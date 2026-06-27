@@ -1476,6 +1476,13 @@ func (bs *BackgroundSession) GetWorkspaceUUID() string {
 	return bs.workspaceUUID
 }
 
+// FreshCachedArgNames returns the parameter names with fresh (non-expired) cached
+// values for the given prompt. Names only — never values. Returns nil when no
+// cache entries exist for the prompt.
+func (bs *BackgroundSession) FreshCachedArgNames(promptName string) []string {
+	return bs.promptArgCache.FreshNames(promptName)
+}
+
 // GetAuxiliaryManager returns the auxiliary manager associated with this session.
 func (bs *BackgroundSession) GetAuxiliaryManager() *auxiliary.WorkspaceAuxiliaryManager {
 	return bs.auxiliaryManager

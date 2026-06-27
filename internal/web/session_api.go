@@ -133,6 +133,12 @@ func (s *Server) handleSessionDelete(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func (s *Server) handleSessionPromptArgCache(w http.ResponseWriter, r *http.Request) {
+	if id, ok := s.sessionIDFromPath(w, r); ok {
+		s.apiHandlers.HandlePromptArgCache(w, r, id)
+	}
+}
+
 // SessionUpdateRequest is an alias for the handlers-package type. The update
 // handler was migrated to internal/web/handlers; the alias keeps existing
 // references in the web package (e.g. tests) compiling.
