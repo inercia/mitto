@@ -13,6 +13,7 @@ import (
 
 	"github.com/coder/acp-go-sdk"
 
+	"github.com/inercia/mitto/internal/config"
 	"github.com/inercia/mitto/internal/processors"
 	"github.com/inercia/mitto/internal/session"
 )
@@ -761,6 +762,21 @@ func (bs *BackgroundSession) pdResolvePreferredModels(promptName string) []strin
 		return nil
 	}
 	return bs.preferredModelsResolver(promptName, bs.workingDir)
+}
+
+func (bs *BackgroundSession) pdResolvePromptParameters(promptName string) []config.PromptParameter {
+	if bs.promptParametersResolver == nil || promptName == "" {
+		return nil
+	}
+	return bs.promptParametersResolver(promptName, bs.workingDir)
+}
+
+func (bs *BackgroundSession) pdCacheGetArg(promptName, paramName string) (string, bool) {
+	return bs.promptArgCache.Get(promptName, paramName)
+}
+
+func (bs *BackgroundSession) pdCacheSetArg(promptName, paramName, value string, ttl time.Duration) {
+	bs.promptArgCache.Set(promptName, paramName, value, ttl)
 }
 
 func (bs *BackgroundSession) pdReadBaselineModel() string {

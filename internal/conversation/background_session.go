@@ -277,6 +277,11 @@ type BackgroundSession struct {
 	// PreferredModels field already set in PromptMeta.
 	preferredModelsResolver func(name, workingDir string) []string
 
+	// promptParametersResolver resolves a prompt name to its declared parameter list.
+	// Used by the prompt dispatcher (mitto-pchx.3) to read per-parameter cache config
+	// when merging cached values into supplied arguments and writing them back.
+	promptParametersResolver func(name, workingDir string) []config.PromptParameter
+
 	// Model preference override tracking (guarded by modelMu).
 	modelMu        sync.Mutex // Protects baselineModel and overrideActive
 	baselineModel  string     // User's intended model; never mutated by per-prompt overrides
@@ -388,6 +393,11 @@ type BackgroundSessionConfig struct {
 	// When set and PromptMeta.PreferredModels is empty, the list is resolved from the
 	// prompt name in PromptWithMeta before the per-prompt model-switching logic runs.
 	PreferredModelsResolver func(name, workingDir string) []string
+
+	// PromptParametersResolver resolves a named workspace prompt to its declared parameter list.
+	// Used by the prompt dispatcher (mitto-pchx.3) to read per-parameter cache config
+	// when merging cached values into supplied arguments and writing them back.
+	PromptParametersResolver func(name, workingDir string) []config.PromptParameter
 
 	// IsChildPrompting checks if a child session's agent is currently responding.
 	// Used to populate children.promptingCount in the CEL context for enabledWhen.
@@ -530,10 +540,11 @@ func NewBackgroundSession(cfg BackgroundSessionConfig) (*BackgroundSession, erro
 		globalMcpServer:         cfg.GlobalMCPServer,         // Global MCP server for session registration
 		auxiliaryManager:        cfg.AuxiliaryManager,        // Workspace-scoped auxiliary manager
 		availableACPServers:     cfg.AvailableACPServers,     // Pre-computed workspace server list
-		promptResolver:          cfg.PromptResolver,          // Named prompt resolver (resolves name → text at send time)
-		preferredModelsResolver: cfg.PreferredModelsResolver, // Named prompt resolver (resolves name → preferredModels)
-		isChildPrompting:        cfg.IsChildPrompting,        // Callback to check if a child session is prompting
-		creationCtx:             cfg.CreationCtx,             // Context for initial ACP session creation RPC only
+		promptResolver:           cfg.PromptResolver,           // Named prompt resolver (resolves name → text at send time)
+		preferredModelsResolver:  cfg.PreferredModelsResolver,  // Named prompt resolver (resolves name → preferredModels)
+		promptParametersResolver: cfg.PromptParametersResolver, // Named prompt resolver (resolves name → parameters)
+		isChildPrompting:         cfg.IsChildPrompting,         // Callback to check if a child session is prompting
+		creationCtx:              cfg.CreationCtx,              // Context for initial ACP session creation RPC only
 	}
 
 	// Look up ACP server constraints from config
@@ -740,10 +751,11 @@ func ResumeBackgroundSession(config BackgroundSessionConfig) (*BackgroundSession
 		globalMcpServer:         config.GlobalMCPServer,         // Global MCP server for session registration
 		auxiliaryManager:        config.AuxiliaryManager,        // Workspace-scoped auxiliary manager
 		availableACPServers:     config.AvailableACPServers,     // Pre-computed workspace server list
-		promptResolver:          config.PromptResolver,          // Named prompt resolver (resolves name → text at send time)
-		preferredModelsResolver: config.PreferredModelsResolver, // Named prompt resolver (resolves name → preferredModels)
-		isChildPrompting:        config.IsChildPrompting,        // Callback to check if a child session is prompting
-		creationCtx:             config.CreationCtx,             // Context for initial ACP session creation RPC only
+		promptResolver:           config.PromptResolver,           // Named prompt resolver (resolves name → text at send time)
+		preferredModelsResolver:  config.PreferredModelsResolver,  // Named prompt resolver (resolves name → preferredModels)
+		promptParametersResolver: config.PromptParametersResolver, // Named prompt resolver (resolves name → parameters)
+		isChildPrompting:         config.IsChildPrompting,         // Callback to check if a child session is prompting
+		creationCtx:              config.CreationCtx,              // Context for initial ACP session creation RPC only
 	}
 
 	// Look up ACP server constraints from config

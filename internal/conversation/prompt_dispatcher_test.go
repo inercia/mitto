@@ -14,6 +14,7 @@ import (
 
 	acp "github.com/coder/acp-go-sdk"
 
+	"github.com/inercia/mitto/internal/config"
 	"github.com/inercia/mitto/internal/processors"
 	"github.com/inercia/mitto/internal/session"
 )
@@ -110,6 +111,13 @@ type fakePromptDeps struct {
 	restartErr     error
 	restartCalled  int
 	reacquireCalls int
+
+	// === mitto-pchx.3: per-conversation prompt-argument cache ===
+	// promptParams is returned by pdResolvePromptParameters (nil ⇒ resolver returns nil).
+	promptParams []config.PromptParameter
+	// argCache is a real per-conversation cache backing pdCacheGetArg/pdCacheSetArg so
+	// dispatcher tests can exercise the merge + write-back path end-to-end.
+	argCache *promptArgCache
 }
 
 func newFakePromptDeps() *fakePromptDeps {
@@ -125,6 +133,7 @@ func newFakePromptDeps() *fakePromptDeps {
 		metaByID:       make(map[string]session.Metadata),
 		childPrompting: make(map[string]bool),
 		sessionCtx:     context.Background(),
+		argCache:       newPromptArgCache(),
 	}
 }
 
@@ -248,6 +257,24 @@ func (f *fakePromptDeps) pdSetActiveModelOnly(_ context.Context, modelID string)
 	defer f.mu.Unlock()
 	f.setActiveModelCalls = append(f.setActiveModelCalls, modelID)
 	return f.setActiveModelErr
+}
+
+// === mitto-pchx.3: prompt-arg cache ===
+
+func (f *fakePromptDeps) pdResolvePromptParameters(_ string) []config.PromptParameter {
+	return f.promptParams
+}
+func (f *fakePromptDeps) pdCacheGetArg(promptName, paramName string) (string, bool) {
+	if f.argCache == nil {
+		return "", false
+	}
+	return f.argCache.Get(promptName, paramName)
+}
+func (f *fakePromptDeps) pdCacheSetArg(promptName, paramName, value string, ttl time.Duration) {
+	if f.argCache == nil {
+		return
+	}
+	f.argCache.Set(promptName, paramName, value, ttl)
 }
 
 // === New in 2.5-d ===
@@ -1746,3 +1773,157 @@ func (e *fakeRateLimitError) Error() string { return "rate_limit_error: too many
 type fakeContextTooLargeError struct{}
 
 func (e *fakeContextTooLargeError) Error() string { return "context_length_exceeded: 413" }
+
+
+// --- mitto-pchx.3: prompt-arg cache merge + write-back tests ---
+
+// boolPtr is a tiny helper for *bool fields.
+func boolPtr(b bool) *bool { return &b }
+
+// TestResolveAndSubstitute_Cache_WriteBackAndAutoFill verifies that a cacheable
+// arg supplied on a first dispatch is written to the cache, and that a second
+// dispatch with the arg absent auto-fills it from the cache and substitutes it
+// into the body. It also confirms the auto-filled arg appears in argument_names.
+func TestResolveAndSubstitute_Cache_WriteBackAndAutoFill(t *testing.T) {
+	p := promptDispatcher{}
+	d := newFakePromptDeps()
+	d.resolver = func(name, _ string) (string, error) { return "Hi ${NAME}", nil }
+	d.promptParams = []config.PromptParameter{
+		{Name: "NAME", Type: "string", Cache: &config.PromptParameterCache{Destination: "memory"}},
+	}
+
+	// First call: arg supplied → substituted into body AND written to cache.
+	msg1, argCount1, meta1, err := p.resolveAndSubstitute(d, "",
+		PromptMeta{PromptName: "greet", Arguments: map[string]string{"NAME": "Alice"}})
+	if err != nil {
+		t.Fatalf("first call unexpected error: %v", err)
+	}
+	if msg1 != "Hi Alice" {
+		t.Fatalf("first call: expected substituted message, got %q", msg1)
+	}
+	if argCount1 != 1 {
+		t.Fatalf("first call: expected argCount=1, got %d", argCount1)
+	}
+	if v, ok := d.argCache.Get("greet", "NAME"); !ok || v != "Alice" {
+		t.Fatalf("expected cache populated with NAME=Alice after first call, got (%q, %v)", v, ok)
+	}
+	// Sanity: argument_names lists NAME on the supplied-arg path.
+	if names, ok := meta1.Meta["argument_names"].([]string); !ok || len(names) != 1 || names[0] != "NAME" {
+		t.Fatalf("first call: expected argument_names=[NAME], got %v", meta1.Meta["argument_names"])
+	}
+
+	// Second call: arg absent → auto-filled from cache + substituted.
+	msg2, argCount2, meta2, err := p.resolveAndSubstitute(d, "",
+		PromptMeta{PromptName: "greet"})
+	if err != nil {
+		t.Fatalf("second call unexpected error: %v", err)
+	}
+	if msg2 != "Hi Alice" {
+		t.Fatalf("second call: expected auto-filled message %q, got %q", "Hi Alice", msg2)
+	}
+	if argCount2 != 1 {
+		t.Fatalf("second call: expected argCount=1 from auto-fill, got %d", argCount2)
+	}
+	if names, ok := meta2.Meta["argument_names"].([]string); !ok || len(names) != 1 || names[0] != "NAME" {
+		t.Fatalf("second call: expected argument_names=[NAME] from auto-fill, got %v", meta2.Meta["argument_names"])
+	}
+}
+
+// TestResolveAndSubstitute_Cache_ExpiredNotAutoFilled verifies that an entry
+// past its TTL is NOT auto-filled and the body keeps its ${NAME:-default} default.
+func TestResolveAndSubstitute_Cache_ExpiredNotAutoFilled(t *testing.T) {
+	p := promptDispatcher{}
+	d := newFakePromptDeps()
+	d.resolver = func(name, _ string) (string, error) { return "Hi ${NAME:-stranger}", nil }
+	d.promptParams = []config.PromptParameter{
+		{Name: "NAME", Type: "string", Cache: &config.PromptParameterCache{Destination: "memory", TTL: "20ms"}},
+	}
+
+	// Populate cache via a first supplied-arg call.
+	if _, _, _, err := p.resolveAndSubstitute(d, "",
+		PromptMeta{PromptName: "greet", Arguments: map[string]string{"NAME": "Alice"}}); err != nil {
+		t.Fatalf("seed call unexpected error: %v", err)
+	}
+	if v, ok := d.argCache.Get("greet", "NAME"); !ok || v != "Alice" {
+		t.Fatalf("seed: expected cache populated, got (%q, %v)", v, ok)
+	}
+
+	// Wait past TTL.
+	time.Sleep(40 * time.Millisecond)
+
+	// Second call with no args: cache expired → arg not filled, no substitution runs.
+	msg, argCount, _, err := p.resolveAndSubstitute(d, "",
+		PromptMeta{PromptName: "greet"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if msg != "Hi ${NAME:-stranger}" {
+		t.Fatalf("expected raw body kept (no substitution), got %q", msg)
+	}
+	if argCount != 0 {
+		t.Fatalf("expected argCount=0 when cache expired, got %d", argCount)
+	}
+}
+
+// TestResolveAndSubstitute_Cache_NonCacheableNotStored verifies that a parameter
+// without a Cache config is never written to the cache, even when supplied.
+func TestResolveAndSubstitute_Cache_NonCacheableNotStored(t *testing.T) {
+	p := promptDispatcher{}
+	d := newFakePromptDeps()
+	d.resolver = func(name, _ string) (string, error) { return "Hi ${NAME}", nil }
+	d.promptParams = []config.PromptParameter{
+		{Name: "NAME", Type: "string"}, // Cache == nil
+	}
+
+	if _, _, _, err := p.resolveAndSubstitute(d, "",
+		PromptMeta{PromptName: "greet", Arguments: map[string]string{"NAME": "Alice"}}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if _, ok := d.argCache.Get("greet", "NAME"); ok {
+		t.Fatal("expected non-cacheable arg NOT written to cache")
+	}
+}
+
+// TestResolveAndSubstitute_Cache_NilResolverSafe verifies that with a nil
+// parameters resolver (or unknown prompt) the dispatcher still works and
+// nothing is cached.
+func TestResolveAndSubstitute_Cache_NilResolverSafe(t *testing.T) {
+	p := promptDispatcher{}
+	d := newFakePromptDeps()
+	d.resolver = func(name, _ string) (string, error) { return "Hi ${NAME}", nil }
+	d.promptParams = nil // resolver returns nil — simulates unknown/unparameterised prompt
+
+	msg, argCount, _, err := p.resolveAndSubstitute(d, "",
+		PromptMeta{PromptName: "greet", Arguments: map[string]string{"NAME": "Alice"}})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if msg != "Hi Alice" {
+		t.Fatalf("expected substituted message, got %q", msg)
+	}
+	if argCount != 1 {
+		t.Fatalf("expected argCount=1, got %d", argCount)
+	}
+	if _, ok := d.argCache.Get("greet", "NAME"); ok {
+		t.Fatal("expected no cache write when resolver returns nil params")
+	}
+}
+
+// TestResolveAndSubstitute_Cache_RequiredPtrNotInterferingWithCache ensures that
+// the Required field (an unrelated *bool) does not affect cache merge/write-back.
+func TestResolveAndSubstitute_Cache_RequiredPtrNotInterferingWithCache(t *testing.T) {
+	p := promptDispatcher{}
+	d := newFakePromptDeps()
+	d.resolver = func(name, _ string) (string, error) { return "Hi ${NAME}", nil }
+	d.promptParams = []config.PromptParameter{
+		{Name: "NAME", Type: "string", Required: boolPtr(true), Cache: &config.PromptParameterCache{Destination: "memory"}},
+	}
+
+	if _, _, _, err := p.resolveAndSubstitute(d, "",
+		PromptMeta{PromptName: "greet", Arguments: map[string]string{"NAME": "Alice"}}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if v, ok := d.argCache.Get("greet", "NAME"); !ok || v != "Alice" {
+		t.Fatalf("expected cache populated, got (%q, %v)", v, ok)
+	}
+}

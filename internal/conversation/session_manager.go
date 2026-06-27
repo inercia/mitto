@@ -160,6 +160,10 @@ type SessionManager struct {
 	// Passed to BackgroundSession via BackgroundSessionConfig on creation/resume.
 	preferredModelsResolver func(name, workingDir string) []string
 
+	// promptParametersResolver resolves a named workspace prompt to its declared parameter list.
+	// Passed to BackgroundSession via BackgroundSessionConfig on creation/resume.
+	promptParametersResolver func(name, workingDir string) []config.PromptParameter
+
 	// onConversationIdle is invoked when a session's agent stops and the session is
 	// idle. Wired to the periodic runner to drive event-driven on-completion firing.
 	onConversationIdle func(sessionID string)
@@ -675,6 +679,14 @@ func (sm *SessionManager) SetPreferredModelsResolver(resolver func(name, working
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 	sm.preferredModelsResolver = resolver
+}
+
+// SetPromptParametersResolver sets the function used to resolve a prompt name to its declared parameter list.
+// The resolver is passed to every new and resumed BackgroundSession via BackgroundSessionConfig.
+func (sm *SessionManager) SetPromptParametersResolver(resolver func(name, workingDir string) []config.PromptParameter) {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	sm.promptParametersResolver = resolver
 }
 
 // SetOnConversationIdle registers the callback invoked when a session goes idle after
@@ -1358,8 +1370,9 @@ func (sm *SessionManager) CreateSessionWithWorkspace(ctx context.Context, name, 
 		AuxiliaryManager:        sm.auxiliaryManager,
 		SharedProcess:           sharedProcess,              // Shared ACP process (nil = legacy mode)
 		PruneConfig:             pruneConfig,                // Auto-pruning configuration (nil = no auto-pruning)
-		PromptResolver:          sm.promptResolver,          // Named prompt resolver (resolves prompt name → text)
-		PreferredModelsResolver: sm.preferredModelsResolver, // Named prompt resolver (resolves prompt name → preferredModels)
+		PromptResolver:           sm.promptResolver,           // Named prompt resolver (resolves prompt name → text)
+		PreferredModelsResolver:  sm.preferredModelsResolver,  // Named prompt resolver (resolves prompt name → preferredModels)
+		PromptParametersResolver: sm.promptParametersResolver, // Named prompt resolver (resolves prompt name → parameters)
 		OnTurnIdle: func(sessionID string) {
 			sm.mu.RLock()
 			cb := sm.onConversationIdle
@@ -1979,8 +1992,9 @@ func (sm *SessionManager) ResumeSession(sessionID, sessionName, workingDir strin
 		AuxiliaryManager:        sm.auxiliaryManager,
 		SharedProcess:           sharedProcess,              // Shared ACP process (nil = legacy mode)
 		PruneConfig:             pruneConfig,                // Auto-pruning configuration (nil = no auto-pruning)
-		PromptResolver:          sm.promptResolver,          // Named prompt resolver (resolves prompt name → text)
-		PreferredModelsResolver: sm.preferredModelsResolver, // Named prompt resolver (resolves prompt name → preferredModels)
+		PromptResolver:           sm.promptResolver,           // Named prompt resolver (resolves prompt name → text)
+		PreferredModelsResolver:  sm.preferredModelsResolver,  // Named prompt resolver (resolves prompt name → preferredModels)
+		PromptParametersResolver: sm.promptParametersResolver, // Named prompt resolver (resolves prompt name → parameters)
 		OnTurnIdle: func(sessionID string) {
 			sm.mu.RLock()
 			cb := sm.onConversationIdle

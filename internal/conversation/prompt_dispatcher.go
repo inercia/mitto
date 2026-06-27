@@ -100,6 +100,12 @@ type promptDeps interface {
 	pdWriteOverrideActive(active bool) // modelMu.Lock + write + Unlock
 	pdSetActiveModelOnly(ctx context.Context, modelID string) error
 
+	// Per-conversation prompt-argument cache (mitto-pchx.3): resolver returns the prompt's
+	// declared parameter list (with optional Cache config); Get/Set bridge to the in-memory store.
+	pdResolvePromptParameters(name string) []config.PromptParameter
+	pdCacheGetArg(promptName, paramName string) (string, bool)
+	pdCacheSetArg(promptName, paramName, value string, ttl time.Duration)
+
 	// === New in 2.5-d: post-prompt completion helpers ===
 
 	// Token usage bookkeeping
@@ -198,6 +204,44 @@ func (p promptDispatcher) resolveAndSubstitute(d promptDeps, message string, met
 			}
 		} else {
 			message = rendered
+		}
+	}
+
+	// Per-conversation prompt-argument cache (mitto-pchx.3): for a named prompt,
+	// fill cacheable params missing from meta.Arguments from the cache, then write
+	// back supplied cacheable values with their TTL (refreshing on re-supply).
+	if meta.PromptName != "" {
+		if params := d.pdResolvePromptParameters(meta.PromptName); len(params) > 0 {
+			// Read/merge: inject fresh cached values for cacheable params not already supplied.
+			for _, p := range params {
+				if p.Cache == nil {
+					continue
+				}
+				if meta.Arguments != nil {
+					if _, ok := meta.Arguments[p.Name]; ok {
+						continue
+					}
+				}
+				if v, ok := d.pdCacheGetArg(meta.PromptName, p.Name); ok {
+					if meta.Arguments == nil {
+						meta.Arguments = make(map[string]string)
+					}
+					meta.Arguments[p.Name] = v
+				}
+			}
+			// Write-back: persist supplied/merged cacheable values with their TTL.
+			for _, p := range params {
+				if p.Cache == nil {
+					continue
+				}
+				if meta.Arguments == nil {
+					continue
+				}
+				if v, ok := meta.Arguments[p.Name]; ok {
+					ttl, _ := p.Cache.ParsedTTL()
+					d.pdCacheSetArg(meta.PromptName, p.Name, v, ttl)
+				}
+			}
 		}
 	}
 
