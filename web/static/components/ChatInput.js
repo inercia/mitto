@@ -537,37 +537,44 @@ export function ChatInput({
         const response = await authFetch(
           endpoints.sessions.periodic(sessionId),
         );
-        if (response.ok) {
-          const config = await response.json();
-          // Always update frequency
-          if (config.frequency) {
-            setPeriodicFrequency(config.frequency);
-          }
-          // Update next_scheduled_at (only set if enabled)
-          if (config.enabled && config.next_scheduled_at) {
-            setPeriodicNextScheduledAt(config.next_scheduled_at);
-          } else {
-            setPeriodicNextScheduledAt(null);
-          }
-          // Update prompt name and fresh context from config
-          setPeriodicPromptName(config.prompt_name || "");
-          setPeriodicFreshContext(config.fresh_context === true);
-          setPeriodicMaxIterations(config.max_iterations ?? 0);
-          setPeriodicIterationCount(config.iteration_count ?? 0);
-          setPeriodicTrigger(config.trigger || "schedule");
-          setPeriodicDelaySeconds(config.delay_seconds ?? 5);
-          setPeriodicMaxDurationSeconds(config.max_duration_seconds ?? 0);
-          setPeriodicStoppedReason(config.stopped_reason || "");
-          // Set lock state based on the enabled field
-          const isLocked = config.enabled === true;
-          setIsPeriodicLocked(isLocked);
-          // Set prompt state based on config
-          const isPendingPlaceholder = config.prompt === "(pending)";
-          if (config.prompt && !isPendingPlaceholder) {
-            setPeriodicPrompt(config.prompt);
-          } else {
-            setPeriodicPrompt("");
-          }
+        const ct = response.headers.get("content-type");
+        if (!response.ok || !ct || !ct.includes("application/json")) {
+          console.warn(
+            "Periodic config fetch returned non-JSON response:",
+            response.status,
+            ct,
+          );
+          return;
+        }
+        const config = await response.json();
+        // Always update frequency
+        if (config.frequency) {
+          setPeriodicFrequency(config.frequency);
+        }
+        // Update next_scheduled_at (only set if enabled)
+        if (config.enabled && config.next_scheduled_at) {
+          setPeriodicNextScheduledAt(config.next_scheduled_at);
+        } else {
+          setPeriodicNextScheduledAt(null);
+        }
+        // Update prompt name and fresh context from config
+        setPeriodicPromptName(config.prompt_name || "");
+        setPeriodicFreshContext(config.fresh_context === true);
+        setPeriodicMaxIterations(config.max_iterations ?? 0);
+        setPeriodicIterationCount(config.iteration_count ?? 0);
+        setPeriodicTrigger(config.trigger || "schedule");
+        setPeriodicDelaySeconds(config.delay_seconds ?? 5);
+        setPeriodicMaxDurationSeconds(config.max_duration_seconds ?? 0);
+        setPeriodicStoppedReason(config.stopped_reason || "");
+        // Set lock state based on the enabled field
+        const isLocked = config.enabled === true;
+        setIsPeriodicLocked(isLocked);
+        // Set prompt state based on config
+        const isPendingPlaceholder = config.prompt === "(pending)";
+        if (config.prompt && !isPendingPlaceholder) {
+          setPeriodicPrompt(config.prompt);
+        } else {
+          setPeriodicPrompt("");
         }
       } catch (err) {
         console.error("Failed to fetch periodic config:", err);
@@ -627,8 +634,21 @@ export function ChatInput({
         }
         // Fetch the full config to get the prompt name and fresh_context
         authFetch(endpoints.sessions.periodic(sessionId))
-          .then((response) => response.json())
+          .then(async (response) => {
+            if (!response.ok) return null;
+            const ct = response.headers.get("content-type");
+            if (!ct || !ct.includes("application/json")) {
+              console.warn(
+                "Periodic config fetch returned non-JSON response:",
+                response.status,
+                ct,
+              );
+              return null;
+            }
+            return response.json();
+          })
           .then((config) => {
+            if (!config) return;
             setPeriodicPromptName(config.prompt_name || "");
             setPeriodicFreshContext(config.fresh_context === true);
             setPeriodicMaxIterations(config.max_iterations ?? 0);
