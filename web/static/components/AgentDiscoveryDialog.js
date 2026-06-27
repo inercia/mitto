@@ -104,12 +104,23 @@ export function AgentDiscoveryDialog({
   const handleConfirm = useCallback(async () => {
     const toAdd = agents
       .filter((a) => selected.has(a.dir_name) && a.available && a.status)
-      .map((a) => ({
-        name: a.metadata.display_name || a.dir_name,
-        command: a.status.command,
-        type: a.dir_name,
-        source: "settings",
-      }));
+      .map((a) => {
+        const d = a.metadata?.defaults;
+        const entry = {
+          name: a.metadata.display_name || a.dir_name,
+          command: a.status.command,
+          type: a.dir_name,
+          dir_name: a.dir_name,
+          source: "settings",
+        };
+        if (d) {
+          if (d.env && Object.keys(d.env).length > 0) entry.env = { ...d.env };
+          if (Array.isArray(d.tags) && d.tags.length > 0) entry.tags = [...d.tags];
+          if (d.constraints && Object.keys(d.constraints).length > 0) entry.constraints = d.constraints;
+          if (d.autoApprove) entry.auto_approve = true;
+        }
+        return entry;
+      });
 
     if (toAdd.length === 0) {
       onClose?.();
@@ -285,6 +296,37 @@ export function AgentDiscoveryDialog({
                     ${agent.status?.command && html`
                       <div class="text-xs text-mitto-text-muted truncate mt-0.5">${agent.status.command}</div>
                     `}
+                    ${(() => {
+                      const d = agent.metadata?.defaults;
+                      const hasDefaults = d && (
+                        (d.env && Object.keys(d.env).length) ||
+                        (d.tags && d.tags.length) ||
+                        (d.constraints && Object.keys(d.constraints).length) ||
+                        d.autoApprove
+                      );
+                      if (!hasDefaults) return null;
+                      return html`
+                        <div class="mt-1 flex flex-col gap-1">
+                          <div class="text-xs text-mitto-text-muted font-medium">Defaults</div>
+                          ${d.tags && d.tags.length > 0 && html`
+                            <div class="flex items-center gap-1 flex-wrap">
+                              ${d.tags.map((tag) => html`
+                                <span class="badge badge-ghost badge-sm">${tag}</span>
+                              `)}
+                            </div>
+                          `}
+                          ${d.constraints?.model?.pattern && html`
+                            <div class="text-xs text-mitto-text-muted">Model: ${d.constraints.model.matchMode} "${d.constraints.model.pattern}"</div>
+                          `}
+                          ${d.env && Object.keys(d.env).length > 0 && html`
+                            <div class="text-xs text-mitto-text-muted">Env: ${Object.keys(d.env).join(", ")}</div>
+                          `}
+                          ${d.autoApprove && html`
+                            <div class="text-xs text-mitto-text-muted">Auto-approve enabled</div>
+                          `}
+                        </div>
+                      `;
+                    })()}
                   </div>
                 </li>
               `;
