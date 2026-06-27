@@ -1201,11 +1201,26 @@ a.mailto-link:hover {
 /* On small screens, collapse the categorical header badges (the periodic
    status pill — Auto/Paused/Stopped — and the trigger badge) to icon-only by
    hiding their text labels. The leading icon stays visible and conveys the
-   state. Numeric badges (Run N of M, max 2h, countdown) are intentionally left
-   untouched so their values remain readable. */
+   state. Numeric badges (max 2h, countdown) keep their full values; the
+   run-count badge swaps to a compact form (see below) so its value stays
+   readable while taking less room. */
 @media (max-width: 640px) {
   [data-testid="conversation-header-subtitle"] .badge-collapse-label {
     display: none;
+  }
+}
+
+/* Run-count badge: show the full form ("Run N of M") on wider screens and a
+   compact form ("N/M") on narrow screens. */
+[data-testid="periodic-run-count-badge"] .runcount-short {
+  display: none;
+}
+@media (max-width: 640px) {
+  [data-testid="periodic-run-count-badge"] .runcount-full {
+    display: none;
+  }
+  [data-testid="periodic-run-count-badge"] .runcount-short {
+    display: inline;
   }
 }
 

@@ -2039,12 +2039,19 @@ function App() {
       }
     }
   }
-  // Run-count badge: "Run N of M" or "N run(s) · ∞"
+  // Run-count badge: "Run N of M" or "N run(s) · ∞". A compact variant ("N/M" or
+  // "N·∞") is rendered alongside and CSS-swapped in on narrow screens (styles.css).
   const headerRunCountLabel =
     activeSession?.periodic_configured
       ? headerMaxIterations > 0
         ? `Run ${headerIterationCount} of ${headerMaxIterations}`
         : `${headerIterationCount} run${headerIterationCount !== 1 ? "s" : ""} · ∞`
+      : null;
+  const headerRunCountLabelShort =
+    activeSession?.periodic_configured
+      ? headerMaxIterations > 0
+        ? `${headerIterationCount}/${headerMaxIterations}`
+        : `${headerIterationCount}·∞`
       : null;
   // Max-time badge: "max 2h" etc; omitted when not set (0 means unlimited)
   const headerMaxTimeLabel =
@@ -2403,7 +2410,9 @@ function App() {
                   title=${headerIterCapHit
                     ? "Reached the maximum number of iterations"
                     : null}
-                >${headerRunCountLabel}</span>
+                ><span class="runcount-full">${headerRunCountLabel}</span
+                  ><span class="runcount-short">${headerRunCountLabelShort}</span
+                ></span>
               </${Fragment}>`}
               ${headerMaxTimeLabel &&
               html`<${Fragment}>
