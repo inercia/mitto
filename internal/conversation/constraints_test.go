@@ -163,18 +163,19 @@ func TestSelectPreferredModel_NilModels(t *testing.T) {
 func TestConstraintModelSwitchBudgetMath(t *testing.T) {
 	const (
 		maxConcurrentCallers = 4 // from bead: ~4 concurrent sessions at wakeup
-		// Mirror of internal/web/shared_acp_process.go set_model constants.
-		maxRetries        = 3                      // setSessionModelMaxAttempts
-		maxAttemptTimeout = 8 * time.Second        // setSessionModelAttemptTimeout
-		retryBaseDelay    = 300 * time.Millisecond // setSessionModelRetryBaseDelay
-		retryJitterRatio  = 0.5                    // setSessionModelRetryJitterRatio
+		// Mirror of internal/acpproc/shared_acp_process.go set_model constants.
+		// Attempt schedule {12s,8s,5s} sums to 25s — same total as the prior 3×8s (mitto-f7q).
+		maxRetries       = 3                      // setSessionModelMaxAttempts
+		scheduleSum      = 25 * time.Second       // sum(setSessionModelAttemptTimeouts)
+		retryBaseDelay   = 300 * time.Millisecond // setSessionModelRetryBaseDelay
+		retryJitterRatio = 0.5                    // setSessionModelRetryJitterRatio
 	)
 
 	// Max backoff across all retry cycles (attempt 2 + attempt 3, each jittered up).
 	maxJitteredBackoff := time.Duration(float64(retryBaseDelay)*float64(maxRetries-1)*(1+retryJitterRatio)) + retryBaseDelay
 
-	// Per-caller worst-case: N attempts × per-attempt timeout + total jittered backoff.
-	perCallerMax := time.Duration(maxRetries)*maxAttemptTimeout + maxJitteredBackoff
+	// Per-caller worst-case: schedule sum + total jittered backoff.
+	perCallerMax := scheduleSum + maxJitteredBackoff
 
 	// Semaphore wait: up to (N-1) prior holders each at their worst case.
 	semWaitMax := time.Duration(maxConcurrentCallers-1) * perCallerMax

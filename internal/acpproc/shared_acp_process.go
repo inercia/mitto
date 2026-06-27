@@ -32,20 +32,16 @@ const (
 	processStartRetryJitterRatio = 0.3
 
 	// setSessionModelMaxAttempts is the maximum number of set_model RPC attempts per call.
-	// Per-attempt deadline (8s) × 3 + jittered backoffs (≤900ms total) ≈ 25s per caller.
-	// Do NOT increase — widening per-attempt deadlines is explicitly discouraged (mitto-f7q).
+	// Schedule {12s,8s,5s} totals 25s per caller + jitter (≤900ms) ≈ 25s, unchanged from
+	// the prior 3×8s budget — so setModelSem contention at wakeup is unaffected.
 	setSessionModelMaxAttempts = 3
-	// setSessionModelAttemptTimeout is the per-attempt timeout for set_model RPCs.
-	// Each attempt gets a fresh 8s budget so a queued caller is not penalised by the wait.
-	// Do NOT increase (mitto-f7q: Option 1 is explicitly discouraged).
-	setSessionModelAttemptTimeout = 8 * time.Second
 	// setSessionModelRetryBaseDelay is the base backoff between set_model retry attempts.
 	setSessionModelRetryBaseDelay = 300 * time.Millisecond
 	// setSessionModelRetryJitterRatio is the maximum jitter as a fraction of the base delay
 	// added to each retry backoff. Jitter in [0, base×ratio) de-correlates concurrent callers
 	// that would otherwise retry in lock-step (mitto-f7q, Option 3).
 	// With ratio=0.5: attempt-2 delay ∈ [300ms, 450ms), attempt-3 ∈ [600ms, 750ms).
-	// Total per-caller worst-case: 3×8s + 750ms ≈ 25s.
+	// Total per-caller worst-case: sum(schedule) + 750ms ≈ 25s.
 	setSessionModelRetryJitterRatio = 0.5
 
 	// sessionCreateMaxAttempts is the maximum number of session/new RPC attempts per call.
@@ -88,7 +84,7 @@ const (
 	// This mirrors the child-session de-stagger pattern (constraintModelSwitchChildStartupJitter
 	// in internal/conversation/bgsession_config.go, introduced for mitto-x4e). The jitter
 	// waits on m.ctx — not the budget context — so it does NOT consume the 90 s budget.
-	// Do NOT change the per-attempt 8 s deadline (mitto-f7q explicitly discourages that).
+	// Do NOT increase the sum of setSessionModelAttemptTimeouts — the total must stay ≈25s.
 	auxModelSwitchStartupJitter = 10 * time.Second
 
 	// processInitializeAttemptTimeout is the per-attempt deadline for the ACP Initialize
@@ -128,6 +124,19 @@ const (
 	// conversation.ACPRestartBaseDelay, conversation.ACPRestartMaxDelay) to ensure consistent behavior between
 	// SharedACPProcess and conversation.BackgroundSession.
 )
+
+// setSessionModelAttemptTimeouts is the per-attempt deadline schedule for set_model RPCs
+// (mitto-f7q). Attempt-1 is sized above the observed cold-model warm-up p95 (~8s) so a
+// cold claude-haiku-4-5 can complete on the first attempt; later attempts shrink to keep
+// the total (12+8+5 = 25s) ≈ constant vs the prior 3×8s, leaving setModelSem contention
+// unchanged. The array length is tied to setSessionModelMaxAttempts at compile time.
+// Do NOT increase the sum — the total must remain ≈25s so setModelAsyncCallerBudget (90s)
+// contention math stays valid.
+var setSessionModelAttemptTimeouts = [setSessionModelMaxAttempts]time.Duration{
+	12 * time.Second, // attempt 1: sized for cold-model warm-up p95
+	8 * time.Second,  // attempt 2: standard
+	5 * time.Second,  // attempt 3: final, minimal budget
+}
 
 // auxStartupJitter returns a random duration in [0, max) to de-stagger concurrent
 // async aux-session model-set goroutines that would otherwise all hit the capacity-1
@@ -1336,9 +1345,9 @@ func (p *SharedACPProcess) SetSessionModel(ctx context.Context, sessionID acp.Se
 			}
 		}
 
-		// Fresh per-attempt sub-context so each attempt (especially a caller that
-		// waited on the semaphore) gets a full budget regardless of wait time.
-		attemptCtx, attemptCancel := context.WithTimeout(ctx, setSessionModelAttemptTimeout)
+		// Fresh per-attempt sub-context using the attempt schedule so each attempt
+		// (especially a caller that waited on the semaphore) gets its full budget.
+		attemptCtx, attemptCancel := context.WithTimeout(ctx, setSessionModelAttemptTimeouts[attempt-1])
 
 		ctxRemainingMs := int64(-1)
 		if dl, ok := ctx.Deadline(); ok {

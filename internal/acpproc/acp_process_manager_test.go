@@ -770,23 +770,26 @@ func TestAuxCreateMuLockStructure(t *testing.T) {
 // large enough to cover worst-case semaphore contention at server wakeup (mitto-f7q).
 //
 // Worst case: the background goroutine queues behind N-1 prior holders, each
-// completing 3×8s + max jitter backoff ≈ 25s. With N=4 concurrent aux sessions
-// (the "investments" wakeup scenario), 3 prior holders × 25s = 75s wait before
-// the semaphore is acquired. The goroutine's own retries add ≤25s, totalling
-// ≤100s in the absolute worst case. 90s covers the expected contention (≤4
-// concurrent at wakeup) while excluding the extreme 4-holder worst case.
+// completing schedule-sum (12+8+5=25s) + max jitter backoff ≈ 25s. With N=4
+// concurrent aux sessions, 3 prior holders × 25s = 75s wait before the semaphore
+// is acquired. The goroutine's own retries add ≤25s, totalling ≤100s in the
+// absolute worst case. 90s covers the expected contention (≤4 concurrent at
+// wakeup) while excluding the extreme 4-holder worst case.
 func TestSetModelAsyncBudgetMath(t *testing.T) {
 	const (
 		maxConcurrentCallers = 4 // from bead: ~4 concurrent children at wakeup
 		maxRetries           = setSessionModelMaxAttempts
-		maxAttemptTimeout    = setSessionModelAttemptTimeout
 		// Max backoff per retry cycle (attempt 3 carries the largest delay).
 		maxJitteredBackoff = time.Duration(float64(setSessionModelRetryBaseDelay)*float64(maxRetries-1)*(1+setSessionModelRetryJitterRatio)) + setSessionModelRetryBaseDelay
 		asyncBudget        = setModelAsyncCallerBudget
 	)
 
-	// Per-caller worst-case: N attempts × per-attempt timeout + total jittered backoff.
-	perCallerMax := time.Duration(maxRetries)*maxAttemptTimeout + maxJitteredBackoff
+	// Per-caller worst-case: sum of the attempt schedule + total jittered backoff.
+	var scheduleSum time.Duration
+	for _, d := range setSessionModelAttemptTimeouts {
+		scheduleSum += d
+	}
+	perCallerMax := scheduleSum + maxJitteredBackoff
 
 	// Semaphore wait: up to (N-1) prior holders each at their worst case.
 	semWaitMax := time.Duration(maxConcurrentCallers-1) * perCallerMax
@@ -801,6 +804,40 @@ func TestSetModelAsyncBudgetMath(t *testing.T) {
 
 	t.Logf("per-caller max: %v, sem wait (N-1=%d holders): %v, async budget: %v",
 		perCallerMax, maxConcurrentCallers-1, semWaitMax, asyncBudget)
+}
+
+// TestSetModelAttemptTimeoutSchedule asserts structural invariants of the per-attempt
+// deadline schedule (mitto-f7q): length tied to max-attempts, attempt-1 sized for cold
+// warm-up, total ≤ 25s (unchanged from prior 3×8s), and non-increasing order.
+func TestSetModelAttemptTimeoutSchedule(t *testing.T) {
+	schedule := setSessionModelAttemptTimeouts
+
+	if got := len(schedule); got != setSessionModelMaxAttempts {
+		t.Errorf("len(setSessionModelAttemptTimeouts) = %d, want %d (setSessionModelMaxAttempts)",
+			got, setSessionModelMaxAttempts)
+	}
+
+	// Attempt-1 must be sized above the observed 8s cold-model clamp (p95 evidence).
+	if schedule[0] < 12*time.Second {
+		t.Errorf("attempt-1 timeout = %v, want >= 12s (sized for cold warm-up p95)", schedule[0])
+	}
+
+	// Total must not exceed 25s so setModelAsyncCallerBudget contention math is valid.
+	var total time.Duration
+	for _, d := range schedule {
+		total += d
+	}
+	if total > 25*time.Second {
+		t.Errorf("sum(setSessionModelAttemptTimeouts) = %v, want <= 25s (total must not grow)", total)
+	}
+
+	// Timeouts must be non-increasing (front-loaded for cold start).
+	for i := 1; i < len(schedule); i++ {
+		if schedule[i] > schedule[i-1] {
+			t.Errorf("attempt-%d timeout (%v) > attempt-%d timeout (%v); schedule must be non-increasing",
+				i+1, schedule[i], i, schedule[i-1])
+		}
+	}
 }
 
 // TestSetModelRetryJitter verifies that the jittered backoff delay applied in
