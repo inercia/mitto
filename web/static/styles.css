@@ -2172,6 +2172,19 @@ mitto-action {
   backdrop-filter: none;
 }
 
+/* Tailwind infinite utility animations (spinners, pulses) also stop —
+   they run infinitely and contribute to sustained GPU compositing. */
+.reduce-animations .animate-spin,
+.reduce-animations .animate-pulse {
+  animation: none;
+}
+
+/* Transient "improving" overlay: drop its backdrop blur to match the
+   other overlays handled above. */
+.reduce-animations .textarea-improving-overlay {
+  backdrop-filter: none;
+}
+
 /* Also respect OS-level reduced motion preference directly via media query.
    This provides a CSS-only baseline before JavaScript loads. */
 @media (prefers-reduced-motion: reduce) {
@@ -2214,6 +2227,15 @@ mitto-action {
   }
 
   [class*="backdrop-blur"] {
+    backdrop-filter: none;
+  }
+
+  .animate-spin,
+  .animate-pulse {
+    animation: none;
+  }
+
+  .textarea-improving-overlay {
     backdrop-filter: none;
   }
 }
