@@ -114,6 +114,8 @@ Agents are defined in `config/agents/builtin/<agent>/` (shipped) or `MITTO_DIR/a
 | `MCPMetadata` | MCP scope capabilities (`Scopes []string`) |
 | `MCPInstallInput` | JSON input to `mcp-install.sh` (includes `Scope` field) |
 | `AgentDefinition` | Resolved agent with metadata + filesystem location |
+| `AgentDefaults` | Optional `defaults` block seeded into a new ACP server at discovery |
+| `ConstraintSpec` | A single auto-select rule (`matchMode` + `pattern`); mirrors `config.ACPServerConstraint` |
 
 ### metadata.yaml structure
 
@@ -126,7 +128,33 @@ mcp:
 install:
   method: npx
   package: "@anthropic-ai/claude-code"
+defaults:              # optional; seeded into the ACP server when this agent is discovered
+  env:                 # default environment variables for the ACP server
+    NODE_OPTIONS: "--max-old-space-size=8192"
+  constraints:         # auto-select config options (e.g. model) on session start
+    model:
+      matchMode: contains   # contains | exact | startsWith | regex | lookAlike
+      pattern: "Opus"
+  tags: ["coding", "smart"] # categorization tags applied to the server
+  autoApprove: false        # auto-approve tool-call permission requests
 ```
+
+### Agent Defaults (seeded at discovery)
+
+The optional `defaults` block pre-fills a newly discovered agent's ACP server settings.
+The mapping is direct:
+
+| `metadata.yaml` `defaults` | ACP server setting |
+|----------------------------|--------------------|
+| `defaults.env`             | `ACPServer.Env` |
+| `defaults.constraints`     | `ACPServer.Constraints` (see [08-config.md](08-config.md#acp-server-constraints)) |
+| `defaults.tags`            | `ACPServer.Tags` |
+| `defaults.autoApprove`     | `ACPServer.AutoApprove` |
+
+Seeding is **request-wins**: values the user supplies in the Agent Discovery dialog take
+precedence; a default only fills a field the user left empty. `autoApprove` is taken from
+the default. Types live in `internal/agents/types.go` (`AgentDefaults`, `ConstraintSpec`);
+the mapping happens in `seedACPServerDefaults` (`internal/web/handlers/agent_discovery.go`).
 
 **MCP scope values**: `user` (global config), `project` (per-repo), `local` (local-only, not committed).
 

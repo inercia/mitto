@@ -433,6 +433,96 @@ func TestAgentMetadataDefaults_Absent(t *testing.T) {
 	}
 }
 
+// TestAgentMetadataDefaults_PartialSections verifies that a `defaults` block with only
+// some sub-sections present (tags only) parses correctly without errors.
+func TestAgentMetadataDefaults_PartialSections(t *testing.T) {
+	agentsDir := t.TempDir()
+	agentDir := filepath.Join(agentsDir, "builtin", "partial-agent")
+	if err := os.MkdirAll(agentDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	meta := `name: "Partial Agent"
+displayName: "Partial Agent"
+acpId: "partial"
+defaults:
+  tags:
+    - coding
+    - smart
+`
+	if err := os.WriteFile(filepath.Join(agentDir, "metadata.yaml"), []byte(meta), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	m := NewManager(agentsDir, nil)
+	agent, err := m.GetAgent("partial-agent", "builtin")
+	if err != nil {
+		t.Fatalf("GetAgent failed: %v", err)
+	}
+
+	d := agent.Metadata.Defaults
+	if d == nil {
+		t.Fatal("expected Defaults to be non-nil")
+	}
+	if len(d.Tags) != 2 || d.Tags[0] != "coding" || d.Tags[1] != "smart" {
+		t.Errorf("Tags = %v, want [coding smart]", d.Tags)
+	}
+	if len(d.Env) != 0 {
+		t.Errorf("Env = %v, want empty", d.Env)
+	}
+	if len(d.Constraints) != 0 {
+		t.Errorf("Constraints = %v, want empty", d.Constraints)
+	}
+	if d.AutoApprove {
+		t.Error("AutoApprove should be false when not specified")
+	}
+}
+
+// TestAgentMetadataDefaults_EmptyMaps verifies that a `defaults` block with explicitly
+// empty env, constraints, and tags parses without error and yields empty (not nil) maps.
+func TestAgentMetadataDefaults_EmptyMaps(t *testing.T) {
+	agentsDir := t.TempDir()
+	agentDir := filepath.Join(agentsDir, "builtin", "empty-defaults-agent")
+	if err := os.MkdirAll(agentDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	meta := `name: "Empty Defaults Agent"
+displayName: "Empty Defaults Agent"
+acpId: "empty-defaults"
+defaults:
+  env: {}
+  constraints: {}
+  tags: []
+`
+	if err := os.WriteFile(filepath.Join(agentDir, "metadata.yaml"), []byte(meta), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	m := NewManager(agentsDir, nil)
+	agent, err := m.GetAgent("empty-defaults-agent", "builtin")
+	if err != nil {
+		t.Fatalf("GetAgent failed: %v", err)
+	}
+
+	d := agent.Metadata.Defaults
+	if d == nil {
+		t.Fatal("expected Defaults to be non-nil even with empty maps")
+	}
+	if len(d.Env) != 0 {
+		t.Errorf("Env = %v, want empty", d.Env)
+	}
+	if len(d.Constraints) != 0 {
+		t.Errorf("Constraints = %v, want empty", d.Constraints)
+	}
+	if len(d.Tags) != 0 {
+		t.Errorf("Tags = %v, want empty", d.Tags)
+	}
+	if d.AutoApprove {
+		t.Error("AutoApprove should be false")
+	}
+}
+
 // TestMCPServer_EnvUnmarshal verifies that the MCPServer.Env field is populated
 // when an mcp-list.sh script emits an "env" object, so the value can be surfaced
 // by GET /api/workspace-mcp-tools and copied for round-trip into the Add dialog.

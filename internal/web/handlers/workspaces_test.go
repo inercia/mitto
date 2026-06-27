@@ -386,3 +386,46 @@ func TestSeedACPServerDefaults_NilConstraintSpecSkipped(t *testing.T) {
 		t.Errorf("expected Constraints to remain nil when all specs are nil; got %v", s.Constraints)
 	}
 }
+
+// TestSeedACPServerDefaults_FieldLevelOverride verifies the request-wins semantics at
+// field granularity: a user-supplied field is preserved while empty fields are filled
+// from defaults (each field is independently guarded, not all-or-nothing).
+func TestSeedACPServerDefaults_FieldLevelOverride(t *testing.T) {
+	s := &config.ACPServerSettings{
+		Env: map[string]string{"USER_SET": "1"},
+		// Tags and Constraints intentionally empty (user left them unset)
+	}
+	d := &agentsTypes.AgentDefaults{
+		Env:         map[string]string{"DEFAULT_ENV": "x"},
+		Tags:        []string{"t1"},
+		AutoApprove: true,
+		Constraints: map[string]*agentsTypes.ConstraintSpec{
+			"model": {MatchMode: "contains", Pattern: "Opus"},
+		},
+	}
+	seedACPServerDefaults(s, d)
+
+	// User-set Env preserved whole; default Env NOT merged in.
+	if _, ok := s.Env["USER_SET"]; !ok {
+		t.Error("user-set Env key USER_SET should be preserved")
+	}
+	if _, ok := s.Env["DEFAULT_ENV"]; ok {
+		t.Error("default Env key DEFAULT_ENV should not be injected when user already has Env")
+	}
+
+	// Tags seeded from defaults (user left empty).
+	if len(s.Tags) != 1 || s.Tags[0] != "t1" {
+		t.Errorf("Tags = %v, want [t1]", s.Tags)
+	}
+
+	// Constraints seeded from defaults (user left empty).
+	c, ok := s.Constraints["model"]
+	if !ok || c == nil || c.MatchMode != "contains" || c.Pattern != "Opus" {
+		t.Errorf("Constraints[model] = %v, want {contains Opus}", c)
+	}
+
+	// AutoApprove always taken from defaults.
+	if !s.AutoApprove {
+		t.Error("AutoApprove should be set from defaults")
+	}
+}

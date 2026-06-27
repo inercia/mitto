@@ -136,6 +136,8 @@ Note: `/mitto/api/settings` manages global `settings.json`. For per-session feat
 
 Prompt `preferredModels` field (see `07-prompts.md`) also uses these match modes for model auto-selection during `selectPreferredModel()`.
 
+Agent metadata can pre-seed these at discovery: `metadata.yaml` `defaults.constraints` (plus `defaults.env`/`tags`/`autoApprove`) map onto `ACPServer.Constraints`/`Env`/`Tags`/`AutoApprove` via `seedACPServerDefaults` (see [03-cli-acp.md](03-cli-acp.md#agent-defaults-seeded-at-discovery)). Seeding is request-wins (user-supplied values are not overwritten).
+
 ## WorkspaceSettings Override Pattern
 
 `WorkspaceSettings.ACPCommandOverride`: set default from server map, then apply override. See `internal/config/merger.go` for `GenericMerger[T]`.
