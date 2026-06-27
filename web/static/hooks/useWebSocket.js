@@ -1028,57 +1028,57 @@ export function useWebSocket({ onActiveSessionRemovedRef } = {}) {
     }
   }, [storedSessions]);
 
+  // Stable reference to the active session's entry. setSessions() preserves
+  // unchanged session entries by reference, so this only changes identity when
+  // the ACTIVE session's own data changes — not when a background session ticks.
+  // Deriving active-session values from this (instead of the whole `sessions`
+  // map) keeps their references stable across background streaming updates.
+  const activeSession = activeSessionId ? sessions[activeSessionId] : null;
+
   // Get current session's messages
   const messages = useMemo(() => {
-    if (!activeSessionId || !sessions[activeSessionId]) return [];
-    return sessions[activeSessionId].messages || [];
-  }, [sessions, activeSessionId]);
+    return activeSession?.messages || [];
+  }, [activeSession]);
 
   // Get current session info (enhanced with message count)
   const sessionInfo = useMemo(() => {
-    if (!activeSessionId || !sessions[activeSessionId]) return null;
-    const session = sessions[activeSessionId];
-    const info = session.info || {};
+    if (!activeSession) return null;
+    const info = activeSession.info || {};
     // Include message count from the messages array
     return {
       ...info,
-      messageCount: session.messages?.length || 0,
+      messageCount: activeSession.messages?.length || 0,
     };
-  }, [sessions, activeSessionId]);
+  }, [activeSession]);
 
   // Get streaming state for active session
   const isStreaming = useMemo(() => {
-    if (!activeSessionId || !sessions[activeSessionId]) return false;
-    return sessions[activeSessionId].isStreaming || false;
-  }, [sessions, activeSessionId]);
+    return activeSession?.isStreaming || false;
+  }, [activeSession]);
 
   // Check if the ACP agent is running for the active session.
   // When false, the session exists but the agent process hasn't started yet
   // (e.g., during resume). Prompts should be blocked until acp_started arrives.
   const isRunning = useMemo(() => {
-    if (!activeSessionId || !sessions[activeSessionId]) return false;
-    return sessions[activeSessionId].isRunning ?? false;
-  }, [sessions, activeSessionId]);
+    return activeSession?.isRunning ?? false;
+  }, [activeSession]);
 
   // Check if active session has more messages to load
   const hasMoreMessages = useMemo(() => {
-    if (!activeSessionId || !sessions[activeSessionId]) return false;
-    return sessions[activeSessionId].hasMoreMessages || false;
-  }, [sessions, activeSessionId]);
+    return activeSession?.hasMoreMessages || false;
+  }, [activeSession]);
 
   // Check if active session is currently loading more messages
   const isLoadingMore = useMemo(() => {
-    if (!activeSessionId || !sessions[activeSessionId]) return false;
-    return sessions[activeSessionId].isLoadingMore || false;
-  }, [sessions, activeSessionId]);
+    return activeSession?.isLoadingMore || false;
+  }, [activeSession]);
 
   // Check if active session has reached the message limit
   // When true, we've loaded MAX_MESSAGES and can't load more to protect memory
   const hasReachedLimit = useMemo(() => {
-    if (!activeSessionId || !sessions[activeSessionId]) return false;
-    const messageCount = sessions[activeSessionId].messages?.length || 0;
+    const messageCount = activeSession?.messages?.length || 0;
     return messageCount >= MAX_MESSAGES;
-  }, [sessions, activeSessionId]);
+  }, [activeSession]);
 
   // Extract action buttons reference — stable across streaming updates.
   // During streaming, setSessions() spreads the session object which copies
@@ -1191,8 +1191,8 @@ export function useWebSocket({ onActiveSessionRemovedRef } = {}) {
   // Derive configOptions from the active session's info (per-session, not global)
   const configOptions = useMemo(() => {
     if (!activeSessionId) return [];
-    return sessions[activeSessionId]?.info?.config_options || [];
-  }, [activeSessionId, sessions]);
+    return activeSession?.info?.config_options || [];
+  }, [activeSession, activeSessionId]);
 
   // Handle messages from per-session WebSocket
   const handleSessionMessage = useCallback((sessionId, msg) => {
@@ -6092,9 +6092,8 @@ export function useWebSocket({ onActiveSessionRemovedRef } = {}) {
 
   // Get active UI prompt for the current session
   const activeUIPrompt = useMemo(() => {
-    const session = sessions[activeSessionId];
-    return session?.activeUIPrompt || null;
-  }, [sessions, activeSessionId]);
+    return activeSession?.activeUIPrompt || null;
+  }, [activeSession]);
 
   // MCP tools for the currently active session's workspace
   const mcpTools = useMemo(() => {
