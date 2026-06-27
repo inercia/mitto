@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"sync"
 	"syscall"
 
 	"github.com/spf13/cobra"
@@ -117,42 +118,75 @@ func runStandaloneMCPServer(ctx context.Context) error {
 	return srv.Wait()
 }
 
-// runMCPProxy runs as a STDIO-to-HTTP proxy.
-// It reads JSON-RPC messages from stdin, forwards them to the HTTP MCP server,
-// and writes responses to stdout.
-//
-// The Streamable HTTP transport uses Mcp-Session-Id header for session state.
-// This proxy maintains the session ID across requests.
+// runMCPProxy runs as a STDIO-to-HTTP proxy using os.Stdin and os.Stdout.
+// It is a thin wrapper around runMCPProxyIO for production use.
 func runMCPProxy(ctx context.Context, targetURL string) error {
-	client := &http.Client{}
-	reader := bufio.NewReader(os.Stdin)
+	return runMCPProxyIO(ctx, targetURL, os.Stdin, os.Stdout)
+}
 
-	// Session ID from Streamable HTTP transport (maintained across requests)
+// runMCPProxyIO runs as a STDIO-to-HTTP proxy with explicit IO streams.
+// It reads JSON-RPC messages from in, forwards them to the HTTP MCP server,
+// and writes responses to out.
+//
+// Concurrency model:
+//   - stdin is read SERIALLY (single reader goroutine — the main loop).
+//   - Each JSON-RPC request is dispatched to its own goroutine so long-running
+//     tool calls do not starve keepalive pings or other requests.
+//   - All writes to out are serialized via outMu.
+//   - mcpSessionID is guarded by sessionMu (read before dispatch, write after response).
+//   - A WaitGroup ensures all in-flight goroutines finish before the function returns,
+//     so no responses are lost on EOF or context cancellation.
+func runMCPProxyIO(ctx context.Context, targetURL string, in io.Reader, out io.Writer) error {
+	client := &http.Client{}
+	reader := bufio.NewReader(in)
+
+	// outMu serializes all writes to out.
+	var outMu sync.Mutex
+
+	// sessionMu guards mcpSessionID (read + write from multiple goroutines).
+	var sessionMu sync.Mutex
 	var mcpSessionID string
+
+	// wg tracks in-flight request goroutines.
+	var wg sync.WaitGroup
+
+	// writeLine writes data to out under the mutex, appending a newline if needed.
+	writeLine := func(data []byte) {
+		outMu.Lock()
+		defer outMu.Unlock()
+		out.Write(data)
+		if data[len(data)-1] != '\n' {
+			out.Write([]byte("\n"))
+		}
+	}
 
 	for {
 		select {
 		case <-ctx.Done():
+			wg.Wait()
 			return ctx.Err()
 		default:
 		}
 
-		// Read a line (JSON-RPC message) - MCP uses newline-delimited JSON
+		// Read a line (JSON-RPC message) — MCP uses newline-delimited JSON.
+		// This is the only goroutine that reads; no mutex needed here.
 		line, err := reader.ReadString('\n')
 		if err == io.EOF {
+			wg.Wait()
 			return nil
 		}
 		if err != nil {
+			wg.Wait()
 			return fmt.Errorf("read error: %w", err)
 		}
 
-		// Skip empty lines
+		// Skip empty lines.
 		trimmed := strings.TrimSpace(line)
 		if len(trimmed) == 0 {
 			continue
 		}
 
-		// Extract request ID from the JSON-RPC message for error responses
+		// Extract request ID for error responses (notifications have no id).
 		var reqID interface{}
 		var reqMsg struct {
 			ID interface{} `json:"id"`
@@ -161,27 +195,36 @@ func runMCPProxy(ctx context.Context, targetURL string) error {
 			reqID = reqMsg.ID
 		}
 
-		// Forward to HTTP server
-		resp, newSessionID, err := forwardToHTTP(ctx, client, targetURL, trimmed, mcpSessionID)
-		if err != nil {
-			// Write JSON-RPC error response with original request ID
-			writeJSONRPCError(os.Stdout, reqID, -32603, fmt.Sprintf("proxy error: %v", err))
-			continue
-		}
+		// Snapshot session ID before launching the goroutine.
+		sessionMu.Lock()
+		currentSessionID := mcpSessionID
+		sessionMu.Unlock()
 
-		// Update session ID if received
-		if newSessionID != "" {
-			mcpSessionID = newSessionID
-		}
+		// Dispatch this request concurrently so the read loop is never blocked.
+		wg.Add(1)
+		go func(body string, id interface{}, sessID string) {
+			defer wg.Done()
 
-		// Write response to stdout (add newline for JSON-RPC framing)
-		// Note: notifications don't have responses, so resp may be empty
-		if len(resp) > 0 {
-			os.Stdout.Write(resp)
-			if resp[len(resp)-1] != '\n' {
-				os.Stdout.Write([]byte("\n"))
+			resp, newSessionID, err := forwardToHTTP(ctx, client, targetURL, body, sessID)
+			if err != nil {
+				outMu.Lock()
+				writeJSONRPCError(out, id, -32603, fmt.Sprintf("proxy error: %v", err))
+				outMu.Unlock()
+				return
 			}
-		}
+
+			// Update shared session ID if the response carried a new one.
+			if newSessionID != "" {
+				sessionMu.Lock()
+				mcpSessionID = newSessionID
+				sessionMu.Unlock()
+			}
+
+			// Write response (notifications produce an empty resp — write nothing).
+			if len(resp) > 0 {
+				writeLine(resp)
+			}
+		}(trimmed, reqID, currentSessionID)
 	}
 }
 
