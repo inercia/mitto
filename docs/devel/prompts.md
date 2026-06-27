@@ -216,6 +216,69 @@ in the user-facing config reference. The five builtin exemplars are
 guarded by the `*ThreeModeTargetResolution` tests in
 `internal/config/prompt_template_test.go`.
 
+## Argument caching
+
+Parameters that declare a `cache` block enable **per-conversation, per-prompt value caching** so the UI stops re-asking users for the same input within a TTL window. Values are stored in memory on the `BackgroundSession` and are lost on restart/suspend.
+
+### The four-stage loop
+
+```mermaid
+sequenceDiagram
+    participant U as User
+    participant F as Frontend
+    participant B as Backend (dispatcher)
+    participant C as Cache (promptArgCache)
+
+    Note over U,C: Stage 1 — first dispatch (user supplies the value)
+    U->>F: Selects prompt "cache-loop", fills CITY=Paris
+    F->>B: POST /sessions/{id}/queue  {prompt_name, arguments:{CITY:Paris}}
+    B->>C: Set("cache-loop", "CITY", "Paris", ttl)
+    B->>B: SubstituteArguments → PCHXMARK city=Paris
+    B-->>F: prompt_complete
+
+    Note over U,C: Stage 2 — frontend status check (before re-sending)
+    F->>B: GET /sessions/{id}/prompt-arg-cache?prompt=cache-loop
+    B->>C: FreshNames("cache-loop")
+    C-->>B: ["CITY"]
+    B-->>F: {cached:["CITY"]}
+    F->>F: effectiveMissingParams → CITY removed from missing list
+    Note over F: Dialog skipped; dispatches directly
+
+    Note over U,C: Stage 3 — second dispatch (no args supplied)
+    F->>B: POST /sessions/{id}/queue  {prompt_name}  (no arguments)
+    B->>C: Get("cache-loop", "CITY") → "Paris" (fresh)
+    B->>B: Inject CITY=Paris into meta.Arguments
+    B->>C: Set("cache-loop", "CITY", "Paris", ttl)  ← TTL refreshed
+    B->>B: SubstituteArguments → PCHXMARK city=Paris
+    B-->>F: prompt_complete
+
+    Note over U,C: Stage 4 — after TTL expiry
+    F->>B: GET /sessions/{id}/prompt-arg-cache?prompt=cache-loop
+    B->>C: FreshNames("cache-loop") → expired, deleted
+    C-->>B: []
+    B-->>F: {cached:[]}
+    F->>F: CITY still in missing list → dialog shown again
+    U->>F: User re-enters CITY
+```
+
+### Names-only contract
+
+Cached **values** are never sent to the frontend. The status endpoint
+(`GET /api/sessions/{id}/prompt-arg-cache?prompt=<name>`) returns parameter
+**names** only. The frontend uses the names to subtract already-cached params
+from the "missing" list; it never reads or displays cached values.
+
+### Lifetime and semantics
+
+- **In-memory**: owned by `BackgroundSession`; lost on restart or suspend.
+- **Per-conversation, per-prompt**: composite key `promptName\x00paramName` prevents prefix collisions.
+- **TTL**: absent/empty `ttl` = conversation lifetime (no expiry). Each write-back on re-dispatch **refreshes** the TTL — expiry is measured from the last dispatch that touched the cache.
+- **Non-cacheable params** (`cache` absent): never written to or read from cache; behavior unchanged.
+
+### See Also
+
+- [docs/config/prompts.md](../config/prompts.md) — `cache` block schema, field reference, validation rules.
+
 ## 5. The periodic overlay
 
 Any prompt in any of these menus may additionally declare `periodic:`. When
@@ -245,9 +308,11 @@ Periodic conversations can only be **top-level** (not children). The `at` field
 | Backend  | `internal/web/queue_api.go`                       | `handleAddToQueue` (stores `prompt_name`/`arguments`)                  |
 | Backend  | `internal/web/background_session.go`              | dispatch-time `promptResolver` + `SubstituteArguments`                 |
 | Backend  | `internal/config/prompt_template.go`              | Go template engine (`RenderPromptTemplate`, `PrecompileTemplateConds`) |
-| Backend  | `internal/conversation/prompt_dispatcher.go`      | template render integration in `resolveAndSubstitute`                  |
+| Backend  | `internal/conversation/prompt_dispatcher.go`      | template render + arg-cache read/merge/write-back in `resolveAndSubstitute` |
+| Backend  | `internal/conversation/prompt_arg_cache.go`       | per-conversation in-memory cache store (`Get`/`Set`/`FreshNames`, TTL) |
+| Backend  | `internal/web/handlers/session_prompt_arg_cache.go` | `GET /sessions/{id}/prompt-arg-cache` status endpoint (names only)   |
 | Backend  | `internal/session/queue.go`                       | `QueuedMessage{ PromptName, Arguments }`, `Add`/`Pop`                  |
-| Frontend | `web/static/utils/prompts.js`                     | `promptMenus`, `MENU_PARAM_TYPES`, `menuSatisfies`, `getMissingPromptParameters` |
+| Frontend | `web/static/utils/prompts.js`                     | `promptMenus`, `getMissingPromptParameters`, `fetchCachedParamNames`, `effectiveMissingParams` |
 | Frontend | `web/static/hooks/useWorkspacePrompts.js`         | `fetchConversationPromptsForSession`                                   |
 | Frontend | `web/static/hooks/useBeadsIntegration.js`         | `fetchBeads*PromptsForWorkspace`, `handleRunBeads*Prompt`              |
 | Frontend | `web/static/hooks/useConversationSeeding.js`      | `seedConversationWithPrompt`, `startConversationWithPrompt`            |

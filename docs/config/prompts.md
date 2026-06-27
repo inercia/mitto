@@ -884,6 +884,9 @@ parameters:
 - `cache` is **optional** — parameters without a `cache` block behave exactly as before.
 - Scoping is **per-conversation and per-parameter** (not cross-conversation or global).
 
+For the runtime data-flow (dispatch-time merge/write-back, the status endpoint, and the
+names-only contract), see [Argument caching](../devel/prompts.md#argument-caching).
+
 ## Go Template Syntax in Prompts
 
 Prompt bodies are rendered with Go [`text/template`](https://pkg.go.dev/text/template) at send time. **This is the recommended way to inject session context** — legacy `@mitto:` placeholders and `${VAR}` arguments still work but are deprecated in prompt bodies (see [Variable Substitution in Prompts](#variable-substitution-in-prompts) below).

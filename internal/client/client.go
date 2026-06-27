@@ -446,6 +446,73 @@ func (c *Client) AddToQueueNamed(sessionID, promptName string) (*QueuedMessage, 
 	return &msg, nil
 }
 
+// AddToQueueNamedWithArgs adds a named prompt with optional arguments to the session's queue.
+// When args is nil or empty, the request omits the arguments field (identical to AddToQueueNamed).
+func (c *Client) AddToQueueNamedWithArgs(sessionID, promptName string, args map[string]string) (*QueuedMessage, error) {
+	reqBody := struct {
+		PromptName string            `json:"prompt_name"`
+		Arguments  map[string]string `json:"arguments,omitempty"`
+	}{PromptName: promptName, Arguments: args}
+	body, err := json.Marshal(reqBody)
+	if err != nil {
+		return nil, fmt.Errorf("add named+args to queue: marshal: %w", err)
+	}
+
+	resp, err := c.httpClient.Post(
+		c.apiURL("/api/sessions/"+url.PathEscape(sessionID)+"/queue"),
+		"application/json",
+		bytes.NewReader(body),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("add named+args to queue: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, fmt.Errorf("session not found: %s", sessionID)
+	}
+	if resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("add named+args to queue: status %d: %s", resp.StatusCode, string(respBody))
+	}
+
+	var msg QueuedMessage
+	if err := json.NewDecoder(resp.Body).Decode(&msg); err != nil {
+		return nil, fmt.Errorf("add named+args to queue: decode: %w", err)
+	}
+	return &msg, nil
+}
+
+// GetPromptArgCache returns the names of parameters currently cached (fresh) for a
+// named prompt in a conversation. On a 404 the session is unknown; on any other
+// non-2xx an error with the status and body is returned.
+func (c *Client) GetPromptArgCache(sessionID, promptName string) ([]string, error) {
+	qp := url.Values{"prompt": {promptName}}
+	reqURL := c.apiURL("/api/sessions/"+url.PathEscape(sessionID)+"/prompt-arg-cache") + "?" + qp.Encode()
+	resp, err := c.httpClient.Get(reqURL)
+	if err != nil {
+		return nil, fmt.Errorf("get prompt-arg-cache: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, fmt.Errorf("session not found: %s", sessionID)
+	}
+	if resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("get prompt-arg-cache: status %d: %s", resp.StatusCode, string(respBody))
+	}
+
+	var result struct {
+		Prompt string   `json:"prompt"`
+		Cached []string `json:"cached"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, fmt.Errorf("get prompt-arg-cache: decode: %w", err)
+	}
+	return result.Cached, nil
+}
+
 // --- Periodic API ---
 
 // PeriodicFrequency represents a periodic schedule frequency.

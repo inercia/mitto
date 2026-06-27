@@ -187,9 +187,12 @@ parameters:
 
 - `destination` must be one of `KnownPromptCacheDestinations` (`"memory"` only in v1).
 - `ttl` must be a positive Go duration if provided (`"0s"` / negative → validation error).
-- Scoping is **per-conversation, per-parameter** — not global.
+- Scoping is **per-conversation, per-parameter** — not global. Composite key `promptName\x00paramName` prevents prefix collisions.
 - `Cache *PromptParameterCache` lives on `PromptParameter`; it flows through `ToWebPrompt` automatically (no change to `WebPrompt`).
 - `ParsedTTL()` method on `*PromptParameterCache`: `"" → (0, nil)` (conversation lifetime), `"1h" → (time.Hour, nil)`, invalid → error.
+- **Runtime dispatch** (mitto-pchx.3): inside `resolveAndSubstitute` in `prompt_dispatcher.go`, for each cacheable param BEFORE `SubstituteArguments`: (read/merge) if param is absent from `meta.Arguments` and a fresh cached value exists, it is injected; (write-back) every cacheable param present in `meta.Arguments` (including just-injected ones) is persisted with its TTL — this **refreshes** the TTL on each re-dispatch.
+- **Status endpoint**: `GET /api/sessions/{id}/prompt-arg-cache?prompt=<name>` returns `{ "cached": ["A","B"] }` — **names only**, never values. Empty array when nothing cached (never null). Handler: `internal/web/handlers/session_prompt_arg_cache.go`.
+- **Frontend dialog-skip** (mitto-pchx.5): before opening `PromptParameterDialog`, the frontend calls the status endpoint and subtracts cacheable+fresh params from the `missing` list (`fetchCachedParamNames` / `effectiveMissingParams` in `web/static/utils/prompts.js`). If nothing remains, it dispatches directly without showing the dialog.
 
 ### Pitfalls
 
