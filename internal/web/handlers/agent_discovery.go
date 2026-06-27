@@ -41,6 +41,48 @@ type AgentConfirmEntry struct {
 	Command string `json:"command"`
 	// Type is an optional type identifier (used for prompt matching)
 	Type string `json:"type,omitempty"`
+	// DirName is the agent's directory name (e.g., "claude-code", "augment").
+	// When present, the backend looks up the agent's metadata defaults by this name
+	// and seeds them into the new ACPServerSettings entry.
+	DirName string `json:"dir_name,omitempty"`
+}
+
+// seedACPServerDefaults applies agent metadata defaults onto a newly created
+// ACP server settings entry. Only fields that are currently empty/unset on the
+// settings are populated, so any user-provided values win.
+// Both s and d may be nil, in which case the function is a no-op.
+func seedACPServerDefaults(s *configPkg.ACPServerSettings, d *agents.AgentDefaults) {
+	if s == nil || d == nil {
+		return
+	}
+	if len(s.Env) == 0 && len(d.Env) > 0 {
+		env := make(map[string]string, len(d.Env))
+		for k, v := range d.Env {
+			env[k] = v
+		}
+		s.Env = env
+	}
+	if len(s.Tags) == 0 && len(d.Tags) > 0 {
+		tags := make([]string, len(d.Tags))
+		copy(tags, d.Tags)
+		s.Tags = tags
+	}
+	if s.Constraints == nil && len(d.Constraints) > 0 {
+		constraints := make(map[string]*configPkg.ACPServerConstraint, len(d.Constraints))
+		for k, spec := range d.Constraints {
+			if spec == nil {
+				continue
+			}
+			constraints[k] = &configPkg.ACPServerConstraint{
+				MatchMode: spec.MatchMode,
+				Pattern:   spec.Pattern,
+			}
+		}
+		if len(constraints) > 0 {
+			s.Constraints = constraints
+		}
+	}
+	s.AutoApprove = d.AutoApprove
 }
 
 // HandleScanAgents handles POST /api/agents/scan.
@@ -132,6 +174,12 @@ func (h *Handlers) HandleConfirmAgents(w http.ResponseWriter, r *http.Request) {
 		existing[strings.ToLower(srv.Name)] = true
 	}
 
+	// Build agent manager for defaults seeding; skip defaults (not a fatal error) if unavailable.
+	var mgr *agents.Manager
+	if agentsDir, err := appdir.AgentsDir(); err == nil {
+		mgr = agents.NewManager(agentsDir, h.deps.Logger)
+	}
+
 	// Append new servers from the confirmation request
 	added := 0
 	for _, entry := range req.Agents {
@@ -141,12 +189,18 @@ func (h *Handlers) HandleConfirmAgents(w http.ResponseWriter, r *http.Request) {
 		if existing[strings.ToLower(entry.Name)] {
 			continue
 		}
-		settings.ACPServers = append(settings.ACPServers, configPkg.ACPServerSettings{
+		srv := configPkg.ACPServerSettings{
 			Name:    entry.Name,
 			Command: entry.Command,
 			Type:    entry.Type,
 			Source:  configPkg.SourceSettings,
-		})
+		}
+		if mgr != nil && entry.DirName != "" {
+			if agent, err := mgr.GetAgent(entry.DirName); err == nil && agent != nil && agent.Metadata.Defaults != nil {
+				seedACPServerDefaults(&srv, agent.Metadata.Defaults)
+			}
+		}
+		settings.ACPServers = append(settings.ACPServers, srv)
 		existing[strings.ToLower(entry.Name)] = true
 		added++
 	}

@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	agentsTypes "github.com/inercia/mitto/internal/agents"
 	"github.com/inercia/mitto/internal/config"
 	"github.com/inercia/mitto/internal/conversation"
 )
@@ -293,5 +294,95 @@ func TestHandleWorkspaces_DELETE(t *testing.T) {
 
 	if w.Code != http.StatusBadRequest {
 		t.Errorf("Status = %d, want %d", w.Code, http.StatusBadRequest)
+	}
+}
+
+// ---- seedACPServerDefaults unit tests ----
+
+func TestSeedACPServerDefaults_NilDefaults(t *testing.T) {
+	s := &config.ACPServerSettings{Name: "test"}
+	seedACPServerDefaults(s, nil)
+	if s.Env != nil || s.Tags != nil || s.Constraints != nil || s.AutoApprove {
+		t.Error("settings should be unchanged when defaults is nil")
+	}
+}
+
+func TestSeedACPServerDefaults_NilSettings(t *testing.T) {
+	// Must not panic.
+	seedACPServerDefaults(nil, nil)
+}
+
+func TestSeedACPServerDefaults_FullDefaults(t *testing.T) {
+	s := &config.ACPServerSettings{}
+	d := &agentsTypes.AgentDefaults{
+		Env:         map[string]string{"FOO": "bar"},
+		Tags:        []string{"alpha", "beta"},
+		AutoApprove: true,
+		Constraints: map[string]*agentsTypes.ConstraintSpec{
+			"model": {MatchMode: "contains", Pattern: "Opus"},
+		},
+	}
+	seedACPServerDefaults(s, d)
+
+	if s.Env["FOO"] != "bar" {
+		t.Errorf("Env not seeded; got %v", s.Env)
+	}
+	if len(s.Tags) != 2 || s.Tags[0] != "alpha" {
+		t.Errorf("Tags not seeded; got %v", s.Tags)
+	}
+	if !s.AutoApprove {
+		t.Error("AutoApprove not seeded")
+	}
+	c, ok := s.Constraints["model"]
+	if !ok || c == nil || c.MatchMode != "contains" || c.Pattern != "Opus" {
+		t.Errorf("Constraints not seeded correctly; got %v", s.Constraints)
+	}
+}
+
+func TestSeedACPServerDefaults_PresetFieldsNotOverwritten(t *testing.T) {
+	presetConstraints := map[string]*config.ACPServerConstraint{
+		"mode": {MatchMode: "exact", Pattern: "fast"},
+	}
+	s := &config.ACPServerSettings{
+		Env:         map[string]string{"EXISTING": "yes"},
+		Tags:        []string{"existing-tag"},
+		Constraints: presetConstraints,
+	}
+	d := &agentsTypes.AgentDefaults{
+		Env:         map[string]string{"NEW": "val"},
+		Tags:        []string{"new-tag"},
+		AutoApprove: true,
+		Constraints: map[string]*agentsTypes.ConstraintSpec{
+			"model": {MatchMode: "contains", Pattern: "Opus"},
+		},
+	}
+	seedACPServerDefaults(s, d)
+
+	if _, ok := s.Env["NEW"]; ok {
+		t.Error("preset Env should not be overwritten")
+	}
+	if len(s.Tags) != 1 || s.Tags[0] != "existing-tag" {
+		t.Errorf("preset Tags should not be overwritten; got %v", s.Tags)
+	}
+	if _, ok := s.Constraints["model"]; ok {
+		t.Error("preset Constraints should not be overwritten")
+	}
+	// AutoApprove is always set from defaults (no pre-set field to preserve).
+	if !s.AutoApprove {
+		t.Error("AutoApprove should be set from defaults")
+	}
+}
+
+func TestSeedACPServerDefaults_NilConstraintSpecSkipped(t *testing.T) {
+	s := &config.ACPServerSettings{}
+	d := &agentsTypes.AgentDefaults{
+		Constraints: map[string]*agentsTypes.ConstraintSpec{
+			"model": nil, // nil spec — must be skipped safely
+		},
+	}
+	seedACPServerDefaults(s, d)
+	// All specs were nil, so the resulting map must remain nil (not assigned).
+	if s.Constraints != nil {
+		t.Errorf("expected Constraints to remain nil when all specs are nil; got %v", s.Constraints)
 	}
 }
