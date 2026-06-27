@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/inercia/mitto/internal/appdir"
 	"github.com/inercia/mitto/internal/beads"
@@ -239,6 +240,43 @@ func TestHandleBeadsList_BdCommandError_ReturnsServerError(t *testing.T) {
 	}
 	if env.Error.Message == "" {
 		t.Error("error.message should be non-empty")
+	}
+}
+
+// listTimeoutClient is a beads.Client whose List blocks until ctx is done.
+type listTimeoutClient struct{ stubBeadsClient }
+
+func (c *listTimeoutClient) List(ctx context.Context, _ string) ([]byte, error) {
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
+func TestHandleBeadsList_Timeout_ReturnsRetryable503(t *testing.T) {
+	old := auxBackedRequestTimeout
+	auxBackedRequestTimeout = 20 * time.Millisecond
+	defer func() { auxBackedRequestTimeout = old }()
+
+	s := newBeadsTestServerWithClient(&listTimeoutClient{})
+	req := localhostRequest("/api/issues?working_dir=/test/workspace")
+	w := httptest.NewRecorder()
+	s.handleBeadsList(w, req)
+
+	if w.Code != http.StatusServiceUnavailable {
+		t.Errorf("status = %d, want %d", w.Code, http.StatusServiceUnavailable)
+	}
+	if ra := w.Header().Get("Retry-After"); ra == "" {
+		t.Error("Retry-After header not set")
+	}
+	var env struct {
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&env); err != nil {
+		t.Fatalf("decode error body: %v", err)
+	}
+	if env.Error.Code != "unavailable" {
+		t.Errorf("error.code = %q, want %q", env.Error.Code, "unavailable")
 	}
 }
 

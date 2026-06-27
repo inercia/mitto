@@ -1,6 +1,8 @@
 package handlers
 
 import (
+	"context"
+	"errors"
 	"net/http"
 	"path/filepath"
 	"strings"
@@ -84,8 +86,14 @@ func (h *Handlers) HandleBeadsList(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	out, err := h.beadsClient().List(r.Context(), workingDir)
+	ctx, cancel := context.WithTimeout(r.Context(), auxBackedRequestTimeout)
+	defer cancel()
+	out, err := h.beadsClient().List(ctx, workingDir)
 	if err != nil {
+		if errors.Is(err, context.DeadlineExceeded) || errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			writeRetryableUnavailable(w, "Task service is busy. Please try again in a few seconds.", 5)
+			return
+		}
 		writeBeadsError(w, err)
 		return
 	}
@@ -121,8 +129,14 @@ func (h *Handlers) HandleBeadsStats(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	out, err := h.beadsClient().Status(r.Context(), workingDir)
+	ctx, cancel := context.WithTimeout(r.Context(), auxBackedRequestTimeout)
+	defer cancel()
+	out, err := h.beadsClient().Status(ctx, workingDir)
 	if err != nil {
+		if errors.Is(err, context.DeadlineExceeded) || errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			writeRetryableUnavailable(w, "Task service is busy. Please try again in a few seconds.", 5)
+			return
+		}
 		writeBeadsError(w, err)
 		return
 	}
@@ -165,8 +179,14 @@ func (h *Handlers) HandleBeadsShow(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	out, err := h.beadsClient().Show(r.Context(), workingDir, id)
+	ctx, cancel := context.WithTimeout(r.Context(), auxBackedRequestTimeout)
+	defer cancel()
+	out, err := h.beadsClient().Show(ctx, workingDir, id)
 	if err != nil {
+		if errors.Is(err, context.DeadlineExceeded) || errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			writeRetryableUnavailable(w, "Task service is busy. Please try again in a few seconds.", 5)
+			return
+		}
 		writeBeadsError(w, err)
 		return
 	}

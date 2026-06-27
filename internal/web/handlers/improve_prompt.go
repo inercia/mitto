@@ -2,9 +2,9 @@ package handlers
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"strings"
-	"time"
 )
 
 // HandleImprovePrompt improves a user prompt via the workspace-scoped auxiliary
@@ -43,13 +43,18 @@ func (h *Handlers) HandleImprovePrompt(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Create a context with timeout for the auxiliary request
-	ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
+	// Create a context with timeout for the auxiliary request; stay below the
+	// 30s middleware cap so we can write a clear error before it fires.
+	ctx, cancel := context.WithTimeout(r.Context(), auxBackedRequestTimeout)
 	defer cancel()
 
 	// Call the workspace-scoped auxiliary manager to improve the prompt
 	improved, err := h.deps.ImprovePrompt(ctx, req.WorkspaceUUID, req.Prompt)
 	if err != nil {
+		if errors.Is(err, context.DeadlineExceeded) || errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			writeRetryableUnavailable(w, "The AI helper is starting up. Please try again in a few seconds.", 5)
+			return
+		}
 		if h.deps.Logger != nil {
 			h.deps.Logger.Error("Failed to improve prompt",
 				"error", err,

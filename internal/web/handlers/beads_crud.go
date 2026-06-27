@@ -3,10 +3,10 @@ package handlers
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"path/filepath"
 	"strings"
-	"time"
 
 	"github.com/inercia/mitto/internal/beads"
 	"github.com/inercia/mitto/internal/conversation"
@@ -80,7 +80,7 @@ func (h *Handlers) HandleBeadsCreate(w http.ResponseWriter, r *http.Request) {
 		}
 
 		if h.deps.GenerateAuxTitle != nil {
-			ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
+			ctx, cancel := context.WithTimeout(r.Context(), auxBackedRequestTimeout)
 			defer cancel()
 			if generated, err := h.deps.GenerateAuxTitle(ctx, ws.UUID, description); err == nil && strings.TrimSpace(generated) != "" {
 				title = strings.TrimSpace(generated)
@@ -171,9 +171,16 @@ func (h *Handlers) HandleBeadsCleanup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Fast phase: list closed IDs using the request context.
-	ids, err := h.beadsClient().ListClosedIDs(r.Context(), workingDir)
+	// Fast phase: list closed IDs; bound below the middleware cap so a slow bd
+	// gets a clear retryable 503 instead of the opaque middleware 503.
+	ctx, cancel := context.WithTimeout(r.Context(), auxBackedRequestTimeout)
+	defer cancel()
+	ids, err := h.beadsClient().ListClosedIDs(ctx, workingDir)
 	if err != nil {
+		if errors.Is(err, context.DeadlineExceeded) || errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			writeRetryableUnavailable(w, "Task service is busy. Please try again in a few seconds.", 5)
+			return
+		}
 		writeBeadsError(w, err)
 		return
 	}

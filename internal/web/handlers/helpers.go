@@ -5,6 +5,8 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"net/http"
+	"strconv"
+	"time"
 )
 
 // These are package-local copies of the HTTP helpers in internal/web, kept here
@@ -65,7 +67,14 @@ const (
 	errCodeTooLarge         = "too_large"
 	errCodeRateLimited      = "rate_limited"
 	errCodeServerError      = "server_error"
+	errCodeUnavailable      = "unavailable"
 )
+
+// auxBackedRequestTimeout bounds aux/bd-backed handlers BELOW the 30s
+// middleware cap (middleware.DefaultRequestTimeout) so they can write a
+// clear, retryable 503 before http.TimeoutHandler emits its opaque one.
+// It is a var only so tests can shorten it; treat it as constant in prod.
+var auxBackedRequestTimeout = 25 * time.Second
 
 // defaultCodeForStatus returns the canonical error code string for an HTTP
 // status code, per the policy table in rest-api-conventions.md §4. Unmapped
@@ -88,9 +97,20 @@ func defaultCodeForStatus(status int) string {
 		return errCodeTooLarge
 	case http.StatusTooManyRequests:
 		return errCodeRateLimited
+	case http.StatusServiceUnavailable:
+		return errCodeUnavailable
 	default:
 		return errCodeServerError
 	}
+}
+
+// writeRetryableUnavailable writes a 503 with a Retry-After header and the
+// canonical "unavailable" error envelope, signalling the client to retry shortly.
+func writeRetryableUnavailable(w http.ResponseWriter, message string, retryAfterSeconds int) {
+	if retryAfterSeconds > 0 {
+		w.Header().Set("Retry-After", strconv.Itoa(retryAfterSeconds))
+	}
+	writeErrorJSON(w, http.StatusServiceUnavailable, errCodeUnavailable, message)
 }
 
 // writeErrorJSON writes a structured JSON error response using the canonical
