@@ -179,7 +179,7 @@ import {
 } from "./constants.js";
 
 // Import prompt utilities
-import { promptMenus, getMissingPromptParameters, autofillConversationMenuArgs } from "./utils/prompts.js";
+import { promptMenus, getMissingPromptParameters, autofillConversationMenuArgs, fetchCachedParamNames, effectiveMissingParams } from "./utils/prompts.js";
 
 // Import global event handlers (registers side effects on module load) and predicates
 import {
@@ -1791,7 +1791,11 @@ function App() {
         if (action === "make-periodic") {
           // Regular conversation: configure it as periodic now and fire the first run.
           const sessionId = session.session_id;
-          const missing = getMissingPromptParameters(prompt, "conversation");
+          let missing = getMissingPromptParameters(prompt, "conversation");
+          if (missing.length > 0 && sessionId) {
+            const cached = await fetchCachedParamNames(sessionId, prompt.name);
+            missing = effectiveMissingParams(missing, cached);
+          }
           if (missing.length > 0) {
             setPromptParamDialog({
               prompt,
@@ -1821,7 +1825,11 @@ function App() {
           // Already-periodic or child conversation: enqueue a single run without touching config.
           const sessionId = session?.session_id;
           if (!sessionId) return;
-          const missing = getMissingPromptParameters(prompt, "conversation");
+          let missing = getMissingPromptParameters(prompt, "conversation");
+          if (missing.length > 0 && sessionId) {
+            const cached = await fetchCachedParamNames(sessionId, prompt.name);
+            missing = effectiveMissingParams(missing, cached);
+          }
           if (missing.length > 0) {
             setPromptParamDialog({
               prompt,
@@ -1891,9 +1899,13 @@ function App() {
       // Auto-fill what the host conversation can supply (e.g. a lone child for a
       // childSessionId param), then prompt the user only for what remains.
       const autoArgs = autofillConversationMenuArgs(prompt, sessionId, allSessions);
-      const missing = getMissingPromptParameters(prompt, "conversation").filter(
+      let missing = getMissingPromptParameters(prompt, "conversation").filter(
         (p) => autoArgs[p.name] === undefined,
       );
+      if (missing.length > 0 && sessionId) {
+        const cached = await fetchCachedParamNames(sessionId, prompt.name);
+        missing = effectiveMissingParams(missing, cached);
+      }
       if (missing.length > 0) {
         setPromptParamDialog({
           prompt,

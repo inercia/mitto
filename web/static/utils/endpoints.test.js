@@ -170,6 +170,30 @@ describe("endpoints registry", () => {
     test("images", () => expect(endpoints.sessions.images("s1")).toBe("/api/sessions/s1/images"));
     test("image(id, imageId)", () => expect(endpoints.sessions.image("s1", "img1")).toBe("/api/sessions/s1/images/img1"));
     test("filesFromPath", () => expect(endpoints.sessions.filesFromPath("s1")).toBe("/api/sessions/s1/files/from-path"));
+
+    describe("promptArgCache", () => {
+      test("produces correct path with prompt query param", () => {
+        const url = endpoints.sessions.promptArgCache("sess-1", "my-prompt");
+        expect(url).toBe("/api/sessions/sess-1/prompt-arg-cache?prompt=my-prompt");
+      });
+
+      test("encodes special chars in session id", () => {
+        const url = endpoints.sessions.promptArgCache("sess/id", "p");
+        expect(url).toContain("/api/sessions/sess%2Fid/prompt-arg-cache");
+      });
+
+      test("encodes special chars in prompt name", () => {
+        const url = endpoints.sessions.promptArgCache("s1", "team/my prompt");
+        expect(url).toContain("prompt=team%2Fmy+prompt");
+      });
+
+      test("respects mittoApiPrefix", () => {
+        window.mittoApiPrefix = "/mitto";
+        const url = endpoints.sessions.promptArgCache("s1", "p");
+        expect(url).toContain("/mitto/api/sessions/s1/prompt-arg-cache");
+        window.mittoApiPrefix = "";
+      });
+    });
   });
 
   describe("workspaces group", () => {

@@ -2,6 +2,7 @@
  * Unit tests for prompt menu utility functions
  */
 
+import { jest } from "@jest/globals";
 import {
   promptMenus,
   promptParameters,
@@ -11,6 +12,9 @@ import {
   collectPromptArguments,
   getMissingPromptParameters,
   autofillConversationMenuArgs,
+  isCacheableParam,
+  fetchCachedParamNames,
+  effectiveMissingParams,
 } from "./prompts.js";
 
 // =============================================================================
@@ -579,5 +583,150 @@ describe("getMissingPromptParameters", () => {
     const prompt = { parameters: [issueParam, boolParam] };
     // beadsIssues supplies beadsId → only the boolean remains to be collected
     expect(getMissingPromptParameters(prompt, "beadsIssues")).toEqual([boolParam]);
+  });
+});
+
+// =============================================================================
+// isCacheableParam Tests
+// =============================================================================
+
+describe("isCacheableParam", () => {
+  test("returns true when param has a cache block", () => {
+    expect(isCacheableParam({ name: "X", cache: {} })).toBe(true);
+  });
+
+  test("returns true when cache block has destination+ttl", () => {
+    expect(isCacheableParam({ name: "X", cache: { destination: "memory", ttl: "1h" } })).toBe(true);
+  });
+
+  test("returns false when param has no cache field", () => {
+    expect(isCacheableParam({ name: "X", type: "string" })).toBe(false);
+  });
+
+  test("returns false when cache is null", () => {
+    expect(isCacheableParam({ name: "X", cache: null })).toBe(false);
+  });
+
+  test("returns false for null param", () => {
+    expect(isCacheableParam(null)).toBe(false);
+  });
+
+  test("returns false for undefined param", () => {
+    expect(isCacheableParam(undefined)).toBe(false);
+  });
+});
+
+// =============================================================================
+// effectiveMissingParams Tests
+// =============================================================================
+
+describe("effectiveMissingParams", () => {
+  const cacheableA = { name: "A", type: "string", cache: { destination: "memory" } };
+  const cacheableB = { name: "B", type: "string", cache: { destination: "memory" } };
+  const nonCacheable = { name: "C", type: "string" };
+
+  test("removes a cacheable param whose name is in the cached Set", () => {
+    const result = effectiveMissingParams([cacheableA, nonCacheable], new Set(["A"]));
+    expect(result).toEqual([nonCacheable]);
+  });
+
+  test("keeps a cacheable param whose name is NOT in the cached set", () => {
+    const result = effectiveMissingParams([cacheableA], new Set(["Z"]));
+    expect(result).toEqual([cacheableA]);
+  });
+
+  test("keeps a non-cacheable param even if its name is in the cached set", () => {
+    const result = effectiveMissingParams([nonCacheable], new Set(["C"]));
+    expect(result).toEqual([nonCacheable]);
+  });
+
+  test("accepts an array for cachedNames in addition to a Set", () => {
+    const result = effectiveMissingParams([cacheableA, cacheableB], ["A"]);
+    expect(result).toEqual([cacheableB]);
+  });
+
+  test("accepts empty array for cachedNames — nothing removed", () => {
+    const result = effectiveMissingParams([cacheableA], []);
+    expect(result).toEqual([cacheableA]);
+  });
+
+  test("accepts null cachedNames — treated as empty, nothing removed", () => {
+    const result = effectiveMissingParams([cacheableA], null);
+    expect(result).toEqual([cacheableA]);
+  });
+
+  test("returns empty array when missing is empty", () => {
+    expect(effectiveMissingParams([], new Set(["A"]))).toEqual([]);
+  });
+
+  test("returns empty array when missing is null", () => {
+    expect(effectiveMissingParams(null, new Set(["A"]))).toEqual([]);
+  });
+
+  test("removes all cacheable params when all are cached", () => {
+    const result = effectiveMissingParams([cacheableA, cacheableB, nonCacheable], new Set(["A", "B"]));
+    expect(result).toEqual([nonCacheable]);
+  });
+});
+
+// =============================================================================
+// fetchCachedParamNames Tests
+// =============================================================================
+
+describe("fetchCachedParamNames", () => {
+  test("returns Set with cached names on ok response", async () => {
+    const fetchImpl = jest.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ cached: ["A", "B"] }),
+    });
+    const result = await fetchCachedParamNames("sess-1", "my-prompt", { fetchImpl });
+    expect(result).toEqual(new Set(["A", "B"]));
+  });
+
+  test("passes URL containing /prompt-arg-cache and prompt= to fetchImpl", async () => {
+    const fetchImpl = jest.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ cached: [] }),
+    });
+    await fetchCachedParamNames("sess-1", "my-prompt", { fetchImpl });
+    const calledUrl = fetchImpl.mock.calls[0][0];
+    expect(calledUrl).toContain("/prompt-arg-cache");
+    expect(calledUrl).toContain("prompt=");
+    expect(calledUrl).toContain("my-prompt");
+  });
+
+  test("returns empty Set on non-ok response", async () => {
+    const fetchImpl = jest.fn().mockResolvedValue({ ok: false });
+    const result = await fetchCachedParamNames("sess-1", "my-prompt", { fetchImpl });
+    expect(result).toEqual(new Set());
+  });
+
+  test("returns empty Set and does not throw when fetchImpl throws", async () => {
+    const fetchImpl = jest.fn().mockRejectedValue(new Error("network error"));
+    const result = await fetchCachedParamNames("sess-1", "my-prompt", { fetchImpl });
+    expect(result).toEqual(new Set());
+  });
+
+  test("returns empty Set and does NOT call fetchImpl when sessionId is missing", async () => {
+    const fetchImpl = jest.fn();
+    const result = await fetchCachedParamNames("", "my-prompt", { fetchImpl });
+    expect(result).toEqual(new Set());
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  test("returns empty Set and does NOT call fetchImpl when promptName is missing", async () => {
+    const fetchImpl = jest.fn();
+    const result = await fetchCachedParamNames("sess-1", "", { fetchImpl });
+    expect(result).toEqual(new Set());
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  test("returns empty Set when response json has no cached array", async () => {
+    const fetchImpl = jest.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ prompt: "x" }),
+    });
+    const result = await fetchCachedParamNames("sess-1", "x", { fetchImpl });
+    expect(result).toEqual(new Set());
   });
 });

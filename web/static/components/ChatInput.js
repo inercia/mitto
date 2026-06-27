@@ -29,7 +29,7 @@ import { PeriodicFrequencyPanel } from "./PeriodicFrequencyPanel.js";
 import { SavePromptDialog } from "./SavePromptDialog.js";
 import { GripIcon, ChatBubbleIcon } from "./Icons.js";
 import { PromptsMenu } from "./PromptsMenu.js";
-import { flattenPrompts, getMissingPromptParameters } from "../utils/prompts.js";
+import { flattenPrompts, getMissingPromptParameters, fetchCachedParamNames, effectiveMissingParams } from "../utils/prompts.js";
 import { Tooltip } from "./Tooltip.js";
 
 /**
@@ -1039,7 +1039,11 @@ export function ChatInput({
 
     // Check if the prompt declares parameters that need user input before saving.
     const fullPrompt = periodicPrompts.find((p) => p.name === promptName);
-    const missing = fullPrompt ? getMissingPromptParameters(fullPrompt, "conversation") : [];
+    let missing = fullPrompt ? getMissingPromptParameters(fullPrompt, "conversation") : [];
+    if (missing.length > 0 && sessionId && fullPrompt) {
+      const cached = await fetchCachedParamNames(sessionId, fullPrompt.name);
+      missing = effectiveMissingParams(missing, cached);
+    }
     if (missing.length > 0 && onOpenPromptParamDialog) {
       onOpenPromptParamDialog(fullPrompt, missing, async (userArgs) => {
         await doPatch(userArgs);
@@ -1251,7 +1255,11 @@ export function ChatInput({
     // options.arguments map is passed to onSend, which routes through the queue
     // API so the backend can apply ${VAR} substitution.
     if (onSend && prompt.name) {
-      const missing = getMissingPromptParameters(prompt, "prompts");
+      let missing = getMissingPromptParameters(prompt, "prompts");
+      if (missing.length > 0 && sessionId) {
+        const cached = await fetchCachedParamNames(sessionId, prompt.name);
+        missing = effectiveMissingParams(missing, cached);
+      }
       if (missing.length > 0 && onOpenPromptParamDialog) {
         onOpenPromptParamDialog(prompt, missing, async (userArgs) => {
           onSend("", [], [], { promptName: prompt.name, arguments: userArgs });

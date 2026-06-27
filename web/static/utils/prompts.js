@@ -1,5 +1,8 @@
 // Mitto Web Interface - Prompt Menu Utilities
 
+import { authFetch } from "./csrf.js";
+import { endpoints } from "./endpoints.js";
+
 /**
  * Returns the list of UI menus a prompt opts into. The `menus` front-matter is a
  * comma-separated list (e.g. "prompts, conversation"). A missing or empty value
@@ -145,6 +148,43 @@ export function getMissingPromptParameters(prompt, menu) {
       isBooleanParam(p) ||
       (p.required !== false && !provided.includes(p.type)),
   );
+}
+
+/**
+ * True when a parameter declares a cache block (per-conversation value caching).
+ */
+export function isCacheableParam(p) {
+  return !!(p && p.cache);
+}
+
+/**
+ * Fetch the set of parameter names currently cached (fresh) for a prompt in a
+ * conversation. Names only — never values. Tolerant of errors: on any failure
+ * (network, non-2xx, unknown session) returns an EMPTY Set so callers fall back
+ * to today's behavior (ask). `fetchImpl` is injectable for tests (defaults to authFetch).
+ * @returns {Promise<Set<string>>}
+ */
+export async function fetchCachedParamNames(sessionId, promptName, { fetchImpl } = {}) {
+  if (!sessionId || !promptName) return new Set();
+  const fetch_ = fetchImpl || authFetch;
+  try {
+    const resp = await fetch_(endpoints.sessions.promptArgCache(sessionId, promptName));
+    if (!resp || !resp.ok) return new Set();
+    const data = await resp.json();
+    return new Set(Array.isArray(data && data.cached) ? data.cached : []);
+  } catch (_err) {
+    return new Set();
+  }
+}
+
+/**
+ * Remove from `missing` any parameter that is cacheable AND whose name is in
+ * `cachedNames`. Non-cacheable params and cacheable-but-not-cached params are kept.
+ * `cachedNames` may be a Set or an array.
+ */
+export function effectiveMissingParams(missing, cachedNames) {
+  const cached = cachedNames instanceof Set ? cachedNames : new Set(cachedNames || []);
+  return (missing || []).filter((p) => !(isCacheableParam(p) && cached.has(p.name)));
 }
 
 /**

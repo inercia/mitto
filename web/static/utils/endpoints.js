@@ -60,6 +60,7 @@ export const endpoints = {
     periodicRunNow: (id)                => apiUrl(`/api/sessions/${enc(id)}/periodic/run-now`),
     callback:       (id)                => apiUrl(`/api/sessions/${enc(id)}/callback`),
     userData:       (id)                => apiUrl(`/api/sessions/${enc(id)}/user-data`),
+    promptArgCache: (id, promptName)    => apiUrl(`/api/sessions/${enc(id)}/prompt-arg-cache`) + qs({ prompt: promptName }),
     queue:          (id)                => apiUrl(`/api/sessions/${enc(id)}/queue`),
     queueMsg:       (id, msgId)         => apiUrl(`/api/sessions/${enc(id)}/queue/${enc(msgId)}`),
     queueMove:      (id, msgId)         => apiUrl(`/api/sessions/${enc(id)}/queue/${enc(msgId)}/move`),
