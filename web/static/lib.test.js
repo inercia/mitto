@@ -65,6 +65,8 @@ import {
   conversationToMarkdown,
   PERIODIC_STOPPED_LABELS,
   formatPeriodicMaxDuration,
+  buildRetryTargets,
+  messageKey,
 } from "./lib.js";
 
 // =============================================================================
@@ -5784,5 +5786,150 @@ describe("Periodic header badge label logic", () => {
     test("run 0 of N before first run", () => {
       expect(computeRunCountLabel(0, 5, true)).toBe("Run 0 of 5");
     });
+  });
+});
+
+// =============================================================================
+// buildRetryTargets Tests
+// =============================================================================
+
+describe("buildRetryTargets", () => {
+  test("returns empty map for empty array", () => {
+    expect(buildRetryTargets([]).size).toBe(0);
+  });
+
+  test("returns empty map for null/undefined input", () => {
+    expect(buildRetryTargets(null).size).toBe(0);
+    expect(buildRetryTargets(undefined).size).toBe(0);
+  });
+
+  test("maps error index to preceding user prompt text and images", () => {
+    const msgs = [
+      { role: ROLE_USER, text: "hello", images: [] },
+      { role: ROLE_ERROR, text: "oops" },
+    ];
+    const map = buildRetryTargets(msgs);
+    expect(map.size).toBe(1);
+    expect(map.get(1)).toEqual({ text: "hello", images: [] });
+  });
+
+  test("resolves to the NEAREST preceding user prompt (not an older one)", () => {
+    const imgs = [{ id: "img1" }];
+    const msgs = [
+      { role: ROLE_USER, text: "first" },
+      { role: ROLE_USER, text: "second", images: imgs },
+      { role: ROLE_ERROR, text: "err" },
+    ];
+    const map = buildRetryTargets(msgs);
+    expect(map.get(2)).toEqual({ text: "second", images: imgs });
+  });
+
+  test("error with no preceding user prompt → not in map", () => {
+    const msgs = [
+      { role: ROLE_AGENT, text: "hi" },
+      { role: ROLE_ERROR, text: "err" },
+    ];
+    const map = buildRetryTargets(msgs);
+    expect(map.has(1)).toBe(false);
+  });
+
+  test("user message without truthy text is ignored", () => {
+    const msgs = [
+      { role: ROLE_USER, text: "" },
+      { role: ROLE_ERROR, text: "err" },
+    ];
+    const map = buildRetryTargets(msgs);
+    expect(map.has(1)).toBe(false);
+  });
+
+  test("user message with null text is ignored", () => {
+    const msgs = [
+      { role: ROLE_USER, text: null },
+      { role: ROLE_ERROR, text: "err" },
+    ];
+    expect(buildRetryTargets(msgs).has(1)).toBe(false);
+  });
+
+  test("multiple errors each resolve to their own nearest preceding user prompt", () => {
+    const msgs = [
+      { role: ROLE_USER, text: "prompt-a" },
+      { role: ROLE_ERROR, text: "err-a" },
+      { role: ROLE_USER, text: "prompt-b" },
+      { role: ROLE_ERROR, text: "err-b" },
+    ];
+    const map = buildRetryTargets(msgs);
+    expect(map.get(1)).toEqual({ text: "prompt-a", images: [] });
+    expect(map.get(3)).toEqual({ text: "prompt-b", images: [] });
+  });
+
+  test("defaults images to [] when the user message has no images", () => {
+    const msgs = [
+      { role: ROLE_USER, text: "hi" },
+      { role: ROLE_ERROR, text: "err" },
+    ];
+    expect(buildRetryTargets(msgs).get(1).images).toEqual([]);
+  });
+
+  test("preserves image array reference from the user message", () => {
+    const imgs = [{ id: "x" }];
+    const msgs = [
+      { role: ROLE_USER, text: "hi", images: imgs },
+      { role: ROLE_ERROR, text: "err" },
+    ];
+    expect(buildRetryTargets(msgs).get(1).images).toBe(imgs);
+  });
+
+  test("non-error, non-user messages are ignored", () => {
+    const msgs = [
+      { role: ROLE_USER, text: "hello" },
+      { role: ROLE_AGENT, text: "reply" },
+      { role: ROLE_THOUGHT, text: "thinking" },
+      { role: ROLE_TOOL, text: "tool" },
+    ];
+    expect(buildRetryTargets(msgs).size).toBe(0);
+  });
+});
+
+// =============================================================================
+// messageKey Tests
+// =============================================================================
+
+describe("messageKey", () => {
+  test("prefers seq when present", () => {
+    expect(messageKey({ seq: 42, id: "abc", timestamp: 1000, role: "agent" })).toBe("seq-42");
+  });
+
+  test("prefers seq even when seq is 0", () => {
+    expect(messageKey({ seq: 0, id: "abc" })).toBe("seq-0");
+  });
+
+  test("falls back to id when seq is null", () => {
+    expect(messageKey({ seq: null, id: "abc", timestamp: 1000, role: "agent" })).toBe("id-abc");
+  });
+
+  test("falls back to id when seq is undefined", () => {
+    expect(messageKey({ id: "abc", timestamp: 1000, role: "agent" })).toBe("id-abc");
+  });
+
+  test("falls back to timestamp+role when both seq and id are absent", () => {
+    expect(messageKey({ timestamp: 1620000000000, role: "user" })).toBe("ts-1620000000000-user");
+  });
+
+  test("falls back to timestamp+role when id is null", () => {
+    expect(messageKey({ id: null, timestamp: 999, role: "error" })).toBe("ts-999-error");
+  });
+
+  test("returns distinct keys for different seqs", () => {
+    expect(messageKey({ seq: 1 })).not.toBe(messageKey({ seq: 2 }));
+  });
+
+  test("returns distinct keys for different ids", () => {
+    expect(messageKey({ id: "a" })).not.toBe(messageKey({ id: "b" }));
+  });
+
+  test("returns distinct keys for different timestamp+role combos", () => {
+    const a = messageKey({ timestamp: 1000, role: "user" });
+    const b = messageKey({ timestamp: 1000, role: "agent" });
+    expect(a).not.toBe(b);
   });
 });

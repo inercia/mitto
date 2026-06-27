@@ -1796,6 +1796,44 @@ export async function copyToClipboard(text) {
  * @param {string|null} archivedAt - ISO 8601 timestamp when the session was archived
  * @returns {string}
  */
+/**
+ * Build a map from error-message index → retry payload { text, images }.
+ * Single forward pass: tracks the most recent user message that has truthy
+ * `.text`; when an error message is encountered, records that payload.
+ *
+ * @param {Array} displayMessages - The ordered (forward) array of messages
+ * @returns {Map<number, {text: string, images: Array}>} index → retry payload
+ */
+export function buildRetryTargets(displayMessages) {
+  const map = new Map();
+  if (!Array.isArray(displayMessages)) return map;
+  let lastUserText = null;
+  let lastUserImages = [];
+  for (let i = 0; i < displayMessages.length; i++) {
+    const msg = displayMessages[i];
+    if (msg.role === ROLE_USER && msg.text) {
+      lastUserText = msg.text;
+      lastUserImages = msg.images || [];
+    } else if (msg.role === ROLE_ERROR && lastUserText !== null) {
+      map.set(i, { text: lastUserText, images: lastUserImages });
+    }
+  }
+  return map;
+}
+
+/**
+ * Compute a stable string key for a message, for use in Preact reconciliation.
+ * Preference order: seq → id → timestamp+role (never index-based).
+ *
+ * @param {object} msg - Message object
+ * @returns {string} Stable key string
+ */
+export function messageKey(msg) {
+  if (msg.seq != null) return "seq-" + msg.seq;
+  if (msg.id != null) return "id-" + msg.id;
+  return "ts-" + msg.timestamp + "-" + msg.role;
+}
+
 export function getArchiveReasonText(reason, archivedAt) {
   const dateStr = archivedAt ? new Date(archivedAt).toLocaleDateString() : "";
   switch (reason) {

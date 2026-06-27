@@ -2,10 +2,11 @@
 // Renders the scrollable messages area: empty state, reversed message list with
 // date separators and retry buttons, load-more controls, infinite-scroll sentinel,
 // and the scroll-to-bottom floating button.
-const { html, Fragment } = window.preact;
+const { html, Fragment, useMemo } = window.preact;
 
 import { Message } from "./Message.js";
 import { SpinnerIcon, ArrowDownIcon, SettingsIcon } from "./Icons.js";
+import { buildRetryTargets, messageKey } from "../lib.js";
 
 /**
  * @param {Array}    displayMessages   - Coalesced messages to render
@@ -49,6 +50,74 @@ export function MessageList({
   workspaces,
   messagesContainerRef,
 }) {
+  // Memoize the reversed/flatMapped render list. Recomputes only when the
+  // active session's messages, streaming state, or retry callback change —
+  // not on every unrelated re-render (e.g. background-session streaming ticks).
+  const renderedMessages = useMemo(() => {
+    // Precompute retry targets in one forward pass (O(n)) instead of the
+    // previous O(n·m) backward scan per error message.
+    const retryTargets = buildRetryTargets(displayMessages);
+
+    return [...displayMessages].reverse().flatMap((msg, i, arr) => {
+      // i === 0 is the newest message (column-reverse layout)
+      const origIdx = arr.length - 1 - i;
+
+      let retryHandler = undefined;
+      if (msg.role === "error") {
+        const target = retryTargets.get(origIdx);
+        if (target) {
+          const { text, images } = target;
+          retryHandler = () => onRetry(text, images);
+        }
+      }
+
+      const key = messageKey(msg);
+
+      let dateSeparator = null;
+      if (msg.timestamp) {
+        const msgDate = new Date(msg.timestamp).toDateString();
+        const olderMsg = arr[i + 1];
+        const olderDate = olderMsg?.timestamp
+          ? new Date(olderMsg.timestamp).toDateString()
+          : null;
+        if (!olderMsg || msgDate !== olderDate) {
+          const now = new Date();
+          const yesterday = new Date(now);
+          yesterday.setDate(yesterday.getDate() - 1);
+          let label;
+          const d = new Date(msg.timestamp);
+          if (d.toDateString() === now.toDateString()) {
+            label = "Today";
+          } else if (d.toDateString() === yesterday.toDateString()) {
+            label = "Yesterday";
+          } else {
+            label = d.toLocaleDateString([], {
+              month: "short",
+              day: "numeric",
+              year: d.getFullYear() !== now.getFullYear() ? "numeric" : undefined,
+            });
+          }
+          dateSeparator = html`
+            <div key=${"sep-" + key} class="divider date-separator">
+              ${label}
+            </div>
+          `;
+        }
+      }
+
+      const msgEl = html`
+        <${Message}
+          key=${key}
+          message=${msg}
+          isLast=${i === 0}
+          isStreaming=${isStreaming}
+          onRetry=${retryHandler}
+        />
+      `;
+      return dateSeparator ? [dateSeparator, msgEl] : [msgEl];
+    });
+  }, [displayMessages, isStreaming, onRetry]);
+
   return html`
     <${Fragment}>
       <!-- Messages (scrollable container with normal scroll) -->
@@ -151,67 +220,7 @@ export function MessageList({
               </div>
             </div>
           `}
-          ${[...displayMessages]
-            .reverse()
-            .flatMap((msg, i, arr) => {
-              let retryHandler = undefined;
-              if (msg.role === "error") {
-                const origIdx = arr.length - 1 - i;
-                for (let j = origIdx - 1; j >= 0; j--) {
-                  const prev = displayMessages[j];
-                  if (prev.role === "user" && prev.text) {
-                    const retryText = prev.text;
-                    const retryImages = prev.images || [];
-                    retryHandler = () => onRetry(retryText, retryImages);
-                    break;
-                  }
-                }
-              }
-
-              const origIdx = arr.length - 1 - i;
-              let dateSeparator = null;
-              if (msg.timestamp) {
-                const msgDate = new Date(msg.timestamp).toDateString();
-                const olderMsg = arr[i + 1];
-                const olderDate = olderMsg?.timestamp
-                  ? new Date(olderMsg.timestamp).toDateString()
-                  : null;
-                if (!olderMsg || msgDate !== olderDate) {
-                  const now = new Date();
-                  const yesterday = new Date(now);
-                  yesterday.setDate(yesterday.getDate() - 1);
-                  let label;
-                  const d = new Date(msg.timestamp);
-                  if (d.toDateString() === now.toDateString()) {
-                    label = "Today";
-                  } else if (d.toDateString() === yesterday.toDateString()) {
-                    label = "Yesterday";
-                  } else {
-                    label = d.toLocaleDateString([], {
-                      month: "short",
-                      day: "numeric",
-                      year: d.getFullYear() !== now.getFullYear() ? "numeric" : undefined,
-                    });
-                  }
-                  dateSeparator = html`
-                    <div key=${"sep-" + origIdx} class="divider date-separator">
-                      ${label}
-                    </div>
-                  `;
-                }
-              }
-
-              const msgEl = html`
-                <${Message}
-                  key=${msg.timestamp + "-" + origIdx}
-                  message=${msg}
-                  isLast=${i === 0}
-                  isStreaming=${isStreaming}
-                  onRetry=${retryHandler}
-                />
-              `;
-              return dateSeparator ? [dateSeparator, msgEl] : [msgEl];
-            })}
+          ${renderedMessages}
           ${(hasMoreMessages || hasReachedLimit) &&
           html`
             <div class="flex justify-center my-4">
