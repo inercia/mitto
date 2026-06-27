@@ -323,6 +323,131 @@ describe("NamedPromptPill tooltip", () => {
 });
 
 // =============================================================================
+// messagePropsAreEqual (memo comparator) Tests
+// =============================================================================
+
+/**
+ * Mirror of messagePropsAreEqual from Message.js for isolated unit testing.
+ * Returns true when props are equal (memo should skip re-render).
+ */
+function messagePropsAreEqual(prev, next) {
+  return (
+    prev.message.html === next.message.html &&
+    prev.message.text === next.message.text &&
+    prev.message.status === next.message.status &&
+    prev.message.title === next.message.title &&
+    prev.message.images === next.message.images &&
+    prev.message.complete === next.message.complete &&
+    prev.isLast === next.isLast &&
+    prev.isStreaming === next.isStreaming &&
+    prev.onRetry === next.onRetry
+  );
+}
+
+function makeProps(overrides = {}) {
+  return {
+    message: {
+      html: "<p>hello</p>",
+      text: "hello",
+      status: "completed",
+      title: "Tool call",
+      images: null,
+      complete: true,
+      ...(overrides.message || {}),
+    },
+    isLast: false,
+    isStreaming: false,
+    onRetry: null,
+    ...overrides,
+  };
+}
+
+describe("messagePropsAreEqual (memo comparator)", () => {
+  test("returns true when all relevant props are identical", () => {
+    const p = makeProps();
+    expect(messagePropsAreEqual(p, makeProps())).toBe(true);
+  });
+
+  test("returns false when message.html changes (streaming chunk)", () => {
+    const prev = makeProps();
+    const next = makeProps({ message: { html: "<p>updated</p>" } });
+    expect(messagePropsAreEqual(prev, next)).toBe(false);
+  });
+
+  test("returns false when message.text changes", () => {
+    const prev = makeProps();
+    const next = makeProps({ message: { text: "changed" } });
+    expect(messagePropsAreEqual(prev, next)).toBe(false);
+  });
+
+  test("returns false when message.status changes", () => {
+    const prev = makeProps();
+    const next = makeProps({ message: { status: "running" } });
+    expect(messagePropsAreEqual(prev, next)).toBe(false);
+  });
+
+  test("returns false when message.title changes", () => {
+    const prev = makeProps();
+    const next = makeProps({ message: { title: "New tool" } });
+    expect(messagePropsAreEqual(prev, next)).toBe(false);
+  });
+
+  test("returns false when message.complete changes", () => {
+    const prev = makeProps({ message: { complete: false } });
+    const next = makeProps({ message: { complete: true } });
+    expect(messagePropsAreEqual(prev, next)).toBe(false);
+  });
+
+  test("returns false when isLast changes", () => {
+    const prev = makeProps({ isLast: false });
+    const next = makeProps({ isLast: true });
+    expect(messagePropsAreEqual(prev, next)).toBe(false);
+  });
+
+  test("returns false when isStreaming changes", () => {
+    const prev = makeProps({ isStreaming: false });
+    const next = makeProps({ isStreaming: true });
+    expect(messagePropsAreEqual(prev, next)).toBe(false);
+  });
+
+  test("returns false when onRetry reference changes", () => {
+    const prev = makeProps({ onRetry: () => {} });
+    const next = makeProps({ onRetry: () => {} });
+    expect(messagePropsAreEqual(prev, next)).toBe(false);
+  });
+
+  test("returns true when onRetry is the same function reference", () => {
+    const fn = () => {};
+    const prev = makeProps({ onRetry: fn });
+    const next = makeProps({ onRetry: fn });
+    expect(messagePropsAreEqual(prev, next)).toBe(true);
+  });
+
+  test("returns false when images reference changes (new array)", () => {
+    const prev = makeProps({ message: { images: [] } });
+    const next = makeProps({ message: { images: [] } });
+    expect(messagePropsAreEqual(prev, next)).toBe(false);
+  });
+
+  test("returns true when images is the same array reference", () => {
+    const imgs = [];
+    const prev = makeProps({ message: { images: imgs } });
+    const next = makeProps({ message: { images: imgs } });
+    expect(messagePropsAreEqual(prev, next)).toBe(true);
+  });
+
+  test("streaming message: always returns false when html changes each chunk", () => {
+    // Simulates successive streaming chunks — memo must not block re-renders
+    const chunks = ["<p>h</p>", "<p>he</p>", "<p>hel</p>", "<p>hell</p>"];
+    for (let i = 0; i < chunks.length - 1; i++) {
+      const prev = makeProps({ message: { html: chunks[i], complete: false }, isStreaming: true, isLast: true });
+      const next = makeProps({ message: { html: chunks[i + 1], complete: false }, isStreaming: true, isLast: true });
+      expect(messagePropsAreEqual(prev, next)).toBe(false);
+    }
+  });
+});
+
+// =============================================================================
 // sessionChangeText Tests
 // =============================================================================
 

@@ -1,7 +1,7 @@
 // Mitto Web Interface - Message Component
 // Renders different types of messages (user, agent, thought, tool, error, system)
 
-const { html, useMemo, useEffect, useRef, useState } = window.preact;
+const { html, useMemo, useEffect, useRef, useState, memo } = window.preact;
 
 import {
   ROLE_USER,
@@ -212,7 +212,7 @@ function ThoughtBubble({ message, isLast, isStreaming }) {
  * @param {boolean} props.isStreaming - Whether the session is currently streaming
  * @param {Function} [props.onRetry] - Optional callback to retry (resend last prompt). Shown on error messages.
  */
-export function Message({ message, isLast, isStreaming, onRetry }) {
+function MessageImpl({ message, isLast, isStreaming, onRetry }) {
   const isUser = message.role === ROLE_USER;
   const isAgent = message.role === ROLE_AGENT;
   const isThought = message.role === ROLE_THOUGHT;
@@ -621,3 +621,43 @@ export function Message({ message, isLast, isStreaming, onRetry }) {
 
   return null;
 }
+
+/**
+ * Props comparator for memo(MessageImpl).
+ * Returns true (skip re-render) when all output-affecting fields are equal.
+ *
+ * Fields checked:
+ *   message.html    — agent/streaming content; changes on every streaming chunk
+ *   message.text    — user / thought / error text
+ *   message.status  — tool status (running / completed / failed)
+ *   message.title   — tool call title
+ *   message.images  — user-attached images (reference equality is fine here)
+ *   message.complete — whether the message is finalised
+ *   isLast          — affects showCursor / timestamp visibility
+ *   isStreaming      — drives the streaming cursor
+ *   onRetry         — error-message retry callback reference
+ *
+ * The actively streaming message always updates message.html on every chunk,
+ * so it will never be memoized away — the comparator naturally returns false.
+ */
+export function messagePropsAreEqual(prev, next) {
+  return (
+    prev.message.html === next.message.html &&
+    prev.message.text === next.message.text &&
+    prev.message.status === next.message.status &&
+    prev.message.title === next.message.title &&
+    prev.message.images === next.message.images &&
+    prev.message.complete === next.message.complete &&
+    prev.isLast === next.isLast &&
+    prev.isStreaming === next.isStreaming &&
+    prev.onRetry === next.onRetry
+  );
+}
+
+/**
+ * Memoized Message — skips re-render when the message content and surrounding
+ * context (isLast, isStreaming, onRetry) are unchanged.  The streaming bubble
+ * is not affected: its message.html updates on every chunk, so it always
+ * re-renders.
+ */
+export const Message = memo(MessageImpl, messagePropsAreEqual);
