@@ -14,6 +14,12 @@ import { Tooltip } from "./Tooltip.js";
 import { usePullToRefresh } from "../hooks/usePullToRefresh.js";
 import { useSwipeToAction } from "../hooks/index.js";
 
+// How often (ms) to surface a progress toast during a bulk closed-issue
+// cleanup. Progress events arrive per server-side batch (25 issues each), which
+// can be more frequent than is useful as toasts, so we throttle visible updates
+// to this rate and keep a single live toast updated in place.
+const CLEANUP_PROGRESS_TOAST_INTERVAL_MS = 3000;
+
 // ---- helpers ----------------------------------------------------------------
 
 // Safely read a fetch Response body that is expected to be JSON. If the body is
@@ -1975,7 +1981,7 @@ function BeadsIssueRow({ issue, bgTone, borderTone, onSelect, onContextMenu, onC
   `;
 }
 
-export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBeadsPrompt, onFetchBeadsListPrompts, onRunBeadsListPrompt, onShowSidebar, onOpenConfig, issueSessionMap = {}, issueStreamingSet = new Set(), onOpenConversation, onLaunchPrompt, initialCreateNonce = 0, initialRefreshNonce = 0, initialCleanupNonce = 0 }) {
+export function BeadsView({ workingDir, showToast, dismissToast, onFetchBeadsPrompts, onRunBeadsPrompt, onFetchBeadsListPrompts, onRunBeadsListPrompt, onShowSidebar, onOpenConfig, issueSessionMap = {}, issueStreamingSet = new Set(), onOpenConversation, onLaunchPrompt, initialCreateNonce = 0, initialRefreshNonce = 0, initialCleanupNonce = 0 }) {
   const [issues, setIssues] = useState([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
@@ -2082,6 +2088,11 @@ export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBea
   const [showCleanupConfirm, setShowCleanupConfirm] = useState(false);
   const [cleaningUp, setCleaningUp] = useState(false);
   const [cleanupProgress, setCleanupProgress] = useState(null);
+  // Bookkeeping for the single "live" cleanup progress toast: the id of the
+  // currently shown toast (so it can be replaced/dismissed in place) and the
+  // timestamp of the last shown toast (so updates are throttled, not per-batch).
+  const cleanupToastIdRef = useRef(null);
+  const lastCleanupToastAtRef = useRef(0);
 
   // Single-issue delete confirmation target + in-flight state, and the
   // in-flight flag for the close/reopen status toggle.
@@ -2516,7 +2527,18 @@ export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBea
         return;
       }
       // Background job started; progress arrives via mitto:beads_cleanup_progress.
-      setCleanupProgress({ deleted: 0, total: data.total || 0 });
+      const total = data.total || 0;
+      setCleanupProgress({ deleted: 0, total });
+      // Immediate feedback that the (potentially long) operation has begun. This
+      // sticky toast is then replaced in place by throttled progress updates.
+      lastCleanupToastAtRef.current = Date.now();
+      cleanupToastIdRef.current = showToast
+        ? showToast({
+            style: "info",
+            title: `Removing ${total} closed issue${total === 1 ? "" : "s"}…`,
+            sticky: true,
+          })
+        : null;
     } catch (err) {
       showToast && showToast({ style: "error", title: err.message || "Failed to clean up issues" });
       setCleaningUp(false);
@@ -2524,31 +2546,58 @@ export function BeadsView({ workingDir, showToast, onFetchBeadsPrompts, onRunBea
   }, [workingDir, showToast]);
 
   useEffect(() => {
+    // Dismiss the live progress toast (if any) so a terminal outcome can take
+    // its place, or so a stale toast does not linger on unmount.
+    const clearProgressToast = () => {
+      if (cleanupToastIdRef.current != null && dismissToast) {
+        dismissToast(cleanupToastIdRef.current);
+      }
+      cleanupToastIdRef.current = null;
+    };
     const onProgress = (e) => {
       const d = (e && e.detail) || {};
       if (d.working_dir !== workingDir) return;
       if (d.error) {
+        clearProgressToast();
         showToast && showToast({ style: "error", title: d.error || "Failed to clean up issues" });
         setCleaningUp(false);
         setCleanupProgress(null);
         fetchList();
         return;
       }
-      setCleanupProgress({ deleted: d.deleted || 0, total: d.total || 0 });
+      const deleted = d.deleted || 0;
+      const total = d.total || 0;
+      setCleanupProgress({ deleted, total });
       if (d.done) {
-        const n = d.deleted || 0;
+        clearProgressToast();
         showToast && showToast({
           style: "success",
-          title: `Removed ${n} closed issue${n === 1 ? "" : "s"}`,
+          title: `Removed ${deleted} closed issue${deleted === 1 ? "" : "s"}`,
         });
         setCleaningUp(false);
         setCleanupProgress(null);
         fetchList();
+        return;
+      }
+      // Mid-flight: refresh the single live progress toast, throttled so a long
+      // run with many batches does not spam one toast per batch.
+      const now = Date.now();
+      if (showToast && now - lastCleanupToastAtRef.current >= CLEANUP_PROGRESS_TOAST_INTERVAL_MS) {
+        lastCleanupToastAtRef.current = now;
+        clearProgressToast();
+        cleanupToastIdRef.current = showToast({
+          style: "info",
+          title: `Removing closed issues… ${deleted}/${total}`,
+          sticky: true,
+        });
       }
     };
     window.addEventListener("mitto:beads_cleanup_progress", onProgress);
-    return () => window.removeEventListener("mitto:beads_cleanup_progress", onProgress);
-  }, [workingDir, showToast, fetchList]);
+    return () => {
+      window.removeEventListener("mitto:beads_cleanup_progress", onProgress);
+      clearProgressToast();
+    };
+  }, [workingDir, showToast, dismissToast, fetchList]);
 
   // Permanently delete a single issue, then refresh the list. The confirm
   // dialog (gated on deleteTarget) calls this.

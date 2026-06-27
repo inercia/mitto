@@ -2303,6 +2303,7 @@ function App() {
               workingDir=${beadsWorkingDir}
               onClose=${() => setMainView("conversation")}
               showToast=${showToast}
+              dismissToast=${dismissToast}
               onFetchBeadsPrompts=${fetchBeadsPromptsForWorkspace}
               onRunBeadsPrompt=${handleRunBeadsPrompt}
               onFetchBeadsListPrompts=${fetchBeadsListPromptsForWorkspace}
