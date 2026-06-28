@@ -5,7 +5,6 @@
 const { useState, useEffect, useCallback, useRef, html } = window.preact;
 
 import { PromptsMenu } from "./PromptsMenu.js";
-import { ChatBubbleIcon } from "./Icons.js";
 import { PortalTooltip } from "./ContextMenu.js";
 import { getPromptSortMode } from "../utils/storage.js";
 
@@ -24,8 +23,6 @@ const FREE_TEXT_PREVIEW_MAX = 40;
  * @param {boolean} props.disabled - Whether the selector is read-only
  * @param {Function} props.onSelect - Callback when a prompt is selected: (promptName) => void
  * @param {boolean} props.isOpen - Kept for API compat; parent card controls visibility now (ignored here)
- * @param {boolean} props.isPromptAreaVisible - Whether the prompt composition area below is visible
- * @param {Function} props.onTogglePromptArea - Callback to toggle prompt composition area visibility
  */
 export function PeriodicPromptSelector({
   prompts = [],
@@ -34,15 +31,12 @@ export function PeriodicPromptSelector({
   disabled = false,
   onSelect,
   isOpen = false,
-  isPromptAreaVisible = false,
-  onTogglePromptArea,
   // When true the trigger expands to fill its container (used in the mobile
   // expanded-properties row); otherwise it stays compact (header placement).
   fullWidth = false,
   // Testid roots. Distinct prefixes let multiple instances (header + mobile
   // body) coexist in the DOM without breaking strict-mode Playwright locators.
   idPrefix = "periodic-prompt-selector",
-  toggleTestId = "periodic-toggle-prompt-area",
 }) {
   const [showDropdown, setShowDropdown] = useState(false);
   const [filterText, setFilterText] = useState("");
@@ -207,25 +201,6 @@ export function PeriodicPromptSelector({
             listTestId="${idPrefix}-list"
           />
         </div>
-      `}
-
-      <!-- Toggle prompt composition area button -->
-      ${onTogglePromptArea &&
-      html`
-        <button
-          type="button"
-          onClick=${onTogglePromptArea}
-          class="shrink-0 h-8 w-8 flex items-center justify-center bg-white dark:bg-mitto-surface-2 border border-mitto-border dark:border-mitto-border-2 rounded text-mitto-text-secondary hover:text-mitto-text-strong hover:border-mitto-accent-500/50 focus:outline-none focus:ring-1 focus:ring-mitto-accent-500 transition-colors cursor-pointer tooltip tooltip-bottom"
-          data-tip=${isPromptAreaVisible
-            ? "Hide message input"
-            : "Show message input"}
-          aria-label=${isPromptAreaVisible
-            ? "Hide message input"
-            : "Show message input"}
-          data-testid=${toggleTestId}
-        >
-          <${ChatBubbleIcon} className="w-4 h-4" />
-        </button>
       `}
     </div>
   `;

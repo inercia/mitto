@@ -8,6 +8,7 @@ import {
   PeriodicFilledIcon,
   PlayFilledIcon,
   PauseFilledIcon,
+  ChatBubbleIcon,
 } from "./Icons.js";
 import { PeriodicPromptSelector } from "./PeriodicPromptSelector.js";
 import { ConfirmDialog } from "./ConfirmDialog.js";
@@ -863,9 +864,9 @@ export function PeriodicFrequencyPanel({
             }
           </button>
 
-          <!-- Inline prompt selector + Mitto bubble (header placement). Always
-               visible across breakpoints so the prompt stays reachable without
-               expanding the properties section. -->
+          <!-- Inline prompt selector (header placement). Always visible across
+               breakpoints so the prompt stays reachable without expanding the
+               properties section. -->
           <div class="min-w-0">
             <${PeriodicPromptSelector}
               prompts=${prompts}
@@ -873,8 +874,6 @@ export function PeriodicFrequencyPanel({
               selectedPromptBody=${selectedPromptBody}
               disabled=${false}
               onSelect=${onPromptSelect}
-              isPromptAreaVisible=${isPromptAreaVisible}
-              onTogglePromptArea=${onTogglePromptArea}
             />
           </div>
 
@@ -895,6 +894,23 @@ export function PeriodicFrequencyPanel({
             ${isSaving
               ? html`<span class="loading loading-spinner w-4 h-4"></span>`
               : "Save"}
+          </button>`}
+
+          <!-- Toggle message input area button (Mitto bubble). Sits next to the
+               expand/collapse chevron on the right edge of the header. -->
+          ${onTogglePromptArea &&
+          html`<button
+            type="button"
+            onClick=${onTogglePromptArea}
+            onMouseEnter=${(e) => showHeaderTip(e, isPromptAreaVisible ? "Hide message input" : "Show message input")}
+            onMouseLeave=${hideHeaderTip}
+            onMouseDown=${hideHeaderTip}
+            class="shrink-0 p-1.5 rounded border border-mitto-border dark:border-mitto-border-2 bg-white dark:bg-mitto-surface-2 cursor-pointer hover:bg-mitto-surface-hover dark:hover:bg-mitto-surface-3 transition-colors"
+            data-tip=${isPromptAreaVisible ? "Hide message input" : "Show message input"}
+            aria-label=${isPromptAreaVisible ? "Hide message input" : "Show message input"}
+            data-testid="periodic-toggle-prompt-area"
+          >
+            <${ChatBubbleIcon} className="w-4 h-4 text-mitto-text-secondary" />
           </button>`}
 
           <!-- Expand/collapse chevron button -->
