@@ -334,6 +334,9 @@ export function useWebSocket({ onActiveSessionRemovedRef } = {}) {
   const [activeSessionId, setActiveSessionId] = useState(null);
   const [storedSessions, setStoredSessions] = useState([]); // Sessions from the store
 
+  // Global MCP server bind status from the `connected` message: { available, reason, port } | null
+  const [mcpStatus, setMcpStatus] = useState(null);
+
   // Workspaces state: list of configured workspaces from server
   const [workspaces, setWorkspaces] = useState([]);
   // Available ACP servers from config
@@ -1224,6 +1227,11 @@ export function useWebSocket({ onActiveSessionRemovedRef } = {}) {
         // Update queue configuration from server
         if (msg.data.queue_config) {
           setQueueConfig(msg.data.queue_config);
+        }
+
+        // Global MCP bind status (same for all sessions); drives a persistent badge.
+        if (msg.data.mcp) {
+          setMcpStatus(msg.data.mcp);
         }
 
         // Update available slash commands from agent
@@ -6136,6 +6144,7 @@ export function useWebSocket({ onActiveSessionRemovedRef } = {}) {
     actionButtons,
     sessionInfo,
     mcpTools,
+    mcpStatus,
     activeSessionId,
     activeSessions,
     storedSessions,

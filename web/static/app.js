@@ -269,6 +269,7 @@ function App() {
     activeUIPrompt,
     sendUIPromptAnswer,
     mcpTools,
+    mcpStatus,
     ensureResumed,
     isCreatingSession,
     creatingWorkingDirs,
@@ -2558,6 +2559,23 @@ function App() {
           />
         </div>
         <!-- End of messages wrapper -->
+
+        <!-- Persistent MCP-unavailable banner (global; survives reconnects). -->
+        ${mcpStatus &&
+        mcpStatus.available === false &&
+        html`
+          <div class="flex justify-center my-2">
+            <div role="alert" class="alert alert-warning max-w-2xl text-sm py-2">
+              <span>
+                MCP server unavailable${mcpStatus.reason === "port_in_use"
+                  ? ` — port ${mcpStatus.port} is already in use (another Mitto instance may be running)`
+                  : mcpStatus.port
+                    ? ` (port ${mcpStatus.port})`
+                    : ""}. Mitto continues without MCP tools.
+              </span>
+            </div>
+          </div>
+        `}
 
         <!-- ACP reconnecting banner (shown when ACP not ready and there are messages) -->
         <!-- Only show when global WS is connected — during shutdown, WS disconnects and we don't want to show this -->

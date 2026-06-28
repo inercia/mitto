@@ -182,6 +182,13 @@ type Server struct {
 	// MCP debug server for exposing debugging tools
 	mcpServer *mcpserver.Server
 
+	// MCP bind status, set once during NewServer (before serving). Surfaced to the
+	// frontend in the `connected` message so the UI shows a persistent badge when
+	// the global MCP server failed to bind (e.g. another Mitto instance holds the port).
+	mcpAvailable bool
+	mcpReason    string // empty when available; "port_in_use" or "start_failed"
+	mcpPort      int    // configured/effective MCP port (for UI diagnostics)
+
 	// Scanner defense for blocking malicious IPs at the connection level
 	defense *defense.ScannerDefense
 
@@ -557,6 +564,7 @@ func NewServer(config Config) (*Server, error) {
 		negativeSessionCache: NewNegativeSessionCache(),
 		recentStartFails:     make(map[string]time.Time),
 		beads:                beads.NewClient(),
+		mcpAvailable:         true,
 	}
 
 	// The REST handlers sub-package facade is constructed later in NewServer,
@@ -588,6 +596,11 @@ func NewServer(config Config) (*Server, error) {
 		mcpHost := config.MittoConfig.MCP.GetHost()
 		mcpPort := config.MittoConfig.MCP.GetPort()
 
+		effectiveMCPPort := mcpPort
+		if effectiveMCPPort < 0 {
+			effectiveMCPPort = mcpserver.DefaultPort
+		}
+
 		mcpSrv, err := mcpserver.NewServer(
 			mcpserver.Config{Host: mcpHost, Port: mcpPort},
 			mcpserver.Dependencies{
@@ -599,6 +612,9 @@ func NewServer(config Config) (*Server, error) {
 		)
 		if err != nil {
 			logger.Warn("Failed to create MCP server", "error", err)
+			s.mcpAvailable = false
+			s.mcpReason = "start_failed"
+			s.mcpPort = effectiveMCPPort
 		} else {
 			s.mcpServer = mcpSrv
 			if err := mcpSrv.Start(context.Background()); err != nil {
@@ -612,11 +628,21 @@ func NewServer(config Config) (*Server, error) {
 					msg = "Failed to start MCP server — port already in use (another Mitto instance may be running). Mitto will continue without MCP; session-scoped tools, prompts, and stdio proxies will be unavailable until this is resolved."
 				}
 				logger.Warn(msg, "error", err, "host", mcpHost, "port", mcpPort)
+				s.mcpAvailable = false
+				s.mcpPort = effectiveMCPPort
+				if strings.Contains(errStr, "address already in use") || strings.Contains(errStr, "bind:") {
+					s.mcpReason = "port_in_use"
+				} else {
+					s.mcpReason = "start_failed"
+				}
 			} else {
 				logger.Info("MCP server started", "port", mcpSrv.Port())
 				// Set MCP URL on process manager so auxiliary processor sessions
 				// can use a stdio proxy to access Mitto tools.
 				acpProcessMgr.MCPServerURL = fmt.Sprintf("http://127.0.0.1:%d/mcp", mcpSrv.Port())
+				s.mcpAvailable = true
+				s.mcpReason = ""
+				s.mcpPort = mcpSrv.Port()
 			}
 			// Pass MCP server to session manager for session registration
 			sessionMgr.SetGlobalMCPServer(mcpSrv)
@@ -728,20 +754,20 @@ func NewServer(config Config) (*Server, error) {
 		StopPeriodicForArchive: func(sessionID string) {
 			s.periodicRunner.StopPeriodicForArchive(sessionID, session.StoppedReasonArchived)
 		},
-		ErrSessionBusy:                     ErrSessionBusy,
-		ErrPeriodicNotEnabled:              ErrPeriodicNotEnabled,
-		PeriodicDelayFloor:                 s.periodicDelayFloor,
-		BroadcastPeriodicUpdated:           s.BroadcastPeriodicUpdated,
-		BroadcastBeadsCleanupProgress:      s.BroadcastBeadsCleanupProgress,
-		BootstrapOnCompletion:              s.periodicRunner.BootstrapOnCompletion,
-		BroadcastSettingsUpdated:           s.BroadcastSessionSettingsUpdated,
-		BroadcastSessionDeleted:            s.BroadcastSessionDeleted,
-		BroadcastACPStartFailed:            s.BroadcastACPStartFailed,
-		BroadcastACPStopped:                s.BroadcastACPStopped,
-		BroadcastACPStarted:                s.BroadcastACPStarted,
-		BroadcastSessionRenamed:            s.BroadcastSessionRenamed,
-		BroadcastSessionPinned:             s.BroadcastSessionPinned,
-		BroadcastSessionArchived:           s.BroadcastSessionArchived,
+		ErrSessionBusy:                ErrSessionBusy,
+		ErrPeriodicNotEnabled:         ErrPeriodicNotEnabled,
+		PeriodicDelayFloor:            s.periodicDelayFloor,
+		BroadcastPeriodicUpdated:      s.BroadcastPeriodicUpdated,
+		BroadcastBeadsCleanupProgress: s.BroadcastBeadsCleanupProgress,
+		BootstrapOnCompletion:         s.periodicRunner.BootstrapOnCompletion,
+		BroadcastSettingsUpdated:      s.BroadcastSessionSettingsUpdated,
+		BroadcastSessionDeleted:       s.BroadcastSessionDeleted,
+		BroadcastACPStartFailed:       s.BroadcastACPStartFailed,
+		BroadcastACPStopped:           s.BroadcastACPStopped,
+		BroadcastACPStarted:           s.BroadcastACPStarted,
+		BroadcastSessionRenamed:       s.BroadcastSessionRenamed,
+		BroadcastSessionPinned:        s.BroadcastSessionPinned,
+		BroadcastSessionArchived:      s.BroadcastSessionArchived,
 		BroadcastSessionCreated: func(data map[string]interface{}) {
 			s.eventsManager.Broadcast(conversation.WSMsgTypeSessionCreated, data)
 		},

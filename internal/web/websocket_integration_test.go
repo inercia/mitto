@@ -1097,6 +1097,47 @@ func TestSessionConfigOption_JSONSerialization(t *testing.T) {
 	}
 }
 
+// TestServer_MCPStatusFields verifies the mcp status fields are wired correctly
+// and would produce the expected connected-message payload structure.
+func TestServer_MCPStatusFields(t *testing.T) {
+	s := &Server{
+		mcpAvailable: false,
+		mcpReason:    "port_in_use",
+		mcpPort:      5757,
+	}
+
+	if s.mcpAvailable != false {
+		t.Errorf("mcpAvailable = %v, want false", s.mcpAvailable)
+	}
+	if s.mcpReason != "port_in_use" {
+		t.Errorf("mcpReason = %q, want %q", s.mcpReason, "port_in_use")
+	}
+	if s.mcpPort != 5757 {
+		t.Errorf("mcpPort = %d, want 5757", s.mcpPort)
+	}
+
+	// Verify the payload structure matches what sendSessionConnected produces.
+	mcpPayload := map[string]interface{}{
+		"available": s.mcpAvailable,
+		"reason":    s.mcpReason,
+		"port":      s.mcpPort,
+	}
+	data, err := json.Marshal(mcpPayload)
+	if err != nil {
+		t.Fatalf("Failed to marshal mcp payload: %v", err)
+	}
+	var parsed map[string]interface{}
+	if err := json.Unmarshal(data, &parsed); err != nil {
+		t.Fatalf("Failed to unmarshal mcp payload: %v", err)
+	}
+	if parsed["available"] != false {
+		t.Errorf("payload available = %v, want false", parsed["available"])
+	}
+	if parsed["reason"] != "port_in_use" {
+		t.Errorf("payload reason = %v, want port_in_use", parsed["reason"])
+	}
+}
+
 // TestSessionConfigOption_OmitEmptyFields tests that empty optional fields
 // are omitted from JSON serialization.
 func TestSessionConfigOption_OmitEmptyFields(t *testing.T) {

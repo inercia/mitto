@@ -528,6 +528,14 @@ func (c *SessionWSClient) sendSessionConnected(bs *conversation.BackgroundSessio
 		}
 	}
 
+	// MCP bind status (global, server-level). Always included so the frontend can
+	// show/clear a persistent badge across reconnects.
+	data["mcp"] = map[string]interface{}{
+		"available": c.server.mcpAvailable,
+		"reason":    c.server.mcpReason,
+		"port":      c.server.mcpPort,
+	}
+
 	c.sendMessage(WSMsgTypeConnected, data)
 }
 
