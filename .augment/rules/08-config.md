@@ -73,50 +73,11 @@ See [docs/devel/message-queue.md](../docs/devel/message-queue.md) for details.
 
 ## Workspace RC Files
 
-Per-workspace configuration via RC files. Search order (first found wins):
-1. `{workspace}/.mittorc`
-2. `{workspace}/.mitto/mittorc`
-3. `{workspace}/.mitto/mittorc.yaml`
-
-```go
-// Load workspace RC
-rc := config.LoadWorkspaceRC(workingDir)
-
-// Save prompt enabled state to workspace RC
-config.SaveWorkspaceRCPromptEnabled(workingDir, "Add tests", false)
-
-// Save processor enabled state to workspace RC (mirrors prompts pattern)
-config.SaveWorkspaceRCProcessorEnabled(workingDir, "memorize-preferences", true)
-
-// Get workspace-specific overrides
-dirs := sessionManager.GetWorkspacePromptsDirs(workingDir)
-overrides := sessionManager.GetWorkspaceProcessorOverrides(workingDir)
-```
-
-Workspace RC supports: `prompts` (inline prompts + disable overrides), `processors` (processor overrides: `{name, enabled?, arguments?}` — `arguments` is a name→value map for prompt-mode parameter overrides), `prompts_dirs` (extra search paths), `processors_dirs` (extra processor search paths), `user_data_schema` (per-workspace metadata).
-
-```go
-// Save per-workspace processor argument overrides (mitto-5g2v.3)
-config.SaveWorkspaceRCProcessorArguments(workingDir, "auggie-update-rules", map[string]string{"HistoryLimit": "25"})
-
-// Read back via LoadWorkspaceRC → ProcessorOverrides[i].Arguments map
-// Or via SessionManager → GetWorkspaceProcessorOverrides → ProcessorOverride.Arguments
-// → wired into ProcessorInput.ProcessorArgOverrides → ResolveProcessorArgs → SubstituteArguments
-```
-
-See `07-prompts.md` for prompt-specific workspace RC usage.
+Per-workspace config via RC files (`{workspace}/.mittorc` or `.mitto/mittorc[.yaml]`). Supports: `prompts`, `processors` (with `enabled`/`arguments`), `prompts_dirs`, `processors_dirs`, `user_data_schema`. Use `config.LoadWorkspaceRC(workingDir)` to load. See `07-prompts.md` for details.
 
 ## Workspace Persistence
 
-| Startup Mode        | Source            | Persistence      |
-| ------------------- | ----------------- | ---------------- |
-| CLI with `--dir`    | CLI flags         | NOT saved        |
-| CLI without `--dir` | `workspaces.json` | Saved on changes |
-| macOS app           | `workspaces.json` | Saved on changes |
-
-### Folder-Level Settings (folders.json)
-
-`folders.json` (authoritative store, keyed by `working_dir`) holds folder-level settings: `name`, `color`, `code`, `group` label, `auto_children`, folder-native `beads`. Created via one-time migration, then all common info lives here. `LoadWorkspaces` auto-migrates + merges via `ApplyFolderDefaults`. `SaveWorkspaces` extracts fields, writes `folders.json` first (crash-safe), then `workspaces.json`. Metadata (`description`/`url`/`group`/`user_data_schema`) stays in `.mittorc` (version-controllable). Code: `internal/config/folders.go`.
+Workspaces persisted in `workspaces.json` (except CLI `--dir`). `folders.json` (crash-safe) holds folder-level settings; metadata stays in `.mittorc` (version-controllable).
 
 ## Global Settings REST API
 
@@ -129,6 +90,24 @@ See `07-prompts.md` for prompt-specific workspace RC usage.
 | POST | `/mitto/api/agents/confirm` | Confirm detected agents (adds to settings) |
 
 Note: `/mitto/api/settings` manages global `settings.json`. For per-session feature flags, see `16-web-backend-settings.md`.
+
+## Model Profiles
+
+`models:` block in embedded `config/config.default.yaml` ships a default set of 7 profiles for **first installs only**. Existing `settings.json` is never overwritten. Pattern:
+
+```yaml
+models:
+  - name: Claude Opus          # UI label (read-only)
+    criteria: { matchMode: contains, pattern: Opus }  # Case-insensitive pattern matching
+    tags: [Smartest, Reasoning, Expensive]            # Interface-only semantic tags
+```
+
+**Tag union matching** (additive): If a model name matches multiple profiles (e.g., `Claude Opus 4.5`):
+- First: Matches `Claude` profile → `[Anthropic]`
+- Then: Matches `Opus` profile → Adds `[Smartest, Reasoning, Expensive]`
+- Result: `[Anthropic, Smartest, Reasoning, Expensive]` (union)
+
+Use `matchMode: contains` for robust cross-version matching. Tags are interface-only; runtime consumption is tracked separately (see `mitto-2cc`). Shipped defaults include: Claude, Opus, Sonnet, Haiku, GPT-5, GPT-4, Gemini. Test: `TestParse_EmbeddedDefaultModelProfiles()` in `internal/config/config_test.go`.
 
 ## ACP Server Constraints
 

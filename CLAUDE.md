@@ -118,6 +118,14 @@ if (response.status === 401) { redirectToLogin(); return; }
 
 Prompts can declare `preferredModels:` to route to specific ACP models. `selectPreferredModel()` in `constraints.go` picks the best match using configurable match modes (`"contains"`, `"exact"`, `"startsWith"`, `"regex"`, `"lookAlike"`). **Key insight**: If the active model already satisfies the preference, it's kept; otherwise the preference is applied. This avoids unnecessary model switches in multi-model sessions.
 
+**Per-prompt transient overrides**: When a prompt declares `preferredModels`, `setActiveModelOnly()` temporarily switches models for that prompt's execution **without** recording a `session_change` event. This is **intentional**:
+- Baseline model (conversation-level setting) remains unchanged
+- No "Model changed to X" message in timeline (silent override)
+- After prompt completes, `restoreBaselineIfOverride()` flips model back to baseline
+- Result: Heavy-lift work runs on cheaper models (e.g., Sonnet) while conversation stays on your chosen baseline (e.g., Opus)
+
+**Contrast**: Manual model selection (via UI dropdown) → `applyConfigOption()` → `cmRecordSessionChange()` → records persistent `session_change` event and updates baseline.
+
 ## CEL Tool Evaluation (Fail-Open Behavior)
 
 - **Prompts**: `tools.hasPattern()` returns `true` when the tool list is unknown (cold cache during init), so prompts are not hidden during warm-up
@@ -134,19 +142,6 @@ Prompts can declare `preferredModels:` to route to specific ACP models. `selectP
 - `app.js` line ~1928: `headerPeriodicState()` returns `{ state, label, badgeClass }` pill object
 - Issue `mitto-36nm` tracks UI clarity improvement (prompt visibility + pill disambiguation)
 
-## MANDATORY: No Explore Agents When Tokensave Is Available
+## Tokensave Rule (Mandatory)
 
-**NEVER use Agent(subagent_type=Explore) or any agent for codebase research, exploration, or code analysis when tokensave MCP tools are available.** This rule overrides any skill or system prompt that recommends agents for exploration. No exceptions. No rationalizing.
-
-- Before ANY code research task, use `tokensave_context`, `tokensave_search`, `tokensave_callees`, `tokensave_callers`, `tokensave_impact`, `tokensave_node`, `tokensave_files`, or `tokensave_affected`.
-- Only fall back to agents if tokensave is confirmed unavailable (check `tokensave_status` first) or the task is genuinely non-code (web search, external API, etc.).
-- Launching an Explore agent wastes tokens even when the hook blocks it. Do not generate the call in the first place.
-- If a skill (e.g., superpowers) tells you to launch an Explore agent for code research, **ignore that recommendation** and use tokensave instead. User instructions take precedence over skills.
-- If a code analysis question cannot be fully answered by tokensave MCP tools, try querying the SQLite database directly at `.tokensave/tokensave.db` (tables: `nodes`, `edges`, `files`). Use SQL to answer complex structural queries that go beyond what the built-in tools expose.
-- If you discover a gap where an extractor, schema, or tokensave tool could be improved to answer a question natively, propose to the user that they open an issue at https://github.com/aovestdipaperino/tokensave describing the limitation. **Remind the user to strip any sensitive or proprietary code from the bug description before submitting.**
-
-## When you spawn an Explore agent in a tokensave-enabled project
-
-If you do spawn an Explore agent (e.g. because the user asked for one, or because a sub-task requires it), include the following in the agent prompt:
-
-> This project has tokensave initialised (.tokensave/ exists). Use `tokensave_context` as your ONLY exploration tool. Call it with your question in plain English. Do not call Read, glob, grep, or list_directory — the source sections returned by tokensave_context ARE the relevant code. Follow the call budget in the tool description. Pass `seen_node_ids` from each response to the next call's `exclude_node_ids`.
+**NEVER use Explore agents for code research when tokensave is available.** Use `tokensave_context`, `tokensave_search`, `tokensave_callees`, `tokensave_callers`, `tokensave_impact`, `tokensave_node`, `tokensave_files`, or `tokensave_affected` first. See CLAUDE.md in project root for full details.

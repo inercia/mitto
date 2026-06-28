@@ -1,11 +1,12 @@
 # Model Profiles (`models:`)
 
 Model profiles pair a **model-selection criteria** with **capability tags**, configured
-under a top-level `models:` list. This is currently an **interface-only** feature:
-profiles are parsed, stored, and exposed through an internal Go API, but Mitto does
-**not yet** branch on model tags at runtime — there is no prompt-template function,
-CEL macro, or processor that consumes them. The Go API below is the intended extension
-point for future work.
+under a top-level `models:` list. Profiles are parsed, stored, exposed through an
+internal Go API, **and consumed at runtime**: the current model's capability tags are
+available to prompts and processors via the `Model("tag")` template function, the
+`Session.HasModelTag("tag")` CEL macro, and the `"tag" in Session.ModelTags` membership
+expression (see [Consumed at runtime](#consumed-at-runtime) below). All three are
+populated from `config.ResolveModelTags`.
 
 ## Shipped defaults (first install only)
 
@@ -92,14 +93,33 @@ the model is unknown or no profile matches; never errors.
 **`config.ConstraintMatchesName(c *ACPServerConstraint, name string) bool`**
 The shared match engine used by `ResolveModelTags`. Returns `false` when `c` is nil.
 
-## Not yet consumed at runtime
+## Consumed at runtime
 
-> **Note:** Profiles are parsed and round-tripped through `Config`/`Settings` and
-> exposed via the Go API above, but **nothing in Mitto currently consumes model tags
-> at runtime**. There is no prompt-template function, CEL macro, or processor that
-> branches on them. This is the intended extension point for future work; contributors
-> adding runtime consumption should build on `ResolveModelTags`.
+The current model's capability tags (resolved via `ResolveModelTags`) are exposed to
+both **prompts** and **processors**, populated at menu time and at send time so the two
+agree:
+
+- **Template function** — `{{ Model "tag" }}` returns `true` when the current model
+  carries `tag` (case-insensitive); `false` when the model is unknown or no profile
+  matches.
+- **CEL macro** — `Session.HasModelTag("tag")` (mirrors `Tools.HasPattern`), usable in
+  `enabledWhen` to gate a prompt or processor on the active model.
+- **CEL membership** — `"tag" in Session.ModelTags`, where `Session.ModelTags` is the
+  list of the current model's tags (`[]` when unknown).
+
+Tags reflect the session's **baseline/active** model at render time, not a prompt's
+`preferredModels` (which apply after render). Membership is case-insensitive and
+degrades to an empty set when the model is unknown (cold start / suspended session) or
+no profile matches.
+
+See [prompt-templates.md](../devel/prompt-templates.md) (context schema table and the
+`Model` function) and [prompts.md](prompts.md) (`enabledWhen` with
+`Session.HasModelTag`) for the canonical reference.
 
 ## See also
 
 - [ACP Servers / Model Selection Constraints](acp.md) — shares the same match engine
+- [Prompt Templates](../devel/prompt-templates.md) — context schema, `Model` function,
+  `Session.ModelTags` / `Session.HasModelTag`
+- [Prompts](prompts.md) — `enabledWhen` gating with `Session.HasModelTag` /
+  `"tag" in Session.ModelTags`
