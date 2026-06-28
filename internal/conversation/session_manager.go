@@ -1345,16 +1345,16 @@ func (sm *SessionManager) CreateSessionWithWorkspace(ctx context.Context, name, 
 
 	newBsStart := time.Now()
 	bs, err := NewBackgroundSession(BackgroundSessionConfig{
-		PersistedID:             "",  // Empty = generate fresh
-		CreationCtx:             ctx, // Propagate caller's context for the initial NewSession RPC
-		ACPCommand:              acpCommand,
-		ACPCwd:                  acpCwd,
-		Env:                     acpEnv,
-		ACPServer:               acpServer,
-		WorkingDir:              workingDir,
-		AutoApprove:             autoApprove,
-		Logger:                  sm.logger,
-		Store:                   store,
+		PersistedID:                    "",  // Empty = generate fresh
+		CreationCtx:                    ctx, // Propagate caller's context for the initial NewSession RPC
+		ACPCommand:                     acpCommand,
+		ACPCwd:                         acpCwd,
+		Env:                            acpEnv,
+		ACPServer:                      acpServer,
+		WorkingDir:                     workingDir,
+		AutoApprove:                    autoApprove,
+		Logger:                         sm.logger,
+		Store:                          store,
 		SessionName:                    name,
 		ProcessorManager:               procMgr,
 		WorkspaceProcessorArgOverrides: procArgOverrides,
@@ -1366,13 +1366,13 @@ func (sm *SessionManager) CreateSessionWithWorkspace(ctx context.Context, name, 
 		WorkspaceUUID:                  workspaceUUID,
 		MittoConfig:                    sm.mittoConfig,   // Pass config for default flags
 		AvailableACPServers:            availableServers, // Pre-computed workspace server list
-		GlobalMCPServer:         sm.mcpServer,
-		AuxiliaryManager:        sm.auxiliaryManager,
-		SharedProcess:           sharedProcess,              // Shared ACP process (nil = legacy mode)
-		PruneConfig:             pruneConfig,                // Auto-pruning configuration (nil = no auto-pruning)
-		PromptResolver:           sm.promptResolver,           // Named prompt resolver (resolves prompt name → text)
-		PreferredModelsResolver:  sm.preferredModelsResolver,  // Named prompt resolver (resolves prompt name → preferredModels)
-		PromptParametersResolver: sm.promptParametersResolver, // Named prompt resolver (resolves prompt name → parameters)
+		GlobalMCPServer:                sm.mcpServer,
+		AuxiliaryManager:               sm.auxiliaryManager,
+		SharedProcess:                  sharedProcess,               // Shared ACP process (nil = legacy mode)
+		PruneConfig:                    pruneConfig,                 // Auto-pruning configuration (nil = no auto-pruning)
+		PromptResolver:                 sm.promptResolver,           // Named prompt resolver (resolves prompt name → text)
+		PreferredModelsResolver:        sm.preferredModelsResolver,  // Named prompt resolver (resolves prompt name → preferredModels)
+		PromptParametersResolver:       sm.promptParametersResolver, // Named prompt resolver (resolves prompt name → parameters)
 		OnTurnIdle: func(sessionID string) {
 			sm.mu.RLock()
 			cb := sm.onConversationIdle
@@ -1967,16 +1967,16 @@ func (sm *SessionManager) ResumeSession(sessionID, sessionName, workingDir strin
 		// there is no request context to propagate. The 25s timeout in creationRPCCtx()
 		// provides the safety net so the goroutine doesn't block indefinitely if the ACP
 		// agent is busy.
-		PersistedID:             sessionID,
-		ACPCommand:              acpCommand,
-		ACPCwd:                  acpCwd,
-		Env:                     acpEnv,
-		ACPServer:               acpServer,
-		ACPSessionID:            acpSessionID,
-		WorkingDir:              workingDir,
-		AutoApprove:             autoApprove,
-		Logger:                  sm.logger,
-		Store:                   store,
+		PersistedID:                    sessionID,
+		ACPCommand:                     acpCommand,
+		ACPCwd:                         acpCwd,
+		Env:                            acpEnv,
+		ACPServer:                      acpServer,
+		ACPSessionID:                   acpSessionID,
+		WorkingDir:                     workingDir,
+		AutoApprove:                    autoApprove,
+		Logger:                         sm.logger,
+		Store:                          store,
 		SessionName:                    sessionName,
 		ProcessorManager:               procMgr,
 		WorkspaceProcessorArgOverrides: resumeProcArgOverrides,
@@ -1988,13 +1988,13 @@ func (sm *SessionManager) ResumeSession(sessionID, sessionName, workingDir strin
 		WorkspaceUUID:                  workspaceUUID,
 		MittoConfig:                    sm.mittoConfig,         // Pass config for default flags
 		AvailableACPServers:            resumeAvailableServers, // Pre-computed workspace server list
-		GlobalMCPServer:         sm.mcpServer,
-		AuxiliaryManager:        sm.auxiliaryManager,
-		SharedProcess:           sharedProcess,              // Shared ACP process (nil = legacy mode)
-		PruneConfig:             pruneConfig,                // Auto-pruning configuration (nil = no auto-pruning)
-		PromptResolver:           sm.promptResolver,           // Named prompt resolver (resolves prompt name → text)
-		PreferredModelsResolver:  sm.preferredModelsResolver,  // Named prompt resolver (resolves prompt name → preferredModels)
-		PromptParametersResolver: sm.promptParametersResolver, // Named prompt resolver (resolves prompt name → parameters)
+		GlobalMCPServer:                sm.mcpServer,
+		AuxiliaryManager:               sm.auxiliaryManager,
+		SharedProcess:                  sharedProcess,               // Shared ACP process (nil = legacy mode)
+		PruneConfig:                    pruneConfig,                 // Auto-pruning configuration (nil = no auto-pruning)
+		PromptResolver:                 sm.promptResolver,           // Named prompt resolver (resolves prompt name → text)
+		PreferredModelsResolver:        sm.preferredModelsResolver,  // Named prompt resolver (resolves prompt name → preferredModels)
+		PromptParametersResolver:       sm.promptParametersResolver, // Named prompt resolver (resolves prompt name → parameters)
 		OnTurnIdle: func(sessionID string) {
 			sm.mu.RLock()
 			cb := sm.onConversationIdle

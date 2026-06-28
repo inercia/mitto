@@ -64,7 +64,7 @@ Say hello from the atomic seed test.
 
 	// Connect via WebSocket and wait for the seeded prompt to be dispatched and completed.
 	var (
-		mu            sync.Mutex
+		mu             sync.Mutex
 		promptComplete bool
 	)
 

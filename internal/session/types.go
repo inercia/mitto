@@ -89,8 +89,8 @@ const (
 	EventTypeError          EventType = "error"
 	EventTypeSessionStart   EventType = "session_start"
 	EventTypeSessionEnd     EventType = "session_end"
-	EventTypeUIPromptAnswer  EventType = "ui_prompt_answer"
-	EventTypeSessionChange   EventType = "session_change"
+	EventTypeUIPromptAnswer EventType = "ui_prompt_answer"
+	EventTypeSessionChange  EventType = "session_change"
 )
 
 // SessionStatus represents the status of a session.

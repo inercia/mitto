@@ -72,8 +72,8 @@ func (h *Handlers) HandleWorkspaceProcessors(w http.ResponseWriter, r *http.Requ
 
 	// Build override maps from workspace .mittorc processors section.
 	// Mirrors the prompts pattern: [{name, enabled?, arguments?}] entries override processor defaults.
-	enabledOverrides := make(map[string]bool)            // name → enabled
-	argOverrides := make(map[string]map[string]string)  // name → {paramName → value}
+	enabledOverrides := make(map[string]bool)          // name → enabled
+	argOverrides := make(map[string]map[string]string) // name → {paramName → value}
 	for _, o := range h.deps.SessionManager.GetWorkspaceProcessorOverrides(workingDir) {
 		if o.Enabled != nil {
 			enabledOverrides[o.Name] = *o.Enabled

@@ -503,4 +503,3 @@ parameters:
 		t.Errorf("value after clear = %v, want AGENTS.md (default)", p["value"])
 	}
 }
-

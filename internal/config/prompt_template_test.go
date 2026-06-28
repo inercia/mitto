@@ -1257,7 +1257,6 @@ func TestInteractionMode_ConditionalRendering(t *testing.T) {
 	}
 }
 
-
 // TestRenderPromptTemplate_Iteration verifies that the {{ .Iteration.* }} template
 // namespace is available and branches correctly on Number=0 vs Number=2 (Max=3).
 func TestRenderPromptTemplate_Iteration(t *testing.T) {

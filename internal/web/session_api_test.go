@@ -2255,7 +2255,6 @@ func TestHandleWorkspacePrompts_DirGatesUseDirParamNotSession(t *testing.T) {
 	}
 }
 
-
 // TestSessionSubresourceRoutingPrecedence proves that specific sub-resource
 // patterns coexist correctly with the base /api/sessions/{id} route: each
 // registered sub-path wins over the base, and the base/events routes respond
@@ -2308,7 +2307,7 @@ func TestSessionSubresourceRoutingPrecedence(t *testing.T) {
 		"/api/sessions/abc123/user-data": "user-data:abc123",
 		"/api/sessions/abc123/callback":  "callback:abc123",
 		// Sub-resources with optional trailing sub-ID (increment 4).
-		"/api/sessions/abc123/images":          "images:abc123:",
+		"/api/sessions/abc123/images":           "images:abc123:",
 		"/api/sessions/abc123/images/img7":      "images:abc123:img7",
 		"/api/sessions/abc123/files":            "files:abc123:",
 		"/api/sessions/abc123/files/f9":         "files:abc123:f9",

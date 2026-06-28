@@ -750,7 +750,6 @@ func BenchmarkCompileAndEvaluate(b *testing.B) {
 	}
 }
 
-
 // TestCELEvaluator_UserData validates UserData["x"] and "x" in UserData.
 func TestCELEvaluator_UserData(t *testing.T) {
 	e := newTestEvaluator(t)

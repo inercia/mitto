@@ -1250,13 +1250,13 @@ func TestSaturationCooldownForLevel(t *testing.T) {
 	}{
 		{-1, base},
 		{0, base},
-		{1, base},        // 30s × 2^0 = 30s
-		{2, 2 * base},    // 30s × 2^1 = 60s
-		{3, 4 * base},    // 30s × 2^2 = 120s
-		{4, 8 * base},    // 30s × 2^3 = 240s
-		{5, max},         // 30s × 2^4 = 480s → capped at 300s
-		{100, max},       // very large level: must not overflow, must return cap
-		{1000, max},      // extreme level: same cap guarantee
+		{1, base},     // 30s × 2^0 = 30s
+		{2, 2 * base}, // 30s × 2^1 = 60s
+		{3, 4 * base}, // 30s × 2^2 = 120s
+		{4, 8 * base}, // 30s × 2^3 = 240s
+		{5, max},      // 30s × 2^4 = 480s → capped at 300s
+		{100, max},    // very large level: must not overflow, must return cap
+		{1000, max},   // extreme level: same cap guarantee
 	}
 	for _, tc := range cases {
 		got := saturationCooldownForLevel(tc.level)
@@ -1505,7 +1505,7 @@ func TestSaturationCooldownCap(t *testing.T) {
 		p.saturationMu.Lock()
 		p.saturatedUntil = time.Now().Add(-time.Millisecond)
 		p.saturationMu.Unlock()
-		p.isSaturated() // self-clear → inProbe=true
+		p.isSaturated()      // self-clear → inProbe=true
 		p.recordRPCTimeout() // probe timeout → escalate
 
 		p.saturationMu.Lock()

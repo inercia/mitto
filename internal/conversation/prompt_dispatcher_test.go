@@ -45,40 +45,40 @@ type fakePromptDeps struct {
 	workspaceUUID                  string
 	availableACPServers            []processors.AvailableACPServer
 	workspaceProcessorArgOverrides map[string]map[string]string
-	sessionMeta            session.Metadata
-	sessionMetaErr         error
-	metaByID               map[string]session.Metadata
-	childSessions          []session.Metadata
-	childSessionsErr       error
-	childPrompting         map[string]bool
-	mcpToolNames           []string
-	userData               *session.UserData
-	userDataErr            error
-	sessionCtx             context.Context
-	hasProcessorMgr        bool
-	applyResult            *processors.ProcessorResult
-	applyErr               error
-	persistActivationCalls int
-	historyPrefix          string // prefix injected by pdBuildPromptWithHistory
+	sessionMeta                    session.Metadata
+	sessionMetaErr                 error
+	metaByID                       map[string]session.Metadata
+	childSessions                  []session.Metadata
+	childSessionsErr               error
+	childPrompting                 map[string]bool
+	mcpToolNames                   []string
+	userData                       *session.UserData
+	userDataErr                    error
+	sessionCtx                     context.Context
+	hasProcessorMgr                bool
+	applyResult                    *processors.ProcessorResult
+	applyErr                       error
+	persistActivationCalls         int
+	historyPrefix                  string // prefix injected by pdBuildPromptWithHistory
 
 	// === New in 2.5-c ===
-	hasSharedProcess    bool
-	handshakeErr        error
-	handshakeCalls      int
-	hasRecorder         bool
-	recordedErrorEvents []string
-	nextSeq             int64
-	refreshSeqCalls     int
-	promptingResetCalls int
-	streamingChanges    []bool
-	hasACPConn          bool
-	acpNewSessionID     string
-	acpNewSessionErr    error
-	agentModels         *acp.UnstableSessionModelState
-	resolvedModelTags   []string
-	resolvedPreferred   []string
-	baselineModel       string
-	overrideActive      bool
+	hasSharedProcess       bool
+	handshakeErr           error
+	handshakeCalls         int
+	hasRecorder            bool
+	recordedErrorEvents    []string
+	nextSeq                int64
+	refreshSeqCalls        int
+	promptingResetCalls    int
+	streamingChanges       []bool
+	hasACPConn             bool
+	acpNewSessionID        string
+	acpNewSessionErr       error
+	agentModels            *acp.UnstableSessionModelState
+	resolvedModelTags      []string
+	resolvedPreferred      []string
+	baselineModel          string
+	overrideActive         bool
 	setActiveModelCalls    []string
 	setActiveModelErr      error
 	recordedSessionChanges []session.SessionChangeData
@@ -1853,7 +1853,6 @@ func (e *fakeRateLimitError) Error() string { return "rate_limit_error: too many
 type fakeContextTooLargeError struct{}
 
 func (e *fakeContextTooLargeError) Error() string { return "context_length_exceeded: 413" }
-
 
 // --- mitto-pchx.3: prompt-arg cache merge + write-back tests ---
 

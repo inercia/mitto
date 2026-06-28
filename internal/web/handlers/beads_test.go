@@ -56,7 +56,7 @@ func (c *stubBeadsClient) ListClosedIDs(_ context.Context, _ string) ([]string, 
 	return nil, nil
 }
 func (c *stubBeadsClient) DeleteIDs(_ context.Context, _ string, _ []string) error { return nil }
-func (c *stubBeadsClient) SetStatus(_ context.Context, _, _, _ string) error { return nil }
+func (c *stubBeadsClient) SetStatus(_ context.Context, _, _, _ string) error       { return nil }
 func (c *stubBeadsClient) Update(_ context.Context, _ string, p beads.UpdateParams) error {
 	if c.updateFn != nil {
 		return c.updateFn(p)

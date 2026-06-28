@@ -247,15 +247,15 @@ func BuildTemplateFuncMap(ctx *PromptEnabledContext) template.FuncMap {
 		"HasPattern":    func(pattern string) bool { return hasPattern(toolsAvailable, toolNames, pattern) },
 		// Model(tag) — true iff the session's current model carries the capability tag
 		// (case-insensitive), resolved from the models: profiles. False for an unknown model.
-		"Model": func(tag string) bool { return hasModelTag(modelTags, tag) },
-		"Cond":          condFn,
-		"When":          condFn, // alias for Cond
-		"Trim":          strings.TrimSpace,
-		"Lower":         strings.ToLower,
-		"Upper":         strings.ToUpper,
-		"Contains":      strings.Contains,
-		"HasPrefix":     strings.HasPrefix,
-		"HasSuffix":     strings.HasSuffix,
-		"Join":          func(sep string, elems []string) string { return strings.Join(elems, sep) },
+		"Model":     func(tag string) bool { return hasModelTag(modelTags, tag) },
+		"Cond":      condFn,
+		"When":      condFn, // alias for Cond
+		"Trim":      strings.TrimSpace,
+		"Lower":     strings.ToLower,
+		"Upper":     strings.ToUpper,
+		"Contains":  strings.Contains,
+		"HasPrefix": strings.HasPrefix,
+		"HasSuffix": strings.HasSuffix,
+		"Join":      func(sep string, elems []string) string { return strings.Join(elems, sep) },
 	}
 }

@@ -330,7 +330,7 @@ func buildActivation(ctx *PromptEnabledContext) map[string]any {
 		"Session.IsPeriodicConversation": ctx.Session.IsPeriodicConversation,
 		"Session.HasBeadsIssue":          ctx.Session.HasBeadsIssue,
 		"Session.BeadsIssue":             ctx.Session.BeadsIssue,
-		"Session.ModelTags":             ctx.Session.ModelTags,
+		"Session.ModelTags":              ctx.Session.ModelTags,
 
 		"Parent.Exists":    ctx.Parent.Exists,
 		"Parent.Name":      ctx.Parent.Name,

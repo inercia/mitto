@@ -3784,8 +3784,8 @@ func TestPromptMode_ArgSubstitution_BeforePhase(t *testing.T) {
 // after-phase (agentResponded) processors (mitto-5g2v.2).
 func TestPromptMode_ArgSubstitution_AfterPhase(t *testing.T) {
 	proc := &Processor{
-		Name: "report-to-file",
-		When: WhenConfig{On: PhaseAgentResponded, Match: MatchAll, StopReasons: []string{"end_turn"}},
+		Name:   "report-to-file",
+		When:   WhenConfig{On: PhaseAgentResponded, Match: MatchAll, StopReasons: []string{"end_turn"}},
 		Prompt: "Write summary to ${dest}.",
 		Parameters: []config.PromptParameter{
 			{Name: "dest", Type: "text", Default: "SUMMARY.md"},
@@ -3849,10 +3849,10 @@ func TestPromptMode_ArgSubstitution_AfterPhase(t *testing.T) {
 
 // TestPromptMode_ArgSubstitution_MittoRCPersistence is an integration test that
 // exercises the full persistence → resolution → substitution → dispatch chain:
-//   1. Write a per-workspace override to a real .mittorc via SaveWorkspaceRCProcessorArguments.
-//   2. Read it back via LoadWorkspaceRC and build the ProcessorArgOverrides map.
-//   3. Apply a prompt-mode processor whose body uses ${HistoryLimit:-10}.
-//   4. Assert the dispatched prompt reflects the override (25) and the default (10).
+//  1. Write a per-workspace override to a real .mittorc via SaveWorkspaceRCProcessorArguments.
+//  2. Read it back via LoadWorkspaceRC and build the ProcessorArgOverrides map.
+//  3. Apply a prompt-mode processor whose body uses ${HistoryLimit:-10}.
+//  4. Assert the dispatched prompt reflects the override (25) and the default (10).
 func TestPromptMode_ArgSubstitution_MittoRCPersistence(t *testing.T) {
 	dir := t.TempDir()
 	procName := "auggie-update-rules-test"
@@ -3882,8 +3882,8 @@ func TestPromptMode_ArgSubstitution_MittoRCPersistence(t *testing.T) {
 
 	// Step 3: build a prompt-mode processor with the Parameters block.
 	proc := &Processor{
-		Name: procName,
-		When: WhenConfig{On: PhaseUserPrompt, Match: MatchAll},
+		Name:   procName,
+		When:   WhenConfig{On: PhaseUserPrompt, Match: MatchAll},
 		Prompt: "Review last_n: ${HistoryLimit:-10} messages.",
 		Parameters: []config.PromptParameter{
 			{Name: "HistoryLimit", Type: "text", Default: "10"},
@@ -4587,7 +4587,6 @@ func buildProcessorYAML(cadence *CadenceConfig) string {
 	}
 	return sb.String()
 }
-
 
 // TestBuildCELContext_Iteration verifies that BuildCELContext correctly populates
 // the ctx.Iteration.* fields from ProcessorInput.IterationNumber / MaxIterations / IsPeriodic.

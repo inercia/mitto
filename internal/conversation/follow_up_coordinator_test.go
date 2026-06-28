@@ -30,11 +30,11 @@ type fakeFollowUpDeps struct {
 	sessionDir                     string
 	storeAvailable                 bool
 	workspaceProcessorArgOverrides map[string]map[string]string
-	casResult      bool // what fuCASFollowUpInProgress returns
-	loadResult     bool // what fuLoadFollowUpInProgress returns
-	auxAvailable   bool
-	abEnabled      bool
-	eventCount     int
+	casResult                      bool // what fuCASFollowUpInProgress returns
+	loadResult                     bool // what fuLoadFollowUpInProgress returns
+	auxAvailable                   bool
+	abEnabled                      bool
+	eventCount                     int
 
 	// in-memory button cache
 	cacheMu       sync.RWMutex

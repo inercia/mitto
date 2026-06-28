@@ -48,7 +48,9 @@ func TestHandlePromptArgCache_SessionNotFound(t *testing.T) {
 		t.Errorf("Status = %d, want %d", w.Code, http.StatusNotFound)
 	}
 	var env struct {
-		Error struct{ Code string `json:"code"` } `json:"error"`
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
 	}
 	if err := json.Unmarshal(w.Body.Bytes(), &env); err != nil {
 		t.Fatalf("unmarshal: %v (body=%q)", err, w.Body.String())

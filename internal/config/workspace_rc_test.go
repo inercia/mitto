@@ -1313,4 +1313,3 @@ processors:
 		t.Errorf("p-new.Arguments[filename] = %q, want %q", pNew.Arguments["filename"], "AGENTS.md")
 	}
 }
-

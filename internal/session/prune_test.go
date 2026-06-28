@@ -34,7 +34,7 @@ func (c *pruneRaceLogCapture) Handle(_ context.Context, r slog.Record) error {
 // WithAttrs returns the same receiver so that the component-filter wrapper in
 // logging.WithComponent keeps routing records here.
 func (c *pruneRaceLogCapture) WithAttrs(_ []slog.Attr) slog.Handler { return c }
-func (c *pruneRaceLogCapture) WithGroup(_ string) slog.Handler       { return c }
+func (c *pruneRaceLogCapture) WithGroup(_ string) slog.Handler      { return c }
 
 // findWarns returns the subset of captured messages that contain substr.
 func (c *pruneRaceLogCapture) findWarns(substr string) []string {
