@@ -27,7 +27,7 @@ import { useResizeHandle } from "../hooks/useResizeHandle.js";
 import { SlashCommandPicker } from "./SlashCommandPicker.js";
 import { PeriodicFrequencyPanel } from "./PeriodicFrequencyPanel.js";
 import { SavePromptDialog } from "./SavePromptDialog.js";
-import { GripIcon, ChatBubbleIcon } from "./Icons.js";
+import { GripIcon } from "./Icons.js";
 import { PromptsMenu } from "./PromptsMenu.js";
 import { flattenPrompts, getMissingPromptParameters, fetchCachedParamNames, effectiveMissingParams } from "../utils/prompts.js";
 import { Tooltip } from "./Tooltip.js";
@@ -135,19 +135,23 @@ function ChatInputConfigSelect({ configOption, onSetConfigOption, isStreaming })
 }
 
 /**
- * PromptCollapseToggle - Chat-bubble button to show/hide the chat input area
- * while an MCP UI prompt panel is active.
+ * PromptStopButton - Stop button shown inside an active MCP UI prompt panel.
+ * Aborts the pending prompt and stops the agent turn. Replaces the former
+ * show/hide chat-input toggle: the composition area and an active UI prompt are
+ * mutually exclusive, so there is nothing to toggle to.
  */
-function PromptCollapseToggle({ collapsed, onToggle }) {
+function PromptStopButton({ onStop }) {
   return html`
     <button
       type="button"
-      onClick=${onToggle}
-      class="btn btn-ghost btn-square btn-sm tooltip tooltip-top"
-      data-tip=${collapsed ? "Show prompt area" : "Hide prompt area"}
-      aria-label=${collapsed ? "Show prompt area" : "Hide prompt area"}
+      onClick=${onStop}
+      class="btn btn-ghost btn-square btn-sm text-error tooltip tooltip-top"
+      data-tip="Stop the agent"
+      aria-label="Stop the agent"
     >
-      <${ChatBubbleIcon} className="w-4 h-4" />
+      <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <rect x="6" y="6" width="12" height="12" rx="2" stroke-width="2" />
+      </svg>
     </button>
   `;
 }
@@ -1902,6 +1906,15 @@ export function ChatInput({
     [activeUIPrompt, onUIPromptAnswer],
   );
 
+  // Stop the agent turn from within an active MCP UI prompt panel. Aborts the
+  // pending prompt (so the blocking tool call resolves) and stops streaming.
+  const handleUIPromptStop = useCallback(() => {
+    if (hasActiveUIPrompt) {
+      handleUIPromptAnswer("abort", "Abort");
+    }
+    if (onCancel) onCancel();
+  }, [hasActiveUIPrompt, handleUIPromptAnswer, onCancel]);
+
   // Debug logging for action buttons — only log when buttons actually change
   useEffect(() => {
     if (actionButtons && actionButtons.length > 0) {
@@ -2082,10 +2095,7 @@ ${activeUIPrompt.text || ""}</textarea
                           / 16,384
                         </span>
                         <div class="flex gap-2 items-center">
-                          <${PromptCollapseToggle}
-                            collapsed=${isPromptCollapsed}
-                            onToggle=${() => setIsPromptCollapsed((v) => !v)}
-                          />
+                          <${PromptStopButton} onStop=${handleUIPromptStop} />
                           <button
                             type="button"
                             onClick=${() =>
@@ -2156,10 +2166,7 @@ ${activeUIPrompt.text || ""}</textarea
                           class="flex items-center justify-end gap-2 px-4 pt-2 pb-3 shrink-0"
                         >
                           <div class="flex gap-2 items-center">
-                            <${PromptCollapseToggle}
-                              collapsed=${isPromptCollapsed}
-                              onToggle=${() => setIsPromptCollapsed((v) => !v)}
-                            />
+                            <${PromptStopButton} onStop=${handleUIPromptStop} />
                             <button
                               type="button"
                               onClick=${() =>
@@ -2336,10 +2343,7 @@ ${activeUIPrompt.text || ""}</textarea
                         <div
                           class="flex items-center justify-end px-4 pt-2 pb-3 shrink-0"
                         >
-                          <${PromptCollapseToggle}
-                            collapsed=${isPromptCollapsed}
-                            onToggle=${() => setIsPromptCollapsed((v) => !v)}
-                          />
+                          <${PromptStopButton} onStop=${handleUIPromptStop} />
                         </div>
                       </div>
                     `
@@ -2352,7 +2356,7 @@ ${activeUIPrompt.text || ""}</textarea
       <!-- Single merged card: compact header always visible; body expands on demand. -->
       <div class="max-w-4xl mx-auto">
         <${PeriodicFrequencyPanel}
-          isOpen=${periodicConfigured}
+          isOpen=${periodicConfigured && !hasActiveUIPrompt}
           disabled=${isPeriodicLocked}
           sessionId=${sessionId}
           frequency=${periodicFrequency}
