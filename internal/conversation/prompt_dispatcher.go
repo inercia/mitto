@@ -154,6 +154,15 @@ type promptDeps interface {
 	pdGetRestartInfo() string
 	pdRestartACPProcess() error // bakes in RestartReasonCrashDuringStream
 	pdReacquirePromptingState() // promptMu: isPrompting=true, promptStartTime=now, Unlock
+
+	// === New in mitto-2tm: in-place context flush for FreshContext periodic runs ===
+
+	// pdContextFlushCommand returns the agent-native context-flush command (e.g. "/clear")
+	// configured for this session's ACP server, or "" when the feature is not configured.
+	pdContextFlushCommand() string
+	// pdFlushContextInPlace sends the flush command synchronously on the existing ACP session
+	// with streaming suppressed so the flush turn stays out of the transcript.
+	pdFlushContextInPlace(ctx context.Context) error
 }
 
 // promptDispatcher is a stateless collaborator holding safe synchronous chunks of
@@ -646,11 +655,46 @@ func (p promptDispatcher) completeHandshakeOrAbort(d promptDeps) bool {
 	return false
 }
 
-// createFreshContextSession creates a new ACP session for fresh-context runs.
-// Returns the new session ID, or "" if FreshContext is not requested or the
-// connection is unavailable.
+// createFreshContextSession prepares a fresh context for a FreshContext periodic run.
+//
+// When a contextFlushCommand is configured for the ACP server, it performs an
+// in-place flush (sends the command on the existing session with streaming suppressed)
+// rather than creating a new ACP session. This works for both direct-conn and
+// shared-process sessions. The flush is best-effort: errors are logged as warnings
+// but never abort the main periodic prompt. Returns "" in this path — the main
+// Prompt() continues on the existing session.
+//
+// When no flush command is configured, falls back to the original NewSession path
+// (direct-conn only, gated by pdHasACPConn). Returns the new session ID on success,
+// or "" on failure or when FreshContext is not requested.
 func (p promptDispatcher) createFreshContextSession(d promptDeps, meta PromptMeta) string {
-	if !meta.FreshContext || !d.pdHasACPConn() {
+	if !meta.FreshContext {
+		return ""
+	}
+
+	// Prefer in-place flush when the ACP server has a flush command configured.
+	if cmd := d.pdContextFlushCommand(); cmd != "" {
+		flushCtx, flushCancel := context.WithTimeout(d.pdSessionCtx(), 30*time.Second)
+		err := d.pdFlushContextInPlace(flushCtx)
+		flushCancel()
+		if err == nil {
+			if l := d.pdLogger(); l != nil {
+				l.Info("In-place context flush succeeded for periodic FreshContext run",
+					"session_id", d.pdSessionID())
+			}
+		} else {
+			if l := d.pdLogger(); l != nil {
+				l.Warn("In-place context flush failed, continuing with main prompt",
+					"error", err,
+					"session_id", d.pdSessionID())
+			}
+		}
+		// Always return "" — main prompt continues on the existing session.
+		return ""
+	}
+
+	// Fallback: create a new ACP session (direct-conn only).
+	if !d.pdHasACPConn() {
 		return ""
 	}
 	cwd := d.pdWorkingDir()

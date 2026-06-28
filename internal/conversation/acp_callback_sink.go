@@ -115,6 +115,11 @@ type acpCallbackDeps interface {
 	// cbApplyConfigConstraintsAsync kicks off the async constraint-application
 	// goroutine for a category (matches the legacy `go bs.applyConfigConstraints(...)`).
 	cbApplyConfigConstraintsAsync(category string)
+
+	// cbStreamingSuppressed reports whether streaming callbacks are currently
+	// suppressed (e.g. during an in-place context flush). When true, each gated
+	// callback must return immediately without recording or notifying.
+	cbStreamingSuppressed() bool
 }
 
 // acpCallbackSink is stateless; all dependencies are passed per call,
@@ -143,6 +148,9 @@ func (acpCallbackSink) logAgentModels(d acpCallbackDeps, models *acp.UnstableSes
 
 // onContextUsageUpdate stores the latest context window usage and notifies all observers.
 func (acpCallbackSink) onContextUsageUpdate(d acpCallbackDeps, size, used int) {
+	if d.cbStreamingSuppressed() {
+		return
+	}
 	d.cbSetContextUsage(size, used)
 	d.cbNotifyObservers(func(o SessionObserver) {
 		o.OnContextUsageUpdate(size, used)
@@ -152,7 +160,7 @@ func (acpCallbackSink) onContextUsageUpdate(d acpCallbackDeps, size, used int) {
 // --- Stream callbacks ---
 
 func (acpCallbackSink) onAgentMessage(d acpCallbackDeps, seq int64, html string) {
-	if d.cbIsClosed() {
+	if d.cbIsClosed() || d.cbStreamingSuppressed() {
 		return
 	}
 
@@ -197,7 +205,7 @@ func (acpCallbackSink) onAgentMessage(d acpCallbackDeps, seq int64, html string)
 }
 
 func (acpCallbackSink) onAgentThought(d acpCallbackDeps, seq int64, text string) {
-	if d.cbIsClosed() {
+	if d.cbIsClosed() || d.cbStreamingSuppressed() {
 		return
 	}
 
@@ -214,7 +222,7 @@ func (acpCallbackSink) onAgentThought(d acpCallbackDeps, seq int64, text string)
 }
 
 func (acpCallbackSink) onToolCall(d acpCallbackDeps, seq int64, id, title, status string) {
-	if d.cbIsClosed() {
+	if d.cbIsClosed() || d.cbStreamingSuppressed() {
 		return
 	}
 
@@ -261,7 +269,7 @@ func (acpCallbackSink) onMittoToolCall(d acpCallbackDeps, requestID string) {
 }
 
 func (acpCallbackSink) onToolUpdate(d acpCallbackDeps, seq int64, id string, status *string) {
-	if d.cbIsClosed() {
+	if d.cbIsClosed() || d.cbStreamingSuppressed() {
 		return
 	}
 
@@ -281,7 +289,7 @@ func (acpCallbackSink) onToolUpdate(d acpCallbackDeps, seq int64, id string, sta
 }
 
 func (acpCallbackSink) onPlan(d acpCallbackDeps, seq int64, entries []PlanEntry) {
-	if d.cbIsClosed() {
+	if d.cbIsClosed() || d.cbStreamingSuppressed() {
 		return
 	}
 
@@ -494,7 +502,7 @@ func (acpCallbackSink) onPermission(d acpCallbackDeps, ctx context.Context, para
 // onAvailableCommands handles the available slash commands update from the agent.
 // It stores the commands (sorted alphabetically by name) and notifies all observers.
 func (acpCallbackSink) onAvailableCommands(d acpCallbackDeps, commands []AvailableCommand) {
-	if d.cbIsClosed() {
+	if d.cbIsClosed() || d.cbStreamingSuppressed() {
 		return
 	}
 
@@ -531,7 +539,7 @@ func (acpCallbackSink) availableCommands(d acpCallbackDeps) []AvailableCommand {
 // This updates the stored config option and notifies observers.
 // Called for the legacy modes API; converts to config option format internally.
 func (acpCallbackSink) onCurrentModeChanged(d acpCallbackDeps, modeID string) {
-	if d.cbIsClosed() {
+	if d.cbIsClosed() || d.cbStreamingSuppressed() {
 		return
 	}
 

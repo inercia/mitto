@@ -302,6 +302,12 @@ type BackgroundSession struct {
 	// and periodic config changes (those keep the same BackgroundSession).
 	periodicContinuationMu    sync.Mutex
 	lastTurnScheduledPeriodic bool
+
+	// streamingSuppressed gates streaming callbacks during an in-place context flush
+	// (flushContextInPlace). When true the acpCallbackSink short-circuits all streaming
+	// callbacks so the flush turn never reaches the recorder, observers, or the transcript.
+	streamingSuppressedMu sync.Mutex
+	streamingSuppressed   bool
 }
 
 // activeUIPrompt holds the state for a pending UI prompt from an MCP tool.

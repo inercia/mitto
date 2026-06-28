@@ -39,6 +39,7 @@ type fakeCallbackDeps struct {
 	uiErr               error
 	baselineModel       string // simulates persisted baselineModel; init only if empty
 	defaultBaselineUsed bool
+	streamingSuppressed bool // mitto-2tm: gates streaming callback short-circuit
 
 	// recorders
 	notifiedEvents      []string
@@ -175,6 +176,10 @@ func (f *fakeCallbackDeps) cbApplyConfigConstraintsAsync(category string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.asyncConstraintCats = append(f.asyncConstraintCats, category)
+}
+
+func (f *fakeCallbackDeps) cbStreamingSuppressed() bool {
+	return f.streamingSuppressed
 }
 
 // callbackRecorderObserver records observer events with a stable string key.
@@ -562,5 +567,50 @@ func TestCallbackSink_LogAgentModels_NilSafe(t *testing.T) {
 	// no panic, no recorded state
 	if len(d.notifiedEvents) != 0 {
 		t.Fatalf("logAgentModels must not produce side effects, got %v", d.notifiedEvents)
+	}
+}
+
+// TestACPCallbackSink_SuppressionShortCircuits_StreamingCallbacks verifies that when
+// cbStreamingSuppressed() returns true, each gated callback is a pure no-op:
+// no recorder events, no observer notifications, no state mutations.
+func TestACPCallbackSink_SuppressionShortCircuits_StreamingCallbacks(t *testing.T) {
+	s := acpCallbackSink{}
+	d := &fakeCallbackDeps{
+		streamingSuppressed: true,
+		hasObservers:        true,
+		observerCount:       1,
+	}
+
+	status := "running"
+	s.onContextUsageUpdate(d, 1000, 500)
+	s.onAgentMessage(d, 1, "<p>hi</p>")
+	s.onAgentThought(d, 2, "thinking")
+	s.onToolCall(d, 3, "tc1", "title", "running")
+	s.onToolUpdate(d, 4, "tc1", &status)
+	s.onPlan(d, 5, []PlanEntry{{Content: "step"}})
+	s.onAvailableCommands(d, []AvailableCommand{{Name: "clear"}})
+	s.onCurrentModeChanged(d, "code")
+
+	if len(d.notifiedEvents) != 0 {
+		t.Fatalf("expected no observer notifications when suppressed, got %v", d.notifiedEvents)
+	}
+	if len(d.recordedEvents) != 0 {
+		t.Fatalf("expected no recorded events when suppressed, got %d", len(d.recordedEvents))
+	}
+	if len(d.contextUsages) != 0 {
+		t.Fatalf("expected no context usage stored when suppressed, got %v", d.contextUsages)
+	}
+	if len(d.planEntries) != 0 {
+		t.Fatalf("expected no plan state callback when suppressed, got %v", d.planEntries)
+	}
+	if len(d.modeCurrentValues) != 0 {
+		t.Fatalf("expected no mode value update when suppressed, got %v", d.modeCurrentValues)
+	}
+	if len(d.persistedConfig) != 0 {
+		t.Fatalf("expected no config persist when suppressed, got %v", d.persistedConfig)
+	}
+	// availableCmds must remain nil (cbSetAvailableCommands not called)
+	if d.availableCmds != nil {
+		t.Fatalf("expected available commands not stored when suppressed, got %v", d.availableCmds)
 	}
 }

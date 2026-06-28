@@ -114,6 +114,11 @@ type fakePromptDeps struct {
 	restartCalled  int
 	reacquireCalls int
 
+	// === New in mitto-2tm: in-place context flush ===
+	contextFlushCommand    string
+	flushContextInPlaceErr error
+	flushContextCalled     bool
+
 	// === mitto-pchx.3: per-conversation prompt-argument cache ===
 	// promptParams is returned by pdResolvePromptParameters (nil ⇒ resolver returns nil).
 	promptParams []config.PromptParameter
@@ -421,6 +426,16 @@ func (f *fakePromptDeps) pdReacquirePromptingState() {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.reacquireCalls++
+}
+
+// === New in mitto-2tm ===
+
+func (f *fakePromptDeps) pdContextFlushCommand() string { return f.contextFlushCommand }
+func (f *fakePromptDeps) pdFlushContextInPlace(_ context.Context) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.flushContextCalled = true
+	return f.flushContextInPlaceErr
 }
 
 type pdRecorderObserver struct{ deps *fakePromptDeps }
@@ -1194,6 +1209,64 @@ func TestPromptDispatcher_CreateFreshContextSession_ACPError_ReturnsEmpty(t *tes
 	id := p.createFreshContextSession(d, PromptMeta{FreshContext: true})
 	if id != "" {
 		t.Fatalf("expected empty id on error, got %q", id)
+	}
+}
+
+// --- createFreshContextSession in-place flush tests (mitto-2tm) ---
+
+func TestPromptDispatcher_CreateFreshContextSession_PrefersInPlaceFlush_WhenCmdConfigured(t *testing.T) {
+	p := promptDispatcher{}
+	d := newFakePromptDeps()
+	d.contextFlushCommand = "/clear"
+	// hasACPConn=false intentionally: in-place path must work without it.
+	d.hasACPConn = false
+	d.acpNewSessionID = "should-not-be-used"
+
+	id := p.createFreshContextSession(d, PromptMeta{FreshContext: true})
+
+	if id != "" {
+		t.Fatalf("expected empty id (in-place path), got %q", id)
+	}
+	if !d.flushContextCalled {
+		t.Fatal("expected pdFlushContextInPlace to be called")
+	}
+	// NewSession must NOT have been called.
+	// (acpNewSessionCalled would increment nextSeq; verify it wasn't via the fake)
+	// We check by asserting flushContextCalled AND that acpNewSessionID is unused:
+	// if NewSession had been called and succeeded the return would be non-empty.
+}
+
+func TestPromptDispatcher_CreateFreshContextSession_FlushErrorDoesNotAbort(t *testing.T) {
+	p := promptDispatcher{}
+	d := newFakePromptDeps()
+	d.contextFlushCommand = "/clear"
+	d.flushContextInPlaceErr = errors.New("flush failed")
+
+	id := p.createFreshContextSession(d, PromptMeta{FreshContext: true})
+
+	// Must still return "" (continue on existing session) even on flush error.
+	if id != "" {
+		t.Fatalf("expected empty id even on flush error, got %q", id)
+	}
+	if !d.flushContextCalled {
+		t.Fatal("expected pdFlushContextInPlace to be called")
+	}
+}
+
+func TestPromptDispatcher_CreateFreshContextSession_FallsBackToNewSession_WhenNoCmd(t *testing.T) {
+	p := promptDispatcher{}
+	d := newFakePromptDeps()
+	d.contextFlushCommand = "" // no flush command → NewSession fallback
+	d.hasACPConn = true
+	d.acpNewSessionID = "new-sess-42"
+
+	id := p.createFreshContextSession(d, PromptMeta{FreshContext: true})
+
+	if id != "new-sess-42" {
+		t.Fatalf("expected fallback NewSession id, got %q", id)
+	}
+	if d.flushContextCalled {
+		t.Fatal("expected pdFlushContextInPlace NOT to be called when no flush command")
 	}
 }
 

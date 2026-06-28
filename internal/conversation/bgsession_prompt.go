@@ -182,6 +182,41 @@ func (bs *BackgroundSession) PromptWithAttachments(message string, imageIDs, fil
 	return bs.PromptWithMeta(message, PromptMeta{ImageIDs: imageIDs, FileIDs: fileIDs})
 }
 
+// flushContextInPlace sends the configured contextFlushCommand to the existing ACP
+// session synchronously, suppressing all streaming callbacks for the duration so the
+// flush turn never reaches the recorder, observers, or the transcript.
+//
+// Behavioral contract:
+//   - Sends contextFlushCommand as a single-block Prompt() RPC on the existing session.
+//   - All streaming callbacks are suppressed (setStreamingSuppressed) for the duration.
+//   - Best-effort: the caller MUST continue with the main periodic prompt regardless of
+//     any returned error.
+//   - Works for both direct-conn (acpConn) and shared-process (sharedProcess) sessions.
+func (bs *BackgroundSession) flushContextInPlace(ctx context.Context) error {
+	cmd := strings.TrimSpace(bs.contextFlushCommand)
+	if cmd == "" {
+		return &sessionError{"context flush command not configured for this server"}
+	}
+	if bs.acpID == "" {
+		return &sessionError{"no ACP session ID available for in-place flush"}
+	}
+	blocks := []acp.ContentBlock{acp.TextBlock(cmd)}
+	bs.setStreamingSuppressed(true)
+	defer bs.setStreamingSuppressed(false)
+	if bs.sharedProcess != nil {
+		_, err := bs.sharedProcess.Prompt(ctx, acp.SessionId(bs.acpID), blocks)
+		return err
+	}
+	if bs.acpConn != nil {
+		_, err := bs.acpConn.Prompt(ctx, acp.PromptRequest{
+			SessionId: acp.SessionId(bs.acpID),
+			Prompt:    blocks,
+		})
+		return err
+	}
+	return &sessionError{"no ACP transport available for in-place flush"}
+}
+
 // FlushContext clears the agent's conversation context by sending the configured
 // agent-native context-flush command (e.g. "/clear") through the normal prompt
 // path. It runs asynchronously like any other prompt. Returns an error when no
@@ -1005,6 +1040,14 @@ func (bs *BackgroundSession) pdReacquirePromptingState() {
 	bs.isPrompting = true
 	bs.promptStartTime = time.Now()
 	bs.promptMu.Unlock()
+}
+
+// === New in mitto-2tm ===
+
+func (bs *BackgroundSession) pdContextFlushCommand() string { return bs.contextFlushCommand }
+
+func (bs *BackgroundSession) pdFlushContextInPlace(ctx context.Context) error {
+	return bs.flushContextInPlace(ctx)
 }
 
 // peekPeriodicContinuation reports whether the current dispatch is an uninterrupted

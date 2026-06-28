@@ -276,3 +276,20 @@ func (bs *BackgroundSession) cbInitBaselineModelIfEmpty(defaultModel string) {
 func (bs *BackgroundSession) cbApplyConfigConstraintsAsync(category string) {
 	go bs.applyConfigConstraints(category)
 }
+
+// cbStreamingSuppressed reports whether streaming callbacks are currently suppressed
+// (i.e. during an in-place context flush). Used by acpCallbackSink to short-circuit.
+func (bs *BackgroundSession) cbStreamingSuppressed() bool {
+	bs.streamingSuppressedMu.Lock()
+	defer bs.streamingSuppressedMu.Unlock()
+	return bs.streamingSuppressed
+}
+
+// setStreamingSuppressed sets the streaming-suppression flag. When true all
+// streaming callbacks (onAgentMessage, onToolCall, etc.) are no-ops so the
+// flush turn stays out of the recorder, observers, and the transcript.
+func (bs *BackgroundSession) setStreamingSuppressed(v bool) {
+	bs.streamingSuppressedMu.Lock()
+	bs.streamingSuppressed = v
+	bs.streamingSuppressedMu.Unlock()
+}
