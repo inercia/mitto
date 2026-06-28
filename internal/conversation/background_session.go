@@ -291,6 +291,15 @@ type BackgroundSession struct {
 	queueErrMu         sync.Mutex
 	lastQueueSendError string
 	lastQueueSendErrAt time.Time
+
+	// Periodic continuation marker (mitto-5xjn). lastTurnScheduledPeriodic records whether
+	// the most recent COMMITTED dispatch was a scheduled (non-forced, non-FreshContext)
+	// periodic run of this loop. It powers Iteration.IsUninterrupted. Session-scoped +
+	// in-memory so it auto-resets to false across archive/unarchive, GC suspend/resume, and
+	// process restart (all recreate the BackgroundSession). Explicitly cleared on ACP reinit
+	// and periodic config changes (those keep the same BackgroundSession).
+	periodicContinuationMu    sync.Mutex
+	lastTurnScheduledPeriodic bool
 }
 
 // activeUIPrompt holds the state for a pending UI prompt from an MCP tool.

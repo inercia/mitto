@@ -40,6 +40,7 @@ func (h *Handlers) handleSetPeriodic(w http.ResponseWriter, r *http.Request, ses
 		writeErrorJSON(w, http.StatusInternalServerError, "", "Failed to set periodic prompt")
 		return
 	}
+	h.resetPeriodicContinuation(sessionID)
 
 	// Return the updated periodic prompt
 	updated, err := ps.Get()
@@ -123,6 +124,7 @@ func (h *Handlers) handlePatchPeriodic(w http.ResponseWriter, r *http.Request, s
 			h.deps.Logger.Warn("Failed to record pausedByUser reason", "error", err)
 		}
 	}
+	h.resetPeriodicContinuation(sessionID)
 
 	// Return the updated periodic prompt
 	updated, err := ps.Get()
@@ -148,4 +150,16 @@ func (h *Handlers) handlePatchPeriodic(w http.ResponseWriter, r *http.Request, s
 	}
 
 	writeJSONOK(w, updated)
+}
+
+// resetPeriodicContinuation clears the live BackgroundSession's periodic continuation marker
+// (mitto-5xjn) so the next periodic run after a config change/pause/re-enable renders the
+// verbose form. No-op when the session is not currently live.
+func (h *Handlers) resetPeriodicContinuation(sessionID string) {
+	if h.deps.SessionManager == nil {
+		return
+	}
+	if bs := h.deps.SessionManager.GetSession(sessionID); bs != nil {
+		bs.ResetPeriodicContinuation()
+	}
 }

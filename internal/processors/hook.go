@@ -188,6 +188,7 @@ func BuildCELContext(input *ProcessorInput) *config.PromptEnabledContext {
 	ctx.Iteration.IsPeriodic = input.IsPeriodic
 	ctx.Iteration.IsFirst = input.IterationNumber == 0
 	ctx.Iteration.IsLast = input.MaxIterations > 0 && input.IterationNumber == input.MaxIterations-1
+	ctx.Iteration.IsUninterrupted = input.IterationUninterrupted
 	ctx.Session.HasBeadsIssue = input.BeadsIssue != ""
 
 	// Args (send-time arguments) for Go-template field interpolation in prompt bodies.

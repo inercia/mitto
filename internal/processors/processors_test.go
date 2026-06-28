@@ -4565,12 +4565,14 @@ func buildProcessorYAML(cadence *CadenceConfig) string {
 // the ctx.Iteration.* fields from ProcessorInput.IterationNumber / MaxIterations / IsPeriodic.
 func TestBuildCELContext_Iteration(t *testing.T) {
 	cases := []struct {
-		name           string
-		isPeriodic     bool
-		iterationNum   int
-		maxIterations  int
-		wantIsFirst    bool
-		wantIsLast     bool
+		name                   string
+		isPeriodic             bool
+		iterationNum           int
+		maxIterations          int
+		iterationUninterrupted bool
+		wantIsFirst            bool
+		wantIsLast             bool
+		wantIsUninterrupted    bool
 	}{
 		// (1) First run of a 3-run periodic sequence.
 		{
@@ -4599,15 +4601,38 @@ func TestBuildCELContext_Iteration(t *testing.T) {
 			wantIsFirst:   false,
 			wantIsLast:    false,
 		},
+		// (4) Uninterrupted continuation (mitto-5xjn).
+		{
+			name:                   "uninterrupted",
+			isPeriodic:             true,
+			iterationNum:           3,
+			maxIterations:          0,
+			iterationUninterrupted: true,
+			wantIsFirst:            false,
+			wantIsLast:             false,
+			wantIsUninterrupted:    true,
+		},
+		// (5) Interrupted (user prompt between runs) — IsUninterrupted must be false.
+		{
+			name:                   "interrupted",
+			isPeriodic:             true,
+			iterationNum:           3,
+			maxIterations:          0,
+			iterationUninterrupted: false,
+			wantIsFirst:            false,
+			wantIsLast:             false,
+			wantIsUninterrupted:    false,
+		},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			input := &ProcessorInput{
-				SessionID:       "sess-iter",
-				IsPeriodic:      tc.isPeriodic,
-				IterationNumber: tc.iterationNum,
-				MaxIterations:   tc.maxIterations,
+				SessionID:              "sess-iter",
+				IsPeriodic:             tc.isPeriodic,
+				IterationNumber:        tc.iterationNum,
+				MaxIterations:          tc.maxIterations,
+				IterationUninterrupted: tc.iterationUninterrupted,
 			}
 			ctx := BuildCELContext(input)
 
@@ -4625,6 +4650,9 @@ func TestBuildCELContext_Iteration(t *testing.T) {
 			}
 			if ctx.Iteration.IsLast != tc.wantIsLast {
 				t.Errorf("IsLast: got %v, want %v", ctx.Iteration.IsLast, tc.wantIsLast)
+			}
+			if ctx.Iteration.IsUninterrupted != tc.wantIsUninterrupted {
+				t.Errorf("IsUninterrupted: got %v, want %v", ctx.Iteration.IsUninterrupted, tc.wantIsUninterrupted)
 			}
 		})
 	}

@@ -109,6 +109,18 @@ func (bs *BackgroundSession) SetPromptResolver(resolver PromptResolver) {
 	bs.promptResolver = resolver
 }
 
+// PeriodicKind classifies how a periodic prompt was triggered so the dispatch path can
+// distinguish a normal scheduled/onCompletion delivery from a manual "run now" without
+// matching the magic SenderID string. PeriodicKindNone means the prompt is not a
+// periodic run (user/other sender).
+type PeriodicKind int
+
+const (
+	PeriodicKindNone      PeriodicKind = iota // not a periodic run
+	PeriodicKindScheduled                     // normal scheduled / onCompletion delivery
+	PeriodicKindForced                        // manual "run now"
+)
+
 // PromptMeta contains optional metadata about the prompt source.
 type PromptMeta struct {
 	SenderID         string          // Unique identifier of the sending client (for broadcast deduplication)
@@ -118,11 +130,19 @@ type PromptMeta struct {
 	FileIDs          []string        // IDs of files attached to the prompt
 	OnComplete       func(err error) // Called when the async prompt goroutine finishes (nil = success)
 	IsPeriodicForced bool            // True when this periodic prompt was triggered manually via "run now"
+	// PeriodicKind classifies a periodic run (none/scheduled/forced). Set by the
+	// PeriodicRunner. Drives the Iteration.IsUninterrupted continuation signal.
+	PeriodicKind PeriodicKind
 	// IterationNumber is the 0-based index of the current periodic run (periodic.IterationCount
 	// at dispatch). Zero for non-periodic prompts. Feeds the {{ .Iteration.* }} template namespace.
 	IterationNumber int
 	// MaxIterations is the configured maximum number of periodic runs (0 = unlimited).
 	MaxIterations int
+	// IterationUninterrupted feeds {{ .Iteration.IsUninterrupted }}: true only on a
+	// scheduled, non-forced, non-FreshContext periodic run that directly follows another
+	// such run with no interruption. Computed in PromptWithMeta from the session-scoped
+	// continuation marker (peeked before body render, advanced at the dispatch commit).
+	IterationUninterrupted bool
 	FreshContext bool // True to suppress history injection and use a new ACP session for this prompt
 	// Arguments, when non-empty, triggers bash-like ${VAR}/${VAR:-default}
 	// substitution on the resolved prompt text before persistence and broadcast.
@@ -166,6 +186,13 @@ func (bs *BackgroundSession) PromptWithAttachments(message string, imageIDs, fil
 // The meta parameter contains sender information for multi-client broadcast.
 // The response is streamed via callbacks to the attached client (if any) and persisted.
 func (bs *BackgroundSession) PromptWithMeta(message string, meta PromptMeta) error {
+	// Periodic continuation signal (mitto-5xjn): peek BEFORE resolveAndSubstitute so the
+	// prompt-body template ({{ if .Iteration.IsUninterrupted }}) renders against it. We
+	// only PEEK here (no mutation); the marker is advanced at the dispatch point of no
+	// return below, so rejected/early-return dispatches never corrupt the chain.
+	isScheduledPeriodic := meta.PeriodicKind == PeriodicKindScheduled && !meta.FreshContext
+	meta.IterationUninterrupted = bs.peekPeriodicContinuation(isScheduledPeriodic)
+
 	// Resolve prompt name, apply argument substitution, annotate meta.
 	// See promptDispatcher.resolveAndSubstitute for the full logic.
 	var (
@@ -299,6 +326,11 @@ retryAfterRestart:
 		bs.isFirstPrompt = false
 	}
 	bs.promptMu.Unlock()
+
+	// Point of no return: this dispatch is committed. Advance the periodic continuation
+	// marker so the NEXT dispatch can detect an uninterrupted continuation. A non-scheduled
+	// dispatch (user/forced/FreshContext) sets it false, breaking the chain (mitto-5xjn).
+	bs.advancePeriodicContinuation(isScheduledPeriodic)
 
 	// Notify about streaming state change (prompt started)
 	if bs.onStreamingStateChanged != nil {
@@ -945,4 +977,34 @@ func (bs *BackgroundSession) pdReacquirePromptingState() {
 	bs.isPrompting = true
 	bs.promptStartTime = time.Now()
 	bs.promptMu.Unlock()
+}
+
+// peekPeriodicContinuation reports whether the current dispatch is an uninterrupted
+// continuation (a scheduled periodic run directly following another one) WITHOUT mutating
+// the marker. The marker is advanced separately at the dispatch point of no return so that
+// early-return/rejected dispatches do not corrupt the continuation chain.
+func (bs *BackgroundSession) peekPeriodicContinuation(isScheduledPeriodic bool) bool {
+	bs.periodicContinuationMu.Lock()
+	defer bs.periodicContinuationMu.Unlock()
+	return isScheduledPeriodic && bs.lastTurnScheduledPeriodic
+}
+
+// advancePeriodicContinuation records whether the just-committed dispatch was a scheduled
+// periodic run, so the next dispatch can detect an uninterrupted continuation. Setting it
+// false (any non-scheduled dispatch: user prompt, forced run, FreshContext) breaks the chain.
+func (bs *BackgroundSession) advancePeriodicContinuation(isScheduledPeriodic bool) {
+	bs.periodicContinuationMu.Lock()
+	bs.lastTurnScheduledPeriodic = isScheduledPeriodic
+	bs.periodicContinuationMu.Unlock()
+}
+
+// ResetPeriodicContinuation clears the continuation marker so the next periodic run renders
+// the verbose form. Called on lifecycle boundaries that break the "agent just finished that
+// exact task and still holds the context" assumption while keeping the same BackgroundSession:
+// ACP process reinit/restart and periodic loop config changes (create/update/pause/re-enable).
+// Boundaries that recreate the BackgroundSession reset it for free.
+func (bs *BackgroundSession) ResetPeriodicContinuation() {
+	bs.periodicContinuationMu.Lock()
+	bs.lastTurnScheduledPeriodic = false
+	bs.periodicContinuationMu.Unlock()
 }

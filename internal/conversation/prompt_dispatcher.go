@@ -461,6 +461,7 @@ func (p promptDispatcher) buildProcessorInput(d promptDeps, message string, isFi
 		IsPeriodicForced:       meta.IsPeriodicForced,
 		IterationNumber:        meta.IterationNumber,
 		MaxIterations:          meta.MaxIterations,
+		IterationUninterrupted: meta.IterationUninterrupted,
 		Arguments:              meta.Arguments,
 		AdvancedSettings:       advancedSettings,
 		HasUserDataSchema:      hasUserDataSchema,

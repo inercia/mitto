@@ -52,6 +52,14 @@ type IterationContext struct {
 	IsFirst bool
 	// IsLast is true when Max > 0 && Number == Max-1.
 	IsLast bool
+	// IsUninterrupted is true ONLY on a scheduled (non-forced) periodic run that
+	// directly follows another such run of this same loop with nothing in between:
+	// no user interjection, no forced "run now", no FreshContext, and within the same
+	// process lifetime. Powered by a session-scoped in-memory marker that resets across
+	// archive/unarchive, GC suspend/resume, process restart, ACP reinit, pause/re-enable,
+	// and loop config changes. Prompt bodies branch on it to render a compact "continue"
+	// form on uninterrupted continuation runs and the verbose form otherwise.
+	IsUninterrupted bool
 }
 
 // ACPServerInfo describes a single ACP server available in the workspace.

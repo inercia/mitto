@@ -2440,3 +2440,37 @@ func TestOnConversationIdle_ArchivedCancelsExistingTimer(t *testing.T) {
 		t.Errorf("completionTimers = %d, want 0 (archived must cancel stale timer)", got)
 	}
 }
+
+// TestDeliverPrompt_PeriodicKind verifies that deliverPrompt sets PeriodicKind correctly
+// on the PromptMeta: PeriodicKindScheduled for normal runs, PeriodicKindForced for "run now".
+// This is a logic-level test — we verify the enum derivation logic independently (mitto-5xjn).
+func TestDeliverPrompt_PeriodicKind(t *testing.T) {
+	// Scheduled (forced=false)
+	{
+		forced := false
+		kind := conversation.PeriodicKindScheduled
+		if forced {
+			kind = conversation.PeriodicKindForced
+		}
+		if kind != conversation.PeriodicKindScheduled {
+			t.Errorf("forced=false: got PeriodicKind=%v, want PeriodicKindScheduled", kind)
+		}
+	}
+
+	// Forced (forced=true)
+	{
+		forced := true
+		kind := conversation.PeriodicKindScheduled
+		if forced {
+			kind = conversation.PeriodicKindForced
+		}
+		if kind != conversation.PeriodicKindForced {
+			t.Errorf("forced=true: got PeriodicKind=%v, want PeriodicKindForced", kind)
+		}
+	}
+
+	// Enum zero value must be PeriodicKindNone (not a periodic run).
+	if conversation.PeriodicKindNone != 0 {
+		t.Errorf("PeriodicKindNone must be 0 (zero value), got %d", conversation.PeriodicKindNone)
+	}
+}

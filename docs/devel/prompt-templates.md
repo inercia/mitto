@@ -132,6 +132,7 @@ CEL expression always read the same field from the same struct.
 | `{{ .Iteration.IsPeriodic }}` | — | `Iteration.IsPeriodic` — `true` when triggered by the periodic runner |
 | `{{ .Iteration.IsFirst }}` | — | `Iteration.IsFirst` — `true` when `Number == 0` |
 | `{{ .Iteration.IsLast }}` | — | `Iteration.IsLast` — `true` when `Max > 0 && Number == Max-1` |
+| `{{ .Iteration.IsUninterrupted }}` | — | `Iteration.IsUninterrupted` — `true` only on a scheduled, non-forced periodic run directly following another such run (no user interjection / forced run / FreshContext; same process lifetime) |
 
 `Args` is populated from `meta.Arguments` at send time. At menu time (`enabledWhen`
 evaluation), `Args` is `nil`. Template rendering runs at **send time only**, so `Args` is

@@ -1272,4 +1272,35 @@ func TestRenderPromptTemplate_Iteration(t *testing.T) {
 	if gotFirst == gotLast {
 		t.Error("expected different output for Number=0 vs Number=2, but got the same")
 	}
+
+	// IsUninterrupted=true → compact branch; IsUninterrupted=false → verbose branch (mitto-5xjn).
+	bodyU := `{{ if .Iteration.IsUninterrupted }}continue{{ else }}verbose{{ end }}`
+
+	ctxContinue := &PromptEnabledContext{
+		Iteration: IterationContext{
+			IsPeriodic:      true,
+			IsUninterrupted: true,
+		},
+	}
+	gotContinue, err := RenderPromptTemplate("test-continue", bodyU, ctxContinue, nil)
+	if err != nil {
+		t.Fatalf("RenderPromptTemplate(continue): unexpected error: %v", err)
+	}
+	if gotContinue != "continue" {
+		t.Errorf("IsUninterrupted=true: got %q, want %q", gotContinue, "continue")
+	}
+
+	ctxVerbose := &PromptEnabledContext{
+		Iteration: IterationContext{
+			IsPeriodic:      true,
+			IsUninterrupted: false,
+		},
+	}
+	gotVerbose, err := RenderPromptTemplate("test-verbose", bodyU, ctxVerbose, nil)
+	if err != nil {
+		t.Fatalf("RenderPromptTemplate(verbose): unexpected error: %v", err)
+	}
+	if gotVerbose != "verbose" {
+		t.Errorf("IsUninterrupted=false: got %q, want %q", gotVerbose, "verbose")
+	}
 }

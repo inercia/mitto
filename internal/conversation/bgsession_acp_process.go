@@ -160,6 +160,10 @@ func (bs *BackgroundSession) restartACPProcess(reason RestartReason) error {
 	// Clear the old connection
 	bs.acpConn = nil
 
+	// Breaking the periodic continuation: an ACP reinit disrupts agent context, so the next
+	// periodic run must render the verbose form (mitto-5xjn).
+	bs.ResetPeriodicContinuation()
+
 	// Record this restart attempt with reason
 	bs.recordRestart(reason)
 

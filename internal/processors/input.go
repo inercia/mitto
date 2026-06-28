@@ -59,6 +59,11 @@ type ProcessorInput struct {
 	// MaxIterations is the configured maximum number of periodic runs (0 = unlimited).
 	// Used for the {{ .Iteration.* }} template namespace. Excluded from JSON (json:"-").
 	MaxIterations int `json:"-"`
+	// IterationUninterrupted feeds {{ .Iteration.IsUninterrupted }}. True only on a
+	// scheduled, non-forced periodic run directly following another such run (no user
+	// interjection, no forced run, no FreshContext, same process lifetime). Excluded from
+	// JSON (json:"-") — never sent to external command processors.
+	IterationUninterrupted bool `json:"-"`
 	// AdvancedSettings contains the per-session feature flags (flag name → enabled).
 	// Used for permissions.* CEL context in enabledWhen expressions.
 	AdvancedSettings map[string]bool `json:"-"`

@@ -1202,12 +1202,17 @@ func (r *PeriodicRunner) deliverPrompt(bs *conversation.BackgroundSession, sessi
 	// PromptWithMeta is async — it returns nil immediately. Without OnComplete,
 	// RecordSent would advance the schedule even if the prompt later fails
 	// (e.g., ACP process crash).
+	periodicKind := conversation.PeriodicKindScheduled
+	if forced {
+		periodicKind = conversation.PeriodicKindForced
+	}
 	meta := conversation.PromptMeta{
 		SenderID:         "periodic-runner",
 		PromptID:         "",                  // No client to confirm delivery to
 		PromptName:       periodic.PromptName, // Pass prompt name so UI can render a badge instead of full text
 		Arguments:        periodic.Arguments,  // User-supplied values for ${VAR} substitution in the resolved text
 		IsPeriodicForced: forced,
+		PeriodicKind:     periodicKind,
 		IterationNumber:  periodic.IterationCount,
 		MaxIterations:    periodic.MaxIterations,
 		FreshContext:     periodic.FreshContext,

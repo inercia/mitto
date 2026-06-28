@@ -199,3 +199,26 @@ parameters:
 - `EnabledWhen` has `json:"-"` → settings override of a builtin loses `enabledWhen`. Merge logic must carry forward from lower-priority source.
 - Never round-trip merged prompts via `POST /api/config` — set `prompts: []` explicitly. Backend must filter `req.Prompts` to `Source == PromptSourceSettings` only.
 - Context-adaptive prompts: avoid `CommandExists("bd") && DirExists(".beads")` in `enabledWhen` — it hides the prompt exactly when mode 3 (conversation menu, no linked bead) applies.
+
+## Iteration.IsUninterrupted (mitto-5xjn)
+
+`{{ .Iteration.IsUninterrupted }}` is `true` only on a **scheduled** (non-forced, non-FreshContext) periodic run that directly follows another such run with nothing in between — no user interjection, no forced "run now", no FreshContext, same process lifetime.
+
+**Reset boundaries** (set marker to false):
+- Archive/unarchive, GC suspend/resume, process restart — auto-reset because BackgroundSession is recreated.
+- ACP process reinit/restart (`restartACPProcess`).
+- Periodic loop config change (`PUT /api/sessions/{id}/periodic`).
+- Periodic loop pause or re-enable (`PATCH /api/sessions/{id}/periodic`).
+
+**Authoring rule**: the compact "continue" branch MUST carry a durable re-anchor — a one-line goal restatement plus a pointer to the on-disk state file or linked bead — because long loops compact history. Always render the verbose form whenever `IsFirst || !IsUninterrupted`:
+
+```
+{{ if .Iteration.IsFirst }}
+  ...verbose full-context form...
+{{ else if .Iteration.IsUninterrupted }}
+  Continue: <one-line goal>. State: <file or bead ref>.
+  ...compact delta-only instructions...
+{{ else }}
+  ...verbose full-context form (interrupted or restarted)...
+{{ end }}
+```

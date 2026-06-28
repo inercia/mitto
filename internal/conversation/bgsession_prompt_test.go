@@ -106,3 +106,74 @@ func TestRedactArgValue_Truncation(t *testing.T) {
 		t.Errorf("expected %d runes (80 + ellipsis), got %d", maxArgValueLen+1, len(runes))
 	}
 }
+
+// TestPeriodicContinuation_Marker tests the peek/advance/reset lifecycle of the
+// session-scoped periodic continuation marker (mitto-5xjn).
+func TestPeriodicContinuation_Marker(t *testing.T) {
+	newBS := func() *BackgroundSession {
+		bs := &BackgroundSession{}
+		return bs
+	}
+
+	// (i) First scheduled run → peek returns false (no previous run recorded).
+	t.Run("first-scheduled-peek-false", func(t *testing.T) {
+		bs := newBS()
+		if got := bs.peekPeriodicContinuation(true); got {
+			t.Error("first scheduled run: peekPeriodicContinuation(true) should return false, got true")
+		}
+	})
+
+	// (ii) Two back-to-back scheduled runs: advance true → next peek true.
+	t.Run("back-to-back-scheduled", func(t *testing.T) {
+		bs := newBS()
+		bs.advancePeriodicContinuation(true) // first run committed
+		if got := bs.peekPeriodicContinuation(true); !got {
+			t.Error("second scheduled run: peekPeriodicContinuation(true) should return true after advance(true)")
+		}
+	})
+
+	// (iii) A user/non-scheduled dispatch between two scheduled runs resets the chain.
+	t.Run("non-scheduled-breaks-chain", func(t *testing.T) {
+		bs := newBS()
+		bs.advancePeriodicContinuation(true)  // scheduled run 1
+		bs.advancePeriodicContinuation(false) // user prompt (non-scheduled)
+		if got := bs.peekPeriodicContinuation(true); got {
+			t.Error("after non-scheduled advance(false): peekPeriodicContinuation(true) should return false")
+		}
+	})
+
+	// (iv) Forced periodic run (isScheduledPeriodic=false) → peek false and resets chain.
+	t.Run("forced-run-breaks-chain", func(t *testing.T) {
+		bs := newBS()
+		bs.advancePeriodicContinuation(true)  // scheduled run 1
+		bs.advancePeriodicContinuation(false) // forced run (PeriodicKindForced → isScheduledPeriodic=false)
+		if got := bs.peekPeriodicContinuation(true); got {
+			t.Error("after forced advance(false): peekPeriodicContinuation(true) should return false")
+		}
+		// peek with false also returns false
+		if got := bs.peekPeriodicContinuation(false); got {
+			t.Error("peekPeriodicContinuation(false) should always return false")
+		}
+	})
+
+	// (v) FreshContext → isScheduledPeriodic is computed as false → peek false.
+	t.Run("fresh-context-peek-false", func(t *testing.T) {
+		bs := newBS()
+		bs.advancePeriodicContinuation(true)
+		// FreshContext makes isScheduledPeriodic=false regardless of PeriodicKindScheduled
+		isScheduledPeriodic := false // PeriodicKindScheduled && !FreshContext → false when FreshContext=true
+		if got := bs.peekPeriodicContinuation(isScheduledPeriodic); got {
+			t.Error("FreshContext: peekPeriodicContinuation(false) should return false")
+		}
+	})
+
+	// (vi) ResetPeriodicContinuation makes the next peek false even after advance(true).
+	t.Run("reset-makes-next-peek-false", func(t *testing.T) {
+		bs := newBS()
+		bs.advancePeriodicContinuation(true)
+		bs.ResetPeriodicContinuation()
+		if got := bs.peekPeriodicContinuation(true); got {
+			t.Error("after ResetPeriodicContinuation: peekPeriodicContinuation(true) should return false")
+		}
+	})
+}
