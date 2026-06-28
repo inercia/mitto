@@ -136,3 +136,20 @@ This rule:
 ## Adding Session Capabilities
 
 Backend `connected` message → `useWebSocket.js` (add to session.info) → `app.js` (pass as prop) → Component (use).
+
+## API Endpoint Registry
+
+**MANDATORY**: All API calls use `endpoints` from `web/static/utils/endpoints.js`. Never hardcode URL strings.
+
+```javascript
+// ✅ Correct
+const url = endpoints.sessions.get(sessionId);
+const url = endpoints.workspacePrompts.list({ working_dir: dir, session_id: id });
+const ws = new WebSocket(endpoints.sessions.ws(sessionId));
+
+// ❌ Wrong
+const url = apiUrl(`/api/sessions/${sessionId}`);
+const url = apiUrl("/api/workspace-prompts?working_dir=" + encodeURIComponent(dir));
+```
+
+The `qs()` helper omits `undefined`/`null`/`""` params and uses `URLSearchParams`. WebSocket builders return `wss://...` via `wsUrl()`. See `.augment/rules/20-web-frontend-core.md` docs or `web/static/utils/endpoints.js` for full builder list.

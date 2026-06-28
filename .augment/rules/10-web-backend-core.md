@@ -145,33 +145,68 @@ bs.logger = logging.WithSessionContext(config.Logger, sessionID, workingDir, acp
 clientLogger := logging.WithClient(s.logger, clientID, sessionID)
 ```
 
+## Session API Routing: Method+Pattern (Complete)
+
+✅ **COMPLETE**: Replaced hand-rolled path-splitting dispatch with Go 1.22+ `http.ServeMux` method+pattern routing.
+
+### Pattern: Dynamic Route Params with `r.PathValue()`
+
+Instead of `strings.Split` on `r.URL.Path`:
+
+```go
+// OLD (eliminated):
+parts := strings.Split(r.URL.Path, "/")
+sessionID := parts[4]  // Fragile, magic indices
+
+// NEW (Go 1.22+):
+if id, ok := s.sessionIDFromPath(w, r); ok {
+    s.apiHandlers.HandleGetSession(w, r, id)
+}
+
+// Helper:
+func (s *Server) sessionIDFromPath(w http.ResponseWriter, r *http.Request) (string, bool) {
+    id := r.PathValue("id")
+    if !session.IsValidSessionID(id) {
+        writeErrorJSON(w, http.StatusBadRequest, "invalid_session_id", "")
+        return "", false
+    }
+    return id, true
+}
+```
+
+### Route Table Pattern (`routes.go`)
+
+Use declarative method+pattern table instead of subtree fallback:
+
+```go
+apiRoute{http.MethodGet, "/api/sessions/{id}", s.handleSessionGet},
+apiRoute{http.MethodPatch, "/api/sessions/{id}", s.handleSessionUpdate},
+apiRoute{http.MethodDelete, "/api/sessions/{id}", s.handleSessionDelete},
+apiRoute{http.MethodGet, "/api/sessions/{id}/events", s.handleSessionEvents},
+apiRoute{http.MethodGet, "/api/sessions/{id}/ws", s.handleSessionWS},
+```
+
+**Benefit**: No `strings.Split` ambiguity; Go's mux ensures specificity via pattern precedence.
+
+### Thin Wrapper Pattern
+
+Session handlers are thin wrappers that:
+1. Extract IDs from path using `r.PathValue()`
+2. Validate session ID (call IsValidSessionID)
+3. Delegate to handler in `handlers` sub-package
+
+Example:
+```go
+func (s *Server) handleSessionGet(w http.ResponseWriter, r *http.Request) {
+    if id, ok := s.sessionIDFromPath(w, r); ok {
+        s.apiHandlers.HandleGetSession(w, r, id, false)
+    }
+}
+```
+
 ## Handler Migration to Sub-packages (Complete)
 
 ✅ All 16 REST handlers extracted into `internal/web/handlers/` sub-package.
-
-### Scope Boundaries (Fixed)
-
-**Routing dispatchers** (stay in `server.go`):
-- `handleConfig`, `handleSessions`, `handleSessionDetail`, `handleWorkspacePrompts`
-- Pure method/path switches → delegate to `s.apiHandlers.*`
-- No substantive REST logic; routing stays flat per acceptance criteria
-
-**WebSocket transport handlers** (stay in `server.go`):
-- `handleGlobalEventsWS`, `handleSessionWS`
-- Outside REST scope (not in affected-files list of refactor issue)
-- Connection upgrade/lifecycle, not REST request/response
-
-### Handler Categories (Migrated)
-
-**Dispatcher-coupled** (11 handlers):
-- Called by routing dispatcher with extra args (`sessionID`, etc.)
-- Examples: `HandleSessionPrune`, `HandleSessionChanges`, `HandleSessionSettings`, etc.
-- Safe incremental migration; dispatcher delegates via `s.apiHandlers.Handle<Name>(w, r, ...)`
-
-**Directly-registered** (5 handlers):
-- Standard `func(w, r)` signature registered in `server.go` routing
-- Examples: `HandleBeadsDetails`, `HandleImageUpload`, `HandleFileDownload`, etc.
-- Migrated in groups to reduce risk
 
 ### Deps Facade
 

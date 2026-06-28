@@ -266,13 +266,30 @@ function ParamField({
     `;
   }
 
+  if (type === "boolean") {
+    // Coherent checkbox layout: checkbox + name on one row (clickable label),
+    // with the description below aligned under the name.
+    return html`
+      <fieldset class="fieldset">
+        <label class="flex items-center gap-2 cursor-pointer">
+          ${control}
+          <span class="fieldset-legend text-mitto-text-secondary p-0">
+            ${name}
+          </span>
+        </label>
+        ${description &&
+        html`<p class="text-xs text-mitto-text-muted mt-1 ml-6">
+          ${description}
+        </p>`}
+      </fieldset>
+    `;
+  }
+
   return html`
     <fieldset class="fieldset">
       <legend class="fieldset-legend text-mitto-text-secondary">
         ${name}
-        ${required &&
-        type !== "boolean" &&
-        html`<span class="text-mitto-danger ml-0.5">*</span>`}
+        ${required && html`<span class="text-mitto-danger ml-0.5">*</span>`}
       </legend>
       ${control}
       ${description &&

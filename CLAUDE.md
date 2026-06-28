@@ -73,32 +73,46 @@ go test -v -tags integration ./tests/integration/inprocess/
 4. Store in `useWebSocket.js` and pass through `app.js`
 5. Update mock ACP server and add integration test
 
-## Handler Migration Pattern (Complete)
+## Go 1.22+ Routing Pattern (Complete)
 
-**Status**: ✅ COMPLETE. All 16 REST handlers extracted from flat `*_api.go` files into `internal/web/handlers/` sub-package.
+**Status**: ✅ COMPLETE. Eliminated `strings.Split` path-parsing via Go 1.22+ `http.ServeMux` method+pattern routing with `r.PathValue()`.
 
-**Routing dispatchers stay flat** in `server.go` (4 methods): `handleConfig`, `handleSessions`, `handleSessionDetail`, `handleWorkspacePrompts`. These are pure method/path routers that delegate to `s.apiHandlers.*`.
-
-**WebSocket transport handlers stay flat** in `server.go` (2 methods): `handleGlobalEventsWS`, `handleSessionWS`. These are outside REST handler scope (explicitly excluded from refactor scope).
-
-**Two categories migrated**:
-- **Dispatcher-coupled handlers** (11): Called with `sessionID` arg by `handleSessionDetail()`. Safe incremental migration per handler.
-- **Directly-registered handlers** (5): Standard `(w, r)` signature. Migrated in groups from `beads_api.go`, etc.
-
-**Wiring pattern**:
+**Pattern**: Extract path params, validate, delegate to handler:
 ```go
-// In NewServer:
-handlers.New(handlers.Deps{
-    Store:          store,
-    SessionManager: sessionMgr,
-    // ... extend conservatively
-})
-
-// Dispatcher delegates:
-s.apiHandlers.HandleSessionPrune(w, r, sessionID)
+func (s *Server) handleSessionGet(w http.ResponseWriter, r *http.Request) {
+    if id, ok := s.sessionIDFromPath(w, r); ok {
+        s.apiHandlers.HandleGetSession(w, r, id, false)
+    }
+}
 ```
 
-**Key constraint**: `handlers` pkg never imports `internal/web` to avoid circular deps. Dependencies flow only one direction: `web → handlers`.
+**Route table** (`routes.go`): Declarative method+pattern entries (no subtree fallback):
+```go
+apiRoute{http.MethodGet, "/api/sessions/{id}", s.handleSessionGet},
+apiRoute{http.MethodPatch, "/api/sessions/{id}", s.handleSessionUpdate},
+apiRoute{http.MethodDelete, "/api/sessions/{id}", s.handleSessionDelete},
+```
+
+## Frontend authFetch Pattern (Complete)
+
+**Pattern**: Use `authFetch(url, options?)` for all authenticated API calls. Ensures `credentials: "include"` (cross-origin/Tailscale safe) + unified 401 handling.
+
+```javascript
+// Use endpoints registry (never hardcoded URLs)
+const response = await authFetch(endpoints.config.get());
+const response = await authFetch(endpoints.sessions.get(sessionId));
+```
+
+**Key**: All URLs come from `web/static/utils/endpoints.js` registry. Never construct URLs manually.
+
+**Defense-in-depth**: Add explicit 401 guard in critical paths:
+```javascript
+if (response.status === 401) { redirectToLogin(); return; }
+```
+
+**Public vs. authenticated**:
+- ✅ `authFetch`: All authenticated endpoints (via `endpoints` builders)
+- ❌ Keep raw `fetch` with `same-origin`: Public endpoints like `/api/supported-runners`
 
 ## Model Selection & Preferred Models
 
