@@ -5,7 +5,12 @@
 const { html, Fragment } = window.preact;
 
 import { getPromptIcon, PeriodicIcon } from "./Icons.js";
-import { getContrastColor, flattenPrompts } from "../utils/prompts.js";
+import {
+  getContrastColor,
+  flattenPrompts,
+  resolvePromptModelOverride,
+  currentModelName,
+} from "../utils/prompts.js";
 
 // Source badge (W/F/S) shown on the right of each item when enabled.
 function getBadgeInfo(source) {
@@ -34,6 +39,9 @@ function getBadgeInfo(source) {
  * @param {Function} props.onSelect - (prompt, event) => void
  * @param {string} [props.selectedName] - name of the currently-chosen prompt (shows a check)
  * @param {boolean} [props.showSourceBadge] - show the W/F/S source badge
+ * @param {Object} [props.modelOption] - the "model" config option ({ current_value,
+ *   options }) used to surface an "overrides model" chip on prompts whose
+ *   preferredModels would run them on a different model than the current one
  * @param {boolean} [props.shiftHeld] - swap the leading icon for an edit pencil
  * @param {*} [props.footer] - optional footer content (rendered below the list)
  * @param {string} [props.placeholder] - filter input placeholder
@@ -55,6 +63,7 @@ export function PromptsMenu({
   selectedName = "",
   showSourceBadge = false,
   shiftHeld = false,
+  modelOption = null,
   footer = null,
   placeholder = "Search prompts...",
   emptyText = "No matching prompts",
@@ -65,6 +74,7 @@ export function PromptsMenu({
   const { groups, flat } = flattenPrompts(prompts, { filterText, sortMode });
   const clampedIndex =
     flat.length === 0 ? -1 : Math.min(selectedIndex, flat.length - 1);
+  const curModelName = currentModelName(modelOption);
 
   const renderItem = (prompt) => {
     const fi = flat.indexOf(prompt);
@@ -85,6 +95,10 @@ export function PromptsMenu({
         }
       : baseStyle;
     const PromptIcon = getPromptIcon(prompt.icon);
+    const overrideModel = resolvePromptModelOverride(
+      prompt.preferredModels,
+      modelOption,
+    );
     return html`
       <li key=${keyPrefix + "-item-" + prompt.name}>
         <button
@@ -102,6 +116,17 @@ export function PromptsMenu({
               ? html`<${PromptIcon} className="w-4 h-4 shrink-0 opacity-60" />`
               : html`<svg class="w-4 h-4 shrink-0 opacity-60" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z" /></svg>`}
           <span class="truncate flex-1 min-w-0">${prompt.name}</span>
+          ${overrideModel &&
+          html`<span
+            class="text-[10px] font-bold px-1.5 py-0.5 rounded bg-mitto-accent-600/80 text-white/90 shrink-0"
+            title=${"Runs on " +
+            overrideModel.name +
+            " for this prompt" +
+            (curModelName
+              ? " — your conversation model stays " + curModelName
+              : "")}
+            >⚡ ${overrideModel.name}</span
+          >`}
           ${prompt.periodic &&
           html`<span
             class="shrink-0 text-success opacity-80"

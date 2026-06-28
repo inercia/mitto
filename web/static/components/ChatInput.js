@@ -254,6 +254,14 @@ export function ChatInput({
     return configOptions?.filter((o) => o.type === "select" && o.options?.length > 0) || [];
   }, [configOptions]);
 
+  // The "model" config option, used to surface a per-prompt model-override chip
+  // in the prompts dropup (prompts whose preferredModels resolve to a different
+  // model than the current conversation model).
+  const modelOption = useMemo(
+    () => configOptions?.find((o) => o.category === "model") || null,
+    [configOptions],
+  );
+
   // Compute context window usage percentage (null when no data available).
   // Prefers context_usage from ACP SessionUsageUpdate (exact size/used).
   // Falls back to input_tokens from PromptResponse.Usage + static model context window.
@@ -2857,6 +2865,7 @@ ${activeUIPrompt.text || ""}</textarea
                       >
                         <${PromptsMenu}
                           prompts=${predefinedPrompts}
+                          modelOption=${modelOption}
                           filterText=${promptFilterText}
                           onFilterChange=${(value) => {
                             setPromptFilterText(value);

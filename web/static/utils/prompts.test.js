@@ -15,6 +15,8 @@ import {
   isCacheableParam,
   fetchCachedParamNames,
   effectiveMissingParams,
+  resolvePromptModelOverride,
+  currentModelName,
 } from "./prompts.js";
 
 // =============================================================================
@@ -728,5 +730,101 @@ describe("fetchCachedParamNames", () => {
     });
     const result = await fetchCachedParamNames("sess-1", "x", { fetchImpl });
     expect(result).toEqual(new Set());
+  });
+});
+
+// =============================================================================
+// resolvePromptModelOverride / currentModelName Tests
+// =============================================================================
+
+describe("resolvePromptModelOverride", () => {
+  const modelOption = {
+    current_value: "claude-opus-4-8",
+    options: [
+      { value: "claude-opus-4-8", name: "Opus 4.8" },
+      { value: "claude-sonnet-4-5", name: "Sonnet 4.5" },
+      { value: "gpt-4o", name: "GPT-4o" },
+    ],
+  };
+
+  test("returns the override model when a pattern resolves to a different model", () => {
+    const result = resolvePromptModelOverride(["*sonnet*"], modelOption);
+    expect(result).toEqual({ value: "claude-sonnet-4-5", name: "Sonnet 4.5" });
+  });
+
+  test("matches against the display name as well as the id", () => {
+    const result = resolvePromptModelOverride(["*gpt-4o*"], modelOption);
+    expect(result).toEqual({ value: "gpt-4o", name: "GPT-4o" });
+  });
+
+  test("returns null when the current model already satisfies a pattern (no switch)", () => {
+    expect(resolvePromptModelOverride(["*opus*"], modelOption)).toBeNull();
+  });
+
+  test("current-model-first: a later pattern matching current does not stop an earlier match", () => {
+    // First pattern matches sonnet (not current), so it wins before opus is considered.
+    const result = resolvePromptModelOverride(["*sonnet*", "*opus*"], modelOption);
+    expect(result).toEqual({ value: "claude-sonnet-4-5", name: "Sonnet 4.5" });
+  });
+
+  test("current model wins when it matches the first pattern", () => {
+    // Current (opus) matches the first pattern → no override even though sonnet exists.
+    expect(
+      resolvePromptModelOverride(["*opus*", "*sonnet*"], modelOption),
+    ).toBeNull();
+  });
+
+  test("walks patterns in order and skips patterns with no available match", () => {
+    const result = resolvePromptModelOverride(
+      ["*flash*", "*sonnet*"],
+      modelOption,
+    );
+    expect(result).toEqual({ value: "claude-sonnet-4-5", name: "Sonnet 4.5" });
+  });
+
+  test("is case-insensitive", () => {
+    const result = resolvePromptModelOverride(["*SONNET*"], modelOption);
+    expect(result).toEqual({ value: "claude-sonnet-4-5", name: "Sonnet 4.5" });
+  });
+
+  test("returns null when nothing matches", () => {
+    expect(resolvePromptModelOverride(["*nope*"], modelOption)).toBeNull();
+  });
+
+  test("returns null for empty/absent preferredModels", () => {
+    expect(resolvePromptModelOverride([], modelOption)).toBeNull();
+    expect(resolvePromptModelOverride(undefined, modelOption)).toBeNull();
+  });
+
+  test("returns null when modelOption is absent or has no options", () => {
+    expect(resolvePromptModelOverride(["*sonnet*"], null)).toBeNull();
+    expect(
+      resolvePromptModelOverride(["*sonnet*"], { current_value: "x", options: [] }),
+    ).toBeNull();
+  });
+});
+
+describe("currentModelName", () => {
+  const modelOption = {
+    current_value: "claude-opus-4-8",
+    options: [
+      { value: "claude-opus-4-8", name: "Opus 4.8" },
+      { value: "claude-sonnet-4-5", name: "Sonnet 4.5" },
+    ],
+  };
+
+  test("returns the display name of the current model", () => {
+    expect(currentModelName(modelOption)).toBe("Opus 4.8");
+  });
+
+  test("falls back to the value when the name is missing", () => {
+    expect(
+      currentModelName({ current_value: "x", options: [{ value: "x" }] }),
+    ).toBe("x");
+  });
+
+  test("returns empty string when unavailable", () => {
+    expect(currentModelName(null)).toBe("");
+    expect(currentModelName({ current_value: "x", options: [] })).toBe("");
   });
 });

@@ -363,3 +363,91 @@ export function flattenPrompts(prompts, opts) {
   }
   return { groups, flat };
 }
+
+/**
+ * Case-insensitive glob match mirroring Go's path.Match for model ids/names.
+ * '*' matches any run of non-'/' chars, '?' matches a single non-'/' char; all
+ * other regex metacharacters are escaped. Model ids/names contain no '/', so
+ * '*' effectively matches anything.
+ */
+function globToRegExp(pattern) {
+  let out = "^";
+  for (const ch of pattern) {
+    if (ch === "*") out += "[^/]*";
+    else if (ch === "?") out += "[^/]";
+    else out += ch.replace(/[.+^${}()|[\]\\]/g, "\\$&");
+  }
+  return new RegExp(out + "$");
+}
+
+function globMatchCI(patternLower, s) {
+  return globToRegExp(patternLower).test(String(s).toLowerCase());
+}
+
+/**
+ * Frontend mirror of backend SelectPreferredModel
+ * (internal/conversation/constraints.go). The Go function is the canonical
+ * source of truth — keep this in sync.
+ *
+ * Resolves a prompt's ordered `preferredModels` glob patterns against the live
+ * "model" config option to decide which model the prompt would transiently run
+ * on. Patterns are walked in order; for each pattern the CURRENT model is checked
+ * first (an already-satisfying model is kept, so there is no override), otherwise
+ * the first available model matching the pattern is chosen. Matching is glob
+ * (case-insensitive) against both the model value (id) and display name.
+ *
+ * @param {string[]} preferredModels - ordered glob patterns
+ * @param {Object} modelOption - the "model" category config option
+ *   ({ current_value, options: [{ value, name }] })
+ * @returns {{ value: string, name: string } | null} the override model when it
+ *   DIFFERS from the current conversation model; null when there is no override
+ *   (no patterns, no model option, nothing matches, or the current model already
+ *   satisfies a pattern).
+ */
+export function resolvePromptModelOverride(preferredModels, modelOption) {
+  if (
+    !Array.isArray(preferredModels) ||
+    preferredModels.length === 0 ||
+    !modelOption ||
+    !Array.isArray(modelOption.options) ||
+    modelOption.options.length === 0
+  ) {
+    return null;
+  }
+  const currentId = modelOption.current_value || "";
+  const currentOpt = modelOption.options.find((o) => o.value === currentId);
+  const currentName = currentOpt ? currentOpt.name || "" : "";
+
+  for (const pattern of preferredModels) {
+    const patternLower = String(pattern).toLowerCase();
+    // Current model checked first: if it already satisfies the pattern, the
+    // prompt keeps the current model — no override to surface.
+    if (
+      (currentId && globMatchCI(patternLower, currentId)) ||
+      (currentName && globMatchCI(patternLower, currentName))
+    ) {
+      return null;
+    }
+    for (const opt of modelOption.options) {
+      if (
+        globMatchCI(patternLower, opt.value || "") ||
+        globMatchCI(patternLower, opt.name || "")
+      ) {
+        return { value: opt.value, name: opt.name || opt.value };
+      }
+    }
+  }
+  return null;
+}
+
+/**
+ * Returns the display name of the current model from a "model" config option,
+ * falling back to the raw value, or "" when unavailable.
+ */
+export function currentModelName(modelOption) {
+  if (!modelOption || !Array.isArray(modelOption.options)) return "";
+  const cur = modelOption.options.find(
+    (o) => o.value === modelOption.current_value,
+  );
+  return cur ? cur.name || cur.value : "";
+}
