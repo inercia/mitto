@@ -7,6 +7,28 @@ profiles are parsed, stored, and exposed through an internal Go API, but Mitto d
 CEL macro, or processor that consumes them. The Go API below is the intended extension
 point for future work.
 
+## Shipped defaults (first install only)
+
+New installs are seeded with a set of well-known profiles from the embedded
+`config/config.default.yaml` (written to `settings.json` on the first run; existing
+installs are left untouched). All use `matchMode: contains`, so they are
+version-agnostic, and their tags **union** across overlapping matches:
+
+| Profile | Pattern | Tags |
+|---------|---------|------|
+| Claude | `Claude` | `Anthropic` |
+| Claude Opus | `Opus` | `Smartest`, `Reasoning`, `Expensive` |
+| Claude Sonnet | `Sonnet` | `Smart`, `Coding` |
+| Claude Haiku | `Haiku` | `Fast`, `Cheap` |
+| GPT-5 | `GPT-5` | `Smart`, `Reasoning`, `Coding` |
+| GPT-4 | `GPT-4` | `Smart`, `Coding` |
+| Gemini | `Gemini` | `Smart`, `LongContext` |
+
+Because matching is additive, a name like `Claude Opus 4.x` resolves to the union of
+the vendor-level `Claude` profile and the `Claude Opus` profile
+(`Anthropic`, `Smartest`, `Reasoning`, `Expensive`). Edit or remove these in your
+`settings.json` (or the Models settings tab) to suit the models you use.
+
 ## YAML Configuration
 
 The `models:` section is a top-level list in your configuration (settings or YAML).

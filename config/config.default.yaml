@@ -29,18 +29,48 @@ acp: []
 #
 # Match modes: contains, exact, startsWith, regex, lookAlike
 #
-# Example:
-#   models:
-#     - name: Opus
-#       criteria:
-#         matchMode: contains
-#         pattern: Opus
-#       tags: [Smartest, Expensive]
-#     - name: Sonnet
-#       criteria:
-#         matchMode: contains
-#         pattern: Sonnet
-#       tags: [Smart, Cheap]
+# The profiles below seed NEW installs only (they are written to settings.json on the
+# first run); existing settings.json files are left untouched. Tags overlap by design:
+# a model name is matched against every profile and the union of matching tags applies
+# (e.g. "Claude Opus 4.x" resolves to Anthropic + Smartest + Reasoning + Expensive).
+# Tags are interface-only today (parsed and exposed via the Go API, not yet consumed
+# at runtime). Edit or extend these to match the models you use.
+models:
+  - name: Claude
+    criteria:
+      matchMode: contains
+      pattern: Claude
+    tags: [Anthropic]
+  - name: Claude Opus
+    criteria:
+      matchMode: contains
+      pattern: Opus
+    tags: [Smartest, Reasoning, Expensive]
+  - name: Claude Sonnet
+    criteria:
+      matchMode: contains
+      pattern: Sonnet
+    tags: [Smart, Coding]
+  - name: Claude Haiku
+    criteria:
+      matchMode: contains
+      pattern: Haiku
+    tags: [Fast, Cheap]
+  - name: GPT-5
+    criteria:
+      matchMode: contains
+      pattern: GPT-5
+    tags: [Smart, Reasoning, Coding]
+  - name: GPT-4
+    criteria:
+      matchMode: contains
+      pattern: GPT-4
+    tags: [Smart, Coding]
+  - name: Gemini
+    criteria:
+      matchMode: contains
+      pattern: Gemini
+    tags: [Smart, LongContext]
 
 # Web server configuration
 web:

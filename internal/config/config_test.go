@@ -4,6 +4,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	defaultConfig "github.com/inercia/mitto/config"
 )
 
 func TestParse_ValidConfig(t *testing.T) {
@@ -2421,5 +2423,68 @@ func TestResolveModelTags(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestParse_EmbeddedDefaultModelProfiles pins the well-known model profiles seeded into
+// new installs via the embedded config/config.default.yaml. It guards against the shipped
+// default drifting (bad YAML, renamed profiles, or dropped tags) and verifies that the
+// union resolution behaves as documented for representative model names.
+func TestParse_EmbeddedDefaultModelProfiles(t *testing.T) {
+	cfg, err := Parse(defaultConfig.DefaultConfigYAML)
+	if err != nil {
+		t.Fatalf("Parse(embedded default) failed: %v", err)
+	}
+
+	wantProfiles := map[string][]string{
+		"Claude":        {"Anthropic"},
+		"Claude Opus":   {"Smartest", "Reasoning", "Expensive"},
+		"Claude Sonnet": {"Smart", "Coding"},
+		"Claude Haiku":  {"Fast", "Cheap"},
+		"GPT-5":         {"Smart", "Reasoning", "Coding"},
+		"GPT-4":         {"Smart", "Coding"},
+		"Gemini":        {"Smart", "LongContext"},
+	}
+
+	if len(cfg.Models) != len(wantProfiles) {
+		t.Fatalf("embedded default Models count = %d, want %d", len(cfg.Models), len(wantProfiles))
+	}
+
+	for name, wantTags := range wantProfiles {
+		p, ok := cfg.ModelProfileByName(name)
+		if !ok {
+			t.Errorf("embedded default missing profile %q", name)
+			continue
+		}
+		if p.Criteria == nil || p.Criteria.MatchMode != "contains" {
+			t.Errorf("profile %q criteria = %+v, want matchMode contains", name, p.Criteria)
+		}
+		if len(p.Tags) != len(wantTags) {
+			t.Errorf("profile %q tags = %v, want %v", name, p.Tags, wantTags)
+			continue
+		}
+		for i := range wantTags {
+			if p.Tags[i] != wantTags[i] {
+				t.Errorf("profile %q tags[%d] = %q, want %q", name, i, p.Tags[i], wantTags[i])
+			}
+		}
+	}
+
+	// "Claude Opus 4.x" matches the vendor-level Claude (contains "Claude") and the Opus
+	// profile (contains "Opus"); the union de-dups case-insensitively.
+	opusTags := cfg.ResolveModelTags("Claude Opus 4.5")
+	wantOpus := []string{"Anthropic", "Smartest", "Reasoning", "Expensive"}
+	if len(opusTags) != len(wantOpus) {
+		t.Fatalf("ResolveModelTags(Claude Opus 4.5) = %v, want %v", opusTags, wantOpus)
+	}
+	for i := range wantOpus {
+		if opusTags[i] != wantOpus[i] {
+			t.Errorf("ResolveModelTags(Claude Opus 4.5)[%d] = %q, want %q", i, opusTags[i], wantOpus[i])
+		}
+	}
+
+	// A non-Anthropic model only picks up its own profile's tags.
+	if got := cfg.ResolveModelTags("Gemini 2.5 Pro"); len(got) != 2 || got[0] != "Smart" || got[1] != "LongContext" {
+		t.Errorf("ResolveModelTags(Gemini 2.5 Pro) = %v, want [Smart LongContext]", got)
 	}
 }
