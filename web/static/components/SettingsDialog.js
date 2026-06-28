@@ -44,6 +44,7 @@ import {
   DuplicateIcon,
   ShieldIcon,
   SearchIcon,
+  LayersIcon,
 } from "./Icons.js";
 import { AgentDiscoveryDialog } from "./AgentDiscoveryDialog.js";
 import { Modal } from "./Modal.js";
@@ -1019,6 +1020,8 @@ export function SettingsDialog({
   // Configuration state
   const [workspaces, setWorkspaces] = useState([]);
   const [acpServers, setAcpServers] = useState([]);
+  // Model profiles (named profiles pairing criteria with capability tags)
+  const [modelProfiles, setModelProfiles] = useState([]);
   // Stable key counter for ACP servers — survives renames without losing focus
   const stableKeyRef = useRef(0);
   const assignStableKey = (srv) => {
@@ -1399,6 +1402,7 @@ export function SettingsDialog({
       const servers = config.acp_servers || [];
       servers.forEach(assignStableKey);
       setAcpServers(servers);
+      setModelProfiles(Array.isArray(config.models) ? config.models : []);
 
       // Reset server renames when config is loaded
       setServerRenames({});
@@ -1860,6 +1864,17 @@ export function SettingsDialog({
         auto_approve: globalAutoApprove,
       };
 
+      // Build model profiles list — always sent so removals/edits stick
+      // (backend treats omitted=preserve; explicitly sending is authoritative)
+      const modelProfilesToSave = modelProfiles.map((p) => ({
+        name: (p.name || "").trim(),
+        criteria:
+          p.criteria && p.criteria.matchMode
+            ? { matchMode: p.criteria.matchMode, pattern: p.criteria.pattern || "" }
+            : null,
+        tags: Array.isArray(p.tags) ? p.tags.filter((t) => t && t.trim()) : [],
+      }));
+
       const config = {
         workspaces: workspaces,
         acp_servers: acpServersToSave,
@@ -1873,6 +1888,7 @@ export function SettingsDialog({
           host: mcpHost.trim(),
           port: mcpPort ? parseInt(mcpPort, 10) : 0,
         },
+        models: modelProfilesToSave,
         restricted_runners:
           Object.keys(restrictedRunnersToSave).length > 0
             ? restrictedRunnersToSave
@@ -2184,6 +2200,12 @@ export function SettingsDialog({
     setError("");
   };
 
+  // Helpers for editing model profiles inline
+  const updateProfile = (i, patch) =>
+    setModelProfiles((prev) => prev.map((p, idx) => (idx === i ? { ...p, ...patch } : p)));
+  const removeProfile = (i) =>
+    setModelProfiles((prev) => prev.filter((_, idx) => idx !== i));
+
   if (!isOpen) return null;
 
   // Can close if we have both ACP servers and workspaces configured
@@ -2192,6 +2214,7 @@ export function SettingsDialog({
   // Define navigation items for sidebar
   const navItems = [
     { id: "servers", label: "ACP Servers", icon: ServerIcon },
+    { id: "models", label: "Models", icon: LayersIcon },
     { id: "runners", label: "Runners", icon: LockIcon },
     { id: "permissions", label: "Conversations", icon: ShieldIcon },
     { id: "web", label: "Web", icon: GlobeIcon },
@@ -4435,6 +4458,110 @@ export function SettingsDialog({
                         </div>
                       `}
 
+                    </div>
+                  `}
+
+                  <!-- Models Tab -->
+                  ${activeTab === "models" &&
+                  html`
+                    <div class="space-y-4">
+                      <p class="text-mitto-text-muted text-sm">
+                        Named model profiles pair a selection criteria with
+                        capability tags (e.g. "Smart", "Cheap"). Other parts of
+                        Mitto can branch on tags instead of raw model names.
+                      </p>
+
+                      ${modelProfiles.map(
+                        (p, i) => html`
+                          <div
+                            key=${i}
+                            class="border border-mitto-border-1 rounded-lg p-3 space-y-2"
+                          >
+                            <!-- Profile header: name + remove -->
+                            <div class="flex items-center gap-2">
+                              <input
+                                type="text"
+                                class="input input-sm flex-1"
+                                placeholder="e.g., Opus"
+                                value=${p.name || ""}
+                                onInput=${(e) =>
+                                  updateProfile(i, { name: e.target.value })}
+                              />
+                              <button
+                                class="btn btn-sm btn-ghost text-error"
+                                title="Remove profile"
+                                onClick=${() => removeProfile(i)}
+                              >
+                                <${TrashIcon} className="w-4 h-4" />
+                              </button>
+                            </div>
+
+                            <!-- Criteria (model selector) -->
+                            <div class="space-y-1">
+                              <label class="text-xs font-medium text-mitto-text-secondary">
+                                Criteria
+                              </label>
+                              <${ModelSelection}
+                                matchMode=${(p.criteria && p.criteria.matchMode) || ""}
+                                pattern=${(p.criteria && p.criteria.pattern) || ""}
+                                onChange=${(mode, pat) =>
+                                  updateProfile(i, {
+                                    criteria: mode
+                                      ? { matchMode: mode, pattern: pat }
+                                      : null,
+                                  })}
+                              />
+                            </div>
+
+                            <!-- Tags -->
+                            <div class="space-y-1">
+                              <label class="text-xs font-medium text-mitto-text-secondary">
+                                Tags (comma-separated)
+                              </label>
+                              <input
+                                type="text"
+                                class="input input-sm w-full"
+                                placeholder="e.g., Smart, Cheap"
+                                value=${(p.tags || []).join(", ")}
+                                onInput=${(e) =>
+                                  updateProfile(i, {
+                                    tags: e.target.value
+                                      .split(",")
+                                      .map((t) => t.trim())
+                                      .filter(Boolean),
+                                  })}
+                              />
+                              ${(p.tags || []).length > 0 &&
+                              html`
+                                <div class="flex flex-wrap gap-1 mt-1">
+                                  ${(p.tags || []).map(
+                                    (tag) => html`
+                                      <span
+                                        key=${tag}
+                                        class="badge badge-sm badge-outline"
+                                        >${tag}</span
+                                      >
+                                    `,
+                                  )}
+                                </div>
+                              `}
+                            </div>
+                          </div>
+                        `,
+                      )}
+
+                      <!-- Add Model button -->
+                      <button
+                        class="btn btn-sm"
+                        onClick=${() =>
+                          setModelProfiles([
+                            ...modelProfiles,
+                            { name: "", criteria: null, tags: [] },
+                          ])}
+                      >
+                        <${PlusIcon} className="w-4 h-4" />
+                        Add Model
+                      </button>
                     </div>
                   `}
                 `}
