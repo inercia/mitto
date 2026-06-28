@@ -145,7 +145,7 @@ function PromptStopButton({ onStop }) {
     <button
       type="button"
       onClick=${onStop}
-      class="btn btn-ghost btn-square btn-sm text-error tooltip tooltip-top"
+      class="chat-input-action stop-active tooltip tooltip-top"
       data-tip="Stop the agent"
       aria-label="Stop the agent"
     >
