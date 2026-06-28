@@ -5,6 +5,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"github.com/inercia/mitto/internal/agents"
+	"github.com/inercia/mitto/internal/config"
 )
 
 func TestHandleAdvancedFlags(t *testing.T) {
@@ -120,5 +123,27 @@ func TestHandleAgentTypes_MethodNotAllowed(t *testing.T) {
 
 	if w.Code != http.StatusMethodNotAllowed {
 		t.Errorf("Status = %d, want %d", w.Code, http.StatusMethodNotAllowed)
+	}
+}
+
+func TestSeedACPServerDefaults_ContextFlushCommand_Seeded(t *testing.T) {
+	s := &config.ACPServerSettings{Name: "my-server", Command: "cmd"}
+	d := &agents.AgentDefaults{ContextFlushCommand: "/clear"}
+
+	seedACPServerDefaults(s, d)
+
+	if s.ContextFlushCommand != "/clear" {
+		t.Errorf("ContextFlushCommand = %q, want %q", s.ContextFlushCommand, "/clear")
+	}
+}
+
+func TestSeedACPServerDefaults_ContextFlushCommand_RequestWins(t *testing.T) {
+	s := &config.ACPServerSettings{Name: "my-server", Command: "cmd", ContextFlushCommand: "/my-custom-flush"}
+	d := &agents.AgentDefaults{ContextFlushCommand: "/clear"}
+
+	seedACPServerDefaults(s, d)
+
+	if s.ContextFlushCommand != "/my-custom-flush" {
+		t.Errorf("ContextFlushCommand = %q, want %q (user-supplied value should win)", s.ContextFlushCommand, "/my-custom-flush")
 	}
 }

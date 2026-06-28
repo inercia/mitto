@@ -54,6 +54,10 @@ type ACPServer struct {
 	// The key is the config option category (e.g., "model", "mode").
 	// When a session starts, matching constraints auto-select the appropriate option value.
 	Constraints map[string]*ACPServerConstraint
+	// ContextFlushCommand is an optional agent-native slash command (e.g. "/clear")
+	// that flushes/clears the conversation context without restarting the agent.
+	// Empty means the feature is disabled for this server.
+	ContextFlushCommand string
 }
 
 // GetType returns the type identifier for prompt matching.
@@ -1192,7 +1196,8 @@ type rawACPServerConfig struct {
 		Periodic        *PromptPeriodic   `yaml:"periodic,omitempty"`
 		Parameters      []PromptParameter `yaml:"parameters"`
 	} `yaml:"prompts"`
-	RestrictedRunners map[string]*WorkspaceRunnerConfig `yaml:"restricted_runners"`
+	RestrictedRunners   map[string]*WorkspaceRunnerConfig `yaml:"restricted_runners"`
+	ContextFlushCommand string                            `yaml:"contextFlushCommand"`
 }
 
 // rawConfig is used for YAML unmarshaling to handle the map-based format.
@@ -1386,13 +1391,14 @@ func Parse(data []byte) (*Config, error) {
 	for _, entry := range raw.ACP {
 		for name, server := range entry {
 			acpServer := ACPServer{
-				Name:              name,
-				Command:           server.Command,
-				Cwd:               server.Cwd,
-				Type:              server.Type, // Optional type for prompt matching
-				Env:               server.Env,  // Environment variables
-				RestrictedRunners: server.RestrictedRunners,
-				Tags:              server.Tags, // Optional categorization tags
+				Name:                name,
+				Command:             server.Command,
+				Cwd:                 server.Cwd,
+				Type:                server.Type, // Optional type for prompt matching
+				Env:                 server.Env,  // Environment variables
+				RestrictedRunners:   server.RestrictedRunners,
+				Tags:                server.Tags, // Optional categorization tags
+				ContextFlushCommand: server.ContextFlushCommand,
 			}
 			// Copy server-specific prompts
 			for _, p := range server.Prompts {

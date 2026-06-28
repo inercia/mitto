@@ -82,6 +82,9 @@ func seedACPServerDefaults(s *configPkg.ACPServerSettings, d *agents.AgentDefaul
 			s.Constraints = constraints
 		}
 	}
+	if s.ContextFlushCommand == "" && d.ContextFlushCommand != "" {
+		s.ContextFlushCommand = d.ContextFlushCommand
+	}
 	s.AutoApprove = d.AutoApprove
 }
 

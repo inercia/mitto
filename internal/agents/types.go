@@ -93,6 +93,9 @@ type AgentDefaults struct {
 	// AutoApprove sets whether the agent auto-approves tool-call permission requests
 	// by default.
 	AutoApprove bool `yaml:"autoApprove" json:"autoApprove"`
+	// ContextFlushCommand is the default agent-native context-flush slash command
+	// (e.g. "/clear") seeded into ACPServer.ContextFlushCommand at discovery.
+	ContextFlushCommand string `yaml:"contextFlushCommand,omitempty" json:"contextFlushCommand,omitempty"`
 }
 
 // AgentMetadata holds the parsed content of a metadata.yaml file.

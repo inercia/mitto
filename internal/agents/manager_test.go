@@ -370,6 +370,7 @@ defaults:
     - coding
     - smart
   autoApprove: true
+  contextFlushCommand: "/flush"
 `
 	if err := os.WriteFile(filepath.Join(agentDir, "metadata.yaml"), []byte(meta), 0644); err != nil {
 		t.Fatal(err)
@@ -414,6 +415,11 @@ defaults:
 	// AutoApprove
 	if !d.AutoApprove {
 		t.Error("expected AutoApprove to be true")
+	}
+
+	// ContextFlushCommand
+	if d.ContextFlushCommand != "/flush" {
+		t.Errorf("ContextFlushCommand = %q, want %q", d.ContextFlushCommand, "/flush")
 	}
 }
 

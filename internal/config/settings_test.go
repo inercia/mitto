@@ -446,3 +446,31 @@ func TestParseMemoryRecycleThreshold(t *testing.T) {
 		t.Errorf("nil ParseMemoryRecycleThreshold() = (%d, %t), want (0, false)", gotBytes, gotEnabled)
 	}
 }
+
+func TestContextFlushCommand_RoundTrip(t *testing.T) {
+	original := &Config{
+		ACPServers: []ACPServer{
+			{Name: "server1", Command: "cmd1", ContextFlushCommand: "/clear"},
+			{Name: "server2", Command: "cmd2"}, // no ContextFlushCommand
+		},
+	}
+
+	settings := ConfigToSettings(original)
+
+	// Verify JSON tag is present
+	if settings.ACPServers[0].ContextFlushCommand != "/clear" {
+		t.Errorf("ACPServers[0].ContextFlushCommand = %q, want %q", settings.ACPServers[0].ContextFlushCommand, "/clear")
+	}
+	if settings.ACPServers[1].ContextFlushCommand != "" {
+		t.Errorf("ACPServers[1].ContextFlushCommand = %q, want empty", settings.ACPServers[1].ContextFlushCommand)
+	}
+
+	result := settings.ToConfig()
+
+	if result.ACPServers[0].ContextFlushCommand != "/clear" {
+		t.Errorf("round-trip ACPServers[0].ContextFlushCommand = %q, want %q", result.ACPServers[0].ContextFlushCommand, "/clear")
+	}
+	if result.ACPServers[1].ContextFlushCommand != "" {
+		t.Errorf("round-trip ACPServers[1].ContextFlushCommand = %q, want empty", result.ACPServers[1].ContextFlushCommand)
+	}
+}
