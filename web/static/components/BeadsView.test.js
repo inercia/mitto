@@ -392,3 +392,230 @@ describe("onLaunchPrompt call convention", () => {
     expect(launcher.lastCall()).toHaveLength(2);
   });
 });
+
+// =============================================================================
+// Cleanup progress-toast throttle/replace logic
+// =============================================================================
+
+/**
+ * Duplicated from BeadsView.js for testing (component imports window.preact
+ * globals at module load, so the module itself cannot be imported under jsdom).
+ * Keep this in sync with handleCleanup's start toast and the onProgress handler
+ * in BeadsView.js. `now` is injected (rather than Date.now()) so the throttle
+ * window can be exercised deterministically.
+ */
+const CLEANUP_PROGRESS_TOAST_INTERVAL_MS = 3000;
+
+function makeCleanupHarness({ workingDir = "/w" } = {}) {
+  const refs = { cleanupToastId: null, lastCleanupToastAt: 0 };
+
+  let nextToastId = 0;
+  const showToast = (opts) => {
+    showToast.calls.push(opts);
+    return ++nextToastId;
+  };
+  showToast.calls = [];
+  showToast.count = () => showToast.calls.length;
+  showToast.last = () => showToast.calls[showToast.calls.length - 1];
+  showToast.countByStyle = (style) => showToast.calls.filter((c) => c.style === style).length;
+
+  const dismissToast = (id) => dismissToast.ids.push(id);
+  dismissToast.ids = [];
+  dismissToast.count = () => dismissToast.ids.length;
+  dismissToast.last = () => dismissToast.ids[dismissToast.ids.length - 1];
+
+  const fetchList = () => { fetchList.count += 1; };
+  fetchList.count = 0;
+
+  const setCleaningUp = (v) => setCleaningUp.values.push(v);
+  setCleaningUp.values = [];
+  const setCleanupProgress = (v) => setCleanupProgress.values.push(v);
+  setCleanupProgress.values = [];
+
+  const clearProgressToast = () => {
+    if (refs.cleanupToastId != null && dismissToast) {
+      dismissToast(refs.cleanupToastId);
+    }
+    refs.cleanupToastId = null;
+  };
+
+  // Mirrors handleCleanup's "background job started" branch.
+  const start = (total, now) => {
+    setCleanupProgress({ deleted: 0, total });
+    refs.lastCleanupToastAt = now;
+    refs.cleanupToastId = showToast
+      ? showToast({
+          style: "info",
+          title: `Removing ${total} closed issue${total === 1 ? "" : "s"}…`,
+          sticky: true,
+        })
+      : null;
+  };
+
+  // Mirrors the onProgress event handler.
+  const onProgress = (detail, now) => {
+    const d = detail || {};
+    if (d.working_dir !== workingDir) return;
+    if (d.error) {
+      clearProgressToast();
+      showToast && showToast({ style: "error", title: d.error || "Failed to clean up issues" });
+      setCleaningUp(false);
+      setCleanupProgress(null);
+      fetchList();
+      return;
+    }
+    const deleted = d.deleted || 0;
+    const total = d.total || 0;
+    setCleanupProgress({ deleted, total });
+    if (d.done) {
+      clearProgressToast();
+      showToast && showToast({
+        style: "success",
+        title: `Removed ${deleted} closed issue${deleted === 1 ? "" : "s"}`,
+      });
+      setCleaningUp(false);
+      setCleanupProgress(null);
+      fetchList();
+      return;
+    }
+    if (showToast && now - refs.lastCleanupToastAt >= CLEANUP_PROGRESS_TOAST_INTERVAL_MS) {
+      refs.lastCleanupToastAt = now;
+      clearProgressToast();
+      refs.cleanupToastId = showToast({
+        style: "info",
+        title: `Removing closed issues… ${deleted}/${total}`,
+        sticky: true,
+      });
+    }
+  };
+
+  return { refs, workingDir, showToast, dismissToast, fetchList, setCleaningUp, setCleanupProgress, start, onProgress };
+}
+
+describe("cleanup progress toast — start", () => {
+  test("shows an immediate sticky info toast and records its id + timestamp", () => {
+    const h = makeCleanupHarness();
+    h.start(120, 1000);
+    expect(h.showToast.count()).toBe(1);
+    expect(h.showToast.last()).toEqual({
+      style: "info",
+      title: "Removing 120 closed issues…",
+      sticky: true,
+    });
+    expect(h.refs.cleanupToastId).toBe(1);
+    expect(h.refs.lastCleanupToastAt).toBe(1000);
+    expect(h.dismissToast.count()).toBe(0);
+  });
+
+  test("singular pluralization for a single closed issue", () => {
+    const h = makeCleanupHarness();
+    h.start(1, 1000);
+    expect(h.showToast.last().title).toBe("Removing 1 closed issue…");
+  });
+});
+
+describe("cleanup progress toast — throttle", () => {
+  test("an update within the throttle window shows no new toast", () => {
+    const h = makeCleanupHarness();
+    h.start(120, 1000);
+    h.onProgress({ working_dir: "/w", deleted: 25, total: 120 }, 3999); // 2999ms later
+    expect(h.showToast.countByStyle("info")).toBe(1); // still just the start toast
+    expect(h.dismissToast.count()).toBe(0);
+    expect(h.refs.cleanupToastId).toBe(1);
+    expect(h.refs.lastCleanupToastAt).toBe(1000);
+  });
+
+  test("an update at exactly the interval boundary shows (>= comparison)", () => {
+    const h = makeCleanupHarness();
+    h.start(120, 1000);
+    h.onProgress({ working_dir: "/w", deleted: 50, total: 120 }, 4000); // exactly 3000ms later
+    expect(h.showToast.countByStyle("info")).toBe(2);
+    expect(h.refs.lastCleanupToastAt).toBe(4000);
+  });
+
+  test("each update throttles from the last shown time, not from start", () => {
+    const h = makeCleanupHarness();
+    h.start(120, 1000);
+    h.onProgress({ working_dir: "/w", deleted: 50, total: 120 }, 4000); // shows (id 2)
+    h.onProgress({ working_dir: "/w", deleted: 75, total: 120 }, 6000); // only 2000ms later → skip
+    expect(h.showToast.countByStyle("info")).toBe(2);
+    h.onProgress({ working_dir: "/w", deleted: 90, total: 120 }, 7000); // 3000ms later → shows
+    expect(h.showToast.countByStyle("info")).toBe(3);
+    expect(h.refs.lastCleanupToastAt).toBe(7000);
+  });
+
+  test("first mid-flight progress (no prior start) shows immediately", () => {
+    const h = makeCleanupHarness();
+    h.onProgress({ working_dir: "/w", deleted: 25, total: 50 }, 5000);
+    expect(h.showToast.countByStyle("info")).toBe(1);
+    expect(h.dismissToast.count()).toBe(0); // nothing to replace yet
+    expect(h.refs.cleanupToastId).toBe(1);
+    expect(h.refs.lastCleanupToastAt).toBe(5000);
+  });
+
+  test("events for a different working dir are ignored", () => {
+    const h = makeCleanupHarness();
+    h.start(120, 1000);
+    h.onProgress({ working_dir: "/other", deleted: 60, total: 120 }, 9999);
+    expect(h.showToast.count()).toBe(1); // only the start toast
+    expect(h.dismissToast.count()).toBe(0);
+    expect(h.refs.cleanupToastId).toBe(1);
+    expect(h.refs.lastCleanupToastAt).toBe(1000);
+  });
+});
+
+describe("cleanup progress toast — replace in place", () => {
+  test("a throttled update dismisses the previous toast before showing the new one", () => {
+    const h = makeCleanupHarness();
+    h.start(120, 1000); // toast id 1
+    h.onProgress({ working_dir: "/w", deleted: 50, total: 120 }, 4000); // replace
+    expect(h.dismissToast.count()).toBe(1);
+    expect(h.dismissToast.last()).toBe(1); // dismissed the start toast
+    expect(h.showToast.last()).toEqual({
+      style: "info",
+      title: "Removing closed issues… 50/120",
+      sticky: true,
+    });
+    expect(h.refs.cleanupToastId).toBe(2); // tracks the new live toast
+  });
+});
+
+describe("cleanup progress toast — terminal outcomes reset state", () => {
+  test("done dismisses the live toast, shows a success toast, and clears the ref", () => {
+    const h = makeCleanupHarness();
+    h.start(120, 1000);
+    h.onProgress({ working_dir: "/w", deleted: 50, total: 120 }, 4000); // live toast id 2
+    h.onProgress({ working_dir: "/w", deleted: 120, total: 120, done: true }, 5000);
+    expect(h.dismissToast.last()).toBe(2);
+    expect(h.showToast.countByStyle("success")).toBe(1);
+    expect(h.showToast.last().title).toBe("Removed 120 closed issues");
+    expect(h.refs.cleanupToastId).toBeNull();
+    expect(h.fetchList.count).toBe(1);
+    expect(h.setCleaningUp.values).toContain(false);
+  });
+
+  test("done with no live toast does not call dismiss (null guard)", () => {
+    const h = makeCleanupHarness();
+    h.onProgress({ working_dir: "/w", deleted: 0, total: 0, done: true }, 5000);
+    expect(h.dismissToast.count()).toBe(0);
+    expect(h.showToast.countByStyle("success")).toBe(1);
+    expect(h.showToast.last().title).toBe("Removed 0 closed issues");
+  });
+
+  test("done with a single deleted issue uses singular pluralization", () => {
+    const h = makeCleanupHarness();
+    h.onProgress({ working_dir: "/w", deleted: 1, total: 1, done: true }, 5000);
+    expect(h.showToast.last().title).toBe("Removed 1 closed issue");
+  });
+
+  test("error dismisses the live toast, shows an error toast, and clears the ref", () => {
+    const h = makeCleanupHarness();
+    h.start(120, 1000); // live toast id 1
+    h.onProgress({ working_dir: "/w", error: "bd exploded" }, 2000);
+    expect(h.dismissToast.last()).toBe(1);
+    expect(h.showToast.countByStyle("error")).toBe(1);
+    expect(h.showToast.last().title).toBe("bd exploded");
+    expect(h.refs.cleanupToastId).toBeNull();
+    expect(h.fetchList.count).toBe(1);
+  });
+});
