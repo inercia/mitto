@@ -125,10 +125,15 @@ const STARTUP_STAGGER_MS = 300;
 // Debounce window for reconnectAllSessionsStaggered (ms).
 // Multiple macOS activation sources (NSWorkspaceDidWakeNotification,
 // NSWorkspaceScreensDidWakeNotification, applicationDidBecomeActive) can fire
-// 4–10 seconds apart for the same wake/focus event.  Collapsing these into a
-// single staggered reconnect prevents duplicate background-session timers from
-// firing concurrently and accumulating observers on BackgroundSession.
-const STAGGERED_RECONNECT_DEBOUNCE_MS = 5000;
+// 4–10 seconds apart for the same wake/focus event.  In addition, the native
+// "App became active" callback and the WKWebView visibilitychange "App became
+// visible" event are distinct triggers that both funnel here ~6 s apart for a
+// single wake.  Collapsing these into a single staggered reconnect prevents a
+// redundant active-session force-reconnect (which tears down a freshly opened
+// WebSocket) and avoids duplicate background-session timers accumulating
+// observers on BackgroundSession.  Matches APP_ACTIVATE_RESYNC_DEBOUNCE_MS
+// (one resync per wake) so the active+visible pair coalesces into one reconnect.
+const STAGGERED_RECONNECT_DEBOUNCE_MS = 15000;
 
 // Grace period (ms) before a background session's per-session WebSocket is
 // disconnected after it stops being the active session. Lazy-connect keeps only
@@ -5712,10 +5717,13 @@ export function useWebSocket({ onActiveSessionRemovedRef } = {}) {
   //
   // Two-layer protection:
   //   1. Leading-edge debounce: suppress calls within STAGGERED_RECONNECT_DEBOUNCE_MS
-  //      of the last accepted call (handles 4–5 s pairs).
+  //      (15 s) of the last accepted call.  This coalesces the macOS native
+  //      "App became active" and WKWebView "App became visible" pair (which fire
+  //      ~6–10 s apart for a single wake) into one reconnect, preventing a
+  //      redundant active-session force-reconnect.
   //   2. Timer cancellation: cancel any still-pending background-session timers from
-  //      a previous call before scheduling new ones (handles 6–10 s pairs where the
-  //      debounce window has expired but the previous timers haven't fired yet).
+  //      a previous call before scheduling new ones (defense-in-depth for any pair
+  //      that still slips past the debounce window before its timers have fired).
   const reconnectAllSessionsStaggered = useCallback(() => {
     // Layer 1: leading-edge debounce.
     const now = Date.now();
