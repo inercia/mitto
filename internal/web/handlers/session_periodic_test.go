@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/inercia/mitto/internal/conversation"
 	"github.com/inercia/mitto/internal/session"
@@ -43,6 +44,51 @@ func putPeriodicForTest(t *testing.T, h *Handlers, sid string, body PeriodicProm
 		t.Fatalf("decode PUT response: %v", err)
 	}
 	return got
+}
+
+// TestHandleRunPeriodicNow_TimeoutReturnsRetryable503 verifies that a slow
+// TriggerPeriodicNow (e.g. a blocking auto-resume) does not block the handler
+// past auxBackedRequestTimeout: it returns a fast retryable 503 with a
+// Retry-After header and the canonical "unavailable" error code (mitto-n36h).
+func TestHandleRunPeriodicNow_TimeoutReturnsRetryable503(t *testing.T) {
+	// Lower the budget so the test completes quickly.
+	old := auxBackedRequestTimeout
+	auxBackedRequestTimeout = 20 * time.Millisecond
+	defer func() { auxBackedRequestTimeout = old }()
+
+	// Stub blocks past the shortened budget so the handler's deadline fires
+	// first; the buffered result channel lets this goroutine finish without
+	// leaking once the test releases it.
+	release := make(chan struct{})
+	defer close(release)
+	stub := func(_ string, _ bool) error {
+		<-release
+		return nil
+	}
+
+	h := New(Deps{TriggerPeriodicNow: stub})
+
+	req := httptest.NewRequest(http.MethodPost, "/api/sessions/sid/periodic/run-now", nil)
+	w := httptest.NewRecorder()
+	h.handleRunPeriodicNow(w, req, "sid")
+
+	if w.Code != http.StatusServiceUnavailable {
+		t.Errorf("status = %d, want %d", w.Code, http.StatusServiceUnavailable)
+	}
+	if ra := w.Header().Get("Retry-After"); ra == "" {
+		t.Error("Retry-After header not set")
+	}
+	var env struct {
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&env); err != nil {
+		t.Fatalf("decode error body: %v", err)
+	}
+	if env.Error.Code != "unavailable" {
+		t.Errorf("error.code = %q, want %q", env.Error.Code, "unavailable")
+	}
 }
 
 func TestHandleSessionPeriodic_ChildRejected(t *testing.T) {
