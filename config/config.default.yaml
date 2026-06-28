@@ -22,6 +22,26 @@
 #       command: npx -y @agentclientprotocol/claude-agent-acp@latest
 acp: []
 
+# Named model profiles
+# Pair a model-selection criteria (same match-mode + pattern mechanism as the ACP
+# server "Model Selection" constraints) with capability tags. These let other parts
+# of Mitto branch on a model's capability tags instead of brittle model-name strings.
+#
+# Match modes: contains, exact, startsWith, regex, lookAlike
+#
+# Example:
+#   models:
+#     - name: Opus
+#       criteria:
+#         matchMode: contains
+#         pattern: Opus
+#       tags: [Smartest, Expensive]
+#     - name: Sonnet
+#       criteria:
+#         matchMode: contains
+#         pattern: Sonnet
+#       tags: [Smart, Cheap]
+
 # Web server configuration
 web:
   host: 127.0.0.1  # Local listener always binds to 127.0.0.1 for security
