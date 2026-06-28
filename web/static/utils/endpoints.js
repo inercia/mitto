@@ -58,6 +58,7 @@ export const endpoints = {
     settings:       (id)                => apiUrl(`/api/sessions/${enc(id)}/settings`),
     periodic:       (id)                => apiUrl(`/api/sessions/${enc(id)}/periodic`),
     periodicRunNow: (id)                => apiUrl(`/api/sessions/${enc(id)}/periodic/run-now`),
+    flush:          (id)                => apiUrl(`/api/sessions/${enc(id)}/flush`),
     callback:       (id)                => apiUrl(`/api/sessions/${enc(id)}/callback`),
     userData:       (id)                => apiUrl(`/api/sessions/${enc(id)}/user-data`),
     promptArgCache: (id, promptName)    => apiUrl(`/api/sessions/${enc(id)}/prompt-arg-cache`) + qs({ prompt: promptName }),

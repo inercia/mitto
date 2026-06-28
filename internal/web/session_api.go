@@ -109,6 +109,12 @@ func (s *Server) handleSessionPeriodic(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func (s *Server) handleSessionFlush(w http.ResponseWriter, r *http.Request) {
+	if id, ok := s.sessionIDFromPath(w, r); ok {
+		s.apiHandlers.HandleSessionFlush(w, r, id)
+	}
+}
+
 func (s *Server) handleSessionGet(w http.ResponseWriter, r *http.Request) {
 	if id, ok := s.sessionIDFromPath(w, r); ok {
 		s.apiHandlers.HandleGetSession(w, r, id, false)

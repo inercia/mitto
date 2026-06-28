@@ -143,7 +143,7 @@ type PromptMeta struct {
 	// such run with no interruption. Computed in PromptWithMeta from the session-scoped
 	// continuation marker (peeked before body render, advanced at the dispatch commit).
 	IterationUninterrupted bool
-	FreshContext bool // True to suppress history injection and use a new ACP session for this prompt
+	FreshContext           bool // True to suppress history injection and use a new ACP session for this prompt
 	// Arguments, when non-empty, triggers bash-like ${VAR}/${VAR:-default}
 	// substitution on the resolved prompt text before persistence and broadcast.
 	// Only set for named/scenario prompts; ad-hoc messages leave this nil so that
@@ -180,6 +180,23 @@ func (bs *BackgroundSession) PromptWithImages(message string, imageIDs []string)
 // This runs asynchronously. The IDs should be of previously uploaded images/files.
 func (bs *BackgroundSession) PromptWithAttachments(message string, imageIDs, fileIDs []string) error {
 	return bs.PromptWithMeta(message, PromptMeta{ImageIDs: imageIDs, FileIDs: fileIDs})
+}
+
+// FlushContext clears the agent's conversation context by sending the configured
+// agent-native context-flush command (e.g. "/clear") through the normal prompt
+// path. It runs asynchronously like any other prompt. Returns an error when no
+// flush command is configured for this session's ACP server, or when the session
+// is closed. Callers (e.g. the REST handler) should gate on IsPrompting() to
+// avoid issuing a flush while a turn is in flight.
+func (bs *BackgroundSession) FlushContext() error {
+	cmd := strings.TrimSpace(bs.contextFlushCommand)
+	if cmd == "" {
+		return &sessionError{"context flush command not configured for this server"}
+	}
+	if bs.IsClosed() {
+		return &sessionError{"session is closed"}
+	}
+	return bs.PromptWithMeta(cmd, PromptMeta{SenderID: "context-flush"})
 }
 
 // PromptWithMeta sends a message with optional metadata to the agent. This runs asynchronously.

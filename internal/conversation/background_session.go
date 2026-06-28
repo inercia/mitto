@@ -186,6 +186,7 @@ type BackgroundSession struct {
 	acpCwd               string                                 // Working directory for ACP process (for restart)
 	serverEnv            map[string]string                      // Server-specific env vars from settings.json (for restart)
 	acpServerConstraints map[string]*config.ACPServerConstraint // Auto-selection constraints from the ACP server config
+	contextFlushCommand  string                                 // Agent-native context-flush command (e.g. "/clear"); empty = disabled
 	procCtl              acpProcessController                   // ACP restart policy collaborator (composition)
 	titleCoord           titleCoordinator                       // Auto-title generation triggers collaborator (composition)
 	promptArgCache       *promptArgCache                        // Per-conversation prompt argument value cache (composition)
@@ -329,7 +330,7 @@ type BackgroundSessionConfig struct {
 	// from GetWorkspaceProcessorOverrides and injected at session creation/resume time.
 	WorkspaceProcessorArgOverrides map[string]map[string]string
 	QueueConfig                    *config.QueueConfig // Queue processing configuration
-	Runner           *runner.Runner      // Optional restricted runner for sandboxed execution
+	Runner                         *runner.Runner      // Optional restricted runner for sandboxed execution
 
 	ActionButtonsConfig *config.ActionButtonsConfig // Action buttons configuration
 	FileLinksConfig     *config.FileLinksConfig     // File path linking configuration
@@ -530,34 +531,36 @@ func NewBackgroundSession(cfg BackgroundSessionConfig) (*BackgroundSession, erro
 		workingDir:                     cfg.WorkingDir,
 		isFirstPrompt:                  true, // New session starts with first prompt pending
 		queueConfig:                    cfg.QueueConfig,
-		actionButtonsConfig:     cfg.ActionButtonsConfig,
-		fileLinksConfig:         cfg.FileLinksConfig,
-		apiPrefix:               cfg.APIPrefix,
-		workspaceUUID:           cfg.WorkspaceUUID,
-		runner:                  cfg.Runner,
-		onStreamingStateChanged: cfg.OnStreamingStateChanged,
-		onUIPromptStateChanged:  cfg.OnUIPromptStateChanged,
-		onUIPromptTimeout:       cfg.OnUIPromptTimeout,
-		onPlanStateChanged:      cfg.OnPlanStateChanged,
-		onConfigChanged:         cfg.OnConfigOptionChanged,
-		onTitleGenerated:        cfg.OnTitleGenerated,
-		onSelfDestruct:          cfg.OnSelfDestruct,
-		onTurnIdle:              cfg.OnTurnIdle,
-		acpCommand:              cfg.ACPCommand,              // Store for restart
-		acpCwd:                  cfg.ACPCwd,                  // Store for restart
-		serverEnv:               cfg.Env,                     // Store for restart
-		globalMcpServer:         cfg.GlobalMCPServer,         // Global MCP server for session registration
-		auxiliaryManager:        cfg.AuxiliaryManager,        // Workspace-scoped auxiliary manager
-		availableACPServers:     cfg.AvailableACPServers,     // Pre-computed workspace server list
-		promptResolver:           cfg.PromptResolver,           // Named prompt resolver (resolves name → text at send time)
-		preferredModelsResolver:  cfg.PreferredModelsResolver,  // Named prompt resolver (resolves name → preferredModels)
-		promptParametersResolver: cfg.PromptParametersResolver, // Named prompt resolver (resolves name → parameters)
-		isChildPrompting:         cfg.IsChildPrompting,         // Callback to check if a child session is prompting
-		creationCtx:              cfg.CreationCtx,              // Context for initial ACP session creation RPC only
+		actionButtonsConfig:            cfg.ActionButtonsConfig,
+		fileLinksConfig:                cfg.FileLinksConfig,
+		apiPrefix:                      cfg.APIPrefix,
+		workspaceUUID:                  cfg.WorkspaceUUID,
+		runner:                         cfg.Runner,
+		onStreamingStateChanged:        cfg.OnStreamingStateChanged,
+		onUIPromptStateChanged:         cfg.OnUIPromptStateChanged,
+		onUIPromptTimeout:              cfg.OnUIPromptTimeout,
+		onPlanStateChanged:             cfg.OnPlanStateChanged,
+		onConfigChanged:                cfg.OnConfigOptionChanged,
+		onTitleGenerated:               cfg.OnTitleGenerated,
+		onSelfDestruct:                 cfg.OnSelfDestruct,
+		onTurnIdle:                     cfg.OnTurnIdle,
+		acpCommand:                     cfg.ACPCommand,               // Store for restart
+		acpCwd:                         cfg.ACPCwd,                   // Store for restart
+		serverEnv:                      cfg.Env,                      // Store for restart
+		globalMcpServer:                cfg.GlobalMCPServer,          // Global MCP server for session registration
+		auxiliaryManager:               cfg.AuxiliaryManager,         // Workspace-scoped auxiliary manager
+		availableACPServers:            cfg.AvailableACPServers,      // Pre-computed workspace server list
+		promptResolver:                 cfg.PromptResolver,           // Named prompt resolver (resolves name → text at send time)
+		preferredModelsResolver:        cfg.PreferredModelsResolver,  // Named prompt resolver (resolves name → preferredModels)
+		promptParametersResolver:       cfg.PromptParametersResolver, // Named prompt resolver (resolves name → parameters)
+		isChildPrompting:               cfg.IsChildPrompting,         // Callback to check if a child session is prompting
+		creationCtx:                    cfg.CreationCtx,              // Context for initial ACP session creation RPC only
 	}
 
 	// Look up ACP server constraints from config
 	bs.acpServerConstraints = lookupACPServerConstraints(cfg.MittoConfig, cfg.ACPServer)
+	// Look up the agent-native context-flush command from config
+	bs.contextFlushCommand = lookupContextFlushCommand(cfg.MittoConfig, cfg.ACPServer)
 
 	// Wire prompt-mode processor execution to auxiliary sessions
 	if bs.processorManager != nil && bs.auxiliaryManager != nil {
@@ -741,34 +744,36 @@ func ResumeBackgroundSession(config BackgroundSessionConfig) (*BackgroundSession
 		workspaceProcessorArgOverrides: config.WorkspaceProcessorArgOverrides,
 		workingDir:                     config.WorkingDir,
 		isFirstPrompt:                  true, // Treat first prompt after resume as "first" for processors (re-inject context)
-		queueConfig:             config.QueueConfig,
-		actionButtonsConfig:     config.ActionButtonsConfig,
-		fileLinksConfig:         config.FileLinksConfig,
-		apiPrefix:               config.APIPrefix,
-		workspaceUUID:           config.WorkspaceUUID,
-		runner:                  config.Runner,
-		onStreamingStateChanged: config.OnStreamingStateChanged,
-		onUIPromptStateChanged:  config.OnUIPromptStateChanged,
-		onUIPromptTimeout:       config.OnUIPromptTimeout,
-		onPlanStateChanged:      config.OnPlanStateChanged,
-		onConfigChanged:         config.OnConfigOptionChanged,
-		onTitleGenerated:        config.OnTitleGenerated,
-		onSelfDestruct:          config.OnSelfDestruct,
-		acpCommand:              config.ACPCommand,              // Store for restart
-		acpCwd:                  config.ACPCwd,                  // Store for restart
-		serverEnv:               config.Env,                     // Store for restart
-		globalMcpServer:         config.GlobalMCPServer,         // Global MCP server for session registration
-		auxiliaryManager:        config.AuxiliaryManager,        // Workspace-scoped auxiliary manager
-		availableACPServers:     config.AvailableACPServers,     // Pre-computed workspace server list
-		promptResolver:           config.PromptResolver,           // Named prompt resolver (resolves name → text at send time)
-		preferredModelsResolver:  config.PreferredModelsResolver,  // Named prompt resolver (resolves name → preferredModels)
-		promptParametersResolver: config.PromptParametersResolver, // Named prompt resolver (resolves name → parameters)
-		isChildPrompting:         config.IsChildPrompting,         // Callback to check if a child session is prompting
-		creationCtx:              config.CreationCtx,              // Context for initial ACP session creation RPC only
+		queueConfig:                    config.QueueConfig,
+		actionButtonsConfig:            config.ActionButtonsConfig,
+		fileLinksConfig:                config.FileLinksConfig,
+		apiPrefix:                      config.APIPrefix,
+		workspaceUUID:                  config.WorkspaceUUID,
+		runner:                         config.Runner,
+		onStreamingStateChanged:        config.OnStreamingStateChanged,
+		onUIPromptStateChanged:         config.OnUIPromptStateChanged,
+		onUIPromptTimeout:              config.OnUIPromptTimeout,
+		onPlanStateChanged:             config.OnPlanStateChanged,
+		onConfigChanged:                config.OnConfigOptionChanged,
+		onTitleGenerated:               config.OnTitleGenerated,
+		onSelfDestruct:                 config.OnSelfDestruct,
+		acpCommand:                     config.ACPCommand,               // Store for restart
+		acpCwd:                         config.ACPCwd,                   // Store for restart
+		serverEnv:                      config.Env,                      // Store for restart
+		globalMcpServer:                config.GlobalMCPServer,          // Global MCP server for session registration
+		auxiliaryManager:               config.AuxiliaryManager,         // Workspace-scoped auxiliary manager
+		availableACPServers:            config.AvailableACPServers,      // Pre-computed workspace server list
+		promptResolver:                 config.PromptResolver,           // Named prompt resolver (resolves name → text at send time)
+		preferredModelsResolver:        config.PreferredModelsResolver,  // Named prompt resolver (resolves name → preferredModels)
+		promptParametersResolver:       config.PromptParametersResolver, // Named prompt resolver (resolves name → parameters)
+		isChildPrompting:               config.IsChildPrompting,         // Callback to check if a child session is prompting
+		creationCtx:                    config.CreationCtx,              // Context for initial ACP session creation RPC only
 	}
 
 	// Look up ACP server constraints from config
 	bs.acpServerConstraints = lookupACPServerConstraints(config.MittoConfig, config.ACPServer)
+	// Look up the agent-native context-flush command from config
+	bs.contextFlushCommand = lookupContextFlushCommand(config.MittoConfig, config.ACPServer)
 
 	// Wire prompt-mode processor execution to auxiliary sessions
 	if bs.processorManager != nil && bs.auxiliaryManager != nil {
@@ -940,6 +945,13 @@ func (bs *BackgroundSession) GetWorkingDir() string {
 // GetACPID returns the ACP protocol session ID.
 func (bs *BackgroundSession) GetACPID() string {
 	return bs.acpID
+}
+
+// ContextFlushCommand returns the agent-native context-flush command (e.g.
+// "/clear") configured for this session's ACP server, or "" when the feature is
+// not configured. Used by the API/UI to decide whether to expose the flush action.
+func (bs *BackgroundSession) ContextFlushCommand() string {
+	return bs.contextFlushCommand
 }
 
 // StartedAt returns when this session was started or resumed.

@@ -65,6 +65,8 @@ import {
   initCSRF,
   apiUrl,
   authFetch,
+  endpoints,
+  errorMessageFromData,
   fixViewerURLIfNeeded,
   getGroupingMode,
   cycleGroupingMode,
@@ -2082,6 +2084,33 @@ function App() {
     }
   }, [messages, showToast]);
 
+  // Flush the agent's conversation context by sending the configured
+  // context-flush command (e.g. "/clear") to the active conversation. The
+  // backend resolves the command per ACP server; the menu item is only shown
+  // when one is configured (see flushCommand below).
+  const handleFlushContext = useCallback(
+    async (session) => {
+      const sessionId = session?.session_id || activeSessionId;
+      if (!sessionId) return;
+      try {
+        const res = await authFetch(endpoints.sessions.flush(sessionId), {
+          method: "POST",
+        });
+        if (res.ok) {
+          showToast({ style: "success", title: "Flushing conversation context\u2026", duration: 3000 });
+        } else {
+          const data = await res.json().catch(() => null);
+          const msg = errorMessageFromData(data) || "Failed to flush context";
+          showToast({ style: "error", title: msg, duration: 4000 });
+        }
+      } catch (err) {
+        console.error("Failed to flush context:", err);
+        showToast({ style: "error", title: "Failed to flush context", duration: 4000 });
+      }
+    },
+    [activeSessionId, showToast],
+  );
+
   const {
     contextMenu: headerMenu,
     contextMenuItems: headerMenuItems,
@@ -2103,6 +2132,8 @@ function App() {
     onFetchConversationPrompts: fetchConversationPromptsForSession,
     onSendPromptToConversation: handleSendPromptToConversation,
     onCopyConversation: activeSessionId ? handleCopyConversation : undefined,
+    flushCommand: sessionInfo?.context_flush_command || "",
+    onFlushContext: activeSessionId ? handleFlushContext : undefined,
   });
 
   return html`

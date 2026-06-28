@@ -17,6 +17,7 @@ import {
   ArchiveFilledIcon,
   TrashIcon,
   CopyIcon,
+  BroomIcon,
 } from "../components/Icons.js";
 import { buildPromptGroupMenuItems } from "../components/ContextMenu.js";
 
@@ -36,6 +37,8 @@ export function useConversationMenu({
   onFetchConversationPrompts, // async (session, workingDir) => menus:conversation prompts
   onSendPromptToConversation, // (session, prompt) when a context-menu prompt is clicked
   onCopyConversation,         // optional: (session) => void — shows "Copy as Markdown" item
+  flushCommand = "",          // optional: when non-empty, shows "Flush context" item
+  onFlushContext,             // optional: (session) => void — invoked when "Flush context" is clicked
 }) {
   const [contextMenu, setContextMenu] = useState(null);
   // menus:conversation prompts evaluated for THIS conversation. Loaded lazily
@@ -109,6 +112,18 @@ export function useConversationMenu({
             },
           ]
         : []),
+      // "Flush context" — only shown when the conversation's ACP server has a
+      // context-flush command configured and the caller provides the callback.
+      ...(flushCommand && onFlushContext
+        ? [
+            {
+              label: "Flush context",
+              icon: html`<${BroomIcon} />`,
+              title: `Send ${flushCommand} to clear the agent's context`,
+              onClick: () => onFlushContext(session),
+            },
+          ]
+        : []),
       // "Make periodic" — only for non-periodic, non-spawned, non-archived sessions
       ...(!isPeriodicEnabled && !isSpawned && !isArchived
         ? [
@@ -170,6 +185,8 @@ export function useConversationMenu({
     onArchive,
     onDelete,
     onCopyConversation,
+    flushCommand,
+    onFlushContext,
   ]);
 
   return {

@@ -40,6 +40,20 @@ func lookupACPServerConstraints(cfg *config.Config, serverName string) map[strin
 	return nil
 }
 
+// lookupContextFlushCommand returns the agent-native context-flush command (e.g.
+// "/clear") configured for the named ACP server, or "" when none is configured.
+func lookupContextFlushCommand(cfg *config.Config, serverName string) string {
+	if cfg == nil {
+		return ""
+	}
+	for _, srv := range cfg.ACPServers {
+		if srv.Name == serverName {
+			return srv.ContextFlushCommand
+		}
+	}
+	return ""
+}
+
 // configDeps is the minimal interface configManager needs from BackgroundSession.
 // All methods are prefixed with "cm" to avoid clashes with BackgroundSession's public API.
 type configDeps interface {

@@ -392,6 +392,9 @@ func (c *SessionWSClient) sendSessionConnected(bs *conversation.BackgroundSessio
 	if bs != nil {
 		data["acp_session_id"] = bs.GetACPID()
 		data["is_prompting"] = bs.IsPrompting()
+		// Surface the agent-native context-flush command (e.g. "/clear") so the UI
+		// can decide whether to expose the "Flush context" action. Empty = disabled.
+		data["context_flush_command"] = bs.ContextFlushCommand()
 	}
 
 	// Get session metadata if available

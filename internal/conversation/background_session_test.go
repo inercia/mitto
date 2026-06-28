@@ -187,6 +187,51 @@ func TestLookupACPServerConstraints(t *testing.T) {
 	})
 }
 
+// TestLookupContextFlushCommand pins down the per-ACP-server resolution of the
+// agent-native context-flush command used by BackgroundSession.FlushContext and
+// the /flush API/UI gating.
+func TestLookupContextFlushCommand(t *testing.T) {
+	cfg := &config.Config{
+		ACPServers: []config.ACPServer{
+			{Name: "claude-code", ContextFlushCommand: "/clear"},
+			{Name: "no-flush"},
+		},
+	}
+
+	t.Run("nil config returns empty", func(t *testing.T) {
+		if got := lookupContextFlushCommand(nil, "claude-code"); got != "" {
+			t.Errorf("expected empty command when cfg is nil, got %q", got)
+		}
+	})
+
+	t.Run("matching server returns its command", func(t *testing.T) {
+		if got := lookupContextFlushCommand(cfg, "claude-code"); got != "/clear" {
+			t.Errorf("expected '/clear', got %q", got)
+		}
+	})
+
+	t.Run("server without command returns empty", func(t *testing.T) {
+		if got := lookupContextFlushCommand(cfg, "no-flush"); got != "" {
+			t.Errorf("expected empty command, got %q", got)
+		}
+	})
+
+	t.Run("unknown server returns empty", func(t *testing.T) {
+		if got := lookupContextFlushCommand(cfg, "does-not-exist"); got != "" {
+			t.Errorf("expected empty command for unknown server, got %q", got)
+		}
+	})
+}
+
+// TestFlushContext_NotConfigured verifies FlushContext refuses to send anything
+// when no context-flush command is configured for the session's ACP server.
+func TestFlushContext_NotConfigured(t *testing.T) {
+	bs := &BackgroundSession{contextFlushCommand: ""}
+	if err := bs.FlushContext(); err == nil {
+		t.Fatal("expected error when no flush command is configured")
+	}
+}
+
 // TestBackgroundSessionConfig_PopulatesConstraintsFromMittoConfig verifies the
 // end-to-end wiring through the constructor field: given a MittoConfig with a
 // matching ACPServer entry, the constraint-lookup logic invoked by both
