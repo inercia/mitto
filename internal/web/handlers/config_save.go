@@ -29,6 +29,9 @@ type ConfigSaveRequest struct {
 		AutoApprove bool                                      `json:"auto_approve,omitempty"` // Auto-approve permission requests
 		Tags        []string                                  `json:"tags,omitempty"`         // Optional categorization tags
 		Constraints map[string]*configPkg.ACPServerConstraint `json:"constraints,omitempty"`  // Config option auto-selection rules
+		// ContextFlushCommand is an optional agent-native slash command (e.g. "/clear")
+		// to flush conversation context without restarting the agent.
+		ContextFlushCommand string `json:"context_flush_command,omitempty"`
 	} `json:"acp_servers"`
 	// Prompts is the top-level list of global prompts
 	Prompts []configPkg.WebPrompt `json:"prompts,omitempty"`
@@ -56,6 +59,7 @@ type ConfigSaveRequest struct {
 	Conversations *configPkg.ConversationsConfig `json:"conversations,omitempty"`
 	Session       *configPkg.SessionConfig       `json:"session,omitempty"`
 	Permissions   *configPkg.PermissionsConfig   `json:"permissions,omitempty"`
+	MCP           *configPkg.MCPConfig           `json:"mcp,omitempty"`
 	// ServerRenames maps old ACP server names to their new names. The UI sends
 	// this when a server is renamed in place so the backend can migrate the
 	// stored ACPServer of existing conversations (otherwise they would be

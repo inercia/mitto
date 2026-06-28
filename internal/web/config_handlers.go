@@ -133,6 +133,8 @@ func (s *Server) buildNewSettings(req *ConfigSaveRequest) (*configPkg.Settings, 
 			AutoApprove: srv.AutoApprove,          // Auto-approve permission requests
 			Tags:        srv.Tags,                 // Categorization tags
 			Constraints: srv.Constraints,          // Config option auto-selection rules
+			// ContextFlushCommand: agent-native context-flush slash command (e.g. "/clear")
+			ContextFlushCommand: srv.ContextFlushCommand,
 			// Per-server prompts are no longer saved to settings.json
 			// They are managed via prompt files with acps: field
 		}
@@ -285,6 +287,14 @@ func (s *Server) buildNewSettings(req *ConfigSaveRequest) (*configPkg.Settings, 
 		permissionsConfig = s.config.MittoConfig.Permissions
 	}
 
+	// Use MCP from request if provided, otherwise preserve existing
+	var mcpConfig *configPkg.MCPConfig
+	if req.MCP != nil {
+		mcpConfig = req.MCP
+	} else if s.config.MittoConfig != nil {
+		mcpConfig = s.config.MittoConfig.MCP
+	}
+
 	// Filter out file-sourced and builtin prompts — they should not be persisted to settings.json
 	// since they're already loaded from MITTO_DIR/prompts/ files on startup.
 	var settingsPrompts []configPkg.WebPrompt
@@ -302,6 +312,7 @@ func (s *Server) buildNewSettings(req *ConfigSaveRequest) (*configPkg.Settings, 
 		Session:       sessionConfig,
 		Conversations: conversationsConfig,
 		Permissions:   permissionsConfig,
+		MCP:           mcpConfig,
 	}, nil
 }
 
@@ -356,6 +367,7 @@ func (s *Server) applyConfigChanges(req *ConfigSaveRequest, settings *configPkg.
 		s.config.MittoConfig.UI = settings.UI
 		s.config.MittoConfig.Session = settings.Session
 		s.config.MittoConfig.Conversations = settings.Conversations
+		s.config.MittoConfig.MCP = settings.MCP
 
 		// Update session manager's global conversations config so new sessions use the updated settings
 		s.sessionManager.SetGlobalConversations(settings.Conversations)

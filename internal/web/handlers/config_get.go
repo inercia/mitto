@@ -93,6 +93,18 @@ func (h *Handlers) HandleGetConfig(w http.ResponseWriter, r *http.Request) {
 		response["conversations"] = h.deps.MittoConfig.Conversations
 		response["permissions"] = h.deps.MittoConfig.Permissions
 
+		// MCP server config — send effective values (getters are nil-safe).
+		// GetPort() returns -1 when unset; surface the default 5757 for display.
+		mcpPort := h.deps.MittoConfig.MCP.GetPort()
+		if mcpPort < 0 {
+			mcpPort = 5757
+		}
+		response["mcp"] = map[string]interface{}{
+			"enabled": h.deps.MittoConfig.MCP.IsEnabled(),
+			"host":    h.deps.MittoConfig.MCP.GetHost(),
+			"port":    mcpPort,
+		}
+
 		// Merge prompts from global files and settings
 		// Global file prompts (MITTO_DIR/prompts/*.prompt.yaml) have lower priority than settings prompts
 		var globalFilePrompts []configPkg.WebPrompt
@@ -138,6 +150,11 @@ func (h *Handlers) HandleGetConfig(w http.ResponseWriter, r *http.Request) {
 			// Include type if specified (for prompt matching)
 			if srv.Type != "" {
 				acpServers[i]["type"] = srv.Type
+			}
+
+			// Include context-flush command if specified
+			if srv.ContextFlushCommand != "" {
+				acpServers[i]["context_flush_command"] = srv.ContextFlushCommand
 			}
 
 			// Get file-based prompts that explicitly target this ACP server type

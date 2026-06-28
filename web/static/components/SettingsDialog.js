@@ -565,6 +565,7 @@ function ServerEditForm({ server, agentTypes = [], onChange }) {
   const [tags, setTags] = useState(
     server.tags ? server.tags.join(", ") : "",
   );
+  const [contextFlushCommand, setContextFlushCommand] = useState(server.context_flush_command || "");
   // Environment variables as array of {key, value} for easier editing
   const [envVars, setEnvVars] = useState(() => {
     const env = server.env || {};
@@ -592,6 +593,7 @@ function ServerEditForm({ server, agentTypes = [], onChange }) {
       envVars: overrides.envVars !== undefined ? overrides.envVars : envVars,
       constraintModelMode: overrides.constraintModelMode !== undefined ? overrides.constraintModelMode : constraintModelMode,
       constraintModelPattern: overrides.constraintModelPattern !== undefined ? overrides.constraintModelPattern : constraintModelPattern,
+      contextFlushCommand: overrides.contextFlushCommand !== undefined ? overrides.contextFlushCommand : contextFlushCommand,
     };
 
     // Convert envVars array to object, filtering out empty keys
@@ -625,6 +627,7 @@ function ServerEditForm({ server, agentTypes = [], onChange }) {
       envObj,
       parsedTags,
       Object.keys(constraints).length > 0 ? constraints : undefined,
+      currentState.contextFlushCommand,
     );
   };
 
@@ -720,6 +723,23 @@ function ServerEditForm({ server, agentTypes = [], onChange }) {
         />
         <p class="label">
           Comma-separated tags for categorization
+        </p>
+      </div>
+      <div>
+        <label class="label" for="acp-server-flush-cmd"
+          >Context Flush Command
+          <span class="text-xs text-mitto-text-muted">(optional)</span></label
+        >
+        <input
+          id="acp-server-flush-cmd"
+          type="text"
+          value=${contextFlushCommand}
+          onInput=${(e) => { setContextFlushCommand(e.target.value); emitChange({ contextFlushCommand: e.target.value }); }}
+          placeholder="e.g., /clear"
+          class="input input-sm w-full"
+        />
+        <p class="label">
+          Agent slash command to flush/clear context without restarting (leave empty to disable)
         </p>
       </div>
 
@@ -1031,6 +1051,11 @@ export function SettingsDialog({
   const [hookUpCommand, setHookUpCommand] = useState("");
   const [hookDownCommand, setHookDownCommand] = useState("");
   const [hookExternalAddress, setHookExternalAddress] = useState("");
+
+  // MCP server settings
+  const [mcpEnabled, setMcpEnabled] = useState(true);
+  const [mcpHost, setMcpHost] = useState("");
+  const [mcpPort, setMcpPort] = useState(""); // string for the number input
 
   // Access log setting (enabled by default)
   const [accessLogEnabled, setAccessLogEnabled] = useState(true);
@@ -1442,6 +1467,11 @@ export function SettingsDialog({
       setHookDownCommand(config.web?.hooks?.down?.command || "");
       setHookExternalAddress(config.web?.hooks?.external_address || "");
 
+      // Load MCP settings
+      setMcpEnabled(config.mcp?.enabled !== false);
+      setMcpHost(config.mcp?.host || "");
+      setMcpPort(config.mcp?.port ? String(config.mcp.port) : "");
+
       // Load access log setting (enabled by default)
       setAccessLogEnabled(config.web?.access_log?.enabled !== false);
 
@@ -1807,6 +1837,7 @@ export function SettingsDialog({
           env: srv.env || undefined, // Include env vars if present
           tags: srv.tags && srv.tags.length > 0 ? srv.tags : undefined, // Include tags if present
           constraints: srv.constraints || undefined, // Include constraints if present
+          context_flush_command: srv.context_flush_command || undefined,
         };
         // Only include type if specified (otherwise name is used as type)
         if (srv.type) {
@@ -1840,6 +1871,11 @@ export function SettingsDialog({
         conversations: conversationsConfig,
         session: sessionConfig,
         permissions: permissionsConfig,
+        mcp: {
+          enabled: mcpEnabled,
+          host: mcpHost.trim(),
+          port: mcpPort ? parseInt(mcpPort, 10) : 0,
+        },
         restricted_runners:
           Object.keys(restrictedRunnersToSave).length > 0
             ? restrictedRunnersToSave
@@ -2020,7 +2056,7 @@ export function SettingsDialog({
     setError("");
   };
 
-  const updateServer = (oldName, newName, newCommand, newType, autoApprove, env, tags, constraints) => {
+  const updateServer = (oldName, newName, newCommand, newType, autoApprove, env, tags, constraints, contextFlushCommand) => {
     // Update server in-memory (prompts are now read-only from files)
     setAcpServers(
       acpServers.map((s) => {
@@ -2035,6 +2071,7 @@ export function SettingsDialog({
           env: env && Object.keys(env).length > 0 ? env : undefined, // undefined to omit if empty
           tags: tags && tags.length > 0 ? tags : undefined, // undefined to omit if empty
           constraints: constraints || undefined, // undefined to omit if empty
+          context_flush_command: contextFlushCommand && contextFlushCommand.trim() ? contextFlushCommand.trim() : undefined,
         };
         // Only include type if specified (otherwise name is used as type)
         if (newType && newType.trim()) {
@@ -2161,6 +2198,7 @@ export function SettingsDialog({
     { id: "runners", label: "Runners", icon: LockIcon },
     { id: "permissions", label: "Conversations", icon: ShieldIcon },
     { id: "web", label: "Web", icon: GlobeIcon },
+    { id: "mcp", label: "MCP", icon: LightningIcon },
     { id: "ui", label: "UI", icon: SlidersIcon },
   ];
 
@@ -2487,7 +2525,7 @@ export function SettingsDialog({
                                         <${ServerEditForm}
                                           server=${srv}
                                           agentTypes=${agentTypes}
-                                          onChange=${(name, cmd, type, autoApprove, env, tags, constraints) =>
+                                          onChange=${(name, cmd, type, autoApprove, env, tags, constraints, contextFlushCommand) =>
                                             updateServer(
                                               srv.name,
                                               name,
@@ -2497,6 +2535,7 @@ export function SettingsDialog({
                                               env,
                                               tags,
                                               constraints,
+                                              contextFlushCommand,
                                             )}
                                         />
                                       `}
@@ -3854,6 +3893,79 @@ export function SettingsDialog({
                             </div>
                           </div>
                         </label>
+                      </div>
+                    </div>
+                  `}
+
+                  <!-- MCP Tab -->
+                  ${activeTab === "mcp" &&
+                  html`
+                    <div class="space-y-4">
+                      <p class="text-mitto-text-muted text-sm">
+                        Configure the built-in MCP (Model Context Protocol)
+                        server that exposes Mitto tools to AI agents.
+                      </p>
+
+                      <div class="space-y-3">
+                        <h4 class="text-sm font-medium text-mitto-text-secondary">
+                          MCP server (Model Context Protocol)
+                        </h4>
+
+                        <label
+                          class="flex items-center gap-3 p-4 cursor-pointer hover:bg-base-200/40 transition-colors"
+                        >
+                          <input
+                            type="checkbox"
+                            checked=${mcpEnabled}
+                            onChange=${(e) => setMcpEnabled(e.target.checked)}
+                            class="checkbox checkbox-sm checkbox-primary"
+                          />
+                          <div>
+                            <div class="font-medium text-sm">
+                              Enable MCP server
+                            </div>
+                            <div class="text-xs text-mitto-text-muted">
+                              Run a local MCP server so AI agents can access
+                              Mitto's tools.
+                            </div>
+                          </div>
+                        </label>
+
+                        <div class="p-4 space-y-3">
+                          <div class="flex items-center gap-2">
+                            <label class="text-sm text-mitto-text-muted w-12"
+                              >Host</label
+                            >
+                            <input
+                              type="text"
+                              value=${mcpHost}
+                              onInput=${(e) => setMcpHost(e.target.value)}
+                              placeholder="127.0.0.1"
+                              class="input input-sm flex-1 font-mono"
+                            />
+                          </div>
+                          <div class="flex items-center gap-2">
+                            <label class="text-sm text-mitto-text-muted w-12"
+                              >Port</label
+                            >
+                            <input
+                              type="number"
+                              value=${mcpPort}
+                              onInput=${(e) => setMcpPort(e.target.value)}
+                              placeholder="5757"
+                              min="0"
+                              max="65535"
+                              class="input input-sm w-24"
+                            />
+                            <span class="text-xs text-mitto-text-muted"
+                              >(0 = system-assigned free port)</span
+                            >
+                          </div>
+                          <p class="text-xs text-mitto-text-muted">
+                            Changes to the MCP server take effect after
+                            restarting Mitto.
+                          </p>
+                        </div>
                       </div>
                     </div>
                   `}
