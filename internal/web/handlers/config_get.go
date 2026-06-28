@@ -70,6 +70,7 @@ func (h *Handlers) HandleGetConfig(w http.ResponseWriter, r *http.Request) {
 		"web":             configPkg.WebConfig{},
 		"config_readonly": h.deps.ConfigReadOnly,
 		"api_prefix":      h.deps.APIPrefix, // Include API prefix for frontend to use
+		"models":          []configPkg.ModelProfile{},
 	}
 
 	// Include RC file path if config is from an RC file
@@ -92,6 +93,13 @@ func (h *Handlers) HandleGetConfig(w http.ResponseWriter, r *http.Request) {
 		response["session"] = h.deps.MittoConfig.Session
 		response["conversations"] = h.deps.MittoConfig.Conversations
 		response["permissions"] = h.deps.MittoConfig.Permissions
+
+		// Model profiles — use the actual slice when non-nil; the default empty slice
+		// (set at the top of this function) covers the nil case so the frontend always
+		// receives an array, never JSON null.
+		if h.deps.MittoConfig.Models != nil {
+			response["models"] = h.deps.MittoConfig.Models
+		}
 
 		// MCP server config — send effective values (getters are nil-safe).
 		// GetPort() returns -1 when unset; surface the default 5757 for display.

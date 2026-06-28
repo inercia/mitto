@@ -304,6 +304,15 @@ func (s *Server) buildNewSettings(req *ConfigSaveRequest) (*configPkg.Settings, 
 		}
 	}
 
+	// Use Models from request if provided, otherwise preserve existing profiles.
+	// Pointer semantics: nil = section omitted (preserve); non-nil = authoritative list.
+	var modelsConfig []configPkg.ModelProfile
+	if req.Models != nil {
+		modelsConfig = *req.Models
+	} else if s.config.MittoConfig != nil {
+		modelsConfig = s.config.MittoConfig.Models
+	}
+
 	return &configPkg.Settings{
 		ACPServers:    newACPServers,
 		Prompts:       settingsPrompts,
@@ -313,6 +322,7 @@ func (s *Server) buildNewSettings(req *ConfigSaveRequest) (*configPkg.Settings, 
 		Conversations: conversationsConfig,
 		Permissions:   permissionsConfig,
 		MCP:           mcpConfig,
+		Models:        modelsConfig,
 	}, nil
 }
 
@@ -368,6 +378,7 @@ func (s *Server) applyConfigChanges(req *ConfigSaveRequest, settings *configPkg.
 		s.config.MittoConfig.Session = settings.Session
 		s.config.MittoConfig.Conversations = settings.Conversations
 		s.config.MittoConfig.MCP = settings.MCP
+		s.config.MittoConfig.Models = settings.Models
 
 		// Update session manager's global conversations config so new sessions use the updated settings
 		s.sessionManager.SetGlobalConversations(settings.Conversations)

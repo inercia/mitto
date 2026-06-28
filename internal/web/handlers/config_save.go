@@ -60,6 +60,11 @@ type ConfigSaveRequest struct {
 	Session       *configPkg.SessionConfig       `json:"session,omitempty"`
 	Permissions   *configPkg.PermissionsConfig   `json:"permissions,omitempty"`
 	MCP           *configPkg.MCPConfig           `json:"mcp,omitempty"`
+	// Models is a pointer so the backend can distinguish "section omitted" (preserve the
+	// existing model profiles — e.g. a dialog that has no business touching model config)
+	// from "section present" (apply it as the authoritative full list — the Settings dialog,
+	// which always sends the complete models array). nil means preserve; non-nil replaces.
+	Models *[]configPkg.ModelProfile `json:"models,omitempty"`
 	// ServerRenames maps old ACP server names to their new names. The UI sends
 	// this when a server is renamed in place so the backend can migrate the
 	// stored ACPServer of existing conversations (otherwise they would be

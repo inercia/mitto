@@ -745,3 +745,144 @@ func TestHandleGetConfig_ETag(t *testing.T) {
 		t.Error("Full response should have non-empty body")
 	}
 }
+
+// twoProfileFixture returns two model profiles used across model-profile tests.
+func twoProfileFixture() []config.ModelProfile {
+	return []config.ModelProfile{
+		{
+			Name:     "Opus",
+			Criteria: &config.ACPServerConstraint{MatchMode: "contains", Pattern: "Opus"},
+			Tags:     []string{"Smartest", "Expensive"},
+		},
+		{
+			Name:     "Sonnet",
+			Criteria: &config.ACPServerConstraint{MatchMode: "contains", Pattern: "Sonnet"},
+			Tags:     []string{"Smart", "Cheap"},
+		},
+	}
+}
+
+// TestHandleGetConfig_ModelProfiles verifies that GET /api/config includes
+// the model profiles configured in MittoConfig.Models.
+func TestHandleGetConfig_ModelProfiles(t *testing.T) {
+	server := &Server{
+		config: Config{
+			MittoConfig: &config.Config{
+				Models: twoProfileFixture(),
+			},
+		},
+		sessionManager: conversation.NewSessionManager("", "", false, nil),
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/config", nil)
+	w := httptest.NewRecorder()
+	server.handleGetConfig(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("Status = %d, want %d, body: %s", w.Code, http.StatusOK, w.Body.String())
+	}
+
+	var resp map[string]json.RawMessage
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("Failed to parse response JSON: %v", err)
+	}
+
+	modelsRaw, ok := resp["models"]
+	if !ok {
+		t.Fatal("Response missing 'models' key")
+	}
+
+	var models []map[string]interface{}
+	if err := json.Unmarshal(modelsRaw, &models); err != nil {
+		t.Fatalf("Failed to parse models array: %v", err)
+	}
+
+	if len(models) != 2 {
+		t.Fatalf("models len = %d, want 2", len(models))
+	}
+
+	// Check first profile (Opus)
+	if models[0]["name"] != "Opus" {
+		t.Errorf("models[0].name = %v, want Opus", models[0]["name"])
+	}
+	criteria0, ok := models[0]["criteria"].(map[string]interface{})
+	if !ok {
+		t.Fatal("models[0].criteria is not an object")
+	}
+	if criteria0["matchMode"] != "contains" {
+		t.Errorf("models[0].criteria.matchMode = %v, want contains", criteria0["matchMode"])
+	}
+	if criteria0["pattern"] != "Opus" {
+		t.Errorf("models[0].criteria.pattern = %v, want Opus", criteria0["pattern"])
+	}
+	tags0, _ := models[0]["tags"].([]interface{})
+	if len(tags0) != 2 || tags0[0] != "Smartest" || tags0[1] != "Expensive" {
+		t.Errorf("models[0].tags = %v, want [Smartest Expensive]", tags0)
+	}
+
+	// Check second profile (Sonnet)
+	if models[1]["name"] != "Sonnet" {
+		t.Errorf("models[1].name = %v, want Sonnet", models[1]["name"])
+	}
+}
+
+// TestBuildNewSettings_ModelsPresent verifies that when req.Models is non-nil,
+// buildNewSettings returns the provided list as the authoritative profiles.
+func TestBuildNewSettings_ModelsPresent(t *testing.T) {
+	profiles := twoProfileFixture()
+	server := &Server{
+		config: Config{
+			MittoConfig: &config.Config{},
+		},
+	}
+
+	req := &ConfigSaveRequest{
+		Models: &profiles,
+	}
+	settings, err := server.buildNewSettings(req)
+	if err != nil {
+		t.Fatalf("buildNewSettings returned error: %v", err)
+	}
+
+	if len(settings.Models) != 2 {
+		t.Fatalf("settings.Models len = %d, want 2", len(settings.Models))
+	}
+	if settings.Models[0].Name != "Opus" {
+		t.Errorf("settings.Models[0].Name = %q, want Opus", settings.Models[0].Name)
+	}
+	if settings.Models[1].Name != "Sonnet" {
+		t.Errorf("settings.Models[1].Name = %q, want Sonnet", settings.Models[1].Name)
+	}
+}
+
+// TestBuildNewSettings_ModelsOmitted verifies that when req.Models is nil
+// (section omitted), buildNewSettings preserves the existing profiles from
+// MittoConfig rather than wiping them.
+func TestBuildNewSettings_ModelsOmitted(t *testing.T) {
+	existing := twoProfileFixture()
+	server := &Server{
+		config: Config{
+			MittoConfig: &config.Config{
+				Models: existing,
+			},
+		},
+	}
+
+	req := &ConfigSaveRequest{
+		// Models intentionally omitted (nil) — preserve existing
+	}
+	settings, err := server.buildNewSettings(req)
+	if err != nil {
+		t.Fatalf("buildNewSettings returned error: %v", err)
+	}
+
+	if len(settings.Models) != len(existing) {
+		t.Fatalf("settings.Models len = %d, want %d (preserve existing)", len(settings.Models), len(existing))
+	}
+	if settings.Models[0].Name != existing[0].Name {
+		t.Errorf("settings.Models[0].Name = %q, want %q", settings.Models[0].Name, existing[0].Name)
+	}
+	if settings.Models[1].Name != existing[1].Name {
+		t.Errorf("settings.Models[1].Name = %q, want %q", settings.Models[1].Name, existing[1].Name)
+	}
+}
