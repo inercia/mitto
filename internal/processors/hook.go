@@ -259,6 +259,11 @@ func BuildCELContext(input *ProcessorInput) *config.PromptEnabledContext {
 	// Session user data JSON for template rendering
 	ctx.Session.UserDataJSON = input.UserDataJSON
 
+	// Model tags/name resolved from the current model (config models: profiles). Feeds the
+	// Model(tag) template func and Session.HasModelTag CEL macro. Empty when model unknown.
+	ctx.Session.ModelTags = input.ModelTags
+	ctx.Session.ModelName = input.ModelName
+
 	// Tools context. Processors evaluate at message-processing time, where the
 	// tool list is treated as known (the cache is warmed on connect). Mark it
 	// Available so tool-pattern functions use name-based matching rather than the

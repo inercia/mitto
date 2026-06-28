@@ -100,6 +100,34 @@ func TestBuildCELContext_NewFields(t *testing.T) {
 	}
 }
 
+// TestBuildCELContext_ModelTags asserts that BuildCELContext copies the resolved model
+// tags and name onto the Session context (mitto-i5sr), and that an unset input yields
+// empty values (safe for Model(tag)/HasModelTag to treat as no tags).
+func TestBuildCELContext_ModelTags(t *testing.T) {
+	input := &ProcessorInput{
+		SessionID: "sess-1",
+		ModelName: "Opus 4.8",
+		ModelTags: []string{"Smart", "Expensive"},
+	}
+	ctx := BuildCELContext(input)
+
+	if ctx.Session.ModelName != "Opus 4.8" {
+		t.Errorf("Session.ModelName = %q, want %q", ctx.Session.ModelName, "Opus 4.8")
+	}
+	if len(ctx.Session.ModelTags) != 2 || ctx.Session.ModelTags[0] != "Smart" || ctx.Session.ModelTags[1] != "Expensive" {
+		t.Errorf("Session.ModelTags = %v, want [Smart Expensive]", ctx.Session.ModelTags)
+	}
+
+	// Unset model fields yield empty values (cold start / unknown model).
+	emptyCtx := BuildCELContext(&ProcessorInput{SessionID: "s"})
+	if emptyCtx.Session.ModelName != "" {
+		t.Errorf("empty Session.ModelName = %q, want \"\"", emptyCtx.Session.ModelName)
+	}
+	if len(emptyCtx.Session.ModelTags) != 0 {
+		t.Errorf("empty Session.ModelTags = %v, want []", emptyCtx.Session.ModelTags)
+	}
+}
+
 // TestBuildCELContext_UserData asserts that BuildCELContext populates ctx.UserData
 // from input.UserData (name→value map).
 func TestBuildCELContext_UserData(t *testing.T) {

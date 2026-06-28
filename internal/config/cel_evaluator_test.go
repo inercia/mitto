@@ -418,7 +418,7 @@ func TestCELEvaluator_AllContextFields(t *testing.T) {
 	ctx := &PromptEnabledContext{
 		ACP:       ACPContext{Name: "test", Type: "mytype", Tags: []string{"t1"}, AutoApprove: true},
 		Workspace: WorkspaceContext{UUID: "wu", Folder: "/ws", Name: "My WS"},
-		Session:   SessionContext{ID: "sid", Name: "sname", IsChild: true, IsAutoChild: false, ParentID: "pid", IsPeriodicConversation: true},
+		Session:   SessionContext{ID: "sid", Name: "sname", IsChild: true, IsAutoChild: false, ParentID: "pid", IsPeriodicConversation: true, ModelTags: []string{"smart"}},
 		Parent:    ParentContext{Exists: true, Name: "pname", ACPServer: "pacp"},
 		Children:  ChildrenContext{Count: 3, Exists: true, MCPCount: 2, Names: []string{"c1"}, ACPServers: []string{"a1"}, PromptingCount: 1, IdleCount: 2},
 		Tools:     ToolsContext{Available: true, Names: []string{"tool_a", "tool_b"}},
@@ -446,6 +446,8 @@ func TestCELEvaluator_AllContextFields(t *testing.T) {
 		`!Session.IsAutoChild`,
 		`Session.ParentID == "pid"`,
 		`Session.IsPeriodicConversation`,
+		`"smart" in Session.ModelTags`,
+		`Session.HasModelTag("smart")`,
 		`Parent.Exists`,
 		`Parent.Name == "pname"`,
 		`Parent.ACPServer == "pacp"`,
@@ -496,6 +498,43 @@ func TestCELEvaluator_SessionIsPeriodicConversation(t *testing.T) {
 	}
 	if got := evaluate(t, e, ce, falseCtx); got {
 		t.Error("expected false when IsPeriodicConversation=false")
+	}
+}
+
+// TestCELEvaluator_SessionHasModelTag validates the Session.HasModelTag(tag) macro and the
+// "tag" in Session.ModelTags membership expression (mitto-i5sr), including case-insensitivity
+// and the empty / unknown-model fallback.
+func TestCELEvaluator_SessionHasModelTag(t *testing.T) {
+	e := newTestEvaluator(t)
+
+	smartCtx := &PromptEnabledContext{
+		Session: SessionContext{ModelTags: []string{"Smart", "Expensive"}},
+	}
+	emptyCtx := &PromptEnabledContext{
+		Session: SessionContext{ModelTags: nil},
+	}
+
+	tests := []struct {
+		name string
+		expr string
+		ctx  *PromptEnabledContext
+		want bool
+	}{
+		{"macro exact", `Session.HasModelTag("Smart")`, smartCtx, true},
+		{"macro case insensitive", `Session.HasModelTag("smart")`, smartCtx, true},
+		{"macro miss", `Session.HasModelTag("cheap")`, smartCtx, false},
+		{"macro empty tags", `Session.HasModelTag("smart")`, emptyCtx, false},
+		{"in operator hit", `"Smart" in Session.ModelTags`, smartCtx, true},
+		{"in operator miss", `"cheap" in Session.ModelTags`, smartCtx, false},
+		{"combined with negation", `Session.HasModelTag("smart") && !Session.HasModelTag("cheap")`, smartCtx, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ce := compile(t, e, tt.expr)
+			if got := evaluate(t, e, ce, tt.ctx); got != tt.want {
+				t.Errorf("Evaluate(%q) = %v, want %v", tt.expr, got, tt.want)
+			}
+		})
 	}
 }
 

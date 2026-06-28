@@ -186,6 +186,7 @@ type BackgroundSession struct {
 	acpCwd               string                                 // Working directory for ACP process (for restart)
 	serverEnv            map[string]string                      // Server-specific env vars from settings.json (for restart)
 	acpServerConstraints map[string]*config.ACPServerConstraint // Auto-selection constraints from the ACP server config
+	mittoConfig          *config.Config                         // Full Mitto config; used for model-tag resolution (config.ResolveModelTags)
 	contextFlushCommand  string                                 // Agent-native context-flush command (e.g. "/clear"); empty = disabled
 	procCtl              acpProcessController                   // ACP restart policy collaborator (composition)
 	titleCoord           titleCoordinator                       // Auto-title generation triggers collaborator (composition)
@@ -559,6 +560,8 @@ func NewBackgroundSession(cfg BackgroundSessionConfig) (*BackgroundSession, erro
 
 	// Look up ACP server constraints from config
 	bs.acpServerConstraints = lookupACPServerConstraints(cfg.MittoConfig, cfg.ACPServer)
+	// Store full config for model-tag resolution (config.ResolveModelTags).
+	bs.mittoConfig = cfg.MittoConfig
 	// Look up the agent-native context-flush command from config
 	bs.contextFlushCommand = lookupContextFlushCommand(cfg.MittoConfig, cfg.ACPServer)
 
@@ -772,6 +775,8 @@ func ResumeBackgroundSession(config BackgroundSessionConfig) (*BackgroundSession
 
 	// Look up ACP server constraints from config
 	bs.acpServerConstraints = lookupACPServerConstraints(config.MittoConfig, config.ACPServer)
+	// Store full config for model-tag resolution (config.ResolveModelTags).
+	bs.mittoConfig = config.MittoConfig
 	// Look up the agent-native context-flush command from config
 	bs.contextFlushCommand = lookupContextFlushCommand(config.MittoConfig, config.ACPServer)
 
@@ -1195,6 +1200,17 @@ func (bs *BackgroundSession) AgentSupportsImages() bool {
 // This is from the UNSTABLE SessionModelState API and may be nil if the agent doesn't support it.
 func (bs *BackgroundSession) AgentModels() *acp.UnstableSessionModelState {
 	return bs.agentModels
+}
+
+// CurrentModelName returns the display name of the session's current model, falling back
+// to the raw model id when no display name is known. Returns "" when agentModels is nil
+// (cold start / suspended session). Used by menu-time model-tag resolution.
+func (bs *BackgroundSession) CurrentModelName() string {
+	models := bs.agentModels
+	if models == nil {
+		return ""
+	}
+	return ModelDisplayName(models, string(models.CurrentModelId))
 }
 
 // --- Observer Management ---

@@ -913,6 +913,7 @@ The following fields are available at send time. They are the **same fields used
 | `{{ .Session.IsPeriodic }}` | `true` when triggered by the periodic runner |
 | `{{ .Session.IsPeriodicForced }}` | `true` when a periodic run was manually triggered ("run now") |
 | `{{ .Session.BeadsIssue }}` | Linked beads issue ID (empty if none) |
+| `{{ .Session.ModelName }}` | Current model's display name (empty if unknown) |
 | `{{ .ACP.Name }}` | ACP server name |
 | `{{ .ACP.Type }}` | ACP server type |
 | `{{ .Workspace.Folder }}` | Session working directory |
@@ -940,8 +941,12 @@ The following fields are available at send time. They are the **same fields used
 | `fileExists` | `fileExists "path"` | Path exists as a file (relative to workspace folder) |
 | `dirExists` | `dirExists "path"` | Directory exists |
 | `commandExists` | `commandExists "name"` | Command is on PATH |
+| `Model` | `Model "tag"` | Current model carries capability `tag` (case-insensitive), from [`models:` profiles](models.md); `false` when the model is unknown or no profile matches |
 
 String utilities: `trim`, `lower`, `upper`, `contains`, `hasPrefix`, `hasSuffix`, `join`.
+
+Model tags are also available at menu time in `enabledWhen`: `Session.HasModelTag("smart")`
+or `"smart" in Session.ModelTags`. See [Model Profiles](models.md).
 
 ### Examples
 

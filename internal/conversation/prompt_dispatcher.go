@@ -95,6 +95,7 @@ type promptDeps interface {
 
 	// Per-prompt model preference
 	pdGetAgentModels() *acp.UnstableSessionModelState // may return nil
+	pdResolveModelTags(modelName string) []string     // config.ResolveModelTags; nil when no config/match
 	pdResolvePreferredModels(promptName string) []string
 	pdReadBaselineModel() string       // modelMu.Lock + read + Unlock
 	pdWriteOverrideActive(active bool) // modelMu.Lock + write + Unlock
@@ -467,6 +468,16 @@ func (p promptDispatcher) buildProcessorInput(d promptDeps, message string, isFi
 		}
 	}
 
+	// Resolve the CURRENT model's capability tags (config models: profiles) for the
+	// Model(tag) template func and Session.HasModelTag CEL macro. Degrades to empty
+	// (no tags) when agentModels is nil — never errors the render. See mitto-i5sr.
+	var modelName string
+	var modelTags []string
+	if models := d.pdGetAgentModels(); models != nil {
+		modelName = ModelDisplayName(models, string(models.CurrentModelId))
+		modelTags = d.pdResolveModelTags(modelName)
+	}
+
 	return &processors.ProcessorInput{
 		Message:                message,
 		IsFirstMessage:         isFirst,
@@ -494,6 +505,8 @@ func (p promptDispatcher) buildProcessorInput(d promptDeps, message string, isFi
 		UserDataSchemaJSON:     userDataSchemaJSON,
 		UserDataJSON:           userDataJSON,
 		UserData:               userDataMap,
+		ModelTags:              modelTags,
+		ModelName:              modelName,
 		ProcessorArgOverrides:  d.pdWorkspaceProcessorArgOverrides(),
 	}
 }

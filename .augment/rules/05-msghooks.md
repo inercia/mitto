@@ -131,6 +131,7 @@ Key CEL variables/functions (full reference in `docs/config/processors.md`):
 | ----------------------- | --------------------------------------------------------------------------- |
 | `acp.*`                 | `acp.matchesServerType("augment")`, `acp.name`, `acp.type`, `acp.tags`     |
 | `session.*`             | `session.isPeriodic`, `session.isChild`, `session.id`                       |
+| `Session.ModelTags`     | `Session.HasModelTag("smart")`, `"smart" in Session.ModelTags` — current model's tags from `models:` profiles (template: `{{ if Model "smart" }}`); empty when model unknown |
 | `workspace.*`           | `workspace.hasUserDataSchema`, `workspace.hasMittoRC`, `workspace.hasMetadataDescription`, `workspace.folder` |
 | `children.*`            | `children.exists`, `children.count`, `children.mcp_count`, `children.promptingCount`, `children.idleCount` |
 | `tools.*`               | `tools.hasPattern("mitto_*")`, `tools.hasAllPatterns(["a_*", "b_*"])`       |

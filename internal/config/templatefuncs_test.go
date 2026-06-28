@@ -421,12 +421,49 @@ func TestUserData(t *testing.T) {
 	}
 }
 
+// TestModel verifies the Model(tag) template func resolves current-model capability tags
+// case-insensitively and degrades to false for an empty / unknown-model tag set (mitto-i5sr).
+func TestModel(t *testing.T) {
+	ctx := &PromptEnabledContext{
+		Session: SessionContext{ModelTags: []string{"Smart", "Expensive"}},
+	}
+	fm := BuildTemplateFuncMap(ctx)
+	modelFn := fm["Model"].(func(string) bool)
+
+	if !modelFn("Smart") {
+		t.Errorf(`Model("Smart") = false, want true`)
+	}
+	if !modelFn("smart") {
+		t.Errorf(`Model("smart") = false, want true (case-insensitive)`)
+	}
+	if modelFn("cheap") {
+		t.Errorf(`Model("cheap") = true, want false`)
+	}
+
+	// nil tags (cold start / unknown model) must not panic and return false.
+	nilCtx := &PromptEnabledContext{}
+	fm2 := BuildTemplateFuncMap(nilCtx)
+	modelFn2 := fm2["Model"].(func(string) bool)
+	if modelFn2("smart") {
+		t.Errorf(`Model nil tags = true, want false`)
+	}
+
+	// Renders correctly through RenderPromptTemplate ({{ if Model "smart" }}).
+	got, err := RenderPromptTemplate("test", `{{ if Model "smart" }}SMART{{ else }}PLAIN{{ end }}`, ctx, fm)
+	if err != nil {
+		t.Fatalf("render error: %v", err)
+	}
+	if got != "SMART" {
+		t.Errorf("render got %q, want %q", got, "SMART")
+	}
+}
+
 // TestBuildTemplateFuncMap_AllKeysPresent verifies all expected keys exist.
 func TestBuildTemplateFuncMap_AllKeysPresent(t *testing.T) {
 	fm := BuildTemplateFuncMap(nil)
 	expected := []string{
 		"Arg", "Default", "UserData",
-		"FileExists", "DirExists", "CommandExists", "HasPattern",
+		"FileExists", "DirExists", "CommandExists", "HasPattern", "Model",
 		"Trim", "Lower", "Upper", "Contains", "HasPrefix", "HasSuffix", "Join",
 	}
 	for _, key := range expected {

@@ -113,6 +113,8 @@ CEL expression always read the same field from the same struct.
 | `{{ .Session.IsPeriodic }}` | `Session.IsPeriodic` | `Session.IsPeriodic` |
 | `{{ .Session.BeadsIssue }}` | `Session.BeadsIssue` | `Session.BeadsIssue` |
 | `{{ .Session.UserDataJSON }}` | — | `Session.UserDataJSON` — JSON of session user-data attributes |
+| `{{ Model "tag" }}` | `Session.HasModelTag("tag")` / `"tag" in Session.ModelTags` | `Session.ModelTags` — capability tags of the **current** model (from `models:` profiles); `[]` when unknown |
+| `{{ .Session.ModelName }}` | — | `Session.ModelName` — display name of the current model; `""` when unknown |
 | `{{ UserData "NAME" }}` / `{{ index .UserData "NAME" }}` | `UserData["NAME"]` (new) | `UserData["NAME"]` (new) — per-conversation user-data field; `""` when unset |
 | `{{ .ACP.Name }}` | `ACP.Name` | `ACP.Name` |
 | `{{ .ACP.Type }}` | `ACP.Type` | `ACP.Type` |
@@ -141,6 +143,8 @@ always the real argument map (possibly empty).
 **Extending the CEL env (mitto-m7sb.5):** Add `cel.Variable("args", cel.MapType(cel.StringType, cel.StringType))` to `NewCELEvaluator` and map it in `buildActivation` as `"args": ctx.Args`. This allows `enabledWhen: "Args['BRANCH'] != \"\""` for conditional visibility that depends on arguments.
 
 **User data (mitto-5y9x):** `UserData` is declared and wired the same way as `Args` — a `cel.Variable("UserData", cel.MapType(cel.StringType, cel.DynType))` in `NewCELEvaluator`, normalized to an empty map in `buildActivation` so `"X" in UserData` never panics, plus the `UserData "NAME"` template func and the `.UserData` map. Unlike `Args`, `UserData` is populated at **both** menu time (`buildPromptEnabledContext`) and send time (`buildProcessorInput`) — from the same per-conversation attributes that back `Session.UserDataJSON` — so `enabledWhen` can gate on `UserData["X"]`.
+
+**Model tags (mitto-i5sr):** `Session.ModelTags` exposes the **current** model's capability tags, resolved from the `models:` profiles (see [models.md](../config/models.md)) via `config.ResolveModelTags(modelName)` — the same `contains/exact/startsWith/regex/lookAlike` engine (`config.ConstraintMatchesName`) used by ACP-server model constraints. It is wired like `UserData`: a `cel.Variable("Session.ModelTags", cel.ListType(cel.StringType))`, the `Session.HasModelTag(tag)` receiver macro (mirroring `Tools.HasPattern`), the `Model(tag)` template func, and the `"tag" in Session.ModelTags` operator. Populated at **both** menu time (`buildPromptEnabledContext`, from `BackgroundSession.CurrentModelName()`) and send time (`buildProcessorInput`, from `pdGetAgentModels()`), so menu and send agree. Tags reflect the session's **baseline/active** model at render time, **not** a prompt's `preferredModels` (which apply after render). Membership is case-insensitive and degrades to an empty set (`Model("x") == false`, never an error) when the model is unknown (cold start / suspended session) or no profile matches.
 
 ---
 
@@ -185,6 +189,7 @@ The shared pure-Go helpers are: `statResolved`, the glob-match logic, `matchesSe
 | `FileExists` | `FileExists(path string) bool` | File exists at `path` (relative to `Workspace.Folder`). Calls `statResolved`. |
 | `DirExists` | `DirExists(path string) bool` | Directory exists. Calls `statResolved`. |
 | `CommandExists` | `CommandExists(name string) bool` | Command is in PATH (`exec.LookPath`). |
+| `Model` | `Model(tag string) bool` | Current model carries capability `tag` (case-insensitive), resolved from `models:` profiles. `false` when the model is unknown or no profile matches. |
 
 **No `html` escaping.** Use `text/template` (not `html/template`). Prompt bodies are
 plain text / Markdown sent to an AI agent, not rendered in a browser.

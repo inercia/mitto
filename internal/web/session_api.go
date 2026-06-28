@@ -354,6 +354,19 @@ func (s *Server) buildPromptEnabledContext(sessionID string) *config.PromptEnabl
 		}
 	}
 
+	// Model tags from the session's CURRENT model (config models: profiles). Mirrors the
+	// send-time resolution in prompt_dispatcher.buildProcessorInput so the Model(tag) template
+	// func and Session.HasModelTag CEL macro read identical tags at menu time and send time.
+	// Degrades to empty tags when the session/model is unknown (cold start) — never errors.
+	if s.config.MittoConfig != nil {
+		if bs := s.sessionManager.GetSession(sessionID); bs != nil {
+			if modelName := bs.CurrentModelName(); modelName != "" {
+				ctx.Session.ModelName = modelName
+				ctx.Session.ModelTags = s.config.MittoConfig.ResolveModelTags(modelName)
+			}
+		}
+	}
+
 	// Permissions context - resolve flags with defaults
 	ctx.Permissions.CanDoIntrospection = session.GetFlagValue(meta.AdvancedSettings, session.FlagCanDoIntrospection)
 	ctx.Permissions.CanSendPrompt = session.GetFlagValue(meta.AdvancedSettings, session.FlagCanSendPrompt)

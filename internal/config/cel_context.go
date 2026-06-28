@@ -145,6 +145,15 @@ type SessionContext struct {
 	// UserDataJSON is the JSON representation of the current session's user data attributes.
 	// Empty when no user data exists. Used by the {{ .Session.UserDataJSON }} template accessor.
 	UserDataJSON string
+	// ModelTags holds the capability tags resolved for the session's CURRENT model
+	// (from the models: profiles in config). Empty when agentModels is unknown (cold start
+	// / suspended session) or no profile matches. Feeds the Model(tag) template func and the
+	// Session.HasModelTag CEL macro / "tag" in Session.ModelTags expression. A nil slice is safe.
+	ModelTags []string
+	// ModelName is the display name of the session's current model (convenience accessor for
+	// {{ .Session.ModelName }} display). Empty when the model is unknown. Not the headline
+	// surface — branch on ModelTags / HasModelTag rather than the brittle model-name string.
+	ModelName string
 }
 
 // ParentContext holds parent session context for CEL evaluation.

@@ -70,6 +70,7 @@ func NewCELEvaluator() (*CELEvaluator, error) {
 		cel.Variable("Session.IsPeriodicConversation", cel.BoolType),
 		cel.Variable("Session.HasBeadsIssue", cel.BoolType),
 		cel.Variable("Session.BeadsIssue", cel.StringType),
+		cel.Variable("Session.ModelTags", cel.ListType(cel.StringType)),
 
 		// Parent variables
 		cel.Variable("Parent.Exists", cel.BoolType),
@@ -161,6 +162,13 @@ func NewCELEvaluator() (*CELEvaluator, error) {
 				cel.FunctionBinding(mittoHasAnyPattern),
 			),
 		),
+		cel.Function("__mitto_hasModelTag",
+			cel.Overload("__mitto_hasModelTag_list_string",
+				[]*cel.Type{cel.ListType(cel.StringType), cel.StringType},
+				cel.BoolType,
+				cel.FunctionBinding(mittoHasModelTag),
+			),
+		),
 		cel.Function("__mitto_matchesServerType",
 			cel.Overload("__mitto_matchesServerType_string_string_string",
 				[]*cel.Type{cel.StringType, cel.StringType, cel.StringType},
@@ -194,6 +202,7 @@ func NewCELEvaluator() (*CELEvaluator, error) {
 		// tools.*/acp.*/fileExists/dirExists calls never reach the checker.
 		cel.Macros(
 			cel.ReceiverMacro("HasPattern", 1, toolsHasPatternMacro),
+			cel.ReceiverMacro("HasModelTag", 1, sessionHasModelTagMacro),
 			cel.ReceiverMacro("HasAllPatterns", 1, toolsHasAllPatternsMacro),
 			cel.ReceiverMacro("HasAnyPattern", 1, toolsHasAnyPatternMacro),
 			cel.ReceiverMacro("MatchesServerType", 1, acpMatchesServerTypeMacro),
@@ -321,6 +330,7 @@ func buildActivation(ctx *PromptEnabledContext) map[string]any {
 		"Session.IsPeriodicConversation": ctx.Session.IsPeriodicConversation,
 		"Session.HasBeadsIssue":          ctx.Session.HasBeadsIssue,
 		"Session.BeadsIssue":             ctx.Session.BeadsIssue,
+		"Session.ModelTags":             ctx.Session.ModelTags,
 
 		"Parent.Exists":    ctx.Parent.Exists,
 		"Parent.Name":      ctx.Parent.Name,
@@ -409,6 +419,14 @@ func toolsHasAnyPatternMacro(eh cel.MacroExprFactory, target celast.Expr, args [
 	return eh.NewCall("__mitto_hasAnyPattern", eh.NewIdent("Tools.Available"), eh.NewIdent("Tools.Names"), args[0]), nil
 }
 
+// sessionHasModelTagMacro rewrites Session.HasModelTag(t) -> __mitto_hasModelTag(Session.ModelTags, t).
+func sessionHasModelTagMacro(eh cel.MacroExprFactory, target celast.Expr, args []celast.Expr) (celast.Expr, *celcommon.Error) {
+	if !isIdent(target, "Session") {
+		return nil, nil
+	}
+	return eh.NewCall("__mitto_hasModelTag", eh.NewIdent("Session.ModelTags"), args[0]), nil
+}
+
 // acpMatchesServerTypeMacro rewrites ACP.MatchesServerType(t) ->
 // __mitto_matchesServerType(ACP.Name, ACP.Type, t).
 func acpMatchesServerTypeMacro(eh cel.MacroExprFactory, target celast.Expr, args []celast.Expr) (celast.Expr, *celcommon.Error) {
@@ -486,6 +504,18 @@ func mittoHasAnyPattern(args ...ref.Val) ref.Val {
 	names := extractStringArgs([]ref.Val{args[1]})
 	patterns := extractStringArgs([]ref.Val{args[2]})
 	return types.Bool(hasAnyPattern(bool(available), names, patterns))
+}
+
+// mittoHasModelTag reports whether tag (args[1]) is present in the model tag list
+// (args[0]). Context-free so the compiled program can be cached. Delegates to hasModelTag
+// (templatefuncs.go) — single source of truth shared with the Model(tag) template func.
+func mittoHasModelTag(args ...ref.Val) ref.Val {
+	if len(args) != 2 {
+		return types.Bool(false)
+	}
+	tags := extractStringArgs([]ref.Val{args[0]})
+	tag := valToString(args[1])
+	return types.Bool(hasModelTag(tags, tag))
 }
 
 // mittoMatchesServerType reports whether the ACP server type matches any of the

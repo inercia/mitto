@@ -806,6 +806,13 @@ func (bs *BackgroundSession) pdGetAgentModels() *acp.UnstableSessionModelState {
 	return bs.agentModels
 }
 
+func (bs *BackgroundSession) pdResolveModelTags(modelName string) []string {
+	if bs.mittoConfig == nil || modelName == "" {
+		return nil
+	}
+	return bs.mittoConfig.ResolveModelTags(modelName)
+}
+
 func (bs *BackgroundSession) pdResolvePreferredModels(promptName string) []string {
 	if bs.preferredModelsResolver == nil || promptName == "" {
 		return nil

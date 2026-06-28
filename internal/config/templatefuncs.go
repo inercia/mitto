@@ -65,6 +65,19 @@ func hasAnyPattern(available bool, names []string, patterns []string) bool {
 	return false
 }
 
+// hasModelTag reports whether tag is present in tags (case-insensitive membership).
+// Single source of truth shared by the Model(tag) template func and the Session.HasModelTag
+// CEL macro. Returns false for an empty tag set, so Model("x") is false when the current
+// model is unknown or carries no matching profile tag (never errors the render).
+func hasModelTag(tags []string, tag string) bool {
+	for _, t := range tags {
+		if strings.EqualFold(t, tag) {
+			return true
+		}
+	}
+	return false
+}
+
 // matchesServerType reports whether acpType case-insensitively matches any of serverTypes.
 // Fail-open: returns true when acpName is "" (no ACP server active).
 func matchesServerType(acpName, acpType string, serverTypes []string) bool {
@@ -170,6 +183,7 @@ func FormatChildren(children []ChildInfo) string {
 //   - dirExists(path)  — true iff path is a directory.
 //   - commandExists(name) — true iff name is in PATH.
 //   - hasPattern(pattern) — true iff any MCP tool name matches pattern (fail-open).
+//   - Model(tag) — true iff the current model carries the capability tag (case-insensitive).
 //   - cond(expr) / when(expr) — compile+evaluate a CEL expression via GetCELEvaluator()
 //     against the SAME ctx used for enabledWhen. Fail-closed: returns (false, error) on
 //     compile or eval failure, which aborts template execution (and thus the send).
@@ -183,6 +197,7 @@ func BuildTemplateFuncMap(ctx *PromptEnabledContext) template.FuncMap {
 		toolNames      []string
 		args           map[string]string
 		userData       map[string]string
+		modelTags      []string
 	)
 	if ctx != nil {
 		folder = ctx.Workspace.Folder
@@ -190,6 +205,7 @@ func BuildTemplateFuncMap(ctx *PromptEnabledContext) template.FuncMap {
 		toolNames = ctx.Tools.Names
 		args = ctx.Args
 		userData = ctx.UserData
+		modelTags = ctx.Session.ModelTags
 	}
 
 	// cond/when: compile+evaluate a CEL expression against ctx using the singleton.
@@ -229,6 +245,9 @@ func BuildTemplateFuncMap(ctx *PromptEnabledContext) template.FuncMap {
 		"DirExists":     func(path string) bool { return dirExists(folder, path) },
 		"CommandExists": func(name string) bool { return commandExists(name) },
 		"HasPattern":    func(pattern string) bool { return hasPattern(toolsAvailable, toolNames, pattern) },
+		// Model(tag) — true iff the session's current model carries the capability tag
+		// (case-insensitive), resolved from the models: profiles. False for an unknown model.
+		"Model": func(tag string) bool { return hasModelTag(modelTags, tag) },
 		"Cond":          condFn,
 		"When":          condFn, // alias for Cond
 		"Trim":          strings.TrimSpace,

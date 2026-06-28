@@ -98,6 +98,13 @@ type ProcessorInput struct {
 	// template access and CEL UserData["X"] expressions. Excluded from JSON (json:"-")
 	// so values are never sent to external command processors.
 	UserData map[string]string `json:"-"`
+	// ModelTags holds the capability tags resolved for the session's current model
+	// (from config models: profiles). Populates Session.ModelTags for the Model(tag)
+	// template func and Session.HasModelTag CEL macro. Excluded from JSON (json:"-").
+	ModelTags []string `json:"-"`
+	// ModelName is the display name of the session's current model (convenience for
+	// {{ .Session.ModelName }} display). Excluded from JSON (json:"-").
+	ModelName string `json:"-"`
 }
 
 // AvailableACPServer describes an ACP server available in the session's workspace.

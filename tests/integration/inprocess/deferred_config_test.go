@@ -222,3 +222,49 @@ func TestDeferredModeConfig_FlushesBeforeQueuedPrompt(t *testing.T) {
 			}, "agent-confirmed mode architect")
 		})
 }
+
+// setupModelTagsServer builds a test server whose MittoConfig declares model profiles, so
+// the Model(tag) template func / Session.HasModelTag CEL macro can resolve the current
+// model's tags. The mock ACP's default current model is "Sonnet 4.6" (claude-sonnet-4-6).
+func setupModelTagsServer(t *testing.T, profiles []config.ModelProfile) (*TestServer, string) {
+	t.Helper()
+	orderFile := filepath.Join(t.TempDir(), "rpc-order.log")
+	t.Setenv("MOCK_RPC_ORDER_FILE", orderFile)
+	ts := SetupTestServer(t, func(c *web.Config) {
+		if c.MittoConfig != nil {
+			disable := false
+			c.MittoConfig.Conversations = &config.ConversationsConfig{
+				Queue: &config.QueueConfig{AutoGenerateTitles: &disable},
+			}
+			c.MittoConfig.Models = profiles
+		}
+	})
+	return ts, orderFile
+}
+
+// TestTemplateRender_ModelTag verifies that {{ if Model "tag" }} resolves against the
+// session's CURRENT model tags (mitto-i5sr): the matching tag renders its branch while a
+// non-matching tag falls through to the else branch (no error). The mock's current model is
+// "Sonnet 4.6", tagged "smart" here; "expensive" is reserved for Opus, so it must NOT match.
+func TestTemplateRender_ModelTag(t *testing.T) {
+	ts, orderFile := setupModelTagsServer(t, []config.ModelProfile{
+		{Name: "Sonnet", Criteria: &config.ACPServerConstraint{MatchMode: "contains", Pattern: "Sonnet"}, Tags: []string{"smart"}},
+		{Name: "Opus", Criteria: &config.ACPServerConstraint{MatchMode: "contains", Pattern: "Opus"}, Tags: []string{"expensive"}},
+	})
+	writeTemplatePrompt(t, ts, "tmpl-modeltag", "tmpl-modeltag",
+		`MT:{{ if Model "smart" }}SMART{{ else }}NOTSMART{{ end }}/{{ if Model "expensive" }}EXP{{ else }}NOTEXP{{ end }}`)
+
+	lines := runTemplatePromptAndWait(t, ts, orderFile, "tmpl-modeltag", nil)
+
+	rendered := promptLineFor(lines, "MT:")
+	if rendered == "" {
+		t.Fatalf("expected MT: line in RPC order; got lines: %v", lines)
+	}
+	if !strings.Contains(rendered, "MT:SMART/NOTEXP") {
+		t.Errorf("model-tag branches wrong: got %q, want it to contain %q", rendered, "MT:SMART/NOTEXP")
+	}
+	if strings.Contains(rendered, "{{") {
+		t.Errorf("literal {{ remains in rendered prompt: %q", rendered)
+	}
+	t.Logf("rendered: %q", rendered)
+}

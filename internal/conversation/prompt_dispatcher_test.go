@@ -75,6 +75,7 @@ type fakePromptDeps struct {
 	acpNewSessionID     string
 	acpNewSessionErr    error
 	agentModels         *acp.UnstableSessionModelState
+	resolvedModelTags   []string
 	resolvedPreferred   []string
 	baselineModel       string
 	overrideActive      bool
@@ -246,6 +247,7 @@ func (f *fakePromptDeps) pdACPConnNewSession(_ context.Context, _ string) (strin
 	return f.acpNewSessionID, f.acpNewSessionErr
 }
 func (f *fakePromptDeps) pdGetAgentModels() *acp.UnstableSessionModelState { return f.agentModels }
+func (f *fakePromptDeps) pdResolveModelTags(_ string) []string             { return f.resolvedModelTags }
 func (f *fakePromptDeps) pdResolvePreferredModels(_ string) []string       { return f.resolvedPreferred }
 func (f *fakePromptDeps) pdReadBaselineModel() string                      { return f.baselineModel }
 func (f *fakePromptDeps) pdWriteOverrideActive(active bool) {

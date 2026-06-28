@@ -2,7 +2,6 @@ package conversation
 
 import (
 	"path"
-	"regexp"
 	"strings"
 
 	"github.com/coder/acp-go-sdk"
@@ -34,45 +33,29 @@ func ModelsToConfigOptions(models *acp.UnstableSessionModelState) []SessionConfi
 // MatchConstraintOption finds the best matching option value for a constraint.
 // It iterates through all options and returns the last match, so that the latest version wins
 // when models are ordered by version. Returns empty string if no match.
+//
+// The per-name match semantics (contains/exact/startsWith/regex/lookAlike) live in
+// config.ConstraintMatchesName, which is shared with model-tag resolution so the engine
+// stays DRY and cannot drift between callers.
 func MatchConstraintOption(constraint *config.ACPServerConstraint, options []SessionConfigOptionValue) string {
-	patternLower := strings.ToLower(constraint.Pattern)
 	var matchedValue string
 	for _, opt := range options {
-		nameLower := strings.ToLower(opt.Name)
-		switch constraint.MatchMode {
-		case "contains":
-			if strings.Contains(nameLower, patternLower) {
-				matchedValue = opt.Value
-			}
-		case "exact":
-			if nameLower == patternLower {
-				matchedValue = opt.Value
-			}
-		case "startsWith":
-			if strings.HasPrefix(nameLower, patternLower) {
-				matchedValue = opt.Value
-			}
-		case "regex":
-			if matched, _ := regexp.MatchString("(?i)"+constraint.Pattern, opt.Name); matched {
-				matchedValue = opt.Value
-			}
-		case "lookAlike":
-			words := strings.Fields(patternLower)
-			if len(words) > 0 {
-				allFound := true
-				for _, word := range words {
-					if !strings.Contains(nameLower, word) {
-						allFound = false
-						break
-					}
-				}
-				if allFound {
-					matchedValue = opt.Value
-				}
-			}
+		if config.ConstraintMatchesName(constraint, opt.Name) {
+			matchedValue = opt.Value
 		}
 	}
 	return matchedValue
+}
+
+// ResolveProfileModel resolves a model profile's Criteria against the available models,
+// returning the matched model id ("" when the profile/criteria is nil or nothing matches).
+// It reuses MatchConstraintOption (and thus config.ConstraintMatchesName) so profile-based
+// model resolution shares the exact same match engine as ACP server constraints.
+func ResolveProfileModel(profile *config.ModelProfile, models *acp.UnstableSessionModelState) string {
+	if profile == nil || profile.Criteria == nil {
+		return ""
+	}
+	return MatchConstraintOption(profile.Criteria, ModelsToConfigOptions(models))
 }
 
 // ResolveAuxModelSwitch decides which model a freshly-created auxiliary session should run

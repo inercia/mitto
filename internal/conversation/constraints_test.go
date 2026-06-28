@@ -67,6 +67,37 @@ func TestMatchConstraintOption(t *testing.T) {
 	}
 }
 
+// TestResolveProfileModel verifies that a model profile's Criteria resolves to the
+// matching model id via the shared constraint match engine.
+func TestResolveProfileModel(t *testing.T) {
+	models := &acp.UnstableSessionModelState{
+		AvailableModels: []acp.UnstableModelInfo{
+			{ModelId: "claude-haiku-4-5", Name: "Haiku 4.5"},
+			{ModelId: "claude-sonnet-4-6", Name: "Sonnet 4.6"},
+			{ModelId: "claude-opus-4-8", Name: "Opus 4.8"},
+		},
+	}
+	tests := []struct {
+		name    string
+		profile *config.ModelProfile
+		models  *acp.UnstableSessionModelState
+		want    string
+	}{
+		{name: "nil profile", profile: nil, models: models, want: ""},
+		{name: "nil criteria", profile: &config.ModelProfile{Name: "TagsOnly"}, models: models, want: ""},
+		{name: "contains match", profile: &config.ModelProfile{Name: "Opus", Criteria: &config.ACPServerConstraint{MatchMode: "contains", Pattern: "Opus"}}, models: models, want: "claude-opus-4-8"},
+		{name: "no match", profile: &config.ModelProfile{Name: "GPT", Criteria: &config.ACPServerConstraint{MatchMode: "contains", Pattern: "gpt"}}, models: models, want: ""},
+		{name: "nil models", profile: &config.ModelProfile{Name: "Opus", Criteria: &config.ACPServerConstraint{MatchMode: "contains", Pattern: "Opus"}}, models: nil, want: ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := ResolveProfileModel(tt.profile, tt.models); got != tt.want {
+				t.Errorf("ResolveProfileModel() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 // TestResolveAuxModelSwitch pins down the auxiliary model-switch decision (mitto-ykb).
 func TestResolveAuxModelSwitch(t *testing.T) {
 	models := func(current string) *acp.UnstableSessionModelState {
