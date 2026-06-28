@@ -38,6 +38,26 @@ prompt: |
   {{- end }}
   This is the **automated, non-interactive** sibling of "Start work": on every scheduled run you advance the target **one concrete increment** toward completion, and when there is **nothing ready left to do in scope**, you remove your own periodic flag and stop.
 
+  {{- if .Iteration.IsUninterrupted }}
+  ## Continuation — uninterrupted scheduled run
+
+  **Silent mode.** Use **only** `mitto_ui_notify`; never call `mitto_ui_options`,
+  `mitto_ui_form`, or `mitto_ui_textbox`. **Decide autonomously** — do not ask which
+  ticket to work on or how to proceed. The sole exception is a requirement that is
+  **not properly defined** in the ticket: **defer it** (Step 4) rather than ask or guess.
+
+  Durable anchor for this loop: {{ if .Session.BeadsIssue }}bead `{{ .Session.BeadsIssue }}`{{ else }}this conversation's linked bead{{ end }}. Earlier runs already
+  advanced this work — review the prior `bd comment` "Iterate run:" entries on the
+  target bead and the existing children (`{{ .Children.MCPText }}`) so you continue
+  from where the last run stopped instead of repeating it. Then proceed straight to
+  the steps below.
+  {{- if .Iteration.IsLast }}
+
+  **Final scheduled run** (the `maxIterations` cap is reached after this run): do **not**
+  begin an increment you cannot finish now — wrap up, log status with `bd comment`, then
+  post a closing summary via `mitto_ui_notify`.
+  {{- end }}
+  {{- else }}
   ## Interaction Mode — READ THIS FIRST
 
   This prompt almost always runs **unattended on a schedule**.
@@ -75,6 +95,7 @@ prompt: |
   in the ticket itself — in that case you **defer the ticket** (Step 4) rather than asking or
   guessing. The goal is identical: advance the work one increment, or stop cleanly when
   nothing is ready.
+  {{- end }}
 
   ## Step 1 — Resolve the target issue for this run
 

@@ -9,6 +9,28 @@ description: Continue iterating to implement the feature we have been working on
 group: Development
 backgroundColor: '#BBDEFB'
 prompt: |
+  {{- if .Iteration.IsUninterrupted }}
+  Continue implementing the feature you have been working on in this loop. Read the
+  state file `implement-<problem>-<date>.md` and the relevant source first — do
+  not speculate about code you haven't opened.
+
+  Do exactly one increment this run:
+
+  1. Review the state file: what's done and what's still missing.
+  2. Pick the next work item from the spec — no extra features or abstractions.
+  3. Implement it.
+  4. Verify the implementation.
+  5. Update the state file (Progress / Issues remaining).
+  {{- if eq .Args.Commit "true" }}
+  6. Commit only the files you changed, staged explicitly by path (never
+     `git add -A`, `git add .`, or `git commit -a`); concise conventional
+     message; skip the commit if nothing changed.
+  {{- end }}
+
+  **Decide autonomously; do not ask the user.** Only when part of the spec is
+  genuinely ill-defined, record it under "Issues remaining", report it, and stop
+  — never guess.
+  {{- else }}
   Read the state file and relevant source files first. Do not speculate about
   code you haven't opened.
 
@@ -55,3 +77,4 @@ prompt: |
   {{- end }}
 
   Once complete, verify against original problem description.
+  {{- end }}
