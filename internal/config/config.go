@@ -1114,22 +1114,13 @@ func (p *PermissionsConfig) IsAutoApprove() bool {
 
 // MCPConfig contains configuration for the MCP (Model Context Protocol) server.
 // The MCP server provides debugging tools and UI prompt functionality to AI agents.
+// The server is always started; only its bind host/port are configurable.
 type MCPConfig struct {
-	// Enabled controls whether the MCP server is started. Default: true.
-	Enabled *bool `json:"enabled,omitempty" yaml:"enabled,omitempty"`
 	// Host is the address to bind the MCP server to. Default: "127.0.0.1".
 	Host string `json:"host,omitempty" yaml:"host,omitempty"`
 	// Port is the port to listen on. Default: 5757.
 	// Use 0 to let the system pick a free port.
 	Port *int `json:"port,omitempty" yaml:"port,omitempty"`
-}
-
-// IsEnabled returns whether the MCP server should be started.
-func (c *MCPConfig) IsEnabled() bool {
-	if c == nil || c.Enabled == nil {
-		return true // Default: enabled
-	}
-	return *c.Enabled
 }
 
 // GetHost returns the host to bind the MCP server to.
@@ -1339,9 +1330,8 @@ type rawConfig struct {
 	} `yaml:"session"`
 	// MCP is the MCP server configuration
 	MCP *struct {
-		Enabled *bool  `yaml:"enabled"`
-		Host    string `yaml:"host"`
-		Port    *int   `yaml:"port"`
+		Host string `yaml:"host"`
+		Port *int   `yaml:"port"`
 	} `yaml:"mcp"`
 }
 
@@ -1680,9 +1670,8 @@ func Parse(data []byte) (*Config, error) {
 	// Parse MCP config
 	if raw.MCP != nil {
 		cfg.MCP = &MCPConfig{
-			Enabled: raw.MCP.Enabled,
-			Host:    raw.MCP.Host,
-			Port:    raw.MCP.Port,
+			Host: raw.MCP.Host,
+			Port: raw.MCP.Port,
 		}
 	}
 

@@ -100,9 +100,8 @@ func (h *Handlers) HandleGetConfig(w http.ResponseWriter, r *http.Request) {
 			mcpPort = 5757
 		}
 		response["mcp"] = map[string]interface{}{
-			"enabled": h.deps.MittoConfig.MCP.IsEnabled(),
-			"host":    h.deps.MittoConfig.MCP.GetHost(),
-			"port":    mcpPort,
+			"host": h.deps.MittoConfig.MCP.GetHost(),
+			"port": mcpPort,
 		}
 
 		// Merge prompts from global files and settings

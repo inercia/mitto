@@ -1052,8 +1052,7 @@ export function SettingsDialog({
   const [hookDownCommand, setHookDownCommand] = useState("");
   const [hookExternalAddress, setHookExternalAddress] = useState("");
 
-  // MCP server settings
-  const [mcpEnabled, setMcpEnabled] = useState(true);
+  // MCP server settings (the server is always enabled; only host/port are configurable)
   const [mcpHost, setMcpHost] = useState("");
   const [mcpPort, setMcpPort] = useState(""); // string for the number input
 
@@ -1468,7 +1467,6 @@ export function SettingsDialog({
       setHookExternalAddress(config.web?.hooks?.external_address || "");
 
       // Load MCP settings
-      setMcpEnabled(config.mcp?.enabled !== false);
       setMcpHost(config.mcp?.host || "");
       setMcpPort(config.mcp?.port ? String(config.mcp.port) : "");
 
@@ -1872,7 +1870,6 @@ export function SettingsDialog({
         session: sessionConfig,
         permissions: permissionsConfig,
         mcp: {
-          enabled: mcpEnabled,
           host: mcpHost.trim(),
           port: mcpPort ? parseInt(mcpPort, 10) : 0,
         },
@@ -3910,26 +3907,6 @@ export function SettingsDialog({
                         <h4 class="text-sm font-medium text-mitto-text-secondary">
                           MCP server (Model Context Protocol)
                         </h4>
-
-                        <label
-                          class="flex items-center gap-3 p-4 cursor-pointer hover:bg-base-200/40 transition-colors"
-                        >
-                          <input
-                            type="checkbox"
-                            checked=${mcpEnabled}
-                            onChange=${(e) => setMcpEnabled(e.target.checked)}
-                            class="checkbox checkbox-sm checkbox-primary"
-                          />
-                          <div>
-                            <div class="font-medium text-sm">
-                              Enable MCP server
-                            </div>
-                            <div class="text-xs text-mitto-text-muted">
-                              Run a local MCP server so AI agents can access
-                              Mitto's tools.
-                            </div>
-                          </div>
-                        </label>
 
                         <div class="p-4 space-y-3">
                           <div class="flex items-center gap-2">
