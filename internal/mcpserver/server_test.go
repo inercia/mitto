@@ -9352,6 +9352,39 @@ func TestSendPrompt_BothEmpty_Error(t *testing.T) {
 	}
 }
 
+// TestSendPrompt_InvalidTemplate_Rejected verifies that a free-text prompt with
+// broken Go-template syntax is rejected synchronously at enqueue time (mitto-e7u),
+// so the orchestrator gets a clear error instead of the body being silently
+// delivered raw to a child. Nothing should be added to the target queue.
+func TestSendPrompt_InvalidTemplate_Rejected(t *testing.T) {
+	store, srv, senderID, targetID := setupSendPromptServerWithPrompts(t, nil)
+
+	ctx := context.Background()
+	_, output, err := srv.handleSendPromptToConversation(ctx, nil, SendPromptToConversationInput{
+		SelfID:         senderID,
+		ConversationID: targetID,
+		Prompt:         "{{ if .Broken }}", // unbalanced action -> parse error
+	})
+	if err != nil {
+		t.Fatalf("handleSendPromptToConversation returned error: %v", err)
+	}
+	if output.Success {
+		t.Fatal("Expected failure for a prompt with broken template syntax")
+	}
+	if !strings.Contains(output.Error, "invalid prompt template") {
+		t.Errorf("Expected error mentioning 'invalid prompt template', got: %s", output.Error)
+	}
+
+	// Verify nothing was enqueued.
+	msgs, err := store.Queue(targetID).List()
+	if err != nil {
+		t.Fatalf("queue.List() error: %v", err)
+	}
+	if len(msgs) != 0 {
+		t.Fatalf("Expected 0 queued messages after rejection, got %d", len(msgs))
+	}
+}
+
 // TestConversationUpdate_OnCompletionPeriodic verifies the MCP _update tool can create an
 // on-completion periodic conversation (no frequency required) with a completion delay and
 // max-duration cap, and that a partial update clamps the delay to the floor without clobbering

@@ -156,6 +156,22 @@ type promptDeps interface {
 // PromptWithMeta that contain no goto labels and no goroutines.
 type promptDispatcher struct{}
 
+// SenderID sentinels for non-human dispatch paths: queued messages (which include
+// MCP cross-session sends via mitto_conversation_send_prompt) and periodic runs.
+const (
+	senderIDQueue    = "queue"
+	senderIDPeriodic = "periodic-runner"
+)
+
+// isAutomatedDispatch reports whether a prompt originates from an automated /
+// cross-session dispatch path (queue or periodic runner) rather than direct human
+// input. Automated free-text dispatches fail-closed on a template parse error so a
+// broken, unrenderable body is never silently delivered raw to a child that cannot
+// act on it — that cascaded into a 10m child-wait timeout (mitto-e7u).
+func isAutomatedDispatch(senderID string) bool {
+	return senderID == senderIDQueue || senderID == senderIDPeriodic
+}
+
 // resolveAndSubstitute covers the top of PromptWithMeta (lines 165–201 in the original):
 //  1. If meta.PromptName != "" && message == "": resolve the prompt name to full text
 //     (error if no resolver, or if resolution fails).
@@ -193,10 +209,15 @@ func (p promptDispatcher) resolveAndSubstitute(d promptDeps, message string, met
 		}
 		rendered, rerr := config.RenderPromptTemplate(name, message, tctx, funcs)
 		if rerr != nil {
-			if meta.PromptName != "" {
-				return "", 0, meta, rerr // named prompt: fail-closed
+			// Named prompts always fail-closed. Automated/cross-session dispatches
+			// (queue, periodic-runner) also fail-closed: a broken template body must
+			// not be silently delivered raw to a child that cannot act on it — that
+			// cascaded into a 10m child-wait timeout (mitto-e7u). Direct human input
+			// keeps fail-open so pasted text containing {{ is delivered literally.
+			if meta.PromptName != "" || isAutomatedDispatch(meta.SenderID) {
+				return "", 0, meta, rerr
 			}
-			// free-text: fail-open — warn and deliver raw message
+			// free-text (direct human input): fail-open — warn and deliver raw message
 			if l := d.pdLogger(); l != nil {
 				l.Warn("free-text template render failed, delivering raw message",
 					"session_id", d.pdSessionID(),
@@ -457,7 +478,7 @@ func (p promptDispatcher) buildProcessorInput(d promptDeps, message string, isFi
 		AvailableACPServers:    d.pdAvailableACPServers(),
 		ChildSessions:          childSessions,
 		MCPToolNames:           mcpToolNames,
-		IsPeriodic:             meta.SenderID == "periodic-runner",
+		IsPeriodic:             meta.SenderID == senderIDPeriodic,
 		IsPeriodicForced:       meta.IsPeriodicForced,
 		IterationNumber:        meta.IterationNumber,
 		MaxIterations:          meta.MaxIterations,

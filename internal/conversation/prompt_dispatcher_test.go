@@ -626,7 +626,9 @@ func TestResolveAndSubstitute_Template_FailClosed(t *testing.T) {
 }
 
 // TestResolveAndSubstitute_FreeText_InvalidTemplate_FailOpen verifies that a
-// free-text body containing unbalanced template syntax is delivered raw (fail-open).
+// free-text body from DIRECT HUMAN INPUT (empty SenderID) containing unbalanced
+// template syntax is delivered raw (fail-open) — so pasted text containing {{ is
+// delivered literally (mitto-gnxe).
 func TestResolveAndSubstitute_FreeText_InvalidTemplate_FailOpen(t *testing.T) {
 	p := promptDispatcher{}
 	d := newFakePromptDeps()
@@ -639,6 +641,28 @@ func TestResolveAndSubstitute_FreeText_InvalidTemplate_FailOpen(t *testing.T) {
 	}
 	if msg != body {
 		t.Fatalf("expected raw body byte-for-byte, got %q", msg)
+	}
+}
+
+// TestResolveAndSubstitute_AutomatedDispatch_InvalidTemplate_FailClosed verifies
+// that a free-text body with unbalanced template syntax dispatched via an automated
+// path (queue / periodic-runner) fails CLOSED — it returns a non-nil error instead
+// of silently delivering the raw, unrenderable body to a child (mitto-e7u).
+func TestResolveAndSubstitute_AutomatedDispatch_InvalidTemplate_FailClosed(t *testing.T) {
+	p := promptDispatcher{}
+	body := "{{ if .Broken }}" // unbalanced action -> "unexpected EOF"
+
+	for _, senderID := range []string{senderIDQueue, senderIDPeriodic} {
+		t.Run(senderID, func(t *testing.T) {
+			d := newFakePromptDeps()
+			msg, _, _, err := p.resolveAndSubstitute(d, body, PromptMeta{SenderID: senderID})
+			if err == nil {
+				t.Fatalf("expected non-nil error for automated dispatch (sender=%q) with invalid template, got msg=%q", senderID, msg)
+			}
+			if msg != "" {
+				t.Fatalf("expected empty message on fail-closed, got %q", msg)
+			}
+		})
 	}
 }
 

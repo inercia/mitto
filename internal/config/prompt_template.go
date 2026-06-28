@@ -158,6 +158,30 @@ func PrecompileTemplateConds(name, body string) error {
 	return nil
 }
 
+// ValidatePromptTemplateSyntax parse-checks a prompt body for valid Go
+// text/template syntax WITHOUT executing it. It catches structural errors such as
+// an unbalanced action ("unexpected EOF") before a body is enqueued for dispatch,
+// so a broken free-text prompt is rejected at dispatch time with a clear error
+// instead of being silently delivered raw to a child (mitto-e7u).
+//
+// Fast path: bodies without template syntax return nil. The full FuncMap is
+// registered so legitimate function calls (Cond, When, Session.*, etc.) parse
+// successfully; no template execution is performed, so this never false-positives
+// on funcs that would need real render context.
+func ValidatePromptTemplateSyntax(name, body string) error {
+	if !HasTemplateSyntax(body) {
+		return nil
+	}
+	if name == "" {
+		name = "prompt"
+	}
+	fm := BuildTemplateFuncMap(&PromptEnabledContext{})
+	if _, err := template.New(name).Option("missingkey=zero").Funcs(fm).Parse(body); err != nil {
+		return fmt.Errorf("prompt template %q: parse error: %w", name, err)
+	}
+	return nil
+}
+
 // RenderPromptTemplate renders a prompt body with Go text/template.
 //
 // Fast path: if body has no template syntax it is returned unchanged (no parse).

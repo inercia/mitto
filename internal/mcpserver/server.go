@@ -2090,6 +2090,20 @@ func (s *Server) handleSendPromptToConversation(ctx context.Context, req *mcp.Ca
 		scheduledTime = &t
 	}
 
+	// Reject a free-text body with broken Go-template syntax up front (mitto-e7u),
+	// so the orchestrator gets a clear, synchronous error instead of the body being
+	// enqueued and later silently delivered raw to a child that cannot act on it.
+	// Named prompts (prompt_name) are validated when their body is resolved at
+	// dispatch in the target's context.
+	if strings.TrimSpace(input.PromptName) == "" {
+		if err := config.ValidatePromptTemplateSyntax("prompt", input.Prompt); err != nil {
+			return nil, SendPromptOutput{
+				Success: false,
+				Error:   "invalid prompt template: " + err.Error(),
+			}, nil
+		}
+	}
+
 	// Get the queue for the target conversation
 	queue := store.Queue(input.ConversationID)
 
@@ -3142,6 +3156,15 @@ func (s *Server) handleConversationStart(ctx context.Context, req *mcp.CallToolR
 
 	// If initial prompt provided, add it to the queue
 	if initialPromptText != "" {
+		// Reject a free-text initial prompt with broken Go-template syntax up front
+		// (mitto-e7u), so it is not enqueued and later silently delivered raw. Named
+		// prompts (resolved to text above) were validated at save time.
+		if input.PromptName == "" {
+			if err := config.ValidatePromptTemplateSyntax("prompt", initialPromptText); err != nil {
+				return nil, ConversationStartOutput{}, fmt.Errorf("invalid initial prompt template: %w", err)
+			}
+		}
+
 		// Parse optional initial prompt delay
 		var scheduledTime *time.Time
 		if input.InitialPromptDelay != "" {

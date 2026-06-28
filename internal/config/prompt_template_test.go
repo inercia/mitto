@@ -199,6 +199,36 @@ func TestRenderPromptTemplate(t *testing.T) {
 	}
 }
 
+// TestValidatePromptTemplateSyntax verifies parse-only validation: plain bodies
+// and bodies with valid template syntax (including FuncMap calls) pass, while
+// structurally broken bodies (e.g. unbalanced actions) return an error (mitto-e7u).
+func TestValidatePromptTemplateSyntax(t *testing.T) {
+	tests := []struct {
+		name    string
+		body    string
+		wantErr bool
+	}{
+		{name: "plain-text", body: "Hello world", wantErr: false},
+		{name: "dollar-var-only", body: "work on ${ISSUE}", wantErr: false},
+		{name: "valid-action", body: "id={{ .Session.ID }}", wantErr: false},
+		{name: "valid-funcmap-call", body: "{{ if .Iteration.IsUninterrupted }}x{{ end }}", wantErr: false},
+		{name: "unbalanced-if", body: "{{ if .Broken }}", wantErr: true},
+		{name: "unterminated-action", body: "hello {{ .Name", wantErr: true},
+		{name: "empty", body: "", wantErr: false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			err := ValidatePromptTemplateSyntax("prompt", tc.body)
+			if tc.wantErr && err == nil {
+				t.Fatalf("expected error for body %q, got nil", tc.body)
+			}
+			if !tc.wantErr && err != nil {
+				t.Fatalf("expected nil error for body %q, got: %v", tc.body, err)
+			}
+		})
+	}
+}
+
 // errBoom is a sentinel error for test case 9.
 var errBoom = fmt.Errorf("boom")
 
