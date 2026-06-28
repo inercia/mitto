@@ -78,8 +78,9 @@ type fakePromptDeps struct {
 	resolvedPreferred   []string
 	baselineModel       string
 	overrideActive      bool
-	setActiveModelCalls []string
-	setActiveModelErr   error
+	setActiveModelCalls    []string
+	setActiveModelErr      error
+	recordedSessionChanges []session.SessionChangeData
 
 	// === New in 2.5-d ===
 	lastUsageSet          *acp.Usage
@@ -257,6 +258,13 @@ func (f *fakePromptDeps) pdSetActiveModelOnly(_ context.Context, modelID string)
 	defer f.mu.Unlock()
 	f.setActiveModelCalls = append(f.setActiveModelCalls, modelID)
 	return f.setActiveModelErr
+}
+func (f *fakePromptDeps) pdRecordSessionChange(kind, value, previousValue string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.recordedSessionChanges = append(f.recordedSessionChanges, session.SessionChangeData{
+		Kind: kind, Value: value, PreviousValue: previousValue,
+	})
 }
 
 // === mitto-pchx.3: prompt-arg cache ===
@@ -1225,6 +1233,9 @@ func TestPromptDispatcher_ApplyModelPreference_NoPreference_DesiredIsBaseline_No
 	if !strings.Contains(buf.String(), "decision=skip_no_preference") {
 		t.Fatalf("expected decision=skip_no_preference in log, got: %s", buf.String())
 	}
+	if len(d.recordedSessionChanges) != 0 {
+		t.Fatalf("expected no model_override pill with no preference, got %v", d.recordedSessionChanges)
+	}
 }
 
 func TestPromptDispatcher_ApplyModelPreference_MatchingPreference_SetsModelAndOverride(t *testing.T) {
@@ -1252,6 +1263,13 @@ func TestPromptDispatcher_ApplyModelPreference_MatchingPreference_SetsModelAndOv
 	}
 	if !strings.Contains(buf.String(), "decision=switching") {
 		t.Fatalf("expected decision=switching in log, got: %s", buf.String())
+	}
+	if len(d.recordedSessionChanges) != 1 {
+		t.Fatalf("expected 1 model_override pill, got %d", len(d.recordedSessionChanges))
+	}
+	if sc := d.recordedSessionChanges[0]; sc.Kind != ConfigOptionCategoryModelOverride ||
+		sc.Value != "Model 2" || sc.PreviousValue != "Model 1" {
+		t.Fatalf("unexpected model_override pill: %+v", sc)
 	}
 }
 
@@ -1282,6 +1300,14 @@ func TestPromptDispatcher_ApplyModelPreference_PreferenceAlreadyActive_NoSwitch(
 	if !strings.Contains(buf.String(), "decision=skip_already_satisfied") {
 		t.Fatalf("expected decision=skip_already_satisfied in log, got: %s", buf.String())
 	}
+	// Pill is still emitted: the prompt runs on a non-baseline model even though
+	// no RPC switch was needed.
+	if len(d.recordedSessionChanges) != 1 {
+		t.Fatalf("expected 1 model_override pill when override active, got %d", len(d.recordedSessionChanges))
+	}
+	if sc := d.recordedSessionChanges[0]; sc.Value != "Model 2" || sc.PreviousValue != "Model 1" {
+		t.Fatalf("unexpected model_override pill: %+v", sc)
+	}
 }
 
 func TestPromptDispatcher_ApplyModelPreference_NoMatch_UsesBaseline_ClearsOverride(t *testing.T) {
@@ -1308,6 +1334,34 @@ func TestPromptDispatcher_ApplyModelPreference_NoMatch_UsesBaseline_ClearsOverri
 	}
 	if !strings.Contains(buf.String(), "decision=skip_no_match") {
 		t.Fatalf("expected decision=skip_no_match in log, got: %s", buf.String())
+	}
+	if len(d.recordedSessionChanges) != 0 {
+		t.Fatalf("expected no model_override pill when not overriding, got %v", d.recordedSessionChanges)
+	}
+}
+
+func TestPromptDispatcher_ApplyModelPreference_SwitchFails_NoPill(t *testing.T) {
+	p := promptDispatcher{}
+	d := newFakePromptDeps()
+	d.agentModels = &acp.UnstableSessionModelState{
+		CurrentModelId: "m-1",
+		AvailableModels: []acp.UnstableModelInfo{
+			{ModelId: "m-1", Name: "Model 1"},
+			{ModelId: "m-2", Name: "Model 2"},
+		},
+	}
+	d.baselineModel = "m-1"
+	d.setActiveModelErr = errors.New("boom")
+	var buf bytes.Buffer
+	d.logger = slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	p.applyModelPreference(d, PromptMeta{PreferredModels: []string{"Model 2"}})
+
+	if len(d.setActiveModelCalls) != 1 {
+		t.Fatalf("expected setActiveModelOnly to be attempted, got %v", d.setActiveModelCalls)
+	}
+	if len(d.recordedSessionChanges) != 0 {
+		t.Fatalf("expected no model_override pill when switch RPC failed, got %v", d.recordedSessionChanges)
 	}
 }
 

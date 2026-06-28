@@ -135,6 +135,23 @@ func SelectPreferredModel(patterns []string, models *acp.UnstableSessionModelSta
 	return ""
 }
 
+// ModelDisplayName returns the human-readable Name for modelID from the available
+// models, falling back to the raw modelID when no match is found (or models is nil).
+func ModelDisplayName(models *acp.UnstableSessionModelState, modelID string) string {
+	if models == nil || modelID == "" {
+		return modelID
+	}
+	for _, m := range models.AvailableModels {
+		if string(m.ModelId) == modelID {
+			if m.Name != "" {
+				return m.Name
+			}
+			return modelID
+		}
+	}
+	return modelID
+}
+
 // GlobMatchCI reports whether the already-lowercased pattern matches s (case-insensitive).
 // Uses path.Match semantics: '*' matches any non-'/' sequence, '?' matches one character.
 // Model IDs and display names never contain '/', so '*' effectively matches anything.

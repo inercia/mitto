@@ -457,10 +457,15 @@ describe("messagePropsAreEqual (memo comparator)", () => {
  */
 function sessionChangeText(m) {
   const value = m.value || "";
+  const previousValue = m.previousValue || "";
   const items = Array.isArray(m.items) ? m.items : [];
   switch (m.kind) {
     case "model":
       return `Model changed to ${value}`;
+    case "model_override":
+      return previousValue
+        ? `⚡ Running this prompt on ${value} — conversation stays on ${previousValue}`
+        : `⚡ Running this prompt on ${value}`;
     case "mode":
       return `Mode changed to ${value}`;
     case "prompt_arguments":
@@ -497,5 +502,23 @@ describe("sessionChangeText", () => {
     expect(sessionChangeText({ kind: "future_thing" })).toBe(
       "future_thing changed",
     );
+  });
+
+  test("model_override renders the transient-override pill with baseline", () => {
+    expect(
+      sessionChangeText({
+        kind: "model_override",
+        value: "Sonnet 4.5",
+        previousValue: "Opus",
+      }),
+    ).toBe(
+      "⚡ Running this prompt on Sonnet 4.5 — conversation stays on Opus",
+    );
+  });
+
+  test("model_override without baseline omits the 'conversation stays on' clause", () => {
+    expect(
+      sessionChangeText({ kind: "model_override", value: "Sonnet 4.5" }),
+    ).toBe("⚡ Running this prompt on Sonnet 4.5");
   });
 });

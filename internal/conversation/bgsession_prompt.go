@@ -844,6 +844,10 @@ func (bs *BackgroundSession) pdSetActiveModelOnly(ctx context.Context, modelID s
 	return bs.setActiveModelOnly(ctx, modelID)
 }
 
+func (bs *BackgroundSession) pdRecordSessionChange(kind, value, previousValue string) {
+	bs.cmRecordSessionChange(kind, value, previousValue)
+}
+
 // === New in 2.5-d ===
 
 func (bs *BackgroundSession) pdSetLastUsage(usage *acp.Usage) {

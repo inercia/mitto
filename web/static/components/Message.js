@@ -31,10 +31,15 @@ import { getBeadsKnownIds } from "../utils/beadsKnownIds.js";
  */
 function sessionChangeText(m) {
   const value = m.value || "";
+  const previousValue = m.previousValue || "";
   const items = Array.isArray(m.items) ? m.items : [];
   switch (m.kind) {
     case "model":
       return `Model changed to ${value}`;
+    case "model_override":
+      return previousValue
+        ? `⚡ Running this prompt on ${value} — conversation stays on ${previousValue}`
+        : `⚡ Running this prompt on ${value}`;
     case "mode":
       return `Mode changed to ${value}`;
     case "prompt_arguments":

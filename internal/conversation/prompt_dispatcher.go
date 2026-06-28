@@ -99,6 +99,9 @@ type promptDeps interface {
 	pdReadBaselineModel() string       // modelMu.Lock + read + Unlock
 	pdWriteOverrideActive(active bool) // modelMu.Lock + write + Unlock
 	pdSetActiveModelOnly(ctx context.Context, modelID string) error
+	// pdRecordSessionChange assigns a seq, persists a session-change timeline
+	// event via the recorder, and notifies observers. Used for the model-override pill.
+	pdRecordSessionChange(kind, value, previousValue string)
 
 	// Per-conversation prompt-argument cache (mitto-pchx.3): resolver returns the prompt's
 	// declared parameter list (with optional Cache config); Get/Set bridge to the in-memory store.
@@ -694,9 +697,11 @@ func (p promptDispatcher) applyModelPreference(d promptDeps, meta PromptMeta) {
 
 	isOverride := desired != "" && desired != baseline
 	switching := desired != "" && desired != currentModel
+	switchFailed := false
 	if switching {
 		setCtx, setCancel := context.WithTimeout(d.pdSessionCtx(), 15*time.Second)
 		if setErr := d.pdSetActiveModelOnly(setCtx, desired); setErr != nil {
+			switchFailed = true
 			if l := d.pdLogger(); l != nil {
 				l.Warn("Failed to apply model preference", "model", desired, "error", setErr)
 			}
@@ -724,6 +729,17 @@ func (p promptDispatcher) applyModelPreference(d promptDeps, meta PromptMeta) {
 			"current_model", currentModel,
 			"desired", desired,
 			"decision", decision)
+	}
+
+	// Emit a timeline pill when this prompt runs on a model different from the
+	// conversation baseline, so the transient override is visible to the user.
+	// Skipped when the switch RPC failed (the model did not actually change).
+	if isOverride && !switchFailed {
+		d.pdRecordSessionChange(
+			ConfigOptionCategoryModelOverride,
+			ModelDisplayName(models, desired),
+			ModelDisplayName(models, baseline),
+		)
 	}
 
 	d.pdWriteOverrideActive(isOverride)

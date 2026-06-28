@@ -46,6 +46,10 @@ const (
 	ConfigOptionCategoryMode         = "mode"
 	ConfigOptionCategoryModel        = "model"
 	ConfigOptionCategoryThoughtLevel = "thought_level"
+	// ConfigOptionCategoryModelOverride marks a transient, per-prompt model
+	// switch (driven by a prompt's preferredModels) that leaves the conversation
+	// baseline unchanged. Rendered as a distinct timeline pill, not a config change.
+	ConfigOptionCategoryModelOverride = "model_override"
 )
 
 // ConfigOptionType constants for option types.
