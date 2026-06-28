@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -19,6 +20,56 @@ type ACPServerConstraint struct {
 	MatchMode string `json:"matchMode"`
 	// Pattern is the text to match against option names (e.g., "Opus 4.6").
 	Pattern string `json:"pattern"`
+}
+
+// ModelProfile is a named model profile pairing a selection criteria with tags.
+// Profiles let users tag models by capability (e.g. "Smart", "Cheap") independently
+// of the raw model name, so other parts of Mitto can branch on capability tags rather
+// than brittle model-name strings.
+type ModelProfile struct {
+	// Name is the display name for this profile (e.g. "Opus").
+	Name string `json:"name"`
+	// Criteria selects which model(s) this profile applies to, reusing the same
+	// match-mode + pattern mechanism as ACPServer config-option constraints.
+	Criteria *ACPServerConstraint `json:"criteria,omitempty"`
+	// Tags is the list of capability tags carried by matching models (e.g. "Smart", "Cheap").
+	Tags []string `json:"tags,omitempty"`
+}
+
+// ConstraintMatchesName reports whether name matches the constraint's Pattern under
+// its MatchMode. It is the single-string core of the constraint match engine, shared by
+// MatchConstraintOption (which applies it across a list of option names) and by model-tag
+// resolution, so the contains/exact/startsWith/regex/lookAlike semantics never drift.
+// Matching is case-insensitive (regex uses the (?i) flag). A nil constraint never matches.
+func ConstraintMatchesName(c *ACPServerConstraint, name string) bool {
+	if c == nil {
+		return false
+	}
+	patternLower := strings.ToLower(c.Pattern)
+	nameLower := strings.ToLower(name)
+	switch c.MatchMode {
+	case "contains":
+		return strings.Contains(nameLower, patternLower)
+	case "exact":
+		return nameLower == patternLower
+	case "startsWith":
+		return strings.HasPrefix(nameLower, patternLower)
+	case "regex":
+		matched, _ := regexp.MatchString("(?i)"+c.Pattern, name)
+		return matched
+	case "lookAlike":
+		words := strings.Fields(patternLower)
+		if len(words) == 0 {
+			return false
+		}
+		for _, word := range words {
+			if !strings.Contains(nameLower, word) {
+				return false
+			}
+		}
+		return true
+	}
+	return false
 }
 
 // ACPServer represents a single ACP server configuration.
@@ -1165,6 +1216,24 @@ type Config struct {
 	RestrictedRunners map[string]*WorkspaceRunnerConfig
 	// MCP contains MCP (Model Context Protocol) server configuration
 	MCP *MCPConfig
+	// Models is the list of named model profiles (criteria + tags) for tag-based
+	// model-capability lookups.
+	Models []ModelProfile
+}
+
+// rawModelCriteria is used for YAML unmarshaling of a model profile's criteria.
+// It mirrors ACPServerConstraint but with explicit yaml tags (yaml.v3 lowercases
+// field names by default, which would turn MatchMode into "matchmode").
+type rawModelCriteria struct {
+	MatchMode string `yaml:"matchMode"`
+	Pattern   string `yaml:"pattern"`
+}
+
+// rawModelProfile is used for YAML unmarshaling of model profile entries.
+type rawModelProfile struct {
+	Name     string            `yaml:"name"`
+	Criteria *rawModelCriteria `yaml:"criteria"`
+	Tags     []string          `yaml:"tags"`
 }
 
 // rawACPServerConfig is used for YAML unmarshaling of ACP server entries.
@@ -1194,6 +1263,8 @@ type rawACPServerConfig struct {
 // rawConfig is used for YAML unmarshaling to handle the map-based format.
 type rawConfig struct {
 	ACP []map[string]rawACPServerConfig `yaml:"acp"`
+	// Models is the top-level named model profiles section
+	Models []rawModelProfile `yaml:"models"`
 	// Prompts is the top-level prompts section for global prompts
 	Prompts []struct {
 		Name            string            `yaml:"name"`
@@ -1416,6 +1487,25 @@ func Parse(data []byte) (*Config, error) {
 			}
 			cfg.ACPServers = append(cfg.ACPServers, acpServer)
 		}
+	}
+
+	// Populate model profiles (top-level models:)
+	for _, m := range raw.Models {
+		// Skip profiles without a name
+		if m.Name == "" {
+			continue
+		}
+		mp := ModelProfile{
+			Name: m.Name,
+			Tags: m.Tags,
+		}
+		if m.Criteria != nil {
+			mp.Criteria = &ACPServerConstraint{
+				MatchMode: m.Criteria.MatchMode,
+				Pattern:   m.Criteria.Pattern,
+			}
+		}
+		cfg.Models = append(cfg.Models, mp)
 	}
 
 	// Populate global prompts (top-level)
@@ -1705,6 +1795,61 @@ func (c *Config) GetServerType(name string) string {
 		return ""
 	}
 	return srv.GetType()
+}
+
+// ModelProfileByName returns the model profile with the given name (case-insensitive).
+// The bool is false when no profile matches. Intended for consumers that need to look up
+// a profile's tags or criteria by its display name.
+func (c *Config) ModelProfileByName(name string) (*ModelProfile, bool) {
+	for i := range c.Models {
+		if strings.EqualFold(c.Models[i].Name, name) {
+			return &c.Models[i], true
+		}
+	}
+	return nil, false
+}
+
+// ModelProfilesByTag returns all model profiles carrying the given tag (case-insensitive),
+// mirroring how ACP server tags are compared elsewhere. Returns an empty slice when none match.
+func (c *Config) ModelProfilesByTag(tag string) []ModelProfile {
+	var out []ModelProfile
+	for _, p := range c.Models {
+		for _, t := range p.Tags {
+			if strings.EqualFold(t, tag) {
+				out = append(out, p)
+				break
+			}
+		}
+	}
+	return out
+}
+
+// ResolveModelTags returns the UNION of capability tags from every model profile whose
+// Criteria matches modelName (using the shared ConstraintMatchesName engine). Tags are
+// de-duplicated case-insensitively, preserving first-seen order. It is a pure function of
+// (profiles, name) so config never needs to import conversation. Returns nil when modelName
+// is empty, no profile has criteria, or nothing matches (a nil slice is safe to range/index).
+func (c *Config) ResolveModelTags(modelName string) []string {
+	if modelName == "" {
+		return nil
+	}
+	var tags []string
+	seen := make(map[string]struct{})
+	for i := range c.Models {
+		p := &c.Models[i]
+		if !ConstraintMatchesName(p.Criteria, modelName) {
+			continue
+		}
+		for _, t := range p.Tags {
+			key := strings.ToLower(t)
+			if _, dup := seen[key]; dup {
+				continue
+			}
+			seen[key] = struct{}{}
+			tags = append(tags, t)
+		}
+	}
+	return tags
 }
 
 // ServerNames returns a list of all configured server names.

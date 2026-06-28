@@ -2234,3 +2234,192 @@ conversations:
 		t.Errorf("GetMinPeriodicCompletionDelaySeconds() = %d, want 10", cfg.Conversations.GetMinPeriodicCompletionDelaySeconds())
 	}
 }
+
+func TestParse_Models(t *testing.T) {
+	yaml := `
+models:
+  - name: Opus
+    criteria:
+      matchMode: contains
+      pattern: Opus
+    tags: [Smartest, Expensive]
+  - name: Sonnet
+    criteria:
+      matchMode: contains
+      pattern: Sonnet
+    tags: [Smart, Cheap]
+`
+	cfg, err := Parse([]byte(yaml))
+	if err != nil {
+		t.Fatalf("Parse failed: %v", err)
+	}
+
+	if len(cfg.Models) != 2 {
+		t.Fatalf("Models count = %d, want 2", len(cfg.Models))
+	}
+
+	opus := cfg.Models[0]
+	if opus.Name != "Opus" {
+		t.Errorf("Models[0].Name = %q, want %q", opus.Name, "Opus")
+	}
+	if opus.Criteria == nil {
+		t.Fatalf("Models[0].Criteria is nil, want non-nil")
+	}
+	if opus.Criteria.MatchMode != "contains" {
+		t.Errorf("Models[0].Criteria.MatchMode = %q, want %q", opus.Criteria.MatchMode, "contains")
+	}
+	if opus.Criteria.Pattern != "Opus" {
+		t.Errorf("Models[0].Criteria.Pattern = %q, want %q", opus.Criteria.Pattern, "Opus")
+	}
+	if len(opus.Tags) != 2 || opus.Tags[0] != "Smartest" || opus.Tags[1] != "Expensive" {
+		t.Errorf("Models[0].Tags = %v, want [Smartest Expensive]", opus.Tags)
+	}
+
+	sonnet := cfg.Models[1]
+	if sonnet.Name != "Sonnet" {
+		t.Errorf("Models[1].Name = %q, want %q", sonnet.Name, "Sonnet")
+	}
+	if len(sonnet.Tags) != 2 || sonnet.Tags[0] != "Smart" || sonnet.Tags[1] != "Cheap" {
+		t.Errorf("Models[1].Tags = %v, want [Smart Cheap]", sonnet.Tags)
+	}
+}
+
+func TestParse_ModelsEmptyAndNameless(t *testing.T) {
+	// A profile without a name must be skipped; a profile without criteria is allowed.
+	yaml := `
+models:
+  - name: ""
+    tags: [ignored]
+  - name: TagsOnly
+    tags: [Fast]
+`
+	cfg, err := Parse([]byte(yaml))
+	if err != nil {
+		t.Fatalf("Parse failed: %v", err)
+	}
+	if len(cfg.Models) != 1 {
+		t.Fatalf("Models count = %d, want 1", len(cfg.Models))
+	}
+	if cfg.Models[0].Name != "TagsOnly" {
+		t.Errorf("Models[0].Name = %q, want %q", cfg.Models[0].Name, "TagsOnly")
+	}
+	if cfg.Models[0].Criteria != nil {
+		t.Errorf("Models[0].Criteria = %v, want nil", cfg.Models[0].Criteria)
+	}
+}
+
+// TestConstraintMatchesName pins the single-string match engine shared by
+// MatchConstraintOption and model-tag resolution across all match modes.
+func TestConstraintMatchesName(t *testing.T) {
+	tests := []struct {
+		name       string
+		constraint *ACPServerConstraint
+		input      string
+		want       bool
+	}{
+		{name: "nil constraint never matches", constraint: nil, input: "Opus 4.8", want: false},
+		{name: "contains hit", constraint: &ACPServerConstraint{MatchMode: "contains", Pattern: "opus"}, input: "Opus 4.8", want: true},
+		{name: "contains case insensitive", constraint: &ACPServerConstraint{MatchMode: "contains", Pattern: "OPUS"}, input: "opus-4.8", want: true},
+		{name: "contains miss", constraint: &ACPServerConstraint{MatchMode: "contains", Pattern: "sonnet"}, input: "Opus 4.8", want: false},
+		{name: "exact hit case insensitive", constraint: &ACPServerConstraint{MatchMode: "exact", Pattern: "gpt-4o"}, input: "GPT-4o", want: true},
+		{name: "exact miss for partial", constraint: &ACPServerConstraint{MatchMode: "exact", Pattern: "opus"}, input: "opus-4.8", want: false},
+		{name: "startsWith hit", constraint: &ACPServerConstraint{MatchMode: "startsWith", Pattern: "opus"}, input: "Opus 4.8", want: true},
+		{name: "startsWith miss", constraint: &ACPServerConstraint{MatchMode: "startsWith", Pattern: "4.8"}, input: "Opus 4.8", want: false},
+		{name: "regex hit case insensitive", constraint: &ACPServerConstraint{MatchMode: "regex", Pattern: "opus-4\\.[78]"}, input: "OPUS-4.8", want: true},
+		{name: "regex miss", constraint: &ACPServerConstraint{MatchMode: "regex", Pattern: "^claude"}, input: "Opus 4.8", want: false},
+		{name: "lookAlike all words present", constraint: &ACPServerConstraint{MatchMode: "lookAlike", Pattern: "Opus 4.8"}, input: "opus-4.8", want: true},
+		{name: "lookAlike word missing", constraint: &ACPServerConstraint{MatchMode: "lookAlike", Pattern: "opus 5.0"}, input: "opus-4.8", want: false},
+		{name: "lookAlike empty pattern", constraint: &ACPServerConstraint{MatchMode: "lookAlike", Pattern: ""}, input: "opus-4.8", want: false},
+		{name: "unknown mode", constraint: &ACPServerConstraint{MatchMode: "nope", Pattern: "opus"}, input: "opus-4.8", want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := ConstraintMatchesName(tt.constraint, tt.input); got != tt.want {
+				t.Errorf("ConstraintMatchesName() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestModelProfileByName covers case-insensitive profile lookup by name.
+func TestModelProfileByName(t *testing.T) {
+	cfg := &Config{Models: []ModelProfile{
+		{Name: "Opus", Tags: []string{"Smartest"}},
+		{Name: "Sonnet", Tags: []string{"Smart"}},
+	}}
+
+	p, ok := cfg.ModelProfileByName("opus")
+	if !ok {
+		t.Fatalf("ModelProfileByName(opus) ok = false, want true")
+	}
+	if p.Name != "Opus" {
+		t.Errorf("ModelProfileByName(opus).Name = %q, want %q", p.Name, "Opus")
+	}
+
+	if _, ok := cfg.ModelProfileByName("haiku"); ok {
+		t.Errorf("ModelProfileByName(haiku) ok = true, want false")
+	}
+}
+
+// TestModelProfilesByTag covers case-insensitive tag filtering, including a tag shared
+// by multiple profiles.
+func TestModelProfilesByTag(t *testing.T) {
+	cfg := &Config{Models: []ModelProfile{
+		{Name: "Opus", Tags: []string{"Smartest", "Expensive"}},
+		{Name: "Sonnet", Tags: []string{"Smart", "Cheap"}},
+		{Name: "Haiku", Tags: []string{"Fast", "Cheap"}},
+	}}
+
+	cheap := cfg.ModelProfilesByTag("cheap")
+	if len(cheap) != 2 {
+		t.Fatalf("ModelProfilesByTag(cheap) count = %d, want 2", len(cheap))
+	}
+	if cheap[0].Name != "Sonnet" || cheap[1].Name != "Haiku" {
+		t.Errorf("ModelProfilesByTag(cheap) = [%s %s], want [Sonnet Haiku]", cheap[0].Name, cheap[1].Name)
+	}
+
+	if got := cfg.ModelProfilesByTag("missing"); len(got) != 0 {
+		t.Errorf("ModelProfilesByTag(missing) count = %d, want 0", len(got))
+	}
+}
+
+// TestResolveModelTags covers tag resolution across every match mode, the union (with
+// case-insensitive de-dup) across multiple matching profiles, the no-match / empty cases,
+// and that criteria-less profiles never contribute tags.
+func TestResolveModelTags(t *testing.T) {
+	cfg := &Config{Models: []ModelProfile{
+		{Name: "Opus", Criteria: &ACPServerConstraint{MatchMode: "contains", Pattern: "Opus"}, Tags: []string{"Smart", "Expensive"}},
+		{Name: "Claude", Criteria: &ACPServerConstraint{MatchMode: "regex", Pattern: "opus|sonnet"}, Tags: []string{"Anthropic", "smart"}},
+		{Name: "Sonnet", Criteria: &ACPServerConstraint{MatchMode: "exact", Pattern: "Sonnet 4.6"}, Tags: []string{"Cheap"}},
+		{Name: "Pro", Criteria: &ACPServerConstraint{MatchMode: "startsWith", Pattern: "opus"}, Tags: []string{"Pro"}},
+		{Name: "Look", Criteria: &ACPServerConstraint{MatchMode: "lookAlike", Pattern: "Opus 4.8"}, Tags: []string{"Latest"}},
+		{Name: "TagsOnly", Tags: []string{"NeverApplied"}}, // nil criteria → never matches
+	}}
+
+	tests := []struct {
+		name      string
+		modelName string
+		want      []string
+	}{
+		// "Opus 4.8" matches Opus (contains), Claude (regex), Pro (startsWith), Look (lookAlike).
+		// Union with case-insensitive de-dup: Smart, Expensive, Anthropic, Pro, Latest
+		// ("smart" from Claude is dropped as a dup of "Smart").
+		{name: "union across modes", modelName: "Opus 4.8", want: []string{"Smart", "Expensive", "Anthropic", "Pro", "Latest"}},
+		{name: "exact only", modelName: "Sonnet 4.6", want: []string{"Anthropic", "smart", "Cheap"}},
+		{name: "no match", modelName: "GPT-4o", want: nil},
+		{name: "empty name", modelName: "", want: nil},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := cfg.ResolveModelTags(tt.modelName)
+			if len(got) != len(tt.want) {
+				t.Fatalf("ResolveModelTags(%q) = %v, want %v", tt.modelName, got, tt.want)
+			}
+			for i := range tt.want {
+				if got[i] != tt.want[i] {
+					t.Errorf("ResolveModelTags(%q)[%d] = %q, want %q", tt.modelName, i, got[i], tt.want[i])
+				}
+			}
+		})
+	}
+}

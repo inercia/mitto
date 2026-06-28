@@ -69,6 +69,8 @@ type Settings struct {
 	RestrictedRunners map[string]*WorkspaceRunnerConfig `json:"restricted_runners,omitempty"`
 	// MCP contains MCP (Model Context Protocol) server configuration
 	MCP *MCPConfig `json:"mcp,omitempty"`
+	// Models is the list of named model profiles (criteria + tags)
+	Models []ModelProfile `json:"models,omitempty"`
 }
 
 // DefaultStartupStaggerMs is the default stagger delay in milliseconds between
@@ -308,6 +310,7 @@ func (s *Settings) ToConfig() *Config {
 		Permissions:       s.Permissions,
 		RestrictedRunners: s.RestrictedRunners,
 		MCP:               s.MCP,
+		Models:            s.Models,
 	}
 	for i, srv := range s.ACPServers {
 		cfg.ACPServers[i] = ACPServer(srv)
@@ -328,6 +331,7 @@ func ConfigToSettings(cfg *Config) *Settings {
 		Permissions:       cfg.Permissions,
 		RestrictedRunners: cfg.RestrictedRunners,
 		MCP:               cfg.MCP,
+		Models:            cfg.Models,
 	}
 	for i, srv := range cfg.ACPServers {
 		s.ACPServers[i] = ACPServerSettings(srv)
