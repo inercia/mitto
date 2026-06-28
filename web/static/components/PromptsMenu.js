@@ -125,7 +125,7 @@ export function PromptsMenu({
             (curModelName
               ? " — your conversation model stays " + curModelName
               : "")}
-            >⚡ ${overrideModel.name}</span
+            >⚡</span
           >`}
           ${prompt.periodic &&
           html`<span
