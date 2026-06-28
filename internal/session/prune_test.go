@@ -1,12 +1,60 @@
 package session
 
 import (
+	"context"
+	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
+
+// pruneRaceLogCapture is a minimal slog.Handler that records WARN+ messages
+// for the concurrent-prune race tests (mitto-yom).
+// It is safe for concurrent use.
+type pruneRaceLogCapture struct {
+	mu   sync.Mutex
+	msgs []string
+}
+
+func (c *pruneRaceLogCapture) Enabled(_ context.Context, lv slog.Level) bool {
+	return lv >= slog.LevelWarn
+}
+
+func (c *pruneRaceLogCapture) Handle(_ context.Context, r slog.Record) error {
+	c.mu.Lock()
+	c.msgs = append(c.msgs, r.Message)
+	c.mu.Unlock()
+	return nil
+}
+
+// WithAttrs returns the same receiver so that the component-filter wrapper in
+// logging.WithComponent keeps routing records here.
+func (c *pruneRaceLogCapture) WithAttrs(_ []slog.Attr) slog.Handler { return c }
+func (c *pruneRaceLogCapture) WithGroup(_ string) slog.Handler       { return c }
+
+// findWarns returns the subset of captured messages that contain substr.
+func (c *pruneRaceLogCapture) findWarns(substr string) []string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	var out []string
+	for _, m := range c.msgs {
+		if strings.Contains(m, substr) {
+			out = append(out, m)
+		}
+	}
+	return out
+}
+
+// reset clears all captured messages.
+func (c *pruneRaceLogCapture) reset() {
+	c.mu.Lock()
+	c.msgs = nil
+	c.mu.Unlock()
+}
 
 func TestPruneConfig_IsEnabled(t *testing.T) {
 	tests := []struct {
@@ -905,6 +953,201 @@ func TestPruneIfNeeded_MaxSeqMatchesKeptEvents(t *testing.T) {
 		t.Errorf("EventsRemoved = %d, want 0 (no events should be removed when already at minimum)", result.EventsRemoved)
 	}
 	t.Logf("Note: Implementation keeps at least 1 event even with MaxMessages: 0")
+}
+
+// TestRecorder_ConcurrentRecord_DoesNotRaceOnPrune tests concurrent
+// RecordUserPrompt calls with pruning enabled for the events.jsonl.tmp
+// rename race described in mitto-yom.
+//
+// # Scenario A – Single Store (no race expected)
+//
+// Within one process, Store.mu (sync.RWMutex) serializes every PruneIfNeeded
+// call. Even with many goroutines sharing different Recorders on the same
+// Store, only one goroutine enters performPrune at a time → race CANNOT occur.
+//
+// # Scenario B – Two Stores, same baseDir (race expected)
+//
+// Two Store instances on the same directory simulate two concurrent Mitto
+// processes. Each Store has its own mu, so concurrent performPrune calls can
+// interleave on the shared events.jsonl.tmp:
+//
+//	Store1 creates .tmp → Store2 overwrites .tmp → Store1 renames .tmp→events.jsonl
+//	→ Store2 tries rename → ENOENT → WARN "failed to prune session after recording event"
+//
+// This reproduces the production WARN seen in mitto-yom.
+func TestRecorder_ConcurrentRecord_DoesNotRaceOnPrune(t *testing.T) {
+	const (
+		numGoroutines = 8
+		eventsEach    = 50
+		pruneMax      = 50
+	)
+
+	// Override slog default so that logging.Session() → logging.Get() →
+	// slog.Default() routes WARN records to our capturer.
+	// (In the test binary, globalLogger is nil — no logging.Initialize call —
+	// so Get() falls back to slog.Default().)
+	cap := &pruneRaceLogCapture{}
+	oldDefault := slog.Default()
+	slog.SetDefault(slog.New(cap))
+	t.Cleanup(func() { slog.SetDefault(oldDefault) })
+
+	// assertWellFormed checks that events.jsonl is parseable and seq is
+	// non-decreasing. It uses the store's own ReadEvents to stay consistent
+	// with prune semantics. checkMonotonic should be false when two Stores
+	// write concurrently (seq collisions are expected there).
+	assertWellFormed := func(t *testing.T, store *Store, sessionID string, checkMonotonic bool, maxEvents int) {
+		t.Helper()
+		events, err := store.ReadEvents(sessionID)
+		if err != nil {
+			t.Errorf("ReadEvents failed: %v", err)
+			return
+		}
+		if checkMonotonic {
+			var prevSeq int64
+			for i, ev := range events {
+				if ev.Seq <= prevSeq {
+					t.Errorf("seq not monotonic at index %d: got seq %d after %d", i, ev.Seq, prevSeq)
+				}
+				prevSeq = ev.Seq
+			}
+		}
+		t.Logf("events.jsonl: %d events", len(events))
+		if maxEvents > 0 && len(events) > maxEvents {
+			t.Errorf("event count %d exceeds expected max %d", len(events), maxEvents)
+		}
+	}
+
+	// ── Scenario A: Single Store ──────────────────────────────────────────────
+	// Store.mu serializes all PruneIfNeeded calls; race is structurally impossible.
+	// This sub-test must always pass.
+	t.Run("SingleStore_NoRaceExpected", func(t *testing.T) {
+		cap.reset()
+
+		tmpDir := t.TempDir()
+		store, err := NewStore(tmpDir)
+		if err != nil {
+			t.Fatalf("NewStore: %v", err)
+		}
+		defer store.Close()
+
+		recorder := NewRecorder(store)
+		recorder.SetPruneConfig(&PruneConfig{MaxMessages: pruneMax})
+		if err := recorder.Start("test-server", "/test/dir", ""); err != nil {
+			t.Fatalf("Start: %v", err)
+		}
+
+		var (
+			wg      sync.WaitGroup
+			errMu   sync.Mutex
+			errList []error
+		)
+		for g := 0; g < numGoroutines; g++ {
+			wg.Add(1)
+			go func(id int) {
+				defer wg.Done()
+				for i := 0; i < eventsEach; i++ {
+					if err := recorder.RecordUserPrompt(fmt.Sprintf("g%d-msg%d", id, i)); err != nil {
+						errMu.Lock()
+						errList = append(errList, err)
+						errMu.Unlock()
+					}
+				}
+			}(g)
+		}
+		wg.Wait()
+
+		// (a) zero errors from RecordUserPrompt
+		for _, e := range errList {
+			t.Errorf("SingleStore: RecordUserPrompt error: %v", e)
+		}
+		// (b) zero "failed to prune" WARN lines — Store.mu serializes all prune ops
+		pruneWarns := cap.findWarns("failed to prune")
+		if len(pruneWarns) > 0 {
+			t.Errorf("SingleStore: %d unexpected 'failed to prune' WARN(s): %v", len(pruneWarns), pruneWarns)
+		} else {
+			t.Logf("SingleStore: 0 'failed to prune' WARNs — race absent as expected (Store.mu serializes)")
+		}
+		// (c) events.jsonl is well-formed with monotonic seq
+		assertWellFormed(t, store, recorder.SessionID(), true /* monotonic */, pruneMax+numGoroutines)
+	})
+
+	// ── Scenario B: Two Stores, same baseDir ─────────────────────────────────
+	// Simulates two concurrent Mitto processes sharing the same session dir.
+	// With the unique-tmp fix applied to both WriteJSONAtomic (metadata.json) and
+	// performPrune (events.jsonl), concurrent renames no longer collide:
+	//   each caller writes to its own .<pid>.<counter>.tmp file.
+	// This sub-test must PASS with the fix in place (regression guard for mitto-yom).
+	t.Run("TwoStores_NoRaceWithUniqueTmp", func(t *testing.T) {
+		cap.reset()
+
+		tmpDir := t.TempDir()
+		store1, err := NewStore(tmpDir)
+		if err != nil {
+			t.Fatalf("NewStore1: %v", err)
+		}
+		defer store1.Close()
+
+		// Create the session via store1 / rec1.
+		rec1 := NewRecorder(store1)
+		rec1.SetPruneConfig(&PruneConfig{MaxMessages: pruneMax})
+		if err := rec1.Start("test-server", "/test/dir", ""); err != nil {
+			t.Fatalf("rec1.Start: %v", err)
+		}
+		sessionID := rec1.SessionID()
+
+		// Open a SECOND Store on the same directory — simulates a second process.
+		store2, err := NewStore(tmpDir)
+		if err != nil {
+			t.Fatalf("NewStore2: %v", err)
+		}
+		defer store2.Close()
+
+		rec2 := NewRecorderWithID(store2, sessionID)
+		rec2.SetPruneConfig(&PruneConfig{MaxMessages: pruneMax})
+		if err := rec2.Resume(); err != nil {
+			t.Fatalf("rec2.Resume: %v", err)
+		}
+
+		var (
+			wg      sync.WaitGroup
+			errMu   sync.Mutex
+			errList []error
+		)
+		recorders := []*Recorder{rec1, rec2}
+		for g := 0; g < numGoroutines; g++ {
+			wg.Add(1)
+			rec := recorders[g%2]
+			go func(rec *Recorder, id int) {
+				defer wg.Done()
+				for i := 0; i < eventsEach; i++ {
+					if err := rec.RecordUserPrompt(fmt.Sprintf("g%d-msg%d", id, i)); err != nil {
+						errMu.Lock()
+						errList = append(errList, err)
+						errMu.Unlock()
+					}
+				}
+			}(rec, g)
+		}
+		wg.Wait()
+
+		// (a) zero errors from RecordUserPrompt — unique-tmp fix eliminates
+		// the metadata.json corruption that caused "failed to parse JSON" errors.
+		for _, e := range errList {
+			t.Errorf("TwoStores: RecordUserPrompt error: %v", e)
+		}
+		// (b) zero "failed to prune" WARNs — unique-tmp fix eliminates ENOENT on rename.
+		pruneWarns := cap.findWarns("failed to prune")
+		if len(pruneWarns) > 0 {
+			t.Errorf("TwoStores: %d 'failed to prune' WARN(s) after fix — rename race still present: %v",
+				len(pruneWarns), pruneWarns)
+		} else {
+			t.Logf("TwoStores: 0 'failed to prune' WARNs — unique-tmp fix working")
+		}
+		// (c) events.jsonl is parseable; seq monotonicity may not hold across two
+		// independent Stores (metadata EventCount races remain) but the file must
+		// be valid JSONL and within a generous bound.
+		assertWellFormed(t, store1, sessionID, false /* two-store seq collision possible */, 0)
+	})
 }
 
 // TestStore_PruneIfNeeded_PreservesSeqs is the primary regression test for the

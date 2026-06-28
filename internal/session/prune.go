@@ -5,9 +5,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"sync/atomic"
 
 	"github.com/inercia/mitto/internal/logging"
 )
+
+// pruneTmpCounter provides a process-unique suffix for temp event files in
+// performPrune, preventing ENOENT rename collisions across concurrent processes.
+var pruneTmpCounter uint64
 
 const (
 	// DefaultPruneKeepLast is the default number of events to keep when pruning.
@@ -234,7 +239,8 @@ func (s *Store) performPrune(
 	// (load_events after_seq). Renumbering breaks the invariant that seq values
 	// are stable identifiers — clients that have already seen seq N would never
 	// receive events between the pruned-away seq and the new file's max_seq.
-	tmpPath := eventsPath + ".tmp"
+	// Unique suffix prevents ENOENT collision when two processes prune concurrently.
+	tmpPath := fmt.Sprintf("%s.%d.%d.tmp", eventsPath, os.Getpid(), atomic.AddUint64(&pruneTmpCounter, 1))
 	tmpFile, err := os.Create(tmpPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create temp events file: %w", err)
