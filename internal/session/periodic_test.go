@@ -1351,3 +1351,103 @@ func TestPeriodicPrompt_PromptPreview(t *testing.T) {
 		})
 	}
 }
+
+// --- DeferNextSchedule tests ---
+
+func TestPeriodicStore_DeferNextSchedule(t *testing.T) {
+	dir := t.TempDir()
+	ps := NewPeriodicStore(dir)
+
+	p := &PeriodicPrompt{
+		Prompt:    "Test",
+		Frequency: Frequency{Value: 1, Unit: FrequencyHours},
+		Enabled:   true,
+	}
+	if err := ps.Set(p); err != nil {
+		t.Fatalf("Set() error = %v", err)
+	}
+	// Establish a baseline schedule and counters.
+	if err := ps.RecordSent(); err != nil {
+		t.Fatalf("RecordSent() error = %v", err)
+	}
+	before, _ := ps.Get()
+	iterBefore := before.IterationCount
+	lastSentBefore := before.LastSentAt
+
+	delay := 5 * time.Minute
+	start := time.Now().UTC()
+	if err := ps.DeferNextSchedule(delay); err != nil {
+		t.Fatalf("DeferNextSchedule() error = %v", err)
+	}
+
+	after, _ := ps.Get()
+	if after.NextScheduledAt == nil {
+		t.Fatal("NextScheduledAt should be set after DeferNextSchedule")
+	}
+	// NextScheduledAt should be roughly now+delay (allow scheduling slack).
+	wantMin := start.Add(delay - time.Second)
+	wantMax := start.Add(delay + time.Minute)
+	if after.NextScheduledAt.Before(wantMin) || after.NextScheduledAt.After(wantMax) {
+		t.Errorf("NextScheduledAt = %v, want within [%v, %v]", after.NextScheduledAt, wantMin, wantMax)
+	}
+	// Iteration count and last-sent must be untouched (a backoff is not a delivery).
+	if after.IterationCount != iterBefore {
+		t.Errorf("IterationCount = %d, want unchanged %d", after.IterationCount, iterBefore)
+	}
+	if lastSentBefore == nil || after.LastSentAt == nil || !after.LastSentAt.Equal(*lastSentBefore) {
+		t.Errorf("LastSentAt changed: before=%v after=%v", lastSentBefore, after.LastSentAt)
+	}
+}
+
+func TestPeriodicStore_DeferNextSchedule_OnCompletionNoop(t *testing.T) {
+	dir := t.TempDir()
+	ps := NewPeriodicStore(dir)
+
+	p := &PeriodicPrompt{
+		Prompt:  "Test",
+		Trigger: TriggerOnCompletion,
+		Enabled: true,
+	}
+	if err := ps.Set(p); err != nil {
+		t.Fatalf("Set() error = %v", err)
+	}
+
+	if err := ps.DeferNextSchedule(5 * time.Minute); err != nil {
+		t.Fatalf("DeferNextSchedule() error = %v", err)
+	}
+	got, _ := ps.Get()
+	if got.NextScheduledAt != nil {
+		t.Errorf("NextScheduledAt should stay nil for onCompletion trigger, got %v", got.NextScheduledAt)
+	}
+}
+
+func TestPeriodicStore_DeferNextSchedule_DisabledNoop(t *testing.T) {
+	dir := t.TempDir()
+	ps := NewPeriodicStore(dir)
+
+	p := &PeriodicPrompt{
+		Prompt:    "Test",
+		Frequency: Frequency{Value: 1, Unit: FrequencyHours},
+		Enabled:   false,
+	}
+	if err := ps.Set(p); err != nil {
+		t.Fatalf("Set() error = %v", err)
+	}
+
+	if err := ps.DeferNextSchedule(5 * time.Minute); err != nil {
+		t.Fatalf("DeferNextSchedule() error = %v", err)
+	}
+	got, _ := ps.Get()
+	if got.NextScheduledAt != nil {
+		t.Errorf("NextScheduledAt should stay nil for disabled config, got %v", got.NextScheduledAt)
+	}
+}
+
+func TestPeriodicStore_DeferNextSchedule_NotFound(t *testing.T) {
+	dir := t.TempDir()
+	ps := NewPeriodicStore(dir)
+
+	if err := ps.DeferNextSchedule(time.Minute); err != ErrPeriodicNotFound {
+		t.Errorf("DeferNextSchedule() on empty store error = %v, want ErrPeriodicNotFound", err)
+	}
+}

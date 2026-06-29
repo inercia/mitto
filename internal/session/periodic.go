@@ -497,6 +497,34 @@ func (ps *PeriodicStore) RecordSent() error {
 	return nil
 }
 
+// DeferNextSchedule pushes NextScheduledAt out to now+delay WITHOUT advancing the
+// iteration count or LastSentAt. It is used to back off after a transient delivery
+// failure so the runner does not re-fire the same prompt on every poll tick.
+// It is a no-op (returns nil) for disabled configs and for onCompletion triggers,
+// whose next run is event-driven (NextScheduledAt is always nil).
+func (ps *PeriodicStore) DeferNextSchedule(delay time.Duration) error {
+	ps.mu.Lock()
+	defer ps.mu.Unlock()
+
+	existing, err := ps.getUnlocked()
+	if err != nil {
+		return err
+	}
+	if !existing.Enabled || existing.IsOnCompletion() {
+		return nil
+	}
+
+	now := time.Now().UTC()
+	next := now.Add(delay)
+	existing.NextScheduledAt = &next
+	existing.UpdatedAt = now
+
+	if err := fileutil.WriteJSONAtomic(ps.periodicPath(), existing, 0644); err != nil {
+		return fmt.Errorf("failed to write periodic file: %w", err)
+	}
+	return nil
+}
+
 // MarkStopped disables the periodic prompt and records the reason it was stopped.
 // It sets Enabled=false, StoppedReason=reason, StoppedAt=now (UTC),
 // NextScheduledAt=nil, and UpdatedAt=now.

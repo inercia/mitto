@@ -2475,3 +2475,41 @@ func TestDeliverPrompt_PeriodicKind(t *testing.T) {
 		t.Errorf("PeriodicKindNone must be 0 (zero value), got %d", conversation.PeriodicKindNone)
 	}
 }
+
+func TestPeriodicScheduleBackoff(t *testing.T) {
+	tests := []struct {
+		name     string
+		failures int
+		want     time.Duration
+	}{
+		{"zero clamps to first attempt", 0, periodicScheduleBackoffBase},
+		{"first failure is base", 1, periodicScheduleBackoffBase},
+		{"second failure doubles", 2, 2 * periodicScheduleBackoffBase},
+		{"third failure quadruples", 3, 4 * periodicScheduleBackoffBase},
+		{"fourth failure x8", 4, 8 * periodicScheduleBackoffBase},
+		{"large failure count is capped", 100, periodicScheduleBackoffCap},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := periodicScheduleBackoff(tt.failures)
+			if got != tt.want {
+				t.Errorf("periodicScheduleBackoff(%d) = %v, want %v", tt.failures, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestPeriodicScheduleBackoff_MonotonicAndCapped(t *testing.T) {
+	var prev time.Duration
+	for f := 1; f <= 50; f++ {
+		got := periodicScheduleBackoff(f)
+		if got < prev {
+			t.Errorf("backoff decreased: failures=%d got=%v prev=%v", f, got, prev)
+		}
+		if got > periodicScheduleBackoffCap {
+			t.Errorf("backoff exceeded cap: failures=%d got=%v cap=%v", f, got, periodicScheduleBackoffCap)
+		}
+		prev = got
+	}
+}

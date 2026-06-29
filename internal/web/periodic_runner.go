@@ -24,7 +24,38 @@ const (
 	// MaxPromptResolveFailures is the number of consecutive prompt-name resolution
 	// failures after which the periodic config is auto-paused (disabled).
 	MaxPromptResolveFailures = 3
+
+	// periodicScheduleBackoffBase is the initial delay applied to NextScheduledAt
+	// after the first scheduled periodic delivery failure. It doubles with each
+	// consecutive failure, capped at periodicScheduleBackoffCap. This prevents a
+	// flaky transport from re-firing the same prompt on every poll tick (mitto-qal.2).
+	periodicScheduleBackoffBase = 30 * time.Second
+
+	// periodicScheduleBackoffCap is the maximum backoff delay for scheduled
+	// periodic delivery failures.
+	periodicScheduleBackoffCap = 15 * time.Minute
 )
+
+// periodicScheduleBackoff returns the delay to defer the next scheduled run after
+// `failures` consecutive delivery failures. It grows exponentially from
+// periodicScheduleBackoffBase, doubling on each failure, capped at
+// periodicScheduleBackoffCap.
+func periodicScheduleBackoff(failures int) time.Duration {
+	if failures < 1 {
+		failures = 1
+	}
+	delay := periodicScheduleBackoffBase
+	for i := 1; i < failures; i++ {
+		delay *= 2
+		if delay >= periodicScheduleBackoffCap {
+			return periodicScheduleBackoffCap
+		}
+	}
+	if delay > periodicScheduleBackoffCap {
+		delay = periodicScheduleBackoffCap
+	}
+	return delay
+}
 
 // Errors for periodic runner operations.
 var (
@@ -117,6 +148,14 @@ type PeriodicRunner struct {
 	promptResolveFailures   map[string]int
 	promptResolveFailuresMu sync.Mutex
 
+	// scheduleBackoffFailures tracks consecutive delivery failures for scheduled
+	// periodic prompts. It drives an exponential backoff on NextScheduledAt so a
+	// flaky transport does not cause the same prompt to re-fire every poll tick
+	// (mitto-qal.2). Reset to zero on the next successful delivery. Distinct from
+	// consecutiveFailures, which tracks resume failures and triggers auto-archive.
+	scheduleBackoffFailures   map[string]int
+	scheduleBackoffFailuresMu sync.Mutex
+
 	// completionTimers holds the armed one-shot timers for onCompletion periodic
 	// conversations, keyed by session ID. Arming a new timer replaces (stops) any
 	// existing one, so at most one firing is pending per session.
@@ -140,6 +179,7 @@ func NewPeriodicRunner(store *session.Store, sm *conversation.SessionManager, lo
 		minCompletionDelaySeconds: config.DefaultMinPeriodicCompletionDelaySeconds,
 		consecutiveFailures:       make(map[string]int),
 		promptResolveFailures:     make(map[string]int),
+		scheduleBackoffFailures:   make(map[string]int),
 		completionTimers:          make(map[string]*time.Timer),
 	}
 }
@@ -1218,6 +1258,45 @@ func (r *PeriodicRunner) deliverPrompt(bs *conversation.BackgroundSession, sessi
 		FreshContext:     periodic.FreshContext,
 		OnComplete: func(err error) {
 			if err != nil {
+				// Scheduled triggers: back off NextScheduledAt so a transient transport
+				// failure (e.g. -32603) does not re-fire the same prompt on every poll
+				// tick (mitto-qal.2). onCompletion triggers are event-driven (their
+				// NextScheduledAt is nil) and manual "keep schedule" runs (resetTimer=false)
+				// or forced one-shots must not push out the regular schedule.
+				if resetTimer && !forced && !periodic.IsOnCompletion() {
+					r.scheduleBackoffFailuresMu.Lock()
+					r.scheduleBackoffFailures[sessionID]++
+					failures := r.scheduleBackoffFailures[sessionID]
+					r.scheduleBackoffFailuresMu.Unlock()
+
+					delay := periodicScheduleBackoff(failures)
+					if deferErr := periodicStore.DeferNextSchedule(delay); deferErr != nil {
+						if r.logger != nil {
+							r.logger.Warn("Periodic prompt failed, backoff could not be applied",
+								"session_id", sessionID,
+								"session_name", sessionName,
+								"consecutive_failures", failures,
+								"error", deferErr)
+						}
+					} else {
+						if r.logger != nil {
+							r.logger.Warn("Periodic prompt failed, backing off next run",
+								"session_id", sessionID,
+								"session_name", sessionName,
+								"consecutive_failures", failures,
+								"backoff", delay,
+								"error", err)
+						}
+						// Broadcast the new next-run time so the countdown reflects the backoff.
+						if r.onPeriodicUpdated != nil {
+							if updated, gErr := periodicStore.Get(); gErr == nil && updated != nil {
+								r.onPeriodicUpdated(sessionID, updated)
+							}
+						}
+					}
+					return
+				}
+
 				if r.logger != nil {
 					r.logger.Warn("Periodic prompt failed, schedule not advanced",
 						"session_id", sessionID,
@@ -1226,6 +1305,11 @@ func (r *PeriodicRunner) deliverPrompt(bs *conversation.BackgroundSession, sessi
 				}
 				return
 			}
+
+			// Successful delivery — clear any accumulated scheduled-delivery backoff.
+			r.scheduleBackoffFailuresMu.Lock()
+			delete(r.scheduleBackoffFailures, sessionID)
+			r.scheduleBackoffFailuresMu.Unlock()
 
 			if !resetTimer {
 				// Manual run with "keep schedule" — leave NextScheduledAt unchanged.
