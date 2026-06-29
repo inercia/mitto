@@ -155,21 +155,24 @@ dispatched, `BackgroundSession` resolves it (`internal/web/background_session.go
 ```go
 resolved, err := bs.promptResolver(meta.PromptName, bs.workingDir)
 // ...
-if len(meta.Arguments) > 0 {
-    message = processors.SubstituteArguments(message, meta.Arguments)
-}
+// Template rendering: {{ .Args.NAME }} / {{ Arg "NAME" "default" }} are resolved here
+message, err = renderTemplateBody(message, ctx, meta.Arguments)
 ```
 
-**Before** `${VAR}` substitution, the body is rendered with Go `text/template` (fail-closed: a template error aborts the send) when it contains `{{`. Legacy `@mitto:` substitution runs later in `applyProcessorsAndBuildBlocks`, after the processors pipeline. The full authoritative dispatch order is documented in [prompt-templates.md §3.2](prompt-templates.md#32-new-order-after-mitto-m7sb2-insertion-point-in-resolveandsubstitute).
+The body is rendered with Go `text/template` (fail-closed: a template error aborts the send)
+when it contains `{{`. Argument values from `meta.Arguments` are available in the template as
+`{{ .Args.NAME }}` (direct access, empty string if absent) and `{{ Arg "NAME" "default" }}`
+(with fallback). Legacy `@mitto:` substitution runs later in `applyProcessorsAndBuildBlocks`,
+after the processors pipeline. The full authoritative dispatch order is documented in
+[prompt-templates.md §3.2](prompt-templates.md#32-new-order-after-mitto-m7sb2-insertion-point-in-resolveandsubstitute).
 
 This guarantees that workspace-specific overrides, ACP-server filtering, and
 `enabledWhen` are evaluated in the **right** environment — important because the
 request may have originated from a different workspace (e.g. the Beads view is
 open for project A while the active conversation is in project B). The
-`${ISSUE_ID}` placeholder in a bead prompt body is filled here; the prompt then
-loads further detail itself via `bd show ${ISSUE_ID}`. The `arguments` map
-supports bash-like `${VAR}` and `${VAR:-default}` syntax
-(`processors.SubstituteArguments`). The argument count (`len(meta.Arguments)`) is
+`{{ .Args.ISSUE_ID }}` template expression in a bead prompt body is resolved here;
+the prompt then loads further detail itself via `bd show {{ .Args.ISSUE_ID }}`.
+The argument count (`len(meta.Arguments)`) is
 persisted as `argument_count` on `UserPromptData` and broadcast via the `user_prompt`
 WebSocket message; the frontend renders a small numeric badge on the `NamedPromptPill`
 component when `argument_count > 0`.
@@ -327,5 +330,4 @@ Periodic conversations can only be **top-level** (not children). The `at` field
   reference (`menus`, `enabledWhen`, `requires`, `periodic`, parameters)
 - [Message Queue](message-queue.md) — queue storage, named-prompt dispatch,
   REST API
-- [Message Processing Pipeline](processors.md) — `@mitto:` variable substitution
-  and `${VAR}` argument substitution
+- [Message Processing Pipeline](processors.md) — `@mitto:` variable substitution in processors

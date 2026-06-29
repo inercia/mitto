@@ -69,7 +69,7 @@ type QueuedMessage struct {
     ClientID      string            `json:"client_id,omitempty"`      // Source client
     Title         string            `json:"title,omitempty"`          // Auto-generated title (skipped for named-prompt items)
     ScheduledTime *time.Time        `json:"scheduled_time,omitempty"` // Deliver after this time (nil = immediate)
-    Arguments     map[string]string `json:"arguments,omitempty"`      // ${VAR}/${VAR:-default} substitution values applied at dispatch
+    Arguments     map[string]string `json:"arguments,omitempty"`      // Go-template argument values applied at dispatch ({{ .Args.NAME }} / {{ Arg "NAME" "default" }})
     PromptName    string            `json:"prompt_name,omitempty"`    // Named-prompt: resolved to full text at dispatch (empty for ad-hoc messages)
 }
 
@@ -247,7 +247,7 @@ Queue items can carry a **prompt name** (+ optional substitution arguments) inst
 | Property | Behavior |
 |----------|----------|
 | `prompt_name` | Name of the workspace prompt to send; resolved at dispatch |
-| `arguments` | `${VAR}`/`${VAR:-default}` substitutions applied when the prompt is resolved and sent |
+| `arguments` | Go-template argument values applied at dispatch time via `{{ .Args.NAME }}` / `{{ Arg "NAME" "default" }}` |
 | `message` | Empty string for named-prompt items |
 | Title generation | **Skipped** — the prompt name itself serves as the label in the queue UI |
 

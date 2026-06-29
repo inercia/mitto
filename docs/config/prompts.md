@@ -448,9 +448,9 @@ submenu listing every `menus: beadsIssues` prompt.
 
 Selecting one of these prompts starts a new conversation seeded with the prompt
 text. The menu auto-fills the selected issue's ID and title as typed arguments.
-The prompt body should reference them via `${ISSUE_ID}` (and optionally
-`${ISSUE_TITLE:-Untitled}`) and load its own full context with
-`bd show ${ISSUE_ID}` rather than relying on a pre-built context block:
+The prompt body should reference them via `{{ .Args.ISSUE_ID }}` (and optionally
+`{{ Arg "ISSUE_TITLE" "Untitled" }}`) and load its own full context with
+`bd show {{ .Args.ISSUE_ID }}` rather than relying on a pre-built context block:
 
 ```yaml
 name: "Start work"
@@ -460,11 +460,11 @@ parameters:
   - name: ISSUE_ID
     type: beadsId
 prompt: |
-  The target bead is `${ISSUE_ID}`.
+  The target bead is `{{ .Args.ISSUE_ID }}`.
 
   Load its full detail:
 
-      bd show ${ISSUE_ID} --long --json
+      bd show {{ .Args.ISSUE_ID }} --long --json
 
   then claim it and propose a plan.
 ```
@@ -693,36 +693,33 @@ it back into a regular conversation. It is the automated sibling of the interact
 
 ## Prompt Arguments
 
-Prompt text supports bash-style `${VAR}` placeholder syntax for argument substitution.
-This lets a caller supply named values that are interpolated into the prompt before it
-is sent to the agent.
+Prompt arguments are passed to prompts at dispatch time and accessed in the
+prompt body via Go template syntax. **Go templates are the only supported
+mechanism for argument substitution** — the legacy bash-style `${VAR}` /
+`${VAR:-default}` format has been removed.
 
 ### Syntax
 
-| Placeholder           | Behaviour                                                                                                          |
-| --------------------- | ------------------------------------------------------------------------------------------------------------------ |
-| `${VAR}`              | Replaced with the supplied value, or an empty string if `VAR` was not provided.                                    |
-| `${VAR:-default}`     | Replaced with the supplied value if present **and non-empty**, otherwise with `default` (bash `:-` semantics).     |
-| `\${VAR}`             | The leading backslash is an escape: the literal text `${VAR}` is emitted without substitution.                     |
+| Expression | Behaviour |
+| --- | --- |
+| `{{ .Args.NAME }}` | Argument value, or empty string if `NAME` was not supplied. |
+| `{{ Arg "NAME" "default" }}` | Argument value if present and non-empty, otherwise `"default"`. |
 
-Surrounding single or double quotes around the default are stripped automatically:
-`${VAR:-"a value"}` → `a value`, `${VAR:-'other'}` → `other`.
+### When arguments are applied
 
-### When substitution is applied
-
-Argument substitution is applied **only** when the caller explicitly supplies an
-`arguments` map alongside the prompt — for example:
+Arguments are supplied by the caller at dispatch time and rendered during the Go
+template pass:
 
 - Prompts run from a **context menu** (conversation or Beads issue) that passes
   structured arguments.
 - Prompts sent via the MCP `mitto_conversation_send_prompt` tool's `arguments`
   parameter.
 
-**Ad-hoc user-typed messages are never substituted.** If a user types or pastes
-text containing `${...}` into the chat input it reaches the agent verbatim — no
-substitution is performed, so shell scripts and code snippets are safe.
+**Ad-hoc user-typed messages are never rendered.** If a user types or pastes text
+into the chat input it reaches the agent verbatim — no template rendering is
+performed on ad-hoc messages, so shell scripts and code snippets are safe.
 
-The transcript always shows the **substituted** text, not the original template.
+The transcript always shows the **rendered** text, not the original template.
 
 ### Example
 
@@ -736,22 +733,18 @@ parameters:
   - name: ISSUE_TITLE
     type: beadsTitle
 prompt: |
-  You are starting work on Beads issue **${ISSUE_ID}** — *${ISSUE_TITLE:-Untitled}*.
-
-  ${ISSUE_BODY}
+  You are starting work on Beads issue **{{ .Args.ISSUE_ID }}** — *{{ Arg "ISSUE_TITLE" "Untitled" }}*.
 
   Please begin by reading the full issue description above, then propose a plan.
 ```
 
-Here `${ISSUE_ID}` is required (no default), `${ISSUE_TITLE:-Untitled}` falls back to
-`"Untitled"` if the `beadsTitle` argument is not supplied, and `${ISSUE_BODY}` expands
-to empty string if not supplied (it has no declared parameter — defaults still come from
-the `${VAR:-default}` body syntax).
+Here `{{ .Args.ISSUE_ID }}` is the required issue ID, and `{{ Arg "ISSUE_TITLE" "Untitled" }}`
+falls back to `"Untitled"` if the `beadsTitle` argument is not supplied.
 
 ## parameters (Typed Inputs & Type-Based Gating)
 
 The `parameters` field declares the **typed inputs** a prompt expects. Each entry
-names a template variable (used as `${NAME}` in the prompt body) and assigns it a
+names a template variable (used as `{{ .Args.NAME }}` in the prompt body) and assigns it a
 **type** drawn from the canonical type registry. The menu gating check uses these
 types: a prompt is offered in menu **M** only when M can auto-supply every
 **required** declared type.
@@ -764,7 +757,7 @@ current mechanism.
 
 ```yaml
 parameters:
-  - name: PARAM_NAME        # required — used as ${PARAM_NAME} in the prompt body
+  - name: PARAM_NAME        # required — used as {{ .Args.PARAM_NAME }} in the prompt body
     type: beadsId           # required — one of the predefined types below
     description: "..."      # optional — human-readable hint
     required: true          # optional bool — controls menu gating (see below):
@@ -789,7 +782,7 @@ parameters:
   - name: ISSUE_ID
     type: beadsId
 prompt: |
-  (prompt body here — use ${ISSUE_ID} to reference the selected issue)
+  (prompt body here — use {{ .Args.ISSUE_ID }} to reference the selected issue)
 ```
 
 ### Predefined types
@@ -838,8 +831,8 @@ which maps each `{ name, type }` to the value supplied for its type by the menu.
 `beadsIssues` supplies both `beadsId` (from `issue.id`) and `beadsTitle`
 (from `issue.title`) when it invokes a prompt.
 
-Prompts that can degrade gracefully because all placeholders have sensible defaults
-(`${VAR:-default}`) can omit `parameters` entirely and appear in any menu they target.
+Prompts that can degrade gracefully because all template expressions have sensible defaults
+(`{{ Arg "VAR" "default" }}`) can omit `parameters` entirely and appear in any menu they target.
 
 A `boolean` parameter never gates visibility (regardless of `required`): a checkbox
 always has a definite answer, so the prompt appears in any menu it targets. The
@@ -889,16 +882,15 @@ names-only contract), see [Argument caching](../devel/prompts.md#argument-cachin
 
 ## Go Template Syntax in Prompts
 
-Prompt bodies are rendered with Go [`text/template`](https://pkg.go.dev/text/template) at send time. **This is the recommended way to inject session context** — legacy `@mitto:` placeholders and `${VAR}` arguments still work but are deprecated in prompt bodies (see [Variable Substitution in Prompts](#variable-substitution-in-prompts) below).
+Prompt bodies are rendered with Go [`text/template`](https://pkg.go.dev/text/template) at send time. **This is the only supported mechanism for argument substitution and session-context injection** — legacy `@mitto:` placeholders remain supported for backward compatibility in processors, but `${VAR}` argument substitution has been removed from prompt bodies. Use `{{ .Args.NAME }}` / `{{ Arg "NAME" "default" }}` instead.
 
 ### Render Order
 
 1. Named-prompt resolution (prompt name → full body)
 2. **Go template render** (`{{ ... }}`) — **fail-closed**: a template error aborts the send and surfaces an error in the UI
-3. `${VAR}` / `${VAR:-default}` argument substitution
-4. Legacy `@mitto:` variable substitution
+3. Legacy `@mitto:` variable substitution
 
-A template may itself emit `${VAR}` tokens (step 2 outputs text that step 3 then resolves). See [prompt-templates.md §3.2](../devel/prompt-templates.md#32-new-order-after-mitto-m7sb2-insertion-point-in-resolveandsubstitute) for the authoritative pipeline.
+See [prompt-templates.md §3.2](../devel/prompt-templates.md#32-new-order-after-mitto-m7sb2-insertion-point-in-resolveandsubstitute) for the authoritative pipeline.
 
 ### Context Fields
 
@@ -934,7 +926,7 @@ The following fields are available at send time. They are the **same fields used
 
 | Function | Signature | Meaning |
 | --- | --- | --- |
-| `arg` | `arg "NAME" "default"` | Argument value, or default if absent/empty (like `${NAME:-default}`) |
+| `arg` | `arg "NAME" "default"` | Argument value, or default if absent/empty (replaces the removed `${NAME:-default}` bash syntax) |
 | `UserData` | `UserData "NAME"` | Per-conversation user-data field value, or `""` if unset. Handles names with spaces, e.g. `UserData "JIRA Ticket"`. |
 | `default` | `default "fallback" .Value` | `.Value` if non-empty, else fallback |
 | `cond` / `when` | `cond "celExpr"` | Evaluate a CEL expression (same grammar as `enabledWhen`) → bool |

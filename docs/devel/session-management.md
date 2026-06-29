@@ -201,7 +201,7 @@ Frontend (`useWebSocket.js`): the `meta` field is extracted from the live `user_
 
 ### Concrete consumer: `argument_names`
 
-When a named/workspace prompt is dispatched with user-supplied arguments, `BackgroundSession.PromptWithMeta` records the **names only** (sorted, never the values) of the substituted `${VAR}` arguments under `meta["argument_names"]`. Values are substituted into the prompt text before persistence and are forbidden by the sensitivity policy above. The frontend `NamedPromptPill` (in `Message.js`) surfaces these names in the argument-count badge's tooltip (e.g. `Arguments: ISSUE_ID, PROJECT`), falling back to `N argument(s)` when names are unavailable (older events).
+When a named/workspace prompt is dispatched with user-supplied arguments, `BackgroundSession.PromptWithMeta` records the **names only** (sorted, never the values) of the template arguments (formerly `${VAR}`, now `{{ .Args.NAME }}`) under `meta["argument_names"]`. Values are substituted into the prompt text before persistence and are forbidden by the sensitivity policy above. The frontend `NamedPromptPill` (in `Message.js`) surfaces these names in the argument-count badge's tooltip (e.g. `Arguments: ISSUE_ID, PROJECT`), falling back to `N argument(s)` when names are unavailable (older events).
 
 ## Session State Ownership Model
 

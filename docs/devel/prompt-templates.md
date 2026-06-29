@@ -15,7 +15,7 @@ unified templating layer:
 
 | Mechanism | Current location | Status after this epic |
 |-----------|-----------------|----------------------|
-| `${VAR}` / `${VAR:-default}` (bash-like) | `processors.SubstituteArguments` | **Deprecated** — kept as fallback during deprecation window |
+| `${VAR}` / `${VAR:-default}` (bash-like) | `processors.SubstituteArguments` | **Removed** — use `{{ .Args.NAME }}` / `{{ Arg "NAME" "default" }}` |
 | `@mitto:variable` | `processors.SubstituteVariables` | **Deprecated** in prompt bodies; kept for processor configs |
 | `enabledWhen` CEL expressions | `config.CELEvaluator` | **Extended** — reused as `cond` / `when` template function |
 
@@ -80,8 +80,8 @@ resolveAndSubstitute:
        Context: PromptEnabledContext + Args (see §4)
        FuncMap: cond/when, arg, fileExists, dirExists, commandExists (see §6)
        Error: fail-closed → return error → PromptWithMeta returns error
-  2. argCount = len(meta.Arguments)                     [legacy fallback]
-  3. processors.SubstituteArguments(...)                [legacy fallback]
+  2. argCount = len(meta.Arguments)                     [retained for audit trail]
+  3. (removed) processors.SubstituteArguments was the bash-like ${VAR} pass; removed in mitto-4so
   4. Build argument metadata                            [unchanged]
 ```
 
@@ -181,7 +181,7 @@ The shared pure-Go helpers are: `statResolved`, the glob-match logic, `matchesSe
 
 | Function | Signature | Semantics |
 |---|---|---|
-| `Arg` | `Arg(name, defaultVal string) string` | `Args[name]` if present AND non-empty, else `defaultVal`. Mirrors `${name:-default}` bash semantics exactly. |
+| `Arg` | `Arg(name, defaultVal string) string` | `Args[name]` if present AND non-empty, else `defaultVal`. Replaces the removed `${NAME:-default}` bash syntax. |
 | `UserData` | `UserData(name string) string` | `UserData[name]` (per-conversation user-data field), or `""` when unset. Handles names with spaces, e.g. `UserData "JIRA Ticket"`. The `.UserData` map is also directly accessible: `{{ index .UserData "JIRA Ticket" }}`. |
 | `Default` | `Default(fallback, val string) string` | Returns `val` if non-empty, else `fallback`. Same as sprig `default`. |
 | `Cond` | `Cond(celExpr string) (bool, error)` | Evaluate CEL expression against send-time context. |
@@ -341,14 +341,14 @@ periodic-runner handling is needed.
 
 ---
 
-## 11. Deprecation plan
+## 11. Migration summary
 
 | Phase | Action |
 |---|---|
-| mitto-m7sb.2 | Add template rendering to `resolveAndSubstitute`. New syntax `{{ ... }}` works. `${VAR}` and `@mitto:` still work (legacy fallback stages 3, 7). |
-| mitto-m7sb.10 | Add migration guide to `docs/config/prompts.md`; annotate built-in prompts with `# @mitto:session_id → {{ .Session.ID }}` comments |
-| mitto-m7sb.12 | Migrate built-in prompts in `config/prompts/` from `${VAR}` / `@mitto:` to `{{ ... }}` |
-| Future epic | Remove `SubstituteArguments` and `SubstituteVariables` from `resolveAndSubstitute` / `applyProcessorsAndBuildBlocks` once all prompts are migrated. `@mitto:` stays in processor configs indefinitely. |
+| mitto-m7sb.2 | Add template rendering to `resolveAndSubstitute`. `{{ ... }}` is the primary mechanism; `${VAR}` remained as a legacy fallback during this phase. |
+| mitto-m7sb.10 | Add migration guide to `docs/config/prompts.md`; annotate built-in prompts with migration comments. |
+| mitto-m7sb.12 | Migrate built-in prompts in `config/prompts/` from `${VAR}` / `@mitto:` to `{{ ... }}`. |
+| mitto-4so | **Removed** `${VAR}` / `${VAR:-default}` bash-like argument substitution (`SubstituteArguments`) from `resolveAndSubstitute`. `{{ .Args.NAME }}` / `{{ Arg "NAME" "default" }}` are the only mechanisms. `@mitto:` stays in processor configs indefinitely; `SubstituteVariables` in `applyProcessorsAndBuildBlocks` is retained for processor backward-compat. |
 
 ---
 
