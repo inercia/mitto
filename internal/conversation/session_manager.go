@@ -1228,7 +1228,7 @@ func (sm *SessionManager) CreateSessionWithWorkspace(ctx context.Context, name, 
 	procMgr = sm.loadWorkspaceProcessors(procMgr, workingDir)
 
 	// Apply workspace-level processor overrides from .mittorc processors section.
-	// Also build the arg-overrides map for ${VAR} substitution in prompt-mode processors.
+	// Also build the arg-overrides map for Go-template .Args in prompt-mode processors.
 	var procArgOverrides map[string]map[string]string
 	if overrides := sm.GetWorkspaceProcessorOverrides(workingDir); len(overrides) > 0 {
 		procMgr = procMgr.CloneWithEnabledOverrides(overrides)
@@ -1862,7 +1862,7 @@ func (sm *SessionManager) ResumeSession(sessionID, sessionName, workingDir strin
 	procMgr = sm.loadWorkspaceProcessors(procMgr, workingDir)
 
 	// Apply workspace-level processor overrides from .mittorc processors section.
-	// Also build the arg-overrides map for ${VAR} substitution in prompt-mode processors.
+	// Also build the arg-overrides map for Go-template .Args in prompt-mode processors.
 	var resumeProcArgOverrides map[string]map[string]string
 	if overrides := sm.GetWorkspaceProcessorOverrides(workingDir); len(overrides) > 0 {
 		procMgr = procMgr.CloneWithEnabledOverrides(overrides)

@@ -242,14 +242,14 @@ type Processor struct {
 	// When set, Command and Text must be empty. The processor runs in fire-and-forget mode:
 	// the prompt is dispatched to a workspace-scoped auxiliary session and the pipeline
 	// continues immediately without waiting for the agent's response.
-	// Supports @mitto:variable and ${VAR}/${VAR:-default} substitution.
+	// Supports @mitto:variable substitution and Go-template .Args rendering.
 	Prompt string `yaml:"prompt,omitempty" json:"prompt,omitempty"`
 
 	// Parameters declares named, typed inputs for prompt-mode processors.
 	// Each entry must have a non-empty, unique name; a recognised type (see
 	// config.KnownPromptParameterTypes); and a mandatory non-empty default value.
-	// Parameters are substituted into the Prompt body via ${NAME} / ${NAME:-fallback}
-	// placeholders at dispatch time (workspace override → declared default).
+	// Parameters are exposed as .Args in the prompt template at dispatch time
+	// (workspace override → declared default).
 	// Only valid for prompt-mode processors; rejected on command-mode or text-mode.
 	Parameters []config.PromptParameter `yaml:"parameters,omitempty" json:"parameters,omitempty"`
 

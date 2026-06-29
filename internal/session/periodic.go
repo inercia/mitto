@@ -154,9 +154,9 @@ type PeriodicPrompt struct {
 	// When set, the prompt text is resolved from the workspace prompts at execution time.
 	// Either Prompt or PromptName must be set.
 	PromptName string `json:"prompt_name,omitempty"`
-	// Arguments holds user-supplied values for ${VAR}/${VAR:-default} substitution
-	// when PromptName is set. Substitution is applied to the resolved prompt text at
-	// execution time. Empty for free-text prompts (Prompt field only).
+	// Arguments holds user-supplied values for Go-template .Args placeholders
+	// when PromptName is set. Applied to the resolved prompt text at execution time.
+	// Empty for free-text prompts (Prompt field only).
 	Arguments map[string]string `json:"arguments,omitempty"`
 	// Frequency defines how often the prompt should be sent.
 	Frequency Frequency `json:"frequency"`

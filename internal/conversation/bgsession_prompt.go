@@ -144,10 +144,10 @@ type PromptMeta struct {
 	// continuation marker (peeked before body render, advanced at the dispatch commit).
 	IterationUninterrupted bool
 	FreshContext           bool // True to suppress history injection and use a new ACP session for this prompt
-	// Arguments, when non-empty, triggers bash-like ${VAR}/${VAR:-default}
-	// substitution on the resolved prompt text before persistence and broadcast.
+	// Arguments, when non-empty, provides values for Go-template .Args placeholders
+	// in the resolved prompt text before persistence and broadcast.
 	// Only set for named/scenario prompts; ad-hoc messages leave this nil so that
-	// pasted shell/code containing ${...} is never corrupted.
+	// pasted shell/code containing template-like text is never corrupted.
 	Arguments map[string]string
 	// PreferredModels is an ordered list of case-insensitive glob patterns matched against
 	// available model IDs and display names. The first match wins; absent/empty uses the

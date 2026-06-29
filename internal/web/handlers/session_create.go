@@ -21,7 +21,7 @@ type SessionCreateRequest struct {
 	ACPServer         string            `json:"acp_server,omitempty"`          // Optional: specify ACP server for the session
 	BeadsIssue        string            `json:"beads_issue,omitempty"`         // Optional: link conversation to a beads issue ID at creation
 	InitialPromptName string            `json:"initial_prompt_name,omitempty"` // Optional: seed the queue with a named prompt atomically on creation
-	Arguments         map[string]string `json:"arguments,omitempty"`           // Optional: ${VAR} substitution arguments for the initial prompt
+	Arguments         map[string]string `json:"arguments,omitempty"`           // Optional: Go-template .Args values for the initial prompt
 }
 
 // HandleCreateSession handles POST /api/sessions

@@ -3662,7 +3662,7 @@ func TestPromptMode_ArgSubstitution_BeforePhase(t *testing.T) {
 	proc := &Processor{
 		Name:   "save-rules",
 		When:   WhenConfig{On: PhaseUserPrompt, Match: MatchAll},
-		Prompt: "Save to ${filename} using mode ${mode}.",
+		Prompt: "Save to {{ .Args.filename }} using mode {{ .Args.mode }}.",
 		Parameters: []config.PromptParameter{
 			{Name: "filename", Type: "text", Default: "AGENTS.md"},
 			{Name: "mode", Type: "text", Default: "append"},
@@ -3721,11 +3721,11 @@ func TestPromptMode_ArgSubstitution_BeforePhase(t *testing.T) {
 	})
 
 	t.Run("inline default in body works when no declared param", func(t *testing.T) {
-		// A processor with no declared parameters but using ${VAR:-inline} in the body.
+		// A processor with no declared parameters but using the Arg helper in the body.
 		proc2 := &Processor{
 			Name:   "inline-default",
 			When:   WhenConfig{On: PhaseUserPrompt, Match: MatchAll},
-			Prompt: "Use ${tool:-bash} for this.",
+			Prompt: `Use {{ Arg "tool" "bash" }} for this.`,
 		}
 		mgr2 := NewManager("", nil)
 		mgr2.processors = []*Processor{proc2}
@@ -3750,11 +3750,13 @@ func TestPromptMode_ArgSubstitution_BeforePhase(t *testing.T) {
 		}
 	})
 
-	t.Run("escaped placeholder is preserved", func(t *testing.T) {
+	t.Run("literal dollar-brace placeholder is preserved verbatim", func(t *testing.T) {
+		// A body with ${...} but no {{ }} template syntax must be returned unchanged
+		// (acceptance criterion: a literal ${X} is delivered as-is).
 		proc3 := &Processor{
 			Name:   "escape-test",
 			When:   WhenConfig{On: PhaseUserPrompt, Match: MatchAll},
-			Prompt: `Literal \${filename} not substituted.`,
+			Prompt: "Literal ${filename} not substituted.",
 		}
 		mgr3 := NewManager("", nil)
 		mgr3.processors = []*Processor{proc3}
@@ -3780,13 +3782,13 @@ func TestPromptMode_ArgSubstitution_BeforePhase(t *testing.T) {
 	})
 }
 
-// TestPromptMode_ArgSubstitution_AfterPhase tests ${VAR} substitution in prompt-mode
-// after-phase (agentResponded) processors (mitto-5g2v.2).
+// TestPromptMode_ArgSubstitution_AfterPhase tests Go-template .Args rendering in
+// prompt-mode after-phase (agentResponded) processors (mitto-5g2v.2).
 func TestPromptMode_ArgSubstitution_AfterPhase(t *testing.T) {
 	proc := &Processor{
 		Name:   "report-to-file",
 		When:   WhenConfig{On: PhaseAgentResponded, Match: MatchAll, StopReasons: []string{"end_turn"}},
-		Prompt: "Write summary to ${dest}.",
+		Prompt: "Write summary to {{ .Args.dest }}.",
 		Parameters: []config.PromptParameter{
 			{Name: "dest", Type: "text", Default: "SUMMARY.md"},
 		},
@@ -3848,10 +3850,10 @@ func TestPromptMode_ArgSubstitution_AfterPhase(t *testing.T) {
 }
 
 // TestPromptMode_ArgSubstitution_MittoRCPersistence is an integration test that
-// exercises the full persistence → resolution → substitution → dispatch chain:
+// exercises the full persistence → resolution → template-render → dispatch chain:
 //  1. Write a per-workspace override to a real .mittorc via SaveWorkspaceRCProcessorArguments.
 //  2. Read it back via LoadWorkspaceRC and build the ProcessorArgOverrides map.
-//  3. Apply a prompt-mode processor whose body uses ${HistoryLimit:-10}.
+//  3. Apply a prompt-mode processor whose body uses {{ Arg "HistoryLimit" "10" }}.
 //  4. Assert the dispatched prompt reflects the override (25) and the default (10).
 func TestPromptMode_ArgSubstitution_MittoRCPersistence(t *testing.T) {
 	dir := t.TempDir()
@@ -3884,7 +3886,7 @@ func TestPromptMode_ArgSubstitution_MittoRCPersistence(t *testing.T) {
 	proc := &Processor{
 		Name:   procName,
 		When:   WhenConfig{On: PhaseUserPrompt, Match: MatchAll},
-		Prompt: "Review last_n: ${HistoryLimit:-10} messages.",
+		Prompt: `Review last_n: {{ Arg "HistoryLimit" "10" }} messages.`,
 		Parameters: []config.PromptParameter{
 			{Name: "HistoryLimit", Type: "text", Default: "10"},
 		},

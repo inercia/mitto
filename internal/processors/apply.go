@@ -755,10 +755,17 @@ func (m *Manager) applyWithRerun(ctx context.Context, input *ProcessorInput, ori
 			}
 
 			// Build the prompt: first @mitto: variable substitution, then
-			// ${VAR}/${VAR:-fallback} argument substitution.
+			// Go-template render exposing resolved args as .Args.
 			assembledPrompt := SubstituteVariables(proc.Prompt, input)
 			resolvedArgs := ResolveProcessorArgs(proc.Parameters, input.ProcessorArgOverrides[proc.Name])
-			assembledPrompt = SubstituteArguments(assembledPrompt, resolvedArgs)
+			ctx := BuildCELContext(input)
+			ctx.Args = resolvedArgs
+			funcs := config.BuildTemplateFuncMap(ctx)
+			if rendered, rerr := config.RenderPromptTemplate(proc.Name, assembledPrompt, ctx, funcs); rerr != nil {
+				m.logger.Warn("prompt-mode processor template render failed; using unrendered body", "name", proc.Name, "error", rerr)
+			} else {
+				assembledPrompt = rendered
+			}
 			procTimeout := proc.GetTimeout().Duration()
 
 			// Collect for batched dispatch.
@@ -1135,10 +1142,18 @@ func (m *Manager) ApplyAfter(ctx context.Context, input AfterProcessorInput) App
 			}
 
 			// Build the prompt: first @mitto: variable substitution, then
-			// ${VAR}/${VAR:-fallback} argument substitution.
+			// Go-template render exposing resolved args as .Args.
 			assembledPrompt := substituteAfterVariables(proc.Prompt, input)
 			resolvedArgs := ResolveProcessorArgs(proc.Parameters, input.ProcessorArgOverrides[proc.Name])
-			assembledPrompt = SubstituteArguments(assembledPrompt, resolvedArgs)
+			tctx := &config.PromptEnabledContext{}
+			tctx.Session.ID = input.SessionID
+			tctx.Args = resolvedArgs
+			funcs := config.BuildTemplateFuncMap(tctx)
+			if rendered, rerr := config.RenderPromptTemplate(proc.Name, assembledPrompt, tctx, funcs); rerr != nil {
+				m.logger.Warn("prompt-mode processor template render failed; using unrendered body", "name", proc.Name, "error", rerr)
+			} else {
+				assembledPrompt = rendered
+			}
 			procTimeout := proc.GetTimeout().Duration()
 			pendingPrompts = append(pendingPrompts, pendingPromptDispatch{
 				name:    proc.Name,

@@ -12,7 +12,6 @@ import (
 	"github.com/inercia/mitto/internal/config"
 	"github.com/inercia/mitto/internal/conversation"
 	"github.com/inercia/mitto/internal/fileutil"
-	"github.com/inercia/mitto/internal/processors"
 	"github.com/inercia/mitto/internal/session"
 )
 
@@ -2062,8 +2061,8 @@ func TestPeriodicRunner_RecoverStalledOnCompletion_SessionPrompting_Noop(t *test
 // TestPeriodicRunner_DeliverPrompt_ArgumentsForwardedAndSubstituted verifies that
 // the periodic runner correctly resolves a named prompt via promptResolver and
 // that the Arguments stored in the periodic config would produce the expected
-// substituted text when passed through processors.SubstituteArguments — the
-// same function called by PromptWithMeta before dispatching to ACP.
+// rendered text when passed through Go-template rendering — the same path taken
+// by PromptWithMeta before dispatching to ACP.
 //
 // The test does NOT require a real ACP connection.  deliverPrompt is called
 // but expected to fail with an ACP-unavailable error (the resolver has already
@@ -2080,7 +2079,8 @@ func TestPeriodicRunner_DeliverPrompt_ArgumentsForwardedAndSubstituted(t *testin
 		t.Fatalf("store.Create() error = %v", err)
 	}
 
-	const templateText = "Check ${ISSUE_ID} in ${ENV:-prod}"
+	// Go-template form: {{ .Args.ISSUE_ID }} and {{ Arg "ENV" "prod" }} for default.
+	const templateText = `Check {{ .Args.ISSUE_ID }} in {{ Arg "ENV" "prod" }}`
 	var resolverCalled bool
 	var resolvedName string
 
@@ -2126,22 +2126,21 @@ func TestPeriodicRunner_DeliverPrompt_ArgumentsForwardedAndSubstituted(t *testin
 		t.Log("deliverPrompt returned nil (unexpected but not harmful for this test)")
 	}
 
-	// Verify that applying SubstituteArguments to the resolved template with the
-	// stored arguments produces the correct substituted text.  This mirrors what
-	// PromptWithMeta does before recording and dispatching to ACP.
-	// ${ENV:-prod} must render the default "prod" because ENV is absent.
+	// Verify that Go-template rendering with the stored arguments produces the
+	// correct substituted text.  ENV is absent so the Arg helper must use the
+	// default "prod".
 	substituted := substituteTestArgs(templateText, periodic.Arguments)
 	if want := "Check mitto-42 in prod"; substituted != want {
 		t.Errorf("substituted text = %q, want %q", substituted, want)
 	}
 }
 
-// TestPeriodicRunner_DeliverPrompt_DefaultRendered verifies that ${VAR:-default}
+// TestPeriodicRunner_DeliverPrompt_DefaultRendered verifies that the Arg helper
 // in a named prompt renders the default string when the key is absent from Arguments.
 func TestPeriodicRunner_DeliverPrompt_DefaultRendered(t *testing.T) {
-	const template = "run ${CMD:-lint} on ${TARGET:-all}"
+	const tmpl = `run {{ Arg "CMD" "lint" }} on {{ Arg "TARGET" "all" }}`
 	args := map[string]string{"CMD": "test"} // TARGET absent — default must apply
-	got := substituteTestArgs(template, args)
+	got := substituteTestArgs(tmpl, args)
 	want := "run test on all"
 	if got != want {
 		t.Errorf("default rendering: got %q, want %q", got, want)
@@ -2151,8 +2150,8 @@ func TestPeriodicRunner_DeliverPrompt_DefaultRendered(t *testing.T) {
 // TestPeriodicRunner_DeliverPrompt_FreeTextUnaffected verifies that a periodic
 // prompt using only the Prompt field (no PromptName, no Arguments) leaves a
 // literal ${...} placeholder in the text untouched.  With nil Arguments the
-// substituteTestArgs helper (and, correspondingly, PromptWithMeta) must not
-// modify the text because the substitution is guarded on len(Arguments) > 0.
+// substituteTestArgs helper must not modify the text because the early-return
+// guard fires on len(args)==0.
 func TestPeriodicRunner_DeliverPrompt_FreeTextUnaffected(t *testing.T) {
 	const freeText = "Check ${SOMETHING} now"
 	periodic := &session.PeriodicPrompt{
@@ -2166,15 +2165,17 @@ func TestPeriodicRunner_DeliverPrompt_FreeTextUnaffected(t *testing.T) {
 	}
 }
 
-// substituteTestArgs mirrors the substitution that PromptWithMeta applies inside
-// its async goroutine so tests can verify the correct output without a real ACP
-// connection. It delegates to processors.SubstituteArguments — the same function
-// called in bgsession_prompt.go PromptWithMeta.
+// substituteTestArgs mirrors the Go-template rendering that PromptWithMeta
+// applies inside its async goroutine so tests can verify the correct output
+// without a real ACP connection.
 func substituteTestArgs(text string, args map[string]string) string {
 	if len(args) == 0 {
 		return text
 	}
-	return processors.SubstituteArguments(text, args)
+	ctx := &config.PromptEnabledContext{Args: args}
+	funcs := config.BuildTemplateFuncMap(ctx)
+	out, _ := config.RenderPromptTemplate("test", text, ctx, funcs)
+	return out
 }
 
 // =============================================================================

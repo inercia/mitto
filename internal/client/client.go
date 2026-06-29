@@ -78,7 +78,7 @@ type CreateSessionRequest struct {
 	WorkingDir        string            `json:"working_dir,omitempty"`
 	ACPServer         string            `json:"acp_server,omitempty"`
 	InitialPromptName string            `json:"initial_prompt_name,omitempty"` // Optional: seed the queue with a named prompt atomically on creation
-	Arguments         map[string]string `json:"arguments,omitempty"`           // Optional: ${VAR} substitution arguments for the initial prompt
+	Arguments         map[string]string `json:"arguments,omitempty"`           // Optional: Go-template .Args values for the initial prompt
 }
 
 // ListSessions returns all sessions.

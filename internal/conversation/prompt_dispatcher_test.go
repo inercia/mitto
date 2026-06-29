@@ -538,7 +538,7 @@ func TestPromptDispatcher_ResolveAndSubstitute_ArgSubstitution(t *testing.T) {
 
 	args := map[string]string{"NAME": "Alice", "CITY": "Paris"}
 	msg, argCount, updatedMeta, err := p.resolveAndSubstitute(d,
-		"Hello ${NAME}, welcome to ${CITY}!", PromptMeta{Arguments: args})
+		"Hello {{ .Args.NAME }}, welcome to {{ .Args.CITY }}!", PromptMeta{Arguments: args})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -611,23 +611,22 @@ func TestResolveAndSubstitute_Template_SessionID(t *testing.T) {
 	}
 }
 
-// TestResolveAndSubstitute_Template_RenderBeforeArgSubstitution verifies that
-// template rendering runs BEFORE ${VAR} substitution: the template may emit
-// ${SUFFIX} tokens that SubstituteArguments then resolves.
-func TestResolveAndSubstitute_Template_RenderBeforeArgSubstitution(t *testing.T) {
+// TestResolveAndSubstitute_Template_ArgsAvailableAtRender verifies that
+// .Args values are available during template rendering via {{ .Args.SUFFIX }}.
+func TestResolveAndSubstitute_Template_ArgsAvailableAtRender(t *testing.T) {
 	p := promptDispatcher{}
 	d := newFakePromptDeps()
 	d.sessionID = "sess-X"
 
-	// Template outputs "sess-X-${SUFFIX}"; SubstituteArguments then resolves ${SUFFIX}.
-	body := "{{ .Session.ID }}-${SUFFIX}"
+	// Template uses .Session.ID and .Args.SUFFIX directly in one render pass.
+	body := "{{ .Session.ID }}-{{ .Args.SUFFIX }}"
 	args := map[string]string{"SUFFIX": "end"}
 	msg, _, _, err := p.resolveAndSubstitute(d, body, PromptMeta{Arguments: args})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if msg != "sess-X-end" {
-		t.Fatalf("expected render-then-subst result, got %q", msg)
+		t.Fatalf("expected rendered result, got %q", msg)
 	}
 }
 
@@ -1939,7 +1938,7 @@ func boolPtr(b bool) *bool { return &b }
 func TestResolveAndSubstitute_Cache_WriteBackAndAutoFill(t *testing.T) {
 	p := promptDispatcher{}
 	d := newFakePromptDeps()
-	d.resolver = func(name, _ string) (string, error) { return "Hi ${NAME}", nil }
+	d.resolver = func(name, _ string) (string, error) { return "Hi {{ .Args.NAME }}", nil }
 	d.promptParams = []config.PromptParameter{
 		{Name: "NAME", Type: "string", Cache: &config.PromptParameterCache{Destination: "memory"}},
 	}
@@ -1982,11 +1981,14 @@ func TestResolveAndSubstitute_Cache_WriteBackAndAutoFill(t *testing.T) {
 }
 
 // TestResolveAndSubstitute_Cache_ExpiredNotAutoFilled verifies that an entry
-// past its TTL is NOT auto-filled and the body keeps its ${NAME:-default} default.
+// past its TTL is NOT auto-filled. With Go templates the Arg helper in the body
+// still renders the declared default when no arg is filled.
 func TestResolveAndSubstitute_Cache_ExpiredNotAutoFilled(t *testing.T) {
 	p := promptDispatcher{}
 	d := newFakePromptDeps()
-	d.resolver = func(name, _ string) (string, error) { return "Hi ${NAME:-stranger}", nil }
+	d.resolver = func(name, _ string) (string, error) {
+		return `Hi {{ Arg "NAME" "stranger" }}`, nil
+	}
 	d.promptParams = []config.PromptParameter{
 		{Name: "NAME", Type: "string", Cache: &config.PromptParameterCache{Destination: "memory", TTL: "20ms"}},
 	}
@@ -2003,14 +2005,15 @@ func TestResolveAndSubstitute_Cache_ExpiredNotAutoFilled(t *testing.T) {
 	// Wait past TTL.
 	time.Sleep(40 * time.Millisecond)
 
-	// Second call with no args: cache expired → arg not filled, no substitution runs.
+	// Second call with no args: cache expired → arg not filled → argCount=0.
+	// The Arg helper renders the declared default "stranger".
 	msg, argCount, _, err := p.resolveAndSubstitute(d, "",
 		PromptMeta{PromptName: "greet"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if msg != "Hi ${NAME:-stranger}" {
-		t.Fatalf("expected raw body kept (no substitution), got %q", msg)
+	if msg != "Hi stranger" {
+		t.Fatalf("expected Arg helper default rendered, got %q", msg)
 	}
 	if argCount != 0 {
 		t.Fatalf("expected argCount=0 when cache expired, got %d", argCount)
@@ -2022,7 +2025,7 @@ func TestResolveAndSubstitute_Cache_ExpiredNotAutoFilled(t *testing.T) {
 func TestResolveAndSubstitute_Cache_NonCacheableNotStored(t *testing.T) {
 	p := promptDispatcher{}
 	d := newFakePromptDeps()
-	d.resolver = func(name, _ string) (string, error) { return "Hi ${NAME}", nil }
+	d.resolver = func(name, _ string) (string, error) { return "Hi {{ .Args.NAME }}", nil }
 	d.promptParams = []config.PromptParameter{
 		{Name: "NAME", Type: "string"}, // Cache == nil
 	}
@@ -2042,7 +2045,7 @@ func TestResolveAndSubstitute_Cache_NonCacheableNotStored(t *testing.T) {
 func TestResolveAndSubstitute_Cache_NilResolverSafe(t *testing.T) {
 	p := promptDispatcher{}
 	d := newFakePromptDeps()
-	d.resolver = func(name, _ string) (string, error) { return "Hi ${NAME}", nil }
+	d.resolver = func(name, _ string) (string, error) { return "Hi {{ .Args.NAME }}", nil }
 	d.promptParams = nil // resolver returns nil — simulates unknown/unparameterised prompt
 
 	msg, argCount, _, err := p.resolveAndSubstitute(d, "",
@@ -2051,7 +2054,7 @@ func TestResolveAndSubstitute_Cache_NilResolverSafe(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if msg != "Hi Alice" {
-		t.Fatalf("expected substituted message, got %q", msg)
+		t.Fatalf("expected rendered message, got %q", msg)
 	}
 	if argCount != 1 {
 		t.Fatalf("expected argCount=1, got %d", argCount)
@@ -2066,7 +2069,7 @@ func TestResolveAndSubstitute_Cache_NilResolverSafe(t *testing.T) {
 func TestResolveAndSubstitute_Cache_RequiredPtrNotInterferingWithCache(t *testing.T) {
 	p := promptDispatcher{}
 	d := newFakePromptDeps()
-	d.resolver = func(name, _ string) (string, error) { return "Hi ${NAME}", nil }
+	d.resolver = func(name, _ string) (string, error) { return "Hi {{ .Args.NAME }}", nil }
 	d.promptParams = []config.PromptParameter{
 		{Name: "NAME", Type: "string", Required: boolPtr(true), Cache: &config.PromptParameterCache{Destination: "memory"}},
 	}

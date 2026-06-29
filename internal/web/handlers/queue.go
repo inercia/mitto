@@ -18,7 +18,7 @@ type QueueAddRequest struct {
 	ImageIDs      []string          `json:"image_ids,omitempty"`
 	FileIDs       []string          `json:"file_ids,omitempty"`
 	ScheduledTime *string           `json:"scheduled_time,omitempty"` // Optional: RFC 3339 timestamp or relative duration (e.g., "5m", "1h")
-	Arguments     map[string]string `json:"arguments,omitempty"`      // Optional: ${VAR}/${VAR:-default} substitution values applied when sent
+	Arguments     map[string]string `json:"arguments,omitempty"`      // Optional: values for Go-template .Args placeholders applied when sent
 	PromptName    string            `json:"prompt_name,omitempty"`    // Optional: name of a workspace prompt to send by name (resolved at dispatch)
 }
 

@@ -230,7 +230,7 @@ func (r *Recorder) RecordUserPromptWithImages(message string, images []ImageRef,
 // RecordUserPromptComplete records a user prompt event with optional image/file references, prompt ID, prompt name, and argument count.
 // The promptID is a client-generated ID used for delivery confirmation on reconnect.
 // The promptName is the name of the workspace prompt used (for UI rendering); empty string means no named prompt.
-// The argumentCount is the number of ${VAR} arguments substituted; 0 means no arguments (ad-hoc or no-arg named prompt).
+// The argumentCount is the number of Go-template .Args values supplied; 0 means no arguments (ad-hoc or no-arg named prompt).
 func (r *Recorder) RecordUserPromptComplete(message string, images []ImageRef, files []FileRef, promptID string, promptName string, argumentCount int, opts ...RecordOption) error {
 	return r.recordEvent(applyOptions(Event{
 		Type:      EventTypeUserPrompt,

@@ -75,9 +75,9 @@ type PromptParameterCache struct {
 }
 
 // PromptParameter declares a single named, typed parameter that the prompt body
-// references via ${NAME} or ${NAME:-default} substitution syntax.
+// references via Go-template {{ .Args.NAME }} or {{ Arg "NAME" "default" }} syntax.
 type PromptParameter struct {
-	// Name is the placeholder name used in the prompt body (e.g. "id" for ${id}).
+	// Name is the placeholder name used in the prompt body (e.g. "id" for {{ .Args.id }}).
 	Name string `yaml:"name" json:"name"`
 	// Type is one of the known parameter types (see KnownPromptParameterTypes).
 	Type string `yaml:"type" json:"type"`
@@ -85,11 +85,11 @@ type PromptParameter struct {
 	Description string `yaml:"description,omitempty" json:"description,omitempty"`
 	// Required, when explicitly set to true, signals that the parameter must be
 	// supplied before the prompt is dispatched. Defaults to unset (caller decides).
-	// Declarative defaults are handled by the ${VAR:-default} body syntax, not here.
+	// Declarative defaults are handled by the Arg helper in the template body, not here.
 	Required *bool `yaml:"required,omitempty" json:"required,omitempty"`
 	// Default is the default value substituted when the parameter is not explicitly
 	// supplied. Required for processor parameters (mandatory); optional for prompt-file
-	// parameters (the ${VAR:-default} body syntax also provides per-site defaults).
+	// parameters (the Arg helper in the template body also provides per-site defaults).
 	Default string `yaml:"default,omitempty" json:"default,omitempty"`
 	// Cache, when non-nil, enables per-conversation value caching for this parameter.
 	// The collected argument value is stored so the UI can skip re-asking within the
@@ -153,7 +153,7 @@ type PromptFile struct {
 
 	// Parameters declares the named, typed inputs this prompt expects.
 	// Each entry must have a non-empty name and a recognised type (see KnownPromptParameterTypes).
-	// Callers substitute values via ${NAME} or ${NAME:-default} placeholders in Content.
+	// Callers substitute values via Go-template .Args.NAME or Arg helper in Content.
 	Parameters []PromptParameter `yaml:"parameters,omitempty" json:"parameters,omitempty"`
 
 	// Content is the prompt body text, stored under the "prompt" key in the YAML file.

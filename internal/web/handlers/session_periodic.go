@@ -24,7 +24,7 @@ type PeriodicPromptRequest struct {
 	DelaySeconds int `json:"delay_seconds,omitempty"`
 	// MaxDurationSeconds is the wall-clock cap since iterating started (0 = unlimited).
 	MaxDurationSeconds int `json:"max_duration_seconds,omitempty"`
-	// Arguments holds user-supplied values for ${VAR}/${VAR:-default} substitution
+	// Arguments holds user-supplied values for Go-template .Args placeholders
 	// when PromptName is set. Ignored for free-text prompts.
 	Arguments map[string]string `json:"arguments,omitempty"`
 }

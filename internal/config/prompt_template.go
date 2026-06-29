@@ -186,7 +186,7 @@ func ValidatePromptTemplateSyntax(name, body string) error {
 //
 // Fast path: if body has no template syntax it is returned unchanged (no parse).
 // Otherwise the body is parsed and executed against data with the given funcs.
-// missingkey=zero: a missing MAP key renders as "" (like ${MISSING}); struct
+// missingkey=zero: a missing MAP key renders as "" (like an absent .Args key); struct
 // field typos still produce an error. No HTML escaping (text/template).
 //
 // name is used only in error messages (use the prompt name when available).

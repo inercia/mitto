@@ -1094,7 +1094,7 @@ func (s *Server) registerSessionScopedTools(mcpSrv *mcp.Server) {
 			"Optionally specify a 'workspace' UUID when sending to a conversation in a different workspace (requires user confirmation). " +
 			"Optionally provide a 'schedule_time' parameter (ISO 8601 / RFC 3339 timestamp) to schedule the message for future delivery instead of immediate processing. " +
 			"Supports both absolute timestamps (e.g., '2024-01-15T10:30:00Z') and relative durations from now (e.g., '5m', '1h', '2h30m'). " +
-			"Optionally provide an 'arguments' map (string keys to string values) to substitute bash-like placeholders in the prompt text when it is sent: '${VAR}' is replaced with the value (or empty string if absent), and '${VAR:-default}' uses the value when set and non-empty, otherwise 'default'. Escape with a backslash ('\\${VAR}') to emit a literal placeholder. " +
+			"Optionally provide an 'arguments' map (string keys to string values) to fill Go-template placeholders in the prompt text when it is sent: a '.Args.VAR' field is replaced with the value (or empty string if absent), and the Arg helper with a default uses the value when set and non-empty, otherwise the default. " +
 			"Optionally provide 'prompt_name' to enqueue a predefined workspace prompt by name instead of free text; the name is resolved to its full body at dispatch in the TARGET conversation's context. Provide either 'prompt' (free text) or 'prompt_name'. " +
 			"Requires 'Can Send Prompt' flag to be enabled. " +
 			selfIDNote,
@@ -1172,7 +1172,7 @@ func (s *Server) registerSessionScopedTools(mcpSrv *mcp.Server) {
 			"(use 'mitto_conversation_get_current' to see available ACP servers in the 'available_acp_servers' field). " +
 			"Optionally provide a 'title' for the conversation and an 'initial_prompt' to start the agent working immediately. " +
 			"Instead of an inline 'initial_prompt', you may provide 'prompt_name' to use a predefined prompt by name (resolved the same way as 'mitto_prompt_get', case-insensitive) as the initial prompt — 'prompt_name' and 'initial_prompt' are mutually exclusive. " +
-			"Optionally provide an 'arguments' map (string keys to string values) to substitute bash-like placeholders in the initial prompt when it is sent: '${VAR}' is replaced with the value (or empty string if absent), and '${VAR:-default}' uses the value when set and non-empty, otherwise 'default'. Escape with a backslash ('\\${VAR}') to emit a literal placeholder. This pairs with 'prompt_name' to fill a predefined prompt's parameters without fetching it first. " +
+			"Optionally provide an 'arguments' map (string keys to string values) to fill Go-template placeholders in the initial prompt when it is sent: a '.Args.VAR' field is replaced with the value (or empty string if absent), and the Arg helper with a default uses the value when set and non-empty, otherwise the default. This pairs with 'prompt_name' to fill a predefined prompt's parameters without fetching it first. " +
 			"Optionally provide 'initial_prompt_delay' to delay the initial prompt delivery instead of sending it immediately. " +
 			"Supports both absolute timestamps (e.g., '2024-01-15T10:30:00Z') and relative durations from now (e.g., '5m', '1h', '2h30m'). " +
 			"Requires 'initial_prompt' or 'prompt_name' to be set. " +
@@ -1974,7 +1974,7 @@ type SendPromptToConversationInput struct {
 	Prompt         string            `json:"prompt"`
 	Workspace      string            `json:"workspace,omitempty"`     // Optional workspace UUID for cross-workspace operations
 	ScheduleTime   string            `json:"schedule_time,omitempty"` // Optional: RFC 3339 timestamp or relative duration (e.g., "5m", "1h")
-	Arguments      map[string]string `json:"arguments,omitempty"`     // Optional: ${VAR}/${VAR:-default} substitution values applied to the prompt text when sent
+	Arguments      map[string]string `json:"arguments,omitempty"`     // Optional: values for Go-template .Args placeholders in the prompt text when sent
 	PromptName     string            `json:"prompt_name,omitempty"`   // Optional: name of a workspace prompt to send by name (resolved at dispatch in the target conversation's context)
 }
 
@@ -2712,7 +2712,7 @@ type ConversationStartInput struct {
 	InitialPrompt      string            `json:"initial_prompt,omitempty"`       // Optional initial message to queue
 	PromptName         string            `json:"prompt_name,omitempty"`          // Optional: name of a predefined prompt to use as the initial prompt (mutually exclusive with initial_prompt)
 	InitialPromptDelay string            `json:"initial_prompt_delay,omitempty"` // Optional: delay initial prompt delivery (RFC 3339 timestamp or relative duration like "5m", "1h")
-	Arguments          map[string]string `json:"arguments,omitempty"`            // Optional: ${VAR}/${VAR:-default} substitution values applied to the initial prompt when sent
+	Arguments          map[string]string `json:"arguments,omitempty"`            // Optional: values for Go-template .Args placeholders in the initial prompt when sent
 	ACPServer          string            `json:"acp_server,omitempty"`           // Optional ACP server name (defaults to parent's server)
 	BeadsIssue         string            `json:"beads_issue,omitempty"`          // Optional: link the new conversation to a beads issue ID (e.g. "mitto-123")
 	Workspace          string            `json:"workspace,omitempty"`            // Optional workspace UUID for cross-workspace operations
@@ -2826,7 +2826,7 @@ func (s *Server) handleConversationStart(ctx context.Context, req *mcp.CallToolR
 	// mutually exclusive with an inline initial_prompt: when prompt_name is set,
 	// its full text is looked up from the merged prompt list (same resolution as
 	// mitto_prompt_get) and used as the initial prompt. Optional 'arguments' are
-	// applied as ${VAR}/${VAR:-default} substitution when the prompt is sent.
+	// applied to Go-template .Args placeholders when the prompt is sent.
 	initialPromptText := input.InitialPrompt
 	if input.PromptName != "" {
 		if input.InitialPrompt != "" {

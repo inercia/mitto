@@ -50,7 +50,7 @@ type followUpDeps interface {
 	fuApplyAfterProcessors(ctx context.Context, input processors.AfterProcessorInput) processors.ApplyAfterResult
 	// fuWorkspaceProcessorArgOverrides returns the per-workspace processor argument overrides
 	// from the folder's .mittorc (procName → argName → value). Used to populate
-	// AfterProcessorInput.ProcessorArgOverrides for ${VAR} substitution in prompt-mode processors.
+	// AfterProcessorInput.ProcessorArgOverrides for Go-template .Args in prompt-mode processors.
 	fuWorkspaceProcessorArgOverrides() map[string]map[string]string
 
 	// Session store.

@@ -14,7 +14,7 @@ import (
 // WebProcessorParameter represents one declared parameter of a prompt-mode processor
 // as returned by the workspace processors API.
 type WebProcessorParameter struct {
-	// Name is the parameter identifier used in ${NAME} placeholders.
+	// Name is the parameter identifier used in Go-template .Args.NAME placeholders.
 	Name string `json:"name"`
 	// Type is one of the known parameter types (see config.KnownPromptParameterTypes).
 	Type string `json:"type"`

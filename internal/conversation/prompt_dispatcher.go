@@ -64,7 +64,7 @@ type promptDeps interface {
 	pdApplyProcessors(ctx context.Context, input *processors.ProcessorInput) (*processors.ProcessorResult, error)
 	// pdWorkspaceProcessorArgOverrides returns the per-workspace processor argument overrides
 	// from the folder's .mittorc (procName → argName → value). Used to populate
-	// ProcessorInput.ProcessorArgOverrides for ${VAR} substitution in prompt-mode processors.
+	// ProcessorInput.ProcessorArgOverrides for Go-template .Args in prompt-mode processors.
 	pdWorkspaceProcessorArgOverrides() map[string]map[string]string
 	// pdPersistProcessorActivation persists the activation count to metadata after Apply.
 	// No-op when no store or persistedID.
@@ -185,13 +185,14 @@ func isAutomatedDispatch(senderID string) bool {
 	return senderID == senderIDQueue || senderID == senderIDPeriodic
 }
 
-// resolveAndSubstitute covers the top of PromptWithMeta (lines 165–201 in the original):
-//  1. If meta.PromptName != "" && message == "": resolve the prompt name to full text
+// resolveAndSubstitute covers the top of PromptWithMeta:
+//  1. Name-resolution: if meta.PromptName != "" && message == "", resolve via promptResolver
 //     (error if no resolver, or if resolution fails).
-//     1b. Go template rendering (mitto-m7sb.5): fast-path guarded; fail-closed.
-//  2. Record argCount = len(meta.Arguments).
-//  3. If argCount > 0: apply bash-like argument substitution to the message.
-//  4. If argCount > 0: build argument metadata and annotate meta.Meta.
+//  2. Cache read/merge: for a named prompt, inject cached argument values into
+//     meta.Arguments before template render so .Args includes them at render time.
+//  3. Go template rendering (mitto-m7sb.5): fast-path guarded; fail-closed for
+//     named/automated dispatches, fail-open for direct human input.
+//  4. Record argCount = len(meta.Arguments); build argument metadata and annotate meta.Meta.
 //
 // Returns (resolvedMessage, argCount, updatedMeta, error). On non-nil error the
 // caller should return the error immediately (the two early-return paths are preserved).
@@ -208,42 +209,11 @@ func (p promptDispatcher) resolveAndSubstitute(d promptDeps, message string, met
 		message = resolved
 	}
 
-	// Template render (mitto-m7sb.5): runs after name-resolution, before ${VAR}
-	// substitution, so a template may itself emit ${VAR}/@mitto tokens that the
-	// legacy passes then handle. Fast-path guard avoids buildProcessorInput for
-	// non-template bodies (the common case).
-	if config.HasTemplateSyntax(message) {
-		input := p.buildProcessorInput(d, message, false, meta)
-		tctx := processors.BuildCELContext(input)
-		funcs := config.BuildTemplateFuncMap(tctx)
-		name := meta.PromptName
-		if name == "" {
-			name = "prompt"
-		}
-		rendered, rerr := config.RenderPromptTemplate(name, message, tctx, funcs)
-		if rerr != nil {
-			// Named prompts always fail-closed. Automated/cross-session dispatches
-			// (queue, periodic-runner) also fail-closed: a broken template body must
-			// not be silently delivered raw to a child that cannot act on it — that
-			// cascaded into a 10m child-wait timeout (mitto-e7u). Direct human input
-			// keeps fail-open so pasted text containing {{ is delivered literally.
-			if meta.PromptName != "" || isAutomatedDispatch(meta.SenderID) {
-				return "", 0, meta, rerr
-			}
-			// free-text (direct human input): fail-open — warn and deliver raw message
-			if l := d.pdLogger(); l != nil {
-				l.Warn("free-text template render failed, delivering raw message",
-					"session_id", d.pdSessionID(),
-					"error", rerr)
-			}
-		} else {
-			message = rendered
-		}
-	}
-
 	// Per-conversation prompt-argument cache (mitto-pchx.3): for a named prompt,
 	// fill cacheable params missing from meta.Arguments from the cache, then write
 	// back supplied cacheable values with their TTL (refreshing on re-supply).
+	// Runs BEFORE template render so that .Args (built from meta.Arguments in
+	// buildProcessorInput) includes cached values at render time.
 	if meta.PromptName != "" {
 		if params := d.pdResolvePromptParameters(meta.PromptName); len(params) > 0 {
 			// Read/merge: inject fresh cached values for cacheable params not already supplied.
@@ -279,11 +249,40 @@ func (p promptDispatcher) resolveAndSubstitute(d promptDeps, message string, met
 		}
 	}
 
-	argCount := len(meta.Arguments)
-
-	if argCount > 0 {
-		message = processors.SubstituteArguments(message, meta.Arguments)
+	// Template render (mitto-m7sb.5): runs after name-resolution and cache
+	// read/merge, so .Args (built from meta.Arguments) includes cached values.
+	// Fast-path guard avoids buildProcessorInput for non-template bodies (the
+	// common case).
+	if config.HasTemplateSyntax(message) {
+		input := p.buildProcessorInput(d, message, false, meta)
+		tctx := processors.BuildCELContext(input)
+		funcs := config.BuildTemplateFuncMap(tctx)
+		name := meta.PromptName
+		if name == "" {
+			name = "prompt"
+		}
+		rendered, rerr := config.RenderPromptTemplate(name, message, tctx, funcs)
+		if rerr != nil {
+			// Named prompts always fail-closed. Automated/cross-session dispatches
+			// (queue, periodic-runner) also fail-closed: a broken template body must
+			// not be silently delivered raw to a child that cannot act on it — that
+			// cascaded into a 10m child-wait timeout (mitto-e7u). Direct human input
+			// keeps fail-open so pasted text containing {{ is delivered literally.
+			if meta.PromptName != "" || isAutomatedDispatch(meta.SenderID) {
+				return "", 0, meta, rerr
+			}
+			// free-text (direct human input): fail-open — warn and deliver raw message
+			if l := d.pdLogger(); l != nil {
+				l.Warn("free-text template render failed, delivering raw message",
+					"session_id", d.pdSessionID(),
+					"error", rerr)
+			}
+		} else {
+			message = rendered
+		}
 	}
+
+	argCount := len(meta.Arguments)
 
 	if argCount > 0 {
 		names, arguments := buildArgumentMetadata(meta.Arguments)
