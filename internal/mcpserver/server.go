@@ -2281,6 +2281,7 @@ func (s *Server) handleUIOptions(ctx context.Context, req *mcp.CallToolRequest, 
 		"allow_free_text", input.AllowFreeText,
 		"timeout", timeout)
 
+	defer s.startProgressHeartbeat(ctx, req)()
 	resp, err := reg.uiPrompter.UIPrompt(ctx, promptReq)
 	if err != nil {
 		return nil, UIOptionsOutput{Index: -1}, fmt.Errorf("failed to display UI prompt: %w", err)
@@ -2402,6 +2403,7 @@ func (s *Server) handleUITextbox(ctx context.Context, req *mcp.CallToolRequest, 
 		"timeout", timeout)
 
 	// Send prompt and wait for response (blocks until user responds or timeout)
+	defer s.startProgressHeartbeat(ctx, req)()
 	resp, err := reg.uiPrompter.UIPrompt(ctx, promptReq)
 	if err != nil {
 		return nil, UITextboxOutput{}, fmt.Errorf("failed to display UI textbox: %w", err)
@@ -2519,6 +2521,7 @@ func (s *Server) handleUIForm(ctx context.Context, req *mcp.CallToolRequest, inp
 		"timeout", timeout)
 
 	// Send prompt and wait for response (blocks until user responds or timeout)
+	defer s.startProgressHeartbeat(ctx, req)()
 	resp, err := reg.uiPrompter.UIPrompt(ctx, promptReq)
 	if err != nil {
 		return nil, UIFormOutput{}, fmt.Errorf("failed to display UI form: %w", err)
@@ -4167,6 +4170,44 @@ func (s *Server) handleConversationUpdate(ctx context.Context, req *mcp.CallTool
 // defaultConversationWaitTimeout is the default timeout for mitto_conversation_wait.
 const defaultConversationWaitTimeout = 10 * time.Minute
 
+// mcpHeartbeatInterval is how often a long-blocking tool handler emits a progress
+// notification to keep the in-flight request's SSE stream from idling out. Must
+// stay comfortably below the transport idle window (tunnel / agent HTTP client).
+const mcpHeartbeatInterval = 15 * time.Second
+
+// startProgressHeartbeat emits periodic progress notifications on the in-flight
+// request's stream until the returned stop func is called, keeping the SSE
+// transport alive during long-blocking waits (mitto-qal.1).
+func (s *Server) startProgressHeartbeat(ctx context.Context, req *mcp.CallToolRequest) func() {
+	if req == nil || req.Session == nil {
+		return func() {}
+	}
+	hbCtx, cancel := context.WithCancel(ctx)
+	token := req.Params.GetProgressToken()
+	go func() {
+		ticker := time.NewTicker(mcpHeartbeatInterval)
+		defer ticker.Stop()
+		var n float64
+		for {
+			select {
+			case <-hbCtx.Done():
+				return
+			case <-ticker.C:
+				n++
+				if err := req.Session.NotifyProgress(hbCtx, &mcp.ProgressNotificationParams{
+					ProgressToken: token,
+					Progress:      n,
+					Message:       "still working…",
+				}); err != nil {
+					s.logger.Debug("progress heartbeat failed", "error", err)
+					return
+				}
+			}
+		}
+	}()
+	return cancel
+}
+
 // waitConditionAgentResponded is the "what" value for waiting until the agent finishes responding.
 const waitConditionAgentResponded = "agent_responded"
 
@@ -4293,6 +4334,7 @@ func (s *Server) handleConversationWait(ctx context.Context, req *mcp.CallToolRe
 	// Wait for the agent to finish responding, respecting context cancellation.
 	// WaitForResponseComplete blocks with its own timeout, but we also need to
 	// handle ctx.Done() for MCP-level cancellation.
+	defer s.startProgressHeartbeat(ctx, req)()
 	done := make(chan bool, 1)
 	go func() {
 		done <- targetBS.WaitForResponseComplete(timeout)
@@ -4616,6 +4658,7 @@ func (s *Server) handleChildrenTasksWait(ctx context.Context, req *mcp.CallToolR
 	}
 
 	// Block until all running children report or timeout
+	defer s.startProgressHeartbeat(ctx, req)()
 	s.logger.Info("Waiting for children to report",
 		"parent_session", realSessionID,
 		"task_id", input.TaskID,

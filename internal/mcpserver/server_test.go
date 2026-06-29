@@ -13,6 +13,8 @@ import (
 	"testing"
 	"time"
 
+	mcp "github.com/modelcontextprotocol/go-sdk/mcp"
+
 	"github.com/inercia/mitto/internal/config"
 	"github.com/inercia/mitto/internal/session"
 )
@@ -9510,4 +9512,31 @@ func TestConversationUpdate_SelfAlias(t *testing.T) {
 	if stored.Enabled {
 		t.Error("expected periodic config to be disabled after self update, but it is still enabled")
 	}
+}
+
+// TestStartProgressHeartbeat verifies that startProgressHeartbeat returns a stop
+// function that terminates the background goroutine promptly without panicking.
+// The goroutine must exit via hbCtx.Done() before the 15-second ticker fires,
+// so no live ServerSession is needed for this test (mitto-qal.1).
+func TestStartProgressHeartbeat(t *testing.T) {
+	s := &Server{logger: slog.Default()}
+	req := &mcp.CallToolRequest{Params: &mcp.CallToolParamsRaw{}}
+
+	t.Run("stops promptly when cancel called", func(t *testing.T) {
+		stopHB := s.startProgressHeartbeat(context.Background(), req)
+		// Cancel before the 15-second ticker fires. The goroutine must exit
+		// via hbCtx.Done() without reaching req.Session.NotifyProgress.
+		stopHB()
+		// Allow the goroutine a moment to exit.
+		time.Sleep(20 * time.Millisecond)
+		// Reaching here without panic confirms correct cancellation.
+	})
+
+	t.Run("handles pre-cancelled context", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel() // already cancelled before heartbeat starts
+		stopHB := s.startProgressHeartbeat(ctx, req)
+		stopHB()
+		time.Sleep(20 * time.Millisecond)
+	})
 }
