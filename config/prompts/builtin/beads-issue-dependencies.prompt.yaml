@@ -18,22 +18,22 @@ prompt: |
 
   Beads is a CLI issue tracker (`bd`). Issues are called "beads" and have IDs like `bd-xyz`.
 
-  The **target bead** is `${IssueID}`. Your job is to get its **relationships** right so the tracker
+  The **target bead** is `{{ .Args.IssueID }}`. Your job is to get its **relationships** right so the tracker
   can sequence work correctly. This matters because `bd ready` only surfaces **unblocked** beads —
   missing or wrong dependencies hide work that is actually ready, or expose work that is not.
 
   There are four relationship kinds:
-  - **blocked-by / depends-on**: `${IssueID}` cannot start until another bead is done.
-  - **blocks**: another bead cannot start until `${IssueID}` is done.
+  - **blocked-by / depends-on**: `{{ .Args.IssueID }}` cannot start until another bead is done.
+  - **blocks**: another bead cannot start until `{{ .Args.IssueID }}` is done.
   - **related**: a non-blocking association (bidirectional).
-  - **parent**: `${IssueID}` is a child of a larger bead (epic/feature).
+  - **parent**: `{{ .Args.IssueID }}` is a child of a larger bead (epic/feature).
 
   ## Step 1 — Load the bead and its current relationships
 
   ```bash
-  bd show ${IssueID} --long --json   # description, parent, labels, metadata
-  bd dep tree ${IssueID}             # current blockers and what it blocks
-  bd dep list ${IssueID}             # flat list of dependencies and dependents
+  bd show {{ .Args.IssueID }} --long --json   # description, parent, labels, metadata
+  bd dep tree {{ .Args.IssueID }}             # current blockers and what it blocks
+  bd dep list {{ .Args.IssueID }}             # flat list of dependencies and dependents
   ```
 
   Note what relationships already exist so you do not duplicate or contradict them.
@@ -53,7 +53,7 @@ prompt: |
 
   ## Step 3 — Analyze and propose relationships
 
-  Build a proposed relationship set for `${IssueID}`. For each, capture the **direction**, the
+  Build a proposed relationship set for `{{ .Args.IssueID }}`. For each, capture the **direction**, the
   **other bead's ID + title**, the **kind** (blocked-by / blocks / related / parent), and a one-line
   **rationale grounded in evidence**. Also flag any **existing** relationship that looks wrong and
   should be removed.
@@ -65,7 +65,7 @@ prompt: |
 
   This is **read-only until you confirm**. Present the proposed changes as a clear list (additions
   and any removals), then confirm via `mitto_ui_options_mitto(self_id: "{{ .Session.ID }}",
-  allow_free_text: true)`, e.g. "Apply these dependency changes to `${IssueID}`?" with options:
+  allow_free_text: true)`, e.g. "Apply these dependency changes to `{{ .Args.IssueID }}`?" with options:
 
   - **"Apply all proposed changes"**
   - **"Apply additions only — skip removals"**
@@ -81,24 +81,24 @@ prompt: |
   `bd dep add`:
 
   ```bash
-  # ${IssueID} is blocked by / depends on <blocker>:
-  bd dep add ${IssueID} --blocked-by <blocker-id>
+  # {{ .Args.IssueID }} is blocked by / depends on <blocker>:
+  bd dep add {{ .Args.IssueID }} --blocked-by <blocker-id>
 
-  # ${IssueID} blocks <blocked> (it must be done first):
-  bd dep ${IssueID} --blocks <blocked-id>
+  # {{ .Args.IssueID }} blocks <blocked> (it must be done first):
+  bd dep {{ .Args.IssueID }} --blocks <blocked-id>
 
   # Non-blocking, bidirectional association:
-  bd dep relate ${IssueID} <other-id>
+  bd dep relate {{ .Args.IssueID }} <other-id>
 
   # Reparent under an epic/feature (empty string removes the parent):
-  bd update ${IssueID} --parent <parent-id>
+  bd update {{ .Args.IssueID }} --parent <parent-id>
   ```
 
   To remove an incorrect relationship the user approved removing:
 
   ```bash
   bd dep remove <blocked-id> <blocker-id>   # remove a blocking edge
-  bd dep unrelate ${IssueID} <other-id>    # remove a related link
+  bd dep unrelate {{ .Args.IssueID }} <other-id>    # remove a related link
   ```
 
   After wiring, **verify no cycles were introduced**:
@@ -112,7 +112,7 @@ prompt: |
   Finally, append an audit note to the bead recording what changed and why:
 
   ```bash
-  bd update ${IssueID} --append-notes "Dependencies updated: <edges added/removed, reparenting> — <why, grounded in the analysis above>."
+  bd update {{ .Args.IssueID }} --append-notes "Dependencies updated: <edges added/removed, reparenting> — <why, grounded in the analysis above>."
   ```
 
   ## Step 6 — Final summary
@@ -120,11 +120,11 @@ prompt: |
   Show the updated relationship graph and confirm the bead's readiness:
 
   ```bash
-  bd dep tree ${IssueID}
-  bd show ${IssueID} --json   # confirm parent and status
+  bd dep tree {{ .Args.IssueID }}
+  bd show {{ .Args.IssueID }} --json   # confirm parent and status
   ```
 
-  Summarise what changed (edges added/removed, reparenting) and state whether `${IssueID}` is now
+  Summarise what changed (edges added/removed, reparenting) and state whether `{{ .Args.IssueID }}` is now
   **ready** (unblocked) or still **blocked**, and by which beads. If it is now ready, suggest the
   **"Start work"** prompt.
 
