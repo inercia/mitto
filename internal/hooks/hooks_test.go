@@ -220,3 +220,48 @@ func TestRunDown_EmptyCommand(t *testing.T) {
 	hook := config.WebHook{Command: "", Name: "test-empty"}
 	RunDown(hook, 8080)
 }
+
+func TestRunDown_Timeout(t *testing.T) {
+	// Override downHookTimeout to a very short value so the test doesn't take 30 s.
+	orig := downHookTimeout
+	downHookTimeout = 200 * time.Millisecond
+	defer func() { downHookTimeout = orig }()
+
+	hook := config.WebHook{Command: "sleep 5", Name: "test-timeout"}
+
+	start := time.Now()
+	RunDown(hook, 8080) // should return once the 200 ms timeout fires
+	elapsed := time.Since(start)
+
+	// Should complete well within 1 s (timeout is 200 ms + process cleanup overhead).
+	if elapsed > 1*time.Second {
+		t.Errorf("RunDown with timed-out command took too long: %v (want < 1s)", elapsed)
+	}
+}
+
+func TestRunDown_SignalTerminated(t *testing.T) {
+	// A command killed by context timeout manifests as exit_code == -1 (signal kill).
+	// Verify RunDown handles this quietly (no panic, no error return).
+	orig := downHookTimeout
+	downHookTimeout = 100 * time.Millisecond
+	defer func() { downHookTimeout = orig }()
+
+	hook := config.WebHook{Command: "sleep 10", Name: "test-signal-term"}
+	// Should not panic — signal termination via context is expected during restarts.
+	RunDown(hook, 8080)
+}
+
+// TestJitter verifies that the jitter helper keeps the result within ±20% of the base
+// duration across a large sample, as documented.
+func TestJitter(t *testing.T) {
+	base := 100 * time.Millisecond
+	min := time.Duration(float64(base) * 0.8)
+	max := time.Duration(float64(base) * 1.2)
+
+	for i := 0; i < 200; i++ {
+		result := jitter(base)
+		if result < min || result > max {
+			t.Errorf("jitter(%v) = %v, want in [%v, %v]", base, result, min, max)
+		}
+	}
+}
