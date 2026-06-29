@@ -57,6 +57,13 @@ const (
 	// to each retry backoff, de-correlating concurrent callers (mitto-4no7, mirrors set_model).
 	// With ratio=0.5: attempt-2 delay ∈ [300ms,450ms), attempt-3 ∈ [600ms,750ms).
 	sessionCreateRetryJitterRatio = 0.5
+	// sessionCreateTotalBudget caps the wall-clock time of the entire NewSession retry
+	// sequence (mitto-8d7). A deadline-less caller previously let the loop burn the full
+	// sessionCreateMaxAttempts × sessionCreateAttemptTimeout (~75s) on a hung transport.
+	// At 60s the loop completes attempt 1 (~25s) and attempt 2 (~25s), then bails before
+	// attempt 3 once the remaining budget can no longer fund a full per-attempt timeout —
+	// bounding the worst case to ~50s while never extending a caller's own deadline.
+	sessionCreateTotalBudget = 60 * time.Second
 
 	// setModelAsyncCallerBudget is the context timeout given to the background goroutine
 	// that performs the aux-session model switch asynchronously (mitto-f7q, Option 4).
@@ -847,6 +854,18 @@ func (p *SharedACPProcess) isSaturated() bool {
 	return true
 }
 
+// rpcErrorCode extracts the JSON-RPC error code from err when it (or any error it
+// wraps) is an *acp.RequestError. The second return reports whether a code was
+// found. Used to surface a structured, queryable rpc_code on NewSession failures
+// (mitto-8d7) in addition to the full error string.
+func rpcErrorCode(err error) (int, bool) {
+	var re *acp.RequestError
+	if errors.As(err, &re) && re != nil {
+		return re.Code, true
+	}
+	return 0, false
+}
+
 // NewSession creates a new ACP session on this shared process.
 func (p *SharedACPProcess) NewSession(ctx context.Context, cwd string, mcpServers []acp.McpServer) (*conversation.SessionHandle, error) {
 	p.activeRPCs.Add(1)
@@ -898,6 +917,21 @@ func (p *SharedACPProcess) NewSession(ctx context.Context, cwd string, mcpServer
 		cwd = "."
 	}
 
+	// Bounded total wall-clock budget (mitto-8d7): a deadline-less (or very generous)
+	// caller context would otherwise let the retry loop burn the full
+	// effectiveMaxAttempts × sessionCreateAttemptTimeout (~75s) on a hung transport —
+	// the evidence showed ctx_remaining_ms=-1, so the per-attempt remaining-budget
+	// fail-fast in shouldFailFastCreateAttempt never tripped. Derive a budgetCtx that
+	// caps the whole sequence; we only ever tighten the caller's deadline, never extend
+	// it. This makes the existing remaining-budget bail active for every caller and
+	// guarantees NewSession returns within sessionCreateTotalBudget.
+	budgetCtx := ctx
+	if dl, ok := ctx.Deadline(); !ok || time.Until(dl) > sessionCreateTotalBudget {
+		var budgetCancel context.CancelFunc
+		budgetCtx, budgetCancel = context.WithTimeout(ctx, sessionCreateTotalBudget)
+		defer budgetCancel()
+	}
+
 	// Bounded retry-with-jitter loop (mitto-4no7): mirrors SetSessionModel's policy so
 	// transient deadline failures on session/new are retried up to effectiveMaxAttempts.
 	// Each attempt gets a fresh sessionCreateAttemptTimeout budget, preserving the
@@ -905,19 +939,20 @@ func (p *SharedACPProcess) NewSession(ctx context.Context, cwd string, mcpServer
 	// In probe mode effectiveMaxAttempts=1, limiting the probe to a single attempt.
 	var lastErr error
 	for attempt := 1; attempt <= effectiveMaxAttempts; attempt++ {
-		// Honour caller cancellation before each attempt.
-		if ctx.Err() != nil {
-			return nil, fmt.Errorf("session/new: context cancelled before attempt %d: %w", attempt, ctx.Err())
+		// Honour caller cancellation / total budget before each attempt.
+		if budgetCtx.Err() != nil {
+			return nil, fmt.Errorf("session/new: context cancelled before attempt %d: %w", attempt, budgetCtx.Err())
 		}
 
 		// Mid-flight fail-fast (mitto-13ck.2): once a sibling caller has tripped the
 		// saturation flag, bail at the next retry boundary instead of draining another
 		// full per-attempt budget on a process that is not responding. Also bail if the
-		// caller's remaining deadline can no longer fund a full attempt.
+		// remaining total budget can no longer fund a full attempt — budgetCtx always
+		// carries a deadline now (mitto-8d7), so this bail is active for every caller.
 		{
 			hasDeadline := false
 			var remaining time.Duration
-			if dl, ok := ctx.Deadline(); ok {
+			if dl, ok := budgetCtx.Deadline(); ok {
 				hasDeadline = true
 				remaining = time.Until(dl)
 			}
@@ -933,16 +968,17 @@ func (p *SharedACPProcess) NewSession(ctx context.Context, cwd string, mcpServer
 			delay := time.Duration(attempt-1)*sessionCreateRetryBaseDelay + jitter
 			select {
 			case <-time.After(delay):
-			case <-ctx.Done():
-				return nil, fmt.Errorf("session/new: context cancelled during retry backoff: %w", ctx.Err())
+			case <-budgetCtx.Done():
+				return nil, fmt.Errorf("session/new: context cancelled during retry backoff: %w", budgetCtx.Err())
 			}
 		}
 
-		// Fresh per-attempt sub-context so each attempt gets a full create budget.
-		attemptCtx, attemptCancel := context.WithTimeout(ctx, sessionCreateAttemptTimeout)
+		// Fresh per-attempt sub-context so each attempt gets a full create budget,
+		// capped by the remaining total budget (budgetCtx).
+		attemptCtx, attemptCancel := context.WithTimeout(budgetCtx, sessionCreateAttemptTimeout)
 
 		ctxRemainingMs := int64(-1)
-		if dl, ok := ctx.Deadline(); ok {
+		if dl, ok := budgetCtx.Deadline(); ok {
 			ctxRemainingMs = time.Until(dl).Milliseconds()
 		}
 
@@ -984,11 +1020,13 @@ func (p *SharedACPProcess) NewSession(ctx context.Context, cwd string, mcpServer
 			p.recordRPCTimeout()
 		}
 		if p.logger != nil {
+			rpcCode, _ := rpcErrorCode(err)
 			p.logger.Warn("SharedACPProcess.NewSession failed",
 				"attempt", attempt,
 				"max_attempts", sessionCreateMaxAttempts,
 				"rpc_ms", rpcDuration.Milliseconds(),
 				"ctx_remaining_ms", ctxRemainingMs,
+				"rpc_code", rpcCode,
 				"error", err)
 		}
 

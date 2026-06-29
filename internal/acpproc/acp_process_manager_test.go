@@ -3,6 +3,7 @@ package acpproc
 import (
 	"context"
 	"errors"
+	"fmt"
 	"math/rand"
 	"reflect"
 	"sync"
@@ -1534,5 +1535,68 @@ func TestAuxStartupJitter(t *testing.T) {
 		if got < 0 || got >= max {
 			t.Fatalf("auxStartupJitter(%v) = %v, out of range [0, %v)", max, got, max)
 		}
+	}
+}
+
+// TestSessionCreateTotalBudgetBound is a math test for mitto-8d7.
+//
+// It verifies that the NewSession total wall-clock budget (sessionCreateTotalBudget)
+// genuinely bounds the worst case below the pre-fix tail (max attempts × per-attempt
+// timeout ≈ 75s) while still leaving room for at least two full per-attempt budgets,
+// and that the remaining budget after two attempts is small enough that the existing
+// shouldFailFastCreateAttempt bail trips before a third full-budget attempt.
+func TestSessionCreateTotalBudgetBound(t *testing.T) {
+	preFixTail := time.Duration(sessionCreateMaxAttempts) * sessionCreateAttemptTimeout
+
+	// The budget must actually bound the loop below the pre-fix worst case.
+	if sessionCreateTotalBudget >= preFixTail {
+		t.Errorf("sessionCreateTotalBudget (%v) must be < max attempts tail (%v) to bound the loop",
+			sessionCreateTotalBudget, preFixTail)
+	}
+
+	// The budget must leave room for at least two full per-attempt budgets so a single
+	// slow create that succeeds on retry is not regressed to a single attempt.
+	if sessionCreateTotalBudget < 2*sessionCreateAttemptTimeout {
+		t.Errorf("sessionCreateTotalBudget (%v) must fund >=2 attempts (2×%v) to avoid regressing retries",
+			sessionCreateTotalBudget, sessionCreateAttemptTimeout)
+	}
+
+	// After two full per-attempt timeouts, the remaining budget must be insufficient to
+	// fund another attempt, so shouldFailFastCreateAttempt bails before attempt 3.
+	remainingAfterTwo := sessionCreateTotalBudget - 2*sessionCreateAttemptTimeout
+	bail, reason := shouldFailFastCreateAttempt(3, false, true, remainingAfterTwo)
+	if !bail {
+		t.Errorf("attempt=3 with remaining=%v must bail (budget exhausted); got bail=false", remainingAfterTwo)
+	}
+	if bail && reason == "" {
+		t.Error("bail reason must be non-empty")
+	}
+	t.Logf("sessionCreateTotalBudget=%v, per-attempt=%v, maxAttempts=%d → pre-fix tail=%v, remaining-after-2=%v",
+		sessionCreateTotalBudget, sessionCreateAttemptTimeout, sessionCreateMaxAttempts, preFixTail, remainingAfterTwo)
+}
+
+// TestRPCErrorCode verifies that rpcErrorCode (mitto-8d7) extracts the JSON-RPC error
+// code from a bare or wrapped *acp.RequestError and reports absence for other errors.
+func TestRPCErrorCode(t *testing.T) {
+	// Bare RequestError (e.g. -32603 Internal error from the agent).
+	bare := acp.NewInternalError(map[string]any{"detail": "slow create"})
+	if code, ok := rpcErrorCode(bare); !ok || code != -32603 {
+		t.Errorf("rpcErrorCode(bare) = (%d, %v), want (-32603, true)", code, ok)
+	}
+
+	// Wrapped RequestError must still be unwrapped via errors.As.
+	wrapped := fmt.Errorf("failed to create session: %w", bare)
+	if code, ok := rpcErrorCode(wrapped); !ok || code != -32603 {
+		t.Errorf("rpcErrorCode(wrapped) = (%d, %v), want (-32603, true)", code, ok)
+	}
+
+	// Non-RPC errors report no code.
+	if code, ok := rpcErrorCode(errors.New("plain error")); ok || code != 0 {
+		t.Errorf("rpcErrorCode(plain) = (%d, %v), want (0, false)", code, ok)
+	}
+
+	// Nil error reports no code.
+	if code, ok := rpcErrorCode(nil); ok || code != 0 {
+		t.Errorf("rpcErrorCode(nil) = (%d, %v), want (0, false)", code, ok)
 	}
 }
