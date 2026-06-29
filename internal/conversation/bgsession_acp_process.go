@@ -523,6 +523,45 @@ func (bs *BackgroundSession) signalAgentActivity() {
 	bs.lastAgentActivityAt.Store(time.Now().UnixNano())
 }
 
+// trackToolCallStatus records a tool call's status transition so the prompt
+// inactivity watchdog can tell when the agent is legitimately blocked on an
+// in-flight tool. A tool call is considered in flight from its first non-terminal
+// status (pending/in_progress) until a terminal status (completed/failed) is seen.
+// Unknown/empty statuses are treated as non-terminal (in flight) — failing toward
+// suppressing the warning, which is the desired behavior for a WARN-only signal.
+func (bs *BackgroundSession) trackToolCallStatus(id, status string) {
+	if id == "" {
+		return
+	}
+	bs.inFlightToolCallsMu.Lock()
+	defer bs.inFlightToolCallsMu.Unlock()
+	switch status {
+	case string(acp.ToolCallStatusCompleted), string(acp.ToolCallStatusFailed):
+		delete(bs.inFlightToolCalls, id)
+	default:
+		if bs.inFlightToolCalls == nil {
+			bs.inFlightToolCalls = make(map[string]struct{})
+		}
+		bs.inFlightToolCalls[id] = struct{}{}
+	}
+}
+
+// hasInFlightToolCall reports whether at least one tool call is currently in flight.
+func (bs *BackgroundSession) hasInFlightToolCall() bool {
+	bs.inFlightToolCallsMu.Lock()
+	defer bs.inFlightToolCallsMu.Unlock()
+	return len(bs.inFlightToolCalls) > 0
+}
+
+// resetInFlightToolCalls clears the in-flight tool-call set. Called at prompt start
+// so stale entries (e.g. a tool call whose terminal update was lost) never carry
+// over and permanently suppress the watchdog warning across prompts.
+func (bs *BackgroundSession) resetInFlightToolCalls() {
+	bs.inFlightToolCallsMu.Lock()
+	defer bs.inFlightToolCallsMu.Unlock()
+	bs.inFlightToolCalls = nil
+}
+
 // startPromptInactivityWatchdog launches a background goroutine that watches for a
 // live-but-unresponsive agent during a prompt. Unlike the process-death and
 // connection-EOF monitors, this catches the case where the agent stays alive with an
@@ -533,6 +572,8 @@ func (bs *BackgroundSession) signalAgentActivity() {
 //   - returns when ctx is done (the prompt completed or was cancelled elsewhere);
 //   - pauses (resets the baseline) while a UI prompt is active, since permission
 //     dialogs and MCP tool questions legitimately block the agent on user input;
+//   - pauses (resets the baseline) while a tool call is in flight, since a long-running
+//     tool that streams no intermediate updates is the agent working, not a wedged agent;
 //   - emits a WARN log once the idle time crosses promptInactivityWatchdogWarnDelay;
 //   - sets fired and calls cancel() once the idle time crosses
 //     promptInactivityWatchdogTimeout, unblocking the prompt RPC so is_prompting clears.
@@ -546,8 +587,10 @@ func (bs *BackgroundSession) startPromptInactivityWatchdog(ctx context.Context, 
 		return
 	}
 
-	// Establish the idle baseline at prompt start.
+	// Establish the idle baseline at prompt start, and clear any stale in-flight
+	// tool-call tracking carried over from a prior prompt.
 	bs.lastAgentActivityAt.Store(time.Now().UnixNano())
+	bs.resetInFlightToolCalls()
 
 	// Tick frequently enough to detect the threshold with reasonable granularity
 	// (a quarter of the smaller delay), with a small floor to bound overhead. In
@@ -573,9 +616,10 @@ func (bs *BackgroundSession) startPromptInactivityWatchdog(ctx context.Context, 
 				return
 			case <-ticker.C:
 				// Pause while the agent is legitimately blocked on a UI prompt
-				// (permission dialog or MCP tool question). Reset the baseline so the
-				// idle clock starts fresh once the user responds.
-				if bs.GetActiveUIPrompt() != nil {
+				// (permission dialog or MCP tool question) or waiting on an in-flight
+				// tool call (a long-running tool may stream no intermediate updates).
+				// Reset the baseline so the idle clock starts fresh once it resumes.
+				if bs.GetActiveUIPrompt() != nil || bs.hasInFlightToolCall() {
 					bs.lastAgentActivityAt.Store(time.Now().UnixNano())
 					warned = false
 					continue

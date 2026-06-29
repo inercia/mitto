@@ -35,6 +35,7 @@ func (bs *BackgroundSession) onAgentThought(seq int64, text string) {
 }
 
 func (bs *BackgroundSession) onToolCall(seq int64, id, title, status string) {
+	bs.trackToolCallStatus(id, status)
 	bs.callbackSink.onToolCall(bs, seq, id, title, status)
 }
 
@@ -43,6 +44,9 @@ func (bs *BackgroundSession) onMittoToolCall(requestID string) {
 }
 
 func (bs *BackgroundSession) onToolUpdate(seq int64, id string, status *string) {
+	if status != nil {
+		bs.trackToolCallStatus(id, *status)
+	}
 	bs.callbackSink.onToolUpdate(bs, seq, id, status)
 }
 

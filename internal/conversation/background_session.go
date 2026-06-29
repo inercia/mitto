@@ -100,6 +100,15 @@ type BackgroundSession struct {
 	// to detect a live-but-unresponsive agent (one that stops streaming without crashing).
 	lastAgentActivityAt atomic.Int64
 
+	// inFlightToolCalls tracks ACP tool calls that have started (pending/in_progress)
+	// but have not yet reached a terminal status (completed/failed) during the current
+	// prompt. The prompt inactivity watchdog pauses while any tool call is in flight:
+	// a long-running tool that streams no intermediate updates is the agent working,
+	// not a wedged agent, so it must not trip the "no streamed activity" warning. It is
+	// reset at prompt start. Guarded by inFlightToolCallsMu.
+	inFlightToolCallsMu sync.Mutex
+	inFlightToolCalls   map[string]struct{}
+
 	// Configuration
 	autoApprove bool
 	logger      *slog.Logger

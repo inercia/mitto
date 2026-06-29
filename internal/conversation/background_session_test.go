@@ -4533,6 +4533,63 @@ func TestStartPromptInactivityWatchdog_PausesDuringUIPrompt(t *testing.T) {
 	cancel()
 }
 
+// TestStartPromptInactivityWatchdog_PausesDuringToolCall verifies the watchdog does not
+// fire (and emits no WARN) while a tool call is in flight, since a long-running tool
+// that streams no intermediate updates is the agent working, not a wedged agent. Once
+// the tool reaches a terminal status the idle clock resumes and the warning may fire.
+func TestStartPromptInactivityWatchdog_PausesDuringToolCall(t *testing.T) {
+	origWarn := promptInactivityWatchdogWarnDelay
+	origTimeout := promptInactivityWatchdogTimeout
+	promptInactivityWatchdogWarnDelay = 20 * time.Millisecond
+	promptInactivityWatchdogTimeout = 50 * time.Millisecond
+	defer func() {
+		promptInactivityWatchdogWarnDelay = origWarn
+		promptInactivityWatchdogTimeout = origTimeout
+	}()
+
+	rec := newCapturingLogHandler()
+	bs := &BackgroundSession{logger: slog.New(rec), persistedID: "test-toolcall"}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	var fired atomic.Bool
+	// The watchdog resets in-flight tracking at prompt start, so the tool call must
+	// be marked in flight after it starts — mirroring the real flow where tool_call
+	// updates stream in only after the prompt begins.
+	bs.startPromptInactivityWatchdog(ctx, cancel, &fired)
+	bs.trackToolCallStatus("call_1", "in_progress")
+
+	// While the tool is in flight, the watchdog must stay quiet well past the timeout.
+	time.Sleep(250 * time.Millisecond)
+	if fired.Load() {
+		t.Error("watchdog fired while a tool call was in flight (it should pause)")
+	}
+	if ctx.Err() != nil {
+		t.Error("prompt context should not be cancelled while a tool call is in flight")
+	}
+	if got := len(rec.entriesAt(slog.LevelWarn)); got != 0 {
+		t.Errorf("expected 0 WARN entries while a tool call is in flight, got %d", got)
+	}
+	if got := len(rec.entriesAt(slog.LevelError)); got != 0 {
+		t.Errorf("expected 0 ERROR entries while a tool call is in flight, got %d", got)
+	}
+
+	// Complete the tool call; the watchdog should now observe idleness and warn.
+	bs.trackToolCallStatus("call_1", "completed")
+	if bs.hasInFlightToolCall() {
+		t.Fatal("tool call should no longer be in flight after a terminal status")
+	}
+
+	deadline := time.After(2 * time.Second)
+	for len(rec.entriesAt(slog.LevelWarn)) == 0 {
+		select {
+		case <-deadline:
+			t.Fatal("expected a WARN log after the tool call completed and the agent went idle")
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+	cancel()
+}
+
 // TestStartPromptInactivityWatchdog_DisabledWhenZero verifies the watchdog is a no-op
 // when both the warn delay and timeout are non-positive.
 func TestStartPromptInactivityWatchdog_DisabledWhenZero(t *testing.T) {
