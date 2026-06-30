@@ -55,6 +55,11 @@ import {
   HeadingIcon,
   QuoteIcon,
 } from "./Icons.js";
+import {
+  promptPeriodicMode,
+  promptPeriodicIsToggleable,
+  promptPeriodicDefaultOn,
+} from "../utils/prompts.js";
 import { CodeEditorField } from "./CodeEditorField.js";
 import {
   ContextMenu,
@@ -2805,6 +2810,9 @@ export function BeadsView({
   const [showListPrompts, setShowListPrompts] = useState(false);
   const [listPrompts, setListPrompts] = useState([]);
   const [listPromptsLoading, setListPromptsLoading] = useState(false);
+  // Per-send periodic override for beadsList prompts, keyed by prompt name.
+  // Reset whenever the list reloads (see effect below).
+  const [listPeriodicOn, setListPeriodicOn] = useState({});
 
   // Shortcut buttons configured for this folder's tasksList section.
   const [shortcuts, setShortcuts] = useState([]);
@@ -3728,7 +3736,18 @@ export function BeadsView({
       if (next && onFetchBeadsListPrompts && workingDir) {
         setListPromptsLoading(true);
         onFetchBeadsListPrompts(workingDir)
-          .then((list) => setListPrompts(list || []))
+          .then((list) => {
+            const prompts = list || [];
+            setListPrompts(prompts);
+            // Seed per-item periodic toggle defaults from each prompt's mode/default.
+            const seed = {};
+            for (const p of prompts) {
+              if (promptPeriodicIsToggleable(p)) {
+                seed[p.name] = promptPeriodicDefaultOn(p);
+              }
+            }
+            setListPeriodicOn(seed);
+          })
           .finally(() => setListPromptsLoading(false));
       }
       return next;
@@ -3737,9 +3756,9 @@ export function BeadsView({
 
   // Run a list-level prompt in a new conversation (no per-issue context).
   const handleRunListPrompt = useCallback(
-    (prompt) => {
+    (prompt, opts) => {
       setShowListPrompts(false);
-      onRunBeadsListPrompt && onRunBeadsListPrompt(prompt);
+      onRunBeadsListPrompt && onRunBeadsListPrompt(prompt, undefined, opts);
     },
     [onRunBeadsListPrompt],
   );
@@ -4315,19 +4334,55 @@ export function BeadsView({
                     <li key=${p.name}>
                       <button
                         type="button"
-                        onClick=${() => handleRunListPrompt(p)}
+                        onClick=${() => {
+                          const mode = promptPeriodicMode(p);
+                          const opts =
+                            mode === "optional"
+                              ? {
+                                  asPeriodic:
+                                    listPeriodicOn[p.name] !== undefined
+                                      ? listPeriodicOn[p.name]
+                                      : promptPeriodicDefaultOn(p),
+                                }
+                              : undefined;
+                          handleRunListPrompt(p, opts);
+                        }}
                         title=${p.description || p.name}
                       >
                         <span class="w-4 h-4 shrink-0"
                           ><${PromptIcon} className="w-4 h-4"
                         /></span>
                         <span class="truncate flex-1">${p.name}</span>
-                        ${p.periodic &&
-                        html`<span
-                          class="shrink-0 text-success opacity-80"
-                          title="Periodic prompt — sets the conversation to recurring mode"
-                          ><${PeriodicIcon} className="w-3.5 h-3.5"
-                        /></span>`}
+                        ${(() => {
+                          const mode = promptPeriodicMode(p);
+                          if (mode === "none") return null;
+                          if (mode === "optional") {
+                            const on =
+                              listPeriodicOn[p.name] !== undefined
+                                ? listPeriodicOn[p.name]
+                                : promptPeriodicDefaultOn(p);
+                            return html`<input
+                              type="checkbox"
+                              class="toggle toggle-primary shrink-0"
+                              checked=${on}
+                              title="Run as periodic (recurring) conversation"
+                              onClick=${(e) => e.stopPropagation()}
+                              onChange=${(e) => {
+                                e.stopPropagation();
+                                setListPeriodicOn((m) => ({
+                                  ...m,
+                                  [p.name]: e.target.checked,
+                                }));
+                              }}
+                            />`;
+                          }
+                          // mode === "always": locked badge (unchanged look)
+                          return html`<span
+                            class="shrink-0 text-success opacity-80"
+                            title="Periodic prompt — always sets the conversation to recurring mode"
+                            ><${PeriodicIcon} className="w-3.5 h-3.5"
+                          /></span>`;
+                        })()}
                       </button>
                     </li>
                   `;
