@@ -34,18 +34,20 @@ func TestAtomicCreateSeed(t *testing.T) {
 	// loaded by resolvePromptByName via loadPromptsFromDirs and do NOT require PromptsCache.
 	// The file must exist before TryProcessQueuedMessage runs (it fires asynchronously
 	// after CreateSession returns, so writing here is safe).
+	// Uses the canonical .prompt.yaml format: loadPromptsFromDirs/LoadPromptsFromDir only
+	// loads ".prompt.yaml" files (legacy ".md" front-matter files require an explicit
+	// migration step that resolvePromptByName does not perform).
 	workspaceDir := filepath.Join(ts.TempDir, "workspace")
 	promptsDir := filepath.Join(workspaceDir, ".mitto", "prompts")
 	if err := os.MkdirAll(promptsDir, 0755); err != nil {
 		t.Fatalf("Failed to create workspace prompts dir: %v", err)
 	}
-	promptContent := `---
-name: "atomic-seed-test-prompt"
+	promptContent := `name: "atomic-seed-test-prompt"
 description: "Integration test prompt for atomic create+seed"
----
-Say hello from the atomic seed test.
+prompt: |
+  Say hello from the atomic seed test.
 `
-	promptPath := filepath.Join(promptsDir, "atomic-seed-test-prompt.md")
+	promptPath := filepath.Join(promptsDir, "atomic-seed-test-prompt.prompt.yaml")
 	if err := os.WriteFile(promptPath, []byte(promptContent), 0644); err != nil {
 		t.Fatalf("Failed to write prompt file: %v", err)
 	}
@@ -127,5 +129,121 @@ Say hello from the atomic seed test.
 			t.Logf("  seq=%d type=%s data=%+v", ev.Seq, ev.Type, ev.Data)
 		}
 		t.Errorf("No user_prompt event with prompt_name=%q found — atomic create+seed failed", "atomic-seed-test-prompt")
+	}
+}
+
+// TestSingletonPromptFindOrRoute verifies the find-or-route logic for
+// singleton-declared prompts (mitto-4mb.3): creating a conversation from a
+// singleton prompt twice in the same working dir routes the second call to
+// the SAME conversation (reused:true) instead of creating a duplicate, and
+// (idle case) re-seeds the prompt into the existing queue for dispatch.
+func TestSingletonPromptFindOrRoute(t *testing.T) {
+	ts := SetupTestServer(t)
+
+	// Declare a singleton prompt via the canonical .prompt.yaml format (loaded
+	// by loadPromptsFromDirs without needing the legacy .md migration step).
+	workspaceDir := filepath.Join(ts.TempDir, "workspace")
+	promptsDir := filepath.Join(workspaceDir, ".mitto", "prompts")
+	if err := os.MkdirAll(promptsDir, 0755); err != nil {
+		t.Fatalf("Failed to create workspace prompts dir: %v", err)
+	}
+	promptContent := `name: "singleton-test-prompt"
+description: "Integration test prompt for singleton find-or-route"
+singleton: true
+prompt: |
+  Say hello from the singleton find-or-route test.
+`
+	promptPath := filepath.Join(promptsDir, "singleton-test-prompt.prompt.yaml")
+	if err := os.WriteFile(promptPath, []byte(promptContent), 0644); err != nil {
+		t.Fatalf("Failed to write prompt file: %v", err)
+	}
+
+	// First call: creates a brand-new conversation and seeds it.
+	first, err := ts.Client.CreateSession(client.CreateSessionRequest{
+		InitialPromptName: "singleton-test-prompt",
+	})
+	if err != nil {
+		t.Fatalf("First CreateSession failed: %v", err)
+	}
+	if first.Reused {
+		t.Fatalf("First CreateSession should not be reused, got Reused=true")
+	}
+	t.Logf("Created first session: %s", first.SessionID)
+
+	var (
+		mu              sync.Mutex
+		completionCount int
+	)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	ws, err := ts.Client.Connect(ctx, first.SessionID, client.SessionCallbacks{
+		OnPromptComplete: func(eventCount int) {
+			mu.Lock()
+			defer mu.Unlock()
+			completionCount++
+			t.Logf("Prompt complete #%d: %d events", completionCount, eventCount)
+		},
+	})
+	if err != nil {
+		t.Fatalf("Connect failed: %v", err)
+	}
+	defer ws.Close()
+
+	if err := ws.LoadEvents(50, 0, 0); err != nil {
+		t.Fatalf("LoadEvents failed: %v", err)
+	}
+
+	// Wait for the first seeded prompt to complete so the session goes idle
+	// (empty queue, not prompting) before issuing the second create call.
+	waitFor(t, 20*time.Second, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return completionCount >= 1
+	}, "first prompt complete")
+
+	// Second call: same prompt, same (default) working dir — must route to the
+	// SAME conversation instead of creating a duplicate, and re-seed it (idle).
+	second, err := ts.Client.CreateSession(client.CreateSessionRequest{
+		InitialPromptName: "singleton-test-prompt",
+	})
+	if err != nil {
+		t.Fatalf("Second CreateSession failed: %v", err)
+	}
+	if !second.Reused {
+		t.Errorf("Second CreateSession should be reused, got Reused=false")
+	}
+	if second.SessionID != first.SessionID {
+		t.Fatalf("Second SessionID = %q, want same as first %q", second.SessionID, first.SessionID)
+	}
+
+	// Wait for the re-seeded (second) prompt to complete on the same conversation.
+	waitFor(t, 20*time.Second, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return completionCount >= 2
+	}, "second (reused) prompt complete")
+
+	// Verify the event log has two user_prompt events for the named prompt.
+	events, err := ts.Store.ReadEvents(first.SessionID)
+	if err != nil {
+		t.Fatalf("ReadEvents failed: %v", err)
+	}
+	var promptCount int
+	for _, ev := range events {
+		if ev.Type != "user_prompt" {
+			continue
+		}
+		dataMap, ok := ev.Data.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		if name, _ := dataMap["prompt_name"].(string); name == "singleton-test-prompt" {
+			promptCount++
+		}
+	}
+	if promptCount != 2 {
+		t.Errorf("user_prompt events with prompt_name=%q = %d, want 2 (initial create + reused seed)",
+			"singleton-test-prompt", promptCount)
 	}
 }

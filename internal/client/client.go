@@ -70,6 +70,9 @@ type SessionInfo struct {
 	Status       string `json:"status,omitempty"`
 	CreatedAt    string `json:"created_at,omitempty"`
 	UpdatedAt    string `json:"updated_at,omitempty"`
+	// Reused is true when CreateSession was routed to an existing singleton-prompt
+	// conversation instead of creating a new one (see find-or-route, mitto-4mb.3).
+	Reused bool `json:"reused,omitempty"`
 }
 
 // CreateSessionRequest represents a request to create a new session.

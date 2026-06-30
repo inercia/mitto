@@ -190,6 +190,11 @@ type Deps struct {
 	// May be nil; callers must nil-guard.
 	RemoveNegativeCache func(sessionID string)
 
+	// ResolvePromptSingleton reports whether the named prompt (resolved for the
+	// given working dir via the full merge pipeline) is declared singleton. May be
+	// nil; callers must nil-guard (treat nil as "not singleton").
+	ResolvePromptSingleton func(promptName, workingDir string) bool
+
 	// DefaultACPServer mirrors Server.config.ACPServer: the default ACP server
 	// name used in the create-session response when the resolved workspace does
 	// not specify one.
@@ -329,9 +334,35 @@ type Handlers struct {
 
 	beadsCleanupMu     sync.Mutex
 	beadsCleanupActive map[string]bool
+
+	// singletonLocksMu guards singletonLocks (lazily-created keyed mutexes).
+	singletonLocksMu sync.Mutex
+	// singletonLocks holds one mutex per "workingDir\x00promptName" key. It
+	// serializes the singleton find-or-route scan+create/seed sequence in
+	// HandleCreateSession so two concurrent requests for the same key cannot
+	// both miss the scan and create duplicate conversations. See lockSingleton.
+	singletonLocks map[string]*sync.Mutex
 }
 
 // New creates a new Handlers with the given dependencies.
 func New(deps Deps) *Handlers {
 	return &Handlers{deps: deps, beadsCleanupActive: make(map[string]bool)}
+}
+
+// lockSingleton locks (lazily creating if needed) the mutex for key and
+// returns a function that unlocks it. Callers should `defer unlock()`.
+func (h *Handlers) lockSingleton(key string) func() {
+	h.singletonLocksMu.Lock()
+	if h.singletonLocks == nil {
+		h.singletonLocks = make(map[string]*sync.Mutex)
+	}
+	mu, ok := h.singletonLocks[key]
+	if !ok {
+		mu = &sync.Mutex{}
+		h.singletonLocks[key] = mu
+	}
+	h.singletonLocksMu.Unlock()
+
+	mu.Lock()
+	return mu.Unlock
 }

@@ -115,6 +115,34 @@ func (h *Handlers) HandleCreateSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Singleton find-or-route (mitto-4mb.3): when the prompt that originates this
+	// conversation is declared singleton, route to an existing non-archived
+	// conversation in the same working dir instead of creating a duplicate. The
+	// per-(workingDir, promptName) lock below is held for the rest of this
+	// function so the scan + create/seed sequence is atomic relative to other
+	// concurrent creates for the same key — two rapid clicks cannot both miss
+	// the scan and create duplicates.
+	promptName := req.InitialPromptName
+	if promptName == "" {
+		promptName = req.OriginPromptName
+	}
+	if promptName != "" && h.deps.ResolvePromptSingleton != nil && h.deps.ResolvePromptSingleton(promptName, req.WorkingDir) {
+		key := req.WorkingDir + "\x00" + promptName
+		unlock := h.lockSingleton(key)
+		defer unlock()
+
+		if h.deps.Store != nil {
+			metas, _ := h.deps.Store.List()
+			if existingID, found := findSingletonCandidate(metas, req.WorkingDir, promptName); found {
+				h.reuseSingletonSession(w, existingID, promptName, req.Arguments)
+				return
+			}
+		}
+		// No candidate found — fall through to create as today. The lock stays
+		// held (via defer) until this function returns, so the OriginPromptName
+		// persistence below completes before another waiter's scan can run.
+	}
+
 	// Note: The session manager already has the store set by the server at startup.
 	// No need to create a new store here.
 
@@ -165,10 +193,17 @@ func (h *Handlers) HandleCreateSession(w http.ResponseWriter, r *http.Request) {
 
 	// Persist the originating prompt name (if provided), independent of seeding
 	// so it also works for the periodic path. Used for singleton find-or-route.
-	if req.OriginPromptName != "" {
+	// Falls back to InitialPromptName (matching the lookup in promptName above)
+	// so callers that seed via initial_prompt_name without an explicit
+	// origin_prompt_name still get tracked for singleton find-or-route.
+	originPromptName := req.OriginPromptName
+	if originPromptName == "" {
+		originPromptName = req.InitialPromptName
+	}
+	if originPromptName != "" {
 		if store := h.deps.Store; store != nil {
 			if err := store.UpdateMetadata(bs.GetSessionID(), func(meta *session.Metadata) {
-				meta.OriginPromptName = req.OriginPromptName
+				meta.OriginPromptName = originPromptName
 			}); err != nil && h.deps.Logger != nil {
 				h.deps.Logger.Warn("Failed to set origin_prompt_name on new session", "error", err, "session_id", bs.GetSessionID())
 			}
@@ -197,7 +232,7 @@ func (h *Handlers) HandleCreateSession(w http.ResponseWriter, r *http.Request) {
 		"working_dir":        req.WorkingDir,
 		"status":             "active",
 		"beads_issue":        req.BeadsIssue,
-		"origin_prompt_name": req.OriginPromptName,
+		"origin_prompt_name": originPromptName,
 	}
 	if h.deps.BroadcastSessionCreated != nil {
 		h.deps.BroadcastSessionCreated(sessionData)
@@ -235,6 +270,70 @@ func (h *Handlers) seedQueueWithNamedPrompt(bs *conversation.BackgroundSession, 
 	}
 	// Dispatch immediately if the agent is idle — same path as the queue API.
 	go bs.TryProcessQueuedMessage()
+}
+
+// findSingletonCandidate scans persisted session metadata for a non-archived
+// session in workingDir whose OriginPromptName matches promptName
+// (case-insensitive). When multiple match, the most recently updated one wins.
+// Returns (sessionID, true) on a match, ("", false) when none is found.
+func findSingletonCandidate(metas []session.Metadata, workingDir, promptName string) (string, bool) {
+	var best session.Metadata
+	found := false
+	for _, m := range metas {
+		if m.Archived || m.WorkingDir != workingDir || !strings.EqualFold(m.OriginPromptName, promptName) {
+			continue
+		}
+		if !found || m.UpdatedAt.After(best.UpdatedAt) {
+			best = m
+			found = true
+		}
+	}
+	if !found {
+		return "", false
+	}
+	return best.SessionID, true
+}
+
+// reuseSingletonSession routes a singleton-prompt create request to an
+// existing conversation instead of creating a duplicate. If the existing
+// conversation is idle (not prompting and an empty queue), the prompt is
+// re-seeded into it — via the live BackgroundSession when loaded, or by
+// enqueuing directly (without dispatch) when not. If busy, it is left
+// untouched (focus-only). Always responds 200 with
+// {"session_id": existingID, "reused": true}.
+func (h *Handlers) reuseSingletonSession(w http.ResponseWriter, existingID, promptName string, arguments map[string]string) {
+	store := h.deps.Store
+	var bs *conversation.BackgroundSession
+	if h.deps.SessionManager != nil {
+		bs = h.deps.SessionManager.GetSession(existingID)
+	}
+
+	if store != nil {
+		queue := store.Queue(existingID)
+		qlen, _ := queue.Len()
+		idle := qlen == 0
+		if bs != nil {
+			idle = !bs.IsPrompting() && qlen == 0
+		}
+
+		if idle {
+			if bs != nil {
+				h.seedQueueWithNamedPrompt(bs, existingID, promptName, arguments)
+			} else {
+				maxSize := configPkg.DefaultQueueMaxSize
+				msg, err := queue.Add("", nil, nil, "", nil, maxSize, arguments, promptName)
+				if err != nil {
+					if h.deps.Logger != nil {
+						h.deps.Logger.Warn("Failed to seed reused singleton session", "error", err, "session_id", existingID, "prompt_name", promptName)
+					}
+				} else if h.deps.NotifyQueueUpdate != nil {
+					h.deps.NotifyQueueUpdate(existingID, "added", msg.ID)
+				}
+			}
+		}
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{"session_id": existingID, "reused": true})
 }
 
 // ResolveOwningWorkspace returns the registered workspace that OWNS reqDir, so
