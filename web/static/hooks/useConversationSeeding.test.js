@@ -12,6 +12,7 @@ import {
   useConversationSeeding,
   parseDurationToSeconds,
 } from "./useConversationSeeding.js";
+import { promptResolveAsPeriodic } from "../utils/prompts.js";
 
 // Provide a minimal window.preact stub so the module-level destructure doesn't throw.
 global.window = global.window || {};
@@ -707,13 +708,14 @@ describe("configurePeriodicSchedule — max_iterations", () => {
 
 describe("ChatInput periodic routing — onPeriodicPrompt delegation", () => {
   /**
-   * Minimal simulation of the ChatInput.handlePredefinedPrompt routing logic
-   * (the lines added in this bead). Extracted here so we can test without
-   * mounting the full ChatInput component.
+   * Minimal simulation of the ChatInput.handlePredefinedPrompt routing logic.
+   * Extracted here so we can test without mounting the full ChatInput component.
+   * Mirrors the real code: const asPeriodic = prompt && promptResolveAsPeriodic(prompt);
+   * if (asPeriodic && onPeriodicPrompt) { onPeriodicPrompt(prompt); return; } (mitto-92x.3).
    */
   function routePrompt(prompt, { onPeriodicPrompt, onSend } = {}) {
-    // Simulates: if (prompt && prompt.periodic && onPeriodicPrompt) { onPeriodicPrompt(prompt); return; }
-    if (prompt && prompt.periodic && onPeriodicPrompt) {
+    const asPeriodic = prompt && promptResolveAsPeriodic(prompt);
+    if (asPeriodic && onPeriodicPrompt) {
       onPeriodicPrompt(prompt);
       return "periodic";
     }
@@ -771,6 +773,35 @@ describe("ChatInput periodic routing — onPeriodicPrompt delegation", () => {
     expect(onPeriodicPrompt).not.toHaveBeenCalled();
     expect(onSend).not.toHaveBeenCalled();
     expect(result).toBe("noop");
+  });
+
+  // mitto-92x.3: routing now flows through promptResolveAsPeriodic (mode-aware),
+  // not a bare `prompt.periodic` presence check.
+  test("mode: always (no explicit mode) routes to onPeriodicPrompt — unchanged behavior", () => {
+    const onPeriodicPrompt = jest.fn();
+    const onSend = jest.fn();
+    const prompt = { name: "daily", periodic: { value: 1, unit: "hours" } };
+
+    const result = routePrompt(prompt, { onPeriodicPrompt, onSend });
+
+    expect(onPeriodicPrompt).toHaveBeenCalledWith(prompt);
+    expect(onSend).not.toHaveBeenCalled();
+    expect(result).toBe("periodic");
+  });
+
+  test("mode: optional, default:false resolves to one-shot — falls through to onSend (no override in ChatInput yet)", () => {
+    const onPeriodicPrompt = jest.fn();
+    const onSend = jest.fn();
+    const prompt = {
+      name: "maybe-periodic",
+      periodic: { mode: "optional", default: false },
+    };
+
+    const result = routePrompt(prompt, { onPeriodicPrompt, onSend });
+
+    expect(onPeriodicPrompt).not.toHaveBeenCalled();
+    expect(onSend).toHaveBeenCalledWith("maybe-periodic");
+    expect(result).toBe("send");
   });
 });
 

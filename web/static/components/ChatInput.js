@@ -35,6 +35,7 @@ import {
   fetchCachedParamNames,
   effectiveMissingParams,
   promptParameters,
+  promptResolveAsPeriodic,
 } from "../utils/prompts.js";
 import { Tooltip } from "./Tooltip.js";
 
@@ -1343,7 +1344,9 @@ export function ChatInput({
 
     // Periodic-flagged prompts: route to app-level branching (decidePeriodicAction).
     // This handles make-periodic / one-shot / new-periodic without duplicating logic here.
-    if (prompt && prompt.periodic && onPeriodicPrompt) {
+    // No per-send override here yet (added in mitto-92x.5).
+    const asPeriodic = prompt && promptResolveAsPeriodic(prompt);
+    if (asPeriodic && onPeriodicPrompt) {
       onPeriodicPrompt(prompt);
       return;
     }

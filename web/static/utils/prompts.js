@@ -95,6 +95,21 @@ export function promptPeriodicDefaultOn(prompt) {
 }
 
 /**
+ * Resolve whether a given send should be dispatched as periodic.
+ * @param {object} prompt - the prompt object (may have prompt.periodic with mode/default).
+ * @param {boolean} [override] - explicit per-send choice from a UI toggle; only honored for mode "optional".
+ * @returns {boolean}
+ */
+export function promptResolveAsPeriodic(prompt, override) {
+  const mode = promptPeriodicMode(prompt);
+  if (mode === "none") return false; // never periodic (override ignored)
+  if (mode === "always") return true; // locked ON (override ignored)
+  // mode === "optional":
+  if (typeof override === "boolean") return override;
+  return promptPeriodicDefaultOn(prompt);
+}
+
+/**
  * Frontend mirror of the backend parameter-type registry.
  * Canonical source of truth: internal/config/prompt_param_types.go
  * These two lists MUST be kept in sync — do not add types here without also

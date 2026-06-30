@@ -10,6 +10,7 @@ import {
   promptPeriodicMode,
   promptPeriodicIsToggleable,
   promptPeriodicDefaultOn,
+  promptResolveAsPeriodic,
   promptParameters,
   KNOWN_PARAM_TYPES,
   MENU_PARAM_TYPES,
@@ -1091,5 +1092,48 @@ describe("promptPeriodicMode / IsToggleable / DefaultOn", () => {
     expect(promptPeriodicMode(undefined)).toBe("none");
     expect(promptPeriodicIsToggleable(undefined)).toBe(false);
     expect(promptPeriodicDefaultOn(undefined)).toBe(false);
+  });
+});
+
+// =============================================================================
+// promptResolveAsPeriodic
+// =============================================================================
+
+describe("promptResolveAsPeriodic", () => {
+  test("mode none -> false (override ignored)", () => {
+    expect(promptResolveAsPeriodic({})).toBe(false);
+    expect(promptResolveAsPeriodic({}, true)).toBe(false);
+    expect(promptResolveAsPeriodic({ periodic: null }, true)).toBe(false);
+  });
+
+  test("mode always -> true (override ignored)", () => {
+    const p = { periodic: { mode: "always" } };
+    expect(promptResolveAsPeriodic(p)).toBe(true);
+    expect(promptResolveAsPeriodic(p, false)).toBe(true);
+  });
+
+  test("mode optional, no override, default:false -> false", () => {
+    const p = { periodic: { mode: "optional", default: false } };
+    expect(promptResolveAsPeriodic(p)).toBe(false);
+  });
+
+  test("mode optional, no override, default:true -> true", () => {
+    const p = { periodic: { mode: "optional", default: true } };
+    expect(promptResolveAsPeriodic(p)).toBe(true);
+  });
+
+  test("mode optional, no override, default absent -> true", () => {
+    const p = { periodic: { mode: "optional" } };
+    expect(promptResolveAsPeriodic(p)).toBe(true);
+  });
+
+  test("mode optional, override:true -> true even if default:false", () => {
+    const p = { periodic: { mode: "optional", default: false } };
+    expect(promptResolveAsPeriodic(p, true)).toBe(true);
+  });
+
+  test("mode optional, override:false -> false even if default:true", () => {
+    const p = { periodic: { mode: "optional", default: true } };
+    expect(promptResolveAsPeriodic(p, false)).toBe(false);
   });
 });

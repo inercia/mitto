@@ -191,6 +191,7 @@ import {
   autofillConversationMenuArgs,
   fetchCachedParamNames,
   effectiveMissingParams,
+  promptResolveAsPeriodic,
 } from "./utils/prompts.js";
 
 // Import global event handlers (registers side effects on module load) and predicates
@@ -1939,10 +1940,11 @@ function App() {
   //   "make-periodic" — regular conversation: configure as periodic + fire first run.
   //   "one-shot"      — already periodic / child conversation: send prompt once, no config change.
   const handleSendPromptToConversation = useCallback(
-    async (session, prompt) => {
+    async (session, prompt, opts) => {
       if (!prompt?.name) return;
 
-      if (prompt.periodic) {
+      const asPeriodic = promptResolveAsPeriodic(prompt, opts?.asPeriodic);
+      if (asPeriodic) {
         const action = decidePeriodicAction(session);
 
         if (action === "make-periodic") {

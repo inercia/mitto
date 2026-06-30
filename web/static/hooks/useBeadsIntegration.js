@@ -12,6 +12,7 @@ import {
   menuSatisfies,
   collectPromptArguments,
   getMissingPromptParameters,
+  promptResolveAsPeriodic,
 } from "../utils/prompts.js";
 import { useConversationSeeding } from "./useConversationSeeding.js";
 
@@ -217,7 +218,7 @@ export function useBeadsIntegration({
   // beadsId → issue.id, beadsTitle → issue.title). Mirrors
   // handleSendPromptToConversation's queue delivery.
   const handleRunBeadsPrompt = useCallback(
-    async (prompt, issue) => {
+    async (prompt, issue, opts) => {
       if (!prompt?.name || !issue || !beadsWorkingDir) return;
 
       // When a folder has several workspaces (e.g. Opus and Sonnet variants),
@@ -246,7 +247,8 @@ export function useBeadsIntegration({
       const missing = getMissingPromptParameters(prompt, "beadsIssues");
 
       // Periodic prompts create a recurring conversation instead of a one-time seed.
-      if (prompt.periodic && onOpenPeriodicDialog) {
+      const asPeriodic = promptResolveAsPeriodic(prompt, opts?.asPeriodic);
+      if (asPeriodic && onOpenPeriodicDialog) {
         // Open the periodic dialog and start the conversation with the resolved
         // arguments merged in (so ${VAR} substitution sees the issue context).
         const launchPeriodic = (args) => {
@@ -364,7 +366,7 @@ export function useBeadsIntegration({
   // minus the per-issue context. The conversation is named after the prompt so it
   // doesn't linger as "New conversation" (this also suppresses auto-title gen).
   const handleRunBeadsListPrompt = useCallback(
-    async (prompt, workingDirOverride) => {
+    async (prompt, workingDirOverride, opts) => {
       // Allow an explicit working dir (e.g. the sidebar Tasks menu, which runs a
       // list prompt for a folder that may not be the one currently open in the
       // beads view). Falls back to the open beads working dir for in-view use.
@@ -376,7 +378,8 @@ export function useBeadsIntegration({
       const ws = beadsMatches.find((w) => w.is_default) || beadsMatches[0];
 
       // Periodic prompts create a recurring conversation instead of a one-time seed.
-      if (prompt.periodic && onOpenPeriodicDialog) {
+      const asPeriodic = promptResolveAsPeriodic(prompt, opts?.asPeriodic);
+      if (asPeriodic && onOpenPeriodicDialog) {
         onOpenPeriodicDialog(prompt, async (schedule) => {
           const result = await startConversationWithPrompt({
             workingDir: wd,
