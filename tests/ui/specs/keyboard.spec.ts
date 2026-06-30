@@ -241,3 +241,131 @@ test.describe("Accessibility", () => {
     await expect(focusedElement).toBeVisible();
   });
 });
+
+/**
+ * Close-conversation confirmation (Cmd+W) — delete-confirmation mode gate.
+ *
+ * Cmd+W maps to the native window.mittoCloseConversation handler (a native menu
+ * shortcut, so it is invoked directly via page.evaluate rather than a browser
+ * key press). The tri-state ui.confirmations.delete_conversation setting
+ * (always | responding | never) gates whether a confirmation dialog is shown.
+ *
+ * These tests lock down the "responding" mode — the regression that an
+ * accidental Cmd+W while the agent is streaming silently discarded an
+ * in-progress conversation. In "responding" mode:
+ *   • streaming  → a confirmation dialog (with the streaming warning) appears;
+ *   • idle       → the conversation closes without any dialog.
+ */
+test.describe("Close Conversation Confirmation (Cmd+W)", () => {
+  test.beforeEach(async ({ page, helpers }) => {
+    // Cmd+W operates on the ACTIVE regular conversation, so ensure one exists
+    // and its WebSocket is ready before driving the close handler.
+    await helpers.navigateAndEnsureSession(page);
+  });
+
+  // Set ui.confirmations.delete_conversation via the Settings UI (the real
+  // wiring: select → Save → app re-reads config into deleteConfirmMode).
+  async function setDeleteConfirmMode(page, mode: string) {
+    await page.locator('button[data-testid="settings-btn"]').first().click();
+    const dialog = page.locator('[data-testid="settings-dialog"]');
+    await expect(dialog).toBeVisible({ timeout: 5000 });
+
+    // The confirmations <select> lives in the "ui" panel.
+    await page.locator('[data-testid="settings-nav-ui"]').click();
+    const select = page.locator('select:has(option[value="responding"])');
+    await expect(select).toBeVisible({ timeout: 5000 });
+    await select.selectOption(mode);
+
+    // Save and wait for the success toast so the app's onSave callback has
+    // re-fetched the config (which updates deleteConfirmMode), then close.
+    await page.locator('[data-testid="settings-save"]').click();
+    await expect(page.getByText("Configuration saved")).toBeVisible({
+      timeout: 10000,
+    });
+    await page.locator('[data-testid="settings-close"]').click();
+    await expect(dialog).toBeHidden({ timeout: 5000 });
+  }
+
+  test('"responding" mode: Cmd+W while the agent is responding shows the confirmation dialog', async ({
+    page,
+    selectors,
+    helpers,
+    timeouts,
+  }) => {
+    await setDeleteConfirmMode(page, "responding");
+
+    // Start a slow (multi-chunk) streaming response so the agent stays in the
+    // responding state long enough to drive Cmd+W mid-stream.
+    const msg = helpers.uniqueMessage("Please give me a slow response");
+    await helpers.sendMessage(page, msg);
+    await helpers.waitForUserMessage(page, msg);
+
+    // The stop button is the authoritative "agent is responding" signal.
+    await expect(page.locator(selectors.stopButton)).toBeVisible({
+      timeout: timeouts.shortAction,
+    });
+
+    // Trigger the native Cmd+W close handler.
+    await page.evaluate(() => window.mittoCloseConversation());
+
+    // A confirmation dialog must appear, surfacing the streaming warning.
+    const deleteDialog = page
+      .locator('[role="dialog"]')
+      .filter({ hasText: "Delete Session" });
+    await expect(deleteDialog).toBeVisible({ timeout: timeouts.shortAction });
+    await expect(
+      deleteDialog.getByText("still receiving a response"),
+    ).toBeVisible();
+
+    // Cancel — the conversation must survive (the dialog closes, no deletion).
+    await deleteDialog.getByRole("button", { name: "Cancel" }).click();
+    await expect(deleteDialog).toBeHidden({ timeout: timeouts.shortAction });
+    await expect(page.locator(selectors.app)).toBeVisible();
+  });
+
+  test('"responding" mode: Cmd+W while idle closes without a confirmation dialog', async ({
+    page,
+    selectors,
+    timeouts,
+  }) => {
+    await setDeleteConfirmMode(page, "responding");
+
+    // No streaming in progress: the stop button must be hidden (idle agent).
+    await expect(page.locator(selectors.stopButton)).toBeHidden({
+      timeout: timeouts.shortAction,
+    });
+
+    const beforeId = await page.evaluate(() =>
+      localStorage.getItem("mitto_last_session_id"),
+    );
+
+    // Trigger the native Cmd+W close handler while idle.
+    await page.evaluate(() => window.mittoCloseConversation());
+
+    // No confirmation dialog should ever appear (DeleteDialog renders nothing
+    // when closed, so it stays absent from the DOM).
+    const deleteDialog = page
+      .locator('[role="dialog"]')
+      .filter({ hasText: "Delete Session" });
+    await expect(deleteDialog).toHaveCount(0);
+    // Give any (incorrect) dialog a chance to mount before re-asserting absence.
+    await page.waitForTimeout(800);
+    await expect(deleteDialog).toHaveCount(0);
+
+    // The active conversation was closed: the app switches away from it (to
+    // another conversation, a fresh one, or the folder Tasks view). Confirm we
+    // are no longer pointed at the just-closed conversation.
+    await expect
+      .poll(
+        () =>
+          page.evaluate(() =>
+            localStorage.getItem("mitto_last_session_id"),
+          ),
+        { timeout: timeouts.appReady },
+      )
+      .not.toBe(beforeId);
+
+    // App remains functional.
+    await expect(page.locator(selectors.app)).toBeVisible();
+  });
+});
