@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/inercia/mitto/internal/client"
+	"github.com/inercia/mitto/internal/conversation"
 )
 
 // TestAtomicCreateSeed verifies that a single POST /api/sessions with
@@ -245,5 +246,138 @@ prompt: |
 	if promptCount != 2 {
 		t.Errorf("user_prompt events with prompt_name=%q = %d, want 2 (initial create + reused seed)",
 			"singleton-test-prompt", promptCount)
+	}
+}
+
+// TestSingletonPromptFindOrRoute_BusyReuseDoesNotDuplicate verifies the busy
+// branch of singleton find-or-route (mitto-4mb.3/.5): creating a conversation
+// from a singleton prompt a second time while the EXISTING conversation is
+// still prompting (busy) routes to the SAME conversation (reused:true, same
+// session id) WITHOUT enqueuing/dispatching a duplicate prompt — contrast the
+// idle case above, which re-seeds and expects two user_prompt events.
+func TestSingletonPromptFindOrRoute_BusyReuseDoesNotDuplicate(t *testing.T) {
+	ts := SetupTestServer(t)
+
+	// Singleton prompt with a SLOW body (mock ACP delays 3s on this pattern —
+	// see tests/fixtures/responses/lazy-session-slow-prompt.json) so the first
+	// dispatch stays busy long enough for the second create to land mid-turn.
+	workspaceDir := filepath.Join(ts.TempDir, "workspace")
+	promptsDir := filepath.Join(workspaceDir, ".mitto", "prompts")
+	if err := os.MkdirAll(promptsDir, 0755); err != nil {
+		t.Fatalf("Failed to create workspace prompts dir: %v", err)
+	}
+	promptContent := `name: "singleton-busy-prompt"
+description: "Integration test prompt for singleton busy-reuse"
+singleton: true
+prompt: |
+  LAZY_SESSION_SLOW_PROMPT please respond slowly for the busy-reuse test.
+`
+	promptPath := filepath.Join(promptsDir, "singleton-busy-prompt.prompt.yaml")
+	if err := os.WriteFile(promptPath, []byte(promptContent), 0644); err != nil {
+		t.Fatalf("Failed to write prompt file: %v", err)
+	}
+
+	// First call: creates a brand-new conversation and seeds it with the slow prompt.
+	first, err := ts.Client.CreateSession(client.CreateSessionRequest{
+		InitialPromptName: "singleton-busy-prompt",
+	})
+	if err != nil {
+		t.Fatalf("First CreateSession failed: %v", err)
+	}
+	if first.Reused {
+		t.Fatalf("First CreateSession should not be reused, got Reused=true")
+	}
+	t.Logf("Created first session: %s", first.SessionID)
+
+	var (
+		mu              sync.Mutex
+		completionCount int
+	)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	ws, err := ts.Client.Connect(ctx, first.SessionID, client.SessionCallbacks{
+		OnPromptComplete: func(eventCount int) {
+			mu.Lock()
+			defer mu.Unlock()
+			completionCount++
+			t.Logf("Prompt complete #%d: %d events", completionCount, eventCount)
+		},
+	})
+	if err != nil {
+		t.Fatalf("Connect failed: %v", err)
+	}
+	defer ws.Close()
+
+	if err := ws.LoadEvents(50, 0, 0); err != nil {
+		t.Fatalf("LoadEvents failed: %v", err)
+	}
+
+	// Wait until the first (slow) prompt is actually prompting — the busy window.
+	sm := ts.Server.GetSessionManager()
+	var bs *conversation.BackgroundSession
+	waitFor(t, 10*time.Second, func() bool {
+		bs = sm.GetSession(first.SessionID)
+		return bs != nil && bs.IsPrompting()
+	}, "first (slow) prompt is prompting")
+
+	// Second call, issued WHILE busy: same prompt, same working dir — must route
+	// to the SAME conversation, and must NOT enqueue a duplicate (busy = focus-only).
+	second, err := ts.Client.CreateSession(client.CreateSessionRequest{
+		InitialPromptName: "singleton-busy-prompt",
+	})
+	if err != nil {
+		t.Fatalf("Second CreateSession failed: %v", err)
+	}
+	if !second.Reused {
+		t.Errorf("Second CreateSession should be reused, got Reused=false")
+	}
+	if second.SessionID != first.SessionID {
+		t.Fatalf("Second SessionID = %q, want same as first %q", second.SessionID, first.SessionID)
+	}
+
+	// The busy path does not enqueue — the queue should not have gained a
+	// pending duplicate from the second (busy) create call.
+	if qlen, err := ts.Store.Queue(first.SessionID).Len(); err == nil && qlen != 0 {
+		t.Errorf("Queue length after busy reuse = %d, want 0 (busy reuse must not enqueue)", qlen)
+	}
+
+	// Wait for the slow first prompt to finish, then settle briefly to catch any
+	// late re-dispatch the busy path might have incorrectly triggered.
+	waitFor(t, 20*time.Second, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return completionCount >= 1
+	}, "first prompt complete")
+	time.Sleep(500 * time.Millisecond)
+	mu.Lock()
+	finalCompletionCount := completionCount
+	mu.Unlock()
+	if finalCompletionCount != 1 {
+		t.Errorf("completionCount = %d after settle, want 1 (busy reuse must not dispatch a second prompt)", finalCompletionCount)
+	}
+
+	// KEY ASSERTION: exactly ONE user_prompt event for this prompt — the busy
+	// second create must not have produced a duplicate dispatch.
+	events, err := ts.Store.ReadEvents(first.SessionID)
+	if err != nil {
+		t.Fatalf("ReadEvents failed: %v", err)
+	}
+	var promptCount int
+	for _, ev := range events {
+		if ev.Type != "user_prompt" {
+			continue
+		}
+		dataMap, ok := ev.Data.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		if name, _ := dataMap["prompt_name"].(string); name == "singleton-busy-prompt" {
+			promptCount++
+		}
+	}
+	if promptCount != 1 {
+		t.Errorf("user_prompt events with prompt_name=%q = %d, want 1 (busy reuse must NOT duplicate)",
+			"singleton-busy-prompt", promptCount)
 	}
 }
