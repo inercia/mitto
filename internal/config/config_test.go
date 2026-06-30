@@ -459,6 +459,93 @@ prompts:
 	}
 }
 
+// TestParse_PromptSingletonAndTags verifies that top-level (global) inline
+// `prompts:` entries in config.yaml carry `singleton` and `tags` through
+// Parse() into the resulting WebPrompt (mitto-4mb.7). A prompt that omits
+// both keys must default to Singleton=false and empty Tags, guarding
+// against accidental coupling between sibling prompt entries.
+func TestParse_PromptSingletonAndTags(t *testing.T) {
+	yaml := `
+prompts:
+  - name: "Singleton Prompt"
+    prompt: "Singleton prompt text"
+    singleton: true
+    tags: ["foo", "bar"]
+  - name: "Plain Prompt"
+    prompt: "Plain prompt text"
+`
+	cfg, err := Parse([]byte(yaml))
+	if err != nil {
+		t.Fatalf("Parse failed: %v", err)
+	}
+
+	if len(cfg.Prompts) != 2 {
+		t.Fatalf("global prompts count = %d, want 2", len(cfg.Prompts))
+	}
+
+	singleton := cfg.Prompts[0]
+	if !singleton.Singleton {
+		t.Errorf("singleton prompt Singleton = %v, want true", singleton.Singleton)
+	}
+	if len(singleton.Tags) != 2 || singleton.Tags[0] != "foo" || singleton.Tags[1] != "bar" {
+		t.Errorf("singleton prompt Tags = %v, want [foo bar]", singleton.Tags)
+	}
+
+	plain := cfg.Prompts[1]
+	if plain.Singleton {
+		t.Errorf("plain prompt Singleton = %v, want false", plain.Singleton)
+	}
+	if len(plain.Tags) != 0 {
+		t.Errorf("plain prompt Tags = %v, want empty", plain.Tags)
+	}
+}
+
+// TestParse_PerServerPromptSingletonAndTags is the per-ACP-server counterpart
+// of TestParse_PromptSingletonAndTags: it verifies the same round-trip for
+// prompts nested under `acp[].prompts:` (mitto-4mb.7).
+func TestParse_PerServerPromptSingletonAndTags(t *testing.T) {
+	yaml := `
+acp:
+  - auggie:
+      command: "auggie --acp"
+      prompts:
+        - name: "Singleton Server Prompt"
+          prompt: "Singleton server prompt text"
+          singleton: true
+          tags: ["foo", "bar"]
+        - name: "Plain Server Prompt"
+          prompt: "Plain server prompt text"
+`
+	cfg, err := Parse([]byte(yaml))
+	if err != nil {
+		t.Fatalf("Parse failed: %v", err)
+	}
+
+	if len(cfg.ACPServers) != 1 {
+		t.Fatalf("ACPServers count = %d, want 1", len(cfg.ACPServers))
+	}
+	auggie := cfg.ACPServers[0]
+	if len(auggie.Prompts) != 2 {
+		t.Fatalf("auggie prompts count = %d, want 2", len(auggie.Prompts))
+	}
+
+	singleton := auggie.Prompts[0]
+	if !singleton.Singleton {
+		t.Errorf("singleton server prompt Singleton = %v, want true", singleton.Singleton)
+	}
+	if len(singleton.Tags) != 2 || singleton.Tags[0] != "foo" || singleton.Tags[1] != "bar" {
+		t.Errorf("singleton server prompt Tags = %v, want [foo bar]", singleton.Tags)
+	}
+
+	plain := auggie.Prompts[1]
+	if plain.Singleton {
+		t.Errorf("plain server prompt Singleton = %v, want false", plain.Singleton)
+	}
+	if len(plain.Tags) != 0 {
+		t.Errorf("plain server prompt Tags = %v, want empty", plain.Tags)
+	}
+}
+
 func TestParse_PromptsDirs(t *testing.T) {
 	yaml := `
 acp:

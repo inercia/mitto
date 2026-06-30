@@ -160,6 +160,8 @@ type WebPrompt struct {
 	// Singleton, when true, declares that this prompt must not have multiple
 	// concurrent conversation instances (subject to find-or-route logic).
 	Singleton bool `json:"singleton,omitempty"`
+	// Tags is an optional list of categorization tags for this prompt.
+	Tags []string `json:"tags,omitempty"`
 	// Source indicates where this prompt originated from (file, settings, workspace).
 	// This is used by the frontend to determine which prompts should be saved back to settings.
 	// Only prompts with Source="settings" or empty Source should be saved.
@@ -1270,6 +1272,8 @@ type rawACPServerConfig struct {
 		EnabledWhen     string            `yaml:"enabledWhen"`
 		Periodic        *PromptPeriodic   `yaml:"periodic,omitempty"`
 		Parameters      []PromptParameter `yaml:"parameters"`
+		Tags            []string          `yaml:"tags"`
+		Singleton       bool              `yaml:"singleton"`
 	} `yaml:"prompts"`
 	RestrictedRunners   map[string]*WorkspaceRunnerConfig `yaml:"restricted_runners"`
 	ContextFlushCommand string                            `yaml:"contextFlushCommand"`
@@ -1293,6 +1297,8 @@ type rawConfig struct {
 		EnabledWhen     string            `yaml:"enabledWhen"`
 		Periodic        *PromptPeriodic   `yaml:"periodic,omitempty"`
 		Parameters      []PromptParameter `yaml:"parameters"`
+		Tags            []string          `yaml:"tags"`
+		Singleton       bool              `yaml:"singleton"`
 	} `yaml:"prompts"`
 	// PromptsDirs is a list of additional directories to search for prompt files
 	PromptsDirs []string `yaml:"prompts_dirs"`
@@ -1493,6 +1499,8 @@ func Parse(data []byte) (*Config, error) {
 					Description:     p.Description,
 					Group:           p.Group,
 					Menus:           p.Menus,
+					Singleton:       p.Singleton,
+					Tags:            p.Tags,
 					EnabledWhen:     p.EnabledWhen,
 					Periodic:        p.Periodic,
 					Parameters:      p.Parameters,
@@ -1544,6 +1552,8 @@ func Parse(data []byte) (*Config, error) {
 			Description:     p.Description,
 			Group:           p.Group,
 			Menus:           p.Menus,
+			Singleton:       p.Singleton,
+			Tags:            p.Tags,
 			EnabledWhen:     p.EnabledWhen,
 			Enabled:         p.Enabled,
 			Periodic:        p.Periodic,
