@@ -722,3 +722,95 @@ describe("canSave with boolean params", () => {
     expect(canSave(parameters, { Note: "hello" })).toBe(true);
   });
 });
+
+// =============================================================================
+// initialValues seeding logic
+// Mirrors the reset effect in PromptParameterDialog.js: when the dialog opens,
+// values are seeded from initialValues (if provided) rather than starting empty.
+// =============================================================================
+
+/**
+ * Mirrors the reset effect: returns the initial values map that should be set
+ * when the dialog opens.
+ */
+function seedValues(initialValues) {
+  return initialValues ? { ...initialValues } : {};
+}
+
+/**
+ * Mirrors handleSubmit: applies any per-parameter transformations (boolean
+ * serialization) and omits undefined keys. Returns the final args map.
+ */
+function buildSubmitArgs(parameters, values) {
+  const args = {};
+  for (const p of parameters) {
+    if (p.type === "boolean") {
+      args[p.name] = serializeBooleanArg(values[p.name]);
+    } else {
+      args[p.name] = values[p.name] || "";
+    }
+  }
+  return args;
+}
+
+describe("initialValues seeding", () => {
+  test("seeds text field from initialValues when dialog opens", () => {
+    const initialValues = { FOO: "bar" };
+    const seeded = seedValues(initialValues);
+    expect(seeded).toEqual({ FOO: "bar" });
+  });
+
+  test("text field value reflects seeded initialValue", () => {
+    const parameters = [{ name: "FOO", type: "text", required: true }];
+    const initialValues = { FOO: "bar" };
+    const seeded = seedValues(initialValues);
+    // The seeded value for FOO should match
+    expect(seeded["FOO"]).toBe("bar");
+    // canSave should be true because the required field is pre-filled
+    expect(canSave(parameters, seeded)).toBe(true);
+  });
+
+  test("submitting with seeded+edited value calls onSubmit with edited value", () => {
+    const parameters = [{ name: "FOO", type: "text", required: true }];
+    const initialValues = { FOO: "bar" };
+    // Simulate: seed then user edits to "baz"
+    const values = { ...seedValues(initialValues), FOO: "baz" };
+    const args = buildSubmitArgs(parameters, values);
+    expect(args).toEqual({ FOO: "baz" });
+  });
+
+  test("boolean field seeded as string 'true' is checked", () => {
+    const initialValues = { Flag: "true" };
+    const seeded = seedValues(initialValues);
+    // ParamField reads value and treats "true" as checked
+    expect(booleanCheckboxChecked(seeded["Flag"])).toBe(true);
+  });
+
+  test("boolean field seeded as string 'false' is unchecked", () => {
+    const initialValues = { Flag: "false" };
+    const seeded = seedValues(initialValues);
+    expect(booleanCheckboxChecked(seeded["Flag"])).toBe(false);
+  });
+
+  test("submitting with seeded boolean 'true' emits 'true'", () => {
+    const parameters = [{ name: "Flag", type: "boolean" }];
+    const seeded = seedValues({ Flag: "true" });
+    const args = buildSubmitArgs(parameters, seeded);
+    expect(args["Flag"]).toBe("true");
+  });
+
+  test("empty initialValues produces empty seed", () => {
+    expect(seedValues({})).toEqual({});
+  });
+
+  test("null initialValues produces empty seed (no crash)", () => {
+    expect(seedValues(null)).toEqual({});
+  });
+
+  test("seeded values are a copy (mutations don't affect original)", () => {
+    const original = { FOO: "bar" };
+    const seeded = seedValues(original);
+    seeded["FOO"] = "mutated";
+    expect(original["FOO"]).toBe("bar");
+  });
+});
