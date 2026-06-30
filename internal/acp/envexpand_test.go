@@ -13,12 +13,20 @@ func TestBuildMittoEnv(t *testing.T) {
 			"MITTO_WORKING_DIR":    "/home/user/project",
 			"MITTO_ACP_SERVER":     "auggie",
 			"MITTO_WORKSPACE_UUID": "ws-uuid-456",
+			"BEADS_ACTOR":          "mitto:sess-123",
 		}
 
 		for key, want := range expected {
 			if got := env[key]; got != want {
 				t.Errorf("env[%q] = %q, want %q", key, got, want)
 			}
+		}
+	})
+
+	t.Run("empty session ID omits BEADS_ACTOR", func(t *testing.T) {
+		env := BuildMittoEnv("", "/w", "a", "u")
+		if _, ok := env["BEADS_ACTOR"]; ok {
+			t.Errorf("BEADS_ACTOR should be absent when sessionID is empty, got %q", env["BEADS_ACTOR"])
 		}
 	})
 

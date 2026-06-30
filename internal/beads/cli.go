@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -23,12 +24,20 @@ type Runner interface {
 	Run(ctx context.Context, dir string, args ...string) (stdout []byte, stderr string, err error)
 }
 
-// execRunner is the default Runner that invokes the real bd binary.
-type execRunner struct{}
+// execRunner is the default Runner that invokes the real bd binary. When actor
+// is non-empty it is exported to the bd subprocess as BEADS_ACTOR, which bd uses
+// as the default --actor for its audit trail. An empty actor leaves the
+// subprocess environment untouched (bd falls back to git user.name / $USER).
+type execRunner struct {
+	actor string
+}
 
-func (execRunner) Run(ctx context.Context, dir string, args ...string) ([]byte, string, error) {
+func (r execRunner) Run(ctx context.Context, dir string, args ...string) ([]byte, string, error) {
 	cmd := exec.CommandContext(ctx, "bd", args...)
 	cmd.Dir = dir
+	if r.actor != "" {
+		cmd.Env = envWithActor(r.actor)
+	}
 
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
@@ -46,6 +55,22 @@ func (execRunner) Run(ctx context.Context, dir string, args ...string) ([]byte, 
 	}
 
 	return stdout.Bytes(), "", nil
+}
+
+// envWithActor returns a copy of the current process environment with any
+// existing BEADS_ACTOR entry removed and a single BEADS_ACTOR=actor appended, so
+// the bd subprocess is stamped with the given actor regardless of what the
+// parent process inherited.
+func envWithActor(actor string) []string {
+	base := os.Environ()
+	out := make([]string, 0, len(base)+1)
+	for _, kv := range base {
+		if strings.HasPrefix(kv, "BEADS_ACTOR=") {
+			continue
+		}
+		out = append(out, kv)
+	}
+	return append(out, "BEADS_ACTOR="+actor)
 }
 
 // cliClient implements Client using a Runner.

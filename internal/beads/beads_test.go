@@ -731,3 +731,38 @@ func TestAppendGitignorePattern_AppendsNewlineToTruncatedFile(t *testing.T) {
 		t.Fatalf("new-pattern count = %d, want 1 (content: %q)", got, data)
 	}
 }
+
+func TestEnvWithActor_OverridesAndDedupes(t *testing.T) {
+	// A stale BEADS_ACTOR inherited from the parent process must be replaced,
+	// not duplicated, so the bd subprocess sees exactly our actor.
+	t.Setenv("BEADS_ACTOR", "stale:value")
+
+	env := envWithActor("mitto:webui")
+
+	var actors []string
+	for _, kv := range env {
+		if strings.HasPrefix(kv, "BEADS_ACTOR=") {
+			actors = append(actors, strings.TrimPrefix(kv, "BEADS_ACTOR="))
+		}
+	}
+	if len(actors) != 1 {
+		t.Fatalf("BEADS_ACTOR entries = %d (%v), want exactly 1", len(actors), actors)
+	}
+	if actors[0] != "mitto:webui" {
+		t.Errorf("BEADS_ACTOR = %q, want %q", actors[0], "mitto:webui")
+	}
+}
+
+func TestNewClient_DefaultsWebUIActor(t *testing.T) {
+	c, ok := NewClient().(*cliClient)
+	if !ok {
+		t.Fatalf("NewClient did not return *cliClient")
+	}
+	r, ok := c.runner.(execRunner)
+	if !ok {
+		t.Fatalf("NewClient runner is %T, want execRunner", c.runner)
+	}
+	if r.actor != webUIActor {
+		t.Errorf("execRunner.actor = %q, want %q", r.actor, webUIActor)
+	}
+}

@@ -86,8 +86,15 @@ type Client interface {
 	Sync(ctx context.Context, dir, integration, action string) (string, error)
 }
 
-// NewClient returns a Client backed by the real bd binary.
-func NewClient() Client { return &cliClient{runner: execRunner{}} }
+// webUIActor is the default BEADS_ACTOR for Tasks-view CRUD initiated through the
+// web UI, where there is no single owning conversation. Stamping these writes
+// mitto:webui distinguishes them from a human running bd directly and from a
+// specific conversation's mitto:<sessionID>.
+const webUIActor = "mitto:webui"
+
+// NewClient returns a Client backed by the real bd binary. Writes it makes are
+// stamped with the mitto:webui actor for audit attribution.
+func NewClient() Client { return &cliClient{runner: execRunner{actor: webUIActor}} }
 
 // NewClientWithRunner returns a Client backed by a custom Runner (for testing).
 func NewClientWithRunner(r Runner) Client { return &cliClient{runner: r} }
