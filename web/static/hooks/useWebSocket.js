@@ -63,6 +63,7 @@ import {
   isReconnectLimitReached,
   checkSessionExists,
   isTerminalSessionError,
+  isReusedConversationResponse,
 } from "../utils/websocket.js";
 
 // =============================================================================
@@ -4773,6 +4774,21 @@ export function useWebSocket({ onActiveSessionRemovedRef } = {}) {
 
         const data = await response.json();
         const sessionId = data.session_id;
+
+        // Singleton find-or-route: backend routed this create to an EXISTING
+        // conversation. Do NOT seed placeholder state — that would clobber the
+        // already-loaded messages/info and flash "Start chatting with undefined".
+        // Focus it instead; connect/sync restores/loads its real state. (mitto-4mb.10)
+        if (isReusedConversationResponse(data)) {
+          const existing = sessionsRef.current[sessionId];
+          const wdForGroup = existing?.info?.working_dir || wd;
+          const acpForGroup =
+            existing?.info?.acp_server || opts.acpServer || "";
+          expandGroupForSession(sessionId, wdForGroup, acpForGroup);
+          connectToSession(sessionId);
+          setActiveSessionId(sessionId);
+          return { sessionId, reused: true };
+        }
 
         // Build system message with workspace info
         let systemMsg = `Start chatting with ${data.acp_server}`;

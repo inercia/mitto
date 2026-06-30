@@ -23,6 +23,7 @@ import {
   updateSeqWatermark,
   getSeqWatermark,
   clearSeqWatermark,
+  isReusedConversationResponse,
   WEBSOCKET_CONSTANTS,
 } from "./websocket.js";
 
@@ -1558,5 +1559,35 @@ describe("isTerminalSessionError", () => {
     ).toBe(true);
     expect(isTerminalSessionError("session not running")).toBe(true);
     expect(isTerminalSessionError("SESSION NOT RUNNING")).toBe(true);
+  });
+});
+
+// =============================================================================
+// Singleton Find-or-Route: isReusedConversationResponse
+// =============================================================================
+
+describe("isReusedConversationResponse", () => {
+  test("returns true when reused is strictly true", () => {
+    expect(isReusedConversationResponse({ reused: true })).toBe(true);
+  });
+
+  test("returns false when reused is false", () => {
+    expect(isReusedConversationResponse({ reused: false })).toBe(false);
+  });
+
+  test("returns false when reused is absent", () => {
+    expect(isReusedConversationResponse({})).toBe(false);
+  });
+
+  test("returns false for undefined data", () => {
+    expect(isReusedConversationResponse(undefined)).toBe(false);
+  });
+
+  test("returns false for null data", () => {
+    expect(isReusedConversationResponse(null)).toBe(false);
+  });
+
+  test("returns false when reused is a string, not a boolean", () => {
+    expect(isReusedConversationResponse({ reused: "true" })).toBe(false);
   });
 });

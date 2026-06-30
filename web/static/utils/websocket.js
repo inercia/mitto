@@ -349,6 +349,24 @@ export function isTerminalSessionError(message) {
   );
 }
 
+// =============================================================================
+// Singleton Find-or-Route: Reused Conversation Detection
+// =============================================================================
+
+/**
+ * Whether a POST /api/sessions response indicates the backend routed the
+ * request to an EXISTING conversation (singleton find-or-route, mitto-4mb).
+ * When true, the client must NOT seed placeholder session state — doing so
+ * would clobber the already-loaded conversation and flash "Start chatting
+ * with undefined". Only a strict boolean `true` counts. (mitto-4mb.10)
+ *
+ * @param {object} data - The create-session response body.
+ * @returns {boolean}
+ */
+export function isReusedConversationResponse(data) {
+  return data?.reused === true;
+}
+
 // Export constants for testing
 export const WEBSOCKET_CONSTANTS = {
   MAX_RECENT_SEQS,
