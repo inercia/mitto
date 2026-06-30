@@ -65,6 +65,36 @@ export function promptMenuIncludes(prompt, menu) {
 }
 
 /**
+ * Returns the periodic mode of a prompt: "always" | "optional" | "none".
+ * - "none"     when prompt.periodic is absent/null (never periodic).
+ * - "optional" when prompt.periodic.mode === "optional".
+ * - "always"   otherwise (block present with absent/unknown mode → backend default).
+ */
+export function promptPeriodicMode(prompt) {
+  const periodic = prompt?.periodic;
+  if (!periodic) return "none";
+  return periodic.mode === "optional" ? "optional" : "always";
+}
+
+/** True iff the prompt's periodic mode is "optional" (the only toggleable category). */
+export function promptPeriodicIsToggleable(prompt) {
+  return promptPeriodicMode(prompt) === "optional";
+}
+
+/**
+ * Initial send-as-periodic state:
+ * - "always"   → true (locked ON)
+ * - "optional" → prompt.periodic.default !== false (nil/true → true, false → false)
+ * - "none"     → false
+ */
+export function promptPeriodicDefaultOn(prompt) {
+  const mode = promptPeriodicMode(prompt);
+  if (mode === "none") return false;
+  if (mode === "optional") return prompt.periodic.default !== false;
+  return true;
+}
+
+/**
  * Frontend mirror of the backend parameter-type registry.
  * Canonical source of truth: internal/config/prompt_param_types.go
  * These two lists MUST be kept in sync — do not add types here without also

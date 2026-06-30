@@ -7,6 +7,9 @@ import {
   promptMenus,
   promptMenuExcludes,
   promptMenuIncludes,
+  promptPeriodicMode,
+  promptPeriodicIsToggleable,
+  promptPeriodicDefaultOn,
   promptParameters,
   KNOWN_PARAM_TYPES,
   MENU_PARAM_TYPES,
@@ -1014,5 +1017,79 @@ describe("periodic prompt filter logic (union + exclusion)", () => {
 
   test("prompt with no menus field IS in periodic selector (defaults to prompts)", () => {
     expect(isPeriodicPrompt({})).toBe(true);
+  });
+});
+
+// =============================================================================
+// promptPeriodicMode / promptPeriodicIsToggleable / promptPeriodicDefaultOn
+// =============================================================================
+
+describe("promptPeriodicMode / IsToggleable / DefaultOn", () => {
+  test("no periodic ({}) -> mode none, toggleable false, defaultOn false", () => {
+    expect(promptPeriodicMode({})).toBe("none");
+    expect(promptPeriodicIsToggleable({})).toBe(false);
+    expect(promptPeriodicDefaultOn({})).toBe(false);
+  });
+
+  test("periodic: null -> mode none, toggleable false, defaultOn false", () => {
+    const p = { periodic: null };
+    expect(promptPeriodicMode(p)).toBe("none");
+    expect(promptPeriodicIsToggleable(p)).toBe(false);
+    expect(promptPeriodicDefaultOn(p)).toBe(false);
+  });
+
+  test("periodic present, no mode -> mode always, toggleable false, defaultOn true", () => {
+    const p = { periodic: {} };
+    expect(promptPeriodicMode(p)).toBe("always");
+    expect(promptPeriodicIsToggleable(p)).toBe(false);
+    expect(promptPeriodicDefaultOn(p)).toBe(true);
+  });
+
+  test("mode: always -> mode always, toggleable false, defaultOn true", () => {
+    const p = { periodic: { mode: "always" } };
+    expect(promptPeriodicMode(p)).toBe("always");
+    expect(promptPeriodicIsToggleable(p)).toBe(false);
+    expect(promptPeriodicDefaultOn(p)).toBe(true);
+  });
+
+  test("mode: always with default:false -> default ignored, defaultOn true", () => {
+    const p = { periodic: { mode: "always", default: false } };
+    expect(promptPeriodicMode(p)).toBe("always");
+    expect(promptPeriodicIsToggleable(p)).toBe(false);
+    expect(promptPeriodicDefaultOn(p)).toBe(true);
+  });
+
+  test("mode: optional -> mode optional, toggleable true, defaultOn true", () => {
+    const p = { periodic: { mode: "optional" } };
+    expect(promptPeriodicMode(p)).toBe("optional");
+    expect(promptPeriodicIsToggleable(p)).toBe(true);
+    expect(promptPeriodicDefaultOn(p)).toBe(true);
+  });
+
+  test("mode: optional, default:true -> mode optional, toggleable true, defaultOn true", () => {
+    const p = { periodic: { mode: "optional", default: true } };
+    expect(promptPeriodicMode(p)).toBe("optional");
+    expect(promptPeriodicIsToggleable(p)).toBe(true);
+    expect(promptPeriodicDefaultOn(p)).toBe(true);
+  });
+
+  test("mode: optional, default:false -> mode optional, toggleable true, defaultOn false", () => {
+    const p = { periodic: { mode: "optional", default: false } };
+    expect(promptPeriodicMode(p)).toBe("optional");
+    expect(promptPeriodicIsToggleable(p)).toBe(true);
+    expect(promptPeriodicDefaultOn(p)).toBe(false);
+  });
+
+  test("unknown mode is treated as always", () => {
+    const p = { periodic: { mode: "weird" } };
+    expect(promptPeriodicMode(p)).toBe("always");
+    expect(promptPeriodicIsToggleable(p)).toBe(false);
+    expect(promptPeriodicDefaultOn(p)).toBe(true);
+  });
+
+  test("null-safe: undefined prompt -> mode none, toggleable false, defaultOn false", () => {
+    expect(promptPeriodicMode(undefined)).toBe("none");
+    expect(promptPeriodicIsToggleable(undefined)).toBe(false);
+    expect(promptPeriodicDefaultOn(undefined)).toBe(false);
   });
 });
