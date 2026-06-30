@@ -706,6 +706,50 @@ func TestStore_ChildSessions_ClosedStore(t *testing.T) {
 	}
 }
 
+func TestStore_UpdateMetadata_OriginPromptName(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	sessionID := "test-origin-prompt-name"
+
+	meta := Metadata{
+		SessionID:  sessionID,
+		ACPServer:  "test-server",
+		WorkingDir: "/test/dir",
+	}
+	if err := store.Create(meta); err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+
+	// Verify initial state has no origin prompt name.
+	gotMeta, err := store.GetMetadata(sessionID)
+	if err != nil {
+		t.Fatalf("GetMetadata failed: %v", err)
+	}
+	if gotMeta.OriginPromptName != "" {
+		t.Errorf("OriginPromptName should be empty initially, got %q", gotMeta.OriginPromptName)
+	}
+
+	// Set it via UpdateMetadata, mirroring how HandleCreateSession persists it.
+	if err := store.UpdateMetadata(sessionID, func(m *Metadata) {
+		m.OriginPromptName = "Reevaluate all issues"
+	}); err != nil {
+		t.Fatalf("UpdateMetadata failed: %v", err)
+	}
+
+	gotMeta, err = store.GetMetadata(sessionID)
+	if err != nil {
+		t.Fatalf("GetMetadata failed: %v", err)
+	}
+	if gotMeta.OriginPromptName != "Reevaluate all issues" {
+		t.Errorf("OriginPromptName = %q, want %q", gotMeta.OriginPromptName, "Reevaluate all issues")
+	}
+}
+
 func TestStore_AdvancedSettings(t *testing.T) {
 	tmpDir := t.TempDir()
 	store, err := NewStore(tmpDir)

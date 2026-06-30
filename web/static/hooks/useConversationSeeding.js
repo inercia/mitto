@@ -323,6 +323,9 @@ export function useConversationSeeding({ newSession }) {
      * then `PUT /api/sessions/{id}/periodic` configures the named prompt on the
      * periodic schedule. `at` (if provided) must already be in UTC HH:MM.
      *
+     * originPromptName is set on the session opts from prompt.name so the
+     * backend can later detect duplicate singleton-prompt conversations.
+     *
      * @param {{ workingDir, acpServer, name, beadsIssue, prompt, arguments, periodic, fetchImpl }} opts
      * @returns {Promise<{ sessionId: string } | { error: string }>}
      */
@@ -337,7 +340,13 @@ export function useConversationSeeding({ newSession }) {
       fetchImpl,
     }) => {
       // Build the newSession call — skip the queue seed when periodic is present.
-      const sessionOpts = { workingDir, acpServer, name, beadsIssue };
+      const sessionOpts = {
+        workingDir,
+        acpServer,
+        name,
+        beadsIssue,
+        originPromptName: prompt?.name,
+      };
       if (!periodic) {
         // One-time path: pass the named prompt so the queue delivers it once.
         sessionOpts.initialPromptName = prompt?.name;

@@ -268,6 +268,7 @@ type Metadata struct {
 	CurrentModeID           string          `json:"current_mode_id,omitempty"`           // Current session mode ID (e.g., "ask", "code", "architect")
 	BaselineModel           string          `json:"baseline_model,omitempty"`            // User's intended model; never mutated by per-prompt overrides
 	BeadsIssue              string          `json:"beads_issue,omitempty"`               // Linked beads issue ID (e.g. "mitto-123"), empty if none
+	OriginPromptName        string          `json:"origin_prompt_name,omitempty"`        // Name of the prompt that originated this conversation (singleton scope: WorkingDir+OriginPromptName)
 	AdvancedSettings        map[string]bool `json:"advanced_settings,omitempty"`         // Per-session feature flags (flag name → enabled)
 	ProcessorActivations    int             `json:"processor_activations,omitempty"`     // Cumulative processor pipeline activation count
 	ProcessorLastActivation time.Time       `json:"processor_last_activation,omitempty"` // When processors were last activated

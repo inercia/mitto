@@ -402,6 +402,7 @@ func (c *SessionWSClient) sendSessionConnected(bs *conversation.BackgroundSessio
 		if meta, err := c.store.GetMetadata(c.sessionID); err == nil {
 			data["name"] = meta.Name
 			data["beads_issue"] = meta.BeadsIssue
+			data["origin_prompt_name"] = meta.OriginPromptName
 			data["working_dir"] = meta.WorkingDir
 			data["created_at"] = meta.CreatedAt.Format(time.RFC3339)
 			data["status"] = meta.Status

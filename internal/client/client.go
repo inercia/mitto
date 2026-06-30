@@ -77,6 +77,7 @@ type CreateSessionRequest struct {
 	Name              string            `json:"name,omitempty"`
 	WorkingDir        string            `json:"working_dir,omitempty"`
 	ACPServer         string            `json:"acp_server,omitempty"`
+	OriginPromptName  string            `json:"origin_prompt_name,omitempty"`  // Optional: name of the prompt that originated this conversation
 	InitialPromptName string            `json:"initial_prompt_name,omitempty"` // Optional: seed the queue with a named prompt atomically on creation
 	Arguments         map[string]string `json:"arguments,omitempty"`           // Optional: Go-template .Args values for the initial prompt
 }

@@ -4694,6 +4694,7 @@ export function useWebSocket({ onActiveSessionRemovedRef } = {}) {
           working_dir: wd,
           acp_server: opts.acpServer || "",
           beads_issue: opts.beadsIssue || "",
+          origin_prompt_name: opts.originPromptName || "",
           initial_prompt_name: opts.initialPromptName || "",
         };
         if (opts.arguments && Object.keys(opts.arguments).length > 0) {

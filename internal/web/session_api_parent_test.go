@@ -102,3 +102,53 @@ func TestHandleListSessions_ParentSessionID(t *testing.T) {
 		t.Errorf("Parent ParentSessionID = %q, want empty string", parentSession.ParentSessionID)
 	}
 }
+
+// TestHandleListSessions_OriginPromptName verifies that OriginPromptName is
+// included in the API response (it flows through automatically because
+// SessionListResponse embeds session.Metadata).
+func TestHandleListSessions_OriginPromptName(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := session.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	meta := session.Metadata{
+		SessionID:        "session-with-origin-prompt",
+		ACPServer:        "test-server",
+		WorkingDir:       "/tmp",
+		Name:             "Reevaluate Session",
+		OriginPromptName: "Reevaluate all issues",
+	}
+	if err := store.Create(meta); err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+
+	server := &Server{
+		sessionManager: conversation.NewSessionManager("", "", false, nil),
+		store:          store,
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/sessions", nil)
+	w := httptest.NewRecorder()
+
+	server.handleListSessions(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("Status = %d, want %d", w.Code, http.StatusOK)
+	}
+
+	var response []SessionListResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
+		t.Fatalf("Failed to unmarshal response: %v", err)
+	}
+
+	if len(response) != 1 {
+		t.Fatalf("Expected 1 session, got %d", len(response))
+	}
+
+	if response[0].OriginPromptName != "Reevaluate all issues" {
+		t.Errorf("OriginPromptName = %q, want %q", response[0].OriginPromptName, "Reevaluate all issues")
+	}
+}

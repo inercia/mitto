@@ -206,6 +206,21 @@ describe("useConversationSeeding — startConversationWithPrompt", () => {
     expect(callArg.beadsIssue).toBe("mitto-42");
   });
 
+  test("forwards originPromptName (= prompt.name) to newSession", async () => {
+    const newSession = jest.fn().mockResolvedValue({ sessionId: "sess-9" });
+    const { startConversationWithPrompt } = useConversationSeeding({
+      newSession,
+    });
+
+    await startConversationWithPrompt({
+      prompt: { name: "Reevaluate all issues" },
+      workingDir: "/w",
+    });
+
+    const callArg = newSession.mock.calls[0][0];
+    expect(callArg.originPromptName).toBe("Reevaluate all issues");
+  });
+
   test("does NOT call seedConversationWithPrompt — single-call path only invokes newSession", async () => {
     // The new implementation calls newSession only; it does NOT call seedConversationWithPrompt.
     // We verify this by confirming newSession is the sole mock and the result is clean (no seedError).

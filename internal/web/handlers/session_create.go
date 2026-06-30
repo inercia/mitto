@@ -20,6 +20,7 @@ type SessionCreateRequest struct {
 	WorkingDir        string            `json:"working_dir,omitempty"`
 	ACPServer         string            `json:"acp_server,omitempty"`          // Optional: specify ACP server for the session
 	BeadsIssue        string            `json:"beads_issue,omitempty"`         // Optional: link conversation to a beads issue ID at creation
+	OriginPromptName  string            `json:"origin_prompt_name,omitempty"`  // Optional: name of the prompt that originated this conversation
 	InitialPromptName string            `json:"initial_prompt_name,omitempty"` // Optional: seed the queue with a named prompt atomically on creation
 	Arguments         map[string]string `json:"arguments,omitempty"`           // Optional: Go-template .Args values for the initial prompt
 }
@@ -162,6 +163,18 @@ func (h *Handlers) HandleCreateSession(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Persist the originating prompt name (if provided), independent of seeding
+	// so it also works for the periodic path. Used for singleton find-or-route.
+	if req.OriginPromptName != "" {
+		if store := h.deps.Store; store != nil {
+			if err := store.UpdateMetadata(bs.GetSessionID(), func(meta *session.Metadata) {
+				meta.OriginPromptName = req.OriginPromptName
+			}); err != nil && h.deps.Logger != nil {
+				h.deps.Logger.Warn("Failed to set origin_prompt_name on new session", "error", err, "session_id", bs.GetSessionID())
+			}
+		}
+	}
+
 	// Determine the ACP server name for the response
 	acpServerName := h.deps.DefaultACPServer
 	if workspace != nil && workspace.ACPServer != "" {
@@ -177,13 +190,14 @@ func (h *Handlers) HandleCreateSession(w http.ResponseWriter, r *http.Request) {
 
 	// Broadcast session creation to all global events clients
 	sessionData := map[string]interface{}{
-		"session_id":     bs.GetSessionID(),
-		"acp_session_id": bs.GetACPID(),
-		"name":           req.Name,
-		"acp_server":     acpServerName,
-		"working_dir":    req.WorkingDir,
-		"status":         "active",
-		"beads_issue":    req.BeadsIssue,
+		"session_id":         bs.GetSessionID(),
+		"acp_session_id":     bs.GetACPID(),
+		"name":               req.Name,
+		"acp_server":         acpServerName,
+		"working_dir":        req.WorkingDir,
+		"status":             "active",
+		"beads_issue":        req.BeadsIssue,
+		"origin_prompt_name": req.OriginPromptName,
 	}
 	if h.deps.BroadcastSessionCreated != nil {
 		h.deps.BroadcastSessionCreated(sessionData)
