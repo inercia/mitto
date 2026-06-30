@@ -243,23 +243,6 @@ export function AutoChildrenEditor({
         These conversations are auto-created when a new top-level conversation
         starts. They are deleted when the parent is deleted.
       </p>
-      <div class="flex justify-end mb-2">
-        ${canAdd
-          ? html`
-              <button
-                type="button"
-                onClick=${addChild}
-                class="btn btn-ghost btn-xs"
-              >
-                + Add Child
-              </button>
-            `
-          : html`
-              <span class="text-xs text-mitto-text-muted"
-                >Max ${maxChildren} children</span
-              >
-            `}
-      </div>
       ${(children || []).length === 0
         ? html`
             <div class="text-xs text-mitto-text-muted italic py-2">
@@ -312,6 +295,20 @@ export function AutoChildrenEditor({
               )}
             </div>
           `}
+      <div class="mt-3 flex items-center gap-2">
+        <button
+          type="button"
+          class="btn btn-sm btn-ghost"
+          disabled=${!canAdd}
+          onClick=${addChild}
+        >
+          + Add Child
+        </button>
+        ${!canAdd &&
+        html`<span class="text-xs text-mitto-text-muted"
+          >Maximum ${maxChildren}</span
+        >`}
+      </div>
     </fieldset>
   `;
 }
@@ -1133,11 +1130,9 @@ export function SettingsDialog({
     "open -a Terminal ${MITTO_WORKING_DIR}",
   );
 
-  // Confirmation settings (all platforms)
-  const [confirmDeleteSession, setConfirmDeleteSession] = useState(true);
-  // Confirmation settings (macOS only)
-  const [confirmQuitWithRunningSessions, setConfirmQuitWithRunningSessions] =
-    useState(true);
+  // Confirmation mode for destroying a conversation (all platforms).
+  // One of "always" (default), "responding", or "never".
+  const [deleteConfirmMode, setDeleteConfirmMode] = useState("always");
 
   // Archive retention period setting
   const [archiveRetentionPeriod, setArchiveRetentionPeriod] = useState("never");
@@ -1548,13 +1543,9 @@ export function SettingsDialog({
         }
       }
 
-      // Load confirmation settings (all platforms, default to true)
-      setConfirmDeleteSession(
-        config.ui?.confirmations?.delete_session !== false,
-      );
-      // Load confirmation settings (macOS only, default to true)
-      setConfirmQuitWithRunningSessions(
-        config.ui?.confirmations?.quit_with_running_sessions !== false,
+      // Load confirmation mode (all platforms, default to "always")
+      setDeleteConfirmMode(
+        config.ui?.confirmations?.delete_conversation || "always",
       );
 
       // Load archive retention period setting (default to "never")
@@ -1804,7 +1795,7 @@ export function SettingsDialog({
       const uiConfig = {
         // Confirmations (all platforms)
         confirmations: {
-          delete_session: confirmDeleteSession,
+          delete_conversation: deleteConfirmMode,
         },
         // Web-specific UI settings
         web: {
@@ -1818,9 +1809,6 @@ export function SettingsDialog({
 
       // Add macOS-specific settings
       if (isMacApp) {
-        // Add quit confirmation setting (macOS only)
-        uiConfig.confirmations.quit_with_running_sessions =
-          confirmQuitWithRunningSessions;
         uiConfig.mac = {
           notifications: {
             sounds: {
@@ -1980,7 +1968,7 @@ export function SettingsDialog({
         // Update quit confirmation setting via native API
         if (typeof window.mittoSetQuitConfirmEnabled === "function") {
           try {
-            window.mittoSetQuitConfirmEnabled(confirmQuitWithRunningSessions);
+            window.mittoSetQuitConfirmEnabled(deleteConfirmMode !== "never");
           } catch (err) {
             console.error("Failed to update quit confirmation setting:", err);
           }
@@ -4390,51 +4378,31 @@ export function SettingsDialog({
                       <h4 class="text-sm font-medium text-mitto-text-secondary">
                         Confirmations
                       </h4>
-                      <label
-                        class="flex items-center gap-3 p-3 cursor-pointer hover:bg-base-200/40 transition-colors"
-                      >
-                        <input
-                          type="checkbox"
-                          checked=${confirmDeleteSession}
-                          onChange=${(e) =>
-                            setConfirmDeleteSession(e.target.checked)}
-                          class="checkbox checkbox-sm checkbox-primary"
-                        />
-                        <div>
-                          <div class="font-medium text-sm">
-                            Confirm before deleting conversations
-                          </div>
-                          <div class="text-xs text-mitto-text-muted">
-                            Show a confirmation dialog when deleting a
-                            conversation
-                          </div>
-                        </div>
-                      </label>
-                      ${isMacApp &&
-                      html`
-                        <label
-                          class="flex items-center gap-3 p-3 cursor-pointer hover:bg-base-200/40 transition-colors"
-                        >
-                          <input
-                            type="checkbox"
-                            checked=${confirmQuitWithRunningSessions}
-                            onChange=${(e) =>
-                              setConfirmQuitWithRunningSessions(
-                                e.target.checked,
-                              )}
-                            class="checkbox checkbox-sm checkbox-primary"
-                          />
+                      <div class="p-3">
+                        <div class="flex items-center justify-between gap-3">
                           <div>
                             <div class="font-medium text-sm">
-                              Confirm before quitting with active conversations
+                              Confirm before deleting a conversation
                             </div>
                             <div class="text-xs text-mitto-text-muted">
-                              Show a confirmation dialog when quitting while an
-                              agent is responding
+                              When to show a confirmation dialog before closing,
+                              deleting, or quitting while a conversation exists
                             </div>
                           </div>
-                        </label>
-                      `}
+                          <select
+                            value=${deleteConfirmMode}
+                            onChange=${(e) =>
+                              setDeleteConfirmMode(e.target.value)}
+                            class="select select-sm"
+                          >
+                            <option value="always">Always</option>
+                            <option value="responding">
+                              Only when responding
+                            </option>
+                            <option value="never">Never</option>
+                          </select>
+                        </div>
+                      </div>
                     </div>
 
                     <!-- macOS-specific settings -->

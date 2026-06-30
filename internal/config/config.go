@@ -407,13 +407,23 @@ type MacUIConfig struct {
 	TerminalAction *TerminalActionConfig `json:"terminal_action,omitempty"`
 }
 
+// DeleteConversation confirmation modes for ConfirmationsConfig.DeleteConversation.
+const (
+	// DeleteConversationAlways confirms on every conversation destruction (default).
+	DeleteConversationAlways = "always"
+	// DeleteConversationResponding confirms only when the agent is responding.
+	DeleteConversationResponding = "responding"
+	// DeleteConversationNever never confirms before destroying a conversation.
+	DeleteConversationNever = "never"
+)
+
 // ConfirmationsConfig represents confirmation dialog settings.
 type ConfirmationsConfig struct {
-	// DeleteSession controls whether to show confirmation when deleting a session (default: true)
-	DeleteSession *bool `json:"delete_session,omitempty"`
-	// QuitWithRunningSessions controls whether to show confirmation when quitting with running sessions (default: true)
-	// This only applies to the macOS desktop app.
-	QuitWithRunningSessions *bool `json:"quit_with_running_sessions,omitempty"`
+	// DeleteConversation controls when to show a confirmation dialog before
+	// destroying a conversation (closing via Cmd+W, deleting from the sidebar,
+	// or quitting the macOS app while an agent is responding). One of "always"
+	// (default), "responding" (only when the agent is responding), or "never".
+	DeleteConversation string `json:"delete_conversation,omitempty"`
 }
 
 // Conversation cycling mode constants.
@@ -1324,8 +1334,7 @@ type rawConfig struct {
 	} `yaml:"web"`
 	UI *struct {
 		Confirmations *struct {
-			DeleteSession           *bool `yaml:"delete_session"`
-			QuitWithRunningSessions *bool `yaml:"quit_with_running_sessions"`
+			DeleteConversation string `yaml:"delete_conversation"`
 		} `yaml:"confirmations"`
 		Web *struct {
 			InputFontFamily         string `yaml:"input_font_family"`
@@ -1594,8 +1603,7 @@ func Parse(data []byte) (*Config, error) {
 		// Populate confirmations
 		if raw.UI.Confirmations != nil {
 			cfg.UI.Confirmations = &ConfirmationsConfig{
-				DeleteSession:           raw.UI.Confirmations.DeleteSession,
-				QuitWithRunningSessions: raw.UI.Confirmations.QuitWithRunningSessions,
+				DeleteConversation: raw.UI.Confirmations.DeleteConversation,
 			}
 		}
 
@@ -1893,11 +1901,23 @@ func (c *Config) GetShowHideHotkey() (key string, enabled bool) {
 	return key, enabled
 }
 
-// ShouldConfirmQuitWithRunningSessions returns whether to show a confirmation dialog
-// when quitting the app with running sessions. Defaults to true.
-func (c *Config) ShouldConfirmQuitWithRunningSessions() bool {
-	if c.UI.Confirmations == nil || c.UI.Confirmations.QuitWithRunningSessions == nil {
-		return true // Default to true
+// DeleteConversationMode returns the configured confirmation mode for destroying
+// a conversation. Defaults to DeleteConversationAlways when unset or invalid.
+func (c *Config) DeleteConversationMode() string {
+	if c.UI.Confirmations == nil {
+		return DeleteConversationAlways
 	}
-	return *c.UI.Confirmations.QuitWithRunningSessions
+	switch c.UI.Confirmations.DeleteConversation {
+	case DeleteConversationResponding, DeleteConversationNever:
+		return c.UI.Confirmations.DeleteConversation
+	default:
+		return DeleteConversationAlways
+	}
+}
+
+// ShouldConfirmDeleteRespondingSession returns whether to show a confirmation dialog
+// before destroying a conversation while its agent is actively responding (and, on the
+// macOS app, before quitting with responding agents). True unless the mode is "never".
+func (c *Config) ShouldConfirmDeleteRespondingSession() bool {
+	return c.DeleteConversationMode() != DeleteConversationNever
 }

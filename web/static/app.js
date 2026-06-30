@@ -915,8 +915,9 @@ function App() {
   const [agentCompletedSoundEnabled, setAgentCompletedSoundEnabled] =
     useState(false);
 
-  // UI confirmation settings (default: true - show confirmations)
-  const [confirmDeleteSession, setConfirmDeleteSession] = useState(true);
+  // Confirmation mode for destroying a conversation (close via Cmd+W, sidebar
+  // delete). One of "always" (default), "responding", or "never".
+  const [deleteConfirmMode, setDeleteConfirmMode] = useState("always");
 
   // Badge/folder click command (macOS only)
   const [badgeClickCommand, setBadgeClickCommand] = useState(
@@ -964,10 +965,10 @@ function App() {
             setRcFilePath(config.rc_file_path);
           }
         }
-        // Load UI confirmation settings
-        if (config?.ui?.confirmations?.delete_session === false) {
-          setConfirmDeleteSession(false);
-        }
+        // Load UI confirmation mode (default "always")
+        setDeleteConfirmMode(
+          config?.ui?.confirmations?.delete_conversation || "always",
+        );
         // Load UI settings (macOS only)
         console.log(
           "[config] ui.mac.notifications:",
@@ -1181,14 +1182,29 @@ function App() {
     window.mittoCloseConversation = async () => {
       if (!activeSessionId) return;
 
-      // If confirmation is enabled, show the delete dialog
-      if (confirmDeleteSession) {
-        // Find the current session to pass to the dialog
-        const currentSession =
-          activeSessions.find((s) => s.session_id === activeSessionId) ||
-          storedSessions.find((s) => s.session_id === activeSessionId);
+      // Find the current session to pass to the dialog
+      const currentSession =
+        activeSessions.find((s) => s.session_id === activeSessionId) ||
+        storedSessions.find((s) => s.session_id === activeSessionId);
+
+      // The active conversation's live streaming state is authoritative for
+      // whether the agent is currently responding.
+      const isActivePrompting =
+        isStreaming || currentSession?.isStreaming || false;
+
+      // Confirm based on the delete-confirmation mode: "always" confirms every
+      // close; "responding" confirms only while the agent is responding (so an
+      // accidental Cmd+W cannot discard an in-progress conversation); "never"
+      // closes without a dialog.
+      if (
+        deleteConfirmMode === "always" ||
+        (deleteConfirmMode === "responding" && isActivePrompting)
+      ) {
         if (currentSession) {
-          setDeleteDialog({ isOpen: true, session: currentSession });
+          setDeleteDialog({
+            isOpen: true,
+            session: { ...currentSession, isStreaming: isActivePrompting },
+          });
         }
         return;
       }
@@ -1301,7 +1317,8 @@ function App() {
     removeSession,
     fetchStoredSessions,
     activeSessionId,
-    confirmDeleteSession,
+    deleteConfirmMode,
+    isStreaming,
     activeSessions,
     storedSessions,
     configReadonly,
@@ -1775,8 +1792,21 @@ function App() {
   );
 
   const handleDeleteSession = async (session) => {
-    // If confirmation is disabled, delete immediately
-    if (!confirmDeleteSession) {
+    // A conversation that is still receiving a response must always be
+    // confirmed before deletion. For the active conversation the live
+    // top-level streaming state is authoritative; otherwise fall back to the
+    // per-session flag.
+    const isPrompting =
+      session?.isStreaming ||
+      (session?.session_id === activeSessionId && isStreaming) ||
+      false;
+
+    // Delete immediately only when no confirmation is required: mode is "never",
+    // or mode is "responding" while the agent is not currently responding.
+    if (
+      deleteConfirmMode === "never" ||
+      (deleteConfirmMode === "responding" && !isPrompting)
+    ) {
       // Clean up plan entries, expiration tracking, and completion timers for this session
       clearPlanForSession(session.session_id);
       await removeSession(session.session_id);
@@ -1784,7 +1814,10 @@ function App() {
       return;
     }
     // Otherwise show the confirmation dialog
-    setDeleteDialog({ isOpen: true, session });
+    setDeleteDialog({
+      isOpen: true,
+      session: { ...session, isStreaming: isPrompting },
+    });
   };
 
   const handleConfirmDelete = async () => {
@@ -2465,8 +2498,8 @@ function App() {
               const config = await fetchConfig();
               if (config) {
                 // Reload UI settings
-                setConfirmDeleteSession(
-                  config?.ui?.confirmations?.delete_session !== false,
+                setDeleteConfirmMode(
+                  config?.ui?.confirmations?.delete_conversation || "always",
                 );
                 // Reload badge/folder click command (macOS only)
                 if (typeof window.mittoPickFolder === "function") {

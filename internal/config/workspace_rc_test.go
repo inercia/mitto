@@ -96,7 +96,7 @@ prompts:
     prompt: "Review this code"
 ui:
   confirmations:
-    delete_session: false
+    delete_conversation: never
 `
 	rc, err := parseWorkspaceRC([]byte(yaml))
 	if err != nil {

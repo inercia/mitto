@@ -637,7 +637,7 @@ func TestHandleSaveConfig_UIWithNativeNotifications(t *testing.T) {
 		"acp_servers": [{"name": "test-server", "command": "test-cmd"}],
 		"ui": {
 			"confirmations": {
-				"delete_session": false
+				"delete_conversation": "never"
 			},
 			"mac": {
 				"notifications": {

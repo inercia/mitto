@@ -1354,7 +1354,7 @@ func run() error {
 	// Set up quit confirmation interceptor
 	confirmQuit := true
 	if cfg != nil {
-		confirmQuit = cfg.ShouldConfirmQuitWithRunningSessions()
+		confirmQuit = cfg.ShouldConfirmDeleteRespondingSession()
 	}
 	setupQuitInterceptor(confirmQuit, port)
 

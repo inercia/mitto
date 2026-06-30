@@ -169,10 +169,12 @@ web:
 
 # UI settings
 # ui:
-#   # Confirmation dialogs - set to false to skip confirmations
+#   # Confirmation dialogs
 #   confirmations:
-#     delete_session: true  # Confirm before deleting a conversation (default: true)
-#     quit_with_running_sessions: true  # Confirm before quitting with running conversations (default: true, macOS only)
+#     # When to confirm before destroying a conversation (closing via Cmd+W, deleting
+#     # from the sidebar, or quitting the macOS app while an agent is responding).
+#     # One of: always (default), responding (only when the agent is responding), never.
+#     delete_conversation: always
 #
 #   # Web interface settings (applies to both browser and macOS app)
 #   web:

@@ -1197,7 +1197,7 @@ acp:
       command: "claude"
 ui:
   confirmations:
-    delete_session: false
+    delete_conversation: never
 `
 	cfg, err := Parse([]byte(yaml))
 	if err != nil {
@@ -1208,23 +1208,19 @@ ui:
 		t.Fatal("UI.Confirmations is nil")
 	}
 
-	if cfg.UI.Confirmations.DeleteSession == nil {
-		t.Fatal("UI.Confirmations.DeleteSession is nil")
-	}
-
-	if *cfg.UI.Confirmations.DeleteSession != false {
-		t.Error("Confirmations.DeleteSession = true, want false")
+	if cfg.UI.Confirmations.DeleteConversation != DeleteConversationNever {
+		t.Errorf("Confirmations.DeleteConversation = %q, want %q", cfg.UI.Confirmations.DeleteConversation, DeleteConversationNever)
 	}
 }
 
-func TestParse_UIConfirmationsTrue(t *testing.T) {
+func TestParse_UIConfirmationsAlways(t *testing.T) {
 	yaml := `
 acp:
   - claude:
       command: "claude"
 ui:
   confirmations:
-    delete_session: true
+    delete_conversation: always
 `
 	cfg, err := Parse([]byte(yaml))
 	if err != nil {
@@ -1235,12 +1231,8 @@ ui:
 		t.Fatal("UI.Confirmations is nil")
 	}
 
-	if cfg.UI.Confirmations.DeleteSession == nil {
-		t.Fatal("UI.Confirmations.DeleteSession is nil")
-	}
-
-	if *cfg.UI.Confirmations.DeleteSession != true {
-		t.Error("Confirmations.DeleteSession = false, want true")
+	if cfg.UI.Confirmations.DeleteConversation != DeleteConversationAlways {
+		t.Errorf("Confirmations.DeleteConversation = %q, want %q", cfg.UI.Confirmations.DeleteConversation, DeleteConversationAlways)
 	}
 }
 
@@ -1251,7 +1243,7 @@ acp:
       command: "claude"
 ui:
   confirmations:
-    delete_session: false
+    delete_conversation: never
   mac:
     notifications:
       sounds:
@@ -1263,11 +1255,11 @@ ui:
 	}
 
 	// Check confirmations
-	if cfg.UI.Confirmations == nil || cfg.UI.Confirmations.DeleteSession == nil {
+	if cfg.UI.Confirmations == nil {
 		t.Fatal("UI.Confirmations not properly parsed")
 	}
-	if *cfg.UI.Confirmations.DeleteSession != false {
-		t.Error("Confirmations.DeleteSession = true, want false")
+	if cfg.UI.Confirmations.DeleteConversation != DeleteConversationNever {
+		t.Errorf("Confirmations.DeleteConversation = %q, want %q", cfg.UI.Confirmations.DeleteConversation, DeleteConversationNever)
 	}
 
 	// Check Mac notifications
@@ -1279,15 +1271,14 @@ ui:
 	}
 }
 
-func TestParse_UIConfirmationsQuitWithRunningSessions(t *testing.T) {
+func TestParse_UIConfirmationsDeleteConversationResponding(t *testing.T) {
 	yaml := `
 acp:
   - claude:
       command: "claude"
 ui:
   confirmations:
-    delete_session: true
-    quit_with_running_sessions: false
+    delete_conversation: responding
 `
 	cfg, err := Parse([]byte(yaml))
 	if err != nil {
@@ -1298,17 +1289,17 @@ ui:
 		t.Fatal("UI.Confirmations is nil")
 	}
 
-	if cfg.UI.Confirmations.QuitWithRunningSessions == nil {
-		t.Fatal("UI.Confirmations.QuitWithRunningSessions is nil")
+	if cfg.UI.Confirmations.DeleteConversation != DeleteConversationResponding {
+		t.Errorf("Confirmations.DeleteConversation = %q, want %q", cfg.UI.Confirmations.DeleteConversation, DeleteConversationResponding)
 	}
 
-	if *cfg.UI.Confirmations.QuitWithRunningSessions != false {
-		t.Error("Confirmations.QuitWithRunningSessions = true, want false")
+	// "responding" still confirms before quitting with a responding agent.
+	if cfg.ShouldConfirmDeleteRespondingSession() != true {
+		t.Error("ShouldConfirmDeleteRespondingSession() = false, want true")
 	}
 
-	// Also verify the helper method
-	if cfg.ShouldConfirmQuitWithRunningSessions() != false {
-		t.Error("ShouldConfirmQuitWithRunningSessions() = true, want false")
+	if cfg.DeleteConversationMode() != DeleteConversationResponding {
+		t.Errorf("DeleteConversationMode() = %q, want %q", cfg.DeleteConversationMode(), DeleteConversationResponding)
 	}
 }
 
@@ -1440,7 +1431,7 @@ func TestBadgeClickActionConfig_Defaults(t *testing.T) {
 	}
 }
 
-func TestShouldConfirmQuitWithRunningSessions(t *testing.T) {
+func TestShouldConfirmDeleteRespondingSession(t *testing.T) {
 	tests := []struct {
 		name     string
 		config   *Config
@@ -1452,7 +1443,7 @@ func TestShouldConfirmQuitWithRunningSessions(t *testing.T) {
 			expected: true,
 		},
 		{
-			name: "nil QuitWithRunningSessions returns true",
+			name: "empty mode returns true",
 			config: &Config{
 				UI: UIConfig{
 					Confirmations: &ConfirmationsConfig{},
@@ -1461,22 +1452,33 @@ func TestShouldConfirmQuitWithRunningSessions(t *testing.T) {
 			expected: true,
 		},
 		{
-			name: "explicit true returns true",
+			name: "always returns true",
 			config: &Config{
 				UI: UIConfig{
 					Confirmations: &ConfirmationsConfig{
-						QuitWithRunningSessions: boolPtr(true),
+						DeleteConversation: DeleteConversationAlways,
 					},
 				},
 			},
 			expected: true,
 		},
 		{
-			name: "explicit false returns false",
+			name: "responding returns true",
 			config: &Config{
 				UI: UIConfig{
 					Confirmations: &ConfirmationsConfig{
-						QuitWithRunningSessions: boolPtr(false),
+						DeleteConversation: DeleteConversationResponding,
+					},
+				},
+			},
+			expected: true,
+		},
+		{
+			name: "never returns false",
+			config: &Config{
+				UI: UIConfig{
+					Confirmations: &ConfirmationsConfig{
+						DeleteConversation: DeleteConversationNever,
 					},
 				},
 			},
@@ -1486,16 +1488,63 @@ func TestShouldConfirmQuitWithRunningSessions(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := tt.config.ShouldConfirmQuitWithRunningSessions()
+			got := tt.config.ShouldConfirmDeleteRespondingSession()
 			if got != tt.expected {
-				t.Errorf("ShouldConfirmQuitWithRunningSessions() = %v, want %v", got, tt.expected)
+				t.Errorf("ShouldConfirmDeleteRespondingSession() = %v, want %v", got, tt.expected)
 			}
 		})
 	}
 }
 
-func boolPtr(b bool) *bool {
-	return &b
+func TestDeleteConversationMode(t *testing.T) {
+	tests := []struct {
+		name     string
+		config   *Config
+		expected string
+	}{
+		{
+			name:     "nil confirmations defaults to always",
+			config:   &Config{},
+			expected: DeleteConversationAlways,
+		},
+		{
+			name: "empty value defaults to always",
+			config: &Config{
+				UI: UIConfig{Confirmations: &ConfirmationsConfig{}},
+			},
+			expected: DeleteConversationAlways,
+		},
+		{
+			name: "invalid value defaults to always",
+			config: &Config{
+				UI: UIConfig{Confirmations: &ConfirmationsConfig{DeleteConversation: "bogus"}},
+			},
+			expected: DeleteConversationAlways,
+		},
+		{
+			name: "responding is preserved",
+			config: &Config{
+				UI: UIConfig{Confirmations: &ConfirmationsConfig{DeleteConversation: DeleteConversationResponding}},
+			},
+			expected: DeleteConversationResponding,
+		},
+		{
+			name: "never is preserved",
+			config: &Config{
+				UI: UIConfig{Confirmations: &ConfirmationsConfig{DeleteConversation: DeleteConversationNever}},
+			},
+			expected: DeleteConversationNever,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := tt.config.DeleteConversationMode()
+			if got != tt.expected {
+				t.Errorf("DeleteConversationMode() = %q, want %q", got, tt.expected)
+			}
+		})
+	}
 }
 
 // Tests for MessageProcessor
