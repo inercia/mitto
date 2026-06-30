@@ -1,6 +1,11 @@
 icon: globe
 name: 'GitHub: babysit my PRs'
 menus: prompts
+parameters:
+  - name: Repository
+    type: text
+    required: false
+    description: 'Optional GitHub repository (owner/repo) to babysit. If omitted, the repository of the current folder is used.'
 description: 'Periodically check your own open PRs: rebase stale branches, report CI failures, flag ready-to-merge PRs, and address review comments'
 group: GitHub
 backgroundColor: '#BBDEFB'
@@ -9,9 +14,12 @@ tags:
 - github
 enabledWhen: FileExists(".git/config") && (Tools.HasPattern("github_*") || CommandExists("gh"))
 prompt: |
-  Monitor your own open pull requests for the current repository, keeping them
-  up-to-date and reporting issues. Only acts on PRs where you are the author.
-  Designed to be run periodically via `mitto_conversation_set_periodic`.
+  {{- $repoFlag := "" -}}
+  {{- if .Args.Repository }}{{ $repoFlag = printf " --repo %s" .Args.Repository }}{{ end -}}
+  Monitor your own open pull requests for the target repository (the current
+  folder's repo by default, or the one supplied via the `Repository` parameter),
+  keeping them up-to-date and reporting issues. Only acts on PRs where you are
+  the author. Designed to be run periodically via `mitto_conversation_set_periodic`.
 
   ## Session Context
 
@@ -57,12 +65,32 @@ prompt: |
   {{- end }}
 
   ## Step 1 — Identify the repository
+  {{- if .Args.Repository }}
+
+  A target repository was supplied: **`{{ .Args.Repository }}`**. Every `gh`
+  command in this prompt already targets it via `--repo {{ .Args.Repository }}`,
+  so you do not need to be inside that repository's checkout.
+
+  ```bash
+  gh repo view {{ .Args.Repository }} --json nameWithOwner,defaultBranchRef -q '.nameWithOwner + " (default: " + .defaultBranchRef.name + ")"'
+  ```
+
+  **Local git operations** (the rebase in Step 3a) still need a local clone of
+  the target repo. If the current folder is already a checkout of
+  `{{ .Args.Repository }}`, use it; otherwise clone it on demand into a temp dir
+  (`gh repo clone {{ .Args.Repository }} "$(mktemp -d)"`) and run the git
+  commands there.
+  {{- else }}
+
+  No repository was supplied, so operate on the repository of the **current
+  folder** where this prompt runs.
 
   ```bash
   git remote -v
   git rev-parse --show-toplevel
   gh repo view --json nameWithOwner,defaultBranchRef -q '.nameWithOwner + " (default: " + .defaultBranchRef.name + ")"'
   ```
+  {{- end }}
 
   If `gh` is not authenticated (`gh auth status` fails), inform the user and stop.
 
@@ -93,7 +121,7 @@ prompt: |
   rebase, merge, or spawn fix conversations for other people's PRs.
 
   ```bash
-  gh pr list --state open --author @me --json number,title,headRefName,baseRefName,statusCheckRollup,mergeable,updatedAt,isDraft,reviewDecision,author,reviewRequests,labels --limit 50
+  gh pr list{{ $repoFlag }} --state open --author @me --json number,title,headRefName,baseRefName,statusCheckRollup,mergeable,updatedAt,isDraft,reviewDecision,author,reviewRequests,labels --limit 50
   ```
 
   If no open PRs, skip to the Summary (Step 4).
@@ -110,7 +138,7 @@ prompt: |
   be cleanly merged.
 
   ```bash
-  gh pr view <number> --json mergeStateStatus,mergeable,baseRefName,headRefName
+  gh pr view <number>{{ $repoFlag }} --json mergeStateStatus,mergeable,baseRefName,headRefName
   ```
 
   **If the PR is behind its target branch and needs rebasing:**
@@ -137,7 +165,11 @@ prompt: |
      ```
 
   2. **Important**: Do NOT modify the local checkout — the user may be working there.
-     Use a temporary worktree or bare operations:
+     Use a temporary worktree or bare operations.
+     {{- if .Args.Repository }}
+     Run the git commands below inside a checkout of `{{ .Args.Repository }}` —
+     the current folder if it is that repo, otherwise the temp clone from Step 1.
+     {{- end }}
 
      ```bash
      # Fetch latest from remote
@@ -210,9 +242,9 @@ prompt: |
   1. Attempt to retrieve failure logs:
      ```bash
      # Find the failing run
-     gh run list --branch <headRefName> --status failure --limit 1 --json databaseId,name,conclusion
+     gh run list{{ $repoFlag }} --branch <headRefName> --status failure --limit 1 --json databaseId,name,conclusion
      # Get failure details
-     gh run view <run-id> --log-failed 2>/dev/null | tail -80
+     gh run view <run-id>{{ $repoFlag }} --log-failed 2>/dev/null | tail -80
      ```
 
   2. Notify the user with failure details:
@@ -267,7 +299,7 @@ prompt: |
       { label: "No, just notify" }
     ])
   ```
-  If the user selects "Yes": `gh pr merge <number> --merge` (or `--squash`/`--rebase`
+  If the user selects "Yes": `gh pr merge <number>{{ $repoFlag }} --merge` (or `--squash`/`--rebase`
   based on repo settings). Then notify success.
 
   **In scheduled mode**, just notify:
@@ -283,7 +315,7 @@ prompt: |
   Check for unresolved review threads:
 
   ```bash
-  gh pr view <number> --json reviewThreads --jq '[.reviewThreads[] | select(.isResolved == false)] | length'
+  gh pr view <number>{{ $repoFlag }} --json reviewThreads --jq '[.reviewThreads[] | select(.isResolved == false)] | length'
   ```
 
   **If there are unresolved threads:**
@@ -362,6 +394,15 @@ prompt: |
 
   ## Guidelines
 
+  - **Target repository**:
+  {{- if .Args.Repository }}
+    operate on `{{ .Args.Repository }}`; all `gh` commands target it via
+    `--repo {{ .Args.Repository }}`. When spawning fix conversations, tell them
+    the repository is `{{ .Args.Repository }}` and to clone it if the current
+    folder is a different repo.
+  {{- else }}
+    no repository was supplied; operate on the repository of the current folder.
+  {{- end }}
   - **Never modify the local checkout** — the user may have uncommitted work there.
     Always use temporary worktrees for rebase operations.
   - Use `--force-with-lease` when force-pushing (never `--force`).
