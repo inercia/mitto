@@ -133,7 +133,7 @@ func (h *Handlers) HandleCreateSession(w http.ResponseWriter, r *http.Request) {
 
 		if h.deps.Store != nil {
 			metas, _ := h.deps.Store.List()
-			if existingID, found := findSingletonCandidate(metas, req.WorkingDir, promptName); found {
+			if existingID, found := session.FindSingletonCandidate(metas, req.WorkingDir, promptName); found {
 				h.reuseSingletonSession(w, existingID, promptName, req.Arguments)
 				return
 			}
@@ -270,28 +270,6 @@ func (h *Handlers) seedQueueWithNamedPrompt(bs *conversation.BackgroundSession, 
 	}
 	// Dispatch immediately if the agent is idle — same path as the queue API.
 	go bs.TryProcessQueuedMessage()
-}
-
-// findSingletonCandidate scans persisted session metadata for a non-archived
-// session in workingDir whose OriginPromptName matches promptName
-// (case-insensitive). When multiple match, the most recently updated one wins.
-// Returns (sessionID, true) on a match, ("", false) when none is found.
-func findSingletonCandidate(metas []session.Metadata, workingDir, promptName string) (string, bool) {
-	var best session.Metadata
-	found := false
-	for _, m := range metas {
-		if m.Archived || m.WorkingDir != workingDir || !strings.EqualFold(m.OriginPromptName, promptName) {
-			continue
-		}
-		if !found || m.UpdatedAt.After(best.UpdatedAt) {
-			best = m
-			found = true
-		}
-	}
-	if !found {
-		return "", false
-	}
-	return best.SessionID, true
 }
 
 // reuseSingletonSession routes a singleton-prompt create request to an

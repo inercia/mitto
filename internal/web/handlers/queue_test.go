@@ -6,7 +6,6 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/inercia/mitto/internal/session"
 )
@@ -30,82 +29,6 @@ func setupQueueTestHandlers(t *testing.T) (*session.Store, *Handlers, string) {
 
 	h := New(Deps{Store: store, APIPrefix: "/mitto"})
 	return store, h, sessionID
-}
-
-// =============================================================================
-// findSingletonCandidate (mitto-4mb.3) — scan/decision logic in isolation
-// =============================================================================
-
-func TestFindSingletonCandidate_NoExistingSession(t *testing.T) {
-	if _, found := findSingletonCandidate(nil, "/work", "my-prompt"); found {
-		t.Error("expected no candidate for empty metadata list")
-	}
-}
-
-func TestFindSingletonCandidate_OneMatchingNonArchivedSession(t *testing.T) {
-	metas := []session.Metadata{
-		{SessionID: "s1", WorkingDir: "/work", OriginPromptName: "my-prompt"},
-	}
-	id, found := findSingletonCandidate(metas, "/work", "my-prompt")
-	if !found {
-		t.Fatal("expected a candidate")
-	}
-	if id != "s1" {
-		t.Errorf("SessionID = %q, want %q", id, "s1")
-	}
-}
-
-func TestFindSingletonCandidate_ArchivedMatchIgnored(t *testing.T) {
-	metas := []session.Metadata{
-		{SessionID: "s1", WorkingDir: "/work", OriginPromptName: "my-prompt", Archived: true},
-	}
-	if _, found := findSingletonCandidate(metas, "/work", "my-prompt"); found {
-		t.Error("archived session should not be a candidate")
-	}
-}
-
-func TestFindSingletonCandidate_DifferentWorkingDirIgnored(t *testing.T) {
-	metas := []session.Metadata{
-		{SessionID: "s1", WorkingDir: "/other", OriginPromptName: "my-prompt"},
-	}
-	if _, found := findSingletonCandidate(metas, "/work", "my-prompt"); found {
-		t.Error("session in a different working dir should not be a candidate")
-	}
-}
-
-func TestFindSingletonCandidate_DifferentOriginPromptNameIgnored(t *testing.T) {
-	metas := []session.Metadata{
-		{SessionID: "s1", WorkingDir: "/work", OriginPromptName: "other-prompt"},
-	}
-	if _, found := findSingletonCandidate(metas, "/work", "my-prompt"); found {
-		t.Error("session from a different prompt should not be a candidate")
-	}
-}
-
-func TestFindSingletonCandidate_CaseInsensitivePromptMatch(t *testing.T) {
-	metas := []session.Metadata{
-		{SessionID: "s1", WorkingDir: "/work", OriginPromptName: "My-Prompt"},
-	}
-	id, found := findSingletonCandidate(metas, "/work", "my-prompt")
-	if !found || id != "s1" {
-		t.Errorf("expected case-insensitive match, got found=%v id=%q", found, id)
-	}
-}
-
-func TestFindSingletonCandidate_MultipleMatches_MostRecentlyUpdatedWins(t *testing.T) {
-	older := time.Now().Add(-1 * time.Hour)
-	newer := time.Now()
-	metas := []session.Metadata{
-		{SessionID: "old", WorkingDir: "/work", OriginPromptName: "my-prompt", UpdatedAt: older},
-		{SessionID: "new", WorkingDir: "/work", OriginPromptName: "my-prompt", UpdatedAt: newer},
-	}
-	id, found := findSingletonCandidate(metas, "/work", "my-prompt")
-	if !found {
-		t.Fatal("expected a candidate")
-	}
-	if id != "new" {
-		t.Errorf("SessionID = %q, want %q (most recently updated)", id, "new")
-	}
 }
 
 // TestReuseSingletonSession_NotLoadedIdle_EnqueuesWithoutDispatch verifies that
