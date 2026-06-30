@@ -53,6 +53,8 @@ import {
 
 import { ModelSelection } from "./ModelSelection.js";
 import { Tooltip } from "./Tooltip.js";
+import { IconPicker } from "./IconPicker.js";
+import { promptMenuIncludes } from "../utils/prompts.js";
 
 // Flatten the canonical nested error envelope {error:{code,message,details}} to a
 // flat message string. Returns "" when there is no error. Also accepts the legacy
@@ -265,6 +267,13 @@ export function WorkspacesDialog({
   // Local argument edit state: { [procName]: { [paramName]: value } }
   // Seeded lazily on first edit; cleared after a successful Save.
   const [processorArgEdits, setProcessorArgEdits] = useState({});
+
+  // Folder shortcuts state (for the Shortcuts tab)
+  const [shortcutsSections, setShortcutsSections] = useState({});
+  const [shortcutsLoading, setShortcutsLoading] = useState(false);
+  const [shortcutsLoaded, setShortcutsLoaded] = useState(false);
+  const [shortcutsError, setShortcutsError] = useState("");
+  const [tasksListPrompts, setTasksListPrompts] = useState([]);
 
   // Folder beads config state (for the Beads Config tab) — UI wrapper over `bd config`.
   // beadsConfig holds the raw {key: value} map last loaded from the server.
@@ -594,6 +603,45 @@ export function WorkspacesDialog({
     setBeadsPushPrompt("");
     setBeadsSyncPrompt("");
     setBeadsUpstreamPrompts([]);
+  }, [selectedFolder]);
+
+  // Lazily load shortcuts when the Shortcuts folder tab is opened.
+  useEffect(() => {
+    if (activeTab !== "shortcuts" || !selectedFolder) return;
+    const workingDir = getSelectedFolderDir();
+    if (!workingDir) return;
+    setShortcutsLoading(true);
+    setShortcutsError("");
+    Promise.all([
+      authFetch(endpoints.folders.shortcuts({ working_dir: workingDir }))
+        .then((r) => r.json())
+        .then((data) => setShortcutsSections(data.sections || {})),
+      authFetch(
+        endpoints.workspacePrompts.list({
+          working_dir: workingDir,
+          include_global: true,
+        }),
+      )
+        .then((r) => r.json())
+        .then((data) => {
+          const all = data.prompts || [];
+          const filtered = all
+            .filter((p) => promptMenuIncludes(p, "beadsList"))
+            .sort((a, b) => a.name.localeCompare(b.name));
+          setTasksListPrompts(filtered);
+        }),
+    ])
+      .then(() => setShortcutsLoaded(true))
+      .catch((err) => setShortcutsError("Failed to load shortcuts: " + err.message))
+      .finally(() => setShortcutsLoading(false));
+  }, [activeTab, selectedFolder]);
+
+  // Reset shortcuts state when switching folders.
+  useEffect(() => {
+    setShortcutsSections({});
+    setTasksListPrompts([]);
+    setShortcutsError("");
+    setShortcutsLoaded(false);
   }, [selectedFolder]);
 
   const loadData = async () => {
@@ -1227,6 +1275,18 @@ export function WorkspacesDialog({
         }
       }
 
+      // Persist folder shortcuts if the Shortcuts tab was opened/edited.
+      if (selectedFolder && shortcutsLoaded) {
+        try {
+          await persistShortcuts();
+        } catch (scErr) {
+          setError("Failed to save shortcuts: " + scErr.message);
+          const elapsed = Date.now() - saveStartTime;
+          setTimeout(() => setSaving(false), Math.max(0, 1000 - elapsed));
+          return;
+        }
+      }
+
       setWorkspaces(updated);
       setNewFolderKey(null);
       onSave?.();
@@ -1733,6 +1793,82 @@ export function WorkspacesDialog({
     }
   };
 
+  // ------ Shortcuts tab helpers -----------------------------------------------
+
+  // Immutably update a row in the tasksList section.
+  const updateShortcutRow = (idx, patch) => {
+    setShortcutsSections((prev) => {
+      const list = [...(prev.tasksList || [])];
+      list[idx] = { ...list[idx], ...patch };
+      return { ...prev, tasksList: list };
+    });
+  };
+
+  // Remove a row from the tasksList section.
+  const removeShortcutRow = (idx) => {
+    setShortcutsSections((prev) => {
+      const list = [...(prev.tasksList || [])];
+      list.splice(idx, 1);
+      return { ...prev, tasksList: list };
+    });
+  };
+
+  // Move a row up (dir=-1) or down (dir=1) in the tasksList section.
+  const moveShortcutRow = (idx, dir) => {
+    setShortcutsSections((prev) => {
+      const list = [...(prev.tasksList || [])];
+      const target = idx + dir;
+      if (target < 0 || target >= list.length) return prev;
+      [list[idx], list[target]] = [list[target], list[idx]];
+      return { ...prev, tasksList: list };
+    });
+  };
+
+  // Append a new empty row.
+  const addShortcutRow = () => {
+    setShortcutsSections((prev) => {
+      const list = [...(prev.tasksList || [])];
+      if (list.length >= 10) return prev;
+      // Empty icon → fall back to the linked prompt's own icon at render time.
+      list.push({ icon: "", prompt: "" });
+      return { ...prev, tasksList: list };
+    });
+  };
+
+  // Persist the shortcuts sections via PUT /api/folders/shortcuts.
+  // Throws on failure; updates local state on success. Invoked by the
+  // dialog footer Save (handleSave).
+  const persistShortcuts = async () => {
+    const workingDir = getSelectedFolderDir();
+    if (!workingDir) return;
+    // Build sections: drop rows with empty prompt, cap to 10.
+    const tasksList = (shortcutsSections.tasksList || [])
+      .filter((r) => r.prompt)
+      .slice(0, 10);
+    const sections = { tasksList };
+    const res = await secureFetch(
+      endpoints.folders.shortcuts({ working_dir: workingDir }),
+      {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sections }),
+      },
+    );
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok)
+      throw new Error(errorMessageFromData(data, "Failed to save shortcuts"));
+    setShortcutsSections(data.sections || {});
+    // Notify any open Tasks list (BeadsView) so its shortcut buttons refresh
+    // immediately, without requiring a full page reload.
+    window.dispatchEvent(
+      new CustomEvent("mitto:folder_shortcuts_updated", {
+        detail: { working_dir: workingDir },
+      }),
+    );
+  };
+
+  // ---------------------------------------------------------------------------
+
   // Load processors when a folder is selected and the Processors tab is active
   useEffect(() => {
     if (!selectedFolder || activeTab !== "processors") return;
@@ -1864,12 +2000,13 @@ export function WorkspacesDialog({
 
   // Different tab sets for folder vs workspace
   const folderTabs = [
-    { id: "general", label: "General" },
-    { id: "metadata", label: "Metadata" },
-    { id: "beads", label: "Tasks" },
-    { id: "prompts", label: "Prompts" },
-    { id: "processors", label: "Processors" },
-    { id: "children", label: "Children" },
+    { id: "general", label: "General", short: "General" },
+    { id: "metadata", label: "Metadata", short: "Meta" },
+    { id: "beads", label: "Tasks", short: "Tasks" },
+    { id: "prompts", label: "Prompts", short: "Prompts" },
+    { id: "processors", label: "Processors", short: "Proc" },
+    { id: "shortcuts", label: "Shortcuts", short: "Cuts" },
+    { id: "children", label: "Children", short: "Children" },
   ];
 
   const workspaceTabs = [
@@ -2192,7 +2329,8 @@ export function WorkspacesDialog({
                           type="radio"
                           name="ws-folder-tabs"
                           role="tab"
-                          aria-label=${tab.label}
+                          title=${tab.label}
+                          aria-label=${tab.short}
                           data-testid=${`ws-tab-${tab.id}`}
                           checked=${activeTab === tab.id}
                           onChange=${() => setActiveTab(tab.id)}
@@ -3672,6 +3810,134 @@ export function WorkspacesDialog({
                                         </div>
                                       `;
                                     })}
+                              </div>
+                            `}
+                      </div>
+                    `}
+
+                    <!-- Folder Shortcuts tab -->
+                    ${activeTab === "shortcuts" &&
+                    html`
+                      <div class="space-y-4">
+                        ${shortcutsLoading
+                          ? html`<div
+                              class="flex items-center justify-center p-4"
+                            >
+                              <${SpinnerIcon} className="w-5 h-5 animate-spin" />
+                            </div>`
+                          : html`
+                              <div class="space-y-4">
+                                <fieldset class="fieldset pt-2">
+                                  <legend class="fieldset-legend">
+                                    Tasks List
+                                  </legend>
+                                  <p class="text-sm text-mitto-text-muted mb-3">
+                                    Manage shortcut buttons for sending prompts
+                                    in the Tasks list.
+                                  </p>
+
+                                  <div class="space-y-2">
+                                    ${(shortcutsSections.tasksList || []).map(
+                                      (row, idx) => {
+                                        const linkedPrompt =
+                                          tasksListPrompts.find(
+                                            (p) => p.name === row.prompt,
+                                          );
+                                        return html`
+                                          <div key=${idx} class="join w-full">
+                                            <${IconPicker}
+                                              value=${row.icon}
+                                              defaultIconName=${linkedPrompt?.icon ||
+                                              ""}
+                                              className="join-item border-mitto-border"
+                                              onChange=${(name) =>
+                                                updateShortcutRow(idx, {
+                                                  icon: name,
+                                                })}
+                                            />
+                                            <select
+                                              class="select select-sm join-item flex-1"
+                                              value=${row.prompt}
+                                              onChange=${(e) =>
+                                                updateShortcutRow(idx, {
+                                                  prompt: e.target.value,
+                                                })}
+                                            >
+                                              <option value="">
+                                                Select a prompt…
+                                              </option>
+                                              ${tasksListPrompts.map(
+                                                (p) => html`
+                                                  <option
+                                                    key=${p.name}
+                                                    value=${p.name}
+                                                  >
+                                                    ${p.name}
+                                                  </option>
+                                                `,
+                                              )}
+                                            </select>
+                                            <button
+                                              type="button"
+                                              class="btn btn-ghost btn-square btn-sm join-item"
+                                              disabled=${idx === 0}
+                                              onClick=${() =>
+                                                moveShortcutRow(idx, -1)}
+                                              aria-label="Move up"
+                                              title="Move up"
+                                            >
+                                              ↑
+                                            </button>
+                                            <button
+                                              type="button"
+                                              class="btn btn-ghost btn-square btn-sm join-item"
+                                              disabled=${idx ===
+                                              (shortcutsSections.tasksList || [])
+                                                .length -
+                                                1}
+                                              onClick=${() =>
+                                                moveShortcutRow(idx, 1)}
+                                              aria-label="Move down"
+                                              title="Move down"
+                                            >
+                                              ↓
+                                            </button>
+                                            <button
+                                              type="button"
+                                              class="btn btn-ghost btn-square btn-sm join-item text-mitto-danger"
+                                              onClick=${() =>
+                                                removeShortcutRow(idx)}
+                                              aria-label="Remove"
+                                              title="Remove"
+                                            >
+                                              <${TrashIcon}
+                                                className="w-4 h-4"
+                                              />
+                                            </button>
+                                          </div>
+                                        `;
+                                      },
+                                    )}
+                                  </div>
+
+                                  <div class="mt-3 flex items-center gap-2">
+                                    <button
+                                      type="button"
+                                      class="btn btn-sm btn-ghost"
+                                      disabled=${(shortcutsSections.tasksList || []).length >= 10}
+                                      onClick=${addShortcutRow}
+                                    >
+                                      + Add shortcut
+                                    </button>
+                                    ${(shortcutsSections.tasksList || []).length >= 10 &&
+                                    html`<span class="text-xs text-mitto-text-muted">Maximum 10</span>`}
+                                  </div>
+                                </fieldset>
+
+                                ${shortcutsError &&
+                                html`<p class="text-sm text-mitto-danger">
+                                  ${shortcutsError}
+                                </p>`}
                               </div>
                             `}
                       </div>

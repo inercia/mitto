@@ -117,6 +117,7 @@ test.describe("WorkspacesDialog structure (daisyUI conversion safety net)", () =
       "beads",
       "prompts",
       "processors",
+      "shortcuts",
       "children",
     ];
     for (const id of folderTabs) {
