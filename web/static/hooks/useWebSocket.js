@@ -4491,6 +4491,14 @@ export function useWebSocket({ onActiveSessionRemovedRef } = {}) {
         }
         break;
 
+      case "beads_changed":
+        if (msg.data) {
+          window.dispatchEvent(
+            new CustomEvent("mitto:beads_changed", { detail: msg.data }),
+          );
+        }
+        break;
+
       case "mcp_tools_unavailable":
         // Server notifies that Mitto MCP tools are not available in the ACP agent.
         // Dispatches an event so UI components can show an installation prompt.

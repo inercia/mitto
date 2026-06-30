@@ -330,6 +330,12 @@ const (
 	// Data: { "changed_dirs": []string, "timestamp": string (ISO 8601) }
 	WSMsgTypePromptsChanged = "prompts_changed"
 
+	// WSMsgTypeBeadsChanged notifies that beads issues have changed on disk.
+	// Sent when another agent or CLI (bd, git pull, bd dolt pull) modifies the .beads/ directory.
+	// Clients should refresh their tasks/issues view when receiving this message.
+	// Data: { "working_dirs": []string, "changed_dirs": []string, "timestamp": string (ISO 8601) }
+	WSMsgTypeBeadsChanged = "beads_changed"
+
 	// WSMsgTypeBeadsCleanupProgress reports progress of a background bulk
 	// closed-issue cleanup started via POST /api/issues/cleanup. Sent repeatedly
 	// as batches complete, plus a final message with done=true (or error set).

@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -194,6 +195,9 @@ type Server struct {
 
 	// Prompts watcher for monitoring prompt file changes
 	promptsWatcher *configPkg.PromptsWatcher
+
+	// Beads watcher for monitoring .beads/ directory changes
+	beadsWatcher *configPkg.BeadsWatcher
 
 	// ACP process manager for workspace-scoped shared processes
 	acpProcessManager *acpproc.ACPProcessManager
@@ -792,6 +796,11 @@ func NewServer(config Config) (*Server, error) {
 		},
 		SyncConfigWorkspaces: func() {
 			s.config.Workspaces = s.sessionManager.GetWorkspaces()
+			// Re-subscribe beads watcher to pick up any newly added workspaces.
+			if s.beadsWatcher != nil {
+				s.beadsWatcher.Unsubscribe(s)
+				s.beadsWatcher.Subscribe(s, s.getBeadsWatchDirs())
+			}
 		},
 		RestartWorkspaceACP: func() func(string) error {
 			if s.acpProcessManager == nil {
@@ -874,6 +883,16 @@ func NewServer(config Config) (*Server, error) {
 		s.promptsWatcher.Subscribe(s, s.getPromptsWatchDirs())
 		s.promptsWatcher.Start()
 		logger.Info("Prompts watcher started", "dirs", s.getPromptsWatchDirs())
+	}
+
+	// Initialize beads watcher for monitoring .beads/ directory changes
+	if beadsWatcher, err := configPkg.NewBeadsWatcher(logger); err != nil {
+		logger.Warn("Failed to create beads watcher", "error", err)
+	} else {
+		s.beadsWatcher = beadsWatcher
+		s.beadsWatcher.Subscribe(s, s.getBeadsWatchDirs())
+		s.beadsWatcher.Start()
+		logger.Info("Beads watcher started", "dirs", s.getBeadsWatchDirs())
 	}
 
 	// Set up routes
@@ -1085,6 +1104,11 @@ func (s *Server) Shutdown() error {
 	// Close prompts watcher
 	if s.promptsWatcher != nil {
 		s.promptsWatcher.Close()
+	}
+
+	// Close beads watcher
+	if s.beadsWatcher != nil {
+		s.beadsWatcher.Close()
 	}
 
 	// Shut down the HTTP server with a timeout so we don't hang indefinitely.
@@ -1674,6 +1698,49 @@ func (s *Server) getPromptsWatchDirs() []string {
 		dirs = append(dirs, s.config.MittoConfig.PromptsDirs...)
 	}
 
+	return dirs
+}
+
+// =============================================================================
+// BeadsSubscriber implementation
+// =============================================================================
+
+// OnBeadsChanged is called by the BeadsWatcher when .beads/ directories change.
+// It broadcasts the change to all connected clients via the global events WebSocket.
+func (s *Server) OnBeadsChanged(event configPkg.BeadsChangeEvent) {
+	if s.eventsManager == nil {
+		return
+	}
+
+	s.eventsManager.Broadcast(WSMsgTypeBeadsChanged, map[string]interface{}{
+		"working_dirs": event.WorkingDirs,
+		"changed_dirs": event.ChangedDirs,
+		"timestamp":    event.Timestamp.Format("2006-01-02T15:04:05Z07:00"),
+	})
+
+	if s.logger != nil {
+		s.logger.Debug("Broadcasted beads_changed event",
+			"working_dirs", event.WorkingDirs,
+			"changed_dirs", event.ChangedDirs,
+			"client_count", s.eventsManager.ClientCount())
+	}
+}
+
+// getBeadsWatchDirs returns the .beads/ directories to watch, one per workspace.
+func (s *Server) getBeadsWatchDirs() []string {
+	seen := make(map[string]struct{})
+	var dirs []string
+	for _, ws := range s.sessionManager.GetWorkspaces() {
+		if ws.WorkingDir == "" {
+			continue
+		}
+		d := filepath.Join(ws.WorkingDir, ".beads")
+		if _, ok := seen[d]; ok {
+			continue
+		}
+		seen[d] = struct{}{}
+		dirs = append(dirs, d)
+	}
 	return dirs
 }
 

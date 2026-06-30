@@ -2805,6 +2805,11 @@ export function BeadsView({
   const [showListPrompts, setShowListPrompts] = useState(false);
   const [listPrompts, setListPrompts] = useState([]);
   const [listPromptsLoading, setListPromptsLoading] = useState(false);
+
+  // Shortcut buttons configured for this folder's tasksList section.
+  const [shortcuts, setShortcuts] = useState([]);
+  // Map from prompt name → prompt object, built once shortcuts + prompts are loaded.
+  const [shortcutPromptMap, setShortcutPromptMap] = useState(new Map());
   const listPromptsRef = useRef(null);
   // Ref for the issues scroll container — used by usePullToRefresh.
   const scrollContainerRef = useRef(null);
@@ -2876,6 +2881,79 @@ export function BeadsView({
       cancelled = true;
     };
   }, [workingDir]);
+
+  // Fetch folder shortcut buttons and resolve their prompt objects eagerly so
+  // buttons can dispatch immediately without a lazy-load on click. Extracted to
+  // a callback so both the initial load and the "shortcuts updated" event
+  // listener (below) can reuse it. `isStale` lets the workingDir effect cancel a
+  // stale in-flight fetch when the folder changes mid-request.
+  const loadShortcuts = useCallback(
+    async (isStale) => {
+      if (!workingDir) {
+        setShortcuts([]);
+        setShortcutPromptMap(new Map());
+        return;
+      }
+      try {
+        const res = await authFetch(
+          endpoints.folders.shortcuts({ working_dir: workingDir }),
+        );
+        const data = await res.json().catch(() => ({}));
+        const list = data?.sections?.tasksList || [];
+        if (isStale && isStale()) return;
+        setShortcuts(list);
+        if (list.length > 0 && onFetchBeadsListPrompts) {
+          const prompts = await onFetchBeadsListPrompts(workingDir);
+          if (isStale && isStale()) return;
+          const map = new Map((prompts || []).map((p) => [p.name, p]));
+          setShortcutPromptMap(map);
+        } else {
+          setShortcutPromptMap(new Map());
+        }
+      } catch (_err) {
+        if (isStale && isStale()) return;
+        setShortcuts([]);
+        setShortcutPromptMap(new Map());
+      }
+    },
+    [workingDir, onFetchBeadsListPrompts],
+  );
+
+  // Initial load (and reload on folder switch), with stale-fetch cancellation.
+  useEffect(() => {
+    let cancelled = false;
+    loadShortcuts(() => cancelled);
+    return () => {
+      cancelled = true;
+    };
+  }, [loadShortcuts]);
+
+  // Refresh shortcut buttons immediately when the Workspaces dialog saves new
+  // shortcuts for this folder, so no page reload is needed.
+  useEffect(() => {
+    const handler = (e) => {
+      const dir = e?.detail?.working_dir;
+      if (!dir || dir === workingDir) loadShortcuts();
+    };
+    window.addEventListener("mitto:folder_shortcuts_updated", handler);
+    return () =>
+      window.removeEventListener("mitto:folder_shortcuts_updated", handler);
+  }, [loadShortcuts, workingDir]);
+
+  // Auto-refresh the issue list when the backend fsnotify watcher reports
+  // external changes to .beads (another agent/CLI, git pull, bd dolt pull).
+  // Scope the refetch to this view's working_dir to avoid a global thundering
+  // refresh across all open Tasks views.
+  useEffect(() => {
+    const handler = (e) => {
+      const dirs = e?.detail?.working_dirs;
+      if (!dirs || (Array.isArray(dirs) && dirs.includes(workingDir))) {
+        fetchList();
+      }
+    };
+    window.addEventListener("mitto:beads_changed", handler);
+    return () => window.removeEventListener("mitto:beads_changed", handler);
+  }, [workingDir, fetchList]);
 
   // Trigger an upstream sync action (pull/push/sync) via POST /api/issues/sync.
   // The backend reads the integration from folders.json; we only send the action.
@@ -4411,6 +4489,39 @@ export function BeadsView({
             </div>
           `
         }
+
+        ${shortcuts.length > 0 &&
+          html`
+            <div
+              class="flex items-center gap-1 pl-2 ml-1 border-l border-mitto-border"
+            >
+              ${shortcuts.map((sc, i) => {
+                const prompt = shortcutPromptMap.get(sc.prompt);
+                const found = !!prompt;
+                // Empty shortcut icon → fall back to the linked prompt's own icon.
+                const Icon = getPromptIconOrDefault(sc.icon || prompt?.icon);
+                return html`
+                  <button
+                    key=${i}
+                    type="button"
+                    onClick=${() => found && handleRunListPrompt(prompt)}
+                    aria-disabled=${found ? "false" : "true"}
+                    class="btn btn-ghost btn-square btn-sm inline-flex tooltip tooltip-top ${found ? "" : "opacity-40 pointer-events-none"}"
+                    data-tip=${found
+                      ? `Run "${sc.prompt}"`
+                      : `Prompt "${sc.prompt}" not found`}
+                    aria-label=${found
+                      ? `Run "${sc.prompt}"`
+                      : `Prompt "${sc.prompt}" not found`}
+                  >
+                    <span class="w-4 h-4">
+                      <${Icon} className="w-4 h-4" />
+                    </span>
+                  </button>
+                `;
+              })}
+            </div>
+          `}
 
         <span class="text-xs text-mitto-text-secondary ml-auto">${filtered.length} issue${filtered.length === 1 ? "" : "s"}</span>
 
