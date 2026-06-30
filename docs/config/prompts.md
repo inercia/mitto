@@ -264,7 +264,7 @@ prompt: |
 | `backgroundColor` | No       | string   | Hex color for the button (e.g., `"#E8F5E9"`)                                                 |
 | `icon`            | No       | string   | Icon name shown next to the prompt in menus. See [valid names](#icon-names). Unknown names fall back to the default icon. |
 | `tags`            | No       | string[] | Categorization tags (reserved for future use)                                                |
-| `singleton`       | No       | bool     | `true` means the prompt should not have multiple concurrent conversation instances (reuse-or-focus behavior, implemented in later work). Default: `false` |
+| `singleton`       | No       | bool     | `true` means launching this prompt from the menu does not create a duplicate conversation if a non-archived conversation started from the same prompt already exists in the same working directory. Instead the existing conversation is reused: if it is idle the prompt is re-seeded into its queue; if it is busy it is only focused (focus-only). Scope key is (working directory, origin prompt name). Default: `false` |
 | `acps`            | No       | string   | Comma-separated ACP server types this prompt belongs to. Makes the prompt server-specific.   |
 | `enabled`         | No       | bool     | Set to `false` to disable the prompt. Default: `true`                                        |
 | `enabledWhen`     | No       | string   | CEL expression for conditional enablement. See [below](#enabledwhen-conditional-enablement). |

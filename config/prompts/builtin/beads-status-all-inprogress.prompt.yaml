@@ -4,6 +4,7 @@ menus: prompts, beadsList
 description: Fact-check implementation status for all in-progress beads in this repo
 backgroundColor: '#FFCCBC'
 group: Tasks
+singleton: true
 enabledWhen: CommandExists("bd") && DirExists(".beads")
 preferredModels:
   - "*sonnet*"

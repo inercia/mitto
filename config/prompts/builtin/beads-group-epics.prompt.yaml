@@ -4,6 +4,7 @@ menus: beadsList
 description: Review ungrouped open beads, propose high-confidence epic groupings for review, and (after confirmation) create the epics and reparent the member issues
 backgroundColor: '#B2DFDB'
 group: Tasks
+singleton: true
 enabledWhen: CommandExists("bd") && DirExists(".beads")
 periodic:
   mode: optional

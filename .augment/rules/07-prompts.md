@@ -127,7 +127,11 @@ Full recipe: [docs/config/prompts.md § Context-adaptive prompts (three modes)](
 
 ## Key Types
 
-`WebPrompt`: Name, Prompt, Description, Group, BackgroundColor, Icon, Source ("builtin"|"file"|"settings"|"workspace"), Enabled (*bool: nil=enabled, false=disabled), EnabledWhen (CEL, server-side only), Periodic (non-nil = periodic conversation), Singleton (bool: `true` = no concurrent conversation instances; find-or-route logic is a separate increment).
+`WebPrompt`: Name, Prompt, Description, Group, BackgroundColor, Icon, Source ("builtin"|"file"|"settings"|"workspace"), Enabled (*bool: nil=enabled, false=disabled), EnabledWhen (CEL, server-side only), Periodic (non-nil = periodic conversation), Singleton (bool: `true` = no concurrent conversation instances for this prompt in the same working dir; see below).
+
+### Singleton Prompts (find-or-route)
+
+A prompt with `singleton: true` must not have more than one non-archived conversation per working dir. A session records the prompt that created it in `session.Metadata.OriginPromptName` at create time (set on `POST /api/sessions` from `initial_prompt_name`/`origin_prompt_name`). When a singleton prompt is launched, `HandleCreateSession` (`internal/web/handlers/session_create.go`) scans existing non-archived sessions by `(WorkingDir, OriginPromptName)` under a keyed lock (`lockSingleton`); on a match it reuses that conversation instead of creating a new one — re-seeding the queue if idle, focus-only if busy — and responds with `reused: true`. The frontend threads `reused` through `useWebSocket.js` → `useConversationSeeding.js` and shows a "Reusing existing ..." toast instead of "Started ..." (`useBeadsIntegration.js`, `app.js`). Applied to the builtin beadsList maintenance prompts (overview, reevaluate, cleanup-stale, group-epics, status-all-inprogress) — deliberately **not** to "Start working on ready", since concurrent work-starting conversations are legitimate.
 
 `PromptPeriodic` (YAML `periodic:`): `value`/`unit`/`at` (schedule period), `maxIterations`, plus the on-completion fields `trigger` (`schedule` default | `onCompletion`), `delay` (int seconds for onCompletion; clamped to the global floor), and `maxDuration` (duration string e.g. `4h`; wall-clock cap from the first run). `MaxIterations` caps scheduled runs; effective cap = min(prompt maxIterations, config default 100, hardcoded 1000). Backend auto-disables (not archives) when either the iteration cap or `maxDuration` is hit.
 
