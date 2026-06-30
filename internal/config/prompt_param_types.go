@@ -116,7 +116,7 @@ func ValidatePromptParameters(menus string, params []PromptParameter) error {
 		parts := strings.Split(menus, ",")
 		var menuList []string
 		for _, m := range parts {
-			if m = strings.TrimSpace(m); m != "" {
+			if m = strings.TrimSpace(m); m != "" && !strings.HasPrefix(m, "!") {
 				menuList = append(menuList, m)
 			}
 		}

@@ -4,19 +4,64 @@ import { authFetch } from "./csrf.js";
 import { endpoints } from "./endpoints.js";
 
 /**
- * Returns the list of UI menus a prompt opts into. The `menus` front-matter is a
- * comma-separated list (e.g. "prompts, conversation"). A missing or empty value
- * defaults to the "prompts" dropup only, so prompts that explicitly target other
- * menus (e.g. "conversation") are excluded from the dropup unless they also list
- * "prompts".
+ * Returns the list of UI menus a prompt opts INTO (positive tokens only).
+ * The `menus` front-matter is a comma-separated list (e.g. "prompts, conversation").
+ * Tokens prefixed with `!` (e.g. "!promptsPeriodic") are exclusions and are
+ * stripped from the returned list — use `promptMenuExcludes` to read them.
+ * A missing or empty value (after stripping exclusion tokens) defaults to
+ * ["prompts"], so prompts that explicitly target other menus (e.g. "conversation")
+ * are excluded from the dropup unless they also list "prompts".
  */
 export function promptMenus(prompt) {
   const raw = typeof prompt?.menus === "string" ? prompt.menus.trim() : "";
   if (raw === "") return ["prompts"];
-  return raw
+  const positive = raw
     .split(",")
     .map((m) => m.trim())
-    .filter(Boolean);
+    .filter((m) => m && !m.startsWith("!"));
+  return positive.length > 0 ? positive : ["prompts"];
+}
+
+/**
+ * Returns a Set of menu names that a prompt explicitly opts OUT of (the
+ * `!`-prefixed tokens in the `menus` front-matter). For example, for
+ * `menus: "prompts, !promptsPeriodic"` it returns `new Set(["promptsPeriodic"])`.
+ * Robust to null/undefined/empty (returns an empty Set).
+ *
+ * @param {Object} prompt - Prompt object with optional `menus` string
+ * @returns {Set<string>} Set of excluded menu names (without the leading `!`)
+ */
+export function promptMenuExcludes(prompt) {
+  const raw = typeof prompt?.menus === "string" ? prompt.menus.trim() : "";
+  if (raw === "") return new Set();
+  const excluded = new Set();
+  for (const token of raw.split(",")) {
+    const t = token.trim();
+    if (t.startsWith("!")) {
+      const name = t.slice(1).trim();
+      if (name) excluded.add(name);
+    }
+  }
+  return excluded;
+}
+
+/**
+ * Returns true when a prompt is a positive member of `menu`, honoring
+ * both inclusions and `!`-prefixed exclusions. Equivalent to:
+ *   promptMenus(prompt).includes(menu) && !promptMenuExcludes(prompt).has(menu)
+ *
+ * This is the canonical membership check to use at every call site instead of a
+ * bare `promptMenus(p).includes(menu)`, so that exclusions are always respected.
+ *
+ * @param {Object} prompt - Prompt object with optional `menus` string
+ * @param {string} menu   - Menu name to check (e.g. "prompts", "promptsPeriodic")
+ * @returns {boolean}
+ */
+export function promptMenuIncludes(prompt, menu) {
+  return (
+    promptMenus(prompt).includes(menu) &&
+    !promptMenuExcludes(prompt).has(menu)
+  );
 }
 
 /**

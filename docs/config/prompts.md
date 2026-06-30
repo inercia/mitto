@@ -404,6 +404,37 @@ Pair this with the `Session.IsPeriodicConversation` CEL variable (see
 [enabledWhen](#enabledwhen-conditional-enablement)) if you also want the prompt
 hidden everywhere outside periodic conversations.
 
+### Exclusion Syntax (`!menu`)
+
+A `!`-prefixed token in `menus` **explicitly excludes** the prompt from that menu,
+even when a union or implicit rule would otherwise include it. Exclusions take
+precedence over inclusions.
+
+**Motivating case:** the periodic prompt selector uses a union rule — every
+`prompts` prompt also appears in the selector. To suppress a one-shot prompt from
+the periodic selector without removing it from the regular dropup, add
+`!promptsPeriodic`:
+
+```yaml
+name: "JIRA: decompose"
+description: "Break a JIRA epic into subtasks — one-shot only, not for recurring runs"
+group: "JIRA"
+menus: prompts, !promptsPeriodic
+prompt: |
+  Analyze the current JIRA epic and decompose it into actionable subtasks.
+```
+
+This prompt appears in the ChatInput dropup (`prompts`) but is hidden from the
+periodic prompt selector (`!promptsPeriodic`).
+
+**Rules:**
+- A bare token (`prompts`) opts the prompt **into** that menu.
+- A `!`-prefixed token (`!promptsPeriodic`) opts the prompt **out of** that menu.
+- Exclusions take precedence over inclusions and union rules.
+- If all non-`!` tokens are stripped and nothing positive remains, `menus`
+  defaults to `["prompts"]` (the prompt still appears in the dropup).
+- Exclusion tokens are ignored by backend validation and never treated as target menu names.
+
 ### Conversation Context Menu
 
 In the conversation context menu, these prompts appear **after** the standard

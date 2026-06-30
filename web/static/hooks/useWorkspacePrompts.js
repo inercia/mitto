@@ -8,7 +8,12 @@
 const { useState, useEffect, useCallback, useMemo } = window.preact;
 
 import { authFetch, endpoints } from "../utils/index.js";
-import { promptMenus, menuSatisfies } from "../utils/prompts.js";
+import {
+  promptMenus,
+  promptMenuExcludes,
+  promptMenuIncludes,
+  menuSatisfies,
+} from "../utils/prompts.js";
 
 /**
  * Workspace-prompts fetch/cache hook.
@@ -36,7 +41,7 @@ export function useWorkspacePrompts({
   // Parameters that the "prompts" menu cannot auto-fill are collected via the
   // PromptParameterDialog when the user selects such a prompt (mitto-hcf.3).
   const predefinedPrompts = useMemo(
-    () => workspacePrompts.filter((p) => promptMenus(p).includes("prompts")),
+    () => workspacePrompts.filter((p) => promptMenuIncludes(p, "prompts")),
     [workspacePrompts],
   );
 
@@ -45,9 +50,16 @@ export function useWorkspacePrompts({
   // "promptsPeriodic" (periodic-selector-specific). The union keeps existing
   // prompts available in the selector while letting authors target a prompt
   // ONLY at the periodic selector via `menus: promptsPeriodic`.
+  //
+  // Exclusion: `!promptsPeriodic` in a prompt's `menus` field suppresses it
+  // from the periodic selector even when it would otherwise be included via
+  // the union (e.g. a one-shot prompt with `menus: prompts, !promptsPeriodic`).
+  // The exclusion is applied BEFORE the satisfaction check so it always wins.
   const periodicPrompts = useMemo(
     () =>
       workspacePrompts.filter((p) => {
+        // Explicit exclusion takes precedence over the union rule.
+        if (promptMenuExcludes(p).has("promptsPeriodic")) return false;
         const menus = promptMenus(p);
         return (
           (menus.includes("prompts") && menuSatisfies(p, "prompts")) ||
@@ -85,7 +97,7 @@ export function useWorkspacePrompts({
         // Parameters that the "conversation" menu cannot auto-fill are collected
         // via the PromptParameterDialog when the user selects such a prompt
         // (mitto-hcf.3). No menuSatisfies gate — all params can be user-filled.
-        return all.filter((p) => p && promptMenus(p).includes("conversation"));
+        return all.filter((p) => p && promptMenuIncludes(p, "conversation"));
       } catch (err) {
         console.error("Failed to fetch conversation prompts for session:", err);
         return [];

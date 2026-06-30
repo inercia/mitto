@@ -51,6 +51,14 @@ Defined on both `PromptFile` and `WebPrompt` in `internal/config/prompts.go` /
 | `beadsIssues`     | per-issue right-click **New ›** submenu in the Beads list     | **creates a new conversation** (with `ISSUE_ID`) |
 | `beadsList`       | list-level prompts button in the Beads list footer           | **creates a new conversation** (no per-issue arg)|
 
+**Exclusion syntax (`!menu`):** A `!`-prefixed token explicitly opts the prompt
+*out* of a menu, taking precedence over any union or implicit inclusion rule.
+For example, `menus: prompts, !promptsPeriodic` shows the prompt in the ChatInput
+dropup but hides it from the periodic prompt selector (which otherwise includes all
+`prompts`-tagged prompts via a union rule). Exclusion tokens are parsed and applied
+on the frontend (`promptMenuExcludes` / `promptMenuIncludes` in
+`web/static/utils/prompts.js`); the backend ignores them during validation.
+
 ### Type-based menu gating
 
 Independently of `menus`, a prompt that declares `parameters` is subject to

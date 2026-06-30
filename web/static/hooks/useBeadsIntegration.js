@@ -8,7 +8,7 @@ const { useState, useCallback, useMemo, useRef } = window.preact;
 
 import { authFetch, endpoints } from "../utils/index.js";
 import {
-  promptMenus,
+  promptMenuIncludes,
   menuSatisfies,
   collectPromptArguments,
   getMissingPromptParameters,
@@ -158,7 +158,7 @@ export function useBeadsIntegration({
         const data = await res.json();
         const all = data?.prompts || [];
         return all
-          .filter((p) => p && promptMenus(p).includes("beadsIssues"))
+          .filter((p) => p && promptMenuIncludes(p, "beadsIssues"))
           .sort((a, b) => (a.name || "").localeCompare(b.name || ""));
       } catch (err) {
         console.error("Failed to fetch beads prompts for workspace:", err);
@@ -196,7 +196,7 @@ export function useBeadsIntegration({
           .filter(
             (p) =>
               p &&
-              promptMenus(p).includes("beadsList") &&
+              promptMenuIncludes(p, "beadsList") &&
               menuSatisfies(p, "beadsList"),
           )
           .sort((a, b) => (a.name || "").localeCompare(b.name || ""));
