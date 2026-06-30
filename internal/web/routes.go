@@ -67,6 +67,7 @@ func (s *Server) apiRoutes(authMgr *middleware.AuthManager, csrfMgr *middleware.
 		apiRoute{pattern: "/api/workspaces", handler: http.HandlerFunc(s.apiHandlers.HandleWorkspaces)},
 		apiRoute{method: "GET", pattern: "/api/workspaces/{uuid}/effective-runner-config", handler: http.HandlerFunc(s.apiHandlers.HandleWorkspaceEffectiveRunnerConfig)},
 		apiRoute{method: "POST", pattern: "/api/workspaces/{uuid}/restart-acp", handler: http.HandlerFunc(s.apiHandlers.HandleWorkspaceRestartACP)},
+		apiRoute{method: "GET", pattern: "/api/workspaces/{uuid}/acp-status", handler: http.HandlerFunc(s.apiHandlers.HandleWorkspaceACPStatus)},
 		apiRoute{method: "GET", pattern: "/api/workspaces/{uuid}/metadata", handler: http.HandlerFunc(s.apiHandlers.HandleWorkspaceMetadata)},
 		apiRoute{method: "PUT", pattern: "/api/workspaces/{uuid}/metadata", handler: http.HandlerFunc(s.apiHandlers.HandleWorkspaceMetadata)},
 		apiRoute{method: "GET", pattern: "/api/workspaces/{uuid}/user-data-schema", handler: http.HandlerFunc(s.apiHandlers.HandleWorkspaceUserDataSchema)},

@@ -21,6 +21,28 @@ func (h *Handlers) HandleWorkspaceRestartACP(w http.ResponseWriter, r *http.Requ
 	h.handleRestartWorkspaceACP(w, r, r.PathValue("uuid"))
 }
 
+// HandleWorkspaceACPStatus handles GET /api/workspaces/{uuid}/acp-status.
+// The {uuid} wildcard is extracted by the mux via r.PathValue("uuid").
+func (h *Handlers) HandleWorkspaceACPStatus(w http.ResponseWriter, r *http.Request) {
+	h.handleWorkspaceACPStatus(w, r, r.PathValue("uuid"))
+}
+
+// handleWorkspaceACPStatus handles GET /api/workspaces/{uuid}/acp-status.
+// Reports whether the workspace has a live shared ACP process, so the UI can
+// decide whether an MCP install/remove needs an ACP restart to take effect.
+func (h *Handlers) handleWorkspaceACPStatus(w http.ResponseWriter, r *http.Request, workspaceUUID string) {
+	ws := h.deps.SessionManager.GetWorkspaceByUUID(workspaceUUID)
+	if ws == nil {
+		writeErrorJSON(w, http.StatusNotFound, "", "Workspace not found")
+		return
+	}
+	alive := false
+	if h.deps.HasLiveWorkspaceACP != nil {
+		alive = h.deps.HasLiveWorkspaceACP(workspaceUUID)
+	}
+	writeJSONOK(w, map[string]interface{}{"alive": alive})
+}
+
 // EffectiveRunnerConfigResponse is the response for GET /api/workspaces/{uuid}/effective-runner-config.
 // It returns the resolved runner config from global + agent levels (no workspace overrides),
 // so the UI can show what restrictions a workspace would inherit.

@@ -745,16 +745,16 @@ export function WorkspacesDialog({
     }
   }, []);
 
-  // Check if the given workspace UUID has any active (running) sessions.
-  const checkActiveSessionsForWorkspace = useCallback(async (workspaceUUID) => {
+  // Check if the given workspace UUID has a live shared ACP process. The Restart
+  // ACP button must be offered whenever this is true (even with 0 conversations),
+  // because the live process loaded the old MCP config at startup.
+  const checkLiveAcpForWorkspace = useCallback(async (workspaceUUID) => {
     if (!workspaceUUID) return false;
     try {
-      const res = await authFetch(endpoints.sessions.running());
+      const res = await authFetch(endpoints.workspaces.acpStatus(workspaceUUID));
       if (!res.ok) return false;
       const data = await res.json();
-      return (data.sessions || []).some(
-        (s) => s.workspace_uuid === workspaceUUID,
-      );
+      return !!data.alive;
     } catch {
       return false;
     }
@@ -882,9 +882,9 @@ export function WorkspacesDialog({
       } else {
         const names = results.map((r) => r.name).join(", ");
         setMcpInstallSuccess(`Successfully installed: ${names}`);
-        // Check if active sessions need an ACP restart to pick up the new MCP server
+        // Check if a live ACP process needs restarting to pick up the new MCP server
         if (selectedWorkspace?.uuid) {
-          checkActiveSessionsForWorkspace(selectedWorkspace.uuid).then(
+          checkLiveAcpForWorkspace(selectedWorkspace.uuid).then(
             (hasActive) => {
               if (hasActive) setNeedsRestart(true);
             },
@@ -912,7 +912,7 @@ export function WorkspacesDialog({
     editAcpServer,
     selectedWorkspace,
     loadMcpTools,
-    checkActiveSessionsForWorkspace,
+    checkLiveAcpForWorkspace,
   ]);
 
   const handleMcpRemove = useCallback(
@@ -944,9 +944,9 @@ export function WorkspacesDialog({
         if (!data.success) {
           setMcpToolsError(data.message || "Failed to remove MCP server");
         } else {
-          // Check if active sessions need an ACP restart to drop the removed MCP server
+          // Check if a live ACP process needs restarting to drop the removed MCP server
           if (selectedWorkspace?.uuid) {
-            const hasActive = await checkActiveSessionsForWorkspace(
+            const hasActive = await checkLiveAcpForWorkspace(
               selectedWorkspace.uuid,
             );
             if (hasActive) setNeedsRestart(true);
@@ -965,7 +965,7 @@ export function WorkspacesDialog({
       selectedWorkspace,
       mcpTools,
       loadMcpTools,
-      checkActiveSessionsForWorkspace,
+      checkLiveAcpForWorkspace,
     ],
   );
 
@@ -1014,7 +1014,7 @@ export function WorkspacesDialog({
       } else {
         setMcpInstallSuccess("Installed Mitto MCP server.");
         if (selectedWorkspace?.uuid) {
-          checkActiveSessionsForWorkspace(selectedWorkspace.uuid).then(
+          checkLiveAcpForWorkspace(selectedWorkspace.uuid).then(
             (hasActive) => {
               if (hasActive) setNeedsRestart(true);
             },
@@ -1032,7 +1032,7 @@ export function WorkspacesDialog({
     editAcpServer,
     selectedWorkspace,
     loadMcpTools,
-    checkActiveSessionsForWorkspace,
+    checkLiveAcpForWorkspace,
   ]);
 
   const handleMcpRemoveConfirm = useCallback(

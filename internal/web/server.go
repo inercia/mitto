@@ -808,6 +808,12 @@ func NewServer(config Config) (*Server, error) {
 			}
 			return s.acpProcessManager.RestartProcess
 		}(),
+		HasLiveWorkspaceACP: func() func(string) bool {
+			if s.acpProcessManager == nil {
+				return nil
+			}
+			return s.acpProcessManager.HasLiveProcess
+		}(),
 		IsShutdown: s.IsShutdown,
 		AuthInfo: func() (bool, bool) {
 			if s.authManager == nil {

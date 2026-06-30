@@ -403,6 +403,22 @@ func (m *ACPProcessManager) GetProcess(workspaceUUID string) *SharedACPProcess {
 	return m.processes[workspaceUUID]
 }
 
+// HasLiveProcess reports whether a live shared ACP process exists for the
+// workspace. It returns true only when a process exists and its underlying
+// connection has not yet exited (non-blocking Done() check).
+func (m *ACPProcessManager) HasLiveProcess(workspaceUUID string) bool {
+	p := m.GetProcess(workspaceUUID)
+	if p == nil {
+		return false
+	}
+	select {
+	case <-p.Done():
+		return false // process has exited
+	default:
+		return true
+	}
+}
+
 // CreateSession creates a new ACP session on the shared process for the given workspace.
 // If no shared process exists yet, one is created.
 // acpCommand, acpCwd, acpEnv are the runtime-resolved ACP connection parameters.

@@ -97,6 +97,7 @@ export const endpoints = {
     mcpToolsRemove: (uuid) =>
       apiUrl(`/api/workspaces/${enc(uuid)}/mcp-tools/remove`),
     restartAcp: (uuid) => apiUrl(`/api/workspaces/${enc(uuid)}/restart-acp`),
+    acpStatus: (uuid) => apiUrl(`/api/workspaces/${enc(uuid)}/acp-status`),
     processors: (uuid) => apiUrl(`/api/workspaces/${enc(uuid)}/processors`),
     processor: (uuid, name) =>
       apiUrl(`/api/workspaces/${enc(uuid)}/processors/${enc(name)}`),

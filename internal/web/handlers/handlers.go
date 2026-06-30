@@ -298,6 +298,12 @@ type Deps struct {
 	// value as "ACP process manager not available".
 	RestartWorkspaceACP func(workspaceUUID string) error
 
+	// HasLiveWorkspaceACP mirrors Server.acpProcessManager.HasLiveProcess: reports
+	// whether a live shared ACP process exists for a workspace UUID. It is nil when
+	// the server has no ACP process manager; callers must nil-guard (treat nil as
+	// "unknown" → false).
+	HasLiveWorkspaceACP func(workspaceUUID string) bool
+
 	// IsShutdown mirrors Server.IsShutdown: reports whether the server is shutting
 	// down. Used by the health check to return 503 while draining. May be nil; the
 	// health handler treats a nil value as "not shutting down".
