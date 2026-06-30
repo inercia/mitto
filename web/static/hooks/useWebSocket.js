@@ -24,6 +24,7 @@ import {
   cleanupExpiredPrompts,
   getMaxSeq,
   isStaleClientState,
+  resolveHasMoreAfterEventsLoaded,
 } from "../lib.js";
 
 import {
@@ -2452,11 +2453,23 @@ export function useWebSocket({ onActiveSessionRemovedRef } = {}) {
             ? lastSeq
             : Math.max(session.lastLoadedSeq || 0, lastSeq, maxSeq);
 
+          // has_more from a forward sync (after_seq) only reflects whether events
+          // exist older than the fetched delta — NOT whether older history is still
+          // missing from memory. resolveHasMoreAfterEventsLoaded keeps has_more
+          // authoritative only on replace (initial load / stale recovery) or
+          // prepend (load more), and preserves the existing flag on a merge-sync.
+          // See lib.js for the full rationale.
           const updatedSession = {
             ...session,
             messages: limitMessages(messages),
             isStreaming: isPrompting,
-            hasMoreMessages: hasMore,
+            hasMoreMessages: resolveHasMoreAfterEventsLoaded({
+              isPrepend,
+              isStaleClient,
+              existingMessageCount: session.messages.length,
+              serverHasMore: hasMore,
+              existingHasMore: session.hasMoreMessages,
+            }),
             // For stale client recovery, reset firstLoadedSeq to server's value
             firstLoadedSeq: isPrepend
               ? firstSeq

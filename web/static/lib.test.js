@@ -35,6 +35,7 @@ import {
   COALESCE_DEFAULTS,
   getMaxSeq,
   isStaleClientState,
+  resolveHasMoreAfterEventsLoaded,
   getMessageHash,
   mergeMessagesWithSync,
   safeJsonParse,
@@ -4793,6 +4794,135 @@ describe("UI State Consistency", () => {
       const shouldShowButton = hasMoreMessages && messages.length > 0;
 
       expect(shouldShowButton).toBe(false);
+    });
+  });
+
+  describe("resolveHasMoreAfterEventsLoaded (load-more flag preservation)", () => {
+    // Regression: on startup the app connects to a session and runs a forward
+    // sync (load_events with after_seq=watermark). For an idle session the delta
+    // is empty and the server returns has_more=false. Previously this was applied
+    // unconditionally, clearing hasMoreMessages and hiding the "Load earlier
+    // messages" button until a manual reload. The flag must instead be preserved
+    // on a merge-sync, since has_more from a forward sync says nothing about
+    // whether older history is still missing from memory.
+
+    test("preserves existing has-more flag on a forward merge-sync (idle session, empty/false delta)", () => {
+      // Session already has messages and knows more history exists, then a
+      // forward sync returns has_more=false. The flag must stay true.
+      const result = resolveHasMoreAfterEventsLoaded({
+        isPrepend: false,
+        isStaleClient: false,
+        existingMessageCount: 40,
+        serverHasMore: false,
+        existingHasMore: true,
+      });
+
+      expect(result).toBe(true);
+    });
+
+    test("does not resurrect has-more on a merge-sync when client already had none", () => {
+      const result = resolveHasMoreAfterEventsLoaded({
+        isPrepend: false,
+        isStaleClient: false,
+        existingMessageCount: 40,
+        serverHasMore: false,
+        existingHasMore: false,
+      });
+
+      expect(result).toBe(false);
+    });
+
+    test("uses server has_more on initial load (no messages in memory)", () => {
+      // Initial load replaces the message list, so the server is authoritative.
+      expect(
+        resolveHasMoreAfterEventsLoaded({
+          isPrepend: false,
+          isStaleClient: false,
+          existingMessageCount: 0,
+          serverHasMore: true,
+          existingHasMore: false,
+        }),
+      ).toBe(true);
+
+      expect(
+        resolveHasMoreAfterEventsLoaded({
+          isPrepend: false,
+          isStaleClient: false,
+          existingMessageCount: 0,
+          serverHasMore: false,
+          existingHasMore: true,
+        }),
+      ).toBe(false);
+    });
+
+    test("uses server has_more on prepend (load more older history)", () => {
+      // Prepend fetches older events, so has_more reflects whether even older
+      // history remains and is authoritative.
+      expect(
+        resolveHasMoreAfterEventsLoaded({
+          isPrepend: true,
+          isStaleClient: false,
+          existingMessageCount: 40,
+          serverHasMore: false,
+          existingHasMore: true,
+        }),
+      ).toBe(false);
+
+      expect(
+        resolveHasMoreAfterEventsLoaded({
+          isPrepend: true,
+          isStaleClient: false,
+          existingMessageCount: 40,
+          serverHasMore: true,
+          existingHasMore: false,
+        }),
+      ).toBe(true);
+    });
+
+    test("uses server has_more on stale-client recovery (server replaces state)", () => {
+      expect(
+        resolveHasMoreAfterEventsLoaded({
+          isPrepend: false,
+          isStaleClient: true,
+          existingMessageCount: 40,
+          serverHasMore: false,
+          existingHasMore: true,
+        }),
+      ).toBe(false);
+
+      expect(
+        resolveHasMoreAfterEventsLoaded({
+          isPrepend: false,
+          isStaleClient: true,
+          existingMessageCount: 40,
+          serverHasMore: true,
+          existingHasMore: false,
+        }),
+      ).toBe(true);
+    });
+
+    test("normalizes undefined inputs to booleans", () => {
+      // serverHasMore undefined on a replace → false (not undefined)
+      expect(
+        resolveHasMoreAfterEventsLoaded({
+          isPrepend: false,
+          isStaleClient: false,
+          existingMessageCount: 0,
+          serverHasMore: undefined,
+          existingHasMore: undefined,
+        }),
+      ).toBe(false);
+
+      // existingHasMore undefined on a merge-sync → false (not undefined)
+      expect(
+        resolveHasMoreAfterEventsLoaded({
+          isPrepend: false,
+          isStaleClient: false,
+          existingMessageCount: 40,
+          serverHasMore: false,
+          existingHasMore: undefined,
+        }),
+      ).toBe(false);
     });
   });
 

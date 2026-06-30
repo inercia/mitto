@@ -778,6 +778,41 @@ export function isStaleClientState(clientLastSeq, serverLastSeq) {
 }
 
 /**
+ * Resolve the authoritative "has more (older) history" flag after an
+ * events_loaded response.
+ *
+ * A forward sync (load_events with after_seq) only ever fetches NEWER events.
+ * Its has_more reflects whether events exist older than the DELTA's first event
+ * (after_seq+1) — NOT whether older history is still missing from memory. For an
+ * idle session the delta is empty, so the server returns has_more=false; blindly
+ * applying that would wrongly clear the "Load earlier messages" button for a
+ * session that genuinely has more history not yet loaded.
+ *
+ * has_more is therefore only authoritative when we REPLACE the message list
+ * (initial load / stale recovery) or PREPEND (load more). On a merge-sync we
+ * preserve the client's existing flag.
+ *
+ * @param {Object} params
+ * @param {boolean} params.isPrepend - Loading older history (load more)
+ * @param {boolean} params.isStaleClient - Stale recovery (server replaces state)
+ * @param {number} params.existingMessageCount - Messages already in memory
+ * @param {boolean} params.serverHasMore - has_more from the events_loaded response
+ * @param {boolean} params.existingHasMore - Client's current hasMoreMessages flag
+ * @returns {boolean} The resolved hasMoreMessages value
+ */
+export function resolveHasMoreAfterEventsLoaded({
+  isPrepend,
+  isStaleClient,
+  existingMessageCount,
+  serverHasMore,
+  existingHasMore,
+}) {
+  const isReplaceOrPrepend =
+    isPrepend || existingMessageCount === 0 || isStaleClient;
+  return isReplaceOrPrepend ? Boolean(serverHasMore) : Boolean(existingHasMore);
+}
+
+/**
  * Create a content hash for a message for deduplication.
  * Handles different message types appropriately:
  * - user/agent/thought/error: use text or html content
