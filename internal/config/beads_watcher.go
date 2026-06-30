@@ -11,6 +11,19 @@ import (
 	"github.com/fsnotify/fsnotify"
 )
 
+// BeadsDebounceDelay is the trailing debounce delay for beads file-system events.
+// It is intentionally larger than the shared DebounceDelay because the embedded
+// Dolt database under .beads/ writes in noisy bursts (last-touched, backup/*.jsonl,
+// embeddeddolt/). A longer quiet window coalesces consecutive write waves from a
+// single logical operation into one notification.
+const BeadsDebounceDelay = 750 * time.Millisecond
+
+// BeadsMaxWait caps how long accumulated changes may wait before firing, even if
+// new events keep arriving (which would otherwise keep resetting the trailing
+// timer). It guarantees that, under sustained activity, subscribers are notified
+// at most once per this window instead of being starved or woken too often.
+const BeadsMaxWait = 3 * time.Second
+
 // BeadsChangeEvent represents a notification that beads issues have changed on disk.
 type BeadsChangeEvent struct {
 	// ChangedDirs contains the .beads/ directories that had changes.
@@ -43,7 +56,9 @@ type BeadsWatcher struct {
 	subscribers        map[BeadsSubscriber]struct{}
 
 	debounceDelay  time.Duration
+	maxWait        time.Duration
 	pendingChanges map[string]struct{}
+	firstPendingAt time.Time
 	debounceTimer  *time.Timer
 	debounceMu     sync.Mutex
 
@@ -65,7 +80,8 @@ func NewBeadsWatcher(logger *slog.Logger) (*BeadsWatcher, error) {
 		actualWatchedPaths: make(map[string]string),
 		subscriberDirs:     make(map[BeadsSubscriber]map[string]struct{}),
 		subscribers:        make(map[BeadsSubscriber]struct{}),
-		debounceDelay:      DebounceDelay,
+		debounceDelay:      BeadsDebounceDelay,
+		maxWait:            BeadsMaxWait,
 		pendingChanges:     make(map[string]struct{}),
 		logger:             logger,
 		done:               make(chan struct{}),
@@ -73,11 +89,20 @@ func NewBeadsWatcher(logger *slog.Logger) (*BeadsWatcher, error) {
 	}, nil
 }
 
-// SetDebounceDelay sets the debounce delay. Must be called before Start().
+// SetDebounceDelay sets the trailing debounce delay. Must be called before Start().
 func (bw *BeadsWatcher) SetDebounceDelay(d time.Duration) {
-	bw.mu.Lock()
-	defer bw.mu.Unlock()
+	bw.debounceMu.Lock()
+	defer bw.debounceMu.Unlock()
 	bw.debounceDelay = d
+}
+
+// SetMaxWait sets the maximum time accumulated changes may wait before firing,
+// even while new events keep arriving. A value <= 0 disables the cap, restoring
+// pure trailing-debounce behavior. Must be called before Start().
+func (bw *BeadsWatcher) SetMaxWait(d time.Duration) {
+	bw.debounceMu.Lock()
+	defer bw.debounceMu.Unlock()
+	bw.maxWait = d
 }
 
 // Start begins the event processing loop.
@@ -303,10 +328,28 @@ func (bw *BeadsWatcher) handleEvent(event fsnotify.Event) {
 
 	bw.debounceMu.Lock()
 	bw.pendingChanges[beadsDir] = struct{}{}
+	now := time.Now()
+	if bw.firstPendingAt.IsZero() {
+		bw.firstPendingAt = now
+	}
+	// Trailing debounce: fire debounceDelay after the most recent event so a
+	// burst of writes collapses into one notification. The maxWait cap bounds
+	// the total wait from the first pending change, so sustained activity that
+	// keeps resetting the trailing timer still fires at most once per window
+	// instead of waking subscribers repeatedly (or being starved indefinitely).
+	delay := bw.debounceDelay
+	if bw.maxWait > 0 {
+		if remaining := bw.maxWait - now.Sub(bw.firstPendingAt); remaining < delay {
+			delay = remaining
+		}
+		if delay < 0 {
+			delay = 0
+		}
+	}
 	if bw.debounceTimer != nil {
 		bw.debounceTimer.Stop()
 	}
-	bw.debounceTimer = time.AfterFunc(bw.debounceDelay, bw.firePendingChanges)
+	bw.debounceTimer = time.AfterFunc(delay, bw.firePendingChanges)
 	bw.debounceMu.Unlock()
 }
 
@@ -316,6 +359,7 @@ func (bw *BeadsWatcher) firePendingChanges() {
 	changes := bw.pendingChanges
 	bw.pendingChanges = make(map[string]struct{})
 	bw.debounceTimer = nil
+	bw.firstPendingAt = time.Time{}
 	bw.debounceMu.Unlock()
 
 	if len(changes) == 0 {

@@ -289,3 +289,60 @@ func TestBeadsWatcher_Debounce(t *testing.T) {
 		t.Errorf("Expected debouncing to reduce events, got %d", count)
 	}
 }
+
+func TestBeadsWatcher_MaxWait_FiresDuringSustainedActivity(t *testing.T) {
+	// Under a continuous stream of writes (each within the trailing debounce
+	// window), a pure trailing debounce would never fire. The maxWait cap must
+	// force a notification mid-stream so subscribers aren't starved.
+	tmpDir := t.TempDir()
+	beadsDir := filepath.Join(tmpDir, ".beads")
+	if err := os.MkdirAll(beadsDir, 0755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+
+	bw, err := NewBeadsWatcher(nil)
+	if err != nil {
+		t.Fatalf("NewBeadsWatcher: %v", err)
+	}
+	defer bw.Close()
+
+	bw.SetDebounceDelay(80 * time.Millisecond)
+	bw.SetMaxWait(150 * time.Millisecond)
+	bw.Start()
+
+	sub := newMockBeadsSubscriber()
+	if err := bw.Subscribe(sub, []string{beadsDir}); err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+
+	// Write continuously every 20ms (well under the 80ms trailing delay) for
+	// 600ms. The writes never pause long enough for the trailing timer to
+	// elapse, so only the maxWait cap can trigger a notification.
+	stop := make(chan struct{})
+	done := make(chan struct{})
+	ltPath := filepath.Join(beadsDir, "last-touched")
+	go func() {
+		defer close(done)
+		ticker := time.NewTicker(20 * time.Millisecond)
+		defer ticker.Stop()
+		i := 0
+		for {
+			select {
+			case <-stop:
+				return
+			case <-ticker.C:
+				i++
+				_ = os.WriteFile(ltPath, []byte{byte(i)}, 0644)
+			}
+		}
+	}()
+
+	// An event must arrive while writes are still ongoing (i.e. well before the
+	// 600ms write loop finishes), proving the cap fired mid-stream.
+	got := sub.WaitForEvent(400 * time.Millisecond)
+	close(stop)
+	<-done
+	if !got {
+		t.Fatal("Expected a maxWait-capped event during sustained writes, got none")
+	}
+}
