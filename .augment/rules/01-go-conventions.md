@@ -13,34 +13,20 @@ keywords:
 
 ## Callback Patterns
 
-### Consistent Parameter Ordering
-
-When callbacks need ordering/tracking info, put it first:
-
+Ordering/tracking info first:
 ```go
 OnAgentMessage func(seq int64, html string)
 OnToolCall     func(seq int64, id, title, status string)
 ```
 
-### Passing Data Through Buffers
-
-When buffering content that needs metadata (like seq), track it in the buffer:
-
+For buffered content with metadata, track in buffer:
 ```go
 type Buffer struct {
     content    strings.Builder
     pendingSeq int64  // Metadata from first write
 }
-
-func (b *Buffer) Write(seq int64, data string) {
-    if b.content.Len() == 0 {
-        b.pendingSeq = seq  // First write's metadata wins
-    }
-    b.content.WriteString(data)
-}
-
 func (b *Buffer) Flush() {
-    seq := b.pendingSeq  // Capture before reset
+    seq := b.pendingSeq
     b.pendingSeq = 0
     b.onFlush(seq, b.content.String())
 }
@@ -48,20 +34,10 @@ func (b *Buffer) Flush() {
 
 ## Interface-Based Decoupling
 
-Define interface where it's USED, not where it's implemented:
-
+Define interface where it's USED:
 ```go
-type SeqProvider interface {
-    GetNextSeq() int64
-}
-
-type WebClient struct {
-    seqProvider SeqProvider
-}
-
-func (bs *BackgroundSession) GetNextSeq() int64 {
-    return bs.getNextSeq()
-}
+type SeqProvider interface { GetNextSeq() int64 }
+type WebClient struct { seqProvider SeqProvider }
 ```
 
 ## Deadlock Prevention
@@ -75,6 +51,35 @@ r.mu.Lock(); defer r.mu.Unlock(); r.recordEvent(...)
 // RIGHT — call store directly (has its own lock)
 r.mu.Lock(); defer r.mu.Unlock(); r.store.AppendEvent(...)
 ```
+
+## Bounded Deadline Context in Retry Loops
+
+When a retry loop has no parent deadline (deadline-less or very generous context), each per-attempt timeout consumes wall-clock time independently, burning all attempts even on hung transport.
+
+**Pattern** (mitto-8d7): Derive a `budgetCtx` that caps the *entire sequence*:
+
+```go
+const totalBudget = 60 * time.Second
+
+budgetCtx := ctx
+if dl, ok := ctx.Deadline(); !ok || time.Until(dl) > totalBudget {
+    var budgetCancel context.CancelFunc
+    budgetCtx, budgetCancel = context.WithTimeout(ctx, totalBudget)
+    defer budgetCancel()
+}
+
+// Use budgetCtx inside the loop (never extend caller's deadline)
+for attempt := 1; attempt <= maxAttempts; attempt++ {
+    if budgetCtx.Err() != nil {
+        return nil, fmt.Errorf("context cancelled before attempt %d", attempt)
+    }
+    attemptCtx, cancel := context.WithTimeout(budgetCtx, perAttemptTimeout)
+    // ... attempt logic ...
+    cancel()
+}
+```
+
+**Key principle**: Only *tighten* deadlines, never extend. `shouldFailFastCreateAttempt` bails when remaining budget < per-attempt timeout.
 
 ## Explicit Lock Management in Retry Loops
 

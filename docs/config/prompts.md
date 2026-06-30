@@ -476,6 +476,31 @@ dropup, where no issue context would be available. See [Prompt Arguments](#promp
 and [parameters (Typed Inputs & Type-Based Gating)](#parameters-typed-inputs--type-based-gating)
 for the full mechanism.
 
+#### Per-row `Item.*` namespace for `enabledWhen`
+
+When the Beads context menu opens for a specific issue, the server populates the
+`Item` CEL namespace with that issue's data. `beadsIssues` prompts can use
+`enabledWhen` to show or hide themselves per row:
+
+| Field | Type | Example value |
+|---|---|---|
+| `Item.Id` | string | `"mitto-abc"` |
+| `Item.Status` | string | `"open"`, `"closed"` |
+| `Item.Type` | string | `"bug"`, `"feature"`, `"task"` |
+| `Item.Priority` | string | `"0"`, `"1"`, `"2"`, `"3"` |
+| `Item.Labels` | list of strings | `["blog", "frontend"]` |
+| `Item.Kind` | string | `"beadsIssue"` |
+
+**Examples:**
+
+```yaml
+# Show only for bug-type issues
+enabledWhen: 'Item.Type == "bug"'
+
+# Show only for issues labelled "blog"
+enabledWhen: '"blog" in Item.Labels'
+```
+
 ### Beads List Menu
 
 Prompts whose `menus` list includes `beadsList` appear in the **list-level prompts

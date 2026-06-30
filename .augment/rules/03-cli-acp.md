@@ -18,67 +18,26 @@ keywords:
 
 ## CLI Patterns
 
-### Cobra Command Structure
+Multi-workspace: `mitto web --dir auggie:/path/to/project1 --dir claude-code:/path/to/project2`
 
-```go
-var cliCmd = &cobra.Command{
-    Use:   "cli",
-    Short: "One-line description",
-    RunE:  runCLI,
-}
-```
-
-### User Feedback
-
-```go
-fmt.Printf("🚀 Starting ACP server: %s\n", server.Name)
-fmt.Printf("✅ Connected (protocol v%v)\n", version)
-```
-
-### Multi-Workspace CLI Usage
-
-```bash
-mitto web --dir /path/to/project1 --dir /path/to/project2
-mitto web --dir auggie:/path/to/project1 --dir claude-code:/path/to/project2
-```
-
-### `--host` Flag (Security-Sensitive)
-
-`mitto web --host 0.0.0.0` binds to all interfaces (needed for Docker). Default is `127.0.0.1`.
-
-**Security**: The local listener runs without authentication. When `--host` is not a loopback address, a runtime warning is printed. Never expose to untrusted networks.
+`--host 0.0.0.0` (Docker) vs `127.0.0.1` (default). No authentication on local listener; warn if exposed.
 
 ## ACP Protocol
 
-### SDK: `github.com/coder/acp-go-sdk`
+SDK: `github.com/coder/acp-go-sdk` over JSON-RPC 2.0 stdin/stdout.
 
-- The `Client` struct implements `acp.Client` interface
-- Use `acp.ClientSideConnection` for protocol handling
-- JSON-RPC 2.0 over stdin/stdout of the agent subprocess
-
-### ContentBlock — Discriminated Union
-
+**ContentBlock** (discriminated union): Check type via nil-pointer checks, NOT `Type()`:
 ```go
-// Check type via nil pointer checks (NOT a Type() method):
-if block.Image != nil { /* block.Image.Data, block.Image.MimeType */ }
-else if block.Text != nil { /* block.Text.Text */ }
-
-// Create blocks via helpers:
-acp.TextBlock("hello")
-acp.ImageBlock(base64Data, "image/png")
+if block.Image != nil { use block.Image.Data }
+else if block.Text != nil { use block.Text.Text }
 ```
 
-**Anti-pattern**: `block.Type()`, `acp.ContentBlockTypeImage` do NOT exist.
-
-### Connection Lifecycle
-
+**Connection lifecycle**:
 ```go
-conn, err := acp.NewConnection(ctx, command, autoApprove, output, logger)
-defer conn.Close()
-
-conn.Initialize(ctx)       // Returns AgentCapabilities
-conn.NewSession(ctx, cwd)  // Returns SessionID + Modes
-conn.Prompt(ctx, message)  // Streaming response via callbacks
+conn, err := acp.NewConnection(ctx, cmd, autoApprove, output, logger)
+conn.Initialize(ctx)  // AgentCapabilities
+conn.NewSession(ctx, cwd)  // SessionID + Modes
+conn.Prompt(ctx, msg)  // Streaming via callbacks
 ```
 
 ### Agent Capabilities
@@ -87,6 +46,32 @@ Always check capabilities before sending unsupported content blocks:
 caps := resp.AgentCapabilities
 bs.agentSupportsImages = caps.PromptCapabilities.Image
 ```
+
+### Error Code Extraction & Logging
+
+Wrap `*acp.RequestError` extraction in a helper for structured logging (mitto-8d7):
+
+```go
+// rpcErrorCode extracts the JSON-RPC error code from err when it (or any error it
+// wraps) is an *acp.RequestError. Used to surface a structured, queryable rpc_code
+// field in addition to the full error string.
+func rpcErrorCode(err error) (int, bool) {
+    var re *acp.RequestError
+    if errors.As(err, &re) && re != nil {
+        return re.Code, true
+    }
+    return 0, false
+}
+
+// Log both code and message:
+rpcCode, _ := rpcErrorCode(err)
+logger.Warn("NewSession failed",
+    "rpc_code", rpcCode,
+    "error", err.Error(),
+)
+```
+
+This decouples error-code queries (e.g., alerting on `-32603` internal server errors) from full error strings.
 
 ### Permission Handling
 
@@ -104,66 +89,9 @@ resp := CancelledPermissionResponse()
 
 ## Agent Definitions
 
-Agents are defined in `config/agents/builtin/<agent>/` (shipped) or `MITTO_DIR/agents/custom/<agent>/` (user-created).
+Located in `config/agents/builtin/<agent>/` (shipped) or `MITTO_DIR/agents/custom/<agent>/` (custom).
 
-### Key Types (`internal/agents/types.go`)
-
-| Type | Purpose |
-|------|---------|
-| `AgentMetadata` | Parsed from `metadata.yaml` |
-| `MCPMetadata` | MCP scope capabilities (`Scopes []string`) |
-| `MCPInstallInput` | JSON input to `mcp-install.sh` (includes `Scope` field) |
-| `AgentDefinition` | Resolved agent with metadata + filesystem location |
-| `AgentDefaults` | Optional `defaults` block seeded into a new ACP server at discovery |
-| `ConstraintSpec` | A single auto-select rule (`matchMode` + `pattern`); mirrors `config.ACPServerConstraint` |
-
-### metadata.yaml structure
-
-```yaml
-name: claude-code
-displayName: Claude Code
-acpId: claude
-mcp:
-  scopes: ["user", "project", "local"]  # supported scopes
-install:
-  method: npx
-  package: "@anthropic-ai/claude-code"
-defaults:              # optional; seeded into the ACP server when this agent is discovered
-  env:                 # default environment variables for the ACP server
-    NODE_OPTIONS: "--max-old-space-size=8192"
-  constraints:         # auto-select config options (e.g. model) on session start
-    model:
-      matchMode: contains   # contains | exact | startsWith | regex | lookAlike
-      pattern: "Opus"
-  tags: ["coding", "smart"] # categorization tags applied to the server
-  autoApprove: false        # auto-approve tool-call permission requests
-```
-
-### Agent Defaults (seeded at discovery)
-
-The optional `defaults` block pre-fills a newly discovered agent's ACP server settings.
-The mapping is direct:
-
-| `metadata.yaml` `defaults` | ACP server setting |
-|----------------------------|--------------------|
-| `defaults.env`             | `ACPServer.Env` |
-| `defaults.constraints`     | `ACPServer.Constraints` (see [08-config.md](08-config.md#acp-server-constraints)) |
-| `defaults.tags`            | `ACPServer.Tags` |
-| `defaults.autoApprove`     | `ACPServer.AutoApprove` |
-
-Seeding is **request-wins**: values the user supplies in the Agent Discovery dialog take
-precedence; a default only fills a field the user left empty. `autoApprove` is taken from
-the default. Types live in `internal/agents/types.go` (`AgentDefaults`, `ConstraintSpec`);
-the mapping happens in `seedACPServerDefaults` (`internal/web/handlers/agent_discovery.go`).
-
-**MCP scope values**: `user` (global config), `project` (per-repo), `local` (local-only, not committed).
-
-### Agent Commands
-
-- `CommandMCPList` (via `mcp-list.sh`) — List MCP servers
-- `CommandMCPInstall` (via `mcp-install.sh`) — Install MCP server
-- `CommandMCPRemove` (via `mcp-remove.sh`) — Remove MCP server (scope must match metadata)
-
-### Adding Agents
-
-Create `config/agents/builtin/<name>/metadata.yaml` + scripts (`install.sh`, `mcp-list.sh`, `mcp-install.sh`, `mcp-remove.sh`). Set `mcp.scopes` in metadata.
+**metadata.yaml**: Defines agent, MCP scopes, install method, default env/constraints/tags.
+**MCP scopes**: `user` (global), `project` (per-repo), `local` (uncommitted).
+**Agent defaults** (seeded at discovery): Pre-fill ACP server settings. Request-wins: user values take precedence.
+**Commands**: `mcp-list.sh`, `mcp-install.sh`, `mcp-remove.sh` (scope must match metadata).

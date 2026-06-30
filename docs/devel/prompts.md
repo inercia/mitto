@@ -86,7 +86,7 @@ The **evaluation context differs by caller** — this is the subtle part:
   `web/static/hooks/useBeadsIntegration.js`) pass
   `?dir=...&enabled_context=workspace`, optionally the active `session_id`, and
   for per-issue rows the `item_*` params (`item_kind`, `item_id`,
-  `item_status`, `item_type`, `item_priority`). When no session is active the
+  `item_status`, `item_type`, `item_priority`, `item_labels`). When no session is active the
   backend builds a session-less context via `buildWorkspacePromptEnabledContext`
   so gates like `CommandExists("bd")`, `DirExists(".beads")`, and
   `Item.Status != "closed"` still evaluate. The `Item.*` namespace lets each row
