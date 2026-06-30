@@ -3849,6 +3849,71 @@ func TestPromptMode_ArgSubstitution_AfterPhase(t *testing.T) {
 	})
 }
 
+// TestPromptMode_ArgSubstitution_PreferencesFile tests Go-template .Args.PreferencesFile
+// rendering in the memorize-preferences-style agentIdle processor (mitto-pyi).
+func TestPromptMode_ArgSubstitution_PreferencesFile(t *testing.T) {
+	proc := &Processor{
+		Name:   "memorize-preferences-test",
+		When:   WhenConfig{On: PhaseAgentResponded, Match: MatchAll, StopReasons: []string{"end_turn"}},
+		Prompt: "Update the {{ .Args.PreferencesFile }} file.",
+		Parameters: []config.PromptParameter{ {Name: "PreferencesFile", Type: "text", Default: "AGENTS.md"} },
+	}
+
+	t.Run("default used when no override", func(t *testing.T) {
+		var mu sync.Mutex
+		var dispatched []string
+		m := makeAfterManager([]*Processor{proc})
+		m.SetPromptFunc(func(ctx context.Context, wsUUID, procName, prompt string) error {
+			mu.Lock()
+			dispatched = append(dispatched, prompt)
+			mu.Unlock()
+			return nil
+		})
+
+		m.ApplyAfter(context.Background(), makeAfterInput("user", "end_turn"))
+		time.Sleep(50 * time.Millisecond)
+
+		mu.Lock()
+		defer mu.Unlock()
+		if len(dispatched) != 1 {
+			t.Fatalf("expected 1 dispatched prompt, got %d", len(dispatched))
+		}
+		want := "Update the AGENTS.md file."
+		if dispatched[0] != want {
+			t.Errorf("prompt = %q, want %q", dispatched[0], want)
+		}
+	})
+
+	t.Run("workspace override wins over default", func(t *testing.T) {
+		var mu sync.Mutex
+		var dispatched []string
+		m := makeAfterManager([]*Processor{proc})
+		m.SetPromptFunc(func(ctx context.Context, wsUUID, procName, prompt string) error {
+			mu.Lock()
+			dispatched = append(dispatched, prompt)
+			mu.Unlock()
+			return nil
+		})
+
+		input := makeAfterInput("user", "end_turn")
+		input.ProcessorArgOverrides = map[string]map[string]string{
+			"memorize-preferences-test": { "PreferencesFile": ".augment/rules/90-local.md" },
+		}
+		m.ApplyAfter(context.Background(), input)
+		time.Sleep(50 * time.Millisecond)
+
+		mu.Lock()
+		defer mu.Unlock()
+		if len(dispatched) != 1 {
+			t.Fatalf("expected 1 dispatched prompt, got %d", len(dispatched))
+		}
+		want := "Update the .augment/rules/90-local.md file."
+		if dispatched[0] != want {
+			t.Errorf("prompt = %q, want %q", dispatched[0], want)
+		}
+	})
+}
+
 // TestPromptMode_ArgSubstitution_MittoRCPersistence is an integration test that
 // exercises the full persistence → resolution → template-render → dispatch chain:
 //  1. Write a per-workspace override to a real .mittorc via SaveWorkspaceRCProcessorArguments.

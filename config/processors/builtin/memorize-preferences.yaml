@@ -4,7 +4,7 @@
 # This prompt-mode processor watches user messages for preferences, conventions,
 # and how-they-want-things-done patterns. When it finds relevant preferences,
 # it instructs an auxiliary AI agent to save them in a clearly delimited section
-# of the AGENTS.md file in the workspace root.
+# of a configurable file (AGENTS.md by default) in the workspace root.
 #
 # This is a fire-and-forget processor: the prompt is dispatched to a workspace-scoped
 # auxiliary ACP session and the pipeline continues immediately without waiting.
@@ -32,7 +32,7 @@
 #   conservatively — when in doubt, an entry is kept.
 ##########################################################################################
 name: memorize-preferences
-description: "Extracts user preferences from conversations and saves them to AGENTS.md"
+description: "Extracts user preferences from conversations and saves them to a configurable file (AGENTS.md by default)"
 enabled: true
 when:
   on: agentIdle
@@ -49,9 +49,15 @@ on_error: skip
 # Skip periodic prompts — only process real user messages
 enabledWhen: '!Session.IsPeriodic'
 
+parameters:
+  - name: PreferencesFile
+    type: text
+    description: "File where extracted user preferences are saved (relative to workspace root)"
+    default: AGENTS.md
+
 prompt: |
   You are a preference curator. You maintain a concise, durable list of the user's
-  preferences in the AGENTS.md file in the workspace root. You have TWO jobs on each
+  preferences in the {{ .Args.PreferencesFile }} file in the workspace root. You have TWO jobs on each
   run: (1) capture any NEW preferences from recent messages, and (2) keep the existing
   list clean by garbage-collecting stale entries and compacting related ones.
 
@@ -95,7 +101,7 @@ prompt: |
 
   ## Writing the section
 
-  Update the AGENTS.md file using EXACTLY this format (create the section if it is
+  Update the {{ .Args.PreferencesFile }} file using EXACTLY this format (create the section if it is
   missing). Rewrite the WHOLE section with the cleaned-up result — i.e. the existing
   entries minus anything garbage-collected, with overlapping entries compacted, plus
   any new preferences appended:
@@ -107,10 +113,10 @@ prompt: |
   - **another category**: description
   <!-- END USER PREFERENCES -->
 
-  If the AGENTS.md file doesn't exist, create it with just this section.
+  If the {{ .Args.PreferencesFile }} file doesn't exist, create it with just this section.
   Read the existing entries first so you can dedupe, compact, and avoid duplicates.
   Only touch the content between the BEGIN/END USER PREFERENCES markers — never modify
-  any other section of AGENTS.md.
+  any other section of {{ .Args.PreferencesFile }}.
   If there are NO new preferences AND nothing needs garbage-collecting or compacting,
   do nothing — do NOT modify any files.
 
@@ -127,7 +133,7 @@ prompt: |
 
   ## Notification
 
-  After completing your work, if you changed AGENTS.md (added, removed, or compacted
+  After completing your work, if you changed {{ .Args.PreferencesFile }} (added, removed, or compacted
   preferences), call `mitto_ui_notify` with:
   - `self_id`: "@mitto:session_id"
   - `title`: "📝 Preferences Updated"
