@@ -1,6 +1,6 @@
 icon: check
 name: Review Changes
-menus: prompts
+menus: prompts, !promptsPeriodic
 description: 'Review recent changes against requirements: completeness, correctness, tight scope'
 group: Code Quality
 backgroundColor: '#C8E6C9'

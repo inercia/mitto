@@ -1,6 +1,6 @@
 icon: save
 name: Commit changes
-menus: prompts
+menus: prompts, !promptsPeriodic
 description: Stage and commit changes with descriptive messages
 group: Submission of changes
 backgroundColor: '#B2DFDB'

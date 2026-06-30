@@ -1,6 +1,6 @@
 icon: list
 name: Implement spec
-menus: prompts
+menus: prompts, !promptsPeriodic
 description: Create a detailed implementation plan from a specification
 group: Development
 backgroundColor: '#FFECB3'

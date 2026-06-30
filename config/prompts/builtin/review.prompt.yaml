@@ -1,6 +1,6 @@
 icon: search
 name: Review
-menus: prompts
+menus: prompts, !promptsPeriodic
 description: Review changes for quality and correctness
 group: Code Quality
 backgroundColor: '#C8E6C9'

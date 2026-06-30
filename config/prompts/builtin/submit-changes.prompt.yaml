@@ -1,6 +1,6 @@
 icon: globe
 name: Submit changes
-menus: prompts
+menus: prompts, !promptsPeriodic
 description: Submit changes
 group: Submission of changes
 backgroundColor: '#B2DFDB'

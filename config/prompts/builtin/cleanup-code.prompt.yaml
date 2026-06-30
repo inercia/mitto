@@ -1,6 +1,6 @@
 icon: broom
 name: Cleanup Code
-menus: prompts
+menus: prompts, !promptsPeriodic
 description: Remove dead code, unused imports, and outdated documentation
 group: Code Quality
 backgroundColor: '#C8E6C9'
