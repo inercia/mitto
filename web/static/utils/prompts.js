@@ -65,6 +65,14 @@ export function promptMenuIncludes(prompt, menu) {
 }
 
 /**
+ * True when a prompt declares it must not have multiple concurrent
+ * conversation instances (singleton). Absent/false → not singleton.
+ */
+export function isSingletonPrompt(prompt) {
+  return prompt?.singleton === true;
+}
+
+/**
  * Returns the periodic mode of a prompt: "always" | "optional" | "none".
  * - "none"     when prompt.periodic is absent/null (never periodic).
  * - "optional" when prompt.periodic.mode === "optional".

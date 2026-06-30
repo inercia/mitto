@@ -7,6 +7,7 @@ import {
   promptMenus,
   promptMenuExcludes,
   promptMenuIncludes,
+  isSingletonPrompt,
   promptPeriodicMode,
   promptPeriodicIsToggleable,
   promptPeriodicDefaultOn,
@@ -73,6 +74,28 @@ describe("promptMenus", () => {
 
   test("handles undefined prompt gracefully", () => {
     expect(promptMenus(undefined)).toEqual(["prompts"]);
+  });
+});
+
+// =============================================================================
+// isSingletonPrompt Tests
+// =============================================================================
+
+describe("isSingletonPrompt", () => {
+  test("returns true when singleton is true", () => {
+    expect(isSingletonPrompt({ singleton: true })).toBe(true);
+  });
+
+  test("returns false when singleton is false", () => {
+    expect(isSingletonPrompt({ singleton: false })).toBe(false);
+  });
+
+  test("returns false when singleton is absent", () => {
+    expect(isSingletonPrompt({})).toBe(false);
+  });
+
+  test("returns false for null prompt", () => {
+    expect(isSingletonPrompt(null)).toBe(false);
   });
 });
 

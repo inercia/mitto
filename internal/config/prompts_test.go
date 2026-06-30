@@ -299,6 +299,48 @@ prompt: |
 	}
 }
 
+func TestParsePromptFile_WithSingleton(t *testing.T) {
+	data := []byte(`name: "Singleton Prompt"
+singleton: true
+prompt: |
+  Only one instance at a time.
+`)
+
+	prompt, err := ParsePromptFile("singleton.prompt.yaml", data, time.Now())
+	if err != nil {
+		t.Fatalf("ParsePromptFile failed: %v", err)
+	}
+	if !prompt.Singleton {
+		t.Errorf("Singleton = false, want true")
+	}
+
+	// Round-trips through ToWebPrompt.
+	wp := prompt.ToWebPrompt()
+	if !wp.Singleton {
+		t.Errorf("WebPrompt.Singleton = false, want true")
+	}
+}
+
+func TestParsePromptFile_WithoutSingleton(t *testing.T) {
+	data := []byte(`name: "Plain Prompt"
+prompt: |
+  Many instances allowed.
+`)
+
+	prompt, err := ParsePromptFile("plain-singleton.prompt.yaml", data, time.Now())
+	if err != nil {
+		t.Fatalf("ParsePromptFile failed: %v", err)
+	}
+	if prompt.Singleton {
+		t.Errorf("Singleton = true, want false (absent defaults to false)")
+	}
+
+	wp := prompt.ToWebPrompt()
+	if wp.Singleton {
+		t.Errorf("WebPrompt.Singleton = true, want false")
+	}
+}
+
 func TestMergePrompts_PreservesPeriodicField(t *testing.T) {
 	periodic := &PromptPeriodic{Value: 3, Unit: "hours"}
 	globalPrompts := []WebPrompt{

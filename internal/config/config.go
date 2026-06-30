@@ -157,6 +157,9 @@ type WebPrompt struct {
 	// example, "conversation" makes the prompt available in the per-conversation
 	// context menu. Multiple values may be combined, e.g. "conversation,group".
 	Menus string `json:"menus,omitempty"`
+	// Singleton, when true, declares that this prompt must not have multiple
+	// concurrent conversation instances (subject to find-or-route logic).
+	Singleton bool `json:"singleton,omitempty"`
 	// Source indicates where this prompt originated from (file, settings, workspace).
 	// This is used by the frontend to determine which prompts should be saved back to settings.
 	// Only prompts with Source="settings" or empty Source should be saved.

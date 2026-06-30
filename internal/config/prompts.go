@@ -183,6 +183,10 @@ type PromptFile struct {
 	// Tags is an optional list of categorization tags for future use.
 	Tags []string `yaml:"tags,omitempty" json:"tags,omitempty"`
 
+	// Singleton, when true, declares that this prompt must not have multiple
+	// concurrent conversation instances (subject to find-or-route logic).
+	Singleton bool `yaml:"singleton,omitempty" json:"singleton,omitempty"`
+
 	// Enabled controls whether the prompt is active. Defaults to true if not specified.
 	Enabled *bool `yaml:"enabled,omitempty" json:"-"`
 
@@ -256,6 +260,7 @@ func (p *PromptFile) ToWebPrompt() WebPrompt {
 		Description:     p.Description,
 		Group:           p.Group,
 		Menus:           p.Menus,
+		Singleton:       p.Singleton,
 		Source:          PromptSourceFile,
 		EnabledWhen:     p.EnabledWhen,
 		Enabled:         p.Enabled,
