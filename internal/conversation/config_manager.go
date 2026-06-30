@@ -130,6 +130,14 @@ func (c configManager) getConfigValue(d configDeps, configID string) string {
 }
 
 func (c configManager) setConfigOption(d configDeps, ctx context.Context, configID, value string) error {
+	return c.setConfigOptionWithOpts(d, ctx, configID, value, true)
+}
+
+// setConfigOptionWithOpts is the core of setConfigOption. recordTimeline controls
+// whether a model change emits a user-facing session_change timeline pill. The
+// startup/constraint auto-select path passes false so re-selecting the configured
+// model on every session resume does not repeat an identical "Model changed" pill.
+func (c configManager) setConfigOptionWithOpts(d configDeps, ctx context.Context, configID, value string, recordTimeline bool) error {
 	if d.cmIsClosed() {
 		return fmt.Errorf("session is closed")
 	}
@@ -182,10 +190,19 @@ func (c configManager) setConfigOption(d configDeps, ctx context.Context, config
 	d.cmDeletePendingEntry(configID)
 	d.cmUnlockPendingConfig()
 
-	return c.applyConfigOption(d, ctx, configID, value)
+	return c.applyConfigOptionWithOpts(d, ctx, configID, value, recordTimeline)
 }
 
 func (c configManager) applyConfigOption(d configDeps, ctx context.Context, configID, value string) error {
+	return c.applyConfigOptionWithOpts(d, ctx, configID, value, true)
+}
+
+// applyConfigOptionWithOpts is the core of applyConfigOption. When recordTimeline
+// is false, a model change is applied (RPC + baseline + persistence + live config
+// broadcast) WITHOUT emitting a session_change timeline pill. Used by the ACP-server
+// constraint auto-select path, which re-selects the configured model on every
+// session resume and would otherwise repeat an identical "Model changed" pill.
+func (c configManager) applyConfigOptionWithOpts(d configDeps, ctx context.Context, configID, value string, recordTimeline bool) error {
 	opt, ok := d.cmFindByID(configID)
 	if !ok {
 		return fmt.Errorf("unknown config option: %s", configID)
@@ -210,7 +227,9 @@ func (c configManager) applyConfigOption(d configDeps, ctx context.Context, conf
 		d.cmSetCurrentModelID(value)
 		d.cmSetBaselineAndClearOverride(value)
 		c.persistBaselineModel(d, value)
-		d.cmRecordSessionChange(ConfigOptionCategoryModel, value, previousModel)
+		if recordTimeline {
+			d.cmRecordSessionChange(ConfigOptionCategoryModel, value, previousModel)
+		}
 	} else {
 		return fmt.Errorf("config option %s is not supported by current agent", configID)
 	}
@@ -280,7 +299,7 @@ func (c configManager) applyConfigConstraints(d configDeps, category string) {
 	ctx, cancel := context.WithTimeout(context.Background(), constraintModelSwitchCallerBudget)
 	defer cancel()
 
-	if err := c.setConfigOption(d, ctx, category, matchedValue); err != nil {
+	if err := c.setConfigOptionWithOpts(d, ctx, category, matchedValue, false); err != nil {
 		if l := d.cmLogger(); l != nil {
 			l.Warn("ACP server constraint: failed to auto-select option (best-effort, falling back to current model)",
 				"category", category, "value", matchedValue, "error", err)

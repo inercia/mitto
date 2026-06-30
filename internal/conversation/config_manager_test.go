@@ -51,6 +51,7 @@ type fakeConfigDeps struct {
 	notifiedConfig    [][3]string // sessionID, configID, value
 	baselineUpdates   []string
 	overrideClears    int
+	sessionChanges    [][3]string // kind, value, previousValue
 	sessionCtx        context.Context
 }
 
@@ -211,7 +212,11 @@ func (f *fakeConfigDeps) cmNotifyConfigChanged(configID, value string) {
 	defer f.mu.Unlock()
 	f.notifiedConfig = append(f.notifiedConfig, [3]string{f.sessionID, configID, value})
 }
-func (f *fakeConfigDeps) cmRecordSessionChange(kind, value, previousValue string) {}
+func (f *fakeConfigDeps) cmRecordSessionChange(kind, value, previousValue string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.sessionChanges = append(f.sessionChanges, [3]string{kind, value, previousValue})
+}
 
 // --- Tests ---
 
@@ -521,5 +526,52 @@ func TestConfigManager_ApplyConfigConstraints_AlreadySet(t *testing.T) {
 
 	if len(d.modelRPCCalls) != 0 {
 		t.Fatalf("expected no RPC when already at constraint value, got %v", d.modelRPCCalls)
+	}
+}
+
+// TestConfigManager_SetConfigOption_RecordsTimeline verifies that a user-initiated
+// model change (idle path) emits a session_change timeline pill.
+func TestConfigManager_SetConfigOption_RecordsTimeline(t *testing.T) {
+	c := configManager{}
+	d := newFakeConfigDeps()
+	d.currentModelID = "m-1"
+
+	err := c.setConfigOption(d, context.Background(), ConfigOptionCategoryModel, "m-2")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(d.sessionChanges) != 1 {
+		t.Fatalf("expected 1 session change recorded, got %v", d.sessionChanges)
+	}
+	got := d.sessionChanges[0]
+	if got[0] != ConfigOptionCategoryModel || got[1] != "m-2" || got[2] != "m-1" {
+		t.Fatalf("expected {model, m-2, m-1}, got %v", got)
+	}
+}
+
+// TestConfigManager_ApplyConfigConstraints_DoesNotRecordTimeline verifies that the
+// constraint-driven auto-select still switches the model (RPC + baseline) but does
+// NOT emit a session_change timeline pill, so resuming a session does not repeat an
+// identical "Model changed" message (mitto-hd4).
+func TestConfigManager_ApplyConfigConstraints_DoesNotRecordTimeline(t *testing.T) {
+	c := configManager{}
+	d := newFakeConfigDeps()
+	d.constraint = map[string]*config.ACPServerConstraint{
+		ConfigOptionCategoryModel: {Pattern: "Model 2", MatchMode: "exact"},
+	}
+	d.currentModelID = "m-1" // different, so the switch will fire
+
+	c.applyConfigConstraints(d, ConfigOptionCategoryModel)
+
+	// The model switch must still happen (RPC + baseline update).
+	if len(d.modelRPCCalls) != 1 || d.modelRPCCalls[0] != "m-2" {
+		t.Fatalf("expected model RPC for 'm-2', got %v", d.modelRPCCalls)
+	}
+	if len(d.baselineUpdates) != 1 || d.baselineUpdates[0] != "m-2" {
+		t.Fatalf("expected baseline update to 'm-2', got %v", d.baselineUpdates)
+	}
+	// But no timeline pill must be recorded for the automatic switch.
+	if len(d.sessionChanges) != 0 {
+		t.Fatalf("expected no session change recorded for constraint switch, got %v", d.sessionChanges)
 	}
 }
