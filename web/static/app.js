@@ -552,7 +552,9 @@ function App() {
       setMainView("conversation");
       showToast({
         style: "success",
-        title: `Started "${promptName}"`,
+        title: result.reused
+          ? `Reusing existing "${promptName}" conversation`
+          : `Started "${promptName}"`,
         duration: 3000,
       });
     },

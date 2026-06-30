@@ -4811,7 +4811,7 @@ export function useWebSocket({ onActiveSessionRemovedRef } = {}) {
         connectToSession(sessionId);
         setActiveSessionId(sessionId);
 
-        return { sessionId };
+        return { sessionId, reused: data.reused === true };
       } catch (err) {
         // Network/fetch error — clear busy state
         _sessionCreationRetryCount = 0;

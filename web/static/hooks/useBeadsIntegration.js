@@ -316,7 +316,9 @@ export function useBeadsIntegration({
           setMainView("conversation");
           showToast({
             style: "success",
-            title: `Started "${prompt.name}" for ${issue.id}`,
+            title: result.reused
+              ? `Reusing existing "${prompt.name}" conversation`
+              : `Started "${prompt.name}" for ${issue.id}`,
             duration: 3000,
           });
         });
@@ -346,7 +348,9 @@ export function useBeadsIntegration({
       setMainView("conversation");
       showToast({
         style: "success",
-        title: `Started "${prompt.name}" for ${issue.id}`,
+        title: result.reused
+          ? `Reusing existing "${prompt.name}" conversation`
+          : `Started "${prompt.name}" for ${issue.id}`,
         duration: 3000,
       });
     },
@@ -426,7 +430,9 @@ export function useBeadsIntegration({
       setMainView("conversation");
       showToast({
         style: "success",
-        title: `Started "${prompt.name}"`,
+        title: result.reused
+          ? `Reusing existing "${prompt.name}" conversation`
+          : `Started "${prompt.name}"`,
         duration: 3000,
       });
     },

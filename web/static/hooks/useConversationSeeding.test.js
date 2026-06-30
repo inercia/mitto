@@ -182,7 +182,7 @@ describe("useConversationSeeding — startConversationWithPrompt", () => {
     const callArg = newSession.mock.calls[0][0];
     expect(callArg.initialPromptName).toBe("p1");
     expect(callArg.arguments).toEqual({ ISSUE_ID: "mitto-1" });
-    expect(result).toEqual({ sessionId: "sess-9" });
+    expect(result).toEqual({ sessionId: "sess-9", reused: false });
   });
 
   test("passes workingDir, acpServer, name, beadsIssue through to newSession", async () => {
@@ -237,7 +237,7 @@ describe("useConversationSeeding — startConversationWithPrompt", () => {
     // Single call to newSession, no extra calls
     expect(newSession).toHaveBeenCalledTimes(1);
     // Result has sessionId and no seedError (old two-call path would set seedError on failure)
-    expect(result).toEqual({ sessionId: "sess-9" });
+    expect(result).toEqual({ sessionId: "sess-9", reused: false });
     expect(result).not.toHaveProperty("seedError");
   });
 
@@ -266,6 +266,22 @@ describe("useConversationSeeding — startConversationWithPrompt", () => {
     });
 
     expect(result).toEqual({ error: "session_creation_failed" });
+  });
+
+  test("surfaces reused:true from newSession result", async () => {
+    const newSession = jest
+      .fn()
+      .mockResolvedValue({ sessionId: "sess-9", reused: true });
+    const { startConversationWithPrompt } = useConversationSeeding({
+      newSession,
+    });
+    const result = await startConversationWithPrompt({
+      workingDir: "/x",
+      acpServer: "acp",
+      name: "n",
+      prompt: { name: "p" },
+    });
+    expect(result).toEqual({ sessionId: "sess-9", reused: true });
   });
 });
 
@@ -435,7 +451,7 @@ describe("useConversationSeeding — startConversationWithPrompt periodic path",
     expect(body.enabled).toBe(true);
     expect(body.frequency.at).toBe("09:00");
 
-    expect(result).toEqual({ sessionId: "sess-periodic" });
+    expect(result).toEqual({ sessionId: "sess-periodic", reused: false });
   });
 
   test("periodic: returns error if periodic PUT fails", async () => {
@@ -473,7 +489,7 @@ describe("useConversationSeeding — startConversationWithPrompt periodic path",
     const callArg = newSession.mock.calls[0][0];
     expect(callArg.initialPromptName).toBe("p1");
     expect(callArg.arguments).toEqual({ X: "y" });
-    expect(result).toEqual({ sessionId: "sess-one-time" });
+    expect(result).toEqual({ sessionId: "sess-one-time", reused: false });
   });
 });
 

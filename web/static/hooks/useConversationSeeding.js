@@ -327,7 +327,7 @@ export function useConversationSeeding({ newSession }) {
      * backend can later detect duplicate singleton-prompt conversations.
      *
      * @param {{ workingDir, acpServer, name, beadsIssue, prompt, arguments, periodic, fetchImpl }} opts
-     * @returns {Promise<{ sessionId: string } | { error: string }>}
+     * @returns {Promise<{ sessionId: string, reused?: boolean } | { error: string }>}
      */
     async ({
       workingDir,
@@ -372,7 +372,7 @@ export function useConversationSeeding({ newSession }) {
         }
       }
 
-      return { sessionId: result.sessionId };
+      return { sessionId: result.sessionId, reused: result.reused === true };
     },
     [newSession],
   );
