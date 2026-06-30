@@ -3853,10 +3853,10 @@ func TestPromptMode_ArgSubstitution_AfterPhase(t *testing.T) {
 // rendering in the memorize-preferences-style agentIdle processor (mitto-pyi).
 func TestPromptMode_ArgSubstitution_PreferencesFile(t *testing.T) {
 	proc := &Processor{
-		Name:   "memorize-preferences-test",
-		When:   WhenConfig{On: PhaseAgentResponded, Match: MatchAll, StopReasons: []string{"end_turn"}},
-		Prompt: "Update the {{ .Args.PreferencesFile }} file.",
-		Parameters: []config.PromptParameter{ {Name: "PreferencesFile", Type: "text", Default: "AGENTS.md"} },
+		Name:       "memorize-preferences-test",
+		When:       WhenConfig{On: PhaseAgentResponded, Match: MatchAll, StopReasons: []string{"end_turn"}},
+		Prompt:     "Update the {{ .Args.PreferencesFile }} file.",
+		Parameters: []config.PromptParameter{{Name: "PreferencesFile", Type: "text", Default: "AGENTS.md"}},
 	}
 
 	t.Run("default used when no override", func(t *testing.T) {
@@ -3897,7 +3897,7 @@ func TestPromptMode_ArgSubstitution_PreferencesFile(t *testing.T) {
 
 		input := makeAfterInput("user", "end_turn")
 		input.ProcessorArgOverrides = map[string]map[string]string{
-			"memorize-preferences-test": { "PreferencesFile": ".augment/rules/90-local.md" },
+			"memorize-preferences-test": {"PreferencesFile": ".augment/rules/90-local.md"},
 		}
 		m.ApplyAfter(context.Background(), input)
 		time.Sleep(50 * time.Millisecond)
