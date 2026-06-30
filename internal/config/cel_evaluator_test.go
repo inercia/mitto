@@ -604,6 +604,7 @@ func TestCELEvaluator_ItemContext(t *testing.T) {
 			Status:   "closed",
 			Type:     "task",
 			Priority: "2",
+			Labels:   []string{"chore"},
 			Kind:     "beadsIssue",
 		},
 	}
@@ -613,10 +614,11 @@ func TestCELEvaluator_ItemContext(t *testing.T) {
 			Status:   "open",
 			Type:     "feature",
 			Priority: "1",
+			Labels:   []string{"blog", "frontend"},
 			Kind:     "beadsIssue",
 		},
 	}
-	emptyCtx := &PromptEnabledContext{} // Item fields all zero-valued
+	emptyCtx := &PromptEnabledContext{} // Item fields all zero-valued (Labels is nil → normalized to [])
 
 	tests := []struct {
 		name           string
@@ -645,6 +647,12 @@ func TestCELEvaluator_ItemContext(t *testing.T) {
 		// Item.Priority check
 		{"priority string match", `Item.Priority == "1"`, openCtx, true, true},
 		{"priority no match", `Item.Priority == "0"`, openCtx, false, true},
+
+		// Item.Labels — membership and exists checks
+		{"label in open ctx", `"blog" in Item.Labels`, openCtx, true, true},
+		{"label not in closed ctx", `"blog" in Item.Labels`, closedCtx, false, true},
+		{"label not in empty ctx", `"blog" in Item.Labels`, emptyCtx, false, true},
+		{"label exists open ctx", `Item.Labels.exists(l, l == "blog")`, openCtx, true, true},
 
 		// Combined with session
 		{"item and session combined", `Item.Status != "closed" && !Session.IsChild`, openCtx, true, true},

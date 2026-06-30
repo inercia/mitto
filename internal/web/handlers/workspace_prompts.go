@@ -457,6 +457,7 @@ func (h *Handlers) HandleWorkspacePromptsGET(w http.ResponseWriter, r *http.Requ
 				Status:   query.Get("item_status"),
 				Type:     query.Get("item_type"),
 				Priority: query.Get("item_priority"),
+				Labels:   splitItemLabels(query.Get("item_labels")),
 				Kind:     itemKind,
 			}
 		}
@@ -497,4 +498,20 @@ func (h *Handlers) HandleWorkspacePromptsGET(w http.ResponseWriter, r *http.Requ
 		resp["migrated"] = migratedNames
 	}
 	writeJSONOK(w, resp)
+}
+
+// splitItemLabels splits a comma-separated item_labels query param into a
+// trimmed, empty-filtered slice. Returns nil for blank input.
+func splitItemLabels(s string) []string {
+	if strings.TrimSpace(s) == "" {
+		return nil
+	}
+	parts := strings.Split(s, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
 }

@@ -307,6 +307,11 @@ func buildActivation(ctx *PromptEnabledContext) map[string]any {
 	for k, v := range ctx.UserData {
 		userDataAny[k] = v
 	}
+	// Normalize Item.Labels: nil → empty slice so `"x" in Item.Labels` is always safe.
+	itemLabels := ctx.Item.Labels
+	if itemLabels == nil {
+		itemLabels = []string{}
+	}
 	return map[string]any{
 		"ACP.Name":        ctx.ACP.Name,
 		"ACP.Type":        ctx.ACP.Type,
@@ -358,11 +363,13 @@ func buildActivation(ctx *PromptEnabledContext) map[string]any {
 		// no item context is set) so expressions like Item["Status"] resolve cleanly.
 		// Callers populate ctx.Item for per-row list-menu evaluation (mitto-o0u.1).
 		// See ReferencesItem for how callers detect item-dependent expressions.
+		// Labels is a list so `"x" in Item.Labels` and `Item.Labels.exists(...)` work.
 		"Item": map[string]any{
 			"Id":       ctx.Item.Id,
 			"Status":   ctx.Item.Status,
 			"Type":     ctx.Item.Type,
 			"Priority": ctx.Item.Priority,
+			"Labels":   itemLabels,
 			"Kind":     ctx.Item.Kind,
 		},
 

@@ -227,8 +227,8 @@ type ToolsContext struct {
 
 // ItemContext holds the generic per-row item context for CEL evaluation of list menus.
 // Populated when a menu is opened for a specific row (e.g. a beads issue); empty otherwise.
-// All fields are always present (empty string when unset) so expressions like item.status
-// always resolve without a missing-key error.
+// String fields are always present (empty string when unset) so expressions like item.status
+// always resolve without a missing-key error. Labels is nil/empty when no labels are set.
 type ItemContext struct {
 	// Id is the unique identifier of the item (e.g. a beads issue ID like "mitto-abc")
 	Id string
@@ -238,6 +238,8 @@ type ItemContext struct {
 	Type string
 	// Priority is the priority of the item as a string (e.g. "0", "1", "2", "3")
 	Priority string
+	// Labels are the item's labels (e.g. a beads issue's labels like ["blog"]). Nil when none.
+	Labels []string
 	// Kind distinguishes the source of the item (e.g. "beadsIssue")
 	Kind string
 }

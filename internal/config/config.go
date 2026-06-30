@@ -1170,7 +1170,9 @@ type MCPConfig struct {
 	// Host is the address to bind the MCP server to. Default: "127.0.0.1".
 	Host string `json:"host,omitempty" yaml:"host,omitempty"`
 	// Port is the port to listen on. Default: 5757.
-	// Use 0 to let the system pick a free port.
+	// Must be a fixed port (1-65535). 0 (auto-assigned / random) is NOT allowed:
+	// the full MCP address must be known in advance so ACP servers can be
+	// configured to connect to it.
 	Port *int `json:"port,omitempty" yaml:"port,omitempty"`
 }
 

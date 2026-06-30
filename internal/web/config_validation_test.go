@@ -2,6 +2,7 @@ package web
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -347,6 +348,67 @@ func TestValidateConfigRequest_OmittedWebNoExistingAuth(t *testing.T) {
 	req := workspacesOnlyBody()
 	if err := server.validateConfigRequest(req); err != nil {
 		t.Fatalf("unexpected error validating a workspaces-only save: %v", err)
+	}
+}
+
+// mcpConfigBody is a minimal valid config save request carrying an MCP section
+// with the given port. A nil port means the "mcp" section omits the port field
+// entirely (so MCPConfig.Port stays nil, i.e. "use the default").
+func mcpConfigBody(port *int) *ConfigSaveRequest {
+	portField := ""
+	if port != nil {
+		portField = fmt.Sprintf(`, "port": %d`, *port)
+	}
+	body := `{
+		"workspaces": [{"working_dir": "/tmp", "acp_server": "test"}],
+		"acp_servers": [{"name": "test", "command": "cmd"}],
+		"mcp": {"host": "127.0.0.1"` + portField + `}
+	}`
+	var req ConfigSaveRequest
+	if err := json.Unmarshal([]byte(body), &req); err != nil {
+		panic(err)
+	}
+	return &req
+}
+
+// Port 0 (auto-assigned / random) must be rejected: the MCP address must be
+// known in advance so ACP servers can be configured to connect to it.
+func TestValidateConfigRequest_MCPPortZeroRejected(t *testing.T) {
+	server := &Server{}
+	zero := 0
+	err := server.validateConfigRequest(mcpConfigBody(&zero))
+	if err == nil {
+		t.Fatal("expected error for MCP port 0")
+	}
+	if err.StatusCode != http.StatusBadRequest {
+		t.Errorf("StatusCode = %d, want %d", err.StatusCode, http.StatusBadRequest)
+	}
+}
+
+// Out-of-range ports are rejected.
+func TestValidateConfigRequest_MCPPortOutOfRangeRejected(t *testing.T) {
+	server := &Server{}
+	tooBig := 70000
+	if err := server.validateConfigRequest(mcpConfigBody(&tooBig)); err == nil {
+		t.Fatal("expected error for out-of-range MCP port")
+	}
+}
+
+// A fixed, valid MCP port is accepted.
+func TestValidateConfigRequest_MCPPortValid(t *testing.T) {
+	server := &Server{}
+	port := 5757
+	if err := server.validateConfigRequest(mcpConfigBody(&port)); err != nil {
+		t.Fatalf("unexpected error for valid MCP port: %v", err)
+	}
+}
+
+// A nil MCP port (section present, port omitted) is accepted: it means "use the
+// default port".
+func TestValidateConfigRequest_MCPPortNilAccepted(t *testing.T) {
+	server := &Server{}
+	if err := server.validateConfigRequest(mcpConfigBody(nil)); err != nil {
+		t.Fatalf("unexpected error for nil MCP port: %v", err)
 	}
 }
 
