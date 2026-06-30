@@ -29,7 +29,13 @@ import { PeriodicFrequencyPanel } from "./PeriodicFrequencyPanel.js";
 import { SavePromptDialog } from "./SavePromptDialog.js";
 import { GripIcon } from "./Icons.js";
 import { PromptsMenu } from "./PromptsMenu.js";
-import { flattenPrompts, getMissingPromptParameters, fetchCachedParamNames, effectiveMissingParams } from "../utils/prompts.js";
+import {
+  flattenPrompts,
+  getMissingPromptParameters,
+  fetchCachedParamNames,
+  effectiveMissingParams,
+  promptParameters,
+} from "../utils/prompts.js";
 import { Tooltip } from "./Tooltip.js";
 
 /**
@@ -59,14 +65,16 @@ function wireMittoFileMarkers(root) {
     if (!rel) return;
     // Defensive re-validation: the backend sanitizer already enforces this,
     // but never trust agent-supplied content even after sanitization.
-    if (rel.startsWith("/") || rel.includes("..") || rel.includes("://")) return;
+    if (rel.startsWith("/") || rel.includes("..") || rel.includes("://"))
+      return;
     const lower = rel.toLowerCase();
     if (
       lower.startsWith("javascript:") ||
       lower.startsWith("data:") ||
       lower.startsWith("file:") ||
       lower.startsWith("mailto:")
-    ) return;
+    )
+      return;
 
     const lineRaw = el.getAttribute("data-mitto-line") || "";
     const line = /^\d+$/.test(lineRaw) ? lineRaw : "";
@@ -96,7 +104,11 @@ function wireMittoFileMarkers(root) {
  * Prevents the select from reverting to the old value while waiting for the server's
  * config_option_changed WebSocket response.
  */
-function ChatInputConfigSelect({ configOption, onSetConfigOption, isStreaming }) {
+function ChatInputConfigSelect({
+  configOption,
+  onSetConfigOption,
+  isStreaming,
+}) {
   const [localValue, setLocalValue] = useState(configOption.current_value);
 
   // Sync local value when server confirms the change
@@ -115,10 +127,12 @@ function ChatInputConfigSelect({ configOption, onSetConfigOption, isStreaming })
 
   return html`
     <${Tooltip}
-      tip=${isStreaming
-        ? configOption.name + " will apply to the next prompt"
-        : configOption.description ||
-          "Select " + configOption.name.toLowerCase()}
+      tip=${
+        isStreaming
+          ? configOption.name + " will apply to the next prompt"
+          : configOption.description ||
+            "Select " + configOption.name.toLowerCase()
+      }
       placement="top"
     >
       <select
@@ -149,7 +163,12 @@ function PromptStopButton({ onStop }) {
       data-tip="Stop the agent"
       aria-label="Stop the agent"
     >
-      <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <svg
+        class="w-4 h-4"
+        fill="none"
+        stroke="currentColor"
+        viewBox="0 0 24 24"
+      >
         <rect x="6" y="6" width="12" height="12" rx="2" stroke-width="2" />
       </svg>
     </button>
@@ -255,7 +274,11 @@ export function ChatInput({
 
   // Find all "select" type config options with options (e.g. "Mode", "Model")
   const selectConfigOptions = useMemo(() => {
-    return configOptions?.filter((o) => o.type === "select" && o.options?.length > 0) || [];
+    return (
+      configOptions?.filter(
+        (o) => o.type === "select" && o.options?.length > 0,
+      ) || []
+    );
   }, [configOptions]);
 
   // The "model" config option, used to surface a per-prompt model-override chip
@@ -272,7 +295,10 @@ export function ChatInput({
   const contextPct = useMemo(() => {
     // Primary: use SessionUsageUpdate data if available
     if (contextUsage?.size > 0 && contextUsage?.used != null) {
-      return Math.min(Math.round((contextUsage.used / contextUsage.size) * 100), 100);
+      return Math.min(
+        Math.round((contextUsage.used / contextUsage.size) * 100),
+        100,
+      );
     }
     // Fallback: compute from input_tokens + known model context window
     if (tokenUsage?.input_tokens) {
@@ -282,7 +308,10 @@ export function ChatInput({
       if (modelId) {
         const ctxWindow = getContextWindowSize(modelId);
         if (ctxWindow) {
-          return Math.min(Math.round((tokenUsage.input_tokens / ctxWindow) * 100), 100);
+          return Math.min(
+            Math.round((tokenUsage.input_tokens / ctxWindow) * 100),
+            100,
+          );
         }
       }
     }
@@ -450,10 +479,12 @@ export function ChatInput({
   const [periodicIterationCount, setPeriodicIterationCount] = useState(0);
   const [periodicTrigger, setPeriodicTrigger] = useState("schedule");
   const [periodicDelaySeconds, setPeriodicDelaySeconds] = useState(5);
-  const [periodicMaxDurationSeconds, setPeriodicMaxDurationSeconds] = useState(0);
+  const [periodicMaxDurationSeconds, setPeriodicMaxDurationSeconds] =
+    useState(0);
   // Reason the periodic loop was auto-stopped (e.g. "maxDuration", "maxIterations",
   // "iterationSafeguard"); empty when running. Drives the restore-dialog wording.
   const [periodicStoppedReason, setPeriodicStoppedReason] = useState("");
+  const [periodicArguments, setPeriodicArguments] = useState({});
 
   // Track window width for responsive placeholder
   const [isSmallWindow, setIsSmallWindow] = useState(window.innerWidth < 640);
@@ -491,6 +522,7 @@ export function ChatInput({
     setPeriodicDelaySeconds(5);
     setPeriodicMaxDurationSeconds(0);
     setPeriodicStoppedReason("");
+    setPeriodicArguments({});
     // Collapse the periodic properties body by default when switching
     // conversations (the prompt composition area is collapsed separately by
     // the periodicConfigured effect below).
@@ -537,6 +569,7 @@ export function ChatInput({
       setPeriodicDelaySeconds(5);
       setPeriodicMaxDurationSeconds(0);
       setPeriodicStoppedReason("");
+      setPeriodicArguments({});
       // Don't clear the draft when disabling periodic - preserve user's text
       return;
     }
@@ -578,6 +611,7 @@ export function ChatInput({
         setPeriodicDelaySeconds(config.delay_seconds ?? 5);
         setPeriodicMaxDurationSeconds(config.max_duration_seconds ?? 0);
         setPeriodicStoppedReason(config.stopped_reason || "");
+        setPeriodicArguments(config.arguments || {});
         // Set lock state based on the enabled field
         const isLocked = config.enabled === true;
         setIsPeriodicLocked(isLocked);
@@ -616,7 +650,8 @@ export function ChatInput({
       if (frequency) {
         setPeriodicFrequency(frequency);
       }
-      if (iterationCount !== undefined) setPeriodicIterationCount(iterationCount);
+      if (iterationCount !== undefined)
+        setPeriodicIterationCount(iterationCount);
       if (maxIterations !== undefined) setPeriodicMaxIterations(maxIterations);
 
       // If periodic config was deleted (not configured), reset state
@@ -669,6 +704,7 @@ export function ChatInput({
             setPeriodicDelaySeconds(config.delay_seconds ?? 5);
             setPeriodicMaxDurationSeconds(config.max_duration_seconds ?? 0);
             setPeriodicStoppedReason(config.stopped_reason || "");
+            setPeriodicArguments(config.arguments || {});
             const isPendingPlaceholder = config.prompt === "(pending)";
             if (config.prompt && !isPendingPlaceholder) {
               setPeriodicPrompt(config.prompt);
@@ -714,7 +750,8 @@ export function ChatInput({
   // Session exists but ACP agent hasn't started yet (e.g., during resume).
   // Blocks sending and action buttons, but allows typing so drafts are preserved.
   // GC-suspended sessions are intentionally paused — don't show the "Resuming" banner.
-  const isResuming = !isRunning && !isArchived && !noSession && !disabled && !gcSuspended;
+  const isResuming =
+    !isRunning && !isArchived && !noSession && !disabled && !gcSuspended;
 
   // Expose focus and togglePrompts methods via inputRef for external control
   useEffect(() => {
@@ -1035,56 +1072,99 @@ export function ChatInput({
   }, [sessionId, isPeriodicSaving]);
 
   // Handle periodic prompt selection from PeriodicPromptSelector
-  const handlePeriodicPromptSelect = useCallback(async (promptName) => {
-    if (!sessionId || isPeriodicSaving) return;
+  const handlePeriodicPromptSelect = useCallback(
+    async (promptName) => {
+      if (!sessionId || isPeriodicSaving) return;
 
-    // Helper that performs the actual PATCH, optionally with arguments.
-    const doPatch = async (extraArgs) => {
-      setIsPeriodicSaving(true);
-      try {
-        const body = { prompt_name: promptName, enabled: true };
-        if (extraArgs && Object.keys(extraArgs).length > 0) {
-          body.arguments = extraArgs;
-        }
-        const response = await secureFetch(
-          endpoints.sessions.periodic(sessionId),
-          {
-            method: "PATCH",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(body),
-          },
-        );
-        if (response.ok) {
-          const data = await response.json();
-          setPeriodicPromptName(promptName);
-          setIsPeriodicLocked(true);
-          if (data.next_scheduled_at) {
-            setPeriodicNextScheduledAt(data.next_scheduled_at);
+      // Helper that performs the actual PATCH, optionally with arguments.
+      const doPatch = async (extraArgs) => {
+        setIsPeriodicSaving(true);
+        try {
+          const body = { prompt_name: promptName, enabled: true };
+          if (extraArgs && Object.keys(extraArgs).length > 0) {
+            body.arguments = extraArgs;
           }
+          const response = await secureFetch(
+            endpoints.sessions.periodic(sessionId),
+            {
+              method: "PATCH",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify(body),
+            },
+          );
+          if (response.ok) {
+            const data = await response.json();
+            setPeriodicPromptName(promptName);
+            setIsPeriodicLocked(true);
+            if (data.next_scheduled_at) {
+              setPeriodicNextScheduledAt(data.next_scheduled_at);
+            }
+          }
+        } catch (err) {
+          console.error("Failed to save periodic prompt selection:", err);
+        } finally {
+          setIsPeriodicSaving(false);
         }
-      } catch (err) {
-        console.error("Failed to save periodic prompt selection:", err);
-      } finally {
-        setIsPeriodicSaving(false);
+      };
+
+      // Check if the prompt declares parameters that need user input before saving.
+      const fullPrompt = periodicPrompts.find((p) => p.name === promptName);
+      let missing = fullPrompt
+        ? getMissingPromptParameters(fullPrompt, "conversation")
+        : [];
+      if (missing.length > 0 && sessionId && fullPrompt) {
+        const cached = await fetchCachedParamNames(sessionId, fullPrompt.name);
+        missing = effectiveMissingParams(missing, cached);
       }
-    };
+      if (missing.length > 0 && onOpenPromptParamDialog) {
+        onOpenPromptParamDialog(fullPrompt, missing, async (userArgs) => {
+          await doPatch(userArgs);
+        });
+        return;
+      }
 
-    // Check if the prompt declares parameters that need user input before saving.
-    const fullPrompt = periodicPrompts.find((p) => p.name === promptName);
-    let missing = fullPrompt ? getMissingPromptParameters(fullPrompt, "conversation") : [];
-    if (missing.length > 0 && sessionId && fullPrompt) {
-      const cached = await fetchCachedParamNames(sessionId, fullPrompt.name);
-      missing = effectiveMissingParams(missing, cached);
-    }
-    if (missing.length > 0 && onOpenPromptParamDialog) {
-      onOpenPromptParamDialog(fullPrompt, missing, async (userArgs) => {
-        await doPatch(userArgs);
-      });
-      return;
-    }
+      await doPatch(undefined);
+    },
+    [sessionId, isPeriodicSaving, periodicPrompts, onOpenPromptParamDialog],
+  );
 
-    await doPatch(undefined);
-  }, [sessionId, isPeriodicSaving, periodicPrompts, onOpenPromptParamDialog]);
+  // Open the PromptParameterDialog pre-filled with current periodic arguments
+  const handleEditPeriodicArguments = useCallback(() => {
+    const prompt = (periodicPrompts || []).find(
+      (p) => p.name === periodicPromptName,
+    );
+    if (!prompt) return;
+    const params = promptParameters(prompt);
+    if (params.length === 0) return;
+    if (!onOpenPromptParamDialog) return;
+    onOpenPromptParamDialog(
+      prompt,
+      params,
+      async (userArgs) => {
+        try {
+          const resp = await secureFetch(
+            endpoints.sessions.periodic(sessionId),
+            {
+              method: "PATCH",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ arguments: userArgs }),
+            },
+          );
+          if (resp.ok) setPeriodicArguments(userArgs);
+          else console.error("Failed to save periodic arguments");
+        } catch (err) {
+          console.error("Failed to save periodic arguments:", err);
+        }
+      },
+      { initialValues: periodicArguments, hostSessionId: sessionId },
+    );
+  }, [
+    periodicPrompts,
+    periodicPromptName,
+    periodicArguments,
+    sessionId,
+    onOpenPromptParamDialog,
+  ]);
 
   // Handle frequency change from the PeriodicFrequencyPanel
   const handlePeriodicFrequencyChange = useCallback(
@@ -1212,7 +1292,10 @@ export function ChatInput({
     const textarea = e.target;
     textarea.style.height = "auto";
     textarea.style.height =
-      Math.max(textareaMinHeight, Math.min(textarea.scrollHeight, textareaHardMax)) + "px";
+      Math.max(
+        textareaMinHeight,
+        Math.min(textarea.scrollHeight, textareaHardMax),
+      ) + "px";
 
     // Show slash command picker when typing '/' at the start
     if (
@@ -1249,7 +1332,10 @@ export function ChatInput({
           // Adjust height to fit content
           textarea.style.height = "auto";
           textarea.style.height =
-            Math.max(textareaMinHeight, Math.min(textarea.scrollHeight, textareaHardMax)) + "px";
+            Math.max(
+              textareaMinHeight,
+              Math.min(textarea.scrollHeight, textareaHardMax),
+            ) + "px";
         });
       }
       return;
@@ -1336,7 +1422,9 @@ export function ChatInput({
 
       if (!response.ok) {
         const errData = await response.json().catch(() => ({}));
-        throw new Error(errorMessageFromData(errData, "Failed to improve prompt"));
+        throw new Error(
+          errorMessageFromData(errData, "Failed to improve prompt"),
+        );
       }
 
       const data = await response.json();
@@ -1348,7 +1436,10 @@ export function ChatInput({
             if (textarea) {
               textarea.style.height = "auto";
               textarea.style.height =
-                Math.max(textareaMinHeight, Math.min(textarea.scrollHeight, textareaHardMax)) + "px";
+                Math.max(
+                  textareaMinHeight,
+                  Math.min(textarea.scrollHeight, textareaHardMax),
+                ) + "px";
               textarea.focus();
             }
           });
@@ -1362,8 +1453,11 @@ export function ChatInput({
           setImproveError("Request timed out. Please try again.");
         } else {
           const msg = err.message || "Failed to improve prompt";
-          const hasCrashHint = msg.includes("crashed") || msg.includes("try again");
-          setImproveError(hasCrashHint ? msg : msg + " \u2014 please try again.");
+          const hasCrashHint =
+            msg.includes("crashed") || msg.includes("try again");
+          setImproveError(
+            hasCrashHint ? msg : msg + " \u2014 please try again.",
+          );
         }
         setTimeout(() => setImproveError(null), 5000);
       }
@@ -1434,13 +1528,10 @@ export function ChatInput({
       const formData = new FormData();
       formData.append("image", file);
 
-      const response = await secureFetch(
-        endpoints.sessions.images(sessionId),
-        {
-          method: "POST",
-          body: formData,
-        },
-      );
+      const response = await secureFetch(endpoints.sessions.images(sessionId), {
+        method: "POST",
+        body: formData,
+      });
 
       if (!response.ok) {
         const error = await response.json();
@@ -1553,10 +1644,10 @@ export function ChatInput({
       const formData = new FormData();
       formData.append("file", file);
 
-      const response = await secureFetch(
-        endpoints.sessions.files(sessionId),
-        { method: "POST", body: formData },
-      );
+      const response = await secureFetch(endpoints.sessions.files(sessionId), {
+        method: "POST",
+        body: formData,
+      });
 
       if (!response.ok) {
         const error = await response.json();
@@ -1936,7 +2027,10 @@ export function ChatInput({
           textarea.focus();
           textarea.style.height = "auto";
           textarea.style.height =
-            Math.max(textareaMinHeight, Math.min(textarea.scrollHeight, textareaHardMax)) + "px";
+            Math.max(
+              textareaMinHeight,
+              Math.min(textarea.scrollHeight, textareaHardMax),
+            ) + "px";
         }
       });
     },
@@ -1955,11 +2049,17 @@ export function ChatInput({
     >
       <!-- Resize handle for ChatInput height -->
       <div
-        class="flex items-center justify-center h-2 cursor-ns-resize hover:bg-mitto-surface-4/30 transition-colors select-none touch-none ${isTextareaDragging ? 'bg-mitto-surface-4/30' : ''}"
+        class="flex items-center justify-center h-2 cursor-ns-resize hover:bg-mitto-surface-4/30 transition-colors select-none touch-none ${isTextareaDragging
+          ? "bg-mitto-surface-4/30"
+          : ""}"
         ...${textareaHandleProps}
         title="Drag to resize input area"
       >
-        <div class="w-8 h-0.5 rounded-full bg-mitto-surface-4 ${isTextareaDragging ? 'bg-slate-400' : ''}"></div>
+        <div
+          class="w-8 h-0.5 rounded-full bg-mitto-surface-4 ${isTextareaDragging
+            ? "bg-slate-400"
+            : ""}"
+        ></div>
       </div>
       <!-- Hidden file input for images -->
       <input
@@ -2052,13 +2152,20 @@ export function ChatInput({
                         ...${promptHandleProps}
                         title="Drag to resize"
                       >
-                        <${GripIcon} className="w-6 h-1.5 text-mitto-text-muted" />
+                        <${GripIcon}
+                          className="w-6 h-1.5 text-mitto-text-muted"
+                        />
                       </div>
 
                       <!-- Title -->
                       <div class="px-4 pt-2 pb-2 shrink-0">
-                        <p class="ui-prompt-question text-sm font-medium" style="white-space: pre-wrap">
-                          ${(activeUIPrompt.title || activeUIPrompt.question)?.replace(/\\n/g, '\n')}
+                        <p
+                          class="ui-prompt-question text-sm font-medium"
+                          style="white-space: pre-wrap"
+                        >
+                          ${(
+                            activeUIPrompt.title || activeUIPrompt.question
+                          )?.replace(/\\n/g, "\n")}
                         </p>
                       </div>
 
@@ -2073,7 +2180,8 @@ export function ChatInput({
                           onInput=${(e) => {
                             setTextboxValue(e.target.value);
                             e.target.style.height = "auto";
-                            e.target.style.height = e.target.scrollHeight + "px";
+                            e.target.style.height =
+                              e.target.scrollHeight + "px";
                           }}
                         >
 ${activeUIPrompt.text || ""}</textarea
@@ -2135,13 +2243,20 @@ ${activeUIPrompt.text || ""}</textarea
                           ...${promptHandleProps}
                           title="Drag to resize"
                         >
-                          <${GripIcon} className="w-6 h-1.5 text-mitto-text-muted" />
+                          <${GripIcon}
+                            className="w-6 h-1.5 text-mitto-text-muted"
+                          />
                         </div>
 
                         <!-- Title -->
                         <div class="px-4 pt-2 pb-2 shrink-0">
-                          <p class="ui-prompt-question text-sm font-medium" style="white-space: pre-wrap">
-                            ${(activeUIPrompt.title || activeUIPrompt.question)?.replace(/\\n/g, '\n')}
+                          <p
+                            class="ui-prompt-question text-sm font-medium"
+                            style="white-space: pre-wrap"
+                          >
+                            ${(
+                              activeUIPrompt.title || activeUIPrompt.question
+                            )?.replace(/\\n/g, "\n")}
                           </p>
                         </div>
 
@@ -2229,13 +2344,18 @@ ${activeUIPrompt.text || ""}</textarea
                           ...${promptHandleProps}
                           title="Drag to resize"
                         >
-                          <${GripIcon} className="w-6 h-1.5 text-mitto-text-muted" />
+                          <${GripIcon}
+                            className="w-6 h-1.5 text-mitto-text-muted"
+                          />
                         </div>
 
                         <!-- Question -->
                         <div class="px-4 pt-2 pb-2 shrink-0">
-                          <p class="ui-prompt-question text-sm font-medium" style="white-space: pre-wrap">
-                            ${activeUIPrompt.question?.replace(/\\n/g, '\n')}
+                          <p
+                            class="ui-prompt-question text-sm font-medium"
+                            style="white-space: pre-wrap"
+                          >
+                            ${activeUIPrompt.question?.replace(/\\n/g, "\n")}
                           </p>
                         </div>
 
@@ -2261,7 +2381,8 @@ ${activeUIPrompt.text || ""}</textarea
                                   ${idx + 1}
                                 </span>
                                 <div class="min-w-0 flex-1">
-                                  <span class="text-sm font-medium text-mitto-text-strong"
+                                  <span
+                                    class="text-sm font-medium text-mitto-text-strong"
                                     >${opt.label}</span
                                   >
                                   ${opt.description &&
@@ -2397,6 +2518,7 @@ ${activeUIPrompt.text || ""}</textarea
           onTriggerChange=${setPeriodicTrigger}
           onDelayChange=${setPeriodicDelaySeconds}
           onMaxDurationChange=${setPeriodicMaxDurationSeconds}
+          onEditArguments=${handleEditPeriodicArguments}
         />
       </div>
 
@@ -2525,9 +2647,7 @@ ${activeUIPrompt.text || ""}</textarea
       ${sendError &&
       html`
         <div class="max-w-4xl mx-auto mb-2">
-          <div
-            class="alert alert-warning text-sm"
-          >
+          <div class="alert alert-warning text-sm">
             <svg
               class="w-4 h-4 shrink-0"
               fill="none"
@@ -2590,7 +2710,13 @@ ${activeUIPrompt.text || ""}</textarea
                 autocomplete=${isNativeApp() ? "off" : "on"}
                 autocapitalize=${isNativeApp() ? "off" : "sentences"}
                 spellcheck=${isNativeApp() ? "false" : "true"}
-                ...${isNativeApp() ? {} : { inputmode: "text", enterkeyhint: sendKeyMode === "ctrl-enter" ? "enter" : "send" }}
+                ...${isNativeApp()
+                  ? {}
+                  : {
+                      inputmode: "text",
+                      enterkeyhint:
+                        sendKeyMode === "ctrl-enter" ? "enter" : "send",
+                    }}
                 value=${text}
                 onInput=${handleInput}
                 onKeyDown=${handleKeyDown}
@@ -2606,17 +2732,19 @@ ${activeUIPrompt.text || ""}</textarea
                 isImproving
                   ? "opacity-50 cursor-not-allowed"
                   : ""}"
-                disabled=${isFullyDisabled ||
-                isReadOnly ||
-                isImproving}
+                disabled=${isFullyDisabled || isReadOnly || isImproving}
               />
 
               <!-- Improving prompt overlay with spinner -->
               ${isImproving &&
               html`
                 <div class="textarea-improving-overlay">
-                  <span class="loading loading-spinner w-6 h-6 text-mitto-accent"></span>
-                  <span class="text-sm text-mitto-accent-300 mt-2">Improving prompt...</span>
+                  <span
+                    class="loading loading-spinner w-6 h-6 text-mitto-accent"
+                  ></span>
+                  <span class="text-sm text-mitto-accent-300 mt-2"
+                    >Improving prompt...</span
+                  >
                 </div>
               `}
             </div>
@@ -2633,19 +2761,35 @@ ${activeUIPrompt.text || ""}</textarea
                           ? html`<img
                               src=${img.url}
                               alt=${img.name || "Pending image"}
-                              class="w-16 h-16 rounded-lg object-cover border border-mitto-border-2 ${img.uploading ? "opacity-50" : ""}"
+                              class="w-16 h-16 rounded-lg object-cover border border-mitto-border-2 ${img.uploading
+                                ? "opacity-50"
+                                : ""}"
                             />`
                           : html`<div
                               class="w-16 h-16 rounded-lg bg-mitto-surface-3 border border-mitto-border-2 flex items-center justify-center"
                             >
-                              <svg class="w-6 h-6 text-mitto-text-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
+                              <svg
+                                class="w-6 h-6 text-mitto-text-500"
+                                fill="none"
+                                stroke="currentColor"
+                                viewBox="0 0 24 24"
+                              >
+                                <path
+                                  stroke-linecap="round"
+                                  stroke-linejoin="round"
+                                  stroke-width="2"
+                                  d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"
+                                />
                               </svg>
                             </div>`}
                         ${img.uploading
                           ? html`
-                              <div class="absolute inset-0 flex items-center justify-center">
-                                <span class="loading loading-spinner w-5 h-5 text-mitto-text-strong"></span>
+                              <div
+                                class="absolute inset-0 flex items-center justify-center"
+                              >
+                                <span
+                                  class="loading loading-spinner w-5 h-5 text-mitto-text-strong"
+                                ></span>
                               </div>
                             `
                           : html`
@@ -2656,8 +2800,18 @@ ${activeUIPrompt.text || ""}</textarea
                                 data-tip="Remove image"
                                 aria-label="Remove image"
                               >
-                                <svg class="w-3 h-3 text-mitto-danger-fg" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+                                <svg
+                                  class="w-3 h-3 text-mitto-danger-fg"
+                                  fill="none"
+                                  stroke="currentColor"
+                                  viewBox="0 0 24 24"
+                                >
+                                  <path
+                                    stroke-linecap="round"
+                                    stroke-linejoin="round"
+                                    stroke-width="2"
+                                    d="M6 18L18 6M6 6l12 12"
+                                  />
                                 </svg>
                               </button>
                             `}
@@ -2675,18 +2829,44 @@ ${activeUIPrompt.text || ""}</textarea
                 <div class="flex flex-wrap gap-2">
                   ${pendingFiles.map(
                     (file) => html`
-                      <div key=${file.id} class="relative group flex items-center gap-2 bg-mitto-surface-3 rounded-lg px-3 py-2 border border-mitto-border-2">
-                        <svg class="w-5 h-5 text-mitto-text-muted shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                      <div
+                        key=${file.id}
+                        class="relative group flex items-center gap-2 bg-mitto-surface-3 rounded-lg px-3 py-2 border border-mitto-border-2"
+                      >
+                        <svg
+                          class="w-5 h-5 text-mitto-text-muted shrink-0"
+                          fill="none"
+                          stroke="currentColor"
+                          viewBox="0 0 24 24"
+                        >
+                          <path
+                            stroke-linecap="round"
+                            stroke-linejoin="round"
+                            stroke-width="2"
+                            d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"
+                          />
                         </svg>
-                        <span class="text-sm text-mitto-text-secondary max-w-[150px] truncate" title=${file.name}>${file.name}</span>
-                        ${file.category && html`
-                          <span class="text-xs px-1.5 py-0.5 rounded ${file.category === "text" ? "bg-green-900 text-green-300" : "bg-mitto-accent-900 text-mitto-accent-300"}">${file.category}</span>
+                        <span
+                          class="text-sm text-mitto-text-secondary max-w-[150px] truncate"
+                          title=${file.name}
+                          >${file.name}</span
+                        >
+                        ${file.category &&
+                        html`
+                          <span
+                            class="text-xs px-1.5 py-0.5 rounded ${file.category ===
+                            "text"
+                              ? "bg-green-900 text-green-300"
+                              : "bg-mitto-accent-900 text-mitto-accent-300"}"
+                            >${file.category}</span
+                          >
                         `}
                         ${file.uploading
                           ? html`
                               <div class="flex items-center justify-center">
-                                <span class="loading loading-spinner w-4 h-4 text-mitto-accent"></span>
+                                <span
+                                  class="loading loading-spinner w-4 h-4 text-mitto-accent"
+                                ></span>
                               </div>
                             `
                           : html`
@@ -2697,8 +2877,18 @@ ${activeUIPrompt.text || ""}</textarea
                                 data-tip="Remove file"
                                 aria-label="Remove file"
                               >
-                                <svg class="w-3 h-3 text-mitto-danger-fg" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+                                <svg
+                                  class="w-3 h-3 text-mitto-danger-fg"
+                                  fill="none"
+                                  stroke="currentColor"
+                                  viewBox="0 0 24 24"
+                                >
+                                  <path
+                                    stroke-linecap="round"
+                                    stroke-linejoin="round"
+                                    stroke-width="2"
+                                    d="M6 18L18 6M6 6l12 12"
+                                  />
                                 </svg>
                               </button>
                             `}
@@ -2718,8 +2908,13 @@ ${activeUIPrompt.text || ""}</textarea
                   type="button"
                   onClick=${handleImprovePrompt}
                   onMouseDown=${(e) => e.preventDefault()}
-                  disabled=${isFullyDisabled || !text.trim() || isReadOnly || isImproving}
-                  class="chat-input-action tooltip tooltip-top ${isImproving ? "improving" : ""}"
+                  disabled=${isFullyDisabled ||
+                  !text.trim() ||
+                  isReadOnly ||
+                  isImproving}
+                  class="chat-input-action tooltip tooltip-top ${isImproving
+                    ? "improving"
+                    : ""}"
                   data-tip="Improve prompt with AI (Ctrl+P)"
                   aria-label="Improve prompt with AI (Ctrl+P)"
                 >
@@ -2728,8 +2923,18 @@ ${activeUIPrompt.text || ""}</textarea
                         <span class="loading loading-spinner w-4 h-4"></span>
                       `
                     : html`
-                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 3v4M3 5h4M6 17v4m-2-2h4m5-16l2.286 6.857L21 12l-5.714 2.143L13 21l-2.286-6.857L5 12l5.714-2.143L13 3z" />
+                        <svg
+                          class="w-4 h-4"
+                          fill="none"
+                          stroke="currentColor"
+                          viewBox="0 0 24 24"
+                        >
+                          <path
+                            stroke-linecap="round"
+                            stroke-linejoin="round"
+                            stroke-width="2"
+                            d="M5 3v4M3 5h4M6 17v4m-2-2h4m5-16l2.286 6.857L21 12l-5.714 2.143L13 21l-2.286-6.857L5 12l5.714-2.143L13 3z"
+                          />
                         </svg>
                       `}
                 </button>
@@ -2744,8 +2949,18 @@ ${activeUIPrompt.text || ""}</textarea
                   data-tip="Attach image"
                   aria-label="Attach image"
                 >
-                  <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
+                  <svg
+                    class="w-4 h-4"
+                    fill="none"
+                    stroke="currentColor"
+                    viewBox="0 0 24 24"
+                  >
+                    <path
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                      stroke-width="2"
+                      d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"
+                    />
                   </svg>
                 </button>
 
@@ -2759,8 +2974,18 @@ ${activeUIPrompt.text || ""}</textarea
                   data-tip="Attach file"
                   aria-label="Attach file"
                 >
-                  <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13" />
+                  <svg
+                    class="w-4 h-4"
+                    fill="none"
+                    stroke="currentColor"
+                    viewBox="0 0 24 24"
+                  >
+                    <path
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                      stroke-width="2"
+                      d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13"
+                    />
                   </svg>
                 </button>
 
@@ -2772,13 +2997,26 @@ ${activeUIPrompt.text || ""}</textarea
                     type="button"
                     onClick=${() => setShowSaveDialog(true)}
                     onMouseDown=${(e) => e.preventDefault()}
-                    disabled=${isFullyDisabled || !text.trim() || isReadOnly || isImproving}
+                    disabled=${isFullyDisabled ||
+                    !text.trim() ||
+                    isReadOnly ||
+                    isImproving}
                     class="chat-input-action tooltip tooltip-top"
                     data-tip="Save prompt as file"
                     aria-label="Save prompt as file"
                   >
-                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7H5a2 2 0 00-2 2v9a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-3m-1 4l-3 3m0 0l-3-3m3 3V4" />
+                    <svg
+                      class="w-4 h-4"
+                      fill="none"
+                      stroke="currentColor"
+                      viewBox="0 0 24 24"
+                    >
+                      <path
+                        stroke-linecap="round"
+                        stroke-linejoin="round"
+                        stroke-width="2"
+                        d="M8 7H5a2 2 0 00-2 2v9a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-3m-1 4l-3 3m0 0l-3-3m3 3V4"
+                      />
                     </svg>
                   </button>
                 `}
@@ -2792,36 +3030,65 @@ ${activeUIPrompt.text || ""}</textarea
                     setPendingFiles([]);
                   }}
                   onMouseDown=${(e) => e.preventDefault()}
-                  disabled=${isFullyDisabled || isReadOnly || isImproving || (!text.trim() && !hasPendingAttachments)}
+                  disabled=${isFullyDisabled ||
+                  isReadOnly ||
+                  isImproving ||
+                  (!text.trim() && !hasPendingAttachments)}
                   class="chat-input-action tooltip tooltip-top"
                   data-tip="Clear message"
                   aria-label="Clear message"
                 >
-                  <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                  <svg
+                    class="w-4 h-4"
+                    fill="none"
+                    stroke="currentColor"
+                    viewBox="0 0 24 24"
+                  >
+                    <path
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                      stroke-width="2"
+                      d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"
+                    />
                   </svg>
                 </button>
               </div>
 
               <!-- Center: Config selectors and context usage (shown when either is available) -->
-              ${(selectConfigOptions.length > 0 || contextPct !== null) && html`
+              ${(selectConfigOptions.length > 0 || contextPct !== null) &&
+              html`
                 <div class="chat-input-model-selector">
-                  ${selectConfigOptions.map((configOpt) => html`
-                    <${ChatInputConfigSelect}
-                      key=${configOpt.id}
-                      configOption=${configOpt}
-                      onSetConfigOption=${onSetConfigOption}
-                      isStreaming=${isStreaming}
-                    />
-                  `)}
-                  ${contextPct !== null && html`
+                  ${selectConfigOptions.map(
+                    (configOpt) => html`
+                      <${ChatInputConfigSelect}
+                        key=${configOpt.id}
+                        configOption=${configOpt}
+                        onSetConfigOption=${onSetConfigOption}
+                        isStreaming=${isStreaming}
+                      />
+                    `,
+                  )}
+                  ${contextPct !== null &&
+                  html`
                     <span
                       class="chat-input-context-pct tooltip tooltip-top"
-                      style=${"color: " + (contextPct > 80 ? "#ef4444" : contextPct > 50 ? "#f59e0b" : "#64748b")}
+                      style=${"color: " +
+                      (contextPct > 80
+                        ? "#ef4444"
+                        : contextPct > 50
+                          ? "#f59e0b"
+                          : "#64748b")}
                       data-tip=${contextUsage?.size
-                        ? "Context: " + (contextUsage.used || 0).toLocaleString() + " / " + contextUsage.size.toLocaleString() + " tokens"
-                        : "Context: ~" + (tokenUsage?.input_tokens || 0).toLocaleString() + " input tokens"}
-                    >${contextPct}%</span>
+                        ? "Context: " +
+                          (contextUsage.used || 0).toLocaleString() +
+                          " / " +
+                          contextUsage.size.toLocaleString() +
+                          " tokens"
+                        : "Context: ~" +
+                          (tokenUsage?.input_tokens || 0).toLocaleString() +
+                          " input tokens"}
+                      >${contextPct}%</span
+                    >
                   `}
                 </div>
               `}
@@ -2829,31 +3096,46 @@ ${activeUIPrompt.text || ""}</textarea
               <!-- Right action buttons: queue-toggle, prompts, enqueue, send/stop/lock -->
               <div class="chat-input-actions-right">
                 <!-- Queue toggle button: shown when queue has items OR dropdown is open -->
-                ${(queueLength > 0 || showQueueDropdown) && html`
-                <button
-                  type="button"
-                  onClick=${() => {
-                    if (!periodicConfigured && onToggleQueue) onToggleQueue();
-                  }}
-                  disabled=${periodicConfigured}
-                  data-queue-toggle
-                  class="chat-input-action relative tooltip tooltip-top"
-                  style="${showQueueDropdown && !periodicConfigured ? "background: #2563eb !important; color: white !important;" : ""}"
-                  data-tip=${periodicConfigured
-                    ? "Queue disabled for periodic sessions"
-                    : `${queueLength}/${queueConfig.max_size} queued - Click to ${showQueueDropdown ? "hide" : "show"} queue`}
-                  aria-label=${periodicConfigured
-                    ? "Queue disabled for periodic sessions"
-                    : `${queueLength}/${queueConfig.max_size} queued - Click to ${showQueueDropdown ? "hide" : "show"} queue`}
-                >
-                  <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 10h16M4 14h16M4 18h16" />
-                  </svg>
-                  ${!periodicConfigured && html`<span
-                    class="absolute -top-1 -right-1 pointer-events-none"
-                    style="display:flex;align-items:center;justify-content:center;min-width:16px;height:16px;padding:0 4px;border-radius:9999px;font-size:10px;font-weight:600;line-height:1;background:var(--mitto-accent,#dc2626);color:var(--mitto-accent-fg,#ffffff);box-sizing:border-box;"
-                  >${queueLength}</span>`}
-                </button>
+                ${(queueLength > 0 || showQueueDropdown) &&
+                html`
+                  <button
+                    type="button"
+                    onClick=${() => {
+                      if (!periodicConfigured && onToggleQueue) onToggleQueue();
+                    }}
+                    disabled=${periodicConfigured}
+                    data-queue-toggle
+                    class="chat-input-action relative tooltip tooltip-top"
+                    style="${showQueueDropdown && !periodicConfigured
+                      ? "background: #2563eb !important; color: white !important;"
+                      : ""}"
+                    data-tip=${periodicConfigured
+                      ? "Queue disabled for periodic sessions"
+                      : `${queueLength}/${queueConfig.max_size} queued - Click to ${showQueueDropdown ? "hide" : "show"} queue`}
+                    aria-label=${periodicConfigured
+                      ? "Queue disabled for periodic sessions"
+                      : `${queueLength}/${queueConfig.max_size} queued - Click to ${showQueueDropdown ? "hide" : "show"} queue`}
+                  >
+                    <svg
+                      class="w-4 h-4"
+                      fill="none"
+                      stroke="currentColor"
+                      viewBox="0 0 24 24"
+                    >
+                      <path
+                        stroke-linecap="round"
+                        stroke-linejoin="round"
+                        stroke-width="2"
+                        d="M4 6h16M4 10h16M4 14h16M4 18h16"
+                      />
+                    </svg>
+                    ${!periodicConfigured &&
+                    html`<span
+                      class="absolute -top-1 -right-1 pointer-events-none"
+                      style="display:flex;align-items:center;justify-content:center;min-width:16px;height:16px;padding:0 4px;border-radius:9999px;font-size:10px;font-weight:600;line-height:1;background:var(--mitto-accent,#dc2626);color:var(--mitto-accent-fg,#ffffff);box-sizing:border-box;"
+                      >${queueLength}</span
+                    >`}
+                  </button>
                 `}
 
                 <!-- Prompts Toggle Button -->
@@ -2885,13 +3167,18 @@ ${activeUIPrompt.text || ""}</textarea
                             if (e.key === "ArrowDown") {
                               e.preventDefault();
                               setPromptSelectedIndex((prev) =>
-                                Math.min(prev + 1, flatFilteredPrompts.length - 1),
+                                Math.min(
+                                  prev + 1,
+                                  flatFilteredPrompts.length - 1,
+                                ),
                               );
                               return;
                             }
                             if (e.key === "ArrowUp") {
                               e.preventDefault();
-                              setPromptSelectedIndex((prev) => Math.max(-1, prev - 1));
+                              setPromptSelectedIndex((prev) =>
+                                Math.max(-1, prev - 1),
+                              );
                               return;
                             }
                             if (e.key === "Enter") {
@@ -2944,84 +3231,166 @@ ${activeUIPrompt.text || ""}</textarea
                       aria-label="Insert predefined prompt"
                     >
                       <svg
-                        class="w-4 h-4 transition-transform ${showDropup ? "rotate-180" : ""}"
+                        class="w-4 h-4 transition-transform ${showDropup
+                          ? "rotate-180"
+                          : ""}"
                         fill="none"
                         stroke="currentColor"
                         viewBox="0 0 24 24"
                       >
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 15l7-7 7 7" />
+                        <path
+                          stroke-linecap="round"
+                          stroke-linejoin="round"
+                          stroke-width="2"
+                          d="M5 15l7-7 7 7"
+                        />
                       </svg>
                     </button>
                   </div>
                 `}
 
                 <!-- Enqueue button: shown when streaming (so user can enqueue while agent works) -->
-                ${isStreaming && html`
-                <button
-                  type="button"
-                  onClick=${handleAddToQueueClick}
-                  disabled=${isFullyDisabled || (!text.trim() && !hasPendingAttachments) || isReadOnly || isImproving || periodicConfigured}
-                  class="chat-input-action tooltip tooltip-top"
-                  data-tip=${periodicConfigured ? "Queue disabled for periodic sessions" : "Add to queue (⌘/Ctrl+Enter)"}
-                  aria-label=${periodicConfigured ? "Queue disabled for periodic sessions" : "Add to queue (⌘/Ctrl+Enter)"}
-                >
-                  <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4" />
-                  </svg>
-                </button>
+                ${isStreaming &&
+                html`
+                  <button
+                    type="button"
+                    onClick=${handleAddToQueueClick}
+                    disabled=${isFullyDisabled ||
+                    (!text.trim() && !hasPendingAttachments) ||
+                    isReadOnly ||
+                    isImproving ||
+                    periodicConfigured}
+                    class="chat-input-action tooltip tooltip-top"
+                    data-tip=${periodicConfigured
+                      ? "Queue disabled for periodic sessions"
+                      : "Add to queue (⌘/Ctrl+Enter)"}
+                    aria-label=${periodicConfigured
+                      ? "Queue disabled for periodic sessions"
+                      : "Add to queue (⌘/Ctrl+Enter)"}
+                  >
+                    <svg
+                      class="w-4 h-4"
+                      fill="none"
+                      stroke="currentColor"
+                      viewBox="0 0 24 24"
+                    >
+                      <path
+                        stroke-linecap="round"
+                        stroke-linejoin="round"
+                        stroke-width="2"
+                        d="M12 4v16m8-8H4"
+                      />
+                    </svg>
+                  </button>
                 `}
 
                 <!-- Send/Stop button -->
                 ${isStreaming
+                  ? html`
+                      <!-- Stop button -->
+                      <button
+                        type="button"
+                        onClick=${() => {
+                          if (hasActiveUIPrompt) {
+                            handleUIPromptAnswer("abort", "Abort");
+                          }
+                          onCancel();
+                        }}
+                        class="chat-input-action stop-active tooltip tooltip-top"
+                        data-tip=${hasActiveUIPrompt
+                          ? "Dismiss prompt and stop"
+                          : "Stop streaming"}
+                        aria-label=${hasActiveUIPrompt
+                          ? "Dismiss prompt and stop"
+                          : "Stop streaming"}
+                      >
+                        <svg
+                          class="w-4 h-4"
+                          fill="none"
+                          stroke="currentColor"
+                          viewBox="0 0 24 24"
+                        >
+                          <rect
+                            x="6"
+                            y="6"
+                            width="12"
+                            height="12"
+                            rx="2"
+                            stroke-width="2"
+                          />
+                        </svg>
+                      </button>
+                    `
+                  : isSending
                     ? html`
-                        <!-- Stop button -->
+                        <!-- Sending spinner -->
                         <button
                           type="button"
-                          onClick=${() => {
-                            if (hasActiveUIPrompt) {
-                              handleUIPromptAnswer("abort", "Abort");
-                            }
-                            onCancel();
-                          }}
-                          class="chat-input-action stop-active tooltip tooltip-top"
-                          data-tip=${hasActiveUIPrompt ? "Dismiss prompt and stop" : "Stop streaming"}
-                          aria-label=${hasActiveUIPrompt ? "Dismiss prompt and stop" : "Stop streaming"}
+                          disabled
+                          class="chat-input-action"
                         >
-                          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <rect x="6" y="6" width="12" height="12" rx="2" stroke-width="2" />
-                          </svg>
+                          <span class="loading loading-spinner w-4 h-4"></span>
                         </button>
                       `
-                    : isSending
-                      ? html`
-                          <!-- Sending spinner -->
-                          <button type="button" disabled class="chat-input-action">
-                            <span class="loading loading-spinner w-4 h-4"></span>
-                          </button>
-                        `
-                      : html`
-                          <!-- Send button -->
-                          <button
-                            type="submit"
-                            disabled=${isFullyDisabled || isResuming || !acpReady || (!text.trim() && !hasPendingAttachments) || isReadOnly || isImproving || isQueueFull}
-                            class="chat-input-action tooltip tooltip-top ${(!text.trim() && !hasPendingAttachments) || isQueueFull ? "" : "send-active"} ${isQueueFull ? "queue-full" : ""}"
-                            style="${isQueueFull ? "background: #ea580c !important; color: white !important;" : ""}"
-                            data-tip=${isQueueFull ? `Queue full (${queueConfig.max_size}/${queueConfig.max_size})` : "Send message"}
-                            aria-label=${isQueueFull ? `Queue full (${queueConfig.max_size}/${queueConfig.max_size})` : "Send message"}
-                          >
-                            ${isQueueFull
-                              ? html`
-                                  <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M18.364 18.364A9 9 0 005.636 5.636m12.728 12.728A9 9 0 015.636 5.636m12.728 12.728L5.636 5.636" />
-                                  </svg>
-                                `
-                              : html`
-                                  <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M22 2L11 13M22 2l-7 20-4-9-9-4 20-7z" />
-                                  </svg>
-                                `}
-                          </button>
-                        `}
+                    : html`
+                        <!-- Send button -->
+                        <button
+                          type="submit"
+                          disabled=${isFullyDisabled ||
+                          isResuming ||
+                          !acpReady ||
+                          (!text.trim() && !hasPendingAttachments) ||
+                          isReadOnly ||
+                          isImproving ||
+                          isQueueFull}
+                          class="chat-input-action tooltip tooltip-top ${(!text.trim() &&
+                            !hasPendingAttachments) ||
+                          isQueueFull
+                            ? ""
+                            : "send-active"} ${isQueueFull ? "queue-full" : ""}"
+                          style="${isQueueFull
+                            ? "background: #ea580c !important; color: white !important;"
+                            : ""}"
+                          data-tip=${isQueueFull
+                            ? `Queue full (${queueConfig.max_size}/${queueConfig.max_size})`
+                            : "Send message"}
+                          aria-label=${isQueueFull
+                            ? `Queue full (${queueConfig.max_size}/${queueConfig.max_size})`
+                            : "Send message"}
+                        >
+                          ${isQueueFull
+                            ? html`
+                                <svg
+                                  class="w-4 h-4"
+                                  fill="none"
+                                  stroke="currentColor"
+                                  viewBox="0 0 24 24"
+                                >
+                                  <path
+                                    stroke-linecap="round"
+                                    stroke-linejoin="round"
+                                    stroke-width="2"
+                                    d="M18.364 18.364A9 9 0 005.636 5.636m12.728 12.728A9 9 0 015.636 5.636m12.728 12.728L5.636 5.636"
+                                  />
+                                </svg>
+                              `
+                            : html`
+                                <svg
+                                  class="w-4 h-4"
+                                  fill="none"
+                                  stroke="currentColor"
+                                  viewBox="0 0 24 24"
+                                >
+                                  <path
+                                    stroke-linecap="round"
+                                    stroke-linejoin="round"
+                                    stroke-width="2"
+                                    d="M22 2L11 13M22 2l-7 20-4-9-9-4 20-7z"
+                                  />
+                                </svg>
+                              `}
+                        </button>
+                      `}
               </div>
             </div>
           </div>
@@ -3038,4 +3407,3 @@ ${activeUIPrompt.text || ""}</textarea
     </form>
   `;
 }
-

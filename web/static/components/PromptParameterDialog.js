@@ -302,12 +302,13 @@ function ParamField({
  * PromptParameterDialog — collects values for prompt parameters that a menu
  * could NOT auto-fill, then returns them as an arguments map via onSubmit.
  *
- * @param {boolean}  isOpen     - controls visibility
- * @param {Function} onClose    - called on dismiss (no onSubmit)
- * @param {Function} onSubmit   - called with { [paramName]: string } on Save
- * @param {Array}    parameters - missing params: [{ name, type, description?, required? }]
- * @param {string}   workingDir - workspace directory (needed for beadsId selector)
- * @param {string}   [title]    - dialog title; defaults to "Prompt parameters"
+ * @param {boolean}  isOpen         - controls visibility
+ * @param {Function} onClose        - called on dismiss (no onSubmit)
+ * @param {Function} onSubmit       - called with { [paramName]: string } on Save
+ * @param {Array}    parameters     - params: [{ name, type, description?, required? }]
+ * @param {string}   workingDir     - workspace directory (needed for beadsId selector)
+ * @param {string}   [title]        - dialog title; defaults to "Prompt parameters"
+ * @param {Object}   [initialValues] - pre-seeded values keyed by parameter name
  */
 export function PromptParameterDialog({
   isOpen,
@@ -317,6 +318,7 @@ export function PromptParameterDialog({
   workingDir,
   hostSessionId,
   title = "Prompt parameters",
+  initialValues = {},
 }) {
   const [values, setValues] = useState({});
   const [beadsIssues, setBeadsIssues] = useState([]);
@@ -327,10 +329,14 @@ export function PromptParameterDialog({
   const [loadingWorkspaces, setLoadingWorkspaces] = useState(false);
   const [acpServers, setAcpServers] = useState([]);
 
-  // Reset state each time the dialog opens
+  // Reset state each time the dialog opens; seed from initialValues when provided.
+  // Seeds on the open transition only — initialValues is intentionally NOT a
+  // dependency: callers may pass a fresh object literal each render (e.g. `|| {}`),
+  // which would otherwise re-run this effect on every parent render and wipe
+  // user-typed values.
   useEffect(() => {
     if (!isOpen) return;
-    setValues({});
+    setValues(initialValues ? { ...initialValues } : {});
     setBeadsIssues([]);
     setSessions([]);
     setWorkspaces([]);
@@ -338,7 +344,7 @@ export function PromptParameterDialog({
     setLoadingBeads(false);
     setLoadingSessions(false);
     setLoadingWorkspaces(false);
-  }, [isOpen]);
+  }, [isOpen]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Fetch beads issues when dialog opens (only if a beadsId param is present)
   useEffect(() => {
@@ -394,7 +400,9 @@ export function PromptParameterDialog({
     setLoadingWorkspaces(true);
     // Scope the ACP server list to the current folder when known, so the
     // acpServer dropdown only offers agents configured for this workspace.
-    const wsUrl = endpoints.workspaces.list(workingDir ? { working_dir: workingDir } : undefined);
+    const wsUrl = endpoints.workspaces.list(
+      workingDir ? { working_dir: workingDir } : undefined,
+    );
     authFetch(wsUrl)
       .then((r) => (r.ok ? r.json() : Promise.reject(r.status)))
       .then((data) => {

@@ -169,7 +169,11 @@ import {
   EllipsisIcon,
 } from "./components/Icons.js";
 import { ContextMenu } from "./components/ContextMenu.js";
-import { BeadsView, BeadsIssueView, BeadsDetailPanel } from "./components/BeadsView.js";
+import {
+  BeadsView,
+  BeadsIssueView,
+  BeadsDetailPanel,
+} from "./components/BeadsView.js";
 import { DashboardView } from "./components/DashboardView.js";
 
 // Import constants
@@ -181,7 +185,13 @@ import {
 } from "./constants.js";
 
 // Import prompt utilities
-import { promptMenus, getMissingPromptParameters, autofillConversationMenuArgs, fetchCachedParamNames, effectiveMissingParams } from "./utils/prompts.js";
+import {
+  promptMenus,
+  getMissingPromptParameters,
+  autofillConversationMenuArgs,
+  fetchCachedParamNames,
+  effectiveMissingParams,
+} from "./utils/prompts.js";
 
 // Import global event handlers (registers side effects on module load) and predicates
 import {
@@ -287,10 +297,19 @@ function App() {
   // NOTE: This effect must stay after the useWebSocket() destructuring above so that
   // sessionInfo and ensureResumed are in scope when the dependency array is evaluated.
   useEffect(() => {
-    if (activeSessionId && sessionInfo?.gc_suspended && !sessionInfo?.archived) {
+    if (
+      activeSessionId &&
+      sessionInfo?.gc_suspended &&
+      !sessionInfo?.archived
+    ) {
       ensureResumed(activeSessionId);
     }
-  }, [activeSessionId, sessionInfo?.gc_suspended, sessionInfo?.archived, ensureResumed]);
+  }, [
+    activeSessionId,
+    sessionInfo?.gc_suspended,
+    sessionInfo?.archived,
+    ensureResumed,
+  ]);
 
   // Sidebar resize handle (horizontal direction)
   const {
@@ -336,7 +355,10 @@ function App() {
   // (e.g. a conversation) via the New task shortcut, without switching to the
   // beads list view. { open, workingDir } — workingDir is kept during the
   // close animation so only `open` is flipped on dismiss.
-  const [quickCreate, setQuickCreate] = useState({ open: false, workingDir: null });
+  const [quickCreate, setQuickCreate] = useState({
+    open: false,
+    workingDir: null,
+  });
   // mainView controls what is shown in the right-side area: "conversation" or "beads"
   const [mainView, setMainView] = useState("conversation");
   // Ref mirror of mainView so native swipe-gesture handlers (registered in an effect
@@ -482,8 +504,10 @@ function App() {
     setShowSidebar,
     setShowSidePanel,
     setSidePanelTab,
-    onOpenPeriodicDialog: (prompt, onSchedule) => setPeriodicScheduleDialog({ prompt, onSchedule }),
-    onOpenPromptParamDialog: (prompt, parameters, onSubmit) => setPromptParamDialog({ prompt, parameters, onSubmit }),
+    onOpenPeriodicDialog: (prompt, onSchedule) =>
+      setPeriodicScheduleDialog({ prompt, onSchedule }),
+    onOpenPromptParamDialog: (prompt, parameters, onSubmit) =>
+      setPromptParamDialog({ prompt, parameters, onSubmit }),
     activeSessionId,
   });
 
@@ -497,26 +521,42 @@ function App() {
 
   // Conversation seeding: send a named prompt to an existing conversation via queue,
   // or create a new (optionally periodic) conversation seeded with a named prompt.
-  const { seedConversationWithPrompt, startConversationWithPrompt } = useConversationSeeding({ newSession });
+  const { seedConversationWithPrompt, startConversationWithPrompt } =
+    useConversationSeeding({ newSession });
 
   // Launch a named prompt in a new conversation for the "prompts" upstream type in BeadsView.
   // action is "pull"|"push"|"sync"; conversationName is set to "Pull tasks" etc.
-  const handleBeadsLaunchPrompt = useCallback(async (action, promptName) => {
-    const names = { pull: "Pull tasks", push: "Push tasks", sync: "Sync tasks" };
-    const conversationName = names[action] || "Tasks";
-    const result = await startConversationWithPrompt({
-      workingDir: beadsWorkingDir,
-      // omit acpServer — use the folder default
-      name: conversationName,
-      prompt: { name: promptName },
-    });
-    if (!result?.sessionId) {
-      showToast({ style: "error", title: result?.error || `Failed to launch ${action} prompt`, duration: 4000 });
-      return;
-    }
-    setMainView("conversation");
-    showToast({ style: "success", title: `Started "${promptName}"`, duration: 3000 });
-  }, [startConversationWithPrompt, beadsWorkingDir, showToast, setMainView]);
+  const handleBeadsLaunchPrompt = useCallback(
+    async (action, promptName) => {
+      const names = {
+        pull: "Pull tasks",
+        push: "Push tasks",
+        sync: "Sync tasks",
+      };
+      const conversationName = names[action] || "Tasks";
+      const result = await startConversationWithPrompt({
+        workingDir: beadsWorkingDir,
+        // omit acpServer — use the folder default
+        name: conversationName,
+        prompt: { name: promptName },
+      });
+      if (!result?.sessionId) {
+        showToast({
+          style: "error",
+          title: result?.error || `Failed to launch ${action} prompt`,
+          duration: 4000,
+        });
+        return;
+      }
+      setMainView("conversation");
+      showToast({
+        style: "success",
+        title: `Started "${promptName}"`,
+        duration: 3000,
+      });
+    },
+    [startConversationWithPrompt, beadsWorkingDir, showToast, setMainView],
+  );
 
   // Fetch and cache known beads issue IDs for the active session's workspace.
   // Dispatches "beads-ids-updated" to re-linkify already-rendered messages.
@@ -531,7 +571,9 @@ function App() {
         sessionInfo?.working_dir || window.mittoCurrentWorkspace || "",
         activeSessionId,
       );
-    return () => { delete window.mittoOpenBeadsIssue; };
+    return () => {
+      delete window.mittoOpenBeadsIssue;
+    };
   }, [handleOpenBeadsIssue, activeSessionId, sessionInfo?.working_dir]);
 
   // Wire the active-conversation-removed callback consumed by useWebSocket. When
@@ -601,7 +643,12 @@ function App() {
       });
       clearBackgroundCompletion();
     }
-  }, [backgroundCompletion, clearBackgroundCompletion, showToast, focusSession]);
+  }, [
+    backgroundCompletion,
+    clearBackgroundCompletion,
+    showToast,
+    focusSession,
+  ]);
 
   // Show toast and native notification when a periodic prompt starts
   useEffect(() => {
@@ -649,7 +696,8 @@ function App() {
   // This fires when a blocking prompt expired while the user was not viewing the session.
   useEffect(() => {
     if (backgroundUIPromptTimeout) {
-      const sessionName = backgroundUIPromptTimeout.sessionName || "Conversation";
+      const sessionName =
+        backgroundUIPromptTimeout.sessionName || "Conversation";
       // Show native macOS notification (sticky — user needs to go check the session)
       if (
         window.mittoNativeNotificationsEnabled &&
@@ -666,13 +714,19 @@ function App() {
       showToast({
         style: "warning",
         title: `Missed prompt in ${sessionName}`,
-        message: backgroundUIPromptTimeout.question || "Agent needed your input",
+        message:
+          backgroundUIPromptTimeout.question || "Agent needed your input",
         duration: 10000,
         onClick: () => focusSession(backgroundUIPromptTimeout.sessionId),
       });
       clearBackgroundUIPromptTimeout();
     }
-  }, [backgroundUIPromptTimeout, clearBackgroundUIPromptTimeout, showToast, focusSession]);
+  }, [
+    backgroundUIPromptTimeout,
+    clearBackgroundUIPromptTimeout,
+    showToast,
+    focusSession,
+  ]);
 
   // Background notification event listeners (extracted to
   // hooks/useBackgroundNotifications.js): runner fallback, memory recycle,
@@ -865,13 +919,21 @@ function App() {
   const [confirmDeleteSession, setConfirmDeleteSession] = useState(true);
 
   // Badge/folder click command (macOS only)
-  const [badgeClickCommand, setBadgeClickCommand] = useState("open ${MITTO_WORKING_DIR}");
+  const [badgeClickCommand, setBadgeClickCommand] = useState(
+    "open ${MITTO_WORKING_DIR}",
+  );
   // Terminal action command (macOS only)
-  const [terminalActionCommand, setTerminalActionCommand] = useState("open -a Terminal ${MITTO_WORKING_DIR}");
+  const [terminalActionCommand, setTerminalActionCommand] = useState(
+    "open -a Terminal ${MITTO_WORKING_DIR}",
+  );
 
   // Derive enabled state from non-empty command
-  const badgeClickEnabled = typeof window.mittoPickFolder === "function" && badgeClickCommand.trim() !== "";
-  const terminalActionEnabled = typeof window.mittoPickFolder === "function" && terminalActionCommand.trim() !== "";
+  const badgeClickEnabled =
+    typeof window.mittoPickFolder === "function" &&
+    badgeClickCommand.trim() !== "";
+  const terminalActionEnabled =
+    typeof window.mittoPickFolder === "function" &&
+    terminalActionCommand.trim() !== "";
 
   // Input font family setting (web UI, default: "system")
   const [inputFontFamily, setInputFontFamily] = useState("system");
@@ -923,11 +985,13 @@ function App() {
         }
         // Load badge/folder click command (macOS only)
         setBadgeClickCommand(
-          config?.ui?.mac?.badge_click_action?.command || "open ${MITTO_WORKING_DIR}",
+          config?.ui?.mac?.badge_click_action?.command ||
+            "open ${MITTO_WORKING_DIR}",
         );
         // Load terminal action command (macOS only)
         setTerminalActionCommand(
-          config?.ui?.mac?.terminal_action?.command || "open -a Terminal ${MITTO_WORKING_DIR}",
+          config?.ui?.mac?.terminal_action?.command ||
+            "open -a Terminal ${MITTO_WORKING_DIR}",
         );
         // Load input font family setting (web UI)
         if (config?.ui?.web?.input_font_family) {
@@ -1072,10 +1136,13 @@ function App() {
             style: "warning",
             title: result.retrying
               ? "Agent is busy \u2014 retrying automatically\u2026"
-              : (result.error || "Agent is busy"),
+              : result.error || "Agent is busy",
             duration: result.retrying ? 30000 : 5000,
           });
-        } else if (result?.errorCode === "no_workspace_configured" && !configReadonly) {
+        } else if (
+          result?.errorCode === "no_workspace_configured" &&
+          !configReadonly
+        ) {
           setSettingsDialog({ isOpen: true, forceOpen: true });
         } else if (result?.sessionId) {
           // Switch away from the beads panel so the new conversation is shown.
@@ -1145,7 +1212,8 @@ function App() {
       if (currentSession.parent_id) return;
 
       // Check if already archived
-      const isArchived = currentSession.archived || currentSession.info?.archived;
+      const isArchived =
+        currentSession.archived || currentSession.info?.archived;
 
       // Toggle archive state
       await archiveSession(activeSessionId, !isArchived);
@@ -1260,10 +1328,13 @@ function App() {
           style: "warning",
           title: result.retrying
             ? "Agent is busy \u2014 retrying automatically\u2026"
-            : (result.error || "Agent is busy"),
+            : result.error || "Agent is busy",
           duration: result.retrying ? 30000 : 5000,
         });
-      } else if (result?.errorCode === "no_workspace_configured" && !configReadonly) {
+      } else if (
+        result?.errorCode === "no_workspace_configured" &&
+        !configReadonly
+      ) {
         setSettingsDialog({ isOpen: true, forceOpen: true });
       } else if (result?.sessionId) {
         // newSession activates the new conversation; switch away from the beads
@@ -1296,10 +1367,13 @@ function App() {
             style: "warning",
             title: result.retrying
               ? "Agent is busy \u2014 retrying automatically\u2026"
-              : (result.error || "Agent is busy"),
+              : result.error || "Agent is busy",
             duration: result.retrying ? 30000 : 5000,
           });
-        } else if (result?.errorCode === "no_workspace_configured" && !configReadonly) {
+        } else if (
+          result?.errorCode === "no_workspace_configured" &&
+          !configReadonly
+        ) {
           setSettingsDialog({ isOpen: true, forceOpen: true });
         } else if (result?.sessionId) {
           // Switch away from the beads panel so the new conversation is shown.
@@ -1341,10 +1415,13 @@ function App() {
           style: "warning",
           title: result.retrying
             ? "Agent is busy \u2014 retrying automatically\u2026"
-            : (result.error || "Agent is busy"),
+            : result.error || "Agent is busy",
           duration: result.retrying ? 30000 : 5000,
         });
-      } else if (result?.errorCode === "no_workspace_configured" && !configReadonly) {
+      } else if (
+        result?.errorCode === "no_workspace_configured" &&
+        !configReadonly
+      ) {
         setSettingsDialog({ isOpen: true, forceOpen: true });
       } else if (result?.sessionId) {
         // Switch away from the beads panel so the new conversation is shown.
@@ -1371,10 +1448,13 @@ function App() {
         style: "warning",
         title: result.retrying
           ? "Agent is busy \u2014 retrying automatically\u2026"
-          : (result.error || "Agent is busy"),
+          : result.error || "Agent is busy",
         duration: result.retrying ? 30000 : 5000,
       });
-    } else if (result?.errorCode === "no_workspace_configured" && !configReadonly) {
+    } else if (
+      result?.errorCode === "no_workspace_configured" &&
+      !configReadonly
+    ) {
       setSettingsDialog({ isOpen: true, forceOpen: true });
     } else if (result?.sessionId) {
       // Switch away from the beads panel so the new conversation is shown.
@@ -1401,10 +1481,13 @@ function App() {
     setWorkspacesDialog({ isOpen: true });
   };
 
-  const handleShowWorkspacesForFolder = useCallback((workingDir, tab) => {
-    if (configReadonly) return;
-    setWorkspacesDialog({ isOpen: true, workingDir, tab });
-  }, [configReadonly]);
+  const handleShowWorkspacesForFolder = useCallback(
+    (workingDir, tab) => {
+      if (configReadonly) return;
+      setWorkspacesDialog({ isOpen: true, workingDir, tab });
+    },
+    [configReadonly],
+  );
 
   const handleShowKeyboardShortcuts = () => {
     setKeyboardShortcutsDialog({ isOpen: true });
@@ -1480,7 +1563,12 @@ function App() {
       // Call the original sendPrompt
       return sendPrompt(message, images, files, options);
     },
-    [sendPrompt, seedConversationWithPrompt, trackUserMessageForPlanExpiration, activeSessionId],
+    [
+      sendPrompt,
+      seedConversationWithPrompt,
+      trackUserMessageForPlanExpiration,
+      activeSessionId,
+    ],
   );
 
   // Handler for prompts dropdown open - refreshes workspace prompts (which now include all sources)
@@ -1488,10 +1576,7 @@ function App() {
     if (sessionInfo?.working_dir) {
       fetchWorkspacePrompts(sessionInfo.working_dir, false);
     }
-  }, [
-    sessionInfo?.working_dir,
-    fetchWorkspacePrompts,
-  ]);
+  }, [sessionInfo?.working_dir, fetchWorkspacePrompts]);
 
   const handleSelectSession = (sessionId, opts) => {
     switchSession(sessionId);
@@ -1530,7 +1615,10 @@ function App() {
 
         if (!res.ok) {
           const data = await res.json();
-          showToast({ style: "error", title: data.error?.message || data.error || "Failed to open folder" });
+          showToast({
+            style: "error",
+            title: data.error?.message || data.error || "Failed to open folder",
+          });
         } else {
           const data = await res.json();
           if (!data.success && data.error) {
@@ -1538,7 +1626,10 @@ function App() {
           }
         }
       } catch (err) {
-        showToast({ style: "error", title: "Failed to open folder: " + err.message });
+        showToast({
+          style: "error",
+          title: "Failed to open folder: " + err.message,
+        });
       }
     },
     [badgeClickEnabled, showToast],
@@ -1553,12 +1644,18 @@ function App() {
         const res = await authFetch(apiUrl("/api/badge-click"), {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ workspace_path: workspacePath, action: "folder" }),
+          body: JSON.stringify({
+            workspace_path: workspacePath,
+            action: "folder",
+          }),
         });
 
         if (!res.ok) {
           const data = await res.json();
-          showToast({ style: "error", title: data.error?.message || data.error || "Failed to open folder" });
+          showToast({
+            style: "error",
+            title: data.error?.message || data.error || "Failed to open folder",
+          });
         } else {
           const data = await res.json();
           if (!data.success && data.error) {
@@ -1566,7 +1663,10 @@ function App() {
           }
         }
       } catch (err) {
-        showToast({ style: "error", title: "Failed to open folder: " + err.message });
+        showToast({
+          style: "error",
+          title: "Failed to open folder: " + err.message,
+        });
       }
     },
     [badgeClickEnabled, showToast],
@@ -1580,19 +1680,27 @@ function App() {
       if (!workingDir) return;
       const ws = (workspaces || []).find((w) => w.working_dir === workingDir);
       const uuid = ws?.uuid;
-      if (!uuid) { showToast({ style: "error", title: "Unknown workspace folder" }); return; }
+      if (!uuid) {
+        showToast({ style: "error", title: "Unknown workspace folder" });
+        return;
+      }
       try {
-        const res = await secureFetch(apiUrl(`/api/workspaces/${encodeURIComponent(uuid)}/folder-group`), {
-          method: "PUT",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ group: group || "" }),
-        });
+        const res = await secureFetch(
+          apiUrl(`/api/workspaces/${encodeURIComponent(uuid)}/folder-group`),
+          {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ group: group || "" }),
+          },
+        );
         if (!res.ok) {
           let msg = "Failed to move folder to group";
           try {
             const data = await res.json();
             msg = data.error?.message || msg;
-          } catch (_) { /* keep default */ }
+          } catch (_) {
+            /* keep default */
+          }
           showToast({ style: "error", title: msg });
           return;
         }
@@ -1604,7 +1712,10 @@ function App() {
           title: trimmed ? `Moved to group "${trimmed}"` : "Removed from group",
         });
       } catch (err) {
-        showToast({ style: "error", title: "Failed to move folder to group: " + err.message });
+        showToast({
+          style: "error",
+          title: "Failed to move folder to group: " + err.message,
+        });
       }
     },
     [showToast, refreshWorkspaces, workspaces],
@@ -1619,12 +1730,19 @@ function App() {
         const res = await authFetch(apiUrl("/api/badge-click"), {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ workspace_path: workspacePath, action: "terminal" }),
+          body: JSON.stringify({
+            workspace_path: workspacePath,
+            action: "terminal",
+          }),
         });
 
         if (!res.ok) {
           const data = await res.json();
-          showToast({ style: "error", title: data.error?.message || data.error || "Failed to open terminal" });
+          showToast({
+            style: "error",
+            title:
+              data.error?.message || data.error || "Failed to open terminal",
+          });
         } else {
           const data = await res.json();
           if (!data.success && data.error) {
@@ -1632,7 +1750,10 @@ function App() {
           }
         }
       } catch (err) {
-        showToast({ style: "error", title: "Failed to open terminal: " + err.message });
+        showToast({
+          style: "error",
+          title: "Failed to open terminal: " + err.message,
+        });
       }
     },
     [terminalActionEnabled, showToast],
@@ -1805,11 +1926,21 @@ function App() {
               parameters: missing,
               hostSessionId: sessionId,
               onSubmit: async (userArgs) => {
-                const result = await makePeriodicNow(sessionId, prompt, { arguments: userArgs });
+                const result = await makePeriodicNow(sessionId, prompt, {
+                  arguments: userArgs,
+                });
                 if (result.success) {
-                  showToast({ style: "success", title: `Made conversation periodic with "${prompt.name}"`, duration: 3000 });
+                  showToast({
+                    style: "success",
+                    title: `Made conversation periodic with "${prompt.name}"`,
+                    duration: 3000,
+                  });
                 } else {
-                  showToast({ style: "warning", title: "Failed to configure periodic schedule", duration: 4000 });
+                  showToast({
+                    style: "warning",
+                    title: "Failed to configure periodic schedule",
+                    duration: 4000,
+                  });
                 }
               },
             });
@@ -1817,9 +1948,17 @@ function App() {
           }
           const result = await makePeriodicNow(sessionId, prompt);
           if (result.success) {
-            showToast({ style: "success", title: `Made conversation periodic with "${prompt.name}"`, duration: 3000 });
+            showToast({
+              style: "success",
+              title: `Made conversation periodic with "${prompt.name}"`,
+              duration: 3000,
+            });
           } else {
-            showToast({ style: "warning", title: "Failed to configure periodic schedule", duration: 4000 });
+            showToast({
+              style: "warning",
+              title: "Failed to configure periodic schedule",
+              duration: 4000,
+            });
           }
           return;
         }
@@ -1839,11 +1978,23 @@ function App() {
               parameters: missing,
               hostSessionId: sessionId,
               onSubmit: async (userArgs) => {
-                const result = await seedConversationWithPrompt(sessionId, prompt, { arguments: userArgs });
+                const result = await seedConversationWithPrompt(
+                  sessionId,
+                  prompt,
+                  { arguments: userArgs },
+                );
                 if (result.success) {
-                  showToast({ style: "success", title: `Sent "${prompt.name}" to conversation`, duration: 3000 });
+                  showToast({
+                    style: "success",
+                    title: `Sent "${prompt.name}" to conversation`,
+                    duration: 3000,
+                  });
                 } else {
-                  showToast({ style: "warning", title: "Failed to send prompt", duration: 4000 });
+                  showToast({
+                    style: "warning",
+                    title: "Failed to send prompt",
+                    duration: 4000,
+                  });
                 }
               },
             });
@@ -1851,9 +2002,17 @@ function App() {
           }
           const result = await seedConversationWithPrompt(sessionId, prompt);
           if (result.success) {
-            showToast({ style: "success", title: `Sent "${prompt.name}" to conversation`, duration: 3000 });
+            showToast({
+              style: "success",
+              title: `Sent "${prompt.name}" to conversation`,
+              duration: 3000,
+            });
           } else {
-            showToast({ style: "warning", title: "Failed to send prompt", duration: 4000 });
+            showToast({
+              style: "warning",
+              title: "Failed to send prompt",
+              duration: 4000,
+            });
           }
           return;
         }
@@ -1871,19 +2030,32 @@ function App() {
                 workingDir,
                 acpServer,
                 prompt,
-                ...(collectedArgs && Object.keys(collectedArgs).length > 0 ? { arguments: collectedArgs } : {}),
+                ...(collectedArgs && Object.keys(collectedArgs).length > 0
+                  ? { arguments: collectedArgs }
+                  : {}),
                 periodic: schedule,
               });
               if (result?.sessionId) {
                 focusSession(result.sessionId);
-                showToast({ style: "success", title: `Started periodic "${prompt.name}"`, duration: 3000 });
+                showToast({
+                  style: "success",
+                  title: `Started periodic "${prompt.name}"`,
+                  duration: 3000,
+                });
               } else {
-                showToast({ style: "warning", title: "Failed to start periodic conversation", duration: 4000 });
+                showToast({
+                  style: "warning",
+                  title: "Failed to start periodic conversation",
+                  duration: 4000,
+                });
               }
             },
           });
         };
-        const missingForNewPeriodic = getMissingPromptParameters(prompt, "conversation");
+        const missingForNewPeriodic = getMissingPromptParameters(
+          prompt,
+          "conversation",
+        );
         if (missingForNewPeriodic.length > 0) {
           setPromptParamDialog({
             prompt,
@@ -1901,7 +2073,11 @@ function App() {
       if (!sessionId) return;
       // Auto-fill what the host conversation can supply (e.g. a lone child for a
       // childSessionId param), then prompt the user only for what remains.
-      const autoArgs = autofillConversationMenuArgs(prompt, sessionId, allSessions);
+      const autoArgs = autofillConversationMenuArgs(
+        prompt,
+        sessionId,
+        allSessions,
+      );
       let missing = getMissingPromptParameters(prompt, "conversation").filter(
         (p) => autoArgs[p.name] === undefined,
       );
@@ -1954,7 +2130,14 @@ function App() {
         });
       }
     },
-    [seedConversationWithPrompt, startConversationWithPrompt, showToast, focusSession, setPromptParamDialog, allSessions],
+    [
+      seedConversationWithPrompt,
+      startConversationWithPrompt,
+      showToast,
+      focusSession,
+      setPromptParamDialog,
+      allSessions,
+    ],
   );
 
   // ----- Chat header conversation menu -----
@@ -1995,31 +2178,52 @@ function App() {
   // live countdown + next scheduled run time. The periodic fields live on the
   // stored session object (GET /api/sessions + periodic_updated broadcasts carry
   // next_scheduled_at + frequency; the per-session "connected" message does not).
-  const headerAcpServer = sessionInfo?.acp_server || activeSession?.acp_server || "";
+  const headerAcpServer =
+    sessionInfo?.acp_server || activeSession?.acp_server || "";
   const headerNextScheduledAt =
-    (activeSession?.periodic_configured && activeSession?.next_scheduled_at) || null;
+    (activeSession?.periodic_configured && activeSession?.next_scheduled_at) ||
+    null;
   const headerPeriodicUnit = activeSession?.periodic_frequency?.unit || "hours";
   // Derive a single 3-state pill for the periodic status: running | paused | stopped | null.
   // null means not periodic (no pill rendered).
   const headerPeriodicState = (() => {
     if (!activeSession?.periodic_configured) return null;
     if (activeSession?.periodic_enabled) {
-      return { state: "running", label: "Auto", badgeClass: "badge-success badge-soft" };
+      return {
+        state: "running",
+        label: "Auto",
+        badgeClass: "badge-success badge-soft",
+      };
     }
     // Loop is disabled — check the reason for stopped vs paused distinction
-    const entry = PERIODIC_STOPPED_LABELS[activeSession?.periodic_stopped_reason];
+    const entry =
+      PERIODIC_STOPPED_LABELS[activeSession?.periodic_stopped_reason];
     if (entry && entry.kind === "stopped") {
-      return { state: "stopped", label: entry.label, badgeClass: "badge-error badge-soft" };
+      return {
+        state: "stopped",
+        label: entry.label,
+        badgeClass: "badge-error badge-soft",
+      };
     }
     if (entry && entry.kind === "paused") {
-      return { state: "paused", label: entry.label, badgeClass: "badge-warning badge-soft" };
+      return {
+        state: "paused",
+        label: entry.label,
+        badgeClass: "badge-warning badge-soft",
+      };
     }
     // No reason set — manual pause / unknown
-    return { state: "paused", label: "Paused", badgeClass: "badge-warning badge-soft" };
+    return {
+      state: "paused",
+      label: "Paused",
+      badgeClass: "badge-warning badge-soft",
+    };
   })();
   // Keep backwards-compat references used by cap-highlight logic below
   const headerStoppedReason =
-    (activeSession?.periodic_configured && activeSession?.periodic_stopped_reason) || null;
+    (activeSession?.periodic_configured &&
+      activeSession?.periodic_stopped_reason) ||
+    null;
 
   // Periodic "glance" badges shown in the subtitle for ALL periodic sessions
   // (running or stopped, schedule or onCompletion).
@@ -2027,7 +2231,8 @@ function App() {
   const headerIterationCount = activeSession?.periodic_iteration_count ?? 0;
   const headerMaxIterations = activeSession?.periodic_max_iterations ?? 0;
   const headerDelaySeconds = activeSession?.periodic_delay_seconds ?? 0;
-  const headerMaxDurationSecs = activeSession?.periodic_max_duration_seconds ?? 0;
+  const headerMaxDurationSecs =
+    activeSession?.periodic_max_duration_seconds ?? 0;
 
   // Trigger badge: "every 2h" for schedule, "after agent finishes [· +Ns]" for onCompletion
   let headerTriggerLabel = null;
@@ -2037,25 +2242,24 @@ function App() {
     } else {
       const freq = activeSession?.periodic_frequency;
       if (freq) {
-        const u = freq.unit === "minutes" ? "min" : freq.unit === "hours" ? "h" : "d";
+        const u =
+          freq.unit === "minutes" ? "min" : freq.unit === "hours" ? "h" : "d";
         headerTriggerLabel = `every ${freq.value}${u}`;
       }
     }
   }
   // Run-count badge: "Run N of M" or "N run(s) · ∞". A compact variant ("N/M" or
   // "N·∞") is rendered alongside and CSS-swapped in on narrow screens (styles.css).
-  const headerRunCountLabel =
-    activeSession?.periodic_configured
-      ? headerMaxIterations > 0
-        ? `Run ${headerIterationCount} of ${headerMaxIterations}`
-        : `${headerIterationCount} run${headerIterationCount !== 1 ? "s" : ""} · ∞`
-      : null;
-  const headerRunCountLabelShort =
-    activeSession?.periodic_configured
-      ? headerMaxIterations > 0
-        ? `${headerIterationCount}/${headerMaxIterations}`
-        : `${headerIterationCount}·∞`
-      : null;
+  const headerRunCountLabel = activeSession?.periodic_configured
+    ? headerMaxIterations > 0
+      ? `Run ${headerIterationCount} of ${headerMaxIterations}`
+      : `${headerIterationCount} run${headerIterationCount !== 1 ? "s" : ""} · ∞`
+    : null;
+  const headerRunCountLabelShort = activeSession?.periodic_configured
+    ? headerMaxIterations > 0
+      ? `${headerIterationCount}/${headerMaxIterations}`
+      : `${headerIterationCount}·∞`
+    : null;
   // Max-time badge: "max 2h" etc; omitted when not set (0 means unlimited)
   const headerMaxTimeLabel =
     activeSession?.periodic_configured && headerMaxDurationSecs > 0
@@ -2079,9 +2283,17 @@ function App() {
     const md = conversationToMarkdown(messages);
     const ok = await copyToClipboard(md);
     if (ok) {
-      showToast({ style: "success", title: "Conversation copied as Markdown", duration: 3000 });
+      showToast({
+        style: "success",
+        title: "Conversation copied as Markdown",
+        duration: 3000,
+      });
     } else {
-      showToast({ style: "error", title: "Failed to copy conversation", duration: 3000 });
+      showToast({
+        style: "error",
+        title: "Failed to copy conversation",
+        duration: 3000,
+      });
     }
   }, [messages, showToast]);
 
@@ -2098,7 +2310,11 @@ function App() {
           method: "POST",
         });
         if (res.ok) {
-          showToast({ style: "success", title: "Flushing conversation context\u2026", duration: 3000 });
+          showToast({
+            style: "success",
+            title: "Flushing conversation context\u2026",
+            duration: 3000,
+          });
         } else {
           const data = await res.json().catch(() => null);
           const msg = errorMessageFromData(data) || "Failed to flush context";
@@ -2106,7 +2322,11 @@ function App() {
         }
       } catch (err) {
         console.error("Failed to flush context:", err);
-        showToast({ style: "error", title: "Failed to flush context", duration: 4000 });
+        showToast({
+          style: "error",
+          title: "Failed to flush context",
+          duration: 4000,
+        });
       }
     },
     [activeSessionId, showToast],
@@ -2146,7 +2366,7 @@ function App() {
         class="drawer-toggle"
         checked=${showSidebar}
         onChange=${(e) => setShowSidebar(e.target.checked)}
-        tabIndex=${-1}
+        tabindex=${-1}
         aria-hidden="true"
       />
       <!-- drawer-content: ALL page content (header, messages, input, dialogs).
@@ -2154,316 +2374,353 @@ function App() {
            positioned right-edge overlay) is confined to this content area
            (right of the sidebar) rather than the whole viewport. -->
       <div class="drawer-content flex flex-col h-full relative">
-      <!-- Delete Dialog -->
-      <${DeleteDialog}
-        isOpen=${deleteDialog.isOpen}
-        sessionName=${deleteDialog.session?.name ||
-        deleteDialog.session?.description ||
-        "Untitled"}
-        isActive=${deleteDialog.session?.session_id === activeSessionId}
-        isStreaming=${deleteDialog.session?.isStreaming || false}
-        onConfirm=${handleConfirmDelete}
-        onCancel=${() => setDeleteDialog({ isOpen: false, session: null })}
-      />
+        <!-- Delete Dialog -->
+        <${DeleteDialog}
+          isOpen=${deleteDialog.isOpen}
+          sessionName=${deleteDialog.session?.name ||
+          deleteDialog.session?.description ||
+          "Untitled"}
+          isActive=${deleteDialog.session?.session_id === activeSessionId}
+          isStreaming=${deleteDialog.session?.isStreaming || false}
+          onConfirm=${handleConfirmDelete}
+          onCancel=${() => setDeleteDialog({ isOpen: false, session: null })}
+        />
 
-      <!-- Workspace Selection Dialog (for new conversations) -->
-      <${NewSessionWorkspaceDialog}
-        isOpen=${workspaceDialog.isOpen}
-        workspaces=${workspaceDialog.filteredWorkspaces || workspaces}
-        onSelect=${handleWorkspaceSelect}
-        onCancel=${() => setWorkspaceDialog({ isOpen: false })}
-        onCreateWorkspace=${configReadonly
-          ? null
-          : () => {
-              setWorkspaceDialog({ isOpen: false });
-              handleShowWorkspaces();
-            }}
-      />
+        <!-- Workspace Selection Dialog (for new conversations) -->
+        <${NewSessionWorkspaceDialog}
+          isOpen=${workspaceDialog.isOpen}
+          workspaces=${workspaceDialog.filteredWorkspaces || workspaces}
+          onSelect=${handleWorkspaceSelect}
+          onCancel=${() => setWorkspaceDialog({ isOpen: false })}
+          onCreateWorkspace=${configReadonly
+            ? null
+            : () => {
+                setWorkspaceDialog({ isOpen: false });
+                handleShowWorkspaces();
+              }}
+        />
 
-      <!-- Agent Discovery Dialog (first-run when no ACP servers configured) -->
-      <${AgentDiscoveryDialog}
-        isOpen=${showAgentDiscovery}
-        onClose=${async () => {
-          setShowAgentDiscovery(false);
-          // Check if ACP servers exist but no workspaces → open workspaces dialog
-          try {
-            invalidateConfigCache();
-            const config = await fetchConfig();
-            const hasServers = config?.acp_servers && config.acp_servers.length > 0;
-            const noWorkspaces = !config?.workspaces || config.workspaces.length === 0;
-            if (hasServers && noWorkspaces) {
-              setWorkspacesDialog({ isOpen: true });
-              return;
-            }
-          } catch (err) {
-            console.error("[AgentDiscovery] Failed to check config on close:", err);
-          }
-          // Fall through to settings dialog so user can configure manually
-          setSettingsDialog({ isOpen: true, forceOpen: true });
-        }}
-        onAgentsConfirmed=${async () => {
-          setShowAgentDiscovery(false);
-          // Refresh config to pick up newly added servers
-          invalidateConfigCache();
-          try {
-            const config = await fetchConfig();
-            if (config) {
-              refreshWorkspaces();
-              // If ACP servers exist but no workspaces, open workspaces dialog
-              const hasServers = config.acp_servers && config.acp_servers.length > 0;
-              const noWorkspaces = !config.workspaces || config.workspaces.length === 0;
+        <!-- Agent Discovery Dialog (first-run when no ACP servers configured) -->
+        <${AgentDiscoveryDialog}
+          isOpen=${showAgentDiscovery}
+          onClose=${async () => {
+            setShowAgentDiscovery(false);
+            // Check if ACP servers exist but no workspaces → open workspaces dialog
+            try {
+              invalidateConfigCache();
+              const config = await fetchConfig();
+              const hasServers =
+                config?.acp_servers && config.acp_servers.length > 0;
+              const noWorkspaces =
+                !config?.workspaces || config.workspaces.length === 0;
               if (hasServers && noWorkspaces) {
                 setWorkspacesDialog({ isOpen: true });
+                return;
               }
-            }
-          } catch (err) {
-            console.error("[AgentDiscovery] Failed to refresh config:", err);
-          }
-        }}
-      />
-
-      <!-- Settings Dialog -->
-      <${SettingsDialog}
-        isOpen=${settingsDialog.isOpen}
-        forceOpen=${settingsDialog.forceOpen}
-        onClose=${() => setSettingsDialog({ isOpen: false, forceOpen: false })}
-        showToast=${showToast}
-        onSave=${async () => {
-          // Refresh workspaces after saving
-          refreshWorkspaces();
-          // Reload config to update prompts and UI settings (invalidate cache first)
-          invalidateConfigCache();
-          try {
-            const config = await fetchConfig();
-            if (config) {
-              // Reload UI settings
-              setConfirmDeleteSession(
-                config?.ui?.confirmations?.delete_session !== false,
-              );
-              // Reload badge/folder click command (macOS only)
-              if (typeof window.mittoPickFolder === "function") {
-                setBadgeClickCommand(
-                  config?.ui?.mac?.badge_click_action?.command || "open ${MITTO_WORKING_DIR}",
-                );
-                setTerminalActionCommand(
-                  config?.ui?.mac?.terminal_action?.command || "open -a Terminal ${MITTO_WORKING_DIR}",
-                );
-              }
-              // Reload input font family setting
-              setInputFontFamily(
-                config?.ui?.web?.input_font_family || "system",
-              );
-              // Reload input font size setting
-              setInputFontSize(
-                config?.ui?.web?.input_font_size || "default",
-              );
-              // Reload send key mode setting
-              setSendKeyMode(config?.ui?.web?.send_key_mode || "enter");
-              // Reload conversation cycling mode setting
-              setConversationCyclingMode(
-                config?.ui?.web?.conversation_cycling_mode || CYCLING_MODE.ALL,
-              );
-              // Reload accordion mode setting for groups
-              setSingleExpandedGroupMode(
-                config?.ui?.web?.single_expanded_group === true,
+            } catch (err) {
+              console.error(
+                "[AgentDiscovery] Failed to check config on close:",
+                err,
               );
             }
-          } catch (err) {
-            console.error("Failed to reload config after save:", err);
-          }
-        }}
-      />
+            // Fall through to settings dialog so user can configure manually
+            setSettingsDialog({ isOpen: true, forceOpen: true });
+          }}
+          onAgentsConfirmed=${async () => {
+            setShowAgentDiscovery(false);
+            // Refresh config to pick up newly added servers
+            invalidateConfigCache();
+            try {
+              const config = await fetchConfig();
+              if (config) {
+                refreshWorkspaces();
+                // If ACP servers exist but no workspaces, open workspaces dialog
+                const hasServers =
+                  config.acp_servers && config.acp_servers.length > 0;
+                const noWorkspaces =
+                  !config.workspaces || config.workspaces.length === 0;
+                if (hasServers && noWorkspaces) {
+                  setWorkspacesDialog({ isOpen: true });
+                }
+              }
+            } catch (err) {
+              console.error("[AgentDiscovery] Failed to refresh config:", err);
+            }
+          }}
+        />
 
-      <!-- Workspaces Dialog -->
-      <${WorkspacesDialog}
-        isOpen=${workspacesDialog.isOpen}
-        initialWorkingDir=${workspacesDialog.workingDir || null}
-        initialTab=${workspacesDialog.tab || null}
-        onClose=${() => setWorkspacesDialog({ isOpen: false })}
-        showToast=${showToast}
-        onSave=${async () => {
-          refreshWorkspaces();
-          invalidateConfigCache();
-        }}
-      />
+        <!-- Settings Dialog -->
+        <${SettingsDialog}
+          isOpen=${settingsDialog.isOpen}
+          forceOpen=${settingsDialog.forceOpen}
+          onClose=${() =>
+            setSettingsDialog({ isOpen: false, forceOpen: false })}
+          showToast=${showToast}
+          onSave=${async () => {
+            // Refresh workspaces after saving
+            refreshWorkspaces();
+            // Reload config to update prompts and UI settings (invalidate cache first)
+            invalidateConfigCache();
+            try {
+              const config = await fetchConfig();
+              if (config) {
+                // Reload UI settings
+                setConfirmDeleteSession(
+                  config?.ui?.confirmations?.delete_session !== false,
+                );
+                // Reload badge/folder click command (macOS only)
+                if (typeof window.mittoPickFolder === "function") {
+                  setBadgeClickCommand(
+                    config?.ui?.mac?.badge_click_action?.command ||
+                      "open ${MITTO_WORKING_DIR}",
+                  );
+                  setTerminalActionCommand(
+                    config?.ui?.mac?.terminal_action?.command ||
+                      "open -a Terminal ${MITTO_WORKING_DIR}",
+                  );
+                }
+                // Reload input font family setting
+                setInputFontFamily(
+                  config?.ui?.web?.input_font_family || "system",
+                );
+                // Reload input font size setting
+                setInputFontSize(config?.ui?.web?.input_font_size || "default");
+                // Reload send key mode setting
+                setSendKeyMode(config?.ui?.web?.send_key_mode || "enter");
+                // Reload conversation cycling mode setting
+                setConversationCyclingMode(
+                  config?.ui?.web?.conversation_cycling_mode ||
+                    CYCLING_MODE.ALL,
+                );
+                // Reload accordion mode setting for groups
+                setSingleExpandedGroupMode(
+                  config?.ui?.web?.single_expanded_group === true,
+                );
+              }
+            } catch (err) {
+              console.error("Failed to reload config after save:", err);
+            }
+          }}
+        />
 
-      <!-- Keyboard Shortcuts Dialog -->
-      <${KeyboardShortcutsDialog}
-        isOpen=${keyboardShortcutsDialog.isOpen}
-        onClose=${() => setKeyboardShortcutsDialog({ isOpen: false })}
-      />
+        <!-- Workspaces Dialog -->
+        <${WorkspacesDialog}
+          isOpen=${workspacesDialog.isOpen}
+          initialWorkingDir=${workspacesDialog.workingDir || null}
+          initialTab=${workspacesDialog.tab || null}
+          onClose=${() => setWorkspacesDialog({ isOpen: false })}
+          showToast=${showToast}
+          onSave=${async () => {
+            refreshWorkspaces();
+            invalidateConfigCache();
+          }}
+        />
 
-      <!-- Periodic Schedule Dialog: opened when a periodic-declaring prompt is selected -->
-      <${PeriodicScheduleDialog}
-        isOpen=${periodicScheduleDialog !== null}
-        prompt=${periodicScheduleDialog?.prompt}
-        onConfirm=${(schedule) => {
-          const { onSchedule } = periodicScheduleDialog || {};
-          setPeriodicScheduleDialog(null);
-          onSchedule?.(schedule);
-        }}
-        onCancel=${() => setPeriodicScheduleDialog(null)}
-      />
+        <!-- Keyboard Shortcuts Dialog -->
+        <${KeyboardShortcutsDialog}
+          isOpen=${keyboardShortcutsDialog.isOpen}
+          onClose=${() => setKeyboardShortcutsDialog({ isOpen: false })}
+        />
 
-      <!-- Prompt Parameter Dialog: opened when a menu (beads, conversation, or
+        <!-- Periodic Schedule Dialog: opened when a periodic-declaring prompt is selected -->
+        <${PeriodicScheduleDialog}
+          isOpen=${periodicScheduleDialog !== null}
+          prompt=${periodicScheduleDialog?.prompt}
+          onConfirm=${(schedule) => {
+            const { onSchedule } = periodicScheduleDialog || {};
+            setPeriodicScheduleDialog(null);
+            onSchedule?.(schedule);
+          }}
+          onCancel=${() => setPeriodicScheduleDialog(null)}
+        />
+
+        <!-- Prompt Parameter Dialog: opened when a menu (beads, conversation, or
            the ChatInput dropup) has prompt params it cannot auto-fill. The
            conversation menu sets hostSessionId to the right-clicked conversation
            so a childSessionId picker is scoped to its children; other surfaces
            fall back to the active session. -->
-      <${PromptParameterDialog}
-        isOpen=${promptParamDialog !== null}
-        parameters=${promptParamDialog?.parameters || []}
-        workingDir=${beadsWorkingDir}
-        hostSessionId=${promptParamDialog?.hostSessionId ?? activeSessionId}
-        title=${promptParamDialog?.prompt?.name || "Prompt parameters"}
-        onClose=${() => setPromptParamDialog(null)}
-        onSubmit=${(args) => { promptParamDialog?.onSubmit?.(args); setPromptParamDialog(null); }}
-      />
+        <${PromptParameterDialog}
+          isOpen=${promptParamDialog !== null}
+          parameters=${promptParamDialog?.parameters || []}
+          workingDir=${beadsWorkingDir}
+          hostSessionId=${promptParamDialog?.hostSessionId ?? activeSessionId}
+          title=${promptParamDialog?.prompt?.name || "Prompt parameters"}
+          initialValues=${promptParamDialog?.initialValues || {}}
+          onClose=${() => setPromptParamDialog(null)}
+          onSubmit=${(args) => {
+            promptParamDialog?.onSubmit?.(args);
+            setPromptParamDialog(null);
+          }}
+        />
 
-      <!-- Unified toast container -->
-      <${ToastContainer} toasts=${toasts} onDismiss=${dismissToast} />
+        <!-- Unified toast container -->
+        <${ToastContainer} toasts=${toasts} onDismiss=${dismissToast} />
 
-      <!-- Main content area: dashboard, beads view, or conversation -->
-      ${mainView === "dashboard"
-        ? html`
-          <${DashboardView} onShowSidebar=${() => setShowSidebar(true)} />
-        `
-        : mainView === "beads" && beadsWorkingDir
-        ? html`
-          <div class="flex-1 flex flex-col min-w-0 overflow-hidden bg-mitto-bg">
-            <${BeadsView}
-              workingDir=${beadsWorkingDir}
-              onClose=${() => setMainView("conversation")}
-              showToast=${showToast}
-              dismissToast=${dismissToast}
-              onFetchBeadsPrompts=${fetchBeadsPromptsForWorkspace}
-              onRunBeadsPrompt=${handleRunBeadsPrompt}
-              onFetchBeadsListPrompts=${fetchBeadsListPromptsForWorkspace}
-              onRunBeadsListPrompt=${handleRunBeadsListPrompt}
-              onShowSidebar=${() => setShowSidebar(true)}
-              onOpenConfig=${window.mittoIsExternal === true ? undefined : () => handleShowWorkspacesForFolder(beadsWorkingDir, "beads")}
-              issueSessionMap=${beadsIssueSessionMap}
-              issueStreamingSet=${beadsIssueStreamingSet}
-              onOpenConversation=${handleSelectSession}
-              onLaunchPrompt=${handleBeadsLaunchPrompt}
-              initialCreateNonce=${beadsCreateNonce}
-              initialRefreshNonce=${beadsRefreshNonce}
-              initialCleanupNonce=${beadsCleanupNonce}
-            />
-          </div>
-        `
-        : html`
-      <div
-        ref=${mainContentRef}
-        class="flex-1 flex flex-col min-w-0 overflow-hidden"
-      >
-        <!-- Header -->
-        <div
-          class="relative p-4 bg-mitto-sidebar border-b border-mitto-border-1 flex items-center gap-3 shrink-0"
-        >
-          <${Tooltip}
-            tip="Show conversations"
-            placement="bottom"
-            className="md:hidden"
-          >
-            <button
-              class="p-2 hover:bg-mitto-surface-hover rounded-lg transition-colors"
-              onClick=${() => setShowSidebar(true)}
-              aria-label="Show conversations"
-            >
-              <${MenuIcon} className="w-6 h-6" />
-            </button>
-          <//>
-          <div class="flex-1 min-w-0 flex flex-col justify-center">
-            <h1
-              class="font-bold text-xl truncate no-underline tooltip tooltip-bottom ${!activeSessionId
-                ? "text-mitto-text-muted"
-                : connected
-                  ? ""
-                  : "text-mitto-text-muted"}"
-              data-tip=${activeSessionId
-                ? sessionInfo?.name || "New conversation"
-                : ""}
-              aria-label=${activeSessionId
-                ? sessionInfo?.name || "New conversation"
-                : ""}
-            >
-              ${activeSessionId
-                ? sessionInfo?.name || "New conversation"
-                : "No Active Session"}
-            </h1>
-            ${activeSessionId &&
-            (headerAcpServer ||
-              headerNextScheduledAt ||
-              headerPeriodicState ||
-              activeSession?.periodic_configured) &&
-            html`<div
-              class="text-xs text-mitto-text-muted truncate flex items-center gap-2 min-w-0"
-              data-testid="conversation-header-subtitle"
-            >
-              ${headerPeriodicState &&
-              html`<span
-                class="badge badge-sm ${headerPeriodicState.badgeClass} whitespace-nowrap inline-flex items-center gap-1"
-                data-testid="periodic-status-pill"
-                title=${headerPeriodicState.state === "running"
-                  ? "Periodic loop is iterating"
-                  : (activeSession?.periodic_stopped_reason || "") +
-                    (activeSession?.stopped_at
-                      ? " · " + new Date(activeSession.stopped_at).toLocaleString()
-                      : "")}
-              >${headerPeriodicState.state === "running"
-                  ? html`<${PeriodicIcon} className="w-3 h-3" />`
-                  : headerPeriodicState.state === "stopped"
-                    ? html`<${StopIcon} className="w-3 h-3" />`
-                    : html`<${PauseFilledIcon} className="w-3 h-3" />`}<span
-                  class="badge-collapse-label"
-                  >${headerPeriodicState.label}</span
-                ></span>`}
-              ${headerAcpServer &&
-              html`<span class="truncate min-w-0">${headerAcpServer}</span>`}
-              ${headerTriggerLabel &&
-              html`<${Fragment}>
+        <!-- Main content area: dashboard, beads view, or conversation -->
+        ${mainView === "dashboard"
+          ? html`
+              <${DashboardView} onShowSidebar=${() => setShowSidebar(true)} />
+            `
+          : mainView === "beads" && beadsWorkingDir
+            ? html`
+                <div
+                  class="flex-1 flex flex-col min-w-0 overflow-hidden bg-mitto-bg"
+                >
+                  <${BeadsView}
+                    workingDir=${beadsWorkingDir}
+                    onClose=${() => setMainView("conversation")}
+                    showToast=${showToast}
+                    dismissToast=${dismissToast}
+                    onFetchBeadsPrompts=${fetchBeadsPromptsForWorkspace}
+                    onRunBeadsPrompt=${handleRunBeadsPrompt}
+                    onFetchBeadsListPrompts=${fetchBeadsListPromptsForWorkspace}
+                    onRunBeadsListPrompt=${handleRunBeadsListPrompt}
+                    onShowSidebar=${() => setShowSidebar(true)}
+                    onOpenConfig=${window.mittoIsExternal === true
+                      ? undefined
+                      : () =>
+                          handleShowWorkspacesForFolder(
+                            beadsWorkingDir,
+                            "beads",
+                          )}
+                    issueSessionMap=${beadsIssueSessionMap}
+                    issueStreamingSet=${beadsIssueStreamingSet}
+                    onOpenConversation=${handleSelectSession}
+                    onLaunchPrompt=${handleBeadsLaunchPrompt}
+                    initialCreateNonce=${beadsCreateNonce}
+                    initialRefreshNonce=${beadsRefreshNonce}
+                    initialCleanupNonce=${beadsCleanupNonce}
+                  />
+                </div>
+              `
+            : html`
+                <div
+                  ref=${mainContentRef}
+                  class="flex-1 flex flex-col min-w-0 overflow-hidden"
+                >
+                  <!-- Header -->
+                  <div
+                    class="relative p-4 bg-mitto-sidebar border-b border-mitto-border-1 flex items-center gap-3 shrink-0"
+                  >
+                    <${Tooltip}
+                      tip="Show conversations"
+                      placement="bottom"
+                      className="md:hidden"
+                    >
+                      <button
+                        class="p-2 hover:bg-mitto-surface-hover rounded-lg transition-colors"
+                        onClick=${() => setShowSidebar(true)}
+                        aria-label="Show conversations"
+                      >
+                        <${MenuIcon} className="w-6 h-6" />
+                      </button>
+                    <//>
+                    <div class="flex-1 min-w-0 flex flex-col justify-center">
+                      <h1
+                        class="font-bold text-xl truncate no-underline tooltip tooltip-bottom ${!activeSessionId
+                          ? "text-mitto-text-muted"
+                          : connected
+                            ? ""
+                            : "text-mitto-text-muted"}"
+                        data-tip=${activeSessionId
+                          ? sessionInfo?.name || "New conversation"
+                          : ""}
+                        aria-label=${activeSessionId
+                          ? sessionInfo?.name || "New conversation"
+                          : ""}
+                      >
+                        ${activeSessionId
+                          ? sessionInfo?.name || "New conversation"
+                          : "No Active Session"}
+                      </h1>
+                      ${activeSessionId &&
+                      (headerAcpServer ||
+                        headerNextScheduledAt ||
+                        headerPeriodicState ||
+                        activeSession?.periodic_configured) &&
+                      html`<div
+                        class="text-xs text-mitto-text-muted truncate flex items-center gap-2 min-w-0"
+                        data-testid="conversation-header-subtitle"
+                      >
+                        ${headerPeriodicState &&
+                        html`<span
+                          class="badge badge-sm ${headerPeriodicState.badgeClass} whitespace-nowrap inline-flex items-center gap-1"
+                          data-testid="periodic-status-pill"
+                          title=${headerPeriodicState.state === "running"
+                            ? "Periodic loop is iterating"
+                            : (activeSession?.periodic_stopped_reason || "") +
+                              (activeSession?.stopped_at
+                                ? " · " +
+                                  new Date(
+                                    activeSession.stopped_at,
+                                  ).toLocaleString()
+                                : "")}
+                          >${headerPeriodicState.state === "running"
+                            ? html`<${PeriodicIcon} className="w-3 h-3" />`
+                            : headerPeriodicState.state === "stopped"
+                              ? html`<${StopIcon} className="w-3 h-3" />`
+                              : html`<${PauseFilledIcon}
+                                  className="w-3 h-3"
+                                />`}<span class="badge-collapse-label"
+                            >${headerPeriodicState.label}</span
+                          ></span
+                        >`}
+                        ${headerAcpServer &&
+                        html`<span class="truncate min-w-0"
+                          >${headerAcpServer}</span
+                        >`}
+                        ${headerTriggerLabel &&
+                        html`<${Fragment}>
                 <span class="opacity-60">·</span>
                 <span
                   class="badge badge-sm badge-ghost whitespace-nowrap inline-flex items-center gap-1"
                   data-testid="periodic-trigger-badge"
-                >${headerPeriodicTrigger === "onCompletion"
+                >${
+                  headerPeriodicTrigger === "onCompletion"
                     ? html`<${CheckIcon} className="w-3 h-3" />`
-                    : html`<${ClockIcon} className="w-3 h-3" />`}<span
+                    : html`<${ClockIcon} className="w-3 h-3" />`
+                }<span
                     class="badge-collapse-label"
                     >${headerTriggerLabel}</span
                   ></span>
               </${Fragment}>`}
-              ${headerRunCountLabel !== null &&
-              html`<${Fragment}>
+                        ${headerRunCountLabel !== null &&
+                        html`<${Fragment}>
                 <span class="opacity-60">·</span>
                 <span
                   class="badge badge-sm ${headerRunCountBadgeClass} whitespace-nowrap"
                   data-testid="periodic-run-count-badge"
-                  title=${headerIterCapHit
-                    ? "Reached the maximum number of iterations"
-                    : null}
+                  title=${
+                    headerIterCapHit
+                      ? "Reached the maximum number of iterations"
+                      : null
+                  }
                 ><span class="runcount-full">${headerRunCountLabel}</span
                   ><span class="runcount-short">${headerRunCountLabelShort}</span
                 ></span>
               </${Fragment}>`}
-              ${headerMaxTimeLabel &&
-              html`<${Fragment}>
+                        ${headerMaxTimeLabel &&
+                        html`<${Fragment}>
                 <span class="opacity-60">·</span>
                 <span
                   class="badge badge-sm ${headerMaxTimeBadgeClass} whitespace-nowrap"
                   data-testid="periodic-max-time-badge"
-                  title=${headerTimeCapHit
-                    ? "Reached the maximum run time"
-                    : null}
+                  title=${
+                    headerTimeCapHit ? "Reached the maximum run time" : null
+                  }
                 >${headerMaxTimeLabel}</span>
               </${Fragment}>`}
-              ${headerPeriodicState?.state === "running" &&
-              headerNextScheduledAt &&
-              html`<${Fragment}>
-                ${headerAcpServer || headerTriggerLabel || headerRunCountLabel !== null || headerMaxTimeLabel
-                  ? html`<span class="opacity-60">·</span>`
-                  : null}
+                        ${headerPeriodicState?.state === "running" &&
+                        headerNextScheduledAt &&
+                        html`<${Fragment}>
+                ${
+                  headerAcpServer ||
+                  headerTriggerLabel ||
+                  headerRunCountLabel !== null ||
+                  headerMaxTimeLabel
+                    ? html`<span class="opacity-60">·</span>`
+                    : null
+                }
                 <${CountdownDisplay}
                   targetIso=${headerNextScheduledAt}
                   unit=${headerPeriodicUnit}
@@ -2471,258 +2728,302 @@ function App() {
                   className="whitespace-nowrap"
                 />
               </${Fragment}>`}
-            </div>`}
-          </div>
-          <div class="ml-auto flex items-center gap-2">
-            <!-- Conversation actions menu (mirrors the sidebar row menu) -->
-            ${activeSessionId
-              ? html`
-                  <${Tooltip} tip="Conversation actions" placement="bottom" portal>
-                    <button
-                      type="button"
-                      onClick=${handleHeaderMenuButtonClick}
-                      class="p-1.5 rounded hover:bg-mitto-surface-hover transition-colors text-mitto-text-secondary hover:text-mitto-text-200"
-                      aria-label="Conversation actions"
-                      data-testid="header-conversation-menu"
-                    >
-                      <${EllipsisIcon} className="w-4 h-4" />
-                    </button>
-                  <//>
-                `
-              : null}
-            <!-- Unified side panel toggle -->
-            <${Tooltip} tip="Session details" placement="bottom" portal>
-              <button
-                onClick=${handleToggleSidePanel}
-                class="p-1.5 rounded hover:bg-mitto-surface-hover transition-colors ${showSidePanel ? "bg-mitto-surface-3 text-mitto-accent" : "text-mitto-text-secondary hover:text-mitto-text-200"}"
-                aria-label="Session details"
-              >
-                <${SidePanelIcon} className="w-4 h-4" />
-              </button>
-            <//>
-          </div>
-        </div>
-        ${headerMenu &&
-        html`
-          <${ContextMenu}
-            x=${headerMenu.x}
-            y=${headerMenu.y}
-            items=${headerMenuItems}
-            onClose=${closeHeaderMenu}
-          />
-        `}
+                      </div>`}
+                    </div>
+                    <div class="ml-auto flex items-center gap-2">
+                      <!-- Conversation actions menu (mirrors the sidebar row menu) -->
+                      ${activeSessionId
+                        ? html`
+                            <${Tooltip}
+                              tip="Conversation actions"
+                              placement="bottom"
+                              portal
+                            >
+                              <button
+                                type="button"
+                                onClick=${handleHeaderMenuButtonClick}
+                                class="p-1.5 rounded hover:bg-mitto-surface-hover transition-colors text-mitto-text-secondary hover:text-mitto-text-200"
+                                aria-label="Conversation actions"
+                                data-testid="header-conversation-menu"
+                              >
+                                <${EllipsisIcon} className="w-4 h-4" />
+                              </button>
+                            <//>
+                          `
+                        : null}
+                      <!-- Unified side panel toggle -->
+                      <${Tooltip}
+                        tip="Session details"
+                        placement="bottom"
+                        portal
+                      >
+                        <button
+                          onClick=${handleToggleSidePanel}
+                          class="p-1.5 rounded hover:bg-mitto-surface-hover transition-colors ${showSidePanel
+                            ? "bg-mitto-surface-3 text-mitto-accent"
+                            : "text-mitto-text-secondary hover:text-mitto-text-200"}"
+                          aria-label="Session details"
+                        >
+                          <${SidePanelIcon} className="w-4 h-4" />
+                        </button>
+                      <//>
+                    </div>
+                  </div>
+                  ${headerMenu &&
+                  html`
+                    <${ContextMenu}
+                      x=${headerMenu.x}
+                      y=${headerMenu.y}
+                      items=${headerMenuItems}
+                      onClose=${closeHeaderMenu}
+                    />
+                  `}
 
-        <!-- Messages wrapper (for positioning scroll-to-bottom button and plan panel) -->
-        <div class="flex-1 relative min-h-0 overflow-hidden">
-          <!-- Agent Plan Panel (floating overlay at top) -->
-          <${AgentPlanPanel}
-            isOpen=${showPlanPanel}
-            onClose=${handleClosePlanPanel}
-            onToggle=${handleTogglePlanPanel}
-            entries=${planEntries}
-            userPinned=${planUserPinned}
-          />
-          <!-- Agent Plan Indicator (shown when panel is collapsed but has entries) -->
-          ${!showPlanPanel &&
-          planEntries.length > 0 &&
-          html`
-            <div
-              class="absolute top-2 left-1/2 transform -translate-x-1/2 z-10"
-            >
-              <${AgentPlanIndicator}
-                onClick=${handleTogglePlanPanel}
-                entries=${planEntries}
-              />
-            </div>
-          `}
-          <!-- Messages list (scrollable container + scroll-to-bottom button) -->
-          <${MessageList}
-            displayMessages=${displayMessages}
-            messages=${messages}
-            hasMoreMessages=${hasMoreMessages}
-            hasReachedLimit=${hasReachedLimit}
-            isLoadingMore=${isLoadingMore}
-            isStreaming=${isStreaming}
-            onLoadMore=${handleLoadMore}
-            onScrollToBottom=${scrollToBottom}
-            isUserAtBottom=${isUserAtBottom}
-            hasNewMessages=${hasNewMessages}
-            sentinelRef=${sentinelRef}
-            onRetry=${handleSendPrompt}
-            activeSessionId=${activeSessionId}
-            swipeDirection=${swipeDirection}
-            swipeArrow=${swipeArrow}
-            connected=${connected}
-            sessionInfo=${sessionInfo}
-            workspaces=${workspaces}
-            messagesContainerRef=${messagesContainerRef}
-          />
-        </div>
-        <!-- End of messages wrapper -->
+                  <!-- Messages wrapper (for positioning scroll-to-bottom button and plan panel) -->
+                  <div class="flex-1 relative min-h-0 overflow-hidden">
+                    <!-- Agent Plan Panel (floating overlay at top) -->
+                    <${AgentPlanPanel}
+                      isOpen=${showPlanPanel}
+                      onClose=${handleClosePlanPanel}
+                      onToggle=${handleTogglePlanPanel}
+                      entries=${planEntries}
+                      userPinned=${planUserPinned}
+                    />
+                    <!-- Agent Plan Indicator (shown when panel is collapsed but has entries) -->
+                    ${!showPlanPanel &&
+                    planEntries.length > 0 &&
+                    html`
+                      <div
+                        class="absolute top-2 left-1/2 transform -translate-x-1/2 z-10"
+                      >
+                        <${AgentPlanIndicator}
+                          onClick=${handleTogglePlanPanel}
+                          entries=${planEntries}
+                        />
+                      </div>
+                    `}
+                    <!-- Messages list (scrollable container + scroll-to-bottom button) -->
+                    <${MessageList}
+                      displayMessages=${displayMessages}
+                      messages=${messages}
+                      hasMoreMessages=${hasMoreMessages}
+                      hasReachedLimit=${hasReachedLimit}
+                      isLoadingMore=${isLoadingMore}
+                      isStreaming=${isStreaming}
+                      onLoadMore=${handleLoadMore}
+                      onScrollToBottom=${scrollToBottom}
+                      isUserAtBottom=${isUserAtBottom}
+                      hasNewMessages=${hasNewMessages}
+                      sentinelRef=${sentinelRef}
+                      onRetry=${handleSendPrompt}
+                      activeSessionId=${activeSessionId}
+                      swipeDirection=${swipeDirection}
+                      swipeArrow=${swipeArrow}
+                      connected=${connected}
+                      sessionInfo=${sessionInfo}
+                      workspaces=${workspaces}
+                      messagesContainerRef=${messagesContainerRef}
+                    />
+                  </div>
+                  <!-- End of messages wrapper -->
 
-        <!-- Persistent MCP-unavailable banner (global; survives reconnects). -->
-        ${mcpStatus &&
-        mcpStatus.available === false &&
-        html`
-          <div class="flex justify-center my-2">
-            <div role="alert" class="alert alert-warning max-w-2xl text-sm py-2">
-              <span>
-                MCP server unavailable${mcpStatus.reason === "port_in_use"
-                  ? ` — port ${mcpStatus.port} is already in use (another Mitto instance may be running)`
-                  : mcpStatus.port
-                    ? ` (port ${mcpStatus.port})`
-                    : ""}. Mitto continues without MCP tools.
-              </span>
-            </div>
-          </div>
-        `}
+                  <!-- Persistent MCP-unavailable banner (global; survives reconnects). -->
+                  ${mcpStatus &&
+                  mcpStatus.available === false &&
+                  html`
+                    <div class="flex justify-center my-2">
+                      <div
+                        role="alert"
+                        class="alert alert-warning max-w-2xl text-sm py-2"
+                      >
+                        <span>
+                          MCP server
+                          unavailable${mcpStatus.reason === "port_in_use"
+                            ? ` — port ${mcpStatus.port} is already in use (another Mitto instance may be running)`
+                            : mcpStatus.port
+                              ? ` (port ${mcpStatus.port})`
+                              : ""}.
+                          Mitto continues without MCP tools.
+                        </span>
+                      </div>
+                    </div>
+                  `}
 
-        <!-- ACP reconnecting banner (shown when ACP not ready and there are messages) -->
-        <!-- Only show when global WS is connected — during shutdown, WS disconnects and we don't want to show this -->
-        <!-- Skip for GC-suspended sessions — they are intentionally paused, not reconnecting -->
-        ${connected &&
-        activeSessionId &&
-        sessionInfo &&
-        !sessionInfo.acp_ready &&
-        !sessionInfo.archived &&
-        !sessionInfo.gc_suspended &&
-        messages.length > 0 &&
-        html`
-          <div class="flex items-center justify-center py-2 text-sm">
-            <span class="skeleton skeleton-text skeleton-text-readable"
-              >Reconnecting to AI agent...</span
-            >
-          </div>
-        `}
+                  <!-- ACP reconnecting banner (shown when ACP not ready and there are messages) -->
+                  <!-- Only show when global WS is connected — during shutdown, WS disconnects and we don't want to show this -->
+                  <!-- Skip for GC-suspended sessions — they are intentionally paused, not reconnecting -->
+                  ${connected &&
+                  activeSessionId &&
+                  sessionInfo &&
+                  !sessionInfo.acp_ready &&
+                  !sessionInfo.archived &&
+                  !sessionInfo.gc_suspended &&
+                  messages.length > 0 &&
+                  html`
+                    <div class="flex items-center justify-center py-2 text-sm">
+                      <span
+                        class="skeleton skeleton-text skeleton-text-readable"
+                        >Establishing ACP session...</span
+                      >
+                    </div>
+                  `}
 
-        <!-- Archive reason banner (shown when conversation is archived and has a reason) -->
-        <!-- Uses the same balloon style as system messages for visual consistency -->
-        ${sessionInfo?.archived &&
-        sessionInfo?.archive_reason &&
-        html`
-          <div class="flex justify-center mb-3">
-            <div
-              class="text-xs text-mitto-text-muted bg-mitto-surface-2/50 px-3 py-1 rounded-full"
-            >
-              ${getArchiveReasonText(
-                sessionInfo.archive_reason,
-                sessionInfo.archived_at,
-              )}
-            </div>
-          </div>
-        `}
+                  <!-- Archive reason banner (shown when conversation is archived and has a reason) -->
+                  <!-- Uses the same balloon style as system messages for visual consistency -->
+                  ${sessionInfo?.archived &&
+                  sessionInfo?.archive_reason &&
+                  html`
+                    <div class="flex justify-center mb-3">
+                      <div
+                        class="text-xs text-mitto-text-muted bg-mitto-surface-2/50 px-3 py-1 rounded-full"
+                      >
+                        ${getArchiveReasonText(
+                          sessionInfo.archive_reason,
+                          sessionInfo.archived_at,
+                        )}
+                      </div>
+                    </div>
+                  `}
 
-        <!-- Input Area Container (relative for QueueDropdown positioning) -->
-        <div class="relative shrink-0">
-          <!-- Queue Dropdown (floating overlay above input) -->
-          <${QueueDropdown}
-            isOpen=${showQueueDropdown}
-            onClose=${handleCloseQueueDropdown}
-            messages=${queueMessages}
-            onDelete=${handleDeleteQueueMessage}
-            onMove=${handleMoveQueueMessage}
-            isDeleting=${isDeletingQueueMessage}
-            isMoving=${isMovingQueueMessage}
-            queueLength=${queueLength}
-            maxSize=${queueConfig.max_size}
-          />
+                  <!-- Input Area Container (relative for QueueDropdown positioning) -->
+                  <div class="relative shrink-0">
+                    <!-- Queue Dropdown (floating overlay above input) -->
+                    <${QueueDropdown}
+                      isOpen=${showQueueDropdown}
+                      onClose=${handleCloseQueueDropdown}
+                      messages=${queueMessages}
+                      onDelete=${handleDeleteQueueMessage}
+                      onMove=${handleMoveQueueMessage}
+                      isDeleting=${isDeletingQueueMessage}
+                      isMoving=${isMovingQueueMessage}
+                      queueLength=${queueLength}
+                      maxSize=${queueConfig.max_size}
+                    />
 
-          <!-- Input -->
-          <${ChatInput}
-            onSend=${handleSendPrompt}
-            onCancel=${cancelPrompt}
-            disabled=${!connected || !activeSessionId}
-            isStreaming=${isStreaming}
-            isRunning=${isRunning}
-            isReadOnly=${sessionInfo?.isReadOnly}
-            isArchived=${sessionInfo?.archived || false}
-            predefinedPrompts=${predefinedPrompts}
-            periodicPrompts=${periodicPrompts}
-            inputRef=${chatInputRef}
-            noSession=${!activeSessionId}
-            sessionId=${activeSessionId}
-            draft=${currentDraft}
-            onDraftChange=${updateDraft}
-            sessionDraftsRef=${sessionDraftsRef}
-            onPromptsOpen=${handlePromptsOpen}
-            queueLength=${queueLength}
-            queueConfig=${queueConfig}
-            onAddToQueue=${handleAddToQueue}
-            onToggleQueue=${handleToggleQueueDropdown}
-            showQueueDropdown=${showQueueDropdown}
-            actionButtons=${actionButtons}
-            availableCommands=${availableCommands}
-            periodicConfigured=${sessionInfo?.periodic_configured || false}
-            onPeriodicPrompt=${(prompt) => handleSendPromptToConversation(activeSession, prompt)}
-            onOpenPromptParamDialog=${(prompt, parameters, onSubmit) => setPromptParamDialog({ prompt, parameters, onSubmit })}
-            agentSupportsImages=${sessionInfo?.agent_supports_images ?? false}
-            acpReady=${connected && sessionInfo ? (sessionInfo.acp_ready ?? true) : true}
-            gcSuspended=${sessionInfo?.gc_suspended || false}
-            onResume=${() => ensureResumed(activeSessionId)}
-            activeUIPrompt=${activeUIPrompt}
-            onUIPromptAnswer=${(requestId, optionId, label, freeText) =>
-              sendUIPromptAnswer(activeSessionId, requestId, optionId, label, freeText)}
-            workingDir=${sessionInfo?.working_dir || ""}
-            sendKeyMode=${sendKeyMode}
-            configOptions=${configOptions}
-            onSetConfigOption=${setConfigOption}
-            contextUsage=${sessionInfo?.context_usage ?? null}
-            tokenUsage=${sessionInfo?.usage ?? null}
-          />
-        </div>
-      </div>
-      `}
+                    <!-- Input -->
+                    <${ChatInput}
+                      onSend=${handleSendPrompt}
+                      onCancel=${cancelPrompt}
+                      disabled=${!connected || !activeSessionId}
+                      isStreaming=${isStreaming}
+                      isRunning=${isRunning}
+                      isReadOnly=${sessionInfo?.isReadOnly}
+                      isArchived=${sessionInfo?.archived || false}
+                      predefinedPrompts=${predefinedPrompts}
+                      periodicPrompts=${periodicPrompts}
+                      inputRef=${chatInputRef}
+                      noSession=${!activeSessionId}
+                      sessionId=${activeSessionId}
+                      draft=${currentDraft}
+                      onDraftChange=${updateDraft}
+                      sessionDraftsRef=${sessionDraftsRef}
+                      onPromptsOpen=${handlePromptsOpen}
+                      queueLength=${queueLength}
+                      queueConfig=${queueConfig}
+                      onAddToQueue=${handleAddToQueue}
+                      onToggleQueue=${handleToggleQueueDropdown}
+                      showQueueDropdown=${showQueueDropdown}
+                      actionButtons=${actionButtons}
+                      availableCommands=${availableCommands}
+                      periodicConfigured=${sessionInfo?.periodic_configured ||
+                      false}
+                      onPeriodicPrompt=${(prompt) =>
+                        handleSendPromptToConversation(activeSession, prompt)}
+                      onOpenPromptParamDialog=${(
+                        prompt,
+                        parameters,
+                        onSubmit,
+                        opts = {},
+                      ) =>
+                        setPromptParamDialog({
+                          prompt,
+                          parameters,
+                          onSubmit,
+                          initialValues: opts.initialValues,
+                          hostSessionId: opts.hostSessionId,
+                        })}
+                      agentSupportsImages=${sessionInfo?.agent_supports_images ??
+                      false}
+                      acpReady=${connected && sessionInfo
+                        ? (sessionInfo.acp_ready ?? true)
+                        : true}
+                      gcSuspended=${sessionInfo?.gc_suspended || false}
+                      onResume=${() => ensureResumed(activeSessionId)}
+                      activeUIPrompt=${activeUIPrompt}
+                      onUIPromptAnswer=${(
+                        requestId,
+                        optionId,
+                        label,
+                        freeText,
+                      ) =>
+                        sendUIPromptAnswer(
+                          activeSessionId,
+                          requestId,
+                          optionId,
+                          label,
+                          freeText,
+                        )}
+                      workingDir=${sessionInfo?.working_dir || ""}
+                      sendKeyMode=${sendKeyMode}
+                      configOptions=${configOptions}
+                      onSetConfigOption=${setConfigOption}
+                      contextUsage=${sessionInfo?.context_usage ?? null}
+                      tokenUsage=${sessionInfo?.usage ?? null}
+                    />
+                  </div>
+                </div>
+              `}
 
-      <!-- Unified Session Panel: docks to the right edge of drawer-content as a
+        <!-- Unified Session Panel: docks to the right edge of drawer-content as a
            confined overlay (Drawer dock mode + styles.css), so it does NOT
            reflow the conversation (messages keep full width); on phones it
            covers the whole view. Self-gates on showSidePanel; only relevant in
            conversation view. -->
-      <${SessionPanel}
-        isOpen=${showSidePanel}
-        onClose=${handleCloseSidePanel}
-        activeTab=${sidePanelTab}
-        onTabChange=${setSidePanelTab}
-        sessionId=${activeSessionId}
-        sessionInfo=${sessionInfo}
-        onRename=${renameSession}
-        onOpenBeadsIssue=${handleOpenBeadsIssue}
-        isStreaming=${isStreaming}
-        configOptions=${configOptions}
-        onSetConfigOption=${setConfigOption}
-        mcpTools=${mcpTools}
-        showToast=${showToast}
-      />
+        <${SessionPanel}
+          isOpen=${showSidePanel}
+          onClose=${handleCloseSidePanel}
+          activeTab=${sidePanelTab}
+          onTabChange=${setSidePanelTab}
+          sessionId=${activeSessionId}
+          sessionInfo=${sessionInfo}
+          onRename=${renameSession}
+          onOpenBeadsIssue=${handleOpenBeadsIssue}
+          isStreaming=${isStreaming}
+          configOptions=${configOptions}
+          onSetConfigOption=${setConfigOption}
+          mcpTools=${mcpTools}
+          showToast=${showToast}
+        />
 
-      <!-- Single-issue viewer: docks to the right edge of drawer-content as a
+        <!-- Single-issue viewer: docks to the right edge of drawer-content as a
            confined overlay (Drawer dock mode, like SessionPanel) over the
            conversation, which stays mounted and visible behind it. Opened from a
            conversation's "Linked beads issue" link or an inline beads link.
            Gated on beadsIssueOpen so it unmounts after its close animation. -->
-      ${beadsIssueOpen && beadsWorkingDir && beadsInitialIssueId
-        ? html`
-          <${BeadsIssueView}
-            workingDir=${beadsWorkingDir}
-            issueId=${beadsInitialIssueId}
-            selectNonce=${beadsSelectNonce}
-            showToast=${showToast}
-            onFetchBeadsPrompts=${fetchBeadsPromptsForWorkspace}
-            onRunBeadsPrompt=${handleRunBeadsPrompt}
-            onReturnToConversation=${handleReturnFromBeadsIssue}
-          />
-        `
-        : ""}
+        ${beadsIssueOpen && beadsWorkingDir && beadsInitialIssueId
+          ? html`
+              <${BeadsIssueView}
+                workingDir=${beadsWorkingDir}
+                issueId=${beadsInitialIssueId}
+                selectNonce=${beadsSelectNonce}
+                showToast=${showToast}
+                onFetchBeadsPrompts=${fetchBeadsPromptsForWorkspace}
+                onRunBeadsPrompt=${handleRunBeadsPrompt}
+                onReturnToConversation=${handleReturnFromBeadsIssue}
+              />
+            `
+          : ""}
 
-      <!-- Quick "new task" create panel (⌘⇧N) shown as an overlay over the
+        <!-- Quick "new task" create panel (⌘⇧N) shown as an overlay over the
            current content without switching to the beads list view. Its own
            fixed/absolute layers float over the viewport. -->
-      <${BeadsDetailPanel}
-        isCreating=${quickCreate.open}
-        workingDir=${quickCreate.workingDir}
-        onClose=${() => setQuickCreate((qc) => ({ ...qc, open: false }))}
-        onCreated=${() => {}}
-        showToast=${showToast}
-      />
+        <${BeadsDetailPanel}
+          isCreating=${quickCreate.open}
+          workingDir=${quickCreate.workingDir}
+          onClose=${() => setQuickCreate((qc) => ({ ...qc, open: false }))}
+          onCreated=${() => {}}
+          showToast=${showToast}
+        />
       </div>
       <!-- END drawer-content -->
 
@@ -2779,7 +3080,8 @@ function App() {
             onMoveFolderToGroup=${handleMoveFolderToGroup}
             onTerminalClick=${handleTerminalClick}
             onBeadsOpen=${handleBeadsOpen}
-            onBeadsCreate=${(wd) => setQuickCreate({ open: true, workingDir: wd })}
+            onBeadsCreate=${(wd) =>
+              setQuickCreate({ open: true, workingDir: wd })}
             onFetchBeadsListPrompts=${fetchBeadsListPromptsForWorkspace}
             onRunBeadsListPrompt=${handleRunBeadsListPrompt}
             onBeadsRefresh=${handleBeadsRefresh}
@@ -2797,7 +3099,9 @@ function App() {
           />
           <!-- Resize handle on right edge (desktop: drag to resize sidebarWidth) -->
           <div
-            class="absolute top-0 right-0 w-1 h-full cursor-col-resize hover:bg-mitto-accent-500/30 transition-colors z-10 ${isSidebarDragging ? 'bg-mitto-accent-500/40' : ''}"
+            class="absolute top-0 right-0 w-1 h-full cursor-col-resize hover:bg-mitto-accent-500/30 transition-colors z-10 ${isSidebarDragging
+              ? "bg-mitto-accent-500/40"
+              : ""}"
             style="margin-right: -2px;"
             ...${sidebarHandleProps}
             title="Drag to resize sidebar"

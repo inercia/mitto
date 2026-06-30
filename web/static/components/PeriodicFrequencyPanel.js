@@ -9,7 +9,9 @@ import {
   PlayFilledIcon,
   PauseFilledIcon,
   ChatBubbleIcon,
+  SlidersIcon,
 } from "./Icons.js";
+import { promptParameters } from "../utils/prompts.js";
 import { PeriodicPromptSelector } from "./PeriodicPromptSelector.js";
 import { ConfirmDialog } from "./ConfirmDialog.js";
 import { secureFetch, authFetch } from "../utils/csrf.js";
@@ -182,6 +184,7 @@ export function PeriodicFrequencyPanel({
   onTriggerChange,
   onDelayChange,
   onMaxDurationChange,
+  onEditArguments,
 }) {
   // Local state for editing
   const [localValue, setLocalValue] = useState(frequency.value || 1);
@@ -728,6 +731,15 @@ export function PeriodicFrequencyPanel({
     ? `This conversation stopped because it reached its ${stoppedReasonText}. Restore it to keep iterating.`
     : "Do you want to restore the periodic schedule for this conversation?";
 
+  // Compute whether the edit-arguments button should be enabled
+  const selectedPrompt = selectedPromptName
+    ? (prompts || []).find((p) => p.name === selectedPromptName)
+    : null;
+  const selectedPromptParams = selectedPrompt
+    ? promptParameters(selectedPrompt)
+    : [];
+  const canEditArgs = !!selectedPromptName && selectedPromptParams.length > 0;
+
   return html`
     <${Fragment}>
       <!-- Confirmation dialog for immediate delivery -->
@@ -877,41 +889,75 @@ export function PeriodicFrequencyPanel({
             />
           </div>
 
+          <!-- Edit prompt arguments button: opens PromptParameterDialog pre-filled
+               with the current stored arguments. Disabled when no named prompt is
+               selected or when the selected prompt declares no parameters. -->
+          <button
+            type="button"
+            onClick=${() => onEditArguments && onEditArguments()}
+            onMouseEnter=${(e) => showHeaderTip(e, "Set prompt arguments")}
+            onMouseLeave=${hideHeaderTip}
+            onMouseDown=${hideHeaderTip}
+            disabled=${!canEditArgs}
+            class="shrink-0 p-1.5 rounded border border-mitto-border dark:border-mitto-border-2 bg-white dark:bg-mitto-surface-2 transition-colors ${!canEditArgs ? "opacity-50 cursor-not-allowed" : "cursor-pointer hover:bg-mitto-surface-hover dark:hover:bg-mitto-surface-3"}"
+            data-tip="Set prompt arguments"
+            aria-label="Set prompt arguments"
+            data-testid="periodic-edit-args-button"
+          >
+            <${SlidersIcon} className="w-4 h-4 text-mitto-text-secondary" />
+          </button>
+
           <!-- Flex spacer -->
           <div class="flex-1 min-w-0"></div>
 
           <!-- While expanded: staged-edit Save button. While collapsed: nothing
                (trigger, run-count, and max-time glance info now live in the
                always-visible conversation-header subtitle). -->
-          ${expanded &&
-          html`<button
-            type="button"
-            onClick=${handleSaveAll}
-            disabled=${isSaving}
-            class="btn btn-primary btn-sm shrink-0"
-            data-testid="periodic-save-button"
-          >
-            ${isSaving
-              ? html`<span class="loading loading-spinner w-4 h-4"></span>`
-              : "Save"}
-          </button>`}
+          ${
+            expanded &&
+            html`<button
+              type="button"
+              onClick=${handleSaveAll}
+              disabled=${isSaving}
+              class="btn btn-primary btn-sm shrink-0"
+              data-testid="periodic-save-button"
+            >
+              ${isSaving
+                ? html`<span class="loading loading-spinner w-4 h-4"></span>`
+                : "Save"}
+            </button>`
+          }
 
           <!-- Toggle message input area button (Mitto bubble). Sits next to the
                expand/collapse chevron on the right edge of the header. -->
-          ${onTogglePromptArea &&
-          html`<button
-            type="button"
-            onClick=${onTogglePromptArea}
-            onMouseEnter=${(e) => showHeaderTip(e, isPromptAreaVisible ? "Hide message input" : "Show message input")}
-            onMouseLeave=${hideHeaderTip}
-            onMouseDown=${hideHeaderTip}
-            class="shrink-0 p-1.5 rounded border border-mitto-border dark:border-mitto-border-2 bg-white dark:bg-mitto-surface-2 cursor-pointer hover:bg-mitto-surface-hover dark:hover:bg-mitto-surface-3 transition-colors"
-            data-tip=${isPromptAreaVisible ? "Hide message input" : "Show message input"}
-            aria-label=${isPromptAreaVisible ? "Hide message input" : "Show message input"}
-            data-testid="periodic-toggle-prompt-area"
-          >
-            <${ChatBubbleIcon} className="w-4 h-4 text-mitto-text-secondary" />
-          </button>`}
+          ${
+            onTogglePromptArea &&
+            html`<button
+              type="button"
+              onClick=${onTogglePromptArea}
+              onMouseEnter=${(e) =>
+                showHeaderTip(
+                  e,
+                  isPromptAreaVisible
+                    ? "Hide message input"
+                    : "Show message input",
+                )}
+              onMouseLeave=${hideHeaderTip}
+              onMouseDown=${hideHeaderTip}
+              class="shrink-0 p-1.5 rounded border border-mitto-border dark:border-mitto-border-2 bg-white dark:bg-mitto-surface-2 cursor-pointer hover:bg-mitto-surface-hover dark:hover:bg-mitto-surface-3 transition-colors"
+              data-tip=${isPromptAreaVisible
+                ? "Hide message input"
+                : "Show message input"}
+              aria-label=${isPromptAreaVisible
+                ? "Hide message input"
+                : "Show message input"}
+              data-testid="periodic-toggle-prompt-area"
+            >
+              <${ChatBubbleIcon}
+                className="w-4 h-4 text-mitto-text-secondary"
+              />
+            </button>`
+          }
 
           <!-- Expand/collapse chevron button -->
           <button
@@ -936,10 +982,16 @@ export function PeriodicFrequencyPanel({
           </button>
         </div>
 
-        ${headerTip &&
-        html`
-          <${PortalTooltip} x=${headerTip.x} y=${headerTip.y} text=${headerTip.text} />
-        `}
+        ${
+          headerTip &&
+          html`
+            <${PortalTooltip}
+              x=${headerTip.x}
+              y=${headerTip.y}
+              text=${headerTip.text}
+            />
+          `
+        }
 
         <!-- BODY: collapsed by default; expands when user clicks the chevron -->
         <div
