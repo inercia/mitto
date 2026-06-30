@@ -5,6 +5,7 @@ package config
 import (
 	"fmt"
 	"io/fs"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -15,10 +16,13 @@ import (
 )
 
 // PromptPeriodic declares that selecting this prompt should start a periodic
-// (recurring) conversation instead of a one-time one. Presence implies opt-in;
-// the fields provide sensible defaults for the schedule dialog.
+// (recurring) conversation instead of a one-time one. A prompt falls into one
+// of three categories:
+//   - No `periodic:` block at all → never periodic (unchanged one-time send).
+//   - `mode: always` (or `mode` absent) → always periodic; not user-toggleable.
+//   - `mode: optional` → user-choosable; `default` sets the initial per-send state.
 //
-// Example frontmatter (schedule-based):
+// Example frontmatter (always periodic, schedule-based):
 //
 //	periodic:
 //	  value: 1
@@ -26,13 +30,21 @@ import (
 //	  at: "09:00"          # optional, only for days (UTC)
 //	  maxIterations: 10    # optional; 0/absent = unlimited scheduled runs
 //
-// Example frontmatter (on-completion trigger):
+// Example frontmatter (always periodic, on-completion trigger):
 //
 //	periodic:
 //	  trigger: onCompletion  # fire after the agent stops responding
 //	  delay: 30              # seconds to wait after agent stops (clamped to floor at consumption)
 //	  maxIterations: 20      # optional safety cap
 //	  maxDuration: "4h"      # optional wall-clock cap; 0/absent = unlimited
+//
+// Example frontmatter (optionally periodic, off by default):
+//
+//	periodic:
+//	  mode: optional
+//	  default: false         # initial per-send toggle state; nil/absent => true (on)
+//	  trigger: onCompletion
+//	  delay: 30
 type PromptPeriodic struct {
 	// Value is the number of time units between runs (min 1). Used for trigger: schedule (default).
 	Value int `yaml:"value" json:"value"`
@@ -52,6 +64,43 @@ type PromptPeriodic struct {
 	// MaxDuration is an optional wall-clock cap (e.g. "2h", "30m"); 0/absent = unlimited.
 	// Parsed to seconds at the consumption boundary.
 	MaxDuration string `yaml:"maxDuration,omitempty" json:"maxDuration,omitempty"`
+	// Mode selects whether periodic is mandatory or user-toggleable: "always"
+	// (default when empty/absent) or "optional". Validated by ValidatePromptPeriodic.
+	Mode string `yaml:"mode,omitempty" json:"mode,omitempty"`
+	// Default is the initial per-send toggle state when Mode is "optional".
+	// nil/absent => true (on). Ignored (with a lint warning) when Mode is "always".
+	Default *bool `yaml:"default,omitempty" json:"default,omitempty"`
+}
+
+// PromptPeriodicModeAlways means the prompt is always periodic; not user-toggleable.
+// Also the implied mode when PromptPeriodic.Mode is empty.
+const PromptPeriodicModeAlways = "always"
+
+// PromptPeriodicModeOptional means periodic is user-choosable for this prompt;
+// PromptPeriodic.Default sets the initial per-send toggle state.
+const PromptPeriodicModeOptional = "optional"
+
+// knownPromptPeriodicModes enumerates valid PromptPeriodic.Mode values (besides "").
+var knownPromptPeriodicModes = map[string]bool{
+	PromptPeriodicModeAlways:   true,
+	PromptPeriodicModeOptional: true,
+}
+
+// ValidatePromptPeriodic validates the periodic block's mode/default combination.
+// Returns an error for unknown mode values. Emits a non-fatal warning when default
+// is set together with mode: always (or mode absent), since the value is ignored.
+func ValidatePromptPeriodic(promptName string, p *PromptPeriodic) error {
+	if p == nil {
+		return nil
+	}
+	if p.Mode != "" && !knownPromptPeriodicModes[p.Mode] {
+		return fmt.Errorf("prompt %q: periodic.mode %q is not valid (must be one of: always, optional)", promptName, p.Mode)
+	}
+	if p.Default != nil && p.Mode != PromptPeriodicModeOptional {
+		slog.Warn("prompt periodic.default is ignored unless periodic.mode is \"optional\"",
+			"prompt", promptName, "mode", p.Mode)
+	}
+	return nil
 }
 
 // PromptParameterCache configures value caching for a single prompt parameter.
@@ -254,6 +303,11 @@ func ParsePromptFile(path string, data []byte, modTime time.Time) (*PromptFile, 
 
 	// Validate parameters block.
 	if err := ValidatePromptParameters(prompt.Menus, prompt.Parameters); err != nil {
+		return nil, fmt.Errorf("prompt file %s: %w", path, err)
+	}
+
+	// Validate periodic block (mode/default combination).
+	if err := ValidatePromptPeriodic(prompt.Name, prompt.Periodic); err != nil {
 		return nil, fmt.Errorf("prompt file %s: %w", path, err)
 	}
 

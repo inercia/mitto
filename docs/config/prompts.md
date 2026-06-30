@@ -627,6 +627,8 @@ periodic:
   trigger: schedule  # optional — schedule (default) | onCompletion
   delay: 30          # optional — seconds to wait after the agent stops, before the next onCompletion run
   maxDuration: "4h"  # optional — wall-clock cap (e.g. 30m, 4h, 1d); 0/absent = unlimited
+  mode: always       # optional — always (default) | optional
+  default: true      # optional — only meaningful for mode: optional; nil/absent = true
 ```
 
 | Field           | Required | Description |
@@ -638,6 +640,8 @@ periodic:
 | `trigger`       | No       | How runs fire: `schedule` (default — frequency-based) or `onCompletion` (fire after the agent stops responding). See [Triggers](#triggers-schedule-vs-on-completion). |
 | `delay`         | No       | For `trigger: onCompletion` only — seconds to wait after the agent finishes before the next run. Clamped up to the global floor (`min_periodic_completion_delay_seconds`, default 5). Ignored for `schedule`. |
 | `maxDuration`   | No       | Wall-clock cap as a duration string (`30m`, `4h`, `1d`). Once it elapses (measured from the first run), the conversation auto-stops. `0`/absent = unlimited. |
+| `mode`          | No       | `always` (default — not user-toggleable) or `optional` (user-choosable per send). Unknown values are rejected at load time. See [Always / optional / never](#always--optional--never). |
+| `default`       | No       | Initial per-send toggle state when `mode: optional`. `true`/absent = on, `false` = off. Ignored (with a load-time warning) when `mode` is `always` or absent. |
 
 ¹ Required for `trigger: schedule` (the default). Ignored for `trigger: onCompletion`, which fires off the agent-idle event rather than a fixed period.
 
@@ -645,6 +649,28 @@ periodic:
 
 The `value` / `unit` / `at` fields double as the **default period** applied
 whenever a conversation is made periodic (see [Default period](#default-period)).
+
+#### Always / optional / never
+
+Every prompt falls into one of three categories:
+
+- **Never periodic** — no `periodic:` block at all. Regular one-time prompt (unchanged).
+- **Always periodic** — `periodic:` block with `mode: always` (or `mode` absent). Periodic behavior is mandatory whenever the prompt is selected; not user-toggleable.
+- **Optionally periodic** — `periodic:` block with `mode: optional`. The user can choose whether this send is periodic; `default` sets the initial toggle state.
+
+```yaml
+# Always periodic (mode omitted == always)
+periodic:
+  trigger: onCompletion
+  delay: 30
+
+# Optionally periodic, off by default
+periodic:
+  mode: optional
+  default: false
+  trigger: onCompletion
+  delay: 30
+```
 
 ### Behavior
 

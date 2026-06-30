@@ -858,6 +858,159 @@ func TestToWebPrompt_OnCompletion_JSONRoundTrip(t *testing.T) {
 	}
 }
 
+func TestParsePromptFile_WithPeriodic_OptionalDefaultFalse(t *testing.T) {
+	data := []byte(`name: "Optional Periodic"
+periodic:
+  mode: optional
+  default: false
+  trigger: onCompletion
+prompt: |
+  Maybe run periodically.
+`)
+
+	prompt, err := ParsePromptFile("optional.prompt.yaml", data, time.Now())
+	if err != nil {
+		t.Fatalf("ParsePromptFile failed: %v", err)
+	}
+	if prompt.Periodic == nil {
+		t.Fatal("Periodic = nil, want non-nil")
+	}
+	if prompt.Periodic.Mode != "optional" {
+		t.Errorf("Periodic.Mode = %q, want %q", prompt.Periodic.Mode, "optional")
+	}
+	if prompt.Periodic.Default == nil || *prompt.Periodic.Default != false {
+		t.Errorf("Periodic.Default = %v, want *false", prompt.Periodic.Default)
+	}
+
+	// Round-trips through ToWebPrompt (whole-pointer copy).
+	wp := prompt.ToWebPrompt()
+	if wp.Periodic == nil {
+		t.Fatal("WebPrompt.Periodic = nil, want non-nil")
+	}
+	if wp.Periodic.Mode != "optional" {
+		t.Errorf("WebPrompt.Periodic.Mode = %q, want %q", wp.Periodic.Mode, "optional")
+	}
+	if wp.Periodic.Default == nil || *wp.Periodic.Default != false {
+		t.Errorf("WebPrompt.Periodic.Default = %v, want *false", wp.Periodic.Default)
+	}
+
+	raw, err := json.Marshal(wp)
+	if err != nil {
+		t.Fatalf("json.Marshal failed: %v", err)
+	}
+	jsonStr := string(raw)
+	if !strings.Contains(jsonStr, `"mode":"optional"`) {
+		t.Errorf("JSON missing mode field; got: %s", jsonStr)
+	}
+	if !strings.Contains(jsonStr, `"default":false`) {
+		t.Errorf("JSON missing default field; got: %s", jsonStr)
+	}
+}
+
+func TestParsePromptFile_WithPeriodic_NoMode(t *testing.T) {
+	data := []byte(`name: "Always Periodic"
+periodic:
+  value: 1
+  unit: hours
+prompt: |
+  Always runs periodically.
+`)
+
+	prompt, err := ParsePromptFile("always.prompt.yaml", data, time.Now())
+	if err != nil {
+		t.Fatalf("ParsePromptFile failed: %v", err)
+	}
+	if prompt.Periodic == nil {
+		t.Fatal("Periodic = nil, want non-nil")
+	}
+	if prompt.Periodic.Mode != "" {
+		t.Errorf("Periodic.Mode = %q, want empty (absent => treated as always)", prompt.Periodic.Mode)
+	}
+	if prompt.Periodic.Default != nil {
+		t.Errorf("Periodic.Default = %v, want nil (absent)", prompt.Periodic.Default)
+	}
+}
+
+func TestParsePromptFile_PeriodicUnknownMode(t *testing.T) {
+	data := []byte(`name: "Bad Mode"
+periodic:
+  mode: sometimes
+prompt: |
+  body
+`)
+
+	_, err := ParsePromptFile("bad-mode.prompt.yaml", data, time.Now())
+	if err == nil {
+		t.Fatal("ParsePromptFile should fail for unknown periodic.mode, got nil error")
+	}
+	if !strings.Contains(err.Error(), "periodic.mode") {
+		t.Errorf("error = %q, want it to mention 'periodic.mode'", err.Error())
+	}
+	if !strings.Contains(err.Error(), "sometimes") {
+		t.Errorf("error = %q, want it to mention the invalid value 'sometimes'", err.Error())
+	}
+}
+
+func TestValidatePromptPeriodic(t *testing.T) {
+	t.Run("nil periodic is OK", func(t *testing.T) {
+		if err := ValidatePromptPeriodic("p", nil); err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("empty mode is OK (treated as always)", func(t *testing.T) {
+		if err := ValidatePromptPeriodic("p", &PromptPeriodic{}); err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("mode=always is OK", func(t *testing.T) {
+		if err := ValidatePromptPeriodic("p", &PromptPeriodic{Mode: "always"}); err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("mode=optional is OK", func(t *testing.T) {
+		if err := ValidatePromptPeriodic("p", &PromptPeriodic{Mode: "optional"}); err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("unknown mode returns error mentioning prompt name and value", func(t *testing.T) {
+		err := ValidatePromptPeriodic("My Prompt", &PromptPeriodic{Mode: "bogus"})
+		if err == nil {
+			t.Fatal("expected error, got nil")
+		}
+		if !strings.Contains(err.Error(), "My Prompt") {
+			t.Errorf("error = %q, want it to mention prompt name 'My Prompt'", err.Error())
+		}
+		if !strings.Contains(err.Error(), "bogus") {
+			t.Errorf("error = %q, want it to mention the invalid value 'bogus'", err.Error())
+		}
+	})
+
+	t.Run("default set with mode=always does not error (warning only)", func(t *testing.T) {
+		f := false
+		if err := ValidatePromptPeriodic("p", &PromptPeriodic{Mode: "always", Default: &f}); err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("default set with mode absent does not error (warning only)", func(t *testing.T) {
+		tr := true
+		if err := ValidatePromptPeriodic("p", &PromptPeriodic{Default: &tr}); err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("default set with mode=optional does not error and does not warn", func(t *testing.T) {
+		f := false
+		if err := ValidatePromptPeriodic("p", &PromptPeriodic{Mode: "optional", Default: &f}); err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+	})
+}
+
 // ---- PromptParameter / Parameters field tests ----
 
 func TestIsKnownPromptParameterType(t *testing.T) {
