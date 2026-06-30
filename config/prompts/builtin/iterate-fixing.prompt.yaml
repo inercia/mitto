@@ -8,6 +8,11 @@ parameters:
 description: Continue iterating to fix the problem we have been working on
 group: Development
 backgroundColor: '#BBDEFB'
+periodic:
+  mode: always
+  trigger: onCompletion
+  delay: 30
+  maxIterations: 20
 prompt: |
   {{- if .Iteration.IsUninterrupted }}
   Continue fixing the problem you have been working on in this loop. Read the state

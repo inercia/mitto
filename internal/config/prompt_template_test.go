@@ -1333,3 +1333,115 @@ func TestRenderPromptTemplate_Iteration(t *testing.T) {
 		t.Errorf("IsUninterrupted=false: got %q, want %q", gotVerbose, "verbose")
 	}
 }
+
+// TestBuiltinPromptPeriodicModes verifies the mitto-92x.6 mechanical flagging
+// pass: every builtin prompt assigned a mode/default in the epic's
+// classification table parses with the expected PromptPeriodic.Mode/Default,
+// and a representative sample of the "never periodic" set has no periodic
+// block at all.
+func TestBuiltinPromptPeriodicModes(t *testing.T) {
+	builtinDir := "../../config/prompts/builtin"
+
+	boolPtr := func(b bool) *bool { return &b }
+
+	type want struct {
+		mode string
+		def  *bool // nil means PromptPeriodic.Default must be nil
+	}
+
+	cases := map[string]want{
+		// Group A — always (6).
+		"beads-issue-iterate-until-complete.prompt.yaml": {mode: "always", def: nil},
+		"github-iterate-babysit-new-prs.prompt.yaml":     {mode: "always", def: nil},
+		"github-post-merge-cleanup.prompt.yaml":          {mode: "always", def: nil},
+		"iterate-until.prompt.yaml":                      {mode: "always", def: nil},
+		"iterate-fixing.prompt.yaml":                     {mode: "always", def: nil},
+		"iterate-implementing.prompt.yaml":               {mode: "always", def: nil},
+
+		// Group B — optional / default:true (4).
+		"github-babysit-contributions.prompt.yaml": {mode: "optional", def: boolPtr(true)},
+		"github-babysit-my-prs.prompt.yaml":        {mode: "optional", def: boolPtr(true)},
+		"github-sync-tasks.prompt.yaml":            {mode: "optional", def: boolPtr(true)},
+		"jira-sync-tasks.prompt.yaml":              {mode: "optional", def: boolPtr(true)},
+
+		// Group C — optional / default:false (22).
+		"check-ci.prompt.yaml":                    {mode: "optional", def: boolPtr(false)},
+		"fix-ci.prompt.yaml":                      {mode: "optional", def: boolPtr(false)},
+		"run-tests.prompt.yaml":                   {mode: "optional", def: boolPtr(false)},
+		"analyze-logs.prompt.yaml":                {mode: "optional", def: boolPtr(false)},
+		"architectural-analysis.prompt.yaml":      {mode: "optional", def: boolPtr(false)},
+		"child-create-minions.prompt.yaml":        {mode: "optional", def: boolPtr(false)},
+		"continue.prompt.yaml":                    {mode: "optional", def: boolPtr(false)},
+		"whats-next.prompt.yaml":                  {mode: "optional", def: boolPtr(false)},
+		"beads-followup-work.prompt.yaml":         {mode: "optional", def: boolPtr(false)},
+		"beads-cleanup-stale.prompt.yaml":         {mode: "optional", def: boolPtr(false)},
+		"beads-group-epics.prompt.yaml":           {mode: "optional", def: boolPtr(false)},
+		"beads-overview.prompt.yaml":              {mode: "optional", def: boolPtr(false)},
+		"beads-reevaluate.prompt.yaml":            {mode: "optional", def: boolPtr(false)},
+		"beads-work.prompt.yaml":                  {mode: "optional", def: boolPtr(false)},
+		"beads-status-all-inprogress.prompt.yaml": {mode: "optional", def: boolPtr(false)},
+		"beads-status-one-inprogress.prompt.yaml": {mode: "optional", def: boolPtr(false)},
+		"beads-issue-status.prompt.yaml":          {mode: "optional", def: boolPtr(false)},
+		"beads-issue-work.prompt.yaml":            {mode: "optional", def: boolPtr(false)},
+		"github-review-slack-prs.prompt.yaml":     {mode: "optional", def: boolPtr(false)},
+		"jira-status-all-inprogress.prompt.yaml":  {mode: "optional", def: boolPtr(false)},
+		"jira-status-one-inprogress.prompt.yaml":  {mode: "optional", def: boolPtr(false)},
+		"jira-work.prompt.yaml":                   {mode: "optional", def: boolPtr(false)},
+	}
+
+	for file, w := range cases {
+		t.Run(file, func(t *testing.T) {
+			path := filepath.Join(builtinDir, file)
+			data, err := os.ReadFile(path)
+			if err != nil {
+				t.Skipf("prompt file not found at %s: %v", path, err)
+			}
+			prompt, err := ParsePromptFile(file, data, time.Now())
+			if err != nil {
+				t.Fatalf("ParsePromptFile(%s): %v", file, err)
+			}
+			if prompt.Periodic == nil {
+				t.Fatalf("%s: Periodic = nil, want non-nil", file)
+			}
+			if prompt.Periodic.Mode != w.mode {
+				t.Errorf("%s: Periodic.Mode = %q, want %q", file, prompt.Periodic.Mode, w.mode)
+			}
+			if w.def == nil {
+				if prompt.Periodic.Default != nil {
+					t.Errorf("%s: Periodic.Default = %v, want nil", file, *prompt.Periodic.Default)
+				}
+			} else {
+				if prompt.Periodic.Default == nil {
+					t.Errorf("%s: Periodic.Default = nil, want %v", file, *w.def)
+				} else if *prompt.Periodic.Default != *w.def {
+					t.Errorf("%s: Periodic.Default = %v, want %v", file, *prompt.Periodic.Default, *w.def)
+				}
+			}
+		})
+	}
+
+	// Representative sample of the "never periodic" set: no periodic block at all.
+	neverFiles := []string{
+		"explain.prompt.yaml",
+		"refactor.prompt.yaml",
+		"review.prompt.yaml",
+		"add-tests.prompt.yaml",
+		"beads-issue-decompose.prompt.yaml",
+	}
+	for _, file := range neverFiles {
+		t.Run("never/"+file, func(t *testing.T) {
+			path := filepath.Join(builtinDir, file)
+			data, err := os.ReadFile(path)
+			if err != nil {
+				t.Skipf("prompt file not found at %s: %v", path, err)
+			}
+			prompt, err := ParsePromptFile(file, data, time.Now())
+			if err != nil {
+				t.Fatalf("ParsePromptFile(%s): %v", file, err)
+			}
+			if prompt.Periodic != nil {
+				t.Errorf("%s: Periodic = %+v, want nil (never-periodic set)", file, prompt.Periodic)
+			}
+		})
+	}
+}

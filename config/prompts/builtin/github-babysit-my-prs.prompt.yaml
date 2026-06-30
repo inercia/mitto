@@ -13,6 +13,12 @@ tags:
 - periodic
 - github
 enabledWhen: FileExists(".git/config") && (Tools.HasPattern("github_*") || CommandExists("gh"))
+periodic:
+  mode: optional
+  default: true
+  trigger: onCompletion
+  delay: 3600
+  maxIterations: 30
 prompt: |
   {{- $repoFlag := "" -}}
   {{- if .Args.Repository }}{{ $repoFlag = printf " --repo %s" .Args.Repository }}{{ end -}}

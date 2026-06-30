@@ -5,6 +5,11 @@ description: Review ungrouped open beads, propose high-confidence epic groupings
 backgroundColor: '#B2DFDB'
 group: Tasks
 enabledWhen: CommandExists("bd") && DirExists(".beads")
+periodic:
+  mode: optional
+  default: false
+  trigger: onCompletion
+  delay: 60
 prompt: |
   ## Session Context
 

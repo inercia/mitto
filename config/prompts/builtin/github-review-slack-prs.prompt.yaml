@@ -16,6 +16,11 @@ tags:
 - slack
 - periodic
 enabledWhen: Tools.HasPattern("slack_*") && (Tools.HasPattern("github_*") || CommandExists("gh"))
+periodic:
+  mode: optional
+  default: false
+  trigger: onCompletion
+  delay: 60
 prompt: |
   Scan a Slack channel for **requests to review pull requests**, map each request
   to the matching **local checkout** under a given checkouts root, and review each

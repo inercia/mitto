@@ -13,6 +13,12 @@ preferredModels:
   - "*flash*"
   - "*mini*"
   - "*sonnet*"
+periodic:
+  mode: optional
+  default: true
+  value: 1
+  unit: days
+  at: "09:00"
 prompt: |
   Pull JIRA tickets matching this project's saved query into local beads issues,
   keeping the beads copy in sync with changes made in JIRA (description, comments,

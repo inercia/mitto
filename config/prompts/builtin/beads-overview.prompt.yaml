@@ -10,6 +10,11 @@ preferredModels:
   - "*flash*"
   - "*mini*"
   - "*sonnet*"
+periodic:
+  mode: optional
+  default: false
+  trigger: onCompletion
+  delay: 60
 prompt: |
   ## Session Context
 

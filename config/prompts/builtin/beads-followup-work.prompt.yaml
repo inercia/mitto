@@ -5,6 +5,11 @@ description: Review the conversation for incomplete work, follow-up items, and e
 backgroundColor: '#DCEDC8'
 group: Tasks
 enabledWhen: CommandExists("bd") && DirExists(".beads")
+periodic:
+  mode: optional
+  default: false
+  trigger: onCompletion
+  delay: 60
 prompt: |
   ## Session Context
 

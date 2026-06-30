@@ -6,6 +6,11 @@ menus: prompts, conversation
 backgroundColor: '#FFF9C4'
 tags:
 - periodic
+periodic:
+  mode: optional
+  default: false
+  trigger: onCompletion
+  delay: 60
 prompt: |
   Before taking any action, review the current state of the work by reading relevant files,
   checking git status, and understanding what has already been completed.

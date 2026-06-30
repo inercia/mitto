@@ -13,6 +13,12 @@ preferredModels:
   - "*flash*"
   - "*mini*"
   - "*sonnet*"
+periodic:
+  mode: optional
+  default: true
+  value: 1
+  unit: days
+  at: "09:00"
 prompt: |
   Pull GitHub issues from this project's repository into local beads issues,
   keeping the beads copy in sync with changes made on GitHub (body, comments,

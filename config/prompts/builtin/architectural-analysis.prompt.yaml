@@ -7,6 +7,11 @@ group: Code Quality
 tags:
 - periodic
 enabledWhen: CommandExists("bd") && DirExists(".beads")
+periodic:
+  mode: optional
+  default: false
+  trigger: onCompletion
+  delay: 60
 prompt: |
   ## Session Context
 

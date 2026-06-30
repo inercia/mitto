@@ -8,6 +8,11 @@ parameters:
 description: Continue iterating to implement the feature we have been working on
 group: Development
 backgroundColor: '#BBDEFB'
+periodic:
+  mode: always
+  trigger: onCompletion
+  delay: 30
+  maxIterations: 20
 prompt: |
   {{- if .Iteration.IsUninterrupted }}
   Continue implementing the feature you have been working on in this loop. Read the

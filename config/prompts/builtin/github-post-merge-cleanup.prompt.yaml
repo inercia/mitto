@@ -14,6 +14,7 @@ tags:
 - cleanup
 enabledWhen: '!Session.IsChild && FileExists(".git/config") && (Tools.HasPattern("github_*") || CommandExists("gh")) && CommandExists("bd") && DirExists(".beads") && Tools.HasPattern("mitto_conversation_*")'
 periodic:
+  mode: always
   trigger: onCompletion
   delay: 21600
   maxIterations: 20

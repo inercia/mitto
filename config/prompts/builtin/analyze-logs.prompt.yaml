@@ -15,6 +15,11 @@ parameters:
     multiLine: true
     description: 'Optional additional instructions to steer the analysis (e.g. "these are nginx access logs — focus on security and abuse", "this is the payment service, flag any data-consistency issues", "ignore deprecation warnings", "correlate by request-id")'
 enabledWhen: CommandExists("bd") && DirExists(".beads")
+periodic:
+  mode: optional
+  default: false
+  trigger: onCompletion
+  delay: 60
 prompt: |
   ## Session Context
 

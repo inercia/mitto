@@ -5,6 +5,11 @@ description: Reevaluate priority, dependencies, and importance of all beads — 
 backgroundColor: '#FFCC80'
 group: Tasks
 enabledWhen: CommandExists("bd") && DirExists(".beads")
+periodic:
+  mode: optional
+  default: false
+  trigger: onCompletion
+  delay: 60
 prompt: |
   ## Session Context
 

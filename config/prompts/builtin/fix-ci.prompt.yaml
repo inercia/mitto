@@ -7,6 +7,11 @@ backgroundColor: '#B2DFDB'
 tags:
 - periodic
 - ci
+periodic:
+  mode: optional
+  default: false
+  trigger: onCompletion
+  delay: 60
 prompt: |
   Check CI status and read failure logs before making changes. Do not speculate —
   read the logs and relevant source files.

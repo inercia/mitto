@@ -5,6 +5,11 @@ group: Work flow
 menus: prompts, conversation
 backgroundColor: '#FFF9C4'
 enabledWhen: '!Session.IsPeriodicConversation'
+periodic:
+  mode: optional
+  default: false
+  trigger: onCompletion
+  delay: 60
 prompt: |
   {{- if .Session.BeadsIssue }}
   This conversation is linked to beads issue `{{ .Session.BeadsIssue }}` — frame everything

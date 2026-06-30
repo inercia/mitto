@@ -13,6 +13,11 @@ description: Make this conversation periodic (on completion) and keep iterating 
 backgroundColor: '#D1C4E9'
 group: Work flow
 enabledWhen: '!Session.IsChild && !Session.IsPeriodicConversation && Tools.HasPattern("mitto_conversation_*")'
+periodic:
+  mode: always
+  trigger: onCompletion
+  delay: 30
+  maxIterations: 20
 prompt: |
   ## Session Context
 
