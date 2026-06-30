@@ -116,6 +116,11 @@ export const endpoints = {
       apiUrl(`/api/workspace-prompts/${enc(name)}`) + qs(params),
   },
 
+  /** Folder-level settings (stored in folders.json, per-user). */
+  folders: {
+    shortcuts: (params) => apiUrl("/api/folders/shortcuts") + qs(params),
+  },
+
   /** Global server configuration. */
   config: {
     get: (params) => apiUrl("/api/config" + qs(params)),
