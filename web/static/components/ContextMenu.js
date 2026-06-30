@@ -10,14 +10,17 @@ import {
   getPromptIconOrDefault,
   PeriodicIcon,
 } from "./Icons.js";
-import { flattenPrompts } from "../utils/prompts.js";
+import { flattenPrompts, promptPeriodicMode, promptPeriodicDefaultOn } from "../utils/prompts.js";
 
 // Build ContextMenu submenu items that group `prompts` by their `group`
 // attribute (ungrouped prompts fall under "Other"), each group sorted by name.
 // Every group becomes one ContextMenu entry whose `submenu` lists its prompts.
-// `onRun(prompt)` handles selection; `groupIcon` is shown on each group entry.
-// Returns [] when there are no prompts. Shared by the conversation menu and the
-// Beads issue menus so all three surfaces present identical grouped submenus.
+// `onRun(prompt, opts)` handles selection; `groupIcon` is shown on each group
+// entry. Returns [] when there are no prompts. Shared by the conversation menu
+// and the Beads issue menus so all three surfaces present identical grouped
+// submenus. Each submenu item carries `periodicMode`/`periodicDefaultOn` so
+// ContextMenuItem can render a mode-aware toggle/badge (mitto-92x.5) instead of
+// a static trailing element.
 export function buildPromptGroupMenuItems(prompts, onRun, groupIcon) {
   const { groups } = flattenPrompts(prompts || [], {});
   return groups.map((g) => ({
@@ -26,14 +29,10 @@ export function buildPromptGroupMenuItems(prompts, onRun, groupIcon) {
     submenu: g.prompts.map((p) => ({
       label: p.name,
       icon: html`<${getPromptIconOrDefault(p.icon)} className="w-4 h-4" />`,
-      trailing: p.periodic
-        ? html`<span
-            class="shrink-0 text-success opacity-80"
-            title="Periodic prompt — sets the conversation to recurring mode"
-            ><${PeriodicIcon} className="w-3.5 h-3.5"
-          /></span>`
-        : null,
-      onClick: () => onRun(p),
+      periodicMode: promptPeriodicMode(p),
+      periodicDefaultOn: promptPeriodicDefaultOn(p),
+      trailing: null, // periodic visual now derives from periodicMode in ContextMenuItem
+      onClick: (opts) => onRun(p, opts),
     })),
   }));
 }
@@ -129,6 +128,8 @@ function ContextMenuItem({ item, onClose }) {
   const submenuCount = hasSubmenu ? item.submenu.length : 0;
   const [submenuOpen, setSubmenuOpen] = useState(false);
   const [submenuPos, setSubmenuPos] = useState({ left: 0, top: 0 });
+  // Per-submenu-item periodic override (mode "optional" only), keyed by sub.label.
+  const [periodicOverrides, setPeriodicOverrides] = useState({});
   const itemRef = useRef(null);
   const submenuRef = useRef(null);
   const closeTimerRef = useRef(null);
@@ -235,7 +236,13 @@ function ContextMenuItem({ item, onClose }) {
                     onClick=${(e) => {
                       e.stopPropagation();
                       if (!sub.disabled) {
-                        sub.onClick();
+                        const asPeriodic =
+                          sub.periodicMode === "optional"
+                            ? periodicOverrides[sub.label] !== undefined
+                              ? periodicOverrides[sub.label]
+                              : sub.periodicDefaultOn
+                            : undefined;
+                        sub.onClick({ asPeriodic });
                         onClose();
                       }
                     }}
@@ -245,7 +252,30 @@ function ContextMenuItem({ item, onClose }) {
                     ${sub.icon &&
                     html`<span class="w-4 h-4">${sub.icon}</span>`}
                     <span class="flex-1">${sub.label}</span>
-                    ${sub.trailing}
+                    ${sub.periodicMode === "optional"
+                      ? html`<input
+                          type="checkbox"
+                          class="toggle toggle-primary shrink-0"
+                          checked=${periodicOverrides[sub.label] !== undefined
+                            ? periodicOverrides[sub.label]
+                            : sub.periodicDefaultOn}
+                          title="Run as periodic (recurring) conversation"
+                          onClick=${(e) => e.stopPropagation()}
+                          onChange=${(e) => {
+                            e.stopPropagation();
+                            setPeriodicOverrides((m) => ({
+                              ...m,
+                              [sub.label]: e.target.checked,
+                            }));
+                          }}
+                        />`
+                      : sub.periodicMode === "always"
+                        ? html`<span
+                            class="shrink-0 text-success opacity-80"
+                            title="Periodic prompt — sets the conversation to recurring mode"
+                            ><${PeriodicIcon} className="w-3.5 h-3.5"
+                          /></span>`
+                        : sub.trailing}
                   </button>
                 </li>
               `,

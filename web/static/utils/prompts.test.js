@@ -1137,3 +1137,94 @@ describe("promptResolveAsPeriodic", () => {
     expect(promptResolveAsPeriodic(p, false)).toBe(false);
   });
 });
+
+// =============================================================================
+// buildPromptGroupMenuItems (ContextMenu.js) — mitto-92x.5
+//
+// ContextMenu.js (and its Icons.js dependency) destructure window.preact at
+// module load time, so window.preact must be stubbed BEFORE the module is
+// evaluated. Static imports are hoisted ahead of any module-level statement,
+// so the stub is installed first and the module is loaded via a dynamic
+// import() inside beforeAll (which Jest's ESM mode supports).
+// =============================================================================
+
+describe("buildPromptGroupMenuItems", () => {
+  let buildPromptGroupMenuItems;
+
+  beforeAll(async () => {
+    window.preact = {
+      html: (strings, ...values) => ({ __htmlStub: true, strings, values }),
+      useState: (initial) => [initial, () => {}],
+    };
+    ({ buildPromptGroupMenuItems } = await import(
+      "../components/ContextMenu.js"
+    ));
+  });
+
+  const prompts = [
+    { name: "Always On", group: "G" }, // no periodic block -> "none"
+    {
+      name: "Always Periodic",
+      group: "G",
+      periodic: { mode: "always" },
+    },
+    {
+      name: "Maybe Periodic",
+      group: "G",
+      periodic: { mode: "optional", default: false },
+    },
+  ];
+
+  function findSub(items, label) {
+    for (const group of items) {
+      const found = (group.submenu || []).find((s) => s.label === label);
+      if (found) return found;
+    }
+    return undefined;
+  }
+
+  test("a 'none'-mode prompt yields periodicMode 'none'", () => {
+    const items = buildPromptGroupMenuItems(prompts, () => {}, null);
+    const sub = findSub(items, "Always On");
+    expect(sub).toBeDefined();
+    expect(sub.periodicMode).toBe("none");
+  });
+
+  test("an 'always'-mode prompt carries periodicMode 'always' and periodicDefaultOn true", () => {
+    const items = buildPromptGroupMenuItems(prompts, () => {}, null);
+    const sub = findSub(items, "Always Periodic");
+    expect(sub).toBeDefined();
+    expect(sub.periodicMode).toBe("always");
+    expect(sub.periodicDefaultOn).toBe(true);
+  });
+
+  test("an 'optional'-mode prompt carries periodicMode 'optional' and periodicDefaultOn matching its default", () => {
+    const items = buildPromptGroupMenuItems(prompts, () => {}, null);
+    const sub = findSub(items, "Maybe Periodic");
+    expect(sub).toBeDefined();
+    expect(sub.periodicMode).toBe("optional");
+    expect(sub.periodicDefaultOn).toBe(false);
+  });
+
+  test("calling item.onClick({ asPeriodic: true }) invokes onRun with (prompt, { asPeriodic: true })", () => {
+    const onRun = jest.fn();
+    const items = buildPromptGroupMenuItems(prompts, onRun, null);
+    const sub = findSub(items, "Maybe Periodic");
+    sub.onClick({ asPeriodic: true });
+    expect(onRun).toHaveBeenCalledTimes(1);
+    const [calledPrompt, calledOpts] = onRun.mock.calls[0];
+    expect(calledPrompt.name).toBe("Maybe Periodic");
+    expect(calledOpts).toEqual({ asPeriodic: true });
+  });
+
+  test("calling item.onClick({ asPeriodic: false }) forwards false", () => {
+    const onRun = jest.fn();
+    const items = buildPromptGroupMenuItems(prompts, onRun, null);
+    const sub = findSub(items, "Maybe Periodic");
+    sub.onClick({ asPeriodic: false });
+    expect(onRun).toHaveBeenCalledTimes(1);
+    const [calledPrompt, calledOpts] = onRun.mock.calls[0];
+    expect(calledPrompt.name).toBe("Maybe Periodic");
+    expect(calledOpts).toEqual({ asPeriodic: false });
+  });
+});

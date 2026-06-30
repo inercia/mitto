@@ -2962,8 +2962,12 @@ function App() {
                       availableCommands=${availableCommands}
                       periodicConfigured=${sessionInfo?.periodic_configured ||
                       false}
-                      onPeriodicPrompt=${(prompt) =>
-                        handleSendPromptToConversation(activeSession, prompt)}
+                      onPeriodicPrompt=${(prompt, opts) =>
+                        handleSendPromptToConversation(
+                          activeSession,
+                          prompt,
+                          opts,
+                        )}
                       onOpenPromptParamDialog=${(
                         prompt,
                         parameters,

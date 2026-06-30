@@ -765,9 +765,9 @@ export function BeadsDetailPanel({
     if (!data) return [];
     const promptGroupItems = buildPromptGroupMenuItems(
       prompts,
-      (p) => {
+      (p, opts) => {
         setPanelMenu(null);
-        onRunPrompt && onRunPrompt(p, data);
+        onRunPrompt && onRunPrompt(p, data, opts);
       },
       html`<${PlusIcon} />`,
     );
@@ -3706,9 +3706,9 @@ export function BeadsView({
   // Run a beads prompt for a specific issue: delegates to the parent, which
   // creates a new conversation seeded with the prompt text and issue context.
   const handleRunPrompt = useCallback(
-    (prompt, issue) => {
+    (prompt, issue, opts) => {
       closeContextMenu();
-      onRunBeadsPrompt && onRunBeadsPrompt(prompt, issue);
+      onRunBeadsPrompt && onRunBeadsPrompt(prompt, issue, opts);
     },
     [onRunBeadsPrompt, closeContextMenu],
   );
@@ -3767,7 +3767,7 @@ export function BeadsView({
   // identical to the conversation menu and the detail-panel kebab.
   const promptGroupItems = buildPromptGroupMenuItems(
     menuPrompts,
-    (p) => handleRunPrompt(p, contextMenu && contextMenu.issue),
+    (p, opts) => handleRunPrompt(p, contextMenu && contextMenu.issue, opts),
     html`<${PlusIcon} />`,
   );
 

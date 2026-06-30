@@ -2,7 +2,7 @@
 // A single searchable, grouped, color-aware prompt picker reused by the
 // ChatInput prompts dropup and the periodic-conversation prompt selector.
 
-const { html, Fragment } = window.preact;
+const { html, Fragment, useState } = window.preact;
 
 import { getPromptIcon, PeriodicIcon } from "./Icons.js";
 import {
@@ -10,6 +10,8 @@ import {
   flattenPrompts,
   resolvePromptModelOverride,
   currentModelName,
+  promptPeriodicMode,
+  promptPeriodicDefaultOn,
 } from "../utils/prompts.js";
 
 // Source badge (W/F/S) shown on the right of each item when enabled.
@@ -48,7 +50,8 @@ function getBadgeInfo(source) {
  * @param {string} [props.sortMode] - "name" (default) or "color"
  * @param {number} [props.selectedIndex] - flat index highlighted via keyboard (-1 = none)
  * @param {Object} [props.selectedItemRef] - ref attached to the keyboard-highlighted item
- * @param {Function} props.onSelect - (prompt, event) => void
+ * @param {Function} props.onSelect - (prompt, event, opts?) => void. When
+ *   periodicToggle is true, opts is { asPeriodic } for "optional"-mode prompts.
  * @param {string} [props.selectedName] - name of the currently-chosen prompt (shows a check)
  * @param {boolean} [props.showSourceBadge] - show the W/F/S source badge
  * @param {Object} [props.modelOption] - the "model" config option ({ current_value,
@@ -61,6 +64,10 @@ function getBadgeInfo(source) {
  * @param {string} [props.keyPrefix] - key namespace to keep instances distinct
  * @param {string} [props.filterTestId] - data-testid for the filter input
  * @param {string} [props.listTestId] - data-testid for the scrollable list container
+ * @param {boolean} [props.periodicToggle] - when true, render a mode-aware periodic
+ *   control (toggle for "optional", locked badge for "always") instead of the
+ *   static periodic badge; onSelect then receives a 3rd ({ asPeriodic }) arg.
+ *   Defaults to false (static badge, unchanged look) for config selectors.
  */
 export function PromptsMenu({
   prompts = [],
@@ -82,11 +89,14 @@ export function PromptsMenu({
   keyPrefix = "pm",
   filterTestId,
   listTestId,
+  periodicToggle = false,
 }) {
   const { groups, flat } = flattenPrompts(prompts, { filterText, sortMode });
   const clampedIndex =
     flat.length === 0 ? -1 : Math.min(selectedIndex, flat.length - 1);
   const curModelName = currentModelName(modelOption);
+  // Per-item periodic override (mode "optional" only), keyed by prompt.name.
+  const [periodicOverrides, setPeriodicOverrides] = useState({});
 
   const renderItem = (prompt) => {
     const fi = flat.indexOf(prompt);
@@ -115,7 +125,15 @@ export function PromptsMenu({
       <li key=${keyPrefix + "-item-" + prompt.name}>
         <button
           type="button"
-          onClick=${(e) => onSelect && onSelect(prompt, e)}
+          onClick=${(e) => {
+            const asPeriodic =
+              promptPeriodicMode(prompt) === "optional"
+                ? periodicOverrides[prompt.name] !== undefined
+                  ? periodicOverrides[prompt.name]
+                  : promptPeriodicDefaultOn(prompt)
+                : undefined;
+            onSelect && onSelect(prompt, e, { asPeriodic });
+          }}
           title=${prompt.description || prompt.name}
           class="prompt-item w-full text-left px-4 py-2.5 text-sm text-mitto-text hover:brightness-110 transition-all flex items-center gap-2 rounded-none"
           style=${style}
@@ -163,12 +181,44 @@ export function PromptsMenu({
               : "")}
             >⚡</span
           >`}
-          ${prompt.periodic &&
+          ${!periodicToggle &&
+          prompt.periodic &&
           html`<span
             class="shrink-0 text-success opacity-80"
             title="Periodic prompt — sets the conversation to recurring mode"
             ><${PeriodicIcon} className="w-3.5 h-3.5"
           /></span>`}
+          ${periodicToggle &&
+          (() => {
+            const mode = promptPeriodicMode(prompt);
+            if (mode === "none") return null;
+            if (mode === "optional") {
+              const on =
+                periodicOverrides[prompt.name] !== undefined
+                  ? periodicOverrides[prompt.name]
+                  : promptPeriodicDefaultOn(prompt);
+              return html`<input
+                type="checkbox"
+                class="toggle toggle-primary shrink-0"
+                checked=${on}
+                title="Run as periodic (recurring) conversation"
+                onClick=${(e) => e.stopPropagation()}
+                onChange=${(e) => {
+                  e.stopPropagation();
+                  setPeriodicOverrides((m) => ({
+                    ...m,
+                    [prompt.name]: e.target.checked,
+                  }));
+                }}
+              />`;
+            }
+            // mode === "always": locked badge (unchanged look)
+            return html`<span
+              class="shrink-0 text-success opacity-80"
+              title="Periodic prompt — sets the conversation to recurring mode"
+              ><${PeriodicIcon} className="w-3.5 h-3.5"
+            /></span>`;
+          })()}
           ${showSourceBadge &&
           html`<span
             class="text-[10px] font-bold px-1.5 py-0.5 rounded ${getBadgeInfo(

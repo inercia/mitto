@@ -89,7 +89,7 @@ export function useConversationMenu({
       onSendPromptToConversation && menuPrompts && menuPrompts.length > 0
         ? buildPromptGroupMenuItems(
             menuPrompts,
-            (p) => onSendPromptToConversation(session, p),
+            (p, opts) => onSendPromptToConversation(session, p, opts),
             html`<${LightningIcon} />`,
           )
         : [];

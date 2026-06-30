@@ -202,7 +202,7 @@ function PromptStopButton({ onStop }) {
  * @param {Array} props.actionButtons - Array of action buttons from agent response { label, response }
  * @param {Array} props.availableCommands - Array of available slash commands { name, description, input_hint }
  * @param {boolean} props.periodicConfigured - Whether a periodic config exists (shows editor, disables queue buttons)
- * @param {Function} [props.onPeriodicPrompt] - Called with (prompt) when a periodic-flagged prompt is selected. Routes to app-level branching (decidePeriodicAction). When absent, periodic prompts fall through to the normal send path.
+ * @param {Function} [props.onPeriodicPrompt] - Called with (prompt, opts) when a periodic-flagged prompt is selected, where opts is { asPeriodic } (the resolved per-send override). Routes to app-level branching (decidePeriodicAction). When absent, periodic prompts fall through to the normal send path.
  * @param {Object} props.activeUIPrompt - Active UI prompt from MCP tool { requestId, promptType, question, options, timeoutSeconds, receivedAt }
  * @param {Function} props.onUIPromptAnswer - Callback when user answers a UI prompt (requestId, optionId, label)
  * @param {string} props.workingDir - Workspace directory path (for smart file path insertion on native app drag & drop)
@@ -1310,7 +1310,7 @@ export function ChatInput({
     }
   };
 
-  const handlePredefinedPrompt = async (prompt, event) => {
+  const handlePredefinedPrompt = async (prompt, event, opts) => {
     setShowDropup(false);
 
     // Shift+click/Enter = insert into composition area (legacy behavior)
@@ -1344,10 +1344,9 @@ export function ChatInput({
 
     // Periodic-flagged prompts: route to app-level branching (decidePeriodicAction).
     // This handles make-periodic / one-shot / new-periodic without duplicating logic here.
-    // No per-send override here yet (added in mitto-92x.5).
-    const asPeriodic = prompt && promptResolveAsPeriodic(prompt);
+    const asPeriodic = prompt && promptResolveAsPeriodic(prompt, opts?.asPeriodic);
     if (asPeriodic && onPeriodicPrompt) {
-      onPeriodicPrompt(prompt);
+      onPeriodicPrompt(prompt, { asPeriodic });
       return;
     }
 
@@ -3206,10 +3205,11 @@ ${activeUIPrompt.text || ""}</textarea
                           sortMode=${promptSortMode}
                           selectedIndex=${promptSelectedIndex}
                           selectedItemRef=${selectedPromptItemRef}
-                          onSelect=${(prompt, e) =>
-                            handlePredefinedPrompt(prompt, e)}
+                          onSelect=${(prompt, e, opts) =>
+                            handlePredefinedPrompt(prompt, e, opts)}
                           showSourceBadge=${true}
                           shiftHeld=${shiftHeld}
+                          periodicToggle=${true}
                           placeholder="Filter prompts..."
                           emptyText="No matching prompts"
                           keyPrefix="chat-prompts"
