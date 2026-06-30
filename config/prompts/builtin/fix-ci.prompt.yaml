@@ -81,6 +81,41 @@ prompt: |
   then send a `mitto_ui_notify` success.
   {{- end }}
 
+  ### 3b. Track failures durably (periodic mode)
+  {{- if .Session.IsPeriodic }}
+
+  CI is failing. Set up **durable cross-run state in beads** so the loop remembers what
+  it already tried (attempt counts, known flakes, escalations) — the beads-native
+  replacement for an ephemeral `ci-sweeper-state.md`. Do this **only if `bd` is available
+  and a `.beads` directory exists**; otherwise skip and proceed statelessly.
+
+  **Resolve the tracker epic** (durable anchor for this repo's CI failures):
+  {{- if .Session.BeadsIssue }}
+  This conversation is linked to `{{ .Session.BeadsIssue }}` — treat it as the CI tracker epic.
+  {{- else }}
+  Find or create it, then link it so future runs resolve it automatically:
+
+  ```bash
+  bd list --label ci-sweeper --status open --json    # reuse an open epic labelled ci-sweeper if present
+  bd create "CI sweeper tracker (<repo>)" --type epic -p 2 -l ci-sweeper --silent   # else create one
+  ```
+
+  ```
+  mitto_conversation_update(self_id: "{{ .Session.ID }}", conversation_id: "self", beads_issue: "<tracker-epic-id>")
+  ```
+  {{- end }}
+
+  **Load failure history** so you don't re-attempt known-bad fixes or fight flakes:
+
+  ```bash
+  bd list --label ci-failure --status open --json    # open failure beads under the tracker
+  ```
+
+  **Dedup** each current failure against these beads by (failing job + error signature).
+  A matching open bead carries the prior **attempt count** and any `flake`/`needs-human`
+  labels — read it before acting (Steps 4–5).
+  {{- end }}
+
   ### 4. Diagnose
 
   ```bash
@@ -92,12 +127,48 @@ prompt: |
 
   1. Quote exact error from logs
   2. Diagnose root cause: test failure, build error, lint/format, dependency, config/environment
+  {{- if .Session.IsPeriodic }}
+
+  **Classify before fixing (periodic, when beads is available):**
+  - **Flake** — same test failed then passed on retry **without a code change**, or the
+    matching bead is already labelled `flake`: do **not** auto-fix. Label the bead `flake`,
+    `bd comment` the evidence, and notify for human quarantine.
+  - **Repeat failure** — a matching failure bead exists: read its attempt count. If it has
+    already reached **3 attempts**, do **not** retry — escalate (see Step 5).
+  - **New, actionable** — create a failure bead (unless deduped) capturing the commit SHA,
+    failing job, and exact error, then proceed to fix:
+
+    ```bash
+    bd create "CI: <job> — <short error>" --type bug --parent <tracker-epic> \
+      -l ci-failure -p 1 --body-file <tmpfile>   # body: commit SHA, job, exact error, branch
+    ```
+  {{- end }}
 
   ### 5. Fix
 
   Per issue: implement fix, explain the change, verify locally (tests, build, lint).
 
   Fix in dependency order — causes before symptoms.
+  {{- if .Session.IsPeriodic }}
+
+  **Periodic-mode fix safety + escalation (when beads is available):**
+  - **Protect the working checkout.** If the working tree has **unrelated uncommitted
+    changes**, make the fix in a **temporary git worktree** on its own branch (verify and
+    commit there) instead of the live checkout — never mix the user's work with the CI fix.
+  - **Record each attempt** on the failure bead: `bd comment <bead> "Attempt N/3: <what
+    changed>; local verify=<pass|fail>."`
+  - **Escalate after 3 attempts** on the same failure — stop retrying and hand off:
+    ```bash
+    bd update <bead> --add-label needs-human --defer +1d
+    ```
+    Then `mitto_ui_notify` with the failure, what was tried, and why a human is needed.
+  - **On success** (local verification passes), **close** the failure bead so it's pruned
+    from the active list: `bd close <bead> --reason "fixed: <summary>"`.
+  - **Stop spinning:** if every current failure is already `needs-human` or `flake`
+    (nothing this loop can act on), disable periodic
+    (`mitto_conversation_update(self_id: "{{ .Session.ID }}", conversation_id: "self", periodic_enabled: false)`)
+    and notify — the user re-runs after addressing the handoffs.
+  {{- end }}
 
   #### Delegating Complex CI Fixes to Child Conversations
 
@@ -150,8 +221,11 @@ prompt: |
   In scheduled mode: **commit** your fixes, but do **NOT push** — pushing is left to
   the user. Stage only the files you changed, explicitly by path (`git add <file> ...`);
   never `git add -A`/`.` or `git commit -a`. Skip the commit if nothing changed this
-  run. Then `mitto_ui_notify` that fixes were committed and ask the user to push to
-  re-run CI.
+  run. If you fixed in a temporary worktree (dirty checkout), commit there and report the
+  worktree/branch. When beads is in use, **close** the fixed failure bead and append a run
+  record to the tracker epic
+  (`bd comment <tracker-epic> "CI run: fixed <N>, escalated <K>, flakes <F>."`). Then
+  `mitto_ui_notify` what was fixed/escalated and ask the user to push to re-run CI.
   {{- else }}
 
   Suggest the user commit and push the changes.
@@ -165,6 +239,16 @@ prompt: |
   - Report flaky tests as flaky rather than retrying blindly
   - Note infrastructure-related failures explicitly
   - Group related fixes in a single commit
+  {{- if .Session.IsPeriodic }}
+  - **Beads is the durable state store** in periodic mode (when `bd` + `.beads` exist): a
+    `ci-sweeper` tracker epic anchors the loop; each failure is a `ci-failure` child bead
+    with attempt count in `bd comment`; never create a `ci-sweeper-state.md` or any state file.
+  - **Attempt cap:** escalate to a human (`needs-human` + `bd update --defer`) after 3
+    attempts on the same failure — never retry the same broken fix forever.
+  - **Flakes:** label `flake` and quarantine via a bead; do not auto-fix tests that pass on retry.
+  - **Never clobber the working checkout** — use a temporary worktree when it has unrelated
+    uncommitted changes; spawned children must never be periodic.
+  {{- end }}
   - **Interaction mode** (see "Interaction Mode" section above):
   {{- if and .Session.IsPeriodic (not .Session.IsPeriodicForced) }}
     - **Scheduled periodic**: notify-only; fix + commit (never push); verify locally;

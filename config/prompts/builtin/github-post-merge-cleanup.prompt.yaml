@@ -1,0 +1,273 @@
+icon: broom
+name: 'GitHub: post-merge cleanup'
+menus: prompts
+parameters:
+  - name: IssuesOnly
+    type: boolean
+    description: Triage only — file/update beads cleanup issues and notify, but never auto-fix or open PRs (leave unchecked to auto-fix small, low-risk items)
+description: Auto-periodic — after merges to the default branch, sweep for follow-up work (TODOs, deprecations, stale flags, doc gaps), track it in beads, auto-fix small low-risk items, and self-terminate when quiet
+group: GitHub
+backgroundColor: '#BBDEFB'
+tags:
+- periodic
+- github
+- cleanup
+enabledWhen: '!Session.IsChild && FileExists(".git/config") && (Tools.HasPattern("github_*") || CommandExists("gh")) && CommandExists("bd") && DirExists(".beads") && Tools.HasPattern("mitto_conversation_*")'
+periodic:
+  trigger: onCompletion
+  delay: 21600
+  maxIterations: 20
+  maxDuration: "168h"
+prompt: |
+  The auto-periodic **post-merge cleanup sweeper**. After merges land on the
+  default branch, each run sweeps for follow-up work — deprecations, `TODO`/`FIXME`,
+  `// remove after`, stale feature flags, broken doc links, and explicit follow-ups
+  named in merged PRs/issues — **without blocking or touching the merge itself**.
+
+  Unlike the original pattern, **there is no `post-merge-state.md` file**: beads is
+  the durable state store. A **tracker epic** bead holds the run state, each cleanup
+  opportunity becomes a **child bead**, and labels encode lifecycle.
+
+  ## Session Context
+
+  Your session ID is `{{ .Session.ID }}` — use this as `self_id` for all `mitto_*` MCP tool calls.
+  Available ACP servers: {{ .ACP.AvailableText }}
+  Existing children (spawned by previous runs): {{ .Children.MCPText }}
+
+  When spawning fix conversations, prefer `"coding"` or `"fast"` tagged servers.
+  **Never** make a spawned conversation periodic — they are one-off tasks.
+
+  ## Mode: triage-only vs. auto-fix
+  {{- if eq .Args.IssuesOnly "true" }}
+
+  **Issues-only mode** (the `IssuesOnly` box is ticked): only **file/update beads
+  cleanup issues** and notify. Do **NOT** fix anything, spawn fixers, or open PRs —
+  humans pick the issues up. Skip every "auto-fix" action below.
+  {{- else }}
+
+  **Auto-fix mode** (default): file beads issues for everything, and additionally
+  **auto-fix only small, low-risk items** by opening PRs (via a temp worktree or a
+  one-off child), **never auto-merging**. Large/risky/architectural items are filed
+  and **deferred to a human** — never attempted automatically.
+  {{- end }}
+
+  ## Interaction Mode — READ THIS FIRST
+  {{- if and .Session.IsPeriodic (not .Session.IsPeriodicForced) }}
+
+  **Silent mode — scheduled periodic run.** Use **only** `mitto_ui_notify`. Do **NOT**
+  call `mitto_ui_options`, `mitto_ui_form`, or `mitto_ui_textbox` — nobody is watching.
+  Act autonomously when safe; otherwise file a bead and notify. Stay quiet on no-op runs.
+  {{- else }}
+
+  **Interactive mode** (first send, or a force-triggered run): a user may be present, so
+  you *may* use interactive `mitto_ui_*` tools and ask before risky actions.
+  {{- end }}
+  {{- if .Iteration.IsLast }}
+
+  **Final scheduled run.** This is the last automatic iteration (the `maxIterations`
+  cap is reached after this run). Do not start a fix you cannot finish; record state
+  on the tracker epic with `bd comment`, then post a closing `mitto_ui_notify` summary.
+  {{- end }}
+
+  ## Step 1 — Identify the repository and verify auth
+
+  ```bash
+  git remote -v && git rev-parse --show-toplevel
+  gh repo view --json nameWithOwner,defaultBranchRef -q '.nameWithOwner + " (default: " + .defaultBranchRef.name + ")"'
+  ```
+
+  If `gh auth status` fails, stop immediately and inform the user. Note the default
+  branch (e.g. `main`) — it is the merge target you sweep.
+
+  Rename this conversation for easy identification — but only if the current name
+  (`{{ .Session.Name }}`) doesn't already start with "Post-merge cleanup":
+
+  ```
+  mitto_conversation_update(self_id: "{{ .Session.ID }}", conversation_id: "{{ .Session.ID }}",
+    name: "Post-merge cleanup in <nameWithOwner>")
+  ```
+
+  ## Step 1b — Resolve the tracker epic (the durable "state file")
+
+  The tracker epic is this loop's beads-native replacement for `post-merge-state.md`.
+  {{- if .Session.BeadsIssue }}
+  This conversation is already linked to `{{ .Session.BeadsIssue }}` — treat it as the
+  tracker epic for every run.
+  {{- else }}
+  This conversation is **not yet linked**. Find or create the tracker epic:
+
+  ```bash
+  bd list --label post-merge-cleanup --status open --json   # if your bd lacks --label, list all and filter to type=epic + label post-merge-cleanup
+  ```
+
+  - If an epic labelled `post-merge-cleanup` exists for this repo, reuse it.
+  - Otherwise create one:
+
+    ```bash
+    bd create "Post-merge cleanup tracker (<nameWithOwner>)" --type epic -p 2 -l post-merge-cleanup --silent
+    ```
+
+  Then link it as the **durable anchor** so future runs resolve it automatically:
+
+  ```
+  mitto_conversation_update(self_id: "{{ .Session.ID }}", conversation_id: "self", beads_issue: "<tracker-epic-id>")
+  ```
+  {{- end }}
+
+  Treat the tracker epic as **`<epic>`** for the rest of this run.
+
+  ## Step 2 — Determine the scan window (since last run)
+
+  The durable "Last run" marker lives in the **latest `Cleanup run:` comment** on
+  `<epic>` (it records `lastSHA=<commit>`). Read the epic and its comments:
+
+  ```bash
+  bd show <epic> --long --json --include-comments
+  git fetch origin <defaultBranch>
+  ```
+
+  - **Continuation run** (a prior `lastSHA` exists): scan merges in
+    `<lastSHA>..origin/<defaultBranch>`.
+  - **First run** (no marker): scan merges from the last **7 days**.
+
+  ```bash
+  git log --merges --first-parent <lastSHA>..origin/<defaultBranch> \
+    --pretty='%H %s' || \
+  git log --merges --first-parent --since="7 days ago" origin/<defaultBranch> --pretty='%H %s'
+  ```
+
+  Record the current `origin/<defaultBranch>` HEAD SHA — you will store it as the new
+  `lastSHA` in Step 5. If there are **no new merges**, do no scanning work this run and
+  go to **Step 6 (stop decision)**.
+
+  ## Step 3 — Scan merges and file cleanup beads
+
+  For each merge in the window, inspect what landed and harvest cleanup opportunities:
+
+  ```bash
+  gh pr list --state merged --base <defaultBranch> --search "merged:>=<date>" \
+    --json number,title,mergedAt,mergeCommit,labels --limit 30   # linked PRs + their follow-up labels
+  git show <mergeSHA> --stat                                      # files touched by each merge
+  ```
+
+  Scan the merged diffs (and the files they touched) for cleanup signals:
+  - `TODO` / `FIXME` / `XXX` and `// remove after <date|version|PR>` markers **introduced
+    or referenced by the merge**, deprecation notices, and dead/disabled code paths.
+  - Stale feature flags (a flag whose rollout the merge completes or supersedes).
+  - Broken or outdated doc links and docs that reference changed/removed APIs.
+  - **Explicit follow-ups** named in the merged PR body, review comments, or linked issues.
+
+  **Only act on signals with merge context or a linked ticket** — do **not** sweep every
+  pre-existing `TODO` in the repo (that is noise; see Guidelines).
+
+  For each genuine opportunity:
+  1. **Dedup.** Check existing `post-merge-cleanup` beads (`bd list --label post-merge-cleanup --json`)
+     for one already referencing the same source (commit / file:line / symbol / PR). If
+     found, skip filing (optionally refresh its `bd comment`).
+  2. **File a child bead** under `<epic>`, capturing the source and an assessment:
+
+     ```bash
+     bd create "<concise cleanup title>" --type task --parent <epic> \
+       -l post-merge-cleanup,cleanup -p <1=high|2=med|3=low by risk×effort> \
+       --body-file <tmpfile>   # body: source (PR #, commit SHA, file:line), what & why, risk, effort
+     ```
+
+     Use `--type chore`/`tech-debt` labels where they fit your tracker's conventions.
+
+  ## Step 4 — Classify and act (label state machine)
+
+  Lifecycle is encoded with beads status + a couple of labels:
+  `open` *(discovered)* → claimed/`in_progress` *(fixing)* → `pr-open` *(PR raised)* →
+  **closed** *(merged)*; risky/large → `deferred` *(human handoff)*.
+  {{- if eq .Args.IssuesOnly "true" }}
+
+  **Issues-only mode:** do not fix anything. For each new bead, just notify
+  (`mitto_ui_notify`) so a human can pick it up. Skip the rest of this step.
+  {{- else }}
+
+  **Small + low-risk** (a few lines, no behaviour change beyond intended dead-code
+  removal, e.g. drop a completed flag, remove dead code a merge orphaned, fix a doc
+  link): auto-fix it — but **never** touch the local checkout (the user may have
+  uncommitted work). Either fix it yourself in a **temporary worktree** and open a PR,
+  or spawn **one** one-off child to do so:
+
+  ```
+  mitto_conversation_new(self_id: "{{ .Session.ID }}",
+    title: "Cleanup <bead-id>: <title>",
+    beads_issue: "<bead-id>",
+    initial_prompt: "<self-contained worker prompt: the cleanup bead's source (PR/commit/file:line),
+      the exact minimal change, the no-behaviour-change rule, run the full test suite, and open a PR
+      with --force-with-lease on its own branch — do NOT modify the local checkout and do NOT merge>",
+    acp_server: "<prefer a coding/fast-tagged server>")
+  ```
+
+  - Before spawning, check `{{ .Children.MCPText }}` and **skip** if a child already
+    exists for the same bead. **Cap auto-fixes at 2 per run.**
+  - When a PR is raised, label the bead `pr-open` (`bd update <bead-id> --add-label pr-open`).
+    Closing the bead happens when the PR merges (a later run, or "GitHub: babysit my PRs").
+  - **Verifier rule:** cleanup must not change behaviour except intentional dead-code
+    removal; the worker runs the **full test suite**. **Never auto-merge.** Any cleanup
+    touching **>10 files** is not "small" — treat it as large (below).
+
+  **Large / risky / architectural** (design discussion, flag affecting prod config,
+  deprecations with external consumers, or anything attempted twice without passing
+  tests): do **not** attempt it. Defer the bead to a human:
+
+  ```bash
+  bd comment <bead-id> "Deferred: <why this needs a human — risk/scope/design>."
+  bd update <bead-id> --add-label deferred --defer +1d    # drops out of `ready` until a human revisits
+  ```
+
+  Notify on meaningful items only (filed N, fixed M, deferred K) — batch, don't spam.
+  {{- end }}
+
+  ## Step 5 — Update the tracker (durable state)
+
+  Append a run record to `<epic>` so the next run knows where it stopped. This single
+  comment is the beads-native equivalent of the old state file's "Last run" line:
+
+  ```bash
+  bd comment <epic> "Cleanup run: scanned <range or '7d'>, filed <N>, fixed <M> (PRs: #..), deferred <K>; lastSHA=<current origin/<defaultBranch> HEAD>."
+  ```
+
+  Open cleanup beads = the "Pending" bucket; `deferred`-labelled beads = "Deferred
+  (human decision)"; closed beads = "Completed". No separate file is needed.
+
+  ## Step 6 — Stop decision / self-terminate
+
+  Keep iterating (end this run; the next fires after `delay`) while there is anything
+  this loop can still advance — new merges arriving, or open auto-fixable beads not yet
+  at `pr-open`. `deferred` beads waiting on a human are **not** a reason to keep
+  spinning.
+
+  When a run finds **no new merges** since `lastSHA` **and** no open auto-fixable
+  cleanup beads remain (only `deferred`/`pr-open`/none), the sweep is quiet —
+  **self-terminate**:
+
+  ```
+  mitto_conversation_update(self_id: "{{ .Session.ID }}", conversation_id: "self", periodic_enabled: false)
+  mitto_ui_notify(self_id: "{{ .Session.ID }}", title: "Post-merge cleanup — idle",
+    message: "<what was filed/fixed/deferred across runs; nothing actionable left, so iteration stopped>",
+    style: "success")
+  ```
+
+  The user can re-run this prompt anytime to sweep a fresh batch of merges.
+
+  ## Guidelines
+
+  - **Never block the merge or the local checkout.** Always fix in a temporary worktree
+    and push with `--force-with-lease` (never `--force`); never auto-merge cleanup PRs.
+  - **No behaviour change.** Cleanup must not alter behaviour except intentional
+    dead-code removal; the worker runs the full test suite before opening a PR. A
+    regression means immediate human handoff (`deferred`).
+  - **Beads is the state store** — never create a `post-merge-state.md` (or any state
+    file). The tracker epic's `Cleanup run:` comments hold the run state; child beads +
+    labels (`post-merge-cleanup`, `cleanup`, `pr-open`, `deferred`) hold per-item state.
+  - **Act on merge context only.** Only file beads for signals tied to a merge or a
+    linked ticket — do not sweep every pre-existing `TODO` (noise control).
+  - **Human handoff** for architectural debt, prod-config flag removal, deprecations
+    with external API consumers, or anything attempted twice without passing tests.
+  - **Caps:** at most **2 auto-fix PRs per run**; check `{{ .Children.MCPText }}` and skip
+    duplicate spawns; spawned conversations are one-off and **must never be periodic**.
+  - **Notify only when it matters** on scheduled runs (filed / fixed / deferred / final
+    stop); stay quiet on no-op runs. Always log to the tracker with `bd comment`.
