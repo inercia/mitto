@@ -1,6 +1,11 @@
 icon: globe
 name: 'GitHub: babysit contributions'
 menus: prompts
+parameters:
+  - name: Repository
+    type: text
+    required: false
+    description: 'Optional GitHub repository (owner/repo) to monitor. If omitted, the repository of the current folder is used.'
 description: Periodically check for pending review requests, bot dependency PRs ready to merge, and stale remote branches from merged PRs
 group: GitHub
 backgroundColor: '#C8E6C9'
@@ -9,11 +14,14 @@ tags:
 - github
 enabledWhen: FileExists(".git/config") && (Tools.HasPattern("github_*") || CommandExists("gh"))
 prompt: |
-  Monitor community and repo-wide contributions for the current repository:
-  pending review requests addressed to you, bot dependency PRs (Dependabot,
-  Renovate) ready to merge, and stale remote branches from merged PRs. This
-  prompt does **not** touch your own PRs — use "GitHub: babysit my PRs" for that.
-  Designed to be run periodically via `mitto_conversation_set_periodic`.
+  {{- $repoFlag := "" -}}
+  {{- if .Args.Repository }}{{ $repoFlag = printf " --repo %s" .Args.Repository }}{{ end -}}
+  Monitor community and repo-wide contributions for the target repository (the
+  current folder's repo by default, or the one supplied via the `Repository`
+  parameter): pending review requests addressed to you, bot dependency PRs
+  (Dependabot, Renovate) ready to merge, and stale remote branches from merged
+  PRs. This prompt does **not** touch your own PRs — use "GitHub: babysit my
+  PRs" for that. Designed to be run periodically via `mitto_conversation_set_periodic`.
 
   ## Session Context
 
@@ -37,12 +45,26 @@ prompt: |
   {{- end }}
 
   ## Step 1 — Identify the repository
+  {{- if .Args.Repository }}
+
+  A target repository was supplied: **`{{ .Args.Repository }}`**. Every `gh`
+  command in this prompt already targets it via `--repo {{ .Args.Repository }}`,
+  so you do not need to be inside that repository's checkout.
+
+  ```bash
+  gh repo view {{ .Args.Repository }} --json nameWithOwner,defaultBranchRef -q '.nameWithOwner + " (default: " + .defaultBranchRef.name + ")"'
+  ```
+  {{- else }}
+
+  No repository was supplied, so operate on the repository of the **current
+  folder** where this prompt runs.
 
   ```bash
   git remote -v
   git rev-parse --show-toplevel
   gh repo view --json nameWithOwner,defaultBranchRef -q '.nameWithOwner + " (default: " + .defaultBranchRef.name + ")"'
   ```
+  {{- end }}
 
   If `gh` is not authenticated (`gh auth status` fails), inform the user and stop.
 
@@ -61,7 +83,7 @@ prompt: |
   Check if the current user has been requested to review any PRs:
 
   ```bash
-  gh pr list --search "review-requested:@me" --state open --json number,title,author,createdAt --limit 20
+  gh pr list{{ $repoFlag }} --search "review-requested:@me" --state open --json number,title,author,createdAt --limit 20
   ```
 
   If there are pending review requests, **batch into a single notification:**
@@ -78,8 +100,8 @@ prompt: |
   List open bot dependency PRs:
 
   ```bash
-  gh pr list --state open --author "app/dependabot" --json number,title,statusCheckRollup,author --limit 20
-  gh pr list --state open --author "app/renovate" --json number,title,statusCheckRollup,author --limit 20
+  gh pr list{{ $repoFlag }} --state open --author "app/dependabot" --json number,title,statusCheckRollup,author --limit 20
+  gh pr list{{ $repoFlag }} --state open --author "app/renovate" --json number,title,statusCheckRollup,author --limit 20
   ```
 
   If a bot PR has all CI checks passing:
@@ -93,8 +115,8 @@ prompt: |
       { label: "No, just notify" }
     ])
   ```
-  If the user selects "Yes": `gh pr review <number> --approve` then
-  `gh pr merge <number> --merge`. Then notify success.
+  If the user selects "Yes": `gh pr review{{ $repoFlag }} <number> --approve` then
+  `gh pr merge{{ $repoFlag }} <number> --merge`. Then notify success.
 
   **In scheduled mode**, just notify:
   ```
@@ -109,14 +131,21 @@ prompt: |
   Check for remote branches from merged PRs that were not deleted:
 
   ```bash
-  gh pr list --state merged --json headRefName,number,title --limit 30
+  gh pr list{{ $repoFlag }} --state merged --json headRefName,number,title --limit 30
   ```
 
   Cross-reference against existing remote branches:
+  {{- if .Args.Repository }}
+
+  ```bash
+  gh api repos/{{ .Args.Repository }}/branches --paginate -q '.[].name'
+  ```
+  {{- else }}
 
   ```bash
   git ls-remote --heads origin
   ```
+  {{- end }}
 
   If any merged-PR branches still exist on the remote:
 
@@ -130,9 +159,18 @@ prompt: |
     ])
   ```
   If the user selects "Yes", delete via remote API (safe — does not affect local):
+  {{- if .Args.Repository }}
+
+  ```bash
+  # delete each merged branch via the API (no local checkout needed)
+  gh api -X DELETE repos/{{ .Args.Repository }}/git/refs/heads/<branch>   # repeat per branch
+  ```
+  {{- else }}
+
   ```bash
   git push origin --delete <branch1> <branch2> ...
   ```
+  {{- end }}
 
   **In scheduled mode**, just notify:
   ```
@@ -157,6 +195,14 @@ prompt: |
 
   ## Guidelines
 
+  - **Target repository**:
+  {{- if .Args.Repository }}
+    operate on `{{ .Args.Repository }}`; all `gh` commands target it via
+    `--repo {{ .Args.Repository }}`, and merged-branch cleanup uses the GitHub
+    API (no local checkout of that repo is assumed).
+  {{- else }}
+    no repository was supplied; operate on the repository of the current folder.
+  {{- end }}
   - If `gh` authentication fails, stop immediately and inform the user.
   - **Interaction mode** (see "Interaction Mode" section above):
   {{- if and .Session.IsPeriodic (not .Session.IsPeriodicForced) }}

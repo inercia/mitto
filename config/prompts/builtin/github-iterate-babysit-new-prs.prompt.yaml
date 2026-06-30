@@ -1,6 +1,11 @@
 icon: globe
 name: 'GitHub: iterate babysitting new PRs'
 menus: prompts
+parameters:
+  - name: Repository
+    type: text
+    required: false
+    description: 'Optional GitHub repository (owner/repo) whose recently-created PRs to babysit. If omitted, the repository of the current folder is used.'
 description: Auto-periodic — keep babysitting the PRs you recently created (rebase, fix CI, address comments, merge when ready), then self-terminate when nothing actionable remains
 group: GitHub
 backgroundColor: '#BBDEFB'
@@ -14,13 +19,16 @@ periodic:
   maxIterations: 30
   maxDuration: "6h"
 prompt: |
+  {{- $repoFlag := "" -}}
+  {{- if .Args.Repository }}{{ $repoFlag = printf " --repo %s" .Args.Repository }}{{ end -}}
   The auto-periodic, self-driving sibling of **"GitHub: babysit my PRs"**. On
   every run this conversation advances the **PRs you recently created** (the ones
   it has been babysitting) one step toward done — rebasing stale branches, fixing
   CI, addressing review comments, and merging when ready — and when there is
   **nothing actionable left**, it removes its own periodic flag and stops.
 
-  Only ever acts on PRs where **you are the author**.
+  Operates on the current folder's repository by default, or the one supplied via
+  the `Repository` parameter. Only ever acts on PRs where **you are the author**.
 
   ## Session Context
 
@@ -59,12 +67,30 @@ prompt: |
   {{- end }}
 
   ## Step 1 — Identify the repository and verify auth
+  {{- if .Args.Repository }}
+
+  A target repository was supplied: **`{{ .Args.Repository }}`**. Every `gh`
+  command in this prompt already targets it via `--repo {{ .Args.Repository }}`,
+  so you do not need to be inside that repository's checkout.
+
+  ```bash
+  gh repo view {{ .Args.Repository }} --json nameWithOwner,defaultBranchRef -q '.nameWithOwner + " (default: " + .defaultBranchRef.name + ")"'
+  gh api user -q '.login'      # your GitHub login — only act on PRs whose author.login matches
+  ```
+
+  **Local git operations** (the rebase in Step 3a) still need a local clone of
+  the target repo. If the current folder is already a checkout of
+  `{{ .Args.Repository }}`, use it; otherwise clone it on demand into a temp dir
+  (`gh repo clone {{ .Args.Repository }} "$(mktemp -d)"`) and run the git
+  commands there.
+  {{- else }}
 
   ```bash
   git remote -v
   gh repo view --json nameWithOwner,defaultBranchRef -q '.nameWithOwner + " (default: " + .defaultBranchRef.name + ")"'
   gh api user -q '.login'      # your GitHub login — only act on PRs whose author.login matches
   ```
+  {{- end }}
 
   If `gh auth status` fails, stop immediately and inform the user.
 
@@ -99,7 +125,7 @@ prompt: |
      (within the last **7 days**), capped at **10**:
 
      ```bash
-     gh pr list --state open --author @me --search "sort:created-desc" \
+     gh pr list{{ $repoFlag }} --state open --author @me --search "sort:created-desc" \
        --json number,title,headRefName,baseRefName,statusCheckRollup,mergeable,mergeStateStatus,updatedAt,createdAt,isDraft,reviewDecision,author,reviewThreads --limit 20
      ```
 
@@ -136,10 +162,13 @@ prompt: |
 
   ### 3a. Rebase if behind base
   ```bash
-  gh pr view <number> --json mergeStateStatus,mergeable,baseRefName,headRefName
+  gh pr view{{ $repoFlag }} <number> --json mergeStateStatus,mergeable,baseRefName,headRefName
   ```
   If behind and cannot cleanly merge: in interactive mode ask first; in silent mode
-  notify and proceed. Rebase in a temp worktree:
+  notify and proceed. Rebase in a temp worktree
+  {{- if .Args.Repository }} — run the git commands inside a checkout of
+  `{{ .Args.Repository }}` (the current folder if it is that repo, otherwise the
+  temp clone from Step 1){{ end }}:
   ```bash
   git fetch origin <baseRefName> <headRefName>
   TMPDIR=$(mktemp -d); git worktree add "$TMPDIR" origin/<headRefName> --detach
@@ -153,12 +182,12 @@ prompt: |
 
   ### 3b. Fix failing CI
   ```bash
-  gh pr checks <number> --json name,state,description,detailsUrl
+  gh pr checks{{ $repoFlag }} <number> --json name,state,description,detailsUrl
   ```
   If any check is failing, this PR is **actionable**. Pull a brief failure summary:
   ```bash
-  gh run list --branch <headRefName> --status failure --limit 1 --json databaseId,name,conclusion
-  gh run view <run-id> --log-failed 2>/dev/null | tail -80
+  gh run list{{ $repoFlag }} --branch <headRefName> --status failure --limit 1 --json databaseId,name,conclusion
+  gh run view{{ $repoFlag }} <run-id> --log-failed 2>/dev/null | tail -80
   ```
   Notify (error, sound+native) with the failing check names and summary. Then, if
   `mitto_conversation_new` is available, spawn a one-off fix conversation (subject
@@ -171,14 +200,14 @@ prompt: |
       Failing checks: <check names>
       Error summary: <brief failure details>
       Check out <headRefName>, diagnose and fix the failures, then push.
-      The repo is at: <repo path>",
+      {{ if .Args.Repository }}The repository is `{{ .Args.Repository }}` — clone it with `gh repo clone` if the current folder is a different repo.{{ else }}The repo is at: <repo path>{{ end }}",
     acp_server: <prefer "coding" or "fast" tagged server>)
   ```
   If all checks pass, this step is **not actionable**.
 
   ### 3c. Address unresolved review comments
   ```bash
-  gh pr view <number> --json reviewThreads --jq '[.reviewThreads[] | select(.isResolved == false)] | length'
+  gh pr view{{ $repoFlag }} <number> --json reviewThreads --jq '[.reviewThreads[] | select(.isResolved == false)] | length'
   ```
   If the count is > 0, this PR is **actionable**. Notify (warning) with the count.
   Then, if `mitto_conversation_new` is available, spawn a one-off conversation to
@@ -190,7 +219,7 @@ prompt: |
     initial_prompt: "PR #<number> (<title>) has <count> unresolved review threads.
       Check out <headRefName>, read them with `gh pr view <number> --json reviewThreads`,
       address each with code changes and replies, then push.
-      The repo is at: <repo path>",
+      {{ if .Args.Repository }}The repository is `{{ .Args.Repository }}` — clone it with `gh repo clone` if the current folder is a different repo.{{ else }}The repo is at: <repo path>{{ end }}",
     acp_server: <prefer "coding" or "fast" tagged server>)
   ```
   If there are no unresolved threads, this step is **not actionable**.
@@ -204,7 +233,7 @@ prompt: |
       question: "🚀 PR #<number> (<title>) is approved with passing CI. Merge it?",
       options: [ { label: "Yes, merge now" }, { label: "No, just notify" } ])
     ```
-    On "Yes": `gh pr merge <number> --squash` (or `--merge`/`--rebase` per repo
+    On "Yes": `gh pr merge{{ $repoFlag }} <number> --squash` (or `--merge`/`--rebase` per repo
     convention), then notify success. A merged PR leaves the target set (it is
     **done**).
   - **Silent mode**: do **not** auto-merge. Just notify (success) that it is ready,
@@ -255,6 +284,16 @@ prompt: |
 
   ## Guidelines
 
+  - **Target repository**:
+  {{- if .Args.Repository }}
+    operate on `{{ .Args.Repository }}`; all `gh` commands target it via
+    `--repo {{ .Args.Repository }}`. Local git operations (rebases) run inside a
+    checkout of that repo — the current folder if it is that repo, otherwise a
+    temp clone. When spawning fix conversations, tell them the repository is
+    `{{ .Args.Repository }}` and to clone it if the current folder differs.
+  {{- else }}
+    no repository was supplied; operate on the repository of the current folder.
+  {{- end }}
   - **Only act on your own PRs** (`author.login` == your login). Never rebase,
     merge, or spawn fix conversations for PRs authored by others.
   - **Never modify the local checkout** — the user may have uncommitted work there.
