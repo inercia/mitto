@@ -7,7 +7,12 @@
 const { useState, useCallback, useMemo, useRef } = window.preact;
 
 import { authFetch, endpoints } from "../utils/index.js";
-import { promptMenus, menuSatisfies, collectPromptArguments, getMissingPromptParameters } from "../utils/prompts.js";
+import {
+  promptMenus,
+  menuSatisfies,
+  collectPromptArguments,
+  getMissingPromptParameters,
+} from "../utils/prompts.js";
 import { useConversationSeeding } from "./useConversationSeeding.js";
 
 /**
@@ -45,7 +50,9 @@ export function useBeadsIntegration({
   onOpenPromptParamDialog,
   activeSessionId,
 }) {
-  const { startConversationWithPrompt } = useConversationSeeding({ newSession });
+  const { startConversationWithPrompt } = useConversationSeeding({
+    newSession,
+  });
   const [beadsWorkingDir, setBeadsWorkingDir] = useState(null);
   // When the beads view is opened from a linked conversation (e.g. the
   // properties panel's "Linked beads issue" link), these drive auto-selecting
@@ -117,45 +124,49 @@ export function useBeadsIntegration({
   // `issue` is provided, appends item_* params so the server can evaluate
   // item.*-gated enabledWhen expressions per row (mitto-o0u.1). Prompts that
   // don't reference item.* are unaffected by the extra params.
+  // Per-row params sent: item_kind, item_id, item_status, item_type,
+  // item_priority (when numeric), item_labels (comma-separated, when non-empty).
   //
   // enabled_context=workspace tells the server to evaluate the full enabledWhen
   // gates even without a session (mitto-gns). We also pass the current active
   // session_id when one exists so real per-session permission flags +
   // session.isChild apply (approach B); the server falls back to session-less
   // workspace defaults only when no session is active.
-  const fetchBeadsPromptsForWorkspace = useCallback(async (workingDir, issue) => {
-    if (!workingDir) return [];
-    try {
-      const params = {
-        working_dir: workingDir,
-        enabled_context: "workspace",
-        session_id: activeSessionId,
-      };
-      if (issue) {
-        params.item_kind = "beadsIssue";
-        params.item_id = issue.id;
-        params.item_status = issue.status;
-        params.item_type = issue.issue_type;
-        if (typeof issue.priority === "number") {
-          params.item_priority = String(issue.priority);
+  const fetchBeadsPromptsForWorkspace = useCallback(
+    async (workingDir, issue) => {
+      if (!workingDir) return [];
+      try {
+        const params = {
+          working_dir: workingDir,
+          enabled_context: "workspace",
+          session_id: activeSessionId,
+        };
+        if (issue) {
+          params.item_kind = "beadsIssue";
+          params.item_id = issue.id;
+          params.item_status = issue.status;
+          params.item_type = issue.issue_type;
+          if (typeof issue.priority === "number") {
+            params.item_priority = String(issue.priority);
+          }
+          if (Array.isArray(issue.labels) && issue.labels.length > 0) {
+            params.item_labels = issue.labels.join(",");
+          }
         }
+        const res = await authFetch(endpoints.workspacePrompts.list(params));
+        if (!res.ok) return [];
+        const data = await res.json();
+        const all = data?.prompts || [];
+        return all
+          .filter((p) => p && promptMenus(p).includes("beadsIssues"))
+          .sort((a, b) => (a.name || "").localeCompare(b.name || ""));
+      } catch (err) {
+        console.error("Failed to fetch beads prompts for workspace:", err);
+        return [];
       }
-      const res = await authFetch(endpoints.workspacePrompts.list(params));
-      if (!res.ok) return [];
-      const data = await res.json();
-      const all = data?.prompts || [];
-      return all
-        .filter(
-          (p) =>
-            p &&
-            promptMenus(p).includes("beadsIssues"),
-        )
-        .sort((a, b) => (a.name || "").localeCompare(b.name || ""));
-    } catch (err) {
-      console.error("Failed to fetch beads prompts for workspace:", err);
-      return [];
-    }
-  }, [activeSessionId]);
+    },
+    [activeSessionId],
+  );
 
   // Fetch the prompts whose `menus` list includes `beadsList` for a workspace
   // directory. Used by the list-level prompts button in the Beads list view.
@@ -167,32 +178,35 @@ export function useBeadsIntegration({
   // prompts (mitto-gns); we pass the current active session_id when one exists so
   // real per-session flags + session.isChild apply (approach B), falling back to
   // session-less workspace defaults only when no session is active.
-  const fetchBeadsListPromptsForWorkspace = useCallback(async (workingDir) => {
-    if (!workingDir) return [];
-    try {
-      const res = await authFetch(
-        endpoints.workspacePrompts.list({
-          working_dir: workingDir,
-          enabled_context: "workspace",
-          session_id: activeSessionId,
-        }),
-      );
-      if (!res.ok) return [];
-      const data = await res.json();
-      const all = data?.prompts || [];
-      return all
-        .filter(
-          (p) =>
-            p &&
-            promptMenus(p).includes("beadsList") &&
-            menuSatisfies(p, "beadsList"),
-        )
-        .sort((a, b) => (a.name || "").localeCompare(b.name || ""));
-    } catch (err) {
-      console.error("Failed to fetch beads list prompts for workspace:", err);
-      return [];
-    }
-  }, [activeSessionId]);
+  const fetchBeadsListPromptsForWorkspace = useCallback(
+    async (workingDir) => {
+      if (!workingDir) return [];
+      try {
+        const res = await authFetch(
+          endpoints.workspacePrompts.list({
+            working_dir: workingDir,
+            enabled_context: "workspace",
+            session_id: activeSessionId,
+          }),
+        );
+        if (!res.ok) return [];
+        const data = await res.json();
+        const all = data?.prompts || [];
+        return all
+          .filter(
+            (p) =>
+              p &&
+              promptMenus(p).includes("beadsList") &&
+              menuSatisfies(p, "beadsList"),
+          )
+          .sort((a, b) => (a.name || "").localeCompare(b.name || ""));
+      } catch (err) {
+        console.error("Failed to fetch beads list prompts for workspace:", err);
+        return [];
+      }
+    },
+    [activeSessionId],
+  );
 
   // Run a beads prompt against a specific issue: create a new conversation in
   // the beads workspace, then seed it with the prompt text and a type-driven
@@ -208,7 +222,9 @@ export function useBeadsIntegration({
 
       // When a folder has several workspaces (e.g. Opus and Sonnet variants),
       // prefer the one marked is_default so beads launches use the intended agent.
-      const beadsMatches = workspaces.filter((w) => w.working_dir === beadsWorkingDir);
+      const beadsMatches = workspaces.filter(
+        (w) => w.working_dir === beadsWorkingDir,
+      );
       const ws = beadsMatches.find((w) => w.is_default) || beadsMatches[0];
       // Name the conversation after the issue (e.g. "mitto-kp7 · Fix login") so
       // it doesn't linger as "New conversation". The prompt is delivered via the
@@ -223,7 +239,10 @@ export function useBeadsIntegration({
       // the issue context (e.g. ${ISSUE_ID}). Previously the periodic branch
       // returned before these were computed, so periodic conversations were
       // created with no arguments and ${ISSUE_ID} was never substituted.
-      const autoArgs = collectPromptArguments(prompt, { beadsId: issue.id, beadsTitle: issue.title });
+      const autoArgs = collectPromptArguments(prompt, {
+        beadsId: issue.id,
+        beadsTitle: issue.title,
+      });
       const missing = getMissingPromptParameters(prompt, "beadsIssues");
 
       // Periodic prompts create a recurring conversation instead of a one-time seed.
@@ -242,11 +261,20 @@ export function useBeadsIntegration({
               periodic: schedule,
             });
             if (!result?.sessionId) {
-              showToast({ style: "error", title: result?.error || "Failed to create periodic conversation", duration: 4000 });
+              showToast({
+                style: "error",
+                title:
+                  result?.error || "Failed to create periodic conversation",
+                duration: 4000,
+              });
               return;
             }
             setMainView("conversation");
-            showToast({ style: "success", title: `Started periodic "${prompt.name}" for ${issue.id}`, duration: 3000 });
+            showToast({
+              style: "success",
+              title: `Started periodic "${prompt.name}" for ${issue.id}`,
+              duration: 3000,
+            });
           });
         };
 
@@ -320,7 +348,14 @@ export function useBeadsIntegration({
         duration: 3000,
       });
     },
-    [beadsWorkingDir, workspaces, startConversationWithPrompt, showToast, onOpenPeriodicDialog, onOpenPromptParamDialog],
+    [
+      beadsWorkingDir,
+      workspaces,
+      startConversationWithPrompt,
+      showToast,
+      onOpenPeriodicDialog,
+      onOpenPromptParamDialog,
+    ],
   );
 
   // Run a beads-list prompt: create a new conversation in the beads workspace,
@@ -351,11 +386,19 @@ export function useBeadsIntegration({
             periodic: schedule,
           });
           if (!result?.sessionId) {
-            showToast({ style: "error", title: result?.error || "Failed to create periodic conversation", duration: 4000 });
+            showToast({
+              style: "error",
+              title: result?.error || "Failed to create periodic conversation",
+              duration: 4000,
+            });
             return;
           }
           setMainView("conversation");
-          showToast({ style: "success", title: `Started periodic "${prompt.name}"`, duration: 3000 });
+          showToast({
+            style: "success",
+            title: `Started periodic "${prompt.name}"`,
+            duration: 3000,
+          });
         });
         return;
       }
@@ -384,7 +427,13 @@ export function useBeadsIntegration({
         duration: 3000,
       });
     },
-    [beadsWorkingDir, workspaces, startConversationWithPrompt, showToast, onOpenPeriodicDialog],
+    [
+      beadsWorkingDir,
+      workspaces,
+      startConversationWithPrompt,
+      showToast,
+      onOpenPeriodicDialog,
+    ],
   );
 
   // Handle Beads button — switch main view to the beads panel for the given workspace.
@@ -466,20 +515,23 @@ export function useBeadsIntegration({
   // handleReturnFromBeadsIssue). Pass `opts.reopenProperties` (true only for the
   // properties-panel link) to re-open that panel on close; auto-detected body
   // links omit it so closing just returns to the conversation.
-  const handleOpenBeadsIssue = useCallback((issueId, workingDir, originSessionId, opts) => {
-    if (!issueId || !workingDir) return;
-    beadsReturnSessionRef.current = originSessionId || null;
-    beadsReturnOpenPropertiesRef.current = !!(opts && opts.reopenProperties);
-    setBeadsWorkingDir(workingDir);
-    setBeadsInitialIssueId(issueId);
-    setBeadsSelectNonce((n) => n + 1);
-    // Open as a docked overlay over the conversation rather than switching the
-    // main view, so the conversation stays visible behind it. The properties
-    // panel (if open) is closed so the overlay docks cleanly to the right edge.
-    setBeadsIssueOpen(true);
-    setShowSidebar(false);
-    setShowSidePanel(false);
-  }, []);
+  const handleOpenBeadsIssue = useCallback(
+    (issueId, workingDir, originSessionId, opts) => {
+      if (!issueId || !workingDir) return;
+      beadsReturnSessionRef.current = originSessionId || null;
+      beadsReturnOpenPropertiesRef.current = !!(opts && opts.reopenProperties);
+      setBeadsWorkingDir(workingDir);
+      setBeadsInitialIssueId(issueId);
+      setBeadsSelectNonce((n) => n + 1);
+      // Open as a docked overlay over the conversation rather than switching the
+      // main view, so the conversation stays visible behind it. The properties
+      // panel (if open) is closed so the overlay docks cleanly to the right edge.
+      setBeadsIssueOpen(true);
+      setShowSidebar(false);
+      setShowSidePanel(false);
+    },
+    [],
+  );
 
   // Return to the conversation an issue was opened from. Called by BeadsView when
   // the standalone detail panel is closed. The properties panel is re-opened only

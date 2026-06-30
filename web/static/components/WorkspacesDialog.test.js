@@ -23,16 +23,25 @@ const buildMcpServerJson = (srv) => {
 
 describe("buildMcpServerJson", () => {
   test("wraps the server config under mcpServers keyed by name", () => {
-    const out = JSON.parse(buildMcpServerJson({ name: "srv", command: "node" }));
+    const out = JSON.parse(
+      buildMcpServerJson({ name: "srv", command: "node" }),
+    );
     expect(Object.keys(out)).toEqual(["mcpServers"]);
     expect(Object.keys(out.mcpServers)).toEqual(["srv"]);
   });
 
   test("includes command and non-empty args", () => {
     const out = JSON.parse(
-      buildMcpServerJson({ name: "srv", command: "node", args: ["server.js", "--port", "3000"] }),
+      buildMcpServerJson({
+        name: "srv",
+        command: "node",
+        args: ["server.js", "--port", "3000"],
+      }),
     );
-    expect(out.mcpServers.srv).toEqual({ command: "node", args: ["server.js", "--port", "3000"] });
+    expect(out.mcpServers.srv).toEqual({
+      command: "node",
+      args: ["server.js", "--port", "3000"],
+    });
   });
 
   test("includes env when it has keys", () => {
@@ -47,12 +56,16 @@ describe("buildMcpServerJson", () => {
   });
 
   test("omits env when it is empty", () => {
-    const out = JSON.parse(buildMcpServerJson({ name: "srv", command: "node", env: {} }));
+    const out = JSON.parse(
+      buildMcpServerJson({ name: "srv", command: "node", env: {} }),
+    );
     expect(out.mcpServers.srv).not.toHaveProperty("env");
   });
 
   test("omits env when it is undefined", () => {
-    const out = JSON.parse(buildMcpServerJson({ name: "srv", command: "node" }));
+    const out = JSON.parse(
+      buildMcpServerJson({ name: "srv", command: "node" }),
+    );
     expect(out.mcpServers.srv).not.toHaveProperty("env");
   });
 
@@ -107,7 +120,9 @@ describe("buildMcpServerJson", () => {
  */
 function currentParamValue(edits, procName, param) {
   const procEdits = edits[procName] || {};
-  return procEdits[param.name] !== undefined ? procEdits[param.name] : param.value;
+  return procEdits[param.name] !== undefined
+    ? procEdits[param.name]
+    : param.value;
 }
 
 /**
@@ -129,8 +144,9 @@ function isProcessorDirty(edits, procName, parameters) {
 function buildSaveArgs(edits, proc) {
   const procEdits = edits[proc.name] || {};
   const args = {};
-  for (const p of (proc.parameters || [])) {
-    args[p.name] = procEdits[p.name] !== undefined ? procEdits[p.name] : p.value;
+  for (const p of proc.parameters || []) {
+    args[p.name] =
+      procEdits[p.name] !== undefined ? procEdits[p.name] : p.value;
   }
   return args;
 }
@@ -215,7 +231,9 @@ describe("buildSaveArgs (argument map for PUT endpoint)", () => {
   });
 
   test("all params edited", () => {
-    const edits = { "auggie-manage-rules": { filename: "NOTES.md", mode: "prepend" } };
+    const edits = {
+      "auggie-manage-rules": { filename: "NOTES.md", mode: "prepend" },
+    };
     const args = buildSaveArgs(edits, proc);
     expect(args).toEqual({ filename: "NOTES.md", mode: "prepend" });
   });

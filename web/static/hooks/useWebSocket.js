@@ -57,7 +57,6 @@ import {
   isSeqDuplicate as isSeqDuplicateUtil,
   markSeqSeen as markSeqSeenUtil,
   calculateReconnectDelay,
-
   createReconnectDebounceTracker,
   shouldDebounceReconnect,
   isReconnectLimitReached,
@@ -324,7 +323,9 @@ export function useWebSocket({ onActiveSessionRemovedRef } = {}) {
 
   // Set of workingDir strings with an in-flight session-creation request or pending auto-retry.
   // Used to show a per-folder spinner on the "+" button and prevent duplicate clicks.
-  const [creatingWorkingDirs, setCreatingWorkingDirs] = useState(() => new Set());
+  const [creatingWorkingDirs, setCreatingWorkingDirs] = useState(
+    () => new Set(),
+  );
 
   // Derived: true if ANY folder has an in-flight create (for non-folder consumers).
   const isCreatingSession = creatingWorkingDirs.size > 0;
@@ -817,7 +818,9 @@ export function useWebSocket({ onActiveSessionRemovedRef } = {}) {
           try {
             const data = await response.json();
             msg = data.error?.message || msg;
-          } catch (_e) { /* keep default */ }
+          } catch (_e) {
+            /* keep default */
+          }
           return { error: msg };
         }
 
@@ -849,9 +852,12 @@ export function useWebSocket({ onActiveSessionRemovedRef } = {}) {
           const contentType = response.headers.get("content-type");
           if (contentType && contentType.includes("application/json")) {
             const errorData = await response.json();
-            const error = new Error(errorData.error?.message || "Failed to remove workspace");
+            const error = new Error(
+              errorData.error?.message || "Failed to remove workspace",
+            );
             error.code = errorData.error?.code;
-            error.conversationCount = errorData.error?.details?.conversation_count;
+            error.conversationCount =
+              errorData.error?.details?.conversation_count;
             throw error;
           }
           const errorText = await response.text();
@@ -927,7 +933,8 @@ export function useWebSocket({ onActiveSessionRemovedRef } = {}) {
   const addToQueue = useCallback(
     async (message, imageIds = [], fileIds = [], opts = {}) => {
       const { promptName } = opts;
-      if (!activeSessionId || (!message?.trim() && !promptName)) return { success: false };
+      if (!activeSessionId || (!message?.trim() && !promptName))
+        return { success: false };
       try {
         const body = {
           message: message?.trim() || "",
@@ -1318,7 +1325,8 @@ export function useWebSocket({ onActiveSessionRemovedRef } = {}) {
                 gc_suspended:
                   msg.data.gc_suspended ?? session.info?.gc_suspended ?? false,
                 // Linked beads issue ID (always include, even if empty, so frontend can clear the control)
-                beads_issue: msg.data.beads_issue ?? session.info?.beads_issue ?? "",
+                beads_issue:
+                  msg.data.beads_issue ?? session.info?.beads_issue ?? "",
                 // Processor stats
                 processor_count:
                   msg.data.processor_count ??
@@ -3832,9 +3840,7 @@ export function useWebSocket({ onActiveSessionRemovedRef } = {}) {
       // Load session events from API (with limit for faster initial load)
       try {
         // Get session metadata first to know total event count and working_dir
-        const metaResponse = await authFetch(
-          endpoints.sessions.get(sessionId),
-        );
+        const metaResponse = await authFetch(endpoints.sessions.get(sessionId));
         const meta = metaResponse.ok ? await metaResponse.json() : {};
 
         // If we already have messages, just update the info with working_dir
@@ -3939,9 +3945,14 @@ export function useWebSocket({ onActiveSessionRemovedRef } = {}) {
           setGroupExpanded(parentKey, true);
 
           // Also expand the folder containing the parent session (unscoped key).
-          const folderKey = resolveFolderKey(msg.data, storedSessionsRef.current, msg.data.working_dir);
+          const folderKey = resolveFolderKey(
+            msg.data,
+            storedSessionsRef.current,
+            msg.data.working_dir,
+          );
           if (folderKey) setGroupExpanded(folderKey, true);
-          if (msg.data.archived && folderKey) setGroupExpanded(`archived:${folderKey}`, true);
+          if (msg.data.archived && folderKey)
+            setGroupExpanded(`archived:${folderKey}`, true);
         }
 
         setStoredSessions((prev) => {
@@ -4240,10 +4251,12 @@ export function useWebSocket({ onActiveSessionRemovedRef } = {}) {
                   periodic_frequency: msg.data.frequency || null,
                   periodic_iteration_count: msg.data.iteration_count ?? null,
                   periodic_max_iterations: msg.data.max_iterations ?? null,
-                  periodic_stopped_reason: msg.data.periodic_stopped_reason || null,
+                  periodic_stopped_reason:
+                    msg.data.periodic_stopped_reason || null,
                   periodic_trigger: msg.data.trigger ?? null,
                   periodic_delay_seconds: msg.data.delay_seconds ?? null,
-                  periodic_max_duration_seconds: msg.data.max_duration_seconds ?? null,
+                  periodic_max_duration_seconds:
+                    msg.data.max_duration_seconds ?? null,
                 }
               : s,
           ),
@@ -4266,10 +4279,12 @@ export function useWebSocket({ onActiveSessionRemovedRef } = {}) {
                 periodic_frequency: msg.data.frequency || null,
                 periodic_iteration_count: msg.data.iteration_count ?? null,
                 periodic_max_iterations: msg.data.max_iterations ?? null,
-                periodic_stopped_reason: msg.data.periodic_stopped_reason || null,
+                periodic_stopped_reason:
+                  msg.data.periodic_stopped_reason || null,
                 periodic_trigger: msg.data.trigger ?? null,
                 periodic_delay_seconds: msg.data.delay_seconds ?? null,
-                periodic_max_duration_seconds: msg.data.max_duration_seconds ?? null,
+                periodic_max_duration_seconds:
+                  msg.data.max_duration_seconds ?? null,
               },
             },
           };
@@ -4456,7 +4471,9 @@ export function useWebSocket({ onActiveSessionRemovedRef } = {}) {
       case "beads_cleanup_progress":
         if (msg.data) {
           window.dispatchEvent(
-            new CustomEvent("mitto:beads_cleanup_progress", { detail: msg.data }),
+            new CustomEvent("mitto:beads_cleanup_progress", {
+              detail: msg.data,
+            }),
           );
         }
         break;
@@ -4529,7 +4546,8 @@ export function useWebSocket({ onActiveSessionRemovedRef } = {}) {
 
           const lastSessionId = getLastActiveSessionId();
           const lastSession =
-            lastSessionId && sessions.find((s) => s.session_id === lastSessionId);
+            lastSessionId &&
+            sessions.find((s) => s.session_id === lastSessionId);
 
           // Lazy-connect: only the active session opens a per-session WebSocket
           // at startup. Background sessions are NOT pre-connected — they connect
@@ -4643,10 +4661,13 @@ export function useWebSocket({ onActiveSessionRemovedRef } = {}) {
       const wd = opts.workingDir || "";
 
       // Mark creation as in-flight so the targeted folder button shows a spinner.
-      setCreatingWorkingDirs((prev) => { const s = new Set(prev); s.add(wd); return s; });
+      setCreatingWorkingDirs((prev) => {
+        const s = new Set(prev);
+        s.add(wd);
+        return s;
+      });
 
       try {
-
         const sessionBody = {
           name: opts.name || "",
           working_dir: wd,
@@ -4671,7 +4692,8 @@ export function useWebSocket({ onActiveSessionRemovedRef } = {}) {
             const errorData = await response.json();
             console.error("Failed to create session:", errorData);
             errorCode = errorData.error?.code;
-            errorMessage = errorData.error?.message || "Failed to create session";
+            errorMessage =
+              errorData.error?.message || "Failed to create session";
           } else {
             const errorText = await response.text();
             console.error("Failed to create session:", errorText);
@@ -4710,14 +4732,22 @@ export function useWebSocket({ onActiveSessionRemovedRef } = {}) {
           // Other errors, or retry limit exhausted — clear busy state.
           _sessionCreationRetryCount = 0;
           _sessionCreationPendingOpts = null;
-          setCreatingWorkingDirs((prev) => { const s = new Set(prev); s.delete(wd); return s; });
+          setCreatingWorkingDirs((prev) => {
+            const s = new Set(prev);
+            s.delete(wd);
+            return s;
+          });
           return { error: errorMessage, errorCode };
         }
 
         // Success — reset all retry state and clear busy indicator.
         _sessionCreationRetryCount = 0;
         _sessionCreationPendingOpts = null;
-        setCreatingWorkingDirs((prev) => { const s = new Set(prev); s.delete(wd); return s; });
+        setCreatingWorkingDirs((prev) => {
+          const s = new Set(prev);
+          s.delete(wd);
+          return s;
+        });
 
         const data = await response.json();
         const sessionId = data.session_id;
@@ -4764,7 +4794,11 @@ export function useWebSocket({ onActiveSessionRemovedRef } = {}) {
         // Network/fetch error — clear busy state
         _sessionCreationRetryCount = 0;
         _sessionCreationPendingOpts = null;
-        setCreatingWorkingDirs((prev) => { const s = new Set(prev); s.delete(wd); return s; });
+        setCreatingWorkingDirs((prev) => {
+          const s = new Set(prev);
+          s.delete(wd);
+          return s;
+        });
         console.error(`[createNewSession] Network error:`, err);
         return { error: err.message || "Network error" };
       }

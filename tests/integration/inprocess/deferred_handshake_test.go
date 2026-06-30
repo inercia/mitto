@@ -96,7 +96,6 @@ func TestDeferredHandshakePermanentFailure(t *testing.T) {
 	}
 }
 
-
 // TestDeferredHandshakeRetrySucceeds verifies that when session/new fails once but
 // succeeds on the 2nd attempt, the first prompt is answered normally with no error (mitto-8uz).
 func TestDeferredHandshakeRetrySucceeds(t *testing.T) {

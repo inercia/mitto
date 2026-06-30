@@ -1,13 +1,66 @@
 // Mitto Web Interface - BeadsView Component
 // Displays a Beads (bd) issue list and detail view for a workspace.
 
-const { html, useState, useEffect, useCallback, useMemo, useRef, Fragment } = window.preact;
+const { html, useState, useEffect, useCallback, useMemo, useRef, Fragment } =
+  window.preact;
 
-import { apiUrl, authFetch, secureFetch, endpoints, getBeadsFilters, setBeadsFilters, getBeadsGrouping, setBeadsGrouping, getBeadsSort, setBeadsSort } from "../utils/index.js";
+import {
+  apiUrl,
+  authFetch,
+  secureFetch,
+  endpoints,
+  getBeadsFilters,
+  setBeadsFilters,
+  getBeadsGrouping,
+  setBeadsGrouping,
+  getBeadsSort,
+  setBeadsSort,
+} from "../utils/index.js";
 import { getBasename, copyToClipboard } from "../lib.js";
-import { PlusIcon, CloseIcon, TrashIcon, RefreshIcon, BroomIcon, ChevronUpIcon, ChevronDownIcon, ChevronRightIcon, CheckIcon, CircleIcon, HourglassIcon, MenuIcon, ArrowDownIcon, ArrowUpIcon, SyncIcon, SettingsIcon, ExpandIcon, CollapseIcon, MoonIcon, SunIcon, LayersIcon, EllipsisIcon, SortIcon, CopyIcon, getPromptIconOrDefault, PeriodicIcon, LinkIcon, ListIcon, BoldIcon, ItalicIcon, StrikethroughIcon, InlineCodeIcon, CodeBlockIcon, NumberedListIcon, HeadingIcon, QuoteIcon } from "./Icons.js";
+import {
+  PlusIcon,
+  CloseIcon,
+  TrashIcon,
+  RefreshIcon,
+  BroomIcon,
+  ChevronUpIcon,
+  ChevronDownIcon,
+  ChevronRightIcon,
+  CheckIcon,
+  CircleIcon,
+  HourglassIcon,
+  MenuIcon,
+  ArrowDownIcon,
+  ArrowUpIcon,
+  SyncIcon,
+  SettingsIcon,
+  ExpandIcon,
+  CollapseIcon,
+  MoonIcon,
+  SunIcon,
+  LayersIcon,
+  EllipsisIcon,
+  SortIcon,
+  CopyIcon,
+  getPromptIconOrDefault,
+  PeriodicIcon,
+  LinkIcon,
+  ListIcon,
+  BoldIcon,
+  ItalicIcon,
+  StrikethroughIcon,
+  InlineCodeIcon,
+  CodeBlockIcon,
+  NumberedListIcon,
+  HeadingIcon,
+  QuoteIcon,
+} from "./Icons.js";
 import { CodeEditorField } from "./CodeEditorField.js";
-import { ContextMenu, buildPromptGroupMenuItems, PortalTooltip } from "./ContextMenu.js";
+import {
+  ContextMenu,
+  buildPromptGroupMenuItems,
+  PortalTooltip,
+} from "./ContextMenu.js";
 import { ConfirmDialog } from "./ConfirmDialog.js";
 import { Drawer } from "./Drawer.js";
 import { Tooltip } from "./Tooltip.js";
@@ -38,7 +91,8 @@ async function readBeadsResponse(res) {
       if (parsed && typeof parsed.error === "object" && parsed.error !== null) {
         return {
           error: parsed.error.message || `Request failed (HTTP ${res.status})`,
-          stderr: (parsed.error.details && parsed.error.details.stderr) || undefined,
+          stderr:
+            (parsed.error.details && parsed.error.details.stderr) || undefined,
         };
       }
       return parsed;
@@ -46,7 +100,9 @@ async function readBeadsResponse(res) {
       // fall through to error object below
     }
   }
-  return { error: (text && text.trim()) || `Request failed (HTTP ${res.status})` };
+  return {
+    error: (text && text.trim()) || `Request failed (HTTP ${res.status})`,
+  };
 }
 
 // matchesSearch returns true when `issue` matches the user's search query.
@@ -64,7 +120,14 @@ function matchesSearch(issue, search) {
   const owner = (issue.owner || "").toLowerCase();
   const description = (issue.description || "").toLowerCase();
   for (const t of tokens) {
-    if (!(id.includes(t) || title.includes(t) || owner.includes(t) || description.includes(t))) {
+    if (
+      !(
+        id.includes(t) ||
+        title.includes(t) ||
+        owner.includes(t) ||
+        description.includes(t)
+      )
+    ) {
       return false;
     }
   }
@@ -72,7 +135,12 @@ function matchesSearch(issue, search) {
 }
 
 // Display labels for the folder's configured upstream task system.
-const UPSTREAM_LABELS = { jira: "Jira", github: "GitHub", gitlab: "GitLab", linear: "Linear" };
+const UPSTREAM_LABELS = {
+  jira: "Jira",
+  github: "GitHub",
+  gitlab: "GitLab",
+  linear: "Linear",
+};
 
 // Dependency edge kinds accepted by "bd dep add -t" (mirrors the backend
 // allow-list in beads_api.go). "blocks" is the default/most common kind, so it
@@ -143,17 +211,26 @@ const TYPE_COLORS = {
 };
 
 function badge(text, colorClass) {
-  return html`<span class="badge badge-sm font-medium px-2.5 py-0.5 ${colorClass}">${text}</span>`;
+  return html`<span
+    class="badge badge-sm font-medium px-2.5 py-0.5 ${colorClass}"
+    >${text}</span
+  >`;
 }
 
 function priorityBadge(p) {
   const n = typeof p === "number" ? p : 3;
-  return badge(PRIORITY_LABELS[n] ?? String(p), PRIORITY_COLORS[n] ?? PRIORITY_COLORS[3]);
+  return badge(
+    PRIORITY_LABELS[n] ?? String(p),
+    PRIORITY_COLORS[n] ?? PRIORITY_COLORS[3],
+  );
 }
 
 export function statusBadge(s) {
   const label = (s || "open").replace(/_/g, " ");
-  return badge(label, STATUS_COLORS[s] ?? "bg-mitto-surface-4 text-mitto-text-strong");
+  return badge(
+    label,
+    STATUS_COLORS[s] ?? "bg-mitto-surface-4 text-mitto-text-strong",
+  );
 }
 
 // Status badge for the (narrow) dependencies list: shows the full status label
@@ -162,9 +239,14 @@ export function statusBadge(s) {
 // label is kept in `title` for hover/accessibility.
 function depStatusBadge(s) {
   const label = (s || "open").replace(/_/g, " ");
-  const colorClass = STATUS_COLORS[s] ?? "bg-mitto-surface-4 text-mitto-text-strong";
-  return html`<span class="badge badge-sm font-medium px-2.5 py-0.5 ${colorClass}" title=${label}>
-    <span class="beads-badge-abbr">${label.charAt(0)}</span><span class="beads-badge-full">${label}</span>
+  const colorClass =
+    STATUS_COLORS[s] ?? "bg-mitto-surface-4 text-mitto-text-strong";
+  return html`<span
+    class="badge badge-sm font-medium px-2.5 py-0.5 ${colorClass}"
+    title=${label}
+  >
+    <span class="beads-badge-abbr">${label.charAt(0)}</span
+    ><span class="beads-badge-full">${label}</span>
   </span>`;
 }
 
@@ -181,7 +263,9 @@ const SORT_FIELD_OPTIONS = [
   { field: "priority", label: "Priority", key: "priority" },
 ];
 
-const SORT_FIELD_LABELS = Object.fromEntries(SORT_FIELD_OPTIONS.map(o => [o.field, o.label]));
+const SORT_FIELD_LABELS = Object.fromEntries(
+  SORT_FIELD_OPTIONS.map((o) => [o.field, o.label]),
+);
 
 // Compare two issues for the chosen sort field and direction. Priority is a
 // number (0 = highest) so ascending = most important first; the dates compare
@@ -196,7 +280,8 @@ function cmpBySort(a, b, sort) {
     primary = pa - pb;
   } else {
     const key = sort.field === "updated" ? "updated_at" : "created_at";
-    primary = (Date.parse(a?.[key] || "") || 0) - (Date.parse(b?.[key] || "") || 0);
+    primary =
+      (Date.parse(a?.[key] || "") || 0) - (Date.parse(b?.[key] || "") || 0);
   }
   if (primary !== 0) return primary * dir;
   return (a.id || "").localeCompare(b.id || "");
@@ -213,8 +298,16 @@ function renderMarkdown(text) {
 
 function commentBody(text) {
   const m = renderMarkdown(text);
-  if (m) return html`<div class="markdown-content text-mitto-text text-sm max-w-none" dangerouslySetInnerHTML=${{ __html: m }} />`;
-  return html`<pre class="whitespace-pre-wrap wrap-break-word text-sm text-mitto-text">${text || ""}</pre>`;
+  if (m)
+    return html`<div
+      class="markdown-content text-mitto-text text-sm max-w-none"
+      dangerouslySetInnerHTML=${{ __html: m }}
+    />`;
+  return html`<pre
+    class="whitespace-pre-wrap wrap-break-word text-sm text-mitto-text"
+  >
+${text || ""}</pre
+  >`;
 }
 
 // ---- Detail side panel ------------------------------------------------------
@@ -250,7 +343,25 @@ function labelValue(label, value) {
  * Clicking anywhere outside the panel (the issue list / conversation) closes it,
  * detected via a document mousedown listener rather than a backdrop element.
  */
-export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, initialFullscreen, onClose, onCreated, onUpdated, showToast, onFetchPrompts, onRunPrompt, onDelete, onToggleStatus, onToggleDefer, statusBusy, onSelectIssue, createParentId }) {
+export function BeadsDetailPanel({
+  issue,
+  allIssues,
+  isCreating,
+  workingDir,
+  initialFullscreen,
+  onClose,
+  onCreated,
+  onUpdated,
+  showToast,
+  onFetchPrompts,
+  onRunPrompt,
+  onDelete,
+  onToggleStatus,
+  onToggleDefer,
+  statusBusy,
+  onSelectIssue,
+  createParentId,
+}) {
   const isOpen = isCreating || !!issue;
   const [isClosing, setIsClosing] = useState(false);
   const [shouldRender, setShouldRender] = useState(isOpen);
@@ -274,7 +385,9 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, ini
   const isMobile = useMemo(() => {
     if (typeof navigator === "undefined") return false;
     const ua = navigator.userAgent || "";
-    return /iPhone|iPad|iPod|Android|webOS|BlackBerry|IEMobile|Opera Mini/i.test(ua);
+    return /iPhone|iPad|iPod|Android|webOS|BlackBerry|IEMobile|Opera Mini/i.test(
+      ua,
+    );
   }, []);
   const lastIssueRef = useRef(issue);
   const lastCreatingRef = useRef(isCreating);
@@ -328,8 +441,6 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, ini
   const [editingType, setEditingType] = useState(false);
   const typeRef = useRef(null);
 
-
-
   // View-mode inline assignee editing.
   const [editingAssignee, setEditingAssignee] = useState(false);
   const assigneeRef = useRef(null);
@@ -338,7 +449,14 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, ini
 
   // Draft / dirty / save state for view mode. All six editable fields
   // accumulate into viewDraft; a single Save posts them together.
-  const [viewDraft, setViewDraft] = useState({ title: "", type: "task", priority: 2, description: "", assignee: "", notes: "" });
+  const [viewDraft, setViewDraft] = useState({
+    title: "",
+    type: "task",
+    priority: 2,
+    description: "",
+    assignee: "",
+    notes: "",
+  });
   const [savingView, setSavingView] = useState(false);
   // When true, show the "Discard changes?" confirm dialog before closing.
   const [confirmDiscard, setConfirmDiscard] = useState(false);
@@ -398,17 +516,20 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, ini
     return () => document.removeEventListener("mousedown", onDocClick);
   }, [editingType]);
 
-  const openPanelMenu = useCallback((e) => {
-    e.preventDefault();
-    e.stopPropagation();
-    const rect = e.currentTarget.getBoundingClientRect();
-    setPanelMenu({ x: rect.left, y: rect.bottom });
-    if (onFetchPrompts && workingDir) {
-      // Pass the issue so item.*-gated prompts (e.g. Start work hidden for
-      // closed issues) evaluate against this issue's status (mitto-gns).
-      onFetchPrompts(workingDir, data).then((list) => setPrompts(list || []));
-    }
-  }, [onFetchPrompts, workingDir, data]);
+  const openPanelMenu = useCallback(
+    (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const rect = e.currentTarget.getBoundingClientRect();
+      setPanelMenu({ x: rect.left, y: rect.bottom });
+      if (onFetchPrompts && workingDir) {
+        // Pass the issue so item.*-gated prompts (e.g. Start work hidden for
+        // closed issues) evaluate against this issue's status (mitto-gns).
+        onFetchPrompts(workingDir, data).then((list) => setPrompts(list || []));
+      }
+    },
+    [onFetchPrompts, workingDir, data],
+  );
 
   useEffect(() => {
     if (isOpen) {
@@ -434,37 +555,65 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, ini
       if (createParentId) body.parent = createParentId;
       if (createAssignee.trim()) body.assignee = createAssignee.trim();
       if (createNotes.trim()) body.notes = createNotes.trim();
-      if (createDeps.length) body.dependencies = createDeps.map(d => ({ id: d.id, type: d.type || "blocks" }));
-      const res = await secureFetch(endpoints.issues.create({ working_dir: workingDir }), {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      });
+      if (createDeps.length)
+        body.dependencies = createDeps.map((d) => ({
+          id: d.id,
+          type: d.type || "blocks",
+        }));
+      const res = await secureFetch(
+        endpoints.issues.create({ working_dir: workingDir }),
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+        },
+      );
       const respData = await readBeadsResponse(res);
       if (!res.ok || respData.error) {
-        showToast && showToast({ style: "error", title: respData.error || "Failed to create issue" });
+        showToast &&
+          showToast({
+            style: "error",
+            title: respData.error || "Failed to create issue",
+          });
       } else {
         showToast && showToast({ style: "success", title: "Issue created" });
         onCreated && onCreated();
         onClose && onClose();
       }
     } catch (err) {
-      showToast && showToast({ style: "error", title: err.message || "Failed to create issue" });
+      showToast &&
+        showToast({
+          style: "error",
+          title: err.message || "Failed to create issue",
+        });
     } finally {
       setSubmitting(false);
     }
-  }, [workingDir, title, type, priority, description, createParentId, createAssignee, createNotes, createDeps, showToast, onCreated, onClose]);
+  }, [
+    workingDir,
+    title,
+    type,
+    priority,
+    description,
+    createParentId,
+    createAssignee,
+    createNotes,
+    createDeps,
+    showToast,
+    onCreated,
+    onClose,
+  ]);
 
   const addCreateDep = useCallback(() => {
     const id = createNewDepId.trim();
     if (!id) return;
-    if (createDeps.some(d => d.id === id)) return;
-    setCreateDeps(prev => [...prev, { id, type: createNewDepType }]);
+    if (createDeps.some((d) => d.id === id)) return;
+    setCreateDeps((prev) => [...prev, { id, type: createNewDepType }]);
     setCreateNewDepId("");
   }, [createNewDepId, createNewDepType, createDeps]);
 
   const removeCreateDep = useCallback((id) => {
-    setCreateDeps(prev => prev.filter(d => d.id !== id));
+    setCreateDeps((prev) => prev.filter((d) => d.id !== id));
   }, []);
 
   // AI-enhance a description text field via the same auxiliary endpoint the chat
@@ -472,43 +621,53 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, ini
   // text/setText pair so it serves both the create-form description and the
   // view-mode inline edit draft. Replaces the text with the improved version on
   // success; surfaces errors as a toast. No-op when empty or already running.
-  const improveDescriptionText = useCallback(async (text, setText) => {
-    if (improvingDesc || !text || !text.trim()) return;
-    setImprovingDesc(true);
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 65000); // 65s timeout
-    try {
-      const response = await secureFetch(endpoints.aux.improvePrompt(), {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          prompt: text,
-          workspace_uuid:
-            (typeof window !== "undefined" && window.mittoCurrentWorkspaceUUID) ||
-            (typeof sessionStorage !== "undefined" && sessionStorage.getItem("mittoCurrentWorkspaceUUID")) ||
-            "",
-        }),
-        signal: controller.signal,
-      });
-      clearTimeout(timeoutId);
-      if (!response.ok) {
-        const errData = await response.json().catch(() => ({}));
-        throw new Error(errData?.error?.message || errData?.message || "Failed to improve description");
+  const improveDescriptionText = useCallback(
+    async (text, setText) => {
+      if (improvingDesc || !text || !text.trim()) return;
+      setImprovingDesc(true);
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 65000); // 65s timeout
+      try {
+        const response = await secureFetch(endpoints.aux.improvePrompt(), {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            prompt: text,
+            workspace_uuid:
+              (typeof window !== "undefined" &&
+                window.mittoCurrentWorkspaceUUID) ||
+              (typeof sessionStorage !== "undefined" &&
+                sessionStorage.getItem("mittoCurrentWorkspaceUUID")) ||
+              "",
+          }),
+          signal: controller.signal,
+        });
+        clearTimeout(timeoutId);
+        if (!response.ok) {
+          const errData = await response.json().catch(() => ({}));
+          throw new Error(
+            errData?.error?.message ||
+              errData?.message ||
+              "Failed to improve description",
+          );
+        }
+        const respData = await response.json();
+        if (respData.improved_prompt) {
+          setText(respData.improved_prompt);
+        }
+      } catch (err) {
+        clearTimeout(timeoutId);
+        const msg =
+          err.name === "AbortError"
+            ? "Request timed out. Please try again."
+            : err.message || "Failed to improve description";
+        showToast && showToast({ style: "error", title: msg });
+      } finally {
+        setImprovingDesc(false);
       }
-      const respData = await response.json();
-      if (respData.improved_prompt) {
-        setText(respData.improved_prompt);
-      }
-    } catch (err) {
-      clearTimeout(timeoutId);
-      const msg = err.name === "AbortError"
-        ? "Request timed out. Please try again."
-        : (err.message || "Failed to improve description");
-      showToast && showToast({ style: "error", title: msg });
-    } finally {
-      setImprovingDesc(false);
-    }
-  }, [improvingDesc, showToast]);
+    },
+    [improvingDesc, showToast],
+  );
 
   // md renders the draft description so the read-only view reflects in-progress edits.
   const md = useMemo(
@@ -516,36 +675,53 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, ini
     [creating, viewDraft && viewDraft.description],
   );
   const subtasks = useMemo(
-    () => (!creating && data ? allIssues.filter(i => i.parent === data.id) : []),
+    () =>
+      !creating && data ? allIssues.filter((i) => i.parent === data.id) : [],
     [creating, allIssues, data && data.id],
   );
 
   // The "original" values used to compute dirtiness. Notes come from async
   // fetchDeps, so they are sourced from the `notes` state rather than data.
-  const viewOriginal = useMemo(() => ({
-    title: (data && data.title) || "",
-    type: (data && data.issue_type) || "task",
-    priority: (data && typeof data.priority === "number") ? data.priority : 2,
-    description: (data && data.description) || "",
-    assignee: (data && data.assignee) || "",
-    notes: notes || "",
-  }), [data && data.id, data && data.title, data && data.issue_type, data && data.priority, data && data.description, data && data.assignee, notes]);
+  const viewOriginal = useMemo(
+    () => ({
+      title: (data && data.title) || "",
+      type: (data && data.issue_type) || "task",
+      priority: data && typeof data.priority === "number" ? data.priority : 2,
+      description: (data && data.description) || "",
+      assignee: (data && data.assignee) || "",
+      notes: notes || "",
+    }),
+    [
+      data && data.id,
+      data && data.title,
+      data && data.issue_type,
+      data && data.priority,
+      data && data.description,
+      data && data.assignee,
+      notes,
+    ],
+  );
 
   const viewDirty = useMemo(() => {
     if (creating) return false;
     const t = viewDraft.title.trim();
-    return (t !== "" && t !== viewOriginal.title)
-      || viewDraft.type !== viewOriginal.type
-      || viewDraft.priority !== viewOriginal.priority
-      || viewDraft.description !== viewOriginal.description
-      || viewDraft.assignee.trim() !== viewOriginal.assignee
-      || viewDraft.notes !== viewOriginal.notes;
+    return (
+      (t !== "" && t !== viewOriginal.title) ||
+      viewDraft.type !== viewOriginal.type ||
+      viewDraft.priority !== viewOriginal.priority ||
+      viewDraft.description !== viewOriginal.description ||
+      viewDraft.assignee.trim() !== viewOriginal.assignee ||
+      viewDraft.notes !== viewOriginal.notes
+    );
   }, [creating, viewDraft, viewOriginal]);
 
   // handleClose and handleDiscardAndClose are defined here (after creating and
   // viewDirty) because their dep arrays reference both computed values.
   const handleClose = useCallback(() => {
-    if (!creating && viewDirty) { setConfirmDiscard(true); return; }
+    if (!creating && viewDirty) {
+      setConfirmDiscard(true);
+      return;
+    }
     setIsClosing(true);
     setTimeout(() => onClose(), 150);
   }, [creating, viewDirty, onClose]);
@@ -584,20 +760,29 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, ini
     if (!data) return [];
     const promptGroupItems = buildPromptGroupMenuItems(
       prompts,
-      (p) => { setPanelMenu(null); onRunPrompt && onRunPrompt(p, data); },
+      (p) => {
+        setPanelMenu(null);
+        onRunPrompt && onRunPrompt(p, data);
+      },
       html`<${PlusIcon} />`,
     );
     return [
       ...promptGroupItems,
       {
         label: data.status === "closed" ? "Reopen" : "Close",
-        icon: data.status === "closed" ? html`<${RefreshIcon} />` : html`<${CheckIcon} />`,
+        icon:
+          data.status === "closed"
+            ? html`<${RefreshIcon} />`
+            : html`<${CheckIcon} />`,
         onClick: () => onToggleStatus && onToggleStatus(data),
         disabled: statusBusy,
       },
       {
         label: data.status === "deferred" ? "Undefer" : "Defer",
-        icon: data.status === "deferred" ? html`<${SunIcon} />` : html`<${MoonIcon} />`,
+        icon:
+          data.status === "deferred"
+            ? html`<${SunIcon} />`
+            : html`<${MoonIcon} />`,
         onClick: () => onToggleDefer && onToggleDefer(data),
         disabled: statusBusy,
       },
@@ -608,7 +793,15 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, ini
         danger: true,
       },
     ];
-  }, [data, prompts, statusBusy, onRunPrompt, onToggleStatus, onToggleDefer, onDelete]);
+  }, [
+    data,
+    prompts,
+    statusBusy,
+    onRunPrompt,
+    onToggleStatus,
+    onToggleDefer,
+    onDelete,
+  ]);
 
   // Seed non-notes fields whenever a different issue opens (notes come from
   // fetchDeps below, which calls setViewDraft when seedDraftNotes is true).
@@ -617,7 +810,7 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, ini
     setViewDraft({
       title: data.title || "",
       type: data.issue_type || "task",
-      priority: (typeof data.priority === "number") ? data.priority : 2,
+      priority: typeof data.priority === "number" ? data.priority : 2,
       description: data.description || "",
       assignee: data.assignee || "",
       notes: "",
@@ -679,7 +872,8 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, ini
   }, []);
 
   const startEditNotes = useCallback(() => {
-    if (notesViewRef.current) setNotesMinHeight(notesViewRef.current.offsetHeight);
+    if (notesViewRef.current)
+      setNotesMinHeight(notesViewRef.current.offsetHeight);
     setEditingNotes(true);
   }, []);
 
@@ -700,7 +894,7 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, ini
       e.target.blur();
     } else if (e.key === "Escape") {
       e.preventDefault();
-      setViewDraft(p => ({ ...p, title: titleEditStartRef.current }));
+      setViewDraft((p) => ({ ...p, title: titleEditStartRef.current }));
       e.target.blur();
     }
   }, []);
@@ -711,7 +905,7 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, ini
       e.target.blur();
     } else if (e.key === "Escape") {
       e.preventDefault();
-      setViewDraft(p => ({ ...p, assignee: assigneeEditStartRef.current }));
+      setViewDraft((p) => ({ ...p, assignee: assigneeEditStartRef.current }));
       e.target.blur();
     }
   }, []);
@@ -723,21 +917,31 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, ini
     const t = viewDraft.title.trim();
     if (t !== "" && t !== viewOriginal.title) body.title = t;
     if (viewDraft.type !== viewOriginal.type) body.type = viewDraft.type;
-    if (viewDraft.priority !== viewOriginal.priority) body.priority = viewDraft.priority;
-    if (viewDraft.description !== viewOriginal.description) body.description = viewDraft.description;
-    if (viewDraft.assignee.trim() !== viewOriginal.assignee) body.assignee = viewDraft.assignee.trim();
+    if (viewDraft.priority !== viewOriginal.priority)
+      body.priority = viewDraft.priority;
+    if (viewDraft.description !== viewOriginal.description)
+      body.description = viewDraft.description;
+    if (viewDraft.assignee.trim() !== viewOriginal.assignee)
+      body.assignee = viewDraft.assignee.trim();
     if (viewDraft.notes !== viewOriginal.notes) body.notes = viewDraft.notes;
     if (Object.keys(body).length === 0) return;
     setSavingView(true);
     try {
-      const res = await secureFetch(endpoints.issues.update(data.id, { working_dir: workingDir }), {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      });
+      const res = await secureFetch(
+        endpoints.issues.update(data.id, { working_dir: workingDir }),
+        {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+        },
+      );
       const respData = await readBeadsResponse(res);
       if (!res.ok || respData.error) {
-        showToast && showToast({ style: "error", title: respData.error || "Failed to save changes" });
+        showToast &&
+          showToast({
+            style: "error",
+            title: respData.error || "Failed to save changes",
+          });
       } else {
         if ("notes" in body) setNotes(viewDraft.notes);
         setEditingTitle(false);
@@ -749,11 +953,23 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, ini
         onUpdated && onUpdated();
       }
     } catch (err) {
-      showToast && showToast({ style: "error", title: err.message || "Failed to save changes" });
+      showToast &&
+        showToast({
+          style: "error",
+          title: err.message || "Failed to save changes",
+        });
     } finally {
       setSavingView(false);
     }
-  }, [viewDraft, viewOriginal, data && data.id, workingDir, savingView, showToast, onUpdated]);
+  }, [
+    viewDraft,
+    viewOriginal,
+    data && data.id,
+    workingDir,
+    savingView,
+    showToast,
+    onUpdated,
+  ]);
 
   // Load the issue's full dependency edges, notes, and comments. The list row
   // only carries counts, so the actual data comes from /api/issues/{id}.
@@ -761,36 +977,40 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, ini
   // the initial open has a correct draft baseline. Callers that refresh deps
   // after a dep add/remove or comment post must pass false to avoid clobbering
   // an in-progress notes edit.
-  const fetchDeps = useCallback(async (seedDraftNotes = false) => {
-    if (!workingDir || !data || !data.id) return;
-    setDepsLoading(true);
-    try {
-      const res = await authFetch(
-        endpoints.issues.show(data.id, { working_dir: workingDir }),
-      );
-      const respData = await readBeadsResponse(res);
-      if (!res.ok || respData.error) {
+  const fetchDeps = useCallback(
+    async (seedDraftNotes = false) => {
+      if (!workingDir || !data || !data.id) return;
+      setDepsLoading(true);
+      try {
+        const res = await authFetch(
+          endpoints.issues.show(data.id, { working_dir: workingDir }),
+        );
+        const respData = await readBeadsResponse(res);
+        if (!res.ok || respData.error) {
+          setDeps([]);
+          setComments([]);
+          setNotes("");
+          if (seedDraftNotes) setViewDraft((prev) => ({ ...prev, notes: "" }));
+        } else {
+          const issueObj = Array.isArray(respData) ? respData[0] : respData;
+          setDeps((issueObj && issueObj.dependencies) || []);
+          setComments((issueObj && issueObj.comments) || []);
+          const fetchedNotes = (issueObj && issueObj.notes) || "";
+          setNotes(fetchedNotes);
+          if (seedDraftNotes)
+            setViewDraft((prev) => ({ ...prev, notes: fetchedNotes }));
+        }
+      } catch (_err) {
         setDeps([]);
         setComments([]);
         setNotes("");
-        if (seedDraftNotes) setViewDraft(prev => ({ ...prev, notes: "" }));
-      } else {
-        const issueObj = Array.isArray(respData) ? respData[0] : respData;
-        setDeps((issueObj && issueObj.dependencies) || []);
-        setComments((issueObj && issueObj.comments) || []);
-        const fetchedNotes = (issueObj && issueObj.notes) || "";
-        setNotes(fetchedNotes);
-        if (seedDraftNotes) setViewDraft(prev => ({ ...prev, notes: fetchedNotes }));
+        if (seedDraftNotes) setViewDraft((prev) => ({ ...prev, notes: "" }));
+      } finally {
+        setDepsLoading(false);
       }
-    } catch (_err) {
-      setDeps([]);
-      setComments([]);
-      setNotes("");
-      if (seedDraftNotes) setViewDraft(prev => ({ ...prev, notes: "" }));
-    } finally {
-      setDepsLoading(false);
-    }
-  }, [workingDir, data && data.id]);
+    },
+    [workingDir, data && data.id],
+  );
 
   // Open the new-comment editor with an empty draft.
   const startAddComment = useCallback(() => {
@@ -810,14 +1030,21 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, ini
     }
     setSavingComment(true);
     try {
-      const res = await secureFetch(endpoints.issues.comments(data.id, { working_dir: workingDir }), {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text }),
-      });
+      const res = await secureFetch(
+        endpoints.issues.comments(data.id, { working_dir: workingDir }),
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ text }),
+        },
+      );
       const respData = await readBeadsResponse(res);
       if (!res.ok || respData.error) {
-        showToast && showToast({ style: "error", title: respData.error || "Failed to add comment" });
+        showToast &&
+          showToast({
+            style: "error",
+            title: respData.error || "Failed to add comment",
+          });
       } else {
         setCommentDraft("");
         showToast && showToast({ style: "success", title: "Comment added" });
@@ -825,12 +1052,23 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, ini
         onUpdated && onUpdated();
       }
     } catch (err) {
-      showToast && showToast({ style: "error", title: err.message || "Failed to add comment" });
+      showToast &&
+        showToast({
+          style: "error",
+          title: err.message || "Failed to add comment",
+        });
     } finally {
       setSavingComment(false);
       setAddingComment(false);
     }
-  }, [commentDraft, data && data.id, workingDir, showToast, fetchDeps, onUpdated]);
+  }, [
+    commentDraft,
+    data && data.id,
+    workingDir,
+    showToast,
+    fetchDeps,
+    onUpdated,
+  ]);
 
   // Fetch dependencies, notes, and comments whenever a (non-create) issue is opened or switched.
   // seedDraftNotes=true so the initial open seeds viewDraft.notes from the response.
@@ -847,33 +1085,54 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, ini
 
   // Add or remove a dependency edge via /api/issues/{id}/dependencies, then refresh both the
   // dependency list and the parent issue list (so counts stay current).
-  const mutateDep = useCallback(async (action, dependsOn, depType) => {
-    if (!data || !data.id || !dependsOn) return;
-    setDepsBusy(true);
-    try {
-      const body = { depends_on: dependsOn, action };
-      if (action === "add") body.type = depType || "blocks";
-      const res = await secureFetch(endpoints.issues.dependencies(data.id, { working_dir: workingDir }), {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      });
-      const respData = await readBeadsResponse(res);
-      if (!res.ok || respData.error) {
-        showToast && showToast({ style: "error", title: respData.error || `Failed to ${action} dependency` });
+  const mutateDep = useCallback(
+    async (action, dependsOn, depType) => {
+      if (!data || !data.id || !dependsOn) return;
+      setDepsBusy(true);
+      try {
+        const body = { depends_on: dependsOn, action };
+        if (action === "add") body.type = depType || "blocks";
+        const res = await secureFetch(
+          endpoints.issues.dependencies(data.id, { working_dir: workingDir }),
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(body),
+          },
+        );
+        const respData = await readBeadsResponse(res);
+        if (!res.ok || respData.error) {
+          showToast &&
+            showToast({
+              style: "error",
+              title: respData.error || `Failed to ${action} dependency`,
+            });
+          return false;
+        }
+        showToast &&
+          showToast({
+            style: "success",
+            title:
+              action === "add"
+                ? `Added dependency on ${dependsOn}`
+                : `Removed dependency on ${dependsOn}`,
+          });
+        await fetchDeps(false);
+        onUpdated && onUpdated();
+        return true;
+      } catch (err) {
+        showToast &&
+          showToast({
+            style: "error",
+            title: err.message || `Failed to ${action} dependency`,
+          });
         return false;
+      } finally {
+        setDepsBusy(false);
       }
-      showToast && showToast({ style: "success", title: action === "add" ? `Added dependency on ${dependsOn}` : `Removed dependency on ${dependsOn}` });
-      await fetchDeps(false);
-      onUpdated && onUpdated();
-      return true;
-    } catch (err) {
-      showToast && showToast({ style: "error", title: err.message || `Failed to ${action} dependency` });
-      return false;
-    } finally {
-      setDepsBusy(false);
-    }
-  }, [data && data.id, workingDir, showToast, fetchDeps, onUpdated]);
+    },
+    [data && data.id, workingDir, showToast, fetchDeps, onUpdated],
+  );
 
   const handleAddDep = useCallback(async () => {
     const target = newDepId.trim();
@@ -885,36 +1144,63 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, ini
   // Change the kind of an existing edge. bd has no in-place type update, so this
   // removes the edge and re-adds it with the new type. A single combined toast
   // and refresh is issued at the end.
-  const changeDepType = useCallback(async (dependsOn, nextType) => {
-    if (!data || !data.id || !dependsOn || depsBusy) return;
-    setDepsBusy(true);
-    try {
-      const post = (body) => secureFetch(endpoints.issues.dependencies(data.id, { working_dir: workingDir }), {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      });
-      let res = await post({ depends_on: dependsOn, action: "remove" });
-      let respData = await readBeadsResponse(res);
-      if (!res.ok || respData.error) {
-        showToast && showToast({ style: "error", title: respData.error || "Failed to change dependency type" });
-        return;
+  const changeDepType = useCallback(
+    async (dependsOn, nextType) => {
+      if (!data || !data.id || !dependsOn || depsBusy) return;
+      setDepsBusy(true);
+      try {
+        const post = (body) =>
+          secureFetch(
+            endpoints.issues.dependencies(data.id, { working_dir: workingDir }),
+            {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify(body),
+            },
+          );
+        let res = await post({ depends_on: dependsOn, action: "remove" });
+        let respData = await readBeadsResponse(res);
+        if (!res.ok || respData.error) {
+          showToast &&
+            showToast({
+              style: "error",
+              title: respData.error || "Failed to change dependency type",
+            });
+          return;
+        }
+        res = await post({
+          depends_on: dependsOn,
+          type: nextType,
+          action: "add",
+        });
+        respData = await readBeadsResponse(res);
+        if (!res.ok || respData.error) {
+          showToast &&
+            showToast({
+              style: "error",
+              title: respData.error || "Failed to change dependency type",
+            });
+        } else {
+          showToast &&
+            showToast({
+              style: "success",
+              title: `Changed ${dependsOn} to ${nextType}`,
+            });
+        }
+        await fetchDeps(false);
+        onUpdated && onUpdated();
+      } catch (err) {
+        showToast &&
+          showToast({
+            style: "error",
+            title: err.message || "Failed to change dependency type",
+          });
+      } finally {
+        setDepsBusy(false);
       }
-      res = await post({ depends_on: dependsOn, type: nextType, action: "add" });
-      respData = await readBeadsResponse(res);
-      if (!res.ok || respData.error) {
-        showToast && showToast({ style: "error", title: respData.error || "Failed to change dependency type" });
-      } else {
-        showToast && showToast({ style: "success", title: `Changed ${dependsOn} to ${nextType}` });
-      }
-      await fetchDeps(false);
-      onUpdated && onUpdated();
-    } catch (err) {
-      showToast && showToast({ style: "error", title: err.message || "Failed to change dependency type" });
-    } finally {
-      setDepsBusy(false);
-    }
-  }, [data && data.id, workingDir, depsBusy, showToast, fetchDeps, onUpdated]);
+    },
+    [data && data.id, workingDir, depsBusy, showToast, fetchDeps, onUpdated],
+  );
 
   if (!shouldRender) return null;
   if (!creating && !data) return null;
@@ -940,71 +1226,153 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, ini
   // edit draft) and `disabled` force-greys the row regardless (read-only view).
   const renderDescToolbar = ({ text, setText, disabled, editorApiRef }) => html`
     <div class="flex items-center gap-1 mb-1">
-      <button type="button" class="chat-input-action tooltip tooltip-bottom" disabled=${disabled}
-        data-tip="Bold" aria-label="Bold" onMouseDown=${(e) => e.preventDefault()}
-        onClick=${() => editorApiRef?.current?.wrapSelection("**", "**", "bold text")}>
+      <button
+        type="button"
+        class="chat-input-action tooltip tooltip-bottom"
+        disabled=${disabled}
+        data-tip="Bold"
+        aria-label="Bold"
+        onMouseDown=${(e) => e.preventDefault()}
+        onClick=${() =>
+          editorApiRef?.current?.wrapSelection("**", "**", "bold text")}
+      >
         <${BoldIcon} />
       </button>
-      <button type="button" class="chat-input-action tooltip tooltip-bottom" disabled=${disabled}
-        data-tip="Italic" aria-label="Italic" onMouseDown=${(e) => e.preventDefault()}
-        onClick=${() => editorApiRef?.current?.wrapSelection("*", "*", "italic")}>
+      <button
+        type="button"
+        class="chat-input-action tooltip tooltip-bottom"
+        disabled=${disabled}
+        data-tip="Italic"
+        aria-label="Italic"
+        onMouseDown=${(e) => e.preventDefault()}
+        onClick=${() =>
+          editorApiRef?.current?.wrapSelection("*", "*", "italic")}
+      >
         <${ItalicIcon} />
       </button>
-      <button type="button" class="chat-input-action tooltip tooltip-bottom" disabled=${disabled}
-        data-tip="Strikethrough" aria-label="Strikethrough" onMouseDown=${(e) => e.preventDefault()}
-        onClick=${() => editorApiRef?.current?.wrapSelection("~~", "~~", "strikethrough")}>
+      <button
+        type="button"
+        class="chat-input-action tooltip tooltip-bottom"
+        disabled=${disabled}
+        data-tip="Strikethrough"
+        aria-label="Strikethrough"
+        onMouseDown=${(e) => e.preventDefault()}
+        onClick=${() =>
+          editorApiRef?.current?.wrapSelection("~~", "~~", "strikethrough")}
+      >
         <${StrikethroughIcon} />
       </button>
-      <button type="button" class="chat-input-action tooltip tooltip-bottom" disabled=${disabled}
-        data-tip="Inline code" aria-label="Inline code" onMouseDown=${(e) => e.preventDefault()}
-        onClick=${() => editorApiRef?.current?.wrapSelection("\`", "\`", "code")}>
+      <button
+        type="button"
+        class="chat-input-action tooltip tooltip-bottom"
+        disabled=${disabled}
+        data-tip="Inline code"
+        aria-label="Inline code"
+        onMouseDown=${(e) => e.preventDefault()}
+        onClick=${() =>
+          editorApiRef?.current?.wrapSelection("\`", "\`", "code")}
+      >
         <${InlineCodeIcon} />
       </button>
-      <button type="button" class="chat-input-action tooltip tooltip-bottom" disabled=${disabled}
-        data-tip="Code block" aria-label="Code block" onMouseDown=${(e) => e.preventDefault()}
-        onClick=${() => editorApiRef?.current?.wrapSelection("\n\`\`\`\n", "\n\`\`\`\n", "code")}>
+      <button
+        type="button"
+        class="chat-input-action tooltip tooltip-bottom"
+        disabled=${disabled}
+        data-tip="Code block"
+        aria-label="Code block"
+        onMouseDown=${(e) => e.preventDefault()}
+        onClick=${() =>
+          editorApiRef?.current?.wrapSelection(
+            "\n\`\`\`\n",
+            "\n\`\`\`\n",
+            "code",
+          )}
+      >
         <${CodeBlockIcon} />
       </button>
-      <button type="button" class="chat-input-action tooltip tooltip-bottom" disabled=${disabled}
-        data-tip="Link" aria-label="Link" onMouseDown=${(e) => e.preventDefault()}
-        onClick=${() => editorApiRef?.current?.insertLink("text", "url")}>
+      <button
+        type="button"
+        class="chat-input-action tooltip tooltip-bottom"
+        disabled=${disabled}
+        data-tip="Link"
+        aria-label="Link"
+        onMouseDown=${(e) => e.preventDefault()}
+        onClick=${() => editorApiRef?.current?.insertLink("text", "url")}
+      >
         <${LinkIcon} />
       </button>
-      <button type="button" class="chat-input-action tooltip tooltip-bottom" disabled=${disabled}
-        data-tip="Bulleted list" aria-label="Bulleted list" onMouseDown=${(e) => e.preventDefault()}
-        onClick=${() => editorApiRef?.current?.prefixLines("- ")}>
+      <button
+        type="button"
+        class="chat-input-action tooltip tooltip-bottom"
+        disabled=${disabled}
+        data-tip="Bulleted list"
+        aria-label="Bulleted list"
+        onMouseDown=${(e) => e.preventDefault()}
+        onClick=${() => editorApiRef?.current?.prefixLines("- ")}
+      >
         <${ListIcon} className="w-4 h-4" />
       </button>
-      <button type="button" class="chat-input-action tooltip tooltip-bottom" disabled=${disabled}
-        data-tip="Numbered list" aria-label="Numbered list" onMouseDown=${(e) => e.preventDefault()}
-        onClick=${() => editorApiRef?.current?.prefixLines((i) => `${i + 1}. `)}>
+      <button
+        type="button"
+        class="chat-input-action tooltip tooltip-bottom"
+        disabled=${disabled}
+        data-tip="Numbered list"
+        aria-label="Numbered list"
+        onMouseDown=${(e) => e.preventDefault()}
+        onClick=${() => editorApiRef?.current?.prefixLines((i) => `${i + 1}. `)}
+      >
         <${NumberedListIcon} />
       </button>
-      <button type="button" class="chat-input-action tooltip tooltip-bottom" disabled=${disabled}
-        data-tip="Heading" aria-label="Heading" onMouseDown=${(e) => e.preventDefault()}
-        onClick=${() => editorApiRef?.current?.prefixLines("## ")}>
+      <button
+        type="button"
+        class="chat-input-action tooltip tooltip-bottom"
+        disabled=${disabled}
+        data-tip="Heading"
+        aria-label="Heading"
+        onMouseDown=${(e) => e.preventDefault()}
+        onClick=${() => editorApiRef?.current?.prefixLines("## ")}
+      >
         <${HeadingIcon} />
       </button>
-      <button type="button" class="chat-input-action tooltip tooltip-bottom" disabled=${disabled}
-        data-tip="Quote" aria-label="Quote" onMouseDown=${(e) => e.preventDefault()}
-        onClick=${() => editorApiRef?.current?.prefixLines("> ")}>
+      <button
+        type="button"
+        class="chat-input-action tooltip tooltip-bottom"
+        disabled=${disabled}
+        data-tip="Quote"
+        aria-label="Quote"
+        onMouseDown=${(e) => e.preventDefault()}
+        onClick=${() => editorApiRef?.current?.prefixLines("> ")}
+      >
         <${QuoteIcon} />
       </button>
       <button
         type="button"
-        class="chat-input-action ${improvingDesc ? "improving" : ""} ml-auto tooltip tooltip-bottom"
+        class="chat-input-action ${improvingDesc
+          ? "improving"
+          : ""} ml-auto tooltip tooltip-bottom"
         onClick=${() => improveDescriptionText(text, setText)}
         onMouseDown=${(e) => e.preventDefault()}
         disabled=${disabled || improvingDesc || !text || !text.trim()}
-        data-tip="Improve description with AI" aria-label="Improve description with AI"
+        data-tip="Improve description with AI"
+        aria-label="Improve description with AI"
       >
         ${improvingDesc
           ? html`<span class="loading loading-spinner w-4 h-4"></span>`
           : html`
-            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 3v4M3 5h4M6 17v4m-2-2h4m5-16l2.286 6.857L21 12l-5.714 2.143L13 21l-2.286-6.857L5 12l5.714-2.143L13 3z" />
-            </svg>
-          `}
+              <svg
+                class="w-4 h-4"
+                fill="none"
+                stroke="currentColor"
+                viewBox="0 0 24 24"
+              >
+                <path
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  stroke-width="2"
+                  d="M5 3v4M3 5h4M6 17v4m-2-2h4m5-16l2.286 6.857L21 12l-5.714 2.143L13 21l-2.286-6.857L5 12l5.714-2.143L13 3z"
+                />
+              </svg>
+            `}
       </button>
     </div>
   `;
@@ -1013,265 +1381,292 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, ini
 
   const TitleField = (mode) => {
     if (mode === "create") {
-      return html`
-        <input
-          id="new-issue-title"
-          type="text"
-          class=${inputClass}
-          placeholder="Issue title (optional — auto-generated from description)"
-          value=${title}
-          onInput=${e => setTitle(e.target.value)}
-          disabled=${submitting}
-        />`;
+      return html` <input
+        id="new-issue-title"
+        type="text"
+        class=${inputClass}
+        placeholder="Issue title (optional — auto-generated from description)"
+        value=${title}
+        onInput=${(e) => setTitle(e.target.value)}
+        disabled=${submitting}
+      />`;
     }
     return editingTitle
-      ? html`
-        <input
+      ? html` <input
           ref=${titleRef}
           type="text"
           class="${inputClass} font-semibold text-base"
           value=${viewDraft.title}
-          onInput=${e => setViewDraft(p => ({ ...p, title: e.target.value }))}
+          onInput=${(e) =>
+            setViewDraft((p) => ({ ...p, title: e.target.value }))}
           onBlur=${() => setEditingTitle(false)}
           onKeyDown=${handleTitleKeyDown}
           disabled=${savingView}
         />`
-      : html`
-        <h2
+      : html` <h2
           class="font-semibold text-base text-mitto-text wrap-break-word cursor-text rounded px-1 -mx-1 hover:bg-mitto-input-box transition-colors block tooltip tooltip-bottom"
           onClick=${startEditTitle}
           data-tip="Click to edit"
-        >${viewDraft.title}</h2>`;
+        >
+          ${viewDraft.title}
+        </h2>`;
   };
 
-  const TypeField = (mode) => mode === "create"
-    ? html`
-      <select
-        id="new-issue-type"
-        class=${selectClass}
-        value=${type}
-        onInput=${e => setType(e.target.value)}
-        disabled=${submitting}
-      >
-        ${ISSUE_TYPES.map(t => html`<option value=${t}>${t}</option>`)}
-      </select>`
-    : html`
-      <div class="relative" ref=${typeRef}>
-        <button
-          type="button"
-          onClick=${() => setEditingType(o => !o)}
-          class="btn btn-ghost btn-xs inline-flex tooltip tooltip-bottom"
-          data-tip="Click to change type"
+  const TypeField = (mode) =>
+    mode === "create"
+      ? html` <select
+          id="new-issue-type"
+          class=${selectClass}
+          value=${type}
+          onInput=${(e) => setType(e.target.value)}
+          disabled=${submitting}
         >
-          ${typeBadge(viewDraft.type)}
-        </button>
-        ${editingType && html`
-          <ul class="menu absolute left-0 top-full mt-1 z-10 bg-base-200 rounded-box shadow-xl min-w-[140px]">
-            ${ISSUE_TYPES.map(t => {
-              const isCurrent = t === viewDraft.type;
+          ${ISSUE_TYPES.map((t) => html`<option value=${t}>${t}</option>`)}
+        </select>`
+      : html` <div class="relative" ref=${typeRef}>
+          <button
+            type="button"
+            onClick=${() => setEditingType((o) => !o)}
+            class="btn btn-ghost btn-xs inline-flex tooltip tooltip-bottom"
+            data-tip="Click to change type"
+          >
+            ${typeBadge(viewDraft.type)}
+          </button>
+          ${editingType &&
+          html`
+            <ul
+              class="menu absolute left-0 top-full mt-1 z-10 bg-base-200 rounded-box shadow-xl min-w-[140px]"
+            >
+              ${ISSUE_TYPES.map((t) => {
+                const isCurrent = t === viewDraft.type;
+                return html`
+                  <li key=${t}>
+                    <button
+                      type="button"
+                      onClick=${() => {
+                        setViewDraft((p) => ({ ...p, type: t }));
+                        setEditingType(false);
+                      }}
+                    >
+                      ${typeBadge(t)}
+                      <span class="flex-1">${t}</span>
+                      ${isCurrent &&
+                      html`<${CheckIcon} className="w-3.5 h-3.5 opacity-70" />`}
+                    </button>
+                  </li>
+                `;
+              })}
+            </ul>
+          `}
+        </div>`;
+
+  const PriorityField = (mode) =>
+    mode === "create"
+      ? html` <select
+          id="new-issue-priority"
+          class=${selectClass}
+          value=${priority}
+          onInput=${(e) => setPriority(Number(e.target.value))}
+          disabled=${submitting}
+        >
+          ${Object.entries(PRIORITY_LABELS).map(
+            ([n, label]) => html`<option value=${n}>${label}</option>`,
+          )}
+        </select>`
+      : html` <div class="dropdown">
+          <div
+            tabindex="0"
+            role="button"
+            class="btn btn-ghost btn-xs inline-flex tooltip tooltip-bottom"
+            data-tip="Click to change priority"
+          >
+            ${priorityBadge(viewDraft.priority)}
+          </div>
+          <ul
+            tabindex="0"
+            class="dropdown-content menu mt-1 z-10 bg-base-200 rounded-box shadow-xl min-w-[140px]"
+          >
+            ${Object.entries(PRIORITY_LABELS).map(([n, label]) => {
+              const num = Number(n);
+              const isCurrent = num === viewDraft.priority;
               return html`
-                <li key=${t}>
+                <li key=${n}>
                   <button
                     type="button"
-                    onClick=${() => { setViewDraft(p => ({ ...p, type: t })); setEditingType(false); }}
+                    onClick=${(ev) => {
+                      setViewDraft((p) => ({ ...p, priority: num }));
+                      ev.currentTarget.blur();
+                      if (document.activeElement) document.activeElement.blur();
+                    }}
                   >
-                    ${typeBadge(t)}
-                    <span class="flex-1">${t}</span>
-                    ${isCurrent && html`<${CheckIcon} className="w-3.5 h-3.5 opacity-70" />`}
+                    ${priorityBadge(num)}
+                    <span class="flex-1">${label}</span>
+                    ${isCurrent &&
+                    html`<${CheckIcon} className="w-3.5 h-3.5 opacity-70" />`}
                   </button>
                 </li>
               `;
             })}
           </ul>
-        `}
-      </div>`;
-
-  const PriorityField = (mode) => mode === "create"
-    ? html`
-      <select
-        id="new-issue-priority"
-        class=${selectClass}
-        value=${priority}
-        onInput=${e => setPriority(Number(e.target.value))}
-        disabled=${submitting}
-      >
-        ${Object.entries(PRIORITY_LABELS).map(([n, label]) =>
-          html`<option value=${n}>${label}</option>`
-        )}
-      </select>`
-    : html`
-      <div class="dropdown">
-        <div tabindex="0" role="button" class="btn btn-ghost btn-xs inline-flex tooltip tooltip-bottom" data-tip="Click to change priority">
-          ${priorityBadge(viewDraft.priority)}
-        </div>
-        <ul tabindex="0" class="dropdown-content menu mt-1 z-10 bg-base-200 rounded-box shadow-xl min-w-[140px]">
-          ${Object.entries(PRIORITY_LABELS).map(([n, label]) => {
-            const num = Number(n);
-            const isCurrent = num === viewDraft.priority;
-            return html`
-              <li key=${n}>
-                <button
-                  type="button"
-                  onClick=${(ev) => {
-                    setViewDraft(p => ({ ...p, priority: num }));
-                    ev.currentTarget.blur();
-                    if (document.activeElement) document.activeElement.blur();
-                  }}
-                >
-                  ${priorityBadge(num)}
-                  <span class="flex-1">${label}</span>
-                  ${isCurrent && html`<${CheckIcon} className="w-3.5 h-3.5 opacity-70" />`}
-                </button>
-              </li>
-            `;
-          })}
-        </ul>
-      </div>`;
+        </div>`;
 
   // DescriptionField is self-contained (includes label + wrapper) to avoid
   // Fragment-induced CodeMirror remount cycles.
   const DescriptionField = (mode) => {
     if (mode === "create") {
-      return html`
-        <div>
-          <label class=${labelClass} for="new-issue-desc">Description <span class="text-red-400">*</span></label>
-          ${renderDescToolbar({
-            text: description,
-            setText: (v) => { setDescription(v); createEditorApiRef.current?.setValue(v); },
-            disabled: submitting,
-            editorApiRef: createEditorApiRef,
-          })}
-          <${CodeEditorField}
-            value=${description}
-            onChange=${(v) => setDescription(v)}
-            onBlur=${(v) => setDescription(v)}
-            disabled=${submitting}
+      return html` <div>
+        <label class=${labelClass} for="new-issue-desc"
+          >Description <span class="text-red-400">*</span></label
+        >
+        ${renderDescToolbar({
+          text: description,
+          setText: (v) => {
+            setDescription(v);
+            createEditorApiRef.current?.setValue(v);
+          },
+          disabled: submitting,
+          editorApiRef: createEditorApiRef,
+        })}
+        <${CodeEditorField}
+          value=${description}
+          onChange=${(v) => setDescription(v)}
+          onBlur=${(v) => setDescription(v)}
+          disabled=${submitting}
+          darkMode=${false}
+          lineNumbers=${false}
+          lineWrapping=${true}
+          highlightActiveLine=${false}
+          className="input-font-target"
+          minHeight=${160}
+          editorApiRef=${createEditorApiRef}
+          autoFocus=${true}
+        />
+      </div>`;
+    }
+    return html` <div>
+      <label class=${labelClass}>Description</label>
+      ${renderDescToolbar(
+        editingDesc
+          ? {
+              text: viewDraft.description,
+              setText: (v) => {
+                setViewDraft((p) => ({ ...p, description: v }));
+                detailEditorApiRef.current?.setValue(v);
+              },
+              disabled: savingView,
+              editorApiRef: detailEditorApiRef,
+            }
+          : { text: "", setText: () => {}, disabled: true },
+      )}
+      ${editingDesc
+        ? html` <${CodeEditorField}
+            value=${viewDraft.description}
+            onChange=${(v) => setViewDraft((p) => ({ ...p, description: v }))}
+            onBlur=${() => setEditingDesc(false)}
+            disabled=${savingView}
             darkMode=${false}
             lineNumbers=${false}
             lineWrapping=${true}
             highlightActiveLine=${false}
             className="input-font-target"
-            minHeight=${160}
-            editorApiRef=${createEditorApiRef}
+            minHeight=${descMinHeight || 0}
             autoFocus=${true}
-          />
-        </div>`;
-    }
-    return html`
-      <div>
-        <label class=${labelClass}>Description</label>
-        ${renderDescToolbar(
-          editingDesc
-            ? {
-                text: viewDraft.description,
-                setText: (v) => { setViewDraft(p => ({ ...p, description: v })); detailEditorApiRef.current?.setValue(v); },
-                disabled: savingView,
-                editorApiRef: detailEditorApiRef,
-              }
-            : { text: "", setText: () => {}, disabled: true }
-        )}
-        ${editingDesc
-          ? html`
-            <${CodeEditorField}
-              value=${viewDraft.description}
-              onChange=${(v) => setViewDraft(p => ({ ...p, description: v }))}
-              onBlur=${() => setEditingDesc(false)}
-              disabled=${savingView}
-              darkMode=${false}
-              lineNumbers=${false}
-              lineWrapping=${true}
-              highlightActiveLine=${false}
-              className="input-font-target"
-              minHeight=${descMinHeight || 0}
-              autoFocus=${true}
-              editorApiRef=${detailEditorApiRef}
-            />`
-          : html`
-            <div
-              ref=${descViewRef}
-              class="card border border-mitto-border rounded p-3 bg-mitto-input-box cursor-text hover:border-mitto-text-secondary transition-colors relative block tooltip tooltip-bottom"
-              onClick=${startEditDesc}
-              data-tip="Click to edit"
-            >
-              ${viewDraft.description
-                ? (md
-                    ? html`<div class="markdown-content text-mitto-text text-sm max-w-none" dangerouslySetInnerHTML=${{ __html: md }} />`
-                    : html`<pre class="whitespace-pre-wrap wrap-break-word text-sm text-mitto-text">${viewDraft.description}</pre>`)
-                : html`<span class="text-sm text-mitto-text-secondary italic">No description. Click to add one.</span>`
-              }
-            </div>`
-        }
-      </div>`;
+            editorApiRef=${detailEditorApiRef}
+          />`
+        : html` <div
+            ref=${descViewRef}
+            class="card border border-mitto-border rounded p-3 bg-mitto-input-box cursor-text hover:border-mitto-text-secondary transition-colors relative block tooltip tooltip-bottom"
+            onClick=${startEditDesc}
+            data-tip="Click to edit"
+          >
+            ${viewDraft.description
+              ? md
+                ? html`<div
+                    class="markdown-content text-mitto-text text-sm max-w-none"
+                    dangerouslySetInnerHTML=${{ __html: md }}
+                  />`
+                : html`<pre
+                    class="whitespace-pre-wrap wrap-break-word text-sm text-mitto-text"
+                  >
+${viewDraft.description}</pre
+                  >`
+              : html`<span class="text-sm text-mitto-text-secondary italic"
+                  >No description. Click to add one.</span
+                >`}
+          </div>`}
+    </div>`;
   };
 
   const AssigneeField = (mode) => {
     if (mode === "create") {
-      return html`
-        <input
-          id="new-issue-assignee"
-          type="text"
-          class=${inputClass}
-          placeholder="Assignee"
-          value=${createAssignee}
-          disabled=${submitting}
-          onInput=${e => setCreateAssignee(e.target.value)}
-        />`;
+      return html` <input
+        id="new-issue-assignee"
+        type="text"
+        class=${inputClass}
+        placeholder="Assignee"
+        value=${createAssignee}
+        disabled=${submitting}
+        onInput=${(e) => setCreateAssignee(e.target.value)}
+      />`;
     }
     return editingAssignee
-      ? html`
-        <input
+      ? html` <input
           ref=${assigneeRef}
           type="text"
           class=${inputClass}
           placeholder="Assignee (empty to clear)"
           value=${viewDraft.assignee}
-          onInput=${e => setViewDraft(p => ({ ...p, assignee: e.target.value }))}
+          onInput=${(e) =>
+            setViewDraft((p) => ({ ...p, assignee: e.target.value }))}
           onBlur=${() => setEditingAssignee(false)}
           onKeyDown=${handleAssigneeKeyDown}
           disabled=${savingView}
         />`
-      : html`
-        <div
+      : html` <div
           class="text-sm text-mitto-text wrap-break-word cursor-text hover:text-mitto-text-300 transition-colors flex items-center gap-2 tooltip tooltip-bottom"
           onClick=${startEditAssignee}
           data-tip="Click to edit"
         >
           ${viewDraft.assignee
             ? html`<span>${viewDraft.assignee}</span>`
-            : html`<span class="text-mitto-text-secondary italic">Unassigned. Click to set.</span>`}
+            : html`<span class="text-mitto-text-secondary italic"
+                >Unassigned. Click to set.</span
+              >`}
         </div>`;
   };
 
   const NotesField = (mode) => {
     if (mode === "create") {
-      return html`
-        <textarea
-          id="new-issue-notes"
-          class="${textareaClass} resize-y min-h-[80px]"
-          placeholder="Optional notes"
-          disabled=${submitting}
-          onInput=${e => setCreateNotes(e.target.value)}
-          value=${createNotes}
-        ></textarea>`;
+      return html` <textarea
+        id="new-issue-notes"
+        class="${textareaClass} resize-y min-h-[80px]"
+        placeholder="Optional notes"
+        disabled=${submitting}
+        onInput=${(e) => setCreateNotes(e.target.value)}
+        value=${createNotes}
+      ></textarea>`;
     }
     if (depsLoading) {
-      return html`<div class="flex items-center gap-2 text-xs text-mitto-text-secondary"><span class="loading loading-spinner w-3 h-3"></span> Loading…</div>`;
+      return html`<div
+        class="flex items-center gap-2 text-xs text-mitto-text-secondary"
+      >
+        <span class="loading loading-spinner w-3 h-3"></span> Loading…
+      </div>`;
     }
     return editingNotes
-      ? html`
-        <textarea
+      ? html` <textarea
           ref=${notesRef}
           class="${textareaClass} resize-y"
           rows="4"
           style=${notesMinHeight ? `min-height:${notesMinHeight}px` : null}
           placeholder="Add notes…"
           value=${viewDraft.notes}
-          onInput=${e => setViewDraft(p => ({ ...p, notes: e.target.value }))}
+          onInput=${(e) =>
+            setViewDraft((p) => ({ ...p, notes: e.target.value }))}
           onBlur=${() => setEditingNotes(false)}
           disabled=${savingView}
         ></textarea>`
-      : html`
-        <div
+      : html` <div
           ref=${notesViewRef}
           class="card border-l-2 border-l-amber-500/70 bg-amber-500/10 rounded-r p-2 pl-3 cursor-text hover:border-l-amber-500 transition-colors relative block tooltip tooltip-bottom"
           onClick=${startEditNotes}
@@ -1279,51 +1674,66 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, ini
         >
           ${viewDraft.notes && viewDraft.notes.trim()
             ? commentBody(viewDraft.notes)
-            : html`<span class="text-sm text-mitto-text-secondary italic">No notes. Click to add.</span>`}
+            : html`<span class="text-sm text-mitto-text-secondary italic"
+                >No notes. Click to add.</span
+              >`}
         </div>`;
   };
 
   const DependenciesField = (mode) => {
     if (mode === "create") {
-      return html`
-        <datalist id="beads-create-dep-options">
+      return html` <datalist id="beads-create-dep-options">
           ${(allIssues || [])
-            .filter(i => !createDeps.some(d => d.id === i.id))
-            .map(i => html`<option key=${i.id} value=${i.id}>${i.title}</option>`)}
+            .filter((i) => !createDeps.some((d) => d.id === i.id))
+            .map(
+              (i) =>
+                html`<option key=${i.id} value=${i.id}>${i.title}</option>`,
+            )}
         </datalist>
         <ul class="list mt-1">
-          ${createDeps.map(d => html`
-            <li key=${d.id} class="list-row items-center px-2 py-1 gap-2">
-              <select
-                class="select select-xs beads-dep-type-select shrink-0"
-                value=${d.type || "blocks"}
-                disabled=${submitting}
-                onInput=${e => setCreateDeps(prev => prev.map(x => x.id === d.id ? { ...x, type: e.target.value } : x))}
-              >
-                ${DEP_TYPES.map(t => html`<option value=${t}>${t}</option>`)}
-              </select>
-              <span class="list-col-grow font-mono text-xs min-w-0 truncate">${d.id}</span>
-              <button
-                type="button"
-                onClick=${() => removeCreateDep(d.id)}
-                disabled=${submitting}
-                class="btn btn-ghost btn-square btn-xs shrink-0 inline-flex tooltip tooltip-bottom"
-                data-tip="Remove dependency"
-                aria-label="Remove dependency"
-              >
-                <${CloseIcon} className="w-3.5 h-3.5" />
-              </button>
-            </li>
-          `)}
+          ${createDeps.map(
+            (d) => html`
+              <li key=${d.id} class="list-row items-center px-2 py-1 gap-2">
+                <select
+                  class="select select-xs beads-dep-type-select shrink-0"
+                  value=${d.type || "blocks"}
+                  disabled=${submitting}
+                  onInput=${(e) =>
+                    setCreateDeps((prev) =>
+                      prev.map((x) =>
+                        x.id === d.id ? { ...x, type: e.target.value } : x,
+                      ),
+                    )}
+                >
+                  ${DEP_TYPES.map(
+                    (t) => html`<option value=${t}>${t}</option>`,
+                  )}
+                </select>
+                <span class="list-col-grow font-mono text-xs min-w-0 truncate"
+                  >${d.id}</span
+                >
+                <button
+                  type="button"
+                  onClick=${() => removeCreateDep(d.id)}
+                  disabled=${submitting}
+                  class="btn btn-ghost btn-square btn-xs shrink-0 inline-flex tooltip tooltip-bottom"
+                  data-tip="Remove dependency"
+                  aria-label="Remove dependency"
+                >
+                  <${CloseIcon} className="w-3.5 h-3.5" />
+                </button>
+              </li>
+            `,
+          )}
         </ul>
         <div class="join w-full mt-1">
           <select
             class="select select-xs beads-dep-type-select join-item"
             value=${createNewDepType}
             disabled=${submitting}
-            onInput=${e => setCreateNewDepType(e.target.value)}
+            onInput=${(e) => setCreateNewDepType(e.target.value)}
           >
-            ${DEP_TYPES.map(t => html`<option value=${t}>${t}</option>`)}
+            ${DEP_TYPES.map((t) => html`<option value=${t}>${t}</option>`)}
           </select>
           <input
             type="text"
@@ -1331,15 +1741,25 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, ini
             placeholder="issue id…"
             value=${createNewDepId}
             disabled=${submitting}
-            onInput=${e => setCreateNewDepId(e.target.value)}
-            onKeyDown=${e => { if (e.key === "Enter") { e.preventDefault(); addCreateDep(); } }}
+            onInput=${(e) => setCreateNewDepId(e.target.value)}
+            onKeyDown=${(e) => {
+              if (e.key === "Enter") {
+                e.preventDefault();
+                addCreateDep();
+              }
+            }}
             class="input input-xs flex-1 min-w-0 join-item"
           />
           <button
             type="button"
             onClick=${addCreateDep}
-            aria-disabled=${!createNewDepId.trim() || submitting ? "true" : "false"}
-            class="btn btn-ghost btn-square btn-xs shrink-0 join-item inline-flex tooltip tooltip-bottom ${!createNewDepId.trim() || submitting ? "opacity-40 pointer-events-none" : ""}"
+            aria-disabled=${!createNewDepId.trim() || submitting
+              ? "true"
+              : "false"}
+            class="btn btn-ghost btn-square btn-xs shrink-0 join-item inline-flex tooltip tooltip-bottom ${!createNewDepId.trim() ||
+            submitting
+              ? "opacity-40 pointer-events-none"
+              : ""}"
             data-tip="Add dependency"
             aria-label="Add dependency"
           >
@@ -1347,31 +1767,44 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, ini
           </button>
         </div>`;
     }
-    return html`
-      <datalist id="beads-dep-options">
+    return html` <datalist id="beads-dep-options">
         ${(allIssues || [])
-          .filter(i => i.id !== data.id && !deps.some(d => d.id === i.id))
-          .map(i => html`<option key=${i.id} value=${i.id}>${i.title}</option>`)}
+          .filter((i) => i.id !== data.id && !deps.some((d) => d.id === i.id))
+          .map(
+            (i) => html`<option key=${i.id} value=${i.id}>${i.title}</option>`,
+          )}
       </datalist>
       ${depsLoading
-        ? html`<div class="flex items-center gap-2 text-xs text-mitto-text-secondary"><span class="loading loading-spinner w-3 h-3"></span> Loading…</div>`
+        ? html`<div
+            class="flex items-center gap-2 text-xs text-mitto-text-secondary"
+          >
+            <span class="loading loading-spinner w-3 h-3"></span> Loading…
+          </div>`
         : html`
-          <div class="beads-deps-grid">
-            ${deps.length === 0 && html`<span class="beads-dep-empty text-xs text-mitto-text-secondary italic py-1">No dependencies.</span>`}
-            ${deps.map(d => html`
+            <div class="beads-deps-grid">
+              ${deps.length === 0 &&
+              html`<span
+                class="beads-dep-empty text-xs text-mitto-text-secondary italic py-1"
+                >No dependencies.</span
+              >`}
+              ${deps.map(
+                (d) => html`
               <${Fragment} key=${d.id}>
                 <span class="beads-dep-badge">${depStatusBadge(d.status)}</span>
                 <select
                   class="select select-xs beads-dep-type-select"
                   value=${d.dependency_type || "blocks"}
                   disabled=${depsBusy}
-                  onInput=${e => { if (e.target.value !== (d.dependency_type || "blocks")) changeDepType(d.id, e.target.value); }}
+                  onInput=${(e) => {
+                    if (e.target.value !== (d.dependency_type || "blocks"))
+                      changeDepType(d.id, e.target.value);
+                  }}
                 >
-                  ${DEP_TYPES.map(t => html`<option value=${t}>${t}</option>`)}
+                  ${DEP_TYPES.map((t) => html`<option value=${t}>${t}</option>`)}
                 </select>
                 <button
                   type="button"
-                  onClick=${() => onSelectIssue && onSelectIssue((allIssues || []).find(i => i.id === d.id) || d)}
+                  onClick=${() => onSelectIssue && onSelectIssue((allIssues || []).find((i) => i.id === d.id) || d)}
                   class="input input-xs w-full min-w-0 text-left hover:underline tooltip tooltip-bottom"
                   data-tip=${"Open " + d.id}
                 >
@@ -1380,7 +1813,10 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, ini
                 </button>
                 <button
                   type="button"
-                  onClick=${() => { if (depsBusy) return; mutateDep("remove", d.id); }}
+                  onClick=${() => {
+                    if (depsBusy) return;
+                    mutateDep("remove", d.id);
+                  }}
                   aria-disabled=${depsBusy ? "true" : "false"}
                   class="btn btn-ghost btn-square btn-xs group inline-flex tooltip tooltip-bottom ${depsBusy ? "opacity-40 pointer-events-none" : ""}"
                   data-tip="Remove dependency"
@@ -1389,40 +1825,54 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, ini
                   <${CloseIcon} className="w-3.5 h-3.5 group-hover:text-red-400" />
                 </button>
               </${Fragment}>
-            `)}
-            <span class="beads-dep-badge"></span>
-            <select
-              class="select select-xs beads-dep-type-select"
-              value=${newDepType}
-              disabled=${depsBusy}
-              onInput=${e => setNewDepType(e.target.value)}
-            >
-              ${DEP_TYPES.map(t => html`<option value=${t}>${t}</option>`)}
-            </select>
-            <input
-              type="text"
-              list="beads-dep-options"
-              placeholder="issue id…"
-              value=${newDepId}
-              disabled=${depsBusy}
-              onInput=${e => setNewDepId(e.target.value)}
-              onKeyDown=${e => { if (e.key === "Enter") { e.preventDefault(); handleAddDep(); } }}
-              class="input input-xs w-full min-w-0"
-            />
-            <button
-              type="button"
-              onClick=${() => { if (depsBusy || !newDepId.trim()) return; handleAddDep(); }}
-              aria-disabled=${depsBusy || !newDepId.trim() ? "true" : "false"}
-              class="btn btn-ghost btn-square btn-xs inline-flex tooltip tooltip-bottom ${depsBusy || !newDepId.trim() ? "opacity-40 pointer-events-none" : ""}"
-              data-tip="Add dependency"
-              aria-label="Add dependency"
-            >
-              ${depsBusy
-                ? html`<span class="loading loading-spinner w-3.5 h-3.5"></span>`
-                : html`<${PlusIcon} className="w-3.5 h-3.5" />`}
-            </button>
-          </div>
-        `}`;
+            `,
+              )}
+              <span class="beads-dep-badge"></span>
+              <select
+                class="select select-xs beads-dep-type-select"
+                value=${newDepType}
+                disabled=${depsBusy}
+                onInput=${(e) => setNewDepType(e.target.value)}
+              >
+                ${DEP_TYPES.map((t) => html`<option value=${t}>${t}</option>`)}
+              </select>
+              <input
+                type="text"
+                list="beads-dep-options"
+                placeholder="issue id…"
+                value=${newDepId}
+                disabled=${depsBusy}
+                onInput=${(e) => setNewDepId(e.target.value)}
+                onKeyDown=${(e) => {
+                  if (e.key === "Enter") {
+                    e.preventDefault();
+                    handleAddDep();
+                  }
+                }}
+                class="input input-xs w-full min-w-0"
+              />
+              <button
+                type="button"
+                onClick=${() => {
+                  if (depsBusy || !newDepId.trim()) return;
+                  handleAddDep();
+                }}
+                aria-disabled=${depsBusy || !newDepId.trim() ? "true" : "false"}
+                class="btn btn-ghost btn-square btn-xs inline-flex tooltip tooltip-bottom ${depsBusy ||
+                !newDepId.trim()
+                  ? "opacity-40 pointer-events-none"
+                  : ""}"
+                data-tip="Add dependency"
+                aria-label="Add dependency"
+              >
+                ${depsBusy
+                  ? html`<span
+                      class="loading loading-spinner w-3.5 h-3.5"
+                    ></span>`
+                  : html`<${PlusIcon} className="w-3.5 h-3.5" />`}
+              </button>
+            </div>
+          `}`;
   };
 
   return html`
@@ -1446,62 +1896,87 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, ini
         isClosing=${isClosing}
         onClose=${handleClose}
         zClass="z-60"
-        rootStyle=${fullscreen
-          ? "--dock-w:100%;--dock-maxw:100%"
-          : isMobile
-            ? "--dock-w:100%"
-            : "--dock-w:40rem;--dock-maxw:85%"}
+        rootStyle=${
+          fullscreen
+            ? "--dock-w:100%;--dock-maxw:100%"
+            : isMobile
+              ? "--dock-w:100%"
+              : "--dock-w:40rem;--dock-maxw:85%"
+        }
         widthClass="w-full"
         panelClass="bg-mitto-sidebar shrink-0 h-full flex flex-col border-l border-mitto-border-1"
       >
       <div class="flex items-center gap-2 p-4 border-b border-mitto-border shrink-0">
         <div class="flex-1 min-w-0">
-          ${creating
-            ? html`<${Fragment}>
+          ${
+            creating
+              ? html`<${Fragment}>
                 ${TitleField("create")}
                 ${createParentId ? html`<div class="font-mono text-xs text-mitto-text-secondary">in ${createParentId}</div>` : null}
               </${Fragment}>`
-            : html`
-              <div class="flex items-center gap-1">
-                <span class="font-mono text-xs text-mitto-text-secondary">${data.id}</span>
-                <button
-                  type="button"
-                  onClick=${async () => {
-                    const ok = await copyToClipboard(data.id);
-                    showToast && showToast(ok
-                      ? { style: "success", title: `Copied ${data.id}` }
-                      : { style: "error", title: "Failed to copy issue ID" });
-                  }}
-                  class="btn btn-ghost btn-xs btn-square inline-flex tooltip tooltip-bottom"
-                  data-tip="Copy issue ID ${data.id}"
-                  aria-label="Copy issue ID ${data.id}"
-                >
-                  <${CopyIcon} className="w-3.5 h-3.5" />
-                </button>
-              </div>
-              ${TitleField("view")}
-            `}
+              : html`
+                  <div class="flex items-center gap-1">
+                    <span class="font-mono text-xs text-mitto-text-secondary"
+                      >${data.id}</span
+                    >
+                    <button
+                      type="button"
+                      onClick=${async () => {
+                        const ok = await copyToClipboard(data.id);
+                        showToast &&
+                          showToast(
+                            ok
+                              ? { style: "success", title: `Copied ${data.id}` }
+                              : {
+                                  style: "error",
+                                  title: "Failed to copy issue ID",
+                                },
+                          );
+                      }}
+                      class="btn btn-ghost btn-xs btn-square inline-flex tooltip tooltip-bottom"
+                      data-tip="Copy issue ID ${data.id}"
+                      aria-label="Copy issue ID ${data.id}"
+                    >
+                      <${CopyIcon} className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                  ${TitleField("view")}
+                `
+          }
         </div>
-        ${!creating && data && html`
-          <button type="button" onClick=${openPanelMenu} class="btn btn-ghost btn-square btn-sm shrink-0 inline-flex tooltip tooltip-bottom" data-tip="More actions" aria-label="More actions">
-            <${EllipsisIcon} className="w-5 h-5" />
-          </button>
-        `}
+        ${
+          !creating &&
+          data &&
+          html`
+            <button
+              type="button"
+              onClick=${openPanelMenu}
+              class="btn btn-ghost btn-square btn-sm shrink-0 inline-flex tooltip tooltip-bottom"
+              data-tip="More actions"
+              aria-label="More actions"
+            >
+              <${EllipsisIcon} className="w-5 h-5" />
+            </button>
+          `
+        }
         <button
-          onClick=${() => setFullscreen(f => !f)}
+          onClick=${() => setFullscreen((f) => !f)}
           class="btn btn-ghost btn-square btn-sm shrink-0 inline-flex tooltip tooltip-bottom"
           data-tip=${fullscreen ? "Exit fullscreen" : "Fullscreen"}
           aria-label=${fullscreen ? "Exit fullscreen" : "Fullscreen"}
         >
-          ${fullscreen
-            ? html`<${CollapseIcon} className="w-5 h-5" />`
-            : html`<${ExpandIcon} className="w-5 h-5" />`}
+          ${
+            fullscreen
+              ? html`<${CollapseIcon} className="w-5 h-5" />`
+              : html`<${ExpandIcon} className="w-5 h-5" />`
+          }
         </button>
       </div>
 
       <div class="flex-1 overflow-y-auto p-4 space-y-4">
-        ${creating
-          ? html`
+        ${
+          creating
+            ? html`
             <${Fragment}>
               <div class="flex flex-wrap gap-2 items-center">
                 <span class="${labelClass} shrink-0">Type</span>
@@ -1511,21 +1986,27 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, ini
               </div>
 
               <div class="grid grid-cols-2 gap-3">
-                ${createParentId ? html`
-                  <div>
-                    <label class=${labelClass} for="new-issue-parent">Parent</label>
-                    <input
-                      id="new-issue-parent"
-                      type="text"
-                      class="${inputClass} font-mono"
-                      value=${createParentId}
-                      readonly
-                      aria-readonly="true"
-                      title="This issue will be created as a child of ${createParentId}"
-                      data-testid="beads-create-parent"
-                    />
-                  </div>
-                ` : null}
+                ${
+                  createParentId
+                    ? html`
+                        <div>
+                          <label class=${labelClass} for="new-issue-parent"
+                            >Parent</label
+                          >
+                          <input
+                            id="new-issue-parent"
+                            type="text"
+                            class="${inputClass} font-mono"
+                            value=${createParentId}
+                            readonly
+                            aria-readonly="true"
+                            title="This issue will be created as a child of ${createParentId}"
+                            data-testid="beads-create-parent"
+                          />
+                        </div>
+                      `
+                    : null
+                }
                 <div>
                   <label class=${labelClass} for="new-issue-assignee">Assignee</label>
                   ${AssigneeField("create")}
@@ -1545,146 +2026,233 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, ini
               </fieldset>
             </${Fragment}>
           `
-          : html`
-            <div class="flex flex-wrap gap-2 items-center">
-              ${TypeField("view")}
-              ${statusBadge(data.status)}
-              ${PriorityField("view")}
-            </div>
+            : html`
+                <div class="flex flex-wrap gap-2 items-center">
+                  ${TypeField("view")} ${statusBadge(data.status)}
+                  ${PriorityField("view")}
+                </div>
 
-            <div class="grid grid-cols-2 gap-3">
-              <div>
-                <label class=${labelClass}>Assignee</label>
-                ${AssigneeField("view")}
-              </div>
-              ${labelValue("Owner", data.owner)}
-              ${labelValue("Created", data.created_at && new Date(data.created_at).toLocaleDateString())}
-              ${labelValue("Updated", data.updated_at && new Date(data.updated_at).toLocaleDateString())}
-              ${data.parent && labelValue("Parent", html`
-                <button
-                  type="button"
-                  onClick=${() => onSelectIssue && onSelectIssue((allIssues || []).find(i => i.id === data.parent) || { id: data.parent })}
-                  class="font-mono text-mitto-accent-400 hover:text-mitto-accent-300 hover:underline text-left tooltip tooltip-bottom"
-                  data-tip=${"Open " + data.parent}
-                >${data.parent}</button>
-              `)}
-            </div>
-
-            ${DescriptionField("view")}
-
-            ${subtasks.length > 0 && html`
-              <fieldset class="fieldset">
-                <legend class="fieldset-legend">Subtasks (${subtasks.length})</legend>
-                <ul class="space-y-1">
-                  ${subtasks.map(c => html`
-                    <li key=${c.id}>
+                <div class="grid grid-cols-2 gap-3">
+                  <div>
+                    <label class=${labelClass}>Assignee</label>
+                    ${AssigneeField("view")}
+                  </div>
+                  ${labelValue("Owner", data.owner)}
+                  ${labelValue(
+                    "Created",
+                    data.created_at &&
+                      new Date(data.created_at).toLocaleDateString(),
+                  )}
+                  ${labelValue(
+                    "Updated",
+                    data.updated_at &&
+                      new Date(data.updated_at).toLocaleDateString(),
+                  )}
+                  ${data.parent &&
+                  labelValue(
+                    "Parent",
+                    html`
                       <button
                         type="button"
-                        onClick=${() => onSelectIssue && onSelectIssue(c)}
-                        class="btn btn-ghost btn-xs w-full justify-start inline-flex tooltip tooltip-bottom"
-                        data-tip="Open ${c.id}"
+                        onClick=${() =>
+                          onSelectIssue &&
+                          onSelectIssue(
+                            (allIssues || []).find(
+                              (i) => i.id === data.parent,
+                            ) || { id: data.parent },
+                          )}
+                        class="font-mono text-mitto-accent-400 hover:text-mitto-accent-300 hover:underline text-left tooltip tooltip-bottom"
+                        data-tip=${"Open " + data.parent}
                       >
-                        ${statusBadge(c.status)}
-                        <span class="font-mono text-mitto-text-secondary text-xs">${c.id}</span>
-                        <span class="truncate">${c.title}</span>
+                        ${data.parent}
                       </button>
-                    </li>
-                  `)}
-                </ul>
-              </fieldset>
-            `}
+                    `,
+                  )}
+                </div>
 
-            <fieldset class="fieldset">
-              <legend class="fieldset-legend">Dependencies</legend>
-              ${DependenciesField("view")}
-            </fieldset>
+                ${DescriptionField("view")}
+                ${subtasks.length > 0 &&
+                html`
+                  <fieldset class="fieldset">
+                    <legend class="fieldset-legend">
+                      Subtasks (${subtasks.length})
+                    </legend>
+                    <ul class="space-y-1">
+                      ${subtasks.map(
+                        (c) => html`
+                          <li key=${c.id}>
+                            <button
+                              type="button"
+                              onClick=${() => onSelectIssue && onSelectIssue(c)}
+                              class="btn btn-ghost btn-xs w-full justify-start inline-flex tooltip tooltip-bottom"
+                              data-tip="Open ${c.id}"
+                            >
+                              ${statusBadge(c.status)}
+                              <span
+                                class="font-mono text-mitto-text-secondary text-xs"
+                                >${c.id}</span
+                              >
+                              <span class="truncate">${c.title}</span>
+                            </button>
+                          </li>
+                        `,
+                      )}
+                    </ul>
+                  </fieldset>
+                `}
 
-            <fieldset class="fieldset">
-              <legend class="fieldset-legend">Comments${comments.length ? ` (${comments.length})` : ""}</legend>
-              ${depsLoading
-                ? html`
-                  <div class="flex items-center gap-2 text-xs text-mitto-text-secondary">
-                    <span class="loading loading-spinner w-3 h-3"></span> Loading…
-                  </div>
-                `
-                : html`
-                  <${Fragment}>
-                    ${comments.length === 0
-                      ? html`<div class="text-xs text-mitto-text-secondary italic">No comments.</div>`
-                      : html`
-                        <ul class="space-y-2">
-                          ${[...comments].sort((a, b) => new Date(a.created_at) - new Date(b.created_at)).map(cm => html`
-                            <li key=${cm.id} class="border-l-2 border-l-mitto-accent-500/70 bg-mitto-accent-500/10 rounded-r p-2 pl-3">
-                              <div class="flex items-center justify-between gap-2 mb-1">
-                                <span class="text-xs font-medium text-mitto-text">${cm.author || "Unknown"}</span>
-                                <span class="text-xs text-mitto-text-secondary" title=${cm.created_at}>${cm.created_at ? new Date(cm.created_at).toLocaleString() : ""}</span>
-                              </div>
-                              ${commentBody(cm.text)}
-                            </li>
-                          `)}
-                        </ul>
-                      `}
-                    ${addingComment
-                      ? html`
-                        <textarea
-                          ref=${commentRef}
-                          class="${textareaClass} resize-y mt-2"
-                          rows="3"
-                          placeholder="Add a comment…"
-                          value=${commentDraft}
-                          onInput=${e => setCommentDraft(e.target.value)}
-                          onBlur=${handleCommentBlur}
-                          disabled=${savingComment}
-                        ></textarea>
-                      `
-                      : html`
-                        <button
-                          type="button"
-                          onClick=${startAddComment}
-                          disabled=${savingComment}
-                          class="btn btn-ghost btn-xs mt-2 inline-flex tooltip tooltip-bottom"
-                          data-tip="Add comment"
+                <fieldset class="fieldset">
+                  <legend class="fieldset-legend">Dependencies</legend>
+                  ${DependenciesField("view")}
+                </fieldset>
+
+                <fieldset class="fieldset">
+                  <legend class="fieldset-legend">
+                    Comments${comments.length ? ` (${comments.length})` : ""}
+                  </legend>
+                  ${depsLoading
+                    ? html`
+                        <div
+                          class="flex items-center gap-2 text-xs text-mitto-text-secondary"
                         >
-                          ${savingComment
-                            ? html`<span class="loading loading-spinner w-3.5 h-3.5"></span>`
-                            : html`<${PlusIcon} className="w-3.5 h-3.5" />`}
-                          <span>Add comment</span>
-                        </button>
-                      `}
+                          <span class="loading loading-spinner w-3 h-3"></span>
+                          Loading…
+                        </div>
+                      `
+                    : html`
+                  <${Fragment}>
+                    ${
+                      comments.length === 0
+                        ? html`<div
+                            class="text-xs text-mitto-text-secondary italic"
+                          >
+                            No comments.
+                          </div>`
+                        : html`
+                            <ul class="space-y-2">
+                              ${[...comments]
+                                .sort(
+                                  (a, b) =>
+                                    new Date(a.created_at) -
+                                    new Date(b.created_at),
+                                )
+                                .map(
+                                  (cm) => html`
+                                    <li
+                                      key=${cm.id}
+                                      class="border-l-2 border-l-mitto-accent-500/70 bg-mitto-accent-500/10 rounded-r p-2 pl-3"
+                                    >
+                                      <div
+                                        class="flex items-center justify-between gap-2 mb-1"
+                                      >
+                                        <span
+                                          class="text-xs font-medium text-mitto-text"
+                                          >${cm.author || "Unknown"}</span
+                                        >
+                                        <span
+                                          class="text-xs text-mitto-text-secondary"
+                                          title=${cm.created_at}
+                                          >${cm.created_at
+                                            ? new Date(
+                                                cm.created_at,
+                                              ).toLocaleString()
+                                            : ""}</span
+                                        >
+                                      </div>
+                                      ${commentBody(cm.text)}
+                                    </li>
+                                  `,
+                                )}
+                            </ul>
+                          `
+                    }
+                    ${
+                      addingComment
+                        ? html`
+                            <textarea
+                              ref=${commentRef}
+                              class="${textareaClass} resize-y mt-2"
+                              rows="3"
+                              placeholder="Add a comment…"
+                              value=${commentDraft}
+                              onInput=${(e) => setCommentDraft(e.target.value)}
+                              onBlur=${handleCommentBlur}
+                              disabled=${savingComment}
+                            ></textarea>
+                          `
+                        : html`
+                            <button
+                              type="button"
+                              onClick=${startAddComment}
+                              disabled=${savingComment}
+                              class="btn btn-ghost btn-xs mt-2 inline-flex tooltip tooltip-bottom"
+                              data-tip="Add comment"
+                            >
+                              ${savingComment
+                                ? html`<span
+                                    class="loading loading-spinner w-3.5 h-3.5"
+                                  ></span>`
+                                : html`<${PlusIcon} className="w-3.5 h-3.5" />`}
+                              <span>Add comment</span>
+                            </button>
+                          `
+                    }
                   </${Fragment}>
-                `
-              }
-            </fieldset>
+                `}
+                </fieldset>
 
-            <fieldset class="fieldset">
-              <legend class="fieldset-legend">Notes</legend>
-              ${NotesField("view")}
-            </fieldset>
-          `}
+                <fieldset class="fieldset">
+                  <legend class="fieldset-legend">Notes</legend>
+                  ${NotesField("view")}
+                </fieldset>
+              `
+        }
       </div>
 
-      ${(creating || data) && html`
-        <div class="flex justify-end gap-3 p-3 border-t border-mitto-border shrink-0">
-          <button type="button" onClick=${handleClose} disabled=${creating ? submitting : savingView} class="btn btn-ghost btn-sm inline-flex tooltip tooltip-top" data-tip="Close">Close</button>
-          <button type="button"
-            onClick=${creating ? handleSave : handleViewSave}
-            disabled=${creating ? (!description.trim() || submitting) : (!viewDirty || savingView)}
-            class="btn btn-primary btn-sm inline-flex tooltip tooltip-top"
-            data-tip="Save changes">
-            ${(creating ? submitting : savingView) ? html`<span class="loading loading-spinner w-4 h-4"></span>` : null}
-            Save
-          </button>
-        </div>
-      `}
+      ${
+        (creating || data) &&
+        html`
+          <div
+            class="flex justify-end gap-3 p-3 border-t border-mitto-border shrink-0"
+          >
+            <button
+              type="button"
+              onClick=${handleClose}
+              disabled=${creating ? submitting : savingView}
+              class="btn btn-ghost btn-sm inline-flex tooltip tooltip-top"
+              data-tip="Close"
+            >
+              Close
+            </button>
+            <button
+              type="button"
+              onClick=${creating ? handleSave : handleViewSave}
+              disabled=${creating
+                ? !description.trim() || submitting
+                : !viewDirty || savingView}
+              class="btn btn-primary btn-sm inline-flex tooltip tooltip-top"
+              data-tip="Save changes"
+            >
+              ${(creating ? submitting : savingView)
+                ? html`<span class="loading loading-spinner w-4 h-4"></span>`
+                : null}
+              Save
+            </button>
+          </div>
+        `
+      }
       <//>
-      ${panelMenu && html`
-        <${ContextMenu}
-          x=${panelMenu.x}
-          y=${panelMenu.y}
-          items=${panelMenuItems}
-          onClose=${() => setPanelMenu(null)}
-        />
-      `}
+      ${
+        panelMenu &&
+        html`
+          <${ContextMenu}
+            x=${panelMenu.x}
+            y=${panelMenu.y}
+            items=${panelMenuItems}
+            onClose=${() => setPanelMenu(null)}
+          />
+        `
+      }
       <${ConfirmDialog}
         isOpen=${confirmDiscard}
         title="Discard changes?"
@@ -1711,7 +2279,15 @@ export function BeadsDetailPanel({ issue, allIssues, isCreating, workingDir, ini
  * conversation via onReturnToConversation. The expand toggle in the panel
  * header lets the user widen it to fill the area.
  */
-export function BeadsIssueView({ workingDir, issueId, selectNonce, showToast, onFetchBeadsPrompts, onRunBeadsPrompt, onReturnToConversation }) {
+export function BeadsIssueView({
+  workingDir,
+  issueId,
+  selectNonce,
+  showToast,
+  onFetchBeadsPrompts,
+  onRunBeadsPrompt,
+  onReturnToConversation,
+}) {
   // currentIssueId tracks in-viewer navigation (e.g. clicking a dep id).
   const [currentIssueId, setCurrentIssueId] = useState(issueId);
   const [issue, setIssue] = useState(null);
@@ -1743,16 +2319,24 @@ export function BeadsIssueView({ workingDir, issueId, selectNonce, showToast, on
         const data = await readBeadsResponse(res);
         if (cancelled) return;
         if (!res.ok || data.error) {
-          showToast && showToast({ style: "error", title: data.error || "Failed to load issue" });
+          showToast &&
+            showToast({
+              style: "error",
+              title: data.error || "Failed to load issue",
+            });
         } else {
           const issueObj = Array.isArray(data) ? data[0] : data;
           setIssue(issueObj || null);
         }
       } catch (_err) {
-        if (!cancelled) showToast && showToast({ style: "error", title: "Failed to load issue" });
+        if (!cancelled)
+          showToast &&
+            showToast({ style: "error", title: "Failed to load issue" });
       }
     })();
-    return () => { cancelled = true; };
+    return () => {
+      cancelled = true;
+    };
   }, [workingDir, currentIssueId, refreshNonce]);
 
   // Fetch the full issue list so BeadsDetailPanel can derive subtasks for the
@@ -1764,7 +2348,9 @@ export function BeadsIssueView({ workingDir, issueId, selectNonce, showToast, on
     let cancelled = false;
     (async () => {
       try {
-        const res = await authFetch(endpoints.issues.list({ working_dir: workingDir }));
+        const res = await authFetch(
+          endpoints.issues.list({ working_dir: workingDir }),
+        );
         const data = await readBeadsResponse(res);
         if (cancelled) return;
         if (res.ok && !data.error && Array.isArray(data)) {
@@ -1774,10 +2360,12 @@ export function BeadsIssueView({ workingDir, issueId, selectNonce, showToast, on
         // Non-fatal: subtasks just won't render.
       }
     })();
-    return () => { cancelled = true; };
+    return () => {
+      cancelled = true;
+    };
   }, [workingDir, refreshNonce]);
 
-  const refresh = useCallback(() => setRefreshNonce(n => n + 1), []);
+  const refresh = useCallback(() => setRefreshNonce((n) => n + 1), []);
 
   // In-viewer navigation: clicking a dep id re-fetches that issue.
   const handleSelectIssue = useCallback((depObj) => {
@@ -1785,71 +2373,122 @@ export function BeadsIssueView({ workingDir, issueId, selectNonce, showToast, on
     if (id) setCurrentIssueId(id);
   }, []);
 
-  const handleToggleStatus = useCallback(async (iss) => {
-    if (!iss) return;
-    const action = iss.status === "closed" ? "reopen" : "close";
-    setStatusBusy(true);
-    try {
-      const res = await secureFetch(endpoints.issues.status(iss.id, { working_dir: workingDir }), {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action }),
-      });
-      const data = await readBeadsResponse(res);
-      if (!res.ok || data.error) {
-        showToast && showToast({ style: "error", title: data.error || `Failed to ${action} issue` });
-      } else {
-        showToast && showToast({ style: "success", title: action === "close" ? `Closed ${iss.id}` : `Reopened ${iss.id}` });
-        refresh();
+  const handleToggleStatus = useCallback(
+    async (iss) => {
+      if (!iss) return;
+      const action = iss.status === "closed" ? "reopen" : "close";
+      setStatusBusy(true);
+      try {
+        const res = await secureFetch(
+          endpoints.issues.status(iss.id, { working_dir: workingDir }),
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ action }),
+          },
+        );
+        const data = await readBeadsResponse(res);
+        if (!res.ok || data.error) {
+          showToast &&
+            showToast({
+              style: "error",
+              title: data.error || `Failed to ${action} issue`,
+            });
+        } else {
+          showToast &&
+            showToast({
+              style: "success",
+              title:
+                action === "close" ? `Closed ${iss.id}` : `Reopened ${iss.id}`,
+            });
+          refresh();
+        }
+      } catch (err) {
+        showToast &&
+          showToast({
+            style: "error",
+            title: err.message || `Failed to ${action} issue`,
+          });
+      } finally {
+        setStatusBusy(false);
       }
-    } catch (err) {
-      showToast && showToast({ style: "error", title: err.message || `Failed to ${action} issue` });
-    } finally {
-      setStatusBusy(false);
-    }
-  }, [workingDir, showToast, refresh]);
+    },
+    [workingDir, showToast, refresh],
+  );
 
-  const handleToggleDefer = useCallback(async (iss) => {
-    if (!iss) return;
-    const action = iss.status === "deferred" ? "undefer" : "defer";
-    setStatusBusy(true);
-    try {
-      const res = await secureFetch(endpoints.issues.status(iss.id, { working_dir: workingDir }), {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action }),
-      });
-      const data = await readBeadsResponse(res);
-      if (!res.ok || data.error) {
-        showToast && showToast({ style: "error", title: data.error || `Failed to ${action} issue` });
-      } else {
-        showToast && showToast({ style: "success", title: action === "defer" ? `Deferred ${iss.id}` : `Undeferred ${iss.id}` });
-        refresh();
+  const handleToggleDefer = useCallback(
+    async (iss) => {
+      if (!iss) return;
+      const action = iss.status === "deferred" ? "undefer" : "defer";
+      setStatusBusy(true);
+      try {
+        const res = await secureFetch(
+          endpoints.issues.status(iss.id, { working_dir: workingDir }),
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ action }),
+          },
+        );
+        const data = await readBeadsResponse(res);
+        if (!res.ok || data.error) {
+          showToast &&
+            showToast({
+              style: "error",
+              title: data.error || `Failed to ${action} issue`,
+            });
+        } else {
+          showToast &&
+            showToast({
+              style: "success",
+              title:
+                action === "defer"
+                  ? `Deferred ${iss.id}`
+                  : `Undeferred ${iss.id}`,
+            });
+          refresh();
+        }
+      } catch (err) {
+        showToast &&
+          showToast({
+            style: "error",
+            title: err.message || `Failed to ${action} issue`,
+          });
+      } finally {
+        setStatusBusy(false);
       }
-    } catch (err) {
-      showToast && showToast({ style: "error", title: err.message || `Failed to ${action} issue` });
-    } finally {
-      setStatusBusy(false);
-    }
-  }, [workingDir, showToast, refresh]);
+    },
+    [workingDir, showToast, refresh],
+  );
 
   const confirmDeleteIssue = useCallback(async () => {
     if (!deleteTarget) return;
     const id = deleteTarget.id;
     setDeletingIssue(true);
     try {
-      const res = await secureFetch(endpoints.issues.remove(id, { working_dir: workingDir }), {
-        method: "DELETE",
-      });
+      const res = await secureFetch(
+        endpoints.issues.remove(id, { working_dir: workingDir }),
+        {
+          method: "DELETE",
+        },
+      );
       const data = await readBeadsResponse(res);
       if (!res.ok || data.error) {
-        showToast && showToast({ style: "error", title: data.error || "Failed to delete issue" });
+        showToast &&
+          showToast({
+            style: "error",
+            title: data.error || "Failed to delete issue",
+          });
       } else {
         showToast && showToast({ style: "success", title: `Deleted ${id}` });
         onReturnToConversation && onReturnToConversation();
       }
     } catch (err) {
-      showToast && showToast({ style: "error", title: err.message || "Failed to delete issue" });
+      showToast &&
+        showToast({
+          style: "error",
+          title: err.message || "Failed to delete issue",
+        });
     } finally {
       setDeletingIssue(false);
       setDeleteTarget(null);
@@ -1912,7 +2551,16 @@ export function BeadsIssueView({ workingDir, issueId, selectNonce, showToast, on
 // Swipeable wrapper for a single beads issue row. Mirrors the conversation
 // list's swipe-to-action: swipe left to close an open issue (green/check) or
 // to delete an already-closed issue (red/trash).
-function BeadsIssueRow({ issue, bgTone, borderTone, onSelect, onContextMenu, onClose, onDelete, children }) {
+function BeadsIssueRow({
+  issue,
+  bgTone,
+  borderTone,
+  onSelect,
+  onContextMenu,
+  onClose,
+  onDelete,
+  children,
+}) {
   // Closed issues can't be closed again — swipe deletes them instead (mirrors
   // SessionItem, where the archived tab swaps archive for delete).
   const isSwipeToDelete = issue.status === "closed";
@@ -1950,15 +2598,26 @@ function BeadsIssueRow({ issue, bgTone, borderTone, onSelect, onContextMenu, onC
   const absOffset = Math.abs(swipeOffset);
 
   return html`
-    <div class="beads-item-container relative overflow-hidden" ...${containerProps}>
+    <div
+      class="beads-item-container relative overflow-hidden"
+      ...${containerProps}
+    >
       <!-- Swipe action background (revealed when swiping left) -->
       <div
-        class="absolute inset-0 ${isSwipeToDelete ? "bg-red-600" : "bg-green-700"} flex items-center justify-end pr-6 transition-opacity"
+        class="absolute inset-0 ${isSwipeToDelete
+          ? "bg-red-600"
+          : "bg-green-700"} flex items-center justify-end pr-6 transition-opacity"
         style="opacity: ${isRevealed || absOffset > 20 ? 1 : 0}"
       >
         <button
-          onClick=${(e) => { e.preventDefault(); e.stopPropagation(); triggerAction(); }}
-          class="p-3 rounded-full ${isSwipeToDelete ? "bg-red-700 hover:bg-red-800" : "bg-green-900"} transition-colors tooltip tooltip-left"
+          onClick=${(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            triggerAction();
+          }}
+          class="p-3 rounded-full ${isSwipeToDelete
+            ? "bg-red-700 hover:bg-red-800"
+            : "bg-green-900"} transition-colors tooltip tooltip-left"
           data-tip=${isSwipeToDelete ? "Delete" : "Close"}
           aria-label=${isSwipeToDelete ? "Delete" : "Close"}
         >
@@ -1972,7 +2631,9 @@ function BeadsIssueRow({ issue, bgTone, borderTone, onSelect, onContextMenu, onC
         data-has-context-menu
         onClick=${handleClick}
         onContextMenu=${onContextMenu}
-        class="list-row cursor-pointer select-none ${bgTone} ${borderTone} ${isSwiping ? "" : "transition-all duration-200"}"
+        class="list-row cursor-pointer select-none ${bgTone} ${borderTone} ${isSwiping
+          ? ""
+          : "transition-all duration-200"}"
         style="transform: translateX(${swipeOffset}px);"
       >
         ${children}
@@ -1981,7 +2642,24 @@ function BeadsIssueRow({ issue, bgTone, borderTone, onSelect, onContextMenu, onC
   `;
 }
 
-export function BeadsView({ workingDir, showToast, dismissToast, onFetchBeadsPrompts, onRunBeadsPrompt, onFetchBeadsListPrompts, onRunBeadsListPrompt, onShowSidebar, onOpenConfig, issueSessionMap = {}, issueStreamingSet = new Set(), onOpenConversation, onLaunchPrompt, initialCreateNonce = 0, initialRefreshNonce = 0, initialCleanupNonce = 0 }) {
+export function BeadsView({
+  workingDir,
+  showToast,
+  dismissToast,
+  onFetchBeadsPrompts,
+  onRunBeadsPrompt,
+  onFetchBeadsListPrompts,
+  onRunBeadsListPrompt,
+  onShowSidebar,
+  onOpenConfig,
+  issueSessionMap = {},
+  issueStreamingSet = new Set(),
+  onOpenConversation,
+  onLaunchPrompt,
+  initialCreateNonce = 0,
+  initialRefreshNonce = 0,
+  initialCleanupNonce = 0,
+}) {
   const [issues, setIssues] = useState([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
@@ -2001,12 +2679,14 @@ export function BeadsView({ workingDir, showToast, dismissToast, onFetchBeadsPro
 
   // Status filter toggles, seeded from the in-memory module state so the
   // selection survives navigating away and back within the same session.
-  const [statusToggles, setStatusToggles] = useState(() => ({ ...beadsStatusToggles }));
+  const [statusToggles, setStatusToggles] = useState(() => ({
+    ...beadsStatusToggles,
+  }));
 
   // Toggle a single status on/off. The new state is also written back to the
   // module-level store so it persists across remounts within the session.
   const toggleStatus = useCallback((key) => {
-    setStatusToggles(prev => {
+    setStatusToggles((prev) => {
       const next = { ...prev, [key]: !prev[key] };
       beadsStatusToggles = next;
       return next;
@@ -2048,11 +2728,16 @@ export function BeadsView({ workingDir, showToast, dismissToast, onFetchBeadsPro
   // Status toggles are deliberately in-memory only; these are separate.
   const [grouping, setGrouping] = useState(() => getBeadsGrouping().enabled);
   // Epics are expanded by default; we persist only the IDs the user collapses.
-  const [collapsedEpics, setCollapsedEpics] = useState(() => new Set(getBeadsGrouping().collapsedEpics));
+  const [collapsedEpics, setCollapsedEpics] = useState(
+    () => new Set(getBeadsGrouping().collapsedEpics),
+  );
 
   // Write-through: persist grouping state whenever it changes.
   useEffect(() => {
-    setBeadsGrouping({ enabled: grouping, collapsedEpics: [...collapsedEpics] });
+    setBeadsGrouping({
+      enabled: grouping,
+      collapsedEpics: [...collapsedEpics],
+    });
   }, [grouping, collapsedEpics]);
 
   // Sort preference (field + direction), persisted to localStorage. Defaults to
@@ -2131,7 +2816,9 @@ export function BeadsView({ workingDir, showToast, dismissToast, onFetchBeadsPro
     setLoading(true);
     setError(null);
     try {
-      const res = await authFetch(endpoints.issues.list({ working_dir: workingDir }));
+      const res = await authFetch(
+        endpoints.issues.list({ working_dir: workingDir }),
+      );
       const data = await readBeadsResponse(res);
       if (!res.ok || data.error) {
         setError(data.error || data.message || "Failed to load issues");
@@ -2152,11 +2839,15 @@ export function BeadsView({ workingDir, showToast, dismissToast, onFetchBeadsPro
 
   // Pull-to-refresh: disabled while the detail panel or create drawer is open.
   const pullToRefreshDisabled = !!(selectedIssue || isCreating);
-  const { pullDistance, refreshing } = usePullToRefresh(scrollContainerRef, fetchList, {
-    enabled: !pullToRefreshDisabled,
-    threshold: 70,
-    resistance: 0.5,
-  });
+  const { pullDistance, refreshing } = usePullToRefresh(
+    scrollContainerRef,
+    fetchList,
+    {
+      enabled: !pullToRefreshDisabled,
+      threshold: 70,
+      resistance: 0.5,
+    },
+  );
 
   // Fetch the folder's configured upstream so the sync buttons can be shown.
   useEffect(() => {
@@ -2167,7 +2858,9 @@ export function BeadsView({ workingDir, showToast, dismissToast, onFetchBeadsPro
     let cancelled = false;
     (async () => {
       try {
-        const res = await authFetch(endpoints.issues.upstream({ working_dir: workingDir }));
+        const res = await authFetch(
+          endpoints.issues.upstream({ working_dir: workingDir }),
+        );
         const data = await readBeadsResponse(res);
         if (!cancelled) {
           setUpstream((data && data.upstream) || "none");
@@ -2179,41 +2872,67 @@ export function BeadsView({ workingDir, showToast, dismissToast, onFetchBeadsPro
         if (!cancelled) setUpstream("none");
       }
     })();
-    return () => { cancelled = true; };
+    return () => {
+      cancelled = true;
+    };
   }, [workingDir]);
 
   // Trigger an upstream sync action (pull/push/sync) via POST /api/issues/sync.
   // The backend reads the integration from folders.json; we only send the action.
-  const handleSync = useCallback(async (action) => {
-    if (!workingDir || syncAction) return;
-    setSyncAction(action);
-    try {
-      const res = await secureFetch(endpoints.issues.sync({ working_dir: workingDir }), {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action }),
-      });
-      const data = await readBeadsResponse(res);
-      if (!res.ok || data.error) {
-        showToast && showToast({ style: "error", title: data.error || `Failed to ${action}`, message: data.stderr });
-      } else {
-        const verb = action === "pull" ? "Pulled" : action === "push" ? "Pushed" : "Synced";
-        showToast && showToast({ style: "success", title: `${verb} with ${UPSTREAM_LABELS[upstream] || upstream}` });
-        fetchList();
+  const handleSync = useCallback(
+    async (action) => {
+      if (!workingDir || syncAction) return;
+      setSyncAction(action);
+      try {
+        const res = await secureFetch(
+          endpoints.issues.sync({ working_dir: workingDir }),
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ action }),
+          },
+        );
+        const data = await readBeadsResponse(res);
+        if (!res.ok || data.error) {
+          showToast &&
+            showToast({
+              style: "error",
+              title: data.error || `Failed to ${action}`,
+              message: data.stderr,
+            });
+        } else {
+          const verb =
+            action === "pull"
+              ? "Pulled"
+              : action === "push"
+                ? "Pushed"
+                : "Synced";
+          showToast &&
+            showToast({
+              style: "success",
+              title: `${verb} with ${UPSTREAM_LABELS[upstream] || upstream}`,
+            });
+          fetchList();
+        }
+      } catch (err) {
+        showToast &&
+          showToast({
+            style: "error",
+            title: err.message || `Failed to ${action}`,
+          });
+      } finally {
+        setSyncAction(null);
       }
-    } catch (err) {
-      showToast && showToast({ style: "error", title: err.message || `Failed to ${action}` });
-    } finally {
-      setSyncAction(null);
-    }
-  }, [workingDir, syncAction, upstream, showToast, fetchList]);
+    },
+    [workingDir, syncAction, upstream, showToast, fetchList],
+  );
 
   // The list rows already carry all rich fields (description, parent, dates,
   // assignee, owner), so the detail panel is populated directly from the row —
   // no extra /show request needed. Clicking the open row again toggles it shut.
   const selectIssue = useCallback((issue) => {
     setIsCreating(false);
-    setSelectedIssue(prev => (prev && prev.id === issue.id) ? null : issue);
+    setSelectedIssue((prev) => (prev && prev.id === issue.id ? null : issue));
   }, []);
 
   // Open the side panel in "create" mode for a brand-new issue.
@@ -2311,14 +3030,14 @@ export function BeadsView({ workingDir, showToast, dismissToast, onFetchBeadsPro
   // Keep the open detail panel in sync when the list refreshes: replace it with
   // the fresh row if it still exists, otherwise close the panel.
   useEffect(() => {
-    setSelectedIssue(prev => {
+    setSelectedIssue((prev) => {
       if (!prev) return prev;
-      return issues.find(i => i.id === prev.id) || null;
+      return issues.find((i) => i.id === prev.id) || null;
     });
   }, [issues]);
 
   const filtered = useMemo(() => {
-    const out = issues.filter(issue => {
+    const out = issues.filter((issue) => {
       // Hide an issue only when its status maps to a toggle that is currently
       // off. Statuses without a toggle (e.g. blocked, deferred) are unaffected.
       if (statusToggles[issue.status] === false) return false;
@@ -2332,7 +3051,10 @@ export function BeadsView({ workingDir, showToast, dismissToast, onFetchBeadsPro
     return out;
   }, [issues, statusToggles, typeFilter, search, sort]);
 
-  const allTypes = useMemo(() => [...new Set(issues.map(i => i.issue_type).filter(Boolean))], [issues]);
+  const allTypes = useMemo(
+    () => [...new Set(issues.map((i) => i.issue_type).filter(Boolean))],
+    [issues],
+  );
 
   // Map of issue id -> number of issues that name it as their parent. Computed
   // from the full list (not the filtered view) so an epic's child count stays
@@ -2358,12 +3080,13 @@ export function BeadsView({ workingDir, showToast, dismissToast, onFetchBeadsPro
   const groupedItems = useMemo(() => {
     if (!grouping) return null;
 
-    const issueById = new Map(issues.map(i => [i.id, i]));
+    const issueById = new Map(issues.map((i) => [i.id, i]));
 
     // Epics from the full list: typed as "epic" or has at least one child.
     const epicSet = new Set();
     for (const i of issues) {
-      if (i.issue_type === "epic" || (childCountById[i.id] || 0) > 0) epicSet.add(i.id);
+      if (i.issue_type === "epic" || (childCountById[i.id] || 0) > 0)
+        epicSet.add(i.id);
     }
 
     // Walk up the parent chain and return the ID of the NEAREST (direct) epic
@@ -2437,8 +3160,14 @@ export function BeadsView({ workingDir, showToast, dismissToast, onFetchBeadsPro
     // interleaved and sorted together using each item's representative issue.
     for (const [, group] of epicGroups) {
       group.items.sort((a, b) => {
-        const ia = a.type === "issue" ? a.issue : (a.group.epic || { priority: 3, id: "" });
-        const ib = b.type === "issue" ? b.issue : (b.group.epic || { priority: 3, id: "" });
+        const ia =
+          a.type === "issue"
+            ? a.issue
+            : a.group.epic || { priority: 3, id: "" };
+        const ib =
+          b.type === "issue"
+            ? b.issue
+            : b.group.epic || { priority: 3, id: "" };
         return cmpBySort(ia, ib, sort);
       });
     }
@@ -2449,11 +3178,14 @@ export function BeadsView({ workingDir, showToast, dismissToast, onFetchBeadsPro
     // epic (filtered out but with surviving children) has no representative, so
     // it falls back to a low-priority, undated placeholder.
     const topLevel = [];
-    for (const id of epicOrderIds) topLevel.push({ type: "epic", group: epicGroups.get(id) });
+    for (const id of epicOrderIds)
+      topLevel.push({ type: "epic", group: epicGroups.get(id) });
     for (const issue of orphans) topLevel.push({ type: "orphan", issue });
     topLevel.sort((a, b) => {
-      const ia = a.type === "epic" ? (a.group.epic || { priority: 3, id: "" }) : a.issue;
-      const ib = b.type === "epic" ? (b.group.epic || { priority: 3, id: "" }) : b.issue;
+      const ia =
+        a.type === "epic" ? a.group.epic || { priority: 3, id: "" } : a.issue;
+      const ib =
+        b.type === "epic" ? b.group.epic || { priority: 3, id: "" } : b.issue;
       return cmpBySort(ia, ib, sort);
     });
     return topLevel;
@@ -2491,15 +3223,20 @@ export function BeadsView({ workingDir, showToast, dismissToast, onFetchBeadsPro
   // The still-open descendants — closing already-closed issues is a no-op, so
   // the "close children" option only targets these.
   const deleteTargetOpenDescendants = useMemo(
-    () => deleteTargetDescendants.filter(d => d.issue.status !== "closed"),
+    () => deleteTargetDescendants.filter((d) => d.issue.status !== "closed"),
     [deleteTargetDescendants],
   );
 
   // Reset the child-handling choice whenever the delete target changes, so it
   // never carries over from a previous deletion.
-  useEffect(() => { setChildAction("none"); }, [deleteTarget]);
+  useEffect(() => {
+    setChildAction("none");
+  }, [deleteTarget]);
 
-  const closedCount = useMemo(() => issues.filter(i => i.status === "closed").length, [issues]);
+  const closedCount = useMemo(
+    () => issues.filter((i) => i.status === "closed").length,
+    [issues],
+  );
 
   // Start a background bulk-delete of all closed issues. The HTTP call returns
   // immediately; progress arrives via the mitto:beads_cleanup_progress event.
@@ -2508,20 +3245,32 @@ export function BeadsView({ workingDir, showToast, dismissToast, onFetchBeadsPro
     setCleanupProgress(null);
     setShowCleanupConfirm(false);
     try {
-      const res = await secureFetch(endpoints.issues.cleanup({ working_dir: workingDir }), {
-        method: "POST",
-      });
+      const res = await secureFetch(
+        endpoints.issues.cleanup({ working_dir: workingDir }),
+        {
+          method: "POST",
+        },
+      );
       const data = await readBeadsResponse(res);
       if (!res.ok || data.error) {
-        showToast && showToast({ style: "error", title: data.error || "Failed to clean up issues" });
+        showToast &&
+          showToast({
+            style: "error",
+            title: data.error || "Failed to clean up issues",
+          });
         setCleaningUp(false);
         return;
       }
       if (!data.started) {
         if (data.already_running) {
-          showToast && showToast({ style: "info", title: "Cleanup already in progress" });
+          showToast &&
+            showToast({ style: "info", title: "Cleanup already in progress" });
         } else {
-          showToast && showToast({ style: "success", title: "No closed issues to remove" });
+          showToast &&
+            showToast({
+              style: "success",
+              title: "No closed issues to remove",
+            });
         }
         setCleaningUp(false);
         return;
@@ -2540,7 +3289,11 @@ export function BeadsView({ workingDir, showToast, dismissToast, onFetchBeadsPro
           })
         : null;
     } catch (err) {
-      showToast && showToast({ style: "error", title: err.message || "Failed to clean up issues" });
+      showToast &&
+        showToast({
+          style: "error",
+          title: err.message || "Failed to clean up issues",
+        });
       setCleaningUp(false);
     }
   }, [workingDir, showToast]);
@@ -2559,7 +3312,11 @@ export function BeadsView({ workingDir, showToast, dismissToast, onFetchBeadsPro
       if (d.working_dir !== workingDir) return;
       if (d.error) {
         clearProgressToast();
-        showToast && showToast({ style: "error", title: d.error || "Failed to clean up issues" });
+        showToast &&
+          showToast({
+            style: "error",
+            title: d.error || "Failed to clean up issues",
+          });
         setCleaningUp(false);
         setCleanupProgress(null);
         fetchList();
@@ -2570,10 +3327,11 @@ export function BeadsView({ workingDir, showToast, dismissToast, onFetchBeadsPro
       setCleanupProgress({ deleted, total });
       if (d.done) {
         clearProgressToast();
-        showToast && showToast({
-          style: "success",
-          title: `Removed ${deleted} closed issue${deleted === 1 ? "" : "s"}`,
-        });
+        showToast &&
+          showToast({
+            style: "success",
+            title: `Removed ${deleted} closed issue${deleted === 1 ? "" : "s"}`,
+          });
         setCleaningUp(false);
         setCleanupProgress(null);
         fetchList();
@@ -2582,7 +3340,11 @@ export function BeadsView({ workingDir, showToast, dismissToast, onFetchBeadsPro
       // Mid-flight: refresh the single live progress toast, throttled so a long
       // run with many batches does not spam one toast per batch.
       const now = Date.now();
-      if (showToast && now - lastCleanupToastAtRef.current >= CLEANUP_PROGRESS_TOAST_INTERVAL_MS) {
+      if (
+        showToast &&
+        now - lastCleanupToastAtRef.current >=
+          CLEANUP_PROGRESS_TOAST_INTERVAL_MS
+      ) {
         lastCleanupToastAtRef.current = now;
         clearProgressToast();
         cleanupToastIdRef.current = showToast({
@@ -2617,11 +3379,14 @@ export function BeadsView({ workingDir, showToast, dismissToast, onFetchBeadsPro
       if (childAction === "close") {
         for (const { issue: child } of deleteTargetOpenDescendants) {
           try {
-            const cres = await secureFetch(endpoints.issues.status(child.id, { working_dir: workingDir }), {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ action: "close" }),
-            });
+            const cres = await secureFetch(
+              endpoints.issues.status(child.id, { working_dir: workingDir }),
+              {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ action: "close" }),
+              },
+            );
             const cdata = await readBeadsResponse(cres);
             if (!cres.ok || cdata.error) closeFailed++;
             else closedCount++;
@@ -2631,12 +3396,17 @@ export function BeadsView({ workingDir, showToast, dismissToast, onFetchBeadsPro
         }
       } else if (childAction === "delete") {
         // Delete deepest-first so a parent is never removed before its children.
-        const ordered = [...deleteTargetDescendants].sort((a, b) => b.depth - a.depth);
+        const ordered = [...deleteTargetDescendants].sort(
+          (a, b) => b.depth - a.depth,
+        );
         for (const { issue: child } of ordered) {
           try {
-            const cres = await secureFetch(endpoints.issues.remove(child.id, { working_dir: workingDir }), {
-              method: "DELETE",
-            });
+            const cres = await secureFetch(
+              endpoints.issues.remove(child.id, { working_dir: workingDir }),
+              {
+                method: "DELETE",
+              },
+            );
             const cdata = await readBeadsResponse(cres);
             if (!cres.ok || cdata.error) childDeleteFailed++;
             else childDeletedCount++;
@@ -2646,12 +3416,19 @@ export function BeadsView({ workingDir, showToast, dismissToast, onFetchBeadsPro
         }
       }
 
-      const res = await secureFetch(endpoints.issues.remove(id, { working_dir: workingDir }), {
-        method: "DELETE",
-      });
+      const res = await secureFetch(
+        endpoints.issues.remove(id, { working_dir: workingDir }),
+        {
+          method: "DELETE",
+        },
+      );
       const data = await readBeadsResponse(res);
       if (!res.ok || data.error) {
-        showToast && showToast({ style: "error", title: data.error || "Failed to delete issue" });
+        showToast &&
+          showToast({
+            style: "error",
+            title: data.error || "Failed to delete issue",
+          });
       } else {
         let title = `Deleted ${id}`;
         if (closedCount > 0) {
@@ -2663,117 +3440,201 @@ export function BeadsView({ workingDir, showToast, dismissToast, onFetchBeadsPro
         const failedTotal = closeFailed + childDeleteFailed;
         if (failedTotal > 0) {
           const verb = childAction === "delete" ? "delete" : "close";
-          showToast && showToast({
-            style: "warning",
-            title: `${title} (${failedTotal} child issue${failedTotal === 1 ? "" : "s"} failed to ${verb})`,
-          });
+          showToast &&
+            showToast({
+              style: "warning",
+              title: `${title} (${failedTotal} child issue${failedTotal === 1 ? "" : "s"} failed to ${verb})`,
+            });
         } else {
           showToast && showToast({ style: "success", title });
         }
         fetchList();
       }
     } catch (err) {
-      showToast && showToast({ style: "error", title: err.message || "Failed to delete issue" });
+      showToast &&
+        showToast({
+          style: "error",
+          title: err.message || "Failed to delete issue",
+        });
     } finally {
       setDeletingIssue(false);
       setDeleteTarget(null);
     }
-  }, [deleteTarget, childAction, deleteTargetOpenDescendants, deleteTargetDescendants, workingDir, showToast, fetchList]);
+  }, [
+    deleteTarget,
+    childAction,
+    deleteTargetOpenDescendants,
+    deleteTargetDescendants,
+    workingDir,
+    showToast,
+    fetchList,
+  ]);
 
   // Close or reopen a single issue depending on its current status, then refresh.
-  const handleToggleStatus = useCallback(async (issue) => {
-    if (!issue) return;
-    const action = issue.status === "closed" ? "reopen" : "close";
-    setStatusBusy(true);
-    try {
-      const res = await secureFetch(endpoints.issues.status(issue.id, { working_dir: workingDir }), {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action }),
-      });
-      const data = await readBeadsResponse(res);
-      if (!res.ok || data.error) {
-        showToast && showToast({ style: "error", title: data.error || `Failed to ${action} issue` });
-      } else {
-        showToast && showToast({ style: "success", title: action === "close" ? `Closed ${issue.id}` : `Reopened ${issue.id}` });
-        fetchList();
+  const handleToggleStatus = useCallback(
+    async (issue) => {
+      if (!issue) return;
+      const action = issue.status === "closed" ? "reopen" : "close";
+      setStatusBusy(true);
+      try {
+        const res = await secureFetch(
+          endpoints.issues.status(issue.id, { working_dir: workingDir }),
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ action }),
+          },
+        );
+        const data = await readBeadsResponse(res);
+        if (!res.ok || data.error) {
+          showToast &&
+            showToast({
+              style: "error",
+              title: data.error || `Failed to ${action} issue`,
+            });
+        } else {
+          showToast &&
+            showToast({
+              style: "success",
+              title:
+                action === "close"
+                  ? `Closed ${issue.id}`
+                  : `Reopened ${issue.id}`,
+            });
+          fetchList();
+        }
+      } catch (err) {
+        showToast &&
+          showToast({
+            style: "error",
+            title: err.message || `Failed to ${action} issue`,
+          });
+      } finally {
+        setStatusBusy(false);
       }
-    } catch (err) {
-      showToast && showToast({ style: "error", title: err.message || `Failed to ${action} issue` });
-    } finally {
-      setStatusBusy(false);
-    }
-  }, [workingDir, showToast, fetchList]);
+    },
+    [workingDir, showToast, fetchList],
+  );
 
   // Defer or undefer a single issue ("on ice" for later) depending on its
   // current status, then refresh. Uses /api/issues/{id}/status, which also
   // handles the defer/undefer verbs.
-  const handleToggleDefer = useCallback(async (issue) => {
-    if (!issue) return;
-    const action = issue.status === "deferred" ? "undefer" : "defer";
-    setStatusBusy(true);
-    try {
-      const res = await secureFetch(endpoints.issues.status(issue.id, { working_dir: workingDir }), {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action }),
-      });
-      const data = await readBeadsResponse(res);
-      if (!res.ok || data.error) {
-        showToast && showToast({ style: "error", title: data.error || `Failed to ${action} issue` });
-      } else {
-        showToast && showToast({ style: "success", title: action === "defer" ? `Deferred ${issue.id}` : `Undeferred ${issue.id}` });
-        fetchList();
+  const handleToggleDefer = useCallback(
+    async (issue) => {
+      if (!issue) return;
+      const action = issue.status === "deferred" ? "undefer" : "defer";
+      setStatusBusy(true);
+      try {
+        const res = await secureFetch(
+          endpoints.issues.status(issue.id, { working_dir: workingDir }),
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ action }),
+          },
+        );
+        const data = await readBeadsResponse(res);
+        if (!res.ok || data.error) {
+          showToast &&
+            showToast({
+              style: "error",
+              title: data.error || `Failed to ${action} issue`,
+            });
+        } else {
+          showToast &&
+            showToast({
+              style: "success",
+              title:
+                action === "defer"
+                  ? `Deferred ${issue.id}`
+                  : `Undeferred ${issue.id}`,
+            });
+          fetchList();
+        }
+      } catch (err) {
+        showToast &&
+          showToast({
+            style: "error",
+            title: err.message || `Failed to ${action} issue`,
+          });
+      } finally {
+        setStatusBusy(false);
       }
-    } catch (err) {
-      showToast && showToast({ style: "error", title: err.message || `Failed to ${action} issue` });
-    } finally {
-      setStatusBusy(false);
-    }
-  }, [workingDir, showToast, fetchList]);
+    },
+    [workingDir, showToast, fetchList],
+  );
 
   // Create a "blocks" dependency edge from the context menu. `direction` picks
   // the argument order (the edge kind is always "blocks"):
   //   "depends-on" → issue depends on other      (bd dep add <issue> <other>)
   //   "blocks"     → issue blocks other          (bd dep add <other> <issue>)
   // since "A depends on B" is the same edge as "B is blocked by A".
-  const handleAddDependencyEdge = useCallback(async (issue, other, direction) => {
-    if (!issue || !other) return;
-    const id = direction === "blocks" ? other.id : issue.id;
-    const dependsOn = direction === "blocks" ? issue.id : other.id;
-    try {
-      const res = await secureFetch(endpoints.issues.dependencies(id, { working_dir: workingDir }), {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ depends_on: dependsOn, type: "blocks", action: "add" }),
-      });
-      const data = await readBeadsResponse(res);
-      if (!res.ok || data.error) {
-        showToast && showToast({ style: "error", title: data.error || "Failed to add dependency", message: data.stderr });
-      } else {
-        showToast && showToast({
-          style: "success",
-          title: direction === "blocks" ? `${issue.id} now blocks ${other.id}` : `${issue.id} now depends on ${other.id}`,
-        });
-        fetchList();
+  const handleAddDependencyEdge = useCallback(
+    async (issue, other, direction) => {
+      if (!issue || !other) return;
+      const id = direction === "blocks" ? other.id : issue.id;
+      const dependsOn = direction === "blocks" ? issue.id : other.id;
+      try {
+        const res = await secureFetch(
+          endpoints.issues.dependencies(id, { working_dir: workingDir }),
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              depends_on: dependsOn,
+              type: "blocks",
+              action: "add",
+            }),
+          },
+        );
+        const data = await readBeadsResponse(res);
+        if (!res.ok || data.error) {
+          showToast &&
+            showToast({
+              style: "error",
+              title: data.error || "Failed to add dependency",
+              message: data.stderr,
+            });
+        } else {
+          showToast &&
+            showToast({
+              style: "success",
+              title:
+                direction === "blocks"
+                  ? `${issue.id} now blocks ${other.id}`
+                  : `${issue.id} now depends on ${other.id}`,
+            });
+          fetchList();
+        }
+      } catch (err) {
+        showToast &&
+          showToast({
+            style: "error",
+            title: err.message || "Failed to add dependency",
+          });
       }
-    } catch (err) {
-      showToast && showToast({ style: "error", title: err.message || "Failed to add dependency" });
-    }
-  }, [workingDir, showToast, fetchList]);
+    },
+    [workingDir, showToast, fetchList],
+  );
 
   // Run a beads prompt for a specific issue: delegates to the parent, which
   // creates a new conversation seeded with the prompt text and issue context.
-  const handleRunPrompt = useCallback((prompt, issue) => {
-    closeContextMenu();
-    onRunBeadsPrompt && onRunBeadsPrompt(prompt, issue);
-  }, [onRunBeadsPrompt, closeContextMenu]);
+  const handleRunPrompt = useCallback(
+    (prompt, issue) => {
+      closeContextMenu();
+      onRunBeadsPrompt && onRunBeadsPrompt(prompt, issue);
+    },
+    [onRunBeadsPrompt, closeContextMenu],
+  );
 
   // Close the list-level prompts dropdown on outside click while it is open.
   useEffect(() => {
     if (!showListPrompts) return undefined;
     const onDocClick = (e) => {
-      if (listPromptsRef.current && !listPromptsRef.current.contains(e.target)) {
+      if (
+        listPromptsRef.current &&
+        !listPromptsRef.current.contains(e.target)
+      ) {
         setShowListPrompts(false);
       }
     };
@@ -2797,10 +3658,13 @@ export function BeadsView({ workingDir, showToast, dismissToast, onFetchBeadsPro
   }, [onFetchBeadsListPrompts, workingDir]);
 
   // Run a list-level prompt in a new conversation (no per-issue context).
-  const handleRunListPrompt = useCallback((prompt) => {
-    setShowListPrompts(false);
-    onRunBeadsListPrompt && onRunBeadsListPrompt(prompt);
-  }, [onRunBeadsListPrompt]);
+  const handleRunListPrompt = useCallback(
+    (prompt) => {
+      setShowListPrompts(false);
+      onRunBeadsListPrompt && onRunBeadsListPrompt(prompt);
+    },
+    [onRunBeadsListPrompt],
+  );
 
   // Group the beadsIssues prompts by their `group` into per-group submenus,
   // identical to the conversation menu and the detail-panel kebab.
@@ -2818,7 +3682,10 @@ export function BeadsView({ workingDir, showToast, dismissToast, onFetchBeadsPro
   // Picking one creates a "blocks" edge in the chosen direction via
   // handleAddDependencyEdge. Closed/deferred issues are excluded as dependency targets.
   const otherIssues = (issues || []).filter(
-    (i) => ctxIssue && i.id !== ctxIssue.id && (i.status === "open" || i.status === "in_progress"),
+    (i) =>
+      ctxIssue &&
+      i.id !== ctxIssue.id &&
+      (i.status === "open" || i.status === "in_progress"),
   );
   const issueSubmenu = (direction) =>
     otherIssues.map((i) => ({
@@ -2830,8 +3697,16 @@ export function BeadsView({ workingDir, showToast, dismissToast, onFetchBeadsPro
     ...promptGroupItems,
     ...(otherIssues.length > 0
       ? [
-          { label: "Depends On", icon: html`<${ArrowDownIcon} />`, submenu: issueSubmenu("depends-on") },
-          { label: "Blocks", icon: html`<${ArrowUpIcon} />`, submenu: issueSubmenu("blocks") },
+          {
+            label: "Depends On",
+            icon: html`<${ArrowDownIcon} />`,
+            submenu: issueSubmenu("depends-on"),
+          },
+          {
+            label: "Blocks",
+            icon: html`<${ArrowUpIcon} />`,
+            submenu: issueSubmenu("blocks"),
+          },
         ]
       : []),
     {
@@ -2840,9 +3715,12 @@ export function BeadsView({ workingDir, showToast, dismissToast, onFetchBeadsPro
       onClick: async () => {
         if (!ctxIssue) return;
         const ok = await copyToClipboard(ctxIssue.id);
-        showToast && showToast(ok
-          ? { style: "success", title: `Copied ${ctxIssue.id}` }
-          : { style: "error", title: "Failed to copy issue ID" });
+        showToast &&
+          showToast(
+            ok
+              ? { style: "success", title: `Copied ${ctxIssue.id}` }
+              : { style: "error", title: "Failed to copy issue ID" },
+          );
       },
     },
     {
@@ -2912,24 +3790,28 @@ export function BeadsView({ workingDir, showToast, dismissToast, onFetchBeadsPro
               // <details> onToggle re-derives the same state idempotently).
               e.preventDefault();
               e.stopPropagation();
-              setCollapsedEpics(prev => {
+              setCollapsedEpics((prev) => {
                 const next = new Set(prev);
                 if (next.has(issue.id)) next.delete(issue.id);
                 else next.add(issue.id);
                 return next;
               });
             }}
-          >${epicExpanded
-            ? html`<${ChevronDownIcon} className="w-4 h-4" />`
-            : html`<${ChevronRightIcon} className="w-4 h-4" />`}</button>`
+          >
+            ${epicExpanded
+              ? html`<${ChevronDownIcon} className="w-4 h-4" />`
+              : html`<${ChevronRightIcon} className="w-4 h-4" />`}
+          </button>`
         : null}
       <div class="list-col-grow flex flex-col gap-1 min-w-0">
         <div class="flex items-center gap-2 flex-wrap">
           ${isStreamingIssue
-            ? html`<span class="shrink-0 text-mitto-accent tooltip tooltip-bottom" data-tip="A linked conversation is responding..." aria-label="A linked conversation is responding...">
-                <span
-                  class="loading loading-ring loading-xs"
-                ></span>
+            ? html`<span
+                class="shrink-0 text-mitto-accent tooltip tooltip-bottom"
+                data-tip="A linked conversation is responding..."
+                aria-label="A linked conversation is responding..."
+              >
+                <span class="loading loading-ring loading-xs"></span>
               </span>`
             : null}
           <span class="font-mono text-xs max-w-40 truncate" title=${issue.id}>
@@ -2937,30 +3819,46 @@ export function BeadsView({ workingDir, showToast, dismissToast, onFetchBeadsPro
               ? html`<a
                   href="#"
                   class="text-mitto-accent-400 hover:text-mitto-accent-300 hover:underline"
-                  onClick=${(e) => { e.preventDefault(); e.stopPropagation(); onOpenConversation(linkedSessionId); }}
-                >${issue.id}</a>`
-              : html`<span class="text-mitto-text-secondary">${issue.id}</span>`}
+                  onClick=${(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    onOpenConversation(linkedSessionId);
+                  }}
+                  >${issue.id}</a
+                >`
+              : html`<span class="text-mitto-text-secondary"
+                  >${issue.id}</span
+                >`}
           </span>
-          ${typeBadge(issue.issue_type)}
-          ${statusBadge(issue.status)}
+          ${typeBadge(issue.issue_type)} ${statusBadge(issue.status)}
           ${priorityBadge(issue.priority)}
-          ${childCount > 0 ? html`
-            <span
-              class="inline-flex items-center gap-1 text-xs text-purple-300 tooltip tooltip-bottom"
-              data-tip="${childCount} child issue${childCount === 1 ? "" : "s"}"
-            >
-              <${LayersIcon} className="w-3.5 h-3.5" />
-              ${childCount}
-            </span>
-          ` : null}
+          ${childCount > 0
+            ? html`
+                <span
+                  class="inline-flex items-center gap-1 text-xs text-purple-300 tooltip tooltip-bottom"
+                  data-tip="${childCount} child issue${childCount === 1
+                    ? ""
+                    : "s"}"
+                >
+                  <${LayersIcon} className="w-3.5 h-3.5" />
+                  ${childCount}
+                </span>
+              `
+            : null}
         </div>
-        <div class="text-sm text-mitto-text wrap-break-word">${issue.title}</div>
+        <div class="text-sm text-mitto-text wrap-break-word">
+          ${issue.title}
+        </div>
       </div>
       <div class="flex items-center gap-1 shrink-0 self-center">
         ${isEpic
           ? html`<button
               type="button"
-              onClick=${(e) => { e.preventDefault(); e.stopPropagation(); openCreateInEpic(issue.id); }}
+              onClick=${(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                openCreateInEpic(issue.id);
+              }}
               onMouseEnter=${(e) => showToolbarTip(e, "New issue in epic")}
               onMouseLeave=${hideToolbarTip}
               onMouseDown=${hideToolbarTip}
@@ -3013,7 +3911,12 @@ export function BeadsView({ workingDir, showToast, dismissToast, onFetchBeadsPro
     // Stable key: use epicId, or fall back to the first item's issue id for ghosts.
     const firstItem = group.items[0];
     const ghostKey = firstItem
-      ? "ghost-" + (firstItem.type === "issue" ? firstItem.issue.id : (firstItem.group.epic ? firstItem.group.epic.id : ""))
+      ? "ghost-" +
+        (firstItem.type === "issue"
+          ? firstItem.issue.id
+          : firstItem.group.epic
+            ? firstItem.group.epic.id
+            : "")
       : "ghost";
     return html`
       <details
@@ -3023,7 +3926,7 @@ export function BeadsView({ workingDir, showToast, dismissToast, onFetchBeadsPro
         onToggle=${(e) => {
           if (!epicId) return;
           const open = e.currentTarget.open;
-          setCollapsedEpics(prev => {
+          setCollapsedEpics((prev) => {
             const next = new Set(prev);
             if (open) next.delete(epicId);
             else next.add(epicId);
@@ -3034,17 +3937,28 @@ export function BeadsView({ workingDir, showToast, dismissToast, onFetchBeadsPro
         <summary class="beads-epic-summary">
           ${epicIssue
             ? renderIssueRow(epicIssue, isOpen)
-            : html`<div class="list-row opacity-60 border border-dashed border-mitto-border">
-                <span class="shrink-0 self-center text-mitto-text-muted" aria-hidden="true" data-testid="beads-epic-chevron">
+            : html`<div
+                class="list-row opacity-60 border border-dashed border-mitto-border"
+              >
+                <span
+                  class="shrink-0 self-center text-mitto-text-muted"
+                  aria-hidden="true"
+                  data-testid="beads-epic-chevron"
+                >
                   ${isOpen
                     ? html`<${ChevronDownIcon} className="w-4 h-4" />`
                     : html`<${ChevronRightIcon} className="w-4 h-4" />`}
                 </span>
-                <div class="list-col-grow text-xs text-mitto-text-muted italic">Epic (not in current filter)</div>
+                <div class="list-col-grow text-xs text-mitto-text-muted italic">
+                  Epic (not in current filter)
+                </div>
               </div>`}
         </summary>
-        <div class="pl-8" style=${depth > 1 ? "padding-left: " + (depth * 2) + "rem" : ""}>
-          ${group.items.map(item => {
+        <div
+          class="pl-8"
+          style=${depth > 1 ? "padding-left: " + depth * 2 + "rem" : ""}
+        >
+          ${group.items.map((item) => {
             if (item.type === "issue") return renderIssueRow(item.issue);
             return renderEpicGroup(item.group, depth + 1);
           })}
@@ -3070,31 +3984,35 @@ export function BeadsView({ workingDir, showToast, dismissToast, onFetchBeadsPro
 
       <div class="beads-toolbar flex items-center gap-2 px-4 border-b border-mitto-border shrink-0">
         <div class="join shrink-0" role="group" aria-label="Filter by status">
-          ${BEADS_STATUS_TOGGLES.map(t => {
+          ${BEADS_STATUS_TOGGLES.map((t) => {
             const tip = statusToggles[t.key]
               ? `Hide ${t.label} issues`
               : `Show ${t.label} issues`;
             return html`
-            <button
-              type="button"
-              onClick=${() => toggleStatus(t.key)}
-              onMouseEnter=${(e) => showToolbarTip(e, tip)}
-              onMouseLeave=${hideToolbarTip}
-              onMouseDown=${hideToolbarTip}
-              aria-pressed=${statusToggles[t.key] ? "true" : "false"}
-              aria-label=${tip}
-              data-tip=${tip}
-              class="btn btn-xs btn-square join-item inline-flex ${statusToggles[t.key] ? "btn-active" : "btn-ghost opacity-50"}"
-            >
-              <${t.Icon} className="w-3.5 h-3.5" />
-            </button>
-          `;
+              <button
+                type="button"
+                onClick=${() => toggleStatus(t.key)}
+                onMouseEnter=${(e) => showToolbarTip(e, tip)}
+                onMouseLeave=${hideToolbarTip}
+                onMouseDown=${hideToolbarTip}
+                aria-pressed=${statusToggles[t.key] ? "true" : "false"}
+                aria-label=${tip}
+                data-tip=${tip}
+                class="btn btn-xs btn-square join-item inline-flex ${statusToggles[
+                  t.key
+                ]
+                  ? "btn-active"
+                  : "btn-ghost opacity-50"}"
+              >
+                <${t.Icon} className="w-3.5 h-3.5" />
+              </button>
+            `;
           })}
         </div>
         <div class="join shrink-0" role="group" aria-label="View mode">
           <button
             type="button"
-            onClick=${() => setGrouping(g => !g)}
+            onClick=${() => setGrouping((g) => !g)}
             onMouseEnter=${(e) => showToolbarTip(e, grouping ? "Switch to flat list" : "Group issues by epic")}
             onMouseLeave=${hideToolbarTip}
             onMouseDown=${hideToolbarTip}
@@ -3109,22 +4027,22 @@ export function BeadsView({ workingDir, showToast, dismissToast, onFetchBeadsPro
         <select
           class="select select-xs shrink-0 w-28"
           value=${typeFilter}
-          onInput=${e => setTypeFilter(e.target.value)}
+          onInput=${(e) => setTypeFilter(e.target.value)}
         >
           <option value="all">All types</option>
-          ${allTypes.map(t => html`<option value=${t}>${t}</option>`)}
+          ${allTypes.map((t) => html`<option value=${t}>${t}</option>`)}
         </select>
         <input
           type="text"
           placeholder="Search id, title, body…"
           value=${search}
-          onInput=${e => setSearch(e.target.value)}
+          onInput=${(e) => setSearch(e.target.value)}
           class="input input-xs flex-1 min-w-0"
         />
         <div class="relative shrink-0" ref=${sortMenuRef}>
           <button
             type="button"
-            onClick=${() => setShowSortMenu(o => !o)}
+            onClick=${() => setShowSortMenu((o) => !o)}
             onMouseEnter=${(e) => showToolbarTip(e, `Sort by ${SORT_FIELD_LABELS[sort.field]} (${sort.direction === "asc" ? "ascending" : "descending"})`)}
             onMouseLeave=${hideToolbarTip}
             onMouseDown=${hideToolbarTip}
@@ -3136,50 +4054,77 @@ export function BeadsView({ workingDir, showToast, dismissToast, onFetchBeadsPro
             data-testid="beads-sort-button"
           >
             <${SortIcon} className="w-3.5 h-3.5" />
-            ${sort.direction === "asc"
-              ? html`<${ArrowUpIcon} className="w-3 h-3" />`
-              : html`<${ArrowDownIcon} className="w-3 h-3" />`}
+            ${
+              sort.direction === "asc"
+                ? html`<${ArrowUpIcon} className="w-3 h-3" />`
+                : html`<${ArrowDownIcon} className="w-3 h-3" />`
+            }
           </button>
-          ${showSortMenu && html`
-            <ul class="menu absolute top-full right-0 mt-2 w-52 bg-base-200 rounded-box shadow-xl z-10" data-testid="beads-sort-menu">
-              <li class="menu-title">Sort by</li>
-              ${SORT_FIELD_OPTIONS.map(opt => html`
-                <li key=${opt.field}>
-                  <button
-                    type="button"
-                    onClick=${() => setSort(s => ({ ...s, field: opt.field }))}
-                    class=${sort.field === opt.field ? "menu-active" : ""}
-                  >
-                    <span class="w-4 h-4 shrink-0">
-                      ${sort.field === opt.field ? html`<${CheckIcon} className="w-4 h-4" />` : null}
-                    </span>
-                    <span class="flex-1">${opt.label}</span>
-                  </button>
-                </li>
-              `)}
-              <li class="menu-title">Direction</li>
-              ${[{ dir: "asc", label: "Ascending", Icon: ArrowUpIcon }, { dir: "desc", label: "Descending", Icon: ArrowDownIcon }].map(d => html`
-                <li key=${d.dir}>
-                  <button
-                    type="button"
-                    onClick=${() => setSort(s => ({ ...s, direction: d.dir }))}
-                    class=${sort.direction === d.dir ? "menu-active" : ""}
-                  >
-                    <span class="w-4 h-4 shrink-0">
-                      ${sort.direction === d.dir ? html`<${CheckIcon} className="w-4 h-4" />` : null}
-                    </span>
-                    <span class="flex-1">${d.label}</span>
-                    <${d.Icon} className="w-3.5 h-3.5 opacity-60" />
-                  </button>
-                </li>
-              `)}
-            </ul>
-          `}
+          ${
+            showSortMenu &&
+            html`
+              <ul
+                class="menu absolute top-full right-0 mt-2 w-52 bg-base-200 rounded-box shadow-xl z-10"
+                data-testid="beads-sort-menu"
+              >
+                <li class="menu-title">Sort by</li>
+                ${SORT_FIELD_OPTIONS.map(
+                  (opt) => html`
+                    <li key=${opt.field}>
+                      <button
+                        type="button"
+                        onClick=${() =>
+                          setSort((s) => ({ ...s, field: opt.field }))}
+                        class=${sort.field === opt.field ? "menu-active" : ""}
+                      >
+                        <span class="w-4 h-4 shrink-0">
+                          ${sort.field === opt.field
+                            ? html`<${CheckIcon} className="w-4 h-4" />`
+                            : null}
+                        </span>
+                        <span class="flex-1">${opt.label}</span>
+                      </button>
+                    </li>
+                  `,
+                )}
+                <li class="menu-title">Direction</li>
+                ${[
+                  { dir: "asc", label: "Ascending", Icon: ArrowUpIcon },
+                  { dir: "desc", label: "Descending", Icon: ArrowDownIcon },
+                ].map(
+                  (d) => html`
+                    <li key=${d.dir}>
+                      <button
+                        type="button"
+                        onClick=${() =>
+                          setSort((s) => ({ ...s, direction: d.dir }))}
+                        class=${sort.direction === d.dir ? "menu-active" : ""}
+                      >
+                        <span class="w-4 h-4 shrink-0">
+                          ${sort.direction === d.dir
+                            ? html`<${CheckIcon} className="w-4 h-4" />`
+                            : null}
+                        </span>
+                        <span class="flex-1">${d.label}</span>
+                        <${d.Icon} className="w-3.5 h-3.5 opacity-60" />
+                      </button>
+                    </li>
+                  `,
+                )}
+              </ul>
+            `
+          }
         </div>
-        ${toolbarTip &&
-        html`
-          <${PortalTooltip} x=${toolbarTip.x} y=${toolbarTip.y} text=${toolbarTip.text} />
-        `}
+        ${
+          toolbarTip &&
+          html`
+            <${PortalTooltip}
+              x=${toolbarTip.x}
+              y=${toolbarTip.y}
+              text=${toolbarTip.text}
+            />
+          `
+        }
       </div>
 
       <div class="flex-1 overflow-y-auto overflow-x-auto beads-table-scroll" ref=${scrollContainerRef}>
@@ -3192,34 +4137,62 @@ export function BeadsView({ workingDir, showToast, dismissToast, onFetchBeadsPro
             display: "flex",
             alignItems: "center",
             justifyContent: "center",
-            transition: pullDistance === 0 ? "height 0.2s ease, opacity 0.2s ease" : "none",
+            transition:
+              pullDistance === 0
+                ? "height 0.2s ease, opacity 0.2s ease"
+                : "none",
             flexShrink: 0,
           }}
         >
-          <span class="loading loading-spinner w-5 h-5 text-mitto-text-secondary"></span>
+          <span
+            class="loading loading-spinner w-5 h-5 text-mitto-text-secondary"
+          ></span>
         </div>`}
-        ${!loading && error && html`
-          <div class="flex items-center justify-center h-24 text-red-400 text-sm px-4">${error}</div>
-        `}
-        ${!loading && !error && filtered.length === 0 && html`
-          <div class="flex flex-col items-center justify-center gap-1 h-32 text-center px-4">
-            <div class="text-mitto-text-secondary text-sm">No issues found</div>
-            <div class="text-mitto-text-muted text-xs">Create a new issue by pressing the "+" button below.</div>
-          </div>
-        `}
-        ${!error && filtered.length > 0 && html`
-          <div class="list p-2">
-            ${grouping && groupedItems
-              ? groupedItems.map(item => {
-                  if (item.type === "orphan") return renderIssueRow(item.issue);
-                  // Epic group: render recursively via renderEpicGroup.
-                  // depth=1 → 2rem padding-left (matches the original pl-8 / 2rem).
-                  return renderEpicGroup(item.group, 1);
-                })
-              : filtered.map(issue => renderIssueRow(issue))
-            }
-          </div>
-        `}
+        ${
+          !loading &&
+          error &&
+          html`
+            <div
+              class="flex items-center justify-center h-24 text-red-400 text-sm px-4"
+            >
+              ${error}
+            </div>
+          `
+        }
+        ${
+          !loading &&
+          !error &&
+          filtered.length === 0 &&
+          html`
+            <div
+              class="flex flex-col items-center justify-center gap-1 h-32 text-center px-4"
+            >
+              <div class="text-mitto-text-secondary text-sm">
+                No issues found
+              </div>
+              <div class="text-mitto-text-muted text-xs">
+                Create a new issue by pressing the "+" button below.
+              </div>
+            </div>
+          `
+        }
+        ${
+          !error &&
+          filtered.length > 0 &&
+          html`
+            <div class="list p-2">
+              ${grouping && groupedItems
+                ? groupedItems.map((item) => {
+                    if (item.type === "orphan")
+                      return renderIssueRow(item.issue);
+                    // Epic group: render recursively via renderEpicGroup.
+                    // depth=1 → 2rem padding-left (matches the original pl-8 / 2rem).
+                    return renderEpicGroup(item.group, 1);
+                  })
+                : filtered.map((issue) => renderIssueRow(issue))}
+            </div>
+          `
+        }
       </div>
 
       <div class="flex items-center gap-1 p-4 border-t border-mitto-border shrink-0">
@@ -3241,39 +4214,49 @@ export function BeadsView({ workingDir, showToast, dismissToast, onFetchBeadsPro
           >
             <${ChevronUpIcon} className="w-4 h-4" />
           </button>
-          ${showListPrompts && html`
-            <ul class="menu absolute bottom-full left-0 mb-2 w-64 max-h-72 overflow-y-auto flex-nowrap bg-base-200 rounded-box shadow-xl z-10">
-              ${listPromptsLoading && html`
-                <li class="px-3 py-2 flex items-center gap-2">
-                  <span class="loading loading-spinner w-4 h-4"></span> Loading…
-                </li>
-              `}
-              ${!listPromptsLoading && listPrompts.length === 0 && html`
-                <li class="px-3 py-2 opacity-60">No task prompts</li>
-              `}
-              ${!listPromptsLoading && listPrompts.map(p => {
-                const PromptIcon = getPromptIconOrDefault(p.icon);
-                return html`
-                <li key=${p.name}>
-                  <button
-                    type="button"
-                    onClick=${() => handleRunListPrompt(p)}
-                    title=${p.description || p.name}
-                  >
-                    <span class="w-4 h-4 shrink-0"><${PromptIcon} className="w-4 h-4" /></span>
-                    <span class="truncate flex-1">${p.name}</span>
-                    ${p.periodic &&
-                    html`<span
-                      class="shrink-0 text-success opacity-80"
-                      title="Periodic prompt — sets the conversation to recurring mode"
-                      ><${PeriodicIcon} className="w-3.5 h-3.5" /></span
-                    >`}
-                  </button>
-                </li>
-              `;
-              })}
-            </ul>
-          `}
+          ${
+            showListPrompts &&
+            html`
+              <ul
+                class="menu absolute bottom-full left-0 mb-2 w-64 max-h-72 overflow-y-auto flex-nowrap bg-base-200 rounded-box shadow-xl z-10"
+              >
+                ${listPromptsLoading &&
+                html`
+                  <li class="px-3 py-2 flex items-center gap-2">
+                    <span class="loading loading-spinner w-4 h-4"></span>
+                    Loading…
+                  </li>
+                `}
+                ${!listPromptsLoading &&
+                listPrompts.length === 0 &&
+                html` <li class="px-3 py-2 opacity-60">No task prompts</li> `}
+                ${!listPromptsLoading &&
+                listPrompts.map((p) => {
+                  const PromptIcon = getPromptIconOrDefault(p.icon);
+                  return html`
+                    <li key=${p.name}>
+                      <button
+                        type="button"
+                        onClick=${() => handleRunListPrompt(p)}
+                        title=${p.description || p.name}
+                      >
+                        <span class="w-4 h-4 shrink-0"
+                          ><${PromptIcon} className="w-4 h-4"
+                        /></span>
+                        <span class="truncate flex-1">${p.name}</span>
+                        ${p.periodic &&
+                        html`<span
+                          class="shrink-0 text-success opacity-80"
+                          title="Periodic prompt — sets the conversation to recurring mode"
+                          ><${PeriodicIcon} className="w-3.5 h-3.5"
+                        /></span>`}
+                      </button>
+                    </li>
+                  `;
+                })}
+              </ul>
+            `
+          }
         </div>
         <button
           onClick=${fetchList}
@@ -3284,7 +4267,10 @@ export function BeadsView({ workingDir, showToast, dismissToast, onFetchBeadsPro
           <${RefreshIcon} className="w-4 h-4" />
         </button>
         <button
-          onClick=${() => { if (closedCount === 0 || cleaningUp) return; setShowCleanupConfirm(true); }}
+          onClick=${() => {
+            if (closedCount === 0 || cleaningUp) return;
+            setShowCleanupConfirm(true);
+          }}
           aria-disabled=${closedCount === 0 || cleaningUp ? "true" : "false"}
           class="btn btn-ghost btn-square btn-sm group inline-flex tooltip tooltip-top ${closedCount === 0 || cleaningUp ? "opacity-40 pointer-events-none" : ""}"
           data-tip=${cleaningUp && cleanupProgress && cleanupProgress.total > 0 ? `Removing ${cleanupProgress.deleted}/${cleanupProgress.total}…` : closedCount === 0 ? "No closed issues to clean up" : `Clean up ${closedCount} closed issue${closedCount === 1 ? "" : "s"}`}
@@ -3293,86 +4279,154 @@ export function BeadsView({ workingDir, showToast, dismissToast, onFetchBeadsPro
           <${BroomIcon} className="w-4 h-4 group-hover:text-red-400" />
         </button>
 
-        ${upstream && upstream !== "none" && html`
-          <div class="flex items-center gap-1 pl-2 ml-1 border-l border-mitto-border">
-            ${upstream === "prompts" ? html`
-              <button
-                onClick=${() => { if (!pullPromptName || !onLaunchPrompt) return; onLaunchPrompt("pull", pullPromptName); }}
-                aria-disabled=${(!pullPromptName || !onLaunchPrompt) ? "true" : "false"}
-                class="btn btn-ghost btn-square btn-sm inline-flex tooltip tooltip-top ${(!pullPromptName || !onLaunchPrompt) ? "opacity-40 pointer-events-none" : ""}"
-                data-tip=${pullPromptName ? `Pull: run "${pullPromptName}"` : "No pull prompt configured"}
-                aria-label=${pullPromptName ? `Pull: run "${pullPromptName}"` : "No pull prompt configured"}
-              >
-                <${ArrowDownIcon} className="w-4 h-4" />
-              </button>
-              <button
-                onClick=${() => { if (!pushPromptName || !onLaunchPrompt) return; onLaunchPrompt("push", pushPromptName); }}
-                aria-disabled=${(!pushPromptName || !onLaunchPrompt) ? "true" : "false"}
-                class="btn btn-ghost btn-square btn-sm inline-flex tooltip tooltip-top ${(!pushPromptName || !onLaunchPrompt) ? "opacity-40 pointer-events-none" : ""}"
-                data-tip=${pushPromptName ? `Push: run "${pushPromptName}"` : "No push prompt configured"}
-                aria-label=${pushPromptName ? `Push: run "${pushPromptName}"` : "No push prompt configured"}
-              >
-                <${ArrowUpIcon} className="w-4 h-4" />
-              </button>
-              <button
-                onClick=${() => { if (!syncPromptName || !onLaunchPrompt) return; onLaunchPrompt("sync", syncPromptName); }}
-                aria-disabled=${(!syncPromptName || !onLaunchPrompt) ? "true" : "false"}
-                class="btn btn-ghost btn-square btn-sm inline-flex tooltip tooltip-top ${(!syncPromptName || !onLaunchPrompt) ? "opacity-40 pointer-events-none" : ""}"
-                data-tip=${syncPromptName ? `Sync: run "${syncPromptName}"` : "No sync prompt configured"}
-                aria-label=${syncPromptName ? `Sync: run "${syncPromptName}"` : "No sync prompt configured"}
-              >
-                <${SyncIcon} className="w-4 h-4" />
-              </button>
-            ` : html`
-              <button
-                onClick=${() => { if (syncAction) return; handleSync("pull"); }}
-                aria-disabled=${syncAction ? "true" : "false"}
-                class="btn btn-ghost btn-square btn-sm inline-flex tooltip tooltip-top ${syncAction ? "opacity-40 pointer-events-none" : ""}"
-                data-tip=${`Pull from ${UPSTREAM_LABELS[upstream] || upstream}`}
-                aria-label=${`Pull from ${UPSTREAM_LABELS[upstream] || upstream}`}
-              >
-                ${syncAction === "pull"
-                  ? html`<span class="loading loading-spinner w-4 h-4"></span>`
-                  : html`<${ArrowDownIcon} className="w-4 h-4" />`}
-              </button>
-              <button
-                onClick=${() => { if (syncAction) return; handleSync("push"); }}
-                aria-disabled=${syncAction ? "true" : "false"}
-                class="btn btn-ghost btn-square btn-sm inline-flex tooltip tooltip-top ${syncAction ? "opacity-40 pointer-events-none" : ""}"
-                data-tip=${`Push to ${UPSTREAM_LABELS[upstream] || upstream}`}
-                aria-label=${`Push to ${UPSTREAM_LABELS[upstream] || upstream}`}
-              >
-                ${syncAction === "push"
-                  ? html`<span class="loading loading-spinner w-4 h-4"></span>`
-                  : html`<${ArrowUpIcon} className="w-4 h-4" />`}
-              </button>
-              <button
-                onClick=${() => { if (syncAction) return; handleSync("sync"); }}
-                aria-disabled=${syncAction ? "true" : "false"}
-                class="btn btn-ghost btn-square btn-sm inline-flex tooltip tooltip-top ${syncAction ? "opacity-40 pointer-events-none" : ""}"
-                data-tip=${`Sync with ${UPSTREAM_LABELS[upstream] || upstream} (pull then push)`}
-                aria-label=${`Sync with ${UPSTREAM_LABELS[upstream] || upstream} (pull then push)`}
-              >
-                ${syncAction === "sync"
-                  ? html`<span class="loading loading-spinner w-4 h-4"></span>`
-                  : html`<${SyncIcon} className="w-4 h-4" />`}
-              </button>
-            `}
-          </div>
-        `}
+        ${
+          upstream &&
+          upstream !== "none" &&
+          html`
+            <div
+              class="flex items-center gap-1 pl-2 ml-1 border-l border-mitto-border"
+            >
+              ${upstream === "prompts"
+                ? html`
+                    <button
+                      onClick=${() => {
+                        if (!pullPromptName || !onLaunchPrompt) return;
+                        onLaunchPrompt("pull", pullPromptName);
+                      }}
+                      aria-disabled=${!pullPromptName || !onLaunchPrompt
+                        ? "true"
+                        : "false"}
+                      class="btn btn-ghost btn-square btn-sm inline-flex tooltip tooltip-top ${!pullPromptName ||
+                      !onLaunchPrompt
+                        ? "opacity-40 pointer-events-none"
+                        : ""}"
+                      data-tip=${pullPromptName
+                        ? `Pull: run "${pullPromptName}"`
+                        : "No pull prompt configured"}
+                      aria-label=${pullPromptName
+                        ? `Pull: run "${pullPromptName}"`
+                        : "No pull prompt configured"}
+                    >
+                      <${ArrowDownIcon} className="w-4 h-4" />
+                    </button>
+                    <button
+                      onClick=${() => {
+                        if (!pushPromptName || !onLaunchPrompt) return;
+                        onLaunchPrompt("push", pushPromptName);
+                      }}
+                      aria-disabled=${!pushPromptName || !onLaunchPrompt
+                        ? "true"
+                        : "false"}
+                      class="btn btn-ghost btn-square btn-sm inline-flex tooltip tooltip-top ${!pushPromptName ||
+                      !onLaunchPrompt
+                        ? "opacity-40 pointer-events-none"
+                        : ""}"
+                      data-tip=${pushPromptName
+                        ? `Push: run "${pushPromptName}"`
+                        : "No push prompt configured"}
+                      aria-label=${pushPromptName
+                        ? `Push: run "${pushPromptName}"`
+                        : "No push prompt configured"}
+                    >
+                      <${ArrowUpIcon} className="w-4 h-4" />
+                    </button>
+                    <button
+                      onClick=${() => {
+                        if (!syncPromptName || !onLaunchPrompt) return;
+                        onLaunchPrompt("sync", syncPromptName);
+                      }}
+                      aria-disabled=${!syncPromptName || !onLaunchPrompt
+                        ? "true"
+                        : "false"}
+                      class="btn btn-ghost btn-square btn-sm inline-flex tooltip tooltip-top ${!syncPromptName ||
+                      !onLaunchPrompt
+                        ? "opacity-40 pointer-events-none"
+                        : ""}"
+                      data-tip=${syncPromptName
+                        ? `Sync: run "${syncPromptName}"`
+                        : "No sync prompt configured"}
+                      aria-label=${syncPromptName
+                        ? `Sync: run "${syncPromptName}"`
+                        : "No sync prompt configured"}
+                    >
+                      <${SyncIcon} className="w-4 h-4" />
+                    </button>
+                  `
+                : html`
+                    <button
+                      onClick=${() => {
+                        if (syncAction) return;
+                        handleSync("pull");
+                      }}
+                      aria-disabled=${syncAction ? "true" : "false"}
+                      class="btn btn-ghost btn-square btn-sm inline-flex tooltip tooltip-top ${syncAction
+                        ? "opacity-40 pointer-events-none"
+                        : ""}"
+                      data-tip=${`Pull from ${UPSTREAM_LABELS[upstream] || upstream}`}
+                      aria-label=${`Pull from ${UPSTREAM_LABELS[upstream] || upstream}`}
+                    >
+                      ${syncAction === "pull"
+                        ? html`<span
+                            class="loading loading-spinner w-4 h-4"
+                          ></span>`
+                        : html`<${ArrowDownIcon} className="w-4 h-4" />`}
+                    </button>
+                    <button
+                      onClick=${() => {
+                        if (syncAction) return;
+                        handleSync("push");
+                      }}
+                      aria-disabled=${syncAction ? "true" : "false"}
+                      class="btn btn-ghost btn-square btn-sm inline-flex tooltip tooltip-top ${syncAction
+                        ? "opacity-40 pointer-events-none"
+                        : ""}"
+                      data-tip=${`Push to ${UPSTREAM_LABELS[upstream] || upstream}`}
+                      aria-label=${`Push to ${UPSTREAM_LABELS[upstream] || upstream}`}
+                    >
+                      ${syncAction === "push"
+                        ? html`<span
+                            class="loading loading-spinner w-4 h-4"
+                          ></span>`
+                        : html`<${ArrowUpIcon} className="w-4 h-4" />`}
+                    </button>
+                    <button
+                      onClick=${() => {
+                        if (syncAction) return;
+                        handleSync("sync");
+                      }}
+                      aria-disabled=${syncAction ? "true" : "false"}
+                      class="btn btn-ghost btn-square btn-sm inline-flex tooltip tooltip-top ${syncAction
+                        ? "opacity-40 pointer-events-none"
+                        : ""}"
+                      data-tip=${`Sync with ${UPSTREAM_LABELS[upstream] || upstream} (pull then push)`}
+                      aria-label=${`Sync with ${UPSTREAM_LABELS[upstream] || upstream} (pull then push)`}
+                    >
+                      ${syncAction === "sync"
+                        ? html`<span
+                            class="loading loading-spinner w-4 h-4"
+                          ></span>`
+                        : html`<${SyncIcon} className="w-4 h-4" />`}
+                    </button>
+                  `}
+            </div>
+          `
+        }
 
         <span class="text-xs text-mitto-text-secondary ml-auto">${filtered.length} issue${filtered.length === 1 ? "" : "s"}</span>
 
-        ${onOpenConfig && html`
-          <button
-            onClick=${() => onOpenConfig()}
-            class="btn btn-ghost btn-square btn-sm ml-2 inline-flex tooltip tooltip-top"
-            data-tip="Tasks configuration"
-            aria-label="Tasks configuration"
-          >
-            <${SettingsIcon} className="w-4 h-4" />
-          </button>
-        `}
+        ${
+          onOpenConfig &&
+          html`
+            <button
+              onClick=${() => onOpenConfig()}
+              class="btn btn-ghost btn-square btn-sm ml-2 inline-flex tooltip tooltip-top"
+              data-tip="Tasks configuration"
+              aria-label="Tasks configuration"
+            >
+              <${SettingsIcon} className="w-4 h-4" />
+            </button>
+          `
+        }
       </div>
     </div>
 
@@ -3396,14 +4450,17 @@ export function BeadsView({ workingDir, showToast, dismissToast, onFetchBeadsPro
     />
     </div>
 
-    ${contextMenu && html`
-      <${ContextMenu}
-        x=${contextMenu.x}
-        y=${contextMenu.y}
-        items=${contextMenuItems}
-        onClose=${closeContextMenu}
-      />
-    `}
+    ${
+      contextMenu &&
+      html`
+        <${ContextMenu}
+          x=${contextMenu.x}
+          y=${contextMenu.y}
+          items=${contextMenuItems}
+          onClose=${closeContextMenu}
+        />
+      `
+    }
 
     <${ConfirmDialog}
       isOpen=${showCleanupConfirm}
@@ -3428,56 +4485,67 @@ export function BeadsView({ workingDir, showToast, dismissToast, onFetchBeadsPro
       onConfirm=${confirmDeleteIssue}
       onCancel=${() => setDeleteTarget(null)}
     >
-      ${deleteTargetDescendants.length > 0 && html`
-        <div class="mt-3 space-y-2">
-          <p class="text-sm text-mitto-text-secondary">
-            This epic has ${deleteTargetDescendants.length} descendant issue${deleteTargetDescendants.length === 1 ? "" : "s"}. What should happen to ${deleteTargetDescendants.length === 1 ? "it" : "them"}?
-          </p>
-          <label class="flex items-start gap-3 cursor-pointer select-none">
-            <input
-              type="radio"
-              name="child-action"
-              value="none"
-              checked=${childAction === "none"}
-              disabled=${deletingIssue}
-              onChange=${() => setChildAction("none")}
-              class="radio radio-sm mt-0.5"
-            />
-            <span class="text-sm text-mitto-text-secondary">Leave child issues unchanged</span>
-          </label>
-          ${deleteTargetOpenDescendants.length > 0 && html`
+      ${
+        deleteTargetDescendants.length > 0 &&
+        html`
+          <div class="mt-3 space-y-2">
+            <p class="text-sm text-mitto-text-secondary">
+              This epic has ${deleteTargetDescendants.length} descendant
+              issue${deleteTargetDescendants.length === 1 ? "" : "s"}. What
+              should happen to
+              ${deleteTargetDescendants.length === 1 ? "it" : "them"}?
+            </p>
             <label class="flex items-start gap-3 cursor-pointer select-none">
               <input
                 type="radio"
                 name="child-action"
-                value="close"
-                checked=${childAction === "close"}
+                value="none"
+                checked=${childAction === "none"}
                 disabled=${deletingIssue}
-                onChange=${() => setChildAction("close")}
+                onChange=${() => setChildAction("none")}
                 class="radio radio-sm mt-0.5"
               />
+              <span class="text-sm text-mitto-text-secondary"
+                >Leave child issues unchanged</span
+              >
+            </label>
+            ${deleteTargetOpenDescendants.length > 0 &&
+            html`
+              <label class="flex items-start gap-3 cursor-pointer select-none">
+                <input
+                  type="radio"
+                  name="child-action"
+                  value="close"
+                  checked=${childAction === "close"}
+                  disabled=${deletingIssue}
+                  onChange=${() => setChildAction("close")}
+                  class="radio radio-sm mt-0.5"
+                />
+                <span class="text-sm text-mitto-text-secondary">
+                  Close the ${deleteTargetOpenDescendants.length} open child
+                  issue${deleteTargetOpenDescendants.length === 1 ? "" : "s"}
+                </span>
+              </label>
+            `}
+            <label class="flex items-start gap-3 cursor-pointer select-none">
+              <input
+                type="radio"
+                name="child-action"
+                value="delete"
+                checked=${childAction === "delete"}
+                disabled=${deletingIssue}
+                onChange=${() => setChildAction("delete")}
+                class="radio radio-sm radio-error mt-0.5"
+              />
               <span class="text-sm text-mitto-text-secondary">
-                Close the ${deleteTargetOpenDescendants.length} open child issue${deleteTargetOpenDescendants.length === 1 ? "" : "s"}
+                Delete all ${deleteTargetDescendants.length} child
+                issue${deleteTargetDescendants.length === 1 ? "" : "s"}
+                (permanent)
               </span>
             </label>
-          `}
-          <label class="flex items-start gap-3 cursor-pointer select-none">
-            <input
-              type="radio"
-              name="child-action"
-              value="delete"
-              checked=${childAction === "delete"}
-              disabled=${deletingIssue}
-              onChange=${() => setChildAction("delete")}
-              class="radio radio-sm radio-error mt-0.5"
-            />
-            <span class="text-sm text-mitto-text-secondary">
-              Delete all ${deleteTargetDescendants.length} child issue${deleteTargetDescendants.length === 1 ? "" : "s"} (permanent)
-            </span>
-          </label>
-        </div>
-      `}
+          </div>
+        `
+      }
     </${ConfirmDialog}>
   `;
 }
-

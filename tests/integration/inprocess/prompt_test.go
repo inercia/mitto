@@ -648,7 +648,6 @@ output: discard
 	}
 }
 
-
 // TestTemplateRender_UserData_NilMap verifies that {{ UserData "X" }} on a session
 // with no user data renders "" without error (fail-safe, not fail-closed).
 func TestTemplateRender_UserData_NilMap(t *testing.T) {
@@ -688,10 +687,10 @@ func TestTemplateRender_UserData_DotAccess(t *testing.T) {
 
 // TestPromptArgCache_FullLoop_ExistingConversation exercises the full per-conversation
 // prompt-argument caching loop against a real (mock) ACP session:
-//   1. Seed with args → dispatcher writes them to cache; check rendered body + status.
-//   2. Seed without args → backend auto-fills from cache; rendered body unchanged.
-//   3. Wait past TTL (seed #2 refreshes TTL so wait from that call) → status empty.
-//   4. Seed without args post-expiry → falls back to ${VAR:-default} defaults.
+//  1. Seed with args → dispatcher writes them to cache; check rendered body + status.
+//  2. Seed without args → backend auto-fills from cache; rendered body unchanged.
+//  3. Wait past TTL (seed #2 refreshes TTL so wait from that call) → status empty.
+//  4. Seed without args post-expiry → falls back to ${VAR:-default} defaults.
 func TestPromptArgCache_FullLoop_ExistingConversation(t *testing.T) {
 	ts, orderFile := setupDeferredConfigServer(t)
 

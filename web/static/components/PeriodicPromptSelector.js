@@ -83,7 +83,9 @@ export function PeriodicPromptSelector({
   // Three display modes: named prompt > free-text body preview > empty placeholder.
   // The free-text case shows the first non-empty line, trimmed and truncated to
   // FREE_TEXT_PREVIEW_MAX, with the full body available on hover via PortalTooltip.
-  const freeTextBody = !selectedPromptName ? (selectedPromptBody || "").trim() : "";
+  const freeTextBody = !selectedPromptName
+    ? (selectedPromptBody || "").trim()
+    : "";
   let freeTextPreview = "";
   if (freeTextBody) {
     const firstLine = freeTextBody.split(/\r?\n/, 1)[0].trim();
@@ -93,7 +95,8 @@ export function PeriodicPromptSelector({
         : firstLine;
   }
   const hasFreeText = freeTextPreview.length > 0;
-  const displayName = selectedPromptName || freeTextPreview || "Select a prompt...";
+  const displayName =
+    selectedPromptName || freeTextPreview || "Select a prompt...";
   const isConfigured = !!selectedPromptName || hasFreeText;
 
   // Cursor-anchored tooltip showing the full free-text body on hover. Gated on
@@ -175,7 +178,11 @@ export function PeriodicPromptSelector({
       </button>
 
       ${bodyTip &&
-      html`<${PortalTooltip} x=${bodyTip.x} y=${bodyTip.y} text=${bodyTip.text} />`}
+      html`<${PortalTooltip}
+        x=${bodyTip.x}
+        y=${bodyTip.y}
+        text=${bodyTip.text}
+      />`}
 
       <!-- Dropdown panel (appears ABOVE the trigger button) -->
       ${showDropdown &&

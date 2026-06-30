@@ -112,8 +112,7 @@ function NamedPromptPill({ message }) {
   }
   return html`
     <div class="message-enter flex justify-end items-center gap-2 mb-3">
-      ${timeStr &&
-      html`<span class="message-timestamp">${timeStr}</span>`}
+      ${timeStr && html`<span class="message-timestamp">${timeStr}</span>`}
       <div
         class="badge badge-primary badge-lg gap-2"
         data-testid="named-prompt-pill"
@@ -137,7 +136,8 @@ function NamedPromptPill({ message }) {
           <span
             class="badge badge-sm badge-ghost tabular-nums"
             data-testid="prompt-arg-count"
-          >${message.argumentCount}</span>
+            >${message.argumentCount}</span
+          >
         <//>`}
       </div>
     </div>
@@ -161,7 +161,8 @@ function ThoughtBubble({ message, isLast, isStreaming }) {
   const firstLine = useMemo(() => {
     if (!message.text) return "";
     const newlineIdx = message.text.indexOf("\n");
-    const line = newlineIdx > 0 ? message.text.substring(0, newlineIdx) : message.text;
+    const line =
+      newlineIdx > 0 ? message.text.substring(0, newlineIdx) : message.text;
     // Truncate long first lines
     const maxLen = 120;
     return line.length > maxLen ? line.substring(0, maxLen) : line;
@@ -185,17 +186,28 @@ function ThoughtBubble({ message, isLast, isStreaming }) {
 
   return html`
     <div class="message-enter flex justify-start mb-3">
-      <div class="${bubbleClass} ${isCollapsible ? 'thought-bubble-collapsible' : ''}">
+      <div
+        class="${bubbleClass} ${isCollapsible
+          ? "thought-bubble-collapsible"
+          : ""}"
+      >
         <div
-          class="flex items-start gap-2 ${isCollapsible ? 'cursor-pointer select-none' : ''}"
-          onClick=${isCollapsible ? () => setIsCollapsed(!isCollapsed) : undefined}
+          class="flex items-start gap-2 ${isCollapsible
+            ? "cursor-pointer select-none"
+            : ""}"
+          onClick=${isCollapsible
+            ? () => setIsCollapsed(!isCollapsed)
+            : undefined}
         >
           <span
-            class="${isModelError ? 'text-amber-400' : 'text-purple-400'} mt-0.5 shrink-0"
-            >${isModelError ? "⚠️" : "💭"}</span>
+            class="${isModelError
+              ? "text-amber-400"
+              : "text-purple-400"} mt-0.5 shrink-0"
+            >${isModelError ? "⚠️" : "💭"}</span
+          >
           <div class="min-w-0">
             <span
-              class="italic ${showCursor ? 'streaming-cursor' : ''}"
+              class="italic ${showCursor ? "streaming-cursor" : ""}"
               dangerouslySetInnerHTML=${{ __html: displayHtml }}
             />
             ${isModelError &&
@@ -284,11 +296,15 @@ function MessageImpl({ message, isLast, isStreaming, onRetry }) {
       if (isRunning) {
         // Spinning indicator for running
         return html`
-          <span class="loading loading-spinner w-4 h-4 text-mitto-warning"></span>
+          <span
+            class="loading loading-spinner w-4 h-4 text-mitto-warning"
+          ></span>
         `;
       }
       // Default: gray text for unknown status
-      return html`<span class="text-xs text-mitto-text-muted">${message.status}</span>`;
+      return html`<span class="text-xs text-mitto-text-muted"
+        >${message.status}</span
+      >`;
     };
 
     // Parse the title for file paths
@@ -323,7 +339,10 @@ function MessageImpl({ message, isLast, isStreaming, onRetry }) {
               e.preventDefault();
               e.stopPropagation();
               if (!viewerUrl) return;
-              if (isNativeApp() && typeof window.mittoOpenViewer === "function") {
+              if (
+                isNativeApp() &&
+                typeof window.mittoOpenViewer === "function"
+              ) {
                 const fullUrl = new URL(viewerUrl, window.location.origin).href;
                 window.mittoOpenViewer(fullUrl);
               } else {
@@ -353,7 +372,11 @@ function MessageImpl({ message, isLast, isStreaming, onRetry }) {
 
   // Thought display — delegated to ThoughtBubble to keep hooks unconditional
   if (isThought) {
-    return html`<${ThoughtBubble} message=${message} isLast=${isLast} isStreaming=${isStreaming} />`;
+    return html`<${ThoughtBubble}
+      message=${message}
+      isLast=${isLast}
+      isStreaming=${isStreaming}
+    />`;
   }
 
   // Error message (with URL linkification)
@@ -439,18 +462,23 @@ function MessageImpl({ message, isLast, isStreaming, onRetry }) {
           table.parentNode.insertBefore(wrapper, table);
           wrapper.appendChild(table);
         });
-        const { ids, meta } = getBeadsKnownIds(window.mittoCurrentWorkspace || "");
+        const { ids, meta } = getBeadsKnownIds(
+          window.mittoCurrentWorkspace || "",
+        );
         linkifyBeadsRefs(userMessageRef.current, ids, meta);
       }
 
       const onBeadsUpdated = () => {
         if (userMessageRef.current && useMarkdown) {
-          const { ids, meta } = getBeadsKnownIds(window.mittoCurrentWorkspace || "");
+          const { ids, meta } = getBeadsKnownIds(
+            window.mittoCurrentWorkspace || "",
+          );
           linkifyBeadsRefs(userMessageRef.current, ids, meta);
         }
       };
       window.addEventListener("beads-ids-updated", onBeadsUpdated);
-      return () => window.removeEventListener("beads-ids-updated", onBeadsUpdated);
+      return () =>
+        window.removeEventListener("beads-ids-updated", onBeadsUpdated);
     }, [renderedHtml, useMarkdown]);
 
     const [userCopied, setUserCopied] = useState(false);
@@ -509,11 +537,14 @@ function MessageImpl({ message, isLast, isStreaming, onRetry }) {
                 onClick=${handleUserCopy}
               >
                 ${userCopied
-                  ? html`<${CheckIcon} className="w-3.5 h-3.5 text-mitto-success" />`
+                  ? html`<${CheckIcon}
+                      className="w-3.5 h-3.5 text-mitto-success"
+                    />`
                   : html`<${CopyIcon} className="w-3.5 h-3.5" />`}
               </button>
             <//>
-            ${userTimeStr && html`<div class="message-timestamp">${userTimeStr}</div>`}
+            ${userTimeStr &&
+            html`<div class="message-timestamp">${userTimeStr}</div>`}
           </div>
         </div>
       </div>
@@ -558,18 +589,23 @@ function MessageImpl({ message, isLast, isStreaming, onRetry }) {
         }
 
         // Linkify beads IDs
-        const { ids, meta } = getBeadsKnownIds(window.mittoCurrentWorkspace || "");
+        const { ids, meta } = getBeadsKnownIds(
+          window.mittoCurrentWorkspace || "",
+        );
         linkifyBeadsRefs(agentMessageRef.current, ids, meta);
       }
 
       const onBeadsUpdated = () => {
         if (agentMessageRef.current) {
-          const { ids, meta } = getBeadsKnownIds(window.mittoCurrentWorkspace || "");
+          const { ids, meta } = getBeadsKnownIds(
+            window.mittoCurrentWorkspace || "",
+          );
           linkifyBeadsRefs(agentMessageRef.current, ids, meta);
         }
       };
       window.addEventListener("beads-ids-updated", onBeadsUpdated);
-      return () => window.removeEventListener("beads-ids-updated", onBeadsUpdated);
+      return () =>
+        window.removeEventListener("beads-ids-updated", onBeadsUpdated);
     }, [message.html]);
 
     const [agentCopied, setAgentCopied] = useState(false);
@@ -586,7 +622,9 @@ function MessageImpl({ message, isLast, isStreaming, onRetry }) {
     // hid the time for every agent message whenever the conversation was running
     // (e.g. completed messages followed by a tool call); mirror `showCursor` so
     // only the live message hides its time.
-    const agentTimeStr = !showCursor ? formatMessageTime(message.timestamp) : null;
+    const agentTimeStr = !showCursor
+      ? formatMessageTime(message.timestamp)
+      : null;
     return html`
       <div class="message-enter flex justify-start mb-3 group">
         <div
@@ -613,11 +651,14 @@ function MessageImpl({ message, isLast, isStreaming, onRetry }) {
                 onClick=${handleAgentCopy}
               >
                 ${agentCopied
-                  ? html`<${CheckIcon} className="w-3.5 h-3.5 text-mitto-success" />`
+                  ? html`<${CheckIcon}
+                      className="w-3.5 h-3.5 text-mitto-success"
+                    />`
                   : html`<${CopyIcon} className="w-3.5 h-3.5" />`}
               </button>
             <//>
-            ${agentTimeStr && html`<div class="message-timestamp ml-auto">${agentTimeStr}</div>`}
+            ${agentTimeStr &&
+            html`<div class="message-timestamp ml-auto">${agentTimeStr}</div>`}
           </div>
         </div>
       </div>

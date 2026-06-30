@@ -15,11 +15,23 @@ import {
 // Source badge (W/F/S) shown on the right of each item when enabled.
 function getBadgeInfo(source) {
   if (source === "workspace") {
-    return { label: "W", title: "Workspace prompt", bgColor: "bg-green-600/80" };
+    return {
+      label: "W",
+      title: "Workspace prompt",
+      bgColor: "bg-green-600/80",
+    };
   } else if (source === "file") {
-    return { label: "F", title: "File-based prompt", bgColor: "bg-purple-600/80" };
+    return {
+      label: "F",
+      title: "File-based prompt",
+      bgColor: "bg-purple-600/80",
+    };
   }
-  return { label: "S", title: "Settings prompt", bgColor: "bg-mitto-accent-600/80" };
+  return {
+    label: "S",
+    title: "Settings prompt",
+    bgColor: "bg-mitto-accent-600/80",
+  };
 }
 
 /**
@@ -111,10 +123,34 @@ export function PromptsMenu({
           ref=${isKbSelected ? selectedItemRef : null}
         >
           ${shiftHeld
-            ? html`<svg class="w-4 h-4 shrink-0 opacity-60" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" /></svg>`
+            ? html`<svg
+                class="w-4 h-4 shrink-0 opacity-60"
+                fill="none"
+                stroke="currentColor"
+                viewBox="0 0 24 24"
+              >
+                <path
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  stroke-width="2"
+                  d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"
+                />
+              </svg>`
             : PromptIcon
               ? html`<${PromptIcon} className="w-4 h-4 shrink-0 opacity-60" />`
-              : html`<svg class="w-4 h-4 shrink-0 opacity-60" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z" /></svg>`}
+              : html`<svg
+                  class="w-4 h-4 shrink-0 opacity-60"
+                  fill="none"
+                  stroke="currentColor"
+                  viewBox="0 0 24 24"
+                >
+                  <path
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                    stroke-width="2"
+                    d="M13 10V3L4 14h7v7l9-11h-7z"
+                  />
+                </svg>`}
           <span class="truncate flex-1 min-w-0">${prompt.name}</span>
           ${overrideModel &&
           html`<span
@@ -131,16 +167,28 @@ export function PromptsMenu({
           html`<span
             class="shrink-0 text-success opacity-80"
             title="Periodic prompt — sets the conversation to recurring mode"
-            ><${PeriodicIcon} className="w-3.5 h-3.5" /></span
-          >`}
+            ><${PeriodicIcon} className="w-3.5 h-3.5"
+          /></span>`}
           ${showSourceBadge &&
           html`<span
-            class="text-[10px] font-bold px-1.5 py-0.5 rounded ${getBadgeInfo(prompt.source).bgColor} text-white/90 shrink-0"
+            class="text-[10px] font-bold px-1.5 py-0.5 rounded ${getBadgeInfo(
+              prompt.source,
+            ).bgColor} text-white/90 shrink-0"
             title=${getBadgeInfo(prompt.source).title}
             >${getBadgeInfo(prompt.source).label}</span
           >`}
           ${isChosen &&
-          html`<svg class="w-4 h-4 shrink-0 text-mitto-accent" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd" /></svg>`}
+          html`<svg
+            class="w-4 h-4 shrink-0 text-mitto-accent"
+            fill="currentColor"
+            viewBox="0 0 20 20"
+          >
+            <path
+              fill-rule="evenodd"
+              d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z"
+              clip-rule="evenodd"
+            />
+          </svg>`}
         </button>
       </li>
     `;
@@ -181,11 +229,19 @@ export function PromptsMenu({
             `,
           )}
         </ul>
-        ${flat.length === 0 &&
-        html`<div class="px-4 py-3 text-xs text-mitto-text-muted text-center">${emptyText}</div>`}
+        ${
+          flat.length === 0 &&
+          html`<div class="px-4 py-3 text-xs text-mitto-text-muted text-center">
+            ${emptyText}
+          </div>`
+        }
       </div>
-      ${footer &&
-      html`<div class="px-3 py-1.5 border-t border-mitto-border-1 shrink-0">${footer}</div>`}
+      ${
+        footer &&
+        html`<div class="px-3 py-1.5 border-t border-mitto-border-1 shrink-0">
+          ${footer}
+        </div>`
+      }
     </${Fragment}>
   `;
 }

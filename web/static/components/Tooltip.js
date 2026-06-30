@@ -84,16 +84,19 @@ export function Tooltip({
   // across renders), so declare the portal hover state before any early return.
   const [tipPos, setTipPos] = useState(null);
   const tipTimerRef = useRef(null);
-  const showPortalTip = useCallback((e) => {
-    if (!TOOLTIP_SUPPORTS_HOVER || !tip) return;
-    const x = e.clientX;
-    const y = e.clientY;
-    clearTimeout(tipTimerRef.current);
-    tipTimerRef.current = setTimeout(
-      () => setTipPos({ x, y }),
-      PORTAL_TOOLTIP_DELAY_MS,
-    );
-  }, [tip]);
+  const showPortalTip = useCallback(
+    (e) => {
+      if (!TOOLTIP_SUPPORTS_HOVER || !tip) return;
+      const x = e.clientX;
+      const y = e.clientY;
+      clearTimeout(tipTimerRef.current);
+      tipTimerRef.current = setTimeout(
+        () => setTipPos({ x, y }),
+        PORTAL_TOOLTIP_DELAY_MS,
+      );
+    },
+    [tip],
+  );
   const hidePortalTip = useCallback(() => {
     clearTimeout(tipTimerRef.current);
     setTipPos(null);
@@ -130,7 +133,5 @@ export function Tooltip({
     .filter(Boolean)
     .join(" ");
 
-  return html`
-    <div class=${classes} data-tip=${tip}>${children}</div>
-  `;
+  return html` <div class=${classes} data-tip=${tip}>${children}</div> `;
 }

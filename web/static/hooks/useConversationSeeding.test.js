@@ -3,7 +3,15 @@
  */
 
 import { jest } from "@jest/globals";
-import { buildSeedQueueBody, seedConversationWithPrompt, configurePeriodicSchedule, decidePeriodicAction, makePeriodicNow, useConversationSeeding, parseDurationToSeconds } from "./useConversationSeeding.js";
+import {
+  buildSeedQueueBody,
+  seedConversationWithPrompt,
+  configurePeriodicSchedule,
+  decidePeriodicAction,
+  makePeriodicNow,
+  useConversationSeeding,
+  parseDurationToSeconds,
+} from "./useConversationSeeding.js";
 
 // Provide a minimal window.preact stub so the module-level destructure doesn't throw.
 global.window = global.window || {};
@@ -14,7 +22,11 @@ window.mittoApiPrefix = "";
 if (typeof document === "undefined") {
   global.document = { cookie: "" };
 } else {
-  Object.defineProperty(document, "cookie", { value: "", writable: true, configurable: true });
+  Object.defineProperty(document, "cookie", {
+    value: "",
+    writable: true,
+    configurable: true,
+  });
 }
 
 afterEach(() => {
@@ -82,13 +94,17 @@ describe("seedConversationWithPrompt", () => {
   });
 
   test("returns invalid_request when prompt.name is missing", async () => {
-    const result = await seedConversationWithPrompt("sess-1", { prompt: "body" });
+    const result = await seedConversationWithPrompt("sess-1", {
+      prompt: "body",
+    });
     expect(result).toEqual({ success: false, error: "invalid_request" });
   });
 
   test("POSTs to correct URL with prompt_name and no message field", async () => {
     const fetchImpl = makeFetch(201, { id: "msg-abc" });
-    const result = await seedConversationWithPrompt("sess-1", prompt, { fetchImpl });
+    const result = await seedConversationWithPrompt("sess-1", prompt, {
+      fetchImpl,
+    });
 
     expect(fetchImpl).toHaveBeenCalledTimes(1);
     const [url, opts] = fetchImpl.mock.calls[0];
@@ -105,27 +121,38 @@ describe("seedConversationWithPrompt", () => {
 
   test("includes arguments in body when provided", async () => {
     const fetchImpl = makeFetch(200, { id: "msg-xyz" });
-    await seedConversationWithPrompt("sess-1", prompt, { arguments: { foo: "bar" }, fetchImpl });
+    await seedConversationWithPrompt("sess-1", prompt, {
+      arguments: { foo: "bar" },
+      fetchImpl,
+    });
     const sentBody = JSON.parse(fetchImpl.mock.calls[0][1].body);
     expect(sentBody.arguments).toEqual({ foo: "bar" });
   });
 
   test("returns success:false on non-ok response", async () => {
     const fetchImpl = makeFetch(400, { error: "bad_request" });
-    const result = await seedConversationWithPrompt("sess-1", prompt, { fetchImpl });
+    const result = await seedConversationWithPrompt("sess-1", prompt, {
+      fetchImpl,
+    });
     expect(result.success).toBe(false);
     expect(result.error).toBe("bad_request");
   });
 
   test("returns success:false with request_failed on network error", async () => {
-    const fetchImpl = jest.fn(() => Promise.reject(new Error("network failure")));
-    const result = await seedConversationWithPrompt("sess-1", prompt, { fetchImpl });
+    const fetchImpl = jest.fn(() =>
+      Promise.reject(new Error("network failure")),
+    );
+    const result = await seedConversationWithPrompt("sess-1", prompt, {
+      fetchImpl,
+    });
     expect(result).toEqual({ success: false, error: "request_failed" });
   });
 
   test("returns success:true on 200 response", async () => {
     const fetchImpl = makeFetch(200, { id: "msg-200" });
-    const result = await seedConversationWithPrompt("sess-1", prompt, { fetchImpl });
+    const result = await seedConversationWithPrompt("sess-1", prompt, {
+      fetchImpl,
+    });
     expect(result).toEqual({ success: true, messageId: "msg-200" });
   });
 });
@@ -137,7 +164,9 @@ describe("seedConversationWithPrompt", () => {
 describe("useConversationSeeding — startConversationWithPrompt", () => {
   test("calls newSession with initialPromptName and arguments, returns sessionId", async () => {
     const newSession = jest.fn().mockResolvedValue({ sessionId: "sess-9" });
-    const { startConversationWithPrompt } = useConversationSeeding({ newSession });
+    const { startConversationWithPrompt } = useConversationSeeding({
+      newSession,
+    });
 
     const result = await startConversationWithPrompt({
       prompt: { name: "p1" },
@@ -157,7 +186,9 @@ describe("useConversationSeeding — startConversationWithPrompt", () => {
 
   test("passes workingDir, acpServer, name, beadsIssue through to newSession", async () => {
     const newSession = jest.fn().mockResolvedValue({ sessionId: "sess-9" });
-    const { startConversationWithPrompt } = useConversationSeeding({ newSession });
+    const { startConversationWithPrompt } = useConversationSeeding({
+      newSession,
+    });
 
     await startConversationWithPrompt({
       prompt: { name: "p1" },
@@ -178,7 +209,9 @@ describe("useConversationSeeding — startConversationWithPrompt", () => {
     // The new implementation calls newSession only; it does NOT call seedConversationWithPrompt.
     // We verify this by confirming newSession is the sole mock and the result is clean (no seedError).
     const newSession = jest.fn().mockResolvedValue({ sessionId: "sess-9" });
-    const { startConversationWithPrompt } = useConversationSeeding({ newSession });
+    const { startConversationWithPrompt } = useConversationSeeding({
+      newSession,
+    });
 
     const result = await startConversationWithPrompt({
       prompt: { name: "p1" },
@@ -194,7 +227,9 @@ describe("useConversationSeeding — startConversationWithPrompt", () => {
 
   test("returns error when newSession returns no sessionId", async () => {
     const newSession = jest.fn().mockResolvedValue({ error: "boom" });
-    const { startConversationWithPrompt } = useConversationSeeding({ newSession });
+    const { startConversationWithPrompt } = useConversationSeeding({
+      newSession,
+    });
 
     const result = await startConversationWithPrompt({
       prompt: { name: "p1" },
@@ -206,9 +241,13 @@ describe("useConversationSeeding — startConversationWithPrompt", () => {
 
   test("returns session_creation_failed when newSession returns empty object", async () => {
     const newSession = jest.fn().mockResolvedValue({});
-    const { startConversationWithPrompt } = useConversationSeeding({ newSession });
+    const { startConversationWithPrompt } = useConversationSeeding({
+      newSession,
+    });
 
-    const result = await startConversationWithPrompt({ prompt: { name: "p1" } });
+    const result = await startConversationWithPrompt({
+      prompt: { name: "p1" },
+    });
 
     expect(result).toEqual({ error: "session_creation_failed" });
   });
@@ -233,7 +272,12 @@ describe("configurePeriodicSchedule", () => {
 
   test("PUTs to /api/sessions/{id}/periodic with correct body for hours", async () => {
     const fetchImpl = makeFetch(200, {});
-    await configurePeriodicSchedule("sess-1", prompt, { value: 2, unit: "hours" }, { fetchImpl });
+    await configurePeriodicSchedule(
+      "sess-1",
+      prompt,
+      { value: 2, unit: "hours" },
+      { fetchImpl },
+    );
 
     const [url, opts] = fetchImpl.mock.calls[0];
     expect(url).toContain("/api/sessions/sess-1/periodic");
@@ -249,7 +293,12 @@ describe("configurePeriodicSchedule", () => {
 
   test("includes 'at' in frequency only for days unit", async () => {
     const fetchImpl = makeFetch(200, {});
-    await configurePeriodicSchedule("sess-2", prompt, { value: 1, unit: "days", at: "09:00" }, { fetchImpl });
+    await configurePeriodicSchedule(
+      "sess-2",
+      prompt,
+      { value: 1, unit: "days", at: "09:00" },
+      { fetchImpl },
+    );
 
     const body = JSON.parse(fetchImpl.mock.calls[0][1].body);
     expect(body.frequency.unit).toBe("days");
@@ -258,7 +307,12 @@ describe("configurePeriodicSchedule", () => {
 
   test("omits 'at' for minutes unit even when provided", async () => {
     const fetchImpl = makeFetch(200, {});
-    await configurePeriodicSchedule("sess-3", prompt, { value: 30, unit: "minutes", at: "09:00" }, { fetchImpl });
+    await configurePeriodicSchedule(
+      "sess-3",
+      prompt,
+      { value: 30, unit: "minutes", at: "09:00" },
+      { fetchImpl },
+    );
 
     const body = JSON.parse(fetchImpl.mock.calls[0][1].body);
     expect(body.frequency.unit).toBe("minutes");
@@ -267,20 +321,35 @@ describe("configurePeriodicSchedule", () => {
 
   test("returns success:true on 200 response", async () => {
     const fetchImpl = makeFetch(200, {});
-    const result = await configurePeriodicSchedule("sess-4", prompt, { value: 1, unit: "hours" }, { fetchImpl });
+    const result = await configurePeriodicSchedule(
+      "sess-4",
+      prompt,
+      { value: 1, unit: "hours" },
+      { fetchImpl },
+    );
     expect(result).toEqual({ success: true });
   });
 
   test("returns success:false with periodic_setup_failed on non-ok response", async () => {
     const fetchImpl = makeFetch(400, { error: "bad_request" });
-    const result = await configurePeriodicSchedule("sess-5", prompt, { value: 1, unit: "hours" }, { fetchImpl });
+    const result = await configurePeriodicSchedule(
+      "sess-5",
+      prompt,
+      { value: 1, unit: "hours" },
+      { fetchImpl },
+    );
     expect(result.success).toBe(false);
     expect(result.error).toBeDefined();
   });
 
   test("returns success:false on network error", async () => {
     const fetchImpl = jest.fn(() => Promise.reject(new Error("net fail")));
-    const result = await configurePeriodicSchedule("sess-6", prompt, { value: 1, unit: "hours" }, { fetchImpl });
+    const result = await configurePeriodicSchedule(
+      "sess-6",
+      prompt,
+      { value: 1, unit: "hours" },
+      { fetchImpl },
+    );
     expect(result.success).toBe(false);
     expect(result.error).toBe("periodic_setup_failed");
   });
@@ -302,9 +371,13 @@ describe("useConversationSeeding — startConversationWithPrompt periodic path",
   }
 
   test("periodic: does NOT pass initialPromptName to newSession", async () => {
-    const newSession = jest.fn().mockResolvedValue({ sessionId: "sess-periodic" });
+    const newSession = jest
+      .fn()
+      .mockResolvedValue({ sessionId: "sess-periodic" });
     const fetchImpl = makeFetch(200, {});
-    const { startConversationWithPrompt } = useConversationSeeding({ newSession });
+    const { startConversationWithPrompt } = useConversationSeeding({
+      newSession,
+    });
 
     await startConversationWithPrompt({
       prompt: { name: "daily-standup" },
@@ -319,9 +392,13 @@ describe("useConversationSeeding — startConversationWithPrompt periodic path",
   });
 
   test("periodic: PUTs periodic config after session creation", async () => {
-    const newSession = jest.fn().mockResolvedValue({ sessionId: "sess-periodic" });
+    const newSession = jest
+      .fn()
+      .mockResolvedValue({ sessionId: "sess-periodic" });
     const fetchImpl = makeFetch(200, {});
-    const { startConversationWithPrompt } = useConversationSeeding({ newSession });
+    const { startConversationWithPrompt } = useConversationSeeding({
+      newSession,
+    });
 
     const result = await startConversationWithPrompt({
       prompt: { name: "daily-standup" },
@@ -348,7 +425,9 @@ describe("useConversationSeeding — startConversationWithPrompt periodic path",
   test("periodic: returns error if periodic PUT fails", async () => {
     const newSession = jest.fn().mockResolvedValue({ sessionId: "sess-fail" });
     const fetchImpl = makeFetch(500, { error: "server_error" });
-    const { startConversationWithPrompt } = useConversationSeeding({ newSession });
+    const { startConversationWithPrompt } = useConversationSeeding({
+      newSession,
+    });
 
     const result = await startConversationWithPrompt({
       prompt: { name: "p1" },
@@ -362,8 +441,12 @@ describe("useConversationSeeding — startConversationWithPrompt periodic path",
   });
 
   test("non-periodic: still passes initialPromptName (unchanged behavior)", async () => {
-    const newSession = jest.fn().mockResolvedValue({ sessionId: "sess-one-time" });
-    const { startConversationWithPrompt } = useConversationSeeding({ newSession });
+    const newSession = jest
+      .fn()
+      .mockResolvedValue({ sessionId: "sess-one-time" });
+    const { startConversationWithPrompt } = useConversationSeeding({
+      newSession,
+    });
 
     const result = await startConversationWithPrompt({
       prompt: { name: "p1" },
@@ -396,15 +479,21 @@ describe("decidePeriodicAction", () => {
   });
 
   test("returns one-shot when session is periodic_enabled", () => {
-    expect(decidePeriodicAction({ session_id: "s1", periodic_enabled: true })).toBe("one-shot");
+    expect(
+      decidePeriodicAction({ session_id: "s1", periodic_enabled: true }),
+    ).toBe("one-shot");
   });
 
   test("returns one-shot when session is periodic_configured (but not enabled)", () => {
-    expect(decidePeriodicAction({ session_id: "s1", periodic_configured: true })).toBe("one-shot");
+    expect(
+      decidePeriodicAction({ session_id: "s1", periodic_configured: true }),
+    ).toBe("one-shot");
   });
 
   test("returns one-shot when session has parent_session_id (child conversation)", () => {
-    expect(decidePeriodicAction({ session_id: "s1", parent_session_id: "parent-1" })).toBe("one-shot");
+    expect(
+      decidePeriodicAction({ session_id: "s1", parent_session_id: "parent-1" }),
+    ).toBe("one-shot");
   });
 
   test("returns make-periodic for a regular running conversation", () => {
@@ -412,7 +501,9 @@ describe("decidePeriodicAction", () => {
   });
 
   test("returns make-periodic even when periodic_enabled is false/undefined", () => {
-    expect(decidePeriodicAction({ session_id: "s1", periodic_enabled: false })).toBe("make-periodic");
+    expect(
+      decidePeriodicAction({ session_id: "s1", periodic_enabled: false }),
+    ).toBe("make-periodic");
   });
 });
 
@@ -484,7 +575,9 @@ describe("makePeriodicNow", () => {
   });
 
   test("does NOT call run-now when PUT fails", async () => {
-    const fetchImpl = makeFetchSequence(makeResp(500, { error: "server_error" }));
+    const fetchImpl = makeFetchSequence(
+      makeResp(500, { error: "server_error" }),
+    );
     const result = await makePeriodicNow("sess-1", prompt, { fetchImpl });
 
     expect(fetchImpl).toHaveBeenCalledTimes(1);
@@ -505,7 +598,10 @@ describe("makePeriodicNow", () => {
   });
 
   test("sends max_iterations:0 when prompt has no maxIterations", async () => {
-    const noMaxPrompt = { name: "simple", periodic: { value: 2, unit: "hours" } };
+    const noMaxPrompt = {
+      name: "simple",
+      periodic: { value: 2, unit: "hours" },
+    };
     const fetchImpl = makeFetchSequence(makeResp(200), makeResp(200));
     await makePeriodicNow("sess-3", noMaxPrompt, { fetchImpl });
 
@@ -514,7 +610,10 @@ describe("makePeriodicNow", () => {
   });
 
   test("returns error when run-now fails", async () => {
-    const fetchImpl = makeFetchSequence(makeResp(200), makeResp(500, { error: "server_error" }));
+    const fetchImpl = makeFetchSequence(
+      makeResp(200),
+      makeResp(500, { error: "server_error" }),
+    );
     const result = await makePeriodicNow("sess-4", prompt, { fetchImpl });
     expect(result.success).toBe(false);
     expect(result.error).toBeDefined();
@@ -523,7 +622,10 @@ describe("makePeriodicNow", () => {
   test("treats run-now 409 (session busy) as success after PUT succeeds", async () => {
     // The PUT already persisted the periodic config; a 409 means a run is already
     // in flight (e.g. enabling a schedule fired its first run). Not a failure.
-    const fetchImpl = makeFetchSequence(makeResp(200), makeResp(409, { error: "busy" }));
+    const fetchImpl = makeFetchSequence(
+      makeResp(200),
+      makeResp(409, { error: "busy" }),
+    );
     const result = await makePeriodicNow("sess-5", prompt, { fetchImpl });
     expect(result).toEqual({ success: true });
   });
@@ -548,28 +650,48 @@ describe("configurePeriodicSchedule — max_iterations", () => {
 
   test("includes max_iterations from periodic.maxIterations when positive", async () => {
     const fetchImpl = makeFetch(200);
-    await configurePeriodicSchedule("s1", { name: "p" }, { value: 1, unit: "hours", maxIterations: 7 }, { fetchImpl });
+    await configurePeriodicSchedule(
+      "s1",
+      { name: "p" },
+      { value: 1, unit: "hours", maxIterations: 7 },
+      { fetchImpl },
+    );
     const body = JSON.parse(fetchImpl.mock.calls[0][1].body);
     expect(body.max_iterations).toBe(7);
   });
 
   test("falls back to prompt.periodic.maxIterations when periodic.maxIterations is absent", async () => {
     const fetchImpl = makeFetch(200);
-    await configurePeriodicSchedule("s1", prompt, { value: 1, unit: "hours" }, { fetchImpl });
+    await configurePeriodicSchedule(
+      "s1",
+      prompt,
+      { value: 1, unit: "hours" },
+      { fetchImpl },
+    );
     const body = JSON.parse(fetchImpl.mock.calls[0][1].body);
     expect(body.max_iterations).toBe(10);
   });
 
   test("sends max_iterations:0 when both are absent/zero (unlimited)", async () => {
     const fetchImpl = makeFetch(200);
-    await configurePeriodicSchedule("s1", { name: "p" }, { value: 1, unit: "hours", maxIterations: 0 }, { fetchImpl });
+    await configurePeriodicSchedule(
+      "s1",
+      { name: "p" },
+      { value: 1, unit: "hours", maxIterations: 0 },
+      { fetchImpl },
+    );
     const body = JSON.parse(fetchImpl.mock.calls[0][1].body);
     expect(body.max_iterations).toBe(0);
   });
 
   test("periodic.maxIterations takes priority over prompt.periodic.maxIterations", async () => {
     const fetchImpl = makeFetch(200);
-    await configurePeriodicSchedule("s1", prompt, { value: 1, unit: "hours", maxIterations: 3 }, { fetchImpl });
+    await configurePeriodicSchedule(
+      "s1",
+      prompt,
+      { value: 1, unit: "hours", maxIterations: 3 },
+      { fetchImpl },
+    );
     const body = JSON.parse(fetchImpl.mock.calls[0][1].body);
     expect(body.max_iterations).toBe(3);
   });
@@ -605,7 +727,10 @@ describe("ChatInput periodic routing — onPeriodicPrompt delegation", () => {
   test("calls onPeriodicPrompt for a periodic-flagged prompt", () => {
     const onPeriodicPrompt = jest.fn();
     const onSend = jest.fn();
-    const prompt = { name: "daily-standup", periodic: { value: 1, unit: "hours" } };
+    const prompt = {
+      name: "daily-standup",
+      periodic: { value: 1, unit: "hours" },
+    };
 
     const result = routePrompt(prompt, { onPeriodicPrompt, onSend });
 
@@ -719,8 +844,15 @@ describe("configurePeriodicSchedule — trigger/delay/maxDuration fields", () =>
   test("includes trigger, delay_seconds, max_duration_seconds in PUT body", async () => {
     const fetchImpl = makeFetch(200);
     await configurePeriodicSchedule(
-      "s1", prompt,
-      { value: 1, unit: "hours", trigger: "onCompletion", delaySeconds: 10, maxDurationSeconds: 3600 },
+      "s1",
+      prompt,
+      {
+        value: 1,
+        unit: "hours",
+        trigger: "onCompletion",
+        delaySeconds: 10,
+        maxDurationSeconds: 3600,
+      },
       { fetchImpl },
     );
     const body = JSON.parse(fetchImpl.mock.calls[0][1].body);
@@ -731,7 +863,12 @@ describe("configurePeriodicSchedule — trigger/delay/maxDuration fields", () =>
 
   test("defaults trigger to 'schedule' and delay/maxDuration to 0 when absent", async () => {
     const fetchImpl = makeFetch(200);
-    await configurePeriodicSchedule("s1", prompt, { value: 1, unit: "hours" }, { fetchImpl });
+    await configurePeriodicSchedule(
+      "s1",
+      prompt,
+      { value: 1, unit: "hours" },
+      { fetchImpl },
+    );
     const body = JSON.parse(fetchImpl.mock.calls[0][1].body);
     expect(body.trigger).toBe("schedule");
     expect(body.delay_seconds).toBe(0);
@@ -809,7 +946,16 @@ describe("makePeriodicNow — trigger/delay/maxDuration fields", () => {
   }
 
   test("includes trigger from prompt.periodic in PUT body", async () => {
-    const prompt = { name: "p", periodic: { value: 1, unit: "hours", trigger: "onCompletion", delay: 10, maxDuration: "1h" } };
+    const prompt = {
+      name: "p",
+      periodic: {
+        value: 1,
+        unit: "hours",
+        trigger: "onCompletion",
+        delay: 10,
+        maxDuration: "1h",
+      },
+    };
     const fetchImpl = makeFetchSequence(makeResp(200), makeResp(200));
     await makePeriodicNow("sess-1", prompt, { fetchImpl });
 
@@ -836,7 +982,10 @@ describe("makePeriodicNow — trigger/delay/maxDuration fields", () => {
 // =============================================================================
 
 describe("makePeriodicNow — arguments forwarding", () => {
-  const prompt = { name: "daily-standup", periodic: { value: 1, unit: "hours" } };
+  const prompt = {
+    name: "daily-standup",
+    periodic: { value: 1, unit: "hours" },
+  };
 
   function makeFetchSequence(...responses) {
     let i = 0;
@@ -856,7 +1005,10 @@ describe("makePeriodicNow — arguments forwarding", () => {
 
   test("includes arguments in PUT body when non-empty map is supplied", async () => {
     const fetchImpl = makeFetchSequence(makeResp(200), makeResp(200));
-    await makePeriodicNow("sess-1", prompt, { arguments: { ENV: "prod", REGION: "us-east" }, fetchImpl });
+    await makePeriodicNow("sess-1", prompt, {
+      arguments: { ENV: "prod", REGION: "us-east" },
+      fetchImpl,
+    });
 
     const body = JSON.parse(fetchImpl.mock.calls[0][1].body);
     expect(body.arguments).toEqual({ ENV: "prod", REGION: "us-east" });
@@ -898,7 +1050,12 @@ describe("configurePeriodicSchedule — arguments forwarding", () => {
 
   test("includes arguments in PUT body when non-empty map is supplied", async () => {
     const fetchImpl = makeFetch(200);
-    await configurePeriodicSchedule("s1", prompt, { value: 1, unit: "hours" }, { arguments: { KEY: "val" }, fetchImpl });
+    await configurePeriodicSchedule(
+      "s1",
+      prompt,
+      { value: 1, unit: "hours" },
+      { arguments: { KEY: "val" }, fetchImpl },
+    );
 
     const body = JSON.parse(fetchImpl.mock.calls[0][1].body);
     expect(body.arguments).toEqual({ KEY: "val" });
@@ -906,7 +1063,12 @@ describe("configurePeriodicSchedule — arguments forwarding", () => {
 
   test("omits arguments from PUT body when empty object is supplied", async () => {
     const fetchImpl = makeFetch(200);
-    await configurePeriodicSchedule("s1", prompt, { value: 1, unit: "hours" }, { arguments: {}, fetchImpl });
+    await configurePeriodicSchedule(
+      "s1",
+      prompt,
+      { value: 1, unit: "hours" },
+      { arguments: {}, fetchImpl },
+    );
 
     const body = JSON.parse(fetchImpl.mock.calls[0][1].body);
     expect(body).not.toHaveProperty("arguments");
@@ -914,7 +1076,12 @@ describe("configurePeriodicSchedule — arguments forwarding", () => {
 
   test("omits arguments from PUT body when not supplied", async () => {
     const fetchImpl = makeFetch(200);
-    await configurePeriodicSchedule("s1", prompt, { value: 1, unit: "hours" }, { fetchImpl });
+    await configurePeriodicSchedule(
+      "s1",
+      prompt,
+      { value: 1, unit: "hours" },
+      { fetchImpl },
+    );
 
     const body = JSON.parse(fetchImpl.mock.calls[0][1].body);
     expect(body).not.toHaveProperty("arguments");
@@ -939,7 +1106,9 @@ describe("useConversationSeeding — startConversationWithPrompt periodic path �
   test("periodic: forwards arguments into the PUT body when supplied", async () => {
     const newSession = jest.fn().mockResolvedValue({ sessionId: "sess-p" });
     const fetchImpl = makeFetch(200);
-    const { startConversationWithPrompt } = useConversationSeeding({ newSession });
+    const { startConversationWithPrompt } = useConversationSeeding({
+      newSession,
+    });
 
     await startConversationWithPrompt({
       prompt: { name: "daily-standup" },
@@ -956,7 +1125,9 @@ describe("useConversationSeeding — startConversationWithPrompt periodic path �
   test("periodic: omits arguments from PUT body when not supplied", async () => {
     const newSession = jest.fn().mockResolvedValue({ sessionId: "sess-p" });
     const fetchImpl = makeFetch(200);
-    const { startConversationWithPrompt } = useConversationSeeding({ newSession });
+    const { startConversationWithPrompt } = useConversationSeeding({
+      newSession,
+    });
 
     await startConversationWithPrompt({
       prompt: { name: "daily-standup" },
@@ -972,7 +1143,9 @@ describe("useConversationSeeding — startConversationWithPrompt periodic path �
   test("periodic: omits arguments from PUT body when empty object", async () => {
     const newSession = jest.fn().mockResolvedValue({ sessionId: "sess-p" });
     const fetchImpl = makeFetch(200);
-    const { startConversationWithPrompt } = useConversationSeeding({ newSession });
+    const { startConversationWithPrompt } = useConversationSeeding({
+      newSession,
+    });
 
     await startConversationWithPrompt({
       prompt: { name: "daily-standup" },

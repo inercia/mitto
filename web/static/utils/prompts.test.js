@@ -313,7 +313,7 @@ describe("collectPromptArguments", () => {
   test("maps beadsTitle type to the correct param name", () => {
     const prompt = { parameters: [{ name: "TITLE", type: "beadsTitle" }] };
     expect(
-      collectPromptArguments(prompt, { beadsTitle: "Fix the bug" })
+      collectPromptArguments(prompt, { beadsTitle: "Fix the bug" }),
     ).toEqual({ TITLE: "Fix the bug" });
   });
 
@@ -328,7 +328,7 @@ describe("collectPromptArguments", () => {
       collectPromptArguments(prompt, {
         beadsId: "mitto-42",
         beadsTitle: "Fix the bug",
-      })
+      }),
     ).toEqual({ ISSUE_ID: "mitto-42", ISSUE_TITLE: "Fix the bug" });
   });
 
@@ -352,9 +352,7 @@ describe("collectPromptArguments", () => {
 
   test("ignores parameter types whose value is undefined", () => {
     const prompt = { parameters: [{ name: "ISSUE_ID", type: "beadsId" }] };
-    expect(
-      collectPromptArguments(prompt, { beadsId: undefined })
-    ).toEqual({});
+    expect(collectPromptArguments(prompt, { beadsId: undefined })).toEqual({});
   });
 
   test("returns empty object when typeValues is empty", () => {
@@ -402,7 +400,7 @@ describe("autofillConversationMenuArgs", () => {
       { session_id: "other", parent_session_id: "host-2" },
     ];
     expect(
-      autofillConversationMenuArgs(childParamPrompt, "host-1", sessions)
+      autofillConversationMenuArgs(childParamPrompt, "host-1", sessions),
     ).toEqual({ TARGET_CONVERSATION: "child-1" });
   });
 
@@ -412,14 +410,14 @@ describe("autofillConversationMenuArgs", () => {
       { session_id: "child-2", parent_session_id: "host-1" },
     ];
     expect(
-      autofillConversationMenuArgs(childParamPrompt, "host-1", sessions)
+      autofillConversationMenuArgs(childParamPrompt, "host-1", sessions),
     ).toEqual({});
   });
 
   test("does not fill when host has no children", () => {
     const sessions = [{ session_id: "child-1", parent_session_id: "host-2" }];
     expect(
-      autofillConversationMenuArgs(childParamPrompt, "host-1", sessions)
+      autofillConversationMenuArgs(childParamPrompt, "host-1", sessions),
     ).toEqual({});
   });
 
@@ -429,7 +427,7 @@ describe("autofillConversationMenuArgs", () => {
       { session_id: "child-2", parent_session_id: "host-1", archived: true },
     ];
     expect(
-      autofillConversationMenuArgs(childParamPrompt, "host-1", sessions)
+      autofillConversationMenuArgs(childParamPrompt, "host-1", sessions),
     ).toEqual({ TARGET_CONVERSATION: "child-1" });
   });
 
@@ -438,7 +436,9 @@ describe("autofillConversationMenuArgs", () => {
       parameters: [{ name: "TARGET", type: "sessionId" }],
     };
     const sessions = [{ session_id: "child-1", parent_session_id: "host-1" }];
-    expect(autofillConversationMenuArgs(prompt, "host-1", sessions)).toEqual({});
+    expect(autofillConversationMenuArgs(prompt, "host-1", sessions)).toEqual(
+      {},
+    );
   });
 });
 
@@ -561,7 +561,9 @@ describe("getMissingPromptParameters", () => {
     const optionalParam = { name: "EXTRA", type: "text", required: false };
     const prompt = { parameters: [requiredParam, optionalParam] };
     // prompts menu supplies nothing; required beadsId is missing, optional text is not
-    expect(getMissingPromptParameters(prompt, "prompts")).toEqual([requiredParam]);
+    expect(getMissingPromptParameters(prompt, "prompts")).toEqual([
+      requiredParam,
+    ]);
   });
 
   test("boolean param is ALWAYS missing (collected via checkbox) in every menu", () => {
@@ -584,7 +586,9 @@ describe("getMissingPromptParameters", () => {
     const issueParam = { name: "ISSUE_ID", type: "beadsId", required: true };
     const prompt = { parameters: [issueParam, boolParam] };
     // beadsIssues supplies beadsId → only the boolean remains to be collected
-    expect(getMissingPromptParameters(prompt, "beadsIssues")).toEqual([boolParam]);
+    expect(getMissingPromptParameters(prompt, "beadsIssues")).toEqual([
+      boolParam,
+    ]);
   });
 });
 
@@ -598,7 +602,12 @@ describe("isCacheableParam", () => {
   });
 
   test("returns true when cache block has destination+ttl", () => {
-    expect(isCacheableParam({ name: "X", cache: { destination: "memory", ttl: "1h" } })).toBe(true);
+    expect(
+      isCacheableParam({
+        name: "X",
+        cache: { destination: "memory", ttl: "1h" },
+      }),
+    ).toBe(true);
   });
 
   test("returns false when param has no cache field", () => {
@@ -623,12 +632,23 @@ describe("isCacheableParam", () => {
 // =============================================================================
 
 describe("effectiveMissingParams", () => {
-  const cacheableA = { name: "A", type: "string", cache: { destination: "memory" } };
-  const cacheableB = { name: "B", type: "string", cache: { destination: "memory" } };
+  const cacheableA = {
+    name: "A",
+    type: "string",
+    cache: { destination: "memory" },
+  };
+  const cacheableB = {
+    name: "B",
+    type: "string",
+    cache: { destination: "memory" },
+  };
   const nonCacheable = { name: "C", type: "string" };
 
   test("removes a cacheable param whose name is in the cached Set", () => {
-    const result = effectiveMissingParams([cacheableA, nonCacheable], new Set(["A"]));
+    const result = effectiveMissingParams(
+      [cacheableA, nonCacheable],
+      new Set(["A"]),
+    );
     expect(result).toEqual([nonCacheable]);
   });
 
@@ -666,7 +686,10 @@ describe("effectiveMissingParams", () => {
   });
 
   test("removes all cacheable params when all are cached", () => {
-    const result = effectiveMissingParams([cacheableA, cacheableB, nonCacheable], new Set(["A", "B"]));
+    const result = effectiveMissingParams(
+      [cacheableA, cacheableB, nonCacheable],
+      new Set(["A", "B"]),
+    );
     expect(result).toEqual([nonCacheable]);
   });
 });
@@ -681,7 +704,9 @@ describe("fetchCachedParamNames", () => {
       ok: true,
       json: async () => ({ cached: ["A", "B"] }),
     });
-    const result = await fetchCachedParamNames("sess-1", "my-prompt", { fetchImpl });
+    const result = await fetchCachedParamNames("sess-1", "my-prompt", {
+      fetchImpl,
+    });
     expect(result).toEqual(new Set(["A", "B"]));
   });
 
@@ -699,13 +724,17 @@ describe("fetchCachedParamNames", () => {
 
   test("returns empty Set on non-ok response", async () => {
     const fetchImpl = jest.fn().mockResolvedValue({ ok: false });
-    const result = await fetchCachedParamNames("sess-1", "my-prompt", { fetchImpl });
+    const result = await fetchCachedParamNames("sess-1", "my-prompt", {
+      fetchImpl,
+    });
     expect(result).toEqual(new Set());
   });
 
   test("returns empty Set and does not throw when fetchImpl throws", async () => {
     const fetchImpl = jest.fn().mockRejectedValue(new Error("network error"));
-    const result = await fetchCachedParamNames("sess-1", "my-prompt", { fetchImpl });
+    const result = await fetchCachedParamNames("sess-1", "my-prompt", {
+      fetchImpl,
+    });
     expect(result).toEqual(new Set());
   });
 
@@ -763,7 +792,10 @@ describe("resolvePromptModelOverride", () => {
 
   test("current-model-first: a later pattern matching current does not stop an earlier match", () => {
     // First pattern matches sonnet (not current), so it wins before opus is considered.
-    const result = resolvePromptModelOverride(["*sonnet*", "*opus*"], modelOption);
+    const result = resolvePromptModelOverride(
+      ["*sonnet*", "*opus*"],
+      modelOption,
+    );
     expect(result).toEqual({ value: "claude-sonnet-4-5", name: "Sonnet 4.5" });
   });
 
@@ -799,7 +831,10 @@ describe("resolvePromptModelOverride", () => {
   test("returns null when modelOption is absent or has no options", () => {
     expect(resolvePromptModelOverride(["*sonnet*"], null)).toBeNull();
     expect(
-      resolvePromptModelOverride(["*sonnet*"], { current_value: "x", options: [] }),
+      resolvePromptModelOverride(["*sonnet*"], {
+        current_value: "x",
+        options: [],
+      }),
     ).toBeNull();
   });
 });

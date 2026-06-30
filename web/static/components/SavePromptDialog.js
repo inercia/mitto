@@ -1,7 +1,8 @@
 // Mitto Web Interface - Save Prompt Dialog Component
 // Modal dialog for saving the current prompt text as a markdown file with frontmatter
 
-const { useState, useEffect, useCallback, useRef, html, Fragment } = window.preact;
+const { useState, useEffect, useCallback, useRef, html, Fragment } =
+  window.preact;
 
 import { hasNativeFolderPicker, pickFolder } from "../utils/native.js";
 import { secureFetch, authFetch } from "../utils/csrf.js";
@@ -152,7 +153,9 @@ export function SavePromptDialog({ isOpen, onClose, promptText, workingDir }) {
         } catch (_) {
           // non-JSON body; fall back to status-based message
         }
-        throw new Error(errorMessageFromData(data, `Save failed (${response.status})`));
+        throw new Error(
+          errorMessageFromData(data, `Save failed (${response.status})`),
+        );
       }
 
       // Success - close dialog
@@ -182,7 +185,9 @@ export function SavePromptDialog({ isOpen, onClose, promptText, workingDir }) {
 
     try {
       // Check if file already exists
-      const checkResponse = await authFetch(endpoints.misc.checkFileExists({ path: fullPath }));
+      const checkResponse = await authFetch(
+        endpoints.misc.checkFileExists({ path: fullPath }),
+      );
 
       if (checkResponse.ok) {
         const data = await checkResponse.json();
@@ -247,7 +252,8 @@ export function SavePromptDialog({ isOpen, onClose, promptText, workingDir }) {
       class="btn btn-sm btn-primary"
       data-testid="save-prompt-save-btn"
     >
-      ${isSaving && html`<span class="loading loading-spinner loading-xs"></span>`}
+      ${isSaving &&
+      html`<span class="loading loading-spinner loading-xs"></span>`}
       Save
     </button>
   `;
@@ -334,41 +340,47 @@ export function SavePromptDialog({ isOpen, onClose, promptText, workingDir }) {
                 class="input input-sm join-item flex-1 font-mono text-xs"
                 data-testid="save-prompt-directory-input"
               />
-              ${hasNativeFolderPicker() &&
-              html`
-                <button
-                  type="button"
-                  onClick=${handleBrowse}
-                  disabled=${isSaving}
-                  class="btn btn-sm join-item whitespace-nowrap"
-                  data-testid="save-prompt-browse-btn"
-                >
-                  Browse…
-                </button>
-              `}
+              ${
+                hasNativeFolderPicker() &&
+                html`
+                  <button
+                    type="button"
+                    onClick=${handleBrowse}
+                    disabled=${isSaving}
+                    class="btn btn-sm join-item whitespace-nowrap"
+                    data-testid="save-prompt-browse-btn"
+                  >
+                    Browse…
+                  </button>
+                `
+              }
             </div>
-            ${fullPath &&
-            html`
-              <p
-                class="text-xs text-mitto-text-muted mt-1 font-mono truncate"
-                title=${fullPath}
-              >
-                ${fullPath}
-              </p>
-            `}
+            ${
+              fullPath &&
+              html`
+                <p
+                  class="text-xs text-mitto-text-muted mt-1 font-mono truncate"
+                  title=${fullPath}
+                >
+                  ${fullPath}
+                </p>
+              `
+            }
           </fieldset>
 
           <!-- Error message -->
-          ${error &&
-          html`
-            <div
-              role="alert"
-              class="alert alert-error alert-soft text-sm"
-              data-testid="save-prompt-error"
-            >
-              ${error}
-            </div>
-          `}
+          ${
+            error &&
+            html`
+              <div
+                role="alert"
+                class="alert alert-error alert-soft text-sm"
+                data-testid="save-prompt-error"
+              >
+                ${error}
+              </div>
+            `
+          }
         </div>
       </${Modal}>
 

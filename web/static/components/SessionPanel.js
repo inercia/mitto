@@ -397,7 +397,9 @@ export function SessionPanel({
     (async () => {
       try {
         const res = await authFetch(
-          endpoints.issues.show(sessionInfo.beads_issue, { working_dir: sessionInfo.working_dir }),
+          endpoints.issues.show(sessionInfo.beads_issue, {
+            working_dir: sessionInfo.working_dir,
+          }),
         );
         if (!res.ok) {
           if (!cancelled) setBeadsStatus(null);
@@ -429,7 +431,8 @@ export function SessionPanel({
       setUserDataError(null);
 
       try {
-        const wsUuid = sessionInfo?.workspace_uuid || window.mittoCurrentWorkspaceUUID || "";
+        const wsUuid =
+          sessionInfo?.workspace_uuid || window.mittoCurrentWorkspaceUUID || "";
         const [userDataRes, schemaRes] = await Promise.all([
           authFetch(endpoints.sessions.userData(sessionId)),
           authFetch(endpoints.workspaces.userDataSchema(wsUuid)),
@@ -448,7 +451,12 @@ export function SessionPanel({
     };
 
     fetchUserData();
-  }, [isOpen, sessionId, sessionInfo?.working_dir, sessionInfo?.workspace_uuid]);
+  }, [
+    isOpen,
+    sessionId,
+    sessionInfo?.working_dir,
+    sessionInfo?.workspace_uuid,
+  ]);
 
   // --- Effects: fetch changes when changes tab is active ---
   useEffect(() => {
@@ -458,9 +466,7 @@ export function SessionPanel({
       setIsLoadingChanges(true);
       setChangesError(null);
       try {
-        const resp = await authFetch(
-          endpoints.sessions.changes(sessionId),
-        );
+        const resp = await authFetch(endpoints.sessions.changes(sessionId));
         if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
         const data = await resp.json();
         setChangesData(data);
@@ -542,20 +548,19 @@ export function SessionPanel({
       setSavingFlags((prev) => ({ ...prev, [flagName]: true }));
       setFlagsError(null);
       try {
-        const res = await secureFetch(
-          endpoints.sessions.settings(sessionId),
-          {
-            method: "PATCH",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ settings: { [flagName]: newValue } }),
-          },
-        );
+        const res = await secureFetch(endpoints.sessions.settings(sessionId), {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ settings: { [flagName]: newValue } }),
+        });
         if (res.ok) {
           const data = await res.json();
           setSessionSettings(data.settings || {});
         } else {
           const errorData = await res.json().catch(() => ({}));
-          setFlagsError(errorMessageFromData(errorData, "Failed to save setting"));
+          setFlagsError(
+            errorMessageFromData(errorData, "Failed to save setting"),
+          );
         }
       } catch (err) {
         console.error("Failed to save flag:", err);
@@ -569,10 +574,9 @@ export function SessionPanel({
 
   // --- Handlers: callback URL ---
   const handleEnableCallback = useCallback(async () => {
-    const res = await secureFetch(
-      endpoints.sessions.callback(sessionId),
-      { method: "POST" },
-    );
+    const res = await secureFetch(endpoints.sessions.callback(sessionId), {
+      method: "POST",
+    });
     if (res.ok) {
       const data = await res.json();
       setCallbackConfig(data);
@@ -607,10 +611,9 @@ export function SessionPanel({
       confirmVariant: "danger",
       onConfirm: async () => {
         setConfirmDialog(null);
-        const res = await secureFetch(
-          endpoints.sessions.callback(sessionId),
-          { method: "POST" },
-        );
+        const res = await secureFetch(endpoints.sessions.callback(sessionId), {
+          method: "POST",
+        });
         if (res.ok) {
           const data = await res.json();
           setCallbackConfig(data);
@@ -634,10 +637,9 @@ export function SessionPanel({
       confirmVariant: "danger",
       onConfirm: async () => {
         setConfirmDialog(null);
-        const res = await secureFetch(
-          endpoints.sessions.callback(sessionId),
-          { method: "DELETE" },
-        );
+        const res = await secureFetch(endpoints.sessions.callback(sessionId), {
+          method: "DELETE",
+        });
         if (res.ok) setCallbackConfig(null);
       },
     });
@@ -677,20 +679,19 @@ export function SessionPanel({
           value: editedAttributeValue,
         });
       }
-      const res = await secureFetch(
-        endpoints.sessions.userData(sessionId),
-        {
-          method: "PUT",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ attributes: updatedAttributes }),
-        },
-      );
+      const res = await secureFetch(endpoints.sessions.userData(sessionId), {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ attributes: updatedAttributes }),
+      });
       if (res.ok) {
         setUserData(await res.json());
         setEditingAttribute(null);
       } else {
         const errorData = await res.json().catch(() => ({}));
-        setUserDataError(errorMessageFromData(errorData, "Failed to save attribute"));
+        setUserDataError(
+          errorMessageFromData(errorData, "Failed to save attribute"),
+        );
       }
     } catch (err) {
       console.error("Failed to save attribute:", err);
@@ -815,11 +816,13 @@ export function SessionPanel({
           style="margin-top:-1px;"
           key=${currentTab}
         >
-          ${currentTab === "properties"
-            ? renderPropertiesContent()
-            : currentTab === "changes"
-              ? renderChangesContent()
-              : renderAdvancedTabContent()}
+          ${
+            currentTab === "properties"
+              ? renderPropertiesContent()
+              : currentTab === "changes"
+                ? renderChangesContent()
+                : renderAdvancedTabContent()
+          }
         </div>
       <//>
 
@@ -897,9 +900,7 @@ export function SessionPanel({
       setIsLoadingChanges(true);
       setChangesError(null);
       try {
-        const resp = await authFetch(
-          endpoints.sessions.changes(sessionId),
-        );
+        const resp = await authFetch(endpoints.sessions.changes(sessionId));
         if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
         const data = await resp.json();
         setChangesData(data);
@@ -1087,9 +1088,9 @@ export function SessionPanel({
                   />
                   <${Tooltip} tip="Save" placement="bottom">
                     <button
-                      class="btn btn-ghost btn-square btn-sm text-mitto-success ${isSavingTitle
-                        ? "opacity-40 pointer-events-none"
-                        : ""}"
+                      class="btn btn-ghost btn-square btn-sm text-mitto-success ${
+                        isSavingTitle ? "opacity-40 pointer-events-none" : ""
+                      }"
                       onClick=${handleSaveTitle}
                       aria-label="Save"
                       aria-disabled=${isSavingTitle ? "true" : "false"}
@@ -1471,14 +1472,16 @@ export function SessionPanel({
                               />
                               <${Tooltip} tip="Save" placement="bottom">
                                 <button
-                                  class="btn btn-ghost btn-square btn-sm text-mitto-success ${isSavingAttribute
-                                    ? "opacity-40 pointer-events-none"
-                                    : ""}"
+                                  class="btn btn-ghost btn-square btn-sm text-mitto-success ${
+                                    isSavingAttribute
+                                      ? "opacity-40 pointer-events-none"
+                                      : ""
+                                  }"
                                   onClick=${handleSaveAttribute}
                                   aria-label="Save"
-                                  aria-disabled=${isSavingAttribute
-                                    ? "true"
-                                    : "false"}
+                                  aria-disabled=${
+                                    isSavingAttribute ? "true" : "false"
+                                  }
                                 >
                                   <${CheckIcon} className="w-4 h-4" />
                                 </button>
@@ -1487,85 +1490,87 @@ export function SessionPanel({
                           `
                         : html`
                             <div class="flex items-center gap-2 group">
-                              ${field.type === "filename" && value
-                                ? (() => {
-                                    const apiPrefix =
-                                      window.mittoApiPrefix || "";
-                                    // Resolve against the conversation's own working dir, not the
-                                    // globally-selected workspace. Prefer working_dir (legacy
-                                    // `workspace=` param) over workspace_uuid: CLI-spawned
-                                    // sessions inherit the default workspace UUID, which resolves
-                                    // to the server's directory. The viewer prefers `ws=` when
-                                    // present, so omit it when a working dir is available.
-                                    const wsPath =
-                                      sessionInfo?.working_dir ||
-                                      window.mittoCurrentWorkspace ||
-                                      "";
-                                    const workspaceUUID =
-                                      sessionInfo?.workspace_uuid ||
-                                      window.mittoCurrentWorkspaceUUID ||
-                                      "";
-                                    const relativePath = value.replace(
-                                      /^\.\//,
-                                      "",
-                                    );
-                                    let viewerUrl = null;
-                                    if (wsPath) {
-                                      viewerUrl = `${apiPrefix}/viewer.html?workspace=${encodeURIComponent(wsPath)}&path=${encodeURIComponent(relativePath)}&ws_path=${encodeURIComponent(wsPath)}`;
-                                    } else if (workspaceUUID) {
-                                      viewerUrl = `${apiPrefix}/viewer.html?ws=${encodeURIComponent(workspaceUUID)}&path=${encodeURIComponent(relativePath)}`;
-                                    }
-                                    return html`
-                                      <a
-                                        href=${viewerUrl || "#"}
-                                        class="file-link flex-1 text-sm text-mitto-accent hover:underline truncate"
-                                        title=${value}
-                                        onClick=${(e) => {
-                                          e.preventDefault();
-                                          e.stopPropagation();
-                                          if (!viewerUrl) return;
-                                          if (
-                                            isNativeApp() &&
-                                            typeof window.mittoOpenViewer ===
-                                              "function"
-                                          ) {
-                                            const fullUrl = new URL(
-                                              viewerUrl,
-                                              window.location.origin,
-                                            ).href;
-                                            window.mittoOpenViewer(fullUrl);
-                                          } else {
+                              ${
+                                field.type === "filename" && value
+                                  ? (() => {
+                                      const apiPrefix =
+                                        window.mittoApiPrefix || "";
+                                      // Resolve against the conversation's own working dir, not the
+                                      // globally-selected workspace. Prefer working_dir (legacy
+                                      // `workspace=` param) over workspace_uuid: CLI-spawned
+                                      // sessions inherit the default workspace UUID, which resolves
+                                      // to the server's directory. The viewer prefers `ws=` when
+                                      // present, so omit it when a working dir is available.
+                                      const wsPath =
+                                        sessionInfo?.working_dir ||
+                                        window.mittoCurrentWorkspace ||
+                                        "";
+                                      const workspaceUUID =
+                                        sessionInfo?.workspace_uuid ||
+                                        window.mittoCurrentWorkspaceUUID ||
+                                        "";
+                                      const relativePath = value.replace(
+                                        /^\.\//,
+                                        "",
+                                      );
+                                      let viewerUrl = null;
+                                      if (wsPath) {
+                                        viewerUrl = `${apiPrefix}/viewer.html?workspace=${encodeURIComponent(wsPath)}&path=${encodeURIComponent(relativePath)}&ws_path=${encodeURIComponent(wsPath)}`;
+                                      } else if (workspaceUUID) {
+                                        viewerUrl = `${apiPrefix}/viewer.html?ws=${encodeURIComponent(workspaceUUID)}&path=${encodeURIComponent(relativePath)}`;
+                                      }
+                                      return html`
+                                        <a
+                                          href=${viewerUrl || "#"}
+                                          class="file-link flex-1 text-sm text-mitto-accent hover:underline truncate"
+                                          title=${value}
+                                          onClick=${(e) => {
+                                            e.preventDefault();
+                                            e.stopPropagation();
+                                            if (!viewerUrl) return;
+                                            if (
+                                              isNativeApp() &&
+                                              typeof window.mittoOpenViewer ===
+                                                "function"
+                                            ) {
+                                              const fullUrl = new URL(
+                                                viewerUrl,
+                                                window.location.origin,
+                                              ).href;
+                                              window.mittoOpenViewer(fullUrl);
+                                            } else {
+                                              window.open(
+                                                viewerUrl,
+                                                "_blank",
+                                                "noopener,noreferrer",
+                                              );
+                                            }
+                                          }}
+                                          >${value}</a
+                                        >
+                                      `;
+                                    })()
+                                  : html`
+                                      <span
+                                        class="flex-1 text-sm truncate ${value
+                                          ? "text-mitto-text-300"
+                                          : "text-mitto-text-muted italic"} ${field.type ===
+                                          "url" && value
+                                          ? "cursor-pointer hover:text-mitto-accent"
+                                          : ""}"
+                                        onClick=${() => {
+                                          if (field.type === "url" && value)
                                             window.open(
-                                              viewerUrl,
+                                              value,
                                               "_blank",
                                               "noopener,noreferrer",
                                             );
-                                          }
                                         }}
-                                        >${value}</a
+                                        title=${value || "(not set)"}
+                                        >${value || "(not set)"}</span
                                       >
-                                    `;
-                                  })()
-                                : html`
-                                    <span
-                                      class="flex-1 text-sm truncate ${value
-                                        ? "text-mitto-text-300"
-                                        : "text-mitto-text-muted italic"} ${field.type ===
-                                        "url" && value
-                                        ? "cursor-pointer hover:text-mitto-accent"
-                                        : ""}"
-                                      onClick=${() => {
-                                        if (field.type === "url" && value)
-                                          window.open(
-                                            value,
-                                            "_blank",
-                                            "noopener,noreferrer",
-                                          );
-                                      }}
-                                      title=${value || "(not set)"}
-                                      >${value || "(not set)"}</span
-                                    >
-                                  `}
+                                    `
+                              }
                               <${Tooltip} tip="Edit" placement="bottom">
                                 <button
                                   class="btn btn-ghost btn-square btn-xs opacity-0 group-hover:opacity-100"

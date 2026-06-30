@@ -66,11 +66,17 @@ export class CodeEditor {
    */
   async init(content = "") {
     this._modules = await loadCore();
-    const { view: viewMod, state: stateMod, commands: cmdMod, language: langMod, search: searchMod } = this._modules;
+    const {
+      view: viewMod,
+      state: stateMod,
+      commands: cmdMod,
+      language: langMod,
+      search: searchMod,
+    } = this._modules;
 
     // Compartments for dynamic reconfiguration
     this._readOnlyCompartment = new stateMod.Compartment();
-    this._themeCompartment    = new stateMod.Compartment();
+    this._themeCompartment = new stateMod.Compartment();
     this._languageCompartment = new stateMod.Compartment();
 
     // Build extensions list. The line-number, fold, and active-line gutters are
@@ -78,7 +84,11 @@ export class CodeEditor {
     // gutterless editor (e.g. the beads description field).
     const extensions = [
       ...(this.lineNumbers
-        ? [viewMod.lineNumbers(), viewMod.highlightActiveLineGutter(), langMod.foldGutter()]
+        ? [
+            viewMod.lineNumbers(),
+            viewMod.highlightActiveLineGutter(),
+            langMod.foldGutter(),
+          ]
         : []),
       ...(this.lineWrapping ? [viewMod.EditorView.lineWrapping] : []),
       ...(this.highlightActiveLine ? [viewMod.highlightActiveLine()] : []),
@@ -89,7 +99,9 @@ export class CodeEditor {
       viewMod.dropCursor(),
       stateMod.EditorState.allowMultipleSelections.of(true),
       langMod.indentOnInput(),
-      langMod.syntaxHighlighting(langMod.defaultHighlightStyle, { fallback: true }),
+      langMod.syntaxHighlighting(langMod.defaultHighlightStyle, {
+        fallback: true,
+      }),
       langMod.bracketMatching(),
       searchMod.highlightSelectionMatches(),
       viewMod.keymap.of([
@@ -102,47 +114,67 @@ export class CodeEditor {
       cmdMod.history(),
 
       // Dynamic compartments
-      this._readOnlyCompartment.of(stateMod.EditorState.readOnly.of(this.readOnly)),
+      this._readOnlyCompartment.of(
+        stateMod.EditorState.readOnly.of(this.readOnly),
+      ),
       this._themeCompartment.of(await this._buildThemeExtension()),
       this._languageCompartment.of(await this._buildLanguageExtension()),
     ];
 
     // Change listener
     if (this.onChange) {
-      extensions.push(viewMod.EditorView.updateListener.of((update) => {
-        if (update.docChanged) {
-          this.onChange(update.state.doc.toString());
-        }
-      }));
+      extensions.push(
+        viewMod.EditorView.updateListener.of((update) => {
+          if (update.docChanged) {
+            this.onChange(update.state.doc.toString());
+          }
+        }),
+      );
     }
 
     // Blur listener
     if (this.onBlur) {
-      extensions.push(viewMod.EditorView.domEventHandlers({
-        blur: () => { this.onBlur(this.getValue()); },
-      }));
+      extensions.push(
+        viewMod.EditorView.domEventHandlers({
+          blur: () => {
+            this.onBlur(this.getValue());
+          },
+        }),
+      );
     }
 
     // Font size via CSS custom property on container
-    this.container.style.setProperty("--editor-font-size", `${this.fontSize}px`);
+    this.container.style.setProperty(
+      "--editor-font-size",
+      `${this.fontSize}px`,
+    );
 
     // Base theme for font size and scroll
-    extensions.push(viewMod.EditorView.baseTheme({
-      "&": {
-        fontSize: "var(--editor-font-size, 13px)",
-        height: "100%",
-      },
-      ".cm-scroller": {
-        overflow: "auto",
-        fontFamily: "ui-monospace, 'SFMono-Regular', 'SF Mono', Menlo, monospace",
-      },
-      ".cm-gutters": {
-        fontSize: "var(--editor-font-size, 13px)",
-      },
-    }));
+    extensions.push(
+      viewMod.EditorView.baseTheme({
+        "&": {
+          fontSize: "var(--editor-font-size, 13px)",
+          height: "100%",
+        },
+        ".cm-scroller": {
+          overflow: "auto",
+          fontFamily:
+            "ui-monospace, 'SFMono-Regular', 'SF Mono', Menlo, monospace",
+        },
+        ".cm-gutters": {
+          fontSize: "var(--editor-font-size, 13px)",
+        },
+      }),
+    );
 
-    const startState = stateMod.EditorState.create({ doc: content, extensions });
-    this.view = new viewMod.EditorView({ state: startState, parent: this.container });
+    const startState = stateMod.EditorState.create({
+      doc: content,
+      extensions,
+    });
+    this.view = new viewMod.EditorView({
+      state: startState,
+      parent: this.container,
+    });
   }
 
   /** @returns {string} Current document content */
@@ -164,7 +196,7 @@ export class CodeEditor {
     this.readOnly = readOnly;
     this.view.dispatch({
       effects: this._readOnlyCompartment.reconfigure(
-        this._modules.state.EditorState.readOnly.of(readOnly)
+        this._modules.state.EditorState.readOnly.of(readOnly),
       ),
     });
   }
@@ -174,7 +206,9 @@ export class CodeEditor {
     if (!this.view) return;
     this.darkMode = dark;
     this.view.dispatch({
-      effects: this._themeCompartment.reconfigure(await this._buildThemeExtension()),
+      effects: this._themeCompartment.reconfigure(
+        await this._buildThemeExtension(),
+      ),
     });
   }
 
@@ -190,7 +224,9 @@ export class CodeEditor {
     if (!this.view) return;
     this.language = ext;
     this.view.dispatch({
-      effects: this._languageCompartment.reconfigure(await this._buildLanguageExtension()),
+      effects: this._languageCompartment.reconfigure(
+        await this._buildLanguageExtension(),
+      ),
     });
   }
 
@@ -211,14 +247,20 @@ export class CodeEditor {
       const insert = before + placeholder + after;
       this.view.dispatch({
         changes: { from: sel.from, to: sel.to, insert },
-        selection: { anchor: sel.from + before.length, head: sel.from + before.length + placeholder.length },
+        selection: {
+          anchor: sel.from + before.length,
+          head: sel.from + before.length + placeholder.length,
+        },
       });
     } else {
       const selectedText = state.doc.sliceString(sel.from, sel.to);
       const insert = before + selectedText + after;
       this.view.dispatch({
         changes: { from: sel.from, to: sel.to, insert },
-        selection: { anchor: sel.from + before.length, head: sel.from + before.length + selectedText.length },
+        selection: {
+          anchor: sel.from + before.length,
+          head: sel.from + before.length + selectedText.length,
+        },
       });
     }
     this.view.focus();
@@ -243,7 +285,10 @@ export class CodeEditor {
       // Select the textPlaceholder so the user types the link text first.
       this.view.dispatch({
         changes: { from: sel.from, to: sel.to, insert },
-        selection: { anchor: sel.from + 1, head: sel.from + 1 + textPlaceholder.length },
+        selection: {
+          anchor: sel.from + 1,
+          head: sel.from + 1 + textPlaceholder.length,
+        },
       });
     } else {
       const selectedText = state.doc.sliceString(sel.from, sel.to);
@@ -270,7 +315,11 @@ export class CodeEditor {
     const startLine = state.doc.lineAt(sel.from);
     const endLine = state.doc.lineAt(sel.to);
     const changes = [];
-    for (let lineNum = startLine.number, i = 0; lineNum <= endLine.number; lineNum++, i++) {
+    for (
+      let lineNum = startLine.number, i = 0;
+      lineNum <= endLine.number;
+      lineNum++, i++
+    ) {
       const line = state.doc.line(lineNum);
       const prefix = typeof marker === "function" ? marker(i) : marker;
       changes.push({ from: line.from, to: line.from, insert: prefix });

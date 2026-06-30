@@ -42,8 +42,13 @@ const inflight = new Map();
  * @param {string|null} sessionId - Optional session ID to pass as ?session_id=… for server-side filtering
  * @returns {Promise<object>} Parsed JSON config object
  */
-export async function fetchConfig(acpServer = null, force = false, sessionId = null) {
-  const cacheKey = [acpServer || "", sessionId || ""].join("|") || "__default__";
+export async function fetchConfig(
+  acpServer = null,
+  force = false,
+  sessionId = null,
+) {
+  const cacheKey =
+    [acpServer || "", sessionId || ""].join("|") || "__default__";
 
   // 1. Completed-response cache hit
   if (!force) {
@@ -59,7 +64,10 @@ export async function fetchConfig(acpServer = null, force = false, sessionId = n
     }
   }
 
-  const url = endpoints.config.get({ acp_server: acpServer, session_id: sessionId });
+  const url = endpoints.config.get({
+    acp_server: acpServer,
+    session_id: sessionId,
+  });
 
   // Attach the stored ETag (if any) so the server can return 304 Not Modified
   // when the config has not changed since the last successful fetch.

@@ -167,16 +167,23 @@ describe("API Utilities", () => {
   describe("errorMessageFromData", () => {
     test("extracts message from canonical nested envelope", () => {
       expect(
-        errorMessageFromData({ error: { code: "bad_request", message: "Bad thing" } }, "fb"),
+        errorMessageFromData(
+          { error: { code: "bad_request", message: "Bad thing" } },
+          "fb",
+        ),
       ).toBe("Bad thing");
     });
 
     test("extracts legacy flat-string error", () => {
-      expect(errorMessageFromData({ error: "legacy msg" }, "fb")).toBe("legacy msg");
+      expect(errorMessageFromData({ error: "legacy msg" }, "fb")).toBe(
+        "legacy msg",
+      );
     });
 
     test("extracts top-level message", () => {
-      expect(errorMessageFromData({ message: "top msg" }, "fb")).toBe("top msg");
+      expect(errorMessageFromData({ message: "top msg" }, "fb")).toBe(
+        "top msg",
+      );
     });
 
     test("returns fallback for empty object", () => {
@@ -193,7 +200,10 @@ describe("API Utilities", () => {
 
     test("nested envelope wins over top-level message", () => {
       expect(
-        errorMessageFromData({ error: { message: "nested" }, message: "top" }, "fb"),
+        errorMessageFromData(
+          { error: { message: "nested" }, message: "top" },
+          "fb",
+        ),
       ).toBe("nested");
     });
   });

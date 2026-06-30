@@ -1443,7 +1443,8 @@ describe("prepend cascade prevention (2026-04-16 fix)", () => {
     // const isStaleClient = !isPrepend && isStaleClientState(clientLastSeq, maxSeq);
     // When isPrepend=true, isStaleClient is always false regardless of seq comparison.
     const isPrepend = true;
-    const isStaleClient = !isPrepend && isStaleClientState(clientLastSeq, serverMaxSeq);
+    const isStaleClient =
+      !isPrepend && isStaleClientState(clientLastSeq, serverMaxSeq);
     expect(isStaleClient).toBe(false); // Cascade prevented!
   });
 
@@ -1451,7 +1452,8 @@ describe("prepend cascade prevention (2026-04-16 fix)", () => {
     const clientLastSeq = 2181;
     const serverMaxSeq = 2180;
     const isPrepend = false;
-    const isStaleClient = !isPrepend && isStaleClientState(clientLastSeq, serverMaxSeq);
+    const isStaleClient =
+      !isPrepend && isStaleClientState(clientLastSeq, serverMaxSeq);
     expect(isStaleClient).toBe(true); // Stale detection works for non-prepend
   });
 });
@@ -4978,7 +4980,6 @@ describe("formatTimeAgo", () => {
   });
 });
 
-
 describe("User Prompt Image Construction (WebSocket handler)", () => {
   // This tests the logic used in the user_prompt WebSocket handler
   // (useWebSocket.js) to construct image objects from raw image_ids.
@@ -4992,7 +4993,12 @@ describe("User Prompt Image Construction (WebSocket handler)", () => {
   // from convertEventsToMessages.
 
   // Helper that mimics the FIXED user_prompt handler image construction
-  function buildUserMessageWithImages(sessionId, message, imageIds, apiPrefix = "") {
+  function buildUserMessageWithImages(
+    sessionId,
+    message,
+    imageIds,
+    apiPrefix = "",
+  ) {
     const userMessage = {
       role: ROLE_USER,
       text: message,
@@ -5024,7 +5030,10 @@ describe("User Prompt Image Construction (WebSocket handler)", () => {
   }
 
   test("constructs images array with URLs from image_ids", () => {
-    const msg = buildUserMessageWithImages("sess-123", "Check this", ["img_001", "img_002"]);
+    const msg = buildUserMessageWithImages("sess-123", "Check this", [
+      "img_001",
+      "img_002",
+    ]);
     expect(msg.images).toHaveLength(2);
     expect(msg.images[0]).toEqual({
       id: "img_001",
@@ -5049,8 +5058,15 @@ describe("User Prompt Image Construction (WebSocket handler)", () => {
   });
 
   test("image URLs include apiPrefix when set", () => {
-    const msg = buildUserMessageWithImages("sess-123", "Test", ["img_001"], "/mitto");
-    expect(msg.images[0].url).toBe("/mitto/api/sessions/sess-123/images/img_001");
+    const msg = buildUserMessageWithImages(
+      "sess-123",
+      "Test",
+      ["img_001"],
+      "/mitto",
+    );
+    expect(msg.images[0].url).toBe(
+      "/mitto/api/sessions/sess-123/images/img_001",
+    );
   });
 
   test("image format matches convertEventsToMessages output", () => {
@@ -5063,15 +5079,17 @@ describe("User Prompt Image Construction (WebSocket handler)", () => {
     const wsMessage = buildUserMessageWithImages(sessionId, "Test", [imageId]);
 
     // What convertEventsToMessages produces
-    const events = [{
-      type: "user_prompt",
-      data: {
-        message: "Test",
-        images: [{ id: imageId, mime_type: "image/png" }],
+    const events = [
+      {
+        type: "user_prompt",
+        data: {
+          message: "Test",
+          images: [{ id: imageId, mime_type: "image/png" }],
+        },
+        timestamp: "2024-01-01T10:00:00Z",
+        seq: 1,
       },
-      timestamp: "2024-01-01T10:00:00Z",
-      seq: 1,
-    }];
+    ];
     const loadedMessages = convertEventsToMessages(events, { sessionId });
 
     // Both should have images with id and url
@@ -5082,7 +5100,9 @@ describe("User Prompt Image Construction (WebSocket handler)", () => {
   test("Message component can render images from WebSocket handler", () => {
     // Message.js checks: message.images && message.images.length > 0
     // and renders: message.images.map(img => img.url)
-    const msg = buildUserMessageWithImages("sess-123", "Check this", ["img_001"]);
+    const msg = buildUserMessageWithImages("sess-123", "Check this", [
+      "img_001",
+    ]);
     const hasImages = msg.images && msg.images.length > 0;
     expect(hasImages).toBe(true);
     expect(msg.images[0].url).toBeDefined();
@@ -5099,7 +5119,6 @@ describe("User Prompt Image Construction (WebSocket handler)", () => {
   });
 });
 
-
 // =============================================================================
 // parseToolTitlePaths Tests
 // =============================================================================
@@ -5111,7 +5130,9 @@ describe("parseToolTitlePaths", () => {
   });
 
   test("returns empty text segment for undefined", () => {
-    expect(parseToolTitlePaths(undefined)).toEqual([{ type: "text", value: "" }]);
+    expect(parseToolTitlePaths(undefined)).toEqual([
+      { type: "text", value: "" },
+    ]);
   });
 
   test("returns empty text segment for empty string", () => {
@@ -5146,7 +5167,7 @@ describe("parseToolTitlePaths", () => {
   // Backtick-delimited paths with spaces
   test("detects backtick-delimited path with spaces in directory name", () => {
     const result = parseToolTitlePaths(
-      "Read `symbols/Alphabet Inc./analysis-2026-04-27.md`"
+      "Read `symbols/Alphabet Inc./analysis-2026-04-27.md`",
     );
     expect(result).toEqual([
       { type: "text", value: "Read " },
@@ -5164,9 +5185,7 @@ describe("parseToolTitlePaths", () => {
 
   // Single-quote-delimited paths with spaces
   test("detects single-quote-delimited path with spaces", () => {
-    const result = parseToolTitlePaths(
-      "Edit 'My Documents/project/notes.md'"
-    );
+    const result = parseToolTitlePaths("Edit 'My Documents/project/notes.md'");
     expect(result).toEqual([
       { type: "text", value: "Edit " },
       { type: "path", value: "My Documents/project/notes.md" },
@@ -5192,7 +5211,7 @@ describe("parseToolTitlePaths", () => {
   // Action prefix + remainder as path (no delimiters, spaces in path)
   test("detects path with spaces via action prefix + remainder", () => {
     const result = parseToolTitlePaths(
-      "Read symbols/Alphabet Inc./analysis-2026-04-27.md"
+      "Read symbols/Alphabet Inc./analysis-2026-04-27.md",
     );
     expect(result).toEqual([
       { type: "text", value: "Read " },
@@ -5202,9 +5221,7 @@ describe("parseToolTitlePaths", () => {
 
   // Multiple paths in one title (via backticks)
   test("detects multiple backtick-delimited paths", () => {
-    const result = parseToolTitlePaths(
-      "Diff `src/a.go` and `src/b.go`"
-    );
+    const result = parseToolTitlePaths("Diff `src/a.go` and `src/b.go`");
     const paths = result.filter((s) => s.type === "path").map((s) => s.value);
     expect(paths).toContain("src/a.go");
     expect(paths).toContain("src/b.go");
@@ -5233,7 +5250,7 @@ describe("getArchiveReasonText", () => {
 
   test("returns inactivity message without date", () => {
     expect(getArchiveReasonText("inactivity", null)).toBe(
-      "Auto-archived due to inactivity"
+      "Auto-archived due to inactivity",
     );
   });
 
@@ -5244,14 +5261,17 @@ describe("getArchiveReasonText", () => {
 
   test("returns acp_start_failures message without date", () => {
     expect(getArchiveReasonText("acp_start_failures", null)).toBe(
-      "Auto-archived: agent failed to start after repeated attempts"
+      "Auto-archived: agent failed to start after repeated attempts",
     );
   });
 
   test("returns acp_start_failures message with date", () => {
-    const result = getArchiveReasonText("acp_start_failures", "2024-06-01T00:00:00Z");
+    const result = getArchiveReasonText(
+      "acp_start_failures",
+      "2024-06-01T00:00:00Z",
+    );
     expect(result).toMatch(
-      /^Auto-archived: agent failed to start after repeated attempts on /
+      /^Auto-archived: agent failed to start after repeated attempts on /,
     );
   });
 
@@ -5260,7 +5280,10 @@ describe("getArchiveReasonText", () => {
   });
 
   test("returns default 'Archived on <date>' for unknown reason with date", () => {
-    const result = getArchiveReasonText("some_other_reason", "2024-06-01T00:00:00Z");
+    const result = getArchiveReasonText(
+      "some_other_reason",
+      "2024-06-01T00:00:00Z",
+    );
     expect(result).toMatch(/^Archived on /);
   });
 
@@ -5310,17 +5333,23 @@ describe("htmlToMarkdown", () => {
   });
 
   test("fenced code block with language class", () => {
-    const result = htmlToMarkdown('<pre><code class="language-javascript">const x = 1;</code></pre>');
+    const result = htmlToMarkdown(
+      '<pre><code class="language-javascript">const x = 1;</code></pre>',
+    );
     expect(result).toBe("```javascript\nconst x = 1;\n```");
   });
 
   test("fenced code block preserves content verbatim (no whitespace collapse)", () => {
-    const result = htmlToMarkdown("<pre><code>line1\n  line2\nline3</code></pre>");
+    const result = htmlToMarkdown(
+      "<pre><code>line1\n  line2\nline3</code></pre>",
+    );
     expect(result).toBe("```\nline1\n  line2\nline3\n```");
   });
 
   test("link", () => {
-    expect(htmlToMarkdown('<a href="https://example.com">Click</a>')).toBe("[Click](https://example.com)");
+    expect(htmlToMarkdown('<a href="https://example.com">Click</a>')).toBe(
+      "[Click](https://example.com)",
+    );
   });
 
   test("unordered list", () => {
@@ -5334,13 +5363,17 @@ describe("htmlToMarkdown", () => {
   });
 
   test("nested unordered list", () => {
-    const result = htmlToMarkdown("<ul><li>Top<ul><li>Nested</li></ul></li></ul>");
+    const result = htmlToMarkdown(
+      "<ul><li>Top<ul><li>Nested</li></ul></li></ul>",
+    );
     expect(result).toContain("- Top");
     expect(result).toContain("  - Nested");
   });
 
   test("blockquote", () => {
-    const result = htmlToMarkdown("<blockquote><p>Quoted text</p></blockquote>");
+    const result = htmlToMarkdown(
+      "<blockquote><p>Quoted text</p></blockquote>",
+    );
     expect(result).toContain("> Quoted text");
   });
 
@@ -5420,11 +5453,15 @@ describe("messageToMarkdown", () => {
   });
 
   test("thought message returns empty string", () => {
-    expect(messageToMarkdown({ role: ROLE_THOUGHT, text: "thinking..." })).toBe("");
+    expect(messageToMarkdown({ role: ROLE_THOUGHT, text: "thinking..." })).toBe(
+      "",
+    );
   });
 
   test("tool message returns empty string", () => {
-    expect(messageToMarkdown({ role: ROLE_TOOL, title: "Edit file.js" })).toBe("");
+    expect(messageToMarkdown({ role: ROLE_TOOL, title: "Edit file.js" })).toBe(
+      "",
+    );
   });
 
   test("error message returns empty string", () => {
@@ -5506,13 +5543,34 @@ describe("conversationToMarkdown", () => {
 
 describe("PERIODIC_STOPPED_LABELS", () => {
   test("maps all seven known reason codes to {label, kind} objects", () => {
-    expect(PERIODIC_STOPPED_LABELS.maxDuration).toEqual({ label: "Stopped: max time", kind: "stopped" });
-    expect(PERIODIC_STOPPED_LABELS.maxIterations).toEqual({ label: "Stopped: max iters", kind: "stopped" });
-    expect(PERIODIC_STOPPED_LABELS.iterationSafeguard).toEqual({ label: "Stopped: max iters", kind: "stopped" });
-    expect(PERIODIC_STOPPED_LABELS.promptUnresolved).toEqual({ label: "Stopped: prompt missing", kind: "stopped" });
-    expect(PERIODIC_STOPPED_LABELS.resumeFailures).toEqual({ label: "Stopped: resume errors", kind: "stopped" });
-    expect(PERIODIC_STOPPED_LABELS.pausedByUser).toEqual({ label: "Paused by you", kind: "paused" });
-    expect(PERIODIC_STOPPED_LABELS.disabledByAgent).toEqual({ label: "Paused by the agent", kind: "paused" });
+    expect(PERIODIC_STOPPED_LABELS.maxDuration).toEqual({
+      label: "Stopped: max time",
+      kind: "stopped",
+    });
+    expect(PERIODIC_STOPPED_LABELS.maxIterations).toEqual({
+      label: "Stopped: max iters",
+      kind: "stopped",
+    });
+    expect(PERIODIC_STOPPED_LABELS.iterationSafeguard).toEqual({
+      label: "Stopped: max iters",
+      kind: "stopped",
+    });
+    expect(PERIODIC_STOPPED_LABELS.promptUnresolved).toEqual({
+      label: "Stopped: prompt missing",
+      kind: "stopped",
+    });
+    expect(PERIODIC_STOPPED_LABELS.resumeFailures).toEqual({
+      label: "Stopped: resume errors",
+      kind: "stopped",
+    });
+    expect(PERIODIC_STOPPED_LABELS.pausedByUser).toEqual({
+      label: "Paused by you",
+      kind: "paused",
+    });
+    expect(PERIODIC_STOPPED_LABELS.disabledByAgent).toEqual({
+      label: "Paused by the agent",
+      kind: "paused",
+    });
   });
 
   test("maxIterations and iterationSafeguard share the same label", () => {
@@ -5526,7 +5584,13 @@ describe("PERIODIC_STOPPED_LABELS", () => {
   });
 
   test("all stopped reasons have kind='stopped'", () => {
-    const stoppedReasons = ["maxDuration", "maxIterations", "iterationSafeguard", "promptUnresolved", "resumeFailures"];
+    const stoppedReasons = [
+      "maxDuration",
+      "maxIterations",
+      "iterationSafeguard",
+      "promptUnresolved",
+      "resumeFailures",
+    ];
     for (const reason of stoppedReasons) {
       expect(PERIODIC_STOPPED_LABELS[reason].kind).toBe("stopped");
     }
@@ -5545,16 +5609,32 @@ describe("PERIODIC_STOPPED_LABELS", () => {
   function computeHeaderPeriodicState(session) {
     if (!session?.periodic_configured) return null;
     if (session?.periodic_enabled) {
-      return { state: "running", label: "Auto", badgeClass: "badge-success badge-soft" };
+      return {
+        state: "running",
+        label: "Auto",
+        badgeClass: "badge-success badge-soft",
+      };
     }
     const entry = PERIODIC_STOPPED_LABELS[session?.periodic_stopped_reason];
     if (entry && entry.kind === "stopped") {
-      return { state: "stopped", label: entry.label, badgeClass: "badge-error badge-soft" };
+      return {
+        state: "stopped",
+        label: entry.label,
+        badgeClass: "badge-error badge-soft",
+      };
     }
     if (entry && entry.kind === "paused") {
-      return { state: "paused", label: entry.label, badgeClass: "badge-warning badge-soft" };
+      return {
+        state: "paused",
+        label: entry.label,
+        badgeClass: "badge-warning badge-soft",
+      };
     }
-    return { state: "paused", label: "Paused", badgeClass: "badge-warning badge-soft" };
+    return {
+      state: "paused",
+      label: "Paused",
+      badgeClass: "badge-warning badge-soft",
+    };
   }
 
   test("non-periodic session yields null (no pill)", () => {
@@ -5575,7 +5655,11 @@ describe("PERIODIC_STOPPED_LABELS", () => {
   });
 
   test("stopped reason yields Stopped/red", () => {
-    const session = { periodic_configured: true, periodic_enabled: false, periodic_stopped_reason: "maxDuration" };
+    const session = {
+      periodic_configured: true,
+      periodic_enabled: false,
+      periodic_stopped_reason: "maxDuration",
+    };
     const result = computeHeaderPeriodicState(session);
     expect(result.state).toBe("stopped");
     expect(result.label).toBe("Stopped: max time");
@@ -5583,7 +5667,11 @@ describe("PERIODIC_STOPPED_LABELS", () => {
   });
 
   test("pausedByUser reason yields Paused/amber", () => {
-    const session = { periodic_configured: true, periodic_enabled: false, periodic_stopped_reason: "pausedByUser" };
+    const session = {
+      periodic_configured: true,
+      periodic_enabled: false,
+      periodic_stopped_reason: "pausedByUser",
+    };
     const result = computeHeaderPeriodicState(session);
     expect(result.state).toBe("paused");
     expect(result.label).toBe("Paused by you");
@@ -5591,7 +5679,11 @@ describe("PERIODIC_STOPPED_LABELS", () => {
   });
 
   test("disabledByAgent reason yields Paused/amber", () => {
-    const session = { periodic_configured: true, periodic_enabled: false, periodic_stopped_reason: "disabledByAgent" };
+    const session = {
+      periodic_configured: true,
+      periodic_enabled: false,
+      periodic_stopped_reason: "disabledByAgent",
+    };
     const result = computeHeaderPeriodicState(session);
     expect(result.state).toBe("paused");
     expect(result.label).toBe("Paused by the agent");
@@ -5599,7 +5691,11 @@ describe("PERIODIC_STOPPED_LABELS", () => {
   });
 
   test("no reason (manual pause) yields generic Paused/amber", () => {
-    const session = { periodic_configured: true, periodic_enabled: false, periodic_stopped_reason: null };
+    const session = {
+      periodic_configured: true,
+      periodic_enabled: false,
+      periodic_stopped_reason: null,
+    };
     const result = computeHeaderPeriodicState(session);
     expect(result.state).toBe("paused");
     expect(result.label).toBe("Paused");
@@ -5607,7 +5703,11 @@ describe("PERIODIC_STOPPED_LABELS", () => {
   });
 
   test("unknown future reason falls back to generic Paused/amber", () => {
-    const session = { periodic_configured: true, periodic_enabled: false, periodic_stopped_reason: "someFutureReason" };
+    const session = {
+      periodic_configured: true,
+      periodic_enabled: false,
+      periodic_stopped_reason: "someFutureReason",
+    };
     const result = computeHeaderPeriodicState(session);
     expect(result.state).toBe("paused");
     expect(result.label).toBe("Paused");
@@ -5686,7 +5786,8 @@ describe("Periodic header badge label logic", () => {
     }
     const freq = session.periodic_frequency;
     if (!freq) return null;
-    const u = freq.unit === "minutes" ? "min" : freq.unit === "hours" ? "h" : "d";
+    const u =
+      freq.unit === "minutes" ? "min" : freq.unit === "hours" ? "h" : "d";
     return `every ${freq.value}${u}`;
   }
 
@@ -5896,7 +5997,9 @@ describe("buildRetryTargets", () => {
 
 describe("messageKey", () => {
   test("prefers seq when present", () => {
-    expect(messageKey({ seq: 42, id: "abc", timestamp: 1000, role: "agent" })).toBe("seq-42");
+    expect(
+      messageKey({ seq: 42, id: "abc", timestamp: 1000, role: "agent" }),
+    ).toBe("seq-42");
   });
 
   test("prefers seq even when seq is 0", () => {
@@ -5904,19 +6007,27 @@ describe("messageKey", () => {
   });
 
   test("falls back to id when seq is null", () => {
-    expect(messageKey({ seq: null, id: "abc", timestamp: 1000, role: "agent" })).toBe("id-abc");
+    expect(
+      messageKey({ seq: null, id: "abc", timestamp: 1000, role: "agent" }),
+    ).toBe("id-abc");
   });
 
   test("falls back to id when seq is undefined", () => {
-    expect(messageKey({ id: "abc", timestamp: 1000, role: "agent" })).toBe("id-abc");
+    expect(messageKey({ id: "abc", timestamp: 1000, role: "agent" })).toBe(
+      "id-abc",
+    );
   });
 
   test("falls back to timestamp+role when both seq and id are absent", () => {
-    expect(messageKey({ timestamp: 1620000000000, role: "user" })).toBe("ts-1620000000000-user");
+    expect(messageKey({ timestamp: 1620000000000, role: "user" })).toBe(
+      "ts-1620000000000-user",
+    );
   });
 
   test("falls back to timestamp+role when id is null", () => {
-    expect(messageKey({ id: null, timestamp: 999, role: "error" })).toBe("ts-999-error");
+    expect(messageKey({ id: null, timestamp: 999, role: "error" })).toBe(
+      "ts-999-error",
+    );
   });
 
   test("returns distinct keys for different seqs", () => {

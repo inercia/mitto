@@ -95,7 +95,10 @@ export function useQueueActions({
     async (message, images = [], files = [], opts = {}) => {
       // Allow queueing if there's text OR images OR files OR a named prompt
       const hasContent =
-        message?.trim() || images.length > 0 || files.length > 0 || opts?.promptName;
+        message?.trim() ||
+        images.length > 0 ||
+        files.length > 0 ||
+        opts?.promptName;
       if (!hasContent || isAddingToQueue) return { success: false };
 
       setIsAddingToQueue(true);
@@ -110,7 +113,12 @@ export function useQueueActions({
           updateDraft(activeSessionId, "");
 
           // Show queue toast feedback
-          showToast({ style: "info", title: "Message queued", duration: 2000, dismissable: false });
+          showToast({
+            style: "info",
+            title: "Message queued",
+            duration: 2000,
+            dismissable: false,
+          });
 
           // Trigger badge pulse animation
           setQueueBadgePulse(true);

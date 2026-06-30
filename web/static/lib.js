@@ -310,7 +310,7 @@ function _parseUndelimited(text, segments) {
   // ── Pass 2: action-prefix + remainder as path ────────────────────────────
   // Match "Read ", "Edit ", etc. at the very start of `text`
   const prefixPattern = new RegExp(
-    `^((?:${TOOL_ACTION_PREFIXES.join("|")})\\s+)(.+)$`
+    `^((?:${TOOL_ACTION_PREFIXES.join("|")})\\s+)(.+)$`,
   );
   const prefixMatch = text.match(prefixPattern);
   if (prefixMatch) {
@@ -364,13 +364,13 @@ function _parseUndelimited(text, segments) {
 // Keyed by the `periodic_stopped_reason` string sent by the backend.
 // Each entry has { label, kind } where kind is "stopped" (terminal/red) or "paused" (resumable/amber).
 export const PERIODIC_STOPPED_LABELS = {
-  maxDuration:        { label: "Stopped: max time",       kind: "stopped" },
-  maxIterations:      { label: "Stopped: max iters",      kind: "stopped" },
-  iterationSafeguard: { label: "Stopped: max iters",      kind: "stopped" },
-  promptUnresolved:   { label: "Stopped: prompt missing", kind: "stopped" },
-  resumeFailures:     { label: "Stopped: resume errors",  kind: "stopped" },
-  pausedByUser:       { label: "Paused by you",           kind: "paused"  },
-  disabledByAgent:    { label: "Paused by the agent",     kind: "paused"  },
+  maxDuration: { label: "Stopped: max time", kind: "stopped" },
+  maxIterations: { label: "Stopped: max iters", kind: "stopped" },
+  iterationSafeguard: { label: "Stopped: max iters", kind: "stopped" },
+  promptUnresolved: { label: "Stopped: prompt missing", kind: "stopped" },
+  resumeFailures: { label: "Stopped: resume errors", kind: "stopped" },
+  pausedByUser: { label: "Paused by you", kind: "paused" },
+  disabledByAgent: { label: "Paused by the agent", kind: "paused" },
 };
 
 /**
@@ -428,7 +428,8 @@ export function computeAllSessions(activeSessions, storedSessions) {
       "";
 
     // Flatten acp_server from info so session.acp_server is set for grouping/tooltips
-    const acpServer = s.acp_server || s.info?.acp_server || stored?.acp_server || "";
+    const acpServer =
+      s.acp_server || s.info?.acp_server || stored?.acp_server || "";
 
     // Always merge stored properties (archived, name, pinned, periodic_enabled, periodic_configured, next_scheduled_at, periodic_frequency) if stored session exists
     if (stored) {
@@ -451,19 +452,28 @@ export function computeAllSessions(activeSessions, storedSessions) {
         // periodic_configured: config exists → editor UI mode + reconnect long-lived check
         periodic_configured: stored.periodic_configured || false,
         // Progress bar: next run time and frequency (from API list or WebSocket periodic_updated)
-        next_scheduled_at: s.next_scheduled_at ?? stored.next_scheduled_at ?? null,
-        periodic_frequency: s.periodic_frequency ?? stored.periodic_frequency ?? null,
+        next_scheduled_at:
+          s.next_scheduled_at ?? stored.next_scheduled_at ?? null,
+        periodic_frequency:
+          s.periodic_frequency ?? stored.periodic_frequency ?? null,
         // Reason the periodic loop stopped (maxDuration, maxIterations, etc.); null while running
-        periodic_stopped_reason: s.periodic_stopped_reason ?? stored.periodic_stopped_reason ?? null,
+        periodic_stopped_reason:
+          s.periodic_stopped_reason ?? stored.periodic_stopped_reason ?? null,
         // Periodic glance fields (shown in the conversation-header subtitle)
         periodic_trigger: s.periodic_trigger ?? stored.periodic_trigger ?? null,
-        periodic_iteration_count: s.periodic_iteration_count ?? stored.periodic_iteration_count ?? null,
-        periodic_max_iterations: s.periodic_max_iterations ?? stored.periodic_max_iterations ?? null,
-        periodic_delay_seconds: s.periodic_delay_seconds ?? stored.periodic_delay_seconds ?? null,
+        periodic_iteration_count:
+          s.periodic_iteration_count ?? stored.periodic_iteration_count ?? null,
+        periodic_max_iterations:
+          s.periodic_max_iterations ?? stored.periodic_max_iterations ?? null,
+        periodic_delay_seconds:
+          s.periodic_delay_seconds ?? stored.periodic_delay_seconds ?? null,
         periodic_max_duration_seconds:
-          s.periodic_max_duration_seconds ?? stored.periodic_max_duration_seconds ?? null,
+          s.periodic_max_duration_seconds ??
+          stored.periodic_max_duration_seconds ??
+          null,
         // CRITICAL: Preserve parent_session_id for hierarchical conversation tree
-        parent_session_id: s.parent_session_id || stored.parent_session_id || null,
+        parent_session_id:
+          s.parent_session_id || stored.parent_session_id || null,
         // Preserve child_origin for child session icon rendering (lightning/robot/person)
         child_origin: s.child_origin || stored.child_origin || null,
         // Preserve the linked beads issue ID — the active session object may not
@@ -915,7 +925,11 @@ export function mergeMessagesWithSync(existingMessages, newMessages) {
   });
 
   // Add filtered new messages
-  if (filteredNewMessages.length === 0 && seqsToUpdate.size === 0 && pendingUpdates.size === 0) {
+  if (
+    filteredNewMessages.length === 0 &&
+    seqsToUpdate.size === 0 &&
+    pendingUpdates.size === 0
+  ) {
     return existingMessages;
   }
 
@@ -1605,7 +1619,8 @@ export function formatTimeAgo(date) {
 
 /** @param {Node} node @param {{ inPre: boolean, listDepth: number }} ctx @returns {string} */
 function _serializeNode(node, ctx) {
-  if (node.nodeType === 3) { // TEXT_NODE
+  if (node.nodeType === 3) {
+    // TEXT_NODE
     const text = node.textContent;
     return ctx.inPre ? text : text.replace(/[\n\r\t ]+/g, " ");
   }
@@ -1619,29 +1634,58 @@ function _serializeNode(node, ctx) {
     const lang = codeEl
       ? (codeEl.className.match(/language-(\S+)/) || [])[1] || ""
       : "";
-    const content = (codeEl ? codeEl.textContent : node.textContent).replace(/\n$/, "");
+    const content = (codeEl ? codeEl.textContent : node.textContent).replace(
+      /\n$/,
+      "",
+    );
     return "\n\n```" + lang + "\n" + content + "\n```\n\n";
   }
 
   // Inline code (pre handled above, so any code here is inline)
   if (tag === "code") return "`" + node.textContent + "`";
 
-  const HEADINGS = { h1: "#", h2: "##", h3: "###", h4: "####", h5: "#####", h6: "######" };
+  const HEADINGS = {
+    h1: "#",
+    h2: "##",
+    h3: "###",
+    h4: "####",
+    h5: "#####",
+    h6: "######",
+  };
   if (HEADINGS[tag]) {
-    return "\n\n" + HEADINGS[tag] + " " + _serializeChildren(node, ctx).trim() + "\n\n";
+    return (
+      "\n\n" +
+      HEADINGS[tag] +
+      " " +
+      _serializeChildren(node, ctx).trim() +
+      "\n\n"
+    );
   }
 
   switch (tag) {
-    case "p": return "\n\n" + _serializeChildren(node, ctx).trim() + "\n\n";
+    case "p":
+      return "\n\n" + _serializeChildren(node, ctx).trim() + "\n\n";
     case "strong":
-    case "b": return "**" + _serializeChildren(node, ctx) + "**";
+    case "b":
+      return "**" + _serializeChildren(node, ctx) + "**";
     case "em":
-    case "i": return "*" + _serializeChildren(node, ctx) + "*";
+    case "i":
+      return "*" + _serializeChildren(node, ctx) + "*";
     case "del":
-    case "s": return "~~" + _serializeChildren(node, ctx) + "~~";
-    case "a": return "[" + _serializeChildren(node, ctx) + "](" + (node.getAttribute("href") || "") + ")";
-    case "br": return "\n";
-    case "hr": return "\n\n---\n\n";
+    case "s":
+      return "~~" + _serializeChildren(node, ctx) + "~~";
+    case "a":
+      return (
+        "[" +
+        _serializeChildren(node, ctx) +
+        "](" +
+        (node.getAttribute("href") || "") +
+        ")"
+      );
+    case "br":
+      return "\n";
+    case "hr":
+      return "\n\n---\n\n";
     case "ul":
     case "ol": {
       const ordered = tag === "ol";
@@ -1652,21 +1696,37 @@ function _serializeNode(node, ctx) {
         .filter((c) => c.nodeType === 1 && c.tagName.toLowerCase() === "li")
         .map((li) => {
           const bullet = ordered ? ++idx + "." : "-";
-          return indent + bullet + " " + _serializeLi(li, { ...ctx, listDepth: depth + 1 });
+          return (
+            indent +
+            bullet +
+            " " +
+            _serializeLi(li, { ...ctx, listDepth: depth + 1 })
+          );
         });
       return "\n\n" + lines.join("\n") + "\n\n";
     }
     case "blockquote": {
       const inner = _serializeChildren(node, ctx).trim();
-      return "\n\n" + inner.split("\n").map((l) => "> " + l).join("\n") + "\n\n";
+      return (
+        "\n\n" +
+        inner
+          .split("\n")
+          .map((l) => "> " + l)
+          .join("\n") +
+        "\n\n"
+      );
     }
-    case "table": return "\n\n" + _serializeTable(node) + "\n\n";
-    default: return _serializeChildren(node, ctx);
+    case "table":
+      return "\n\n" + _serializeTable(node) + "\n\n";
+    default:
+      return _serializeChildren(node, ctx);
   }
 }
 
 function _serializeChildren(node, ctx) {
-  return Array.from(node.childNodes).map((c) => _serializeNode(c, ctx)).join("");
+  return Array.from(node.childNodes)
+    .map((c) => _serializeNode(c, ctx))
+    .join("");
 }
 
 function _serializeLi(li, ctx) {
@@ -1688,7 +1748,9 @@ function _serializeLi(li, ctx) {
 function _serializeTable(table) {
   const thead = table.querySelector("thead");
   const getCells = (row, sel) =>
-    Array.from(row.querySelectorAll(sel)).map((c) => c.textContent.replace(/\|/g, "\\|").trim());
+    Array.from(row.querySelectorAll(sel)).map((c) =>
+      c.textContent.replace(/\|/g, "\\|").trim(),
+    );
 
   let headers = [];
   if (thead) {

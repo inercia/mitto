@@ -74,14 +74,19 @@ export function Drawer({
   const closing = isClosing ? "closing" : "";
 
   return html`
-    <div class="drawer ${side === "end" ? "drawer-end" : ""} ${scoped ? "drawer-scoped" : ""} ${dock ? "drawer-dock" : ""} ${className}" style=${rootStyle}>
+    <div
+      class="drawer ${side === "end" ? "drawer-end" : ""} ${scoped
+        ? "drawer-scoped"
+        : ""} ${dock ? "drawer-dock" : ""} ${className}"
+      style=${rootStyle}
+    >
       <!-- Kept permanently checked: visibility is Preact-controlled (mount /
            unmount), the checkbox only makes daisyUI resolve the open state. -->
       <input
         type="checkbox"
         class="drawer-toggle"
         defaultChecked
-        tabIndex=${-1}
+        tabindex=${-1}
         aria-hidden="true"
       />
       <div class="drawer-side ${zClass}">
@@ -95,7 +100,9 @@ export function Drawer({
              carries cursor:pointer, so without it outside-taps would never
              close the drawer on iPhone. -->
         <div
-          class="drawer-overlay cursor-pointer ${animate && !scoped ? "properties-backdrop" : ""} ${closing}"
+          class="drawer-overlay cursor-pointer ${animate && !scoped
+            ? "properties-backdrop"
+            : ""} ${closing}"
           onClick=${onClose}
           data-testid=${overlayTestid}
         ></div>

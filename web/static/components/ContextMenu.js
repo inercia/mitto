@@ -5,7 +5,11 @@
 const { html, useState, useEffect, useLayoutEffect, useRef, render } =
   window.preact;
 
-import { ChevronRightIcon, getPromptIconOrDefault, PeriodicIcon } from "./Icons.js";
+import {
+  ChevronRightIcon,
+  getPromptIconOrDefault,
+  PeriodicIcon,
+} from "./Icons.js";
 import { flattenPrompts } from "../utils/prompts.js";
 
 // Build ContextMenu submenu items that group `prompts` by their `group`
@@ -26,8 +30,8 @@ export function buildPromptGroupMenuItems(prompts, onRun, groupIcon) {
         ? html`<span
             class="shrink-0 text-success opacity-80"
             title="Periodic prompt — sets the conversation to recurring mode"
-            ><${PeriodicIcon} className="w-3.5 h-3.5" /></span
-          >`
+            ><${PeriodicIcon} className="w-3.5 h-3.5"
+          /></span>`
         : null,
       onClick: () => onRun(p),
     })),
@@ -99,7 +103,9 @@ export function PortalTooltip({ x, y, text }) {
       ny = window.innerHeight - rect.height - margin;
     }
     if (ny < margin) ny = margin;
-    setPos((prev) => (prev.x === nx && prev.y === ny ? prev : { x: nx, y: ny }));
+    setPos((prev) =>
+      prev.x === nx && prev.y === ny ? prev : { x: nx, y: ny },
+    );
   }, [x, y, text]);
 
   return html`
@@ -108,7 +114,9 @@ export function PortalTooltip({ x, y, text }) {
         ref=${ref}
         class="fixed pointer-events-none"
         style="left: ${pos.x}px; top: ${pos.y}px; z-index: 9999; max-width: 20rem; white-space: pre-line; background: var(--color-neutral); color: var(--color-neutral-content); border-radius: var(--radius-field); padding: .375rem .625rem; font-size: .8125rem; line-height: 1.4; box-shadow: 0 4px 14px rgba(0, 0, 0, 0.35);"
-      >${text}</div>
+      >
+        ${text}
+      </div>
     <//>
   `;
 }

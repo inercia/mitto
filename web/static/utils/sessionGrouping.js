@@ -42,9 +42,7 @@ export function computeSessionFingerprint(filteredSessions, groupingMode) {
 function getSessionInfo(session) {
   return {
     workingDir:
-      session.working_dir ||
-      getGlobalWorkingDir(session.session_id) ||
-      "",
+      session.working_dir || getGlobalWorkingDir(session.session_id) || "",
     acpServer: session.acp_server || "",
   };
 }
@@ -149,7 +147,12 @@ function computeFolderGroups(filteredSessions, allSessions, workspaces) {
 // Flat modes: server and workspace
 // ---------------------------------------------------------------------------
 
-function computeFlatGroups(filteredSessions, groupingMode, allSessions, workspaces) {
+function computeFlatGroups(
+  filteredSessions,
+  groupingMode,
+  allSessions,
+  workspaces,
+) {
   const sessionById = new Map(filteredSessions.map((s) => [s.session_id, s]));
   const allKnownSessionIds = new Set(allSessions.map((s) => s.session_id));
 
@@ -176,7 +179,8 @@ function computeFlatGroups(filteredSessions, groupingMode, allSessions, workspac
           w.working_dir === workingDir &&
           (!acpServer || w.acp_server === acpServer),
       );
-      groupLabel = ws?.name || (workingDir ? getBasename(workingDir) : "Unknown");
+      groupLabel =
+        ws?.name || (workingDir ? getBasename(workingDir) : "Unknown");
       groupWorkingDir = workingDir;
       groupAcpServer = acpServer;
     }
@@ -248,7 +252,11 @@ function annotateWithCategory(nodes) {
 export function computeUnifiedTree(allSessions, workspaces = []) {
   const sessions = allSessions || [];
 
-  const dashboard = { type: "dashboard", id: "__dashboard__", label: "Dashboard" };
+  const dashboard = {
+    type: "dashboard",
+    id: "__dashboard__",
+    label: "Dashboard",
+  };
 
   if (sessions.length === 0) {
     return { dashboard, folders: [] };
@@ -513,5 +521,10 @@ export function computeGroupedSessions(
   if (groupingMode === "folder") {
     return computeFolderGroups(filteredSessions, allSessions, workspaces);
   }
-  return computeFlatGroups(filteredSessions, groupingMode, allSessions, workspaces);
+  return computeFlatGroups(
+    filteredSessions,
+    groupingMode,
+    allSessions,
+    workspaces,
+  );
 }

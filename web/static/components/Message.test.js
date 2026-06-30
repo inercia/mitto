@@ -56,15 +56,15 @@ describe("isModelErrorThought", () => {
     });
 
     test("detects 'overloaded'", () => {
-      expect(
-        isModelErrorThought("The model is overloaded right now"),
-      ).toBe(true);
+      expect(isModelErrorThought("The model is overloaded right now")).toBe(
+        true,
+      );
     });
 
     test("detects 'service unavailable'", () => {
-      expect(
-        isModelErrorThought("Got a service unavailable response"),
-      ).toBe(true);
+      expect(isModelErrorThought("Got a service unavailable response")).toBe(
+        true,
+      );
     });
 
     test("detects 'service_unavailable'", () => {
@@ -78,9 +78,9 @@ describe("isModelErrorThought", () => {
     });
 
     test("detects 'failed due to' with 'api'", () => {
-      expect(
-        isModelErrorThought("Request failed due to an api timeout"),
-      ).toBe(true);
+      expect(isModelErrorThought("Request failed due to an api timeout")).toBe(
+        true,
+      );
     });
 
     test("detects 'failed due to' with 'upstream'", () => {
@@ -104,9 +104,9 @@ describe("isModelErrorThought", () => {
 
   describe("avoids false positives on normal thinking text", () => {
     test("does not match 'I think the error is in line 42'", () => {
-      expect(
-        isModelErrorThought("I think the error is in line 42"),
-      ).toBe(false);
+      expect(isModelErrorThought("I think the error is in line 42")).toBe(
+        false,
+      );
     });
 
     test("does not match discussion about fixing bugs", () => {
@@ -123,7 +123,9 @@ describe("isModelErrorThought", () => {
 
     test("does not match 'this function returns an error'", () => {
       expect(
-        isModelErrorThought("This function returns an error when the input is invalid"),
+        isModelErrorThought(
+          "This function returns an error when the input is invalid",
+        ),
       ).toBe(false);
     });
 
@@ -146,9 +148,9 @@ describe("isModelErrorThought", () => {
     });
 
     test("does not match 'failed due to a timeout'", () => {
-      expect(
-        isModelErrorThought("The build failed due to a timeout"),
-      ).toBe(false);
+      expect(isModelErrorThought("The build failed due to a timeout")).toBe(
+        false,
+      );
     });
 
     test("does not match general thinking about code", () => {
@@ -290,9 +292,9 @@ describe("NamedPromptPill tooltip", () => {
   });
 
   test("falls back to count when meta.arguments is empty and no names", () => {
-    expect(
-      buildArgTip({ argumentCount: 4, meta: { arguments: [] } }),
-    ).toBe("4 argument(s)");
+    expect(buildArgTip({ argumentCount: 4, meta: { arguments: [] } })).toBe(
+      "4 argument(s)",
+    );
   });
 
   test("falls back when meta.argument_names is an empty array", () => {
@@ -440,8 +442,16 @@ describe("messagePropsAreEqual (memo comparator)", () => {
     // Simulates successive streaming chunks — memo must not block re-renders
     const chunks = ["<p>h</p>", "<p>he</p>", "<p>hel</p>", "<p>hell</p>"];
     for (let i = 0; i < chunks.length - 1; i++) {
-      const prev = makeProps({ message: { html: chunks[i], complete: false }, isStreaming: true, isLast: true });
-      const next = makeProps({ message: { html: chunks[i + 1], complete: false }, isStreaming: true, isLast: true });
+      const prev = makeProps({
+        message: { html: chunks[i], complete: false },
+        isStreaming: true,
+        isLast: true,
+      });
+      const next = makeProps({
+        message: { html: chunks[i + 1], complete: false },
+        isStreaming: true,
+        isLast: true,
+      });
       expect(messagePropsAreEqual(prev, next)).toBe(false);
     }
   });
@@ -481,15 +491,15 @@ function sessionChangeText(m) {
 
 describe("sessionChangeText", () => {
   test("renders model kind as 'Model changed to <value>'", () => {
-    expect(
-      sessionChangeText({ kind: "model", value: "claude-x" }),
-    ).toBe("Model changed to claude-x");
+    expect(sessionChangeText({ kind: "model", value: "claude-x" })).toBe(
+      "Model changed to claude-x",
+    );
   });
 
   test("unknown kind with label falls back to generic label text", () => {
-    expect(
-      sessionChangeText({ kind: "future_thing", label: "Foo" }),
-    ).toBe("Foo changed");
+    expect(sessionChangeText({ kind: "future_thing", label: "Foo" })).toBe(
+      "Foo changed",
+    );
   });
 
   test("unknown kind with label and value uses generic 'changed to' text", () => {
@@ -511,9 +521,7 @@ describe("sessionChangeText", () => {
         value: "Sonnet 4.5",
         previousValue: "Opus",
       }),
-    ).toBe(
-      "⚡ Running this prompt on Sonnet 4.5 — conversation stays on Opus",
-    );
+    ).toBe("⚡ Running this prompt on Sonnet 4.5 — conversation stays on Opus");
   });
 
   test("model_override without baseline omits the 'conversation stays on' clause", () => {

@@ -114,7 +114,10 @@ export function useTheme() {
       }
       // Migration: seed from old single-slot key if it was a light-bucket theme
       const legacy = localStorage.getItem("mitto-theme-name");
-      if (legacy && Object.prototype.hasOwnProperty.call(NAMED_THEMES, legacy)) {
+      if (
+        legacy &&
+        Object.prototype.hasOwnProperty.call(NAMED_THEMES, legacy)
+      ) {
         if (NAMED_THEMES[legacy] === "light" || legacy === "mitto") {
           return legacy;
         }
@@ -131,7 +134,10 @@ export function useTheme() {
       }
       // Migration: seed from old single-slot key if it was a dark-bucket theme
       const legacy = localStorage.getItem("mitto-theme-name");
-      if (legacy && Object.prototype.hasOwnProperty.call(NAMED_THEMES, legacy)) {
+      if (
+        legacy &&
+        Object.prototype.hasOwnProperty.call(NAMED_THEMES, legacy)
+      ) {
         if (NAMED_THEMES[legacy] === "dark") {
           return legacy;
         }
@@ -228,11 +234,20 @@ export function useTheme() {
         setDarkThemeName(name);
       }
     };
-    window.addEventListener("mitto-theme-light-changed", handleLightThemeChanged);
+    window.addEventListener(
+      "mitto-theme-light-changed",
+      handleLightThemeChanged,
+    );
     window.addEventListener("mitto-theme-dark-changed", handleDarkThemeChanged);
     return () => {
-      window.removeEventListener("mitto-theme-light-changed", handleLightThemeChanged);
-      window.removeEventListener("mitto-theme-dark-changed", handleDarkThemeChanged);
+      window.removeEventListener(
+        "mitto-theme-light-changed",
+        handleLightThemeChanged,
+      );
+      window.removeEventListener(
+        "mitto-theme-dark-changed",
+        handleDarkThemeChanged,
+      );
     };
   }, []);
 
@@ -299,8 +314,10 @@ export function useTheme() {
         // Auto-enable on mobile/tablet (iPad reports as Macintosh with touch support)
         if (typeof navigator !== "undefined") {
           const ua = navigator.userAgent || "";
-          if (/iPad|iPhone|iPod|Android/i.test(ua) ||
-              (navigator.maxTouchPoints > 1 && /Macintosh/i.test(ua))) {
+          if (
+            /iPad|iPhone|iPod|Android/i.test(ua) ||
+            (navigator.maxTouchPoints > 1 && /Macintosh/i.test(ua))
+          ) {
             return true;
           }
         }
@@ -318,8 +335,10 @@ export function useTheme() {
     // even when idle, draining battery on iPad and similar devices.
     if (typeof navigator !== "undefined") {
       const ua = navigator.userAgent || "";
-      if (/iPad|iPhone|iPod|Android/i.test(ua) ||
-          (navigator.maxTouchPoints > 1 && /Macintosh/i.test(ua))) {
+      if (
+        /iPad|iPhone|iPod|Android/i.test(ua) ||
+        (navigator.maxTouchPoints > 1 && /Macintosh/i.test(ua))
+      ) {
         return true;
       }
     }

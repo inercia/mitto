@@ -233,7 +233,7 @@ describe("stale loop cascade prevention", () => {
     // Without clearing, events below highestSeq - MAX_RECENT_SEQS are rejected
     // MAX_RECENT_SEQS = 100, so anything below 2081 would be rejected
     expect(isSeqDuplicate(tracker, 2000, undefined)).toBe(true); // WRONGLY rejected!
-    expect(isSeqDuplicate(tracker, 100, undefined)).toBe(true);  // WRONGLY rejected!
+    expect(isSeqDuplicate(tracker, 100, undefined)).toBe(true); // WRONGLY rejected!
 
     // Events near highestSeq are NOT rejected (within recent window)
     expect(isSeqDuplicate(tracker, 2180, undefined)).toBe(false); // Within window
@@ -384,17 +384,29 @@ describe("calculateSessionCreationDelay", () => {
 
   test("doubles delay for each attempt", () => {
     const baseDelay = WEBSOCKET_CONSTANTS.SESSION_CREATION_BASE_DELAY_MS;
-    expect(calculateSessionCreationDelay(0, { jitterFactor: 0 })).toBe(baseDelay);
-    expect(calculateSessionCreationDelay(1, { jitterFactor: 0 })).toBe(baseDelay * 2);
-    expect(calculateSessionCreationDelay(2, { jitterFactor: 0 })).toBe(baseDelay * 4);
-    expect(calculateSessionCreationDelay(3, { jitterFactor: 0 })).toBe(baseDelay * 8);
+    expect(calculateSessionCreationDelay(0, { jitterFactor: 0 })).toBe(
+      baseDelay,
+    );
+    expect(calculateSessionCreationDelay(1, { jitterFactor: 0 })).toBe(
+      baseDelay * 2,
+    );
+    expect(calculateSessionCreationDelay(2, { jitterFactor: 0 })).toBe(
+      baseDelay * 4,
+    );
+    expect(calculateSessionCreationDelay(3, { jitterFactor: 0 })).toBe(
+      baseDelay * 8,
+    );
   });
 
   test("caps at SESSION_CREATION_MAX_DELAY_MS", () => {
     const maxDelay = WEBSOCKET_CONSTANTS.SESSION_CREATION_MAX_DELAY_MS;
     // Attempt 10 would be 2000 * 2^10 = 2048000, but should cap at 30000
-    expect(calculateSessionCreationDelay(10, { jitterFactor: 0 })).toBe(maxDelay);
-    expect(calculateSessionCreationDelay(20, { jitterFactor: 0 })).toBe(maxDelay);
+    expect(calculateSessionCreationDelay(10, { jitterFactor: 0 })).toBe(
+      maxDelay,
+    );
+    expect(calculateSessionCreationDelay(20, { jitterFactor: 0 })).toBe(
+      maxDelay,
+    );
   });
 
   test("base delay is 2x the reconnect base delay", () => {
@@ -1109,7 +1121,12 @@ describe("lastKnownSeqRef synchronization logic", () => {
       const ref = { session1: 100 };
       const messagesMaxSeq = 50;
       const lastLoadedSeq = 60;
-      const result = getClientMaxSeq(ref, "session1", messagesMaxSeq, lastLoadedSeq);
+      const result = getClientMaxSeq(
+        ref,
+        "session1",
+        messagesMaxSeq,
+        lastLoadedSeq,
+      );
       expect(result).toBe(100); // ref wins
     });
 
@@ -1117,7 +1134,12 @@ describe("lastKnownSeqRef synchronization logic", () => {
       const ref = { session1: 50 };
       const messagesMaxSeq = 100;
       const lastLoadedSeq = 80;
-      const result = getClientMaxSeq(ref, "session1", messagesMaxSeq, lastLoadedSeq);
+      const result = getClientMaxSeq(
+        ref,
+        "session1",
+        messagesMaxSeq,
+        lastLoadedSeq,
+      );
       expect(result).toBe(100); // state wins
     });
 
@@ -1125,7 +1147,12 @@ describe("lastKnownSeqRef synchronization logic", () => {
       const ref = { session1: 100 };
       const messagesMaxSeq = 0;
       const lastLoadedSeq = 0;
-      const result = getClientMaxSeq(ref, "session1", messagesMaxSeq, lastLoadedSeq);
+      const result = getClientMaxSeq(
+        ref,
+        "session1",
+        messagesMaxSeq,
+        lastLoadedSeq,
+      );
       expect(result).toBe(100);
     });
 
@@ -1133,7 +1160,12 @@ describe("lastKnownSeqRef synchronization logic", () => {
       const ref = {};
       const messagesMaxSeq = 50;
       const lastLoadedSeq = 60;
-      const result = getClientMaxSeq(ref, "session1", messagesMaxSeq, lastLoadedSeq);
+      const result = getClientMaxSeq(
+        ref,
+        "session1",
+        messagesMaxSeq,
+        lastLoadedSeq,
+      );
       expect(result).toBe(60);
     });
 
@@ -1141,7 +1173,12 @@ describe("lastKnownSeqRef synchronization logic", () => {
       const ref = {};
       const messagesMaxSeq = 0;
       const lastLoadedSeq = 0;
-      const result = getClientMaxSeq(ref, "session1", messagesMaxSeq, lastLoadedSeq);
+      const result = getClientMaxSeq(
+        ref,
+        "session1",
+        messagesMaxSeq,
+        lastLoadedSeq,
+      );
       expect(result).toBe(0);
     });
 
@@ -1149,7 +1186,12 @@ describe("lastKnownSeqRef synchronization logic", () => {
       const ref = {};
       const messagesMaxSeq = 100;
       const lastLoadedSeq = 150;
-      const result = getClientMaxSeq(ref, "session1", messagesMaxSeq, lastLoadedSeq);
+      const result = getClientMaxSeq(
+        ref,
+        "session1",
+        messagesMaxSeq,
+        lastLoadedSeq,
+      );
       expect(result).toBe(150);
     });
 
@@ -1158,7 +1200,12 @@ describe("lastKnownSeqRef synchronization logic", () => {
       const ref = { session1: 113 };
       const messagesMaxSeq = 0; // messages array is empty
       const lastLoadedSeq = 0; // no loaded events yet
-      const result = getClientMaxSeq(ref, "session1", messagesMaxSeq, lastLoadedSeq);
+      const result = getClientMaxSeq(
+        ref,
+        "session1",
+        messagesMaxSeq,
+        lastLoadedSeq,
+      );
       expect(result).toBe(113); // ref saves the day!
     });
   });
@@ -1175,7 +1222,12 @@ describe("lastKnownSeqRef synchronization logic", () => {
       delete ref["session1"]; // stale client reset
       const messagesMaxSeq = 50;
       const lastLoadedSeq = 40;
-      const result = getClientMaxSeq(ref, "session1", messagesMaxSeq, lastLoadedSeq);
+      const result = getClientMaxSeq(
+        ref,
+        "session1",
+        messagesMaxSeq,
+        lastLoadedSeq,
+      );
       expect(result).toBe(50); // uses state since ref is gone
     });
 
@@ -1201,7 +1253,12 @@ describe("lastKnownSeqRef synchronization logic", () => {
       const lastLoadedSeq = 0;
 
       // Compute after_seq for reconnection
-      const afterSeq = getClientMaxSeq(ref, "s1", messagesMaxSeq, lastLoadedSeq);
+      const afterSeq = getClientMaxSeq(
+        ref,
+        "s1",
+        messagesMaxSeq,
+        lastLoadedSeq,
+      );
       expect(afterSeq).toBe(113); // ref provides correct value
     });
 
@@ -1293,29 +1350,47 @@ describe("checkSessionExists", () => {
   test("returns { exists: false } when server responds with 404", async () => {
     const mockFetch = createMockFetch(404);
 
-    const result = await checkSessionExists("session-123", mockFetch, mockApiUrl);
+    const result = await checkSessionExists(
+      "session-123",
+      mockFetch,
+      mockApiUrl,
+    );
     expect(result).toEqual({ exists: false, networkError: false });
-    expect(mockFetch.calls).toEqual(["http://localhost/api/sessions/session-123"]);
+    expect(mockFetch.calls).toEqual([
+      "http://localhost/api/sessions/session-123",
+    ]);
   });
 
   test("returns { exists: true } when server responds with 200", async () => {
     const mockFetch = createMockFetch(200);
 
-    const result = await checkSessionExists("session-456", mockFetch, mockApiUrl);
+    const result = await checkSessionExists(
+      "session-456",
+      mockFetch,
+      mockApiUrl,
+    );
     expect(result).toEqual({ exists: true, networkError: false });
   });
 
   test("returns { exists: true } when server responds with 500 (don't give up on server errors)", async () => {
     const mockFetch = createMockFetch(500);
 
-    const result = await checkSessionExists("session-789", mockFetch, mockApiUrl);
+    const result = await checkSessionExists(
+      "session-789",
+      mockFetch,
+      mockApiUrl,
+    );
     expect(result).toEqual({ exists: true, networkError: false });
   });
 
   test("returns { exists: true, networkError: true } on network failure", async () => {
     const mockFetch = createFailingFetch(new Error("Network error"));
 
-    const result = await checkSessionExists("session-abc", mockFetch, mockApiUrl);
+    const result = await checkSessionExists(
+      "session-abc",
+      mockFetch,
+      mockApiUrl,
+    );
     expect(result).toEqual({ exists: true, networkError: true });
   });
 
@@ -1323,7 +1398,11 @@ describe("checkSessionExists", () => {
     const mockFetch = createMockFetch(200);
     const prefixApiUrl = (path) => `/prefix${path}`;
 
-    await checkSessionExists("01JNPKPC01SJYTSE3EYMW5J26R", mockFetch, prefixApiUrl);
+    await checkSessionExists(
+      "01JNPKPC01SJYTSE3EYMW5J26R",
+      mockFetch,
+      prefixApiUrl,
+    );
     expect(mockFetch.calls).toEqual([
       "/prefix/api/sessions/01JNPKPC01SJYTSE3EYMW5J26R",
     ]);
@@ -1464,13 +1543,19 @@ describe("isTerminalSessionError", () => {
   });
 
   test('returns true for "session is closed" errors', () => {
-    expect(isTerminalSessionError("Failed to send prompt: session is closed")).toBe(true);
+    expect(
+      isTerminalSessionError("Failed to send prompt: session is closed"),
+    ).toBe(true);
     expect(isTerminalSessionError("session is closed")).toBe(true);
     expect(isTerminalSessionError("SESSION IS CLOSED")).toBe(true);
   });
 
   test('returns true for "session not running" errors', () => {
-    expect(isTerminalSessionError("Session not running. Create or resume the session")).toBe(true);
+    expect(
+      isTerminalSessionError(
+        "Session not running. Create or resume the session",
+      ),
+    ).toBe(true);
     expect(isTerminalSessionError("session not running")).toBe(true);
     expect(isTerminalSessionError("SESSION NOT RUNNING")).toBe(true);
   });

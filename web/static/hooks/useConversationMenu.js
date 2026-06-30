@@ -36,9 +36,9 @@ export function useConversationMenu({
   onMakeNonPeriodic,
   onFetchConversationPrompts, // async (session, workingDir) => menus:conversation prompts
   onSendPromptToConversation, // (session, prompt) when a context-menu prompt is clicked
-  onCopyConversation,         // optional: (session) => void — shows "Copy as Markdown" item
-  flushCommand = "",          // optional: when non-empty, shows "Flush context" item
-  onFlushContext,             // optional: (session) => void — invoked when "Flush context" is clicked
+  onCopyConversation, // optional: (session) => void — shows "Copy as Markdown" item
+  flushCommand = "", // optional: when non-empty, shows "Flush context" item
+  onFlushContext, // optional: (session) => void — invoked when "Flush context" is clicked
 }) {
   const [contextMenu, setContextMenu] = useState(null);
   // menus:conversation prompts evaluated for THIS conversation. Loaded lazily

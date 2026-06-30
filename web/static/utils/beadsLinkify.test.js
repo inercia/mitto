@@ -4,7 +4,12 @@
 
 import { linkifyBeadsRefs } from "./beadsLinkify.js";
 
-const KNOWN_IDS = new Set(["mitto-aaa", "mitto-123", "mitto-123.4", "mitto-uxn"]);
+const KNOWN_IDS = new Set([
+  "mitto-aaa",
+  "mitto-123",
+  "mitto-123.4",
+  "mitto-uxn",
+]);
 const META = new Map([
   ["mitto-aaa", { title: "Test Issue", status: "open" }],
   ["mitto-123", { title: "Bug Report", status: "closed" }],

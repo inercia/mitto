@@ -94,7 +94,8 @@ export function MessageList({
             label = d.toLocaleDateString([], {
               month: "short",
               day: "numeric",
-              year: d.getFullYear() !== now.getFullYear() ? "numeric" : undefined,
+              year:
+                d.getFullYear() !== now.getFullYear() ? "numeric" : undefined,
             });
           }
           dateSeparator = html`
@@ -125,139 +126,159 @@ export function MessageList({
         ref=${messagesContainerRef}
         class="absolute inset-0 overflow-y-auto scroll-smooth p-4 messages-container-reverse"
       >
-        ${swipeDirection &&
-        html`
-          <div
-            key=${`flash-${activeSessionId}`}
-            class="swipe-flash swipe-flash-${swipeDirection}"
-          />
-        `}
-        ${swipeArrow &&
-        html`
-          <div
-            key=${`arrow-${activeSessionId}-${swipeArrow}`}
-            class="swipe-arrow-indicator"
-          >
-            <div class="swipe-arrow-indicator__content">
-              <span class="swipe-arrow-indicator__arrow"
-                >${swipeArrow === "left" ? "→" : "←"}</span
-              >
+        ${
+          swipeDirection &&
+          html`
+            <div
+              key=${`flash-${activeSessionId}`}
+              class="swipe-flash swipe-flash-${swipeDirection}"
+            />
+          `
+        }
+        ${
+          swipeArrow &&
+          html`
+            <div
+              key=${`arrow-${activeSessionId}-${swipeArrow}`}
+              class="swipe-arrow-indicator"
+            >
+              <div class="swipe-arrow-indicator__content">
+                <span class="swipe-arrow-indicator__arrow"
+                  >${swipeArrow === "left" ? "→" : "←"}</span
+                >
+              </div>
             </div>
-          </div>
-        `}
+          `
+        }
         <div
           key=${activeSessionId}
-          class="max-w-2xl mx-auto flex flex-col-reverse ${swipeDirection
-            ? `swipe-slide-${swipeDirection}`
-            : ""}"
+          class="max-w-2xl mx-auto flex flex-col-reverse ${
+            swipeDirection ? `swipe-slide-${swipeDirection}` : ""
+          }"
         >
-          ${messages.length === 0 &&
-          !hasMoreMessages &&
-          html`
-            <div class="hero h-full">
-              <div class="hero-content">
-              <div class="text-center text-mitto-text-muted">
-                <img src="./favicon.png" alt="Mitto" class="w-24 h-24 mb-6 opacity-30 mx-auto" />
-                <p class="text-2xl font-medium text-mitto-text-secondary mb-4">
-                  Welcome to Mitto
-                </p>
-                ${workspaces.length === 0
-                  ? html`
-                      <p class="text-base text-mitto-text-muted max-w-md">
-                        Get started by creating a workspace in Settings
-                        (<span class="inline-block align-middle">
-                          <${SettingsIcon} className="w-5 h-5 inline" />
-                        </span>
-                        icon in the sidebar)
-                      </p>
-                    `
-                  : activeSessionId
-                    ? html`
-                        <p class="text-base text-mitto-text-muted">
-                          Type a message to start chatting with the AI agent
-                        </p>
-                      `
-                    : html`
-                        <div class="text-base text-mitto-text-muted max-w-md">
-                          <p>
-                            Create a new conversation using the
-                            <span
-                              class="inline-flex items-center justify-center w-6 h-6 rounded bg-primary text-primary-content text-sm font-bold mx-1"
-                              >+</span
-                            >
-                            button in the sidebar
-                          </p>
-                          ${workspaces.length > 1
-                            ? html`
-                                <p class="text-sm text-mitto-text-muted mt-3">
-                                  You'll be able to choose which workspace
-                                  to use
-                                </p>
-                              `
-                            : ""}
-                        </div>
-                      `}
-                ${!connected &&
-                html`
-                  <p class="text-sm mt-6 text-mitto-warning">
-                    Connecting to server...
-                  </p>
-                `}
-                ${connected &&
-                activeSessionId &&
-                sessionInfo &&
-                !sessionInfo.acp_ready &&
-                !sessionInfo.archived &&
-                html`
-                  <p
-                    class="text-sm mt-6 text-mitto-warning flex items-center gap-2"
-                  >
-                    <span class="loading loading-spinner w-3 h-3 text-yellow-500"></span>
-                    Connecting to AI agent...
-                  </p>
-                `}
-              </div>
-              </div>
-            </div>
-          `}
-          ${renderedMessages}
-          ${(hasMoreMessages || hasReachedLimit) &&
-          html`
-            <div class="flex justify-center my-4">
-              ${isLoadingMore
-                ? html`
-                    <div
-                      class="px-4 py-2 text-sm text-mitto-text-muted flex items-center gap-2"
+          ${
+            messages.length === 0 &&
+            !hasMoreMessages &&
+            html`
+              <div class="hero h-full">
+                <div class="hero-content">
+                  <div class="text-center text-mitto-text-muted">
+                    <img
+                      src="./favicon.png"
+                      alt="Mitto"
+                      class="w-24 h-24 mb-6 opacity-30 mx-auto"
+                    />
+                    <p
+                      class="text-2xl font-medium text-mitto-text-secondary mb-4"
                     >
-                      <${SpinnerIcon} className="w-4 h-4" />
-                      <span>Loading earlier messages...</span>
-                    </div>
-                  `
-                : hasReachedLimit
+                      Welcome to Mitto
+                    </p>
+                    ${workspaces.length === 0
+                      ? html`
+                          <p class="text-base text-mitto-text-muted max-w-md">
+                            Get started by creating a workspace in Settings
+                            (<span class="inline-block align-middle">
+                              <${SettingsIcon} className="w-5 h-5 inline" />
+                            </span>
+                            icon in the sidebar)
+                          </p>
+                        `
+                      : activeSessionId
+                        ? html`
+                            <p class="text-base text-mitto-text-muted">
+                              Type a message to start chatting with the AI agent
+                            </p>
+                          `
+                        : html`
+                            <div
+                              class="text-base text-mitto-text-muted max-w-md"
+                            >
+                              <p>
+                                Create a new conversation using the
+                                <span
+                                  class="inline-flex items-center justify-center w-6 h-6 rounded bg-primary text-primary-content text-sm font-bold mx-1"
+                                  >+</span
+                                >
+                                button in the sidebar
+                              </p>
+                              ${workspaces.length > 1
+                                ? html`
+                                    <p
+                                      class="text-sm text-mitto-text-muted mt-3"
+                                    >
+                                      You'll be able to choose which workspace
+                                      to use
+                                    </p>
+                                  `
+                                : ""}
+                            </div>
+                          `}
+                    ${!connected &&
+                    html`
+                      <p class="text-sm mt-6 text-mitto-warning">
+                        Connecting to server...
+                      </p>
+                    `}
+                    ${connected &&
+                    activeSessionId &&
+                    sessionInfo &&
+                    !sessionInfo.acp_ready &&
+                    !sessionInfo.archived &&
+                    html`
+                      <p
+                        class="text-sm mt-6 text-mitto-warning flex items-center gap-2"
+                      >
+                        <span
+                          class="loading loading-spinner w-3 h-3 text-yellow-500"
+                        ></span>
+                        Establishing ACP session...
+                      </p>
+                    `}
+                  </div>
+                </div>
+              </div>
+            `
+          }
+          ${renderedMessages}
+          ${
+            (hasMoreMessages || hasReachedLimit) &&
+            html`
+              <div class="flex justify-center my-4">
+                ${isLoadingMore
                   ? html`
                       <div
                         class="px-4 py-2 text-sm text-mitto-text-muted flex items-center gap-2"
-                        data-testid="limit-reached-indicator"
                       >
-                        <span>📚</span>
-                        <span
-                          >Message limit reached (${messages.length}
-                          messages loaded)</span
-                        >
+                        <${SpinnerIcon} className="w-4 h-4" />
+                        <span>Loading earlier messages...</span>
                       </div>
                     `
-                  : html`
-                      <button
-                        onClick=${onLoadMore}
-                        class="btn btn-ghost btn-sm text-mitto-text-muted"
-                        data-testid="load-more-button"
-                      >
-                        <span>↑</span>
-                        <span>Load earlier messages...</span>
-                      </button>
-                    `}
-            </div>
-          `}
+                  : hasReachedLimit
+                    ? html`
+                        <div
+                          class="px-4 py-2 text-sm text-mitto-text-muted flex items-center gap-2"
+                          data-testid="limit-reached-indicator"
+                        >
+                          <span>📚</span>
+                          <span
+                            >Message limit reached (${messages.length} messages
+                            loaded)</span
+                          >
+                        </div>
+                      `
+                    : html`
+                        <button
+                          onClick=${onLoadMore}
+                          class="btn btn-ghost btn-sm text-mitto-text-muted"
+                          data-testid="load-more-button"
+                        >
+                          <span>↑</span>
+                          <span>Load earlier messages...</span>
+                        </button>
+                      `}
+              </div>
+            `
+          }
           ${html`
             <div ref=${sentinelRef} class="h-1 w-full" aria-hidden="true" />
           `}
@@ -266,26 +287,30 @@ export function MessageList({
       <!-- End of scrollable messages container -->
 
       <!-- Scroll to bottom button -->
-      ${(!isUserAtBottom || hasNewMessages) &&
-      messages.length > 0 &&
-      html`
-        <div class="scroll-to-bottom-wrapper">
-          <button
-            onClick=${() => onScrollToBottom(true)}
-            class="btn btn-circle scroll-to-bottom-btn tooltip tooltip-bottom ${hasNewMessages
-              ? "has-new"
-              : ""}"
-            data-tip="Scroll to bottom"
-            aria-label="Scroll to bottom"
-          >
-            <${ArrowDownIcon} className="w-5 h-5" />
-            ${hasNewMessages &&
-            html` <span
-              class="new-messages-indicator badge badge-warning badge-xs"
-            ></span> `}
-          </button>
-        </div>
-      `}
+      ${
+        (!isUserAtBottom || hasNewMessages) &&
+        messages.length > 0 &&
+        html`
+          <div class="scroll-to-bottom-wrapper">
+            <button
+              onClick=${() => onScrollToBottom(true)}
+              class="btn btn-circle scroll-to-bottom-btn tooltip tooltip-bottom ${hasNewMessages
+                ? "has-new"
+                : ""}"
+              data-tip="Scroll to bottom"
+              aria-label="Scroll to bottom"
+            >
+              <${ArrowDownIcon} className="w-5 h-5" />
+              ${hasNewMessages &&
+              html`
+                <span
+                  class="new-messages-indicator badge badge-warning badge-xs"
+                ></span>
+              `}
+            </button>
+          </div>
+        `
+      }
     </${Fragment}>
   `;
 }

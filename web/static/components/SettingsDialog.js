@@ -130,7 +130,9 @@ export function FolderListEditor({
   return html`
     <div class="space-y-1">
       <div class="flex items-center gap-2 mb-1">
-        <span class="text-sm font-medium text-mitto-text-secondary flex-1">${label}</span>
+        <span class="text-sm font-medium text-mitto-text-secondary flex-1"
+          >${label}</span
+        >
         <select
           value=${mode}
           onChange=${(e) => onModeChange(e.target.value)}
@@ -144,7 +146,9 @@ export function FolderListEditor({
       ${mode === "append" &&
       (inheritedFolders || []).length > 0 &&
       html`
-        <div class="space-y-1 opacity-50 pb-1 border-b border-mitto-border-2/40">
+        <div
+          class="space-y-1 opacity-50 pb-1 border-b border-mitto-border-2/40"
+        >
           ${(inheritedFolders || []).map(
             (f, idx) => html`
               <div key=${"inh-" + idx} class="flex items-center gap-2">
@@ -159,7 +163,6 @@ export function FolderListEditor({
           )}
         </div>
       `}
-
       ${mode === "replace" &&
       html`
         <p class="text-xs text-amber-400/80 mb-1">
@@ -190,11 +193,7 @@ export function FolderListEditor({
             </div>
           `,
         )}
-        <button
-          type="button"
-          onClick=${addFolder}
-          class="btn btn-ghost btn-xs"
-        >
+        <button type="button" onClick=${addFolder} class="btn btn-ghost btn-xs">
           <${PlusIcon} className="w-3 h-3" />
           Add folder
         </button>
@@ -256,7 +255,9 @@ export function AutoChildrenEditor({
               </button>
             `
           : html`
-              <span class="text-xs text-mitto-text-muted">Max ${maxChildren} children</span>
+              <span class="text-xs text-mitto-text-muted"
+                >Max ${maxChildren} children</span
+              >
             `}
       </div>
       ${(children || []).length === 0
@@ -274,7 +275,8 @@ export function AutoChildrenEditor({
                       type="text"
                       value=${child.title || ""}
                       placeholder="Child title"
-                      onInput=${(e) => updateChild(idx, "title", e.target.value)}
+                      onInput=${(e) =>
+                        updateChild(idx, "title", e.target.value)}
                       class="input input-sm join-item flex-1"
                     />
                     <select
@@ -398,7 +400,11 @@ export function RunnerRestrictionsEditor({
       runnerConfig.restrictions?.docker);
 
   return html`
-    <div class="collapse collapse-plus ${expanded ? "collapse-open" : "collapse-close"} border border-mitto-border-2/50 rounded-md bg-mitto-surface-3/20 mt-2">
+    <div
+      class="collapse collapse-plus ${expanded
+        ? "collapse-open"
+        : "collapse-close"} border border-mitto-border-2/50 rounded-md bg-mitto-surface-3/20 mt-2"
+    >
       <div
         class="collapse-title flex items-center justify-between p-3 pr-12 min-h-0 cursor-pointer bg-mitto-surface-3/30 hover:bg-mitto-surface-3/50 transition-colors"
         onClick=${() => setExpanded(!expanded)}
@@ -408,9 +414,7 @@ export function RunnerRestrictionsEditor({
         </div>
         ${hasConfig &&
         html`
-          <span
-            class="badge badge-sm bg-mitto-accent-500/20 text-mitto-accent"
-          >
+          <span class="badge badge-sm bg-mitto-accent-500/20 text-mitto-accent">
             Configured
           </span>
         `}
@@ -419,136 +423,141 @@ export function RunnerRestrictionsEditor({
       <div class="collapse-content px-0">
         ${expanded &&
         html`
-        <div class="p-4 space-y-4 border-t border-mitto-border-2/50">
-          <fieldset class="fieldset pt-2">
-            <legend class="fieldset-legend">Networking</legend>
-            <p class="label">
-              Override inherited restrictions from global/agent config.
-              ${effectiveConfig
-                ? ""
-                : " Loading inherited values..."}
-            </p>
-            <div class="space-y-1">
-              <label class="label">
-                <input
-                  type="checkbox"
-                  id="override-networking"
-                  checked=${overrideNetworking}
-                  onChange=${(e) => handleNetworkingOverride(e.target.checked)}
-                  class="checkbox checkbox-sm checkbox-primary"
-                />
-                Override networking
-              </label>
-              ${overrideNetworking
-                ? html`
-                    <label class="label ml-6">
-                      <input
-                        type="checkbox"
-                        checked=${runnerConfig?.restrictions?.allow_networking !==
-                        false}
-                        onChange=${(e) =>
-                          updateRestriction(
-                            "allow_networking",
-                            e.target.checked,
-                          )}
-                        class="checkbox checkbox-sm checkbox-primary"
-                      />
-                      Allow networking
-                    </label>
-                  `
-                : html`
-                    <p class="text-xs text-mitto-text-muted ml-6">
-                      Inherited:
-                      ${inheritedNetworking ? "allowed" : "blocked"}
-                    </p>
-                  `}
-            </div>
-          </fieldset>
-
-          <!-- Read folders -->
-          <${FolderListEditor}
-            label="Allow read folders"
-            folders=${runnerConfig?.restrictions?.allow_read_folders || []}
-            inheritedFolders=${effectiveConfig?.restrictions
-              ?.allow_read_folders || []}
-            mode=${readMode}
-            onModeChange=${(m) =>
-              updateMergeMode(m, setReadMode, setWriteMode)}
-            onFoldersChange=${(folders) =>
-              updateRestriction("allow_read_folders", folders)}
-            placeholder="$MITTO_WORKING_DIR"
-          />
-
-          <!-- Write folders -->
-          <${FolderListEditor}
-            label="Allow write folders"
-            folders=${runnerConfig?.restrictions?.allow_write_folders || []}
-            inheritedFolders=${effectiveConfig?.restrictions
-              ?.allow_write_folders || []}
-            mode=${writeMode}
-            onModeChange=${(m) =>
-              updateMergeMode(m, setWriteMode, setReadMode)}
-            onFoldersChange=${(folders) =>
-              updateRestriction("allow_write_folders", folders)}
-            placeholder="$MITTO_WORKING_DIR"
-          />
-
-          ${runnerType === "docker" &&
-          html`
-            <fieldset class="fieldset pt-2 mt-2">
-              <legend class="fieldset-legend">Docker Settings</legend>
-              <div class="grid grid-cols-3 gap-3">
-                <div>
-                  <label class="label" for="docker-image">Image</label>
+          <div class="p-4 space-y-4 border-t border-mitto-border-2/50">
+            <fieldset class="fieldset pt-2">
+              <legend class="fieldset-legend">Networking</legend>
+              <p class="label">
+                Override inherited restrictions from global/agent config.
+                ${effectiveConfig ? "" : " Loading inherited values..."}
+              </p>
+              <div class="space-y-1">
+                <label class="label">
                   <input
-                    id="docker-image"
-                    type="text"
-                    value=${runnerConfig?.restrictions?.docker?.image || ""}
-                    onInput=${(e) => updateDocker("image", e.target.value)}
-                    class="input input-sm w-full font-mono"
-                    placeholder="alpine:latest"
+                    type="checkbox"
+                    id="override-networking"
+                    checked=${overrideNetworking}
+                    onChange=${(e) =>
+                      handleNetworkingOverride(e.target.checked)}
+                    class="checkbox checkbox-sm checkbox-primary"
                   />
-                </div>
-                <div>
-                  <label class="label" for="docker-memory">Memory Limit</label>
-                  <input
-                    id="docker-memory"
-                    type="text"
-                    value=${runnerConfig?.restrictions?.docker?.memory_limit ||
-                    ""}
-                    onInput=${(e) =>
-                      updateDocker("memory_limit", e.target.value)}
-                    class="input input-sm w-full font-mono"
-                    placeholder="4g"
-                  />
-                </div>
-                <div>
-                  <label class="label" for="docker-cpu">CPU Limit</label>
-                  <input
-                    id="docker-cpu"
-                    type="text"
-                    value=${runnerConfig?.restrictions?.docker?.cpu_limit || ""}
-                    onInput=${(e) => updateDocker("cpu_limit", e.target.value)}
-                    class="input input-sm w-full font-mono"
-                    placeholder="2.0"
-                  />
-                </div>
+                  Override networking
+                </label>
+                ${overrideNetworking
+                  ? html`
+                      <label class="label ml-6">
+                        <input
+                          type="checkbox"
+                          checked=${runnerConfig?.restrictions
+                            ?.allow_networking !== false}
+                          onChange=${(e) =>
+                            updateRestriction(
+                              "allow_networking",
+                              e.target.checked,
+                            )}
+                          class="checkbox checkbox-sm checkbox-primary"
+                        />
+                        Allow networking
+                      </label>
+                    `
+                  : html`
+                      <p class="text-xs text-mitto-text-muted ml-6">
+                        Inherited:
+                        ${inheritedNetworking ? "allowed" : "blocked"}
+                      </p>
+                    `}
               </div>
             </fieldset>
-          `}
 
-          <!-- Clear button -->
-          <div class="flex justify-end pt-2 border-t border-mitto-border-2/50">
-            <button
-              type="button"
-              onClick=${() => onChange(null)}
-              class="btn btn-ghost btn-xs"
+            <!-- Read folders -->
+            <${FolderListEditor}
+              label="Allow read folders"
+              folders=${runnerConfig?.restrictions?.allow_read_folders || []}
+              inheritedFolders=${effectiveConfig?.restrictions
+                ?.allow_read_folders || []}
+              mode=${readMode}
+              onModeChange=${(m) =>
+                updateMergeMode(m, setReadMode, setWriteMode)}
+              onFoldersChange=${(folders) =>
+                updateRestriction("allow_read_folders", folders)}
+              placeholder="$MITTO_WORKING_DIR"
+            />
+
+            <!-- Write folders -->
+            <${FolderListEditor}
+              label="Allow write folders"
+              folders=${runnerConfig?.restrictions?.allow_write_folders || []}
+              inheritedFolders=${effectiveConfig?.restrictions
+                ?.allow_write_folders || []}
+              mode=${writeMode}
+              onModeChange=${(m) =>
+                updateMergeMode(m, setWriteMode, setReadMode)}
+              onFoldersChange=${(folders) =>
+                updateRestriction("allow_write_folders", folders)}
+              placeholder="$MITTO_WORKING_DIR"
+            />
+
+            ${runnerType === "docker" &&
+            html`
+              <fieldset class="fieldset pt-2 mt-2">
+                <legend class="fieldset-legend">Docker Settings</legend>
+                <div class="grid grid-cols-3 gap-3">
+                  <div>
+                    <label class="label" for="docker-image">Image</label>
+                    <input
+                      id="docker-image"
+                      type="text"
+                      value=${runnerConfig?.restrictions?.docker?.image || ""}
+                      onInput=${(e) => updateDocker("image", e.target.value)}
+                      class="input input-sm w-full font-mono"
+                      placeholder="alpine:latest"
+                    />
+                  </div>
+                  <div>
+                    <label class="label" for="docker-memory"
+                      >Memory Limit</label
+                    >
+                    <input
+                      id="docker-memory"
+                      type="text"
+                      value=${runnerConfig?.restrictions?.docker
+                        ?.memory_limit || ""}
+                      onInput=${(e) =>
+                        updateDocker("memory_limit", e.target.value)}
+                      class="input input-sm w-full font-mono"
+                      placeholder="4g"
+                    />
+                  </div>
+                  <div>
+                    <label class="label" for="docker-cpu">CPU Limit</label>
+                    <input
+                      id="docker-cpu"
+                      type="text"
+                      value=${runnerConfig?.restrictions?.docker?.cpu_limit ||
+                      ""}
+                      onInput=${(e) =>
+                        updateDocker("cpu_limit", e.target.value)}
+                      class="input input-sm w-full font-mono"
+                      placeholder="2.0"
+                    />
+                  </div>
+                </div>
+              </fieldset>
+            `}
+
+            <!-- Clear button -->
+            <div
+              class="flex justify-end pt-2 border-t border-mitto-border-2/50"
             >
-              Clear Restrictions
-            </button>
+              <button
+                type="button"
+                onClick=${() => onChange(null)}
+                class="btn btn-ghost btn-xs"
+              >
+                Clear Restrictions
+              </button>
+            </div>
           </div>
-        </div>
-      `}
+        `}
       </div>
     </div>
   `;
@@ -563,10 +572,10 @@ function ServerEditForm({ server, agentTypes = [], onChange }) {
   const [command, setCommand] = useState(server.command);
   const [type, setType] = useState(server.type || "");
   const [autoApprove, setAutoApprove] = useState(server.auto_approve === true);
-  const [tags, setTags] = useState(
-    server.tags ? server.tags.join(", ") : "",
+  const [tags, setTags] = useState(server.tags ? server.tags.join(", ") : "");
+  const [contextFlushCommand, setContextFlushCommand] = useState(
+    server.context_flush_command || "",
   );
-  const [contextFlushCommand, setContextFlushCommand] = useState(server.context_flush_command || "");
   // Environment variables as array of {key, value} for easier editing
   const [envVars, setEnvVars] = useState(() => {
     const env = server.env || {};
@@ -589,12 +598,24 @@ function ServerEditForm({ server, agentTypes = [], onChange }) {
       name: overrides.name !== undefined ? overrides.name : name,
       command: overrides.command !== undefined ? overrides.command : command,
       type: overrides.type !== undefined ? overrides.type : type,
-      autoApprove: overrides.autoApprove !== undefined ? overrides.autoApprove : autoApprove,
+      autoApprove:
+        overrides.autoApprove !== undefined
+          ? overrides.autoApprove
+          : autoApprove,
       tags: overrides.tags !== undefined ? overrides.tags : tags,
       envVars: overrides.envVars !== undefined ? overrides.envVars : envVars,
-      constraintModelMode: overrides.constraintModelMode !== undefined ? overrides.constraintModelMode : constraintModelMode,
-      constraintModelPattern: overrides.constraintModelPattern !== undefined ? overrides.constraintModelPattern : constraintModelPattern,
-      contextFlushCommand: overrides.contextFlushCommand !== undefined ? overrides.contextFlushCommand : contextFlushCommand,
+      constraintModelMode:
+        overrides.constraintModelMode !== undefined
+          ? overrides.constraintModelMode
+          : constraintModelMode,
+      constraintModelPattern:
+        overrides.constraintModelPattern !== undefined
+          ? overrides.constraintModelPattern
+          : constraintModelPattern,
+      contextFlushCommand:
+        overrides.contextFlushCommand !== undefined
+          ? overrides.contextFlushCommand
+          : contextFlushCommand,
     };
 
     // Convert envVars array to object, filtering out empty keys
@@ -613,7 +634,10 @@ function ServerEditForm({ server, agentTypes = [], onChange }) {
 
     // Build constraints
     const constraints = {};
-    if (currentState.constraintModelMode && currentState.constraintModelPattern) {
+    if (
+      currentState.constraintModelMode &&
+      currentState.constraintModelPattern
+    ) {
       constraints.model = {
         matchMode: currentState.constraintModelMode,
         pattern: currentState.constraintModelPattern,
@@ -657,7 +681,10 @@ function ServerEditForm({ server, agentTypes = [], onChange }) {
           id="acp-server-name"
           type="text"
           value=${name}
-          onInput=${(e) => { setName(e.target.value); emitChange({ name: e.target.value }); }}
+          onInput=${(e) => {
+            setName(e.target.value);
+            emitChange({ name: e.target.value });
+          }}
           class="input input-sm w-full"
         />
       </div>
@@ -667,35 +694,41 @@ function ServerEditForm({ server, agentTypes = [], onChange }) {
           id="acp-server-command"
           type="text"
           value=${command}
-          onInput=${(e) => { setCommand(e.target.value); emitChange({ command: e.target.value }); }}
+          onInput=${(e) => {
+            setCommand(e.target.value);
+            emitChange({ command: e.target.value });
+          }}
           class="input input-sm w-full"
         />
       </div>
       <!-- Model Selection -->
       <div>
         <label class="label">Model Selection</label>
-        <p class="label">
-          Switch to a model based on some selection criteria
-        </p>
+        <p class="label">Switch to a model based on some selection criteria</p>
         <${ModelSelection}
           matchMode=${constraintModelMode}
           pattern=${constraintModelPattern}
           onChange=${(mode, pat) => {
             setConstraintModelMode(mode);
             setConstraintModelPattern(pat);
-            emitChange({ constraintModelMode: mode, constraintModelPattern: pat });
+            emitChange({
+              constraintModelMode: mode,
+              constraintModelPattern: pat,
+            });
           }}
         />
       </div>
       <div>
         <label class="label" for="acp-server-type"
-          >Type
-          <span class="text-xs text-mitto-danger ml-1">*</span></label
+          >Type <span class="text-xs text-mitto-danger ml-1">*</span></label
         >
         <select
           id="acp-server-type"
           value=${type}
-          onChange=${(e) => { setType(e.target.value); emitChange({ type: e.target.value }); }}
+          onChange=${(e) => {
+            setType(e.target.value);
+            emitChange({ type: e.target.value });
+          }}
           class="select select-sm w-full"
         >
           <option value="">-- Select agent type --</option>
@@ -718,13 +751,14 @@ function ServerEditForm({ server, agentTypes = [], onChange }) {
           id="acp-server-tags"
           type="text"
           value=${tags}
-          onInput=${(e) => { setTags(e.target.value); emitChange({ tags: e.target.value }); }}
+          onInput=${(e) => {
+            setTags(e.target.value);
+            emitChange({ tags: e.target.value });
+          }}
           placeholder="e.g., coding, fast-model, production"
           class="input input-sm w-full"
         />
-        <p class="label">
-          Comma-separated tags for categorization
-        </p>
+        <p class="label">Comma-separated tags for categorization</p>
       </div>
       <div>
         <label class="label" for="acp-server-flush-cmd"
@@ -735,12 +769,16 @@ function ServerEditForm({ server, agentTypes = [], onChange }) {
           id="acp-server-flush-cmd"
           type="text"
           value=${contextFlushCommand}
-          onInput=${(e) => { setContextFlushCommand(e.target.value); emitChange({ contextFlushCommand: e.target.value }); }}
+          onInput=${(e) => {
+            setContextFlushCommand(e.target.value);
+            emitChange({ contextFlushCommand: e.target.value });
+          }}
           placeholder="e.g., /clear"
           class="input input-sm w-full"
         />
         <p class="label">
-          Agent slash command to flush/clear context without restarting (leave empty to disable)
+          Agent slash command to flush/clear context without restarting (leave
+          empty to disable)
         </p>
       </div>
 
@@ -751,7 +789,10 @@ function ServerEditForm({ server, agentTypes = [], onChange }) {
         <input
           type="checkbox"
           checked=${autoApprove}
-          onChange=${(e) => { setAutoApprove(e.target.checked); emitChange({ autoApprove: e.target.checked }); }}
+          onChange=${(e) => {
+            setAutoApprove(e.target.checked);
+            emitChange({ autoApprove: e.target.checked });
+          }}
           class="checkbox checkbox-sm checkbox-primary"
         />
         <div class="flex-1">
@@ -794,7 +835,8 @@ function ServerEditForm({ server, agentTypes = [], onChange }) {
                         type="text"
                         value=${env.key}
                         placeholder="NAME"
-                        onInput=${(e) => updateEnvVar(idx, "key", e.target.value)}
+                        onInput=${(e) =>
+                          updateEnvVar(idx, "key", e.target.value)}
                         class="input input-sm flex-1 font-mono"
                       />
                       <span class="text-mitto-text-muted">=</span>
@@ -859,7 +901,6 @@ function ServerEditForm({ server, agentTypes = [], onChange }) {
           </div>
         </div>
       `}
-
     </fieldset>
   `;
 }
@@ -905,9 +946,7 @@ function PromptEditForm({ prompt, onSave, onCancel, readOnly = false }) {
         />
       </div>
       <div>
-        <label class="label" for="action-btn-group"
-          >Group (optional)</label
-        >
+        <label class="label" for="action-btn-group">Group (optional)</label>
         <input
           id="action-btn-group"
           type="text"
@@ -921,9 +960,7 @@ function PromptEditForm({ prompt, onSave, onCancel, readOnly = false }) {
         />
       </div>
       <div>
-        <label class="label"
-          >Background Color (optional)</label
-        >
+        <label class="label">Background Color (optional)</label>
         <div class="flex items-center gap-2">
           <${Tooltip} tip="Choose background color" placement="top">
             <input
@@ -975,11 +1012,7 @@ function PromptEditForm({ prompt, onSave, onCancel, readOnly = false }) {
         </div>
       </div>
       <div class="flex justify-end gap-2">
-        <button
-          type="button"
-          onClick=${onCancel}
-          class="btn btn-ghost btn-sm"
-        >
+        <button type="button" onClick=${onCancel} class="btn btn-ghost btn-sm">
           ${readOnly ? "Close" : "Cancel"}
         </button>
         ${!readOnly &&
@@ -1085,8 +1118,6 @@ export function SettingsDialog({
   // Track server renames (oldName -> newName) so backend can update sessions
   const [serverRenames, setServerRenames] = useState({});
 
-
-
   // UI settings state (macOS only)
   const [agentCompletedSound, setAgentCompletedSound] = useState(false);
   const [nativeNotifications, setNativeNotifications] = useState(false);
@@ -1095,8 +1126,9 @@ export function SettingsDialog({
   const [showInAllSpaces, setShowInAllSpaces] = useState(false);
   const [startAtLogin, setStartAtLogin] = useState(false);
   const [loginItemSupported, setLoginItemSupported] = useState(false);
-  const [badgeClickCommand, setBadgeClickCommand] =
-    useState("open ${MITTO_WORKING_DIR}");
+  const [badgeClickCommand, setBadgeClickCommand] = useState(
+    "open ${MITTO_WORKING_DIR}",
+  );
   const [terminalActionCommand, setTerminalActionCommand] = useState(
     "open -a Terminal ${MITTO_WORKING_DIR}",
   );
@@ -1132,7 +1164,8 @@ export function SettingsDialog({
   // Max periodic iterations setting - default 100
   const [maxPeriodicIterations, setMaxPeriodicIterations] = useState(100);
 
-  const [periodicBehaviorExpanded, setPeriodicBehaviorExpanded] = useState(false);
+  const [periodicBehaviorExpanded, setPeriodicBehaviorExpanded] =
+    useState(false);
 
   // Default flags for new conversations
   const [availableFlags, setAvailableFlags] = useState([]);
@@ -1170,7 +1203,10 @@ export function SettingsDialog({
       }
       // Migration: seed from old single-slot key if it was a light-bucket theme
       const legacy = localStorage.getItem("mitto-theme-name");
-      if (legacy && Object.prototype.hasOwnProperty.call(NAMED_THEMES, legacy)) {
+      if (
+        legacy &&
+        Object.prototype.hasOwnProperty.call(NAMED_THEMES, legacy)
+      ) {
         if (NAMED_THEMES[legacy] === "light" || legacy === "mitto") {
           return legacy;
         }
@@ -1187,7 +1223,10 @@ export function SettingsDialog({
       }
       // Migration: seed from old single-slot key if it was a dark-bucket theme
       const legacy = localStorage.getItem("mitto-theme-name");
-      if (legacy && Object.prototype.hasOwnProperty.call(NAMED_THEMES, legacy)) {
+      if (
+        legacy &&
+        Object.prototype.hasOwnProperty.call(NAMED_THEMES, legacy)
+      ) {
         if (NAMED_THEMES[legacy] === "dark") {
           return legacy;
         }
@@ -1280,10 +1319,7 @@ export function SettingsDialog({
   // Handle follow system reduced motion toggle
   const handleFollowSystemReducedMotionChange = (enabled) => {
     setFollowSystemReducedMotion(enabled);
-    localStorage.setItem(
-      "mitto-follow-system-reduced-motion",
-      String(enabled),
-    );
+    localStorage.setItem("mitto-follow-system-reduced-motion", String(enabled));
     // When enabling, sync with OS preference immediately
     let newReduceAnimations = reduceAnimations;
     if (enabled && typeof window !== "undefined" && window.matchMedia) {
@@ -1377,8 +1413,6 @@ export function SettingsDialog({
       console.error("Failed to load runner defaults:", err);
     }
   };
-
-
 
   const loadConfig = async () => {
     setLoading(true);
@@ -1488,7 +1522,8 @@ export function SettingsDialog({
 
       // Load badge click action settings (macOS only)
       setBadgeClickCommand(
-        config.ui?.mac?.badge_click_action?.command || "open ${MITTO_WORKING_DIR}",
+        config.ui?.mac?.badge_click_action?.command ||
+          "open ${MITTO_WORKING_DIR}",
       );
 
       // Load terminal action settings (macOS only)
@@ -1543,14 +1578,10 @@ export function SettingsDialog({
       }
 
       // Load periodic suspend timeout (default "" = 30 minutes)
-      setPeriodicSuspendTimeout(
-        config.session?.periodic_suspend_timeout || "",
-      );
+      setPeriodicSuspendTimeout(config.session?.periodic_suspend_timeout || "");
 
       // Load memory recycle threshold (default "" = disabled)
-      setMemoryRecycleThreshold(
-        config.session?.memory_recycle_threshold || "",
-      );
+      setMemoryRecycleThreshold(config.session?.memory_recycle_threshold || "");
 
       // Load follow-up suggestions settings (advanced) - enabled by default
       setActionButtonsEnabled(
@@ -1611,7 +1642,6 @@ export function SettingsDialog({
       } catch (err) {
         console.warn("Failed to load advanced flags:", err);
       }
-
     } catch (err) {
       setError("Failed to load configuration: " + err.message);
     } finally {
@@ -1625,7 +1655,9 @@ export function SettingsDialog({
 
     // Validation
     if (workspaces.length === 0) {
-      setError("At least one workspace is required. Please open the Workspaces dialog to add one.");
+      setError(
+        "At least one workspace is required. Please open the Workspaces dialog to add one.",
+      );
       return;
     }
 
@@ -1650,7 +1682,9 @@ export function SettingsDialog({
     }
     // Check for duplicate server names
     const serverNames = acpServers.map((s) => s.name.trim());
-    const duplicates = serverNames.filter((n, i) => serverNames.indexOf(n) !== i);
+    const duplicates = serverNames.filter(
+      (n, i) => serverNames.indexOf(n) !== i,
+    );
     if (duplicates.length > 0) {
       setError(`Duplicate ACP server name: "${duplicates[0]}"`);
       setActiveTab("servers");
@@ -1688,7 +1722,9 @@ export function SettingsDialog({
         return;
       }
       if (cfTeamDomain.includes("://")) {
-        setError("Cloudflare Access: Team domain should be a domain name, not a URL");
+        setError(
+          "Cloudflare Access: Team domain should be a domain name, not a URL",
+        );
         setActiveTab("web");
         return;
       }
@@ -1699,7 +1735,9 @@ export function SettingsDialog({
       }
     }
     if (authEnabled && !authUsername.trim() && !cfEnabled) {
-      setError("External access requires at least one authentication method (username/password or Cloudflare Access)");
+      setError(
+        "External access requires at least one authentication method (username/password or Cloudflare Access)",
+      );
       setActiveTab("web");
       return;
     }
@@ -1745,7 +1783,11 @@ export function SettingsDialog({
       };
 
       // Add hooks if configured
-      if (hookUpCommand.trim() || hookDownCommand.trim() || hookExternalAddress.trim()) {
+      if (
+        hookUpCommand.trim() ||
+        hookDownCommand.trim() ||
+        hookExternalAddress.trim()
+      ) {
         webConfig.hooks = {};
         if (hookUpCommand.trim()) {
           webConfig.hooks.up = { command: hookUpCommand.trim() };
@@ -1870,7 +1912,10 @@ export function SettingsDialog({
         name: (p.name || "").trim(),
         criteria:
           p.criteria && p.criteria.matchMode
-            ? { matchMode: p.criteria.matchMode, pattern: p.criteria.pattern || "" }
+            ? {
+                matchMode: p.criteria.matchMode,
+                pattern: p.criteria.pattern || "",
+              }
             : null,
         tags: Array.isArray(p.tags) ? p.tags.filter((t) => t && t.trim()) : [],
       }));
@@ -1886,7 +1931,10 @@ export function SettingsDialog({
         permissions: permissionsConfig,
         mcp: {
           host: mcpHost.trim(),
-          port: mcpPort ? parseInt(mcpPort, 10) : 0,
+          // The MCP port must be a fixed value (1-65535) so ACP servers can be
+          // configured to connect to a known address. 0 (auto-assigned) is not
+          // allowed: coerce empty/invalid input back to the default 5757.
+          port: parseInt(mcpPort, 10) >= 1 ? parseInt(mcpPort, 10) : 5757,
         },
         models: modelProfilesToSave,
         restricted_runners:
@@ -1910,8 +1958,14 @@ export function SettingsDialog({
 
       if (!res.ok) {
         let errData = null;
-        try { errData = await res.json(); } catch (_e) { /* non-JSON error body */ }
-        throw new Error(errorMessageFromData(errData, "Failed to save configuration"));
+        try {
+          errData = await res.json();
+        } catch (_e) {
+          /* non-JSON error body */
+        }
+        throw new Error(
+          errorMessageFromData(errData, "Failed to save configuration"),
+        );
       }
       const result = await res.json();
 
@@ -1987,7 +2041,7 @@ export function SettingsDialog({
           appliedDetails.push(
             activeExternalPort
               ? `External access active on port ${activeExternalPort}`
-              : "external access enabled"
+              : "external access enabled",
           );
         }
         if (result.applied.auth_enabled) {
@@ -2019,8 +2073,6 @@ export function SettingsDialog({
     // (at least one ACP server, at least one workspace) is enforced on Save.
     onClose?.();
   };
-
-
 
   // ACP Server management
   const addServer = () => {
@@ -2069,7 +2121,17 @@ export function SettingsDialog({
     setError("");
   };
 
-  const updateServer = (oldName, newName, newCommand, newType, autoApprove, env, tags, constraints, contextFlushCommand) => {
+  const updateServer = (
+    oldName,
+    newName,
+    newCommand,
+    newType,
+    autoApprove,
+    env,
+    tags,
+    constraints,
+    contextFlushCommand,
+  ) => {
     // Update server in-memory (prompts are now read-only from files)
     setAcpServers(
       acpServers.map((s) => {
@@ -2084,7 +2146,10 @@ export function SettingsDialog({
           env: env && Object.keys(env).length > 0 ? env : undefined, // undefined to omit if empty
           tags: tags && tags.length > 0 ? tags : undefined, // undefined to omit if empty
           constraints: constraints || undefined, // undefined to omit if empty
-          context_flush_command: contextFlushCommand && contextFlushCommand.trim() ? contextFlushCommand.trim() : undefined,
+          context_flush_command:
+            contextFlushCommand && contextFlushCommand.trim()
+              ? contextFlushCommand.trim()
+              : undefined,
         };
         // Only include type if specified (otherwise name is used as type)
         if (newType && newType.trim()) {
@@ -2120,9 +2185,7 @@ export function SettingsDialog({
 
   const removeServer = (serverName) => {
     // Check if any workspace uses this server as its primary ACP server
-    const usedBy = workspaces.filter(
-      (ws) => ws.acp_server === serverName,
-    );
+    const usedBy = workspaces.filter((ws) => ws.acp_server === serverName);
     if (usedBy.length > 0) {
       // Build a helpful error message listing the workspaces using this server
       const workspacePaths = usedBy.map((ws) => ws.working_dir).slice(0, 3); // Show up to 3
@@ -2202,7 +2265,9 @@ export function SettingsDialog({
 
   // Helpers for editing model profiles inline
   const updateProfile = (i, patch) =>
-    setModelProfiles((prev) => prev.map((p, idx) => (idx === i ? { ...p, ...patch } : p)));
+    setModelProfiles((prev) =>
+      prev.map((p, idx) => (idx === i ? { ...p, ...patch } : p)),
+    );
   const removeProfile = (i) =>
     setModelProfiles((prev) => prev.filter((_, idx) => idx !== i));
 
@@ -2230,210 +2295,213 @@ export function SettingsDialog({
       boxClass="settings-dialog bg-mitto-sidebar w-[70vw] h-[70vh] max-w-[95vw] max-h-[95vh]"
       bodyClass="flex flex-col flex-1 min-h-0 overflow-hidden"
     >
-        <!-- Header -->
-        <div
-          class="flex items-center justify-between p-4 border-b border-mitto-border-1"
-        >
-          <h3 class="text-lg font-semibold flex items-center gap-2">
-            <${SettingsIcon} className="w-5 h-5" />
-            Settings
-          </h3>
-          ${canClose &&
-          html`
-            <button
-              onClick=${handleClose}
-              class="btn btn-ghost btn-square btn-sm"
-            >
-              <${CloseIcon} className="w-5 h-5" />
-            </button>
-          `}
-        </div>
-
-        <!-- Main content area with sidebar - fills available space -->
-        <div class="flex flex-1 min-h-0 overflow-hidden">
-          <!-- Sidebar Navigation -->
-          <ul
-            class="menu flex-nowrap w-44 shrink-0 border-r border-mitto-border-1 overflow-y-auto"
+      <!-- Header -->
+      <div
+        class="flex items-center justify-between p-4 border-b border-mitto-border-1"
+      >
+        <h3 class="text-lg font-semibold flex items-center gap-2">
+          <${SettingsIcon} className="w-5 h-5" />
+          Settings
+        </h3>
+        ${canClose &&
+        html`
+          <button
+            onClick=${handleClose}
+            class="btn btn-ghost btn-square btn-sm"
           >
-            ${navItems.map(
-              (item) => html`
-                <li key=${item.id}>
-                  <button
-                    data-testid=${`settings-nav-${item.id}`}
-                    onClick=${() => setActiveTab(item.id)}
-                    class="font-medium ${activeTab === item.id
-                      ? "menu-active"
-                      : "text-mitto-text-muted"}"
-                  >
-                    <${item.icon} className="w-4 h-4 shrink-0" />
-                    <span class="truncate">${item.label}</span>
-                  </button>
-                </li>
-              `,
-            )}
-          </ul>
+            <${CloseIcon} className="w-5 h-5" />
+          </button>
+        `}
+      </div>
 
-          <!-- Content Area -->
-          <div class="flex-1 overflow-y-auto p-4" data-testid="settings-content">
-            ${loading
-              ? html`
-                  <div class="flex items-center justify-center py-12">
-                    <${SpinnerIcon} className="w-8 h-8 text-mitto-accent" />
-                  </div>
-                `
-              : html`
-                  <!-- ACP Servers Tab -->
-                  ${activeTab === "servers" &&
-                  html`
-                    <div class="space-y-4">
-                      <div class="flex items-center justify-between">
-                        <p class="text-mitto-text-muted text-sm">
-                          ACP servers are AI coding assistants.${" "}
-                          <a
-                            href="https://agentclientprotocol.com/overview/agents"
-                            onClick=${(e) => {
-                              e.preventDefault();
-                              openExternalURL(
-                                "https://agentclientprotocol.com/overview/agents",
-                              );
+      <!-- Main content area with sidebar - fills available space -->
+      <div class="flex flex-1 min-h-0 overflow-hidden">
+        <!-- Sidebar Navigation -->
+        <ul
+          class="menu flex-nowrap w-44 shrink-0 border-r border-mitto-border-1 overflow-y-auto"
+        >
+          ${navItems.map(
+            (item) => html`
+              <li key=${item.id}>
+                <button
+                  data-testid=${`settings-nav-${item.id}`}
+                  onClick=${() => setActiveTab(item.id)}
+                  class="font-medium ${activeTab === item.id
+                    ? "menu-active"
+                    : "text-mitto-text-muted"}"
+                >
+                  <${item.icon} className="w-4 h-4 shrink-0" />
+                  <span class="truncate">${item.label}</span>
+                </button>
+              </li>
+            `,
+          )}
+        </ul>
+
+        <!-- Content Area -->
+        <div class="flex-1 overflow-y-auto p-4" data-testid="settings-content">
+          ${loading
+            ? html`
+                <div class="flex items-center justify-center py-12">
+                  <${SpinnerIcon} className="w-8 h-8 text-mitto-accent" />
+                </div>
+              `
+            : html`
+                <!-- ACP Servers Tab -->
+                ${activeTab === "servers" &&
+                html`
+                  <div class="space-y-4">
+                    <div class="flex items-center justify-between">
+                      <p class="text-mitto-text-muted text-sm">
+                        ACP servers are AI coding assistants.${" "}
+                        <a
+                          href="https://agentclientprotocol.com/overview/agents"
+                          onClick=${(e) => {
+                            e.preventDefault();
+                            openExternalURL(
+                              "https://agentclientprotocol.com/overview/agents",
+                            );
+                          }}
+                          class="text-mitto-accent hover:text-mitto-accent-300 underline cursor-pointer"
+                          >Popular examples</a
+                        >${" "} include Auggie and Claude Code. You can
+                        configure multiple servers and choose which one to use
+                        for each workspace.
+                      </p>
+                      <button
+                        type="button"
+                        onClick=${() => setShowDiscoverAgents(true)}
+                        class="btn btn-ghost btn-square btn-sm tooltip tooltip-bottom"
+                        data-tip="Discover Agents"
+                        aria-label="Discover Agents"
+                      >
+                        <${SearchIcon} className="w-5 h-5" />
+                      </button>
+                      <button
+                        type="button"
+                        onClick=${() => setShowAddServer(!showAddServer)}
+                        class="btn btn-ghost btn-square btn-sm tooltip tooltip-bottom ${showAddServer
+                          ? "btn-active"
+                          : ""}"
+                        data-tip="Add Server"
+                        aria-label="Add Server"
+                      >
+                        <${PlusIcon} className="w-5 h-5" />
+                      </button>
+                    </div>
+
+                    ${showAddServer &&
+                    html`
+                      <fieldset class="fieldset pt-2 space-y-3">
+                        <legend class="fieldset-legend">Add Server</legend>
+                        <div>
+                          <label class="label" for="new-server-name"
+                            >Server Name</label
+                          >
+                          <input
+                            id="new-server-name"
+                            type="text"
+                            value=${newServerName}
+                            onInput=${(e) => setNewServerName(e.target.value)}
+                            placeholder="e.g., claude-code"
+                            class="input input-sm w-full"
+                          />
+                        </div>
+                        <div>
+                          <label class="label" for="new-server-command"
+                            >Command</label
+                          >
+                          <input
+                            id="new-server-command"
+                            type="text"
+                            value=${newServerCommand}
+                            onInput=${(e) =>
+                              setNewServerCommand(e.target.value)}
+                            placeholder="e.g., npx -y @anthropic/claude-code-acp"
+                            class="input input-sm w-full"
+                          />
+                        </div>
+                        <div>
+                          <label class="label" for="new-server-type"
+                            >Type
+                            <span class="text-xs text-mitto-danger ml-1"
+                              >*</span
+                            ></label
+                          >
+                          <select
+                            id="new-server-type"
+                            value=${newServerType}
+                            onChange=${(e) => setNewServerType(e.target.value)}
+                            class="select select-sm w-full ${!newServerType
+                              ? "ring-2 ring-amber-500/50"
+                              : ""}"
+                          >
+                            <option value="">-- Select agent type --</option>
+                            ${agentTypes.map(
+                              (t) =>
+                                html`<option key=${t} value=${t}>${t}</option>`,
+                            )}
+                          </select>
+                          <p class="label">
+                            Servers with the same type share prompts and agent
+                            configuration.
+                          </p>
+                        </div>
+                        <div>
+                          <label class="label" for="new-server-tags"
+                            >Tags
+                            <span class="text-xs text-mitto-text-muted"
+                              >(optional)</span
+                            ></label
+                          >
+                          <input
+                            id="new-server-tags"
+                            type="text"
+                            value=${newServerTags}
+                            onInput=${(e) => setNewServerTags(e.target.value)}
+                            placeholder="e.g., coding, fast-model, production"
+                            class="input input-sm w-full"
+                          />
+                          <p class="label">
+                            Comma-separated tags for categorization
+                          </p>
+                        </div>
+                        ${error &&
+                        html`
+                          <div
+                            role="alert"
+                            class="alert alert-error alert-soft text-sm"
+                          >
+                            ⚠️ ${error}
+                          </div>
+                        `}
+                        <div class="flex justify-end gap-2">
+                          <button
+                            type="button"
+                            onClick=${() => {
+                              setShowAddServer(false);
+                              setNewServerName("");
+                              setNewServerCommand("");
+                              setNewServerType("");
+                              setNewServerTags("");
+                              setError("");
                             }}
-                            class="text-mitto-accent hover:text-mitto-accent-300 underline cursor-pointer"
-                            >Popular examples</a
-                          >${" "} include Auggie and Claude Code. You can
-                          configure multiple servers and choose which one to use
-                          for each workspace.
-                        </p>
-                        <button
-                          type="button"
-                          onClick=${() => setShowDiscoverAgents(true)}
-                          class="btn btn-ghost btn-square btn-sm tooltip tooltip-bottom"
-                          data-tip="Discover Agents"
-                          aria-label="Discover Agents"
-                        >
-                          <${SearchIcon} className="w-5 h-5" />
-                        </button>
-                        <button
-                          type="button"
-                          onClick=${() => setShowAddServer(!showAddServer)}
-                          class="btn btn-ghost btn-square btn-sm tooltip tooltip-bottom ${showAddServer ? "btn-active" : ""}"
-                          data-tip="Add Server"
-                          aria-label="Add Server"
-                        >
-                          <${PlusIcon} className="w-5 h-5" />
-                        </button>
-                      </div>
-
-                      ${showAddServer &&
-                      html`
-                        <fieldset
-                          class="fieldset pt-2 space-y-3"
-                        >
-                          <legend class="fieldset-legend">Add Server</legend>
-                          <div>
-                            <label class="label" for="new-server-name"
-                              >Server Name</label
-                            >
-                            <input
-                              id="new-server-name"
-                              type="text"
-                              value=${newServerName}
-                              onInput=${(e) => setNewServerName(e.target.value)}
-                              placeholder="e.g., claude-code"
-                              class="input input-sm w-full"
-                            />
-                          </div>
-                          <div>
-                            <label class="label" for="new-server-command"
-                              >Command</label
-                            >
-                            <input
-                              id="new-server-command"
-                              type="text"
-                              value=${newServerCommand}
-                              onInput=${(e) =>
-                                setNewServerCommand(e.target.value)}
-                              placeholder="e.g., npx -y @anthropic/claude-code-acp"
-                              class="input input-sm w-full"
-                            />
-                          </div>
-                          <div>
-                            <label class="label" for="new-server-type"
-                              >Type
-                              <span class="text-xs text-mitto-danger ml-1">*</span></label
-                            >
-                            <select
-                              id="new-server-type"
-                              value=${newServerType}
-                              onChange=${(e) =>
-                                setNewServerType(e.target.value)}
-                              class="select select-sm w-full ${!newServerType ? "ring-2 ring-amber-500/50" : ""}"
-                            >
-                              <option value="">-- Select agent type --</option>
-                              ${agentTypes.map(
-                                (t) => html`<option key=${t} value=${t}>${t}</option>`,
-                              )}
-                            </select>
-                            <p class="label">
-                              Servers with the same type share prompts and
-                              agent configuration.
-                            </p>
-                          </div>
-                          <div>
-                            <label class="label" for="new-server-tags"
-                              >Tags
-                              <span class="text-xs text-mitto-text-muted"
-                                >(optional)</span
-                              ></label
-                            >
-                            <input
-                              id="new-server-tags"
-                              type="text"
-                              value=${newServerTags}
-                              onInput=${(e) =>
-                                setNewServerTags(e.target.value)}
-                              placeholder="e.g., coding, fast-model, production"
-                              class="input input-sm w-full"
-                            />
-                            <p class="label">
-                              Comma-separated tags for categorization
-                            </p>
-                          </div>
-                          ${error &&
-                          html`
-                            <div
-                              role="alert"
-                              class="alert alert-error alert-soft text-sm"
-                            >
-                              ⚠️ ${error}
-                            </div>
-                          `}
-                          <div class="flex justify-end gap-2">
-                            <button
-                              type="button"
-                              onClick=${() => {
-                                setShowAddServer(false);
-                                setNewServerName("");
-                                setNewServerCommand("");
-                                setNewServerType("");
-                                setNewServerTags("");
-                                setError("");
-                              }}
-                              class="btn btn-ghost btn-sm"
-                            >
-                              Cancel
-                            </button>
-                            <button
-                              type="button"
-                              onClick=${addServer}
-                              class="btn btn-primary btn-sm"
-                            >
-                              Add
-                            </button>
-                          </div>
-                        </fieldset>
-                      `}
-                      <fieldset class="fieldset pt-2">
-                        <legend class="fieldset-legend">ACP Servers</legend>
+                            class="btn btn-ghost btn-sm"
+                          >
+                            Cancel
+                          </button>
+                          <button
+                            type="button"
+                            onClick=${addServer}
+                            class="btn btn-primary btn-sm"
+                          >
+                            Add
+                          </button>
+                        </div>
+                      </fieldset>
+                    `}
+                    <fieldset class="fieldset pt-2">
+                      <legend class="fieldset-legend">ACP Servers</legend>
                       ${acpServers.length === 0
                         ? html`
                             <div class="text-center py-8 text-mitto-text-muted">
@@ -2451,103 +2519,139 @@ export function SettingsDialog({
                               ${sortedAcpServers.map((srv) => {
                                 // RC file servers are read-only (cannot edit/delete)
                                 const isRCFile = srv.source === "rcfile";
-                                const isExpanded = editingServer === srv._key && !isRCFile;
+                                const isExpanded =
+                                  editingServer === srv._key && !isRCFile;
                                 return html`
                                   <div key=${srv._key}>
-                                  <div
-                                    class="collapse ${!isRCFile ? "collapse-plus" : ""} ${isExpanded ? "collapse-open" : "collapse-close"} bg-mitto-surface-3/20 rounded-sm border border-mitto-border-2/50 ${isRCFile ? "opacity-80" : ""} group w-full"
-                                  >
-                                    <!-- Collapsed header row — click to expand/collapse -->
                                     <div
-                                      class="collapse-title flex items-center gap-3 py-2 px-3 pr-12 min-h-0 ${!isRCFile ? "cursor-pointer hover:bg-mitto-surface-3/30" : ""} transition-colors"
-                                      onClick=${!isRCFile ? () => setEditingServer(isExpanded ? null : srv._key) : null}
+                                      class="collapse ${!isRCFile
+                                        ? "collapse-plus"
+                                        : ""} ${isExpanded
+                                        ? "collapse-open"
+                                        : "collapse-close"} bg-mitto-surface-3/20 rounded-sm border border-mitto-border-2/50 ${isRCFile
+                                        ? "opacity-80"
+                                        : ""} group w-full"
                                     >
-                                      <div class="flex-1 min-w-0">
-                                        <div class="font-medium text-sm flex items-center gap-2">
-                                          ${srv.name}
-                                          ${srv.type && html`
-                                            <span
-                                              class="badge badge-sm bg-purple-500/20 text-purple-400 tooltip tooltip-bottom"
-                                              data-tip="Server type for prompt matching"
-                                            >
-                                              ${srv.type}
-                                            </span>
-                                          `}
-                                          ${srv.tags && srv.tags.length > 0 && srv.tags.map(
-                                            (tag) => html`
+                                      <!-- Collapsed header row — click to expand/collapse -->
+                                      <div
+                                        class="collapse-title flex items-center gap-3 py-2 px-3 pr-12 min-h-0 ${!isRCFile
+                                          ? "cursor-pointer hover:bg-mitto-surface-3/30"
+                                          : ""} transition-colors"
+                                        onClick=${!isRCFile
+                                          ? () =>
+                                              setEditingServer(
+                                                isExpanded ? null : srv._key,
+                                              )
+                                          : null}
+                                      >
+                                        <div class="flex-1 min-w-0">
+                                          <div
+                                            class="font-medium text-sm flex items-center gap-2"
+                                          >
+                                            ${srv.name}
+                                            ${srv.type &&
+                                            html`
                                               <span
-                                                key=${tag}
-                                                class="badge badge-sm bg-mitto-accent-500/20 text-mitto-accent tooltip tooltip-bottom"
-                                                data-tip="Tag"
+                                                class="badge badge-sm bg-purple-500/20 text-purple-400 tooltip tooltip-bottom"
+                                                data-tip="Server type for prompt matching"
                                               >
-                                                ${tag}
+                                                ${srv.type}
                                               </span>
-                                            `,
-                                          )}
-                                          ${isRCFile && html`
-                                            <span
-                                              class="flex items-center gap-1 text-xs text-amber-400"
-                                              title="This server is defined in .mittorc and cannot be modified here"
-                                            >
-                                              <${LockIcon} className="w-3 h-3" />
-                                            </span>
-                                          `}
-                                          ${srv.prompts?.length > 0 && html`
-                                            <span
-                                              class="flex items-center gap-1 text-xs text-mitto-accent"
-                                              title="${srv.prompts.length} server-specific prompt(s)"
-                                            >
-                                              <${LightningIcon} className="w-3.5 h-3.5" />
-                                              ${srv.prompts.length}
-                                            </span>
-                                          `}
+                                            `}
+                                            ${srv.tags &&
+                                            srv.tags.length > 0 &&
+                                            srv.tags.map(
+                                              (tag) => html`
+                                                <span
+                                                  key=${tag}
+                                                  class="badge badge-sm bg-mitto-accent-500/20 text-mitto-accent tooltip tooltip-bottom"
+                                                  data-tip="Tag"
+                                                >
+                                                  ${tag}
+                                                </span>
+                                              `,
+                                            )}
+                                            ${isRCFile &&
+                                            html`
+                                              <span
+                                                class="flex items-center gap-1 text-xs text-amber-400"
+                                                title="This server is defined in .mittorc and cannot be modified here"
+                                              >
+                                                <${LockIcon}
+                                                  className="w-3 h-3"
+                                                />
+                                              </span>
+                                            `}
+                                            ${srv.prompts?.length > 0 &&
+                                            html`
+                                              <span
+                                                class="flex items-center gap-1 text-xs text-mitto-accent"
+                                                title="${srv.prompts
+                                                  .length} server-specific prompt(s)"
+                                              >
+                                                <${LightningIcon}
+                                                  className="w-3.5 h-3.5"
+                                                />
+                                                ${srv.prompts.length}
+                                              </span>
+                                            `}
+                                          </div>
+                                          <div
+                                            class="text-xs text-mitto-text-muted truncate"
+                                            title=${srv.command}
+                                          >
+                                            ${srv.command}
+                                            ${isRCFile &&
+                                            html`<span
+                                              class="ml-2 text-amber-500/70"
+                                              >(from .mittorc)</span
+                                            >`}
+                                          </div>
                                         </div>
-                                        <div
-                                          class="text-xs text-mitto-text-muted truncate"
-                                          title=${srv.command}
-                                        >
-                                          ${srv.command}
-                                          ${isRCFile && html`<span class="ml-2 text-amber-500/70">(from .mittorc)</span>`}
-                                        </div>
+                                        ${!isRCFile &&
+                                        html`
+                                          <button
+                                            type="button"
+                                            onClick=${(e) => {
+                                              e.stopPropagation();
+                                              duplicateServer(srv.name);
+                                            }}
+                                            class="btn btn-ghost btn-square btn-sm opacity-0 group-hover:opacity-100 tooltip tooltip-bottom"
+                                            data-tip="Duplicate server"
+                                            aria-label="Duplicate server"
+                                          >
+                                            <${DuplicateIcon}
+                                              className="w-4 h-4"
+                                            />
+                                          </button>
+                                          <button
+                                            type="button"
+                                            onClick=${(e) => {
+                                              e.stopPropagation();
+                                              removeServer(srv.name);
+                                            }}
+                                            class="btn btn-ghost btn-square btn-sm opacity-0 group-hover:opacity-100 tooltip tooltip-bottom"
+                                            data-tip="Remove server"
+                                            aria-label="Remove server"
+                                          >
+                                            <${TrashIcon} className="w-4 h-4" />
+                                          </button>
+                                        `}
                                       </div>
-                                      ${!isRCFile && html`
-                                        <button
-                                          type="button"
-                                          onClick=${(e) => {
-                                            e.stopPropagation();
-                                            duplicateServer(srv.name);
-                                          }}
-                                          class="btn btn-ghost btn-square btn-sm opacity-0 group-hover:opacity-100 tooltip tooltip-bottom"
-                                          data-tip="Duplicate server"
-                                          aria-label="Duplicate server"
-                                        >
-                                          <${DuplicateIcon} className="w-4 h-4" />
-                                        </button>
-                                        <button
-                                          type="button"
-                                          onClick=${(e) => {
-                                            e.stopPropagation();
-                                            removeServer(srv.name);
-                                          }}
-                                          class="btn btn-ghost btn-square btn-sm opacity-0 group-hover:opacity-100 tooltip tooltip-bottom"
-                                          data-tip="Remove server"
-                                          aria-label="Remove server"
-                                        >
-                                          <${TrashIcon} className="w-4 h-4" />
-                                        </button>
-                                      `}
-                                    </div>
-                                    <!-- Expanded edit form. pb only when expanded: a hardcoded
+                                      <!-- Expanded edit form. pb only when expanded: a hardcoded
                                          padding-bottom would size the closed collapse-content grid
                                          track (~12px) and show an empty sliver under each row. -->
-                                    <div class="collapse-content px-3 ${isExpanded ? "pb-3" : ""}">
-                                      ${isExpanded && html`
-                                        <${ServerEditForm}
-                                          server=${srv}
-                                          agentTypes=${agentTypes}
-                                          onChange=${(name, cmd, type, autoApprove, env, tags, constraints, contextFlushCommand) =>
-                                            updateServer(
-                                              srv.name,
+                                      <div
+                                        class="collapse-content px-3 ${isExpanded
+                                          ? "pb-3"
+                                          : ""}"
+                                      >
+                                        ${isExpanded &&
+                                        html`
+                                          <${ServerEditForm}
+                                            server=${srv}
+                                            agentTypes=${agentTypes}
+                                            onChange=${(
                                               name,
                                               cmd,
                                               type,
@@ -2556,96 +2660,110 @@ export function SettingsDialog({
                                               tags,
                                               constraints,
                                               contextFlushCommand,
-                                            )}
-                                        />
-                                      `}
+                                            ) =>
+                                              updateServer(
+                                                srv.name,
+                                                name,
+                                                cmd,
+                                                type,
+                                                autoApprove,
+                                                env,
+                                                tags,
+                                                constraints,
+                                                contextFlushCommand,
+                                              )}
+                                          />
+                                        `}
+                                      </div>
                                     </div>
-                                  </div>
                                   </div>
                                 `;
                               })}
                             </div>
                           `}
-                      </fieldset>
-                    </div>
-                  `}
+                    </fieldset>
+                  </div>
+                `}
 
-                  <!-- (Prompts are managed per-workspace in WorkspacesDialog) -->
+                <!-- (Prompts are managed per-workspace in WorkspacesDialog) -->
 
-                  <!-- Runners Tab -->
-                  ${activeTab === "runners" &&
-                  html`
-                    <div class="space-y-4">
-                      <div
-                        role="alert"
-                        class="alert alert-warning alert-soft"
-                      >
-                        <p class="text-sm leading-relaxed">
-                          ⚠️ <strong>Advanced feature:</strong> Configure
-                          sandboxing restrictions for each runner type. These
-                          are global defaults that apply to all workspaces using
-                          that runner type. Misconfigured restrictions can break
-                          MCP server access.
-                        </p>
-                      </div>
-
-                      <p class="text-mitto-text-muted text-sm">
-                        Configure per-runner-type restrictions. Workspaces using
-                        a specific runner type will inherit these settings.
-                        <br />
-                        <span class="text-mitto-text-muted"
-                          >Note: .mittorc settings will override these
-                          values.</span
-                        >
+                <!-- Runners Tab -->
+                ${activeTab === "runners" &&
+                html`
+                  <div class="space-y-4">
+                    <div role="alert" class="alert alert-warning alert-soft">
+                      <p class="text-sm leading-relaxed">
+                        ⚠️ <strong>Advanced feature:</strong> Configure
+                        sandboxing restrictions for each runner type. These are
+                        global defaults that apply to all workspaces using that
+                        runner type. Misconfigured restrictions can break MCP
+                        server access.
                       </p>
+                    </div>
 
-                      <!-- Runner configurations -->
-                      <div class="space-y-3">
-                        ${supportedRunners
-                          .filter((r) => r.type !== "exec" && r.supported)
-                          .map(
-                            (runner) => html`
+                    <p class="text-mitto-text-muted text-sm">
+                      Configure per-runner-type restrictions. Workspaces using a
+                      specific runner type will inherit these settings.
+                      <br />
+                      <span class="text-mitto-text-muted"
+                        >Note: .mittorc settings will override these
+                        values.</span
+                      >
+                    </p>
+
+                    <!-- Runner configurations -->
+                    <div class="space-y-3">
+                      ${supportedRunners
+                        .filter((r) => r.type !== "exec" && r.supported)
+                        .map(
+                          (runner) => html`
+                            <div
+                              key=${runner.type}
+                              class="collapse collapse-plus ${expandedRunner ===
+                              runner.type
+                                ? "collapse-open"
+                                : "collapse-close"} border border-mitto-border-2/50 rounded-md bg-mitto-surface-3/20"
+                            >
+                              <!-- Runner header (collapsible) -->
                               <div
-                                key=${runner.type}
-                                class="collapse collapse-plus ${expandedRunner === runner.type ? 'collapse-open' : 'collapse-close'} border border-mitto-border-2/50 rounded-md bg-mitto-surface-3/20"
+                                class="collapse-title flex items-center justify-between p-3 pr-12 min-h-0 cursor-pointer bg-mitto-surface-3/30 hover:bg-mitto-surface-3/50 transition-colors"
+                                onClick=${() =>
+                                  setExpandedRunner(
+                                    expandedRunner === runner.type
+                                      ? null
+                                      : runner.type,
+                                  )}
                               >
-                                <!-- Runner header (collapsible) -->
-                                <div
-                                  class="collapse-title flex items-center justify-between p-3 pr-12 min-h-0 cursor-pointer bg-mitto-surface-3/30 hover:bg-mitto-surface-3/50 transition-colors"
-                                  onClick=${() =>
-                                    setExpandedRunner(
-                                      expandedRunner === runner.type
-                                        ? null
-                                        : runner.type,
-                                    )}
-                                >
-                                  <div class="flex items-center gap-3">
-                                    <div class="text-left">
-                                      <div class="font-medium text-sm">
-                                        ${runner.label}
-                                      </div>
-                                      <div class="text-xs text-mitto-text-muted">
-                                        ${runner.description}
-                                      </div>
+                                <div class="flex items-center gap-3">
+                                  <div class="text-left">
+                                    <div class="font-medium text-sm">
+                                      ${runner.label}
+                                    </div>
+                                    <div class="text-xs text-mitto-text-muted">
+                                      ${runner.description}
                                     </div>
                                   </div>
-                                  ${restrictedRunners[runner.type] &&
-                                  html`
-                                    <span
-                                      class="badge badge-sm bg-mitto-accent-500/20 text-mitto-accent"
-                                    >
-                                      Configured
-                                    </span>
-                                  `}
                                 </div>
-
-                                <!-- Expanded content -->
-                                <div class="collapse-content px-4 ${expandedRunner === runner.type ? 'pb-4' : ''}">
-                                  ${expandedRunner === runner.type &&
-                                  html`
-                                  <div
-                                    class="space-y-4"
+                                ${restrictedRunners[runner.type] &&
+                                html`
+                                  <span
+                                    class="badge badge-sm bg-mitto-accent-500/20 text-mitto-accent"
                                   >
+                                    Configured
+                                  </span>
+                                `}
+                              </div>
+
+                              <!-- Expanded content -->
+                              <div
+                                class="collapse-content px-4 ${expandedRunner ===
+                                runner.type
+                                  ? "pb-4"
+                                  : ""}"
+                              >
+                                ${expandedRunner === runner.type &&
+                                html`
+                                  <div class="space-y-4">
                                     <!-- Allow networking toggle -->
                                     <label
                                       class="flex items-center gap-3 cursor-pointer"
@@ -2681,7 +2799,9 @@ export function SettingsDialog({
                                         <div class="font-medium text-sm">
                                           Allow networking
                                         </div>
-                                        <div class="text-xs text-mitto-text-muted">
+                                        <div
+                                          class="text-xs text-mitto-text-muted"
+                                        >
                                           Required for network-based MCP servers
                                         </div>
                                       </div>
@@ -2967,7 +3087,8 @@ export function SettingsDialog({
                                         </label>
                                         <div class="grid grid-cols-3 gap-3">
                                           <div>
-                                            <label class="text-xs text-mitto-text-muted"
+                                            <label
+                                              class="text-xs text-mitto-text-muted"
                                               >Image</label
                                             >
                                             <input
@@ -3009,7 +3130,8 @@ export function SettingsDialog({
                                             />
                                           </div>
                                           <div>
-                                            <label class="text-xs text-mitto-text-muted"
+                                            <label
+                                              class="text-xs text-mitto-text-muted"
                                               >Memory Limit</label
                                             >
                                             <input
@@ -3052,7 +3174,8 @@ export function SettingsDialog({
                                             />
                                           </div>
                                           <div>
-                                            <label class="text-xs text-mitto-text-muted"
+                                            <label
+                                              class="text-xs text-mitto-text-muted"
                                               >CPU Limit</label
                                             >
                                             <input
@@ -3099,7 +3222,8 @@ export function SettingsDialog({
 
                                     <!-- Merge strategy -->
                                     <div class="flex items-center gap-3 pt-2">
-                                      <label class="text-sm text-mitto-text-muted"
+                                      <label
+                                        class="text-sm text-mitto-text-muted"
                                         >Merge Strategy:</label
                                       >
                                       <select
@@ -3164,202 +3288,208 @@ export function SettingsDialog({
                                       </button>
                                     </div>
                                   </div>
-                                  `}
-                                </div>
+                                `}
                               </div>
-                            `,
-                          )}
+                            </div>
+                          `,
+                        )}
 
-                        <!-- Show unsupported runners (disabled) -->
-                        ${supportedRunners
-                          .filter((r) => r.type !== "exec" && !r.supported)
-                          .map(
-                            (runner) => html`
+                      <!-- Show unsupported runners (disabled) -->
+                      ${supportedRunners
+                        .filter((r) => r.type !== "exec" && !r.supported)
+                        .map(
+                          (runner) => html`
+                            <div
+                              key=${runner.type}
+                              class="border border-mitto-border-2/30 rounded-md overflow-hidden opacity-50"
+                            >
                               <div
-                                key=${runner.type}
-                                class="border border-mitto-border-2/30 rounded-md overflow-hidden opacity-50"
+                                class="flex items-center justify-between p-3 bg-mitto-surface-3/20"
                               >
-                                <div
-                                  class="flex items-center justify-between p-3 bg-mitto-surface-3/20"
-                                >
-                                  <div class="flex items-center gap-3">
-                                    <${ChevronRightIcon}
-                                      className="w-4 h-4 text-mitto-text-muted"
-                                    />
-                                    <div>
-                                      <div
-                                        class="font-medium text-sm text-mitto-text-muted"
-                                      >
-                                        ${runner.label}
-                                      </div>
-                                      <div class="text-xs text-mitto-text-muted">
-                                        ${runner.warning ||
-                                        "Not supported on this platform"}
-                                      </div>
+                                <div class="flex items-center gap-3">
+                                  <${ChevronRightIcon}
+                                    className="w-4 h-4 text-mitto-text-muted"
+                                  />
+                                  <div>
+                                    <div
+                                      class="font-medium text-sm text-mitto-text-muted"
+                                    >
+                                      ${runner.label}
+                                    </div>
+                                    <div class="text-xs text-mitto-text-muted">
+                                      ${runner.warning ||
+                                      "Not supported on this platform"}
                                     </div>
                                   </div>
                                 </div>
                               </div>
-                            `,
-                          )}
-                      </div>
+                            </div>
+                          `,
+                        )}
                     </div>
-                  `}
+                  </div>
+                `}
 
-                  <!-- Permissions Tab -->
-                  ${activeTab === "permissions" &&
-                  html`
-                    <div class="space-y-4">
-                      <p class="text-mitto-text-muted text-sm">
-                        Configure how permission requests from AI agents are
-                        handled.
-                      </p>
+                <!-- Permissions Tab -->
+                ${activeTab === "permissions" &&
+                html`
+                  <div class="space-y-4">
+                    <p class="text-mitto-text-muted text-sm">
+                      Configure how permission requests from AI agents are
+                      handled.
+                    </p>
 
-                      <!-- Global Permissions Section -->
-                      <div class="space-y-3">
-                        <h4 class="text-sm font-medium text-mitto-text-secondary">
-                          Global Settings
-                        </h4>
+                    <!-- Global Permissions Section -->
+                    <div class="space-y-3">
+                      <h4 class="text-sm font-medium text-mitto-text-secondary">
+                        Global Settings
+                      </h4>
 
-                        <label
-                          class="flex items-center gap-3 p-4 cursor-pointer hover:bg-base-200/40 transition-colors"
-                        >
-                          <input
-                            type="checkbox"
-                            checked=${globalAutoApprove}
-                            onChange=${(e) =>
-                              setGlobalAutoApprove(e.target.checked)}
-                            class="checkbox checkbox-sm checkbox-primary"
-                          />
-                          <div class="flex-1">
-                            <div class="font-medium text-sm">
-                              Auto-approve All Permissions
-                            </div>
-                            <div class="text-xs text-mitto-text-muted">
-                              Automatically approve all permission requests from
-                              AI agents without showing a dialog. This is the
-                              default behavior.
-                            </div>
+                      <label
+                        class="flex items-center gap-3 p-4 cursor-pointer hover:bg-base-200/40 transition-colors"
+                      >
+                        <input
+                          type="checkbox"
+                          checked=${globalAutoApprove}
+                          onChange=${(e) =>
+                            setGlobalAutoApprove(e.target.checked)}
+                          class="checkbox checkbox-sm checkbox-primary"
+                        />
+                        <div class="flex-1">
+                          <div class="font-medium text-sm">
+                            Auto-approve All Permissions
                           </div>
-                        </label>
+                          <div class="text-xs text-mitto-text-muted">
+                            Automatically approve all permission requests from
+                            AI agents without showing a dialog. This is the
+                            default behavior.
+                          </div>
+                        </div>
+                      </label>
 
-                        <div
-                          class="p-3 bg-mitto-surface-2/50 rounded-md border border-mitto-border-1"
+                      <div
+                        class="p-3 bg-mitto-surface-2/50 rounded-md border border-mitto-border-1"
+                      >
+                        <p
+                          class="text-mitto-text-secondary text-sm leading-relaxed"
                         >
-                          <p class="text-mitto-text-secondary text-sm leading-relaxed">
-                            <span class="text-mitto-accent font-medium"
-                              >Permission hierarchy:</span
-                            >${" "}
-                            Per-workspace settings can enable auto-approve even
-                            when this global setting is off. Configure
-                            workspace-specific settings in the Workspaces dialog.
+                          <span class="text-mitto-accent font-medium"
+                            >Permission hierarchy:</span
+                          >${" "} Per-workspace settings can enable auto-approve
+                          even when this global setting is off. Configure
+                          workspace-specific settings in the Workspaces dialog.
+                        </p>
+                      </div>
+
+                      ${!globalAutoApprove &&
+                      html`
+                        <div
+                          role="alert"
+                          class="alert alert-warning alert-soft"
+                        >
+                          <p class="text-sm leading-relaxed">
+                            ⚠️ <strong>Note:</strong> When auto-approve is
+                            disabled, you will need to manually approve or deny
+                            each permission request from the agent. This may
+                            interrupt your workflow but provides more control
+                            over agent actions.
                           </p>
                         </div>
+                      `}
+                    </div>
 
-                        ${!globalAutoApprove &&
+                    <!-- Archive Settings -->
+                    <div class="space-y-3">
+                      <h4 class="text-sm font-medium text-mitto-text-secondary">
+                        Archive Settings
+                      </h4>
+                      <div class="p-3">
+                        <div class="flex items-center justify-between">
+                          <div>
+                            <div class="font-medium text-sm">
+                              Auto-archive inactive conversations
+                            </div>
+                            <div class="text-xs text-mitto-text-muted">
+                              Automatically archive conversations after the
+                              specified period of inactivity
+                            </div>
+                          </div>
+                          <select
+                            value=${autoArchiveInactiveAfter}
+                            onChange=${(e) =>
+                              setAutoArchiveInactiveAfter(e.target.value)}
+                            class="select select-sm"
+                          >
+                            <option value="">Disabled</option>
+                            <option value="1d">After 1 day</option>
+                            <option value="1w">After 1 week</option>
+                            <option value="1m">After 1 month</option>
+                            <option value="3m">After 3 months</option>
+                          </select>
+                        </div>
+                      </div>
+                      <div class="p-3">
+                        <div class="flex items-center justify-between">
+                          <div>
+                            <div class="font-medium text-sm">
+                              Auto-delete archived conversations
+                            </div>
+                            <div class="text-xs text-mitto-text-muted">
+                              Automatically delete archived conversations after
+                              the specified period
+                            </div>
+                          </div>
+                          <select
+                            value=${archiveRetentionPeriod}
+                            onChange=${(e) =>
+                              setArchiveRetentionPeriod(e.target.value)}
+                            class="select select-sm"
+                          >
+                            <option value="never">Never</option>
+                            <option value="1d">After 1 day</option>
+                            <option value="1w">After 1 week</option>
+                            <option value="1m">After 1 month</option>
+                            <option value="3m">After 3 months</option>
+                          </select>
+                        </div>
+                      </div>
+                    </div>
+
+                    <!-- Periodic Behavior (collapse) -->
+                    <div
+                      data-testid="periodic-behavior-collapse"
+                      class="collapse collapse-arrow ${periodicBehaviorExpanded
+                        ? "collapse-open"
+                        : "collapse-close"} border border-mitto-border-2/50 rounded-md bg-mitto-surface-3/20 mt-2"
+                    >
+                      <div
+                        class="collapse-title flex items-center justify-between p-3 pr-12 min-h-0 cursor-pointer bg-mitto-surface-3/30 hover:bg-mitto-surface-3/50 transition-colors"
+                        onClick=${() =>
+                          setPeriodicBehaviorExpanded(
+                            !periodicBehaviorExpanded,
+                          )}
+                      >
+                        <span class="text-sm font-medium"
+                          >Periodic Behavior</span
+                        >
+                      </div>
+                      <div class="collapse-content px-0">
+                        ${periodicBehaviorExpanded &&
                         html`
                           <div
-                            role="alert"
-                            class="alert alert-warning alert-soft"
+                            class="p-4 space-y-4 border-t border-mitto-border-2/50"
                           >
-                            <p class="text-sm leading-relaxed">
-                              ⚠️ <strong>Note:</strong> When auto-approve is
-                              disabled, you will need to manually approve or deny
-                              each permission request from the agent. This may
-                              interrupt your workflow but provides more control
-                              over agent actions.
-                            </p>
-                          </div>
-                        `}
-                      </div>
-
-                      <!-- Archive Settings -->
-                      <div class="space-y-3">
-                        <h4 class="text-sm font-medium text-mitto-text-secondary">
-                          Archive Settings
-                        </h4>
-                        <div
-                          class="p-3"
-                        >
-                          <div class="flex items-center justify-between">
-                            <div>
-                              <div class="font-medium text-sm">
-                                Auto-archive inactive conversations
-                              </div>
-                              <div class="text-xs text-mitto-text-muted">
-                                Automatically archive conversations after the
-                                specified period of inactivity
-                              </div>
-                            </div>
-                            <select
-                              value=${autoArchiveInactiveAfter}
-                              onChange=${(e) =>
-                                setAutoArchiveInactiveAfter(e.target.value)}
-                              class="select select-sm"
-                            >
-                              <option value="">Disabled</option>
-                              <option value="1d">After 1 day</option>
-                              <option value="1w">After 1 week</option>
-                              <option value="1m">After 1 month</option>
-                              <option value="3m">After 3 months</option>
-                            </select>
-                          </div>
-                        </div>
-                        <div
-                          class="p-3"
-                        >
-                          <div class="flex items-center justify-between">
-                            <div>
-                              <div class="font-medium text-sm">
-                                Auto-delete archived conversations
-                              </div>
-                              <div class="text-xs text-mitto-text-muted">
-                                Automatically delete archived conversations
-                                after the specified period
-                              </div>
-                            </div>
-                            <select
-                              value=${archiveRetentionPeriod}
-                              onChange=${(e) =>
-                                setArchiveRetentionPeriod(e.target.value)}
-                              class="select select-sm"
-                            >
-                              <option value="never">Never</option>
-                              <option value="1d">After 1 day</option>
-                              <option value="1w">After 1 week</option>
-                              <option value="1m">After 1 month</option>
-                              <option value="3m">After 3 months</option>
-                            </select>
-                          </div>
-                        </div>
-                      </div>
-
-                      <!-- Periodic Behavior (collapse) -->
-                      <div
-                        data-testid="periodic-behavior-collapse"
-                        class="collapse collapse-arrow ${periodicBehaviorExpanded ? "collapse-open" : "collapse-close"} border border-mitto-border-2/50 rounded-md bg-mitto-surface-3/20 mt-2"
-                      >
-                        <div
-                          class="collapse-title flex items-center justify-between p-3 pr-12 min-h-0 cursor-pointer bg-mitto-surface-3/30 hover:bg-mitto-surface-3/50 transition-colors"
-                          onClick=${() => setPeriodicBehaviorExpanded(!periodicBehaviorExpanded)}
-                        >
-                          <span class="text-sm font-medium">Periodic Behavior</span>
-                        </div>
-                        <div class="collapse-content px-0">
-                          ${periodicBehaviorExpanded &&
-                          html`
-                          <div class="p-4 space-y-4 border-t border-mitto-border-2/50">
                             <div class="flex items-center justify-between">
                               <div>
                                 <div class="font-medium text-sm">
                                   Suspend periodic conversations
                                 </div>
                                 <div class="text-xs text-mitto-text-muted">
-                                  Automatically suspend idle periodic conversations
-                                  when their next run is farther away than this
-                                  timeout. Saves memory by stopping ACP and MCP
-                                  processes. Conversations resume transparently
-                                  when focused.
+                                  Automatically suspend idle periodic
+                                  conversations when their next run is farther
+                                  away than this timeout. Saves memory by
+                                  stopping ACP and MCP processes. Conversations
+                                  resume transparently when focused.
                                 </div>
                               </div>
                               <select
@@ -3383,9 +3513,9 @@ export function SettingsDialog({
                                 </div>
                                 <div class="text-xs text-mitto-text-muted">
                                   Maximum number of scheduled runs a periodic
-                                  conversation performs before it auto-stops. Set to
-                                  0 for unlimited (still bounded by a built-in safety
-                                  ceiling of 1000).
+                                  conversation performs before it auto-stops.
+                                  Set to 0 for unlimited (still bounded by a
+                                  built-in safety ceiling of 1000).
                                 </div>
                               </div>
                               <input
@@ -3402,1236 +3532,1245 @@ export function SettingsDialog({
                             </div>
                             <!-- Future: default period control -->
                           </div>
-                          `}
-                        </div>
-                      </div>
-
-                      <!-- Memory Recycling -->
-                      <div class="space-y-3">
-                        <h4 class="text-sm font-medium text-mitto-text-secondary">
-                          Memory Recycling
-                        </h4>
-                        <div
-                          class="p-3"
-                        >
-                          <div class="flex items-center justify-between">
-                            <div>
-                              <div class="font-medium text-sm">
-                                Recycle bloated idle conversations
-                              </div>
-                              <div class="text-xs text-mitto-text-muted">
-                                Recycle an idle agent process when its memory
-                                usage grows beyond this size, reclaiming memory
-                                from bloated conversations. Only fully-idle
-                                conversations are affected and they resume
-                                transparently when focused.
-                              </div>
-                            </div>
-                            <select
-                              value=${memoryRecycleThreshold}
-                              onInput=${(e) =>
-                                setMemoryRecycleThreshold(e.target.value)}
-                              class="select select-sm"
-                            >
-                              <option value="">Disabled</option>
-                              <option value="3g">Above 3 GB</option>
-                              <option value="4g">Above 4 GB</option>
-                              <option value="6g">Above 6 GB</option>
-                              <option value="8g">Above 8 GB</option>
-                            </select>
-                          </div>
-                        </div>
-                      </div>
-
-                      <!-- Conversation History Limits -->
-                      <div class="space-y-3">
-                        <h4 class="text-sm font-medium text-mitto-text-secondary">
-                          Conversation History
-                        </h4>
-                        <div
-                          class="p-3"
-                        >
-                          <div class="flex items-center justify-between">
-                            <div>
-                              <div class="font-medium text-sm">
-                                Max messages per conversation
-                              </div>
-                              <div class="text-xs text-mitto-text-muted">
-                                Automatically prune oldest messages when a
-                                conversation exceeds this limit. Prevents
-                                excessive memory usage in long-running
-                                conversations. Set to 0 for unlimited.
-                              </div>
-                            </div>
-                            <input
-                              type="number"
-                              min="0"
-                              max="100000"
-                              step="100"
-                              value=${maxMessagesPerSession}
-                              onChange=${(e) =>
-                                setMaxMessagesPerSession(
-                                  parseInt(e.target.value, 10) || 0,
-                                )}
-                              class="input input-sm w-24 text-center"
-                            />
-                          </div>
-                        </div>
-                      </div>
-
-                      <!-- Child Conversations Limit -->
-                      <div class="space-y-3">
-                        <h4 class="text-sm font-medium text-mitto-text-secondary">
-                          Child Conversations
-                        </h4>
-                        <div
-                          class="p-3"
-                        >
-                          <div class="flex items-center justify-between">
-                            <div>
-                              <div class="font-medium text-sm">
-                                Max Child Conversations
-                              </div>
-                              <div class="text-xs text-mitto-text-muted">
-                                Maximum number of child conversations an AI agent
-                                can spawn via MCP. Auto-created children are not
-                                counted. Set to 0 for unlimited.
-                              </div>
-                            </div>
-                            <input
-                              type="number"
-                              min="0"
-                              max="100"
-                              value=${maxChildConversations}
-                              onChange=${(e) =>
-                                setMaxChildConversations(
-                                  parseInt(e.target.value, 10) || 0,
-                                )}
-                              class="input input-sm w-20 text-center"
-                            />
-                          </div>
-                        </div>
-                      </div>
-
-
-                      <!-- Default Flags for New Conversations -->
-                      ${availableFlags.length > 0 &&
-                      html`
-                        <div class="space-y-3">
-                          <h4 class="text-sm font-medium text-mitto-text-secondary">
-                            Default Flags for New Conversations
-                          </h4>
-                          <p class="text-xs text-mitto-text-muted">
-                            These flags will be enabled by default when creating
-                            new conversations.
-                          </p>
-                          <div
-                            class="overflow-x-auto"
-                          >
-                            <table class="table table-sm">
-                              <tbody>
-                                ${availableFlags.map(
-                                  (flag) => html`
-                                    <tr key=${flag.name}>
-                                      <td class="w-10">
-                                        <input
-                                          type="checkbox"
-                                          checked=${defaultFlags[flag.name] ||
-                                          false}
-                                          onChange=${(e) => {
-                                            const newFlags = {
-                                              ...defaultFlags,
-                                            };
-                                            if (e.target.checked) {
-                                              newFlags[flag.name] = true;
-                                            } else {
-                                              delete newFlags[flag.name];
-                                            }
-                                            setDefaultFlags(newFlags);
-                                          }}
-                                          class="checkbox checkbox-sm checkbox-primary cursor-pointer"
-                                        />
-                                      </td>
-                                      <td>
-                                        <div class="font-medium">
-                                          ${flag.label}
-                                        </div>
-                                        <div class="text-xs text-mitto-text-muted">
-                                          ${flag.description}
-                                        </div>
-                                      </td>
-                                    </tr>
-                                  `,
-                                )}
-                              </tbody>
-                            </table>
-                          </div>
-                        </div>
-                      `}
-
-                      <!-- Message Display -->
-                      <div class="space-y-3">
-                        <h4 class="text-sm font-medium text-mitto-text-secondary">
-                          Message Display
-                        </h4>
-                        <label
-                          class="flex items-center gap-3 p-3 cursor-pointer hover:bg-base-200/40 transition-colors"
-                        >
-                          <input
-                            type="checkbox"
-                            checked=${actionButtonsEnabled}
-                            onChange=${(e) =>
-                              setActionButtonsEnabled(e.target.checked)}
-                            class="checkbox checkbox-sm checkbox-primary"
-                          />
-                          <div class="flex-1">
-                            <div class="font-medium text-sm">
-                              Follow-up Suggestions
-                            </div>
-                            <div class="text-xs text-mitto-text-muted">
-                              Analyze agent responses to suggest clickable
-                              follow-up options (uses auxiliary conversation)
-                            </div>
-                          </div>
-                        </label>
-                        <label
-                          class="flex items-center gap-3 p-3 cursor-pointer hover:bg-base-200/40 transition-colors"
-                        >
-                          <input
-                            type="checkbox"
-                            checked=${externalImagesEnabled}
-                            onChange=${(e) =>
-                              setExternalImagesEnabled(e.target.checked)}
-                            class="checkbox checkbox-sm checkbox-primary"
-                          />
-                          <div class="flex-1">
-                            <div class="font-medium text-sm">
-                              Allow External Images
-                            </div>
-                            <div class="text-xs text-mitto-text-muted">
-                              Load images from external HTTPS sources in
-                              messages (requires restart, may expose your IP to
-                              external servers)
-                            </div>
-                          </div>
-                        </label>
-                      </div>
-                    </div>
-                  `}
-
-                  <!-- Web Tab -->
-                  ${activeTab === "web" &&
-                  html`
-                    <div class="space-y-4">
-                      <p class="text-mitto-text-muted text-sm">
-                        Configure external access
-                        settings${authEnabled ? " and lifecycle hooks" : ""}.
-                      </p>
-
-                      <!-- External Access Section -->
-                      <div class="space-y-3">
-                        <h4 class="text-sm font-medium text-mitto-text-secondary">
-                          External Access
-                        </h4>
-
-                        <label
-                          class="flex items-center gap-3 p-4 cursor-pointer hover:bg-base-200/40 transition-colors"
-                        >
-                          <input
-                            type="checkbox"
-                            checked=${authEnabled}
-                            onChange=${(e) => setAuthEnabled(e.target.checked)}
-                            class="checkbox checkbox-sm checkbox-primary"
-                          />
-                          <div>
-                            <div class="font-medium text-sm">
-                              Allow External Access
-                            </div>
-                            <div class="text-xs text-mitto-text-muted">
-                              Listen on all interfaces (0.0.0.0) and require
-                              authentication
-                            </div>
-                          </div>
-                        </label>
-
-                        ${authEnabled &&
-                        html`
-                          <!-- Port and status -->
-                          <div
-                            class="p-4 space-y-3"
-                          >
-                            <div class="flex items-center gap-2">
-                              <label class="text-sm text-mitto-text-muted">Port</label>
-                              <input
-                                type="number"
-                                value=${externalPort}
-                                onInput=${(e) =>
-                                  setExternalPort(e.target.value)}
-                                placeholder="random"
-                                min="1024"
-                                max="65535"
-                                class="input input-sm w-24"
-                              />
-                              <span class="text-xs text-mitto-text-muted"
-                                >(leave empty for random)</span
-                              >
-                            </div>
-
-                          </div>
-
-                          <!-- Authentication Methods -->
-                          <div class="space-y-3">
-                            <h5 class="text-sm font-medium text-mitto-text-muted">
-                              Authentication
-                            </h5>
-                            <p class="text-xs text-mitto-text-muted">
-                              At least one authentication method is required for
-                              external access.
-                            </p>
-
-                            <!-- Simple Auth (Username/Password) -->
-                            <div
-                              class="p-4 space-y-3"
-                            >
-                              <label class="flex items-center gap-3 cursor-pointer">
-                                <input
-                                  type="checkbox"
-                                  checked=${!!authUsername.trim()}
-                                  onChange=${(e) => {
-                                    if (!e.target.checked) {
-                                      setAuthUsername("");
-                                      setAuthPassword("");
-                                    } else {
-                                      setAuthUsername(authUsername || "admin");
-                                    }
-                                  }}
-                                  class="checkbox checkbox-sm checkbox-primary"
-                                />
-                                <div>
-                                  <div class="font-medium text-sm">
-                                    Username / Password
-                                  </div>
-                                  <div class="text-xs text-mitto-text-muted">
-                                    Simple credentials for login
-                                  </div>
-                                </div>
-                              </label>
-                              ${authUsername.trim() &&
-                              html`
-                                <div class="flex items-center gap-4 pl-7">
-                                  <div class="flex items-center gap-2">
-                                    <label class="text-sm text-mitto-text-muted"
-                                      >Username</label
-                                    >
-                                    <input
-                                      type="text"
-                                      value=${authUsername}
-                                      onInput=${(e) =>
-                                        setAuthUsername(e.target.value)}
-                                      placeholder="admin"
-                                      class="input input-sm w-28"
-                                    />
-                                  </div>
-                                  <div class="flex items-center gap-2">
-                                    <label class="text-sm text-mitto-text-muted"
-                                      >Password</label
-                                    >
-                                    <input
-                                      type="password"
-                                      value=${authPassword}
-                                      onInput=${(e) => {
-                                        setAuthPassword(e.target.value);
-                                        if (e.target.value === "" && hasExistingPassword) {
-                                          // User cleared the field while a keychain password exists
-                                          // → revert to "keep existing" mode
-                                          setAuthPasswordUnchanged(true);
-                                        } else if (e.target.value !== "") {
-                                          // User typed a new password → mark as changed
-                                          setAuthPasswordUnchanged(false);
-                                        }
-                                      }}
-                                      placeholder=${authPasswordUnchanged
-                                        ? "••••••••"
-                                        : "Enter password"}
-                                      class="input input-sm w-28"
-                                    />
-                                  </div>
-                                </div>
-                              `}
-                            </div>
-
-                            <!-- Cloudflare Access Auth -->
-                            <div
-                              class="p-4 space-y-3"
-                            >
-                              <label class="flex items-center gap-3 cursor-pointer">
-                                <input
-                                  type="checkbox"
-                                  checked=${cfEnabled}
-                                  onChange=${(e) =>
-                                    setCfEnabled(e.target.checked)}
-                                  class="checkbox checkbox-sm checkbox-primary"
-                                />
-                                <div>
-                                  <div class="font-medium text-sm">
-                                    Cloudflare Access
-                                  </div>
-                                  <div class="text-xs text-mitto-text-muted">
-                                    SSO/OAuth via Cloudflare Access JWT
-                                    validation
-                                  </div>
-                                </div>
-                              </label>
-                              ${cfEnabled &&
-                              html`
-                                <div class="space-y-2 pl-7">
-                                  <div class="flex items-center gap-2">
-                                    <label
-                                      class="text-sm text-mitto-text-muted w-28"
-                                      >Team Domain</label
-                                    >
-                                    <input
-                                      type="text"
-                                      value=${cfTeamDomain}
-                                      onInput=${(e) =>
-                                        setCfTeamDomain(e.target.value)}
-                                      placeholder="yourteam.cloudflareaccess.com"
-                                      class="input input-sm flex-1"
-                                    />
-                                  </div>
-                                  <div class="flex items-center gap-2">
-                                    <label
-                                      class="text-sm text-mitto-text-muted w-28"
-                                      >Audience</label
-                                    >
-                                    <input
-                                      type="text"
-                                      value=${cfAudience}
-                                      onInput=${(e) =>
-                                        setCfAudience(e.target.value)}
-                                      placeholder="Application AUD tag"
-                                      class="input input-sm flex-1 font-mono"
-                                    />
-                                  </div>
-                                </div>
-                              `}
-                            </div>
-                          </div>
-
-                          <!-- Lifecycle Hooks -->
-                          <div
-                            class="p-4 space-y-3"
-                          >
-                            <h5 class="text-sm font-medium text-mitto-text-secondary">
-                              Lifecycle Hooks
-                            </h5>
-                            <p class="text-xs text-mitto-text-muted">
-                              Commands to run when external access starts/stops
-                              (e.g., for tunneling).${" "}
-                              <button
-                                type="button"
-                                onClick=${() =>
-                                  openExternalURL(
-                                    "https://github.com/inercia/mitto/blob/main/docs/config/ext-access.md",
-                                  )}
-                                class="text-mitto-accent hover:text-mitto-accent-300 underline cursor-pointer"
-                              >
-                                Learn more
-                              </button>
-                            </p>
-                            <div class="flex items-center gap-2">
-                              <label class="text-sm text-mitto-text-muted w-12"
-                                >Up</label
-                              >
-                              <input
-                                type="text"
-                                value=${hookUpCommand}
-                                onInput=${(e) =>
-                                  setHookUpCommand(e.target.value)}
-                                placeholder="e.g., cloudflared tunnel --url http://localhost:$PORT"
-                                class="input input-sm flex-1 font-mono"
-                              />
-                            </div>
-                            <div class="flex items-center gap-2">
-                              <label class="text-sm text-mitto-text-muted w-12"
-                                >Down</label
-                              >
-                              <input
-                                type="text"
-                                value=${hookDownCommand}
-                                onInput=${(e) =>
-                                  setHookDownCommand(e.target.value)}
-                                placeholder="e.g., pkill cloudflared"
-                                class="input input-sm flex-1 font-mono"
-                              />
-                            </div>
-                            <div class="flex items-center gap-2 mt-2">
-                              <label class="text-sm text-mitto-text-muted w-12"
-                                >URL</label
-                              >
-                              <input
-                                type="text"
-                                value=${hookExternalAddress}
-                                onInput=${(e) =>
-                                  setHookExternalAddress(e.target.value)}
-                                placeholder="e.g., https://mitto.example.com"
-                                class="input input-sm flex-1 font-mono"
-                              />
-                            </div>
-                            <p class="text-xs text-mitto-text-muted mt-1">
-                              If set, Mitto monitors this URL and restarts
-                              hooks if unreachable.
-                            </p>
-                          </div>
                         `}
                       </div>
+                    </div>
 
-                      <!-- Access Log Section -->
-                      <div class="space-y-3">
-                        <h4 class="text-sm font-medium text-mitto-text-secondary">
-                          Access Log
-                        </h4>
-
-                        <label
-                          class="flex items-center gap-3 p-4 cursor-pointer hover:bg-base-200/40 transition-colors"
-                        >
-                          <input
-                            type="checkbox"
-                            checked=${accessLogEnabled}
-                            onChange=${(e) =>
-                              setAccessLogEnabled(e.target.checked)}
-                            class="checkbox checkbox-sm checkbox-primary"
-                          />
+                    <!-- Memory Recycling -->
+                    <div class="space-y-3">
+                      <h4 class="text-sm font-medium text-mitto-text-secondary">
+                        Memory Recycling
+                      </h4>
+                      <div class="p-3">
+                        <div class="flex items-center justify-between">
                           <div>
                             <div class="font-medium text-sm">
-                              Enable Access Log
+                              Recycle bloated idle conversations
                             </div>
                             <div class="text-xs text-mitto-text-muted">
-                              Log security-relevant events (login attempts,
-                              unauthorized access, external requests) to a
-                              rotating log file
+                              Recycle an idle agent process when its memory
+                              usage grows beyond this size, reclaiming memory
+                              from bloated conversations. Only fully-idle
+                              conversations are affected and they resume
+                              transparently when focused.
                             </div>
                           </div>
-                        </label>
+                          <select
+                            value=${memoryRecycleThreshold}
+                            onInput=${(e) =>
+                              setMemoryRecycleThreshold(e.target.value)}
+                            class="select select-sm"
+                          >
+                            <option value="">Disabled</option>
+                            <option value="3g">Above 3 GB</option>
+                            <option value="4g">Above 4 GB</option>
+                            <option value="6g">Above 6 GB</option>
+                            <option value="8g">Above 8 GB</option>
+                          </select>
+                        </div>
                       </div>
                     </div>
-                  `}
 
-                  <!-- MCP Tab -->
-                  ${activeTab === "mcp" &&
-                  html`
-                    <div class="space-y-4">
-                      <p class="text-mitto-text-muted text-sm">
-                        Configure the built-in MCP (Model Context Protocol)
-                        server that exposes Mitto tools to AI agents.
-                      </p>
+                    <!-- Conversation History Limits -->
+                    <div class="space-y-3">
+                      <h4 class="text-sm font-medium text-mitto-text-secondary">
+                        Conversation History
+                      </h4>
+                      <div class="p-3">
+                        <div class="flex items-center justify-between">
+                          <div>
+                            <div class="font-medium text-sm">
+                              Max messages per conversation
+                            </div>
+                            <div class="text-xs text-mitto-text-muted">
+                              Automatically prune oldest messages when a
+                              conversation exceeds this limit. Prevents
+                              excessive memory usage in long-running
+                              conversations. Set to 0 for unlimited.
+                            </div>
+                          </div>
+                          <input
+                            type="number"
+                            min="0"
+                            max="100000"
+                            step="100"
+                            value=${maxMessagesPerSession}
+                            onChange=${(e) =>
+                              setMaxMessagesPerSession(
+                                parseInt(e.target.value, 10) || 0,
+                              )}
+                            class="input input-sm w-24 text-center"
+                          />
+                        </div>
+                      </div>
+                    </div>
 
+                    <!-- Child Conversations Limit -->
+                    <div class="space-y-3">
+                      <h4 class="text-sm font-medium text-mitto-text-secondary">
+                        Child Conversations
+                      </h4>
+                      <div class="p-3">
+                        <div class="flex items-center justify-between">
+                          <div>
+                            <div class="font-medium text-sm">
+                              Max Child Conversations
+                            </div>
+                            <div class="text-xs text-mitto-text-muted">
+                              Maximum number of child conversations an AI agent
+                              can spawn via MCP. Auto-created children are not
+                              counted. Set to 0 for unlimited.
+                            </div>
+                          </div>
+                          <input
+                            type="number"
+                            min="0"
+                            max="100"
+                            value=${maxChildConversations}
+                            onChange=${(e) =>
+                              setMaxChildConversations(
+                                parseInt(e.target.value, 10) || 0,
+                              )}
+                            class="input input-sm w-20 text-center"
+                          />
+                        </div>
+                      </div>
+                    </div>
+
+                    <!-- Default Flags for New Conversations -->
+                    ${availableFlags.length > 0 &&
+                    html`
                       <div class="space-y-3">
-                        <h4 class="text-sm font-medium text-mitto-text-secondary">
-                          MCP server (Model Context Protocol)
+                        <h4
+                          class="text-sm font-medium text-mitto-text-secondary"
+                        >
+                          Default Flags for New Conversations
                         </h4>
+                        <p class="text-xs text-mitto-text-muted">
+                          These flags will be enabled by default when creating
+                          new conversations.
+                        </p>
+                        <div class="overflow-x-auto">
+                          <table class="table table-sm">
+                            <tbody>
+                              ${availableFlags.map(
+                                (flag) => html`
+                                  <tr key=${flag.name}>
+                                    <td class="w-10">
+                                      <input
+                                        type="checkbox"
+                                        checked=${defaultFlags[flag.name] ||
+                                        false}
+                                        onChange=${(e) => {
+                                          const newFlags = {
+                                            ...defaultFlags,
+                                          };
+                                          if (e.target.checked) {
+                                            newFlags[flag.name] = true;
+                                          } else {
+                                            delete newFlags[flag.name];
+                                          }
+                                          setDefaultFlags(newFlags);
+                                        }}
+                                        class="checkbox checkbox-sm checkbox-primary cursor-pointer"
+                                      />
+                                    </td>
+                                    <td>
+                                      <div class="font-medium">
+                                        ${flag.label}
+                                      </div>
+                                      <div
+                                        class="text-xs text-mitto-text-muted"
+                                      >
+                                        ${flag.description}
+                                      </div>
+                                    </td>
+                                  </tr>
+                                `,
+                              )}
+                            </tbody>
+                          </table>
+                        </div>
+                      </div>
+                    `}
 
+                    <!-- Message Display -->
+                    <div class="space-y-3">
+                      <h4 class="text-sm font-medium text-mitto-text-secondary">
+                        Message Display
+                      </h4>
+                      <label
+                        class="flex items-center gap-3 p-3 cursor-pointer hover:bg-base-200/40 transition-colors"
+                      >
+                        <input
+                          type="checkbox"
+                          checked=${actionButtonsEnabled}
+                          onChange=${(e) =>
+                            setActionButtonsEnabled(e.target.checked)}
+                          class="checkbox checkbox-sm checkbox-primary"
+                        />
+                        <div class="flex-1">
+                          <div class="font-medium text-sm">
+                            Follow-up Suggestions
+                          </div>
+                          <div class="text-xs text-mitto-text-muted">
+                            Analyze agent responses to suggest clickable
+                            follow-up options (uses auxiliary conversation)
+                          </div>
+                        </div>
+                      </label>
+                      <label
+                        class="flex items-center gap-3 p-3 cursor-pointer hover:bg-base-200/40 transition-colors"
+                      >
+                        <input
+                          type="checkbox"
+                          checked=${externalImagesEnabled}
+                          onChange=${(e) =>
+                            setExternalImagesEnabled(e.target.checked)}
+                          class="checkbox checkbox-sm checkbox-primary"
+                        />
+                        <div class="flex-1">
+                          <div class="font-medium text-sm">
+                            Allow External Images
+                          </div>
+                          <div class="text-xs text-mitto-text-muted">
+                            Load images from external HTTPS sources in messages
+                            (requires restart, may expose your IP to external
+                            servers)
+                          </div>
+                        </div>
+                      </label>
+                    </div>
+                  </div>
+                `}
+
+                <!-- Web Tab -->
+                ${activeTab === "web" &&
+                html`
+                  <div class="space-y-4">
+                    <p class="text-mitto-text-muted text-sm">
+                      Configure external access
+                      settings${authEnabled ? " and lifecycle hooks" : ""}.
+                    </p>
+
+                    <!-- External Access Section -->
+                    <div class="space-y-3">
+                      <h4 class="text-sm font-medium text-mitto-text-secondary">
+                        External Access
+                      </h4>
+
+                      <label
+                        class="flex items-center gap-3 p-4 cursor-pointer hover:bg-base-200/40 transition-colors"
+                      >
+                        <input
+                          type="checkbox"
+                          checked=${authEnabled}
+                          onChange=${(e) => setAuthEnabled(e.target.checked)}
+                          class="checkbox checkbox-sm checkbox-primary"
+                        />
+                        <div>
+                          <div class="font-medium text-sm">
+                            Allow External Access
+                          </div>
+                          <div class="text-xs text-mitto-text-muted">
+                            Listen on all interfaces (0.0.0.0) and require
+                            authentication
+                          </div>
+                        </div>
+                      </label>
+
+                      ${authEnabled &&
+                      html`
+                        <!-- Port and status -->
                         <div class="p-4 space-y-3">
                           <div class="flex items-center gap-2">
+                            <label class="text-sm text-mitto-text-muted"
+                              >Port</label
+                            >
+                            <input
+                              type="number"
+                              value=${externalPort}
+                              onInput=${(e) => setExternalPort(e.target.value)}
+                              placeholder="random"
+                              min="1024"
+                              max="65535"
+                              class="input input-sm w-24"
+                            />
+                            <span class="text-xs text-mitto-text-muted"
+                              >(leave empty for random)</span
+                            >
+                          </div>
+                        </div>
+
+                        <!-- Authentication Methods -->
+                        <div class="space-y-3">
+                          <h5 class="text-sm font-medium text-mitto-text-muted">
+                            Authentication
+                          </h5>
+                          <p class="text-xs text-mitto-text-muted">
+                            At least one authentication method is required for
+                            external access.
+                          </p>
+
+                          <!-- Simple Auth (Username/Password) -->
+                          <div class="p-4 space-y-3">
+                            <label
+                              class="flex items-center gap-3 cursor-pointer"
+                            >
+                              <input
+                                type="checkbox"
+                                checked=${!!authUsername.trim()}
+                                onChange=${(e) => {
+                                  if (!e.target.checked) {
+                                    setAuthUsername("");
+                                    setAuthPassword("");
+                                  } else {
+                                    setAuthUsername(authUsername || "admin");
+                                  }
+                                }}
+                                class="checkbox checkbox-sm checkbox-primary"
+                              />
+                              <div>
+                                <div class="font-medium text-sm">
+                                  Username / Password
+                                </div>
+                                <div class="text-xs text-mitto-text-muted">
+                                  Simple credentials for login
+                                </div>
+                              </div>
+                            </label>
+                            ${authUsername.trim() &&
+                            html`
+                              <div class="flex items-center gap-4 pl-7">
+                                <div class="flex items-center gap-2">
+                                  <label class="text-sm text-mitto-text-muted"
+                                    >Username</label
+                                  >
+                                  <input
+                                    type="text"
+                                    value=${authUsername}
+                                    onInput=${(e) =>
+                                      setAuthUsername(e.target.value)}
+                                    placeholder="admin"
+                                    class="input input-sm w-28"
+                                  />
+                                </div>
+                                <div class="flex items-center gap-2">
+                                  <label class="text-sm text-mitto-text-muted"
+                                    >Password</label
+                                  >
+                                  <input
+                                    type="password"
+                                    value=${authPassword}
+                                    onInput=${(e) => {
+                                      setAuthPassword(e.target.value);
+                                      if (
+                                        e.target.value === "" &&
+                                        hasExistingPassword
+                                      ) {
+                                        // User cleared the field while a keychain password exists
+                                        // → revert to "keep existing" mode
+                                        setAuthPasswordUnchanged(true);
+                                      } else if (e.target.value !== "") {
+                                        // User typed a new password → mark as changed
+                                        setAuthPasswordUnchanged(false);
+                                      }
+                                    }}
+                                    placeholder=${authPasswordUnchanged
+                                      ? "••••••••"
+                                      : "Enter password"}
+                                    class="input input-sm w-28"
+                                  />
+                                </div>
+                              </div>
+                            `}
+                          </div>
+
+                          <!-- Cloudflare Access Auth -->
+                          <div class="p-4 space-y-3">
+                            <label
+                              class="flex items-center gap-3 cursor-pointer"
+                            >
+                              <input
+                                type="checkbox"
+                                checked=${cfEnabled}
+                                onChange=${(e) =>
+                                  setCfEnabled(e.target.checked)}
+                                class="checkbox checkbox-sm checkbox-primary"
+                              />
+                              <div>
+                                <div class="font-medium text-sm">
+                                  Cloudflare Access
+                                </div>
+                                <div class="text-xs text-mitto-text-muted">
+                                  SSO/OAuth via Cloudflare Access JWT validation
+                                </div>
+                              </div>
+                            </label>
+                            ${cfEnabled &&
+                            html`
+                              <div class="space-y-2 pl-7">
+                                <div class="flex items-center gap-2">
+                                  <label
+                                    class="text-sm text-mitto-text-muted w-28"
+                                    >Team Domain</label
+                                  >
+                                  <input
+                                    type="text"
+                                    value=${cfTeamDomain}
+                                    onInput=${(e) =>
+                                      setCfTeamDomain(e.target.value)}
+                                    placeholder="yourteam.cloudflareaccess.com"
+                                    class="input input-sm flex-1"
+                                  />
+                                </div>
+                                <div class="flex items-center gap-2">
+                                  <label
+                                    class="text-sm text-mitto-text-muted w-28"
+                                    >Audience</label
+                                  >
+                                  <input
+                                    type="text"
+                                    value=${cfAudience}
+                                    onInput=${(e) =>
+                                      setCfAudience(e.target.value)}
+                                    placeholder="Application AUD tag"
+                                    class="input input-sm flex-1 font-mono"
+                                  />
+                                </div>
+                              </div>
+                            `}
+                          </div>
+                        </div>
+
+                        <!-- Lifecycle Hooks -->
+                        <div class="p-4 space-y-3">
+                          <h5
+                            class="text-sm font-medium text-mitto-text-secondary"
+                          >
+                            Lifecycle Hooks
+                          </h5>
+                          <p class="text-xs text-mitto-text-muted">
+                            Commands to run when external access starts/stops
+                            (e.g., for tunneling).${" "}
+                            <button
+                              type="button"
+                              onClick=${() =>
+                                openExternalURL(
+                                  "https://github.com/inercia/mitto/blob/main/docs/config/ext-access.md",
+                                )}
+                              class="text-mitto-accent hover:text-mitto-accent-300 underline cursor-pointer"
+                            >
+                              Learn more
+                            </button>
+                          </p>
+                          <div class="flex items-center gap-2">
                             <label class="text-sm text-mitto-text-muted w-12"
-                              >Host</label
+                              >Up</label
                             >
                             <input
                               type="text"
-                              value=${mcpHost}
-                              onInput=${(e) => setMcpHost(e.target.value)}
-                              placeholder="127.0.0.1"
+                              value=${hookUpCommand}
+                              onInput=${(e) => setHookUpCommand(e.target.value)}
+                              placeholder="e.g., cloudflared tunnel --url http://localhost:$PORT"
                               class="input input-sm flex-1 font-mono"
                             />
                           </div>
                           <div class="flex items-center gap-2">
                             <label class="text-sm text-mitto-text-muted w-12"
-                              >Port</label
+                              >Down</label
                             >
                             <input
-                              type="number"
-                              value=${mcpPort}
-                              onInput=${(e) => setMcpPort(e.target.value)}
-                              placeholder="5757"
-                              min="0"
-                              max="65535"
-                              class="input input-sm w-24"
+                              type="text"
+                              value=${hookDownCommand}
+                              onInput=${(e) =>
+                                setHookDownCommand(e.target.value)}
+                              placeholder="e.g., pkill cloudflared"
+                              class="input input-sm flex-1 font-mono"
                             />
-                            <span class="text-xs text-mitto-text-muted"
-                              >(0 = system-assigned free port)</span
-                            >
                           </div>
-                          <p class="text-xs text-mitto-text-muted">
-                            Changes to the MCP server take effect after
-                            restarting Mitto.
+                          <div class="flex items-center gap-2 mt-2">
+                            <label class="text-sm text-mitto-text-muted w-12"
+                              >URL</label
+                            >
+                            <input
+                              type="text"
+                              value=${hookExternalAddress}
+                              onInput=${(e) =>
+                                setHookExternalAddress(e.target.value)}
+                              placeholder="e.g., https://mitto.example.com"
+                              class="input input-sm flex-1 font-mono"
+                            />
+                          </div>
+                          <p class="text-xs text-mitto-text-muted mt-1">
+                            If set, Mitto monitors this URL and restarts hooks
+                            if unreachable.
                           </p>
+                        </div>
+                      `}
+                    </div>
+
+                    <!-- Access Log Section -->
+                    <div class="space-y-3">
+                      <h4 class="text-sm font-medium text-mitto-text-secondary">
+                        Access Log
+                      </h4>
+
+                      <label
+                        class="flex items-center gap-3 p-4 cursor-pointer hover:bg-base-200/40 transition-colors"
+                      >
+                        <input
+                          type="checkbox"
+                          checked=${accessLogEnabled}
+                          onChange=${(e) =>
+                            setAccessLogEnabled(e.target.checked)}
+                          class="checkbox checkbox-sm checkbox-primary"
+                        />
+                        <div>
+                          <div class="font-medium text-sm">
+                            Enable Access Log
+                          </div>
+                          <div class="text-xs text-mitto-text-muted">
+                            Log security-relevant events (login attempts,
+                            unauthorized access, external requests) to a
+                            rotating log file
+                          </div>
+                        </div>
+                      </label>
+                    </div>
+                  </div>
+                `}
+
+                <!-- MCP Tab -->
+                ${activeTab === "mcp" &&
+                html`
+                  <div class="space-y-4">
+                    <p class="text-mitto-text-muted text-sm">
+                      Configure the built-in MCP (Model Context Protocol) server
+                      that exposes Mitto tools to AI agents.
+                    </p>
+
+                    <div class="space-y-3">
+                      <h4 class="text-sm font-medium text-mitto-text-secondary">
+                        MCP server (Model Context Protocol)
+                      </h4>
+
+                      <div class="p-4 space-y-3">
+                        <div class="flex items-center gap-2">
+                          <label class="text-sm text-mitto-text-muted w-12"
+                            >Host</label
+                          >
+                          <input
+                            type="text"
+                            value=${mcpHost}
+                            onInput=${(e) => setMcpHost(e.target.value)}
+                            placeholder="127.0.0.1"
+                            class="input input-sm flex-1 font-mono"
+                          />
+                        </div>
+                        <div class="flex items-center gap-2">
+                          <label class="text-sm text-mitto-text-muted w-12"
+                            >Port</label
+                          >
+                          <input
+                            type="number"
+                            value=${mcpPort}
+                            onInput=${(e) => setMcpPort(e.target.value)}
+                            placeholder="5757"
+                            min="1"
+                            max="65535"
+                            class="input input-sm w-24"
+                          />
+                          <span class="text-xs text-mitto-text-muted"
+                            >(fixed port — the address must be known in advance
+                            so ACP servers can connect)</span
+                          >
+                        </div>
+                        <p class="text-xs text-mitto-text-muted">
+                          Changes to the MCP server take effect after restarting
+                          Mitto.
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+                `}
+
+                <!-- UI Tab -->
+                ${activeTab === "ui" &&
+                html`
+                  <div class="space-y-4">
+                    <!-- Appearance Settings (all platforms) -->
+                    <div class="space-y-3">
+                      <h4 class="text-sm font-medium text-mitto-text-secondary">
+                        Appearance
+                      </h4>
+                      <div class="p-3 space-y-3">
+                        <div class="text-xs text-mitto-text-muted">
+                          Choose a daisyUI color theme for each mode. "Mitto
+                          (default)" uses the built-in Mitto palette.
+                        </div>
+                        <div class="flex items-center justify-between gap-3">
+                          <div class="font-medium text-sm">Light theme</div>
+                          <select
+                            value=${lightThemeName}
+                            onInput=${(e) =>
+                              handleLightThemeChange(e.target.value)}
+                            class="select select-sm"
+                          >
+                            <option value="mitto">${THEME_LABELS.mitto}</option>
+                            ${Object.entries(NAMED_THEMES)
+                              .filter(([, bucket]) => bucket === "light")
+                              .map(
+                                ([name]) =>
+                                  html`<option value=${name}>
+                                    ${THEME_LABELS[name] || name}
+                                  </option>`,
+                              )}
+                          </select>
+                        </div>
+                        <div class="flex items-center justify-between gap-3">
+                          <div class="font-medium text-sm">
+                            Default dark theme
+                          </div>
+                          <select
+                            value=${darkThemeName}
+                            onInput=${(e) =>
+                              handleDarkThemeChange(e.target.value)}
+                            class="select select-sm"
+                          >
+                            <option value="mitto">${THEME_LABELS.mitto}</option>
+                            ${Object.entries(NAMED_THEMES)
+                              .filter(([, bucket]) => bucket === "dark")
+                              .map(
+                                ([name]) =>
+                                  html`<option value=${name}>
+                                    ${THEME_LABELS[name] || name}
+                                  </option>`,
+                              )}
+                          </select>
+                        </div>
+                      </div>
+                      <label
+                        class="flex items-center gap-3 p-3 cursor-pointer hover:bg-base-200/40 transition-colors"
+                      >
+                        <input
+                          type="checkbox"
+                          checked=${followSystemTheme}
+                          onChange=${(e) =>
+                            handleFollowSystemThemeChange(e.target.checked)}
+                          class="checkbox checkbox-sm checkbox-primary"
+                        />
+                        <div>
+                          <div class="font-medium text-sm">
+                            Follow system theme
+                          </div>
+                          <div class="text-xs text-mitto-text-muted">
+                            Automatically switch between light and dark mode
+                            based on your system preferences
+                          </div>
+                        </div>
+                      </label>
+                      <label
+                        class="flex items-center gap-3 p-3 cursor-pointer hover:bg-base-200/40 transition-colors"
+                      >
+                        <input
+                          type="checkbox"
+                          checked=${followSystemReducedMotion}
+                          onChange=${(e) =>
+                            handleFollowSystemReducedMotionChange(
+                              e.target.checked,
+                            )}
+                          class="checkbox checkbox-sm checkbox-primary"
+                        />
+                        <div>
+                          <div class="font-medium text-sm">
+                            Follow system reduced motion
+                          </div>
+                          <div class="text-xs text-mitto-text-muted">
+                            Automatically reduce animations based on your system
+                            accessibility preferences
+                          </div>
+                        </div>
+                      </label>
+                      <label
+                        class="flex items-center gap-3 p-3 cursor-pointer hover:bg-base-200/40 transition-colors ${followSystemReducedMotion
+                          ? "opacity-50"
+                          : ""}"
+                      >
+                        <input
+                          type="checkbox"
+                          checked=${reduceAnimations}
+                          onChange=${(e) =>
+                            handleReduceAnimationsChange(e.target.checked)}
+                          disabled=${followSystemReducedMotion}
+                          class="checkbox checkbox-sm checkbox-primary ${followSystemReducedMotion
+                            ? "cursor-not-allowed"
+                            : ""}"
+                        />
+                        <div>
+                          <div class="font-medium text-sm">
+                            Reduce animations
+                          </div>
+                          <div class="text-xs text-mitto-text-muted">
+                            ${followSystemReducedMotion
+                              ? "Controlled by system preference"
+                              : "Replace pulsing and blinking animations with static indicators"}
+                          </div>
+                        </div>
+                      </label>
+                      <div class="p-3">
+                        <div class="flex items-center justify-between">
+                          <div>
+                            <div class="font-medium text-sm">
+                              Prompt sorting
+                            </div>
+                            <div class="text-xs text-mitto-text-muted">
+                              How to sort prompts in the dropdown menu
+                            </div>
+                          </div>
+                          <select
+                            value=${promptSortMode}
+                            onChange=${(e) =>
+                              handlePromptSortModeChange(e.target.value)}
+                            class="select select-sm"
+                          >
+                            <option value="alphabetical">Alphabetical</option>
+                            <option value="color">By Color</option>
+                          </select>
+                        </div>
+                      </div>
+                      <div class="p-3">
+                        <div class="flex items-center justify-between">
+                          <div>
+                            <div class="font-medium text-sm">
+                              Input box font
+                            </div>
+                            <div class="text-xs text-mitto-text-muted">
+                              Font family and size for the message compose area
+                            </div>
+                          </div>
+                          <div class="flex items-center gap-2">
+                            <select
+                              value=${inputFontFamily}
+                              onChange=${(e) =>
+                                setInputFontFamily(e.target.value)}
+                              class="select select-sm"
+                            >
+                              <option value="system">System Default</option>
+                              <option value="sans-serif">Sans-Serif</option>
+                              <option value="serif">Serif</option>
+                              <option value="monospace">Monospace</option>
+                              <option value="menlo">Menlo</option>
+                              <option value="monaco">Monaco</option>
+                              <option value="consolas">Consolas</option>
+                              <option value="courier-new">Courier New</option>
+                              <option value="jetbrains-mono">
+                                JetBrains Mono
+                              </option>
+                              <option value="sf-mono">SF Mono</option>
+                              <option value="cascadia-code">
+                                Cascadia Code
+                              </option>
+                            </select>
+                            <select
+                              value=${inputFontSize}
+                              onChange=${(e) =>
+                                setInputFontSize(e.target.value)}
+                              class="select select-sm"
+                            >
+                              <option value="small">Small</option>
+                              <option value="default">Default</option>
+                              <option value="medium">Medium</option>
+                              <option value="large">Large</option>
+                              <option value="xl">Extra Large</option>
+                            </select>
+                          </div>
+                        </div>
+                      </div>
+                      <div class="p-3">
+                        <div class="flex items-center justify-between">
+                          <div>
+                            <div class="font-medium text-sm">
+                              Send message shortcut
+                            </div>
+                            <div class="text-xs text-mitto-text-muted">
+                              Key combination to send messages
+                            </div>
+                          </div>
+                          <select
+                            value=${sendKeyMode}
+                            onChange=${(e) => setSendKeyMode(e.target.value)}
+                            class="select select-sm"
+                          >
+                            <option value="enter">
+                              Enter to send
+                              (${navigator.platform?.includes("Mac")
+                                ? "⌘"
+                                : "Ctrl"}+Enter
+                              to queue)
+                            </option>
+                            <option value="ctrl-enter">
+                              ${navigator.platform?.includes("Mac")
+                                ? "⌘"
+                                : "Ctrl"}+Enter
+                              to send
+                              (${navigator.platform?.includes("Mac")
+                                ? "⌘⇧"
+                                : "Ctrl+Shift"}+Enter
+                              to queue)
+                            </option>
+                          </select>
+                        </div>
+                      </div>
+                      <label
+                        class="flex items-center gap-3 p-3 cursor-pointer hover:bg-base-200/40 transition-colors"
+                      >
+                        <input
+                          type="checkbox"
+                          checked=${singleExpandedGroup}
+                          onChange=${(e) => {
+                            const checked = e.target.checked;
+                            setSingleExpandedGroup(checked);
+                            // When accordion mode is enabled, force cycling to "all"
+                            if (checked) {
+                              setConversationCyclingMode(CYCLING_MODE.ALL);
+                            }
+                          }}
+                          class="checkbox checkbox-sm checkbox-primary"
+                        />
+                        <div>
+                          <div class="font-medium text-sm">
+                            Accordion mode for groups
+                          </div>
+                          <div class="text-xs text-mitto-text-muted">
+                            When grouping is enabled, only one group can be
+                            expanded at a time
+                          </div>
+                        </div>
+                      </label>
+                      <div
+                        class="p-3 ${singleExpandedGroup ? "opacity-50" : ""}"
+                      >
+                        <div class="flex items-center justify-between">
+                          <div>
+                            <div class="font-medium text-sm">
+                              Conversation cycling
+                            </div>
+                            <div class="text-xs text-mitto-text-muted">
+                              ${singleExpandedGroup
+                                ? "Requires accordion mode to be disabled"
+                                : "Which conversations to include when using keyboard/swipe navigation"}
+                            </div>
+                          </div>
+                          <select
+                            value=${singleExpandedGroup
+                              ? CYCLING_MODE.ALL
+                              : conversationCyclingMode}
+                            onChange=${(e) =>
+                              setConversationCyclingMode(e.target.value)}
+                            disabled=${singleExpandedGroup}
+                            class="select select-sm ${singleExpandedGroup
+                              ? "cursor-not-allowed"
+                              : ""}"
+                          >
+                            ${CYCLING_MODE_OPTIONS.map(
+                              (opt) => html`
+                                <option key=${opt.value} value=${opt.value}>
+                                  ${opt.label}
+                                </option>
+                              `,
+                            )}
+                          </select>
                         </div>
                       </div>
                     </div>
-                  `}
 
-                  <!-- UI Tab -->
-                  ${activeTab === "ui" &&
-                  html`
-                    <div class="space-y-4">
-                      <!-- Appearance Settings (all platforms) -->
-                      <div class="space-y-3">
-                        <h4 class="text-sm font-medium text-mitto-text-secondary">
-                          Appearance
-                        </h4>
-                        <div class="p-3 space-y-3">
+                    <!-- Confirmation Settings (all platforms) -->
+                    <div class="space-y-3">
+                      <h4 class="text-sm font-medium text-mitto-text-secondary">
+                        Confirmations
+                      </h4>
+                      <label
+                        class="flex items-center gap-3 p-3 cursor-pointer hover:bg-base-200/40 transition-colors"
+                      >
+                        <input
+                          type="checkbox"
+                          checked=${confirmDeleteSession}
+                          onChange=${(e) =>
+                            setConfirmDeleteSession(e.target.checked)}
+                          class="checkbox checkbox-sm checkbox-primary"
+                        />
+                        <div>
+                          <div class="font-medium text-sm">
+                            Confirm before deleting conversations
+                          </div>
                           <div class="text-xs text-mitto-text-muted">
-                            Choose a daisyUI color theme for each mode. "Mitto
-                            (default)" uses the built-in Mitto palette.
-                          </div>
-                          <div class="flex items-center justify-between gap-3">
-                            <div class="font-medium text-sm">Light theme</div>
-                            <select
-                              value=${lightThemeName}
-                              onInput=${(e) =>
-                                handleLightThemeChange(e.target.value)}
-                              class="select select-sm"
-                            >
-                              <option value="mitto">${THEME_LABELS.mitto}</option>
-                              ${Object.entries(NAMED_THEMES)
-                                .filter(([, bucket]) => bucket === "light")
-                                .map(([name]) =>
-                                  html`<option value=${name}>
-                                    ${THEME_LABELS[name] || name}
-                                  </option>`,
-                                )}
-                            </select>
-                          </div>
-                          <div class="flex items-center justify-between gap-3">
-                            <div class="font-medium text-sm">Default dark theme</div>
-                            <select
-                              value=${darkThemeName}
-                              onInput=${(e) =>
-                                handleDarkThemeChange(e.target.value)}
-                              class="select select-sm"
-                            >
-                              <option value="mitto">${THEME_LABELS.mitto}</option>
-                              ${Object.entries(NAMED_THEMES)
-                                .filter(([, bucket]) => bucket === "dark")
-                                .map(([name]) =>
-                                  html`<option value=${name}>
-                                    ${THEME_LABELS[name] || name}
-                                  </option>`,
-                                )}
-                            </select>
+                            Show a confirmation dialog when deleting a
+                            conversation
                           </div>
                         </div>
+                      </label>
+                      ${isMacApp &&
+                      html`
                         <label
                           class="flex items-center gap-3 p-3 cursor-pointer hover:bg-base-200/40 transition-colors"
                         >
                           <input
                             type="checkbox"
-                            checked=${followSystemTheme}
+                            checked=${confirmQuitWithRunningSessions}
                             onChange=${(e) =>
-                              handleFollowSystemThemeChange(e.target.checked)}
-                            class="checkbox checkbox-sm checkbox-primary"
-                          />
-                          <div>
-                            <div class="font-medium text-sm">
-                              Follow system theme
-                            </div>
-                            <div class="text-xs text-mitto-text-muted">
-                              Automatically switch between light and dark mode
-                              based on your system preferences
-                            </div>
-                          </div>
-                        </label>
-                        <label
-                          class="flex items-center gap-3 p-3 cursor-pointer hover:bg-base-200/40 transition-colors"
-                        >
-                          <input
-                            type="checkbox"
-                            checked=${followSystemReducedMotion}
-                            onChange=${(e) =>
-                              handleFollowSystemReducedMotionChange(
+                              setConfirmQuitWithRunningSessions(
                                 e.target.checked,
                               )}
                             class="checkbox checkbox-sm checkbox-primary"
                           />
                           <div>
                             <div class="font-medium text-sm">
-                              Follow system reduced motion
+                              Confirm before quitting with active conversations
                             </div>
                             <div class="text-xs text-mitto-text-muted">
-                              Automatically reduce animations based on your
-                              system accessibility preferences
+                              Show a confirmation dialog when quitting while an
+                              agent is responding
                             </div>
                           </div>
                         </label>
-                        <label
-                          class="flex items-center gap-3 p-3 cursor-pointer hover:bg-base-200/40 transition-colors ${followSystemReducedMotion
-                            ? "opacity-50"
-                            : ""}"
-                        >
-                          <input
-                            type="checkbox"
-                            checked=${reduceAnimations}
-                            onChange=${(e) =>
-                              handleReduceAnimationsChange(e.target.checked)}
-                            disabled=${followSystemReducedMotion}
-                            class="checkbox checkbox-sm checkbox-primary ${followSystemReducedMotion
-                              ? "cursor-not-allowed"
-                              : ""}"
-                          />
-                          <div>
-                            <div class="font-medium text-sm">
-                              Reduce animations
-                            </div>
-                            <div class="text-xs text-mitto-text-muted">
-                              ${followSystemReducedMotion
-                                ? "Controlled by system preference"
-                                : "Replace pulsing and blinking animations with static indicators"}
-                            </div>
-                          </div>
-                        </label>
-                        <div
-                          class="p-3"
-                        >
-                          <div class="flex items-center justify-between">
-                            <div>
-                              <div class="font-medium text-sm">
-                                Prompt sorting
-                              </div>
-                              <div class="text-xs text-mitto-text-muted">
-                                How to sort prompts in the dropdown menu
-                              </div>
-                            </div>
-                            <select
-                              value=${promptSortMode}
-                              onChange=${(e) =>
-                                handlePromptSortModeChange(e.target.value)}
-                              class="select select-sm"
-                            >
-                              <option value="alphabetical">Alphabetical</option>
-                              <option value="color">By Color</option>
-                            </select>
-                          </div>
-                        </div>
-                        <div
-                          class="p-3"
-                        >
-                          <div class="flex items-center justify-between">
-                            <div>
-                              <div class="font-medium text-sm">
-                                Input box font
-                              </div>
-                              <div class="text-xs text-mitto-text-muted">
-                                Font family and size for the message compose area
-                              </div>
-                            </div>
-                            <div class="flex items-center gap-2">
-                              <select
-                                value=${inputFontFamily}
-                                onChange=${(e) =>
-                                  setInputFontFamily(e.target.value)}
-                                class="select select-sm"
-                              >
-                                <option value="system">System Default</option>
-                                <option value="sans-serif">Sans-Serif</option>
-                                <option value="serif">Serif</option>
-                                <option value="monospace">Monospace</option>
-                                <option value="menlo">Menlo</option>
-                                <option value="monaco">Monaco</option>
-                                <option value="consolas">Consolas</option>
-                                <option value="courier-new">Courier New</option>
-                                <option value="jetbrains-mono">JetBrains Mono</option>
-                                <option value="sf-mono">SF Mono</option>
-                                <option value="cascadia-code">Cascadia Code</option>
-                              </select>
-                              <select
-                                value=${inputFontSize}
-                                onChange=${(e) =>
-                                  setInputFontSize(e.target.value)}
-                                class="select select-sm"
-                              >
-                                <option value="small">Small</option>
-                                <option value="default">Default</option>
-                                <option value="medium">Medium</option>
-                                <option value="large">Large</option>
-                                <option value="xl">Extra Large</option>
-                              </select>
-                            </div>
-                          </div>
-                        </div>
-                        <div
-                          class="p-3"
-                        >
-                          <div class="flex items-center justify-between">
-                            <div>
-                              <div class="font-medium text-sm">
-                                Send message shortcut
-                              </div>
-                              <div class="text-xs text-mitto-text-muted">
-                                Key combination to send messages
-                              </div>
-                            </div>
-                            <select
-                              value=${sendKeyMode}
-                              onChange=${(e) => setSendKeyMode(e.target.value)}
-                              class="select select-sm"
-                            >
-                              <option value="enter">
-                                Enter to send (${navigator.platform?.includes("Mac")
-                                  ? "⌘"
-                                  : "Ctrl"}+Enter to queue)
-                              </option>
-                              <option value="ctrl-enter">
-                                ${navigator.platform?.includes("Mac")
-                                  ? "⌘"
-                                  : "Ctrl"}+Enter to send (${navigator.platform?.includes("Mac")
-                                  ? "⌘⇧"
-                                  : "Ctrl+Shift"}+Enter to queue)
-                              </option>
-                            </select>
-                          </div>
-                        </div>
-                        <label
-                          class="flex items-center gap-3 p-3 cursor-pointer hover:bg-base-200/40 transition-colors"
-                        >
-                          <input
-                            type="checkbox"
-                            checked=${singleExpandedGroup}
-                            onChange=${(e) => {
-                              const checked = e.target.checked;
-                              setSingleExpandedGroup(checked);
-                              // When accordion mode is enabled, force cycling to "all"
-                              if (checked) {
-                                setConversationCyclingMode(CYCLING_MODE.ALL);
-                              }
-                            }}
-                            class="checkbox checkbox-sm checkbox-primary"
-                          />
-                          <div>
-                            <div class="font-medium text-sm">
-                              Accordion mode for groups
-                            </div>
-                            <div class="text-xs text-mitto-text-muted">
-                              When grouping is enabled, only one group can be
-                              expanded at a time
-                            </div>
-                          </div>
-                        </label>
-                        <div
-                          class="p-3 ${singleExpandedGroup ? "opacity-50" : ""}"
-                        >
-                          <div class="flex items-center justify-between">
-                            <div>
-                              <div class="font-medium text-sm">
-                                Conversation cycling
-                              </div>
-                              <div class="text-xs text-mitto-text-muted">
-                                ${singleExpandedGroup
-                                  ? "Requires accordion mode to be disabled"
-                                  : "Which conversations to include when using keyboard/swipe navigation"}
-                              </div>
-                            </div>
-                            <select
-                              value=${singleExpandedGroup ? CYCLING_MODE.ALL : conversationCyclingMode}
-                              onChange=${(e) =>
-                                setConversationCyclingMode(e.target.value)}
-                              disabled=${singleExpandedGroup}
-                              class="select select-sm ${singleExpandedGroup ? "cursor-not-allowed" : ""}"
-                            >
-                              ${CYCLING_MODE_OPTIONS.map(
-                                (opt) => html`
-                                  <option key=${opt.value} value=${opt.value}>
-                                    ${opt.label}
-                                  </option>
-                                `,
-                              )}
-                            </select>
-                          </div>
-                        </div>
-                      </div>
+                      `}
+                    </div>
 
-                      <!-- Confirmation Settings (all platforms) -->
+                    <!-- macOS-specific settings -->
+                    ${isMacApp &&
+                    html`
                       <div class="space-y-3">
-                        <h4 class="text-sm font-medium text-mitto-text-secondary">
-                          Confirmations
+                        <h4
+                          class="text-sm font-medium text-mitto-text-secondary"
+                        >
+                          macOS Settings
                         </h4>
                         <label
                           class="flex items-center gap-3 p-3 cursor-pointer hover:bg-base-200/40 transition-colors"
                         >
                           <input
                             type="checkbox"
-                            checked=${confirmDeleteSession}
+                            checked=${agentCompletedSound}
                             onChange=${(e) =>
-                              setConfirmDeleteSession(e.target.checked)}
+                              setAgentCompletedSound(e.target.checked)}
                             class="checkbox checkbox-sm checkbox-primary"
                           />
                           <div>
                             <div class="font-medium text-sm">
-                              Confirm before deleting conversations
+                              Play sound when agent completes
                             </div>
                             <div class="text-xs text-mitto-text-muted">
-                              Show a confirmation dialog when deleting a
-                              conversation
+                              Play a notification sound when the AI finishes
+                              responding
                             </div>
                           </div>
                         </label>
-                        ${isMacApp &&
+                        <label
+                          class="flex items-center gap-3 p-3 cursor-pointer hover:bg-base-200/40 transition-colors"
+                        >
+                          <input
+                            type="checkbox"
+                            checked=${nativeNotifications}
+                            onChange=${(e) => {
+                              // Simply save the preference - permission will be requested on app restart
+                              setNativeNotifications(e.target.checked);
+                            }}
+                            class="checkbox checkbox-sm checkbox-primary"
+                          />
+                          <div>
+                            <div class="font-medium text-sm">
+                              Native notifications
+                            </div>
+                            <div class="text-xs text-mitto-text-muted">
+                              Show notifications in macOS Notification Center
+                              (requires restart)
+                              ${notificationPermissionStatus === 1
+                                ? html`<span class="text-mitto-warning ml-1"
+                                    >(permission denied in System
+                                    Settings)</span
+                                  >`
+                                : ""}
+                            </div>
+                          </div>
+                        </label>
+                        <label
+                          class="flex items-center gap-3 p-3 cursor-pointer hover:bg-base-200/40 transition-colors"
+                        >
+                          <input
+                            type="checkbox"
+                            checked=${showInAllSpaces}
+                            onChange=${(e) =>
+                              setShowInAllSpaces(e.target.checked)}
+                            class="checkbox checkbox-sm checkbox-primary"
+                          />
+                          <div>
+                            <div class="font-medium text-sm">
+                              Show in all Spaces
+                            </div>
+                            <div class="text-xs text-mitto-text-muted">
+                              Make the window visible in all macOS Spaces
+                              (requires restart)
+                            </div>
+                          </div>
+                        </label>
+                        ${loginItemSupported &&
                         html`
                           <label
                             class="flex items-center gap-3 p-3 cursor-pointer hover:bg-base-200/40 transition-colors"
                           >
                             <input
                               type="checkbox"
-                              checked=${confirmQuitWithRunningSessions}
+                              checked=${startAtLogin}
                               onChange=${(e) =>
-                                setConfirmQuitWithRunningSessions(
-                                  e.target.checked,
-                                )}
+                                setStartAtLogin(e.target.checked)}
                               class="checkbox checkbox-sm checkbox-primary"
                             />
                             <div>
                               <div class="font-medium text-sm">
-                                Confirm before quitting with active
-                                conversations
+                                Start at Login
                               </div>
                               <div class="text-xs text-mitto-text-muted">
-                                Show a confirmation dialog when quitting while
-                                an agent is responding
+                                Launch Mitto automatically when you log in
                               </div>
                             </div>
                           </label>
                         `}
+
+                        <!-- Open Folder Action -->
+                        <div class="p-4 space-y-2">
+                          <div class="font-medium text-sm">
+                            Open folder command
+                          </div>
+                          <div class="text-xs text-mitto-text-muted mb-2">
+                            Command to open workspace folder from badges and
+                            group header buttons. Leave empty to disable.
+                          </div>
+                          <div class="flex items-center gap-2">
+                            <input
+                              type="text"
+                              value=${badgeClickCommand}
+                              onInput=${(e) =>
+                                setBadgeClickCommand(e.target.value)}
+                              placeholder="open \${MITTO_WORKING_DIR}"
+                              class="input input-sm flex-1 font-mono"
+                            />
+                          </div>
+                          <p class="text-xs text-mitto-text-muted">
+                            Use${" "}
+                            <code class="bg-mitto-surface-4 px-1 rounded"
+                              >\${MITTO_WORKING_DIR}</code
+                            >${" "} as placeholder for the workspace path
+                          </p>
+                        </div>
+
+                        <!-- Terminal Action -->
+                        <div class="p-4 space-y-2">
+                          <div class="font-medium text-sm">
+                            Open terminal command
+                          </div>
+                          <div class="text-xs text-mitto-text-muted mb-2">
+                            Command to open a terminal at the workspace folder
+                            from group header buttons. Leave empty to disable.
+                          </div>
+                          <div class="flex items-center gap-2">
+                            <input
+                              type="text"
+                              value=${terminalActionCommand}
+                              onInput=${(e) =>
+                                setTerminalActionCommand(e.target.value)}
+                              placeholder="open -a Terminal \${MITTO_WORKING_DIR}"
+                              class="input input-sm flex-1 font-mono"
+                            />
+                          </div>
+                          <p class="text-xs text-mitto-text-muted">
+                            Use${" "}
+                            <code class="bg-mitto-surface-4 px-1 rounded"
+                              >\${MITTO_WORKING_DIR}</code
+                            >${" "} as placeholder for the workspace path
+                          </p>
+                        </div>
                       </div>
+                    `}
+                  </div>
+                `}
 
-                      <!-- macOS-specific settings -->
-                      ${isMacApp &&
-                      html`
-                        <div class="space-y-3">
-                          <h4 class="text-sm font-medium text-mitto-text-secondary">
-                            macOS Settings
-                          </h4>
-                          <label
-                            class="flex items-center gap-3 p-3 cursor-pointer hover:bg-base-200/40 transition-colors"
-                          >
+                <!-- Models Tab -->
+                ${activeTab === "models" &&
+                html`
+                  <div class="space-y-4">
+                    <p class="text-mitto-text-muted text-sm">
+                      Named model profiles pair a selection criteria with
+                      capability tags (e.g. "Smart", "Cheap"). Other parts of
+                      Mitto can branch on tags instead of raw model names.
+                    </p>
+
+                    ${modelProfiles.map(
+                      (p, i) => html`
+                        <div
+                          key=${i}
+                          class="border border-mitto-border-1 rounded-lg p-3 space-y-2"
+                        >
+                          <!-- Profile header: name + remove -->
+                          <div class="flex items-center gap-2">
                             <input
-                              type="checkbox"
-                              checked=${agentCompletedSound}
-                              onChange=${(e) =>
-                                setAgentCompletedSound(e.target.checked)}
-                              class="checkbox checkbox-sm checkbox-primary"
+                              type="text"
+                              class="input input-sm flex-1"
+                              placeholder="e.g., Opus"
+                              value=${p.name || ""}
+                              onInput=${(e) =>
+                                updateProfile(i, { name: e.target.value })}
                             />
-                            <div>
-                              <div class="font-medium text-sm">
-                                Play sound when agent completes
-                              </div>
-                              <div class="text-xs text-mitto-text-muted">
-                                Play a notification sound when the AI finishes
-                                responding
-                              </div>
-                            </div>
-                          </label>
-                          <label
-                            class="flex items-center gap-3 p-3 cursor-pointer hover:bg-base-200/40 transition-colors"
-                          >
-                            <input
-                              type="checkbox"
-                              checked=${nativeNotifications}
-                              onChange=${(e) => {
-                                // Simply save the preference - permission will be requested on app restart
-                                setNativeNotifications(e.target.checked);
-                              }}
-                              class="checkbox checkbox-sm checkbox-primary"
-                            />
-                            <div>
-                              <div class="font-medium text-sm">
-                                Native notifications
-                              </div>
-                              <div class="text-xs text-mitto-text-muted">
-                                Show notifications in macOS Notification Center
-                                (requires restart)
-                                ${notificationPermissionStatus === 1
-                                  ? html`<span class="text-mitto-warning ml-1"
-                                      >(permission denied in System
-                                      Settings)</span
-                                    >`
-                                  : ""}
-                              </div>
-                            </div>
-                          </label>
-                          <label
-                            class="flex items-center gap-3 p-3 cursor-pointer hover:bg-base-200/40 transition-colors"
-                          >
-                            <input
-                              type="checkbox"
-                              checked=${showInAllSpaces}
-                              onChange=${(e) =>
-                                setShowInAllSpaces(e.target.checked)}
-                              class="checkbox checkbox-sm checkbox-primary"
-                            />
-                            <div>
-                              <div class="font-medium text-sm">
-                                Show in all Spaces
-                              </div>
-                              <div class="text-xs text-mitto-text-muted">
-                                Make the window visible in all macOS Spaces
-                                (requires restart)
-                              </div>
-                            </div>
-                          </label>
-                          ${loginItemSupported &&
-                          html`
-                            <label
-                              class="flex items-center gap-3 p-3 cursor-pointer hover:bg-base-200/40 transition-colors"
+                            <button
+                              class="btn btn-sm btn-ghost text-error"
+                              title="Remove profile"
+                              onClick=${() => removeProfile(i)}
                             >
-                              <input
-                                type="checkbox"
-                                checked=${startAtLogin}
-                                onChange=${(e) =>
-                                  setStartAtLogin(e.target.checked)}
-                                class="checkbox checkbox-sm checkbox-primary"
-                              />
-                              <div>
-                                <div class="font-medium text-sm">
-                                  Start at Login
-                                </div>
-                                <div class="text-xs text-mitto-text-muted">
-                                  Launch Mitto automatically when you log in
-                                </div>
-                              </div>
-                            </label>
-                          `}
-
-                          <!-- Open Folder Action -->
-                          <div
-                            class="p-4 space-y-2"
-                          >
-                            <div class="font-medium text-sm">
-                              Open folder command
-                            </div>
-                            <div class="text-xs text-mitto-text-muted mb-2">
-                              Command to open workspace folder from badges and group header buttons. Leave empty to disable.
-                            </div>
-                            <div class="flex items-center gap-2">
-                              <input
-                                type="text"
-                                value=${badgeClickCommand}
-                                onInput=${(e) =>
-                                  setBadgeClickCommand(e.target.value)}
-                                placeholder="open \${MITTO_WORKING_DIR}"
-                                class="input input-sm flex-1 font-mono"
-                              />
-                            </div>
-                            <p class="text-xs text-mitto-text-muted">
-                              Use${" "}
-                              <code class="bg-mitto-surface-4 px-1 rounded"
-                                >\${MITTO_WORKING_DIR}</code
-                              >${" "} as placeholder for the workspace path
-                            </p>
+                              <${TrashIcon} className="w-4 h-4" />
+                            </button>
                           </div>
 
-                          <!-- Terminal Action -->
-                          <div
-                            class="p-4 space-y-2"
-                          >
-                            <div class="font-medium text-sm">
-                              Open terminal command
-                            </div>
-                            <div class="text-xs text-mitto-text-muted mb-2">
-                              Command to open a terminal at the workspace folder from group header buttons. Leave empty to disable.
-                            </div>
-                            <div class="flex items-center gap-2">
-                              <input
-                                type="text"
-                                value=${terminalActionCommand}
-                                onInput=${(e) =>
-                                  setTerminalActionCommand(e.target.value)}
-                                placeholder="open -a Terminal \${MITTO_WORKING_DIR}"
-                                class="input input-sm flex-1 font-mono"
-                              />
-                            </div>
-                            <p class="text-xs text-mitto-text-muted">
-                              Use${" "}
-                              <code class="bg-mitto-surface-4 px-1 rounded"
-                                >\${MITTO_WORKING_DIR}</code
-                              >${" "} as placeholder for the workspace path
-                            </p>
+                          <!-- Criteria (model selector) -->
+                          <div class="space-y-1">
+                            <label
+                              class="text-xs font-medium text-mitto-text-secondary"
+                            >
+                              Criteria
+                            </label>
+                            <${ModelSelection}
+                              matchMode=${(p.criteria &&
+                                p.criteria.matchMode) ||
+                              ""}
+                              pattern=${(p.criteria && p.criteria.pattern) ||
+                              ""}
+                              onChange=${(mode, pat) =>
+                                updateProfile(i, {
+                                  criteria: mode
+                                    ? { matchMode: mode, pattern: pat }
+                                    : null,
+                                })}
+                            />
+                          </div>
+
+                          <!-- Tags -->
+                          <div class="space-y-1">
+                            <label
+                              class="text-xs font-medium text-mitto-text-secondary"
+                            >
+                              Tags (comma-separated)
+                            </label>
+                            <input
+                              type="text"
+                              class="input input-sm w-full"
+                              placeholder="e.g., Smart, Cheap"
+                              value=${(p.tags || []).join(", ")}
+                              onInput=${(e) =>
+                                updateProfile(i, {
+                                  tags: e.target.value
+                                    .split(",")
+                                    .map((t) => t.trim())
+                                    .filter(Boolean),
+                                })}
+                            />
+                            ${(p.tags || []).length > 0 &&
+                            html`
+                              <div class="flex flex-wrap gap-1 mt-1">
+                                ${(p.tags || []).map(
+                                  (tag) => html`
+                                    <span
+                                      key=${tag}
+                                      class="badge badge-sm badge-outline"
+                                      >${tag}</span
+                                    >
+                                  `,
+                                )}
+                              </div>
+                            `}
                           </div>
                         </div>
-                      `}
+                      `,
+                    )}
 
-                    </div>
-                  `}
-
-                  <!-- Models Tab -->
-                  ${activeTab === "models" &&
-                  html`
-                    <div class="space-y-4">
-                      <p class="text-mitto-text-muted text-sm">
-                        Named model profiles pair a selection criteria with
-                        capability tags (e.g. "Smart", "Cheap"). Other parts of
-                        Mitto can branch on tags instead of raw model names.
-                      </p>
-
-                      ${modelProfiles.map(
-                        (p, i) => html`
-                          <div
-                            key=${i}
-                            class="border border-mitto-border-1 rounded-lg p-3 space-y-2"
-                          >
-                            <!-- Profile header: name + remove -->
-                            <div class="flex items-center gap-2">
-                              <input
-                                type="text"
-                                class="input input-sm flex-1"
-                                placeholder="e.g., Opus"
-                                value=${p.name || ""}
-                                onInput=${(e) =>
-                                  updateProfile(i, { name: e.target.value })}
-                              />
-                              <button
-                                class="btn btn-sm btn-ghost text-error"
-                                title="Remove profile"
-                                onClick=${() => removeProfile(i)}
-                              >
-                                <${TrashIcon} className="w-4 h-4" />
-                              </button>
-                            </div>
-
-                            <!-- Criteria (model selector) -->
-                            <div class="space-y-1">
-                              <label class="text-xs font-medium text-mitto-text-secondary">
-                                Criteria
-                              </label>
-                              <${ModelSelection}
-                                matchMode=${(p.criteria && p.criteria.matchMode) || ""}
-                                pattern=${(p.criteria && p.criteria.pattern) || ""}
-                                onChange=${(mode, pat) =>
-                                  updateProfile(i, {
-                                    criteria: mode
-                                      ? { matchMode: mode, pattern: pat }
-                                      : null,
-                                  })}
-                              />
-                            </div>
-
-                            <!-- Tags -->
-                            <div class="space-y-1">
-                              <label class="text-xs font-medium text-mitto-text-secondary">
-                                Tags (comma-separated)
-                              </label>
-                              <input
-                                type="text"
-                                class="input input-sm w-full"
-                                placeholder="e.g., Smart, Cheap"
-                                value=${(p.tags || []).join(", ")}
-                                onInput=${(e) =>
-                                  updateProfile(i, {
-                                    tags: e.target.value
-                                      .split(",")
-                                      .map((t) => t.trim())
-                                      .filter(Boolean),
-                                  })}
-                              />
-                              ${(p.tags || []).length > 0 &&
-                              html`
-                                <div class="flex flex-wrap gap-1 mt-1">
-                                  ${(p.tags || []).map(
-                                    (tag) => html`
-                                      <span
-                                        key=${tag}
-                                        class="badge badge-sm badge-outline"
-                                        >${tag}</span
-                                      >
-                                    `,
-                                  )}
-                                </div>
-                              `}
-                            </div>
-                          </div>
-                        `,
-                      )}
-
-                      <!-- Add Model button -->
-                      <button
-                        class="btn btn-sm"
-                        onClick=${() =>
-                          setModelProfiles([
-                            ...modelProfiles,
-                            { name: "", criteria: null, tags: [] },
-                          ])}
-                      >
-                        <${PlusIcon} className="w-4 h-4" />
-                        Add Model
-                      </button>
-                    </div>
-                  `}
+                    <!-- Add Model button -->
+                    <button
+                      class="btn btn-sm"
+                      onClick=${() =>
+                        setModelProfiles([
+                          ...modelProfiles,
+                          { name: "", criteria: null, tags: [] },
+                        ])}
+                    >
+                      <${PlusIcon} className="w-4 h-4" />
+                      Add Model
+                    </button>
+                  </div>
                 `}
-          </div>
+              `}
         </div>
+      </div>
 
-        <!-- Footer -->
-        <div class="p-4 border-t border-mitto-border-1">
-          ${error &&
-          html`
-            <div
-              role="alert"
-              class="alert alert-error alert-soft text-sm mb-3"
-            >
-              ${error}
-            </div>
-          `}
-          ${warning &&
-          html`
-            <div
-              role="alert"
-              class="alert alert-warning alert-soft text-sm mb-3"
-            >
-              ${warning}
-            </div>
-          `}
-          <div class="flex justify-end gap-3">
-            ${canClose &&
-            html`
-              <button
-                onClick=${handleClose}
-                data-testid="settings-close"
-                class="btn btn-ghost btn-sm"
-              >
-                Close
-              </button>
-            `}
-            <button
-              onClick=${handleSave}
-              data-testid="settings-save"
-              disabled=${saving}
-              class="btn btn-primary btn-sm gap-2"
-            >
-              ${saving
-                ? html`
-                    <${SpinnerIcon} className="w-4 h-4" />
-                    Saving...
-                  `
-                : "Save"}
-            </button>
+      <!-- Footer -->
+      <div class="p-4 border-t border-mitto-border-1">
+        ${error &&
+        html`
+          <div role="alert" class="alert alert-error alert-soft text-sm mb-3">
+            ${error}
           </div>
+        `}
+        ${warning &&
+        html`
+          <div role="alert" class="alert alert-warning alert-soft text-sm mb-3">
+            ${warning}
+          </div>
+        `}
+        <div class="flex justify-end gap-3">
+          ${canClose &&
+          html`
+            <button
+              onClick=${handleClose}
+              data-testid="settings-close"
+              class="btn btn-ghost btn-sm"
+            >
+              Close
+            </button>
+          `}
+          <button
+            onClick=${handleSave}
+            data-testid="settings-save"
+            disabled=${saving}
+            class="btn btn-primary btn-sm gap-2"
+          >
+            ${saving
+              ? html`
+                  <${SpinnerIcon} className="w-4 h-4" />
+                  Saving...
+                `
+              : "Save"}
+          </button>
         </div>
+      </div>
     <//>
 
     <!-- Agent Discovery Dialog (settings mode - returns agents to state without saving) -->
     <${AgentDiscoveryDialog}
-        isOpen=${showDiscoverAgents}
-        mode="settings"
-        existingServers=${acpServers}
-        onClose=${() => setShowDiscoverAgents(false)}
-        onAgentsSelected=${(newAgents) => {
-          // Deduplicate by case-insensitive name before adding to state
-          const existingNames = new Set(acpServers.map((s) => s.name.toLowerCase()));
-          const toAdd = newAgents.filter((a) => !existingNames.has(a.name.toLowerCase()));
-          if (toAdd.length > 0) {
-            toAdd.forEach(assignStableKey);
-            setAcpServers([...acpServers, ...toAdd]);
-          }
-          setShowDiscoverAgents(false);
-        }}
-      />
+      isOpen=${showDiscoverAgents}
+      mode="settings"
+      existingServers=${acpServers}
+      onClose=${() => setShowDiscoverAgents(false)}
+      onAgentsSelected=${(newAgents) => {
+        // Deduplicate by case-insensitive name before adding to state
+        const existingNames = new Set(
+          acpServers.map((s) => s.name.toLowerCase()),
+        );
+        const toAdd = newAgents.filter(
+          (a) => !existingNames.has(a.name.toLowerCase()),
+        );
+        if (toAdd.length > 0) {
+          toAdd.forEach(assignStableKey);
+          setAcpServers([...acpServers, ...toAdd]);
+        }
+        setShowDiscoverAgents(false);
+      }}
+    />
   `;
 }

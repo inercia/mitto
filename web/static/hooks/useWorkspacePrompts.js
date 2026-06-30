@@ -22,7 +22,11 @@ import { promptMenus, menuSatisfies } from "../utils/prompts.js";
  *   periodicPrompts: Array, fetchWorkspacePrompts: Function,
  *   fetchConversationPromptsForSession: Function }}
  */
-export function useWorkspacePrompts({ workingDir, activeSessionId, showToast }) {
+export function useWorkspacePrompts({
+  workingDir,
+  activeSessionId,
+  showToast,
+}) {
   const [workspacePrompts, setWorkspacePrompts] = useState([]); // All prompts for current workspace (merged from all sources by backend)
   const [workspacePromptsDir, setWorkspacePromptsDir] = useState(null); // Current workspace dir for prompts cache
   const [workspacePromptsLastModified, setWorkspacePromptsLastModified] =
@@ -32,10 +36,7 @@ export function useWorkspacePrompts({ workingDir, activeSessionId, showToast }) 
   // Parameters that the "prompts" menu cannot auto-fill are collected via the
   // PromptParameterDialog when the user selects such a prompt (mitto-hcf.3).
   const predefinedPrompts = useMemo(
-    () =>
-      workspacePrompts.filter(
-        (p) => promptMenus(p).includes("prompts"),
-      ),
+    () => workspacePrompts.filter((p) => promptMenus(p).includes("prompts")),
     [workspacePrompts],
   );
 
@@ -84,16 +85,9 @@ export function useWorkspacePrompts({ workingDir, activeSessionId, showToast }) 
         // Parameters that the "conversation" menu cannot auto-fill are collected
         // via the PromptParameterDialog when the user selects such a prompt
         // (mitto-hcf.3). No menuSatisfies gate — all params can be user-filled.
-        return all.filter(
-          (p) =>
-            p &&
-            promptMenus(p).includes("conversation"),
-        );
+        return all.filter((p) => p && promptMenus(p).includes("conversation"));
       } catch (err) {
-        console.error(
-          "Failed to fetch conversation prompts for session:",
-          err,
-        );
+        console.error("Failed to fetch conversation prompts for session:", err);
         return [];
       }
     },
@@ -239,10 +233,7 @@ export function useWorkspacePrompts({ workingDir, activeSessionId, showToast }) 
     window.addEventListener("mitto:prompts_changed", handlePromptsChanged);
     return () =>
       window.removeEventListener("mitto:prompts_changed", handlePromptsChanged);
-  }, [
-    workingDir,
-    fetchWorkspacePrompts,
-  ]);
+  }, [workingDir, fetchWorkspacePrompts]);
 
   return {
     workspacePrompts,

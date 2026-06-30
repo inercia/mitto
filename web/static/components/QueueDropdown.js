@@ -59,7 +59,6 @@ function formatRelativeTime(scheduledTime) {
   return `in ${diffDays}d`;
 }
 
-
 /**
  * QueueDropdown component - displays queued messages with delete and move functionality
  * @param {Object} props
@@ -254,7 +253,9 @@ export function QueueDropdown({
       <div
         class="queue-dropdown-header px-3 py-2 border-b border-mitto-border-1 flex items-center justify-between"
       >
-        <span class="text-xs font-medium text-mitto-text-muted uppercase tracking-wide">
+        <span
+          class="text-xs font-medium text-mitto-text-muted uppercase tracking-wide"
+        >
           Queued Messages (${messages.length}/${maxSize})
         </span>
       </div>
@@ -271,7 +272,9 @@ export function QueueDropdown({
                     data-testid="queue-item"
                     data-queue-item-index=${index}
                   >
-                    <div class="flex items-center gap-2 px-3 py-2 rounded-none hover:bg-mitto-surface-3/50 transition-colors group">
+                    <div
+                      class="flex items-center gap-2 px-3 py-2 rounded-none hover:bg-mitto-surface-3/50 transition-colors group"
+                    >
                       <span
                         class="queue-item-number text-xs text-mitto-text-muted font-mono w-4 shrink-0"
                       >
@@ -281,7 +284,9 @@ export function QueueDropdown({
                         class="queue-item-text flex-1 text-sm text-mitto-text truncate"
                         title=${msg.prompt_name || msg.message}
                       >
-                        ${msg.prompt_name || msg.title || truncateText(msg.message)}
+                        ${msg.prompt_name ||
+                        msg.title ||
+                        truncateText(msg.message)}
                       </span>
                       ${msg.scheduled_time
                         ? html`
@@ -309,14 +314,17 @@ export function QueueDropdown({
                             ? "opacity-40 pointer-events-none"
                             : ""}"
                           data-tip=${index === 0 ? "Already at top" : "Move up"}
-                          aria-label=${index === 0 ? "Already at top" : "Move up"}
+                          aria-label=${index === 0
+                            ? "Already at top"
+                            : "Move up"}
                         >
                           <${ChevronUpIcon} className="w-3.5 h-3.5" />
                         </button>
                         <button
                           type="button"
                           onClick=${(e) => handleMoveDown(e, msg.id)}
-                          aria-disabled=${isMoving || index === messages.length - 1
+                          aria-disabled=${isMoving ||
+                          index === messages.length - 1
                             ? "true"
                             : "false"}
                           class="queue-item-move-down btn btn-ghost btn-square btn-xs text-mitto-text-muted hover:text-mitto-text-strong tooltip tooltip-bottom ${isMoving ||

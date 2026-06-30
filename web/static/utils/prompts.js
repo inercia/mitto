@@ -112,7 +112,8 @@ export function menuSatisfies(prompt, menu) {
   if (params.length === 0) return true;
   const provided = MENU_PARAM_TYPES[menu] || [];
   return params.every(
-    (p) => isBooleanParam(p) || p.required === false || provided.includes(p.type),
+    (p) =>
+      isBooleanParam(p) || p.required === false || provided.includes(p.type),
   );
 }
 
@@ -145,8 +146,7 @@ export function getMissingPromptParameters(prompt, menu) {
   const provided = MENU_PARAM_TYPES[menu] || [];
   return params.filter(
     (p) =>
-      isBooleanParam(p) ||
-      (p.required !== false && !provided.includes(p.type)),
+      isBooleanParam(p) || (p.required !== false && !provided.includes(p.type)),
   );
 }
 
@@ -164,11 +164,17 @@ export function isCacheableParam(p) {
  * to today's behavior (ask). `fetchImpl` is injectable for tests (defaults to authFetch).
  * @returns {Promise<Set<string>>}
  */
-export async function fetchCachedParamNames(sessionId, promptName, { fetchImpl } = {}) {
+export async function fetchCachedParamNames(
+  sessionId,
+  promptName,
+  { fetchImpl } = {},
+) {
   if (!sessionId || !promptName) return new Set();
   const fetch_ = fetchImpl || authFetch;
   try {
-    const resp = await fetch_(endpoints.sessions.promptArgCache(sessionId, promptName));
+    const resp = await fetch_(
+      endpoints.sessions.promptArgCache(sessionId, promptName),
+    );
     if (!resp || !resp.ok) return new Set();
     const data = await resp.json();
     return new Set(Array.isArray(data && data.cached) ? data.cached : []);
@@ -183,8 +189,11 @@ export async function fetchCachedParamNames(sessionId, promptName, { fetchImpl }
  * `cachedNames` may be a Set or an array.
  */
 export function effectiveMissingParams(missing, cachedNames) {
-  const cached = cachedNames instanceof Set ? cachedNames : new Set(cachedNames || []);
-  return (missing || []).filter((p) => !(isCacheableParam(p) && cached.has(p.name)));
+  const cached =
+    cachedNames instanceof Set ? cachedNames : new Set(cachedNames || []);
+  return (missing || []).filter(
+    (p) => !(isCacheableParam(p) && cached.has(p.name)),
+  );
 }
 
 /**

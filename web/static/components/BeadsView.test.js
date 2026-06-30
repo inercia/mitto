@@ -25,7 +25,9 @@ async function readBeadsResponse(res) {
       // fall through to error object below
     }
   }
-  return { error: (text && text.trim()) || `Request failed (HTTP ${res.status})` };
+  return {
+    error: (text && text.trim()) || `Request failed (HTTP ${res.status})`,
+  };
 }
 
 /**
@@ -123,7 +125,14 @@ function matchesSearch(issue, search) {
   const owner = (issue.owner || "").toLowerCase();
   const description = (issue.description || "").toLowerCase();
   for (const t of tokens) {
-    if (!(id.includes(t) || title.includes(t) || owner.includes(t) || description.includes(t))) {
+    if (
+      !(
+        id.includes(t) ||
+        title.includes(t) ||
+        owner.includes(t) ||
+        description.includes(t)
+      )
+    ) {
       return false;
     }
   }
@@ -229,8 +238,8 @@ describe("matchesSearch", () => {
  * Keep in sync with implementation: filters to enabled AND parameter-free prompts.
  */
 function filterArgumentFreePrompts(prompts) {
-  return prompts.filter(p =>
-    p.enabled !== false && (!p.parameters || p.parameters.length === 0)
+  return prompts.filter(
+    (p) => p.enabled !== false && (!p.parameters || p.parameters.length === 0),
   );
 }
 
@@ -246,28 +255,28 @@ describe("filterArgumentFreePrompts (prompts upstream picker)", () => {
 
   test("includes prompts with empty parameters array", () => {
     const result = filterArgumentFreePrompts(basePrompts);
-    expect(result.map(p => p.name)).toContain("sync-tasks");
+    expect(result.map((p) => p.name)).toContain("sync-tasks");
   });
 
   test("includes prompts with undefined parameters", () => {
     const result = filterArgumentFreePrompts(basePrompts);
-    expect(result.map(p => p.name)).toContain("pull-issues");
+    expect(result.map((p) => p.name)).toContain("pull-issues");
   });
 
   test("includes prompts with no parameters field", () => {
     const result = filterArgumentFreePrompts(basePrompts);
-    expect(result.map(p => p.name)).toContain("no-fields-at-all");
+    expect(result.map((p) => p.name)).toContain("no-fields-at-all");
   });
 
   test("excludes prompts that have parameters (has required args)", () => {
     const result = filterArgumentFreePrompts(basePrompts);
-    expect(result.map(p => p.name)).not.toContain("create-issue");
+    expect(result.map((p) => p.name)).not.toContain("create-issue");
   });
 
   test("excludes prompts where enabled === false", () => {
     const result = filterArgumentFreePrompts(basePrompts);
-    expect(result.map(p => p.name)).not.toContain("disabled-prompt");
-    expect(result.map(p => p.name)).not.toContain("disabled-param");
+    expect(result.map((p) => p.name)).not.toContain("disabled-prompt");
+    expect(result.map((p) => p.name)).not.toContain("disabled-param");
   });
 
   test("treats enabled: undefined as enabled (included)", () => {
@@ -382,7 +391,9 @@ describe("onLaunchPrompt call convention", () => {
 
   test("button does NOT call launcher when onLaunchPrompt is absent", () => {
     // Nothing to assert — just ensure it doesn't throw
-    expect(() => simulateButtonClick("pull", "my-prompt", undefined)).not.toThrow();
+    expect(() =>
+      simulateButtonClick("pull", "my-prompt", undefined),
+    ).not.toThrow();
   });
 
   test("launcher is NOT called with an arguments object (argument-free)", () => {
@@ -417,14 +428,17 @@ function makeCleanupHarness({ workingDir = "/w" } = {}) {
   showToast.calls = [];
   showToast.count = () => showToast.calls.length;
   showToast.last = () => showToast.calls[showToast.calls.length - 1];
-  showToast.countByStyle = (style) => showToast.calls.filter((c) => c.style === style).length;
+  showToast.countByStyle = (style) =>
+    showToast.calls.filter((c) => c.style === style).length;
 
   const dismissToast = (id) => dismissToast.ids.push(id);
   dismissToast.ids = [];
   dismissToast.count = () => dismissToast.ids.length;
   dismissToast.last = () => dismissToast.ids[dismissToast.ids.length - 1];
 
-  const fetchList = () => { fetchList.count += 1; };
+  const fetchList = () => {
+    fetchList.count += 1;
+  };
   fetchList.count = 0;
 
   const setCleaningUp = (v) => setCleaningUp.values.push(v);
@@ -458,7 +472,11 @@ function makeCleanupHarness({ workingDir = "/w" } = {}) {
     if (d.working_dir !== workingDir) return;
     if (d.error) {
       clearProgressToast();
-      showToast && showToast({ style: "error", title: d.error || "Failed to clean up issues" });
+      showToast &&
+        showToast({
+          style: "error",
+          title: d.error || "Failed to clean up issues",
+        });
       setCleaningUp(false);
       setCleanupProgress(null);
       fetchList();
@@ -469,16 +487,20 @@ function makeCleanupHarness({ workingDir = "/w" } = {}) {
     setCleanupProgress({ deleted, total });
     if (d.done) {
       clearProgressToast();
-      showToast && showToast({
-        style: "success",
-        title: `Removed ${deleted} closed issue${deleted === 1 ? "" : "s"}`,
-      });
+      showToast &&
+        showToast({
+          style: "success",
+          title: `Removed ${deleted} closed issue${deleted === 1 ? "" : "s"}`,
+        });
       setCleaningUp(false);
       setCleanupProgress(null);
       fetchList();
       return;
     }
-    if (showToast && now - refs.lastCleanupToastAt >= CLEANUP_PROGRESS_TOAST_INTERVAL_MS) {
+    if (
+      showToast &&
+      now - refs.lastCleanupToastAt >= CLEANUP_PROGRESS_TOAST_INTERVAL_MS
+    ) {
       refs.lastCleanupToastAt = now;
       clearProgressToast();
       refs.cleanupToastId = showToast({
@@ -489,7 +511,17 @@ function makeCleanupHarness({ workingDir = "/w" } = {}) {
     }
   };
 
-  return { refs, workingDir, showToast, dismissToast, fetchList, setCleaningUp, setCleanupProgress, start, onProgress };
+  return {
+    refs,
+    workingDir,
+    showToast,
+    dismissToast,
+    fetchList,
+    setCleaningUp,
+    setCleanupProgress,
+    start,
+    onProgress,
+  };
 }
 
 describe("cleanup progress toast — start", () => {
@@ -585,7 +617,10 @@ describe("cleanup progress toast — terminal outcomes reset state", () => {
     const h = makeCleanupHarness();
     h.start(120, 1000);
     h.onProgress({ working_dir: "/w", deleted: 50, total: 120 }, 4000); // live toast id 2
-    h.onProgress({ working_dir: "/w", deleted: 120, total: 120, done: true }, 5000);
+    h.onProgress(
+      { working_dir: "/w", deleted: 120, total: 120, done: true },
+      5000,
+    );
     expect(h.dismissToast.last()).toBe(2);
     expect(h.showToast.countByStyle("success")).toBe(1);
     expect(h.showToast.last().title).toBe("Removed 120 closed issues");

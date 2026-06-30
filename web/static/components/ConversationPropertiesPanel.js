@@ -456,8 +456,12 @@ export function ConversationPropertiesPanel({
                 typeof freshContext === "boolean"
                   ? freshContext
                   : prev.fresh_context,
-              ...(iterationCount !== undefined && { iteration_count: iterationCount }),
-              ...(maxIterations !== undefined && { max_iterations: maxIterations }),
+              ...(iterationCount !== undefined && {
+                iteration_count: iterationCount,
+              }),
+              ...(maxIterations !== undefined && {
+                max_iterations: maxIterations,
+              }),
             }
           : prev,
       );
@@ -525,21 +529,20 @@ export function ConversationPropertiesPanel({
       setFlagsError(null);
 
       try {
-        const res = await secureFetch(
-          endpoints.sessions.settings(sessionId),
-          {
-            method: "PATCH",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ settings: { [flagName]: newValue } }),
-          },
-        );
+        const res = await secureFetch(endpoints.sessions.settings(sessionId), {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ settings: { [flagName]: newValue } }),
+        });
 
         if (res.ok) {
           const data = await res.json();
           setSessionSettings(data.settings || {});
         } else {
           const errorData = await res.json().catch(() => ({}));
-          setFlagsError(errorMessageFromData(errorData, "Failed to save setting"));
+          setFlagsError(
+            errorMessageFromData(errorData, "Failed to save setting"),
+          );
         }
       } catch (err) {
         console.error("Failed to save flag:", err);
@@ -560,14 +563,11 @@ export function ConversationPropertiesPanel({
       const newValue = e.target.checked;
       if (!sessionId) return;
       try {
-        const res = await secureFetch(
-          endpoints.sessions.periodic(sessionId),
-          {
-            method: "PATCH",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ fresh_context: newValue }),
-          },
-        );
+        const res = await secureFetch(endpoints.sessions.periodic(sessionId), {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ fresh_context: newValue }),
+        });
         if (res.ok) {
           const data = await res.json();
           setPeriodicConfig((prev) =>
@@ -586,7 +586,9 @@ export function ConversationPropertiesPanel({
   );
 
   const handleEnableCallback = useCallback(async () => {
-    const res = await secureFetch(endpoints.sessions.callback(sessionId), { method: "POST" });
+    const res = await secureFetch(endpoints.sessions.callback(sessionId), {
+      method: "POST",
+    });
     if (res.ok) {
       const data = await res.json();
       setCallbackConfig(data);
@@ -616,12 +618,15 @@ export function ConversationPropertiesPanel({
   const handleRotateCallback = useCallback(() => {
     setConfirmDialog({
       title: "Rotate Callback URL",
-      message: "Rotate callback URL? The old URL will stop working immediately.",
+      message:
+        "Rotate callback URL? The old URL will stop working immediately.",
       confirmLabel: "Rotate",
       confirmVariant: "danger",
       onConfirm: async () => {
         setConfirmDialog(null);
-        const res = await secureFetch(endpoints.sessions.callback(sessionId), { method: "POST" });
+        const res = await secureFetch(endpoints.sessions.callback(sessionId), {
+          method: "POST",
+        });
         if (res.ok) {
           const data = await res.json();
           setCallbackConfig(data);
@@ -645,7 +650,9 @@ export function ConversationPropertiesPanel({
       confirmVariant: "danger",
       onConfirm: async () => {
         setConfirmDialog(null);
-        const res = await secureFetch(endpoints.sessions.callback(sessionId), { method: "DELETE" });
+        const res = await secureFetch(endpoints.sessions.callback(sessionId), {
+          method: "DELETE",
+        });
         if (res.ok) {
           setCallbackConfig(null);
         }
@@ -735,8 +742,9 @@ export function ConversationPropertiesPanel({
           <label class="block text-sm font-medium text-mitto-text-secondary mb-2">
             Title
           </label>
-          ${isEditingTitle
-            ? html`
+          ${
+            isEditingTitle
+              ? html`
                 <div class="flex items-center gap-2">
                   <input
                     ref=${titleInputRef}
@@ -767,7 +775,7 @@ export function ConversationPropertiesPanel({
                   </${Tooltip}>
                 </div>
               `
-            : html`
+              : html`
                 <div class="flex items-center gap-2 group">
                   <span
                     class="flex-1 text-sm truncate cursor-pointer hover:text-mitto-accent transition-colors tooltip tooltip-bottom"
@@ -786,72 +794,79 @@ export function ConversationPropertiesPanel({
                     </button>
                   </${Tooltip}>
                 </div>
-              `}
+              `
+          }
         </div>
 
         <!-- Status & Runner Badges Section -->
         <div class="flex items-center gap-2 flex-wrap">
           <!-- Status Badge -->
-          ${isStreaming
-            ? html`
-                <span
-                  class="badge badge-sm gap-1.5 bg-mitto-accent-500/20 text-mitto-accent"
-                >
-                  <span
-                    class="w-2 h-2 bg-mitto-accent-400 rounded-full streaming-indicator"
-                  ></span>
-                  Streaming
-                </span>
-              `
-            : sessionInfo?.archived
+          ${
+            isStreaming
               ? html`
                   <span
-                    class="badge badge-sm gap-1.5 bg-mitto-surface-3 text-mitto-text-secondary"
+                    class="badge badge-sm gap-1.5 bg-mitto-accent-500/20 text-mitto-accent"
                   >
-                    <span class="w-2 h-2 bg-slate-500 rounded-full"></span>
-                    Archived
+                    <span
+                      class="w-2 h-2 bg-mitto-accent-400 rounded-full streaming-indicator"
+                    ></span>
+                    Streaming
                   </span>
                 `
-              : sessionInfo?.status === "active"
+              : sessionInfo?.archived
                 ? html`
-                    <span
-                      class="badge badge-sm gap-1.5 bg-green-500/20 text-mitto-success"
-                    >
-                      <span class="w-2 h-2 bg-green-400 rounded-full"></span>
-                      Active
-                    </span>
-                  `
-                : html`
                     <span
                       class="badge badge-sm gap-1.5 bg-mitto-surface-3 text-mitto-text-secondary"
                     >
-                      Stored
+                      <span class="w-2 h-2 bg-slate-500 rounded-full"></span>
+                      Archived
                     </span>
-                  `}
+                  `
+                : sessionInfo?.status === "active"
+                  ? html`
+                      <span
+                        class="badge badge-sm gap-1.5 bg-green-500/20 text-mitto-success"
+                      >
+                        <span class="w-2 h-2 bg-green-400 rounded-full"></span>
+                        Active
+                      </span>
+                    `
+                  : html`
+                      <span
+                        class="badge badge-sm gap-1.5 bg-mitto-surface-3 text-mitto-text-secondary"
+                      >
+                        Stored
+                      </span>
+                    `
+          }
           <!-- ACP Server Badge (e.g., "auggie") -->
-          ${sessionInfo?.acp_server &&
-          html`
-            <span
-              class="badge badge-sm bg-mitto-accent-500/20 text-mitto-accent tooltip tooltip-bottom"
-              data-tip="ACP Server"
-            >
-              ${sessionInfo.acp_server}
-            </span>
-          `}
+          ${
+            sessionInfo?.acp_server &&
+            html`
+              <span
+                class="badge badge-sm bg-mitto-accent-500/20 text-mitto-accent tooltip tooltip-bottom"
+                data-tip="ACP Server"
+              >
+                ${sessionInfo.acp_server}
+              </span>
+            `
+          }
           <!-- Runner Type Badge (e.g., "exec") -->
-          ${sessionInfo?.runner_type &&
-          html`
-            <span
-              class="badge badge-sm tooltip tooltip-bottom ${sessionInfo.runner_restricted
-                ? "bg-yellow-500/20 text-mitto-warning"
-                : "bg-purple-500/20 text-purple-400"}"
-              data-tip="${sessionInfo.runner_restricted
-                ? "Restricted execution mode"
-                : "Sandbox type"}"
-            >
-              ${sessionInfo.runner_type}
-            </span>
-          `}
+          ${
+            sessionInfo?.runner_type &&
+            html`
+              <span
+                class="badge badge-sm tooltip tooltip-bottom ${sessionInfo.runner_restricted
+                  ? "bg-yellow-500/20 text-mitto-warning"
+                  : "bg-purple-500/20 text-purple-400"}"
+                data-tip="${sessionInfo.runner_restricted
+                  ? "Restricted execution mode"
+                  : "Sandbox type"}"
+              >
+                ${sessionInfo.runner_type}
+              </span>
+            `
+          }
         </div>
 
         <!-- Statistics Section (messages, time, processors, token usage) -->
@@ -860,103 +875,176 @@ export function ConversationPropertiesPanel({
             Statistics
           </label>
           <div class="text-xs text-mitto-text-secondary space-y-0.5">
-            ${sessionInfo?.messageCount !== undefined && html`
-              <div class="flex justify-between">
-                <span>Messages</span>
-                <span class="text-mitto-text-300">${sessionInfo.messageCount}</span>
-              </div>
-            `}
-            ${sessionInfo?.created_at && html`
-              <div class="flex justify-between">
-                <span>Created</span>
-                <span class="text-mitto-text-300" title=${new Date(sessionInfo.created_at).toLocaleString()}>
-                  ${formatTimeAgo(sessionInfo.created_at)}
-                </span>
-              </div>
-            `}
-            ${(sessionInfo?.processor_count > 0) && html`
-              <div
-                class="flex justify-between"
-                title=${sessionInfo?.processor_last_names?.length
-                  ? `Last applied: ${sessionInfo.processor_last_names.join(', ')}`
-                  : 'No processors applied yet'}
-              >
-                <span>Processors</span>
-                <span class="text-mitto-text-300">${sessionInfo.processor_count}${sessionInfo?.processor_activations > 0 ? ` (${sessionInfo.processor_activations} runs)` : ''}</span>
-              </div>
-            `}
+            ${
+              sessionInfo?.messageCount !== undefined &&
+              html`
+                <div class="flex justify-between">
+                  <span>Messages</span>
+                  <span class="text-mitto-text-300"
+                    >${sessionInfo.messageCount}</span
+                  >
+                </div>
+              `
+            }
+            ${
+              sessionInfo?.created_at &&
+              html`
+                <div class="flex justify-between">
+                  <span>Created</span>
+                  <span
+                    class="text-mitto-text-300"
+                    title=${new Date(sessionInfo.created_at).toLocaleString()}
+                  >
+                    ${formatTimeAgo(sessionInfo.created_at)}
+                  </span>
+                </div>
+              `
+            }
+            ${
+              sessionInfo?.processor_count > 0 &&
+              html`
+                <div
+                  class="flex justify-between"
+                  title=${sessionInfo?.processor_last_names?.length
+                    ? `Last applied: ${sessionInfo.processor_last_names.join(", ")}`
+                    : "No processors applied yet"}
+                >
+                  <span>Processors</span>
+                  <span class="text-mitto-text-300"
+                    >${sessionInfo.processor_count}${sessionInfo?.processor_activations >
+                    0
+                      ? ` (${sessionInfo.processor_activations} runs)`
+                      : ""}</span
+                  >
+                </div>
+              `
+            }
           </div>
 
-          ${sessionInfo?.usage && html`
-            <div class="mt-2 pt-2 border-t border-mitto-border-1/50">
-              <!-- Context usage bar -->
-              ${(() => {
-                const contextTokens = sessionInfo.usage.input_tokens;
-                const contextWindow = getContextWindowSize(currentModelId);
-                const pct = contextWindow ? Math.min((contextTokens / contextWindow) * 100, 100) : null;
-                const barColor = pct === null ? "bg-mitto-accent" : pct > 80 ? "bg-mitto-danger" : pct > 50 ? "bg-yellow-500" : "bg-mitto-success";
-                const textColor = pct === null ? "text-mitto-text-300" : pct > 80 ? "text-mitto-danger" : pct > 50 ? "text-mitto-warning" : "text-mitto-success";
-                return html`
-                  <div class="mb-2">
-                    <div class="flex justify-between items-baseline mb-1">
-                      <span class="text-xs font-medium text-mitto-text-secondary">Context</span>
-                      <span class="text-xs ${textColor}">
-                        ${formatTokenCount(contextTokens)}${contextWindow ? html` / ${formatTokenCount(contextWindow)}` : ''}
-                      </span>
-                    </div>
-                    <div class="w-full h-1.5 bg-mitto-surface-3 rounded-full overflow-hidden">
-                      <div
-                        class="h-full ${barColor} rounded-full transition-all duration-300"
-                        style="width: ${pct !== null ? pct : 0}%"
-                      />
-                    </div>
-                    ${pct !== null && html`
-                      <div class="text-right mt-0.5">
-                        <span class="text-[10px] text-mitto-text-500">${pct.toFixed(0)}%</span>
+          ${
+            sessionInfo?.usage &&
+            html`
+              <div class="mt-2 pt-2 border-t border-mitto-border-1/50">
+                <!-- Context usage bar -->
+                ${(() => {
+                  const contextTokens = sessionInfo.usage.input_tokens;
+                  const contextWindow = getContextWindowSize(currentModelId);
+                  const pct = contextWindow
+                    ? Math.min((contextTokens / contextWindow) * 100, 100)
+                    : null;
+                  const barColor =
+                    pct === null
+                      ? "bg-mitto-accent"
+                      : pct > 80
+                        ? "bg-mitto-danger"
+                        : pct > 50
+                          ? "bg-yellow-500"
+                          : "bg-mitto-success";
+                  const textColor =
+                    pct === null
+                      ? "text-mitto-text-300"
+                      : pct > 80
+                        ? "text-mitto-danger"
+                        : pct > 50
+                          ? "text-mitto-warning"
+                          : "text-mitto-success";
+                  return html`
+                    <div class="mb-2">
+                      <div class="flex justify-between items-baseline mb-1">
+                        <span
+                          class="text-xs font-medium text-mitto-text-secondary"
+                          >Context</span
+                        >
+                        <span class="text-xs ${textColor}">
+                          ${formatTokenCount(contextTokens)}${contextWindow
+                            ? html` / ${formatTokenCount(contextWindow)}`
+                            : ""}
+                        </span>
                       </div>
-                    `}
-                  </div>
-                `;
-              })()}
+                      <div
+                        class="w-full h-1.5 bg-mitto-surface-3 rounded-full overflow-hidden"
+                      >
+                        <div
+                          class="h-full ${barColor} rounded-full transition-all duration-300"
+                          style="width: ${pct !== null ? pct : 0}%"
+                        />
+                      </div>
+                      ${pct !== null &&
+                      html`
+                        <div class="text-right mt-0.5">
+                          <span class="text-[10px] text-mitto-text-500"
+                            >${pct.toFixed(0)}%</span
+                          >
+                        </div>
+                      `}
+                    </div>
+                  `;
+                })()}
 
-              <!-- Last Turn Tokens breakdown -->
-              <label class="block text-xs font-medium text-mitto-text-500 mb-1">
-                Last Turn Tokens
-              </label>
-              <div class="text-xs text-mitto-text-secondary space-y-0.5">
-                <div class="flex justify-between">
-                  <span>Input</span>
-                  <span class="text-mitto-text-300">${formatTokenCount(sessionInfo.usage.input_tokens)}</span>
-                </div>
-                <div class="flex justify-between">
-                  <span>Output</span>
-                  <span class="text-mitto-text-300">${formatTokenCount(sessionInfo.usage.output_tokens)}</span>
-                </div>
-                <div class="flex justify-between">
-                  <span>Total</span>
-                  <span class="text-mitto-text-300 font-medium">${formatTokenCount(sessionInfo.usage.total_tokens)}</span>
-                </div>
-                ${sessionInfo.usage.cached_read_tokens !== undefined && html`
+                <!-- Last Turn Tokens breakdown -->
+                <label
+                  class="block text-xs font-medium text-mitto-text-500 mb-1"
+                >
+                  Last Turn Tokens
+                </label>
+                <div class="text-xs text-mitto-text-secondary space-y-0.5">
                   <div class="flex justify-between">
-                    <span>Cache Read</span>
-                    <span class="text-mitto-text-300">${formatTokenCount(sessionInfo.usage.cached_read_tokens)}</span>
+                    <span>Input</span>
+                    <span class="text-mitto-text-300"
+                      >${formatTokenCount(sessionInfo.usage.input_tokens)}</span
+                    >
                   </div>
-                `}
-                ${sessionInfo.usage.cached_write_tokens !== undefined && html`
                   <div class="flex justify-between">
-                    <span>Cache Write</span>
-                    <span class="text-mitto-text-300">${formatTokenCount(sessionInfo.usage.cached_write_tokens)}</span>
+                    <span>Output</span>
+                    <span class="text-mitto-text-300"
+                      >${formatTokenCount(
+                        sessionInfo.usage.output_tokens,
+                      )}</span
+                    >
                   </div>
-                `}
-                ${sessionInfo.usage.thought_tokens !== undefined && html`
                   <div class="flex justify-between">
-                    <span>Thinking</span>
-                    <span class="text-mitto-text-300">${formatTokenCount(sessionInfo.usage.thought_tokens)}</span>
+                    <span>Total</span>
+                    <span class="text-mitto-text-300 font-medium"
+                      >${formatTokenCount(sessionInfo.usage.total_tokens)}</span
+                    >
                   </div>
-                `}
+                  ${sessionInfo.usage.cached_read_tokens !== undefined &&
+                  html`
+                    <div class="flex justify-between">
+                      <span>Cache Read</span>
+                      <span class="text-mitto-text-300"
+                        >${formatTokenCount(
+                          sessionInfo.usage.cached_read_tokens,
+                        )}</span
+                      >
+                    </div>
+                  `}
+                  ${sessionInfo.usage.cached_write_tokens !== undefined &&
+                  html`
+                    <div class="flex justify-between">
+                      <span>Cache Write</span>
+                      <span class="text-mitto-text-300"
+                        >${formatTokenCount(
+                          sessionInfo.usage.cached_write_tokens,
+                        )}</span
+                      >
+                    </div>
+                  `}
+                  ${sessionInfo.usage.thought_tokens !== undefined &&
+                  html`
+                    <div class="flex justify-between">
+                      <span>Thinking</span>
+                      <span class="text-mitto-text-300"
+                        >${formatTokenCount(
+                          sessionInfo.usage.thought_tokens,
+                        )}</span
+                      >
+                    </div>
+                  `}
+                </div>
               </div>
-            </div>
-          `}
+            `
+          }
         </div>
 
         <!-- Workspace Section -->
@@ -966,187 +1054,216 @@ export function ConversationPropertiesPanel({
           </label>
           <div class="flex items-center gap-2 text-sm text-mitto-text-300">
             <${FolderIcon} className="w-4 h-4 shrink-0 text-mitto-text-500" />
-            ${canRevealInFinder() && sessionInfo?.working_dir
-              ? html`
-                  <button
-                    type="button"
-                    class="truncate text-left hover:text-mitto-accent hover:underline transition-colors cursor-pointer"
-                    title="Open in Finder: ${sessionInfo.working_dir}"
-                    onClick=${() => revealInFinder(sessionInfo.working_dir)}
-                  >
-                    ${sessionInfo.working_dir}
-                  </button>
-                `
-              : html`
-                  <span class="truncate" title=${sessionInfo?.working_dir || ""}>
-                    ${sessionInfo?.working_dir || "Unknown"}
-                  </span>
-                `}
+            ${
+              canRevealInFinder() && sessionInfo?.working_dir
+                ? html`
+                    <button
+                      type="button"
+                      class="truncate text-left hover:text-mitto-accent hover:underline transition-colors cursor-pointer"
+                      title="Open in Finder: ${sessionInfo.working_dir}"
+                      onClick=${() => revealInFinder(sessionInfo.working_dir)}
+                    >
+                      ${sessionInfo.working_dir}
+                    </button>
+                  `
+                : html`
+                    <span
+                      class="truncate"
+                      title=${sessionInfo?.working_dir || ""}
+                    >
+                      ${sessionInfo?.working_dir || "Unknown"}
+                    </span>
+                  `
+            }
           </div>
         </div>
 
         <!-- Session Config Options Section -->
         <!-- Renders all config options dynamically based on type -->
         <!-- Supports: select (dropdown), toggle (future), unknown types gracefully ignored -->
-        ${configOptions?.length > 0 &&
-        configOptions.map(
-          (configOption) => html`
-            <div key=${configOption.id}>
-              <label class="block text-sm font-medium text-mitto-text-secondary mb-2">
-                ${configOption.name}
-              </label>
-
-              <!-- Select type: dropdown with options -->
-              ${configOption.type === "select" &&
-              html`
-                <${ConfigOptionSelect}
-                  configOption=${configOption}
-                  onSetConfigOption=${onSetConfigOption}
-                  isStreaming=${isStreaming}
-                />
-              `}
-
-              <!-- Toggle type (future): boolean switch -->
-              ${configOption.type === "toggle" &&
-              html`
-                <div class="flex items-center justify-between">
-                  <input
-                    type="checkbox"
-                    role="switch"
-                    class="toggle toggle-primary"
-                    checked=${configOption.current_value === "true"}
-                    aria-checked=${configOption.current_value === "true"}
-                    onChange=${() =>
-                      onSetConfigOption?.(
-                        configOption.id,
-                        configOption.current_value === "true"
-                          ? "false"
-                          : "true",
-                      )}
-                    disabled=${isStreaming}
-                    title=${isStreaming
-                      ? `Cannot change ${configOption.name.toLowerCase()} while streaming`
-                      : configOption.description ||
-                        `Toggle ${configOption.name.toLowerCase()}`}
-                  />
-                </div>
-                ${configOption.description &&
-                html`
-                  <p class="mt-1 text-xs text-mitto-text-500">
-                    ${configOption.description}
-                  </p>
-                `}
-              `}
-
-              <!-- Unknown types: show current value as read-only -->
-              ${configOption.type !== "select" &&
-              configOption.type !== "toggle" &&
-              html`
-                <div
-                  class="w-full bg-mitto-surface-3/50 text-mitto-text-secondary rounded-lg px-3 py-2 text-sm border border-mitto-border-2"
-                  title=${`Unsupported config type: ${configOption.type}`}
+        ${
+          configOptions?.length > 0 &&
+          configOptions.map(
+            (configOption) => html`
+              <div key=${configOption.id}>
+                <label
+                  class="block text-sm font-medium text-mitto-text-secondary mb-2"
                 >
-                  ${configOption.current_value || "(not set)"}
-                </div>
-                ${configOption.description &&
+                  ${configOption.name}
+                </label>
+
+                <!-- Select type: dropdown with options -->
+                ${configOption.type === "select" &&
                 html`
-                  <p class="mt-1 text-xs text-mitto-text-500">
-                    ${configOption.description}
-                  </p>
+                  <${ConfigOptionSelect}
+                    configOption=${configOption}
+                    onSetConfigOption=${onSetConfigOption}
+                    isStreaming=${isStreaming}
+                  />
                 `}
-              `}
-            </div>
-          `,
-        )}
+
+                <!-- Toggle type (future): boolean switch -->
+                ${configOption.type === "toggle" &&
+                html`
+                  <div class="flex items-center justify-between">
+                    <input
+                      type="checkbox"
+                      role="switch"
+                      class="toggle toggle-primary"
+                      checked=${configOption.current_value === "true"}
+                      aria-checked=${configOption.current_value === "true"}
+                      onChange=${() =>
+                        onSetConfigOption?.(
+                          configOption.id,
+                          configOption.current_value === "true"
+                            ? "false"
+                            : "true",
+                        )}
+                      disabled=${isStreaming}
+                      title=${isStreaming
+                        ? `Cannot change ${configOption.name.toLowerCase()} while streaming`
+                        : configOption.description ||
+                          `Toggle ${configOption.name.toLowerCase()}`}
+                    />
+                  </div>
+                  ${configOption.description &&
+                  html`
+                    <p class="mt-1 text-xs text-mitto-text-500">
+                      ${configOption.description}
+                    </p>
+                  `}
+                `}
+
+                <!-- Unknown types: show current value as read-only -->
+                ${configOption.type !== "select" &&
+                configOption.type !== "toggle" &&
+                html`
+                  <div
+                    class="w-full bg-mitto-surface-3/50 text-mitto-text-secondary rounded-lg px-3 py-2 text-sm border border-mitto-border-2"
+                    title=${`Unsupported config type: ${configOption.type}`}
+                  >
+                    ${configOption.current_value || "(not set)"}
+                  </div>
+                  ${configOption.description &&
+                  html`
+                    <p class="mt-1 text-xs text-mitto-text-500">
+                      ${configOption.description}
+                    </p>
+                  `}
+                `}
+              </div>
+            `,
+          )
+        }
 
         <!-- Periodic Prompts Section (only shown when configured and enabled) -->
-        ${periodicConfig?.enabled &&
-        html`
-          <div>
-            <label class="block text-sm font-medium text-mitto-text-secondary mb-2">
-              Periodic Prompts
-            </label>
-            <div class="flex items-center gap-2 text-sm text-mitto-text-300">
-              <${PeriodicFilledIcon}
-                className="w-4 h-4 shrink-0 text-mitto-accent"
-              />
-              <span>${formatFrequency(periodicConfig.frequency)}</span>
-            </div>
-            ${periodicConfig.last_sent_at &&
-            html`
-              <p class="mt-1 text-xs text-mitto-text-500">
-                Last run:
-                ${new Date(periodicConfig.last_sent_at).toLocaleString()}
-              </p>
-            `}
-            ${periodicConfig.next_scheduled_at &&
-            html`
-              <p class="mt-1 text-xs text-mitto-text-500">
-                Next run:
-                ${new Date(periodicConfig.next_scheduled_at).toLocaleString()}
-                <span class="text-mitto-text-secondary ml-1">
-                  (${formatRelativeTime(periodicConfig.next_scheduled_at)})
-                </span>
-              </p>
-            `}
-            <p class="mt-1 text-xs text-mitto-text-500">
-              ${(periodicConfig.max_iterations ?? 0) > 0
-                ? `Run ${periodicConfig.iteration_count ?? 0} of ${periodicConfig.max_iterations}`
-                : `${periodicConfig.iteration_count ?? 0} run${(periodicConfig.iteration_count ?? 0) !== 1 ? "s" : ""} · unlimited`}
-            </p>
-            <!-- Fresh context toggle: each scheduled run starts with a clean agent context -->
-            <div class="mt-3 flex items-center gap-2 text-sm">
-              <input
-                type="checkbox"
-                id="properties-fresh-context-checkbox-${sessionId}"
-                checked=${!!periodicConfig.fresh_context}
-                onInput=${handleFreshContextChange}
-                class="w-4 h-4 rounded border-mitto-border-3 text-mitto-accent focus:ring-mitto-accent-500 cursor-pointer shrink-0"
-                data-testid="properties-fresh-context-checkbox"
-              />
+        ${
+          periodicConfig?.enabled &&
+          html`
+            <div>
               <label
-                for="properties-fresh-context-checkbox-${sessionId}"
-                class="text-mitto-text-300 cursor-pointer select-none"
+                class="block text-sm font-medium text-mitto-text-secondary mb-2"
               >
-                Start each run with a fresh context
+                Periodic Prompts
               </label>
+              <div class="flex items-center gap-2 text-sm text-mitto-text-300">
+                <${PeriodicFilledIcon}
+                  className="w-4 h-4 shrink-0 text-mitto-accent"
+                />
+                <span>${formatFrequency(periodicConfig.frequency)}</span>
+              </div>
+              ${periodicConfig.last_sent_at &&
+              html`
+                <p class="mt-1 text-xs text-mitto-text-500">
+                  Last run:
+                  ${new Date(periodicConfig.last_sent_at).toLocaleString()}
+                </p>
+              `}
+              ${periodicConfig.next_scheduled_at &&
+              html`
+                <p class="mt-1 text-xs text-mitto-text-500">
+                  Next run:
+                  ${new Date(periodicConfig.next_scheduled_at).toLocaleString()}
+                  <span class="text-mitto-text-secondary ml-1">
+                    (${formatRelativeTime(periodicConfig.next_scheduled_at)})
+                  </span>
+                </p>
+              `}
+              <p class="mt-1 text-xs text-mitto-text-500">
+                ${(periodicConfig.max_iterations ?? 0) > 0
+                  ? `Run ${periodicConfig.iteration_count ?? 0} of ${periodicConfig.max_iterations}`
+                  : `${periodicConfig.iteration_count ?? 0} run${(periodicConfig.iteration_count ?? 0) !== 1 ? "s" : ""} · unlimited`}
+              </p>
+              <!-- Fresh context toggle: each scheduled run starts with a clean agent context -->
+              <div class="mt-3 flex items-center gap-2 text-sm">
+                <input
+                  type="checkbox"
+                  id="properties-fresh-context-checkbox-${sessionId}"
+                  checked=${!!periodicConfig.fresh_context}
+                  onInput=${handleFreshContextChange}
+                  class="w-4 h-4 rounded border-mitto-border-3 text-mitto-accent focus:ring-mitto-accent-500 cursor-pointer shrink-0"
+                  data-testid="properties-fresh-context-checkbox"
+                />
+                <label
+                  for="properties-fresh-context-checkbox-${sessionId}"
+                  class="text-mitto-text-300 cursor-pointer select-none"
+                >
+                  Start each run with a fresh context
+                </label>
+              </div>
             </div>
-          </div>
-        `}
+          `
+        }
 
         <!-- MCP Tools Section (Collapsible) -->
-        ${mcpTools && mcpTools.length > 0 && html`
-          <div class="pt-4">
-            <div class="collapse collapse-plus ${isMcpToolsExpanded ? "collapse-open" : "collapse-close"}">
+        ${
+          mcpTools &&
+          mcpTools.length > 0 &&
+          html`
+            <div class="pt-4">
               <div
-                class="collapse-title flex items-center gap-2 px-0 py-0 pr-12 min-h-0 cursor-pointer text-sm font-medium text-mitto-text-secondary hover:text-mitto-text-300 transition-colors"
-                onClick=${() => setIsMcpToolsExpanded(!isMcpToolsExpanded)}
+                class="collapse collapse-plus ${isMcpToolsExpanded
+                  ? "collapse-open"
+                  : "collapse-close"}"
               >
-                <span>MCP Tools</span>
-                <span class="text-xs text-mitto-text-500">(${mcpTools.length})</span>
-              </div>
+                <div
+                  class="collapse-title flex items-center gap-2 px-0 py-0 pr-12 min-h-0 cursor-pointer text-sm font-medium text-mitto-text-secondary hover:text-mitto-text-300 transition-colors"
+                  onClick=${() => setIsMcpToolsExpanded(!isMcpToolsExpanded)}
+                >
+                  <span>MCP Tools</span>
+                  <span class="text-xs text-mitto-text-500"
+                    >(${mcpTools.length})</span
+                  >
+                </div>
 
-              <div class="collapse-content px-0">
-                ${isMcpToolsExpanded && html`
-                  <div class="mt-3 space-y-1 max-h-64 overflow-y-auto">
-                    ${mcpTools.map((tool) => html`
-                      <div
-                        key=${tool.name}
-                        class="text-xs text-mitto-text-300 bg-mitto-surface-3/50 rounded px-2 py-1"
-                        title=${tool.description || tool.name}
-                      >
-                        <span class="font-mono">${tool.name}</span>
-                        ${tool.description && html`
-                          <p class="text-mitto-text-500 mt-0.5 truncate">${tool.description}</p>
-                        `}
-                      </div>
-                    `)}
-                  </div>
-                `}
+                <div class="collapse-content px-0">
+                  ${isMcpToolsExpanded &&
+                  html`
+                    <div class="mt-3 space-y-1 max-h-64 overflow-y-auto">
+                      ${mcpTools.map(
+                        (tool) => html`
+                          <div
+                            key=${tool.name}
+                            class="text-xs text-mitto-text-300 bg-mitto-surface-3/50 rounded px-2 py-1"
+                            title=${tool.description || tool.name}
+                          >
+                            <span class="font-mono">${tool.name}</span>
+                            ${tool.description &&
+                            html`
+                              <p class="text-mitto-text-500 mt-0.5 truncate">
+                                ${tool.description}
+                              </p>
+                            `}
+                          </div>
+                        `,
+                      )}
+                    </div>
+                  `}
+                </div>
               </div>
             </div>
-          </div>
-        `}
+          `
+        }
 
         <!-- Advanced Section (Collapsible) -->
         ${renderAdvancedSection()}
@@ -1163,11 +1280,17 @@ export function ConversationPropertiesPanel({
     return html`
       <div class="pt-4">
         <!-- Callback URL Section (only for periodic conversations) -->
-        ${periodicConfig && html`
+        ${periodicConfig &&
+        html`
           <div class="mb-4">
-            <label class="block text-sm font-medium text-mitto-text-secondary mb-2">Callback URL</label>
-            ${periodicConfig.enabled ? html`
-              ${callbackConfig?.callback_url ? html`
+            <label
+              class="block text-sm font-medium text-mitto-text-secondary mb-2"
+              >Callback URL</label
+            >
+            ${periodicConfig.enabled
+              ? html`
+                  ${callbackConfig?.callback_url
+                    ? html`
                 <div class="flex items-center gap-1.5">
                   <${Tooltip} tip="Copy callback URL to clipboard" placement="top">
                     <button onClick=${handleCopyCallbackUrl} class="text-xs px-2 py-1 rounded bg-mitto-surface-3 hover:bg-mitto-surface-hover text-mitto-text-300 transition-colors">
@@ -1177,29 +1300,51 @@ export function ConversationPropertiesPanel({
                   <${Tooltip} tip="Generate new callback URL (invalidates old one)" placement="top"><button onClick=${handleRotateCallback} class="text-xs px-2 py-1 rounded bg-mitto-surface-3 hover:bg-mitto-surface-hover text-mitto-text-300 transition-colors">🔄 Rotate</button></${Tooltip}>
                   <${Tooltip} tip="Revoke callback URL" placement="top"><button onClick=${handleRevokeCallback} class="text-xs px-2 py-1 rounded bg-mitto-surface-3 hover:bg-red-900/50 text-mitto-text-secondary hover:text-red-300 transition-colors" aria-label="Revoke callback URL">✕</button></${Tooltip}>
                 </div>
-              ` : html`
+              `
+                    : html`
                 <${Tooltip} tip="Generate a callback URL for triggering this periodic conversation externally" placement="top">
                   <button onClick=${handleEnableCallback} class="text-xs px-2 py-1 rounded bg-mitto-surface-3 hover:bg-mitto-surface-hover text-mitto-text-300 transition-colors">
                     🔗 Enable Callback URL
                   </button>
                 </${Tooltip}>
               `}
-            ` : html`
-              ${callbackConfig?.callback_url ? html`
-                <p class="text-xs text-mitto-text-muted mb-1.5 italic">Preserved but inactive while periodic is disabled</p>
-                <div class="flex items-center gap-1.5">
-                  <button onClick=${handleCopyCallbackUrl} class="text-xs px-2 py-1 rounded bg-mitto-surface-2 text-mitto-text-500 hover:text-mitto-text-secondary transition-colors">${callbackCopied ? "✓ Copied!" : "📋 Copy URL"}</button>
-                  <button onClick=${handleRevokeCallback} class="text-xs px-2 py-1 rounded bg-mitto-surface-2 text-mitto-text-500 hover:text-mitto-danger transition-colors">✕ Revoke</button>
-                </div>
-              ` : html`
-                <p class="text-xs text-mitto-text-500">No callback URL configured.</p>
-              `}
-            `}
+                `
+              : html`
+                  ${callbackConfig?.callback_url
+                    ? html`
+                        <p class="text-xs text-mitto-text-muted mb-1.5 italic">
+                          Preserved but inactive while periodic is disabled
+                        </p>
+                        <div class="flex items-center gap-1.5">
+                          <button
+                            onClick=${handleCopyCallbackUrl}
+                            class="text-xs px-2 py-1 rounded bg-mitto-surface-2 text-mitto-text-500 hover:text-mitto-text-secondary transition-colors"
+                          >
+                            ${callbackCopied ? "✓ Copied!" : "📋 Copy URL"}
+                          </button>
+                          <button
+                            onClick=${handleRevokeCallback}
+                            class="text-xs px-2 py-1 rounded bg-mitto-surface-2 text-mitto-text-500 hover:text-mitto-danger transition-colors"
+                          >
+                            ✕ Revoke
+                          </button>
+                        </div>
+                      `
+                    : html`
+                        <p class="text-xs text-mitto-text-500">
+                          No callback URL configured.
+                        </p>
+                      `}
+                `}
           </div>
         `}
 
         <!-- Collapsible Section -->
-        <div class="collapse collapse-plus ${isAdvancedExpanded ? "collapse-open" : "collapse-close"}">
+        <div
+          class="collapse collapse-plus ${isAdvancedExpanded
+            ? "collapse-open"
+            : "collapse-close"}"
+        >
           <div
             class="collapse-title flex items-center gap-2 px-0 py-0 pr-12 min-h-0 cursor-pointer text-sm font-medium text-mitto-text-secondary hover:text-mitto-text-300 transition-colors"
             onClick=${() => setIsAdvancedExpanded(!isAdvancedExpanded)}
@@ -1211,59 +1356,63 @@ export function ConversationPropertiesPanel({
             ${isAdvancedExpanded &&
             html`
               <div class="mt-3 space-y-3">
-            ${isLoadingFlags
-              ? html`<div class="text-sm text-mitto-text-500">Loading...</div>`
-              : html`
-                  ${flagsError &&
-                  html`
-                    <div
-                      role="alert"
-                      class="alert alert-error alert-soft text-sm"
-                    >
-                      ${flagsError}
-                    </div>
-                  `}
-                  ${availableFlags.map((flag) => {
-                    const currentValue = sessionSettings[flag.name];
-                    const isSaving = savingFlags[flag.name];
+                ${isLoadingFlags
+                  ? html`<div class="text-sm text-mitto-text-500">
+                      Loading...
+                    </div>`
+                  : html`
+                      ${flagsError &&
+                      html`
+                        <div
+                          role="alert"
+                          class="alert alert-error alert-soft text-sm"
+                        >
+                          ${flagsError}
+                        </div>
+                      `}
+                      ${availableFlags.map((flag) => {
+                        const currentValue = sessionSettings[flag.name];
+                        const isSaving = savingFlags[flag.name];
 
-                    return html`
-                      <div key=${flag.name} class="flex items-start gap-3">
-                        <div class="pt-0.5">
-                          ${isSaving
-                            ? html`<span class="loading loading-spinner w-5 h-5 text-mitto-accent"></span>`
-                            : html`
-                                <${TriStateCheckbox}
-                                  value=${currentValue}
-                                  onChange=${(newValue) =>
-                                    handleFlagChange(flag.name, newValue)}
-                                  title=${flag.description || flag.label}
-                                />
+                        return html`
+                          <div key=${flag.name} class="flex items-start gap-3">
+                            <div class="pt-0.5">
+                              ${isSaving
+                                ? html`<span
+                                    class="loading loading-spinner w-5 h-5 text-mitto-accent"
+                                  ></span>`
+                                : html`
+                                    <${TriStateCheckbox}
+                                      value=${currentValue}
+                                      onChange=${(newValue) =>
+                                        handleFlagChange(flag.name, newValue)}
+                                      title=${flag.description || flag.label}
+                                    />
+                                  `}
+                            </div>
+                            <div class="flex-1 min-w-0">
+                              <label
+                                class="block text-sm text-mitto-text-300 cursor-pointer"
+                                onClick=${() =>
+                                  !isSaving &&
+                                  handleFlagChange(
+                                    flag.name,
+                                    currentValue === true ? false : true,
+                                  )}
+                              >
+                                ${flag.label}
+                              </label>
+                              ${flag.description &&
+                              html`
+                                <p class="text-xs text-mitto-text-500 mt-0.5">
+                                  ${flag.description}
+                                </p>
                               `}
-                        </div>
-                        <div class="flex-1 min-w-0">
-                          <label
-                            class="block text-sm text-mitto-text-300 cursor-pointer"
-                            onClick=${() =>
-                              !isSaving &&
-                              handleFlagChange(
-                                flag.name,
-                                currentValue === true ? false : true,
-                              )}
-                          >
-                            ${flag.label}
-                          </label>
-                          ${flag.description &&
-                          html`
-                            <p class="text-xs text-mitto-text-500 mt-0.5">
-                              ${flag.description}
-                            </p>
-                          `}
-                        </div>
-                      </div>
-                    `;
-                  })}
-                `}
+                            </div>
+                          </div>
+                        `;
+                      })}
+                    `}
               </div>
             `}
           </div>
@@ -1271,5 +1420,4 @@ export function ConversationPropertiesPanel({
       </div>
     `;
   }
-
 }

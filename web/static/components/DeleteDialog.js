@@ -28,15 +28,19 @@ export function DeleteDialog({
     <${Modal} isOpen=${isOpen} onClose=${onCancel} title="Delete Session" footer=${footer}>
       <p class="text-mitto-text-muted text-sm">
         Are you sure you want to delete "${sessionName}"?
-        ${isStreaming &&
-        html`<br /><span class="text-orange-400"
-            >⚠️ This session is still receiving a response.</span
-          >`}
-        ${isActive &&
-        !isStreaming &&
-        html`<br /><span class="text-mitto-warning"
-            >This is the active session.</span
-          >`}
+        ${
+          isStreaming &&
+          html`<br /><span class="text-orange-400"
+              >⚠️ This session is still receiving a response.</span
+            >`
+        }
+        ${
+          isActive &&
+          !isStreaming &&
+          html`<br /><span class="text-mitto-warning"
+              >This is the active session.</span
+            >`
+        }
       </p>
     </${Modal}>
   `;

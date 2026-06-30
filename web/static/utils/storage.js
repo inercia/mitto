@@ -324,7 +324,10 @@ export function migrateLegacyTabStorage() {
         }
       }
     } catch (innerErr) {
-      console.warn("[Mitto] Failed to prune tab-scoped expanded groups:", innerErr);
+      console.warn(
+        "[Mitto] Failed to prune tab-scoped expanded groups:",
+        innerErr,
+      );
     }
 
     localStorage.setItem(DETAB_MIGRATION_KEY, "1");
@@ -949,8 +952,14 @@ export function getBeadsFilters() {
     if (value) {
       const parsed = JSON.parse(value);
       return {
-        type: typeof parsed.type === "string" ? parsed.type : DEFAULT_BEADS_FILTERS.type,
-        search: typeof parsed.search === "string" ? parsed.search : DEFAULT_BEADS_FILTERS.search,
+        type:
+          typeof parsed.type === "string"
+            ? parsed.type
+            : DEFAULT_BEADS_FILTERS.type,
+        search:
+          typeof parsed.search === "string"
+            ? parsed.search
+            : DEFAULT_BEADS_FILTERS.search,
       };
     }
   } catch (e) {
@@ -999,8 +1008,13 @@ export function getBeadsGrouping() {
     if (value) {
       const parsed = JSON.parse(value);
       return {
-        enabled: typeof parsed.enabled === "boolean" ? parsed.enabled : DEFAULT_BEADS_GROUPING.enabled,
-        collapsedEpics: Array.isArray(parsed.collapsedEpics) ? parsed.collapsedEpics.filter(x => typeof x === "string") : DEFAULT_BEADS_GROUPING.collapsedEpics,
+        enabled:
+          typeof parsed.enabled === "boolean"
+            ? parsed.enabled
+            : DEFAULT_BEADS_GROUPING.enabled,
+        collapsedEpics: Array.isArray(parsed.collapsedEpics)
+          ? parsed.collapsedEpics.filter((x) => typeof x === "string")
+          : DEFAULT_BEADS_GROUPING.collapsedEpics,
       };
     }
   } catch (e) {
@@ -1016,8 +1030,13 @@ export function getBeadsGrouping() {
 export function setBeadsGrouping(state) {
   try {
     const toStore = {
-      enabled: typeof state?.enabled === "boolean" ? state.enabled : DEFAULT_BEADS_GROUPING.enabled,
-      collapsedEpics: Array.isArray(state?.collapsedEpics) ? state.collapsedEpics : DEFAULT_BEADS_GROUPING.collapsedEpics,
+      enabled:
+        typeof state?.enabled === "boolean"
+          ? state.enabled
+          : DEFAULT_BEADS_GROUPING.enabled,
+      collapsedEpics: Array.isArray(state?.collapsedEpics)
+        ? state.collapsedEpics
+        : DEFAULT_BEADS_GROUPING.collapsedEpics,
     };
     localStorage.setItem(BEADS_GROUPING_KEY, JSON.stringify(toStore));
   } catch (e) {
@@ -1049,8 +1068,12 @@ export function getBeadsSort() {
     if (value) {
       const parsed = JSON.parse(value);
       return {
-        field: BEADS_SORT_FIELDS.includes(parsed.field) ? parsed.field : DEFAULT_BEADS_SORT.field,
-        direction: BEADS_SORT_DIRECTIONS.includes(parsed.direction) ? parsed.direction : DEFAULT_BEADS_SORT.direction,
+        field: BEADS_SORT_FIELDS.includes(parsed.field)
+          ? parsed.field
+          : DEFAULT_BEADS_SORT.field,
+        direction: BEADS_SORT_DIRECTIONS.includes(parsed.direction)
+          ? parsed.direction
+          : DEFAULT_BEADS_SORT.direction,
       };
     }
   } catch (e) {
@@ -1066,8 +1089,12 @@ export function getBeadsSort() {
 export function setBeadsSort(sort) {
   try {
     const toStore = {
-      field: BEADS_SORT_FIELDS.includes(sort?.field) ? sort.field : DEFAULT_BEADS_SORT.field,
-      direction: BEADS_SORT_DIRECTIONS.includes(sort?.direction) ? sort.direction : DEFAULT_BEADS_SORT.direction,
+      field: BEADS_SORT_FIELDS.includes(sort?.field)
+        ? sort.field
+        : DEFAULT_BEADS_SORT.field,
+      direction: BEADS_SORT_DIRECTIONS.includes(sort?.direction)
+        ? sort.direction
+        : DEFAULT_BEADS_SORT.direction,
     };
     localStorage.setItem(BEADS_SORT_KEY, JSON.stringify(toStore));
   } catch (e) {
