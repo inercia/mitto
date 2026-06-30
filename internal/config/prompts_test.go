@@ -1092,6 +1092,53 @@ func TestValidatePromptParameters(t *testing.T) {
 			}
 		}
 	})
+
+	t.Run("multiLine on a text param is OK", func(t *testing.T) {
+		err := ValidatePromptParameters("", []PromptParameter{{Name: "Instructions", Type: "text", MultiLine: true}})
+		if err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("multiLine on a non-text param returns error mentioning multiLine and text", func(t *testing.T) {
+		err := ValidatePromptParameters("", []PromptParameter{{Name: "Issue", Type: "beadsId", MultiLine: true}})
+		if err == nil {
+			t.Fatal("expected error, got nil")
+		}
+		if !strings.Contains(err.Error(), "multiLine") {
+			t.Errorf("error = %q, want it to contain 'multiLine'", err.Error())
+		}
+		if !strings.Contains(err.Error(), "text") {
+			t.Errorf("error = %q, want it to contain 'text'", err.Error())
+		}
+	})
+}
+
+func TestParsePromptFile_WithMultiLineParameter(t *testing.T) {
+	data := []byte(`name: "MultiLine Prompt"
+parameters:
+  - name: Instructions
+    type: text
+    multiLine: true
+  - name: Path
+    type: text
+prompt: |
+  ${Instructions} for ${Path}.
+`)
+
+	prompt, err := ParsePromptFile("ml.prompt.yaml", data, time.Now())
+	if err != nil {
+		t.Fatalf("ParsePromptFile failed: %v", err)
+	}
+	if len(prompt.Parameters) != 2 {
+		t.Fatalf("len(Parameters) = %d, want 2", len(prompt.Parameters))
+	}
+	if !prompt.Parameters[0].MultiLine {
+		t.Errorf("Parameters[0].MultiLine = false, want true")
+	}
+	if prompt.Parameters[1].MultiLine {
+		t.Errorf("Parameters[1].MultiLine = true, want false (absent)")
+	}
 }
 
 func TestParsePromptFile_ChildSessionId(t *testing.T) {

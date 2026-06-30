@@ -83,6 +83,10 @@ type PromptParameter struct {
 	Type string `yaml:"type" json:"type"`
 	// Description is an optional human-readable hint shown in the UI / MCP schema.
 	Description string `yaml:"description,omitempty" json:"description,omitempty"`
+	// MultiLine, when true, renders the input as a multi-line, resizable textarea
+	// instead of a single-line field. Only meaningful for the "text" type (see
+	// ValidatePromptParameters); ignored when collected outside the UI.
+	MultiLine bool `yaml:"multiLine,omitempty" json:"multiLine,omitempty"`
 	// Required, when explicitly set to true, signals that the parameter must be
 	// supplied before the prompt is dispatched. Defaults to unset (caller decides).
 	// Declarative defaults are handled by the Arg helper in the template body, not here.

@@ -63,7 +63,9 @@ export function isBooleanParam(p) {
 
 /**
  * Returns the structured parameters array for a prompt, or [] if absent/empty.
- * Each entry is { name, type, description?, required? }.
+ * Each entry is { name, type, description?, required?, multiLine? }. multiLine is
+ * only meaningful for type "text": when true the dialog renders a resizable
+ * multi-line textarea instead of a single-line input (see PromptParameterDialog).
  */
 export function promptParameters(prompt) {
   const params = prompt?.parameters;

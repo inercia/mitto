@@ -12,7 +12,7 @@ import { Modal } from "./Modal.js";
 
 /**
  * Render one parameter field based on its type.
- * @param {Object} param     - { name, type, description?, required? }
+ * @param {Object} param     - { name, type, description?, required?, multiLine? }
  * @param {string} value     - current field value
  * @param {Function} onChange - (name, value) => void
  * @param {Array} beadsIssues - loaded beads issues (may be [])
@@ -39,7 +39,7 @@ function ParamField({
   acpServers,
   hostSessionId,
 }) {
-  const { name, type, description, required } = param;
+  const { name, type, description, required, multiLine } = param;
 
   let control;
   if (type === "beadsId") {
@@ -246,14 +246,25 @@ function ParamField({
       />
     `;
   } else if (type === "text") {
-    control = html`
-      <textarea
-        class="textarea textarea-sm w-full resize-none"
-        rows="3"
-        value=${value}
-        onInput=${(e) => onChange(name, e.target.value)}
-      ></textarea>
-    `;
+    // Default: single-line input. multiLine renders a resizable textarea for
+    // naturally multi-line values (e.g. instructions).
+    control = multiLine
+      ? html`
+          <textarea
+            class="textarea textarea-sm w-full resize-y"
+            rows="3"
+            value=${value}
+            onInput=${(e) => onChange(name, e.target.value)}
+          ></textarea>
+        `
+      : html`
+          <input
+            type="text"
+            class="input input-sm w-full"
+            value=${value}
+            onInput=${(e) => onChange(name, e.target.value)}
+          />
+        `;
   } else {
     // beadsTitle, unknown → plain text input
     control = html`
@@ -305,7 +316,7 @@ function ParamField({
  * @param {boolean}  isOpen         - controls visibility
  * @param {Function} onClose        - called on dismiss (no onSubmit)
  * @param {Function} onSubmit       - called with { [paramName]: string } on Save
- * @param {Array}    parameters     - params: [{ name, type, description?, required? }]
+ * @param {Array}    parameters     - params: [{ name, type, description?, required?, multiLine? }]
  * @param {string}   workingDir     - workspace directory (needed for beadsId selector)
  * @param {string}   [title]        - dialog title; defaults to "Prompt parameters"
  * @param {Object}   [initialValues] - pre-seeded values keyed by parameter name

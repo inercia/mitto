@@ -790,6 +790,10 @@ parameters:
                             #   false       → optional: auto-fills when menu supplies
                             #                 it, but never hides the prompt from menus
                             #                 that cannot. No blocking form is shown.
+    multiLine: true         # optional bool — only valid for type: text. Renders a
+                            #   resizable multi-line textarea in the parameter dialog
+                            #   instead of a single-line input. Rejected at load on
+                            #   any other type.
 ```
 
 Multiple parameters may be listed; the menu must supply all **required** ones (`required`
@@ -825,7 +829,7 @@ in sync.
 | `workspaceId` | A Mitto workspace UUID. |
 | `workspaceFolder` | An absolute path to a workspace root directory. |
 | `acpServer` | An ACP server (agent) name. Lets a prompt that creates a new conversation choose which agent runs it. |
-| `text` | Generic free-form text (catch-all type). |
+| `text` | Generic free-form text (catch-all type). Rendered as a single-line input by default; set `multiLine: true` to render a resizable multi-line textarea instead. |
 | `boolean` | A yes/no flag, rendered as a checkbox. Supplied to the template as the string `"true"` or `"false"` (default unchecked → `"false"`). Boolean parameters never gate menu visibility and are always collected via the parameter dialog. |
 
 ### Visibility rule (type-based gating)

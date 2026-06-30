@@ -814,3 +814,32 @@ describe("initialValues seeding", () => {
     expect(original["FOO"]).toBe("bar");
   });
 });
+
+// =============================================================================
+// text render-branch logic (single-line input vs multiLine textarea)
+// Duplicated from the `text` branch of ParamField in PromptParameterDialog.js —
+// keep in sync.
+// =============================================================================
+
+/**
+ * Mirrors the `text` branch of ParamField: a single-line input by default, a
+ * resizable textarea when multiLine is true.
+ *   { kind: "input" | "textarea" }
+ */
+function renderTextControl({ multiLine }) {
+  return multiLine ? { kind: "textarea" } : { kind: "input" };
+}
+
+describe("text render branch (multiLine)", () => {
+  test("renders a single-line input when multiLine is absent", () => {
+    expect(renderTextControl({}).kind).toBe("input");
+  });
+
+  test("renders a single-line input when multiLine is false", () => {
+    expect(renderTextControl({ multiLine: false }).kind).toBe("input");
+  });
+
+  test("renders a textarea when multiLine is true", () => {
+    expect(renderTextControl({ multiLine: true }).kind).toBe("textarea");
+  });
+});

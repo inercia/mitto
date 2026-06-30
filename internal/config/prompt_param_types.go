@@ -88,6 +88,12 @@ func ValidatePromptParameters(menus string, params []PromptParameter) error {
 		if param.Type == "" || !IsKnownPromptParameterType(param.Type) {
 			return fmt.Errorf("parameter %q has unknown type %q (must be one of: %s)", param.Name, param.Type, strings.Join(KnownPromptParameterTypes, ", "))
 		}
+		// multiLine only controls how a free-text field is rendered, so it is
+		// only meaningful for the "text" type. Reject it elsewhere to catch
+		// misconfiguration early.
+		if param.MultiLine && param.Type != "text" {
+			return fmt.Errorf("parameter %q: multiLine is only valid for type \"text\", not %q", param.Name, param.Type)
+		}
 		// Validate the optional cache block.
 		if param.Cache != nil {
 			if !KnownPromptCacheDestinations[param.Cache.Destination] {

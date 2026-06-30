@@ -75,6 +75,9 @@ parameters:
                         #   absent/true → gates menu visibility (default)
                         #   false       → optional: auto-fills when menu supplies it,
                         #                 but never hides the prompt; no blocking form
+    multiLine: true     # optional bool — only valid for type: text. Renders a
+                        #   resizable multi-line textarea instead of a single-line
+                        #   input. Rejected at load on any other type.
 ```
 
 ### Predefined types (canonical registry: `internal/config/prompt_param_types.go`)
@@ -89,7 +92,7 @@ Frontend mirror: `KNOWN_PARAM_TYPES` in `web/static/utils/prompts.js`. Both must
 | `childSessionId` | Child conversation/session UUID (relative to host). Auto-filled in `conversation` menu when the host has exactly one non-archived child; otherwise the picker is scoped to the host's children. Valid only in `prompts`/`conversation` menus. |
 | `workspaceId` | Mitto workspace UUID. |
 | `workspaceFolder` | Absolute path to a workspace root directory. |
-| `text` | Generic free-form text (catch-all). |
+| `text` | Generic free-form text (catch-all). Renders as a single-line input by default; add `multiLine: true` to render a resizable multi-line textarea. |
 | `boolean` | Yes/no flag, rendered as a checkbox. Supplied as the string `"true"`/`"false"` (default unchecked → `"false"`). Never gates menu visibility; always collected via the dialog. |
 
 ### Type-based menu gating
