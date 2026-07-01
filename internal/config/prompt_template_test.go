@@ -1364,29 +1364,20 @@ func TestBuiltinPromptPeriodicModes(t *testing.T) {
 		"github-sync-tasks.prompt.yaml":            {mode: "optional", def: boolPtr(true)},
 		"jira-sync-tasks.prompt.yaml":              {mode: "optional", def: boolPtr(true)},
 
-		// Group C — optional / default:false (22).
-		"check-ci.prompt.yaml":                    {mode: "optional", def: boolPtr(false)},
-		"fix-ci.prompt.yaml":                      {mode: "optional", def: boolPtr(false)},
-		"run-tests.prompt.yaml":                   {mode: "optional", def: boolPtr(false)},
-		"analyze-logs.prompt.yaml":                {mode: "optional", def: boolPtr(false)},
-		"architectural-analysis.prompt.yaml":      {mode: "optional", def: boolPtr(false)},
-		"child-create-minions.prompt.yaml":        {mode: "optional", def: boolPtr(false)},
-		"continue.prompt.yaml":                    {mode: "optional", def: boolPtr(false)},
-		"whats-next.prompt.yaml":                  {mode: "optional", def: boolPtr(false)},
-		"beads-followup-work.prompt.yaml":         {mode: "optional", def: boolPtr(false)},
-		"beads-cleanup-stale.prompt.yaml":         {mode: "optional", def: boolPtr(false)},
-		"beads-group-epics.prompt.yaml":           {mode: "optional", def: boolPtr(false)},
-		"beads-overview.prompt.yaml":              {mode: "optional", def: boolPtr(false)},
-		"beads-reevaluate.prompt.yaml":            {mode: "optional", def: boolPtr(false)},
-		"beads-work.prompt.yaml":                  {mode: "optional", def: boolPtr(false)},
-		"beads-status-all-inprogress.prompt.yaml": {mode: "optional", def: boolPtr(false)},
-		"beads-status-one-inprogress.prompt.yaml": {mode: "optional", def: boolPtr(false)},
-		"beads-issue-status.prompt.yaml":          {mode: "optional", def: boolPtr(false)},
-		"beads-issue-work.prompt.yaml":            {mode: "optional", def: boolPtr(false)},
-		"github-review-slack-prs.prompt.yaml":     {mode: "optional", def: boolPtr(false)},
-		"jira-status-all-inprogress.prompt.yaml":  {mode: "optional", def: boolPtr(false)},
-		"jira-status-one-inprogress.prompt.yaml":  {mode: "optional", def: boolPtr(false)},
-		"jira-work.prompt.yaml":                   {mode: "optional", def: boolPtr(false)},
+		// Group C — optional / default:false (13).
+		"check-ci.prompt.yaml":                   {mode: "optional", def: boolPtr(false)},
+		"fix-ci.prompt.yaml":                     {mode: "optional", def: boolPtr(false)},
+		"run-tests.prompt.yaml":                  {mode: "optional", def: boolPtr(false)},
+		"analyze-logs.prompt.yaml":               {mode: "optional", def: boolPtr(false)},
+		"architectural-analysis.prompt.yaml":     {mode: "optional", def: boolPtr(false)},
+		"child-create-minions.prompt.yaml":       {mode: "optional", def: boolPtr(false)},
+		"continue.prompt.yaml":                   {mode: "optional", def: boolPtr(false)},
+		"whats-next.prompt.yaml":                 {mode: "optional", def: boolPtr(false)},
+		"beads-work.prompt.yaml":                 {mode: "optional", def: boolPtr(false)},
+		"github-review-slack-prs.prompt.yaml":    {mode: "optional", def: boolPtr(false)},
+		"jira-status-all-inprogress.prompt.yaml": {mode: "optional", def: boolPtr(false)},
+		"jira-status-one-inprogress.prompt.yaml": {mode: "optional", def: boolPtr(false)},
+		"jira-work.prompt.yaml":                  {mode: "optional", def: boolPtr(false)},
 	}
 
 	for file, w := range cases {
@@ -1427,7 +1418,19 @@ func TestBuiltinPromptPeriodicModes(t *testing.T) {
 		"review.prompt.yaml",
 		"add-tests.prompt.yaml",
 		"beads-issue-decompose.prompt.yaml",
+		// Tasks prompts that are one-shot reports, context-bound, or
+		// confirmation-gated — periodic re-firing makes no sense for them.
+		"beads-followup-work.prompt.yaml",
+		"beads-cleanup-stale.prompt.yaml",
+		"beads-group-epics.prompt.yaml",
+		"beads-overview.prompt.yaml",
+		"beads-reevaluate.prompt.yaml",
+		"beads-status-all-inprogress.prompt.yaml",
+		"beads-status-one-inprogress.prompt.yaml",
+		"beads-issue-status.prompt.yaml",
+		"beads-issue-work.prompt.yaml",
 	}
+
 	for _, file := range neverFiles {
 		t.Run("never/"+file, func(t *testing.T) {
 			path := filepath.Join(builtinDir, file)
