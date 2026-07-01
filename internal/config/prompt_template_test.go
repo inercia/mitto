@@ -1548,6 +1548,106 @@ func TestIterateFixingBug_RendersForRepresentativeContexts(t *testing.T) {
 	}
 }
 
+// TestIterateImplementingFeature_RendersForRepresentativeContexts renders
+// beads-issue-iterate-implementing-feature.prompt.yaml (mitto-gap.5) for
+// representative contexts and asserts it renders without error and picks the
+// right branch:
+//
+//	(a) linked-issue context  — .Session.BeadsIssue set, first run (default
+//	    zero-value Iteration) → bead ID appears; interactive "Interaction Mode"
+//	    header renders (not the uninterrupted continuation form).
+//	(b) arg-only context      — .Args.IssueID set, .Iteration.IsUninterrupted
+//	    true (silent scheduled continuation) → bead ID appears; the compact
+//	    "Continuation — uninterrupted scheduled run" header renders instead of
+//	    the verbose "Interaction Mode" header.
+//	(c) no-target context     — neither BeadsIssue nor IssueID set → the
+//	    "not explicitly specified" guidance appears and no `bd show` command
+//	    leaks (Step 1 is skipped entirely without a resolved target); the
+//	    Step 4 handoff commands still use the "<target-feature>" placeholder.
+//
+// The test loads the file from the real builtin directory so it always
+// exercises the current on-disk content; the render itself also proves the
+// YAML/template parses. Mirrors TestIterateFixingBug_RendersForRepresentativeContexts.
+func TestIterateImplementingFeature_RendersForRepresentativeContexts(t *testing.T) {
+	builtinDir := "../../config/prompts/builtin"
+	path := filepath.Join(builtinDir, "beads-issue-iterate-implementing-feature.prompt.yaml")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Skipf("prompt file not found at %s: %v", path, err)
+	}
+	prompt, err := ParsePromptFile("beads-issue-iterate-implementing-feature.prompt.yaml", data, time.Now())
+	if err != nil {
+		t.Fatalf("ParsePromptFile: %v", err)
+	}
+	body := prompt.Content
+
+	render := func(ctx *PromptEnabledContext) string {
+		funcs := BuildTemplateFuncMap(ctx)
+		out, rerr := RenderPromptTemplate("beads-issue-iterate-implementing-feature", body, ctx, funcs)
+		if rerr != nil {
+			t.Fatalf("RenderPromptTemplate: %v", rerr)
+		}
+		return out
+	}
+
+	// (a) Linked-issue context, first interactive run.
+	ctxA := &PromptEnabledContext{
+		Session: SessionContext{
+			BeadsIssue:    "mitto-abc",
+			HasBeadsIssue: true,
+		},
+		Iteration: IterationContext{IsFirst: true},
+	}
+	outA := render(ctxA)
+	if !strings.Contains(outA, "mitto-abc") {
+		t.Errorf("branch (a): expected bead ID 'mitto-abc' in output; got:\n%s", outA)
+	}
+	if !strings.Contains(outA, "Interaction Mode — READ THIS FIRST") {
+		t.Errorf("branch (a): expected interactive 'Interaction Mode' header; got:\n%s", outA)
+	}
+	if strings.Contains(outA, "Continuation — uninterrupted scheduled run") {
+		t.Errorf("branch (a): unexpected uninterrupted-continuation header on a first interactive run")
+	}
+	if strings.Contains(outA, "bd show  ") || strings.Contains(outA, "bd show \n") {
+		t.Errorf("branch (a): found broken empty 'bd show ' command in output")
+	}
+
+	// (b) Arg-only context, uninterrupted silent continuation run.
+	ctxB := &PromptEnabledContext{
+		Args:      map[string]string{"IssueID": "mitto-xyz"},
+		Iteration: IterationContext{IsPeriodic: true, IsUninterrupted: true},
+	}
+	outB := render(ctxB)
+	if !strings.Contains(outB, "mitto-xyz") {
+		t.Errorf("branch (b): expected bead ID 'mitto-xyz' in output; got:\n%s", outB)
+	}
+	if !strings.Contains(outB, "Continuation — uninterrupted scheduled run") {
+		t.Errorf("branch (b): expected uninterrupted-continuation header; got:\n%s", outB)
+	}
+	if strings.Contains(outB, "Interaction Mode — READ THIS FIRST") {
+		t.Errorf("branch (b): unexpected verbose 'Interaction Mode' header on an uninterrupted run")
+	}
+	if strings.Contains(outB, "bd show  ") || strings.Contains(outB, "bd show \n") {
+		t.Errorf("branch (b): found broken empty 'bd show ' command in output")
+	}
+
+	// (c) No target resolvable — neither BeadsIssue nor Args.IssueID set.
+	ctxC := &PromptEnabledContext{}
+	outC := render(ctxC)
+	if !strings.Contains(outC, "not explicitly specified") {
+		t.Errorf("branch (c): expected 'not explicitly specified' guidance; got:\n%s", outC)
+	}
+	if !strings.Contains(outC, "No target feature to work on") {
+		t.Errorf("branch (c): expected the 'No target feature to work on' Step 1 fallback; got:\n%s", outC)
+	}
+	if strings.Contains(outC, "bd show  ") || strings.Contains(outC, "bd show \n") {
+		t.Errorf("branch (c): found broken empty 'bd show ' command in output")
+	}
+	if !strings.Contains(outC, "<target-feature>") {
+		t.Errorf("branch (c): expected the '<target-feature>' placeholder in the Step 4 handoff commands; got:\n%s", outC)
+	}
+}
+
 // TestBuiltinPromptPeriodicModes verifies the mitto-92x.6 mechanical flagging
 // pass: every builtin prompt assigned a mode/default in the epic's
 // classification table parses with the expected PromptPeriodic.Mode/Default,

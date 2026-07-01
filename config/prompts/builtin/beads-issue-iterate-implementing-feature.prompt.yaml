@@ -1,0 +1,244 @@
+icon: periodic
+name: Iterate implementing feature
+menus: beadsIssues, conversation
+parameters:
+  - name: IssueID
+    type: beadsId
+    required: false
+    description: The beads issue ID to act on
+  - name: Commit
+    type: boolean
+    description: Commit the work at the end of the review stage
+description: Auto-periodic — drive a feature bead through plan → implement → test → review via label-encoded state, then self-terminate
+backgroundColor: '#C8E6C9'
+group: Tasks
+enabledWhen: '!Session.IsChild && CommandExists("bd") && DirExists(".beads") && Tools.HasPattern("mitto_conversation_*") && Item.Type == "feature" && Item.Status != "closed"'
+periodic:
+  mode: always
+  trigger: onCompletion
+  delay: 30
+  maxIterations: 30
+  maxDuration: "8h"
+prompt: |
+  ## Session Context
+
+  Your session ID is `{{ .Session.ID }}` — use this as `self_id` for all `mitto_*` MCP tool calls.
+  Available ACP servers: `{{ .ACP.AvailableText }}`
+  Existing children: `{{ .Children.MCPText }}`
+
+  # Beads: Iterate Implementing Feature
+
+  Beads is a CLI issue tracker (`bd`). Issues are called "beads" and have IDs like `bd-xyz`.
+  This prompt drives a single `feature`-type bead through a **label-encoded state
+  machine** — `planned` → `implemented` → `tested` → `verified` — advancing **exactly
+  one stage per run**, then removing its own periodic flag once `verified` is reached.
+
+  {{ $target := "" -}}
+  {{ if .Session.BeadsIssue }}{{ $target = .Session.BeadsIssue }}{{ else if .Args.IssueID }}{{ $target = .Args.IssueID }}{{ end -}}
+  {{ if $target -}}
+  The **target feature** for this run is `{{ $target }}`{{ if .Session.BeadsIssue }} (from this conversation's linked beads issue — preferred, durable across periodic runs){{ else }} (supplied as the `IssueID` argument){{ end }}.
+  {{- else -}}
+  The **target feature** for this run is **not explicitly specified**. This prompt requires
+  one specific `feature` bead — do not guess an ID and do not scan the backlog for
+  candidates. If a user is present (see Interaction Mode below), ask which feature via
+  `mitto_ui_options`; in silent/scheduled mode, skip straight to the Blocked → Defer +
+  Handoff pattern (Step 4) using a `mitto_ui_notify` in place of a bead comment, then stop.
+  {{- end }}
+
+  {{- if .Iteration.IsUninterrupted }}
+  ## Continuation — uninterrupted scheduled run
+
+  **Silent mode.** Use **only** `mitto_ui_notify`; never call `mitto_ui_options`,
+  `mitto_ui_form`, or `mitto_ui_textbox`. **Decide autonomously** — do not ask which
+  stage to work on or how to proceed. If a run cannot make progress autonomously, use
+  the **Blocked → Defer + Handoff** pattern (Step 4) instead of guessing.
+
+  Review the prior `bd comment` entries on `{{ $target }}` so you continue from where
+  the last run stopped instead of repeating it. Then proceed straight to Step 1.
+  {{- if .Iteration.IsLast }}
+
+  **Final scheduled run** (the `maxIterations` cap is reached after this run): do **not**
+  begin a stage you cannot finish now — wrap up, log status with `bd comment`, then post a
+  closing summary via `mitto_ui_notify`.
+  {{- end }}
+  {{- else }}
+  ## Interaction Mode — READ THIS FIRST
+
+  This prompt almost always runs **unattended on a schedule**.
+  {{- if and .Session.IsPeriodic (not .Session.IsPeriodicForced) }}
+
+  **Silent mode — a scheduled periodic run.**
+  - Use **only** `mitto_ui_notify` — non-blocking notifications.
+  - Do **NOT** call `mitto_ui_options`, `mitto_ui_form`, or `mitto_ui_textbox`. Nobody is
+    watching. Never block waiting for input.
+  - When you cannot make progress autonomously, do **not** guess and do **not** ask — use
+    the **Blocked → Defer + Handoff** pattern (Step 4).
+  {{- else }}
+
+  **Interactive mode** (e.g. the very first send, or a force-triggered run): a user may be
+  present. During Plan/Design (Step 3a) only, you *may* ask clarifying questions via
+  `mitto_ui_*` tools; every other stage still decides autonomously or defers (Step 4).
+  {{- end }}
+  {{- if not .Iteration.IsFirst }}
+
+  **Continuation run.** Earlier runs of this conversation already advanced this work.
+  Before doing anything else, review the prior `bd comment` entries on `{{ $target }}` so
+  you continue from where the last run stopped instead of repeating it.
+  {{- end }}
+  {{- if .Iteration.IsLast }}
+
+  **Final scheduled run.** This is the last automatic iteration (the `maxIterations` cap is
+  reached after this run, so no further run will fire). Do **not** begin a stage you cannot
+  finish now — instead wrap up: log current status with `bd comment`, then post a closing
+  summary via `mitto_ui_notify`.
+  {{- end }}
+  {{- end }}
+
+  {{ if $target -}}
+  ## Step 1 — Load LIVE state (never rely on a stale snapshot)
+
+  Labels drift between runs. Load the bead's **current** state fresh, every run:
+
+  ```bash
+  bd show {{ $target }} --json --include-comments
+  ```
+
+  Read its `labels` array. **Branch on this live JSON, not on any `Item.*` template
+  field** — `Item.*` is empty at send time and only usable in `enabledWhen`.
+
+  ## Step 2 — Confirm it is still actionable
+
+  If `{{ $target }}` is already `closed`, or carries `needs-human` and is still deferred,
+  stop here: post a `mitto_ui_notify` explaining why, and self-terminate (Step 3e's
+  self-termination steps) without changing any label.
+
+  ## Step 3 — Branch on the live labels; advance exactly ONE stage this run
+
+  - None of `planned`, `implemented`, `tested`, `verified` present → **Step 3a: Plan/Design.**
+  - `planned` present, `implemented` absent → **Step 3b: Implement.**
+  - `implemented` present, `tested` absent → **Step 3c: Test.**
+  - `tested` present, `verified` absent → **Step 3d: Review/Verify.**
+  - `verified` present → **Step 3e: Done.**
+
+  If at any point in a stage you cannot make progress autonomously, stop that stage
+  immediately and go to **Step 4 (Blocked → Defer + Handoff)** instead of guessing or
+  advancing the label.
+
+  ### Step 3a — Plan/Design (no state label yet)
+
+  Read the bead's description and acceptance criteria plus any related code — do not
+  speculate about code you have not opened. In **interactive** mode (see above) you may
+  ask clarifying questions via `mitto_ui_options`; in **silent** mode proceed
+  autonomously or defer (Step 4) rather than guess. Produce a concrete implementation
+  plan; if the work is large enough to span multiple reviewable increments, decompose it
+  into sub-issues (`bd create "<title>" --parent {{ $target }} ...`). Then:
+
+  ```bash
+  bd comment {{ $target }} "Plan: <approach, key design decisions, files/areas touched, any sub-issues created>."
+  bd update {{ $target }} --add-label planned
+  ```
+
+  ### Step 3b — Implement (`planned` present, not yet `implemented`)
+
+  Write the code per the plan, in the smallest coherent increments. Do not gold-plate —
+  implement exactly what the plan and acceptance criteria call for. When the feature is
+  **functionally complete**:
+
+  ```bash
+  bd comment {{ $target }} "Implementation: <what was built, files touched, any deviations from the plan and why>."
+  bd update {{ $target }} --add-label implemented
+  ```
+
+  ### Step 3c — Test (`implemented` present, not yet `tested`)
+
+  Write or extend tests covering the acceptance criteria. Run them until the **new**
+  tests AND the **full relevant suite** pass — do not stop at a partial pass. Then:
+
+  ```bash
+  bd comment {{ $target }} "Testing: <tests added/extended, command to run them, pass/fail evidence>."
+  bd update {{ $target }} --add-label tested
+  ```
+
+  ### Step 3d — Review/Verify (`tested` present, not yet `verified`)
+
+  Self-review before declaring done: build cleanly, run the linter/vet, confirm docs
+  were updated where needed, confirm every acceptance criterion is satisfied, and check
+  for downstream breakage (callers, tests, configs). If any gap is found, **do not
+  advance the label** — go back and close the gap (Step 3b/3c) or, if it needs user
+  input, defer (Step 4). When genuinely satisfied:
+
+  ```bash
+  bd comment {{ $target }} "Review: <build/lint/test results, acceptance criteria checklist, downstream impact checked>."
+  bd update {{ $target }} --add-label verified
+  ```
+  {{- if eq .Args.Commit "true" }}
+
+  **Commit the work.** Stage only the files changed for this feature — by path
+  (`git add <file> ...`) — never `git add -A`, `git add .`, or `git commit -a`, since
+  unrelated uncommitted changes may exist and must be left untouched. Use a concise,
+  conventional commit message. Skip the commit if nothing changed.
+  {{- end }}
+
+  ### Step 3e — Done (`verified` present)
+
+  ```bash
+  bd close {{ $target }} --reason "<short summary of what was delivered>"   # optional but recommended
+  ```
+
+  Then self-terminate so this conversation stops re-running:
+
+  ```
+  mitto_conversation_update(self_id: "{{ .Session.ID }}", conversation_id: "self", periodic_enabled: false)
+  mitto_ui_notify(self_id: "{{ .Session.ID }}", title: "Iterate implementing feature — done", message: "<what was planned/implemented/tested/verified across runs>", style: "success")
+  ```
+
+  After stopping, do nothing further this run.
+  {{- else }}
+  ## Step 1 — No target feature to work on
+
+  There is nothing to load or branch on without a target. Do not run any `bd` command.
+  {{- end }}
+
+  ## Step 4 — Blocked → Defer + Handoff (applies at EVERY stage above)
+
+  Use this whenever a run cannot make progress autonomously: something is unclear (a
+  decision/info only the user can give), something can't be solved without help (a
+  secret, an external action, a product decision), or you are otherwise stuck. **Do not**
+  advance the state label in this case. Instead:
+
+  1. Defer and flag the bead so it drops out of `bd ready`:
+
+     ```bash
+     bd update {{ if $target }}{{ $target }}{{ else }}<target-feature>{{ end }} --add-label needs-human --defer <when>   # e.g. tomorrow / +1d
+     ```
+
+  2. Write a **structured handoff** comment on the bead:
+
+     ```bash
+     bd comment {{ if $target }}{{ $target }}{{ else }}<target-feature>{{ end }} "Blocked at <stage>. What I tried: <summary>. What I need from you: <the ONE concrete question/decision/info/action>. How to resume: bd update <id> --remove-label needs-human --defer '' , then re-run."
+     ```
+
+  3. End the iteration with a concise handoff message naming the blocker and the single
+     thing needed (interactive runs also `mitto_ui_notify`), and disable this
+     conversation's own periodic flag so the loop does not spin on the blocker:
+
+     ```
+     mitto_conversation_update(self_id: "{{ .Session.ID }}", conversation_id: "self", periodic_enabled: false)
+     ```
+
+  The user resumes the loop (re-enabling periodic, or force-running) after clearing the
+  `needs-human` label and addressing the handoff.
+
+  ## Guidelines
+
+  - **One stage per run.** Advance `planned` → `implemented` → `tested` → `verified` a
+    single step, then return — the next scheduled run continues. Never skip a stage or
+    do two at once.
+  - **Live state only.** Always re-read labels via `bd show --json` at the start of the
+    run; never assume labels from a prior run or from `Item.*`.
+  - **Decide autonomously; never guess.** The only time you must not proceed is when
+    something is genuinely unclear/unsolvable without the user — then use Step 4.
+  - **Silent unless it matters.** On scheduled runs, `mitto_ui_notify` only for
+    meaningful milestones (stage advanced, verified, blocked/deferred, or final stop).
+  - **Always log to the tracker** with `bd comment` so progress is auditable even when
+    you stay silent in the UI.
