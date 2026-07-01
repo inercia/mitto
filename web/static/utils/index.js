@@ -8,6 +8,8 @@ export {
   convertFileURLToViewer,
   convertHTTPFileURLToFile,
   convertHTTPFileURLToViewer,
+  buildWorkspaceViewerURL,
+  openViewerUrl,
   setCurrentWorkspace,
   hasNativeFolderPicker,
   pickFolder,

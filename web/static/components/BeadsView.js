@@ -15,6 +15,10 @@ import {
   setBeadsGrouping,
   getBeadsSort,
   setBeadsSort,
+  openExternalURL,
+  openFileURL,
+  buildWorkspaceViewerURL,
+  openViewerUrl,
 } from "../utils/index.js";
 import { getBasename, copyToClipboard } from "../lib.js";
 import {
@@ -301,11 +305,43 @@ function renderMarkdown(text) {
   return null;
 }
 
-function commentBody(text) {
+// Intercept clicks on links inside rendered beads markdown (description,
+// comments, notes). Relative links reference files in the workspace and must
+// open in the internal viewer — otherwise the SPA router follows the bare href
+// and renders a blank "Not Found" page. External URLs open in the system
+// browser. Returns true when a link was handled so callers can skip any
+// edit-mode toggle on the surrounding container.
+function handleBeadsContentClick(e, workspacePath) {
+  const target = e.target;
+  const link = target && target.closest ? target.closest("a") : null;
+  if (!link) return false;
+  const href = link.getAttribute("href");
+  if (!href || href.startsWith("#")) return false;
+
+  // A link was clicked: prevent SPA navigation and edit-mode toggles.
+  e.preventDefault();
+  e.stopPropagation();
+
+  if (/^(https?:|mailto:|tel:)/i.test(href)) {
+    openExternalURL(href);
+    return true;
+  }
+  if (/^file:/i.test(href)) {
+    openFileURL(href);
+    return true;
+  }
+  // Everything else is treated as a workspace-relative file → internal viewer.
+  const viewerUrl = buildWorkspaceViewerURL(href, workspacePath);
+  if (viewerUrl) openViewerUrl(viewerUrl);
+  return true;
+}
+
+function commentBody(text, workspacePath) {
   const m = renderMarkdown(text);
   if (m)
     return html`<div
       class="markdown-content text-mitto-text text-sm max-w-none"
+      onClick=${(e) => handleBeadsContentClick(e, workspacePath)}
       dangerouslySetInnerHTML=${{ __html: m }}
     />`;
   return html`<pre
@@ -1637,6 +1673,7 @@ export function BeadsDetailPanel({
               ? md
                 ? html`<div
                     class="markdown-content text-mitto-text text-sm max-w-none"
+                    onClick=${(e) => handleBeadsContentClick(e, workingDir)}
                     dangerouslySetInnerHTML=${{ __html: md }}
                   />`
                 : html`<pre
@@ -1727,7 +1764,7 @@ ${viewDraft.description}</pre
           data-tip="Click to edit"
         >
           ${viewDraft.notes && viewDraft.notes.trim()
-            ? commentBody(viewDraft.notes)
+            ? commentBody(viewDraft.notes, workingDir)
             : html`<span class="text-sm text-mitto-text-secondary italic"
                 >No notes. Click to add.</span
               >`}
@@ -2228,7 +2265,7 @@ ${viewDraft.description}</pre
                                             : ""}</span
                                         >
                                       </div>
-                                      ${commentBody(cm.text)}
+                                      ${commentBody(cm.text, workingDir)}
                                     </li>
                                   `,
                                 )}
