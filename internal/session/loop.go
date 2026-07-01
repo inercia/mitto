@@ -15,10 +15,10 @@ import (
 )
 
 const (
-	periodicFileName = "periodic.json"
+	loopFileName = "loop.json"
 )
 
-// StoppedReason is the reason a periodic conversation was automatically stopped.
+// StoppedReason is the reason a loop conversation was automatically stopped.
 // These values are part of the frontend contract — do not change.
 type StoppedReason string
 
@@ -45,7 +45,7 @@ const (
 	StoppedReasonDisabledByAgent StoppedReason = "disabledByAgent"
 
 	// StoppedReasonArchived is set when the conversation is archived (manual or auto),
-	// which authoritatively stops the periodic loop.
+	// which authoritatively stops the loop.
 	StoppedReasonArchived StoppedReason = "archived"
 
 	// StoppedReasonNoProgress is set when the onTasks trigger's circuit breaker fires
@@ -56,8 +56,8 @@ const (
 )
 
 var (
-	// ErrPeriodicNotFound is returned when no periodic prompt is configured.
-	ErrPeriodicNotFound = errors.New("periodic prompt not found")
+	// ErrLoopNotFound is returned when no loop prompt is configured.
+	ErrLoopNotFound = errors.New("loop prompt not found")
 	// ErrInvalidFrequency is returned when the frequency configuration is invalid.
 	ErrInvalidFrequency = errors.New("invalid frequency configuration")
 	// ErrPromptEmpty is returned when the prompt text is empty.
@@ -72,17 +72,17 @@ var (
 	ErrInvalidMaxDuration = errors.New("invalid max_duration_seconds: must be >= 0")
 )
 
-// PeriodicTrigger defines how/when a periodic prompt is fired.
-type PeriodicTrigger string
+// LoopTrigger defines how/when a loop prompt is fired.
+type LoopTrigger string
 
 const (
 	// TriggerSchedule is the default trigger: fire based on Frequency.
-	TriggerSchedule PeriodicTrigger = "schedule"
+	TriggerSchedule LoopTrigger = "schedule"
 	// TriggerOnCompletion fires after the agent stops responding (event-driven).
-	TriggerOnCompletion PeriodicTrigger = "onCompletion"
+	TriggerOnCompletion LoopTrigger = "onCompletion"
 	// TriggerOnTasks fires when beads/tasks in the workspace change, optionally
 	// gated by a CEL Condition (event-driven).
-	TriggerOnTasks PeriodicTrigger = "onTasks"
+	TriggerOnTasks LoopTrigger = "onTasks"
 )
 
 // ConditionValidator is an optional package-level seam that compile-validates a
@@ -91,7 +91,7 @@ const (
 // When nil, Condition compile-validation is skipped in Validate().
 var ConditionValidator func(string) error
 
-// FrequencyUnit represents the time unit for periodic scheduling.
+// FrequencyUnit represents the time unit for loop scheduling.
 type FrequencyUnit string
 
 const (
@@ -161,8 +161,8 @@ func (f *Frequency) Duration() time.Duration {
 	}
 }
 
-// PeriodicPrompt represents a scheduled recurring prompt for a session.
-type PeriodicPrompt struct {
+// LoopPrompt represents a scheduled recurring prompt for a session.
+type LoopPrompt struct {
 	// Prompt is the message text to send.
 	Prompt string `json:"prompt"`
 	// PromptName is the name of a workspace prompt to resolve at execution time.
@@ -175,7 +175,7 @@ type PeriodicPrompt struct {
 	Arguments map[string]string `json:"arguments,omitempty"`
 	// Frequency defines how often the prompt should be sent.
 	Frequency Frequency `json:"frequency"`
-	// Enabled indicates whether the periodic prompt is active.
+	// Enabled indicates whether the loop prompt is active.
 	Enabled bool `json:"enabled"`
 	// FreshContext indicates whether each scheduled run should start with a clean
 	// agent context (no history injection, new ACP session). Default is false.
@@ -184,17 +184,17 @@ type PeriodicPrompt struct {
 	MaxIterations int `json:"max_iterations,omitempty"`
 	// IterationCount is the number of scheduled runs delivered so far.
 	IterationCount int `json:"iteration_count"`
-	// CreatedAt is when the periodic prompt was created.
+	// CreatedAt is when the loop prompt was created.
 	CreatedAt time.Time `json:"created_at"`
-	// UpdatedAt is when the periodic prompt was last modified.
+	// UpdatedAt is when the loop prompt was last modified.
 	UpdatedAt time.Time `json:"updated_at"`
 	// LastSentAt is when the prompt was last delivered (nil if never sent).
 	LastSentAt *time.Time `json:"last_sent_at,omitempty"`
 	// NextScheduledAt is the computed next delivery time (nil if not scheduled).
 	NextScheduledAt *time.Time `json:"next_scheduled_at,omitempty"`
-	// Trigger controls how this periodic prompt is fired.
+	// Trigger controls how this loop prompt is fired.
 	// Empty or "schedule" means frequency-based; "onCompletion" means event-driven.
-	Trigger PeriodicTrigger `json:"trigger,omitempty"`
+	Trigger LoopTrigger `json:"trigger,omitempty"`
 	// DelaySeconds is the number of seconds to wait after the agent stops responding
 	// before the next run. Only meaningful when Trigger is onCompletion.
 	DelaySeconds int `json:"delay_seconds,omitempty"`
@@ -203,7 +203,7 @@ type PeriodicPrompt struct {
 	// FirstRunAt is the elapsed-time anchor: set on the first RecordSent call.
 	// Used by ReachedMaxDuration to compute how long iterating has been running.
 	FirstRunAt *time.Time `json:"first_run_at,omitempty"`
-	// StoppedReason records why the periodic loop was automatically stopped.
+	// StoppedReason records why the loop was automatically stopped.
 	// Empty when still running or not yet stopped.
 	StoppedReason StoppedReason `json:"stopped_reason,omitempty"`
 	// StoppedAt is the timestamp when the loop was auto-stopped (nil when still running).
@@ -220,26 +220,26 @@ type PeriodicPrompt struct {
 
 // ReachedMaxIterations returns true if the prompt has been delivered the maximum number of scheduled times.
 // Returns false when MaxIterations is 0 (unlimited).
-func (p *PeriodicPrompt) ReachedMaxIterations() bool {
+func (p *LoopPrompt) ReachedMaxIterations() bool {
 	return p.MaxIterations > 0 && p.IterationCount >= p.MaxIterations
 }
 
 // EffectiveTrigger returns the resolved trigger type.
 // When Trigger is empty, TriggerSchedule (the default) is returned.
-func (p *PeriodicPrompt) EffectiveTrigger() PeriodicTrigger {
+func (p *LoopPrompt) EffectiveTrigger() LoopTrigger {
 	if p.Trigger == "" {
 		return TriggerSchedule
 	}
 	return p.Trigger
 }
 
-// IsOnCompletion returns true when this periodic prompt uses the onCompletion trigger.
-func (p *PeriodicPrompt) IsOnCompletion() bool {
+// IsOnCompletion returns true when this loop prompt uses the onCompletion trigger.
+func (p *LoopPrompt) IsOnCompletion() bool {
 	return p.EffectiveTrigger() == TriggerOnCompletion
 }
 
-// IsOnTasks returns true when this periodic prompt uses the onTasks trigger.
-func (p *PeriodicPrompt) IsOnTasks() bool {
+// IsOnTasks returns true when this loop prompt uses the onTasks trigger.
+func (p *LoopPrompt) IsOnTasks() bool {
 	return p.EffectiveTrigger() == TriggerOnTasks
 }
 
@@ -254,7 +254,7 @@ const promptPreviewMaxRunes = 80
 // Otherwise returns the first line, trimmed, truncated to 80 runes with a
 // trailing "…" appended when the original first line exceeded that length.
 // Named-prompt-only configs (PromptName set, Prompt empty) also return "".
-func (p *PeriodicPrompt) PromptPreview() string {
+func (p *LoopPrompt) PromptPreview() string {
 	body := strings.TrimSpace(p.Prompt)
 	if body == "" || body == pendingPlaceholder {
 		return ""
@@ -274,7 +274,7 @@ func (p *PeriodicPrompt) PromptPreview() string {
 
 // ReachedMaxDuration returns true if the elapsed time since the first run exceeds MaxDurationSeconds.
 // Returns false when MaxDurationSeconds is 0 (unlimited) or FirstRunAt is nil (not yet started).
-func (p *PeriodicPrompt) ReachedMaxDuration(now time.Time) bool {
+func (p *LoopPrompt) ReachedMaxDuration(now time.Time) bool {
 	if p.MaxDurationSeconds <= 0 || p.FirstRunAt == nil {
 		return false
 	}
@@ -284,7 +284,7 @@ func (p *PeriodicPrompt) ReachedMaxDuration(now time.Time) bool {
 // ClampDelay ensures DelaySeconds is at least floorSeconds.
 // Only applies when the trigger is onCompletion; schedule prompts are not clamped.
 // The floor value is injected by the caller — this method does NOT hardcode any policy minimum.
-func (p *PeriodicPrompt) ClampDelay(floorSeconds int) {
+func (p *LoopPrompt) ClampDelay(floorSeconds int) {
 	if !p.IsOnCompletion() {
 		return
 	}
@@ -293,8 +293,8 @@ func (p *PeriodicPrompt) ClampDelay(floorSeconds int) {
 	}
 }
 
-// Validate checks if the periodic prompt configuration is valid.
-func (p *PeriodicPrompt) Validate() error {
+// Validate checks if the loop prompt configuration is valid.
+func (p *LoopPrompt) Validate() error {
 	if p.Prompt == "" && p.PromptName == "" {
 		return ErrPromptEmpty
 	}
@@ -326,44 +326,44 @@ func (p *PeriodicPrompt) Validate() error {
 	return nil
 }
 
-// PeriodicStore manages the periodic prompt for a single session.
+// LoopStore manages the loop prompt for a single session.
 // It is safe for concurrent use.
-type PeriodicStore struct {
+type LoopStore struct {
 	sessionDir string
 	mu         sync.RWMutex
 }
 
-// NewPeriodicStore creates a new PeriodicStore for the given session directory.
-func NewPeriodicStore(sessionDir string) *PeriodicStore {
-	return &PeriodicStore{
+// NewLoopStore creates a new LoopStore for the given session directory.
+func NewLoopStore(sessionDir string) *LoopStore {
+	return &LoopStore{
 		sessionDir: sessionDir,
 	}
 }
 
-// periodicPath returns the path to the periodic.json file.
-func (ps *PeriodicStore) periodicPath() string {
-	return filepath.Join(ps.sessionDir, periodicFileName)
+// loopPath returns the path to the loop.json file.
+func (ps *LoopStore) loopPath() string {
+	return filepath.Join(ps.sessionDir, loopFileName)
 }
 
-// Get retrieves the current periodic prompt configuration.
-// Returns ErrPeriodicNotFound if no periodic prompt is configured.
-func (ps *PeriodicStore) Get() (*PeriodicPrompt, error) {
+// Get retrieves the current loop prompt configuration.
+// Returns ErrLoopNotFound if no loop prompt is configured.
+func (ps *LoopStore) Get() (*LoopPrompt, error) {
 	ps.mu.RLock()
 	defer ps.mu.RUnlock()
 
-	var p PeriodicPrompt
-	err := fileutil.ReadJSON(ps.periodicPath(), &p)
+	var p LoopPrompt
+	err := fileutil.ReadJSON(ps.loopPath(), &p)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil, ErrPeriodicNotFound
+			return nil, ErrLoopNotFound
 		}
-		return nil, fmt.Errorf("failed to read periodic file: %w", err)
+		return nil, fmt.Errorf("failed to read loop file: %w", err)
 	}
 	return &p, nil
 }
 
-// Set creates or replaces the periodic prompt configuration.
-func (ps *PeriodicStore) Set(p *PeriodicPrompt) error {
+// Set creates or replaces the loop prompt configuration.
+func (ps *LoopStore) Set(p *LoopPrompt) error {
 	if err := p.Validate(); err != nil {
 		return err
 	}
@@ -392,16 +392,16 @@ func (ps *PeriodicStore) Set(p *PeriodicPrompt) error {
 	p.UpdatedAt = now
 	p.NextScheduledAt = ps.computeNextScheduledTime(p)
 
-	if err := fileutil.WriteJSONAtomic(ps.periodicPath(), p, 0644); err != nil {
-		return fmt.Errorf("failed to write periodic file: %w", err)
+	if err := fileutil.WriteJSONAtomic(ps.loopPath(), p, 0644); err != nil {
+		return fmt.Errorf("failed to write loop file: %w", err)
 	}
 	return nil
 }
 
-// Update applies a partial update to the periodic prompt.
+// Update applies a partial update to the loop prompt.
 // Only non-nil fields in the update are applied.
 // IterationCount is never modified by Update — it is managed exclusively by RecordSent.
-func (ps *PeriodicStore) Update(prompt *string, promptName *string, frequency *Frequency, enabled *bool, freshContext *bool, maxIterations *int, trigger *PeriodicTrigger, delaySeconds *int, maxDurationSeconds *int, arguments *map[string]string, condition *string, conditionPreset *string, cooldownSeconds *int) error {
+func (ps *LoopStore) Update(prompt *string, promptName *string, frequency *Frequency, enabled *bool, freshContext *bool, maxIterations *int, trigger *LoopTrigger, delaySeconds *int, maxDurationSeconds *int, arguments *map[string]string, condition *string, conditionPreset *string, cooldownSeconds *int) error {
 	ps.mu.Lock()
 	defer ps.mu.Unlock()
 
@@ -462,30 +462,30 @@ func (ps *PeriodicStore) Update(prompt *string, promptName *string, frequency *F
 	existing.UpdatedAt = time.Now().UTC()
 	existing.NextScheduledAt = ps.computeNextScheduledTime(existing)
 
-	if err := fileutil.WriteJSONAtomic(ps.periodicPath(), existing, 0644); err != nil {
-		return fmt.Errorf("failed to write periodic file: %w", err)
+	if err := fileutil.WriteJSONAtomic(ps.loopPath(), existing, 0644); err != nil {
+		return fmt.Errorf("failed to write loop file: %w", err)
 	}
 	return nil
 }
 
-// Delete removes the periodic prompt configuration.
-func (ps *PeriodicStore) Delete() error {
+// Delete removes the loop prompt configuration.
+func (ps *LoopStore) Delete() error {
 	ps.mu.Lock()
 	defer ps.mu.Unlock()
 
-	err := os.Remove(ps.periodicPath())
+	err := os.Remove(ps.loopPath())
 	if err != nil {
 		if os.IsNotExist(err) {
-			return ErrPeriodicNotFound
+			return ErrLoopNotFound
 		}
-		return fmt.Errorf("failed to delete periodic file: %w", err)
+		return fmt.Errorf("failed to delete loop file: %w", err)
 	}
 	return nil
 }
 
 // ResetCounters resets the iteration and elapsed-time anchors so the loop starts
 // fresh: IterationCount is set to 0, FirstRunAt is cleared (elapsed time = 0), and
-// LastSentAt is cleared (never-sent). This is used when restoring a periodic
+// LastSentAt is cleared (never-sent). This is used when restoring a loop
 // conversation that was auto-stopped after reaching its max-iterations or
 // max-duration cap. Clearing LastSentAt makes the conversation look brand-new so
 // that the restore behaves like the initial run: an onCompletion loop bootstraps
@@ -493,7 +493,7 @@ func (ps *PeriodicStore) Delete() error {
 // gap, not a pre-first-run delay) rather than waiting out the configured delay. It
 // does not change Enabled or the prompt configuration; re-enabling is handled
 // separately by Update.
-func (ps *PeriodicStore) ResetCounters() error {
+func (ps *LoopStore) ResetCounters() error {
 	ps.mu.Lock()
 	defer ps.mu.Unlock()
 
@@ -507,14 +507,14 @@ func (ps *PeriodicStore) ResetCounters() error {
 	existing.LastSentAt = nil
 	existing.UpdatedAt = time.Now().UTC()
 
-	if err := fileutil.WriteJSONAtomic(ps.periodicPath(), existing, 0644); err != nil {
-		return fmt.Errorf("failed to write periodic file: %w", err)
+	if err := fileutil.WriteJSONAtomic(ps.loopPath(), existing, 0644); err != nil {
+		return fmt.Errorf("failed to write loop file: %w", err)
 	}
 	return nil
 }
 
 // RecordSent updates the last_sent_at timestamp, increments iteration_count, and computes next_scheduled_at.
-func (ps *PeriodicStore) RecordSent() error {
+func (ps *LoopStore) RecordSent() error {
 	ps.mu.Lock()
 	defer ps.mu.Unlock()
 
@@ -533,8 +533,8 @@ func (ps *PeriodicStore) RecordSent() error {
 	existing.UpdatedAt = now
 	existing.NextScheduledAt = ps.computeNextScheduledTime(existing)
 
-	if err := fileutil.WriteJSONAtomic(ps.periodicPath(), existing, 0644); err != nil {
-		return fmt.Errorf("failed to write periodic file: %w", err)
+	if err := fileutil.WriteJSONAtomic(ps.loopPath(), existing, 0644); err != nil {
+		return fmt.Errorf("failed to write loop file: %w", err)
 	}
 	return nil
 }
@@ -544,7 +544,7 @@ func (ps *PeriodicStore) RecordSent() error {
 // failure so the runner does not re-fire the same prompt on every poll tick.
 // It is a no-op (returns nil) for disabled configs and for onCompletion/onTasks
 // triggers, whose next run is event-driven (NextScheduledAt is always nil).
-func (ps *PeriodicStore) DeferNextSchedule(delay time.Duration) error {
+func (ps *LoopStore) DeferNextSchedule(delay time.Duration) error {
 	ps.mu.Lock()
 	defer ps.mu.Unlock()
 
@@ -561,17 +561,17 @@ func (ps *PeriodicStore) DeferNextSchedule(delay time.Duration) error {
 	existing.NextScheduledAt = &next
 	existing.UpdatedAt = now
 
-	if err := fileutil.WriteJSONAtomic(ps.periodicPath(), existing, 0644); err != nil {
-		return fmt.Errorf("failed to write periodic file: %w", err)
+	if err := fileutil.WriteJSONAtomic(ps.loopPath(), existing, 0644); err != nil {
+		return fmt.Errorf("failed to write loop file: %w", err)
 	}
 	return nil
 }
 
-// MarkStopped disables the periodic prompt and records the reason it was stopped.
+// MarkStopped disables the loop prompt and records the reason it was stopped.
 // It sets Enabled=false, StoppedReason=reason, StoppedAt=now (UTC),
 // NextScheduledAt=nil, and UpdatedAt=now.
-// Returns ErrPeriodicNotFound if no periodic config exists.
-func (ps *PeriodicStore) MarkStopped(reason StoppedReason) error {
+// Returns ErrLoopNotFound if no loop config exists.
+func (ps *LoopStore) MarkStopped(reason StoppedReason) error {
 	ps.mu.Lock()
 	defer ps.mu.Unlock()
 
@@ -587,21 +587,21 @@ func (ps *PeriodicStore) MarkStopped(reason StoppedReason) error {
 	existing.NextScheduledAt = nil
 	existing.UpdatedAt = now
 
-	if err := fileutil.WriteJSONAtomic(ps.periodicPath(), existing, 0644); err != nil {
-		return fmt.Errorf("failed to write periodic file: %w", err)
+	if err := fileutil.WriteJSONAtomic(ps.loopPath(), existing, 0644); err != nil {
+		return fmt.Errorf("failed to write loop file: %w", err)
 	}
 	return nil
 }
 
-// getUnlocked reads the periodic file without locking (caller must hold lock).
-func (ps *PeriodicStore) getUnlocked() (*PeriodicPrompt, error) {
-	var p PeriodicPrompt
-	err := fileutil.ReadJSON(ps.periodicPath(), &p)
+// getUnlocked reads the loop file without locking (caller must hold lock).
+func (ps *LoopStore) getUnlocked() (*LoopPrompt, error) {
+	var p LoopPrompt
+	err := fileutil.ReadJSON(ps.loopPath(), &p)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil, ErrPeriodicNotFound
+			return nil, ErrLoopNotFound
 		}
-		return nil, fmt.Errorf("failed to read periodic file: %w", err)
+		return nil, fmt.Errorf("failed to read loop file: %w", err)
 	}
 	return &p, nil
 }
@@ -609,7 +609,7 @@ func (ps *PeriodicStore) getUnlocked() (*PeriodicPrompt, error) {
 // computeNextScheduledTime calculates when the next prompt should be sent.
 // Returns nil for onCompletion/onTasks triggers — their next run is armed by the
 // event-driven firing path, not a frequency-based schedule.
-func (ps *PeriodicStore) computeNextScheduledTime(p *PeriodicPrompt) *time.Time {
+func (ps *LoopStore) computeNextScheduledTime(p *LoopPrompt) *time.Time {
 	if !p.Enabled {
 		return nil
 	}
@@ -651,7 +651,7 @@ func (ps *PeriodicStore) computeNextScheduledTime(p *PeriodicPrompt) *time.Time 
 }
 
 // nextTimeAt computes the next occurrence of a specific time (HH:MM UTC).
-func (ps *PeriodicStore) nextTimeAt(from time.Time, at string, days int) time.Time {
+func (ps *LoopStore) nextTimeAt(from time.Time, at string, days int) time.Time {
 	var h, m int
 	fmt.Sscanf(at, "%d:%d", &h, &m)
 

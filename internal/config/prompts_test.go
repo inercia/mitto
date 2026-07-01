@@ -171,10 +171,10 @@ func TestToWebPrompt(t *testing.T) {
 	}
 }
 
-func TestParsePromptFile_WithPeriodic(t *testing.T) {
+func TestParsePromptFile_WithLoop(t *testing.T) {
 	data := []byte(`name: "Daily Standup"
 description: "Run daily standup"
-periodic:
+loop:
   value: 1
   unit: days
   at: "09:00"
@@ -190,38 +190,38 @@ prompt: |
 	if prompt.Name != "Daily Standup" {
 		t.Errorf("Name = %q, want %q", prompt.Name, "Daily Standup")
 	}
-	if prompt.Periodic == nil {
-		t.Fatal("Periodic = nil, want non-nil")
+	if prompt.Loop == nil {
+		t.Fatal("Loop = nil, want non-nil")
 	}
-	if prompt.Periodic.Value != 1 {
-		t.Errorf("Periodic.Value = %d, want 1", prompt.Periodic.Value)
+	if prompt.Loop.Value != 1 {
+		t.Errorf("Loop.Value = %d, want 1", prompt.Loop.Value)
 	}
-	if prompt.Periodic.Unit != "days" {
-		t.Errorf("Periodic.Unit = %q, want %q", prompt.Periodic.Unit, "days")
+	if prompt.Loop.Unit != "days" {
+		t.Errorf("Loop.Unit = %q, want %q", prompt.Loop.Unit, "days")
 	}
-	if prompt.Periodic.At != "09:00" {
-		t.Errorf("Periodic.At = %q, want %q", prompt.Periodic.At, "09:00")
+	if prompt.Loop.At != "09:00" {
+		t.Errorf("Loop.At = %q, want %q", prompt.Loop.At, "09:00")
 	}
 
-	// Verify ToWebPrompt carries the Periodic field.
+	// Verify ToWebPrompt carries the Loop field.
 	wp := prompt.ToWebPrompt()
-	if wp.Periodic == nil {
-		t.Fatal("WebPrompt.Periodic = nil, want non-nil after ToWebPrompt()")
+	if wp.Loop == nil {
+		t.Fatal("WebPrompt.Loop = nil, want non-nil after ToWebPrompt()")
 	}
-	if wp.Periodic.Value != 1 {
-		t.Errorf("WebPrompt.Periodic.Value = %d, want 1", wp.Periodic.Value)
+	if wp.Loop.Value != 1 {
+		t.Errorf("WebPrompt.Loop.Value = %d, want 1", wp.Loop.Value)
 	}
-	if wp.Periodic.Unit != "days" {
-		t.Errorf("WebPrompt.Periodic.Unit = %q, want %q", wp.Periodic.Unit, "days")
+	if wp.Loop.Unit != "days" {
+		t.Errorf("WebPrompt.Loop.Unit = %q, want %q", wp.Loop.Unit, "days")
 	}
-	if wp.Periodic.At != "09:00" {
-		t.Errorf("WebPrompt.Periodic.At = %q, want %q", wp.Periodic.At, "09:00")
+	if wp.Loop.At != "09:00" {
+		t.Errorf("WebPrompt.Loop.At = %q, want %q", wp.Loop.At, "09:00")
 	}
 }
 
-func TestParsePromptFile_WithPeriodic_NoAt(t *testing.T) {
+func TestParsePromptFile_WithLoop_NoAt(t *testing.T) {
 	data := []byte(`name: "Hourly Check"
-periodic:
+loop:
   value: 2
   unit: hours
 prompt: |
@@ -233,23 +233,23 @@ prompt: |
 		t.Fatalf("ParsePromptFile failed: %v", err)
 	}
 
-	if prompt.Periodic == nil {
-		t.Fatal("Periodic = nil, want non-nil")
+	if prompt.Loop == nil {
+		t.Fatal("Loop = nil, want non-nil")
 	}
-	if prompt.Periodic.Value != 2 {
-		t.Errorf("Periodic.Value = %d, want 2", prompt.Periodic.Value)
+	if prompt.Loop.Value != 2 {
+		t.Errorf("Loop.Value = %d, want 2", prompt.Loop.Value)
 	}
-	if prompt.Periodic.Unit != "hours" {
-		t.Errorf("Periodic.Unit = %q, want %q", prompt.Periodic.Unit, "hours")
+	if prompt.Loop.Unit != "hours" {
+		t.Errorf("Loop.Unit = %q, want %q", prompt.Loop.Unit, "hours")
 	}
-	if prompt.Periodic.At != "" {
-		t.Errorf("Periodic.At = %q, want empty (no at for hours)", prompt.Periodic.At)
+	if prompt.Loop.At != "" {
+		t.Errorf("Loop.At = %q, want empty (no at for hours)", prompt.Loop.At)
 	}
 }
 
-func TestParsePromptFile_WithPeriodic_MaxIterations(t *testing.T) {
+func TestParsePromptFile_WithLoop_MaxIterations(t *testing.T) {
 	data := []byte(`name: "Capped"
-periodic:
+loop:
   value: 1
   unit: hours
   maxIterations: 5
@@ -262,24 +262,24 @@ prompt: |
 		t.Fatalf("ParsePromptFile failed: %v", err)
 	}
 
-	if prompt.Periodic == nil {
-		t.Fatal("Periodic = nil, want non-nil")
+	if prompt.Loop == nil {
+		t.Fatal("Loop = nil, want non-nil")
 	}
-	if prompt.Periodic.MaxIterations != 5 {
-		t.Errorf("Periodic.MaxIterations = %d, want 5", prompt.Periodic.MaxIterations)
+	if prompt.Loop.MaxIterations != 5 {
+		t.Errorf("Loop.MaxIterations = %d, want 5", prompt.Loop.MaxIterations)
 	}
 
 	// Verify ToWebPrompt carries the MaxIterations field.
 	wp := prompt.ToWebPrompt()
-	if wp.Periodic == nil {
-		t.Fatal("WebPrompt.Periodic = nil, want non-nil after ToWebPrompt()")
+	if wp.Loop == nil {
+		t.Fatal("WebPrompt.Loop = nil, want non-nil after ToWebPrompt()")
 	}
-	if wp.Periodic.MaxIterations != 5 {
-		t.Errorf("WebPrompt.Periodic.MaxIterations = %d, want 5", wp.Periodic.MaxIterations)
+	if wp.Loop.MaxIterations != 5 {
+		t.Errorf("WebPrompt.Loop.MaxIterations = %d, want 5", wp.Loop.MaxIterations)
 	}
 }
 
-func TestParsePromptFile_NoPeriodic(t *testing.T) {
+func TestParsePromptFile_NoLoop(t *testing.T) {
 	data := []byte(`name: "One-time Prompt"
 prompt: |
   Just a regular prompt.
@@ -289,13 +289,13 @@ prompt: |
 	if err != nil {
 		t.Fatalf("ParsePromptFile failed: %v", err)
 	}
-	if prompt.Periodic != nil {
-		t.Errorf("Periodic = %+v, want nil for prompt without periodic field", prompt.Periodic)
+	if prompt.Loop != nil {
+		t.Errorf("Loop = %+v, want nil for prompt without loop field", prompt.Loop)
 	}
 
 	wp := prompt.ToWebPrompt()
-	if wp.Periodic != nil {
-		t.Errorf("WebPrompt.Periodic = %+v, want nil", wp.Periodic)
+	if wp.Loop != nil {
+		t.Errorf("WebPrompt.Loop = %+v, want nil", wp.Loop)
 	}
 }
 
@@ -341,34 +341,34 @@ prompt: |
 	}
 }
 
-func TestMergePrompts_PreservesPeriodicField(t *testing.T) {
-	periodic := &PromptPeriodic{Value: 3, Unit: "hours"}
+func TestMergePrompts_PreservesLoopField(t *testing.T) {
+	loop := &PromptLoop{Value: 3, Unit: "hours"}
 	globalPrompts := []WebPrompt{
-		{Name: "Periodic Prompt", Prompt: "do it", Periodic: periodic, Source: PromptSourceFile},
+		{Name: "Loop Prompt", Prompt: "do it", Loop: loop, Source: PromptSourceFile},
 		{Name: "Regular Prompt", Prompt: "also do it", Source: PromptSourceFile},
 	}
 
-	// MergePrompts should carry the Periodic field through.
+	// MergePrompts should carry the Loop field through.
 	merged := MergePrompts(globalPrompts, nil, nil)
 
 	var found *WebPrompt
 	for i := range merged {
-		if merged[i].Name == "Periodic Prompt" {
+		if merged[i].Name == "Loop Prompt" {
 			found = &merged[i]
 			break
 		}
 	}
 	if found == nil {
-		t.Fatal("Periodic Prompt not found in merged result")
+		t.Fatal("Loop Prompt not found in merged result")
 	}
-	if found.Periodic == nil {
-		t.Fatal("merged Periodic Prompt has nil Periodic field, want non-nil")
+	if found.Loop == nil {
+		t.Fatal("merged Loop Prompt has nil Loop field, want non-nil")
 	}
-	if found.Periodic.Value != 3 {
-		t.Errorf("merged Periodic.Value = %d, want 3", found.Periodic.Value)
+	if found.Loop.Value != 3 {
+		t.Errorf("merged Loop.Value = %d, want 3", found.Loop.Value)
 	}
-	if found.Periodic.Unit != "hours" {
-		t.Errorf("merged Periodic.Unit = %q, want hours", found.Periodic.Unit)
+	if found.Loop.Unit != "hours" {
+		t.Errorf("merged Loop.Unit = %q, want hours", found.Loop.Unit)
 	}
 }
 
@@ -781,9 +781,9 @@ func TestFilterPromptsSpecificToACP(t *testing.T) {
 	}
 }
 
-func TestParsePromptFile_WithPeriodic_OnCompletion(t *testing.T) {
+func TestParsePromptFile_WithLoop_OnCompletion(t *testing.T) {
 	data := []byte(`name: "On Completion Prompt"
-periodic:
+loop:
   trigger: onCompletion
   delay: 10
   maxDuration: "2h"
@@ -796,30 +796,30 @@ prompt: |
 		t.Fatalf("ParsePromptFile failed: %v", err)
 	}
 
-	if prompt.Periodic == nil {
-		t.Fatal("Periodic = nil, want non-nil")
+	if prompt.Loop == nil {
+		t.Fatal("Loop = nil, want non-nil")
 	}
-	if prompt.Periodic.Trigger != "onCompletion" {
-		t.Errorf("Periodic.Trigger = %q, want %q", prompt.Periodic.Trigger, "onCompletion")
+	if prompt.Loop.Trigger != "onCompletion" {
+		t.Errorf("Loop.Trigger = %q, want %q", prompt.Loop.Trigger, "onCompletion")
 	}
-	if prompt.Periodic.Delay != 10 {
-		t.Errorf("Periodic.Delay = %d, want 10", prompt.Periodic.Delay)
+	if prompt.Loop.Delay != 10 {
+		t.Errorf("Loop.Delay = %d, want 10", prompt.Loop.Delay)
 	}
-	if prompt.Periodic.MaxDuration != "2h" {
-		t.Errorf("Periodic.MaxDuration = %q, want %q", prompt.Periodic.MaxDuration, "2h")
+	if prompt.Loop.MaxDuration != "2h" {
+		t.Errorf("Loop.MaxDuration = %q, want %q", prompt.Loop.MaxDuration, "2h")
 	}
 	// value/unit absent → zero values
-	if prompt.Periodic.Value != 0 {
-		t.Errorf("Periodic.Value = %d, want 0 (not set)", prompt.Periodic.Value)
+	if prompt.Loop.Value != 0 {
+		t.Errorf("Loop.Value = %d, want 0 (not set)", prompt.Loop.Value)
 	}
-	if prompt.Periodic.Unit != "" {
-		t.Errorf("Periodic.Unit = %q, want empty (not set)", prompt.Periodic.Unit)
+	if prompt.Loop.Unit != "" {
+		t.Errorf("Loop.Unit = %q, want empty (not set)", prompt.Loop.Unit)
 	}
 }
 
-func TestParsePromptFile_WithPeriodic_ScheduleNoTrigger(t *testing.T) {
+func TestParsePromptFile_WithLoop_ScheduleNoTrigger(t *testing.T) {
 	data := []byte(`name: "Schedule Prompt"
-periodic:
+loop:
   value: 2
   unit: hours
   maxIterations: 5
@@ -832,27 +832,27 @@ prompt: |
 		t.Fatalf("ParsePromptFile failed: %v", err)
 	}
 
-	if prompt.Periodic == nil {
-		t.Fatal("Periodic = nil, want non-nil")
+	if prompt.Loop == nil {
+		t.Fatal("Loop = nil, want non-nil")
 	}
 	// Trigger absent → empty string (schedule default)
-	if prompt.Periodic.Trigger != "" {
-		t.Errorf("Periodic.Trigger = %q, want empty (schedule default)", prompt.Periodic.Trigger)
+	if prompt.Loop.Trigger != "" {
+		t.Errorf("Loop.Trigger = %q, want empty (schedule default)", prompt.Loop.Trigger)
 	}
-	if prompt.Periodic.Value != 2 {
-		t.Errorf("Periodic.Value = %d, want 2", prompt.Periodic.Value)
+	if prompt.Loop.Value != 2 {
+		t.Errorf("Loop.Value = %d, want 2", prompt.Loop.Value)
 	}
-	if prompt.Periodic.Unit != "hours" {
-		t.Errorf("Periodic.Unit = %q, want %q", prompt.Periodic.Unit, "hours")
+	if prompt.Loop.Unit != "hours" {
+		t.Errorf("Loop.Unit = %q, want %q", prompt.Loop.Unit, "hours")
 	}
-	if prompt.Periodic.MaxIterations != 5 {
-		t.Errorf("Periodic.MaxIterations = %d, want 5", prompt.Periodic.MaxIterations)
+	if prompt.Loop.MaxIterations != 5 {
+		t.Errorf("Loop.MaxIterations = %d, want 5", prompt.Loop.MaxIterations)
 	}
-	if prompt.Periodic.Delay != 0 {
-		t.Errorf("Periodic.Delay = %d, want 0 (not set)", prompt.Periodic.Delay)
+	if prompt.Loop.Delay != 0 {
+		t.Errorf("Loop.Delay = %d, want 0 (not set)", prompt.Loop.Delay)
 	}
-	if prompt.Periodic.MaxDuration != "" {
-		t.Errorf("Periodic.MaxDuration = %q, want empty (not set)", prompt.Periodic.MaxDuration)
+	if prompt.Loop.MaxDuration != "" {
+		t.Errorf("Loop.MaxDuration = %q, want empty (not set)", prompt.Loop.MaxDuration)
 	}
 }
 
@@ -860,7 +860,7 @@ func TestToWebPrompt_OnCompletion_JSONRoundTrip(t *testing.T) {
 	pf := &PromptFile{
 		Name:    "On Completion",
 		Content: "body",
-		Periodic: &PromptPeriodic{
+		Loop: &PromptLoop{
 			Trigger:     "onCompletion",
 			Delay:       10,
 			MaxDuration: "2h",
@@ -868,8 +868,8 @@ func TestToWebPrompt_OnCompletion_JSONRoundTrip(t *testing.T) {
 	}
 
 	wp := pf.ToWebPrompt()
-	if wp.Periodic == nil {
-		t.Fatal("WebPrompt.Periodic = nil, want non-nil")
+	if wp.Loop == nil {
+		t.Fatal("WebPrompt.Loop = nil, want non-nil")
 	}
 
 	raw, err := json.Marshal(wp)
@@ -889,20 +889,20 @@ func TestToWebPrompt_OnCompletion_JSONRoundTrip(t *testing.T) {
 	}
 
 	// Also verify via struct fields.
-	if wp.Periodic.Trigger != "onCompletion" {
-		t.Errorf("WebPrompt.Periodic.Trigger = %q, want %q", wp.Periodic.Trigger, "onCompletion")
+	if wp.Loop.Trigger != "onCompletion" {
+		t.Errorf("WebPrompt.Loop.Trigger = %q, want %q", wp.Loop.Trigger, "onCompletion")
 	}
-	if wp.Periodic.Delay != 10 {
-		t.Errorf("WebPrompt.Periodic.Delay = %d, want 10", wp.Periodic.Delay)
+	if wp.Loop.Delay != 10 {
+		t.Errorf("WebPrompt.Loop.Delay = %d, want 10", wp.Loop.Delay)
 	}
-	if wp.Periodic.MaxDuration != "2h" {
-		t.Errorf("WebPrompt.Periodic.MaxDuration = %q, want %q", wp.Periodic.MaxDuration, "2h")
+	if wp.Loop.MaxDuration != "2h" {
+		t.Errorf("WebPrompt.Loop.MaxDuration = %q, want %q", wp.Loop.MaxDuration, "2h")
 	}
 }
 
-func TestParsePromptFile_WithPeriodic_OptionalDefaultFalse(t *testing.T) {
-	data := []byte(`name: "Optional Periodic"
-periodic:
+func TestParsePromptFile_WithLoop_OptionalDefaultFalse(t *testing.T) {
+	data := []byte(`name: "Optional Loop"
+loop:
   mode: optional
   default: false
   trigger: onCompletion
@@ -914,26 +914,26 @@ prompt: |
 	if err != nil {
 		t.Fatalf("ParsePromptFile failed: %v", err)
 	}
-	if prompt.Periodic == nil {
-		t.Fatal("Periodic = nil, want non-nil")
+	if prompt.Loop == nil {
+		t.Fatal("Loop = nil, want non-nil")
 	}
-	if prompt.Periodic.Mode != "optional" {
-		t.Errorf("Periodic.Mode = %q, want %q", prompt.Periodic.Mode, "optional")
+	if prompt.Loop.Mode != "optional" {
+		t.Errorf("Loop.Mode = %q, want %q", prompt.Loop.Mode, "optional")
 	}
-	if prompt.Periodic.Default == nil || *prompt.Periodic.Default != false {
-		t.Errorf("Periodic.Default = %v, want *false", prompt.Periodic.Default)
+	if prompt.Loop.Default == nil || *prompt.Loop.Default != false {
+		t.Errorf("Loop.Default = %v, want *false", prompt.Loop.Default)
 	}
 
 	// Round-trips through ToWebPrompt (whole-pointer copy).
 	wp := prompt.ToWebPrompt()
-	if wp.Periodic == nil {
-		t.Fatal("WebPrompt.Periodic = nil, want non-nil")
+	if wp.Loop == nil {
+		t.Fatal("WebPrompt.Loop = nil, want non-nil")
 	}
-	if wp.Periodic.Mode != "optional" {
-		t.Errorf("WebPrompt.Periodic.Mode = %q, want %q", wp.Periodic.Mode, "optional")
+	if wp.Loop.Mode != "optional" {
+		t.Errorf("WebPrompt.Loop.Mode = %q, want %q", wp.Loop.Mode, "optional")
 	}
-	if wp.Periodic.Default == nil || *wp.Periodic.Default != false {
-		t.Errorf("WebPrompt.Periodic.Default = %v, want *false", wp.Periodic.Default)
+	if wp.Loop.Default == nil || *wp.Loop.Default != false {
+		t.Errorf("WebPrompt.Loop.Default = %v, want *false", wp.Loop.Default)
 	}
 
 	raw, err := json.Marshal(wp)
@@ -949,9 +949,9 @@ prompt: |
 	}
 }
 
-func TestParsePromptFile_WithPeriodic_NoMode(t *testing.T) {
-	data := []byte(`name: "Always Periodic"
-periodic:
+func TestParsePromptFile_WithLoop_NoMode(t *testing.T) {
+	data := []byte(`name: "Always Loop"
+loop:
   value: 1
   unit: hours
 prompt: |
@@ -962,20 +962,20 @@ prompt: |
 	if err != nil {
 		t.Fatalf("ParsePromptFile failed: %v", err)
 	}
-	if prompt.Periodic == nil {
-		t.Fatal("Periodic = nil, want non-nil")
+	if prompt.Loop == nil {
+		t.Fatal("Loop = nil, want non-nil")
 	}
-	if prompt.Periodic.Mode != "" {
-		t.Errorf("Periodic.Mode = %q, want empty (absent => treated as always)", prompt.Periodic.Mode)
+	if prompt.Loop.Mode != "" {
+		t.Errorf("Loop.Mode = %q, want empty (absent => treated as always)", prompt.Loop.Mode)
 	}
-	if prompt.Periodic.Default != nil {
-		t.Errorf("Periodic.Default = %v, want nil (absent)", prompt.Periodic.Default)
+	if prompt.Loop.Default != nil {
+		t.Errorf("Loop.Default = %v, want nil (absent)", prompt.Loop.Default)
 	}
 }
 
-func TestParsePromptFile_PeriodicUnknownMode(t *testing.T) {
+func TestParsePromptFile_LoopUnknownMode(t *testing.T) {
 	data := []byte(`name: "Bad Mode"
-periodic:
+loop:
   mode: sometimes
 prompt: |
   body
@@ -983,43 +983,43 @@ prompt: |
 
 	_, err := ParsePromptFile("bad-mode.prompt.yaml", data, time.Now())
 	if err == nil {
-		t.Fatal("ParsePromptFile should fail for unknown periodic.mode, got nil error")
+		t.Fatal("ParsePromptFile should fail for unknown loop.mode, got nil error")
 	}
-	if !strings.Contains(err.Error(), "periodic.mode") {
-		t.Errorf("error = %q, want it to mention 'periodic.mode'", err.Error())
+	if !strings.Contains(err.Error(), "loop.mode") {
+		t.Errorf("error = %q, want it to mention 'loop.mode'", err.Error())
 	}
 	if !strings.Contains(err.Error(), "sometimes") {
 		t.Errorf("error = %q, want it to mention the invalid value 'sometimes'", err.Error())
 	}
 }
 
-func TestValidatePromptPeriodic(t *testing.T) {
-	t.Run("nil periodic is OK", func(t *testing.T) {
-		if err := ValidatePromptPeriodic("p", nil); err != nil {
+func TestValidatePromptLoop(t *testing.T) {
+	t.Run("nil loop is OK", func(t *testing.T) {
+		if err := ValidatePromptLoop("p", nil); err != nil {
 			t.Errorf("unexpected error: %v", err)
 		}
 	})
 
 	t.Run("empty mode is OK (treated as always)", func(t *testing.T) {
-		if err := ValidatePromptPeriodic("p", &PromptPeriodic{}); err != nil {
+		if err := ValidatePromptLoop("p", &PromptLoop{}); err != nil {
 			t.Errorf("unexpected error: %v", err)
 		}
 	})
 
 	t.Run("mode=always is OK", func(t *testing.T) {
-		if err := ValidatePromptPeriodic("p", &PromptPeriodic{Mode: "always"}); err != nil {
+		if err := ValidatePromptLoop("p", &PromptLoop{Mode: "always"}); err != nil {
 			t.Errorf("unexpected error: %v", err)
 		}
 	})
 
 	t.Run("mode=optional is OK", func(t *testing.T) {
-		if err := ValidatePromptPeriodic("p", &PromptPeriodic{Mode: "optional"}); err != nil {
+		if err := ValidatePromptLoop("p", &PromptLoop{Mode: "optional"}); err != nil {
 			t.Errorf("unexpected error: %v", err)
 		}
 	})
 
 	t.Run("unknown mode returns error mentioning prompt name and value", func(t *testing.T) {
-		err := ValidatePromptPeriodic("My Prompt", &PromptPeriodic{Mode: "bogus"})
+		err := ValidatePromptLoop("My Prompt", &PromptLoop{Mode: "bogus"})
 		if err == nil {
 			t.Fatal("expected error, got nil")
 		}
@@ -1033,21 +1033,21 @@ func TestValidatePromptPeriodic(t *testing.T) {
 
 	t.Run("default set with mode=always does not error (warning only)", func(t *testing.T) {
 		f := false
-		if err := ValidatePromptPeriodic("p", &PromptPeriodic{Mode: "always", Default: &f}); err != nil {
+		if err := ValidatePromptLoop("p", &PromptLoop{Mode: "always", Default: &f}); err != nil {
 			t.Errorf("unexpected error: %v", err)
 		}
 	})
 
 	t.Run("default set with mode absent does not error (warning only)", func(t *testing.T) {
 		tr := true
-		if err := ValidatePromptPeriodic("p", &PromptPeriodic{Default: &tr}); err != nil {
+		if err := ValidatePromptLoop("p", &PromptLoop{Default: &tr}); err != nil {
 			t.Errorf("unexpected error: %v", err)
 		}
 	})
 
 	t.Run("default set with mode=optional does not error and does not warn", func(t *testing.T) {
 		f := false
-		if err := ValidatePromptPeriodic("p", &PromptPeriodic{Mode: "optional", Default: &f}); err != nil {
+		if err := ValidatePromptLoop("p", &PromptLoop{Mode: "optional", Default: &f}); err != nil {
 			t.Errorf("unexpected error: %v", err)
 		}
 	})

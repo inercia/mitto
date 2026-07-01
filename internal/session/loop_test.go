@@ -144,15 +144,15 @@ func TestFrequency_Duration(t *testing.T) {
 	}
 }
 
-func TestPeriodicPrompt_Validate(t *testing.T) {
+func TestLoopPrompt_Validate(t *testing.T) {
 	tests := []struct {
 		name    string
-		prompt  PeriodicPrompt
+		prompt  LoopPrompt
 		wantErr bool
 	}{
 		{
 			name: "valid prompt",
-			prompt: PeriodicPrompt{
+			prompt: LoopPrompt{
 				Prompt:    "Check for updates",
 				Frequency: Frequency{Value: 1, Unit: FrequencyHours},
 				Enabled:   true,
@@ -161,7 +161,7 @@ func TestPeriodicPrompt_Validate(t *testing.T) {
 		},
 		{
 			name: "empty prompt",
-			prompt: PeriodicPrompt{
+			prompt: LoopPrompt{
 				Prompt:    "",
 				Frequency: Frequency{Value: 1, Unit: FrequencyHours},
 				Enabled:   true,
@@ -180,21 +180,21 @@ func TestPeriodicPrompt_Validate(t *testing.T) {
 	}
 }
 
-func TestPeriodicStore_GetNotFound(t *testing.T) {
+func TestLoopStore_GetNotFound(t *testing.T) {
 	dir := t.TempDir()
-	ps := NewPeriodicStore(dir)
+	ps := NewLoopStore(dir)
 
 	_, err := ps.Get()
-	if err != ErrPeriodicNotFound {
-		t.Errorf("Get() error = %v, want ErrPeriodicNotFound", err)
+	if err != ErrLoopNotFound {
+		t.Errorf("Get() error = %v, want ErrLoopNotFound", err)
 	}
 }
 
-func TestPeriodicStore_SetAndGet(t *testing.T) {
+func TestLoopStore_SetAndGet(t *testing.T) {
 	dir := t.TempDir()
-	ps := NewPeriodicStore(dir)
+	ps := NewLoopStore(dir)
 
-	p := &PeriodicPrompt{
+	p := &LoopPrompt{
 		Prompt:    "Check for updates",
 		Frequency: Frequency{Value: 1, Unit: FrequencyHours},
 		Enabled:   true,
@@ -205,9 +205,9 @@ func TestPeriodicStore_SetAndGet(t *testing.T) {
 	}
 
 	// Verify file was created
-	periodicPath := filepath.Join(dir, periodicFileName)
-	if _, err := os.Stat(periodicPath); os.IsNotExist(err) {
-		t.Fatal("periodic.json should exist after Set()")
+	loopPath := filepath.Join(dir, loopFileName)
+	if _, err := os.Stat(loopPath); os.IsNotExist(err) {
+		t.Fatal("loop.json should exist after Set()")
 	}
 
 	got, err := ps.Get()
@@ -238,12 +238,12 @@ func TestPeriodicStore_SetAndGet(t *testing.T) {
 	}
 }
 
-func TestPeriodicStore_SetValidation(t *testing.T) {
+func TestLoopStore_SetValidation(t *testing.T) {
 	dir := t.TempDir()
-	ps := NewPeriodicStore(dir)
+	ps := NewLoopStore(dir)
 
 	// Empty prompt
-	err := ps.Set(&PeriodicPrompt{
+	err := ps.Set(&LoopPrompt{
 		Prompt:    "",
 		Frequency: Frequency{Value: 1, Unit: FrequencyHours},
 		Enabled:   true,
@@ -253,7 +253,7 @@ func TestPeriodicStore_SetValidation(t *testing.T) {
 	}
 
 	// Invalid frequency (value must be >= 1)
-	err = ps.Set(&PeriodicPrompt{
+	err = ps.Set(&LoopPrompt{
 		Prompt:    "Test",
 		Frequency: Frequency{Value: 0, Unit: FrequencyMinutes}, // Zero not allowed
 		Enabled:   true,
@@ -263,12 +263,12 @@ func TestPeriodicStore_SetValidation(t *testing.T) {
 	}
 }
 
-func TestPeriodicStore_SetPreservesCreatedAt(t *testing.T) {
+func TestLoopStore_SetPreservesCreatedAt(t *testing.T) {
 	dir := t.TempDir()
-	ps := NewPeriodicStore(dir)
+	ps := NewLoopStore(dir)
 
 	// Create initial
-	p1 := &PeriodicPrompt{
+	p1 := &LoopPrompt{
 		Prompt:    "First prompt",
 		Frequency: Frequency{Value: 1, Unit: FrequencyHours},
 		Enabled:   true,
@@ -284,7 +284,7 @@ func TestPeriodicStore_SetPreservesCreatedAt(t *testing.T) {
 	time.Sleep(10 * time.Millisecond)
 
 	// Update with new prompt
-	p2 := &PeriodicPrompt{
+	p2 := &LoopPrompt{
 		Prompt:    "Updated prompt",
 		Frequency: Frequency{Value: 2, Unit: FrequencyHours},
 		Enabled:   false,
@@ -311,19 +311,19 @@ func TestPeriodicStore_SetPreservesCreatedAt(t *testing.T) {
 	}
 }
 
-func TestPeriodicStore_Update(t *testing.T) {
+func TestLoopStore_Update(t *testing.T) {
 	dir := t.TempDir()
-	ps := NewPeriodicStore(dir)
+	ps := NewLoopStore(dir)
 
 	// Update on non-existent should fail
 	enabled := true
 	err := ps.Update(nil, nil, nil, &enabled, nil, nil, nil, nil, nil, nil, nil, nil, nil)
-	if err != ErrPeriodicNotFound {
-		t.Errorf("Update() on empty store error = %v, want ErrPeriodicNotFound", err)
+	if err != ErrLoopNotFound {
+		t.Errorf("Update() on empty store error = %v, want ErrLoopNotFound", err)
 	}
 
 	// Create initial
-	p := &PeriodicPrompt{
+	p := &LoopPrompt{
 		Prompt:    "Initial prompt",
 		Frequency: Frequency{Value: 1, Unit: FrequencyHours},
 		Enabled:   true,
@@ -369,12 +369,12 @@ func TestPeriodicStore_Update(t *testing.T) {
 	}
 }
 
-func TestPeriodicStore_UpdateValidation(t *testing.T) {
+func TestLoopStore_UpdateValidation(t *testing.T) {
 	dir := t.TempDir()
-	ps := NewPeriodicStore(dir)
+	ps := NewLoopStore(dir)
 
 	// Create initial
-	p := &PeriodicPrompt{
+	p := &LoopPrompt{
 		Prompt:    "Initial prompt",
 		Frequency: Frequency{Value: 1, Unit: FrequencyHours},
 		Enabled:   true,
@@ -395,56 +395,56 @@ func TestPeriodicStore_UpdateValidation(t *testing.T) {
 	}
 }
 
-func TestPeriodicStore_Delete(t *testing.T) {
+func TestLoopStore_Delete(t *testing.T) {
 	dir := t.TempDir()
-	ps := NewPeriodicStore(dir)
+	ps := NewLoopStore(dir)
 
 	// Delete non-existent should return error
 	err := ps.Delete()
-	if err != ErrPeriodicNotFound {
-		t.Errorf("Delete() on empty store error = %v, want ErrPeriodicNotFound", err)
+	if err != ErrLoopNotFound {
+		t.Errorf("Delete() on empty store error = %v, want ErrLoopNotFound", err)
 	}
 
 	// Create and delete
-	p := &PeriodicPrompt{
+	p := &LoopPrompt{
 		Prompt:    "Test",
 		Frequency: Frequency{Value: 1, Unit: FrequencyHours},
 		Enabled:   true,
 	}
 	ps.Set(p)
 
-	periodicPath := filepath.Join(dir, periodicFileName)
-	if _, err := os.Stat(periodicPath); os.IsNotExist(err) {
-		t.Fatal("periodic.json should exist after Set()")
+	loopPath := filepath.Join(dir, loopFileName)
+	if _, err := os.Stat(loopPath); os.IsNotExist(err) {
+		t.Fatal("loop.json should exist after Set()")
 	}
 
 	if err := ps.Delete(); err != nil {
 		t.Fatalf("Delete() error = %v", err)
 	}
 
-	if _, err := os.Stat(periodicPath); !os.IsNotExist(err) {
-		t.Error("periodic.json should not exist after Delete()")
+	if _, err := os.Stat(loopPath); !os.IsNotExist(err) {
+		t.Error("loop.json should not exist after Delete()")
 	}
 
 	// Get should return not found
 	_, err = ps.Get()
-	if err != ErrPeriodicNotFound {
-		t.Errorf("Get() after Delete() error = %v, want ErrPeriodicNotFound", err)
+	if err != ErrLoopNotFound {
+		t.Errorf("Get() after Delete() error = %v, want ErrLoopNotFound", err)
 	}
 }
 
-func TestPeriodicStore_RecordSent(t *testing.T) {
+func TestLoopStore_RecordSent(t *testing.T) {
 	dir := t.TempDir()
-	ps := NewPeriodicStore(dir)
+	ps := NewLoopStore(dir)
 
 	// RecordSent on non-existent should fail
 	err := ps.RecordSent()
-	if err != ErrPeriodicNotFound {
-		t.Errorf("RecordSent() on empty store error = %v, want ErrPeriodicNotFound", err)
+	if err != ErrLoopNotFound {
+		t.Errorf("RecordSent() on empty store error = %v, want ErrLoopNotFound", err)
 	}
 
 	// Create
-	p := &PeriodicPrompt{
+	p := &LoopPrompt{
 		Prompt:    "Test",
 		Frequency: Frequency{Value: 1, Unit: FrequencyHours},
 		Enabled:   true,
@@ -475,17 +475,17 @@ func TestPeriodicStore_RecordSent(t *testing.T) {
 	}
 }
 
-func TestPeriodicStore_ResetCounters(t *testing.T) {
+func TestLoopStore_ResetCounters(t *testing.T) {
 	dir := t.TempDir()
-	ps := NewPeriodicStore(dir)
+	ps := NewLoopStore(dir)
 
 	// ResetCounters on non-existent should fail
-	if err := ps.ResetCounters(); err != ErrPeriodicNotFound {
-		t.Errorf("ResetCounters() on empty store error = %v, want ErrPeriodicNotFound", err)
+	if err := ps.ResetCounters(); err != ErrLoopNotFound {
+		t.Errorf("ResetCounters() on empty store error = %v, want ErrLoopNotFound", err)
 	}
 
 	// Create and run twice so IterationCount and FirstRunAt are populated.
-	p := &PeriodicPrompt{
+	p := &LoopPrompt{
 		Prompt:    "Test",
 		Frequency: Frequency{Value: 1, Unit: FrequencyHours},
 		Enabled:   true,
@@ -532,12 +532,12 @@ func TestPeriodicStore_ResetCounters(t *testing.T) {
 	}
 }
 
-func TestPeriodicStore_NextScheduledAtWhenDisabled(t *testing.T) {
+func TestLoopStore_NextScheduledAtWhenDisabled(t *testing.T) {
 	dir := t.TempDir()
-	ps := NewPeriodicStore(dir)
+	ps := NewLoopStore(dir)
 
 	// Create disabled prompt
-	p := &PeriodicPrompt{
+	p := &LoopPrompt{
 		Prompt:    "Test",
 		Frequency: Frequency{Value: 1, Unit: FrequencyHours},
 		Enabled:   false,
@@ -568,12 +568,12 @@ func TestPeriodicStore_NextScheduledAtWhenDisabled(t *testing.T) {
 	}
 }
 
-func TestPeriodicStore_NextScheduledAtWithDaysAndAt(t *testing.T) {
+func TestLoopStore_NextScheduledAtWithDaysAndAt(t *testing.T) {
 	dir := t.TempDir()
-	ps := NewPeriodicStore(dir)
+	ps := NewLoopStore(dir)
 
 	// Create a daily prompt at 09:00 UTC
-	p := &PeriodicPrompt{
+	p := &LoopPrompt{
 		Prompt:    "Daily check",
 		Frequency: Frequency{Value: 1, Unit: FrequencyDays, At: "09:00"},
 		Enabled:   true,
@@ -591,12 +591,12 @@ func TestPeriodicStore_NextScheduledAtWithDaysAndAt(t *testing.T) {
 	}
 }
 
-func TestPeriodicStore_LastSentAtPreservedOnUpdate(t *testing.T) {
+func TestLoopStore_LastSentAtPreservedOnUpdate(t *testing.T) {
 	dir := t.TempDir()
-	ps := NewPeriodicStore(dir)
+	ps := NewLoopStore(dir)
 
 	// Create and record sent
-	p := &PeriodicPrompt{
+	p := &LoopPrompt{
 		Prompt:    "Test",
 		Frequency: Frequency{Value: 1, Unit: FrequencyHours},
 		Enabled:   true,
@@ -608,7 +608,7 @@ func TestPeriodicStore_LastSentAtPreservedOnUpdate(t *testing.T) {
 	lastSent := got1.LastSentAt
 
 	// Update with Set (should preserve last_sent_at)
-	p2 := &PeriodicPrompt{
+	p2 := &LoopPrompt{
 		Prompt:    "Updated",
 		Frequency: Frequency{Value: 2, Unit: FrequencyHours},
 		Enabled:   true,
@@ -624,15 +624,15 @@ func TestPeriodicStore_LastSentAtPreservedOnUpdate(t *testing.T) {
 	}
 }
 
-func TestPeriodicPrompt_Validate_MaxIterations(t *testing.T) {
+func TestLoopPrompt_Validate_MaxIterations(t *testing.T) {
 	tests := []struct {
 		name    string
-		prompt  PeriodicPrompt
+		prompt  LoopPrompt
 		wantErr bool
 	}{
 		{
 			name: "zero max iterations (unlimited)",
-			prompt: PeriodicPrompt{
+			prompt: LoopPrompt{
 				Prompt:        "Test",
 				Frequency:     Frequency{Value: 1, Unit: FrequencyHours},
 				MaxIterations: 0,
@@ -641,7 +641,7 @@ func TestPeriodicPrompt_Validate_MaxIterations(t *testing.T) {
 		},
 		{
 			name: "positive max iterations",
-			prompt: PeriodicPrompt{
+			prompt: LoopPrompt{
 				Prompt:        "Test",
 				Frequency:     Frequency{Value: 1, Unit: FrequencyHours},
 				MaxIterations: 5,
@@ -650,7 +650,7 @@ func TestPeriodicPrompt_Validate_MaxIterations(t *testing.T) {
 		},
 		{
 			name: "negative max iterations",
-			prompt: PeriodicPrompt{
+			prompt: LoopPrompt{
 				Prompt:        "Test",
 				Frequency:     Frequency{Value: 1, Unit: FrequencyHours},
 				MaxIterations: -1,
@@ -669,7 +669,7 @@ func TestPeriodicPrompt_Validate_MaxIterations(t *testing.T) {
 	}
 }
 
-func TestPeriodicPrompt_ReachedMaxIterations(t *testing.T) {
+func TestLoopPrompt_ReachedMaxIterations(t *testing.T) {
 	tests := []struct {
 		name           string
 		maxIterations  int
@@ -685,7 +685,7 @@ func TestPeriodicPrompt_ReachedMaxIterations(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			p := &PeriodicPrompt{MaxIterations: tt.maxIterations, IterationCount: tt.iterationCount}
+			p := &LoopPrompt{MaxIterations: tt.maxIterations, IterationCount: tt.iterationCount}
 			if got := p.ReachedMaxIterations(); got != tt.want {
 				t.Errorf("ReachedMaxIterations() = %v, want %v", got, tt.want)
 			}
@@ -693,11 +693,11 @@ func TestPeriodicPrompt_ReachedMaxIterations(t *testing.T) {
 	}
 }
 
-func TestPeriodicStore_RecordSent_IncrementsIterationCount(t *testing.T) {
+func TestLoopStore_RecordSent_IncrementsIterationCount(t *testing.T) {
 	dir := t.TempDir()
-	ps := NewPeriodicStore(dir)
+	ps := NewLoopStore(dir)
 
-	p := &PeriodicPrompt{
+	p := &LoopPrompt{
 		Prompt:    "Test",
 		Frequency: Frequency{Value: 1, Unit: FrequencyHours},
 		Enabled:   true,
@@ -722,11 +722,11 @@ func TestPeriodicStore_RecordSent_IncrementsIterationCount(t *testing.T) {
 	}
 }
 
-func TestPeriodicStore_IterationCountPreservedOnSet(t *testing.T) {
+func TestLoopStore_IterationCountPreservedOnSet(t *testing.T) {
 	dir := t.TempDir()
-	ps := NewPeriodicStore(dir)
+	ps := NewLoopStore(dir)
 
-	p := &PeriodicPrompt{
+	p := &LoopPrompt{
 		Prompt:    "Test",
 		Frequency: Frequency{Value: 1, Unit: FrequencyHours},
 		Enabled:   true,
@@ -741,7 +741,7 @@ func TestPeriodicStore_IterationCountPreservedOnSet(t *testing.T) {
 	}
 
 	// Re-save the config (simulates user updating frequency without resetting counter)
-	p2 := &PeriodicPrompt{
+	p2 := &LoopPrompt{
 		Prompt:    "Updated prompt",
 		Frequency: Frequency{Value: 2, Unit: FrequencyHours},
 		Enabled:   true,
@@ -756,11 +756,11 @@ func TestPeriodicStore_IterationCountPreservedOnSet(t *testing.T) {
 	}
 }
 
-func TestPeriodicStore_UpdateDoesNotTouchIterationCount(t *testing.T) {
+func TestLoopStore_UpdateDoesNotTouchIterationCount(t *testing.T) {
 	dir := t.TempDir()
-	ps := NewPeriodicStore(dir)
+	ps := NewLoopStore(dir)
 
-	p := &PeriodicPrompt{
+	p := &LoopPrompt{
 		Prompt:    "Test",
 		Frequency: Frequency{Value: 1, Unit: FrequencyHours},
 		Enabled:   true,
@@ -787,56 +787,56 @@ func TestPeriodicStore_UpdateDoesNotTouchIterationCount(t *testing.T) {
 
 // --- New tests for trigger type, delay, maxDuration, FirstRunAt ---
 
-func TestPeriodicPrompt_Validate_Trigger(t *testing.T) {
+func TestLoopPrompt_Validate_Trigger(t *testing.T) {
 	validFreq := Frequency{Value: 1, Unit: FrequencyHours}
 	tests := []struct {
 		name    string
-		prompt  PeriodicPrompt
+		prompt  LoopPrompt
 		wantErr error
 	}{
 		{
 			name:    "valid schedule trigger explicit",
-			prompt:  PeriodicPrompt{Prompt: "p", Frequency: validFreq, Trigger: TriggerSchedule},
+			prompt:  LoopPrompt{Prompt: "p", Frequency: validFreq, Trigger: TriggerSchedule},
 			wantErr: nil,
 		},
 		{
 			name:    "valid empty trigger treated as schedule",
-			prompt:  PeriodicPrompt{Prompt: "p", Frequency: validFreq, Trigger: ""},
+			prompt:  LoopPrompt{Prompt: "p", Frequency: validFreq, Trigger: ""},
 			wantErr: nil,
 		},
 		{
 			name:    "valid onCompletion with no frequency",
-			prompt:  PeriodicPrompt{Prompt: "p", Trigger: TriggerOnCompletion},
+			prompt:  LoopPrompt{Prompt: "p", Trigger: TriggerOnCompletion},
 			wantErr: nil,
 		},
 		{
 			name:    "valid onCompletion with delay",
-			prompt:  PeriodicPrompt{Prompt: "p", Trigger: TriggerOnCompletion, DelaySeconds: 10},
+			prompt:  LoopPrompt{Prompt: "p", Trigger: TriggerOnCompletion, DelaySeconds: 10},
 			wantErr: nil,
 		},
 		{
 			name:    "valid onTasks with no frequency",
-			prompt:  PeriodicPrompt{Prompt: "p", Trigger: TriggerOnTasks},
+			prompt:  LoopPrompt{Prompt: "p", Trigger: TriggerOnTasks},
 			wantErr: nil,
 		},
 		{
 			name:    "valid onTasks with empty condition fires on any change",
-			prompt:  PeriodicPrompt{Prompt: "p", Trigger: TriggerOnTasks, Condition: ""},
+			prompt:  LoopPrompt{Prompt: "p", Trigger: TriggerOnTasks, Condition: ""},
 			wantErr: nil,
 		},
 		{
 			name:    "invalid trigger value",
-			prompt:  PeriodicPrompt{Prompt: "p", Frequency: validFreq, Trigger: "weekly"},
+			prompt:  LoopPrompt{Prompt: "p", Frequency: validFreq, Trigger: "weekly"},
 			wantErr: ErrInvalidTrigger,
 		},
 		{
 			name:    "negative DelaySeconds",
-			prompt:  PeriodicPrompt{Prompt: "p", Trigger: TriggerOnCompletion, DelaySeconds: -1},
+			prompt:  LoopPrompt{Prompt: "p", Trigger: TriggerOnCompletion, DelaySeconds: -1},
 			wantErr: ErrInvalidDelay,
 		},
 		{
 			name:    "negative MaxDurationSeconds",
-			prompt:  PeriodicPrompt{Prompt: "p", Trigger: TriggerOnCompletion, MaxDurationSeconds: -1},
+			prompt:  LoopPrompt{Prompt: "p", Trigger: TriggerOnCompletion, MaxDurationSeconds: -1},
 			wantErr: ErrInvalidMaxDuration,
 		},
 	}
@@ -855,14 +855,14 @@ func TestPeriodicPrompt_Validate_Trigger(t *testing.T) {
 	}
 }
 
-// TestPeriodicPrompt_Validate_Condition verifies that Condition compile-validation
+// TestLoopPrompt_Validate_Condition verifies that Condition compile-validation
 // is delegated to the injected ConditionValidator seam: nil validator skips the
 // check, a passing validator allows the condition, and a failing validator rejects
 // it with a wrapped error.
-func TestPeriodicPrompt_Validate_Condition(t *testing.T) {
+func TestLoopPrompt_Validate_Condition(t *testing.T) {
 	t.Cleanup(func() { ConditionValidator = nil })
 
-	p := PeriodicPrompt{Prompt: "p", Trigger: TriggerOnTasks, Condition: "tasks.changed()"}
+	p := LoopPrompt{Prompt: "p", Trigger: TriggerOnTasks, Condition: "tasks.changed()"}
 
 	// No validator wired up: CEL compile-check is skipped, condition is accepted as-is.
 	ConditionValidator = nil
@@ -888,16 +888,16 @@ func TestPeriodicPrompt_Validate_Condition(t *testing.T) {
 	}
 
 	// Empty Condition is never validated, even with a rejecting validator wired up.
-	pEmpty := PeriodicPrompt{Prompt: "p", Trigger: TriggerOnTasks}
+	pEmpty := LoopPrompt{Prompt: "p", Trigger: TriggerOnTasks}
 	if err := pEmpty.Validate(); err != nil {
 		t.Errorf("Validate() with empty condition and rejecting validator error = %v, want nil", err)
 	}
 }
 
-func TestPeriodicPrompt_ClampDelay(t *testing.T) {
+func TestLoopPrompt_ClampDelay(t *testing.T) {
 	tests := []struct {
 		name      string
-		trigger   PeriodicTrigger
+		trigger   LoopTrigger
 		delay     int
 		floor     int
 		wantDelay int
@@ -911,7 +911,7 @@ func TestPeriodicPrompt_ClampDelay(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			p := &PeriodicPrompt{Trigger: tt.trigger, DelaySeconds: tt.delay}
+			p := &LoopPrompt{Trigger: tt.trigger, DelaySeconds: tt.delay}
 			p.ClampDelay(tt.floor)
 			if p.DelaySeconds != tt.wantDelay {
 				t.Errorf("DelaySeconds = %d, want %d", p.DelaySeconds, tt.wantDelay)
@@ -920,7 +920,7 @@ func TestPeriodicPrompt_ClampDelay(t *testing.T) {
 	}
 }
 
-func TestPeriodicPrompt_ReachedMaxDuration(t *testing.T) {
+func TestLoopPrompt_ReachedMaxDuration(t *testing.T) {
 	now := time.Now().UTC()
 	past := now.Add(-10 * time.Second)
 	future := now.Add(10 * time.Second)
@@ -941,7 +941,7 @@ func TestPeriodicPrompt_ReachedMaxDuration(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			p := &PeriodicPrompt{MaxDurationSeconds: tt.maxDurationSeconds, FirstRunAt: tt.firstRunAt}
+			p := &LoopPrompt{MaxDurationSeconds: tt.maxDurationSeconds, FirstRunAt: tt.firstRunAt}
 			if got := p.ReachedMaxDuration(tt.now); got != tt.want {
 				t.Errorf("ReachedMaxDuration() = %v, want %v", got, tt.want)
 			}
@@ -949,11 +949,11 @@ func TestPeriodicPrompt_ReachedMaxDuration(t *testing.T) {
 	}
 }
 
-func TestPeriodicStore_RecordSent_SetsFirstRunAt(t *testing.T) {
+func TestLoopStore_RecordSent_SetsFirstRunAt(t *testing.T) {
 	dir := t.TempDir()
-	ps := NewPeriodicStore(dir)
+	ps := NewLoopStore(dir)
 
-	p := &PeriodicPrompt{
+	p := &LoopPrompt{
 		Prompt:    "Test",
 		Frequency: Frequency{Value: 1, Unit: FrequencyHours},
 		Enabled:   true,
@@ -989,11 +989,11 @@ func TestPeriodicStore_RecordSent_SetsFirstRunAt(t *testing.T) {
 	}
 }
 
-func TestPeriodicStore_FirstRunAtPreservedOnSet(t *testing.T) {
+func TestLoopStore_FirstRunAtPreservedOnSet(t *testing.T) {
 	dir := t.TempDir()
-	ps := NewPeriodicStore(dir)
+	ps := NewLoopStore(dir)
 
-	p := &PeriodicPrompt{
+	p := &LoopPrompt{
 		Prompt:    "Test",
 		Frequency: Frequency{Value: 1, Unit: FrequencyHours},
 		Enabled:   true,
@@ -1005,7 +1005,7 @@ func TestPeriodicStore_FirstRunAtPreservedOnSet(t *testing.T) {
 	firstRunAt := *got.FirstRunAt
 
 	// Replace config via Set — FirstRunAt must survive.
-	p2 := &PeriodicPrompt{
+	p2 := &LoopPrompt{
 		Prompt:    "Updated",
 		Frequency: Frequency{Value: 2, Unit: FrequencyHours},
 		Enabled:   true,
@@ -1023,11 +1023,11 @@ func TestPeriodicStore_FirstRunAtPreservedOnSet(t *testing.T) {
 	}
 }
 
-func TestPeriodicStore_Update_NewFields(t *testing.T) {
+func TestLoopStore_Update_NewFields(t *testing.T) {
 	dir := t.TempDir()
-	ps := NewPeriodicStore(dir)
+	ps := NewLoopStore(dir)
 
-	p := &PeriodicPrompt{
+	p := &LoopPrompt{
 		Prompt:    "Test",
 		Frequency: Frequency{Value: 1, Unit: FrequencyHours},
 		Enabled:   true,
@@ -1072,14 +1072,14 @@ func TestPeriodicStore_Update_NewFields(t *testing.T) {
 	}
 }
 
-// TestPeriodicStore_Update_OnTasksFields verifies that Condition, ConditionPreset,
+// TestLoopStore_Update_OnTasksFields verifies that Condition, ConditionPreset,
 // and CooldownSeconds round-trip through Update/Get, and that a nil update leaves
 // them unchanged.
-func TestPeriodicStore_Update_OnTasksFields(t *testing.T) {
+func TestLoopStore_Update_OnTasksFields(t *testing.T) {
 	dir := t.TempDir()
-	ps := NewPeriodicStore(dir)
+	ps := NewLoopStore(dir)
 
-	p := &PeriodicPrompt{
+	p := &LoopPrompt{
 		Prompt:  "Test",
 		Trigger: TriggerOnTasks,
 		Enabled: true,
@@ -1122,11 +1122,11 @@ func TestPeriodicStore_Update_OnTasksFields(t *testing.T) {
 	}
 }
 
-func TestPeriodicStore_OnCompletion_NextScheduledAtIsNil(t *testing.T) {
+func TestLoopStore_OnCompletion_NextScheduledAtIsNil(t *testing.T) {
 	dir := t.TempDir()
-	ps := NewPeriodicStore(dir)
+	ps := NewLoopStore(dir)
 
-	p := &PeriodicPrompt{
+	p := &LoopPrompt{
 		Prompt:  "Test",
 		Trigger: TriggerOnCompletion,
 		Enabled: true,
@@ -1143,11 +1143,11 @@ func TestPeriodicStore_OnCompletion_NextScheduledAtIsNil(t *testing.T) {
 
 // --- MarkStopped tests ---
 
-func TestPeriodicStore_MarkStopped_SetsAllFields(t *testing.T) {
+func TestLoopStore_MarkStopped_SetsAllFields(t *testing.T) {
 	dir := t.TempDir()
-	ps := NewPeriodicStore(dir)
+	ps := NewLoopStore(dir)
 
-	if err := ps.Set(&PeriodicPrompt{
+	if err := ps.Set(&LoopPrompt{
 		Prompt:    "Test",
 		Frequency: Frequency{Value: 1, Unit: FrequencyHours},
 		Enabled:   true,
@@ -1182,7 +1182,7 @@ func TestPeriodicStore_MarkStopped_SetsAllFields(t *testing.T) {
 	}
 }
 
-func TestPeriodicStore_MarkStopped_AllReasons(t *testing.T) {
+func TestLoopStore_MarkStopped_AllReasons(t *testing.T) {
 	reasons := []StoppedReason{
 		StoppedReasonMaxDuration,
 		StoppedReasonMaxIterations,
@@ -1194,8 +1194,8 @@ func TestPeriodicStore_MarkStopped_AllReasons(t *testing.T) {
 	for _, reason := range reasons {
 		t.Run(string(reason), func(t *testing.T) {
 			dir := t.TempDir()
-			ps := NewPeriodicStore(dir)
-			if err := ps.Set(&PeriodicPrompt{
+			ps := NewLoopStore(dir)
+			if err := ps.Set(&LoopPrompt{
 				Prompt:    "Test",
 				Frequency: Frequency{Value: 1, Unit: FrequencyHours},
 				Enabled:   true,
@@ -1216,11 +1216,11 @@ func TestPeriodicStore_MarkStopped_AllReasons(t *testing.T) {
 	}
 }
 
-func TestPeriodicStore_MarkStopped_PersistsAcrossRestart(t *testing.T) {
+func TestLoopStore_MarkStopped_PersistsAcrossRestart(t *testing.T) {
 	dir := t.TempDir()
-	ps := NewPeriodicStore(dir)
+	ps := NewLoopStore(dir)
 
-	if err := ps.Set(&PeriodicPrompt{
+	if err := ps.Set(&LoopPrompt{
 		Prompt:    "Test",
 		Frequency: Frequency{Value: 1, Unit: FrequencyHours},
 		Enabled:   true,
@@ -1231,8 +1231,8 @@ func TestPeriodicStore_MarkStopped_PersistsAcrossRestart(t *testing.T) {
 		t.Fatalf("MarkStopped() error = %v", err)
 	}
 
-	// Simulate restart: create a fresh PeriodicStore for the same directory.
-	ps2 := NewPeriodicStore(dir)
+	// Simulate restart: create a fresh LoopStore for the same directory.
+	ps2 := NewLoopStore(dir)
 	got, err := ps2.Get()
 	if err != nil {
 		t.Fatalf("Get() on fresh store error = %v", err)
@@ -1245,21 +1245,21 @@ func TestPeriodicStore_MarkStopped_PersistsAcrossRestart(t *testing.T) {
 	}
 }
 
-func TestPeriodicStore_MarkStopped_NotFound(t *testing.T) {
+func TestLoopStore_MarkStopped_NotFound(t *testing.T) {
 	dir := t.TempDir()
-	ps := NewPeriodicStore(dir)
+	ps := NewLoopStore(dir)
 
 	err := ps.MarkStopped(StoppedReasonMaxDuration)
-	if !errors.Is(err, ErrPeriodicNotFound) {
-		t.Errorf("MarkStopped() on non-existent config error = %v, want ErrPeriodicNotFound", err)
+	if !errors.Is(err, ErrLoopNotFound) {
+		t.Errorf("MarkStopped() on non-existent config error = %v, want ErrLoopNotFound", err)
 	}
 }
 
-func TestPeriodicStore_Update_EnableTrue_ClearsStoppedState(t *testing.T) {
+func TestLoopStore_Update_EnableTrue_ClearsStoppedState(t *testing.T) {
 	dir := t.TempDir()
-	ps := NewPeriodicStore(dir)
+	ps := NewLoopStore(dir)
 
-	if err := ps.Set(&PeriodicPrompt{
+	if err := ps.Set(&LoopPrompt{
 		Prompt:    "Test",
 		Frequency: Frequency{Value: 1, Unit: FrequencyHours},
 		Enabled:   true,
@@ -1291,11 +1291,11 @@ func TestPeriodicStore_Update_EnableTrue_ClearsStoppedState(t *testing.T) {
 	}
 }
 
-func TestPeriodicStore_Update_EnableFalse_DoesNotClearStoppedState(t *testing.T) {
+func TestLoopStore_Update_EnableFalse_DoesNotClearStoppedState(t *testing.T) {
 	dir := t.TempDir()
-	ps := NewPeriodicStore(dir)
+	ps := NewLoopStore(dir)
 
-	if err := ps.Set(&PeriodicPrompt{
+	if err := ps.Set(&LoopPrompt{
 		Prompt:    "Test",
 		Frequency: Frequency{Value: 1, Unit: FrequencyHours},
 		Enabled:   true,
@@ -1318,14 +1318,14 @@ func TestPeriodicStore_Update_EnableFalse_DoesNotClearStoppedState(t *testing.T)
 	}
 }
 
-// TestPeriodicStore_Set_ArgumentsPersisted verifies that Arguments set on a PeriodicPrompt
+// TestLoopStore_Set_ArgumentsPersisted verifies that Arguments set on a LoopPrompt
 // via Set() survive a round-trip through Get().
-func TestPeriodicStore_Set_ArgumentsPersisted(t *testing.T) {
+func TestLoopStore_Set_ArgumentsPersisted(t *testing.T) {
 	dir := t.TempDir()
-	ps := NewPeriodicStore(dir)
+	ps := NewLoopStore(dir)
 
 	args := map[string]string{"ISSUE_ID": "mitto-42", "ENV": "prod"}
-	if err := ps.Set(&PeriodicPrompt{
+	if err := ps.Set(&LoopPrompt{
 		PromptName: "my-prompt",
 		Arguments:  args,
 		Frequency:  Frequency{Value: 1, Unit: FrequencyHours},
@@ -1348,13 +1348,13 @@ func TestPeriodicStore_Set_ArgumentsPersisted(t *testing.T) {
 	}
 }
 
-// TestPeriodicStore_Update_ArgumentsPersisted verifies that the arguments field
+// TestLoopStore_Update_ArgumentsPersisted verifies that the arguments field
 // is updated via Update() and that nil leaves it unchanged.
-func TestPeriodicStore_Update_ArgumentsPersisted(t *testing.T) {
+func TestLoopStore_Update_ArgumentsPersisted(t *testing.T) {
 	dir := t.TempDir()
-	ps := NewPeriodicStore(dir)
+	ps := NewLoopStore(dir)
 
-	if err := ps.Set(&PeriodicPrompt{
+	if err := ps.Set(&LoopPrompt{
 		PromptName: "my-prompt",
 		Arguments:  map[string]string{"KEY": "initial"},
 		Frequency:  Frequency{Value: 1, Unit: FrequencyHours},
@@ -1386,7 +1386,7 @@ func TestPeriodicStore_Update_ArgumentsPersisted(t *testing.T) {
 	}
 }
 
-func TestPeriodicPrompt_PromptPreview(t *testing.T) {
+func TestLoopPrompt_PromptPreview(t *testing.T) {
 	tests := []struct {
 		name   string
 		prompt string
@@ -1442,7 +1442,7 @@ func TestPeriodicPrompt_PromptPreview(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			p := &PeriodicPrompt{Prompt: tt.prompt}
+			p := &LoopPrompt{Prompt: tt.prompt}
 			got := p.PromptPreview()
 			if got != tt.want {
 				t.Errorf("PromptPreview() = %q, want %q", got, tt.want)
@@ -1453,11 +1453,11 @@ func TestPeriodicPrompt_PromptPreview(t *testing.T) {
 
 // --- DeferNextSchedule tests ---
 
-func TestPeriodicStore_DeferNextSchedule(t *testing.T) {
+func TestLoopStore_DeferNextSchedule(t *testing.T) {
 	dir := t.TempDir()
-	ps := NewPeriodicStore(dir)
+	ps := NewLoopStore(dir)
 
-	p := &PeriodicPrompt{
+	p := &LoopPrompt{
 		Prompt:    "Test",
 		Frequency: Frequency{Value: 1, Unit: FrequencyHours},
 		Enabled:   true,
@@ -1498,11 +1498,11 @@ func TestPeriodicStore_DeferNextSchedule(t *testing.T) {
 	}
 }
 
-func TestPeriodicStore_DeferNextSchedule_OnCompletionNoop(t *testing.T) {
+func TestLoopStore_DeferNextSchedule_OnCompletionNoop(t *testing.T) {
 	dir := t.TempDir()
-	ps := NewPeriodicStore(dir)
+	ps := NewLoopStore(dir)
 
-	p := &PeriodicPrompt{
+	p := &LoopPrompt{
 		Prompt:  "Test",
 		Trigger: TriggerOnCompletion,
 		Enabled: true,
@@ -1520,11 +1520,11 @@ func TestPeriodicStore_DeferNextSchedule_OnCompletionNoop(t *testing.T) {
 	}
 }
 
-func TestPeriodicStore_DeferNextSchedule_DisabledNoop(t *testing.T) {
+func TestLoopStore_DeferNextSchedule_DisabledNoop(t *testing.T) {
 	dir := t.TempDir()
-	ps := NewPeriodicStore(dir)
+	ps := NewLoopStore(dir)
 
-	p := &PeriodicPrompt{
+	p := &LoopPrompt{
 		Prompt:    "Test",
 		Frequency: Frequency{Value: 1, Unit: FrequencyHours},
 		Enabled:   false,
@@ -1542,11 +1542,11 @@ func TestPeriodicStore_DeferNextSchedule_DisabledNoop(t *testing.T) {
 	}
 }
 
-func TestPeriodicStore_DeferNextSchedule_NotFound(t *testing.T) {
+func TestLoopStore_DeferNextSchedule_NotFound(t *testing.T) {
 	dir := t.TempDir()
-	ps := NewPeriodicStore(dir)
+	ps := NewLoopStore(dir)
 
-	if err := ps.DeferNextSchedule(time.Minute); err != ErrPeriodicNotFound {
-		t.Errorf("DeferNextSchedule() on empty store error = %v, want ErrPeriodicNotFound", err)
+	if err := ps.DeferNextSchedule(time.Minute); err != ErrLoopNotFound {
+		t.Errorf("DeferNextSchedule() on empty store error = %v, want ErrLoopNotFound", err)
 	}
 }
