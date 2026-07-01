@@ -3,6 +3,7 @@ package handlers
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -535,6 +536,130 @@ func TestHandleSetPeriodic_PendingPlaceholderDoesNotBecomeTitle(t *testing.T) {
 	}
 	if !strings.Contains(strings.ToLower(meta.Name), "actual") && !strings.Contains(strings.ToLower(meta.Name), "resolved") {
 		t.Errorf("title should be derived from the resolved prompt body; got %q", meta.Name)
+	}
+}
+
+// TestHandleSessionPeriodic_OnTasksRoundTrip verifies that the onTasks trigger and its
+// condition/condition_preset/cooldown_seconds fields round-trip through PUT and PATCH,
+// and that a frequency is not required for the onTasks trigger.
+func TestHandleSessionPeriodic_OnTasksRoundTrip(t *testing.T) {
+	store, h := newPeriodicStore(t)
+	tmpDir := t.TempDir()
+
+	const sid = "test-ontasks-roundtrip"
+	if err := store.Create(session.Metadata{SessionID: sid, ACPServer: "test-server", WorkingDir: tmpDir}); err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+
+	cond := `Tasks.Open > Prev.Open`
+	preset := "any-open-increase"
+	cooldown := 120
+
+	got := putPeriodicForTest(t, h, sid, PeriodicPromptRequest{
+		Prompt:          "review beads changes",
+		Enabled:         true,
+		Trigger:         session.TriggerOnTasks,
+		Condition:       &cond,
+		ConditionPreset: &preset,
+		CooldownSeconds: &cooldown,
+	})
+
+	if got.Trigger != session.TriggerOnTasks {
+		t.Errorf("Trigger = %q, want %q", got.Trigger, session.TriggerOnTasks)
+	}
+	if got.Condition != cond {
+		t.Errorf("Condition = %q, want %q", got.Condition, cond)
+	}
+	if got.ConditionPreset != preset {
+		t.Errorf("ConditionPreset = %q, want %q", got.ConditionPreset, preset)
+	}
+	if got.CooldownSeconds != cooldown {
+		t.Errorf("CooldownSeconds = %d, want %d", got.CooldownSeconds, cooldown)
+	}
+
+	// PATCH: change only the condition; other onTasks fields must be preserved.
+	newCond := `size(Changes.Reopened) > 0`
+	patchBody, _ := json.Marshal(PeriodicPromptPatchRequest{Condition: &newCond})
+	req := httptest.NewRequest(http.MethodPatch, "/api/sessions/"+sid+"/periodic", bytes.NewReader(patchBody))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	h.HandleSessionPeriodic(w, req, sid, "")
+	if w.Code != http.StatusOK {
+		t.Fatalf("PATCH periodic: Status = %d, want %d. Body: %s", w.Code, http.StatusOK, w.Body.String())
+	}
+
+	stored, err := store.Periodic(sid).Get()
+	if err != nil {
+		t.Fatalf("Get periodic after PATCH: %v", err)
+	}
+	if stored.Condition != newCond {
+		t.Errorf("Condition after PATCH = %q, want %q", stored.Condition, newCond)
+	}
+	if stored.ConditionPreset != preset {
+		t.Errorf("ConditionPreset after PATCH = %q, want preserved %q", stored.ConditionPreset, preset)
+	}
+	if stored.CooldownSeconds != cooldown {
+		t.Errorf("CooldownSeconds after PATCH = %d, want preserved %d", stored.CooldownSeconds, cooldown)
+	}
+	if !stored.IsOnTasks() {
+		t.Errorf("Trigger after PATCH = %q, want onTasks (must not be clobbered)", stored.Trigger)
+	}
+}
+
+// TestHandleSessionPeriodic_PatchInvalidConditionRejected verifies that an invalid CEL
+// condition is rejected with a 400 Bad Request when session.ConditionValidator is wired.
+// The real wiring (config.ValidateCondition) is owned by a sibling worker, so this test
+// injects a fake rejecting validator to exercise the same seam in isolation.
+func TestHandleSessionPeriodic_PatchInvalidConditionRejected(t *testing.T) {
+	old := session.ConditionValidator
+	session.ConditionValidator = func(expr string) error {
+		return errors.New("simulated invalid CEL")
+	}
+	defer func() { session.ConditionValidator = old }()
+
+	store, h := newPeriodicStore(t)
+	tmpDir := t.TempDir()
+
+	const sid = "test-ontasks-invalid-condition"
+	if err := store.Create(session.Metadata{SessionID: sid, ACPServer: "test-server", WorkingDir: tmpDir}); err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+
+	putPeriodicForTest(t, h, sid, PeriodicPromptRequest{
+		Prompt:  "review beads changes",
+		Enabled: true,
+		Trigger: session.TriggerOnTasks,
+	})
+
+	badCond := "not valid cel("
+	patchBody, _ := json.Marshal(PeriodicPromptPatchRequest{Condition: &badCond})
+	req := httptest.NewRequest(http.MethodPatch, "/api/sessions/"+sid+"/periodic", bytes.NewReader(patchBody))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	h.HandleSessionPeriodic(w, req, sid, "")
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("PATCH invalid condition: Status = %d, want %d. Body: %s", w.Code, http.StatusBadRequest, w.Body.String())
+	}
+	var env struct {
+		Error struct {
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &env); err != nil {
+		t.Fatalf("decode error body: %v", err)
+	}
+	if !strings.Contains(env.Error.Message, "invalid condition") {
+		t.Errorf("error.message = %q, want it to mention 'invalid condition'", env.Error.Message)
+	}
+
+	// Verify the rejected condition was not persisted.
+	stored, err := store.Periodic(sid).Get()
+	if err != nil {
+		t.Fatalf("Get periodic after rejected PATCH: %v", err)
+	}
+	if stored.Condition == badCond {
+		t.Errorf("rejected condition must not be persisted, got %q", stored.Condition)
 	}
 }
 

@@ -1184,8 +1184,9 @@ func (s *Server) registerSessionScopedTools(mcpSrv *mcp.Server) {
 			"Set 'periodic_enabled' to false to create the periodic configuration in a paused state. " +
 			"Set 'periodic_fresh_context' to true to start each run with a clean agent context (no history injection, new ACP session). " +
 			"Set 'periodic_max_iterations' to limit the number of scheduled runs (0 = unlimited). " +
-			"Set 'periodic_trigger' to 'onCompletion' to fire the next run after the agent stops responding (event-driven) instead of on a fixed 'schedule'; onCompletion does not require a frequency. " +
+			"Set 'periodic_trigger' to 'onCompletion' to fire the next run after the agent stops responding (event-driven), or 'onTasks' to fire when beads/tasks in the workspace change (event-driven), instead of on a fixed 'schedule'; neither onCompletion nor onTasks requires a frequency. " +
 			"For 'onCompletion', set 'periodic_completion_delay_seconds' to the wait after the agent stops (clamped to the global floor). " +
+			"For 'onTasks', optionally set 'periodic_condition' to a CEL expression gating which task changes fire the run (empty = fire on ANY beads/task change); 'periodic_condition_preset' records an optional UI preset id compiled into the condition. " +
 			"Set 'periodic_max_duration_seconds' to auto-stop the conversation after a wall-clock cap since iterating started (0 = unlimited). " +
 			"Cannot be used together with 'acp_server'. " +
 			"Requires 'Can start conversation' flag to be enabled in Advanced Settings (disabled by default for security). " +
@@ -1257,8 +1258,9 @@ func (s *Server) registerSessionScopedTools(mcpSrv *mcp.Server) {
 			"To disable periodic entirely, set 'periodic_enabled' to false. " +
 			"Set 'periodic_fresh_context' to true to start each run with a clean agent context (no history injection, new ACP session). " +
 			"Set 'periodic_max_iterations' to limit the number of scheduled runs (0 = unlimited). " +
-			"Set 'periodic_trigger' to 'onCompletion' (event-driven: fire after the agent stops) or 'schedule' (frequency-based, default); onCompletion does not require a frequency. " +
+			"Set 'periodic_trigger' to 'onCompletion' (event-driven: fire after the agent stops), 'onTasks' (event-driven: fire when beads/tasks in the workspace change), or 'schedule' (frequency-based, default); neither onCompletion nor onTasks requires a frequency. " +
 			"For 'onCompletion', set 'periodic_completion_delay_seconds' to the wait after the agent stops (clamped to the global floor). " +
+			"For 'onTasks', optionally set 'periodic_condition' to a CEL expression gating which task changes fire the run (empty = fire on ANY beads/task change); 'periodic_condition_preset' records an optional UI preset id compiled into the condition. " +
 			"Set 'periodic_max_duration_seconds' to auto-stop the conversation after a wall-clock cap since iterating started (0 = unlimited). " +
 			selfIDNote,
 	}, s.handleConversationUpdate)
@@ -2727,10 +2729,15 @@ type ConversationStartInput struct {
 	PeriodicEnabled        *bool  `json:"periodic_enabled,omitempty"`         // Whether periodic is active (defaults to true)
 	PeriodicFreshContext   *bool  `json:"periodic_fresh_context,omitempty"`   // Start each run with a fresh agent context (default false)
 	PeriodicMaxIterations  *int   `json:"periodic_max_iterations,omitempty"`  // Maximum number of scheduled runs (0 = unlimited)
-	// On-completion trigger configuration (optional)
-	PeriodicTrigger                string `json:"periodic_trigger,omitempty"`                  // "schedule" (default) or "onCompletion"
+	// On-completion / on-tasks trigger configuration (optional)
+	PeriodicTrigger                string `json:"periodic_trigger,omitempty"`                  // "schedule" (default), "onCompletion", or "onTasks"
 	PeriodicCompletionDelaySeconds *int   `json:"periodic_completion_delay_seconds,omitempty"` // Wait (s) after agent stops, onCompletion only; clamped to floor
 	PeriodicMaxDurationSeconds     *int   `json:"periodic_max_duration_seconds,omitempty"`     // Wall-clock cap (s) since iterating started (0 = unlimited)
+	// PeriodicCondition is a CEL expression gating onTasks firing (only meaningful when
+	// periodic_trigger is "onTasks"). Empty means fire on ANY beads/task change.
+	PeriodicCondition string `json:"periodic_condition,omitempty"`
+	// PeriodicConditionPreset is an optional UI preset id that was compiled into periodic_condition.
+	PeriodicConditionPreset string `json:"periodic_condition_preset,omitempty"`
 }
 
 // ConversationStartOutput is the output for mitto_conversation_new tool.
@@ -3027,19 +3034,19 @@ func (s *Server) handleConversationStart(ctx context.Context, req *mcp.CallToolR
 	var periodicConfigured bool
 	var periodicNextRun string
 	if input.PeriodicPrompt != "" {
-		// Resolve the trigger (default schedule). onCompletion is event-driven and does
-		// not require a frequency.
+		// Resolve the trigger (default schedule). onCompletion and onTasks are
+		// event-driven and do not require a frequency.
 		trigger := session.PeriodicTrigger(input.PeriodicTrigger)
 		switch trigger {
-		case "", session.TriggerSchedule, session.TriggerOnCompletion:
+		case "", session.TriggerSchedule, session.TriggerOnCompletion, session.TriggerOnTasks:
 			// valid
 		default:
-			return nil, ConversationStartOutput{}, fmt.Errorf("periodic_trigger must be 'schedule' or 'onCompletion'")
+			return nil, ConversationStartOutput{}, fmt.Errorf("periodic_trigger must be 'schedule', 'onCompletion', or 'onTasks'")
 		}
-		isOnCompletion := trigger == session.TriggerOnCompletion
+		skipFrequency := trigger == session.TriggerOnCompletion || trigger == session.TriggerOnTasks
 
 		var freq session.Frequency
-		if !isOnCompletion {
+		if !skipFrequency {
 			// Schedule trigger: frequency is required.
 			if input.PeriodicFrequencyValue < 1 {
 				return nil, ConversationStartOutput{}, fmt.Errorf("periodic_frequency_value must be >= 1 when periodic_prompt is provided")
@@ -3101,6 +3108,8 @@ func (s *Server) handleConversationStart(ctx context.Context, req *mcp.CallToolR
 			Trigger:            trigger,
 			DelaySeconds:       delaySeconds,
 			MaxDurationSeconds: maxDurationSeconds,
+			Condition:          input.PeriodicCondition,
+			ConditionPreset:    input.PeriodicConditionPreset,
 		}
 		// Clamp the on-completion delay to the global floor (no-op for schedule).
 		periodic.ClampDelay(s.periodicDelayFloor())
@@ -3864,7 +3873,8 @@ func (s *Server) handleConversationUpdate(ctx context.Context, req *mcp.CallTool
 
 	// Update periodic configuration if any periodic fields provided
 	if input.PeriodicPrompt != nil || input.PeriodicFrequencyValue != nil || input.PeriodicFrequencyUnit != nil || input.PeriodicEnabled != nil || input.PeriodicFreshContext != nil || input.PeriodicMaxIterations != nil ||
-		input.PeriodicTrigger != nil || input.PeriodicCompletionDelaySeconds != nil || input.PeriodicMaxDurationSeconds != nil {
+		input.PeriodicTrigger != nil || input.PeriodicCompletionDelaySeconds != nil || input.PeriodicMaxDurationSeconds != nil ||
+		input.PeriodicCondition != nil || input.PeriodicConditionPreset != nil {
 		periodicStore := store.Periodic(input.ConversationID)
 
 		// Check if this is an update to existing periodic config or a new setup
@@ -3872,21 +3882,22 @@ func (s *Server) handleConversationUpdate(ctx context.Context, req *mcp.CallTool
 		isNew := existErr != nil || existing == nil
 
 		if isNew {
-			// Resolve the trigger (default schedule). onCompletion does not require a frequency.
+			// Resolve the trigger (default schedule). onCompletion and onTasks are
+			// event-driven and do not require a frequency.
 			trigger := session.TriggerSchedule
 			if input.PeriodicTrigger != nil {
 				trigger = session.PeriodicTrigger(*input.PeriodicTrigger)
 			}
 			switch trigger {
-			case "", session.TriggerSchedule, session.TriggerOnCompletion:
+			case "", session.TriggerSchedule, session.TriggerOnCompletion, session.TriggerOnTasks:
 				// valid
 			default:
 				return nil, ConversationUpdateOutput{
 					Success: false,
-					Error:   "periodic_trigger must be 'schedule' or 'onCompletion'",
+					Error:   "periodic_trigger must be 'schedule', 'onCompletion', or 'onTasks'",
 				}, nil
 			}
-			isOnCompletion := trigger == session.TriggerOnCompletion
+			skipFrequency := trigger == session.TriggerOnCompletion || trigger == session.TriggerOnTasks
 
 			// Creating new periodic config — require the prompt always.
 			if input.PeriodicPrompt == nil || *input.PeriodicPrompt == "" {
@@ -3897,7 +3908,7 @@ func (s *Server) handleConversationUpdate(ctx context.Context, req *mcp.CallTool
 			}
 
 			var freq session.Frequency
-			if !isOnCompletion {
+			if !skipFrequency {
 				// Schedule trigger: frequency is mandatory.
 				if input.PeriodicFrequencyValue == nil || *input.PeriodicFrequencyValue < 1 {
 					return nil, ConversationUpdateOutput{
@@ -3977,6 +3988,12 @@ func (s *Server) handleConversationUpdate(ctx context.Context, req *mcp.CallTool
 				DelaySeconds:       delaySeconds,
 				MaxDurationSeconds: maxDurationSeconds,
 			}
+			if input.PeriodicCondition != nil {
+				periodic.Condition = *input.PeriodicCondition
+			}
+			if input.PeriodicConditionPreset != nil {
+				periodic.ConditionPreset = *input.PeriodicConditionPreset
+			}
 			// Clamp the on-completion delay to the global floor (no-op for schedule).
 			periodic.ClampDelay(s.periodicDelayFloor())
 
@@ -4051,7 +4068,7 @@ func (s *Server) handleConversationUpdate(ctx context.Context, req *mcp.CallTool
 				}
 			}
 
-			if err := periodicStore.Update(prompt, nil, freq, enabled, input.PeriodicFreshContext, input.PeriodicMaxIterations, trigger, delaySeconds, input.PeriodicMaxDurationSeconds, nil); err != nil {
+			if err := periodicStore.Update(prompt, nil, freq, enabled, input.PeriodicFreshContext, input.PeriodicMaxIterations, trigger, delaySeconds, input.PeriodicMaxDurationSeconds, nil, input.PeriodicCondition, input.PeriodicConditionPreset, nil); err != nil {
 				return nil, ConversationUpdateOutput{
 					Success: false,
 					Error:   fmt.Sprintf("failed to update periodic: %v", err),
@@ -4151,6 +4168,8 @@ func (s *Server) handleConversationUpdate(ctx context.Context, req *mcp.CallTool
 		output.PeriodicTrigger = string(p.EffectiveTrigger())
 		output.PeriodicCompletionDelaySeconds = p.DelaySeconds
 		output.PeriodicMaxDurationSeconds = p.MaxDurationSeconds
+		output.PeriodicCondition = p.Condition
+		output.PeriodicConditionPreset = p.ConditionPreset
 		if p.NextScheduledAt != nil {
 			output.PeriodicNextRun = p.NextScheduledAt.Format("2006-01-02T15:04:05Z07:00")
 		}

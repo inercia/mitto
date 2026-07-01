@@ -9458,6 +9458,147 @@ func TestConversationUpdate_OnCompletionPeriodic(t *testing.T) {
 	}
 }
 
+// TestConversationStart_OnTasksPeriodic verifies that mitto_conversation_new accepts
+// periodic_trigger:"onTasks" (no frequency required) and persists periodic_condition
+// (+ periodic_condition_preset) on the new conversation.
+func TestConversationStart_OnTasksPeriodic(t *testing.T) {
+	store, srv, parentID := setupConversationStartServer(t)
+	ctx := context.Background()
+
+	cond := `Changes.Touched.exists(i, i.type == "bug")`
+	_, output, err := srv.handleConversationStart(ctx, nil, ConversationStartInput{
+		SelfID:                  parentID,
+		Title:                   "onTasks child",
+		PeriodicPrompt:          "review beads changes",
+		PeriodicTrigger:         string(session.TriggerOnTasks),
+		PeriodicCondition:       cond,
+		PeriodicConditionPreset: "bug-touched",
+	})
+	if err != nil {
+		t.Fatalf("handleConversationStart error: %v", err)
+	}
+	if !output.PeriodicConfigured {
+		t.Fatalf("expected periodic to be configured: %s", output.Error)
+	}
+
+	stored, err := store.Periodic(output.SessionID).Get()
+	if err != nil {
+		t.Fatalf("Get periodic: %v", err)
+	}
+	if !stored.IsOnTasks() {
+		t.Errorf("stored trigger = %q, want onTasks", stored.Trigger)
+	}
+	if stored.Condition != cond {
+		t.Errorf("stored condition = %q, want %q", stored.Condition, cond)
+	}
+	if stored.ConditionPreset != "bug-touched" {
+		t.Errorf("stored condition_preset = %q, want %q", stored.ConditionPreset, "bug-touched")
+	}
+}
+
+// TestConversationUpdate_OnTasksPeriodic verifies that mitto_conversation_update can
+// create an onTasks periodic conversation (no frequency required) with a CEL condition,
+// and that a subsequent partial update can change just the condition_preset without
+// clobbering the condition or trigger.
+func TestConversationUpdate_OnTasksPeriodic(t *testing.T) {
+	store, srv, parentID := setupConversationStartServer(t)
+	ctx := context.Background()
+
+	prompt := "review beads changes"
+	trigger := string(session.TriggerOnTasks)
+	cond := `Tasks.Open > Prev.Open`
+
+	_, out, err := srv.handleConversationUpdate(ctx, nil, ConversationUpdateInput{
+		SelfID:            parentID,
+		ConversationID:    parentID,
+		PeriodicPrompt:    &prompt,
+		PeriodicTrigger:   &trigger,
+		PeriodicCondition: &cond,
+	})
+	if err != nil {
+		t.Fatalf("handleConversationUpdate error: %v", err)
+	}
+	if !out.Success {
+		t.Fatalf("update not successful: %s", out.Error)
+	}
+	if out.PeriodicTrigger != string(session.TriggerOnTasks) {
+		t.Errorf("output PeriodicTrigger = %q, want %q", out.PeriodicTrigger, session.TriggerOnTasks)
+	}
+	if out.PeriodicCondition != cond {
+		t.Errorf("output PeriodicCondition = %q, want %q", out.PeriodicCondition, cond)
+	}
+
+	stored, err := store.Periodic(parentID).Get()
+	if err != nil {
+		t.Fatalf("Get periodic: %v", err)
+	}
+	if !stored.IsOnTasks() {
+		t.Errorf("stored trigger = %q, want onTasks", stored.Trigger)
+	}
+	if stored.Condition != cond {
+		t.Errorf("stored condition = %q, want %q", stored.Condition, cond)
+	}
+
+	// Partial update: change only the condition preset; condition/trigger must be preserved.
+	preset := "bug-only"
+	_, out2, err := srv.handleConversationUpdate(ctx, nil, ConversationUpdateInput{
+		SelfID:                  parentID,
+		ConversationID:          parentID,
+		PeriodicConditionPreset: &preset,
+	})
+	if err != nil {
+		t.Fatalf("handleConversationUpdate (patch) error: %v", err)
+	}
+	if !out2.Success {
+		t.Fatalf("patch not successful: %s", out2.Error)
+	}
+	if out2.PeriodicConditionPreset != preset {
+		t.Errorf("patched preset = %q, want %q", out2.PeriodicConditionPreset, preset)
+	}
+	if out2.PeriodicCondition != cond {
+		t.Errorf("patched condition should be preserved = %q, want %q", out2.PeriodicCondition, cond)
+	}
+	if out2.PeriodicTrigger != string(session.TriggerOnTasks) {
+		t.Errorf("patched trigger should be preserved = %q, want %q", out2.PeriodicTrigger, session.TriggerOnTasks)
+	}
+}
+
+// TestConversationUpdate_OnTasksInvalidConditionRejected verifies that an invalid CEL
+// condition is rejected via the session.ConditionValidator seam. The real wiring
+// (config.ValidateCondition) is owned by a sibling worker, so this test injects a fake
+// rejecting validator to exercise the same seam in isolation, without depending on it.
+func TestConversationUpdate_OnTasksInvalidConditionRejected(t *testing.T) {
+	_, srv, parentID := setupConversationStartServer(t)
+	ctx := context.Background()
+
+	old := session.ConditionValidator
+	session.ConditionValidator = func(expr string) error {
+		return fmt.Errorf("simulated invalid CEL: %q", expr)
+	}
+	defer func() { session.ConditionValidator = old }()
+
+	prompt := "review beads changes"
+	trigger := string(session.TriggerOnTasks)
+	cond := `this is not valid CEL`
+
+	_, out, err := srv.handleConversationUpdate(ctx, nil, ConversationUpdateInput{
+		SelfID:            parentID,
+		ConversationID:    parentID,
+		PeriodicPrompt:    &prompt,
+		PeriodicTrigger:   &trigger,
+		PeriodicCondition: &cond,
+	})
+	if err != nil {
+		t.Fatalf("handleConversationUpdate unexpected transport error: %v", err)
+	}
+	if out.Success {
+		t.Fatalf("expected failure for invalid condition, got success")
+	}
+	if !strings.Contains(out.Error, "invalid condition") {
+		t.Errorf("error = %q, want it to surface the validator's rejection ('invalid condition')", out.Error)
+	}
+}
+
 // TestConversationUpdate_SelfAlias verifies that a conversation can update itself by
 // passing "self" as the conversation_id — the case where a periodic conversation
 // disables its own periodicity. The "self" alias must resolve to the caller's real

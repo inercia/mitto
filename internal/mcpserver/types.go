@@ -360,14 +360,21 @@ type ConversationUpdateInput struct {
 	PeriodicEnabled        *bool   `json:"periodic_enabled,omitempty"`         // Whether periodic is active (defaults to true)
 	PeriodicFreshContext   *bool   `json:"periodic_fresh_context,omitempty"`   // Start each run with a fresh agent context (default false)
 	PeriodicMaxIterations  *int    `json:"periodic_max_iterations,omitempty"`  // Maximum number of scheduled runs (0 = unlimited)
-	// PeriodicTrigger selects how the prompt fires: "schedule" (frequency-based, default) or
-	// "onCompletion" (event-driven: fire after the agent stops responding + the completion delay).
+	// PeriodicTrigger selects how the prompt fires: "schedule" (frequency-based, default),
+	// "onCompletion" (event-driven: fire after the agent stops responding + the completion delay),
+	// or "onTasks" (event-driven: fire when beads/tasks in the workspace change, optionally
+	// gated by periodic_condition).
 	PeriodicTrigger *string `json:"periodic_trigger,omitempty"`
 	// PeriodicCompletionDelaySeconds is the wait (seconds) after the agent stops before the next
 	// run; only meaningful for the onCompletion trigger. Clamped to the global floor on write.
 	PeriodicCompletionDelaySeconds *int `json:"periodic_completion_delay_seconds,omitempty"`
 	// PeriodicMaxDurationSeconds is the wall-clock cap (seconds) since iterating started (0 = unlimited).
 	PeriodicMaxDurationSeconds *int `json:"periodic_max_duration_seconds,omitempty"`
+	// PeriodicCondition is a CEL expression gating onTasks firing (only meaningful when
+	// periodic_trigger is "onTasks"). Empty means fire on ANY beads/task change.
+	PeriodicCondition *string `json:"periodic_condition,omitempty"`
+	// PeriodicConditionPreset is an optional UI preset id that was compiled into periodic_condition.
+	PeriodicConditionPreset *string `json:"periodic_condition_preset,omitempty"`
 }
 
 // UserDataAttributeUpdate represents a single user data attribute to set.
@@ -398,7 +405,10 @@ type ConversationUpdateOutput struct {
 	PeriodicTrigger                string `json:"periodic_trigger,omitempty"`
 	PeriodicCompletionDelaySeconds int    `json:"periodic_completion_delay_seconds,omitempty"`
 	PeriodicMaxDurationSeconds     int    `json:"periodic_max_duration_seconds,omitempty"`
-	Error                          string `json:"error,omitempty"`
+	// onTasks trigger fields (returned when configured)
+	PeriodicCondition       string `json:"periodic_condition,omitempty"`
+	PeriodicConditionPreset string `json:"periodic_condition_preset,omitempty"`
+	Error                   string `json:"error,omitempty"`
 }
 
 // UITextboxInput is the input for the mitto_ui_textbox tool.

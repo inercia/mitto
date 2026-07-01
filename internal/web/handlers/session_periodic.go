@@ -27,6 +27,14 @@ type PeriodicPromptRequest struct {
 	// Arguments holds user-supplied values for Go-template .Args placeholders
 	// when PromptName is set. Ignored for free-text prompts.
 	Arguments map[string]string `json:"arguments,omitempty"`
+	// Condition is a CEL expression gating onTasks firing. Empty means fire on
+	// ANY beads/task change. Only meaningful when Trigger is "onTasks".
+	Condition *string `json:"condition,omitempty"`
+	// ConditionPreset is an optional UI preset id that was compiled into Condition.
+	ConditionPreset *string `json:"condition_preset,omitempty"`
+	// CooldownSeconds is the per-conversation cooldown floor honoured by the runner
+	// between onTasks firings. 0/nil means use the global floor.
+	CooldownSeconds *int `json:"cooldown_seconds,omitempty"`
 }
 
 // PeriodicPromptPatchRequest is the request body for partial updates.
@@ -44,6 +52,10 @@ type PeriodicPromptPatchRequest struct {
 	// Arguments is a partial update for the substitution arguments map.
 	// nil = leave unchanged; non-nil = replace the entire map (including empty map to clear it).
 	Arguments *map[string]string `json:"arguments,omitempty"`
+	// Condition, ConditionPreset, CooldownSeconds are partial updates for the onTasks fields.
+	Condition       *string `json:"condition,omitempty"`
+	ConditionPreset *string `json:"condition_preset,omitempty"`
+	CooldownSeconds *int    `json:"cooldown_seconds,omitempty"`
 	// ResetCounters, when true, resets IterationCount=0, FirstRunAt=nil, and
 	// LastSentAt=nil so the elapsed iterations and elapsed time start from zero and
 	// the loop looks never-sent. Used when restoring a conversation that auto-stopped

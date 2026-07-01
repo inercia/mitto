@@ -2,9 +2,19 @@ package handlers
 
 import (
 	"net/http"
+	"strings"
 
 	"github.com/inercia/mitto/internal/session"
 )
+
+// isInvalidConditionErr reports whether err originates from PeriodicPrompt.Validate's
+// CEL condition check (session.ConditionValidator, wired to config.ValidateCondition).
+// There is no dedicated sentinel for this — Validate wraps the validator's error with
+// the fixed prefix "invalid condition: " — so we match on that prefix to classify it
+// as a 400 (bad request) instead of falling through to the generic 500 handler.
+func isInvalidConditionErr(err error) bool {
+	return err != nil && strings.HasPrefix(err.Error(), "invalid condition:")
+}
 
 // handleSetPeriodic handles PUT /api/sessions/{id}/periodic
 func (h *Handlers) handleSetPeriodic(w http.ResponseWriter, r *http.Request, sessionID string, ps *session.PeriodicStore) {
@@ -25,12 +35,22 @@ func (h *Handlers) handleSetPeriodic(w http.ResponseWriter, r *http.Request, ses
 		DelaySeconds:       req.DelaySeconds,
 		MaxDurationSeconds: req.MaxDurationSeconds,
 	}
+	if req.Condition != nil {
+		p.Condition = *req.Condition
+	}
+	if req.ConditionPreset != nil {
+		p.ConditionPreset = *req.ConditionPreset
+	}
+	if req.CooldownSeconds != nil {
+		p.CooldownSeconds = *req.CooldownSeconds
+	}
 	// Clamp the on-completion delay to the global floor on write (no-op for schedule trigger).
 	p.ClampDelay(h.periodicDelayFloor())
 
 	if err := ps.Set(p); err != nil {
 		if err == session.ErrInvalidFrequency || err == session.ErrPromptEmpty || err == session.ErrInvalidMaxIterations ||
-			err == session.ErrInvalidTrigger || err == session.ErrInvalidDelay || err == session.ErrInvalidMaxDuration {
+			err == session.ErrInvalidTrigger || err == session.ErrInvalidDelay || err == session.ErrInvalidMaxDuration ||
+			isInvalidConditionErr(err) {
 			writeErrorJSON(w, http.StatusBadRequest, "", err.Error())
 			return
 		}
@@ -88,13 +108,14 @@ func (h *Handlers) handlePatchPeriodic(w http.ResponseWriter, r *http.Request, s
 		}
 	}
 
-	if err := ps.Update(req.Prompt, req.PromptName, req.Frequency, req.Enabled, req.FreshContext, req.MaxIterations, req.Trigger, req.DelaySeconds, req.MaxDurationSeconds, req.Arguments); err != nil {
+	if err := ps.Update(req.Prompt, req.PromptName, req.Frequency, req.Enabled, req.FreshContext, req.MaxIterations, req.Trigger, req.DelaySeconds, req.MaxDurationSeconds, req.Arguments, req.Condition, req.ConditionPreset, req.CooldownSeconds); err != nil {
 		if err == session.ErrPeriodicNotFound {
 			writeErrorJSON(w, http.StatusNotFound, "", "No periodic prompt configured")
 			return
 		}
 		if err == session.ErrInvalidFrequency || err == session.ErrPromptEmpty || err == session.ErrInvalidMaxIterations ||
-			err == session.ErrInvalidTrigger || err == session.ErrInvalidDelay || err == session.ErrInvalidMaxDuration {
+			err == session.ErrInvalidTrigger || err == session.ErrInvalidDelay || err == session.ErrInvalidMaxDuration ||
+			isInvalidConditionErr(err) {
 			writeErrorJSON(w, http.StatusBadRequest, "", err.Error())
 			return
 		}
