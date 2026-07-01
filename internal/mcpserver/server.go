@@ -2747,6 +2747,7 @@ type ConversationStartOutput struct {
 	QueuePosition       int    `json:"queue_position,omitempty"`      // Queue position if initial prompt was provided
 	PeriodicConfigured  bool   `json:"periodic_configured,omitempty"` // Whether periodic was configured
 	PeriodicNextRun     string `json:"periodic_next_run,omitempty"`   // Next scheduled run (RFC3339)
+	Reused              bool   `json:"reused,omitempty"`              // True when routed to an existing singleton conversation instead of creating a new one
 	Error               string `json:"error,omitempty"`
 }
 
@@ -2838,6 +2839,11 @@ func (s *Server) handleConversationStart(ctx context.Context, req *mcp.CallToolR
 	// mitto_prompt_get) and used as the initial prompt. Optional 'arguments' are
 	// applied to Go-template .Args placeholders when the prompt is sent.
 	initialPromptText := input.InitialPrompt
+	// originPromptName / promptIsSingleton drive singleton find-or-route below
+	// (mitto-4mb.8). They are only set when the conversation originates from a
+	// named prompt, matching the web path's OriginPromptName tracking.
+	originPromptName := ""
+	promptIsSingleton := false
 	if input.PromptName != "" {
 		if input.InitialPrompt != "" {
 			return nil, ConversationStartOutput{}, fmt.Errorf(
@@ -2853,6 +2859,8 @@ func (s *Server) handleConversationStart(ctx context.Context, req *mcp.CallToolR
 				"prompt not found: no prompt named %q is available in this workspace", input.PromptName)
 		}
 		initialPromptText = p.Prompt
+		originPromptName = input.PromptName
+		promptIsSingleton = p.Singleton
 	}
 
 	// Check max child conversations limit
@@ -2955,6 +2963,26 @@ func (s *Server) handleConversationStart(ctx context.Context, req *mcp.CallToolR
 		}
 	}
 
+	// Singleton find-or-route (mitto-4mb.8): mirror the web path
+	// (internal/web/handlers/session_create.go) — when the originating prompt is
+	// declared singleton, route to an existing non-archived conversation in the
+	// same working dir instead of creating a duplicate.
+	if promptIsSingleton && originPromptName != "" {
+		if metas, listErr := store.List(); listErr == nil {
+			if existingID, ok := session.FindSingletonCandidate(metas, targetWorkingDir, originPromptName); ok {
+				out, rerr := s.reuseSingletonConversation(store, existingID, initialPromptText, realSessionID, input.Arguments)
+				if rerr != nil {
+					return nil, ConversationStartOutput{}, rerr
+				}
+				s.logger.Info("Routed mitto_conversation_new to existing singleton conversation",
+					"existing_session_id", existingID,
+					"origin_prompt_name", originPromptName,
+					"working_dir", targetWorkingDir)
+				return nil, out, nil
+			}
+		}
+	}
+
 	// Create new session ID using the standard timestamp format
 	// This ensures compatibility with IsValidSessionID validation in the web layer
 	newSessionID := session.GenerateSessionID()
@@ -2980,6 +3008,7 @@ func (s *Server) handleConversationStart(ctx context.Context, req *mcp.CallToolR
 		ChildOrigin:      session.ChildOriginMCP, // Created via MCP tool
 		AdvancedSettings: childSettings,
 		BeadsIssue:       input.BeadsIssue,
+		OriginPromptName: originPromptName, // Track originating prompt for singleton find-or-route
 	}
 
 	// Create the session
@@ -3205,6 +3234,55 @@ func (s *Server) handleConversationStart(ctx context.Context, req *mcp.CallToolR
 	}
 
 	return nil, output, nil
+}
+
+// reuseSingletonConversation routes an mitto_conversation_new call for a
+// singleton prompt to an existing non-archived conversation instead of creating
+// a duplicate, mirroring the web reuseSingletonSession behavior. When the
+// existing conversation is idle (not prompting and an empty queue) the prompt is
+// re-seeded so re-invoking a menu prompt re-runs it; when busy it is left
+// untouched (focus-only). The returned output carries reused=true.
+func (s *Server) reuseSingletonConversation(store *session.Store, existingID, initialPromptText, clientID string, arguments map[string]string) (ConversationStartOutput, error) {
+	meta, err := store.GetMetadata(existingID)
+	if err != nil {
+		return ConversationStartOutput{}, fmt.Errorf("failed to load existing singleton conversation: %v", err)
+	}
+
+	output := ConversationStartOutput{
+		ConversationDetails: s.buildConversationDetails(meta, store.SessionDir(existingID)),
+		Reused:              true,
+	}
+
+	if initialPromptText == "" {
+		return output, nil
+	}
+
+	queue := store.Queue(existingID)
+	qlen, _ := queue.Len()
+	var bs BackgroundSession
+	if s.sessionManager != nil {
+		bs = s.sessionManager.GetSession(existingID)
+	}
+	idle := qlen == 0
+	if bs != nil {
+		idle = !bs.IsPrompting() && qlen == 0
+	}
+	if !idle {
+		return output, nil
+	}
+
+	if _, addErr := queue.Add(initialPromptText, nil, nil, clientID, nil, 0, arguments, ""); addErr != nil {
+		s.logger.Warn("Failed to re-seed reused singleton conversation",
+			"session_id", existingID, "error", addErr)
+		return output, nil
+	}
+	if newLen, lenErr := queue.Len(); lenErr == nil {
+		output.QueuePosition = newLen
+	}
+	if bs != nil {
+		go bs.TryProcessQueuedMessage()
+	}
+	return output, nil
 }
 
 // GetConversationInput is the input for mitto_get_conversation tool.

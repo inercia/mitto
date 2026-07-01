@@ -815,6 +815,104 @@ func TestConversationStart_PromptName_NotFound(t *testing.T) {
 	}
 }
 
+// TestConversationStart_Singleton_RoutesToExisting verifies that a second
+// mitto_conversation_new for the same singleton prompt in the same working dir
+// routes to the existing conversation (reused=true) instead of creating a
+// duplicate — MCP-path parity with the web find-or-route (mitto-4mb.8).
+func TestConversationStart_Singleton_RoutesToExisting(t *testing.T) {
+	store, srv, parentID := setupConversationStartServerWithPrompts(t, []config.WebPrompt{
+		{Name: "Singleton work", Prompt: "do work", Singleton: true},
+	})
+
+	ctx := context.Background()
+
+	// First call creates the singleton conversation.
+	_, first, err := srv.handleConversationStart(ctx, nil, ConversationStartInput{
+		SelfID:     parentID,
+		PromptName: "Singleton work",
+	})
+	if err != nil {
+		t.Fatalf("First call: unexpected error: %v", err)
+	}
+	if first.SessionID == "" {
+		t.Fatal("First call: expected a non-empty session ID")
+	}
+	if first.Reused {
+		t.Error("First call: expected reused=false for the initial create")
+	}
+
+	afterFirst, err := store.List()
+	if err != nil {
+		t.Fatalf("store.List() error: %v", err)
+	}
+
+	// Second call for the same singleton prompt must route to the existing one.
+	_, second, err := srv.handleConversationStart(ctx, nil, ConversationStartInput{
+		SelfID:     parentID,
+		PromptName: "singleton WORK", // case-insensitive
+	})
+	if err != nil {
+		t.Fatalf("Second call: unexpected error: %v", err)
+	}
+	if !second.Reused {
+		t.Error("Second call: expected reused=true")
+	}
+	if second.SessionID != first.SessionID {
+		t.Errorf("Second call: expected existing session ID %q, got %q", first.SessionID, second.SessionID)
+	}
+
+	afterSecond, err := store.List()
+	if err != nil {
+		t.Fatalf("store.List() error: %v", err)
+	}
+	if len(afterSecond) != len(afterFirst) {
+		t.Errorf("Second call created a duplicate: session count went from %d to %d",
+			len(afterFirst), len(afterSecond))
+	}
+}
+
+// TestConversationStart_NonSingleton_CreatesDuplicate verifies that a
+// non-singleton prompt is NOT subject to find-or-route: a second call creates a
+// distinct conversation.
+func TestConversationStart_NonSingleton_CreatesDuplicate(t *testing.T) {
+	store, srv, parentID := setupConversationStartServerWithPrompts(t, []config.WebPrompt{
+		{Name: "Plain work", Prompt: "do work"}, // Singleton defaults to false
+	})
+
+	ctx := context.Background()
+
+	_, first, err := srv.handleConversationStart(ctx, nil, ConversationStartInput{
+		SelfID:     parentID,
+		PromptName: "Plain work",
+	})
+	if err != nil {
+		t.Fatalf("First call: unexpected error: %v", err)
+	}
+
+	_, second, err := srv.handleConversationStart(ctx, nil, ConversationStartInput{
+		SelfID:     parentID,
+		PromptName: "Plain work",
+	})
+	if err != nil {
+		t.Fatalf("Second call: unexpected error: %v", err)
+	}
+	if second.Reused {
+		t.Error("Second call: expected reused=false for a non-singleton prompt")
+	}
+	if second.SessionID == first.SessionID {
+		t.Error("Second call: expected a distinct session ID for a non-singleton prompt")
+	}
+
+	metas, err := store.List()
+	if err != nil {
+		t.Fatalf("store.List() error: %v", err)
+	}
+	// parent + 2 distinct children
+	if len(metas) != 3 {
+		t.Errorf("Expected 3 sessions (parent + 2 children), got %d", len(metas))
+	}
+}
+
 // Helper function to check if a string contains a substring
 func contains(s, substr string) bool {
 	return len(s) >= len(substr) && (s == substr || len(substr) == 0 ||
