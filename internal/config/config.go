@@ -101,6 +101,12 @@ type ACPServer struct {
 	// Tags is an optional list of categorization tags for this ACP server.
 	// Tags are single words or hyphenated-words (e.g., "coding", "fast-model").
 	Tags []string
+	// ModelProfile is the name of a Model profile (Config.Models) whose Criteria
+	// should be used for session-start model auto-selection, replacing the
+	// legacy free-text matchMode/pattern constraint under Constraints["model"].
+	// Empty means no profile is selected; legacy Constraints["model"] (if any)
+	// is used as a fallback. See FindModelProfile.
+	ModelProfile string
 	// Constraints is an optional map of config option auto-selection rules.
 	// The key is the config option category (e.g., "model", "mode").
 	// When a session starts, matching constraints auto-select the appropriate option value.
@@ -118,6 +124,20 @@ func (s *ACPServer) GetType() string {
 		return s.Type
 	}
 	return s.Name
+}
+
+// FindModelProfile returns the named Model profile (case-insensitive match on
+// ModelProfile.Name), or nil if name is empty or no profile matches.
+func (c *Config) FindModelProfile(name string) *ModelProfile {
+	if c == nil || name == "" {
+		return nil
+	}
+	for i := range c.Models {
+		if strings.EqualFold(c.Models[i].Name, name) {
+			return &c.Models[i]
+		}
+	}
+	return nil
 }
 
 // PromptSource indicates where a prompt originated from.
@@ -177,11 +197,12 @@ type WebPrompt struct {
 	// a periodic (recurring) conversation instead of a one-time seed. The fields
 	// provide default schedule values for the schedule dialog.
 	Periodic *PromptPeriodic `json:"periodic,omitempty"`
-	// PreferredModels is an ordered list of case-insensitive glob patterns matched against
-	// available model IDs and display names. The first match wins. Empty/absent means use
-	// the session's baseline model. This field is carried through PromptMeta to enable
+	// PreferredModels is an ordered list of references to global model profiles
+	// (Settings → Models), by profile name or capability tag. The first entry that
+	// resolves to an available model wins. Empty/absent means use the session's
+	// baseline model. This field is carried through PromptMeta to enable
 	// per-prompt model selection without mutating the user's model preference.
-	PreferredModels []string `json:"preferredModels,omitempty"`
+	PreferredModels []PromptPreferredModel `json:"preferredModels,omitempty"`
 	// Parameters declares the named, typed inputs this prompt expects.
 	// Populated from the `parameters:` block in .prompt.yaml or inline config prompts.
 	Parameters []PromptParameter `json:"parameters,omitempty"`
@@ -1820,23 +1841,25 @@ func (c *Config) GetServerType(name string) string {
 	return srv.GetType()
 }
 
-// ModelProfileByName returns the model profile with the given name (case-insensitive).
-// The bool is false when no profile matches. Intended for consumers that need to look up
-// a profile's tags or criteria by its display name.
-func (c *Config) ModelProfileByName(name string) (*ModelProfile, bool) {
-	for i := range c.Models {
-		if strings.EqualFold(c.Models[i].Name, name) {
-			return &c.Models[i], true
+// ProfileByName returns a pointer to the profile in profiles with the given name
+// (case-insensitive), or nil when none matches. This is the pure, slice-based core
+// shared by (*Config).ModelProfileByName and by conversation.SelectPreferredModel,
+// which only has a []ModelProfile (not a *Config) available at call time.
+func ProfileByName(profiles []ModelProfile, name string) *ModelProfile {
+	for i := range profiles {
+		if strings.EqualFold(profiles[i].Name, name) {
+			return &profiles[i]
 		}
 	}
-	return nil, false
+	return nil
 }
 
-// ModelProfilesByTag returns all model profiles carrying the given tag (case-insensitive),
-// mirroring how ACP server tags are compared elsewhere. Returns an empty slice when none match.
-func (c *Config) ModelProfilesByTag(tag string) []ModelProfile {
+// ProfilesByTag returns all profiles in profiles carrying the given tag
+// (case-insensitive). Returns nil when none match. This is the pure, slice-based
+// core shared by (*Config).ModelProfilesByTag and by conversation.SelectPreferredModel.
+func ProfilesByTag(profiles []ModelProfile, tag string) []ModelProfile {
 	var out []ModelProfile
-	for _, p := range c.Models {
+	for _, p := range profiles {
 		for _, t := range p.Tags {
 			if strings.EqualFold(t, tag) {
 				out = append(out, p)
@@ -1845,6 +1868,20 @@ func (c *Config) ModelProfilesByTag(tag string) []ModelProfile {
 		}
 	}
 	return out
+}
+
+// ModelProfileByName returns the model profile with the given name (case-insensitive).
+// The bool is false when no profile matches. Intended for consumers that need to look up
+// a profile's tags or criteria by its display name.
+func (c *Config) ModelProfileByName(name string) (*ModelProfile, bool) {
+	p := ProfileByName(c.Models, name)
+	return p, p != nil
+}
+
+// ModelProfilesByTag returns all model profiles carrying the given tag (case-insensitive),
+// mirroring how ACP server tags are compared elsewhere. Returns an empty slice when none match.
+func (c *Config) ModelProfilesByTag(tag string) []ModelProfile {
+	return ProfilesByTag(c.Models, tag)
 }
 
 // ResolveModelTags returns the UNION of capability tags from every model profile whose

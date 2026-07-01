@@ -344,6 +344,10 @@ func NewServer(config Config) (*Server, error) {
 	acpProcessMgr.WorkspaceConfigProvider = func(workspaceUUID string) *configPkg.WorkspaceSettings {
 		return sessionMgr.GetWorkspaceByUUID(workspaceUUID)
 	}
+	// Set Model profile resolver so process manager can resolve AuxiliaryModelProfile (mitto-hke).
+	acpProcessMgr.ModelProfileResolver = func(name string) *configPkg.ModelProfile {
+		return config.MittoConfig.FindModelProfile(name)
+	}
 	sessionMgr.SetACPProcessManager(acpProcessManagerAdapter{acpProcessMgr})
 
 	// Start ACP process garbage collector to clean up idle sessions and processes.
@@ -881,7 +885,7 @@ func NewServer(config Config) (*Server, error) {
 	promptResolverFunc := func(promptName string, workingDir string) (string, error) {
 		return s.resolvePromptByName(promptName, workingDir)
 	}
-	preferredModelsResolverFunc := func(promptName string, workingDir string) []string {
+	preferredModelsResolverFunc := func(promptName string, workingDir string) []configPkg.PromptPreferredModel {
 		return s.resolvePreferredModelsByPromptName(promptName, workingDir)
 	}
 	promptParametersResolverFunc := func(promptName string, workingDir string) []configPkg.PromptParameter {
@@ -1908,7 +1912,7 @@ func (s *Server) resolvePromptByName(promptName string, workingDir string) (stri
 // resolvePreferredModelsByPromptName resolves a prompt name to its preferredModels list.
 // Uses the same resolution pipeline as resolvePromptByName.
 // Returns nil when the prompt is not found or has no preferredModels field.
-func (s *Server) resolvePreferredModelsByPromptName(promptName, workingDir string) []string {
+func (s *Server) resolvePreferredModelsByPromptName(promptName, workingDir string) []configPkg.PromptPreferredModel {
 	// 1. Global file prompts
 	var globalFilePrompts []configPkg.WebPrompt
 	if s.config.PromptsCache != nil {

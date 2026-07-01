@@ -28,14 +28,33 @@ func childStartupJitter(max time.Duration) time.Duration {
 }
 
 // lookupACPServerConstraints returns the auto-selection constraints for the named ACP server.
+//
+// When the server has a ModelProfile set (mitto-hke), the profile's Criteria replaces
+// the "model" entry of the constraints map (a copy — srv.Constraints is never mutated),
+// so downstream applyConfigConstraints resolves the model the same way it always has.
+// If the profile name doesn't resolve to a known profile, or has no Criteria, this falls
+// back to the server's raw Constraints (legacy matchMode/pattern behaviour).
 func lookupACPServerConstraints(cfg *config.Config, serverName string) map[string]*config.ACPServerConstraint {
 	if cfg == nil {
 		return nil
 	}
 	for _, srv := range cfg.ACPServers {
-		if srv.Name == serverName {
+		if srv.Name != serverName {
+			continue
+		}
+		if srv.ModelProfile == "" {
 			return srv.Constraints
 		}
+		profile := cfg.FindModelProfile(srv.ModelProfile)
+		if profile == nil || profile.Criteria == nil {
+			return srv.Constraints
+		}
+		merged := make(map[string]*config.ACPServerConstraint, len(srv.Constraints)+1)
+		for k, v := range srv.Constraints {
+			merged[k] = v
+		}
+		merged["model"] = profile.Criteria
+		return merged
 	}
 	return nil
 }

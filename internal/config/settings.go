@@ -289,6 +289,9 @@ type ACPServerSettings struct {
 	AutoApprove bool `json:"auto_approve,omitempty"`
 	// Tags is an optional list of categorization tags for this ACP server.
 	Tags []string `json:"tags,omitempty"`
+	// ModelProfile is the name of a Model profile (Config.Models) used for
+	// session-start model auto-selection; empty falls back to legacy Constraints.
+	ModelProfile string `json:"model_profile,omitempty"`
 	// Constraints is an optional map of config option auto-selection rules.
 	// The key is the config option category (e.g., "model", "mode").
 	Constraints map[string]*ACPServerConstraint `json:"constraints,omitempty"`

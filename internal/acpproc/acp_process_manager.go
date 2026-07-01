@@ -34,6 +34,12 @@ type ACPProcessManager struct {
 	// Used to look up AuxiliaryModelSelection for new auxiliary sessions.
 	WorkspaceConfigProvider func(workspaceUUID string) *config.WorkspaceSettings
 
+	// ModelProfileResolver resolves a named Model profile (Config.Models) by name.
+	// Used to look up AuxiliaryModelProfile for new auxiliary sessions (mitto-hke).
+	// May be nil, in which case AuxiliaryModelProfile is ignored and
+	// AuxiliaryModelSelection is used as-is.
+	ModelProfileResolver func(name string) *config.ModelProfile
+
 	// Auxiliary session tracking
 	auxMu       sync.Mutex
 	auxSessions map[auxSessionKey]*auxiliarySessionState
@@ -801,90 +807,100 @@ func (m *ACPProcessManager) getOrCreateAuxiliarySession(ctx context.Context, wor
 	}
 
 	// Apply auxiliary model selection if configured for this workspace.
-	// If AuxiliaryModelSelection is set and a model matches, switch the session model.
+	// If AuxiliaryModelProfile is set (mitto-hke), it takes precedence and its resolved
+	// Criteria is used in place of the legacy AuxiliaryModelSelection matchMode/pattern.
+	// Falls back to AuxiliaryModelSelection when the profile field is empty or unresolved.
 	// On no match or nil selection, leave the ACP server's default model unchanged.
 	if m.WorkspaceConfigProvider != nil {
-		if ws := m.WorkspaceConfigProvider(workspaceUUID); ws != nil && ws.AuxiliaryModelSelection != nil && ws.AuxiliaryModelSelection.Pattern != "" {
-			matched, shouldSet := conversation.ResolveAuxModelSwitch(ws.AuxiliaryModelSelection, sessionHandle.Models)
-			switch {
-			case shouldSet:
-				// Best-effort async model switch (mitto-f7q, Option 4): return the aux
-				// session immediately on the server-default model and perform the preferred-
-				// model switch in a background goroutine. This prevents the capacity-1
-				// setModelSem from blocking aux-session creation — and all callers queued
-				// behind it — during server wakeup when several concurrent aux sessions
-				// start simultaneously.
-				//
-				// The first aux prompt may run on the default model; this is explicitly
-				// acceptable per the bead.
-				//
-				// Budget: setModelAsyncCallerBudget (90s) derived from m.ctx (NOT the caller
-				// ctx, which is short-lived and may expire before the goroutine runs).
-				// Worst-case: setModelSem queued behind ~3 other holders each taking up to
-				// 3×8s + jitter backoff (≤25s each) → ~75s wait before the semaphore is
-				// acquired. Since this is off the critical path, a generous budget has no
-				// UX cost. m.ctx cancels on manager shutdown as a safety backstop.
-				capturedWorkspaceUUID := workspaceUUID
-				capturedPurpose := purpose
-				capturedMatched := matched
-				capturedProcess := process
-				capturedSessionID := acp.SessionId(sessionHandle.SessionID)
-				capturedLogger := m.logger
-				go func() {
-					// De-stagger concurrent prewarmed aux model-set goroutines (mitto-xicp).
-					// All 4 purposes fire at nearly the same instant during prewarmAuxiliarySessions;
-					// without jitter they all queue on the capacity-1 setModelSem simultaneously and
-					// the last one exhausts its 90 s budget before the semaphore is released.
-					// The jitter waits on m.ctx — NOT inside the budget context — so it does not
-					// consume the setModelAsyncCallerBudget (mitto-f7q: per-attempt deadline unchanged).
-					// Mirrors the child-session de-stagger pattern from mitto-x4e.
-					if jitter := auxStartupJitter(auxModelSwitchStartupJitter); jitter > 0 {
-						if capturedLogger != nil {
-							capturedLogger.Debug("Auxiliary session: staggering startup model switch",
-								"workspace_uuid", capturedWorkspaceUUID,
-								"purpose", capturedPurpose,
-								"jitter_ms", jitter.Milliseconds())
-						}
-						select {
-						case <-time.After(jitter):
-						case <-m.ctx.Done():
-							return
-						}
-					}
-					setCtx, setCancel := context.WithTimeout(m.ctx, setModelAsyncCallerBudget)
-					defer setCancel()
-					if setErr := capturedProcess.SetSessionModel(setCtx, capturedSessionID, capturedMatched); setErr != nil {
-						if capturedLogger != nil {
-							capturedLogger.Warn("Auxiliary session: failed to set model",
-								"workspace_uuid", capturedWorkspaceUUID,
-								"purpose", capturedPurpose,
-								"model_id", capturedMatched,
-								"error", setErr)
-						}
-					} else if capturedLogger != nil {
-						capturedLogger.Info("Auxiliary session: model set via AuxiliaryModelSelection",
-							"workspace_uuid", capturedWorkspaceUUID,
-							"purpose", capturedPurpose,
-							"model_id", capturedMatched)
-					}
-				}()
-			case matched != "":
-				// The freshly-created session already runs the preferred model, so the
-				// set_model RPC is needless — skip it to avoid the per-process serialisation
-				// contention that drives the 8s deadline cascade at server wakeup (mitto-ykb).
-				if m.logger != nil {
-					m.logger.Debug("Auxiliary session: model already matches AuxiliaryModelSelection, skipping set_model",
-						"workspace_uuid", workspaceUUID,
-						"purpose", purpose,
-						"model_id", matched)
+		if ws := m.WorkspaceConfigProvider(workspaceUUID); ws != nil {
+			auxConstraint := ws.AuxiliaryModelSelection
+			if ws.AuxiliaryModelProfile != "" && m.ModelProfileResolver != nil {
+				if profile := m.ModelProfileResolver(ws.AuxiliaryModelProfile); profile != nil && profile.Criteria != nil {
+					auxConstraint = profile.Criteria
 				}
-			default:
-				if m.logger != nil {
-					m.logger.Debug("Auxiliary session: no model matched AuxiliaryModelSelection, using server default",
-						"workspace_uuid", workspaceUUID,
-						"purpose", purpose,
-						"match_mode", ws.AuxiliaryModelSelection.MatchMode,
-						"pattern", ws.AuxiliaryModelSelection.Pattern)
+			}
+			if auxConstraint != nil && auxConstraint.Pattern != "" {
+				matched, shouldSet := conversation.ResolveAuxModelSwitch(auxConstraint, sessionHandle.Models)
+				switch {
+				case shouldSet:
+					// Best-effort async model switch (mitto-f7q, Option 4): return the aux
+					// session immediately on the server-default model and perform the preferred-
+					// model switch in a background goroutine. This prevents the capacity-1
+					// setModelSem from blocking aux-session creation — and all callers queued
+					// behind it — during server wakeup when several concurrent aux sessions
+					// start simultaneously.
+					//
+					// The first aux prompt may run on the default model; this is explicitly
+					// acceptable per the bead.
+					//
+					// Budget: setModelAsyncCallerBudget (90s) derived from m.ctx (NOT the caller
+					// ctx, which is short-lived and may expire before the goroutine runs).
+					// Worst-case: setModelSem queued behind ~3 other holders each taking up to
+					// 3×8s + jitter backoff (≤25s each) → ~75s wait before the semaphore is
+					// acquired. Since this is off the critical path, a generous budget has no
+					// UX cost. m.ctx cancels on manager shutdown as a safety backstop.
+					capturedWorkspaceUUID := workspaceUUID
+					capturedPurpose := purpose
+					capturedMatched := matched
+					capturedProcess := process
+					capturedSessionID := acp.SessionId(sessionHandle.SessionID)
+					capturedLogger := m.logger
+					go func() {
+						// De-stagger concurrent prewarmed aux model-set goroutines (mitto-xicp).
+						// All 4 purposes fire at nearly the same instant during prewarmAuxiliarySessions;
+						// without jitter they all queue on the capacity-1 setModelSem simultaneously and
+						// the last one exhausts its 90 s budget before the semaphore is released.
+						// The jitter waits on m.ctx — NOT inside the budget context — so it does not
+						// consume the setModelAsyncCallerBudget (mitto-f7q: per-attempt deadline unchanged).
+						// Mirrors the child-session de-stagger pattern from mitto-x4e.
+						if jitter := auxStartupJitter(auxModelSwitchStartupJitter); jitter > 0 {
+							if capturedLogger != nil {
+								capturedLogger.Debug("Auxiliary session: staggering startup model switch",
+									"workspace_uuid", capturedWorkspaceUUID,
+									"purpose", capturedPurpose,
+									"jitter_ms", jitter.Milliseconds())
+							}
+							select {
+							case <-time.After(jitter):
+							case <-m.ctx.Done():
+								return
+							}
+						}
+						setCtx, setCancel := context.WithTimeout(m.ctx, setModelAsyncCallerBudget)
+						defer setCancel()
+						if setErr := capturedProcess.SetSessionModel(setCtx, capturedSessionID, capturedMatched); setErr != nil {
+							if capturedLogger != nil {
+								capturedLogger.Warn("Auxiliary session: failed to set model",
+									"workspace_uuid", capturedWorkspaceUUID,
+									"purpose", capturedPurpose,
+									"model_id", capturedMatched,
+									"error", setErr)
+							}
+						} else if capturedLogger != nil {
+							capturedLogger.Info("Auxiliary session: model set via AuxiliaryModelSelection",
+								"workspace_uuid", capturedWorkspaceUUID,
+								"purpose", capturedPurpose,
+								"model_id", capturedMatched)
+						}
+					}()
+				case matched != "":
+					// The freshly-created session already runs the preferred model, so the
+					// set_model RPC is needless — skip it to avoid the per-process serialisation
+					// contention that drives the 8s deadline cascade at server wakeup (mitto-ykb).
+					if m.logger != nil {
+						m.logger.Debug("Auxiliary session: model already matches AuxiliaryModelSelection, skipping set_model",
+							"workspace_uuid", workspaceUUID,
+							"purpose", purpose,
+							"model_id", matched)
+					}
+				default:
+					if m.logger != nil {
+						m.logger.Debug("Auxiliary session: no model matched AuxiliaryModelSelection, using server default",
+							"workspace_uuid", workspaceUUID,
+							"purpose", purpose,
+							"match_mode", auxConstraint.MatchMode,
+							"pattern", auxConstraint.Pattern)
+					}
 				}
 			}
 		}
