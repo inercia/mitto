@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/inercia/mitto/internal/defense"
+	"github.com/inercia/mitto/internal/web/middleware"
 )
 
 // SetExternalPort sets the port to use for external access.
@@ -24,7 +25,7 @@ func (s *Server) SetExternalPort(port int) {
 func ExternalConnectionMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Add context value indicating this is an external connection
-		ctx := context.WithValue(r.Context(), ContextKeyExternalConnection, true)
+		ctx := context.WithValue(r.Context(), middleware.ContextKeyExternalConnection, true)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }
@@ -173,24 +174,4 @@ func (s *Server) GetExternalPort() int {
 	s.externalMu.Lock()
 	defer s.externalMu.Unlock()
 	return s.externalPort
-}
-
-// ExternalStatusResponse represents the response for the external status endpoint.
-type ExternalStatusResponse struct {
-	Enabled bool `json:"enabled"`
-	Port    int  `json:"port"`
-}
-
-// handleExternalStatus handles GET /api/external-status.
-// Returns the current status of the external listener.
-func (s *Server) handleExternalStatus(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
-	writeJSONOK(w, ExternalStatusResponse{
-		Enabled: s.IsExternalListenerRunning(),
-		Port:    s.GetExternalPort(),
-	})
 }

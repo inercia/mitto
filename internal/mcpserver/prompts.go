@@ -178,6 +178,7 @@ func (s *Server) handlePromptList(ctx context.Context, req *mcp.CallToolRequest,
 			Source:          string(p.Source),
 			Enabled:         p.Enabled,
 			Periodic:        p.Periodic,
+			Parameters:      p.Parameters,
 		})
 	}
 	return nil, PromptListOutput{Success: true, Prompts: prompts, WorkingDir: workingDir}, nil
@@ -217,6 +218,7 @@ func (s *Server) handlePromptGet(ctx context.Context, req *mcp.CallToolRequest, 
 			Source:          string(p.Source),
 			Enabled:         p.Enabled,
 			Periodic:        p.Periodic,
+			Parameters:      p.Parameters,
 		},
 	}, nil
 }
@@ -306,6 +308,13 @@ func (s *Server) handlePromptUpdate(ctx context.Context, req *mcp.CallToolReques
 	if err := os.MkdirAll(promptsDir, 0o755); err != nil {
 		return nil, PromptUpdateOutput{Error: "failed to create prompts directory: " + err.Error()}, nil
 	}
+
+	// Reject invalid Go-template syntax / cond CEL before persisting (mitto-m7sb.6).
+	if err := config.PrecompileTemplateConds(name, promptText); err != nil {
+		return nil, PromptUpdateOutput{Error: "invalid prompt template: " + err.Error()}, nil
+	}
+	// Warn (non-fatal) when body still uses deprecated @mitto: tokens (mitto-m7sb.9).
+	config.WarnDeprecatedMittoVars(name, promptText)
 
 	pf := &config.PromptFile{
 		Name:            name,

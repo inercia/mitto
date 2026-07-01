@@ -179,8 +179,23 @@ func BuildCELContext(input *ProcessorInput) *config.PromptEnabledContext {
 	ctx.Session.IsChild = input.ParentSessionID != ""
 	ctx.Session.ParentID = input.ParentSessionID
 	ctx.Session.IsPeriodic = input.IsPeriodic
+	ctx.Session.IsPeriodicForced = input.IsPeriodicForced
 	ctx.Session.BeadsIssue = input.BeadsIssue
+
+	// Iteration context for the {{ .Iteration.* }} template namespace.
+	ctx.Iteration.Number = input.IterationNumber
+	ctx.Iteration.Max = input.MaxIterations
+	ctx.Iteration.IsPeriodic = input.IsPeriodic
+	ctx.Iteration.IsFirst = input.IterationNumber == 0
+	ctx.Iteration.IsLast = input.MaxIterations > 0 && input.IterationNumber == input.MaxIterations-1
+	ctx.Iteration.IsUninterrupted = input.IterationUninterrupted
 	ctx.Session.HasBeadsIssue = input.BeadsIssue != ""
+
+	// Args (send-time arguments) for Go-template field interpolation in prompt bodies.
+	// nil at menu time (no prompt dispatched yet); a nil map is safe to index.
+	ctx.Args = input.Arguments
+	// UserData — per-conversation user data map (name→value). nil when absent.
+	ctx.UserData = input.UserData
 
 	// ACP context — get tags from the current server in AvailableACPServers
 	ctx.ACP.Name = input.ACPServer
@@ -188,8 +203,13 @@ func BuildCELContext(input *ProcessorInput) *config.PromptEnabledContext {
 		if srv.Current {
 			ctx.ACP.Type = srv.Type
 			ctx.ACP.Tags = srv.Tags
-			break
 		}
+		ctx.ACP.Available = append(ctx.ACP.Available, config.ACPServerInfo{
+			Name:    srv.Name,
+			Type:    srv.Type,
+			Tags:    srv.Tags,
+			Current: srv.Current,
+		})
 	}
 	if ctx.ACP.Type == "" {
 		ctx.ACP.Type = input.ACPServer
@@ -201,10 +221,12 @@ func BuildCELContext(input *ProcessorInput) *config.PromptEnabledContext {
 	ctx.Workspace.HasUserDataSchema = input.HasUserDataSchema
 	ctx.Workspace.HasMittoRC = input.HasMittoRC
 	ctx.Workspace.HasMetadataDescription = input.HasMetadataDescription
+	ctx.Workspace.UserDataSchemaJSON = input.UserDataSchemaJSON
 
 	// Parent context
 	if input.ParentSessionID != "" {
 		ctx.Parent.Exists = true
+		ctx.Parent.ID = input.ParentSessionID
 		ctx.Parent.Name = input.ParentSessionName
 		// ParentACPServer is not in ProcessorInput — leave empty
 	}
@@ -221,14 +243,34 @@ func BuildCELContext(input *ProcessorInput) *config.PromptEnabledContext {
 		if child.IsPrompting {
 			ctx.Children.PromptingCount++
 		}
+		childInfo := config.ChildInfo{
+			ID:          child.ID,
+			Name:        child.Name,
+			ACPServer:   child.ACPServer,
+			Origin:      child.ChildOrigin,
+			IsPrompting: child.IsPrompting,
+		}
+		ctx.Children.All = append(ctx.Children.All, childInfo)
+		if child.ChildOrigin == "mcp" {
+			ctx.Children.MCP = append(ctx.Children.MCP, childInfo)
+		}
 	}
 	ctx.Children.IdleCount = ctx.Children.Count - ctx.Children.PromptingCount
 
-	// Tools context
-	if len(input.MCPToolNames) > 0 {
-		ctx.Tools.Available = true
-		ctx.Tools.Names = input.MCPToolNames
-	}
+	// Session user data JSON for template rendering
+	ctx.Session.UserDataJSON = input.UserDataJSON
+
+	// Model tags/name resolved from the current model (config models: profiles). Feeds the
+	// Model(tag) template func and Session.HasModelTag CEL macro. Empty when model unknown.
+	ctx.Session.ModelTags = input.ModelTags
+	ctx.Session.ModelName = input.ModelName
+
+	// Tools context. Processors evaluate at message-processing time, where the
+	// tool list is treated as known (the cache is warmed on connect). Mark it
+	// Available so tool-pattern functions use name-based matching rather than the
+	// warm-up fail-open path used by the prompt menus.
+	ctx.Tools.Available = true
+	ctx.Tools.Names = input.MCPToolNames
 
 	// Permissions context - resolve flags with defaults
 	ctx.Permissions.CanDoIntrospection = session.GetFlagValue(input.AdvancedSettings, session.FlagCanDoIntrospection)

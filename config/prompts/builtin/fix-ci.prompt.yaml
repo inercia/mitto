@@ -4,11 +4,44 @@ menus: prompts
 description: Diagnose and fix CI pipeline failures
 group: CI
 backgroundColor: '#B2DFDB'
+tags:
+- periodic
+- ci
+periodic:
+  mode: optional
+  default: false
+  trigger: onCompletion
+  delay: 60
 prompt: |
   Check CI status and read failure logs before making changes. Do not speculate —
   read the logs and relevant source files.
 
   Diagnose and fix CI pipeline failures for the current branch.
+
+  ## Session Context
+
+  Your session ID is `{{ .Session.ID }}` — use this as `self_id` for all `mitto_*` MCP tool calls.
+
+  ## Interaction Mode
+  {{- if and .Session.IsPeriodic (not .Session.IsPeriodicForced) }}
+
+  **Scheduled mode** — a periodic run; the user is not watching.
+  - Use **only** `mitto_ui_notify` for all communication — non-blocking notifications only.
+  - Do **NOT** use `mitto_ui_options`, `mitto_ui_form`, `mitto_ui_textbox`, or any
+    interactive/blocking UI tool. They will stall an unattended run.
+  - Act **autonomously**: diagnose and fix CI-failing issues, verifying locally
+    (tests, build, lint) since you will **not** push.
+  - When local verification passes (nothing left to fix), notify success and
+    **stop iterating** so the loop doesn't spin:
+    `mitto_conversation_update(self_id: "{{ .Session.ID }}", conversation_id: "self", periodic_enabled: false)`.
+  - If a failure is ambiguous or needs a human decision (flaky test, infra outage,
+    CI-config/dependency change), do not guess — notify and stop.
+  {{- else }}
+
+  **Interactive mode** — a force-triggered run or a non-periodic conversation; the user may be present.
+  - You may use `mitto_ui_options`, `mitto_ui_form`, and other interactive tools in
+    addition to `mitto_ui_notify`. Ask before risky changes (CI config, dependencies).
+  {{- end }}
 
   Only fix CI-failing issues. Keep changes minimal.
 
@@ -47,6 +80,46 @@ prompt: |
   ```
 
   If passing, report success and stop.
+  {{- if and .Session.IsPeriodic (not .Session.IsPeriodicForced) }}
+  In scheduled mode: also disable your own periodic so the loop stops
+  (`mitto_conversation_update(self_id: "{{ .Session.ID }}", conversation_id: "self", periodic_enabled: false)`),
+  then send a `mitto_ui_notify` success.
+  {{- end }}
+
+  ### 3b. Track failures durably (periodic mode)
+  {{- if .Session.IsPeriodic }}
+
+  CI is failing. Set up **durable cross-run state in beads** so the loop remembers what
+  it already tried (attempt counts, known flakes, escalations) — the beads-native
+  replacement for an ephemeral `ci-sweeper-state.md`. Do this **only if `bd` is available
+  and a `.beads` directory exists**; otherwise skip and proceed statelessly.
+
+  **Resolve the tracker epic** (durable anchor for this repo's CI failures):
+  {{- if .Session.BeadsIssue }}
+  This conversation is linked to `{{ .Session.BeadsIssue }}` — treat it as the CI tracker epic.
+  {{- else }}
+  Find or create it, then link it so future runs resolve it automatically:
+
+  ```bash
+  bd list --label ci-sweeper --status open --json    # reuse an open epic labelled ci-sweeper if present
+  bd create "CI sweeper tracker (<repo>)" --type epic -p 2 -l ci-sweeper --silent   # else create one
+  ```
+
+  ```
+  mitto_conversation_update(self_id: "{{ .Session.ID }}", conversation_id: "self", beads_issue: "<tracker-epic-id>")
+  ```
+  {{- end }}
+
+  **Load failure history** so you don't re-attempt known-bad fixes or fight flakes:
+
+  ```bash
+  bd list --label ci-failure --status open --json    # open failure beads under the tracker
+  ```
+
+  **Dedup** each current failure against these beads by (failing job + error signature).
+  A matching open bead carries the prior **attempt count** and any `flake`/`needs-human`
+  labels — read it before acting (Steps 4–5).
+  {{- end }}
 
   ### 4. Diagnose
 
@@ -59,12 +132,48 @@ prompt: |
 
   1. Quote exact error from logs
   2. Diagnose root cause: test failure, build error, lint/format, dependency, config/environment
+  {{- if .Session.IsPeriodic }}
+
+  **Classify before fixing (periodic, when beads is available):**
+  - **Flake** — same test failed then passed on retry **without a code change**, or the
+    matching bead is already labelled `flake`: do **not** auto-fix. Label the bead `flake`,
+    `bd comment` the evidence, and notify for human quarantine.
+  - **Repeat failure** — a matching failure bead exists: read its attempt count. If it has
+    already reached **3 attempts**, do **not** retry — escalate (see Step 5).
+  - **New, actionable** — create a failure bead (unless deduped) capturing the commit SHA,
+    failing job, and exact error, then proceed to fix:
+
+    ```bash
+    bd create "CI: <job> — <short error>" --type bug --parent <tracker-epic> \
+      -l ci-failure -p 1 --body-file <tmpfile>   # body: commit SHA, job, exact error, branch
+    ```
+  {{- end }}
 
   ### 5. Fix
 
   Per issue: implement fix, explain the change, verify locally (tests, build, lint).
 
   Fix in dependency order — causes before symptoms.
+  {{- if .Session.IsPeriodic }}
+
+  **Periodic-mode fix safety + escalation (when beads is available):**
+  - **Protect the working checkout.** If the working tree has **unrelated uncommitted
+    changes**, make the fix in a **temporary git worktree** on its own branch (verify and
+    commit there) instead of the live checkout — never mix the user's work with the CI fix.
+  - **Record each attempt** on the failure bead: `bd comment <bead> "Attempt N/3: <what
+    changed>; local verify=<pass|fail>."`
+  - **Escalate after 3 attempts** on the same failure — stop retrying and hand off:
+    ```bash
+    bd update <bead> --add-label needs-human --defer +1d
+    ```
+    Then `mitto_ui_notify` with the failure, what was tried, and why a human is needed.
+  - **On success** (local verification passes), **close** the failure bead so it's pruned
+    from the active list: `bd close <bead> --reason "fixed: <summary>"`.
+  - **Stop spinning:** if every current failure is already `needs-human` or `flake`
+    (nothing this loop can act on), disable periodic
+    (`mitto_conversation_update(self_id: "{{ .Session.ID }}", conversation_id: "self", periodic_enabled: false)`)
+    and notify — the user re-runs after addressing the handoffs.
+  {{- end }}
 
   #### Delegating Complex CI Fixes to Child Conversations
 
@@ -72,23 +181,31 @@ prompt: |
 
   **Do NOT delegate** for: a single failure, cascading failures from one root cause, or simple lint/format fixes.
 
+  {{- if and .Session.IsPeriodic (not .Session.IsPeriodicForced) }}
+  In scheduled mode: before spawning, check `{{ .Children.AllText }}` and reuse an
+  existing child for the same failure instead of duplicating. Spawn at most **3 per
+  run**. **Spawned conversations must never be periodic** — they are one-off tasks.
+  {{- end }}
+
   **Session context for delegation:**
 
-  Your session ID is `@mitto:session_id` — use as `self_id` for all `mitto_*` tool calls.
+  Your session ID is `{{ .Session.ID }}` — use as `self_id` for all `mitto_*` tool calls.
 
   Available ACP servers:
-  @mitto:available_acp_servers
+  {{ .ACP.AvailableText }}
+  {{- if .Children.AllText }}
 
   Existing children:
-  @mitto:children
+  {{ .Children.AllText }}
+  {{- end }}
 
   **How to delegate:**
 
   1. Group failures into independent fix tasks (no shared root cause, no overlapping files)
   2. Choose ACP server: straightforward fixes → prefer `"coding"`/`"fast"` servers; ambiguous failures needing investigation → prefer `"reasoning"`/`"planning"` servers; no match → server marked `(current)`, then first available
   3. If relevant children already exist, consider sending work to them via `mitto_conversation_send_prompt` instead of creating new ones
-  4. `mitto_conversation_new(self_id: "@mitto:session_id")` per task — include: the exact error log, relevant file paths, what to fix, constraints (minimal changes, fix root cause not symptoms), and reporting directive
-  5. `mitto_children_tasks_wait(self_id: "@mitto:session_id", task_id: "<ci-fix-description>", timeout_seconds: 600)`
+  4. `mitto_conversation_new(self_id: "{{ .Session.ID }}")` per task — include: the exact error log, relevant file paths, what to fix, constraints (minimal changes, fix root cause not symptoms), and reporting directive
+  5. `mitto_children_tasks_wait(self_id: "{{ .Session.ID }}", task_id: "<ci-fix-description>", timeout_seconds: 600)`
   6. Review all results together — check for conflicts between fixes
   7. Verify combined changes locally: run full CI check (`make test` or equivalent)
   8. `mitto_conversation_delete` for completed children
@@ -104,13 +221,44 @@ prompt: |
   ```
 
   ### 7. Commit and Push
+  {{- if and .Session.IsPeriodic (not .Session.IsPeriodicForced) }}
 
-  Suggest user commit and push the changes.
+  In scheduled mode: **commit** your fixes, but do **NOT push** — pushing is left to
+  the user. Stage only the files you changed, explicitly by path (`git add <file> ...`);
+  never `git add -A`/`.` or `git commit -a`. Skip the commit if nothing changed this
+  run. If you fixed in a temporary worktree (dirty checkout), commit there and report the
+  worktree/branch. When beads is in use, **close** the fixed failure bead and append a run
+  record to the tracker epic
+  (`bd comment <tracker-epic> "CI run: fixed <N>, escalated <K>, flakes <F>."`). Then
+  `mitto_ui_notify` what was fixed/escalated and ask the user to push to re-run CI.
+  {{- else }}
+
+  Suggest the user commit and push the changes.
+  {{- end }}
 
   ## Guidelines
 
   - Check CI status before attempting fixes
-  - Get user approval before modifying CI config or dependencies
+  - Modifying CI config or dependencies: in interactive mode get user approval; in
+    scheduled mode do **not** make these changes — notify and stop instead
   - Report flaky tests as flaky rather than retrying blindly
   - Note infrastructure-related failures explicitly
   - Group related fixes in a single commit
+  {{- if .Session.IsPeriodic }}
+  - **Beads is the durable state store** in periodic mode (when `bd` + `.beads` exist): a
+    `ci-sweeper` tracker epic anchors the loop; each failure is a `ci-failure` child bead
+    with attempt count in `bd comment`; never create a `ci-sweeper-state.md` or any state file.
+  - **Attempt cap:** escalate to a human (`needs-human` + `bd update --defer`) after 3
+    attempts on the same failure — never retry the same broken fix forever.
+  - **Flakes:** label `flake` and quarantine via a bead; do not auto-fix tests that pass on retry.
+  - **Never clobber the working checkout** — use a temporary worktree when it has unrelated
+    uncommitted changes; spawned children must never be periodic.
+  {{- end }}
+  - **Interaction mode** (see "Interaction Mode" section above):
+  {{- if and .Session.IsPeriodic (not .Session.IsPeriodicForced) }}
+    - **Scheduled periodic**: notify-only; fix + commit (never push); verify locally;
+      stop iterating when green; spawned children must never be periodic.
+  {{- else }}
+    - **Force-triggered or non-periodic**: you may use interactive UI; ask before
+      risky changes; suggest commit + push at the end.
+  {{- end }}

@@ -76,11 +76,15 @@
     // Two-slot: pick the theme name for the active bucket.
     // One-pass migration: fall back to old mitto-theme-name if new keys absent.
     var legacy = localStorage.getItem("mitto-theme-name");
-    var slotKey = effectiveBucket === "light" ? "mitto-theme-light" : "mitto-theme-dark";
+    var slotKey =
+      effectiveBucket === "light" ? "mitto-theme-light" : "mitto-theme-dark";
     var name = localStorage.getItem(slotKey);
     if (!name || !Object.prototype.hasOwnProperty.call(THEME_BUCKETS, name)) {
       // Migration: use legacy key if it matches the active bucket
-      if (legacy && Object.prototype.hasOwnProperty.call(THEME_BUCKETS, legacy)) {
+      if (
+        legacy &&
+        Object.prototype.hasOwnProperty.call(THEME_BUCKETS, legacy)
+      ) {
         var legacyBucket = THEME_BUCKETS[legacy];
         if (legacyBucket === effectiveBucket || legacyBucket === null) {
           name = legacy;
@@ -106,5 +110,4 @@
   } catch (e) {
     // localStorage/matchMedia may be unavailable — fall back to default styling.
   }
-
 })();

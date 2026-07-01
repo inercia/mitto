@@ -48,6 +48,18 @@
   overflow-x: hidden;
 }
 
+/* daisyUI tooltips ship with z-index:2, which lets adjacent positioned chrome
+   (the chat-input textarea, toolbars, side panels) paint over the bubble —
+   the "tooltip hidden behind other UI" symptom. Raise the bubble/arrow so a
+   hover tooltip always renders above surrounding UI within its stacking
+   context. Selectors mirror daisyUI's specificity; styles.css loads after
+   tailwind.css so source order wins the ties. */
+.tooltip[data-tip]::before,
+.tooltip > .tooltip-content,
+.tooltip::after {
+  z-index: 1000;
+}
+
 /* Messages container scrollbar - show scrollbar for better Edge compatibility.
    Edge (Chromium) can have scrolling issues when scrollbar is hidden with
    flex-col-reverse layouts. We show a thin, styled scrollbar instead. */
@@ -299,6 +311,21 @@
   will-change: opacity, transform;
 }
 
+/* Reconnecting banner: keep daisyUI's skeleton-text gradient shimmer but raise
+   the dim baseline text from 20% to 60% opacity so the label stays clearly
+   readable while still shimmering. daisyUI's .skeleton-text gradient lives in an
+   @layer, so this unlayered rule (and its higher 0,2,0 specificity) wins. In
+   browsers without color-mix support, daisyUI's fully-opaque fallback applies
+   and this rule is simply ignored. */
+.skeleton-text.skeleton-text-readable {
+  background-image: linear-gradient(
+    105deg,
+    color-mix(in oklab, var(--color-base-content) 60%, transparent) 0% 40%,
+    var(--color-base-content) 50%,
+    color-mix(in oklab, var(--color-base-content) 60%, transparent) 60% 100%
+  );
+}
+
 /* Keep the sidebar filter-tab bar (Conversations) and the Tasks panel toolbar
    at the same height so the horizontal divider lines between the two
    side-by-side panels align. Both panel headers already share p-4 + text-lg, so
@@ -317,6 +344,47 @@
 .beads-dep-type-select {
   width: 8rem;
   flex: 0 0 auto;
+}
+
+/* Single grid shared by every dependency row (existing rows + the add-row) so
+   their columns line up exactly: status badge | type dropdown | issue | action.
+   Col 1 is max-content so it hugs the badge (no wide gap before the dropdown);
+   col 2 matches .beads-dep-type-select's fixed 8rem; col 3 fills the rest and is
+   allowed to shrink to zero (minmax(0,1fr)) so the issue text can truncate; col 4
+   hugs the square action button. */
+.beads-deps-grid {
+  display: grid;
+  grid-template-columns: max-content 8rem minmax(0, 1fr) max-content;
+  align-items: center;
+  column-gap: 0.5rem;
+  row-gap: 0.375rem;
+  margin-top: 0.25rem;
+}
+.beads-dep-badge {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+}
+.beads-dep-empty {
+  grid-column: 1 / -1;
+}
+
+/* Dependency status badges show the full status label normally and collapse to
+   a single-letter abbreviation on small screens (the full label stays in the
+   element's `title` for hover/accessibility). */
+.beads-badge-abbr {
+  display: none;
+}
+.beads-badge-full {
+  display: inline;
+}
+@media (max-width: 640px) {
+  .beads-badge-abbr {
+    display: inline;
+  }
+  .beads-badge-full {
+    display: none;
+  }
 }
 
 /* Filter tab streaming pulse - uses ::before pseudo-element to only animate background */
@@ -540,17 +608,21 @@
   color: #93c5fd;
 }
 
-/* File links - styled with dotted underline */
-.markdown-content a.file-link,
-a.file-link {
+/* File links - styled with dotted underline.
+ * Selectors are element-agnostic so that inert <span>/<label> markers wired
+ * up by trusted frontend code (e.g. mitto_ui_form file markers) get the same
+ * affordance as real <a> links. */
+.markdown-content .file-link,
+.file-link {
   color: #34d399; /* Green to distinguish from external links */
   text-decoration: underline;
   text-decoration-style: dotted;
   text-underline-offset: 2px;
+  cursor: pointer;
 }
 
-.markdown-content a.file-link:hover,
-a.file-link:hover {
+.markdown-content .file-link:hover,
+.file-link:hover {
   color: #6ee7b7;
   text-decoration-style: solid;
 }
@@ -564,6 +636,28 @@ a.url-link {
 
 a.url-link:hover {
   color: #93c5fd;
+}
+
+/* Beads issue links - inserted by linkifyBeadsRefs */
+a.beads-link {
+  color: #a78bfa; /* Purple accent to distinguish from file/URL links */
+  text-decoration: underline;
+  text-decoration-style: dotted;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+
+a.beads-link:hover {
+  color: #c4b5fd;
+  text-decoration-style: solid;
+}
+
+.light a.beads-link {
+  color: #7c3aed;
+}
+
+.light a.beads-link:hover {
+  color: #6d28d9;
 }
 
 /* Mailto links */
@@ -661,13 +755,13 @@ a.mailto-link:hover {
   color: #1d4ed8;
 }
 
-.light .markdown-content a.file-link,
-.light a.file-link {
+.light .markdown-content .file-link,
+.light .file-link {
   color: #059669; /* Darker green for light mode */
 }
 
-.light .markdown-content a.file-link:hover,
-.light a.file-link:hover {
+.light .markdown-content .file-link:hover,
+.light .file-link:hover {
   color: #047857;
 }
 
@@ -1104,6 +1198,32 @@ a.mailto-link:hover {
   }
 }
 
+/* On small screens, collapse the categorical header badges (the periodic
+   status pill — Auto/Paused/Stopped — and the trigger badge) to icon-only by
+   hiding their text labels. The leading icon stays visible and conveys the
+   state. Numeric badges (max 2h, countdown) keep their full values; the
+   run-count badge swaps to a compact form (see below) so its value stays
+   readable while taking less room. */
+@media (max-width: 640px) {
+  [data-testid="conversation-header-subtitle"] .badge-collapse-label {
+    display: none;
+  }
+}
+
+/* Run-count badge: show the full form ("Run N of M") on wider screens and a
+   compact form ("N/M") on narrow screens. */
+[data-testid="periodic-run-count-badge"] .runcount-short {
+  display: none;
+}
+@media (max-width: 640px) {
+  [data-testid="periodic-run-count-badge"] .runcount-full {
+    display: none;
+  }
+  [data-testid="periodic-run-count-badge"] .runcount-short {
+    display: inline;
+  }
+}
+
 /* =============================================================================
    Queue Dropdown
    ============================================================================= */
@@ -1251,6 +1371,110 @@ a.mailto-link:hover {
   background-color: transparent;
 }
 
+/* Dock (mitto-cdf): a right (end) drawer that docks to the right edge of its
+   nearest positioned ancestor (drawer-content) and is confined to the PANEL's
+   own width — NOT a full-area overlay — with no dimming backdrop. Because the
+   conversation content to the panel's LEFT is never under a composited layer,
+   the WebKit/Chromium backing-store drop that blanked the content on
+   pointer-move cannot occur.
+   We dock the .drawer ROOT (not the .drawer-side) so it never spans the left,
+   and force display:block on BOTH the root and the side: daisyUI's .drawer is
+   display:grid and its .drawer-side is a content-sized grid item, so a
+   width:100% on the side would resolve against that ~20rem grid track instead
+   of the root (leaving the panel narrow on phones). As a plain block the side
+   fills the root, and the root takes a definite height from top:0/bottom:0
+   (read off drawer-content). Out of flow, so the conversation does not reflow.
+   Unlayered so it wins over daisyUI's layered defaults. */
+.drawer-dock {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  right: 0;
+  left: auto; /* dock the whole drawer to the right edge */
+  display: block; /* not daisyUI's grid (which would content-size the side) */
+  /* Docked panel-strip width on desktop. Configurable per consumer via the
+     --dock-w / --dock-maxw CSS vars (Drawer rootStyle); defaults suit the
+     conversation panel. The beads viewer sets a wider strip with a % cap. */
+  width: var(--dock-w, 20rem);
+  max-width: var(--dock-maxw, 100%);
+}
+
+.drawer-dock > .drawer-side {
+  position: relative; /* in-flow within the docked root (override daisyUI fixed) */
+  inset: auto;
+  display: block; /* not grid */
+  width: 100%; /* fill the docked root */
+  height: 100%;
+}
+
+/* No backdrop in dock mode (close via Escape or the panel's own controls). */
+.drawer-dock > .drawer-side > .drawer-overlay {
+  display: none;
+}
+
+/* Subtle elevation: a soft directional shadow cast toward the content on the
+   panel's LEFT edge, so the right-docked panel reads as floating slightly above
+   the conversation/beads list rather than sitting flush against it. Overrides
+   the panel's default shadow-2xl (a downward shadow that is invisible on a
+   full-height edge-docked strip). */
+.drawer-dock > .drawer-side > :not(.drawer-overlay) {
+  box-shadow: -6px 0 18px -8px rgba(0, 0, 0, 0.3);
+}
+
+/* Phones / small windows: keep the dock CONFINED to the right edge instead of
+   covering the whole viewport, so the content to its left (conversation / beads
+   list) stays visible and interactive — mirroring the left sidebar. The panel
+   keeps its --dock-w width but is capped so a content peek always remains on the
+   left. Because the panel is absolute (not a full-area composited overlay) and
+   the content beside it is never under a transparent fixed layer, there is no
+   GPU backing-store drop on pointer-move (mitto-cdf). Close via the panel's own
+   X or Escape (no backdrop). The beads viewer sets --dock-w:100% on mobile; the
+   85vw cap here confines it the same way. Consumers can lift the cap (e.g. the
+   beads viewer in fullscreen sets --dock-maxw:100%) to fill the viewport. */
+@media (max-width: 767.98px) {
+  .drawer-dock {
+    max-width: var(--dock-maxw, 85vw);
+  }
+}
+
+/* Left nav sidebar on small screens (mitto-cdf): the conversations sidebar is
+   the top-level daisyUI drawer (.sidebar-shell, start side). Below the md
+   breakpoint daisyUI renders its .drawer-side as a position:fixed,
+   width:100% (full-viewport) grid layer with the panel as a fixed-width grid
+   item, leaving a sliver of conversation visible on the right under the
+   transparent .drawer-overlay backdrop. When open the full-viewport .drawer-side
+   has pointer-events:auto, so moving the pointer over it (backdrop or empty grid
+   area) drops the visible conversation's backing store and blanks it — the same
+   WebKit/Chromium compositing bug fixed for the end/dock panels.
+   Fix (mirrors the dock panels): CONFINE the fixed .drawer-side to the panel's
+   own width on the left edge (width:max-content, inset-inline-end:auto) instead
+   of spanning the viewport, and drop the dimming backdrop. The conversation then
+   stays visible and interactive to the panel's right and is never under a fixed
+   transparent layer, so the backing-store drop cannot occur — while the sidebar
+   no longer takes over the window on small/tablet widths (e.g. ~750px). The
+   panel is capped at 85vw so on very narrow phones a peek of conversation always
+   remains (still safe: that peek is live content, not a composited overlay). The
+   sidebar's own md:hidden Close (X) button still dismisses it.
+   Desktop (md:drawer-open, >=768px) is unaffected: this only applies below the md
+   breakpoint, where the sidebar is otherwise an overlay drawer. Unlayered so it
+   wins over daisyUI's layered defaults AND the inline px width. */
+@media (max-width: 767.98px) {
+  .sidebar-shell > .drawer-side {
+    width: max-content; /* shrink to the panel strip, not the 100% viewport */
+    inset-inline-end: auto; /* do not span to the right edge */
+  }
+  .sidebar-shell > .drawer-side > :not(.drawer-overlay) {
+    max-width: 85vw; /* never cover the whole window; keep a conversation peek */
+    /* Subtle elevation toward the content on the panel's RIGHT edge (mirrors the
+       right-dock shadow) so the floating sidebar reads as lifted above the
+       conversation peek beside it. */
+    box-shadow: 6px 0 18px -8px rgba(0, 0, 0, 0.3);
+  }
+  .sidebar-shell > .drawer-side > .drawer-overlay {
+    display: none; /* no dimming layer over visible conversation content */
+  }
+}
+
 /* Fix (mitto-0ho): the Beads description/create CodeMirror editor sometimes
    paints fully blank when clicked. Same WKWebView/Safari backing-store drop as
    .beads-table-scroll above: the editor's real scroll layer (.cm-scroller,
@@ -1272,6 +1496,22 @@ a.mailto-link:hover {
   transform: translateZ(0);
 }
 
+/* Remove the stray horizontal line inside the beads description/create editor.
+   The wrapper carries a min-height (so a short description still shows a roomy
+   box), but its height is otherwise indefinite, so CodeMirror's height:100%
+   editor collapses to the text height and the GPU-promoted .cm-scroller above
+   ends mid-box — its composited bottom edge anti-aliases into a visible 1px
+   seam with empty space below it. Make the wrapper a flex column and let the
+   editor grow to fill the min-height, so the scroll layer's bottom edge lands
+   on the wrapper's bottom border (hidden) instead of floating mid-box. */
+.input-font-target {
+  display: flex;
+  flex-direction: column;
+}
+.input-font-target > .cm-editor {
+  flex: 1 0 auto;
+}
+
 /* Queue dropdown list scrollbar */
 .queue-dropdown-list::-webkit-scrollbar {
   width: 6px;
@@ -1288,6 +1528,14 @@ a.mailto-link:hover {
 
 .queue-dropdown-list::-webkit-scrollbar-thumb:hover {
   background: #64748b;
+}
+
+/* Queue item action buttons: always visible at reduced opacity, full on hover/focus, always full on touch */
+.queue-item-actions { opacity: 0.45; }
+.group:hover .queue-item-actions,
+.group:focus-within .queue-item-actions { opacity: 1; }
+@media (hover: none) {
+  .queue-item-actions { opacity: 1; }
 }
 
 /* Light theme adjustments */
@@ -1626,6 +1874,41 @@ mitto-action {
   }
 }
 
+/* Config selector daisyUI dropdowns in the composition toolbar open UPWARD:
+   the toolbar sits at the bottom of the screen. daisyUI's placement classes
+   (dropdown-top / dropdown-end) rely on CSS anchor positioning and are not in
+   the precompiled tailwind.css, so position the menu explicitly here for
+   cross-browser correctness (including WKWebView). Right-aligned to avoid
+   overflowing the viewport edge on narrow screens.
+
+   z-index: daisyUI ships .dropdown .dropdown-content at z-index:999, but a
+   Tailwind `z-*` utility (in the later `utilities` cascade layer) would win by
+   layer order regardless of specificity and drop the menu below the
+   composition area's top border. Pin it here (styles.css is unlayered, so it
+   beats any utility) so the upward menu always paints above that border. */
+.chat-input-config-dropdown .dropdown-content {
+  top: auto;
+  bottom: 100%;
+  right: 0;
+  left: auto;
+  margin-top: 0;
+  margin-bottom: 0.375rem;
+  z-index: 999;
+}
+
+/* Config selector daisyUI dropdowns in the properties panels open DOWNWARD and
+   fill the trigger width. Same rationale as above: daisyUI's default dropdown
+   placement relies on CSS anchor `position-area`, unavailable in WKWebView, so
+   pin explicit physical insets here for cross-browser correctness. */
+.config-dropdown-block .dropdown-content {
+  top: 100%;
+  bottom: auto;
+  left: 0;
+  right: auto;
+  margin-top: 0.375rem;
+  margin-bottom: 0;
+}
+
 
 .chat-input-context-pct {
   font-size: 11px;
@@ -1939,6 +2222,19 @@ mitto-action {
   backdrop-filter: none;
 }
 
+/* Tailwind infinite utility animations (spinners, pulses) also stop —
+   they run infinitely and contribute to sustained GPU compositing. */
+.reduce-animations .animate-spin,
+.reduce-animations .animate-pulse {
+  animation: none;
+}
+
+/* Transient "improving" overlay: drop its backdrop blur to match the
+   other overlays handled above. */
+.reduce-animations .textarea-improving-overlay {
+  backdrop-filter: none;
+}
+
 /* Also respect OS-level reduced motion preference directly via media query.
    This provides a CSS-only baseline before JavaScript loads. */
 @media (prefers-reduced-motion: reduce) {
@@ -1981,6 +2277,15 @@ mitto-action {
   }
 
   [class*="backdrop-blur"] {
+    backdrop-filter: none;
+  }
+
+  .animate-spin,
+  .animate-pulse {
+    animation: none;
+  }
+
+  .textarea-improving-overlay {
     backdrop-filter: none;
   }
 }

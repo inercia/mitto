@@ -4,6 +4,13 @@ menus: prompts
 description: Run the test suite and report results
 group: Testing
 backgroundColor: '#FFE0B2'
+preferredModels:
+  - modelTag: Coding
+periodic:
+  mode: optional
+  default: false
+  trigger: onCompletion
+  delay: 60
 prompt: |
   Run the project's test suite and report results.
 

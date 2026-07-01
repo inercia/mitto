@@ -29,15 +29,21 @@ when:
     afterInterval: 5m
 priority: 200
 timeout: 300s
-on_error: skip
+onError: skip
+
+parameters:
+  - name: HistoryLimit
+    type: text
+    description: "How many recent user/agent messages the auxiliary agent reviews"
+    default: "10"
 
 # Only for Auggie sessions, skip periodic prompts, and only when rules already exist
-enabledWhen: 'acp.matchesServerType("augment") && !session.isPeriodic && dirExists(".augment/rules")'
+enabledWhen: 'ACP.MatchesServerType("augment") && !Session.IsPeriodic && DirExists(".augment/rules")'
 
 prompt: |
   You update `.augment/rules` files for this workspace based on recent conversation insights.
 
-  Working directory: @mitto:working_dir
+  Working directory: {{ .Workspace.Folder }}
 
   Review the recent conversation messages below and update rules based on insights
   and lessons learned:
@@ -83,9 +89,9 @@ prompt: |
   Use the `mitto_conversation_history` MCP tool to retrieve the recent conversation.
   Call it with:
   - `self_id`: your session ID (from `mitto_conversation_get_current`)
-  - `conversation_id`: "@mitto:session_id"
+  - `conversation_id`: "{{ .Session.ID }}"
   - `event_types`: ["user_prompt", "agent_message"]
-  - `last_n`: 10
+  - `last_n`: ${HistoryLimit:-10}
 
   Review these messages for patterns, conventions, and lessons learned.
 
@@ -93,7 +99,7 @@ prompt: |
 
   After completing your work, if you updated any rules files, call
   `mitto_ui_notify` with:
-  - `self_id`: "@mitto:session_id"
+  - `self_id`: "{{ .Session.ID }}"
   - `title`: "✏️ Rules Updated"
   - `message`: a brief summary, e.g. "Updated 3 rules files with new patterns"
   - `style`: "success"

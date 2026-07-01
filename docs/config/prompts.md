@@ -260,10 +260,11 @@ prompt: |
 | `description`     | No       | string   | Tooltip text shown on hover                                                                  |
 | `group`           | No       | string   | Group name for organizing prompts in the menu (e.g., `"Git"`, `"Testing"`)                   |
 | `menus`           | No       | string   | Comma-separated list of menus the prompt appears in: `prompts` (ChatInput dropup), `promptsPeriodic` (periodic prompt selector), `conversation` (per-conversation context menu), `beadsIssues` (per-issue context menu in the Beads list), and/or `beadsList` (list-level prompts button in the Beads list footer). Defaults to `prompts` if omitted. See [below](#menus). |
-| `requires`        | No       | string   | Comma-separated list of capabilities the menu must provide for this prompt to appear. See [below](#requires-capability-gating). |
+| `parameters`      | No       | list     | Typed input declarations. Each entry: `{ name, type, description?, required? }`. The menu must supply every declared type or the prompt is hidden. See [below](#parameters-typed-inputs--type-based-gating). |
 | `backgroundColor` | No       | string   | Hex color for the button (e.g., `"#E8F5E9"`)                                                 |
 | `icon`            | No       | string   | Icon name shown next to the prompt in menus. See [valid names](#icon-names). Unknown names fall back to the default icon. |
 | `tags`            | No       | string[] | Categorization tags (reserved for future use)                                                |
+| `singleton`       | No       | bool     | `true` means launching this prompt from the menu does not create a duplicate conversation if a non-archived conversation started from the same prompt already exists in the same working directory. Instead the existing conversation is reused: if it is idle the prompt is re-seeded into its queue; if it is busy it is only focused (focus-only). Scope key is (working directory, origin prompt name). Default: `false` |
 | `acps`            | No       | string   | Comma-separated ACP server types this prompt belongs to. Makes the prompt server-specific.   |
 | `enabled`         | No       | bool     | Set to `false` to disable the prompt. Default: `true`                                        |
 | `enabledWhen`     | No       | string   | CEL expression for conditional enablement. See [below](#enabledwhen-conditional-enablement). |
@@ -312,7 +313,7 @@ description: "Pick a JIRA ticket and spawn parallel conversations"
 group: "JIRA"
 backgroundColor: "#BBDEFB"
 enabled: true
-enabledWhen: '!session.isChild && acp.matchesServerType(["augment", "claude-code"]) && tools.hasAllPatterns(["jira_*", "mitto_conversation_*"])'
+enabledWhen: '!Session.IsChild && ACP.MatchesServerType(["augment", "claude-code"]) && Tools.HasAllPatterns(["jira_*", "mitto_conversation_*"])'
 prompt: |
   (prompt body here)
 ```
@@ -400,9 +401,40 @@ prompt: |
   Check the repository for pending review requests and stale branches.
 ```
 
-Pair this with the `session.isPeriodicConversation` CEL variable (see
+Pair this with the `Session.IsPeriodicConversation` CEL variable (see
 [enabledWhen](#enabledwhen-conditional-enablement)) if you also want the prompt
 hidden everywhere outside periodic conversations.
+
+### Exclusion Syntax (`!menu`)
+
+A `!`-prefixed token in `menus` **explicitly excludes** the prompt from that menu,
+even when a union or implicit rule would otherwise include it. Exclusions take
+precedence over inclusions.
+
+**Motivating case:** the periodic prompt selector uses a union rule — every
+`prompts` prompt also appears in the selector. To suppress a one-shot prompt from
+the periodic selector without removing it from the regular dropup, add
+`!promptsPeriodic`:
+
+```yaml
+name: "JIRA: decompose"
+description: "Break a JIRA epic into subtasks — one-shot only, not for recurring runs"
+group: "JIRA"
+menus: prompts, !promptsPeriodic
+prompt: |
+  Analyze the current JIRA epic and decompose it into actionable subtasks.
+```
+
+This prompt appears in the ChatInput dropup (`prompts`) but is hidden from the
+periodic prompt selector (`!promptsPeriodic`).
+
+**Rules:**
+- A bare token (`prompts`) opts the prompt **into** that menu.
+- A `!`-prefixed token (`!promptsPeriodic`) opts the prompt **out of** that menu.
+- Exclusions take precedence over inclusions and union rules.
+- If all non-`!` tokens are stripped and nothing positive remains, `menus`
+  defaults to `["prompts"]` (the prompt still appears in the dropup).
+- Exclusion tokens are ignored by backend validation and never treated as target menu names.
 
 ### Conversation Context Menu
 
@@ -432,8 +464,8 @@ Prompts without a `group` are collected under an **"Other"** submenu.
   evaluated for the **active** conversation — the context menu evaluates each
   prompt's `enabledWhen` against the **conversation you right-clicked**. The menu
   is populated on demand for that specific conversation, so context-dependent
-  prompts (e.g. `enabledWhen: "session.isChild"` for "Report to parent", or
-  `enabledWhen: "children.exists"` for "Continue in existing") appear
+  prompts (e.g. `enabledWhen: "Session.IsChild"` for "Report to parent", or
+  `enabledWhen: "Children.Exists"` for "Continue in existing") appear
   only on the conversations where they apply.
 - `@mitto:` [variable substitution](#variable-substitution-in-prompts) is applied
   to the enqueued text in the target conversation's context before it reaches the
@@ -447,31 +479,59 @@ Alongside common bead actions (e.g. **Delete**), the menu includes a **New**
 submenu listing every `menus: beadsIssues` prompt.
 
 Selecting one of these prompts starts a new conversation seeded with the prompt
-text, and the menu supplies the selected issue's ID as an `ISSUE_ID` argument. The
-prompt body should reference it via `${ISSUE_ID}` and load its own context with
-`bd show ${ISSUE_ID}` rather than relying on a pre-built context block:
+text. The menu auto-fills the selected issue's ID and title as typed arguments.
+The prompt body should reference them via `{{ .Args.ISSUE_ID }}` (and optionally
+`{{ Arg "ISSUE_TITLE" "Untitled" }}`) and load its own full context with
+`bd show {{ .Args.ISSUE_ID }}` rather than relying on a pre-built context block:
 
 ```yaml
 name: "Start work"
 group: "Beads"
 menus: beadsIssues
-requires: parameters
+parameters:
+  - name: ISSUE_ID
+    type: beadsId
 prompt: |
-  The target bead is `${ISSUE_ID}`.
+  The target bead is `{{ .Args.ISSUE_ID }}`.
 
   Load its full detail:
 
-      bd show ${ISSUE_ID} --long --json
+      bd show {{ .Args.ISSUE_ID }} --long --json
 
   then claim it and propose a plan.
 ```
 
-Because the `beadsIssues` menu always provides the `parameters` capability (it
-passes `{ ISSUE_ID: <issue.id> }`), issue-scoped prompts set `requires: parameters`
-so they appear **only** in this menu and not in the generic `prompts` dropup, where
-no `ISSUE_ID` would be available. See [Prompt Arguments](#prompt-arguments) and
-[requires (Capability Gating)](#requires-capability-gating) for the underlying
-mechanism.
+Because the `beadsIssues` menu supplies the `beadsId` type (auto-filling
+`ISSUE_ID` from the selected issue), issue-scoped prompts that declare
+`type: beadsId` appear **only** in this menu and not in the generic `prompts`
+dropup, where no issue context would be available. See [Prompt Arguments](#prompt-arguments)
+and [parameters (Typed Inputs & Type-Based Gating)](#parameters-typed-inputs--type-based-gating)
+for the full mechanism.
+
+#### Per-row `Item.*` namespace for `enabledWhen`
+
+When the Beads context menu opens for a specific issue, the server populates the
+`Item` CEL namespace with that issue's data. `beadsIssues` prompts can use
+`enabledWhen` to show or hide themselves per row:
+
+| Field | Type | Example value |
+|---|---|---|
+| `Item.Id` | string | `"mitto-abc"` |
+| `Item.Status` | string | `"open"`, `"closed"` |
+| `Item.Type` | string | `"bug"`, `"feature"`, `"task"` |
+| `Item.Priority` | string | `"0"`, `"1"`, `"2"`, `"3"` |
+| `Item.Labels` | list of strings | `["blog", "frontend"]` |
+| `Item.Kind` | string | `"beadsIssue"` |
+
+**Examples:**
+
+```yaml
+# Show only for bug-type issues
+enabledWhen: 'Item.Type == "bug"'
+
+# Show only for issues labelled "blog"
+enabledWhen: '"blog" in Item.Labels'
+```
 
 ### Beads List Menu
 
@@ -490,6 +550,65 @@ prompt: |
   (prompt body here)
 ```
 
+### Context-adaptive prompts (three modes)
+
+A single prompt can serve **both** the per-issue Beads menu and the generic
+conversation menu by combining `menus: beadsIssues, conversation`, an **optional**
+typed parameter, and a Go-template _target ladder_ that resolves the issue from
+whichever context is available. The same body then adapts to one of three modes:
+
+1. **Linked issue** — the conversation is already linked to a bead, so
+   `{{ .Session.BeadsIssue }}` is set (e.g. an "Iterate until complete" run).
+2. **Selected issue** — launched from the Beads per-issue menu, which auto-fills
+   the optional `IssueID` parameter (`{{ .Args.IssueID }}`).
+3. **No issue (current problem)** — launched from the conversation menu with no
+   bead in context. The prompt drops all `bd` commands and acts as a general
+   advisor on the _current problem_ under discussion.
+
+**Header recipe** — list both menus and mark the parameter optional so the prompt
+is not hidden when no issue is available (see
+[parameters (Typed Inputs & Type-Based Gating)](#parameters-typed-inputs--type-based-gating)):
+
+```yaml
+name: "Check status"
+menus: beadsIssues, conversation
+parameters:
+  - name: IssueID
+    type: beadsId
+    required: false
+    description: The beads issue ID to act on
+```
+
+**Target ladder** — resolve a single `$target` at the top of the body, preferring
+the linked bead, then the optional argument, then falling back to mode 3:
+
+```text
+{{ $target := "" -}}
+{{ if .Session.BeadsIssue }}{{ $target = .Session.BeadsIssue }}
+{{ else if .Args.IssueID }}{{ $target = .Args.IssueID }}{{ end -}}
+
+{{ if $target -}}
+The target bead is `{{ $target }}`.
+{{- else -}}
+There is **no linked bead**. Work on the **current problem** under discussion;
+do **not** run any `bd` commands.
+{{- end }}
+```
+
+**Command gating** — wrap every bead-specific command (and any `git grep <id>`
+that depends on an issue ID) in `{{ if $target }} … {{ end }}` so mode 3 emits
+**zero** `bd` commands:
+
+```text
+{{ if $target -}}
+    bd show {{ $target }} --long --json
+{{- end }}
+```
+
+The built-in `beads-issue-investigate`, `beads-issue-discuss`,
+`beads-issue-status`, `beads-issue-resolved`, `beads-issue-work`, and
+`beads-followup-work` prompts all follow this three-mode pattern.
+
 ## Periodic Prompts
 
 A prompt can declare a `periodic:` mapping to opt into **periodic mode**. How a
@@ -502,23 +621,57 @@ convert an existing conversation to periodic, or send a single one-shot run (see
 
 ```yaml
 periodic:
-  value: 1           # number of time units between runs (integer ≥ 1)
-  unit: hours        # minutes | hours | days
+  value: 1           # number of time units between runs (integer ≥ 1); used by trigger: schedule
+  unit: hours        # minutes | hours | days; used by trigger: schedule
   at: "09:00"        # optional — time of day in HH:MM (local time in the UI, stored as UTC); only valid for unit: days
   maxIterations: 10  # optional; 0/absent = unlimited scheduled runs
+  trigger: schedule  # optional — schedule (default) | onCompletion
+  delay: 30          # optional — seconds to wait after the agent stops, before the next onCompletion run
+  maxDuration: "4h"  # optional — wall-clock cap (e.g. 30m, 4h, 1d); 0/absent = unlimited
+  mode: always       # optional — always (default) | optional
+  default: true      # optional — only meaningful for mode: optional; nil/absent = true
 ```
 
 | Field           | Required | Description |
 | --------------- | -------- | ----------- |
-| `value`         | Yes      | Number of time units between runs (integer ≥ 1, max 999) |
-| `unit`          | Yes      | `minutes`, `hours`, or `days` |
+| `value`         | Yes¹     | Number of time units between runs (integer ≥ 1, max 999) |
+| `unit`          | Yes¹     | `minutes`, `hours`, or `days` |
 | `at`            | No       | Time of day (`HH:MM`) for daily schedules only. Ignored for other units. |
 | `maxIterations` | No       | Cap on the number of scheduled runs (integer ≥ 0). `0` or absent means unlimited at the prompt level. See [Max iterations and auto-stop](#max-iterations-and-auto-stop). |
+| `trigger`       | No       | How runs fire: `schedule` (default — frequency-based) or `onCompletion` (fire after the agent stops responding). See [Triggers](#triggers-schedule-vs-on-completion). |
+| `delay`         | No       | For `trigger: onCompletion` only — seconds to wait after the agent finishes before the next run. Clamped up to the global floor (`min_periodic_completion_delay_seconds`, default 5). Ignored for `schedule`. |
+| `maxDuration`   | No       | Wall-clock cap as a duration string (`30m`, `4h`, `1d`). Once it elapses (measured from the first run), the conversation auto-stops. `0`/absent = unlimited. |
+| `mode`          | No       | `always` (default — not user-toggleable) or `optional` (user-choosable per send). Unknown values are rejected at load time. See [Always / optional / never](#always--optional--never). |
+| `default`       | No       | Initial per-send toggle state when `mode: optional`. `true`/absent = on, `false` = off. Ignored (with a load-time warning) when `mode` is `always` or absent. |
+
+¹ Required for `trigger: schedule` (the default). Ignored for `trigger: onCompletion`, which fires off the agent-idle event rather than a fixed period.
 
 **Presence implies opt-in** — omitting the `periodic:` block entirely keeps the prompt as a regular one-time prompt.
 
 The `value` / `unit` / `at` fields double as the **default period** applied
 whenever a conversation is made periodic (see [Default period](#default-period)).
+
+#### Always / optional / never
+
+Every prompt falls into one of three categories:
+
+- **Never periodic** — no `periodic:` block at all. Regular one-time prompt (unchanged).
+- **Always periodic** — `periodic:` block with `mode: always` (or `mode` absent). Periodic behavior is mandatory whenever the prompt is selected; not user-toggleable.
+- **Optionally periodic** — `periodic:` block with `mode: optional`. The user can choose whether this send is periodic; `default` sets the initial toggle state.
+
+```yaml
+# Always periodic (mode omitted == always)
+periodic:
+  trigger: onCompletion
+  delay: 30
+
+# Optionally periodic, off by default
+periodic:
+  mode: optional
+  default: false
+  trigger: onCompletion
+  delay: 30
+```
 
 ### Behavior
 
@@ -557,6 +710,26 @@ The binding cap is the **smallest positive** of:
 A `maxIterations` of `0` (or absent) means "unlimited" at the prompt level, but the
 config setting and the backstop still apply.
 
+#### Triggers: schedule vs on-completion
+
+The `trigger` field selects **when** a periodic run fires:
+
+- **`schedule`** (default) — runs fire on a fixed period defined by `value`/`unit`
+  (and optional `at` for daily). This is the classic interval behavior.
+- **`onCompletion`** — the next run is armed **after the agent stops responding**,
+  waiting `delay` seconds first. Each delivered run's completion arms the following
+  one, so the loop is event-driven rather than clock-driven. The `delay` is clamped
+  up to the global floor (`min_periodic_completion_delay_seconds`, default 5 s) to
+  prevent hot loops.
+
+`maxDuration` applies to **both** triggers: it is a wall-clock cap measured from the
+first run. Once exceeded, the periodic prompt is **disabled** (not deleted) on the
+next check, exactly like the [max-iterations auto-stop](#max-iterations-and-auto-stop).
+Combine `maxDuration` with `maxIterations` to bound a loop by either time or count,
+whichever comes first. See
+[On-Completion Trigger and Max Duration](conversations.md#on-completion-trigger-and-max-duration)
+for the server-side floor and defaults.
+
 **Restrictions:**
 - Periodic conversations can only be **top-level** (not child) conversations. Selecting a periodic prompt on a child conversation falls through to the one-shot send; the backend also returns HTTP 400 for periodic-on-child.
 - The `at` field is only sent for `unit: days`; it is ignored otherwise (matches `Frequency.Validate()` on the backend).
@@ -587,50 +760,53 @@ leaving the schedule unchanged.
 
 ### Real-world example: auto-periodic, self-terminating
 
-The builtin **"Iterate until complete"** prompt
+The builtin **"Iterate until issue complete"** prompt
 (`config/prompts/builtin/beads-iterate-until-complete.prompt.yaml`) is a real
 auto-periodic example: a `menus: beadsIssues` prompt with a `periodic:` block
-(every 30 minutes, `maxIterations: 20`). Selecting it on a beads issue or epic
-starts a periodic conversation that, on each scheduled run, advances the target
-one concrete increment (for an epic, the next ready child) and logs progress to
-the tracker. Scheduled runs are **non-interactive** (branch on `@mitto:periodic` /
-`@mitto:periodic_forced`; use `mitto_ui_notify` only). When nothing ready remains
-in scope, it **self-terminates** — `mitto_conversation_update(conversation_id:
-"self", periodic_enabled: false)` turns it back into a regular conversation. It is
-the automated sibling of the interactive "Start work" (`beads-issue-work`) prompt.
+(`trigger: onCompletion`, `delay: 30`, `maxIterations: 20`, `maxDuration: 4h`).
+Selecting it on a beads issue or epic starts a periodic conversation that, on each
+run, **delegates** one concrete increment to a child conversation (for an epic, the
+next ready child) and logs progress to the tracker; the next run fires shortly
+after the agent stops responding. Scheduled runs are **non-interactive** (branch on
+`@mitto:periodic` / `@mitto:periodic_forced`; use `mitto_ui_notify` only). When
+nothing ready remains in scope, it **self-terminates** —
+`mitto_conversation_update(conversation_id: "self", periodic_enabled: false)` turns
+it back into a regular conversation. It is the automated sibling of the interactive
+"Start work" (`beads-issue-work`) prompt.
+
+For the general design pattern behind this kind of self-driving, self-terminating
+loop — encoding workflow progress as `bd` labels — see
+[Label-as-state-machine pattern for periodic beads prompts](../devel/prompt-templates.md#13-label-as-state-machine-pattern-for-periodic-beads-prompts).
 
 ## Prompt Arguments
 
-Prompt text supports bash-style `${VAR}` placeholder syntax for argument substitution.
-This lets a caller supply named values that are interpolated into the prompt before it
-is sent to the agent.
+Prompt arguments are passed to prompts at dispatch time and accessed in the
+prompt body via Go template syntax. **Go templates are the only supported
+mechanism for argument substitution** — the legacy bash-style `${VAR}` /
+`${VAR:-default}` format has been removed.
 
 ### Syntax
 
-| Placeholder           | Behaviour                                                                                                          |
-| --------------------- | ------------------------------------------------------------------------------------------------------------------ |
-| `${VAR}`              | Replaced with the supplied value, or an empty string if `VAR` was not provided.                                    |
-| `${VAR:-default}`     | Replaced with the supplied value if present **and non-empty**, otherwise with `default` (bash `:-` semantics).     |
-| `\${VAR}`             | The leading backslash is an escape: the literal text `${VAR}` is emitted without substitution.                     |
+| Expression | Behaviour |
+| --- | --- |
+| `{{ .Args.NAME }}` | Argument value, or empty string if `NAME` was not supplied. |
+| `{{ Arg "NAME" "default" }}` | Argument value if present and non-empty, otherwise `"default"`. |
 
-Surrounding single or double quotes around the default are stripped automatically:
-`${VAR:-"a value"}` → `a value`, `${VAR:-'other'}` → `other`.
+### When arguments are applied
 
-### When substitution is applied
-
-Argument substitution is applied **only** when the caller explicitly supplies an
-`arguments` map alongside the prompt — for example:
+Arguments are supplied by the caller at dispatch time and rendered during the Go
+template pass:
 
 - Prompts run from a **context menu** (conversation or Beads issue) that passes
   structured arguments.
 - Prompts sent via the MCP `mitto_conversation_send_prompt` tool's `arguments`
   parameter.
 
-**Ad-hoc user-typed messages are never substituted.** If a user types or pastes
-text containing `${...}` into the chat input it reaches the agent verbatim — no
-substitution is performed, so shell scripts and code snippets are safe.
+**Ad-hoc user-typed messages are never rendered.** If a user types or pastes text
+into the chat input it reaches the agent verbatim — no template rendering is
+performed on ad-hoc messages, so shell scripts and code snippets are safe.
 
-The transcript always shows the **substituted** text, not the original template.
+The transcript always shows the **rendered** text, not the original template.
 
 ### Example
 
@@ -638,33 +814,54 @@ The transcript always shows the **substituted** text, not the original template.
 name: "Beads: start work"
 group: "Beads"
 menus: beadsIssues
-requires: parameters
+parameters:
+  - name: ISSUE_ID
+    type: beadsId
+  - name: ISSUE_TITLE
+    type: beadsTitle
 prompt: |
-  You are starting work on Beads issue **${ISSUE_ID}** — *${ISSUE_TITLE:-Untitled}*.
-
-  ${ISSUE_BODY}
+  You are starting work on Beads issue **{{ .Args.ISSUE_ID }}** — *{{ Arg "ISSUE_TITLE" "Untitled" }}*.
 
   Please begin by reading the full issue description above, then propose a plan.
 ```
 
-Here `${ISSUE_ID}` is required (no default), `${ISSUE_TITLE:-Untitled}` falls back to
-`"Untitled"` if omitted, and `${ISSUE_BODY}` expands to empty string if not supplied.
+Here `{{ .Args.ISSUE_ID }}` is the required issue ID, and `{{ Arg "ISSUE_TITLE" "Untitled" }}`
+falls back to `"Untitled"` if the `beadsTitle` argument is not supplied.
 
-## requires (Capability Gating)
+## parameters (Typed Inputs & Type-Based Gating)
 
-The `requires` field lets a prompt declare which **capabilities** a menu
-must provide before the prompt is shown in that menu. This is the counterpart to the
-`menus` field: `menus` says *where* a prompt can appear; `requires` says *what the
-menu must supply* for it to be usable there.
+The `parameters` field declares the **typed inputs** a prompt expects. Each entry
+names a template variable (used as `{{ .Args.NAME }}` in the prompt body) and assigns it a
+**type** drawn from the canonical type registry. The menu gating check uses these
+types: a prompt is offered in menu **M** only when M can auto-supply every
+**required** declared type.
 
-### Syntax
+This replaces the retired `requires:` string field. The old string-capability gating
+approach is gone; type-based gating via `menuSatisfies`/`MENU_PARAM_TYPES` is the
+current mechanism.
+
+### Schema
 
 ```yaml
-requires: capability1, capability2
+parameters:
+  - name: PARAM_NAME        # required — used as {{ .Args.PARAM_NAME }} in the prompt body
+    type: beadsId           # required — one of the predefined types below
+    description: "..."      # optional — human-readable hint
+    required: true          # optional bool — controls menu gating (see below):
+                            #   absent/true → param gates menu visibility (default)
+                            #   false       → optional: auto-fills when menu supplies
+                            #                 it, but never hides the prompt from menus
+                            #                 that cannot. No blocking form is shown.
+    multiLine: true         # optional bool — only valid for type: text. Renders a
+                            #   resizable multi-line textarea in the parameter dialog
+                            #   instead of a single-line input. Rejected at load on
+                            #   any other type.
 ```
 
-The value is a **comma-separated list** of capability names (parsed identically to
-`menus`). Whitespace around each entry is ignored.
+Multiple parameters may be listed; the menu must supply all **required** ones (`required`
+absent or `true`). Parameters with `required: false` are **optional**: they auto-fill when
+the menu can supply their type, but they do not gate menu visibility and no form is shown
+if the menu cannot supply them.
 
 ### YAML example
 
@@ -672,47 +869,223 @@ The value is a **comma-separated list** of capability names (parsed identically 
 name: "Beads: start work"
 group: "Beads"
 menus: beadsIssues
-requires: parameters
+parameters:
+  - name: ISSUE_ID
+    type: beadsId
 prompt: |
-  (prompt body here)
+  (prompt body here — use {{ .Args.ISSUE_ID }} to reference the selected issue)
 ```
 
-### Visibility rule
+### Predefined types
+
+The canonical registry lives in `internal/config/prompt_param_types.go` and is
+mirrored by `KNOWN_PARAM_TYPES` in `web/static/utils/prompts.js`. Both must be kept
+in sync.
+
+| Type | Description |
+| ---- | ----------- |
+| `beadsId` | A beads issue ID (e.g. `"mitto-42"`). Auto-filled by the `beadsIssues` menu from the selected issue's ID. |
+| `beadsTitle` | A beads issue title (free text). Auto-filled by the `beadsIssues` menu from the selected issue's title. |
+| `sessionId` | A Mitto conversation/session UUID. |
+| `childSessionId` | A child conversation/session UUID, relative to the host conversation. In the `conversation` menu it is auto-filled when the right-clicked conversation has exactly one (non-archived) child; otherwise the picker is scoped to that conversation's children. |
+| `workspaceId` | A Mitto workspace UUID. |
+| `workspaceFolder` | An absolute path to a workspace root directory. |
+| `acpServer` | An ACP server (agent) name. Lets a prompt that creates a new conversation choose which agent runs it. |
+| `text` | Generic free-form text (catch-all type). Rendered as a single-line input by default; set `multiLine: true` to render a resizable multi-line textarea instead. |
+| `boolean` | A yes/no flag, rendered as a checkbox. Supplied to the template as the string `"true"` or `"false"` (default unchecked → `"false"`). Boolean parameters never gate menu visibility and are always collected via the parameter dialog. |
+
+### Visibility rule (type-based gating)
 
 A prompt appears in menu **M** if and only if **both** conditions hold:
 
 1. The prompt's `menus` list includes `M` (or `menus` is omitted and M is `prompts`).
-2. Menu `M` provides **every** capability listed in `requires`.
+2. Menu `M` can supply **every** type declared in `parameters`.
 
-If a prompt has no `requires` field (or an empty one), condition 2 is vacuously true
-and the prompt appears in any menu it targets via `menus`.
+A prompt with an empty or absent `parameters` list satisfies condition 2 for any menu.
+For an unknown menu, its supplied types are treated as empty (so a prompt with declared
+parameters is NOT shown there).
 
-### Provided capabilities per menu
+The frontend check is `menuSatisfies(prompt, menu)` in `web/static/utils/prompts.js`.
+The argument map is built generically by `collectPromptArguments(prompt, typeValues)`,
+which maps each `{ name, type }` to the value supplied for its type by the menu.
 
-| Menu | Provided capabilities |
-| ---- | --------------------- |
+### Types supplied per menu
+
+| Menu | Supplied types |
+| ---- | -------------- |
 | `prompts` (ChatInput dropup) | *(none)* |
 | `promptsPeriodic` (periodic prompt selector) | *(none)* |
 | `conversation` (per-conversation context menu) | *(none)* |
-| `beadsIssues` (Beads issue context menu) | `parameters` |
+| `beadsIssues` (Beads issue context menu) | `beadsId`, `beadsTitle` |
 | `beadsList` (Beads list-level prompts button) | *(none)* |
 
-The `parameters` capability means the menu always passes a structured `arguments` map
-when it invokes a prompt. Prompts that are **useless without arguments** (i.e., they
-have required `${VAR}` placeholders with no meaningful default) should set
-`requires: parameters` so they are hidden from menus that cannot supply them.
+`beadsIssues` supplies both `beadsId` (from `issue.id`) and `beadsTitle`
+(from `issue.title`) when it invokes a prompt.
 
-Prompts that can degrade gracefully — because all placeholders have sensible defaults
-via `${VAR:-default}` — should **omit** `requires` and let the defaults handle the
-missing arguments instead.
+Prompts that can degrade gracefully because all template expressions have sensible defaults
+(`{{ Arg "VAR" "default" }}`) can omit `parameters` entirely and appear in any menu they target.
 
-### Why a list, not a boolean?
+A `boolean` parameter never gates visibility (regardless of `required`): a checkbox
+always has a definite answer, so the prompt appears in any menu it targets. The
+parameter is always collected via the parameter dialog (rendered as a checkbox) and
+supplied to the template as the string `"true"`/`"false"`. In a Go template you can
+branch on it, e.g. `{{ if eq .Args.Commit "true" }}…{{ end }}`.
 
-`requires` is designed as a list (rather than `requires_parameters: true`) so that
-future capability types can be added without changing the field semantics. For now
-`parameters` is the only defined capability.
+### MCP surfacing
+
+`mitto_prompt_get` and `mitto_prompt_list` include a `parameters` array per prompt,
+matching the YAML schema above.
+
+### Parameter value caching (`cache` block)
+
+An optional `cache` sub-block on any parameter enables **per-conversation value
+caching**. When the user supplies a value for the parameter, it is stored so the
+UI can skip re-asking for it within the same conversation.
+
+```yaml
+parameters:
+  - name: SlackChannel
+    type: text
+    description: Slack channel to post to
+    cache:
+      destination: memory   # required — only "memory" is valid in v1
+      ttl: 1h               # optional Go duration; absent = cached for conversation lifetime
+```
+
+#### Fields
+
+| Field | Required | Description |
+| ----- | -------- | ----------- |
+| `destination` | Yes | Cache backend. Only `"memory"` is valid in v1. |
+| `ttl` | No | How long the cached value is valid. Any Go duration string (e.g. `"30m"`, `"2h"`). Must be **positive** if provided. When absent, the value is cached for the entire conversation lifetime. |
+
+#### Rules
+
+- `destination` must be `"memory"` (the only valid value in v1). An unknown destination
+  is a hard parse error.
+- `ttl`, when present, must be a parseable Go duration **greater than zero**. Values of
+  `"0s"` or negative durations (e.g. `"-1h"`) are rejected at parse time.
+- `cache` is **optional** — parameters without a `cache` block behave exactly as before.
+- Scoping is **per-conversation and per-parameter** (not cross-conversation or global).
+
+For the runtime data-flow (dispatch-time merge/write-back, the status endpoint, and the
+names-only contract), see [Argument caching](../devel/prompts.md#argument-caching).
+
+## Go Template Syntax in Prompts
+
+Prompt bodies are rendered with Go [`text/template`](https://pkg.go.dev/text/template) at send time. **This is the only supported mechanism for argument substitution and session-context injection** — legacy `@mitto:` placeholders remain supported for backward compatibility in processors, but `${VAR}` argument substitution has been removed from prompt bodies. Use `{{ .Args.NAME }}` / `{{ Arg "NAME" "default" }}` instead.
+
+### Render Order
+
+1. Named-prompt resolution (prompt name → full body)
+2. **Go template render** (`{{ ... }}`) — **fail-closed**: a template error aborts the send and surfaces an error in the UI
+3. Legacy `@mitto:` variable substitution
+
+See [prompt-templates.md §3.2](../devel/prompt-templates.md#32-new-order-after-mitto-m7sb2-insertion-point-in-resolveandsubstitute) for the authoritative pipeline.
+
+### Context Fields
+
+The following fields are available at send time. They are the **same fields used in `enabledWhen` CEL expressions** (e.g. `{{ .Session.ID }}` == `Session.ID`). See [devel §4](../devel/prompt-templates.md#4-the-unified-context-configpromptenabledcontext--args) for the full accessor↔CEL↔Go-field mapping.
+
+| Template accessor | Description |
+| --- | --- |
+| `{{ .Session.ID }}` | Current session/conversation ID |
+| `{{ .Session.ParentID }}` | Parent conversation ID (empty if root) |
+| `{{ .Session.Name }}` | Conversation title/name |
+| `{{ .Session.IsChild }}` | `true` in child conversations |
+| `{{ .Session.IsPeriodic }}` | `true` when triggered by the periodic runner |
+| `{{ .Session.IsPeriodicForced }}` | `true` when a periodic run was manually triggered ("run now") |
+| `{{ .Session.HasMessages }}` | `true` once the conversation has any user message |
+| `{{ .Session.BeadsIssue }}` | Linked beads issue ID (empty if none) |
+| `{{ .Session.ModelName }}` | Current model's display name (empty if unknown) |
+| `{{ .ACP.Name }}` | ACP server name |
+| `{{ .ACP.Type }}` | ACP server type |
+| `{{ .Workspace.Folder }}` | Session working directory |
+| `{{ .Workspace.UUID }}` | Workspace identifier |
+| `{{ .Parent.Name }}` | Parent conversation name |
+| `{{ .Parent.Exists }}` | `true` if this session has a parent |
+| `{{ .Children.Count }}` | Number of child conversations |
+| `{{ .Children.MCPCount }}` | Number of MCP-spawned children |
+| `{{ .Args.NAME }}` | Argument value for `NAME` (from prompt arguments) |
+| `{{ index .UserData "NAME" }}` | Per-conversation user-data field `NAME` (empty if unset); see also the `UserData` function below |
+| `{{ .Iteration.Number }}` | 0-based index of the current periodic run (0 for non-periodic) |
+| `{{ .Iteration.Max }}` | Configured max runs (0 = unlimited; 0 for non-periodic) |
+| `{{ .Iteration.IsPeriodic }}` | `true` when triggered by the periodic runner |
+| `{{ .Iteration.IsFirst }}` | `true` when `Number == 0` |
+| `{{ .Iteration.IsLast }}` | `true` when `Max > 0 && Number == Max-1` |
+
+### Functions
+
+| Function | Signature | Meaning |
+| --- | --- | --- |
+| `arg` | `arg "NAME" "default"` | Argument value, or default if absent/empty (replaces the removed `${NAME:-default}` bash syntax) |
+| `UserData` | `UserData "NAME"` | Per-conversation user-data field value, or `""` if unset. Handles names with spaces, e.g. `UserData "JIRA Ticket"`. |
+| `default` | `default "fallback" .Value` | `.Value` if non-empty, else fallback |
+| `cond` / `when` | `cond "celExpr"` | Evaluate a CEL expression (same grammar as `enabledWhen`) → bool |
+| `fileExists` | `fileExists "path"` | Path exists as a file (relative to workspace folder) |
+| `dirExists` | `dirExists "path"` | Directory exists |
+| `commandExists` | `commandExists "name"` | Command is on PATH |
+| `GitRepo` | `GitRepo "path"` | Folder (omit `path` for the whole workspace) is inside a git work tree — use as a gatekeeper before other `Git*` checks |
+| `GitFileModified` | `GitFileModified "path"` | Tracked file at `path` has pending (staged/unstaged) changes vs HEAD/index; untracked files are `false` |
+| `GitDirModified` | `GitDirModified "path"` | Directory (omit `path` for the whole workspace) has any pending changes, including untracked files |
+| `GitFileTracked` | `GitFileTracked "path"` | `path` is tracked by git (present in the index) |
+| `GitFileDeleted` | `GitFileDeleted "path"` | Tracked file at `path` has been deleted (staged or unstaged deletion) |
+| `Model` | `Model "tag"` | Current model carries capability `tag` (case-insensitive), from [`models:` profiles](models.md); `false` when the model is unknown or no profile matches |
+
+All `Git*` functions resolve relative paths against `Workspace.Folder`, run `git` as a
+subprocess (bounded to 5s), and return `false` outside a git repo or when git is unavailable.
+They are evaluated at send/display time, same as `fileExists`/`dirExists`/`commandExists`.
+Use `GitRepo` as a gatekeeper (e.g. `GitRepo() && GitDirModified()`) when a prompt should only
+apply inside git-managed folders.
+
+String utilities: `trim`, `lower`, `upper`, `contains`, `hasPrefix`, `hasSuffix`, `join`.
+
+Model tags are also available at menu time in `enabledWhen`: `Session.HasModelTag("smart")`
+or `"smart" in Session.ModelTags`. See [Model Profiles](models.md).
+
+### Examples
+
+```yaml
+# Session context
+prompt: |
+  Your session ID is `{{ .Session.ID }}`.
+
+# Conditional block
+prompt: |
+  {{ if .Session.IsChild }}You are a child session.{{ else }}You are a root session.{{ end }}
+
+# Cond (CEL) + Arg
+prompt: |
+  {{ if Cond "FileExists(\".git/config\")" }}Repo: {{ Arg "REPO" "current" }}{{ end }}
+
+# User data: set-if-unset, else continue
+prompt: |
+  {{ if UserData "JIRA Ticket" }}
+  Continue work on {{ UserData "JIRA Ticket" }}.
+  {{ else }}
+  No JIRA ticket is set yet. Determine it from the conversation and call
+  mitto_conversation_update with user_data to set "JIRA Ticket", then proceed.
+  {{ end }}
+```
+
+The same field is available at menu time in `enabledWhen`, e.g. `enabledWhen: '"JIRA Ticket" in UserData && UserData["JIRA Ticket"] != ""'`.
+
+### Escaping & Corner Cases
+
+- Emit a literal `{{` with `{{ "{{" }}` — the delimiter cannot be backslash-escaped.
+- Close blocks with `{{ end }}` (not `fi`).
+- Inside a `Cond "..."` CEL string, escape inner double-quotes: `Cond "FileExists(\".git/config\")"`.
+- Struct-field typos (e.g. `{{ .Session.IDd }}`) are caught at **load time** (fail-fast validation). Missing `.Args.X` map keys render as empty string (`missingkey=zero`).
+
+See [devel §10](../devel/prompt-templates.md#10-corner-cases) for the full corner-case reference.
+
+---
 
 ## Variable Substitution in Prompts
+
+> **Deprecated in prompt bodies.** Use [Go template syntax](#go-template-syntax-in-prompts) instead — it is more expressive, type-safe, and validated at load time. `@mitto:` substitution **still works** during the deprecation window and the `@mitto:` pass still runs after template rendering. A non-fatal warning is logged at prompt load/save when a migratable `@mitto:` token appears in a body.
+>
+> **`@mitto:` is NOT deprecated in processors** — it remains the supported mechanism there. See [processors.md](processors.md#variable-substitution).
 
 Prompt text supports `@mitto:variable` placeholders that are automatically replaced with
 live session values before the prompt is sent to the AI agent. This is the same variable
@@ -734,6 +1107,31 @@ substitution system used by [message processors](processors.md#variable-substitu
 | `@mitto:children`              | Child sessions, comma-separated with names and ACP servers                   |
 | `@mitto:periodic`              | `"true"` if this prompt was triggered by the periodic runner, `"false"` otherwise |
 | `@mitto:periodic_forced`       | `"true"` if this is a manually-triggered periodic run (via "run now"), `"false"` otherwise |
+
+### Migration Table
+
+For each deprecated token, the recommended Go template replacement is listed. Tokens without a template equivalent yet are marked **keep** — they continue to work via `@mitto:` and do **not** trigger a deprecation warning.
+
+| `@mitto:` token | Template replacement | Status |
+| --- | --- | --- |
+| `@mitto:session_id` | `{{ .Session.ID }}` | migrate |
+| `@mitto:parent_session_id` | `{{ .Session.ParentID }}` | migrate |
+| `@mitto:parent` | `{{ if .Parent.Exists }}{{ .Session.ParentID }} ({{ .Parent.Name }}){{ end }}` | migrate |
+| `@mitto:session_name` | `{{ .Session.Name }}` | migrate |
+| `@mitto:working_dir` | `{{ .Workspace.Folder }}` | migrate |
+| `@mitto:acp_server` | `{{ .ACP.Name }}` | migrate |
+| `@mitto:workspace_uuid` | `{{ .Workspace.UUID }}` | migrate |
+| `@mitto:beads_issue` | `{{ .Session.BeadsIssue }}` | migrate |
+| `@mitto:mcp_children_count` | `{{ .Children.MCPCount }}` | migrate |
+| `@mitto:periodic` | `{{ .Session.IsPeriodic }}` | migrate |
+| `@mitto:periodic_forced` | `{{ .Session.IsPeriodicForced }}` | migrate |
+| `@mitto:available_acp_servers` | *(no template equivalent yet)* | **keep** — no warning |
+| `@mitto:children` | *(no template equivalent yet)* | **keep** — no warning |
+| `@mitto:mcp_children` | *(no template equivalent yet)* | **keep** — no warning |
+| `@mitto:user_data` | *(no template equivalent yet)* | **keep** — no warning |
+| `@mitto:user_data_schema` | *(no template equivalent yet)* | **keep** — no warning |
+
+Note: `@mitto:periodic` renders as a Go `bool` (`true`/`false`), identical in string form to the old `"true"`/`"false"` output.
 
 ### Behavior
 
@@ -762,7 +1160,7 @@ A prompt that helps the agent use Mitto MCP tools efficiently:
 
 ```yaml
 name: "Spawn Workers"
-enabledWhen: 'tools.hasPattern("mitto_conversation_*")'
+enabledWhen: 'Tools.HasPattern("mitto_conversation_*")'
 prompt: |
   ## Session Context
 
@@ -808,7 +1206,7 @@ expressions.
 ```yaml
 name: "Create Minions"
 description: "Break work into parallel tasks"
-enabledWhen: "!session.isChild"
+enabledWhen: "!Session.IsChild"
 prompt: |
   (prompt body here)
 ```
@@ -819,102 +1217,103 @@ prompt is shown (fail-open behavior for safety).
 
 ### Available Context Variables
 
-#### ACP Server Context (`acp.*`)
+#### ACP Server Context (`ACP.*`)
 
 Information about the AI agent (ACP server) used in the current conversation.
 
 | Variable          | Type      | Description                                |
 | ----------------- | --------- | ------------------------------------------ |
-| `acp.name`        | string    | ACP server name (e.g., `"Claude Code"`)    |
-| `acp.type`        | string    | Server type (e.g., `"claude"`, `"auggie"`) |
-| `acp.tags`        | list[str] | Server tags (e.g., `["coding", "fast"]`)   |
-| `acp.autoApprove` | bool      | Whether auto-approve is enabled            |
+| `ACP.Name`        | string    | ACP server name (e.g., `"Claude Code"`)    |
+| `ACP.Type`        | string    | Server type (e.g., `"claude"`, `"auggie"`) |
+| `ACP.Tags`        | list[str] | Server tags (e.g., `["coding", "fast"]`)   |
+| `ACP.AutoApprove` | bool      | Whether auto-approve is enabled            |
 
-#### Workspace Context (`workspace.*`)
+#### Workspace Context (`Workspace.*`)
 
 Information about the current workspace.
 
 | Variable           | Type   | Description                  |
 | ------------------ | ------ | ---------------------------- |
-| `workspace.uuid`   | string | Unique workspace identifier  |
-| `workspace.folder` | string | Workspace directory path     |
-| `workspace.name`   | string | Display name (if configured) |
+| `Workspace.UUID`   | string | Unique workspace identifier  |
+| `Workspace.Folder` | string | Workspace directory path     |
+| `Workspace.Name`   | string | Display name (if configured) |
 
-#### Session Context (`session.*`)
+#### Session Context (`Session.*`)
 
 Information about the current conversation/session.
 
 | Variable              | Type   | Description                                              |
 | --------------------- | ------ | -------------------------------------------------------- |
-| `session.id`          | string | Session identifier                                       |
-| `session.name`        | string | Session display name                                     |
-| `session.isChild`     | bool   | `true` if this is a child conversation                   |
-| `session.isAutoChild` | bool   | `true` if created automatically by parent                |
-| `session.parentId`    | string | Parent session ID (empty if not a child)                 |
-| `session.isPeriodic`  | bool   | `true` if this prompt was triggered by the periodic runner |
-| `session.isPeriodicConversation` | bool   | `true` if this is a periodic conversation (it has a periodic prompt configuration) |
-| `session.hasBeadsIssue` | bool   | `true` if the conversation has a beads issue associated                  |
-| `session.beadsIssue`  | string | Linked beads issue ID (empty if none)                                    |
+| `Session.ID`          | string | Session identifier                                       |
+| `Session.Name`        | string | Session display name                                     |
+| `Session.IsChild`     | bool   | `true` if this is a child conversation                   |
+| `Session.IsAutoChild` | bool   | `true` if created automatically by parent                |
+| `Session.ParentID`    | string | Parent session ID (empty if not a child)                 |
+| `Session.IsPeriodic`  | bool   | `true` if this prompt was triggered by the periodic runner |
+| `Session.IsPeriodicConversation` | bool   | `true` if this is a periodic conversation (it has a periodic prompt configuration) |
+| `Session.HasMessages` | bool   | `true` if the conversation has at least one user message (empty conversations are false) |
+| `Session.HasBeadsIssue` | bool   | `true` if the conversation has a beads issue associated                  |
+| `Session.BeadsIssue`  | string | Linked beads issue ID (empty if none)                                    |
 
-#### Parent Context (`parent.*`)
+#### Parent Context (`Parent.*`)
 
 Information about the parent conversation (only meaningful for child sessions).
 
 | Variable           | Type   | Description                     |
 | ------------------ | ------ | ------------------------------- |
-| `parent.exists`    | bool   | `true` if parent session exists |
-| `parent.name`      | string | Parent session name             |
-| `parent.acpServer` | string | ACP server used by parent       |
+| `Parent.Exists`    | bool   | `true` if parent session exists |
+| `Parent.Name`      | string | Parent session name             |
+| `Parent.ACPServer` | string | ACP server used by parent       |
 
-#### Children Context (`children.*`)
+#### Children Context (`Children.*`)
 
 Information about child conversations spawned from this session.
 
 | Variable              | Type      | Description                                  |
 | --------------------- | --------- | -------------------------------------------- |
-| `children.count`      | int       | Number of direct child sessions              |
-| `children.exists`     | bool      | `true` if has at least one child             |
-| `children.mcpCount`   | int       | Number of children created via MCP tools     |
-| `children.names`      | list[str] | List of child session names                  |
-| `children.acpServers` | list[str] | List of ACP servers used by children         |
+| `Children.Count`      | int       | Number of direct child sessions              |
+| `Children.Exists`     | bool      | `true` if has at least one child             |
+| `Children.MCPCount`   | int       | Number of children created via MCP tools     |
+| `Children.Names`      | list[str] | List of child session names                  |
+| `Children.ACPServers` | list[str] | List of ACP servers used by children         |
 
-#### Permissions Context (`permissions.*`)
+#### Permissions Context (`Permissions.*`)
 
 Information about the permissions granted to the current session.
 
 | Variable                                | Type | Description                                                           |
 | --------------------------------------- | ---- | --------------------------------------------------------------------- |
-| `permissions.canDoIntrospection`        | bool | Whether the session can access Mitto's MCP server for introspection   |
-| `permissions.canSendPrompt`             | bool | Whether the session can send prompts to other conversations           |
-| `permissions.canPromptUser`             | bool | Whether MCP tools can display interactive prompts to the user         |
-| `permissions.canStartConversation`      | bool | Whether the session can create new conversations                      |
-| `permissions.canInteractOtherWorkspaces`| bool | Whether the session can interact with other workspaces                |
-| `permissions.autoApprovePermissions`    | bool | Whether permission requests are auto-approved                         |
+| `Permissions.CanDoIntrospection`        | bool | Whether the session can access Mitto's MCP server for introspection   |
+| `Permissions.CanSendPrompt`             | bool | Whether the session can send prompts to other conversations           |
+| `Permissions.CanPromptUser`             | bool | Whether MCP tools can display interactive prompts to the user         |
+| `Permissions.CanStartConversation`      | bool | Whether the session can create new conversations                      |
+| `Permissions.CanInteractOtherWorkspaces`| bool | Whether the session can interact with other workspaces                |
+| `Permissions.AutoApprovePermissions`    | bool | Whether permission requests are auto-approved                         |
 
-#### MCP Tools Context (`tools.*`)
+#### MCP Tools Context (`Tools.*`)
 
 Information about available MCP tools. Note: Tool information may not be available
 immediately when a session starts.
 
-| Variable          | Type      | Description                         |
-| ----------------- | --------- | ----------------------------------- |
-| `tools.available` | bool      | `true` if tool list has been loaded |
-| `tools.names`     | list[str] | List of available tool names        |
+| Variable          | Type      | Description                                                |
+| ----------------- | --------- | --------------------------------------------------------- |
+| `Tools.Available` | bool      | `true` once the tool list is known (a non-empty result has been fetched); `false` while it is still being warmed up |
+| `Tools.Names`     | list[str] | List of available tool names                              |
 
 **Custom functions:**
 
 | Function                              | Returns | Description                                                   |
 | ------------------------------------- | ------- | ------------------------------------------------------------- |
-| `acp.matchesServerType("type")`           | bool    | `true` if ACP type matches (case-insensitive, fail-open)      |
-| `acp.matchesServerType(["a", "b"])`       | bool    | `true` if ACP matches any of the listed servers               |
-| `tools.hasPattern("glob")`            | bool    | `true` if any tool matches the glob pattern                   |
-| `tools.hasAllPatterns(["g1", "g2"])`   | bool    | `true` if ALL glob patterns are satisfied                     |
-| `tools.hasAnyPattern(["g1", "g2"])`    | bool    | `true` if ANY glob pattern is satisfied                       |
+| `ACP.MatchesServerType("type")`           | bool    | `true` if ACP type matches (case-insensitive, fail-open)      |
+| `ACP.MatchesServerType(["a", "b"])`       | bool    | `true` if ACP matches any of the listed servers               |
+| `Tools.HasPattern("glob")`            | bool    | `true` if any tool matches the glob pattern (fail-open while `Tools.Available` is `false`) |
+| `Tools.HasAllPatterns(["g1", "g2"])`   | bool    | `true` if ALL glob patterns are satisfied (fail-open while `Tools.Available` is `false`) |
+| `Tools.HasAnyPattern(["g1", "g2"])`    | bool    | `true` if ANY glob pattern is satisfied (fail-open while `Tools.Available` is `false`) |
 
 The glob pattern supports `*` (any characters) and `?` (single character).
 
-**`acp.matchesServerType` details:**
-- Compares against `acp.type` only (case-insensitive), not the display name
+**`ACP.MatchesServerType` details:**
+- Compares against `ACP.Type` only (case-insensitive), not the display name
 - **Fail-open**: Returns `true` when no ACP server is active (so prompts remain visible during startup)
 
 ### CEL Expression Examples
@@ -923,92 +1322,92 @@ The glob pattern supports `*` (any characters) and `?` (single character).
 
 ```yaml
 # Only show in parent conversations (not in children)
-enabledWhen: "!session.isChild"
+enabledWhen: "!Session.IsChild"
 
 # Only show in child conversations
-enabledWhen: "session.isChild"
+enabledWhen: "Session.IsChild"
 
 # Only show in manually-created child conversations
-enabledWhen: "session.isChild && !session.isAutoChild"
+enabledWhen: "Session.IsChild && !Session.IsAutoChild"
 
 # Show only if this session has spawned children
-enabledWhen: "children.exists"
+enabledWhen: "Children.Exists"
 
 # Show only if this session has no children
-enabledWhen: "children.count == 0"
+enabledWhen: "Children.Count == 0"
 ```
 
 #### ACP Server Filtering
 
 ```yaml
 # Only for a specific ACP server type (case-insensitive, fail-open)
-enabledWhen: 'acp.matchesServerType("augment")'
+enabledWhen: 'ACP.MatchesServerType("augment")'
 
 # Only for one of several server types
-enabledWhen: 'acp.matchesServerType(["augment", "claude-code"])'
+enabledWhen: 'ACP.MatchesServerType(["augment", "claude-code"])'
 
 # Only for Claude-based servers (name prefix match)
-enabledWhen: 'acp.name.startsWith("Claude")'
+enabledWhen: 'ACP.Name.startsWith("Claude")'
 
 # Only for servers tagged with "coding"
-enabledWhen: '"coding" in acp.tags'
+enabledWhen: '"coding" in ACP.Tags'
 
 # Only for fast models
-enabledWhen: '"fast" in acp.tags || "quick" in acp.tags'
+enabledWhen: '"fast" in ACP.Tags || "quick" in ACP.Tags'
 
 # Only when auto-approve is disabled
-enabledWhen: "!acp.autoApprove"
+enabledWhen: "!ACP.AutoApprove"
 ```
 
 #### MCP Tool Requirements
 
 ```yaml
 # Only show if GitHub tools are available
-enabledWhen: 'tools.hasPattern("github_*")'
+enabledWhen: 'Tools.HasPattern("github_*")'
 
 # Only show if Jira tools are available
-enabledWhen: 'tools.hasPattern("jira_*")'
+enabledWhen: 'Tools.HasPattern("jira_*")'
 
 # Require ALL tool patterns to be satisfied (AND logic)
-enabledWhen: 'tools.hasAllPatterns(["jira_*", "mitto_conversation_*"])'
+enabledWhen: 'Tools.HasAllPatterns(["jira_*", "mitto_conversation_*"])'
 
 # Require ANY tool pattern to be satisfied (OR logic)
-enabledWhen: 'tools.hasAnyPattern(["github_*", "gitlab_*"])'
+enabledWhen: 'Tools.HasAnyPattern(["github_*", "gitlab_*"])'
 
 # Only show if any database tool is available
-enabledWhen: 'tools.hasPattern("*_database_*") || tools.hasPattern("*_sql_*")'
+enabledWhen: 'Tools.HasPattern("*_database_*") || Tools.HasPattern("*_sql_*")'
 
 # Only when tools have been loaded
-enabledWhen: "tools.available"
+enabledWhen: "Tools.Available"
 ```
 
 #### Permissions
 
 ```yaml
 # Only show delegation prompts when sending to other conversations is allowed
-enabledWhen: "children.exists && permissions.canSendPrompt"
+enabledWhen: "Children.Exists && Permissions.CanSendPrompt"
 
 # Only show "spawn workers" when conversation creation is allowed
-enabledWhen: "!session.isChild && permissions.canStartConversation"
+enabledWhen: "!Session.IsChild && Permissions.CanStartConversation"
 
 # Require both creation and communication permissions
-enabledWhen: "!session.isChild && permissions.canStartConversation && permissions.canSendPrompt"
+enabledWhen: "!Session.IsChild && Permissions.CanStartConversation && Permissions.CanSendPrompt"
 ```
 
 #### Combined Conditions
 
 ```yaml
 # Coordinator prompt: only in parent sessions with coding servers
-enabledWhen: '!session.isChild && "coding" in acp.tags'
+enabledWhen: '!Session.IsChild && "coding" in ACP.Tags'
 
 # Report-to-parent prompt: only in children with existing parent
-enabledWhen: "session.isChild && parent.exists"
+enabledWhen: "Session.IsChild && Parent.Exists"
 
 # GitHub PR prompt: only with GitHub tools and not in child sessions
-enabledWhen: '!session.isChild && tools.hasPattern("github_*")'
+enabledWhen: '!Session.IsChild && Tools.HasPattern("github_*")'
 
 # Complex workspace check
-enabledWhen: 'workspace.folder.contains("my-project") && "fast" in acp.tags'
+enabledWhen: 'Workspace.Folder.contains("my-project") && "fast" in ACP.Tags'
 ```
 
 #### Real-World Examples from Builtin Prompts
@@ -1018,27 +1417,27 @@ These examples are from Mitto's built-in prompts:
 ```yaml
 # "Create minions" - Spawn parallel worker conversations
 # Only in parent conversations, requires Mitto MCP tools
-enabledWhen: '!session.isChild && permissions.canStartConversation && tools.hasPattern("mitto_conversation_*")'
+enabledWhen: '!Session.IsChild && Tools.HasPattern("mitto_conversation_*")'
 
 # "Report to parent" - Send status back to parent
 # Only in child conversations that have a parent
-enabledWhen: 'session.isChild && parent.exists && permissions.canSendPrompt && tools.hasPattern("mitto_conversation_*")'
+enabledWhen: 'Session.IsChild && Parent.Exists && Tools.HasPattern("mitto_conversation_*")'
 
 # "Continue work in child" - Resume work in existing child
 # Only when the session has spawned children
-enabledWhen: 'children.exists && permissions.canSendPrompt && tools.hasPattern("mitto_conversation_*")'
+enabledWhen: 'Children.Exists && Tools.HasPattern("mitto_conversation_*")'
 
 # "JIRA: start work" - Pick a ticket and spawn workers
 # Only in parent conversations, requires both JIRA and Mitto tools
-enabledWhen: '!session.isChild && permissions.canStartConversation && tools.hasAllPatterns(["jira_*", "mitto_conversation_*"])'
+enabledWhen: '!Session.IsChild && Tools.HasAllPatterns(["jira_*", "mitto_conversation_*"])'
 
 # "Improve Augment rules" - Update .augment/rules
 # Only when using Augment-type agents (not Claude Code or other agents)
-enabledWhen: 'acp.matchesServerType("augment")'
+enabledWhen: 'ACP.MatchesServerType("augment")'
 
 # "Handoff to new conversation" - Continue in a new session
 # Only in parent conversations, requires Mitto tools
-enabledWhen: '!session.isChild && permissions.canStartConversation && tools.hasPattern("mitto_conversation_*")'
+enabledWhen: '!Session.IsChild && Tools.HasPattern("mitto_conversation_*")'
 ```
 
 ### CEL Language Reference
@@ -1049,7 +1448,7 @@ CEL is a simple expression language designed for evaluation. Key features:
 
 - Comparison: `==`, `!=`, `<`, `<=`, `>`, `>=`
 - Logical: `&&` (and), `||` (or), `!` (not)
-- Membership: `in` (e.g., `"tag" in acp.tags`)
+- Membership: `in` (e.g., `"tag" in ACP.Tags`)
 - Ternary: `condition ? value_if_true : value_if_false`
 
 **String functions:**
@@ -1071,16 +1470,16 @@ CEL is a simple expression language designed for evaluation. Key features:
 
 ```cel
 // String operations
-acp.name.startsWith("Claude")
-workspace.folder.contains("/projects/")
+ACP.Name.startsWith("Claude")
+Workspace.Folder.contains("/projects/")
 
 // List operations
-acp.tags.size() > 0
-acp.tags.exists(t, t == "coding")
-children.names.all(n, n.startsWith("Worker"))
+ACP.Tags.size() > 0
+ACP.Tags.exists(t, t == "coding")
+Children.Names.all(n, n.startsWith("Worker"))
 
 // Ternary
-children.count > 5 ? true : acp.autoApprove
+Children.Count > 5 ? true : ACP.AutoApprove
 ```
 
 For full CEL documentation, see the [CEL Language Definition](https://github.com/google/cel-spec/blob/master/doc/langdef.md).
@@ -1090,7 +1489,10 @@ For full CEL documentation, see the [CEL Language Definition](https://github.com
 - **Invalid expression syntax**: Prompt is shown (fail-open), warning logged
 - **Evaluation error**: Prompt is shown (fail-open), warning logged
 - **Missing context**: Default values used (empty strings, false booleans, zero counts)
-- **Tools not yet loaded**: `tools.available` is `false`, `tools.names` is empty
+- **Tools not yet loaded**: `Tools.Available` is `false` and `Tools.Names` is empty. The
+  `Tools.HasPattern` / `Tools.HasAllPatterns` / `Tools.HasAnyPattern` functions **fail open**
+  (return `true`) in this state, so tool-gated prompts are shown during the MCP-tools cache
+  warm-up window rather than being hidden. Once the tool list is known they evaluate normally.
 
 ## Priority and Override Behavior
 

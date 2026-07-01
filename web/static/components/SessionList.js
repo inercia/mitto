@@ -1,8 +1,10 @@
 // Mitto Web Interface - Session List Component
-const { html, Fragment, useState, useMemo, useCallback, useEffect, useRef } = window.preact;
+const { html, Fragment, useState, useMemo, useCallback, useEffect, useRef } =
+  window.preact;
 
 import { apiUrl } from "../utils/api.js";
 import { authFetch } from "../utils/csrf.js";
+import { endpoints } from "../utils/endpoints.js";
 
 import {
   computeUnifiedTree,
@@ -23,9 +25,13 @@ import {
   getDensity,
   setDensity,
 } from "../utils/index.js";
-import { computeAllSessions, getBasename, getGlobalWorkingDir } from "../lib.js";
+import {
+  computeAllSessions,
+  getBasename,
+  getGlobalWorkingDir,
+} from "../lib.js";
 import { SessionItem } from "./SessionItem.js";
-import { ContextMenu } from "./ContextMenu.js";
+import { ContextMenu, PortalTooltip } from "./ContextMenu.js";
 import { Modal } from "./Modal.js";
 import {
   FolderIcon,
@@ -40,7 +46,6 @@ import {
   SettingsIcon,
   RobotIcon,
   BeadsIcon,
-  HomeIcon,
   FilterIcon,
   TerminalIcon,
   EllipsisIcon,
@@ -62,11 +67,22 @@ const GIT_CHANGES_TTL_MS = 30_000;
 // In-flight fetch promises keyed by workingDir to avoid duplicate concurrent requests.
 const GIT_CHANGES_IN_FLIGHT = {};
 
+// Hover-only portal tooltips for sidebar row controls. CSS daisyUI tooltips on
+// the folder/group action buttons get clipped by the row chrome and the
+// sidebar's overflow, so those use a body-level PortalTooltip instead
+// (cursor-anchored, viewport-clamped). Gate on hover so taps never leave a
+// stuck bubble, matching daisyUI's own behaviour.
+const SIDEBAR_SUPPORTS_HOVER =
+  typeof window !== "undefined" &&
+  typeof window.matchMedia === "function" &&
+  window.matchMedia("(hover: hover)").matches;
+const SIDEBAR_TOOLTIP_DELAY_MS = 250;
+
 // Fetch git changes for a session's workingDir, with caching and in-flight dedup.
 // Returns { files, is_git_repo, branch } or null on error.
 async function fetchGitChanges(sessionId) {
   try {
-    const response = await authFetch(apiUrl(`/api/sessions/${sessionId}/changes`));
+    const response = await authFetch(endpoints.sessions.changes(sessionId));
     if (!response.ok) return null;
     return await response.json();
   } catch {
@@ -105,7 +121,7 @@ const BEADS_STATS_IN_FLIGHT = {};
 async function fetchBeadsStats(workingDir) {
   try {
     const response = await authFetch(
-      apiUrl(`/api/beads/stats?working_dir=${encodeURIComponent(workingDir)}`),
+      endpoints.issues.stats({ working_dir: workingDir }),
     );
     if (!response.ok) return null;
     const data = await response.json();
@@ -193,15 +209,15 @@ export function SessionList({
   onRunBeadsListPrompt, // (prompt, workingDir) => run a beadsList prompt
   onBeadsRefresh, // (workingDir) => open the beads view and refresh its list
   onBeadsCleanup, // (workingDir) => open the beads view and clean up closed issues
-  onShowDashboard,
-  mainView = "conversation", // Current main-content view: "conversation" | "beads" | "dashboard"
+  mainView = "conversation", // Current main-content view: "conversation" | "beads"
   beadsWorkingDir = null, // Working dir whose Tasks (beads) view is open, when mainView === "beads"
   queueLength = 0,
   onFetchConversationPrompts, // Async (session, workingDir) => prompts[] for the context menu
   onSendPromptToConversation,
   onMakePeriodic, // Called with (session) to convert a regular session to periodic
   onMakeNonPeriodic, // Called with (session) to revert a periodic session to regular
-  isCreatingSession = false, // True while a new-conversation request is in-flight or retrying
+  isCreatingSession = false, // True while ANY new-conversation request is in-flight or retrying
+  creatingWorkingDirs = new Set(), // Set of workingDirs with an in-flight create request
 }) {
   // Combine active and stored sessions using shared helper function
   const allSessions = useMemo(
@@ -224,6 +240,35 @@ export function SessionList({
   // Group header context menu state: { x, y, workingDir, label }
   const [groupContextMenu, setGroupContextMenu] = useState(null);
   const closeGroupContextMenu = () => setGroupContextMenu(null);
+
+  // Body-level portal tooltip for sidebar row controls (see SIDEBAR_* above).
+  // A single shared bubble is fine since only one row is hovered at a time.
+  const [rowTip, setRowTip] = useState(null);
+  const rowTipTimerRef = useRef(null);
+  const hideRowTip = useCallback(() => {
+    clearTimeout(rowTipTimerRef.current);
+    setRowTip(null);
+  }, []);
+  // Spread onto an element via ...${rowTipHandlers("...")} to show `text` below
+  // the cursor on hover and hide it on leave / press.
+  const rowTipHandlers = useCallback(
+    (text) => ({
+      onMouseEnter: (e) => {
+        if (!SIDEBAR_SUPPORTS_HOVER || !text) return;
+        const x = e.clientX;
+        const y = e.clientY;
+        clearTimeout(rowTipTimerRef.current);
+        rowTipTimerRef.current = setTimeout(
+          () => setRowTip({ x, y, text }),
+          SIDEBAR_TOOLTIP_DELAY_MS,
+        );
+      },
+      onMouseLeave: hideRowTip,
+      onMouseDown: hideRowTip,
+    }),
+    [hideRowTip],
+  );
+  useEffect(() => () => clearTimeout(rowTipTimerRef.current), []);
 
   // Per-folder "Tasks" entry context menu state: { x, y, workingDir, label }.
   // Mirrors groupContextMenu but for the static Tasks node. The beadsList
@@ -319,7 +364,8 @@ export function SessionList({
   const submitNewGroup = useCallback(() => {
     const name = newGroupName.trim();
     if (!name || !newGroupDialog) return;
-    if (onMoveFolderToGroup) onMoveFolderToGroup(newGroupDialog.workingDir, name);
+    if (onMoveFolderToGroup)
+      onMoveFolderToGroup(newGroupDialog.workingDir, name);
     setNewGroupDialog(null);
     setNewGroupName("");
   }, [newGroupName, newGroupDialog, onMoveFolderToGroup]);
@@ -361,7 +407,6 @@ export function SessionList({
     });
     return unsubscribe;
   }, []);
-
 
   // Listen for programmatic group expansion changes (e.g., from swipe/keyboard navigation)
   // When expandGroupForSession in useWebSocket.js expands a group during session switching,
@@ -409,11 +454,15 @@ export function SessionList({
 
   // Helper to check if a group is expanded using React state (not localStorage)
   // to avoid stale reads in WKWebView (macOS native app).
-  const isSidebarGroupExpanded = useCallback((groupKey) => {
-    if (groupKey in sidebarExpandedGroups) return sidebarExpandedGroups[groupKey];
-    if (groupKey === "__archived__") return false;
-    return true;
-  }, [sidebarExpandedGroups]);
+  const isSidebarGroupExpanded = useCallback(
+    (groupKey) => {
+      if (groupKey in sidebarExpandedGroups)
+        return sidebarExpandedGroups[groupKey];
+      if (groupKey === "__archived__") return false;
+      return true;
+    },
+    [sidebarExpandedGroups],
+  );
 
   // Handle group expand/collapse toggle
   const handleToggleGroup = useCallback(
@@ -460,7 +509,9 @@ export function SessionList({
   // key are stored unscoped. Parent-child keys ("parent:<id>") keep using
   // handleToggleGroup/isSidebarGroupExpanded (those already pass through unscoped).
   const isUnifiedFolderExpanded = (folderKey) =>
-    folderKey in sidebarExpandedGroups ? sidebarExpandedGroups[folderKey] : true;
+    folderKey in sidebarExpandedGroups
+      ? sidebarExpandedGroups[folderKey]
+      : true;
   const isUnifiedArchivedExpanded = (folderKey) => {
     const key = `archived:${folderKey}`;
     return key in sidebarExpandedGroups ? sidebarExpandedGroups[key] : false;
@@ -504,7 +555,6 @@ export function SessionList({
     [],
   );
 
-
   // Helper to get session's working directory
   const getSessionWorkingDir = (session) => {
     const storedSession = storedSessions.find(
@@ -545,7 +595,6 @@ export function SessionList({
     });
     return map;
   }, [allSessions]);
-
 
   // Unified sidebar tree (mitto-1er.3): a single folder-grouped tree over ALL
   // sessions (regular + periodic + archived), independent of the filter tab.
@@ -623,7 +672,9 @@ export function SessionList({
         if (session.children && session.children.length > 0) {
           const parentKey = `parent:${session.session_id}`;
           map.set(session.session_id, parentKey);
-          session.children.forEach((child) => map.set(child.session_id, parentKey));
+          session.children.forEach((child) =>
+            map.set(child.session_id, parentKey),
+          );
         }
       });
     });
@@ -687,7 +738,9 @@ export function SessionList({
       // If there are expanded parent groups and the selected session doesn't belong
       // to any of them, collapse all other parent groups
       if (expandedParentKeys.length > 0) {
-        const shouldCollapse = expandedParentKeys.some((key) => key !== familyKey);
+        const shouldCollapse = expandedParentKeys.some(
+          (key) => key !== familyKey,
+        );
         if (shouldCollapse) {
           setSidebarExpandedGroups((prev) => {
             const next = { ...prev };
@@ -767,12 +820,12 @@ export function SessionList({
       if (remembered && folderHasSession(folder, remembered)) {
         handleSelectWithCollapse(remembered, { keepSidebarOpen: true });
       } else if (folder.workingDir) {
-        onBeadsOpen && onBeadsOpen(folder.workingDir, { keepSidebarOpen: true });
+        onBeadsOpen &&
+          onBeadsOpen(folder.workingDir, { keepSidebarOpen: true });
       }
     },
     [handleSelectWithCollapse, onBeadsOpen],
   );
-
 
   // Render a single session item
   // hideBadge: if true, hides the entire badge
@@ -888,13 +941,13 @@ export function SessionList({
   const getEmptyMessage = () => "No conversations yet";
 
   // Render the unified sidebar tree (mitto-1er.3): daisyUI `menu` with CONTROLLED
-  // <details> expansion. Consumes computeUnifiedTree (Dashboard + folders, each with
+  // <details> expansion. Consumes computeUnifiedTree (folders, each with
   // conversations[]/archived[] and a Tasks node). Folders and the per-folder Archived
   // subgroup are controlled <details>; parent-child nesting reuses the existing
-  // SessionItem expand/collapse mechanism. Static Dashboard/Tasks rows are placeholders
+  // SessionItem expand/collapse mechanism. Static Tasks rows are placeholders
   // here — their behavior is wired in mitto-1er.7; per-category icons in mitto-1er.5.
   const renderUnifiedTree = () => {
-    const { dashboard, folders } = filteredTree;
+    const { folders } = filteredTree;
     const allFolderKeys = folders.map((f) => f.key);
 
     // All parent keys across the whole tree, so opening one parent collapses the
@@ -925,8 +978,7 @@ export function SessionList({
     // folder conversations[] list and the archived[] subgroup.
     const renderSessionNodes = (nodes) =>
       nodes.map((session) => {
-        const hasChildren =
-          session.children && session.children.length > 0;
+        const hasChildren = session.children && session.children.length > 0;
         const parentKey = `parent:${session.session_id}`;
         // Children are collapsed by default and expand only when the user clicks
         // the child-count badge. The manual choice is tracked (and persisted) via
@@ -942,9 +994,7 @@ export function SessionList({
         return html`
           <div
             key=${session.session_id}
-            class="parent-session-group ${hasChildren
-              ? "has-children"
-              : ""}"
+            class="parent-session-group ${hasChildren ? "has-children" : ""}"
           >
             ${renderSessionItem(
               {
@@ -1013,21 +1063,6 @@ export function SessionList({
 
     return html`
       <ul class="menu menu-sm w-full p-0 flex-nowrap">
-        <!-- Dashboard (static, top-level) — clears the active session to show
-             the no-session view. Not a conversation; excluded from nav. -->
-        <li>
-          <button
-            type="button"
-            onClick=${() => onShowDashboard && onShowDashboard()}
-            aria-current=${!activeSessionId ? "page" : undefined}
-            class="gap-2 text-sm ${!activeSessionId
-              ? "text-mitto-text-strong bg-mitto-surface-3"
-              : "text-mitto-text-muted"}"
-          >
-            <${HomeIcon} className="w-4 h-4 shrink-0" />
-            <span class="truncate">${dashboard.label}</span>
-          </button>
-        </li>
         ${(() => {
           // When any folder has a group assigned, render collapsible group
           // sections (named groups + a trailing "Other" for ungrouped folders).
@@ -1044,228 +1079,269 @@ export function SessionList({
     // Declared as a hoisted function so it can be referenced by the IIFE above
     // and by renderGroupSectionLi regardless of source order.
     function renderFolderLi(folder) {
-          const folderExpanded = isUnifiedFolderExpanded(folder.key);
-          const archivedExpanded = isUnifiedArchivedExpanded(folder.key);
-          // Count badge excludes archived conversations (active conversations only).
-          const totalSessions = countNodes(folder.conversations);
-          const hasFolderStreaming =
-            hasStreaming(folder.conversations) ||
-            hasStreaming(folder.archived);
-          // The Tasks (beads) entry carries the focus highlight while its
-          // folder's beads view is the active main-content view.
-          const tasksActive =
-            mainView === "beads" && beadsWorkingDir === folder.workingDir;
-          return html`
-            <li
-              key=${folder.key}
-              class="folder-group min-w-0 ${density === "comfortable"
-                ? "mt-2"
-                : ""}"
+      const folderExpanded = isUnifiedFolderExpanded(folder.key);
+      const archivedExpanded = isUnifiedArchivedExpanded(folder.key);
+      // Count badge excludes archived conversations (active conversations only).
+      const totalSessions = countNodes(folder.conversations);
+      const hasFolderStreaming =
+        hasStreaming(folder.conversations) || hasStreaming(folder.archived);
+      // The Tasks (beads) entry carries the focus highlight while its
+      // folder's beads view is the active main-content view.
+      const tasksActive =
+        mainView === "beads" && beadsWorkingDir === folder.workingDir;
+      return html`
+        <li
+          key=${folder.key}
+          class="folder-group min-w-0 ${density === "comfortable"
+            ? "mt-2"
+            : ""}"
+        >
+          <details
+            class="min-w-0 w-full"
+            open=${folderExpanded}
+            onToggle=${(e) => {
+              const open = e.currentTarget.open;
+              if (open !== folderExpanded) {
+                handleUnifiedToggle(folder.key, open, allFolderKeys);
+                if (open) handleFolderOpened(folder);
+              }
+            }}
+          >
+            <summary
+              class="block text-sm font-medium text-mitto-text-muted after:hidden"
+              onContextMenu=${(e) => {
+                if (folder.workingDir) {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  setGroupContextMenu({
+                    x: e.clientX,
+                    y: e.clientY,
+                    workingDir: folder.workingDir,
+                    label: folder.label,
+                  });
+                }
+              }}
+              data-has-context-menu=${folder.workingDir ? "true" : undefined}
             >
-              <details
-                class="min-w-0 w-full"
-                open=${folderExpanded}
-                onToggle=${(e) => {
-                  const open = e.currentTarget.open;
-                  if (open !== folderExpanded) {
-                    handleUnifiedToggle(folder.key, open, allFolderKeys);
-                    if (open) handleFolderOpened(folder);
-                  }
-                }}
-              >
-                <summary
-                  class="block text-sm font-medium text-mitto-text-muted after:hidden"
-                  onContextMenu=${(e) => {
-                    if (folder.workingDir) {
+              <div class="flex items-center gap-2">
+                ${hasFolderStreaming
+                  ? html`
+                      <span
+                        class="loading loading-ring loading-xs shrink-0 text-mitto-accent"
+                        data-tip="Agent responding in this folder"
+                        aria-label="Agent responding in this folder"
+                        ...${rowTipHandlers("Agent responding in this folder")}
+                      ></span>
+                    `
+                  : html`<${FolderIcon} className="w-4 h-4 shrink-0" />`}
+                <span class="truncate min-w-0" title=${folder.workingDir}>
+                  ${folder.label}
+                </span>
+                <span class="flex-1"></span>
+                <span class="badge badge-sm badge-ghost shrink-0 tabular-nums"
+                  >${totalSessions}</span
+                >
+                ${(() => {
+                  const folderCreating = creatingWorkingDirs.has(
+                    folder.workingDir,
+                  );
+                  return html`<button
+                    type="button"
+                    onClick=${(e) => {
                       e.preventDefault();
                       e.stopPropagation();
+                      if (!folderCreating)
+                        handleNewSessionInFolder(folder.workingDir, e);
+                    }}
+                    ...${rowTipHandlers(
+                      folderCreating
+                        ? "Creating conversation\u2026"
+                        : `New conversation in ${folder.label}`,
+                    )}
+                    class="btn btn-ghost btn-circle btn-xs sidebar-group-action shrink-0 text-mitto-text-muted hover:text-mitto-text-strong ${folderCreating
+                      ? "cursor-wait opacity-60"
+                      : ""}"
+                    data-tip=${folderCreating
+                      ? "Creating conversation\u2026"
+                      : `New conversation in ${folder.label}`}
+                    aria-label=${folderCreating
+                      ? "Creating conversation\u2026"
+                      : `New conversation in ${folder.label}`}
+                    disabled=${folderCreating}
+                  >
+                    ${folderCreating
+                      ? html`<${SpinnerIcon}
+                          className="w-3.5 h-3.5 animate-spin"
+                        />`
+                      : html`<${PlusIcon} className="w-3.5 h-3.5" />`}
+                  </button>`;
+                })()}
+                ${folder.workingDir &&
+                html`
+                  <button
+                    type="button"
+                    onClick=${(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      const rect = e.currentTarget.getBoundingClientRect();
                       setGroupContextMenu({
-                        x: e.clientX,
-                        y: e.clientY,
+                        x: rect.left,
+                        y: rect.bottom,
                         workingDir: folder.workingDir,
                         label: folder.label,
                       });
-                    }
-                  }}
-                  data-has-context-menu=${folder.workingDir
-                    ? "true"
-                    : undefined}
-                >
-                  <div class="flex items-center gap-2">
-                    ${hasFolderStreaming
-                      ? html`
-                          <span
-                            class="loading loading-ring loading-xs shrink-0 text-mitto-accent"
-                            title="Agent responding in this folder"
-                          ></span>
-                        `
-                      : html`<${FolderIcon} className="w-4 h-4 shrink-0" />`}
-                    <span class="truncate min-w-0" title=${folder.workingDir}>
-                      ${folder.label}
-                    </span>
-                    <span class="flex-1"></span>
-                    <span
-                      class="badge badge-sm badge-ghost shrink-0 tabular-nums"
-                      >${totalSessions}</span
-                    >
-                    <button
-                      type="button"
-                      onClick=${(e) => {
-                        e.preventDefault();
-                        e.stopPropagation();
-                        if (!isCreatingSession)
-                          handleNewSessionInFolder(folder.workingDir, e);
-                      }}
-                      class="btn btn-ghost btn-circle btn-xs sidebar-group-action shrink-0 text-mitto-text-muted hover:text-mitto-text-strong ${isCreatingSession
-                        ? "cursor-wait opacity-60"
-                        : ""}"
-                      title=${isCreatingSession
-                        ? "Creating conversation\u2026"
-                        : `New conversation in ${folder.label}`}
-                      disabled=${isCreatingSession}
-                    >
-                      ${isCreatingSession
-                        ? html`<${SpinnerIcon} className="w-3.5 h-3.5 animate-spin" />`
-                        : html`<${PlusIcon} className="w-3.5 h-3.5" />`}
-                    </button>
-                    ${folder.workingDir &&
-                    html`
-                      <button
-                        type="button"
-                        onClick=${(e) => {
-                          e.preventDefault();
-                          e.stopPropagation();
-                          const rect = e.currentTarget.getBoundingClientRect();
-                          setGroupContextMenu({
-                            x: rect.left,
-                            y: rect.bottom,
-                            workingDir: folder.workingDir,
-                            label: folder.label,
-                          });
-                        }}
-                        class="btn btn-ghost btn-circle btn-xs sidebar-group-action shrink-0 text-mitto-text-muted hover:text-mitto-text-strong"
-                        title="More actions"
-                        aria-label="More actions"
-                      >
-                        <${EllipsisIcon} className="w-3.5 h-3.5" />
-                      </button>
-                    `}
+                    }}
+                    ...${rowTipHandlers("More actions")}
+                    class="btn btn-ghost btn-circle btn-xs sidebar-group-action shrink-0 text-mitto-text-muted hover:text-mitto-text-strong"
+                    data-tip="More actions"
+                    aria-label="More actions"
+                  >
+                    <${EllipsisIcon} className="w-3.5 h-3.5" />
+                  </button>
+                `}
+              </div>
+              ${density === "comfortable" &&
+              folderExpanded &&
+              folder.workingDir &&
+              (() => {
+                const gitData = gitChangesMap[folder.workingDir];
+                if (!gitData || !gitData.is_git_repo) return null;
+                const files = gitData.files || [];
+                const modified = files.filter(
+                  (f) =>
+                    f.status === "M" || f.status === "R" || f.status === "C",
+                ).length;
+                const added = files.filter((f) => f.status === "A").length;
+                const deleted = files.filter((f) => f.status === "D").length;
+                const untracked = files.filter((f) => f.status === "?").length;
+                if (!modified && !added && !deleted && !untracked) return null;
+                const MAX_BRANCH_LEN = 18;
+                const branchDisplay =
+                  gitData.branch && gitData.branch.length > MAX_BRANCH_LEN
+                    ? "…" + gitData.branch.slice(-MAX_BRANCH_LEN)
+                    : gitData.branch;
+                const parts = [];
+                if (modified)
+                  parts.push(
+                    html`<span class="text-amber-400">✎${modified}</span>`,
+                  );
+                if (added)
+                  parts.push(
+                    html`<span class="text-green-400">+${added}</span>`,
+                  );
+                if (deleted)
+                  parts.push(
+                    html`<span class="text-red-400">−${deleted}</span>`,
+                  );
+                if (untracked)
+                  parts.push(
+                    html`<span class="text-mitto-text-muted"
+                      >?${untracked}</span
+                    >`,
+                  );
+                return html`
+                  <div
+                    class="text-[0.5625rem] font-normal italic text-mitto-text-muted truncate mt-0.5 pl-6 flex items-center gap-1.5"
+                  >
+                    ${gitData.branch
+                      ? html`<${Fragment}><span title=${gitData.branch}>⎇ ${branchDisplay}</span><span>·</span></${Fragment}>`
+                      : null}
+                    ${parts}
                   </div>
-                  ${density === "comfortable" && folderExpanded && folder.workingDir && (() => {
-                    const gitData = gitChangesMap[folder.workingDir];
-                    if (!gitData || !gitData.is_git_repo) return null;
-                    const files = gitData.files || [];
-                    const modified = files.filter((f) => f.status === "M" || f.status === "R" || f.status === "C").length;
-                    const added = files.filter((f) => f.status === "A").length;
-                    const deleted = files.filter((f) => f.status === "D").length;
-                    const untracked = files.filter((f) => f.status === "?").length;
-                    if (!modified && !added && !deleted && !untracked) return null;
-                    const MAX_BRANCH_LEN = 18;
-                    const branchDisplay =
-                      gitData.branch && gitData.branch.length > MAX_BRANCH_LEN
-                        ? "…" + gitData.branch.slice(-MAX_BRANCH_LEN)
-                        : gitData.branch;
-                    const parts = [];
-                    if (modified) parts.push(html`<span class="text-amber-400">✎${modified}</span>`);
-                    if (added) parts.push(html`<span class="text-green-400">+${added}</span>`);
-                    if (deleted) parts.push(html`<span class="text-red-400">−${deleted}</span>`);
-                    if (untracked) parts.push(html`<span class="text-mitto-text-muted">?${untracked}</span>`);
-                    return html`
-                      <div class="text-[0.5625rem] font-normal italic text-mitto-text-muted truncate mt-0.5 pl-6 flex items-center gap-1.5">
-                        ${gitData.branch ? html`<${Fragment}><span title=${gitData.branch}>⎇ ${branchDisplay}</span><span>·</span></${Fragment}>` : null}
-                        ${parts}
-                      </div>
-                    `;
-                  })()}
-                </summary>
-                <ul>
-                  ${folder.showTasks &&
-                  html`
-                    <!-- Tasks (static, per-folder) — always the first entry in a
+                `;
+              })()}
+            </summary>
+            <ul>
+              ${folder.showTasks &&
+              html`
+                <!-- Tasks (static, per-folder) — always the first entry in a
                          project. Opens the Beads view for this folder. Not a
                          conversation; excluded from nav. -->
-                    <li>
-                      <div
-                        role="button"
-                        tabindex="0"
-                        onClick=${(e) => {
-                          e.preventDefault();
-                          e.stopPropagation();
-                          // Selecting Tasks collapses this folder's Archived
-                          // subgroup (matches conversation-selection behavior).
-                          const archivedKey = `archived:${folder.key}`;
-                          setSidebarExpandedGroups((prev) =>
-                            prev[archivedKey] === false
-                              ? prev
-                              : { ...prev, [archivedKey]: false },
-                          );
-                          onBeadsOpen && onBeadsOpen(folder.workingDir);
-                        }}
-                        aria-current=${tasksActive ? "page" : undefined}
-                        class="flex flex-col gap-0.5 items-stretch text-sm border-0! ${tasksActive
-                          ? "bg-mitto-accent text-mitto-accent-fg"
-                          : "text-mitto-text-muted"}"
-                        title="Beads issues: ${folder.workingDir}"
-                      >
-                        <!-- Top row: icon, label, and trailing action buttons.
+                <li>
+                  <div
+                    role="button"
+                    tabindex="0"
+                    onClick=${(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      // Selecting Tasks collapses this folder's Archived
+                      // subgroup (matches conversation-selection behavior).
+                      const archivedKey = `archived:${folder.key}`;
+                      setSidebarExpandedGroups((prev) =>
+                        prev[archivedKey] === false
+                          ? prev
+                          : { ...prev, [archivedKey]: false },
+                      );
+                      onBeadsOpen && onBeadsOpen(folder.workingDir);
+                    }}
+                    aria-current=${tasksActive ? "page" : undefined}
+                    class="flex flex-col gap-0.5 items-stretch text-sm border-0! ${tasksActive
+                      ? "bg-mitto-accent text-mitto-accent-fg"
+                      : "text-mitto-text-muted"}"
+                    title="Beads issues: ${folder.workingDir}"
+                  >
+                    <!-- Top row: icon, label, and trailing action buttons.
                              The stats row below lives inside the same clickable
                              container so the whole entry behaves as one unit
                              (matches regular conversation items). -->
-                        <div class="flex items-center gap-2 min-w-0 w-full">
-                          <${BeadsIcon} className="w-4 h-4 shrink-0" />
-                          <span class="truncate min-w-0"
-                            >${folder.tasksNode.label}</span
-                          >
-                          <span class="flex-1"></span>
-                          ${folder.workingDir &&
-                          html`
-                            <button
-                              type="button"
-                              onClick=${(e) => {
-                                e.preventDefault();
-                                e.stopPropagation();
-                                onBeadsCreate &&
-                                  onBeadsCreate(folder.workingDir);
-                              }}
-                              class="btn btn-ghost btn-circle btn-xs sidebar-group-action shrink-0 text-mitto-text-muted hover:text-mitto-text-strong"
-                              title="New issue"
-                              aria-label="New issue"
-                            >
-                              <${PlusIcon} className="w-3.5 h-3.5" />
-                            </button>
-                            <button
-                              type="button"
-                              onClick=${(e) => {
-                                e.preventDefault();
-                                e.stopPropagation();
-                                const rect =
-                                  e.currentTarget.getBoundingClientRect();
-                                openTasksContextMenu(
-                                  rect.left,
-                                  rect.bottom,
-                                  folder.workingDir,
-                                  folder.tasksNode.label,
-                                );
-                              }}
-                              class="btn btn-ghost btn-circle btn-xs sidebar-group-action shrink-0 text-mitto-text-muted hover:text-mitto-text-strong"
-                              title="More actions"
-                              aria-label="More actions"
-                            >
-                              <${EllipsisIcon} className="w-3.5 h-3.5" />
-                            </button>
-                          `}
-                        </div>
-                        ${density === "comfortable" && folderExpanded && (() => {
-                          const stats = beadsStatsMap[folder.workingDir];
-                          if (!stats) return null;
-                          const open = stats.open_issues || 0;
-                          const inProgress = stats.in_progress_issues || 0;
-                          const ready = stats.ready_issues || 0;
-                          const blocked = stats.blocked_issues || 0;
-                          const total = stats.total_issues || 0;
-                          if (!total) return null;
-                          return html`
-                            <!-- w-full + min-w-0: the parent button is a flex
+                    <div class="flex items-center gap-2 min-w-0 w-full">
+                      <${BeadsIcon} className="w-4 h-4 shrink-0" />
+                      <span class="truncate min-w-0"
+                        >${folder.tasksNode.label}</span
+                      >
+                      <span class="flex-1"></span>
+                      ${folder.workingDir &&
+                      html`
+                        <button
+                          type="button"
+                          onClick=${(e) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            onBeadsCreate && onBeadsCreate(folder.workingDir);
+                          }}
+                          ...${rowTipHandlers("New issue")}
+                          class="btn btn-ghost btn-circle btn-xs sidebar-group-action shrink-0 text-mitto-text-muted hover:text-mitto-text-strong"
+                          data-tip="New issue"
+                          aria-label="New issue"
+                        >
+                          <${PlusIcon} className="w-3.5 h-3.5" />
+                        </button>
+                        <button
+                          type="button"
+                          onClick=${(e) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            const rect =
+                              e.currentTarget.getBoundingClientRect();
+                            openTasksContextMenu(
+                              rect.left,
+                              rect.bottom,
+                              folder.workingDir,
+                              folder.tasksNode.label,
+                            );
+                          }}
+                          ...${rowTipHandlers("More actions")}
+                          class="btn btn-ghost btn-circle btn-xs sidebar-group-action shrink-0 text-mitto-text-muted hover:text-mitto-text-strong"
+                          data-tip="More actions"
+                          aria-label="More actions"
+                        >
+                          <${EllipsisIcon} className="w-3.5 h-3.5" />
+                        </button>
+                      `}
+                    </div>
+                    ${density === "comfortable" &&
+                    folderExpanded &&
+                    (() => {
+                      const stats = beadsStatsMap[folder.workingDir];
+                      if (!stats) return null;
+                      const open = stats.open_issues || 0;
+                      const inProgress = stats.in_progress_issues || 0;
+                      const ready = stats.ready_issues || 0;
+                      const blocked = stats.blocked_issues || 0;
+                      const total = stats.total_issues || 0;
+                      if (!total) return null;
+                      return html`
+                        <!-- w-full + min-w-0: the parent button is a flex
                                  column where daisyUI's menu rule forces
                                  align-items:center, which would shrink this row
                                  to its content and center it (pushing the stats
@@ -1274,54 +1350,88 @@ export function SessionList({
                                  pl-6 indent lands the text under the label —
                                  matching the folder git line and conversation
                                  subtitle second-line style. -->
-                            <div class="text-[0.5625rem] font-normal italic truncate pl-6 w-full min-w-0 flex items-center gap-1.5 ${tasksActive ? "text-mitto-accent-fg/80" : "text-mitto-text-muted"}">
-                              <span title="${open} open">○ ${open}</span>
-                              <span class="${tasksActive ? "" : "text-amber-400"}" title="${inProgress} in progress">◐ ${inProgress}</span>
-                              <span class="${tasksActive ? "" : "text-green-400"}" title="${ready} ready">● ${ready}</span>
-                              ${blocked ? html`<span class="${tasksActive ? "" : "text-red-400"}" title="${blocked} blocked">⊘ ${blocked}</span>` : null}
-                            </div>
-                          `;
-                        })()}
-                      </div>
-                    </li>
-                  `}
-                  ${renderSessionNodes(folder.conversations)}
-                  ${folder.archived.length > 0 &&
-                  html`
-                    <li class="archived-subgroup min-w-0">
-                      <details
-                        class="min-w-0 w-full"
-                        open=${archivedExpanded}
-                        onToggle=${(e) => {
-                          const open = e.currentTarget.open;
-                          if (open !== archivedExpanded) {
-                            handleUnifiedToggle(
-                              `archived:${folder.key}`,
-                              open,
-                              allFolderKeys,
-                            );
-                          }
-                        }}
-                      >
-                        <summary
-                          class="flex items-center gap-2 text-sm text-mitto-text-muted after:hidden"
+                        <div
+                          class="text-[0.5625rem] font-normal italic truncate pl-6 w-full min-w-0 flex items-center gap-1.5 ${tasksActive
+                            ? "text-mitto-accent-fg/80"
+                            : "text-mitto-text-muted"}"
                         >
-                          <${ArchiveIcon} className="w-4 h-4 shrink-0" />
-                          <span class="truncate">Archived</span>
-                          <span class="flex-1"></span>
                           <span
-                            class="badge badge-sm badge-ghost shrink-0 tabular-nums"
-                            >${folder.archived.length}</span
+                            class="tooltip tooltip-top"
+                            data-tip="${open} open"
+                            aria-label="${open} open"
+                            >○ ${open}</span
                           >
-                        </summary>
-                        <ul>${renderSessionNodes(folder.archived)}</ul>
-                      </details>
-                    </li>
-                  `}
-                </ul>
-              </details>
-            </li>
-          `;
+                          <span
+                            class="tooltip tooltip-top ${tasksActive
+                              ? ""
+                              : "text-amber-400"}"
+                            data-tip="${inProgress} in progress"
+                            aria-label="${inProgress} in progress"
+                            >◐ ${inProgress}</span
+                          >
+                          <span
+                            class="tooltip tooltip-top ${tasksActive
+                              ? ""
+                              : "text-green-400"}"
+                            data-tip="${ready} ready"
+                            aria-label="${ready} ready"
+                            >● ${ready}</span
+                          >
+                          ${blocked
+                            ? html`<span
+                                class="tooltip tooltip-top ${tasksActive
+                                  ? ""
+                                  : "text-red-400"}"
+                                data-tip="${blocked} blocked"
+                                aria-label="${blocked} blocked"
+                                >⊘ ${blocked}</span
+                              >`
+                            : null}
+                        </div>
+                      `;
+                    })()}
+                  </div>
+                </li>
+              `}
+              ${renderSessionNodes(folder.conversations)}
+              ${folder.archived.length > 0 &&
+              html`
+                <li class="archived-subgroup min-w-0">
+                  <details
+                    class="min-w-0 w-full"
+                    open=${archivedExpanded}
+                    onToggle=${(e) => {
+                      const open = e.currentTarget.open;
+                      if (open !== archivedExpanded) {
+                        handleUnifiedToggle(
+                          `archived:${folder.key}`,
+                          open,
+                          allFolderKeys,
+                        );
+                      }
+                    }}
+                  >
+                    <summary
+                      class="flex items-center gap-2 text-sm text-mitto-text-muted after:hidden"
+                    >
+                      <${ArchiveIcon} className="w-4 h-4 shrink-0" />
+                      <span class="truncate">Archived</span>
+                      <span class="flex-1"></span>
+                      <span
+                        class="badge badge-sm badge-ghost shrink-0 tabular-nums"
+                        >${folder.archived.length}</span
+                      >
+                    </summary>
+                    <ul>
+                      ${renderSessionNodes(folder.archived)}
+                    </ul>
+                  </details>
+                </li>
+              `}
+            </ul>
+          </details>
+        </li>
+      `;
     }
 
     // Render a top-level group section (collapsible) that wraps its folders.
@@ -1359,154 +1469,202 @@ export function SessionList({
 
   return html`
     <${Fragment}>
-      ${groupContextMenu && html`
-        <${ContextMenu}
-          x=${groupContextMenu.x}
-          y=${groupContextMenu.y}
-          items=${[
-            ...(groupContextMenu.workingDir
-              ? (() => {
-                  // List workspaces/agents matching this folder, mirroring the "+" button.
-                  const matching = workspaces.filter(
-                    (ws) => ws.working_dir === groupContextMenu.workingDir,
-                  );
-                  if (matching.length === 0) return [];
-                  return [{
-                    label: "New",
-                    icon: html`<${PlusIcon} className="w-4 h-4" />`,
-                    submenu: matching.map((ws) => ({
-                      label: ws.acp_server || ws.name || getBasename(ws.working_dir),
-                      icon: html`<${RobotIcon} className="w-4 h-4" />`,
-                      onClick: () => onNewSession && onNewSession(ws, null),
-                    })),
-                  }];
-                })()
-              : []),
-            ...(groupContextMenu.workingDir ? [{
-              label: "Tasks",
-              icon: html`<${BeadsIcon} className="w-4 h-4" />`,
-              onClick: () => onBeadsOpen && onBeadsOpen(groupContextMenu.workingDir),
-            }] : []),
-            ...(badgeClickEnabled && groupContextMenu.workingDir ? [{
-              label: "Open Folder",
-              icon: html`<${FolderOpenIcon} className="w-4 h-4" />`,
-              onClick: () => onFolderOpen && onFolderOpen(groupContextMenu.workingDir),
-            }] : []),
-            ...(terminalActionEnabled && groupContextMenu.workingDir ? [{
-              label: "Open Terminal",
-              icon: html`<${TerminalIcon} className="w-4 h-4" />`,
-              onClick: () => onTerminalClick && onTerminalClick(groupContextMenu.workingDir),
-            }] : []),
-            ...(onMoveFolderToGroup && groupContextMenu.workingDir
-              // Not gated by configReadonly: a folder's group is local
-              // organizational metadata in folders.json, not host config like
-              // adding servers. The backend permits it for authenticated
-              // external clients, so it stays available on external connections.
-              ? [(() => {
-                  const wd = groupContextMenu.workingDir;
-                  const lbl = groupContextMenu.label;
-                  const current = getFolderGroup(wd);
-                  const submenu = [];
-                  allGroups.forEach((g) => {
-                    const isCurrent =
-                      g.toLowerCase() === current.toLowerCase();
-                    submenu.push({
-                      label: g,
-                      icon: isCurrent
-                        ? html`<${CheckIcon} className="w-4 h-4" />`
-                        : html`<span class="inline-block w-4 h-4"></span>`,
-                      disabled: isCurrent,
-                      onClick: () => onMoveFolderToGroup(wd, g),
-                    });
-                  });
-                  if (current) {
-                    submenu.push({
-                      label: "No group",
-                      icon: html`<${CloseIcon} className="w-4 h-4" />`,
-                      onClick: () => onMoveFolderToGroup(wd, ""),
-                    });
-                  }
-                  submenu.push({
-                    label: "New group\u2026",
-                    icon: html`<${PlusIcon} className="w-4 h-4" />`,
-                    onClick: () => setNewGroupDialog({ workingDir: wd, label: lbl }),
-                  });
-                  return {
-                    label: "Move to group",
-                    icon: html`<${LayersIcon} className="w-4 h-4" />`,
-                    submenu,
-                  };
-                })()]
-              : []),
-            ...(!configReadonly && groupContextMenu.workingDir ? [{
-              label: "Configure Workspace",
-              icon: html`<${SettingsIcon} className="w-4 h-4" />`,
-              onClick: () => onShowWorkspacesForFolder && onShowWorkspacesForFolder(groupContextMenu.workingDir),
-            }] : []),
-          ]}
-          onClose=${closeGroupContextMenu}
-        />
-      `}
-      ${tasksContextMenu &&
-      html`
-        <${ContextMenu}
-          x=${tasksContextMenu.x}
-          y=${tasksContextMenu.y}
-          items=${[
-            {
-              label: "New",
-              icon: html`<${PlusIcon} className="w-4 h-4" />`,
-              onClick: () =>
-                onBeadsCreate && onBeadsCreate(tasksContextMenu.workingDir),
-            },
-            {
-              label: "Tasks",
-              icon: html`<${LightningIcon} className="w-4 h-4" />`,
-              submenu: tasksMenuPromptsLoading
+      ${
+        rowTip &&
+        html`<${PortalTooltip}
+          x=${rowTip.x}
+          y=${rowTip.y}
+          text=${rowTip.text}
+        />`
+      }
+      ${
+        groupContextMenu &&
+        html`
+          <${ContextMenu}
+            x=${groupContextMenu.x}
+            y=${groupContextMenu.y}
+            items=${[
+              ...(groupContextMenu.workingDir
+                ? (() => {
+                    // List workspaces/agents matching this folder, mirroring the "+" button.
+                    const matching = workspaces.filter(
+                      (ws) => ws.working_dir === groupContextMenu.workingDir,
+                    );
+                    if (matching.length === 0) return [];
+                    return [
+                      {
+                        label: "New",
+                        icon: html`<${PlusIcon} className="w-4 h-4" />`,
+                        submenu: matching.map((ws) => ({
+                          label:
+                            ws.acp_server ||
+                            ws.name ||
+                            getBasename(ws.working_dir),
+                          icon: html`<${RobotIcon} className="w-4 h-4" />`,
+                          onClick: () => onNewSession && onNewSession(ws, null),
+                        })),
+                      },
+                    ];
+                  })()
+                : []),
+              ...(onMoveFolderToGroup && groupContextMenu.workingDir
+                ? // Not gated by configReadonly: a folder's group is local
+                  // organizational metadata in folders.json, not host config like
+                  // adding servers. The backend permits it for authenticated
+                  // external clients, so it stays available on external connections.
+                  [
+                    (() => {
+                      const wd = groupContextMenu.workingDir;
+                      const lbl = groupContextMenu.label;
+                      const current = getFolderGroup(wd);
+                      const submenu = [];
+                      allGroups.forEach((g) => {
+                        const isCurrent =
+                          g.toLowerCase() === current.toLowerCase();
+                        submenu.push({
+                          label: g,
+                          icon: isCurrent
+                            ? html`<${CheckIcon} className="w-4 h-4" />`
+                            : html`<span class="inline-block w-4 h-4"></span>`,
+                          disabled: isCurrent,
+                          onClick: () => onMoveFolderToGroup(wd, g),
+                        });
+                      });
+                      if (current) {
+                        submenu.push({
+                          label: "No group",
+                          icon: html`<${CloseIcon} className="w-4 h-4" />`,
+                          onClick: () => onMoveFolderToGroup(wd, ""),
+                        });
+                      }
+                      submenu.push({
+                        label: "New group\u2026",
+                        icon: html`<${PlusIcon} className="w-4 h-4" />`,
+                        onClick: () =>
+                          setNewGroupDialog({ workingDir: wd, label: lbl }),
+                      });
+                      return {
+                        label: "Move to group",
+                        icon: html`<${LayersIcon} className="w-4 h-4" />`,
+                        submenu,
+                      };
+                    })(),
+                  ]
+                : []),
+              ...(groupContextMenu.workingDir
                 ? [
                     {
-                      label: "Loading\u2026",
-                      disabled: true,
-                      onClick: () => {},
+                      label: "Tasks",
+                      icon: html`<${BeadsIcon} className="w-4 h-4" />`,
+                      onClick: () =>
+                        onBeadsOpen && onBeadsOpen(groupContextMenu.workingDir),
                     },
                   ]
-                : tasksMenuPrompts.length === 0
+                : []),
+              ...(badgeClickEnabled && groupContextMenu.workingDir
+                ? [
+                    {
+                      label: "Open Folder",
+                      icon: html`<${FolderOpenIcon} className="w-4 h-4" />`,
+                      onClick: () =>
+                        onFolderOpen &&
+                        onFolderOpen(groupContextMenu.workingDir),
+                    },
+                  ]
+                : []),
+              ...(terminalActionEnabled && groupContextMenu.workingDir
+                ? [
+                    {
+                      label: "Open Terminal",
+                      icon: html`<${TerminalIcon} className="w-4 h-4" />`,
+                      onClick: () =>
+                        onTerminalClick &&
+                        onTerminalClick(groupContextMenu.workingDir),
+                    },
+                  ]
+                : []),
+              ...(!configReadonly && groupContextMenu.workingDir
+                ? [
+                    {
+                      label: "Configure Workspace",
+                      icon: html`<${SettingsIcon} className="w-4 h-4" />`,
+                      onClick: () =>
+                        onShowWorkspacesForFolder &&
+                        onShowWorkspacesForFolder(groupContextMenu.workingDir),
+                    },
+                  ]
+                : []),
+            ]}
+            onClose=${closeGroupContextMenu}
+          />
+        `
+      }
+      ${
+        tasksContextMenu &&
+        html`
+          <${ContextMenu}
+            x=${tasksContextMenu.x}
+            y=${tasksContextMenu.y}
+            items=${[
+              {
+                label: "New",
+                icon: html`<${PlusIcon} className="w-4 h-4" />`,
+                onClick: () =>
+                  onBeadsCreate && onBeadsCreate(tasksContextMenu.workingDir),
+              },
+              {
+                label: "Tasks",
+                icon: html`<${LightningIcon} className="w-4 h-4" />`,
+                submenu: tasksMenuPromptsLoading
                   ? [
                       {
-                        label: "No task prompts",
+                        label: "Loading\u2026",
                         disabled: true,
                         onClick: () => {},
                       },
                     ]
-                  : tasksMenuPrompts.map((p) => {
-                      const PromptIcon = getPromptIconOrDefault(p.icon);
-                      return {
-                        label: p.name,
-                        icon: html`<${PromptIcon} className="w-4 h-4" />`,
-                        onClick: () =>
-                          onRunBeadsListPrompt &&
-                          onRunBeadsListPrompt(p, tasksContextMenu.workingDir),
-                      };
-                    }),
-            },
-            {
-              label: "Refresh",
-              icon: html`<${RefreshIcon} className="w-4 h-4" />`,
-              onClick: () =>
-                onBeadsRefresh && onBeadsRefresh(tasksContextMenu.workingDir),
-            },
-            {
-              label: "Cleanup closed",
-              icon: html`<${BroomIcon} className="w-4 h-4" />`,
-              onClick: () =>
-                onBeadsCleanup && onBeadsCleanup(tasksContextMenu.workingDir),
-            },
-          ]}
-          onClose=${closeTasksContextMenu}
-        />
-      `}
-      ${newGroupDialog &&
-      html`
+                  : tasksMenuPrompts.length === 0
+                    ? [
+                        {
+                          label: "No task prompts",
+                          disabled: true,
+                          onClick: () => {},
+                        },
+                      ]
+                    : tasksMenuPrompts.map((p) => {
+                        const PromptIcon = getPromptIconOrDefault(p.icon);
+                        return {
+                          label: p.name,
+                          icon: html`<${PromptIcon} className="w-4 h-4" />`,
+                          onClick: () =>
+                            onRunBeadsListPrompt &&
+                            onRunBeadsListPrompt(
+                              p,
+                              tasksContextMenu.workingDir,
+                            ),
+                        };
+                      }),
+              },
+              {
+                label: "Refresh",
+                icon: html`<${RefreshIcon} className="w-4 h-4" />`,
+                onClick: () =>
+                  onBeadsRefresh && onBeadsRefresh(tasksContextMenu.workingDir),
+              },
+              {
+                label: "Cleanup closed",
+                icon: html`<${BroomIcon} className="w-4 h-4" />`,
+                onClick: () =>
+                  onBeadsCleanup && onBeadsCleanup(tasksContextMenu.workingDir),
+              },
+            ]}
+            onClose=${closeTasksContextMenu}
+          />
+        `
+      }
+      ${
+        newGroupDialog &&
+        html`
         <${Modal}
           isOpen=${true}
           onClose=${() => setNewGroupDialog(null)}
@@ -1555,13 +1713,16 @@ export function SessionList({
               class="input input-sm w-full"
               data-testid="new-group-name-input"
             />
-            ${newGroupDialog.label &&
-            html`<p class="text-xs text-mitto-text-muted">
-              "${newGroupDialog.label}" will be moved to this group.
-            </p>`}
+            ${
+              newGroupDialog.label &&
+              html`<p class="text-xs text-mitto-text-muted">
+                "${newGroupDialog.label}" will be moved to this group.
+              </p>`
+            }
           </div>
         </${Modal}>
-      `}
+      `
+      }
       <div class="h-full flex flex-col">
       <div
         class="p-4 flex items-center justify-between"
@@ -1570,19 +1731,22 @@ export function SessionList({
           <${ChatBubbleIcon} className="w-5 h-5 shrink-0" />
           <span>Mitto</span>
         </h2>
-        ${onClose &&
-        html`
-          <button
-            onClick=${onClose}
-            class="btn btn-ghost btn-square btn-sm md:hidden"
-            title="Close"
-          >
-            <${CloseIcon} className="w-4 h-4" />
-          </button>
-        `}
+        ${
+          onClose &&
+          html`
+            <button
+              onClick=${onClose}
+              class="btn btn-ghost btn-square btn-sm md:hidden tooltip tooltip-bottom"
+              data-tip="Close"
+              aria-label="Close"
+            >
+              <${CloseIcon} className="w-4 h-4" />
+            </button>
+          `
+        }
       </div>
       <!-- Side panel toolbar: panel-wide actions, sitting right above the
-           Dashboard entry. Holds, in order: new-conversation, workspaces,
+           conversation tree. Holds, in order: new-conversation, workspaces,
            category-filter, density, search, and settings. Workspaces and
            settings were moved up from the footer; they are disabled (greyed)
            rather than hidden when the configuration is read-only. -->
@@ -1600,12 +1764,15 @@ export function SessionList({
             data-testid="new-conversation-btn"
             onClick=${() => !isCreatingSession && onNewSession(null, null)}
             aria-disabled=${isCreatingSession ? "true" : "false"}
-            class="btn btn-ghost btn-sm join-item flex-auto ${isCreatingSession ? "opacity-40 pointer-events-none" : ""}"
-            title=${isCreatingSession ? "Creating conversation\u2026" : "New Conversation"}
+            class="btn btn-ghost btn-sm join-item flex-auto tooltip tooltip-bottom ${isCreatingSession ? "opacity-40 pointer-events-none" : ""}"
+            data-tip=${isCreatingSession ? "Creating conversation\u2026" : "New Conversation"}
+            aria-label=${isCreatingSession ? "Creating conversation\u2026" : "New Conversation"}
           >
-            ${isCreatingSession
-              ? html`<${SpinnerIcon} className="w-4 h-4 animate-spin" />`
-              : html`<${PlusIcon} className="w-4 h-4" />`}
+            ${
+              isCreatingSession
+                ? html`<${SpinnerIcon} className="w-4 h-4 animate-spin" />`
+                : html`<${PlusIcon} className="w-4 h-4" />`
+            }
           </button>
           <!-- Workspaces: moved up from the footer. Disabled (greyed) instead
                of hidden when the configuration is read-only. -->
@@ -1614,10 +1781,12 @@ export function SessionList({
             type="button"
             onClick=${() => !configReadonly && onShowWorkspaces && onShowWorkspaces()}
             aria-disabled=${configReadonly ? "true" : "false"}
-            class="btn btn-ghost btn-sm join-item flex-auto ${configReadonly
-              ? "opacity-40 pointer-events-none text-mitto-text-muted"
-              : "text-mitto-text-muted hover:text-mitto-text-strong"}"
-            title=${configReadonly ? "Workspaces (read-only configuration)" : "Workspaces"}
+            class="btn btn-ghost btn-sm join-item flex-auto tooltip tooltip-bottom ${
+              configReadonly
+                ? "opacity-40 pointer-events-none text-mitto-text-muted"
+                : "text-mitto-text-muted hover:text-mitto-text-strong"
+            }"
+            data-tip=${configReadonly ? "Workspaces (read-only configuration)" : "Workspaces"}
             aria-label="Workspaces"
           >
             <${FolderIcon} className="w-4 h-4" />
@@ -1637,10 +1806,12 @@ export function SessionList({
           >
             <summary
               data-testid="category-filter-btn"
-              class="btn btn-ghost btn-sm join-item w-full list-none ${anyCategoryHidden
-                ? "text-mitto-accent-400"
-                : "text-mitto-text-muted"}"
-              title="Filter categories"
+              class="btn btn-ghost btn-sm join-item w-full list-none tooltip tooltip-bottom ${
+                anyCategoryHidden
+                  ? "text-mitto-accent-400"
+                  : "text-mitto-text-muted"
+              }"
+              data-tip="Filter categories"
               aria-label="Filter categories"
             >
               <${FilterIcon} className="w-4 h-4" />
@@ -1685,8 +1856,8 @@ export function SessionList({
           >
             <summary
               data-testid="density-btn"
-              class="btn btn-ghost btn-sm join-item w-full list-none text-mitto-text-muted"
-              title="Density"
+              class="btn btn-ghost btn-sm join-item w-full list-none text-mitto-text-muted tooltip tooltip-bottom"
+              data-tip="Density"
               aria-label="Density"
             >
               <${SlidersIcon} className="w-4 h-4" />
@@ -1713,9 +1884,9 @@ export function SessionList({
           <button
             type="button"
             data-testid="search-btn"
-            class="btn btn-ghost btn-sm join-item flex-auto text-mitto-text-muted"
+            class="btn btn-ghost btn-sm join-item flex-auto text-mitto-text-muted tooltip tooltip-bottom"
             aria-label="Search"
-            title="Search"
+            data-tip="Search"
           >
             <${SearchIcon} className="w-4 h-4" />
           </button>
@@ -1726,12 +1897,18 @@ export function SessionList({
             type="button"
             onClick=${() => !configReadonly && onShowSettings && onShowSettings()}
             aria-disabled=${configReadonly ? "true" : "false"}
-            class="btn btn-ghost btn-sm join-item flex-auto ${configReadonly
-              ? "opacity-40 pointer-events-none text-mitto-text-muted"
-              : "text-mitto-text-muted hover:text-mitto-text-strong"}"
-            title=${configReadonly
-              ? (rcFilePath ? `Using ${rcFilePath}` : "Settings (read-only configuration)")
-              : "Settings"}
+            class="btn btn-ghost btn-sm join-item flex-auto tooltip tooltip-bottom ${
+              configReadonly
+                ? "opacity-40 pointer-events-none text-mitto-text-muted"
+                : "text-mitto-text-muted hover:text-mitto-text-strong"
+            }"
+            data-tip=${
+              configReadonly
+                ? rcFilePath
+                  ? `Using ${rcFilePath}`
+                  : "Settings (read-only configuration)"
+                : "Settings"
+            }
             aria-label="Settings"
           >
             <${SettingsIcon} className="w-4 h-4" />
@@ -1739,12 +1916,14 @@ export function SessionList({
         </div>
       </div>
       <div class="flex-1 overflow-y-auto scrollbar-hide">
-        ${allSessions.length === 0 &&
-        html`
-          <div class="p-4 text-mitto-text-muted text-sm text-center">
-            ${getEmptyMessage()}
-          </div>
-        `}
+        ${
+          allSessions.length === 0 &&
+          html`
+            <div class="p-4 text-mitto-text-muted text-sm text-center">
+              ${getEmptyMessage()}
+            </div>
+          `
+        }
         ${renderUnifiedTree()}
       </div>
       <!-- Footer with theme and font size toggles -->
@@ -1754,8 +1933,8 @@ export function SessionList({
                Controlled Preact checkbox — useTheme owns persistence / follow-system /
                Mermaid sync; we do NOT use daisyUI's data-theme theme-controller. -->
           <label
-            class="btn btn-ghost btn-square btn-sm swap swap-rotate text-mitto-text-muted hover:text-mitto-text-strong"
-            title="${isLight ? "Switch to dark theme" : "Switch to light theme"}"
+            class="btn btn-ghost btn-square btn-sm swap swap-rotate text-mitto-text-muted hover:text-mitto-text-strong tooltip tooltip-top"
+            data-tip="${isLight ? "Switch to dark theme" : "Switch to light theme"}"
             aria-label="Toggle between light and dark theme"
             data-testid="theme-toggle"
           >
@@ -1777,10 +1956,11 @@ export function SessionList({
             <button
               type="button"
               onClick=${() => isLargeFont && onToggleFontSize()}
-              class="btn btn-sm join-item ${!isLargeFont
-                ? "btn-active"
-                : "btn-ghost"}"
-              title="Switch to small font"
+              class="btn btn-sm join-item tooltip tooltip-top ${
+                !isLargeFont ? "btn-active" : "btn-ghost"
+              }"
+              data-tip="Switch to small font"
+              aria-label="Switch to small font"
               aria-pressed=${!isLargeFont}
             >
               <span class="text-xs font-semibold">A</span>
@@ -1788,10 +1968,11 @@ export function SessionList({
             <button
               type="button"
               onClick=${() => !isLargeFont && onToggleFontSize()}
-              class="btn btn-sm join-item ${isLargeFont
-                ? "btn-active"
-                : "btn-ghost"}"
-              title="Switch to large font"
+              class="btn btn-sm join-item tooltip tooltip-top ${
+                isLargeFont ? "btn-active" : "btn-ghost"
+              }"
+              data-tip="Switch to large font"
+              aria-label="Switch to large font"
               aria-pressed=${isLargeFont}
             >
               <span class="text-base font-semibold">A</span>
@@ -1800,8 +1981,9 @@ export function SessionList({
           <!-- Keyboard shortcuts button -->
           <button
             onClick=${onShowKeyboardShortcuts}
-            class="btn btn-ghost btn-square btn-sm group"
-            title="Keyboard Shortcuts"
+            class="btn btn-ghost btn-square btn-sm group tooltip tooltip-top"
+            data-tip="Keyboard Shortcuts"
+            aria-label="Keyboard Shortcuts"
           >
             <${KeyboardIcon}
               className="w-4 h-4 text-mitto-text-muted group-hover:text-mitto-text-strong"

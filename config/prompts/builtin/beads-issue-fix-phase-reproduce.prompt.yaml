@@ -1,0 +1,120 @@
+icon: error
+name: Bug fix — reproduce phase
+menus: internal
+parameters:
+  - name: IssueID
+    type: beadsId
+    required: false
+    description: The beads issue ID to reproduce
+description: Internal phase-tier prompt — write a failing test that reproduces the bug and add the `reproduced` label. Invoked by name from the bug-fix driver; runs on the Coding tier.
+group: Tasks
+backgroundColor: '#FFCDD2'
+preferredModels:
+  - modelTag: Coding
+prompt: |
+  ## Session Context
+
+  Your session ID is `{{ .Session.ID }}` — use this as `self_id` for all `mitto_*` MCP tool calls.
+
+  # Bug Fix — Reproduce Phase
+
+  This is the **reproduce** stage of the label-encoded bug-fix state machine
+  (`researched` → `reproduced` → `fixed`). It is normally invoked by name from the
+  `Iterate fixing bug` driver (or by a list orchestrator), which selects this phase
+  when the target bead carries `researched` but not yet `reproduced`.
+
+  {{ $target := "" -}}
+  {{ if .Session.BeadsIssue }}{{ $target = .Session.BeadsIssue }}{{ else if .Args.IssueID }}{{ $target = .Args.IssueID }}{{ end -}}
+  {{ if $target -}}
+  The **target bug** for this phase is `{{ $target }}`{{ if .Session.BeadsIssue }} (from this conversation's linked beads issue){{ else }} (supplied as the `IssueID` argument){{ end }}.
+  {{- else -}}
+  No target bug is resolvable (neither `.Session.BeadsIssue` nor an `IssueID` argument
+  was supplied). Do not guess. Post a `mitto_ui_notify` explaining the missing target,
+  then stop this phase without changing anything.
+  {{- end }}
+
+  {{ if $target -}}
+  ## Step 1 — Load LIVE state
+
+  Labels drift between runs. Load the bead's **current** state fresh:
+
+  ```bash
+  bd show {{ $target }} --json --include-comments
+  ```
+
+  Read its `labels` array and prior comments (especially the investigate-phase
+  `Investigation:` comment recorded when `researched` was added). If `reproduced` is
+  already present, this phase's work is already done — `bd comment` a note that the
+  phase re-ran redundantly and stop **without** re-adding the label.
+
+  ## Step 2 — Write a failing test
+
+  This is a **scheduled, silent** phase (invoked by the driver's on-completion
+  loop). Do **not** call `mitto_ui_options`, `mitto_ui_form`, or `mitto_ui_textbox` —
+  decide autonomously; if something is genuinely unclear or unsolvable without user
+  input, defer via **Step 4**.
+
+  Write an automated test that **fails** because of the bug (no fix yet). Ground the
+  test in the investigation notes on the bead:
+
+  - Use the project's existing test framework and conventions (mirror a nearby test).
+  - Prefer the **narrowest** level that still demonstrates the bug
+    (unit > integration > e2e).
+  - Assert the **expected** behavior so the test fails **specifically** on this bug,
+    not on an unrelated error or a crash during setup.
+  - Name it descriptively; reference the bead ID (`{{ $target }}`) in a comment.
+
+  Run the test and confirm it fails, with the failing output matching the reported
+  symptom. Capture the exact command and the failing output as evidence. If it does
+  not fail as expected, refine the test — a test that passes has not reproduced the
+  bug. **Leave the failing test in place** (do not delete or skip it) so it will
+  verify the future fix.
+
+  ## Step 3 — Record and advance the label
+
+  When the failing test reliably reproduces the bug, record the reproduction and
+  advance the state:
+
+  ```bash
+  bd comment {{ $target }} "Reproduction: <failing test file::name, command to run it, failing output>."
+  bd update {{ $target }} --add-label reproduced
+  ```
+
+  Only add the label after the comment is posted. Then stop — the driver's next
+  scheduled run will pick up the `reproduced` state and dispatch the fix phase.
+  {{- end }}
+
+  ## Step 4 — Blocked → Defer + Handoff
+
+  Use this whenever this phase cannot make progress autonomously. **Do not** advance
+  the `reproduced` label. Instead:
+
+  1. Defer and flag the bead so it drops out of `bd ready`:
+
+     ```bash
+     bd update {{ if $target }}{{ $target }}{{ else }}<target-bug>{{ end }} --add-label needs-human --defer <when>
+     ```
+
+  2. Write a structured handoff comment:
+
+     ```bash
+     bd comment {{ if $target }}{{ $target }}{{ else }}<target-bug>{{ end }} "Blocked at reproduce. What I tried: <summary>. What I need from you: <the ONE concrete question/decision/info/action>. How to resume: bd update <id> --remove-label needs-human --defer '' , then re-run."
+     ```
+
+  3. End with a concise handoff message naming the blocker and the single thing
+     needed, and disable the enclosing conversation's periodic flag so the driver
+     loop does not spin on the blocker:
+
+     ```
+     mitto_conversation_update(self_id: "{{ .Session.ID }}", conversation_id: "self", periodic_enabled: false)
+     ```
+
+  ## Guidelines
+
+  - **One stage only.** This phase advances at most one label (`reproduced`).
+    Do not attempt to fix the bug — the fix phase runs next.
+  - **Test must fail for the right reason.** A test that passes, or fails on an
+    unrelated setup error, has not reproduced the bug — refine and retry.
+  - **Live state only.** Always re-read labels via `bd show --json` at the start of
+    the phase; never assume labels from a prior run.
+  - **Always log to the tracker** with `bd comment` so progress is auditable.

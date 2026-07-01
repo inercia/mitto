@@ -1,9 +1,11 @@
 icon: edit
 name: Document
-menus: prompts
+menus: prompts, !promptsPeriodic
 description: Update user-facing documentation for the changes we just made
 group: Documentation
 backgroundColor: '#E1BEE7'
+preferredModels:
+  - modelTag: Coding
 prompt: |
   Before updating documentation, read the code changes we made and the existing
   user-facing docs. Understand what changed from the user's perspective before

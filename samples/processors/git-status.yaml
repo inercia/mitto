@@ -35,5 +35,5 @@ output: transform   # Replace message with transformed version
 # Execution settings
 timeout: 10s
 working_dir: session  # Run in the session's working directory
-on_error: skip        # Continue without git status if script fails
+onError: skip        # Continue without git status if script fails
 

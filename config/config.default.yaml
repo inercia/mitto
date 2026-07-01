@@ -22,6 +22,56 @@
 #       command: npx -y @agentclientprotocol/claude-agent-acp@latest
 acp: []
 
+# Named model profiles
+# Pair a model-selection criteria (same match-mode + pattern mechanism as the ACP
+# server "Model Selection" constraints) with capability tags. These let other parts
+# of Mitto branch on a model's capability tags instead of brittle model-name strings.
+#
+# Match modes: contains, exact, startsWith, regex, lookAlike
+#
+# The profiles below seed NEW installs only (they are written to settings.json on the
+# first run); existing settings.json files are left untouched. Tags overlap by design:
+# a model name is matched against every profile and the union of matching tags applies
+# (e.g. "Claude Opus 4.x" resolves to Anthropic + Smartest + Reasoning + Expensive).
+# Tags are interface-only today (parsed and exposed via the Go API, not yet consumed
+# at runtime). Edit or extend these to match the models you use.
+models:
+  - name: Claude
+    criteria:
+      matchMode: contains
+      pattern: Claude
+    tags: [Anthropic]
+  - name: Claude Opus
+    criteria:
+      matchMode: contains
+      pattern: Opus
+    tags: [Smartest, Reasoning, Expensive]
+  - name: Claude Sonnet
+    criteria:
+      matchMode: contains
+      pattern: Sonnet
+    tags: [Smart, Coding]
+  - name: Claude Haiku
+    criteria:
+      matchMode: contains
+      pattern: Haiku
+    tags: [Fast, Cheap]
+  - name: GPT-5
+    criteria:
+      matchMode: contains
+      pattern: GPT-5
+    tags: [Smart, Reasoning, Coding]
+  - name: GPT-4
+    criteria:
+      matchMode: contains
+      pattern: GPT-4
+    tags: [Smart, Coding]
+  - name: Gemini
+    criteria:
+      matchMode: contains
+      pattern: Gemini
+    tags: [Smart, LongContext]
+
 # Web server configuration
 web:
   host: 127.0.0.1  # Local listener always binds to 127.0.0.1 for security
@@ -119,10 +169,12 @@ web:
 
 # UI settings
 # ui:
-#   # Confirmation dialogs - set to false to skip confirmations
+#   # Confirmation dialogs
 #   confirmations:
-#     delete_session: true  # Confirm before deleting a conversation (default: true)
-#     quit_with_running_sessions: true  # Confirm before quitting with running conversations (default: true, macOS only)
+#     # When to confirm before destroying a conversation (closing via Cmd+W, deleting
+#     # from the sidebar, or quitting the macOS app while an agent is responding).
+#     # One of: always (default), responding (only when the agent is responding), never.
+#     delete_conversation: always
 #
 #   # Web interface settings (applies to both browser and macOS app)
 #   web:

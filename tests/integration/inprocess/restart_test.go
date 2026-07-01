@@ -11,7 +11,7 @@ import (
 	"time"
 
 	"github.com/inercia/mitto/internal/client"
-	"github.com/inercia/mitto/internal/web"
+	"github.com/inercia/mitto/internal/conversation"
 )
 
 // safeErrorCollector is a thread-safe error message collector for tests.
@@ -171,11 +171,20 @@ func TestACPRestart_RateLimiting(t *testing.T) {
 				return found && foundAttempt
 			}, fmt.Sprintf("crash %d: restart notification with 'attempt %d of 3'", i, i))
 
-			// Wait for the restart to complete before triggering the next crash.
-			// This is critical because restartACPProcess applies exponential backoff
-			// (3s, 6s, 12s) before actually starting the new process.
+			// Wait for the FULL turn to settle before triggering the next crash. The
+			// restart is immediately followed by a single automatic retry of the same
+			// message (prompt_dispatcher.go), which also crashes because it resends the
+			// identical "CRASH_N" text. That second crash does not consume another
+			// restart slot; it ends the turn with "...Please resend your message."
+			// Waiting only for the substring "AI agent restarted" is unreliable: it
+			// also matches the earlier, non-terminal "...Retrying your message
+			// automatically..." notification, letting the test race ahead and send the
+			// next crash while the auto-retry's fallout (a second restart notification
+			// with a stale attempt count) is still in flight. This is critical also
+			// because restartACPProcess applies exponential backoff (3s, 6s, 12s)
+			// before actually starting the new process.
 			waitFor(t, 30*time.Second, func() bool {
-				found, _ := errorCollector.containsSince(startIdx, "AI agent restarted")
+				found, _ := errorCollector.containsSince(startIdx, "Please resend your message")
 				return found
 			}, fmt.Sprintf("crash %d: restart completion", i))
 		} else {
@@ -236,9 +245,17 @@ func TestACPRestart_BackoffDelays(t *testing.T) {
 			t.Logf("SendPrompt %d failed (expected): %v", i, err)
 		}
 
-		// Wait for restart to complete (includes backoff delay)
-		waitFor(t, 20*time.Second, func() bool {
-			found, _ := errorCollector.containsSince(startIdx, "AI agent restarted")
+		// Wait for the FULL turn to settle (restart + automatic single retry, which
+		// re-crashes on the identical CRASH_N text and ends the turn with
+		// "...Please resend your message."). Waiting on the bare substring
+		// "AI agent restarted" is unreliable: it also matches the earlier,
+		// non-terminal "...Retrying your message automatically..." notification,
+		// so the wait would return before this crash's exponential backoff elapsed
+		// and race on leftover notifications from the previous crash. The terminal
+		// message appears only after the backoff + restart + auto-retry complete, so
+		// the measured cycle correctly includes the backoff delay.
+		waitFor(t, 30*time.Second, func() bool {
+			found, _ := errorCollector.containsSince(startIdx, "Please resend your message")
 			return found
 		}, fmt.Sprintf("restart %d completion", i))
 
@@ -325,12 +342,12 @@ func TestACPRestart_ReasonTracking(t *testing.T) {
 	// Verify reason was tracked.
 	// The mock sends an AgentMessageChunk before crashing, so the crash is detected
 	// during streaming, resulting in CrashDuringStream (not CrashDuringPrompt).
-	if stats.LastReason != web.RestartReasonCrashDuringStream {
-		t.Errorf("LastReason = %q, want %q", stats.LastReason, web.RestartReasonCrashDuringStream)
+	if stats.LastReason != conversation.RestartReasonCrashDuringStream {
+		t.Errorf("LastReason = %q, want %q", stats.LastReason, conversation.RestartReasonCrashDuringStream)
 	}
 
 	// Verify reason count
-	if count := stats.ReasonCounts[web.RestartReasonCrashDuringStream]; count != 1 {
+	if count := stats.ReasonCounts[conversation.RestartReasonCrashDuringStream]; count != 1 {
 		t.Errorf("ReasonCounts[CrashDuringStream] = %d, want 1", count)
 	}
 }

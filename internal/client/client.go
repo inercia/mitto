@@ -70,6 +70,9 @@ type SessionInfo struct {
 	Status       string `json:"status,omitempty"`
 	CreatedAt    string `json:"created_at,omitempty"`
 	UpdatedAt    string `json:"updated_at,omitempty"`
+	// Reused is true when CreateSession was routed to an existing singleton-prompt
+	// conversation instead of creating a new one (see find-or-route, mitto-4mb.3).
+	Reused bool `json:"reused,omitempty"`
 }
 
 // CreateSessionRequest represents a request to create a new session.
@@ -77,8 +80,9 @@ type CreateSessionRequest struct {
 	Name              string            `json:"name,omitempty"`
 	WorkingDir        string            `json:"working_dir,omitempty"`
 	ACPServer         string            `json:"acp_server,omitempty"`
+	OriginPromptName  string            `json:"origin_prompt_name,omitempty"`  // Optional: name of the prompt that originated this conversation
 	InitialPromptName string            `json:"initial_prompt_name,omitempty"` // Optional: seed the queue with a named prompt atomically on creation
-	Arguments         map[string]string `json:"arguments,omitempty"`           // Optional: ${VAR} substitution arguments for the initial prompt
+	Arguments         map[string]string `json:"arguments,omitempty"`           // Optional: Go-template .Args values for the initial prompt
 }
 
 // ListSessions returns all sessions.
@@ -446,6 +450,73 @@ func (c *Client) AddToQueueNamed(sessionID, promptName string) (*QueuedMessage, 
 	return &msg, nil
 }
 
+// AddToQueueNamedWithArgs adds a named prompt with optional arguments to the session's queue.
+// When args is nil or empty, the request omits the arguments field (identical to AddToQueueNamed).
+func (c *Client) AddToQueueNamedWithArgs(sessionID, promptName string, args map[string]string) (*QueuedMessage, error) {
+	reqBody := struct {
+		PromptName string            `json:"prompt_name"`
+		Arguments  map[string]string `json:"arguments,omitempty"`
+	}{PromptName: promptName, Arguments: args}
+	body, err := json.Marshal(reqBody)
+	if err != nil {
+		return nil, fmt.Errorf("add named+args to queue: marshal: %w", err)
+	}
+
+	resp, err := c.httpClient.Post(
+		c.apiURL("/api/sessions/"+url.PathEscape(sessionID)+"/queue"),
+		"application/json",
+		bytes.NewReader(body),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("add named+args to queue: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, fmt.Errorf("session not found: %s", sessionID)
+	}
+	if resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("add named+args to queue: status %d: %s", resp.StatusCode, string(respBody))
+	}
+
+	var msg QueuedMessage
+	if err := json.NewDecoder(resp.Body).Decode(&msg); err != nil {
+		return nil, fmt.Errorf("add named+args to queue: decode: %w", err)
+	}
+	return &msg, nil
+}
+
+// GetPromptArgCache returns the names of parameters currently cached (fresh) for a
+// named prompt in a conversation. On a 404 the session is unknown; on any other
+// non-2xx an error with the status and body is returned.
+func (c *Client) GetPromptArgCache(sessionID, promptName string) ([]string, error) {
+	qp := url.Values{"prompt": {promptName}}
+	reqURL := c.apiURL("/api/sessions/"+url.PathEscape(sessionID)+"/prompt-arg-cache") + "?" + qp.Encode()
+	resp, err := c.httpClient.Get(reqURL)
+	if err != nil {
+		return nil, fmt.Errorf("get prompt-arg-cache: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, fmt.Errorf("session not found: %s", sessionID)
+	}
+	if resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("get prompt-arg-cache: status %d: %s", resp.StatusCode, string(respBody))
+	}
+
+	var result struct {
+		Prompt string   `json:"prompt"`
+		Cached []string `json:"cached"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, fmt.Errorf("get prompt-arg-cache: decode: %w", err)
+	}
+	return result.Cached, nil
+}
+
 // --- Periodic API ---
 
 // PeriodicFrequency represents a periodic schedule frequency.
@@ -462,6 +533,14 @@ type SetPeriodicRequest struct {
 	Frequency     PeriodicFrequency `json:"frequency"`
 	Enabled       bool              `json:"enabled"`
 	MaxIterations int               `json:"max_iterations,omitempty"`
+	// On-completion trigger fields (mitto-icf).
+	Trigger            string `json:"trigger,omitempty"`              // "schedule" | "onCompletion" | "onTasks"
+	DelaySeconds       int    `json:"delay_seconds,omitempty"`        // clamped to server floor
+	MaxDurationSeconds int    `json:"max_duration_seconds,omitempty"` // 0 = unlimited
+	// onTasks trigger fields (mitto-oja).
+	Condition       string `json:"condition,omitempty"`        // CEL expression; empty = fire on ANY beads change
+	ConditionPreset string `json:"condition_preset,omitempty"` // optional UI preset id that compiled to Condition
+	CooldownSeconds int    `json:"cooldown_seconds,omitempty"` // per-conversation cooldown floor; 0 = use global floor
 }
 
 // PeriodicConfig represents the periodic configuration for a session.
@@ -472,6 +551,17 @@ type PeriodicConfig struct {
 	Enabled         bool              `json:"enabled"`
 	MaxIterations   int               `json:"max_iterations,omitempty"`
 	NextScheduledAt string            `json:"next_scheduled_at,omitempty"`
+	// On-completion trigger fields (mitto-icf).
+	Trigger            string `json:"trigger,omitempty"`
+	DelaySeconds       int    `json:"delay_seconds,omitempty"`
+	MaxDurationSeconds int    `json:"max_duration_seconds,omitempty"`
+	IterationCount     int    `json:"iteration_count,omitempty"`
+	FreshContext       bool   `json:"fresh_context,omitempty"`
+	// onTasks trigger fields (mitto-oja).
+	Condition       string `json:"condition,omitempty"`
+	ConditionPreset string `json:"condition_preset,omitempty"`
+	CooldownSeconds int    `json:"cooldown_seconds,omitempty"`
+	StoppedReason   string `json:"stopped_reason,omitempty"`
 }
 
 // SetPeriodic configures a periodic schedule on a session via PUT.

@@ -1,9 +1,11 @@
 icon: globe
 name: Submit changes
-menus: prompts
+menus: prompts, !promptsPeriodic
 description: Submit changes
 group: Submission of changes
 backgroundColor: '#B2DFDB'
+preferredModels:
+  - modelTag: Coding
 prompt: |
   Submit current work by preparing, committing (if needed), and pushing changes to a pull request.
 
@@ -55,7 +57,7 @@ prompt: |
 
   Confirm if: multiple remotes, non-standard setup, no tracking/PR found.
 
-  **With Mitto UI**: `mitto_ui_options(self_id: "@mitto:session_id", ...)` → "PR targets upstream/main, push to origin. Correct?"
+  **With Mitto UI**: `mitto_ui_options(self_id: "{{ .Session.ID }}", ...)` → "PR targets upstream/main, push to origin. Correct?"
   **Without**: Ask in conversation.
 
   ### 4. Check if Rebase Needed
@@ -80,7 +82,7 @@ prompt: |
   First, generate a PR title and description from the commits. Then present a form for the user to review and customize:
 
   ```
-  mitto_ui_form(self_id: "@mitto:session_id", title: "Create Pull Request", html: "
+  mitto_ui_form(self_id: "{{ .Session.ID }}", title: "Create Pull Request", html: "
     <label for='pr_title'>Title:</label>
     <input type='text' name='pr_title' id='pr_title' value='<generated-title>' placeholder='PR title'>
     <label for='base_branch'>Base branch:</label>
@@ -99,7 +101,7 @@ prompt: |
   Then present the PR description in a textbox for editing:
 
   ```
-  mitto_ui_textbox(self_id: "@mitto:session_id",
+  mitto_ui_textbox(self_id: "{{ .Session.ID }}",
     title: "Edit PR Description",
     text: "<generated-description-markdown>",
     result: "edited_text")

@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/inercia/mitto/internal/conversation"
 	"github.com/inercia/mitto/internal/session"
 )
 
@@ -83,7 +84,7 @@ func (m *mockBackgroundSessionForPrompting) setIsPrompting(v bool) {
 }
 
 // TestSessionWSClient_OnAgentMessage_IsPrompting tests that OnAgentMessage includes
-// the is_prompting field based on the BackgroundSession state.
+// the is_prompting field based on the conversation.BackgroundSession state.
 func TestSessionWSClient_OnAgentMessage_IsPrompting(t *testing.T) {
 	tests := []struct {
 		name          string
@@ -148,7 +149,7 @@ func TestSessionWSClient_OnAgentMessage_IsPrompting(t *testing.T) {
 }
 
 // TestSessionWSClient_OnAgentThought_IsPrompting tests that OnAgentThought includes
-// the is_prompting field based on the BackgroundSession state.
+// the is_prompting field based on the conversation.BackgroundSession state.
 func TestSessionWSClient_OnAgentThought_IsPrompting(t *testing.T) {
 	mockBg := &mockBackgroundSessionForPrompting{isPrompting: true}
 
@@ -164,7 +165,7 @@ func TestSessionWSClient_OnAgentThought_IsPrompting(t *testing.T) {
 }
 
 // TestSessionWSClient_OnToolCall_IsPrompting tests that OnToolCall includes
-// the is_prompting field based on the BackgroundSession state.
+// the is_prompting field based on the conversation.BackgroundSession state.
 func TestSessionWSClient_OnToolCall_IsPrompting(t *testing.T) {
 	mockBg := &mockBackgroundSessionForPrompting{isPrompting: true}
 
@@ -181,7 +182,7 @@ func TestSessionWSClient_OnToolCall_IsPrompting(t *testing.T) {
 }
 
 // TestSessionWSClient_OnToolUpdate_IsPrompting tests that OnToolUpdate includes
-// the is_prompting field based on the BackgroundSession state.
+// the is_prompting field based on the conversation.BackgroundSession state.
 func TestSessionWSClient_OnToolUpdate_IsPrompting(t *testing.T) {
 	mockBg := &mockBackgroundSessionForPrompting{isPrompting: false}
 
@@ -543,6 +544,66 @@ func TestSyncMissedEventsDuringRegistration_NonexistentSession(t *testing.T) {
 	}
 }
 
+// TestPostLoadProcessing_NoH2SyncOnSubsequentSync verifies that
+// syncMissedEventsDuringRegistration is NOT called on a sync load_events when
+// the observer is already registered (initialLoadDone == true). On such calls the
+// observer is already active so streaming covers new events; a second events_loaded
+// from the H2 path would be a spurious duplicate. This is the regression test for
+// the mitto-b6ym fix.
+func TestPostLoadProcessing_NoH2SyncOnSubsequentSync(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := session.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("Failed to create store: %v", err)
+	}
+	defer store.Close()
+
+	sessionID := "test-no-h2-on-sync"
+	if err := store.Create(session.Metadata{SessionID: sessionID}); err != nil {
+		t.Fatalf("Failed to create session: %v", err)
+	}
+	// Add events including one "beyond" lastSeq so H2 would fire if the gate is missing.
+	for _, ev := range []session.Event{
+		{Type: "user_prompt", Seq: 1, Data: map[string]interface{}{"message": "Hello"}},
+		{Type: "agent_message", Seq: 2, Data: map[string]interface{}{"html": "Hi"}},
+		{Type: "agent_message", Seq: 3, Data: map[string]interface{}{"html": "Extra"}},
+	} {
+		if err := store.AppendEvent(sessionID, ev); err != nil {
+			t.Fatalf("AppendEvent: %v", err)
+		}
+	}
+
+	mockWS := newMockWSConn()
+	client := &SessionWSClient{
+		sessionID:       sessionID,
+		wsConn:          &WSConn{send: mockWS.send},
+		store:           store,
+		initialLoadDone: true, // observer already registered — simulates a subsequent sync
+	}
+
+	// postLoadProcessing with a non-prepend sync result (lastSeq=2, one event beyond).
+	// With the bug: syncMissedEventsDuringRegistration fires and sends events_loaded.
+	// With the fix: justRegistered=false so no H2 sync is triggered.
+	client.postLoadProcessing(loadEventsResult{isPrepend: false, lastSeq: 2})
+
+	// Allow time for any goroutine that might send a message.
+	time.Sleep(80 * time.Millisecond)
+
+	select {
+	case msgBytes := <-mockWS.send:
+		var msg struct {
+			Type string `json:"type"`
+		}
+		_ = json.Unmarshal(msgBytes, &msg)
+		if msg.Type == WSMsgTypeEventsLoaded {
+			t.Errorf("got spurious events_loaded from H2 path on subsequent sync (duplicate regression)")
+		}
+		// Any other message type (e.g. plan state) is fine.
+	case <-time.After(80 * time.Millisecond):
+		// Expected: no events_loaded from H2 path.
+	}
+}
+
 // TestHandleLoadEvents_SeqMismatchProtection tests that when a client sends afterSeq
 // higher than the server's max seq (event count), we fall back to initial load instead
 // of setting lastSentSeq to the bogus value. This protects against UI freezes when
@@ -695,7 +756,7 @@ func TestSessionWSClient_OnAvailableCommandsUpdated(t *testing.T) {
 	}
 
 	// Call OnAvailableCommandsUpdated
-	commands := []AvailableCommand{
+	commands := []conversation.AvailableCommand{
 		{Name: "test", Description: "Test command", InputHint: "Enter test"},
 		{Name: "help", Description: "Get help"},
 	}
@@ -758,7 +819,7 @@ func TestSessionWSClient_OnAvailableCommandsUpdated_Empty(t *testing.T) {
 	}
 
 	// Call with empty commands
-	client.OnAvailableCommandsUpdated([]AvailableCommand{})
+	client.OnAvailableCommandsUpdated([]conversation.AvailableCommand{})
 
 	// Read the message from the channel
 	select {
@@ -820,7 +881,7 @@ func (m *mockBackgroundSessionForMaxSeq) IsClosed() bool {
 }
 
 // TestGetServerMaxSeq_WithBackgroundSession tests that getServerMaxSeq
-// returns the correct value when a BackgroundSession is active.
+// returns the correct value when a conversation.BackgroundSession is active.
 func TestGetServerMaxSeq_WithBackgroundSession(t *testing.T) {
 	// Note: When we create a session with Start() and End(), it adds 2 extra events:
 	// - session_start (1 event)
@@ -829,7 +890,7 @@ func TestGetServerMaxSeq_WithBackgroundSession(t *testing.T) {
 	tests := []struct {
 		name           string
 		persistedCount int   // Number of agent messages to record
-		assignedSeq    int64 // Simulated assigned seq from BackgroundSession
+		assignedSeq    int64 // Simulated assigned seq from conversation.BackgroundSession
 		wantMaxSeq     int64 // Expected max seq (max of persisted+2 and assignedSeq)
 	}{
 		{
@@ -891,9 +952,7 @@ func TestGetServerMaxSeq_WithBackgroundSession(t *testing.T) {
 			client := &SessionWSClient{
 				sessionID: sessionID,
 				store:     store,
-				bgSession: &BackgroundSession{
-					nextSeq: tt.assignedSeq + 1, // nextSeq is assignedSeq + 1
-				},
+				bgSession: conversation.NewTestBackgroundSession(conversation.BackgroundSessionTestOpts{NextSeq: tt.assignedSeq + 1}),
 			}
 
 			// Override bgSession's GetMaxAssignedSeq by setting nextSeq directly
@@ -901,7 +960,7 @@ func TestGetServerMaxSeq_WithBackgroundSession(t *testing.T) {
 			got := client.getServerMaxSeq()
 
 			// The expected value is max(persistedCount, assignedSeq)
-			// But since we're using the real BackgroundSession, we need to account
+			// But since we're using the real conversation.BackgroundSession, we need to account
 			// for how it calculates GetMaxAssignedSeq
 			_ = mockBg // unused in this test, but shows the pattern
 
@@ -913,7 +972,7 @@ func TestGetServerMaxSeq_WithBackgroundSession(t *testing.T) {
 }
 
 // TestGetServerMaxSeq_NoBackgroundSession tests that getServerMaxSeq
-// returns the persisted event count when no BackgroundSession is active.
+// returns the persisted event count when no conversation.BackgroundSession is active.
 func TestGetServerMaxSeq_NoBackgroundSession(t *testing.T) {
 	tmpDir := t.TempDir()
 	store, err := session.NewStore(tmpDir)
@@ -948,4 +1007,224 @@ func TestGetServerMaxSeq_NoBackgroundSession(t *testing.T) {
 	if got != 27 {
 		t.Errorf("getServerMaxSeq() = %d, want 27 (25 messages + 2 system events)", got)
 	}
+}
+
+// TestSessionWSClient_OnUserPrompt_ArgumentCount verifies that the WS user_prompt
+// payload includes argument_count when the prompt had arguments, and omits it otherwise.
+func TestSessionWSClient_OnUserPrompt_ArgumentCount(t *testing.T) {
+	tests := []struct {
+		name          string
+		promptName    string
+		argumentCount int
+		wantArgCount  bool
+	}{
+		{
+			name:          "with arguments",
+			promptName:    "deploy-prompt",
+			argumentCount: 3,
+			wantArgCount:  true,
+		},
+		{
+			name:          "no arguments",
+			promptName:    "plain-prompt",
+			argumentCount: 0,
+			wantArgCount:  false,
+		},
+		{
+			name:          "ad-hoc prompt no arguments",
+			promptName:    "",
+			argumentCount: 0,
+			wantArgCount:  false,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			mockWS := newMockWSConn()
+			client := &SessionWSClient{
+				sessionID: "test-session",
+				clientID:  "client-1",
+				wsConn:    &WSConn{send: mockWS.send},
+			}
+
+			client.OnUserPrompt(1, "client-1", "pid-1", "hello", nil, nil, tc.promptName, tc.argumentCount)
+
+			// Read from the send channel (same pattern as TestSessionWSClient_OnAvailableCommandsUpdated)
+			select {
+			case msgBytes := <-mockWS.send:
+				var msg struct {
+					Type string                 `json:"type"`
+					Data map[string]interface{} `json:"data"`
+				}
+				if err := json.Unmarshal(msgBytes, &msg); err != nil {
+					t.Fatalf("failed to unmarshal message: %v", err)
+				}
+				if msg.Type != WSMsgTypeUserPrompt {
+					t.Errorf("message type = %q, want %q", msg.Type, WSMsgTypeUserPrompt)
+				}
+				argCountVal, hasArgCount := msg.Data["argument_count"]
+				if tc.wantArgCount {
+					if !hasArgCount {
+						t.Errorf("expected argument_count in payload, got none")
+					} else if int(argCountVal.(float64)) != tc.argumentCount {
+						t.Errorf("argument_count = %v, want %d", argCountVal, tc.argumentCount)
+					}
+				} else {
+					if hasArgCount && argCountVal != nil {
+						if f, ok := argCountVal.(float64); ok && f != 0 {
+							t.Errorf("expected argument_count absent/0, got %v", argCountVal)
+						}
+					}
+				}
+			case <-time.After(100 * time.Millisecond):
+				t.Error("expected user_prompt message on send channel but got none")
+			}
+		})
+	}
+}
+
+// TestSessionWSClient_OnEventMeta_AttachedToUserPrompt verifies that meta stored via
+// OnEventMeta is attached to the subsequent user_prompt WebSocket payload, and that
+// without OnEventMeta the "meta" key is absent from the payload.
+func TestSessionWSClient_OnEventMeta_AttachedToUserPrompt(t *testing.T) {
+	t.Run("meta present when OnEventMeta called before OnUserPrompt", func(t *testing.T) {
+		mockWS := newMockWSConn()
+		client := &SessionWSClient{
+			sessionID: "test-session",
+			clientID:  "client-1",
+			wsConn:    &WSConn{send: mockWS.send},
+		}
+
+		const seq = int64(42)
+		metaIn := map[string]any{"source": "test", "count": 7}
+
+		// Simulate the ordering guarantee: OnEventMeta fires before OnUserPrompt.
+		client.OnEventMeta(seq, metaIn)
+		client.OnUserPrompt(seq, "client-1", "pid-1", "hello", nil, nil, "", 0)
+
+		select {
+		case msgBytes := <-mockWS.send:
+			var msg struct {
+				Type string                 `json:"type"`
+				Data map[string]interface{} `json:"data"`
+			}
+			if err := json.Unmarshal(msgBytes, &msg); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			if msg.Type != WSMsgTypeUserPrompt {
+				t.Fatalf("msg type = %q, want %q", msg.Type, WSMsgTypeUserPrompt)
+			}
+			metaOut, hasMeta := msg.Data["meta"]
+			if !hasMeta {
+				t.Fatal("expected \"meta\" key in WS payload, got none")
+			}
+			metaMap, ok := metaOut.(map[string]interface{})
+			if !ok {
+				t.Fatalf("meta has type %T, want map[string]interface{}", metaOut)
+			}
+			if metaMap["source"] != "test" {
+				t.Errorf(`meta["source"] = %v, want "test"`, metaMap["source"])
+			}
+		case <-time.After(100 * time.Millisecond):
+			t.Fatal("expected user_prompt on send channel, got none")
+		}
+	})
+
+	t.Run("meta absent when OnEventMeta not called", func(t *testing.T) {
+		mockWS := newMockWSConn()
+		client := &SessionWSClient{
+			sessionID: "test-session",
+			clientID:  "client-1",
+			wsConn:    &WSConn{send: mockWS.send},
+		}
+
+		client.OnUserPrompt(1, "client-1", "pid-1", "hello", nil, nil, "", 0)
+
+		select {
+		case msgBytes := <-mockWS.send:
+			var msg struct {
+				Type string                 `json:"type"`
+				Data map[string]interface{} `json:"data"`
+			}
+			if err := json.Unmarshal(msgBytes, &msg); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			if _, hasMeta := msg.Data["meta"]; hasMeta {
+				t.Errorf("expected \"meta\" key absent from WS payload, but it was present: %v", msg.Data["meta"])
+			}
+		case <-time.After(100 * time.Millisecond):
+			t.Fatal("expected user_prompt on send channel, got none")
+		}
+	})
+
+	t.Run("meta consumed: second OnUserPrompt for same seq has no meta", func(t *testing.T) {
+		mockWS := newMockWSConn()
+		client := &SessionWSClient{
+			sessionID: "test-session",
+			clientID:  "client-1",
+			wsConn:    &WSConn{send: mockWS.send},
+		}
+
+		const seq = int64(10)
+		client.OnEventMeta(seq, map[string]any{"once": true})
+		// First call consumes the meta.
+		client.OnUserPrompt(seq, "client-1", "pid-1", "msg1", nil, nil, "", 0)
+		<-mockWS.send // drain first message
+
+		// Second call for same seq must NOT have meta.
+		client.OnUserPrompt(seq, "client-1", "pid-1", "msg2", nil, nil, "", 0)
+
+		select {
+		case msgBytes := <-mockWS.send:
+			var msg struct {
+				Type string                 `json:"type"`
+				Data map[string]interface{} `json:"data"`
+			}
+			if err := json.Unmarshal(msgBytes, &msg); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			if _, hasMeta := msg.Data["meta"]; hasMeta {
+				t.Errorf("second call: expected \"meta\" absent, got %v", msg.Data["meta"])
+			}
+		case <-time.After(100 * time.Millisecond):
+			t.Fatal("expected second user_prompt on send channel, got none")
+		}
+	})
+
+	t.Run("argument_names array passes through in meta", func(t *testing.T) {
+		mockWS := newMockWSConn()
+		client := &SessionWSClient{
+			sessionID: "test-session",
+			clientID:  "client-1",
+			wsConn:    &WSConn{send: mockWS.send},
+		}
+
+		const seq = int64(99)
+		client.OnEventMeta(seq, map[string]any{"argument_names": []string{"ISSUE_ID", "PROJECT"}})
+		client.OnUserPrompt(seq, "client-1", "pid-1", "review", nil, nil, "Review", 2)
+
+		select {
+		case msgBytes := <-mockWS.send:
+			var msg struct {
+				Type string                 `json:"type"`
+				Data map[string]interface{} `json:"data"`
+			}
+			if err := json.Unmarshal(msgBytes, &msg); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			metaOut, ok := msg.Data["meta"].(map[string]interface{})
+			if !ok {
+				t.Fatalf("meta missing or wrong type: %T", msg.Data["meta"])
+			}
+			names, ok := metaOut["argument_names"].([]interface{})
+			if !ok {
+				t.Fatalf("argument_names missing or wrong type: %T", metaOut["argument_names"])
+			}
+			if len(names) != 2 || names[0] != "ISSUE_ID" || names[1] != "PROJECT" {
+				t.Errorf("argument_names = %v, want [ISSUE_ID PROJECT]", names)
+			}
+		case <-time.After(100 * time.Millisecond):
+			t.Fatal("expected user_prompt on send channel, got none")
+		}
+	})
 }

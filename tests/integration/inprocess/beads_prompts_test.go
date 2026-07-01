@@ -16,16 +16,16 @@ import (
 
 // TestWorkspacePrompts_BeadsDirGatesUseDirParamNotSession is an end-to-end
 // regression test (through the real HTTP server) for the bug where beads-issue
-// context-menu prompts disappeared. dir-based enabledWhen gates (dirExists) were
-// evaluated against the active conversation's working dir instead of the `dir`
-// query param. The frontend always appends &session_id=<activeConversation>, so
-// when that conversation lived in a folder without ".beads", dirExists(".beads")
+// context-menu prompts disappeared. dir-based enabledWhen gates (DirExists) were
+// evaluated against the active conversation's working dir instead of the
+// `working_dir` query param. The frontend always appends &session_id=<activeConversation>,
+// so when that conversation lived in a folder without ".beads", DirExists(".beads")
 // evaluated false and every beads prompt was filtered out — an empty menu.
 //
 // Scenario reproduced here:
 //   - Active conversation lives in the configured workspace (NO .beads).
 //   - The Tasks/beads view is opened for a separate project dir (HAS .beads).
-//   - GET /api/workspace-prompts?dir=<beadsDir>&session_id=<active>&item_*...
+//   - GET /api/workspace-prompts?working_dir=<beadsDir>&session_id=<active>&item_*...
 //
 // Expectations (post-fix): the dir param is authoritative, so dir-gated prompts
 // for beadsDir are returned even though the session's folder has no .beads. A
@@ -39,10 +39,10 @@ func TestWorkspacePrompts_BeadsDirGatesUseDirParamNotSession(t *testing.T) {
 	rcContent := `prompts:
   - name: "Decompose issue"
     prompt: "x"
-    enabledWhen: 'dirExists(".beads")'
+    enabledWhen: 'DirExists(".beads")'
   - name: "Start work"
     prompt: "y"
-    enabledWhen: 'item.status != "closed"'
+    enabledWhen: 'Item.Status != "closed"'
   - name: "Show status"
     prompt: "z"
 `
@@ -77,7 +77,7 @@ func TestWorkspacePrompts_BeadsDirGatesUseDirParamNotSession(t *testing.T) {
 	fetchPrompts := func(t *testing.T, dir, sessionID, itemStatus string) []string {
 		t.Helper()
 		q := url.Values{}
-		q.Set("dir", dir)
+		q.Set("working_dir", dir)
 		q.Set("enabled_context", "workspace")
 		if sessionID != "" {
 			q.Set("session_id", sessionID)
@@ -125,7 +125,7 @@ func TestWorkspacePrompts_BeadsDirGatesUseDirParamNotSession(t *testing.T) {
 	//    folder. Pre-fix this returned an empty list; post-fix all three show.
 	open := fetchPrompts(t, beadsDir, sess.SessionID, "open")
 	if !has(open, "Decompose issue") {
-		t.Errorf("dir-gated prompt filtered out: dirExists(\".beads\") evaluated against the session's folder, not the dir param; got %v", open)
+		t.Errorf("dir-gated prompt filtered out: DirExists(\".beads\") evaluated against the session's folder, not the working_dir param; got %v", open)
 	}
 	if !has(open, "Start work") {
 		t.Errorf("item-gated prompt missing for open issue; got %v", open)

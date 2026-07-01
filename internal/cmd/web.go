@@ -4,12 +4,14 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"os"
 	"path/filepath"
 
 	"github.com/spf13/cobra"
 
 	"github.com/inercia/mitto/internal/appdir"
 	"github.com/inercia/mitto/internal/config"
+	"github.com/inercia/mitto/internal/conversation"
 	"github.com/inercia/mitto/internal/hooks"
 	"github.com/inercia/mitto/internal/web"
 )
@@ -181,7 +183,7 @@ func runWeb(cmd *cobra.Command, args []string) error {
 	// and WorkspaceAuxiliaryManager. No global initialization needed here.
 
 	// Create workspace save callback (only used when not from CLI)
-	var onWorkspaceSave web.WorkspaceSaveFunc
+	var onWorkspaceSave conversation.WorkspaceSaveFunc
 	if !fromCLI {
 		onWorkspaceSave = config.SaveWorkspaces
 	}
@@ -243,14 +245,25 @@ func runWeb(cmd *cobra.Command, args []string) error {
 	slog.Info("Local listener started", "address", fmt.Sprintf("%s:%d", webHost, actualPort), "port", actualPort)
 	fmt.Printf("   Local URL: http://%s:%d\n", webHost, actualPort)
 
-	// Start external listener if auth is configured (for external access)
-	// Track the actual external port for the up hook
+	// Warn when no authentication is configured — the web interface is unprotected.
+	if cfg == nil || cfg.Web.Auth == nil ||
+		(cfg.Web.Auth.Simple == nil && cfg.Web.Auth.Cloudflare == nil) {
+		fmt.Fprintf(os.Stderr, "   ⚠️  Authentication is not configured — the web interface is unprotected. Anyone who can reach this server has full access.\n")
+	}
+
+	// Start external listener if auth is configured and external access is not
+	// intentionally disabled (port -1 = disabled, 0 = random, >0 = specific port).
+	// Track the actual external port for the up hook.
 	var actualExternalPort int
-	if cfg != nil && cfg.Web.Auth != nil {
+	if cfg != nil && cfg.Web.Auth != nil && externalPort >= 0 {
 		var err error
 		actualExternalPort, err = srv.StartExternalListener(externalPort)
 		if err != nil {
-			fmt.Printf("   ⚠️  Failed to start external listener: %v\n", err)
+			portStr := fmt.Sprintf("port %d", externalPort)
+			if externalPort == 0 {
+				portStr = "the external port"
+			}
+			fmt.Fprintf(os.Stderr, "   ⚠️  External access is DOWN: the external listener failed to start on %s: %v\n", portStr, err)
 		} else {
 			// Note: StartExternalListener already logs success
 			fmt.Printf("   External URL: http://0.0.0.0:%d\n", actualExternalPort)

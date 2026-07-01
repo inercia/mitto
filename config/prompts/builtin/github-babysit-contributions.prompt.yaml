@@ -1,59 +1,86 @@
 icon: globe
 name: 'GitHub: babysit contributions'
 menus: prompts
+parameters:
+  - name: Repository
+    type: text
+    required: false
+    description: 'Optional GitHub repository (owner/repo) to monitor. If omitted, the repository of the current folder is used.'
 description: Periodically check for pending review requests, bot dependency PRs ready to merge, and stale remote branches from merged PRs
 group: GitHub
 backgroundColor: '#C8E6C9'
 tags:
 - periodic
 - github
-enabledWhen: fileExists(".git/config") && (tools.hasPattern("github_*") || commandExists("gh"))
+enabledWhen: FileExists(".git/config") && (Tools.HasPattern("github_*") || CommandExists("gh"))
+periodic:
+  mode: optional
+  default: true
+  trigger: onCompletion
+  delay: 3600
+  maxIterations: 30
 prompt: |
-  Monitor community and repo-wide contributions for the current repository:
-  pending review requests addressed to you, bot dependency PRs (Dependabot,
-  Renovate) ready to merge, and stale remote branches from merged PRs. This
-  prompt does **not** touch your own PRs — use "GitHub: babysit my PRs" for that.
-  Designed to be run periodically via `mitto_conversation_set_periodic`.
+  {{- $repoFlag := "" -}}
+  {{- if .Args.Repository }}{{ $repoFlag = printf " --repo %s" .Args.Repository }}{{ end -}}
+  Monitor community and repo-wide contributions for the target repository (the
+  current folder's repo by default, or the one supplied via the `Repository`
+  parameter): pending review requests addressed to you, bot dependency PRs
+  (Dependabot, Renovate) ready to merge, and stale remote branches from merged
+  PRs. This prompt does **not** touch your own PRs — use "GitHub: babysit my
+  PRs" for that. Designed to be run periodically via `mitto_conversation_set_periodic`.
 
   ## Session Context
 
-  Your session ID is `@mitto:session_id` — use this as `self_id` for all `mitto_*` MCP tool calls.
+  Your session ID is `{{ .Session.ID }}` — use this as `self_id` for all `mitto_*` MCP tool calls.
 
   Available ACP servers:
-  @mitto:available_acp_servers
+  {{ .ACP.AvailableText }}
 
   ## Interaction Mode
+  {{- if and .Session.IsPeriodic (not .Session.IsPeriodicForced) }}
 
-  - **Periodic run**: `@mitto:periodic` = is this a scheduled periodic execution?
-  - **Force-triggered**: `@mitto:periodic_forced` = was this periodic run manually triggered by the user?
-
-  **If this is a scheduled periodic run** (`@mitto:periodic` = "true" AND `@mitto:periodic_forced` = "false"):
+  **Silent mode** — a scheduled periodic run; the user is not watching.
   - Use **only** `mitto_ui_notify` for all communication — non-blocking notifications only.
   - Do **NOT** use `mitto_ui_options`, `mitto_ui_form`, `mitto_ui_textbox`, or any
-    interactive/blocking UI tool. The user is not watching.
+    interactive/blocking UI tool.
+  {{- else }}
 
-  **If this is a force-triggered run** (`@mitto:periodic_forced` = "true") **or a
-  non-periodic conversation** (`@mitto:periodic` = "false"):
+  **Interactive mode** — a force-triggered run or a non-periodic conversation; the user may be present.
   - You may freely interact with the user using `mitto_ui_options`, `mitto_ui_form`,
     and other interactive tools in addition to `mitto_ui_notify`.
+  {{- end }}
 
   ## Step 1 — Identify the repository
+  {{- if .Args.Repository }}
+
+  A target repository was supplied: **`{{ .Args.Repository }}`**. Every `gh`
+  command in this prompt already targets it via `--repo {{ .Args.Repository }}`,
+  so you do not need to be inside that repository's checkout.
+
+  ```bash
+  gh repo view {{ .Args.Repository }} --json nameWithOwner,defaultBranchRef -q '.nameWithOwner + " (default: " + .defaultBranchRef.name + ")"'
+  ```
+  {{- else }}
+
+  No repository was supplied, so operate on the repository of the **current
+  folder** where this prompt runs.
 
   ```bash
   git remote -v
   git rev-parse --show-toplevel
   gh repo view --json nameWithOwner,defaultBranchRef -q '.nameWithOwner + " (default: " + .defaultBranchRef.name + ")"'
   ```
+  {{- end }}
 
   If `gh` is not authenticated (`gh auth status` fails), inform the user and stop.
 
   Once you have the `nameWithOwner` (e.g., `some-org/some-repo`), rename this
   conversation so it's easy to identify — but only if the current name
-  (`@mitto:session_name`) doesn't already start with "Babysit contributions":
+  (`{{ .Session.Name }}`) doesn't already start with "Babysit contributions":
 
   ```
-  mitto_conversation_update(self_id: "@mitto:session_id",
-    conversation_id: "@mitto:session_id",
+  mitto_conversation_update(self_id: "{{ .Session.ID }}",
+    conversation_id: "{{ .Session.ID }}",
     name: "Babysit contributions in <nameWithOwner>")
   ```
 
@@ -62,13 +89,13 @@ prompt: |
   Check if the current user has been requested to review any PRs:
 
   ```bash
-  gh pr list --search "review-requested:@me" --state open --json number,title,author,createdAt --limit 20
+  gh pr list{{ $repoFlag }} --search "review-requested:@me" --state open --json number,title,author,createdAt --limit 20
   ```
 
   If there are pending review requests, **batch into a single notification:**
 
   ```
-  mitto_ui_notify(self_id: "@mitto:session_id",
+  mitto_ui_notify(self_id: "{{ .Session.ID }}",
     title: "👀 <count> PRs awaiting your review",
     message: "You've been requested to review:\n• #<N> <title> by <author> (<days> days ago)\n• #<M> <title> by <author> (<days> days ago)\n...",
     style: "info")
@@ -79,27 +106,27 @@ prompt: |
   List open bot dependency PRs:
 
   ```bash
-  gh pr list --state open --author "app/dependabot" --json number,title,statusCheckRollup,author --limit 20
-  gh pr list --state open --author "app/renovate" --json number,title,statusCheckRollup,author --limit 20
+  gh pr list{{ $repoFlag }} --state open --author "app/dependabot" --json number,title,statusCheckRollup,author --limit 20
+  gh pr list{{ $repoFlag }} --state open --author "app/renovate" --json number,title,statusCheckRollup,author --limit 20
   ```
 
   If a bot PR has all CI checks passing:
 
   **In interactive mode**, offer to approve and merge:
   ```
-  mitto_ui_options(self_id: "@mitto:session_id",
+  mitto_ui_options(self_id: "{{ .Session.ID }}",
     question: "🤖 Bot PR #<number> (<title>) has passing CI. Approve and merge?",
     options: [
       { label: "Yes, approve and merge" },
       { label: "No, just notify" }
     ])
   ```
-  If the user selects "Yes": `gh pr review <number> --approve` then
-  `gh pr merge <number> --merge`. Then notify success.
+  If the user selects "Yes": `gh pr review{{ $repoFlag }} <number> --approve` then
+  `gh pr merge{{ $repoFlag }} <number> --merge`. Then notify success.
 
   **In scheduled mode**, just notify:
   ```
-  mitto_ui_notify(self_id: "@mitto:session_id",
+  mitto_ui_notify(self_id: "{{ .Session.ID }}",
     title: "🤖 Bot PR #<number> ready to merge",
     message: "<title> — dependency update from <author> with passing CI. Consider merging.",
     style: "info")
@@ -110,20 +137,27 @@ prompt: |
   Check for remote branches from merged PRs that were not deleted:
 
   ```bash
-  gh pr list --state merged --json headRefName,number,title --limit 30
+  gh pr list{{ $repoFlag }} --state merged --json headRefName,number,title --limit 30
   ```
 
   Cross-reference against existing remote branches:
+  {{- if .Args.Repository }}
+
+  ```bash
+  gh api repos/{{ .Args.Repository }}/branches --paginate -q '.[].name'
+  ```
+  {{- else }}
 
   ```bash
   git ls-remote --heads origin
   ```
+  {{- end }}
 
   If any merged-PR branches still exist on the remote:
 
   **In interactive mode**, offer to delete them:
   ```
-  mitto_ui_options(self_id: "@mitto:session_id",
+  mitto_ui_options(self_id: "{{ .Session.ID }}",
     question: "🧹 <count> merged branches still on remote:\n<branch1> (PR #N)\n<branch2> (PR #M)\n\nDelete them?",
     options: [
       { label: "Yes, delete all" },
@@ -131,13 +165,22 @@ prompt: |
     ])
   ```
   If the user selects "Yes", delete via remote API (safe — does not affect local):
+  {{- if .Args.Repository }}
+
+  ```bash
+  # delete each merged branch via the API (no local checkout needed)
+  gh api -X DELETE repos/{{ .Args.Repository }}/git/refs/heads/<branch>   # repeat per branch
+  ```
+  {{- else }}
+
   ```bash
   git push origin --delete <branch1> <branch2> ...
   ```
+  {{- end }}
 
   **In scheduled mode**, just notify:
   ```
-  mitto_ui_notify(self_id: "@mitto:session_id",
+  mitto_ui_notify(self_id: "{{ .Session.ID }}",
     title: "🧹 <count> merged branches can be cleaned up",
     message: "Branches from merged PRs still on remote:\n<branch1> (PR #N)\n<branch2> (PR #M)\n...",
     style: "info")
@@ -158,14 +201,24 @@ prompt: |
 
   ## Guidelines
 
+  - **Target repository**:
+  {{- if .Args.Repository }}
+    operate on `{{ .Args.Repository }}`; all `gh` commands target it via
+    `--repo {{ .Args.Repository }}`, and merged-branch cleanup uses the GitHub
+    API (no local checkout of that repo is assumed).
+  {{- else }}
+    no repository was supplied; operate on the repository of the current folder.
+  {{- end }}
   - If `gh` authentication fails, stop immediately and inform the user.
   - **Interaction mode** (see "Interaction Mode" section above):
-    - **Scheduled periodic** (`@mitto:periodic` = "true", `@mitto:periodic_forced` = "false"):
-      Use only `mitto_ui_notify`. No interactive UI. Skip the summary — only
-      send notifications for actionable items.
+  {{- if and .Session.IsPeriodic (not .Session.IsPeriodicForced) }}
+    - **Scheduled periodic**: Use only `mitto_ui_notify`. No interactive UI. Skip the
+      summary — only send notifications for actionable items.
+  {{- else }}
     - **Force-triggered or non-periodic**: You may use `mitto_ui_options`,
       `mitto_ui_form`, and other interactive tools. Ask the user before risky
       actions (merges, branch deletions). Show the full summary at the end.
+  {{- end }}
   - **Notification batching**: batch repetitive items (pending reviews, bot PRs)
     into a single notification per category to avoid spamming the user —
     especially important in periodic mode.

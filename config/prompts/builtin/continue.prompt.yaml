@@ -4,12 +4,35 @@ description: Continue with the current task from where we left off
 group: Work flow
 menus: prompts, conversation
 backgroundColor: '#FFF9C4'
-enabledWhen: '!session.isPeriodicConversation'
+enabledWhen: Session.HasMessages
 prompt: |
   Before taking any action, review the current state of the work by reading relevant files,
   checking git status, and understanding what has already been completed.
 
   Continue with the current task from where we left off.
+  {{- if .Session.BeadsIssue }}
+  This conversation is linked to beads issue `{{ .Session.BeadsIssue }}`, so **that bead and its
+  follow-ups are the current task** — see the "Beads issue" section below to resolve what to work on.
+  {{- end }}
+
+  Your session ID is `{{ .Session.ID }}` — use as `self_id` for all `mitto_*` MCP tool calls.
+
+  ## Interaction Mode
+  {{- if and .Session.IsPeriodic (not .Session.IsPeriodicForced) }}
+
+  **Scheduled mode** — a periodic run; the user is not watching.
+  - Decide **autonomously**; do not ask. Use only `mitto_ui_notify`.
+  - Keep making the next concrete increment of progress each run.
+  - **Commit** completed increments (stage only changed files by path; never
+    `git add -A`/`.` or `git commit -a`; skip if nothing changed) but do **NOT
+    push** — leave that to the user.
+  - If you become genuinely blocked (ambiguous requirement, missing decision), do
+    **not** guess — notify what's blocked and stop iterating
+    (`mitto_conversation_update(self_id: "{{ .Session.ID }}", conversation_id: "self", periodic_enabled: false)`).
+  {{- else }}
+
+  **Interactive mode** — a force-triggered run or a non-periodic conversation; the user may be present.
+  {{- end }}
 
   Rules:
 
@@ -18,4 +41,82 @@ prompt: |
   3. Execute that step
   4. Report progress and what remains
 
+  {{- if and .Session.IsPeriodic (not .Session.IsPeriodicForced) }}
+  In scheduled mode, if blocked or unclear: notify and stop (see above) — do not ask.
+  {{- else }}
   If blocked or unclear, ask for clarification before proceeding.
+  {{- end }}
+
+  {{- if .Session.BeadsIssue }}
+
+  ## Beads issue: `{{ .Session.BeadsIssue }}`
+
+  This conversation is linked to a bead, so the "current task" above is that bead **and its
+  follow-ups** — resume by advancing them rather than guessing from context.
+
+  Beads is a CLI issue tracker (`bd`); issues ("beads") have IDs like `bd-xyz`.
+
+  ### B1. Load the bead and its tree
+
+  ```bash
+  bd show {{ .Session.BeadsIssue }} --long --json     # description, acceptance criteria, status
+  bd dep tree {{ .Session.BeadsIssue }}               # parent epic, blockers, and what it blocks
+  bd show {{ .Session.BeadsIssue }} --children --json # child beads (is this an epic/parent?)
+  ```
+
+  ### B2. Decide what to work on this continuation
+
+  Pick the **first** case that applies and treat the chosen bead as the work for this run:
+
+  1. **The bead has remaining work** (acceptance criteria not yet met) → keep implementing it as
+     the natural next step above. Claim it if it isn't already (`bd update {{ .Session.BeadsIssue }} --claim`).
+  2. **The bead is an epic/parent with open children** → it's a container, not directly
+     implementable; work the **next ready child** (open + unblocked per `bd dep tree`; prefer
+     schema/scaffolding before dependents, then highest priority).
+  3. **The bead is complete but has follow-ups** → using `bd ready --json` to confirm readiness,
+     look in order for: a ready **dependent** (an issue this bead *blocks* that is now unblocked),
+     then a ready **sibling** under the same parent epic. Work that follow-up.
+  4. **Nothing ready remains** → go to **B4** (wrap up).
+
+  When you switch to a different bead (child, dependent, or sibling), keep the conversation link on
+  the right anchor:
+  {{- if and .Session.IsPeriodic (not .Session.IsPeriodicForced) }}
+  - **Standalone follow-up** (dependent/sibling): claim it (`bd update <id> --claim`) and **relink**
+    this conversation — `mitto_conversation_update(self_id: "{{ .Session.ID }}", conversation_id: "self", beads_issue: "<id>")`.
+  - **Child of an epic**: leave the link on the **epic** (the durable anchor) so the next run still
+    resolves the epic.
+  {{- else }}
+  - Say which bead you're now working on, and for a standalone follow-up offer to relink the
+    conversation to it (`mitto_conversation_update(... beads_issue: "<id>")`).
+  {{- end }}
+
+  ### B3. If a bead becomes complete this run
+
+  When the bead you worked (`<id>`) meets all its acceptance criteria:
+  {{- if and .Session.IsPeriodic (not .Session.IsPeriodicForced) }}
+  In scheduled mode, act autonomously to keep the loop moving:
+  - **Commit** its work (stage only changed files by path; never `git add -A`/`.`) with a message
+    referencing the bead. Do **NOT push** — leave that to the user.
+  - **Close** it: `bd close <id> --reason "<what was delivered>"`.
+  - Return to **B2** to pick up the next follow-up, and `mitto_ui_notify` progress.
+  {{- else }}
+  do **not** close or commit on your own. Present the finding and act only on what the user approves
+  via `mitto_ui_options(self_id: "{{ .Session.ID }}", allow_free_text: true)` (fall back to a
+  plain question if the `mitto_*` tools are unavailable):
+  - **"Close the issue"** — `bd close <id> --reason "<what was delivered>"`.
+  - **"Commit the changes"** — commit the work for this bead with a clear message referencing it.
+  - **"Work the next follow-up"** — if B2 found a ready dependent/sibling/child, start it.
+
+  Offer these so the user can pick any combination. Honour their choice exactly.
+  {{- end }}
+
+  ### B4. When nothing ready remains
+
+  The bead and all its in-scope follow-ups are done, blocked, or deferred:
+  {{- if and .Session.IsPeriodic (not .Session.IsPeriodicForced) }}
+  notify completion and **stop iterating** —
+  `mitto_conversation_update(self_id: "{{ .Session.ID }}", conversation_id: "self", periodic_enabled: false)`.
+  {{- else }}
+  say so and suggest closing/committing anything outstanding. Do not take git actions without approval.
+  {{- end }}
+  {{- end }}

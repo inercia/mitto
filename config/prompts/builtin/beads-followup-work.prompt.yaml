@@ -1,21 +1,52 @@
-icon: beads
-name: Identify follow-up work
-menus: prompts, conversations
-description: Review the conversation for incomplete work, follow-up items, and edge cases, organize them (grouping related items under epics — new or existing), and file them as beads
+icon: search
+name: Identify follow-up issues
+menus: beadsIssues, prompts, conversation
+parameters:
+  - name: IssueID
+    type: beadsId
+    required: false
+    description: The beads issue ID to act on
+description: Review for incomplete work, follow-up items, and edge cases — for a specific bead or the whole conversation — organize them (grouping related items under epics), and file them as beads
 backgroundColor: '#DCEDC8'
 group: Tasks
-enabledWhen: commandExists("bd") && dirExists(".beads")
+enabledWhen: CommandExists("bd") && DirExists(".beads") && (Session.HasMessages || Session.HasBeadsIssue || Item.Id != "")
 prompt: |
   ## Session Context
 
-  Your session ID is `@mitto:session_id` — use this as `self_id` for all `mitto_*` MCP tool calls.
+  Your session ID is `{{ .Session.ID }}` — use this as `self_id` for all `mitto_*` MCP tool calls.
 
   # Beads: Identify Follow-up Work
 
   Beads is a CLI issue tracker (`bd`). Issues are called "beads" and have IDs like `bd-xyz`. Beads supports first-class parent/child hierarchy (epics) and blocking dependencies.
 
+  {{ $target := "" -}}
+  {{ if .Session.BeadsIssue }}{{ $target = .Session.BeadsIssue }}{{ else if .Args.IssueID }}{{ $target = .Args.IssueID }}{{ end -}}
+  {{ if $target -}}
+  The **target bead** is `{{ $target }}`. Your job is to identify **follow-up work for this specific bead**: parts of it left unfinished, acceptance criteria not yet met, edge cases and hardening it does not yet cover, and problems discovered while working on it. Organize what you find into a clean structure and file a bead for each so nothing is lost — by default as **children of `{{ $target }}`**.
+  {{- else -}}
   While working on a focused task, it's common to discover **other** problems, to leave parts of a request unfinished, or to spot edge cases worth handling later. Your job here is to comb back through **this conversation**, extract everything that warrants future work, organize it into a clean structure, and file a bead for each so nothing is lost.
+  {{- end }}
 
+  {{ if $target -}}
+  ## Step 1 — Understand the target bead, then mine for follow-up work
+
+  First load the bead and its context so you know what it covers and what has (and has not) been done:
+
+  ```bash
+  bd show {{ $target }} --long --json      # description, acceptance criteria, design, notes
+  bd dep tree {{ $target }}                # blockers and what it blocks
+  bd show {{ $target }} --children --json  # existing children (avoid duplicating them)
+  bd comments {{ $target }}                # prior discussion / decisions
+  ```
+
+  Then review the current state (relevant files, `git status`, recent changes, and this conversation if it worked on the bead) and extract every follow-up item that deserves its own bead. Use the context you already have — do not ask the user to re-explain. Look for:
+
+  - **Unmet acceptance criteria**: conditions from the bead that are not yet satisfied.
+  - **Unfinished sub-parts**: portions of the bead's scope left incomplete.
+  - **Side discoveries**: problems noticed while working on the bead (a related bug, a fragile code path, a missing edge-case handler).
+  - **Edge cases & hardening**: inputs, states, or failure modes the work does not yet handle and should.
+  - **Deferred / parked work**: anything explicitly postponed, TODOs, tech debt, missing tests, or missing docs tied to this bead.
+  {{- else -}}
   ## Step 1 — Mine the conversation for follow-up work
 
   Review the full conversation history and extract every item that deserves its own bead. Use the context you already have — do not ask the user to re-explain what happened. Look for:
@@ -25,6 +56,7 @@ prompt: |
   - **Side discoveries**: problems noticed in passing while doing the main work (e.g. a related bug, a fragile code path, a missing edge-case handler).
   - **Edge cases & hardening**: inputs, states, or failure modes that the current work does not yet handle and should.
   - **Deferred / parked work**: anything explicitly postponed ("let's do this later", "out of scope for now"), TODOs, tech debt, missing tests, or missing docs.
+  {{- end }}
 
   For each candidate, capture: a short **title**, a **description** (what it is, why it matters, where it lives — files/components — and any context such as root cause, repro, or proposed fix), and a suggested **type** and **priority**.
 
@@ -56,6 +88,9 @@ prompt: |
 
   Group the surviving candidates so related work lives together instead of as a flat pile. Prefer reusing existing structure over creating new structure:
 
+  {{ if $target -}}
+  - **Default to children of the target bead `{{ $target }}`.** Because every item here is follow-up work for this bead, make each one a **child of `{{ $target }}`** unless it clearly is **not** a sub-part of it — in that case keep it standalone (or `related`-link it to `{{ $target }}`) rather than forcing the parent. Prefer the target bead over inventing a new epic.
+  {{ end -}}
   - **Attach to an existing epic first.** For each item, check whether one of the open epics from Step 3 already covers its theme, feature, or component. If a fitting epic exists, make the item a **child of that existing epic** (record the real epic ID) rather than creating a new parent. A single item is reason enough to attach to an existing epic — you don't need a cluster to reuse one.
   - **Create a new epic only when needed.** When two or more related items share a theme that **no existing epic** covers, propose a **new epic** (parent bead) to hold them, and make those items its **children**. A new epic needs a clear title and a one-line purpose.
   - **Keep genuinely standalone items at the top level** — do not invent a new epic for a single item, and do not force an item into an existing epic that doesn't truly fit.
@@ -70,7 +105,7 @@ prompt: |
 
   > **[<type> · <priority>] <title>** — <one-line why>
 
-  Then present **every** epic and item in a single `mitto_ui_form_mitto(self_id: "@mitto:session_id")` as checkboxes, **checked by default**, so the user can simply uncheck what to skip. Nest children under their epic visually:
+  Then present **every** epic and item in a single `mitto_ui_form_mitto(self_id: "{{ .Session.ID }}")` as checkboxes, **checked by default**, so the user can simply uncheck what to skip. Nest children under their epic visually:
 
   ```html
   <p>Select what to file as beads. Unchecked items are skipped. Epics group their children.</p>
@@ -96,9 +131,13 @@ prompt: |
 
   ## Step 6 — Create the approved beads
 
-  Create approved **new epics first** so their children can reference them; children of **existing** epics use the real epic IDs from Step 3. For each bead, compose a well-structured Markdown description (Summary, Findings / Context, Proposed Solution if known, Acceptance Criteria), write it to a temporary file, and pass it via `--body-file` to preserve formatting and avoid shell-quoting issues:
+  Create approved **new epics first** so their children can reference them; children of **existing** epics use the real epic IDs from Step 3{{ if $target }}; children of the target bead use `{{ $target }}` as their parent{{ end }}. For each bead, compose a well-structured Markdown description (Summary, Findings / Context, Proposed Solution if known, Acceptance Criteria), write it to a temporary file, and pass it via `--body-file` to preserve formatting and avoid shell-quoting issues:
 
   ```bash
+  {{ if $target -}}
+  # Child of the target bead (the default for follow-up items)
+  bd create "<title>" --parent {{ $target }} --type <type> --priority <priority> --body-file /tmp/bead-item.md
+  {{ end -}}
   # New epic (parent)
   bd create "<epic title>" --type epic --priority <priority> --labels "<labels>" --body-file /tmp/bead-epic.md
   # Child of a new epic (use the ID just returned) or of an existing epic (use its Step 3 ID)

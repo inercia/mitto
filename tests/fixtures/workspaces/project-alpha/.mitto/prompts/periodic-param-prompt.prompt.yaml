@@ -1,0 +1,12 @@
+name: Periodic Param Test
+description: A periodic-selector prompt with a required text param (E2E edit-args dialog testing)
+menus: promptsPeriodic
+group: Periodic
+parameters:
+  - name: TASK
+    type: text
+    multiLine: true
+    description: The task to perform on each iteration
+    required: false
+prompt: |
+  Perform the following task on this iteration: ${TASK}.

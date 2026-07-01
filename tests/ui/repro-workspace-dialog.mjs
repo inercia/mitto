@@ -11,7 +11,7 @@ const URL = `http://127.0.0.1:${PORT}`;
   await page.goto(URL, { waitUntil: 'networkidle' });
   await page.waitForTimeout(2000);
 
-  const newBtn = page.locator('[title="New Conversation"]');
+  const newBtn = page.locator('[data-testid="new-conversation-btn"]');
   await newBtn.first().click();
   await page.waitForTimeout(500);
 

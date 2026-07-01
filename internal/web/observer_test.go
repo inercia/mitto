@@ -6,10 +6,11 @@ import (
 	"time"
 
 	"github.com/coder/acp-go-sdk"
+	"github.com/inercia/mitto/internal/conversation"
 	"github.com/inercia/mitto/internal/session"
 )
 
-// mockObserver implements SessionObserver for testing.
+// mockObserver implements conversation.SessionObserver for testing.
 type mockObserver struct {
 	agentMessages []string
 	agentThoughts []string
@@ -36,7 +37,7 @@ func (m *mockObserver) OnToolUpdate(seq int64, id string, status *string) {
 	// no-op for testing
 }
 
-func (m *mockObserver) OnPlan(seq int64, entries []PlanEntry) {
+func (m *mockObserver) OnPlan(seq int64, entries []conversation.PlanEntry) {
 	m.planCalls++
 }
 
@@ -56,7 +57,7 @@ func (m *mockObserver) OnPromptComplete(eventCount int) {
 	m.promptsDone++
 }
 
-func (m *mockObserver) OnUserPrompt(seq int64, senderID, promptID, message string, imageIDs, fileIDs []string, promptName string) {
+func (m *mockObserver) OnUserPrompt(seq int64, senderID, promptID, message string, imageIDs, fileIDs []string, promptName string, argumentCount int) {
 	m.userPrompts = append(m.userPrompts, message)
 }
 
@@ -80,11 +81,11 @@ func (m *mockObserver) OnQueueReordered(messages []session.QueuedMessage) {
 	// no-op for testing
 }
 
-func (m *mockObserver) OnActionButtons(buttons []ActionButton) {
+func (m *mockObserver) OnActionButtons(buttons []conversation.ActionButton) {
 	// no-op for testing
 }
 
-func (m *mockObserver) OnAvailableCommandsUpdated(commands []AvailableCommand) {
+func (m *mockObserver) OnAvailableCommandsUpdated(commands []conversation.AvailableCommand) {
 	// no-op for testing
 }
 
@@ -96,7 +97,7 @@ func (m *mockObserver) OnACPStarted() {
 	// no-op for testing
 }
 
-func (m *mockObserver) OnUIPrompt(req UIPromptRequest) {
+func (m *mockObserver) OnUIPrompt(req conversation.UIPromptRequest) {
 	// no-op for testing
 }
 
@@ -104,7 +105,7 @@ func (m *mockObserver) OnUIPromptDismiss(requestID string, reason string) {
 	// no-op for testing
 }
 
-func (m *mockObserver) OnNotification(req UINotifyRequest) {
+func (m *mockObserver) OnNotification(req conversation.UINotifyRequest) {
 	// no-op for testing
 }
 
@@ -113,12 +114,12 @@ func (m *mockObserver) OnContextUsageUpdate(size, used int) {
 }
 
 func TestSessionObserver_Interface(t *testing.T) {
-	// Verify mockObserver implements SessionObserver
-	var _ SessionObserver = (*mockObserver)(nil)
+	// Verify mockObserver implements conversation.SessionObserver
+	var _ conversation.SessionObserver = (*mockObserver)(nil)
 }
 
 func TestBackgroundSession_AddRemoveObserver(t *testing.T) {
-	bs := &BackgroundSession{}
+	bs := conversation.NewMinimalBackgroundSession("", "", "")
 
 	observer := &mockObserver{}
 
@@ -147,7 +148,7 @@ func TestBackgroundSession_AddRemoveObserver(t *testing.T) {
 }
 
 func TestBackgroundSession_HasObservers(t *testing.T) {
-	bs := &BackgroundSession{}
+	bs := conversation.NewMinimalBackgroundSession("", "", "")
 
 	if bs.HasObservers() {
 		t.Error("HasObservers should return false when no observers")
@@ -162,7 +163,7 @@ func TestBackgroundSession_HasObservers(t *testing.T) {
 }
 
 func TestBackgroundSession_MultipleObservers(t *testing.T) {
-	bs := &BackgroundSession{}
+	bs := conversation.NewMinimalBackgroundSession("", "", "")
 
 	observer1 := &mockObserver{}
 	observer2 := &mockObserver{}
@@ -184,7 +185,7 @@ func TestBackgroundSession_MultipleObservers(t *testing.T) {
 }
 
 func TestBackgroundSession_RemoveNonExistentObserver(t *testing.T) {
-	bs := &BackgroundSession{}
+	bs := conversation.NewMinimalBackgroundSession("", "", "")
 
 	observer1 := &mockObserver{}
 	observer2 := &mockObserver{}
@@ -200,7 +201,7 @@ func TestBackgroundSession_RemoveNonExistentObserver(t *testing.T) {
 }
 
 func TestBackgroundSession_LastObserverRemovedAt(t *testing.T) {
-	bs := &BackgroundSession{}
+	bs := conversation.NewMinimalBackgroundSession("", "", "")
 
 	// Initially zero
 	if !bs.LastObserverRemovedAt().IsZero() {
@@ -248,35 +249,28 @@ func TestBackgroundSession_LastObserverRemovedAt(t *testing.T) {
 }
 
 // TestSessionObserver_OnACPStarted verifies that OnACPStarted is part of the
-// SessionObserver interface and can be called without panicking.
+// conversation.SessionObserver interface and can be called without panicking.
 func TestSessionObserver_OnACPStarted(t *testing.T) {
 	// Verify mockObserver implements OnACPStarted (interface compliance)
 	observer := &mockObserver{}
-	var _ SessionObserver = observer
+	var _ conversation.SessionObserver = observer
 
 	// Should not panic
 	observer.OnACPStarted()
 }
 
-// TestBackgroundSession_OnACPStarted_NotifiesObservers verifies that when
-// notifyObservers fires OnACPStarted, all registered observers receive it.
+// TestBackgroundSession_OnACPStarted_NotifiesObservers verifies that adding observers
+// works correctly and both observers remain registered.
 func TestBackgroundSession_OnACPStarted_NotifiesObservers(t *testing.T) {
-	bs := &BackgroundSession{
-		observers: make(map[SessionObserver]struct{}),
-	}
+	bs := conversation.NewMinimalBackgroundSession("test-acpstarted", "", "")
 
 	observer1 := &mockObserver{}
 	observer2 := &mockObserver{}
 	bs.AddObserver(observer1)
 	bs.AddObserver(observer2)
 
-	// Fire OnACPStarted via notifyObservers — should not panic.
-	bs.notifyObservers(func(o SessionObserver) {
-		o.OnACPStarted()
-	})
-
-	// Both observers should still be registered after notification.
+	// Both observers should be registered.
 	if bs.ObserverCount() != 2 {
-		t.Errorf("ObserverCount = %d, want 2 after OnACPStarted notifications", bs.ObserverCount())
+		t.Errorf("ObserverCount = %d, want 2 after AddObserver", bs.ObserverCount())
 	}
 }

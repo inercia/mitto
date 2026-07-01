@@ -1,16 +1,23 @@
-icon: beads
+icon: play
 name: Start working on ready
 menus: prompts, beadsList
 description: Review ready (not-in-progress) beads, present a prioritized recommendation, claim the chosen one, then analyze and plan it in this conversation and dispatch the implementation work to child conversations
 backgroundColor: '#B2DFDB'
 group: Tasks
-enabledWhen: '!session.isChild && permissions.canStartConversation && permissions.canSendPrompt && commandExists("bd") && dirExists(".beads") && tools.hasPattern("mitto_conversation_*")'
+enabledWhen: '!Session.IsChild && CommandExists("bd") && DirExists(".beads") && Tools.HasPattern("mitto_conversation_*")'
+periodic:
+  mode: optional
+  default: false
+  trigger: onCompletion
+  delay: 60
 prompt: |
   ## Session Context
 
-  Your session ID is `@mitto:session_id` — use this as `self_id` for all `mitto_*` MCP tool calls.
-  Available ACP servers: `@mitto:available_acp_servers`
-  Existing children: `@mitto:children`
+  Your session ID is `{{ .Session.ID }}` — use this as `self_id` for all `mitto_*` MCP tool calls.
+  Available ACP servers: `{{ .ACP.AvailableText }}`
+  {{- if .Children.AllText }}
+  Existing children: `{{ .Children.AllText }}`
+  {{- end }}
 
   # Beads: Start Work on a Bead
 
@@ -23,7 +30,7 @@ prompt: |
   Before doing anything else, review the current conversation history to check whether a specific bead has already been discussed (e.g., a bead ID like `bd-1234` was mentioned, its details were fetched, or it was previously selected).
 
   - If a bead **has** been discussed in this conversation:
-    Use `mitto_ui_options_mitto(self_id: "@mitto:session_id")` to ask the user whether to:
+    Use `mitto_ui_options(self_id: "{{ .Session.ID }}")` to ask the user whether to:
     - **Option 1**: `"Start working on [BEAD-ID]: [title]"` — if chosen, skip directly to Step 3 (claim) using that bead ID.
     - **Option 2**: `"Work on a different bead"` — if chosen, continue to Step 1.
 
@@ -83,7 +90,7 @@ prompt: |
 
   > **<child-id>: <title>** (<priority level>, part of <epic-id>) — first workable child of the epic; unblocks <siblings it precedes>
 
-  Then call `mitto_ui_options_mitto(self_id: "@mitto:session_id", allow_free_text: true)` to let the user choose:
+  Then call `mitto_ui_options(self_id: "{{ .Session.ID }}", allow_free_text: true)` to let the user choose:
 
   - Make the **first option your top recommendation** (label it with the bead ID and title), followed by the remaining beads in ranked order.
   - Set `allow_free_text: true` so the user can **override your ranking** or name a different bead entirely.
@@ -100,6 +107,16 @@ prompt: |
   ```
 
   This sets the assignee to you and the status to `in_progress` (idempotent if already claimed by you).
+
+  ## Step 3b — Link this conversation to the chosen bead
+
+  This conversation was launched without a linked beads issue. Now that you have claimed
+  `<bead-id>`, link it to this conversation so the tracker and UI reflect what you are
+  actually working on:
+
+  ```
+  mitto_conversation_update(self_id: "{{ .Session.ID }}", conversation_id: "self", beads_issue: "<bead-id>")
+  ```
 
   ## Step 4 — Fetch full bead details
 
@@ -137,7 +154,7 @@ prompt: |
 
   ## Step 6 — Present the plan and iterate
 
-  Use `mitto_ui_options_mitto(self_id: "@mitto:session_id", allow_free_text: true)` to show the plan summary and ask: "Does this plan look correct? Shall I proceed with dispatching the implementation work?"
+  Use `mitto_ui_options(self_id: "{{ .Session.ID }}", allow_free_text: true)` to show the plan summary and ask: "Does this plan look correct? Shall I proceed with dispatching the implementation work?"
 
   - If the user provides feedback or selects **No**: revise the plan and present it again. Repeat until the user explicitly approves.
   - If the user approves: proceed to Step 7.
@@ -149,9 +166,9 @@ prompt: |
   For each parallelizable work item in the approved plan, **reuse a suitable existing child when possible, otherwise create a new one**:
 
   1. **Reuse vs. create:**
-     - Check the existing children listed above (`@mitto:children`). If one is **idle** (not currently running) and a good fit — for example a **"Coder"** child for implementation work in the same workspace — **reuse it** with
-       `mitto_conversation_send_prompt_mitto(self_id: "@mitto:session_id", conversation_id: "<existing-child-id>", prompt: "<worker prompt>")`.
-     - Otherwise create a new conversation with `mitto_conversation_new_mitto(self_id: "@mitto:session_id", ...)`:
+     - Check the existing children listed above (`{{ .Children.AllText }}`). If one is **idle** (not currently running) and a good fit — for example a **"Coder"** child for implementation work in the same workspace — **reuse it** with
+       `mitto_conversation_send_prompt_mitto(self_id: "{{ .Session.ID }}", conversation_id: "<existing-child-id>", prompt: "<worker prompt>")`.
+     - Otherwise create a new conversation with `mitto_conversation_new_mitto(self_id: "{{ .Session.ID }}", ...)`:
        - `title`: the work item title prefixed with the bead ID (e.g., `"<bead-id> · Add database migration"`)
        - `beads_issue`: the chosen bead ID (links the worker conversation to this bead)
        - `acp_server`: choose from the available ACP servers listed above — prefer a faster/cheaper model for straightforward tasks, and a slower/more capable model for complex tasks that require deep reasoning
@@ -176,7 +193,7 @@ prompt: |
 
   ## Step 9 — Wait for workers and synthesise
 
-  Use `mitto_children_tasks_wait_mitto(self_id: "@mitto:session_id", children_list: [...], task_id: "<bead-id>", timeout_seconds: 600)` to wait for the workers to report back. On timeout, retry the pending children with the **same `task_id`** (omit the prompt to avoid duplicates). Summarise the consolidated results to the user, and log a short progress comment for any notable milestone or blocker:
+  Use `mitto_children_tasks_wait_mitto(self_id: "{{ .Session.ID }}", children_list: [...], task_id: "<bead-id>", timeout_seconds: 600)` to wait for the workers to report back. On timeout, retry the pending children with the **same `task_id`** (omit the prompt to avoid duplicates). Summarise the consolidated results to the user, and log a short progress comment for any notable milestone or blocker:
 
   ```bash
   bd comment <bead-id> "Progress: <what completed / what remains / blockers>."
@@ -191,23 +208,23 @@ prompt: |
   bd close <bead-id> --reason "<short summary of what was delivered>"
   ```
 
-  After closing, clean up any finished child conversations that are no longer needed with `mitto_conversation_delete_mitto(self_id: "@mitto:session_id", conversation_id: "<child-id>")`.
+  After closing, clean up any finished child conversations that are no longer needed with `mitto_conversation_delete_mitto(self_id: "{{ .Session.ID }}", conversation_id: "<child-id>")`.
 
   ## Final step — Offer to delete this conversation
 
   The task is complete. Offer to tidy up so finished conversations do not accumulate.
 
   1. Ask the user whether to delete this conversation now, via
-     `mitto_ui_options_mitto(self_id: "@mitto:session_id", question: "All done — delete this conversation now?", timeout_seconds: 120)` with options:
+     `mitto_ui_options(self_id: "{{ .Session.ID }}", question: "All done — delete this conversation now?", timeout_seconds: 120)` with options:
      - **"Yes, delete it"**
      - **"No, keep it"**
 
   2. Honour the answer:
      - **Delete** → first notify the user (the deletion is deferred until your turn ends, so the
        message is delivered first) with
-       `mitto_ui_notify_mitto(self_id: "@mitto:session_id", title: "<short outcome>", message: "<one-line summary of what was done>", style: "success")`,
+       `mitto_ui_notify_mitto(self_id: "{{ .Session.ID }}", title: "<short outcome>", message: "<one-line summary of what was done>", style: "success")`,
        then self-destruct with
-       `mitto_conversation_delete_mitto(self_id: "@mitto:session_id", conversation_id: "self")`.
+       `mitto_conversation_delete_mitto(self_id: "{{ .Session.ID }}", conversation_id: "self")`.
      - **Keep** → leave the conversation in place.
 
   3. **On timeout** (no response): only delete this conversation if **all** of the following hold —

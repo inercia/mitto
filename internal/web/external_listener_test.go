@@ -5,6 +5,9 @@ import (
 	"net/http"
 	"testing"
 	"time"
+
+	configPkg "github.com/inercia/mitto/internal/config"
+	"github.com/inercia/mitto/internal/web/middleware"
 )
 
 func TestServer_ExternalListener(t *testing.T) {
@@ -230,7 +233,7 @@ func TestExternalConnectionMiddleware(t *testing.T) {
 	var contextValue interface{}
 
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		contextValue = r.Context().Value(ContextKeyExternalConnection)
+		contextValue = r.Context().Value(middleware.ContextKeyExternalConnection)
 		w.WriteHeader(http.StatusOK)
 	})
 
@@ -265,4 +268,22 @@ func (m *mockResponseWriter) Write(b []byte) (int, error) {
 
 func (m *mockResponseWriter) WriteHeader(statusCode int) {
 	m.statusCode = statusCode
+}
+
+func TestUpdateHealthMonitor_NotStartedWhenExternalListenerDown(t *testing.T) {
+	s := &Server{}
+	s.hookPort = 12345
+	hooks := configPkg.WebHooks{
+		ExternalAddress: "https://example.com",
+		Up:              configPkg.WebHook{Command: "echo up"},
+		Down:            configPkg.WebHook{Command: "echo down"},
+	}
+	// External listener is NOT running -> monitor must not start.
+	s.updateHealthMonitor(hooks)
+	s.healthMonitorMu.Lock()
+	hm := s.healthMonitor
+	s.healthMonitorMu.Unlock()
+	if hm != nil {
+		t.Fatal("health monitor must NOT start when external listener is down (would cause tunnel restart storm)")
+	}
 }

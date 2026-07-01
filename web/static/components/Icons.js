@@ -10,10 +10,11 @@ const { html } = window.preact;
 export function SpinnerIcon({ className = "w-4 h-4" }) {
   // daisyUI `loading loading-spinner` animates itself; strip any legacy
   // `animate-spin` passed by callers to avoid a double animation.
-  const cls = className.replace(/\banimate-spin\b/g, "").replace(/\s+/g, " ").trim();
-  return html`
-    <span class="loading loading-spinner ${cls}"></span>
-  `;
+  const cls = className
+    .replace(/\banimate-spin\b/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  return html` <span class="loading loading-spinner ${cls}"></span> `;
 }
 
 /**
@@ -214,11 +215,7 @@ export function TrashIcon({ className = "w-5 h-5" }) {
  */
 export function BroomIcon({ className = "w-5 h-5" }) {
   return html`
-    <svg
-      class="${className}"
-      fill="currentColor"
-      viewBox="0 0 24 24"
-    >
+    <svg class="${className}" fill="currentColor" viewBox="0 0 24 24">
       <path
         d="M19.36 2.72l1.42 1.42-5.72 5.71c1.07 1.54 1.22 3.39.32 4.59L9.06 8.12c1.2-.9 3.05-.75 4.59.32l5.71-5.72M5.93 17.57c-2.01-2.01-3.24-4.41-3.58-6.65l4.88-2.09 7.44 7.44-2.09 4.88c-2.24-.34-4.64-1.57-6.65-3.58z"
       />
@@ -439,11 +436,7 @@ export function ImageIcon({ className = "w-5 h-5" }) {
  */
 export function LightningIcon({ className = "w-4 h-4" }) {
   return html`
-    <svg
-      class="${className}"
-      fill="currentColor"
-      viewBox="0 0 24 24"
-    >
+    <svg class="${className}" fill="currentColor" viewBox="0 0 24 24">
       <path d="M13 10V3L4 14h7v7l9-11h-7z" />
     </svg>
   `;
@@ -944,6 +937,24 @@ export function PlayFilledIcon({ className = "w-4 h-4" }) {
 }
 
 /**
+ * Pause filled icon for "pause" action
+ * Shows a filled circular badge with two white vertical bars inside
+ * Similar style to PlayFilledIcon but indicates "pause" action
+ * @param {string} className - CSS classes (default: 'w-4 h-4')
+ */
+export function PauseFilledIcon({ className = "w-4 h-4" }) {
+  return html`
+    <svg class="${className}" viewBox="0 0 24 24">
+      <!-- Filled circle background using currentColor (will be blue/colored) -->
+      <circle cx="12" cy="12" r="11" fill="currentColor" />
+      <!-- Two pause bars in white for contrast against colored circle -->
+      <rect x="8" y="7" width="3" height="10" rx="1" fill="white" />
+      <rect x="13" y="7" width="3" height="10" rx="1" fill="white" />
+    </svg>
+  `;
+}
+
+/**
  * List/no-grouping icon (horizontal lines)
  * @param {string} className - CSS classes (default: 'w-5 h-5')
  */
@@ -1162,7 +1173,6 @@ export function LayersIcon({ className = "w-5 h-5" }) {
   `;
 }
 
-
 /**
  * Search / magnifying glass icon
  * @param {string} className - CSS classes (default: 'w-5 h-5')
@@ -1191,8 +1201,19 @@ export function SearchIcon({ className = "w-5 h-5" }) {
  */
 export function RefreshIcon({ className = "w-4 h-4" }) {
   return html`
-    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class=${className}>
-      <path stroke-linecap="round" stroke-linejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.992 0 3.181 3.183a8.25 8.25 0 0 0 13.803-3.7M4.031 9.865a8.25 8.25 0 0 1 13.803-3.7l3.181 3.182M21.015 4.356v4.992" />
+    <svg
+      xmlns="http://www.w3.org/2000/svg"
+      fill="none"
+      viewBox="0 0 24 24"
+      stroke-width="1.5"
+      stroke="currentColor"
+      class=${className}
+    >
+      <path
+        stroke-linecap="round"
+        stroke-linejoin="round"
+        d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.992 0 3.181 3.183a8.25 8.25 0 0 0 13.803-3.7M4.031 9.865a8.25 8.25 0 0 1 13.803-3.7l3.181 3.182M21.015 4.356v4.992"
+      />
     </svg>
   `;
 }
@@ -1205,8 +1226,19 @@ export function RefreshIcon({ className = "w-4 h-4" }) {
  */
 export function SyncIcon({ className = "w-4 h-4" }) {
   return html`
-    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class=${className}>
-      <path stroke-linecap="round" stroke-linejoin="round" d="M3 7.5 7.5 3m0 0L12 7.5M7.5 3v13.5m13.5 0L16.5 21m0 0L12 16.5m4.5 4.5V7.5" />
+    <svg
+      xmlns="http://www.w3.org/2000/svg"
+      fill="none"
+      viewBox="0 0 24 24"
+      stroke-width="1.5"
+      stroke="currentColor"
+      class=${className}
+    >
+      <path
+        stroke-linecap="round"
+        stroke-linejoin="round"
+        d="M3 7.5 7.5 3m0 0L12 7.5M7.5 3v13.5m13.5 0L16.5 21m0 0L12 16.5m4.5 4.5V7.5"
+      />
     </svg>
   `;
 }
@@ -1232,7 +1264,6 @@ export function TagIcon({ className = "w-4 h-4" }) {
     </svg>
   `;
 }
-
 
 export function SidePanelIcon({ className = "w-5 h-5" }) {
   return html`
@@ -1266,7 +1297,9 @@ export function ExpandIcon({ className = "w-5 h-5" }) {
       stroke-linecap="round"
       stroke-linejoin="round"
     >
-      <path d="M3.75 3.75v4.5m0-4.5h4.5m-4.5 0L9 9M3.75 20.25v-4.5m0 4.5h4.5m-4.5 0L9 15M20.25 3.75h-4.5m4.5 0v4.5m0-4.5L15 9m5.25 11.25h-4.5m4.5 0v-4.5m0 4.5L15 15" />
+      <path
+        d="M3.75 3.75v4.5m0-4.5h4.5m-4.5 0L9 9M3.75 20.25v-4.5m0 4.5h4.5m-4.5 0L9 15M20.25 3.75h-4.5m4.5 0v4.5m0-4.5L15 9m5.25 11.25h-4.5m4.5 0v-4.5m0 4.5L15 15"
+      />
     </svg>
   `;
 }
@@ -1286,11 +1319,12 @@ export function CollapseIcon({ className = "w-5 h-5" }) {
       stroke-linecap="round"
       stroke-linejoin="round"
     >
-      <path d="M9 9V4.5M9 9H4.5M9 9 3.75 3.75M9 15v4.5M9 15H4.5M9 15l-5.25 5.25M15 9h4.5M15 9V4.5M15 9l5.25-5.25M15 15h4.5M15 15v4.5m0-4.5 5.25 5.25" />
+      <path
+        d="M9 9V4.5M9 9H4.5M9 9 3.75 3.75M9 15v4.5M9 15H4.5M9 15l-5.25 5.25M15 9h4.5M15 9V4.5M15 9l5.25-5.25M15 15h4.5M15 15v4.5m0-4.5 5.25 5.25"
+      />
     </svg>
   `;
 }
-
 
 /**
  * Terminal/command prompt icon (Heroicons terminal-window)
@@ -1306,7 +1340,11 @@ export function TerminalIcon({ className = "w-5 h-5" }) {
       stroke="currentColor"
       class=${className}
     >
-      <path stroke-linecap="round" stroke-linejoin="round" d="m6.75 7.5 3 2.25-3 2.25m4.5 0h3m-9 8.25h13.5A2.25 2.25 0 0 0 21 17.25V6.75A2.25 2.25 0 0 0 18.75 4.5H5.25A2.25 2.25 0 0 0 3 6.75v10.5A2.25 2.25 0 0 0 5.25 20.25Z" />
+      <path
+        stroke-linecap="round"
+        stroke-linejoin="round"
+        d="m6.75 7.5 3 2.25-3 2.25m4.5 0h3m-9 8.25h13.5A2.25 2.25 0 0 0 21 17.25V6.75A2.25 2.25 0 0 0 18.75 4.5H5.25A2.25 2.25 0 0 0 3 6.75v10.5A2.25 2.25 0 0 0 5.25 20.25Z"
+      />
     </svg>
   `;
 }
@@ -1325,7 +1363,11 @@ export function FolderOpenIcon({ className = "w-5 h-5" }) {
       stroke="currentColor"
       class=${className}
     >
-      <path stroke-linecap="round" stroke-linejoin="round" d="M3.75 9.776c.112-.017.227-.026.344-.026h15.812c.117 0 .232.009.344.026m-16.5 0a2.25 2.25 0 0 0-1.883 2.542l.857 6a2.25 2.25 0 0 0 2.227 1.932H19.05a2.25 2.25 0 0 0 2.227-1.932l.857-6a2.25 2.25 0 0 0-1.883-2.542m-16.5 0V6.228c0-1.168.895-2.128 2.033-2.216a48.394 48.394 0 0 1 5.274-.166c1.045.044 2.062.262 2.987.678l.724.33c.925.416 1.943.634 2.987.678a48.54 48.54 0 0 1 5.274.166 2.252 2.252 0 0 1 2.033 2.216v3.548" />
+      <path
+        stroke-linecap="round"
+        stroke-linejoin="round"
+        d="M3.75 9.776c.112-.017.227-.026.344-.026h15.812c.117 0 .232.009.344.026m-16.5 0a2.25 2.25 0 0 0-1.883 2.542l.857 6a2.25 2.25 0 0 0 2.227 1.932H19.05a2.25 2.25 0 0 0 2.227-1.932l.857-6a2.25 2.25 0 0 0-1.883-2.542m-16.5 0V6.228c0-1.168.895-2.128 2.033-2.216a48.394 48.394 0 0 1 5.274-.166c1.045.044 2.062.262 2.987.678l.724.33c.925.416 1.943.634 2.987.678a48.54 48.54 0 0 1 5.274.166 2.252 2.252 0 0 1 2.033 2.216v3.548"
+      />
     </svg>
   `;
 }
@@ -1344,7 +1386,11 @@ export function BeadsIcon({ className = "w-5 h-5" }) {
       stroke="currentColor"
       class=${className}
     >
-      <path stroke-linecap="round" stroke-linejoin="round" d="M8.25 6.75h7.5M8.25 12h7.5m-7.5 5.25h7.5M3.75 6.75h.007v.008H3.75V6.75Zm.375 0a.375.375 0 1 1-.75 0 .375.375 0 0 1 .75 0ZM3.75 12h.007v.008H3.75V12Zm.375 0a.375.375 0 1 1-.75 0 .375.375 0 0 1 .75 0Zm-.375 5.25h.007v.008H3.75v-.008Zm.375 0a.375.375 0 1 1-.75 0 .375.375 0 0 1 .75 0Z" />
+      <path
+        stroke-linecap="round"
+        stroke-linejoin="round"
+        d="M8.25 6.75h7.5M8.25 12h7.5m-7.5 5.25h7.5M3.75 6.75h.007v.008H3.75V6.75Zm.375 0a.375.375 0 1 1-.75 0 .375.375 0 0 1 .75 0ZM3.75 12h.007v.008H3.75V12Zm.375 0a.375.375 0 1 1-.75 0 .375.375 0 0 1 .75 0Zm-.375 5.25h.007v.008H3.75v-.008Zm.375 0a.375.375 0 1 1-.75 0 .375.375 0 0 1 .75 0Z"
+      />
     </svg>
   `;
 }
@@ -1536,4 +1582,188 @@ export function getPromptIcon(name) {
 // Use this in menus that always want to render an icon for every prompt.
 export function getPromptIconOrDefault(name) {
   return getPromptIcon(name) || LightningIcon;
+}
+
+// ---- Markdown editor toolbar icons ------------------------------------------
+
+/**
+ * Bold text icon (B)
+ * @param {string} className - CSS classes (default: 'w-4 h-4')
+ */
+export function BoldIcon({ className = "w-4 h-4" }) {
+  return html`
+    <svg
+      class="${className}"
+      fill="none"
+      stroke="currentColor"
+      viewBox="0 0 24 24"
+    >
+      <path
+        stroke-linecap="round"
+        stroke-linejoin="round"
+        stroke-width="2.5"
+        d="M6 4h8a4 4 0 010 8H6V4zm0 8h9a4 4 0 010 8H6v-8z"
+      />
+    </svg>
+  `;
+}
+
+/**
+ * Italic text icon (I)
+ * @param {string} className - CSS classes (default: 'w-4 h-4')
+ */
+export function ItalicIcon({ className = "w-4 h-4" }) {
+  return html`
+    <svg
+      class="${className}"
+      fill="none"
+      stroke="currentColor"
+      viewBox="0 0 24 24"
+    >
+      <path
+        stroke-linecap="round"
+        stroke-linejoin="round"
+        stroke-width="2"
+        d="M19 4h-9m4 16H5M15 4L9 20"
+      />
+    </svg>
+  `;
+}
+
+/**
+ * Strikethrough text icon
+ * @param {string} className - CSS classes (default: 'w-4 h-4')
+ */
+export function StrikethroughIcon({ className = "w-4 h-4" }) {
+  return html`
+    <svg
+      class="${className}"
+      fill="none"
+      stroke="currentColor"
+      viewBox="0 0 24 24"
+    >
+      <path
+        stroke-linecap="round"
+        stroke-linejoin="round"
+        stroke-width="2"
+        d="M9 15a4 4 0 007.5-2H4m8-9c-2.2 0-4 1.3-4 3s1.8 3 4 3"
+      />
+    </svg>
+  `;
+}
+
+/**
+ * Inline code icon (monospace brackets)
+ * @param {string} className - CSS classes (default: 'w-4 h-4')
+ */
+export function InlineCodeIcon({ className = "w-4 h-4" }) {
+  return html`
+    <svg
+      class="${className}"
+      fill="none"
+      stroke="currentColor"
+      viewBox="0 0 24 24"
+    >
+      <path
+        stroke-linecap="round"
+        stroke-linejoin="round"
+        stroke-width="2"
+        d="M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4"
+      />
+    </svg>
+  `;
+}
+
+/**
+ * Code block icon (fenced code block)
+ * @param {string} className - CSS classes (default: 'w-4 h-4')
+ */
+export function CodeBlockIcon({ className = "w-4 h-4" }) {
+  return html`
+    <svg
+      class="${className}"
+      fill="none"
+      stroke="currentColor"
+      viewBox="0 0 24 24"
+    >
+      <path
+        stroke-linecap="round"
+        stroke-linejoin="round"
+        stroke-width="2"
+        d="M8 9l-3 3 3 3m8-6l3 3-3 3M3 5h18a1 1 0 011 1v12a1 1 0 01-1 1H3a1 1 0 01-1-1V6a1 1 0 011-1z"
+      />
+    </svg>
+  `;
+}
+
+/**
+ * Numbered list icon
+ * @param {string} className - CSS classes (default: 'w-4 h-4')
+ */
+export function NumberedListIcon({ className = "w-4 h-4" }) {
+  return html`
+    <svg
+      class="${className}"
+      fill="none"
+      stroke="currentColor"
+      viewBox="0 0 24 24"
+    >
+      <path
+        stroke-linecap="round"
+        stroke-linejoin="round"
+        stroke-width="2"
+        d="M9 6h11M9 12h11M9 18h11M4 6h1m-1 6h1m-1 6h1"
+      />
+    </svg>
+  `;
+}
+
+/**
+ * Heading icon (H with lines)
+ * @param {string} className - CSS classes (default: 'w-4 h-4')
+ */
+export function HeadingIcon({ className = "w-4 h-4" }) {
+  return html`
+    <svg
+      class="${className}"
+      fill="none"
+      stroke="currentColor"
+      viewBox="0 0 24 24"
+    >
+      <path
+        stroke-linecap="round"
+        stroke-linejoin="round"
+        stroke-width="2"
+        d="M4 6h16M4 12h10M4 18h6"
+      />
+    </svg>
+  `;
+}
+
+/**
+ * Blockquote icon (vertical bar with text lines)
+ * @param {string} className - CSS classes (default: 'w-4 h-4')
+ */
+export function QuoteIcon({ className = "w-4 h-4" }) {
+  return html`
+    <svg
+      class="${className}"
+      fill="none"
+      stroke="currentColor"
+      viewBox="0 0 24 24"
+    >
+      <path
+        stroke-linecap="round"
+        stroke-linejoin="round"
+        stroke-width="2"
+        d="M3 6h18M3 10h18M3 14h18M3 18h18"
+      />
+      <path
+        stroke-linecap="round"
+        stroke-linejoin="round"
+        stroke-width="2.5"
+        d="M2 4v16"
+      />
+    </svg>
+  `;
 }

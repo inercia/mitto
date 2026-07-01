@@ -7,10 +7,10 @@ import { CloseIcon } from "./Icons.js";
 // token bridge) and icon emoji. The alert-* class carries both background and
 // content color per theme, replacing the old fixed bg-*/text-white pairs.
 const STYLE_CONFIG = {
-  info:    { alert: "alert-info",    icon: "ℹ️" },
+  info: { alert: "alert-info", icon: "ℹ️" },
   success: { alert: "alert-success", icon: "✓" },
   warning: { alert: "alert-warning", icon: "⚠️" },
-  error:   { alert: "alert-error",   icon: "❌" },
+  error: { alert: "alert-error", icon: "❌" },
 };
 
 /**
@@ -56,8 +56,9 @@ export function ToastContainer({ toasts, onDismiss }) {
                     e.stopPropagation();
                     onDismiss(toast.id);
                   }}
-                  class="btn btn-ghost btn-xs btn-circle"
-                  title="Dismiss"
+                  class="btn btn-ghost btn-xs btn-circle tooltip tooltip-bottom"
+                  data-tip="Dismiss"
+                  aria-label="Dismiss"
                 >
                   <${CloseIcon} className="w-4 h-4" />
                 </button>

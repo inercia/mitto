@@ -1,165 +1,147 @@
 # Mitto — Claude Code Project Memory
 
-Mitto is a multi-agent interface for AI coding agents (Claude Code, Auggie, Cursor) with CLI, Web UI, and native macOS app. It communicates with agents via the Agent Client Protocol (ACP).
+Mitto is a multi-agent interface for AI coding agents (Claude Code, Auggie, Cursor) with CLI, Web UI, and native macOS app.
 
-## Quick Reference
+## Build & Test Quick Reference
 
 ```bash
-make build                # Build CLI binary
-make build-mock-acp       # Build mock ACP server (required before integration tests)
-make build-mac-app        # Build macOS app bundle
-make test                 # All unit tests (Go + JS)
-make test-go              # Go unit tests only
-make test-js              # JavaScript unit tests
-make test-integration     # Integration tests (needs mock-acp built first)
-make test-ui              # Playwright UI tests
-make lint                 # Run golangci-lint
+make build-mock-acp       # Build mock ACP server (REQUIRED before integration tests)
+make test-integration     # Integration tests (needs mock-acp binary)
 ```
 
-## Architecture Overview
-
-- **Entry points**: `cmd/mitto/` (CLI), `cmd/mitto-app/` (macOS native app)
-- **Go packages**: All in `internal/` — never import `internal/cmd` from other packages
-- **Frontend**: Preact/HTM in `web/static/` (components, hooks, utils)
-- **Tests**: `tests/integration/` (Go), `tests/ui/` (Playwright), `tests/mocks/` (mock ACP server)
-- **Docs**: `docs/devel/` has detailed architecture docs — consult before major changes
-- **Existing AI rules**: `.augment/rules/*.md` has 26 detailed rule files — check before adding patterns
+**Details**: See `.augment/rules/00-overview.md` for architecture, package structure, and full build commands.
 
 ## Core Data Flow
 
 ```
-Frontend (Preact) ←WebSocket→ BackgroundSession ←JSON-RPC/stdio→ ACP Agent (Claude Code CLI)
+Frontend (Preact) ←WebSocket→ BackgroundSession ←JSON-RPC/stdio→ ACP Agent
 ```
 
-- `internal/web/background_session.go` — The central hub. Bridges WebSocket clients to ACP agents via the observer pattern.
-- `internal/web/session_ws.go` — WebSocket connection handler, sends `connected` message with session metadata.
-- `internal/web/observer.go` — `SessionObserver` interface (OnAgentMessage, OnError, OnToolCall, etc.)
-- `internal/acp/` — ACP protocol client wrapping `github.com/coder/acp-go-sdk`
+Key files (in progress decomposition `mitto-dhg.2`):
+- `internal/conversation/background_session.go` — Core observer bridge (6,483 LOC → 124 methods being extracted)
+- `internal/conversation/bgsession_*.go` — Delegators to extracted components
+- `internal/conversation/*_coordinator.go` — Workflow orchestrators (follow-up, auxiliary)
+- `internal/conversation/*_manager.go` — State managers (config, queue, title)
+- `internal/conversation/*_analyzer.go` — Data analyzers (session, collaborator)
+- `internal/web/session_ws.go` — WebSocket `connected` message sends capabilities
+- `internal/web/observer.go` — `SessionObserver` interface
 
 ## Key Patterns
 
-### Observer Notification Pattern
+**Observer Notification:**
 ```go
-bs.notifyObservers(func(o SessionObserver) {
-    o.OnError("message to user")
-})
+bs.notifyObservers(func(o SessionObserver) { o.OnError("msg") })
 ```
 
-### ACP ContentBlock (Discriminated Union)
-The ACP SDK uses nil-pointer checks, NOT a Type() method:
+**ACP ContentBlock:** Uses nil-pointer checks, not Type():
 ```go
-for _, block := range blocks {
-    if block.Image != nil { /* image block */ }
-    else if block.Text != nil { /* text block */ }
-}
+if block.Image != nil { /*...*/ } else if block.Text != nil { /*...*/ }
 ```
 
-### Agent Capabilities
-Capabilities are advertised during ACP initialization. Always check before using:
+**Agent Capabilities:** Advertised during init, check before use:
 ```go
-caps := resp.AgentCapabilities
-bs.agentSupportsImages = caps.PromptCapabilities.Image
-// Later in PromptWithMeta:
-if len(imageIDs) > 0 && !bs.agentSupportsImages { /* warn but send anyway */ }
+if len(imageIDs) > 0 && !bs.agentSupportsImages { /* warn */ }
 ```
 
-### Frontend Capability Flow
-Backend → WebSocket `connected` message → `useWebSocket.js` stores in session.info → `app.js` passes as prop → Component uses it:
-```javascript
-// useWebSocket.js: store from connected message
-agent_supports_images: msg.data.agent_supports_images ?? false,
-// app.js: pass to component
-agentSupportsImages=${sessionInfo?.agent_supports_images ?? false}
-```
+**Frontend Capability Flow:** Backend sends in `connected` → `useWebSocket.js` stores → `app.js` passes as prop
 
 ## Testing
 
-### Integration Tests (In-Process)
+Integration tests require mock ACP server:
 ```bash
-# Build mock first, then run
 go build -o tests/mocks/acp-server/mock-acp-server ./tests/mocks/acp-server/
 go test -v -tags integration ./tests/integration/inprocess/
 ```
 
-- Tests use `SetupTestServer(t)` which creates an in-process web server with mock ACP
-- Mock ACP server communicates via stdin/stdout JSON-RPC
-- Scenarios are regex-matched in `tests/fixtures/responses/*.json`
-- Build tag: `//go:build integration`
+- Tests use `SetupTestServer(t)` with mock ACP via stdin/stdout JSON-RPC
+- Scenarios regex-matched in `tests/fixtures/responses/*.json`
+- Test client: `CreateSession()`, `Connect()` (WebSocket), `SendPrompt()`, `UploadImage()`, `LoadEvents()`
+- Known issue: `TestWSConn_ForceReconnect_AppliesBackoff` fails if uncommitted changes exist
 
-### Test Client (`internal/client/`)
-- `CreateSession()`, `Connect()` (WebSocket), `SendPrompt()`, `SendPromptWithImages()`
-- `UploadImage()` — multipart POST to `/api/sessions/{id}/images`
-- `LoadEvents()` — must be called after Connect to register as observer
+## Critical Gotchas
 
-### Pre-existing Test Failures
-- `TestWSConn_ForceReconnect_AppliesBackoff` may fail from uncommitted working tree changes — verify with `git stash` before blaming your changes
+- **Image pipeline**: Upload → disk storage → base64 encode → ACP ContentBlock. Only `image_ids` sent in WebSocket; backend loads from disk.
+- **Log authoritative source**: Check `events.jsonl` (session dir) when debugging; server logs rotate and have gaps.
+- **daisyUI drawer GPU bug**: `.drawer-side` + fixed-position overlay compete for pointer events → blank artifacts. Fix: See `web/static/styles.css` for verified pattern. Do NOT use `translateZ(0)`.
+- **Zombie WebSocket recovery**: When phone sleeps or app backgrounded, WS may enter "zombie" state (appearing open but dead). On visibility change or app activate, force-close and reconnect. This is expected behavior — not a bug. See `.augment/rules/23-web-frontend-mobile.md` for resilience patterns.
 
-## Common Gotchas
+## New Agent Capability Checklist
 
-- **SessionManager fields**: The map is `activeSessions` (not `sessions`). Methods use receiver `sm`, but `session_ws.go` uses `s`.
-- **Go compiler cascading errors**: An undefined field reference can cause phantom "no field or method" errors on valid fields in the same struct. Fix the root cause first.
-- **Image pipeline**: Upload → disk storage → base64 encode on prompt → ACP ContentBlock. Images are NOT stored in the WebSocket message — only `image_ids` are sent, backend loads from disk.
-- **Log rotation gaps**: Server logs rotate and can have gaps. When debugging historical issues, check `events.jsonl` in the session directory as the authoritative record.
-- **Build the mock ACP server**: Always run `make build-mock-acp` before integration tests. The binary at `tests/mocks/acp-server/mock-acp-server` must exist.
-- **daisyUI drawer GPU compositing bug**: daisyUI's base `.drawer-side` panel child carries `will-change: transform` + a `translate` transition, permanently promoting it to its own GPU layer. When a fixed-position overlay exists nearby, both layers compete for pointer events → stale layer fails to invalidate on pointer-move, causing blank/ghost artifacts. **Fix**: Add an unlayered CSS rule that neutralizes the redundant compositing (see `web/static/styles.css` for the verified pattern). Do NOT use `translateZ(0)` — it was reverted as ineffective.
-
-## File Modification Checklist
-
-When adding new agent capabilities:
 1. Store capability on `BackgroundSession` during ACP init
-2. Add public getter method
-3. Check capability before using the feature in `PromptWithMeta`
-4. Send user notification via `OnError` if feature unavailable
-5. Add to WebSocket `connected` message in `sendSessionConnected()`
-6. Store in `useWebSocket.js` session info from `connected` handler
-7. Pass as prop through `app.js` to the relevant component
-8. Update mock ACP server types and handler for testing
-9. Write integration test proving end-to-end flow
+2. Add public getter; check before use in `PromptWithMeta`
+3. Add to WebSocket `connected` message
+4. Store in `useWebSocket.js` and pass through `app.js`
+5. Update mock ACP server and add integration test
 
+## Go 1.22+ Routing Pattern (Complete)
 
-<!-- BEGIN BEADS INTEGRATION v:1 profile:minimal hash:ca08a54f -->
-## Beads Issue Tracker
+**Status**: ✅ COMPLETE. Eliminated `strings.Split` path-parsing via Go 1.22+ `http.ServeMux` method+pattern routing with `r.PathValue()`.
 
-This project uses **bd (beads)** for issue tracking. Run `bd prime` to see full workflow context and commands.
-
-### Quick Reference
-
-```bash
-bd ready              # Find available work
-bd show <id>          # View issue details
-bd update <id> --claim  # Claim work
-bd close <id>         # Complete work
+**Pattern**: Extract path params, validate, delegate to handler:
+```go
+func (s *Server) handleSessionGet(w http.ResponseWriter, r *http.Request) {
+    if id, ok := s.sessionIDFromPath(w, r); ok {
+        s.apiHandlers.HandleGetSession(w, r, id, false)
+    }
+}
 ```
 
-### Rules
+**Route table** (`routes.go`): Declarative method+pattern entries (no subtree fallback):
+```go
+apiRoute{http.MethodGet, "/api/sessions/{id}", s.handleSessionGet},
+apiRoute{http.MethodPatch, "/api/sessions/{id}", s.handleSessionUpdate},
+apiRoute{http.MethodDelete, "/api/sessions/{id}", s.handleSessionDelete},
+```
 
-- Use `bd` for ALL task tracking — do NOT use TodoWrite, TaskCreate, or markdown TODO lists
-- Run `bd prime` for detailed command reference and session close protocol
-- Use `bd remember` for persistent knowledge — do NOT use MEMORY.md files
+## Frontend authFetch Pattern (Complete)
 
-## Session Completion
+**Pattern**: Use `authFetch(url, options?)` for all authenticated API calls. Ensures `credentials: "include"` (cross-origin/Tailscale safe) + unified 401 handling.
 
-**When ending a work session**, you MUST complete ALL steps below. Work is NOT complete until `git push` succeeds.
+```javascript
+// Use endpoints registry (never hardcoded URLs)
+const response = await authFetch(endpoints.config.get());
+const response = await authFetch(endpoints.sessions.get(sessionId));
+```
 
-**MANDATORY WORKFLOW:**
+**Key**: All URLs come from `web/static/utils/endpoints.js` registry. Never construct URLs manually.
 
-1. **File issues for remaining work** - Create issues for anything that needs follow-up
-2. **Run quality gates** (if code changed) - Tests, linters, builds
-3. **Update issue status** - Close finished work, update in-progress items
-4. **PUSH TO REMOTE** - This is MANDATORY:
-   ```bash
-   git pull --rebase
-   bd dolt push
-   git push
-   git status  # MUST show "up to date with origin"
-   ```
-5. **Clean up** - Clear stashes, prune remote branches
-6. **Verify** - All changes committed AND pushed
-7. **Hand off** - Provide context for next session
+**Defense-in-depth**: Add explicit 401 guard in critical paths:
+```javascript
+if (response.status === 401) { redirectToLogin(); return; }
+```
 
-**CRITICAL RULES:**
-- Work is NOT complete until `git push` succeeds
-- NEVER stop before pushing - that leaves work stranded locally
-- NEVER say "ready to push when you are" - YOU must push
-- If push fails, resolve and retry until it succeeds
-<!-- END BEADS INTEGRATION -->
+**Public vs. authenticated**:
+- ✅ `authFetch`: All authenticated endpoints (via `endpoints` builders)
+- ❌ Keep raw `fetch` with `same-origin`: Public endpoints like `/api/supported-runners`
+
+## Model Selection & Preferred Models
+
+Prompts can declare `preferredModels:` to route to specific ACP models. `selectPreferredModel()` in `constraints.go` picks the best match using configurable match modes (`"contains"`, `"exact"`, `"startsWith"`, `"regex"`, `"lookAlike"`). **Key insight**: If the active model already satisfies the preference, it's kept; otherwise the preference is applied. This avoids unnecessary model switches in multi-model sessions.
+
+**Per-prompt transient overrides**: When a prompt declares `preferredModels`, `setActiveModelOnly()` temporarily switches models for that prompt's execution **without** recording a `session_change` event. This is **intentional**:
+- Baseline model (conversation-level setting) remains unchanged
+- No "Model changed to X" message in timeline (silent override)
+- After prompt completes, `restoreBaselineIfOverride()` flips model back to baseline
+- Result: Heavy-lift work runs on cheaper models (e.g., Sonnet) while conversation stays on your chosen baseline (e.g., Opus)
+
+**Contrast**: Manual model selection (via UI dropdown) → `applyConfigOption()` → `cmRecordSessionChange()` → records persistent `session_change` event and updates baseline.
+
+## CEL Tool Evaluation (Fail-Open Behavior)
+
+- **Prompts**: `tools.hasPattern()` returns `true` when the tool list is unknown (cold cache during init), so prompts are not hidden during warm-up
+- **Processors**: Always see the real tool list (fail-open is disabled internally)
+- Once tools are fetched, evaluation uses the actual list. Useful for tool-gated prompt/processor gating via `enabledWhen`
+
+## Periodic Conversations
+
+**onCompletion trigger** (distinct from schedule-based periodic):
+- Re-fires automatically 30s after agent finishes each turn (configurable `delay_seconds`)
+- Green "Running" pill = `periodic_enabled: true`, NOT generic "agent is active" status
+- Limited by `max_iterations` and `max_duration_seconds`
+- Free-text periodic prompts NOT sent to frontend → selector can't display them (UI gap)
+- `app.js` line ~1928: `headerPeriodicState()` returns `{ state, label, badgeClass }` pill object
+- Issue `mitto-36nm` tracks UI clarity improvement (prompt visibility + pill disambiguation)
+
+## Tokensave Rule (Mandatory)
+
+**NEVER use Explore agents for code research when tokensave is available.** Use `tokensave_context`, `tokensave_search`, `tokensave_callees`, `tokensave_callers`, `tokensave_impact`, `tokensave_node`, `tokensave_files`, or `tokensave_affected` first. See CLAUDE.md in project root for full details.

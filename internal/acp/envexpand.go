@@ -20,7 +20,7 @@ func BuildMittoEnv(sessionID, workingDir, acpServer, workspaceUUID string) map[s
 		logsDir = d
 	}
 
-	return map[string]string{
+	env := map[string]string{
 		"MITTO_SESSION_ID":     sessionID,
 		"MITTO_WORKING_DIR":    workingDir,
 		"MITTO_ACP_SERVER":     acpServer,
@@ -28,6 +28,14 @@ func BuildMittoEnv(sessionID, workingDir, acpServer, workspaceUUID string) map[s
 		"MITTO_DATA_DIR":       dataDir,
 		"MITTO_LOGS_DIR":       logsDir,
 	}
+	// Stamp bd (beads) writes the agent makes in this conversation with a stable
+	// per-conversation actor so the audit trail records which Mitto conversation
+	// made each change. bd reads BEADS_ACTOR as the default --actor. Only set it
+	// when we have a session ID (shared/process-less env builds pass "").
+	if sessionID != "" {
+		env["BEADS_ACTOR"] = "mitto:" + sessionID
+	}
+	return env
 }
 
 // ExpandCommand expands $MITTO_* and ${MITTO_*} references in a command string.

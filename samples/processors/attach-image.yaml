@@ -33,5 +33,5 @@ output: transform
 
 timeout: 10s
 working_dir: session
-on_error: skip
+onError: skip
 

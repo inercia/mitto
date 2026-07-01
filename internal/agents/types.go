@@ -93,6 +93,9 @@ type AgentDefaults struct {
 	// AutoApprove sets whether the agent auto-approves tool-call permission requests
 	// by default.
 	AutoApprove bool `yaml:"autoApprove" json:"autoApprove"`
+	// ContextFlushCommand is the default agent-native context-flush slash command
+	// (e.g. "/clear") seeded into ACPServer.ContextFlushCommand at discovery.
+	ContextFlushCommand string `yaml:"contextFlushCommand,omitempty" json:"contextFlushCommand,omitempty"`
 }
 
 // AgentMetadata holds the parsed content of a metadata.yaml file.
@@ -190,10 +193,11 @@ type MCPListInput struct {
 
 // MCPServer represents a single MCP server entry returned by mcp-list.sh.
 type MCPServer struct {
-	Name    string   `json:"name"`
-	Command string   `json:"command,omitempty"`
-	Args    []string `json:"args,omitempty"`
-	URL     string   `json:"url,omitempty"`
+	Name    string            `json:"name"`
+	Command string            `json:"command,omitempty"`
+	Args    []string          `json:"args,omitempty"`
+	URL     string            `json:"url,omitempty"`
+	Env     map[string]string `json:"env,omitempty"`
 }
 
 // MCPListOutput is the expected JSON output from mcp-list.sh.

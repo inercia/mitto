@@ -1,6 +1,10 @@
 package processors
 
-import "testing"
+import (
+	"testing"
+
+	configPkg "github.com/inercia/mitto/internal/config"
+)
 
 func TestSubstituteVariables(t *testing.T) {
 	input := &ProcessorInput{
@@ -332,6 +336,61 @@ func TestSubstituteVariables_Children(t *testing.T) {
 				t.Errorf("SubstituteVariables(%q) = %q, want %q", tt.message, got, tt.expected)
 			}
 		})
+	}
+}
+
+// TestDelegationParity_FormatACPServers verifies that formatAvailableACPServers
+// produces byte-identical output to config.FormatACPServers for the same input,
+// confirming the delegation is a faithful single-source-of-truth wrapper.
+func TestDelegationParity_FormatACPServers(t *testing.T) {
+	cases := [][]AvailableACPServer{
+		nil,
+		{},
+		{{Name: "auggie", Tags: []string{"coding"}, Current: true}},
+		{{Name: "auggie", Tags: []string{"coding"}, Current: false}, {Name: "claude", Tags: []string{"fast"}, Current: true}},
+		{{Name: "bare"}},
+	}
+	for i, servers := range cases {
+		got := formatAvailableACPServers(servers)
+		// Build the config.ACPServerInfo slice the same way the delegation does.
+		infos := make([]configPkg.ACPServerInfo, 0, len(servers))
+		for _, srv := range servers {
+			infos = append(infos, configPkg.ACPServerInfo{Name: srv.Name, Type: srv.Type, Tags: srv.Tags, Current: srv.Current})
+		}
+		want := configPkg.FormatACPServers(infos)
+		if got != want {
+			t.Errorf("case %d: formatAvailableACPServers = %q, config.FormatACPServers = %q", i, got, want)
+		}
+	}
+}
+
+// TestDelegationParity_FormatChildren verifies that formatChildSessions and
+// formatMCPChildren produce byte-identical output to config.FormatChildren.
+func TestDelegationParity_FormatChildren(t *testing.T) {
+	children := []ChildSession{
+		{ID: "s1", Name: "Coder", ACPServer: "auggie", ChildOrigin: "mcp"},
+		{ID: "s2", Name: "Helper", ACPServer: "claude", ChildOrigin: "auto"},
+		{ID: "s3", ChildOrigin: "mcp"},
+	}
+
+	// formatChildSessions → config.FormatChildren(all)
+	allInfos := make([]configPkg.ChildInfo, 0, len(children))
+	for _, c := range children {
+		allInfos = append(allInfos, configPkg.ChildInfo{ID: c.ID, Name: c.Name, ACPServer: c.ACPServer, Origin: c.ChildOrigin})
+	}
+	if got, want := formatChildSessions(children), configPkg.FormatChildren(allInfos); got != want {
+		t.Errorf("formatChildSessions parity: got %q, want %q", got, want)
+	}
+
+	// formatMCPChildren → config.FormatChildren(mcp-only)
+	var mcpInfos []configPkg.ChildInfo
+	for _, c := range children {
+		if c.ChildOrigin == "mcp" {
+			mcpInfos = append(mcpInfos, configPkg.ChildInfo{ID: c.ID, Name: c.Name, ACPServer: c.ACPServer, Origin: c.ChildOrigin})
+		}
+	}
+	if got, want := formatMCPChildren(children), configPkg.FormatChildren(mcpInfos); got != want {
+		t.Errorf("formatMCPChildren parity: got %q, want %q", got, want)
 	}
 }
 

@@ -133,6 +133,76 @@ See [MCP Documentation](mcp.md) for how flags control MCP server behavior.
 | `file_write`       | File write operation                 |
 | `error`            | Error occurrence                     |
 
+## Generic Event Metadata
+
+Each `Event` carries an optional `Meta map[string]any` field (JSON key `"meta"`, `omitempty`) for lightweight, experimental annotations that do not yet warrant a dedicated typed field on the event's `*Data` struct.
+
+### Event.Meta field
+
+```go
+type Event struct {
+    // ... typed fields ...
+    Meta map[string]any `json:"meta,omitempty"`
+}
+```
+
+- **Absent by default** — `omitempty` means `nil` meta serialises to nothing; old events need no migration and old readers ignore the field.
+- **Established annotations should stay typed** — fields like `ArgumentCount` on `UserPromptData` remain as strongly-typed struct fields. `Meta` is for experimental / low-traffic data only.
+
+### RecordOption API
+
+All `Recorder.Record*` methods accept a final variadic `...RecordOption` parameter:
+
+```go
+// Attach a single key.
+recorder.RecordUserPrompt(message, session.WithMeta("source", "queue"))
+
+// Merge a map.
+recorder.RecordUserPromptComplete(msg, imgs, files, pid, pname, argC,
+    session.WithMetaMap(map[string]any{"run_id": runID, "periodic": true}))
+```
+
+`WithMeta` and `WithMetaMap` accumulate: multiple calls to either option on the same event merge their entries. Existing callers with no options compile and behave unchanged.
+
+### Size cap and drop-on-oversize behaviour
+
+The constant `session.MaxMetaBytes = 4096` limits the JSON-encoded size of the metadata bag. If the bag exceeds the cap, **the entire map is dropped** (not truncated per-key) and a `WARN` log is emitted:
+
+```
+WARN event meta exceeds size cap, dropped  size=N cap=4096
+```
+
+This "drop whole" policy keeps behaviour predictable: either the full annotation is present or nothing is, with no partial/silently-truncated state.
+
+### Sensitivity policy
+
+`Meta` **must NOT** carry:
+- Secrets, credentials, or API keys
+- Full argument values or full prompt text
+- Any personally identifiable information
+
+Store only small, non-sensitive identifiers, counters, or boolean flags. Violating this rule risks leaking sensitive data into `events.jsonl` which is a plain-text file on disk.
+
+### Propagation to observers and WebSocket
+
+`EventMetaObserver` is an **optional sibling** of `SessionObserver`. Observers that implement it receive meta alongside the typed notification:
+
+```go
+type EventMetaObserver interface {
+    OnEventMeta(seq int64, meta map[string]any)
+}
+```
+
+In `BackgroundSession.PromptWithMeta`, `OnEventMeta` is called **before** `OnUserPrompt` so observers can store meta keyed by seq and attach it to the outgoing payload.
+
+`SessionWSClient` implements `EventMetaObserver`: it stores pending meta in a `map[int64]map[string]any` (guarded by a mutex), consumes and deletes the entry inside `OnUserPrompt`, and attaches it to the WebSocket payload as `data["meta"]`. If no meta was stored for a given seq, the key is absent from the payload.
+
+Frontend (`useWebSocket.js`): the `meta` field is extracted from the live `user_prompt` message payload and stored on the message object. For **persisted** events, `lib.js` `convertEventsToMessages` also maps `event.data.meta` onto the message so annotations survive a reload.
+
+### Concrete consumer: `argument_names`
+
+When a named/workspace prompt is dispatched with user-supplied arguments, `BackgroundSession.PromptWithMeta` records the **names only** (sorted, never the values) of the template arguments (formerly `${VAR}`, now `{{ .Args.NAME }}`) under `meta["argument_names"]`. Values are substituted into the prompt text before persistence and are forbidden by the sensitivity policy above. The frontend `NamedPromptPill` (in `Message.js`) surfaces these names in the argument-count badge's tooltip (e.g. `Arguments: ISSUE_ID, PROJECT`), falling back to `N argument(s)` when names are unavailable (older events).
+
 ## Session State Ownership Model
 
 Session state is distributed across multiple components with clear ownership boundaries:

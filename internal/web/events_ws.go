@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"sync"
+
+	"github.com/inercia/mitto/internal/web/middleware"
 )
 
 // GlobalEventsClient represents a connected client listening for global events.
@@ -68,7 +70,7 @@ func (m *GlobalEventsManager) ClientCount() int {
 
 // handleGlobalEventsWS handles WebSocket connections for global events.
 func (s *Server) handleGlobalEventsWS(w http.ResponseWriter, r *http.Request) {
-	clientIP := getClientIPWithProxyCheck(r)
+	clientIP := middleware.GetClientIPWithProxyCheck(r)
 
 	// Use secure upgrader with compression for external connections
 	secureUpgrader := s.getSecureUpgraderForRequest(r)

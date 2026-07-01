@@ -90,6 +90,7 @@ const (
 	EventTypeSessionStart   EventType = "session_start"
 	EventTypeSessionEnd     EventType = "session_end"
 	EventTypeUIPromptAnswer EventType = "ui_prompt_answer"
+	EventTypeSessionChange  EventType = "session_change"
 )
 
 // SessionStatus represents the status of a session.
@@ -122,15 +123,30 @@ type Event struct {
 	Type      EventType   `json:"type"`
 	Timestamp time.Time   `json:"timestamp"`
 	Data      interface{} `json:"data"`
+
+	// Meta is an optional generic metadata bag for lightweight, experimental annotations
+	// that do not yet warrant a dedicated typed field on the *Data struct.
+	//
+	// SENSITIVITY POLICY: Meta must NOT carry secrets, credentials, full argument
+	// values, or full prompt text. Well-established, high-traffic annotations should
+	// graduate to typed fields on the per-type *Data struct instead.
+	//
+	// Size cap: MaxMetaBytes (4 KB JSON-encoded). Entries that exceed the cap are
+	// dropped in their entirety (not truncated) to keep behaviour predictable.
+	//
+	// Backward compatible: omitempty means absent meta serialises as nothing, so old
+	// events need no migration and old readers ignore the field.
+	Meta map[string]any `json:"meta,omitempty"`
 }
 
 // UserPromptData contains data for a user prompt event.
 type UserPromptData struct {
-	Message    string     `json:"message"`
-	Images     []ImageRef `json:"images,omitempty"`
-	Files      []FileRef  `json:"files,omitempty"`
-	PromptID   string     `json:"prompt_id,omitempty"`   // Client-generated ID for delivery confirmation
-	PromptName string     `json:"prompt_name,omitempty"` // Name of the workspace prompt used (for UI rendering)
+	Message       string     `json:"message"`
+	Images        []ImageRef `json:"images,omitempty"`
+	Files         []FileRef  `json:"files,omitempty"`
+	PromptID      string     `json:"prompt_id,omitempty"`      // Client-generated ID for delivery confirmation
+	PromptName    string     `json:"prompt_name,omitempty"`    // Name of the workspace prompt used (for UI rendering)
+	ArgumentCount int        `json:"argument_count,omitempty"` // Number of Go-template .Args supplied (>0 only for named prompts with args)
 }
 
 // AgentMessageData contains data for an agent message event.
@@ -218,6 +234,17 @@ type SessionEndData struct {
 	ACPConnected bool   `json:"acp_connected,omitempty"` // Whether ACP connection was active
 }
 
+// SessionChangeData records a user-initiated session change as a first-class
+// timeline event. Generic by design: Kind discriminates the change category so
+// new kinds need no new event type / recorder / observer / WS message.
+type SessionChangeData struct {
+	Kind          string   `json:"kind"`                     // "model" | "mode" | "prompt_arguments" | ...
+	Label         string   `json:"label,omitempty"`          // optional human label
+	Value         string   `json:"value,omitempty"`          // scalar new value (e.g. model id)
+	PreviousValue string   `json:"previous_value,omitempty"` // scalar prior value
+	Items         []string `json:"items,omitempty"`          // list payload (e.g. argument NAMES — never values)
+}
+
 // Metadata contains session metadata stored separately from the event log.
 type Metadata struct {
 	SessionID               string          `json:"session_id"`
@@ -239,7 +266,9 @@ type Metadata struct {
 	RunnerType              string          `json:"runner_type,omitempty"`               // Type of runner used (exec, sandbox-exec, firejail, docker)
 	RunnerRestricted        bool            `json:"runner_restricted,omitempty"`         // Whether the runner has restrictions enabled
 	CurrentModeID           string          `json:"current_mode_id,omitempty"`           // Current session mode ID (e.g., "ask", "code", "architect")
+	BaselineModel           string          `json:"baseline_model,omitempty"`            // User's intended model; never mutated by per-prompt overrides
 	BeadsIssue              string          `json:"beads_issue,omitempty"`               // Linked beads issue ID (e.g. "mitto-123"), empty if none
+	OriginPromptName        string          `json:"origin_prompt_name,omitempty"`        // Name of the prompt that originated this conversation (singleton scope: WorkingDir+OriginPromptName)
 	AdvancedSettings        map[string]bool `json:"advanced_settings,omitempty"`         // Per-session feature flags (flag name → enabled)
 	ProcessorActivations    int             `json:"processor_activations,omitempty"`     // Cumulative processor pipeline activation count
 	ProcessorLastActivation time.Time       `json:"processor_last_activation,omitempty"` // When processors were last activated

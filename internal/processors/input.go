@@ -31,8 +31,8 @@ type ProcessorInput struct {
 	// WorkspaceUUID is the workspace identifier.
 	WorkspaceUUID string `json:"workspace_uuid,omitempty"`
 	// BeadsIssue is the linked beads issue ID (e.g. "bd-123"), empty if none.
-	// Used for @mitto:beads_issue variable substitution and the session.hasBeadsIssue /
-	// session.beadsIssue CEL context in enabledWhen expressions.
+	// Used for @mitto:beads_issue variable substitution and the Session.HasBeadsIssue /
+	// Session.BeadsIssue CEL context in enabledWhen expressions.
 	BeadsIssue string `json:"beads_issue,omitempty"`
 	// AvailableACPServers lists the ACP servers that have workspaces configured for the
 	// session's working directory. Mirrors the data reported by the MCP tool.
@@ -42,7 +42,7 @@ type ProcessorInput struct {
 	// Each entry includes the session ID, name, and ACP server.
 	ChildSessions []ChildSession `json:"child_sessions,omitempty"`
 	// MCPToolNames is the list of MCP tool names available in the current workspace.
-	// Used for tools.* CEL context in enabledWhen expressions.
+	// Used for Tools.* CEL context in enabledWhen expressions.
 	// May be empty if tools haven't been fetched yet.
 	MCPToolNames []string `json:"-"`
 	// IsPeriodic indicates whether this prompt was triggered by the periodic runner.
@@ -52,17 +52,29 @@ type ProcessorInput struct {
 	// via "run now" (as opposed to the normal scheduled delivery).
 	// Used for @mitto:periodic_forced variable substitution.
 	IsPeriodicForced bool `json:"is_periodic_forced,omitempty"`
+	// IterationNumber is the 0-based index of the current periodic run.
+	// Used for the {{ .Iteration.* }} template namespace. Excluded from JSON
+	// (json:"-") so raw iteration values are never sent to external command processors.
+	IterationNumber int `json:"-"`
+	// MaxIterations is the configured maximum number of periodic runs (0 = unlimited).
+	// Used for the {{ .Iteration.* }} template namespace. Excluded from JSON (json:"-").
+	MaxIterations int `json:"-"`
+	// IterationUninterrupted feeds {{ .Iteration.IsUninterrupted }}. True only on a
+	// scheduled, non-forced periodic run directly following another such run (no user
+	// interjection, no forced run, no FreshContext, same process lifetime). Excluded from
+	// JSON (json:"-") — never sent to external command processors.
+	IterationUninterrupted bool `json:"-"`
 	// AdvancedSettings contains the per-session feature flags (flag name → enabled).
 	// Used for permissions.* CEL context in enabledWhen expressions.
 	AdvancedSettings map[string]bool `json:"-"`
 	// HasUserDataSchema indicates whether the workspace has a user data schema.
-	// Used for workspace.hasUserDataSchema CEL variable.
+	// Used for Workspace.HasUserDataSchema CEL variable.
 	HasUserDataSchema bool `json:"-"`
 	// HasMittoRC indicates whether a .mittorc file exists in the workspace.
-	// Used for workspace.hasMittoRC CEL variable.
+	// Used for Workspace.HasMittoRC CEL variable.
 	HasMittoRC bool `json:"-"`
 	// HasMetadataDescription indicates whether the workspace has metadata.description set.
-	// Used for workspace.hasMetadataDescription CEL variable.
+	// Used for Workspace.HasMetadataDescription CEL variable.
 	HasMetadataDescription bool `json:"-"`
 	// UserDataSchemaJSON is the JSON representation of the workspace user data schema.
 	// Used for @mitto:user_data_schema variable substitution.
@@ -70,6 +82,29 @@ type ProcessorInput struct {
 	// UserDataJSON is the JSON representation of the current session's user data.
 	// Used for @mitto:user_data variable substitution.
 	UserDataJSON string `json:"-"`
+	// Arguments holds the raw arguments supplied to the prompt (meta.Arguments).
+	// Used to populate PromptEnabledContext.Args for Go-template field interpolation
+	// ({{ .Args.NAME }}) in prompt bodies. Excluded from JSON (json:"-") so raw,
+	// possibly-sensitive argument values are never sent to external command processors.
+	Arguments map[string]string `json:"-"`
+	// ProcessorArgOverrides holds per-processor argument value overrides from the
+	// workspace .mittorc file. Keyed by processor name; values are arg name→value maps.
+	// Populated by the caller from config.GetWorkspaceProcessorOverrides. Used in the
+	// before-phase prompt-mode dispatch to overlay declared parameter defaults.
+	// Excluded from JSON — never sent to external command processors.
+	ProcessorArgOverrides map[string]map[string]string `json:"-"`
+	// UserData is the name→value map of the conversation's user data attributes.
+	// Used to populate PromptEnabledContext.UserData for {{ UserData "NAME" }} / .UserData
+	// template access and CEL UserData["X"] expressions. Excluded from JSON (json:"-")
+	// so values are never sent to external command processors.
+	UserData map[string]string `json:"-"`
+	// ModelTags holds the capability tags resolved for the session's current model
+	// (from config models: profiles). Populates Session.ModelTags for the Model(tag)
+	// template func and Session.HasModelTag CEL macro. Excluded from JSON (json:"-").
+	ModelTags []string `json:"-"`
+	// ModelName is the display name of the session's current model (convenience for
+	// {{ .Session.ModelName }} display). Excluded from JSON (json:"-").
+	ModelName string `json:"-"`
 }
 
 // AvailableACPServer describes an ACP server available in the session's workspace.

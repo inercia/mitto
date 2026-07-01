@@ -1,7 +1,7 @@
 // Mitto Web Interface - Message Component
 // Renders different types of messages (user, agent, thought, tool, error, system)
 
-const { html, useMemo, useEffect, useRef, useState } = window.preact;
+const { html, useMemo, useEffect, useRef, useState, memo } = window.preact;
 
 import {
   ROLE_USER,
@@ -19,6 +19,40 @@ import {
 
 import { openFileURL, isNativeApp, getAPIPrefix } from "../utils/index.js";
 import { CopyIcon, CheckIcon } from "./Icons.js";
+import { Tooltip } from "./Tooltip.js";
+import { linkifyBeadsRefs } from "../utils/beadsLinkify.js";
+import { getBeadsKnownIds } from "../utils/beadsKnownIds.js";
+
+/**
+ * Compute human-readable text for a session_change system message.
+ * Single source of truth: both live WS push and reload paths produce
+ * a ROLE_SYSTEM message with kind/value/items fields; this function
+ * is the only place that maps kinds to display text.
+ */
+function sessionChangeText(m) {
+  const value = m.value || "";
+  const previousValue = m.previousValue || "";
+  const items = Array.isArray(m.items) ? m.items : [];
+  switch (m.kind) {
+    case "model":
+      return `Model changed to ${value}`;
+    case "model_override":
+      return previousValue
+        ? `⚡ Running this prompt on ${value} — conversation stays on ${previousValue}`
+        : `⚡ Running this prompt on ${value}`;
+    case "mode":
+      return `Mode changed to ${value}`;
+    case "prompt_arguments":
+      return `Prompt arguments: ${items.join(", ")}`;
+    default: {
+      // Generic fallback so future/unknown kinds still render with no code change.
+      const what = m.label || m.kind || "Session";
+      if (value) return `${what} changed to ${value}`;
+      if (items.length) return `${what}: ${items.join(", ")}`;
+      return `${what} changed`;
+    }
+  }
+}
 
 /**
  * Check if a thought message appears to be reporting an upstream model/API error.
@@ -53,13 +87,32 @@ function formatMessageTime(timestamp) {
 /**
  * NamedPromptPill component - renders a named prompt as a distinctive pill/badge.
  * Displayed right-aligned (like user messages) with an icon and the prompt name.
+ * When the prompt was sent with arguments (argumentCount > 0), a small numeric
+ * badge is shown indicating how many arguments were substituted.
  */
 function NamedPromptPill({ message }) {
   const timeStr = formatMessageTime(message.timestamp);
+  // Tooltip fallback chain: name=value pairs (when backend provided values) →
+  // names only → numeric count. Values are already truncated/redacted upstream.
+  const argPairs =
+    message.meta && Array.isArray(message.meta.arguments)
+      ? message.meta.arguments
+      : null;
+  const argNames =
+    message.meta && Array.isArray(message.meta.argument_names)
+      ? message.meta.argument_names
+      : null;
+  let argTip;
+  if (argPairs && argPairs.length > 0) {
+    argTip = argPairs.map((a) => `${a.name}=${a.value}`).join(", ");
+  } else if (argNames && argNames.length > 0) {
+    argTip = `Arguments: ${argNames.join(", ")}`;
+  } else {
+    argTip = `${message.argumentCount} argument(s)`;
+  }
   return html`
     <div class="message-enter flex justify-end items-center gap-2 mb-3">
-      ${timeStr &&
-      html`<span class="message-timestamp">${timeStr}</span>`}
+      ${timeStr && html`<span class="message-timestamp">${timeStr}</span>`}
       <div
         class="badge badge-primary badge-lg gap-2"
         data-testid="named-prompt-pill"
@@ -78,6 +131,14 @@ function NamedPromptPill({ message }) {
           />
         </svg>
         <span class="text-sm font-medium">${message.promptName}</span>
+        ${message.argumentCount > 0 &&
+        html`<${Tooltip} tip=${argTip}>
+          <span
+            class="badge badge-sm badge-ghost tabular-nums"
+            data-testid="prompt-arg-count"
+            >${message.argumentCount}</span
+          >
+        <//>`}
       </div>
     </div>
   `;
@@ -100,7 +161,8 @@ function ThoughtBubble({ message, isLast, isStreaming }) {
   const firstLine = useMemo(() => {
     if (!message.text) return "";
     const newlineIdx = message.text.indexOf("\n");
-    const line = newlineIdx > 0 ? message.text.substring(0, newlineIdx) : message.text;
+    const line =
+      newlineIdx > 0 ? message.text.substring(0, newlineIdx) : message.text;
     // Truncate long first lines
     const maxLen = 120;
     return line.length > maxLen ? line.substring(0, maxLen) : line;
@@ -124,17 +186,28 @@ function ThoughtBubble({ message, isLast, isStreaming }) {
 
   return html`
     <div class="message-enter flex justify-start mb-3">
-      <div class="${bubbleClass} ${isCollapsible ? 'thought-bubble-collapsible' : ''}">
+      <div
+        class="${bubbleClass} ${isCollapsible
+          ? "thought-bubble-collapsible"
+          : ""}"
+      >
         <div
-          class="flex items-start gap-2 ${isCollapsible ? 'cursor-pointer select-none' : ''}"
-          onClick=${isCollapsible ? () => setIsCollapsed(!isCollapsed) : undefined}
+          class="flex items-start gap-2 ${isCollapsible
+            ? "cursor-pointer select-none"
+            : ""}"
+          onClick=${isCollapsible
+            ? () => setIsCollapsed(!isCollapsed)
+            : undefined}
         >
           <span
-            class="${isModelError ? 'text-amber-400' : 'text-purple-400'} mt-0.5 shrink-0"
-            >${isModelError ? "⚠️" : "💭"}</span>
+            class="${isModelError
+              ? "text-amber-400"
+              : "text-purple-400"} mt-0.5 shrink-0"
+            >${isModelError ? "⚠️" : "💭"}</span
+          >
           <div class="min-w-0">
             <span
-              class="italic ${showCursor ? 'streaming-cursor' : ''}"
+              class="italic ${showCursor ? "streaming-cursor" : ""}"
               dangerouslySetInnerHTML=${{ __html: displayHtml }}
             />
             ${isModelError &&
@@ -156,7 +229,7 @@ function ThoughtBubble({ message, isLast, isStreaming }) {
  * @param {boolean} props.isStreaming - Whether the session is currently streaming
  * @param {Function} [props.onRetry] - Optional callback to retry (resend last prompt). Shown on error messages.
  */
-export function Message({ message, isLast, isStreaming, onRetry }) {
+function MessageImpl({ message, isLast, isStreaming, onRetry }) {
   const isUser = message.role === ROLE_USER;
   const isAgent = message.role === ROLE_AGENT;
   const isThought = message.role === ROLE_THOUGHT;
@@ -171,7 +244,7 @@ export function Message({ message, isLast, isStreaming, onRetry }) {
         <div
           class="text-xs text-mitto-text-muted bg-mitto-surface-2 px-3 py-1 rounded-full"
         >
-          ${message.text}
+          ${message.kind ? sessionChangeText(message) : message.text}
         </div>
       </div>
     `;
@@ -223,11 +296,15 @@ export function Message({ message, isLast, isStreaming, onRetry }) {
       if (isRunning) {
         // Spinning indicator for running
         return html`
-          <span class="loading loading-spinner w-4 h-4 text-mitto-warning"></span>
+          <span
+            class="loading loading-spinner w-4 h-4 text-mitto-warning"
+          ></span>
         `;
       }
       // Default: gray text for unknown status
-      return html`<span class="text-xs text-mitto-text-muted">${message.status}</span>`;
+      return html`<span class="text-xs text-mitto-text-muted"
+        >${message.status}</span
+      >`;
     };
 
     // Parse the title for file paths
@@ -262,7 +339,10 @@ export function Message({ message, isLast, isStreaming, onRetry }) {
               e.preventDefault();
               e.stopPropagation();
               if (!viewerUrl) return;
-              if (isNativeApp() && typeof window.mittoOpenViewer === "function") {
+              if (
+                isNativeApp() &&
+                typeof window.mittoOpenViewer === "function"
+              ) {
                 const fullUrl = new URL(viewerUrl, window.location.origin).href;
                 window.mittoOpenViewer(fullUrl);
               } else {
@@ -292,7 +372,11 @@ export function Message({ message, isLast, isStreaming, onRetry }) {
 
   // Thought display — delegated to ThoughtBubble to keep hooks unconditional
   if (isThought) {
-    return html`<${ThoughtBubble} message=${message} isLast=${isLast} isStreaming=${isStreaming} />`;
+    return html`<${ThoughtBubble}
+      message=${message}
+      isLast=${isLast}
+      isStreaming=${isStreaming}
+    />`;
   }
 
   // Error message (with URL linkification)
@@ -308,26 +392,31 @@ export function Message({ message, isLast, isStreaming, onRetry }) {
           <span>❌</span>
           <span dangerouslySetInnerHTML=${{ __html: linkedErrorText }} />
           ${onRetry &&
-          html`<button
-            type="button"
-            class="btn btn-ghost btn-sm btn-circle shrink-0"
-            onClick=${onRetry}
-            title="Retry — resend the last prompt"
+          html`<${Tooltip}
+            tip="Retry — resend the last prompt"
+            className="shrink-0"
           >
-            <svg
-              class="w-4 h-4"
-              fill="none"
-              stroke="currentColor"
-              viewBox="0 0 24 24"
-              stroke-width="2"
+            <button
+              type="button"
+              class="btn btn-ghost btn-sm btn-circle shrink-0"
+              onClick=${onRetry}
+              aria-label="Retry — resend the last prompt"
             >
-              <path
-                stroke-linecap="round"
-                stroke-linejoin="round"
-                d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.992 0 3.181 3.183a8.25 8.25 0 0 0 13.803-3.7M4.031 9.865a8.25 8.25 0 0 1 13.803-3.7l3.181 3.182M20.015 4.66v4.992"
-              />
-            </svg>
-          </button>`}
+              <svg
+                class="w-4 h-4"
+                fill="none"
+                stroke="currentColor"
+                viewBox="0 0 24 24"
+                stroke-width="2"
+              >
+                <path
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.992 0 3.181 3.183a8.25 8.25 0 0 0 13.803-3.7M4.031 9.865a8.25 8.25 0 0 1 13.803-3.7l3.181 3.182M20.015 4.66v4.992"
+                />
+              </svg>
+            </button>
+          <//>`}
         </div>
       </div>
     `;
@@ -358,14 +447,13 @@ export function Message({ message, isLast, isStreaming, onRetry }) {
     // Ref for table wrapping in user markdown content
     const userMessageRef = useRef(null);
 
-    // Wrap tables in scrollable containers for horizontal scrolling on narrow screens
+    // Wrap tables and linkify beads IDs in user markdown content
     useEffect(() => {
       if (userMessageRef.current && useMarkdown) {
         const tables = userMessageRef.current.querySelectorAll(
           "table:not(.table-wrapper table)",
         );
         tables.forEach((table) => {
-          // Skip if already wrapped
           if (table.parentElement?.classList.contains("table-wrapper")) {
             return;
           }
@@ -374,7 +462,23 @@ export function Message({ message, isLast, isStreaming, onRetry }) {
           table.parentNode.insertBefore(wrapper, table);
           wrapper.appendChild(table);
         });
+        const { ids, meta } = getBeadsKnownIds(
+          window.mittoCurrentWorkspace || "",
+        );
+        linkifyBeadsRefs(userMessageRef.current, ids, meta);
       }
+
+      const onBeadsUpdated = () => {
+        if (userMessageRef.current && useMarkdown) {
+          const { ids, meta } = getBeadsKnownIds(
+            window.mittoCurrentWorkspace || "",
+          );
+          linkifyBeadsRefs(userMessageRef.current, ids, meta);
+        }
+      };
+      window.addEventListener("beads-ids-updated", onBeadsUpdated);
+      return () =>
+        window.removeEventListener("beads-ids-updated", onBeadsUpdated);
     }, [renderedHtml, useMarkdown]);
 
     const [userCopied, setUserCopied] = useState(false);
@@ -420,19 +524,27 @@ export function Message({ message, isLast, isStreaming, onRetry }) {
                 dangerouslySetInnerHTML=${{ __html: linkedPlainText }}
               />`}
           <div class="flex items-center justify-end gap-1 mt-1">
-            <button
-              type="button"
-              class="btn btn-ghost btn-xs opacity-0 group-hover:opacity-100 transition-opacity"
-              title=${userCopied ? "Copied!" : "Copy as Markdown"}
-              aria-label="Copy as Markdown"
-              data-testid="copy-message-markdown"
-              onClick=${handleUserCopy}
+            <${Tooltip}
+              tip=${userCopied ? "Copied!" : "Copy as Markdown"}
+              open=${userCopied}
+              placement="top"
             >
-              ${userCopied
-                ? html`<${CheckIcon} className="w-3.5 h-3.5 text-mitto-success" />`
-                : html`<${CopyIcon} className="w-3.5 h-3.5" />`}
-            </button>
-            ${userTimeStr && html`<div class="message-timestamp">${userTimeStr}</div>`}
+              <button
+                type="button"
+                class="btn btn-ghost btn-xs opacity-0 group-hover:opacity-100 transition-opacity"
+                aria-label="Copy as Markdown"
+                data-testid="copy-message-markdown"
+                onClick=${handleUserCopy}
+              >
+                ${userCopied
+                  ? html`<${CheckIcon}
+                      className="w-3.5 h-3.5 text-mitto-success"
+                    />`
+                  : html`<${CopyIcon} className="w-3.5 h-3.5" />`}
+              </button>
+            <//>
+            ${userTimeStr &&
+            html`<div class="message-timestamp">${userTimeStr}</div>`}
           </div>
         </div>
       </div>
@@ -462,7 +574,6 @@ export function Message({ message, isLast, isStreaming, onRetry }) {
           "table:not(.table-wrapper table)",
         );
         tables.forEach((table) => {
-          // Skip if already wrapped
           if (table.parentElement?.classList.contains("table-wrapper")) {
             return;
           }
@@ -476,7 +587,25 @@ export function Message({ message, isLast, isStreaming, onRetry }) {
         if (typeof window.renderMermaidDiagrams === "function") {
           window.renderMermaidDiagrams(agentMessageRef.current);
         }
+
+        // Linkify beads IDs
+        const { ids, meta } = getBeadsKnownIds(
+          window.mittoCurrentWorkspace || "",
+        );
+        linkifyBeadsRefs(agentMessageRef.current, ids, meta);
       }
+
+      const onBeadsUpdated = () => {
+        if (agentMessageRef.current) {
+          const { ids, meta } = getBeadsKnownIds(
+            window.mittoCurrentWorkspace || "",
+          );
+          linkifyBeadsRefs(agentMessageRef.current, ids, meta);
+        }
+      };
+      window.addEventListener("beads-ids-updated", onBeadsUpdated);
+      return () =>
+        window.removeEventListener("beads-ids-updated", onBeadsUpdated);
     }, [message.html]);
 
     const [agentCopied, setAgentCopied] = useState(false);
@@ -493,7 +622,9 @@ export function Message({ message, isLast, isStreaming, onRetry }) {
     // hid the time for every agent message whenever the conversation was running
     // (e.g. completed messages followed by a tool call); mirror `showCursor` so
     // only the live message hides its time.
-    const agentTimeStr = !showCursor ? formatMessageTime(message.timestamp) : null;
+    const agentTimeStr = !showCursor
+      ? formatMessageTime(message.timestamp)
+      : null;
     return html`
       <div class="message-enter flex justify-start mb-3 group">
         <div
@@ -507,19 +638,27 @@ export function Message({ message, isLast, isStreaming, onRetry }) {
             dangerouslySetInnerHTML=${{ __html: message.html || "" }}
           />
           <div class="flex items-center gap-1 mt-1">
-            <button
-              type="button"
-              class="btn btn-ghost btn-xs opacity-0 group-hover:opacity-100 transition-opacity"
-              title=${agentCopied ? "Copied!" : "Copy as Markdown"}
-              aria-label="Copy as Markdown"
-              data-testid="copy-message-markdown"
-              onClick=${handleAgentCopy}
+            <${Tooltip}
+              tip=${agentCopied ? "Copied!" : "Copy as Markdown"}
+              open=${agentCopied}
+              placement="top"
             >
-              ${agentCopied
-                ? html`<${CheckIcon} className="w-3.5 h-3.5 text-mitto-success" />`
-                : html`<${CopyIcon} className="w-3.5 h-3.5" />`}
-            </button>
-            ${agentTimeStr && html`<div class="message-timestamp ml-auto">${agentTimeStr}</div>`}
+              <button
+                type="button"
+                class="btn btn-ghost btn-xs opacity-0 group-hover:opacity-100 transition-opacity"
+                aria-label="Copy as Markdown"
+                data-testid="copy-message-markdown"
+                onClick=${handleAgentCopy}
+              >
+                ${agentCopied
+                  ? html`<${CheckIcon}
+                      className="w-3.5 h-3.5 text-mitto-success"
+                    />`
+                  : html`<${CopyIcon} className="w-3.5 h-3.5" />`}
+              </button>
+            <//>
+            ${agentTimeStr &&
+            html`<div class="message-timestamp ml-auto">${agentTimeStr}</div>`}
           </div>
         </div>
       </div>
@@ -528,3 +667,43 @@ export function Message({ message, isLast, isStreaming, onRetry }) {
 
   return null;
 }
+
+/**
+ * Props comparator for memo(MessageImpl).
+ * Returns true (skip re-render) when all output-affecting fields are equal.
+ *
+ * Fields checked:
+ *   message.html    — agent/streaming content; changes on every streaming chunk
+ *   message.text    — user / thought / error text
+ *   message.status  — tool status (running / completed / failed)
+ *   message.title   — tool call title
+ *   message.images  — user-attached images (reference equality is fine here)
+ *   message.complete — whether the message is finalised
+ *   isLast          — affects showCursor / timestamp visibility
+ *   isStreaming      — drives the streaming cursor
+ *   onRetry         — error-message retry callback reference
+ *
+ * The actively streaming message always updates message.html on every chunk,
+ * so it will never be memoized away — the comparator naturally returns false.
+ */
+export function messagePropsAreEqual(prev, next) {
+  return (
+    prev.message.html === next.message.html &&
+    prev.message.text === next.message.text &&
+    prev.message.status === next.message.status &&
+    prev.message.title === next.message.title &&
+    prev.message.images === next.message.images &&
+    prev.message.complete === next.message.complete &&
+    prev.isLast === next.isLast &&
+    prev.isStreaming === next.isStreaming &&
+    prev.onRetry === next.onRetry
+  );
+}
+
+/**
+ * Memoized Message — skips re-render when the message content and surrounding
+ * context (isLast, isStreaming, onRetry) are unchanged.  The streaming bubble
+ * is not affected: its message.html updates on every chunk, so it always
+ * re-renders.
+ */
+export const Message = memo(MessageImpl, messagePropsAreEqual);

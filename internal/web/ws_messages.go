@@ -18,6 +18,7 @@ import (
 	"encoding/json"
 	"strings"
 
+	"github.com/inercia/mitto/internal/conversation"
 	"github.com/inercia/mitto/internal/session"
 )
 
@@ -108,76 +109,21 @@ const (
 	// Data: { "session_id": string, "client_id": string, "acp_server": string, ... }
 	WSMsgTypeConnected = "connected"
 
-	// WSMsgTypeSessionCreated notifies that a new session was created.
-	// Sent on /api/events to all connected clients.
-	// Data: { "session_id": string, "name": string, "working_dir": string }
-	WSMsgTypeSessionCreated = "session_created"
+	// Domain lifecycle event types moved to internal/conversation (ws_events.go).
 
 	// WSMsgTypeSessionSwitched confirms session switch completed.
 	// Data: { "session_id": string }
 	WSMsgTypeSessionSwitched = "session_switched"
-
-	// WSMsgTypeSessionRenamed notifies that a session was renamed.
-	// Sent on both /api/events (broadcast) and session WebSocket.
-	// Data: { "session_id": string, "name": string }
-	WSMsgTypeSessionRenamed = "session_renamed"
 
 	// WSMsgTypeSessionPinned notifies that a session's pinned state changed.
 	// Sent on /api/events to all connected clients.
 	// Data: { "session_id": string, "pinned": bool }
 	WSMsgTypeSessionPinned = "session_pinned"
 
-	// WSMsgTypeSessionDeleted notifies that a session was deleted.
-	// Sent on /api/events to all connected clients.
-	// Data: { "session_id": string }
-	WSMsgTypeSessionDeleted = "session_deleted"
-
-	// WSMsgTypeSessionArchived notifies that a session's archived state changed.
-	// Sent on /api/events to all connected clients.
-	// Data: { "session_id": string, "archived": bool }
-	WSMsgTypeSessionArchived = "session_archived"
-
-	// WSMsgTypeSessionStreaming notifies that a session's streaming state changed.
-	// Sent on /api/events when a session starts or stops streaming.
-	// Data: { "session_id": string, "is_streaming": bool }
-	WSMsgTypeSessionStreaming = "session_streaming"
-
-	// WSMsgTypeSessionWaiting notifies that a session's waiting-for-children state changed.
-	// This is broadcast when a parent session starts or stops blocking on mitto_children_tasks_wait.
-	// Data: { "session_id": string, "is_waiting": bool }
-	WSMsgTypeSessionWaiting = "session_waiting"
-
-	// WSMsgTypeSessionUIPrompt notifies that a session's UI prompt state changed.
-	// This is broadcast when a session starts or stops waiting for user input
-	// (blocking UI prompts from MCP tools or permission requests).
-	// Data: { "session_id": string, "is_waiting": bool }
-	WSMsgTypeSessionUIPrompt = "session_ui_prompt"
-
-	// WSMsgTypeBackgroundUIPromptTimeout notifies all clients that a blocking UI prompt
-	// timed out in a session the user was not actively viewing.
-	// This triggers a native OS notification so the user knows the session needed input.
-	// Sent on /api/events to all connected clients.
-	// Data: { "session_id": string, "session_name": string, "question": string }
-	WSMsgTypeBackgroundUIPromptTimeout = "background_ui_prompt_timeout"
-
 	// WSMsgTypeSessionSettingsUpdated notifies that a session's advanced settings changed.
 	// Sent on /api/events to all connected clients.
 	// Data: { "session_id": string, "settings": { "flag_name": bool, ... } }
 	WSMsgTypeSessionSettingsUpdated = "session_settings_updated"
-
-	// WSMsgTypePeriodicUpdated notifies that a session's periodic prompt state changed.
-	// Sent on /api/events to all connected clients when periodic is enabled/disabled.
-	// Data: {
-	//   "session_id": string,
-	//   "periodic_configured": bool,
-	//   "periodic_enabled": bool,
-	//   "fresh_context": bool,  // if configured; each run starts with a clean agent context
-	//   "max_iterations": number,  // cap on scheduled runs (0 = unlimited)
-	//   "iteration_count": number, // scheduled runs delivered so far
-	//   "frequency": { "value": number, "unit": string, "at"?: string },  // if configured
-	//   "next_scheduled_at": string  // ISO 8601, if enabled and scheduled
-	// }
-	WSMsgTypePeriodicUpdated = "periodic_updated"
 
 	// WSMsgTypePeriodicStarted notifies that a periodic prompt was delivered.
 	// Sent on /api/events to all connected clients when a scheduled periodic run starts.
@@ -270,10 +216,6 @@ const (
 	// Additional fields (is_running, queue_length, status) allow the UI to stay in sync
 	// without separate API calls, useful for multi-tab scenarios and mobile wake recovery.
 	WSMsgTypeKeepaliveAck = "keepalive_ack"
-
-	// WSMsgTypeRunnerFallback notifies that a configured runner is not supported and fell back to exec.
-	// Data: { "session_id": string, "requested_type": string, "fallback_type": string, "reason": string }
-	WSMsgTypeRunnerFallback = "runner_fallback"
 
 	// WSMsgTypeMemoryRecycled notifies that the GC's memory-recycle tier (Tier 4) stopped
 	// a memory-bloated idle shared ACP process to reclaim memory. Affected conversations
@@ -372,12 +314,6 @@ const (
 	// Data: { "session_id": string, "commands": []{ "name": string, "description": string, "input_hint": string (optional) } }
 	WSMsgTypeAvailableCommandsUpdated = "available_commands_updated"
 
-	// WSMsgTypeConfigOptionChanged notifies that a session config option has changed.
-	// Sent when any config option is changed either by the client or by the agent.
-	// For backward compatibility with legacy modes, config_id will be "mode" for mode changes.
-	// Data: { "session_id": string, "config_id": string, "value": string }
-	WSMsgTypeConfigOptionChanged = "config_option_changed"
-
 	// WSMsgTypeSetConfigOption is sent from the frontend to change a config option value.
 	// For backward compatibility with legacy modes, use config_id "mode" for mode changes.
 	// Data: { "config_id": string, "value": string }
@@ -394,6 +330,18 @@ const (
 	// Data: { "changed_dirs": []string, "timestamp": string (ISO 8601) }
 	WSMsgTypePromptsChanged = "prompts_changed"
 
+	// WSMsgTypeBeadsChanged notifies that beads issues have changed on disk.
+	// Sent when another agent or CLI (bd, git pull, bd dolt pull) modifies the .beads/ directory.
+	// Clients should refresh their tasks/issues view when receiving this message.
+	// Data: { "working_dirs": []string, "changed_dirs": []string, "timestamp": string (ISO 8601) }
+	WSMsgTypeBeadsChanged = "beads_changed"
+
+	// WSMsgTypeBeadsCleanupProgress reports progress of a background bulk
+	// closed-issue cleanup started via POST /api/issues/cleanup. Sent repeatedly
+	// as batches complete, plus a final message with done=true (or error set).
+	// Data: { "working_dir": string, "deleted": int, "total": int, "done": bool, "error": string }
+	WSMsgTypeBeadsCleanupProgress = "beads_cleanup_progress"
+
 	// WSMsgTypeMCPToolsUnavailable notifies that Mitto MCP tools are not available in the workspace.
 	// Sent when user focuses/switches to a conversation and MCP availability check fails.
 	// Data: {
@@ -407,11 +355,6 @@ const (
 	// Sent from frontend when user confirms running the suggested installation command.
 	// Data: { "command": string }
 	WSMsgTypeRunMCPInstallCommand = "run_mcp_install_command"
-
-	// WSMsgTypeMCPToolsAvailable notifies that MCP tools have been fetched for a workspace.
-	// Sent via the global events WebSocket when tools are successfully retrieved.
-	// Data: { "workspace_uuid": string, "tools": []MCPToolInfo }
-	WSMsgTypeMCPToolsAvailable = "mcp_tools_available"
 
 	// WSMsgTypeNotification sends a fire-and-forget notification to the client.
 	// Triggered by the mitto_ui_notify MCP tool. No response is expected from the client.
@@ -433,6 +376,14 @@ const (
 	// Sent when the agent sends a SessionUsageUpdate notification.
 	// Data: { "session_id": string, "size": int, "used": int }
 	WSMsgTypeContextUsageUpdate = "context_usage_update"
+
+	// WSMsgTypeAgentWorking is a transient heartbeat telling the client the agent is
+	// still working during a prolonged silent stretch of a prompt (e.g. a long tool
+	// call that streams no output), so the UI shows honest progress instead of an
+	// indefinite frozen spinner. Not persisted. Stops when activity resumes, the
+	// prompt ends, or the agent dies.
+	// Data: { "session_id": string, "idle_ms": int64, "tool_title": string (optional), "is_prompting": true }
+	WSMsgTypeAgentWorking = "agent_working"
 )
 
 // =============================================================================
@@ -499,7 +450,7 @@ type ToolCallUpdateData struct {
 
 // PlanData holds data for a plan event.
 type PlanData struct {
-	Entries []PlanEntry `json:"entries"`
+	Entries []conversation.PlanEntry `json:"entries"`
 }
 
 // FileOperationData holds data for file read/write events.
@@ -601,7 +552,7 @@ func (b *EventBuffer) AppendToolCallUpdate(seq int64, id string, status *string)
 
 // AppendPlan appends a plan event to the buffer.
 // Always creates a new event with the provided seq.
-func (b *EventBuffer) AppendPlan(seq int64, entries []PlanEntry) {
+func (b *EventBuffer) AppendPlan(seq int64, entries []conversation.PlanEntry) {
 	b.events = append(b.events, BufferedEvent{
 		Type: BufferedEventPlan,
 		Seq:  seq,
@@ -681,10 +632,10 @@ func (b *EventBuffer) GetAgentThought() string {
 	return result.String()
 }
 
-// ReplayTo sends this buffered event to a SessionObserver.
+// ReplayTo sends this buffered event to a conversation.SessionObserver.
 // This is used to catch up newly connected observers on in-progress streaming.
 // The event's Seq is passed to the observer for ordering and deduplication.
-func (e BufferedEvent) ReplayTo(observer SessionObserver) {
+func (e BufferedEvent) ReplayTo(observer conversation.SessionObserver) {
 	switch e.Type {
 	case BufferedEventAgentThought:
 		if data, ok := e.Data.(*AgentThoughtData); ok && data.Text != "" {

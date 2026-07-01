@@ -4,7 +4,10 @@ description: Review child conversations and delete the finished ones that are no
 group: Work flow
 menus: prompts, conversation
 backgroundColor: '#FFF9C4'
-enabledWhen: children.exists && tools.hasPattern("mitto_conversation_*") && !session.isPeriodicConversation
+enabledWhen: Children.Exists && Tools.HasPattern("mitto_conversation_*") && !Session.IsPeriodicConversation
+preferredModels:
+  - modelTag: Cheap
+  - modelTag: Coding
 prompt: |
   Review the child conversations spawned from this one, identify the ones that have
   finished their work and are no longer needed, and delete them after user confirmation.
@@ -12,13 +15,13 @@ prompt: |
 
   ## Phase 1: Context
 
-  Your session ID is `@mitto:session_id` — use as `self_id` for all `mitto_*` tool calls.
+  Your session ID is `{{ .Session.ID }}` — use as `self_id` for all `mitto_*` tool calls.
 
   All child conversations:
-  @mitto:children
+  {{ .Children.AllText }}
 
   MCP-created children (these are safe to delete and are never auto-children):
-  @mitto:mcp_children
+  {{ .Children.MCPText }}
 
   Use these variables as the authoritative child list — do **not** call
   `mitto_conversation_list` to re-enumerate them.
@@ -29,7 +32,7 @@ prompt: |
 
   ## Phase 2: Inspect Each Child
 
-  For each child, call `mitto_conversation_get(self_id: "@mitto:session_id",
+  For each child, call `mitto_conversation_get(self_id: "{{ .Session.ID }}",
   conversation_id: <child_id>)` (run these in parallel) to learn:
 
   - `child_origin` — `"auto"`, `"mcp"`, or `"human"`. Treat `"auto"` as protected.
@@ -64,7 +67,7 @@ prompt: |
   ## Phase 5: Confirm With User
 
   Present a short summary, then ask for confirmation via
-  `mitto_ui_form(self_id: "@mitto:session_id", ...)` (timeout: 120s) with one checkbox per
+  `mitto_ui_form(self_id: "{{ .Session.ID }}", ...)` (timeout: 120s) with one checkbox per
   candidate, pre-checked for the ones you recommend deleting:
 
   ```html
@@ -82,7 +85,7 @@ prompt: |
   For each confirmed conversation ID:
 
   ```
-  mitto_conversation_delete(self_id: "@mitto:session_id", conversation_id: <child_id>)
+  mitto_conversation_delete(self_id: "{{ .Session.ID }}", conversation_id: <child_id>)
   ```
 
   Double-check before each call that the target is **not** an auto-child and was in the

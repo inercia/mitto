@@ -321,9 +321,9 @@ Returns:
 Present a sanitized HTML form to the user and wait for submission. Requires `can_prompt_user` flag.
 
 The HTML is strictly sanitized to allow only form-related elements (input, select, textarea, label,
-fieldset, legend, div, span, p, br, hr, headings). Scripts, styles, event handlers, images, links,
-iframes, and all other elements are stripped. Submit/cancel buttons are added automatically.
-Form values are returned as key-value pairs keyed by each element's `name` attribute.
+fieldset, legend, div, span, p, br, hr, headings). Scripts, styles, event handlers, images, links
+(`<a>`/`href`), iframes, and all other elements are stripped. Submit/cancel buttons are added
+automatically. Form values are returned as key-value pairs keyed by each element's `name` attribute.
 
 | Parameter         | Type   | Required | Description                                         |
 | ----------------- | ------ | -------- | --------------------------------------------------- |
@@ -344,6 +344,42 @@ Returns:
 Supported input types: `text`, `number`, `email`, `url`, `tel`, `password`, `date`, `time`,
 `checkbox`, `radio`, `hidden`, `color`, `range`. Checkbox values are returned as `"true"`/`"false"`.
 Radio groups return the value of the selected option.
+
+**Radio/checkbox group layout.** Put the question in its own block element (a `<p>`, or a
+`<fieldset>` with a `<legend>`) and wrap **each** option in its own `<label>`. The form CSS makes
+`<label>` block-level, so every option — including the first — renders on its own line beneath the
+question:
+
+```html
+<p>Scope of the drop:</p>
+<label><input type="radio" name="scope" value="mcp" checked> Drop only MCP requests</label>
+<label><input type="radio" name="scope" value="path"> Drop by literal path match</label>
+<label><input type="radio" name="scope" value="all"> Blanket: drop all spans</label>
+```
+
+Do **not** render the question as inline text/`<strong>` immediately followed by the first option,
+and do **not** list bare `<input>` options separated by `<br>` — in that markup the first option
+renders glued to the question line while the rest break correctly, which looks broken. (As a safety
+net, the form CSS also forces standalone `<p>`/heading/`<strong>` headings inside a form to
+block-level, but wrapping each option in a `<label>` is the reliable pattern.)
+
+**Clickable workspace-file references.** `<a>`/`href` remain banned, but a form may include an
+**inert, data-only marker** on a `<span>` or `<label>` that the web UI turns into a clickable link
+opening Mitto's internal file viewer (`viewer.html`) at an optional line:
+
+```html
+<span data-mitto-file="internal/web/server.go" data-mitto-line="142">internal/web/server.go:142</span>
+```
+
+- `data-mitto-file` — a **workspace-relative** path. Absolute paths (leading `/`), `..` traversal,
+  URL schemes (`javascript:`, `data:`, `http://`, …) and backslashes are rejected by the sanitizer.
+- `data-mitto-line` — digits only (optional). When present, the viewer scrolls to and highlights
+  that line.
+- These attributes are allowed **only** on `<span>` and `<label>`; on any other element they are
+  stripped. The agent never supplies a URL or scheme — trusted frontend code builds the viewer URL
+  from the **current workspace** UUID plus the validated path and line, so the marker is inert until
+  the UI wires it up and cannot target another workspace. Works in both the browser and the native
+  macOS app.
 
 #### `mitto_conversation_new`
 
@@ -439,12 +475,12 @@ sequenceDiagram
 
 #### `mitto_conversation_update`
 
-Update properties of a conversation. Supports partial updates — only specified fields are changed, others are left untouched. Any registered session can update any conversation (no parent-child restriction).
+Update properties of a conversation. Supports partial updates — only specified fields are changed, others are left untouched. Any registered session can update any conversation (no parent-child restriction). Pass `"self"` (or your own conversation ID) as `conversation_id` to update your own conversation (e.g. a periodic conversation disabling its own periodicity).
 
 | Parameter         | Type                            | Required | Description                                                    |
 | ----------------- | ------------------------------- | -------- | -------------------------------------------------------------- |
 | `self_id`         | string                          | Yes      | Your session ID                                                |
-| `conversation_id` | string                          | Yes      | Target conversation to update                                  |
+| `conversation_id` | string                          | Yes      | Target conversation to update, or `"self"`/your own ID to update yourself |
 | `name`            | string                          | No       | New conversation title (omit to leave unchanged)               |
 | `user_data`       | `[{name, value}]`               | No       | User data attributes to set (validated against workspace schema) |
 | `user_data_merge` | bool                            | No       | If `true` (default), merge with existing attributes; if `false`, replace all |

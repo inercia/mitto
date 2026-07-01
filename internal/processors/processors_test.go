@@ -14,6 +14,167 @@ import (
 	"github.com/inercia/mitto/internal/config"
 )
 
+func TestBuildCELContext_ArgsAndPeriodicForced(t *testing.T) {
+	input := &ProcessorInput{
+		SessionID:        "sess-1",
+		IsPeriodicForced: true,
+		Arguments:        map[string]string{"BRANCH": "main"},
+	}
+	ctx := BuildCELContext(input)
+	if !ctx.Session.IsPeriodicForced {
+		t.Error("expected ctx.Session.IsPeriodicForced=true")
+	}
+	if ctx.Args == nil || ctx.Args["BRANCH"] != "main" {
+		t.Fatalf("expected ctx.Args populated from input.Arguments, got %#v", ctx.Args)
+	}
+
+	// nil Arguments (menu-time shape) must yield a nil-safe Args map.
+	empty := BuildCELContext(&ProcessorInput{SessionID: "sess-2"})
+	if empty.Args != nil {
+		t.Errorf("expected nil Args when input.Arguments is nil, got %#v", empty.Args)
+	}
+	if empty.Session.IsPeriodicForced {
+		t.Error("expected IsPeriodicForced=false by default")
+	}
+}
+
+// TestBuildCELContext_NewFields asserts that BuildCELContext populates the new
+// fields added in mitto-jkpn: ACP.Available, Children.All, Children.MCP,
+// Session.UserDataJSON, and Workspace.UserDataSchemaJSON.
+func TestBuildCELContext_NewFields(t *testing.T) {
+	input := &ProcessorInput{
+		SessionID: "sess-1",
+		ACPServer: "auggie",
+		AvailableACPServers: []AvailableACPServer{
+			{Name: "auggie", Type: "augment", Tags: []string{"coding"}, Current: true},
+			{Name: "claude", Type: "claude-code", Tags: []string{"fast"}, Current: false},
+		},
+		ChildSessions: []ChildSession{
+			{ID: "c1", Name: "Coder", ACPServer: "auggie", ChildOrigin: "mcp", IsPrompting: true},
+			{ID: "c2", Name: "Helper", ACPServer: "claude", ChildOrigin: "auto", IsPrompting: false},
+		},
+		UserDataJSON:       `[{"name":"env","value":"prod"}]`,
+		UserDataSchemaJSON: `[{"name":"env","type":"string"}]`,
+	}
+
+	ctx := BuildCELContext(input)
+
+	// ACP.Available
+	if len(ctx.ACP.Available) != 2 {
+		t.Fatalf("ACP.Available: expected 2 entries, got %d", len(ctx.ACP.Available))
+	}
+	if ctx.ACP.Available[0].Name != "auggie" || !ctx.ACP.Available[0].Current {
+		t.Errorf("ACP.Available[0]: got %+v", ctx.ACP.Available[0])
+	}
+	if ctx.ACP.Available[1].Name != "claude" || ctx.ACP.Available[1].Current {
+		t.Errorf("ACP.Available[1]: got %+v", ctx.ACP.Available[1])
+	}
+
+	// Children.All — both children
+	if len(ctx.Children.All) != 2 {
+		t.Fatalf("Children.All: expected 2, got %d", len(ctx.Children.All))
+	}
+	if ctx.Children.All[0].ID != "c1" || !ctx.Children.All[0].IsPrompting {
+		t.Errorf("Children.All[0]: got %+v", ctx.Children.All[0])
+	}
+	if ctx.Children.All[1].ID != "c2" || ctx.Children.All[1].IsPrompting {
+		t.Errorf("Children.All[1]: got %+v", ctx.Children.All[1])
+	}
+
+	// Children.MCP — only the mcp child
+	if len(ctx.Children.MCP) != 1 {
+		t.Fatalf("Children.MCP: expected 1, got %d", len(ctx.Children.MCP))
+	}
+	if ctx.Children.MCP[0].ID != "c1" || ctx.Children.MCP[0].Origin != "mcp" {
+		t.Errorf("Children.MCP[0]: got %+v", ctx.Children.MCP[0])
+	}
+
+	// Session.UserDataJSON
+	if ctx.Session.UserDataJSON != input.UserDataJSON {
+		t.Errorf("Session.UserDataJSON = %q, want %q", ctx.Session.UserDataJSON, input.UserDataJSON)
+	}
+
+	// Workspace.UserDataSchemaJSON
+	if ctx.Workspace.UserDataSchemaJSON != input.UserDataSchemaJSON {
+		t.Errorf("Workspace.UserDataSchemaJSON = %q, want %q", ctx.Workspace.UserDataSchemaJSON, input.UserDataSchemaJSON)
+	}
+}
+
+// TestBuildCELContext_ModelTags asserts that BuildCELContext copies the resolved model
+// tags and name onto the Session context (mitto-i5sr), and that an unset input yields
+// empty values (safe for Model(tag)/HasModelTag to treat as no tags).
+func TestBuildCELContext_ModelTags(t *testing.T) {
+	input := &ProcessorInput{
+		SessionID: "sess-1",
+		ModelName: "Opus 4.8",
+		ModelTags: []string{"Smart", "Expensive"},
+	}
+	ctx := BuildCELContext(input)
+
+	if ctx.Session.ModelName != "Opus 4.8" {
+		t.Errorf("Session.ModelName = %q, want %q", ctx.Session.ModelName, "Opus 4.8")
+	}
+	if len(ctx.Session.ModelTags) != 2 || ctx.Session.ModelTags[0] != "Smart" || ctx.Session.ModelTags[1] != "Expensive" {
+		t.Errorf("Session.ModelTags = %v, want [Smart Expensive]", ctx.Session.ModelTags)
+	}
+
+	// Unset model fields yield empty values (cold start / unknown model).
+	emptyCtx := BuildCELContext(&ProcessorInput{SessionID: "s"})
+	if emptyCtx.Session.ModelName != "" {
+		t.Errorf("empty Session.ModelName = %q, want \"\"", emptyCtx.Session.ModelName)
+	}
+	if len(emptyCtx.Session.ModelTags) != 0 {
+		t.Errorf("empty Session.ModelTags = %v, want []", emptyCtx.Session.ModelTags)
+	}
+}
+
+// TestBuildCELContext_UserData asserts that BuildCELContext populates ctx.UserData
+// from input.UserData (name→value map).
+func TestBuildCELContext_UserData(t *testing.T) {
+	input := &ProcessorInput{
+		SessionID: "sess-1",
+		UserData:  map[string]string{"JIRA Ticket": "PROJ-42", "env": "prod"},
+	}
+	ctx := BuildCELContext(input)
+
+	if ctx.UserData == nil {
+		t.Fatal("expected ctx.UserData to be populated, got nil")
+	}
+	if ctx.UserData["JIRA Ticket"] != "PROJ-42" {
+		t.Errorf(`ctx.UserData["JIRA Ticket"] = %q, want "PROJ-42"`, ctx.UserData["JIRA Ticket"])
+	}
+	if ctx.UserData["env"] != "prod" {
+		t.Errorf(`ctx.UserData["env"] = %q, want "prod"`, ctx.UserData["env"])
+	}
+
+	// nil input.UserData must yield nil ctx.UserData (safe to index).
+	emptyCtx := BuildCELContext(&ProcessorInput{SessionID: "s"})
+	if emptyCtx.UserData != nil {
+		t.Errorf("expected nil ctx.UserData when input.UserData is nil, got %#v", emptyCtx.UserData)
+	}
+}
+
+// TestBuildCELContext_EmptyInput verifies no panics and zero values for new fields
+// when input has no ACP servers, no children, and no user-data JSON.
+func TestBuildCELContext_EmptyInput(t *testing.T) {
+	ctx := BuildCELContext(&ProcessorInput{SessionID: "s"})
+	if len(ctx.ACP.Available) != 0 {
+		t.Errorf("expected empty ACP.Available, got %d", len(ctx.ACP.Available))
+	}
+	if len(ctx.Children.All) != 0 {
+		t.Errorf("expected empty Children.All, got %d", len(ctx.Children.All))
+	}
+	if len(ctx.Children.MCP) != 0 {
+		t.Errorf("expected empty Children.MCP, got %d", len(ctx.Children.MCP))
+	}
+	if ctx.Session.UserDataJSON != "" {
+		t.Errorf("expected empty Session.UserDataJSON, got %q", ctx.Session.UserDataJSON)
+	}
+	if ctx.Workspace.UserDataSchemaJSON != "" {
+		t.Errorf("expected empty Workspace.UserDataSchemaJSON, got %q", ctx.Workspace.UserDataSchemaJSON)
+	}
+}
+
 func TestProcessorIsEnabled(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -125,8 +286,8 @@ func TestProcessorShouldApply(t *testing.T) {
 			expected:       true,
 		},
 		{
-			name: "enabledWhen CEL matches acp.name",
-			hook: &Processor{When: WhenConfig{On: PhaseUserPrompt, Match: MatchAll}, EnabledWhen: `acp.name == "auggie-opus"`},
+			name: "enabledWhen CEL matches ACP.Name",
+			hook: &Processor{When: WhenConfig{On: PhaseUserPrompt, Match: MatchAll}, EnabledWhen: `ACP.Name == "auggie-opus"`},
 			input: &ProcessorInput{
 				ACPServer: "auggie-opus",
 				AvailableACPServers: []AvailableACPServer{
@@ -137,8 +298,8 @@ func TestProcessorShouldApply(t *testing.T) {
 			expected:       true,
 		},
 		{
-			name: "enabledWhen CEL acp.name no match",
-			hook: &Processor{When: WhenConfig{On: PhaseUserPrompt, Match: MatchAll}, EnabledWhen: `acp.name == "auggie-opus"`},
+			name: "enabledWhen CEL ACP.Name no match",
+			hook: &Processor{When: WhenConfig{On: PhaseUserPrompt, Match: MatchAll}, EnabledWhen: `ACP.Name == "auggie-opus"`},
 			input: &ProcessorInput{
 				ACPServer: "auggie-fast",
 				AvailableACPServers: []AvailableACPServer{
@@ -149,8 +310,8 @@ func TestProcessorShouldApply(t *testing.T) {
 			expected:       false,
 		},
 		{
-			name: "enabledWhen CEL matches acp.tags",
-			hook: &Processor{When: WhenConfig{On: PhaseUserPrompt, Match: MatchAll}, EnabledWhen: `acp.tags.exists(t, t == "reasoning")`},
+			name: "enabledWhen CEL matches ACP.Tags",
+			hook: &Processor{When: WhenConfig{On: PhaseUserPrompt, Match: MatchAll}, EnabledWhen: `ACP.Tags.exists(t, t == "reasoning")`},
 			input: &ProcessorInput{
 				ACPServer: "auggie-opus",
 				AvailableACPServers: []AvailableACPServer{
@@ -162,7 +323,7 @@ func TestProcessorShouldApply(t *testing.T) {
 		},
 		{
 			name: "enabledWhen CEL tags no match",
-			hook: &Processor{When: WhenConfig{On: PhaseUserPrompt, Match: MatchAll}, EnabledWhen: `acp.tags.exists(t, t == "reasoning")`},
+			hook: &Processor{When: WhenConfig{On: PhaseUserPrompt, Match: MatchAll}, EnabledWhen: `ACP.Tags.exists(t, t == "reasoning")`},
 			input: &ProcessorInput{
 				ACPServer: "auggie-fast",
 				AvailableACPServers: []AvailableACPServer{
@@ -173,8 +334,8 @@ func TestProcessorShouldApply(t *testing.T) {
 			expected:       false,
 		},
 		{
-			name: "enabledWhen CEL children.exists",
-			hook: &Processor{When: WhenConfig{On: PhaseUserPrompt, Match: MatchAll}, EnabledWhen: `children.exists`},
+			name: "enabledWhen CEL Children.Exists",
+			hook: &Processor{When: WhenConfig{On: PhaseUserPrompt, Match: MatchAll}, EnabledWhen: `Children.Exists`},
 			input: &ProcessorInput{
 				ChildSessions: []ChildSession{
 					{ID: "child-1", Name: "Sub task"},
@@ -184,15 +345,15 @@ func TestProcessorShouldApply(t *testing.T) {
 			expected:       true,
 		},
 		{
-			name:           "enabledWhen CEL children.exists false",
-			hook:           &Processor{When: WhenConfig{On: PhaseUserPrompt, Match: MatchAll}, EnabledWhen: `children.exists`},
+			name:           "enabledWhen CEL Children.Exists false",
+			hook:           &Processor{When: WhenConfig{On: PhaseUserPrompt, Match: MatchAll}, EnabledWhen: `Children.Exists`},
 			input:          &ProcessorInput{},
 			isFirstMessage: true,
 			expected:       false,
 		},
 		{
-			name: "enabledWhen CEL children.mcp_count threshold met",
-			hook: &Processor{When: WhenConfig{On: PhaseUserPrompt, Match: MatchAll}, EnabledWhen: `children.mcp_count >= 2`},
+			name: "enabledWhen CEL Children.MCPCount threshold met",
+			hook: &Processor{When: WhenConfig{On: PhaseUserPrompt, Match: MatchAll}, EnabledWhen: `Children.MCPCount >= 2`},
 			input: &ProcessorInput{
 				ChildSessions: []ChildSession{
 					{ID: "child-1", Name: "Task A", ChildOrigin: "mcp"},
@@ -203,8 +364,8 @@ func TestProcessorShouldApply(t *testing.T) {
 			expected:       true,
 		},
 		{
-			name: "enabledWhen CEL children.mcp_count below threshold",
-			hook: &Processor{When: WhenConfig{On: PhaseUserPrompt, Match: MatchAll}, EnabledWhen: `children.mcp_count >= 2`},
+			name: "enabledWhen CEL Children.MCPCount below threshold",
+			hook: &Processor{When: WhenConfig{On: PhaseUserPrompt, Match: MatchAll}, EnabledWhen: `Children.MCPCount >= 2`},
 			input: &ProcessorInput{
 				ChildSessions: []ChildSession{
 					{ID: "child-1", Name: "Task A", ChildOrigin: "mcp"},
@@ -215,8 +376,8 @@ func TestProcessorShouldApply(t *testing.T) {
 			expected:       false,
 		},
 		{
-			name: "enabledWhen CEL children.promptingCount zero when none prompting",
-			hook: &Processor{When: WhenConfig{On: PhaseUserPrompt, Match: MatchAll}, EnabledWhen: `children.promptingCount == 0`},
+			name: "enabledWhen CEL Children.PromptingCount zero when none prompting",
+			hook: &Processor{When: WhenConfig{On: PhaseUserPrompt, Match: MatchAll}, EnabledWhen: `Children.PromptingCount == 0`},
 			input: &ProcessorInput{
 				ChildSessions: []ChildSession{
 					{ID: "child-1", Name: "Task A", ChildOrigin: "mcp", IsPrompting: false},
@@ -227,8 +388,8 @@ func TestProcessorShouldApply(t *testing.T) {
 			expected:       true,
 		},
 		{
-			name: "enabledWhen CEL children.promptingCount non-zero when child is prompting",
-			hook: &Processor{When: WhenConfig{On: PhaseUserPrompt, Match: MatchAll}, EnabledWhen: `children.promptingCount == 0`},
+			name: "enabledWhen CEL Children.PromptingCount non-zero when child is prompting",
+			hook: &Processor{When: WhenConfig{On: PhaseUserPrompt, Match: MatchAll}, EnabledWhen: `Children.PromptingCount == 0`},
 			input: &ProcessorInput{
 				ChildSessions: []ChildSession{
 					{ID: "child-1", Name: "Task A", ChildOrigin: "mcp", IsPrompting: true},
@@ -239,8 +400,8 @@ func TestProcessorShouldApply(t *testing.T) {
 			expected:       false,
 		},
 		{
-			name: "enabledWhen CEL children.idleCount correct",
-			hook: &Processor{When: WhenConfig{On: PhaseUserPrompt, Match: MatchAll}, EnabledWhen: `children.idleCount == 1`},
+			name: "enabledWhen CEL Children.IdleCount correct",
+			hook: &Processor{When: WhenConfig{On: PhaseUserPrompt, Match: MatchAll}, EnabledWhen: `Children.IdleCount == 1`},
 			input: &ProcessorInput{
 				ChildSessions: []ChildSession{
 					{ID: "child-1", Name: "Task A", ChildOrigin: "mcp", IsPrompting: true},
@@ -267,8 +428,8 @@ func TestProcessorShouldApply(t *testing.T) {
 			expected:       true,
 		},
 		{
-			name: "tools.hasAllPatterns all patterns satisfied",
-			hook: &Processor{When: WhenConfig{On: PhaseUserPrompt, Match: MatchAll}, EnabledWhen: `tools.hasAllPatterns(["mitto_*", "jira_*"])`},
+			name: "Tools.HasAllPatterns all patterns satisfied",
+			hook: &Processor{When: WhenConfig{On: PhaseUserPrompt, Match: MatchAll}, EnabledWhen: `Tools.HasAllPatterns(["mitto_*", "jira_*"])`},
 			input: &ProcessorInput{
 				MCPToolNames: []string{"mitto_conversation_new", "mitto_conversation_list", "jira_search"},
 			},
@@ -276,8 +437,8 @@ func TestProcessorShouldApply(t *testing.T) {
 			expected:       true,
 		},
 		{
-			name: "tools.hasAllPatterns some patterns not satisfied",
-			hook: &Processor{When: WhenConfig{On: PhaseUserPrompt, Match: MatchAll}, EnabledWhen: `tools.hasAllPatterns(["mitto_*", "slack_*"])`},
+			name: "Tools.HasAllPatterns some patterns not satisfied",
+			hook: &Processor{When: WhenConfig{On: PhaseUserPrompt, Match: MatchAll}, EnabledWhen: `Tools.HasAllPatterns(["mitto_*", "slack_*"])`},
 			input: &ProcessorInput{
 				MCPToolNames: []string{"mitto_conversation_new", "jira_search"},
 			},
@@ -285,8 +446,8 @@ func TestProcessorShouldApply(t *testing.T) {
 			expected:       false,
 		},
 		{
-			name:           "tools.hasPattern no tools available",
-			hook:           &Processor{When: WhenConfig{On: PhaseUserPrompt, Match: MatchAll}, EnabledWhen: `tools.hasPattern("mitto_*")`},
+			name:           "Tools.HasPattern no tools available",
+			hook:           &Processor{When: WhenConfig{On: PhaseUserPrompt, Match: MatchAll}, EnabledWhen: `Tools.HasPattern("mitto_*")`},
 			input:          &ProcessorInput{MCPToolNames: []string{}},
 			isFirstMessage: true,
 			expected:       false,
@@ -301,8 +462,8 @@ func TestProcessorShouldApply(t *testing.T) {
 			expected:       true,
 		},
 		{
-			name: "tools.hasPattern exact tool match",
-			hook: &Processor{When: WhenConfig{On: PhaseUserPrompt, Match: MatchAll}, EnabledWhen: `tools.hasPattern("mitto_conversation_new")`},
+			name: "Tools.HasPattern exact tool match",
+			hook: &Processor{When: WhenConfig{On: PhaseUserPrompt, Match: MatchAll}, EnabledWhen: `Tools.HasPattern("mitto_conversation_new")`},
 			input: &ProcessorInput{
 				MCPToolNames: []string{"mitto_conversation_new", "mitto_conversation_list"},
 			},
@@ -310,8 +471,8 @@ func TestProcessorShouldApply(t *testing.T) {
 			expected:       true,
 		},
 		{
-			name: "enabledWhen CEL tools.hasPattern",
-			hook: &Processor{When: WhenConfig{On: PhaseUserPrompt, Match: MatchAll}, EnabledWhen: `tools.hasPattern("mitto_*")`},
+			name: "enabledWhen CEL Tools.HasPattern",
+			hook: &Processor{When: WhenConfig{On: PhaseUserPrompt, Match: MatchAll}, EnabledWhen: `Tools.HasPattern("mitto_*")`},
 			input: &ProcessorInput{
 				MCPToolNames: []string{"mitto_conversation_new", "mitto_conversation_list"},
 			},
@@ -319,8 +480,8 @@ func TestProcessorShouldApply(t *testing.T) {
 			expected:       true,
 		},
 		{
-			name: "enabledWhen CEL tools.hasPattern no match",
-			hook: &Processor{When: WhenConfig{On: PhaseUserPrompt, Match: MatchAll}, EnabledWhen: `tools.hasPattern("slack_*")`},
+			name: "enabledWhen CEL Tools.HasPattern no match",
+			hook: &Processor{When: WhenConfig{On: PhaseUserPrompt, Match: MatchAll}, EnabledWhen: `Tools.HasPattern("slack_*")`},
 			input: &ProcessorInput{
 				MCPToolNames: []string{"mitto_conversation_new", "jira_search"},
 			},
@@ -853,6 +1014,91 @@ text: "hello"
 			expectSkip:  true,
 			expectCount: 0,
 		},
+		// parameters block tests (mitto-5g2v.1)
+		{
+			name: "prompt-mode with valid parameters accepted",
+			yaml: `
+name: ok-params
+when:
+  on: userPrompt
+  match: first
+prompt: "Save content to ${filename}."
+parameters:
+  - name: filename
+    type: text
+    description: Target filename
+    default: AGENTS.md
+`,
+			expectSkip:  false,
+			expectCount: 1,
+		},
+		{
+			name: "prompt-mode parameter missing default rejected",
+			yaml: `
+name: bad-no-default
+when:
+  on: userPrompt
+  match: first
+prompt: "Save content to ${filename}."
+parameters:
+  - name: filename
+    type: text
+    description: Target filename
+`,
+			expectSkip:  true,
+			expectCount: 0,
+		},
+		{
+			name: "prompt-mode parameter unknown type rejected",
+			yaml: `
+name: bad-unknown-type
+when:
+  on: userPrompt
+  match: first
+prompt: "Save content to ${filename}."
+parameters:
+  - name: filename
+    type: unknownType
+    default: AGENTS.md
+`,
+			expectSkip:  true,
+			expectCount: 0,
+		},
+		{
+			name: "prompt-mode duplicate parameter name rejected",
+			yaml: `
+name: bad-dup-name
+when:
+  on: userPrompt
+  match: first
+prompt: "Use ${x} and ${x} again."
+parameters:
+  - name: x
+    type: text
+    default: foo
+  - name: x
+    type: text
+    default: bar
+`,
+			expectSkip:  true,
+			expectCount: 0,
+		},
+		{
+			name: "command-mode with parameters rejected",
+			yaml: `
+name: bad-cmd-params
+when:
+  on: userPrompt
+  match: all
+command: /bin/echo
+parameters:
+  - name: filename
+    type: text
+    default: AGENTS.md
+`,
+			expectSkip:  true,
+			expectCount: 0,
+		},
 	}
 
 	for _, tt := range tests {
@@ -868,6 +1114,113 @@ text: "hello"
 				t.Errorf("expected %d processors, got %d", tt.expectCount, len(procs))
 			}
 		})
+	}
+}
+
+// TestLoader_Errors_ValidationFailure verifies that a processor with a missing
+// mandatory `default` is retained as a ProcessorLoadError (not silently dropped)
+// and is accessible via Loader.Errors() and Manager.LoadErrors().
+func TestLoader_Errors_ValidationFailure(t *testing.T) {
+	dir := t.TempDir()
+	writeYAML(t, dir, "bad.yaml", `
+name: bad-no-default
+when:
+  on: userPrompt
+  match: first
+prompt: "Save to ${filename}."
+parameters:
+  - name: filename
+    type: text
+`)
+
+	loader := NewLoader(dir, nil)
+	procs, err := loader.Load()
+	if err != nil {
+		t.Fatalf("Load() should not return error (validation failures are retained), got: %v", err)
+	}
+	if len(procs) != 0 {
+		t.Errorf("expected 0 valid processors, got %d", len(procs))
+	}
+	errs := loader.Errors()
+	if len(errs) != 1 {
+		t.Fatalf("expected 1 load error, got %d: %v", len(errs), errs)
+	}
+	le := errs[0]
+	if le.Name != "bad-no-default" {
+		t.Errorf("error.Name = %q, want %q", le.Name, "bad-no-default")
+	}
+	if le.Error == "" {
+		t.Error("error.Error must not be empty")
+	}
+	if le.FilePath == "" {
+		t.Error("error.FilePath must not be empty")
+	}
+
+	// Manager.LoadErrors() must thread through the same errors.
+	mgr := NewManager(dir, nil)
+	if err := mgr.Load(); err != nil {
+		t.Fatalf("Manager.Load() error: %v", err)
+	}
+	mgrErrs := mgr.LoadErrors()
+	if len(mgrErrs) != 1 {
+		t.Fatalf("Manager.LoadErrors(): expected 1, got %d", len(mgrErrs))
+	}
+	if mgrErrs[0].Name != "bad-no-default" {
+		t.Errorf("Manager error.Name = %q, want %q", mgrErrs[0].Name, "bad-no-default")
+	}
+	if mgrErrs[0].Source != ProcessorSourceGlobal {
+		t.Errorf("Manager error.Source = %q, want %q", mgrErrs[0].Source, ProcessorSourceGlobal)
+	}
+}
+
+// TestLoader_Errors_YAMLParseFailure verifies that a file with a YAML syntax error
+// is retained as a file-level ProcessorLoadError with an empty Name.
+func TestLoader_Errors_YAMLParseFailure(t *testing.T) {
+	dir := t.TempDir()
+	writeYAML(t, dir, "bad.yaml", "invalid: yaml: content:")
+
+	loader := NewLoader(dir, nil)
+	procs, err := loader.Load()
+	if err != nil {
+		t.Fatalf("Load() should not return error (bad files are retained), got: %v", err)
+	}
+	if len(procs) != 0 {
+		t.Errorf("expected 0 valid processors, got %d", len(procs))
+	}
+	errs := loader.Errors()
+	if len(errs) != 1 {
+		t.Fatalf("expected 1 load error, got %d: %v", len(errs), errs)
+	}
+	le := errs[0]
+	if le.Name != "" {
+		t.Errorf("file-level error.Name = %q, want empty (file didn't parse)", le.Name)
+	}
+	if le.Error == "" {
+		t.Error("error.Error must not be empty")
+	}
+}
+
+// TestLoader_Errors_ValidProcNoErrors verifies that a valid processor produces no
+// load errors — ensuring the error-collection path doesn't affect the happy path.
+func TestLoader_Errors_ValidProcNoErrors(t *testing.T) {
+	dir := t.TempDir()
+	writeYAML(t, dir, "ok.yaml", `
+name: ok-proc
+when:
+  on: userPrompt
+  match: all
+command: /bin/echo
+`)
+	loader := NewLoader(dir, nil)
+	procs, err := loader.Load()
+	if err != nil {
+		t.Fatalf("Load(): %v", err)
+	}
+	if len(procs) != 1 {
+		t.Errorf("expected 1 processor, got %d", len(procs))
+	}
+	if len(loader.Errors()) != 0 {
+		t.Errorf("expected 0 load errors for valid processor, got %d: %v", len(loader.Errors()), loader.Errors())
 	}
 }
 
@@ -1119,7 +1472,7 @@ echo '{"text": " :SUFFIX"}'
 	if err != nil {
 		t.Fatalf("ApplyProcessors() error = %v", err)
 	}
-	expected := wrapUserRequest("original") + " :SUFFIX"
+	expected := wrapUserRequest("original") + wrapSystemNotes(" :SUFFIX")
 	if result.Message != expected {
 		t.Errorf("ApplyProcessors() = %q, want %q", result.Message, expected)
 	}
@@ -1324,8 +1677,8 @@ func TestApplyProcessorsTextModeAppend(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ApplyProcessors() error = %v", err)
 	}
-	if result.Message != wrapUserRequest("hello world")+" SUFFIX" {
-		t.Errorf("ApplyProcessors() = %q, want %q", result.Message, wrapUserRequest("hello world")+" SUFFIX")
+	if result.Message != wrapUserRequest("hello world")+wrapSystemNotes(" SUFFIX") {
+		t.Errorf("ApplyProcessors() = %q, want %q", result.Message, wrapUserRequest("hello world")+wrapSystemNotes(" SUFFIX"))
 	}
 }
 
@@ -1356,7 +1709,7 @@ func TestApplyProcessorsTextModeChained(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ApplyProcessors() error = %v", err)
 	}
-	expected := "Context: " + wrapUserRequest("user message") + "\n---\nEnd"
+	expected := "Context: " + wrapUserRequest("user message") + wrapSystemNotes("\n---\nEnd")
 	if result.Message != expected {
 		t.Errorf("ApplyProcessors() = %q, want %q", result.Message, expected)
 	}
@@ -1436,9 +1789,11 @@ func TestApplyProcessors_FirstMessageWrapsUserRequest(t *testing.T) {
 		t.Errorf("expected result to contain wrapped user request %q, got %q", wrapped, result.Message)
 	}
 
-	// Ordering: [Session Context] < <user_request> < [Reminder]
+	// Ordering: [Session Context] < <user_request> < <mitto_system_notes> (contains [Reminder])
 	idxCtx := strings.Index(result.Message, "[Session Context]")
 	idxReq := strings.Index(result.Message, "<user_request>")
+	idxNotesOpen := strings.Index(result.Message, "<mitto_system_notes>")
+	idxNotesClose := strings.Index(result.Message, "</mitto_system_notes>")
 	idxRem := strings.Index(result.Message, "[Reminder]")
 	if idxCtx < 0 || idxReq < 0 || idxRem < 0 {
 		t.Fatalf("expected all three sections present; ctx=%d req=%d rem=%d in %q", idxCtx, idxReq, idxRem, result.Message)
@@ -1447,7 +1802,18 @@ func TestApplyProcessors_FirstMessageWrapsUserRequest(t *testing.T) {
 		t.Errorf("ordering wrong: [Session Context] at %d, <user_request> at %d, [Reminder] at %d", idxCtx, idxReq, idxRem)
 	}
 
-	// Negative case: non-first message must NOT be wrapped.
+	// System-notes wrapping: appended [Reminder] must be inside <mitto_system_notes>.
+	if idxNotesOpen < 0 || idxNotesClose < 0 {
+		t.Fatalf("expected <mitto_system_notes>…</mitto_system_notes> in first-message result, got %q", result.Message)
+	}
+	if idxReq >= idxNotesOpen {
+		t.Errorf("ordering wrong: <user_request> at %d should be before <mitto_system_notes> at %d", idxReq, idxNotesOpen)
+	}
+	if idxNotesOpen >= idxRem || idxRem >= idxNotesClose {
+		t.Errorf("[Reminder] at %d should be between <mitto_system_notes> (%d) and </mitto_system_notes> (%d)", idxRem, idxNotesOpen, idxNotesClose)
+	}
+
+	// Negative case: non-first message must NOT be wrapped with either tag.
 	input2 := &ProcessorInput{Message: msg, IsFirstMessage: false}
 	result2, err := ApplyProcessors(ctx, procs, input2, "", nil)
 	if err != nil {
@@ -1455,6 +1821,9 @@ func TestApplyProcessors_FirstMessageWrapsUserRequest(t *testing.T) {
 	}
 	if strings.Contains(result2.Message, "<user_request>") {
 		t.Errorf("non-first message should NOT contain <user_request> wrapper, got %q", result2.Message)
+	}
+	if strings.Contains(result2.Message, "<mitto_system_notes>") {
+		t.Errorf("non-first message should NOT contain <mitto_system_notes> wrapper, got %q", result2.Message)
 	}
 }
 
@@ -1494,19 +1863,84 @@ func TestApplyProcessorsWithVariableSubstitution(t *testing.T) {
 
 	// At this point, @mitto: variables are still unresolved.
 	// The user request is wrapped in <user_request> delimiters (first-message protection).
+	// The appended footer is wrapped in <mitto_system_notes> (first-message system-notes wrapping).
 	expectedBeforeSubst := "Session: @mitto:session_id\nProject: @mitto:working_dir\n\n" +
-		wrapUserRequest("Fix the login bug") + "\n[agent: @mitto:acp_server]"
+		wrapUserRequest("Fix the login bug") + wrapSystemNotes("\n[agent: @mitto:acp_server]")
 	if result.Message != expectedBeforeSubst {
 		t.Errorf("before substitution: got %q, want %q", result.Message, expectedBeforeSubst)
 	}
 
-	// Step 2: Substitute variables (as BackgroundSession does)
+	// Step 2: Substitute variables (as BackgroundSession does).
+	// SubstituteVariables runs on the whole assembled string, so @mitto: tokens
+	// inside <mitto_system_notes> are substituted the same as before.
 	finalMessage := SubstituteVariables(result.Message, input)
 
 	expectedAfterSubst := "Session: sess-001\nProject: /home/user/myproject\n\n" +
-		wrapUserRequest("Fix the login bug") + "\n[agent: claude-code]"
+		wrapUserRequest("Fix the login bug") + wrapSystemNotes("\n[agent: claude-code]")
 	if finalMessage != expectedAfterSubst {
 		t.Errorf("after substitution: got %q, want %q", finalMessage, expectedAfterSubst)
+	}
+}
+
+// TestApplyProcessors_TextModeTemplateRendering verifies that a text-mode
+// processor body containing Go-template {{ }} accessors is rendered against the
+// session context (mirrors the session-context.yaml builtin after its migration
+// from @mitto: variables to templates). Rendering runs inside ApplyProcessors, so
+// the assembled message contains the resolved values and no literal "{{".
+func TestApplyProcessors_TextModeTemplateRendering(t *testing.T) {
+	procs := []*Processor{
+		{
+			Name: "session-context",
+			Text: "[Session Context]\n" +
+				"Session: {{ .Session.ID }} ({{ .Session.Name }})\n" +
+				"Agent: {{ .ACP.Name }}\n" +
+				"Working Directory: {{ .Workspace.Folder }}\n" +
+				"Parent: {{ .Parent.Ref }}\n" +
+				"Children: {{ .Children.AllText }}\n" +
+				"Available Agents: {{ .ACP.AvailableText }}\n---\n",
+			Mutate: config.ProcessorMutatePrepend,
+			When:   WhenConfig{On: PhaseUserPrompt, Match: MatchAll},
+		},
+	}
+
+	ctx := context.Background()
+	input := &ProcessorInput{
+		Message:           "Fix the login bug",
+		IsFirstMessage:    false, // avoid <user_request> wrapping for a simpler assertion
+		SessionID:         "sess-1",
+		SessionName:       "My Session",
+		WorkingDir:        "/work/dir",
+		ACPServer:         "auggie",
+		ParentSessionID:   "parent-1",
+		ParentSessionName: "Boss",
+		ChildSessions: []ChildSession{
+			{ID: "c1", Name: "Coder", ACPServer: "auggie", ChildOrigin: "mcp", IsPrompting: false},
+		},
+		AvailableACPServers: []AvailableACPServer{
+			{Name: "auggie", Type: "augment", Tags: []string{"coding"}, Current: true},
+		},
+	}
+
+	result, err := ApplyProcessors(ctx, procs, input, "", nil)
+	if err != nil {
+		t.Fatalf("ApplyProcessors() error = %v", err)
+	}
+
+	for _, want := range []string{
+		"Session: sess-1 (My Session)",
+		"Agent: auggie",
+		"Working Directory: /work/dir",
+		"Parent: parent-1 (Boss)",
+		"c1",     // child id rendered via {{ .Children.AllText }}
+		"Coder",  // child name rendered via {{ .Children.AllText }}
+		"auggie", // available ACP server rendered via {{ .ACP.AvailableText }}
+	} {
+		if !strings.Contains(result.Message, want) {
+			t.Errorf("expected rendered message to contain %q, got %q", want, result.Message)
+		}
+	}
+	if strings.Contains(result.Message, "{{") {
+		t.Errorf("expected all templates rendered (no literal {{), got %q", result.Message)
 	}
 }
 
@@ -3284,6 +3718,358 @@ func TestApplyAfter_PromptMode_Dispatched(t *testing.T) {
 	}
 }
 
+// TestPromptMode_ArgSubstitution_BeforePhase tests ${VAR} / ${VAR:-inline} substitution
+// in prompt-mode before-phase (userPrompt) processors (mitto-5g2v.2).
+func TestPromptMode_ArgSubstitution_BeforePhase(t *testing.T) {
+	proc := &Processor{
+		Name:   "save-rules",
+		When:   WhenConfig{On: PhaseUserPrompt, Match: MatchAll},
+		Prompt: "Save to {{ .Args.filename }} using mode {{ .Args.mode }}.",
+		Parameters: []config.PromptParameter{
+			{Name: "filename", Type: "text", Default: "AGENTS.md"},
+			{Name: "mode", Type: "text", Default: "append"},
+		},
+	}
+
+	called := make(chan string, 1)
+	mgr := NewManager("", nil)
+	mgr.processors = []*Processor{proc}
+	mgr.SetPromptFunc(func(ctx context.Context, wsUUID, procName, prompt string) error {
+		called <- prompt
+		return nil
+	})
+
+	t.Run("defaults used when no override", func(t *testing.T) {
+		input := &ProcessorInput{
+			Message:       "hello",
+			WorkspaceUUID: "ws-1",
+		}
+		_, err := mgr.Apply(context.Background(), input)
+		if err != nil {
+			t.Fatalf("Apply() error = %v", err)
+		}
+		select {
+		case got := <-called:
+			want := "Save to AGENTS.md using mode append."
+			if got != want {
+				t.Errorf("prompt = %q, want %q", got, want)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatal("PromptFunc was not called within timeout")
+		}
+	})
+
+	t.Run("workspace override wins over default", func(t *testing.T) {
+		input := &ProcessorInput{
+			Message:       "hello",
+			WorkspaceUUID: "ws-1",
+			ProcessorArgOverrides: map[string]map[string]string{
+				"save-rules": {"filename": "CLAUDE.md"},
+			},
+		}
+		_, err := mgr.Apply(context.Background(), input)
+		if err != nil {
+			t.Fatalf("Apply() error = %v", err)
+		}
+		select {
+		case got := <-called:
+			want := "Save to CLAUDE.md using mode append."
+			if got != want {
+				t.Errorf("prompt = %q, want %q", got, want)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatal("PromptFunc was not called within timeout")
+		}
+	})
+
+	t.Run("inline default in body works when no declared param", func(t *testing.T) {
+		// A processor with no declared parameters but using the Arg helper in the body.
+		proc2 := &Processor{
+			Name:   "inline-default",
+			When:   WhenConfig{On: PhaseUserPrompt, Match: MatchAll},
+			Prompt: `Use {{ Arg "tool" "bash" }} for this.`,
+		}
+		mgr2 := NewManager("", nil)
+		mgr2.processors = []*Processor{proc2}
+		called2 := make(chan string, 1)
+		mgr2.SetPromptFunc(func(ctx context.Context, wsUUID, procName, prompt string) error {
+			called2 <- prompt
+			return nil
+		})
+
+		input := &ProcessorInput{Message: "hi", WorkspaceUUID: "ws-x"}
+		if _, err := mgr2.Apply(context.Background(), input); err != nil {
+			t.Fatalf("Apply() error = %v", err)
+		}
+		select {
+		case got := <-called2:
+			want := "Use bash for this."
+			if got != want {
+				t.Errorf("prompt = %q, want %q", got, want)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatal("PromptFunc was not called within timeout")
+		}
+	})
+
+	t.Run("literal dollar-brace placeholder is preserved verbatim", func(t *testing.T) {
+		// A body with ${...} but no {{ }} template syntax must be returned unchanged
+		// (acceptance criterion: a literal ${X} is delivered as-is).
+		proc3 := &Processor{
+			Name:   "escape-test",
+			When:   WhenConfig{On: PhaseUserPrompt, Match: MatchAll},
+			Prompt: "Literal ${filename} not substituted.",
+		}
+		mgr3 := NewManager("", nil)
+		mgr3.processors = []*Processor{proc3}
+		called3 := make(chan string, 1)
+		mgr3.SetPromptFunc(func(ctx context.Context, wsUUID, procName, prompt string) error {
+			called3 <- prompt
+			return nil
+		})
+
+		input := &ProcessorInput{Message: "hi", WorkspaceUUID: "ws-x"}
+		if _, err := mgr3.Apply(context.Background(), input); err != nil {
+			t.Fatalf("Apply() error = %v", err)
+		}
+		select {
+		case got := <-called3:
+			want := "Literal ${filename} not substituted."
+			if got != want {
+				t.Errorf("prompt = %q, want %q", got, want)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatal("PromptFunc was not called within timeout")
+		}
+	})
+}
+
+// TestPromptMode_ArgSubstitution_AfterPhase tests Go-template .Args rendering in
+// prompt-mode after-phase (agentResponded) processors (mitto-5g2v.2).
+func TestPromptMode_ArgSubstitution_AfterPhase(t *testing.T) {
+	proc := &Processor{
+		Name:   "report-to-file",
+		When:   WhenConfig{On: PhaseAgentResponded, Match: MatchAll, StopReasons: []string{"end_turn"}},
+		Prompt: "Write summary to {{ .Args.dest }}.",
+		Parameters: []config.PromptParameter{
+			{Name: "dest", Type: "text", Default: "SUMMARY.md"},
+		},
+	}
+
+	t.Run("default used when no override", func(t *testing.T) {
+		var mu sync.Mutex
+		var dispatched []string
+		m := makeAfterManager([]*Processor{proc})
+		m.SetPromptFunc(func(ctx context.Context, wsUUID, procName, prompt string) error {
+			mu.Lock()
+			dispatched = append(dispatched, prompt)
+			mu.Unlock()
+			return nil
+		})
+
+		m.ApplyAfter(context.Background(), makeAfterInput("user", "end_turn"))
+		time.Sleep(50 * time.Millisecond)
+
+		mu.Lock()
+		defer mu.Unlock()
+		if len(dispatched) != 1 {
+			t.Fatalf("expected 1 dispatched prompt, got %d", len(dispatched))
+		}
+		want := "Write summary to SUMMARY.md."
+		if dispatched[0] != want {
+			t.Errorf("prompt = %q, want %q", dispatched[0], want)
+		}
+	})
+
+	t.Run("workspace override wins over default", func(t *testing.T) {
+		var mu sync.Mutex
+		var dispatched []string
+		m := makeAfterManager([]*Processor{proc})
+		m.SetPromptFunc(func(ctx context.Context, wsUUID, procName, prompt string) error {
+			mu.Lock()
+			dispatched = append(dispatched, prompt)
+			mu.Unlock()
+			return nil
+		})
+
+		input := makeAfterInput("user", "end_turn")
+		input.ProcessorArgOverrides = map[string]map[string]string{
+			"report-to-file": {"dest": "NOTES.md"},
+		}
+		m.ApplyAfter(context.Background(), input)
+		time.Sleep(50 * time.Millisecond)
+
+		mu.Lock()
+		defer mu.Unlock()
+		if len(dispatched) != 1 {
+			t.Fatalf("expected 1 dispatched prompt, got %d", len(dispatched))
+		}
+		want := "Write summary to NOTES.md."
+		if dispatched[0] != want {
+			t.Errorf("prompt = %q, want %q", dispatched[0], want)
+		}
+	})
+}
+
+// TestPromptMode_ArgSubstitution_PreferencesFile tests Go-template .Args.PreferencesFile
+// rendering in the memorize-preferences-style agentIdle processor (mitto-pyi).
+func TestPromptMode_ArgSubstitution_PreferencesFile(t *testing.T) {
+	proc := &Processor{
+		Name:       "memorize-preferences-test",
+		When:       WhenConfig{On: PhaseAgentResponded, Match: MatchAll, StopReasons: []string{"end_turn"}},
+		Prompt:     "Update the {{ .Args.PreferencesFile }} file.",
+		Parameters: []config.PromptParameter{{Name: "PreferencesFile", Type: "text", Default: "AGENTS.md"}},
+	}
+
+	t.Run("default used when no override", func(t *testing.T) {
+		var mu sync.Mutex
+		var dispatched []string
+		m := makeAfterManager([]*Processor{proc})
+		m.SetPromptFunc(func(ctx context.Context, wsUUID, procName, prompt string) error {
+			mu.Lock()
+			dispatched = append(dispatched, prompt)
+			mu.Unlock()
+			return nil
+		})
+
+		m.ApplyAfter(context.Background(), makeAfterInput("user", "end_turn"))
+		time.Sleep(50 * time.Millisecond)
+
+		mu.Lock()
+		defer mu.Unlock()
+		if len(dispatched) != 1 {
+			t.Fatalf("expected 1 dispatched prompt, got %d", len(dispatched))
+		}
+		want := "Update the AGENTS.md file."
+		if dispatched[0] != want {
+			t.Errorf("prompt = %q, want %q", dispatched[0], want)
+		}
+	})
+
+	t.Run("workspace override wins over default", func(t *testing.T) {
+		var mu sync.Mutex
+		var dispatched []string
+		m := makeAfterManager([]*Processor{proc})
+		m.SetPromptFunc(func(ctx context.Context, wsUUID, procName, prompt string) error {
+			mu.Lock()
+			dispatched = append(dispatched, prompt)
+			mu.Unlock()
+			return nil
+		})
+
+		input := makeAfterInput("user", "end_turn")
+		input.ProcessorArgOverrides = map[string]map[string]string{
+			"memorize-preferences-test": {"PreferencesFile": ".augment/rules/90-local.md"},
+		}
+		m.ApplyAfter(context.Background(), input)
+		time.Sleep(50 * time.Millisecond)
+
+		mu.Lock()
+		defer mu.Unlock()
+		if len(dispatched) != 1 {
+			t.Fatalf("expected 1 dispatched prompt, got %d", len(dispatched))
+		}
+		want := "Update the .augment/rules/90-local.md file."
+		if dispatched[0] != want {
+			t.Errorf("prompt = %q, want %q", dispatched[0], want)
+		}
+	})
+}
+
+// TestPromptMode_ArgSubstitution_MittoRCPersistence is an integration test that
+// exercises the full persistence → resolution → template-render → dispatch chain:
+//  1. Write a per-workspace override to a real .mittorc via SaveWorkspaceRCProcessorArguments.
+//  2. Read it back via LoadWorkspaceRC and build the ProcessorArgOverrides map.
+//  3. Apply a prompt-mode processor whose body uses {{ Arg "HistoryLimit" "10" }}.
+//  4. Assert the dispatched prompt reflects the override (25) and the default (10).
+func TestPromptMode_ArgSubstitution_MittoRCPersistence(t *testing.T) {
+	dir := t.TempDir()
+	procName := "auggie-update-rules-test"
+
+	// Step 1: persist override via the real RC writer.
+	if err := config.SaveWorkspaceRCProcessorArguments(dir, procName, map[string]string{"HistoryLimit": "25"}); err != nil {
+		t.Fatalf("SaveWorkspaceRCProcessorArguments: %v", err)
+	}
+
+	// Step 2: read back via LoadWorkspaceRC (mirrors session_manager.go's GetWorkspaceProcessorOverrides).
+	rc, err := config.LoadWorkspaceRC(dir)
+	if err != nil {
+		t.Fatalf("LoadWorkspaceRC: %v", err)
+	}
+	if rc == nil {
+		t.Fatal("LoadWorkspaceRC returned nil after writing override")
+	}
+	argOverrides := make(map[string]map[string]string)
+	for _, o := range rc.ProcessorOverrides {
+		if len(o.Arguments) > 0 {
+			argOverrides[o.Name] = o.Arguments
+		}
+	}
+	if argOverrides[procName]["HistoryLimit"] != "25" {
+		t.Fatalf("expected HistoryLimit=25 in loaded overrides, got %v", argOverrides[procName])
+	}
+
+	// Step 3: build a prompt-mode processor with the Parameters block.
+	proc := &Processor{
+		Name:   procName,
+		When:   WhenConfig{On: PhaseUserPrompt, Match: MatchAll},
+		Prompt: `Review last_n: {{ Arg "HistoryLimit" "10" }} messages.`,
+		Parameters: []config.PromptParameter{
+			{Name: "HistoryLimit", Type: "text", Default: "10"},
+		},
+	}
+	mgr := NewManager("", nil)
+	mgr.processors = []*Processor{proc}
+
+	// Step 4a: override from .mittorc wins → dispatched prompt should use 25.
+	called := make(chan string, 1)
+	mgr.SetPromptFunc(func(_ context.Context, _, _, prompt string) error {
+		called <- prompt
+		return nil
+	})
+	_, err = mgr.Apply(context.Background(), &ProcessorInput{
+		Message:               "hello",
+		WorkspaceUUID:         "ws-1",
+		ProcessorArgOverrides: argOverrides,
+	})
+	if err != nil {
+		t.Fatalf("Apply (with override): %v", err)
+	}
+	select {
+	case got := <-called:
+		want := "Review last_n: 25 messages."
+		if got != want {
+			t.Errorf("with override: prompt = %q, want %q", got, want)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("PromptFunc not called within timeout (with override)")
+	}
+
+	// Step 4b: no override → declared default (10) is used.
+	called2 := make(chan string, 1)
+	mgr.SetPromptFunc(func(_ context.Context, _, _, prompt string) error {
+		called2 <- prompt
+		return nil
+	})
+	_, err = mgr.Apply(context.Background(), &ProcessorInput{
+		Message:       "hello",
+		WorkspaceUUID: "ws-1",
+		// No ProcessorArgOverrides — should fall back to declared default.
+	})
+	if err != nil {
+		t.Fatalf("Apply (no override): %v", err)
+	}
+	select {
+	case got := <-called2:
+		want := "Review last_n: 10 messages."
+		if got != want {
+			t.Errorf("no override: prompt = %q, want %q", got, want)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("PromptFunc not called within timeout (no override)")
+	}
+}
+
 // TestApplyAfter_PromptMode_NoPromptFunc verifies that prompt-mode processors are
 // skipped gracefully (not counted as errors) when no PromptFunc is configured.
 func TestApplyAfter_PromptMode_NoPromptFunc(t *testing.T) {
@@ -3929,4 +4715,232 @@ func buildProcessorYAML(cadence *CadenceConfig) string {
 		}
 	}
 	return sb.String()
+}
+
+// TestBuildCELContext_Iteration verifies that BuildCELContext correctly populates
+// the ctx.Iteration.* fields from ProcessorInput.IterationNumber / MaxIterations / IsPeriodic.
+func TestBuildCELContext_Iteration(t *testing.T) {
+	cases := []struct {
+		name                   string
+		isPeriodic             bool
+		iterationNum           int
+		maxIterations          int
+		iterationUninterrupted bool
+		wantIsFirst            bool
+		wantIsLast             bool
+		wantIsUninterrupted    bool
+	}{
+		// (1) First run of a 3-run periodic sequence.
+		{
+			name:          "first-of-three",
+			isPeriodic:    true,
+			iterationNum:  0,
+			maxIterations: 3,
+			wantIsFirst:   true,
+			wantIsLast:    false,
+		},
+		// (2) Last run of a 3-run periodic sequence.
+		{
+			name:          "last-of-three",
+			isPeriodic:    true,
+			iterationNum:  2,
+			maxIterations: 3,
+			wantIsFirst:   false,
+			wantIsLast:    true,
+		},
+		// (3) Unlimited sequence (Max=0) — IsLast must always be false.
+		{
+			name:          "unlimited",
+			isPeriodic:    true,
+			iterationNum:  5,
+			maxIterations: 0,
+			wantIsFirst:   false,
+			wantIsLast:    false,
+		},
+		// (4) Uninterrupted continuation (mitto-5xjn).
+		{
+			name:                   "uninterrupted",
+			isPeriodic:             true,
+			iterationNum:           3,
+			maxIterations:          0,
+			iterationUninterrupted: true,
+			wantIsFirst:            false,
+			wantIsLast:             false,
+			wantIsUninterrupted:    true,
+		},
+		// (5) Interrupted (user prompt between runs) — IsUninterrupted must be false.
+		{
+			name:                   "interrupted",
+			isPeriodic:             true,
+			iterationNum:           3,
+			maxIterations:          0,
+			iterationUninterrupted: false,
+			wantIsFirst:            false,
+			wantIsLast:             false,
+			wantIsUninterrupted:    false,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			input := &ProcessorInput{
+				SessionID:              "sess-iter",
+				IsPeriodic:             tc.isPeriodic,
+				IterationNumber:        tc.iterationNum,
+				MaxIterations:          tc.maxIterations,
+				IterationUninterrupted: tc.iterationUninterrupted,
+			}
+			ctx := BuildCELContext(input)
+
+			if ctx.Iteration.Number != tc.iterationNum {
+				t.Errorf("Number: got %d, want %d", ctx.Iteration.Number, tc.iterationNum)
+			}
+			if ctx.Iteration.Max != tc.maxIterations {
+				t.Errorf("Max: got %d, want %d", ctx.Iteration.Max, tc.maxIterations)
+			}
+			if ctx.Iteration.IsPeriodic != tc.isPeriodic {
+				t.Errorf("IsPeriodic: got %v, want %v", ctx.Iteration.IsPeriodic, tc.isPeriodic)
+			}
+			if ctx.Iteration.IsFirst != tc.wantIsFirst {
+				t.Errorf("IsFirst: got %v, want %v", ctx.Iteration.IsFirst, tc.wantIsFirst)
+			}
+			if ctx.Iteration.IsLast != tc.wantIsLast {
+				t.Errorf("IsLast: got %v, want %v", ctx.Iteration.IsLast, tc.wantIsLast)
+			}
+			if ctx.Iteration.IsUninterrupted != tc.wantIsUninterrupted {
+				t.Errorf("IsUninterrupted: got %v, want %v", ctx.Iteration.IsUninterrupted, tc.wantIsUninterrupted)
+			}
+		})
+	}
+}
+
+// TestApplyAfter_PromptMode_SkipsWhenRenderedEmpty verifies the empty-prompt guard:
+// an after-phase prompt-mode processor whose body renders to an empty string is NOT
+// dispatched to the auxiliary session, while a non-empty body IS dispatched.
+func TestApplyAfter_PromptMode_SkipsWhenRenderedEmpty(t *testing.T) {
+	t.Run("empty render is not dispatched", func(t *testing.T) {
+		proc := &Processor{
+			Name:   "empty-body",
+			When:   WhenConfig{On: PhaseAgentResponded, Match: MatchAll, StopReasons: []string{"end_turn"}},
+			Prompt: `{{ if DirExists ".definitely-does-not-exist-xyz" }}should not appear{{ end }}`,
+		}
+		var mu sync.Mutex
+		var dispatched []string
+		m := makeAfterManager([]*Processor{proc})
+		m.SetPromptFunc(func(ctx context.Context, wsUUID, procName, prompt string) error {
+			mu.Lock()
+			dispatched = append(dispatched, prompt)
+			mu.Unlock()
+			return nil
+		})
+
+		input := makeAfterInput("user", "end_turn")
+		input.WorkingDir = t.TempDir() // empty workspace: no rules dir resolves
+		m.ApplyAfter(context.Background(), input)
+		time.Sleep(50 * time.Millisecond) // dispatch is fire-and-forget
+
+		mu.Lock()
+		defer mu.Unlock()
+		if len(dispatched) != 0 {
+			t.Fatalf("expected no dispatch for empty-rendered prompt, got %d: %q", len(dispatched), dispatched)
+		}
+	})
+
+	t.Run("non-empty render is dispatched", func(t *testing.T) {
+		proc := &Processor{
+			Name:   "non-empty-body",
+			When:   WhenConfig{On: PhaseAgentResponded, Match: MatchAll, StopReasons: []string{"end_turn"}},
+			Prompt: `{{ if not (DirExists ".definitely-does-not-exist-xyz") }}real work{{ end }}`,
+		}
+		var mu sync.Mutex
+		var dispatched []string
+		m := makeAfterManager([]*Processor{proc})
+		m.SetPromptFunc(func(ctx context.Context, wsUUID, procName, prompt string) error {
+			mu.Lock()
+			dispatched = append(dispatched, prompt)
+			mu.Unlock()
+			return nil
+		})
+
+		input := makeAfterInput("user", "end_turn")
+		input.WorkingDir = t.TempDir()
+		m.ApplyAfter(context.Background(), input)
+		time.Sleep(50 * time.Millisecond) // dispatch is fire-and-forget
+
+		mu.Lock()
+		defer mu.Unlock()
+		if len(dispatched) != 1 {
+			t.Fatalf("expected 1 dispatch for non-empty prompt, got %d", len(dispatched))
+		}
+		if strings.TrimSpace(dispatched[0]) != "real work" {
+			t.Errorf("dispatched prompt = %q, want %q", dispatched[0], "real work")
+		}
+	})
+}
+
+// TestMemorizePreferences_ResolveTargetFile verifies the auto-detection resolution
+// logic in the real builtin memorize-preferences.yaml template: an explicit
+// PreferencesFile wins; otherwise the rules directory is auto-detected; and when
+// nothing resolves the template renders to empty (which the dispatch guard skips).
+func TestMemorizePreferences_ResolveTargetFile(t *testing.T) {
+	srcPath := rootconfig.BuiltinProcessorsDir + "/memorize-preferences.yaml"
+	content, err := rootconfig.BuiltinProcessorsFS.ReadFile(srcPath)
+	if err != nil {
+		t.Fatalf("ReadFile(%s) error = %v", srcPath, err)
+	}
+	dir := t.TempDir()
+	dstPath := filepath.Join(dir, "memorize-preferences.yaml")
+	if err := os.WriteFile(dstPath, content, 0644); err != nil {
+		t.Fatalf("WriteFile error = %v", err)
+	}
+	proc, err := NewLoader(dir, nil).LoadFile(dstPath)
+	if err != nil {
+		t.Fatalf("LoadFile error = %v", err)
+	}
+	if proc == nil || proc.Prompt == "" {
+		t.Fatal("expected a non-empty prompt body from builtin YAML")
+	}
+
+	render := func(folder string, args map[string]string) string {
+		ctx := &config.PromptEnabledContext{Args: args}
+		ctx.Workspace.Folder = folder
+		funcs := config.BuildTemplateFuncMap(ctx)
+		out, rerr := config.RenderPromptTemplate(proc.Name, proc.Prompt, ctx, funcs)
+		if rerr != nil {
+			t.Fatalf("render error: %v", rerr)
+		}
+		return out
+	}
+
+	t.Run("no target resolves to empty", func(t *testing.T) {
+		out := render(t.TempDir(), nil)
+		if strings.TrimSpace(out) != "" {
+			t.Errorf("expected empty render when no file resolves, got %q", out)
+		}
+	})
+
+	t.Run("auto-detect .augment/rules", func(t *testing.T) {
+		ws := t.TempDir()
+		if err := os.MkdirAll(filepath.Join(ws, ".augment", "rules"), 0755); err != nil {
+			t.Fatalf("mkdir: %v", err)
+		}
+		out := render(ws, nil)
+		if !strings.Contains(out, ".augment/rules/90-local.md") {
+			t.Errorf("expected auto-detected .augment/rules/90-local.md in output, got:\n%s", out)
+		}
+	})
+
+	t.Run("explicit PreferencesFile wins over auto-detect", func(t *testing.T) {
+		ws := t.TempDir()
+		if err := os.MkdirAll(filepath.Join(ws, ".augment", "rules"), 0755); err != nil {
+			t.Fatalf("mkdir: %v", err)
+		}
+		out := render(ws, map[string]string{"PreferencesFile": "CUSTOM.md"})
+		if !strings.Contains(out, "CUSTOM.md") {
+			t.Errorf("expected explicit CUSTOM.md in output, got:\n%s", out)
+		}
+		if strings.Contains(out, ".augment/rules/90-local.md") {
+			t.Errorf("explicit PreferencesFile should override auto-detect, but auto path present:\n%s", out)
+		}
+	})
 }

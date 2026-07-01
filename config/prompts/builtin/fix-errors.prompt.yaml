@@ -1,14 +1,35 @@
 icon: error
 name: Fix errors
-menus: prompts
+menus: prompts, !promptsPeriodic
 description: Analyze and fix the errors shown
 group: Development
 backgroundColor: '#FFE0B2'
+tags:
+- periodic
 prompt: |
   Read relevant source files to understand code context around each error.
   Do not speculate about code you haven't opened.
 
   Analyze and fix the errors shown.
+
+  Your session ID is `{{ .Session.ID }}` — use as `self_id` for all `mitto_*` MCP tool calls.
+
+  ## Interaction Mode
+  {{- if and .Session.IsPeriodic (not .Session.IsPeriodicForced) }}
+
+  **Scheduled mode** — a periodic run; the user is not watching.
+  - Decide **autonomously**; do not ask the user. Use only `mitto_ui_notify`.
+  - Determine the errors to fix from the latest build/test output yourself.
+  - **Commit** your fixes (stage only changed files by path; never `git add -A`/`.`
+    or `git commit -a`; skip if nothing changed) but do **NOT push** — leave that to
+    the user.
+  - If an error is genuinely ambiguous or underspecified, do **not** guess — notify
+    what's blocked and stop, rather than asking.
+  {{- else }}
+
+  **Interactive mode** — a force-triggered run or a non-periodic conversation; the
+  user may be present. Ask for clarification if intent is unclear before changing code.
+  {{- end }}
 
   Only fix the identified errors. Keep changes minimal and focused on root causes.
 
@@ -34,23 +55,31 @@ prompt: |
 
   **Do NOT delegate** for: a single error, errors sharing a root cause, cascading errors from one issue, or trivial one-line fixes.
 
+  {{- if and .Session.IsPeriodic (not .Session.IsPeriodicForced) }}
+  In scheduled mode: before spawning, check `{{ .Children.AllText }}` and reuse an
+  existing child instead of duplicating. Spawn at most **3 per run**. **Spawned
+  conversations must never be periodic.**
+  {{- end }}
+
   **Session context for delegation:**
 
-  Your session ID is `@mitto:session_id` — use as `self_id` for all `mitto_*` tool calls.
+  Your session ID is `{{ .Session.ID }}` — use as `self_id` for all `mitto_*` tool calls.
 
   Available ACP servers:
-  @mitto:available_acp_servers
+  {{ .ACP.AvailableText }}
 
+  {{- if .Children.AllText }}
   Existing children:
-  @mitto:children
+  {{ .Children.AllText }}
+  {{- end }}
 
   **How to delegate:**
 
   1. Group errors by root cause — only independent groups get separate children
   2. Choose ACP server: clear fix path → prefer `"coding"`/`"fast"` servers; requires investigation/design decisions → prefer `"reasoning"`/`"planning"` servers; no match → server marked `(current)`, then first available
   3. If relevant children already exist, consider sending work to them via `mitto_conversation_send_prompt` instead of creating new ones
-  4. `mitto_conversation_new(self_id: "@mitto:session_id")` per task — include: exact error message(s), relevant file paths and context, what to fix, constraints (minimal changes, root cause fixes only), and reporting directive
-  5. `mitto_children_tasks_wait(self_id: "@mitto:session_id", task_id: "<error-fix-description>", timeout_seconds: 600)`
+  4. `mitto_conversation_new(self_id: "{{ .Session.ID }}")` per task — include: exact error message(s), relevant file paths and context, what to fix, constraints (minimal changes, root cause fixes only), and reporting directive
+  5. `mitto_children_tasks_wait(self_id: "{{ .Session.ID }}", task_id: "<error-fix-description>", timeout_seconds: 600)`
   6. Review all results — check for conflicts between fixes
   7. Run full verification after combining all changes
   8. `mitto_conversation_delete` for completed children

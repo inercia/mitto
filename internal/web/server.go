@@ -8,22 +8,27 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	builtinConfig "github.com/inercia/mitto/config"
+	"github.com/inercia/mitto/internal/acpproc"
 	"github.com/inercia/mitto/internal/appdir"
 	"github.com/inercia/mitto/internal/auxiliary"
 	"github.com/inercia/mitto/internal/beads"
 	configPkg "github.com/inercia/mitto/internal/config"
+	"github.com/inercia/mitto/internal/conversation"
 	"github.com/inercia/mitto/internal/defense"
 	"github.com/inercia/mitto/internal/hooks"
 	"github.com/inercia/mitto/internal/logging"
 	"github.com/inercia/mitto/internal/mcpserver"
 	"github.com/inercia/mitto/internal/processors"
 	"github.com/inercia/mitto/internal/session"
+	"github.com/inercia/mitto/internal/web/handlers"
+	"github.com/inercia/mitto/internal/web/middleware"
 	mittoWeb "github.com/inercia/mitto/web"
 )
 
@@ -51,7 +56,7 @@ type Config struct {
 	// When true, workspace changes are NOT persisted to disk.
 	FromCLI bool
 	// OnWorkspaceSave is called when workspaces are modified (only if FromCLI is false).
-	OnWorkspaceSave WorkspaceSaveFunc
+	OnWorkspaceSave conversation.WorkspaceSaveFunc
 	// ConfigReadOnly indicates that configuration was loaded from a custom config file
 	// (via --config flag). When true, the Settings dialog is disabled in the UI.
 	// Note: RC file config is NOT fully read-only anymore - users can add servers via UI.
@@ -140,21 +145,21 @@ type Server struct {
 	eventsManager *GlobalEventsManager
 
 	// Session manager for background sessions that persist across WebSocket disconnects
-	sessionManager *SessionManager
+	sessionManager *conversation.SessionManager
 
 	// Session store for persistence (owned by the server, shared across handlers)
 	store *session.Store
 
 	// Auth manager for handling authentication (nil if auth is disabled)
-	authManager *AuthManager
+	authManager *middleware.AuthManager
 
 	// CSRF manager for protecting state-changing requests
-	csrfManager *CSRFManager
+	csrfManager *middleware.CSRFManager
 
 	// Security components
-	rateLimiter      *GeneralRateLimiter
-	wsSecurityConfig WebSocketSecurityConfig
-	proxyChecker     *TrustedProxyChecker
+	rateLimiter      *middleware.GeneralRateLimiter
+	wsSecurityConfig middleware.WebSocketSecurityConfig
+	proxyChecker     *middleware.TrustedProxyChecker
 
 	// External access listener management
 	externalListener   net.Listener
@@ -163,14 +168,14 @@ type Server struct {
 	externalPort       int // Port for external listener (same as main port by default)
 
 	// Queue title worker for generating titles for queued messages
-	queueTitleWorker *QueueTitleWorker
+	queueTitleWorker *conversation.QueueTitleWorker
 
 	// Periodic runner for scheduled prompt delivery
 	periodicRunner *PeriodicRunner
 
 	// Callback index for mapping callback tokens to session IDs
-	callbackIndex       *CallbackIndex
-	callbackRateLimiter *CallbackRateLimiter
+	callbackIndex       *conversation.CallbackIndex
+	callbackRateLimiter *conversation.CallbackRateLimiter
 
 	// Access logger for security-relevant events (nil if disabled)
 	accessLogger *AccessLogger
@@ -178,14 +183,24 @@ type Server struct {
 	// MCP debug server for exposing debugging tools
 	mcpServer *mcpserver.Server
 
+	// MCP bind status, set once during NewServer (before serving). Surfaced to the
+	// frontend in the `connected` message so the UI shows a persistent badge when
+	// the global MCP server failed to bind (e.g. another Mitto instance holds the port).
+	mcpAvailable bool
+	mcpReason    string // empty when available; "port_in_use" or "start_failed"
+	mcpPort      int    // configured/effective MCP port (for UI diagnostics)
+
 	// Scanner defense for blocking malicious IPs at the connection level
 	defense *defense.ScannerDefense
 
 	// Prompts watcher for monitoring prompt file changes
 	promptsWatcher *configPkg.PromptsWatcher
 
+	// Beads watcher for monitoring .beads/ directory changes
+	beadsWatcher *configPkg.BeadsWatcher
+
 	// ACP process manager for workspace-scoped shared processes
-	acpProcessManager *ACPProcessManager
+	acpProcessManager *acpproc.ACPProcessManager
 
 	// Auxiliary manager for workspace-scoped auxiliary tasks (title generation, etc.)
 	auxiliaryManager *auxiliary.WorkspaceAuxiliaryManager
@@ -205,6 +220,11 @@ type Server struct {
 	onHookProcessChanged   func(*hooks.Process)       // Callback to update shutdown manager when hooks restart
 	onHealthMonitorChanged func(*hooks.HealthMonitor) // Callback to update shutdown manager when health monitor changes
 
+	// externalDownForCredentials is true while external access has been torn down
+	// specifically because auth credentials were incomplete. Used to emit a single
+	// "restored" log line when the listener comes back after credentials are fixed.
+	externalDownForCredentials atomic.Bool
+
 	// recentStartFails deduplicates BroadcastACPStartFailed calls for the same session.
 	// When multiple goroutines coalesce on a single resume failure they all receive the
 	// error and each tries to broadcast; only the first broadcast per session per window
@@ -216,6 +236,10 @@ type Server struct {
 	// concurrent workspace-prompts fetches don't race writing the same files and
 	// only the first caller observes (and reports) a given migration.
 	promptMigrationMu sync.Mutex
+
+	// apiHandlers holds the REST handlers extracted into the internal/web/handlers
+	// sub-package. Routing stays in server.go; the actual handler logic lives there.
+	apiHandlers *handlers.Handlers
 }
 
 // APIPrefix returns the URL prefix for all API and WebSocket endpoints.
@@ -289,10 +313,10 @@ func NewServer(config Config) (*Server, error) {
 	workspaces := config.Workspaces // Use direct field, not GetWorkspaces() which creates legacy workspace
 
 	// Create session manager with workspace support
-	var sessionMgr *SessionManager
+	var sessionMgr *conversation.SessionManager
 	if len(workspaces) > 0 || !config.FromCLI {
 		// Use new options-based constructor for workspace persistence support
-		sessionMgr = NewSessionManagerWithOptions(SessionManagerOptions{
+		sessionMgr = conversation.NewSessionManagerWithOptions(conversation.SessionManagerOptions{
 			Workspaces:      workspaces,
 			AutoApprove:     config.AutoApprove,
 			Logger:          logger,
@@ -302,7 +326,7 @@ func NewServer(config Config) (*Server, error) {
 		})
 	} else {
 		// Legacy single-workspace mode (CLI with no --dir flags and no saved workspaces)
-		sessionMgr = NewSessionManager(config.ACPCommand, config.ACPServer, config.AutoApprove, logger)
+		sessionMgr = conversation.NewSessionManager(config.ACPCommand, config.ACPServer, config.AutoApprove, logger)
 		sessionMgr.SetAPIPrefix(apiPrefix)
 	}
 	sessionMgr.SetStore(store)
@@ -311,7 +335,7 @@ func NewServer(config Config) (*Server, error) {
 	// Clean up orphaned ACP processes from any previous Mitto instance that crashed
 	// without running its shutdown sequence (not done in tests to avoid killing
 	// the developer's live ACP servers when running the test suite).
-	acpProcessMgr := NewACPProcessManager(context.Background(), logger)
+	acpProcessMgr := acpproc.NewACPProcessManager(context.Background(), logger)
 	if os.Getenv("MITTO_TEST_MODE") == "" {
 		acpProcessMgr.CleanupOrphanedProcesses()
 	}
@@ -320,13 +344,17 @@ func NewServer(config Config) (*Server, error) {
 	acpProcessMgr.WorkspaceConfigProvider = func(workspaceUUID string) *configPkg.WorkspaceSettings {
 		return sessionMgr.GetWorkspaceByUUID(workspaceUUID)
 	}
-	sessionMgr.SetACPProcessManager(acpProcessMgr)
+	// Set Model profile resolver so process manager can resolve AuxiliaryModelProfile (mitto-hke).
+	acpProcessMgr.ModelProfileResolver = func(name string) *configPkg.ModelProfile {
+		return config.MittoConfig.FindModelProfile(name)
+	}
+	sessionMgr.SetACPProcessManager(acpProcessManagerAdapter{acpProcessMgr})
 
 	// Start ACP process garbage collector to clean up idle sessions and processes.
 	// The GC periodically checks for sessions with no observers, no active prompts,
 	// and no pending work, and stops shared ACP processes that have no active sessions.
 	if !config.DisableAuxiliaryPrewarm && os.Getenv("MITTO_TEST_MODE") == "" {
-		gcConfig := GCConfig{}
+		gcConfig := acpproc.GCConfig{}
 		// Apply periodic suspend threshold from settings if configured.
 		if config.MittoConfig != nil && config.MittoConfig.Session != nil {
 			if d, enabled := config.MittoConfig.Session.ParsePeriodicSuspendTimeout(); enabled {
@@ -344,7 +372,7 @@ func NewServer(config Config) (*Server, error) {
 				gcConfig.MemoryRecycleThreshold = bytes
 			}
 		}
-		acpProcessMgr.StartGC(gcConfig, func() map[string][]SessionInfo {
+		acpProcessMgr.StartGC(gcConfig, func() map[string][]conversation.SessionInfo {
 			return sessionMgr.GetSessionInfoByWorkspace()
 		}, func(sessionID string) {
 			sessionMgr.CloseIdleSession(sessionID)
@@ -380,9 +408,9 @@ func NewServer(config Config) (*Server, error) {
 	}
 
 	// Initialize auth manager if auth is configured
-	var authMgr *AuthManager
+	var authMgr *middleware.AuthManager
 	if config.MittoConfig != nil && config.MittoConfig.Web.Auth != nil {
-		authMgr = NewAuthManager(config.MittoConfig.Web.Auth)
+		authMgr = middleware.NewAuthManager(config.MittoConfig.Web.Auth)
 		logger.Info("Authentication enabled", "type", "simple")
 	}
 
@@ -427,15 +455,15 @@ func NewServer(config Config) (*Server, error) {
 	}
 
 	// Initialize trusted proxy checker
-	var proxyChecker *TrustedProxyChecker
+	var proxyChecker *middleware.TrustedProxyChecker
 	if securityCfg != nil && len(securityCfg.TrustedProxies) > 0 {
-		proxyChecker = NewTrustedProxyChecker(securityCfg.TrustedProxies)
-		SetDefaultProxyChecker(proxyChecker)
+		proxyChecker = middleware.NewTrustedProxyChecker(securityCfg.TrustedProxies)
+		middleware.SetDefaultProxyChecker(proxyChecker)
 		logger.Info("Trusted proxies configured", "count", len(securityCfg.TrustedProxies))
 	}
 
 	// Initialize rate limiter
-	rateLimitConfig := DefaultRateLimitConfig()
+	rateLimitConfig := middleware.DefaultRateLimitConfig()
 	if securityCfg != nil {
 		if securityCfg.RateLimitRPS > 0 {
 			rateLimitConfig.RequestsPerSecond = securityCfg.RateLimitRPS
@@ -444,10 +472,10 @@ func NewServer(config Config) (*Server, error) {
 			rateLimitConfig.BurstSize = securityCfg.RateLimitBurst
 		}
 	}
-	rateLimiter := NewGeneralRateLimiter(rateLimitConfig)
+	rateLimiter := middleware.NewGeneralRateLimiter(rateLimitConfig)
 
 	// Initialize WebSocket security config
-	wsSecurityConfig := DefaultWebSocketSecurityConfig()
+	wsSecurityConfig := middleware.DefaultWebSocketSecurityConfig()
 	if securityCfg != nil {
 		if len(securityCfg.AllowedOrigins) > 0 {
 			wsSecurityConfig.AllowedOrigins = securityCfg.AllowedOrigins
@@ -458,7 +486,7 @@ func NewServer(config Config) (*Server, error) {
 	}
 
 	// Initialize CSRF manager
-	csrfMgr := NewCSRFManager()
+	csrfMgr := middleware.NewCSRFManager()
 
 	// Set API prefix on auth manager for public path matching
 	if authMgr != nil {
@@ -495,15 +523,15 @@ func NewServer(config Config) (*Server, error) {
 	if config.MittoConfig != nil {
 		webConfig = &config.MittoConfig.Web
 	}
-	if shouldEnableScannerDefense(webConfig) {
-		defenseConfig := configToDefenseConfig(getScannerDefenseConfig(webConfig), true)
+	if middleware.ShouldEnableScannerDefense(webConfig) {
+		defenseConfig := middleware.ConfigToDefenseConfig(middleware.GetScannerDefenseConfig(webConfig), true)
 
 		// When a tunnel hook is configured, increase rate limits if the user
 		// hasn't explicitly set them. Tunnel proxies (cloudflared, ngrok) forward
 		// all browser requests through a single origin, so a page load generating
 		// ~30 requests can easily exceed the default 100 req/min limit.
 		if hasTunnelHook {
-			explicitCfg := getScannerDefenseConfig(webConfig)
+			explicitCfg := middleware.GetScannerDefenseConfig(webConfig)
 			if explicitCfg == nil || explicitCfg.RateLimit == 0 {
 				defenseConfig.RateLimit = 500 // 5x default for tunnel traffic
 				logger.Info("Tunnel hook detected, increased scanner defense rate limit",
@@ -544,7 +572,24 @@ func NewServer(config Config) (*Server, error) {
 		negativeSessionCache: NewNegativeSessionCache(),
 		recentStartFails:     make(map[string]time.Time),
 		beads:                beads.NewClient(),
+		mcpAvailable:         true,
 	}
+
+	// Wrap the beads client so every bd invocation this process makes brackets
+	// itself with the BeadsWatcher self-suppression window. Even read-only bd
+	// reads (list/show) rewrite the embedded Dolt noms journal/manifest and
+	// last-touched; without suppression those self-induced writes bounce back
+	// through fsnotify as a "beads changed" event and refresh the Tasks list on
+	// every click. The watcher (set later in NewServer) is resolved lazily via
+	// s.suppressBeads at request time, so ordering here is fine.
+	s.beads = beads.NewClientWithRunner(suppressingBeadsRunner{
+		inner:    beads.NewExecRunner(),
+		suppress: s.suppressBeads,
+	})
+
+	// The REST handlers sub-package facade is constructed later in NewServer,
+	// after callbackIndex, callbackRateLimiter and periodicRunner are
+	// initialized — see "Construct the REST handlers sub-package facade" below.
 
 	// Set events manager in session manager for broadcasting
 	sessionMgr.SetEventsManager(eventsManager)
@@ -552,7 +597,7 @@ func NewServer(config Config) (*Server, error) {
 	// Surface a toast when the GC's memory-recycle tier (Tier 4) restarts a
 	// memory-bloated idle agent process. Resolve a friendly workspace name here
 	// (the GC only knows the workspace UUID).
-	acpProcessMgr.onMemoryRecycled = func(workspaceUUID string, rssBytes, threshold uint64, sessionCount int) {
+	acpProcessMgr.SetOnMemoryRecycled(func(workspaceUUID string, rssBytes, threshold uint64, sessionCount int) {
 		workspaceName := ""
 		workingDir := ""
 		if ws := sessionMgr.GetWorkspaceByUUID(workspaceUUID); ws != nil {
@@ -560,17 +605,21 @@ func NewServer(config Config) (*Server, error) {
 			workingDir = ws.WorkingDir
 		}
 		s.BroadcastMemoryRecycled(workspaceUUID, workspaceName, workingDir, rssBytes, threshold, sessionCount)
-	}
+	})
 
 	// Initialize MCP server.
 	// This serves both global tools and session-scoped tools.
-	// Check if MCP server is enabled (default: true)
-	// Guard against nil config (can happen in tests)
-	mcpEnabled := config.MittoConfig != nil && config.MittoConfig.MCP.IsEnabled()
-	if mcpEnabled {
+	// The MCP server is always started; only its bind host/port are configurable.
+	// Guard against nil config (can happen in tests).
+	if config.MittoConfig != nil {
 		// Get MCP host and port from config, or use defaults
 		mcpHost := config.MittoConfig.MCP.GetHost()
 		mcpPort := config.MittoConfig.MCP.GetPort()
+
+		effectiveMCPPort := mcpPort
+		if effectiveMCPPort < 0 {
+			effectiveMCPPort = mcpserver.DefaultPort
+		}
 
 		mcpSrv, err := mcpserver.NewServer(
 			mcpserver.Config{Host: mcpHost, Port: mcpPort},
@@ -583,6 +632,9 @@ func NewServer(config Config) (*Server, error) {
 		)
 		if err != nil {
 			logger.Warn("Failed to create MCP server", "error", err)
+			s.mcpAvailable = false
+			s.mcpReason = "start_failed"
+			s.mcpPort = effectiveMCPPort
 		} else {
 			s.mcpServer = mcpSrv
 			if err := mcpSrv.Start(context.Background()); err != nil {
@@ -596,21 +648,29 @@ func NewServer(config Config) (*Server, error) {
 					msg = "Failed to start MCP server — port already in use (another Mitto instance may be running). Mitto will continue without MCP; session-scoped tools, prompts, and stdio proxies will be unavailable until this is resolved."
 				}
 				logger.Warn(msg, "error", err, "host", mcpHost, "port", mcpPort)
+				s.mcpAvailable = false
+				s.mcpPort = effectiveMCPPort
+				if strings.Contains(errStr, "address already in use") || strings.Contains(errStr, "bind:") {
+					s.mcpReason = "port_in_use"
+				} else {
+					s.mcpReason = "start_failed"
+				}
 			} else {
 				logger.Info("MCP server started", "port", mcpSrv.Port())
 				// Set MCP URL on process manager so auxiliary processor sessions
 				// can use a stdio proxy to access Mitto tools.
 				acpProcessMgr.MCPServerURL = fmt.Sprintf("http://127.0.0.1:%d/mcp", mcpSrv.Port())
+				s.mcpAvailable = true
+				s.mcpReason = ""
+				s.mcpPort = mcpSrv.Port()
 			}
 			// Pass MCP server to session manager for session registration
 			sessionMgr.SetGlobalMCPServer(mcpSrv)
 		}
-	} else {
-		logger.Info("MCP server disabled by configuration")
 	}
 
 	// Initialize queue title worker
-	s.queueTitleWorker = NewQueueTitleWorker(store, sessionMgr, auxiliaryManager, logger)
+	s.queueTitleWorker = conversation.NewQueueTitleWorker(store, sessionMgr, auxiliaryManager, logger)
 	s.queueTitleWorker.OnTitleGenerated = func(sessionID, messageID, title string) {
 		// Broadcast title update to all connected clients
 		s.eventsManager.Broadcast(WSMsgTypeQueueMessageTitled, map[string]string{
@@ -620,14 +680,25 @@ func NewServer(config Config) (*Server, error) {
 		})
 	}
 
+	// Wire the onTasks CEL condition compile-validator into the session package's
+	// injected seam. session must stay independent of config/acp/web, so it exposes
+	// session.ConditionValidator as a package-level func var that config supplies.
+	// Wired exactly once at startup.
+	session.ConditionValidator = configPkg.ValidateCondition
+
 	// Initialize periodic runner for scheduled prompt delivery and session housekeeping
 	s.periodicRunner = NewPeriodicRunner(store, sessionMgr, logger)
+	// Share the self-suppressing beads client so the periodic runner's own
+	// onTasks list reads do not bounce back through the watcher as external
+	// changes (which would spuriously re-fire onTasks periodic conversations).
+	s.periodicRunner.SetBeadsClient(s.beads)
 	s.periodicRunner.SetOnPeriodicStarted(s.BroadcastPeriodicStarted)
 	s.periodicRunner.SetOnAutoArchive(func(sessionID string) {
 		s.BroadcastACPStopped(sessionID, "auto_archived")
 		s.BroadcastSessionArchived(sessionID, true)
 	})
 	s.periodicRunner.SetOnPeriodicAutoStopped(s.BroadcastPeriodicUpdated)
+	s.periodicRunner.SetOnPeriodicUpdated(s.BroadcastPeriodicUpdated)
 
 	// Configure the global periodic-iteration safeguard (user default, bounded by backstop).
 	maxPeriodicIter := configPkg.DefaultMaxPeriodicIterations
@@ -635,6 +706,13 @@ func NewServer(config Config) (*Server, error) {
 		maxPeriodicIter = config.MittoConfig.Conversations.GetMaxPeriodicIterations()
 	}
 	s.periodicRunner.SetMaxPeriodicIterations(maxPeriodicIter)
+
+	// Configure the global floor for the on-completion periodic trigger's delay.
+	minCompletionDelay := configPkg.DefaultMinPeriodicCompletionDelaySeconds
+	if config.MittoConfig != nil {
+		minCompletionDelay = config.MittoConfig.Conversations.GetMinPeriodicCompletionDelaySeconds()
+	}
+	s.periodicRunner.SetMinPeriodicCompletionDelaySeconds(minCompletionDelay)
 
 	// Configure startup delay for periodic runner to avoid thundering herd.
 	// Interactive sessions resume first via WebSocket; periodic sessions can afford to wait.
@@ -657,8 +735,132 @@ func NewServer(config Config) (*Server, error) {
 	}
 
 	// Initialize callback index and rate limiter
-	s.callbackIndex = NewCallbackIndex()
-	s.callbackRateLimiter = NewCallbackRateLimiter()
+	s.callbackIndex = conversation.NewCallbackIndex()
+	s.callbackRateLimiter = conversation.NewCallbackRateLimiter()
+
+	// Bind the auxiliary title generator only when an auxiliary manager exists,
+	// so the beads create handler preserves its "no auxiliary → quick-title
+	// fallback" behaviour (a nil func signals no generator).
+	var genAuxTitle func(context.Context, string, string) (string, error)
+	if s.auxiliaryManager != nil {
+		genAuxTitle = s.auxiliaryManager.GenerateTitle
+	}
+
+	// Construct the REST handlers sub-package facade. Built here (not earlier)
+	// so the late-initialized callbackIndex, callbackRateLimiter and
+	// periodicRunner are non-nil when wired into Deps.
+	s.apiHandlers = handlers.New(handlers.Deps{
+		Logger:                   logger,
+		ConfigReadOnly:           config.ConfigReadOnly,
+		MittoConfig:              config.MittoConfig,
+		RCFilePath:               config.RCFilePath,
+		HasRCFileServers:         config.HasRCFileServers,
+		PromptsCache:             config.PromptsCache,
+		HasExistingSimpleAuth:    s.hasExistingSimpleAuth,
+		ValidateAndPrepareConfig: s.validateAndPrepareSaveConfig,
+		BuildNewSettings:         s.buildNewSettings,
+		ApplyConfigChanges:       s.applyConfigChanges,
+		AuthEnabled:              func() bool { return s.authManager != nil && s.authManager.IsEnabled() },
+		FilterPromptsForSession: func(prompts []configPkg.WebPrompt, sessionID string) []configPkg.WebPrompt {
+			if visCtx := s.buildPromptEnabledContext(sessionID); visCtx != nil {
+				return s.filterPromptsByEnabled(prompts, visCtx)
+			}
+			return prompts
+		},
+		MigrateWorkspacePrompts:            s.migrateWorkspacePrompts,
+		LoadPromptsFromDirs:                s.loadPromptsFromDirs,
+		BuildPromptEnabledContext:          s.buildPromptEnabledContext,
+		ApplyWorkspaceNamespace:            s.applyWorkspaceNamespace,
+		BuildWorkspacePromptEnabledContext: s.buildWorkspacePromptEnabledContext,
+		FilterPromptsByEnabled:             s.filterPromptsByEnabled,
+		Store:                              store,
+		SessionManager:                     sessionMgr,
+		APIPrefix:                          apiPrefix,
+		CallbackIndex:                      s.callbackIndex,
+		CallbackRateLimiter:                s.callbackRateLimiter,
+		GetExternalPort:                    s.GetExternalPort,
+		IsExternalListenerRunning:          s.IsExternalListenerRunning,
+		TriggerPeriodicNow:                 s.periodicRunner.TriggerNow,
+		StopPeriodicForArchive: func(sessionID string) {
+			s.periodicRunner.StopPeriodicForArchive(sessionID, session.StoppedReasonArchived)
+		},
+		ErrSessionBusy:                ErrSessionBusy,
+		ErrPeriodicNotEnabled:         ErrPeriodicNotEnabled,
+		PeriodicDelayFloor:            s.periodicDelayFloor,
+		BroadcastPeriodicUpdated:      s.BroadcastPeriodicUpdated,
+		BroadcastBeadsCleanupProgress: s.BroadcastBeadsCleanupProgress,
+		BootstrapOnCompletion:         s.periodicRunner.BootstrapOnCompletion,
+		BroadcastSettingsUpdated:      s.BroadcastSessionSettingsUpdated,
+		BroadcastSessionDeleted:       s.BroadcastSessionDeleted,
+		BroadcastACPStartFailed:       s.BroadcastACPStartFailed,
+		BroadcastACPStopped:           s.BroadcastACPStopped,
+		BroadcastACPStarted:           s.BroadcastACPStarted,
+		BroadcastSessionRenamed:       s.BroadcastSessionRenamed,
+		BroadcastSessionPinned:        s.BroadcastSessionPinned,
+		BroadcastSessionArchived:      s.BroadcastSessionArchived,
+		BroadcastSessionCreated: func(data map[string]interface{}) {
+			s.eventsManager.Broadcast(conversation.WSMsgTypeSessionCreated, data)
+		},
+		ResolvePromptSingleton: func(promptName, workingDir string) bool {
+			return s.resolveSingletonByPromptName(promptName, workingDir)
+		},
+		RemoveNegativeCache: func(sessionID string) {
+			if s.negativeSessionCache != nil {
+				s.negativeSessionCache.Remove(sessionID)
+			}
+		},
+		DefaultACPServer:       config.ACPServer,
+		QueueTitleWorker:       s.queueTitleWorker,
+		NotifyQueueUpdate:      s.notifyQueueUpdate,
+		NotifyQueueReorder:     s.notifyQueueReorder,
+		BeadsClient:            s.beads,
+		GenerateAuxTitle:       genAuxTitle,
+		GetWorkspacePromptsAll: s.getWorkspacePromptsAll,
+		MCPServerURL: func() string {
+			url := fmt.Sprintf("http://127.0.0.1:%d/mcp", mcpserver.DefaultPort)
+			if s.mcpServer != nil && s.mcpServer.IsRunning() && s.mcpServer.Port() > 0 {
+				url = fmt.Sprintf("http://127.0.0.1:%d/mcp", s.mcpServer.Port())
+			}
+			return url
+		},
+		SyncConfigWorkspaces: func() {
+			s.config.Workspaces = s.sessionManager.GetWorkspaces()
+			// Re-subscribe beads watcher to pick up any newly added workspaces.
+			if s.beadsWatcher != nil {
+				s.beadsWatcher.Unsubscribe(s)
+				s.beadsWatcher.Subscribe(s, s.getBeadsWatchDirs())
+				if s.periodicRunner != nil {
+					s.beadsWatcher.Unsubscribe(s.periodicRunner)
+					s.beadsWatcher.Subscribe(s.periodicRunner, s.getBeadsWatchDirs())
+				}
+			}
+		},
+		RestartWorkspaceACP: func() func(string) error {
+			if s.acpProcessManager == nil {
+				return nil
+			}
+			return s.acpProcessManager.RestartProcess
+		}(),
+		HasLiveWorkspaceACP: func() func(string) bool {
+			if s.acpProcessManager == nil {
+				return nil
+			}
+			return s.acpProcessManager.HasLiveProcess
+		}(),
+		IsShutdown: s.IsShutdown,
+		AuthInfo: func() (bool, bool) {
+			if s.authManager == nil {
+				return false, false
+			}
+			return s.authManager.HasValidCredentials(), s.authManager.HasCloudflareAccess()
+		},
+		ImprovePrompt: func() func(context.Context, string, string) (string, error) {
+			if s.auxiliaryManager == nil {
+				return nil
+			}
+			return s.auxiliaryManager.ImprovePrompt
+		}(),
+	})
 
 	// Configure auto-archive inactive sessions if enabled
 	if config.MittoConfig != nil && config.MittoConfig.Session != nil {
@@ -679,13 +881,24 @@ func NewServer(config Config) (*Server, error) {
 	}
 
 	// Set prompt resolver for periodic runner and session manager — resolves prompt names to text at execution time.
-	// Both use the same resolver: PeriodicRunner for scheduled prompts, SessionManager for interactive prompt-by-name.
+	// Both use the same resolver: PeriodicRunner for scheduled prompts, conversation.SessionManager for interactive prompt-by-name.
 	promptResolverFunc := func(promptName string, workingDir string) (string, error) {
 		return s.resolvePromptByName(promptName, workingDir)
+	}
+	preferredModelsResolverFunc := func(promptName string, workingDir string) []configPkg.PromptPreferredModel {
+		return s.resolvePreferredModelsByPromptName(promptName, workingDir)
+	}
+	promptParametersResolverFunc := func(promptName string, workingDir string) []configPkg.PromptParameter {
+		return s.resolvePromptParametersByPromptName(promptName, workingDir)
 	}
 	s.periodicRunner.SetPromptResolver(promptResolverFunc)
 	if s.sessionManager != nil {
 		s.sessionManager.SetPromptResolver(promptResolverFunc)
+		s.sessionManager.SetPreferredModelsResolver(preferredModelsResolverFunc)
+		s.sessionManager.SetPromptParametersResolver(promptParametersResolverFunc)
+		// Wire event-driven on-completion periodic firing: sessions notify the runner
+		// when they go idle so it can arm the next onCompletion run.
+		s.sessionManager.SetOnConversationIdle(s.periodicRunner.OnConversationIdle)
 	}
 
 	s.periodicRunner.Start()
@@ -711,80 +924,36 @@ func NewServer(config Config) (*Server, error) {
 		logger.Info("Prompts watcher started", "dirs", s.getPromptsWatchDirs())
 	}
 
+	// Initialize beads watcher for monitoring .beads/ directory changes
+	if beadsWatcher, err := configPkg.NewBeadsWatcher(logger); err != nil {
+		logger.Warn("Failed to create beads watcher", "error", err)
+	} else {
+		s.beadsWatcher = beadsWatcher
+		s.beadsWatcher.Subscribe(s, s.getBeadsWatchDirs())
+		// Also subscribe the periodic runner so onTasks periodic conversations
+		// can fire (or rebase their diff baseline) when beads change.
+		s.beadsWatcher.Subscribe(s.periodicRunner, s.getBeadsWatchDirs())
+		s.beadsWatcher.Start()
+		logger.Info("Beads watcher started", "dirs", s.getBeadsWatchDirs())
+	}
+
 	// Set up routes
 	mux := http.NewServeMux()
 
-	// Auth routes (always register, they handle their own enabled/disabled state)
-	// These use the API prefix for security through obscurity
-	if authMgr != nil {
-		mux.HandleFunc(apiPrefix+"/api/login", authMgr.HandleLogin)
-		mux.HandleFunc(apiPrefix+"/api/logout", authMgr.HandleLogout)
-	}
-
-	// CSRF token endpoint (always available for getting tokens)
-	mux.HandleFunc(apiPrefix+"/api/csrf-token", csrfMgr.HandleCSRFToken)
-
-	// API routes - all use the API prefix for security through obscurity
-	mux.HandleFunc(apiPrefix+"/api/sessions", s.handleSessions)
-	mux.HandleFunc(apiPrefix+"/api/sessions/running", s.handleRunningSessions)
-	mux.HandleFunc(apiPrefix+"/api/sessions/", s.handleSessionDetail)
-	mux.HandleFunc(apiPrefix+"/api/workspaces", s.handleWorkspaces)
-	mux.HandleFunc(apiPrefix+"/api/workspaces/", s.handleWorkspaceDetail)
-	mux.HandleFunc(apiPrefix+"/api/workspace-prompts", s.handleWorkspacePrompts)
-	mux.HandleFunc(apiPrefix+"/api/workspace-prompts/toggle-enabled", s.handleWorkspacePromptsToggleEnabled)
-	mux.HandleFunc(apiPrefix+"/api/workspace-processors", s.handleWorkspaceProcessors)
-	mux.HandleFunc(apiPrefix+"/api/workspace-processors/toggle-enabled", s.handleWorkspaceProcessorsToggleEnabled)
-	mux.HandleFunc(apiPrefix+"/api/workspace-mcp-tools", s.handleWorkspaceMCPTools)
-	mux.HandleFunc(apiPrefix+"/api/workspace-mcp-install", s.handleWorkspaceMCPInstall)
-	mux.HandleFunc(apiPrefix+"/api/workspace-mcp-remove", s.handleWorkspaceMCPRemove)
-	mux.HandleFunc(apiPrefix+"/api/workspace-metadata", s.handleWorkspaceMetadata)
-	mux.HandleFunc(apiPrefix+"/api/folder-group", s.handleFolderGroup)
-	mux.HandleFunc(apiPrefix+"/api/workspace/user-data-schema", s.handleWorkspaceUserDataSchema)
-	mux.HandleFunc(apiPrefix+"/api/config", s.handleConfig)
-	mux.HandleFunc(apiPrefix+"/api/agent-types", s.handleAgentTypes)
-	mux.HandleFunc(apiPrefix+"/api/agents/scan", s.handleScanAgents)
-	mux.HandleFunc(apiPrefix+"/api/agents/confirm", s.handleConfirmAgents)
-	mux.HandleFunc(apiPrefix+"/api/supported-runners", s.handleSupportedRunners)
-	mux.HandleFunc(apiPrefix+"/api/runner-defaults", s.handleRunnerDefaults)
-	mux.HandleFunc(apiPrefix+"/api/advanced-flags", s.handleAdvancedFlags)
-	mux.HandleFunc(apiPrefix+"/api/external-status", s.handleExternalStatus)
-	mux.HandleFunc(apiPrefix+"/api/aux/improve-prompt", s.handleImprovePrompt)
-	mux.HandleFunc(apiPrefix+"/api/badge-click", s.handleBadgeClick)
-	mux.HandleFunc(apiPrefix+"/api/beads/list", s.handleBeadsList)
-	mux.HandleFunc(apiPrefix+"/api/beads/stats", s.handleBeadsStats)
-	mux.HandleFunc(apiPrefix+"/api/beads/show", s.handleBeadsShow)
-	mux.HandleFunc(apiPrefix+"/api/beads/create", s.handleBeadsCreate)
-	mux.HandleFunc(apiPrefix+"/api/beads/cleanup", s.handleBeadsCleanup)
-	mux.HandleFunc(apiPrefix+"/api/beads/delete", s.handleBeadsDelete)
-	mux.HandleFunc(apiPrefix+"/api/beads/status", s.handleBeadsStatus)
-	mux.HandleFunc(apiPrefix+"/api/beads/update", s.handleBeadsUpdate)
-	mux.HandleFunc(apiPrefix+"/api/beads/comment", s.handleBeadsComment)
-	mux.HandleFunc(apiPrefix+"/api/beads/dep", s.handleBeadsDep)
-	mux.HandleFunc(apiPrefix+"/api/beads/config", s.handleBeadsConfig)
-	mux.HandleFunc(apiPrefix+"/api/beads/upstream", s.handleBeadsUpstream)
-	mux.HandleFunc(apiPrefix+"/api/beads/sync", s.handleBeadsSync)
-	mux.HandleFunc(apiPrefix+"/api/ui-preferences", s.handleUIPreferences)
-
-	// File save endpoints - restricted to localhost only (used by native macOS app)
-	mux.HandleFunc(apiPrefix+"/api/save-file-to-path", s.handleSaveFileToPath)
-	mux.HandleFunc(apiPrefix+"/api/check-file-exists", s.handleCheckFileExists)
-
-	// Auth info endpoint (public, used by login page to adapt its UI)
-	mux.HandleFunc(apiPrefix+"/api/auth-info", s.HandleAuthInfo)
-
-	// M3: Health check endpoint for load balancer integration and monitoring
-	// This endpoint is intentionally NOT behind auth to allow health checks
-	mux.HandleFunc(apiPrefix+"/api/health", s.handleHealthCheck)
-
-	// Callback trigger endpoint (public, no auth required)
-	mux.HandleFunc(apiPrefix+"/api/callback/", s.handleCallbackTrigger)
-
 	// File server endpoint - serves files from workspace directories (for web browser access)
 	fileServer := NewFileServer(sessionMgr, logger)
-	mux.Handle(apiPrefix+"/api/files", fileServer)
 
-	// WebSocket endpoints - also use the API prefix
-	mux.HandleFunc(apiPrefix+"/api/events", s.handleGlobalEventsWS) // Global events (session lifecycle)
+	// Register all API and WebSocket routes from the declarative route table.
+	// Login/logout are included in the table only when authMgr is non-nil.
+	// Method-qualified routes (rt.method != "") use Go 1.22 "METHOD path" patterns
+	// so the mux enforces the method and returns a central 405 automatically.
+	for _, rt := range s.apiRoutes(authMgr, csrfMgr, fileServer) {
+		pattern := apiPrefix + rt.pattern
+		if rt.method != "" {
+			pattern = rt.method + " " + pattern
+		}
+		mux.Handle(pattern, rt.handler)
+	}
 
 	// Robots.txt: discourage bot crawlers from indexing
 	mux.HandleFunc("/robots.txt", handleRobotsTxt)
@@ -831,17 +1000,17 @@ func NewServer(config Config) (*Server, error) {
 
 	// Wrap with security middlewares (applied in reverse order)
 	// 1. Request size limit (1MB max for request bodies)
-	handler = requestSizeLimitMiddleware(1 * 1024 * 1024)(handler)
+	handler = middleware.RequestSizeLimitMiddleware(1 * 1024 * 1024)(handler)
 
 	// 2. Rate limiting for API endpoints
 	handler = rateLimiter.Middleware(handler)
 
 	// 3. Request timeout (excludes WebSocket connections)
-	handler = requestTimeoutMiddleware(DefaultRequestTimeout)(handler)
+	handler = middleware.RequestTimeoutMiddleware(middleware.DefaultRequestTimeout)(handler)
 
 	// 4. Security headers (non-CSP headers)
-	headerSecurityConfig := DefaultSecurityConfig()
-	handler = securityHeadersMiddleware(headerSecurityConfig)(handler)
+	headerSecurityConfig := middleware.DefaultSecurityConfig()
+	handler = middleware.SecurityHeadersMiddleware(headerSecurityConfig)(handler)
 
 	// 5. CSP nonce injection for HTML responses
 	// This must come after security headers but before hide server info
@@ -851,10 +1020,10 @@ func NewServer(config Config) (*Server, error) {
 	if config.MittoConfig != nil && config.MittoConfig.Conversations != nil {
 		allowExternalImages = config.MittoConfig.Conversations.AreExternalImagesEnabled()
 	}
-	handler = cspNonceMiddlewareWithOptions(cspNonceMiddlewareOptions{
-		config:              headerSecurityConfig,
-		apiPrefix:           apiPrefix,
-		allowExternalImages: allowExternalImages,
+	handler = middleware.CSPNonceMiddlewareWithOptions(middleware.CSPNonceMiddlewareOptions{
+		Config:              headerSecurityConfig,
+		APIPrefix:           apiPrefix,
+		AllowExternalImages: allowExternalImages,
 	})(handler)
 
 	// 6. Gzip compression for external connections only
@@ -864,7 +1033,7 @@ func NewServer(config Config) (*Server, error) {
 	handler = gzipMiddleware(handler)
 
 	// 7. Hide server info (outermost to catch all responses)
-	handler = hideServerInfoMiddleware(handler)
+	handler = middleware.HideServerInfoMiddleware(handler)
 
 	// Wrap with logging middleware
 	handler = s.loggingMiddleware(handler)
@@ -979,6 +1148,11 @@ func (s *Server) Shutdown() error {
 		s.promptsWatcher.Close()
 	}
 
+	// Close beads watcher
+	if s.beadsWatcher != nil {
+		s.beadsWatcher.Close()
+	}
+
 	// Shut down the HTTP server with a timeout so we don't hang indefinitely.
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -1010,75 +1184,15 @@ func (s *Server) Store() *session.Store {
 
 // GetSessionManager returns the server's session manager.
 // This is primarily used for testing to access session internals.
-func (s *Server) GetSessionManager() *SessionManager {
+func (s *Server) GetSessionManager() *conversation.SessionManager {
 	return s.sessionManager
 }
 
-// handleHealthCheck handles the health check endpoint for load balancer integration.
-// M3: This endpoint returns server health status and basic metrics.
-// It is intentionally NOT behind authentication to allow health checks from load balancers.
-func (s *Server) handleHealthCheck(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
-	// Check if server is shutting down
-	if s.IsShutdown() {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]interface{}{
-			"status":  "unhealthy",
-			"reason":  "server_shutting_down",
-			"message": "Server is shutting down",
-		})
-		return
-	}
-
-	// Gather health metrics
-	response := map[string]interface{}{
-		"status":    "healthy",
-		"timestamp": time.Now().UTC().Format(time.RFC3339),
-	}
-
-	// Add session metrics if session manager is available
-	if s.sessionManager != nil {
-		activeSessions := s.sessionManager.ActiveSessionCount()
-		promptingSessions := s.sessionManager.PromptingSessionCount()
-		response["sessions"] = map[string]interface{}{
-			"active":    activeSessions,
-			"prompting": promptingSessions,
-		}
-	}
-
-	// Add store metrics if available
-	if s.store != nil {
-		storedCount, err := s.store.CountSessions()
-		if err == nil {
-			response["stored_sessions"] = storedCount
-		}
-	}
-
-	writeJSONOK(w, response)
-}
-
-// HandleAuthInfo returns information about configured authentication methods.
-// This is a public endpoint (no auth required) so the login page can adapt its UI.
-func (s *Server) HandleAuthInfo(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		methodNotAllowed(w)
-		return
-	}
-
-	info := map[string]bool{
-		"simple":     false,
-		"cloudflare": false,
-	}
-
-	if s.authManager != nil {
-		info["simple"] = s.authManager.HasValidCredentials()
-		info["cloudflare"] = s.authManager.HasCloudflareAccess()
-	}
-
-	writeJSONOK(w, info)
+// PeriodicRunner returns the server's periodic runner.
+// This is primarily used by integration tests to drive OnBeadsChanged directly
+// and to inject a fake beads.Client via SetBeadsClient.
+func (s *Server) PeriodicRunner() *PeriodicRunner {
+	return s.periodicRunner
 }
 
 // handleRobotsTxt serves a robots.txt that disallows all crawling.
@@ -1096,7 +1210,7 @@ func handleRobotsTxt(w http.ResponseWriter, r *http.Request) {
 func (s *Server) loggingMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		path := r.URL.Path
-		clientIP := getClientIPWithProxyCheck(r)
+		clientIP := middleware.GetClientIPWithProxyCheck(r)
 
 		// Log static assets at debug level, others at info level
 		if isStaticAsset(path) {
@@ -1122,7 +1236,7 @@ func (s *Server) loggingMiddleware(next http.Handler) http.Handler {
 
 // BroadcastSessionRenamed notifies all connected clients that a session was renamed.
 func (s *Server) BroadcastSessionRenamed(sessionID, newName string) {
-	s.eventsManager.Broadcast(WSMsgTypeSessionRenamed, map[string]string{
+	s.eventsManager.Broadcast(conversation.WSMsgTypeSessionRenamed, map[string]string{
 		"session_id": sessionID,
 		"name":       newName,
 	})
@@ -1155,7 +1269,7 @@ func (s *Server) BroadcastSessionArchived(sessionID string, archived bool, reaso
 	if len(reason) > 0 && reason[0] != "" {
 		data["archive_reason"] = string(reason[0])
 	}
-	s.eventsManager.Broadcast(WSMsgTypeSessionArchived, data)
+	s.eventsManager.Broadcast(conversation.WSMsgTypeSessionArchived, data)
 
 	if s.logger != nil {
 		s.logger.Debug("Broadcast session archived", "session_id", sessionID, "archived", archived,
@@ -1182,7 +1296,7 @@ func (s *Server) BroadcastSessionSettingsUpdated(sessionID string, settings map[
 
 // BroadcastSessionDeleted notifies all connected clients that a session was deleted.
 func (s *Server) BroadcastSessionDeleted(sessionID string) {
-	s.eventsManager.Broadcast(WSMsgTypeSessionDeleted, map[string]string{
+	s.eventsManager.Broadcast(conversation.WSMsgTypeSessionDeleted, map[string]string{
 		"session_id": sessionID,
 	})
 
@@ -1194,43 +1308,9 @@ func (s *Server) BroadcastSessionDeleted(sessionID string) {
 
 // BroadcastPeriodicUpdated notifies all connected clients that a session's periodic state changed.
 // This includes the full periodic config so clients can update their frequency panels.
-//
-// The broadcast includes:
-// - periodic_configured: true if a periodic config exists (controls UI mode)
-// - periodic_enabled: true if periodic runs are active (controls lock state)
-// - max_iterations: cap on scheduled runs (0 = unlimited)
-// - iteration_count: number of scheduled runs delivered so far
 func (s *Server) BroadcastPeriodicUpdated(sessionID string, periodic *session.PeriodicPrompt) {
-	data := map[string]interface{}{
-		"session_id": sessionID,
-	}
-
-	if periodic != nil {
-		// periodic_configured: true means the session is in periodic mode (shows periodic UI)
-		data["periodic_configured"] = true
-		// periodic_enabled: true means periodic runs are active (locked state)
-		data["periodic_enabled"] = periodic.Enabled
-		// fresh_context: true means each scheduled run starts with a clean agent context
-		data["fresh_context"] = periodic.FreshContext
-		data["max_iterations"] = periodic.MaxIterations
-		data["iteration_count"] = periodic.IterationCount
-		data["frequency"] = map[string]interface{}{
-			"value": periodic.Frequency.Value,
-			"unit":  periodic.Frequency.Unit,
-		}
-		if periodic.Frequency.At != "" {
-			data["frequency"].(map[string]interface{})["at"] = periodic.Frequency.At
-		}
-		if periodic.NextScheduledAt != nil && !periodic.NextScheduledAt.IsZero() {
-			data["next_scheduled_at"] = periodic.NextScheduledAt.Format(time.RFC3339)
-		}
-	} else {
-		// No periodic config - session is not in periodic mode
-		data["periodic_configured"] = false
-		data["periodic_enabled"] = false
-	}
-
-	s.eventsManager.Broadcast(WSMsgTypePeriodicUpdated, data)
+	data := conversation.BuildPeriodicUpdatedData(sessionID, periodic)
+	s.eventsManager.Broadcast(conversation.WSMsgTypePeriodicUpdated, data)
 
 	if s.logger != nil {
 		configured := periodic != nil
@@ -1244,7 +1324,7 @@ func (s *Server) BroadcastPeriodicUpdated(sessionID string, periodic *session.Pe
 // BroadcastSessionStreaming notifies all connected clients that a session's streaming state changed.
 // This is called when a session starts (user sends a prompt) or stops streaming (agent completes).
 func (s *Server) BroadcastSessionStreaming(sessionID string, isStreaming bool) {
-	s.eventsManager.Broadcast(WSMsgTypeSessionStreaming, map[string]interface{}{
+	s.eventsManager.Broadcast(conversation.WSMsgTypeSessionStreaming, map[string]interface{}{
 		"session_id":   sessionID,
 		"is_streaming": isStreaming,
 	})
@@ -1287,7 +1367,7 @@ func (s *Server) BroadcastACPStarted(sessionID string) {
 const acpStartFailWindow = 5 * time.Second
 
 // BroadcastACPStartFailed notifies all connected clients that an ACP connection failed to start.
-// If err is an *ACPClassifiedError with a permanent classification, a more detailed
+// If err is an *conversation.ACPClassifiedError with a permanent classification, a more detailed
 // "acp_error_permanent" message is broadcast with actionable user guidance.
 // Duplicate calls for the same session within acpStartFailWindow are suppressed so that
 // coalesced resume waiters do not each emit an error toast.
@@ -1326,7 +1406,7 @@ func (s *Server) BroadcastACPStartFailed(sessionID, sessionName string, err erro
 	}
 
 	// Check if this is a classified permanent error — broadcast with extra context.
-	if classified, ok := err.(*ACPClassifiedError); ok && !classified.IsRetryable() {
+	if classified, ok := err.(*conversation.ACPClassifiedError); ok && !classified.IsRetryable() {
 		data["error_class"] = classified.Class.String()
 		data["user_message"] = classified.UserMessage
 		data["user_guidance"] = classified.UserGuidance
@@ -1423,6 +1503,18 @@ func (s *Server) BroadcastMemoryRecycled(workspaceUUID, workspaceName, workingDi
 	}
 }
 
+// BroadcastBeadsCleanupProgress notifies all connected clients about the
+// progress of a background bulk closed-issue cleanup.
+func (s *Server) BroadcastBeadsCleanupProgress(workingDir string, deleted, total int, done bool, errMsg string) {
+	s.eventsManager.Broadcast(WSMsgTypeBeadsCleanupProgress, map[string]interface{}{
+		"working_dir": workingDir,
+		"deleted":     deleted,
+		"total":       total,
+		"done":        done,
+		"error":       errMsg,
+	})
+}
+
 // SetHealthMonitorDeps provides dependencies needed for dynamic health monitor management.
 // This is called by the startup code to enable the server to manage the health monitor
 // lifecycle when configuration changes.
@@ -1457,8 +1549,10 @@ func (s *Server) updateHealthMonitor(hooksConfig configPkg.WebHooks) {
 		s.healthMonitor = nil
 	}
 
-	// Start new monitor if external address is configured and up hook exists
-	if hooksConfig.ExternalAddress != "" && hooksConfig.Up.Command != "" && s.hookPort > 0 {
+	// Start new monitor only when the external listener is actually running.
+	// If the listener is intentionally down (e.g. incomplete credentials) we must not
+	// start the monitor or it will restart the tunnel hooks in a futile loop.
+	if hooksConfig.ExternalAddress != "" && hooksConfig.Up.Command != "" && s.hookPort > 0 && s.IsExternalListenerRunning() {
 		m := hooks.NewHealthMonitor(hooks.HealthMonitorConfig{
 			Address:   hooksConfig.ExternalAddress,
 			APIPrefix: s.apiPrefix,
@@ -1489,9 +1583,9 @@ func (s *Server) updateHealthMonitor(hooksConfig configPkg.WebHooks) {
 	}
 }
 
-// sessionManagerAdapter adapts SessionManager to mcpserver.SessionManager interface.
+// sessionManagerAdapter adapts conversation.SessionManager to mcpserver.conversation.SessionManager interface.
 type sessionManagerAdapter struct {
-	sm *SessionManager
+	sm *conversation.SessionManager
 }
 
 // GetSession returns a running session by ID.
@@ -1572,6 +1666,11 @@ func (a *sessionManagerAdapter) BroadcastSessionRenamed(sessionID string, newNam
 	a.sm.BroadcastSessionRenamed(sessionID, newName)
 }
 
+// BroadcastPeriodicUpdated broadcasts a periodic_updated event to all connected clients.
+func (a *sessionManagerAdapter) BroadcastPeriodicUpdated(sessionID string, periodic *session.PeriodicPrompt) {
+	a.sm.BroadcastPeriodicUpdated(sessionID, periodic)
+}
+
 // GetUserDataSchema returns the user data schema for a workspace.
 func (a *sessionManagerAdapter) GetUserDataSchema(workingDir string) *configPkg.UserDataSchema {
 	return a.sm.GetUserDataSchema(workingDir)
@@ -1648,6 +1747,76 @@ func (s *Server) getPromptsWatchDirs() []string {
 		dirs = append(dirs, s.config.MittoConfig.PromptsDirs...)
 	}
 
+	return dirs
+}
+
+// =============================================================================
+// BeadsSubscriber implementation
+// =============================================================================
+
+// suppressingBeadsRunner wraps a beads.Runner so each bd invocation this
+// process makes is bracketed with the BeadsWatcher self-suppression window. All
+// beads.Client methods funnel through Runner.Run(ctx, dir, ...), so wrapping the
+// runner covers both reads and writes uniformly. dir is the workspace root the
+// bd command runs in; suppress maps it to its .beads/ suppression window.
+type suppressingBeadsRunner struct {
+	inner    beads.Runner
+	suppress func(workingDir string) func()
+}
+
+// Run brackets the underlying bd invocation with the suppression window.
+func (r suppressingBeadsRunner) Run(ctx context.Context, dir string, args ...string) ([]byte, string, error) {
+	release := r.suppress(dir)
+	defer release()
+	return r.inner.Run(ctx, dir, args...)
+}
+
+// suppressBeads opens a self-activity suppression window for workingDir on the
+// beads watcher and returns its release func. It is nil-safe: before the watcher
+// is created (or in tests without one) it is a no-op, so bd still runs normally.
+func (s *Server) suppressBeads(workingDir string) func() {
+	if s == nil || s.beadsWatcher == nil || workingDir == "" {
+		return func() {}
+	}
+	return s.beadsWatcher.SuppressSelfActivity(workingDir)
+}
+
+// OnBeadsChanged is called by the BeadsWatcher when .beads/ directories change.
+// It broadcasts the change to all connected clients via the global events WebSocket.
+func (s *Server) OnBeadsChanged(event configPkg.BeadsChangeEvent) {
+	if s.eventsManager == nil {
+		return
+	}
+
+	s.eventsManager.Broadcast(WSMsgTypeBeadsChanged, map[string]interface{}{
+		"working_dirs": event.WorkingDirs,
+		"changed_dirs": event.ChangedDirs,
+		"timestamp":    event.Timestamp.Format("2006-01-02T15:04:05Z07:00"),
+	})
+
+	if s.logger != nil {
+		s.logger.Debug("Broadcasted beads_changed event",
+			"working_dirs", event.WorkingDirs,
+			"changed_dirs", event.ChangedDirs,
+			"client_count", s.eventsManager.ClientCount())
+	}
+}
+
+// getBeadsWatchDirs returns the .beads/ directories to watch, one per workspace.
+func (s *Server) getBeadsWatchDirs() []string {
+	seen := make(map[string]struct{})
+	var dirs []string
+	for _, ws := range s.sessionManager.GetWorkspaces() {
+		if ws.WorkingDir == "" {
+			continue
+		}
+		d := filepath.Join(ws.WorkingDir, ".beads")
+		if _, ok := seen[d]; ok {
+			continue
+		}
+		seen[d] = struct{}{}
+		dirs = append(dirs, d)
+	}
 	return dirs
 }
 
@@ -1738,6 +1907,255 @@ func (s *Server) resolvePromptByName(promptName string, workingDir string) (stri
 	}
 
 	return "", fmt.Errorf("prompt %q not found", promptName)
+}
+
+// resolvePreferredModelsByPromptName resolves a prompt name to its preferredModels list.
+// Uses the same resolution pipeline as resolvePromptByName.
+// Returns nil when the prompt is not found or has no preferredModels field.
+func (s *Server) resolvePreferredModelsByPromptName(promptName, workingDir string) []configPkg.PromptPreferredModel {
+	// 1. Global file prompts
+	var globalFilePrompts []configPkg.WebPrompt
+	if s.config.PromptsCache != nil {
+		gfp, err := s.config.PromptsCache.GetWebPrompts()
+		if err != nil && s.logger != nil {
+			s.logger.Warn("Failed to load global file prompts for preferred-models resolution", "error", err)
+		}
+		globalFilePrompts = gfp
+	}
+
+	// 2. Settings file prompts
+	var settingsPrompts []configPkg.WebPrompt
+	if s.config.MittoConfig != nil {
+		settingsPrompts = s.config.MittoConfig.Prompts
+	}
+
+	// 3. ACP server-specific prompts (same as resolvePromptByName)
+	var acpServerName, acpServerType string
+	if s.sessionManager != nil {
+		if ws := s.sessionManager.GetWorkspace(workingDir); ws != nil {
+			acpServerName = ws.ACPServer
+		}
+	}
+	if acpServerName != "" && s.config.MittoConfig != nil {
+		acpServerType = s.config.MittoConfig.GetServerType(acpServerName)
+	}
+	if acpServerType == "" {
+		acpServerType = acpServerName
+	}
+
+	var serverPrompts []configPkg.WebPrompt
+	if acpServerType != "" && s.config.PromptsCache != nil {
+		sp, err := s.config.PromptsCache.GetWebPromptsSpecificToACP(acpServerType)
+		if err != nil && s.logger != nil {
+			s.logger.Warn("Failed to load ACP-specific prompts for preferred-models resolution", "error", err)
+		}
+		serverPrompts = sp
+	}
+	if acpServerName != "" && s.config.MittoConfig != nil {
+		for _, srv := range s.config.MittoConfig.ACPServers {
+			if srv.Name == acpServerName {
+				serverPrompts = append(serverPrompts, srv.Prompts...)
+				break
+			}
+		}
+	}
+
+	// 4. Workspace directory prompts
+	var workspacePromptsDirs []string
+	workspacePromptsDirs = append(workspacePromptsDirs, appdir.WorkspacePromptsDir(workingDir))
+	if s.sessionManager != nil {
+		workspacePromptsDirs = append(workspacePromptsDirs, s.sessionManager.GetWorkspacePromptsDirs(workingDir)...)
+	}
+	dirPrompts := s.loadPromptsFromDirs(workingDir, workspacePromptsDirs)
+
+	// 5. Workspace inline prompts (.mittorc)
+	var inlinePrompts []configPkg.WebPrompt
+	if s.sessionManager != nil {
+		inlinePrompts = s.sessionManager.GetWorkspacePrompts(workingDir)
+	}
+
+	merged := configPkg.MergePrompts(
+		configPkg.MergePrompts(
+			configPkg.MergePrompts(globalFilePrompts, settingsPrompts, serverPrompts),
+			nil,
+			dirPrompts,
+		),
+		nil,
+		inlinePrompts,
+	)
+
+	for _, p := range merged {
+		if strings.EqualFold(p.Name, promptName) {
+			return p.PreferredModels
+		}
+	}
+	return nil
+}
+
+// resolveSingletonByPromptName resolves a prompt name to its singleton flag.
+// Uses the same resolution pipeline as resolvePromptByName.
+// Returns false when the prompt is not found or is not declared singleton.
+func (s *Server) resolveSingletonByPromptName(promptName, workingDir string) bool {
+	// 1. Global file prompts
+	var globalFilePrompts []configPkg.WebPrompt
+	if s.config.PromptsCache != nil {
+		gfp, err := s.config.PromptsCache.GetWebPrompts()
+		if err != nil && s.logger != nil {
+			s.logger.Warn("Failed to load global file prompts for singleton resolution", "error", err)
+		}
+		globalFilePrompts = gfp
+	}
+
+	// 2. Settings file prompts
+	var settingsPrompts []configPkg.WebPrompt
+	if s.config.MittoConfig != nil {
+		settingsPrompts = s.config.MittoConfig.Prompts
+	}
+
+	// 3. ACP server-specific prompts (same as resolvePromptByName)
+	var acpServerName, acpServerType string
+	if s.sessionManager != nil {
+		if ws := s.sessionManager.GetWorkspace(workingDir); ws != nil {
+			acpServerName = ws.ACPServer
+		}
+	}
+	if acpServerName != "" && s.config.MittoConfig != nil {
+		acpServerType = s.config.MittoConfig.GetServerType(acpServerName)
+	}
+	if acpServerType == "" {
+		acpServerType = acpServerName
+	}
+
+	var serverPrompts []configPkg.WebPrompt
+	if acpServerType != "" && s.config.PromptsCache != nil {
+		sp, err := s.config.PromptsCache.GetWebPromptsSpecificToACP(acpServerType)
+		if err != nil && s.logger != nil {
+			s.logger.Warn("Failed to load ACP-specific prompts for singleton resolution", "error", err)
+		}
+		serverPrompts = sp
+	}
+	if acpServerName != "" && s.config.MittoConfig != nil {
+		for _, srv := range s.config.MittoConfig.ACPServers {
+			if srv.Name == acpServerName {
+				serverPrompts = append(serverPrompts, srv.Prompts...)
+				break
+			}
+		}
+	}
+
+	// 4. Workspace directory prompts
+	var workspacePromptsDirs []string
+	workspacePromptsDirs = append(workspacePromptsDirs, appdir.WorkspacePromptsDir(workingDir))
+	if s.sessionManager != nil {
+		workspacePromptsDirs = append(workspacePromptsDirs, s.sessionManager.GetWorkspacePromptsDirs(workingDir)...)
+	}
+	dirPrompts := s.loadPromptsFromDirs(workingDir, workspacePromptsDirs)
+
+	// 5. Workspace inline prompts (.mittorc)
+	var inlinePrompts []configPkg.WebPrompt
+	if s.sessionManager != nil {
+		inlinePrompts = s.sessionManager.GetWorkspacePrompts(workingDir)
+	}
+
+	merged := configPkg.MergePrompts(
+		configPkg.MergePrompts(
+			configPkg.MergePrompts(globalFilePrompts, settingsPrompts, serverPrompts),
+			nil,
+			dirPrompts,
+		),
+		nil,
+		inlinePrompts,
+	)
+
+	for _, p := range merged {
+		if strings.EqualFold(p.Name, promptName) {
+			return p.Singleton
+		}
+	}
+	return false
+}
+
+// resolvePromptParametersByPromptName resolves a prompt name to its declared parameter list.
+// Uses the same resolution pipeline as resolvePromptByName.
+// Returns nil when the prompt is not found or has no parameters declared.
+func (s *Server) resolvePromptParametersByPromptName(promptName, workingDir string) []configPkg.PromptParameter {
+	// 1. Global file prompts
+	var globalFilePrompts []configPkg.WebPrompt
+	if s.config.PromptsCache != nil {
+		gfp, err := s.config.PromptsCache.GetWebPrompts()
+		if err != nil && s.logger != nil {
+			s.logger.Warn("Failed to load global file prompts for parameters resolution", "error", err)
+		}
+		globalFilePrompts = gfp
+	}
+
+	// 2. Settings file prompts
+	var settingsPrompts []configPkg.WebPrompt
+	if s.config.MittoConfig != nil {
+		settingsPrompts = s.config.MittoConfig.Prompts
+	}
+
+	// 3. ACP server-specific prompts (same as resolvePromptByName)
+	var acpServerName, acpServerType string
+	if s.sessionManager != nil {
+		if ws := s.sessionManager.GetWorkspace(workingDir); ws != nil {
+			acpServerName = ws.ACPServer
+		}
+	}
+	if acpServerName != "" && s.config.MittoConfig != nil {
+		acpServerType = s.config.MittoConfig.GetServerType(acpServerName)
+	}
+	if acpServerType == "" {
+		acpServerType = acpServerName
+	}
+
+	var serverPrompts []configPkg.WebPrompt
+	if acpServerType != "" && s.config.PromptsCache != nil {
+		sp, err := s.config.PromptsCache.GetWebPromptsSpecificToACP(acpServerType)
+		if err != nil && s.logger != nil {
+			s.logger.Warn("Failed to load ACP-specific prompts for parameters resolution", "error", err)
+		}
+		serverPrompts = sp
+	}
+	if acpServerName != "" && s.config.MittoConfig != nil {
+		for _, srv := range s.config.MittoConfig.ACPServers {
+			if srv.Name == acpServerName {
+				serverPrompts = append(serverPrompts, srv.Prompts...)
+				break
+			}
+		}
+	}
+
+	// 4. Workspace directory prompts
+	var workspacePromptsDirs []string
+	workspacePromptsDirs = append(workspacePromptsDirs, appdir.WorkspacePromptsDir(workingDir))
+	if s.sessionManager != nil {
+		workspacePromptsDirs = append(workspacePromptsDirs, s.sessionManager.GetWorkspacePromptsDirs(workingDir)...)
+	}
+	dirPrompts := s.loadPromptsFromDirs(workingDir, workspacePromptsDirs)
+
+	// 5. Workspace inline prompts (.mittorc)
+	var inlinePrompts []configPkg.WebPrompt
+	if s.sessionManager != nil {
+		inlinePrompts = s.sessionManager.GetWorkspacePrompts(workingDir)
+	}
+
+	merged := configPkg.MergePrompts(
+		configPkg.MergePrompts(
+			configPkg.MergePrompts(globalFilePrompts, settingsPrompts, serverPrompts),
+			nil,
+			dirPrompts,
+		),
+		nil,
+		inlinePrompts,
+	)
+
+	for _, p := range merged {
+		if strings.EqualFold(p.Name, promptName) {
+			return p.Parameters
+		}
+	}
+	return nil
 }
 
 // parseAutoArchivePeriod converts an auto-archive period string to a duration.

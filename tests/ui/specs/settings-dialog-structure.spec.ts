@@ -22,7 +22,7 @@ const dialog = (page: Page) => page.locator('[data-testid="settings-dialog"]');
 const content = (page: Page) => page.locator('[data-testid="settings-content"]');
 
 async function openDialog(page: Page) {
-  await page.locator('button[title="Settings"]').first().click();
+  await page.locator('button[data-testid="settings-btn"]').first().click();
   await expect(dialog(page)).toBeVisible({ timeout: 5000 });
 }
 

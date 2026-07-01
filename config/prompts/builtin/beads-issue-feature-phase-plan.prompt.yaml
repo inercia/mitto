@@ -1,0 +1,116 @@
+icon: list
+name: Feature — plan phase
+menus: internal
+parameters:
+  - name: IssueID
+    type: beadsId
+    required: false
+    description: The beads issue ID to plan
+description: Internal phase-tier prompt — plan a feature and add the `planned` label. Invoked by name from the feature-implementation driver; runs on the Reasoning tier.
+group: Tasks
+backgroundColor: '#B3E5FC'
+preferredModels:
+  - modelTag: Reasoning
+prompt: |
+  ## Session Context
+
+  Your session ID is `{{ .Session.ID }}` — use this as `self_id` for all `mitto_*` MCP tool calls.
+
+  # Feature Implementation — Plan Phase
+
+  This is the **plan** stage of the label-encoded feature-implementation state machine
+  (`planned` → `implemented` → `tested` → `verified`). It is normally invoked by name
+  from the `Iterate implementing feature` driver (or by a list orchestrator), which
+  selects this phase because the target bead has none of
+  `planned`/`implemented`/`tested`/`verified` yet.
+
+  {{ $target := "" -}}
+  {{ if .Session.BeadsIssue }}{{ $target = .Session.BeadsIssue }}{{ else if .Args.IssueID }}{{ $target = .Args.IssueID }}{{ end -}}
+  {{ if $target -}}
+  The **target feature** for this phase is `{{ $target }}`{{ if .Session.BeadsIssue }} (from this conversation's linked beads issue){{ else }} (supplied as the `IssueID` argument){{ end }}.
+  {{- else -}}
+  No target feature is resolvable (neither `.Session.BeadsIssue` nor an `IssueID`
+  argument was supplied). Do not guess. Post a `mitto_ui_notify` explaining the missing
+  target, then stop this phase without changing anything.
+  {{- end }}
+
+  {{ if $target -}}
+  ## Step 1 — Load LIVE state
+
+  Labels drift between runs. Load the bead's **current** state fresh:
+
+  ```bash
+  bd show {{ $target }} --json --include-comments
+  ```
+
+  Read its `labels` array, description, and acceptance criteria. If `planned` is
+  already present, this phase's work is already done — `bd comment` a note that the
+  phase re-ran redundantly and stop **without** re-adding the label.
+
+  ## Step 2 — Produce an implementation plan
+
+  Interaction mode depends on how this phase was invoked:
+
+  - {{- if and .Session.IsPeriodic (not .Session.IsPeriodicForced) }} **Silent mode** (scheduled continuation of the driver's loop). Do **not** call `mitto_ui_options`, `mitto_ui_form`, or `mitto_ui_textbox`. Decide autonomously; if something is genuinely unclear/unsolvable, defer via **Step 4** rather than guess.
+    {{- else }} **Interactive mode** may apply (a user is present, e.g. first send). You *may* ask clarifying questions via `mitto_ui_options` during planning; every other phase decides autonomously or defers.
+    {{- end }}
+
+  Read the bead's description, acceptance criteria, and any related code so the plan is
+  grounded in the actual codebase — do not speculate about code you have not opened.
+  Produce a concrete implementation plan: the approach, key design decisions, and the
+  files/areas it will touch.
+
+  If the work is large enough to span multiple reviewable increments, decompose it into
+  sub-issues:
+
+  ```bash
+  bd create "<child title>" --parent {{ $target }} --type <type> --priority <0-4>
+  ```
+
+  ## Step 3 — Record the plan and advance the label
+
+  When the plan is concrete enough for the next phase to implement it, record it on the
+  bead and advance the state:
+
+  ```bash
+  bd comment {{ $target }} "Plan: <approach, key design decisions, files/areas touched, any sub-issues created>."
+  bd update {{ $target }} --add-label planned
+  ```
+
+  Only add the label after the comment is posted. Then stop — the driver's next
+  scheduled run will pick up the `planned` state and dispatch the implement phase.
+  {{- end }}
+
+  ## Step 4 — Blocked → Defer + Handoff
+
+  Use this whenever this phase cannot make progress autonomously (something unclear, a
+  decision only the user can give, an external action is required). **Do not** advance
+  the `planned` label. Instead:
+
+  1. Defer and flag the bead so it drops out of `bd ready`:
+
+     ```bash
+     bd update {{ if $target }}{{ $target }}{{ else }}<target-feature>{{ end }} --add-label needs-human --defer <when>
+     ```
+
+  2. Write a structured handoff comment:
+
+     ```bash
+     bd comment {{ if $target }}{{ $target }}{{ else }}<target-feature>{{ end }} "Blocked at plan. What I tried: <summary>. What I need from you: <the ONE concrete question/decision/info/action>. How to resume: bd update <id> --remove-label needs-human --defer '' , then re-run."
+     ```
+
+  3. End with a concise handoff message naming the blocker and the single thing needed
+     (interactive runs also `mitto_ui_notify`), and disable the enclosing conversation's
+     periodic flag so the driver loop does not spin on the blocker:
+
+     ```
+     mitto_conversation_update(self_id: "{{ .Session.ID }}", conversation_id: "self", periodic_enabled: false)
+     ```
+
+  ## Guidelines
+
+  - **One stage only.** This phase advances at most one label (`planned`). Do not
+    implement, test, or review — those are separate phases.
+  - **Live state only.** Always re-read labels via `bd show --json` at the start of
+    the phase; never assume labels from a prior run or from `Item.*`.
+  - **Always log to the tracker** with `bd comment` so progress is auditable.

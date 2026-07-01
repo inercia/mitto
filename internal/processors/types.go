@@ -76,6 +76,17 @@ const (
 	ProcessorSourceConfig ProcessorSource = "config"
 )
 
+// ProcessorLoadError records a processor document that failed to load or validate.
+// Retained so the web layer can surface it in the Processors tab instead of
+// silently dropping the processor.
+type ProcessorLoadError struct {
+	Name     string          `json:"name"`      // processor name if the doc parsed far enough; else ""
+	FilePath string          `json:"file_path"` // YAML file path
+	DocIndex int             `json:"doc_index"` // 0-based document index within the file
+	Source   ProcessorSource `json:"source"`    // global / workspace (stamped by Manager)
+	Error    string          `json:"error"`     // full error message
+}
+
 // ErrorHandling defines how errors are handled.
 type ErrorHandling string
 
@@ -231,8 +242,17 @@ type Processor struct {
 	// When set, Command and Text must be empty. The processor runs in fire-and-forget mode:
 	// the prompt is dispatched to a workspace-scoped auxiliary session and the pipeline
 	// continues immediately without waiting for the agent's response.
-	// Supports @mitto:variable substitution.
+	// Supports @mitto:variable substitution and Go-template .Args rendering.
 	Prompt string `yaml:"prompt,omitempty" json:"prompt,omitempty"`
+
+	// Parameters declares named, typed inputs for prompt-mode processors.
+	// Each entry must have a non-empty, unique name; a recognised type (see
+	// config.KnownPromptParameterTypes); and a non-empty default value unless the
+	// parameter explicitly declares `required: false` (an optional, may-be-empty input).
+	// Parameters are exposed as .Args in the prompt template at dispatch time
+	// (workspace override → declared default).
+	// Only valid for prompt-mode processors; rejected on command-mode or text-mode.
+	Parameters []config.PromptParameter `yaml:"parameters,omitempty" json:"parameters,omitempty"`
 
 	// Input defines what to send to stdin: "message", "conversation", "none".
 	Input InputType `yaml:"input,omitempty" json:"input,omitempty"`
@@ -253,13 +273,13 @@ type Processor struct {
 	Environment map[string]string `yaml:"environment,omitempty" json:"environment,omitempty"`
 
 	// OnError defines error handling: "skip" or "fail". Default: "skip".
-	OnError ErrorHandling `yaml:"on_error,omitempty" json:"on_error,omitempty"`
+	OnError ErrorHandling `yaml:"onError,omitempty" json:"on_error,omitempty"`
 
 	// EnabledWhen is an optional CEL expression that determines whether this processor applies.
-	// Uses the same CEL context as prompt enabledWhen expressions (acp.*, session.*, parent.*,
-	// children.*, workspace.*, tools.*). If empty, the processor always applies (subject to
+	// Uses the same CEL context as prompt enabledWhen expressions (ACP.*, Session.*, Parent.*,
+	// Children.*, Workspace.*, Tools.*). If empty, the processor always applies (subject to
 	// other filters). If the expression evaluates to false, the processor is skipped.
-	// Example: 'acp.tags.exists(t, t == "reasoning")' — only apply for reasoning models.
+	// Example: 'ACP.Tags.exists(t, t == "reasoning")' — only apply for reasoning models.
 	EnabledWhen string `yaml:"enabledWhen,omitempty" json:"enabled_when,omitempty"`
 
 	// FilePath is the path to the processor's YAML file (set internally).
@@ -392,6 +412,12 @@ type AfterProcessorInput struct {
 	// i.e. the agent has drained its queue and gone idle. Used to gate agentIdle processors.
 	// This field is NOT serialized to JSON — it is for internal gating only.
 	SessionIdle bool `json:"-"`
+	// ProcessorArgOverrides holds per-processor argument value overrides from the
+	// workspace .mittorc file. Keyed by processor name; values are arg name→value maps.
+	// Populated by the caller from config.GetWorkspaceProcessorOverrides. Used in the
+	// after-phase prompt-mode dispatch to overlay declared parameter defaults.
+	// Excluded from JSON — never sent to external command processors.
+	ProcessorArgOverrides map[string]map[string]string `json:"-"`
 }
 
 // AfterToolCallSnapshot is a lightweight snapshot of one tool call from an agent turn.

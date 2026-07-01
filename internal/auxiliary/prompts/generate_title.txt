@@ -1,0 +1,7 @@
+
+Consider this initial message in a conversation with an LLM: "%s"
+
+What title would you use for this conversation? Keep it very short, just 2 or 3 words.
+Reply with ONLY the title, nothing else.
+You MUST not call any tool for this task.
+Respond quickly.

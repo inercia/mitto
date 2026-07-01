@@ -1,10 +1,12 @@
 icon: robot
 name: Generate AGENTS.md
-menus: prompts
+menus: prompts, !promptsPeriodic
 description: Analyze project and generate an AGENTS.md file for AI coding agents
 group: Agents & Mitto
 backgroundColor: '#B3E5FC'
-enabledWhen: '!session.isPeriodicConversation'
+enabledWhen: '!Session.IsPeriodicConversation'
+preferredModels:
+  - modelTag: Coding
 prompt: |
   Analyze this project and generate an `AGENTS.md` file that gives AI coding agents
   (Claude Code, Augment, Cursor, etc.) the context they need to work effectively here.
@@ -82,7 +84,7 @@ prompt: |
   Present the generated content for review before saving:
 
   ```
-  mitto_ui_textbox(self_id: "@mitto:session_id",
+  mitto_ui_textbox(self_id: "{{ .Session.ID }}",
     title: "Review AGENTS.md — edit before saving",
     text: "<generated-agents-md>",
     result: "edited_text")

@@ -104,6 +104,47 @@ func TestWriteJSONCreated(t *testing.T) {
 	}
 }
 
+func TestDefaultCodeForStatus(t *testing.T) {
+	cases := map[int]string{
+		http.StatusBadRequest:            "bad_request",
+		http.StatusUnauthorized:          "unauthenticated",
+		http.StatusForbidden:             "forbidden",
+		http.StatusNotFound:              "not_found",
+		http.StatusMethodNotAllowed:      "method_not_allowed",
+		http.StatusConflict:              "conflict",
+		http.StatusRequestEntityTooLarge: "too_large",
+		http.StatusTooManyRequests:       "rate_limited",
+		http.StatusInternalServerError:   "server_error",
+		http.StatusTeapot:                "server_error", // unmapped → fallback
+	}
+	for status, want := range cases {
+		if got := defaultCodeForStatus(status); got != want {
+			t.Errorf("defaultCodeForStatus(%d) = %q, want %q", status, got, want)
+		}
+	}
+}
+
+func TestWriteErrorJSON_EmptyCodeDerived(t *testing.T) {
+	w := httptest.NewRecorder()
+	writeErrorJSON(w, http.StatusNotFound, "", "missing")
+
+	var resp struct {
+		Error struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("Failed to decode response: %v", err)
+	}
+	if resp.Error.Code != "not_found" {
+		t.Errorf("error.code = %q, want %q", resp.Error.Code, "not_found")
+	}
+	if resp.Error.Message != "missing" {
+		t.Errorf("error.message = %q, want %q", resp.Error.Message, "missing")
+	}
+}
+
 func TestWriteErrorJSON(t *testing.T) {
 	w := httptest.NewRecorder()
 	writeErrorJSON(w, http.StatusBadRequest, "validation_error", "Field is required")
@@ -112,16 +153,21 @@ func TestWriteErrorJSON(t *testing.T) {
 		t.Errorf("writeErrorJSON() status = %d, want %d", w.Code, http.StatusBadRequest)
 	}
 
-	var resp map[string]string
+	var resp struct {
+		Error struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
 	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
 		t.Fatalf("Failed to decode response: %v", err)
 	}
 
-	if resp["error"] != "validation_error" {
-		t.Errorf("writeErrorJSON() error = %q, want %q", resp["error"], "validation_error")
+	if resp.Error.Code != "validation_error" {
+		t.Errorf("writeErrorJSON() error code = %q, want %q", resp.Error.Code, "validation_error")
 	}
-	if resp["message"] != "Field is required" {
-		t.Errorf("writeErrorJSON() message = %q, want %q", resp["message"], "Field is required")
+	if resp.Error.Message != "Field is required" {
+		t.Errorf("writeErrorJSON() message = %q, want %q", resp.Error.Message, "Field is required")
 	}
 }
 
@@ -146,9 +192,20 @@ func TestMethodNotAllowed(t *testing.T) {
 		t.Errorf("methodNotAllowed() status = %d, want %d", w.Code, http.StatusMethodNotAllowed)
 	}
 
-	body := strings.TrimSpace(w.Body.String())
-	if body != "Method not allowed" {
-		t.Errorf("methodNotAllowed() body = %q, want %q", body, "Method not allowed")
+	var resp struct {
+		Error struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode error body: %v", err)
+	}
+	if resp.Error.Code != "method_not_allowed" {
+		t.Errorf("error.code = %q, want %q", resp.Error.Code, "method_not_allowed")
+	}
+	if resp.Error.Message != "Method not allowed" {
+		t.Errorf("error.message = %q, want %q", resp.Error.Message, "Method not allowed")
 	}
 }
 
@@ -194,8 +251,20 @@ func TestParseJSONBody_InvalidJSON(t *testing.T) {
 	if w.Code != http.StatusBadRequest {
 		t.Errorf("parseJSONBody() status = %d, want %d", w.Code, http.StatusBadRequest)
 	}
-	if !strings.Contains(w.Body.String(), "Invalid request body") {
-		t.Errorf("parseJSONBody() body should contain 'Invalid request body', got %q", w.Body.String())
+	var resp struct {
+		Error struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode error body: %v", err)
+	}
+	if resp.Error.Code != "bad_request" {
+		t.Errorf("error.code = %q, want %q", resp.Error.Code, "bad_request")
+	}
+	if !strings.Contains(resp.Error.Message, "Invalid request body") {
+		t.Errorf("error.message = %q, should contain %q", resp.Error.Message, "Invalid request body")
 	}
 }
 

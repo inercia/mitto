@@ -22,6 +22,8 @@ From this tab you can:
 
 - **Enable/disable** any processor using the checkbox — global processors can be disabled per workspace
 - See each processor's **source** (workspace, global, or built-in), **mode** (text, command, or prompt), and **trigger** (phase + match)
+- **Override argument values** for prompt-mode processors that declare `parameters:` — each parameter shows an editable input prefilled with the effective value (workspace override or declared default); clicking **Save** persists the values to the folder's `.mittorc`
+- See a red **error** badge (with the full error as a tooltip) for any processor that fails to load or validate — e.g. a missing mandatory `default` on a parameter
 
 Each processor shows badges indicating:
 - **Source**: `global` (orange), `workspace` (green), or `built-in` (blue)
@@ -194,7 +196,7 @@ Mitto ships with builtin processors that are automatically deployed to `MITTO_DI
 | `use-ui-tools`        | Reminds the agent to use Mitto UI tools (options, textbox, form, notify) instead of text prompts | userPrompt / first | text   | Yes |
 | `beads-track-tasks`   | Reminds the agent to track tasks and knowledge in beads (`bd`) instead of markdown TODO lists | userPrompt / first | text   | Yes (requires `bd` command on PATH) |
 | `beads-ready-tasks`   | Reminds the agent to review available tasks (`bd ready`) when a beads database exists | userPrompt / first | text   | Yes (requires `bd` command + `.beads` directory) |
-| `memorize-preferences`| Extracts user preferences from conversations and saves them to AGENTS.md                                 | agentResponded / all | prompt | **Yes** (disable in Workspaces dialog or `.mittorc`) |
+| `memorize-preferences`| Extracts user preferences from conversations and saves them to a configurable file (AGENTS.md by default) | agentResponded / all | prompt | **Yes** (disable in Workspaces dialog or `.mittorc`) |
 | `auggie-manage-rules` | Generates initial `.augment/rules/` when none exist | userPrompt / first | prompt | **Yes** (Auggie only) |
 | `auggie-update-rules` | Updates `.augment/rules/` from conversation insights (every 6 turns or 15k tokens) | agentResponded / all | prompt | **Yes** (Auggie only) |
 | `claude-manage-memory`| Generates initial Claude Code memory files when none exist | userPrompt / first | prompt | **Yes** (Claude Code only) |
@@ -306,7 +308,7 @@ when:
   match: first
 mutate: append
 priority: 90
-enabledWhen: 'acp.tags.exists(t, t == "reasoning")'
+enabledWhen: 'ACP.Tags.exists(t, t == "reasoning")'
 text: |
   ---
   You are running on a premium reasoning model. For tasks that involve
@@ -343,7 +345,7 @@ when:
     afterSentMsgs: 10
 priority: 200
 timeout: 120s
-on_error: skip
+onError: skip
 
 prompt: |
   Analyze recent conversation messages and extract key insights.
@@ -364,6 +366,63 @@ prompt: |
 - **Runs on the workspace's ACP server** — auxiliary sessions use the workspace's main ACP server; an optional *Auxiliary Model Selection* (match mode + pattern) in workspace settings can switch the aux session to a specific model (otherwise the server default is used)
 - **Conversation history via MCP tool** — use `mitto_conversation_history` in the prompt to retrieve messages dynamically
 
+### Parameters (Prompt-Mode Only)
+
+Prompt-mode processors can declare named, typed inputs via a `parameters:` block. At dispatch time, each `${NAME}` / `${NAME:-fallback}` placeholder in the prompt body is replaced with the resolved value. Values are overridable per workspace without editing the YAML file.
+
+#### Schema
+
+```yaml
+parameters:
+  - name: HistoryLimit      # placeholder name → ${HistoryLimit}
+    type: text              # one of: beadsId beadsTitle sessionId childSessionId
+                            #         workspaceId workspaceFolder acpServer text boolean
+    description: "..."      # optional hint shown in the UI
+    required: false         # optional; when false, an empty default is allowed
+    default: "10"           # MANDATORY (non-empty) unless required: false
+```
+
+A missing or empty `default` is a **load error** — the processor is not loaded and appears as a red **error** badge with the full message as a tooltip in the Workspaces → Processors tab — **unless** the parameter declares `required: false`, which marks it as an optional, may-be-empty input (useful when the value is auto-detected at dispatch when left blank).
+
+#### Substitution semantics
+
+| Syntax               | Result                                                         |
+| -------------------- | -------------------------------------------------------------- |
+| `${NAME}`            | Resolved value, or `""` if absent                             |
+| `${NAME:-fallback}`  | Resolved value when set AND non-empty; else the inline fallback|
+| `\${NAME}`           | Literal `${NAME}` (escape — no substitution)                  |
+
+Surrounding single or double quotes around an inline fallback are stripped: `${NAME:-"a value"}` yields `a value` when `NAME` is unset.
+
+**Resolution order**: the declared `default` is used as the base value; a per-workspace override from `.mittorc` (non-empty) takes precedence.
+
+#### Per-workspace overrides
+
+In the Workspaces → Processors tab, each prompt-mode processor with declared parameters shows an editable input per parameter (prefilled with the effective value). Clicking **Save** persists overrides to the folder's `.mittorc`:
+
+```yaml
+# .mittorc (auto-managed — do not edit the arguments key manually)
+processors:
+  - name: auggie-update-rules
+    arguments:
+      HistoryLimit: "25"   # overrides the declared default of "10"
+```
+
+**Example** (the builtin `auggie-update-rules`):
+
+```yaml
+parameters:
+  - name: HistoryLimit
+    type: text
+    description: "How many recent user/agent messages the auxiliary agent reviews"
+    default: "10"
+prompt: |
+  ...
+  - `last_n`: ${HistoryLimit:-10}
+```
+
+With the workspace override above, the dispatched prompt will contain `last_n: 25`.
+
 ### Examples
 
 #### Track user preferences automatically
@@ -383,7 +442,7 @@ when:
     afterSentMsgs: 15
 priority: 200
 timeout: 120s
-on_error: skip
+onError: skip
 
 prompt: |
   Review the recent conversation and write a brief progress summary.
@@ -405,7 +464,7 @@ when:
     afterSentMsgs: 10
 priority: 200
 timeout: 60s
-on_error: skip
+onError: skip
 
 prompt: |
   Look through the agent's responses for any TODO items, action items,
@@ -451,6 +510,14 @@ prompt: |  # Prompt template for auxiliary AI agent (fire-and-forget)
   Session: @mitto:session_id
   Use mitto_conversation_history to retrieve messages and analyze them.
 
+# Prompt-mode only: declare typed inputs substituted into the prompt body.
+# Each needs a MANDATORY non-empty default; values overridable per-workspace (.mittorc).
+parameters:
+  - name: HistoryLimit      # placeholder name → ${HistoryLimit}
+    type: text              # one of the known parameter types
+    description: "..."      # optional UI/MCP hint
+    default: "10"           # REQUIRED, non-empty
+
 # Optional fields
 description: "Adds context"  # Description of what the processor does
 enabled: true                # Default: true
@@ -466,15 +533,15 @@ outputFormat: json # "json" (default) or "raw"; command-mode only. "raw" uses tr
 # Execution settings
 timeout: 5s       # Command timeout (default: 5s); also caps auxiliary agent time in prompt-mode
 working_dir: session  # "session" or "hook" (default: session)
-on_error: skip    # "skip" or "fail" (default: skip)
+onError: skip     # "skip" or "fail" (default: skip)
 
 # Environment variables (in addition to automatic ones; command-mode only)
 environment:
   MY_VAR: "value"
 
 # CEL expression for conditional activation (empty = always apply)
-# Same context as prompt enabledWhen: acp.*, session.*, parent.*, children.*, workspace.*, tools.*
-enabledWhen: 'acp.tags.exists(t, t == "reasoning") && tools.hasAllPatterns(["mitto_conversation_*", "jira_*"])'
+# Same context as prompt enabledWhen: ACP.*, Session.*, Parent.*, Children.*, Workspace.*, Tools.*
+enabledWhen: 'ACP.Tags.exists(t, t == "reasoning") && Tools.HasAllPatterns(["mitto_conversation_*", "jira_*"])'
 ```
 
 ### `when:` Block Reference
@@ -558,18 +625,18 @@ expression must evaluate to `true`.
 
 **CEL context** — Same variables and functions as prompt `enabledWhen`:
 
-- `acp.name`, `acp.type`, `acp.tags`, `acp.autoApprove`
-- `acp.matchesServerType("type")`, `acp.matchesServerType(["a", "b"])` — matches ACP server type only, not display name
-- `session.id`, `session.name`, `session.isChild`, `session.isAutoChild`, `session.parentId`, `session.isPeriodic`
-- `parent.exists`, `parent.name`, `parent.acpServer`
-- `children.count`, `children.exists`, `children.mcpCount`, `children.names`, `children.acpServers`
-- `workspace.uuid`, `workspace.folder`, `workspace.name`
-- `tools.available`, `tools.names`
-- `tools.hasPattern("glob_*")`, `tools.hasAllPatterns(["g1", "g2"])`, `tools.hasAnyPattern(["g1", "g2"])`
-- `permissions.canDoIntrospection`, `permissions.canSendPrompt`, `permissions.canPromptUser`, `permissions.canStartConversation`, `permissions.canInteractOtherWorkspaces`, `permissions.autoApprovePermissions`
-- `commandExists("git")` — returns true if the given command is found in the system PATH and is executable
-- `fileExists("Makefile")` — returns true if the path exists and is a file (not directory); relative paths resolved against workspace folder
-- `dirExists(".github/workflows")` — returns true if the path exists and is a directory; relative paths resolved against workspace folder
+- `ACP.Name`, `ACP.Type`, `ACP.Tags`, `ACP.AutoApprove`
+- `ACP.MatchesServerType("type")`, `ACP.MatchesServerType(["a", "b"])` — matches ACP server type only, not display name
+- `Session.ID`, `Session.Name`, `Session.IsChild`, `Session.IsAutoChild`, `Session.ParentID`, `Session.IsPeriodic`
+- `Parent.Exists`, `Parent.Name`, `Parent.ACPServer`
+- `Children.Count`, `Children.Exists`, `Children.MCPCount`, `Children.Names`, `Children.ACPServers`
+- `Workspace.UUID`, `Workspace.Folder`, `Workspace.Name`
+- `Tools.Available`, `Tools.Names`
+- `Tools.HasPattern("glob_*")`, `Tools.HasAllPatterns(["g1", "g2"])`, `Tools.HasAnyPattern(["g1", "g2"])`
+- `Permissions.CanDoIntrospection`, `Permissions.CanSendPrompt`, `Permissions.CanPromptUser`, `Permissions.CanStartConversation`, `Permissions.CanInteractOtherWorkspaces`, `Permissions.AutoApprovePermissions`
+- `CommandExists("git")` — returns true if the given command is found in the system PATH and is executable
+- `FileExists("Makefile")` — returns true if the path exists and is a file (not directory); relative paths resolved against workspace folder
+- `DirExists(".github/workflows")` — returns true if the path exists and is a directory; relative paths resolved against workspace folder
 
 ### Automatic Re-run (`rerun`)
 
@@ -808,7 +875,7 @@ when:
 ```
 
 With `outputFormat: raw`, whatever the command prints to stdout is prepended directly to the user's
-message without any JSON parsing. Error output (non-zero exit) is still handled according to `on_error`.
+message without any JSON parsing. Error output (non-zero exit) is still handled according to `onError`.
 
 ### Error Output
 
@@ -1049,8 +1116,8 @@ args:
   - "${MITTO_WORKING_DIR}/.ai-rules"
 input: none
 output: prepend
-on_error: skip
-enabledWhen: 'workspace.folder.startsWith("/path/to/my-project")'
+onError: skip
+enabledWhen: 'Workspace.Folder.startsWith("/path/to/my-project")'
 ```
 
 Alternatively, place the processor in `$workspace/.mitto/processors/` to scope it
@@ -1082,7 +1149,7 @@ Within the same priority, order is undefined.
 
 ## Error Handling
 
-| `on_error`       | Behavior                                    |
+| `onError`        | Behavior                                    |
 | ---------------- | ------------------------------------------- |
 | `skip` (default) | Log warning, continue with original message |
 | `fail`           | Abort the message, return error to user     |

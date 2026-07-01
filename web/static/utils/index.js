@@ -8,6 +8,8 @@ export {
   convertFileURLToViewer,
   convertHTTPFileURLToFile,
   convertHTTPFileURLToViewer,
+  buildWorkspaceViewerURL,
+  openViewerUrl,
   setCurrentWorkspace,
   hasNativeFolderPicker,
   pickFolder,
@@ -65,6 +67,8 @@ export {
   authFetch,
 } from "./csrf.js";
 
-export { getApiPrefix, apiUrl, wsUrl } from "./api.js";
+export { getApiPrefix, apiUrl, wsUrl, errorMessageFromData } from "./api.js";
+
+export { endpoints } from "./endpoints.js";
 
 export { fetchConfig, invalidateConfigCache } from "./configCache.js";

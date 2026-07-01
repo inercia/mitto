@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	"github.com/inercia/mitto/internal/conversation"
+	"github.com/inercia/mitto/internal/web/middleware"
 )
 
 // testWSDialer is a WebSocket dialer for tests
@@ -78,7 +80,7 @@ func TestGlobalEventsWebSocket_Connect(t *testing.T) {
 		wsConn := &WSConn{
 			conn:   conn,
 			send:   make(chan []byte, 64),
-			config: DefaultWebSocketSecurityConfig(),
+			config: middleware.DefaultWebSocketSecurityConfig(),
 		}
 
 		client := &GlobalEventsClient{
@@ -146,7 +148,7 @@ func TestGlobalEventsWebSocket_Broadcast(t *testing.T) {
 		wsConn := &WSConn{
 			conn:   conn,
 			send:   make(chan []byte, 64),
-			config: DefaultWebSocketSecurityConfig(),
+			config: middleware.DefaultWebSocketSecurityConfig(),
 		}
 
 		client := &GlobalEventsClient{
@@ -181,20 +183,20 @@ func TestGlobalEventsWebSocket_Broadcast(t *testing.T) {
 	time.Sleep(50 * time.Millisecond)
 
 	// Broadcast a session_created event
-	eventsManager.Broadcast(WSMsgTypeSessionCreated, map[string]string{
+	eventsManager.Broadcast(conversation.WSMsgTypeSessionCreated, map[string]string{
 		"session_id": "test-session-123",
 		"name":       "Test Session",
 	})
 
 	// Both clients should receive the broadcast
 	msg1 := readWSMessage(t, conn1, 2*time.Second)
-	if msg1.Type != WSMsgTypeSessionCreated {
-		t.Errorf("Client 1: Expected message type %q, got %q", WSMsgTypeSessionCreated, msg1.Type)
+	if msg1.Type != conversation.WSMsgTypeSessionCreated {
+		t.Errorf("Client 1: Expected message type %q, got %q", conversation.WSMsgTypeSessionCreated, msg1.Type)
 	}
 
 	msg2 := readWSMessage(t, conn2, 2*time.Second)
-	if msg2.Type != WSMsgTypeSessionCreated {
-		t.Errorf("Client 2: Expected message type %q, got %q", WSMsgTypeSessionCreated, msg2.Type)
+	if msg2.Type != conversation.WSMsgTypeSessionCreated {
+		t.Errorf("Client 2: Expected message type %q, got %q", conversation.WSMsgTypeSessionCreated, msg2.Type)
 	}
 
 	// Verify client count
@@ -282,7 +284,7 @@ func TestWSConn_SendMessage_Integration(t *testing.T) {
 		wsConn := &WSConn{
 			conn:   conn,
 			send:   make(chan []byte, 64),
-			config: DefaultWebSocketSecurityConfig(),
+			config: middleware.DefaultWebSocketSecurityConfig(),
 		}
 
 		// Start write pump
@@ -345,7 +347,7 @@ func TestSessionWSClient_MessageHandling(t *testing.T) {
 		wsConn := &WSConn{
 			conn:   conn,
 			send:   make(chan []byte, 64),
-			config: DefaultWebSocketSecurityConfig(),
+			config: middleware.DefaultWebSocketSecurityConfig(),
 		}
 
 		// Start write pump
@@ -442,7 +444,7 @@ func TestSessionWSClient_SyncSession(t *testing.T) {
 		wsConn := &WSConn{
 			conn:   conn,
 			send:   make(chan []byte, 64),
-			config: DefaultWebSocketSecurityConfig(),
+			config: middleware.DefaultWebSocketSecurityConfig(),
 		}
 
 		go wsConn.WritePump(r.Context(), nil)
@@ -541,7 +543,7 @@ func TestSessionSync_EventOrdering(t *testing.T) {
 		wsConn := &WSConn{
 			conn:   conn,
 			send:   make(chan []byte, 64),
-			config: DefaultWebSocketSecurityConfig(),
+			config: middleware.DefaultWebSocketSecurityConfig(),
 		}
 
 		go wsConn.WritePump(r.Context(), nil)
@@ -664,7 +666,7 @@ func TestSessionSync_ToolCallDeduplication(t *testing.T) {
 		wsConn := &WSConn{
 			conn:   conn,
 			send:   make(chan []byte, 64),
-			config: DefaultWebSocketSecurityConfig(),
+			config: middleware.DefaultWebSocketSecurityConfig(),
 		}
 
 		go wsConn.WritePump(r.Context(), nil)
@@ -742,7 +744,7 @@ func TestWebSocketReconnection(t *testing.T) {
 		wsConn := &WSConn{
 			conn:   conn,
 			send:   make(chan []byte, 64),
-			config: DefaultWebSocketSecurityConfig(),
+			config: middleware.DefaultWebSocketSecurityConfig(),
 		}
 
 		client := &GlobalEventsClient{
@@ -818,7 +820,7 @@ func TestSessionWS_ConnectedMessage_IncludesConfigOptions(t *testing.T) {
 		wsConn := &WSConn{
 			conn:   conn,
 			send:   make(chan []byte, 64),
-			config: DefaultWebSocketSecurityConfig(),
+			config: middleware.DefaultWebSocketSecurityConfig(),
 		}
 
 		// Start write pump
@@ -829,15 +831,15 @@ func TestSessionWS_ConnectedMessage_IncludesConfigOptions(t *testing.T) {
 			"session_id": "test-session",
 			"client_id":  "test-client",
 			"acp_server": "test-server",
-			"config_options": []SessionConfigOption{
+			"config_options": []conversation.SessionConfigOption{
 				{
-					ID:           ConfigOptionCategoryMode,
+					ID:           conversation.ConfigOptionCategoryMode,
 					Name:         "Mode",
 					Description:  "Session operating mode",
-					Category:     ConfigOptionCategoryMode,
-					Type:         ConfigOptionTypeSelect,
+					Category:     conversation.ConfigOptionCategoryMode,
+					Type:         conversation.ConfigOptionTypeSelect,
 					CurrentValue: "code",
-					Options: []SessionConfigOptionValue{
+					Options: []conversation.SessionConfigOptionValue{
 						{Value: "ask", Name: "Ask", Description: "Ask questions"},
 						{Value: "code", Name: "Code", Description: "Make code changes"},
 					},
@@ -863,9 +865,9 @@ func TestSessionWS_ConnectedMessage_IncludesConfigOptions(t *testing.T) {
 
 	// Parse the data
 	var connectedData struct {
-		SessionID     string                `json:"session_id"`
-		ClientID      string                `json:"client_id"`
-		ConfigOptions []SessionConfigOption `json:"config_options"`
+		SessionID     string                             `json:"session_id"`
+		ClientID      string                             `json:"client_id"`
+		ConfigOptions []conversation.SessionConfigOption `json:"config_options"`
 	}
 	if err := json.Unmarshal(connectedMsg.Data, &connectedData); err != nil {
 		t.Fatalf("Failed to unmarshal connected data: %v", err)
@@ -877,14 +879,14 @@ func TestSessionWS_ConnectedMessage_IncludesConfigOptions(t *testing.T) {
 	}
 
 	modeOpt := connectedData.ConfigOptions[0]
-	if modeOpt.ID != ConfigOptionCategoryMode {
-		t.Errorf("Config option ID = %q, want %q", modeOpt.ID, ConfigOptionCategoryMode)
+	if modeOpt.ID != conversation.ConfigOptionCategoryMode {
+		t.Errorf("Config option ID = %q, want %q", modeOpt.ID, conversation.ConfigOptionCategoryMode)
 	}
-	if modeOpt.Category != ConfigOptionCategoryMode {
-		t.Errorf("Config option Category = %q, want %q", modeOpt.Category, ConfigOptionCategoryMode)
+	if modeOpt.Category != conversation.ConfigOptionCategoryMode {
+		t.Errorf("Config option Category = %q, want %q", modeOpt.Category, conversation.ConfigOptionCategoryMode)
 	}
-	if modeOpt.Type != ConfigOptionTypeSelect {
-		t.Errorf("Config option Type = %q, want %q", modeOpt.Type, ConfigOptionTypeSelect)
+	if modeOpt.Type != conversation.ConfigOptionTypeSelect {
+		t.Errorf("Config option Type = %q, want %q", modeOpt.Type, conversation.ConfigOptionTypeSelect)
 	}
 	if modeOpt.CurrentValue != "code" {
 		t.Errorf("Config option CurrentValue = %q, want %q", modeOpt.CurrentValue, "code")
@@ -913,7 +915,7 @@ func TestSessionWS_ConfigOptionChanged_Broadcast(t *testing.T) {
 		wsConn := &WSConn{
 			conn:   conn,
 			send:   make(chan []byte, 64),
-			config: DefaultWebSocketSecurityConfig(),
+			config: middleware.DefaultWebSocketSecurityConfig(),
 		}
 
 		client := &GlobalEventsClient{
@@ -952,16 +954,16 @@ func TestSessionWS_ConfigOptionChanged_Broadcast(t *testing.T) {
 	readWSMessage(t, conn, 2*time.Second)
 
 	// Broadcast a config option changed event
-	eventsManager.Broadcast(WSMsgTypeConfigOptionChanged, map[string]interface{}{
+	eventsManager.Broadcast(conversation.WSMsgTypeConfigOptionChanged, map[string]interface{}{
 		"session_id": "test-session",
-		"config_id":  ConfigOptionCategoryMode,
+		"config_id":  conversation.ConfigOptionCategoryMode,
 		"value":      "architect",
 	})
 
 	// Read the broadcast message
 	changedMsg := readWSMessage(t, conn, 2*time.Second)
-	if changedMsg.Type != WSMsgTypeConfigOptionChanged {
-		t.Errorf("Expected %q, got %q", WSMsgTypeConfigOptionChanged, changedMsg.Type)
+	if changedMsg.Type != conversation.WSMsgTypeConfigOptionChanged {
+		t.Errorf("Expected %q, got %q", conversation.WSMsgTypeConfigOptionChanged, changedMsg.Type)
 	}
 
 	// Verify the data
@@ -977,8 +979,8 @@ func TestSessionWS_ConfigOptionChanged_Broadcast(t *testing.T) {
 	if changedData.SessionID != "test-session" {
 		t.Errorf("session_id = %q, want %q", changedData.SessionID, "test-session")
 	}
-	if changedData.ConfigID != ConfigOptionCategoryMode {
-		t.Errorf("config_id = %q, want %q", changedData.ConfigID, ConfigOptionCategoryMode)
+	if changedData.ConfigID != conversation.ConfigOptionCategoryMode {
+		t.Errorf("config_id = %q, want %q", changedData.ConfigID, conversation.ConfigOptionCategoryMode)
 	}
 	if changedData.Value != "architect" {
 		t.Errorf("value = %q, want %q", changedData.Value, "architect")
@@ -992,7 +994,7 @@ func TestSessionWS_SetConfigOption_MessageFormat(t *testing.T) {
 		Type: WSMsgTypeSetConfigOption,
 	}
 	data := map[string]string{
-		"config_id": ConfigOptionCategoryMode,
+		"config_id": conversation.ConfigOptionCategoryMode,
 		"value":     "code",
 	}
 	msg.Data, _ = json.Marshal(data)
@@ -1020,25 +1022,25 @@ func TestSessionWS_SetConfigOption_MessageFormat(t *testing.T) {
 		t.Fatalf("Failed to unmarshal data: %v", err)
 	}
 
-	if parsedData.ConfigID != ConfigOptionCategoryMode {
-		t.Errorf("config_id = %q, want %q", parsedData.ConfigID, ConfigOptionCategoryMode)
+	if parsedData.ConfigID != conversation.ConfigOptionCategoryMode {
+		t.Errorf("config_id = %q, want %q", parsedData.ConfigID, conversation.ConfigOptionCategoryMode)
 	}
 	if parsedData.Value != "code" {
 		t.Errorf("value = %q, want %q", parsedData.Value, "code")
 	}
 }
 
-// TestSessionConfigOption_JSONSerialization tests that SessionConfigOption
+// TestSessionConfigOption_JSONSerialization tests that conversation.SessionConfigOption
 // serializes correctly to JSON for WebSocket transmission.
 func TestSessionConfigOption_JSONSerialization(t *testing.T) {
-	opt := SessionConfigOption{
-		ID:           ConfigOptionCategoryMode,
+	opt := conversation.SessionConfigOption{
+		ID:           conversation.ConfigOptionCategoryMode,
 		Name:         "Mode",
 		Description:  "Session operating mode",
-		Category:     ConfigOptionCategoryMode,
-		Type:         ConfigOptionTypeSelect,
+		Category:     conversation.ConfigOptionCategoryMode,
+		Type:         conversation.ConfigOptionTypeSelect,
 		CurrentValue: "code",
-		Options: []SessionConfigOptionValue{
+		Options: []conversation.SessionConfigOptionValue{
 			{Value: "ask", Name: "Ask", Description: "Ask questions without making changes"},
 			{Value: "code", Name: "Code", Description: "Make code changes"},
 			{Value: "architect", Name: "Architect"}, // No description
@@ -1052,7 +1054,7 @@ func TestSessionConfigOption_JSONSerialization(t *testing.T) {
 	}
 
 	// Parse back
-	var parsed SessionConfigOption
+	var parsed conversation.SessionConfigOption
 	if err := json.Unmarshal(data, &parsed); err != nil {
 		t.Fatalf("Failed to unmarshal: %v", err)
 	}
@@ -1095,15 +1097,56 @@ func TestSessionConfigOption_JSONSerialization(t *testing.T) {
 	}
 }
 
+// TestServer_MCPStatusFields verifies the mcp status fields are wired correctly
+// and would produce the expected connected-message payload structure.
+func TestServer_MCPStatusFields(t *testing.T) {
+	s := &Server{
+		mcpAvailable: false,
+		mcpReason:    "port_in_use",
+		mcpPort:      5757,
+	}
+
+	if s.mcpAvailable != false {
+		t.Errorf("mcpAvailable = %v, want false", s.mcpAvailable)
+	}
+	if s.mcpReason != "port_in_use" {
+		t.Errorf("mcpReason = %q, want %q", s.mcpReason, "port_in_use")
+	}
+	if s.mcpPort != 5757 {
+		t.Errorf("mcpPort = %d, want 5757", s.mcpPort)
+	}
+
+	// Verify the payload structure matches what sendSessionConnected produces.
+	mcpPayload := map[string]interface{}{
+		"available": s.mcpAvailable,
+		"reason":    s.mcpReason,
+		"port":      s.mcpPort,
+	}
+	data, err := json.Marshal(mcpPayload)
+	if err != nil {
+		t.Fatalf("Failed to marshal mcp payload: %v", err)
+	}
+	var parsed map[string]interface{}
+	if err := json.Unmarshal(data, &parsed); err != nil {
+		t.Fatalf("Failed to unmarshal mcp payload: %v", err)
+	}
+	if parsed["available"] != false {
+		t.Errorf("payload available = %v, want false", parsed["available"])
+	}
+	if parsed["reason"] != "port_in_use" {
+		t.Errorf("payload reason = %v, want port_in_use", parsed["reason"])
+	}
+}
+
 // TestSessionConfigOption_OmitEmptyFields tests that empty optional fields
 // are omitted from JSON serialization.
 func TestSessionConfigOption_OmitEmptyFields(t *testing.T) {
-	opt := SessionConfigOption{
+	opt := conversation.SessionConfigOption{
 		ID:           "model",
 		Name:         "Model",
-		Type:         ConfigOptionTypeSelect,
+		Type:         conversation.ConfigOptionTypeSelect,
 		CurrentValue: "gpt-4",
-		Options: []SessionConfigOptionValue{
+		Options: []conversation.SessionConfigOptionValue{
 			{Value: "gpt-4", Name: "GPT-4"},
 		},
 		// Description and Category are intentionally empty

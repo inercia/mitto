@@ -2,6 +2,7 @@ package web
 
 import (
 	"encoding/json"
+	"github.com/inercia/mitto/internal/conversation"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -42,7 +43,7 @@ func TestHandleListSessions_ParentSessionID(t *testing.T) {
 	}
 
 	server := &Server{
-		sessionManager: NewSessionManager("", "", false, nil),
+		sessionManager: conversation.NewSessionManager("", "", false, nil),
 		store:          store,
 	}
 
@@ -102,8 +103,10 @@ func TestHandleListSessions_ParentSessionID(t *testing.T) {
 	}
 }
 
-// TestHandleGetSession_ParentSessionID verifies that ParentSessionID is included when getting a single session.
-func TestHandleGetSession_ParentSessionID(t *testing.T) {
+// TestHandleListSessions_OriginPromptName verifies that OriginPromptName is
+// included in the API response (it flows through automatically because
+// SessionListResponse embeds session.Metadata).
+func TestHandleListSessions_OriginPromptName(t *testing.T) {
 	tmpDir := t.TempDir()
 	store, err := session.NewStore(tmpDir)
 	if err != nil {
@@ -111,41 +114,41 @@ func TestHandleGetSession_ParentSessionID(t *testing.T) {
 	}
 	defer store.Close()
 
-	// Create a child session with ParentSessionID set
-	childMeta := session.Metadata{
-		SessionID:       "child-session-1",
-		ACPServer:       "test-server",
-		WorkingDir:      "/tmp",
-		Name:            "Child Session",
-		ParentSessionID: "parent-session-1",
+	meta := session.Metadata{
+		SessionID:        "session-with-origin-prompt",
+		ACPServer:        "test-server",
+		WorkingDir:       "/tmp",
+		Name:             "Reevaluate Session",
+		OriginPromptName: "Reevaluate all issues",
 	}
-	if err := store.Create(childMeta); err != nil {
-		t.Fatalf("Create child failed: %v", err)
+	if err := store.Create(meta); err != nil {
+		t.Fatalf("Create failed: %v", err)
 	}
 
 	server := &Server{
-		sessionManager: NewSessionManager("", "", false, nil),
+		sessionManager: conversation.NewSessionManager("", "", false, nil),
 		store:          store,
 	}
 
-	req := httptest.NewRequest(http.MethodGet, "/api/sessions/child-session-1", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/sessions", nil)
 	w := httptest.NewRecorder()
 
-	// Call handleGetSession with sessionID and isEventsRequest=false
-	server.handleGetSession(w, req, "child-session-1", false)
+	server.handleListSessions(w, req)
 
 	if w.Code != http.StatusOK {
 		t.Errorf("Status = %d, want %d", w.Code, http.StatusOK)
 	}
 
-	// Parse response
-	var response session.Metadata
+	var response []SessionListResponse
 	if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
 		t.Fatalf("Failed to unmarshal response: %v", err)
 	}
 
-	// Verify ParentSessionID is present and correct
-	if response.ParentSessionID != "parent-session-1" {
-		t.Errorf("ParentSessionID = %q, want %q", response.ParentSessionID, "parent-session-1")
+	if len(response) != 1 {
+		t.Fatalf("Expected 1 session, got %d", len(response))
+	}
+
+	if response[0].OriginPromptName != "Reevaluate all issues" {
+		t.Errorf("OriginPromptName = %q, want %q", response[0].OriginPromptName, "Reevaluate all issues")
 	}
 }

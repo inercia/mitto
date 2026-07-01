@@ -1,1274 +1,175 @@
 package web
 
 import (
-	"context"
 	"encoding/json"
-	"errors"
-	"fmt"
 	"net/http"
-	"os"
 	"path/filepath"
-	"sort"
-	"strconv"
-	"strings"
-	"time"
-
-	"gopkg.in/yaml.v3"
 
 	"github.com/inercia/mitto/internal/appdir"
 	"github.com/inercia/mitto/internal/config"
-	"github.com/inercia/mitto/internal/processors"
-	"github.com/inercia/mitto/internal/runner"
 	"github.com/inercia/mitto/internal/session"
+	"github.com/inercia/mitto/internal/web/handlers"
 )
 
 // handleSessions handles GET and POST /api/sessions
 func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
-		s.handleListSessions(w, r)
+		s.apiHandlers.HandleListSessions(w, r)
 	case http.MethodPost:
-		s.handleCreateSession(w, r)
+		s.apiHandlers.HandleCreateSession(w, r)
 	default:
 		methodNotAllowed(w)
 	}
 }
 
-// SessionCreateRequest represents a request to create a new session.
-type SessionCreateRequest struct {
-	Name              string            `json:"name,omitempty"`
-	WorkingDir        string            `json:"working_dir,omitempty"`
-	ACPServer         string            `json:"acp_server,omitempty"`          // Optional: specify ACP server for the session
-	BeadsIssue        string            `json:"beads_issue,omitempty"`         // Optional: link conversation to a beads issue ID at creation
-	InitialPromptName string            `json:"initial_prompt_name,omitempty"` // Optional: seed the queue with a named prompt atomically on creation
-	Arguments         map[string]string `json:"arguments,omitempty"`           // Optional: ${VAR} substitution arguments for the initial prompt
-}
+// resolveOwningWorkspace is retained as an alias to the migrated
+// handlers.ResolveOwningWorkspace so the existing web-package unit test keeps
+// compiling. The create-session handler and its workspace-ownership helpers
+// were moved to internal/web/handlers/session_create.go.
+var resolveOwningWorkspace = handlers.ResolveOwningWorkspace
 
-// handleCreateSession handles POST /api/sessions
-func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
-	var req SessionCreateRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		// Allow empty body for default session creation
-		req = SessionCreateRequest{}
-	}
+// SessionListResponse is an alias for the handlers-package type. The list
+// handler was migrated to internal/web/handlers; the alias keeps existing
+// references in the web package (e.g. tests) compiling.
+type SessionListResponse = handlers.SessionListResponse
 
-	// Note: Empty names are allowed - they will be auto-generated after first message
-	// The frontend displays "New Conversation" as a placeholder for empty names
-
-	// Determine workspace to use
-	// Use sessionManager.GetWorkspaces() as the source of truth - it maintains the live
-	// workspace data that can be dynamically updated via the settings UI.
-	// s.config.GetWorkspaces() may be stale if workspaces were added/removed at runtime.
-	var workspace *config.WorkspaceSettings
-	workspaces := s.sessionManager.GetWorkspaces()
-
-	if req.WorkingDir != "" {
-		// User specified a working directory - find matching workspace.
-		// If acp_server is also specified, match both (for duplicate workspaces with
-		// same dir). If only the directory is known and multiple workspaces share it,
-		// prefer the one marked IsDefault so folder-only launches (e.g. from the beads
-		// menu) are deterministic.
-		for i := range workspaces {
-			if workspaces[i].WorkingDir == req.WorkingDir {
-				// If ACP server is specified, only match if it also matches
-				if req.ACPServer != "" && workspaces[i].ACPServer != req.ACPServer {
-					continue
-				}
-				if req.ACPServer == "" && workspaces[i].IsDefault {
-					workspace = &workspaces[i]
-					break
-				}
-				if workspace == nil {
-					workspace = &workspaces[i]
-					if req.ACPServer != "" {
-						break
-					}
-				}
-			}
-		}
-		// No exact workspace match — check whether a registered workspace OWNS the
-		// requested directory (it is a subdirectory of that workspace). If so, reuse
-		// that workspace so its shared ACP process serves this session while
-		// req.WorkingDir continues to flow as the per-session cwd.
-		if workspace == nil {
-			if owningWs := resolveOwningWorkspace(req.WorkingDir, workspaces); owningWs != nil && owningWs.UUID != "" {
-				workspace = owningWs
-			}
-		}
-		// If not found in workspaces but working dir provided, create ad-hoc workspace
-		if workspace == nil {
-			// Use default workspace's ACP server with the requested directory.
-			// Command/cwd/env are resolved from global config at runtime — not cached here.
-			defaultWs := s.sessionManager.GetDefaultWorkspace()
-			if defaultWs != nil {
-				workspace = &config.WorkspaceSettings{
-					ACPServer:          defaultWs.ACPServer,
-					ACPCommandOverride: defaultWs.ACPCommandOverride,
-					WorkingDir:         req.WorkingDir,
-				}
-				// Ensure the ad-hoc workspace has a UUID for auxiliary sessions
-				workspace.EnsureUUID()
-			}
-		}
-	} else if len(workspaces) == 1 {
-		// Single workspace configured - use it
-		workspace = &workspaces[0]
-		req.WorkingDir = workspace.WorkingDir
-	} else {
-		// Multiple workspaces - use default
-		workspace = s.sessionManager.GetDefaultWorkspace()
-		if workspace != nil {
-			req.WorkingDir = workspace.WorkingDir
-		}
-	}
-
-	// Fall back to current directory if still no working dir
-	if req.WorkingDir == "" {
-		req.WorkingDir, _ = os.Getwd()
-	}
-
-	// Validate that we have a valid ACP configuration
-	if workspace == nil || workspace.ACPServer == "" {
-		writeErrorJSON(w, http.StatusBadRequest, "no_workspace_configured",
-			"No workspace configured. Please configure a workspace in Settings first.")
-		return
-	}
-
-	// Note: The session manager already has the store set by the server at startup.
-	// No need to create a new store here.
-
-	// Create the background session with workspace configuration.
-	// The session/new ACP RPC is no longer performed here — it is deferred to the
-	// first prompt (see ensureSharedACPSession) so creating a conversation never
-	// blocks on a busy agent. r.Context() is still passed for the create call.
-	bs, err := s.sessionManager.CreateSessionWithWorkspace(r.Context(), req.Name, req.WorkingDir, workspace)
-	if err != nil {
-		if err == ErrTooManySessions {
-			http.Error(w, "Maximum number of sessions reached (32)", http.StatusServiceUnavailable)
-			return
-		}
-		if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
-			if s.logger != nil {
-				s.logger.Warn("Session creation timed out or was cancelled", "error", err)
-			}
-			writeErrorJSON(w, http.StatusServiceUnavailable, "session_creation_timeout",
-				"Agent is busy — please try again in a moment")
-			return
-		}
-		if s.logger != nil {
-			s.logger.Error("Failed to create session", "error", err)
-		}
-		// Broadcast ACP start failure to all clients (use empty session_id since session wasn't created)
-		s.BroadcastACPStartFailed("", req.Name, err, workspace.ACPServer)
-		http.Error(w, "Failed to create session", http.StatusInternalServerError)
-		return
-	}
-
-	// Invalidate negative session cache in case this session ID was previously cached as not found
-	if s.negativeSessionCache != nil {
-		s.negativeSessionCache.Remove(bs.GetSessionID())
-	}
-
-	// Persist the linked beads issue (if provided) on the freshly created session.
-	if req.BeadsIssue != "" {
-		if store := s.Store(); store != nil {
-			if err := store.UpdateMetadata(bs.GetSessionID(), func(meta *session.Metadata) {
-				meta.BeadsIssue = req.BeadsIssue
-			}); err != nil && s.logger != nil {
-				s.logger.Warn("Failed to set beads_issue on new session", "error", err, "session_id", bs.GetSessionID())
-			}
-		}
-	}
-
-	// Determine the ACP server name for the response
-	acpServerName := s.config.ACPServer
-	if workspace != nil && workspace.ACPServer != "" {
-		acpServerName = workspace.ACPServer
-	}
-
-	// Seed the queue with the named prompt if provided (atomic create+seed).
-	// This uses the same queue plumbing as POST /api/sessions/{id}/queue so
-	// dispatch happens via the normal TryProcessQueuedMessage path.
-	if req.InitialPromptName != "" {
-		s.seedQueueWithNamedPrompt(bs, bs.GetSessionID(), req.InitialPromptName, req.Arguments)
-	}
-
-	// Broadcast session creation to all global events clients
-	sessionData := map[string]interface{}{
-		"session_id":     bs.GetSessionID(),
-		"acp_session_id": bs.GetACPID(),
-		"name":           req.Name,
-		"acp_server":     acpServerName,
-		"working_dir":    req.WorkingDir,
-		"status":         "active",
-		"beads_issue":    req.BeadsIssue,
-	}
-	s.eventsManager.Broadcast(WSMsgTypeSessionCreated, sessionData)
-
-	// Return session info
-	writeJSONCreated(w, sessionData)
-}
-
-// seedQueueWithNamedPrompt enqueues a named prompt on a freshly created session,
-// reusing the same queue plumbing as the queue API (Add + notifyQueueUpdate +
-// TryProcessQueuedMessage). Title generation is skipped for named-prompt items.
-func (s *Server) seedQueueWithNamedPrompt(bs *BackgroundSession, sessionID, promptName string, arguments map[string]string) {
-	queue := s.store.Queue(sessionID)
-	maxSize := config.DefaultQueueMaxSize
-	if qc := bs.GetQueueConfig(); qc != nil {
-		maxSize = qc.GetMaxSize()
-	}
-	msg, err := queue.Add("", nil, nil, "", nil, maxSize, arguments, promptName)
-	if err != nil {
-		if s.logger != nil {
-			s.logger.Warn("Failed to seed new session with named prompt",
-				"error", err,
-				"session_id", sessionID,
-				"prompt_name", promptName)
-		}
-		return
-	}
-	s.notifyQueueUpdate(sessionID, "added", msg.ID)
-	// Dispatch immediately if the agent is idle — same path as the queue API.
-	go bs.TryProcessQueuedMessage()
-}
-
-// resolveOwningWorkspace returns the registered workspace that OWNS reqDir, so
-// its shared ACP process can be reused for a session whose per-session cwd lives
-// inside (or is) that workspace's directory. Returns nil when no workspace owns
-// reqDir, in which case the caller falls back to ad-hoc workspace creation.
-//
-// Ownership is decided by directory containment: a workspace owns reqDir when
-// reqDir equals or is strictly inside the workspace dir. When several match, the
-// deepest (longest WorkingDir) wins.
-func resolveOwningWorkspace(reqDir string, workspaces []config.WorkspaceSettings) *config.WorkspaceSettings {
-	if reqDir == "" {
-		return nil
-	}
-	return ownerByContainment(normalizeDir(reqDir), workspaces)
-}
-
-// normalizeDir cleans a directory path and resolves symlinks best-effort,
-// keeping the cleaned path when the path does not exist or cannot be resolved.
-func normalizeDir(dir string) string {
-	cleaned := filepath.Clean(dir)
-	if resolved, err := filepath.EvalSymlinks(cleaned); err == nil {
-		return resolved
-	}
-	return cleaned
-}
-
-// ownerByContainment returns the deepest workspace whose directory contains (or
-// equals) normReq, or nil. normReq must already be normalized via normalizeDir.
-func ownerByContainment(normReq string, workspaces []config.WorkspaceSettings) *config.WorkspaceSettings {
-	var best *config.WorkspaceSettings
-	var bestLen int
-	for i := range workspaces {
-		ws := &workspaces[i]
-		if ws.WorkingDir == "" || ws.UUID == "" {
-			continue
-		}
-		wsDir := normalizeDir(ws.WorkingDir)
-		rel, err := filepath.Rel(wsDir, normReq)
-		if err != nil {
-			continue
-		}
-		if rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) || filepath.IsAbs(rel) {
-			continue
-		}
-		if len(wsDir) > bestLen {
-			best = ws
-			bestLen = len(wsDir)
-		}
-	}
-	return best
-}
-
-// SessionListResponse extends session.Metadata with additional runtime fields.
-type SessionListResponse struct {
-	session.Metadata
-	// PeriodicEnabled is true when a periodic config exists for this session.
-	// This determines UI mode (shows frequency panel and lock/unlock buttons).
-	// Note: This indicates config existence, not whether periodic runs are active.
-	PeriodicEnabled bool `json:"periodic_enabled"`
-	// NextScheduledAt is the next scheduled time for periodic sessions (nil if not periodic or not scheduled).
-	NextScheduledAt *time.Time `json:"next_scheduled_at,omitempty"`
-	// PeriodicFrequency is the frequency configuration for periodic sessions (nil if not periodic).
-	PeriodicFrequency *session.Frequency `json:"periodic_frequency,omitempty"`
-	// IsWaitingForChildren is true when the session is currently blocked on mitto_children_tasks_wait.
-	// This is a runtime state (not persisted) tracked by the SessionManager.
-	IsWaitingForChildren bool `json:"is_waiting_for_children,omitempty"`
-}
-
-// handleListSessions handles GET /api/sessions
-func (s *Server) handleListSessions(w http.ResponseWriter, r *http.Request) {
-	// Use the server's session store (owned by the server, not closed by this handler)
-	store := s.Store()
-	if store == nil {
-		http.Error(w, "Session store not available", http.StatusInternalServerError)
-		return
-	}
-
-	sessions, err := store.List()
-	if err != nil {
-		if s.logger != nil {
-			s.logger.Error("Failed to list sessions", "error", err)
-		}
-		http.Error(w, "Failed to list sessions", http.StatusInternalServerError)
-		return
-	}
-
-	// Sort by update time, most recently used first
-	sort.Slice(sessions, func(i, j int) bool {
-		return sessions[i].UpdatedAt.After(sessions[j].UpdatedAt)
-	})
-
-	// Build response with periodic_enabled status and scheduling info
-	response := make([]SessionListResponse, len(sessions))
-	for i := range sessions {
-		meta := sessions[i]
-		response[i] = SessionListResponse{
-			Metadata:        meta,
-			PeriodicEnabled: false, // Default to false
-		}
-		// Check if a periodic config exists for this session
-		// PeriodicEnabled = true means UI shows periodic mode (frequency panel, lock/unlock buttons)
-		periodicStore := store.Periodic(meta.SessionID)
-		if periodic, err := periodicStore.Get(); err == nil && periodic != nil {
-			// Periodic config exists - session is in periodic mode
-			response[i].PeriodicEnabled = true
-			// Include scheduling info for progress indicator
-			if periodic.NextScheduledAt != nil && !periodic.NextScheduledAt.IsZero() {
-				response[i].NextScheduledAt = periodic.NextScheduledAt
-			}
-			response[i].PeriodicFrequency = &periodic.Frequency
-		}
-		// Check if session is currently waiting for children (runtime state from SessionManager)
-		if s.sessionManager != nil {
-			response[i].IsWaitingForChildren = s.sessionManager.IsWaitingForChildren(meta.SessionID)
-		}
-	}
-
-	writeJSONOK(w, response)
-}
-
-// handleSessionDetail handles GET, PATCH, DELETE {prefix}/api/sessions/{id}, GET {prefix}/api/sessions/{id}/events,
-// WS {prefix}/api/sessions/{id}/ws, and image operations
-func (s *Server) handleSessionDetail(w http.ResponseWriter, r *http.Request) {
-	// Extract session ID from path: {prefix}/api/sessions/{id} or {prefix}/api/sessions/{id}/events etc.
-	// First strip the API prefix, then strip /api/sessions/
-	path := r.URL.Path
-	path = strings.TrimPrefix(path, s.apiPrefix)
-	path = strings.TrimPrefix(path, "/api/sessions/")
-	parts := strings.Split(path, "/")
-	if len(parts) == 0 || parts[0] == "" {
-		http.Error(w, "Session ID required", http.StatusBadRequest)
-		return
-	}
-
-	sessionID := parts[0]
-
-	// Validate session ID format to prevent path traversal
+// sessionIDFromPath extracts the {id} path wildcard and validates it. On an
+// invalid ID it writes a 400 and returns ok=false.
+func (s *Server) sessionIDFromPath(w http.ResponseWriter, r *http.Request) (string, bool) {
+	sessionID := r.PathValue("id")
 	if !IsValidSessionID(sessionID) {
-		http.Error(w, "Invalid session ID format", http.StatusBadRequest)
-		return
+		writeErrorJSON(w, http.StatusBadRequest, "", "Invalid session ID format")
+		return "", false
 	}
+	return sessionID, true
+}
 
-	isEventsRequest := len(parts) > 1 && parts[1] == "events"
-	isWSRequest := len(parts) > 1 && parts[1] == "ws"
-	isImagesRequest := len(parts) > 1 && parts[1] == "images"
-	isFilesRequest := len(parts) > 1 && parts[1] == "files"
-	isQueueRequest := len(parts) > 1 && parts[1] == "queue"
-	isUserDataRequest := len(parts) > 1 && parts[1] == "user-data"
-	isPeriodicRequest := len(parts) > 1 && parts[1] == "periodic"
-	isCallbackRequest := len(parts) > 1 && parts[1] == "callback"
-	isSettingsRequest := len(parts) > 1 && parts[1] == "settings"
-	isPruneRequest := len(parts) > 1 && parts[1] == "prune"
-	isChangesRequest := len(parts) > 1 && parts[1] == "changes"
+// Thin *Server wrappers for session sub-resources.
+// Each reads the {id} wildcard via sessionIDFromPath and delegates to the handler package.
 
-	// Handle WebSocket upgrade for per-session connections
-	if isWSRequest {
-		s.handleSessionWS(w, r)
-		return
+func (s *Server) handleSessionUserData(w http.ResponseWriter, r *http.Request) {
+	if id, ok := s.sessionIDFromPath(w, r); ok {
+		s.apiHandlers.HandleSessionUserData(w, r, id)
 	}
+}
 
-	// Handle image operations
-	if isImagesRequest {
-		// Extract image ID if present: /api/sessions/{id}/images/{imageId}
-		imagePath := ""
-		if len(parts) > 2 {
-			imagePath = parts[2]
-		}
-		s.handleSessionImages(w, r, sessionID, imagePath)
-		return
+func (s *Server) handleSessionCallbackRoute(w http.ResponseWriter, r *http.Request) {
+	if id, ok := s.sessionIDFromPath(w, r); ok {
+		s.apiHandlers.HandleSessionCallback(w, r, id)
 	}
+}
 
-	// Handle file operations
-	if isFilesRequest {
-		// Extract file ID if present: /api/sessions/{id}/files/{fileId}
-		filePath := ""
-		if len(parts) > 2 {
-			filePath = parts[2]
-		}
-		s.handleSessionFiles(w, r, sessionID, filePath)
-		return
+func (s *Server) handleSessionSettings(w http.ResponseWriter, r *http.Request) {
+	if id, ok := s.sessionIDFromPath(w, r); ok {
+		s.apiHandlers.HandleSessionSettings(w, r, id)
 	}
+}
 
-	// Handle queue operations
-	if isQueueRequest {
-		// Extract message ID if present: /api/sessions/{id}/queue/{msgId}
+func (s *Server) handleSessionPrune(w http.ResponseWriter, r *http.Request) {
+	if id, ok := s.sessionIDFromPath(w, r); ok {
+		s.apiHandlers.HandleSessionPrune(w, r, id)
+	}
+}
+
+func (s *Server) handleSessionChanges(w http.ResponseWriter, r *http.Request) {
+	if id, ok := s.sessionIDFromPath(w, r); ok {
+		s.apiHandlers.HandleSessionChanges(w, r, id)
+	}
+}
+
+func (s *Server) handleSessionImages(w http.ResponseWriter, r *http.Request) {
+	if id, ok := s.sessionIDFromPath(w, r); ok {
+		s.apiHandlers.HandleSessionImages(w, r, id, r.PathValue("imageId"))
+	}
+}
+
+func (s *Server) handleSessionFiles(w http.ResponseWriter, r *http.Request) {
+	if id, ok := s.sessionIDFromPath(w, r); ok {
+		s.apiHandlers.HandleSessionFiles(w, r, id, r.PathValue("fileId"))
+	}
+}
+
+func (s *Server) handleSessionQueue(w http.ResponseWriter, r *http.Request) {
+	if id, ok := s.sessionIDFromPath(w, r); ok {
 		queuePath := ""
-		if len(parts) > 2 {
-			queuePath = "/" + parts[2]
+		if msgID := r.PathValue("msgId"); msgID != "" {
+			queuePath = "/" + msgID
+			if sub := r.PathValue("subAction"); sub != "" {
+				queuePath += "/" + sub
+			}
 		}
-		s.handleSessionQueue(w, r, sessionID, queuePath)
-		return
-	}
-
-	// Handle user data operations
-	if isUserDataRequest {
-		s.handleSessionUserData(w, r, sessionID)
-		return
-	}
-
-	// Handle periodic prompt operations
-	if isPeriodicRequest {
-		// Check for sub-paths like /periodic/run-now
-		periodicSubPath := ""
-		if len(parts) > 2 {
-			periodicSubPath = parts[2]
-		}
-		s.handleSessionPeriodic(w, r, sessionID, periodicSubPath)
-		return
-	}
-
-	// Handle callback token operations
-	if isCallbackRequest {
-		s.handleSessionCallback(w, r, sessionID)
-		return
-	}
-
-	// Handle advanced settings operations
-	if isSettingsRequest {
-		s.handleSessionSettings(w, r, sessionID)
-		return
-	}
-
-	// Handle prune operations
-	if isPruneRequest {
-		s.handleSessionPrune(w, r, sessionID)
-		return
-	}
-
-	// Handle git changes operations
-	if isChangesRequest {
-		s.handleSessionChanges(w, r, sessionID)
-		return
-	}
-
-	switch r.Method {
-	case http.MethodGet:
-		s.handleGetSession(w, r, sessionID, isEventsRequest)
-	case http.MethodPatch:
-		s.handleUpdateSession(w, r, sessionID)
-	case http.MethodDelete:
-		s.handleDeleteSession(w, sessionID)
-	default:
-		methodNotAllowed(w)
+		s.apiHandlers.HandleSessionQueue(w, r, id, queuePath)
 	}
 }
 
-// handleGetSession handles GET /api/sessions/{id} and GET /api/sessions/{id}/events
-// For events, supports query parameters:
-//   - limit: maximum number of events to return (returns last N events)
-//   - before: only return events with seq < before (for pagination)
-//   - order: "asc" (default, oldest first) or "desc" (newest first)
-func (s *Server) handleGetSession(w http.ResponseWriter, r *http.Request, sessionID string, isEventsRequest bool) {
-	// Use the server's session store (owned by the server, not closed by this handler)
-	store := s.Store()
-	if store == nil {
-		http.Error(w, "Session store not available", http.StatusInternalServerError)
-		return
-	}
-
-	if isEventsRequest {
-		// Parse query parameters for pagination
-		query := r.URL.Query()
-		var limit int
-		var beforeSeq int64
-		reverseOrder := query.Get("order") == "desc"
-
-		if limitStr := query.Get("limit"); limitStr != "" {
-			if l, err := strconv.Atoi(limitStr); err == nil && l > 0 {
-				limit = l
-			}
-		}
-		if beforeStr := query.Get("before"); beforeStr != "" {
-			if b, err := strconv.ParseInt(beforeStr, 10, 64); err == nil && b > 0 {
-				beforeSeq = b
-			}
-		}
-
-		var events []session.Event
-		var err error
-		if limit > 0 {
-			if reverseOrder {
-				// Use reverse order read (newest first)
-				events, err = store.ReadEventsLastReverse(sessionID, limit, beforeSeq)
-			} else {
-				// Use paginated read (oldest first)
-				events, err = store.ReadEventsLast(sessionID, limit, beforeSeq)
-			}
-		} else {
-			// Read all events (backward compatible)
-			events, err = store.ReadEvents(sessionID)
-			// If reverse order requested, reverse the result
-			if reverseOrder && err == nil {
-				for i, j := 0, len(events)-1; i < j; i, j = i+1, j-1 {
-					events[i], events[j] = events[j], events[i]
-				}
-			}
-		}
-
-		if err != nil {
-			if err == session.ErrSessionNotFound {
-				http.Error(w, "Session not found", http.StatusNotFound)
-				return
-			}
-			if s.logger != nil {
-				s.logger.Error("Failed to read session events", "error", err, "session_id", sessionID)
-			}
-			http.Error(w, "Failed to read session events", http.StatusInternalServerError)
-			return
-		}
-
-		writeJSONOK(w, events)
-	} else {
-		// Return session metadata
-		meta, err := store.GetMetadata(sessionID)
-		if err != nil {
-			if err == session.ErrSessionNotFound {
-				http.Error(w, "Session not found", http.StatusNotFound)
-				return
-			}
-			if s.logger != nil {
-				s.logger.Error("Failed to get session metadata", "error", err, "session_id", sessionID)
-			}
-			http.Error(w, "Failed to get session metadata", http.StatusInternalServerError)
-			return
-		}
-
-		writeJSONOK(w, meta)
+func (s *Server) handleSessionPeriodic(w http.ResponseWriter, r *http.Request) {
+	if id, ok := s.sessionIDFromPath(w, r); ok {
+		s.apiHandlers.HandleSessionPeriodic(w, r, id, r.PathValue("subPath"))
 	}
 }
 
-// SessionUpdateRequest represents a request to update session metadata.
-type SessionUpdateRequest struct {
-	Name        *string `json:"name,omitempty"`
-	Description *string `json:"description,omitempty"`
-	Pinned      *bool   `json:"pinned,omitempty"`      // Deprecated: use Archived instead
-	Archived    *bool   `json:"archived,omitempty"`    // If true, session is archived
-	BeadsIssue  *string `json:"beads_issue,omitempty"` // Linked beads issue ID (empty string clears it)
+func (s *Server) handleSessionFlush(w http.ResponseWriter, r *http.Request) {
+	if id, ok := s.sessionIDFromPath(w, r); ok {
+		s.apiHandlers.HandleSessionFlush(w, r, id)
+	}
 }
 
-// archiveWaitTimeout is the maximum time to wait for a response to complete when archiving.
-const archiveWaitTimeout = 5 * time.Minute
-
-// handleUpdateSession handles PATCH /api/sessions/{id}
-func (s *Server) handleUpdateSession(w http.ResponseWriter, r *http.Request, sessionID string) {
-	var req SessionUpdateRequest
-	if !parseJSONBody(w, r, &req) {
-		return
+func (s *Server) handleSessionGet(w http.ResponseWriter, r *http.Request) {
+	if id, ok := s.sessionIDFromPath(w, r); ok {
+		s.apiHandlers.HandleGetSession(w, r, id, false)
 	}
-
-	// Use the server's session store (owned by the server, not closed by this handler)
-	store := s.Store()
-	if store == nil {
-		http.Error(w, "Session store not available", http.StatusInternalServerError)
-		return
-	}
-
-	// When archiving a child session, delete it instead (children should never be archived)
-	if req.Archived != nil && *req.Archived {
-		meta, err := store.GetMetadata(sessionID)
-		if err == nil && meta.ParentSessionID != "" {
-			if s.logger != nil {
-				s.logger.Info("Converting child archive to delete",
-					"session_id", sessionID,
-					"parent_session_id", meta.ParentSessionID)
-			}
-			s.handleDeleteSession(w, sessionID)
-			return
-		}
-	}
-
-	// Handle archive lifecycle: wait for response and stop ACP
-	if req.Archived != nil && *req.Archived {
-		if s.sessionManager != nil {
-			// Wait for any active response to complete before archiving
-			// This ensures we don't interrupt an in-progress agent response
-			reason := "archived"
-			if !s.sessionManager.CloseSessionGracefully(sessionID, reason, archiveWaitTimeout) {
-				// Timeout waiting for response - still proceed with archive but log warning
-				if s.logger != nil {
-					s.logger.Warn("Timeout waiting for response before archiving, proceeding anyway",
-						"session_id", sessionID)
-				}
-				// Force close the session
-				reason = "archived_timeout"
-				s.sessionManager.CloseSession(sessionID, reason)
-			}
-			// Broadcast that ACP was stopped
-			s.BroadcastACPStopped(sessionID, reason)
-		}
-	}
-
-	err := store.UpdateMetadata(sessionID, func(meta *session.Metadata) {
-		if req.Name != nil {
-			meta.Name = *req.Name
-		}
-		if req.Description != nil {
-			meta.Description = *req.Description
-		}
-		if req.BeadsIssue != nil {
-			meta.BeadsIssue = *req.BeadsIssue
-		}
-		if req.Pinned != nil {
-			meta.Pinned = *req.Pinned
-		}
-		if req.Archived != nil {
-			meta.Archived = *req.Archived
-			if *req.Archived {
-				// Set archived timestamp and reason when archiving
-				meta.ArchivedAt = time.Now()
-				meta.ArchiveReason = session.ArchiveReasonManual
-			} else {
-				// Clear archived timestamp and reason when unarchiving
-				meta.ArchivedAt = time.Time{}
-				meta.ArchiveReason = ""
-			}
-		}
-	})
-	if err != nil {
-		if err == session.ErrSessionNotFound {
-			http.Error(w, "Session not found", http.StatusNotFound)
-			return
-		}
-		if s.logger != nil {
-			s.logger.Error("Failed to update session", "error", err, "session_id", sessionID)
-		}
-		http.Error(w, "Failed to update session", http.StatusInternalServerError)
-		return
-	}
-
-	// Return updated metadata
-	meta, err := store.GetMetadata(sessionID)
-	if err != nil {
-		http.Error(w, "Failed to get updated metadata", http.StatusInternalServerError)
-		return
-	}
-
-	// Broadcast the rename to all connected WebSocket clients
-	if req.Name != nil {
-		s.BroadcastSessionRenamed(sessionID, *req.Name)
-	}
-
-	// Broadcast the pinned state change to all connected WebSocket clients
-	if req.Pinned != nil {
-		s.BroadcastSessionPinned(sessionID, *req.Pinned)
-	}
-
-	// Broadcast the archived state change to all connected WebSocket clients.
-	// For archive: broadcast immediately so clients know to disconnect.
-	// For unarchive: broadcast AFTER ResumeSession so the session is already in
-	// sm.sessions when clients reconnect (prevents pendingResumes race).
-	if req.Archived != nil && *req.Archived {
-		s.BroadcastSessionArchived(sessionID, true, session.ArchiveReasonManual)
-	}
-
-	// Delete all child sessions when parent is archived
-	if req.Archived != nil && *req.Archived {
-		if s.sessionManager != nil {
-			go s.sessionManager.DeleteChildSessions(sessionID)
-		}
-	}
-
-	// Handle unarchive lifecycle: restart ACP session FIRST, then broadcast
-	if req.Archived != nil && !*req.Archived {
-		if s.sessionManager != nil {
-			// Resume the session to restart the ACP connection
-			_, err := s.sessionManager.ResumeSession(sessionID, meta.Name, meta.WorkingDir)
-			if err != nil {
-				// Log the error but don't fail the request - the session is unarchived
-				// The ACP will be started when the user sends a message
-				if s.logger != nil {
-					s.logger.Warn("Failed to resume ACP session after unarchive",
-						"session_id", sessionID,
-						"error", err)
-				}
-				// Broadcast ACP start failure to all clients
-				s.BroadcastACPStartFailed(sessionID, meta.Name, err, "")
-			} else {
-				if s.logger != nil {
-					s.logger.Info("Resumed ACP session after unarchive",
-						"session_id", sessionID)
-				}
-				// Broadcast that ACP was started
-				s.BroadcastACPStarted(sessionID)
-			}
-		}
-		// Broadcast AFTER resume — session is now in sm.sessions
-		s.BroadcastSessionArchived(sessionID, false)
-	}
-
-	writeJSONOK(w, meta)
 }
 
-// RunningSessionInfo contains information about a running session.
-type RunningSessionInfo struct {
-	SessionID     string `json:"session_id"`
-	Name          string `json:"name"`
-	WorkingDir    string `json:"working_dir"`
-	IsPrompting   bool   `json:"is_prompting"`
-	PromptCount   int    `json:"prompt_count"`
-	WorkspaceUUID string `json:"workspace_uuid"`
-	ACPServer     string `json:"acp_server"`
+func (s *Server) handleSessionEvents(w http.ResponseWriter, r *http.Request) {
+	if id, ok := s.sessionIDFromPath(w, r); ok {
+		s.apiHandlers.HandleGetSession(w, r, id, true)
+	}
 }
 
-// RunningSessionsResponse is the response for GET /api/sessions/running
-type RunningSessionsResponse struct {
-	TotalRunning int                  `json:"total_running"`
-	Prompting    int                  `json:"prompting"`
-	Sessions     []RunningSessionInfo `json:"sessions"`
+func (s *Server) handleSessionUpdate(w http.ResponseWriter, r *http.Request) {
+	if id, ok := s.sessionIDFromPath(w, r); ok {
+		s.apiHandlers.HandleUpdateSession(w, r, id)
+	}
 }
 
-// handleRunningSessions handles GET /api/sessions/running
-// Returns information about all running sessions, including which ones are actively prompting.
-func (s *Server) handleRunningSessions(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		methodNotAllowed(w)
-		return
+func (s *Server) handleSessionDelete(w http.ResponseWriter, r *http.Request) {
+	if id, ok := s.sessionIDFromPath(w, r); ok {
+		s.apiHandlers.HandleDeleteSession(w, id)
 	}
-
-	// Use the server's session store (owned by the server, not closed by this handler)
-	store := s.Store()
-	if store == nil {
-		http.Error(w, "Session store not available", http.StatusInternalServerError)
-		return
-	}
-
-	// Get list of running session IDs
-	runningIDs := s.sessionManager.ListRunningSessions()
-
-	response := RunningSessionsResponse{
-		TotalRunning: len(runningIDs),
-		Sessions:     make([]RunningSessionInfo, 0, len(runningIDs)),
-	}
-
-	for _, sessionID := range runningIDs {
-		bs := s.sessionManager.GetSession(sessionID)
-		if bs == nil {
-			continue
-		}
-
-		info := RunningSessionInfo{
-			SessionID:     sessionID,
-			IsPrompting:   bs.IsPrompting(),
-			PromptCount:   bs.GetPromptCount(),
-			WorkspaceUUID: bs.GetWorkspaceUUID(),
-		}
-
-		// Get session metadata for name and working dir
-		meta, err := store.GetMetadata(sessionID)
-		if err == nil {
-			info.Name = meta.Name
-			info.WorkingDir = meta.WorkingDir
-			info.ACPServer = meta.ACPServer
-		}
-
-		if info.IsPrompting {
-			response.Prompting++
-		}
-
-		response.Sessions = append(response.Sessions, info)
-	}
-
-	writeJSONOK(w, response)
 }
 
-// handleDeleteSession handles DELETE /api/sessions/{id}
-func (s *Server) handleDeleteSession(w http.ResponseWriter, sessionID string) {
-	// Use the server's session store (owned by the server, not closed by this handler)
-	store := s.Store()
-	if store == nil {
-		http.Error(w, "Session store not available", http.StatusInternalServerError)
-		return
+func (s *Server) handleSessionPromptArgCache(w http.ResponseWriter, r *http.Request) {
+	if id, ok := s.sessionIDFromPath(w, r); ok {
+		s.apiHandlers.HandlePromptArgCache(w, r, id)
 	}
-
-	// Find ALL children recursively BEFORE deletion (they will be cascade-deleted by store.Delete)
-	// We need their IDs to close their ACP processes and broadcast deletions
-	allChildIDs, err := store.FindAllChildrenRecursive(sessionID)
-	if err != nil && s.logger != nil {
-		s.logger.Warn("Failed to find children for deletion",
-			"session_id", sessionID,
-			"error", err)
-	}
-
-	// Clean up callback index entries for this session and all children
-	if s.callbackIndex != nil {
-		s.callbackIndex.RemoveBySessionID(sessionID)
-		for _, childID := range allChildIDs {
-			s.callbackIndex.RemoveBySessionID(childID)
-		}
-	}
-
-	// Close ACP processes for parent and all children
-	if s.sessionManager != nil {
-		s.sessionManager.CloseSession(sessionID, "deleted")
-		for _, childID := range allChildIDs {
-			s.sessionManager.CloseSession(childID, "parent_deleted")
-		}
-	}
-
-	// Delete from store (cascade-deletes all children recursively)
-	if err := store.Delete(sessionID); err != nil {
-		if err == session.ErrSessionNotFound {
-			http.Error(w, "Session not found", http.StatusNotFound)
-			return
-		}
-		if s.logger != nil {
-			s.logger.Error("Failed to delete session", "error", err, "session_id", sessionID)
-		}
-		http.Error(w, "Failed to delete session", http.StatusInternalServerError)
-		return
-	}
-
-	// Broadcast deletions to all connected WebSocket clients
-	s.BroadcastSessionDeleted(sessionID)
-	for _, childID := range allChildIDs {
-		s.BroadcastSessionDeleted(childID)
-	}
-
-	if s.logger != nil && len(allChildIDs) > 0 {
-		s.logger.Info("Deleted session with children",
-			"session_id", sessionID,
-			"children_deleted", len(allChildIDs))
-	}
-
-	writeNoContent(w)
 }
+
+// SessionUpdateRequest is an alias for the handlers-package type. The update
+// handler was migrated to internal/web/handlers; the alias keeps existing
+// references in the web package (e.g. tests) compiling.
+type SessionUpdateRequest = handlers.SessionUpdateRequest
 
 // handleWorkspaces handles /api/workspaces
 // GET: List all workspaces
 // POST: Add a new workspace
-// DELETE: Remove a workspace (via query param ?dir=...)
-func (s *Server) handleWorkspaces(w http.ResponseWriter, r *http.Request) {
-	switch r.Method {
-	case http.MethodGet:
-		s.handleGetWorkspaces(w, r)
-	case http.MethodPost:
-		s.handleAddWorkspace(w, r)
-	case http.MethodDelete:
-		s.handleRemoveWorkspace(w, r)
-	default:
-		methodNotAllowed(w)
-	}
-}
-
-// handleGetWorkspaces returns the list of workspaces and available ACP servers
-func (s *Server) handleGetWorkspaces(w http.ResponseWriter, r *http.Request) {
-	workspaces := s.sessionManager.GetWorkspaces()
-
-	// Get available ACP servers from config
-	var acpServers []map[string]string
-	if s.config.MittoConfig != nil {
-		for _, srv := range s.config.MittoConfig.ACPServers {
-			acpServers = append(acpServers, map[string]string{
-				"name":    srv.Name,
-				"command": srv.Command,
-			})
-		}
-	}
-
-	writeJSONOK(w, map[string]interface{}{
-		"workspaces":  workspaces,
-		"acp_servers": acpServers,
-	})
-}
-
-// WorkspaceAddRequest represents a request to add a new workspace
-type WorkspaceAddRequest struct {
-	ACPServer  string `json:"acp_server"`
-	WorkingDir string `json:"working_dir"`
-	Name       string `json:"name,omitempty"`
-	Color      string `json:"color,omitempty"`
-	Code       string `json:"code,omitempty"`
-}
-
-// handleAddWorkspace adds a new workspace
-func (s *Server) handleAddWorkspace(w http.ResponseWriter, r *http.Request) {
-	var req WorkspaceAddRequest
-	if !parseJSONBody(w, r, &req) {
-		return
-	}
-
-	if req.WorkingDir == "" {
-		http.Error(w, "working_dir is required", http.StatusBadRequest)
-		return
-	}
-
-	if req.ACPServer == "" {
-		http.Error(w, "acp_server is required", http.StatusBadRequest)
-		return
-	}
-
-	// Validate the directory exists
-	info, err := os.Stat(req.WorkingDir)
-	if err != nil {
-		http.Error(w, fmt.Sprintf("Directory does not exist: %s", req.WorkingDir), http.StatusBadRequest)
-		return
-	}
-	if !info.IsDir() {
-		http.Error(w, fmt.Sprintf("Path is not a directory: %s", req.WorkingDir), http.StatusBadRequest)
-		return
-	}
-
-	// Validate the ACP server exists in global config.
-	if s.config.MittoConfig != nil {
-		if _, err := s.config.MittoConfig.GetServer(req.ACPServer); err != nil {
-			http.Error(w, fmt.Sprintf("Unknown ACP server: %s", req.ACPServer), http.StatusBadRequest)
-			return
-		}
-	}
-
-	// Check if workspace already exists
-	if ws := s.sessionManager.GetWorkspace(req.WorkingDir); ws != nil {
-		http.Error(w, fmt.Sprintf("Workspace already exists for directory: %s", req.WorkingDir), http.StatusConflict)
-		return
-	}
-
-	// Add the workspace. ACP command/cwd/env are resolved from global config at runtime —
-	// they are never stored on the workspace struct.
-	newWorkspace := config.WorkspaceSettings{
-		ACPServer:  req.ACPServer,
-		WorkingDir: req.WorkingDir,
-		Name:       req.Name,
-		Color:      req.Color,
-		Code:       req.Code,
-	}
-	s.sessionManager.AddWorkspace(newWorkspace)
-
-	// Also update the server config
-	s.config.Workspaces = s.sessionManager.GetWorkspaces()
-
-	writeJSONCreated(w, newWorkspace)
-}
-
-// handleRemoveWorkspace removes a workspace by UUID.
-// Supports both 'uuid' and legacy 'dir' query parameters for backwards compatibility.
-func (s *Server) handleRemoveWorkspace(w http.ResponseWriter, r *http.Request) {
-	uuid := r.URL.Query().Get("uuid")
-	workingDir := r.URL.Query().Get("dir")
-
-	// Find the workspace - prefer UUID, fall back to workingDir
-	var ws *config.WorkspaceSettings
-	if uuid != "" {
-		ws = s.sessionManager.GetWorkspaceByUUID(uuid)
-	} else if workingDir != "" {
-		// Legacy support: find first workspace matching directory
-		ws = s.sessionManager.GetWorkspace(workingDir)
-	} else {
-		http.Error(w, "uuid or dir query parameter is required", http.StatusBadRequest)
-		return
-	}
-
-	if ws == nil {
-		http.Error(w, "Workspace not found", http.StatusNotFound)
-		return
-	}
-
-	// Check if there are conversations using this specific workspace
-	// Use the server's session store (owned by the server, not closed by this handler)
-	store := s.Store()
-	if store == nil {
-		http.Error(w, "Session store not available", http.StatusInternalServerError)
-		return
-	}
-
-	sessions, err := store.List()
-	if err != nil {
-		if s.logger != nil {
-			s.logger.Error("Failed to list sessions", "error", err)
-		}
-		http.Error(w, "Failed to check workspace usage", http.StatusInternalServerError)
-		return
-	}
-
-	// Count conversations using this specific workspace (same dir AND server)
-	var conversationCount int
-	for _, sess := range sessions {
-		if sess.WorkingDir == ws.WorkingDir && sess.ACPServer == ws.ACPServer {
-			conversationCount++
-		}
-	}
-
-	if conversationCount > 0 {
-		// Return error with count - don't allow deletion
-		writeJSON(w, http.StatusConflict, map[string]interface{}{
-			"error":              "workspace_in_use",
-			"message":            fmt.Sprintf("Cannot delete workspace: %d conversation(s) are using it", conversationCount),
-			"conversation_count": conversationCount,
-		})
-		return
-	}
-
-	// Remove the workspace by UUID
-	s.sessionManager.RemoveWorkspace(ws.UUID)
-
-	// Also update the server config
-	s.config.Workspaces = s.sessionManager.GetWorkspaces()
-
-	writeNoContent(w)
-}
-
 // handleWorkspacePrompts handles GET/POST/DELETE /api/workspace-prompts
 //
-//   - GET ?dir=...                      Returns workspace prompts (backward-compat)
-//   - GET ?dir=...&include_global=true  Returns builtin + workspace prompts merged, all sources
-//   - POST                              Create or update a workspace prompt file
-//   - DELETE ?dir=...&name=...          Delete a workspace prompt file by name
+//   - GET ?working_dir=...                      Returns workspace prompts
+//   - GET ?working_dir=...&include_global=true  Returns builtin + workspace prompts merged, all sources
+//   - POST                                      Create or update a workspace prompt file
+//   - DELETE ?working_dir=...&name=...          Delete a workspace prompt file by name
 func (s *Server) handleWorkspacePrompts(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
-		s.handleWorkspacePromptsGET(w, r)
+		s.apiHandlers.HandleWorkspacePromptsGET(w, r)
 	case http.MethodPost:
-		s.handleWorkspacePromptsPOST(w, r)
+		s.apiHandlers.HandleWorkspacePromptsPOST(w, r)
 	case http.MethodDelete:
-		s.handleWorkspacePromptsDELETE(w, r)
+		s.apiHandlers.HandleWorkspacePromptsDELETE(w, r)
 	default:
 		methodNotAllowed(w)
 	}
-}
-
-// handleWorkspacePromptsGET handles GET /api/workspace-prompts?dir=...
-// Returns the prompts from the workspace's .mittorc file and prompts_dirs.
-// Prompts are filtered by the workspace's ACP server if specified in the prompt's acps field.
-// Supports conditional requests via If-Modified-Since header.
-// When include_global=true, also loads builtin prompts and returns all (including disabled).
-func (s *Server) handleWorkspacePromptsGET(w http.ResponseWriter, r *http.Request) {
-
-	workingDir := r.URL.Query().Get("dir")
-	if workingDir == "" {
-		http.Error(w, "dir query parameter is required", http.StatusBadRequest)
-		return
-	}
-
-	// Migrate any legacy .md prompt files in this workspace to the new
-	// .prompt.yaml format before loading. Idempotent: once migrated, subsequent
-	// fetches find the .prompt.yaml already present and report nothing.
-	migrated := s.migrateWorkspacePrompts(workingDir)
-
-	// Get the ACP server type for this workspace (used for filtering prompts).
-	// We use the server type (not name) because prompts target types,
-	// and servers with the same type share prompts (e.g., auggie-fast and auggie-smart
-	// can both have type "auggie" to share prompts with acps: auggie).
-	var acpServerType string
-	var acpServerName string
-	if ws := s.sessionManager.GetWorkspace(workingDir); ws != nil {
-		acpServerName = ws.ACPServer
-	} else if defaultWs := s.sessionManager.GetDefaultWorkspace(); defaultWs != nil {
-		acpServerName = defaultWs.ACPServer
-	}
-	// Look up the server type from config (falls back to name if type is not set)
-	if acpServerName != "" && s.config.MittoConfig != nil {
-		acpServerType = s.config.MittoConfig.GetServerType(acpServerName)
-	}
-	if acpServerType == "" {
-		// Fallback: use name as type if server not found in config
-		acpServerType = acpServerName
-	}
-
-	// Get the file's last modification time for conditional requests
-	lastModified := s.sessionManager.GetWorkspaceRCLastModified(workingDir)
-
-	// Check If-Modified-Since header for conditional request.
-	// Skip the 304 short-circuit when we just migrated files: the client must
-	// receive the fresh prompt list and the one-time migration notice.
-	if !lastModified.IsZero() && len(migrated) == 0 {
-		// Set Last-Modified header
-		w.Header().Set("Last-Modified", lastModified.UTC().Format(http.TimeFormat))
-
-		// Check if client has fresh data
-		if ifModifiedSince := r.Header.Get("If-Modified-Since"); ifModifiedSince != "" {
-			if t, err := time.Parse(http.TimeFormat, ifModifiedSince); err == nil {
-				// HTTP time has second precision, so truncate for comparison
-				if !lastModified.Truncate(time.Second).After(t) {
-					w.WriteHeader(http.StatusNotModified)
-					return
-				}
-			}
-		}
-	} else if !lastModified.IsZero() {
-		w.Header().Set("Last-Modified", lastModified.UTC().Format(http.TimeFormat))
-	}
-
-	// When include_global=true, load builtin + workspace prompts and return all (including disabled).
-	// This is used by the WorkspacesDialog to show the full list with enable/disable controls.
-	includeGlobal := r.URL.Query().Get("include_global")
-	if includeGlobal == "true" || includeGlobal == "1" || includeGlobal == "t" {
-		s.handleWorkspacePromptsGETIncludeGlobal(w, r, workingDir)
-		return
-	}
-
-	// === Load prompts from ALL sources and merge into a single list ===
-	// Priority (lowest to highest):
-	// 1. Global file prompts (MITTO_DIR/prompts/*.prompt.yaml)
-	// 2. Settings file prompts (config.Prompts)
-	// 3. ACP server-specific prompts (prompts with acps: field targeting this server)
-	// 4. Workspace directory prompts (.mitto/prompts/*.prompt.yaml)
-	// 5. Workspace inline prompts (.mittorc prompts section) — highest priority
-
-	// 1. Global file prompts
-	var globalFilePrompts []config.WebPrompt
-	if s.config.PromptsCache != nil {
-		var err error
-		globalFilePrompts, err = s.config.PromptsCache.GetWebPrompts()
-		if err != nil && s.logger != nil {
-			s.logger.Warn("Failed to load global file prompts", "error", err)
-		}
-	}
-
-	// 2. Settings file prompts
-	var settingsPrompts []config.WebPrompt
-	if s.config.MittoConfig != nil {
-		settingsPrompts = s.config.MittoConfig.Prompts
-	}
-
-	// 3. ACP server-specific file prompts (prompts with acps: field targeting this server)
-	var serverPrompts []config.WebPrompt
-	if acpServerType != "" && s.config.PromptsCache != nil {
-		sp, err := s.config.PromptsCache.GetWebPromptsSpecificToACP(acpServerType)
-		if err != nil && s.logger != nil {
-			s.logger.Warn("Failed to load ACP-specific file prompts",
-				"acp_server", acpServerName, "acp_type", acpServerType, "error", err)
-		}
-		serverPrompts = sp
-	}
-
-	// Also include inline per-server prompts from config
-	if acpServerName != "" && s.config.MittoConfig != nil {
-		for _, srv := range s.config.MittoConfig.ACPServers {
-			if srv.Name == acpServerName {
-				serverPrompts = append(serverPrompts, srv.Prompts...)
-				break
-			}
-		}
-	}
-
-	// 4. Workspace directory prompts (.mitto/prompts/*.prompt.yaml)
-	var workspacePromptsDirs []string
-	defaultWorkspacePromptsDir := appdir.WorkspacePromptsDir(workingDir)
-	workspacePromptsDirs = append(workspacePromptsDirs, defaultWorkspacePromptsDir)
-	promptsDirs := s.sessionManager.GetWorkspacePromptsDirs(workingDir)
-	workspacePromptsDirs = append(workspacePromptsDirs, promptsDirs...)
-	dirPrompts := s.loadPromptsFromDirs(workingDir, workspacePromptsDirs)
-
-	// 5. Workspace inline prompts (.mittorc)
-	inlinePrompts := s.sessionManager.GetWorkspacePrompts(workingDir)
-
-	// Merge all sources. MergePrompts takes (global, settings, workspace) and filters disabled.
-	// We merge in two steps: first global+settings, then server+workspace on top.
-	globalMerged := config.MergePromptsKeepDisabled(globalFilePrompts, settingsPrompts, nil)
-	// Server prompts override global; workspace dir prompts override server; inline overrides all.
-	allWorkspace := config.MergePromptsKeepDisabled(nil, dirPrompts, inlinePrompts)
-	prompts := config.MergePromptsKeepDisabled(globalMerged, serverPrompts, allWorkspace)
-
-	// Filter out disabled prompts (workspace enabled:false suppresses same-named global prompts)
-	var filtered []config.WebPrompt
-	for _, p := range prompts {
-		if p.Enabled == nil || *p.Enabled {
-			filtered = append(filtered, p)
-		}
-	}
-	prompts = filtered
-
-	// Filter by enabledWhen expressions. Approach B (mitto-gns): prefer the active
-	// session's context (real per-session permission flags + session.isChild) so
-	// gates like "Start work" stay visible when the current conversation can send
-	// prompts; fall back to a session-less workspace context only when the caller
-	// opts in via enabled_context=workspace and no session is available. The
-	// workspace fallback is what makes the beads menus actually evaluate the full
-	// gates (commandExists/dirExists/!session.isChild/tools/permissions) instead of
-	// returning everything unfiltered. item.* params (sent per-row by the beads
-	// view) are populated onto whichever context is used so item-gated prompts are
-	// evaluated against the opened row.
-	query := r.URL.Query()
-	sessionID := query.Get("session_id")
-	itemKind := query.Get("item_kind")
-
-	var enabledCtx *config.PromptEnabledContext
-	if sessionID != "" {
-		enabledCtx = s.buildPromptEnabledContext(sessionID)
-		// The dir query param is authoritative for the workspace these prompts
-		// belong to. The session only supplies session.*/permissions.*/parent.*/
-		// children.* (approach B); its working dir may differ from the requested
-		// dir (e.g. the Tasks/beads view is opened for one project while the
-		// active conversation is in another, or a worktree). Override the
-		// workspace/ACP/tools namespaces so dir-based gates (dirExists/fileExists
-		// via workspace.folder), tools.hasPattern, and acp.* evaluate against the
-		// requested dir, not the session's folder (mitto-gns follow-up).
-		if enabledCtx != nil {
-			s.applyWorkspaceNamespace(enabledCtx, workingDir)
-		}
-	}
-	if enabledCtx == nil && query.Get("enabled_context") == "workspace" {
-		enabledCtx = s.buildWorkspacePromptEnabledContext(workingDir)
-	}
-	if enabledCtx != nil {
-		if itemKind != "" {
-			enabledCtx.Item = config.ItemContext{
-				Id:       query.Get("item_id"),
-				Status:   query.Get("item_status"),
-				Type:     query.Get("item_type"),
-				Priority: query.Get("item_priority"),
-				Kind:     itemKind,
-			}
-		}
-		prompts = s.filterPromptsByEnabled(prompts, enabledCtx)
-	}
-	enabledEvaluated := enabledCtx != nil
-
-	if s.logger != nil {
-		s.logger.Debug("Returning workspace prompts (all sources merged)",
-			"working_dir", workingDir,
-			"acp_server", acpServerName,
-			"acp_server_type", acpServerType,
-			"prompt_count", len(prompts),
-			"global_file_count", len(globalFilePrompts),
-			"settings_count", len(settingsPrompts),
-			"server_count", len(serverPrompts),
-			"dir_prompt_count", len(dirPrompts),
-			"inline_prompt_count", len(inlinePrompts),
-			"prompts_dirs", workspacePromptsDirs,
-			"last_modified", lastModified,
-			"session_id", sessionID,
-			"item_kind", itemKind,
-			"enabled_evaluated", enabledEvaluated)
-	}
-
-	resp := map[string]interface{}{
-		"prompts":           prompts,
-		"working_dir":       workingDir,
-		"enabled_evaluated": enabledEvaluated,
-	}
-	if len(migrated) > 0 {
-		migratedNames := make([]string, 0, len(migrated))
-		for _, m := range migrated {
-			migratedNames = append(migratedNames, m.Name)
-		}
-		resp["migrated"] = migratedNames
-	}
-	writeJSONOK(w, resp)
 }
 
 // migrateWorkspacePrompts migrates legacy .md prompt files to .prompt.yaml for
@@ -1314,245 +215,6 @@ func (s *Server) migrateWorkspacePrompts(workingDir string) []config.MigratedPro
 	return migrated
 }
 
-// handleWorkspacePromptsGETIncludeGlobal handles the include_global=true variant of the GET endpoint.
-// It loads builtin prompts and workspace prompts, merges them (workspace overrides builtin by name),
-// and returns all prompts including disabled ones (so the UI can render enable/disable toggles).
-func (s *Server) handleWorkspacePromptsGETIncludeGlobal(w http.ResponseWriter, r *http.Request, workingDir string) {
-	// Load builtin prompts and tag them as source="builtin"
-	var builtinPrompts []config.WebPrompt
-	if builtinDir, err := appdir.BuiltinPromptsDir(); err == nil {
-		rawBuiltin, _ := config.LoadPromptsFromDir(builtinDir)
-		for _, p := range rawBuiltin {
-			wp := p.ToWebPrompt()
-			wp.Source = config.PromptSourceBuiltin
-			builtinPrompts = append(builtinPrompts, wp)
-		}
-	}
-
-	// Load workspace prompts from .mitto/prompts/ and tag them as source="workspace"
-	var workspacePrompts []config.WebPrompt
-	workspacePromptsDir := appdir.WorkspacePromptsDir(workingDir)
-	rawWorkspace, _ := config.LoadPromptsFromDir(workspacePromptsDir)
-	for _, p := range rawWorkspace {
-		wp := p.ToWebPrompt()
-		wp.Source = config.PromptSourceWorkspace
-		workspacePrompts = append(workspacePrompts, wp)
-	}
-
-	// Load inline prompts from .mittorc. Separate them into:
-	// - disable-only entries (no prompt text, enabled=false): applied as overrides on builtins
-	// - full prompts with content: treated as workspace prompts
-	disableOverrides := make(map[string]bool) // prompt name → disabled
-	inlinePrompts := s.sessionManager.GetWorkspacePrompts(workingDir)
-	for _, p := range inlinePrompts {
-		isDisableOnly := p.Prompt == "" && p.Enabled != nil && !*p.Enabled
-		if isDisableOnly {
-			disableOverrides[p.Name] = true
-		} else {
-			p.Source = config.PromptSourceWorkspace
-			workspacePrompts = append(workspacePrompts, p)
-		}
-	}
-
-	// Merge: workspace overrides builtin by name.
-	// Unlike MergePrompts, we do NOT filter out disabled prompts — the UI needs to see them.
-	seen := make(map[string]bool)
-	var merged []config.WebPrompt
-	for _, p := range workspacePrompts {
-		if p.Name != "" && !seen[p.Name] {
-			merged = append(merged, p)
-			seen[p.Name] = true
-		}
-	}
-	for _, p := range builtinPrompts {
-		if p.Name != "" && !seen[p.Name] {
-			// Apply disable-only overrides from .mittorc: keep builtin source/content
-			// but mark as disabled so the UI shows the toggle correctly.
-			if disableOverrides[p.Name] {
-				f := false
-				p.Enabled = &f
-			}
-			merged = append(merged, p)
-			seen[p.Name] = true
-		}
-	}
-
-	if s.logger != nil {
-		s.logger.Debug("Returning workspace prompts (include_global)",
-			"working_dir", workingDir,
-			"builtin_count", len(builtinPrompts),
-			"workspace_count", len(workspacePrompts),
-			"merged_count", len(merged))
-	}
-
-	writeJSONOK(w, map[string]interface{}{
-		"prompts":     merged,
-		"working_dir": workingDir,
-	})
-}
-
-// handleWorkspacePromptsPOST handles POST /api/workspace-prompts
-// Creates or updates a workspace prompt file in .mitto/prompts/<slug>.prompt.yaml.
-func (s *Server) handleWorkspacePromptsPOST(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		Dir             string `json:"dir"`
-		Name            string `json:"name"`
-		Prompt          string `json:"prompt"`
-		Description     string `json:"description"`
-		BackgroundColor string `json:"backgroundColor"`
-		Group           string `json:"group"`
-		Enabled         *bool  `json:"enabled"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "invalid JSON body: "+err.Error(), http.StatusBadRequest)
-		return
-	}
-	if req.Dir == "" {
-		http.Error(w, "dir is required", http.StatusBadRequest)
-		return
-	}
-	if req.Name == "" {
-		http.Error(w, "name is required", http.StatusBadRequest)
-		return
-	}
-
-	// Create the prompts directory if needed
-	promptsDir := appdir.WorkspacePromptsDir(req.Dir)
-	if err := os.MkdirAll(promptsDir, 0o755); err != nil {
-		http.Error(w, "failed to create prompts directory: "+err.Error(), http.StatusInternalServerError)
-		return
-	}
-
-	slug := config.SlugifyPromptName(req.Name)
-	if slug == "" {
-		slug = "prompt"
-	}
-	filePath := filepath.Join(promptsDir, slug+".prompt.yaml")
-
-	pf := &config.PromptFile{
-		Name:            req.Name,
-		Description:     req.Description,
-		BackgroundColor: req.BackgroundColor,
-		Group:           req.Group,
-		Enabled:         req.Enabled,
-		Content:         req.Prompt,
-	}
-	yamlBytes, err := yaml.Marshal(pf)
-	if err != nil {
-		http.Error(w, "failed to marshal prompt file: "+err.Error(), http.StatusInternalServerError)
-		return
-	}
-	if err := os.WriteFile(filePath, yamlBytes, 0o644); err != nil {
-		http.Error(w, "failed to write prompt file: "+err.Error(), http.StatusInternalServerError)
-		return
-	}
-
-	if s.logger != nil {
-		s.logger.Debug("Created workspace prompt file", "path", filePath, "name", req.Name)
-	}
-	writeJSONOK(w, map[string]interface{}{"ok": true, "path": filePath})
-}
-
-// handleWorkspacePromptsDELETE handles DELETE /api/workspace-prompts?dir=...&name=...
-// Finds and deletes a workspace prompt file by name from .mitto/prompts/.
-func (s *Server) handleWorkspacePromptsDELETE(w http.ResponseWriter, r *http.Request) {
-	workingDir := r.URL.Query().Get("dir")
-	promptName := r.URL.Query().Get("name")
-	if workingDir == "" {
-		http.Error(w, "dir query parameter is required", http.StatusBadRequest)
-		return
-	}
-	if promptName == "" {
-		http.Error(w, "name query parameter is required", http.StatusBadRequest)
-		return
-	}
-
-	promptsDir := appdir.WorkspacePromptsDir(workingDir)
-	rawPrompts, err := config.LoadPromptsFromDir(promptsDir)
-	if err != nil {
-		http.Error(w, "failed to read prompts directory: "+err.Error(), http.StatusInternalServerError)
-		return
-	}
-
-	// Find the prompt by name
-	var targetPath string
-	for _, p := range rawPrompts {
-		if strings.EqualFold(p.Name, promptName) {
-			targetPath = filepath.Join(promptsDir, p.Path)
-			break
-		}
-	}
-	if targetPath == "" {
-		http.Error(w, "prompt not found: "+promptName, http.StatusNotFound)
-		return
-	}
-
-	if err := os.Remove(targetPath); err != nil {
-		http.Error(w, "failed to delete prompt file: "+err.Error(), http.StatusInternalServerError)
-		return
-	}
-
-	if s.logger != nil {
-		s.logger.Debug("Deleted workspace prompt file", "path", targetPath, "name", promptName)
-	}
-	writeJSONOK(w, map[string]interface{}{"ok": true})
-}
-
-// handleWorkspacePromptsToggleEnabled handles PUT /api/workspace-prompts/toggle-enabled.
-// If the prompt file exists in .mitto/prompts/, updates the enabled field in the YAML file.
-// Otherwise, records the enabled state in the workspace .mittorc file.
-func (s *Server) handleWorkspacePromptsToggleEnabled(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPut {
-		methodNotAllowed(w)
-		return
-	}
-
-	var req struct {
-		Dir     string `json:"dir"`
-		Name    string `json:"name"`
-		Enabled bool   `json:"enabled"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "invalid JSON: "+err.Error(), http.StatusBadRequest)
-		return
-	}
-	if req.Dir == "" {
-		http.Error(w, "dir is required", http.StatusBadRequest)
-		return
-	}
-	if req.Name == "" {
-		http.Error(w, "name is required", http.StatusBadRequest)
-		return
-	}
-
-	// Check if a dedicated prompt file exists in .mitto/prompts/
-	slug := config.SlugifyPromptName(req.Name)
-	promptsDir := appdir.WorkspacePromptsDir(req.Dir)
-	filePath := filepath.Join(promptsDir, slug+".prompt.yaml")
-
-	if _, err := os.Stat(filePath); err == nil {
-		// File exists — update its enabled field
-		if err := config.UpdatePromptFileEnabled(filePath, req.Enabled); err != nil {
-			http.Error(w, "failed to update prompt file: "+err.Error(), http.StatusInternalServerError)
-			return
-		}
-		if s.logger != nil {
-			s.logger.Debug("Updated prompt file enabled state", "path", filePath, "enabled", req.Enabled)
-		}
-	} else {
-		// File doesn't exist — record in .mittorc
-		if err := config.SaveWorkspaceRCPromptEnabled(req.Dir, req.Name, req.Enabled); err != nil {
-			http.Error(w, "failed to update workspace config: "+err.Error(), http.StatusInternalServerError)
-			return
-		}
-		if s.logger != nil {
-			s.logger.Debug("Updated .mittorc prompt enabled state", "dir", req.Dir, "name", req.Name, "enabled", req.Enabled)
-		}
-	}
-
-	writeJSONOK(w, map[string]interface{}{"ok": true})
-}
-
 // buildPromptEnabledContext creates a CEL evaluation context for the given session.
 // Returns nil if session doesn't exist or context cannot be built.
 func (s *Server) buildPromptEnabledContext(sessionID string) *config.PromptEnabledContext {
@@ -1576,6 +238,10 @@ func (s *Server) buildPromptEnabledContext(sessionID string) *config.PromptEnabl
 	ctx.Session.ParentID = meta.ParentSessionID
 	ctx.Session.BeadsIssue = meta.BeadsIssue
 	ctx.Session.HasBeadsIssue = meta.BeadsIssue != ""
+
+	// HasMessages: true once the conversation has recorded at least one user
+	// prompt. Gates "continue"-style prompts that are meaningless when empty.
+	ctx.Session.HasMessages = !meta.LastUserMessageAt.IsZero()
 
 	// Periodic conversation type: true when a periodic configuration exists for this
 	// conversation (matches the PeriodicEnabled UI mode). Distinct from
@@ -1603,8 +269,23 @@ func (s *Server) buildPromptEnabledContext(sessionID string) *config.PromptEnabl
 			ctx.Children.Names = append(ctx.Children.Names, child.Name)
 			ctx.Children.ACPServers = append(ctx.Children.ACPServers, child.ACPServer)
 			// Check if child is currently prompting
+			isPrompting := false
 			if childBS := s.sessionManager.GetSession(child.SessionID); childBS != nil && childBS.IsPrompting() {
 				ctx.Children.PromptingCount++
+				isPrompting = true
+			}
+			// Populate structured child info for template accessors ({{ .Children.AllText }}, {{ .Children.MCPText }})
+			childInfo := config.ChildInfo{
+				ID:          child.SessionID,
+				Name:        child.Name,
+				ACPServer:   child.ACPServer,
+				Origin:      string(child.ChildOrigin),
+				IsPrompting: isPrompting,
+			}
+			ctx.Children.All = append(ctx.Children.All, childInfo)
+			if child.ChildOrigin == session.ChildOriginMCP {
+				ctx.Children.MCP = append(ctx.Children.MCP, childInfo)
+				ctx.Children.MCPCount++
 			}
 		}
 		ctx.Children.IdleCount = ctx.Children.Count - ctx.Children.PromptingCount
@@ -1619,6 +300,25 @@ func (s *Server) buildPromptEnabledContext(sessionID string) *config.PromptEnabl
 			ctx.ACP.AutoApprove = srv.AutoApprove
 		}
 	}
+	// ACP.Available: list of ACP servers with workspaces for this folder.
+	// Replicates buildAvailableACPServers from internal/conversation/workspace_registry.go.
+	if s.config.MittoConfig != nil && meta.WorkingDir != "" {
+		folderWSs := s.sessionManager.GetWorkspacesForFolder(meta.WorkingDir)
+		wsServerSet := make(map[string]bool, len(folderWSs))
+		for _, ws := range folderWSs {
+			wsServerSet[ws.ACPServer] = true
+		}
+		for _, srv := range s.config.MittoConfig.ACPServers {
+			if wsServerSet[srv.Name] {
+				ctx.ACP.Available = append(ctx.ACP.Available, config.ACPServerInfo{
+					Name:    srv.Name,
+					Type:    srv.GetType(),
+					Tags:    srv.Tags,
+					Current: srv.Name == meta.ACPServer,
+				})
+			}
+		}
+	}
 
 	// Workspace context
 	ctx.Workspace.Folder = meta.WorkingDir
@@ -1626,9 +326,25 @@ func (s *Server) buildPromptEnabledContext(sessionID string) *config.PromptEnabl
 		ctx.Workspace.UUID = ws.UUID
 		ctx.Workspace.Name = ws.Name
 	}
-	// Check if workspace has user data schema
+	// Check if workspace has user data schema; also marshal it for template rendering.
 	if schema := s.sessionManager.GetUserDataSchema(meta.WorkingDir); schema != nil && len(schema.Fields) > 0 {
 		ctx.Workspace.HasUserDataSchema = true
+		if schemaBytes, merr := json.Marshal(schema.Fields); merr == nil {
+			ctx.Workspace.UserDataSchemaJSON = string(schemaBytes)
+		}
+	}
+
+	// Session user data JSON for template rendering ({{ .Session.UserDataJSON }}).
+	// Also build UserData map (name→value) for {{ UserData "NAME" }} / CEL UserData["X"].
+	if ud, uerr := store.GetUserData(sessionID); uerr == nil && ud != nil && len(ud.Attributes) > 0 {
+		if udBytes, merr := json.Marshal(ud.Attributes); merr == nil {
+			ctx.Session.UserDataJSON = string(udBytes)
+		}
+		udMap := make(map[string]string, len(ud.Attributes))
+		for _, attr := range ud.Attributes {
+			udMap[attr.Name] = attr.Value
+		}
+		ctx.UserData = udMap
 	}
 
 	// Tools context - get from auxiliary manager if available
@@ -1638,6 +354,19 @@ func (s *Server) buildPromptEnabledContext(sessionID string) *config.PromptEnabl
 			ctx.Tools.Available = true
 			for _, tool := range tools {
 				ctx.Tools.Names = append(ctx.Tools.Names, tool.Name)
+			}
+		}
+	}
+
+	// Model tags from the session's CURRENT model (config models: profiles). Mirrors the
+	// send-time resolution in prompt_dispatcher.buildProcessorInput so the Model(tag) template
+	// func and Session.HasModelTag CEL macro read identical tags at menu time and send time.
+	// Degrades to empty tags when the session/model is unknown (cold start) — never errors.
+	if s.config.MittoConfig != nil {
+		if bs := s.sessionManager.GetSession(sessionID); bs != nil {
+			if modelName := bs.CurrentModelName(); modelName != "" {
+				ctx.Session.ModelName = modelName
+				ctx.Session.ModelTags = s.config.MittoConfig.ResolveModelTags(modelName)
 			}
 		}
 	}
@@ -1829,488 +558,41 @@ func (s *Server) loadPromptsFromDirs(workspaceRoot string, dirs []string) []conf
 	return allPrompts
 }
 
-// handleWorkspaceDetail dispatches /api/workspaces/{uuid}/... sub-routes.
-func (s *Server) handleWorkspaceDetail(w http.ResponseWriter, r *http.Request) {
-	// Extract the path after "/api/workspaces/", stripping apiPrefix first (mirrors handleSessionDetail).
-	path := r.URL.Path
-	path = strings.TrimPrefix(path, s.apiPrefix)
-	path = strings.TrimPrefix(path, "/api/workspaces/")
-
-	parts := strings.SplitN(path, "/", 2)
-	if len(parts) < 2 {
-		http.NotFound(w, r)
-		return
-	}
-	uuid := parts[0]
-	subPath := parts[1]
-
-	switch subPath {
-	case "effective-runner-config":
-		s.handleEffectiveRunnerConfig(w, r, uuid)
-	case "restart-acp":
-		s.handleRestartWorkspaceACP(w, r, uuid)
-	default:
-		http.NotFound(w, r)
-	}
-}
-
-// EffectiveRunnerConfigResponse is the response for GET /api/workspaces/{uuid}/effective-runner-config.
-// It returns the resolved runner config from global + agent levels (no workspace overrides),
-// so the UI can show what restrictions a workspace would inherit.
-type EffectiveRunnerConfigResponse struct {
-	RunnerType   string                     `json:"runner_type"`
-	Restrictions *config.RunnerRestrictions `json:"restrictions,omitempty"`
-}
-
-// handleEffectiveRunnerConfig handles GET /api/workspaces/{uuid}/effective-runner-config.
-// Returns the effective runner config resolved from global and agent levels only.
-func (s *Server) handleEffectiveRunnerConfig(w http.ResponseWriter, r *http.Request, uuid string) {
-	if r.Method != http.MethodGet {
-		methodNotAllowed(w)
-		return
+// getWorkspacePromptsAll returns the full merged prompt list for a working
+// directory, using the same resolution pipeline as the workspace-prompts API
+// endpoint (without ACP server-specific prompts). Used to validate prompt names
+// when the beads upstream == "prompts".
+func (s *Server) getWorkspacePromptsAll(workingDir string) []config.WebPrompt {
+	// 1. Global file prompts
+	var globalFilePrompts []config.WebPrompt
+	if s.config.PromptsCache != nil {
+		gfp, _ := s.config.PromptsCache.GetWebPrompts()
+		globalFilePrompts = gfp
 	}
 
-	ws := s.sessionManager.GetWorkspaceByUUID(uuid)
-	if ws == nil {
-		http.Error(w, "Workspace not found", http.StatusNotFound)
-		return
+	// 2. Settings file prompts
+	var settingsPrompts []config.WebPrompt
+	if s.config.MittoConfig != nil {
+		settingsPrompts = s.config.MittoConfig.Prompts
 	}
 
-	// Get global runner configs
-	sm := s.sessionManager
-	sm.mu.RLock()
-	globalRunnersByType := sm.globalRestrictedRunners
-	mittoConfig := sm.mittoConfig
-	sm.mu.RUnlock()
-
-	// Get agent-specific runner configs
-	var agentRunnersByType map[string]*config.WorkspaceRunnerConfig
-	if mittoConfig != nil && ws.ACPServer != "" {
-		if server, err := mittoConfig.GetServer(ws.ACPServer); err == nil && server != nil {
-			agentRunnersByType = server.RestrictedRunners
-		}
-	}
-
-	// Resolve global + agent levels only (no workspace level)
-	resolved := runner.ResolveEffectiveConfig(globalRunnersByType, agentRunnersByType)
-
-	resp := EffectiveRunnerConfigResponse{
-		RunnerType:   resolved.Type,
-		Restrictions: resolved.Restrictions,
-	}
-
-	writeJSONOK(w, resp)
-}
-
-// handleRestartWorkspaceACP handles POST /api/workspaces/{uuid}/restart-acp.
-// Restarts the shared ACP process for a workspace so that MCP changes take effect.
-func (s *Server) handleRestartWorkspaceACP(w http.ResponseWriter, r *http.Request, workspaceUUID string) {
-	if r.Method != http.MethodPost {
-		methodNotAllowed(w)
-		return
-	}
-
-	// Verify workspace exists
-	ws := s.sessionManager.GetWorkspaceByUUID(workspaceUUID)
-	if ws == nil {
-		http.Error(w, "Workspace not found", http.StatusNotFound)
-		return
-	}
-
-	// Check if the process manager exists
-	if s.acpProcessManager == nil {
-		http.Error(w, "ACP process manager not available", http.StatusInternalServerError)
-		return
-	}
-
-	// Restart the shared ACP process
-	if err := s.acpProcessManager.RestartProcess(workspaceUUID); err != nil {
-		if s.logger != nil {
-			s.logger.Error("Failed to restart ACP process for workspace",
-				"workspace_uuid", workspaceUUID,
-				"error", err)
-		}
-		http.Error(w, "Failed to restart ACP: "+err.Error(), http.StatusInternalServerError)
-		return
-	}
-
-	if s.logger != nil {
-		s.logger.Info("Restarted ACP process for workspace via API",
-			"workspace_uuid", workspaceUUID,
-			"acp_server", ws.ACPServer)
-	}
-
-	writeJSONOK(w, map[string]interface{}{
-		"success": true,
-		"message": "ACP process restarted successfully",
-	})
-}
-
-// handleWorkspaceMetadata dispatches GET and PUT requests for workspace metadata.
-func (s *Server) handleWorkspaceMetadata(w http.ResponseWriter, r *http.Request) {
-	switch r.Method {
-	case http.MethodGet:
-		s.handleWorkspaceMetadataGet(w, r)
-	case http.MethodPut:
-		s.handleWorkspaceMetadataPut(w, r)
-	default:
-		methodNotAllowed(w)
-	}
-}
-
-// handleWorkspaceMetadataGet handles GET /api/workspace-metadata?working_dir=...
-// Returns workspace metadata (description, URL) from the .mittorc file.
-func (s *Server) handleWorkspaceMetadataGet(w http.ResponseWriter, r *http.Request) {
-	workingDir := r.URL.Query().Get("working_dir")
-	if workingDir == "" {
-		http.Error(w, "working_dir query parameter is required", http.StatusBadRequest)
-		return
-	}
-
-	workingDir = strings.TrimSpace(workingDir)
-
-	// Validate that this is a known workspace
-	workspace := s.sessionManager.GetWorkspace(workingDir)
-	if workspace == nil {
-		http.Error(w, "Unknown workspace", http.StatusNotFound)
-		return
-	}
-
-	// Load workspace RC file
-	rc, err := config.LoadWorkspaceRC(workingDir)
-	if err != nil {
-		// Log error but return empty metadata
-		if s.logger != nil {
-			s.logger.Warn("Failed to load workspace RC for metadata", "working_dir", workingDir, "error", err)
-		}
-		writeJSONOK(w, map[string]interface{}{})
-		return
-	}
-
-	if rc == nil || rc.Metadata == nil {
-		writeJSONOK(w, map[string]interface{}{})
-		return
-	}
-
-	writeJSONOK(w, rc.Metadata)
-}
-
-// handleWorkspaceMetadataPut handles PUT /api/workspace-metadata.
-// Saves description and URL to the workspace .mittorc file.
-func (s *Server) handleWorkspaceMetadataPut(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		WorkingDir  string `json:"working_dir"`
-		Description string `json:"description"`
-		URL         string `json:"url"`
-		Group       string `json:"group"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "Invalid request body", http.StatusBadRequest)
-		return
-	}
-	if req.WorkingDir == "" {
-		http.Error(w, "working_dir is required", http.StatusBadRequest)
-		return
-	}
-	req.WorkingDir = strings.TrimSpace(req.WorkingDir)
-
-	// Validate that this is a known workspace
-	workspace := s.sessionManager.GetWorkspace(req.WorkingDir)
-	if workspace == nil {
-		http.Error(w, "Unknown workspace", http.StatusNotFound)
-		return
-	}
-
-	if err := config.SaveWorkspaceMetadata(req.WorkingDir, req.Description, req.URL, req.Group); err != nil {
-		if s.logger != nil {
-			s.logger.Error("Failed to save workspace metadata", "working_dir", req.WorkingDir, "error", err)
-		}
-		http.Error(w, "Failed to save metadata: "+err.Error(), http.StatusInternalServerError)
-		return
-	}
-
-	// Invalidate the workspace RC cache so subsequent reads pick up the new data
+	// 3. Workspace directory prompts (.mitto/prompts/*.prompt.yaml)
+	var workspacePromptsDirs []string
+	workspacePromptsDirs = append(workspacePromptsDirs, appdir.WorkspacePromptsDir(workingDir))
 	if s.sessionManager != nil {
-		s.sessionManager.InvalidateWorkspaceRC(req.WorkingDir)
+		workspacePromptsDirs = append(workspacePromptsDirs, s.sessionManager.GetWorkspacePromptsDirs(workingDir)...)
+	}
+	dirPrompts := s.loadPromptsFromDirs(workingDir, workspacePromptsDirs)
+
+	// 4. Workspace inline prompts (.mittorc)
+	var inlinePrompts []config.WebPrompt
+	if s.sessionManager != nil {
+		inlinePrompts = s.sessionManager.GetWorkspacePrompts(workingDir)
 	}
 
-	if s.logger != nil {
-		s.logger.Info("Workspace metadata saved", "working_dir", req.WorkingDir)
-	}
-
-	writeJSONOK(w, map[string]string{"status": "ok"})
-}
-
-// handleFolderGroup handles PUT /api/folder-group.
-// Sets (or clears) the folder-level organizational group label shared by all
-// workspaces in the given working directory. An empty group clears the
-// assignment ("ungrouped"). The group is folder-level: SetWorkspaces hoists it
-// into the authoritative folders.json (and merges it back on load), so updating
-// the in-memory workspaces and re-saving is sufficient.
-func (s *Server) handleFolderGroup(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPut {
-		methodNotAllowed(w)
-		return
-	}
-
-	var req struct {
-		WorkingDir string `json:"working_dir"`
-		Group      string `json:"group"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "Invalid request body", http.StatusBadRequest)
-		return
-	}
-
-	workingDir := strings.TrimSpace(req.WorkingDir)
-	group := strings.TrimSpace(req.Group)
-	if workingDir == "" {
-		http.Error(w, "working_dir is required", http.StatusBadRequest)
-		return
-	}
-
-	// Validate that this is a known workspace directory.
-	if s.sessionManager.GetWorkspace(workingDir) == nil {
-		http.Error(w, "Unknown workspace", http.StatusNotFound)
-		return
-	}
-
-	// Update the group on every workspace sharing this folder, then persist.
-	// SetWorkspaces hoists the folder-level group into folders.json (shared by
-	// all workspaces in the folder) and triggers the save callback.
-	workspaces := s.sessionManager.GetWorkspaces()
-	for i := range workspaces {
-		if workspaces[i].WorkingDir == workingDir {
-			workspaces[i].Group = group
-		}
-	}
-	s.sessionManager.SetWorkspaces(workspaces)
-	s.config.Workspaces = s.sessionManager.GetWorkspaces()
-
-	if s.logger != nil {
-		s.logger.Info("Folder group updated", "working_dir", workingDir, "group", group)
-	}
-
-	writeJSONOK(w, map[string]string{"group": group})
-}
-
-// WebProcessor represents a processor as returned by the workspace processors API.
-type WebProcessor struct {
-	Name        string                     `json:"name"`
-	Description string                     `json:"description,omitempty"`
-	Enabled     bool                       `json:"enabled"`
-	Source      processors.ProcessorSource `json:"source"`
-	On          string                     `json:"on,omitempty"`
-	Match       string                     `json:"match,omitempty"`
-	Priority    int                        `json:"priority,omitempty"`
-	FilePath    string                     `json:"file_path,omitempty"`
-	Mode        string                     `json:"mode,omitempty"` // "text", "command", or "prompt"
-}
-
-// handleWorkspaceProcessors handles GET /api/workspace-processors?dir=...
-// Returns all processors applicable to the workspace (global + workspace-local),
-// with enabled state reflecting any .mittorc overrides.
-func (s *Server) handleWorkspaceProcessors(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		methodNotAllowed(w)
-		return
-	}
-
-	workingDir := r.URL.Query().Get("dir")
-	if workingDir == "" {
-		http.Error(w, "dir query parameter is required", http.StatusBadRequest)
-		return
-	}
-
-	// Get merged processor manager (global + workspace processors)
-	procMgr := s.sessionManager.GetWorkspaceProcessorManager(workingDir)
-	if procMgr == nil {
-		writeJSONOK(w, map[string]interface{}{"processors": []WebProcessor{}, "working_dir": workingDir})
-		return
-	}
-
-	// Build override map from workspace .mittorc processors section.
-	// Mirrors the prompts pattern: [{name, enabled}] entries override processor defaults.
-	overrides := make(map[string]bool) // name → enabled
-	for _, o := range s.sessionManager.GetWorkspaceProcessorOverrides(workingDir) {
-		if o.Enabled != nil {
-			overrides[o.Name] = *o.Enabled
-		}
-	}
-
-	// Build response list
-	var result []WebProcessor
-	for _, p := range procMgr.Processors() {
-		// Skip config (text-mode) processors — they are not file-based and can't be toggled
-		if p.Source == processors.ProcessorSourceConfig {
-			continue
-		}
-		enabled := p.Enabled == nil || *p.Enabled
-		// Apply workspace-level override from .mittorc processors section
-		if override, ok := overrides[p.Name]; ok {
-			enabled = override
-		}
-		mode := "command"
-		if p.IsTextMode() {
-			mode = "text"
-		} else if p.IsPromptMode() {
-			mode = "prompt"
-		}
-		result = append(result, WebProcessor{
-			Name:        p.Name,
-			Description: p.Description,
-			Enabled:     enabled,
-			Source:      p.Source,
-			On:          string(p.When.On),
-			Match:       string(p.When.Match),
-			Priority:    p.Priority,
-			FilePath:    p.FilePath,
-			Mode:        mode,
-		})
-	}
-
-	// Sort: workspace processors first, then global, then by name within each group
-	sort.Slice(result, func(i, j int) bool {
-		si, sj := sourceOrder(result[i].Source), sourceOrder(result[j].Source)
-		if si != sj {
-			return si < sj
-		}
-		return result[i].Name < result[j].Name
-	})
-
-	if s.logger != nil {
-		s.logger.Debug("Returning workspace processors",
-			"working_dir", workingDir,
-			"count", len(result))
-	}
-
-	writeJSONOK(w, map[string]interface{}{
-		"processors":  result,
-		"working_dir": workingDir,
-	})
-}
-
-// sourceOrder returns a sort priority for processor sources (lower = shown first).
-func sourceOrder(src processors.ProcessorSource) int {
-	switch src {
-	case processors.ProcessorSourceWorkspace:
-		return 0
-	case processors.ProcessorSourceGlobal:
-		return 1
-	case processors.ProcessorSourceBuiltin:
-		return 2
-	default:
-		return 3
-	}
-}
-
-// handleWorkspaceProcessorsToggleEnabled handles PUT /api/workspace-processors/toggle-enabled.
-//
-// Routing logic:
-//   - Workspace-local, single-document YAML file → update enabled field in-place.
-//   - Multi-document YAML file, global, or builtin processor → record override in
-//     the workspace .mittorc file (processors section), same as the global path.
-//
-// The processor is resolved by Name through the merged manager so that multi-doc
-// files (where filename ≠ processor name) are handled correctly.
-func (s *Server) handleWorkspaceProcessorsToggleEnabled(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPut {
-		methodNotAllowed(w)
-		return
-	}
-
-	var req struct {
-		Dir     string `json:"dir"`
-		Name    string `json:"name"`
-		Enabled bool   `json:"enabled"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "invalid JSON: "+err.Error(), http.StatusBadRequest)
-		return
-	}
-	if req.Dir == "" {
-		http.Error(w, "dir is required", http.StatusBadRequest)
-		return
-	}
-	if req.Name == "" {
-		http.Error(w, "name is required", http.StatusBadRequest)
-		return
-	}
-
-	// Resolve the processor by Name through the merged manager.
-	// This works correctly for multi-document files where the filename does
-	// not match the processor name.
-	var resolvedFilePath string
-	var resolvedSource processors.ProcessorSource
-	if procMgr := s.sessionManager.GetWorkspaceProcessorManager(req.Dir); procMgr != nil {
-		for _, p := range procMgr.Processors() {
-			if p.Name == req.Name {
-				resolvedFilePath = p.FilePath
-				resolvedSource = p.Source
-				break
-			}
-		}
-	}
-
-	// Determine whether the processor can be edited in-place:
-	//   1. It must be workspace-local (not global/builtin).
-	//   2. Its file must be a single-document YAML file.
-	useInPlace := false
-	if resolvedFilePath != "" && resolvedSource == processors.ProcessorSourceWorkspace {
-		multi, err := processors.IsMultiDocFile(resolvedFilePath)
-		if err == nil && !multi {
-			useInPlace = true
-		}
-	}
-
-	// Fall back to the old filename-based lookup when the manager couldn't
-	// resolve the processor (e.g. newly added file not yet loaded). Apply the
-	// same single-document guard before allowing an in-place write.
-	if !useInPlace && resolvedFilePath == "" {
-		workspaceProcessorDirs := s.sessionManager.GetWorkspaceAllProcessorDirs(req.Dir)
-		for _, dir := range workspaceProcessorDirs {
-			for _, ext := range []string{".yaml", ".yml"} {
-				candidate := filepath.Join(dir, req.Name+ext)
-				if _, err := os.Stat(candidate); err == nil {
-					multi, err := processors.IsMultiDocFile(candidate)
-					if err == nil && !multi {
-						resolvedFilePath = candidate
-						useInPlace = true
-					}
-					break
-				}
-			}
-			if resolvedFilePath != "" {
-				break
-			}
-		}
-	}
-
-	if useInPlace {
-		// Single-document workspace file — update enabled field in-place.
-		if err := processors.UpdateProcessorFileEnabled(resolvedFilePath, req.Enabled); err != nil {
-			http.Error(w, "failed to update processor file: "+err.Error(), http.StatusInternalServerError)
-			return
-		}
-		if s.logger != nil {
-			s.logger.Debug("Updated processor file enabled state", "path", resolvedFilePath, "enabled", req.Enabled)
-		}
-	} else {
-		// Multi-document file, global/builtin, or unresolvable processor —
-		// record override in the workspace .mittorc processors section.
-		if err := config.SaveWorkspaceRCProcessorEnabled(req.Dir, req.Name, req.Enabled); err != nil {
-			http.Error(w, "failed to update workspace config: "+err.Error(), http.StatusInternalServerError)
-			return
-		}
-		// Invalidate cache so the next read picks up the change.
-		if s.sessionManager != nil {
-			s.sessionManager.InvalidateWorkspaceRC(req.Dir)
-		}
-		if s.logger != nil {
-			s.logger.Debug("Updated .mittorc processor enabled state",
-				"dir", req.Dir, "name", req.Name, "enabled", req.Enabled)
-		}
-	}
-
-	writeJSONOK(w, map[string]interface{}{"ok": true})
+	return config.MergePrompts(
+		config.MergePrompts(globalFilePrompts, settingsPrompts, dirPrompts),
+		nil,
+		inlinePrompts,
+	)
 }

@@ -1,14 +1,16 @@
-icon: beads
+icon: plus
 name: New issue
-menus: prompts
+menus: prompts, !promptsPeriodic
 description: Create a beads issue — from the current conversation context or from scratch
 backgroundColor: '#C8E6C9'
 group: Tasks
-enabledWhen: commandExists("bd")
+enabledWhen: CommandExists("bd")
+preferredModels:
+  - modelTag: Coding
 prompt: |
   ## Session Context
 
-  Your session ID is `@mitto:session_id` — use this as `self_id` for all `mitto_*` MCP tool calls.
+  Your session ID is `{{ .Session.ID }}` — use this as `self_id` for all `mitto_*` MCP tool calls.
 
   # Beads: Create a New Issue
 
@@ -23,7 +25,7 @@ prompt: |
   ```
 
   - If `.beads` **already exists**: skip to Step 1.
-  - If `.beads` **does not exist**: this may be the first time beads is used here. Use `mitto_ui_options_mitto(self_id: "@mitto:session_id")` to ask: "Beads is not initialised in this project yet. Initialise it now so we can create the first issue?" with options "Yes — initialise beads" and "No — cancel".
+  - If `.beads` **does not exist**: this may be the first time beads is used here. Use `mitto_ui_options(self_id: "{{ .Session.ID }}")` to ask: "Beads is not initialised in this project yet. Initialise it now so we can create the first issue?" with options "Yes — initialise beads" and "No — cancel".
     - If the user declines, stop.
     - If the user agrees, initialise beads non-interactively (it auto-detects a sensible default issue prefix from the directory name):
 
@@ -37,7 +39,7 @@ prompt: |
 
   First, check the conversation history for meaningful prior work context (investigation, debugging, feature discussion, research findings, etc.).
 
-  - If the conversation contains **prior work context**: use `mitto_ui_options_mitto(self_id: "@mitto:session_id")` to ask: "What should the new issue be about?" with the following options:
+  - If the conversation contains **prior work context**: use `mitto_ui_options(self_id: "{{ .Session.ID }}")` to ask: "What should the new issue be about?" with the following options:
     - "Based on what we've been working on" (with a short description of the detected topic, e.g., "Based on what we've been working on — the auth timeout bug in the login flow")
     - "Something entirely new — I'll describe it"
 
@@ -67,7 +69,7 @@ prompt: |
 
   ## Step 4 — Collect issue fields via form
 
-  Use `mitto_ui_form_mitto(self_id: "@mitto:session_id")` to present a form, pre-filled with intelligent defaults derived from Steps 2 and 3:
+  Use `mitto_ui_form_mitto(self_id: "{{ .Session.ID }}")` to present a form, pre-filled with intelligent defaults derived from Steps 2 and 3:
 
   ```html
   <label>Title</label>
@@ -112,7 +114,7 @@ prompt: |
   - **Proposed Solution** (if discussed): What approach was identified
   - **Acceptance Criteria**: Concrete, testable conditions for "done"
 
-  Present the description using `mitto_ui_textbox_mitto(self_id: "@mitto:session_id")` with:
+  Present the description using `mitto_ui_textbox_mitto(self_id: "{{ .Session.ID }}")` with:
   - `title`: "Issue Description — Review & Edit"
   - `text`: the composed description
   - `result`: "full"
@@ -137,7 +139,7 @@ prompt: |
 
   ## Step 7 — Offer follow-up actions
 
-  After creation, use `mitto_ui_options_mitto(self_id: "@mitto:session_id")` to ask: "Bead `<id>` is ready. Would you like to:"
+  After creation, use `mitto_ui_options(self_id: "{{ .Session.ID }}")` to ask: "Bead `<id>` is ready. Would you like to:"
     - "Claim it and start working now" — run `bd update <id> --claim`, then suggest using the "Start working on ready" prompt
     - "Link it to another bead (dependency)" — ask for the target bead ID and run `bd dep add <id> <blocker-id>` (or `bd link <id> <other-id> --type related`)
     - "Done — no further action"

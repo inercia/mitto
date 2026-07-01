@@ -1,10 +1,41 @@
 icon: refresh
 name: Iterate fixing
 menus: promptsPeriodic
+parameters:
+  - name: Commit
+    type: boolean
+    description: Commit the changes made at the end of each iteration
 description: Continue iterating to fix the problem we have been working on
 group: Development
 backgroundColor: '#BBDEFB'
+periodic:
+  mode: always
+  trigger: onCompletion
+  delay: 30
+  maxIterations: 20
 prompt: |
+  {{- if .Iteration.IsUninterrupted }}
+  Continue fixing the problem you have been working on in this loop. Read the state
+  file `implement-<problem>-<date>.md` and the relevant source first — do not
+  speculate about code you haven't opened.
+
+  Do exactly one increment this run:
+
+  1. Review the state file: what's been tried, what's still failing.
+  2. Pick the highest-priority remaining issue and find its root cause.
+  3. Implement the fix — minimal and focused on the root cause, not symptoms.
+  4. Verify the fix.
+  5. Update the state file (Progress / Issues remaining).
+  {{- if eq .Args.Commit "true" }}
+  6. Commit only the files you changed, staged explicitly by path (never
+     `git add -A`, `git add .`, or `git commit -a`); concise conventional
+     message; skip the commit if nothing changed.
+  {{- end }}
+
+  **Decide autonomously; do not ask the user.** Only when a requirement is
+  genuinely ill-defined, record it under "Issues remaining", report it, and stop
+  — never guess.
+  {{- else }}
   Read the state file and relevant source files first. Do not speculate about
   code you haven't opened.
 
@@ -15,7 +46,11 @@ prompt: |
   Fix root causes, not symptoms. Ensure fixes work for all valid inputs. Report
   deeper design issues rather than applying narrow workarounds.
 
-
+  **Decide autonomously; do not ask the user.** Take every decision needed to make
+  progress yourself. The sole exception is when part of the problem is **not properly
+  defined or understood** (a genuinely ambiguous requirement or unknown you cannot
+  resolve from the available context): then do **not** guess — record it in the state
+  file under "Issues remaining", report it, and stop rather than asking.
 
   # Preparation
 
@@ -40,5 +75,14 @@ prompt: |
   4. Prioritize and implement fix
   5. Verify the fix
   6. Update state file
+  {{- if eq .Args.Commit "true" }}
+  7. Commit your work — but only if you actually changed files this iteration.
+     Stage **only** the files you changed for this fix, explicitly by path
+     (`git add <file> ...`). Do **NOT** use `git add -A`, `git add .`, or
+     `git commit -a`: other unrelated, uncommitted changes may exist in the repo
+     and must be left untouched. Write a concise, conventional commit message
+     describing this increment. If nothing changed this iteration, skip the commit.
+  {{- end }}
 
   Once fully fixed, verify against original problem description.
+  {{- end }}

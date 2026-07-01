@@ -39,32 +39,147 @@ graph TB
 
 ## REST API Endpoints
 
-The web interface uses REST APIs for session management and configuration:
+All routes are declared in `internal/web/routes.go`. Routes use Go 1.22 method-qualified patterns (`METHOD /path`); method mismatches return 405. Most endpoints require a valid session cookie. Exceptions are listed under **Public / Auth** below.
 
-| Endpoint                          | Method | Purpose                                    |
-| --------------------------------- | ------ | ------------------------------------------ |
-| `/api/sessions`                   | GET    | List all sessions                          |
-| `/api/sessions`                   | POST   | Create new session                         |
-| `/api/sessions/{id}`              | DELETE | Delete a session                           |
-| `/api/sessions/{id}/events`       | GET    | Load session events (deprecated, use WS)   |
-| `/api/sessions/{id}/images`       | POST   | Upload image for session                   |
-| `/api/sessions/{id}/images/paths` | POST   | Upload images from file paths (native app) |
-| `/api/workspaces`                 | GET    | List workspaces and ACP servers            |
-| `/api/workspaces`                 | POST   | Add a new workspace                        |
-| `/api/workspaces`                 | DELETE | Remove a workspace                         |
-| `/api/config`                     | GET    | Get server configuration                   |
-| `/api/queue/{session_id}`         | GET    | Get message queue for session              |
-| `/api/queue/{session_id}`         | POST   | Add message to queue                       |
-| `/api/queue/{session_id}/{id}`    | DELETE | Remove message from queue                  |
+**Error envelope** (standard): `{"error": {"code": "...", "message": "...", "details":{...}?}}`. Common codes: `unauthenticated` (401), `method_not_allowed` (405), `server_error` (500). A small set of `external-stable` endpoints (native app / viewer / load-balancer integration) may retain a legacy flat `{"error": "..."}` shape and must not be renamed.
 
-### Callback Endpoints
+**Mid-migration note**: Some workspace-scoped endpoints are still at flat `/api/workspace-*` paths (notably `/api/workspace-prompts*`) and use `?working_dir=` query params. These are being nested under `/api/workspaces/{uuid}/…` as part of epic mitto-ank; see [`docs/devel/rest-api-conventions.md`](rest-api-conventions.md) for the full current→target mapping.
 
-| Endpoint                              | Method | Auth                   | Description                    |
-| ------------------------------------- | ------ | ---------------------- | ------------------------------ |
-| `{prefix}/api/callback/{token}`       | POST   | Token (capability URL) | Trigger periodic prompt run    |
-| `{prefix}/api/sessions/{id}/callback` | GET    | Session auth           | Get callback status            |
-| `{prefix}/api/sessions/{id}/callback` | POST   | Session auth           | Generate/rotate callback token |
-| `{prefix}/api/sessions/{id}/callback` | DELETE | Session auth           | Revoke callback token          |
+---
+
+### Public / Auth
+
+These endpoints do **not** require a session cookie.
+
+| Path | Method(s) | Description |
+| ---- | --------- | ----------- |
+| `/api/login` | POST | Authenticate (only when auth is configured) |
+| `/api/logout` | POST | End authenticated session |
+| `/api/csrf-token` | GET | Return a CSRF token for subsequent mutations |
+| `/api/auth-info` | GET | Login-page bootstrap (auth mode, OIDC config) |
+| `/api/health` | GET | Load-balancer liveness probe — always 200 OK (external-stable) |
+| `/api/callback/` | POST | Capability-URL webhook — token in path, no cookie needed (external-stable) |
+| `/api/supported-runners` | GET | List runner types supported by the server |
+
+---
+
+### Sessions
+
+| Path | Method(s) | Description |
+| ---- | --------- | ----------- |
+| `/api/sessions` | GET, POST | List all sessions (GET); create a new session (POST) |
+| `GET /api/sessions/running` | GET | List currently running (non-idle) sessions |
+| `GET /api/sessions/{id}` | GET | Get session detail |
+| `PATCH /api/sessions/{id}` | PATCH | Update session metadata (name, archived, beads_issue, …) |
+| `DELETE /api/sessions/{id}` | DELETE | Delete (archive) a session |
+| `GET /api/sessions/{id}/events` | GET | Load persisted event log for a session (REST fallback; the primary live channel is the WebSocket below) |
+| `/api/sessions/{id}/ws` | WebSocket | Per-session streaming WebSocket — see [`docs/devel/websockets/`](websockets/) |
+| `/api/sessions/{id}/user-data` | GET, PUT | Per-session structured user-data attributes |
+| `/api/sessions/{id}/callback` | GET, POST, DELETE | Get status / generate-rotate / revoke capability-URL token |
+| `/api/sessions/{id}/settings` | GET, PUT | Per-session advanced feature flags |
+| `/api/sessions/{id}/prune` | POST | Prune old events from session log |
+| `/api/sessions/{id}/changes` | GET | Get uncommitted file changes for the session's working dir |
+| `/api/sessions/{id}/images` | GET, POST | List uploaded images (GET); upload a new image (POST, multipart) |
+| `/api/sessions/{id}/images/{imageId}` | GET, DELETE | Get or delete a specific uploaded image |
+| `/api/sessions/{id}/images/from-path` | POST | Upload image by local file-system path (native macOS app — external-stable) |
+| `/api/sessions/{id}/files` | GET, POST | List or upload attached files |
+| `/api/sessions/{id}/files/{fileId}` | GET, DELETE | Get or delete a specific attached file |
+| `/api/sessions/{id}/files/from-path` | POST | Attach file by local path (native macOS app — external-stable) |
+| `/api/sessions/{id}/queue` | GET, POST | List pending prompts in queue (GET); enqueue a prompt (POST) |
+| `/api/sessions/{id}/queue/{msgId}` | GET, DELETE | Get or cancel a specific queued prompt |
+| `/api/sessions/{id}/periodic` | GET, PUT, DELETE | Get or set periodic execution configuration |
+| `/api/sessions/{id}/periodic/{subPath}` | varies | Periodic sub-resource actions (e.g. trigger-now) |
+
+---
+
+### Workspaces
+
+Workspace resource endpoints are identified by `{uuid}`. The older flat `/api/workspace-*` paths are being migrated; see the mid-migration note above.
+
+| Path | Method(s) | Description |
+| ---- | --------- | ----------- |
+| `/api/workspaces` | GET, POST, DELETE | List all workspaces (GET); add (POST) or remove (DELETE, `?dir=`) a workspace |
+| `GET /api/workspaces/{uuid}/effective-runner-config` | GET | Resolve the effective runner config for a workspace |
+| `POST /api/workspaces/{uuid}/restart-acp` | POST | Restart the ACP process for a workspace |
+| `GET /api/workspaces/{uuid}/metadata` | GET | Read workspace `.mittorc` metadata (description, URL, group) |
+| `PUT /api/workspaces/{uuid}/metadata` | PUT | Save workspace `.mittorc` metadata |
+| `GET /api/workspaces/{uuid}/user-data-schema` | GET | Read per-conversation user-data field schema |
+| `PUT /api/workspaces/{uuid}/user-data-schema` | PUT | Save per-conversation user-data field schema |
+| `GET /api/workspaces/{uuid}/processors` | GET | List message processors for a workspace |
+| `PATCH /api/workspaces/{uuid}/processors/{name}` | PATCH | Enable or disable a specific processor (`{"enabled": bool}`) |
+| `GET /api/workspaces/{uuid}/mcp-tools` | GET | List MCP servers for a workspace's ACP agent (`?acp_server=` required) |
+| `POST /api/workspaces/{uuid}/mcp-tools/install` | POST | Install MCP servers via agent's `mcp-install.sh` |
+| `POST /api/workspaces/{uuid}/mcp-tools/remove` | POST | Remove an MCP server via agent's `mcp-remove.sh` |
+| `PUT /api/workspaces/{uuid}/folder-group` | PUT | Set the organizational group label for a workspace folder |
+| `/api/workspace-prompts` | GET, POST, DELETE | List (`?working_dir=`), create (POST body `working_dir`), or delete (`?working_dir=&name=`) workspace prompts |
+| `PATCH /api/workspace-prompts/{name}` | PATCH | Enable or disable a prompt (`?working_dir=`, body `{"enabled": bool}`) |
+
+---
+
+### Configuration & Flags
+
+| Path | Method(s) | Description |
+| ---- | --------- | ----------- |
+| `/api/config` | GET, POST | Get full server configuration (GET); save updated configuration (POST) |
+| `/api/agents/types` | GET | List configured ACP agent types |
+| `/api/agents/scan` | GET | Scan for installed agent definitions |
+| `/api/agents/confirm` | POST | Confirm/register scanned agents |
+| `/api/supported-runners` | GET | List supported runner types (public, no auth) |
+| `/api/runner-defaults` | GET | Get default runner settings |
+| `/api/advanced-flags` | GET, POST | Get or update per-server advanced feature flags |
+| `/api/external-status` | GET | Get status of external integrations (GitHub, etc.) |
+
+---
+
+### Issues (Beads)
+
+Issues follow the RESTful `/api/issues` convention. `working_dir` is always a
+query parameter (`?working_dir=...`); the issue id is a path segment:
+
+| Path | Method | Description |
+| ---- | ------ | ----------- |
+| `/api/issues` | GET | List issues |
+| `/api/issues/stats` | GET | Issue statistics |
+| `/api/issues/{id}` | GET | Show a single issue |
+| `/api/issues` | POST | Create an issue |
+| `/api/issues/{id}` | PATCH | Update issue fields |
+| `/api/issues/{id}` | DELETE | Delete an issue |
+| `/api/issues/{id}/status` | POST | Change issue status (close/reopen/defer/undefer) |
+| `/api/issues/{id}/comments` | POST | Add a comment |
+| `/api/issues/{id}/dependencies` | POST | Manage issue dependencies |
+| `/api/issues/cleanup` | POST | Prune closed issues |
+| `/api/issues/config` | GET, PUT, DELETE | Get, set, or unset beads configuration |
+| `/api/issues/upstream` | GET, PUT | Get or set the upstream task system |
+| `/api/issues/sync` | POST | Sync with upstream (pull/push/sync) |
+
+---
+
+### Auxiliary
+
+| Path | Method(s) | Description |
+| ---- | --------- | ----------- |
+| `/api/aux/improve-prompt` | POST | Rewrite a user prompt using the active agent |
+| `/api/badge-click` | POST | Handle native macOS dock-badge click action (external-stable) |
+
+---
+
+### UI & Files
+
+| Path | Method(s) | Description |
+| ---- | --------- | ----------- |
+| `/api/ui-preferences` | GET, POST | Read or save UI display preferences |
+| `/api/files` | GET | Serve workspace files to the viewer (credentialed; external-stable) |
+| `/api/save-file-to-path` | POST | Save content to a local file path (native macOS app — external-stable) |
+| `/api/check-file-exists` | GET | Check whether a local file path exists (native macOS app — external-stable) |
+
+---
+
+### Events & WebSocket
+
+| Path | Protocol | Description |
+| ---- | -------- | ----------- |
+| `/api/events` | WebSocket | Global session-lifecycle event stream (session created/archived/updated) — see [`docs/devel/websockets/`](websockets/) |
+| `/api/sessions/{id}/ws` | WebSocket | Per-session streaming channel (agent chunks, tool calls, status) — see [`docs/devel/websockets/`](websockets/) |
 
 ### Session Metadata Fields
 
@@ -301,3 +416,43 @@ flowchart LR
 - **Sequence tracking via `lastKnownSeqRef`** (not localStorage or React state alone)
 - **Three-tier deduplication**: Server-side `lastSentSeq` + client-side seq tracker + content merge
 - **Server authority**: When client and server disagree, the server always wins
+
+---
+
+## webview.log Staleness While App Hidden (macOS — Expected)
+
+When auditing logs for the macOS app (`cmd/mitto-app`, a WKWebView host), `webview.log` frequently shows long stretches with no new output while `mitto.log` and `access.log` continue to advance. This is **expected behavior**, not a logging defect.
+
+### Symptom
+
+`webview.log` (WKWebView JS console output bridged to a native file) stops advancing for minutes or hours, creating apparent gaps in frontend observability. Backend logs keep flowing normally during the same window.
+
+### Root Cause (Confirmed)
+
+When the macOS app is hidden or backgrounded, WKWebView throttles and then fully suspends JS execution — including timers and `console.*` emission. The native console→file bridge receives nothing to write, so `webview.log` stops advancing. The suspension follows a two-phase pattern:
+
+- **Throttle phase** (~2–3 min): output trickles after the `"App hidden, tracking time"` log marker
+- **Suspend phase**: output stops entirely; console output produced while suspended is **dropped, not buffered**
+
+### Recovery
+
+Resumption is marked by the line:
+
+```
+[macOS] App became active, triggering staggered reconnect and sync
+```
+
+Logging restarts on activation. Sync recovers via seq-aligned `load_events`, with no data loss and no zombie sessions. Overnight or multi-hour gaps are simply long hidden/sleep periods.
+
+### Guidance for Log Audits
+
+Treat `webview.log` staleness during hidden periods as expected. To distinguish expected gaps from genuine defects:
+
+- **Expected**: staleness is preceded by `"App hidden, tracking time"` and followed by `"App became active, triggering staggered reconnect and sync"`
+- **Genuine defect**: staleness occurs **without** a preceding `"App hidden"` marker, or while the app is demonstrably active in the foreground
+
+### Cross-References
+
+- `.augment/rules/09-macos-app.md` — native WKWebView bridge and console capture
+- `.augment/rules/23-web-frontend-mobile.md` — visibility change handling, wake resync
+- `websockets/synchronization.md` — seq-aligned `load_events` and reconnection flow

@@ -1,6 +1,6 @@
 icon: list
 name: Create spec
-menus: prompts
+menus: prompts, !promptsPeriodic
 description: Interactively build a developer-ready specification through guided questions
 group: Planning
 backgroundColor: '#FFECB3'
@@ -56,7 +56,7 @@ prompt: |
   Before saving the spec to a file, present it in a textbox for the user to review and edit:
 
   ```
-  mitto_ui_textbox(self_id: "@mitto:session_id",
+  mitto_ui_textbox(self_id: "{{ .Session.ID }}",
     title: "Review Specification — edit before saving",
     text: "<generated-spec-markdown>",
     result: "edited_text")
@@ -72,10 +72,10 @@ prompt: |
 
   1. Check for `specs/` or `spec/` folder
   2. Multiple candidates: **With Mitto UI**: `mitto_ui_options` to select. **Without**: list and ask.
-  3. No folder exists: **With Mitto UI**: `mitto_ui_options(self_id: "@mitto:session_id", ...)` to create `specs/`. **Without**: ask permission.
+  3. No folder exists: **With Mitto UI**: `mitto_ui_options(self_id: "{{ .Session.ID }}", ...)` to create `specs/`. **Without**: ask permission.
   4. **With Mitto UI**: Use `mitto_ui_form` to confirm the file name and location:
      ```
-     mitto_ui_form(self_id: "@mitto:session_id", title: "Save Specification", html: "
+     mitto_ui_form(self_id: "{{ .Session.ID }}", title: "Save Specification", html: "
        <label for='directory'>Directory:</label>
        <input type='text' name='directory' id='directory' value='<detected-dir>' placeholder='specs/'>
        <label for='filename'>File name:</label>

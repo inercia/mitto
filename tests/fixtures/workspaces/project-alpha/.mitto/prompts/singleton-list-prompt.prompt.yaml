@@ -1,0 +1,6 @@
+name: Singleton List Review
+description: Singleton prompt for the beads issue list (UI test — menus beadsList, singleton)
+menus: beadsList
+singleton: true
+prompt: |
+  Review the current beads issue list as a singleton conversation.

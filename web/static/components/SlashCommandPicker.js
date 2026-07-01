@@ -114,7 +114,9 @@ export function SlashCommandPicker({
       <div
         class="slash-picker-header px-3 py-2 border-b border-mitto-border-1 flex items-center justify-between"
       >
-        <span class="text-xs font-medium text-mitto-text-muted uppercase tracking-wide">
+        <span
+          class="text-xs font-medium text-mitto-text-muted uppercase tracking-wide"
+        >
           Commands ${filter ? `(/${filter})` : ""}
         </span>
         <span class="text-xs text-mitto-text-muted">

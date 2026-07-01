@@ -38,3 +38,21 @@ export function wsUrl(path) {
   }
   return `${protocol}//${window.location.host}${prefix}${path}`;
 }
+
+/**
+ * Extract a human-readable error message from a parsed API response body.
+ * Handles the canonical JSON error envelope ({"error":{"code","message"}}),
+ * a legacy flat-string error ({"error":"..."}), a top-level {"message":"..."},
+ * and falls back to the provided default.
+ * @param {*} data - The parsed response body (object, or anything).
+ * @param {string} fallback - Message to use when none can be extracted.
+ * @returns {string} The extracted message or the fallback.
+ */
+export function errorMessageFromData(data, fallback) {
+  return (
+    data?.error?.message ||
+    (typeof data?.error === "string" ? data.error : undefined) ||
+    data?.message ||
+    fallback
+  );
+}

@@ -90,49 +90,27 @@ When adding a new field to session state (e.g., `periodic_enabled`), **three pla
 
 ## Settings Dialog Patterns
 
-### State After Save
-
-When saving settings that affect external state, update local state immediately after save:
-
-```javascript
-const handleSave = async () => {
-  await fetch("/api/config", { method: "POST", body: JSON.stringify(settings) });
-  const statusRes = await fetch("/api/external-status");
-  const { enabled, port } = await statusRes.json();
-  setCurrentExternalPort(port);
-};
-```
-
-### Config Readonly Mode
-
-Some deployments use file-based config that shouldn't be modified via UI:
-
-```javascript
-const [configReadonly, setConfigReadonly] = useState(false);
-if (configReadonly) return; // Don't open settings dialog
-```
+When saving settings that affect external state, update local state immediately after (e.g., re-fetch port/status). Some deployments use file-based config with `configReadonly` flag — skip settings dialog if true.
 
 ## Per-Tab Active Conversation State
 
-**Pattern**: Each filter tab (Conversations, Periodic, Archived) remembers its own last-focused conversation separately.
+Each filter tab (Conversations, Periodic, Archived) remembers its own last-focused conversation. Storage helpers: `getLastActiveSessionIdForTab(tab)` / `setLastActiveSessionIdForTab(tab, id)` in `storage.js`.
 
-**Storage helpers** (`web/static/utils/storage.js`):
+**Recording**: In `App` effect, compute tab via `getFilterTabForSession()`, record with guard ref to avoid redundant writes during streaming.
+
+**Restoring**: Only in click handler (`SessionList.handleFilterTabChange`), restore if session still exists and belongs to tab. Programmatic tab changes (e.g., unarchive) skip restoration to avoid races.
+
+## Per-Folder Loading State
+
+**Pattern**: When creating a new conversation, scope the loading spinner to a specific `workingDir` rather than showing a global spinner. This prevents UX confusion when multiple folders have pending operations.
+
+**Implementation**: Store loading state as a map keyed by `workingDir`:
 ```javascript
-getLastActiveSessionIdForTab(tab)    // key: "mitto_last_session_id_<tab>"
-setLastActiveSessionIdForTab(tab, id)
+const [newConversationLoading, setNewConversationLoading] = useState({}); // { workingDir: true }
+const isLoadingForFolder = newConversationLoading[workingDir];
 ```
 
-**Recording** (in `App` effect in `app.js`):
-- When `activeSessionId` changes, compute the tab via `getFilterTabForSession(session)`
-- Record the conversation under that tab using `setLastActiveSessionIdForTab(tab, id)`
-- Use a guard ref `(prevTab, prevSession)` to avoid redundant localStorage writes during streaming re-renders
-
-**Restoring** (in `SessionList.handleFilterTabChange` click handler):
-- On user tab click, fetch the last-focused conversation for that tab via `getLastActiveSessionIdForTab(tab)`
-- Only restore if the session still exists AND still belongs to that tab (categories can change: archived → unarchived)
-- Programmatic tab changes (e.g., unarchive which explicitly selects a session) skip restoration — only user clicks trigger restore
-
-**Design rationale**: Restore logic lives *only* in the user-click handler (not the global filter-change event) to avoid races with programmatic tab switches that have their own session selection logic.
+**Usage**: Only show spinner in the folder's section when `newConversationLoading[workingDir] === true`. Clear the flag per-folder after the session response arrives.
 
 ## Cross-Workspace Child Sessions: Folder Group Key
 

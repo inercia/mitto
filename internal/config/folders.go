@@ -13,6 +13,14 @@ import (
 	"github.com/inercia/mitto/internal/fileutil"
 )
 
+// ShortcutButton describes a single shortcut button shown in a section toolbar.
+// Icon is an optional PROMPT_ICONS key (e.g. "lightning"); Prompt is the name
+// of the workspace prompt to run when the button is clicked.
+type ShortcutButton struct {
+	Icon   string `json:"icon" yaml:"icon"`
+	Prompt string `json:"prompt" yaml:"prompt"`
+}
+
 // FolderSettings holds folder-level settings shared by all workspaces that
 // operate on the same working directory. folders.json is the AUTHORITATIVE store
 // for these values: they live here once per folder rather than being repeated on
@@ -46,14 +54,27 @@ type FolderSettings struct {
 	// workspace), so they are merged back on every workspace-driven save by
 	// preserveFolderNativeFields.
 	Beads *BeadsFolderSettings `json:"beads,omitempty" yaml:"beads,omitempty"`
+	// Shortcuts holds per-section configurable shortcut buttons, keyed by section
+	// ID (e.g. "tasksList") so new sections need no schema change. Folder-native:
+	// preserved across workspace-driven saves by preserveFolderNativeFields.
+	Shortcuts map[string][]ShortcutButton `json:"shortcuts,omitempty" yaml:"shortcuts,omitempty"`
 }
 
 // BeadsFolderSettings holds folder-native beads integration settings.
 type BeadsFolderSettings struct {
 	// Upstream selects the external task system beads syncs with. One of
-	// "jira", "github", "gitlab", or "linear". An empty value (or the absence of the
-	// Beads block) means no upstream is configured ("none").
+	// "jira", "github", "gitlab", "linear", or "prompts". An empty value (or the
+	// absence of the Beads block) means no upstream is configured ("none").
 	Upstream string `json:"upstream,omitempty" yaml:"upstream,omitempty"`
+	// PullPrompt is the name of the workspace prompt to run for a pull operation.
+	// Only meaningful when Upstream == "prompts".
+	PullPrompt string `json:"pullPrompt,omitempty" yaml:"pullPrompt,omitempty"`
+	// PushPrompt is the name of the workspace prompt to run for a push operation.
+	// Only meaningful when Upstream == "prompts".
+	PushPrompt string `json:"pushPrompt,omitempty" yaml:"pushPrompt,omitempty"`
+	// SyncPrompt is the name of the workspace prompt to run for a sync operation.
+	// Only meaningful when Upstream == "prompts".
+	SyncPrompt string `json:"syncPrompt,omitempty" yaml:"syncPrompt,omitempty"`
 }
 
 // FoldersFile is the on-disk representation of folders.json. It maps a working
@@ -304,14 +325,30 @@ func beadsEqual(a, b *BeadsFolderSettings) bool {
 	if a == nil || b == nil {
 		return false
 	}
-	return a.Upstream == b.Upstream
+	return a.Upstream == b.Upstream &&
+		a.PullPrompt == b.PullPrompt &&
+		a.PushPrompt == b.PushPrompt &&
+		a.SyncPrompt == b.SyncPrompt
 }
 
 // folderSettingsEmpty reports whether a FolderSettings carries no information
 // and can therefore be dropped from folders.json.
 func folderSettingsEmpty(fs FolderSettings) bool {
-	return fs.Name == "" && fs.Color == "" && fs.Code == "" && fs.Group == "" &&
-		len(fs.AutoChildren) == 0 && (fs.Beads == nil || fs.Beads.Upstream == "")
+	if fs.Name != "" || fs.Color != "" || fs.Code != "" || fs.Group != "" {
+		return false
+	}
+	if len(fs.AutoChildren) > 0 {
+		return false
+	}
+	if fs.Beads != nil && fs.Beads.Upstream != "" {
+		return false
+	}
+	for _, buttons := range fs.Shortcuts {
+		if len(buttons) > 0 {
+			return false
+		}
+	}
+	return true
 }
 
 // preserveFolderNativeFields merges folder-native settings (those not derived
@@ -335,14 +372,30 @@ func preserveFolderNativeFields(workspaces []WorkspaceSettings, folders map[stri
 	}
 	out := folders
 	for wd, ex := range existing {
-		if ex.Beads == nil || ex.Beads.Upstream == "" || !valid[wd] {
+		if !valid[wd] {
+			continue
+		}
+		hasBeads := ex.Beads != nil && ex.Beads.Upstream != ""
+		hasShortcuts := false
+		for _, buttons := range ex.Shortcuts {
+			if len(buttons) > 0 {
+				hasShortcuts = true
+				break
+			}
+		}
+		if !hasBeads && !hasShortcuts {
 			continue
 		}
 		if out == nil {
 			out = map[string]FolderSettings{}
 		}
 		fs := out[wd]
-		fs.Beads = ex.Beads
+		if hasBeads {
+			fs.Beads = ex.Beads
+		}
+		if hasShortcuts {
+			fs.Shortcuts = ex.Shortcuts
+		}
 		out[wd] = fs
 	}
 	return out
@@ -374,6 +427,34 @@ func SetFolderBeadsUpstream(workingDir, upstream string) error {
 	return SaveFolders(folders)
 }
 
+// SetFolderBeadsPromptUpstream sets the beads upstream to "prompts" and
+// persists the three configured prompt names to folders.json. Empty prompt names
+// are allowed (the corresponding operation is simply unconfigured). This is a
+// folder-native field, preserved across workspace-driven saves by
+// preserveFolderNativeFields.
+func SetFolderBeadsPromptUpstream(workingDir, pull, push, sync string) error {
+	folders, err := LoadFolders()
+	if err != nil {
+		return err
+	}
+	if folders == nil {
+		folders = map[string]FolderSettings{}
+	}
+	fs := folders[workingDir]
+	fs.Beads = &BeadsFolderSettings{
+		Upstream:   "prompts",
+		PullPrompt: pull,
+		PushPrompt: push,
+		SyncPrompt: sync,
+	}
+	if folderSettingsEmpty(fs) {
+		delete(folders, workingDir)
+	} else {
+		folders[workingDir] = fs
+	}
+	return SaveFolders(folders)
+}
+
 // FolderBeadsUpstream returns the configured beads upstream for a folder, or
 // "" if none is set or folders.json cannot be read.
 func FolderBeadsUpstream(workingDir string) string {
@@ -386,4 +467,63 @@ func FolderBeadsUpstream(workingDir string) string {
 		return ""
 	}
 	return fs.Beads.Upstream
+}
+
+// FolderBeadsPrompts returns the three configured prompt names for the "prompts"
+// upstream of a folder. Returns empty strings if none are set or folders.json
+// cannot be read.
+func FolderBeadsPrompts(workingDir string) (pull, push, sync string) {
+	folders, err := LoadFolders()
+	if err != nil {
+		return "", "", ""
+	}
+	fs, ok := folders[workingDir]
+	if !ok || fs.Beads == nil {
+		return "", "", ""
+	}
+	return fs.Beads.PullPrompt, fs.Beads.PushPrompt, fs.Beads.SyncPrompt
+}
+
+// FolderShortcuts returns the configured shortcut sections for a folder, or nil.
+func FolderShortcuts(workingDir string) map[string][]ShortcutButton {
+	folders, err := LoadFolders()
+	if err != nil || folders == nil {
+		return nil
+	}
+	fs, ok := folders[workingDir]
+	if !ok {
+		return nil
+	}
+	return fs.Shortcuts
+}
+
+// SetFolderShortcuts persists shortcut sections to folders.json. Empty/absent
+// sections are pruned; if the folder becomes empty its entry is removed.
+func SetFolderShortcuts(workingDir string, sections map[string][]ShortcutButton) error {
+	folders, err := LoadFolders()
+	if err != nil {
+		return err
+	}
+	if folders == nil {
+		folders = map[string]FolderSettings{}
+	}
+	fs := folders[workingDir]
+	// Prune sections with no buttons.
+	cleaned := map[string][]ShortcutButton{}
+	for k, v := range sections {
+		if len(v) > 0 {
+			cleaned[k] = v
+		}
+	}
+	if len(cleaned) == 0 {
+		fs.Shortcuts = nil
+	} else {
+		fs.Shortcuts = cleaned
+	}
+	if folderSettingsEmpty(fs) {
+		delete(folders, workingDir)
+	} else {
+		folders[workingDir] = fs
+	}
+	return SaveFolders(folders)
 }

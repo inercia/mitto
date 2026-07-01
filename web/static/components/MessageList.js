@@ -2,10 +2,11 @@
 // Renders the scrollable messages area: empty state, reversed message list with
 // date separators and retry buttons, load-more controls, infinite-scroll sentinel,
 // and the scroll-to-bottom floating button.
-const { html, Fragment } = window.preact;
+const { html, Fragment, useMemo, useState, useEffect } = window.preact;
 
 import { Message } from "./Message.js";
 import { SpinnerIcon, ArrowDownIcon, SettingsIcon } from "./Icons.js";
+import { buildRetryTargets, messageKey } from "../lib.js";
 
 /**
  * @param {Array}    displayMessages   - Coalesced messages to render
@@ -14,6 +15,8 @@ import { SpinnerIcon, ArrowDownIcon, SettingsIcon } from "./Icons.js";
  * @param {boolean}  hasReachedLimit
  * @param {boolean}  isLoadingMore
  * @param {boolean}  isStreaming
+ * @param {object}   agentWorking      - Transient "agent is still working" heartbeat
+ *                                       ({ idleMs, toolTitle, receivedAt }) or null
  * @param {Function} onLoadMore
  * @param {Function} onScrollToBottom
  * @param {boolean}  isUserAtBottom
@@ -35,6 +38,7 @@ export function MessageList({
   hasReachedLimit,
   isLoadingMore,
   isStreaming,
+  agentWorking,
   onLoadMore,
   onScrollToBottom,
   isUserAtBottom,
@@ -49,6 +53,113 @@ export function MessageList({
   workspaces,
   messagesContainerRef,
 }) {
+  // Tick every second while the "agent is still working" heartbeat is visible, to
+  // update the mm:ss timer and to re-evaluate staleness (auto-hide after 25s with
+  // no new heartbeat). The interval is cleared whenever streaming stops or there's
+  // no heartbeat to show, so it never runs needlessly in the background.
+  const [workingNow, setWorkingNow] = useState(Date.now());
+  useEffect(() => {
+    if (!isStreaming || !agentWorking) return undefined;
+    const interval = setInterval(() => setWorkingNow(Date.now()), 1000);
+    return () => clearInterval(interval);
+  }, [isStreaming, agentWorking]);
+
+  const showAgentWorking =
+    isStreaming && agentWorking && workingNow - agentWorking.receivedAt < 25000;
+
+  const agentWorkingChip = showAgentWorking
+    ? (() => {
+        const totalSeconds = Math.floor(
+          (agentWorking.idleMs + (workingNow - agentWorking.receivedAt)) / 1000,
+        );
+        const mm = String(Math.floor(totalSeconds / 60)).padStart(2, "0");
+        const ss = String(totalSeconds % 60).padStart(2, "0");
+        return html`
+          <div key="agent-working-chip" class="flex justify-center mb-1">
+            <div
+              class="text-xs text-mitto-text-muted flex items-center gap-2 bg-mitto-surface-2 px-3 py-1.5 rounded-lg opacity-70"
+            >
+              <span class="loading loading-spinner w-3 h-3"></span>
+              <span
+                >Working${agentWorking.toolTitle
+                  ? ` — ${agentWorking.toolTitle}`
+                  : ""}… (${mm}:${ss})</span
+              >
+            </div>
+          </div>
+        `;
+      })()
+    : null;
+
+  // Memoize the reversed/flatMapped render list. Recomputes only when the
+  // active session's messages, streaming state, or retry callback change —
+  // not on every unrelated re-render (e.g. background-session streaming ticks).
+  const renderedMessages = useMemo(() => {
+    // Precompute retry targets in one forward pass (O(n)) instead of the
+    // previous O(n·m) backward scan per error message.
+    const retryTargets = buildRetryTargets(displayMessages);
+
+    return [...displayMessages].reverse().flatMap((msg, i, arr) => {
+      // i === 0 is the newest message (column-reverse layout)
+      const origIdx = arr.length - 1 - i;
+
+      let retryHandler = undefined;
+      if (msg.role === "error") {
+        const target = retryTargets.get(origIdx);
+        if (target) {
+          const { text, images } = target;
+          retryHandler = () => onRetry(text, images);
+        }
+      }
+
+      const key = messageKey(msg);
+
+      let dateSeparator = null;
+      if (msg.timestamp) {
+        const msgDate = new Date(msg.timestamp).toDateString();
+        const olderMsg = arr[i + 1];
+        const olderDate = olderMsg?.timestamp
+          ? new Date(olderMsg.timestamp).toDateString()
+          : null;
+        if (!olderMsg || msgDate !== olderDate) {
+          const now = new Date();
+          const yesterday = new Date(now);
+          yesterday.setDate(yesterday.getDate() - 1);
+          let label;
+          const d = new Date(msg.timestamp);
+          if (d.toDateString() === now.toDateString()) {
+            label = "Today";
+          } else if (d.toDateString() === yesterday.toDateString()) {
+            label = "Yesterday";
+          } else {
+            label = d.toLocaleDateString([], {
+              month: "short",
+              day: "numeric",
+              year:
+                d.getFullYear() !== now.getFullYear() ? "numeric" : undefined,
+            });
+          }
+          dateSeparator = html`
+            <div key=${"sep-" + key} class="divider date-separator">
+              ${label}
+            </div>
+          `;
+        }
+      }
+
+      const msgEl = html`
+        <${Message}
+          key=${key}
+          message=${msg}
+          isLast=${i === 0}
+          isStreaming=${isStreaming}
+          onRetry=${retryHandler}
+        />
+      `;
+      return dateSeparator ? [dateSeparator, msgEl] : [msgEl];
+    });
+  }, [displayMessages, isStreaming, onRetry]);
+
   return html`
     <${Fragment}>
       <!-- Messages (scrollable container with normal scroll) -->
@@ -56,199 +167,160 @@ export function MessageList({
         ref=${messagesContainerRef}
         class="absolute inset-0 overflow-y-auto scroll-smooth p-4 messages-container-reverse"
       >
-        ${swipeDirection &&
-        html`
-          <div
-            key=${`flash-${activeSessionId}`}
-            class="swipe-flash swipe-flash-${swipeDirection}"
-          />
-        `}
-        ${swipeArrow &&
-        html`
-          <div
-            key=${`arrow-${activeSessionId}-${swipeArrow}`}
-            class="swipe-arrow-indicator"
-          >
-            <div class="swipe-arrow-indicator__content">
-              <span class="swipe-arrow-indicator__arrow"
-                >${swipeArrow === "left" ? "→" : "←"}</span
-              >
+        ${
+          swipeDirection &&
+          html`
+            <div
+              key=${`flash-${activeSessionId}`}
+              class="swipe-flash swipe-flash-${swipeDirection}"
+            />
+          `
+        }
+        ${
+          swipeArrow &&
+          html`
+            <div
+              key=${`arrow-${activeSessionId}-${swipeArrow}`}
+              class="swipe-arrow-indicator"
+            >
+              <div class="swipe-arrow-indicator__content">
+                <span class="swipe-arrow-indicator__arrow"
+                  >${swipeArrow === "left" ? "→" : "←"}</span
+                >
+              </div>
             </div>
-          </div>
-        `}
+          `
+        }
         <div
           key=${activeSessionId}
-          class="max-w-2xl mx-auto flex flex-col-reverse ${swipeDirection
-            ? `swipe-slide-${swipeDirection}`
-            : ""}"
+          class="max-w-2xl mx-auto flex flex-col-reverse ${
+            swipeDirection ? `swipe-slide-${swipeDirection}` : ""
+          }"
         >
-          ${messages.length === 0 &&
-          !hasMoreMessages &&
-          html`
-            <div class="hero h-full">
-              <div class="hero-content">
-              <div class="text-center text-mitto-text-muted">
-                <img src="./favicon.png" alt="Mitto" class="w-24 h-24 mb-6 opacity-30 mx-auto" />
-                <p class="text-2xl font-medium text-mitto-text-secondary mb-4">
-                  Welcome to Mitto
-                </p>
-                ${workspaces.length === 0
-                  ? html`
-                      <p class="text-base text-mitto-text-muted max-w-md">
-                        Get started by creating a workspace in Settings
-                        (<span class="inline-block align-middle">
-                          <${SettingsIcon} className="w-5 h-5 inline" />
-                        </span>
-                        icon in the sidebar)
-                      </p>
-                    `
-                  : activeSessionId
-                    ? html`
-                        <p class="text-base text-mitto-text-muted">
-                          Type a message to start chatting with the AI agent
-                        </p>
-                      `
-                    : html`
-                        <div class="text-base text-mitto-text-muted max-w-md">
-                          <p>
-                            Create a new conversation using the
-                            <span
-                              class="inline-flex items-center justify-center w-6 h-6 rounded bg-primary text-primary-content text-sm font-bold mx-1"
-                              >+</span
-                            >
-                            button in the sidebar
-                          </p>
-                          ${workspaces.length > 1
-                            ? html`
-                                <p class="text-sm text-mitto-text-muted mt-3">
-                                  You'll be able to choose which workspace
-                                  to use
-                                </p>
-                              `
-                            : ""}
-                        </div>
-                      `}
-                ${!connected &&
-                html`
-                  <p class="text-sm mt-6 text-mitto-warning">
-                    Connecting to server...
-                  </p>
-                `}
-                ${connected &&
-                activeSessionId &&
-                sessionInfo &&
-                !sessionInfo.acp_ready &&
-                !sessionInfo.archived &&
-                html`
-                  <p
-                    class="text-sm mt-6 text-mitto-warning flex items-center gap-2"
-                  >
-                    <span class="loading loading-spinner w-3 h-3 text-yellow-500"></span>
-                    Connecting to AI agent...
-                  </p>
-                `}
-              </div>
-              </div>
-            </div>
-          `}
-          ${[...displayMessages]
-            .reverse()
-            .flatMap((msg, i, arr) => {
-              let retryHandler = undefined;
-              if (msg.role === "error") {
-                const origIdx = arr.length - 1 - i;
-                for (let j = origIdx - 1; j >= 0; j--) {
-                  const prev = displayMessages[j];
-                  if (prev.role === "user" && prev.text) {
-                    const retryText = prev.text;
-                    const retryImages = prev.images || [];
-                    retryHandler = () => onRetry(retryText, retryImages);
-                    break;
-                  }
-                }
-              }
-
-              const origIdx = arr.length - 1 - i;
-              let dateSeparator = null;
-              if (msg.timestamp) {
-                const msgDate = new Date(msg.timestamp).toDateString();
-                const olderMsg = arr[i + 1];
-                const olderDate = olderMsg?.timestamp
-                  ? new Date(olderMsg.timestamp).toDateString()
-                  : null;
-                if (!olderMsg || msgDate !== olderDate) {
-                  const now = new Date();
-                  const yesterday = new Date(now);
-                  yesterday.setDate(yesterday.getDate() - 1);
-                  let label;
-                  const d = new Date(msg.timestamp);
-                  if (d.toDateString() === now.toDateString()) {
-                    label = "Today";
-                  } else if (d.toDateString() === yesterday.toDateString()) {
-                    label = "Yesterday";
-                  } else {
-                    label = d.toLocaleDateString([], {
-                      month: "short",
-                      day: "numeric",
-                      year: d.getFullYear() !== now.getFullYear() ? "numeric" : undefined,
-                    });
-                  }
-                  dateSeparator = html`
-                    <div key=${"sep-" + origIdx} class="divider date-separator">
-                      ${label}
-                    </div>
-                  `;
-                }
-              }
-
-              const msgEl = html`
-                <${Message}
-                  key=${msg.timestamp + "-" + origIdx}
-                  message=${msg}
-                  isLast=${i === 0}
-                  isStreaming=${isStreaming}
-                  onRetry=${retryHandler}
-                />
-              `;
-              return dateSeparator ? [dateSeparator, msgEl] : [msgEl];
-            })}
-          ${(hasMoreMessages || hasReachedLimit) &&
-          html`
-            <div class="flex justify-center my-4">
-              ${isLoadingMore
-                ? html`
-                    <div
-                      class="px-4 py-2 text-sm text-mitto-text-muted flex items-center gap-2"
+          ${
+            messages.length === 0 &&
+            !hasMoreMessages &&
+            html`
+              <div class="hero h-full">
+                <div class="hero-content">
+                  <div class="text-center text-mitto-text-muted">
+                    <img
+                      src="./favicon.png"
+                      alt="Mitto"
+                      class="w-24 h-24 mb-6 opacity-30 mx-auto"
+                    />
+                    <p
+                      class="text-2xl font-medium text-mitto-text-secondary mb-4"
                     >
-                      <${SpinnerIcon} className="w-4 h-4" />
-                      <span>Loading earlier messages...</span>
-                    </div>
-                  `
-                : hasReachedLimit
+                      Welcome to Mitto
+                    </p>
+                    ${workspaces.length === 0
+                      ? html`
+                          <p class="text-base text-mitto-text-muted max-w-md">
+                            Get started by creating a workspace in Settings
+                            (<span class="inline-block align-middle">
+                              <${SettingsIcon} className="w-5 h-5 inline" />
+                            </span>
+                            icon in the sidebar)
+                          </p>
+                        `
+                      : activeSessionId
+                        ? html`
+                            <p class="text-base text-mitto-text-muted">
+                              Type a message to start chatting with the AI agent
+                            </p>
+                          `
+                        : html`
+                            <div
+                              class="text-base text-mitto-text-muted max-w-md"
+                            >
+                              <p>
+                                Create a new conversation using the
+                                <span
+                                  class="inline-flex items-center justify-center w-6 h-6 rounded bg-primary text-primary-content text-sm font-bold mx-1"
+                                  >+</span
+                                >
+                                button in the sidebar
+                              </p>
+                              ${workspaces.length > 1
+                                ? html`
+                                    <p
+                                      class="text-sm text-mitto-text-muted mt-3"
+                                    >
+                                      You'll be able to choose which workspace
+                                      to use
+                                    </p>
+                                  `
+                                : ""}
+                            </div>
+                          `}
+                    ${!connected &&
+                    html`
+                      <p class="text-sm mt-6 text-mitto-warning">
+                        Connecting to server...
+                      </p>
+                    `}
+                    ${connected &&
+                    activeSessionId &&
+                    sessionInfo &&
+                    !sessionInfo.acp_ready &&
+                    !sessionInfo.archived &&
+                    html`
+                      <p
+                        class="text-sm mt-6 text-mitto-warning flex items-center gap-2"
+                      >
+                        <span
+                          class="loading loading-spinner w-3 h-3 text-yellow-500"
+                        ></span>
+                        Establishing ACP session...
+                      </p>
+                    `}
+                  </div>
+                </div>
+              </div>
+            `
+          }
+          ${agentWorkingChip}
+          ${renderedMessages}
+          ${
+            (hasMoreMessages || hasReachedLimit) &&
+            html`
+              <div class="flex justify-center my-4">
+                ${isLoadingMore
                   ? html`
                       <div
                         class="px-4 py-2 text-sm text-mitto-text-muted flex items-center gap-2"
-                        data-testid="limit-reached-indicator"
                       >
-                        <span>📚</span>
-                        <span
-                          >Message limit reached (${messages.length}
-                          messages loaded)</span
-                        >
+                        <${SpinnerIcon} className="w-4 h-4" />
+                        <span>Loading earlier messages...</span>
                       </div>
                     `
-                  : html`
-                      <button
-                        onClick=${onLoadMore}
-                        class="btn btn-ghost btn-sm text-mitto-text-muted"
-                        data-testid="load-more-button"
-                      >
-                        <span>↑</span>
-                        <span>Load earlier messages...</span>
-                      </button>
-                    `}
-            </div>
-          `}
+                  : hasReachedLimit
+                    ? html`
+                        <div
+                          class="px-4 py-2 text-sm text-mitto-text-muted flex items-center gap-2"
+                          data-testid="limit-reached-indicator"
+                        >
+                          <span>📚</span>
+                          <span
+                            >Message limit reached (${messages.length} messages
+                            loaded)</span
+                          >
+                        </div>
+                      `
+                    : html`
+                        <button
+                          onClick=${onLoadMore}
+                          class="btn btn-ghost btn-sm text-mitto-text-muted"
+                          data-testid="load-more-button"
+                        >
+                          <span>↑</span>
+                          <span>Load earlier messages...</span>
+                        </button>
+                      `}
+              </div>
+            `
+          }
           ${html`
             <div ref=${sentinelRef} class="h-1 w-full" aria-hidden="true" />
           `}
@@ -257,25 +329,30 @@ export function MessageList({
       <!-- End of scrollable messages container -->
 
       <!-- Scroll to bottom button -->
-      ${(!isUserAtBottom || hasNewMessages) &&
-      messages.length > 0 &&
-      html`
-        <div class="scroll-to-bottom-wrapper">
-          <button
-            onClick=${() => onScrollToBottom(true)}
-            class="btn btn-circle scroll-to-bottom-btn ${hasNewMessages
-              ? "has-new"
-              : ""}"
-            title="Scroll to bottom"
-          >
-            <${ArrowDownIcon} className="w-5 h-5" />
-            ${hasNewMessages &&
-            html` <span
-              class="new-messages-indicator badge badge-warning badge-xs"
-            ></span> `}
-          </button>
-        </div>
-      `}
+      ${
+        (!isUserAtBottom || hasNewMessages) &&
+        messages.length > 0 &&
+        html`
+          <div class="scroll-to-bottom-wrapper">
+            <button
+              onClick=${() => onScrollToBottom(true)}
+              class="btn btn-circle scroll-to-bottom-btn tooltip tooltip-bottom ${hasNewMessages
+                ? "has-new"
+                : ""}"
+              data-tip="Scroll to bottom"
+              aria-label="Scroll to bottom"
+            >
+              <${ArrowDownIcon} className="w-5 h-5" />
+              ${hasNewMessages &&
+              html`
+                <span
+                  class="new-messages-indicator badge badge-warning badge-xs"
+                ></span>
+              `}
+            </button>
+          </div>
+        `
+      }
     </${Fragment}>
   `;
 }

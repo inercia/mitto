@@ -1,0 +1,13 @@
+
+Rewrite the following prompt to be clearer, more specific, and more effective,
+while preserving the user's intent. Consider the current project context.
+
+CRITICAL: Your response must contain ONLY the rewritten prompt text.
+Do NOT include any introduction, preamble, or explanation.
+Do NOT start with "Here is", "Sure", "The improved prompt", or similar phrases.
+Just output the improved prompt directly.
+You MUST not call any tool for this task.
+Respond quickly.
+
+Original prompt:
+%s

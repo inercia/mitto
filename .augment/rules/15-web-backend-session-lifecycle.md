@@ -85,6 +85,10 @@ Limits: 3 restarts/5min, 10 lifetime cap. Circuit breaker (`permanentlyFailed`) 
 
 Death detection (three layers): OS polling (~2s), `conn.Done()` EOF (~seconds), stderr pattern match (immediate). All signal via `processDone` channel.
 
+## Deferred Handshake Retry
+
+When ACP handshake times out transiently, `BackgroundSession.InitializeWithACP()` defers retry up to 3 attempts with exponential backoff. The error event is persisted in the session event log (viewable in UI). Retries happen deferred in a separate goroutine to avoid blocking session creation or WebSocket initialization. After 3 attempts, the session enters error state with guidance.
+
 ## MCP Server Lifecycle
 
 | Event               | MCP Server Action          |
@@ -128,6 +132,14 @@ Send `session_gone` (NOT generic error — clients stop reconnecting on `session
 ## Periodic Prompt Name Resolution
 
 `PromptName` field selects a named workspace prompt instead of inline text. Resolved at send time via `PromptResolverFunc`. Either `Prompt` or `PromptName` must be set.
+
+### Title Generation from Periodic Prompts
+
+`TriggerTitleGenerationFromPeriodic()` in `BackgroundSession` generates session titles from periodic prompts, skipping the "(pending)" placeholder. Named prompts are resolved to full text before title generation. This applies on first run and on subsequent runs when the prompt changes.
+
+### Auto-Pause on Prompt Resolve Failures
+
+Periodic runner (`PeriodicRunner.maybeRunPrompt()`) auto-pauses the periodic session after `MaxPromptResolveFailures` (default 5) consecutive resolution errors. This prevents endless retry loops when a prompt cannot be resolved (e.g., missing variable, invalid prompt name). The session can be manually resumed via UI.
 
 ## Auto-Resume Guard (Race Condition)
 

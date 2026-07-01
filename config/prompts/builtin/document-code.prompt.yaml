@@ -1,9 +1,11 @@
 icon: edit
 name: Document Code
-menus: prompts
+menus: prompts, !promptsPeriodic
 description: Add inline documentation and comments to the code we just wrote
 group: Documentation
 backgroundColor: '#B39DDB'
+preferredModels:
+  - modelTag: Coding
 prompt: |
   Before adding documentation, read the code we wrote to understand its behavior,
   edge cases, and non-obvious design decisions. Also check the project's existing

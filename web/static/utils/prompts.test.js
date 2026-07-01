@@ -2,11 +2,28 @@
  * Unit tests for prompt menu utility functions
  */
 
+import { jest } from "@jest/globals";
 import {
   promptMenus,
-  promptRequires,
-  menuSatisfiesRequires,
-  MENU_CAPABILITIES,
+  promptMenuExcludes,
+  promptMenuIncludes,
+  isSingletonPrompt,
+  promptPeriodicMode,
+  promptPeriodicIsToggleable,
+  promptPeriodicDefaultOn,
+  promptResolveAsPeriodic,
+  promptParameters,
+  KNOWN_PARAM_TYPES,
+  MENU_PARAM_TYPES,
+  menuSatisfies,
+  collectPromptArguments,
+  getMissingPromptParameters,
+  autofillConversationMenuArgs,
+  isCacheableParam,
+  fetchCachedParamNames,
+  effectiveMissingParams,
+  resolvePromptModelOverride,
+  currentModelName,
 } from "./prompts.js";
 
 // =============================================================================
@@ -61,96 +78,1321 @@ describe("promptMenus", () => {
 });
 
 // =============================================================================
-// promptRequires Tests
+// isSingletonPrompt Tests
 // =============================================================================
 
-describe("promptRequires", () => {
-  test("returns [] when requires field is absent", () => {
-    expect(promptRequires({})).toEqual([]);
+describe("isSingletonPrompt", () => {
+  test("returns true when singleton is true", () => {
+    expect(isSingletonPrompt({ singleton: true })).toBe(true);
   });
 
-  test("returns [] when requires is empty string", () => {
-    expect(promptRequires({ requires: "" })).toEqual([]);
+  test("returns false when singleton is false", () => {
+    expect(isSingletonPrompt({ singleton: false })).toBe(false);
   });
 
-  test("returns single capability from non-empty requires", () => {
-    expect(promptRequires({ requires: "parameters" })).toEqual(["parameters"]);
+  test("returns false when singleton is absent", () => {
+    expect(isSingletonPrompt({})).toBe(false);
   });
 
-  test("returns multiple capabilities when comma-separated", () => {
-    expect(promptRequires({ requires: "parameters, context" })).toEqual([
-      "parameters",
-      "context",
+  test("returns false for null prompt", () => {
+    expect(isSingletonPrompt(null)).toBe(false);
+  });
+});
+
+// =============================================================================
+// promptParameters Tests
+// =============================================================================
+
+describe("promptParameters", () => {
+  test("returns [] when parameters field is absent", () => {
+    expect(promptParameters({})).toEqual([]);
+  });
+
+  test("returns [] when parameters is an empty array", () => {
+    expect(promptParameters({ parameters: [] })).toEqual([]);
+  });
+
+  test("returns the parameters array when non-empty", () => {
+    const params = [{ name: "ISSUE_ID", type: "beadsId" }];
+    expect(promptParameters({ parameters: params })).toEqual(params);
+  });
+
+  test("returns [] for null prompt", () => {
+    expect(promptParameters(null)).toEqual([]);
+  });
+
+  test("returns [] for undefined prompt", () => {
+    expect(promptParameters(undefined)).toEqual([]);
+  });
+
+  test("returns [] when parameters is not an array", () => {
+    expect(promptParameters({ parameters: "beadsId" })).toEqual([]);
+  });
+});
+
+// =============================================================================
+// KNOWN_PARAM_TYPES Tests
+// =============================================================================
+
+describe("KNOWN_PARAM_TYPES", () => {
+  test("includes beadsId", () => {
+    expect(KNOWN_PARAM_TYPES).toContain("beadsId");
+  });
+
+  test("includes beadsTitle", () => {
+    expect(KNOWN_PARAM_TYPES).toContain("beadsTitle");
+  });
+
+  test("includes sessionId", () => {
+    expect(KNOWN_PARAM_TYPES).toContain("sessionId");
+  });
+
+  test("includes workspaceId", () => {
+    expect(KNOWN_PARAM_TYPES).toContain("workspaceId");
+  });
+
+  test("includes workspaceFolder", () => {
+    expect(KNOWN_PARAM_TYPES).toContain("workspaceFolder");
+  });
+
+  test("includes text", () => {
+    expect(KNOWN_PARAM_TYPES).toContain("text");
+  });
+
+  test("includes boolean", () => {
+    expect(KNOWN_PARAM_TYPES).toContain("boolean");
+  });
+});
+
+// =============================================================================
+// MENU_PARAM_TYPES Tests
+// =============================================================================
+
+describe("MENU_PARAM_TYPES", () => {
+  test("prompts menu provides no types", () => {
+    expect(MENU_PARAM_TYPES.prompts).toEqual([]);
+  });
+
+  test("promptsPeriodic menu provides no types", () => {
+    expect(MENU_PARAM_TYPES.promptsPeriodic).toEqual([]);
+  });
+
+  test("conversation menu provides no types", () => {
+    expect(MENU_PARAM_TYPES.conversation).toEqual([]);
+  });
+
+  test("beadsIssues menu provides beadsId and beadsTitle", () => {
+    expect(MENU_PARAM_TYPES.beadsIssues).toContain("beadsId");
+    expect(MENU_PARAM_TYPES.beadsIssues).toContain("beadsTitle");
+  });
+
+  test("beadsList menu provides no types", () => {
+    expect(MENU_PARAM_TYPES.beadsList).toEqual([]);
+  });
+});
+
+// =============================================================================
+// menuSatisfies Tests
+// =============================================================================
+
+describe("menuSatisfies", () => {
+  test("prompt with no parameters is satisfied by any known menu", () => {
+    expect(menuSatisfies({}, "prompts")).toBe(true);
+    expect(menuSatisfies({}, "conversation")).toBe(true);
+    expect(menuSatisfies({}, "beadsIssues")).toBe(true);
+    expect(menuSatisfies({}, "beadsList")).toBe(true);
+  });
+
+  test("prompt with no parameters is satisfied by an unknown menu", () => {
+    expect(menuSatisfies({}, "unknownMenu")).toBe(true);
+  });
+
+  test("beadsId prompt is satisfied by beadsIssues menu", () => {
+    const prompt = { parameters: [{ name: "ISSUE_ID", type: "beadsId" }] };
+    expect(menuSatisfies(prompt, "beadsIssues")).toBe(true);
+  });
+
+  test("beadsId prompt is NOT satisfied by prompts menu", () => {
+    const prompt = { parameters: [{ name: "ISSUE_ID", type: "beadsId" }] };
+    expect(menuSatisfies(prompt, "prompts")).toBe(false);
+  });
+
+  test("beadsId prompt is NOT satisfied by conversation menu", () => {
+    const prompt = { parameters: [{ name: "ISSUE_ID", type: "beadsId" }] };
+    expect(menuSatisfies(prompt, "conversation")).toBe(false);
+  });
+
+  test("beadsId prompt is NOT satisfied by an unknown menu", () => {
+    const prompt = { parameters: [{ name: "ISSUE_ID", type: "beadsId" }] };
+    expect(menuSatisfies(prompt, "unknownMenu")).toBe(false);
+  });
+
+  test("prompt requiring beadsId and beadsTitle is satisfied by beadsIssues", () => {
+    const prompt = {
+      parameters: [
+        { name: "ISSUE_ID", type: "beadsId" },
+        { name: "TITLE", type: "beadsTitle" },
+      ],
+    };
+    expect(menuSatisfies(prompt, "beadsIssues")).toBe(true);
+  });
+
+  test("prompt requiring beadsId and beadsTitle is NOT satisfied by prompts", () => {
+    const prompt = {
+      parameters: [
+        { name: "ISSUE_ID", type: "beadsId" },
+        { name: "TITLE", type: "beadsTitle" },
+      ],
+    };
+    expect(menuSatisfies(prompt, "prompts")).toBe(false);
+  });
+
+  // --- Optional parameter (required: false) gating tests ---
+
+  test("optional beadsId param (required: false) is satisfied by beadsIssues menu", () => {
+    const prompt = {
+      parameters: [{ name: "ISSUE_ID", type: "beadsId", required: false }],
+    };
+    expect(menuSatisfies(prompt, "beadsIssues")).toBe(true);
+  });
+
+  test("optional beadsId param (required: false) is ALSO satisfied by conversation menu", () => {
+    const prompt = {
+      parameters: [{ name: "ISSUE_ID", type: "beadsId", required: false }],
+    };
+    expect(menuSatisfies(prompt, "conversation")).toBe(true);
+  });
+
+  test("optional beadsId param (required: false) is ALSO satisfied by prompts menu", () => {
+    const prompt = {
+      parameters: [{ name: "ISSUE_ID", type: "beadsId", required: false }],
+    };
+    expect(menuSatisfies(prompt, "prompts")).toBe(true);
+  });
+
+  test("required beadsId param (required: true) still gates — NOT satisfied by conversation", () => {
+    const prompt = {
+      parameters: [{ name: "ISSUE_ID", type: "beadsId", required: true }],
+    };
+    expect(menuSatisfies(prompt, "conversation")).toBe(false);
+    expect(menuSatisfies(prompt, "beadsIssues")).toBe(true);
+  });
+
+  test("unset required (no required field) beadsId still gates — NOT satisfied by conversation", () => {
+    const prompt = {
+      parameters: [{ name: "ISSUE_ID", type: "beadsId" }],
+    };
+    expect(menuSatisfies(prompt, "conversation")).toBe(false);
+    expect(menuSatisfies(prompt, "beadsIssues")).toBe(true);
+  });
+
+  test("mixed: required param gates, optional param does not — only the required type determines satisfaction", () => {
+    // required beadsId gates; optional text does not affect gating
+    const prompt = {
+      parameters: [
+        { name: "ISSUE_ID", type: "beadsId", required: true },
+        { name: "EXTRA", type: "text", required: false },
+      ],
+    };
+    // beadsIssues supplies beadsId → satisfies the required gate, optional text ignored
+    expect(menuSatisfies(prompt, "beadsIssues")).toBe(true);
+    // conversation cannot supply beadsId → fails on the required param
+    expect(menuSatisfies(prompt, "conversation")).toBe(false);
+  });
+
+  test("boolean param never gates — satisfied by any menu even when required", () => {
+    const prompt = {
+      parameters: [{ name: "Commit", type: "boolean", required: true }],
+    };
+    expect(menuSatisfies(prompt, "prompts")).toBe(true);
+    expect(menuSatisfies(prompt, "conversation")).toBe(true);
+    expect(menuSatisfies(prompt, "beadsIssues")).toBe(true);
+    expect(menuSatisfies(prompt, "unknownMenu")).toBe(true);
+  });
+
+  test("boolean alongside a required gating param does not relax that gate", () => {
+    const prompt = {
+      parameters: [
+        { name: "ISSUE_ID", type: "beadsId", required: true },
+        { name: "Commit", type: "boolean" },
+      ],
+    };
+    // boolean is satisfied everywhere, but beadsId still gates conversation
+    expect(menuSatisfies(prompt, "beadsIssues")).toBe(true);
+    expect(menuSatisfies(prompt, "conversation")).toBe(false);
+  });
+});
+
+// =============================================================================
+// collectPromptArguments Tests
+// =============================================================================
+
+describe("collectPromptArguments", () => {
+  test("returns empty object for prompt with no parameters", () => {
+    expect(collectPromptArguments({}, { beadsId: "mitto-42" })).toEqual({});
+  });
+
+  test("maps beadsId type to the correct param name", () => {
+    const prompt = { parameters: [{ name: "ISSUE_ID", type: "beadsId" }] };
+    expect(collectPromptArguments(prompt, { beadsId: "mitto-42" })).toEqual({
+      ISSUE_ID: "mitto-42",
+    });
+  });
+
+  test("maps beadsTitle type to the correct param name", () => {
+    const prompt = { parameters: [{ name: "TITLE", type: "beadsTitle" }] };
+    expect(
+      collectPromptArguments(prompt, { beadsTitle: "Fix the bug" }),
+    ).toEqual({ TITLE: "Fix the bug" });
+  });
+
+  test("maps both beadsId and beadsTitle when both are supplied", () => {
+    const prompt = {
+      parameters: [
+        { name: "ISSUE_ID", type: "beadsId" },
+        { name: "ISSUE_TITLE", type: "beadsTitle" },
+      ],
+    };
+    expect(
+      collectPromptArguments(prompt, {
+        beadsId: "mitto-42",
+        beadsTitle: "Fix the bug",
+      }),
+    ).toEqual({ ISSUE_ID: "mitto-42", ISSUE_TITLE: "Fix the bug" });
+  });
+
+  test("ignores parameter types not present in typeValues", () => {
+    const prompt = {
+      parameters: [
+        { name: "ISSUE_ID", type: "beadsId" },
+        { name: "TITLE", type: "beadsTitle" },
+      ],
+    };
+    // Only beadsId is supplied; beadsTitle is absent
+    expect(collectPromptArguments(prompt, { beadsId: "mitto-42" })).toEqual({
+      ISSUE_ID: "mitto-42",
+    });
+  });
+
+  test("ignores parameter types whose value is null", () => {
+    const prompt = { parameters: [{ name: "ISSUE_ID", type: "beadsId" }] };
+    expect(collectPromptArguments(prompt, { beadsId: null })).toEqual({});
+  });
+
+  test("ignores parameter types whose value is undefined", () => {
+    const prompt = { parameters: [{ name: "ISSUE_ID", type: "beadsId" }] };
+    expect(collectPromptArguments(prompt, { beadsId: undefined })).toEqual({});
+  });
+
+  test("returns empty object when typeValues is empty", () => {
+    const prompt = { parameters: [{ name: "ISSUE_ID", type: "beadsId" }] };
+    expect(collectPromptArguments(prompt, {})).toEqual({});
+  });
+
+  test("optional beadsId param (required: false) still auto-fills when value is provided", () => {
+    const prompt = {
+      parameters: [{ name: "ISSUE_ID", type: "beadsId", required: false }],
+    };
+    expect(collectPromptArguments(prompt, { beadsId: "mitto-42" })).toEqual({
+      ISSUE_ID: "mitto-42",
+    });
+  });
+
+  test("optional beadsId param produces empty result when value is not provided", () => {
+    const prompt = {
+      parameters: [{ name: "ISSUE_ID", type: "beadsId", required: false }],
+    };
+    expect(collectPromptArguments(prompt, {})).toEqual({});
+  });
+});
+
+// =============================================================================
+// autofillConversationMenuArgs Tests
+// =============================================================================
+
+describe("autofillConversationMenuArgs", () => {
+  const childParamPrompt = {
+    parameters: [{ name: "TARGET_CONVERSATION", type: "childSessionId" }],
+  };
+
+  test("returns {} when hostSessionId is missing", () => {
+    expect(autofillConversationMenuArgs(childParamPrompt, "", [])).toEqual({});
+  });
+
+  test("returns {} when prompt has no parameters", () => {
+    expect(autofillConversationMenuArgs({}, "host-1", [])).toEqual({});
+  });
+
+  test("fills a childSessionId param when host has exactly one child", () => {
+    const sessions = [
+      { session_id: "child-1", parent_session_id: "host-1" },
+      { session_id: "other", parent_session_id: "host-2" },
+    ];
+    expect(
+      autofillConversationMenuArgs(childParamPrompt, "host-1", sessions),
+    ).toEqual({ TARGET_CONVERSATION: "child-1" });
+  });
+
+  test("does not fill when host has multiple children", () => {
+    const sessions = [
+      { session_id: "child-1", parent_session_id: "host-1" },
+      { session_id: "child-2", parent_session_id: "host-1" },
+    ];
+    expect(
+      autofillConversationMenuArgs(childParamPrompt, "host-1", sessions),
+    ).toEqual({});
+  });
+
+  test("does not fill when host has no children", () => {
+    const sessions = [{ session_id: "child-1", parent_session_id: "host-2" }];
+    expect(
+      autofillConversationMenuArgs(childParamPrompt, "host-1", sessions),
+    ).toEqual({});
+  });
+
+  test("ignores archived children when counting", () => {
+    const sessions = [
+      { session_id: "child-1", parent_session_id: "host-1" },
+      { session_id: "child-2", parent_session_id: "host-1", archived: true },
+    ];
+    expect(
+      autofillConversationMenuArgs(childParamPrompt, "host-1", sessions),
+    ).toEqual({ TARGET_CONVERSATION: "child-1" });
+  });
+
+  test("does not fill non-childSessionId param types", () => {
+    const prompt = {
+      parameters: [{ name: "TARGET", type: "sessionId" }],
+    };
+    const sessions = [{ session_id: "child-1", parent_session_id: "host-1" }];
+    expect(autofillConversationMenuArgs(prompt, "host-1", sessions)).toEqual(
+      {},
+    );
+  });
+});
+
+// =============================================================================
+// getMissingPromptParameters Tests
+// =============================================================================
+
+describe("getMissingPromptParameters", () => {
+  test("prompt with no parameters returns []", () => {
+    expect(getMissingPromptParameters({}, "beadsIssues")).toEqual([]);
+  });
+
+  test("all parameters auto-filled by menu returns []", () => {
+    const prompt = {
+      parameters: [
+        { name: "ISSUE_ID", type: "beadsId" },
+        { name: "TITLE", type: "beadsTitle" },
+      ],
+    };
+    expect(getMissingPromptParameters(prompt, "beadsIssues")).toEqual([]);
+  });
+
+  test("none auto-filled (text param in prompts menu) returns all params", () => {
+    const params = [{ name: "MSG", type: "text" }];
+    const prompt = { parameters: params };
+    expect(getMissingPromptParameters(prompt, "prompts")).toEqual(params);
+  });
+
+  test("none auto-filled in unknown menu returns all params in declared order", () => {
+    const params = [
+      { name: "ISSUE_ID", type: "beadsId" },
+      { name: "MSG", type: "text" },
+    ];
+    const prompt = { parameters: params };
+    expect(getMissingPromptParameters(prompt, "prompts")).toEqual(params);
+  });
+
+  test("mix of auto-filled and free params returns only free ones in order", () => {
+    const beadsIdParam = { name: "ISSUE_ID", type: "beadsId" };
+    const textParam = { name: "MSG", type: "text" };
+    const prompt = { parameters: [beadsIdParam, textParam] };
+    expect(getMissingPromptParameters(prompt, "beadsIssues")).toEqual([
+      textParam,
     ]);
   });
 
-  test("trims whitespace around each capability name", () => {
-    expect(promptRequires({ requires: " parameters , context " })).toEqual([
-      "parameters",
-      "context",
+  test("unknown parameter type is treated as missing", () => {
+    const param = { name: "FOO", type: "unknownType" };
+    const prompt = { parameters: [param] };
+    expect(getMissingPromptParameters(prompt, "beadsIssues")).toEqual([param]);
+  });
+
+  test("unknown menu value causes all params to be treated as missing", () => {
+    const params = [
+      { name: "ISSUE_ID", type: "beadsId" },
+      { name: "TITLE", type: "beadsTitle" },
+    ];
+    const prompt = { parameters: params };
+    expect(getMissingPromptParameters(prompt, "unknownMenu")).toEqual(params);
+  });
+
+  test("missing menu argument causes all params to be treated as missing", () => {
+    const params = [{ name: "ISSUE_ID", type: "beadsId" }];
+    const prompt = { parameters: params };
+    expect(getMissingPromptParameters(prompt, undefined)).toEqual(params);
+  });
+
+  test("returned objects preserve the required field (required + optional)", () => {
+    const requiredParam = { name: "QUERY", type: "text", required: true };
+    const optionalParam = { name: "NOTES", type: "text" };
+    const prompt = { parameters: [requiredParam, optionalParam] };
+    const result = getMissingPromptParameters(prompt, "prompts");
+    expect(result).toHaveLength(2);
+    expect(result[0]).toBe(requiredParam);
+    expect(result[0].required).toBe(true);
+    expect(result[1]).toBe(optionalParam);
+    expect(result[1].required).toBeUndefined();
+  });
+
+  test("preserves declared parameter order in the result", () => {
+    const p1 = { name: "ALPHA", type: "text" };
+    const p2 = { name: "BETA", type: "sessionId" };
+    const p3 = { name: "GAMMA", type: "workspaceId" };
+    const prompt = { parameters: [p1, p2, p3] };
+    expect(getMissingPromptParameters(prompt, "prompts")).toEqual([p1, p2, p3]);
+  });
+
+  // --- Optional parameter (required: false) missing-param tests ---
+
+  test("optional beadsId param in conversation menu is NOT missing (no form shown)", () => {
+    const prompt = {
+      parameters: [{ name: "ISSUE_ID", type: "beadsId", required: false }],
+    };
+    // conversation cannot supply beadsId, but it's optional → not missing
+    expect(getMissingPromptParameters(prompt, "conversation")).toEqual([]);
+  });
+
+  test("optional beadsId param in beadsIssues menu is NOT missing (auto-filled)", () => {
+    const prompt = {
+      parameters: [{ name: "ISSUE_ID", type: "beadsId", required: false }],
+    };
+    // beadsIssues supplies beadsId and it's optional → also not in missing list
+    expect(getMissingPromptParameters(prompt, "beadsIssues")).toEqual([]);
+  });
+
+  test("required beadsId param in conversation menu IS missing (form shown)", () => {
+    const param = { name: "ISSUE_ID", type: "beadsId", required: true };
+    const prompt = { parameters: [param] };
+    expect(getMissingPromptParameters(prompt, "conversation")).toEqual([param]);
+  });
+
+  test("unset required beadsId param in conversation menu IS missing (form shown)", () => {
+    const param = { name: "ISSUE_ID", type: "beadsId" };
+    const prompt = { parameters: [param] };
+    expect(getMissingPromptParameters(prompt, "conversation")).toEqual([param]);
+  });
+
+  test("mixed: only required unsupplied params appear in missing list", () => {
+    const requiredParam = { name: "ISSUE_ID", type: "beadsId", required: true };
+    const optionalParam = { name: "EXTRA", type: "text", required: false };
+    const prompt = { parameters: [requiredParam, optionalParam] };
+    // prompts menu supplies nothing; required beadsId is missing, optional text is not
+    expect(getMissingPromptParameters(prompt, "prompts")).toEqual([
+      requiredParam,
     ]);
+  });
+
+  test("boolean param is ALWAYS missing (collected via checkbox) in every menu", () => {
+    const param = { name: "Commit", type: "boolean" };
+    const prompt = { parameters: [param] };
+    expect(getMissingPromptParameters(prompt, "prompts")).toEqual([param]);
+    expect(getMissingPromptParameters(prompt, "conversation")).toEqual([param]);
+    expect(getMissingPromptParameters(prompt, "beadsIssues")).toEqual([param]);
+  });
+
+  test("boolean param is collected even when marked required:false", () => {
+    const param = { name: "Commit", type: "boolean", required: false };
+    const prompt = { parameters: [param] };
+    // required:false would normally suppress it, but boolean overrides that
+    expect(getMissingPromptParameters(prompt, "conversation")).toEqual([param]);
+  });
+
+  test("mixed boolean + auto-supplied param: boolean still collected, supplied one excluded", () => {
+    const boolParam = { name: "Commit", type: "boolean" };
+    const issueParam = { name: "ISSUE_ID", type: "beadsId", required: true };
+    const prompt = { parameters: [issueParam, boolParam] };
+    // beadsIssues supplies beadsId → only the boolean remains to be collected
+    expect(getMissingPromptParameters(prompt, "beadsIssues")).toEqual([
+      boolParam,
+    ]);
+  });
+});
+
+// =============================================================================
+// isCacheableParam Tests
+// =============================================================================
+
+describe("isCacheableParam", () => {
+  test("returns true when param has a cache block", () => {
+    expect(isCacheableParam({ name: "X", cache: {} })).toBe(true);
+  });
+
+  test("returns true when cache block has destination+ttl", () => {
+    expect(
+      isCacheableParam({
+        name: "X",
+        cache: { destination: "memory", ttl: "1h" },
+      }),
+    ).toBe(true);
+  });
+
+  test("returns false when param has no cache field", () => {
+    expect(isCacheableParam({ name: "X", type: "string" })).toBe(false);
+  });
+
+  test("returns false when cache is null", () => {
+    expect(isCacheableParam({ name: "X", cache: null })).toBe(false);
+  });
+
+  test("returns false for null param", () => {
+    expect(isCacheableParam(null)).toBe(false);
+  });
+
+  test("returns false for undefined param", () => {
+    expect(isCacheableParam(undefined)).toBe(false);
+  });
+});
+
+// =============================================================================
+// effectiveMissingParams Tests
+// =============================================================================
+
+describe("effectiveMissingParams", () => {
+  const cacheableA = {
+    name: "A",
+    type: "string",
+    cache: { destination: "memory" },
+  };
+  const cacheableB = {
+    name: "B",
+    type: "string",
+    cache: { destination: "memory" },
+  };
+  const nonCacheable = { name: "C", type: "string" };
+
+  test("removes a cacheable param whose name is in the cached Set", () => {
+    const result = effectiveMissingParams(
+      [cacheableA, nonCacheable],
+      new Set(["A"]),
+    );
+    expect(result).toEqual([nonCacheable]);
+  });
+
+  test("keeps a cacheable param whose name is NOT in the cached set", () => {
+    const result = effectiveMissingParams([cacheableA], new Set(["Z"]));
+    expect(result).toEqual([cacheableA]);
+  });
+
+  test("keeps a non-cacheable param even if its name is in the cached set", () => {
+    const result = effectiveMissingParams([nonCacheable], new Set(["C"]));
+    expect(result).toEqual([nonCacheable]);
+  });
+
+  test("accepts an array for cachedNames in addition to a Set", () => {
+    const result = effectiveMissingParams([cacheableA, cacheableB], ["A"]);
+    expect(result).toEqual([cacheableB]);
+  });
+
+  test("accepts empty array for cachedNames — nothing removed", () => {
+    const result = effectiveMissingParams([cacheableA], []);
+    expect(result).toEqual([cacheableA]);
+  });
+
+  test("accepts null cachedNames — treated as empty, nothing removed", () => {
+    const result = effectiveMissingParams([cacheableA], null);
+    expect(result).toEqual([cacheableA]);
+  });
+
+  test("returns empty array when missing is empty", () => {
+    expect(effectiveMissingParams([], new Set(["A"]))).toEqual([]);
+  });
+
+  test("returns empty array when missing is null", () => {
+    expect(effectiveMissingParams(null, new Set(["A"]))).toEqual([]);
+  });
+
+  test("removes all cacheable params when all are cached", () => {
+    const result = effectiveMissingParams(
+      [cacheableA, cacheableB, nonCacheable],
+      new Set(["A", "B"]),
+    );
+    expect(result).toEqual([nonCacheable]);
+  });
+});
+
+// =============================================================================
+// fetchCachedParamNames Tests
+// =============================================================================
+
+describe("fetchCachedParamNames", () => {
+  test("returns Set with cached names on ok response", async () => {
+    const fetchImpl = jest.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ cached: ["A", "B"] }),
+    });
+    const result = await fetchCachedParamNames("sess-1", "my-prompt", {
+      fetchImpl,
+    });
+    expect(result).toEqual(new Set(["A", "B"]));
+  });
+
+  test("passes URL containing /prompt-arg-cache and prompt= to fetchImpl", async () => {
+    const fetchImpl = jest.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ cached: [] }),
+    });
+    await fetchCachedParamNames("sess-1", "my-prompt", { fetchImpl });
+    const calledUrl = fetchImpl.mock.calls[0][0];
+    expect(calledUrl).toContain("/prompt-arg-cache");
+    expect(calledUrl).toContain("prompt=");
+    expect(calledUrl).toContain("my-prompt");
+  });
+
+  test("returns empty Set on non-ok response", async () => {
+    const fetchImpl = jest.fn().mockResolvedValue({ ok: false });
+    const result = await fetchCachedParamNames("sess-1", "my-prompt", {
+      fetchImpl,
+    });
+    expect(result).toEqual(new Set());
+  });
+
+  test("returns empty Set and does not throw when fetchImpl throws", async () => {
+    const fetchImpl = jest.fn().mockRejectedValue(new Error("network error"));
+    const result = await fetchCachedParamNames("sess-1", "my-prompt", {
+      fetchImpl,
+    });
+    expect(result).toEqual(new Set());
+  });
+
+  test("returns empty Set and does NOT call fetchImpl when sessionId is missing", async () => {
+    const fetchImpl = jest.fn();
+    const result = await fetchCachedParamNames("", "my-prompt", { fetchImpl });
+    expect(result).toEqual(new Set());
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  test("returns empty Set and does NOT call fetchImpl when promptName is missing", async () => {
+    const fetchImpl = jest.fn();
+    const result = await fetchCachedParamNames("sess-1", "", { fetchImpl });
+    expect(result).toEqual(new Set());
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  test("returns empty Set when response json has no cached array", async () => {
+    const fetchImpl = jest.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ prompt: "x" }),
+    });
+    const result = await fetchCachedParamNames("sess-1", "x", { fetchImpl });
+    expect(result).toEqual(new Set());
+  });
+});
+
+// =============================================================================
+// resolvePromptModelOverride / currentModelName Tests
+// =============================================================================
+
+describe("resolvePromptModelOverride", () => {
+  // Live ACP model list: Haiku → Sonnet → Opus (ordered).
+  const modelOption = {
+    current_value: "claude-opus-4-8",
+    options: [
+      { value: "claude-haiku-3-5", name: "Claude Haiku 3.5" },
+      { value: "claude-sonnet-4-5", name: "Claude Sonnet 4.5" },
+      { value: "claude-opus-4-8", name: "Claude Opus 4.8" },
+    ],
+  };
+
+  // Global model profiles (config.models) — Settings → Models.
+  const profiles = [
+    {
+      name: "Claude Opus",
+      criteria: { matchMode: "contains", pattern: "Opus" },
+      tags: ["Reasoning", "Smartest"],
+    },
+    {
+      name: "Claude Sonnet",
+      criteria: { matchMode: "contains", pattern: "Sonnet" },
+      tags: ["Coding", "Smart"],
+    },
+    {
+      name: "Claude Haiku",
+      criteria: { matchMode: "contains", pattern: "Haiku" },
+      tags: ["Cheap", "Fast"],
+    },
+  ];
+
+  test("modelName resolves to the profile's matched model when it differs from current", () => {
+    const result = resolvePromptModelOverride(
+      [{ modelName: "Claude Sonnet" }],
+      modelOption,
+      profiles,
+    );
+    expect(result).toEqual({
+      value: "claude-sonnet-4-5",
+      name: "Claude Sonnet 4.5",
+    });
+  });
+
+  test("modelName is case-insensitive against profile.name", () => {
+    const result = resolvePromptModelOverride(
+      [{ modelName: "claude sonnet" }],
+      modelOption,
+      profiles,
+    );
+    expect(result).toEqual({
+      value: "claude-sonnet-4-5",
+      name: "Claude Sonnet 4.5",
+    });
+  });
+
+  test("modelTag resolves the first tagged profile that yields an available model", () => {
+    // "Coding" is only on the Sonnet profile.
+    const result = resolvePromptModelOverride(
+      [{ modelTag: "Coding" }],
+      modelOption,
+      profiles,
+    );
+    expect(result).toEqual({
+      value: "claude-sonnet-4-5",
+      name: "Claude Sonnet 4.5",
+    });
+  });
+
+  test("modelTag is deterministic by profile order when multiple profiles share the tag", () => {
+    // Add a shared "Cheap" tag on Sonnet so both Sonnet (index 1) and Haiku
+    // (index 2) match. Sonnet comes first in profile order → wins.
+    const shared = [
+      profiles[0],
+      { ...profiles[1], tags: [...profiles[1].tags, "Cheap"] },
+      profiles[2],
+    ];
+    const result = resolvePromptModelOverride(
+      [{ modelTag: "Cheap" }],
+      modelOption,
+      shared,
+    );
+    expect(result).toEqual({
+      value: "claude-sonnet-4-5",
+      name: "Claude Sonnet 4.5",
+    });
+  });
+
+  test("current-satisfies: modelName matching current model returns null (no chip)", () => {
+    // Current is Opus, and the resolved target of "Claude Opus" is Opus → keep.
+    expect(
+      resolvePromptModelOverride(
+        [{ modelName: "Claude Opus" }],
+        modelOption,
+        profiles,
+      ),
+    ).toBeNull();
+  });
+
+  test("current-satisfies: modelTag whose tagged profile matches current model returns null", () => {
+    // Current is Opus; "Reasoning" tags Opus → current already satisfies.
+    expect(
+      resolvePromptModelOverride(
+        [{ modelTag: "Reasoning" }],
+        modelOption,
+        profiles,
+      ),
+    ).toBeNull();
+  });
+
+  test("ordered first-match-wins: earlier entry that resolves takes precedence", () => {
+    const result = resolvePromptModelOverride(
+      [{ modelName: "Claude Sonnet" }, { modelName: "Claude Haiku" }],
+      modelOption,
+      profiles,
+    );
+    expect(result).toEqual({
+      value: "claude-sonnet-4-5",
+      name: "Claude Sonnet 4.5",
+    });
+  });
+
+  test("unknown entries are skipped so a later resolvable entry can win", () => {
+    const result = resolvePromptModelOverride(
+      [
+        { modelName: "Nonexistent Profile" },
+        { modelTag: "NoSuchTag" },
+        { modelName: "Claude Sonnet" },
+      ],
+      modelOption,
+      profiles,
+    );
+    expect(result).toEqual({
+      value: "claude-sonnet-4-5",
+      name: "Claude Sonnet 4.5",
+    });
+  });
+
+  test("returns null when a modelName's profile resolves to no available model", () => {
+    // No model whose name contains "Gemini" → skip; nothing else → null.
+    const withOrphan = [
+      ...profiles,
+      {
+        name: "Gemini",
+        criteria: { matchMode: "contains", pattern: "Gemini" },
+        tags: [],
+      },
+    ];
+    expect(
+      resolvePromptModelOverride(
+        [{ modelName: "Gemini" }],
+        modelOption,
+        withOrphan,
+      ),
+    ).toBeNull();
+  });
+
+  test("returns null for empty/absent preferredModels", () => {
+    expect(resolvePromptModelOverride([], modelOption, profiles)).toBeNull();
+    expect(
+      resolvePromptModelOverride(undefined, modelOption, profiles),
+    ).toBeNull();
+  });
+
+  test("returns null when modelOption is absent or has no options", () => {
+    expect(
+      resolvePromptModelOverride(
+        [{ modelName: "Claude Sonnet" }],
+        null,
+        profiles,
+      ),
+    ).toBeNull();
+    expect(
+      resolvePromptModelOverride(
+        [{ modelName: "Claude Sonnet" }],
+        { current_value: "x", options: [] },
+        profiles,
+      ),
+    ).toBeNull();
+  });
+
+  test("returns null when modelProfiles is absent or empty", () => {
+    expect(
+      resolvePromptModelOverride(
+        [{ modelName: "Claude Sonnet" }],
+        modelOption,
+        undefined,
+      ),
+    ).toBeNull();
+    expect(
+      resolvePromptModelOverride(
+        [{ modelName: "Claude Sonnet" }],
+        modelOption,
+        [],
+      ),
+    ).toBeNull();
+  });
+
+  test("latest-version-wins: MatchConstraintOption returns the last matching option", () => {
+    // Two Sonnet versions; the later one (4.5) should win.
+    const modelOptionMulti = {
+      current_value: "claude-opus-4-8",
+      options: [
+        { value: "claude-sonnet-3-5", name: "Claude Sonnet 3.5" },
+        { value: "claude-sonnet-4-5", name: "Claude Sonnet 4.5" },
+        { value: "claude-opus-4-8", name: "Claude Opus 4.8" },
+      ],
+    };
+    const result = resolvePromptModelOverride(
+      [{ modelName: "Claude Sonnet" }],
+      modelOptionMulti,
+      profiles,
+    );
+    expect(result).toEqual({
+      value: "claude-sonnet-4-5",
+      name: "Claude Sonnet 4.5",
+    });
+  });
+});
+
+describe("currentModelName", () => {
+  const modelOption = {
+    current_value: "claude-opus-4-8",
+    options: [
+      { value: "claude-opus-4-8", name: "Opus 4.8" },
+      { value: "claude-sonnet-4-5", name: "Sonnet 4.5" },
+    ],
+  };
+
+  test("returns the display name of the current model", () => {
+    expect(currentModelName(modelOption)).toBe("Opus 4.8");
+  });
+
+  test("falls back to the value when the name is missing", () => {
+    expect(
+      currentModelName({ current_value: "x", options: [{ value: "x" }] }),
+    ).toBe("x");
+  });
+
+  test("returns empty string when unavailable", () => {
+    expect(currentModelName(null)).toBe("");
+    expect(currentModelName({ current_value: "x", options: [] })).toBe("");
+  });
+});
+
+// =============================================================================
+// promptMenus — exclusion (`!`-prefix) behaviour
+// =============================================================================
+
+describe("promptMenus — exclusion token stripping", () => {
+  test("strips !-prefixed tokens from the positive list", () => {
+    expect(
+      promptMenus({ menus: "prompts, !promptsPeriodic" }),
+    ).toEqual(["prompts"]);
+  });
+
+  test("defaults to ['prompts'] when only exclusion tokens remain", () => {
+    expect(promptMenus({ menus: "!promptsPeriodic" })).toEqual(["prompts"]);
+  });
+
+  test("strips multiple exclusion tokens", () => {
+    expect(
+      promptMenus({ menus: "prompts, !promptsPeriodic, !conversation" }),
+    ).toEqual(["prompts"]);
+  });
+
+  test("preserves positive tokens alongside exclusions", () => {
+    expect(
+      promptMenus({ menus: "prompts, conversation, !promptsPeriodic" }),
+    ).toEqual(["prompts", "conversation"]);
+  });
+
+  test("handles whitespace around ! tokens", () => {
+    expect(
+      promptMenus({ menus: "prompts , ! promptsPeriodic" }),
+    ).toEqual(["prompts"]);
+  });
+});
+
+// =============================================================================
+// promptMenuExcludes
+// =============================================================================
+
+describe("promptMenuExcludes", () => {
+  test("returns empty Set for prompt with no menus field", () => {
+    expect(promptMenuExcludes({})).toEqual(new Set());
+  });
+
+  test("returns empty Set when menus is empty string", () => {
+    expect(promptMenuExcludes({ menus: "" })).toEqual(new Set());
+  });
+
+  test("returns empty Set when no !-prefixed tokens present", () => {
+    expect(promptMenuExcludes({ menus: "prompts, conversation" })).toEqual(
+      new Set(),
+    );
+  });
+
+  test("returns Set of excluded menu names without leading !", () => {
+    expect(
+      promptMenuExcludes({ menus: "prompts, !promptsPeriodic" }),
+    ).toEqual(new Set(["promptsPeriodic"]));
+  });
+
+  test("returns multiple excluded names", () => {
+    expect(
+      promptMenuExcludes({ menus: "prompts, !promptsPeriodic, !conversation" }),
+    ).toEqual(new Set(["promptsPeriodic", "conversation"]));
+  });
+
+  test("handles whitespace around ! token (defensive)", () => {
+    expect(
+      promptMenuExcludes({ menus: "prompts, ! promptsPeriodic" }),
+    ).toEqual(new Set(["promptsPeriodic"]));
   });
 
   test("handles null prompt gracefully", () => {
-    expect(promptRequires(null)).toEqual([]);
+    expect(promptMenuExcludes(null)).toEqual(new Set());
+  });
+
+  test("handles undefined prompt gracefully", () => {
+    expect(promptMenuExcludes(undefined)).toEqual(new Set());
   });
 });
 
 // =============================================================================
-// menuSatisfiesRequires Tests
+// promptMenuIncludes
 // =============================================================================
 
-describe("menuSatisfiesRequires", () => {
-  test("prompt with no requires is satisfied by any menu", () => {
-    expect(menuSatisfiesRequires({}, "prompts")).toBe(true);
-    expect(menuSatisfiesRequires({}, "conversation")).toBe(true);
-    expect(menuSatisfiesRequires({}, "beadsIssues")).toBe(true);
-    expect(menuSatisfiesRequires({}, "beadsList")).toBe(true);
+describe("promptMenuIncludes", () => {
+  test("returns true when menu is included and not excluded", () => {
+    expect(promptMenuIncludes({ menus: "prompts" }, "prompts")).toBe(true);
   });
 
-  test("beadsIssues menu satisfies 'parameters' requirement", () => {
-    expect(menuSatisfiesRequires({ requires: "parameters" }, "beadsIssues")).toBe(true);
+  test("returns false when menu is not in the positive list", () => {
+    expect(
+      promptMenuIncludes({ menus: "conversation" }, "prompts"),
+    ).toBe(false);
   });
 
-  test("prompts menu does NOT satisfy 'parameters' requirement", () => {
-    expect(menuSatisfiesRequires({ requires: "parameters" }, "prompts")).toBe(false);
+  test("returns false when menu is explicitly excluded", () => {
+    expect(
+      promptMenuIncludes({ menus: "prompts, !promptsPeriodic" }, "promptsPeriodic"),
+    ).toBe(false);
   });
 
-  test("conversation menu does NOT satisfy 'parameters' requirement", () => {
-    expect(menuSatisfiesRequires({ requires: "parameters" }, "conversation")).toBe(false);
+  test("returns true for a menu that is included but a different menu is excluded", () => {
+    expect(
+      promptMenuIncludes({ menus: "prompts, !promptsPeriodic" }, "prompts"),
+    ).toBe(true);
   });
 
-  test("unknown menu does NOT satisfy any capability requirement", () => {
-    expect(menuSatisfiesRequires({ requires: "parameters" }, "unknownMenu")).toBe(false);
+  test("returns true using default when menus is absent", () => {
+    expect(promptMenuIncludes({}, "prompts")).toBe(true);
   });
 
-  test("returns true for unknown menu when prompt has no requirements", () => {
-    expect(menuSatisfiesRequires({ requires: "" }, "unknownMenu")).toBe(true);
+  test("returns false for promptsPeriodic when only !promptsPeriodic specified", () => {
+    expect(
+      promptMenuIncludes({ menus: "!promptsPeriodic" }, "promptsPeriodic"),
+    ).toBe(false);
   });
 });
 
 // =============================================================================
-// MENU_CAPABILITIES Tests
+// Periodic filter behaviour — union with !promptsPeriodic exclusion
 // =============================================================================
 
-describe("MENU_CAPABILITIES", () => {
-  test("prompts menu has no capabilities", () => {
-    expect(MENU_CAPABILITIES.prompts).toEqual([]);
+describe("periodic prompt filter logic (union + exclusion)", () => {
+  // Replicates the periodicPrompts predicate from useWorkspacePrompts.js
+  function isPeriodicPrompt(p) {
+    if (promptMenuExcludes(p).has("promptsPeriodic")) return false;
+    const menus = promptMenus(p);
+    return menus.includes("prompts") || menus.includes("promptsPeriodic");
+  }
+
+  test("prompts-only prompt IS in periodic selector (union rule)", () => {
+    expect(isPeriodicPrompt({ menus: "prompts" })).toBe(true);
   });
 
-  test("promptsPeriodic menu has no capabilities", () => {
-    expect(MENU_CAPABILITIES.promptsPeriodic).toEqual([]);
+  test("promptsPeriodic-only prompt IS in periodic selector", () => {
+    expect(isPeriodicPrompt({ menus: "promptsPeriodic" })).toBe(true);
   });
 
-  test("conversation menu has no capabilities", () => {
-    expect(MENU_CAPABILITIES.conversation).toEqual([]);
+  test("prompt with menus: prompts, !promptsPeriodic is NOT in periodic selector", () => {
+    expect(isPeriodicPrompt({ menus: "prompts, !promptsPeriodic" })).toBe(false);
   });
 
-  test("beadsIssues menu has 'parameters' capability", () => {
-    expect(MENU_CAPABILITIES.beadsIssues).toContain("parameters");
+  test("prompt with menus: conversation is NOT in periodic selector", () => {
+    expect(isPeriodicPrompt({ menus: "conversation" })).toBe(false);
   });
 
-  test("beadsList menu has no capabilities", () => {
-    expect(MENU_CAPABILITIES.beadsList).toEqual([]);
+  test("prompt with no menus field IS in periodic selector (defaults to prompts)", () => {
+    expect(isPeriodicPrompt({})).toBe(true);
+  });
+});
+
+// =============================================================================
+// promptPeriodicMode / promptPeriodicIsToggleable / promptPeriodicDefaultOn
+// =============================================================================
+
+describe("promptPeriodicMode / IsToggleable / DefaultOn", () => {
+  test("no periodic ({}) -> mode none, toggleable false, defaultOn false", () => {
+    expect(promptPeriodicMode({})).toBe("none");
+    expect(promptPeriodicIsToggleable({})).toBe(false);
+    expect(promptPeriodicDefaultOn({})).toBe(false);
+  });
+
+  test("periodic: null -> mode none, toggleable false, defaultOn false", () => {
+    const p = { periodic: null };
+    expect(promptPeriodicMode(p)).toBe("none");
+    expect(promptPeriodicIsToggleable(p)).toBe(false);
+    expect(promptPeriodicDefaultOn(p)).toBe(false);
+  });
+
+  test("periodic present, no mode -> mode always, toggleable false, defaultOn true", () => {
+    const p = { periodic: {} };
+    expect(promptPeriodicMode(p)).toBe("always");
+    expect(promptPeriodicIsToggleable(p)).toBe(false);
+    expect(promptPeriodicDefaultOn(p)).toBe(true);
+  });
+
+  test("mode: always -> mode always, toggleable false, defaultOn true", () => {
+    const p = { periodic: { mode: "always" } };
+    expect(promptPeriodicMode(p)).toBe("always");
+    expect(promptPeriodicIsToggleable(p)).toBe(false);
+    expect(promptPeriodicDefaultOn(p)).toBe(true);
+  });
+
+  test("mode: always with default:false -> default ignored, defaultOn true", () => {
+    const p = { periodic: { mode: "always", default: false } };
+    expect(promptPeriodicMode(p)).toBe("always");
+    expect(promptPeriodicIsToggleable(p)).toBe(false);
+    expect(promptPeriodicDefaultOn(p)).toBe(true);
+  });
+
+  test("mode: optional -> mode optional, toggleable true, defaultOn true", () => {
+    const p = { periodic: { mode: "optional" } };
+    expect(promptPeriodicMode(p)).toBe("optional");
+    expect(promptPeriodicIsToggleable(p)).toBe(true);
+    expect(promptPeriodicDefaultOn(p)).toBe(true);
+  });
+
+  test("mode: optional, default:true -> mode optional, toggleable true, defaultOn true", () => {
+    const p = { periodic: { mode: "optional", default: true } };
+    expect(promptPeriodicMode(p)).toBe("optional");
+    expect(promptPeriodicIsToggleable(p)).toBe(true);
+    expect(promptPeriodicDefaultOn(p)).toBe(true);
+  });
+
+  test("mode: optional, default:false -> mode optional, toggleable true, defaultOn false", () => {
+    const p = { periodic: { mode: "optional", default: false } };
+    expect(promptPeriodicMode(p)).toBe("optional");
+    expect(promptPeriodicIsToggleable(p)).toBe(true);
+    expect(promptPeriodicDefaultOn(p)).toBe(false);
+  });
+
+  test("unknown mode is treated as always", () => {
+    const p = { periodic: { mode: "weird" } };
+    expect(promptPeriodicMode(p)).toBe("always");
+    expect(promptPeriodicIsToggleable(p)).toBe(false);
+    expect(promptPeriodicDefaultOn(p)).toBe(true);
+  });
+
+  test("null-safe: undefined prompt -> mode none, toggleable false, defaultOn false", () => {
+    expect(promptPeriodicMode(undefined)).toBe("none");
+    expect(promptPeriodicIsToggleable(undefined)).toBe(false);
+    expect(promptPeriodicDefaultOn(undefined)).toBe(false);
+  });
+});
+
+// =============================================================================
+// promptResolveAsPeriodic
+// =============================================================================
+
+describe("promptResolveAsPeriodic", () => {
+  test("mode none -> false (override ignored)", () => {
+    expect(promptResolveAsPeriodic({})).toBe(false);
+    expect(promptResolveAsPeriodic({}, true)).toBe(false);
+    expect(promptResolveAsPeriodic({ periodic: null }, true)).toBe(false);
+  });
+
+  test("mode always -> true (override ignored)", () => {
+    const p = { periodic: { mode: "always" } };
+    expect(promptResolveAsPeriodic(p)).toBe(true);
+    expect(promptResolveAsPeriodic(p, false)).toBe(true);
+  });
+
+  test("mode optional, no override, default:false -> false", () => {
+    const p = { periodic: { mode: "optional", default: false } };
+    expect(promptResolveAsPeriodic(p)).toBe(false);
+  });
+
+  test("mode optional, no override, default:true -> true", () => {
+    const p = { periodic: { mode: "optional", default: true } };
+    expect(promptResolveAsPeriodic(p)).toBe(true);
+  });
+
+  test("mode optional, no override, default absent -> true", () => {
+    const p = { periodic: { mode: "optional" } };
+    expect(promptResolveAsPeriodic(p)).toBe(true);
+  });
+
+  test("mode optional, override:true -> true even if default:false", () => {
+    const p = { periodic: { mode: "optional", default: false } };
+    expect(promptResolveAsPeriodic(p, true)).toBe(true);
+  });
+
+  test("mode optional, override:false -> false even if default:true", () => {
+    const p = { periodic: { mode: "optional", default: true } };
+    expect(promptResolveAsPeriodic(p, false)).toBe(false);
+  });
+});
+
+// =============================================================================
+// buildPromptGroupMenuItems (ContextMenu.js) — mitto-92x.5
+//
+// ContextMenu.js (and its Icons.js dependency) destructure window.preact at
+// module load time, so window.preact must be stubbed BEFORE the module is
+// evaluated. Static imports are hoisted ahead of any module-level statement,
+// so the stub is installed first and the module is loaded via a dynamic
+// import() inside beforeAll (which Jest's ESM mode supports).
+// =============================================================================
+
+describe("buildPromptGroupMenuItems", () => {
+  let buildPromptGroupMenuItems;
+
+  beforeAll(async () => {
+    window.preact = {
+      html: (strings, ...values) => ({ __htmlStub: true, strings, values }),
+      useState: (initial) => [initial, () => {}],
+    };
+    ({ buildPromptGroupMenuItems } = await import(
+      "../components/ContextMenu.js"
+    ));
+  });
+
+  const prompts = [
+    { name: "Always On", group: "G" }, // no periodic block -> "none"
+    {
+      name: "Always Periodic",
+      group: "G",
+      periodic: { mode: "always" },
+    },
+    {
+      name: "Maybe Periodic",
+      group: "G",
+      periodic: { mode: "optional", default: false },
+    },
+  ];
+
+  function findSub(items, label) {
+    for (const group of items) {
+      const found = (group.submenu || []).find((s) => s.label === label);
+      if (found) return found;
+    }
+    return undefined;
+  }
+
+  test("a 'none'-mode prompt yields periodicMode 'none'", () => {
+    const items = buildPromptGroupMenuItems(prompts, () => {}, null);
+    const sub = findSub(items, "Always On");
+    expect(sub).toBeDefined();
+    expect(sub.periodicMode).toBe("none");
+  });
+
+  test("an 'always'-mode prompt carries periodicMode 'always' and periodicDefaultOn true", () => {
+    const items = buildPromptGroupMenuItems(prompts, () => {}, null);
+    const sub = findSub(items, "Always Periodic");
+    expect(sub).toBeDefined();
+    expect(sub.periodicMode).toBe("always");
+    expect(sub.periodicDefaultOn).toBe(true);
+  });
+
+  test("an 'optional'-mode prompt carries periodicMode 'optional' and periodicDefaultOn matching its default", () => {
+    const items = buildPromptGroupMenuItems(prompts, () => {}, null);
+    const sub = findSub(items, "Maybe Periodic");
+    expect(sub).toBeDefined();
+    expect(sub.periodicMode).toBe("optional");
+    expect(sub.periodicDefaultOn).toBe(false);
+  });
+
+  test("calling item.onClick({ asPeriodic: true }) invokes onRun with (prompt, { asPeriodic: true })", () => {
+    const onRun = jest.fn();
+    const items = buildPromptGroupMenuItems(prompts, onRun, null);
+    const sub = findSub(items, "Maybe Periodic");
+    sub.onClick({ asPeriodic: true });
+    expect(onRun).toHaveBeenCalledTimes(1);
+    const [calledPrompt, calledOpts] = onRun.mock.calls[0];
+    expect(calledPrompt.name).toBe("Maybe Periodic");
+    expect(calledOpts).toEqual({ asPeriodic: true });
+  });
+
+  test("calling item.onClick({ asPeriodic: false }) forwards false", () => {
+    const onRun = jest.fn();
+    const items = buildPromptGroupMenuItems(prompts, onRun, null);
+    const sub = findSub(items, "Maybe Periodic");
+    sub.onClick({ asPeriodic: false });
+    expect(onRun).toHaveBeenCalledTimes(1);
+    const [calledPrompt, calledOpts] = onRun.mock.calls[0];
+    expect(calledPrompt.name).toBe("Maybe Periodic");
+    expect(calledOpts).toEqual({ asPeriodic: false });
   });
 });

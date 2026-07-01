@@ -1,0 +1,321 @@
+icon: globe
+name: 'GitHub: iterate babysitting new PRs'
+menus: prompts
+parameters:
+  - name: Repository
+    type: text
+    required: false
+    description: 'Optional GitHub repository (owner/repo) whose recently-created PRs to babysit. If omitted, the repository of the current folder is used.'
+description: Auto-periodic — keep babysitting the PRs you recently created (rebase, fix CI, address comments, merge when ready), then self-terminate when nothing actionable remains
+group: GitHub
+backgroundColor: '#BBDEFB'
+tags:
+- periodic
+- github
+enabledWhen: '!Session.IsChild && FileExists(".git/config") && (Tools.HasPattern("github_*") || CommandExists("gh")) && Tools.HasPattern("mitto_conversation_*")'
+periodic:
+  mode: always
+  trigger: onCompletion
+  delay: 3600
+  maxIterations: 30
+  maxDuration: "6h"
+prompt: |
+  {{- $repoFlag := "" -}}
+  {{- if .Args.Repository }}{{ $repoFlag = printf " --repo %s" .Args.Repository }}{{ end -}}
+  The auto-periodic, self-driving sibling of **"GitHub: babysit my PRs"**. On
+  every run this conversation advances the **PRs you recently created** (the ones
+  it has been babysitting) one step toward done — rebasing stale branches, fixing
+  CI, addressing review comments, and merging when ready — and when there is
+  **nothing actionable left**, it removes its own periodic flag and stops.
+
+  Operates on the current folder's repository by default, or the one supplied via
+  the `Repository` parameter. Only ever acts on PRs where **you are the author**.
+
+  ## Session Context
+
+  Your session ID is `{{ .Session.ID }}` — use this as `self_id` for all `mitto_*` MCP tool calls.
+
+  Available ACP servers:
+  {{ .ACP.AvailableText }}
+
+  Existing child conversations (spawned by previous runs):
+  {{ .Children.MCPText }}
+
+  When spawning conversations to fix issues, prefer `"coding"` or `"fast"` tagged
+  servers. **Never** configure spawned conversations as periodic — they are
+  one-off tasks.
+
+  ## Interaction Mode — READ THIS FIRST
+  {{- if and .Session.IsPeriodic (not .Session.IsPeriodicForced) }}
+
+  **Silent mode — scheduled periodic run.**
+  - Use **only** `mitto_ui_notify`. Do **NOT** call `mitto_ui_options`,
+    `mitto_ui_form`, or `mitto_ui_textbox` — nobody is watching, never block.
+  - Act autonomously when safe (clean rebases); otherwise just notify.
+  {{- else }}
+
+  **Interactive mode** (e.g. the very first send, or a force-triggered run): a user may be
+  present, so you *may* use the interactive `mitto_ui_*` tools (ask before risky actions
+  like merges/rebases).
+  {{- end }}
+  {{- if .Iteration.IsLast }}
+
+  **Final scheduled run.** This is the last automatic iteration (the `maxIterations`
+  cap is reached after this run, so no further run will fire). Any PRs still open
+  after this run will **not** be monitored further — post a closing `mitto_ui_notify`
+  summary listing which PRs remain open, so the user can re-run this prompt later to
+  keep babysitting them.
+  {{- end }}
+
+  ## Step 1 — Identify the repository and verify auth
+  {{- if .Args.Repository }}
+
+  A target repository was supplied: **`{{ .Args.Repository }}`**. Every `gh`
+  command in this prompt already targets it via `--repo {{ .Args.Repository }}`,
+  so you do not need to be inside that repository's checkout.
+
+  ```bash
+  gh repo view {{ .Args.Repository }} --json nameWithOwner,defaultBranchRef -q '.nameWithOwner + " (default: " + .defaultBranchRef.name + ")"'
+  gh api user -q '.login'      # your GitHub login — only act on PRs whose author.login matches
+  ```
+
+  **Local git operations** (the rebase in Step 3a) still need a local clone of
+  the target repo. If the current folder is already a checkout of
+  `{{ .Args.Repository }}`, use it; otherwise clone it on demand into a temp dir
+  (`gh repo clone {{ .Args.Repository }} "$(mktemp -d)"`) and run the git
+  commands there.
+  {{- else }}
+
+  ```bash
+  git remote -v
+  gh repo view --json nameWithOwner,defaultBranchRef -q '.nameWithOwner + " (default: " + .defaultBranchRef.name + ")"'
+  gh api user -q '.login'      # your GitHub login — only act on PRs whose author.login matches
+  ```
+  {{- end }}
+
+  If `gh auth status` fails, stop immediately and inform the user.
+
+  Rename this conversation so it's easy to identify — but only if the current name
+  (`{{ .Session.Name }}`) doesn't already start with "Babysit new PRs":
+
+  ```
+  mitto_conversation_update(self_id: "{{ .Session.ID }}", conversation_id: "{{ .Session.ID }}",
+    name: "Babysit new PRs in <nameWithOwner>")
+  ```
+
+  ## Step 2 — Determine the target PR set
+
+  Build the set of PRs to babysit this run, in priority order:
+  {{- if .Iteration.IsFirst }}
+
+  This is the **first run** — there are no babysat PRs from earlier runs yet, so you
+  will normally establish the set from your recently-created PRs (source 2 below).
+  {{- else }}
+
+  This is a **continuation run** — first recover the PRs you were already babysitting
+  from earlier runs of this conversation (source 1 below) before considering new ones.
+  {{- end }}
+
+  1. **PRs already under babysitting** (preferred). Recover them from prior runs of
+     **this** conversation:
+     - Scan `{{ .Children.MCPText }}` for child titles referencing a PR (e.g. containing
+       "PR #<number>") — those numbers are PRs you already started babysitting.
+     - Also reuse any PR numbers established earlier in this conversation's history.
+  2. **Recently created PRs** (when the set above is empty — typically the first
+     run). List your own open PRs, newest first, and take those created recently
+     (within the last **7 days**), capped at **10**:
+
+     ```bash
+     gh pr list{{ $repoFlag }} --state open --author @me --search "sort:created-desc" \
+       --json number,title,headRefName,baseRefName,statusCheckRollup,mergeable,mergeStateStatus,updatedAt,createdAt,isDraft,reviewDecision,author,reviewThreads --limit 20
+     ```
+
+     Keep only PRs whose `author.login` matches your login and whose `createdAt`
+     is within the last 7 days. Note the chosen PR numbers in your output so future
+     runs can recover them from this conversation's history.
+  3. **Nothing identified** (no babysat PRs and no recent PRs):
+     - **Interactive mode**: ask the user what to do —
+       ```
+       mitto_ui_options(self_id: "{{ .Session.ID }}",
+         question: "No recently-created PRs to babysit were found. What would you like to do?",
+         allow_free_text: true, free_text_placeholder: "e.g. 123, 456",
+         options: [
+           { label: "Enter PR number(s) to babysit" },
+           { label: "Quit — stop the periodic loop" }
+         ])
+       ```
+       If the user quits (or provides nothing), go to **Step 5 (stop)**. Otherwise
+       use the PR numbers they supply as the target set.
+     - **Silent mode**: there is nobody to ask — go straight to **Step 5 (stop)**.
+
+  ## Step 3 — Babysit each target PR
+
+  For each target PR, **re-verify `author.login` matches your login**, then run the
+  same checks as "GitHub: babysit my PRs". Track whether each step is **actionable**
+  (something to advance) for the stop decision in Step 4.
+
+  **Never modify the local checkout** — the user may have uncommitted work there.
+  Use a temporary worktree for rebases and `--force-with-lease` for force-pushes.
+
+  **Spawn rules:** before spawning, check `{{ .Children.MCPText }}` and **skip** if a
+  child already exists for the same PR + task. Cap spawning at **3 per run**;
+  spawned conversations are one-off and **must never be periodic**.
+
+  ### 3a. Rebase if behind base
+  ```bash
+  gh pr view{{ $repoFlag }} <number> --json mergeStateStatus,mergeable,baseRefName,headRefName
+  ```
+  If behind and cannot cleanly merge: in interactive mode ask first; in silent mode
+  notify and proceed. Rebase in a temp worktree
+  {{- if .Args.Repository }} — run the git commands inside a checkout of
+  `{{ .Args.Repository }}` (the current folder if it is that repo, otherwise the
+  temp clone from Step 1){{ end }}:
+  ```bash
+  git fetch origin <baseRefName> <headRefName>
+  TMPDIR=$(mktemp -d); git worktree add "$TMPDIR" origin/<headRefName> --detach
+  cd "$TMPDIR" && git rebase origin/<baseRefName>
+  ```
+  - On conflicts: `git rebase --abort`, remove the worktree, notify (warning,
+    sound+native), and — if `mitto_conversation_new` is available — spawn a one-off
+    conversation to resolve them. Then move on.
+  - On success: `git push --force-with-lease origin HEAD:refs/heads/<headRefName>`,
+    clean up the worktree, and notify success.
+
+  ### 3b. Fix failing CI
+  ```bash
+  gh pr checks{{ $repoFlag }} <number> --json name,state,description,detailsUrl
+  ```
+  If any check is failing, this PR is **actionable**. Pull a brief failure summary:
+  ```bash
+  gh run list{{ $repoFlag }} --branch <headRefName> --status failure --limit 1 --json databaseId,name,conclusion
+  gh run view{{ $repoFlag }} <run-id> --log-failed 2>/dev/null | tail -80
+  ```
+  Notify (error, sound+native) with the failing check names and summary. Then, if
+  `mitto_conversation_new` is available, spawn a one-off fix conversation (subject
+  to the spawn rules above) — automatically in silent mode, or after asking in
+  interactive mode:
+  ```
+  mitto_conversation_new(self_id: "{{ .Session.ID }}",
+    title: "Fix CI for PR #<number>: <title>",
+    initial_prompt: "PR #<number> (<title>) has failing CI on branch <headRefName>.
+      Failing checks: <check names>
+      Error summary: <brief failure details>
+      Check out <headRefName>, diagnose and fix the failures, then push.
+      {{ if .Args.Repository }}The repository is `{{ .Args.Repository }}` — clone it with `gh repo clone` if the current folder is a different repo.{{ else }}The repo is at: <repo path>{{ end }}",
+    acp_server: <prefer "coding" or "fast" tagged server>)
+  ```
+  If all checks pass, this step is **not actionable**.
+
+  ### 3c. Address unresolved review comments
+  ```bash
+  gh pr view{{ $repoFlag }} <number> --json reviewThreads --jq '[.reviewThreads[] | select(.isResolved == false)] | length'
+  ```
+  If the count is > 0, this PR is **actionable**. Notify (warning) with the count.
+  Then, if `mitto_conversation_new` is available, spawn a one-off conversation to
+  address them (subject to the spawn rules) — automatically in silent mode, or
+  after asking in interactive mode:
+  ```
+  mitto_conversation_new(self_id: "{{ .Session.ID }}",
+    title: "Address review comments on PR #<number>: <title>",
+    initial_prompt: "PR #<number> (<title>) has <count> unresolved review threads.
+      Check out <headRefName>, read them with `gh pr view <number> --json reviewThreads`,
+      address each with code changes and replies, then push.
+      {{ if .Args.Repository }}The repository is `{{ .Args.Repository }}` — clone it with `gh repo clone` if the current folder is a different repo.{{ else }}The repo is at: <repo path>{{ end }}",
+    acp_server: <prefer "coding" or "fast" tagged server>)
+  ```
+  If there are no unresolved threads, this step is **not actionable**.
+
+  ### 3d. Merge when ready
+  If the PR has `reviewDecision == "APPROVED"`, all CI checks passing, and is **not**
+  a draft, it is ready to merge.
+  - **Interactive mode**: offer to merge —
+    ```
+    mitto_ui_options(self_id: "{{ .Session.ID }}",
+      question: "🚀 PR #<number> (<title>) is approved with passing CI. Merge it?",
+      options: [ { label: "Yes, merge now" }, { label: "No, just notify" } ])
+    ```
+    On "Yes": `gh pr merge{{ $repoFlag }} <number> --squash` (or `--merge`/`--rebase` per repo
+    convention), then notify success. A merged PR leaves the target set (it is
+    **done**).
+  - **Silent mode**: do **not** auto-merge. Just notify (success) that it is ready,
+    and treat it as **actionable** (still waiting on a human to merge).
+
+  ## Step 4 — Summary and stop decision
+
+  After processing every target PR, decide whether to keep iterating:
+
+  - **Interactive mode**: print the brief summary table from "GitHub: babysit my
+    PRs" (PR | Title | Rebase | CI | Review | Notes).
+  - **Silent mode**: stay quiet unless something actionable happened this run.
+
+  A PR is **done** when it is merged or closed. A PR is **steady** when it is fully
+  up to date, has no failing CI, no unresolved threads, and is only waiting on a
+  human to merge or review — i.e. nothing **this loop** can advance right now.
+
+  **Keep iterating** (end this run normally; the next one fires after `delay`) as
+  long as **any** target PR is **not yet done** — i.e. still open, whether it has
+  actionable work this loop can advance or is merely **steady** (waiting on a human
+  to review/merge). A steady PR is **not** a reason to stop: keep monitoring it on
+  every run until it is merged or closed. Do nothing further this run.
+
+  **Otherwise** — **every** target PR is **done** (merged or closed), leaving none
+  still open — go to **Step 5**.
+
+  ## Step 5 — Stop: self-terminate
+
+  When every monitored PR has been **merged or closed** (reached from Step 2 when
+  no PRs were identified / the user quit, or from Step 4 when all target PRs are
+  done — none left open), remove this conversation's own periodic flag so it
+  becomes a regular conversation:
+
+  ```
+  mitto_conversation_update(self_id: "{{ .Session.ID }}", conversation_id: "self", periodic_enabled: false)
+  ```
+
+  Then notify the user (works in both modes):
+
+  ```
+  mitto_ui_notify(self_id: "{{ .Session.ID }}",
+    title: "Babysit new PRs — done",
+    message: "<which PRs were merged or closed; all monitored PRs are now resolved, so iteration stopped>",
+    style: "success")
+  ```
+
+  After stopping, do nothing further this run.
+
+  ## Guidelines
+
+  - **Target repository**:
+  {{- if .Args.Repository }}
+    operate on `{{ .Args.Repository }}`; all `gh` commands target it via
+    `--repo {{ .Args.Repository }}`. Local git operations (rebases) run inside a
+    checkout of that repo — the current folder if it is that repo, otherwise a
+    temp clone. When spawning fix conversations, tell them the repository is
+    `{{ .Args.Repository }}` and to clone it if the current folder differs.
+  {{- else }}
+    no repository was supplied; operate on the repository of the current folder.
+  {{- end }}
+  - **Only act on your own PRs** (`author.login` == your login). Never rebase,
+    merge, or spawn fix conversations for PRs authored by others.
+  - **Never modify the local checkout** — the user may have uncommitted work there.
+    Always rebase in a temporary worktree and force-push with `--force-with-lease`
+    (never `--force`).
+  {{- if and .Session.IsPeriodic (not .Session.IsPeriodicForced) }}
+  - **Interaction mode**: this is a **scheduled** run — use **only** `mitto_ui_notify`,
+    never block on interactive UI, and do **not** auto-merge.
+  {{- else }}
+  - **Interaction mode**: this is a **force-triggered or non-periodic** run — you may use
+    `mitto_ui_options`/`mitto_ui_form` and offer to merge with confirmation.
+  {{- end }}
+  - **Spawn rules**: check `{{ .Children.MCPText }}` before spawning and skip if a child
+    already exists for the same PR + task; cap at **3 spawns per run**, prioritizing
+    rebase conflicts > CI failures > unresolved comments. Spawned conversations are
+    one-off and **must never be periodic**.
+  - **Notify only when it matters** on scheduled runs (rebased, CI broke, ready to
+    merge, merged, or final stop). Stay quiet on routine no-op runs.
+  - **Self-terminate** via `periodic_enabled: false` **only once all** monitored
+    PRs are merged or closed. Keep iterating while any PR is still open — even if it
+    is steady (only waiting on a human to review/merge) — so it stays monitored
+    until it lands. The user can re-run this prompt later to babysit a fresh batch
+    of PRs.
+  - If `gh` authentication fails, stop immediately and inform the user.

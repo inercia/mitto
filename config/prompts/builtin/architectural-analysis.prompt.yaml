@@ -6,13 +6,20 @@ backgroundColor: '#C8E6C9'
 group: Code Quality
 tags:
 - periodic
-enabledWhen: commandExists("bd") && dirExists(".beads")
+enabledWhen: CommandExists("bd") && DirExists(".beads")
+periodic:
+  mode: optional
+  default: false
+  trigger: onCompletion
+  delay: 60
 prompt: |
   ## Session Context
 
-  Your session ID is `@mitto:session_id` — use this as `self_id` for all `mitto_*` MCP tool calls.
-  Available ACP servers: `@mitto:available_acp_servers`
-  Existing children: `@mitto:children`
+  Your session ID is `{{ .Session.ID }}` — use this as `self_id` for all `mitto_*` MCP tool calls.
+  Available ACP servers: `{{ .ACP.AvailableText }}`
+  {{- if .Children.AllText }}
+  Existing children: `{{ .Children.AllText }}`
+  {{- end }}
 
   # Architectural Analysis
 
@@ -24,21 +31,18 @@ prompt: |
   periodically — it adapts its behaviour to whichever mode it is invoked in (see Interaction Mode).
 
   ## Interaction Mode
+  {{- if and .Session.IsPeriodic (not .Session.IsPeriodicForced) }}
 
-  This prompt runs in two modes. Check these variables to decide which applies:
-
-  - `@mitto:periodic` = is this a scheduled periodic execution?
-  - `@mitto:periodic_forced` = was a periodic run manually triggered by the user?
-
-  **Interactive mode** — a regular conversation (`@mitto:periodic` = "false") **or** a force-triggered
-  periodic run (`@mitto:periodic_forced` = "true"):
-  - The user is present. Present findings for approval with `mitto_ui_form` and **wait for confirmation
-    before filing any bead**. You may also use `mitto_ui_options` / `mitto_ui_textbox` and `mitto_ui_notify`.
-
-  **Silent mode** — a scheduled periodic run (`@mitto:periodic` = "true" AND `@mitto:periodic_forced` = "false"):
-  - The user is not watching. Use **only** `mitto_ui_notify` — non-blocking notifications.
+  **Silent mode** — a scheduled periodic run; the user is not watching.
+  - Use **only** `mitto_ui_notify` — non-blocking notifications.
   - Do **NOT** use `mitto_ui_options`, `mitto_ui_form`, or `mitto_ui_textbox`.
   - File only **high-confidence, high-value** findings (skip anything speculative), then notify with a summary.
+  {{- else }}
+
+  **Interactive mode** — a regular conversation or a force-triggered periodic run; the user is present.
+  - Present findings for approval with `mitto_ui_form` and **wait for confirmation
+    before filing any bead**. You may also use `mitto_ui_options` / `mitto_ui_textbox` and `mitto_ui_notify`.
+  {{- end }}
 
   ## Step 1 — Understand the architecture
 
@@ -130,7 +134,7 @@ prompt: |
 
   > **[<type> · <priority>] <title>** — <one-line architectural rationale>
 
-  Then present **every** epic and finding in a single `mitto_ui_form(self_id: "@mitto:session_id")` as
+  Then present **every** epic and finding in a single `mitto_ui_form(self_id: "{{ .Session.ID }}")` as
   checkboxes, **checked by default**, so the user just unchecks what to skip. Nest children under their epic:
 
   ```html
@@ -205,10 +209,10 @@ prompt: |
 
   - Match server tags to task: broad mechanical mapping → `"coding"`/`"fast"` servers; deep architectural
     reasoning → `"reasoning"`/`"planning"` servers; no match → the `(current)` server, then first available.
-  - If relevant children already exist (`@mitto:children`), reuse them via `mitto_conversation_send_prompt`
+  - If relevant children already exist (`{{ .Children.AllText }}`), reuse them via `mitto_conversation_send_prompt`
     instead of creating new ones.
-  - `mitto_conversation_new(self_id: "@mitto:session_id")` with a scoped package/area and a directive to
+  - `mitto_conversation_new(self_id: "{{ .Session.ID }}")` with a scoped package/area and a directive to
     **report findings only — not to file beads or make changes**.
-  - `mitto_children_tasks_wait(self_id: "@mitto:session_id", task_id: "<area>", timeout_seconds: 600)`.
+  - `mitto_children_tasks_wait(self_id: "{{ .Session.ID }}", task_id: "<area>", timeout_seconds: 600)`.
   - Review and integrate reports, then proceed with Steps 2–9 yourself. `mitto_conversation_delete` finished children.
   - Max 4 parallel child conversations. **Without Mitto tools**: do the analysis directly.

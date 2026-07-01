@@ -29,6 +29,8 @@ try:
         if cfg.get('type') == 'stdio':
             entry['command'] = cfg.get('cmd', '')
             entry['args'] = cfg.get('args', [])
+            if cfg.get('envs'):
+                entry['env'] = cfg['envs']
         elif cfg.get('type') == 'sse':
             entry['url'] = cfg.get('uri', '')
         result.append(entry)

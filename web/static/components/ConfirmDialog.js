@@ -41,7 +41,9 @@ export function ConfirmDialog({
 
   // daisyUI button variant: danger → btn-error, default/primary → btn-primary
   const confirmBtnClass =
-    confirmVariant === "danger" ? "btn btn-error btn-sm" : "btn btn-primary btn-sm";
+    confirmVariant === "danger"
+      ? "btn btn-error btn-sm"
+      : "btn btn-primary btn-sm";
 
   const footer = html`
     <button

@@ -66,7 +66,10 @@ beforeEach(() => {
   mockStore = {};
   sessionMockStore = {};
   Object.defineProperty(window, "localStorage", { value: localStorageMock });
-  Object.defineProperty(window, "sessionStorage", { value: sessionStorageMock, writable: true });
+  Object.defineProperty(window, "sessionStorage", {
+    value: sessionStorageMock,
+    writable: true,
+  });
 });
 
 // =============================================================================
@@ -309,8 +312,14 @@ describe("getBeadsGrouping", () => {
   });
 
   test("returns stored grouping when present", () => {
-    mockStore[BEADS_GROUPING_KEY] = JSON.stringify({ enabled: true, collapsedEpics: ["mitto-abc", "mitto-xyz"] });
-    expect(getBeadsGrouping()).toEqual({ enabled: true, collapsedEpics: ["mitto-abc", "mitto-xyz"] });
+    mockStore[BEADS_GROUPING_KEY] = JSON.stringify({
+      enabled: true,
+      collapsedEpics: ["mitto-abc", "mitto-xyz"],
+    });
+    expect(getBeadsGrouping()).toEqual({
+      enabled: true,
+      collapsedEpics: ["mitto-abc", "mitto-xyz"],
+    });
   });
 
   test("fills missing fields with defaults", () => {
@@ -319,13 +328,22 @@ describe("getBeadsGrouping", () => {
   });
 
   test("ignores non-boolean enabled and uses default", () => {
-    mockStore[BEADS_GROUPING_KEY] = JSON.stringify({ enabled: "yes", collapsedEpics: [] });
+    mockStore[BEADS_GROUPING_KEY] = JSON.stringify({
+      enabled: "yes",
+      collapsedEpics: [],
+    });
     expect(getBeadsGrouping()).toEqual({ enabled: true, collapsedEpics: [] });
   });
 
   test("filters non-string entries from collapsedEpics", () => {
-    mockStore[BEADS_GROUPING_KEY] = JSON.stringify({ enabled: false, collapsedEpics: ["ok", 42, null, "also-ok"] });
-    expect(getBeadsGrouping()).toEqual({ enabled: false, collapsedEpics: ["ok", "also-ok"] });
+    mockStore[BEADS_GROUPING_KEY] = JSON.stringify({
+      enabled: false,
+      collapsedEpics: ["ok", 42, null, "also-ok"],
+    });
+    expect(getBeadsGrouping()).toEqual({
+      enabled: false,
+      collapsedEpics: ["ok", "also-ok"],
+    });
   });
 
   test("returns defaults for corrupt JSON", () => {
@@ -337,17 +355,26 @@ describe("getBeadsGrouping", () => {
 describe("setBeadsGrouping", () => {
   test("persists grouping state to localStorage", () => {
     setBeadsGrouping({ enabled: true, collapsedEpics: ["mitto-1"] });
-    expect(JSON.parse(mockStore[BEADS_GROUPING_KEY])).toEqual({ enabled: true, collapsedEpics: ["mitto-1"] });
+    expect(JSON.parse(mockStore[BEADS_GROUPING_KEY])).toEqual({
+      enabled: true,
+      collapsedEpics: ["mitto-1"],
+    });
   });
 
   test("fills missing fields with defaults when saving", () => {
     setBeadsGrouping({ enabled: true });
-    expect(JSON.parse(mockStore[BEADS_GROUPING_KEY])).toEqual({ enabled: true, collapsedEpics: [] });
+    expect(JSON.parse(mockStore[BEADS_GROUPING_KEY])).toEqual({
+      enabled: true,
+      collapsedEpics: [],
+    });
   });
 
   test("uses all defaults when given no argument", () => {
     setBeadsGrouping();
-    expect(JSON.parse(mockStore[BEADS_GROUPING_KEY])).toEqual({ enabled: true, collapsedEpics: [] });
+    expect(JSON.parse(mockStore[BEADS_GROUPING_KEY])).toEqual({
+      enabled: true,
+      collapsedEpics: [],
+    });
   });
 
   test("round-trips through getBeadsGrouping", () => {
@@ -369,12 +396,18 @@ describe("getBeadsSort", () => {
   });
 
   test("returns stored field and direction", () => {
-    mockStore[BEADS_SORT_KEY] = JSON.stringify({ field: "priority", direction: "asc" });
+    mockStore[BEADS_SORT_KEY] = JSON.stringify({
+      field: "priority",
+      direction: "asc",
+    });
     expect(getBeadsSort()).toEqual({ field: "priority", direction: "asc" });
   });
 
   test("falls back to defaults for invalid field/direction", () => {
-    mockStore[BEADS_SORT_KEY] = JSON.stringify({ field: "bogus", direction: "sideways" });
+    mockStore[BEADS_SORT_KEY] = JSON.stringify({
+      field: "bogus",
+      direction: "sideways",
+    });
     expect(getBeadsSort()).toEqual({ field: "created", direction: "desc" });
   });
 
@@ -387,17 +420,26 @@ describe("getBeadsSort", () => {
 describe("setBeadsSort", () => {
   test("persists sort state to localStorage", () => {
     setBeadsSort({ field: "updated", direction: "asc" });
-    expect(JSON.parse(mockStore[BEADS_SORT_KEY])).toEqual({ field: "updated", direction: "asc" });
+    expect(JSON.parse(mockStore[BEADS_SORT_KEY])).toEqual({
+      field: "updated",
+      direction: "asc",
+    });
   });
 
   test("normalizes invalid values to defaults when saving", () => {
     setBeadsSort({ field: "nope", direction: "nope" });
-    expect(JSON.parse(mockStore[BEADS_SORT_KEY])).toEqual({ field: "created", direction: "desc" });
+    expect(JSON.parse(mockStore[BEADS_SORT_KEY])).toEqual({
+      field: "created",
+      direction: "desc",
+    });
   });
 
   test("uses all defaults when given no argument", () => {
     setBeadsSort();
-    expect(JSON.parse(mockStore[BEADS_SORT_KEY])).toEqual({ field: "created", direction: "desc" });
+    expect(JSON.parse(mockStore[BEADS_SORT_KEY])).toEqual({
+      field: "created",
+      direction: "desc",
+    });
   });
 
   test("round-trips through getBeadsSort", () => {
@@ -422,7 +464,12 @@ describe("getCategoryFilter / setCategoryFilter", () => {
   });
 
   test("round-trips: setCategoryFilter then getCategoryFilter", () => {
-    setCategoryFilter({ regular: false, periodic: true, archived: true, tasks: false });
+    setCategoryFilter({
+      regular: false,
+      periodic: true,
+      archived: true,
+      tasks: false,
+    });
     const result = getCategoryFilter();
     expect(result.regular).toBe(false);
     expect(result.periodic).toBe(true);
@@ -437,7 +484,9 @@ describe("getCategoryFilter / setCategoryFilter", () => {
   });
 
   test("partial object persisted → missing keys normalized to true", () => {
-    sessionMockStore["mitto_category_filter"] = JSON.stringify({ regular: false });
+    sessionMockStore["mitto_category_filter"] = JSON.stringify({
+      regular: false,
+    });
     const result = getCategoryFilter();
     expect(result.regular).toBe(false);
     expect(result.periodic).toBe(true);
@@ -457,17 +506,19 @@ describe("migrateLegacyTabStorage", () => {
   test("removes orphaned tab keys and strips \\u0001-scoped expanded-group entries", () => {
     // Seed orphaned top-level keys
     mockStore["mitto_conversation_filter_tab"] = "conversations";
-    mockStore["mitto_filter_tab_grouping"] = JSON.stringify({ conversations: "folder" });
+    mockStore["mitto_filter_tab_grouping"] = JSON.stringify({
+      conversations: "folder",
+    });
     mockStore["mitto_last_session_id_conversations"] = "s1";
     mockStore["mitto_last_session_id_periodic"] = "s2";
     mockStore["mitto_last_session_id_archived"] = "s3";
 
     // Seed expanded-groups with a mix of old tab-scoped (\u0001) and new unscoped keys
     mockStore[EXPANDED_KEY] = JSON.stringify({
-      "conversations\u0001/home/user/project": true,  // OLD — must be removed
-      "/home/user/project": false,                     // NEW bare folder — must survive
-      "archived:/home/user/project": true,             // NEW — must survive
-      "parent:abc123": true,                           // NEW — must survive
+      "conversations\u0001/home/user/project": true, // OLD — must be removed
+      "/home/user/project": false, // NEW bare folder — must survive
+      "archived:/home/user/project": true, // NEW — must survive
+      "parent:abc123": true, // NEW — must survive
     });
 
     migrateLegacyTabStorage();

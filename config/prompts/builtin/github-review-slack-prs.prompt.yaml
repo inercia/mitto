@@ -1,0 +1,268 @@
+icon: search
+name: 'GitHub: review PRs requests in slack'
+menus: prompts
+parameters:
+  - name: SlackChannel
+    type: text
+    description: Link (or ID) of the Slack channel to scan for PR review requests
+  - name: CheckoutsRoot
+    type: text
+    description: Root directory that contains the local checkouts of the repositories you may review
+description: Scan a Slack channel for PR review requests, match each to a local checkout under a checkouts root, and review it — interactive when watched, silent & autonomous when run periodically
+group: GitHub
+backgroundColor: '#BBDEFB'
+tags:
+- github
+- slack
+- periodic
+enabledWhen: Tools.HasPattern("slack_*") && (Tools.HasPattern("github_*") || CommandExists("gh"))
+periodic:
+  mode: optional
+  default: false
+  trigger: onCompletion
+  delay: 60
+prompt: |
+  Scan a Slack channel for **requests to review pull requests**, map each request
+  to the matching **local checkout** under a given checkouts root, and review each
+  PR the same careful way as the **"GitHub: review a Pull Request"** prompt —
+  inspecting the PR **without disturbing any local changes** and reviewing against
+  the repository's own conventions. Designed to be safe to run **periodically**.
+
+  ## Session Context
+
+  Your session ID is `{{ .Session.ID }}` — use this as `self_id` for all `mitto_*` MCP tool calls.
+
+  ## Arguments
+
+  - **Slack channel:** {{ if .Args.SlackChannel }}`{{ .Args.SlackChannel }}`{{ else }}_not provided_{{ end }}
+  - **Checkouts root:** {{ if .Args.CheckoutsRoot }}`{{ .Args.CheckoutsRoot }}`{{ else }}_not provided_{{ end }}
+
+  If either argument is missing: in **interactive** mode ask for it with
+  `mitto_ui_options(self_id: "{{ .Session.ID }}", ..., allow_free_text: true)`;
+  in **silent periodic** mode, post a `mitto_ui_notify` explaining what is missing
+  and stop.
+
+  ## Interaction Mode — READ THIS FIRST
+  {{- if and .Session.IsPeriodic (not .Session.IsPeriodicForced) }}
+
+  **Silent autonomous mode — scheduled periodic run.** Nobody is watching.
+  - Use **only** `mitto_ui_notify`. Do **NOT** call `mitto_ui_options`,
+    `mitto_ui_form`, or `mitto_ui_textbox` — never block waiting for a human.
+  - You **may post review comments without asking**, but only findings you are
+    **highly confident** are correct and actionable. When a finding is uncertain,
+    ambiguous, stylistic, or you are not **really sure**, **drop it** — staying
+    silent is always better than posting a wrong or noisy comment.
+  - Post as a **COMMENT** review only. **Never** auto-`APPROVE` or
+    `REQUEST_CHANGES` in silent mode.
+  - If after filtering there is nothing you are sure about, post **no** review and
+    just record that you looked (a brief `mitto_ui_notify` summary is enough).
+  {{- else }}
+
+  **Interactive mode** (a normal send, or a force-triggered periodic run): a user
+  may be present.
+  - Present candidate comments in a `mitto_ui_form` and **confirm with
+    `mitto_ui_options` before posting** anything.
+  - **Ask** when intent or a finding's validity is unclear, rather than guessing.
+  {{- end }}
+
+  ## Ground rules
+
+  - **Never destroy or disturb local work.** Each checkout may have uncommitted
+    changes. Do **not** `git checkout` / `git switch` the working tree, and do not
+    stash, reset, or pull. Inspect read-only; when you need the PR's files on disk,
+    use a **temporary worktree** (Step 4) and remove it afterwards.
+  - **Only act inside the checkouts root.** Ignore any review request whose
+    repository does not have a checkout under `{{ if .Args.CheckoutsRoot }}{{ .Args.CheckoutsRoot }}{{ else }}<checkouts-root>{{ end }}`.
+  - **Follow each repo's conventions**, not just generic best practice.
+  - Confirm `gh auth status` succeeds before using `gh`; if it fails, notify and stop.
+
+  ## Step 1 — Read review requests from the Slack channel
+
+  Resolve the channel from the argument: a Slack link looks like
+  `https://<workspace>.slack.com/archives/<CHANNEL_ID>` — the `C…`/`G…` segment is
+  the channel ID. Accept a bare ID too.
+
+  Use the available **Slack MCP tools (`slack_*`)** to read the **most recent**
+  messages from that channel (a recent window is enough — e.g. the last day or the
+  last ~50 messages; in periodic mode only look at messages new since the previous
+  run is ideal, but a recent window with the Step 3 dedup is sufficient).
+
+  Identify messages that are **review requests**: typically they mention a review
+  and contain a **GitHub PR URL** like `https://github.com/<owner>/<repo>/pull/<number>`.
+  For each such message extract `<owner>`, `<repo>`, and `<number>`. Build a
+  de-duplicated list of `(owner, repo, number)` — **process each PR at most once
+  per run**, even if requested in several messages.
+
+  ## Step 2 — Map each request to a local checkout under the checkouts root
+
+  For each `(owner, repo, number)`, find the matching checkout **under the
+  checkouts root** by comparing each candidate's `origin` remote to the PR's repo:
+
+  ```bash
+  ROOT="{{ if .Args.CheckoutsRoot }}{{ .Args.CheckoutsRoot }}{{ else }}<checkouts-root>{{ end }}"
+  for d in "$ROOT"/*/; do
+    [ -d "$d/.git" ] || continue
+    url=$(git -C "$d" remote get-url origin 2>/dev/null) || continue
+    # match owner/repo against the remote URL (ssh or https form), case-insensitive,
+    # tolerating a trailing ".git"
+    echo "$url" | grep -qiE "[/:]<owner>/<repo>(\.git)?/?$" && echo "MATCH: $d"
+  done
+  ```
+
+  - If a checkout is found, record `REPO_DIR=<that directory>`.
+  - If **no** checkout under the root matches, **ignore** this request (out of
+    scope) — do not clone, and note it as skipped.
+
+  ## Step 3 — Deduplicate (skip already-reviewed / unchanged PRs)
+
+  For periodic safety, **do not re-review the same PR at the same point in time.**
+  Check, statelessly against GitHub, whether **you have already reviewed this PR at
+  its current head commit**:
+
+  ```bash
+  ME=$(gh api user -q .login)
+  HEAD_SHA=$(gh pr view <number> --repo <owner>/<repo> --json headRefOid -q .headRefOid)
+  LAST=$(gh api repos/<owner>/<repo>/pulls/<number>/reviews \
+    -q "[.[] | select(.user.login==\"$ME\")] | last | .commit_id")
+  ```
+
+  - If `LAST == HEAD_SHA`, you already reviewed this exact state → **skip** it.
+  - If there are **new commits** since your last review (or you never reviewed it),
+    proceed to review.
+  - Also skip PRs that are closed/merged or are **your own** (`author == $ME`).
+
+  ## Step 4 — Review each in-scope PR (safely, per repo)
+
+  Do this **per PR**, operating inside its `REPO_DIR` — never against the
+  conversation's own working directory, and never disturbing the checkout's tree.
+
+  Start read-only (these never touch the working tree):
+
+  ```bash
+  gh pr view <number> --repo <owner>/<repo> \
+    --json title,body,author,labels,commits,files,additions,deletions,baseRefName,headRefName,url
+  gh pr diff <number> --repo <owner>/<repo>
+  ```
+
+  When you need the PR's files on disk (surrounding code, greps, whole files at the
+  PR head), use a **temporary worktree** off `REPO_DIR` so the checkout is untouched —
+  this works whether or not that checkout is dirty:
+
+  ```bash
+  git -C "$REPO_DIR" fetch origin pull/<number>/head
+  TMPDIR=$(mktemp -d)
+  git -C "$REPO_DIR" worktree add --detach "$TMPDIR" FETCH_HEAD
+  # read files under "$TMPDIR"; do NOT modify them
+  ```
+
+  **Understand intent & fit**, then **learn the repo's conventions** before judging:
+  read the PR title/description/linked issues/commit messages; read `AGENTS.md`,
+  `CLAUDE.md`, `CONTRIBUTING*`, `README`, `docs/`, `.augment/rules/`, `.cursor/rules/`,
+  linter/formatter configs, and the surrounding code style in the touched files.
+
+  Review the diff (and surrounding code) across five axes, applying the repo's
+  conventions on top:
+
+  | Axis | Look for |
+  |------|----------|
+  | Correctness | Meets intent, edge cases, error paths, off-by-one, races, adequate tests |
+  | Readability | Clear names, simple control flow, no needless complexity or dead code |
+  | Architecture | Fits existing patterns, clean boundaries, no duplication, deps flow correctly |
+  | Security | Input validated, no secrets, no injection, untrusted external data |
+  | Performance | No N+1, no unbounded loops, pagination, nothing heavy in hot paths |
+
+  Read tests first — they reveal intent and coverage gaps. Approve changes that
+  improve overall code health even if imperfect; don't block on pure preference.
+
+  Collect findings; for each capture: **path** relative to the repo root, the
+  **line number** (if it maps to a specific line, else file-level), and a concise,
+  actionable **comment**.
+
+  Always remove the worktree when done with this PR:
+
+  ```bash
+  git -C "$REPO_DIR" worktree remove "$TMPDIR" --force
+  ```
+
+  ## Step 5 — Present and post the review
+  {{- if and .Session.IsPeriodic (not .Session.IsPeriodicForced) }}
+
+  **Silent periodic mode** — no forms, no confirmations:
+  - Keep **only** the findings you are **really sure** about (drop everything
+    uncertain/stylistic, per the Interaction Mode rules).
+  - If at least one confident finding remains, post a single **COMMENT** review.
+    Line-specific findings go inline via the reviews API; file-level/general ones
+    go in the body:
+
+    ```bash
+    gh api repos/<owner>/<repo>/pulls/<number>/reviews \
+      -f event=COMMENT \
+      -f body="<short summary + any file-level comments>" \
+      -F "comments[][path]=<path>" -F "comments[][line]=<line>" -F "comments[][body]=<text>"
+      # repeat the three -F lines once per inline comment
+    ```
+  - If nothing is confident enough, post **no** review for this PR.
+  {{- else }}
+
+  **Interactive mode** — present **all** candidate comments for one PR in a single
+  `mitto_ui_form(self_id: "{{ .Session.ID }}")`. Use one `<fieldset>` per comment:
+  the legend shows the repo-root-relative path and line (links aren't allowed in
+  the form, so the path is plain text), an Approve/Reject radio, and a textarea
+  **pre-filled** with your suggested comment so the user can edit it in place; end
+  with an overall verdict.
+
+  ```html
+  <p>Review each candidate comment for <code>&lt;owner&gt;/&lt;repo&gt;</code> PR #&lt;number&gt;. Approve or reject, and edit the text before posting.</p>
+
+  <fieldset>
+  <legend>① internal/auth/login.go — line 88</legend>
+  <p>Password comparison uses <code>==</code>, vulnerable to timing attacks.</p>
+  <p>Decision:</p>
+  <label><input type="radio" name="c1_decision" value="approve" checked> Approve</label>
+  <label><input type="radio" name="c1_decision" value="reject"> Reject</label>
+  <label for="c1_text">Comment (edit to modify):</label>
+  <textarea name="c1_text" rows="3">Password comparison uses `==`, which is vulnerable to timing attacks. Consider `subtle.ConstantTimeCompare`.</textarea>
+  </fieldset>
+
+  <p>Overall verdict:</p>
+  <label><input type="radio" name="verdict" value="comment" checked> Comment only</label>
+  <label><input type="radio" name="verdict" value="approve"> Approve the PR</label>
+  <label><input type="radio" name="verdict" value="request_changes"> Request changes</label>
+  ```
+
+  Generate one fieldset per real finding, with stable names `c<N>_decision` /
+  `c<N>_text`. A comment is included only if its decision is `approve`; use the
+  (possibly edited) text. If there are many findings (>~15), split into batches of
+  ~10 per form. Then **confirm before posting**:
+
+  ```
+  mitto_ui_options(self_id: "{{ .Session.ID }}",
+    question: "Post these <count> comments to <owner>/<repo> #<number> as a '<verdict>' review?",
+    options: [ { label: "Post to the PR" }, { label: "Just show me the review here" }, { label: "Cancel" } ])
+  ```
+
+  If posting, build a single review (same `gh api ... /reviews` call as above),
+  mapping the verdict to `event`: comment → `COMMENT`, approve → `APPROVE`, request
+  changes → `REQUEST_CHANGES`. If the user cancels or approves nothing, post nothing.
+  {{- end }}
+
+  ## Step 6 — Summarise
+
+  After processing all in-scope requests, post a concise `mitto_ui_notify` summary:
+  how many requests were found, how many reviewed (with comment counts), how many
+  skipped as already-reviewed/unchanged, and how many ignored as out of the
+  checkouts root. In interactive mode you may additionally print the details.
+
+  ## Guidelines
+
+  - **Never** modify, stash, reset, or switch any checkout's working tree; use a
+    temporary worktree off the matched `REPO_DIR` plus read-only `gh`, and always
+    clean the worktree up.
+  - **Only** review repos with a checkout under the checkouts root; ignore the rest.
+  - **Process each PR at most once per run**, and skip PRs already reviewed at their
+    current head commit (re-review only when new commits arrive).
+  - Review against each **repo's conventions** first, generic best practice second.
+  - In **silent periodic** mode never block on UI, post only comments you are
+    **really sure** about, and only as a `COMMENT` review.
+  - In **interactive** mode, pre-fill every textarea and **confirm before posting**;
+    if the user cancels, post nothing.

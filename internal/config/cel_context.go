@@ -22,6 +22,58 @@ type PromptEnabledContext struct {
 	// Item contains the per-row item context for list menus (e.g. a beads issue row).
 	// All fields are empty strings when no item context is provided.
 	Item ItemContext
+	// Args holds the arguments supplied to the prompt (meta.Arguments) at send time.
+	// It feeds template field interpolation ({{ .Args.NAME }}) in prompt bodies and,
+	// once the CEL env declares the args variable (mitto-m7sb.5), the cond/when
+	// template function. It is nil at menu time (enabledWhen evaluation), since no
+	// prompt has been dispatched yet; nil is safe (a nil map indexes to "").
+	Args map[string]string
+	// UserData is the per-conversation user data (name→value). Feeds the UserData
+	// template func ({{ UserData "NAME" }}), the .UserData map, and the CEL UserData
+	// variable. nil at menu time is safe (nil map indexes to "").
+	UserData map[string]string
+	// Iteration holds periodic-iteration info for the current run, enabling prompt
+	// bodies to branch on which run they are in (e.g. {{ if .Iteration.IsFirst }}).
+	// All-zero (Number=0, IsPeriodic=false) for non-periodic prompts.
+	Iteration IterationContext
+}
+
+// IterationContext holds periodic-iteration info for CEL/template evaluation.
+// Number is the 0-based index of the current run (IterationCount at dispatch).
+// Values are zero for non-periodic prompts.
+type IterationContext struct {
+	// Number is the 0-based index of the current periodic run.
+	Number int
+	// Max is the configured maximum number of runs (0 = unlimited).
+	Max int
+	// IsPeriodic indicates the current prompt was triggered by the periodic runner.
+	IsPeriodic bool
+	// IsFirst is true when Number == 0.
+	IsFirst bool
+	// IsLast is true when Max > 0 && Number == Max-1.
+	IsLast bool
+	// IsUninterrupted is true ONLY on a scheduled (non-forced) periodic run that
+	// directly follows another such run of this same loop with nothing in between:
+	// no user interjection, no forced "run now", no FreshContext, and within the same
+	// process lifetime. Powered by a session-scoped in-memory marker that resets across
+	// archive/unarchive, GC suspend/resume, process restart, ACP reinit, pause/re-enable,
+	// and loop config changes. Prompt bodies branch on it to render a compact "continue"
+	// form on uninterrupted continuation runs and the verbose form otherwise.
+	IsUninterrupted bool
+}
+
+// ACPServerInfo describes a single ACP server available in the workspace.
+// Mirrors processors.AvailableACPServer but lives in the config package so
+// that templatefuncs.go can format it without creating an import cycle.
+type ACPServerInfo struct {
+	// Name is the server identifier (e.g., "claude-code").
+	Name string
+	// Type is the server type for prompt matching. Defaults to Name if not set.
+	Type string
+	// Tags contains optional categorization labels (e.g., ["coding", "fast-model"]).
+	Tags []string
+	// Current is true if this is the active ACP server for the session.
+	Current bool
 }
 
 // ACPContext holds ACP server context for CEL evaluation.
@@ -34,7 +86,14 @@ type ACPContext struct {
 	Tags []string
 	// AutoApprove indicates if permission requests are auto-approved
 	AutoApprove bool
+	// Available is the list of ACP servers that have workspaces configured for
+	// the session's working directory. Used by the {{ .ACP.AvailableText }} template accessor.
+	Available []ACPServerInfo
 }
+
+// AvailableText renders the available ACP servers as a human-readable
+// comma-separated string (see FormatACPServers). Empty when none.
+func (a ACPContext) AvailableText() string { return FormatACPServers(a.Available) }
 
 // WorkspaceContext holds workspace context for CEL evaluation.
 type WorkspaceContext struct {
@@ -50,6 +109,9 @@ type WorkspaceContext struct {
 	HasMittoRC bool
 	// HasMetadataDescription indicates whether the workspace has a metadata description in .mittorc
 	HasMetadataDescription bool
+	// UserDataSchemaJSON is the JSON representation of the workspace user data schema fields.
+	// Empty when no schema is defined. Used by the {{ .Workspace.UserDataSchemaJSON }} template accessor.
+	UserDataSchemaJSON string
 }
 
 // SessionContext holds current session context for CEL evaluation.
@@ -58,6 +120,10 @@ type SessionContext struct {
 	ID string
 	// Name is the display name of the session
 	Name string
+	// HasMessages indicates whether the conversation has had at least one user
+	// message (derived from meta.LastUserMessageAt being non-zero). Used to gate
+	// "continue"-style prompts that make no sense in an empty conversation.
+	HasMessages bool
 	// IsChild indicates whether this session has a parent (is a child session)
 	IsChild bool
 	// IsAutoChild indicates whether this session was automatically created
@@ -66,6 +132,10 @@ type SessionContext struct {
 	ParentID string
 	// IsPeriodic indicates whether the current prompt was triggered by the periodic runner
 	IsPeriodic bool
+	// IsPeriodicForced indicates whether a periodic prompt was triggered manually via
+	// "run now" (as opposed to the normal scheduled delivery). Mirrors
+	// ProcessorInput.IsPeriodicForced and the @mitto:periodic_forced placeholder.
+	IsPeriodicForced bool
 	// IsPeriodicConversation indicates whether the conversation is configured as a
 	// periodic conversation (it has a periodic prompt configuration). Unlike
 	// IsPeriodic, this reflects the conversation TYPE, not whether the current run
@@ -76,6 +146,18 @@ type SessionContext struct {
 	HasBeadsIssue bool
 	// BeadsIssue is the linked beads issue ID (e.g. "bd-123"), empty if none.
 	BeadsIssue string
+	// UserDataJSON is the JSON representation of the current session's user data attributes.
+	// Empty when no user data exists. Used by the {{ .Session.UserDataJSON }} template accessor.
+	UserDataJSON string
+	// ModelTags holds the capability tags resolved for the session's CURRENT model
+	// (from the models: profiles in config). Empty when agentModels is unknown (cold start
+	// / suspended session) or no profile matches. Feeds the Model(tag) template func and the
+	// Session.HasModelTag CEL macro / "tag" in Session.ModelTags expression. A nil slice is safe.
+	ModelTags []string
+	// ModelName is the display name of the session's current model (convenience accessor for
+	// {{ .Session.ModelName }} display). Empty when the model is unknown. Not the headline
+	// surface — branch on ModelTags / HasModelTag rather than the brittle model-name string.
+	ModelName string
 }
 
 // ParentContext holds parent session context for CEL evaluation.
@@ -83,10 +165,40 @@ type SessionContext struct {
 type ParentContext struct {
 	// Exists indicates whether a parent session exists
 	Exists bool
+	// ID is the session identifier of the parent session (empty if no parent)
+	ID string
 	// Name is the display name of the parent session
 	Name string
 	// ACPServer is the ACP server name of the parent session
 	ACPServer string
+}
+
+// Ref renders the parent reference as "id (name)", or just "id" when the name is
+// empty, or "" when there is no parent. Mirrors the @mitto:parent formatter and
+// backs the {{ .Parent.Ref }} template accessor.
+func (p ParentContext) Ref() string {
+	if p.ID == "" {
+		return ""
+	}
+	if p.Name != "" {
+		return p.ID + " (" + p.Name + ")"
+	}
+	return p.ID
+}
+
+// ChildInfo describes a single child session for template rendering.
+// Lives in config so templatefuncs.go can format it without an import cycle.
+type ChildInfo struct {
+	// ID is the child session identifier.
+	ID string
+	// Name is the child session title/name (may be empty if not yet set).
+	Name string
+	// ACPServer is the ACP server name used by the child session.
+	ACPServer string
+	// Origin is the child origin string: "auto", "mcp", or "human".
+	Origin string
+	// IsPrompting indicates the child agent is currently responding.
+	IsPrompting bool
 }
 
 // ChildrenContext holds children sessions context for CEL evaluation.
@@ -105,11 +217,28 @@ type ChildrenContext struct {
 	PromptingCount int
 	// IdleCount is the number of child sessions NOT currently prompting (Count - PromptingCount)
 	IdleCount int
+	// All contains structured info for all child sessions.
+	// Used by the {{ .Children.AllText }} template accessor (FormatChildren).
+	All []ChildInfo
+	// MCP contains structured info for MCP-origin child sessions only.
+	// Used by the {{ .Children.MCPText }} template accessor (FormatChildren on the MCP slice).
+	MCP []ChildInfo
 }
+
+// AllText renders all child sessions as a human-readable comma-separated
+// string (see FormatChildren). Empty when none.
+func (c ChildrenContext) AllText() string { return FormatChildren(c.All) }
+
+// MCPText renders MCP-origin child sessions only, comma-separated. Empty when none.
+func (c ChildrenContext) MCPText() string { return FormatChildren(c.MCP) }
 
 // ToolsContext holds MCP tools context for CEL evaluation.
 type ToolsContext struct {
-	// Available indicates whether the tool list has been fetched
+	// Available indicates whether the tool list is known (a definitive, non-empty
+	// result has been fetched). When false, the tool list is unknown / not yet
+	// fetched, and the tool-pattern functions (tools.hasPattern/hasAllPatterns/
+	// hasAnyPattern) fail open (return true) so tool-gated prompts are not hidden
+	// during the MCP-tools cache warm-up window.
 	Available bool
 	// Names contains the names of available tools
 	Names []string
@@ -117,8 +246,8 @@ type ToolsContext struct {
 
 // ItemContext holds the generic per-row item context for CEL evaluation of list menus.
 // Populated when a menu is opened for a specific row (e.g. a beads issue); empty otherwise.
-// All fields are always present (empty string when unset) so expressions like item.status
-// always resolve without a missing-key error.
+// String fields are always present (empty string when unset) so expressions like item.status
+// always resolve without a missing-key error. Labels is nil/empty when no labels are set.
 type ItemContext struct {
 	// Id is the unique identifier of the item (e.g. a beads issue ID like "mitto-abc")
 	Id string
@@ -128,6 +257,8 @@ type ItemContext struct {
 	Type string
 	// Priority is the priority of the item as a string (e.g. "0", "1", "2", "3")
 	Priority string
+	// Labels are the item's labels (e.g. a beads issue's labels like ["blog"]). Nil when none.
+	Labels []string
 	// Kind distinguishes the source of the item (e.g. "beadsIssue")
 	Kind string
 }

@@ -32,6 +32,17 @@ func StderrOf(err error) string {
 	return ""
 }
 
+// IsNotFound reports whether err represents a bd "issue not found" failure, as
+// opposed to a genuine internal error. bd exits non-zero and prints a message
+// like: no issue found matching "<id>" to stderr when the requested issue does
+// not exist. Callers use this to map a missing issue to HTTP 404 instead of 500.
+func IsNotFound(err error) bool {
+	if err == nil {
+		return false
+	}
+	return strings.Contains(strings.ToLower(StderrOf(err)), "no issue found matching")
+}
+
 // CreateParams carries optional fields for Client.Create.
 type CreateParams struct {
 	Title       string
@@ -73,7 +84,8 @@ type Client interface {
 	Show(ctx context.Context, dir, id string) ([]byte, error)
 	Create(ctx context.Context, dir string, p CreateParams) ([]byte, error)
 	Delete(ctx context.Context, dir, id string) error
-	Cleanup(ctx context.Context, dir string) (int, error)
+	ListClosedIDs(ctx context.Context, dir string) ([]string, error)
+	DeleteIDs(ctx context.Context, dir string, ids []string) error
 	SetStatus(ctx context.Context, dir, id, action string) error
 	Update(ctx context.Context, dir string, p UpdateParams) error
 	Comment(ctx context.Context, dir, id, text string) error
@@ -85,8 +97,21 @@ type Client interface {
 	Sync(ctx context.Context, dir, integration, action string) (string, error)
 }
 
-// NewClient returns a Client backed by the real bd binary.
-func NewClient() Client { return &cliClient{runner: execRunner{}} }
+// webUIActor is the default BEADS_ACTOR for Tasks-view CRUD initiated through the
+// web UI, where there is no single owning conversation. Stamping these writes
+// mitto:webui distinguishes them from a human running bd directly and from a
+// specific conversation's mitto:<sessionID>.
+const webUIActor = "mitto:webui"
+
+// NewClient returns a Client backed by the real bd binary. Writes it makes are
+// stamped with the mitto:webui actor for audit attribution.
+func NewClient() Client { return &cliClient{runner: execRunner{actor: webUIActor}} }
+
+// NewExecRunner returns the default Runner that invokes the real bd binary,
+// stamping writes with the mitto:webui actor. It is exported so callers can wrap
+// it (e.g. to bracket each invocation with side effects) while preserving the
+// production behavior of NewClient.
+func NewExecRunner() Runner { return execRunner{actor: webUIActor} }
 
 // NewClientWithRunner returns a Client backed by a custom Runner (for testing).
 func NewClientWithRunner(r Runner) Client { return &cliClient{runner: r} }
@@ -112,7 +137,7 @@ func IsValidConfigKey(key string) bool {
 // IsValidUpstream reports whether u is a recognised upstream task system.
 func IsValidUpstream(u string) bool {
 	switch u {
-	case "none", "jira", "github", "gitlab", "linear":
+	case "none", "jira", "github", "gitlab", "linear", "prompts":
 		return true
 	default:
 		return false

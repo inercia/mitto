@@ -1,9 +1,11 @@
 icon: save
 name: Commit changes
-menus: prompts
+menus: prompts, !promptsPeriodic
 description: Stage and commit changes with descriptive messages
 group: Submission of changes
 backgroundColor: '#B2DFDB'
+preferredModels:
+  - modelTag: Coding
 prompt: |
   Create Git commits for changes in this repository with proper organization and messages.
 
@@ -28,7 +30,7 @@ prompt: |
   - Suggest branch name following detected convention (based on the changes to commit)
   - **With Mitto UI**: Use `mitto_ui_form` to let the user choose:
     ```
-    mitto_ui_form(self_id: "@mitto:session_id", title: "Create Feature Branch?", html: "
+    mitto_ui_form(self_id: "{{ .Session.ID }}", title: "Create Feature Branch?", html: "
       <label for='action'>Action:</label>
       <select name='action' id='action'>
         <option value='create_branch'>Create feature branch</option>
@@ -63,7 +65,7 @@ prompt: |
 
   **With Mitto UI**: Use `mitto_ui_options` for the top-level decision:
   ```
-  mitto_ui_options(self_id: "@mitto:session_id", question: "Proposed N commits (see above). How to proceed?",
+  mitto_ui_options(self_id: "{{ .Session.ID }}", question: "Proposed N commits (see above). How to proceed?",
     options: [{label: "Approve all"}, {label: "Edit commit messages"}, {label: "Modify plan"}, {label: "Cancel"}])
   ```
   - If **"Edit commit messages"**: proceed to step 4a.
@@ -77,7 +79,7 @@ prompt: |
 
   For each commit, present the message in a textbox for editing:
   ```
-  mitto_ui_textbox(self_id: "@mitto:session_id",
+  mitto_ui_textbox(self_id: "{{ .Session.ID }}",
     title: "Edit commit message (1/N)",
     text: "<type>(<scope>): <description>\n\n<body>",
     result: "edited_text")

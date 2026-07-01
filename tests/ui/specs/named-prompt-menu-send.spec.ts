@@ -172,7 +172,7 @@ testWithCleanup.describe(
   () => {
     testWithCleanup.beforeEach(async ({ page, request, apiUrl, helpers }) => {
       // Mock the beads list so the table renders without the external `bd` binary.
-      await page.route("**/api/beads/list**", async (route) => {
+      await page.route(/\/api\/issues(\?|$)/, async (route) => {
         await route.fulfill({
           status: 200,
           contentType: "application/json",
@@ -276,7 +276,7 @@ testWithCleanup.describe(
   "Named Prompt Menu Sends — Surface 3: beads list menu",
   () => {
     testWithCleanup.beforeEach(async ({ page, request, apiUrl, helpers }) => {
-      await page.route("**/api/beads/list**", async (route) => {
+      await page.route(/\/api\/issues(\?|$)/, async (route) => {
         await route.fulfill({
           status: 200,
           contentType: "application/json",
@@ -315,7 +315,7 @@ testWithCleanup.describe(
 
         // Footer list-prompts button opens the beadsList dropdown.
         const listPromptsBtn = page.locator(
-          'button[title="Run a prompt over the issue list in a new conversation"]',
+          'button[data-tip="Run a prompt over the issue list in a new conversation"]',
         );
         await expect(listPromptsBtn).toBeVisible({
           timeout: timeouts.shortAction,
@@ -397,7 +397,7 @@ testWithCleanup.describe(
         // The "Insert predefined prompt" toggle only renders when prompts are
         // loaded for the active workspace; wait up to appReady.
         const promptsToggle = page.locator(
-          'button[title="Insert predefined prompt"]',
+          'button[data-tip="Insert predefined prompt"]',
         );
         await expect(promptsToggle).toBeVisible({ timeout: timeouts.appReady });
         await promptsToggle.click();

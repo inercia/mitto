@@ -40,15 +40,23 @@ async function loadModuleFromUrl(url) {
  * @returns {Promise<object>} Object with all modules
  */
 async function loadAllFromLocal() {
-  const [preactModule, hooksModule, htmModule, markedModule, dompurifyModule] = await Promise.all([
-    loadModuleFromUrl(LOCAL_URLS.preact),
-    loadModuleFromUrl(LOCAL_URLS.preactHooks),
-    loadModuleFromUrl(LOCAL_URLS.htm),
-    loadModuleFromUrl(LOCAL_URLS.marked),
-    loadModuleFromUrl(LOCAL_URLS.dompurify),
-  ]);
+  const [preactModule, hooksModule, htmModule, markedModule, dompurifyModule] =
+    await Promise.all([
+      loadModuleFromUrl(LOCAL_URLS.preact),
+      loadModuleFromUrl(LOCAL_URLS.preactHooks),
+      loadModuleFromUrl(LOCAL_URLS.htm),
+      loadModuleFromUrl(LOCAL_URLS.marked),
+      loadModuleFromUrl(LOCAL_URLS.dompurify),
+    ]);
 
-  return { preactModule, hooksModule, htmModule, markedModule, dompurifyModule, source: "local" };
+  return {
+    preactModule,
+    hooksModule,
+    htmModule,
+    markedModule,
+    dompurifyModule,
+    source: "local",
+  };
 }
 
 /**
@@ -63,11 +71,46 @@ async function loadAllFromLocal() {
 async function initializeVendorLibraries() {
   const result = await loadAllFromLocal();
 
-  const { preactModule, hooksModule, htmModule, markedModule, dompurifyModule, source } = result;
+  const {
+    preactModule,
+    hooksModule,
+    htmModule,
+    markedModule,
+    dompurifyModule,
+    source,
+  } = result;
 
   // Extract exports
-  const { h, render, Fragment } = preactModule;
-  const { useState, useEffect, useLayoutEffect, useRef, useCallback, useMemo } = hooksModule;
+  const { h, render, Fragment, Component } = preactModule;
+  const { useState, useEffect, useLayoutEffect, useRef, useCallback, useMemo } =
+    hooksModule;
+
+  /**
+   * memo(component, propsAreEqual?) — skip re-render when props haven't changed.
+   * Implemented via a class component with shouldComponentUpdate so it works
+   * with the vendored Preact build (no preact/compat required).
+   * propsAreEqual(prevProps, nextProps) → true means "equal, skip re-render".
+   * When omitted, a shallow-equality check is used.
+   */
+  function memo(component, propsAreEqual) {
+    class MemoComponent extends Component {
+      shouldComponentUpdate(nextProps) {
+        if (propsAreEqual) return !propsAreEqual(this.props, nextProps);
+        // Default: shallow-compare all own props
+        const a = this.props,
+          b = nextProps;
+        for (const k in a) if (a[k] !== b[k]) return true;
+        for (const k in b) if (!(k in a)) return true;
+        return false;
+      }
+      render() {
+        return h(component, this.props);
+      }
+    }
+    MemoComponent.displayName =
+      "Memo(" + (component.displayName || component.name || "") + ")";
+    return MemoComponent;
+  }
   const htm = htmModule.default;
   const { marked } = markedModule;
   const DOMPurify = dompurifyModule.default;
@@ -88,6 +131,8 @@ async function initializeVendorLibraries() {
     h,
     render,
     Fragment,
+    Component,
+    memo,
     useState,
     useEffect,
     useLayoutEffect,

@@ -103,6 +103,11 @@ type WorkspaceSettings struct {
 	// workspace, then the model is switched to the best match from available models.
 	// When nil or Pattern is empty, the ACP server's default model is used.
 	AuxiliaryModelSelection *ACPServerConstraint `json:"auxiliary_model_selection,omitempty" yaml:"auxiliary_model_selection,omitempty"`
+	// AuxiliaryModelProfile is the name of a Model profile (Config.Models) used for
+	// auxiliary-session model selection, replacing the legacy free-text
+	// AuxiliaryModelSelection matchMode/pattern. Empty falls back to
+	// AuxiliaryModelSelection when present.
+	AuxiliaryModelProfile string `json:"auxiliary_model_profile,omitempty" yaml:"auxiliary_model_profile,omitempty"`
 	// IsDefault marks this workspace as the default for its working directory.
 	// When multiple workspaces share the same folder (e.g. different ACP servers
 	// or model variants), the one with IsDefault set is preferred when a workspace

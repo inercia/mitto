@@ -27,6 +27,16 @@ document.addEventListener("click", (e) => {
   const href = link.getAttribute("href");
   if (!href) return;
 
+  // Handle beads issue links (inserted by linkifyBeadsRefs)
+  if (link.dataset.beadsId) {
+    e.preventDefault();
+    e.stopPropagation();
+    if (typeof window.mittoOpenBeadsIssue === "function") {
+      window.mittoOpenBeadsIssue(link.dataset.beadsId);
+    }
+    return;
+  }
+
   console.log("[Mitto] Link clicked:", href, "isNativeApp:", isNativeApp());
 
   // Handle viewer URLs (new format: /viewer.html?ws=...&path=...)
@@ -172,5 +182,5 @@ export function isOverHorizontallyScrollable() {
  * Used to suppress swipe-navigation when the user is interacting with a dialog.
  */
 export function isModalDialogOpen() {
-  return !!document.querySelector('.fixed.inset-0.z-50');
+  return !!document.querySelector(".fixed.inset-0.z-50");
 }

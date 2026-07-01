@@ -1,8 +1,10 @@
 package config
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -132,7 +134,7 @@ func TestToWebPrompt(t *testing.T) {
 		Description:     "Test description",
 		Group:           "Testing",
 		Menus:           "conversation",
-		EnabledWhen:     `acp.matchesServerType(["auggie", "claude-code"])`,
+		EnabledWhen:     `ACP.MatchesServerType(["auggie", "claude-code"])`,
 	}
 
 	wp := prompt.ToWebPrompt()
@@ -163,7 +165,7 @@ func TestToWebPrompt(t *testing.T) {
 		t.Errorf("WebPrompt.Source = %q, want %q", wp.Source, PromptSourceFile)
 	}
 	// EnabledWhen CEL expression should be passed through
-	wantEnabledWhen := `acp.matchesServerType(["auggie", "claude-code"])`
+	wantEnabledWhen := `ACP.MatchesServerType(["auggie", "claude-code"])`
 	if wp.EnabledWhen != wantEnabledWhen {
 		t.Errorf("WebPrompt.EnabledWhen = %q, want %q", wp.EnabledWhen, wantEnabledWhen)
 	}
@@ -294,6 +296,48 @@ prompt: |
 	wp := prompt.ToWebPrompt()
 	if wp.Periodic != nil {
 		t.Errorf("WebPrompt.Periodic = %+v, want nil", wp.Periodic)
+	}
+}
+
+func TestParsePromptFile_WithSingleton(t *testing.T) {
+	data := []byte(`name: "Singleton Prompt"
+singleton: true
+prompt: |
+  Only one instance at a time.
+`)
+
+	prompt, err := ParsePromptFile("singleton.prompt.yaml", data, time.Now())
+	if err != nil {
+		t.Fatalf("ParsePromptFile failed: %v", err)
+	}
+	if !prompt.Singleton {
+		t.Errorf("Singleton = false, want true")
+	}
+
+	// Round-trips through ToWebPrompt.
+	wp := prompt.ToWebPrompt()
+	if !wp.Singleton {
+		t.Errorf("WebPrompt.Singleton = false, want true")
+	}
+}
+
+func TestParsePromptFile_WithoutSingleton(t *testing.T) {
+	data := []byte(`name: "Plain Prompt"
+prompt: |
+  Many instances allowed.
+`)
+
+	prompt, err := ParsePromptFile("plain-singleton.prompt.yaml", data, time.Now())
+	if err != nil {
+		t.Fatalf("ParsePromptFile failed: %v", err)
+	}
+	if prompt.Singleton {
+		t.Errorf("Singleton = true, want false (absent defaults to false)")
+	}
+
+	wp := prompt.ToWebPrompt()
+	if wp.Singleton {
+		t.Errorf("WebPrompt.Singleton = true, want false")
 	}
 }
 
@@ -452,7 +496,7 @@ func TestPromptsToWebPrompts_Empty(t *testing.T) {
 
 func TestParsePromptFile_WithACPs(t *testing.T) {
 	data := []byte(`name: "Claude Only Prompt"
-enabledWhen: 'acp.matchesServerType("claude-code")'
+enabledWhen: 'ACP.MatchesServerType("claude-code")'
 prompt: |
   This prompt is only for Claude Code.
 `)
@@ -465,7 +509,7 @@ prompt: |
 	if prompt.Name != "Claude Only Prompt" {
 		t.Errorf("Name = %q, want %q", prompt.Name, "Claude Only Prompt")
 	}
-	want := `acp.matchesServerType("claude-code")`
+	want := `ACP.MatchesServerType("claude-code")`
 	if prompt.EnabledWhen != want {
 		t.Errorf("EnabledWhen = %q, want %q", prompt.EnabledWhen, want)
 	}
@@ -473,7 +517,7 @@ prompt: |
 
 func TestParsePromptFile_WithMultipleACPs(t *testing.T) {
 	data := []byte(`name: "Multi ACP Prompt"
-enabledWhen: 'acp.matchesServerType(["auggie", "claude-code", "custom-acp"])'
+enabledWhen: 'ACP.MatchesServerType(["auggie", "claude-code", "custom-acp"])'
 prompt: |
   This prompt works with multiple ACPs.
 `)
@@ -483,7 +527,7 @@ prompt: |
 		t.Fatalf("ParsePromptFile failed: %v", err)
 	}
 
-	want := `acp.matchesServerType(["auggie", "claude-code", "custom-acp"])`
+	want := `ACP.MatchesServerType(["auggie", "claude-code", "custom-acp"])`
 	if prompt.EnabledWhen != want {
 		t.Errorf("EnabledWhen = %q, want %q", prompt.EnabledWhen, want)
 	}
@@ -585,12 +629,12 @@ func TestIsSpecificToACP(t *testing.T) {
 		want        bool
 	}{
 		{"empty enabledWhen is not specific", "", "auggie", false},
-		{"empty ACP server", `acp.matchesServerType("auggie")`, "", false},
-		{"exact match single", `acp.matchesServerType("auggie")`, "auggie", true},
-		{"case insensitive match", `acp.matchesServerType("Auggie")`, "auggie", true},
-		{"no match", `acp.matchesServerType("claude-code")`, "auggie", false},
-		{"multiple ACPs with match", `acp.matchesServerType(["claude-code", "auggie"])`, "auggie", true},
-		{"multiple ACPs without match", `acp.matchesServerType(["claude-code", "other"])`, "auggie", false},
+		{"empty ACP server", `ACP.MatchesServerType("auggie")`, "", false},
+		{"exact match single", `ACP.MatchesServerType("auggie")`, "auggie", true},
+		{"case insensitive match", `ACP.MatchesServerType("Auggie")`, "auggie", true},
+		{"no match", `ACP.MatchesServerType("claude-code")`, "auggie", false},
+		{"multiple ACPs with match", `ACP.MatchesServerType(["claude-code", "auggie"])`, "auggie", true},
+		{"multiple ACPs without match", `ACP.MatchesServerType(["claude-code", "other"])`, "auggie", false},
 	}
 
 	for _, tt := range tests {
@@ -606,10 +650,10 @@ func TestIsSpecificToACP(t *testing.T) {
 
 func TestCollectRequiredToolPatterns(t *testing.T) {
 	prompts := []*PromptFile{
-		{Name: "P1", EnabledWhen: `tools.hasAllPatterns(["jira_*", "slack_*"])`},
-		{Name: "P2", EnabledWhen: `tools.hasAllPatterns(["jira_*", "github_*"])`},
+		{Name: "P1", EnabledWhen: `Tools.HasAllPatterns(["jira_*", "slack_*"])`},
+		{Name: "P2", EnabledWhen: `Tools.HasAllPatterns(["jira_*", "github_*"])`},
 		{Name: "P3", EnabledWhen: ""},
-		{Name: "P4", EnabledWhen: `tools.hasPattern("slack_*")`},
+		{Name: "P4", EnabledWhen: `Tools.HasPattern("slack_*")`},
 	}
 
 	patterns := CollectRequiredToolPatterns(prompts)
@@ -651,7 +695,7 @@ func TestCollectRequiredToolPatterns_Empty(t *testing.T) {
 
 func TestParsePromptFile_WithEnabledWhenTools(t *testing.T) {
 	data := []byte(`name: "Jira Prompt"
-enabledWhen: 'tools.hasAllPatterns(["jira_*", "slack_*"])'
+enabledWhen: 'Tools.HasAllPatterns(["jira_*", "slack_*"])'
 prompt: |
   This prompt requires Jira and Slack tools.
 `)
@@ -664,7 +708,7 @@ prompt: |
 	if prompt.Name != "Jira Prompt" {
 		t.Errorf("Name = %q, want %q", prompt.Name, "Jira Prompt")
 	}
-	want := `tools.hasAllPatterns(["jira_*", "slack_*"])`
+	want := `Tools.HasAllPatterns(["jira_*", "slack_*"])`
 	if prompt.EnabledWhen != want {
 		t.Errorf("EnabledWhen = %q, want %q", prompt.EnabledWhen, want)
 	}
@@ -674,12 +718,12 @@ func TestToWebPrompt_IncludesEnabledWhen(t *testing.T) {
 	prompt := &PromptFile{
 		Name:        "Test",
 		Content:     "Content here",
-		EnabledWhen: `acp.matchesServerType("auggie") && tools.hasAllPatterns(["jira_*", "slack_*"])`,
+		EnabledWhen: `ACP.MatchesServerType("auggie") && Tools.HasAllPatterns(["jira_*", "slack_*"])`,
 	}
 
 	wp := prompt.ToWebPrompt()
 
-	want := `acp.matchesServerType("auggie") && tools.hasAllPatterns(["jira_*", "slack_*"])`
+	want := `ACP.MatchesServerType("auggie") && Tools.HasAllPatterns(["jira_*", "slack_*"])`
 	if wp.EnabledWhen != want {
 		t.Errorf("WebPrompt.EnabledWhen = %q, want %q", wp.EnabledWhen, want)
 	}
@@ -691,9 +735,9 @@ func TestToWebPrompt_IncludesEnabledWhen(t *testing.T) {
 func TestFilterPromptsSpecificToACP(t *testing.T) {
 	prompts := []*PromptFile{
 		{Name: "All ACPs", EnabledWhen: ""},
-		{Name: "Claude Only", EnabledWhen: `acp.matchesServerType("claude-code")`},
-		{Name: "Auggie Only", EnabledWhen: `acp.matchesServerType("auggie")`},
-		{Name: "Both", EnabledWhen: `acp.matchesServerType(["claude-code", "auggie"])`},
+		{Name: "Claude Only", EnabledWhen: `ACP.MatchesServerType("claude-code")`},
+		{Name: "Auggie Only", EnabledWhen: `ACP.MatchesServerType("auggie")`},
+		{Name: "Both", EnabledWhen: `ACP.MatchesServerType(["claude-code", "auggie"])`},
 	}
 
 	// Filter for auggie - should only get prompts with explicit acp filter in enabledWhen
@@ -734,6 +778,650 @@ func TestFilterPromptsSpecificToACP(t *testing.T) {
 	filtered = FilterPromptsSpecificToACP(nil, "auggie")
 	if filtered != nil {
 		t.Errorf("FilterPromptsSpecificToACP(nil) = %v, want nil", filtered)
+	}
+}
+
+func TestParsePromptFile_WithPeriodic_OnCompletion(t *testing.T) {
+	data := []byte(`name: "On Completion Prompt"
+periodic:
+  trigger: onCompletion
+  delay: 10
+  maxDuration: "2h"
+prompt: |
+  Fire after agent stops.
+`)
+
+	prompt, err := ParsePromptFile("on-completion.prompt.yaml", data, time.Now())
+	if err != nil {
+		t.Fatalf("ParsePromptFile failed: %v", err)
+	}
+
+	if prompt.Periodic == nil {
+		t.Fatal("Periodic = nil, want non-nil")
+	}
+	if prompt.Periodic.Trigger != "onCompletion" {
+		t.Errorf("Periodic.Trigger = %q, want %q", prompt.Periodic.Trigger, "onCompletion")
+	}
+	if prompt.Periodic.Delay != 10 {
+		t.Errorf("Periodic.Delay = %d, want 10", prompt.Periodic.Delay)
+	}
+	if prompt.Periodic.MaxDuration != "2h" {
+		t.Errorf("Periodic.MaxDuration = %q, want %q", prompt.Periodic.MaxDuration, "2h")
+	}
+	// value/unit absent → zero values
+	if prompt.Periodic.Value != 0 {
+		t.Errorf("Periodic.Value = %d, want 0 (not set)", prompt.Periodic.Value)
+	}
+	if prompt.Periodic.Unit != "" {
+		t.Errorf("Periodic.Unit = %q, want empty (not set)", prompt.Periodic.Unit)
+	}
+}
+
+func TestParsePromptFile_WithPeriodic_ScheduleNoTrigger(t *testing.T) {
+	data := []byte(`name: "Schedule Prompt"
+periodic:
+  value: 2
+  unit: hours
+  maxIterations: 5
+prompt: |
+  Run every 2 hours.
+`)
+
+	prompt, err := ParsePromptFile("schedule.prompt.yaml", data, time.Now())
+	if err != nil {
+		t.Fatalf("ParsePromptFile failed: %v", err)
+	}
+
+	if prompt.Periodic == nil {
+		t.Fatal("Periodic = nil, want non-nil")
+	}
+	// Trigger absent → empty string (schedule default)
+	if prompt.Periodic.Trigger != "" {
+		t.Errorf("Periodic.Trigger = %q, want empty (schedule default)", prompt.Periodic.Trigger)
+	}
+	if prompt.Periodic.Value != 2 {
+		t.Errorf("Periodic.Value = %d, want 2", prompt.Periodic.Value)
+	}
+	if prompt.Periodic.Unit != "hours" {
+		t.Errorf("Periodic.Unit = %q, want %q", prompt.Periodic.Unit, "hours")
+	}
+	if prompt.Periodic.MaxIterations != 5 {
+		t.Errorf("Periodic.MaxIterations = %d, want 5", prompt.Periodic.MaxIterations)
+	}
+	if prompt.Periodic.Delay != 0 {
+		t.Errorf("Periodic.Delay = %d, want 0 (not set)", prompt.Periodic.Delay)
+	}
+	if prompt.Periodic.MaxDuration != "" {
+		t.Errorf("Periodic.MaxDuration = %q, want empty (not set)", prompt.Periodic.MaxDuration)
+	}
+}
+
+func TestToWebPrompt_OnCompletion_JSONRoundTrip(t *testing.T) {
+	pf := &PromptFile{
+		Name:    "On Completion",
+		Content: "body",
+		Periodic: &PromptPeriodic{
+			Trigger:     "onCompletion",
+			Delay:       10,
+			MaxDuration: "2h",
+		},
+	}
+
+	wp := pf.ToWebPrompt()
+	if wp.Periodic == nil {
+		t.Fatal("WebPrompt.Periodic = nil, want non-nil")
+	}
+
+	raw, err := json.Marshal(wp)
+	if err != nil {
+		t.Fatalf("json.Marshal failed: %v", err)
+	}
+	jsonStr := string(raw)
+
+	if !strings.Contains(jsonStr, `"trigger":"onCompletion"`) {
+		t.Errorf("JSON missing trigger field; got: %s", jsonStr)
+	}
+	if !strings.Contains(jsonStr, `"delay":10`) {
+		t.Errorf("JSON missing delay field; got: %s", jsonStr)
+	}
+	if !strings.Contains(jsonStr, `"maxDuration":"2h"`) {
+		t.Errorf("JSON missing maxDuration field; got: %s", jsonStr)
+	}
+
+	// Also verify via struct fields.
+	if wp.Periodic.Trigger != "onCompletion" {
+		t.Errorf("WebPrompt.Periodic.Trigger = %q, want %q", wp.Periodic.Trigger, "onCompletion")
+	}
+	if wp.Periodic.Delay != 10 {
+		t.Errorf("WebPrompt.Periodic.Delay = %d, want 10", wp.Periodic.Delay)
+	}
+	if wp.Periodic.MaxDuration != "2h" {
+		t.Errorf("WebPrompt.Periodic.MaxDuration = %q, want %q", wp.Periodic.MaxDuration, "2h")
+	}
+}
+
+func TestParsePromptFile_WithPeriodic_OptionalDefaultFalse(t *testing.T) {
+	data := []byte(`name: "Optional Periodic"
+periodic:
+  mode: optional
+  default: false
+  trigger: onCompletion
+prompt: |
+  Maybe run periodically.
+`)
+
+	prompt, err := ParsePromptFile("optional.prompt.yaml", data, time.Now())
+	if err != nil {
+		t.Fatalf("ParsePromptFile failed: %v", err)
+	}
+	if prompt.Periodic == nil {
+		t.Fatal("Periodic = nil, want non-nil")
+	}
+	if prompt.Periodic.Mode != "optional" {
+		t.Errorf("Periodic.Mode = %q, want %q", prompt.Periodic.Mode, "optional")
+	}
+	if prompt.Periodic.Default == nil || *prompt.Periodic.Default != false {
+		t.Errorf("Periodic.Default = %v, want *false", prompt.Periodic.Default)
+	}
+
+	// Round-trips through ToWebPrompt (whole-pointer copy).
+	wp := prompt.ToWebPrompt()
+	if wp.Periodic == nil {
+		t.Fatal("WebPrompt.Periodic = nil, want non-nil")
+	}
+	if wp.Periodic.Mode != "optional" {
+		t.Errorf("WebPrompt.Periodic.Mode = %q, want %q", wp.Periodic.Mode, "optional")
+	}
+	if wp.Periodic.Default == nil || *wp.Periodic.Default != false {
+		t.Errorf("WebPrompt.Periodic.Default = %v, want *false", wp.Periodic.Default)
+	}
+
+	raw, err := json.Marshal(wp)
+	if err != nil {
+		t.Fatalf("json.Marshal failed: %v", err)
+	}
+	jsonStr := string(raw)
+	if !strings.Contains(jsonStr, `"mode":"optional"`) {
+		t.Errorf("JSON missing mode field; got: %s", jsonStr)
+	}
+	if !strings.Contains(jsonStr, `"default":false`) {
+		t.Errorf("JSON missing default field; got: %s", jsonStr)
+	}
+}
+
+func TestParsePromptFile_WithPeriodic_NoMode(t *testing.T) {
+	data := []byte(`name: "Always Periodic"
+periodic:
+  value: 1
+  unit: hours
+prompt: |
+  Always runs periodically.
+`)
+
+	prompt, err := ParsePromptFile("always.prompt.yaml", data, time.Now())
+	if err != nil {
+		t.Fatalf("ParsePromptFile failed: %v", err)
+	}
+	if prompt.Periodic == nil {
+		t.Fatal("Periodic = nil, want non-nil")
+	}
+	if prompt.Periodic.Mode != "" {
+		t.Errorf("Periodic.Mode = %q, want empty (absent => treated as always)", prompt.Periodic.Mode)
+	}
+	if prompt.Periodic.Default != nil {
+		t.Errorf("Periodic.Default = %v, want nil (absent)", prompt.Periodic.Default)
+	}
+}
+
+func TestParsePromptFile_PeriodicUnknownMode(t *testing.T) {
+	data := []byte(`name: "Bad Mode"
+periodic:
+  mode: sometimes
+prompt: |
+  body
+`)
+
+	_, err := ParsePromptFile("bad-mode.prompt.yaml", data, time.Now())
+	if err == nil {
+		t.Fatal("ParsePromptFile should fail for unknown periodic.mode, got nil error")
+	}
+	if !strings.Contains(err.Error(), "periodic.mode") {
+		t.Errorf("error = %q, want it to mention 'periodic.mode'", err.Error())
+	}
+	if !strings.Contains(err.Error(), "sometimes") {
+		t.Errorf("error = %q, want it to mention the invalid value 'sometimes'", err.Error())
+	}
+}
+
+func TestValidatePromptPeriodic(t *testing.T) {
+	t.Run("nil periodic is OK", func(t *testing.T) {
+		if err := ValidatePromptPeriodic("p", nil); err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("empty mode is OK (treated as always)", func(t *testing.T) {
+		if err := ValidatePromptPeriodic("p", &PromptPeriodic{}); err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("mode=always is OK", func(t *testing.T) {
+		if err := ValidatePromptPeriodic("p", &PromptPeriodic{Mode: "always"}); err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("mode=optional is OK", func(t *testing.T) {
+		if err := ValidatePromptPeriodic("p", &PromptPeriodic{Mode: "optional"}); err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("unknown mode returns error mentioning prompt name and value", func(t *testing.T) {
+		err := ValidatePromptPeriodic("My Prompt", &PromptPeriodic{Mode: "bogus"})
+		if err == nil {
+			t.Fatal("expected error, got nil")
+		}
+		if !strings.Contains(err.Error(), "My Prompt") {
+			t.Errorf("error = %q, want it to mention prompt name 'My Prompt'", err.Error())
+		}
+		if !strings.Contains(err.Error(), "bogus") {
+			t.Errorf("error = %q, want it to mention the invalid value 'bogus'", err.Error())
+		}
+	})
+
+	t.Run("default set with mode=always does not error (warning only)", func(t *testing.T) {
+		f := false
+		if err := ValidatePromptPeriodic("p", &PromptPeriodic{Mode: "always", Default: &f}); err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("default set with mode absent does not error (warning only)", func(t *testing.T) {
+		tr := true
+		if err := ValidatePromptPeriodic("p", &PromptPeriodic{Default: &tr}); err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("default set with mode=optional does not error and does not warn", func(t *testing.T) {
+		f := false
+		if err := ValidatePromptPeriodic("p", &PromptPeriodic{Mode: "optional", Default: &f}); err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+	})
+}
+
+// ---- PromptParameter / Parameters field tests ----
+
+func TestIsKnownPromptParameterType(t *testing.T) {
+	for _, known := range KnownPromptParameterTypes {
+		if !IsKnownPromptParameterType(known) {
+			t.Errorf("IsKnownPromptParameterType(%q) = false, want true", known)
+		}
+	}
+	if IsKnownPromptParameterType("unknown") {
+		t.Error("IsKnownPromptParameterType(\"unknown\") = true, want false")
+	}
+	if IsKnownPromptParameterType("") {
+		t.Error("IsKnownPromptParameterType(\"\") = true, want false")
+	}
+	// boolean is a recognised type (rendered as a checkbox in the UI).
+	if !IsKnownPromptParameterType("boolean") {
+		t.Error("IsKnownPromptParameterType(\"boolean\") = false, want true")
+	}
+}
+
+func TestParsePromptFile_WithParameters(t *testing.T) {
+	reqTrue := true
+	data := []byte(`name: "Task Prompt"
+parameters:
+  - name: id
+    type: beadsId
+    description: the task ID
+    required: true
+  - name: folder
+    type: workspaceFolder
+prompt: |
+  Work on ${id} in ${folder}.
+`)
+
+	prompt, err := ParsePromptFile("task.prompt.yaml", data, time.Now())
+	if err != nil {
+		t.Fatalf("ParsePromptFile failed: %v", err)
+	}
+
+	if len(prompt.Parameters) != 2 {
+		t.Fatalf("len(Parameters) = %d, want 2", len(prompt.Parameters))
+	}
+
+	p0 := prompt.Parameters[0]
+	if p0.Name != "id" {
+		t.Errorf("Parameters[0].Name = %q, want %q", p0.Name, "id")
+	}
+	if p0.Type != "beadsId" {
+		t.Errorf("Parameters[0].Type = %q, want %q", p0.Type, "beadsId")
+	}
+	if p0.Description != "the task ID" {
+		t.Errorf("Parameters[0].Description = %q, want %q", p0.Description, "the task ID")
+	}
+	if p0.Required == nil || *p0.Required != reqTrue {
+		t.Errorf("Parameters[0].Required = %v, want *true", p0.Required)
+	}
+
+	p1 := prompt.Parameters[1]
+	if p1.Name != "folder" {
+		t.Errorf("Parameters[1].Name = %q, want %q", p1.Name, "folder")
+	}
+	if p1.Type != "workspaceFolder" {
+		t.Errorf("Parameters[1].Type = %q, want %q", p1.Type, "workspaceFolder")
+	}
+	if p1.Required != nil {
+		t.Errorf("Parameters[1].Required = %v, want nil (absent)", p1.Required)
+	}
+}
+
+func TestToWebPrompt_RoundTripsParameters(t *testing.T) {
+	req := true
+	pf := &PromptFile{
+		Name:    "Param Prompt",
+		Content: "body",
+		Parameters: []PromptParameter{
+			{Name: "id", Type: "beadsId", Description: "task id", Required: &req},
+			{Name: "note", Type: "text"},
+		},
+	}
+
+	wp := pf.ToWebPrompt()
+
+	if len(wp.Parameters) != 2 {
+		t.Fatalf("WebPrompt.Parameters len = %d, want 2", len(wp.Parameters))
+	}
+	if wp.Parameters[0].Name != "id" || wp.Parameters[0].Type != "beadsId" {
+		t.Errorf("WebPrompt.Parameters[0] = %+v, want {id beadsId}", wp.Parameters[0])
+	}
+	if wp.Parameters[0].Required == nil || !*wp.Parameters[0].Required {
+		t.Errorf("WebPrompt.Parameters[0].Required = %v, want *true", wp.Parameters[0].Required)
+	}
+	if wp.Parameters[1].Name != "note" || wp.Parameters[1].Type != "text" {
+		t.Errorf("WebPrompt.Parameters[1] = %+v, want {note text}", wp.Parameters[1])
+	}
+}
+
+func TestToWebPrompt_RoundTripsTags(t *testing.T) {
+	pf := &PromptFile{
+		Name:    "Tagged Prompt",
+		Content: "body",
+		Tags:    []string{"coding", "fast"},
+	}
+
+	wp := pf.ToWebPrompt()
+
+	if len(wp.Tags) != 2 {
+		t.Fatalf("WebPrompt.Tags len = %d, want 2", len(wp.Tags))
+	}
+	if wp.Tags[0] != "coding" || wp.Tags[1] != "fast" {
+		t.Errorf("WebPrompt.Tags = %+v, want [coding fast]", wp.Tags)
+	}
+
+	pfNoTags := &PromptFile{
+		Name:    "Untagged Prompt",
+		Content: "body",
+	}
+	wpNoTags := pfNoTags.ToWebPrompt()
+	if len(wpNoTags.Tags) != 0 {
+		t.Errorf("WebPrompt.Tags = %+v, want empty/nil for PromptFile with no tags", wpNoTags.Tags)
+	}
+}
+
+func TestParsePromptFile_UnknownParameterType(t *testing.T) {
+	data := []byte(`name: "Bad Prompt"
+parameters:
+  - name: foo
+    type: notAType
+prompt: |
+  body
+`)
+
+	_, err := ParsePromptFile("bad.prompt.yaml", data, time.Now())
+	if err == nil {
+		t.Fatal("ParsePromptFile should fail for unknown parameter type, got nil error")
+	}
+	if !strings.Contains(err.Error(), "unknown type") {
+		t.Errorf("error = %q, want it to mention 'unknown type'", err.Error())
+	}
+}
+
+func TestParsePromptFile_EmptyParameterName(t *testing.T) {
+	data := []byte(`name: "Bad Prompt"
+parameters:
+  - name: ""
+    type: text
+prompt: |
+  body
+`)
+
+	_, err := ParsePromptFile("bad.prompt.yaml", data, time.Now())
+	if err == nil {
+		t.Fatal("ParsePromptFile should fail for empty parameter name, got nil error")
+	}
+	if !strings.Contains(err.Error(), "name must not be empty") {
+		t.Errorf("error = %q, want it to mention 'name must not be empty'", err.Error())
+	}
+}
+
+func TestParsePromptFile_NoParameters(t *testing.T) {
+	data := []byte(`name: "Simple Prompt"
+prompt: |
+  No params here.
+`)
+
+	prompt, err := ParsePromptFile("simple.prompt.yaml", data, time.Now())
+	if err != nil {
+		t.Fatalf("ParsePromptFile failed: %v", err)
+	}
+	if len(prompt.Parameters) != 0 {
+		t.Errorf("Parameters = %v, want empty", prompt.Parameters)
+	}
+}
+
+func TestValidatePromptParameters(t *testing.T) {
+	t.Run("empty name returns error containing 'name must not be empty'", func(t *testing.T) {
+		err := ValidatePromptParameters("", []PromptParameter{{Name: "", Type: "text"}})
+		if err == nil {
+			t.Fatal("expected error, got nil")
+		}
+		if !strings.Contains(err.Error(), "name must not be empty") {
+			t.Errorf("error = %q, want it to contain 'name must not be empty'", err.Error())
+		}
+	})
+
+	t.Run("unknown type returns error containing 'unknown type'", func(t *testing.T) {
+		err := ValidatePromptParameters("", []PromptParameter{{Name: "x", Type: "notAType"}})
+		if err == nil {
+			t.Fatal("expected error, got nil")
+		}
+		if !strings.Contains(err.Error(), "unknown type") {
+			t.Errorf("error = %q, want it to contain 'unknown type'", err.Error())
+		}
+	})
+
+	t.Run("childSessionId with empty menus is OK", func(t *testing.T) {
+		err := ValidatePromptParameters("", []PromptParameter{{Name: "s", Type: "childSessionId"}})
+		if err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("childSessionId with menus=prompts is OK", func(t *testing.T) {
+		err := ValidatePromptParameters("prompts", []PromptParameter{{Name: "s", Type: "childSessionId"}})
+		if err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("childSessionId with menus=conversation is OK", func(t *testing.T) {
+		err := ValidatePromptParameters("conversation", []PromptParameter{{Name: "s", Type: "childSessionId"}})
+		if err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("childSessionId with menus=prompts,conversation is OK", func(t *testing.T) {
+		err := ValidatePromptParameters("prompts, conversation", []PromptParameter{{Name: "s", Type: "childSessionId"}})
+		if err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("childSessionId with menus=beadsList returns error mentioning childSessionId and beadsList", func(t *testing.T) {
+		err := ValidatePromptParameters("beadsList", []PromptParameter{{Name: "s", Type: "childSessionId"}})
+		if err == nil {
+			t.Fatal("expected error, got nil")
+		}
+		if !strings.Contains(err.Error(), "childSessionId") {
+			t.Errorf("error = %q, want it to contain 'childSessionId'", err.Error())
+		}
+		if !strings.Contains(err.Error(), "beadsList") {
+			t.Errorf("error = %q, want it to contain 'beadsList'", err.Error())
+		}
+	})
+
+	t.Run("childSessionId with menus=conversation,beadsList returns error", func(t *testing.T) {
+		err := ValidatePromptParameters("conversation, beadsList", []PromptParameter{{Name: "s", Type: "childSessionId"}})
+		if err == nil {
+			t.Fatal("expected error, got nil")
+		}
+		if !strings.Contains(err.Error(), "childSessionId") {
+			t.Errorf("error = %q, want it to contain 'childSessionId'", err.Error())
+		}
+	})
+
+	t.Run("non-childSessionId param with beadsList menus is OK", func(t *testing.T) {
+		err := ValidatePromptParameters("beadsList", []PromptParameter{{Name: "x", Type: "text"}})
+		if err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("boolean param is OK in any menu", func(t *testing.T) {
+		for _, menus := range []string{"", "prompts", "conversation", "beadsIssues"} {
+			err := ValidatePromptParameters(menus, []PromptParameter{{Name: "Commit", Type: "boolean"}})
+			if err != nil {
+				t.Errorf("menus=%q: unexpected error: %v", menus, err)
+			}
+		}
+	})
+
+	t.Run("multiLine on a text param is OK", func(t *testing.T) {
+		err := ValidatePromptParameters("", []PromptParameter{{Name: "Instructions", Type: "text", MultiLine: true}})
+		if err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("multiLine on a non-text param returns error mentioning multiLine and text", func(t *testing.T) {
+		err := ValidatePromptParameters("", []PromptParameter{{Name: "Issue", Type: "beadsId", MultiLine: true}})
+		if err == nil {
+			t.Fatal("expected error, got nil")
+		}
+		if !strings.Contains(err.Error(), "multiLine") {
+			t.Errorf("error = %q, want it to contain 'multiLine'", err.Error())
+		}
+		if !strings.Contains(err.Error(), "text") {
+			t.Errorf("error = %q, want it to contain 'text'", err.Error())
+		}
+	})
+}
+
+func TestParsePromptFile_WithMultiLineParameter(t *testing.T) {
+	data := []byte(`name: "MultiLine Prompt"
+parameters:
+  - name: Instructions
+    type: text
+    multiLine: true
+  - name: Path
+    type: text
+prompt: |
+  ${Instructions} for ${Path}.
+`)
+
+	prompt, err := ParsePromptFile("ml.prompt.yaml", data, time.Now())
+	if err != nil {
+		t.Fatalf("ParsePromptFile failed: %v", err)
+	}
+	if len(prompt.Parameters) != 2 {
+		t.Fatalf("len(Parameters) = %d, want 2", len(prompt.Parameters))
+	}
+	if !prompt.Parameters[0].MultiLine {
+		t.Errorf("Parameters[0].MultiLine = false, want true")
+	}
+	if prompt.Parameters[1].MultiLine {
+		t.Errorf("Parameters[1].MultiLine = true, want false (absent)")
+	}
+}
+
+func TestParsePromptFile_ChildSessionId(t *testing.T) {
+	tests := []struct {
+		name    string
+		menus   string
+		wantErr bool
+	}{
+		{"no menus line is OK", "", false},
+		{"menus=prompts is OK", "prompts", false},
+		{"menus=conversation is OK", "conversation", false},
+		{"menus=beadsList errors with childSessionId mention", "beadsList", true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			menusLine := ""
+			if tc.menus != "" {
+				menusLine = "menus: " + tc.menus + "\n"
+			}
+			data := []byte("name: \"Test\"\n" + menusLine + "parameters:\n  - name: child\n    type: childSessionId\nprompt: |\n  body\n")
+			_, err := ParsePromptFile("test.prompt.yaml", data, time.Now())
+			if tc.wantErr {
+				if err == nil {
+					t.Fatal("expected error, got nil")
+				}
+				if !strings.Contains(err.Error(), "childSessionId") {
+					t.Errorf("error = %q, want it to contain 'childSessionId'", err.Error())
+				}
+			} else {
+				if err != nil {
+					t.Errorf("unexpected error: %v", err)
+				}
+			}
+		})
+	}
+}
+
+func TestWorkspaceRC_SkipsInvalidChildSessionIdPrompt(t *testing.T) {
+	yaml := `
+prompts:
+  - name: "Valid Prompt"
+    prompt: "do something"
+    menus: conversation
+    parameters:
+      - name: child
+        type: childSessionId
+  - name: "Invalid Prompt"
+    prompt: "do something else"
+    menus: beadsList
+    parameters:
+      - name: child
+        type: childSessionId
+`
+	rc, err := parseWorkspaceRC([]byte(yaml))
+	if err != nil {
+		t.Fatalf("parseWorkspaceRC failed: %v", err)
+	}
+	if len(rc.Prompts) != 1 {
+		t.Errorf("Prompts count = %d, want 1 (invalid prompt should be skipped)", len(rc.Prompts))
+	}
+	if len(rc.Prompts) > 0 && rc.Prompts[0].Name != "Valid Prompt" {
+		t.Errorf("Prompts[0].Name = %q, want %q", rc.Prompts[0].Name, "Valid Prompt")
 	}
 }
 
@@ -868,5 +1556,427 @@ func TestMigrateMarkdownPromptsInDir_LiteralBlock(t *testing.T) {
 	}
 	if p.Content != body {
 		t.Errorf("Content round-trip = %q, want %q", p.Content, body)
+	}
+}
+
+// TestPrecompileTemplateConds_SavePathGuard proves that the validation function
+// used by the MCP handlePromptUpdate and REST POST /api/workspace-prompts save
+// paths rejects invalid prompt bodies (mitto-m7sb.6). No mcpserver harness
+// exists for handlePromptUpdate so we verify the guard directly.
+func TestPrecompileTemplateConds_SavePathGuard(t *testing.T) {
+	tests := []struct {
+		name    string
+		body    string
+		wantErr bool
+	}{
+		{"non-template body accepted", "plain ${VAR} text", false},
+		{"valid template accepted", "{{ .Session.ID }}", false},
+		{"invalid template syntax rejected", "{{ .Session.ID ", true},
+		{"invalid cond CEL rejected", "{{ if cond \"@@@ bad\" }}x{{ end }}", true},
+		{"struct-field typo rejected", "{{ .Session.Nope }}", true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			err := PrecompileTemplateConds("save-test", tc.body)
+			if tc.wantErr && err == nil {
+				t.Fatal("expected error (save-path guard should reject), got nil")
+			}
+			if !tc.wantErr && err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+		})
+	}
+}
+
+// TestParsePromptFile_TemplateValidation verifies that ParsePromptFile accepts
+// valid templates and rejects invalid ones (mitto-m7sb.6).
+func TestParsePromptFile_TemplateValidation(t *testing.T) {
+	tests := []struct {
+		name    string
+		yaml    string
+		wantErr bool
+	}{
+		{
+			name: "non-template body — fast path, no error",
+			yaml: "name: \"p\"\nprompt: \"plain ${VAR} @mitto:session_id text\"\n",
+		},
+		{
+			name: "valid template body — accepted",
+			yaml: "name: \"p\"\nprompt: \"Hello {{ .Session.ID }}\"\n",
+		},
+		{
+			name:    "invalid template syntax — unclosed action",
+			yaml:    "name: \"p\"\nprompt: \"Hello {{ .Session.ID \"\n",
+			wantErr: true,
+		},
+		{
+			name:    "invalid cond CEL literal — rejected",
+			yaml:    "name: \"p\"\nprompt: \"{{ if cond \\\"@@@ not valid\\\" }}x{{ end }}\"\n",
+			wantErr: true,
+		},
+		{
+			name:    "struct-field typo — rejected",
+			yaml:    "name: \"p\"\nprompt: \"{{ .Session.Nope }}\"\n",
+			wantErr: true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := ParsePromptFile("test.prompt.yaml", []byte(tc.yaml), time.Now())
+			if tc.wantErr && err == nil {
+				t.Fatal("expected error, got nil")
+			}
+			if !tc.wantErr && err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+		})
+	}
+}
+
+// ---- PromptParameterCache tests ----
+
+func TestParsePromptFile_CacheWithTTL(t *testing.T) {
+	data := []byte(`name: "Cached Prompt"
+parameters:
+  - name: SlackChannel
+    type: text
+    description: Slack channel name
+    cache:
+      destination: memory
+      ttl: 1h
+prompt: |
+  Post to ${SlackChannel}.
+`)
+	prompt, err := ParsePromptFile("cached.prompt.yaml", data, time.Now())
+	if err != nil {
+		t.Fatalf("ParsePromptFile failed: %v", err)
+	}
+	if len(prompt.Parameters) != 1 {
+		t.Fatalf("len(Parameters) = %d, want 1", len(prompt.Parameters))
+	}
+	p := prompt.Parameters[0]
+	if p.Name != "SlackChannel" {
+		t.Errorf("Parameters[0].Name = %q, want %q", p.Name, "SlackChannel")
+	}
+	if p.Cache == nil {
+		t.Fatal("Parameters[0].Cache = nil, want non-nil")
+	}
+	if p.Cache.Destination != "memory" {
+		t.Errorf("Cache.Destination = %q, want %q", p.Cache.Destination, "memory")
+	}
+	if p.Cache.TTL != "1h" {
+		t.Errorf("Cache.TTL = %q, want %q", p.Cache.TTL, "1h")
+	}
+}
+
+func TestParsePromptFile_CacheWithoutTTL(t *testing.T) {
+	data := []byte(`name: "Cached No TTL"
+parameters:
+  - name: Channel
+    type: text
+    cache:
+      destination: memory
+prompt: |
+  Use ${Channel}.
+`)
+	prompt, err := ParsePromptFile("cached-nottl.prompt.yaml", data, time.Now())
+	if err != nil {
+		t.Fatalf("ParsePromptFile failed: %v", err)
+	}
+	if len(prompt.Parameters) != 1 {
+		t.Fatalf("len(Parameters) = %d, want 1", len(prompt.Parameters))
+	}
+	p := prompt.Parameters[0]
+	if p.Cache == nil {
+		t.Fatal("Parameters[0].Cache = nil, want non-nil")
+	}
+	if p.Cache.Destination != "memory" {
+		t.Errorf("Cache.Destination = %q, want %q", p.Cache.Destination, "memory")
+	}
+	if p.Cache.TTL != "" {
+		t.Errorf("Cache.TTL = %q, want empty (conversation lifetime)", p.Cache.TTL)
+	}
+}
+
+func TestParsePromptFile_CacheInvalidDestination(t *testing.T) {
+	data := []byte(`name: "Bad Cache"
+parameters:
+  - name: Chan
+    type: text
+    cache:
+      destination: disk
+prompt: |
+  body
+`)
+	_, err := ParsePromptFile("bad-cache.prompt.yaml", data, time.Now())
+	if err == nil {
+		t.Fatal("ParsePromptFile should fail for invalid cache destination, got nil error")
+	}
+	if !strings.Contains(err.Error(), "destination") {
+		t.Errorf("error = %q, want it to mention 'destination'", err.Error())
+	}
+}
+
+func TestParsePromptFile_CacheInvalidTTL_Unparseable(t *testing.T) {
+	data := []byte(`name: "Bad TTL"
+parameters:
+  - name: Chan
+    type: text
+    cache:
+      destination: memory
+      ttl: not-a-duration
+prompt: |
+  body
+`)
+	_, err := ParsePromptFile("bad-ttl.prompt.yaml", data, time.Now())
+	if err == nil {
+		t.Fatal("ParsePromptFile should fail for unparseable TTL, got nil error")
+	}
+	if !strings.Contains(err.Error(), "ttl") {
+		t.Errorf("error = %q, want it to mention 'ttl'", err.Error())
+	}
+}
+
+func TestParsePromptFile_CacheInvalidTTL_Zero(t *testing.T) {
+	data := []byte(`name: "Zero TTL"
+parameters:
+  - name: Chan
+    type: text
+    cache:
+      destination: memory
+      ttl: 0s
+prompt: |
+  body
+`)
+	_, err := ParsePromptFile("zero-ttl.prompt.yaml", data, time.Now())
+	if err == nil {
+		t.Fatal("ParsePromptFile should fail for zero TTL, got nil error")
+	}
+	if !strings.Contains(err.Error(), "positive") {
+		t.Errorf("error = %q, want it to mention 'positive'", err.Error())
+	}
+}
+
+func TestParsePromptFile_CacheInvalidTTL_Negative(t *testing.T) {
+	data := []byte(`name: "Negative TTL"
+parameters:
+  - name: Chan
+    type: text
+    cache:
+      destination: memory
+      ttl: -1h
+prompt: |
+  body
+`)
+	_, err := ParsePromptFile("neg-ttl.prompt.yaml", data, time.Now())
+	if err == nil {
+		t.Fatal("ParsePromptFile should fail for negative TTL, got nil error")
+	}
+	if !strings.Contains(err.Error(), "positive") {
+		t.Errorf("error = %q, want it to mention 'positive'", err.Error())
+	}
+}
+
+func TestToWebPrompt_RoundTripsCacheBlock(t *testing.T) {
+	pf := &PromptFile{
+		Name:    "Cached Param Prompt",
+		Content: "body",
+		Parameters: []PromptParameter{
+			{Name: "SlackChannel", Type: "text", Cache: &PromptParameterCache{Destination: "memory", TTL: "1h"}},
+			{Name: "Note", Type: "text"},
+		},
+	}
+
+	wp := pf.ToWebPrompt()
+
+	if len(wp.Parameters) != 2 {
+		t.Fatalf("WebPrompt.Parameters len = %d, want 2", len(wp.Parameters))
+	}
+	c := wp.Parameters[0].Cache
+	if c == nil {
+		t.Fatal("WebPrompt.Parameters[0].Cache = nil, want non-nil")
+	}
+	if c.Destination != "memory" {
+		t.Errorf("Cache.Destination = %q, want %q", c.Destination, "memory")
+	}
+	if c.TTL != "1h" {
+		t.Errorf("Cache.TTL = %q, want %q", c.TTL, "1h")
+	}
+	if wp.Parameters[1].Cache != nil {
+		t.Errorf("WebPrompt.Parameters[1].Cache = %+v, want nil", wp.Parameters[1].Cache)
+	}
+
+	// Verify JSON round-trip.
+	raw, err := json.Marshal(wp)
+	if err != nil {
+		t.Fatalf("json.Marshal failed: %v", err)
+	}
+	jsonStr := string(raw)
+	if !strings.Contains(jsonStr, `"destination":"memory"`) {
+		t.Errorf("JSON missing cache destination; got: %s", jsonStr)
+	}
+	if !strings.Contains(jsonStr, `"ttl":"1h"`) {
+		t.Errorf("JSON missing cache ttl; got: %s", jsonStr)
+	}
+}
+
+func TestPromptParameterCache_ParsedTTL(t *testing.T) {
+	t.Run("empty TTL returns (0, nil)", func(t *testing.T) {
+		c := &PromptParameterCache{Destination: "memory", TTL: ""}
+		d, err := c.ParsedTTL()
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if d != 0 {
+			t.Errorf("ParsedTTL() = %v, want 0", d)
+		}
+	})
+
+	t.Run("1h returns time.Hour", func(t *testing.T) {
+		c := &PromptParameterCache{Destination: "memory", TTL: "1h"}
+		d, err := c.ParsedTTL()
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if d != time.Hour {
+			t.Errorf("ParsedTTL() = %v, want %v", d, time.Hour)
+		}
+	})
+
+	t.Run("invalid TTL returns error", func(t *testing.T) {
+		c := &PromptParameterCache{Destination: "memory", TTL: "not-valid"}
+		_, err := c.ParsedTTL()
+		if err == nil {
+			t.Fatal("expected error, got nil")
+		}
+	})
+
+	t.Run("zero TTL returns error", func(t *testing.T) {
+		c := &PromptParameterCache{Destination: "memory", TTL: "0s"}
+		_, err := c.ParsedTTL()
+		if err == nil {
+			t.Fatal("expected error, got nil")
+		}
+	})
+
+	t.Run("negative TTL returns error", func(t *testing.T) {
+		c := &PromptParameterCache{Destination: "memory", TTL: "-30m"}
+		_, err := c.ParsedTTL()
+		if err == nil {
+			t.Fatal("expected error, got nil")
+		}
+	})
+}
+
+func TestValidatePromptParameters_Cache(t *testing.T) {
+	t.Run("valid memory destination with TTL", func(t *testing.T) {
+		err := ValidatePromptParameters("", []PromptParameter{
+			{Name: "Chan", Type: "text", Cache: &PromptParameterCache{Destination: "memory", TTL: "30m"}},
+		})
+		if err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("valid memory destination without TTL", func(t *testing.T) {
+		err := ValidatePromptParameters("", []PromptParameter{
+			{Name: "Chan", Type: "text", Cache: &PromptParameterCache{Destination: "memory"}},
+		})
+		if err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("unknown destination returns error naming parameter and destination", func(t *testing.T) {
+		err := ValidatePromptParameters("", []PromptParameter{
+			{Name: "Chan", Type: "text", Cache: &PromptParameterCache{Destination: "disk"}},
+		})
+		if err == nil {
+			t.Fatal("expected error, got nil")
+		}
+		if !strings.Contains(err.Error(), "Chan") {
+			t.Errorf("error = %q, want it to mention parameter name 'Chan'", err.Error())
+		}
+		if !strings.Contains(err.Error(), "disk") {
+			t.Errorf("error = %q, want it to mention bad destination 'disk'", err.Error())
+		}
+	})
+
+	t.Run("invalid TTL returns error", func(t *testing.T) {
+		err := ValidatePromptParameters("", []PromptParameter{
+			{Name: "Chan", Type: "text", Cache: &PromptParameterCache{Destination: "memory", TTL: "bad"}},
+		})
+		if err == nil {
+			t.Fatal("expected error, got nil")
+		}
+	})
+
+	t.Run("nil cache is accepted (cache is optional)", func(t *testing.T) {
+		err := ValidatePromptParameters("", []PromptParameter{
+			{Name: "Chan", Type: "text"},
+		})
+		if err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+	})
+}
+
+// TestBuiltinPromptsParseClean ensures every .prompt.yaml in config/prompts/builtin/
+// passes ParsePromptFile without error. This exercises load-time template validation
+// (added in mitto-m7sb.6) on the migrated builtin prompt set (mitto-m7sb.7/8).
+//
+// jira-sync-tasks.prompt.yaml previously contained literal {{...}} sequences (a JIRA
+// wiki-markup example and a Python regex comment) that are NOT template directives;
+// they are now escaped via {{ "{{" }} (design §10.3) so the whole set validates.
+func TestBuiltinPromptsParseClean(t *testing.T) {
+	// Relative to internal/config/ (the package directory during go test)
+	builtinDir := filepath.Join("..", "..", "config", "prompts", "builtin")
+	entries, err := os.ReadDir(builtinDir)
+	if err != nil {
+		t.Skipf("builtin prompts dir not found at %s: %v", builtinDir, err)
+	}
+	loaded := 0
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".prompt.yaml") {
+			continue
+		}
+		path := filepath.Join(builtinDir, e.Name())
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Errorf("ReadFile(%s): %v", e.Name(), err)
+			continue
+		}
+		if _, err := ParsePromptFile(e.Name(), data, time.Now()); err != nil {
+			t.Errorf("ParsePromptFile(%s): %v", e.Name(), err)
+		}
+		loaded++
+	}
+	if loaded == 0 {
+		t.Error("no builtin prompt files found — something is wrong with the path")
+	}
+	t.Logf("validated %d builtin prompt files", loaded)
+
+	// Verify no builtin prompt declares a SCREAMING_SNAKE_CASE argument name.
+	// All parameter names must use PascalCase (no underscores, not all-uppercase).
+	screamingSnake := regexp.MustCompile(`^[A-Z][A-Z0-9_]*_[A-Z0-9_]*$|^[A-Z0-9_]+$`)
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".prompt.yaml") {
+			continue
+		}
+		path := filepath.Join(builtinDir, e.Name())
+		data, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+		prompt, err := ParsePromptFile(e.Name(), data, time.Now())
+		if err != nil {
+			continue // parse errors already reported above
+		}
+		for _, p := range prompt.Parameters {
+			if strings.Contains(p.Name, "_") || screamingSnake.MatchString(p.Name) {
+				t.Errorf("%s: parameter name %q is SCREAMING_SNAKE_CASE — use PascalCase instead", e.Name(), p.Name)
+			}
+		}
 	}
 }
