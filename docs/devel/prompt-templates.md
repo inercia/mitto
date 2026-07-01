@@ -190,6 +190,7 @@ The shared pure-Go helpers are: `statResolved`, the glob-match logic, `matchesSe
 | `FileExists` | `FileExists(path string) bool` | File exists at `path` (relative to `Workspace.Folder`). Calls `statResolved`. |
 | `DirExists` | `DirExists(path string) bool` | Directory exists. Calls `statResolved`. |
 | `CommandExists` | `CommandExists(name string) bool` | Command is in PATH (`exec.LookPath`). |
+| `GitRepo` | `GitRepo(path ...string) bool` | Folder (default: whole workspace) is inside a git work tree (`git rev-parse --is-inside-work-tree`). Gatekeeper for the other `Git*` checks. |
 | `GitFileModified` | `GitFileModified(path string) bool` | Tracked file at `path` has pending (staged/unstaged) changes vs HEAD/index; untracked files are `false`. Relative to `Workspace.Folder`. Runs `git` as a subprocess (bounded 5s). |
 | `GitDirModified` | `GitDirModified(path ...string) bool` | Directory (default: whole workspace) has any pending changes, including untracked files. |
 | `GitTracked` | `GitTracked(path string) bool` | `path` is tracked by git (present in the index). |

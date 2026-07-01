@@ -1124,6 +1124,118 @@ func TestWork_ThreeModeTargetResolution(t *testing.T) {
 	}
 }
 
+// TestFollowupWork_ThreeModeTargetResolution tests the target-bead resolution
+// branches of beads-followup-work.prompt.yaml:
+//
+//	(a) .Session.BeadsIssue set → target-bead mode: bead ID appears, the
+//	    "target bead" prose and child-default guidance appear, and the
+//	    conversation-mining intro is absent.
+//	(b) .Args.IssueID set only  → target-bead mode via arg: same as (a) with
+//	    the arg bead ID.
+//	(c) neither set             → conversation mode: the conversation-mining
+//	    intro appears and no "target bead" prose leaks. Unlike investigate/work,
+//	    bd commands ARE expected here (this prompt files beads from the
+//	    conversation), so they are not forbidden — instead we assert no
+//	    target-only fragments leaked with an empty target.
+//
+// Also asserts the YAML header migration: menus includes both "beadsIssues"
+// and "conversation", and the IssueID parameter is non-required.
+func TestFollowupWork_ThreeModeTargetResolution(t *testing.T) {
+	builtinDir := "../../config/prompts/builtin"
+	path := filepath.Join(builtinDir, "beads-followup-work.prompt.yaml")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Skipf("prompt file not found at %s: %v", path, err)
+	}
+	prompt, err := ParsePromptFile("beads-followup-work.prompt.yaml", data, time.Now())
+	if err != nil {
+		t.Fatalf("ParsePromptFile: %v", err)
+	}
+	body := prompt.Content
+
+	// Header assertions.
+	if !strings.Contains(prompt.Menus, "beadsIssues") {
+		t.Errorf("expected Menus to contain 'beadsIssues'; got %q", prompt.Menus)
+	}
+	if !strings.Contains(prompt.Menus, "conversation") {
+		t.Errorf("expected Menus to contain 'conversation'; got %q", prompt.Menus)
+	}
+	var issueParam *PromptParameter
+	for i := range prompt.Parameters {
+		if prompt.Parameters[i].Name == "IssueID" {
+			issueParam = &prompt.Parameters[i]
+			break
+		}
+	}
+	if issueParam == nil {
+		t.Fatalf("IssueID parameter not found in prompt.Parameters")
+	}
+	if issueParam.Required == nil {
+		t.Errorf("IssueID parameter: expected Required to be explicitly set (*bool non-nil); got nil")
+	} else if *issueParam.Required {
+		t.Errorf("IssueID parameter: expected Required == false; got true")
+	}
+
+	render := func(ctx *PromptEnabledContext) string {
+		funcs := BuildTemplateFuncMap(ctx)
+		out, rerr := RenderPromptTemplate("beads-followup-work", body, ctx, funcs)
+		if rerr != nil {
+			t.Fatalf("RenderPromptTemplate: %v", rerr)
+		}
+		return out
+	}
+
+	// (a) Target-bead mode: Session.BeadsIssue set.
+	ctxA := &PromptEnabledContext{
+		Session: SessionContext{
+			BeadsIssue:    "mitto-abc",
+			HasBeadsIssue: true,
+		},
+	}
+	outA := render(ctxA)
+	if !strings.Contains(outA, "mitto-abc") {
+		t.Errorf("branch (a): expected bead ID 'mitto-abc' in output; got:\n%s", outA)
+	}
+	if !strings.Contains(outA, "target bead") {
+		t.Errorf("branch (a): expected 'target bead' prose in target mode; got:\n%s", outA)
+	}
+	if strings.Contains(outA, "comb back through") {
+		t.Errorf("branch (a): unexpected conversation-mining intro in target mode")
+	}
+	if strings.Contains(outA, "--parent  ") {
+		t.Errorf("branch (a): found broken empty '--parent' (missing target) in output")
+	}
+
+	// (b) Target-bead mode via arg: only Args.IssueID set.
+	ctxB := &PromptEnabledContext{
+		Args: map[string]string{"IssueID": "mitto-xyz"},
+	}
+	outB := render(ctxB)
+	if !strings.Contains(outB, "mitto-xyz") {
+		t.Errorf("branch (b): expected bead ID 'mitto-xyz' in output; got:\n%s", outB)
+	}
+	if !strings.Contains(outB, "target bead") {
+		t.Errorf("branch (b): expected 'target bead' prose in target mode; got:\n%s", outB)
+	}
+	if strings.Contains(outB, "comb back through") {
+		t.Errorf("branch (b): unexpected conversation-mining intro in target mode")
+	}
+
+	// (c) Conversation mode: neither BeadsIssue nor Args.IssueID set.
+	ctxC := &PromptEnabledContext{}
+	outC := render(ctxC)
+	if !strings.Contains(outC, "comb back through") {
+		t.Errorf("branch (c): expected conversation-mining intro in conversation mode; got:\n%s", outC)
+	}
+	if strings.Contains(outC, "target bead") {
+		t.Errorf("branch (c): unexpected 'target bead' prose in conversation mode")
+	}
+	// The target-only child-parent example must not leak with an empty target.
+	if strings.Contains(outC, "Child of the target bead") {
+		t.Errorf("branch (c): target-only 'Child of the target bead' example leaked into conversation mode")
+	}
+}
+
 // TestInteractionMode_ConditionalRendering verifies that the builtin prompts
 // which were migrated from verbose "Interaction Mode" prose (that manually
 // dumped {{ .Session.IsPeriodic }} / {{ .Session.IsPeriodicForced }}) to Go
@@ -1364,15 +1476,12 @@ func TestBuiltinPromptPeriodicModes(t *testing.T) {
 		"github-sync-tasks.prompt.yaml":            {mode: "optional", def: boolPtr(true)},
 		"jira-sync-tasks.prompt.yaml":              {mode: "optional", def: boolPtr(true)},
 
-		// Group C — optional / default:false (13).
+		// Group C — optional / default:false (10).
 		"check-ci.prompt.yaml":                   {mode: "optional", def: boolPtr(false)},
 		"fix-ci.prompt.yaml":                     {mode: "optional", def: boolPtr(false)},
 		"run-tests.prompt.yaml":                  {mode: "optional", def: boolPtr(false)},
 		"analyze-logs.prompt.yaml":               {mode: "optional", def: boolPtr(false)},
 		"architectural-analysis.prompt.yaml":     {mode: "optional", def: boolPtr(false)},
-		"child-create-minions.prompt.yaml":       {mode: "optional", def: boolPtr(false)},
-		"continue.prompt.yaml":                   {mode: "optional", def: boolPtr(false)},
-		"whats-next.prompt.yaml":                 {mode: "optional", def: boolPtr(false)},
 		"beads-work.prompt.yaml":                 {mode: "optional", def: boolPtr(false)},
 		"github-review-slack-prs.prompt.yaml":    {mode: "optional", def: boolPtr(false)},
 		"jira-status-all-inprogress.prompt.yaml": {mode: "optional", def: boolPtr(false)},
@@ -1417,6 +1526,9 @@ func TestBuiltinPromptPeriodicModes(t *testing.T) {
 		"refactor.prompt.yaml",
 		"review.prompt.yaml",
 		"add-tests.prompt.yaml",
+		"whats-next.prompt.yaml",
+		"child-create-minions.prompt.yaml",
+		"continue.prompt.yaml",
 		"beads-issue-decompose.prompt.yaml",
 		// Tasks prompts that are one-shot reports, context-bound, or
 		// confirmation-gated — periodic re-firing makes no sense for them.

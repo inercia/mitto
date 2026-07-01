@@ -169,6 +169,7 @@ func TestParity_GitHelpers(t *testing.T) {
 	}
 
 	// Step 1: freshly committed repo — everything clean.
+	check("repo after setup", gitRepo(dir, ""), `GitRepo("")`, true)
 	check("tracked after setup", gitTracked(dir, "tracked.txt"), `GitTracked("tracked.txt")`, true)
 	check("fileModified after setup", gitFileModified(dir, "tracked.txt"), `GitFileModified("tracked.txt")`, false)
 	check("deleted after setup", gitDeleted(dir, "tracked.txt"), `GitDeleted("tracked.txt")`, false)
@@ -220,6 +221,26 @@ func TestParity_GitHelpers(t *testing.T) {
 	if dirModified0 != gitDirModified(dir, "") {
 		t.Errorf("GitDirModified() = %v, gitDirModified(dir,\"\") = %v", dirModified0, gitDirModified(dir, ""))
 	}
+
+	// 0-arg GitRepo() must equal the explicit "" form.
+	repo0 := evalCEL(t, e, `GitRepo()`, ctx)
+	repoEmpty := evalCEL(t, e, `GitRepo("")`, ctx)
+	if repo0 != repoEmpty {
+		t.Errorf("GitRepo() = %v, GitRepo(\"\") = %v", repo0, repoEmpty)
+	}
+	if repo0 != gitRepo(dir, "") {
+		t.Errorf("GitRepo() = %v, gitRepo(dir,\"\") = %v", repo0, gitRepo(dir, ""))
+	}
+
+	// A plain (non-git) directory must report false through both engines.
+	plain := t.TempDir()
+	plainCtx := &PromptEnabledContext{Workspace: WorkspaceContext{Folder: plain}}
+	if gitRepo(plain, "") {
+		t.Errorf("gitRepo(non-repo) = true, want false")
+	}
+	if evalCEL(t, e, `GitRepo()`, plainCtx) {
+		t.Errorf("CEL GitRepo() on non-repo = true, want false")
+	}
 }
 
 // TestBuildTemplateFuncMap_GitFuncsRenderSmoke verifies GitFileModified and the
@@ -252,6 +273,14 @@ func TestBuildTemplateFuncMap_GitFuncsRenderSmoke(t *testing.T) {
 	}
 	if got != "yes" {
 		t.Errorf("GitDirModified render = %q, want %q", got, "yes")
+	}
+
+	got, err = RenderPromptTemplate("test", `{{ if GitRepo }}yes{{ else }}no{{ end }}`, ctx, fm)
+	if err != nil {
+		t.Fatalf("render error: %v", err)
+	}
+	if got != "yes" {
+		t.Errorf("GitRepo render = %q, want %q", got, "yes")
 	}
 }
 

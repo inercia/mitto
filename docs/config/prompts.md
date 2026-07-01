@@ -1021,15 +1021,18 @@ The following fields are available at send time. They are the **same fields used
 | `fileExists` | `fileExists "path"` | Path exists as a file (relative to workspace folder) |
 | `dirExists` | `dirExists "path"` | Directory exists |
 | `commandExists` | `commandExists "name"` | Command is on PATH |
+| `GitRepo` | `GitRepo "path"` | Folder (omit `path` for the whole workspace) is inside a git work tree — use as a gatekeeper before other `Git*` checks |
 | `GitFileModified` | `GitFileModified "path"` | Tracked file at `path` has pending (staged/unstaged) changes vs HEAD/index; untracked files are `false` |
 | `GitDirModified` | `GitDirModified "path"` | Directory (omit `path` for the whole workspace) has any pending changes, including untracked files |
 | `GitTracked` | `GitTracked "path"` | `path` is tracked by git (present in the index) |
 | `GitDeleted` | `GitDeleted "path"` | Tracked file at `path` has been deleted (staged or unstaged deletion) |
 | `Model` | `Model "tag"` | Current model carries capability `tag` (case-insensitive), from [`models:` profiles](models.md); `false` when the model is unknown or no profile matches |
 
-All four `Git*` functions resolve relative paths against `Workspace.Folder`, run `git` as a
+All `Git*` functions resolve relative paths against `Workspace.Folder`, run `git` as a
 subprocess (bounded to 5s), and return `false` outside a git repo or when git is unavailable.
 They are evaluated at send/display time, same as `fileExists`/`dirExists`/`commandExists`.
+Use `GitRepo` as a gatekeeper (e.g. `GitRepo() && GitDirModified()`) when a prompt should only
+apply inside git-managed folders.
 
 String utilities: `trim`, `lower`, `upper`, `contains`, `hasPrefix`, `hasSuffix`, `join`.
 
