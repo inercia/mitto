@@ -45,22 +45,22 @@ type ProcessorInput struct {
 	// Used for Tools.* CEL context in enabledWhen expressions.
 	// May be empty if tools haven't been fetched yet.
 	MCPToolNames []string `json:"-"`
-	// IsPeriodic indicates whether this prompt was triggered by the periodic runner.
-	// Used for @mitto:periodic variable substitution.
-	IsPeriodic bool `json:"is_periodic,omitempty"`
-	// IsPeriodicForced indicates whether this periodic prompt was triggered manually
+	// IsLoop indicates whether this prompt was triggered by the loop runner.
+	// Used for @mitto:loop variable substitution.
+	IsLoop bool `json:"is_loop,omitempty"`
+	// IsLoopForced indicates whether this loop prompt was triggered manually
 	// via "run now" (as opposed to the normal scheduled delivery).
-	// Used for @mitto:periodic_forced variable substitution.
-	IsPeriodicForced bool `json:"is_periodic_forced,omitempty"`
-	// IterationNumber is the 0-based index of the current periodic run.
+	// Used for @mitto:loop_forced variable substitution.
+	IsLoopForced bool `json:"is_loop_forced,omitempty"`
+	// IterationNumber is the 0-based index of the current loop run.
 	// Used for the {{ .Iteration.* }} template namespace. Excluded from JSON
 	// (json:"-") so raw iteration values are never sent to external command processors.
 	IterationNumber int `json:"-"`
-	// MaxIterations is the configured maximum number of periodic runs (0 = unlimited).
+	// MaxIterations is the configured maximum number of loop runs (0 = unlimited).
 	// Used for the {{ .Iteration.* }} template namespace. Excluded from JSON (json:"-").
 	MaxIterations int `json:"-"`
 	// IterationUninterrupted feeds {{ .Iteration.IsUninterrupted }}. True only on a
-	// scheduled, non-forced periodic run directly following another such run (no user
+	// scheduled, non-forced loop run directly following another such run (no user
 	// interjection, no forced run, no FreshContext, same process lifetime). Excluded from
 	// JSON (json:"-") — never sent to external command processors.
 	IterationUninterrupted bool `json:"-"`

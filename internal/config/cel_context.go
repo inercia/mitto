@@ -32,27 +32,27 @@ type PromptEnabledContext struct {
 	// template func ({{ UserData "NAME" }}), the .UserData map, and the CEL UserData
 	// variable. nil at menu time is safe (nil map indexes to "").
 	UserData map[string]string
-	// Iteration holds periodic-iteration info for the current run, enabling prompt
+	// Iteration holds loop-iteration info for the current run, enabling prompt
 	// bodies to branch on which run they are in (e.g. {{ if .Iteration.IsFirst }}).
-	// All-zero (Number=0, IsPeriodic=false) for non-periodic prompts.
+	// All-zero (Number=0, IsLoop=false) for non-loop prompts.
 	Iteration IterationContext
 }
 
-// IterationContext holds periodic-iteration info for CEL/template evaluation.
+// IterationContext holds loop-iteration info for CEL/template evaluation.
 // Number is the 0-based index of the current run (IterationCount at dispatch).
-// Values are zero for non-periodic prompts.
+// Values are zero for non-loop prompts.
 type IterationContext struct {
-	// Number is the 0-based index of the current periodic run.
+	// Number is the 0-based index of the current loop run.
 	Number int
 	// Max is the configured maximum number of runs (0 = unlimited).
 	Max int
-	// IsPeriodic indicates the current prompt was triggered by the periodic runner.
-	IsPeriodic bool
+	// IsLoop indicates the current prompt was triggered by the loop runner.
+	IsLoop bool
 	// IsFirst is true when Number == 0.
 	IsFirst bool
 	// IsLast is true when Max > 0 && Number == Max-1.
 	IsLast bool
-	// IsUninterrupted is true ONLY on a scheduled (non-forced) periodic run that
+	// IsUninterrupted is true ONLY on a scheduled (non-forced) loop run that
 	// directly follows another such run of this same loop with nothing in between:
 	// no user interjection, no forced "run now", no FreshContext, and within the same
 	// process lifetime. Powered by a session-scoped in-memory marker that resets across
@@ -130,17 +130,17 @@ type SessionContext struct {
 	IsAutoChild bool
 	// ParentID is the ID of the parent session (empty if not a child)
 	ParentID string
-	// IsPeriodic indicates whether the current prompt was triggered by the periodic runner
-	IsPeriodic bool
-	// IsPeriodicForced indicates whether a periodic prompt was triggered manually via
+	// IsLoop indicates whether the current prompt was triggered by the loop runner
+	IsLoop bool
+	// IsLoopForced indicates whether a loop prompt was triggered manually via
 	// "run now" (as opposed to the normal scheduled delivery). Mirrors
-	// ProcessorInput.IsPeriodicForced and the @mitto:periodic_forced placeholder.
-	IsPeriodicForced bool
-	// IsPeriodicConversation indicates whether the conversation is configured as a
-	// periodic conversation (it has a periodic prompt configuration). Unlike
-	// IsPeriodic, this reflects the conversation TYPE, not whether the current run
+	// ProcessorInput.IsLoopForced and the @mitto:loop_forced placeholder.
+	IsLoopForced bool
+	// IsLoopConversation indicates whether the conversation is configured as a
+	// loop conversation (it has a loop prompt configuration). Unlike
+	// IsLoop, this reflects the conversation TYPE, not whether the current run
 	// was triggered by the scheduler. Populated in the prompt-menu evaluation context.
-	IsPeriodicConversation bool
+	IsLoopConversation bool
 	// HasBeadsIssue indicates whether the conversation has a beads issue associated
 	// (the session metadata BeadsIssue field is non-empty).
 	HasBeadsIssue bool

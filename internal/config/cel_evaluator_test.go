@@ -418,7 +418,7 @@ func TestCELEvaluator_AllContextFields(t *testing.T) {
 	ctx := &PromptEnabledContext{
 		ACP:       ACPContext{Name: "test", Type: "mytype", Tags: []string{"t1"}, AutoApprove: true},
 		Workspace: WorkspaceContext{UUID: "wu", Folder: "/ws", Name: "My WS"},
-		Session:   SessionContext{ID: "sid", Name: "sname", IsChild: true, IsAutoChild: false, ParentID: "pid", IsPeriodicConversation: true, HasMessages: true, ModelTags: []string{"smart"}},
+		Session:   SessionContext{ID: "sid", Name: "sname", IsChild: true, IsAutoChild: false, ParentID: "pid", IsLoopConversation: true, HasMessages: true, ModelTags: []string{"smart"}},
 		Parent:    ParentContext{Exists: true, Name: "pname", ACPServer: "pacp"},
 		Children:  ChildrenContext{Count: 3, Exists: true, MCPCount: 2, Names: []string{"c1"}, ACPServers: []string{"a1"}, PromptingCount: 1, IdleCount: 2},
 		Tools:     ToolsContext{Available: true, Names: []string{"tool_a", "tool_b"}},
@@ -445,7 +445,7 @@ func TestCELEvaluator_AllContextFields(t *testing.T) {
 		`Session.IsChild`,
 		`!Session.IsAutoChild`,
 		`Session.ParentID == "pid"`,
-		`Session.IsPeriodicConversation`,
+		`Session.IsLoopConversation`,
 		`Session.HasMessages`,
 		`"smart" in Session.ModelTags`,
 		`Session.HasModelTag("smart")`,
@@ -482,23 +482,23 @@ func TestCELEvaluator_AllContextFields(t *testing.T) {
 	}
 }
 
-// TestCELEvaluator_SessionIsPeriodicConversation validates the Session.IsPeriodicConversation variable.
-func TestCELEvaluator_SessionIsPeriodicConversation(t *testing.T) {
+// TestCELEvaluator_SessionIsLoopConversation validates the Session.IsLoopConversation variable.
+func TestCELEvaluator_SessionIsLoopConversation(t *testing.T) {
 	e := newTestEvaluator(t)
-	ce := compile(t, e, "Session.IsPeriodicConversation")
+	ce := compile(t, e, "Session.IsLoopConversation")
 
 	trueCtx := &PromptEnabledContext{
-		Session: SessionContext{IsPeriodicConversation: true},
+		Session: SessionContext{IsLoopConversation: true},
 	}
 	if got := evaluate(t, e, ce, trueCtx); !got {
-		t.Error("expected true when IsPeriodicConversation=true")
+		t.Error("expected true when IsLoopConversation=true")
 	}
 
 	falseCtx := &PromptEnabledContext{
-		Session: SessionContext{IsPeriodicConversation: false},
+		Session: SessionContext{IsLoopConversation: false},
 	}
 	if got := evaluate(t, e, ce, falseCtx); got {
-		t.Error("expected false when IsPeriodicConversation=false")
+		t.Error("expected false when IsLoopConversation=false")
 	}
 }
 
@@ -559,23 +559,23 @@ func TestCELEvaluator_SessionHasModelTag(t *testing.T) {
 	}
 }
 
-// TestCELEvaluator_SessionIsPeriodicForced validates the Session.IsPeriodicForced variable.
-func TestCELEvaluator_SessionIsPeriodicForced(t *testing.T) {
+// TestCELEvaluator_SessionIsLoopForced validates the Session.IsLoopForced variable.
+func TestCELEvaluator_SessionIsLoopForced(t *testing.T) {
 	e := newTestEvaluator(t)
-	ce := compile(t, e, "Session.IsPeriodicForced")
+	ce := compile(t, e, "Session.IsLoopForced")
 
 	trueCtx := &PromptEnabledContext{
-		Session: SessionContext{IsPeriodicForced: true},
+		Session: SessionContext{IsLoopForced: true},
 	}
 	if got := evaluate(t, e, ce, trueCtx); !got {
-		t.Error("expected true when IsPeriodicForced=true")
+		t.Error("expected true when IsLoopForced=true")
 	}
 
 	falseCtx := &PromptEnabledContext{
-		Session: SessionContext{IsPeriodicForced: false},
+		Session: SessionContext{IsLoopForced: false},
 	}
 	if got := evaluate(t, e, ce, falseCtx); got {
-		t.Error("expected false when IsPeriodicForced=false")
+		t.Error("expected false when IsLoopForced=false")
 	}
 }
 

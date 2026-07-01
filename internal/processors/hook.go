@@ -178,14 +178,14 @@ func BuildCELContext(input *ProcessorInput) *config.PromptEnabledContext {
 	ctx.Session.Name = input.SessionName
 	ctx.Session.IsChild = input.ParentSessionID != ""
 	ctx.Session.ParentID = input.ParentSessionID
-	ctx.Session.IsPeriodic = input.IsPeriodic
-	ctx.Session.IsPeriodicForced = input.IsPeriodicForced
+	ctx.Session.IsLoop = input.IsLoop
+	ctx.Session.IsLoopForced = input.IsLoopForced
 	ctx.Session.BeadsIssue = input.BeadsIssue
 
 	// Iteration context for the {{ .Iteration.* }} template namespace.
 	ctx.Iteration.Number = input.IterationNumber
 	ctx.Iteration.Max = input.MaxIterations
-	ctx.Iteration.IsPeriodic = input.IsPeriodic
+	ctx.Iteration.IsLoop = input.IsLoop
 	ctx.Iteration.IsFirst = input.IterationNumber == 0
 	ctx.Iteration.IsLast = input.MaxIterations > 0 && input.IterationNumber == input.MaxIterations-1
 	ctx.Iteration.IsUninterrupted = input.IterationUninterrupted

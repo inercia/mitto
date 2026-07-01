@@ -25,8 +25,8 @@ import (
 //   - @mitto:children               — Child sessions, comma-separated with names and ACP servers
 //   - @mitto:mcp_children_count     — Number of MCP-created child sessions (integer as string)
 //   - @mitto:mcp_children           — MCP-created child sessions only, comma-separated
-//   - @mitto:periodic               — "true" if this prompt is from the periodic runner, "false" otherwise
-//   - @mitto:periodic_forced        — "true" if this is a manually-triggered periodic run, "false" otherwise
+//   - @mitto:loop                   — "true" if this prompt is from the loop runner, "false" otherwise
+//   - @mitto:loop_forced            — "true" if this is a manually-triggered loop run, "false" otherwise
 //   - @mitto:user_data_schema       — JSON representation of workspace user data schema
 //   - @mitto:user_data              — JSON representation of current session user data
 //
@@ -81,8 +81,8 @@ func SubstituteVariables(message string, input *ProcessorInput) string {
 		"@mitto:mcp_children_count":    formatMCPChildrenCount(input.ChildSessions),
 		"@mitto:mcp_children":          formatMCPChildren(input.ChildSessions),
 		"@mitto:children":              formatChildSessions(input.ChildSessions),
-		"@mitto:periodic":              strconv.FormatBool(input.IsPeriodic),
-		"@mitto:periodic_forced":       strconv.FormatBool(input.IsPeriodicForced),
+		"@mitto:loop":                  strconv.FormatBool(input.IsLoop),
+		"@mitto:loop_forced":           strconv.FormatBool(input.IsLoopForced),
 		"@mitto:user_data_schema":      input.UserDataSchemaJSON,
 		"@mitto:user_data":             input.UserDataJSON,
 	}
