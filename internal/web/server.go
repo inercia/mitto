@@ -692,13 +692,13 @@ func NewServer(config Config) (*Server, error) {
 	// onTasks list reads do not bounce back through the watcher as external
 	// changes (which would spuriously re-fire onTasks loop conversations).
 	s.loopRunner.SetBeadsClient(s.beads)
-	s.loopRunner.SetOnLoopStarted(s.BroadcastPeriodicStarted)
+	s.loopRunner.SetOnLoopStarted(s.BroadcastLoopStarted)
 	s.loopRunner.SetOnAutoArchive(func(sessionID string) {
 		s.BroadcastACPStopped(sessionID, "auto_archived")
 		s.BroadcastSessionArchived(sessionID, true)
 	})
-	s.loopRunner.SetOnLoopAutoStopped(s.BroadcastPeriodicUpdated)
-	s.loopRunner.SetOnLoopUpdated(s.BroadcastPeriodicUpdated)
+	s.loopRunner.SetOnLoopAutoStopped(s.BroadcastLoopUpdated)
+	s.loopRunner.SetOnLoopUpdated(s.BroadcastLoopUpdated)
 
 	// Configure the global loop-iteration safeguard (user default, bounded by backstop).
 	maxLoopIter := configPkg.DefaultMaxLoopIterations
@@ -748,7 +748,7 @@ func NewServer(config Config) (*Server, error) {
 
 	// Construct the REST handlers sub-package facade. Built here (not earlier)
 	// so the late-initialized callbackIndex, callbackRateLimiter and
-	// periodicRunner are non-nil when wired into Deps.
+	// loopRunner are non-nil when wired into Deps.
 	s.apiHandlers = handlers.New(handlers.Deps{
 		Logger:                   logger,
 		ConfigReadOnly:           config.ConfigReadOnly,
@@ -780,14 +780,14 @@ func NewServer(config Config) (*Server, error) {
 		CallbackRateLimiter:                s.callbackRateLimiter,
 		GetExternalPort:                    s.GetExternalPort,
 		IsExternalListenerRunning:          s.IsExternalListenerRunning,
-		TriggerPeriodicNow:                 s.loopRunner.TriggerNow,
-		StopPeriodicForArchive: func(sessionID string) {
+		TriggerLoopNow:                     s.loopRunner.TriggerNow,
+		StopLoopForArchive: func(sessionID string) {
 			s.loopRunner.StopLoopForArchive(sessionID, session.StoppedReasonArchived)
 		},
 		ErrSessionBusy:                ErrSessionBusy,
-		ErrPeriodicNotEnabled:         ErrLoopNotEnabled,
-		PeriodicDelayFloor:            s.periodicDelayFloor,
-		BroadcastPeriodicUpdated:      s.BroadcastPeriodicUpdated,
+		ErrLoopNotEnabled:             ErrLoopNotEnabled,
+		LoopDelayFloor:                s.loopDelayFloor,
+		BroadcastLoopUpdated:          s.BroadcastLoopUpdated,
 		BroadcastBeadsCleanupProgress: s.BroadcastBeadsCleanupProgress,
 		BootstrapOnCompletion:         s.loopRunner.BootstrapOnCompletion,
 		BroadcastSettingsUpdated:      s.BroadcastSessionSettingsUpdated,
@@ -872,11 +872,11 @@ func NewServer(config Config) (*Server, error) {
 			logger.Info("Auto-archive inactive sessions enabled", "period", autoArchivePeriod, "duration", autoArchiveDuration)
 		}
 
-		// Configure periodic cleanup of archived sessions
+		// Configure loop cleanup of archived sessions
 		retentionPeriod := config.MittoConfig.Session.GetArchiveRetentionPeriod()
 		if retentionPeriod != "" {
 			s.loopRunner.SetArchiveRetentionPeriod(retentionPeriod)
-			logger.Info("Periodic archive retention cleanup enabled", "retention_period", retentionPeriod)
+			logger.Info("Loop archive retention cleanup enabled", "retention_period", retentionPeriod)
 		}
 	}
 
@@ -1306,17 +1306,17 @@ func (s *Server) BroadcastSessionDeleted(sessionID string) {
 	}
 }
 
-// BroadcastPeriodicUpdated notifies all connected clients that a session's periodic state changed.
-// This includes the full periodic config so clients can update their frequency panels.
-func (s *Server) BroadcastPeriodicUpdated(sessionID string, periodic *session.PeriodicPrompt) {
-	data := conversation.BuildPeriodicUpdatedData(sessionID, periodic)
-	s.eventsManager.Broadcast(conversation.WSMsgTypePeriodicUpdated, data)
+// BroadcastLoopUpdated notifies all connected clients that a session's loop state changed.
+// This includes the full loop config so clients can update their frequency panels.
+func (s *Server) BroadcastLoopUpdated(sessionID string, loop *session.LoopPrompt) {
+	data := conversation.BuildLoopUpdatedData(sessionID, loop)
+	s.eventsManager.Broadcast(conversation.WSMsgTypeLoopUpdated, data)
 
 	if s.logger != nil {
-		configured := periodic != nil
-		enabled := periodic != nil && periodic.Enabled
-		s.logger.Debug("Broadcast periodic updated", "session_id", sessionID,
-			"periodic_configured", configured, "periodic_enabled", enabled,
+		configured := loop != nil
+		enabled := loop != nil && loop.Enabled
+		s.logger.Debug("Broadcast loop updated", "session_id", sessionID,
+			"loop_configured", configured, "loop_enabled", enabled,
 			"clients", s.eventsManager.ClientCount())
 	}
 }
@@ -1435,16 +1435,16 @@ func (s *Server) BroadcastACPStartFailed(sessionID, sessionName string, err erro
 	}
 }
 
-// BroadcastPeriodicStarted notifies all connected clients that a periodic prompt was delivered.
+// BroadcastLoopStarted notifies all connected clients that a loop prompt was delivered.
 // This allows the frontend to show a toast notification and native OS notification.
-func (s *Server) BroadcastPeriodicStarted(sessionID, sessionName string) {
-	s.eventsManager.Broadcast(WSMsgTypePeriodicStarted, map[string]string{
+func (s *Server) BroadcastLoopStarted(sessionID, sessionName string) {
+	s.eventsManager.Broadcast(WSMsgTypeLoopStarted, map[string]string{
 		"session_id":   sessionID,
 		"session_name": sessionName,
 	})
 
 	if s.logger != nil {
-		s.logger.Info("Broadcast periodic started", "session_id", sessionID, "session_name", sessionName,
+		s.logger.Info("Broadcast loop started", "session_id", sessionID, "session_name", sessionName,
 			"clients", s.eventsManager.ClientCount())
 	}
 }

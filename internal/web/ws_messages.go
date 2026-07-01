@@ -125,10 +125,10 @@ const (
 	// Data: { "session_id": string, "settings": { "flag_name": bool, ... } }
 	WSMsgTypeSessionSettingsUpdated = "session_settings_updated"
 
-	// WSMsgTypePeriodicStarted notifies that a periodic prompt was delivered.
-	// Sent on /api/events to all connected clients when a scheduled periodic run starts.
+	// WSMsgTypeLoopStarted notifies that a loop prompt was delivered.
+	// Sent on /api/events to all connected clients when a scheduled loop run starts.
 	// Data: { "session_id": string, "session_name": string }
-	WSMsgTypePeriodicStarted = "periodic_started"
+	WSMsgTypeLoopStarted = "loop_started"
 
 	// WSMsgTypeAgentMessage contains HTML-rendered agent response content.
 	// Sent incrementally as the agent generates output.

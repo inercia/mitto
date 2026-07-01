@@ -103,9 +103,9 @@ func (s *Server) handleSessionQueue(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (s *Server) handleSessionPeriodic(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleSessionLoop(w http.ResponseWriter, r *http.Request) {
 	if id, ok := s.sessionIDFromPath(w, r); ok {
-		s.apiHandlers.HandleSessionPeriodic(w, r, id, r.PathValue("subPath"))
+		s.apiHandlers.HandleSessionLoop(w, r, id, r.PathValue("subPath"))
 	}
 }
 
@@ -243,11 +243,11 @@ func (s *Server) buildPromptEnabledContext(sessionID string) *config.PromptEnabl
 	// prompt. Gates "continue"-style prompts that are meaningless when empty.
 	ctx.Session.HasMessages = !meta.LastUserMessageAt.IsZero()
 
-	// Periodic conversation type: true when a periodic configuration exists for this
-	// conversation (matches the PeriodicEnabled UI mode). Distinct from
-	// session.isPeriodic, which marks a scheduler-triggered run.
-	if periodic, err := store.Periodic(sessionID).Get(); err == nil && periodic != nil {
-		ctx.Session.IsPeriodicConversation = true
+	// Loop conversation type: true when a loop configuration exists for this
+	// conversation (matches the LoopEnabled UI mode). Distinct from
+	// session.isLoop, which marks a scheduler-triggered run.
+	if loop, err := store.Loop(sessionID).Get(); err == nil && loop != nil {
+		ctx.Session.IsLoopConversation = true
 	}
 
 	// Parent context (if this is a child)

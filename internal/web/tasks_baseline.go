@@ -11,7 +11,7 @@ import (
 	"github.com/inercia/mitto/internal/fileutil"
 )
 
-// tasksBaselineFileName is the per-session file (alongside periodic.json) that
+// tasksBaselineFileName is the per-session file (alongside loop.json) that
 // persists the raw beads snapshot the onTasks trigger last considered "current"
 // for that conversation — i.e. its diff baseline.
 const tasksBaselineFileName = "tasks_baseline.json"
@@ -38,7 +38,7 @@ type TasksBaseline struct {
 }
 
 // TasksBaselineStore manages the onTasks diff baseline file for a single
-// session directory. Unlike PeriodicStore, it carries no in-memory mutex —
+// session directory. Unlike LoopStore, it carries no in-memory mutex —
 // each instance is short-lived (created fresh per call) and writes go through
 // fileutil.WriteJSONAtomic, which is safe for concurrent writers at the
 // filesystem level (rename-based atomic replace).

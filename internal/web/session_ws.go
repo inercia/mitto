@@ -265,11 +265,11 @@ func (s *Server) handleSessionWS(w http.ResponseWriter, r *http.Request) {
 						"session_id", sessionID)
 				}
 			} else if s.acpProcessManager != nil && s.acpProcessManager.IsGCSuspended(sessionID) {
-				// Session was intentionally suspended by the GC's periodic-suspend
+				// Session was intentionally suspended by the GC's loop-suspend
 				// heuristic. Skip auto-resume to prevent the suspend/resume thrashing
 				// loop (GC closes → frontend reconnects WS → auto-resume → GC closes).
 				// The session will be resumed by ensure_resumed (user focus) or the
-				// PeriodicRunner (when the prompt is due).
+				// LoopRunner (when the prompt is due).
 				if clientLogger != nil {
 					clientLogger.Debug("Session is GC-suspended, not auto-resuming",
 						"session_id", sessionID)
@@ -443,16 +443,16 @@ func (c *SessionWSClient) sendSessionConnected(bs *conversation.BackgroundSessio
 			c.logger.Warn("Failed to get metadata for connected message", "error", err)
 		}
 
-		// Get periodic prompts state.
-		// periodic_configured = true means a periodic config exists (shows editor UI).
-		// periodic_enabled = true means runs are active (drives sidebar category + clock icon).
-		periodicStore := c.store.Periodic(c.sessionID)
-		if periodic, err := periodicStore.Get(); err == nil && periodic != nil {
-			data["periodic_configured"] = true
-			data["periodic_enabled"] = periodic.Enabled
+		// Get loop prompts state.
+		// loop_configured = true means a loop config exists (shows editor UI).
+		// loop_enabled = true means runs are active (drives sidebar category + clock icon).
+		loopStore := c.store.Loop(c.sessionID)
+		if loop, err := loopStore.Get(); err == nil && loop != nil {
+			data["loop_configured"] = true
+			data["loop_enabled"] = loop.Enabled
 		} else {
-			data["periodic_configured"] = false
-			data["periodic_enabled"] = false
+			data["loop_configured"] = false
+			data["loop_enabled"] = false
 		}
 
 		// Get queue length for the session
@@ -1397,7 +1397,7 @@ func (c *SessionWSClient) handleKeepalive(clientTime int64, clientLastSeenSeq in
 		"queue_length":   queueLength,
 		"status":         status,
 	}
-	// Include processor stats for periodic UI refresh
+	// Include processor stats for loop UI refresh
 	if c.bgSession != nil {
 		procCount, procActivations, procLastAt, procLastNames := c.bgSession.GetProcessorStats()
 		keepaliveData["processor_count"] = procCount
@@ -1811,7 +1811,7 @@ func (c *SessionWSClient) handleEnsureResumed() {
 	}
 
 	// Clear GC-suspended flag — the user explicitly focused this session,
-	// so it should resume regardless of the periodic suspend heuristic.
+	// so it should resume regardless of the loop suspend heuristic.
 	if c.server.acpProcessManager != nil {
 		c.server.acpProcessManager.ClearGCSuspended(c.sessionID)
 	}
@@ -2415,7 +2415,7 @@ func (c *SessionWSClient) OnUserPrompt(seq int64, senderID, promptID, message st
 	// also delivered this event. Skipping here races with handleLoadEvents:
 	// a concurrent load_events can update lastSentSeq to include this seq before
 	// the observer notification runs, silently dropping the live notification.
-	// This caused periodic prompt pills to never appear in real-time.
+	// This caused loop prompt pills to never appear in real-time.
 	c.seqMu.Lock()
 	if seq > c.lastSentSeq {
 		c.lastSentSeq = seq

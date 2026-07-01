@@ -8,8 +8,8 @@ import (
 	"github.com/inercia/mitto/internal/session"
 )
 
-// PeriodicPromptRequest is the request body for creating/updating a periodic prompt.
-type PeriodicPromptRequest struct {
+// LoopPromptRequest is the request body for creating/updating a loop prompt.
+type LoopPromptRequest struct {
 	Prompt        string            `json:"prompt"`
 	PromptName    string            `json:"prompt_name,omitempty"`
 	Frequency     session.Frequency `json:"frequency"`
@@ -18,7 +18,7 @@ type PeriodicPromptRequest struct {
 	MaxIterations int               `json:"max_iterations,omitempty"`
 	// Trigger selects how the prompt fires: "" or "schedule" (frequency-based, default)
 	// vs "onCompletion" (event-driven, after the agent stops + DelaySeconds).
-	Trigger session.PeriodicTrigger `json:"trigger,omitempty"`
+	Trigger session.LoopTrigger `json:"trigger,omitempty"`
 	// DelaySeconds is the wait after the agent stops before the next run (onCompletion only).
 	// Clamped to the global floor on write.
 	DelaySeconds int `json:"delay_seconds,omitempty"`
@@ -37,8 +37,8 @@ type PeriodicPromptRequest struct {
 	CooldownSeconds *int `json:"cooldown_seconds,omitempty"`
 }
 
-// PeriodicPromptPatchRequest is the request body for partial updates.
-type PeriodicPromptPatchRequest struct {
+// LoopPromptPatchRequest is the request body for partial updates.
+type LoopPromptPatchRequest struct {
 	Prompt        *string            `json:"prompt,omitempty"`
 	PromptName    *string            `json:"prompt_name,omitempty"`
 	Frequency     *session.Frequency `json:"frequency,omitempty"`
@@ -46,9 +46,9 @@ type PeriodicPromptPatchRequest struct {
 	FreshContext  *bool              `json:"fresh_context,omitempty"`
 	MaxIterations *int               `json:"max_iterations,omitempty"`
 	// Trigger, DelaySeconds, MaxDurationSeconds are partial updates for the on-completion fields.
-	Trigger            *session.PeriodicTrigger `json:"trigger,omitempty"`
-	DelaySeconds       *int                     `json:"delay_seconds,omitempty"`
-	MaxDurationSeconds *int                     `json:"max_duration_seconds,omitempty"`
+	Trigger            *session.LoopTrigger `json:"trigger,omitempty"`
+	DelaySeconds       *int                 `json:"delay_seconds,omitempty"`
+	MaxDurationSeconds *int                 `json:"max_duration_seconds,omitempty"`
 	// Arguments is a partial update for the substitution arguments map.
 	// nil = leave unchanged; non-nil = replace the entire map (including empty map to clear it).
 	Arguments *map[string]string `json:"arguments,omitempty"`
@@ -65,24 +65,24 @@ type PeriodicPromptPatchRequest struct {
 	ResetCounters *bool `json:"reset_counters,omitempty"`
 }
 
-// RunPeriodicNowRequest is the optional request body for POST /api/sessions/{id}/periodic/run-now.
-type RunPeriodicNowRequest struct {
+// RunLoopNowRequest is the optional request body for POST /api/sessions/{id}/loop/run-now.
+type RunLoopNowRequest struct {
 	ResetTimer *bool `json:"reset_timer,omitempty"`
 }
 
-// periodicDelayFloor returns the configured global floor for the on-completion delay.
-// Falls back to the package default when the periodic runner is unavailable (e.g. tests).
-func (h *Handlers) periodicDelayFloor() int {
-	if h.deps.PeriodicDelayFloor != nil {
-		return h.deps.PeriodicDelayFloor()
+// loopDelayFloor returns the configured global floor for the on-completion delay.
+// Falls back to the package default when the loop runner is unavailable (e.g. tests).
+func (h *Handlers) loopDelayFloor() int {
+	if h.deps.LoopDelayFloor != nil {
+		return h.deps.LoopDelayFloor()
 	}
-	return configPkg.DefaultMinPeriodicCompletionDelaySeconds
+	return configPkg.DefaultMinLoopCompletionDelaySeconds
 }
 
-// HandleSessionPeriodic handles periodic prompt operations for a session.
-// Routes: GET, PUT, PATCH, DELETE /api/sessions/{id}/periodic
-// Route: POST /api/sessions/{id}/periodic/run-now (immediate delivery)
-func (h *Handlers) HandleSessionPeriodic(w http.ResponseWriter, r *http.Request, sessionID, subPath string) {
+// HandleSessionLoop handles loop prompt operations for a session.
+// Routes: GET, PUT, PATCH, DELETE /api/sessions/{id}/loop
+// Route: POST /api/sessions/{id}/loop/run-now (immediate delivery)
+func (h *Handlers) HandleSessionLoop(w http.ResponseWriter, r *http.Request, sessionID, subPath string) {
 	store := h.deps.Store
 	if store == nil {
 		writeErrorJSON(w, http.StatusInternalServerError, "", "Session store not available")
@@ -100,65 +100,65 @@ func (h *Handlers) HandleSessionPeriodic(w http.ResponseWriter, r *http.Request,
 		return
 	}
 
-	// Prevent setting periodic on child sessions - only parents/top-level sessions can be periodic
+	// Prevent setting loop on child sessions - only parents/top-level sessions can be loops
 	if r.Method != http.MethodGet && meta.ParentSessionID != "" {
-		writeErrorJSON(w, http.StatusBadRequest, "", "Cannot set periodic on a child conversation. Only parent or top-level conversations can be periodic.")
+		writeErrorJSON(w, http.StatusBadRequest, "", "Cannot set loop on a child conversation. Only parent or top-level conversations can be loops.")
 		return
 	}
 
 	// Handle run-now sub-path
 	if subPath == "run-now" {
-		h.handleRunPeriodicNow(w, r, sessionID)
+		h.handleRunLoopNow(w, r, sessionID)
 		return
 	}
 
-	periodicStore := store.Periodic(sessionID)
+	loopStore := store.Loop(sessionID)
 
 	switch r.Method {
 	case http.MethodGet:
-		h.handleGetPeriodic(w, periodicStore)
+		h.handleGetLoop(w, loopStore)
 	case http.MethodPut:
-		h.handleSetPeriodic(w, r, sessionID, periodicStore)
+		h.handleSetLoop(w, r, sessionID, loopStore)
 	case http.MethodPatch:
-		h.handlePatchPeriodic(w, r, sessionID, periodicStore)
+		h.handlePatchLoop(w, r, sessionID, loopStore)
 	case http.MethodDelete:
-		h.handleDeletePeriodic(w, sessionID, periodicStore)
+		h.handleDeleteLoop(w, sessionID, loopStore)
 	default:
 		methodNotAllowed(w)
 	}
 }
 
-// handleGetPeriodic handles GET /api/sessions/{id}/periodic
-func (h *Handlers) handleGetPeriodic(w http.ResponseWriter, ps *session.PeriodicStore) {
+// handleGetLoop handles GET /api/sessions/{id}/loop
+func (h *Handlers) handleGetLoop(w http.ResponseWriter, ps *session.LoopStore) {
 	p, err := ps.Get()
 	if err != nil {
-		if err == session.ErrPeriodicNotFound {
-			writeErrorJSON(w, http.StatusNotFound, "", "No periodic prompt configured")
+		if err == session.ErrLoopNotFound {
+			writeErrorJSON(w, http.StatusNotFound, "", "No loop prompt configured")
 			return
 		}
 		if h.deps.Logger != nil {
-			h.deps.Logger.Error("Failed to get periodic prompt", "error", err)
+			h.deps.Logger.Error("Failed to get loop prompt", "error", err)
 		}
-		writeErrorJSON(w, http.StatusInternalServerError, "", "Failed to get periodic prompt")
+		writeErrorJSON(w, http.StatusInternalServerError, "", "Failed to get loop prompt")
 		return
 	}
 
 	writeJSONOK(w, p)
 }
 
-// triggerTitleFromPeriodic triggers title generation from a periodic prompt when
+// triggerTitleFromLoop triggers title generation from a loop prompt when
 // the session has no title yet. Shared by the PUT and PATCH handlers.
-func (h *Handlers) triggerTitleFromPeriodic(sessionID, prompt, promptName string) {
+func (h *Handlers) triggerTitleFromLoop(sessionID, prompt, promptName string) {
 	if h.deps.SessionManager != nil && conversation.SessionNeedsTitle(h.deps.Store, sessionID) {
 		if bs := h.deps.SessionManager.GetSession(sessionID); bs != nil {
-			bs.TriggerTitleGenerationFromPeriodic(prompt, promptName)
+			bs.TriggerTitleGenerationFromLoop(prompt, promptName)
 		}
 	}
 }
 
-// broadcastPeriodic broadcasts a periodic-config change when a broadcaster is wired.
-func (h *Handlers) broadcastPeriodic(sessionID string, updated *session.PeriodicPrompt) {
-	if h.deps.BroadcastPeriodicUpdated != nil {
-		h.deps.BroadcastPeriodicUpdated(sessionID, updated)
+// broadcastLoop broadcasts a loop-config change when a broadcaster is wired.
+func (h *Handlers) broadcastLoop(sessionID string, updated *session.LoopPrompt) {
+	if h.deps.BroadcastLoopUpdated != nil {
+		h.deps.BroadcastLoopUpdated(sessionID, updated)
 	}
 }

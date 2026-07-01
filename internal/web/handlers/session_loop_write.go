@@ -7,7 +7,7 @@ import (
 	"github.com/inercia/mitto/internal/session"
 )
 
-// isInvalidConditionErr reports whether err originates from PeriodicPrompt.Validate's
+// isInvalidConditionErr reports whether err originates from LoopPrompt.Validate's
 // CEL condition check (session.ConditionValidator, wired to config.ValidateCondition).
 // There is no dedicated sentinel for this — Validate wraps the validator's error with
 // the fixed prefix "invalid condition: " — so we match on that prefix to classify it
@@ -16,14 +16,14 @@ func isInvalidConditionErr(err error) bool {
 	return err != nil && strings.HasPrefix(err.Error(), "invalid condition:")
 }
 
-// handleSetPeriodic handles PUT /api/sessions/{id}/periodic
-func (h *Handlers) handleSetPeriodic(w http.ResponseWriter, r *http.Request, sessionID string, ps *session.PeriodicStore) {
-	var req PeriodicPromptRequest
+// handleSetLoop handles PUT /api/sessions/{id}/loop
+func (h *Handlers) handleSetLoop(w http.ResponseWriter, r *http.Request, sessionID string, ps *session.LoopStore) {
+	var req LoopPromptRequest
 	if !parseJSONBody(w, r, &req) {
 		return
 	}
 
-	p := &session.PeriodicPrompt{
+	p := &session.LoopPrompt{
 		Prompt:             req.Prompt,
 		PromptName:         req.PromptName,
 		Arguments:          req.Arguments,
@@ -45,7 +45,7 @@ func (h *Handlers) handleSetPeriodic(w http.ResponseWriter, r *http.Request, ses
 		p.CooldownSeconds = *req.CooldownSeconds
 	}
 	// Clamp the on-completion delay to the global floor on write (no-op for schedule trigger).
-	p.ClampDelay(h.periodicDelayFloor())
+	p.ClampDelay(h.loopDelayFloor())
 
 	if err := ps.Set(p); err != nil {
 		if err == session.ErrInvalidFrequency || err == session.ErrPromptEmpty || err == session.ErrInvalidMaxIterations ||
@@ -55,25 +55,25 @@ func (h *Handlers) handleSetPeriodic(w http.ResponseWriter, r *http.Request, ses
 			return
 		}
 		if h.deps.Logger != nil {
-			h.deps.Logger.Error("Failed to set periodic prompt", "error", err)
+			h.deps.Logger.Error("Failed to set loop prompt", "error", err)
 		}
-		writeErrorJSON(w, http.StatusInternalServerError, "", "Failed to set periodic prompt")
+		writeErrorJSON(w, http.StatusInternalServerError, "", "Failed to set loop prompt")
 		return
 	}
-	h.resetPeriodicContinuation(sessionID)
+	h.resetLoopContinuation(sessionID)
 
-	// Return the updated periodic prompt
+	// Return the updated loop prompt
 	updated, err := ps.Get()
 	if err != nil {
-		writeErrorJSON(w, http.StatusInternalServerError, "", "Failed to get updated periodic prompt")
+		writeErrorJSON(w, http.StatusInternalServerError, "", "Failed to get updated loop prompt")
 		return
 	}
 
-	// If the session has no title, trigger title generation from the periodic prompt.
-	h.triggerTitleFromPeriodic(sessionID, req.Prompt, req.PromptName)
+	// If the session has no title, trigger title generation from the loop prompt.
+	h.triggerTitleFromLoop(sessionID, req.Prompt, req.PromptName)
 
-	// Broadcast periodic state change to all clients (includes full config)
-	h.broadcastPeriodic(sessionID, updated)
+	// Broadcast loop state change to all clients (includes full config)
+	h.broadcastLoop(sessionID, updated)
 
 	// Kick off the very first run for a fresh onCompletion conversation.
 	if h.deps.BootstrapOnCompletion != nil {
@@ -83,9 +83,9 @@ func (h *Handlers) handleSetPeriodic(w http.ResponseWriter, r *http.Request, ses
 	writeJSONOK(w, updated)
 }
 
-// handlePatchPeriodic handles PATCH /api/sessions/{id}/periodic
-func (h *Handlers) handlePatchPeriodic(w http.ResponseWriter, r *http.Request, sessionID string, ps *session.PeriodicStore) {
-	var req PeriodicPromptPatchRequest
+// handlePatchLoop handles PATCH /api/sessions/{id}/loop
+func (h *Handlers) handlePatchLoop(w http.ResponseWriter, r *http.Request, sessionID string, ps *session.LoopStore) {
+	var req LoopPromptPatchRequest
 	if !parseJSONBody(w, r, &req) {
 		return
 	}
@@ -93,9 +93,9 @@ func (h *Handlers) handlePatchPeriodic(w http.ResponseWriter, r *http.Request, s
 	// Clamp the on-completion delay to the global floor on write. The effective trigger
 	// is the patched value when provided, otherwise the currently-stored trigger.
 	if req.DelaySeconds != nil {
-		floor := h.periodicDelayFloor()
+		floor := h.loopDelayFloor()
 		if *req.DelaySeconds < floor {
-			effTrigger := session.PeriodicTrigger("")
+			effTrigger := session.LoopTrigger("")
 			if req.Trigger != nil {
 				effTrigger = *req.Trigger
 			} else if cur, err := ps.Get(); err == nil && cur != nil {
@@ -109,8 +109,8 @@ func (h *Handlers) handlePatchPeriodic(w http.ResponseWriter, r *http.Request, s
 	}
 
 	if err := ps.Update(req.Prompt, req.PromptName, req.Frequency, req.Enabled, req.FreshContext, req.MaxIterations, req.Trigger, req.DelaySeconds, req.MaxDurationSeconds, req.Arguments, req.Condition, req.ConditionPreset, req.CooldownSeconds); err != nil {
-		if err == session.ErrPeriodicNotFound {
-			writeErrorJSON(w, http.StatusNotFound, "", "No periodic prompt configured")
+		if err == session.ErrLoopNotFound {
+			writeErrorJSON(w, http.StatusNotFound, "", "No loop prompt configured")
 			return
 		}
 		if err == session.ErrInvalidFrequency || err == session.ErrPromptEmpty || err == session.ErrInvalidMaxIterations ||
@@ -120,9 +120,9 @@ func (h *Handlers) handlePatchPeriodic(w http.ResponseWriter, r *http.Request, s
 			return
 		}
 		if h.deps.Logger != nil {
-			h.deps.Logger.Error("Failed to update periodic prompt", "error", err)
+			h.deps.Logger.Error("Failed to update loop prompt", "error", err)
 		}
-		writeErrorJSON(w, http.StatusInternalServerError, "", "Failed to update periodic prompt")
+		writeErrorJSON(w, http.StatusInternalServerError, "", "Failed to update loop prompt")
 		return
 	}
 
@@ -131,9 +131,9 @@ func (h *Handlers) handlePatchPeriodic(w http.ResponseWriter, r *http.Request, s
 	if req.ResetCounters != nil && *req.ResetCounters {
 		if err := ps.ResetCounters(); err != nil {
 			if h.deps.Logger != nil {
-				h.deps.Logger.Error("Failed to reset periodic counters", "error", err)
+				h.deps.Logger.Error("Failed to reset loop counters", "error", err)
 			}
-			writeErrorJSON(w, http.StatusInternalServerError, "", "Failed to reset periodic counters")
+			writeErrorJSON(w, http.StatusInternalServerError, "", "Failed to reset loop counters")
 			return
 		}
 	}
@@ -145,25 +145,25 @@ func (h *Handlers) handlePatchPeriodic(w http.ResponseWriter, r *http.Request, s
 			h.deps.Logger.Warn("Failed to record pausedByUser reason", "error", err)
 		}
 	}
-	h.resetPeriodicContinuation(sessionID)
+	h.resetLoopContinuation(sessionID)
 
-	// Return the updated periodic prompt
+	// Return the updated loop prompt
 	updated, err := ps.Get()
 	if err != nil {
-		writeErrorJSON(w, http.StatusInternalServerError, "", "Failed to get updated periodic prompt")
+		writeErrorJSON(w, http.StatusInternalServerError, "", "Failed to get updated loop prompt")
 		return
 	}
 
-	// If the session has no title, trigger title generation from the periodic prompt.
+	// If the session has no title, trigger title generation from the loop prompt.
 	var pPrompt, pName string
 	if updated != nil {
 		pPrompt = updated.Prompt
 		pName = updated.PromptName
 	}
-	h.triggerTitleFromPeriodic(sessionID, pPrompt, pName)
+	h.triggerTitleFromLoop(sessionID, pPrompt, pName)
 
-	// Broadcast periodic state change to all clients (includes full config)
-	h.broadcastPeriodic(sessionID, updated)
+	// Broadcast loop state change to all clients (includes full config)
+	h.broadcastLoop(sessionID, updated)
 
 	// Kick off the very first run for a fresh onCompletion conversation.
 	if h.deps.BootstrapOnCompletion != nil {
@@ -173,14 +173,14 @@ func (h *Handlers) handlePatchPeriodic(w http.ResponseWriter, r *http.Request, s
 	writeJSONOK(w, updated)
 }
 
-// resetPeriodicContinuation clears the live BackgroundSession's periodic continuation marker
-// (mitto-5xjn) so the next periodic run after a config change/pause/re-enable renders the
+// resetLoopContinuation clears the live BackgroundSession's loop continuation marker
+// (mitto-5xjn) so the next loop run after a config change/pause/re-enable renders the
 // verbose form. No-op when the session is not currently live.
-func (h *Handlers) resetPeriodicContinuation(sessionID string) {
+func (h *Handlers) resetLoopContinuation(sessionID string) {
 	if h.deps.SessionManager == nil {
 		return
 	}
 	if bs := h.deps.SessionManager.GetSession(sessionID); bs != nil {
-		bs.ResetPeriodicContinuation()
+		bs.ResetLoopContinuation()
 	}
 }

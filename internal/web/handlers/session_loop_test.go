@@ -14,10 +14,10 @@ import (
 	"github.com/inercia/mitto/internal/session"
 )
 
-// newPeriodicStore creates a temp store and returns it together with a Handlers
+// newLoopStore creates a temp store and returns it together with a Handlers
 // wired with only the Store dependency. Broadcast/bootstrap deps are left nil
-// (no-ops), which is sufficient for the periodic REST handler tests.
-func newPeriodicStore(t *testing.T) (*session.Store, *Handlers) {
+// (no-ops), which is sufficient for the loop REST handler tests.
+func newLoopStore(t *testing.T) (*session.Store, *Handlers) {
 	t.Helper()
 	store, err := session.NewStore(t.TempDir())
 	if err != nil {
@@ -28,30 +28,30 @@ func newPeriodicStore(t *testing.T) (*session.Store, *Handlers) {
 	return store, h
 }
 
-// putPeriodicForTest is a helper that PUTs a periodic config via the REST handler and
+// putLoopForTest is a helper that PUTs a loop config via the REST handler and
 // returns the decoded response. It fails the test on a non-200 status.
-func putPeriodicForTest(t *testing.T, h *Handlers, sid string, body PeriodicPromptRequest) session.PeriodicPrompt {
+func putLoopForTest(t *testing.T, h *Handlers, sid string, body LoopPromptRequest) session.LoopPrompt {
 	t.Helper()
 	raw, _ := json.Marshal(body)
-	req := httptest.NewRequest(http.MethodPut, "/api/sessions/"+sid+"/periodic", bytes.NewReader(raw))
+	req := httptest.NewRequest(http.MethodPut, "/api/sessions/"+sid+"/loop", bytes.NewReader(raw))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
-	h.HandleSessionPeriodic(w, req, sid, "")
+	h.HandleSessionLoop(w, req, sid, "")
 	if w.Code != http.StatusOK {
-		t.Fatalf("PUT periodic: Status = %d, want %d. Body: %s", w.Code, http.StatusOK, w.Body.String())
+		t.Fatalf("PUT loop: Status = %d, want %d. Body: %s", w.Code, http.StatusOK, w.Body.String())
 	}
-	var got session.PeriodicPrompt
+	var got session.LoopPrompt
 	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
 		t.Fatalf("decode PUT response: %v", err)
 	}
 	return got
 }
 
-// TestHandleRunPeriodicNow_TimeoutReturnsRetryable503 verifies that a slow
-// TriggerPeriodicNow (e.g. a blocking auto-resume) does not block the handler
+// TestHandleRunLoopNow_TimeoutReturnsRetryable503 verifies that a slow
+// TriggerLoopNow (e.g. a blocking auto-resume) does not block the handler
 // past auxBackedRequestTimeout: it returns a fast retryable 503 with a
 // Retry-After header and the canonical "unavailable" error code (mitto-n36h).
-func TestHandleRunPeriodicNow_TimeoutReturnsRetryable503(t *testing.T) {
+func TestHandleRunLoopNow_TimeoutReturnsRetryable503(t *testing.T) {
 	// Lower the budget so the test completes quickly.
 	old := auxBackedRequestTimeout
 	auxBackedRequestTimeout = 20 * time.Millisecond
@@ -67,11 +67,11 @@ func TestHandleRunPeriodicNow_TimeoutReturnsRetryable503(t *testing.T) {
 		return nil
 	}
 
-	h := New(Deps{TriggerPeriodicNow: stub})
+	h := New(Deps{TriggerLoopNow: stub})
 
-	req := httptest.NewRequest(http.MethodPost, "/api/sessions/sid/periodic/run-now", nil)
+	req := httptest.NewRequest(http.MethodPost, "/api/sessions/sid/loop/run-now", nil)
 	w := httptest.NewRecorder()
-	h.handleRunPeriodicNow(w, req, "sid")
+	h.handleRunLoopNow(w, req, "sid")
 
 	if w.Code != http.StatusServiceUnavailable {
 		t.Errorf("status = %d, want %d", w.Code, http.StatusServiceUnavailable)
@@ -92,12 +92,12 @@ func TestHandleRunPeriodicNow_TimeoutReturnsRetryable503(t *testing.T) {
 	}
 }
 
-func TestHandleSessionPeriodic_ChildRejected(t *testing.T) {
-	store, h := newPeriodicStore(t)
+func TestHandleSessionLoop_ChildRejected(t *testing.T) {
+	store, h := newLoopStore(t)
 	tmpDir := t.TempDir()
 
 	if err := store.Create(session.Metadata{
-		SessionID:  "test-parent-periodic",
+		SessionID:  "test-parent-loop",
 		ACPServer:  "test-server",
 		WorkingDir: tmpDir,
 	}); err != nil {
@@ -105,28 +105,28 @@ func TestHandleSessionPeriodic_ChildRejected(t *testing.T) {
 	}
 
 	if err := store.Create(session.Metadata{
-		SessionID:       "test-child-periodic",
+		SessionID:       "test-child-loop",
 		ACPServer:       "test-server",
 		WorkingDir:      tmpDir,
-		ParentSessionID: "test-parent-periodic",
+		ParentSessionID: "test-parent-loop",
 	}); err != nil {
 		t.Fatalf("Create child failed: %v", err)
 	}
 
-	// PUT periodic on child — should be rejected
-	body, _ := json.Marshal(PeriodicPromptRequest{
+	// PUT loop on child — should be rejected
+	body, _ := json.Marshal(LoopPromptRequest{
 		Prompt:    "check updates",
 		Frequency: session.Frequency{Value: 1, Unit: session.FrequencyHours},
 		Enabled:   true,
 	})
-	req := httptest.NewRequest(http.MethodPut, "/api/sessions/test-child-periodic/periodic", bytes.NewReader(body))
+	req := httptest.NewRequest(http.MethodPut, "/api/sessions/test-child-loop/loop", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 
-	h.HandleSessionPeriodic(w, req, "test-child-periodic", "")
+	h.HandleSessionLoop(w, req, "test-child-loop", "")
 
 	if w.Code != http.StatusBadRequest {
-		t.Errorf("PUT periodic on child: Status = %d, want %d", w.Code, http.StatusBadRequest)
+		t.Errorf("PUT loop on child: Status = %d, want %d", w.Code, http.StatusBadRequest)
 	}
 
 	var env struct {
@@ -141,56 +141,56 @@ func TestHandleSessionPeriodic_ChildRejected(t *testing.T) {
 	if env.Error.Code != "bad_request" {
 		t.Errorf("error.code = %q, want %q", env.Error.Code, "bad_request")
 	}
-	const wantMsg = "Cannot set periodic on a child conversation. Only parent or top-level conversations can be periodic."
+	const wantMsg = "Cannot set loop on a child conversation. Only parent or top-level conversations can be loops."
 	if env.Error.Message != wantMsg {
 		t.Errorf("error.message = %q, want %q", env.Error.Message, wantMsg)
 	}
 
 	// GET should still work (not rejected as 400)
-	req2 := httptest.NewRequest(http.MethodGet, "/api/sessions/test-child-periodic/periodic", nil)
+	req2 := httptest.NewRequest(http.MethodGet, "/api/sessions/test-child-loop/loop", nil)
 	w2 := httptest.NewRecorder()
 
-	h.HandleSessionPeriodic(w2, req2, "test-child-periodic", "")
+	h.HandleSessionLoop(w2, req2, "test-child-loop", "")
 
 	if w2.Code == http.StatusBadRequest {
-		t.Error("GET periodic on child should NOT be rejected with 400")
+		t.Error("GET loop on child should NOT be rejected with 400")
 	}
 }
 
-// TestHandleSessionPeriodic_TopLevelAllowed tests that setting periodic on a top-level session works.
-func TestHandleSessionPeriodic_TopLevelAllowed(t *testing.T) {
-	store, h := newPeriodicStore(t)
+// TestHandleSessionLoop_TopLevelAllowed tests that setting loop on a top-level session works.
+func TestHandleSessionLoop_TopLevelAllowed(t *testing.T) {
+	store, h := newLoopStore(t)
 	tmpDir := t.TempDir()
 
 	if err := store.Create(session.Metadata{
-		SessionID:  "test-toplevel-periodic",
+		SessionID:  "test-toplevel-loop",
 		ACPServer:  "test-server",
 		WorkingDir: tmpDir,
 	}); err != nil {
 		t.Fatalf("Create failed: %v", err)
 	}
 
-	body, _ := json.Marshal(PeriodicPromptRequest{
+	body, _ := json.Marshal(LoopPromptRequest{
 		Prompt:    "check updates",
 		Frequency: session.Frequency{Value: 1, Unit: session.FrequencyHours},
 		Enabled:   true,
 	})
-	req := httptest.NewRequest(http.MethodPut, "/api/sessions/test-toplevel-periodic/periodic", bytes.NewReader(body))
+	req := httptest.NewRequest(http.MethodPut, "/api/sessions/test-toplevel-loop/loop", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 
-	h.HandleSessionPeriodic(w, req, "test-toplevel-periodic", "")
+	h.HandleSessionLoop(w, req, "test-toplevel-loop", "")
 
 	if w.Code != http.StatusOK {
-		t.Errorf("PUT periodic on top-level: Status = %d, want %d. Body: %s", w.Code, http.StatusOK, w.Body.String())
+		t.Errorf("PUT loop on top-level: Status = %d, want %d. Body: %s", w.Code, http.StatusOK, w.Body.String())
 	}
 }
 
-// TestHandleSessionPeriodic_OnCompletionRoundTrip verifies that the on-completion trigger,
+// TestHandleSessionLoop_OnCompletionRoundTrip verifies that the on-completion trigger,
 // completion delay, and max-duration fields round-trip through the PUT handler. A frequency
 // is not required for the onCompletion trigger.
-func TestHandleSessionPeriodic_OnCompletionRoundTrip(t *testing.T) {
-	store, h := newPeriodicStore(t)
+func TestHandleSessionLoop_OnCompletionRoundTrip(t *testing.T) {
+	store, h := newLoopStore(t)
 	tmpDir := t.TempDir()
 
 	const sid = "test-oncompletion-roundtrip"
@@ -198,7 +198,7 @@ func TestHandleSessionPeriodic_OnCompletionRoundTrip(t *testing.T) {
 		t.Fatalf("Create failed: %v", err)
 	}
 
-	got := putPeriodicForTest(t, h, sid, PeriodicPromptRequest{
+	got := putLoopForTest(t, h, sid, LoopPromptRequest{
 		Prompt:             "keep going",
 		Enabled:            true,
 		Trigger:            session.TriggerOnCompletion,
@@ -217,11 +217,11 @@ func TestHandleSessionPeriodic_OnCompletionRoundTrip(t *testing.T) {
 	}
 }
 
-// TestHandleSessionPeriodic_OnCompletionDelayClampedOnPut verifies that a delay below the
-// global floor is clamped up to the floor on write (PUT). With no periodic runner configured,
+// TestHandleSessionLoop_OnCompletionDelayClampedOnPut verifies that a delay below the
+// global floor is clamped up to the floor on write (PUT). With no loop runner configured,
 // the floor is the package default.
-func TestHandleSessionPeriodic_OnCompletionDelayClampedOnPut(t *testing.T) {
-	store, h := newPeriodicStore(t)
+func TestHandleSessionLoop_OnCompletionDelayClampedOnPut(t *testing.T) {
+	store, h := newLoopStore(t)
 	tmpDir := t.TempDir()
 
 	const sid = "test-oncompletion-clamp-put"
@@ -229,22 +229,22 @@ func TestHandleSessionPeriodic_OnCompletionDelayClampedOnPut(t *testing.T) {
 		t.Fatalf("Create failed: %v", err)
 	}
 
-	got := putPeriodicForTest(t, h, sid, PeriodicPromptRequest{
+	got := putLoopForTest(t, h, sid, LoopPromptRequest{
 		Prompt:       "keep going",
 		Enabled:      true,
 		Trigger:      session.TriggerOnCompletion,
 		DelaySeconds: 1, // below the default floor (5)
 	})
 
-	if got.DelaySeconds != h.periodicDelayFloor() {
-		t.Errorf("DelaySeconds = %d, want clamped to floor %d", got.DelaySeconds, h.periodicDelayFloor())
+	if got.DelaySeconds != h.loopDelayFloor() {
+		t.Errorf("DelaySeconds = %d, want clamped to floor %d", got.DelaySeconds, h.loopDelayFloor())
 	}
 }
 
-// TestHandleSessionPeriodic_PatchPartialPreservesOnCompletionFields verifies that a partial
+// TestHandleSessionLoop_PatchPartialPreservesOnCompletionFields verifies that a partial
 // PATCH updating only max_duration_seconds does not clobber the trigger or delay.
-func TestHandleSessionPeriodic_PatchPartialPreservesOnCompletionFields(t *testing.T) {
-	store, h := newPeriodicStore(t)
+func TestHandleSessionLoop_PatchPartialPreservesOnCompletionFields(t *testing.T) {
+	store, h := newLoopStore(t)
 	tmpDir := t.TempDir()
 
 	const sid = "test-oncompletion-patch"
@@ -253,7 +253,7 @@ func TestHandleSessionPeriodic_PatchPartialPreservesOnCompletionFields(t *testin
 	}
 
 	// Seed an onCompletion config with a delay and no duration cap.
-	putPeriodicForTest(t, h, sid, PeriodicPromptRequest{
+	putLoopForTest(t, h, sid, LoopPromptRequest{
 		Prompt:       "keep going",
 		Enabled:      true,
 		Trigger:      session.TriggerOnCompletion,
@@ -262,18 +262,18 @@ func TestHandleSessionPeriodic_PatchPartialPreservesOnCompletionFields(t *testin
 
 	// PATCH only max_duration_seconds.
 	maxDur := 7200
-	patchBody, _ := json.Marshal(PeriodicPromptPatchRequest{MaxDurationSeconds: &maxDur})
-	req := httptest.NewRequest(http.MethodPatch, "/api/sessions/"+sid+"/periodic", bytes.NewReader(patchBody))
+	patchBody, _ := json.Marshal(LoopPromptPatchRequest{MaxDurationSeconds: &maxDur})
+	req := httptest.NewRequest(http.MethodPatch, "/api/sessions/"+sid+"/loop", bytes.NewReader(patchBody))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
-	h.HandleSessionPeriodic(w, req, sid, "")
+	h.HandleSessionLoop(w, req, sid, "")
 	if w.Code != http.StatusOK {
-		t.Fatalf("PATCH periodic: Status = %d, want %d. Body: %s", w.Code, http.StatusOK, w.Body.String())
+		t.Fatalf("PATCH loop: Status = %d, want %d. Body: %s", w.Code, http.StatusOK, w.Body.String())
 	}
 
-	stored, err := store.Periodic(sid).Get()
+	stored, err := store.Loop(sid).Get()
 	if err != nil {
-		t.Fatalf("Get periodic after PATCH: %v", err)
+		t.Fatalf("Get loop after PATCH: %v", err)
 	}
 	if stored.Trigger != session.TriggerOnCompletion {
 		t.Errorf("Trigger after PATCH = %q, want %q (must not be clobbered)", stored.Trigger, session.TriggerOnCompletion)
@@ -286,11 +286,11 @@ func TestHandleSessionPeriodic_PatchPartialPreservesOnCompletionFields(t *testin
 	}
 }
 
-// TestHandleSessionPeriodic_PatchResetCounters verifies that PATCHing with
+// TestHandleSessionLoop_PatchResetCounters verifies that PATCHing with
 // reset_counters=true (used when restoring a loop that hit its cap) re-enables the
 // loop and resets IterationCount=0 and FirstRunAt=nil (elapsed time = 0).
-func TestHandleSessionPeriodic_PatchResetCounters(t *testing.T) {
-	store, h := newPeriodicStore(t)
+func TestHandleSessionLoop_PatchResetCounters(t *testing.T) {
+	store, h := newLoopStore(t)
 	tmpDir := t.TempDir()
 
 	const sid = "test-reset-counters-patch"
@@ -299,7 +299,7 @@ func TestHandleSessionPeriodic_PatchResetCounters(t *testing.T) {
 	}
 
 	// Seed an onCompletion config with a duration cap.
-	putPeriodicForTest(t, h, sid, PeriodicPromptRequest{
+	putLoopForTest(t, h, sid, LoopPromptRequest{
 		Prompt:             "keep going",
 		Enabled:            true,
 		Trigger:            session.TriggerOnCompletion,
@@ -308,7 +308,7 @@ func TestHandleSessionPeriodic_PatchResetCounters(t *testing.T) {
 	})
 
 	// Simulate two completed runs, then auto-stop on the duration cap.
-	ps := store.Periodic(sid)
+	ps := store.Loop(sid)
 	if err := ps.RecordSent(); err != nil {
 		t.Fatalf("RecordSent: %v", err)
 	}
@@ -322,18 +322,18 @@ func TestHandleSessionPeriodic_PatchResetCounters(t *testing.T) {
 	// PATCH restore with reset_counters=true.
 	enabled := true
 	reset := true
-	patchBody, _ := json.Marshal(PeriodicPromptPatchRequest{Enabled: &enabled, ResetCounters: &reset})
-	req := httptest.NewRequest(http.MethodPatch, "/api/sessions/"+sid+"/periodic", bytes.NewReader(patchBody))
+	patchBody, _ := json.Marshal(LoopPromptPatchRequest{Enabled: &enabled, ResetCounters: &reset})
+	req := httptest.NewRequest(http.MethodPatch, "/api/sessions/"+sid+"/loop", bytes.NewReader(patchBody))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
-	h.HandleSessionPeriodic(w, req, sid, "")
+	h.HandleSessionLoop(w, req, sid, "")
 	if w.Code != http.StatusOK {
-		t.Fatalf("PATCH periodic: Status = %d, want %d. Body: %s", w.Code, http.StatusOK, w.Body.String())
+		t.Fatalf("PATCH loop: Status = %d, want %d. Body: %s", w.Code, http.StatusOK, w.Body.String())
 	}
 
 	stored, err := ps.Get()
 	if err != nil {
-		t.Fatalf("Get periodic after PATCH: %v", err)
+		t.Fatalf("Get loop after PATCH: %v", err)
 	}
 	if !stored.Enabled {
 		t.Error("Enabled after restore = false, want true")
@@ -355,10 +355,10 @@ func TestHandleSessionPeriodic_PatchResetCounters(t *testing.T) {
 	}
 }
 
-// TestHandleSessionPeriodic_PatchDelayClamped verifies that a PATCH lowering the delay below
+// TestHandleSessionLoop_PatchDelayClamped verifies that a PATCH lowering the delay below
 // the floor on an onCompletion config is clamped up to the floor.
-func TestHandleSessionPeriodic_PatchDelayClamped(t *testing.T) {
-	store, h := newPeriodicStore(t)
+func TestHandleSessionLoop_PatchDelayClamped(t *testing.T) {
+	store, h := newLoopStore(t)
 	tmpDir := t.TempDir()
 
 	const sid = "test-oncompletion-patch-clamp"
@@ -366,7 +366,7 @@ func TestHandleSessionPeriodic_PatchDelayClamped(t *testing.T) {
 		t.Fatalf("Create failed: %v", err)
 	}
 
-	putPeriodicForTest(t, h, sid, PeriodicPromptRequest{
+	putLoopForTest(t, h, sid, LoopPromptRequest{
 		Prompt:       "keep going",
 		Enabled:      true,
 		Trigger:      session.TriggerOnCompletion,
@@ -374,77 +374,77 @@ func TestHandleSessionPeriodic_PatchDelayClamped(t *testing.T) {
 	})
 
 	belowFloor := 1
-	patchBody, _ := json.Marshal(PeriodicPromptPatchRequest{DelaySeconds: &belowFloor})
-	req := httptest.NewRequest(http.MethodPatch, "/api/sessions/"+sid+"/periodic", bytes.NewReader(patchBody))
+	patchBody, _ := json.Marshal(LoopPromptPatchRequest{DelaySeconds: &belowFloor})
+	req := httptest.NewRequest(http.MethodPatch, "/api/sessions/"+sid+"/loop", bytes.NewReader(patchBody))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
-	h.HandleSessionPeriodic(w, req, sid, "")
+	h.HandleSessionLoop(w, req, sid, "")
 	if w.Code != http.StatusOK {
-		t.Fatalf("PATCH periodic: Status = %d, want %d. Body: %s", w.Code, http.StatusOK, w.Body.String())
+		t.Fatalf("PATCH loop: Status = %d, want %d. Body: %s", w.Code, http.StatusOK, w.Body.String())
 	}
 
-	stored, err := store.Periodic(sid).Get()
+	stored, err := store.Loop(sid).Get()
 	if err != nil {
-		t.Fatalf("Get periodic after PATCH: %v", err)
+		t.Fatalf("Get loop after PATCH: %v", err)
 	}
-	if stored.DelaySeconds != h.periodicDelayFloor() {
-		t.Errorf("DelaySeconds after PATCH = %d, want clamped to floor %d", stored.DelaySeconds, h.periodicDelayFloor())
+	if stored.DelaySeconds != h.loopDelayFloor() {
+		t.Errorf("DelaySeconds after PATCH = %d, want clamped to floor %d", stored.DelaySeconds, h.loopDelayFloor())
 	}
 }
 
-// TestHandleSessionPeriodic_MakePeriodicDraft verifies the "Make periodic" frontend flow:
-// PUT /api/sessions/{id}/periodic with a draft body (enabled:false, prompt:"(pending)")
+// TestHandleSessionLoop_MakeLoopDraft verifies the "Make loop" frontend flow:
+// PUT /api/sessions/{id}/loop with a draft body (enabled:false, prompt:"(pending)")
 // on an existing top-level session succeeds and stores the draft config.
-func TestHandleSessionPeriodic_MakePeriodicDraft(t *testing.T) {
-	store, h := newPeriodicStore(t)
+func TestHandleSessionLoop_MakeLoopDraft(t *testing.T) {
+	store, h := newLoopStore(t)
 	tmpDir := t.TempDir()
 
 	if err := store.Create(session.Metadata{
-		SessionID:  "test-make-periodic-draft",
+		SessionID:  "test-make-loop-draft",
 		ACPServer:  "test-server",
 		WorkingDir: tmpDir,
 	}); err != nil {
 		t.Fatalf("Create failed: %v", err)
 	}
 
-	// Draft body — mirrors what handleMakePeriodic in app.js sends.
-	body, _ := json.Marshal(PeriodicPromptRequest{
+	// Draft body — mirrors what handleMakeLoop in app.js sends.
+	body, _ := json.Marshal(LoopPromptRequest{
 		Prompt:    "(pending)",
 		Frequency: session.Frequency{Value: 1, Unit: session.FrequencyHours},
 		Enabled:   false,
 	})
-	req := httptest.NewRequest(http.MethodPut, "/api/sessions/test-make-periodic-draft/periodic", bytes.NewReader(body))
+	req := httptest.NewRequest(http.MethodPut, "/api/sessions/test-make-loop-draft/loop", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 
-	h.HandleSessionPeriodic(w, req, "test-make-periodic-draft", "")
+	h.HandleSessionLoop(w, req, "test-make-loop-draft", "")
 
 	if w.Code != http.StatusOK {
-		t.Errorf("PUT periodic draft: Status = %d, want %d. Body: %s", w.Code, http.StatusOK, w.Body.String())
+		t.Errorf("PUT loop draft: Status = %d, want %d. Body: %s", w.Code, http.StatusOK, w.Body.String())
 	}
 
-	// Verify the stored periodic config reflects the draft state.
-	ps := store.Periodic("test-make-periodic-draft")
+	// Verify the stored loop config reflects the draft state.
+	ps := store.Loop("test-make-loop-draft")
 	stored, err := ps.Get()
 	if err != nil {
-		t.Fatalf("Get periodic after PUT: %v", err)
+		t.Fatalf("Get loop after PUT: %v", err)
 	}
 	if stored.Enabled {
-		t.Errorf("Draft periodic should have Enabled=false, got true")
+		t.Errorf("Draft loop should have Enabled=false, got true")
 	}
 	if stored.Prompt != "(pending)" {
-		t.Errorf("Draft periodic prompt = %q, want %q", stored.Prompt, "(pending)")
+		t.Errorf("Draft loop prompt = %q, want %q", stored.Prompt, "(pending)")
 	}
 }
 
-// TestHandleSessionPeriodic_DeleteRemovesConfig verifies the "Make non-periodic" frontend flow:
-// PUT a draft config, confirm it exists, then DELETE it via HandleSessionPeriodic,
+// TestHandleSessionLoop_DeleteRemovesConfig verifies the "Make non-loop" frontend flow:
+// PUT a draft config, confirm it exists, then DELETE it via HandleSessionLoop,
 // assert HTTP 204, and confirm the config is gone from the store.
-func TestHandleSessionPeriodic_DeleteRemovesConfig(t *testing.T) {
-	store, h := newPeriodicStore(t)
+func TestHandleSessionLoop_DeleteRemovesConfig(t *testing.T) {
+	store, h := newLoopStore(t)
 	tmpDir := t.TempDir()
 
-	const sid = "test-delete-periodic"
+	const sid = "test-delete-loop"
 	if err := store.Create(session.Metadata{
 		SessionID:  sid,
 		ACPServer:  "test-server",
@@ -453,46 +453,46 @@ func TestHandleSessionPeriodic_DeleteRemovesConfig(t *testing.T) {
 		t.Fatalf("Create failed: %v", err)
 	}
 
-	// Step 1: PUT a draft periodic config so there is something to delete.
-	putBody, _ := json.Marshal(PeriodicPromptRequest{
+	// Step 1: PUT a draft loop config so there is something to delete.
+	putBody, _ := json.Marshal(LoopPromptRequest{
 		Prompt:    "(pending)",
 		Frequency: session.Frequency{Value: 1, Unit: session.FrequencyHours},
 		Enabled:   false,
 	})
-	putReq := httptest.NewRequest(http.MethodPut, "/api/sessions/"+sid+"/periodic", bytes.NewReader(putBody))
+	putReq := httptest.NewRequest(http.MethodPut, "/api/sessions/"+sid+"/loop", bytes.NewReader(putBody))
 	putReq.Header.Set("Content-Type", "application/json")
 	putW := httptest.NewRecorder()
-	h.HandleSessionPeriodic(putW, putReq, sid, "")
+	h.HandleSessionLoop(putW, putReq, sid, "")
 	if putW.Code != http.StatusOK {
-		t.Fatalf("PUT periodic: Status = %d, want 200. Body: %s", putW.Code, putW.Body.String())
+		t.Fatalf("PUT loop: Status = %d, want 200. Body: %s", putW.Code, putW.Body.String())
 	}
 
 	// Confirm the config exists before deleting.
-	if _, err := store.Periodic(sid).Get(); err != nil {
-		t.Fatalf("Get periodic before DELETE: %v", err)
+	if _, err := store.Loop(sid).Get(); err != nil {
+		t.Fatalf("Get loop before DELETE: %v", err)
 	}
 
-	// Step 2: DELETE — mirrors what handleMakeNonPeriodic in app.js sends.
-	delReq := httptest.NewRequest(http.MethodDelete, "/api/sessions/"+sid+"/periodic", nil)
+	// Step 2: DELETE — mirrors what handleMakeNonLoop in app.js sends.
+	delReq := httptest.NewRequest(http.MethodDelete, "/api/sessions/"+sid+"/loop", nil)
 	delW := httptest.NewRecorder()
-	h.HandleSessionPeriodic(delW, delReq, sid, "")
+	h.HandleSessionLoop(delW, delReq, sid, "")
 
-	// handleDeletePeriodic calls writeNoContent → HTTP 204.
+	// handleDeleteLoop calls writeNoContent → HTTP 204.
 	if delW.Code != http.StatusNoContent {
-		t.Errorf("DELETE periodic: Status = %d, want %d. Body: %s", delW.Code, http.StatusNoContent, delW.Body.String())
+		t.Errorf("DELETE loop: Status = %d, want %d. Body: %s", delW.Code, http.StatusNoContent, delW.Body.String())
 	}
 
 	// Step 3: Confirm the config is gone.
-	_, getErr := store.Periodic(sid).Get()
+	_, getErr := store.Loop(sid).Get()
 	if getErr == nil {
 		t.Errorf("Expected error (config gone) after DELETE, got nil")
 	}
 }
 
-// TestHandleSetPeriodic_PendingPlaceholderDoesNotBecomeTitle verifies that when a periodic
+// TestHandleSetLoop_PendingPlaceholderDoesNotBecomeTitle verifies that when a loop
 // prompt is set with a "(pending)" placeholder body plus a prompt_name, the generated title
 // is derived from the resolved prompt body rather than the placeholder.
-func TestHandleSetPeriodic_PendingPlaceholderDoesNotBecomeTitle(t *testing.T) {
+func TestHandleSetLoop_PendingPlaceholderDoesNotBecomeTitle(t *testing.T) {
 	store, err := session.NewStore(t.TempDir())
 	if err != nil {
 		t.Fatalf("NewStore: %v", err)
@@ -520,7 +520,7 @@ func TestHandleSetPeriodic_PendingPlaceholderDoesNotBecomeTitle(t *testing.T) {
 
 	h := New(Deps{Store: store, SessionManager: sm})
 
-	putPeriodicForTest(t, h, sid, PeriodicPromptRequest{
+	putLoopForTest(t, h, sid, LoopPromptRequest{
 		Prompt:     "(pending)",
 		PromptName: "CGW: latest questions",
 		Frequency:  session.Frequency{Value: 1, Unit: session.FrequencyHours},
@@ -539,11 +539,11 @@ func TestHandleSetPeriodic_PendingPlaceholderDoesNotBecomeTitle(t *testing.T) {
 	}
 }
 
-// TestHandleSessionPeriodic_OnTasksRoundTrip verifies that the onTasks trigger and its
+// TestHandleSessionLoop_OnTasksRoundTrip verifies that the onTasks trigger and its
 // condition/condition_preset/cooldown_seconds fields round-trip through PUT and PATCH,
 // and that a frequency is not required for the onTasks trigger.
-func TestHandleSessionPeriodic_OnTasksRoundTrip(t *testing.T) {
-	store, h := newPeriodicStore(t)
+func TestHandleSessionLoop_OnTasksRoundTrip(t *testing.T) {
+	store, h := newLoopStore(t)
 	tmpDir := t.TempDir()
 
 	const sid = "test-ontasks-roundtrip"
@@ -555,7 +555,7 @@ func TestHandleSessionPeriodic_OnTasksRoundTrip(t *testing.T) {
 	preset := "any-open-increase"
 	cooldown := 120
 
-	got := putPeriodicForTest(t, h, sid, PeriodicPromptRequest{
+	got := putLoopForTest(t, h, sid, LoopPromptRequest{
 		Prompt:          "review beads changes",
 		Enabled:         true,
 		Trigger:         session.TriggerOnTasks,
@@ -579,18 +579,18 @@ func TestHandleSessionPeriodic_OnTasksRoundTrip(t *testing.T) {
 
 	// PATCH: change only the condition; other onTasks fields must be preserved.
 	newCond := `size(Changes.Reopened) > 0`
-	patchBody, _ := json.Marshal(PeriodicPromptPatchRequest{Condition: &newCond})
-	req := httptest.NewRequest(http.MethodPatch, "/api/sessions/"+sid+"/periodic", bytes.NewReader(patchBody))
+	patchBody, _ := json.Marshal(LoopPromptPatchRequest{Condition: &newCond})
+	req := httptest.NewRequest(http.MethodPatch, "/api/sessions/"+sid+"/loop", bytes.NewReader(patchBody))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
-	h.HandleSessionPeriodic(w, req, sid, "")
+	h.HandleSessionLoop(w, req, sid, "")
 	if w.Code != http.StatusOK {
-		t.Fatalf("PATCH periodic: Status = %d, want %d. Body: %s", w.Code, http.StatusOK, w.Body.String())
+		t.Fatalf("PATCH loop: Status = %d, want %d. Body: %s", w.Code, http.StatusOK, w.Body.String())
 	}
 
-	stored, err := store.Periodic(sid).Get()
+	stored, err := store.Loop(sid).Get()
 	if err != nil {
-		t.Fatalf("Get periodic after PATCH: %v", err)
+		t.Fatalf("Get loop after PATCH: %v", err)
 	}
 	if stored.Condition != newCond {
 		t.Errorf("Condition after PATCH = %q, want %q", stored.Condition, newCond)
@@ -606,18 +606,18 @@ func TestHandleSessionPeriodic_OnTasksRoundTrip(t *testing.T) {
 	}
 }
 
-// TestHandleSessionPeriodic_PatchInvalidConditionRejected verifies that an invalid CEL
+// TestHandleSessionLoop_PatchInvalidConditionRejected verifies that an invalid CEL
 // condition is rejected with a 400 Bad Request when session.ConditionValidator is wired.
 // The real wiring (config.ValidateCondition) is owned by a sibling worker, so this test
 // injects a fake rejecting validator to exercise the same seam in isolation.
-func TestHandleSessionPeriodic_PatchInvalidConditionRejected(t *testing.T) {
+func TestHandleSessionLoop_PatchInvalidConditionRejected(t *testing.T) {
 	old := session.ConditionValidator
 	session.ConditionValidator = func(expr string) error {
 		return errors.New("simulated invalid CEL")
 	}
 	defer func() { session.ConditionValidator = old }()
 
-	store, h := newPeriodicStore(t)
+	store, h := newLoopStore(t)
 	tmpDir := t.TempDir()
 
 	const sid = "test-ontasks-invalid-condition"
@@ -625,18 +625,18 @@ func TestHandleSessionPeriodic_PatchInvalidConditionRejected(t *testing.T) {
 		t.Fatalf("Create failed: %v", err)
 	}
 
-	putPeriodicForTest(t, h, sid, PeriodicPromptRequest{
+	putLoopForTest(t, h, sid, LoopPromptRequest{
 		Prompt:  "review beads changes",
 		Enabled: true,
 		Trigger: session.TriggerOnTasks,
 	})
 
 	badCond := "not valid cel("
-	patchBody, _ := json.Marshal(PeriodicPromptPatchRequest{Condition: &badCond})
-	req := httptest.NewRequest(http.MethodPatch, "/api/sessions/"+sid+"/periodic", bytes.NewReader(patchBody))
+	patchBody, _ := json.Marshal(LoopPromptPatchRequest{Condition: &badCond})
+	req := httptest.NewRequest(http.MethodPatch, "/api/sessions/"+sid+"/loop", bytes.NewReader(patchBody))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
-	h.HandleSessionPeriodic(w, req, sid, "")
+	h.HandleSessionLoop(w, req, sid, "")
 
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("PATCH invalid condition: Status = %d, want %d. Body: %s", w.Code, http.StatusBadRequest, w.Body.String())
@@ -654,19 +654,19 @@ func TestHandleSessionPeriodic_PatchInvalidConditionRejected(t *testing.T) {
 	}
 
 	// Verify the rejected condition was not persisted.
-	stored, err := store.Periodic(sid).Get()
+	stored, err := store.Loop(sid).Get()
 	if err != nil {
-		t.Fatalf("Get periodic after rejected PATCH: %v", err)
+		t.Fatalf("Get loop after rejected PATCH: %v", err)
 	}
 	if stored.Condition == badCond {
 		t.Errorf("rejected condition must not be persisted, got %q", stored.Condition)
 	}
 }
 
-// TestHandleSessionPeriodic_PUT_ArgumentsPersisted verifies that Arguments supplied in a
-// PUT request are stored in the periodic config and returned by Get.
-func TestHandleSessionPeriodic_PUT_ArgumentsPersisted(t *testing.T) {
-	store, h := newPeriodicStore(t)
+// TestHandleSessionLoop_PUT_ArgumentsPersisted verifies that Arguments supplied in a
+// PUT request are stored in the loop config and returned by Get.
+func TestHandleSessionLoop_PUT_ArgumentsPersisted(t *testing.T) {
+	store, h := newLoopStore(t)
 	tmpDir := t.TempDir()
 	sid := "put-args-session"
 	if err := store.Create(session.Metadata{
@@ -678,7 +678,7 @@ func TestHandleSessionPeriodic_PUT_ArgumentsPersisted(t *testing.T) {
 	}
 
 	args := map[string]string{"ISSUE_ID": "mitto-42", "ENV": "staging"}
-	got := putPeriodicForTest(t, h, sid, PeriodicPromptRequest{
+	got := putLoopForTest(t, h, sid, LoopPromptRequest{
 		PromptName: "check-status",
 		Arguments:  args,
 		Frequency:  session.Frequency{Value: 1, Unit: session.FrequencyHours},
@@ -695,9 +695,9 @@ func TestHandleSessionPeriodic_PUT_ArgumentsPersisted(t *testing.T) {
 	}
 
 	// Verify round-trip via the store directly.
-	stored, err := store.Periodic(sid).Get()
+	stored, err := store.Loop(sid).Get()
 	if err != nil {
-		t.Fatalf("Periodic().Get() error = %v", err)
+		t.Fatalf("Loop().Get() error = %v", err)
 	}
 	for k, v := range args {
 		if stored.Arguments[k] != v {
@@ -706,10 +706,10 @@ func TestHandleSessionPeriodic_PUT_ArgumentsPersisted(t *testing.T) {
 	}
 }
 
-// TestHandleSessionPeriodic_PATCH_ArgumentsPersisted verifies that Arguments supplied in a
+// TestHandleSessionLoop_PATCH_ArgumentsPersisted verifies that Arguments supplied in a
 // PATCH request replace the existing arguments and are returned by Get.
-func TestHandleSessionPeriodic_PATCH_ArgumentsPersisted(t *testing.T) {
-	store, h := newPeriodicStore(t)
+func TestHandleSessionLoop_PATCH_ArgumentsPersisted(t *testing.T) {
+	store, h := newLoopStore(t)
 	tmpDir := t.TempDir()
 	sid := "patch-args-session"
 	if err := store.Create(session.Metadata{
@@ -721,7 +721,7 @@ func TestHandleSessionPeriodic_PATCH_ArgumentsPersisted(t *testing.T) {
 	}
 
 	// Seed via PUT with initial arguments.
-	putPeriodicForTest(t, h, sid, PeriodicPromptRequest{
+	putLoopForTest(t, h, sid, LoopPromptRequest{
 		PromptName: "check-status",
 		Arguments:  map[string]string{"KEY": "initial"},
 		Frequency:  session.Frequency{Value: 1, Unit: session.FrequencyHours},
@@ -730,18 +730,18 @@ func TestHandleSessionPeriodic_PATCH_ArgumentsPersisted(t *testing.T) {
 
 	// PATCH with new arguments.
 	newArgs := map[string]string{"KEY": "patched", "EXTRA": "yes"}
-	body, _ := json.Marshal(PeriodicPromptPatchRequest{
+	body, _ := json.Marshal(LoopPromptPatchRequest{
 		Arguments: &newArgs,
 	})
-	req := httptest.NewRequest(http.MethodPatch, "/api/sessions/"+sid+"/periodic", bytes.NewReader(body))
+	req := httptest.NewRequest(http.MethodPatch, "/api/sessions/"+sid+"/loop", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
-	h.HandleSessionPeriodic(w, req, sid, "")
+	h.HandleSessionLoop(w, req, sid, "")
 	if w.Code != http.StatusOK {
-		t.Fatalf("PATCH periodic status = %d, want %d. Body: %s", w.Code, http.StatusOK, w.Body.String())
+		t.Fatalf("PATCH loop status = %d, want %d. Body: %s", w.Code, http.StatusOK, w.Body.String())
 	}
 
-	var got session.PeriodicPrompt
+	var got session.LoopPrompt
 	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
 		t.Fatalf("decode PATCH response: %v", err)
 	}
@@ -753,15 +753,15 @@ func TestHandleSessionPeriodic_PATCH_ArgumentsPersisted(t *testing.T) {
 	}
 
 	// Nil arguments in PATCH must leave stored map unchanged.
-	body2, _ := json.Marshal(PeriodicPromptPatchRequest{}) // nil Arguments
-	req2 := httptest.NewRequest(http.MethodPatch, "/api/sessions/"+sid+"/periodic", bytes.NewReader(body2))
+	body2, _ := json.Marshal(LoopPromptPatchRequest{}) // nil Arguments
+	req2 := httptest.NewRequest(http.MethodPatch, "/api/sessions/"+sid+"/loop", bytes.NewReader(body2))
 	req2.Header.Set("Content-Type", "application/json")
 	w2 := httptest.NewRecorder()
-	h.HandleSessionPeriodic(w2, req2, sid, "")
+	h.HandleSessionLoop(w2, req2, sid, "")
 	if w2.Code != http.StatusOK {
 		t.Fatalf("PATCH (nil args) status = %d. Body: %s", w2.Code, w2.Body.String())
 	}
-	stored, _ := store.Periodic(sid).Get()
+	stored, _ := store.Loop(sid).Get()
 	if stored.Arguments["KEY"] != "patched" {
 		t.Errorf("nil PATCH should not clear Arguments; KEY = %q", stored.Arguments["KEY"])
 	}

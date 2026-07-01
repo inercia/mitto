@@ -588,8 +588,8 @@ func (r *LoopRunner) cancelCompletionTimer(sessionID string) {
 //   - TriggerNow's internal IsPrompting() check rejects a racing call with ErrSessionBusy
 //     once PromptWithMeta sets isPrompting synchronously before returning.
 //
-// Called from checkSession (crash-safe on poll-loop restart), handleSetPeriodic,
-// handlePatchPeriodic (HTTP), and handleConversationStart/handleConversationUpdate (MCP).
+// Called from checkSession (crash-safe on poll-loop restart), handleSetLoop,
+// handlePatchLoop (HTTP), and handleConversationStart/handleConversationUpdate (MCP).
 // Best-effort — errors are logged but not propagated.
 func (r *LoopRunner) BootstrapOnCompletion(sessionID string) {
 	if r.store == nil {

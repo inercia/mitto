@@ -170,7 +170,7 @@ func (h *Handlers) handleAddToQueue(w http.ResponseWriter, r *http.Request, queu
 	}
 
 	// Try to process the queued message immediately if agent is idle
-	// (skip for scheduled messages — the periodic runner will deliver them when due)
+	// (skip for scheduled messages — the loop runner will deliver them when due)
 	if scheduledTime == nil {
 		if h.deps.SessionManager != nil {
 			if bs := h.deps.SessionManager.GetSession(sessionID); bs != nil {

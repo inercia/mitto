@@ -20,7 +20,7 @@ type UIPreferences struct {
 	ExpandedGroups map[string]bool `json:"expanded_groups,omitempty"`
 
 	// FilterTabGrouping maps filter tab IDs to their grouping mode
-	// Each filter tab (conversations, periodic, archived) can have its own grouping mode
+	// Each filter tab (conversations, loop, archived) can have its own grouping mode
 	FilterTabGrouping map[string]string `json:"filter_tab_grouping,omitempty"`
 
 	// PromptSortMode is the sorting mode for prompts in the dropdown: "alphabetical" or "color"
@@ -88,11 +88,11 @@ func (h *Handlers) handleSaveUIPreferences(w http.ResponseWriter, r *http.Reques
 	}
 
 	// Validate filter_tab_grouping keys and values
-	validFilterTabs := map[string]bool{"conversations": true, "periodic": true, "archived": true}
+	validFilterTabs := map[string]bool{"conversations": true, "loop": true, "archived": true}
 	validGroupingModes := map[string]bool{"none": true, "server": true, "folder": true, "workspace": true}
 	for key, value := range prefs.FilterTabGrouping {
 		if !validFilterTabs[key] {
-			writeErrorJSON(w, http.StatusBadRequest, "", "Invalid filter_tab_grouping key: must be 'conversations', 'periodic', or 'archived'")
+			writeErrorJSON(w, http.StatusBadRequest, "", "Invalid filter_tab_grouping key: must be 'conversations', 'loop', or 'archived'")
 			return
 		}
 		if !validGroupingModes[value] {
