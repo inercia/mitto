@@ -19,7 +19,7 @@ when:
   match: first
 priority: 195
 timeout: 120s
-on_error: skip
+onError: skip
 
 # Only activate when .mittorc exists but has no metadata description, and not periodic
 enabledWhen: 'Workspace.HasMittoRC && !Workspace.HasMetadataDescription && !Session.IsPeriodic'
@@ -31,7 +31,7 @@ prompt: |
 
   ## Session Info
 
-  Working Directory: @mitto:working_dir
+  Working Directory: {{ .Workspace.Folder }}
 
   ## Your Task
 

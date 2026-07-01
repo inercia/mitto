@@ -21,7 +21,7 @@ when:
   match: first
 priority: 200
 timeout: 300s
-on_error: skip
+onError: skip
 
 # Only for Auggie sessions, skip periodic prompts, and only when rules don't exist yet
 enabledWhen: 'ACP.MatchesServerType("augment") && !Session.IsPeriodic && !DirExists(".augment/rules")'
@@ -29,7 +29,7 @@ enabledWhen: 'ACP.MatchesServerType("augment") && !Session.IsPeriodic && !DirExi
 prompt: |
   You generate `.augment/rules` files for this workspace for the first time.
 
-  Working directory: @mitto:working_dir
+  Working directory: {{ .Workspace.Folder }}
 
   Explore the workspace and generate comprehensive rules files:
 
@@ -84,7 +84,7 @@ prompt: |
   ## Notification
 
   After completing your work, call `mitto_ui_notify` with:
-  - `self_id`: "@mitto:session_id"
+  - `self_id`: "{{ .Session.ID }}"
   - `title`: "✏️ Rules Generated"
   - `message`: a brief summary, e.g. "Generated 5 rules files for this workspace"
   - `style`: "success"

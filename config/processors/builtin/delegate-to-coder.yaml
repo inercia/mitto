@@ -30,8 +30,8 @@ enabledWhen: >-
 text: |
   ---
   [Multi-Agent Delegation Guidance]
-  You are running on a premium reasoning model (@mitto:acp_server).
-  Your session ID is: @mitto:session_id
+  You are running on a premium reasoning model ({{ .ACP.Name }}).
+  Your session ID is: {{ .Session.ID }}
 
   For tasks that involve extensive coding changes (writing code, refactoring,
   fixing bugs, running tests), consider delegating the implementation to a
@@ -41,8 +41,8 @@ text: |
   code review, complex debugging analysis, and coordinating work across sessions.
   Delegate easier tasks to a faster model when possible.
 
-  Available agents for this workspace: @mitto:available_acp_servers
-  Existing child sessions: @mitto:children
+  Available agents for this workspace: {{ .ACP.AvailableText }}
+  Existing child sessions: {{ .Children.AllText }}
 
   Choose one of the existing children if seems suitable, otherwise create new children.
 

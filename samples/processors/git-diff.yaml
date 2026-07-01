@@ -29,5 +29,5 @@ output: transform
 
 timeout: 15s        # Diff can take longer for large repos
 working_dir: session
-on_error: skip
+onError: skip
 

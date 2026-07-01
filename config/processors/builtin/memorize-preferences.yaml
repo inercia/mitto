@@ -5,8 +5,9 @@
 # how this individual user likes to work — the kind of thing that is specific to
 # them and would not necessarily be shared with other people working on the same
 # project. When it finds such a preference, it instructs an auxiliary AI agent to
-# save it in a clearly delimited section of a configurable file (AGENTS.md by
-# default) in the workspace root.
+# save it in a target file. That file is auto-detected from the project's rules
+# directory (.augment/rules/, .cursor/rules/, or .codex/rules/) unless
+# PreferencesFile is set; if none is found, nothing is written.
 #
 # This is a fire-and-forget processor: the prompt is dispatched to a workspace-scoped
 # auxiliary ACP session and the pipeline continues immediately without waiting.
@@ -41,7 +42,7 @@
 #   conservatively — when in doubt, an entry is kept.
 ##########################################################################################
 name: memorize-preferences
-description: "Extracts personal, user-specific preferences (not project/code conventions) from conversations and saves them to a configurable file (AGENTS.md by default)"
+description: "Extracts personal, user-specific preferences (not project/code conventions) from conversations and saves them to a target file (auto-detected from .augment/rules/, .cursor/rules/, or .codex/rules/ unless PreferencesFile is set)"
 enabled: true
 when:
   on: agentIdle
@@ -53,7 +54,7 @@ when:
     afterInterval: 3m
 priority: 200
 timeout: 120s
-on_error: skip
+onError: skip
 
 # Skip periodic prompts — only process real user messages
 enabledWhen: '!Session.IsPeriodic'
@@ -61,12 +62,21 @@ enabledWhen: '!Session.IsPeriodic'
 parameters:
   - name: PreferencesFile
     type: text
-    description: "File where extracted user preferences are saved (relative to workspace root)"
-    default: AGENTS.md
+    required: false
+    description: "File where extracted user preferences are saved (relative to workspace root). Leave empty to auto-detect (.augment/rules/, .cursor/rules/, or .codex/rules/); if none is found, nothing is written."
+    default: ""
 
 prompt: |
+  {{- $file := Trim .Args.PreferencesFile -}}
+  {{- if not $file -}}
+  {{- if DirExists ".augment/rules" -}}{{- $file = ".augment/rules/90-local.md" -}}
+  {{- else if DirExists ".cursor/rules" -}}{{- $file = ".cursor/rules/90-local.md" -}}
+  {{- else if DirExists ".codex/rules" -}}{{- $file = ".codex/rules/90-local.md" -}}
+  {{- end -}}
+  {{- end -}}
+  {{- if $file -}}
   You are a preference curator. You maintain a concise, durable list of the user's
-  PERSONAL preferences in the {{ .Args.PreferencesFile }} file in the workspace root. You have TWO jobs on each
+  PERSONAL preferences in the {{ $file }} file in the workspace root. You have TWO jobs on each
   run: (1) capture any NEW personal preferences from recent messages, and (2) keep the existing
   list clean by garbage-collecting stale entries and compacting related ones.
 
@@ -125,7 +135,7 @@ prompt: |
 
   ## Writing the section
 
-  Update the {{ .Args.PreferencesFile }} file using EXACTLY this format (create the section if it is
+  Update the {{ $file }} file using EXACTLY this format (create the section if it is
   missing). Rewrite the WHOLE section with the cleaned-up result — i.e. the existing
   entries minus anything garbage-collected, with overlapping entries compacted, plus
   any new preferences appended:
@@ -137,10 +147,10 @@ prompt: |
   - **another category**: description
   <!-- END USER PREFERENCES -->
 
-  If the {{ .Args.PreferencesFile }} file doesn't exist, create it with just this section.
+  If the {{ $file }} file doesn't exist, create it with just this section.
   Read the existing entries first so you can dedupe, compact, and avoid duplicates.
   Only touch the content between the BEGIN/END USER PREFERENCES markers — never modify
-  any other section of {{ .Args.PreferencesFile }}.
+  any other section of {{ $file }}.
   If there are NO new preferences AND nothing needs garbage-collecting or compacting,
   do nothing — do NOT modify any files.
 
@@ -149,7 +159,7 @@ prompt: |
   Use the `mitto_conversation_history` MCP tool to retrieve recent user messages.
   Call it with:
   - `self_id`: your session ID (from `mitto_conversation_get_current`)
-  - `conversation_id`: "@mitto:session_id"
+  - `conversation_id`: "{{ .Session.ID }}"
   - `event_types`: ["user_prompt", "agent_message"]
   - `last_n`: 12
 
@@ -157,12 +167,13 @@ prompt: |
 
   ## Notification
 
-  After completing your work, if you changed {{ .Args.PreferencesFile }} (added, removed, or compacted
+  After completing your work, if you changed {{ $file }} (added, removed, or compacted
   preferences), call `mitto_ui_notify` with:
-  - `self_id`: "@mitto:session_id"
+  - `self_id`: "{{ .Session.ID }}"
   - `title`: "📝 Preferences Updated"
   - `message`: a brief summary, e.g. "Added 1, removed 2 stale, merged 3"
   - `style`: "success"
 
   If nothing changed and no files were modified, do NOT send any notification — stay
   completely silent.
+  {{- end -}}

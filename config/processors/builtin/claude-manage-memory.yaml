@@ -21,7 +21,7 @@ when:
   match: first
 priority: 200
 timeout: 300s
-on_error: skip
+onError: skip
 
 # Only for Claude Code sessions, skip periodic prompts, and only when memory files don't exist yet
 enabledWhen: 'ACP.MatchesServerType("claude-code") && !Session.IsPeriodic && !FileExists("CLAUDE.md") && !DirExists(".claude")'
@@ -29,7 +29,7 @@ enabledWhen: 'ACP.MatchesServerType("claude-code") && !Session.IsPeriodic && !Fi
 prompt: |
   You generate Claude Code memory files for this workspace for the first time.
 
-  Working directory: @mitto:working_dir
+  Working directory: {{ .Workspace.Folder }}
 
   ## Memory File Locations
 
@@ -90,7 +90,7 @@ prompt: |
   ## Notification
 
   After completing your work, call `mitto_ui_notify` with:
-  - `self_id`: "@mitto:session_id"
+  - `self_id`: "{{ .Session.ID }}"
   - `title`: "🧠 Memory Generated"
   - `message`: a brief summary, e.g. "Generated CLAUDE.md for this workspace"
   - `style`: "success"
