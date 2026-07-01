@@ -386,6 +386,136 @@ export function formatPeriodicMaxDuration(seconds) {
   return `${seconds}s`;
 }
 
+/**
+ * Compact trigger-type label shown in the conversation-header subtitle badge next
+ * to the periodic status pill. "schedule" (default) shows the frequency (e.g.
+ * "every 2h"); "onCompletion" shows the post-completion delay; "onTasks" shows a
+ * fixed label (fires on beads/task changes, not on a cadence, so no "every N" or
+ * countdown is meaningful).
+ * @param {string} trigger - "schedule" | "onCompletion" | "onTasks" (falsy/other → schedule)
+ * @param {number} delaySeconds - onCompletion delay in seconds (ignored otherwise)
+ * @param {{value:number, unit:string}|null} frequency - schedule frequency (ignored for event-driven triggers)
+ * @returns {string|null} the label, or null when nothing can be derived (e.g. no frequency yet)
+ */
+export function computeHeaderTriggerLabel(trigger, delaySeconds, frequency) {
+  if (trigger === "onCompletion") {
+    return `after agent finishes${delaySeconds > 0 ? ` · +${delaySeconds}s` : ""}`;
+  }
+  if (trigger === "onTasks") {
+    return "on task changes";
+  }
+  if (frequency) {
+    const u =
+      frequency.unit === "minutes"
+        ? "min"
+        : frequency.unit === "hours"
+          ? "h"
+          : "d";
+    return `every ${frequency.value}${u}`;
+  }
+  return null;
+}
+
+// =============================================================================
+// onTasks Condition Presets (periodic trigger CEL condition editor)
+// =============================================================================
+
+/**
+ * Preset options for the onTasks condition editor's dropdown. Each preset (except
+ * "any") requires a single parameter (an issue type or label) filled via a small
+ * text input; presetConditionFor() compiles the (id, param) pair into a CEL string.
+ */
+export const CONDITION_PRESETS = [
+  { id: "any", label: "Any change in tasks", needsParam: false },
+  {
+    id: "new-issue-type",
+    label: "New issue of type …",
+    needsParam: true,
+    paramLabel: "Issue type",
+    paramPlaceholder: "bug",
+  },
+  {
+    id: "label-touched",
+    label: "Issue created/updated with label …",
+    needsParam: true,
+    paramLabel: "Label",
+    paramPlaceholder: "PR opened",
+  },
+  {
+    id: "open-type-increased",
+    label: "Open count of type … increased",
+    needsParam: true,
+    paramLabel: "Issue type",
+    paramPlaceholder: "bug",
+  },
+];
+
+/**
+ * Compiles a condition preset + parameter into the CEL expression sent to the
+ * backend as `condition`. Returns "" (fire on any change) for the "any" preset,
+ * an unrecognized preset id, or a param-requiring preset with an empty param.
+ * @param {string} presetId
+ * @param {string} param
+ * @returns {string}
+ */
+export function presetConditionFor(presetId, param) {
+  const p = (param || "").trim();
+  switch (presetId) {
+    case "new-issue-type":
+      return p ? `Changes.Added.exists(i, i.type == "${p}")` : "";
+    case "label-touched":
+      return p ? `Changes.Touched.exists(i, "${p}" in i.labels)` : "";
+    case "open-type-increased":
+      return p ? `Tasks.OpenByType["${p}"] > Prev.OpenByType["${p}"]` : "";
+    default:
+      return "";
+  }
+}
+
+// Regexes matching the exact CEL shape produced by presetConditionFor, used to
+// extract the original parameter back out when restoring a saved condition
+// (GET → editor round-trip) so the small param input can be pre-filled.
+const CONDITION_PRESET_PATTERNS = {
+  "new-issue-type": /^Changes\.Added\.exists\(i, i\.type == "([^"]*)"\)$/,
+  "label-touched": /^Changes\.Touched\.exists\(i, "([^"]*)" in i\.labels\)$/,
+  "open-type-increased":
+    /^Tasks\.OpenByType\["([^"]*)"\] > Prev\.OpenByType\["\1"\]$/,
+};
+
+/**
+ * Extracts the parameter (issue type or label) from a stored condition string
+ * that matches the given preset's canonical shape. Returns "" if it doesn't
+ * match (e.g. the condition was hand-edited into something else).
+ * @param {string} presetId
+ * @param {string} condition
+ * @returns {string}
+ */
+export function extractPresetParam(presetId, condition) {
+  const re = CONDITION_PRESET_PATTERNS[presetId];
+  if (!re) return "";
+  const m = re.exec((condition || "").trim());
+  return m ? m[1] : "";
+}
+
+/**
+ * Resolves which preset id a stored (condition, conditionPreset) pair should
+ * show as selected in the dropdown: the stored preset id if recognized, "any"
+ * if the condition is empty, otherwise "custom" (hand-edited CEL).
+ * @param {string} condition
+ * @param {string} conditionPreset
+ * @returns {string}
+ */
+export function resolveConditionPresetId(condition, conditionPreset) {
+  if (
+    conditionPreset &&
+    CONDITION_PRESETS.some((p) => p.id === conditionPreset)
+  ) {
+    return conditionPreset;
+  }
+  if (!condition) return "any";
+  return "custom";
+}
+
 // Global map to store working_dir values from API responses
 // This is used as a fallback when React state updates haven't propagated yet
 const globalWorkingDirMap = new Map();

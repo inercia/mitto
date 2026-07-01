@@ -33,6 +33,7 @@ import {
   copyToClipboard,
   PERIODIC_STOPPED_LABELS,
   formatPeriodicMaxDuration,
+  computeHeaderTriggerLabel,
 } from "./lib.js";
 
 // Import session tree utilities
@@ -187,6 +188,7 @@ import {
 // Import prompt utilities
 import {
   promptMenus,
+  promptMenuIncludes,
   getMissingPromptParameters,
   autofillConversationMenuArgs,
   fetchCachedParamNames,
@@ -448,6 +450,22 @@ function App() {
     activeSessionId,
     showToast,
   });
+
+  // Whether the active workspace has beads (`.beads` + `bd` on PATH): reuses the
+  // SAME gate already evaluated server-side for beads prompts (enabledWhen:
+  // CommandExists("bd") && DirExists(".beads")) — no new fetch. If ANY workspace
+  // prompt opts into the beadsIssues/beadsList menus, the backend has already
+  // proven this workspace is beads-enabled for the active session's folder.
+  // Drives the "On tasks" periodic trigger tab's visibility (mitto-oja.4).
+  const hasBeadsWorkspace = useMemo(
+    () =>
+      (workspacePrompts || []).some(
+        (p) =>
+          promptMenuIncludes(p, "beadsIssues") ||
+          promptMenuIncludes(p, "beadsList"),
+      ),
+    [workspacePrompts],
+  );
 
   const [configReadonly, setConfigReadonly] = useState(
     () => window.mittoIsExternal === true, // Start as true for external connections, or when --config flag was used or using RC file
@@ -2271,20 +2289,15 @@ function App() {
   const headerMaxDurationSecs =
     activeSession?.periodic_max_duration_seconds ?? 0;
 
-  // Trigger badge: "every 2h" for schedule, "after agent finishes [· +Ns]" for onCompletion
-  let headerTriggerLabel = null;
-  if (activeSession?.periodic_configured) {
-    if (headerPeriodicTrigger === "onCompletion") {
-      headerTriggerLabel = `after agent finishes${headerDelaySeconds > 0 ? ` · +${headerDelaySeconds}s` : ""}`;
-    } else {
-      const freq = activeSession?.periodic_frequency;
-      if (freq) {
-        const u =
-          freq.unit === "minutes" ? "min" : freq.unit === "hours" ? "h" : "d";
-        headerTriggerLabel = `every ${freq.value}${u}`;
-      }
-    }
-  }
+  // Trigger badge: "every 2h" for schedule, "after agent finishes [· +Ns]" for
+  // onCompletion, "on task changes" for onTasks (mitto-oja.4).
+  const headerTriggerLabel = activeSession?.periodic_configured
+    ? computeHeaderTriggerLabel(
+        headerPeriodicTrigger,
+        headerDelaySeconds,
+        activeSession?.periodic_frequency,
+      )
+    : null;
   // Run-count badge: "Run N of M" or "N run(s) · ∞". A compact variant ("N/M" or
   // "N·∞") is rendered alongside and CSS-swapped in on narrow screens (styles.css).
   const headerRunCountLabel = activeSession?.periodic_configured
@@ -2715,7 +2728,9 @@ function App() {
                 >${
                   headerPeriodicTrigger === "onCompletion"
                     ? html`<${CheckIcon} className="w-3 h-3" />`
-                    : html`<${ClockIcon} className="w-3 h-3" />`
+                    : headerPeriodicTrigger === "onTasks"
+                      ? html`<${BeadsIcon} className="w-3 h-3" />`
+                      : html`<${ClockIcon} className="w-3 h-3" />`
                 }<span
                     class="badge-collapse-label"
                     >${headerTriggerLabel}</span
@@ -2948,6 +2963,7 @@ function App() {
                       isArchived=${sessionInfo?.archived || false}
                       predefinedPrompts=${predefinedPrompts}
                       periodicPrompts=${periodicPrompts}
+                      hasBeadsWorkspace=${hasBeadsWorkspace}
                       inputRef=${chatInputRef}
                       noSession=${!activeSessionId}
                       sessionId=${activeSessionId}

@@ -15,9 +15,15 @@ import { promptParameters } from "../utils/prompts.js";
 import { PeriodicPromptSelector } from "./PeriodicPromptSelector.js";
 import { ConfirmDialog } from "./ConfirmDialog.js";
 import { secureFetch, authFetch } from "../utils/csrf.js";
-import { apiUrl } from "../utils/api.js";
+import { apiUrl, errorMessageFromData } from "../utils/api.js";
 import { endpoints } from "../utils/index.js";
 import { PortalTooltip } from "./ContextMenu.js";
+import {
+  CONDITION_PRESETS,
+  presetConditionFor,
+  extractPresetParam,
+  resolveConditionPresetId,
+} from "../lib.js";
 
 /** Minimum delay for on-completion trigger (seconds). Used for client-side clamp helper text. */
 const MIN_COMPLETION_DELAY_SECONDS = 5;
@@ -177,6 +183,13 @@ export function PeriodicFrequencyPanel({
   trigger = "schedule",
   delaySeconds = 5,
   maxDurationSeconds = 0,
+  // onTasks trigger fields: CEL condition gating firing (empty = fire on any
+  // beads/task change) + the UI preset id that was compiled into it.
+  condition = "",
+  conditionPreset = "",
+  // Whether the active workspace has beads (`.beads` + `bd`). Gates the "On
+  // tasks" tab's visibility — a workspace without beads has nothing to fire on.
+  hasBeadsWorkspace = false,
   // Reason the loop was auto-stopped (e.g. "maxDuration", "maxIterations",
   // "iterationSafeguard"); empty when running. Drives the restore-dialog wording.
   stoppedReason = "",
@@ -184,6 +197,8 @@ export function PeriodicFrequencyPanel({
   onTriggerChange,
   onDelayChange,
   onMaxDurationChange,
+  onConditionChange,
+  onConditionPresetChange,
   onEditArguments,
 }) {
   // Local state for editing
@@ -223,6 +238,25 @@ export function PeriodicFrequencyPanel({
   );
   const [localMaxDurUnit, setLocalMaxDurUnit] = useState(
     () => secondsToValueUnit(maxDurationSeconds).unit,
+  );
+  // onTasks trigger local state: the staged CEL condition text (source of truth
+  // sent to the backend), the selected preset dropdown id, the single param
+  // value for param-needing presets, and an inline error from a rejected save.
+  const [localCondition, setLocalCondition] = useState(condition || "");
+  const [localPresetId, setLocalPresetId] = useState(() =>
+    resolveConditionPresetId(condition, conditionPreset),
+  );
+  const [localPresetParam, setLocalPresetParam] = useState(() =>
+    extractPresetParam(
+      resolveConditionPresetId(condition, conditionPreset),
+      condition,
+    ),
+  );
+  const [conditionError, setConditionError] = useState(null);
+  // Advanced (CEL) textarea collapse: auto-opens for hand-edited ("custom")
+  // conditions; otherwise starts collapsed but stays open once toggled.
+  const [advancedCelExpanded, setAdvancedCelExpanded] = useState(
+    () => resolveConditionPresetId(condition, conditionPreset) === "custom",
   );
   // Saving enabled state (pause/resume)
   const [isSavingEnabled, setIsSavingEnabled] = useState(false);
@@ -322,6 +356,15 @@ export function PeriodicFrequencyPanel({
     setLocalMaxDurValue(value);
     setLocalMaxDurUnit(unit);
   }, [maxDurationSeconds]);
+  // Sync onTasks condition/preset from props (server-authoritative updates,
+  // e.g. GET on load or a periodic_updated broadcast from another client).
+  useEffect(() => {
+    const id = resolveConditionPresetId(condition, conditionPreset);
+    setLocalCondition(condition || "");
+    setLocalPresetId(id);
+    setLocalPresetParam(extractPresetParam(id, condition));
+    if (id === "custom") setAdvancedCelExpanded(true);
+  }, [condition, conditionPreset]);
 
   // Discard staged edits when the settings body collapses without saving.
   // Reverts every local field back to the server-authoritative props.
@@ -339,6 +382,11 @@ export function PeriodicFrequencyPanel({
       const { value, unit } = secondsToValueUnit(maxDurationSeconds);
       setLocalMaxDurValue(value);
       setLocalMaxDurUnit(unit);
+      const presetId = resolveConditionPresetId(condition, conditionPreset);
+      setLocalCondition(condition || "");
+      setLocalPresetId(presetId);
+      setLocalPresetParam(extractPresetParam(presetId, condition));
+      setConditionError(null);
     }
   }, [
     expanded,
@@ -351,10 +399,13 @@ export function PeriodicFrequencyPanel({
     delaySeconds,
     minDelaySeconds,
     maxDurationSeconds,
+    condition,
+    conditionPreset,
   ]);
 
-  // Derived: whether this periodic is in on-completion mode
+  // Derived: whether this periodic is in on-completion / on-tasks mode
   const isOnCompletion = localTrigger === "onCompletion";
+  const isOnTasks = localTrigger === "onTasks";
 
   // A "new" periodic conversation is one that has never delivered a run yet
   // (iteration_count is incremented only on actual delivery). Safety pre-fills
@@ -370,10 +421,12 @@ export function PeriodicFrequencyPanel({
     [localMaxIterations, localMaxDurValue, localMaxDurUnit],
   );
 
-  // Staged cadence is "dangerous": fires after every agent completion, or
-  // repeats more frequently than DANGEROUS_FREQUENCY_SECONDS on a schedule.
+  // Staged cadence is "dangerous": fires after every agent completion, fires
+  // on every qualifying task change (event-driven, unbounded), or repeats
+  // more frequently than DANGEROUS_FREQUENCY_SECONDS on a schedule.
   const stagedHasDangerousCadence = useMemo(() => {
-    if (localTrigger === "onCompletion") return true;
+    if (localTrigger === "onCompletion" || localTrigger === "onTasks")
+      return true;
     return (
       valueUnitToSeconds(localValue, localUnit) < DANGEROUS_FREQUENCY_SECONDS
     );
@@ -387,7 +440,9 @@ export function PeriodicFrequencyPanel({
   // Human-readable reason shown in the dangerous-config confirmation dialog.
   const dangerReason = isOnCompletion
     ? "it starts again every time the agent finishes"
-    : `it repeats every ${localValue} ${localUnit}`;
+    : isOnTasks
+      ? "it fires every time a matching task change occurs"
+      : `it repeats every ${localValue} ${localUnit}`;
   const dangerMessage =
     `This periodic conversation has no limit on the number of runs or total ` +
     `time, and ${dangerReason}. It could keep running indefinitely. ` +
@@ -398,12 +453,14 @@ export function PeriodicFrequencyPanel({
   const performSave = useCallback(async () => {
     if (!sessionId || isSaving) return;
 
-    // Optimistic next-run estimate for schedule mode (server value overrides below)
-    if (localTrigger !== "onCompletion") {
+    // Optimistic next-run estimate for schedule mode (server value overrides
+    // below). onCompletion and onTasks are event-driven — no fixed cadence.
+    if (localTrigger !== "onCompletion" && localTrigger !== "onTasks") {
       setLocalNextScheduledAt(calculateNextRun(localValue, localUnit));
     }
 
     setIsSaving(true);
+    setConditionError(null);
     try {
       const clampedDelay = Math.max(minDelaySeconds, localDelay);
       const maxDurSecs = valueUnitToSeconds(localMaxDurValue, localMaxDurUnit);
@@ -418,6 +475,13 @@ export function PeriodicFrequencyPanel({
       // Only include 'at' for daily schedules - convert local time to UTC
       if (localUnit === "days" && localAt) {
         payload.frequency.at = localToUtcTime(localAt);
+      }
+      // onTasks: send the staged CEL condition + the preset id it was
+      // compiled from ("" for a hand-edited/custom condition).
+      if (localTrigger === "onTasks") {
+        payload.condition = localCondition || "";
+        payload.condition_preset =
+          localPresetId === "custom" ? "" : localPresetId;
       }
 
       const response = await secureFetch(
@@ -437,6 +501,7 @@ export function PeriodicFrequencyPanel({
         setLocalNextScheduledAt(data.next_scheduled_at);
         setLocalTrigger(t);
         setLocalDelay(serverDelay);
+        setLocalCondition(data.condition ?? localCondition);
         // Propagate to parent so props stay in sync
         onFrequencyChange?.(data.frequency, data.next_scheduled_at);
         onFreshContextChange?.(data.fresh_context ?? localFreshContext);
@@ -444,8 +509,23 @@ export function PeriodicFrequencyPanel({
         onTriggerChange?.(t);
         onDelayChange?.(serverDelay);
         onMaxDurationChange?.(data.max_duration_seconds ?? maxDurSecs);
+        onConditionChange?.(data.condition ?? localCondition);
+        onConditionPresetChange?.(
+          data.condition_preset ??
+            (localPresetId === "custom" ? "" : localPresetId),
+        );
       } else {
-        console.error("Failed to save periodic settings");
+        const errorData = await response.json().catch(() => ({}));
+        const msg = errorMessageFromData(
+          errorData,
+          "Failed to save periodic settings",
+        );
+        console.error("Failed to save periodic settings:", msg);
+        // Surface invalid-CEL (and other onTasks) rejections inline near the
+        // condition editor instead of failing silently.
+        if (localTrigger === "onTasks") {
+          setConditionError(msg);
+        }
       }
     } catch (err) {
       console.error("Failed to save periodic settings:", err);
@@ -464,6 +544,8 @@ export function PeriodicFrequencyPanel({
     localDelay,
     localMaxDurValue,
     localMaxDurUnit,
+    localCondition,
+    localPresetId,
     minDelaySeconds,
     calculateNextRun,
     onFrequencyChange,
@@ -472,6 +554,8 @@ export function PeriodicFrequencyPanel({
     onTriggerChange,
     onDelayChange,
     onMaxDurationChange,
+    onConditionChange,
+    onConditionPresetChange,
   ]);
 
   // Save entry point (Save button). For a brand-new periodic conversation with
@@ -589,19 +673,24 @@ export function PeriodicFrequencyPanel({
   const handleTriggerSelect = useCallback(
     (newTrigger) => {
       setLocalTrigger(newTrigger);
+      setConditionError(null);
       if (newTrigger === "onCompletion") {
         // Always enforce the minimum on-completion delay.
         setLocalDelay((prev) =>
           Math.max(minDelaySeconds, prev || minDelaySeconds),
         );
-        // Pre-fill safety limits (5 runs, 1h max time) only for brand-new
-        // periodic conversations; never override an established config.
-        if (isNewPeriodic) {
-          setLocalMaxIterations((prev) => (prev > 0 ? prev : 5));
-          if (valueUnitToSeconds(localMaxDurValue, localMaxDurUnit) === 0) {
-            setLocalMaxDurValue(1);
-            setLocalMaxDurUnit("hours");
-          }
+      }
+      // Pre-fill safety limits (5 runs, 1h max time) only for brand-new
+      // periodic conversations switching to an event-driven trigger; never
+      // override an established config.
+      if (
+        (newTrigger === "onCompletion" || newTrigger === "onTasks") &&
+        isNewPeriodic
+      ) {
+        setLocalMaxIterations((prev) => (prev > 0 ? prev : 5));
+        if (valueUnitToSeconds(localMaxDurValue, localMaxDurUnit) === 0) {
+          setLocalMaxDurValue(1);
+          setLocalMaxDurUnit("hours");
         }
       }
     },
@@ -612,6 +701,51 @@ export function PeriodicFrequencyPanel({
   const handleDelayBlur = useCallback(() => {
     setLocalDelay((prev) => Math.max(minDelaySeconds, prev));
   }, [minDelaySeconds]);
+
+  // Handle condition-preset dropdown selection (staged). Selecting a known
+  // preset compiles it (with the current param, if any) into localCondition;
+  // selecting "custom" leaves whatever is already in the Advanced textarea.
+  const handlePresetSelect = useCallback(
+    (e) => {
+      const id = e.target.value;
+      setLocalPresetId(id);
+      setConditionError(null);
+      if (id === "custom") {
+        setAdvancedCelExpanded(true);
+        return;
+      }
+      const preset = CONDITION_PRESETS.find((p) => p.id === id);
+      setLocalCondition(
+        presetConditionFor(id, preset?.needsParam ? localPresetParam : ""),
+      );
+    },
+    [localPresetParam],
+  );
+
+  // Handle the preset's single parameter input (issue type or label; staged).
+  const handlePresetParamChange = useCallback(
+    (e) => {
+      const val = e.target.value;
+      setLocalPresetParam(val);
+      setConditionError(null);
+      setLocalCondition(presetConditionFor(localPresetId, val));
+    },
+    [localPresetId],
+  );
+
+  // Handle direct edits to the Advanced (CEL) textarea (staged). Hand-editing
+  // switches the preset dropdown to "custom" since the text may no longer
+  // match any canonical preset shape.
+  const handleConditionTextareaInput = useCallback((e) => {
+    setLocalCondition(e.target.value);
+    setLocalPresetId("custom");
+    setConditionError(null);
+  }, []);
+
+  // Toggle the Advanced (CEL) collapse open/closed.
+  const toggleAdvancedCel = useCallback(() => {
+    setAdvancedCelExpanded((v) => !v);
+  }, []);
 
   // Handle pause/resume toggle
   const handlePauseResume = useCallback(async () => {
@@ -1001,7 +1135,7 @@ export function PeriodicFrequencyPanel({
               : "max-h-0 opacity-0 overflow-hidden pointer-events-none"
           }"
         >
-          <!-- Trigger tabs: Schedule | On completion -->
+          <!-- Trigger tabs: Schedule | On completion | On tasks (beads workspaces only) -->
           <div class="tabs tabs-border px-4 pt-2">
             <input
               type="radio"
@@ -1023,9 +1157,23 @@ export function PeriodicFrequencyPanel({
               onChange=${() => handleTriggerSelect("onCompletion")}
               data-testid="periodic-trigger-tab-oncompletion"
             />
+            ${hasBeadsWorkspace &&
+            html`
+              <input
+                type="radio"
+                name="periodic-trigger-${sessionId}"
+                role="tab"
+                aria-label="On tasks"
+                class="tab text-sm"
+                checked=${localTrigger === "onTasks"}
+                onChange=${() => handleTriggerSelect("onTasks")}
+                data-testid="periodic-trigger-tab-ontasks"
+              />
+            `}
           </div>
 
-          <!-- State-driven schedule row: "Run every" (schedule) or "Wait" (onCompletion) -->
+          <!-- State-driven schedule row: "Run every" (schedule), "Wait" (onCompletion),
+               or the task-condition editor (onTasks) -->
           ${
             isOnCompletion
               ? html` <!-- On-completion: delay after agent finishes -->
@@ -1052,58 +1200,148 @@ export function PeriodicFrequencyPanel({
                       seconds after the agent finishes (min ${minDelaySeconds}s)
                     </span>
                   </div>`
-              : html` <!-- Schedule: Run every N units -->
-                  <div class="px-4 pt-2 pb-2 flex items-center gap-3 text-sm">
-                    <span
-                      class="text-mitto-text-muted dark:text-mitto-text-300 shrink-0"
-                      >Run every</span
+              : isOnTasks
+                ? html` <!-- On-tasks: condition editor (preset + advanced CEL) -->
+                    <div
+                      class="px-4 pt-2 pb-2 text-sm"
+                      data-testid="periodic-condition-editor"
                     >
+                      <div class="flex items-center gap-3">
+                        <span
+                          class="text-mitto-text-muted dark:text-mitto-text-300 shrink-0"
+                          >Fire when</span
+                        >
+                        <select
+                          value=${localPresetId}
+                          onChange=${handlePresetSelect}
+                          class="select select-sm shrink-0 flex-1"
+                          data-testid="periodic-condition-preset-select"
+                        >
+                          ${CONDITION_PRESETS.map(
+                            (p) => html`<option value=${p.id}>${p.label}</option>`,
+                          )}
+                          <option value="custom">Custom (advanced)</option>
+                        </select>
+                      </div>
+                      ${(() => {
+                        const preset = CONDITION_PRESETS.find(
+                          (p) => p.id === localPresetId,
+                        );
+                        return (
+                          preset?.needsParam &&
+                          html`
+                            <div class="flex items-center gap-3 mt-2">
+                              <span
+                                class="text-mitto-text-muted dark:text-mitto-text-300 shrink-0 w-24"
+                                >${preset.paramLabel}</span
+                              >
+                              <input
+                                type="text"
+                                value=${localPresetParam}
+                                onInput=${handlePresetParamChange}
+                                placeholder=${preset.paramPlaceholder}
+                                class="input input-sm flex-1"
+                                data-testid="periodic-condition-preset-param"
+                              />
+                            </div>
+                          `
+                        );
+                      })()}
 
-                    <input
-                      type="number"
-                      min="1"
-                      max="999"
-                      value=${localValue}
-                      onInput=${handleValueChange}
-                      disabled=${isSaving}
-                      class="input input-sm w-16 shrink-0 text-center"
-                    />
+                      <div class="collapse collapse-arrow mt-2 bg-mitto-surface-2 dark:bg-mitto-surface-3 border border-mitto-border dark:border-mitto-border-2">
+                        <input
+                          type="checkbox"
+                          checked=${advancedCelExpanded}
+                          onChange=${toggleAdvancedCel}
+                        />
+                        <div class="collapse-title text-xs font-medium py-2 min-h-0">
+                          Advanced (CEL)
+                        </div>
+                        <div class="collapse-content text-xs">
+                          <textarea
+                            value=${localCondition}
+                            onInput=${handleConditionTextareaInput}
+                            placeholder="Empty = fire on any task change"
+                            rows="2"
+                            class="textarea textarea-sm w-full font-mono"
+                            data-testid="periodic-condition-textarea"
+                          ></textarea>
+                          <div class="mt-2 text-mitto-text-muted dark:text-mitto-text-300">
+                            Variables:
+                            <code>Tasks</code> (current snapshot),
+                            <code>Prev</code> (previous snapshot),
+                            <code>Changes</code> (added/updated/removed/touched
+                            since last run). Example:
+                            <code
+                              >Tasks.OpenByType["bug"] &gt;
+                              Prev.OpenByType["bug"]</code
+                            >
+                          </div>
+                        </div>
+                      </div>
 
-                    <!-- shrink-0 + fixed width: daisyUI .select has flex-shrink:1 and overflow:hidden,
-                     which lets it collapse to just the chevron (hiding the unit text) in tight rows -->
-                    <select
-                      value=${localUnit}
-                      onChange=${handleUnitChange}
-                      disabled=${isSaving}
-                      class="select select-sm shrink-0 w-24"
-                    >
-                      <option value="minutes">minutes</option>
-                      <option value="hours">hours</option>
-                      <option value="days">days</option>
-                    </select>
-
-                    <!-- Time picker (only shown for daily schedules) -->
-                    ${localUnit === "days" &&
-                    html`
+                      ${conditionError &&
+                      html`
+                        <div
+                          class="mt-2 text-xs text-mitto-danger"
+                          data-testid="periodic-condition-error"
+                        >
+                          ${conditionError}
+                        </div>
+                      `}
+                    </div>`
+                : html` <!-- Schedule: Run every N units -->
+                    <div class="px-4 pt-2 pb-2 flex items-center gap-3 text-sm">
                       <span
                         class="text-mitto-text-muted dark:text-mitto-text-300 shrink-0"
-                        >at</span
+                        >Run every</span
                       >
+
                       <input
-                        type="time"
-                        value=${localAt}
-                        onInput=${handleAtChange}
+                        type="number"
+                        min="1"
+                        max="999"
+                        value=${localValue}
+                        onInput=${handleValueChange}
                         disabled=${isSaving}
-                        class="h-8 px-2 min-w-16 shrink-0 bg-white dark:bg-mitto-surface-2 border border-mitto-border dark:border-mitto-border-2 rounded text-mitto-text-strong text-sm focus:outline-none focus:ring-1 focus:ring-mitto-accent-500 ${isSaving
-                          ? "opacity-50 cursor-not-allowed"
-                          : ""}"
-                        placeholder="HH:MM"
+                        class="input input-sm w-16 shrink-0 text-center"
                       />
-                    `}
-                  </div>`
+
+                      <!-- shrink-0 + fixed width: daisyUI .select has flex-shrink:1 and overflow:hidden,
+                       which lets it collapse to just the chevron (hiding the unit text) in tight rows -->
+                      <select
+                        value=${localUnit}
+                        onChange=${handleUnitChange}
+                        disabled=${isSaving}
+                        class="select select-sm shrink-0 w-24"
+                      >
+                        <option value="minutes">minutes</option>
+                        <option value="hours">hours</option>
+                        <option value="days">days</option>
+                      </select>
+
+                      <!-- Time picker (only shown for daily schedules) -->
+                      ${localUnit === "days" &&
+                      html`
+                        <span
+                          class="text-mitto-text-muted dark:text-mitto-text-300 shrink-0"
+                          >at</span
+                        >
+                        <input
+                          type="time"
+                          value=${localAt}
+                          onInput=${handleAtChange}
+                          disabled=${isSaving}
+                          class="h-8 px-2 min-w-16 shrink-0 bg-white dark:bg-mitto-surface-2 border border-mitto-border dark:border-mitto-border-2 rounded text-mitto-text-strong text-sm focus:outline-none focus:ring-1 focus:ring-mitto-accent-500 ${isSaving
+                            ? "opacity-50 cursor-not-allowed"
+                            : ""}"
+                          placeholder="HH:MM"
+                        />
+                      `}
+                    </div>`
           }
 
-          <!-- Fresh-context row (applies to both schedule and onCompletion) -->
+          <!-- Fresh-context row (applies to schedule, onCompletion, and onTasks) -->
           <div class="px-4 pb-2 flex items-center gap-2 text-sm border-t border-mitto-border dark:border-mitto-border-2 pt-2">
             <input
               type="checkbox"

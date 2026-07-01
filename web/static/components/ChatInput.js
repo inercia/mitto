@@ -247,6 +247,9 @@ export function ChatInput({
   contextUsage = null,
   tokenUsage = null,
   onOpenPromptParamDialog,
+  // Whether the active workspace has beads (`.beads` + `bd`). Gates the "On
+  // tasks" periodic trigger tab in PeriodicFrequencyPanel (mitto-oja.4).
+  hasBeadsWorkspace = false,
 }) {
   // Use the draft from parent state instead of local state
   const text = draft;
@@ -482,6 +485,10 @@ export function ChatInput({
   const [periodicDelaySeconds, setPeriodicDelaySeconds] = useState(5);
   const [periodicMaxDurationSeconds, setPeriodicMaxDurationSeconds] =
     useState(0);
+  // onTasks trigger fields: CEL condition gating firing + the UI preset id
+  // compiled into it (empty condition = fire on any beads/task change).
+  const [periodicCondition, setPeriodicCondition] = useState("");
+  const [periodicConditionPreset, setPeriodicConditionPreset] = useState("");
   // Reason the periodic loop was auto-stopped (e.g. "maxDuration", "maxIterations",
   // "iterationSafeguard"); empty when running. Drives the restore-dialog wording.
   const [periodicStoppedReason, setPeriodicStoppedReason] = useState("");
@@ -522,6 +529,8 @@ export function ChatInput({
     setPeriodicTrigger("schedule");
     setPeriodicDelaySeconds(5);
     setPeriodicMaxDurationSeconds(0);
+    setPeriodicCondition("");
+    setPeriodicConditionPreset("");
     setPeriodicStoppedReason("");
     setPeriodicArguments({});
     // Collapse the periodic properties body by default when switching
@@ -569,6 +578,8 @@ export function ChatInput({
       setPeriodicTrigger("schedule");
       setPeriodicDelaySeconds(5);
       setPeriodicMaxDurationSeconds(0);
+      setPeriodicCondition("");
+      setPeriodicConditionPreset("");
       setPeriodicStoppedReason("");
       setPeriodicArguments({});
       // Don't clear the draft when disabling periodic - preserve user's text
@@ -611,6 +622,8 @@ export function ChatInput({
         setPeriodicTrigger(config.trigger || "schedule");
         setPeriodicDelaySeconds(config.delay_seconds ?? 5);
         setPeriodicMaxDurationSeconds(config.max_duration_seconds ?? 0);
+        setPeriodicCondition(config.condition || "");
+        setPeriodicConditionPreset(config.condition_preset || "");
         setPeriodicStoppedReason(config.stopped_reason || "");
         setPeriodicArguments(config.arguments || {});
         // Set lock state based on the enabled field
@@ -704,6 +717,8 @@ export function ChatInput({
             setPeriodicTrigger(config.trigger || "schedule");
             setPeriodicDelaySeconds(config.delay_seconds ?? 5);
             setPeriodicMaxDurationSeconds(config.max_duration_seconds ?? 0);
+            setPeriodicCondition(config.condition || "");
+            setPeriodicConditionPreset(config.condition_preset || "");
             setPeriodicStoppedReason(config.stopped_reason || "");
             setPeriodicArguments(config.arguments || {});
             const isPendingPlaceholder = config.prompt === "(pending)";
@@ -2515,11 +2530,16 @@ ${activeUIPrompt.text || ""}</textarea
           trigger=${periodicTrigger}
           delaySeconds=${periodicDelaySeconds}
           maxDurationSeconds=${periodicMaxDurationSeconds}
+          condition=${periodicCondition}
+          conditionPreset=${periodicConditionPreset}
+          hasBeadsWorkspace=${hasBeadsWorkspace}
           stoppedReason=${periodicStoppedReason}
           minDelaySeconds=${5}
           onTriggerChange=${setPeriodicTrigger}
           onDelayChange=${setPeriodicDelaySeconds}
           onMaxDurationChange=${setPeriodicMaxDurationSeconds}
+          onConditionChange=${setPeriodicCondition}
+          onConditionPresetChange=${setPeriodicConditionPreset}
           onEditArguments=${handleEditPeriodicArguments}
         />
       </div>

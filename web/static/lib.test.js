@@ -68,6 +68,11 @@ import {
   formatPeriodicMaxDuration,
   buildRetryTargets,
   messageKey,
+  computeHeaderTriggerLabel,
+  CONDITION_PRESETS,
+  presetConditionFor,
+  extractPresetParam,
+  resolveConditionPresetId,
 } from "./lib.js";
 
 // =============================================================================
@@ -6017,6 +6022,163 @@ describe("Periodic header badge label logic", () => {
     test("run 0 of N before first run", () => {
       expect(computeRunCountLabel(0, 5, true)).toBe("Run 0 of 5");
     });
+  });
+});
+
+// =============================================================================
+// computeHeaderTriggerLabel Tests (real exported function, mitto-oja.4)
+// =============================================================================
+
+describe("computeHeaderTriggerLabel", () => {
+  test("schedule trigger returns 'every N<unit>'", () => {
+    expect(
+      computeHeaderTriggerLabel("schedule", 0, { value: 2, unit: "hours" }),
+    ).toBe("every 2h");
+    expect(
+      computeHeaderTriggerLabel("schedule", 0, { value: 30, unit: "minutes" }),
+    ).toBe("every 30min");
+    expect(
+      computeHeaderTriggerLabel("schedule", 0, { value: 1, unit: "days" }),
+    ).toBe("every 1d");
+  });
+
+  test("schedule trigger with no frequency returns null", () => {
+    expect(computeHeaderTriggerLabel("schedule", 0, null)).toBeNull();
+  });
+
+  test("onCompletion trigger without delay omits the +Ns suffix", () => {
+    expect(computeHeaderTriggerLabel("onCompletion", 0, null)).toBe(
+      "after agent finishes",
+    );
+  });
+
+  test("onCompletion trigger with delay appends +Ns", () => {
+    expect(computeHeaderTriggerLabel("onCompletion", 30, null)).toBe(
+      "after agent finishes · +30s",
+    );
+  });
+
+  test("onTasks trigger returns the fixed label regardless of frequency/delay", () => {
+    expect(computeHeaderTriggerLabel("onTasks", 0, null)).toBe(
+      "on task changes",
+    );
+    expect(
+      computeHeaderTriggerLabel("onTasks", 30, { value: 1, unit: "hours" }),
+    ).toBe("on task changes");
+  });
+});
+
+// =============================================================================
+// onTasks Condition Presets Tests (mitto-oja.4)
+// =============================================================================
+
+describe("presetConditionFor", () => {
+  test("'any' preset compiles to the empty string (fire on any change)", () => {
+    expect(presetConditionFor("any", "")).toBe("");
+  });
+
+  test("new-issue-type compiles to a Changes.Added.exists expression", () => {
+    expect(presetConditionFor("new-issue-type", "bug")).toBe(
+      'Changes.Added.exists(i, i.type == "bug")',
+    );
+  });
+
+  test("label-touched compiles to a Changes.Touched.exists expression", () => {
+    expect(presetConditionFor("label-touched", "PR opened")).toBe(
+      'Changes.Touched.exists(i, "PR opened" in i.labels)',
+    );
+  });
+
+  test("open-type-increased compiles to an OpenByType comparison", () => {
+    expect(presetConditionFor("open-type-increased", "bug")).toBe(
+      'Tasks.OpenByType["bug"] > Prev.OpenByType["bug"]',
+    );
+  });
+
+  test("param-requiring presets return '' when the param is empty/blank", () => {
+    expect(presetConditionFor("new-issue-type", "")).toBe("");
+    expect(presetConditionFor("label-touched", "   ")).toBe("");
+    expect(presetConditionFor("open-type-increased", undefined)).toBe("");
+  });
+
+  test("unrecognized preset id returns ''", () => {
+    expect(presetConditionFor("custom", "bug")).toBe("");
+    expect(presetConditionFor("bogus", "bug")).toBe("");
+  });
+
+  test("trims whitespace from the param", () => {
+    expect(presetConditionFor("new-issue-type", "  bug  ")).toBe(
+      'Changes.Added.exists(i, i.type == "bug")',
+    );
+  });
+});
+
+describe("extractPresetParam", () => {
+  test("round-trips the param for each param-requiring preset", () => {
+    expect(
+      extractPresetParam(
+        "new-issue-type",
+        'Changes.Added.exists(i, i.type == "bug")',
+      ),
+    ).toBe("bug");
+    expect(
+      extractPresetParam(
+        "label-touched",
+        'Changes.Touched.exists(i, "PR opened" in i.labels)',
+      ),
+    ).toBe("PR opened");
+    expect(
+      extractPresetParam(
+        "open-type-increased",
+        'Tasks.OpenByType["bug"] > Prev.OpenByType["bug"]',
+      ),
+    ).toBe("bug");
+  });
+
+  test("returns '' when the condition doesn't match the preset's shape", () => {
+    expect(extractPresetParam("new-issue-type", "some.other.expr")).toBe("");
+    expect(extractPresetParam("new-issue-type", "")).toBe("");
+  });
+
+  test("returns '' when the two OpenByType keys differ (not a canonical match)", () => {
+    expect(
+      extractPresetParam(
+        "open-type-increased",
+        'Tasks.OpenByType["bug"] > Prev.OpenByType["feature"]',
+      ),
+    ).toBe("");
+  });
+
+  test("returns '' for an unrecognized preset id", () => {
+    expect(extractPresetParam("any", "")).toBe("");
+    expect(extractPresetParam("custom", "anything")).toBe("");
+  });
+});
+
+describe("resolveConditionPresetId", () => {
+  test("returns the stored preset id when it's a recognized preset", () => {
+    expect(resolveConditionPresetId("", "new-issue-type")).toBe(
+      "new-issue-type",
+    );
+    expect(
+      CONDITION_PRESETS.some((p) => p.id === "open-type-increased"),
+    ).toBe(true);
+  });
+
+  test("returns 'any' when condition is empty and no recognized preset id is stored", () => {
+    expect(resolveConditionPresetId("", "")).toBe("any");
+    expect(resolveConditionPresetId(null, null)).toBe("any");
+  });
+
+  test("returns 'custom' for a non-empty condition with no recognized preset id", () => {
+    expect(resolveConditionPresetId("Tasks.Open > 0", "")).toBe("custom");
+  });
+
+  test("an unrecognized stored preset id falls back to condition-based resolution", () => {
+    expect(resolveConditionPresetId("", "not-a-real-preset")).toBe("any");
+    expect(
+      resolveConditionPresetId("Tasks.Open > 0", "not-a-real-preset"),
+    ).toBe("custom");
   });
 });
 
