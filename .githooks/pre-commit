@@ -1,0 +1,21 @@
+#!/bin/sh
+# Pre-commit hook: block commits that would fail `make fmt-check` in CI.
+#
+# This repo has repeatedly had feature commits land with unformatted Go
+# files (gofmt misses), which fail fast in the CI "Lint" job and mask every
+# later stage (golangci-lint, frontend lint, Integration Tests, Smoke
+# Tests). This hook catches that locally before it ever reaches CI.
+#
+# Installed via: make install-hooks
+# (sets `git config core.hooksPath .githooks`)
+
+set -e
+
+cd "$(git rev-parse --show-toplevel)"
+
+if ! make fmt-check; then
+	echo ""
+	echo "❌ Commit blocked: Go files are not gofmt-clean."
+	echo "   Run 'make fmt' to fix formatting, then re-stage and commit."
+	exit 1
+fi
