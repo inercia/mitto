@@ -29,12 +29,12 @@ func newTestGCManager(
 		lastSessionSeen: make(map[string]time.Time),
 		auxSessions:     make(map[auxSessionKey]*auxiliarySessionState),
 		gcConfig: GCConfig{
-			Interval:                 30 * time.Second,
-			GracePeriod:              60 * time.Second,
-			ObserverGracePeriod:      60 * time.Second,
-			IdleTimeout:              5 * time.Minute,
-			AuxIdleTimeout:           10 * time.Minute,
-			PeriodicSuspendThreshold: 30 * time.Minute,
+			Interval:             30 * time.Second,
+			GracePeriod:          60 * time.Second,
+			ObserverGracePeriod:  60 * time.Second,
+			IdleTimeout:          5 * time.Minute,
+			AuxIdleTimeout:       10 * time.Minute,
+			LoopSuspendThreshold: 30 * time.Minute,
 		},
 		sessionQuery: query,
 		sessionClose: closeSession,
@@ -52,7 +52,7 @@ func newTestSharedProcess() *SharedACPProcess {
 }
 
 // TestGCTier1_ClosesIdleSessions verifies that sessions with no active state
-// (not prompting, no observers, empty queue, no periodic) are closed by Tier 1.
+// (not prompting, no observers, empty queue, no loop) are closed by Tier 1.
 func TestGCTier1_ClosesIdleSessions(t *testing.T) {
 	sessions := map[string][]conversation.SessionInfo{
 		"ws-1": {
@@ -87,7 +87,7 @@ func TestGCTier1_ClosesIdleSessions(t *testing.T) {
 // TestGCTier1_SkipsActiveSessions verifies that sessions with any active state
 // are never closed by Tier 1.
 func TestGCTier1_SkipsActiveSessions(t *testing.T) {
-	// NextPeriodicAt within 2×interval (60s) — should be skipped.
+	// NextLoopAt within 2×interval (60s) — should be skipped.
 	soon := time.Now().Add(10 * time.Second)
 
 	sessions := map[string][]conversation.SessionInfo{
@@ -95,7 +95,7 @@ func TestGCTier1_SkipsActiveSessions(t *testing.T) {
 			{SessionID: "prompting", WorkspaceUUID: "ws-1", IsPrompting: true},
 			{SessionID: "observers", WorkspaceUUID: "ws-1", HasObservers: true},
 			{SessionID: "queue", WorkspaceUUID: "ws-1", QueueLength: 5},
-			{SessionID: "periodic", WorkspaceUUID: "ws-1", NextPeriodicAt: &soon},
+			{SessionID: "loop", WorkspaceUUID: "ws-1", NextLoopAt: &soon},
 			{SessionID: "connected-clients", WorkspaceUUID: "ws-1", HasConnectedClients: true},
 		},
 	}
@@ -121,15 +121,15 @@ func TestGCTier1_SkipsActiveSessions(t *testing.T) {
 	}
 }
 
-// TestGCTier1_ClosesSessionWithDistantPeriodic verifies that a session whose
-// next periodic prompt is far in the future (beyond 2×interval) is still
+// TestGCTier1_ClosesSessionWithDistantLoop verifies that a session whose
+// next loop prompt is far in the future (beyond 2×interval) is still
 // considered idle and is closed by Tier 1.
-func TestGCTier1_ClosesSessionWithDistantPeriodic(t *testing.T) {
+func TestGCTier1_ClosesSessionWithDistantLoop(t *testing.T) {
 	far := time.Now().Add(2 * time.Hour) // well beyond 2×30s = 60s threshold
 
 	sessions := map[string][]conversation.SessionInfo{
 		"ws-1": {
-			{SessionID: "distant-periodic", WorkspaceUUID: "ws-1", NextPeriodicAt: &far},
+			{SessionID: "distant-loop", WorkspaceUUID: "ws-1", NextLoopAt: &far},
 		},
 	}
 
@@ -149,8 +149,8 @@ func TestGCTier1_ClosesSessionWithDistantPeriodic(t *testing.T) {
 
 	mu.Lock()
 	defer mu.Unlock()
-	if !closed["distant-periodic"] {
-		t.Error("session with distant periodic should be closed by Tier 1")
+	if !closed["distant-loop"] {
+		t.Error("session with distant loop should be closed by Tier 1")
 	}
 }
 
@@ -775,23 +775,23 @@ func TestGCTier1_ObserverGracePeriodIgnoredWhenHasObservers(t *testing.T) {
 }
 
 // =============================================================================
-// Periodic Suspend Heuristic Tests
+// Loop Suspend Heuristic Tests
 // =============================================================================
 
-// TestGCTier1_PeriodicSuspend_ClosesWithObservers verifies that a periodic session
-// with active observers is suspended (closed) when its next periodic prompt is
-// farther away than the PeriodicSuspendThreshold.
-func TestGCTier1_PeriodicSuspend_ClosesWithObservers(t *testing.T) {
-	// Next periodic is 2 hours away — well beyond the 30m threshold.
+// TestGCTier1_LoopSuspend_ClosesWithObservers verifies that a loop session
+// with active observers is suspended (closed) when its next loop prompt is
+// farther away than the LoopSuspendThreshold.
+func TestGCTier1_LoopSuspend_ClosesWithObservers(t *testing.T) {
+	// Next loop is 2 hours away — well beyond the 30m threshold.
 	far := time.Now().Add(2 * time.Hour)
 
 	sessions := map[string][]conversation.SessionInfo{
 		"ws-1": {
 			{
-				SessionID:      "periodic-far",
+				SessionID:      "loop-far",
 				WorkspaceUUID:  "ws-1",
 				HasObservers:   true,
-				NextPeriodicAt: &far,
+				NextLoopAt:     &far,
 				ResumedAt:      time.Now().Add(-10 * time.Minute),
 				LastActivityAt: time.Now().Add(-1 * time.Minute), // Recent activity — normally would prevent GC
 			},
@@ -814,18 +814,18 @@ func TestGCTier1_PeriodicSuspend_ClosesWithObservers(t *testing.T) {
 
 	mu.Lock()
 	defer mu.Unlock()
-	if !closed["periodic-far"] {
-		t.Error("periodic session with distant next-run should be suspended even with observers")
+	if !closed["loop-far"] {
+		t.Error("loop session with distant next-run should be suspended even with observers")
 	}
 	// Verify the GC-suspended flag is set to prevent auto-resume thrashing
-	if !m.IsGCSuspended("periodic-far") {
-		t.Error("periodic session should be marked as GC-suspended after suspension")
+	if !m.IsGCSuspended("loop-far") {
+		t.Error("loop session should be marked as GC-suspended after suspension")
 	}
 }
 
-// TestGCTier1_PeriodicSuspend_GCSuspendedFlagCleared verifies that ClearGCSuspended
+// TestGCTier1_LoopSuspend_GCSuspendedFlagCleared verifies that ClearGCSuspended
 // removes the flag and IsGCSuspended returns false for non-suspended sessions.
-func TestGCTier1_PeriodicSuspend_GCSuspendedFlagCleared(t *testing.T) {
+func TestGCTier1_LoopSuspend_GCSuspendedFlagCleared(t *testing.T) {
 	m := newTestGCManager(
 		func() map[string][]conversation.SessionInfo { return nil },
 		func(id string) {},
@@ -849,9 +849,9 @@ func TestGCTier1_PeriodicSuspend_GCSuspendedFlagCleared(t *testing.T) {
 	}
 }
 
-// TestGCTier1_PeriodicSuspend_IdleClosureNotMarkedSuspended verifies that regular
-// idle session closures do NOT set the GC-suspended flag (only periodic suspensions do).
-func TestGCTier1_PeriodicSuspend_IdleClosureNotMarkedSuspended(t *testing.T) {
+// TestGCTier1_LoopSuspend_IdleClosureNotMarkedSuspended verifies that regular
+// idle session closures do NOT set the GC-suspended flag (only loop suspensions do).
+func TestGCTier1_LoopSuspend_IdleClosureNotMarkedSuspended(t *testing.T) {
 	sessions := map[string][]conversation.SessionInfo{
 		"ws-1": {
 			{
@@ -876,21 +876,21 @@ func TestGCTier1_PeriodicSuspend_IdleClosureNotMarkedSuspended(t *testing.T) {
 	}
 }
 
-// TestGCTier1_PeriodicSuspend_KeepsClosePeriodicWithObservers verifies that a
-// periodic session with observers is NOT suspended when its next periodic prompt
-// is within the PeriodicSuspendThreshold.
-func TestGCTier1_PeriodicSuspend_KeepsClosePeriodicWithObservers(t *testing.T) {
-	// Next periodic is 10 minutes away — within the 30m threshold.
+// TestGCTier1_LoopSuspend_KeepsCloseLoopWithObservers verifies that a
+// loop session with observers is NOT suspended when its next loop prompt
+// is within the LoopSuspendThreshold.
+func TestGCTier1_LoopSuspend_KeepsCloseLoopWithObservers(t *testing.T) {
+	// Next loop is 10 minutes away — within the 30m threshold.
 	close_ := time.Now().Add(10 * time.Minute)
 
 	sessions := map[string][]conversation.SessionInfo{
 		"ws-1": {
 			{
-				SessionID:      "periodic-close",
-				WorkspaceUUID:  "ws-1",
-				HasObservers:   true,
-				NextPeriodicAt: &close_,
-				ResumedAt:      time.Now().Add(-10 * time.Minute),
+				SessionID:     "loop-close",
+				WorkspaceUUID: "ws-1",
+				HasObservers:  true,
+				NextLoopAt:    &close_,
+				ResumedAt:     time.Now().Add(-10 * time.Minute),
 			},
 		},
 	}
@@ -911,19 +911,19 @@ func TestGCTier1_PeriodicSuspend_KeepsClosePeriodicWithObservers(t *testing.T) {
 
 	mu.Lock()
 	defer mu.Unlock()
-	if closed["periodic-close"] {
-		t.Error("periodic session with nearby next-run and observers should NOT be suspended")
+	if closed["loop-close"] {
+		t.Error("loop session with nearby next-run and observers should NOT be suspended")
 	}
 }
 
-// TestGCTier1_PeriodicSuspend_KeepsNonPeriodicWithObservers verifies that a
-// non-periodic session with observers is never closed (the periodic suspend
-// heuristic does not apply to non-periodic sessions).
-func TestGCTier1_PeriodicSuspend_KeepsNonPeriodicWithObservers(t *testing.T) {
+// TestGCTier1_LoopSuspend_KeepsNonLoopWithObservers verifies that a
+// non-loop session with observers is never closed (the loop suspend
+// heuristic does not apply to non-loop sessions).
+func TestGCTier1_LoopSuspend_KeepsNonLoopWithObservers(t *testing.T) {
 	sessions := map[string][]conversation.SessionInfo{
 		"ws-1": {
 			{
-				SessionID:     "non-periodic",
+				SessionID:     "non-loop",
 				WorkspaceUUID: "ws-1",
 				HasObservers:  true,
 				ResumedAt:     time.Now().Add(-10 * time.Minute),
@@ -947,25 +947,25 @@ func TestGCTier1_PeriodicSuspend_KeepsNonPeriodicWithObservers(t *testing.T) {
 
 	mu.Lock()
 	defer mu.Unlock()
-	if closed["non-periodic"] {
-		t.Error("non-periodic session with observers should NOT be closed")
+	if closed["non-loop"] {
+		t.Error("non-loop session with observers should NOT be closed")
 	}
 }
 
-// TestGCTier1_PeriodicSuspend_SkipsPrompting verifies that a periodic session
+// TestGCTier1_LoopSuspend_SkipsPrompting verifies that a loop session
 // eligible for suspension is NOT closed when it is actively prompting.
-func TestGCTier1_PeriodicSuspend_SkipsPrompting(t *testing.T) {
+func TestGCTier1_LoopSuspend_SkipsPrompting(t *testing.T) {
 	far := time.Now().Add(2 * time.Hour)
 
 	sessions := map[string][]conversation.SessionInfo{
 		"ws-1": {
 			{
-				SessionID:      "periodic-prompting",
-				WorkspaceUUID:  "ws-1",
-				HasObservers:   true,
-				IsPrompting:    true,
-				NextPeriodicAt: &far,
-				ResumedAt:      time.Now().Add(-10 * time.Minute),
+				SessionID:     "loop-prompting",
+				WorkspaceUUID: "ws-1",
+				HasObservers:  true,
+				IsPrompting:   true,
+				NextLoopAt:    &far,
+				ResumedAt:     time.Now().Add(-10 * time.Minute),
 			},
 		},
 	}
@@ -986,25 +986,25 @@ func TestGCTier1_PeriodicSuspend_SkipsPrompting(t *testing.T) {
 
 	mu.Lock()
 	defer mu.Unlock()
-	if closed["periodic-prompting"] {
-		t.Error("periodic session that is prompting should NOT be suspended")
+	if closed["loop-prompting"] {
+		t.Error("loop session that is prompting should NOT be suspended")
 	}
 }
 
-// TestGCTier1_PeriodicSuspend_SkipsNonEmptyQueue verifies that a periodic session
+// TestGCTier1_LoopSuspend_SkipsNonEmptyQueue verifies that a loop session
 // eligible for suspension is NOT closed when it has queued messages.
-func TestGCTier1_PeriodicSuspend_SkipsNonEmptyQueue(t *testing.T) {
+func TestGCTier1_LoopSuspend_SkipsNonEmptyQueue(t *testing.T) {
 	far := time.Now().Add(2 * time.Hour)
 
 	sessions := map[string][]conversation.SessionInfo{
 		"ws-1": {
 			{
-				SessionID:      "periodic-queue",
-				WorkspaceUUID:  "ws-1",
-				HasObservers:   true,
-				QueueLength:    3,
-				NextPeriodicAt: &far,
-				ResumedAt:      time.Now().Add(-10 * time.Minute),
+				SessionID:     "loop-queue",
+				WorkspaceUUID: "ws-1",
+				HasObservers:  true,
+				QueueLength:   3,
+				NextLoopAt:    &far,
+				ResumedAt:     time.Now().Add(-10 * time.Minute),
 			},
 		},
 	}
@@ -1025,25 +1025,25 @@ func TestGCTier1_PeriodicSuspend_SkipsNonEmptyQueue(t *testing.T) {
 
 	mu.Lock()
 	defer mu.Unlock()
-	if closed["periodic-queue"] {
-		t.Error("periodic session with non-empty queue should NOT be suspended")
+	if closed["loop-queue"] {
+		t.Error("loop session with non-empty queue should NOT be suspended")
 	}
 }
 
-// TestGCTier1_PeriodicSuspend_SkipsRecentlyResumed verifies that a periodic session
+// TestGCTier1_LoopSuspend_SkipsRecentlyResumed verifies that a loop session
 // eligible for suspension is NOT closed when it was recently resumed (within one
 // GC interval). This prevents a resume → immediate close → resume loop.
-func TestGCTier1_PeriodicSuspend_SkipsRecentlyResumed(t *testing.T) {
+func TestGCTier1_LoopSuspend_SkipsRecentlyResumed(t *testing.T) {
 	far := time.Now().Add(2 * time.Hour)
 
 	sessions := map[string][]conversation.SessionInfo{
 		"ws-1": {
 			{
-				SessionID:      "periodic-just-resumed",
-				WorkspaceUUID:  "ws-1",
-				HasObservers:   true,
-				NextPeriodicAt: &far,
-				ResumedAt:      time.Now().Add(-5 * time.Second), // Resumed 5s ago, within 30s interval
+				SessionID:     "loop-just-resumed",
+				WorkspaceUUID: "ws-1",
+				HasObservers:  true,
+				NextLoopAt:    &far,
+				ResumedAt:     time.Now().Add(-5 * time.Second), // Resumed 5s ago, within 30s interval
 			},
 		},
 	}
@@ -1064,27 +1064,27 @@ func TestGCTier1_PeriodicSuspend_SkipsRecentlyResumed(t *testing.T) {
 
 	mu.Lock()
 	defer mu.Unlock()
-	if closed["periodic-just-resumed"] {
-		t.Error("recently resumed periodic session should NOT be suspended (anti-thrash)")
+	if closed["loop-just-resumed"] {
+		t.Error("recently resumed loop session should NOT be suspended (anti-thrash)")
 	}
 }
 
-// TestGCTier1_PeriodicSuspend_SkipsWithinGrace verifies that a periodic session
+// TestGCTier1_LoopSuspend_SkipsWithinGrace verifies that a loop session
 // that recently finished a turn is NOT suspended while it is within the generous
-// PeriodicSuspendGracePeriod. This protects a conversation that just ended a turn
+// LoopSuspendGracePeriod. This protects a conversation that just ended a turn
 // (and may be about to continue) from being reclaimed too aggressively. The grace
 // is keyed on LastResponseCompleteAt (turn END), not LastActivityAt (prompt START).
-func TestGCTier1_PeriodicSuspend_SkipsWithinGrace(t *testing.T) {
+func TestGCTier1_LoopSuspend_SkipsWithinGrace(t *testing.T) {
 	far := time.Now().Add(2 * time.Hour)
 
 	sessions := map[string][]conversation.SessionInfo{
 		"ws-1": {
 			{
-				SessionID:      "periodic-grace",
-				WorkspaceUUID:  "ws-1",
-				HasObservers:   true,
-				NextPeriodicAt: &far,
-				ResumedAt:      time.Now().Add(-2 * time.Hour), // long ago — not "recently resumed"
+				SessionID:     "loop-grace",
+				WorkspaceUUID: "ws-1",
+				HasObservers:  true,
+				NextLoopAt:    &far,
+				ResumedAt:     time.Now().Add(-2 * time.Hour), // long ago — not "recently resumed"
 				// Prompt started long ago (stale), but the turn ended just 2m ago.
 				LastActivityAt:         time.Now().Add(-90 * time.Minute),
 				LastResponseCompleteAt: time.Now().Add(-2 * time.Minute),
@@ -1103,33 +1103,33 @@ func TestGCTier1_PeriodicSuspend_SkipsWithinGrace(t *testing.T) {
 			closed[id] = true
 		},
 	)
-	m.gcConfig.PeriodicSuspendGracePeriod = 10 * time.Minute
+	m.gcConfig.LoopSuspendGracePeriod = 10 * time.Minute
 
 	m.RunGCOnce()
 
 	mu.Lock()
 	defer mu.Unlock()
-	if closed["periodic-grace"] {
-		t.Error("periodic session that finished a turn within the grace window should NOT be suspended")
+	if closed["loop-grace"] {
+		t.Error("loop session that finished a turn within the grace window should NOT be suspended")
 	}
-	if m.IsGCSuspended("periodic-grace") {
-		t.Error("periodic session within grace window should NOT be marked GC-suspended")
+	if m.IsGCSuspended("loop-grace") {
+		t.Error("loop session within grace window should NOT be marked GC-suspended")
 	}
 }
 
-// TestGCTier1_PeriodicSuspend_SuspendsAfterGrace verifies that once a periodic
-// session has been idle longer than PeriodicSuspendGracePeriod (no recent turn
+// TestGCTier1_LoopSuspend_SuspendsAfterGrace verifies that once a loop
+// session has been idle longer than LoopSuspendGracePeriod (no recent turn
 // completion or activity), it is suspended as normal.
-func TestGCTier1_PeriodicSuspend_SuspendsAfterGrace(t *testing.T) {
+func TestGCTier1_LoopSuspend_SuspendsAfterGrace(t *testing.T) {
 	far := time.Now().Add(2 * time.Hour)
 
 	sessions := map[string][]conversation.SessionInfo{
 		"ws-1": {
 			{
-				SessionID:              "periodic-past-grace",
+				SessionID:              "loop-past-grace",
 				WorkspaceUUID:          "ws-1",
 				HasObservers:           true,
-				NextPeriodicAt:         &far,
+				NextLoopAt:             &far,
 				ResumedAt:              time.Now().Add(-2 * time.Hour),
 				LastActivityAt:         time.Now().Add(-90 * time.Minute),
 				LastResponseCompleteAt: time.Now().Add(-30 * time.Minute), // well beyond grace
@@ -1148,34 +1148,34 @@ func TestGCTier1_PeriodicSuspend_SuspendsAfterGrace(t *testing.T) {
 			closed[id] = true
 		},
 	)
-	m.gcConfig.PeriodicSuspendGracePeriod = 10 * time.Minute
+	m.gcConfig.LoopSuspendGracePeriod = 10 * time.Minute
 
 	m.RunGCOnce()
 
 	mu.Lock()
 	defer mu.Unlock()
-	if !closed["periodic-past-grace"] {
-		t.Error("periodic session idle beyond the grace window should be suspended")
+	if !closed["loop-past-grace"] {
+		t.Error("loop session idle beyond the grace window should be suspended")
 	}
-	if !m.IsGCSuspended("periodic-past-grace") {
-		t.Error("periodic session suspended after grace should be marked GC-suspended")
+	if !m.IsGCSuspended("loop-past-grace") {
+		t.Error("loop session suspended after grace should be marked GC-suspended")
 	}
 }
 
-// TestGCTier1_PeriodicSuspend_WithConnectedClients verifies that a periodic session
+// TestGCTier1_LoopSuspend_WithConnectedClients verifies that a loop session
 // eligible for suspension is closed even when it has connected WebSocket clients
 // (pre-connected background sessions that haven't sent load_events yet).
-func TestGCTier1_PeriodicSuspend_WithConnectedClients(t *testing.T) {
+func TestGCTier1_LoopSuspend_WithConnectedClients(t *testing.T) {
 	far := time.Now().Add(2 * time.Hour)
 
 	sessions := map[string][]conversation.SessionInfo{
 		"ws-1": {
 			{
-				SessionID:           "periodic-clients",
+				SessionID:           "loop-clients",
 				WorkspaceUUID:       "ws-1",
 				HasObservers:        false,
 				HasConnectedClients: true,
-				NextPeriodicAt:      &far,
+				NextLoopAt:          &far,
 				ResumedAt:           time.Now().Add(-10 * time.Minute),
 				LastActivityAt:      time.Now().Add(-1 * time.Minute),
 			},
@@ -1198,24 +1198,24 @@ func TestGCTier1_PeriodicSuspend_WithConnectedClients(t *testing.T) {
 
 	mu.Lock()
 	defer mu.Unlock()
-	if !closed["periodic-clients"] {
-		t.Error("periodic session with distant next-run should be suspended even with connected clients")
+	if !closed["loop-clients"] {
+		t.Error("loop session with distant next-run should be suspended even with connected clients")
 	}
 }
 
-// TestGCTier1_PeriodicSuspend_DisabledWhenThresholdZero verifies that setting
-// PeriodicSuspendThreshold to 0 disables the periodic suspend heuristic.
-func TestGCTier1_PeriodicSuspend_DisabledWhenThresholdZero(t *testing.T) {
+// TestGCTier1_LoopSuspend_DisabledWhenThresholdZero verifies that setting
+// LoopSuspendThreshold to 0 disables the loop suspend heuristic.
+func TestGCTier1_LoopSuspend_DisabledWhenThresholdZero(t *testing.T) {
 	far := time.Now().Add(2 * time.Hour)
 
 	sessions := map[string][]conversation.SessionInfo{
 		"ws-1": {
 			{
-				SessionID:      "periodic-no-suspend",
-				WorkspaceUUID:  "ws-1",
-				HasObservers:   true,
-				NextPeriodicAt: &far,
-				ResumedAt:      time.Now().Add(-10 * time.Minute),
+				SessionID:     "loop-no-suspend",
+				WorkspaceUUID: "ws-1",
+				HasObservers:  true,
+				NextLoopAt:    &far,
+				ResumedAt:     time.Now().Add(-10 * time.Minute),
 			},
 		},
 	}
@@ -1231,16 +1231,16 @@ func TestGCTier1_PeriodicSuspend_DisabledWhenThresholdZero(t *testing.T) {
 			closed[id] = true
 		},
 	)
-	// Disable periodic suspend by setting threshold to 0 (disabled).
+	// Disable loop suspend by setting threshold to 0 (disabled).
 	// StartGC converts negative values to 0; RunGCOnce skips the heuristic when <= 0.
-	m.gcConfig.PeriodicSuspendThreshold = 0
+	m.gcConfig.LoopSuspendThreshold = 0
 
 	m.RunGCOnce()
 
 	mu.Lock()
 	defer mu.Unlock()
-	if closed["periodic-no-suspend"] {
-		t.Error("periodic session should NOT be suspended when PeriodicSuspendThreshold is disabled")
+	if closed["loop-no-suspend"] {
+		t.Error("loop session should NOT be suspended when LoopSuspendThreshold is disabled")
 	}
 }
 

@@ -170,8 +170,8 @@ type Server struct {
 	// Queue title worker for generating titles for queued messages
 	queueTitleWorker *conversation.QueueTitleWorker
 
-	// Periodic runner for scheduled prompt delivery
-	periodicRunner *PeriodicRunner
+	// Loop runner for scheduled prompt delivery
+	loopRunner *LoopRunner
 
 	// Callback index for mapping callback tokens to session IDs
 	callbackIndex       *conversation.CallbackIndex
@@ -355,14 +355,14 @@ func NewServer(config Config) (*Server, error) {
 	// and no pending work, and stops shared ACP processes that have no active sessions.
 	if !config.DisableAuxiliaryPrewarm && os.Getenv("MITTO_TEST_MODE") == "" {
 		gcConfig := acpproc.GCConfig{}
-		// Apply periodic suspend threshold from settings if configured.
+		// Apply loop suspend threshold from settings if configured.
 		if config.MittoConfig != nil && config.MittoConfig.Session != nil {
-			if d, enabled := config.MittoConfig.Session.ParsePeriodicSuspendTimeout(); enabled {
-				gcConfig.PeriodicSuspendThreshold = d
+			if d, enabled := config.MittoConfig.Session.ParseLoopSuspendTimeout(); enabled {
+				gcConfig.LoopSuspendThreshold = d
 			} else {
 				// Explicitly disabled — set to 0 so StartGC doesn't apply default.
 				// We need to bypass StartGC's "apply default for <= 0" logic.
-				gcConfig.PeriodicSuspendThreshold = -1
+				gcConfig.LoopSuspendThreshold = -1
 			}
 		}
 		// Apply memory recycle threshold from settings if configured (opt-in).
@@ -588,7 +588,7 @@ func NewServer(config Config) (*Server, error) {
 	})
 
 	// The REST handlers sub-package facade is constructed later in NewServer,
-	// after callbackIndex, callbackRateLimiter and periodicRunner are
+	// after callbackIndex, callbackRateLimiter and loopRunner are
 	// initialized — see "Construct the REST handlers sub-package facade" below.
 
 	// Set events manager in session manager for broadcasting
@@ -686,52 +686,52 @@ func NewServer(config Config) (*Server, error) {
 	// Wired exactly once at startup.
 	session.ConditionValidator = configPkg.ValidateCondition
 
-	// Initialize periodic runner for scheduled prompt delivery and session housekeeping
-	s.periodicRunner = NewPeriodicRunner(store, sessionMgr, logger)
-	// Share the self-suppressing beads client so the periodic runner's own
+	// Initialize loop runner for scheduled prompt delivery and session housekeeping
+	s.loopRunner = NewLoopRunner(store, sessionMgr, logger)
+	// Share the self-suppressing beads client so the loop runner's own
 	// onTasks list reads do not bounce back through the watcher as external
-	// changes (which would spuriously re-fire onTasks periodic conversations).
-	s.periodicRunner.SetBeadsClient(s.beads)
-	s.periodicRunner.SetOnPeriodicStarted(s.BroadcastPeriodicStarted)
-	s.periodicRunner.SetOnAutoArchive(func(sessionID string) {
+	// changes (which would spuriously re-fire onTasks loop conversations).
+	s.loopRunner.SetBeadsClient(s.beads)
+	s.loopRunner.SetOnLoopStarted(s.BroadcastPeriodicStarted)
+	s.loopRunner.SetOnAutoArchive(func(sessionID string) {
 		s.BroadcastACPStopped(sessionID, "auto_archived")
 		s.BroadcastSessionArchived(sessionID, true)
 	})
-	s.periodicRunner.SetOnPeriodicAutoStopped(s.BroadcastPeriodicUpdated)
-	s.periodicRunner.SetOnPeriodicUpdated(s.BroadcastPeriodicUpdated)
+	s.loopRunner.SetOnLoopAutoStopped(s.BroadcastPeriodicUpdated)
+	s.loopRunner.SetOnLoopUpdated(s.BroadcastPeriodicUpdated)
 
-	// Configure the global periodic-iteration safeguard (user default, bounded by backstop).
-	maxPeriodicIter := configPkg.DefaultMaxPeriodicIterations
+	// Configure the global loop-iteration safeguard (user default, bounded by backstop).
+	maxLoopIter := configPkg.DefaultMaxLoopIterations
 	if config.MittoConfig != nil {
-		maxPeriodicIter = config.MittoConfig.Conversations.GetMaxPeriodicIterations()
+		maxLoopIter = config.MittoConfig.Conversations.GetMaxLoopIterations()
 	}
-	s.periodicRunner.SetMaxPeriodicIterations(maxPeriodicIter)
+	s.loopRunner.SetMaxLoopIterations(maxLoopIter)
 
-	// Configure the global floor for the on-completion periodic trigger's delay.
-	minCompletionDelay := configPkg.DefaultMinPeriodicCompletionDelaySeconds
+	// Configure the global floor for the on-completion loop trigger's delay.
+	minCompletionDelay := configPkg.DefaultMinLoopCompletionDelaySeconds
 	if config.MittoConfig != nil {
-		minCompletionDelay = config.MittoConfig.Conversations.GetMinPeriodicCompletionDelaySeconds()
+		minCompletionDelay = config.MittoConfig.Conversations.GetMinLoopCompletionDelaySeconds()
 	}
-	s.periodicRunner.SetMinPeriodicCompletionDelaySeconds(minCompletionDelay)
+	s.loopRunner.SetMinLoopCompletionDelaySeconds(minCompletionDelay)
 
-	// Configure startup delay for periodic runner to avoid thundering herd.
-	// Interactive sessions resume first via WebSocket; periodic sessions can afford to wait.
-	startupPeriodicDelay := configPkg.DefaultStartupPeriodicDelay
+	// Configure startup delay for loop runner to avoid thundering herd.
+	// Interactive sessions resume first via WebSocket; loop sessions can afford to wait.
+	startupLoopDelay := configPkg.DefaultStartupLoopDelay
 	if config.MittoConfig != nil && config.MittoConfig.Session != nil {
-		startupPeriodicDelay = config.MittoConfig.Session.GetStartupPeriodicDelay()
+		startupLoopDelay = config.MittoConfig.Session.GetStartupLoopDelay()
 	}
-	if startupPeriodicDelay > 0 {
-		s.periodicRunner.SetStartupDelay(startupPeriodicDelay)
+	if startupLoopDelay > 0 {
+		s.loopRunner.SetStartupDelay(startupLoopDelay)
 	}
 
-	// Configure stagger delay between consecutive periodic session resumes.
+	// Configure stagger delay between consecutive loop session resumes.
 	// Uses the same startup_stagger_ms config as the queue's ProcessPendingQueues.
 	staggerMs := configPkg.DefaultStartupStaggerMs
 	if config.MittoConfig != nil && config.MittoConfig.Session != nil {
 		staggerMs = config.MittoConfig.Session.GetStartupStaggerMs()
 	}
 	if staggerMs > 0 {
-		s.periodicRunner.SetResumeStagger(time.Duration(staggerMs) * time.Millisecond)
+		s.loopRunner.SetResumeStagger(time.Duration(staggerMs) * time.Millisecond)
 	}
 
 	// Initialize callback index and rate limiter
@@ -780,16 +780,16 @@ func NewServer(config Config) (*Server, error) {
 		CallbackRateLimiter:                s.callbackRateLimiter,
 		GetExternalPort:                    s.GetExternalPort,
 		IsExternalListenerRunning:          s.IsExternalListenerRunning,
-		TriggerPeriodicNow:                 s.periodicRunner.TriggerNow,
+		TriggerPeriodicNow:                 s.loopRunner.TriggerNow,
 		StopPeriodicForArchive: func(sessionID string) {
-			s.periodicRunner.StopPeriodicForArchive(sessionID, session.StoppedReasonArchived)
+			s.loopRunner.StopLoopForArchive(sessionID, session.StoppedReasonArchived)
 		},
 		ErrSessionBusy:                ErrSessionBusy,
-		ErrPeriodicNotEnabled:         ErrPeriodicNotEnabled,
+		ErrPeriodicNotEnabled:         ErrLoopNotEnabled,
 		PeriodicDelayFloor:            s.periodicDelayFloor,
 		BroadcastPeriodicUpdated:      s.BroadcastPeriodicUpdated,
 		BroadcastBeadsCleanupProgress: s.BroadcastBeadsCleanupProgress,
-		BootstrapOnCompletion:         s.periodicRunner.BootstrapOnCompletion,
+		BootstrapOnCompletion:         s.loopRunner.BootstrapOnCompletion,
 		BroadcastSettingsUpdated:      s.BroadcastSessionSettingsUpdated,
 		BroadcastSessionDeleted:       s.BroadcastSessionDeleted,
 		BroadcastACPStartFailed:       s.BroadcastACPStartFailed,
@@ -829,9 +829,9 @@ func NewServer(config Config) (*Server, error) {
 			if s.beadsWatcher != nil {
 				s.beadsWatcher.Unsubscribe(s)
 				s.beadsWatcher.Subscribe(s, s.getBeadsWatchDirs())
-				if s.periodicRunner != nil {
-					s.beadsWatcher.Unsubscribe(s.periodicRunner)
-					s.beadsWatcher.Subscribe(s.periodicRunner, s.getBeadsWatchDirs())
+				if s.loopRunner != nil {
+					s.beadsWatcher.Unsubscribe(s.loopRunner)
+					s.beadsWatcher.Subscribe(s.loopRunner, s.getBeadsWatchDirs())
 				}
 			}
 		},
@@ -868,20 +868,20 @@ func NewServer(config Config) (*Server, error) {
 		if autoArchiveDuration, err := parseAutoArchivePeriod(autoArchivePeriod); err != nil {
 			logger.Warn("Invalid auto-archive period, feature disabled", "period", autoArchivePeriod, "error", err)
 		} else if autoArchiveDuration > 0 {
-			s.periodicRunner.SetAutoArchiveAfter(autoArchiveDuration)
+			s.loopRunner.SetAutoArchiveAfter(autoArchiveDuration)
 			logger.Info("Auto-archive inactive sessions enabled", "period", autoArchivePeriod, "duration", autoArchiveDuration)
 		}
 
 		// Configure periodic cleanup of archived sessions
 		retentionPeriod := config.MittoConfig.Session.GetArchiveRetentionPeriod()
 		if retentionPeriod != "" {
-			s.periodicRunner.SetArchiveRetentionPeriod(retentionPeriod)
+			s.loopRunner.SetArchiveRetentionPeriod(retentionPeriod)
 			logger.Info("Periodic archive retention cleanup enabled", "retention_period", retentionPeriod)
 		}
 	}
 
-	// Set prompt resolver for periodic runner and session manager — resolves prompt names to text at execution time.
-	// Both use the same resolver: PeriodicRunner for scheduled prompts, conversation.SessionManager for interactive prompt-by-name.
+	// Set prompt resolver for loop runner and session manager — resolves prompt names to text at execution time.
+	// Both use the same resolver: LoopRunner for scheduled prompts, conversation.SessionManager for interactive prompt-by-name.
 	promptResolverFunc := func(promptName string, workingDir string) (string, error) {
 		return s.resolvePromptByName(promptName, workingDir)
 	}
@@ -891,22 +891,22 @@ func NewServer(config Config) (*Server, error) {
 	promptParametersResolverFunc := func(promptName string, workingDir string) []configPkg.PromptParameter {
 		return s.resolvePromptParametersByPromptName(promptName, workingDir)
 	}
-	s.periodicRunner.SetPromptResolver(promptResolverFunc)
+	s.loopRunner.SetPromptResolver(promptResolverFunc)
 	if s.sessionManager != nil {
 		s.sessionManager.SetPromptResolver(promptResolverFunc)
 		s.sessionManager.SetPreferredModelsResolver(preferredModelsResolverFunc)
 		s.sessionManager.SetPromptParametersResolver(promptParametersResolverFunc)
-		// Wire event-driven on-completion periodic firing: sessions notify the runner
+		// Wire event-driven on-completion loop firing: sessions notify the runner
 		// when they go idle so it can arm the next onCompletion run.
-		s.sessionManager.SetOnConversationIdle(s.periodicRunner.OnConversationIdle)
+		s.sessionManager.SetOnConversationIdle(s.loopRunner.OnConversationIdle)
 	}
 
-	s.periodicRunner.Start()
+	s.loopRunner.Start()
 
-	// Wire up periodic runner to MCP server for the run-now tool.
-	// The periodic runner is created after the MCP server, so we use a setter.
+	// Wire up loop runner to MCP server for the run-now tool.
+	// The loop runner is created after the MCP server, so we use a setter.
 	if s.mcpServer != nil {
-		s.mcpServer.SetPeriodicRunner(s.periodicRunner)
+		s.mcpServer.SetLoopRunner(s.loopRunner)
 	}
 
 	// Build callback index from existing sessions
@@ -930,9 +930,9 @@ func NewServer(config Config) (*Server, error) {
 	} else {
 		s.beadsWatcher = beadsWatcher
 		s.beadsWatcher.Subscribe(s, s.getBeadsWatchDirs())
-		// Also subscribe the periodic runner so onTasks periodic conversations
+		// Also subscribe the loop runner so onTasks loop conversations
 		// can fire (or rebase their diff baseline) when beads change.
-		s.beadsWatcher.Subscribe(s.periodicRunner, s.getBeadsWatchDirs())
+		s.beadsWatcher.Subscribe(s.loopRunner, s.getBeadsWatchDirs())
 		s.beadsWatcher.Start()
 		logger.Info("Beads watcher started", "dirs", s.getBeadsWatchDirs())
 	}
@@ -1115,9 +1115,9 @@ func (s *Server) Shutdown() error {
 		s.queueTitleWorker.Close()
 	}
 
-	// Stop periodic runner
-	if s.periodicRunner != nil {
-		s.periodicRunner.Stop()
+	// Stop loop runner
+	if s.loopRunner != nil {
+		s.loopRunner.Stop()
 	}
 
 	// Close access logger
@@ -1188,11 +1188,11 @@ func (s *Server) GetSessionManager() *conversation.SessionManager {
 	return s.sessionManager
 }
 
-// PeriodicRunner returns the server's periodic runner.
+// LoopRunner returns the server's loop runner.
 // This is primarily used by integration tests to drive OnBeadsChanged directly
 // and to inject a fake beads.Client via SetBeadsClient.
-func (s *Server) PeriodicRunner() *PeriodicRunner {
-	return s.periodicRunner
+func (s *Server) LoopRunner() *LoopRunner {
+	return s.loopRunner
 }
 
 // handleRobotsTxt serves a robots.txt that disallows all crawling.
@@ -1666,9 +1666,9 @@ func (a *sessionManagerAdapter) BroadcastSessionRenamed(sessionID string, newNam
 	a.sm.BroadcastSessionRenamed(sessionID, newName)
 }
 
-// BroadcastPeriodicUpdated broadcasts a periodic_updated event to all connected clients.
-func (a *sessionManagerAdapter) BroadcastPeriodicUpdated(sessionID string, periodic *session.PeriodicPrompt) {
-	a.sm.BroadcastPeriodicUpdated(sessionID, periodic)
+// BroadcastLoopUpdated broadcasts a loop_updated event to all connected clients.
+func (a *sessionManagerAdapter) BroadcastLoopUpdated(sessionID string, loop *session.LoopPrompt) {
+	a.sm.BroadcastLoopUpdated(sessionID, loop)
 }
 
 // GetUserDataSchema returns the user data schema for a workspace.

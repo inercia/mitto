@@ -10,11 +10,11 @@ import (
 	"github.com/inercia/mitto/internal/session"
 )
 
-// DefaultMinPeriodicTasksCooldownSeconds is the default floor (seconds) applied
-// to the onTasks periodic trigger's cooldown between fires, preventing hot
-// loops from rapid beads churn. Mirrors DefaultMinPeriodicCompletionDelaySeconds
+// DefaultMinLoopTasksCooldownSeconds is the default floor (seconds) applied
+// to the onTasks loop trigger's cooldown between fires, preventing hot
+// loops from rapid beads churn. Mirrors DefaultMinLoopCompletionDelaySeconds
 // for the onCompletion trigger.
-const DefaultMinPeriodicTasksCooldownSeconds = 30
+const DefaultMinLoopTasksCooldownSeconds = 30
 
 // tasksDefaultQuiescenceWindow is the default value for tasksQuiescenceWindow.
 const tasksDefaultQuiescenceWindow = 30 * time.Second
@@ -28,13 +28,13 @@ const tasksListTimeout = 30 * time.Second
 // breaker (Layer 3) auto-pauses the trigger.
 const tasksNoProgressLimit = 3
 
-// Compile-time assertion: *PeriodicRunner implements config.BeadsSubscriber.
-var _ config.BeadsSubscriber = (*PeriodicRunner)(nil)
+// Compile-time assertion: *LoopRunner implements config.BeadsSubscriber.
+var _ config.BeadsSubscriber = (*LoopRunner)(nil)
 
 // SetBeadsClient injects the beads.Client used to list issues for onTasks
 // condition evaluation. Intended for tests; production code may leave this
 // unset to lazily default to beads.NewClient().
-func (r *PeriodicRunner) SetBeadsClient(c beads.Client) {
+func (r *LoopRunner) SetBeadsClient(c beads.Client) {
 	r.beadsClientMu.Lock()
 	defer r.beadsClientMu.Unlock()
 	r.beadsClient = c
@@ -42,7 +42,7 @@ func (r *PeriodicRunner) SetBeadsClient(c beads.Client) {
 
 // beadsClientOrDefault returns the configured beads.Client, lazily defaulting
 // to beads.NewClient() on first use.
-func (r *PeriodicRunner) beadsClientOrDefault() beads.Client {
+func (r *LoopRunner) beadsClientOrDefault() beads.Client {
 	r.beadsClientMu.Lock()
 	defer r.beadsClientMu.Unlock()
 	if r.beadsClient == nil {
@@ -51,9 +51,9 @@ func (r *PeriodicRunner) beadsClientOrDefault() beads.Client {
 	return r.beadsClient
 }
 
-// SetMinPeriodicTasksCooldownSeconds sets the global floor for the onTasks
+// SetMinLoopTasksCooldownSeconds sets the global floor for the onTasks
 // trigger's cooldown between fires. Values < 0 are clamped to 0.
-func (r *PeriodicRunner) SetMinPeriodicTasksCooldownSeconds(n int) {
+func (r *LoopRunner) SetMinLoopTasksCooldownSeconds(n int) {
 	if n < 0 {
 		n = 0
 	}
@@ -62,9 +62,9 @@ func (r *PeriodicRunner) SetMinPeriodicTasksCooldownSeconds(n int) {
 	r.minTasksCooldownSeconds = n
 }
 
-// MinPeriodicTasksCooldownSeconds returns the current floor for the onTasks
+// MinLoopTasksCooldownSeconds returns the current floor for the onTasks
 // trigger's cooldown between fires, in seconds.
-func (r *PeriodicRunner) MinPeriodicTasksCooldownSeconds() int {
+func (r *LoopRunner) MinLoopTasksCooldownSeconds() int {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.minTasksCooldownSeconds
@@ -74,7 +74,7 @@ func (r *PeriodicRunner) MinPeriodicTasksCooldownSeconds() int {
 // conversation's whole child subtree goes idle, before rebasing the baseline.
 // Intended for tests to use a short window; production uses
 // tasksDefaultQuiescenceWindow.
-func (r *PeriodicRunner) SetTasksQuiescenceWindow(d time.Duration) {
+func (r *LoopRunner) SetTasksQuiescenceWindow(d time.Duration) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.tasksQuiescenceWindow = d
@@ -89,7 +89,7 @@ func (r *PeriodicRunner) SetTasksQuiescenceWindow(d time.Duration) {
 //
 // The beads snapshot for each distinct working directory is listed at most
 // once per call, regardless of how many onTasks conversations share it.
-func (r *PeriodicRunner) OnBeadsChanged(event config.BeadsChangeEvent) {
+func (r *LoopRunner) OnBeadsChanged(event config.BeadsChangeEvent) {
 	if r.store == nil || r.tasksEvaluator == nil {
 		return
 	}
@@ -121,9 +121,9 @@ func (r *PeriodicRunner) OnBeadsChanged(event config.BeadsChangeEvent) {
 			continue
 		}
 
-		periodicStore := r.store.Periodic(meta.SessionID)
-		periodic, err := periodicStore.Get()
-		if err != nil || periodic == nil || !periodic.Enabled || !periodic.IsOnTasks() {
+		loopStore := r.store.Loop(meta.SessionID)
+		loop, err := loopStore.Get()
+		if err != nil || loop == nil || !loop.Enabled || !loop.IsOnTasks() {
 			continue
 		}
 
@@ -146,7 +146,7 @@ func (r *PeriodicRunner) OnBeadsChanged(event config.BeadsChangeEvent) {
 			rawCache[meta.WorkingDir] = raw
 		}
 
-		r.processTasksChange(meta, periodic, periodicStore, raw)
+		r.processTasksChange(meta, loop, loopStore, raw)
 	}
 }
 
@@ -182,7 +182,7 @@ type tasksDecision struct {
 // no side effects other than logging — callers (processTasksChange) act on the
 // returned decision. Kept side-effect-free (besides logging) so the decision
 // logic is directly unit-testable without a session manager or ACP connection.
-func (r *PeriodicRunner) evaluateTasksChange(meta session.Metadata, periodic *session.PeriodicPrompt, raw []byte) tasksDecision {
+func (r *LoopRunner) evaluateTasksChange(meta session.Metadata, loop *session.LoopPrompt, raw []byte) tasksDecision {
 	sessionID := meta.SessionID
 
 	// Layer 1 (temporal): ignore while the conversation or any delegated child
@@ -193,13 +193,13 @@ func (r *PeriodicRunner) evaluateTasksChange(meta session.Metadata, periodic *se
 
 	// Auto-stop if the wall-clock maxDuration cap is reached, exactly like the
 	// other triggers (fireOnCompletion / checkSession).
-	periodicStore := r.store.Periodic(sessionID)
-	if r.autoStopIfMaxDurationReached(sessionID, periodic, periodicStore, time.Now()) {
+	loopStore := r.store.Loop(sessionID)
+	if r.autoStopIfMaxDurationReached(sessionID, loop, loopStore, time.Now()) {
 		return tasksDecision{action: tasksActionSkip}
 	}
 
 	// Layer 0 (hard backstop): per-conversation cooldown floor.
-	if r.tasksCooldownActive(periodic) {
+	if r.tasksCooldownActive(loop) {
 		return tasksDecision{action: tasksActionSkip}
 	}
 
@@ -235,12 +235,12 @@ func (r *PeriodicRunner) evaluateTasksChange(meta session.Metadata, periodic *se
 	}
 
 	changeCtx := &config.TasksChangeContext{Tasks: currSnap, Prev: prevSnap, Changes: delta}
-	ok, evalErr := r.tasksEvaluator.Evaluate(periodic.Condition, changeCtx)
+	ok, evalErr := r.tasksEvaluator.Evaluate(loop.Condition, changeCtx)
 	if evalErr != nil {
 		// Fail-closed: a misconfigured condition must not silently fire.
 		if r.logger != nil {
 			r.logger.Warn("onTasks: condition evaluation failed (fail-closed, not firing)",
-				"session_id", sessionID, "condition", periodic.Condition, "error", evalErr)
+				"session_id", sessionID, "condition", loop.Condition, "error", evalErr)
 		}
 		return tasksDecision{action: tasksActionSkip, delta: delta}
 	}
@@ -254,13 +254,13 @@ func (r *PeriodicRunner) evaluateTasksChange(meta session.Metadata, periodic *se
 // processTasksChange evaluates a single onTasks conversation against the
 // latest beads snapshot (raw) for its working directory and acts on the
 // resulting decision: arming a rebase, initializing the baseline, or firing.
-func (r *PeriodicRunner) processTasksChange(meta session.Metadata, periodic *session.PeriodicPrompt, periodicStore *session.PeriodicStore, raw []byte) {
+func (r *LoopRunner) processTasksChange(meta session.Metadata, loop *session.LoopPrompt, loopStore *session.LoopStore, raw []byte) {
 	sessionID := meta.SessionID
-	decision := r.evaluateTasksChange(meta, periodic, raw)
+	decision := r.evaluateTasksChange(meta, loop, raw)
 
 	switch decision.action {
 	case tasksActionDeferBusy:
-		r.armTasksRebase(sessionID, periodicStore)
+		r.armTasksRebase(sessionID, loopStore)
 
 	case tasksActionInitBaseline:
 		if err := decision.baseline.Set(raw); err != nil && r.logger != nil {
@@ -283,7 +283,7 @@ func (r *PeriodicRunner) processTasksChange(meta session.Metadata, periodic *ses
 			r.logger.Warn("onTasks: failed to persist baseline after fire",
 				"session_id", sessionID, "error", err)
 		}
-		r.recordTasksFireOutcome(sessionID, periodicStore, decision.delta)
+		r.recordTasksFireOutcome(sessionID, loopStore, decision.delta)
 
 	case tasksActionSkip:
 		// Nothing to do.
@@ -303,28 +303,28 @@ func tasksDeltaIsMaterial(delta *config.TasksDelta) bool {
 // tasksCooldownActive returns true if firing should be skipped because the
 // per-conversation cooldown (clamped to the global floor) has not elapsed
 // since the last delivery.
-func (r *PeriodicRunner) tasksCooldownActive(periodic *session.PeriodicPrompt) bool {
-	if periodic.LastSentAt == nil {
+func (r *LoopRunner) tasksCooldownActive(loop *session.LoopPrompt) bool {
+	if loop.LastSentAt == nil {
 		return false
 	}
 	r.mu.Lock()
 	floor := r.minTasksCooldownSeconds
 	r.mu.Unlock()
 
-	cooldown := periodic.CooldownSeconds
+	cooldown := loop.CooldownSeconds
 	if cooldown < floor {
 		cooldown = floor
 	}
 	if cooldown <= 0 {
 		return false
 	}
-	return time.Since(*periodic.LastSentAt) < time.Duration(cooldown)*time.Second
+	return time.Since(*loop.LastSentAt) < time.Duration(cooldown)*time.Second
 }
 
 // isTasksSubtreeBusy returns true if the conversation, or any conversation in
 // its delegated-child subtree, is currently prompting or blocked on
 // mitto_children_tasks_wait.
-func (r *PeriodicRunner) isTasksSubtreeBusy(sessionID string) bool {
+func (r *LoopRunner) isTasksSubtreeBusy(sessionID string) bool {
 	if r.sessionManager == nil || r.store == nil {
 		return false
 	}
@@ -345,7 +345,7 @@ func (r *PeriodicRunner) isTasksSubtreeBusy(sessionID string) bool {
 
 // isSessionBusy returns true if sessionID is currently prompting or blocked on
 // mitto_children_tasks_wait.
-func (r *PeriodicRunner) isSessionBusy(sessionID string) bool {
+func (r *LoopRunner) isSessionBusy(sessionID string) bool {
 	if bs := r.sessionManager.GetSession(sessionID); bs != nil && bs.IsPrompting() {
 		return true
 	}
@@ -355,7 +355,7 @@ func (r *PeriodicRunner) isSessionBusy(sessionID string) bool {
 // armTasksRebase schedules a baseline rebase for sessionID after the
 // quiescence window, replacing (and stopping) any timer already pending so at
 // most one rebase is queued per session.
-func (r *PeriodicRunner) armTasksRebase(sessionID string, periodicStore *session.PeriodicStore) {
+func (r *LoopRunner) armTasksRebase(sessionID string, loopStore *session.LoopStore) {
 	r.mu.Lock()
 	window := r.tasksQuiescenceWindow
 	r.mu.Unlock()
@@ -366,7 +366,7 @@ func (r *PeriodicRunner) armTasksRebase(sessionID string, periodicStore *session
 		existing.Stop()
 	}
 	r.tasksRebaseTimers[sessionID] = time.AfterFunc(window, func() {
-		r.fireTasksRebase(sessionID, periodicStore)
+		r.fireTasksRebase(sessionID, loopStore)
 	})
 }
 
@@ -374,7 +374,7 @@ func (r *PeriodicRunner) armTasksRebase(sessionID string, periodicStore *session
 // rebases the onTasks baseline to the current beads snapshot — absorbing any
 // edits the conversation (or a delegated child) made to beads during its run.
 // If still busy, it re-arms itself for another quiescence window.
-func (r *PeriodicRunner) fireTasksRebase(sessionID string, periodicStore *session.PeriodicStore) {
+func (r *LoopRunner) fireTasksRebase(sessionID string, loopStore *session.LoopStore) {
 	r.tasksRebaseTimersMu.Lock()
 	delete(r.tasksRebaseTimers, sessionID)
 	r.tasksRebaseTimersMu.Unlock()
@@ -384,7 +384,7 @@ func (r *PeriodicRunner) fireTasksRebase(sessionID string, periodicStore *sessio
 	}
 
 	if r.isTasksSubtreeBusy(sessionID) {
-		r.armTasksRebase(sessionID, periodicStore)
+		r.armTasksRebase(sessionID, loopStore)
 		return
 	}
 
@@ -393,8 +393,8 @@ func (r *PeriodicRunner) fireTasksRebase(sessionID string, periodicStore *sessio
 		return
 	}
 
-	periodic, err := periodicStore.Get()
-	if err != nil || periodic == nil || !periodic.Enabled || !periodic.IsOnTasks() {
+	loop, err := loopStore.Get()
+	if err != nil || loop == nil || !loop.Enabled || !loop.IsOnTasks() {
 		return
 	}
 
@@ -426,14 +426,14 @@ func (r *PeriodicRunner) fireTasksRebase(sessionID string, periodicStore *sessio
 // conversation is newly enabled for onTasks or the server restarts before any
 // baseline was ever captured. No-op for sessions that already have a baseline,
 // are archived, are not onTasks, or are not enabled.
-func (r *PeriodicRunner) BootstrapTasksBaseline(sessionID string) {
+func (r *LoopRunner) BootstrapTasksBaseline(sessionID string) {
 	if r.store == nil {
 		return
 	}
 
-	periodicStore := r.store.Periodic(sessionID)
-	periodic, err := periodicStore.Get()
-	if err != nil || periodic == nil || !periodic.Enabled || !periodic.IsOnTasks() {
+	loopStore := r.store.Loop(sessionID)
+	loop, err := loopStore.Get()
+	if err != nil || loop == nil || !loop.Enabled || !loop.IsOnTasks() {
 		return
 	}
 
@@ -468,7 +468,7 @@ func (r *PeriodicRunner) BootstrapTasksBaseline(sessionID string) {
 // genuine forward progress), it auto-pauses the trigger via MarkStopped,
 // mirroring the existing failure-pause patterns (handlePromptResolveFailure,
 // autoStopIfMaxDurationReached).
-func (r *PeriodicRunner) recordTasksFireOutcome(sessionID string, periodicStore *session.PeriodicStore, delta *config.TasksDelta) {
+func (r *LoopRunner) recordTasksFireOutcome(sessionID string, loopStore *session.LoopStore, delta *config.TasksDelta) {
 	curr := tasksTouchedIDs(delta)
 
 	r.tasksNoProgressMu.Lock()
@@ -487,7 +487,7 @@ func (r *PeriodicRunner) recordTasksFireOutcome(sessionID string, periodicStore 
 		return
 	}
 
-	if err := periodicStore.MarkStopped(session.StoppedReasonNoProgress); err != nil {
+	if err := loopStore.MarkStopped(session.StoppedReasonNoProgress); err != nil {
 		if r.logger != nil {
 			r.logger.Warn("onTasks: failed to auto-pause after no-progress fires",
 				"session_id", sessionID, "error", err)
@@ -500,9 +500,9 @@ func (r *PeriodicRunner) recordTasksFireOutcome(sessionID string, periodicStore 
 	delete(r.tasksLastTouchedIDs, sessionID)
 	r.tasksNoProgressMu.Unlock()
 
-	if r.onPeriodicAutoStopped != nil {
-		if final, err := periodicStore.Get(); err == nil {
-			r.onPeriodicAutoStopped(sessionID, final)
+	if r.onLoopAutoStopped != nil {
+		if final, err := loopStore.Get(); err == nil {
+			r.onLoopAutoStopped(sessionID, final)
 		}
 	}
 	if r.logger != nil {
