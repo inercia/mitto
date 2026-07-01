@@ -46,38 +46,40 @@ This directory contains technical documentation for developers working on Mitto.
 
 ## Quick Links
 
-| Topic               | Document                                               | Key Sections                                          |
-| ------------------- | ------------------------------------------------------ | ----------------------------------------------------- |
-| Package structure   | [Architecture](architecture.md)                        | Component Breakdown                                   |
-| Configuration       | [Architecture](architecture.md)                        | `internal/config`                                     |
-| ACP architecture    | [ACP Architecture](acp.md)                             | Shared process, multiplexing, concurrency             |
-| ACP client          | [ACP Architecture](acp.md)                             | `internal/acp`                                        |
-| Process GC tiers    | [ACP Architecture](acp.md)                             | Multi-Tier GC, periodic suspend, memory recycle       |
-| Memory recycling    | [ACP Architecture](acp.md)                             | Tier 4 — Memory-Bloat Recycling, Configuration        |
-| Inactivity watchdog | [ACP Architecture](acp.md)                             | Prompt Inactivity Watchdog                            |
-| Feature flags       | [Architecture](architecture.md)                        | Advanced Settings                                     |
-| Event types         | [Session Management](session-management.md)            | Event Types                                           |
-| Session settings    | [Session Management](session-management.md)            | Advanced Settings                                     |
-| Queue API           | [Message Queue](message-queue.md)                      | REST API                                              |
-| Queue titles        | [Message Queue](message-queue.md)                      | Title Generation                                      |
-| Prompt menus        | [Prompt Menus & Dispatch](prompts.md)                  | The `menus` routing key                               |
-| Prompt dispatch     | [Prompt Menus & Dispatch](prompts.md)                  | The two start behaviors, deferred resolution          |
-| REST endpoints      | [Web Interface](web-interface.md)                      | REST API Endpoints                                    |
-| Streaming pipeline  | [Web Interface](web-interface.md)                      | Streaming Response Handling                           |
-| WebSocket protocol  | [WebSocket Docs](websockets/protocol-spec.md)          | All message types and formats                         |
-| Sequence numbers    | [WebSocket Docs](websockets/sequence-numbers.md)       | Assignment, contract, guarantees                      |
-| Reconnection & sync | [WebSocket Docs](websockets/synchronization.md)        | Gap detection, dedup, circuit breaker                 |
-| Communication flows | [WebSocket Docs](websockets/communication-flows.md)    | Golden path and corner case diagrams                  |
-| Mobile support      | [WebSocket Docs](websockets/synchronization.md)        | Mobile Wake Resync, Zombie Detection                  |
-| Workspace API       | [Workspaces](workspaces.md)                            | Workspace REST API                                    |
-| Action buttons      | [Follow-up Suggestions](follow-up-suggestions.md)      | Persistence, Lifecycle                                |
-| Callback endpoints  | [Callbacks](callbacks.md)                              | Public API, Token Lifecycle, Security                 |
-| MCP debugging       | [MCP Servers](mcp.md)                                  | Global Debug Server                                   |
-| Session MCP         | [MCP Servers](mcp.md)                                  | Per-Session MCP Servers                               |
-| Settings API        | [MCP Servers](mcp.md)                                  | Advanced Settings API                                 |
-| Restricted runners  | [Restricted Runner Integration](restricted-runners.md) | Architecture, Runner Types, Config Hierarchy          |
-| Message processors  | [Message Processing Pipeline](processors.md)           | Pipeline, Processor Types, Variable Substitution      |
-| Session resume      | [Session Resume Analysis](session-resume-analysis.md)  | ACP resume support, UNSTABLE API, implementation plan |
+| Topic                 | Document                                               | Key Sections                                          |
+| --------------------- | ------------------------------------------------------ | ----------------------------------------------------- |
+| Package structure     | [Architecture](architecture.md)                        | Component Breakdown                                   |
+| Configuration         | [Architecture](architecture.md)                        | `internal/config`                                     |
+| ACP architecture      | [ACP Architecture](acp.md)                             | Shared process, multiplexing, concurrency             |
+| ACP client            | [ACP Architecture](acp.md)                             | `internal/acp`                                        |
+| Process GC tiers      | [ACP Architecture](acp.md)                             | Multi-Tier GC, periodic suspend, memory recycle       |
+| Memory recycling      | [ACP Architecture](acp.md)                             | Tier 4 — Memory-Bloat Recycling, Configuration        |
+| Inactivity watchdog   | [ACP Architecture](acp.md)                             | Prompt Inactivity Watchdog                            |
+| Feature flags         | [Architecture](architecture.md)                        | Advanced Settings                                     |
+| Event types           | [Session Management](session-management.md)            | Event Types                                           |
+| Session settings      | [Session Management](session-management.md)            | Advanced Settings                                     |
+| Queue API             | [Message Queue](message-queue.md)                      | REST API                                              |
+| Queue titles          | [Message Queue](message-queue.md)                      | Title Generation                                      |
+| Periodic onCompletion | [Message Queue](message-queue.md)                      | Periodic Prompts: On-Completion Delivery              |
+| Periodic onTasks      | [Message Queue](message-queue.md)                      | Periodic Prompts: On-Tasks Delivery                   |
+| Prompt menus          | [Prompt Menus & Dispatch](prompts.md)                  | The `menus` routing key                               |
+| Prompt dispatch       | [Prompt Menus & Dispatch](prompts.md)                  | The two start behaviors, deferred resolution          |
+| REST endpoints        | [Web Interface](web-interface.md)                      | REST API Endpoints                                    |
+| Streaming pipeline    | [Web Interface](web-interface.md)                      | Streaming Response Handling                           |
+| WebSocket protocol    | [WebSocket Docs](websockets/protocol-spec.md)          | All message types and formats                         |
+| Sequence numbers      | [WebSocket Docs](websockets/sequence-numbers.md)       | Assignment, contract, guarantees                      |
+| Reconnection & sync   | [WebSocket Docs](websockets/synchronization.md)        | Gap detection, dedup, circuit breaker                 |
+| Communication flows   | [WebSocket Docs](websockets/communication-flows.md)    | Golden path and corner case diagrams                  |
+| Mobile support        | [WebSocket Docs](websockets/synchronization.md)        | Mobile Wake Resync, Zombie Detection                  |
+| Workspace API         | [Workspaces](workspaces.md)                            | Workspace REST API                                    |
+| Action buttons        | [Follow-up Suggestions](follow-up-suggestions.md)      | Persistence, Lifecycle                                |
+| Callback endpoints    | [Callbacks](callbacks.md)                              | Public API, Token Lifecycle, Security                 |
+| MCP debugging         | [MCP Servers](mcp.md)                                  | Global Debug Server                                   |
+| Session MCP           | [MCP Servers](mcp.md)                                  | Per-Session MCP Servers                               |
+| Settings API          | [MCP Servers](mcp.md)                                  | Advanced Settings API                                 |
+| Restricted runners    | [Restricted Runner Integration](restricted-runners.md) | Architecture, Runner Types, Config Hierarchy          |
+| Message processors    | [Message Processing Pipeline](processors.md)           | Pipeline, Processor Types, Variable Substitution      |
+| Session resume        | [Session Resume Analysis](session-resume-analysis.md)  | ACP resume support, UNSTABLE API, implementation plan |
 
 ## Additional Documentation
 

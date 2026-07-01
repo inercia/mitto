@@ -80,26 +80,26 @@ type Queue struct { ... }
 
 ### Methods
 
-| Method                                                                          | Description                                                           |
-| ------------------------------------------------------------------------------- | --------------------------------------------------------------------- |
-| `Add(message, imageIDs, fileIDs, clientID, scheduled, sz, arguments, promptName)` | Add message, returns `ErrQueueFull` if at capacity                 |
-| `List()`                                                   | Get all messages in FIFO order                                        |
-| `Get(id)`                                                  | Get specific message by ID                                            |
-| `Remove(id)`                                               | Remove specific message                                               |
-| `Pop()`                                                    | Remove and return next ready message (skips future-scheduled)         |
-| `Clear()`                                                  | Remove all messages                                                   |
-| `Len()`                                                    | Get queue length                                                      |
-| `UpdateTitle(id, title)`                                   | Update a message's title                                              |
-| `HasScheduledMessages()`                                   | Check if any scheduled messages exist                                 |
-| `NextScheduledTime()`                                      | Get earliest scheduled time of pending messages                       |
+| Method                                                                            | Description                                                   |
+| --------------------------------------------------------------------------------- | ------------------------------------------------------------- |
+| `Add(message, imageIDs, fileIDs, clientID, scheduled, sz, arguments, promptName)` | Add message, returns `ErrQueueFull` if at capacity            |
+| `List()`                                                                          | Get all messages in FIFO order                                |
+| `Get(id)`                                                                         | Get specific message by ID                                    |
+| `Remove(id)`                                                                      | Remove specific message                                       |
+| `Pop()`                                                                           | Remove and return next ready message (skips future-scheduled) |
+| `Clear()`                                                                         | Remove all messages                                           |
+| `Len()`                                                                           | Get queue length                                              |
+| `UpdateTitle(id, title)`                                                          | Update a message's title                                      |
+| `HasScheduledMessages()`                                                          | Check if any scheduled messages exist                         |
+| `NextScheduledTime()`                                                             | Get earliest scheduled time of pending messages               |
 
 ### Error Values
 
-| Error                | Condition                                                       |
-| -------------------- | --------------------------------------------------------------- |
-| `ErrQueueEmpty`      | `Pop()` on empty queue or no ready messages                     |
-| `ErrMessageNotFound` | `Get()`, `Remove()`, or `UpdateTitle()` with invalid ID         |
-| `ErrQueueFull`       | `Add()` when queue has `maxSize` messages                       |
+| Error                | Condition                                               |
+| -------------------- | ------------------------------------------------------- |
+| `ErrQueueEmpty`      | `Pop()` on empty queue or no ready messages             |
+| `ErrMessageNotFound` | `Get()`, `Remove()`, or `UpdateTitle()` with invalid ID |
+| `ErrQueueFull`       | `Add()` when queue has `maxSize` messages               |
 
 ## Scheduled Messages
 
@@ -113,6 +113,7 @@ Messages can optionally have a `ScheduledTime` that defers delivery until a futu
 ### Pop() Ordering
 
 When `Pop()` is called, it selects the next ready message:
+
 1. **First non-scheduled message** (FIFO among immediate messages)
 2. If no immediate messages, the **earliest due scheduled message** (by ScheduledTime)
 3. Returns `ErrQueueEmpty` if no messages are ready (even if future-scheduled messages exist)
@@ -177,6 +178,119 @@ sequenceDiagram
 ### Interplay with the runner and suspension
 
 The schedule-based poll loop and the on-completion timers are independent paths on the same `PeriodicRunner`. On-completion timers are armed by idle events, not the poll loop, so they are unaffected by the poll interval. A suspended periodic session (Tier-1 GC after `periodic_suspend_timeout`) has no live `BackgroundSession` to emit idle events; the on-completion loop resumes once the session is resumed. See [acp.md](acp.md) for suspension details.
+
+## Periodic Prompts: On-Tasks Delivery
+
+A periodic prompt may set `trigger: onTasks`, which fires whenever the **beads issues in the conversation's working directory change** on disk, optionally gated by a **CEL condition** so it only fires for meaningful changes (e.g. "the open bug count increased", "an issue labelled `PR opened` was created or updated"). Like `onCompletion`, this is event-driven, not clock-driven — `Frequency` is not required and is ignored.
+
+### Trigger semantics
+
+A workspace-wide `BeadsWatcher` (fsnotify on `.beads/`, debounced) calls `PeriodicRunner.OnBeadsChanged(event)` whenever a watched working directory changes. For every **enabled** `onTasks` conversation whose working directory is in `event.WorkingDirs`, the runner:
+
+1. Fetches the latest beads snapshot once per working directory (`bd list --json --all -n 0`), shared across all conversations watching that directory.
+2. Diffs it against that **conversation's own persisted baseline** (see below) using `config.DiffTasks`.
+3. Evaluates the conversation's CEL `Condition` (empty = fire on any material change).
+4. Fires via `TriggerNow` when all guards pass and the condition is true.
+
+The very first `OnBeadsChanged` call for a conversation only **captures the baseline** — it never fires (no spurious first run when `onTasks` is newly enabled or the server restarts before a baseline exists). `BootstrapTasksBaseline` performs the same capture-without-firing on enable/startup.
+
+### Condition language (CEL)
+
+Conditions are CEL expressions evaluated by `config.TasksConditionEvaluator` (`internal/config/tasks_condition.go`) against a `TasksChangeContext` with three variables:
+
+| Variable  | Shape                                                                                                                                                                   | Meaning                                      |
+| --------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------- |
+| `Tasks`   | `Open`, `Closed`, `InProgress`, `Ready`, `Blocked` (ints); `CountByType`, `CountByStatus`, `CountByLabel`, `OpenByType` (`map<string,int>`); `All` (list of issue maps) | Current snapshot (after the change)          |
+| `Prev`    | same shape as `Tasks`                                                                                                                                                   | Snapshot at the conversation's last baseline |
+| `Changes` | `Added`, `Updated`, `Removed`, `Closed`, `Reopened`, `LabelAdded`, `Touched` (= Added ∪ Updated) — all lists of issue maps                                              | The diff between `Prev` and `Tasks`          |
+
+Each issue map exposes canonical keys: `id`, `type`, `status`, `priority`, `labels`, `title`, `assignee`, `updated_at`.
+
+```
+# Open "bug" count increased
+Tasks.OpenByType["bug"] > Prev.OpenByType["bug"]
+
+# An issue labelled "PR opened" was created or updated
+Changes.Touched.exists(i, "PR opened" in i.labels)
+
+# A new P0/P1 bug appeared
+Changes.Added.exists(i, i.type == "bug" && i.priority <= 1)
+
+# Empty condition = fire on ANY beads change
+```
+
+**Native-CEL map caveat:** `Tasks`/`Prev`/`Changes` are plain CEL maps, not proto messages — indexing a key that doesn't exist (e.g. `OpenByType["bug"]` when no bug has ever existed in that snapshot) is a **runtime error**, not a zero value. Conditions that index a type/status/label must ensure the key can already be present in the baseline, or guard with `"bug" in Tasks.OpenByType`.
+
+**Fail-closed semantics:** unlike prompt `enabledWhen` (which fails open), a `Condition` that fails to compile or errors at evaluation time (including the missing-key case above) makes the trigger **not fire** — a misconfigured condition must never cause spurious unattended runs. Compile errors are also rejected synchronously on save (`session.ConditionValidator`, wired to `config.ValidateCondition`).
+
+### The diff baseline (`internal/web/tasks_baseline.go`)
+
+Each `onTasks` conversation keeps its **own** baseline file (`tasks_baseline.json`, alongside `periodic.json`) holding the raw `bd list` JSON at the time it was last considered "current" for that conversation. The baseline is **per-conversation, not per-working-directory** — several `onTasks` conversations watching the same directory each diff against their own baseline, which is what makes Layer 2 loop prevention (below) possible without any actor/attribution support from `bd`.
+
+### Loop prevention (4 layers)
+
+An `onTasks` conversation (or a child it delegates to) will usually _edit_ beads itself as part of doing its work — without safeguards this would re-trigger itself indefinitely, since its own edits show up as a fresh delta against the baseline.
+
+```mermaid
+sequenceDiagram
+    participant Watcher as BeadsWatcher
+    participant PR as PeriodicRunner
+    participant Baseline as TasksBaselineStore
+    participant CEL as TasksConditionEvaluator
+    participant Agent
+
+    Watcher->>PR: OnBeadsChanged(event)
+    PR->>PR: Layer 1 — isTasksSubtreeBusy(sessionID)?
+    alt conversation or a delegated child is busy
+        PR->>PR: armTasksRebase (quiescence timer)
+        Note over PR: event dropped for now
+    else idle
+        PR->>PR: Layer 0 — maxDuration reached? cooldown active?
+        alt guard trips
+            PR->>PR: skip (or auto-stop on maxDuration)
+        else guards pass
+            PR->>Baseline: diff(prev, curr) via DiffTasks
+            alt no baseline yet
+                PR->>Baseline: Set(curr) — capture only, no fire
+            else material delta
+                PR->>CEL: Evaluate(Condition, {Tasks, Prev, Changes})
+                alt condition true
+                    PR->>Agent: TriggerNow (fires the run)
+                    PR->>Baseline: Set(curr) — baseline advances immediately
+                    PR->>PR: Layer 3 — recordTasksFireOutcome(delta)
+                else condition false/error
+                    PR->>PR: skip (fail-closed on error)
+                end
+            end
+        end
+    end
+
+    Note over PR,Agent: run (and any delegated children) finish and go idle
+    PR->>PR: quiescence window elapses
+    PR->>Baseline: rebase to latest snapshot (Layer 2)
+    Note over Baseline: absorbs the run's own edits — they never<br/>reappear as a delta against the NEXT event
+```
+
+- **Layer 0 — hard backstops.** A per-conversation `CooldownSeconds` (clamped up to the global floor `SetMinPeriodicTasksCooldownSeconds`, default 30s) rate-limits fires regardless of the condition. `MaxIterations` and `MaxDurationSeconds` are the same caps used by every trigger; `MaxDurationSeconds` is checked (and auto-stops, mirroring `onCompletion`) before the cooldown check.
+- **Layer 1 — busy guard (temporal).** While the conversation's turn is active — **or any delegated child conversation is still running or blocked on `mitto_children_tasks_wait`** (`isTasksSubtreeBusy`) — incoming events are deferred (`armTasksRebase`), not evaluated. This is the guard against the run's OWN in-flight edits.
+- **Layer 2 — quiescence rebase (the real fix).** Once the conversation's entire delegated-child subtree goes idle, a short quiescence timer (`SetTasksQuiescenceWindow`, default 30s) fires and **rebases the baseline to the current beads snapshot**, absorbing the run's own edits into the new "current" state before the next real event is evaluated. Trade-off: an external change that lands _during_ the busy window is also absorbed and won't trigger a follow-up fire — the fired conversation can re-check state at its own startup if that matters.
+- **Layer 3 — no-progress circuit breaker.** `recordTasksFireOutcome` tracks, per conversation, the set of issue IDs touched (`Changes.Touched`) by consecutive fires. When `tasksNoProgressLimit` (3) consecutive fires touch **no issue beyond** what the previous fire already touched, the trigger auto-pauses (`periodicStore.MarkStopped(session.StoppedReasonNoProgress)`) — this catches a condition that is steady-state-true (e.g. a threshold that baseline-rebase alone cannot silence) before it can hot-loop.
+
+**Out of scope:** actor-based delta filtering (skipping only _other actors'_ edits) was investigated and explicitly deferred — `internal/beads/cli.go` does not stamp a per-change actor, and `bd list --json` exposes only `created_by`/`owner`, not a last-touched actor. The baseline-rebase approach (Layer 2) makes this unnecessary for correctness today.
+
+### Configuration fields (`session.PeriodicPrompt`)
+
+| Field             | JSON               | Meaning                                                                                                           |
+| ----------------- | ------------------ | ----------------------------------------------------------------------------------------------------------------- |
+| `Trigger`         | `trigger`          | `"onTasks"`                                                                                                       |
+| `Condition`       | `condition`        | CEL expression; empty = fire on any material beads change                                                         |
+| `ConditionPreset` | `condition_preset` | Optional UI preset id that was compiled into `Condition`                                                          |
+| `CooldownSeconds` | `cooldown_seconds` | Per-conversation cooldown floor; `0` = use the global floor                                                       |
+| `StoppedReason`   | `stopped_reason`   | `"noProgress"` when Layer 3 auto-paused the loop (also `maxIterations`/`maxDuration`, shared with other triggers) |
+
+### Testing
+
+`internal/config/tasks_condition_test.go` unit-tests snapshot parsing, diffing, and CEL evaluation (including the fail-closed cases). `internal/web/periodic_runner_test.go` unit-tests the guard/decision logic (`evaluateTasksChange`) and each loop-prevention layer in isolation. `tests/integration/inprocess/periodic_ontasks_e2e_test.go` drives the full stack end-to-end against the mock ACP server — CEL-gated firing, the busy-guard + quiescence-rebase interaction, the cooldown floor, the no-progress circuit breaker, and `MaxIterations`/`MaxDurationSeconds` auto-stop — by calling `PeriodicRunner.OnBeadsChanged` directly with a fake `beads.Client` standing in for `bd list` (the `BeadsWatcher` itself is out of scope for that test and is unit-tested separately).
 
 ## Title Generation
 
@@ -244,12 +358,12 @@ Queue items can carry a **prompt name** (+ optional substitution arguments) inst
 
 ### Key properties
 
-| Property | Behavior |
-|----------|----------|
-| `prompt_name` | Name of the workspace prompt to send; resolved at dispatch |
-| `arguments` | Go-template argument values applied at dispatch time via `{{ .Args.NAME }}` / `{{ Arg "NAME" "default" }}` |
-| `message` | Empty string for named-prompt items |
-| Title generation | **Skipped** — the prompt name itself serves as the label in the queue UI |
+| Property         | Behavior                                                                                                   |
+| ---------------- | ---------------------------------------------------------------------------------------------------------- |
+| `prompt_name`    | Name of the workspace prompt to send; resolved at dispatch                                                 |
+| `arguments`      | Go-template argument values applied at dispatch time via `{{ .Args.NAME }}` / `{{ Arg "NAME" "default" }}` |
+| `message`        | Empty string for named-prompt items                                                                        |
+| Title generation | **Skipped** — the prompt name itself serves as the label in the queue UI                                   |
 
 ### Why resolution happens at dispatch
 
@@ -259,25 +373,35 @@ Resolution is deferred to the target conversation's context so that workspace-sp
 
 All menu-driven prompt sends (prompts menu, Cmd+/ slash picker, beads-issue menus, beads-list menus) go through a **single shared helper** — never POST the full prompt body directly:
 
-| Export | Purpose |
-|--------|---------|
-| `buildSeedQueueBody(prompt, {arguments})` | Builds `{prompt_name, arguments}` POST body (never includes `message`) |
-| `seedConversationWithPrompt(sessionId, prompt, {arguments})` | POST `{prompt_name}` to an existing session's queue |
-| `startConversationWithPrompt({workingDir, acpServer, name, beadsIssue, prompt, arguments, periodic})` | Create a new conversation (one-time or periodic — see below) |
-| `configurePeriodicSchedule(sessionId, prompt, periodic, {fetchImpl})` | PUT periodic config onto an already-created session |
+| Export                                                                                                | Purpose                                                                |
+| ----------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------- |
+| `buildSeedQueueBody(prompt, {arguments})`                                                             | Builds `{prompt_name, arguments}` POST body (never includes `message`) |
+| `seedConversationWithPrompt(sessionId, prompt, {arguments})`                                          | POST `{prompt_name}` to an existing session's queue                    |
+| `startConversationWithPrompt({workingDir, acpServer, name, beadsIssue, prompt, arguments, periodic})` | Create a new conversation (one-time or periodic — see below)           |
+| `configurePeriodicSchedule(sessionId, prompt, periodic, {fetchImpl})`                                 | PUT periodic config onto an already-created session                    |
 
 #### One-time path (no `periodic`)
 
 When `periodic` is absent, `startConversationWithPrompt` posts `initial_prompt_name` + `arguments` to `POST /api/sessions` — the backend seeds the queue atomically:
 
 ```javascript
-const { seedConversationWithPrompt, startConversationWithPrompt } = useConversationSeeding({ newSession });
+const { seedConversationWithPrompt, startConversationWithPrompt } =
+  useConversationSeeding({ newSession });
 
 // Seed an existing conversation
-await seedConversationWithPrompt(sessionId, { name: "Review Code" }, { arguments: { ISSUE_ID: "mitto-42" } });
+await seedConversationWithPrompt(
+  sessionId,
+  { name: "Review Code" },
+  { arguments: { ISSUE_ID: "mitto-42" } },
+);
 
 // Create a new conversation and seed it atomically (one-time)
-await startConversationWithPrompt({ workingDir, acpServer, prompt: { name: "Review Code" }, arguments: { ISSUE_ID: "mitto-42" } });
+await startConversationWithPrompt({
+  workingDir,
+  acpServer,
+  prompt: { name: "Review Code" },
+  arguments: { ISSUE_ID: "mitto-42" },
+});
 ```
 
 #### Periodic path (`periodic` present)
@@ -287,7 +411,11 @@ When `periodic: { value, unit, at? }` is provided, `startConversationWithPrompt`
 1. Creates the session via `POST /api/sessions` **without** `initial_prompt_name` (no one-time queue seed).
 2. Calls `configurePeriodicSchedule` which PUTs `/api/sessions/{id}/periodic` with:
    ```json
-   { "prompt_name": "...", "frequency": { "value": 1, "unit": "hours" }, "enabled": true }
+   {
+     "prompt_name": "...",
+     "frequency": { "value": 1, "unit": "hours" },
+     "enabled": true
+   }
    ```
    The `at` field (HH:MM UTC) is included only when `unit === "days"`.
 3. Returns `{ sessionId }` on success, or `{ error }` if the PUT fails (session already created — error is surfaced to the caller).
