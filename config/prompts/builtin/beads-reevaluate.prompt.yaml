@@ -6,11 +6,6 @@ backgroundColor: '#FFCC80'
 group: Tasks
 singleton: true
 enabledWhen: CommandExists("bd") && DirExists(".beads")
-periodic:
-  mode: optional
-  default: false
-  trigger: onCompletion
-  delay: 60
 prompt: |
   ## Session Context
 

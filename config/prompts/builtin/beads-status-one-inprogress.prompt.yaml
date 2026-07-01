@@ -10,11 +10,6 @@ preferredModels:
   - "*flash*"
   - "*gpt-4o*"
   - "*gpt-4.1*"
-periodic:
-  mode: optional
-  default: false
-  trigger: onCompletion
-  delay: 60
 prompt: |
   # Beads: Status Check — One In-Progress Bead
 
