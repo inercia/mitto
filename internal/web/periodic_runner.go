@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/inercia/mitto/internal/beads"
 	"github.com/inercia/mitto/internal/config"
 	"github.com/inercia/mitto/internal/conversation"
 	"github.com/inercia/mitto/internal/session"
@@ -162,6 +163,41 @@ type PeriodicRunner struct {
 	completionTimers   map[string]*time.Timer
 	completionTimersMu sync.Mutex
 
+	// beadsClient lists beads issues for onTasks condition evaluation. Lazily
+	// defaulted to beads.NewClient() on first use; tests inject a fake via
+	// SetBeadsClient.
+	beadsClient   beads.Client
+	beadsClientMu sync.Mutex
+
+	// tasksEvaluator compiles and evaluates onTasks CEL conditions. Built once at
+	// construction; nil if the CEL environment failed to initialize, in which case
+	// OnBeadsChanged is a no-op (fail-closed).
+	tasksEvaluator *config.TasksConditionEvaluator
+
+	// minTasksCooldownSeconds is the global floor (seconds) for the onTasks
+	// trigger's cooldown between fires, preventing hot loops from rapid beads
+	// churn. Mirrors minCompletionDelaySeconds for onCompletion.
+	minTasksCooldownSeconds int
+
+	// tasksQuiescenceWindow is how long the onTasks loop waits, after a
+	// conversation (and its whole child subtree) goes idle, before rebasing the
+	// per-conversation baseline (Layer 2 loop prevention).
+	tasksQuiescenceWindow time.Duration
+
+	// tasksRebaseTimers holds armed one-shot timers that rebase the onTasks
+	// baseline once a busy conversation's subtree goes idle and the quiescence
+	// window elapses, keyed by session ID.
+	tasksRebaseTimers   map[string]*time.Timer
+	tasksRebaseTimersMu sync.Mutex
+
+	// tasksNoProgressCount and tasksLastTouchedIDs track, per session, the
+	// consecutive-no-progress circuit breaker (Layer 3): tasksLastTouchedIDs
+	// holds the set of issue IDs touched by the previous fire so the next fire
+	// can detect whether it touched anything genuinely new.
+	tasksNoProgressCount map[string]int
+	tasksLastTouchedIDs  map[string]map[string]struct{}
+	tasksNoProgressMu    sync.Mutex
+
 	mu      sync.Mutex
 	running bool
 	stopCh  chan struct{}
@@ -170,6 +206,13 @@ type PeriodicRunner struct {
 
 // NewPeriodicRunner creates a new periodic runner.
 func NewPeriodicRunner(store *session.Store, sm *conversation.SessionManager, logger *slog.Logger) *PeriodicRunner {
+	evaluator, err := config.NewTasksConditionEvaluator()
+	if err != nil {
+		evaluator = nil
+		if logger != nil {
+			logger.Warn("Failed to initialize onTasks CEL evaluator; onTasks trigger will be inactive", "error", err)
+		}
+	}
 	return &PeriodicRunner{
 		store:                     store,
 		sessionManager:            sm,
@@ -181,6 +224,12 @@ func NewPeriodicRunner(store *session.Store, sm *conversation.SessionManager, lo
 		promptResolveFailures:     make(map[string]int),
 		scheduleBackoffFailures:   make(map[string]int),
 		completionTimers:          make(map[string]*time.Timer),
+		tasksEvaluator:            evaluator,
+		minTasksCooldownSeconds:   DefaultMinPeriodicTasksCooldownSeconds,
+		tasksQuiescenceWindow:     tasksDefaultQuiescenceWindow,
+		tasksRebaseTimers:         make(map[string]*time.Timer),
+		tasksNoProgressCount:      make(map[string]int),
+		tasksLastTouchedIDs:       make(map[string]map[string]struct{}),
 	}
 }
 
@@ -312,6 +361,14 @@ func (r *PeriodicRunner) Stop() {
 		delete(r.completionTimers, id)
 	}
 	r.completionTimersMu.Unlock()
+
+	// Cancel any pending onTasks baseline-rebase timers so they don't fire after shutdown.
+	r.tasksRebaseTimersMu.Lock()
+	for id, t := range r.tasksRebaseTimers {
+		t.Stop()
+		delete(r.tasksRebaseTimers, id)
+	}
+	r.tasksRebaseTimersMu.Unlock()
 
 	// Wait for the poll loop to finish
 	<-doneCh
@@ -924,6 +981,15 @@ func (r *PeriodicRunner) checkSession(meta session.Metadata, now time.Time) (del
 		// re-arm was missed (e.g. around an ACP resume or a heavy children-wait
 		// turn that did not register as a clean idle transition). See mitto-5dn.
 		r.recoverStalledOnCompletion(meta, periodic)
+		return 0, 0, 0
+	}
+
+	// onTasks configs are event-driven (fired from OnBeadsChanged) and never have
+	// a NextScheduledAt either. Bootstrap the baseline here so a crash/restart
+	// before the baseline was ever captured does not cause a spurious first fire
+	// the next time beads change (mitto-oja.2).
+	if periodic.IsOnTasks() {
+		r.BootstrapTasksBaseline(sessionID)
 		return 0, 0, 0
 	}
 

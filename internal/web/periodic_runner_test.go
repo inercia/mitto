@@ -6,9 +6,11 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/inercia/mitto/internal/beads"
 	"github.com/inercia/mitto/internal/config"
 	"github.com/inercia/mitto/internal/conversation"
 	"github.com/inercia/mitto/internal/fileutil"
@@ -753,7 +755,7 @@ func TestPeriodicRunner_ConfigCapAutoStop(t *testing.T) {
 	})
 
 	disabled := false
-	if err := periodicStore.Update(nil, nil, nil, &disabled, nil, nil, nil, nil, nil, nil); err != nil {
+	if err := periodicStore.Update(nil, nil, nil, &disabled, nil, nil, nil, nil, nil, nil, nil, nil, nil); err != nil {
 		t.Fatalf("periodicStore.Update(disable) error = %v", err)
 	}
 
@@ -2511,5 +2513,811 @@ func TestPeriodicScheduleBackoff_MonotonicAndCapped(t *testing.T) {
 			t.Errorf("backoff exceeded cap: failures=%d got=%v cap=%v", f, got, periodicScheduleBackoffCap)
 		}
 		prev = got
+	}
+}
+
+// =============================================================================
+// onTasks trigger tests (mitto-oja.2)
+// =============================================================================
+
+// fakeTasksBeadsClient is a minimal beads.Client fake for onTasks tests. List
+// returns listFn(dir) when set, otherwise an empty array. onTasks code only
+// ever calls List; every other method is a no-op stub to satisfy the interface.
+type fakeTasksBeadsClient struct {
+	listFn func(dir string) ([]byte, error)
+
+	mu        sync.Mutex
+	listCalls []string
+}
+
+func (c *fakeTasksBeadsClient) List(_ context.Context, dir string) ([]byte, error) {
+	c.mu.Lock()
+	c.listCalls = append(c.listCalls, dir)
+	c.mu.Unlock()
+	if c.listFn != nil {
+		return c.listFn(dir)
+	}
+	return []byte(`[]`), nil
+}
+
+func (c *fakeTasksBeadsClient) listCallCount() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return len(c.listCalls)
+}
+
+func (c *fakeTasksBeadsClient) Status(context.Context, string) ([]byte, error) {
+	return []byte(`{}`), nil
+}
+func (c *fakeTasksBeadsClient) Show(context.Context, string, string) ([]byte, error) {
+	return []byte(`{}`), nil
+}
+func (c *fakeTasksBeadsClient) Create(context.Context, string, beads.CreateParams) ([]byte, error) {
+	return []byte(`{}`), nil
+}
+func (c *fakeTasksBeadsClient) Delete(context.Context, string, string) error { return nil }
+func (c *fakeTasksBeadsClient) ListClosedIDs(context.Context, string) ([]string, error) {
+	return nil, nil
+}
+func (c *fakeTasksBeadsClient) DeleteIDs(context.Context, string, []string) error       { return nil }
+func (c *fakeTasksBeadsClient) SetStatus(context.Context, string, string, string) error { return nil }
+func (c *fakeTasksBeadsClient) Update(context.Context, string, beads.UpdateParams) error {
+	return nil
+}
+func (c *fakeTasksBeadsClient) Comment(context.Context, string, string, string) error { return nil }
+func (c *fakeTasksBeadsClient) Dep(context.Context, string, beads.DepParams) error    { return nil }
+func (c *fakeTasksBeadsClient) ConfigShow(context.Context, string) (map[string]string, error) {
+	return nil, nil
+}
+func (c *fakeTasksBeadsClient) ConfigSet(context.Context, string, string, string) error { return nil }
+func (c *fakeTasksBeadsClient) ConfigUnset(context.Context, string, string) error       { return nil }
+func (c *fakeTasksBeadsClient) EnsureInitialized(context.Context, string) error         { return nil }
+func (c *fakeTasksBeadsClient) Sync(context.Context, string, string, string) (string, error) {
+	return "", nil
+}
+
+// newOnTasksSession creates a session with an enabled onTasks periodic prompt
+// configured with the given working dir and CEL condition (empty = fire on any change).
+func newOnTasksSession(t *testing.T, store *session.Store, sessionID, workingDir, condition string) *session.PeriodicStore {
+	t.Helper()
+	meta := session.Metadata{SessionID: sessionID, ACPServer: "test", WorkingDir: workingDir}
+	if err := store.Create(meta); err != nil {
+		t.Fatalf("store.Create() error = %v", err)
+	}
+	if err := store.Periodic(sessionID).Set(&session.PeriodicPrompt{
+		Prompt:    "iterate",
+		Enabled:   true,
+		Trigger:   session.TriggerOnTasks,
+		Condition: condition,
+	}); err != nil {
+		t.Fatalf("periodicStore.Set() error = %v", err)
+	}
+	return store.Periodic(sessionID)
+}
+
+func TestTasksDeltaIsMaterial(t *testing.T) {
+	if tasksDeltaIsMaterial(nil) {
+		t.Error("nil delta should not be material")
+	}
+	if tasksDeltaIsMaterial(&config.TasksDelta{}) {
+		t.Error("empty delta should not be material")
+	}
+	if !tasksDeltaIsMaterial(&config.TasksDelta{Added: []map[string]any{{"id": "a"}}}) {
+		t.Error("delta with Added should be material")
+	}
+	if !tasksDeltaIsMaterial(&config.TasksDelta{Updated: []map[string]any{{"id": "a"}}}) {
+		t.Error("delta with Updated should be material")
+	}
+	if !tasksDeltaIsMaterial(&config.TasksDelta{Removed: []map[string]any{{"id": "a"}}}) {
+		t.Error("delta with Removed should be material")
+	}
+}
+
+func TestTasksTouchedIDsAndSubset(t *testing.T) {
+	delta := &config.TasksDelta{Touched: []map[string]any{{"id": "a"}, {"id": "b"}, {"not-id": "x"}}}
+	ids := tasksTouchedIDs(delta)
+	if len(ids) != 2 {
+		t.Fatalf("tasksTouchedIDs() = %v, want 2 entries", ids)
+	}
+	if _, ok := ids["a"]; !ok {
+		t.Error("expected id 'a' in touched set")
+	}
+
+	// curr is a subset of prev => no progress.
+	prev := map[string]struct{}{"a": {}, "b": {}, "c": {}}
+	if !tasksIsSubsetOf(ids, prev) {
+		t.Error("curr should be a subset of prev")
+	}
+	// curr has something new => progress.
+	curr2 := map[string]struct{}{"a": {}, "new-id": {}}
+	if tasksIsSubsetOf(curr2, prev) {
+		t.Error("curr2 contains a new id, should not be a subset of prev")
+	}
+	// empty curr is trivially a subset.
+	if !tasksIsSubsetOf(map[string]struct{}{}, prev) {
+		t.Error("empty curr should be a trivial subset")
+	}
+}
+
+func TestPeriodicRunner_TasksCooldownActive(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	runner := NewPeriodicRunner(store, nil, nil)
+	runner.SetMinPeriodicTasksCooldownSeconds(60)
+
+	// Never sent — never on cooldown.
+	p := &session.PeriodicPrompt{Trigger: session.TriggerOnTasks}
+	if runner.tasksCooldownActive(p) {
+		t.Error("never-sent prompt should not be on cooldown")
+	}
+
+	// Sent 1s ago, floor 60s => active.
+	recently := time.Now().Add(-1 * time.Second)
+	p.LastSentAt = &recently
+	if !runner.tasksCooldownActive(p) {
+		t.Error("prompt sent 1s ago with a 60s floor should be on cooldown")
+	}
+
+	// Sent 2 minutes ago, floor 60s => not active.
+	longAgo := time.Now().Add(-2 * time.Minute)
+	p.LastSentAt = &longAgo
+	if runner.tasksCooldownActive(p) {
+		t.Error("prompt sent 2 minutes ago with a 60s floor should not be on cooldown")
+	}
+
+	// Per-conversation CooldownSeconds overrides the floor when larger.
+	p.CooldownSeconds = 300
+	recent := time.Now().Add(-90 * time.Second)
+	p.LastSentAt = &recent
+	if !runner.tasksCooldownActive(p) {
+		t.Error("per-conversation cooldown of 300s should still be active after 90s")
+	}
+}
+
+func TestPeriodicRunner_IsTasksSubtreeBusy(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	if err := store.Create(session.Metadata{SessionID: "parent", ACPServer: "test", WorkingDir: "/tmp"}); err != nil {
+		t.Fatalf("Create(parent) error = %v", err)
+	}
+	if err := store.Create(session.Metadata{SessionID: "child", ACPServer: "test", WorkingDir: "/tmp", ParentSessionID: "parent"}); err != nil {
+		t.Fatalf("Create(child) error = %v", err)
+	}
+
+	sm := conversation.NewSessionManagerWithOptions(conversation.SessionManagerOptions{})
+	runner := NewPeriodicRunner(store, sm, nil)
+
+	// No sessions registered, nothing waiting => idle.
+	if runner.isTasksSubtreeBusy("parent") {
+		t.Error("subtree should be idle with no registered sessions")
+	}
+
+	// Parent itself prompting => busy.
+	sm.AddSessionForTest(conversation.NewMinimalBackgroundSessionPrompting("parent", true))
+	if !runner.isTasksSubtreeBusy("parent") {
+		t.Error("subtree should be busy when the parent itself is prompting")
+	}
+
+	// Parent idle again, but child is prompting => still busy (delegated child).
+	sm.AddSessionForTest(conversation.NewMinimalBackgroundSessionPrompting("parent", false))
+	sm.AddSessionForTest(conversation.NewMinimalBackgroundSessionPrompting("child", true))
+	if !runner.isTasksSubtreeBusy("parent") {
+		t.Error("subtree should be busy when a delegated child is prompting")
+	}
+
+	// Both idle, but parent waiting for children => busy.
+	sm.AddSessionForTest(conversation.NewMinimalBackgroundSessionPrompting("child", false))
+	sm.BroadcastWaitingForChildren("parent", true)
+	if !runner.isTasksSubtreeBusy("parent") {
+		t.Error("subtree should be busy while waiting for children")
+	}
+	sm.BroadcastWaitingForChildren("parent", false)
+
+	// Now fully idle.
+	if runner.isTasksSubtreeBusy("parent") {
+		t.Error("subtree should be idle once parent and child are both idle and not waiting")
+	}
+}
+
+// beadsRow is a small helper to build a raw `bd list` JSON row for tests.
+func beadsRow(id, status, updatedAt string) map[string]any {
+	return map[string]any{"id": id, "type": "task", "status": status, "title": id, "updated_at": updatedAt}
+}
+
+func mustMarshalRows(t *testing.T, rows ...map[string]any) []byte {
+	t.Helper()
+	data, err := json.Marshal(rows)
+	if err != nil {
+		t.Fatalf("json.Marshal() error = %v", err)
+	}
+	return data
+}
+
+// jsonBytesEqual reports whether a and b are semantically equal JSON documents,
+// ignoring formatting differences (fileutil.WriteJSONAtomic always re-indents,
+// including any embedded json.RawMessage, so byte-for-byte comparison is unsafe).
+func jsonBytesEqual(t *testing.T, a, b []byte) bool {
+	t.Helper()
+	var va, vb any
+	if err := json.Unmarshal(a, &va); err != nil {
+		t.Fatalf("json.Unmarshal(a) error = %v", err)
+	}
+	if err := json.Unmarshal(b, &vb); err != nil {
+		t.Fatalf("json.Unmarshal(b) error = %v", err)
+	}
+	ja, _ := json.Marshal(va)
+	jb, _ := json.Marshal(vb)
+	return string(ja) == string(jb)
+}
+
+func TestPeriodicRunner_EvaluateTasksChange_InitializesBaselineWithoutFiring(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	newOnTasksSession(t, store, "s1", "/proj", "")
+	runner := NewPeriodicRunner(store, nil, nil)
+
+	meta, _ := store.GetMetadata("s1")
+	periodic, _ := store.Periodic("s1").Get()
+	raw := mustMarshalRows(t, beadsRow("mitto-1", "open", "2026-01-01T00:00:00Z"))
+
+	decision := runner.evaluateTasksChange(meta, periodic, raw)
+	if decision.action != tasksActionInitBaseline {
+		t.Fatalf("action = %v, want tasksActionInitBaseline", decision.action)
+	}
+
+	// Baseline must not exist yet until processTasksChange (or the caller) persists it.
+	if _, err := NewTasksBaselineStore(store.SessionDir("s1")).Get(); !errors.Is(err, ErrTasksBaselineNotFound) {
+		t.Errorf("baseline should not exist before being persisted, got err = %v", err)
+	}
+
+	// Driving it through processTasksChange persists the baseline and does NOT fire
+	// (no session manager is configured, so a firing attempt would be observable
+	// only via baseline movement, which must not happen here).
+	runner.processTasksChange(meta, periodic, store.Periodic("s1"), raw)
+	baseline, err := NewTasksBaselineStore(store.SessionDir("s1")).Get()
+	if err != nil {
+		t.Fatalf("baseline should exist after processTasksChange, error = %v", err)
+	}
+	if !jsonBytesEqual(t, baseline.RawSnapshot, raw) {
+		t.Errorf("baseline.RawSnapshot = %s, want %s", baseline.RawSnapshot, raw)
+	}
+}
+
+func TestPeriodicRunner_EvaluateTasksChange_NoMaterialChange_Skip(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	newOnTasksSession(t, store, "s1", "/proj", "")
+	runner := NewPeriodicRunner(store, nil, nil)
+
+	raw := mustMarshalRows(t, beadsRow("mitto-1", "open", "2026-01-01T00:00:00Z"))
+	if err := NewTasksBaselineStore(store.SessionDir("s1")).Set(raw); err != nil {
+		t.Fatalf("Set() baseline error = %v", err)
+	}
+
+	meta, _ := store.GetMetadata("s1")
+	periodic, _ := store.Periodic("s1").Get()
+
+	// Identical snapshot — no material change.
+	decision := runner.evaluateTasksChange(meta, periodic, raw)
+	if decision.action != tasksActionSkip {
+		t.Errorf("action = %v, want tasksActionSkip for an unchanged snapshot", decision.action)
+	}
+}
+
+func TestPeriodicRunner_EvaluateTasksChange_EmptyConditionFiresOnAnyChange(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	newOnTasksSession(t, store, "s1", "/proj", "")
+	runner := NewPeriodicRunner(store, nil, nil)
+
+	rawBefore := mustMarshalRows(t, beadsRow("mitto-1", "open", "2026-01-01T00:00:00Z"))
+	if err := NewTasksBaselineStore(store.SessionDir("s1")).Set(rawBefore); err != nil {
+		t.Fatalf("Set() baseline error = %v", err)
+	}
+	rawAfter := mustMarshalRows(t, beadsRow("mitto-1", "closed", "2026-01-02T00:00:00Z"))
+
+	meta, _ := store.GetMetadata("s1")
+	periodic, _ := store.Periodic("s1").Get()
+
+	decision := runner.evaluateTasksChange(meta, periodic, rawAfter)
+	if decision.action != tasksActionFire {
+		t.Fatalf("action = %v, want tasksActionFire for an empty condition with a material change", decision.action)
+	}
+	if len(decision.delta.Closed) != 1 {
+		t.Errorf("delta.Closed = %v, want 1 closed issue", decision.delta.Closed)
+	}
+}
+
+func TestPeriodicRunner_EvaluateTasksChange_ConditionFalse_Skip(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	// Condition only fires when an issue is closed; here we only add a new open one.
+	newOnTasksSession(t, store, "s1", "/proj", "Changes.Closed.size() > 0")
+	runner := NewPeriodicRunner(store, nil, nil)
+
+	rawBefore := mustMarshalRows(t, beadsRow("mitto-1", "open", "2026-01-01T00:00:00Z"))
+	if err := NewTasksBaselineStore(store.SessionDir("s1")).Set(rawBefore); err != nil {
+		t.Fatalf("Set() baseline error = %v", err)
+	}
+	rawAfter := mustMarshalRows(t,
+		beadsRow("mitto-1", "open", "2026-01-01T00:00:00Z"),
+		beadsRow("mitto-2", "open", "2026-01-02T00:00:00Z"))
+
+	meta, _ := store.GetMetadata("s1")
+	periodic, _ := store.Periodic("s1").Get()
+
+	decision := runner.evaluateTasksChange(meta, periodic, rawAfter)
+	if decision.action != tasksActionSkip {
+		t.Fatalf("action = %v, want tasksActionSkip when the condition evaluates false", decision.action)
+	}
+}
+
+func TestPeriodicRunner_EvaluateTasksChange_ConditionTrue_Fires(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	newOnTasksSession(t, store, "s1", "/proj", "Changes.Closed.size() > 0")
+	runner := NewPeriodicRunner(store, nil, nil)
+
+	rawBefore := mustMarshalRows(t, beadsRow("mitto-1", "open", "2026-01-01T00:00:00Z"))
+	if err := NewTasksBaselineStore(store.SessionDir("s1")).Set(rawBefore); err != nil {
+		t.Fatalf("Set() baseline error = %v", err)
+	}
+	rawAfter := mustMarshalRows(t, beadsRow("mitto-1", "closed", "2026-01-02T00:00:00Z"))
+
+	meta, _ := store.GetMetadata("s1")
+	periodic, _ := store.Periodic("s1").Get()
+
+	decision := runner.evaluateTasksChange(meta, periodic, rawAfter)
+	if decision.action != tasksActionFire {
+		t.Fatalf("action = %v, want tasksActionFire when the condition evaluates true", decision.action)
+	}
+}
+
+func TestPeriodicRunner_EvaluateTasksChange_InvalidCondition_FailClosed(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	// Bypass session.Validate (which would reject this) to exercise the
+	// runtime fail-closed path directly: a condition that compiles but does
+	// not evaluate to a bool.
+	newOnTasksSession(t, store, "s1", "/proj", "")
+	if err := writeTestPeriodicFile(filepath.Join(store.SessionDir("s1"), "periodic.json"), &session.PeriodicPrompt{
+		Prompt:    "iterate",
+		Enabled:   true,
+		Trigger:   session.TriggerOnTasks,
+		Condition: "Changes.Touched.size()", // not a bool
+	}); err != nil {
+		t.Fatalf("writeTestPeriodicFile() error = %v", err)
+	}
+
+	runner := NewPeriodicRunner(store, nil, nil)
+
+	rawBefore := mustMarshalRows(t, beadsRow("mitto-1", "open", "2026-01-01T00:00:00Z"))
+	if err := NewTasksBaselineStore(store.SessionDir("s1")).Set(rawBefore); err != nil {
+		t.Fatalf("Set() baseline error = %v", err)
+	}
+	rawAfter := mustMarshalRows(t, beadsRow("mitto-1", "closed", "2026-01-02T00:00:00Z"))
+
+	meta, _ := store.GetMetadata("s1")
+	periodic, _ := store.Periodic("s1").Get()
+
+	decision := runner.evaluateTasksChange(meta, periodic, rawAfter)
+	if decision.action != tasksActionSkip {
+		t.Fatalf("action = %v, want tasksActionSkip (fail-closed) for a non-bool condition result", decision.action)
+	}
+}
+
+func TestPeriodicRunner_EvaluateTasksChange_BusySubtree_DefersRebase(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	newOnTasksSession(t, store, "s1", "/proj", "")
+
+	sm := conversation.NewSessionManagerWithOptions(conversation.SessionManagerOptions{})
+	sm.AddSessionForTest(conversation.NewMinimalBackgroundSessionPrompting("s1", true))
+	runner := NewPeriodicRunner(store, sm, nil)
+
+	rawBefore := mustMarshalRows(t, beadsRow("mitto-1", "open", "2026-01-01T00:00:00Z"))
+	if err := NewTasksBaselineStore(store.SessionDir("s1")).Set(rawBefore); err != nil {
+		t.Fatalf("Set() baseline error = %v", err)
+	}
+	rawAfter := mustMarshalRows(t, beadsRow("mitto-1", "closed", "2026-01-02T00:00:00Z"))
+
+	meta, _ := store.GetMetadata("s1")
+	periodic, _ := store.Periodic("s1").Get()
+
+	decision := runner.evaluateTasksChange(meta, periodic, rawAfter)
+	if decision.action != tasksActionDeferBusy {
+		t.Fatalf("action = %v, want tasksActionDeferBusy while the session is prompting", decision.action)
+	}
+
+	// Driving it through processTasksChange must arm a rebase timer and leave
+	// the baseline untouched (the change must be absorbed later, not fired on now).
+	runner.processTasksChange(meta, periodic, store.Periodic("s1"), rawAfter)
+	if got := countTasksRebaseTimers(runner); got != 1 {
+		t.Errorf("tasksRebaseTimers = %d, want 1 after a busy-subtree event", got)
+	}
+	baseline, err := NewTasksBaselineStore(store.SessionDir("s1")).Get()
+	if err != nil {
+		t.Fatalf("Get() baseline error = %v", err)
+	}
+	if !jsonBytesEqual(t, baseline.RawSnapshot, rawBefore) {
+		t.Error("baseline must remain unchanged while the subtree is busy")
+	}
+	runner.cancelTasksRebaseTimerForTest("s1")
+}
+
+func TestPeriodicRunner_EvaluateTasksChange_MaxDurationReached_Skip(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	ps := newOnTasksSession(t, store, "s1", "/proj", "")
+	firstRun := time.Now().Add(-2 * time.Hour)
+	if err := writeTestPeriodicFile(filepath.Join(store.SessionDir("s1"), "periodic.json"), &session.PeriodicPrompt{
+		Prompt:             "iterate",
+		Enabled:            true,
+		Trigger:            session.TriggerOnTasks,
+		MaxDurationSeconds: 3600,
+		FirstRunAt:         &firstRun,
+	}); err != nil {
+		t.Fatalf("writeTestPeriodicFile() error = %v", err)
+	}
+
+	runner := NewPeriodicRunner(store, nil, nil)
+	rawBefore := mustMarshalRows(t, beadsRow("mitto-1", "open", "2026-01-01T00:00:00Z"))
+	if err := NewTasksBaselineStore(store.SessionDir("s1")).Set(rawBefore); err != nil {
+		t.Fatalf("Set() baseline error = %v", err)
+	}
+	rawAfter := mustMarshalRows(t, beadsRow("mitto-1", "closed", "2026-01-02T00:00:00Z"))
+
+	meta, _ := store.GetMetadata("s1")
+	periodic, err := ps.Get()
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+
+	decision := runner.evaluateTasksChange(meta, periodic, rawAfter)
+	if decision.action != tasksActionSkip {
+		t.Fatalf("action = %v, want tasksActionSkip once maxDuration is reached", decision.action)
+	}
+
+	// The conversation must have been auto-stopped.
+	got, err := ps.Get()
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	if got.Enabled {
+		t.Error("periodic should be disabled after reaching max duration")
+	}
+	if got.StoppedReason != session.StoppedReasonMaxDuration {
+		t.Errorf("StoppedReason = %q, want %q", got.StoppedReason, session.StoppedReasonMaxDuration)
+	}
+}
+
+// countTasksRebaseTimers returns the number of armed onTasks rebase timers.
+func countTasksRebaseTimers(r *PeriodicRunner) int {
+	r.tasksRebaseTimersMu.Lock()
+	defer r.tasksRebaseTimersMu.Unlock()
+	return len(r.tasksRebaseTimers)
+}
+
+// cancelTasksRebaseTimerForTest stops and removes a pending rebase timer so
+// tests don't leak background timers.
+func (r *PeriodicRunner) cancelTasksRebaseTimerForTest(sessionID string) {
+	r.tasksRebaseTimersMu.Lock()
+	defer r.tasksRebaseTimersMu.Unlock()
+	if existing, ok := r.tasksRebaseTimers[sessionID]; ok {
+		existing.Stop()
+		delete(r.tasksRebaseTimers, sessionID)
+	}
+}
+
+func TestPeriodicRunner_FireTasksRebase_RebasesWhenIdle(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	ps := newOnTasksSession(t, store, "s1", "/proj", "")
+	rawBefore := mustMarshalRows(t, beadsRow("mitto-1", "open", "2026-01-01T00:00:00Z"))
+	if err := NewTasksBaselineStore(store.SessionDir("s1")).Set(rawBefore); err != nil {
+		t.Fatalf("Set() baseline error = %v", err)
+	}
+
+	sm := conversation.NewSessionManagerWithOptions(conversation.SessionManagerOptions{})
+	runner := NewPeriodicRunner(store, sm, nil)
+	rawNow := mustMarshalRows(t, beadsRow("mitto-1", "closed", "2026-01-02T00:00:00Z"))
+	fake := &fakeTasksBeadsClient{listFn: func(string) ([]byte, error) { return rawNow, nil }}
+	runner.SetBeadsClient(fake)
+
+	// Idle subtree — the rebase should pick up the latest snapshot, absorbing
+	// the change without firing.
+	runner.fireTasksRebase("s1", ps)
+
+	baseline, err := NewTasksBaselineStore(store.SessionDir("s1")).Get()
+	if err != nil {
+		t.Fatalf("Get() baseline error = %v", err)
+	}
+	if !jsonBytesEqual(t, baseline.RawSnapshot, rawNow) {
+		t.Errorf("baseline.RawSnapshot = %s, want %s", baseline.RawSnapshot, rawNow)
+	}
+	if got := countTasksRebaseTimers(runner); got != 0 {
+		t.Errorf("tasksRebaseTimers = %d, want 0 after a successful rebase", got)
+	}
+}
+
+func TestPeriodicRunner_FireTasksRebase_StillBusy_ReArms(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	ps := newOnTasksSession(t, store, "s1", "/proj", "")
+
+	sm := conversation.NewSessionManagerWithOptions(conversation.SessionManagerOptions{})
+	sm.AddSessionForTest(conversation.NewMinimalBackgroundSessionPrompting("s1", true))
+	runner := NewPeriodicRunner(store, sm, nil)
+	runner.SetTasksQuiescenceWindow(time.Hour) // long enough we can assert before it fires again
+
+	runner.fireTasksRebase("s1", ps)
+
+	if got := countTasksRebaseTimers(runner); got != 1 {
+		t.Errorf("tasksRebaseTimers = %d, want 1 (re-armed because still busy)", got)
+	}
+	runner.cancelTasksRebaseTimerForTest("s1")
+}
+
+func TestPeriodicRunner_BootstrapTasksBaseline_CreatesWhenMissing(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	newOnTasksSession(t, store, "s1", "/proj", "")
+	runner := NewPeriodicRunner(store, nil, nil)
+	raw := mustMarshalRows(t, beadsRow("mitto-1", "open", "2026-01-01T00:00:00Z"))
+	fake := &fakeTasksBeadsClient{listFn: func(string) ([]byte, error) { return raw, nil }}
+	runner.SetBeadsClient(fake)
+
+	runner.BootstrapTasksBaseline("s1")
+
+	baseline, err := NewTasksBaselineStore(store.SessionDir("s1")).Get()
+	if err != nil {
+		t.Fatalf("Get() baseline error = %v", err)
+	}
+	if !jsonBytesEqual(t, baseline.RawSnapshot, raw) {
+		t.Errorf("baseline.RawSnapshot = %s, want %s", baseline.RawSnapshot, raw)
+	}
+
+	// Calling it again must not re-list (already initialized).
+	runner.BootstrapTasksBaseline("s1")
+	if got := fake.listCallCount(); got != 1 {
+		t.Errorf("List call count = %d, want 1 (no re-bootstrap once initialized)", got)
+	}
+}
+
+func TestPeriodicRunner_BootstrapTasksBaseline_NoopWhenNotOnTasks(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	newOnCompletionSession(t, store, "s1", 0) // a different trigger, not onTasks
+	runner := NewPeriodicRunner(store, nil, nil)
+	fake := &fakeTasksBeadsClient{}
+	runner.SetBeadsClient(fake)
+
+	runner.BootstrapTasksBaseline("s1")
+
+	if _, err := NewTasksBaselineStore(store.SessionDir("s1")).Get(); !errors.Is(err, ErrTasksBaselineNotFound) {
+		t.Errorf("baseline should not be created for a non-onTasks trigger, err = %v", err)
+	}
+	if got := fake.listCallCount(); got != 0 {
+		t.Errorf("List call count = %d, want 0", got)
+	}
+}
+
+func TestPeriodicRunner_OnBeadsChanged_RoutingAndCaching(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	// Two onTasks sessions sharing the same working dir (List should be cached,
+	// called once), one onTasks session in a different (unchanged) dir, and one
+	// disabled onTasks session that must be skipped entirely.
+	newOnTasksSession(t, store, "s1", "/proj-a", "")
+	newOnTasksSession(t, store, "s2", "/proj-a", "")
+	newOnTasksSession(t, store, "s3", "/proj-b", "")
+	newOnTasksSession(t, store, "s4", "/proj-a", "")
+	if err := store.Periodic("s4").Update(nil, nil, nil, boolPtr(false), nil, nil, nil, nil, nil, nil, nil, nil, nil); err != nil {
+		t.Fatalf("Update(disable s4) error = %v", err)
+	}
+
+	raw := mustMarshalRows(t, beadsRow("mitto-1", "open", "2026-01-01T00:00:00Z"))
+	fake := &fakeTasksBeadsClient{listFn: func(string) ([]byte, error) { return raw, nil }}
+
+	runner := NewPeriodicRunner(store, nil, nil)
+	runner.SetBeadsClient(fake)
+
+	runner.OnBeadsChanged(config.BeadsChangeEvent{WorkingDirs: []string{"/proj-a"}})
+
+	// s1 and s2 (same dir, enabled, onTasks) get a baseline initialized.
+	for _, sid := range []string{"s1", "s2"} {
+		if _, err := NewTasksBaselineStore(store.SessionDir(sid)).Get(); err != nil {
+			t.Errorf("session %s should have an initialized baseline, error = %v", sid, err)
+		}
+	}
+	// s3 (different dir) and s4 (disabled) must be untouched.
+	for _, sid := range []string{"s3", "s4"} {
+		if _, err := NewTasksBaselineStore(store.SessionDir(sid)).Get(); !errors.Is(err, ErrTasksBaselineNotFound) {
+			t.Errorf("session %s should NOT have a baseline, error = %v", sid, err)
+		}
+	}
+	// List must be called exactly once for /proj-a, even though two sessions share it.
+	if got := fake.listCallCount(); got != 1 {
+		t.Errorf("List call count = %d, want 1 (cached per working dir)", got)
+	}
+}
+
+func TestPeriodicRunner_RecordTasksFireOutcome_CircuitBreakerPausesNoProgress(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	ps := newOnTasksSession(t, store, "s1", "/proj", "")
+	runner := NewPeriodicRunner(store, nil, nil)
+
+	// Same issue id touched repeatedly — no genuine new progress across fires.
+	// The very first fire seeds tasksLastTouchedIDs (nothing to compare against
+	// yet, so it never counts as "no progress" on its own); the breaker needs
+	// tasksNoProgressLimit CONSECUTIVE no-progress fires after that seed.
+	delta := &config.TasksDelta{Touched: []map[string]any{{"id": "mitto-1"}}}
+	runner.recordTasksFireOutcome("s1", ps, delta) // seed
+	for i := 0; i < tasksNoProgressLimit-1; i++ {
+		runner.recordTasksFireOutcome("s1", ps, delta)
+		got, err := ps.Get()
+		if err != nil {
+			t.Fatalf("Get() error = %v", err)
+		}
+		if !got.Enabled {
+			t.Fatalf("periodic should remain enabled before reaching the no-progress limit (iteration %d)", i)
+		}
+	}
+
+	// The Nth consecutive no-progress fire trips the breaker.
+	runner.recordTasksFireOutcome("s1", ps, delta)
+	got, err := ps.Get()
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	if got.Enabled {
+		t.Error("periodic should be auto-paused after tasksNoProgressLimit consecutive no-progress fires")
+	}
+	if got.StoppedReason != session.StoppedReasonNoProgress {
+		t.Errorf("StoppedReason = %q, want %q", got.StoppedReason, session.StoppedReasonNoProgress)
+	}
+}
+
+func TestPeriodicRunner_RecordTasksFireOutcome_ResetsOnGenuineProgress(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	ps := newOnTasksSession(t, store, "s1", "/proj", "")
+	runner := NewPeriodicRunner(store, nil, nil)
+
+	sameDelta := &config.TasksDelta{Touched: []map[string]any{{"id": "mitto-1"}}}
+	for i := 0; i < tasksNoProgressLimit-1; i++ {
+		runner.recordTasksFireOutcome("s1", ps, sameDelta)
+	}
+
+	// A fire that touches a genuinely new issue resets the counter.
+	newDelta := &config.TasksDelta{Touched: []map[string]any{{"id": "mitto-2"}}}
+	runner.recordTasksFireOutcome("s1", ps, newDelta)
+
+	// Even after tasksNoProgressLimit-1 more repeats of the *new* id alone, the
+	// breaker should not have tripped yet because the counter was reset.
+	for i := 0; i < tasksNoProgressLimit-1; i++ {
+		runner.recordTasksFireOutcome("s1", ps, newDelta)
+	}
+	got, err := ps.Get()
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	if !got.Enabled {
+		t.Error("periodic should still be enabled — the counter was reset by genuine progress")
+	}
+}
+
+func TestPeriodicRunner_TasksCooldownSettersGetters(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	runner := NewPeriodicRunner(store, nil, nil)
+	if got := runner.MinPeriodicTasksCooldownSeconds(); got != DefaultMinPeriodicTasksCooldownSeconds {
+		t.Errorf("default MinPeriodicTasksCooldownSeconds = %d, want %d", got, DefaultMinPeriodicTasksCooldownSeconds)
+	}
+	runner.SetMinPeriodicTasksCooldownSeconds(120)
+	if got := runner.MinPeriodicTasksCooldownSeconds(); got != 120 {
+		t.Errorf("MinPeriodicTasksCooldownSeconds() = %d, want 120", got)
+	}
+	runner.SetMinPeriodicTasksCooldownSeconds(-5)
+	if got := runner.MinPeriodicTasksCooldownSeconds(); got != 0 {
+		t.Errorf("negative value should clamp to 0, got %d", got)
+	}
+}
+
+func TestTasksBaselineStore_GetSetRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	bs := NewTasksBaselineStore(dir)
+
+	if _, err := bs.Get(); !errors.Is(err, ErrTasksBaselineNotFound) {
+		t.Errorf("Get() on empty store error = %v, want ErrTasksBaselineNotFound", err)
+	}
+
+	raw := []byte(`[{"id":"mitto-1"}]`)
+	if err := bs.Set(raw); err != nil {
+		t.Fatalf("Set() error = %v", err)
+	}
+
+	got, err := bs.Get()
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	if !jsonBytesEqual(t, got.RawSnapshot, raw) {
+		t.Errorf("RawSnapshot = %s, want %s", got.RawSnapshot, raw)
+	}
+	if got.CapturedAt.IsZero() {
+		t.Error("CapturedAt should be set")
 	}
 }
