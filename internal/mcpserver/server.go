@@ -4509,20 +4509,40 @@ const childrenReportSuffix = "\n\n" +
 
 // logChildrenWaitTimeout logs the outcome of a children-wait timeout. When there
 // are genuinely outstanding (pending) children at the deadline, it logs at WARN
-// with the pending list. When nothing is still pending (e.g. the parent re-waited
-// after children already reported), the timeout is meaningless noise, so it is
-// downgraded to DEBUG.
-func logChildrenWaitTimeout(logger *slog.Logger, parentSession string, pending, reported []string, totalRunning int, timeout time.Duration) {
+// with the pending list. The timeout is downgraded to DEBUG (meaningless noise)
+// when either nothing is still pending (e.g. the parent re-waited after children
+// already reported) or every pending child is still actively processing
+// (healthy-but-slow): the tool already returns a deterministic "still_processing"
+// signal for those, so a WARN would be redundant.
+func logChildrenWaitTimeout(logger *slog.Logger, parentSession string, pending, reported, stillProcessing []string, totalRunning int, timeout time.Duration) {
 	log := logger.Warn
-	if len(pending) == 0 {
+	if len(pending) == 0 || len(stillProcessing) == len(pending) {
 		log = logger.Debug
 	}
 	log("Timeout waiting for children to report",
 		"parent_session", parentSession,
 		"pending_children", pending,
 		"reported_children", reported,
+		"still_processing_children", stillProcessing,
 		"total_running", totalRunning,
 		"timeout", timeout)
+}
+
+// stillProcessingChildren returns the subset of childIDs whose agent is still
+// actively responding (IsPrompting). These are healthy-but-slow children that
+// have not yet reported; a wait timeout on them is expected rather than an error,
+// so it is logged at DEBUG instead of WARN.
+func (s *Server) stillProcessingChildren(childIDs []string) []string {
+	if s.sessionManager == nil {
+		return nil
+	}
+	var processing []string
+	for _, id := range childIDs {
+		if bs := s.sessionManager.GetSession(id); bs != nil && bs.IsPrompting() {
+			processing = append(processing, id)
+		}
+	}
+	return processing
 }
 
 func (s *Server) handleChildrenTasksWait(ctx context.Context, req *mcp.CallToolRequest, input ChildrenTasksWaitInput) (*mcp.CallToolResult, ChildrenTasksWaitOutput, error) {
@@ -4794,7 +4814,8 @@ func (s *Server) handleChildrenTasksWait(ctx context.Context, req *mcp.CallToolR
 			case <-timeoutTimer.C:
 				timedOut = true
 				pendingChildren, reportedChildren := collector.getPendingAndReported()
-				logChildrenWaitTimeout(s.logger, realSessionID, pendingChildren, reportedChildren, len(runningChildren), timeout)
+				stillProcessing := s.stillProcessingChildren(pendingChildren)
+				logChildrenWaitTimeout(s.logger, realSessionID, pendingChildren, reportedChildren, stillProcessing, len(runningChildren), timeout)
 				break waitLoop
 			case <-ctx.Done():
 				return nil, ChildrenTasksWaitOutput{
@@ -4892,7 +4913,7 @@ func (s *Server) handleChildrenTasksWait(ctx context.Context, req *mcp.CallToolR
 		case <-time.After(timeout):
 			timedOut = true
 			pendingChildren, reportedChildren := collector.getPendingAndReported()
-			logChildrenWaitTimeout(s.logger, realSessionID, pendingChildren, reportedChildren, len(runningChildren), timeout)
+			logChildrenWaitTimeout(s.logger, realSessionID, pendingChildren, reportedChildren, nil, len(runningChildren), timeout)
 		case <-ctx.Done():
 			return nil, ChildrenTasksWaitOutput{
 				Success: false,
