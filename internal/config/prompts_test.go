@@ -1149,6 +1149,32 @@ func TestToWebPrompt_RoundTripsParameters(t *testing.T) {
 	}
 }
 
+func TestToWebPrompt_RoundTripsTags(t *testing.T) {
+	pf := &PromptFile{
+		Name:    "Tagged Prompt",
+		Content: "body",
+		Tags:    []string{"coding", "fast"},
+	}
+
+	wp := pf.ToWebPrompt()
+
+	if len(wp.Tags) != 2 {
+		t.Fatalf("WebPrompt.Tags len = %d, want 2", len(wp.Tags))
+	}
+	if wp.Tags[0] != "coding" || wp.Tags[1] != "fast" {
+		t.Errorf("WebPrompt.Tags = %+v, want [coding fast]", wp.Tags)
+	}
+
+	pfNoTags := &PromptFile{
+		Name:    "Untagged Prompt",
+		Content: "body",
+	}
+	wpNoTags := pfNoTags.ToWebPrompt()
+	if len(wpNoTags.Tags) != 0 {
+		t.Errorf("WebPrompt.Tags = %+v, want empty/nil for PromptFile with no tags", wpNoTags.Tags)
+	}
+}
+
 func TestParsePromptFile_UnknownParameterType(t *testing.T) {
 	data := []byte(`name: "Bad Prompt"
 parameters:

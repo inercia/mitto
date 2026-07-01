@@ -150,6 +150,15 @@ type PromptParameter struct {
 	Cache *PromptParameterCache `yaml:"cache,omitempty" json:"cache,omitempty"`
 }
 
+// PromptPreferredModel references a global model profile (Settings → Models) either
+// by profile name or by capability tag. Exactly one of ModelName / ModelTag is set per entry.
+type PromptPreferredModel struct {
+	// ModelName is the name of a Model profile (Config.Models) to resolve, e.g. "Opus".
+	ModelName string `yaml:"modelName,omitempty" json:"modelName,omitempty"`
+	// ModelTag selects any Model profile carrying this capability tag, e.g. "Cheap".
+	ModelTag string `yaml:"modelTag,omitempty" json:"modelTag,omitempty"`
+}
+
 // PromptFile represents a parsed YAML prompt file.
 // Files are stored in MITTO_DIR/prompts/ and can be organized in subdirectories.
 type PromptFile struct {
@@ -203,10 +212,11 @@ type PromptFile struct {
 	// dialog. The "at" field is in HH:MM UTC and is only valid for the "days" unit.
 	Periodic *PromptPeriodic `yaml:"periodic,omitempty" json:"periodic,omitempty"`
 
-	// PreferredModels is an ordered list of case-insensitive glob patterns matched against
-	// available model IDs and display names. The first match wins. Empty/absent means use
-	// the session's baseline model.
-	PreferredModels []string `yaml:"preferredModels,omitempty" json:"preferredModels,omitempty"`
+	// PreferredModels is an ordered list of references to global model profiles
+	// (Settings → Models), by profile name or capability tag. The first entry that
+	// resolves to an available model wins. Empty/absent means use the session's
+	// baseline model. See PromptPreferredModel.
+	PreferredModels []PromptPreferredModel `yaml:"preferredModels,omitempty" json:"preferredModels,omitempty"`
 
 	// Parameters declares the named, typed inputs this prompt expects.
 	// Each entry must have a non-empty name and a recognised type (see KnownPromptParameterTypes).
@@ -267,6 +277,7 @@ func (p *PromptFile) ToWebPrompt() WebPrompt {
 		Periodic:        p.Periodic,
 		PreferredModels: p.PreferredModels,
 		Parameters:      p.Parameters,
+		Tags:            p.Tags,
 	}
 }
 
