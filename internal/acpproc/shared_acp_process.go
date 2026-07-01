@@ -1416,8 +1416,18 @@ func (p *SharedACPProcess) SetSessionModel(ctx context.Context, sessionID acp.Se
 		if errors.Is(err, context.DeadlineExceeded) {
 			p.recordRPCTimeout()
 		}
+		retryable := isRetryableSetModelError(err)
+		// Only the terminal failure (a non-retryable error, or the last attempt with
+		// the retry budget exhausted) is logged at Warn. Intermediate retryable attempts
+		// log at Debug so a best-effort switch that later succeeds — or that cleanly
+		// falls back — no longer emits repeated "SetSessionModel failed" Warn noise
+		// (mitto-8qp: fail once and cleanly fall back, not 3x).
 		if p.logger != nil {
-			p.logger.Warn("SharedACPProcess.SetSessionModel failed",
+			logAttemptFailure := p.logger.Debug
+			if setModelFailureIsTerminal(attempt, retryable) {
+				logAttemptFailure = p.logger.Warn
+			}
+			logAttemptFailure("SharedACPProcess.SetSessionModel failed",
 				"session_id", sessionID,
 				"model_id", modelID,
 				"attempt", attempt,
@@ -1428,12 +1438,21 @@ func (p *SharedACPProcess) SetSessionModel(ctx context.Context, sessionID acp.Se
 		}
 
 		// Non-transient errors are not retried (e.g. invalid model ID).
-		if !isRetryableSetModelError(err) {
+		if !retryable {
 			return err
 		}
 	}
 
 	return fmt.Errorf("set_model failed after %d attempts: %w", setSessionModelMaxAttempts, lastErr)
+}
+
+// setModelFailureIsTerminal reports whether a failed set_model attempt is the final
+// one — i.e. the error is non-retryable, or the retry budget is exhausted. Terminal
+// failures are logged at Warn; intermediate retryable attempts log at Debug so a
+// best-effort switch does not emit repeated "SetSessionModel failed" Warn noise
+// (mitto-8qp). Pure so the log-level decision can be unit-tested without a live RPC.
+func setModelFailureIsTerminal(attempt int, retryable bool) bool {
+	return !retryable || attempt >= setSessionModelMaxAttempts
 }
 
 // isRetryableSetModelError reports whether a set_model error is worth retrying.
