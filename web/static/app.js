@@ -31,8 +31,8 @@ import {
   getArchiveReasonText,
   conversationToMarkdown,
   copyToClipboard,
-  PERIODIC_STOPPED_LABELS,
-  formatPeriodicMaxDuration,
+  LOOP_STOPPED_LABELS,
+  formatLoopMaxDuration,
   computeHeaderTriggerLabel,
 } from "./lib.js";
 
@@ -256,8 +256,8 @@ function App() {
     fetchStoredSessions,
     backgroundCompletion,
     clearBackgroundCompletion,
-    periodicStarted,
-    clearPeriodicStarted,
+    loopStarted,
+    clearLoopStarted,
     backgroundUIPrompt,
     clearBackgroundUIPrompt,
     backgroundUIPromptTimeout,
@@ -673,16 +673,16 @@ function App() {
 
   // Show toast and native notification when a periodic prompt starts
   useEffect(() => {
-    if (periodicStarted) {
+    if (loopStarted) {
       // Show native macOS notification (not sticky — auto-dismisses)
       if (
         window.mittoNativeNotificationsEnabled &&
         typeof window.mittoShowNativeNotification === "function"
       ) {
         window.mittoShowNativeNotification(
-          periodicStarted.sessionName || "Periodic Conversation",
+          loopStarted.sessionName || "Periodic Conversation",
           "Periodic run started",
-          periodicStarted.sessionId,
+          loopStarted.sessionId,
           false,
         );
       }
@@ -690,14 +690,14 @@ function App() {
       // Show in-app toast
       showToast({
         style: "info",
-        title: periodicStarted.sessionName || "Periodic Conversation",
+        title: loopStarted.sessionName || "Periodic Conversation",
         message: "periodic run started",
         duration: 5000,
-        onClick: () => focusSession(periodicStarted.sessionId),
+        onClick: () => focusSession(loopStarted.sessionId),
       });
-      clearPeriodicStarted();
+      clearLoopStarted();
     }
-  }, [periodicStarted, clearPeriodicStarted, showToast, focusSession]);
+  }, [loopStarted, clearLoopStarted, showToast, focusSession]);
 
   // Show toast when a UI prompt arrives in a background session
   useEffect(() => {
@@ -1884,20 +1884,17 @@ function App() {
       const sessionId = session?.session_id;
       if (!sessionId) return;
       try {
-        const res = await secureFetch(
-          apiUrl(`/api/sessions/${sessionId}/periodic`),
-          {
-            method: "PUT",
-            headers: { "Content-Type": "application/json" },
-            // Draft body: "(pending)" satisfies PeriodicPrompt.Validate() while
-            // enabled:false keeps it as DRAFT so nothing is scheduled yet.
-            body: JSON.stringify({
-              prompt: "(pending)",
-              frequency: { value: 1, unit: "hours" },
-              enabled: false,
-            }),
-          },
-        );
+        const res = await secureFetch(endpoints.sessions.loop(sessionId), {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          // Draft body: "(pending)" satisfies PeriodicPrompt.Validate() while
+          // enabled:false keeps it as DRAFT so nothing is scheduled yet.
+          body: JSON.stringify({
+            prompt: "(pending)",
+            frequency: { value: 1, unit: "hours" },
+            enabled: false,
+          }),
+        });
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         focusSession(sessionId);
         showToast({
@@ -1918,7 +1915,7 @@ function App() {
   );
 
   // Remove the periodic config from a conversation, reverting it to a regular one.
-  // DELETE /api/sessions/{id}/periodic broadcasts loop_updated (nil), which
+  // DELETE /api/sessions/{id}/loop broadcasts loop_updated (nil), which
   // sets both loop_configured=false (hides the inline periodic editor) and
   // loop_enabled=false (moves conversation back to the Conversations group).
   const handleMakeNonPeriodic = useCallback(
@@ -1926,10 +1923,9 @@ function App() {
       const sessionId = session?.session_id;
       if (!sessionId) return;
       try {
-        const res = await secureFetch(
-          apiUrl(`/api/sessions/${sessionId}/periodic`),
-          { method: "DELETE" },
-        );
+        const res = await secureFetch(endpoints.sessions.loop(sessionId), {
+          method: "DELETE",
+        });
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         showToast({
           style: "success",
@@ -2250,7 +2246,7 @@ function App() {
     }
     // Loop is disabled — check the reason for stopped vs paused distinction
     const entry =
-      PERIODIC_STOPPED_LABELS[activeSession?.loop_stopped_reason];
+      LOOP_STOPPED_LABELS[activeSession?.loop_stopped_reason];
     if (entry && entry.kind === "stopped") {
       return {
         state: "stopped",
@@ -2311,7 +2307,7 @@ function App() {
   // Max-time badge: "max 2h" etc; omitted when not set (0 means unlimited)
   const headerMaxTimeLabel =
     activeSession?.loop_configured && headerMaxDurationSecs > 0
-      ? `max ${formatPeriodicMaxDuration(headerMaxDurationSecs)}`
+      ? `max ${formatLoopMaxDuration(headerMaxDurationSecs)}`
       : null;
   // When a periodic loop is auto-stopped by a cap, soft-red highlight the
   // specific cap badge that was exceeded (and the Stopped badge) so the user
