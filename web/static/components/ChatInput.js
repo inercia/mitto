@@ -27,7 +27,7 @@ import { useResizeHandle } from "../hooks/useResizeHandle.js";
 import { SlashCommandPicker } from "./SlashCommandPicker.js";
 import { PeriodicFrequencyPanel } from "./PeriodicFrequencyPanel.js";
 import { SavePromptDialog } from "./SavePromptDialog.js";
-import { GripIcon } from "./Icons.js";
+import { GripIcon, SettingsIcon } from "./Icons.js";
 import { ConfigOptionSelect } from "./ConfigOptionSelect.js";
 import { PromptsMenu } from "./PromptsMenu.js";
 import {
@@ -180,6 +180,7 @@ export function ChatInput({
   draft = "",
   onDraftChange,
   onPromptsOpen,
+  onConfigurePrompts,
   queueLength = 0,
   queueConfig = { enabled: true, max_size: 10, delay_seconds: 0 },
   onAddToQueue,
@@ -3196,14 +3197,34 @@ ${activeUIPrompt.text || ""}</textarea
                           placeholder="Filter prompts..."
                           emptyText="No matching prompts"
                           keyPrefix="chat-prompts"
-                          footer=${html`<span
-                            class="text-[10px] ${shiftHeld
-                              ? "text-mitto-accent"
-                              : "text-mitto-text-muted"}"
-                            >${shiftHeld
-                              ? "✏️ Will insert into editor"
-                              : "⇧ Hold Shift to edit before sending"}</span
-                          >`}
+                          footer=${html`<div
+                            class="flex items-center justify-between gap-2"
+                          >
+                            <span
+                              class="text-[10px] ${shiftHeld
+                                ? "text-mitto-accent"
+                                : "text-mitto-text-muted"}"
+                              >${shiftHeld
+                                ? "✏️ Will insert into editor"
+                                : "⇧ Hold Shift to edit before sending"}</span
+                            >
+                            ${onConfigurePrompts &&
+                            html`<button
+                              type="button"
+                              class="btn btn-ghost btn-square btn-sm tooltip tooltip-left"
+                              data-tip="Configure prompts"
+                              aria-label="Configure prompts"
+                              onMouseDown=${(e) => e.preventDefault()}
+                              onClick=${(e) => {
+                                e.stopPropagation();
+                                e.preventDefault();
+                                setShowDropup(false);
+                                onConfigurePrompts();
+                              }}
+                            >
+                              <${SettingsIcon} className="w-4 h-4" />
+                            </button>`}
+                          </div>`}
                         />
                       </div>
                     `}

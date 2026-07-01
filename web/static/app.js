@@ -2970,6 +2970,14 @@ function App() {
                       onDraftChange=${updateDraft}
                       sessionDraftsRef=${sessionDraftsRef}
                       onPromptsOpen=${handlePromptsOpen}
+                      onConfigurePrompts=${!configReadonly &&
+                      sessionInfo?.working_dir
+                        ? () =>
+                            handleShowWorkspacesForFolder(
+                              sessionInfo.working_dir,
+                              "prompts",
+                            )
+                        : undefined}
                       queueLength=${queueLength}
                       queueConfig=${queueConfig}
                       onAddToQueue=${handleAddToQueue}
