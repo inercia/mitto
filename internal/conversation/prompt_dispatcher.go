@@ -98,8 +98,8 @@ type promptDeps interface {
 	pdResolveModelTags(modelName string) []string     // config.ResolveModelTags; nil when no config/match
 	pdResolvePreferredModels(promptName string) []config.PromptPreferredModel
 	pdModelProfiles() []config.ModelProfile // global model profiles (Settings → Models)
-	pdReadBaselineModel() string       // modelMu.Lock + read + Unlock
-	pdWriteOverrideActive(active bool) // modelMu.Lock + write + Unlock
+	pdReadBaselineModel() string            // modelMu.Lock + read + Unlock
+	pdWriteOverrideActive(active bool)      // modelMu.Lock + write + Unlock
 	pdSetActiveModelOnly(ctx context.Context, modelID string) error
 	// pdRecordSessionChange assigns a seq, persists a session-change timeline
 	// event via the recorder, and notifies observers. Used for the model-override pill.

@@ -38,6 +38,12 @@ func newGitRepo(t *testing.T) string {
 	run("init")
 	run("config", "user.email", "test@example.com")
 	run("config", "user.name", "Test")
+	// Disable commit signing for this repo so the test is hermetic: a
+	// developer machine with a global commit.gpgsign=true (and no cached
+	// gpg-agent passphrase) would otherwise fail "git commit" here with
+	// "gpg failed to sign the data". CI runners don't have this configured,
+	// but local machines might.
+	run("config", "commit.gpgsign", "false")
 	if err := os.WriteFile(filepath.Join(dir, "tracked.txt"), []byte("hello\n"), 0644); err != nil {
 		t.Fatal(err)
 	}

@@ -258,7 +258,7 @@ func (f *fakePromptDeps) pdResolvePreferredModels(_ string) []config.PromptPrefe
 	return f.resolvedPreferred
 }
 func (f *fakePromptDeps) pdModelProfiles() []config.ModelProfile { return f.modelProfiles }
-func (f *fakePromptDeps) pdReadBaselineModel() string                      { return f.baselineModel }
+func (f *fakePromptDeps) pdReadBaselineModel() string            { return f.baselineModel }
 func (f *fakePromptDeps) pdWriteOverrideActive(active bool) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
