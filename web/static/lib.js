@@ -360,10 +360,10 @@ function _parseUndelimited(text, segments) {
  * @param {Array} storedSessions - Sessions loaded from storage
  * @returns {Array} Combined and sorted sessions
  */
-// Labels shown in the conversation-header subtitle when a periodic loop has stopped or paused.
+// Labels shown in the conversation-header subtitle when a loop has stopped or paused.
 // Keyed by the `loop_stopped_reason` string sent by the backend.
 // Each entry has { label, kind } where kind is "stopped" (terminal/red) or "paused" (resumable/amber).
-export const PERIODIC_STOPPED_LABELS = {
+export const LOOP_STOPPED_LABELS = {
   maxDuration: { label: "Stopped: max time", kind: "stopped" },
   maxIterations: { label: "Stopped: max iters", kind: "stopped" },
   iterationSafeguard: { label: "Stopped: max iters", kind: "stopped" },
@@ -374,12 +374,12 @@ export const PERIODIC_STOPPED_LABELS = {
 };
 
 /**
- * Compact human-readable duration for a periodic max-duration cap.
+ * Compact human-readable duration for a loop max-duration cap.
  * Rounds down to the largest whole unit (days > hours > minutes > seconds).
  * @param {number} seconds
  * @returns {string} e.g. "2d", "3h", "30min", "45s"
  */
-export function formatPeriodicMaxDuration(seconds) {
+export function formatLoopMaxDuration(seconds) {
   if (seconds >= 86400 && seconds % 86400 === 0) return `${seconds / 86400}d`;
   if (seconds >= 3600 && seconds % 3600 === 0) return `${seconds / 3600}h`;
   if (seconds >= 60 && seconds % 60 === 0) return `${seconds / 60}min`;

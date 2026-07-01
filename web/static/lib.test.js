@@ -64,8 +64,8 @@ import {
   htmlToMarkdown,
   messageToMarkdown,
   conversationToMarkdown,
-  PERIODIC_STOPPED_LABELS,
-  formatPeriodicMaxDuration,
+  LOOP_STOPPED_LABELS,
+  formatLoopMaxDuration,
   buildRetryTargets,
   messageKey,
   computeHeaderTriggerLabel,
@@ -5673,49 +5673,49 @@ describe("conversationToMarkdown", () => {
 });
 
 // =============================================================================
-// PERIODIC_STOPPED_LABELS Tests
+// LOOP_STOPPED_LABELS Tests
 // =============================================================================
 
-describe("PERIODIC_STOPPED_LABELS", () => {
+describe("LOOP_STOPPED_LABELS", () => {
   test("maps all seven known reason codes to {label, kind} objects", () => {
-    expect(PERIODIC_STOPPED_LABELS.maxDuration).toEqual({
+    expect(LOOP_STOPPED_LABELS.maxDuration).toEqual({
       label: "Stopped: max time",
       kind: "stopped",
     });
-    expect(PERIODIC_STOPPED_LABELS.maxIterations).toEqual({
+    expect(LOOP_STOPPED_LABELS.maxIterations).toEqual({
       label: "Stopped: max iters",
       kind: "stopped",
     });
-    expect(PERIODIC_STOPPED_LABELS.iterationSafeguard).toEqual({
+    expect(LOOP_STOPPED_LABELS.iterationSafeguard).toEqual({
       label: "Stopped: max iters",
       kind: "stopped",
     });
-    expect(PERIODIC_STOPPED_LABELS.promptUnresolved).toEqual({
+    expect(LOOP_STOPPED_LABELS.promptUnresolved).toEqual({
       label: "Stopped: prompt missing",
       kind: "stopped",
     });
-    expect(PERIODIC_STOPPED_LABELS.resumeFailures).toEqual({
+    expect(LOOP_STOPPED_LABELS.resumeFailures).toEqual({
       label: "Stopped: resume errors",
       kind: "stopped",
     });
-    expect(PERIODIC_STOPPED_LABELS.pausedByUser).toEqual({
+    expect(LOOP_STOPPED_LABELS.pausedByUser).toEqual({
       label: "Paused by you",
       kind: "paused",
     });
-    expect(PERIODIC_STOPPED_LABELS.disabledByAgent).toEqual({
+    expect(LOOP_STOPPED_LABELS.disabledByAgent).toEqual({
       label: "Paused by the agent",
       kind: "paused",
     });
   });
 
   test("maxIterations and iterationSafeguard share the same label", () => {
-    expect(PERIODIC_STOPPED_LABELS.maxIterations.label).toBe(
-      PERIODIC_STOPPED_LABELS.iterationSafeguard.label,
+    expect(LOOP_STOPPED_LABELS.maxIterations.label).toBe(
+      LOOP_STOPPED_LABELS.iterationSafeguard.label,
     );
   });
 
   test("unknown reason is not in the map", () => {
-    expect(PERIODIC_STOPPED_LABELS["unknownReason"]).toBeUndefined();
+    expect(LOOP_STOPPED_LABELS["unknownReason"]).toBeUndefined();
   });
 
   test("all stopped reasons have kind='stopped'", () => {
@@ -5727,14 +5727,14 @@ describe("PERIODIC_STOPPED_LABELS", () => {
       "resumeFailures",
     ];
     for (const reason of stoppedReasons) {
-      expect(PERIODIC_STOPPED_LABELS[reason].kind).toBe("stopped");
+      expect(LOOP_STOPPED_LABELS[reason].kind).toBe("stopped");
     }
   });
 
   test("all paused reasons have kind='paused'", () => {
     const pausedReasons = ["pausedByUser", "disabledByAgent"];
     for (const reason of pausedReasons) {
-      expect(PERIODIC_STOPPED_LABELS[reason].kind).toBe("paused");
+      expect(LOOP_STOPPED_LABELS[reason].kind).toBe("paused");
     }
   });
 
@@ -5750,7 +5750,7 @@ describe("PERIODIC_STOPPED_LABELS", () => {
         badgeClass: "badge-success badge-soft",
       };
     }
-    const entry = PERIODIC_STOPPED_LABELS[session?.loop_stopped_reason];
+    const entry = LOOP_STOPPED_LABELS[session?.loop_stopped_reason];
     if (entry && entry.kind === "stopped") {
       return {
         state: "stopped",
@@ -5850,58 +5850,58 @@ describe("PERIODIC_STOPPED_LABELS", () => {
   });
 
   test("all known reasons produce a non-empty label", () => {
-    const knownReasons = Object.keys(PERIODIC_STOPPED_LABELS);
+    const knownReasons = Object.keys(LOOP_STOPPED_LABELS);
     for (const reason of knownReasons) {
-      expect(PERIODIC_STOPPED_LABELS[reason].label).toBeTruthy();
+      expect(LOOP_STOPPED_LABELS[reason].label).toBeTruthy();
     }
   });
 });
 
 // =============================================================================
-// formatPeriodicMaxDuration Tests
+// formatLoopMaxDuration Tests
 // =============================================================================
 
-describe("formatPeriodicMaxDuration", () => {
+describe("formatLoopMaxDuration", () => {
   test("formats whole days", () => {
-    expect(formatPeriodicMaxDuration(86400)).toBe("1d");
-    expect(formatPeriodicMaxDuration(172800)).toBe("2d");
-    expect(formatPeriodicMaxDuration(604800)).toBe("7d");
+    expect(formatLoopMaxDuration(86400)).toBe("1d");
+    expect(formatLoopMaxDuration(172800)).toBe("2d");
+    expect(formatLoopMaxDuration(604800)).toBe("7d");
   });
 
   test("formats whole hours", () => {
-    expect(formatPeriodicMaxDuration(3600)).toBe("1h");
-    expect(formatPeriodicMaxDuration(7200)).toBe("2h");
-    expect(formatPeriodicMaxDuration(18000)).toBe("5h");
+    expect(formatLoopMaxDuration(3600)).toBe("1h");
+    expect(formatLoopMaxDuration(7200)).toBe("2h");
+    expect(formatLoopMaxDuration(18000)).toBe("5h");
   });
 
   test("formats whole minutes", () => {
-    expect(formatPeriodicMaxDuration(60)).toBe("1min");
-    expect(formatPeriodicMaxDuration(1800)).toBe("30min");
-    expect(formatPeriodicMaxDuration(3540)).toBe("59min");
+    expect(formatLoopMaxDuration(60)).toBe("1min");
+    expect(formatLoopMaxDuration(1800)).toBe("30min");
+    expect(formatLoopMaxDuration(3540)).toBe("59min");
   });
 
   test("formats seconds for non-round values", () => {
-    expect(formatPeriodicMaxDuration(1)).toBe("1s");
-    expect(formatPeriodicMaxDuration(45)).toBe("45s");
-    expect(formatPeriodicMaxDuration(90)).toBe("90s");
-    expect(formatPeriodicMaxDuration(3601)).toBe("3601s");
+    expect(formatLoopMaxDuration(1)).toBe("1s");
+    expect(formatLoopMaxDuration(45)).toBe("45s");
+    expect(formatLoopMaxDuration(90)).toBe("90s");
+    expect(formatLoopMaxDuration(3601)).toBe("3601s");
   });
 
   test("days takes priority over hours when divisible", () => {
     // 86400 is both a multiple of 3600 and 86400 — days wins
-    expect(formatPeriodicMaxDuration(86400)).toBe("1d");
-    expect(formatPeriodicMaxDuration(172800)).toBe("2d");
+    expect(formatLoopMaxDuration(86400)).toBe("1d");
+    expect(formatLoopMaxDuration(172800)).toBe("2d");
   });
 
   test("hours takes priority over minutes when divisible by 3600", () => {
     // 7200 is divisible by both 60 and 3600 — hours wins
-    expect(formatPeriodicMaxDuration(7200)).toBe("2h");
+    expect(formatLoopMaxDuration(7200)).toBe("2h");
   });
 
   test("non-divisible values fall through to seconds", () => {
     // 3661 = 1 hour + 1 minute + 1 second — not cleanly divisible by any unit
-    expect(formatPeriodicMaxDuration(3661)).toBe("3661s");
-    expect(formatPeriodicMaxDuration(61)).toBe("61s");
+    expect(formatLoopMaxDuration(3661)).toBe("3661s");
+    expect(formatLoopMaxDuration(61)).toBe("61s");
   });
 });
 
