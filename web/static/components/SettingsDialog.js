@@ -41,6 +41,7 @@ import {
   GlobeIcon,
   SlidersIcon,
   ChevronRightIcon,
+  ChevronDownIcon,
   DuplicateIcon,
   ShieldIcon,
   SearchIcon,
@@ -1052,6 +1053,11 @@ export function SettingsDialog({
   const [acpServers, setAcpServers] = useState([]);
   // Model profiles (named profiles pairing criteria with capability tags)
   const [modelProfiles, setModelProfiles] = useState([]);
+  // Accordion: index of the single expanded model profile
+  const [expandedProfileIndex, setExpandedProfileIndex] = useState(0);
+  // Raw text drafts for the tags input, keyed by profile index — lets the
+  // user type commas without the controlled value swallowing them
+  const [tagDrafts, setTagDrafts] = useState({});
   // Stable key counter for ACP servers — survives renames without losing focus
   const stableKeyRef = useRef(0);
   const assignStableKey = (srv) => {
@@ -1432,6 +1438,8 @@ export function SettingsDialog({
       servers.forEach(assignStableKey);
       setAcpServers(servers);
       setModelProfiles(Array.isArray(config.models) ? config.models : []);
+      setExpandedProfileIndex(0);
+      setTagDrafts({});
 
       // Reset server renames when config is loaded
       setServerRenames({});
@@ -1733,6 +1741,21 @@ export function SettingsDialog({
       return;
     }
 
+    // Model profiles: a blank name is only allowed for fully-empty profiles
+    // (those are dropped silently below); partially-filled ones must be named.
+    const hasBlankNamedProfile = modelProfiles.some((p) => {
+      const name = (p.name || "").trim();
+      const tags = Array.isArray(p.tags)
+        ? p.tags.filter((t) => t && t.trim())
+        : [];
+      return name === "" && (!!p.criteria || tags.length > 0);
+    });
+    if (hasBlankNamedProfile) {
+      setError("Model profiles must have a name");
+      setActiveTab("models");
+      return;
+    }
+
     setSaving(true);
     const saveStartTime = Date.now();
     try {
@@ -1895,18 +1918,25 @@ export function SettingsDialog({
       };
 
       // Build model profiles list — always sent so removals/edits stick
-      // (backend treats omitted=preserve; explicitly sending is authoritative)
-      const modelProfilesToSave = modelProfiles.map((p) => ({
-        name: (p.name || "").trim(),
-        criteria:
-          p.criteria && p.criteria.matchMode
-            ? {
-                matchMode: p.criteria.matchMode,
-                pattern: p.criteria.pattern || "",
-              }
-            : null,
-        tags: Array.isArray(p.tags) ? p.tags.filter((t) => t && t.trim()) : [],
-      }));
+      // (backend treats omitted=preserve; explicitly sending is authoritative).
+      // Fully-empty profiles (no name, no criteria, no tags) are dropped
+      // silently here; partially-filled profiles with a blank name are
+      // already blocked above (hasBlankNamedProfile check).
+      const modelProfilesToSave = modelProfiles
+        .map((p) => ({
+          name: (p.name || "").trim(),
+          criteria:
+            p.criteria && p.criteria.matchMode
+              ? {
+                  matchMode: p.criteria.matchMode,
+                  pattern: p.criteria.pattern || "",
+                }
+              : null,
+          tags: Array.isArray(p.tags)
+            ? p.tags.filter((t) => t && t.trim())
+            : [],
+        }))
+        .filter((p) => p.name !== "" || p.criteria || p.tags.length > 0);
 
       const config = {
         workspaces: workspaces,
@@ -2256,8 +2286,39 @@ export function SettingsDialog({
     setModelProfiles((prev) =>
       prev.map((p, idx) => (idx === i ? { ...p, ...patch } : p)),
     );
-  const removeProfile = (i) =>
+  const removeProfile = (i) => {
     setModelProfiles((prev) => prev.filter((_, idx) => idx !== i));
+    setTagDrafts((prev) => {
+      const next = {};
+      Object.entries(prev).forEach(([key, val]) => {
+        const idx = Number(key);
+        if (idx === i) return;
+        next[idx > i ? idx - 1 : idx] = val;
+      });
+      return next;
+    });
+    const newLength = modelProfiles.length - 1;
+    setExpandedProfileIndex((prev) => {
+      const next = prev === i ? 0 : prev > i ? prev - 1 : prev;
+      return Math.max(0, Math.min(next, Math.max(newLength - 1, 0)));
+    });
+  };
+  // Commit a profile's raw tag draft text into its tags array (comma-separated,
+  // trimmed, empties dropped, deduped), then reset the draft to empty so the
+  // input is ready for the next tag (existing tags are shown as chips).
+  const commitTagDraft = (i) => {
+    const raw = tagDrafts[i];
+    if (raw === undefined) return;
+    const tokens = raw
+      .split(",")
+      .map((t) => t.trim())
+      .filter(Boolean);
+    if (tokens.length > 0) {
+      const existing = modelProfiles[i]?.tags || [];
+      updateProfile(i, { tags: [...new Set([...existing, ...tokens])] });
+    }
+    setTagDrafts((prev) => ({ ...prev, [i]: "" }));
+  };
 
   if (!isOpen) return null;
 
@@ -4573,77 +4634,38 @@ export function SettingsDialog({
                       Mitto can branch on tags instead of raw model names.
                     </p>
 
-                    ${modelProfiles.map(
-                      (p, i) => html`
+                    ${modelProfiles.map((p, i) => {
+                      const isExpanded = expandedProfileIndex === i;
+                      const trimmedName = (p.name || "").trim();
+                      const tags = p.tags || [];
+                      const isPartialBlank =
+                        trimmedName === "" &&
+                        (!!p.criteria || tags.length > 0);
+                      return html`
                         <div
                           key=${i}
-                          class="border border-mitto-border-1 rounded-lg p-3 space-y-2"
+                          class="border border-mitto-border-1 rounded-lg overflow-hidden"
                         >
-                          <!-- Profile header: name + remove -->
-                          <div class="flex items-center gap-2">
-                            <input
-                              type="text"
-                              class="input input-sm flex-1"
-                              placeholder="e.g., Opus"
-                              value=${p.name || ""}
-                              onInput=${(e) =>
-                                updateProfile(i, { name: e.target.value })}
-                            />
-                            <button
-                              class="btn btn-sm btn-ghost text-error"
-                              title="Remove profile"
-                              onClick=${() => removeProfile(i)}
-                            >
-                              <${TrashIcon} className="w-4 h-4" />
-                            </button>
-                          </div>
-
-                          <!-- Criteria (model selector) -->
-                          <div class="space-y-1">
-                            <label
-                              class="text-xs font-medium text-mitto-text-secondary"
-                            >
-                              Criteria
-                            </label>
-                            <${ModelSelection}
-                              matchMode=${(p.criteria &&
-                                p.criteria.matchMode) ||
-                              ""}
-                              pattern=${(p.criteria && p.criteria.pattern) ||
-                              ""}
-                              onChange=${(mode, pat) =>
-                                updateProfile(i, {
-                                  criteria: mode
-                                    ? { matchMode: mode, pattern: pat }
-                                    : null,
-                                })}
-                            />
-                          </div>
-
-                          <!-- Tags -->
-                          <div class="space-y-1">
-                            <label
-                              class="text-xs font-medium text-mitto-text-secondary"
-                            >
-                              Tags (comma-separated)
-                            </label>
-                            <input
-                              type="text"
-                              class="input input-sm w-full"
-                              placeholder="e.g., Smart, Cheap"
-                              value=${(p.tags || []).join(", ")}
-                              onInput=${(e) =>
-                                updateProfile(i, {
-                                  tags: e.target.value
-                                    .split(",")
-                                    .map((t) => t.trim())
-                                    .filter(Boolean),
-                                })}
-                            />
-                            ${(p.tags || []).length > 0 &&
+                          <!-- Profile header: name summary + tags + remove -->
+                          <div
+                            class="flex items-center gap-2 p-3 cursor-pointer hover:bg-mitto-surface-3/30"
+                            onClick=${() =>
+                              setExpandedProfileIndex(isExpanded ? -1 : i)}
+                          >
+                            ${isExpanded
+                              ? html`<${ChevronDownIcon}
+                                  className="w-4 h-4 text-mitto-text-muted shrink-0"
+                                />`
+                              : html`<${ChevronRightIcon}
+                                  className="w-4 h-4 text-mitto-text-muted shrink-0"
+                                />`}
+                            <span class="font-medium text-sm flex-1 truncate">
+                              ${trimmedName || "Untitled"}
+                            </span>
+                            ${tags.length > 0 &&
                             html`
-                              <div class="flex flex-wrap gap-1 mt-1">
-                                ${(p.tags || []).map(
+                              <div class="flex flex-wrap gap-1 justify-end">
+                                ${tags.map(
                                   (tag) => html`
                                     <span
                                       key=${tag}
@@ -4654,19 +4676,158 @@ export function SettingsDialog({
                                 )}
                               </div>
                             `}
+                            <button
+                              class="btn btn-sm btn-ghost text-error"
+                              title="Remove profile"
+                              onClick=${(e) => {
+                                e.stopPropagation();
+                                removeProfile(i);
+                              }}
+                            >
+                              <${TrashIcon} className="w-4 h-4" />
+                            </button>
                           </div>
+
+                          ${isExpanded &&
+                          html`
+                            <div
+                              class="p-3 pt-0 space-y-2 border-t border-mitto-border-1"
+                            >
+                              <!-- Name -->
+                              <input
+                                type="text"
+                                class="input input-sm w-full ${isPartialBlank
+                                  ? "border-error"
+                                  : ""}"
+                                placeholder="e.g., Opus"
+                                value=${p.name || ""}
+                                onInput=${(e) =>
+                                  updateProfile(i, { name: e.target.value })}
+                              />
+
+                              <!-- Criteria (model selector) -->
+                              <div class="space-y-1">
+                                <label
+                                  class="text-xs font-medium text-mitto-text-secondary"
+                                >
+                                  Criteria
+                                </label>
+                                <${ModelSelection}
+                                  matchMode=${(p.criteria &&
+                                    p.criteria.matchMode) ||
+                                  ""}
+                                  pattern=${(p.criteria &&
+                                    p.criteria.pattern) ||
+                                  ""}
+                                  onChange=${(mode, pat) =>
+                                    updateProfile(i, {
+                                      criteria: mode
+                                        ? { matchMode: mode, pattern: pat }
+                                        : null,
+                                    })}
+                                />
+                              </div>
+
+                              <!-- Tags -->
+                              <div class="space-y-1">
+                                <label
+                                  class="text-xs font-medium text-mitto-text-secondary"
+                                >
+                                  Tags (comma-separated)
+                                </label>
+                                <input
+                                  type="text"
+                                  class="input input-sm w-full"
+                                  placeholder="e.g., Smart, Cheap"
+                                  value=${tagDrafts[i] !== undefined
+                                    ? tagDrafts[i]
+                                    : tags.join(", ")}
+                                  onInput=${(e) => {
+                                    const raw = e.target.value;
+                                    if (raw.includes(",")) {
+                                      const parts = raw.split(",");
+                                      const trailing = parts.pop();
+                                      const newTokens = parts
+                                        .map((t) => t.trim())
+                                        .filter(Boolean);
+                                      if (newTokens.length > 0) {
+                                        const existing =
+                                          modelProfiles[i]?.tags || [];
+                                        updateProfile(i, {
+                                          tags: [
+                                            ...new Set([
+                                              ...existing,
+                                              ...newTokens,
+                                            ]),
+                                          ],
+                                        });
+                                      }
+                                      setTagDrafts((prev) => ({
+                                        ...prev,
+                                        [i]: trailing,
+                                      }));
+                                    } else {
+                                      setTagDrafts((prev) => ({
+                                        ...prev,
+                                        [i]: raw,
+                                      }));
+                                    }
+                                  }}
+                                  onKeyDown=${(e) => {
+                                    if (e.key === "Enter") {
+                                      e.preventDefault();
+                                      commitTagDraft(i);
+                                    }
+                                  }}
+                                  onBlur=${() => commitTagDraft(i)}
+                                />
+                                ${tags.length > 0 &&
+                                html`
+                                  <div class="flex flex-wrap gap-1 mt-1">
+                                    ${tags.map(
+                                      (tag) => html`
+                                        <span
+                                          key=${tag}
+                                          class="badge badge-sm badge-outline gap-1"
+                                        >
+                                          ${tag}
+                                          <button
+                                            type="button"
+                                            title="Remove tag"
+                                            onClick=${() =>
+                                              updateProfile(i, {
+                                                tags: tags.filter(
+                                                  (t) => t !== tag,
+                                                ),
+                                              })}
+                                          >
+                                            <${CloseIcon}
+                                              className="w-3 h-3"
+                                            />
+                                          </button>
+                                        </span>
+                                      `,
+                                    )}
+                                  </div>
+                                `}
+                              </div>
+                            </div>
+                          `}
                         </div>
-                      `,
-                    )}
+                      `;
+                    })}
 
                     <!-- Add Model button -->
                     <button
                       class="btn btn-sm"
-                      onClick=${() =>
+                      onClick=${() => {
                         setModelProfiles([
                           ...modelProfiles,
                           { name: "", criteria: null, tags: [] },
-                        ])}
+                        ]);
+                        setExpandedProfileIndex(modelProfiles.length);
+                        setTagDrafts({});
+                      }}
                     >
                       <${PlusIcon} className="w-4 h-4" />
                       Add Model

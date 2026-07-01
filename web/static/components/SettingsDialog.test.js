@@ -11,17 +11,36 @@
  */
 
 /**
- * Duplicated from SettingsDialog.js (Tags onInput handler, ~line 4528).
- * Parses a comma-separated tags string into a trimmed, filtered array.
+ * Duplicated from SettingsDialog.js (Tags onInput handler, ~lines 4745-4775).
+ * Splits the raw draft text on every comma typed so far into already-committed
+ * tokens (trimmed, empties dropped) plus the trailing partial token that is
+ * still being typed. This is the fix for the historical bug where a
+ * controlled `value={tags.join(", ")}` swallowed a just-typed comma.
  */
-const parseTagsInput = (value) =>
-  value
+const splitTagDraftOnInput = (raw) => {
+  if (!raw.includes(",")) return { committed: [], trailing: raw };
+  const parts = raw.split(",");
+  const trailing = parts.pop();
+  const committed = parts.map((t) => t.trim()).filter(Boolean);
+  return { committed, trailing };
+};
+
+/**
+ * Duplicated from SettingsDialog.js (commitTagDraft, ~lines 2306-2320).
+ * Commits a raw draft string (blur/Enter/comma) into the tags array: split on
+ * comma, trim, drop empties, merge+dedupe with the existing tags.
+ */
+const commitTagTokens = (raw, existingTags = []) => {
+  const tokens = raw
     .split(",")
     .map((t) => t.trim())
     .filter(Boolean);
+  if (tokens.length === 0) return existingTags;
+  return [...new Set([...existingTags, ...tokens])];
+};
 
 /**
- * Duplicated from SettingsDialog.js (modelProfilesToSave, ~lines 1869-1876).
+ * Duplicated from SettingsDialog.js (modelProfilesToSave, ~lines 1919-1933).
  * Normalizes a model profile object for the save payload.
  */
 const normalizeModelProfile = (p) => ({
@@ -33,25 +52,75 @@ const normalizeModelProfile = (p) => ({
   tags: Array.isArray(p.tags) ? p.tags.filter((t) => t && t.trim()) : [],
 });
 
-describe("parseTagsInput", () => {
-  test("splits a comma-separated string into trimmed tags", () => {
-    expect(parseTagsInput("Smart, Cheap")).toEqual(["Smart", "Cheap"]);
+/**
+ * Duplicated from SettingsDialog.js (modelProfilesToSave filter, ~line 1933).
+ * A normalized profile is fully empty when it has no name, no criteria, and
+ * no tags — these are dropped silently rather than saved.
+ */
+const isEmptyNormalizedProfile = (normalized) =>
+  normalized.name === "" && !normalized.criteria && normalized.tags.length === 0;
+
+/**
+ * Duplicated from SettingsDialog.js (handleSave validation, ~lines 1742-1753).
+ * A profile blocks Save when its name is blank but it has criteria or tags
+ * (i.e. partially filled, as opposed to fully empty).
+ */
+const hasBlankNamedProfile = (profiles) =>
+  profiles.some((p) => {
+    const name = (p.name || "").trim();
+    const tags = Array.isArray(p.tags) ? p.tags.filter((t) => t && t.trim()) : [];
+    return name === "" && (!!p.criteria || tags.length > 0);
   });
 
-  test("trims surrounding whitespace on each tag", () => {
-    expect(parseTagsInput("  A ,B  ,  C")).toEqual(["A", "B", "C"]);
+describe("splitTagDraftOnInput", () => {
+  test("no comma yet: everything is the trailing (in-progress) token", () => {
+    expect(splitTagDraftOnInput("Smart")).toEqual({
+      committed: [],
+      trailing: "Smart",
+    });
+  });
+
+  test("a trailing comma commits the token and leaves an empty trailing", () => {
+    expect(splitTagDraftOnInput("Smart,")).toEqual({
+      committed: ["Smart"],
+      trailing: "",
+    });
+  });
+
+  test("typing continues after a comma without losing characters", () => {
+    expect(splitTagDraftOnInput("Smart,Che")).toEqual({
+      committed: ["Smart"],
+      trailing: "Che",
+    });
+  });
+
+  test("multiple commas (e.g. pasted text) commit multiple tokens", () => {
+    expect(splitTagDraftOnInput("A,B,C")).toEqual({
+      committed: ["A", "B"],
+      trailing: "C",
+    });
+  });
+
+  test("empty string stays as an empty trailing token", () => {
+    expect(splitTagDraftOnInput("")).toEqual({ committed: [], trailing: "" });
+  });
+});
+
+describe("commitTagTokens", () => {
+  test("splits, trims and drops empties", () => {
+    expect(commitTagTokens("  A ,B  ,  C")).toEqual(["A", "B", "C"]);
   });
 
   test("drops empty entries from trailing/duplicate commas", () => {
-    expect(parseTagsInput("A,,B,")).toEqual(["A", "B"]);
+    expect(commitTagTokens("A,,B,")).toEqual(["A", "B"]);
   });
 
-  test("empty string returns empty array", () => {
-    expect(parseTagsInput("")).toEqual([]);
+  test("empty/whitespace-only raw text leaves existing tags unchanged", () => {
+    expect(commitTagTokens(" , ", ["Smart"])).toEqual(["Smart"]);
   });
 
-  test("whitespace-only entries are removed", () => {
-    expect(parseTagsInput(" , ")).toEqual([]);
+  test("merges with and dedupes against existing tags", () => {
+    expect(commitTagTokens("Smart, New", ["Smart"])).toEqual(["Smart", "New"]);
   });
 });
 
@@ -113,5 +182,61 @@ describe("normalizeModelProfile", () => {
       criteria: { matchMode: "contains", pattern: "Opus" },
       tags: ["Smartest", "Expensive"],
     });
+  });
+});
+
+describe("isEmptyNormalizedProfile", () => {
+  test("a profile with no name, criteria or tags is empty", () => {
+    expect(isEmptyNormalizedProfile(normalizeModelProfile({}))).toBe(true);
+  });
+
+  test("a profile with only a name is not empty", () => {
+    expect(
+      isEmptyNormalizedProfile(normalizeModelProfile({ name: "Opus" })),
+    ).toBe(false);
+  });
+
+  test("a blank-name profile with criteria is not empty (blocked, not dropped)", () => {
+    const normalized = normalizeModelProfile({
+      criteria: { matchMode: "contains", pattern: "Opus" },
+    });
+    expect(isEmptyNormalizedProfile(normalized)).toBe(false);
+  });
+
+  test("a blank-name profile with tags is not empty (blocked, not dropped)", () => {
+    const normalized = normalizeModelProfile({ tags: ["Smart"] });
+    expect(isEmptyNormalizedProfile(normalized)).toBe(false);
+  });
+});
+
+describe("hasBlankNamedProfile", () => {
+  test("no profiles: false", () => {
+    expect(hasBlankNamedProfile([])).toBe(false);
+  });
+
+  test("fully-empty profile does not block save", () => {
+    expect(hasBlankNamedProfile([{ name: "", criteria: null, tags: [] }])).toBe(
+      false,
+    );
+  });
+
+  test("named profile does not block save", () => {
+    expect(
+      hasBlankNamedProfile([{ name: "Opus", criteria: null, tags: [] }]),
+    ).toBe(false);
+  });
+
+  test("blank name with criteria blocks save", () => {
+    expect(
+      hasBlankNamedProfile([
+        { name: "", criteria: { matchMode: "contains" }, tags: [] },
+      ]),
+    ).toBe(true);
+  });
+
+  test("blank name with tags blocks save", () => {
+    expect(
+      hasBlankNamedProfile([{ name: "  ", criteria: null, tags: ["Smart"] }]),
+    ).toBe(true);
   });
 });
