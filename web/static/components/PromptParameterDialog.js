@@ -355,7 +355,7 @@ export function PromptParameterDialog({
     setLoadingBeads(false);
     setLoadingSessions(false);
     setLoadingWorkspaces(false);
-  }, [isOpen]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [isOpen]);
 
   // Fetch beads issues when dialog opens (only if a beadsId param is present)
   useEffect(() => {
@@ -374,7 +374,7 @@ export function PromptParameterDialog({
         setBeadsIssues([]);
       })
       .finally(() => setLoadingBeads(false));
-  }, [isOpen, workingDir]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [isOpen, workingDir]);
 
   // Fetch sessions when dialog opens (only if a sessionId param is present)
   useEffect(() => {
@@ -396,7 +396,7 @@ export function PromptParameterDialog({
         setSessions([]);
       })
       .finally(() => setLoadingSessions(false));
-  }, [isOpen]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [isOpen]);
 
   // Fetch workspaces/agents when dialog opens (only if a relevant param is present)
   useEffect(() => {
@@ -426,7 +426,7 @@ export function PromptParameterDialog({
         setAcpServers([]);
       })
       .finally(() => setLoadingWorkspaces(false));
-  }, [isOpen, workingDir]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [isOpen, workingDir]);
 
   const handleFieldChange = useCallback((fieldName, val) => {
     setValues((prev) => ({ ...prev, [fieldName]: val }));
