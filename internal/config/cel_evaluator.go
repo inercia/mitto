@@ -68,6 +68,7 @@ func NewCELEvaluator() (*CELEvaluator, error) {
 		cel.Variable("Session.IsPeriodic", cel.BoolType),
 		cel.Variable("Session.IsPeriodicForced", cel.BoolType),
 		cel.Variable("Session.IsPeriodicConversation", cel.BoolType),
+		cel.Variable("Session.HasMessages", cel.BoolType),
 		cel.Variable("Session.HasBeadsIssue", cel.BoolType),
 		cel.Variable("Session.BeadsIssue", cel.StringType),
 		cel.Variable("Session.ModelTags", cel.ListType(cel.StringType)),
@@ -195,6 +196,51 @@ func NewCELEvaluator() (*CELEvaluator, error) {
 				cel.BinaryBinding(mittoDirExists),
 			),
 		),
+		cel.Function("__mitto_gitRepo",
+			cel.Overload("__mitto_gitRepo_string",
+				[]*cel.Type{cel.StringType},
+				cel.BoolType,
+				cel.UnaryBinding(mittoGitRepoUnary),
+			),
+			cel.Overload("__mitto_gitRepo_string_string",
+				[]*cel.Type{cel.StringType, cel.StringType},
+				cel.BoolType,
+				cel.BinaryBinding(mittoGitRepoBinary),
+			),
+		),
+		cel.Function("__mitto_gitFileModified",
+			cel.Overload("__mitto_gitFileModified_string_string",
+				[]*cel.Type{cel.StringType, cel.StringType},
+				cel.BoolType,
+				cel.BinaryBinding(mittoGitFileModified),
+			),
+		),
+		cel.Function("__mitto_gitDirModified",
+			cel.Overload("__mitto_gitDirModified_string",
+				[]*cel.Type{cel.StringType},
+				cel.BoolType,
+				cel.UnaryBinding(mittoGitDirModifiedUnary),
+			),
+			cel.Overload("__mitto_gitDirModified_string_string",
+				[]*cel.Type{cel.StringType, cel.StringType},
+				cel.BoolType,
+				cel.BinaryBinding(mittoGitDirModifiedBinary),
+			),
+		),
+		cel.Function("__mitto_gitTracked",
+			cel.Overload("__mitto_gitTracked_string_string",
+				[]*cel.Type{cel.StringType, cel.StringType},
+				cel.BoolType,
+				cel.BinaryBinding(mittoGitTracked),
+			),
+		),
+		cel.Function("__mitto_gitDeleted",
+			cel.Overload("__mitto_gitDeleted_string_string",
+				[]*cel.Type{cel.StringType, cel.StringType},
+				cel.BoolType,
+				cel.BinaryBinding(mittoGitDeleted),
+			),
+		),
 
 		// Macros rewrite user-facing convenience calls into the internal
 		// context-free functions above, injecting activation-sourced arguments.
@@ -208,6 +254,13 @@ func NewCELEvaluator() (*CELEvaluator, error) {
 			cel.ReceiverMacro("MatchesServerType", 1, acpMatchesServerTypeMacro),
 			cel.GlobalMacro("FileExists", 1, fileExistsMacro),
 			cel.GlobalMacro("DirExists", 1, dirExistsMacro),
+			cel.GlobalMacro("GitRepo", 0, gitRepoMacro0),
+			cel.GlobalMacro("GitRepo", 1, gitRepoMacro1),
+			cel.GlobalMacro("GitFileModified", 1, gitFileModifiedMacro),
+			cel.GlobalMacro("GitDirModified", 0, gitDirModifiedMacro0),
+			cel.GlobalMacro("GitDirModified", 1, gitDirModifiedMacro1),
+			cel.GlobalMacro("GitTracked", 1, gitTrackedMacro),
+			cel.GlobalMacro("GitDeleted", 1, gitDeletedMacro),
 		),
 	)
 	if err != nil {
@@ -333,6 +386,7 @@ func buildActivation(ctx *PromptEnabledContext) map[string]any {
 		"Session.IsPeriodic":             ctx.Session.IsPeriodic,
 		"Session.IsPeriodicForced":       ctx.Session.IsPeriodicForced,
 		"Session.IsPeriodicConversation": ctx.Session.IsPeriodicConversation,
+		"Session.HasMessages":            ctx.Session.HasMessages,
 		"Session.HasBeadsIssue":          ctx.Session.HasBeadsIssue,
 		"Session.BeadsIssue":             ctx.Session.BeadsIssue,
 		"Session.ModelTags":              ctx.Session.ModelTags,
@@ -451,6 +505,41 @@ func fileExistsMacro(eh cel.MacroExprFactory, _ celast.Expr, args []celast.Expr)
 // dirExistsMacro rewrites DirExists(p) -> __mitto_dirExists(Workspace.Folder, p).
 func dirExistsMacro(eh cel.MacroExprFactory, _ celast.Expr, args []celast.Expr) (celast.Expr, *celcommon.Error) {
 	return eh.NewCall("__mitto_dirExists", eh.NewIdent("Workspace.Folder"), args[0]), nil
+}
+
+// gitRepoMacro0 rewrites GitRepo() -> __mitto_gitRepo(Workspace.Folder).
+func gitRepoMacro0(eh cel.MacroExprFactory, _ celast.Expr, _ []celast.Expr) (celast.Expr, *celcommon.Error) {
+	return eh.NewCall("__mitto_gitRepo", eh.NewIdent("Workspace.Folder")), nil
+}
+
+// gitRepoMacro1 rewrites GitRepo(p) -> __mitto_gitRepo(Workspace.Folder, p).
+func gitRepoMacro1(eh cel.MacroExprFactory, _ celast.Expr, args []celast.Expr) (celast.Expr, *celcommon.Error) {
+	return eh.NewCall("__mitto_gitRepo", eh.NewIdent("Workspace.Folder"), args[0]), nil
+}
+
+// gitFileModifiedMacro rewrites GitFileModified(p) -> __mitto_gitFileModified(Workspace.Folder, p).
+func gitFileModifiedMacro(eh cel.MacroExprFactory, _ celast.Expr, args []celast.Expr) (celast.Expr, *celcommon.Error) {
+	return eh.NewCall("__mitto_gitFileModified", eh.NewIdent("Workspace.Folder"), args[0]), nil
+}
+
+// gitDirModifiedMacro0 rewrites GitDirModified() -> __mitto_gitDirModified(Workspace.Folder).
+func gitDirModifiedMacro0(eh cel.MacroExprFactory, _ celast.Expr, _ []celast.Expr) (celast.Expr, *celcommon.Error) {
+	return eh.NewCall("__mitto_gitDirModified", eh.NewIdent("Workspace.Folder")), nil
+}
+
+// gitDirModifiedMacro1 rewrites GitDirModified(p) -> __mitto_gitDirModified(Workspace.Folder, p).
+func gitDirModifiedMacro1(eh cel.MacroExprFactory, _ celast.Expr, args []celast.Expr) (celast.Expr, *celcommon.Error) {
+	return eh.NewCall("__mitto_gitDirModified", eh.NewIdent("Workspace.Folder"), args[0]), nil
+}
+
+// gitTrackedMacro rewrites GitTracked(p) -> __mitto_gitTracked(Workspace.Folder, p).
+func gitTrackedMacro(eh cel.MacroExprFactory, _ celast.Expr, args []celast.Expr) (celast.Expr, *celcommon.Error) {
+	return eh.NewCall("__mitto_gitTracked", eh.NewIdent("Workspace.Folder"), args[0]), nil
+}
+
+// gitDeletedMacro rewrites GitDeleted(p) -> __mitto_gitDeleted(Workspace.Folder, p).
+func gitDeletedMacro(eh cel.MacroExprFactory, _ celast.Expr, args []celast.Expr) (celast.Expr, *celcommon.Error) {
+	return eh.NewCall("__mitto_gitDeleted", eh.NewIdent("Workspace.Folder"), args[0]), nil
 }
 
 // valToString returns the Go string for a CEL string value, or "" otherwise.
@@ -579,6 +668,50 @@ func mittoFileExists(folderVal, pathVal ref.Val) ref.Val {
 // Delegates to dirExists (templatefuncs.go).
 func mittoDirExists(folderVal, pathVal ref.Val) ref.Val {
 	return types.Bool(dirExists(valToString(folderVal), valToString(pathVal)))
+}
+
+// mittoGitRepoUnary reports whether the workspace folder is inside a git work
+// tree. Delegates to gitRepo with an empty path.
+func mittoGitRepoUnary(folderVal ref.Val) ref.Val {
+	return types.Bool(gitRepo(valToString(folderVal), ""))
+}
+
+// mittoGitRepoBinary reports whether the given directory (second arg, relative
+// to the workspace folder) is inside a git work tree. Delegates to gitRepo.
+func mittoGitRepoBinary(folderVal, pathVal ref.Val) ref.Val {
+	return types.Bool(gitRepo(valToString(folderVal), valToString(pathVal)))
+}
+
+// mittoGitFileModified reports whether a tracked file has pending changes.
+// Relative paths are resolved against the workspace folder (first argument).
+// Delegates to gitFileModified (templatefuncs.go).
+func mittoGitFileModified(folderVal, pathVal ref.Val) ref.Val {
+	return types.Bool(gitFileModified(valToString(folderVal), valToString(pathVal)))
+}
+
+// mittoGitDirModifiedUnary reports whether the whole work tree under the
+// workspace folder is dirty. Delegates to gitDirModified with an empty path.
+func mittoGitDirModifiedUnary(folderVal ref.Val) ref.Val {
+	return types.Bool(gitDirModified(valToString(folderVal), ""))
+}
+
+// mittoGitDirModifiedBinary reports whether the given directory (second arg,
+// relative to the workspace folder) is dirty. Delegates to gitDirModified.
+func mittoGitDirModifiedBinary(folderVal, pathVal ref.Val) ref.Val {
+	return types.Bool(gitDirModified(valToString(folderVal), valToString(pathVal)))
+}
+
+// mittoGitTracked reports whether path is tracked by git. Relative paths are
+// resolved against the workspace folder (first argument). Delegates to gitTracked.
+func mittoGitTracked(folderVal, pathVal ref.Val) ref.Val {
+	return types.Bool(gitTracked(valToString(folderVal), valToString(pathVal)))
+}
+
+// mittoGitDeleted reports whether a tracked file has been deleted. Relative
+// paths are resolved against the workspace folder (first argument). Delegates
+// to gitDeleted.
+func mittoGitDeleted(folderVal, pathVal ref.Val) ref.Val {
+	return types.Bool(gitDeleted(valToString(folderVal), valToString(pathVal)))
 }
 
 // extractStringArgs extracts string values from CEL function arguments.

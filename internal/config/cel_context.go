@@ -120,6 +120,10 @@ type SessionContext struct {
 	ID string
 	// Name is the display name of the session
 	Name string
+	// HasMessages indicates whether the conversation has had at least one user
+	// message (derived from meta.LastUserMessageAt being non-zero). Used to gate
+	// "continue"-style prompts that make no sense in an empty conversation.
+	HasMessages bool
 	// IsChild indicates whether this session has a parent (is a child session)
 	IsChild bool
 	// IsAutoChild indicates whether this session was automatically created
@@ -161,10 +165,25 @@ type SessionContext struct {
 type ParentContext struct {
 	// Exists indicates whether a parent session exists
 	Exists bool
+	// ID is the session identifier of the parent session (empty if no parent)
+	ID string
 	// Name is the display name of the parent session
 	Name string
 	// ACPServer is the ACP server name of the parent session
 	ACPServer string
+}
+
+// Ref renders the parent reference as "id (name)", or just "id" when the name is
+// empty, or "" when there is no parent. Mirrors the @mitto:parent formatter and
+// backs the {{ .Parent.Ref }} template accessor.
+func (p ParentContext) Ref() string {
+	if p.ID == "" {
+		return ""
+	}
+	if p.Name != "" {
+		return p.ID + " (" + p.Name + ")"
+	}
+	return p.ID
 }
 
 // ChildInfo describes a single child session for template rendering.

@@ -418,7 +418,7 @@ func TestCELEvaluator_AllContextFields(t *testing.T) {
 	ctx := &PromptEnabledContext{
 		ACP:       ACPContext{Name: "test", Type: "mytype", Tags: []string{"t1"}, AutoApprove: true},
 		Workspace: WorkspaceContext{UUID: "wu", Folder: "/ws", Name: "My WS"},
-		Session:   SessionContext{ID: "sid", Name: "sname", IsChild: true, IsAutoChild: false, ParentID: "pid", IsPeriodicConversation: true, ModelTags: []string{"smart"}},
+		Session:   SessionContext{ID: "sid", Name: "sname", IsChild: true, IsAutoChild: false, ParentID: "pid", IsPeriodicConversation: true, HasMessages: true, ModelTags: []string{"smart"}},
 		Parent:    ParentContext{Exists: true, Name: "pname", ACPServer: "pacp"},
 		Children:  ChildrenContext{Count: 3, Exists: true, MCPCount: 2, Names: []string{"c1"}, ACPServers: []string{"a1"}, PromptingCount: 1, IdleCount: 2},
 		Tools:     ToolsContext{Available: true, Names: []string{"tool_a", "tool_b"}},
@@ -446,6 +446,7 @@ func TestCELEvaluator_AllContextFields(t *testing.T) {
 		`!Session.IsAutoChild`,
 		`Session.ParentID == "pid"`,
 		`Session.IsPeriodicConversation`,
+		`Session.HasMessages`,
 		`"smart" in Session.ModelTags`,
 		`Session.HasModelTag("smart")`,
 		`Parent.Exists`,
@@ -498,6 +499,26 @@ func TestCELEvaluator_SessionIsPeriodicConversation(t *testing.T) {
 	}
 	if got := evaluate(t, e, ce, falseCtx); got {
 		t.Error("expected false when IsPeriodicConversation=false")
+	}
+}
+
+// TestCELEvaluator_SessionHasMessages validates the Session.HasMessages variable.
+func TestCELEvaluator_SessionHasMessages(t *testing.T) {
+	e := newTestEvaluator(t)
+	ce := compile(t, e, "Session.HasMessages")
+
+	trueCtx := &PromptEnabledContext{
+		Session: SessionContext{HasMessages: true},
+	}
+	if got := evaluate(t, e, ce, trueCtx); !got {
+		t.Error("expected true when HasMessages=true")
+	}
+
+	falseCtx := &PromptEnabledContext{
+		Session: SessionContext{HasMessages: false},
+	}
+	if got := evaluate(t, e, ce, falseCtx); got {
+		t.Error("expected false when HasMessages=false")
 	}
 }
 
