@@ -1702,7 +1702,6 @@ func TestIterateFixingBugs_RendersForRepresentativeContexts(t *testing.T) {
 	}
 }
 
-
 // TestIterateImplementingFeatures_RendersForRepresentativeContexts is the
 // list-level orchestrator counterpart for the feature flow (mitto-gap.6):
 // it parses beads-issue-iterate-implementing-features.prompt.yaml from disk,
@@ -1819,8 +1818,6 @@ func TestIterateImplementingFeatures_RendersForRepresentativeContexts(t *testing
 		t.Errorf("branch (b): unexpected Commit=\"true\" in child arguments when Commit arg is \"false\"; got:\n%s", outB)
 	}
 }
-
-
 
 // TestBugFixPhasePrompts_ParseAndDeclarePreferredModels verifies that the three
 // per-phase bug-fix prompts (Option A tiering, mitto-gap.1) parse from disk,
