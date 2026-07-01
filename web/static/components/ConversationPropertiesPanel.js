@@ -21,6 +21,7 @@ import { Drawer } from "./Drawer.js";
 import { Tooltip } from "./Tooltip.js";
 import { canRevealInFinder, revealInFinder } from "../utils/native.js";
 import { getContextWindowSize } from "../utils/models.js";
+import { ConfigOptionSelect } from "./ConfigOptionSelect.js";
 
 /**
  * Format a token count into a compact human-readable string.
@@ -189,56 +190,9 @@ function formatRelativeTime(targetDate) {
   }
 }
 
-/**
- * ConfigOptionSelect - Select dropdown for a config option with immediate description update
- * Tracks local selected value so description updates immediately on change
- */
-function ConfigOptionSelect({ configOption, onSetConfigOption, isStreaming }) {
-  // Track local selected value for immediate description update
-  const [localValue, setLocalValue] = useState(configOption.current_value);
-
-  // Sync local value when server confirms the change
-  useEffect(() => {
-    setLocalValue(configOption.current_value);
-  }, [configOption.current_value]);
-
-  const handleChange = useCallback(
-    (e) => {
-      const newValue = e.target.value;
-      setLocalValue(newValue); // Update immediately for description
-      onSetConfigOption?.(configOption.id, newValue);
-    },
-    [configOption.id, onSetConfigOption],
-  );
-
-  // Find the option matching the local value for description display
-  const selectedOpt = configOption.options?.find((o) => o.value === localValue);
-
-  return html`
-    <select
-      class="select select-sm w-full"
-      value=${localValue || ""}
-      onChange=${handleChange}
-      disabled=${isStreaming}
-      title=${isStreaming
-        ? `Cannot change ${configOption.name.toLowerCase()} while streaming`
-        : configOption.description ||
-          `Select ${configOption.name.toLowerCase()}`}
-    >
-      ${configOption.options?.map(
-        (opt) => html`
-          <option value=${opt.value} title=${opt.description || ""}>
-            ${opt.name}
-          </option>
-        `,
-      )}
-    </select>
-    ${selectedOpt?.description &&
-    html`
-      <p class="mt-1 text-xs text-mitto-text-500">${selectedOpt.description}</p>
-    `}
-  `;
-}
+// ConfigOptionSelect is imported from the shared ./ConfigOptionSelect.js
+// component (used here with the "block" variant, showing the option description
+// and disabling the control while the session is streaming).
 
 /**
  * ConversationPropertiesPanel - Fixed overlay panel for conversation properties
@@ -1100,6 +1054,8 @@ export function ConversationPropertiesPanel({
                     configOption=${configOption}
                     onSetConfigOption=${onSetConfigOption}
                     isStreaming=${isStreaming}
+                    showDescription=${true}
+                    disableWhileStreaming=${true}
                   />
                 `}
 

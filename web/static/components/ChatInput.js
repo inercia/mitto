@@ -27,7 +27,8 @@ import { useResizeHandle } from "../hooks/useResizeHandle.js";
 import { SlashCommandPicker } from "./SlashCommandPicker.js";
 import { PeriodicFrequencyPanel } from "./PeriodicFrequencyPanel.js";
 import { SavePromptDialog } from "./SavePromptDialog.js";
-import { GripIcon, ChevronDownIcon, CheckIcon } from "./Icons.js";
+import { GripIcon } from "./Icons.js";
+import { ConfigOptionSelect } from "./ConfigOptionSelect.js";
 import { PromptsMenu } from "./PromptsMenu.js";
 import {
   flattenPrompts,
@@ -99,108 +100,9 @@ function wireMittoFileMarkers(root) {
   });
 }
 
-/**
- * ChatInputConfigSelect - daisyUI dropdown for a config option with optimistic
- * local state. Prevents the trigger label from reverting to the old value while
- * waiting for the server's config_option_changed WebSocket response.
- *
- * Uses a daisyUI `dropdown` (details/summary) instead of a native <select> so the
- * menu is fully themed. The composition toolbar sits at the bottom of the screen,
- * so the menu opens upward via the scoped `.chat-input-config-dropdown` CSS.
- */
-function ChatInputConfigSelect({
-  configOption,
-  onSetConfigOption,
-  isStreaming,
-}) {
-  const [localValue, setLocalValue] = useState(configOption.current_value);
-  const [open, setOpen] = useState(false);
-  const detailsRef = useRef(null);
-
-  // Sync local value when server confirms the change
-  useEffect(() => {
-    setLocalValue(configOption.current_value);
-  }, [configOption.current_value]);
-
-  // Close on outside click / Escape while open (native <details> does not do this)
-  useEffect(() => {
-    if (!open) return undefined;
-    const onDocPointer = (e) => {
-      if (detailsRef.current && !detailsRef.current.contains(e.target)) {
-        setOpen(false);
-      }
-    };
-    const onKey = (e) => {
-      if (e.key === "Escape") setOpen(false);
-    };
-    document.addEventListener("mousedown", onDocPointer);
-    document.addEventListener("keydown", onKey);
-    return () => {
-      document.removeEventListener("mousedown", onDocPointer);
-      document.removeEventListener("keydown", onKey);
-    };
-  }, [open]);
-
-  const handleSelect = useCallback(
-    (newValue) => {
-      setLocalValue(newValue); // Update immediately (optimistic)
-      onSetConfigOption?.(configOption.id, newValue);
-      setOpen(false);
-    },
-    [configOption.id, onSetConfigOption],
-  );
-
-  const currentOption = configOption.options.find(
-    (o) => o.value === localValue,
-  );
-  const currentLabel = currentOption
-    ? currentOption.name
-    : localValue || configOption.name;
-  const tip = isStreaming
-    ? configOption.name + " will apply to the next prompt"
-    : configOption.description || "Select " + configOption.name.toLowerCase();
-
-  return html`
-    <details
-      ref=${detailsRef}
-      class="dropdown chat-input-config-dropdown"
-      open=${open}
-      onToggle=${(e) => {
-        const isOpen = e.currentTarget.open;
-        if (isOpen !== open) setOpen(isOpen);
-      }}
-    >
-      <summary
-        class="btn btn-ghost btn-xs font-normal list-none flex-nowrap max-w-[200px] tooltip tooltip-top"
-        data-tip=${tip}
-        aria-label=${configOption.name}
-      >
-        <span class="truncate min-w-0">${currentLabel}</span>
-        <${ChevronDownIcon} className="w-3 h-3 opacity-60" />
-      </summary>
-      <ul
-        class="dropdown-content menu menu-sm bg-mitto-surface-2 rounded-box z-10 w-52 p-2 shadow border border-mitto-border-1 max-h-64 overflow-y-auto flex-nowrap"
-      >
-        ${configOption.options.map(
-          (opt) => html`
-            <li key=${opt.value}>
-              <button
-                type="button"
-                class=${opt.value === localValue ? "menu-active" : ""}
-                onClick=${() => handleSelect(opt.value)}
-              >
-                ${opt.value === localValue
-                  ? html`<${CheckIcon} className="w-4 h-4" />`
-                  : html`<span class="inline-block w-4 h-4"></span>`}
-                <span class="truncate">${opt.name}</span>
-              </button>
-            </li>
-          `,
-        )}
-      </ul>
-    </details>
-  `;
-}
+// ChatInputConfigSelect has been extracted to the shared ConfigOptionSelect
+// component (./ConfigOptionSelect.js), used here with the "toolbar" variant so
+// the menu opens upward from the bottom composition toolbar.
 
 /**
  * PromptStopButton - Stop button shown inside an active MCP UI prompt panel.
@@ -3136,11 +3038,13 @@ ${activeUIPrompt.text || ""}</textarea
                 <div class="chat-input-model-selector">
                   ${selectConfigOptions.map(
                     (configOpt) => html`
-                      <${ChatInputConfigSelect}
+                      <${ConfigOptionSelect}
                         key=${configOpt.id}
                         configOption=${configOpt}
                         onSetConfigOption=${onSetConfigOption}
                         isStreaming=${isStreaming}
+                        variant="toolbar"
+                        placement="top"
                       />
                     `,
                   )}

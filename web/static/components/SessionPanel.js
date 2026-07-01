@@ -23,6 +23,7 @@ import { statusBadge as beadsStatusBadge } from "./BeadsView.js";
 import { formatTimeAgo, looksLikeFilePath } from "../lib.js";
 import { canRevealInFinder, revealInFinder } from "../utils/native.js";
 import { isNativeApp, getAPIPrefix } from "../utils/index.js";
+import { ConfigOptionSelect } from "./ConfigOptionSelect.js";
 
 // ---------------------------------------------------------------------------
 // Helpers (copied from ConversationPropertiesPanel)
@@ -161,48 +162,8 @@ function TriStateCheckbox({ value, onChange, disabled = false, title = "" }) {
   `;
 }
 
-function ConfigOptionSelect({ configOption, onSetConfigOption, isStreaming }) {
-  const [localValue, setLocalValue] = useState(configOption.current_value);
-
-  useEffect(() => {
-    setLocalValue(configOption.current_value);
-  }, [configOption.current_value]);
-
-  const handleChange = useCallback(
-    (e) => {
-      const newValue = e.target.value;
-      setLocalValue(newValue);
-      onSetConfigOption?.(configOption.id, newValue);
-    },
-    [configOption.id, onSetConfigOption],
-  );
-
-  const selectedOpt = configOption.options?.find((o) => o.value === localValue);
-
-  return html`
-    <select
-      class="select select-sm w-full"
-      value=${localValue || ""}
-      onChange=${handleChange}
-      title=${isStreaming
-        ? `${configOption.name} will apply to the next prompt`
-        : configOption.description ||
-          `Select ${configOption.name.toLowerCase()}`}
-    >
-      ${configOption.options?.map(
-        (opt) => html`
-          <option value=${opt.value} title=${opt.description || ""}>
-            ${opt.name}
-          </option>
-        `,
-      )}
-    </select>
-    ${selectedOpt?.description &&
-    html`<p class="mt-1 text-xs text-mitto-text-500">
-      ${selectedOpt.description}
-    </p>`}
-  `;
-}
+// ConfigOptionSelect is imported from the shared ./ConfigOptionSelect.js
+// component (used here with the default "block" variant for the properties panel).
 
 // ---------------------------------------------------------------------------
 // Main SessionPanel component
@@ -1624,6 +1585,7 @@ export function SessionPanel({
                   configOption=${configOption}
                   onSetConfigOption=${onSetConfigOption}
                   isStreaming=${isStreaming}
+                  showDescription=${true}
                 />
               `}
               ${configOption.type === "toggle" &&
