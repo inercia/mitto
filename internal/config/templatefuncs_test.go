@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -17,6 +18,32 @@ import (
 func evalCEL(t *testing.T, e *CELEvaluator, expr string, ctx *PromptEnabledContext) bool {
 	t.Helper()
 	return evaluate(t, e, compile(t, e, expr), ctx)
+}
+
+// newGitRepo initializes a temp git repository with one committed file
+// ("tracked.txt") and returns its path. Skips the test when git is absent.
+func newGitRepo(t *testing.T) string {
+	t.Helper()
+	if !commandExists("git") {
+		t.Skip("git not installed")
+	}
+	dir := t.TempDir()
+	run := func(args ...string) {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	run("init")
+	run("config", "user.email", "test@example.com")
+	run("config", "user.name", "Test")
+	if err := os.WriteFile(filepath.Join(dir, "tracked.txt"), []byte("hello\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	run("add", "tracked.txt")
+	run("commit", "-m", "init")
+	return dir
 }
 
 // =============================================================================
@@ -119,6 +146,112 @@ func TestParity_CommandExists(t *testing.T) {
 				t.Errorf("parity failure: go=%v cel=%v for cmd %q", goResult, celResult, tc.cmd)
 			}
 		})
+	}
+}
+
+// TestParity_GitHelpers walks a single git repo through a sequence of state
+// mutations, asserting Go helper result == CEL eval result == expected bool
+// at every step (mitto-d01).
+func TestParity_GitHelpers(t *testing.T) {
+	dir := newGitRepo(t)
+	e := newTestEvaluator(t)
+	ctx := &PromptEnabledContext{Workspace: WorkspaceContext{Folder: dir}}
+
+	check := func(label string, goResult bool, celExpr string, want bool) {
+		t.Helper()
+		celResult := evalCEL(t, e, celExpr, ctx)
+		if goResult != celResult {
+			t.Errorf("%s: parity failure go=%v cel=%v", label, goResult, celResult)
+		}
+		if goResult != want {
+			t.Errorf("%s: got=%v want=%v", label, goResult, want)
+		}
+	}
+
+	// Step 1: freshly committed repo — everything clean.
+	check("tracked after setup", gitTracked(dir, "tracked.txt"), `GitTracked("tracked.txt")`, true)
+	check("fileModified after setup", gitFileModified(dir, "tracked.txt"), `GitFileModified("tracked.txt")`, false)
+	check("deleted after setup", gitDeleted(dir, "tracked.txt"), `GitDeleted("tracked.txt")`, false)
+	check("dirModified after setup", gitDirModified(dir, ""), `GitDirModified("")`, false)
+
+	// Step 2: add an untracked file.
+	if err := os.WriteFile(filepath.Join(dir, "untracked.txt"), []byte("x"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	check("tracked untracked.txt", gitTracked(dir, "untracked.txt"), `GitTracked("untracked.txt")`, false)
+	check("fileModified untracked.txt", gitFileModified(dir, "untracked.txt"), `GitFileModified("untracked.txt")`, false)
+	check("dirModified after untracked add", gitDirModified(dir, ""), `GitDirModified("")`, true)
+
+	// Step 3: modify the tracked file.
+	f, err := os.OpenFile(filepath.Join(dir, "tracked.txt"), os.O_APPEND|os.O_WRONLY, 0644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.WriteString("more\n"); err != nil {
+		t.Fatal(err)
+	}
+	f.Close()
+	check("fileModified after edit", gitFileModified(dir, "tracked.txt"), `GitFileModified("tracked.txt")`, true)
+	check("dirModified after edit", gitDirModified(dir, ""), `GitDirModified("")`, true)
+
+	// Step 4: remove the tracked file (unstaged deletion).
+	if err := os.Remove(filepath.Join(dir, "tracked.txt")); err != nil {
+		t.Fatal(err)
+	}
+	check("deleted after remove", gitDeleted(dir, "tracked.txt"), `GitDeleted("tracked.txt")`, true)
+	check("fileModified after remove", gitFileModified(dir, "tracked.txt"), `GitFileModified("tracked.txt")`, true)
+	check("tracked after remove", gitTracked(dir, "tracked.txt"), `GitTracked("tracked.txt")`, true)
+
+	// Step 5: a path that never existed.
+	check("tracked absent.txt", gitTracked(dir, "absent.txt"), `GitTracked("absent.txt")`, false)
+	check("fileModified absent.txt", gitFileModified(dir, "absent.txt"), `GitFileModified("absent.txt")`, false)
+	check("deleted absent.txt", gitDeleted(dir, "absent.txt"), `GitDeleted("absent.txt")`, false)
+
+	// 0-arg GitDirModified() must equal the explicit "" form and GitDirModified(".").
+	dirModified0 := evalCEL(t, e, `GitDirModified()`, ctx)
+	dirModifiedEmpty := evalCEL(t, e, `GitDirModified("")`, ctx)
+	dirModifiedDot := evalCEL(t, e, `GitDirModified(".")`, ctx)
+	if dirModified0 != dirModifiedEmpty {
+		t.Errorf("GitDirModified() = %v, GitDirModified(\"\") = %v", dirModified0, dirModifiedEmpty)
+	}
+	if dirModified0 != dirModifiedDot {
+		t.Errorf("GitDirModified() = %v, GitDirModified(\".\") = %v", dirModified0, dirModifiedDot)
+	}
+	if dirModified0 != gitDirModified(dir, "") {
+		t.Errorf("GitDirModified() = %v, gitDirModified(dir,\"\") = %v", dirModified0, gitDirModified(dir, ""))
+	}
+}
+
+// TestBuildTemplateFuncMap_GitFuncsRenderSmoke verifies GitFileModified and the
+// 0-arg GitDirModified form render correctly through RenderPromptTemplate.
+func TestBuildTemplateFuncMap_GitFuncsRenderSmoke(t *testing.T) {
+	dir := newGitRepo(t)
+	f, err := os.OpenFile(filepath.Join(dir, "tracked.txt"), os.O_APPEND|os.O_WRONLY, 0644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.WriteString("more\n"); err != nil {
+		t.Fatal(err)
+	}
+	f.Close()
+
+	ctx := &PromptEnabledContext{Workspace: WorkspaceContext{Folder: dir}}
+	fm := BuildTemplateFuncMap(ctx)
+
+	got, err := RenderPromptTemplate("test", `{{ if GitFileModified "tracked.txt" }}yes{{ else }}no{{ end }}`, ctx, fm)
+	if err != nil {
+		t.Fatalf("render error: %v", err)
+	}
+	if got != "yes" {
+		t.Errorf("GitFileModified render = %q, want %q", got, "yes")
+	}
+
+	got, err = RenderPromptTemplate("test", `{{ if GitDirModified }}yes{{ else }}no{{ end }}`, ctx, fm)
+	if err != nil {
+		t.Fatalf("render error: %v", err)
+	}
+	if got != "yes" {
+		t.Errorf("GitDirModified render = %q, want %q", got, "yes")
 	}
 }
 
@@ -464,6 +597,7 @@ func TestBuildTemplateFuncMap_AllKeysPresent(t *testing.T) {
 	expected := []string{
 		"Arg", "Default", "UserData",
 		"FileExists", "DirExists", "CommandExists", "HasPattern", "Model",
+		"GitFileModified", "GitDirModified", "GitTracked", "GitDeleted",
 		"Trim", "Lower", "Upper", "Contains", "HasPrefix", "HasSuffix", "Join",
 	}
 	for _, key := range expected {
