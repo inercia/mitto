@@ -170,17 +170,6 @@ export function PromptsMenu({
                   />
                 </svg>`}
           <span class="truncate flex-1 min-w-0">${prompt.name}</span>
-          ${overrideModel &&
-          html`<span
-            class="text-[10px] font-bold px-1.5 py-0.5 rounded bg-mitto-accent-600/80 text-white/90 shrink-0"
-            title=${"Runs on " +
-            overrideModel.name +
-            " for this prompt" +
-            (curModelName
-              ? " — your conversation model stays " + curModelName
-              : "")}
-            >⚡</span
-          >`}
           ${!periodicToggle &&
           prompt.periodic &&
           html`<span
@@ -199,9 +188,12 @@ export function PromptsMenu({
                   : promptPeriodicDefaultOn(prompt);
               return html`<input
                 type="checkbox"
-                class="toggle toggle-primary shrink-0"
+                class="checkbox checkbox-sm shrink-0"
+                style="background-color: transparent"
                 checked=${on}
-                title="Run as periodic (recurring) conversation"
+                title=${on
+                  ? "Periodic: ON — click to disable recurring runs"
+                  : "Periodic: OFF — click to run as recurring conversation"}
                 onClick=${(e) => e.stopPropagation()}
                 onChange=${(e) => {
                   e.stopPropagation();
@@ -219,6 +211,17 @@ export function PromptsMenu({
               ><${PeriodicIcon} className="w-3.5 h-3.5"
             /></span>`;
           })()}
+          ${overrideModel &&
+          html`<span
+            class="text-[10px] font-bold px-1.5 py-0.5 rounded bg-mitto-accent-600/80 text-white/90 shrink-0"
+            title=${"Runs on " +
+            overrideModel.name +
+            " for this prompt" +
+            (curModelName
+              ? " — your conversation model stays " + curModelName
+              : "")}
+            >⚡</span
+          >`}
           ${showSourceBadge &&
           html`<span
             class="text-[10px] font-bold px-1.5 py-0.5 rounded ${getBadgeInfo(

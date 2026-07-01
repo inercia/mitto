@@ -140,8 +140,14 @@ export function SessionItem({
   // Check if session is archived
   const isArchived = session.archived || false;
 
-  // Check if periodic is enabled for this session
+  // Check if periodic is enabled for this session (runs active → clock icon +
+  // progress bar). Distinct from periodic_configured, which is true even when a
+  // periodic conversation is paused/draft.
   const isPeriodicEnabled = session.periodic_enabled || false;
+  // Whether a periodic config exists at all (enabled OR paused/draft). Used to
+  // gate the "Make periodic" / "Make non-periodic" context-menu actions so a
+  // paused periodic conversation is not offered "Make periodic" again.
+  const isPeriodicConfigured = session.periodic_configured || false;
 
   // Leading category icon for the unified-tree row:
   //   regular  -> mitto bubble (muted)
@@ -319,7 +325,7 @@ export function SessionItem({
     session,
     workingDir,
     isArchived,
-    isPeriodicEnabled,
+    isPeriodicConfigured,
     isSpawned,
     canArchive,
     archiveBlockedReason,

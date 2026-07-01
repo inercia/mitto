@@ -46,7 +46,6 @@ import {
   SettingsIcon,
   RobotIcon,
   BeadsIcon,
-  HomeIcon,
   FilterIcon,
   TerminalIcon,
   EllipsisIcon,
@@ -210,8 +209,7 @@ export function SessionList({
   onRunBeadsListPrompt, // (prompt, workingDir) => run a beadsList prompt
   onBeadsRefresh, // (workingDir) => open the beads view and refresh its list
   onBeadsCleanup, // (workingDir) => open the beads view and clean up closed issues
-  onShowDashboard,
-  mainView = "conversation", // Current main-content view: "conversation" | "beads" | "dashboard"
+  mainView = "conversation", // Current main-content view: "conversation" | "beads"
   beadsWorkingDir = null, // Working dir whose Tasks (beads) view is open, when mainView === "beads"
   queueLength = 0,
   onFetchConversationPrompts, // Async (session, workingDir) => prompts[] for the context menu
@@ -943,13 +941,13 @@ export function SessionList({
   const getEmptyMessage = () => "No conversations yet";
 
   // Render the unified sidebar tree (mitto-1er.3): daisyUI `menu` with CONTROLLED
-  // <details> expansion. Consumes computeUnifiedTree (Dashboard + folders, each with
+  // <details> expansion. Consumes computeUnifiedTree (folders, each with
   // conversations[]/archived[] and a Tasks node). Folders and the per-folder Archived
   // subgroup are controlled <details>; parent-child nesting reuses the existing
-  // SessionItem expand/collapse mechanism. Static Dashboard/Tasks rows are placeholders
+  // SessionItem expand/collapse mechanism. Static Tasks rows are placeholders
   // here — their behavior is wired in mitto-1er.7; per-category icons in mitto-1er.5.
   const renderUnifiedTree = () => {
-    const { dashboard, folders } = filteredTree;
+    const { folders } = filteredTree;
     const allFolderKeys = folders.map((f) => f.key);
 
     // All parent keys across the whole tree, so opening one parent collapses the
@@ -1065,21 +1063,6 @@ export function SessionList({
 
     return html`
       <ul class="menu menu-sm w-full p-0 flex-nowrap">
-        <!-- Dashboard (static, top-level) — clears the active session to show
-             the no-session view. Not a conversation; excluded from nav. -->
-        <li>
-          <button
-            type="button"
-            onClick=${() => onShowDashboard && onShowDashboard()}
-            aria-current=${!activeSessionId ? "page" : undefined}
-            class="gap-2 text-sm ${!activeSessionId
-              ? "text-mitto-text-strong bg-mitto-surface-3"
-              : "text-mitto-text-muted"}"
-          >
-            <${HomeIcon} className="w-4 h-4 shrink-0" />
-            <span class="truncate">${dashboard.label}</span>
-          </button>
-        </li>
         ${(() => {
           // When any folder has a group assigned, render collapsible group
           // sections (named groups + a trailing "Other" for ungrouped folders).
@@ -1763,7 +1746,7 @@ export function SessionList({
         }
       </div>
       <!-- Side panel toolbar: panel-wide actions, sitting right above the
-           Dashboard entry. Holds, in order: new-conversation, workspaces,
+           conversation tree. Holds, in order: new-conversation, workspaces,
            category-filter, density, search, and settings. Workspaces and
            settings were moved up from the footer; they are disabled (greyed)
            rather than hidden when the configuration is read-only. -->

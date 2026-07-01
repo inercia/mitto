@@ -68,7 +68,7 @@ export function useSessionNavigation({
   // targets, archived conversations are never cycling targets, and cycling never
   // crosses into another folder. Children and archived conversations remain
   // visible in the sidebar; this only affects swipe/keyboard navigation.
-  // Static nodes (Dashboard, Tasks) are excluded by the flattener.
+  // Static nodes (Tasks) are excluded by the flattener.
   // In VISIBLE_GROUPS cycling mode, also skip entries whose folder is collapsed
   // — defaults mirror the sidebar: folders expanded.
   const navigableSessions = useMemo(() => {

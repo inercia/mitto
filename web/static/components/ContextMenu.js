@@ -255,11 +255,18 @@ function ContextMenuItem({ item, onClose }) {
                     ${sub.periodicMode === "optional"
                       ? html`<input
                           type="checkbox"
-                          class="toggle toggle-primary shrink-0"
+                          class="checkbox checkbox-sm shrink-0"
+                          style="background-color: transparent"
                           checked=${periodicOverrides[sub.label] !== undefined
                             ? periodicOverrides[sub.label]
                             : sub.periodicDefaultOn}
-                          title="Run as periodic (recurring) conversation"
+                          title=${(
+                            periodicOverrides[sub.label] !== undefined
+                              ? periodicOverrides[sub.label]
+                              : sub.periodicDefaultOn
+                          )
+                            ? "Periodic: ON — click to disable recurring runs"
+                            : "Periodic: OFF — click to run as recurring conversation"}
                           onClick=${(e) => e.stopPropagation()}
                           onChange=${(e) => {
                             e.stopPropagation();

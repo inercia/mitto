@@ -25,7 +25,7 @@ export function useConversationMenu({
   session,
   workingDir = "",
   isArchived = false,
-  isPeriodicEnabled = false,
+  isPeriodicConfigured = false,
   isSpawned = false,
   canArchive = true,
   archiveBlockedReason = null,
@@ -124,8 +124,11 @@ export function useConversationMenu({
             },
           ]
         : []),
-      // "Make periodic" — only for non-periodic, non-spawned, non-archived sessions
-      ...(!isPeriodicEnabled && !isSpawned && !isArchived
+      // "Make periodic" — only for conversations without a periodic config yet,
+      // non-spawned, non-archived. Gated on periodic_configured (not
+      // periodic_enabled) so a paused/draft periodic conversation is still
+      // treated as already periodic and does not offer "Make periodic" again.
+      ...(!isPeriodicConfigured && !isSpawned && !isArchived
         ? [
             {
               label: "Make periodic",
@@ -134,8 +137,9 @@ export function useConversationMenu({
             },
           ]
         : []),
-      // "Make non-periodic" — inverse: only for periodic, non-spawned sessions
-      ...(isPeriodicEnabled && !isSpawned
+      // "Make non-periodic" — inverse: any conversation that has a periodic
+      // config (enabled OR paused/draft), non-spawned, can remove it.
+      ...(isPeriodicConfigured && !isSpawned
         ? [
             {
               label: "Make non-periodic",
@@ -175,7 +179,7 @@ export function useConversationMenu({
     onSendPromptToConversation,
     session,
     onRename,
-    isPeriodicEnabled,
+    isPeriodicConfigured,
     isSpawned,
     isArchived,
     onMakePeriodic,

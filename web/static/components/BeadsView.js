@@ -4363,9 +4363,12 @@ export function BeadsView({
                                 : promptPeriodicDefaultOn(p);
                             return html`<input
                               type="checkbox"
-                              class="toggle toggle-primary shrink-0"
+                              class="checkbox checkbox-sm shrink-0"
+                              style="background-color: transparent"
                               checked=${on}
-                              title="Run as periodic (recurring) conversation"
+                              title=${on
+                                ? "Periodic: ON — click to disable recurring runs"
+                                : "Periodic: OFF — click to run as recurring conversation"}
                               onClick=${(e) => e.stopPropagation()}
                               onChange=${(e) => {
                                 e.stopPropagation();
