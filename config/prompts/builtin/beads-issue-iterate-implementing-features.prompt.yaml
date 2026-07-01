@@ -1,0 +1,282 @@
+icon: periodic
+name: Iterate implementing features
+menus: beadsList
+parameters:
+  - name: Commit
+    type: boolean
+    description: Have each per-feature child commit its work at the end of the review stage (default true)
+description: One-shot list orchestrator — implement eligible open features one at a time by spawning a self-driving per-feature loop for each, waiting for it to finish, then moving on
+backgroundColor: '#C8E6C9'
+group: Tasks
+enabledWhen: '!Session.IsChild && CommandExists("bd") && DirExists(".beads") && Tools.HasPattern("mitto_conversation_*")'
+prompt: |
+  ## Session Context
+
+  Your session ID is `{{ .Session.ID }}` — use this as `self_id` for all `mitto_*` MCP tool calls.
+  Available ACP servers: `{{ .ACP.AvailableText }}`
+  Existing children: `{{ .Children.MCPText }}`
+
+  # Beads: Iterate Implementing Features (list-level orchestrator)
+
+  Beads is a CLI issue tracker (`bd`). Issues are called "beads" and have IDs like `bd-xyz`.
+
+  This is a **list-level driver** (`menus: beadsList`, no `Item.*` context — the whole
+  point is to process a *set* of features, not one). It is a **loop inside a loop**:
+
+  - **OUTER loop (this prompt).** Enumerate eligible open features, pick the
+    highest-priority one, spawn ONE child conversation to implement it, wait for that
+    child to finish, clean it up, then move to the next feature. Stop when the eligible
+    set is empty or a per-run budget is hit.
+  - **INNER loop (already shipped: the `Iterate implementing feature` prompt,
+    mitto-gap.5).** Each child runs that per-feature driver as an `onCompletion`
+    periodic, advancing one `planned → implemented → tested → verified` label per
+    re-fire, then self-terminating.
+
+  This prompt itself is a **single, non-periodic run that loops internally**. It has no
+  `periodic:` block — one send, one whole outer pass, one stop. The children are the
+  periodic ones.
+
+  ## Preflight — required flags, top-level only, degrade gracefully
+
+  This prompt spawns and waits on child conversations, so two Advanced-Settings flags
+  must be enabled (both are off by default):
+
+  - **Can start conversation** (`session.FlagCanStartConversation`) — needed for
+    `mitto_conversation_new`.
+  - **Can Send Prompt** (`session.FlagCanSendPrompt`) — needed for
+    `mitto_children_tasks_wait` and any child-directed sends.
+
+  Also: only a **top-level** (non-child) conversation may create conversations. The
+  child driver (`Iterate implementing feature`) already runs in-place and never spawns,
+  giving a strict 2-level nesting. This orchestrator therefore refuses to run from a
+  child.
+
+  If either preflight fails at runtime (a tool call errors because a flag is disabled,
+  or you observe that this conversation is a child), **degrade gracefully**: post a
+  single `mitto_ui_notify` explaining which flag / role is missing and what to enable,
+  and STOP. Do **not** touch `bd`, do **not** spawn anything, do **not** loop.
+
+  ## Step 1 — Fetch the per-feature driver body ONCE
+
+  Every child you spawn seeds and re-fires from the **same** body: the per-feature
+  driver prompt (`Iterate implementing feature`, mitto-gap.5). Fetch it once at the top
+  of this run so the same string is reused for every child (no drift between children in
+  the same run):
+
+  ```
+  mitto_prompt_get(self_id: "{{ .Session.ID }}", name: "Iterate implementing feature")
+  ```
+
+  Bind the response's `.prompt` (or `body`) field to a local variable — call it
+  **`<driverBody>`** below. It is a Go-template string with `.Args.IssueID`,
+  `.Args.Commit`, and `.Session.BeadsIssue` placeholders; the runtime renders them
+  at each child dispatch (seed run and every `onCompletion` re-fire).
+
+  If this fetch fails (name not found, prompt disabled), STOP with a
+  `mitto_ui_notify` explaining that the per-feature driver is unavailable and no
+  implementations were started. Do not fall back to any other prompt name.
+
+  ## Step 2 — Enumerate eligible features
+
+  Load open, ready features from the tracker. Prefer the "ready" set (open + unblocked),
+  so we do not waste a child on something blocked:
+
+  ```bash
+  bd ready --type feature --json
+  ```
+
+  If `bd ready --type feature` yields nothing, fall back to the open list (still
+  excluding closed):
+
+  ```bash
+  bd list --status open --type feature --json
+  ```
+
+  Then **exclude** any feature that:
+
+  - carries the terminal `verified` label (the per-feature driver already reached its
+    end-of-loop; the bead just wasn't closed yet — closing is a human decision), OR
+  - is currently `in_progress` by someone/something else (a live child is already
+    driving it — do not double-up), OR
+  - carries the `needs-human` label (previously deferred by a per-feature driver —
+    leave it for the human), OR
+  - matches any *existing* child conversation's `beads_issue` in
+    `{{ .Children.MCPText }}` (a spawn already exists from an earlier run of this
+    orchestrator; do not spawn a duplicate).
+
+  Order the surviving set deterministically: by declared priority
+  (`critical` → `high` → `medium` → `low`), then by bead ID ascending for stability.
+
+  ## Step 3 — Budget the run
+
+  Cap this one outer run at **N = 10** features. Rationale: the per-feature loop's own
+  cap is `maxIterations: 30` with `maxDuration: 8h`, so 10 features × ~8 h worst case is
+  more work than one operator normally wants queued unattended. Advance one feature at a
+  time and stop when either:
+
+  - the eligible set (Step 2) is empty, OR
+  - this run has already processed **N** features, OR
+  - `.Iteration.IsLast` is true (a future-proofing hook — this prompt has no
+    `periodic:` block today, so `.Iteration.IsLast` is false in practice, but future
+    variants may make it periodic; honouring the flag now keeps this driver
+    forward-compatible).
+
+  When you stop, jump to **Step 7 (Final)**.
+
+  ## Step 4 — Spawn ONE child for the highest-priority eligible feature
+
+  Take the first entry from Step 2's ordered set — call it **`<id>`**. Spawn exactly
+  ONE child conversation whose seed AND periodic re-fire are both `<driverBody>`. Link
+  it to `<id>` via `beads_issue` so the per-feature driver resolves its target durably
+  from `.Session.BeadsIssue` on every re-fire (this is why the child does not need to
+  know its own `IssueID` after the seed run):
+
+  ```
+  mitto_conversation_new(
+    self_id: "{{ .Session.ID }}",
+    title: "Implement <id>: <slug>",
+    beads_issue: "<id>",
+    initial_prompt: <driverBody>,
+    arguments: { "IssueID": "<id>", "Commit": "{{ if eq .Args.Commit "false" }}false{{ else }}true{{ end }}" },
+    periodic_prompt: <driverBody>,
+    periodic_trigger: "onCompletion",
+    periodic_completion_delay_seconds: 30,
+    periodic_max_iterations: 30,
+    periodic_max_duration_seconds: 28800
+  )
+  ```
+
+  Notes on why each argument is what it is:
+
+  - **`initial_prompt: <driverBody>` + `arguments`** — `mitto_conversation_new` does
+    NOT auto-apply a fetched prompt's own `periodic:` block. To make the child
+    self-drive its state machine, the same body must be provided as both the seed AND
+    the periodic re-fire. The `arguments` map fills the driver's template
+    placeholders on the seed run.
+  - **`periodic_prompt: <driverBody>`** — every `onCompletion` re-fire uses this text
+    verbatim. It resolves its target from `.Session.BeadsIssue` (set here via
+    `beads_issue`), so it does not need `IssueID`/`Commit` in the arguments map on
+    re-fires. The initial `Commit` argument only affects whichever run dispatches the
+    review phase; earlier phases don't consume it.
+  - **30 / 30 / 28800** — mirror the per-feature driver's own advertised budget
+    (`delay: 30`, `maxIterations: 30`, `maxDuration: "8h" = 28800s`). Passing them
+    explicitly makes the child's schedule identical whether the runtime applies the
+    prompt's block or not.
+
+  Record the returned `conversation_id` — call it **`<child-id>`**. If the create
+  fails (flag disabled, quota exceeded, error), jump to **Step 8 (Blocked → Defer +
+  Handoff)** for `<id>` instead of retrying.
+
+  ## Step 5 — Wait for THIS child, one at a time
+
+  Block on the child so we advance one feature at a time (never in parallel — the whole
+  point of this orchestrator is serial):
+
+  ```
+  mitto_children_tasks_wait(
+    self_id: "{{ .Session.ID }}",
+    children_list: ["<child-id>"],
+    timeout_seconds: 3600
+  )
+  ```
+
+  Then handle the outcome:
+
+  - **Child reported done** (its report is present in the returned consolidated
+    report) → proceed to Step 6.
+  - **Timeout** — the child is still running or stuck. Log the timeout on the bead:
+
+    ```bash
+    bd comment <id> "Orchestrator: 1h wait timed out; leaving child conversation running and moving on to the next feature."
+    ```
+
+    Do **not** kill or archive the child (it may still finish; the operator can
+    inspect it). Then loop back to Step 2 for the next feature. This trades one stalled
+    feature for continued forward progress on the rest of the set — better than
+    blocking the whole outer loop on a single slow child.
+
+  - **Wait itself errored** (flag missing at runtime, transport failure) → treat as
+    the "flag missing" preflight failure: post a `mitto_ui_notify` and STOP the outer
+    loop. Do not archive the child.
+
+  ## Step 6 — Log outcome + clean up the finished child
+
+  When Step 5 confirms the child completed, add a one-line orchestration note on the
+  bead (the child's per-feature driver has already logged its per-phase comments — this
+  note is purely the OUTER loop's bookkeeping), then archive the child to free the
+  max-children cap:
+
+  ```bash
+  bd comment <id> "Orchestrator: per-feature driver completed; archiving worker conversation."
+  ```
+
+  ```
+  mitto_conversation_archive(self_id: "{{ .Session.ID }}", conversation_id: "<child-id>")
+  ```
+
+  We **archive** (not delete) — the child's transcript remains inspectable if the
+  operator wants to audit what the per-feature loop did. Then loop back to **Step 2**
+  and re-enumerate (labels may have drifted; another feature may have become
+  `in_progress` elsewhere; a feature in the previous set may now carry `verified` or
+  `needs-human`).
+
+  ## Step 7 — Final notification and STOP
+
+  When Step 2's eligible set becomes empty, or Step 3's budget is exhausted, or
+  `.Iteration.IsLast` fired, post a single closing notification and end the run.
+
+  ```
+  mitto_ui_notify(
+    self_id: "{{ .Session.ID }}",
+    title: "Iterate implementing features — done",
+    message: "<N processed / <how many remain — deferred / blocked>. Reason: <empty set | budget hit | last iteration>.>",
+    style: "success"
+  )
+  ```
+
+  This prompt has no `periodic:` block, so there is no re-fire to disable — a single
+  natural end-of-turn stops the outer loop.
+
+  ## Step 8 — Blocked → Defer + Handoff (spawn / preflight failures)
+
+  Use this whenever spawning a specific feature's child is impossible (flag missing at
+  create time, quota reached, `mitto_conversation_new` errored, or Step 1's
+  `mitto_prompt_get` failed). Do **not** guess and do **not** silently drop the
+  feature. Instead, defer the bead so it drops out of `bd ready`, record a structured
+  handoff comment, and stop the outer loop cleanly:
+
+  ```bash
+  bd update <id> --add-label needs-human --defer +1d
+  bd comment <id> "Orchestrator: could not spawn per-feature worker. What I tried: <the create/fetch call and its error>. What I need from you: <the ONE concrete action — enable flag, raise cap, re-run>. How to resume: clear needs-human then re-run 'Iterate implementing features'."
+  ```
+
+  Then post the closing notification (Step 7) explaining that iteration stopped due
+  to the spawn failure, and end. Do not attempt to spawn subsequent features in the
+  same run — the same failure likely affects them all.
+
+  ## Guidelines
+
+  - **Serial by design.** Exactly one child in flight at a time. Do not fan out — the
+    per-feature loop itself is periodic and can take hours; parallel spawns would blow
+    past the max-children cap and be impossible to reason about.
+  - **Top-level only.** Only a non-child conversation may spawn. If this run finds
+    itself a child (`Session.IsChild`), stop with a notify — do not touch `bd`, do
+    not spawn.
+  - **Silent unless it matters.** Emit `mitto_ui_notify` only at the closing summary
+    (Step 7), on the graceful-degrade paths (Step 6/8), and on wait-timeout
+    milestones. Do NOT notify per feature — the child does its own bead comments.
+  - **Live state every enumeration.** Re-run Step 2 between features. Labels drift as
+    children finish (`verified` appears), as they defer (`needs-human` appears), or as
+    other tools/humans work in parallel.
+  - **Never duplicate a spawn.** Cross-check `beads_issue` on
+    `{{ .Children.MCPText }}` before creating a new child; a prior orchestrator run
+    (or a manual spawn) may already own that feature.
+  - **Never re-litigate a `verified` feature.** The `verified` label is the
+    per-feature loop's terminal state. Its owner (the human) decides whether to close
+    the bead. This orchestrator only touches features that are still working their way
+    to `verified`.
+  - **Always log to the tracker.** Add a short `bd comment` for every orchestration
+    action (spawn, timeout, completion+archive, defer). The outer loop's decisions
+    are then auditable independently of the child transcripts.
+  - **No `Item.*`.** This is a `beadsList` prompt — there is no per-row item context.
+    All targeting comes from Step 2's live enumeration.
