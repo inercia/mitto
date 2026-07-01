@@ -317,7 +317,7 @@ func TestPeriodicStore_Update(t *testing.T) {
 
 	// Update on non-existent should fail
 	enabled := true
-	err := ps.Update(nil, nil, nil, &enabled, nil, nil, nil, nil, nil, nil)
+	err := ps.Update(nil, nil, nil, &enabled, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 	if err != ErrPeriodicNotFound {
 		t.Errorf("Update() on empty store error = %v, want ErrPeriodicNotFound", err)
 	}
@@ -334,7 +334,7 @@ func TestPeriodicStore_Update(t *testing.T) {
 
 	// Update only enabled field
 	disabled := false
-	if err := ps.Update(nil, nil, nil, &disabled, nil, nil, nil, nil, nil, nil); err != nil {
+	if err := ps.Update(nil, nil, nil, &disabled, nil, nil, nil, nil, nil, nil, nil, nil, nil); err != nil {
 		t.Fatalf("Update() error = %v", err)
 	}
 
@@ -348,7 +348,7 @@ func TestPeriodicStore_Update(t *testing.T) {
 
 	// Update only prompt field
 	newPrompt := "New prompt text"
-	if err := ps.Update(&newPrompt, nil, nil, nil, nil, nil, nil, nil, nil, nil); err != nil {
+	if err := ps.Update(&newPrompt, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil); err != nil {
 		t.Fatalf("Update() error = %v", err)
 	}
 
@@ -359,7 +359,7 @@ func TestPeriodicStore_Update(t *testing.T) {
 
 	// Update frequency
 	newFreq := Frequency{Value: 30, Unit: FrequencyMinutes}
-	if err := ps.Update(nil, nil, &newFreq, nil, nil, nil, nil, nil, nil, nil); err != nil {
+	if err := ps.Update(nil, nil, &newFreq, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil); err != nil {
 		t.Fatalf("Update() error = %v", err)
 	}
 
@@ -383,7 +383,7 @@ func TestPeriodicStore_UpdateValidation(t *testing.T) {
 
 	// Update with invalid frequency should fail (value must be >= 1)
 	invalidFreq := Frequency{Value: 0, Unit: FrequencyMinutes} // Zero not allowed
-	err := ps.Update(nil, nil, &invalidFreq, nil, nil, nil, nil, nil, nil, nil)
+	err := ps.Update(nil, nil, &invalidFreq, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 	if err == nil {
 		t.Error("Update() with invalid frequency should return error")
 	}
@@ -551,7 +551,7 @@ func TestPeriodicStore_NextScheduledAtWhenDisabled(t *testing.T) {
 
 	// Enable it
 	enabled := true
-	ps.Update(nil, nil, nil, &enabled, nil, nil, nil, nil, nil, nil)
+	ps.Update(nil, nil, nil, &enabled, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 
 	got, _ = ps.Get()
 	if got.NextScheduledAt == nil {
@@ -560,7 +560,7 @@ func TestPeriodicStore_NextScheduledAtWhenDisabled(t *testing.T) {
 
 	// Disable again
 	disabled := false
-	ps.Update(nil, nil, nil, &disabled, nil, nil, nil, nil, nil, nil)
+	ps.Update(nil, nil, nil, &disabled, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 
 	got, _ = ps.Get()
 	if got.NextScheduledAt != nil {
@@ -775,7 +775,7 @@ func TestPeriodicStore_UpdateDoesNotTouchIterationCount(t *testing.T) {
 
 	// Update via partial update — should not touch IterationCount
 	newPrompt := "Updated"
-	if err := ps.Update(&newPrompt, nil, nil, nil, nil, nil, nil, nil, nil, nil); err != nil {
+	if err := ps.Update(&newPrompt, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil); err != nil {
 		t.Fatalf("Update() error = %v", err)
 	}
 
@@ -815,6 +815,16 @@ func TestPeriodicPrompt_Validate_Trigger(t *testing.T) {
 			wantErr: nil,
 		},
 		{
+			name:    "valid onTasks with no frequency",
+			prompt:  PeriodicPrompt{Prompt: "p", Trigger: TriggerOnTasks},
+			wantErr: nil,
+		},
+		{
+			name:    "valid onTasks with empty condition fires on any change",
+			prompt:  PeriodicPrompt{Prompt: "p", Trigger: TriggerOnTasks, Condition: ""},
+			wantErr: nil,
+		},
+		{
 			name:    "invalid trigger value",
 			prompt:  PeriodicPrompt{Prompt: "p", Frequency: validFreq, Trigger: "weekly"},
 			wantErr: ErrInvalidTrigger,
@@ -842,6 +852,45 @@ func TestPeriodicPrompt_Validate_Trigger(t *testing.T) {
 				t.Errorf("Validate() unexpected error = %v", err)
 			}
 		})
+	}
+}
+
+// TestPeriodicPrompt_Validate_Condition verifies that Condition compile-validation
+// is delegated to the injected ConditionValidator seam: nil validator skips the
+// check, a passing validator allows the condition, and a failing validator rejects
+// it with a wrapped error.
+func TestPeriodicPrompt_Validate_Condition(t *testing.T) {
+	t.Cleanup(func() { ConditionValidator = nil })
+
+	p := PeriodicPrompt{Prompt: "p", Trigger: TriggerOnTasks, Condition: "tasks.changed()"}
+
+	// No validator wired up: CEL compile-check is skipped, condition is accepted as-is.
+	ConditionValidator = nil
+	if err := p.Validate(); err != nil {
+		t.Errorf("Validate() with nil ConditionValidator error = %v, want nil", err)
+	}
+
+	// Validator wired up and accepts the condition.
+	ConditionValidator = func(string) error { return nil }
+	if err := p.Validate(); err != nil {
+		t.Errorf("Validate() with accepting validator error = %v, want nil", err)
+	}
+
+	// Validator wired up and rejects the condition.
+	wantErr := errors.New("bad CEL syntax")
+	ConditionValidator = func(string) error { return wantErr }
+	err := p.Validate()
+	if err == nil {
+		t.Fatal("Validate() with rejecting validator error = nil, want error")
+	}
+	if !errors.Is(err, wantErr) {
+		t.Errorf("Validate() error = %v, want wrapped %v", err, wantErr)
+	}
+
+	// Empty Condition is never validated, even with a rejecting validator wired up.
+	pEmpty := PeriodicPrompt{Prompt: "p", Trigger: TriggerOnTasks}
+	if err := pEmpty.Validate(); err != nil {
+		t.Errorf("Validate() with empty condition and rejecting validator error = %v, want nil", err)
 	}
 }
 
@@ -991,7 +1040,7 @@ func TestPeriodicStore_Update_NewFields(t *testing.T) {
 	trig := TriggerOnCompletion
 	delay := 15
 	maxDur := 3600
-	if err := ps.Update(nil, nil, nil, nil, nil, nil, &trig, &delay, &maxDur, nil); err != nil {
+	if err := ps.Update(nil, nil, nil, nil, nil, nil, &trig, &delay, &maxDur, nil, nil, nil, nil); err != nil {
 		t.Fatalf("Update() error = %v", err)
 	}
 
@@ -1011,7 +1060,7 @@ func TestPeriodicStore_Update_NewFields(t *testing.T) {
 	}
 
 	// Passing nil for new fields should leave them unchanged.
-	if err := ps.Update(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil); err != nil {
+	if err := ps.Update(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil); err != nil {
 		t.Fatalf("Update() with all-nil error = %v", err)
 	}
 	got2, _ := ps.Get()
@@ -1020,6 +1069,56 @@ func TestPeriodicStore_Update_NewFields(t *testing.T) {
 	}
 	if got2.DelaySeconds != 15 {
 		t.Errorf("DelaySeconds changed on nil update: got %d", got2.DelaySeconds)
+	}
+}
+
+// TestPeriodicStore_Update_OnTasksFields verifies that Condition, ConditionPreset,
+// and CooldownSeconds round-trip through Update/Get, and that a nil update leaves
+// them unchanged.
+func TestPeriodicStore_Update_OnTasksFields(t *testing.T) {
+	dir := t.TempDir()
+	ps := NewPeriodicStore(dir)
+
+	p := &PeriodicPrompt{
+		Prompt:  "Test",
+		Trigger: TriggerOnTasks,
+		Enabled: true,
+	}
+	if err := ps.Set(p); err != nil {
+		t.Fatalf("Set() error = %v", err)
+	}
+
+	cond := "tasks.changed()"
+	preset := "any-change"
+	cooldown := 120
+	if err := ps.Update(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, &cond, &preset, &cooldown); err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+
+	got, _ := ps.Get()
+	if got.Condition != cond {
+		t.Errorf("Condition = %q, want %q", got.Condition, cond)
+	}
+	if got.ConditionPreset != preset {
+		t.Errorf("ConditionPreset = %q, want %q", got.ConditionPreset, preset)
+	}
+	if got.CooldownSeconds != cooldown {
+		t.Errorf("CooldownSeconds = %d, want %d", got.CooldownSeconds, cooldown)
+	}
+
+	// Passing nil for these fields should leave them unchanged.
+	if err := ps.Update(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil); err != nil {
+		t.Fatalf("Update() with all-nil error = %v", err)
+	}
+	got2, _ := ps.Get()
+	if got2.Condition != cond {
+		t.Errorf("Condition changed on nil update: got %q", got2.Condition)
+	}
+	if got2.ConditionPreset != preset {
+		t.Errorf("ConditionPreset changed on nil update: got %q", got2.ConditionPreset)
+	}
+	if got2.CooldownSeconds != cooldown {
+		t.Errorf("CooldownSeconds changed on nil update: got %d", got2.CooldownSeconds)
 	}
 }
 
@@ -1173,7 +1272,7 @@ func TestPeriodicStore_Update_EnableTrue_ClearsStoppedState(t *testing.T) {
 
 	// Re-enable via Update — stopped state must be cleared.
 	enabled := true
-	if err := ps.Update(nil, nil, nil, &enabled, nil, nil, nil, nil, nil, nil); err != nil {
+	if err := ps.Update(nil, nil, nil, &enabled, nil, nil, nil, nil, nil, nil, nil, nil, nil); err != nil {
 		t.Fatalf("Update(enabled=true) error = %v", err)
 	}
 
@@ -1209,7 +1308,7 @@ func TestPeriodicStore_Update_EnableFalse_DoesNotClearStoppedState(t *testing.T)
 
 	// Update with enabled=false should not clear the stopped state.
 	enabled := false
-	if err := ps.Update(nil, nil, nil, &enabled, nil, nil, nil, nil, nil, nil); err != nil {
+	if err := ps.Update(nil, nil, nil, &enabled, nil, nil, nil, nil, nil, nil, nil, nil, nil); err != nil {
 		t.Fatalf("Update(enabled=false) error = %v", err)
 	}
 
@@ -1265,7 +1364,7 @@ func TestPeriodicStore_Update_ArgumentsPersisted(t *testing.T) {
 	}
 
 	// nil arguments → no change
-	if err := ps.Update(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil); err != nil {
+	if err := ps.Update(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil); err != nil {
 		t.Fatalf("Update(nil args) error = %v", err)
 	}
 	got, _ := ps.Get()
@@ -1275,7 +1374,7 @@ func TestPeriodicStore_Update_ArgumentsPersisted(t *testing.T) {
 
 	// non-nil arguments → replace
 	newArgs := map[string]string{"KEY": "updated", "NEW": "value"}
-	if err := ps.Update(nil, nil, nil, nil, nil, nil, nil, nil, nil, &newArgs); err != nil {
+	if err := ps.Update(nil, nil, nil, nil, nil, nil, nil, nil, nil, &newArgs, nil, nil, nil); err != nil {
 		t.Fatalf("Update(newArgs) error = %v", err)
 	}
 	got, _ = ps.Get()

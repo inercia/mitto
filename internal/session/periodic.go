@@ -47,6 +47,12 @@ const (
 	// StoppedReasonArchived is set when the conversation is archived (manual or auto),
 	// which authoritatively stops the periodic loop.
 	StoppedReasonArchived StoppedReason = "archived"
+
+	// StoppedReasonNoProgress is set when the onTasks trigger's circuit breaker fires
+	// repeatedly with no newly-touched issue relative to the previous fire (e.g. a
+	// steady-state-true condition with no genuine forward progress), auto-pausing the
+	// loop to stop the hot-fire storm. Re-enabling clears it.
+	StoppedReasonNoProgress StoppedReason = "noProgress"
 )
 
 var (
@@ -59,7 +65,7 @@ var (
 	// ErrInvalidMaxIterations is returned when max_iterations is negative.
 	ErrInvalidMaxIterations = errors.New("invalid max_iterations: must be >= 0")
 	// ErrInvalidTrigger is returned when the trigger value is not recognised.
-	ErrInvalidTrigger = errors.New("invalid trigger: must be empty, schedule, or onCompletion")
+	ErrInvalidTrigger = errors.New("invalid trigger: must be empty, schedule, onCompletion, or onTasks")
 	// ErrInvalidDelay is returned when delay_seconds is negative.
 	ErrInvalidDelay = errors.New("invalid delay_seconds: must be >= 0")
 	// ErrInvalidMaxDuration is returned when max_duration_seconds is negative.
@@ -74,7 +80,16 @@ const (
 	TriggerSchedule PeriodicTrigger = "schedule"
 	// TriggerOnCompletion fires after the agent stops responding (event-driven).
 	TriggerOnCompletion PeriodicTrigger = "onCompletion"
+	// TriggerOnTasks fires when beads/tasks in the workspace change, optionally
+	// gated by a CEL Condition (event-driven).
+	TriggerOnTasks PeriodicTrigger = "onTasks"
 )
+
+// ConditionValidator is an optional package-level seam that compile-validates a
+// CEL Condition expression. It is nil by default; the config package wires it up
+// at startup to avoid an import cycle (session must stay independent of config).
+// When nil, Condition compile-validation is skipped in Validate().
+var ConditionValidator func(string) error
 
 // FrequencyUnit represents the time unit for periodic scheduling.
 type FrequencyUnit string
@@ -193,6 +208,14 @@ type PeriodicPrompt struct {
 	StoppedReason StoppedReason `json:"stopped_reason,omitempty"`
 	// StoppedAt is the timestamp when the loop was auto-stopped (nil when still running).
 	StoppedAt *time.Time `json:"stopped_at,omitempty"`
+	// Condition is a CEL expression gating onTasks firing. Empty means fire on ANY
+	// beads/task change. Only meaningful when Trigger is onTasks.
+	Condition string `json:"condition,omitempty"`
+	// ConditionPreset is an optional UI preset id that was compiled into Condition.
+	ConditionPreset string `json:"condition_preset,omitempty"`
+	// CooldownSeconds is the per-conversation cooldown floor honoured by the runner
+	// between onTasks firings. 0 means use the global floor.
+	CooldownSeconds int `json:"cooldown_seconds,omitempty"`
 }
 
 // ReachedMaxIterations returns true if the prompt has been delivered the maximum number of scheduled times.
@@ -213,6 +236,11 @@ func (p *PeriodicPrompt) EffectiveTrigger() PeriodicTrigger {
 // IsOnCompletion returns true when this periodic prompt uses the onCompletion trigger.
 func (p *PeriodicPrompt) IsOnCompletion() bool {
 	return p.EffectiveTrigger() == TriggerOnCompletion
+}
+
+// IsOnTasks returns true when this periodic prompt uses the onTasks trigger.
+func (p *PeriodicPrompt) IsOnTasks() bool {
+	return p.EffectiveTrigger() == TriggerOnTasks
 }
 
 // pendingPlaceholder is the placeholder value treated as "no prompt" for preview purposes.
@@ -274,7 +302,7 @@ func (p *PeriodicPrompt) Validate() error {
 		return ErrInvalidMaxIterations
 	}
 	switch p.Trigger {
-	case "", TriggerSchedule, TriggerOnCompletion:
+	case "", TriggerSchedule, TriggerOnCompletion, TriggerOnTasks:
 		// valid
 	default:
 		return ErrInvalidTrigger
@@ -285,8 +313,13 @@ func (p *PeriodicPrompt) Validate() error {
 	if p.MaxDurationSeconds < 0 {
 		return ErrInvalidMaxDuration
 	}
+	if p.Condition != "" && ConditionValidator != nil {
+		if err := ConditionValidator(p.Condition); err != nil {
+			return fmt.Errorf("invalid condition: %w", err)
+		}
+	}
 	// For schedule trigger (default), Frequency must be valid.
-	// For onCompletion, frequency is not required.
+	// For onCompletion and onTasks, frequency is not required.
 	if p.EffectiveTrigger() == TriggerSchedule {
 		return p.Frequency.Validate()
 	}
@@ -368,7 +401,7 @@ func (ps *PeriodicStore) Set(p *PeriodicPrompt) error {
 // Update applies a partial update to the periodic prompt.
 // Only non-nil fields in the update are applied.
 // IterationCount is never modified by Update — it is managed exclusively by RecordSent.
-func (ps *PeriodicStore) Update(prompt *string, promptName *string, frequency *Frequency, enabled *bool, freshContext *bool, maxIterations *int, trigger *PeriodicTrigger, delaySeconds *int, maxDurationSeconds *int, arguments *map[string]string) error {
+func (ps *PeriodicStore) Update(prompt *string, promptName *string, frequency *Frequency, enabled *bool, freshContext *bool, maxIterations *int, trigger *PeriodicTrigger, delaySeconds *int, maxDurationSeconds *int, arguments *map[string]string, condition *string, conditionPreset *string, cooldownSeconds *int) error {
 	ps.mu.Lock()
 	defer ps.mu.Unlock()
 
@@ -411,6 +444,15 @@ func (ps *PeriodicStore) Update(prompt *string, promptName *string, frequency *F
 	}
 	if arguments != nil {
 		existing.Arguments = *arguments
+	}
+	if condition != nil {
+		existing.Condition = *condition
+	}
+	if conditionPreset != nil {
+		existing.ConditionPreset = *conditionPreset
+	}
+	if cooldownSeconds != nil {
+		existing.CooldownSeconds = *cooldownSeconds
 	}
 
 	if err := existing.Validate(); err != nil {
@@ -500,8 +542,8 @@ func (ps *PeriodicStore) RecordSent() error {
 // DeferNextSchedule pushes NextScheduledAt out to now+delay WITHOUT advancing the
 // iteration count or LastSentAt. It is used to back off after a transient delivery
 // failure so the runner does not re-fire the same prompt on every poll tick.
-// It is a no-op (returns nil) for disabled configs and for onCompletion triggers,
-// whose next run is event-driven (NextScheduledAt is always nil).
+// It is a no-op (returns nil) for disabled configs and for onCompletion/onTasks
+// triggers, whose next run is event-driven (NextScheduledAt is always nil).
 func (ps *PeriodicStore) DeferNextSchedule(delay time.Duration) error {
 	ps.mu.Lock()
 	defer ps.mu.Unlock()
@@ -510,7 +552,7 @@ func (ps *PeriodicStore) DeferNextSchedule(delay time.Duration) error {
 	if err != nil {
 		return err
 	}
-	if !existing.Enabled || existing.IsOnCompletion() {
+	if !existing.Enabled || existing.IsOnCompletion() || existing.IsOnTasks() {
 		return nil
 	}
 
@@ -565,13 +607,14 @@ func (ps *PeriodicStore) getUnlocked() (*PeriodicPrompt, error) {
 }
 
 // computeNextScheduledTime calculates when the next prompt should be sent.
-// Returns nil for onCompletion triggers — their next run is armed by the event-driven firing path.
+// Returns nil for onCompletion/onTasks triggers — their next run is armed by the
+// event-driven firing path, not a frequency-based schedule.
 func (ps *PeriodicStore) computeNextScheduledTime(p *PeriodicPrompt) *time.Time {
 	if !p.Enabled {
 		return nil
 	}
 	// Event-driven triggers do not use a frequency-based schedule.
-	if p.IsOnCompletion() {
+	if p.IsOnCompletion() || p.IsOnTasks() {
 		return nil
 	}
 
