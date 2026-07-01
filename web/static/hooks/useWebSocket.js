@@ -351,9 +351,9 @@ export function useWebSocket({ onActiveSessionRemovedRef } = {}) {
   // { sessionId, sessionName, timestamp }
   const [backgroundCompletion, setBackgroundCompletion] = useState(null);
 
-  // Track periodic session starts for toast notifications
+  // Track loop session starts for toast notifications
   // { sessionId, sessionName, timestamp }
-  const [periodicStarted, setPeriodicStarted] = useState(null);
+  const [loopStarted, setLoopStarted] = useState(null);
 
   // Track background UI prompts for toast notifications
   // { sessionId, sessionName, question, timestamp }
@@ -4355,12 +4355,12 @@ export function useWebSocket({ onActiveSessionRemovedRef } = {}) {
         break;
 
       case "loop_started":
-        // A periodic prompt was delivered to a session
+        // A loop prompt was delivered to a session
         // Show toast notification and trigger native notification if enabled
         console.log(
-          `[global] Periodic started: ${msg.data.session_id} (${msg.data.session_name})`,
+          `[global] Loop started: ${msg.data.session_id} (${msg.data.session_name})`,
         );
-        setPeriodicStarted({
+        setLoopStarted({
           sessionId: msg.data.session_id,
           sessionName: msg.data.session_name,
           timestamp: Date.now(),
@@ -6150,9 +6150,9 @@ export function useWebSocket({ onActiveSessionRemovedRef } = {}) {
     setBackgroundCompletion(null);
   }, []);
 
-  // Clear periodic started notification
-  const clearPeriodicStarted = useCallback(() => {
-    setPeriodicStarted(null);
+  // Clear loop started notification
+  const clearLoopStarted = useCallback(() => {
+    setLoopStarted(null);
   }, []);
 
   // Clear background UI prompt notification
@@ -6254,8 +6254,8 @@ export function useWebSocket({ onActiveSessionRemovedRef } = {}) {
     fetchStoredSessions,
     backgroundCompletion,
     clearBackgroundCompletion,
-    periodicStarted,
-    clearPeriodicStarted,
+    loopStarted,
+    clearLoopStarted,
     backgroundUIPrompt,
     clearBackgroundUIPrompt,
     backgroundUIPromptTimeout,
