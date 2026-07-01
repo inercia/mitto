@@ -1,10 +1,12 @@
 ##########################################################################################
 # Builtin processor: automatically extracts user preferences from conversations.
 #
-# This prompt-mode processor watches user messages for preferences, conventions,
-# and how-they-want-things-done patterns. When it finds relevant preferences,
-# it instructs an auxiliary AI agent to save them in a clearly delimited section
-# of a configurable file (AGENTS.md by default) in the workspace root.
+# This prompt-mode processor watches user messages for PERSONAL preferences about
+# how this individual user likes to work — the kind of thing that is specific to
+# them and would not necessarily be shared with other people working on the same
+# project. When it finds such a preference, it instructs an auxiliary AI agent to
+# save it in a clearly delimited section of a configurable file (AGENTS.md by
+# default) in the workspace root.
 #
 # This is a fire-and-forget processor: the prompt is dispatched to a workspace-scoped
 # auxiliary ACP session and the pipeline continues immediately without waiting.
@@ -12,14 +14,21 @@
 # Enabled by default — disable in the Workspaces dialog or .mittorc if you want
 # to turn off automatic preference tracking.
 #
-# What it captures:
-#   - Code style preferences (naming, formatting, patterns)
-#   - Process preferences (testing approach, review habits, commit style)
-#   - Technology preferences (preferred libraries, tools, frameworks)
-#   - Communication style (verbosity, format preferences)
-#   - Project-specific conventions the user has expressed
+# What it captures (PERSONAL, user-specific preferences only):
+#   - How and when the user likes to commit (e.g. commit message style, when to
+#     commit vs. wait, whether to push automatically)
+#   - Personal workflow habits (how they like to review, run tests, iterate)
+#   - Communication style (verbosity, tone, format they prefer from the agent)
+#   - Personal working-style choices that reflect individual taste, not a rule
+#     imposed by the project
 #
 # What it does NOT capture:
+#   - Technical details about the project or codebase (architecture, APIs, file
+#     layout, how a feature works)
+#   - Code conventions or coding standards that belong to the project and would
+#     apply to anyone working on it (naming, formatting, design patterns, preferred
+#     libraries/tools/frameworks)
+#   - Project-wide rules, policies, or documentation
 #   - Task-specific instructions (one-off requests)
 #   - Bug reports or feature requests
 #   - Questions or requests for information
@@ -32,7 +41,7 @@
 #   conservatively — when in doubt, an entry is kept.
 ##########################################################################################
 name: memorize-preferences
-description: "Extracts user preferences from conversations and saves them to a configurable file (AGENTS.md by default)"
+description: "Extracts personal, user-specific preferences (not project/code conventions) from conversations and saves them to a configurable file (AGENTS.md by default)"
 enabled: true
 when:
   on: agentIdle
@@ -57,20 +66,32 @@ parameters:
 
 prompt: |
   You are a preference curator. You maintain a concise, durable list of the user's
-  preferences in the {{ .Args.PreferencesFile }} file in the workspace root. You have TWO jobs on each
-  run: (1) capture any NEW preferences from recent messages, and (2) keep the existing
+  PERSONAL preferences in the {{ .Args.PreferencesFile }} file in the workspace root. You have TWO jobs on each
+  run: (1) capture any NEW personal preferences from recent messages, and (2) keep the existing
   list clean by garbage-collecting stale entries and compacting related ones.
+
+  IMPORTANT — scope: only memorize things that are specific to THIS user as an
+  individual: personal preferences that would not necessarily be shared with other
+  people working on the same project (for example, how or when they like to commit).
+  Do NOT memorize technical details about the project or the code, and do NOT memorize
+  code conventions or coding standards — those belong to the project, not to the user.
 
   ## 1. Capture new preferences
 
-  Look for:
-  - Code style preferences (naming conventions, formatting rules, design patterns)
-  - Process preferences (how they want tests written, how they want commits done)
-  - Technology preferences (preferred libraries, tools, approaches)
-  - Communication preferences (level of detail, format they prefer)
-  - Project-specific conventions they've explicitly stated
+  Look for PERSONAL, user-specific preferences such as:
+  - How and when the user likes to commit (commit message style, when to commit vs.
+    wait, whether to push automatically, etc.)
+  - Personal workflow habits (how they like to review, run tests, or iterate)
+  - Communication preferences (level of detail, tone, format they prefer from the agent)
+  - Personal working-style choices that reflect individual taste rather than a rule
+    imposed by the project
 
   Do NOT extract:
+  - Technical details about the project or codebase (architecture, APIs, file layout,
+    how a feature works)
+  - Code conventions or coding standards that belong to the project and would apply to
+    anyone (naming, formatting, design patterns, preferred libraries/tools/frameworks)
+  - Project-wide rules, policies, or documentation
   - One-off task instructions (e.g., "fix this bug", "add this feature")
   - Questions or requests for information
   - Code snippets that are part of a task (not a preference)
@@ -81,7 +102,10 @@ prompt: |
   Review the EXISTING entries in the preferences section and tidy them up so the list
   stays short, durable, and generally-applicable instead of growing forever.
 
-  Garbage-collect (REMOVE) an entry when it is clearly stale:
+  Garbage-collect (REMOVE) an entry when it is clearly stale or out of scope:
+  - It is a technical detail about the project/codebase, a code convention, or a
+    coding standard rather than a personal, user-specific preference — these do not
+    belong here.
   - It references one-off or now-completed work (specific epics, PRs, issue IDs,
     branch names, or increment numbers like ".1.7") rather than a durable preference.
   - It is superseded or contradicted by a newer preference — keep only the latest.
