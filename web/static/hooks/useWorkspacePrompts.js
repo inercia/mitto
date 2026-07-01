@@ -47,24 +47,24 @@ export function useWorkspacePrompts({
 
   // Loop prompts: prompts shown in the LoopPromptSelector dropdown. A
   // prompt appears here if it opts into "prompts" (default dropup) OR
-  // "promptsPeriodic" (loop-selector-specific). The union keeps existing
+  // "promptsLoop" (loop-selector-specific). The union keeps existing
   // prompts available in the selector while letting authors target a prompt
-  // ONLY at the loop selector via `menus: promptsPeriodic`.
+  // ONLY at the loop selector via `menus: promptsLoop`.
   //
-  // Exclusion: `!promptsPeriodic` in a prompt's `menus` field suppresses it
+  // Exclusion: `!promptsLoop` in a prompt's `menus` field suppresses it
   // from the loop selector even when it would otherwise be included via
-  // the union (e.g. a one-shot prompt with `menus: prompts, !promptsPeriodic`).
+  // the union (e.g. a one-shot prompt with `menus: prompts, !promptsLoop`).
   // The exclusion is applied BEFORE the satisfaction check so it always wins.
   const loopPrompts = useMemo(
     () =>
       workspacePrompts.filter((p) => {
         // Explicit exclusion takes precedence over the union rule.
-        if (promptMenuExcludes(p).has("promptsPeriodic")) return false;
+        if (promptMenuExcludes(p).has("promptsLoop")) return false;
         const menus = promptMenus(p);
         return (
           (menus.includes("prompts") && menuSatisfies(p, "prompts")) ||
-          (menus.includes("promptsPeriodic") &&
-            menuSatisfies(p, "promptsPeriodic"))
+          (menus.includes("promptsLoop") &&
+            menuSatisfies(p, "promptsLoop"))
         );
       }),
     [workspacePrompts],

@@ -1,6 +1,6 @@
 icon: refresh
 name: Iterate implementing
-menus: promptsPeriodic
+menus: promptsLoop
 parameters:
   - name: Commit
     type: boolean

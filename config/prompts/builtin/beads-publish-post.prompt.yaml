@@ -1,4 +1,4 @@
-icon: periodic
+icon: loop
 name: Publish post
 menus: beadsIssues, conversation
 parameters:

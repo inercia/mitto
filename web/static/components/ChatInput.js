@@ -25,7 +25,7 @@ import {
 } from "../utils/storage.js";
 import { useResizeHandle } from "../hooks/useResizeHandle.js";
 import { SlashCommandPicker } from "./SlashCommandPicker.js";
-import { PeriodicFrequencyPanel } from "./PeriodicFrequencyPanel.js";
+import { LoopFrequencyPanel } from "./LoopFrequencyPanel.js";
 import { SavePromptDialog } from "./SavePromptDialog.js";
 import { GripIcon, SettingsIcon } from "./Icons.js";
 import { ConfigOptionSelect } from "./ConfigOptionSelect.js";
@@ -207,7 +207,7 @@ export function ChatInput({
   tokenUsage = null,
   onOpenPromptParamDialog,
   // Whether the active workspace has beads (`.beads` + `bd`). Gates the "On
-  // tasks" periodic trigger tab in PeriodicFrequencyPanel (mitto-oja.4).
+  // tasks" periodic trigger tab in LoopFrequencyPanel (mitto-oja.4).
   hasBeadsWorkspace = false,
 }) {
   // Use the draft from parent state instead of local state
@@ -1046,7 +1046,7 @@ export function ChatInput({
     }
   }, [sessionId, isPeriodicSaving]);
 
-  // Handle periodic prompt selection from PeriodicPromptSelector
+  // Handle periodic prompt selection from LoopPromptSelector
   const handlePeriodicPromptSelect = useCallback(
     async (promptName) => {
       if (!sessionId || isPeriodicSaving) return;
@@ -1141,7 +1141,7 @@ export function ChatInput({
     onOpenPromptParamDialog,
   ]);
 
-  // Handle frequency change from the PeriodicFrequencyPanel
+  // Handle frequency change from the LoopFrequencyPanel
   const handlePeriodicFrequencyChange = useCallback(
     (newFrequency, newNextScheduledAt) => {
       setPeriodicFrequency(newFrequency);
@@ -1152,12 +1152,12 @@ export function ChatInput({
     [],
   );
 
-  // Handle max iterations change from the PeriodicFrequencyPanel
+  // Handle max iterations change from the LoopFrequencyPanel
   const handlePeriodicMaxIterationsChange = useCallback((newValue) => {
     setPeriodicMaxIterations(newValue);
   }, []);
 
-  // Handle pause/resume toggle from the PeriodicFrequencyPanel
+  // Handle pause/resume toggle from the LoopFrequencyPanel
   const handlePeriodicEnabledChange = useCallback((newEnabled) => {
     setIsPeriodicLocked(newEnabled);
     if (!newEnabled) {
@@ -2453,7 +2453,7 @@ ${activeUIPrompt.text || ""}</textarea
       <!-- Part of normal document flow - pushes conversation area up. -->
       <!-- Single merged card: compact header always visible; body expands on demand. -->
       <div class="max-w-4xl mx-auto">
-        <${PeriodicFrequencyPanel}
+        <${LoopFrequencyPanel}
           isOpen=${periodicConfigured && !hasActiveUIPrompt}
           disabled=${isPeriodicLocked}
           sessionId=${sessionId}

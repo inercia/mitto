@@ -47,7 +47,7 @@ import {
   SortIcon,
   CopyIcon,
   getPromptIconOrDefault,
-  PeriodicIcon,
+  LoopIcon,
   LinkIcon,
   ListIcon,
   BoldIcon,
@@ -4554,7 +4554,7 @@ export function BeadsView({
                           return html`<span
                             class="shrink-0 text-success opacity-80"
                             title="Periodic prompt — always sets the conversation to recurring mode"
-                            ><${PeriodicIcon} className="w-3.5 h-3.5"
+                            ><${LoopIcon} className="w-3.5 h-3.5"
                           /></span>`;
                         })()}
                       </button>

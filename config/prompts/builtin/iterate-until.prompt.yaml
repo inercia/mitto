@@ -1,4 +1,4 @@
-icon: periodic
+icon: loop
 name: Iterate until ...
 menus: conversation
 parameters:

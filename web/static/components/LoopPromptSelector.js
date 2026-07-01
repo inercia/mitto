@@ -1,6 +1,6 @@
-// Mitto Web Interface - Periodic Prompt Selector Component
+// Mitto Web Interface - Loop Prompt Selector Component
 // Dropdown for selecting a workspace prompt as the periodic prompt.
-// Renders inline (no outer panel chrome) — meant to be embedded in PeriodicFrequencyPanel header.
+// Renders inline (no outer panel chrome) — meant to be embedded in LoopFrequencyPanel header.
 
 const { useState, useEffect, useCallback, useRef, html } = window.preact;
 
@@ -12,9 +12,9 @@ import { getPromptSortMode } from "../utils/storage.js";
 const FREE_TEXT_PREVIEW_MAX = 40;
 
 /**
- * PeriodicPromptSelector - inline dropdown for selecting a workspace prompt as the periodic prompt.
+ * LoopPromptSelector - inline dropdown for selecting a workspace prompt as the periodic prompt.
  * Renders just the trigger button + dropdown popover (no outer panel chrome).
- * The parent card (PeriodicFrequencyPanel) controls visibility via its own isOpen logic.
+ * The parent card (LoopFrequencyPanel) controls visibility via its own isOpen logic.
  *
  * @param {Object} props
  * @param {Array} props.prompts - Available workspace prompts (same as predefinedPrompts)
@@ -24,7 +24,7 @@ const FREE_TEXT_PREVIEW_MAX = 40;
  * @param {Function} props.onSelect - Callback when a prompt is selected: (promptName) => void
  * @param {boolean} props.isOpen - Kept for API compat; parent card controls visibility now (ignored here)
  */
-export function PeriodicPromptSelector({
+export function LoopPromptSelector({
   prompts = [],
   selectedPromptName = "",
   selectedPromptBody = "",

@@ -85,7 +85,7 @@ function localToUtcTime(localTime) {
 }
 
 /**
- * PeriodicScheduleDialog — modal to collect a periodic schedule for a prompt.
+ * LoopScheduleDialog — modal to collect a periodic schedule for a prompt.
  *
  * Pre-fills from `prompt.periodic` defaults (if present).
  * Calls `onConfirm({ value, unit, at? })` with `at` in UTC HH:MM (days only).
@@ -97,7 +97,7 @@ function localToUtcTime(localTime) {
  * @param {Function} props.onConfirm - Called with { value, unit, at? } on confirm
  * @param {Function} props.onCancel - Called on cancel / close
  */
-export function PeriodicScheduleDialog({
+export function LoopScheduleDialog({
   isOpen,
   prompt,
   onConfirm,

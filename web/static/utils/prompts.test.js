@@ -173,8 +173,8 @@ describe("MENU_PARAM_TYPES", () => {
     expect(MENU_PARAM_TYPES.prompts).toEqual([]);
   });
 
-  test("promptsPeriodic menu provides no types", () => {
-    expect(MENU_PARAM_TYPES.promptsPeriodic).toEqual([]);
+  test("promptsLoop menu provides no types", () => {
+    expect(MENU_PARAM_TYPES.promptsLoop).toEqual([]);
   });
 
   test("conversation menu provides no types", () => {
@@ -1045,29 +1045,29 @@ describe("currentModelName", () => {
 describe("promptMenus — exclusion token stripping", () => {
   test("strips !-prefixed tokens from the positive list", () => {
     expect(
-      promptMenus({ menus: "prompts, !promptsPeriodic" }),
+      promptMenus({ menus: "prompts, !promptsLoop" }),
     ).toEqual(["prompts"]);
   });
 
   test("defaults to ['prompts'] when only exclusion tokens remain", () => {
-    expect(promptMenus({ menus: "!promptsPeriodic" })).toEqual(["prompts"]);
+    expect(promptMenus({ menus: "!promptsLoop" })).toEqual(["prompts"]);
   });
 
   test("strips multiple exclusion tokens", () => {
     expect(
-      promptMenus({ menus: "prompts, !promptsPeriodic, !conversation" }),
+      promptMenus({ menus: "prompts, !promptsLoop, !conversation" }),
     ).toEqual(["prompts"]);
   });
 
   test("preserves positive tokens alongside exclusions", () => {
     expect(
-      promptMenus({ menus: "prompts, conversation, !promptsPeriodic" }),
+      promptMenus({ menus: "prompts, conversation, !promptsLoop" }),
     ).toEqual(["prompts", "conversation"]);
   });
 
   test("handles whitespace around ! tokens", () => {
     expect(
-      promptMenus({ menus: "prompts , ! promptsPeriodic" }),
+      promptMenus({ menus: "prompts , ! promptsLoop" }),
     ).toEqual(["prompts"]);
   });
 });
@@ -1093,20 +1093,20 @@ describe("promptMenuExcludes", () => {
 
   test("returns Set of excluded menu names without leading !", () => {
     expect(
-      promptMenuExcludes({ menus: "prompts, !promptsPeriodic" }),
-    ).toEqual(new Set(["promptsPeriodic"]));
+      promptMenuExcludes({ menus: "prompts, !promptsLoop" }),
+    ).toEqual(new Set(["promptsLoop"]));
   });
 
   test("returns multiple excluded names", () => {
     expect(
-      promptMenuExcludes({ menus: "prompts, !promptsPeriodic, !conversation" }),
-    ).toEqual(new Set(["promptsPeriodic", "conversation"]));
+      promptMenuExcludes({ menus: "prompts, !promptsLoop, !conversation" }),
+    ).toEqual(new Set(["promptsLoop", "conversation"]));
   });
 
   test("handles whitespace around ! token (defensive)", () => {
     expect(
-      promptMenuExcludes({ menus: "prompts, ! promptsPeriodic" }),
-    ).toEqual(new Set(["promptsPeriodic"]));
+      promptMenuExcludes({ menus: "prompts, ! promptsLoop" }),
+    ).toEqual(new Set(["promptsLoop"]));
   });
 
   test("handles null prompt gracefully", () => {
@@ -1135,13 +1135,13 @@ describe("promptMenuIncludes", () => {
 
   test("returns false when menu is explicitly excluded", () => {
     expect(
-      promptMenuIncludes({ menus: "prompts, !promptsPeriodic" }, "promptsPeriodic"),
+      promptMenuIncludes({ menus: "prompts, !promptsLoop" }, "promptsLoop"),
     ).toBe(false);
   });
 
   test("returns true for a menu that is included but a different menu is excluded", () => {
     expect(
-      promptMenuIncludes({ menus: "prompts, !promptsPeriodic" }, "prompts"),
+      promptMenuIncludes({ menus: "prompts, !promptsLoop" }, "prompts"),
     ).toBe(true);
   });
 
@@ -1149,35 +1149,35 @@ describe("promptMenuIncludes", () => {
     expect(promptMenuIncludes({}, "prompts")).toBe(true);
   });
 
-  test("returns false for promptsPeriodic when only !promptsPeriodic specified", () => {
+  test("returns false for promptsLoop when only !promptsLoop specified", () => {
     expect(
-      promptMenuIncludes({ menus: "!promptsPeriodic" }, "promptsPeriodic"),
+      promptMenuIncludes({ menus: "!promptsLoop" }, "promptsLoop"),
     ).toBe(false);
   });
 });
 
 // =============================================================================
-// Periodic filter behaviour — union with !promptsPeriodic exclusion
+// Periodic filter behaviour — union with !promptsLoop exclusion
 // =============================================================================
 
 describe("periodic prompt filter logic (union + exclusion)", () => {
   // Replicates the loopPrompts predicate from useWorkspacePrompts.js
   function isPeriodicPrompt(p) {
-    if (promptMenuExcludes(p).has("promptsPeriodic")) return false;
+    if (promptMenuExcludes(p).has("promptsLoop")) return false;
     const menus = promptMenus(p);
-    return menus.includes("prompts") || menus.includes("promptsPeriodic");
+    return menus.includes("prompts") || menus.includes("promptsLoop");
   }
 
   test("prompts-only prompt IS in periodic selector (union rule)", () => {
     expect(isPeriodicPrompt({ menus: "prompts" })).toBe(true);
   });
 
-  test("promptsPeriodic-only prompt IS in periodic selector", () => {
-    expect(isPeriodicPrompt({ menus: "promptsPeriodic" })).toBe(true);
+  test("promptsLoop-only prompt IS in periodic selector", () => {
+    expect(isPeriodicPrompt({ menus: "promptsLoop" })).toBe(true);
   });
 
-  test("prompt with menus: prompts, !promptsPeriodic is NOT in periodic selector", () => {
-    expect(isPeriodicPrompt({ menus: "prompts, !promptsPeriodic" })).toBe(false);
+  test("prompt with menus: prompts, !promptsLoop is NOT in periodic selector", () => {
+    expect(isPeriodicPrompt({ menus: "prompts, !promptsLoop" })).toBe(false);
   });
 
   test("prompt with menus: conversation is NOT in periodic selector", () => {

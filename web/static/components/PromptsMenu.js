@@ -4,7 +4,7 @@
 
 const { html, Fragment, useState } = window.preact;
 
-import { getPromptIcon, PeriodicIcon } from "./Icons.js";
+import { getPromptIcon, LoopIcon } from "./Icons.js";
 import {
   getContrastColor,
   flattenPrompts,
@@ -180,7 +180,7 @@ export function PromptsMenu({
           html`<span
             class="shrink-0 text-success opacity-80"
             title="Periodic prompt — sets the conversation to recurring mode"
-            ><${PeriodicIcon} className="w-3.5 h-3.5"
+            ><${LoopIcon} className="w-3.5 h-3.5"
           /></span>`}
           ${periodicToggle &&
           (() => {

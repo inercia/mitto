@@ -122,7 +122,7 @@ import {
 } from "./components/AgentPlanPanel.js";
 import { SessionPanel } from "./components/SessionPanel.js";
 import { Drawer } from "./components/Drawer.js";
-import { PeriodicFrequencyPanel } from "./components/PeriodicFrequencyPanel.js";
+import { LoopFrequencyPanel } from "./components/LoopFrequencyPanel.js";
 import { CountdownDisplay } from "./components/CountdownDisplay.js";
 import { ToastContainer } from "./components/ToastContainer.js";
 import {
@@ -154,8 +154,8 @@ import {
   ArchiveIcon,
   ArchiveFilledIcon,
   ListIcon,
-  PeriodicIcon,
-  PeriodicFilledIcon,
+  LoopIcon,
+  LoopFilledIcon,
   CheckIcon,
   ClockIcon,
   StopIcon,
@@ -206,7 +206,7 @@ import { WorkspaceBadge, WorkspacePill } from "./components/WorkspaceBadge.js";
 import { DeleteDialog } from "./components/DeleteDialog.js";
 import { KeyboardShortcutsDialog } from "./components/KeyboardShortcutsDialog.js";
 import { NewSessionWorkspaceDialog } from "./components/NewSessionWorkspaceDialog.js";
-import { PeriodicScheduleDialog } from "./components/PeriodicScheduleDialog.js";
+import { LoopScheduleDialog } from "./components/LoopScheduleDialog.js";
 import { PromptParameterDialog } from "./components/PromptParameterDialog.js";
 import { Tooltip } from "./components/Tooltip.js";
 
@@ -433,7 +433,7 @@ function App() {
   }); // Keyboard shortcuts dialog
   // Periodic schedule dialog: opened when a periodic prompt is selected from any menu.
   // Shape: null | { prompt, onSchedule: async ({ value, unit, at? }) => void }
-  const [periodicScheduleDialog, setPeriodicScheduleDialog] = useState(null);
+  const [loopScheduleDialog, setLoopScheduleDialog] = useState(null);
   // Prompt parameter dialog: opened when a beadsIssues prompt has parameters that
   // the menu cannot auto-fill. Shape: null | { prompt, parameters, onSubmit }
   const [promptParamDialog, setPromptParamDialog] = useState(null);
@@ -524,7 +524,7 @@ function App() {
     setShowSidePanel,
     setSidePanelTab,
     onOpenPeriodicDialog: (prompt, onSchedule) =>
-      setPeriodicScheduleDialog({ prompt, onSchedule }),
+      setLoopScheduleDialog({ prompt, onSchedule }),
     onOpenPromptParamDialog: (prompt, parameters, onSubmit) =>
       setPromptParamDialog({ prompt, parameters, onSubmit }),
     activeSessionId,
@@ -2069,10 +2069,10 @@ function App() {
         // action === "new-loop": no session — open schedule dialog → create NEW loop conversation.
         // When the prompt has parameters, collect them first, then open the schedule dialog.
         const openScheduleDialog = (collectedArgs) => {
-          setPeriodicScheduleDialog({
+          setLoopScheduleDialog({
             prompt,
             onSchedule: async (schedule) => {
-              setPeriodicScheduleDialog(null);
+              setLoopScheduleDialog(null);
               const workingDir = session?.working_dir;
               const acpServer = session?.acp_server;
               const result = await startConversationWithPrompt({
@@ -2571,15 +2571,15 @@ function App() {
         />
 
         <!-- Periodic Schedule Dialog: opened when a periodic-declaring prompt is selected -->
-        <${PeriodicScheduleDialog}
-          isOpen=${periodicScheduleDialog !== null}
-          prompt=${periodicScheduleDialog?.prompt}
+        <${LoopScheduleDialog}
+          isOpen=${loopScheduleDialog !== null}
+          prompt=${loopScheduleDialog?.prompt}
           onConfirm=${(schedule) => {
-            const { onSchedule } = periodicScheduleDialog || {};
-            setPeriodicScheduleDialog(null);
+            const { onSchedule } = loopScheduleDialog || {};
+            setLoopScheduleDialog(null);
             onSchedule?.(schedule);
           }}
-          onCancel=${() => setPeriodicScheduleDialog(null)}
+          onCancel=${() => setLoopScheduleDialog(null)}
         />
 
         <!-- Prompt Parameter Dialog: opened when a menu (beads, conversation, or
@@ -2700,7 +2700,7 @@ function App() {
                                   ).toLocaleString()
                                 : "")}
                           >${headerPeriodicState.state === "running"
-                            ? html`<${PeriodicIcon} className="w-3 h-3" />`
+                            ? html`<${LoopIcon} className="w-3 h-3" />`
                             : headerPeriodicState.state === "stopped"
                               ? html`<${StopIcon} className="w-3 h-3" />`
                               : html`<${PauseFilledIcon}

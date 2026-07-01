@@ -1,18 +1,18 @@
-// Mitto Web Interface - Periodic Frequency Panel Component
+// Mitto Web Interface - Loop Frequency Panel Component
 // Single merged card: compact header (always visible) + collapsible body (settings).
 
 const { useState, useEffect, useCallback, useMemo, useRef, html, Fragment } =
   window.preact;
 
 import {
-  PeriodicFilledIcon,
+  LoopFilledIcon,
   PlayFilledIcon,
   PauseFilledIcon,
   ChatBubbleIcon,
   SlidersIcon,
 } from "./Icons.js";
 import { promptParameters } from "../utils/prompts.js";
-import { PeriodicPromptSelector } from "./PeriodicPromptSelector.js";
+import { LoopPromptSelector } from "./LoopPromptSelector.js";
 import { ConfirmDialog } from "./ConfirmDialog.js";
 import { secureFetch, authFetch } from "../utils/csrf.js";
 import { apiUrl, errorMessageFromData } from "../utils/api.js";
@@ -130,7 +130,7 @@ function localToUtcTime(localTime) {
 }
 
 /**
- * PeriodicFrequencyPanel component - merged periodic settings card.
+ * LoopFrequencyPanel component - merged periodic settings card.
  * Header (always visible when isOpen): run-now, prompt selector, status, pause/resume, expand toggle.
  * Body (collapsed by default): frequency inputs, fresh-context, max-runs.
  *
@@ -155,7 +155,7 @@ function localToUtcTime(localTime) {
  * @param {boolean} props.isPromptAreaVisible - Whether the prompt composition area is visible
  * @param {Function} props.onTogglePromptArea - Callback to toggle prompt composition area visibility
  */
-export function PeriodicFrequencyPanel({
+export function LoopFrequencyPanel({
   isOpen,
   disabled = false,
   sessionId,
@@ -1014,7 +1014,7 @@ export function PeriodicFrequencyPanel({
                breakpoints so the prompt stays reachable without expanding the
                properties section. -->
           <div class="min-w-0">
-            <${PeriodicPromptSelector}
+            <${LoopPromptSelector}
               prompts=${prompts}
               selectedPromptName=${selectedPromptName}
               selectedPromptBody=${selectedPromptBody}

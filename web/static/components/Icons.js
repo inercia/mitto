@@ -871,7 +871,7 @@ export function ArchiveFilledIcon({ className = "w-4 h-4" }) {
  * Periodic/repeat icon (circular arrow) for recurring conversations
  * @param {string} className - CSS classes (default: 'w-4 h-4')
  */
-export function PeriodicIcon({ className = "w-4 h-4" }) {
+export function LoopIcon({ className = "w-4 h-4" }) {
   return html`
     <svg
       class="${className}"
@@ -892,10 +892,10 @@ export function PeriodicIcon({ className = "w-4 h-4" }) {
 /**
  * Periodic filled icon for active periodic state
  * Shows a filled circular badge with contrasting white arrows inside
- * Creates an "inverted" look compared to the outline PeriodicIcon
+ * Creates an "inverted" look compared to the outline LoopIcon
  * @param {string} className - CSS classes (default: 'w-4 h-4')
  */
-export function PeriodicFilledIcon({ className = "w-4 h-4" }) {
+export function LoopFilledIcon({ className = "w-4 h-4" }) {
   return html`
     <svg class="${className}" viewBox="0 0 24 24">
       <!-- Filled circle background using currentColor (will be blue/colored) -->
@@ -922,7 +922,7 @@ export function PeriodicFilledIcon({ className = "w-4 h-4" }) {
 /**
  * Play filled icon for "run now" action
  * Shows a filled circular badge with a white triangle (play arrow) inside
- * Similar style to PeriodicFilledIcon but indicates "run/play" action
+ * Similar style to LoopFilledIcon but indicates "run/play" action
  * @param {string} className - CSS classes (default: 'w-4 h-4')
  */
 export function PlayFilledIcon({ className = "w-4 h-4" }) {
@@ -1565,7 +1565,7 @@ export const PROMPT_ICONS = {
   duplicate: DuplicateIcon,
   pin: PinIcon,
   archive: ArchiveIcon,
-  periodic: PeriodicIcon,
+  loop: LoopIcon,
   queue: QueueIcon,
   play: PlayFilledIcon,
 };

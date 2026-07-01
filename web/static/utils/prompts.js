@@ -6,7 +6,7 @@ import { endpoints } from "./endpoints.js";
 /**
  * Returns the list of UI menus a prompt opts INTO (positive tokens only).
  * The `menus` front-matter is a comma-separated list (e.g. "prompts, conversation").
- * Tokens prefixed with `!` (e.g. "!promptsPeriodic") are exclusions and are
+ * Tokens prefixed with `!` (e.g. "!promptsLoop") are exclusions and are
  * stripped from the returned list — use `promptMenuExcludes` to read them.
  * A missing or empty value (after stripping exclusion tokens) defaults to
  * ["prompts"], so prompts that explicitly target other menus (e.g. "conversation")
@@ -25,7 +25,7 @@ export function promptMenus(prompt) {
 /**
  * Returns a Set of menu names that a prompt explicitly opts OUT of (the
  * `!`-prefixed tokens in the `menus` front-matter). For example, for
- * `menus: "prompts, !promptsPeriodic"` it returns `new Set(["promptsPeriodic"])`.
+ * `menus: "prompts, !promptsLoop"` it returns `new Set(["promptsLoop"])`.
  * Robust to null/undefined/empty (returns an empty Set).
  *
  * @param {Object} prompt - Prompt object with optional `menus` string
@@ -54,7 +54,7 @@ export function promptMenuExcludes(prompt) {
  * bare `promptMenus(p).includes(menu)`, so that exclusions are always respected.
  *
  * @param {Object} prompt - Prompt object with optional `menus` string
- * @param {string} menu   - Menu name to check (e.g. "prompts", "promptsPeriodic")
+ * @param {string} menu   - Menu name to check (e.g. "prompts", "promptsLoop")
  * @returns {boolean}
  */
 export function promptMenuIncludes(prompt, menu) {
@@ -181,7 +181,7 @@ export function promptParameters(prompt) {
  */
 export const MENU_PARAM_TYPES = {
   prompts: [],
-  promptsPeriodic: [],
+  promptsLoop: [],
   conversation: [],
   beadsIssues: ["beadsId", "beadsTitle"],
   beadsList: [],

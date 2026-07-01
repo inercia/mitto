@@ -10,7 +10,7 @@ import {
   EditIcon,
   CheckIcon,
   FolderIcon,
-  PeriodicFilledIcon,
+  LoopFilledIcon,
 } from "./Icons.js";
 import { apiUrl, errorMessageFromData } from "../utils/api.js";
 import { secureFetch, authFetch } from "../utils/csrf.js";
@@ -1124,7 +1124,7 @@ export function ConversationPropertiesPanel({
                 Periodic Prompts
               </label>
               <div class="flex items-center gap-2 text-sm text-mitto-text-300">
-                <${PeriodicFilledIcon}
+                <${LoopFilledIcon}
                   className="w-4 h-4 shrink-0 text-mitto-accent"
                 />
                 <span>${formatFrequency(periodicConfig.frequency)}</span>
