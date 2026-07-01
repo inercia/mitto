@@ -187,6 +187,10 @@ func (h *Handlers) HandleBeadsShow(w http.ResponseWriter, r *http.Request) {
 			writeRetryableUnavailable(w, "Task service is busy. Please try again in a few seconds.", 5)
 			return
 		}
+		if beads.IsNotFound(err) {
+			writeErrorJSON(w, http.StatusNotFound, "", "Issue not found")
+			return
+		}
 		writeBeadsError(w, err)
 		return
 	}

@@ -84,6 +84,29 @@ func TestCmdError_StderrOf(t *testing.T) {
 	}
 }
 
+func TestIsNotFound(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"nil", nil, false},
+		{"missing issue", &CmdError{Err: errors.New("bd exited with non-zero status"),
+			Stderr: `Error fetching mitto-cam: no issue found matching "mitto-cam"`}, true},
+		{"mixed case", &CmdError{Stderr: `No Issue Found Matching "x"`}, true},
+		{"other bd failure", &CmdError{Stderr: "database is locked"}, false},
+		{"empty stderr", &CmdError{Stderr: ""}, false},
+		{"plain error", errors.New("no issue found matching"), false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := IsNotFound(tc.err); got != tc.want {
+				t.Errorf("IsNotFound = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Validators
 // ---------------------------------------------------------------------------

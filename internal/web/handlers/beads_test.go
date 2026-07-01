@@ -29,6 +29,26 @@ func (c *listErrorClient) List(_ context.Context, _ string) ([]byte, error) {
 	return nil, errors.New("bd: command failed: exit status 1")
 }
 
+// showNotFoundClient is a beads.Client whose Show mimics bd's "issue not found"
+// failure: a non-zero exit with the not-found phrase captured on stderr. Used to
+// verify that a missing issue id maps to HTTP 404 rather than 500.
+type showNotFoundClient struct{ stubBeadsClient }
+
+func (c *showNotFoundClient) Show(_ context.Context, _, id string) ([]byte, error) {
+	return nil, &beads.CmdError{
+		Err:    errors.New("bd exited with non-zero status"),
+		Stderr: `Error fetching ` + id + `: no issue found matching "` + id + `"`,
+	}
+}
+
+// showInternalErrorClient is a beads.Client whose Show fails with a generic
+// error (no not-found marker), verifying such failures still map to HTTP 500.
+type showInternalErrorClient struct{ stubBeadsClient }
+
+func (c *showInternalErrorClient) Show(_ context.Context, _, _ string) ([]byte, error) {
+	return nil, &beads.CmdError{Err: errors.New("bd exited with non-zero status"), Stderr: "database is locked"}
+}
+
 // stubBeadsClient implements beads.Client for unit tests.
 // All methods except Create are no-ops that return nil / zero values.
 type stubBeadsClient struct {
@@ -407,6 +427,56 @@ func TestHandleBeadsShow_UnknownWorkspace(t *testing.T) {
 	s.handleBeadsShow(w, req)
 	if w.Code != http.StatusBadRequest {
 		t.Errorf("status = %d, want %d", w.Code, http.StatusBadRequest)
+	}
+}
+
+// TestHandleBeadsShow_NotFound verifies that a missing issue id (bd fails with
+// "no issue found matching") maps to HTTP 404 with the not_found envelope,
+// rather than the generic 500 (regression test for mitto-2pb).
+func TestHandleBeadsShow_NotFound(t *testing.T) {
+	s := newBeadsTestServerWithClient(&showNotFoundClient{})
+	req := localhostRequest("/api/issues/mitto-cam?working_dir=/test/workspace")
+	req.SetPathValue("id", "mitto-cam")
+	w := httptest.NewRecorder()
+	s.handleBeadsShow(w, req)
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want %d", w.Code, http.StatusNotFound)
+	}
+	var resp struct {
+		Error struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode error body: %v", err)
+	}
+	if resp.Error.Code != "not_found" {
+		t.Errorf("error.code = %q, want %q", resp.Error.Code, "not_found")
+	}
+}
+
+// TestHandleBeadsShow_InternalError verifies that a genuine bd failure (not a
+// missing issue) still maps to HTTP 500, so 404 is reserved for not-found.
+func TestHandleBeadsShow_InternalError(t *testing.T) {
+	s := newBeadsTestServerWithClient(&showInternalErrorClient{})
+	req := localhostRequest("/api/issues/mitto-cam?working_dir=/test/workspace")
+	req.SetPathValue("id", "mitto-cam")
+	w := httptest.NewRecorder()
+	s.handleBeadsShow(w, req)
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want %d", w.Code, http.StatusInternalServerError)
+	}
+	var resp struct {
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode error body: %v", err)
+	}
+	if resp.Error.Code != "server_error" {
+		t.Errorf("error.code = %q, want %q", resp.Error.Code, "server_error")
 	}
 }
 

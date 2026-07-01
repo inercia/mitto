@@ -32,6 +32,17 @@ func StderrOf(err error) string {
 	return ""
 }
 
+// IsNotFound reports whether err represents a bd "issue not found" failure, as
+// opposed to a genuine internal error. bd exits non-zero and prints a message
+// like: no issue found matching "<id>" to stderr when the requested issue does
+// not exist. Callers use this to map a missing issue to HTTP 404 instead of 500.
+func IsNotFound(err error) bool {
+	if err == nil {
+		return false
+	}
+	return strings.Contains(strings.ToLower(StderrOf(err)), "no issue found matching")
+}
+
 // CreateParams carries optional fields for Client.Create.
 type CreateParams struct {
 	Title       string
