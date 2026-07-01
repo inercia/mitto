@@ -1746,11 +1746,13 @@ func TestBugFixPhasePrompts_RenderForRepresentativeContexts(t *testing.T) {
 //
 //	(a) linked-issue context  — .Session.BeadsIssue set, first run (default
 //	    zero-value Iteration) → bead ID appears; interactive "Interaction Mode"
-//	    header renders (not the uninterrupted continuation form).
+//	    header renders (not the uninterrupted continuation form); driver
+//	    dispatches phase prompts by name (per-phase model tiering).
 //	(b) arg-only context      — .Args.IssueID set, .Iteration.IsUninterrupted
 //	    true (silent scheduled continuation) → bead ID appears; the compact
 //	    "Continuation — uninterrupted scheduled run" header renders instead of
-//	    the verbose "Interaction Mode" header.
+//	    the verbose "Interaction Mode" header; Commit=true propagates into the
+//	    Implement/Test/Review-phase dispatch arguments.
 //	(c) no-target context     — neither BeadsIssue nor IssueID set → the
 //	    "not explicitly specified" guidance appears and no `bd show` command
 //	    leaks (Step 1 is skipped entirely without a resolved target); the
@@ -1802,10 +1804,43 @@ func TestIterateImplementingFeature_RendersForRepresentativeContexts(t *testing.
 	if strings.Contains(outA, "bd show  ") || strings.Contains(outA, "bd show \n") {
 		t.Errorf("branch (a): found broken empty 'bd show ' command in output")
 	}
+	// Per-phase model tiering: the driver must dispatch phase prompts by name
+	// via mitto_conversation_send_prompt (self-send), NOT do the phase work
+	// inline. The four phase prompt names and the self-send tool must appear
+	// in the rendered body with the resolved target as IssueID.
+	for _, phaseName := range []string{
+		"Feature — plan phase",
+		"Feature — implement phase",
+		"Feature — test phase",
+		"Feature — review phase",
+	} {
+		if !strings.Contains(outA, phaseName) {
+			t.Errorf("branch (a): expected phase dispatch to %q in output; got:\n%s", phaseName, outA)
+		}
+	}
+	if !strings.Contains(outA, "mitto_conversation_send_prompt") {
+		t.Errorf("branch (a): expected 'mitto_conversation_send_prompt' self-send calls in output")
+	}
+	if !strings.Contains(outA, `"IssueID": "mitto-abc"`) {
+		t.Errorf("branch (a): expected resolved target 'mitto-abc' passed as IssueID argument; got:\n%s", outA)
+	}
+	// The driver must NOT do the phase work inline anymore. It must never
+	// contain `bd update ... --add-label planned|implemented|tested|verified`
+	// — that is the phase prompts' job.
+	for _, forbidden := range []string{
+		"--add-label planned",
+		"--add-label implemented",
+		"--add-label tested",
+		"--add-label verified",
+	} {
+		if strings.Contains(outA, forbidden) {
+			t.Errorf("branch (a): driver leaked inline phase-label write %q — must be delegated to the phase prompt; got:\n%s", forbidden, outA)
+		}
+	}
 
-	// (b) Arg-only context, uninterrupted silent continuation run.
+	// (b) Arg-only context, uninterrupted silent continuation run, with Commit=true.
 	ctxB := &PromptEnabledContext{
-		Args:      map[string]string{"IssueID": "mitto-xyz"},
+		Args:      map[string]string{"IssueID": "mitto-xyz", "Commit": "true"},
 		Iteration: IterationContext{IsPeriodic: true, IsUninterrupted: true},
 	}
 	outB := render(ctxB)
@@ -1821,8 +1856,19 @@ func TestIterateImplementingFeature_RendersForRepresentativeContexts(t *testing.
 	if strings.Contains(outB, "bd show  ") || strings.Contains(outB, "bd show \n") {
 		t.Errorf("branch (b): found broken empty 'bd show ' command in output")
 	}
+	// Commit=true must render into the Implement/Test/Review dispatch args.
+	if got, want := strings.Count(outB, `"Commit": "true"`), 3; got != want {
+		t.Errorf("branch (b): expected Commit=true propagated into %d phase dispatch arguments (Implement/Test/Review), got %d; output:\n%s", want, got, outB)
+	}
+	if !strings.Contains(outB, `"IssueID": "mitto-xyz"`) {
+		t.Errorf("branch (b): expected resolved target 'mitto-xyz' passed as IssueID; got:\n%s", outB)
+	}
 
-	// (c) No target resolvable — neither BeadsIssue nor Args.IssueID set.
+	// (c) No target resolvable — neither BeadsIssue nor Args.IssueID set. Step 1
+	// (state loading, "bd show") is skipped entirely without a target; the
+	// Blocked → Defer + Handoff step (Step 4) still renders, using the
+	// "<target-feature>" placeholder rather than an empty/broken argument, since
+	// it is the documented escape hatch for this exact situation.
 	ctxC := &PromptEnabledContext{}
 	outC := render(ctxC)
 	if !strings.Contains(outC, "not explicitly specified") {
@@ -1836,6 +1882,165 @@ func TestIterateImplementingFeature_RendersForRepresentativeContexts(t *testing.
 	}
 	if !strings.Contains(outC, "<target-feature>") {
 		t.Errorf("branch (c): expected the '<target-feature>' placeholder in the Step 4 handoff commands; got:\n%s", outC)
+	}
+}
+
+// TestFeaturePhasePrompts_ParseAndDeclarePreferredModels verifies that the
+// four per-phase feature-implementation prompts (Option A tiering, mitto-gap.5)
+// parse from disk, stay hidden from user-facing menus (menus: internal so no
+// UI consumes them), and declare the expected preferredModels tag so
+// resolvePreferredModelsByPromptName → SelectPreferredModel → setActiveModelOnly
+// switches to the right tier when they are dispatched by name from the driver.
+// Mirrors TestBugFixPhasePrompts_ParseAndDeclarePreferredModels.
+func TestFeaturePhasePrompts_ParseAndDeclarePreferredModels(t *testing.T) {
+	builtinDir := "../../config/prompts/builtin"
+
+	cases := []struct {
+		file         string
+		name         string
+		expectedTier string
+	}{
+		{
+			file:         "beads-issue-feature-phase-plan.prompt.yaml",
+			name:         "Feature — plan phase",
+			expectedTier: "Reasoning",
+		},
+		{
+			file:         "beads-issue-feature-phase-implement.prompt.yaml",
+			name:         "Feature — implement phase",
+			expectedTier: "Coding",
+		},
+		{
+			file:         "beads-issue-feature-phase-test.prompt.yaml",
+			name:         "Feature — test phase",
+			expectedTier: "Coding",
+		},
+		{
+			file:         "beads-issue-feature-phase-review.prompt.yaml",
+			name:         "Feature — review phase",
+			expectedTier: "Reasoning",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.file, func(t *testing.T) {
+			path := filepath.Join(builtinDir, tc.file)
+			data, err := os.ReadFile(path)
+			if err != nil {
+				t.Skipf("prompt file not found at %s: %v", path, err)
+			}
+			p, err := ParsePromptFile(tc.file, data, time.Now())
+			if err != nil {
+				t.Fatalf("ParsePromptFile(%s): %v", tc.file, err)
+			}
+			if p.Name != tc.name {
+				t.Errorf("%s: Name = %q, want %q", tc.file, p.Name, tc.name)
+			}
+			// menus: internal keeps the prompt out of every UI menu (no
+			// frontend filter consumes "internal") while leaving it
+			// resolvable by name for programmatic dispatch.
+			if strings.TrimSpace(p.Menus) != "internal" {
+				t.Errorf("%s: Menus = %q, want \"internal\" (must stay hidden from UI menus)", tc.file, p.Menus)
+			}
+			if len(p.PreferredModels) == 0 {
+				t.Fatalf("%s: PreferredModels is empty; per-phase tiering requires a preferredModels entry", tc.file)
+			}
+			got := p.PreferredModels[0].ModelTag
+			if got != tc.expectedTier {
+				t.Errorf("%s: PreferredModels[0].ModelTag = %q, want %q", tc.file, got, tc.expectedTier)
+			}
+		})
+	}
+}
+
+// TestFeaturePhasePrompts_RenderForRepresentativeContexts renders each of the
+// four phase-tier prompts with (a) a linked-issue context, (b) an arg-only
+// context, and (c) a no-target context, and asserts each render succeeds and
+// picks the right branch (target resolved → Step 1/2/3 renders; no target →
+// missing-target guidance renders, no broken "bd show" command leaks). Mirrors
+// TestBugFixPhasePrompts_RenderForRepresentativeContexts and guards against
+// future template regressions in the feature phase prompts themselves.
+func TestFeaturePhasePrompts_RenderForRepresentativeContexts(t *testing.T) {
+	builtinDir := "../../config/prompts/builtin"
+
+	files := []string{
+		"beads-issue-feature-phase-plan.prompt.yaml",
+		"beads-issue-feature-phase-implement.prompt.yaml",
+		"beads-issue-feature-phase-test.prompt.yaml",
+		"beads-issue-feature-phase-review.prompt.yaml",
+	}
+
+	for _, file := range files {
+		t.Run(file, func(t *testing.T) {
+			path := filepath.Join(builtinDir, file)
+			data, err := os.ReadFile(path)
+			if err != nil {
+				t.Skipf("prompt file not found at %s: %v", path, err)
+			}
+			p, err := ParsePromptFile(file, data, time.Now())
+			if err != nil {
+				t.Fatalf("ParsePromptFile(%s): %v", file, err)
+			}
+			body := p.Content
+
+			render := func(ctx *PromptEnabledContext) string {
+				funcs := BuildTemplateFuncMap(ctx)
+				out, rerr := RenderPromptTemplate(p.Name, body, ctx, funcs)
+				if rerr != nil {
+					t.Fatalf("%s: RenderPromptTemplate: %v", file, rerr)
+				}
+				return out
+			}
+
+			// (a) Linked-issue context.
+			outA := render(&PromptEnabledContext{
+				Session: SessionContext{BeadsIssue: "mitto-abc", HasBeadsIssue: true},
+			})
+			if !strings.Contains(outA, "mitto-abc") {
+				t.Errorf("%s branch (a): expected bead ID 'mitto-abc' in output", file)
+			}
+			if !strings.Contains(outA, "bd show mitto-abc --json --include-comments") {
+				t.Errorf("%s branch (a): expected 'bd show mitto-abc --json --include-comments' in output", file)
+			}
+
+			// (b) Arg-only context — IssueID supplied by the dispatching
+			// driver (which is the primary invocation path for phase prompts).
+			args := map[string]string{"IssueID": "mitto-xyz"}
+			if file != "beads-issue-feature-phase-plan.prompt.yaml" {
+				args["Commit"] = "true"
+			}
+			outB := render(&PromptEnabledContext{Args: args})
+			if !strings.Contains(outB, "mitto-xyz") {
+				t.Errorf("%s branch (b): expected bead ID 'mitto-xyz' in output", file)
+			}
+			if strings.Contains(outB, "bd show  ") || strings.Contains(outB, "bd show \n") {
+				t.Errorf("%s branch (b): found broken empty 'bd show ' command in output", file)
+			}
+
+			// Implement/Test/Review phases must render commit-enabled
+			// scaffolding when Commit=true. The Plan phase has no Commit param.
+			if file != "beads-issue-feature-phase-plan.prompt.yaml" {
+				if !strings.Contains(outB, "git commit -m") {
+					t.Errorf("%s branch (b): expected 'git commit -m' scaffolding when Commit=true; got:\n%s", file, outB)
+				}
+			}
+
+			// (c) No target resolvable — the phase prompt must not run any
+			// `bd` command (no broken empty invocations) and must render its
+			// missing-target guidance.
+			outC := render(&PromptEnabledContext{})
+			if strings.Contains(outC, "bd show  ") || strings.Contains(outC, "bd show \n") {
+				t.Errorf("%s branch (c): found broken empty 'bd show ' command in output", file)
+			}
+			if !strings.Contains(outC, "No target feature is resolvable") {
+				t.Errorf("%s branch (c): expected 'No target feature is resolvable' guidance; got:\n%s", file, outC)
+			}
+			// Even without a target, the Step 4 handoff block still renders
+			// its placeholder for user-driven recovery.
+			if !strings.Contains(outC, "<target-feature>") {
+				t.Errorf("%s branch (c): expected '<target-feature>' placeholder in Step 4 handoff", file)
+			}
+		})
 	}
 }
 

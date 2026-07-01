@@ -9,7 +9,7 @@ parameters:
   - name: Commit
     type: boolean
     description: Commit the work at the end of the review stage
-description: Auto-periodic — drive a feature bead through plan → implement → test → review via label-encoded state, then self-terminate
+description: Auto-periodic — drive a feature bead through plan → implement → test → review by dispatching per-phase prompts (each on its own model tier), then self-terminate
 backgroundColor: '#C8E6C9'
 group: Tasks
 enabledWhen: '!Session.IsChild && CommandExists("bd") && DirExists(".beads") && Tools.HasPattern("mitto_conversation_*") && Item.Type == "feature" && Item.Status != "closed"'
@@ -32,6 +32,15 @@ prompt: |
   This prompt drives a single `feature`-type bead through a **label-encoded state
   machine** — `planned` → `implemented` → `tested` → `verified` — advancing **exactly
   one stage per run**, then removing its own periodic flag once `verified` is reached.
+
+  **Per-phase model tiering.** This driver does **not** do the plan / implement / test /
+  review work inline. It loads the bead's live labels, then **dispatches** the matching
+  phase prompt by name via `mitto_conversation_send_prompt` (a self-send). Each phase
+  prompt declares its own `preferredModels` so the ACP session transiently switches to
+  the right tier for that stage (Reasoning for plan and review, Coding for implement and
+  test) without touching this conversation's baseline model. The phase adds its label
+  and ends; the driver's `onCompletion` schedule then re-runs this prompt, which
+  observes the newly-advanced label and dispatches the next phase.
 
   {{ $target := "" -}}
   {{ if .Session.BeadsIssue }}{{ $target = .Session.BeadsIssue }}{{ else if .Args.IssueID }}{{ $target = .Args.IssueID }}{{ end -}}
@@ -112,74 +121,98 @@ prompt: |
   stop here: post a `mitto_ui_notify` explaining why, and self-terminate (Step 3e's
   self-termination steps) without changing any label.
 
-  ## Step 3 — Branch on the live labels; advance exactly ONE stage this run
+  ## Step 3 — Branch on the live labels; dispatch exactly ONE phase this run
 
-  - None of `planned`, `implemented`, `tested`, `verified` present → **Step 3a: Plan/Design.**
-  - `planned` present, `implemented` absent → **Step 3b: Implement.**
-  - `implemented` present, `tested` absent → **Step 3c: Test.**
-  - `tested` present, `verified` absent → **Step 3d: Review/Verify.**
-  - `verified` present → **Step 3e: Done.**
+  Do **not** do the phase's work inline. Dispatch the matching phase prompt by name
+  via `mitto_conversation_send_prompt` (a self-send), then end this turn. The phase
+  prompt runs on the next turn under its own preferred model tier, does the work, adds
+  its label, and stops; the driver's `onCompletion` schedule re-fires this prompt to
+  advance to the next phase.
 
-  If at any point in a stage you cannot make progress autonomously, stop that stage
-  immediately and go to **Step 4 (Blocked → Defer + Handoff)** instead of guessing or
-  advancing the label.
+  - None of `planned`, `implemented`, `tested`, `verified` present → **Step 3a: dispatch Plan/Design.**
+  - `planned` present, `implemented` absent → **Step 3b: dispatch Implement.**
+  - `implemented` present, `tested` absent → **Step 3c: dispatch Test.**
+  - `tested` present, `verified` absent → **Step 3d: dispatch Review/Verify.**
+  - `verified` present → **Step 3e: Done (handled inline).**
 
-  ### Step 3a — Plan/Design (no state label yet)
+  If the driver itself is unable to load state or resolve the target autonomously, go
+  to **Step 4 (Blocked → Defer + Handoff)** instead of dispatching. The phase prompts
+  themselves also handle their own in-phase blockers via their Step 4.
 
-  Read the bead's description and acceptance criteria plus any related code — do not
-  speculate about code you have not opened. In **interactive** mode (see above) you may
-  ask clarifying questions via `mitto_ui_options`; in **silent** mode proceed
-  autonomously or defer (Step 4) rather than guess. Produce a concrete implementation
-  plan; if the work is large enough to span multiple reviewable increments, decompose it
-  into sub-issues (`bd create "<title>" --parent {{ $target }} ...`). Then:
+  ### Step 3a — Dispatch Plan/Design (no state label yet)
 
-  ```bash
-  bd comment {{ $target }} "Plan: <approach, key design decisions, files/areas touched, any sub-issues created>."
-  bd update {{ $target }} --add-label planned
+  ```
+  mitto_conversation_send_prompt(
+    self_id: "{{ .Session.ID }}",
+    conversation_id: "self",
+    prompt_name: "Feature — plan phase",
+    arguments: { "IssueID": "{{ $target }}" }
+  )
   ```
 
-  ### Step 3b — Implement (`planned` present, not yet `implemented`)
+  Then end this turn. The Plan phase runs on the **Reasoning** tier, records a `Plan:`
+  comment (decomposing into sub-issues first if the work is large), adds the `planned`
+  label, and stops. The next scheduled run of this driver will observe `planned` and
+  dispatch Implement.
 
-  Write the code per the plan, in the smallest coherent increments. Do not gold-plate —
-  implement exactly what the plan and acceptance criteria call for. When the feature is
-  **functionally complete**:
+  ### Step 3b — Dispatch Implement (`planned` present, not yet `implemented`)
 
-  ```bash
-  bd comment {{ $target }} "Implementation: <what was built, files touched, any deviations from the plan and why>."
-  bd update {{ $target }} --add-label implemented
+  ```
+  mitto_conversation_send_prompt(
+    self_id: "{{ .Session.ID }}",
+    conversation_id: "self",
+    prompt_name: "Feature — implement phase",
+    arguments: { "IssueID": "{{ $target }}", "Commit": "{{ if eq .Args.Commit "true" }}true{{ else }}false{{ end }}" }
+  )
   ```
 
-  ### Step 3c — Test (`implemented` present, not yet `tested`)
+  Then end this turn. The Implement phase runs on the **Coding** tier, writes the
+  smallest coherent increment per the plan, records an `Implementation:` comment, adds
+  the `implemented` label{{ if eq .Args.Commit "true" }}, commits the increment{{ end }},
+  and stops. The next scheduled run of this driver will observe `implemented` and
+  dispatch Test.
 
-  Write or extend tests covering the acceptance criteria. Run them until the **new**
-  tests AND the **full relevant suite** pass — do not stop at a partial pass. Then:
+  ### Step 3c — Dispatch Test (`implemented` present, not yet `tested`)
 
-  ```bash
-  bd comment {{ $target }} "Testing: <tests added/extended, command to run them, pass/fail evidence>."
-  bd update {{ $target }} --add-label tested
+  ```
+  mitto_conversation_send_prompt(
+    self_id: "{{ .Session.ID }}",
+    conversation_id: "self",
+    prompt_name: "Feature — test phase",
+    arguments: { "IssueID": "{{ $target }}", "Commit": "{{ if eq .Args.Commit "true" }}true{{ else }}false{{ end }}" }
+  )
   ```
 
-  ### Step 3d — Review/Verify (`tested` present, not yet `verified`)
+  Then end this turn. The Test phase runs on the **Coding** tier, writes/extends tests
+  covering the acceptance criteria until the new tests and the full relevant suite
+  pass, records a `Testing:` comment, adds the `tested`
+  label{{ if eq .Args.Commit "true" }}, commits the test changes{{ end }}, and stops.
+  The next scheduled run of this driver will observe `tested` and dispatch Review.
 
-  Self-review before declaring done: build cleanly, run the linter/vet, confirm docs
-  were updated where needed, confirm every acceptance criterion is satisfied, and check
-  for downstream breakage (callers, tests, configs). If any gap is found, **do not
-  advance the label** — go back and close the gap (Step 3b/3c) or, if it needs user
-  input, defer (Step 4). When genuinely satisfied:
+  ### Step 3d — Dispatch Review/Verify (`tested` present, not yet `verified`)
 
-  ```bash
-  bd comment {{ $target }} "Review: <build/lint/test results, acceptance criteria checklist, downstream impact checked>."
-  bd update {{ $target }} --add-label verified
   ```
-  {{- if eq .Args.Commit "true" }}
+  mitto_conversation_send_prompt(
+    self_id: "{{ .Session.ID }}",
+    conversation_id: "self",
+    prompt_name: "Feature — review phase",
+    arguments: { "IssueID": "{{ $target }}", "Commit": "{{ if eq .Args.Commit "true" }}true{{ else }}false{{ end }}" }
+  )
+  ```
 
-  **Commit the work.** Stage only the files changed for this feature — by path
-  (`git add <file> ...`) — never `git add -A`, `git add .`, or `git commit -a`, since
-  unrelated uncommitted changes may exist and must be left untouched. Use a concise,
-  conventional commit message. Skip the commit if nothing changed.
-  {{- end }}
+  Then end this turn. The Review phase runs on the **Reasoning** tier, self-reviews
+  build/lint/docs/acceptance-criteria/downstream-impact — looping back **without**
+  advancing the label if any gap is found — and once genuinely satisfied records a
+  `Review:` comment, adds the `verified`
+  label{{ if eq .Args.Commit "true" }}, commits any review fix-ups{{ end }}, optionally
+  closes the bead, and stops. The next scheduled run of this driver will observe
+  `verified` and take the Done branch (Step 3e).
 
-  ### Step 3e — Done (`verified` present)
+  ### Step 3e — Done (`verified` present) — handled inline
+
+  All four phases are complete. Close the bead (if the review phase has not already)
+  and self-terminate — **no phase dispatch on this branch**, since there is no further
+  phase work to do:
 
   ```bash
   bd close {{ $target }} --reason "<short summary of what was delivered>"   # optional but recommended
@@ -231,14 +264,19 @@ prompt: |
 
   ## Guidelines
 
-  - **One stage per run.** Advance `planned` → `implemented` → `tested` → `verified` a
-    single step, then return — the next scheduled run continues. Never skip a stage or
-    do two at once.
+  - **One phase per run.** Dispatch a single phase prompt (`planned` → `implemented` →
+    `tested` → `verified`) via `mitto_conversation_send_prompt`, then end the turn.
+    Never skip a stage or dispatch two at once.
+  - **Never do the phase work inline.** The whole point of this driver is per-phase
+    model tiering. If you catch yourself running `bd update ... --add-label` for
+    `planned`/`implemented`/`tested`/`verified` inside *this* prompt, stop — that is the
+    phase prompt's job. This driver only labels `needs-human` (Step 4) and closes on
+    Done.
   - **Live state only.** Always re-read labels via `bd show --json` at the start of the
     run; never assume labels from a prior run or from `Item.*`.
   - **Decide autonomously; never guess.** The only time you must not proceed is when
     something is genuinely unclear/unsolvable without the user — then use Step 4.
   - **Silent unless it matters.** On scheduled runs, `mitto_ui_notify` only for
-    meaningful milestones (stage advanced, verified, blocked/deferred, or final stop).
+    meaningful milestones (phase dispatched, verified, blocked/deferred, or final stop).
   - **Always log to the tracker** with `bd comment` so progress is auditable even when
     you stay silent in the UI.
