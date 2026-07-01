@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/inercia/mitto/internal/appdir"
@@ -531,5 +532,265 @@ func TestConfigToSettings_RoundTripWithModels(t *testing.T) {
 	}
 	if len(tagsOnly.Tags) != 1 || tagsOnly.Tags[0] != "Fast" {
 		t.Errorf("Models[1].Tags = %v, want [Fast]", tagsOnly.Tags)
+	}
+}
+
+// TestMigrateSettingsPeriodicKeys_MovesOldToNew verifies that legacy periodic_*
+// keys nested under "session" and "conversations" are moved to their loop_*
+// equivalents in-place, and that the change is reported.
+func TestMigrateSettingsPeriodicKeys_MovesOldToNew(t *testing.T) {
+	raw := map[string]interface{}{
+		"session": map[string]interface{}{
+			"startup_periodic_delay_seconds": float64(15),
+			"periodic_suspend_timeout":       "30m",
+		},
+		"conversations": map[string]interface{}{
+			"max_periodic_iterations":               float64(42),
+			"min_periodic_completion_delay_seconds": float64(10),
+		},
+	}
+
+	changed := migrateSettingsPeriodicKeys(raw)
+	if !changed {
+		t.Fatal("expected changed=true when legacy keys are present")
+	}
+
+	session := raw["session"].(map[string]interface{})
+	if v, ok := session["startup_periodic_delay_seconds"]; ok {
+		t.Errorf("startup_periodic_delay_seconds should have been removed, still present: %v", v)
+	}
+	if v := session["startup_loop_delay_seconds"]; v != float64(15) {
+		t.Errorf("startup_loop_delay_seconds = %v, want 15", v)
+	}
+	if v, ok := session["periodic_suspend_timeout"]; ok {
+		t.Errorf("periodic_suspend_timeout should have been removed, still present: %v", v)
+	}
+	if v := session["loop_suspend_timeout"]; v != "30m" {
+		t.Errorf("loop_suspend_timeout = %v, want 30m", v)
+	}
+
+	conversations := raw["conversations"].(map[string]interface{})
+	if v, ok := conversations["max_periodic_iterations"]; ok {
+		t.Errorf("max_periodic_iterations should have been removed, still present: %v", v)
+	}
+	if v := conversations["max_loop_iterations"]; v != float64(42) {
+		t.Errorf("max_loop_iterations = %v, want 42", v)
+	}
+	if v, ok := conversations["min_periodic_completion_delay_seconds"]; ok {
+		t.Errorf("min_periodic_completion_delay_seconds should have been removed, still present: %v", v)
+	}
+	if v := conversations["min_loop_completion_delay_seconds"]; v != float64(10) {
+		t.Errorf("min_loop_completion_delay_seconds = %v, want 10", v)
+	}
+}
+
+// TestMigrateSettingsPeriodicKeys_Idempotent verifies that running the migration
+// twice in a row on an already-migrated map is a no-op (second call reports no change).
+func TestMigrateSettingsPeriodicKeys_Idempotent(t *testing.T) {
+	raw := map[string]interface{}{
+		"session": map[string]interface{}{
+			"startup_periodic_delay_seconds": float64(15),
+		},
+	}
+
+	if !migrateSettingsPeriodicKeys(raw) {
+		t.Fatal("expected changed=true on first run")
+	}
+	if migrateSettingsPeriodicKeys(raw) {
+		t.Error("expected changed=false on idempotent re-run")
+	}
+}
+
+// TestMigrateSettingsPeriodicKeys_NewKeyedUntouched verifies that a settings map
+// already using the new loop_* keys is left completely untouched.
+func TestMigrateSettingsPeriodicKeys_NewKeyedUntouched(t *testing.T) {
+	raw := map[string]interface{}{
+		"session": map[string]interface{}{
+			"startup_loop_delay_seconds": float64(20),
+			"loop_suspend_timeout":       "1h",
+		},
+		"conversations": map[string]interface{}{
+			"max_loop_iterations":               float64(99),
+			"min_loop_completion_delay_seconds": float64(7),
+		},
+	}
+
+	if migrateSettingsPeriodicKeys(raw) {
+		t.Error("expected changed=false for an already new-keyed map")
+	}
+
+	session := raw["session"].(map[string]interface{})
+	if v := session["startup_loop_delay_seconds"]; v != float64(20) {
+		t.Errorf("startup_loop_delay_seconds = %v, want 20", v)
+	}
+	if v := session["loop_suspend_timeout"]; v != "1h" {
+		t.Errorf("loop_suspend_timeout = %v, want 1h", v)
+	}
+}
+
+// TestMigrateSettingsPeriodicKeys_PartialOldNewMix verifies that when a key has
+// BOTH the old and the new name present, the old value is not moved (new wins,
+// old moved only when new absent), while sibling old-only keys still migrate.
+func TestMigrateSettingsPeriodicKeys_PartialOldNewMix(t *testing.T) {
+	raw := map[string]interface{}{
+		"session": map[string]interface{}{
+			// Both present: new key must win untouched.
+			"startup_periodic_delay_seconds": float64(15),
+			"startup_loop_delay_seconds":     float64(20),
+			// Only old present: must migrate.
+			"periodic_suspend_timeout": "30m",
+		},
+	}
+
+	if !migrateSettingsPeriodicKeys(raw) {
+		t.Fatal("expected changed=true because periodic_suspend_timeout has no new-key counterpart")
+	}
+
+	session := raw["session"].(map[string]interface{})
+	// Old key with an existing new counterpart is left as-is (not deleted, not moved).
+	if v := session["startup_loop_delay_seconds"]; v != float64(20) {
+		t.Errorf("startup_loop_delay_seconds = %v, want 20 (new value preserved)", v)
+	}
+	if v, ok := session["startup_periodic_delay_seconds"]; !ok || v != float64(15) {
+		t.Errorf("startup_periodic_delay_seconds should be left untouched when new key already present, got %v (ok=%v)", v, ok)
+	}
+	// Old-only key migrates normally.
+	if v, ok := session["periodic_suspend_timeout"]; ok {
+		t.Errorf("periodic_suspend_timeout should have been removed, still present: %v", v)
+	}
+	if v := session["loop_suspend_timeout"]; v != "30m" {
+		t.Errorf("loop_suspend_timeout = %v, want 30m", v)
+	}
+}
+
+// TestMigrateSettingsPeriodicKeys_NoSectionsPresent verifies the migration is a
+// safe no-op when neither "session" nor "conversations" objects are present.
+func TestMigrateSettingsPeriodicKeys_NoSectionsPresent(t *testing.T) {
+	raw := map[string]interface{}{
+		"web": map[string]interface{}{"port": float64(8080)},
+	}
+	if migrateSettingsPeriodicKeys(raw) {
+		t.Error("expected changed=false when session/conversations sections are absent")
+	}
+}
+
+// TestLoadSettings_MigratesLegacyPeriodicKeys is an end-to-end test: an
+// old-keyed settings.json on disk is migrated to loop_* keys on load, values
+// are preserved under the new names, the on-disk file is rewritten, and a
+// second load is a no-op (idempotent; file content unchanged).
+func TestLoadSettings_MigratesLegacyPeriodicKeys(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv(appdir.MittoDirEnv, tmpDir)
+	appdir.ResetCache()
+	t.Cleanup(appdir.ResetCache)
+
+	settingsPath := filepath.Join(tmpDir, appdir.SettingsFileName)
+	legacySettings := `{
+		"acp_servers": [],
+		"web": {"port": 9999},
+		"session": {
+			"startup_periodic_delay_seconds": 15,
+			"periodic_suspend_timeout": "30m"
+		},
+		"conversations": {
+			"max_periodic_iterations": 42,
+			"min_periodic_completion_delay_seconds": 10
+		}
+	}`
+	if err := os.WriteFile(settingsPath, []byte(legacySettings), 0644); err != nil {
+		t.Fatalf("failed to create test settings.json: %v", err)
+	}
+
+	cfg, err := LoadSettings()
+	if err != nil {
+		t.Fatalf("LoadSettings() failed: %v", err)
+	}
+
+	if got := cfg.Session.GetStartupLoopDelay(); got.Seconds() != 15 {
+		t.Errorf("GetStartupLoopDelay() = %v, want 15s", got)
+	}
+	if got := cfg.Session.GetLoopSuspendTimeout(); got != "30m" {
+		t.Errorf("GetLoopSuspendTimeout() = %q, want %q", got, "30m")
+	}
+	if got := cfg.Conversations.GetMaxLoopIterations(); got != 42 {
+		t.Errorf("GetMaxLoopIterations() = %d, want 42", got)
+	}
+	if got := cfg.Conversations.GetMinLoopCompletionDelaySeconds(); got != 10 {
+		t.Errorf("GetMinLoopCompletionDelaySeconds() = %d, want 10", got)
+	}
+
+	// The on-disk file must have been rewritten to the new keys.
+	rewritten, err := os.ReadFile(settingsPath)
+	if err != nil {
+		t.Fatalf("failed to read settings.json after migration: %v", err)
+	}
+	if strings.Contains(string(rewritten), "periodic") {
+		t.Errorf("settings.json still contains a legacy periodic_* key after migration:\n%s", rewritten)
+	}
+	if !strings.Contains(string(rewritten), "startup_loop_delay_seconds") {
+		t.Errorf("settings.json missing startup_loop_delay_seconds after migration:\n%s", rewritten)
+	}
+
+	// Second load must be idempotent: file content stays exactly the same.
+	if _, err := LoadSettings(); err != nil {
+		t.Fatalf("second LoadSettings() failed: %v", err)
+	}
+	rewrittenAgain, err := os.ReadFile(settingsPath)
+	if err != nil {
+		t.Fatalf("failed to read settings.json after second load: %v", err)
+	}
+	if string(rewritten) != string(rewrittenAgain) {
+		t.Errorf("settings.json changed on idempotent second load:\nfirst:\n%s\nsecond:\n%s", rewritten, rewrittenAgain)
+	}
+}
+
+// TestLoadSettings_NewKeyedSettingsUntouched verifies that a settings.json
+// already using the new loop_* keys loads correctly and is not rewritten.
+func TestLoadSettings_NewKeyedSettingsUntouched(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv(appdir.MittoDirEnv, tmpDir)
+	appdir.ResetCache()
+	t.Cleanup(appdir.ResetCache)
+
+	settingsPath := filepath.Join(tmpDir, appdir.SettingsFileName)
+	newSettings := `{
+		"acp_servers": [],
+		"web": {"port": 9999},
+		"session": {
+			"startup_loop_delay_seconds": 20,
+			"loop_suspend_timeout": "1h"
+		},
+		"conversations": {
+			"max_loop_iterations": 99,
+			"min_loop_completion_delay_seconds": 7
+		}
+	}`
+	if err := os.WriteFile(settingsPath, []byte(newSettings), 0644); err != nil {
+		t.Fatalf("failed to create test settings.json: %v", err)
+	}
+
+	before, err := os.ReadFile(settingsPath)
+	if err != nil {
+		t.Fatalf("failed to read settings.json before load: %v", err)
+	}
+
+	cfg, err := LoadSettings()
+	if err != nil {
+		t.Fatalf("LoadSettings() failed: %v", err)
+	}
+
+	if got := cfg.Session.GetStartupLoopDelay(); got.Seconds() != 20 {
+		t.Errorf("GetStartupLoopDelay() = %v, want 20s", got)
+	}
+	if got := cfg.Conversations.GetMaxLoopIterations(); got != 99 {
+		t.Errorf("GetMaxLoopIterations() = %d, want 99", got)
+	}
+
+	after, err := os.ReadFile(settingsPath)
+	if err != nil {
+		t.Fatalf("failed to read settings.json after load: %v", err)
+	}
+	if string(before) != string(after) {
+		t.Errorf("settings.json was rewritten even though it already used loop_* keys:\nbefore:\n%s\nafter:\n%s", before, after)
 	}
 }

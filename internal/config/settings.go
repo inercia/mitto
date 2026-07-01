@@ -1,8 +1,10 @@
 package config
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/inercia/mitto/internal/appdir"
@@ -369,6 +371,12 @@ func LoadSettings() (*Config, error) {
 		}
 	}
 
+	// One-time, idempotent rewrite of legacy periodic_* keys to loop_* (mitto-8ir.12).
+	// Runs on the raw JSON before unmarshalling so old data isn't silently dropped.
+	if err := migrateSettingsFileIfNeeded(settingsPath); err != nil {
+		return nil, fmt.Errorf("failed to migrate settings file %s: %w", settingsPath, err)
+	}
+
 	// Load settings from JSON file
 	var settings Settings
 	if err := fileutil.ReadJSON(settingsPath, &settings); err != nil {
@@ -409,6 +417,83 @@ func LoadSettings() (*Config, error) {
 	}
 
 	return cfg, nil
+}
+
+// migrateSettingsFileIfNeeded performs a one-time, idempotent rewrite of legacy
+// periodic_* keys in settings.json to their loop_* equivalents (mitto-8ir.12).
+// It operates on the raw JSON (map[string]interface{}), not the typed Settings
+// struct, so old data is fixed BEFORE the new (loop_*-only) struct tags read it.
+//
+// It is a no-op when settings.json doesn't exist yet, is empty, isn't a JSON
+// object, or contains none of the legacy keys.
+func migrateSettingsFileIfNeeded(settingsPath string) error {
+	data, err := os.ReadFile(settingsPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	if len(strings.TrimSpace(string(data))) == 0 {
+		return nil
+	}
+
+	var raw map[string]interface{}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		// Malformed or non-object JSON — let the normal load path surface the error.
+		return nil
+	}
+
+	if !migrateSettingsPeriodicKeys(raw) {
+		return nil
+	}
+
+	return fileutil.WriteJSONAtomic(settingsPath, raw, 0644)
+}
+
+// migrateSettingsPeriodicKeys renames legacy periodic_* settings keys to their
+// loop_* equivalents in-place on the raw settings map. These settings live
+// nested under the "session" and "conversations" objects (matching the
+// SessionConfig and ConversationsConfig struct layout):
+//
+//	session.startup_periodic_delay_seconds            -> session.startup_loop_delay_seconds
+//	session.periodic_suspend_timeout                  -> session.loop_suspend_timeout
+//	conversations.max_periodic_iterations              -> conversations.max_loop_iterations
+//	conversations.min_periodic_completion_delay_seconds -> conversations.min_loop_completion_delay_seconds
+//
+// For each mapping, the value is moved only when the old key is present and
+// the new key is absent (old moved only when new absent); an already-migrated
+// or partially-migrated file is left untouched for that key. Returns true if
+// any key was renamed.
+func migrateSettingsPeriodicKeys(raw map[string]interface{}) bool {
+	changed := false
+
+	renameKey := func(m map[string]interface{}, oldKey, newKey string) {
+		if m == nil {
+			return
+		}
+		oldVal, hasOld := m[oldKey]
+		if !hasOld {
+			return
+		}
+		if _, hasNew := m[newKey]; hasNew {
+			return
+		}
+		m[newKey] = oldVal
+		delete(m, oldKey)
+		changed = true
+	}
+
+	if session, ok := raw["session"].(map[string]interface{}); ok {
+		renameKey(session, "startup_periodic_delay_seconds", "startup_loop_delay_seconds")
+		renameKey(session, "periodic_suspend_timeout", "loop_suspend_timeout")
+	}
+	if conversations, ok := raw["conversations"].(map[string]interface{}); ok {
+		renameKey(conversations, "max_periodic_iterations", "max_loop_iterations")
+		renameKey(conversations, "min_periodic_completion_delay_seconds", "min_loop_completion_delay_seconds")
+	}
+
+	return changed
 }
 
 // deduplicateACPServerPrompts removes duplicate prompts from ACP server configurations.
@@ -545,6 +630,12 @@ func LoadSettingsWithFallback() (*LoadResult, error) {
 		if err := createDefaultSettings(); err != nil {
 			return nil, fmt.Errorf("failed to create default settings: %w", err)
 		}
+	}
+
+	// One-time, idempotent rewrite of legacy periodic_* keys to loop_* (mitto-8ir.12).
+	// Runs on the raw JSON before unmarshalling so old data isn't silently dropped.
+	if err := migrateSettingsFileIfNeeded(settingsPath); err != nil {
+		return nil, fmt.Errorf("failed to migrate settings file %s: %w", settingsPath, err)
 	}
 
 	// Load settings.json
