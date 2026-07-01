@@ -171,11 +171,20 @@ func TestACPRestart_RateLimiting(t *testing.T) {
 				return found && foundAttempt
 			}, fmt.Sprintf("crash %d: restart notification with 'attempt %d of 3'", i, i))
 
-			// Wait for the restart to complete before triggering the next crash.
-			// This is critical because restartACPProcess applies exponential backoff
-			// (3s, 6s, 12s) before actually starting the new process.
+			// Wait for the FULL turn to settle before triggering the next crash. The
+			// restart is immediately followed by a single automatic retry of the same
+			// message (prompt_dispatcher.go), which also crashes because it resends the
+			// identical "CRASH_N" text. That second crash does not consume another
+			// restart slot; it ends the turn with "...Please resend your message."
+			// Waiting only for the substring "AI agent restarted" is unreliable: it
+			// also matches the earlier, non-terminal "...Retrying your message
+			// automatically..." notification, letting the test race ahead and send the
+			// next crash while the auto-retry's fallout (a second restart notification
+			// with a stale attempt count) is still in flight. This is critical also
+			// because restartACPProcess applies exponential backoff (3s, 6s, 12s)
+			// before actually starting the new process.
 			waitFor(t, 30*time.Second, func() bool {
-				found, _ := errorCollector.containsSince(startIdx, "AI agent restarted")
+				found, _ := errorCollector.containsSince(startIdx, "Please resend your message")
 				return found
 			}, fmt.Sprintf("crash %d: restart completion", i))
 		} else {

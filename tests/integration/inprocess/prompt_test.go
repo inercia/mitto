@@ -248,15 +248,15 @@ func TestTemplateRender_NamedPrompt_SessionID(t *testing.T) {
 	t.Logf("rendered: %q", rendered)
 }
 
-// TestTemplateRender_ArgsAndVarOrdering proves template runs BEFORE ${VAR} substitution:
-// {{ .Args.NAME }} is filled by template, then the emitted ${CITY} is resolved by
-// SubstituteArguments in the legacy pass.
+// TestTemplateRender_ArgsAndVarOrdering verifies that {{ .Args.NAME }} and the
+// Arg template function are the ONLY argument-substitution mechanisms: the
+// bash-like ${VAR} / ${VAR:-default} pass (processors.SubstituteArguments) was
+// removed in mitto-4so (see docs/devel/prompt-templates.md §11), so a literal
+// "${CITY}" emitted alongside a rendered template value must survive unchanged.
 func TestTemplateRender_ArgsAndVarOrdering(t *testing.T) {
 	ts, orderFile := setupDeferredConfigServer(t)
-	// {{ "${CITY}" }} emits the literal string ${CITY} from the template;
-	// SubstituteArguments then resolves ${CITY} → Paris.
 	writeTemplatePrompt(t, ts, "tmpl-args-order", "tmpl-args-order",
-		`Hi {{ .Args.NAME }} from {{ "${CITY}" }}`)
+		`Hi {{ .Args.NAME }} from {{ Arg "CITY" "Unknown" }} (${CITY} stays literal)`)
 
 	lines := runTemplatePromptAndWait(t, ts, orderFile, "tmpl-args-order",
 		map[string]string{"NAME": "Alice", "CITY": "Paris"})
@@ -266,8 +266,8 @@ func TestTemplateRender_ArgsAndVarOrdering(t *testing.T) {
 	if rendered == "" {
 		t.Fatalf("expected %q in RPC order; got lines: %v", want, lines)
 	}
-	if strings.Contains(rendered, "Alice") && !strings.Contains(rendered, "Paris") {
-		t.Errorf("arg substitution pass did not fire: %q", rendered)
+	if !strings.Contains(rendered, "${CITY} stays literal") {
+		t.Errorf("literal ${CITY} was unexpectedly substituted (legacy ${VAR} pass was removed): %q", rendered)
 	}
 	t.Logf("rendered: %q", rendered)
 }
@@ -304,9 +304,9 @@ func TestTemplateRender_Gating(t *testing.T) {
 	}
 
 	writeTemplatePrompt(t, ts, "tmpl-gating", "tmpl-gating",
-		`{{ if fileExists "marker.txt" }}HASFILE{{ end }}`+
-			`{{ if commandExists "definitely-not-real-cmd-zzz" }}BADCMD{{ end }}`+
-			`{{ if commandExists "sh" }}HASSH{{ end }}`)
+		`{{ if FileExists "marker.txt" }}HASFILE{{ end }}`+
+			`{{ if CommandExists "definitely-not-real-cmd-zzz" }}BADCMD{{ end }}`+
+			`{{ if CommandExists "sh" }}HASSH{{ end }}`)
 
 	lines := runTemplatePromptAndWait(t, ts, orderFile, "tmpl-gating", nil)
 
@@ -378,10 +378,14 @@ func TestTemplateRender_CoexistWithMitto(t *testing.T) {
 	t.Logf("rendered: %q", rendered)
 }
 
-// TestTemplateRender_FailClosed_RawMessage verifies full-pipeline fail-closed behavior:
-// a raw SendPrompt with an invalid template (struct-field typo) fires OnError and
-// does NOT reach the mock ACP agent.
-func TestTemplateRender_FailClosed_RawMessage(t *testing.T) {
+// TestTemplateRender_FailOpen_RawMessage verifies full-pipeline fail-open behavior
+// for direct human input: a raw SendPrompt with an invalid template (struct-field
+// typo) is delivered to the mock ACP agent UNCHANGED (the literal {{ ... }} intact)
+// instead of aborting the send. This is intentional (see the isAutomatedDispatch
+// comment in prompt_dispatcher.go): pasted text containing "{{" must still be
+// delivered literally for direct human input. Named prompts and automated
+// dispatches (queue, periodic-runner) still fail closed.
+func TestTemplateRender_FailOpen_RawMessage(t *testing.T) {
 	ts, orderFile := setupDeferredConfigServer(t)
 
 	sess, err := ts.Client.CreateSession(client.CreateSessionRequest{})
@@ -391,13 +395,13 @@ func TestTemplateRender_FailClosed_RawMessage(t *testing.T) {
 	t.Cleanup(func() { _ = ts.Client.DeleteSession(sess.SessionID) })
 
 	var (
-		mu     sync.Mutex
-		errors []string
+		mu             sync.Mutex
+		promptComplete bool
 	)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	ws, err := ts.Client.Connect(ctx, sess.SessionID, client.SessionCallbacks{
-		OnError: func(msg string) { mu.Lock(); errors = append(errors, msg); mu.Unlock() },
+		OnPromptComplete: func(_ int) { mu.Lock(); promptComplete = true; mu.Unlock() },
 	})
 	if err != nil {
 		t.Fatalf("Connect: %v", err)
@@ -407,42 +411,28 @@ func TestTemplateRender_FailClosed_RawMessage(t *testing.T) {
 		t.Fatalf("LoadEvents: %v", err)
 	}
 
-	// Send a raw message with a struct-field typo — render must fail closed.
+	// Send a raw message with a struct-field typo — render must fail open for
+	// direct human input, delivering the raw message to the agent.
 	if err := ws.SendPrompt("Bad: {{ .Session.NoSuchField }}"); err != nil {
 		t.Fatalf("SendPrompt: %v", err)
 	}
 
-	// Wait for OnError broadcast.
-	waitFor(t, 10*time.Second, func() bool {
+	waitFor(t, 20*time.Second, func() bool {
 		mu.Lock()
 		defer mu.Unlock()
-		return len(errors) > 0
-	}, "OnError from render failure")
+		return promptComplete
+	}, "prompt complete")
 
-	mu.Lock()
-	gotErrors := append([]string(nil), errors...)
-	mu.Unlock()
-	t.Logf("OnError messages: %v", gotErrors)
-
-	// At least one error message must mention the render failure.
-	found := false
-	for _, e := range gotErrors {
-		if strings.Contains(e, "render error") || strings.Contains(e, "NoSuchField") || strings.Contains(e, "template") {
-			found = true
-			break
-		}
-	}
-	if !found {
-		t.Errorf("no render-error message in OnError callbacks; got: %v", gotErrors)
-	}
-
-	// The aborted send must NOT have reached the mock agent.
+	// The raw (unrendered) message must have reached the mock agent.
 	lines := readRPCOrder(t, orderFile)
-	for _, ln := range lines {
-		if strings.HasPrefix(ln, "prompt\t") && strings.Contains(ln, "NoSuchField") {
-			t.Errorf("aborted send reached the agent: %q", ln)
-		}
+	rendered := promptLineFor(lines, "NoSuchField")
+	if rendered == "" {
+		t.Fatalf("expected raw message with NoSuchField to reach the agent; got lines: %v", lines)
 	}
+	if !strings.Contains(rendered, "{{") {
+		t.Errorf("literal {{ .Session.NoSuchField }} should be delivered unchanged (fail-open for direct human input): %q", rendered)
+	}
+	t.Logf("rendered: %q", rendered)
 }
 
 // waitFor waits for a condition to become true.
@@ -690,7 +680,9 @@ func TestTemplateRender_UserData_DotAccess(t *testing.T) {
 //  1. Seed with args → dispatcher writes them to cache; check rendered body + status.
 //  2. Seed without args → backend auto-fills from cache; rendered body unchanged.
 //  3. Wait past TTL (seed #2 refreshes TTL so wait from that call) → status empty.
-//  4. Seed without args post-expiry → falls back to ${VAR:-default} defaults.
+//  4. Seed without args post-expiry → falls back to the Arg(name, default) template
+//     function's default value (the ${VAR:-default} bash-like syntax was removed
+//     in mitto-4so; see docs/devel/prompt-templates.md §11).
 func TestPromptArgCache_FullLoop_ExistingConversation(t *testing.T) {
 	ts, orderFile := setupDeferredConfigServer(t)
 
@@ -712,7 +704,7 @@ parameters:
       destination: memory
       ttl: 2s
 prompt: |
-  PCHXMARK city=${CITY:-NOCITY} lang=${LANG:-NOLANG}
+  PCHXMARK city={{ Arg "CITY" "NOCITY" }} lang={{ Arg "LANG" "NOLANG" }}
 `
 	if err := os.WriteFile(filepath.Join(promptsDir, "cache-loop.prompt.yaml"), []byte(promptYAML), 0644); err != nil {
 		t.Fatalf("write prompt file: %v", err)
@@ -827,11 +819,11 @@ prompt: |
 	if latestPCHX == "" {
 		t.Fatalf("Seed #3: no PCHXMARK line found; lines: %v", lines)
 	}
-	// When no args are supplied and the cache is empty, argCount==0 so SubstituteArguments
-	// is not called and the raw ${VAR:-default} placeholders are preserved in the body.
-	// This is correct system behavior: the UI would have asked the user for new values but
-	// the integration test seeds directly. Assert the body was NOT filled with stale cached
-	// values (city=Paris must not appear) and the raw placeholder text is present.
+	// When no args are supplied and the cache is empty, meta.Arguments stays empty and the
+	// Arg("CITY", "NOCITY") / Arg("LANG", "NOLANG") template calls fall back to their default
+	// values. This is correct system behavior: the UI would have asked the user for new values
+	// but the integration test seeds directly. Assert the body was NOT filled with stale cached
+	// values (city=Paris must not appear) and the default placeholder text is present.
 	if strings.Contains(latestPCHX, "city=Paris") || strings.Contains(latestPCHX, "lang=fr") {
 		t.Errorf("Seed #3: stale cached values appeared after expiry — cache not cleared: %q", latestPCHX)
 	}

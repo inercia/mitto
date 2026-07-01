@@ -15,10 +15,13 @@ import (
 //
 // Trigger flow recap:
 //
+//   - SetPeriodic (with Enabled=true, Trigger=onCompletion) automatically boots
+//     a fresh conversation's loop via BootstrapOnCompletion: it delivers run 1
+//     and, via OnConversationIdle, arms the ~5 s timer for the next auto-fire.
+//     An explicit RunPeriodicNow call is neither needed nor safe here — it would
+//     race the auto-bootstrapped run 1 and get a 409 "session busy" conflict.
 //   - After each turn completes, OnConversationIdle fires the next run after
 //     DelaySeconds (clamped to the global floor, default 5 s).
-//   - RunPeriodicNow boots the loop: it delivers run 1 and, via OnConversationIdle,
-//     arms the ~5 s timer for the next auto-fire.
 //   - max_iterations: once iteration_count >= cap the runner sets enabled=false.
 //   - max_duration:   at the next firing, if now-FirstRunAt >= MaxDurationSeconds,
 //     the runner sets enabled=false WITHOUT delivering (so iteration_count stays at 1).
@@ -61,11 +64,11 @@ func TestPeriodicOnCompletionE2E(t *testing.T) {
 			t.Fatalf("expected enabled=true after SetPeriodic, got false")
 		}
 
-		// Boot the loop: delivers run 1, sets FirstRunAt, increments iteration_count
-		// to 1, and arms the on-completion timer (~5 s) via OnConversationIdle.
-		if err := ts.Client.RunPeriodicNow(sess.SessionID, true); err != nil {
-			t.Fatalf("RunPeriodicNow failed: %v", err)
-		}
+		// SetPeriodic above already booted the loop (BootstrapOnCompletion): it
+		// delivered run 1, set FirstRunAt, incremented iteration_count to 1, and
+		// armed the on-completion timer (~5 s) via OnConversationIdle. Calling
+		// RunPeriodicNow here would race that auto-delivered run 1 and fail with
+		// a 409 "session busy" conflict.
 
 		// Poll until the runner disables the periodic after reaching MaxIterations=2.
 		deadline := time.Now().Add(30 * time.Second)
@@ -130,10 +133,10 @@ func TestPeriodicOnCompletionE2E(t *testing.T) {
 			t.Fatalf("expected enabled=true after SetPeriodic, got false")
 		}
 
-		// Boot the loop: run 1 delivered, FirstRunAt=now, count→1, timer armed (~5 s).
-		if err := ts.Client.RunPeriodicNow(sess.SessionID, true); err != nil {
-			t.Fatalf("RunPeriodicNow failed: %v", err)
-		}
+		// SetPeriodic above already booted the loop (BootstrapOnCompletion): run 1
+		// delivered, FirstRunAt=now, count→1, timer armed (~5 s). An explicit
+		// RunPeriodicNow call here would race that auto-delivered run and fail
+		// with a 409 "session busy" conflict.
 
 		// Poll until the runner disables (max duration reached at the next firing).
 		deadline := time.Now().Add(30 * time.Second)
