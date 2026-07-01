@@ -54,9 +54,9 @@
    hover tooltip always renders above surrounding UI within its stacking
    context. Selectors mirror daisyUI's specificity; styles.css loads after
    tailwind.css so source order wins the ties. */
-.tooltip[data-tip]:before,
+.tooltip[data-tip]::before,
 .tooltip > .tooltip-content,
-.tooltip:after {
+.tooltip::after {
   z-index: 1000;
 }
 
