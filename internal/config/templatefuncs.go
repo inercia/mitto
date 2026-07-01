@@ -217,10 +217,10 @@ func gitDirModified(folder, path string) bool {
 	return len(lines) > 0
 }
 
-// gitTracked reports whether path is tracked by git (present in the index).
+// gitFileTracked reports whether path is tracked by git (present in the index).
 // A file whose deletion is not yet committed is still tracked. Returns false
 // for an empty path, an untracked path, outside a repo, or git unavailable.
-func gitTracked(folder, path string) bool {
+func gitFileTracked(folder, path string) bool {
 	if path == "" {
 		return false
 	}
@@ -228,11 +228,11 @@ func gitTracked(folder, path string) bool {
 	return ok
 }
 
-// gitDeleted reports whether a specific file has been deleted in git — i.e. a
+// gitFileDeleted reports whether a specific file has been deleted in git — i.e. a
 // tracked file removed from the working tree, whether the deletion is staged
 // ("D " in the index column) or unstaged (" D" in the work-tree column).
 // Returns false for an empty path, outside a repo, or git unavailable.
-func gitDeleted(folder, path string) bool {
+func gitFileDeleted(folder, path string) bool {
 	if path == "" {
 		return false
 	}
@@ -325,8 +325,8 @@ func FormatChildren(children []ChildInfo) string {
 //   - GitFileModified(path) — true iff the tracked file has pending (staged/unstaged) changes.
 //   - GitDirModified(path?) — true iff the directory (default: workspace root) has any pending
 //     changes, including untracked files.
-//   - GitTracked(path) — true iff path is tracked by git (present in the index).
-//   - GitDeleted(path) — true iff the tracked file has been deleted (staged or unstaged).
+//   - GitFileTracked(path) — true iff path is tracked by git (present in the index).
+//   - GitFileDeleted(path) — true iff the tracked file has been deleted (staged or unstaged).
 //   - hasPattern(pattern) — true iff any MCP tool name matches pattern (fail-open).
 //   - Model(tag) — true iff the current model carries the capability tag (case-insensitive).
 //   - cond(expr) / when(expr) — compile+evaluate a CEL expression via GetCELEvaluator()
@@ -386,9 +386,9 @@ func BuildTemplateFuncMap(ctx *PromptEnabledContext) template.FuncMap {
 			}
 			return fallback
 		},
-		"FileExists":      func(path string) bool { return fileExists(folder, path) },
-		"DirExists":       func(path string) bool { return dirExists(folder, path) },
-		"CommandExists":   func(name string) bool { return commandExists(name) },
+		"FileExists":    func(path string) bool { return fileExists(folder, path) },
+		"DirExists":     func(path string) bool { return dirExists(folder, path) },
+		"CommandExists": func(name string) bool { return commandExists(name) },
 		"GitRepo": func(path ...string) bool {
 			p := ""
 			if len(path) > 0 {
@@ -404,9 +404,9 @@ func BuildTemplateFuncMap(ctx *PromptEnabledContext) template.FuncMap {
 			}
 			return gitDirModified(folder, p)
 		},
-		"GitTracked": func(path string) bool { return gitTracked(folder, path) },
-		"GitDeleted": func(path string) bool { return gitDeleted(folder, path) },
-		"HasPattern": func(pattern string) bool { return hasPattern(toolsAvailable, toolNames, pattern) },
+		"GitFileTracked": func(path string) bool { return gitFileTracked(folder, path) },
+		"GitFileDeleted": func(path string) bool { return gitFileDeleted(folder, path) },
+		"HasPattern":     func(pattern string) bool { return hasPattern(toolsAvailable, toolNames, pattern) },
 		// Model(tag) — true iff the session's current model carries the capability tag
 		// (case-insensitive), resolved from the models: profiles. False for an unknown model.
 		"Model":     func(tag string) bool { return hasModelTag(modelTags, tag) },

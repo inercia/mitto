@@ -1024,8 +1024,8 @@ The following fields are available at send time. They are the **same fields used
 | `GitRepo` | `GitRepo "path"` | Folder (omit `path` for the whole workspace) is inside a git work tree — use as a gatekeeper before other `Git*` checks |
 | `GitFileModified` | `GitFileModified "path"` | Tracked file at `path` has pending (staged/unstaged) changes vs HEAD/index; untracked files are `false` |
 | `GitDirModified` | `GitDirModified "path"` | Directory (omit `path` for the whole workspace) has any pending changes, including untracked files |
-| `GitTracked` | `GitTracked "path"` | `path` is tracked by git (present in the index) |
-| `GitDeleted` | `GitDeleted "path"` | Tracked file at `path` has been deleted (staged or unstaged deletion) |
+| `GitFileTracked` | `GitFileTracked "path"` | `path` is tracked by git (present in the index) |
+| `GitFileDeleted` | `GitFileDeleted "path"` | Tracked file at `path` has been deleted (staged or unstaged deletion) |
 | `Model` | `Model "tag"` | Current model carries capability `tag` (case-insensitive), from [`models:` profiles](models.md); `false` when the model is unknown or no profile matches |
 
 All `Git*` functions resolve relative paths against `Workspace.Folder`, run `git` as a

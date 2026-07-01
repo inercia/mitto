@@ -193,8 +193,8 @@ The shared pure-Go helpers are: `statResolved`, the glob-match logic, `matchesSe
 | `GitRepo` | `GitRepo(path ...string) bool` | Folder (default: whole workspace) is inside a git work tree (`git rev-parse --is-inside-work-tree`). Gatekeeper for the other `Git*` checks. |
 | `GitFileModified` | `GitFileModified(path string) bool` | Tracked file at `path` has pending (staged/unstaged) changes vs HEAD/index; untracked files are `false`. Relative to `Workspace.Folder`. Runs `git` as a subprocess (bounded 5s). |
 | `GitDirModified` | `GitDirModified(path ...string) bool` | Directory (default: whole workspace) has any pending changes, including untracked files. |
-| `GitTracked` | `GitTracked(path string) bool` | `path` is tracked by git (present in the index). |
-| `GitDeleted` | `GitDeleted(path string) bool` | Tracked file at `path` has been deleted (staged or unstaged deletion). |
+| `GitFileTracked` | `GitFileTracked(path string) bool` | `path` is tracked by git (present in the index). |
+| `GitFileDeleted` | `GitFileDeleted(path string) bool` | Tracked file at `path` has been deleted (staged or unstaged deletion). |
 | `Model` | `Model(tag string) bool` | Current model carries capability `tag` (case-insensitive), resolved from `models:` profiles. `false` when the model is unknown or no profile matches. |
 
 **No `html` escaping.** Use `text/template` (not `html/template`). Prompt bodies are

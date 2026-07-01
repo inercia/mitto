@@ -170,16 +170,16 @@ func TestParity_GitHelpers(t *testing.T) {
 
 	// Step 1: freshly committed repo — everything clean.
 	check("repo after setup", gitRepo(dir, ""), `GitRepo("")`, true)
-	check("tracked after setup", gitTracked(dir, "tracked.txt"), `GitTracked("tracked.txt")`, true)
+	check("tracked after setup", gitFileTracked(dir, "tracked.txt"), `GitFileTracked("tracked.txt")`, true)
 	check("fileModified after setup", gitFileModified(dir, "tracked.txt"), `GitFileModified("tracked.txt")`, false)
-	check("deleted after setup", gitDeleted(dir, "tracked.txt"), `GitDeleted("tracked.txt")`, false)
+	check("deleted after setup", gitFileDeleted(dir, "tracked.txt"), `GitFileDeleted("tracked.txt")`, false)
 	check("dirModified after setup", gitDirModified(dir, ""), `GitDirModified("")`, false)
 
 	// Step 2: add an untracked file.
 	if err := os.WriteFile(filepath.Join(dir, "untracked.txt"), []byte("x"), 0644); err != nil {
 		t.Fatal(err)
 	}
-	check("tracked untracked.txt", gitTracked(dir, "untracked.txt"), `GitTracked("untracked.txt")`, false)
+	check("tracked untracked.txt", gitFileTracked(dir, "untracked.txt"), `GitFileTracked("untracked.txt")`, false)
 	check("fileModified untracked.txt", gitFileModified(dir, "untracked.txt"), `GitFileModified("untracked.txt")`, false)
 	check("dirModified after untracked add", gitDirModified(dir, ""), `GitDirModified("")`, true)
 
@@ -199,14 +199,14 @@ func TestParity_GitHelpers(t *testing.T) {
 	if err := os.Remove(filepath.Join(dir, "tracked.txt")); err != nil {
 		t.Fatal(err)
 	}
-	check("deleted after remove", gitDeleted(dir, "tracked.txt"), `GitDeleted("tracked.txt")`, true)
+	check("deleted after remove", gitFileDeleted(dir, "tracked.txt"), `GitFileDeleted("tracked.txt")`, true)
 	check("fileModified after remove", gitFileModified(dir, "tracked.txt"), `GitFileModified("tracked.txt")`, true)
-	check("tracked after remove", gitTracked(dir, "tracked.txt"), `GitTracked("tracked.txt")`, true)
+	check("tracked after remove", gitFileTracked(dir, "tracked.txt"), `GitFileTracked("tracked.txt")`, true)
 
 	// Step 5: a path that never existed.
-	check("tracked absent.txt", gitTracked(dir, "absent.txt"), `GitTracked("absent.txt")`, false)
+	check("tracked absent.txt", gitFileTracked(dir, "absent.txt"), `GitFileTracked("absent.txt")`, false)
 	check("fileModified absent.txt", gitFileModified(dir, "absent.txt"), `GitFileModified("absent.txt")`, false)
-	check("deleted absent.txt", gitDeleted(dir, "absent.txt"), `GitDeleted("absent.txt")`, false)
+	check("deleted absent.txt", gitFileDeleted(dir, "absent.txt"), `GitFileDeleted("absent.txt")`, false)
 
 	// 0-arg GitDirModified() must equal the explicit "" form and GitDirModified(".").
 	dirModified0 := evalCEL(t, e, `GitDirModified()`, ctx)
@@ -626,7 +626,7 @@ func TestBuildTemplateFuncMap_AllKeysPresent(t *testing.T) {
 	expected := []string{
 		"Arg", "Default", "UserData",
 		"FileExists", "DirExists", "CommandExists", "HasPattern", "Model",
-		"GitFileModified", "GitDirModified", "GitTracked", "GitDeleted",
+		"GitFileModified", "GitDirModified", "GitFileTracked", "GitFileDeleted",
 		"Trim", "Lower", "Upper", "Contains", "HasPrefix", "HasSuffix", "Join",
 	}
 	for _, key := range expected {
