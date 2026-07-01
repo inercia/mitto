@@ -465,6 +465,11 @@ export function BeadsDetailPanel({
   const [savingView, setSavingView] = useState(false);
   // When true, show the "Discard changes?" confirm dialog before closing.
   const [confirmDiscard, setConfirmDiscard] = useState(false);
+  // After a successful Save, holds the just-persisted field values so the dirty
+  // check clears immediately — without waiting for the async onUpdated() refresh
+  // to flow updated `data` back down. Reset to null when a different issue opens
+  // (the seed effect below). When set, it takes precedence over viewOriginal.
+  const [savedBaseline, setSavedBaseline] = useState(null);
 
   // View-mode dependencies. The list rows only carry a dependency_count, so the
   // full edges (id + title + status + dependency_type) are fetched from
@@ -709,33 +714,65 @@ export function BeadsDetailPanel({
 
   const viewDirty = useMemo(() => {
     if (creating) return false;
+    // A successful save records its persisted values in savedBaseline; compare
+    // against those so the panel is no longer "dirty" the instant Save resolves.
+    const base = savedBaseline || viewOriginal;
     const t = viewDraft.title.trim();
     return (
-      (t !== "" && t !== viewOriginal.title) ||
-      viewDraft.type !== viewOriginal.type ||
-      viewDraft.priority !== viewOriginal.priority ||
-      viewDraft.description !== viewOriginal.description ||
-      viewDraft.assignee.trim() !== viewOriginal.assignee ||
-      viewDraft.notes !== viewOriginal.notes
+      (t !== "" && t !== base.title) ||
+      viewDraft.type !== base.type ||
+      viewDraft.priority !== base.priority ||
+      viewDraft.description !== base.description ||
+      viewDraft.assignee.trim() !== base.assignee ||
+      viewDraft.notes !== base.notes
     );
-  }, [creating, viewDraft, viewOriginal]);
+  }, [creating, viewDraft, viewOriginal, savedBaseline]);
 
   // handleClose and handleDiscardAndClose are defined here (after creating and
   // viewDirty) because their dep arrays reference both computed values.
+  const doClose = useCallback(() => {
+    setIsClosing(true);
+    setTimeout(() => onClose(), 150);
+  }, [onClose]);
+
+  // Set when a close is requested while a save is still in flight. The close is
+  // deferred until the save settles (resolved by the effect below) so a
+  // Save→Close race no longer surfaces a spurious "Discard changes?" prompt.
+  const pendingCloseRef = useRef(false);
+
   const handleClose = useCallback(() => {
+    // A save is still running: remember that the user wants to close and let the
+    // in-flight save finish first. The deferred close resolves in the effect
+    // below once savingView clears.
+    if (!creating && savingView) {
+      pendingCloseRef.current = true;
+      return;
+    }
     if (!creating && viewDirty) {
       setConfirmDiscard(true);
       return;
     }
-    setIsClosing(true);
-    setTimeout(() => onClose(), 150);
-  }, [creating, viewDirty, onClose]);
+    doClose();
+  }, [creating, viewDirty, savingView, doClose]);
+
+  // Resolve a close that was deferred while a save was in flight. A successful
+  // save clears viewDirty (savedBaseline now matches the draft) so the panel
+  // closes silently; a failed save leaves the draft dirty, so we fall through to
+  // the discard guard rather than silently losing the user's edits.
+  useEffect(() => {
+    if (savingView || !pendingCloseRef.current) return;
+    pendingCloseRef.current = false;
+    if (!creating && viewDirty) {
+      setConfirmDiscard(true);
+      return;
+    }
+    doClose();
+  }, [savingView, creating, viewDirty, doClose]);
 
   const handleDiscardAndClose = useCallback(() => {
     setConfirmDiscard(false);
-    setIsClosing(true);
-    setTimeout(() => onClose(), 150);
-  }, [onClose]);
+    doClose();
+  }, [doClose]);
 
   // Close the panel when the user clicks outside of it (e.g. on the issue list
   // or conversation to its left). Dock mode (mitto-cdf) deliberately has no
@@ -812,6 +849,7 @@ export function BeadsDetailPanel({
   // fetchDeps below, which calls setViewDraft when seedDraftNotes is true).
   useEffect(() => {
     if (creating || !data || !data.id) return;
+    setSavedBaseline(null);
     setViewDraft({
       title: data.title || "",
       type: data.issue_type || "task",
@@ -949,6 +987,17 @@ export function BeadsDetailPanel({
           });
       } else {
         if ("notes" in body) setNotes(viewDraft.notes);
+        // Record what we just persisted so viewDirty clears immediately (the
+        // normalized values mirror how the dirty check reads the draft), instead
+        // of staying dirty until the async onUpdated() refresh re-seeds `data`.
+        setSavedBaseline({
+          title: viewDraft.title.trim(),
+          type: viewDraft.type,
+          priority: viewDraft.priority,
+          description: viewDraft.description,
+          assignee: viewDraft.assignee.trim(),
+          notes: viewDraft.notes,
+        });
         setEditingTitle(false);
         setEditingType(false);
         setEditingDesc(false);
@@ -2075,6 +2124,21 @@ ${viewDraft.description}</pre
                   )}
                 </div>
 
+                ${Array.isArray(data.labels) &&
+                data.labels.length > 0 &&
+                html`
+                  <div>
+                    <div class="text-xs text-mitto-text-secondary mb-0.5">
+                      Labels
+                    </div>
+                    <div class="flex flex-wrap gap-2">
+                      ${data.labels.map((l) =>
+                        badge(l, "bg-mitto-surface-4 text-mitto-text-strong"),
+                      )}
+                    </div>
+                  </div>
+                `}
+
                 ${DescriptionField("view")}
                 ${subtasks.length > 0 &&
                 html`
@@ -2223,7 +2287,7 @@ ${viewDraft.description}</pre
             <button
               type="button"
               onClick=${handleClose}
-              disabled=${creating ? submitting : savingView}
+              disabled=${creating ? submitting : false}
               class="btn btn-ghost btn-sm inline-flex tooltip tooltip-top"
               data-tip="Close"
             >
@@ -2750,6 +2814,8 @@ export function BeadsView({
   const [sort, setSort] = useState(() => getBeadsSort());
   const [showSortMenu, setShowSortMenu] = useState(false);
   const sortMenuRef = useRef(null);
+  const [showTypeMenu, setShowTypeMenu] = useState(false);
+  const typeMenuRef = useRef(null);
 
   // Write-through: persist the sort preference whenever it changes.
   useEffect(() => {
@@ -2767,6 +2833,18 @@ export function BeadsView({
     document.addEventListener("mousedown", onDocClick);
     return () => document.removeEventListener("mousedown", onDocClick);
   }, [showSortMenu]);
+
+  // Close the type-filter menu on outside click while it is open.
+  useEffect(() => {
+    if (!showTypeMenu) return undefined;
+    const onDocClick = (e) => {
+      if (typeMenuRef.current && !typeMenuRef.current.contains(e.target)) {
+        setShowTypeMenu(false);
+      }
+    };
+    document.addEventListener("mousedown", onDocClick);
+    return () => document.removeEventListener("mousedown", onDocClick);
+  }, [showTypeMenu]);
 
   // Per-issue right-click context menu. `contextMenu` holds the click position
   // and the issue it targets; `menuPrompts` are the `menus: beadsIssues` prompts shown
@@ -4121,14 +4199,70 @@ export function BeadsView({
             <${LayersIcon} className="w-3.5 h-3.5" />
           </button>
         </div>
-        <select
-          class="select select-xs shrink-0 w-28"
-          value=${typeFilter}
-          onInput=${(e) => setTypeFilter(e.target.value)}
+        <details
+          class="dropdown shrink-0"
+          ref=${typeMenuRef}
+          open=${showTypeMenu}
+          onToggle=${(e) => {
+            const open = e.currentTarget.open;
+            if (open !== showTypeMenu) setShowTypeMenu(open);
+          }}
         >
-          <option value="all">All types</option>
-          ${allTypes.map((t) => html`<option value=${t}>${t}</option>`)}
-        </select>
+          <summary
+            class="btn btn-xs btn-ghost gap-1 list-none w-28"
+            data-testid="beads-type-filter-button"
+            aria-label="Filter by type"
+          >
+            <span class="flex-1 truncate">
+              ${typeFilter === "all" ? "All types" : typeFilter}
+            </span>
+            <${ChevronDownIcon} className="w-3 h-3 shrink-0 opacity-60" />
+          </summary>
+          <ul
+            class="dropdown-content menu menu-sm bg-base-200 rounded-box shadow-xl z-10 mt-1 w-44"
+            data-testid="beads-type-filter-menu"
+          >
+            <li class="menu-title text-xs">Type</li>
+            <li>
+              <button
+                type="button"
+                class=${typeFilter === "all" ? "menu-active" : ""}
+                onClick=${() => {
+                  setTypeFilter("all");
+                  setShowTypeMenu(false);
+                }}
+              >
+                <span class="w-4 h-4 shrink-0">
+                  ${typeFilter === "all"
+                    ? html`<${CheckIcon} className="w-4 h-4" />`
+                    : null}
+                </span>
+                <span class="flex-1">All types</span>
+              </button>
+            </li>
+            ${allTypes.map(
+              (t) => html`
+                <li key=${t}>
+                  <button
+                    type="button"
+                    class=${typeFilter === t ? "menu-active" : ""}
+                    onClick=${() => {
+                      setTypeFilter(t);
+                      setShowTypeMenu(false);
+                    }}
+                  >
+                    <span class="w-4 h-4 shrink-0">
+                      ${typeFilter === t
+                        ? html`<${CheckIcon} className="w-4 h-4" />`
+                        : null}
+                    </span>
+                    <span class="flex-1">${t}</span>
+                  </button>
+                </li>
+              `,
+            )}
+          </ul>
+        </details>
         <input
           type="text"
           placeholder="Search id, title, body…"
