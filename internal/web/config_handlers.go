@@ -3,6 +3,7 @@ package web
 import (
 	"fmt"
 	"net/http"
+	"strings"
 
 	configPkg "github.com/inercia/mitto/internal/config"
 	"github.com/inercia/mitto/internal/secrets"
@@ -311,6 +312,20 @@ func (s *Server) buildNewSettings(req *ConfigSaveRequest) (*configPkg.Settings, 
 		modelsConfig = *req.Models
 	} else if s.config.MittoConfig != nil {
 		modelsConfig = s.config.MittoConfig.Models
+	}
+
+	// Defense-in-depth: drop profiles with a blank name before persisting.
+	// Config.Parse already skips these on load, but filtering here avoids
+	// writing dead entries to settings.json in the first place.
+	if len(modelsConfig) > 0 {
+		filteredModels := make([]configPkg.ModelProfile, 0, len(modelsConfig))
+		for _, m := range modelsConfig {
+			if strings.TrimSpace(m.Name) == "" {
+				continue
+			}
+			filteredModels = append(filteredModels, m)
+		}
+		modelsConfig = filteredModels
 	}
 
 	return &configPkg.Settings{

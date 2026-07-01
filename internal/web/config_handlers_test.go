@@ -886,3 +886,35 @@ func TestBuildNewSettings_ModelsOmitted(t *testing.T) {
 		t.Errorf("settings.Models[1].Name = %q, want %q", settings.Models[1].Name, existing[1].Name)
 	}
 }
+
+// TestBuildNewSettings_ModelsFiltersBlankNames verifies that profiles with a
+// blank (or whitespace-only) name are dropped before being persisted, as
+// defense-in-depth alongside the UI validation and Config.Parse's own skip.
+func TestBuildNewSettings_ModelsFiltersBlankNames(t *testing.T) {
+	profiles := append(twoProfileFixture(), config.ModelProfile{
+		Name: "   ",
+		Tags: []string{"Orphan"},
+	})
+	server := &Server{
+		config: Config{
+			MittoConfig: &config.Config{},
+		},
+	}
+
+	req := &ConfigSaveRequest{
+		Models: &profiles,
+	}
+	settings, err := server.buildNewSettings(req)
+	if err != nil {
+		t.Fatalf("buildNewSettings returned error: %v", err)
+	}
+
+	if len(settings.Models) != 2 {
+		t.Fatalf("settings.Models len = %d, want 2 (blank-name profile filtered out)", len(settings.Models))
+	}
+	for _, m := range settings.Models {
+		if strings.TrimSpace(m.Name) == "" {
+			t.Errorf("settings.Models contains a blank-name profile: %+v", m)
+		}
+	}
+}

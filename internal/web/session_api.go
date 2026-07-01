@@ -239,6 +239,10 @@ func (s *Server) buildPromptEnabledContext(sessionID string) *config.PromptEnabl
 	ctx.Session.BeadsIssue = meta.BeadsIssue
 	ctx.Session.HasBeadsIssue = meta.BeadsIssue != ""
 
+	// HasMessages: true once the conversation has recorded at least one user
+	// prompt. Gates "continue"-style prompts that are meaningless when empty.
+	ctx.Session.HasMessages = !meta.LastUserMessageAt.IsZero()
+
 	// Periodic conversation type: true when a periodic configuration exists for this
 	// conversation (matches the PeriodicEnabled UI mode). Distinct from
 	// session.isPeriodic, which marks a scheduler-triggered run.
