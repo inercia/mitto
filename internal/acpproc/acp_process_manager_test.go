@@ -1191,6 +1191,33 @@ func TestShouldFailFastCreateAttempt(t *testing.T) {
 	}
 }
 
+// TestSetModelFailureIsTerminal verifies the pure log-level decision helper (mitto-8qp):
+// only the terminal set_model failure (non-retryable error, or the last attempt with the
+// retry budget exhausted) is treated as terminal (logged at Warn); intermediate retryable
+// attempts are non-terminal (logged at Debug) so a best-effort switch that falls back
+// cleanly no longer emits 3x repeated "SetSessionModel failed" Warn noise.
+func TestSetModelFailureIsTerminal(t *testing.T) {
+	cases := []struct {
+		name      string
+		attempt   int
+		retryable bool
+		want      bool
+	}{
+		{"non-retryable on attempt 1 -> terminal", 1, false, true},
+		{"retryable early attempt -> not terminal", 1, true, false},
+		{"retryable middle attempt -> not terminal", setSessionModelMaxAttempts - 1, true, false},
+		{"retryable last attempt -> terminal (budget exhausted)", setSessionModelMaxAttempts, true, true},
+		{"non-retryable last attempt -> terminal", setSessionModelMaxAttempts, false, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := setModelFailureIsTerminal(tc.attempt, tc.retryable); got != tc.want {
+				t.Errorf("setModelFailureIsTerminal(%d, %v)=%v, want %v", tc.attempt, tc.retryable, got, tc.want)
+			}
+		})
+	}
+}
+
 // TestLoadSession_ExpiredContextNoSaturation verifies that LoadSession's entry guard
 // (mitto-13ck.2) returns fast without incrementing the saturation counter when the
 // caller's context is already cancelled on entry.
