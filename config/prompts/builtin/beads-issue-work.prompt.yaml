@@ -76,7 +76,7 @@ prompt: |
        can be started right now. There may be **more than one** when several have no dependencies
        between them; in that case they can all be tackled in parallel.
     4. **Propose to the user** which child(ren) to start with, using
-       `mitto_ui_options_mitto(self_id: "{{ .Session.ID }}", allow_free_text: true)`:
+       `mitto_ui_options(self_id: "{{ .Session.ID }}", allow_free_text: true)`:
        - Make the first option your top recommendation among the workable children (highest declared
          priority, then highest blocking leverage over its siblings), labelled with the child bead
          ID and title.
@@ -149,7 +149,7 @@ prompt: |
 
   ## Step 4 — Present the plan and iterate
 
-  Use `mitto_ui_options_mitto(self_id: "{{ .Session.ID }}")` to show the plan summary and ask:
+  Use `mitto_ui_options(self_id: "{{ .Session.ID }}")` to show the plan summary and ask:
   "Does this plan look correct? Shall I proceed with spawning work conversations?"
 
   - If the user says **No** or provides feedback: revise the plan and present it again. Repeat until
@@ -233,7 +233,7 @@ prompt: |
   The task is complete. Offer to tidy up so finished conversations do not accumulate.
 
   1. Ask the user whether to delete this conversation now, via
-     `mitto_ui_options_mitto(self_id: "{{ .Session.ID }}", question: "All done — delete this conversation now?", timeout_seconds: 120)` with options:
+     `mitto_ui_options(self_id: "{{ .Session.ID }}", question: "All done — delete this conversation now?", timeout_seconds: 120)` with options:
      - **"Yes, delete it"**
      - **"No, keep it"**
 

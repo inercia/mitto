@@ -21,7 +21,7 @@ prompt: |
 
   First, check the conversation history for meaningful prior work context (investigation, debugging, feature discussion, research findings, etc.).
 
-  - If the conversation contains **prior work context**: use `mitto_ui_options_mitto(self_id: "{{ .Session.ID }}")` to ask: "What should the new ticket be about?" with the following options:
+  - If the conversation contains **prior work context**: use `mitto_ui_options(self_id: "{{ .Session.ID }}")` to ask: "What should the new ticket be about?" with the following options:
     - "Based on what we've been working on" (with a short description of the detected topic, e.g., "Based on what we've been working on — the auth timeout bug in the login flow")
     - "Something entirely new — I'll describe it"
 
@@ -173,7 +173,7 @@ prompt: |
   After completing sprint/status changes:
 
   1. Report the new ticket key and confirm what was done (created, added to sprint, transitioned).
-  2. Use `mitto_ui_options_mitto(self_id: "{{ .Session.ID }}")` to ask: "Ticket `<KEY>` is ready. Would you like to:"
+  2. Use `mitto_ui_options(self_id: "{{ .Session.ID }}")` to ask: "Ticket `<KEY>` is ready. Would you like to:"
      - "Link it to another ticket"
      - "Start working on it now"
      - "Done — no further action"

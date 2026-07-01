@@ -1,5 +1,5 @@
 icon: layers
-name: Group in Epics
+name: Group issues in Epics
 menus: beadsList
 description: Review ungrouped open beads, propose high-confidence epic groupings for review, and (after confirmation) create the epics and reparent the member issues
 backgroundColor: '#B2DFDB'
@@ -128,7 +128,7 @@ prompt: |
   The task is complete. Offer to tidy up so finished conversations do not accumulate.
 
   1. Ask the user whether to delete this conversation now, via
-     `mitto_ui_options_mitto(self_id: "{{ .Session.ID }}", question: "All done — delete this conversation now?", timeout_seconds: 120)` with options:
+     `mitto_ui_options(self_id: "{{ .Session.ID }}", question: "All done — delete this conversation now?", timeout_seconds: 120)` with options:
      - **"Yes, delete it"**
      - **"No, keep it"**
 

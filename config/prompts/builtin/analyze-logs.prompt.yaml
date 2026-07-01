@@ -59,7 +59,7 @@ prompt: |
 
   If the source is ambiguous or you cannot access it (missing file, command fails, no
   permissions), say so clearly and ask the user how to proceed via
-  `mitto_ui_options_mitto(self_id: "{{ .Session.ID }}", allow_free_text: true)` rather
+  `mitto_ui_options(self_id: "{{ .Session.ID }}", allow_free_text: true)` rather
   than guessing.
 
   **Secret safety:** logs may contain tokens, passwords, or keys. Never copy secret

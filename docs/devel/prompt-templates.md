@@ -111,6 +111,7 @@ CEL expression always read the same field from the same struct.
 | `{{ .Session.Name }}` | `Session.Name` | `Session.Name` |
 | `{{ .Session.IsChild }}` | `Session.IsChild` | `Session.IsChild` |
 | `{{ .Session.IsPeriodic }}` | `Session.IsPeriodic` | `Session.IsPeriodic` |
+| `{{ .Session.HasMessages }}` | `Session.HasMessages` | `Session.HasMessages` |
 | `{{ .Session.BeadsIssue }}` | `Session.BeadsIssue` | `Session.BeadsIssue` |
 | `{{ .Session.UserDataJSON }}` | — | `Session.UserDataJSON` — JSON of session user-data attributes |
 | `{{ Model "tag" }}` | `Session.HasModelTag("tag")` / `"tag" in Session.ModelTags` | `Session.ModelTags` — capability tags of the **current** model (from `models:` profiles); `[]` when unknown |
@@ -189,6 +190,10 @@ The shared pure-Go helpers are: `statResolved`, the glob-match logic, `matchesSe
 | `FileExists` | `FileExists(path string) bool` | File exists at `path` (relative to `Workspace.Folder`). Calls `statResolved`. |
 | `DirExists` | `DirExists(path string) bool` | Directory exists. Calls `statResolved`. |
 | `CommandExists` | `CommandExists(name string) bool` | Command is in PATH (`exec.LookPath`). |
+| `GitFileModified` | `GitFileModified(path string) bool` | Tracked file at `path` has pending (staged/unstaged) changes vs HEAD/index; untracked files are `false`. Relative to `Workspace.Folder`. Runs `git` as a subprocess (bounded 5s). |
+| `GitDirModified` | `GitDirModified(path ...string) bool` | Directory (default: whole workspace) has any pending changes, including untracked files. |
+| `GitTracked` | `GitTracked(path string) bool` | `path` is tracked by git (present in the index). |
+| `GitDeleted` | `GitDeleted(path string) bool` | Tracked file at `path` has been deleted (staged or unstaged deletion). |
 | `Model` | `Model(tag string) bool` | Current model carries capability `tag` (case-insensitive), resolved from `models:` profiles. `false` when the model is unknown or no profile matches. |
 
 **No `html` escaping.** Use `text/template` (not `html/template`). Prompt bodies are
@@ -232,7 +237,7 @@ no template syntax. This check is identical to the `@mitto:` fast-path in `Subst
 |---|---|---|
 | `@mitto:session_id` | `{{ .Session.ID }}` | |
 | `@mitto:parent_session_id` | `{{ .Session.ParentID }}` | |
-| `@mitto:parent` | `{{ if .Parent.Exists }}{{ .Session.ParentID }} ({{ .Parent.Name }}){{ end }}` | `formatParentSession` produces `"id (name)"` format |
+| `@mitto:parent` | `{{ .Parent.Ref }}` | `ParentContext.Ref()` mirrors `formatParentSession`: `"id (name)"`, or just `"id"` when the name is empty, or `""` when there is no parent |
 | `@mitto:session_name` | `{{ .Session.Name }}` | |
 | `@mitto:working_dir` | `{{ .Workspace.Folder }}` | |
 | `@mitto:acp_server` | `{{ .ACP.Name }}` | |

@@ -73,7 +73,7 @@ prompt: |
   ## Step 4 — Resolve open questions with the user
 
   For anything you **cannot** settle from evidence, ask the user — do not invent answers. Batch
-  related questions into a single `mitto_ui_options_mitto(self_id: "{{ .Session.ID }}",
+  related questions into a single `mitto_ui_options(self_id: "{{ .Session.ID }}",
   allow_free_text: true)` call, and for each, offer your **best-guess answer** as an option the user
   can confirm, correct, or override via free text. Skip this step if nothing is genuinely ambiguous.
 
@@ -111,7 +111,7 @@ prompt: |
   ## Step 7 — Confirm before writing
 
   This is **read-only until you confirm**. Present the report, then confirm via
-  `mitto_ui_options_mitto(self_id: "{{ .Session.ID }}", allow_free_text: true)`, e.g. "Apply this
+  `mitto_ui_options(self_id: "{{ .Session.ID }}", allow_free_text: true)`, e.g. "Apply this
   enrichment to `{{ $target }}`?" with options:
 
   - **"Apply the enrichment"** — update the bead's fields only.
@@ -168,7 +168,7 @@ prompt: |
   The task is complete. Offer to tidy up so finished conversations do not accumulate.
 
   1. Ask the user whether to delete this conversation now, via
-     `mitto_ui_options_mitto(self_id: "{{ .Session.ID }}", question: "All done — delete this conversation now?", timeout_seconds: 120)` with options:
+     `mitto_ui_options(self_id: "{{ .Session.ID }}", question: "All done — delete this conversation now?", timeout_seconds: 120)` with options:
      - **"Yes, delete it"**
      - **"No, keep it"**
 

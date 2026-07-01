@@ -4,13 +4,7 @@ description: Continue with the current task from where we left off
 group: Work flow
 menus: prompts, conversation
 backgroundColor: '#FFF9C4'
-tags:
-- periodic
-periodic:
-  mode: optional
-  default: false
-  trigger: onCompletion
-  delay: 60
+enabledWhen: Session.HasMessages
 prompt: |
   Before taking any action, review the current state of the work by reading relevant files,
   checking git status, and understanding what has already been completed.
@@ -107,7 +101,7 @@ prompt: |
   - Return to **B2** to pick up the next follow-up, and `mitto_ui_notify` progress.
   {{- else }}
   do **not** close or commit on your own. Present the finding and act only on what the user approves
-  via `mitto_ui_options_mitto(self_id: "{{ .Session.ID }}", allow_free_text: true)` (fall back to a
+  via `mitto_ui_options(self_id: "{{ .Session.ID }}", allow_free_text: true)` (fall back to a
   plain question if the `mitto_*` tools are unavailable):
   - **"Close the issue"** — `bd close <id> --reason "<what was delivered>"`.
   - **"Commit the changes"** — commit the work for this bead with a clear message referencing it.

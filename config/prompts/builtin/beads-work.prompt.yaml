@@ -30,7 +30,7 @@ prompt: |
   Before doing anything else, review the current conversation history to check whether a specific bead has already been discussed (e.g., a bead ID like `bd-1234` was mentioned, its details were fetched, or it was previously selected).
 
   - If a bead **has** been discussed in this conversation:
-    Use `mitto_ui_options_mitto(self_id: "{{ .Session.ID }}")` to ask the user whether to:
+    Use `mitto_ui_options(self_id: "{{ .Session.ID }}")` to ask the user whether to:
     - **Option 1**: `"Start working on [BEAD-ID]: [title]"` — if chosen, skip directly to Step 3 (claim) using that bead ID.
     - **Option 2**: `"Work on a different bead"` — if chosen, continue to Step 1.
 
@@ -90,7 +90,7 @@ prompt: |
 
   > **<child-id>: <title>** (<priority level>, part of <epic-id>) — first workable child of the epic; unblocks <siblings it precedes>
 
-  Then call `mitto_ui_options_mitto(self_id: "{{ .Session.ID }}", allow_free_text: true)` to let the user choose:
+  Then call `mitto_ui_options(self_id: "{{ .Session.ID }}", allow_free_text: true)` to let the user choose:
 
   - Make the **first option your top recommendation** (label it with the bead ID and title), followed by the remaining beads in ranked order.
   - Set `allow_free_text: true` so the user can **override your ranking** or name a different bead entirely.
@@ -154,7 +154,7 @@ prompt: |
 
   ## Step 6 — Present the plan and iterate
 
-  Use `mitto_ui_options_mitto(self_id: "{{ .Session.ID }}", allow_free_text: true)` to show the plan summary and ask: "Does this plan look correct? Shall I proceed with dispatching the implementation work?"
+  Use `mitto_ui_options(self_id: "{{ .Session.ID }}", allow_free_text: true)` to show the plan summary and ask: "Does this plan look correct? Shall I proceed with dispatching the implementation work?"
 
   - If the user provides feedback or selects **No**: revise the plan and present it again. Repeat until the user explicitly approves.
   - If the user approves: proceed to Step 7.
@@ -215,7 +215,7 @@ prompt: |
   The task is complete. Offer to tidy up so finished conversations do not accumulate.
 
   1. Ask the user whether to delete this conversation now, via
-     `mitto_ui_options_mitto(self_id: "{{ .Session.ID }}", question: "All done — delete this conversation now?", timeout_seconds: 120)` with options:
+     `mitto_ui_options(self_id: "{{ .Session.ID }}", question: "All done — delete this conversation now?", timeout_seconds: 120)` with options:
      - **"Yes, delete it"**
      - **"No, keep it"**
 

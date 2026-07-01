@@ -9,7 +9,7 @@ parameters:
     description: The child conversation to continue (one you spawned from this conversation)
     required: true
 backgroundColor: '#FFF9C4'
-enabledWhen: Children.Exists && Tools.HasPattern("mitto_conversation_*") && !Session.IsPeriodicConversation
+enabledWhen: Session.HasMessages && Children.Exists && Tools.HasPattern("mitto_conversation_*") && !Session.IsPeriodicConversation
 prompt: |
   Continue working on this by sending instructions to the existing conversation you
   selected (`{{ .Args.TargetConversation }}` — typically a child you spawned). Build on what it

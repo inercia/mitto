@@ -17,7 +17,7 @@ prompt: |
   {{ if UserData "JIRA Ticket" -}}
   A ticket is saved for this conversation: **`{{ UserData "JIRA Ticket" }}`**.
 
-  Use `mitto_ui_options_mitto(self_id: "{{ .Session.ID }}")` to ask the user:
+  Use `mitto_ui_options(self_id: "{{ .Session.ID }}")` to ask the user:
   - **Option 1**: `"Decompose {{ UserData "JIRA Ticket" }} (your current ticket)"` — if chosen, skip to Step 3 using `{{ UserData "JIRA Ticket" }}` as the ticket key.
   - **Option 2**: `"Search the active sprint for a ticket to decompose"` — if chosen, proceed with the sprint search below.
 
@@ -34,8 +34,8 @@ prompt: |
 
   ## Step 2 — Let the user choose a ticket
 
-  - If **multiple tickets** are found: use `mitto_ui_options_mitto(self_id: "{{ .Session.ID }}")` to present the ticket list and ask the user which one to decompose. Include the ticket key and summary in each option label.
-  - If **exactly one ticket** is found: use `mitto_ui_options_mitto(self_id: "{{ .Session.ID }}")` to confirm with the user before proceeding.
+  - If **multiple tickets** are found: use `mitto_ui_options(self_id: "{{ .Session.ID }}")` to present the ticket list and ask the user which one to decompose. Include the ticket key and summary in each option label.
+  - If **exactly one ticket** is found: use `mitto_ui_options(self_id: "{{ .Session.ID }}")` to confirm with the user before proceeding.
   - If **no tickets** are found: inform the user and stop.
 
   ## Step 3 — Fetch full ticket details
@@ -64,7 +64,7 @@ prompt: |
   - The ticket is large enough that a single PR would be difficult to review
   - Multiple distinct acceptance criteria map cleanly to separate deliverables
 
-  If decomposition is **not** recommended: use `mitto_ui_options_mitto(self_id: "{{ .Session.ID }}")` to inform the user of your reasoning and ask if they want to proceed anyway. If they say No, stop here.
+  If decomposition is **not** recommended: use `mitto_ui_options(self_id: "{{ .Session.ID }}")` to inform the user of your reasoning and ask if they want to proceed anyway. If they say No, stop here.
 
   ## Step 5 — Produce a decomposition plan
 
@@ -89,7 +89,7 @@ prompt: |
 
   ## Step 6 — Present the plan and iterate
 
-  Use `mitto_ui_options_mitto(self_id: "{{ .Session.ID }}")` to show the decomposition plan to the user and ask: "Does this breakdown look correct? Shall I create these sub-tickets in JIRA?"
+  Use `mitto_ui_options(self_id: "{{ .Session.ID }}")` to show the decomposition plan to the user and ask: "Does this breakdown look correct? Shall I create these sub-tickets in JIRA?"
 
   - If the user says **No** or provides feedback: revise the breakdown and present it again. Repeat until the user explicitly approves.
   - If the user says **Yes**: proceed to Step 7.

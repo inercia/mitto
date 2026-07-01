@@ -606,8 +606,8 @@ that depends on an issue ID) in `{{ if $target }} … {{ end }}` so mode 3 emits
 ```
 
 The built-in `beads-issue-investigate`, `beads-issue-discuss`,
-`beads-issue-status`, `beads-issue-resolved`, and `beads-issue-work` prompts all
-follow this three-mode pattern.
+`beads-issue-status`, `beads-issue-resolved`, `beads-issue-work`, and
+`beads-followup-work` prompts all follow this three-mode pattern.
 
 ## Periodic Prompts
 
@@ -991,6 +991,7 @@ The following fields are available at send time. They are the **same fields used
 | `{{ .Session.IsChild }}` | `true` in child conversations |
 | `{{ .Session.IsPeriodic }}` | `true` when triggered by the periodic runner |
 | `{{ .Session.IsPeriodicForced }}` | `true` when a periodic run was manually triggered ("run now") |
+| `{{ .Session.HasMessages }}` | `true` once the conversation has any user message |
 | `{{ .Session.BeadsIssue }}` | Linked beads issue ID (empty if none) |
 | `{{ .Session.ModelName }}` | Current model's display name (empty if unknown) |
 | `{{ .ACP.Name }}` | ACP server name |
@@ -1020,7 +1021,15 @@ The following fields are available at send time. They are the **same fields used
 | `fileExists` | `fileExists "path"` | Path exists as a file (relative to workspace folder) |
 | `dirExists` | `dirExists "path"` | Directory exists |
 | `commandExists` | `commandExists "name"` | Command is on PATH |
+| `GitFileModified` | `GitFileModified "path"` | Tracked file at `path` has pending (staged/unstaged) changes vs HEAD/index; untracked files are `false` |
+| `GitDirModified` | `GitDirModified "path"` | Directory (omit `path` for the whole workspace) has any pending changes, including untracked files |
+| `GitTracked` | `GitTracked "path"` | `path` is tracked by git (present in the index) |
+| `GitDeleted` | `GitDeleted "path"` | Tracked file at `path` has been deleted (staged or unstaged deletion) |
 | `Model` | `Model "tag"` | Current model carries capability `tag` (case-insensitive), from [`models:` profiles](models.md); `false` when the model is unknown or no profile matches |
+
+All four `Git*` functions resolve relative paths against `Workspace.Folder`, run `git` as a
+subprocess (bounded to 5s), and return `false` outside a git repo or when git is unavailable.
+They are evaluated at send/display time, same as `fileExists`/`dirExists`/`commandExists`.
 
 String utilities: `trim`, `lower`, `upper`, `contains`, `hasPrefix`, `hasSuffix`, `join`.
 
@@ -1235,6 +1244,7 @@ Information about the current conversation/session.
 | `Session.ParentID`    | string | Parent session ID (empty if not a child)                 |
 | `Session.IsPeriodic`  | bool   | `true` if this prompt was triggered by the periodic runner |
 | `Session.IsPeriodicConversation` | bool   | `true` if this is a periodic conversation (it has a periodic prompt configuration) |
+| `Session.HasMessages` | bool   | `true` if the conversation has at least one user message (empty conversations are false) |
 | `Session.HasBeadsIssue` | bool   | `true` if the conversation has a beads issue associated                  |
 | `Session.BeadsIssue`  | string | Linked beads issue ID (empty if none)                                    |
 

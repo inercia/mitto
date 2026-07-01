@@ -1,5 +1,5 @@
 icon: check
-name: Check if resolved
+name: Check if issue resolved
 menus: beadsIssues, conversation
 parameters:
   - name: IssueID
@@ -143,7 +143,7 @@ prompt: |
 
   {{ if $target -}}
   Present your verdict and the summary, then confirm the next action via
-  `mitto_ui_options_mitto(self_id: "{{ .Session.ID }}", allow_free_text: true)`, e.g.
+  `mitto_ui_options(self_id: "{{ .Session.ID }}", allow_free_text: true)`, e.g.
   "This bead looks `<verdict>`. What should I do?". Tailor the options to the verdict:
 
   - If the bead is **not resolved** (verdict **Still relevant**, or **Partially resolved** with real
@@ -254,7 +254,7 @@ prompt: |
   The task is complete. Offer to tidy up so finished conversations do not accumulate.
 
   1. Ask the user whether to delete this conversation now, via
-     `mitto_ui_options_mitto(self_id: "{{ .Session.ID }}", question: "All done — delete this conversation now?", timeout_seconds: 120)` with options:
+     `mitto_ui_options(self_id: "{{ .Session.ID }}", question: "All done — delete this conversation now?", timeout_seconds: 120)` with options:
      - **"Yes, delete it"**
      - **"No, keep it"**
 

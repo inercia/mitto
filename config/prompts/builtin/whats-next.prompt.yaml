@@ -4,12 +4,7 @@ description: Analyze progress and suggest next steps
 group: Work flow
 menus: prompts, conversation
 backgroundColor: '#FFF9C4'
-enabledWhen: '!Session.IsPeriodicConversation'
-periodic:
-  mode: optional
-  default: false
-  trigger: onCompletion
-  delay: 60
+enabledWhen: '!Session.IsPeriodicConversation && (Session.HasMessages || Session.HasBeadsIssue)'
 prompt: |
   {{- if .Session.BeadsIssue }}
   This conversation is linked to beads issue `{{ .Session.BeadsIssue }}` — frame everything

@@ -221,10 +221,10 @@ can serve **both** the per-issue `beadsIssues` menu and the generic
 
 For the full YAML header recipe, ladder, and gating examples see
 [Context-adaptive prompts (three modes)](../config/prompts.md#context-adaptive-prompts-three-modes)
-in the user-facing config reference. The five builtin exemplars are
+in the user-facing config reference. The six builtin exemplars are
 `beads-issue-investigate`, `beads-issue-discuss`, `beads-issue-status`,
-`beads-issue-resolved`, and `beads-issue-work`; their render correctness is
-guarded by the `*ThreeModeTargetResolution` tests in
+`beads-issue-resolved`, `beads-issue-work`, and `beads-followup-work`; their
+render correctness is guarded by the `*ThreeModeTargetResolution` tests in
 `internal/config/prompt_template_test.go`.
 
 ## Argument caching

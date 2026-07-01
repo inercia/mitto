@@ -1,5 +1,5 @@
 icon: chat-bubble
-name: Discuss & Refine
+name: Discuss & Refine issue
 menus: beadsIssues, conversation
 parameters:
   - name: IssueID
@@ -61,7 +61,7 @@ prompt: |
   - Ambiguity that would force an implementer to guess
 
   **If nothing stands out** — no pending decisions, blockers, or obvious gaps — ask the user what they
-  want to refine or discuss, via `mitto_ui_options_mitto(self_id: "{{ .Session.ID }}",
+  want to refine or discuss, via `mitto_ui_options(self_id: "{{ .Session.ID }}",
   allow_free_text: true)`, offering focus areas such as *scope*, *approach / design*, *acceptance
   criteria*, *risks & edge cases*, or *priority*, plus free text for their own topic.
 
@@ -69,7 +69,7 @@ prompt: |
 
   Based on your analysis, propose a **short list of concrete next steps**, each with clear reasoning
   for why it matters and what it would settle. Then ask the user **which direction to take** via
-  `mitto_ui_options_mitto(self_id: "{{ .Session.ID }}", allow_free_text: true)`, listing the proposed
+  `mitto_ui_options(self_id: "{{ .Session.ID }}", allow_free_text: true)`, listing the proposed
   steps as options plus free text so they can choose, reprioritise, or describe their own.
 
   ## Step 4 — Assess the quality of the bead or current problem
@@ -95,7 +95,7 @@ prompt: |
   Engage the user in **focused discussion** on the gaps from Step 5 (and the direction chosen in
   Step 3). Ground the conversation in evidence — investigate the codebase, related beads, and history
   as needed so your input is concrete rather than speculative. Batch related questions into a single
-  `mitto_ui_options_mitto(self_id: "{{ .Session.ID }}", allow_free_text: true)` call, offering your
+  `mitto_ui_options(self_id: "{{ .Session.ID }}", allow_free_text: true)` call, offering your
   best-guess answer plus free text, and iterate until each gap is resolved into an **actionable
   conclusion**.
 
@@ -103,7 +103,7 @@ prompt: |
   ## Step 7 — Update the bead (after confirming)
 
   Everything above is **read-only until the user confirms**. Present exactly what you intend to change
-  and get approval via `mitto_ui_options_mitto(self_id: "{{ .Session.ID }}", allow_free_text: true)`,
+  and get approval via `mitto_ui_options(self_id: "{{ .Session.ID }}", allow_free_text: true)`,
   e.g. "Apply these updates to `{{ $target }}`?" with options like **"Apply all"**, **"Apply some"**
   (free text), and **"Make no changes"**. Never write anything the user did not approve.
 
@@ -154,7 +154,7 @@ prompt: |
   The task is complete. Offer to tidy up so finished conversations do not accumulate.
 
   1. Ask the user whether to delete this conversation now, via
-     `mitto_ui_options_mitto(self_id: "{{ .Session.ID }}", question: "All done — delete this conversation now?", timeout_seconds: 120)` with options:
+     `mitto_ui_options(self_id: "{{ .Session.ID }}", question: "All done — delete this conversation now?", timeout_seconds: 120)` with options:
      - **"Yes, delete it"**
      - **"No, keep it"**
 
