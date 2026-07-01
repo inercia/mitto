@@ -309,6 +309,26 @@ func RunDown(hook config.WebHook, port int) {
 
 	// Create and run the command synchronously with timeout enforcement.
 	cmd := exec.CommandContext(ctx, "sh", "-c", command)
+	// Put the child in its own process group so we can kill the whole tree on
+	// timeout. Without this, "sh -c 'sleep 5'" may fork the sleep, and killing
+	// only the shell leaves sleep holding our stdout/stderr pipes — which
+	// blocks cmd.Wait() until sleep exits naturally (see TestRunDown_Timeout).
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	// Override the default Cancel (which only kills cmd.Process) to signal the
+	// entire process group instead.
+	cmd.Cancel = func() error {
+		if cmd.Process == nil {
+			return os.ErrProcessDone
+		}
+		if pgid, err := syscall.Getpgid(cmd.Process.Pid); err == nil {
+			return syscall.Kill(-pgid, syscall.SIGTERM)
+		}
+		return cmd.Process.Kill()
+	}
+	// WaitDelay bounds how long we wait after Cancel for the process/pipes to
+	// close. If children still hold the pipes, this force-closes them so
+	// cmd.Wait() can return promptly.
+	cmd.WaitDelay = 500 * time.Millisecond
 	// Capture stdout+stderr into a limited buffer while still streaming to the console.
 	var rawBuf bytes.Buffer
 	capBuf := &limitedBuffer{buf: &rawBuf, maxSize: maxHookOutputBytes}
