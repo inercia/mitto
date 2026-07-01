@@ -20,15 +20,16 @@ type ExternalAccessWarning struct {
 type ConfigSaveRequest struct {
 	Workspaces []configPkg.WorkspaceSettings `json:"workspaces"`
 	ACPServers []struct {
-		Name        string                                    `json:"name"`
-		Command     string                                    `json:"command"`
-		Type        string                                    `json:"type,omitempty"` // Optional type for prompt matching
-		Env         map[string]string                         `json:"env,omitempty"`  // Environment variables
-		Prompts     []configPkg.WebPrompt                     `json:"prompts,omitempty"`
-		Source      configPkg.ConfigItemSource                `json:"source,omitempty"`       // Source of the server (rcfile, settings)
-		AutoApprove bool                                      `json:"auto_approve,omitempty"` // Auto-approve permission requests
-		Tags        []string                                  `json:"tags,omitempty"`         // Optional categorization tags
-		Constraints map[string]*configPkg.ACPServerConstraint `json:"constraints,omitempty"`  // Config option auto-selection rules
+		Name         string                                    `json:"name"`
+		Command      string                                    `json:"command"`
+		Type         string                                    `json:"type,omitempty"` // Optional type for prompt matching
+		Env          map[string]string                         `json:"env,omitempty"`  // Environment variables
+		Prompts      []configPkg.WebPrompt                     `json:"prompts,omitempty"`
+		Source       configPkg.ConfigItemSource                `json:"source,omitempty"`        // Source of the server (rcfile, settings)
+		AutoApprove  bool                                      `json:"auto_approve,omitempty"`  // Auto-approve permission requests
+		Tags         []string                                  `json:"tags,omitempty"`          // Optional categorization tags
+		ModelProfile string                                    `json:"model_profile,omitempty"` // Model profile name (mitto-hke)
+		Constraints  map[string]*configPkg.ACPServerConstraint `json:"constraints,omitempty"`   // Config option auto-selection rules
 		// ContextFlushCommand is an optional agent-native slash command (e.g. "/clear")
 		// to flush conversation context without restarting the agent.
 		ContextFlushCommand string `json:"context_flush_command,omitempty"`

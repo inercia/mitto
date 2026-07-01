@@ -159,6 +159,11 @@ func (h *Handlers) HandleGetConfig(w http.ResponseWriter, r *http.Request) {
 				acpServers[i]["type"] = srv.Type
 			}
 
+			// Include model profile name if specified (mitto-hke)
+			if srv.ModelProfile != "" {
+				acpServers[i]["model_profile"] = srv.ModelProfile
+			}
+
 			// Include context-flush command if specified
 			if srv.ContextFlushCommand != "" {
 				acpServers[i]["context_flush_command"] = srv.ContextFlushCommand

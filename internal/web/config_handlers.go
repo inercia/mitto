@@ -126,14 +126,15 @@ func (s *Server) buildNewSettings(req *ConfigSaveRequest) (*configPkg.Settings, 
 		}
 
 		newServer := configPkg.ACPServerSettings{
-			Name:        srv.Name,
-			Command:     srv.Command,
-			Type:        srv.Type,                 // Optional type for prompt matching
-			Env:         srv.Env,                  // Environment variables
-			Source:      configPkg.SourceSettings, // Mark as settings-sourced
-			AutoApprove: srv.AutoApprove,          // Auto-approve permission requests
-			Tags:        srv.Tags,                 // Categorization tags
-			Constraints: srv.Constraints,          // Config option auto-selection rules
+			Name:         srv.Name,
+			Command:      srv.Command,
+			Type:         srv.Type,                 // Optional type for prompt matching
+			Env:          srv.Env,                  // Environment variables
+			Source:       configPkg.SourceSettings, // Mark as settings-sourced
+			AutoApprove:  srv.AutoApprove,          // Auto-approve permission requests
+			Tags:         srv.Tags,                 // Categorization tags
+			ModelProfile: srv.ModelProfile,         // Model profile name (mitto-hke)
+			Constraints:  srv.Constraints,          // Config option auto-selection rules
 			// ContextFlushCommand: agent-native context-flush slash command (e.g. "/clear")
 			ContextFlushCommand: srv.ContextFlushCommand,
 			// Per-server prompts are no longer saved to settings.json
