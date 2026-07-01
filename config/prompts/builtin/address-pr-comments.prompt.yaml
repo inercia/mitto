@@ -5,7 +5,7 @@ description: Systematically address all pull request review feedback
 group: Submission of changes
 backgroundColor: '#B2DFDB'
 tags:
-- periodic
+- loop
 - github
 enabledWhen: FileExists(".git/config") && (Tools.HasPattern("github_*") || CommandExists("gh") || CommandExists("glab"))
 prompt: |
@@ -16,9 +16,9 @@ prompt: |
   Your session ID is `{{ .Session.ID }}` — use this as `self_id` for all `mitto_*` MCP tool calls.
 
   ## Interaction Mode
-  {{- if and .Session.IsPeriodic (not .Session.IsPeriodicForced) }}
+  {{- if and .Session.IsLoop (not .Session.IsLoopForced) }}
 
-  **Scheduled mode** — a periodic run; the user is not watching.
+  **Scheduled mode** — a loop run; the user is not watching.
   - Use **only** `mitto_ui_notify` for all communication — non-blocking notifications only.
   - Do **NOT** use `mitto_ui_options`, `mitto_ui_form`, `mitto_ui_textbox`, or any
     interactive/blocking UI tool. They will stall an unattended run.
@@ -29,7 +29,7 @@ prompt: |
     quietly with a single notification — do not block waiting for input.
   {{- else }}
 
-  **Interactive mode** — a force-triggered run or a non-periodic conversation; the user may be present.
+  **Interactive mode** — a force-triggered run or a non-loop conversation; the user may be present.
   - You may freely use `mitto_ui_options`, `mitto_ui_form`, and other interactive
     tools in addition to `mitto_ui_notify`.
   - Confirm analysis and ask before pushing, as described in the steps below.
@@ -57,7 +57,7 @@ prompt: |
   glab mr view          # GitLab
   ```
 
-  {{- if and .Session.IsPeriodic (not .Session.IsPeriodicForced) }}
+  {{- if and .Session.IsLoop (not .Session.IsLoopForced) }}
   In scheduled mode: auto-select the PR for the current branch. If multiple or
   none match, end the run quietly with a `mitto_ui_notify` note — do not ask.
   {{- else }}
@@ -88,7 +88,7 @@ prompt: |
   - **Disagree**: Acknowledge perspective, explain reasoning with evidence, offer alternatives
   - **Already addressed**: Point to relevant code/commit
 
-  {{- if and .Session.IsPeriodic (not .Session.IsPeriodicForced) }}
+  {{- if and .Session.IsLoop (not .Session.IsLoopForced) }}
   In scheduled mode: apply the **Autonomy criteria** above. Implement only
   objectively-valid, low-risk comments; for the rest, reply requesting
   clarification and collect them for the final notification.
@@ -108,7 +108,7 @@ prompt: |
   |---------|------|----------|----------|--------|
   | ...     | ...  | ...      | ...      | ...    |
 
-  {{- if and .Session.IsPeriodic (not .Session.IsPeriodicForced) }}
+  {{- if and .Session.IsLoop (not .Session.IsLoopForced) }}
   In scheduled mode: skip confirmation — proceed with the autonomy-approved
   subset and defer the rest (no blocking UI).
   {{- else }}
@@ -128,11 +128,11 @@ prompt: |
 
   For fixes requiring **significant work** (3+ files, substantial new code, risky refactors), delegate to Mitto child conversations for parallel execution.
 
-  {{- if and .Session.IsPeriodic (not .Session.IsPeriodicForced) }}
+  {{- if and .Session.IsLoop (not .Session.IsLoopForced) }}
   In scheduled mode: before spawning, check `{{ .Children.AllText }}` for an
   existing child for the same PR/comment and reuse it instead of creating a
   duplicate. Spawn at most **3 conversations per run**. **Spawned conversations
-  must never be periodic** — they are one-off tasks.
+  must never be loops** — they are one-off tasks.
   {{- end }}
 
   **How to delegate (requires Mitto MCP tools):**
@@ -185,7 +185,7 @@ prompt: |
 
   ### 9. Push and Request Re-review
 
-  {{- if and .Session.IsPeriodic (not .Session.IsPeriodicForced) }}
+  {{- if and .Session.IsLoop (not .Session.IsLoopForced) }}
   In scheduled mode: push the autonomy-approved fixes and request re-review
   automatically (no confirmation), then `mitto_ui_notify` the result. If there
   are **no** autonomy-approved changes, do not push — just notify which items
@@ -232,12 +232,12 @@ prompt: |
   - Max 4 parallel child conversations
   - In fork workflows, push to `origin`, not `upstream`
   - **Interaction mode** (see "Interaction Mode" section above):
-  {{- if and .Session.IsPeriodic (not .Session.IsPeriodicForced) }}
-    - **Scheduled periodic**: use only `mitto_ui_notify`; act on objectively-valid,
+  {{- if and .Session.IsLoop (not .Session.IsLoopForced) }}
+    - **Scheduled loop**: use only `mitto_ui_notify`; act on objectively-valid,
       low-risk comments per the Autonomy criteria; reply-and-defer the rest; never
-      resolve threads you didn't author; spawned children must never be periodic.
+      resolve threads you didn't author; spawned children must never be loops.
   {{- else }}
-    - **Force-triggered or non-periodic**: you may use `mitto_ui_options`,
+    - **Force-triggered or non-loop**: you may use `mitto_ui_options`,
       `mitto_ui_form`, and other interactive tools; confirm analysis and ask
       before pushing.
   {{- end }}

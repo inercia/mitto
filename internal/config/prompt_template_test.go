@@ -10,16 +10,6 @@ import (
 	"time"
 )
 
-// usesLegacySessionIsPeriodic reports whether raw builtin prompt file content
-// still references the pre-mitto-8ir.2 `.Session.IsPeriodic` / `.Session.IsPeriodicForced`
-// template fields (renamed to `.Session.IsLoop` / `.Session.IsLoopForced`).
-// Migrating the builtin prompt files themselves (config/prompts/builtin/*.yaml)
-// is owned by the separate "builtin-prompts" child bead — used to skip (not
-// fail) render-based tests for files not yet migrated.
-func usesLegacySessionIsPeriodic(data []byte) bool {
-	return strings.Contains(string(data), ".Session.IsPeriodic")
-}
-
 // TestHasTemplateSyntax verifies the fast-path predicate.
 func TestHasTemplateSyntax(t *testing.T) {
 	tests := []struct {
@@ -413,9 +403,6 @@ func TestIterateUntilComplete_TargetResolution(t *testing.T) {
 	if err != nil {
 		t.Skipf("prompt file not found at %s: %v", path, err)
 	}
-	if usesLegacySessionIsPeriodic(data) {
-		t.Skip("beads-issue-iterate-until-complete.prompt.yaml: still uses legacy `.Session.IsPeriodic` template field; awaiting builtin-prompts migration (mitto-8ir)")
-	}
 	prompt, err := ParsePromptFile("beads-issue-iterate-until-complete.prompt.yaml", data, time.Now())
 	if err != nil {
 		t.Fatalf("ParsePromptFile: %v", err)
@@ -726,9 +713,6 @@ func TestIteratePrompts_CommitOption(t *testing.T) {
 			if err != nil {
 				t.Skipf("prompt file not found at %s: %v", path, err)
 			}
-			if usesLegacySessionIsPeriodic(data) {
-				t.Skipf("%s: still uses legacy `.Session.IsPeriodic` template field; awaiting builtin-prompts migration (mitto-8ir)", tc.file)
-			}
 			prompt, err := ParsePromptFile(tc.file, data, time.Now())
 			if err != nil {
 				t.Fatalf("ParsePromptFile(%s): %v", tc.file, err)
@@ -831,29 +815,16 @@ func TestBuiltinPrompts_AllRenderWithoutError(t *testing.T) {
 	}
 
 	var failures []string
-	var pendingMigration int
 	for _, p := range prompts {
 		funcs := BuildTemplateFuncMap(ctx)
 		if _, rerr := RenderPromptTemplate(p.Name, p.Content, ctx, funcs); rerr != nil {
-			// mitto-8ir.2 renamed the Go template fields Session.IsPeriodic/
-			// IsPeriodicForced to Session.IsLoop/IsLoopForced. Builtin prompt
-			// files still using the legacy field names are a known, pending
-			// migration owned by the separate "builtin-prompts" child bead —
-			// don't fail this test for them, just note the count.
-			if strings.Contains(p.Content, ".Session.IsPeriodic") {
-				pendingMigration++
-				continue
-			}
 			failures = append(failures, p.Name+": "+rerr.Error())
 		}
 	}
 	if len(failures) > 0 {
 		t.Errorf("builtin prompts failed to render (broken template funcs / fields):\n  %s", strings.Join(failures, "\n  "))
 	}
-	if pendingMigration > 0 {
-		t.Logf("%d builtin prompt(s) still use the legacy .Session.IsPeriodic field; awaiting builtin-prompts migration (mitto-8ir)", pendingMigration)
-	}
-	t.Logf("rendered %d builtin prompts — all templates valid ✓", len(prompts)-pendingMigration)
+	t.Logf("rendered %d builtin prompts — all templates valid ✓", len(prompts))
 }
 
 // TestStatus_ThreeModeTargetResolution tests the three target-bead
@@ -1280,12 +1251,7 @@ func TestFollowupWork_ThreeModeTargetResolution(t *testing.T) {
 // template engine and that the old verbose variable dumps are gone.
 //
 // The test loads each file from the real builtin directory so it always
-// exercises the current on-disk content. NOTE: the on-disk builtin prompt
-// files still reference the legacy `.Session.IsPeriodic` / `.Session.IsPeriodicForced`
-// template fields (mitto-8ir.2 renamed the Go struct fields to IsLoop/IsLoopForced,
-// but migrating the builtin prompt files themselves is owned by the separate
-// "builtin-prompts" child bead). Each case is skipped, not failed, until that
-// migration lands and the file references the new field names.
+// exercises the current on-disk content.
 func TestInteractionMode_ConditionalRendering(t *testing.T) {
 	builtinDir := "../../config/prompts/builtin"
 
@@ -1301,43 +1267,43 @@ func TestInteractionMode_ConditionalRendering(t *testing.T) {
 		{
 			file:              "architectural-analysis.prompt.yaml",
 			name:              "architectural-analysis",
-			silentMarker:      "a scheduled periodic run; the user is not watching.",
-			interactiveMarker: "a regular conversation or a force-triggered periodic run; the user is present.",
+			silentMarker:      "a scheduled loop run; the user is not watching.",
+			interactiveMarker: "a regular conversation or a force-triggered loop run; the user is present.",
 		},
 		{
 			file:              "jira-sync-tasks.prompt.yaml",
 			name:              "jira-sync-tasks",
-			silentMarker:      "a scheduled periodic run; the user is not watching.",
-			interactiveMarker: "a regular conversation or a force-triggered periodic run; the user is present.",
+			silentMarker:      "a scheduled loop run; the user is not watching.",
+			interactiveMarker: "a regular conversation or a force-triggered loop run; the user is present.",
 		},
 		{
 			file:              "github-sync-tasks.prompt.yaml",
 			name:              "github-sync-tasks",
-			silentMarker:      "a scheduled periodic run; the user is not watching.",
-			interactiveMarker: "a regular conversation or a force-triggered periodic run; the user is present.",
+			silentMarker:      "a scheduled loop run; the user is not watching.",
+			interactiveMarker: "a regular conversation or a force-triggered loop run; the user is present.",
 		},
 		{
 			file:              "github-babysit-contributions.prompt.yaml",
 			name:              "github-babysit-contributions",
-			silentMarker:      "a scheduled periodic run; the user is not watching.",
-			interactiveMarker: "a force-triggered run or a non-periodic conversation; the user may be present.",
+			silentMarker:      "a scheduled loop run; the user is not watching.",
+			interactiveMarker: "a force-triggered run or a non-loop conversation; the user may be present.",
 		},
 		{
 			file:              "github-babysit-my-prs.prompt.yaml",
 			name:              "github-babysit-my-prs",
-			silentMarker:      "a scheduled periodic run; the user is not watching.",
-			interactiveMarker: "a force-triggered run or a non-periodic conversation; the user may be present.",
+			silentMarker:      "a scheduled loop run; the user is not watching.",
+			interactiveMarker: "a force-triggered run or a non-loop conversation; the user may be present.",
 		},
 		{
 			file:              "beads-issue-iterate-until-complete.prompt.yaml",
 			name:              "beads-issue-iterate-until-complete",
-			silentMarker:      "Silent mode — a scheduled periodic run.",
+			silentMarker:      "Silent mode — a scheduled loop run.",
 			interactiveMarker: "(e.g. the very first send, or a force-triggered run): a user may be",
 		},
 		{
 			file:              "github-iterate-babysit-new-prs.prompt.yaml",
 			name:              "github-iterate-babysit-new-prs",
-			silentMarker:      "Silent mode — scheduled periodic run.",
+			silentMarker:      "Silent mode — scheduled loop run.",
 			interactiveMarker: "(e.g. the very first send, or a force-triggered run): a user may be",
 		},
 	}
@@ -1348,9 +1314,6 @@ func TestInteractionMode_ConditionalRendering(t *testing.T) {
 			data, err := os.ReadFile(path)
 			if err != nil {
 				t.Skipf("prompt file not found at %s: %v", path, err)
-			}
-			if usesLegacySessionIsPeriodic(data) {
-				t.Skipf("%s: still uses legacy `.Session.IsPeriodic` template field; awaiting builtin-prompts migration (mitto-8ir)", tc.file)
 			}
 
 			prompt, err := ParsePromptFile(tc.file, data, time.Now())
@@ -1511,9 +1474,6 @@ func TestIterateFixingBug_RendersForRepresentativeContexts(t *testing.T) {
 	if err != nil {
 		t.Skipf("prompt file not found at %s: %v", path, err)
 	}
-	if usesLegacySessionIsPeriodic(data) {
-		t.Skip("beads-issue-iterate-fixing-bug.prompt.yaml: still uses legacy `.Session.IsPeriodic` template field; awaiting builtin-prompts migration (mitto-8ir)")
-	}
 	prompt, err := ParsePromptFile("beads-issue-iterate-fixing-bug.prompt.yaml", data, time.Now())
 	if err != nil {
 		t.Fatalf("ParsePromptFile: %v", err)
@@ -1638,7 +1598,7 @@ func TestIterateFixingBug_RendersForRepresentativeContexts(t *testing.T) {
 //	(a) default context   — no Args, no Session.BeadsIssue → body renders,
 //	    references the per-bug driver name "Iterate fixing bug", declares itself
 //	    a list-level orchestrator, calls out the top-level-only rule, and shows
-//	    the spawn+wait+archive tool triplet with the exact periodic budget
+//	    the spawn+wait+archive tool triplet with the exact loop budget
 //	    (30 / 20 / 14400) that mirrors the per-bug driver's own block. Commit
 //	    defaults to "true" in the child arguments when the Commit arg is absent.
 //	(b) Commit="false"    — the child-arguments literal for Commit flips to
@@ -1707,16 +1667,16 @@ func TestIterateFixingBugs_RendersForRepresentativeContexts(t *testing.T) {
 			t.Errorf("branch (a): expected orchestration tool call %q in body; got:\n%s", tool, outA)
 		}
 	}
-	// Periodic re-fire mechanics that make each child self-drive.
+	// Loop re-fire mechanics that make each child self-drive.
 	for _, hint := range []string{
 		"onCompletion",
-		"periodic_prompt",
-		"periodic_completion_delay_seconds: 30",
-		"periodic_max_iterations: 20",
-		"periodic_max_duration_seconds: 14400",
+		"loop_prompt",
+		"loop_completion_delay_seconds: 30",
+		"loop_max_iterations: 20",
+		"loop_max_duration_seconds: 14400",
 	} {
 		if !strings.Contains(outA, hint) {
-			t.Errorf("branch (a): expected periodic-budget hint %q in body; got:\n%s", hint, outA)
+			t.Errorf("branch (a): expected loop-budget hint %q in body; got:\n%s", hint, outA)
 		}
 	}
 	// Preflight-flag guidance so a user with either flag off gets a graceful stop.
@@ -1752,7 +1712,7 @@ func TestIterateFixingBugs_RendersForRepresentativeContexts(t *testing.T) {
 //
 //	(a) Commit absent      — the child arguments literal defaults to "true";
 //	    the body dispatches to the per-feature driver by name and wires up
-//	    the spawn+wait+archive tool triplet with the exact periodic budget
+//	    the spawn+wait+archive tool triplet with the exact loop budget
 //	    (30 / 30 / 28800) that mirrors the per-feature driver's own block.
 //	(b) Commit="false"     — the child-arguments literal for Commit flips to
 //	    "false", confirming the boolean forwarding is wired correctly.
@@ -1820,16 +1780,16 @@ func TestIterateImplementingFeatures_RendersForRepresentativeContexts(t *testing
 			t.Errorf("branch (a): expected orchestration tool call %q in body; got:\n%s", tool, outA)
 		}
 	}
-	// Periodic re-fire mechanics that make each child self-drive.
+	// Loop re-fire mechanics that make each child self-drive.
 	for _, hint := range []string{
 		"onCompletion",
-		"periodic_prompt",
-		"periodic_completion_delay_seconds: 30",
-		"periodic_max_iterations: 30",
-		"periodic_max_duration_seconds: 28800",
+		"loop_prompt",
+		"loop_completion_delay_seconds: 30",
+		"loop_max_iterations: 30",
+		"loop_max_duration_seconds: 28800",
 	} {
 		if !strings.Contains(outA, hint) {
-			t.Errorf("branch (a): expected periodic-budget hint %q in body; got:\n%s", hint, outA)
+			t.Errorf("branch (a): expected loop-budget hint %q in body; got:\n%s", hint, outA)
 		}
 	}
 	// Preflight-flag guidance so a user with either flag off gets a graceful stop.
@@ -1945,9 +1905,6 @@ func TestBugFixPhasePrompts_RenderForRepresentativeContexts(t *testing.T) {
 			if err != nil {
 				t.Skipf("prompt file not found at %s: %v", path, err)
 			}
-			if usesLegacySessionIsPeriodic(data) {
-				t.Skipf("%s: still uses legacy `.Session.IsPeriodic` template field; awaiting builtin-prompts migration (mitto-8ir)", file)
-			}
 			p, err := ParsePromptFile(file, data, time.Now())
 			if err != nil {
 				t.Fatalf("ParsePromptFile(%s): %v", file, err)
@@ -2042,9 +1999,6 @@ func TestIterateImplementingFeature_RendersForRepresentativeContexts(t *testing.
 	data, err := os.ReadFile(path)
 	if err != nil {
 		t.Skipf("prompt file not found at %s: %v", path, err)
-	}
-	if usesLegacySessionIsPeriodic(data) {
-		t.Skip("beads-issue-iterate-implementing-feature.prompt.yaml: still uses legacy `.Session.IsPeriodic` template field; awaiting builtin-prompts migration (mitto-8ir)")
 	}
 	prompt, err := ParsePromptFile("beads-issue-iterate-implementing-feature.prompt.yaml", data, time.Now())
 	if err != nil {
@@ -2255,9 +2209,6 @@ func TestFeaturePhasePrompts_RenderForRepresentativeContexts(t *testing.T) {
 			if err != nil {
 				t.Skipf("prompt file not found at %s: %v", path, err)
 			}
-			if usesLegacySessionIsPeriodic(data) {
-				t.Skipf("%s: still uses legacy `.Session.IsPeriodic` template field; awaiting builtin-prompts migration (mitto-8ir)", file)
-			}
 			p, err := ParsePromptFile(file, data, time.Now())
 			if err != nil {
 				t.Fatalf("ParsePromptFile(%s): %v", file, err)
@@ -2375,15 +2326,6 @@ func TestBuiltinPromptLoopModes(t *testing.T) {
 			if err != nil {
 				t.Skipf("prompt file not found at %s: %v", path, err)
 			}
-			// The on-disk builtin prompt frontmatter/body still uses the legacy
-			// `periodic:` key and/or `.Session.IsPeriodic` template field; the
-			// yaml/json tag and Go template field were renamed to `loop`/`IsLoop`
-			// as part of mitto-8ir.1/.2, but migrating the builtin prompt files
-			// themselves is owned by the separate mitto-8ir "builtin-prompts"
-			// child bead. Skip (not fail) until that bead updates this file.
-			if strings.Contains(string(data), "periodic:") || usesLegacySessionIsPeriodic(data) {
-				t.Skipf("%s: still uses legacy `periodic:`/`.Session.IsPeriodic`; awaiting builtin-prompts migration (mitto-8ir)", file)
-			}
 			prompt, err := ParsePromptFile(file, data, time.Now())
 			if err != nil {
 				t.Fatalf("ParsePromptFile(%s): %v", file, err)
@@ -2437,9 +2379,6 @@ func TestBuiltinPromptLoopModes(t *testing.T) {
 			data, err := os.ReadFile(path)
 			if err != nil {
 				t.Skipf("prompt file not found at %s: %v", path, err)
-			}
-			if usesLegacySessionIsPeriodic(data) {
-				t.Skipf("%s: still uses legacy `.Session.IsPeriodic` template field; awaiting builtin-prompts migration (mitto-8ir)", file)
 			}
 			prompt, err := ParsePromptFile(file, data, time.Now())
 			if err != nil {

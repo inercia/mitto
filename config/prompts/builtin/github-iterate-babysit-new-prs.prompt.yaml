@@ -6,14 +6,14 @@ parameters:
     type: text
     required: false
     description: 'Optional GitHub repository (owner/repo) whose recently-created PRs to babysit. If omitted, the repository of the current folder is used.'
-description: Auto-periodic — keep babysitting the PRs you recently created (rebase, fix CI, address comments, merge when ready), then self-terminate when nothing actionable remains
+description: Auto-loop — keep babysitting the PRs you recently created (rebase, fix CI, address comments, merge when ready), then self-terminate when nothing actionable remains
 group: GitHub
 backgroundColor: '#BBDEFB'
 tags:
-- periodic
+- loop
 - github
 enabledWhen: '!Session.IsChild && FileExists(".git/config") && (Tools.HasPattern("github_*") || CommandExists("gh")) && Tools.HasPattern("mitto_conversation_*")'
-periodic:
+loop:
   mode: always
   trigger: onCompletion
   delay: 3600
@@ -22,11 +22,11 @@ periodic:
 prompt: |
   {{- $repoFlag := "" -}}
   {{- if .Args.Repository }}{{ $repoFlag = printf " --repo %s" .Args.Repository }}{{ end -}}
-  The auto-periodic, self-driving sibling of **"GitHub: babysit my PRs"**. On
+  The auto-loop, self-driving sibling of **"GitHub: babysit my PRs"**. On
   every run this conversation advances the **PRs you recently created** (the ones
   it has been babysitting) one step toward done — rebasing stale branches, fixing
   CI, addressing review comments, and merging when ready — and when there is
-  **nothing actionable left**, it removes its own periodic flag and stops.
+  **nothing actionable left**, it removes its own loop flag and stops.
 
   Operates on the current folder's repository by default, or the one supplied via
   the `Repository` parameter. Only ever acts on PRs where **you are the author**.
@@ -42,13 +42,13 @@ prompt: |
   {{ .Children.MCPText }}
 
   When spawning conversations to fix issues, prefer `"coding"` or `"fast"` tagged
-  servers. **Never** configure spawned conversations as periodic — they are
+  servers. **Never** configure spawned conversations as loops — they are
   one-off tasks.
 
   ## Interaction Mode — READ THIS FIRST
-  {{- if and .Session.IsPeriodic (not .Session.IsPeriodicForced) }}
+  {{- if and .Session.IsLoop (not .Session.IsLoopForced) }}
 
-  **Silent mode — scheduled periodic run.**
+  **Silent mode — scheduled loop run.**
   - Use **only** `mitto_ui_notify`. Do **NOT** call `mitto_ui_options`,
     `mitto_ui_form`, or `mitto_ui_textbox` — nobody is watching, never block.
   - Act autonomously when safe (clean rebases); otherwise just notify.
@@ -141,7 +141,7 @@ prompt: |
          allow_free_text: true, free_text_placeholder: "e.g. 123, 456",
          options: [
            { label: "Enter PR number(s) to babysit" },
-           { label: "Quit — stop the periodic loop" }
+           { label: "Quit — stop the loop" }
          ])
        ```
        If the user quits (or provides nothing), go to **Step 5 (stop)**. Otherwise
@@ -159,7 +159,7 @@ prompt: |
 
   **Spawn rules:** before spawning, check `{{ .Children.MCPText }}` and **skip** if a
   child already exists for the same PR + task. Cap spawning at **3 per run**;
-  spawned conversations are one-off and **must never be periodic**.
+  spawned conversations are one-off and **must never be loops**.
 
   ### 3a. Rebase if behind base
   ```bash
@@ -265,11 +265,11 @@ prompt: |
 
   When every monitored PR has been **merged or closed** (reached from Step 2 when
   no PRs were identified / the user quit, or from Step 4 when all target PRs are
-  done — none left open), remove this conversation's own periodic flag so it
+  done — none left open), remove this conversation's own loop flag so it
   becomes a regular conversation:
 
   ```
-  mitto_conversation_update(self_id: "{{ .Session.ID }}", conversation_id: "self", periodic_enabled: false)
+  mitto_conversation_update(self_id: "{{ .Session.ID }}", conversation_id: "self", loop_enabled: false)
   ```
 
   Then notify the user (works in both modes):
@@ -300,20 +300,20 @@ prompt: |
   - **Never modify the local checkout** — the user may have uncommitted work there.
     Always rebase in a temporary worktree and force-push with `--force-with-lease`
     (never `--force`).
-  {{- if and .Session.IsPeriodic (not .Session.IsPeriodicForced) }}
+  {{- if and .Session.IsLoop (not .Session.IsLoopForced) }}
   - **Interaction mode**: this is a **scheduled** run — use **only** `mitto_ui_notify`,
     never block on interactive UI, and do **not** auto-merge.
   {{- else }}
-  - **Interaction mode**: this is a **force-triggered or non-periodic** run — you may use
+  - **Interaction mode**: this is a **force-triggered or non-loop** run — you may use
     `mitto_ui_options`/`mitto_ui_form` and offer to merge with confirmation.
   {{- end }}
   - **Spawn rules**: check `{{ .Children.MCPText }}` before spawning and skip if a child
     already exists for the same PR + task; cap at **3 spawns per run**, prioritizing
     rebase conflicts > CI failures > unresolved comments. Spawned conversations are
-    one-off and **must never be periodic**.
+    one-off and **must never be loops**.
   - **Notify only when it matters** on scheduled runs (rebased, CI broke, ready to
     merge, merged, or final stop). Stay quiet on routine no-op runs.
-  - **Self-terminate** via `periodic_enabled: false` **only once all** monitored
+  - **Self-terminate** via `loop_enabled: false` **only once all** monitored
     PRs are merged or closed. Keep iterating while any PR is still open — even if it
     is steady (only waiting on a human to review/merge) — so it stays monitored
     until it lands. The user can re-run this prompt later to babysit a fresh batch

@@ -9,11 +9,11 @@ parameters:
   - name: Commit
     type: boolean
     description: Commit the fix at the end of the fix stage
-description: Auto-periodic — drive a bug bead through investigate → reproduce → fix by dispatching per-phase prompts (each on its own model tier), then self-terminate
+description: Auto-loop — drive a bug bead through investigate → reproduce → fix by dispatching per-phase prompts (each on its own model tier), then self-terminate
 backgroundColor: '#FFCDD2'
 group: Tasks
 enabledWhen: '!Session.IsChild && CommandExists("bd") && DirExists(".beads") && Tools.HasPattern("mitto_conversation_*") && Item.Type == "bug" && Item.Status != "closed"'
-periodic:
+loop:
   mode: always
   trigger: onCompletion
   delay: 30
@@ -31,7 +31,7 @@ prompt: |
   Beads is a CLI issue tracker (`bd`). Issues are called "beads" and have IDs like `bd-xyz`.
   This prompt drives a single `bug`-type bead through a **label-encoded state machine** —
   `researched` → `reproduced` → `fixed` — advancing **exactly one stage per run**, then
-  removing its own periodic flag once `fixed` is reached.
+  removing its own loop flag once `fixed` is reached.
 
   **Per-phase model tiering.** This driver does **not** do the investigate / reproduce /
   fix work inline. It loads the bead's live labels, then **dispatches** the matching
@@ -45,7 +45,7 @@ prompt: |
   {{ $target := "" -}}
   {{ if .Session.BeadsIssue }}{{ $target = .Session.BeadsIssue }}{{ else if .Args.IssueID }}{{ $target = .Args.IssueID }}{{ end -}}
   {{ if $target -}}
-  The **target bug** for this run is `{{ $target }}`{{ if .Session.BeadsIssue }} (from this conversation's linked beads issue — preferred, durable across periodic runs){{ else }} (supplied as the `IssueID` argument){{ end }}.
+  The **target bug** for this run is `{{ $target }}`{{ if .Session.BeadsIssue }} (from this conversation's linked beads issue — preferred, durable across loop runs){{ else }} (supplied as the `IssueID` argument){{ end }}.
   {{- else -}}
   The **target bug** for this run is **not explicitly specified**. This prompt requires one
   specific `bug` bead — do not guess an ID and do not scan the backlog for candidates. If a
@@ -74,9 +74,9 @@ prompt: |
   ## Interaction Mode — READ THIS FIRST
 
   This prompt almost always runs **unattended on a schedule**.
-  {{- if and .Session.IsPeriodic (not .Session.IsPeriodicForced) }}
+  {{- if and .Session.IsLoop (not .Session.IsLoopForced) }}
 
-  **Silent mode — a scheduled periodic run.**
+  **Silent mode — a scheduled loop run.**
   - Use **only** `mitto_ui_notify` — non-blocking notifications.
   - Do **NOT** call `mitto_ui_options`, `mitto_ui_form`, or `mitto_ui_textbox`. Nobody is
     watching. Never block waiting for input.
@@ -198,7 +198,7 @@ prompt: |
   Then stop this conversation from re-running:
 
   ```
-  mitto_conversation_update(self_id: "{{ .Session.ID }}", conversation_id: "self", periodic_enabled: false)
+  mitto_conversation_update(self_id: "{{ .Session.ID }}", conversation_id: "self", loop_enabled: false)
   mitto_ui_notify(self_id: "{{ .Session.ID }}", title: "Iterate fixing bug — done", message: "<what was investigated/reproduced/fixed across runs>", style: "success")
   ```
 
@@ -230,13 +230,13 @@ prompt: |
 
   3. End the iteration with a concise handoff message naming the blocker and the single
      thing needed (interactive runs also `mitto_ui_notify`), and disable this
-     conversation's own periodic flag so the loop does not spin on the blocker:
+     conversation's own loop flag so the loop does not spin on the blocker:
 
      ```
-     mitto_conversation_update(self_id: "{{ .Session.ID }}", conversation_id: "self", periodic_enabled: false)
+     mitto_conversation_update(self_id: "{{ .Session.ID }}", conversation_id: "self", loop_enabled: false)
      ```
 
-  The user resumes the loop (re-enabling periodic, or force-running) after clearing the
+  The user resumes the loop (re-enabling the loop, or force-running) after clearing the
   `needs-human` label and addressing the handoff.
 
   ## Guidelines

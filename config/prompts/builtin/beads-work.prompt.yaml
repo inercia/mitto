@@ -5,7 +5,7 @@ description: Review ready (not-in-progress) beads, present a prioritized recomme
 backgroundColor: '#B2DFDB'
 group: Tasks
 enabledWhen: '!Session.IsChild && CommandExists("bd") && DirExists(".beads") && Tools.HasPattern("mitto_conversation_*")'
-periodic:
+loop:
   mode: optional
   default: false
   trigger: onCompletion

@@ -102,11 +102,11 @@ prompt: |
      ```
 
   3. End with a concise handoff message naming the blocker and the single thing
-     needed, and disable the enclosing conversation's periodic flag so the driver
+     needed, and disable the enclosing conversation's loop flag so the driver
      loop does not spin on the blocker:
 
      ```
-     mitto_conversation_update(self_id: "{{ .Session.ID }}", conversation_id: "self", periodic_enabled: false)
+     mitto_conversation_update(self_id: "{{ .Session.ID }}", conversation_id: "self", loop_enabled: false)
      ```
 
   ## Guidelines

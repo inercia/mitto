@@ -9,11 +9,11 @@ parameters:
   - name: Commit
     type: boolean
     description: Commit the changes made at the end of each iteration
-description: Make this conversation periodic (on completion) and keep iterating until your condition is met, then self-terminate
+description: Make this conversation a loop (on completion) and keep iterating until your condition is met, then self-terminate
 backgroundColor: '#D1C4E9'
 group: Work flow
-enabledWhen: '!Session.IsChild && !Session.IsPeriodicConversation && Tools.HasPattern("mitto_conversation_*")'
-periodic:
+enabledWhen: '!Session.IsChild && !Session.IsLoopConversation && Tools.HasPattern("mitto_conversation_*")'
+loop:
   mode: always
   trigger: onCompletion
   delay: 30
@@ -37,18 +37,18 @@ prompt: |
   ## Step 1 — Arm the loop
 
   Make this conversation re-run automatically after each completion. Set
-  `periodic_prompt` to the continuation prompt below, with `<CONDITION>` replaced by
+  `loop_prompt` to the continuation prompt below, with `<CONDITION>` replaced by
   the **literal text** of the stop condition above — scheduled runs never receive
   this setup prompt, so the condition must be embedded:
 
   ```
   mitto_conversation_update(self_id: "{{ .Session.ID }}", conversation_id: "self",
-    periodic_trigger: "onCompletion",
-    periodic_completion_delay_seconds: 30,
-    periodic_max_iterations: 20,
-    periodic_max_duration_seconds: 14400,
-    periodic_enabled: true,
-    periodic_prompt: "<continuation prompt — built from the template below>")
+    loop_trigger: "onCompletion",
+    loop_completion_delay_seconds: 30,
+    loop_max_iterations: 20,
+    loop_max_duration_seconds: 14400,
+    loop_enabled: true,
+    loop_prompt: "<continuation prompt — built from the template below>")
   ```
 
   Continuation prompt template (keep verbatim except `<CONDITION>`):
@@ -67,7 +67,7 @@ prompt: |
          contents, command exit codes), never against your intentions. If you cannot
          verify it is true, treat it as not yet met.
       3. If it is TRUE: disable the loop —
-         mitto_conversation_update(self_id: "{{ .Session.ID }}", conversation_id: "self", periodic_enabled: false) —
+         mitto_conversation_update(self_id: "{{ .Session.ID }}", conversation_id: "self", loop_enabled: false) —
          then mitto_ui_notify(self_id: "{{ .Session.ID }}", title: "Iteration complete",
          message: "<how the condition was satisfied>", style: "success"). Do nothing further.
       4. If it is NOT met: do exactly ONE concrete increment toward it, verify that
@@ -90,5 +90,5 @@ prompt: |
   you just armed: review the state and evaluate the stop condition. If it is
   **already true**, disable the loop and notify — there is nothing to do. Otherwise
   perform exactly **one** increment toward it, verify it, and report what you
-  advanced and what remains. Then stop responding; the periodic engine arms the next
+  advanced and what remains. Then stop responding; the loop engine arms the next
   run automatically.

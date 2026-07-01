@@ -5,7 +5,7 @@ description: Analyze and fix the errors shown
 group: Development
 backgroundColor: '#FFE0B2'
 tags:
-- periodic
+- loop
 prompt: |
   Read relevant source files to understand code context around each error.
   Do not speculate about code you haven't opened.
@@ -15,9 +15,9 @@ prompt: |
   Your session ID is `{{ .Session.ID }}` — use as `self_id` for all `mitto_*` MCP tool calls.
 
   ## Interaction Mode
-  {{- if and .Session.IsPeriodic (not .Session.IsPeriodicForced) }}
+  {{- if and .Session.IsLoop (not .Session.IsLoopForced) }}
 
-  **Scheduled mode** — a periodic run; the user is not watching.
+  **Scheduled mode** — a loop run; the user is not watching.
   - Decide **autonomously**; do not ask the user. Use only `mitto_ui_notify`.
   - Determine the errors to fix from the latest build/test output yourself.
   - **Commit** your fixes (stage only changed files by path; never `git add -A`/`.`
@@ -27,7 +27,7 @@ prompt: |
     what's blocked and stop, rather than asking.
   {{- else }}
 
-  **Interactive mode** — a force-triggered run or a non-periodic conversation; the
+  **Interactive mode** — a force-triggered run or a non-loop conversation; the
   user may be present. Ask for clarification if intent is unclear before changing code.
   {{- end }}
 
@@ -55,10 +55,10 @@ prompt: |
 
   **Do NOT delegate** for: a single error, errors sharing a root cause, cascading errors from one issue, or trivial one-line fixes.
 
-  {{- if and .Session.IsPeriodic (not .Session.IsPeriodicForced) }}
+  {{- if and .Session.IsLoop (not .Session.IsLoopForced) }}
   In scheduled mode: before spawning, check `{{ .Children.AllText }}` and reuse an
   existing child instead of duplicating. Spawn at most **3 per run**. **Spawned
-  conversations must never be periodic.**
+  conversations must never be loops.**
   {{- end }}
 
   **Session context for delegation:**

@@ -8,7 +8,7 @@ parameters:
 description: Continue iterating to fix the problem we have been working on
 group: Development
 backgroundColor: '#BBDEFB'
-periodic:
+loop:
   mode: always
   trigger: onCompletion
   delay: 30

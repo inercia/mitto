@@ -9,11 +9,11 @@ parameters:
   - name: Commit
     type: boolean
     description: Have the delegated worker commit its changes at the end of each increment
-description: Auto-periodic — keep advancing this bead toward completion, then self-terminate when nothing ready remains
+description: Auto-loop — keep advancing this bead toward completion, then self-terminate when nothing ready remains
 backgroundColor: '#C8E6C9'
 group: Tasks
 enabledWhen: '!Session.IsChild && CommandExists("bd") && DirExists(".beads") && Tools.HasPattern("mitto_conversation_*") && Item.Status != "closed"'
-periodic:
+loop:
   mode: always
   trigger: onCompletion
   delay: 30
@@ -31,13 +31,13 @@ prompt: |
   Beads is a CLI issue tracker (`bd`). Issues are called "beads" and have IDs like `bd-xyz`.
 
   {{ if .Session.BeadsIssue -}}
-  The **target bead** for this run is `{{ .Session.BeadsIssue }}` (from this conversation's linked beads issue — preferred, durable across periodic runs).
+  The **target bead** for this run is `{{ .Session.BeadsIssue }}` (from this conversation's linked beads issue — preferred, durable across loop runs).
   {{- else if .Args.IssueID -}}
   The **target bead** for this run is `{{ .Args.IssueID }}` (supplied as the `IssueID` argument).
   {{- else -}}
   The **target bead** for this run is **not explicitly specified** — infer it from this conversation (recent messages, current git branch, linked PRs). If you cannot determine it confidently, **do not ask the user which ticket to work on** — just pick **any ready, unblocked bead** in scope (apply the Step 2 ranking: highest blocking leverage, then highest declared priority). Any ready, not-blocked bead is fair game. Only if there is no ready, unblocked bead at all do you stop (Step 5).
   {{- end }}
-  This is the **automated, non-interactive** sibling of "Start work": on every scheduled run you advance the target **one concrete increment** toward completion, and when there is **nothing ready left to do in scope**, you remove your own periodic flag and stop.
+  This is the **automated, non-interactive** sibling of "Start work": on every scheduled run you advance the target **one concrete increment** toward completion, and when there is **nothing ready left to do in scope**, you remove your own loop flag and stop.
 
   {{- if .Iteration.IsUninterrupted }}
   ## Continuation — uninterrupted scheduled run
@@ -62,9 +62,9 @@ prompt: |
   ## Interaction Mode — READ THIS FIRST
 
   This prompt almost always runs **unattended on a schedule**.
-  {{- if and .Session.IsPeriodic (not .Session.IsPeriodicForced) }}
+  {{- if and .Session.IsLoop (not .Session.IsLoopForced) }}
 
-  **Silent mode — a scheduled periodic run.**
+  **Silent mode — a scheduled loop run.**
   - Use **only** `mitto_ui_notify` — non-blocking notifications.
   - Do **NOT** call `mitto_ui_options`, `mitto_ui_form`, or `mitto_ui_textbox`.
     Nobody is watching. Never block waiting for input.
@@ -137,7 +137,7 @@ prompt: |
 
   ## Step 1b — Keep the durable conversation link correct
 
-  This conversation's linked beads issue is the **durable anchor** that future periodic
+  This conversation's linked beads issue is the **durable anchor** that future loop
   runs resolve from (see the target resolution above), so it must always point at the
   **top-level target** — the epic or standalone issue — never at a per-run child:
 
@@ -254,11 +254,11 @@ prompt: |
 
   When there is **nothing ready** left within the target bead's scope (the issue
   itself is done/deferred/blocked, and — for an epic — no child is ready), the
-  loop is finished. **Self-terminate**: remove your own periodic flag so this
-  becomes a regular (non-periodic) conversation, and post a final summary.
+  loop is finished. **Self-terminate**: remove your own loop flag so this
+  becomes a regular (non-loop) conversation, and post a final summary.
 
   ```
-  mitto_conversation_update(self_id: "{{ .Session.ID }}", conversation_id: "self", periodic_enabled: false)
+  mitto_conversation_update(self_id: "{{ .Session.ID }}", conversation_id: "self", loop_enabled: false)
   ```
 
   Then notify the user (works in both modes):

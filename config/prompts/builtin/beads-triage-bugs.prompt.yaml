@@ -1,11 +1,11 @@
 icon: tag
 name: Triage untriaged bugs
 menus: prompts, beadsList
-description: Auto-periodic — triage every open untriaged bug in a single pass, mark each `triaged` so future runs skip it, and self-terminate once no untriaged bugs remain
+description: Auto-loop — triage every open untriaged bug in a single pass, mark each `triaged` so future runs skip it, and self-terminate once no untriaged bugs remain
 backgroundColor: '#B3E5FC'
 group: Tasks
 enabledWhen: 'CommandExists("bd") && DirExists(".beads") && Tools.HasPattern("mitto_conversation_*")'
-periodic:
+loop:
   mode: always
   trigger: onCompletion
   delay: 30
@@ -52,9 +52,9 @@ prompt: |
 
   This prompt is designed to run **unattended on a schedule**, but the first send (and
   any force-triggered run) may have a user present.
-  {{- if and .Session.IsPeriodic (not .Session.IsPeriodicForced) }}
+  {{- if and .Session.IsLoop (not .Session.IsLoopForced) }}
 
-  **Silent mode — a scheduled periodic run.**
+  **Silent mode — a scheduled loop run.**
   - Use **only** `mitto_ui_notify` — non-blocking notifications.
   - Do **NOT** call `mitto_ui_options`, `mitto_ui_form`, or `mitto_ui_textbox`. Nobody
     is watching. **Auto-apply** all triage actions.
@@ -103,7 +103,7 @@ prompt: |
   so it doesn't keep re-firing on an empty backlog:
 
   ```
-  mitto_conversation_update(self_id: "{{ .Session.ID }}", conversation_id: "self", periodic_enabled: false)
+  mitto_conversation_update(self_id: "{{ .Session.ID }}", conversation_id: "self", loop_enabled: false)
   mitto_ui_notify(self_id: "{{ .Session.ID }}", title: "Bug triage — done", message: "No untriaged open bugs remain.", style: "success")
   ```
 
@@ -157,7 +157,7 @@ prompt: |
   ```
 
   Log a running tally as you go so the closing summary in Step 6 is accurate.
-  {{- else if and .Session.IsPeriodic (not .Session.IsPeriodicForced) }}
+  {{- else if and .Session.IsLoop (not .Session.IsLoopForced) }}
   **Silent scheduled run — auto-apply.** Same as the uninterrupted case above: for
   each bug run `bd comment` then `bd update --add-label triaged --add-label severity/<lvl>`
   plus the `area/*` and `needs-info` labels decided in 4b. Log a running tally for
@@ -211,7 +211,7 @@ prompt: |
   3. **Do not** add the `triaged` label on this bug (it is genuinely un-triaged until
      the human answers). **Continue with the remaining untriaged bugs** — this Blocked
      path is per-bug and does **not** stop the whole pass, and does **not** disable
-     this conversation's periodic schedule (a future run may still find newly-filed
+     this conversation's loop schedule (a future run may still find newly-filed
      bugs to triage).
 
   ## Step 6 — Closing summary
@@ -241,7 +241,7 @@ prompt: |
     (label applied + missing-info checklist in the comment); the reporter, not this
     pass, unblocks it.
   - **Blocked is per-bug.** A single blocker defers only that bug — it does not stop
-    the pass and does not disable this conversation's periodic schedule.
+    the pass and does not disable this conversation's loop schedule.
   - **Decide autonomously in silent mode; confirm once in interactive mode.** Never
     prompt the user in silent mode; never auto-apply in interactive mode without the
     Step 4c sign-off.

@@ -7,7 +7,7 @@ group: JIRA
 enabledWhen: Tools.HasPattern("jira_*")
 preferredModels:
   - modelTag: Coding
-periodic:
+loop:
   mode: optional
   default: false
   trigger: onCompletion

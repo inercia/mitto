@@ -29,12 +29,12 @@ prompt: |
     set is empty or a per-run budget is hit.
   - **INNER loop (already shipped: the `Iterate implementing feature` prompt,
     mitto-gap.5).** Each child runs that per-feature driver as an `onCompletion`
-    periodic, advancing one `planned → implemented → tested → verified` label per
+    loop, advancing one `planned → implemented → tested → verified` label per
     re-fire, then self-terminating.
 
-  This prompt itself is a **single, non-periodic run that loops internally**. It has no
-  `periodic:` block — one send, one whole outer pass, one stop. The children are the
-  periodic ones.
+  This prompt itself is a **single, non-loop run that loops internally**. It has no
+  `loop:` block — one send, one whole outer pass, one stop. The children are the
+  loop ones.
 
   ## Preflight — required flags, top-level only, degrade gracefully
 
@@ -117,8 +117,8 @@ prompt: |
   - the eligible set (Step 2) is empty, OR
   - this run has already processed **N** features, OR
   - `.Iteration.IsLast` is true (a future-proofing hook — this prompt has no
-    `periodic:` block today, so `.Iteration.IsLast` is false in practice, but future
-    variants may make it periodic; honouring the flag now keeps this driver
+    `loop:` block today, so `.Iteration.IsLast` is false in practice, but future
+    variants may make it a loop; honouring the flag now keeps this driver
     forward-compatible).
 
   When you stop, jump to **Step 7 (Final)**.
@@ -126,7 +126,7 @@ prompt: |
   ## Step 4 — Spawn ONE child for the highest-priority eligible feature
 
   Take the first entry from Step 2's ordered set — call it **`<id>`**. Spawn exactly
-  ONE child conversation whose seed AND periodic re-fire are both `<driverBody>`. Link
+  ONE child conversation whose seed AND loop re-fire are both `<driverBody>`. Link
   it to `<id>` via `beads_issue` so the per-feature driver resolves its target durably
   from `.Session.BeadsIssue` on every re-fire (this is why the child does not need to
   know its own `IssueID` after the seed run):
@@ -138,22 +138,22 @@ prompt: |
     beads_issue: "<id>",
     initial_prompt: <driverBody>,
     arguments: { "IssueID": "<id>", "Commit": "{{ if eq .Args.Commit "false" }}false{{ else }}true{{ end }}" },
-    periodic_prompt: <driverBody>,
-    periodic_trigger: "onCompletion",
-    periodic_completion_delay_seconds: 30,
-    periodic_max_iterations: 30,
-    periodic_max_duration_seconds: 28800
+    loop_prompt: <driverBody>,
+    loop_trigger: "onCompletion",
+    loop_completion_delay_seconds: 30,
+    loop_max_iterations: 30,
+    loop_max_duration_seconds: 28800
   )
   ```
 
   Notes on why each argument is what it is:
 
   - **`initial_prompt: <driverBody>` + `arguments`** — `mitto_conversation_new` does
-    NOT auto-apply a fetched prompt's own `periodic:` block. To make the child
+    NOT auto-apply a fetched prompt's own `loop:` block. To make the child
     self-drive its state machine, the same body must be provided as both the seed AND
-    the periodic re-fire. The `arguments` map fills the driver's template
+    the loop re-fire. The `arguments` map fills the driver's template
     placeholders on the seed run.
-  - **`periodic_prompt: <driverBody>`** — every `onCompletion` re-fire uses this text
+  - **`loop_prompt: <driverBody>`** — every `onCompletion` re-fire uses this text
     verbatim. It resolves its target from `.Session.BeadsIssue` (set here via
     `beads_issue`), so it does not need `IssueID`/`Commit` in the arguments map on
     re-fires. The initial `Commit` argument only affects whichever run dispatches the
@@ -234,7 +234,7 @@ prompt: |
   )
   ```
 
-  This prompt has no `periodic:` block, so there is no re-fire to disable — a single
+  This prompt has no `loop:` block, so there is no re-fire to disable — a single
   natural end-of-turn stops the outer loop.
 
   ## Step 8 — Blocked → Defer + Handoff (spawn / preflight failures)
@@ -257,7 +257,7 @@ prompt: |
   ## Guidelines
 
   - **Serial by design.** Exactly one child in flight at a time. Do not fan out — the
-    per-feature loop itself is periodic and can take hours; parallel spawns would blow
+    per-feature loop itself is a loop and can take hours; parallel spawns would blow
     past the max-children cap and be impossible to reason about.
   - **Top-level only.** Only a non-child conversation may spawn. If this run finds
     itself a child (`Session.IsChild`), stop with a notify — do not touch `bd`, do

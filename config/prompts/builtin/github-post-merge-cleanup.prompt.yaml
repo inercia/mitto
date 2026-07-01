@@ -5,22 +5,22 @@ parameters:
   - name: IssuesOnly
     type: boolean
     description: Triage only — file/update beads cleanup issues and notify, but never auto-fix or open PRs (leave unchecked to auto-fix small, low-risk items)
-description: Auto-periodic — after merges to the default branch, sweep for follow-up work (TODOs, deprecations, stale flags, doc gaps), track it in beads, auto-fix small low-risk items, and self-terminate when quiet
+description: Auto-loop — after merges to the default branch, sweep for follow-up work (TODOs, deprecations, stale flags, doc gaps), track it in beads, auto-fix small low-risk items, and self-terminate when quiet
 group: GitHub
 backgroundColor: '#BBDEFB'
 tags:
-- periodic
+- loop
 - github
 - cleanup
 enabledWhen: '!Session.IsChild && FileExists(".git/config") && (Tools.HasPattern("github_*") || CommandExists("gh")) && CommandExists("bd") && DirExists(".beads") && Tools.HasPattern("mitto_conversation_*")'
-periodic:
+loop:
   mode: always
   trigger: onCompletion
   delay: 21600
   maxIterations: 20
   maxDuration: "168h"
 prompt: |
-  The auto-periodic **post-merge cleanup sweeper**. After merges land on the
+  The auto-loop **post-merge cleanup sweeper**. After merges land on the
   default branch, each run sweeps for follow-up work — deprecations, `TODO`/`FIXME`,
   `// remove after`, stale feature flags, broken doc links, and explicit follow-ups
   named in merged PRs/issues — **without blocking or touching the merge itself**.
@@ -36,7 +36,7 @@ prompt: |
   Existing children (spawned by previous runs): {{ .Children.MCPText }}
 
   When spawning fix conversations, prefer `"coding"` or `"fast"` tagged servers.
-  **Never** make a spawned conversation periodic — they are one-off tasks.
+  **Never** make a spawned conversation a loop — they are one-off tasks.
 
   ## Mode: triage-only vs. auto-fix
   {{- if eq .Args.IssuesOnly "true" }}
@@ -53,9 +53,9 @@ prompt: |
   {{- end }}
 
   ## Interaction Mode — READ THIS FIRST
-  {{- if and .Session.IsPeriodic (not .Session.IsPeriodicForced) }}
+  {{- if and .Session.IsLoop (not .Session.IsLoopForced) }}
 
-  **Silent mode — scheduled periodic run.** Use **only** `mitto_ui_notify`. Do **NOT**
+  **Silent mode — scheduled loop run.** Use **only** `mitto_ui_notify`. Do **NOT**
   call `mitto_ui_options`, `mitto_ui_form`, or `mitto_ui_textbox` — nobody is watching.
   Act autonomously when safe; otherwise file a bead and notify. Stay quiet on no-op runs.
   {{- else }}
@@ -246,7 +246,7 @@ prompt: |
   **self-terminate**:
 
   ```
-  mitto_conversation_update(self_id: "{{ .Session.ID }}", conversation_id: "self", periodic_enabled: false)
+  mitto_conversation_update(self_id: "{{ .Session.ID }}", conversation_id: "self", loop_enabled: false)
   mitto_ui_notify(self_id: "{{ .Session.ID }}", title: "Post-merge cleanup — idle",
     message: "<what was filed/fixed/deferred across runs; nothing actionable left, so iteration stopped>",
     style: "success")
@@ -269,6 +269,6 @@ prompt: |
   - **Human handoff** for architectural debt, prod-config flag removal, deprecations
     with external API consumers, or anything attempted twice without passing tests.
   - **Caps:** at most **2 auto-fix PRs per run**; check `{{ .Children.MCPText }}` and skip
-    duplicate spawns; spawned conversations are one-off and **must never be periodic**.
+    duplicate spawns; spawned conversations are one-off and **must never be loops**.
   - **Notify only when it matters** on scheduled runs (filed / fixed / deferred / final
     stop); stay quiet on no-op runs. Always log to the tracker with `bd comment`.

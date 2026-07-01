@@ -7,7 +7,7 @@ backgroundColor: '#BBDEFB'
 preferredModels:
   - modelTag: Cheap
   - modelTag: Coding
-periodic:
+loop:
   mode: optional
   default: false
   trigger: onCompletion
