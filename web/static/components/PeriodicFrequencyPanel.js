@@ -1063,9 +1063,12 @@ export function PeriodicFrequencyPanel({
           }
 
           <!-- Toggle message input area button (Mitto bubble). Sits next to the
-               expand/collapse chevron on the right edge of the header. -->
+               expand/collapse chevron on the right edge of the header. Hidden
+               while the properties body is expanded to avoid crowding the Save
+               button. -->
           ${
             onTogglePromptArea &&
+            !expanded &&
             html`<button
               type="button"
               onClick=${onTogglePromptArea}

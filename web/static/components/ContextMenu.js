@@ -5,11 +5,7 @@
 const { html, useState, useEffect, useLayoutEffect, useRef, render } =
   window.preact;
 
-import {
-  ChevronRightIcon,
-  getPromptIconOrDefault,
-  PeriodicIcon,
-} from "./Icons.js";
+import { ChevronRightIcon, getPromptIconOrDefault } from "./Icons.js";
 import { flattenPrompts, promptPeriodicMode, promptPeriodicDefaultOn } from "../utils/prompts.js";
 
 // Build ContextMenu submenu items that group `prompts` by their `group`
@@ -277,11 +273,15 @@ function ContextMenuItem({ item, onClose }) {
                           }}
                         />`
                       : sub.periodicMode === "always"
-                        ? html`<span
-                            class="shrink-0 text-success opacity-80"
-                            title="Periodic prompt — sets the conversation to recurring mode"
-                            ><${PeriodicIcon} className="w-3.5 h-3.5"
-                          /></span>`
+                        ? html`<input
+                            type="checkbox"
+                            class="checkbox checkbox-sm shrink-0"
+                            style="background-color: transparent"
+                            checked=${true}
+                            disabled
+                            title="Always periodic — this prompt always runs as a recurring conversation (cannot be changed)"
+                            onClick=${(e) => e.stopPropagation()}
+                          />`
                         : sub.trailing}
                   </button>
                 </li>
@@ -330,6 +330,7 @@ export function ContextMenu({ x, y, items, onClose }) {
     };
     const handleEscape = (e) => {
       if (e.key === "Escape") {
+        e.preventDefault();
         onClose();
       }
     };
