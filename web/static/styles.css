@@ -1874,6 +1874,21 @@ mitto-action {
   }
 }
 
+/* Config selector daisyUI dropdowns in the composition toolbar open UPWARD:
+   the toolbar sits at the bottom of the screen. daisyUI's placement classes
+   (dropdown-top / dropdown-end) rely on CSS anchor positioning and are not in
+   the precompiled tailwind.css, so position the menu explicitly here for
+   cross-browser correctness (including WKWebView). Right-aligned to avoid
+   overflowing the viewport edge on narrow screens. */
+.chat-input-config-dropdown .dropdown-content {
+  top: auto;
+  bottom: 100%;
+  right: 0;
+  left: auto;
+  margin-top: 0;
+  margin-bottom: 0.375rem;
+}
+
 
 .chat-input-context-pct {
   font-size: 11px;
