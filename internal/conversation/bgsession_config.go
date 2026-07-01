@@ -38,20 +38,12 @@ func (bs *BackgroundSession) SetConfigOption(ctx context.Context, configID, valu
 	return bs.configMgr.setConfigOption(bs, ctx, configID, value)
 }
 
-func (bs *BackgroundSession) applyConfigOption(ctx context.Context, configID, value string) error {
-	return bs.configMgr.applyConfigOption(bs, ctx, configID, value)
-}
-
 func (bs *BackgroundSession) flushPendingConfig() {
 	bs.configMgr.flushPendingConfig(bs)
 }
 
 func (bs *BackgroundSession) persistConfigValue(configID, value string) {
 	bs.configMgr.persistConfigValue(bs, configID, value)
-}
-
-func (bs *BackgroundSession) persistBaselineModel(value string) {
-	bs.configMgr.persistBaselineModel(bs, value)
 }
 
 func (bs *BackgroundSession) setActiveModelOnly(ctx context.Context, modelID string) error {

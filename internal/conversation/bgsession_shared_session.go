@@ -56,25 +56,8 @@ func (bs *BackgroundSession) buildWebClientConfig() WebClientConfig {
 	return cfg
 }
 
-func (bs *BackgroundSession) creationRPCCtx() (context.Context, context.CancelFunc) {
-	return bs.handshaker.creationRPCCtx(bs)
-}
-
 func (bs *BackgroundSession) prepareSharedACPSession(sharedProcess SharedProcess, workingDir string) error {
 	return bs.handshaker.prepareSharedACPSession(bs, sharedProcess, workingDir)
-}
-
-// ensureSharedACPSession performs the deferred session/new RPC for a shared-process
-// session. It is idempotent and safe under concurrent callers (guarded by pendingSharedMu).
-// Returns nil immediately if the handshake already completed or was handled by a restart.
-// On error, the session is left in a retryable state — the caller should surface a clear
-// error to the user and allow the next prompt to retry.
-func (bs *BackgroundSession) ensureSharedACPSession() error {
-	return bs.handshaker.ensureSharedACPSession(bs)
-}
-
-func (bs *BackgroundSession) applyPendingSharedModes() {
-	bs.handshaker.applyPendingSharedModes(bs)
 }
 
 func (bs *BackgroundSession) completeDeferredHandshake() error {

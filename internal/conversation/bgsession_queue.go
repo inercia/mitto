@@ -46,11 +46,6 @@ func (bs *BackgroundSession) processNextQueuedMessage() bool {
 	return bs.queueDisp.processNext(bs)
 }
 
-// sendQueuedMessage sends a message that was popped from the queue.
-func (bs *BackgroundSession) sendQueuedMessage(queue *session.Queue, msg session.QueuedMessage) {
-	bs.queueDisp.send(bs, queue, msg)
-}
-
 // --- queueDeps implementation (supplies live session dependencies to queueDispatcher) ---
 
 // queueProcessingEnabled reports whether queue processing is enabled.

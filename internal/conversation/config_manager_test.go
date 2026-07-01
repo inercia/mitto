@@ -36,9 +36,6 @@ type fakeConfigDeps struct {
 	pendingMu     sync.Mutex
 	pendingConfig map[string]string
 
-	// prompt mu
-	promptMuLocked bool
-
 	// injected errors
 	setModeErr  error
 	setModelErr error

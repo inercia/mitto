@@ -51,12 +51,10 @@ type fakeFollowUpDeps struct {
 	applyAfterResult  processors.ApplyAfterResult
 
 	// recorders
-	storedFalse        int
-	notifiedEvents     []string
-	uiNotifyReqs       []UINotifyRequest
-	setUserDataCalls   []*session.UserData
-	abStoreClearCalled int
-	abStoreSetCalls    [][]session.ActionButton
+	storedFalse      int
+	notifiedEvents   []string
+	uiNotifyReqs     []UINotifyRequest
+	setUserDataCalls []*session.UserData
 }
 
 func newFakeFollowUpDeps() *fakeFollowUpDeps {
