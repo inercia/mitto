@@ -96,6 +96,12 @@ const webUIActor = "mitto:webui"
 // stamped with the mitto:webui actor for audit attribution.
 func NewClient() Client { return &cliClient{runner: execRunner{actor: webUIActor}} }
 
+// NewExecRunner returns the default Runner that invokes the real bd binary,
+// stamping writes with the mitto:webui actor. It is exported so callers can wrap
+// it (e.g. to bracket each invocation with side effects) while preserving the
+// production behavior of NewClient.
+func NewExecRunner() Runner { return execRunner{actor: webUIActor} }
+
 // NewClientWithRunner returns a Client backed by a custom Runner (for testing).
 func NewClientWithRunner(r Runner) Client { return &cliClient{runner: r} }
 

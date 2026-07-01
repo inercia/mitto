@@ -346,3 +346,115 @@ func TestBeadsWatcher_MaxWait_FiresDuringSustainedActivity(t *testing.T) {
 		t.Fatal("Expected a maxWait-capped event during sustained writes, got none")
 	}
 }
+
+func TestBeadsWatcher_SelfSuppression_IgnoresWhileActive(t *testing.T) {
+	// A self-induced bd invocation (marked via SuppressSelfActivity) rewrites
+	// last-touched / Dolt noms; those events must NOT be reported while the
+	// invocation is in flight, otherwise a UI-triggered read refreshes the list.
+	tmpDir := t.TempDir()
+	beadsDir := filepath.Join(tmpDir, ".beads")
+	if err := os.MkdirAll(beadsDir, 0755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+
+	bw, err := NewBeadsWatcher(nil)
+	if err != nil {
+		t.Fatalf("NewBeadsWatcher: %v", err)
+	}
+	defer bw.Close()
+	bw.SetDebounceDelay(20 * time.Millisecond)
+	bw.Start()
+
+	sub := newMockBeadsSubscriber()
+	if err := bw.Subscribe(sub, []string{beadsDir}); err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+
+	// Mark self-activity for this workspace, then generate the churn a bd read
+	// would produce.
+	release := bw.SuppressSelfActivity(tmpDir)
+	ltPath := filepath.Join(beadsDir, "last-touched")
+	if err := os.WriteFile(ltPath, []byte("1"), 0644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	if sub.WaitForEvent(300 * time.Millisecond) {
+		t.Fatal("expected self-induced change to be suppressed while bd is active")
+	}
+	release()
+}
+
+func TestBeadsWatcher_SelfSuppression_ReleaseGraceAndExpiry(t *testing.T) {
+	// Verifies the release/grace/expiry lifecycle without sleeping the full
+	// grace: suppressed while active, still suppressed during the trailing grace
+	// window, then cleared once the window elapses. Uses same-package access to
+	// force expiry deterministically.
+	bw, err := NewBeadsWatcher(nil)
+	if err != nil {
+		t.Fatalf("NewBeadsWatcher: %v", err)
+	}
+	bw.Start()
+	defer bw.Close()
+
+	beadsDir, err := filepath.Abs(filepath.Join(t.TempDir(), ".beads"))
+	if err != nil {
+		t.Fatalf("Abs: %v", err)
+	}
+	workingDir := filepath.Dir(beadsDir)
+
+	release := bw.SuppressSelfActivity(workingDir)
+	if !bw.isSelfSuppressed(beadsDir) {
+		t.Fatal("expected suppression while a self bd call is active")
+	}
+
+	release()
+	if !bw.isSelfSuppressed(beadsDir) {
+		t.Fatal("expected suppression to persist during the grace window")
+	}
+
+	// Force the grace deadline into the past instead of waiting BeadsSelfSuppressGrace.
+	bw.suppressMu.Lock()
+	if st := bw.suppressState[beadsDir]; st != nil {
+		st.until = time.Now().Add(-time.Millisecond)
+	}
+	bw.suppressMu.Unlock()
+
+	if bw.isSelfSuppressed(beadsDir) {
+		t.Fatal("expected suppression to clear after the grace window elapses")
+	}
+
+	// Double release must be a no-op (no panic, no negative refcount).
+	release()
+	if bw.isSelfSuppressed(beadsDir) {
+		t.Fatal("double release must not re-arm suppression")
+	}
+}
+
+func TestBeadsWatcher_SelfSuppression_NestedCalls(t *testing.T) {
+	// Overlapping self bd calls (e.g. show + list from one UI click) keep the
+	// dir suppressed until the LAST one finishes.
+	bw, err := NewBeadsWatcher(nil)
+	if err != nil {
+		t.Fatalf("NewBeadsWatcher: %v", err)
+	}
+	bw.Start()
+	defer bw.Close()
+
+	beadsDir, err := filepath.Abs(filepath.Join(t.TempDir(), ".beads"))
+	if err != nil {
+		t.Fatalf("Abs: %v", err)
+	}
+	workingDir := filepath.Dir(beadsDir)
+
+	rel1 := bw.SuppressSelfActivity(workingDir)
+	rel2 := bw.SuppressSelfActivity(workingDir)
+
+	rel1()
+	if !bw.isSelfSuppressed(beadsDir) {
+		t.Fatal("expected suppression to persist while a second call is active")
+	}
+	rel2()
+	if !bw.isSelfSuppressed(beadsDir) {
+		t.Fatal("expected grace-window suppression after the last call releases")
+	}
+}

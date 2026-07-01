@@ -571,6 +571,18 @@ func NewServer(config Config) (*Server, error) {
 		mcpAvailable:         true,
 	}
 
+	// Wrap the beads client so every bd invocation this process makes brackets
+	// itself with the BeadsWatcher self-suppression window. Even read-only bd
+	// reads (list/show) rewrite the embedded Dolt noms journal/manifest and
+	// last-touched; without suppression those self-induced writes bounce back
+	// through fsnotify as a "beads changed" event and refresh the Tasks list on
+	// every click. The watcher (set later in NewServer) is resolved lazily via
+	// s.suppressBeads at request time, so ordering here is fine.
+	s.beads = beads.NewClientWithRunner(suppressingBeadsRunner{
+		inner:    beads.NewExecRunner(),
+		suppress: s.suppressBeads,
+	})
+
 	// The REST handlers sub-package facade is constructed later in NewServer,
 	// after callbackIndex, callbackRateLimiter and periodicRunner are
 	// initialized — see "Construct the REST handlers sub-package facade" below.
@@ -672,6 +684,10 @@ func NewServer(config Config) (*Server, error) {
 
 	// Initialize periodic runner for scheduled prompt delivery and session housekeeping
 	s.periodicRunner = NewPeriodicRunner(store, sessionMgr, logger)
+	// Share the self-suppressing beads client so the periodic runner's own
+	// onTasks list reads do not bounce back through the watcher as external
+	// changes (which would spuriously re-fire onTasks periodic conversations).
+	s.periodicRunner.SetBeadsClient(s.beads)
 	s.periodicRunner.SetOnPeriodicStarted(s.BroadcastPeriodicStarted)
 	s.periodicRunner.SetOnAutoArchive(func(sessionID string) {
 		s.BroadcastACPStopped(sessionID, "auto_archived")
@@ -1733,6 +1749,33 @@ func (s *Server) getPromptsWatchDirs() []string {
 // =============================================================================
 // BeadsSubscriber implementation
 // =============================================================================
+
+// suppressingBeadsRunner wraps a beads.Runner so each bd invocation this
+// process makes is bracketed with the BeadsWatcher self-suppression window. All
+// beads.Client methods funnel through Runner.Run(ctx, dir, ...), so wrapping the
+// runner covers both reads and writes uniformly. dir is the workspace root the
+// bd command runs in; suppress maps it to its .beads/ suppression window.
+type suppressingBeadsRunner struct {
+	inner    beads.Runner
+	suppress func(workingDir string) func()
+}
+
+// Run brackets the underlying bd invocation with the suppression window.
+func (r suppressingBeadsRunner) Run(ctx context.Context, dir string, args ...string) ([]byte, string, error) {
+	release := r.suppress(dir)
+	defer release()
+	return r.inner.Run(ctx, dir, args...)
+}
+
+// suppressBeads opens a self-activity suppression window for workingDir on the
+// beads watcher and returns its release func. It is nil-safe: before the watcher
+// is created (or in tests without one) it is a no-op, so bd still runs normally.
+func (s *Server) suppressBeads(workingDir string) func() {
+	if s == nil || s.beadsWatcher == nil || workingDir == "" {
+		return func() {}
+	}
+	return s.beadsWatcher.SuppressSelfActivity(workingDir)
+}
 
 // OnBeadsChanged is called by the BeadsWatcher when .beads/ directories change.
 // It broadcasts the change to all connected clients via the global events WebSocket.

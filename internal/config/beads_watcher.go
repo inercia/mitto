@@ -24,6 +24,15 @@ const BeadsDebounceDelay = 750 * time.Millisecond
 // at most once per this window instead of being starved or woken too often.
 const BeadsMaxWait = 3 * time.Second
 
+// BeadsSelfSuppressGrace is how long, after this process's own bd invocation
+// against a .beads/ dir finishes, file-system events for that dir keep being
+// ignored. Even read-only bd commands (list, show) rewrite the embedded Dolt
+// noms journal/manifest and last-touched, which would otherwise be reported back
+// to the UI as external changes and trigger a spurious list refresh. The grace
+// window absorbs the Dolt flush that trails process exit; it is a safety margin
+// well above typical fsnotify delivery latency.
+const BeadsSelfSuppressGrace = 2 * time.Second
+
 // BeadsChangeEvent represents a notification that beads issues have changed on disk.
 type BeadsChangeEvent struct {
 	// ChangedDirs contains the .beads/ directories that had changes.
@@ -62,9 +71,26 @@ type BeadsWatcher struct {
 	debounceTimer  *time.Timer
 	debounceMu     sync.Mutex
 
+	// suppressMu guards suppressState. It is independent of mu/debounceMu so a
+	// bd invocation can mark/clear self-activity without contending with watch
+	// registration or debounce bookkeeping.
+	suppressMu sync.Mutex
+	// suppressState maps a watched .beads/ dir (absolute) to its self-activity
+	// suppression window. See SuppressSelfActivity.
+	suppressState map[string]*beadsSuppression
+
 	logger  *slog.Logger
 	done    chan struct{}
 	stopped chan struct{}
+}
+
+// beadsSuppression tracks in-flight self-induced bd activity for one .beads/
+// dir. While active > 0 a bd command is running against the dir; once the last
+// one finishes, until is set to now+grace so the trailing Dolt flush is still
+// ignored.
+type beadsSuppression struct {
+	active int
+	until  time.Time
 }
 
 // NewBeadsWatcher creates a new beads watcher.
@@ -83,6 +109,7 @@ func NewBeadsWatcher(logger *slog.Logger) (*BeadsWatcher, error) {
 		debounceDelay:      BeadsDebounceDelay,
 		maxWait:            BeadsMaxWait,
 		pendingChanges:     make(map[string]struct{}),
+		suppressState:      make(map[string]*beadsSuppression),
 		logger:             logger,
 		done:               make(chan struct{}),
 		stopped:            make(chan struct{}),
@@ -245,6 +272,66 @@ func (bw *BeadsWatcher) eventLoop() {
 	}
 }
 
+// SuppressSelfActivity marks the start of a self-induced bd invocation against
+// workingDir (the workspace root, i.e. the parent of its .beads/ dir) and
+// returns a release function to call when the invocation completes. While any
+// invocation is in flight — and for BeadsSelfSuppressGrace afterward — file-
+// system events for that .beads/ dir are ignored instead of being reported as
+// external changes. The returned release func is safe to call exactly once.
+func (bw *BeadsWatcher) SuppressSelfActivity(workingDir string) func() {
+	if workingDir == "" {
+		return func() {}
+	}
+	beadsDir := filepath.Join(workingDir, ".beads")
+	if abs, err := filepath.Abs(beadsDir); err == nil {
+		beadsDir = abs
+	}
+
+	bw.suppressMu.Lock()
+	st := bw.suppressState[beadsDir]
+	if st == nil {
+		st = &beadsSuppression{}
+		bw.suppressState[beadsDir] = st
+	}
+	st.active++
+	st.until = time.Time{} // active: no expiry while a call is in flight
+	bw.suppressMu.Unlock()
+
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			bw.suppressMu.Lock()
+			if st.active > 0 {
+				st.active--
+			}
+			if st.active == 0 {
+				st.until = time.Now().Add(BeadsSelfSuppressGrace)
+			}
+			bw.suppressMu.Unlock()
+		})
+	}
+}
+
+// isSelfSuppressed reports whether events for beadsDir should currently be
+// ignored because this process is (or was very recently) running a bd command
+// against it. Expired, inactive entries are pruned as a side effect.
+func (bw *BeadsWatcher) isSelfSuppressed(beadsDir string) bool {
+	bw.suppressMu.Lock()
+	defer bw.suppressMu.Unlock()
+	st := bw.suppressState[beadsDir]
+	if st == nil {
+		return false
+	}
+	if st.active > 0 {
+		return true
+	}
+	if !st.until.IsZero() && time.Now().Before(st.until) {
+		return true
+	}
+	delete(bw.suppressState, beadsDir)
+	return false
+}
+
 // isRelevantBeadsPath reports whether path should trigger a beads change event.
 // Relevant: last-touched, backup/*.jsonl, anything under embeddeddolt/.
 func isRelevantBeadsPath(path string) bool {
@@ -318,6 +405,18 @@ func (bw *BeadsWatcher) handleEvent(event fsnotify.Event) {
 	bw.mu.RUnlock()
 
 	if beadsDir == "" {
+		return
+	}
+
+	// Ignore file-system churn caused by this process's own bd invocations.
+	// Even read-only bd reads (list/show) rewrite the embedded Dolt noms
+	// journal/manifest and last-touched; without this, a UI-triggered read would
+	// bounce back as a "beads changed" event and refresh the list on every click.
+	if bw.isSelfSuppressed(beadsDir) {
+		if bw.logger != nil {
+			bw.logger.Debug("Ignoring self-induced beads change",
+				"path", path, "beads_dir", beadsDir, "op", event.Op.String())
+		}
 		return
 	}
 
