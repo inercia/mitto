@@ -242,24 +242,18 @@ function annotateWithCategory(nodes) {
 /**
  * Compute the unified sidebar tree over ALL sessions (regular + periodic +
  * archived) without any tab pre-filtering. Returns a stable data model with
- * static injected nodes (dashboard, per-folder tasks) and conversation nodes
- * annotated with their category and partitioned into active vs. archived roots.
+ * static injected nodes (per-folder tasks) and conversation nodes annotated
+ * with their category and partitioned into active vs. archived roots.
  *
  * @param {Array}  allSessions - Full session list (may be undefined/null)
  * @param {Array}  workspaces  - Workspace metadata list (for labels / names)
- * @returns {{ dashboard: Object, folders: Array }}
+ * @returns {{ folders: Array }}
  */
 export function computeUnifiedTree(allSessions, workspaces = []) {
   const sessions = allSessions || [];
 
-  const dashboard = {
-    type: "dashboard",
-    id: "__dashboard__",
-    label: "Dashboard",
-  };
-
   if (sessions.length === 0) {
-    return { dashboard, folders: [] };
+    return { folders: [] };
   }
 
   const folderGroups = computeFolderGroups(sessions, sessions, workspaces);
@@ -292,7 +286,7 @@ export function computeUnifiedTree(allSessions, workspaces = []) {
     };
   });
 
-  return { dashboard, folders };
+  return { folders };
 }
 
 // ---------------------------------------------------------------------------
@@ -380,12 +374,12 @@ export function computeFolderGroupSections(folders) {
  * dropped). A folder with no visible conversations, no visible archived, and
  * Tasks hidden is pruned entirely.
  *
- * @param {{dashboard: Object, folders: Array}} tree - from computeUnifiedTree
+ * @param {{folders: Array}} tree - from computeUnifiedTree
  * @param {{regular: boolean, periodic: boolean, archived: boolean, tasks: boolean}} filter
- * @returns {{dashboard: Object, folders: Array}} new tree; each folder gains showTasks
+ * @returns {{folders: Array}} new tree; each folder gains showTasks
  */
 export function filterUnifiedTree(tree, filter) {
-  if (!tree) return { dashboard: null, folders: [] };
+  if (!tree) return { folders: [] };
   const f = filter || {};
   const regular = f.regular !== false;
   const periodic = f.periodic !== false;
@@ -420,7 +414,7 @@ export function filterUnifiedTree(tree, filter) {
         folder.showTasks,
     );
 
-  return { dashboard: tree.dashboard, folders };
+  return { folders };
 }
 
 /**
@@ -428,7 +422,7 @@ export function filterUnifiedTree(tree, filter) {
  * (mitto-1er.8). Produces the exact sidebar visual order: for each folder (in
  * render order — folders are alphabetical by label), emit each conversation
  * root followed by its children, then each archived root followed by its
- * children. Static nodes (Dashboard, per-folder Tasks) are NOT sessions and are
+ * children. Static nodes (per-folder Tasks) are NOT sessions and are
  * excluded.
  *
  * Each entry carries navigation metadata so visible-groups filtering can
@@ -438,7 +432,7 @@ export function filterUnifiedTree(tree, filter) {
  *   - archived:  true when the entry is in the Archived subgroup
  *   - parentKey: 'parent:<rootId>' when the entry is a nested child, else null
  *
- * @param {{dashboard: Object, folders: Array}} tree - filtered unified tree
+ * @param {{folders: Array}} tree - filtered unified tree
  * @returns {Array<{session: Object, folderKey: string, archived: boolean, parentKey: (string|null)}>}
  */
 export function flattenUnifiedTreeForNav(tree) {

@@ -252,13 +252,8 @@ describe("computeGroupedSessions – folder", () => {
 // ---------------------------------------------------------------------------
 
 describe("computeUnifiedTree", () => {
-  test("always returns a dashboard node and folders array", () => {
+  test("always returns a folders array", () => {
     const result = computeUnifiedTree([]);
-    expect(result).toHaveProperty("dashboard");
-    expect(result.dashboard).toMatchObject({
-      type: "dashboard",
-      id: "__dashboard__",
-    });
     expect(result).toHaveProperty("folders");
     expect(Array.isArray(result.folders)).toBe(true);
   });
@@ -614,13 +609,11 @@ describe("filterUnifiedTree", () => {
     });
   });
 
-  test("null/undefined tree → { dashboard: null, folders: [] }", () => {
+  test("null/undefined tree → { folders: [] }", () => {
     expect(filterUnifiedTree(null, {})).toEqual({
-      dashboard: null,
       folders: [],
     });
     expect(filterUnifiedTree(undefined, {})).toEqual({
-      dashboard: null,
       folders: [],
     });
   });

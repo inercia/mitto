@@ -175,7 +175,6 @@ import {
   BeadsIssueView,
   BeadsDetailPanel,
 } from "./components/BeadsView.js";
-import { DashboardView } from "./components/DashboardView.js";
 
 // Import constants
 import {
@@ -1629,16 +1628,6 @@ function App() {
     setMainView("conversation");
   };
 
-  // Show the dedicated Dashboard view. Clears the active session (the Dashboard
-  // is not a conversation) and switches the main content area to "dashboard".
-  // Does not delete or disconnect anything.
-  const handleShowDashboard = () => {
-    setActiveSessionId(null);
-    setShowSidebar(false);
-    setShowSidePanel(false);
-    setMainView("dashboard");
-  };
-
   // Handle badge click action - calls API to execute configured command
   const handleBadgeClick = useCallback(
     async (workspacePath) => {
@@ -2391,7 +2380,7 @@ function App() {
     session: activeSession,
     workingDir: headerWorkingDir,
     isArchived: headerIsArchived,
-    isPeriodicEnabled: headerIsPeriodic,
+    isPeriodicConfigured: headerIsPeriodic,
     isSpawned: headerIsSpawned,
     canArchive: headerCanArchive,
     archiveBlockedReason: headerArchiveBlockedReason,
@@ -2606,12 +2595,8 @@ function App() {
         <!-- Unified toast container -->
         <${ToastContainer} toasts=${toasts} onDismiss=${dismissToast} />
 
-        <!-- Main content area: dashboard, beads view, or conversation -->
-        ${mainView === "dashboard"
-          ? html`
-              <${DashboardView} onShowSidebar=${() => setShowSidebar(true)} />
-            `
-          : mainView === "beads" && beadsWorkingDir
+        <!-- Main content area: beads view or conversation -->
+        ${mainView === "beads" && beadsWorkingDir
             ? html`
                 <div
                   class="flex-1 flex flex-col min-w-0 overflow-hidden bg-mitto-bg"
@@ -3143,7 +3128,6 @@ function App() {
             onRunBeadsListPrompt=${handleRunBeadsListPrompt}
             onBeadsRefresh=${handleBeadsRefresh}
             onBeadsCleanup=${handleBeadsCleanup}
-            onShowDashboard=${handleShowDashboard}
             mainView=${mainView}
             beadsWorkingDir=${beadsWorkingDir}
             queueLength=${queueLength}
