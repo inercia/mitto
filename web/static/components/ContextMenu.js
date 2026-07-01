@@ -6,7 +6,7 @@ const { html, useState, useEffect, useLayoutEffect, useRef, render } =
   window.preact;
 
 import { ChevronRightIcon, getPromptIconOrDefault } from "./Icons.js";
-import { flattenPrompts, promptPeriodicMode, promptPeriodicDefaultOn } from "../utils/prompts.js";
+import { flattenPrompts, promptLoopMode, promptLoopDefaultOn } from "../utils/prompts.js";
 
 // Build ContextMenu submenu items that group `prompts` by their `group`
 // attribute (ungrouped prompts fall under "Other"), each group sorted by name.
@@ -25,8 +25,8 @@ export function buildPromptGroupMenuItems(prompts, onRun, groupIcon) {
     submenu: g.prompts.map((p) => ({
       label: p.name,
       icon: html`<${getPromptIconOrDefault(p.icon)} className="w-4 h-4" />`,
-      periodicMode: promptPeriodicMode(p),
-      periodicDefaultOn: promptPeriodicDefaultOn(p),
+      periodicMode: promptLoopMode(p),
+      periodicDefaultOn: promptLoopDefaultOn(p),
       trailing: null, // periodic visual now derives from periodicMode in ContextMenuItem
       onClick: (opts) => onRun(p, opts),
     })),

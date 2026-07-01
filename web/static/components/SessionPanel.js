@@ -302,14 +302,14 @@ export function SessionPanel({
       setFlagsError(null);
 
       // Periodic + callback endpoints only exist for periodic conversations.
-      // Gating on periodic_configured avoids 404 noise on regular sessions.
-      const periodicConfigured = sessionInfo?.periodic_configured === true;
+      // Gating on loop_configured avoids 404 noise on regular sessions.
+      const periodicConfigured = sessionInfo?.loop_configured === true;
 
       try {
         const [periodicRes, callbackRes, flagsRes, settingsRes] =
           await Promise.all([
             periodicConfigured
-              ? authFetch(endpoints.sessions.periodic(sessionId))
+              ? authFetch(endpoints.sessions.loop(sessionId))
               : Promise.resolve(null),
             periodicConfigured
               ? authFetch(endpoints.sessions.callback(sessionId))
@@ -344,7 +344,7 @@ export function SessionPanel({
     };
 
     fetchData();
-  }, [isOpen, sessionId, sessionInfo?.periodic_configured]);
+  }, [isOpen, sessionId, sessionInfo?.loop_configured]);
 
   // --- Effects: fetch linked beads issue status when open ---
   // The status badge mirrors the style used in the Beads view. The status

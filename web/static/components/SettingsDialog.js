@@ -1599,7 +1599,7 @@ export function SettingsDialog({
       }
 
       // Load periodic suspend timeout (default "" = 30 minutes)
-      setPeriodicSuspendTimeout(config.session?.periodic_suspend_timeout || "");
+      setPeriodicSuspendTimeout(config.session?.loop_suspend_timeout || "");
 
       // Load memory recycle threshold (default "" = disabled)
       setMemoryRecycleThreshold(config.session?.memory_recycle_threshold || "");
@@ -1621,7 +1621,7 @@ export function SettingsDialog({
 
       // Load max periodic iterations setting - default to 100
       setMaxPeriodicIterations(
-        config.conversations?.max_periodic_iterations ?? 100,
+        config.conversations?.max_loop_iterations ?? 100,
       );
 
       // Load input font family setting (web UI) - default to "system"
@@ -1883,7 +1883,7 @@ export function SettingsDialog({
           enabled: externalImagesEnabled,
         },
         max_child_conversations: maxChildConversations,
-        max_periodic_iterations: maxPeriodicIterations,
+        max_loop_iterations: maxPeriodicIterations,
         // Only include default_flags if any are set
         ...(Object.keys(defaultFlags).length > 0 && {
           default_flags: defaultFlags,
@@ -1899,7 +1899,7 @@ export function SettingsDialog({
         auto_archive_inactive_after: autoArchiveInactiveAfter,
         max_messages_per_session:
           maxMessagesPerSession === 0 ? -1 : maxMessagesPerSession,
-        periodic_suspend_timeout: periodicSuspendTimeout,
+        loop_suspend_timeout: periodicSuspendTimeout,
         memory_recycle_threshold: memoryRecycleThreshold,
       };
 

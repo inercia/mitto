@@ -361,7 +361,7 @@ function _parseUndelimited(text, segments) {
  * @returns {Array} Combined and sorted sessions
  */
 // Labels shown in the conversation-header subtitle when a periodic loop has stopped or paused.
-// Keyed by the `periodic_stopped_reason` string sent by the backend.
+// Keyed by the `loop_stopped_reason` string sent by the backend.
 // Each entry has { label, kind } where kind is "stopped" (terminal/red) or "paused" (resumable/amber).
 export const PERIODIC_STOPPED_LABELS = {
   maxDuration: { label: "Stopped: max time", kind: "stopped" },
@@ -561,7 +561,7 @@ export function computeAllSessions(activeSessions, storedSessions) {
     const acpServer =
       s.acp_server || s.info?.acp_server || stored?.acp_server || "";
 
-    // Always merge stored properties (archived, name, pinned, periodic_enabled, periodic_configured, next_scheduled_at, periodic_frequency) if stored session exists
+    // Always merge stored properties (archived, name, pinned, loop_enabled, loop_configured, next_scheduled_at, loop_frequency) if stored session exists
     if (stored) {
       return {
         ...s,
@@ -577,29 +577,29 @@ export function computeAllSessions(activeSessions, storedSessions) {
         // session_streaming events out of order, causing the sidebar dot to stay lit
         // after the per-session WebSocket has already received prompt_complete.
         isStreaming: s.isStreaming || false,
-        // periodic_enabled: runs active → sidebar category + clock icon
-        periodic_enabled: stored.periodic_enabled || false,
-        // periodic_configured: config exists → editor UI mode + reconnect long-lived check
-        periodic_configured: stored.periodic_configured || false,
-        // Progress bar: next run time and frequency (from API list or WebSocket periodic_updated)
+        // loop_enabled: runs active → sidebar category + clock icon
+        loop_enabled: stored.loop_enabled || false,
+        // loop_configured: config exists → editor UI mode + reconnect long-lived check
+        loop_configured: stored.loop_configured || false,
+        // Progress bar: next run time and frequency (from API list or WebSocket loop_updated)
         next_scheduled_at:
           s.next_scheduled_at ?? stored.next_scheduled_at ?? null,
-        periodic_frequency:
-          s.periodic_frequency ?? stored.periodic_frequency ?? null,
+        loop_frequency:
+          s.loop_frequency ?? stored.loop_frequency ?? null,
         // Reason the periodic loop stopped (maxDuration, maxIterations, etc.); null while running
-        periodic_stopped_reason:
-          s.periodic_stopped_reason ?? stored.periodic_stopped_reason ?? null,
+        loop_stopped_reason:
+          s.loop_stopped_reason ?? stored.loop_stopped_reason ?? null,
         // Periodic glance fields (shown in the conversation-header subtitle)
-        periodic_trigger: s.periodic_trigger ?? stored.periodic_trigger ?? null,
-        periodic_iteration_count:
-          s.periodic_iteration_count ?? stored.periodic_iteration_count ?? null,
-        periodic_max_iterations:
-          s.periodic_max_iterations ?? stored.periodic_max_iterations ?? null,
-        periodic_delay_seconds:
-          s.periodic_delay_seconds ?? stored.periodic_delay_seconds ?? null,
-        periodic_max_duration_seconds:
-          s.periodic_max_duration_seconds ??
-          stored.periodic_max_duration_seconds ??
+        loop_trigger: s.loop_trigger ?? stored.loop_trigger ?? null,
+        loop_iteration_count:
+          s.loop_iteration_count ?? stored.loop_iteration_count ?? null,
+        loop_max_iterations:
+          s.loop_max_iterations ?? stored.loop_max_iterations ?? null,
+        loop_delay_seconds:
+          s.loop_delay_seconds ?? stored.loop_delay_seconds ?? null,
+        loop_max_duration_seconds:
+          s.loop_max_duration_seconds ??
+          stored.loop_max_duration_seconds ??
           null,
         // CRITICAL: Preserve parent_session_id for hierarchical conversation tree
         parent_session_id:

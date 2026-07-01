@@ -10,8 +10,8 @@ import {
   flattenPrompts,
   resolvePromptModelOverride,
   currentModelName,
-  promptPeriodicMode,
-  promptPeriodicDefaultOn,
+  promptLoopMode,
+  promptLoopDefaultOn,
 } from "../utils/prompts.js";
 
 // Source badge (W/F/S) shown on the right of each item when enabled.
@@ -132,10 +132,10 @@ export function PromptsMenu({
           type="button"
           onClick=${(e) => {
             const asPeriodic =
-              promptPeriodicMode(prompt) === "optional"
+              promptLoopMode(prompt) === "optional"
                 ? periodicOverrides[prompt.name] !== undefined
                   ? periodicOverrides[prompt.name]
-                  : promptPeriodicDefaultOn(prompt)
+                  : promptLoopDefaultOn(prompt)
                 : undefined;
             onSelect && onSelect(prompt, e, { asPeriodic });
           }}
@@ -184,13 +184,13 @@ export function PromptsMenu({
           /></span>`}
           ${periodicToggle &&
           (() => {
-            const mode = promptPeriodicMode(prompt);
+            const mode = promptLoopMode(prompt);
             if (mode === "none") return null;
             if (mode === "optional") {
               const on =
                 periodicOverrides[prompt.name] !== undefined
                   ? periodicOverrides[prompt.name]
-                  : promptPeriodicDefaultOn(prompt);
+                  : promptLoopDefaultOn(prompt);
               return html`<input
                 type="checkbox"
                 class="checkbox checkbox-sm shrink-0"

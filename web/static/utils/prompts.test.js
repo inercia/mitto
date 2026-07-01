@@ -8,10 +8,10 @@ import {
   promptMenuExcludes,
   promptMenuIncludes,
   isSingletonPrompt,
-  promptPeriodicMode,
-  promptPeriodicIsToggleable,
-  promptPeriodicDefaultOn,
-  promptResolveAsPeriodic,
+  promptLoopMode,
+  promptLoopIsToggleable,
+  promptLoopDefaultOn,
+  promptResolveAsLoop,
   promptParameters,
   KNOWN_PARAM_TYPES,
   MENU_PARAM_TYPES,
@@ -1161,7 +1161,7 @@ describe("promptMenuIncludes", () => {
 // =============================================================================
 
 describe("periodic prompt filter logic (union + exclusion)", () => {
-  // Replicates the periodicPrompts predicate from useWorkspacePrompts.js
+  // Replicates the loopPrompts predicate from useWorkspacePrompts.js
   function isPeriodicPrompt(p) {
     if (promptMenuExcludes(p).has("promptsPeriodic")) return false;
     const menus = promptMenus(p);
@@ -1190,119 +1190,119 @@ describe("periodic prompt filter logic (union + exclusion)", () => {
 });
 
 // =============================================================================
-// promptPeriodicMode / promptPeriodicIsToggleable / promptPeriodicDefaultOn
+// promptLoopMode / promptLoopIsToggleable / promptLoopDefaultOn
 // =============================================================================
 
-describe("promptPeriodicMode / IsToggleable / DefaultOn", () => {
-  test("no periodic ({}) -> mode none, toggleable false, defaultOn false", () => {
-    expect(promptPeriodicMode({})).toBe("none");
-    expect(promptPeriodicIsToggleable({})).toBe(false);
-    expect(promptPeriodicDefaultOn({})).toBe(false);
+describe("promptLoopMode / IsToggleable / DefaultOn", () => {
+  test("no loop ({}) -> mode none, toggleable false, defaultOn false", () => {
+    expect(promptLoopMode({})).toBe("none");
+    expect(promptLoopIsToggleable({})).toBe(false);
+    expect(promptLoopDefaultOn({})).toBe(false);
   });
 
-  test("periodic: null -> mode none, toggleable false, defaultOn false", () => {
-    const p = { periodic: null };
-    expect(promptPeriodicMode(p)).toBe("none");
-    expect(promptPeriodicIsToggleable(p)).toBe(false);
-    expect(promptPeriodicDefaultOn(p)).toBe(false);
+  test("loop: null -> mode none, toggleable false, defaultOn false", () => {
+    const p = { loop: null };
+    expect(promptLoopMode(p)).toBe("none");
+    expect(promptLoopIsToggleable(p)).toBe(false);
+    expect(promptLoopDefaultOn(p)).toBe(false);
   });
 
-  test("periodic present, no mode -> mode always, toggleable false, defaultOn true", () => {
-    const p = { periodic: {} };
-    expect(promptPeriodicMode(p)).toBe("always");
-    expect(promptPeriodicIsToggleable(p)).toBe(false);
-    expect(promptPeriodicDefaultOn(p)).toBe(true);
+  test("loop present, no mode -> mode always, toggleable false, defaultOn true", () => {
+    const p = { loop: {} };
+    expect(promptLoopMode(p)).toBe("always");
+    expect(promptLoopIsToggleable(p)).toBe(false);
+    expect(promptLoopDefaultOn(p)).toBe(true);
   });
 
   test("mode: always -> mode always, toggleable false, defaultOn true", () => {
-    const p = { periodic: { mode: "always" } };
-    expect(promptPeriodicMode(p)).toBe("always");
-    expect(promptPeriodicIsToggleable(p)).toBe(false);
-    expect(promptPeriodicDefaultOn(p)).toBe(true);
+    const p = { loop: { mode: "always" } };
+    expect(promptLoopMode(p)).toBe("always");
+    expect(promptLoopIsToggleable(p)).toBe(false);
+    expect(promptLoopDefaultOn(p)).toBe(true);
   });
 
   test("mode: always with default:false -> default ignored, defaultOn true", () => {
-    const p = { periodic: { mode: "always", default: false } };
-    expect(promptPeriodicMode(p)).toBe("always");
-    expect(promptPeriodicIsToggleable(p)).toBe(false);
-    expect(promptPeriodicDefaultOn(p)).toBe(true);
+    const p = { loop: { mode: "always", default: false } };
+    expect(promptLoopMode(p)).toBe("always");
+    expect(promptLoopIsToggleable(p)).toBe(false);
+    expect(promptLoopDefaultOn(p)).toBe(true);
   });
 
   test("mode: optional -> mode optional, toggleable true, defaultOn true", () => {
-    const p = { periodic: { mode: "optional" } };
-    expect(promptPeriodicMode(p)).toBe("optional");
-    expect(promptPeriodicIsToggleable(p)).toBe(true);
-    expect(promptPeriodicDefaultOn(p)).toBe(true);
+    const p = { loop: { mode: "optional" } };
+    expect(promptLoopMode(p)).toBe("optional");
+    expect(promptLoopIsToggleable(p)).toBe(true);
+    expect(promptLoopDefaultOn(p)).toBe(true);
   });
 
   test("mode: optional, default:true -> mode optional, toggleable true, defaultOn true", () => {
-    const p = { periodic: { mode: "optional", default: true } };
-    expect(promptPeriodicMode(p)).toBe("optional");
-    expect(promptPeriodicIsToggleable(p)).toBe(true);
-    expect(promptPeriodicDefaultOn(p)).toBe(true);
+    const p = { loop: { mode: "optional", default: true } };
+    expect(promptLoopMode(p)).toBe("optional");
+    expect(promptLoopIsToggleable(p)).toBe(true);
+    expect(promptLoopDefaultOn(p)).toBe(true);
   });
 
   test("mode: optional, default:false -> mode optional, toggleable true, defaultOn false", () => {
-    const p = { periodic: { mode: "optional", default: false } };
-    expect(promptPeriodicMode(p)).toBe("optional");
-    expect(promptPeriodicIsToggleable(p)).toBe(true);
-    expect(promptPeriodicDefaultOn(p)).toBe(false);
+    const p = { loop: { mode: "optional", default: false } };
+    expect(promptLoopMode(p)).toBe("optional");
+    expect(promptLoopIsToggleable(p)).toBe(true);
+    expect(promptLoopDefaultOn(p)).toBe(false);
   });
 
   test("unknown mode is treated as always", () => {
-    const p = { periodic: { mode: "weird" } };
-    expect(promptPeriodicMode(p)).toBe("always");
-    expect(promptPeriodicIsToggleable(p)).toBe(false);
-    expect(promptPeriodicDefaultOn(p)).toBe(true);
+    const p = { loop: { mode: "weird" } };
+    expect(promptLoopMode(p)).toBe("always");
+    expect(promptLoopIsToggleable(p)).toBe(false);
+    expect(promptLoopDefaultOn(p)).toBe(true);
   });
 
   test("null-safe: undefined prompt -> mode none, toggleable false, defaultOn false", () => {
-    expect(promptPeriodicMode(undefined)).toBe("none");
-    expect(promptPeriodicIsToggleable(undefined)).toBe(false);
-    expect(promptPeriodicDefaultOn(undefined)).toBe(false);
+    expect(promptLoopMode(undefined)).toBe("none");
+    expect(promptLoopIsToggleable(undefined)).toBe(false);
+    expect(promptLoopDefaultOn(undefined)).toBe(false);
   });
 });
 
 // =============================================================================
-// promptResolveAsPeriodic
+// promptResolveAsLoop
 // =============================================================================
 
-describe("promptResolveAsPeriodic", () => {
+describe("promptResolveAsLoop", () => {
   test("mode none -> false (override ignored)", () => {
-    expect(promptResolveAsPeriodic({})).toBe(false);
-    expect(promptResolveAsPeriodic({}, true)).toBe(false);
-    expect(promptResolveAsPeriodic({ periodic: null }, true)).toBe(false);
+    expect(promptResolveAsLoop({})).toBe(false);
+    expect(promptResolveAsLoop({}, true)).toBe(false);
+    expect(promptResolveAsLoop({ loop: null }, true)).toBe(false);
   });
 
   test("mode always -> true (override ignored)", () => {
-    const p = { periodic: { mode: "always" } };
-    expect(promptResolveAsPeriodic(p)).toBe(true);
-    expect(promptResolveAsPeriodic(p, false)).toBe(true);
+    const p = { loop: { mode: "always" } };
+    expect(promptResolveAsLoop(p)).toBe(true);
+    expect(promptResolveAsLoop(p, false)).toBe(true);
   });
 
   test("mode optional, no override, default:false -> false", () => {
-    const p = { periodic: { mode: "optional", default: false } };
-    expect(promptResolveAsPeriodic(p)).toBe(false);
+    const p = { loop: { mode: "optional", default: false } };
+    expect(promptResolveAsLoop(p)).toBe(false);
   });
 
   test("mode optional, no override, default:true -> true", () => {
-    const p = { periodic: { mode: "optional", default: true } };
-    expect(promptResolveAsPeriodic(p)).toBe(true);
+    const p = { loop: { mode: "optional", default: true } };
+    expect(promptResolveAsLoop(p)).toBe(true);
   });
 
   test("mode optional, no override, default absent -> true", () => {
-    const p = { periodic: { mode: "optional" } };
-    expect(promptResolveAsPeriodic(p)).toBe(true);
+    const p = { loop: { mode: "optional" } };
+    expect(promptResolveAsLoop(p)).toBe(true);
   });
 
   test("mode optional, override:true -> true even if default:false", () => {
-    const p = { periodic: { mode: "optional", default: false } };
-    expect(promptResolveAsPeriodic(p, true)).toBe(true);
+    const p = { loop: { mode: "optional", default: false } };
+    expect(promptResolveAsLoop(p, true)).toBe(true);
   });
 
   test("mode optional, override:false -> false even if default:true", () => {
-    const p = { periodic: { mode: "optional", default: true } };
-    expect(promptResolveAsPeriodic(p, false)).toBe(false);
+    const p = { loop: { mode: "optional", default: true } };
+    expect(promptResolveAsLoop(p, false)).toBe(false);
   });
 });
 
@@ -1330,16 +1330,16 @@ describe("buildPromptGroupMenuItems", () => {
   });
 
   const prompts = [
-    { name: "Always On", group: "G" }, // no periodic block -> "none"
+    { name: "Always On", group: "G" }, // no loop block -> "none"
     {
       name: "Always Periodic",
       group: "G",
-      periodic: { mode: "always" },
+      loop: { mode: "always" },
     },
     {
       name: "Maybe Periodic",
       group: "G",
-      periodic: { mode: "optional", default: false },
+      loop: { mode: "optional", default: false },
     },
   ];
 

@@ -125,8 +125,8 @@ export function useConversationMenu({
           ]
         : []),
       // "Make periodic" — only for conversations without a periodic config yet,
-      // non-spawned, non-archived. Gated on periodic_configured (not
-      // periodic_enabled) so a paused/draft periodic conversation is still
+      // non-spawned, non-archived. Gated on loop_configured (not
+      // loop_enabled) so a paused/draft periodic conversation is still
       // treated as already periodic and does not offer "Make periodic" again.
       ...(!isPeriodicConfigured && !isSpawned && !isArchived
         ? [

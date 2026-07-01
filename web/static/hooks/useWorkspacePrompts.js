@@ -3,7 +3,7 @@
 // App. Handles initial fetch on workspace change, re-fetch on session switch,
 // periodic 30-second refresh, visibility-based refresh, and file-watcher events
 // (mitto:prompts_changed). Exposes the full prompt list, the "prompts" dropup
-// subset, the periodic-selector subset, and per-session / per-beads-issue fetch
+// subset, the loop-selector subset, and per-session / per-beads-issue fetch
 // helpers.
 const { useState, useEffect, useCallback, useMemo } = window.preact;
 
@@ -24,7 +24,7 @@ import {
  * @param {string|null|undefined} deps.activeSessionId - Active session id.
  *   Drives per-session re-fetches (CEL expressions vary per session).
  * @returns {{ workspacePrompts: Array, predefinedPrompts: Array,
- *   periodicPrompts: Array, fetchWorkspacePrompts: Function,
+ *   loopPrompts: Array, fetchWorkspacePrompts: Function,
  *   fetchConversationPromptsForSession: Function }}
  */
 export function useWorkspacePrompts({
@@ -45,17 +45,17 @@ export function useWorkspacePrompts({
     [workspacePrompts],
   );
 
-  // Periodic prompts: prompts shown in the PeriodicPromptSelector dropdown. A
+  // Loop prompts: prompts shown in the LoopPromptSelector dropdown. A
   // prompt appears here if it opts into "prompts" (default dropup) OR
-  // "promptsPeriodic" (periodic-selector-specific). The union keeps existing
+  // "promptsPeriodic" (loop-selector-specific). The union keeps existing
   // prompts available in the selector while letting authors target a prompt
-  // ONLY at the periodic selector via `menus: promptsPeriodic`.
+  // ONLY at the loop selector via `menus: promptsPeriodic`.
   //
   // Exclusion: `!promptsPeriodic` in a prompt's `menus` field suppresses it
-  // from the periodic selector even when it would otherwise be included via
+  // from the loop selector even when it would otherwise be included via
   // the union (e.g. a one-shot prompt with `menus: prompts, !promptsPeriodic`).
   // The exclusion is applied BEFORE the satisfaction check so it always wins.
-  const periodicPrompts = useMemo(
+  const loopPrompts = useMemo(
     () =>
       workspacePrompts.filter((p) => {
         // Explicit exclusion takes precedence over the union rule.
@@ -250,7 +250,7 @@ export function useWorkspacePrompts({
   return {
     workspacePrompts,
     predefinedPrompts,
-    periodicPrompts,
+    loopPrompts,
     fetchWorkspacePrompts,
     fetchConversationPromptsForSession,
   };

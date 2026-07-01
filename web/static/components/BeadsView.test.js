@@ -8,9 +8,9 @@
  */
 
 import {
-  promptPeriodicMode,
-  promptPeriodicIsToggleable,
-  promptPeriodicDefaultOn,
+  promptLoopMode,
+  promptLoopIsToggleable,
+  promptLoopDefaultOn,
 } from "../utils/prompts.js";
 
 // =============================================================================
@@ -670,16 +670,16 @@ describe("cleanup progress toast — terminal outcomes reset state", () => {
  * Mirrors the IIFE used in BeadsView's beadsList dropdown item rendering: decides
  * whether to render an interactive toggle ("toggle"), a locked badge ("badge"), or
  * nothing ("none") for a given prompt + per-item toggle-state map. Uses the real
- * promptPeriodicMode/promptPeriodicDefaultOn helpers (not a duplicate).
+ * promptLoopMode/promptLoopDefaultOn helpers (not a duplicate).
  */
 function decideListPromptPeriodicControl(p, listPeriodicOn) {
-  const mode = promptPeriodicMode(p);
+  const mode = promptLoopMode(p);
   if (mode === "none") return { kind: "none" };
   if (mode === "optional") {
     const on =
       listPeriodicOn[p.name] !== undefined
         ? listPeriodicOn[p.name]
-        : promptPeriodicDefaultOn(p);
+        : promptLoopDefaultOn(p);
     return { kind: "toggle", checked: on };
   }
   return { kind: "badge" };
@@ -687,8 +687,8 @@ function decideListPromptPeriodicControl(p, listPeriodicOn) {
 
 describe("beadsList per-item periodic control", () => {
   test("mode: optional, default:false renders an unchecked toggle", () => {
-    const p = { name: "maybe", periodic: { mode: "optional", default: false } };
-    expect(promptPeriodicIsToggleable(p)).toBe(true);
+    const p = { name: "maybe", loop: { mode: "optional", default: false } };
+    expect(promptLoopIsToggleable(p)).toBe(true);
     expect(decideListPromptPeriodicControl(p, {})).toEqual({
       kind: "toggle",
       checked: false,
@@ -696,7 +696,7 @@ describe("beadsList per-item periodic control", () => {
   });
 
   test("mode: optional, default:true renders a checked toggle", () => {
-    const p = { name: "maybe", periodic: { mode: "optional", default: true } };
+    const p = { name: "maybe", loop: { mode: "optional", default: true } };
     expect(decideListPromptPeriodicControl(p, {})).toEqual({
       kind: "toggle",
       checked: true,
@@ -704,7 +704,7 @@ describe("beadsList per-item periodic control", () => {
   });
 
   test("mode: optional, no default renders a checked toggle (default => true)", () => {
-    const p = { name: "maybe", periodic: { mode: "optional" } };
+    const p = { name: "maybe", loop: { mode: "optional" } };
     expect(decideListPromptPeriodicControl(p, {})).toEqual({
       kind: "toggle",
       checked: true,
@@ -712,20 +712,20 @@ describe("beadsList per-item periodic control", () => {
   });
 
   test("mode: optional honors the per-item listPeriodicOn override over the default", () => {
-    const p = { name: "maybe", periodic: { mode: "optional", default: true } };
+    const p = { name: "maybe", loop: { mode: "optional", default: true } };
     expect(
       decideListPromptPeriodicControl(p, { maybe: false }),
     ).toEqual({ kind: "toggle", checked: false });
   });
 
   test("mode: always renders the locked badge (no checkbox toggle)", () => {
-    const p = { name: "always-on", periodic: { mode: "always" } };
-    expect(promptPeriodicIsToggleable(p)).toBe(false);
+    const p = { name: "always-on", loop: { mode: "always" } };
+    expect(promptLoopIsToggleable(p)).toBe(false);
     expect(decideListPromptPeriodicControl(p, {})).toEqual({ kind: "badge" });
   });
 
   test("periodic block with no mode renders the locked badge (absent => always)", () => {
-    const p = { name: "legacy-periodic", periodic: { value: 1, unit: "hours" } };
+    const p = { name: "legacy-periodic", loop: { value: 1, unit: "hours" } };
     expect(decideListPromptPeriodicControl(p, {})).toEqual({ kind: "badge" });
   });
 

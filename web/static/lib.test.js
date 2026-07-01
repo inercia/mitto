@@ -215,47 +215,47 @@ describe("computeAllSessions", () => {
   });
 
   // ---------------------------------------------------------------------------
-  // periodic_stopped_reason merge tests
+  // loop_stopped_reason merge tests
   // ---------------------------------------------------------------------------
 
-  test("merges periodic_stopped_reason from stored session when active lacks it", () => {
+  test("merges loop_stopped_reason from stored session when active lacks it", () => {
     const active = [{ session_id: "1", created_at: "2024-01-01T10:00:00Z" }];
     const stored = [
       {
         session_id: "1",
-        periodic_configured: true,
-        periodic_stopped_reason: "maxDuration",
+        loop_configured: true,
+        loop_stopped_reason: "maxDuration",
         created_at: "2024-01-01T10:00:00Z",
       },
     ];
     const result = computeAllSessions(active, stored);
-    expect(result[0].periodic_stopped_reason).toBe("maxDuration");
+    expect(result[0].loop_stopped_reason).toBe("maxDuration");
   });
 
-  test("active periodic_stopped_reason takes precedence over stored", () => {
+  test("active loop_stopped_reason takes precedence over stored", () => {
     const active = [
       {
         session_id: "1",
-        periodic_stopped_reason: "maxIterations",
+        loop_stopped_reason: "maxIterations",
         created_at: "2024-01-01T10:00:00Z",
       },
     ];
     const stored = [
       {
         session_id: "1",
-        periodic_stopped_reason: "maxDuration",
+        loop_stopped_reason: "maxDuration",
         created_at: "2024-01-01T10:00:00Z",
       },
     ];
     const result = computeAllSessions(active, stored);
-    expect(result[0].periodic_stopped_reason).toBe("maxIterations");
+    expect(result[0].loop_stopped_reason).toBe("maxIterations");
   });
 
-  test("periodic_stopped_reason is null when neither active nor stored has it", () => {
+  test("loop_stopped_reason is null when neither active nor stored has it", () => {
     const active = [{ session_id: "1", created_at: "2024-01-01T10:00:00Z" }];
     const stored = [{ session_id: "1", created_at: "2024-01-01T10:00:00Z" }];
     const result = computeAllSessions(active, stored);
-    expect(result[0].periodic_stopped_reason).toBeNull();
+    expect(result[0].loop_stopped_reason).toBeNull();
   });
 
   // ---------------------------------------------------------------------------
@@ -5742,15 +5742,15 @@ describe("PERIODIC_STOPPED_LABELS", () => {
   // Mirrors the IIFE in app.js that computes headerPeriodicState from an activeSession.
 
   function computeHeaderPeriodicState(session) {
-    if (!session?.periodic_configured) return null;
-    if (session?.periodic_enabled) {
+    if (!session?.loop_configured) return null;
+    if (session?.loop_enabled) {
       return {
         state: "running",
         label: "Auto",
         badgeClass: "badge-success badge-soft",
       };
     }
-    const entry = PERIODIC_STOPPED_LABELS[session?.periodic_stopped_reason];
+    const entry = PERIODIC_STOPPED_LABELS[session?.loop_stopped_reason];
     if (entry && entry.kind === "stopped") {
       return {
         state: "stopped",
@@ -5773,7 +5773,7 @@ describe("PERIODIC_STOPPED_LABELS", () => {
   }
 
   test("non-periodic session yields null (no pill)", () => {
-    const session = { periodic_configured: false };
+    const session = { loop_configured: false };
     expect(computeHeaderPeriodicState(session)).toBeNull();
   });
 
@@ -5782,7 +5782,7 @@ describe("PERIODIC_STOPPED_LABELS", () => {
   });
 
   test("enabled periodic session yields Auto/green", () => {
-    const session = { periodic_configured: true, periodic_enabled: true };
+    const session = { loop_configured: true, loop_enabled: true };
     const result = computeHeaderPeriodicState(session);
     expect(result.state).toBe("running");
     expect(result.label).toBe("Auto");
@@ -5791,9 +5791,9 @@ describe("PERIODIC_STOPPED_LABELS", () => {
 
   test("stopped reason yields Stopped/red", () => {
     const session = {
-      periodic_configured: true,
-      periodic_enabled: false,
-      periodic_stopped_reason: "maxDuration",
+      loop_configured: true,
+      loop_enabled: false,
+      loop_stopped_reason: "maxDuration",
     };
     const result = computeHeaderPeriodicState(session);
     expect(result.state).toBe("stopped");
@@ -5803,9 +5803,9 @@ describe("PERIODIC_STOPPED_LABELS", () => {
 
   test("pausedByUser reason yields Paused/amber", () => {
     const session = {
-      periodic_configured: true,
-      periodic_enabled: false,
-      periodic_stopped_reason: "pausedByUser",
+      loop_configured: true,
+      loop_enabled: false,
+      loop_stopped_reason: "pausedByUser",
     };
     const result = computeHeaderPeriodicState(session);
     expect(result.state).toBe("paused");
@@ -5815,9 +5815,9 @@ describe("PERIODIC_STOPPED_LABELS", () => {
 
   test("disabledByAgent reason yields Paused/amber", () => {
     const session = {
-      periodic_configured: true,
-      periodic_enabled: false,
-      periodic_stopped_reason: "disabledByAgent",
+      loop_configured: true,
+      loop_enabled: false,
+      loop_stopped_reason: "disabledByAgent",
     };
     const result = computeHeaderPeriodicState(session);
     expect(result.state).toBe("paused");
@@ -5827,9 +5827,9 @@ describe("PERIODIC_STOPPED_LABELS", () => {
 
   test("no reason (manual pause) yields generic Paused/amber", () => {
     const session = {
-      periodic_configured: true,
-      periodic_enabled: false,
-      periodic_stopped_reason: null,
+      loop_configured: true,
+      loop_enabled: false,
+      loop_stopped_reason: null,
     };
     const result = computeHeaderPeriodicState(session);
     expect(result.state).toBe("paused");
@@ -5839,9 +5839,9 @@ describe("PERIODIC_STOPPED_LABELS", () => {
 
   test("unknown future reason falls back to generic Paused/amber", () => {
     const session = {
-      periodic_configured: true,
-      periodic_enabled: false,
-      periodic_stopped_reason: "someFutureReason",
+      loop_configured: true,
+      loop_enabled: false,
+      loop_stopped_reason: "someFutureReason",
     };
     const result = computeHeaderPeriodicState(session);
     expect(result.state).toBe("paused");
@@ -5911,15 +5911,15 @@ describe("formatPeriodicMaxDuration", () => {
 
 describe("Periodic header badge label logic", () => {
   // Mirrors the logic in app.js for deriving the trigger badge text:
-  //   if (periodic_trigger === "onCompletion") → "after agent finishes[· +Ns]"
+  //   if (loop_trigger === "onCompletion") → "after agent finishes[· +Ns]"
   //   else if frequency set → "every <value><unit>"
   function computeTriggerLabel(session) {
-    if (!session?.periodic_configured) return null;
-    if (session.periodic_trigger === "onCompletion") {
-      const delay = session.periodic_delay_seconds ?? 0;
+    if (!session?.loop_configured) return null;
+    if (session.loop_trigger === "onCompletion") {
+      const delay = session.loop_delay_seconds ?? 0;
       return `after agent finishes${delay > 0 ? ` · +${delay}s` : ""}`;
     }
-    const freq = session.periodic_frequency;
+    const freq = session.loop_frequency;
     if (!freq) return null;
     const u =
       freq.unit === "minutes" ? "min" : freq.unit === "hours" ? "h" : "d";
@@ -5939,63 +5939,63 @@ describe("Periodic header badge label logic", () => {
   describe("trigger badge", () => {
     test("schedule trigger with hours frequency", () => {
       const session = {
-        periodic_configured: true,
-        periodic_trigger: "schedule",
-        periodic_frequency: { value: 2, unit: "hours" },
+        loop_configured: true,
+        loop_trigger: "schedule",
+        loop_frequency: { value: 2, unit: "hours" },
       };
       expect(computeTriggerLabel(session)).toBe("every 2h");
     });
 
     test("schedule trigger with minutes frequency", () => {
       const session = {
-        periodic_configured: true,
-        periodic_trigger: "schedule",
-        periodic_frequency: { value: 30, unit: "minutes" },
+        loop_configured: true,
+        loop_trigger: "schedule",
+        loop_frequency: { value: 30, unit: "minutes" },
       };
       expect(computeTriggerLabel(session)).toBe("every 30min");
     });
 
     test("schedule trigger with days frequency", () => {
       const session = {
-        periodic_configured: true,
-        periodic_trigger: "schedule",
-        periodic_frequency: { value: 1, unit: "days" },
+        loop_configured: true,
+        loop_trigger: "schedule",
+        loop_frequency: { value: 1, unit: "days" },
       };
       expect(computeTriggerLabel(session)).toBe("every 1d");
     });
 
     test("onCompletion trigger without delay", () => {
       const session = {
-        periodic_configured: true,
-        periodic_trigger: "onCompletion",
-        periodic_delay_seconds: 0,
+        loop_configured: true,
+        loop_trigger: "onCompletion",
+        loop_delay_seconds: 0,
       };
       expect(computeTriggerLabel(session)).toBe("after agent finishes");
     });
 
     test("onCompletion trigger with delay", () => {
       const session = {
-        periodic_configured: true,
-        periodic_trigger: "onCompletion",
-        periodic_delay_seconds: 30,
+        loop_configured: true,
+        loop_trigger: "onCompletion",
+        loop_delay_seconds: 30,
       };
       expect(computeTriggerLabel(session)).toBe("after agent finishes · +30s");
     });
 
-    test("returns null when not periodic_configured", () => {
+    test("returns null when not loop_configured", () => {
       const session = {
-        periodic_configured: false,
-        periodic_trigger: "schedule",
-        periodic_frequency: { value: 1, unit: "hours" },
+        loop_configured: false,
+        loop_trigger: "schedule",
+        loop_frequency: { value: 1, unit: "hours" },
       };
       expect(computeTriggerLabel(session)).toBeNull();
     });
 
     test("returns null when schedule has no frequency set", () => {
       const session = {
-        periodic_configured: true,
-        periodic_trigger: "schedule",
-        periodic_frequency: null,
+        loop_configured: true,
+        loop_trigger: "schedule",
+        loop_frequency: null,
       };
       expect(computeTriggerLabel(session)).toBeNull();
     });

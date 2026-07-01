@@ -1822,7 +1822,7 @@ export function SessionList({
               <li class="menu-title text-xs">Show categories</li>
               ${[
                 { key: "regular", label: "Regular" },
-                { key: "periodic", label: "Periodic" },
+                { key: "loop", label: "Loop" },
                 { key: "archived", label: "Archived" },
                 { key: "tasks", label: "Tasks" },
               ].map(

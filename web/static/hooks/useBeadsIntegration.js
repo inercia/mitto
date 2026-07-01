@@ -12,7 +12,7 @@ import {
   menuSatisfies,
   collectPromptArguments,
   getMissingPromptParameters,
-  promptResolveAsPeriodic,
+  promptResolveAsLoop,
 } from "../utils/prompts.js";
 import { useConversationSeeding } from "./useConversationSeeding.js";
 
@@ -247,7 +247,7 @@ export function useBeadsIntegration({
       const missing = getMissingPromptParameters(prompt, "beadsIssues");
 
       // Periodic prompts create a recurring conversation instead of a one-time seed.
-      const asPeriodic = promptResolveAsPeriodic(prompt, opts?.asPeriodic);
+      const asPeriodic = promptResolveAsLoop(prompt, opts?.asPeriodic);
       if (asPeriodic && onOpenPeriodicDialog) {
         // Open the periodic dialog and start the conversation with the resolved
         // arguments merged in (so ${VAR} substitution sees the issue context).
@@ -260,7 +260,7 @@ export function useBeadsIntegration({
               beadsIssue: issue.id,
               prompt,
               arguments: args,
-              periodic: schedule,
+              loop: schedule,
             });
             if (!result?.sessionId) {
               showToast({
@@ -382,7 +382,7 @@ export function useBeadsIntegration({
       const ws = beadsMatches.find((w) => w.is_default) || beadsMatches[0];
 
       // Periodic prompts create a recurring conversation instead of a one-time seed.
-      const asPeriodic = promptResolveAsPeriodic(prompt, opts?.asPeriodic);
+      const asPeriodic = promptResolveAsLoop(prompt, opts?.asPeriodic);
       if (asPeriodic && onOpenPeriodicDialog) {
         onOpenPeriodicDialog(prompt, async (schedule) => {
           const result = await startConversationWithPrompt({
@@ -390,7 +390,7 @@ export function useBeadsIntegration({
             acpServer: ws?.acp_server,
             name: prompt.name,
             prompt,
-            periodic: schedule,
+            loop: schedule,
           });
           if (!result?.sessionId) {
             showToast({

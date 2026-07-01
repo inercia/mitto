@@ -6,9 +6,9 @@ import { FILTER_TAB } from "../utils/index.js";
 import { useSwipeToAction, useConversationMenu } from "../hooks/index.js";
 import { getArchiveReasonText, getGlobalWorkingDir } from "../lib.js";
 import {
-  PERIODIC_PROGRESS_STYLE,
-  PERIODIC_PROGRESS_COLORS,
-  PERIODIC_PROGRESS_URGENT_THRESHOLD,
+  LOOP_PROGRESS_STYLE,
+  LOOP_PROGRESS_COLORS,
+  LOOP_PROGRESS_URGENT_THRESHOLD,
 } from "../constants.js";
 import { WorkspacePill } from "./WorkspaceBadge.js";
 import { ContextMenu, PortalTooltip } from "./ContextMenu.js";
@@ -38,7 +38,7 @@ const SUPPORTS_HOVER =
 const META_TOOLTIP_DELAY_MS = 450;
 
 /**
- * Calculate periodic progress background style.
+ * Calculate loop progress background style.
  * Returns a CSS background style showing elapsed time as a progress indicator.
  *
  * @param {Object} params - Parameters
@@ -47,17 +47,13 @@ const META_TOOLTIP_DELAY_MS = 450;
  * @param {boolean} params.isLight - Whether light theme is active
  * @returns {string|null} CSS background style or null if not applicable
  */
-export function getPeriodicProgressStyle({
-  nextScheduledAt,
-  frequency,
-  isLight,
-}) {
+export function getLoopProgressStyle({ nextScheduledAt, frequency, isLight }) {
   // Skip if progress indicator is disabled
-  if (PERIODIC_PROGRESS_STYLE === "none" || !nextScheduledAt || !frequency) {
+  if (LOOP_PROGRESS_STYLE === "none" || !nextScheduledAt || !frequency) {
     return null;
   }
 
-  const colors = PERIODIC_PROGRESS_COLORS[PERIODIC_PROGRESS_STYLE];
+  const colors = LOOP_PROGRESS_COLORS[LOOP_PROGRESS_STYLE];
   if (!colors) return null;
 
   const themeColors = isLight ? colors.light : colors.dark;
@@ -87,7 +83,7 @@ export function getPeriodicProgressStyle({
 
   // Determine if we're in "urgent" state (close to next run)
   const remaining = 1 - progress;
-  const isUrgent = remaining < PERIODIC_PROGRESS_URGENT_THRESHOLD;
+  const isUrgent = remaining < LOOP_PROGRESS_URGENT_THRESHOLD;
 
   // Get the appropriate color
   const elapsedColor = isUrgent
@@ -141,13 +137,13 @@ export function SessionItem({
   const isArchived = session.archived || false;
 
   // Check if periodic is enabled for this session (runs active → clock icon +
-  // progress bar). Distinct from periodic_configured, which is true even when a
+  // progress bar). Distinct from loop_configured, which is true even when a
   // periodic conversation is paused/draft.
-  const isPeriodicEnabled = session.periodic_enabled || false;
+  const isPeriodicEnabled = session.loop_enabled || false;
   // Whether a periodic config exists at all (enabled OR paused/draft). Used to
   // gate the "Make periodic" / "Make non-periodic" context-menu actions so a
   // paused periodic conversation is not offered "Make periodic" again.
-  const isPeriodicConfigured = session.periodic_configured || false;
+  const isPeriodicConfigured = session.loop_configured || false;
 
   // Leading category icon for the unified-tree row:
   //   regular  -> mitto bubble (muted)
@@ -164,19 +160,19 @@ export function SessionItem({
     categoryIconClass = "text-mitto-text-muted";
   }
 
-  // Calculate periodic progress background style
+  // Calculate loop progress background style
   const periodicProgressBg = useMemo(() => {
     if (!isPeriodicEnabled || isArchived) return null;
-    return getPeriodicProgressStyle({
+    return getLoopProgressStyle({
       nextScheduledAt: session.next_scheduled_at,
-      frequency: session.periodic_frequency,
+      frequency: session.loop_frequency,
       isLight: isLightTheme,
     });
   }, [
     isPeriodicEnabled,
     isArchived,
     session.next_scheduled_at,
-    session.periodic_frequency,
+    session.loop_frequency,
     isLightTheme,
   ]);
 

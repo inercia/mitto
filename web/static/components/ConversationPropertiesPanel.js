@@ -287,15 +287,15 @@ export function ConversationPropertiesPanel({
       setFlagsError(null);
 
       // Periodic + callback endpoints only exist for periodic conversations.
-      // Gating on periodic_configured avoids 404 noise on regular sessions.
-      const periodicConfigured = sessionInfo?.periodic_configured === true;
+      // Gating on loop_configured avoids 404 noise on regular sessions.
+      const periodicConfigured = sessionInfo?.loop_configured === true;
 
       try {
         // Fetch periodic config, callback config, available flags, and session settings in parallel
         const [periodicRes, callbackRes, flagsRes, settingsRes] =
           await Promise.all([
             periodicConfigured
-              ? authFetch(endpoints.sessions.periodic(sessionId))
+              ? authFetch(endpoints.sessions.loop(sessionId))
               : Promise.resolve(null),
             periodicConfigured
               ? authFetch(endpoints.sessions.callback(sessionId))
@@ -337,7 +337,7 @@ export function ConversationPropertiesPanel({
     };
 
     fetchData();
-  }, [isOpen, sessionId, sessionInfo?.periodic_configured]);
+  }, [isOpen, sessionId, sessionInfo?.loop_configured]);
 
   // Focus title input when entering edit mode
   useEffect(() => {
@@ -374,7 +374,7 @@ export function ConversationPropertiesPanel({
     };
   }, [isOpen, sessionId]);
 
-  // Listen for WebSocket periodic_updated events so the periodic section (and the
+  // Listen for WebSocket loop_updated events so the periodic section (and the
   // fresh-context toggle) stays in sync when changed from another panel/client.
   useEffect(() => {
     if (!isOpen || !sessionId) return;
@@ -422,12 +422,12 @@ export function ConversationPropertiesPanel({
     };
 
     window.addEventListener(
-      "mitto:periodic_config_updated",
+      "mitto:loop_config_updated",
       handlePeriodicUpdated,
     );
     return () => {
       window.removeEventListener(
-        "mitto:periodic_config_updated",
+        "mitto:loop_config_updated",
         handlePeriodicUpdated,
       );
     };
@@ -518,7 +518,7 @@ export function ConversationPropertiesPanel({
       const newValue = e.target.checked;
       if (!sessionId) return;
       try {
-        const res = await secureFetch(endpoints.sessions.periodic(sessionId), {
+        const res = await secureFetch(endpoints.sessions.loop(sessionId), {
           method: "PATCH",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ fresh_context: newValue }),

@@ -60,9 +60,9 @@ import {
   QuoteIcon,
 } from "./Icons.js";
 import {
-  promptPeriodicMode,
-  promptPeriodicIsToggleable,
-  promptPeriodicDefaultOn,
+  promptLoopMode,
+  promptLoopIsToggleable,
+  promptLoopDefaultOn,
 } from "../utils/prompts.js";
 import { CodeEditorField } from "./CodeEditorField.js";
 import {
@@ -3857,8 +3857,8 @@ export function BeadsView({
             // Seed per-item periodic toggle defaults from each prompt's mode/default.
             const seed = {};
             for (const p of prompts) {
-              if (promptPeriodicIsToggleable(p)) {
-                seed[p.name] = promptPeriodicDefaultOn(p);
+              if (promptLoopIsToggleable(p)) {
+                seed[p.name] = promptLoopDefaultOn(p);
               }
             }
             setListPeriodicOn(seed);
@@ -4506,14 +4506,14 @@ export function BeadsView({
                       <button
                         type="button"
                         onClick=${() => {
-                          const mode = promptPeriodicMode(p);
+                          const mode = promptLoopMode(p);
                           const opts =
                             mode === "optional"
                               ? {
                                   asPeriodic:
                                     listPeriodicOn[p.name] !== undefined
                                       ? listPeriodicOn[p.name]
-                                      : promptPeriodicDefaultOn(p),
+                                      : promptLoopDefaultOn(p),
                                 }
                               : undefined;
                           handleRunListPrompt(p, opts);
@@ -4525,13 +4525,13 @@ export function BeadsView({
                         /></span>
                         <span class="truncate flex-1">${p.name}</span>
                         ${(() => {
-                          const mode = promptPeriodicMode(p);
+                          const mode = promptLoopMode(p);
                           if (mode === "none") return null;
                           if (mode === "optional") {
                             const on =
                               listPeriodicOn[p.name] !== undefined
                                 ? listPeriodicOn[p.name]
-                                : promptPeriodicDefaultOn(p);
+                                : promptLoopDefaultOn(p);
                             return html`<input
                               type="checkbox"
                               class="checkbox checkbox-sm shrink-0"

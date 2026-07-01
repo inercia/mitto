@@ -458,7 +458,7 @@ describe("getCategoryFilter / setCategoryFilter", () => {
     const result = getCategoryFilter();
     expect(result).toEqual(DEFAULT_CATEGORY_FILTER);
     expect(result.regular).toBe(true);
-    expect(result.periodic).toBe(true);
+    expect(result.loop).toBe(true);
     expect(result.archived).toBe(true);
     expect(result.tasks).toBe(true);
   });
@@ -466,13 +466,13 @@ describe("getCategoryFilter / setCategoryFilter", () => {
   test("round-trips: setCategoryFilter then getCategoryFilter", () => {
     setCategoryFilter({
       regular: false,
-      periodic: true,
+      loop: true,
       archived: true,
       tasks: false,
     });
     const result = getCategoryFilter();
     expect(result.regular).toBe(false);
-    expect(result.periodic).toBe(true);
+    expect(result.loop).toBe(true);
     expect(result.archived).toBe(true);
     expect(result.tasks).toBe(false);
   });
@@ -489,7 +489,7 @@ describe("getCategoryFilter / setCategoryFilter", () => {
     });
     const result = getCategoryFilter();
     expect(result.regular).toBe(false);
-    expect(result.periodic).toBe(true);
+    expect(result.loop).toBe(true);
     expect(result.archived).toBe(true);
     expect(result.tasks).toBe(true);
   });

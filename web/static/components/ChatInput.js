@@ -36,7 +36,7 @@ import {
   fetchCachedParamNames,
   effectiveMissingParams,
   promptParameters,
-  promptResolveAsPeriodic,
+  promptResolveAsLoop,
 } from "../utils/prompts.js";
 
 /**
@@ -551,7 +551,7 @@ export function ChatInput({
     const fetchPeriodicConfig = async () => {
       try {
         const response = await authFetch(
-          endpoints.sessions.periodic(sessionId),
+          endpoints.sessions.loop(sessionId),
         );
         const ct = response.headers.get("content-type");
         if (!response.ok || !ct || !ct.includes("application/json")) {
@@ -653,7 +653,7 @@ export function ChatInput({
           setPeriodicNextScheduledAt(nextScheduledAt);
         }
         // Fetch the full config to get the prompt name and fresh_context
-        authFetch(endpoints.sessions.periodic(sessionId))
+        authFetch(endpoints.sessions.loop(sessionId))
           .then(async (response) => {
             if (!response.ok) return null;
             const ct = response.headers.get("content-type");
@@ -693,12 +693,12 @@ export function ChatInput({
     };
 
     window.addEventListener(
-      "mitto:periodic_config_updated",
+      "mitto:loop_config_updated",
       handlePeriodicConfigUpdated,
     );
     return () => {
       window.removeEventListener(
-        "mitto:periodic_config_updated",
+        "mitto:loop_config_updated",
         handlePeriodicConfigUpdated,
       );
     };
@@ -990,7 +990,7 @@ export function ChatInput({
     setIsPeriodicSaving(true);
     try {
       const response = await secureFetch(
-        endpoints.sessions.periodic(sessionId),
+        endpoints.sessions.loop(sessionId),
         {
           method: "PATCH",
           headers: { "Content-Type": "application/json" },
@@ -1022,7 +1022,7 @@ export function ChatInput({
     setIsPeriodicSaving(true);
     try {
       const response = await secureFetch(
-        endpoints.sessions.periodic(sessionId),
+        endpoints.sessions.loop(sessionId),
         {
           method: "PATCH",
           headers: { "Content-Type": "application/json" },
@@ -1060,7 +1060,7 @@ export function ChatInput({
             body.arguments = extraArgs;
           }
           const response = await secureFetch(
-            endpoints.sessions.periodic(sessionId),
+            endpoints.sessions.loop(sessionId),
             {
               method: "PATCH",
               headers: { "Content-Type": "application/json" },
@@ -1118,7 +1118,7 @@ export function ChatInput({
       async (userArgs) => {
         try {
           const resp = await secureFetch(
-            endpoints.sessions.periodic(sessionId),
+            endpoints.sessions.loop(sessionId),
             {
               method: "PATCH",
               headers: { "Content-Type": "application/json" },
@@ -1319,7 +1319,7 @@ export function ChatInput({
 
     // Periodic-flagged prompts: route to app-level branching (decidePeriodicAction).
     // This handles make-periodic / one-shot / new-periodic without duplicating logic here.
-    const asPeriodic = prompt && promptResolveAsPeriodic(prompt, opts?.asPeriodic);
+    const asPeriodic = prompt && promptResolveAsLoop(prompt, opts?.asPeriodic);
     if (asPeriodic && onPeriodicPrompt) {
       onPeriodicPrompt(prompt, { asPeriodic });
       return;

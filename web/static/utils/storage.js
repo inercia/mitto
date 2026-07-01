@@ -797,25 +797,25 @@ export function isGroupExpanded(groupKey) {
  */
 export const FILTER_TAB = {
   CONVERSATIONS: "conversations",
-  PERIODIC: "periodic",
+  LOOP: "loop",
   ARCHIVED: "archived",
 };
 
 /**
  * Derive which filter tab a session belongs to from its state. Mirrors the
  * tab-filtering logic used throughout the app (archived → archived,
- * periodic_enabled → periodic, otherwise → conversations).
+ * loop_enabled → loop, otherwise → conversations).
  *
- * NOTE: uses periodic_enabled (runs active), NOT periodic_configured (config exists).
- * A paused/draft periodic conversation (configured but not enabled) falls into
- * the CONVERSATIONS group — its editor is still visible via periodic_configured.
- * @param {Object} session - A session object (archived, periodic_enabled flags)
+ * NOTE: uses loop_enabled (runs active), NOT loop_configured (config exists).
+ * A paused/draft loop conversation (configured but not enabled) falls into
+ * the CONVERSATIONS group — its editor is still visible via loop_configured.
+ * @param {Object} session - A session object (archived, loop_enabled flags)
  * @returns {string} The filter tab for the session
  */
 export function getFilterTabForSession(session) {
   if (!session) return FILTER_TAB.CONVERSATIONS;
   if (session.archived) return FILTER_TAB.ARCHIVED;
-  if (session.periodic_enabled) return FILTER_TAB.PERIODIC;
+  if (session.loop_enabled) return FILTER_TAB.LOOP;
   return FILTER_TAB.CONVERSATIONS;
 }
 
@@ -827,11 +827,11 @@ const CATEGORY_FILTER_KEY = "mitto_category_filter";
 
 /**
  * Default category filter: all categories visible.
- * Shape: { regular, periodic, archived, tasks } (all booleans).
+ * Shape: { regular, loop, archived, tasks } (all booleans).
  */
 export const DEFAULT_CATEGORY_FILTER = {
   regular: true,
-  periodic: true,
+  loop: true,
   archived: true,
   tasks: true,
 };
@@ -840,7 +840,7 @@ export const DEFAULT_CATEGORY_FILTER = {
  * Read the category filter from sessionStorage (browser-session scope; resets
  * in a fresh browser session). Returns the all-visible default when unset or
  * invalid.
- * @returns {{regular: boolean, periodic: boolean, archived: boolean, tasks: boolean}}
+ * @returns {{regular: boolean, loop: boolean, archived: boolean, tasks: boolean}}
  */
 export function getCategoryFilter() {
   try {
@@ -849,7 +849,7 @@ export function getCategoryFilter() {
     const parsed = JSON.parse(value);
     return {
       regular: parsed.regular !== false,
-      periodic: parsed.periodic !== false,
+      loop: parsed.loop !== false,
       archived: parsed.archived !== false,
       tasks: parsed.tasks !== false,
     };
@@ -861,14 +861,14 @@ export function getCategoryFilter() {
 
 /**
  * Persist the category filter to sessionStorage (browser-session scope).
- * @param {{regular: boolean, periodic: boolean, archived: boolean, tasks: boolean}} state
+ * @param {{regular: boolean, loop: boolean, archived: boolean, tasks: boolean}} state
  */
 export function setCategoryFilter(state) {
   try {
     const s = state || {};
     const normalized = {
       regular: s.regular !== false,
-      periodic: s.periodic !== false,
+      loop: s.loop !== false,
       archived: s.archived !== false,
       tasks: s.tasks !== false,
     };

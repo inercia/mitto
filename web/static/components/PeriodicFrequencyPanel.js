@@ -357,7 +357,7 @@ export function PeriodicFrequencyPanel({
     setLocalMaxDurUnit(unit);
   }, [maxDurationSeconds]);
   // Sync onTasks condition/preset from props (server-authoritative updates,
-  // e.g. GET on load or a periodic_updated broadcast from another client).
+  // e.g. GET on load or a loop_updated broadcast from another client).
   useEffect(() => {
     const id = resolveConditionPresetId(condition, conditionPreset);
     setLocalCondition(condition || "");
@@ -485,7 +485,7 @@ export function PeriodicFrequencyPanel({
       }
 
       const response = await secureFetch(
-        endpoints.sessions.periodic(sessionId),
+        endpoints.sessions.loop(sessionId),
         {
           method: "PATCH",
           headers: { "Content-Type": "application/json" },
@@ -614,7 +614,7 @@ export function PeriodicFrequencyPanel({
     setIsTriggering(true);
     try {
       const response = await secureFetch(
-        endpoints.sessions.periodicRunNow(sessionId),
+        endpoints.sessions.loopRunNow(sessionId),
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -637,7 +637,7 @@ export function PeriodicFrequencyPanel({
         }
         return; // Don't close dialog on error
       }
-      // Success - the WebSocket will notify us of the periodic_started event
+      // Success - the WebSocket will notify us of the loop_started event
       setShowConfirmDialog(false);
     } catch (err) {
       console.error("Failed to trigger immediate delivery:", err);
@@ -754,7 +754,7 @@ export function PeriodicFrequencyPanel({
     setIsSavingEnabled(true);
     try {
       const response = await secureFetch(
-        endpoints.sessions.periodic(sessionId),
+        endpoints.sessions.loop(sessionId),
         {
           method: "PATCH",
           headers: { "Content-Type": "application/json" },
@@ -795,7 +795,7 @@ export function PeriodicFrequencyPanel({
         body.reset_counters = true;
       }
       const response = await secureFetch(
-        endpoints.sessions.periodic(sessionId),
+        endpoints.sessions.loop(sessionId),
         {
           method: "PATCH",
           headers: { "Content-Type": "application/json" },

@@ -73,48 +73,48 @@ export function isSingletonPrompt(prompt) {
 }
 
 /**
- * Returns the periodic mode of a prompt: "always" | "optional" | "none".
- * - "none"     when prompt.periodic is absent/null (never periodic).
- * - "optional" when prompt.periodic.mode === "optional".
+ * Returns the loop mode of a prompt: "always" | "optional" | "none".
+ * - "none"     when prompt.loop is absent/null (never a loop).
+ * - "optional" when prompt.loop.mode === "optional".
  * - "always"   otherwise (block present with absent/unknown mode → backend default).
  */
-export function promptPeriodicMode(prompt) {
-  const periodic = prompt?.periodic;
-  if (!periodic) return "none";
-  return periodic.mode === "optional" ? "optional" : "always";
+export function promptLoopMode(prompt) {
+  const loop = prompt?.loop;
+  if (!loop) return "none";
+  return loop.mode === "optional" ? "optional" : "always";
 }
 
-/** True iff the prompt's periodic mode is "optional" (the only toggleable category). */
-export function promptPeriodicIsToggleable(prompt) {
-  return promptPeriodicMode(prompt) === "optional";
+/** True iff the prompt's loop mode is "optional" (the only toggleable category). */
+export function promptLoopIsToggleable(prompt) {
+  return promptLoopMode(prompt) === "optional";
 }
 
 /**
- * Initial send-as-periodic state:
+ * Initial send-as-loop state:
  * - "always"   → true (locked ON)
- * - "optional" → prompt.periodic.default !== false (nil/true → true, false → false)
+ * - "optional" → prompt.loop.default !== false (nil/true → true, false → false)
  * - "none"     → false
  */
-export function promptPeriodicDefaultOn(prompt) {
-  const mode = promptPeriodicMode(prompt);
+export function promptLoopDefaultOn(prompt) {
+  const mode = promptLoopMode(prompt);
   if (mode === "none") return false;
-  if (mode === "optional") return prompt.periodic.default !== false;
+  if (mode === "optional") return prompt.loop.default !== false;
   return true;
 }
 
 /**
- * Resolve whether a given send should be dispatched as periodic.
- * @param {object} prompt - the prompt object (may have prompt.periodic with mode/default).
+ * Resolve whether a given send should be dispatched as a loop.
+ * @param {object} prompt - the prompt object (may have prompt.loop with mode/default).
  * @param {boolean} [override] - explicit per-send choice from a UI toggle; only honored for mode "optional".
  * @returns {boolean}
  */
-export function promptResolveAsPeriodic(prompt, override) {
-  const mode = promptPeriodicMode(prompt);
-  if (mode === "none") return false; // never periodic (override ignored)
+export function promptResolveAsLoop(prompt, override) {
+  const mode = promptLoopMode(prompt);
+  if (mode === "none") return false; // never a loop (override ignored)
   if (mode === "always") return true; // locked ON (override ignored)
   // mode === "optional":
   if (typeof override === "boolean") return override;
-  return promptPeriodicDefaultOn(prompt);
+  return promptLoopDefaultOn(prompt);
 }
 
 /**

@@ -102,8 +102,8 @@ import {
   useSessionNavigation,
   useConversationMenu,
   useConversationSeeding,
-  decidePeriodicAction,
-  makePeriodicNow,
+  decideLoopAction,
+  makeLoopNow,
 } from "./hooks/index.js";
 
 // Import components
@@ -179,9 +179,9 @@ import {
 // Import constants
 import {
   CYCLING_MODE,
-  PERIODIC_PROGRESS_STYLE,
-  PERIODIC_PROGRESS_COLORS,
-  PERIODIC_PROGRESS_URGENT_THRESHOLD,
+  LOOP_PROGRESS_STYLE,
+  LOOP_PROGRESS_COLORS,
+  LOOP_PROGRESS_URGENT_THRESHOLD,
 } from "./constants.js";
 
 // Import prompt utilities
@@ -192,7 +192,7 @@ import {
   autofillConversationMenuArgs,
   fetchCachedParamNames,
   effectiveMissingParams,
-  promptResolveAsPeriodic,
+  promptResolveAsLoop,
 } from "./utils/prompts.js";
 
 // Import global event handlers (registers side effects on module load) and predicates
@@ -442,7 +442,7 @@ function App() {
   const {
     workspacePrompts,
     predefinedPrompts,
-    periodicPrompts,
+    loopPrompts,
     fetchWorkspacePrompts,
     fetchConversationPromptsForSession,
   } = useWorkspacePrompts({
@@ -1875,9 +1875,9 @@ function App() {
   };
 
   // Convert an existing regular conversation to a periodic one by creating a
-  // draft periodic config (enabled:false). The periodic_updated WebSocket event
-  // sets periodic_configured=true (reveals the inline periodic editor in ChatInput)
-  // while periodic_enabled stays false (conversation remains in the Conversations
+  // draft periodic config (enabled:false). The loop_updated WebSocket event
+  // sets loop_configured=true (reveals the inline periodic editor in ChatInput)
+  // while loop_enabled stays false (conversation remains in the Conversations
   // group). The user must explicitly enable scheduling to move it to Periodic group.
   const handleMakePeriodic = useCallback(
     async (session) => {
@@ -1918,9 +1918,9 @@ function App() {
   );
 
   // Remove the periodic config from a conversation, reverting it to a regular one.
-  // DELETE /api/sessions/{id}/periodic broadcasts periodic_updated (nil), which
-  // sets both periodic_configured=false (hides the inline periodic editor) and
-  // periodic_enabled=false (moves conversation back to the Conversations group).
+  // DELETE /api/sessions/{id}/periodic broadcasts loop_updated (nil), which
+  // sets both loop_configured=false (hides the inline periodic editor) and
+  // loop_enabled=false (moves conversation back to the Conversations group).
   const handleMakeNonPeriodic = useCallback(
     async (session) => {
       const sessionId = session?.session_id;
@@ -1952,20 +1952,20 @@ function App() {
   // text. The queue delivers it to the agent when the conversation is idle, so
   // this works for any conversation (not just the active one).
   //
-  // When the chosen prompt declares `periodic`, the handler branches on the target
-  // conversation's state (decidePeriodicAction):
-  //   "new-periodic"  — no session: open schedule dialog → create NEW periodic conversation.
-  //   "make-periodic" — regular conversation: configure as periodic + fire first run.
-  //   "one-shot"      — already periodic / child conversation: send prompt once, no config change.
+  // When the chosen prompt declares `loop`, the handler branches on the target
+  // conversation's state (decideLoopAction):
+  //   "new-loop"  — no session: open schedule dialog → create NEW loop conversation.
+  //   "make-loop" — regular conversation: configure as loop + fire first run.
+  //   "one-shot"  — already a loop / child conversation: send prompt once, no config change.
   const handleSendPromptToConversation = useCallback(
     async (session, prompt, opts) => {
       if (!prompt?.name) return;
 
-      const asPeriodic = promptResolveAsPeriodic(prompt, opts?.asPeriodic);
+      const asPeriodic = promptResolveAsLoop(prompt, opts?.asPeriodic);
       if (asPeriodic) {
-        const action = decidePeriodicAction(session);
+        const action = decideLoopAction(session);
 
-        if (action === "make-periodic") {
+        if (action === "make-loop") {
           // Regular conversation: configure it as periodic now and fire the first run.
           const sessionId = session.session_id;
           let missing = getMissingPromptParameters(prompt, "conversation");
@@ -1979,7 +1979,7 @@ function App() {
               parameters: missing,
               hostSessionId: sessionId,
               onSubmit: async (userArgs) => {
-                const result = await makePeriodicNow(sessionId, prompt, {
+                const result = await makeLoopNow(sessionId, prompt, {
                   arguments: userArgs,
                 });
                 if (result.success) {
@@ -1999,7 +1999,7 @@ function App() {
             });
             return;
           }
-          const result = await makePeriodicNow(sessionId, prompt);
+          const result = await makeLoopNow(sessionId, prompt);
           if (result.success) {
             showToast({
               style: "success",
@@ -2070,7 +2070,7 @@ function App() {
           return;
         }
 
-        // action === "new-periodic": no session — open schedule dialog → create NEW periodic conversation.
+        // action === "new-loop": no session — open schedule dialog → create NEW loop conversation.
         // When the prompt has parameters, collect them first, then open the schedule dialog.
         const openScheduleDialog = (collectedArgs) => {
           setPeriodicScheduleDialog({
@@ -2086,7 +2086,7 @@ function App() {
                 ...(collectedArgs && Object.keys(collectedArgs).length > 0
                   ? { arguments: collectedArgs }
                   : {}),
-                periodic: schedule,
+                loop: schedule,
               });
               if (result?.sessionId) {
                 focusSession(result.sessionId);
@@ -2212,7 +2212,7 @@ function App() {
     [allSessions, activeSessionId],
   );
   const headerIsArchived = activeSession?.archived || false;
-  const headerIsPeriodic = activeSession?.periodic_configured || false;
+  const headerIsPeriodic = activeSession?.loop_configured || false;
   const headerIsSpawned =
     !!(activeSession && activeSession.parent_session_id) && !activeHasChildren;
   // Only the active conversation can have queued messages; streaming state comes
@@ -2229,19 +2229,19 @@ function App() {
 
   // Header subtitle: ACP server name (always) plus, for periodic conversations, a
   // live countdown + next scheduled run time. The periodic fields live on the
-  // stored session object (GET /api/sessions + periodic_updated broadcasts carry
+  // stored session object (GET /api/sessions + loop_updated broadcasts carry
   // next_scheduled_at + frequency; the per-session "connected" message does not).
   const headerAcpServer =
     sessionInfo?.acp_server || activeSession?.acp_server || "";
   const headerNextScheduledAt =
-    (activeSession?.periodic_configured && activeSession?.next_scheduled_at) ||
+    (activeSession?.loop_configured && activeSession?.next_scheduled_at) ||
     null;
-  const headerPeriodicUnit = activeSession?.periodic_frequency?.unit || "hours";
+  const headerPeriodicUnit = activeSession?.loop_frequency?.unit || "hours";
   // Derive a single 3-state pill for the periodic status: running | paused | stopped | null.
   // null means not periodic (no pill rendered).
   const headerPeriodicState = (() => {
-    if (!activeSession?.periodic_configured) return null;
-    if (activeSession?.periodic_enabled) {
+    if (!activeSession?.loop_configured) return null;
+    if (activeSession?.loop_enabled) {
       return {
         state: "running",
         label: "Auto",
@@ -2250,7 +2250,7 @@ function App() {
     }
     // Loop is disabled — check the reason for stopped vs paused distinction
     const entry =
-      PERIODIC_STOPPED_LABELS[activeSession?.periodic_stopped_reason];
+      PERIODIC_STOPPED_LABELS[activeSession?.loop_stopped_reason];
     if (entry && entry.kind === "stopped") {
       return {
         state: "stopped",
@@ -2274,43 +2274,43 @@ function App() {
   })();
   // Keep backwards-compat references used by cap-highlight logic below
   const headerStoppedReason =
-    (activeSession?.periodic_configured &&
-      activeSession?.periodic_stopped_reason) ||
+    (activeSession?.loop_configured &&
+      activeSession?.loop_stopped_reason) ||
     null;
 
   // Periodic "glance" badges shown in the subtitle for ALL periodic sessions
   // (running or stopped, schedule or onCompletion).
-  const headerPeriodicTrigger = activeSession?.periodic_trigger || null;
-  const headerIterationCount = activeSession?.periodic_iteration_count ?? 0;
-  const headerMaxIterations = activeSession?.periodic_max_iterations ?? 0;
-  const headerDelaySeconds = activeSession?.periodic_delay_seconds ?? 0;
+  const headerPeriodicTrigger = activeSession?.loop_trigger || null;
+  const headerIterationCount = activeSession?.loop_iteration_count ?? 0;
+  const headerMaxIterations = activeSession?.loop_max_iterations ?? 0;
+  const headerDelaySeconds = activeSession?.loop_delay_seconds ?? 0;
   const headerMaxDurationSecs =
-    activeSession?.periodic_max_duration_seconds ?? 0;
+    activeSession?.loop_max_duration_seconds ?? 0;
 
   // Trigger badge: "every 2h" for schedule, "after agent finishes [· +Ns]" for
   // onCompletion, "on task changes" for onTasks (mitto-oja.4).
-  const headerTriggerLabel = activeSession?.periodic_configured
+  const headerTriggerLabel = activeSession?.loop_configured
     ? computeHeaderTriggerLabel(
         headerPeriodicTrigger,
         headerDelaySeconds,
-        activeSession?.periodic_frequency,
+        activeSession?.loop_frequency,
       )
     : null;
   // Run-count badge: "Run N of M" or "N run(s) · ∞". A compact variant ("N/M" or
   // "N·∞") is rendered alongside and CSS-swapped in on narrow screens (styles.css).
-  const headerRunCountLabel = activeSession?.periodic_configured
+  const headerRunCountLabel = activeSession?.loop_configured
     ? headerMaxIterations > 0
       ? `Run ${headerIterationCount} of ${headerMaxIterations}`
       : `${headerIterationCount} run${headerIterationCount !== 1 ? "s" : ""} · ∞`
     : null;
-  const headerRunCountLabelShort = activeSession?.periodic_configured
+  const headerRunCountLabelShort = activeSession?.loop_configured
     ? headerMaxIterations > 0
       ? `${headerIterationCount}/${headerMaxIterations}`
       : `${headerIterationCount}·∞`
     : null;
   // Max-time badge: "max 2h" etc; omitted when not set (0 means unlimited)
   const headerMaxTimeLabel =
-    activeSession?.periodic_configured && headerMaxDurationSecs > 0
+    activeSession?.loop_configured && headerMaxDurationSecs > 0
       ? `max ${formatPeriodicMaxDuration(headerMaxDurationSecs)}`
       : null;
   // When a periodic loop is auto-stopped by a cap, soft-red highlight the
@@ -2685,7 +2685,7 @@ function App() {
                       (headerAcpServer ||
                         headerNextScheduledAt ||
                         headerPeriodicState ||
-                        activeSession?.periodic_configured) &&
+                        activeSession?.loop_configured) &&
                       html`<div
                         class="text-xs text-mitto-text-muted truncate flex items-center gap-2 min-w-0"
                         data-testid="conversation-header-subtitle"
@@ -2696,7 +2696,7 @@ function App() {
                           data-testid="periodic-status-pill"
                           title=${headerPeriodicState.state === "running"
                             ? "Periodic loop is iterating"
-                            : (activeSession?.periodic_stopped_reason || "") +
+                            : (activeSession?.loop_stopped_reason || "") +
                               (activeSession?.stopped_at
                                 ? " · " +
                                   new Date(
@@ -2961,7 +2961,7 @@ function App() {
                       isReadOnly=${sessionInfo?.isReadOnly}
                       isArchived=${sessionInfo?.archived || false}
                       predefinedPrompts=${predefinedPrompts}
-                      periodicPrompts=${periodicPrompts}
+                      periodicPrompts=${loopPrompts}
                       hasBeadsWorkspace=${hasBeadsWorkspace}
                       inputRef=${chatInputRef}
                       noSession=${!activeSessionId}
@@ -2985,7 +2985,7 @@ function App() {
                       showQueueDropdown=${showQueueDropdown}
                       actionButtons=${actionButtons}
                       availableCommands=${availableCommands}
-                      periodicConfigured=${sessionInfo?.periodic_configured ||
+                      periodicConfigured=${sessionInfo?.loop_configured ||
                       false}
                       onPeriodicPrompt=${(prompt, opts) =>
                         handleSendPromptToConversation(

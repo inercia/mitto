@@ -1300,31 +1300,31 @@ export function useWebSocket({ onActiveSessionRemovedRef } = {}) {
                 // Preserve archive_pending flag from existing session info
                 archive_pending: session.info?.archive_pending || false,
                 // Periodic state from server:
-                // periodic_configured: config exists → drives editor UI + reconnect long-lived check
-                // periodic_enabled: runs active → drives sidebar category + clock icon
-                periodic_configured:
-                  msg.data.periodic_configured ??
-                  session.info?.periodic_configured ??
+                // loop_configured: config exists → drives editor UI + reconnect long-lived check
+                // loop_enabled: runs active → drives sidebar category + clock icon
+                loop_configured:
+                  msg.data.loop_configured ??
+                  session.info?.loop_configured ??
                   false,
-                periodic_enabled:
-                  msg.data.periodic_enabled ??
-                  session.info?.periodic_enabled ??
+                loop_enabled:
+                  msg.data.loop_enabled ??
+                  session.info?.loop_enabled ??
                   false,
-                periodic_stopped_reason:
-                  msg.data.periodic_stopped_reason ??
-                  session.info?.periodic_stopped_reason ??
+                loop_stopped_reason:
+                  msg.data.loop_stopped_reason ??
+                  session.info?.loop_stopped_reason ??
                   null,
-                periodic_trigger:
-                  msg.data.periodic_trigger ??
-                  session.info?.periodic_trigger ??
+                loop_trigger:
+                  msg.data.loop_trigger ??
+                  session.info?.loop_trigger ??
                   null,
-                periodic_delay_seconds:
-                  msg.data.periodic_delay_seconds ??
-                  session.info?.periodic_delay_seconds ??
+                loop_delay_seconds:
+                  msg.data.loop_delay_seconds ??
+                  session.info?.loop_delay_seconds ??
                   null,
-                periodic_max_duration_seconds:
-                  msg.data.periodic_max_duration_seconds ??
-                  session.info?.periodic_max_duration_seconds ??
+                loop_max_duration_seconds:
+                  msg.data.loop_max_duration_seconds ??
+                  session.info?.loop_max_duration_seconds ??
                   null,
                 workspace_uuid: msg.data.workspace_uuid ?? null,
                 // ACP readiness: false until acp_started event or explicit true in connected msg
@@ -3574,12 +3574,12 @@ export function useWebSocket({ onActiveSessionRemovedRef } = {}) {
 
           // Check if this conversation has a periodic config — those are long-lived by design
           // and should always be allowed to reconnect regardless of age.
-          // Use periodic_configured (config exists) not periodic_enabled (runs active),
+          // Use loop_configured (config exists) not loop_enabled (runs active),
           // so paused/draft periodic conversations still count as long-lived.
           const isPeriodic =
-            sessionsRef.current[sessionId]?.info?.periodic_configured ||
+            sessionsRef.current[sessionId]?.info?.loop_configured ||
             storedSessionsRef.current?.find((s) => s.session_id === sessionId)
-              ?.periodic_configured;
+              ?.loop_configured;
 
           const sessionAgeMs = getSessionAgeMs(sessionId);
           const isTooOld =
@@ -4269,37 +4269,37 @@ export function useWebSocket({ onActiveSessionRemovedRef } = {}) {
         break;
       }
 
-      case "periodic_updated":
+      case "loop_updated":
         // Update session periodic state
         // This is broadcast when any session's periodic state changes
         //
         // Two separate concepts:
-        // - periodic_configured: true if periodic config exists (determines UI mode - shows frequency panel)
-        // - periodic_enabled: true if periodic runs are active (determines lock state)
+        // - loop_configured: true if periodic config exists (determines UI mode - shows frequency panel)
+        // - loop_enabled: true if periodic runs are active (determines lock state)
         //
         // Also includes frequency and next_scheduled_at for cross-client sync
         console.log(
-          `[global] Session periodic state changed: ${msg.data.session_id} -> configured=${msg.data.periodic_configured}, enabled=${msg.data.periodic_enabled}`,
+          `[global] Session periodic state changed: ${msg.data.session_id} -> configured=${msg.data.loop_configured}, enabled=${msg.data.loop_enabled}`,
         );
         // Update in stored sessions:
-        // periodic_enabled: runs active → sidebar category + clock icon
-        // periodic_configured: config exists → editor UI mode
+        // loop_enabled: runs active → sidebar category + clock icon
+        // loop_configured: config exists → editor UI mode
         setStoredSessions((prev) =>
           prev.map((s) =>
             s.session_id === msg.data.session_id
               ? {
                   ...s,
-                  periodic_enabled: msg.data.periodic_enabled,
-                  periodic_configured: msg.data.periodic_configured,
+                  loop_enabled: msg.data.loop_enabled,
+                  loop_configured: msg.data.loop_configured,
                   next_scheduled_at: msg.data.next_scheduled_at || null,
-                  periodic_frequency: msg.data.frequency || null,
-                  periodic_iteration_count: msg.data.iteration_count ?? null,
-                  periodic_max_iterations: msg.data.max_iterations ?? null,
-                  periodic_stopped_reason:
-                    msg.data.periodic_stopped_reason || null,
-                  periodic_trigger: msg.data.trigger ?? null,
-                  periodic_delay_seconds: msg.data.delay_seconds ?? null,
-                  periodic_max_duration_seconds:
+                  loop_frequency: msg.data.frequency || null,
+                  loop_iteration_count: msg.data.iteration_count ?? null,
+                  loop_max_iterations: msg.data.max_iterations ?? null,
+                  loop_stopped_reason:
+                    msg.data.loop_stopped_reason || null,
+                  loop_trigger: msg.data.trigger ?? null,
+                  loop_delay_seconds: msg.data.delay_seconds ?? null,
+                  loop_max_duration_seconds:
                     msg.data.max_duration_seconds ?? null,
                 }
               : s,
@@ -4315,19 +4315,19 @@ export function useWebSocket({ onActiveSessionRemovedRef } = {}) {
               ...session,
               info: {
                 ...session.info,
-                // periodic_enabled: runs active → sidebar category + clock icon
-                periodic_enabled: msg.data.periodic_enabled,
-                // periodic_configured: config exists → editor UI mode
-                periodic_configured: msg.data.periodic_configured,
+                // loop_enabled: runs active → sidebar category + clock icon
+                loop_enabled: msg.data.loop_enabled,
+                // loop_configured: config exists → editor UI mode
+                loop_configured: msg.data.loop_configured,
                 next_scheduled_at: msg.data.next_scheduled_at || null,
-                periodic_frequency: msg.data.frequency || null,
-                periodic_iteration_count: msg.data.iteration_count ?? null,
-                periodic_max_iterations: msg.data.max_iterations ?? null,
-                periodic_stopped_reason:
-                  msg.data.periodic_stopped_reason || null,
-                periodic_trigger: msg.data.trigger ?? null,
-                periodic_delay_seconds: msg.data.delay_seconds ?? null,
-                periodic_max_duration_seconds:
+                loop_frequency: msg.data.frequency || null,
+                loop_iteration_count: msg.data.iteration_count ?? null,
+                loop_max_iterations: msg.data.max_iterations ?? null,
+                loop_stopped_reason:
+                  msg.data.loop_stopped_reason || null,
+                loop_trigger: msg.data.trigger ?? null,
+                loop_delay_seconds: msg.data.delay_seconds ?? null,
+                loop_max_duration_seconds:
                   msg.data.max_duration_seconds ?? null,
               },
             },
@@ -4336,25 +4336,25 @@ export function useWebSocket({ onActiveSessionRemovedRef } = {}) {
         // Dispatch custom event for ChatInput to handle frequency and lock state updates
         // This allows the frequency panel to update in real-time when another client changes it
         window.dispatchEvent(
-          new CustomEvent("mitto:periodic_config_updated", {
+          new CustomEvent("mitto:loop_config_updated", {
             detail: {
               sessionId: msg.data.session_id,
               // periodicConfigured controls UI mode
-              periodicConfigured: msg.data.periodic_configured,
+              periodicConfigured: msg.data.loop_configured,
               // periodicEnabled controls lock state (whether runs are active)
-              periodicEnabled: msg.data.periodic_enabled,
+              periodicEnabled: msg.data.loop_enabled,
               frequency: msg.data.frequency,
               nextScheduledAt: msg.data.next_scheduled_at,
               freshContext: msg.data.fresh_context,
               iterationCount: msg.data.iteration_count,
               maxIterations: msg.data.max_iterations,
-              stoppedReason: msg.data.periodic_stopped_reason || null,
+              stoppedReason: msg.data.loop_stopped_reason || null,
             },
           }),
         );
         break;
 
-      case "periodic_started":
+      case "loop_started":
         // A periodic prompt was delivered to a session
         // Show toast notification and trigger native notification if enabled
         console.log(

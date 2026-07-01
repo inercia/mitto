@@ -2,11 +2,11 @@
 // Centralized configuration values and constants
 
 // =============================================================================
-// Periodic Progress Indicator Configuration
+// Loop Progress Indicator Configuration
 // =============================================================================
 
 /**
- * Progress indicator style for periodic sessions in the sidebar.
+ * Progress indicator style for loop sessions in the sidebar.
  * The background of the session item shows elapsed/remaining time until next run.
  *
  * Available styles:
@@ -16,13 +16,13 @@
  * - "gradient_fade": Smooth gradient transition
  * - "none": Disable progress indicator
  */
-export const PERIODIC_PROGRESS_STYLE = "progress_bar";
+export const LOOP_PROGRESS_STYLE = "progress_bar";
 
 /**
  * Color configurations for each progress style.
  * Each style defines colors for light and dark themes.
  */
-export const PERIODIC_PROGRESS_COLORS = {
+export const LOOP_PROGRESS_COLORS = {
   // Progress bar: full-width fill as item background (uses slate-700 gray like ACP cards)
   progress_bar: {
     light: {
@@ -82,7 +82,7 @@ export const PERIODIC_PROGRESS_COLORS = {
  * When remaining time is below this threshold, the urgent color is used.
  * At 0.05 (5%), urgent triggers when >= 95% of the interval has elapsed.
  */
-export const PERIODIC_PROGRESS_URGENT_THRESHOLD = 0.05; // 5% remaining = 95% elapsed
+export const LOOP_PROGRESS_URGENT_THRESHOLD = 0.05; // 5% remaining = 95% elapsed
 
 // =============================================================================
 // Conversation Cycling
