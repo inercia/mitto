@@ -50,7 +50,7 @@ type ConversationInfo struct {
 	LockStatus     string `json:"lock_status,omitempty"`
 	LockClientType string `json:"lock_client_type,omitempty"`
 	LastSeq        int64  `json:"last_seq,omitempty"`
-	IsPeriodic     bool   `json:"is_periodic"`
+	IsLoop         bool   `json:"is_loop"`
 	ChildOrigin    string `json:"child_origin,omitempty"`
 	BeadsIssue     string `json:"beads_issue,omitempty"` // Linked beads issue ID (e.g. "mitto-123"), empty if none
 }
@@ -86,7 +86,7 @@ type ConversationDetails struct {
 	// Parent/child relationship
 	ParentSessionID string `json:"parent_session_id,omitempty"` // Parent session if this is a child conversation
 	ChildOrigin     string `json:"child_origin,omitempty"`      // How this child was created: "auto", "mcp", or "human" (empty for top-level)
-	IsPeriodic      bool   `json:"is_periodic"`                 // Whether the conversation has an active periodic prompt
+	IsLoop          bool   `json:"is_loop"`                     // Whether the conversation has an active loop prompt
 
 	// Available ACP servers that can be used when creating new conversations from this session
 	AvailableACPServers []AvailableACPServer `json:"available_acp_servers,omitempty"`
@@ -352,29 +352,29 @@ type ConversationUpdateInput struct {
 	UserData      []UserDataAttributeUpdate `json:"user_data,omitempty"`       // User data attributes to set
 	UserDataMerge *bool                     `json:"user_data_merge,omitempty"` // If true (default), merge with existing; if false, replace all
 
-	// Periodic configuration — optional, only applied if any periodic field is non-nil
-	PeriodicPrompt         *string `json:"periodic_prompt,omitempty"`          // The prompt to send periodically
-	PeriodicFrequencyValue *int    `json:"periodic_frequency_value,omitempty"` // Number of units between sends
-	PeriodicFrequencyUnit  *string `json:"periodic_frequency_unit,omitempty"`  // Time unit: "minutes", "hours", or "days"
-	PeriodicFrequencyAt    *string `json:"periodic_frequency_at,omitempty"`    // Time of day HH:MM (UTC), only for "days"
-	PeriodicEnabled        *bool   `json:"periodic_enabled,omitempty"`         // Whether periodic is active (defaults to true)
-	PeriodicFreshContext   *bool   `json:"periodic_fresh_context,omitempty"`   // Start each run with a fresh agent context (default false)
-	PeriodicMaxIterations  *int    `json:"periodic_max_iterations,omitempty"`  // Maximum number of scheduled runs (0 = unlimited)
-	// PeriodicTrigger selects how the prompt fires: "schedule" (frequency-based, default),
+	// Loop configuration — optional, only applied if any loop field is non-nil
+	LoopPrompt         *string `json:"loop_prompt,omitempty"`          // The prompt to send in the loop
+	LoopFrequencyValue *int    `json:"loop_frequency_value,omitempty"` // Number of units between sends
+	LoopFrequencyUnit  *string `json:"loop_frequency_unit,omitempty"`  // Time unit: "minutes", "hours", or "days"
+	LoopFrequencyAt    *string `json:"loop_frequency_at,omitempty"`    // Time of day HH:MM (UTC), only for "days"
+	LoopEnabled        *bool   `json:"loop_enabled,omitempty"`         // Whether the loop is active (defaults to true)
+	LoopFreshContext   *bool   `json:"loop_fresh_context,omitempty"`   // Start each run with a fresh agent context (default false)
+	LoopMaxIterations  *int    `json:"loop_max_iterations,omitempty"`  // Maximum number of scheduled runs (0 = unlimited)
+	// LoopTrigger selects how the prompt fires: "schedule" (frequency-based, default),
 	// "onCompletion" (event-driven: fire after the agent stops responding + the completion delay),
 	// or "onTasks" (event-driven: fire when beads/tasks in the workspace change, optionally
-	// gated by periodic_condition).
-	PeriodicTrigger *string `json:"periodic_trigger,omitempty"`
-	// PeriodicCompletionDelaySeconds is the wait (seconds) after the agent stops before the next
+	// gated by loop_condition).
+	LoopTrigger *string `json:"loop_trigger,omitempty"`
+	// LoopCompletionDelaySeconds is the wait (seconds) after the agent stops before the next
 	// run; only meaningful for the onCompletion trigger. Clamped to the global floor on write.
-	PeriodicCompletionDelaySeconds *int `json:"periodic_completion_delay_seconds,omitempty"`
-	// PeriodicMaxDurationSeconds is the wall-clock cap (seconds) since iterating started (0 = unlimited).
-	PeriodicMaxDurationSeconds *int `json:"periodic_max_duration_seconds,omitempty"`
-	// PeriodicCondition is a CEL expression gating onTasks firing (only meaningful when
-	// periodic_trigger is "onTasks"). Empty means fire on ANY beads/task change.
-	PeriodicCondition *string `json:"periodic_condition,omitempty"`
-	// PeriodicConditionPreset is an optional UI preset id that was compiled into periodic_condition.
-	PeriodicConditionPreset *string `json:"periodic_condition_preset,omitempty"`
+	LoopCompletionDelaySeconds *int `json:"loop_completion_delay_seconds,omitempty"`
+	// LoopMaxDurationSeconds is the wall-clock cap (seconds) since iterating started (0 = unlimited).
+	LoopMaxDurationSeconds *int `json:"loop_max_duration_seconds,omitempty"`
+	// LoopCondition is a CEL expression gating onTasks firing (only meaningful when
+	// loop_trigger is "onTasks"). Empty means fire on ANY beads/task change.
+	LoopCondition *string `json:"loop_condition,omitempty"`
+	// LoopConditionPreset is an optional UI preset id that was compiled into loop_condition.
+	LoopConditionPreset *string `json:"loop_condition_preset,omitempty"`
 }
 
 // UserDataAttributeUpdate represents a single user data attribute to set.
@@ -391,24 +391,24 @@ type ConversationUpdateOutput struct {
 	Name           string                    `json:"name,omitempty"`        // Current name after update
 	BeadsIssue     string                    `json:"beads_issue,omitempty"` // Current linked beads issue ID after update
 	UserData       []UserDataAttributeUpdate `json:"user_data,omitempty"`   // Current user data after update
-	// Periodic configuration (returned when periodic is configured)
-	PeriodicPrompt         string `json:"periodic_prompt,omitempty"`
-	PeriodicFrequencyValue int    `json:"periodic_frequency_value,omitempty"`
-	PeriodicFrequencyUnit  string `json:"periodic_frequency_unit,omitempty"`
-	PeriodicFrequencyAt    string `json:"periodic_frequency_at,omitempty"`
-	PeriodicEnabled        bool   `json:"periodic_enabled"`
-	PeriodicFreshContext   bool   `json:"periodic_fresh_context,omitempty"`
-	PeriodicMaxIterations  int    `json:"periodic_max_iterations,omitempty"`
-	PeriodicIterationCount int    `json:"periodic_iteration_count,omitempty"`
-	PeriodicNextRun        string `json:"periodic_next_run,omitempty"` // RFC3339 format
+	// Loop configuration (returned when the loop is configured)
+	LoopPrompt         string `json:"loop_prompt,omitempty"`
+	LoopFrequencyValue int    `json:"loop_frequency_value,omitempty"`
+	LoopFrequencyUnit  string `json:"loop_frequency_unit,omitempty"`
+	LoopFrequencyAt    string `json:"loop_frequency_at,omitempty"`
+	LoopEnabled        bool   `json:"loop_enabled"`
+	LoopFreshContext   bool   `json:"loop_fresh_context,omitempty"`
+	LoopMaxIterations  int    `json:"loop_max_iterations,omitempty"`
+	LoopIterationCount int    `json:"loop_iteration_count,omitempty"`
+	LoopNextRun        string `json:"loop_next_run,omitempty"` // RFC3339 format
 	// On-completion trigger fields (returned when configured)
-	PeriodicTrigger                string `json:"periodic_trigger,omitempty"`
-	PeriodicCompletionDelaySeconds int    `json:"periodic_completion_delay_seconds,omitempty"`
-	PeriodicMaxDurationSeconds     int    `json:"periodic_max_duration_seconds,omitempty"`
+	LoopTrigger                string `json:"loop_trigger,omitempty"`
+	LoopCompletionDelaySeconds int    `json:"loop_completion_delay_seconds,omitempty"`
+	LoopMaxDurationSeconds     int    `json:"loop_max_duration_seconds,omitempty"`
 	// onTasks trigger fields (returned when configured)
-	PeriodicCondition       string `json:"periodic_condition,omitempty"`
-	PeriodicConditionPreset string `json:"periodic_condition_preset,omitempty"`
-	Error                   string `json:"error,omitempty"`
+	LoopCondition       string `json:"loop_condition,omitempty"`
+	LoopConditionPreset string `json:"loop_condition_preset,omitempty"`
+	Error               string `json:"error,omitempty"`
 }
 
 // UITextboxInput is the input for the mitto_ui_textbox tool.
@@ -887,7 +887,7 @@ type PromptInfo struct {
 	Icon            string                   `json:"icon,omitempty"`
 	Source          string                   `json:"source,omitempty"`     // "file", "settings", "workspace", "builtin"
 	Enabled         *bool                    `json:"enabled,omitempty"`    // nil = enabled (default true)
-	Periodic        *config.PromptPeriodic   `json:"periodic,omitempty"`   // non-nil = prompt starts a periodic conversation
+	Loop            *config.PromptLoop       `json:"loop,omitempty"`       // non-nil = prompt starts a loop conversation
 	Parameters      []config.PromptParameter `json:"parameters,omitempty"` // Declared typed input parameters (omitted when empty)
 }
 
@@ -916,7 +916,7 @@ type PromptDetail struct {
 	Icon            string                   `json:"icon,omitempty"`
 	Source          string                   `json:"source,omitempty"`     // "file", "settings", "workspace", "builtin"
 	Enabled         *bool                    `json:"enabled,omitempty"`    // nil = enabled (default true)
-	Periodic        *config.PromptPeriodic   `json:"periodic,omitempty"`   // non-nil = prompt starts a periodic conversation
+	Loop            *config.PromptLoop       `json:"loop,omitempty"`       // non-nil = prompt starts a loop conversation
 	Parameters      []config.PromptParameter `json:"parameters,omitempty"` // Declared typed input parameters (omitted when empty)
 }
 
