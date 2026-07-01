@@ -220,20 +220,8 @@ parameters:
 `{{ .Iteration.IsUninterrupted }}` is `true` only on a **scheduled** (non-forced, non-FreshContext) periodic run that directly follows another such run with nothing in between — no user interjection, no forced "run now", no FreshContext, same process lifetime.
 
 **Reset boundaries** (set marker to false):
-- Archive/unarchive, GC suspend/resume, process restart — auto-reset because BackgroundSession is recreated.
-- ACP process reinit/restart (`restartACPProcess`).
-- Periodic loop config change (`PUT /api/sessions/{id}/periodic`).
-- Periodic loop pause or re-enable (`PATCH /api/sessions/{id}/periodic`).
+- Archive/unarchive, GC suspend/resume, process restart
+- ACP process reinit/restart
+- Periodic loop config change / pause / re-enable
 
-**Authoring rule**: the compact "continue" branch MUST carry a durable re-anchor — a one-line goal restatement plus a pointer to the on-disk state file or linked bead — because long loops compact history. Always render the verbose form whenever `IsFirst || !IsUninterrupted`:
-
-```
-{{ if .Iteration.IsFirst }}
-  ...verbose full-context form...
-{{ else if .Iteration.IsUninterrupted }}
-  Continue: <one-line goal>. State: <file or bead ref>.
-  ...compact delta-only instructions...
-{{ else }}
-  ...verbose full-context form (interrupted or restarted)...
-{{ end }}
-```
+**Authoring rule**: compact "continue" branch must carry durable re-anchor (one-line goal + file/bead ref). Always render verbose form when `IsFirst || !IsUninterrupted` to reset context after interruptions.
