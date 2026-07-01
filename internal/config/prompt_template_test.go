@@ -1588,6 +1588,121 @@ func TestIterateFixingBug_RendersForRepresentativeContexts(t *testing.T) {
 	}
 }
 
+// TestIterateFixingBugs_RendersForRepresentativeContexts renders
+// beads-issue-iterate-fixing-bugs.prompt.yaml (mitto-gap.4, note plural "bugs")
+// for representative contexts and asserts it renders without error, has the
+// expected list-level frontmatter (no Item.* args), and contains the outer-loop
+// spawn/wait/cleanup mechanics.
+//
+//	(a) default context   — no Args, no Session.BeadsIssue → body renders,
+//	    references the per-bug driver name "Iterate fixing bug", declares itself
+//	    a list-level orchestrator, calls out the top-level-only rule, and shows
+//	    the spawn+wait+archive tool triplet with the exact periodic budget
+//	    (30 / 20 / 14400) that mirrors the per-bug driver's own block. Commit
+//	    defaults to "true" in the child arguments when the Commit arg is absent.
+//	(b) Commit="false"    — the child-arguments literal for Commit flips to
+//	    "false", confirming the boolean forwarding is wired correctly.
+//
+// The frontmatter assertions (menus: beadsList; NO periodic: block; name is
+// "Iterate fixing bugs") are checked once, alongside the (a) render.
+//
+// The test loads the file from the real builtin directory so it always
+// exercises the current on-disk content; the render itself also proves the
+// YAML/template parses. Mirrors TestIterateFixingBug_RendersForRepresentativeContexts.
+func TestIterateFixingBugs_RendersForRepresentativeContexts(t *testing.T) {
+	builtinDir := "../../config/prompts/builtin"
+	path := filepath.Join(builtinDir, "beads-issue-iterate-fixing-bugs.prompt.yaml")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Skipf("prompt file not found at %s: %v", path, err)
+	}
+	prompt, err := ParsePromptFile("beads-issue-iterate-fixing-bugs.prompt.yaml", data, time.Now())
+	if err != nil {
+		t.Fatalf("ParsePromptFile: %v", err)
+	}
+
+	// Frontmatter assertions — this is a list-level orchestrator with no
+	// Item.* context and no periodic block of its own (single-run internal loop).
+	if prompt.Name != "Iterate fixing bugs" {
+		t.Errorf("Name = %q, want %q", prompt.Name, "Iterate fixing bugs")
+	}
+	if strings.TrimSpace(prompt.Menus) != "beadsList" {
+		t.Errorf("Menus = %q, want %q", prompt.Menus, "beadsList")
+	}
+	if prompt.Periodic != nil {
+		t.Errorf("Periodic = %+v, want nil — this orchestrator is a single-run internal loop", prompt.Periodic)
+	}
+
+	body := prompt.Content
+
+	render := func(ctx *PromptEnabledContext) string {
+		funcs := BuildTemplateFuncMap(ctx)
+		out, rerr := RenderPromptTemplate("beads-issue-iterate-fixing-bugs", body, ctx, funcs)
+		if rerr != nil {
+			t.Fatalf("RenderPromptTemplate: %v", rerr)
+		}
+		return out
+	}
+
+	// (a) Default context — Commit absent → default to "true" in child args.
+	outA := render(&PromptEnabledContext{})
+
+	// The orchestrator dispatches to the per-bug driver by name.
+	if !strings.Contains(outA, "Iterate fixing bug") {
+		t.Errorf("branch (a): expected reference to per-bug driver name \"Iterate fixing bug\"; got:\n%s", outA)
+	}
+	// Top-level-only + degrade-gracefully guidance must appear.
+	if !strings.Contains(outA, "top-level") {
+		t.Errorf("branch (a): expected 'top-level' spawn-recursion note; got:\n%s", outA)
+	}
+	// Spawn + wait + archive tool triplet must appear.
+	for _, tool := range []string{
+		"mitto_prompt_get",
+		"mitto_conversation_new",
+		"mitto_children_tasks_wait",
+		"mitto_conversation_archive",
+	} {
+		if !strings.Contains(outA, tool) {
+			t.Errorf("branch (a): expected orchestration tool call %q in body; got:\n%s", tool, outA)
+		}
+	}
+	// Periodic re-fire mechanics that make each child self-drive.
+	for _, hint := range []string{
+		"onCompletion",
+		"periodic_prompt",
+		"periodic_completion_delay_seconds: 30",
+		"periodic_max_iterations: 20",
+		"periodic_max_duration_seconds: 14400",
+	} {
+		if !strings.Contains(outA, hint) {
+			t.Errorf("branch (a): expected periodic-budget hint %q in body; got:\n%s", hint, outA)
+		}
+	}
+	// Preflight-flag guidance so a user with either flag off gets a graceful stop.
+	for _, flag := range []string{
+		"Can start conversation",
+		"Can Send Prompt",
+	} {
+		if !strings.Contains(outA, flag) {
+			t.Errorf("branch (a): expected flag preflight text %q in body; got:\n%s", flag, outA)
+		}
+	}
+	// Commit absent → defaults to "true" in the spawned child's arguments map.
+	if !strings.Contains(outA, `"Commit": "true"`) {
+		t.Errorf("branch (a): expected default Commit=\"true\" in child arguments when Commit arg is absent; got:\n%s", outA)
+	}
+
+	// (b) Commit="false" → the child arguments literal flips to "false".
+	outB := render(&PromptEnabledContext{Args: map[string]string{"Commit": "false"}})
+	if !strings.Contains(outB, `"Commit": "false"`) {
+		t.Errorf("branch (b): expected Commit=\"false\" in child arguments when Commit arg is \"false\"; got:\n%s", outB)
+	}
+	if strings.Contains(outB, `"Commit": "true"`) {
+		t.Errorf("branch (b): unexpected Commit=\"true\" in child arguments when Commit arg is \"false\"; got:\n%s", outB)
+	}
+}
+
+
 // TestBugFixPhasePrompts_ParseAndDeclarePreferredModels verifies that the three
 // per-phase bug-fix prompts (Option A tiering, mitto-gap.1) parse from disk,
 // stay hidden from user-facing menus (menus: internal so no UI consumes them),
