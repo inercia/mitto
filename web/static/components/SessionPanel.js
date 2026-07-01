@@ -536,7 +536,10 @@ export function SessionPanel({
       if (e.key === "Enter") {
         e.preventDefault();
         handleSaveTitle();
-      } else if (e.key === "Escape") setIsEditingTitle(false);
+      } else if (e.key === "Escape") {
+        e.preventDefault();
+        setIsEditingTitle(false);
+      }
     },
     [handleSaveTitle],
   );
@@ -712,7 +715,10 @@ export function SessionPanel({
       if (e.key === "Enter") {
         e.preventDefault();
         handleSaveAttribute();
-      } else if (e.key === "Escape") setEditingAttribute(null);
+      } else if (e.key === "Escape") {
+        e.preventDefault();
+        setEditingAttribute(null);
+      }
     },
     [handleSaveAttribute],
   );

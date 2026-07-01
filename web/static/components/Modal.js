@@ -113,6 +113,7 @@ export function Modal({
       if (modalStack[modalStack.length - 1] !== token) return;
 
       if (e.key === "Escape") {
+        e.preventDefault();
         onCloseRef.current?.();
         return;
       }

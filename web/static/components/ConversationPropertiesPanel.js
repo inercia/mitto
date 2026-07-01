@@ -513,6 +513,7 @@ export function ConversationPropertiesPanel({
         e.preventDefault();
         handleSaveTitle();
       } else if (e.key === "Escape") {
+        e.preventDefault();
         setIsEditingTitle(false);
       }
     },

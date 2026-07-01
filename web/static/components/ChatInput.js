@@ -1292,6 +1292,7 @@ export function ChatInput({
     }
     // Close dropup on Escape
     if (e.key === "Escape") {
+      e.preventDefault();
       setShowDropup(false);
       setShowSlashPicker(false);
     }
@@ -3183,6 +3184,7 @@ ${activeUIPrompt.text || ""}</textarea
                             // Prevent the event from bubbling to the textarea
                             e.stopPropagation();
                             if (e.key === "Escape") {
+                              e.preventDefault();
                               setShowDropup(false);
                               return;
                             }
