@@ -255,6 +255,19 @@ func (p promptDispatcher) resolveAndSubstitute(d promptDeps, message string, met
 	// Fast-path guard avoids buildProcessorInput for non-template bodies (the
 	// common case).
 	if config.HasTemplateSyntax(message) {
+		// For shared-process sessions, session/new is deferred to the first prompt
+		// (see PrewarmACPSession) so conversation creation never blocks on a busy
+		// agent process. Without this, the Model(tag) template func would see a
+		// nil agentModels on the very first templated prompt — before the async
+		// PromptWithMeta goroutine gets a chance to complete the handshake — and
+		// silently resolve no tags. completeDeferredHandshake is idempotent and a
+		// cheap no-op once the handshake is done, so it's safe to call here on
+		// every templated prompt. Best-effort: on failure the render simply
+		// degrades to no model tags, matching pdResolveModelTags' documented
+		// fail-open behavior (mitto-dl2).
+		if d.pdHasSharedProcess() {
+			_ = d.pdCompleteDeferredHandshake()
+		}
 		input := p.buildProcessorInput(d, message, false, meta)
 		tctx := processors.BuildCELContext(input)
 		funcs := config.BuildTemplateFuncMap(tctx)
