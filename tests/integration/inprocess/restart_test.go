@@ -245,9 +245,17 @@ func TestACPRestart_BackoffDelays(t *testing.T) {
 			t.Logf("SendPrompt %d failed (expected): %v", i, err)
 		}
 
-		// Wait for restart to complete (includes backoff delay)
-		waitFor(t, 20*time.Second, func() bool {
-			found, _ := errorCollector.containsSince(startIdx, "AI agent restarted")
+		// Wait for the FULL turn to settle (restart + automatic single retry, which
+		// re-crashes on the identical CRASH_N text and ends the turn with
+		// "...Please resend your message."). Waiting on the bare substring
+		// "AI agent restarted" is unreliable: it also matches the earlier,
+		// non-terminal "...Retrying your message automatically..." notification,
+		// so the wait would return before this crash's exponential backoff elapsed
+		// and race on leftover notifications from the previous crash. The terminal
+		// message appears only after the backoff + restart + auto-retry complete, so
+		// the measured cycle correctly includes the backoff delay.
+		waitFor(t, 30*time.Second, func() bool {
+			found, _ := errorCollector.containsSince(startIdx, "Please resend your message")
 			return found
 		}, fmt.Sprintf("restart %d completion", i))
 
