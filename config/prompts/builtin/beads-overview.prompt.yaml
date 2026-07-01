@@ -7,10 +7,8 @@ group: Tasks
 singleton: true
 enabledWhen: CommandExists("bd") && DirExists(".beads")
 preferredModels:
-  - "*haiku*"
-  - "*flash*"
-  - "*mini*"
-  - "*sonnet*"
+  - modelTag: Cheap
+  - modelTag: Coding
 prompt: |
   ## Session Context
 

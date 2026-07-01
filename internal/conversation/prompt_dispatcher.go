@@ -96,7 +96,8 @@ type promptDeps interface {
 	// Per-prompt model preference
 	pdGetAgentModels() *acp.UnstableSessionModelState // may return nil
 	pdResolveModelTags(modelName string) []string     // config.ResolveModelTags; nil when no config/match
-	pdResolvePreferredModels(promptName string) []string
+	pdResolvePreferredModels(promptName string) []config.PromptPreferredModel
+	pdModelProfiles() []config.ModelProfile // global model profiles (Settings → Models)
 	pdReadBaselineModel() string       // modelMu.Lock + read + Unlock
 	pdWriteOverrideActive(active bool) // modelMu.Lock + write + Unlock
 	pdSetActiveModelOnly(ctx context.Context, modelID string) error
@@ -744,7 +745,7 @@ func (p promptDispatcher) applyModelPreference(d promptDeps, meta PromptMeta) {
 	desired := baseline
 	matched := false
 	if len(preferredModels) > 0 {
-		if resolved := SelectPreferredModel(preferredModels, models); resolved != "" {
+		if resolved := SelectPreferredModel(preferredModels, d.pdModelProfiles(), models); resolved != "" {
 			desired = resolved
 			matched = true
 		}

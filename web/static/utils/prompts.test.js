@@ -796,75 +796,220 @@ describe("fetchCachedParamNames", () => {
 // =============================================================================
 
 describe("resolvePromptModelOverride", () => {
+  // Live ACP model list: Haiku → Sonnet → Opus (ordered).
   const modelOption = {
     current_value: "claude-opus-4-8",
     options: [
-      { value: "claude-opus-4-8", name: "Opus 4.8" },
-      { value: "claude-sonnet-4-5", name: "Sonnet 4.5" },
-      { value: "gpt-4o", name: "GPT-4o" },
+      { value: "claude-haiku-3-5", name: "Claude Haiku 3.5" },
+      { value: "claude-sonnet-4-5", name: "Claude Sonnet 4.5" },
+      { value: "claude-opus-4-8", name: "Claude Opus 4.8" },
     ],
   };
 
-  test("returns the override model when a pattern resolves to a different model", () => {
-    const result = resolvePromptModelOverride(["*sonnet*"], modelOption);
-    expect(result).toEqual({ value: "claude-sonnet-4-5", name: "Sonnet 4.5" });
-  });
+  // Global model profiles (config.models) — Settings → Models.
+  const profiles = [
+    {
+      name: "Claude Opus",
+      criteria: { matchMode: "contains", pattern: "Opus" },
+      tags: ["Reasoning", "Smartest"],
+    },
+    {
+      name: "Claude Sonnet",
+      criteria: { matchMode: "contains", pattern: "Sonnet" },
+      tags: ["Coding", "Smart"],
+    },
+    {
+      name: "Claude Haiku",
+      criteria: { matchMode: "contains", pattern: "Haiku" },
+      tags: ["Cheap", "Fast"],
+    },
+  ];
 
-  test("matches against the display name as well as the id", () => {
-    const result = resolvePromptModelOverride(["*gpt-4o*"], modelOption);
-    expect(result).toEqual({ value: "gpt-4o", name: "GPT-4o" });
-  });
-
-  test("returns null when the current model already satisfies a pattern (no switch)", () => {
-    expect(resolvePromptModelOverride(["*opus*"], modelOption)).toBeNull();
-  });
-
-  test("current-model-first: a later pattern matching current does not stop an earlier match", () => {
-    // First pattern matches sonnet (not current), so it wins before opus is considered.
+  test("modelName resolves to the profile's matched model when it differs from current", () => {
     const result = resolvePromptModelOverride(
-      ["*sonnet*", "*opus*"],
+      [{ modelName: "Claude Sonnet" }],
       modelOption,
+      profiles,
     );
-    expect(result).toEqual({ value: "claude-sonnet-4-5", name: "Sonnet 4.5" });
+    expect(result).toEqual({
+      value: "claude-sonnet-4-5",
+      name: "Claude Sonnet 4.5",
+    });
   });
 
-  test("current model wins when it matches the first pattern", () => {
-    // Current (opus) matches the first pattern → no override even though sonnet exists.
+  test("modelName is case-insensitive against profile.name", () => {
+    const result = resolvePromptModelOverride(
+      [{ modelName: "claude sonnet" }],
+      modelOption,
+      profiles,
+    );
+    expect(result).toEqual({
+      value: "claude-sonnet-4-5",
+      name: "Claude Sonnet 4.5",
+    });
+  });
+
+  test("modelTag resolves the first tagged profile that yields an available model", () => {
+    // "Coding" is only on the Sonnet profile.
+    const result = resolvePromptModelOverride(
+      [{ modelTag: "Coding" }],
+      modelOption,
+      profiles,
+    );
+    expect(result).toEqual({
+      value: "claude-sonnet-4-5",
+      name: "Claude Sonnet 4.5",
+    });
+  });
+
+  test("modelTag is deterministic by profile order when multiple profiles share the tag", () => {
+    // Add a shared "Cheap" tag on Sonnet so both Sonnet (index 1) and Haiku
+    // (index 2) match. Sonnet comes first in profile order → wins.
+    const shared = [
+      profiles[0],
+      { ...profiles[1], tags: [...profiles[1].tags, "Cheap"] },
+      profiles[2],
+    ];
+    const result = resolvePromptModelOverride(
+      [{ modelTag: "Cheap" }],
+      modelOption,
+      shared,
+    );
+    expect(result).toEqual({
+      value: "claude-sonnet-4-5",
+      name: "Claude Sonnet 4.5",
+    });
+  });
+
+  test("current-satisfies: modelName matching current model returns null (no chip)", () => {
+    // Current is Opus, and the resolved target of "Claude Opus" is Opus → keep.
     expect(
-      resolvePromptModelOverride(["*opus*", "*sonnet*"], modelOption),
+      resolvePromptModelOverride(
+        [{ modelName: "Claude Opus" }],
+        modelOption,
+        profiles,
+      ),
     ).toBeNull();
   });
 
-  test("walks patterns in order and skips patterns with no available match", () => {
+  test("current-satisfies: modelTag whose tagged profile matches current model returns null", () => {
+    // Current is Opus; "Reasoning" tags Opus → current already satisfies.
+    expect(
+      resolvePromptModelOverride(
+        [{ modelTag: "Reasoning" }],
+        modelOption,
+        profiles,
+      ),
+    ).toBeNull();
+  });
+
+  test("ordered first-match-wins: earlier entry that resolves takes precedence", () => {
     const result = resolvePromptModelOverride(
-      ["*flash*", "*sonnet*"],
+      [{ modelName: "Claude Sonnet" }, { modelName: "Claude Haiku" }],
       modelOption,
+      profiles,
     );
-    expect(result).toEqual({ value: "claude-sonnet-4-5", name: "Sonnet 4.5" });
+    expect(result).toEqual({
+      value: "claude-sonnet-4-5",
+      name: "Claude Sonnet 4.5",
+    });
   });
 
-  test("is case-insensitive", () => {
-    const result = resolvePromptModelOverride(["*SONNET*"], modelOption);
-    expect(result).toEqual({ value: "claude-sonnet-4-5", name: "Sonnet 4.5" });
+  test("unknown entries are skipped so a later resolvable entry can win", () => {
+    const result = resolvePromptModelOverride(
+      [
+        { modelName: "Nonexistent Profile" },
+        { modelTag: "NoSuchTag" },
+        { modelName: "Claude Sonnet" },
+      ],
+      modelOption,
+      profiles,
+    );
+    expect(result).toEqual({
+      value: "claude-sonnet-4-5",
+      name: "Claude Sonnet 4.5",
+    });
   });
 
-  test("returns null when nothing matches", () => {
-    expect(resolvePromptModelOverride(["*nope*"], modelOption)).toBeNull();
+  test("returns null when a modelName's profile resolves to no available model", () => {
+    // No model whose name contains "Gemini" → skip; nothing else → null.
+    const withOrphan = [
+      ...profiles,
+      {
+        name: "Gemini",
+        criteria: { matchMode: "contains", pattern: "Gemini" },
+        tags: [],
+      },
+    ];
+    expect(
+      resolvePromptModelOverride(
+        [{ modelName: "Gemini" }],
+        modelOption,
+        withOrphan,
+      ),
+    ).toBeNull();
   });
 
   test("returns null for empty/absent preferredModels", () => {
-    expect(resolvePromptModelOverride([], modelOption)).toBeNull();
-    expect(resolvePromptModelOverride(undefined, modelOption)).toBeNull();
+    expect(resolvePromptModelOverride([], modelOption, profiles)).toBeNull();
+    expect(
+      resolvePromptModelOverride(undefined, modelOption, profiles),
+    ).toBeNull();
   });
 
   test("returns null when modelOption is absent or has no options", () => {
-    expect(resolvePromptModelOverride(["*sonnet*"], null)).toBeNull();
     expect(
-      resolvePromptModelOverride(["*sonnet*"], {
-        current_value: "x",
-        options: [],
-      }),
+      resolvePromptModelOverride(
+        [{ modelName: "Claude Sonnet" }],
+        null,
+        profiles,
+      ),
     ).toBeNull();
+    expect(
+      resolvePromptModelOverride(
+        [{ modelName: "Claude Sonnet" }],
+        { current_value: "x", options: [] },
+        profiles,
+      ),
+    ).toBeNull();
+  });
+
+  test("returns null when modelProfiles is absent or empty", () => {
+    expect(
+      resolvePromptModelOverride(
+        [{ modelName: "Claude Sonnet" }],
+        modelOption,
+        undefined,
+      ),
+    ).toBeNull();
+    expect(
+      resolvePromptModelOverride(
+        [{ modelName: "Claude Sonnet" }],
+        modelOption,
+        [],
+      ),
+    ).toBeNull();
+  });
+
+  test("latest-version-wins: MatchConstraintOption returns the last matching option", () => {
+    // Two Sonnet versions; the later one (4.5) should win.
+    const modelOptionMulti = {
+      current_value: "claude-opus-4-8",
+      options: [
+        { value: "claude-sonnet-3-5", name: "Claude Sonnet 3.5" },
+        { value: "claude-sonnet-4-5", name: "Claude Sonnet 4.5" },
+        { value: "claude-opus-4-8", name: "Claude Opus 4.8" },
+      ],
+    };
+    const result = resolvePromptModelOverride(
+      [{ modelName: "Claude Sonnet" }],
+      modelOptionMulti,
+      profiles,
+    );
+    expect(result).toEqual({
+      value: "claude-sonnet-4-5",
+      name: "Claude Sonnet 4.5",
+    });
   });
 });
 

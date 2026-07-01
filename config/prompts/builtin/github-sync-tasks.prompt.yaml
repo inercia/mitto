@@ -9,10 +9,8 @@ tags:
 - github
 enabledWhen: FileExists(".git/config") && (Tools.HasPattern("github_*") || CommandExists("gh")) && CommandExists("bd")
 preferredModels:
-  - "*haiku*"
-  - "*flash*"
-  - "*mini*"
-  - "*sonnet*"
+  - modelTag: Cheap
+  - modelTag: Coding
 periodic:
   mode: optional
   default: true

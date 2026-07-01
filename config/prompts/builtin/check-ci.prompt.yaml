@@ -5,10 +5,8 @@ description: Check CI pipeline status and report results
 group: CI
 backgroundColor: '#BBDEFB'
 preferredModels:
-  - "*haiku*"
-  - "*flash*"
-  - "*mini*"
-  - "*sonnet*"
+  - modelTag: Cheap
+  - modelTag: Coding
 periodic:
   mode: optional
   default: false

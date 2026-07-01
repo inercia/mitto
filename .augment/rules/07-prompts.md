@@ -171,15 +171,21 @@ Server-side via `filterPromptsByEnabled()` / `buildPromptEnabledContext()`. Use 
 
 ### preferredModels Field
 
-Prompts may declare preferred ACP model(s) for auto-selection during session init:
+Prompts may declare preferred model(s) for auto-selection at prompt-dispatch time. Each entry is a **structured reference to a global model profile** (Settings → Models — see [docs/config/models.md](../../docs/config/models.md)) with **exactly one** of `modelName` / `modelTag`:
 
 ```yaml
 preferredModels:
-  - name: "Claude"
-    matchMode: "contains"  # "contains", "exact", "startsWith", "regex", "lookAlike"
+  - modelName: Claude Sonnet   # matches a profile by its `name` (case-insensitive)
+  - modelTag: Coding           # selects any profile carrying this tag (case-insensitive)
 ```
 
-Backend calls `selectPreferredModel()` to pick the best matching active model from the session's ACP server. If the active model **already satisfies** the preference, it is kept; otherwise the preference is applied. This enables smart routing of multi-model sessions without forcing model switches when not needed.
+- **`modelName`** — matches a global model profile by its `name` (case-insensitive equality).
+- **`modelTag`** — selects any profile carrying that tag. Multiple profiles may share a tag; resolution is **deterministic by profile order** in the global `models:` list (first profile with the tag wins).
+- Entries are **ordered, first-match-wins**: the backend tries each entry in order and stops at the first one that resolves to a profile whose criteria match an available model on the session's ACP server.
+
+Backend calls `selectPreferredModel()` to pick the best matching active model. If the active model **already satisfies** the preference (i.e. its name matches the resolved profile's criteria), it is kept; otherwise the preference is applied. This enables smart routing of multi-model sessions without forcing model switches when not needed.
+
+Old glob-string form (`- "*sonnet*"`) is **removed** — hard cutover, no fallback.
 
 ## Parameter Value Caching (`cache` block)
 

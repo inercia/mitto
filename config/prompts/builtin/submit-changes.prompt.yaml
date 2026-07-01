@@ -5,10 +5,7 @@ description: Submit changes
 group: Submission of changes
 backgroundColor: '#B2DFDB'
 preferredModels:
-  - "*sonnet*"
-  - "*flash*"
-  - "*gpt-4o*"
-  - "*gpt-4.1*"
+  - modelTag: Coding
 prompt: |
   Submit current work by preparing, committing (if needed), and pushing changes to a pull request.
 

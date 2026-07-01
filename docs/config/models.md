@@ -116,6 +116,37 @@ See [prompt-templates.md](../devel/prompt-templates.md) (context schema table an
 `Model` function) and [prompts.md](prompts.md) (`enabledWhen` with
 `Session.HasModelTag`) for the canonical reference.
 
+## Referenced by prompts (`preferredModels`)
+
+Prompts may declare a `preferredModels:` list to steer model selection at prompt
+dispatch. Each entry is a **structured reference to a profile** with **exactly one**
+of `modelName` / `modelTag`:
+
+```yaml
+preferredModels:
+  - modelName: Claude Sonnet   # matches a profile by its `name` (case-insensitive)
+  - modelTag: Coding           # selects any profile carrying this tag
+```
+
+- **`modelName`** — case-insensitive equality against the profile's `name`.
+- **`modelTag`** — matches any profile carrying that tag. When several profiles share
+  the tag, resolution is **deterministic by profile order** in the `models:` list
+  (first profile with the tag wins). Given the shipped defaults above, the tag-based
+  entries in the builtin prompts resolve as follows:
+  - `Coding` → first hit is `Claude Sonnet` (also on `GPT-5`, `GPT-4`).
+  - `Cheap` → `Claude Haiku`.
+  - `Smart`, `Smartest`, `Reasoning`, `Fast`, `LongContext`, `Anthropic`,
+    `Expensive` are also available; see the shipped defaults table.
+- Entries are **ordered, first-match-wins**. The backend tries each entry in order
+  and stops at the first that resolves to a profile whose `criteria` match an
+  available model on the session's ACP server.
+- If the current model **already satisfies** the resolved profile, it is kept — no
+  needless model switch. Otherwise the preference is applied.
+
+The old glob-pattern form (`- "*sonnet*"`) has been removed. See
+[.augment/rules/07-prompts.md § preferredModels Field](../../.augment/rules/07-prompts.md)
+for the internal implementation notes.
+
 ## See also
 
 - [ACP Servers / Model Selection Constraints](acp.md) — shares the same match engine

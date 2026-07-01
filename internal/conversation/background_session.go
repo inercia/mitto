@@ -296,7 +296,7 @@ type BackgroundSession struct {
 	// preferredModelsResolver resolves a prompt name to its preferredModels list.
 	// Used in PromptWithMeta to auto-select models for named prompts without a
 	// PreferredModels field already set in PromptMeta.
-	preferredModelsResolver func(name, workingDir string) []string
+	preferredModelsResolver func(name, workingDir string) []config.PromptPreferredModel
 
 	// promptParametersResolver resolves a prompt name to its declared parameter list.
 	// Used by the prompt dispatcher (mitto-pchx.3) to read per-parameter cache config
@@ -428,7 +428,7 @@ type BackgroundSessionConfig struct {
 	// PreferredModelsResolver resolves a named workspace prompt to its preferredModels list.
 	// When set and PromptMeta.PreferredModels is empty, the list is resolved from the
 	// prompt name in PromptWithMeta before the per-prompt model-switching logic runs.
-	PreferredModelsResolver func(name, workingDir string) []string
+	PreferredModelsResolver func(name, workingDir string) []config.PromptPreferredModel
 
 	// PromptParametersResolver resolves a named workspace prompt to its declared parameter list.
 	// Used by the prompt dispatcher (mitto-pchx.3) to read per-parameter cache config

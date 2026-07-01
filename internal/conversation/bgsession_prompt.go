@@ -149,11 +149,12 @@ type PromptMeta struct {
 	// Only set for named/scenario prompts; ad-hoc messages leave this nil so that
 	// pasted shell/code containing template-like text is never corrupted.
 	Arguments map[string]string
-	// PreferredModels is an ordered list of case-insensitive glob patterns matched against
-	// available model IDs and display names. The first match wins; absent/empty uses the
-	// session's baseline model. When empty and PromptName is set, the list is resolved
-	// from the prompt definition via preferredModelsResolver inside PromptWithMeta.
-	PreferredModels []string
+	// PreferredModels is an ordered list of references to global model profiles
+	// (Settings → Models), by profile name or capability tag. The first entry that
+	// resolves to an available model wins; absent/empty uses the session's baseline
+	// model. When empty and PromptName is set, the list is resolved from the prompt
+	// definition via preferredModelsResolver inside PromptWithMeta.
+	PreferredModels []config.PromptPreferredModel
 	// Meta is an optional generic metadata bag attached to the persisted user-prompt
 	// event. Same sensitivity rules as session.RecordOption apply: no full prompt text
 	// or raw secrets. Bounded (≤80 chars), name-redacted argument values ARE recorded
@@ -849,11 +850,20 @@ func (bs *BackgroundSession) pdResolveModelTags(modelName string) []string {
 	return bs.mittoConfig.ResolveModelTags(modelName)
 }
 
-func (bs *BackgroundSession) pdResolvePreferredModels(promptName string) []string {
+func (bs *BackgroundSession) pdResolvePreferredModels(promptName string) []config.PromptPreferredModel {
 	if bs.preferredModelsResolver == nil || promptName == "" {
 		return nil
 	}
 	return bs.preferredModelsResolver(promptName, bs.workingDir)
+}
+
+// pdModelProfiles exposes the global model profiles (Settings → Models) so
+// SelectPreferredModel can resolve PromptPreferredModel entries by name/tag.
+func (bs *BackgroundSession) pdModelProfiles() []config.ModelProfile {
+	if bs.mittoConfig == nil {
+		return nil
+	}
+	return bs.mittoConfig.Models
 }
 
 func (bs *BackgroundSession) pdResolvePromptParameters(promptName string) []config.PromptParameter {

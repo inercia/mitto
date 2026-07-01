@@ -113,7 +113,7 @@ Use `matchMode: contains` for robust cross-version matching. Tags are interface-
 
 `ACPServer.Constraints`: auto-select config options (model, etc.) on session start. MatchModes: `"contains"`, `"exact"`, `"startsWith"`, `"regex"`, `"lookAlike"` (word-based). Applied in `applyConfigConstraints()` after ACP init.
 
-Prompt `preferredModels` field (see `07-prompts.md`) also uses these match modes for model auto-selection during `selectPreferredModel()`.
+Prompt `preferredModels` field (see `07-prompts.md`) references these profiles by **name** (`modelName:`) or **tag** (`modelTag:`) — it does NOT use match-mode globs directly. The profile's own `criteria.matchMode` is applied indirectly, via `selectPreferredModel()`, when the resolved profile's criteria are matched against the ACP server's available models.
 
 Agent metadata can pre-seed these at discovery: `metadata.yaml` `defaults.constraints` (plus `defaults.env`/`tags`/`autoApprove`) map onto `ACPServer.Constraints`/`Env`/`Tags`/`AutoApprove` via `seedACPServerDefaults` (see [03-cli-acp.md](03-cli-acp.md#agent-defaults-seeded-at-discovery)). Seeding is request-wins (user-supplied values are not overwritten).
 

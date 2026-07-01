@@ -9,10 +9,8 @@ tags:
 - jira
 enabledWhen: Tools.HasPattern("jira_*") && CommandExists("bd")
 preferredModels:
-  - "*haiku*"
-  - "*flash*"
-  - "*mini*"
-  - "*sonnet*"
+  - modelTag: Cheap
+  - modelTag: Coding
 periodic:
   mode: optional
   default: true

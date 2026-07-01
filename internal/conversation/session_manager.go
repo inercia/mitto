@@ -158,7 +158,7 @@ type SessionManager struct {
 
 	// preferredModelsResolver resolves a named workspace prompt to its preferredModels list.
 	// Passed to BackgroundSession via BackgroundSessionConfig on creation/resume.
-	preferredModelsResolver func(name, workingDir string) []string
+	preferredModelsResolver func(name, workingDir string) []config.PromptPreferredModel
 
 	// promptParametersResolver resolves a named workspace prompt to its declared parameter list.
 	// Passed to BackgroundSession via BackgroundSessionConfig on creation/resume.
@@ -675,7 +675,7 @@ func (sm *SessionManager) SetPromptResolver(resolver PromptResolver) {
 
 // SetPreferredModelsResolver sets the function used to resolve a prompt name to its preferredModels list.
 // The resolver is passed to every new and resumed BackgroundSession via BackgroundSessionConfig.
-func (sm *SessionManager) SetPreferredModelsResolver(resolver func(name, workingDir string) []string) {
+func (sm *SessionManager) SetPreferredModelsResolver(resolver func(name, workingDir string) []config.PromptPreferredModel) {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 	sm.preferredModelsResolver = resolver

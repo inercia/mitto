@@ -6,10 +6,8 @@ menus: prompts, conversation
 backgroundColor: '#FFF9C4'
 enabledWhen: Session.IsChild && Parent.Exists && Tools.HasPattern("mitto_conversation_*") && !Session.IsPeriodicConversation
 preferredModels:
-  - "*haiku*"
-  - "*flash*"
-  - "*mini*"
-  - "*sonnet*"
+  - modelTag: Cheap
+  - modelTag: Coding
 prompt: |
   Report the current status and findings to the parent conversation that spawned this one.
 

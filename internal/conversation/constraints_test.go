@@ -135,7 +135,23 @@ func TestResolveAuxModelSwitch(t *testing.T) {
 	}
 }
 
-// TestSelectPreferredModel tests the per-prompt model resolver.
+// selectPreferredModelTestProfiles returns a fixture of model profiles used by
+// TestSelectPreferredModel: Opus (contains "Opus", tags Reasoning/Smartest), Sonnet
+// (contains "Sonnet", tags Coding/Smart/Backup), Haiku (contains "Haiku", tags
+// Cheap/Fast), and Gemini (contains "gemini", tag Backup) which never resolves against
+// the fixture's available models — used to exercise deterministic tag fallback (the
+// first tagged profile, in slice order, that yields an available model wins).
+func selectPreferredModelTestProfiles() []config.ModelProfile {
+	return []config.ModelProfile{
+		{Name: "Opus", Criteria: &config.ACPServerConstraint{MatchMode: "contains", Pattern: "Opus"}, Tags: []string{"Reasoning", "Smartest"}},
+		{Name: "Gemini", Criteria: &config.ACPServerConstraint{MatchMode: "contains", Pattern: "gemini"}, Tags: []string{"Backup"}},
+		{Name: "Sonnet", Criteria: &config.ACPServerConstraint{MatchMode: "contains", Pattern: "Sonnet"}, Tags: []string{"Coding", "Smart", "Backup"}},
+		{Name: "Haiku", Criteria: &config.ACPServerConstraint{MatchMode: "contains", Pattern: "Haiku"}, Tags: []string{"Cheap", "Fast"}},
+	}
+}
+
+// TestSelectPreferredModel tests the per-prompt model resolver against ModelName/ModelTag
+// preference entries resolved through a fixture of global model profiles.
 func TestSelectPreferredModel(t *testing.T) {
 	newModels := func(current string) *acp.UnstableSessionModelState {
 		return &acp.UnstableSessionModelState{
@@ -148,29 +164,31 @@ func TestSelectPreferredModel(t *testing.T) {
 			},
 		}
 	}
+	profiles := selectPreferredModelTestProfiles()
+
 	tests := []struct {
-		name     string
-		patterns []string
-		current  string
-		want     string
+		name    string
+		prefs   []config.PromptPreferredModel
+		current string
+		want    string
 	}{
-		{name: "exact match by model id", patterns: []string{"claude-opus-4-6"}, current: "claude-sonnet-4-6", want: "claude-opus-4-6"},
-		{name: "match by display name", patterns: []string{"Sonnet 4.6"}, current: "claude-opus-4-6", want: "claude-sonnet-4-6"},
-		{name: "current matches only pattern → keep", patterns: []string{"*sonnet*"}, current: "claude-sonnet-4-6", want: "claude-sonnet-4-6"},
-		{name: "current matches broad pattern → keep", patterns: []string{"claude-*"}, current: "claude-sonnet-4-6", want: "claude-sonnet-4-6"},
-		{name: "current does not match broad pattern → first match", patterns: []string{"claude-*"}, current: "gpt-4o", want: "claude-haiku-4-5"},
-		{name: "higher-priority pattern wins → switch", patterns: []string{"*opus*", "*sonnet*"}, current: "claude-sonnet-4-6", want: "claude-opus-4-6"},
-		{name: "current matches highest-priority → keep", patterns: []string{"*opus*", "*sonnet*"}, current: "claude-opus-4-6", want: "claude-opus-4-6"},
-		{name: "first pattern matches none, current matches second → keep", patterns: []string{"*nonexistent*", "*haiku*"}, current: "claude-haiku-4-5", want: "claude-haiku-4-5"},
-		{name: "no pattern matches anything → empty", patterns: []string{"*nonexistent*", "*missing*"}, current: "claude-sonnet-4-6", want: ""},
-		{name: "empty patterns → empty", patterns: []string{}, current: "claude-sonnet-4-6", want: ""},
-		{name: "nil patterns → empty", patterns: nil, current: "claude-sonnet-4-6", want: ""},
+		{name: "modelName resolves to profile's model", prefs: []config.PromptPreferredModel{{ModelName: "Opus"}}, current: "claude-sonnet-4-6", want: "claude-opus-4-6"},
+		{name: "modelName case-insensitive", prefs: []config.PromptPreferredModel{{ModelName: "sonnet"}}, current: "claude-opus-4-6", want: "claude-sonnet-4-6"},
+		{name: "current satisfies modelName → keep, no switch", prefs: []config.PromptPreferredModel{{ModelName: "Sonnet"}}, current: "claude-sonnet-4-6", want: "claude-sonnet-4-6"},
+		{name: "modelTag resolves first-yielding profile deterministically", prefs: []config.PromptPreferredModel{{ModelTag: "Backup"}}, current: "gpt-4o", want: "claude-sonnet-4-6"},
+		{name: "current satisfies modelTag → keep, no switch", prefs: []config.PromptPreferredModel{{ModelTag: "Cheap"}}, current: "claude-haiku-4-5", want: "claude-haiku-4-5"},
+		{name: "unknown modelName falls through to next entry", prefs: []config.PromptPreferredModel{{ModelName: "Nonexistent"}, {ModelName: "Haiku"}}, current: "claude-sonnet-4-6", want: "claude-haiku-4-5"},
+		{name: "unknown modelTag falls through to next entry", prefs: []config.PromptPreferredModel{{ModelTag: "Nonexistent"}, {ModelName: "Opus"}}, current: "claude-sonnet-4-6", want: "claude-opus-4-6"},
+		{name: "ordered first-match-wins: higher-priority entry wins over current match", prefs: []config.PromptPreferredModel{{ModelName: "Opus"}, {ModelName: "Sonnet"}}, current: "claude-sonnet-4-6", want: "claude-opus-4-6"},
+		{name: "empty entry list → empty", prefs: []config.PromptPreferredModel{}, current: "claude-sonnet-4-6", want: ""},
+		{name: "nil entry list → empty", prefs: nil, current: "claude-sonnet-4-6", want: ""},
+		{name: "entry with neither modelName nor modelTag falls through → empty", prefs: []config.PromptPreferredModel{{}}, current: "claude-sonnet-4-6", want: ""},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := SelectPreferredModel(tt.patterns, newModels(tt.current))
+			got := SelectPreferredModel(tt.prefs, profiles, newModels(tt.current))
 			if got != tt.want {
-				t.Errorf("SelectPreferredModel(%v, current=%q) = %q, want %q", tt.patterns, tt.current, got, tt.want)
+				t.Errorf("SelectPreferredModel(%v, current=%q) = %q, want %q", tt.prefs, tt.current, got, tt.want)
 			}
 		})
 	}
@@ -178,7 +196,7 @@ func TestSelectPreferredModel(t *testing.T) {
 
 // TestSelectPreferredModel_NilModels ensures the function handles nil model state.
 func TestSelectPreferredModel_NilModels(t *testing.T) {
-	if got := SelectPreferredModel([]string{"*sonnet*"}, nil); got != "" {
+	if got := SelectPreferredModel([]config.PromptPreferredModel{{ModelName: "Sonnet"}}, selectPreferredModelTestProfiles(), nil); got != "" {
 		t.Errorf("SelectPreferredModel with nil models = %q, want empty", got)
 	}
 }

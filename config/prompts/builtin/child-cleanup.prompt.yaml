@@ -6,10 +6,8 @@ menus: prompts, conversation
 backgroundColor: '#FFF9C4'
 enabledWhen: Children.Exists && Tools.HasPattern("mitto_conversation_*") && !Session.IsPeriodicConversation
 preferredModels:
-  - "*haiku*"
-  - "*flash*"
-  - "*mini*"
-  - "*sonnet*"
+  - modelTag: Cheap
+  - modelTag: Coding
 prompt: |
   Review the child conversations spawned from this one, identify the ones that have
   finished their work and are no longer needed, and delete them after user confirmation.

@@ -199,6 +199,9 @@ export function ChatInput({
   sendKeyMode = "enter",
   configOptions = [],
   onSetConfigOption,
+  // Global model profiles (config.models) — needed by PromptsMenu to resolve
+  // structured preferredModels ({modelName}/{modelTag}) into an override chip.
+  modelProfiles = [],
   contextUsage = null,
   tokenUsage = null,
   onOpenPromptParamDialog,
@@ -3132,6 +3135,7 @@ ${activeUIPrompt.text || ""}</textarea
                         <${PromptsMenu}
                           prompts=${predefinedPrompts}
                           modelOption=${modelOption}
+                          modelProfiles=${modelProfiles}
                           filterText=${promptFilterText}
                           onFilterChange=${(value) => {
                             setPromptFilterText(value);

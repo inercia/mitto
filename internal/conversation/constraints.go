@@ -82,17 +82,20 @@ func ResolveAuxModelSwitch(constraint *config.ACPServerConstraint, models *acp.U
 	return matched, true
 }
 
-// SelectPreferredModel resolves an ordered list of case-insensitive glob patterns to the
-// model id the session should run with. Patterns are walked in preference order and, for
-// each pattern, the currently active model is checked FIRST: when it already matches the
-// pattern it is kept as-is (returning the current id) so no needless SetSessionModel RPC is
-// issued. Only when the active model does not match does the function fall back to the first
-// other available model matching that pattern. Patterns that match no available model are
-// skipped, so resolution continues with the next preference. Matching is glob against both
-// ModelId and Name. Returns "" when nothing matches, signalling the caller to fall back to
-// the session baseline.
-func SelectPreferredModel(patterns []string, models *acp.UnstableSessionModelState) string {
-	if len(patterns) == 0 || models == nil {
+// SelectPreferredModel resolves an ordered list of preferred-model profile references
+// (each naming a global Model profile by ModelName or ModelTag) to the model id the
+// session should run with. Entries are walked in preference order and, for each entry,
+// the currently active model is checked FIRST: when it already satisfies the entry's
+// profile criteria it is kept as-is (returning the current id) so no needless
+// SetSessionModel RPC is issued. Only when the active model does not satisfy the entry
+// does the function fall back to the model resolved from the entry's profile(s) via
+// ResolveProfileModel. A ModelTag entry considers every profile carrying that tag, in
+// profiles-slice order, and uses the first one that resolves to an available model
+// (deterministic first-match-wins). Unknown names/tags or entries that resolve to no
+// available model are skipped, so resolution continues with the next preference.
+// Returns "" when nothing matches, signalling the caller to fall back to the baseline.
+func SelectPreferredModel(prefs []config.PromptPreferredModel, profiles []config.ModelProfile, models *acp.UnstableSessionModelState) string {
+	if len(prefs) == 0 || models == nil {
 		return ""
 	}
 	current := string(models.CurrentModelId)
@@ -103,19 +106,55 @@ func SelectPreferredModel(patterns []string, models *acp.UnstableSessionModelSta
 			break
 		}
 	}
-	for _, pattern := range patterns {
-		patternLower := strings.ToLower(pattern)
-		if current != "" && (GlobMatchCI(patternLower, current) ||
-			(currentName != "" && GlobMatchCI(patternLower, currentName))) {
-			return current
-		}
-		for _, m := range models.AvailableModels {
-			if GlobMatchCI(patternLower, string(m.ModelId)) || GlobMatchCI(patternLower, m.Name) {
-				return string(m.ModelId)
+
+	for _, pref := range prefs {
+		switch {
+		case pref.ModelName != "":
+			profile := config.ProfileByName(profiles, pref.ModelName)
+			if profile == nil {
+				continue
+			}
+			if current != "" && currentSatisfiesProfile(profile, current, currentName) {
+				return current
+			}
+			if resolved := ResolveProfileModel(profile, models); resolved != "" {
+				return resolved
+			}
+		case pref.ModelTag != "":
+			tagged := config.ProfilesByTag(profiles, pref.ModelTag)
+			if len(tagged) == 0 {
+				continue
+			}
+			if current != "" {
+				for i := range tagged {
+					if currentSatisfiesProfile(&tagged[i], current, currentName) {
+						return current
+					}
+				}
+			}
+			for i := range tagged {
+				if resolved := ResolveProfileModel(&tagged[i], models); resolved != "" {
+					return resolved
+				}
 			}
 		}
+		// Unset/unknown entry, or one that resolved to nothing → try the next preference.
 	}
 	return ""
+}
+
+// currentSatisfiesProfile reports whether the current model (matched by id or display
+// name) already satisfies profile's Criteria, letting SelectPreferredModel skip a
+// needless SetSessionModel RPC when the active model already belongs to the preferred
+// profile.
+func currentSatisfiesProfile(profile *config.ModelProfile, currentID, currentName string) bool {
+	if profile == nil || profile.Criteria == nil {
+		return false
+	}
+	if config.ConstraintMatchesName(profile.Criteria, currentID) {
+		return true
+	}
+	return currentName != "" && config.ConstraintMatchesName(profile.Criteria, currentName)
 }
 
 // ModelDisplayName returns the human-readable Name for modelID from the available

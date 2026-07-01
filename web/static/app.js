@@ -971,6 +971,12 @@ function App() {
   // Agent discovery dialog state (shown on first run when no ACP servers configured)
   const [showAgentDiscovery, setShowAgentDiscovery] = useState(false);
 
+  // Global model profiles (config.models). Threaded into ChatInput → PromptsMenu
+  // so prompts with structured preferredModels ({modelName}/{modelTag}) can
+  // resolve to an "overrides model" chip. Refreshed alongside other UI settings
+  // on mount and after SettingsDialog saves.
+  const [modelProfiles, setModelProfiles] = useState([]);
+
   // Check if running in the native macOS app
   const isMacApp = typeof window.mittoPickFolder === "function";
 
@@ -978,6 +984,8 @@ function App() {
   useEffect(() => {
     fetchConfig()
       .then((config) => {
+        // Load global model profiles (config.models) for PromptsMenu chips.
+        setModelProfiles(Array.isArray(config?.models) ? config.models : []);
         // Track if config is read-only (loaded from --config file or RC file)
         if (config?.config_readonly) {
           setConfigReadonly(true);
@@ -2504,6 +2512,10 @@ function App() {
             try {
               const config = await fetchConfig();
               if (config) {
+                // Reload global model profiles for PromptsMenu chips.
+                setModelProfiles(
+                  Array.isArray(config?.models) ? config.models : [],
+                );
                 // Reload UI settings
                 setDeleteConfirmMode(
                   config?.ui?.confirmations?.delete_conversation || "always",
@@ -3011,6 +3023,7 @@ function App() {
                       sendKeyMode=${sendKeyMode}
                       configOptions=${configOptions}
                       onSetConfigOption=${setConfigOption}
+                      modelProfiles=${modelProfiles}
                       contextUsage=${sessionInfo?.context_usage ?? null}
                       tokenUsage=${sessionInfo?.usage ?? null}
                     />

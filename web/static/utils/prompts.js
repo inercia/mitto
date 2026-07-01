@@ -474,23 +474,65 @@ export function flattenPrompts(prompts, opts) {
 }
 
 /**
- * Case-insensitive glob match mirroring Go's path.Match for model ids/names.
- * '*' matches any run of non-'/' chars, '?' matches a single non-'/' char; all
- * other regex metacharacters are escaped. Model ids/names contain no '/', so
- * '*' effectively matches anything.
+ * Frontend mirror of backend config.ConstraintMatchesName
+ * (internal/config/config.go). Reports whether `name` matches a criteria
+ * `{ matchMode, pattern }` case-insensitively. A nil/empty criteria never
+ * matches. Keep in sync with the Go implementation.
  */
-function globToRegExp(pattern) {
-  let out = "^";
-  for (const ch of pattern) {
-    if (ch === "*") out += "[^/]*";
-    else if (ch === "?") out += "[^/]";
-    else out += ch.replace(/[.+^${}()|[\]\\]/g, "\\$&");
+function constraintMatchesName(criteria, name) {
+  if (!criteria) return false;
+  const pattern = String(criteria.pattern || "");
+  const patternLower = pattern.toLowerCase();
+  const nameStr = String(name || "");
+  const nameLower = nameStr.toLowerCase();
+  switch (criteria.matchMode) {
+    case "contains":
+      return nameLower.includes(patternLower);
+    case "exact":
+      return nameLower === patternLower;
+    case "startsWith":
+      return nameLower.startsWith(patternLower);
+    case "regex": {
+      if (!pattern) return false;
+      try {
+        return new RegExp(pattern, "i").test(nameStr);
+      } catch (_e) {
+        return false;
+      }
+    }
+    case "lookAlike": {
+      const words = patternLower.split(/\s+/).filter(Boolean);
+      if (words.length === 0) return false;
+      return words.every((w) => nameLower.includes(w));
+    }
+    default:
+      return false;
   }
-  return new RegExp(out + "$");
 }
 
-function globMatchCI(patternLower, s) {
-  return globToRegExp(patternLower).test(String(s).toLowerCase());
+/**
+ * Frontend mirror of backend ResolveProfileModel + MatchConstraintOption
+ * (internal/conversation/constraints.go). Iterates the modelOption's options
+ * and returns the LAST option whose display name matches the profile's
+ * criteria — so when models are ordered by version, the latest wins. Returns
+ * null when profile/criteria is missing or nothing matches.
+ */
+function resolveProfileModel(profile, modelOption) {
+  if (
+    !profile ||
+    !profile.criteria ||
+    !modelOption ||
+    !Array.isArray(modelOption.options)
+  ) {
+    return null;
+  }
+  let matched = null;
+  for (const opt of modelOption.options) {
+    if (constraintMatchesName(profile.criteria, opt.name || "")) {
+      matched = opt;
+    }
+  }
+  return matched ? { value: matched.value, name: matched.name || matched.value } : null;
 }
 
 /**
@@ -498,28 +540,39 @@ function globMatchCI(patternLower, s) {
  * (internal/conversation/constraints.go). The Go function is the canonical
  * source of truth — keep this in sync.
  *
- * Resolves a prompt's ordered `preferredModels` glob patterns against the live
- * "model" config option to decide which model the prompt would transiently run
- * on. Patterns are walked in order; for each pattern the CURRENT model is checked
- * first (an already-satisfying model is kept, so there is no override), otherwise
- * the first available model matching the pattern is chosen. Matching is glob
- * (case-insensitive) against both the model value (id) and display name.
+ * Resolves a prompt's ordered `preferredModels` — structured references to
+ * global model profiles (Settings → Models) — against the live "model" config
+ * option to decide which model the prompt would transiently run on. Each
+ * entry is `{ modelName }` (single named profile) or `{ modelTag }` (any
+ * profile carrying that tag, first-yielding wins by profile order). For each
+ * entry the CURRENT model is checked first: if it already satisfies the
+ * entry, the prompt keeps the current model and no override chip is shown.
  *
- * @param {string[]} preferredModels - ordered glob patterns
- * @param {Object} modelOption - the "model" category config option
- *   ({ current_value, options: [{ value, name }] })
- * @returns {{ value: string, name: string } | null} the override model when it
- *   DIFFERS from the current conversation model; null when there is no override
- *   (no patterns, no model option, nothing matches, or the current model already
- *   satisfies a pattern).
+ * @param {Array<{modelName?: string, modelTag?: string}>} preferredModels
+ *   ordered preference entries.
+ * @param {Object} modelOption the "model" category config option
+ *   ({ current_value, options: [{ value, name }] }).
+ * @param {Array<{name: string, criteria: {matchMode: string, pattern: string},
+ *   tags?: string[]}>} modelProfiles the global model profiles from
+ *   config.models.
+ * @returns {{ value: string, name: string } | null} the override model when
+ *   it DIFFERS from the current conversation model; null when there is no
+ *   override (no entries, no model option, no profiles, nothing matches, or
+ *   the current model already satisfies an entry).
  */
-export function resolvePromptModelOverride(preferredModels, modelOption) {
+export function resolvePromptModelOverride(
+  preferredModels,
+  modelOption,
+  modelProfiles,
+) {
   if (
     !Array.isArray(preferredModels) ||
     preferredModels.length === 0 ||
     !modelOption ||
     !Array.isArray(modelOption.options) ||
-    modelOption.options.length === 0
+    modelOption.options.length === 0 ||
+    !Array.isArray(modelProfiles) ||
+    modelProfiles.length === 0
   ) {
     return null;
   }
@@ -527,22 +580,49 @@ export function resolvePromptModelOverride(preferredModels, modelOption) {
   const currentOpt = modelOption.options.find((o) => o.value === currentId);
   const currentName = currentOpt ? currentOpt.name || "" : "";
 
-  for (const pattern of preferredModels) {
-    const patternLower = String(pattern).toLowerCase();
-    // Current model checked first: if it already satisfies the pattern, the
-    // prompt keeps the current model — no override to surface.
-    if (
-      (currentId && globMatchCI(patternLower, currentId)) ||
-      (currentName && globMatchCI(patternLower, currentName))
-    ) {
-      return null;
+  for (const entry of preferredModels) {
+    if (!entry || typeof entry !== "object") continue;
+    const modelName = entry.modelName ? String(entry.modelName) : "";
+    const modelTag = entry.modelTag ? String(entry.modelTag) : "";
+
+    if (modelName) {
+      const profile = modelProfiles.find(
+        (p) => p && p.name && p.name.toLowerCase() === modelName.toLowerCase(),
+      );
+      if (!profile) continue;
+      const resolved = resolveProfileModel(profile, modelOption);
+      if (!resolved) continue;
+      // Current-satisfies short-circuit: if the current model is already the
+      // resolved target, no override chip to show.
+      if (currentId && resolved.value === currentId) return null;
+      return resolved;
     }
-    for (const opt of modelOption.options) {
+
+    if (modelTag) {
+      const tagLower = modelTag.toLowerCase();
+      const taggedProfiles = modelProfiles.filter(
+        (p) =>
+          p &&
+          Array.isArray(p.tags) &&
+          p.tags.some((t) => String(t).toLowerCase() === tagLower),
+      );
+      if (taggedProfiles.length === 0) continue;
+      // Current-satisfies short-circuit: if the current model's name matches
+      // ANY tagged profile's criteria, keep the current model (no override).
       if (
-        globMatchCI(patternLower, opt.value || "") ||
-        globMatchCI(patternLower, opt.name || "")
+        currentName &&
+        taggedProfiles.some((p) => constraintMatchesName(p.criteria, currentName))
       ) {
-        return { value: opt.value, name: opt.name || opt.value };
+        return null;
+      }
+      // Deterministic by profile order: first profile that yields an
+      // available model wins.
+      for (const profile of taggedProfiles) {
+        const resolved = resolveProfileModel(profile, modelOption);
+        if (resolved) {
+          if (currentId && resolved.value === currentId) return null;
+          return resolved;
+        }
       }
     }
   }

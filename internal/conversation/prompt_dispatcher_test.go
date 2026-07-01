@@ -76,7 +76,8 @@ type fakePromptDeps struct {
 	acpNewSessionErr       error
 	agentModels            *acp.UnstableSessionModelState
 	resolvedModelTags      []string
-	resolvedPreferred      []string
+	resolvedPreferred      []config.PromptPreferredModel
+	modelProfiles          []config.ModelProfile
 	baselineModel          string
 	overrideActive         bool
 	setActiveModelCalls    []string
@@ -253,7 +254,10 @@ func (f *fakePromptDeps) pdACPConnNewSession(_ context.Context, _ string) (strin
 }
 func (f *fakePromptDeps) pdGetAgentModels() *acp.UnstableSessionModelState { return f.agentModels }
 func (f *fakePromptDeps) pdResolveModelTags(_ string) []string             { return f.resolvedModelTags }
-func (f *fakePromptDeps) pdResolvePreferredModels(_ string) []string       { return f.resolvedPreferred }
+func (f *fakePromptDeps) pdResolvePreferredModels(_ string) []config.PromptPreferredModel {
+	return f.resolvedPreferred
+}
+func (f *fakePromptDeps) pdModelProfiles() []config.ModelProfile { return f.modelProfiles }
 func (f *fakePromptDeps) pdReadBaselineModel() string                      { return f.baselineModel }
 func (f *fakePromptDeps) pdWriteOverrideActive(active bool) {
 	f.mu.Lock()
@@ -1323,11 +1327,14 @@ func TestPromptDispatcher_ApplyModelPreference_MatchingPreference_SetsModelAndOv
 		},
 	}
 	d.baselineModel = "m-1"
+	d.modelProfiles = []config.ModelProfile{
+		{Name: "Pref2", Criteria: &config.ACPServerConstraint{MatchMode: "contains", Pattern: "Model 2"}},
+	}
 	var buf bytes.Buffer
 	d.logger = slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
 
-	// Prefer "m-2" (matched by name "Model 2" with "contains" mode)
-	p.applyModelPreference(d, PromptMeta{PreferredModels: []string{"Model 2"}})
+	// Prefer "m-2" via the "Pref2" profile (matched by name "Model 2" with "contains" mode)
+	p.applyModelPreference(d, PromptMeta{PreferredModels: []config.PromptPreferredModel{{ModelName: "Pref2"}}})
 
 	if len(d.setActiveModelCalls) != 1 || d.setActiveModelCalls[0] != "m-2" {
 		t.Fatalf("expected setActiveModelOnly('m-2'), got %v", d.setActiveModelCalls)
@@ -1358,11 +1365,14 @@ func TestPromptDispatcher_ApplyModelPreference_PreferenceAlreadyActive_NoSwitch(
 		},
 	}
 	d.baselineModel = "m-1"
+	d.modelProfiles = []config.ModelProfile{
+		{Name: "Pref2", Criteria: &config.ACPServerConstraint{MatchMode: "contains", Pattern: "Model 2"}},
+	}
 	var buf bytes.Buffer
 	d.logger = slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
 
-	// Prefer "m-2" which is already active.
-	p.applyModelPreference(d, PromptMeta{PreferredModels: []string{"Model 2"}})
+	// Prefer "m-2" via the "Pref2" profile, which is already active.
+	p.applyModelPreference(d, PromptMeta{PreferredModels: []config.PromptPreferredModel{{ModelName: "Pref2"}}})
 
 	if len(d.setActiveModelCalls) != 0 {
 		t.Fatalf("expected no RPC when preferred model already active, got %v", d.setActiveModelCalls)
@@ -1394,11 +1404,14 @@ func TestPromptDispatcher_ApplyModelPreference_NoMatch_UsesBaseline_ClearsOverri
 		},
 	}
 	d.baselineModel = "m-1"
+	d.modelProfiles = []config.ModelProfile{
+		{Name: "Missing", Criteria: &config.ACPServerConstraint{MatchMode: "contains", Pattern: "nonexistent-model"}},
+	}
 	var buf bytes.Buffer
 	d.logger = slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
 
-	// Preference pattern doesn't match anything → desired stays at baseline.
-	p.applyModelPreference(d, PromptMeta{PreferredModels: []string{"nonexistent-model"}})
+	// Preference profile's criteria doesn't match anything → desired stays at baseline.
+	p.applyModelPreference(d, PromptMeta{PreferredModels: []config.PromptPreferredModel{{ModelName: "Missing"}}})
 
 	if len(d.setActiveModelCalls) != 0 {
 		t.Fatalf("expected no model switch on no-match, got %v", d.setActiveModelCalls)
@@ -1426,10 +1439,13 @@ func TestPromptDispatcher_ApplyModelPreference_SwitchFails_NoPill(t *testing.T) 
 	}
 	d.baselineModel = "m-1"
 	d.setActiveModelErr = errors.New("boom")
+	d.modelProfiles = []config.ModelProfile{
+		{Name: "Pref2", Criteria: &config.ACPServerConstraint{MatchMode: "contains", Pattern: "Model 2"}},
+	}
 	var buf bytes.Buffer
 	d.logger = slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
 
-	p.applyModelPreference(d, PromptMeta{PreferredModels: []string{"Model 2"}})
+	p.applyModelPreference(d, PromptMeta{PreferredModels: []config.PromptPreferredModel{{ModelName: "Pref2"}}})
 
 	if len(d.setActiveModelCalls) != 1 {
 		t.Fatalf("expected setActiveModelOnly to be attempted, got %v", d.setActiveModelCalls)

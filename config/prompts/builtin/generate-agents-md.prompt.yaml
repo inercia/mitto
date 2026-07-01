@@ -6,10 +6,7 @@ group: Agents & Mitto
 backgroundColor: '#B3E5FC'
 enabledWhen: '!Session.IsPeriodicConversation'
 preferredModels:
-  - "*sonnet*"
-  - "*flash*"
-  - "*gpt-4o*"
-  - "*gpt-4.1*"
+  - modelTag: Coding
 prompt: |
   Analyze this project and generate an `AGENTS.md` file that gives AI coding agents
   (Claude Code, Augment, Cursor, etc.) the context they need to work effectively here.

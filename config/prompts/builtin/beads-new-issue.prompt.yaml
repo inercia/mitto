@@ -6,10 +6,7 @@ backgroundColor: '#C8E6C9'
 group: Tasks
 enabledWhen: CommandExists("bd")
 preferredModels:
-  - "*sonnet*"
-  - "*flash*"
-  - "*gpt-4o*"
-  - "*gpt-4.1*"
+  - modelTag: Coding
 prompt: |
   ## Session Context
 

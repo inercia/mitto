@@ -57,6 +57,9 @@ function getBadgeInfo(source) {
  * @param {Object} [props.modelOption] - the "model" config option ({ current_value,
  *   options }) used to surface an "overrides model" chip on prompts whose
  *   preferredModels would run them on a different model than the current one
+ * @param {Array} [props.modelProfiles] - global model profiles (config.models)
+ *   needed to resolve structured preferredModels entries ({modelName}/{modelTag})
+ *   into a concrete model. Without this, no override chip can be surfaced.
  * @param {boolean} [props.shiftHeld] - swap the leading icon for an edit pencil
  * @param {*} [props.footer] - optional footer content (rendered below the list)
  * @param {string} [props.placeholder] - filter input placeholder
@@ -83,6 +86,7 @@ export function PromptsMenu({
   showSourceBadge = false,
   shiftHeld = false,
   modelOption = null,
+  modelProfiles = [],
   footer = null,
   placeholder = "Search prompts...",
   emptyText = "No matching prompts",
@@ -120,6 +124,7 @@ export function PromptsMenu({
     const overrideModel = resolvePromptModelOverride(
       prompt.preferredModels,
       modelOption,
+      modelProfiles,
     );
     return html`
       <li key=${keyPrefix + "-item-" + prompt.name}>
