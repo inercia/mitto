@@ -37,7 +37,7 @@ const ACPStartFailureThreshold = 3
 
 // DefaultMaxMessagesPerSession is the default maximum number of messages to retain per session.
 // When exceeded, the oldest messages are automatically pruned after each new event is recorded.
-// This prevents unbounded session growth (especially for periodic sessions) which can cause
+// This prevents unbounded session growth (especially for loop sessions) which can cause
 // OOM crashes when many large sessions share a single ACP process.
 // Can be overridden via settings.json or .mitterc with "max_messages_per_session".
 // Set to 0 in settings to disable automatic pruning.
@@ -165,7 +165,7 @@ type SessionManager struct {
 	promptParametersResolver func(name, workingDir string) []config.PromptParameter
 
 	// onConversationIdle is invoked when a session's agent stops and the session is
-	// idle. Wired to the periodic runner to drive event-driven on-completion firing.
+	// idle. Wired to the loop runner to drive event-driven on-completion firing.
 	onConversationIdle func(sessionID string)
 
 	// resumeSemaphore limits the number of sessions that can simultaneously resume their
@@ -690,8 +690,8 @@ func (sm *SessionManager) SetPromptParametersResolver(resolver func(name, workin
 }
 
 // SetOnConversationIdle registers the callback invoked when a session goes idle after
-// a turn. It is wired to the periodic runner's OnConversationIdle to drive event-driven
-// on-completion periodic firing.
+// a turn. It is wired to the loop runner's OnConversationIdle to drive event-driven
+// on-completion loop firing.
 func (sm *SessionManager) SetOnConversationIdle(cb func(sessionID string)) {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
@@ -875,9 +875,9 @@ func (sm *SessionManager) BroadcastSessionRenamed(sessionID string, newName stri
 	}
 }
 
-// BroadcastPeriodicUpdated broadcasts a periodic_updated event to all connected clients.
-// This is called when a session's periodic config changes (e.g., via MCP tools).
-func (sm *SessionManager) BroadcastPeriodicUpdated(sessionID string, periodic *session.PeriodicPrompt) {
+// BroadcastLoopUpdated broadcasts a loop_updated event to all connected clients.
+// This is called when a session's loop config changes (e.g., via MCP tools).
+func (sm *SessionManager) BroadcastLoopUpdated(sessionID string, loop *session.LoopPrompt) {
 	sm.mu.RLock()
 	em := sm.eventsManager
 	sm.mu.RUnlock()
@@ -886,10 +886,10 @@ func (sm *SessionManager) BroadcastPeriodicUpdated(sessionID string, periodic *s
 		return
 	}
 
-	em.Broadcast(WSMsgTypePeriodicUpdated, BuildPeriodicUpdatedData(sessionID, periodic))
+	em.Broadcast(WSMsgTypeLoopUpdated, BuildLoopUpdatedData(sessionID, loop))
 
 	if sm.logger != nil {
-		sm.logger.Debug("Broadcast periodic updated", "session_id", sessionID, "clients", em.ClientCount())
+		sm.logger.Debug("Broadcast loop updated", "session_id", sessionID, "clients", em.ClientCount())
 	}
 }
 
@@ -1594,7 +1594,7 @@ func (sm *SessionManager) GetOrCreateSession(sessionID, workingDir string) (*Bac
 // on the server side as well. Otherwise, we create a new ACP connection and continue
 // using the same persisted session ID for recording.
 func (sm *SessionManager) ResumeSession(sessionID, sessionName, workingDir string) (*BackgroundSession, error) {
-	// Clear GC-suspended flag — any explicit resume (ensure_resumed, periodic runner,
+	// Clear GC-suspended flag — any explicit resume (ensure_resumed, loop runner,
 	// queue processing) should allow the session to run. This must happen before the
 	// "already running" check to avoid stale flags.
 	if sm.acpProcessManager != nil {
@@ -1777,7 +1777,7 @@ func (sm *SessionManager) ResumeSession(sessionID, sessionName, workingDir strin
 							acpServer = rescueWs.ACPServer
 							// Persist the rescued ACP server name so the next resume resolves
 							// directly instead of re-rescuing (and re-emitting the orphaned WARN)
-							// on every periodic/queue sweep. Best-effort: a failure here does not
+							// on every loop/queue sweep. Best-effort: a failure here does not
 							// block the resume itself.
 							if store != nil {
 								if err := store.UpdateMetadata(sessionID, func(m *session.Metadata) {
@@ -2612,10 +2612,10 @@ func (sm *SessionManager) GetSessionInfoByWorkspace() map[string][]SessionInfo {
 			continue
 		}
 
-		var nextPeriodic *time.Time
+		var nextLoop *time.Time
 		if sm.store != nil {
-			if p, err := sm.store.Periodic(bs.GetSessionID()).Get(); err == nil && p.Enabled {
-				nextPeriodic = p.NextScheduledAt
+			if p, err := sm.store.Loop(bs.GetSessionID()).Get(); err == nil && p.Enabled {
+				nextLoop = p.NextScheduledAt
 			}
 		}
 
@@ -2632,7 +2632,7 @@ func (sm *SessionManager) GetSessionInfoByWorkspace() map[string][]SessionInfo {
 			HasConnectedClients:    bs.HasConnectedClients(),
 			IsChild:                bs.HasParent(),
 			QueueLength:            queueLen,
-			NextPeriodicAt:         nextPeriodic,
+			NextLoopAt:             nextLoop,
 			ResumedAt:              bs.StartedAt(),
 			LastObserverRemovedAt:  bs.LastObserverRemovedAt(),
 			LastActivityAt:         bs.LastActivityAt(),
@@ -2660,7 +2660,7 @@ func (sm *SessionManager) CloseIdleSession(sessionID string) {
 	sm.ClearCachedPlanState(sessionID)
 
 	if bs != nil {
-		// Use a distinct reason for periodic suspensions so the frontend can show
+		// Use a distinct reason for loop suspensions so the frontend can show
 		// a friendly "Session suspended" message instead of an error balloon.
 		reason := "gc_idle"
 		if sm.acpProcessManager != nil && sm.acpProcessManager.IsGCSuspended(sessionID) {

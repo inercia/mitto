@@ -38,7 +38,7 @@ func (titleCoordinator) needsTitle(d titleDeps) bool {
 // retryIfNeeded triggers async title generation if the session still has no title.
 // Called after prompt completion to catch failed initial attempts and prompts that
 // arrived via paths that don't trigger title generation (queue, MCP send_prompt,
-// periodic prompts).
+// loop prompts).
 func (c titleCoordinator) retryIfNeeded(d titleDeps, message string) {
 	if !d.sessionHasNoTitle() {
 		return
@@ -55,13 +55,13 @@ func (c titleCoordinator) trigger(d titleDeps, message string) {
 	c.retryIfNeeded(d, message)
 }
 
-// triggerFromPeriodic chooses the best source text for title generation given a
-// periodic-style draft. The inline prompt may be empty, whitespace, or the UI
+// triggerFromLoop chooses the best source text for title generation given a
+// loop-style draft. The inline prompt may be empty, whitespace, or the UI
 // placeholder "(pending)" — all three are treated as "no inline prompt". When only
 // promptName is meaningful, it is resolved to full text via the configured resolver;
 // on failure or when no resolver is configured, the bare prompt name is used as a
 // fallback. No-op when neither source yields any text.
-func (c titleCoordinator) triggerFromPeriodic(d titleDeps, prompt, promptName string) {
+func (c titleCoordinator) triggerFromLoop(d titleDeps, prompt, promptName string) {
 	inline := strings.TrimSpace(prompt)
 	if inline != "" && inline != "(pending)" {
 		c.retryIfNeeded(d, inline)
@@ -78,7 +78,7 @@ func (c titleCoordinator) triggerFromPeriodic(d titleDeps, prompt, promptName st
 		}
 		if err != nil {
 			if lg := d.titleLogger(); lg != nil {
-				lg.Warn("Could not resolve periodic prompt name for title generation; falling back to name",
+				lg.Warn("Could not resolve loop prompt name for title generation; falling back to name",
 					"prompt_name", name, "error", err)
 			}
 		}

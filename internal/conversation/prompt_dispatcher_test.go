@@ -674,13 +674,13 @@ func TestResolveAndSubstitute_FreeText_InvalidTemplate_FailOpen(t *testing.T) {
 
 // TestResolveAndSubstitute_AutomatedDispatch_InvalidTemplate_FailClosed verifies
 // that a free-text body with unbalanced template syntax dispatched via an automated
-// path (queue / periodic-runner) fails CLOSED — it returns a non-nil error instead
+// path (queue / loop-runner) fails CLOSED — it returns a non-nil error instead
 // of silently delivering the raw, unrenderable body to a child (mitto-e7u).
 func TestResolveAndSubstitute_AutomatedDispatch_InvalidTemplate_FailClosed(t *testing.T) {
 	p := promptDispatcher{}
 	body := "{{ if .Broken }}" // unbalanced action -> "unexpected EOF"
 
-	for _, senderID := range []string{senderIDQueue, senderIDPeriodic} {
+	for _, senderID := range []string{senderIDQueue, senderIDLoop} {
 		t.Run(senderID, func(t *testing.T) {
 			d := newFakePromptDeps()
 			msg, _, _, err := p.resolveAndSubstitute(d, body, PromptMeta{SenderID: senderID})
@@ -842,8 +842,8 @@ func TestPromptDispatcher_BuildProcessorInput_NoStore_MinimalInput(t *testing.T)
 	if input.IsFirstMessage {
 		t.Fatal("expected IsFirstMessage=false")
 	}
-	if input.IsPeriodic {
-		t.Fatal("expected IsPeriodic=false for non-periodic sender")
+	if input.IsLoop {
+		t.Fatal("expected IsLoop=false for non-loop sender")
 	}
 	// Store-dependent fields must be empty
 	if input.SessionName != "" || input.ParentSessionID != "" || input.UserDataJSON != "" {
@@ -868,7 +868,7 @@ func TestPromptDispatcher_BuildProcessorInput_WithMetadata(t *testing.T) {
 	d.childPrompting["child-1"] = true
 	d.mcpToolNames = []string{"tool_a", "tool_b"}
 
-	input := p.buildProcessorInput(d, "test", true, PromptMeta{SenderID: "periodic-runner"})
+	input := p.buildProcessorInput(d, "test", true, PromptMeta{SenderID: "loop-runner"})
 
 	if input.SessionName != "My Session" {
 		t.Fatalf("expected SessionName='My Session', got %q", input.SessionName)
@@ -885,23 +885,23 @@ func TestPromptDispatcher_BuildProcessorInput_WithMetadata(t *testing.T) {
 	if len(input.MCPToolNames) != 2 {
 		t.Fatalf("expected 2 MCP tool names, got %v", input.MCPToolNames)
 	}
-	if !input.IsPeriodic {
-		t.Fatal("expected IsPeriodic=true for periodic-runner sender")
+	if !input.IsLoop {
+		t.Fatal("expected IsLoop=true for loop-runner sender")
 	}
 	if input.BeadsIssue != "mitto-123" {
 		t.Fatalf("expected BeadsIssue='mitto-123', got %q", input.BeadsIssue)
 	}
 }
 
-func TestPromptDispatcher_BuildProcessorInput_IsPeriodicForced(t *testing.T) {
+func TestPromptDispatcher_BuildProcessorInput_IsLoopForced(t *testing.T) {
 	p := promptDispatcher{}
 	d := newFakePromptDeps()
 	d.hasStore = false
 
-	meta := PromptMeta{IsPeriodicForced: true}
+	meta := PromptMeta{IsLoopForced: true}
 	input := p.buildProcessorInput(d, "msg", false, meta)
-	if !input.IsPeriodicForced {
-		t.Fatal("expected IsPeriodicForced=true")
+	if !input.IsLoopForced {
+		t.Fatal("expected IsLoopForced=true")
 	}
 }
 

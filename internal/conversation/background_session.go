@@ -186,7 +186,7 @@ type BackgroundSession struct {
 
 	// onTurnIdle is called after a turn completes and the session is fully idle
 	// (turn succeeded and no further queued message was dispatched). Used to arm
-	// the on-completion periodic timer.
+	// the on-completion loop timer.
 	onTurnIdle func(sessionID string)
 
 	// isChildPrompting checks if a child session is currently prompting.
@@ -313,14 +313,14 @@ type BackgroundSession struct {
 	lastQueueSendError string
 	lastQueueSendErrAt time.Time
 
-	// Periodic continuation marker (mitto-5xjn). lastTurnScheduledPeriodic records whether
+	// Loop continuation marker (mitto-5xjn). lastTurnScheduledLoop records whether
 	// the most recent COMMITTED dispatch was a scheduled (non-forced, non-FreshContext)
-	// periodic run of this loop. It powers Iteration.IsUninterrupted. Session-scoped +
+	// run of this loop. It powers Iteration.IsUninterrupted. Session-scoped +
 	// in-memory so it auto-resets to false across archive/unarchive, GC suspend/resume, and
 	// process restart (all recreate the BackgroundSession). Explicitly cleared on ACP reinit
-	// and periodic config changes (those keep the same BackgroundSession).
-	periodicContinuationMu    sync.Mutex
-	lastTurnScheduledPeriodic bool
+	// and loop config changes (those keep the same BackgroundSession).
+	loopContinuationMu    sync.Mutex
+	lastTurnScheduledLoop bool
 
 	// streamingSuppressed gates streaming callbacks during an in-place context flush
 	// (flushContextInPlace). When true the acpCallbackSink short-circuits all streaming
@@ -401,7 +401,7 @@ type BackgroundSessionConfig struct {
 	OnSelfDestruct func(sessionID string)
 
 	// OnTurnIdle is called after a turn completes and the session is fully idle.
-	// Used to drive event-driven on-completion periodic firing via the runner.
+	// Used to drive event-driven on-completion loop firing via the runner.
 	OnTurnIdle func(sessionID string)
 
 	// GlobalMCPServer is the global MCP server for session registration.

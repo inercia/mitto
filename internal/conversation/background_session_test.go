@@ -4853,10 +4853,10 @@ func TestBuildACPProcessEnv_MittoEnvOverridesServerEnv(t *testing.T) {
 	}
 }
 
-// TestTriggerTitleGenerationFromPeriodic verifies that the helper correctly selects
+// TestTriggerTitleGenerationFromLoop verifies that the helper correctly selects
 // the source text for title generation given various combinations of inline prompt
 // and prompt_name, including the UI placeholder "(pending)".
-func TestTriggerTitleGenerationFromPeriodic(t *testing.T) {
+func TestTriggerTitleGenerationFromLoop(t *testing.T) {
 	// makeBS creates a minimal BackgroundSession backed by a real session.Store.
 	// The session has no name, so NeedsTitle() returns true and retryTitleGenerationIfNeeded
 	// will synchronously set a quick fallback title via GenerateAndSetTitle.
@@ -4896,7 +4896,7 @@ func TestTriggerTitleGenerationFromPeriodic(t *testing.T) {
 			resolverCalled = true
 			return "should not be used", nil
 		})
-		bs.TriggerTitleGenerationFromPeriodic("Real text here", "SomeName")
+		bs.TriggerTitleGenerationFromLoop("Real text here", "SomeName")
 		if resolverCalled {
 			t.Error("resolver should not be called when inline prompt is usable")
 		}
@@ -4915,7 +4915,7 @@ func TestTriggerTitleGenerationFromPeriodic(t *testing.T) {
 			}
 			return "", fmt.Errorf("unexpected name %q", name)
 		})
-		bs.TriggerTitleGenerationFromPeriodic("(pending)", "X")
+		bs.TriggerTitleGenerationFromLoop("(pending)", "X")
 		got := getName(t, store, "sid-2")
 		if strings.Contains(strings.ToLower(got), "pending") {
 			t.Errorf("title must not be derived from '(pending)' placeholder, got %q", got)
@@ -4930,7 +4930,7 @@ func TestTriggerTitleGenerationFromPeriodic(t *testing.T) {
 		bs, store := makeBS(t, "sid-3", func(name, dir string) (string, error) {
 			return "", fmt.Errorf("resolution failed")
 		})
-		bs.TriggerTitleGenerationFromPeriodic("(pending)", "MyPromptName")
+		bs.TriggerTitleGenerationFromLoop("(pending)", "MyPromptName")
 		got := getName(t, store, "sid-3")
 		if !strings.Contains(got, "MyPromptName") {
 			t.Errorf("expected fallback to prompt name 'MyPromptName', got %q", got)
@@ -4940,7 +4940,7 @@ func TestTriggerTitleGenerationFromPeriodic(t *testing.T) {
 	// Case 4: empty inline, no resolver configured → uses prompt name directly.
 	t.Run("empty inline no resolver - uses name", func(t *testing.T) {
 		bs, store := makeBS(t, "sid-4", nil)
-		bs.TriggerTitleGenerationFromPeriodic("", "PromptXYZ")
+		bs.TriggerTitleGenerationFromLoop("", "PromptXYZ")
 		got := getName(t, store, "sid-4")
 		if !strings.Contains(got, "PromptXYZ") {
 			t.Errorf("expected title from prompt name, got %q", got)
@@ -4950,7 +4950,7 @@ func TestTriggerTitleGenerationFromPeriodic(t *testing.T) {
 	// Case 5: both empty → no-op, no title set.
 	t.Run("both empty - no-op", func(t *testing.T) {
 		bs, store := makeBS(t, "sid-5", nil)
-		bs.TriggerTitleGenerationFromPeriodic("", "")
+		bs.TriggerTitleGenerationFromLoop("", "")
 		got := getName(t, store, "sid-5")
 		if got != "" {
 			t.Errorf("expected no title set when both args are empty, got %q", got)
@@ -4960,7 +4960,7 @@ func TestTriggerTitleGenerationFromPeriodic(t *testing.T) {
 	// Case 6: whitespace-only inline is treated as empty; falls back to prompt name.
 	t.Run("whitespace-only inline treated as empty", func(t *testing.T) {
 		bs, store := makeBS(t, "sid-6", nil)
-		bs.TriggerTitleGenerationFromPeriodic("   ", "WhitespaceName")
+		bs.TriggerTitleGenerationFromLoop("   ", "WhitespaceName")
 		got := getName(t, store, "sid-6")
 		if !strings.Contains(got, "WhitespaceName") {
 			t.Errorf("expected title from prompt name, got %q", got)

@@ -104,42 +104,42 @@ func (bs *BackgroundSession) buildPromptWithHistory(message string) string {
 }
 
 // SetPromptResolver sets the function used to resolve named workspace prompts to their full text.
-// This is called by the server setup code (same resolver used by PeriodicRunner).
+// This is called by the server setup code (same resolver used by LoopRunner).
 func (bs *BackgroundSession) SetPromptResolver(resolver PromptResolver) {
 	bs.promptResolver = resolver
 }
 
-// PeriodicKind classifies how a periodic prompt was triggered so the dispatch path can
+// LoopKind classifies how a loop prompt was triggered so the dispatch path can
 // distinguish a normal scheduled/onCompletion delivery from a manual "run now" without
-// matching the magic SenderID string. PeriodicKindNone means the prompt is not a
-// periodic run (user/other sender).
-type PeriodicKind int
+// matching the magic SenderID string. LoopKindNone means the prompt is not a
+// loop run (user/other sender).
+type LoopKind int
 
 const (
-	PeriodicKindNone      PeriodicKind = iota // not a periodic run
-	PeriodicKindScheduled                     // normal scheduled / onCompletion delivery
-	PeriodicKindForced                        // manual "run now"
+	LoopKindNone      LoopKind = iota // not a loop run
+	LoopKindScheduled                 // normal scheduled / onCompletion delivery
+	LoopKindForced                    // manual "run now"
 )
 
 // PromptMeta contains optional metadata about the prompt source.
 type PromptMeta struct {
-	SenderID         string          // Unique identifier of the sending client (for broadcast deduplication)
-	PromptID         string          // Client-generated prompt ID (for delivery confirmation)
-	PromptName       string          // Name of workspace prompt (resolved to full text before ACP; empty for ad-hoc prompts)
-	ImageIDs         []string        // IDs of images attached to the prompt
-	FileIDs          []string        // IDs of files attached to the prompt
-	OnComplete       func(err error) // Called when the async prompt goroutine finishes (nil = success)
-	IsPeriodicForced bool            // True when this periodic prompt was triggered manually via "run now"
-	// PeriodicKind classifies a periodic run (none/scheduled/forced). Set by the
-	// PeriodicRunner. Drives the Iteration.IsUninterrupted continuation signal.
-	PeriodicKind PeriodicKind
-	// IterationNumber is the 0-based index of the current periodic run (periodic.IterationCount
-	// at dispatch). Zero for non-periodic prompts. Feeds the {{ .Iteration.* }} template namespace.
+	SenderID     string          // Unique identifier of the sending client (for broadcast deduplication)
+	PromptID     string          // Client-generated prompt ID (for delivery confirmation)
+	PromptName   string          // Name of workspace prompt (resolved to full text before ACP; empty for ad-hoc prompts)
+	ImageIDs     []string        // IDs of images attached to the prompt
+	FileIDs      []string        // IDs of files attached to the prompt
+	OnComplete   func(err error) // Called when the async prompt goroutine finishes (nil = success)
+	IsLoopForced bool            // True when this loop prompt was triggered manually via "run now"
+	// LoopKind classifies a loop run (none/scheduled/forced). Set by the
+	// LoopRunner. Drives the Iteration.IsUninterrupted continuation signal.
+	LoopKind LoopKind
+	// IterationNumber is the 0-based index of the current loop run (loop.IterationCount
+	// at dispatch). Zero for non-loop prompts. Feeds the {{ .Iteration.* }} template namespace.
 	IterationNumber int
-	// MaxIterations is the configured maximum number of periodic runs (0 = unlimited).
+	// MaxIterations is the configured maximum number of loop runs (0 = unlimited).
 	MaxIterations int
 	// IterationUninterrupted feeds {{ .Iteration.IsUninterrupted }}: true only on a
-	// scheduled, non-forced, non-FreshContext periodic run that directly follows another
+	// scheduled, non-forced, non-FreshContext loop run that directly follows another
 	// such run with no interruption. Computed in PromptWithMeta from the session-scoped
 	// continuation marker (peeked before body render, advanced at the dispatch commit).
 	IterationUninterrupted bool
@@ -190,7 +190,7 @@ func (bs *BackgroundSession) PromptWithAttachments(message string, imageIDs, fil
 // Behavioral contract:
 //   - Sends contextFlushCommand as a single-block Prompt() RPC on the existing session.
 //   - All streaming callbacks are suppressed (setStreamingSuppressed) for the duration.
-//   - Best-effort: the caller MUST continue with the main periodic prompt regardless of
+//   - Best-effort: the caller MUST continue with the main loop prompt regardless of
 //     any returned error.
 //   - Works for both direct-conn (acpConn) and shared-process (sharedProcess) sessions.
 func (bs *BackgroundSession) flushContextInPlace(ctx context.Context) error {
@@ -239,12 +239,12 @@ func (bs *BackgroundSession) FlushContext() error {
 // The meta parameter contains sender information for multi-client broadcast.
 // The response is streamed via callbacks to the attached client (if any) and persisted.
 func (bs *BackgroundSession) PromptWithMeta(message string, meta PromptMeta) error {
-	// Periodic continuation signal (mitto-5xjn): peek BEFORE resolveAndSubstitute so the
+	// Loop continuation signal (mitto-5xjn): peek BEFORE resolveAndSubstitute so the
 	// prompt-body template ({{ if .Iteration.IsUninterrupted }}) renders against it. We
 	// only PEEK here (no mutation); the marker is advanced at the dispatch point of no
 	// return below, so rejected/early-return dispatches never corrupt the chain.
-	isScheduledPeriodic := meta.PeriodicKind == PeriodicKindScheduled && !meta.FreshContext
-	meta.IterationUninterrupted = bs.peekPeriodicContinuation(isScheduledPeriodic)
+	isScheduledLoop := meta.LoopKind == LoopKindScheduled && !meta.FreshContext
+	meta.IterationUninterrupted = bs.peekLoopContinuation(isScheduledLoop)
 
 	// Resolve prompt name, apply argument substitution, annotate meta.
 	// See promptDispatcher.resolveAndSubstitute for the full logic.
@@ -367,7 +367,7 @@ retryAfterRestart:
 	bs.TouchActivity()
 
 	// Check if we need to inject conversation history (first prompt of resumed session).
-	// FreshContext suppresses history injection so each periodic run starts clean.
+	// FreshContext suppresses history injection so each loop run starts clean.
 	shouldInjectHistory := bs.isResumed && !bs.historyInjected && !meta.FreshContext
 	if shouldInjectHistory {
 		bs.historyInjected = true
@@ -380,10 +380,10 @@ retryAfterRestart:
 	}
 	bs.promptMu.Unlock()
 
-	// Point of no return: this dispatch is committed. Advance the periodic continuation
+	// Point of no return: this dispatch is committed. Advance the loop continuation
 	// marker so the NEXT dispatch can detect an uninterrupted continuation. A non-scheduled
 	// dispatch (user/forced/FreshContext) sets it false, breaking the chain (mitto-5xjn).
-	bs.advancePeriodicContinuation(isScheduledPeriodic)
+	bs.advanceLoopContinuation(isScheduledLoop)
 
 	// Notify about streaming state change (prompt started)
 	if bs.onStreamingStateChanged != nil {
@@ -573,7 +573,7 @@ retryAfterRestart:
 		}
 
 		// sessionIdle becomes true only on the success path when the turn ended and
-		// no further queued message was dispatched. It gates the on-completion periodic
+		// no further queued message was dispatched. It gates the on-completion loop
 		// idle hook invoked after OnComplete below.
 		sessionIdle := false
 
@@ -1061,32 +1061,32 @@ func (bs *BackgroundSession) pdFlushContextInPlace(ctx context.Context) error {
 	return bs.flushContextInPlace(ctx)
 }
 
-// peekPeriodicContinuation reports whether the current dispatch is an uninterrupted
-// continuation (a scheduled periodic run directly following another one) WITHOUT mutating
+// peekLoopContinuation reports whether the current dispatch is an uninterrupted
+// continuation (a scheduled loop run directly following another one) WITHOUT mutating
 // the marker. The marker is advanced separately at the dispatch point of no return so that
 // early-return/rejected dispatches do not corrupt the continuation chain.
-func (bs *BackgroundSession) peekPeriodicContinuation(isScheduledPeriodic bool) bool {
-	bs.periodicContinuationMu.Lock()
-	defer bs.periodicContinuationMu.Unlock()
-	return isScheduledPeriodic && bs.lastTurnScheduledPeriodic
+func (bs *BackgroundSession) peekLoopContinuation(isScheduledLoop bool) bool {
+	bs.loopContinuationMu.Lock()
+	defer bs.loopContinuationMu.Unlock()
+	return isScheduledLoop && bs.lastTurnScheduledLoop
 }
 
-// advancePeriodicContinuation records whether the just-committed dispatch was a scheduled
-// periodic run, so the next dispatch can detect an uninterrupted continuation. Setting it
+// advanceLoopContinuation records whether the just-committed dispatch was a scheduled
+// loop run, so the next dispatch can detect an uninterrupted continuation. Setting it
 // false (any non-scheduled dispatch: user prompt, forced run, FreshContext) breaks the chain.
-func (bs *BackgroundSession) advancePeriodicContinuation(isScheduledPeriodic bool) {
-	bs.periodicContinuationMu.Lock()
-	bs.lastTurnScheduledPeriodic = isScheduledPeriodic
-	bs.periodicContinuationMu.Unlock()
+func (bs *BackgroundSession) advanceLoopContinuation(isScheduledLoop bool) {
+	bs.loopContinuationMu.Lock()
+	bs.lastTurnScheduledLoop = isScheduledLoop
+	bs.loopContinuationMu.Unlock()
 }
 
-// ResetPeriodicContinuation clears the continuation marker so the next periodic run renders
+// ResetLoopContinuation clears the continuation marker so the next loop run renders
 // the verbose form. Called on lifecycle boundaries that break the "agent just finished that
 // exact task and still holds the context" assumption while keeping the same BackgroundSession:
-// ACP process reinit/restart and periodic loop config changes (create/update/pause/re-enable).
+// ACP process reinit/restart and loop config changes (create/update/pause/re-enable).
 // Boundaries that recreate the BackgroundSession reset it for free.
-func (bs *BackgroundSession) ResetPeriodicContinuation() {
-	bs.periodicContinuationMu.Lock()
-	bs.lastTurnScheduledPeriodic = false
-	bs.periodicContinuationMu.Unlock()
+func (bs *BackgroundSession) ResetLoopContinuation() {
+	bs.loopContinuationMu.Lock()
+	bs.lastTurnScheduledLoop = false
+	bs.loopContinuationMu.Unlock()
 }

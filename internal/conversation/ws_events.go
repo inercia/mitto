@@ -14,8 +14,8 @@ const (
 	// WSMsgTypeSessionRenamed notifies that a session was renamed.
 	WSMsgTypeSessionRenamed = "session_renamed"
 
-	// WSMsgTypePeriodicUpdated notifies that a session's periodic prompt state changed.
-	WSMsgTypePeriodicUpdated = "periodic_updated"
+	// WSMsgTypeLoopUpdated notifies that a session's loop prompt state changed.
+	WSMsgTypeLoopUpdated = "loop_updated"
 
 	// WSMsgTypeSessionWaiting notifies that a session's waiting-for-children state changed.
 	WSMsgTypeSessionWaiting = "session_waiting"

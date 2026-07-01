@@ -17,8 +17,8 @@ type SessionInfo struct {
 	// yet registered as observers (i.e., connected but haven't sent load_events).
 	HasConnectedClients bool
 	QueueLength         int
-	// NextPeriodicAt is when the next periodic prompt is due (nil = no periodic config).
-	NextPeriodicAt *time.Time
+	// NextLoopAt is when the next loop prompt is due (nil = no loop config).
+	NextLoopAt *time.Time
 	// ResumedAt is when the session was last started/resumed. Used by GC to give
 	// freshly resumed sessions a grace period before considering them idle.
 	ResumedAt time.Time
@@ -31,7 +31,7 @@ type SessionInfo struct {
 	LastActivityAt time.Time
 	// LastResponseCompleteAt is when the agent last finished a turn (completed a
 	// response). Unlike LastActivityAt (set at prompt start), this marks the END of
-	// work, making it the correct signal for the periodic-suspend grace window.
+	// work, making it the correct signal for the loop-suspend grace window.
 	// Zero if the agent has not completed a response since the session was resumed.
 	LastResponseCompleteAt time.Time
 }

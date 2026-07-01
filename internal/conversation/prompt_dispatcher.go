@@ -156,7 +156,7 @@ type promptDeps interface {
 	pdRestartACPProcess() error // bakes in RestartReasonCrashDuringStream
 	pdReacquirePromptingState() // promptMu: isPrompting=true, promptStartTime=now, Unlock
 
-	// === New in mitto-2tm: in-place context flush for FreshContext periodic runs ===
+	// === New in mitto-2tm: in-place context flush for FreshContext loop runs ===
 
 	// pdContextFlushCommand returns the agent-native context-flush command (e.g. "/clear")
 	// configured for this session's ACP server, or "" when the feature is not configured.
@@ -171,19 +171,19 @@ type promptDeps interface {
 type promptDispatcher struct{}
 
 // SenderID sentinels for non-human dispatch paths: queued messages (which include
-// MCP cross-session sends via mitto_conversation_send_prompt) and periodic runs.
+// MCP cross-session sends via mitto_conversation_send_prompt) and loop runs.
 const (
-	senderIDQueue    = "queue"
-	senderIDPeriodic = "periodic-runner"
+	senderIDQueue = "queue"
+	senderIDLoop  = "loop-runner"
 )
 
 // isAutomatedDispatch reports whether a prompt originates from an automated /
-// cross-session dispatch path (queue or periodic runner) rather than direct human
+// cross-session dispatch path (queue or loop runner) rather than direct human
 // input. Automated free-text dispatches fail-closed on a template parse error so a
 // broken, unrenderable body is never silently delivered raw to a child that cannot
 // act on it — that cascaded into a 10m child-wait timeout (mitto-e7u).
 func isAutomatedDispatch(senderID string) bool {
-	return senderID == senderIDQueue || senderID == senderIDPeriodic
+	return senderID == senderIDQueue || senderID == senderIDLoop
 }
 
 // resolveAndSubstitute covers the top of PromptWithMeta:
@@ -278,7 +278,7 @@ func (p promptDispatcher) resolveAndSubstitute(d promptDeps, message string, met
 		rendered, rerr := config.RenderPromptTemplate(name, message, tctx, funcs)
 		if rerr != nil {
 			// Named prompts always fail-closed. Automated/cross-session dispatches
-			// (queue, periodic-runner) also fail-closed: a broken template body must
+			// (queue, loop-runner) also fail-closed: a broken template body must
 			// not be silently delivered raw to a child that cannot act on it — that
 			// cascaded into a 10m child-wait timeout (mitto-e7u). Direct human input
 			// keeps fail-open so pasted text containing {{ is delivered literally.
@@ -514,8 +514,8 @@ func (p promptDispatcher) buildProcessorInput(d promptDeps, message string, isFi
 		AvailableACPServers:    d.pdAvailableACPServers(),
 		ChildSessions:          childSessions,
 		MCPToolNames:           mcpToolNames,
-		IsPeriodic:             meta.SenderID == senderIDPeriodic,
-		IsPeriodicForced:       meta.IsPeriodicForced,
+		IsLoop:                 meta.SenderID == senderIDLoop,
+		IsLoopForced:           meta.IsLoopForced,
 		IterationNumber:        meta.IterationNumber,
 		MaxIterations:          meta.MaxIterations,
 		IterationUninterrupted: meta.IterationUninterrupted,
@@ -668,13 +668,13 @@ func (p promptDispatcher) completeHandshakeOrAbort(d promptDeps) bool {
 	return false
 }
 
-// createFreshContextSession prepares a fresh context for a FreshContext periodic run.
+// createFreshContextSession prepares a fresh context for a FreshContext loop run.
 //
 // When a contextFlushCommand is configured for the ACP server, it performs an
 // in-place flush (sends the command on the existing session with streaming suppressed)
 // rather than creating a new ACP session. This works for both direct-conn and
 // shared-process sessions. The flush is best-effort: errors are logged as warnings
-// but never abort the main periodic prompt. Returns "" in this path — the main
+// but never abort the main loop prompt. Returns "" in this path — the main
 // Prompt() continues on the existing session.
 //
 // When no flush command is configured, falls back to the original NewSession path
@@ -692,7 +692,7 @@ func (p promptDispatcher) createFreshContextSession(d promptDeps, meta PromptMet
 		flushCancel()
 		if err == nil {
 			if l := d.pdLogger(); l != nil {
-				l.Info("In-place context flush succeeded for periodic FreshContext run",
+				l.Info("In-place context flush succeeded for loop FreshContext run",
 					"session_id", d.pdSessionID())
 			}
 		} else {
@@ -719,7 +719,7 @@ func (p promptDispatcher) createFreshContextSession(d promptDeps, meta PromptMet
 	freshCancel()
 	if err == nil {
 		if l := d.pdLogger(); l != nil {
-			l.Info("Created fresh ACP session for periodic run",
+			l.Info("Created fresh ACP session for loop run",
 				"fresh_session_id", sessID,
 				"session_id", d.pdSessionID())
 		}
@@ -948,7 +948,7 @@ func (p promptDispatcher) finalizeTurn(d promptDeps, err error, meta PromptMeta,
 		meta.OnComplete(err)
 	}
 
-	// Notify the on-completion periodic hook once the agent has stopped and the
+	// Notify the on-completion loop hook once the agent has stopped and the
 	// session is fully idle.
 	if sessionIdle {
 		d.pdOnTurnIdle()

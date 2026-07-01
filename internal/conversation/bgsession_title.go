@@ -20,7 +20,7 @@ func (bs *BackgroundSession) NeedsTitle() bool {
 // (1) failed initial title generation attempts (e.g., context deadline exceeded)
 // (2) prompts that arrived via paths that don't trigger title generation
 //
-//	(queue processing, MCP send_prompt, periodic prompts)
+//	(queue processing, MCP send_prompt, loop prompts)
 func (bs *BackgroundSession) retryTitleGenerationIfNeeded(message string) {
 	bs.titleCoord.retryIfNeeded(bs, message)
 }
@@ -28,21 +28,21 @@ func (bs *BackgroundSession) retryTitleGenerationIfNeeded(message string) {
 // TriggerTitleGeneration triggers async title generation if the session has no title yet.
 // This is the public interface used by MCP tools and API handlers to generate titles
 // for sessions that received prompts via paths that don't normally trigger title generation
-// (e.g., periodic prompt configuration, queue processing).
+// (e.g., loop prompt configuration, queue processing).
 func (bs *BackgroundSession) TriggerTitleGeneration(message string) {
 	bs.titleCoord.trigger(bs, message)
 }
 
-// TriggerTitleGenerationFromPeriodic chooses the best source text for title
-// generation given a periodic-style draft. The inline `prompt` may be empty,
+// TriggerTitleGenerationFromLoop chooses the best source text for title
+// generation given a loop-style draft. The inline `prompt` may be empty,
 // whitespace, or the UI placeholder "(pending)" — all three are treated as
 // "no inline prompt". When only `promptName` is meaningful, it is resolved
 // to its full text via the configured prompt resolver (workingDir-scoped)
 // before being passed to the auxiliary title generator. If resolution fails
 // or no resolver is configured, the bare prompt name is used as a fallback.
 // No-op when neither source yields any text.
-func (bs *BackgroundSession) TriggerTitleGenerationFromPeriodic(prompt, promptName string) {
-	bs.titleCoord.triggerFromPeriodic(bs, prompt, promptName)
+func (bs *BackgroundSession) TriggerTitleGenerationFromLoop(prompt, promptName string) {
+	bs.titleCoord.triggerFromLoop(bs, prompt, promptName)
 }
 
 // --- titleDeps implementation (supplies live session dependencies to titleCoordinator) ---

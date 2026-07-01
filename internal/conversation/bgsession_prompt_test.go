@@ -107,9 +107,9 @@ func TestRedactArgValue_Truncation(t *testing.T) {
 	}
 }
 
-// TestPeriodicContinuation_Marker tests the peek/advance/reset lifecycle of the
-// session-scoped periodic continuation marker (mitto-5xjn).
-func TestPeriodicContinuation_Marker(t *testing.T) {
+// TestLoopContinuation_Marker tests the peek/advance/reset lifecycle of the
+// session-scoped loop continuation marker (mitto-5xjn).
+func TestLoopContinuation_Marker(t *testing.T) {
 	newBS := func() *BackgroundSession {
 		bs := &BackgroundSession{}
 		return bs
@@ -118,62 +118,62 @@ func TestPeriodicContinuation_Marker(t *testing.T) {
 	// (i) First scheduled run → peek returns false (no previous run recorded).
 	t.Run("first-scheduled-peek-false", func(t *testing.T) {
 		bs := newBS()
-		if got := bs.peekPeriodicContinuation(true); got {
-			t.Error("first scheduled run: peekPeriodicContinuation(true) should return false, got true")
+		if got := bs.peekLoopContinuation(true); got {
+			t.Error("first scheduled run: peekLoopContinuation(true) should return false, got true")
 		}
 	})
 
 	// (ii) Two back-to-back scheduled runs: advance true → next peek true.
 	t.Run("back-to-back-scheduled", func(t *testing.T) {
 		bs := newBS()
-		bs.advancePeriodicContinuation(true) // first run committed
-		if got := bs.peekPeriodicContinuation(true); !got {
-			t.Error("second scheduled run: peekPeriodicContinuation(true) should return true after advance(true)")
+		bs.advanceLoopContinuation(true) // first run committed
+		if got := bs.peekLoopContinuation(true); !got {
+			t.Error("second scheduled run: peekLoopContinuation(true) should return true after advance(true)")
 		}
 	})
 
 	// (iii) A user/non-scheduled dispatch between two scheduled runs resets the chain.
 	t.Run("non-scheduled-breaks-chain", func(t *testing.T) {
 		bs := newBS()
-		bs.advancePeriodicContinuation(true)  // scheduled run 1
-		bs.advancePeriodicContinuation(false) // user prompt (non-scheduled)
-		if got := bs.peekPeriodicContinuation(true); got {
-			t.Error("after non-scheduled advance(false): peekPeriodicContinuation(true) should return false")
+		bs.advanceLoopContinuation(true)  // scheduled run 1
+		bs.advanceLoopContinuation(false) // user prompt (non-scheduled)
+		if got := bs.peekLoopContinuation(true); got {
+			t.Error("after non-scheduled advance(false): peekLoopContinuation(true) should return false")
 		}
 	})
 
-	// (iv) Forced periodic run (isScheduledPeriodic=false) → peek false and resets chain.
+	// (iv) Forced loop run (isScheduledLoop=false) → peek false and resets chain.
 	t.Run("forced-run-breaks-chain", func(t *testing.T) {
 		bs := newBS()
-		bs.advancePeriodicContinuation(true)  // scheduled run 1
-		bs.advancePeriodicContinuation(false) // forced run (PeriodicKindForced → isScheduledPeriodic=false)
-		if got := bs.peekPeriodicContinuation(true); got {
-			t.Error("after forced advance(false): peekPeriodicContinuation(true) should return false")
+		bs.advanceLoopContinuation(true)  // scheduled run 1
+		bs.advanceLoopContinuation(false) // forced run (LoopKindForced → isScheduledLoop=false)
+		if got := bs.peekLoopContinuation(true); got {
+			t.Error("after forced advance(false): peekLoopContinuation(true) should return false")
 		}
 		// peek with false also returns false
-		if got := bs.peekPeriodicContinuation(false); got {
-			t.Error("peekPeriodicContinuation(false) should always return false")
+		if got := bs.peekLoopContinuation(false); got {
+			t.Error("peekLoopContinuation(false) should always return false")
 		}
 	})
 
-	// (v) FreshContext → isScheduledPeriodic is computed as false → peek false.
+	// (v) FreshContext → isScheduledLoop is computed as false → peek false.
 	t.Run("fresh-context-peek-false", func(t *testing.T) {
 		bs := newBS()
-		bs.advancePeriodicContinuation(true)
-		// FreshContext makes isScheduledPeriodic=false regardless of PeriodicKindScheduled
-		isScheduledPeriodic := false // PeriodicKindScheduled && !FreshContext → false when FreshContext=true
-		if got := bs.peekPeriodicContinuation(isScheduledPeriodic); got {
-			t.Error("FreshContext: peekPeriodicContinuation(false) should return false")
+		bs.advanceLoopContinuation(true)
+		// FreshContext makes isScheduledLoop=false regardless of LoopKindScheduled
+		isScheduledLoop := false // LoopKindScheduled && !FreshContext → false when FreshContext=true
+		if got := bs.peekLoopContinuation(isScheduledLoop); got {
+			t.Error("FreshContext: peekLoopContinuation(false) should return false")
 		}
 	})
 
-	// (vi) ResetPeriodicContinuation makes the next peek false even after advance(true).
+	// (vi) ResetLoopContinuation makes the next peek false even after advance(true).
 	t.Run("reset-makes-next-peek-false", func(t *testing.T) {
 		bs := newBS()
-		bs.advancePeriodicContinuation(true)
-		bs.ResetPeriodicContinuation()
-		if got := bs.peekPeriodicContinuation(true); got {
-			t.Error("after ResetPeriodicContinuation: peekPeriodicContinuation(true) should return false")
+		bs.advanceLoopContinuation(true)
+		bs.ResetLoopContinuation()
+		if got := bs.peekLoopContinuation(true); got {
+			t.Error("after ResetLoopContinuation: peekLoopContinuation(true) should return false")
 		}
 	})
 }
