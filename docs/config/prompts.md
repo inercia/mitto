@@ -774,6 +774,10 @@ nothing ready remains in scope, it **self-terminates** —
 it back into a regular conversation. It is the automated sibling of the interactive
 "Start work" (`beads-issue-work`) prompt.
 
+For the general design pattern behind this kind of self-driving, self-terminating
+loop — encoding workflow progress as `bd` labels — see
+[Label-as-state-machine pattern for periodic beads prompts](../devel/prompt-templates.md#13-label-as-state-machine-pattern-for-periodic-beads-prompts).
+
 ## Prompt Arguments
 
 Prompt arguments are passed to prompts at dispatch time and accessed in the

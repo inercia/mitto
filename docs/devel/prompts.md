@@ -219,6 +219,10 @@ can serve **both** the per-issue `beadsIssues` menu and the generic
 > The body MUST resolve the target from `$target` (or `.Session.BeadsIssue` /
 > `.Args.IssueID` directly), never from `.Item.*`.
 
+This same menu-time/send-time split underpins periodic, multi-run prompts that
+advance a beads issue through a sequence of `bd` labels one stage per run —
+see [Label-as-state-machine pattern for periodic beads prompts](prompt-templates.md#13-label-as-state-machine-pattern-for-periodic-beads-prompts).
+
 For the full YAML header recipe, ladder, and gating examples see
 [Context-adaptive prompts (three modes)](../config/prompts.md#context-adaptive-prompts-three-modes)
 in the user-facing config reference. The six builtin exemplars are

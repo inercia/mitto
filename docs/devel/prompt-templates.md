@@ -371,3 +371,285 @@ periodic-runner handling is needed.
 | **mitto-m7sb.6** | FuncMap full impl: `arg`, `default`, `fileExists`, `dirExists`, `commandExists`, `cond`/`when`; extract shared pure-Go helper package | `internal/config/cel_evaluator.go` (extract), new `internal/config/templatefuncs.go` |
 | **mitto-m7sb.10** | Docs update: migration guide in `docs/config/prompts.md` | `docs/config/prompts.md` |
 | **mitto-m7sb.12** | Prompt migration: convert built-in prompts | `config/prompts/builtin/*.prompt.yaml` |
+
+---
+
+## 13. Label-as-state-machine pattern for periodic beads prompts
+
+This section documents a higher-level **design pattern** built on top of the template
+context described in §4 and §10.1: using `bd` labels as a durable, ordered state
+machine that a periodic conversation advances one stage per run. It is the pattern
+behind the shipped `Iterate fixing bug`, `Iterate fixing bugs`, and
+`Iterate implementing features` builtin prompts (§13.9).
+
+### 13.1  Concept
+
+A **periodic conversation** advances a single beads issue through an ordered,
+finite set of states encoded as `bd` **labels** (e.g. `researched` → `reproduced`
+→ `fixed`). Each scheduled run performs the same four-step cycle:
+
+1. **Read** the issue's *live* labels (`bd show <id> --json`).
+2. **Branch** to the stage implied by the current label set.
+3. **Do** that stage's work (and only that stage's — never more than one stage
+   per run).
+4. **Advance** the label (add the label for the stage just completed), then
+   either stop the turn (the next scheduled run picks up the next stage) or,
+   at the **terminal** label, **self-terminate** the periodic schedule (§13.5).
+
+Because the state lives in the tracker (not in conversation memory), the loop
+survives conversation restarts, crashes, and even a full context reset —
+anything that can run `bd show <id>` can resume it.
+
+### 13.2  Critical context distinction: `Item.*` vs. live `bd show`
+
+> **Warning — do not branch on `Item.*` in the prompt body.**
+>
+> - `Item.*` fields (`Item.Id` / `Item.Status` / `Item.Type` / `Item.Priority` /
+>   `Item.Labels` / `Item.Kind`) are populated **only at menu time**, for
+>   per-row `enabledWhen` gating in the Beads context menu (see
+>   [docs/config/prompts.md § Per-row `Item.*` namespace](../config/prompts.md#per-row-item-namespace-for-enabledwhen)).
+> - At **send time**, the body's template/CEL context is built by
+>   `processors.BuildCELContext(input)` (`internal/processors/hook.go`), which
+>   constructs a `config.PromptEnabledContext` **without ever setting an `Item`
+>   field**. So `{{ .Item.Labels }}` — or a `Cond` expression referencing
+>   `Item.*` — is **empty/false** everywhere in a prompt body, every time.
+> - **Therefore:** branch on the **live** state, read fresh every run via
+>   `bd show {{ .Args.IssueID }} --json` (where `{{ .Args.IssueID }}` is
+>   whatever the durable target resolves to — see §13.3), **never** on
+>   `Item.*` in the body. This is also the more *correct* behavior: labels
+>   mutate between runs, so a menu-time snapshot would already be stale by the
+>   time a later scheduled run reads it.
+
+This is the same timing asymmetry documented in [§10.1](#101--timing-asymmetry-args-is-empty-at-menu-time)
+for `Args` (empty at menu time, populated at send time) — `Item.*` is the
+mirror image: populated at menu time, empty at send time. See [§4](#4-the-unified-context-configpromptenabledcontext--args)
+for the full accessor↔CEL↔Go-field table that documents which fields exist in
+which context.
+
+### 13.3  Durable anchors across runs
+
+Two fields identify *which* issue a given run should act on, and one namespace
+reports where in the schedule the run sits:
+
+| Field | Meaning |
+|---|---|
+| `{{ .Session.BeadsIssue }}` | The conversation's **linked** beads issue (set via `beads_issue` at creation, or `mitto_conversation_update`). Preferred — durable across every periodic re-fire regardless of arguments. |
+| `{{ .Args.IssueID }}` | An explicit argument (e.g. auto-filled by the `beadsIssues` menu on the first send). Used when there is no linked issue yet, or as a one-shot override. |
+| `{{ .Iteration.IsFirst }}` | `true` on the very first run (`Iteration.Number == 0`) — no prior `bd comment` history to review yet. |
+| `{{ .Iteration.IsUninterrupted }}` | `true` only on a scheduled, non-forced periodic run directly following another such run — i.e. genuine machine-driven continuation, not a user-resumed or force-triggered run. |
+| `{{ .Iteration.IsLast }}` | `true` on the final scheduled run before `maxIterations` is hit — a hook to wrap up gracefully instead of starting a stage that won't finish. |
+
+The standard **target ladder** (also used by the context-adaptive prompts in
+[docs/config/prompts.md](../config/prompts.md#context-adaptive-prompts-three-modes))
+prefers the durable linked issue, falling back to the argument:
+
+```text
+{{ $target := "" -}}
+{{ if .Session.BeadsIssue }}{{ $target = .Session.BeadsIssue }}
+{{ else if .Args.IssueID }}{{ $target = .Args.IssueID }}{{ end -}}
+```
+
+### 13.4  Auto-periodic frontmatter block
+
+A label-as-state-machine prompt declares a `periodic:` block so each run
+re-fires automatically once the agent stops responding — see
+[docs/config/prompts.md § Periodic Prompts](../config/prompts.md#periodic-prompts)
+for the full field reference:
+
+```yaml
+periodic:
+  mode: always
+  trigger: onCompletion   # fire the next run after the agent stops, not on a fixed clock
+  delay: 30               # seconds to wait after the agent finishes
+  maxIterations: 20       # hard cap on scheduled runs — a backstop, not the exit condition
+  maxDuration: "4h"       # wall-clock cap from the first run
+```
+
+**This block behaves differently depending on how the conversation was
+started — this distinction matters for orchestrator authors:**
+
+| How the prompt is dispatched | Does `periodic:` auto-apply? |
+|---|---|
+| Selected directly in the UI (ChatInput dropup, Beads context menu, periodic selector) | **Yes.** The frontend reads the prompt's `periodic:` block and configures the conversation accordingly (see [Behavior](../config/prompts.md#behavior)). |
+| Spawned programmatically via `mitto_conversation_new(prompt_name: "...")` (e.g. from an orchestrator prompt) | **No.** The prompt's own `periodic:` frontmatter is **not** read or applied. The caller must pass explicit `periodic_prompt`, `periodic_trigger`, `periodic_completion_delay_seconds`, `periodic_max_iterations`, and `periodic_max_duration_seconds` arguments to `mitto_conversation_new` to reproduce the same schedule. |
+
+The shipped list-level orchestrators (`Iterate fixing bugs`,
+`Iterate implementing features`) work around this by fetching the per-issue
+driver's body once via `mitto_prompt_get`, then passing that body as **both**
+`initial_prompt` and `periodic_prompt`, with the numeric periodic fields
+copied from the driver's own `periodic:` block (see §13.9).
+
+### 13.5  Self-termination
+
+At the terminal label — the stage after which there is no further work —
+the prompt turns off its own periodic schedule instead of continuing to fire:
+
+```
+mitto_conversation_update(self_id: "{{ .Session.ID }}", conversation_id: "self", periodic_enabled: false)
+```
+
+This flips the conversation back into a regular (non-periodic) one; it is not
+deleted or archived, and can be re-enabled later (e.g. after a human clears a
+`needs-human` label and wants to resume — §13.7).
+
+### 13.6  State-label vocabulary guidance
+
+Keep the label set for a given workflow **small, ordered, and documented** —
+each label should represent exactly one completed stage, and the prompt body
+should never skip a label or add two in the same run. Two shipped examples:
+
+| Workflow | Ordered labels |
+|---|---|
+| Bug fix (`Iterate fixing bug`) | `researched` → `reproduced` → `fixed` |
+| Feature (`Iterate implementing features`'s per-feature driver) | `planned` → `implemented` → `tested` → `verified` |
+
+**Label collisions across workflows.** Because labels are a flat namespace on
+the bead, two different state-machine prompts that both use a label like
+`done` or `ready` can collide — one workflow's branch condition may
+accidentally match a label left behind by a different workflow. If your
+workspace runs multiple label-as-state-machine prompts, either keep each
+workflow's label vocabulary lexically distinct (as the two examples above
+already are) or adopt an explicit prefix convention (e.g. `bugfix:researched`,
+`feature:planned`) to make ownership unambiguous.
+
+### 13.7  Blocked → Defer + Handoff sub-pattern
+
+When a run **cannot make progress autonomously** — a requirement is
+ill-defined, a decision needs a human, or an external action/secret is
+required — the prompt must **not guess**. Instead it parks the issue so it
+drops out of scheduling and leaves a clear trail for a human to pick up:
+
+1. **Defer and flag** the bead so it drops out of `bd ready` (confirmed by
+   `bd ready --help`: "Excludes in_progress, blocked, **deferred**, and hooked
+   issues"):
+
+   ```bash
+   bd update <id> --add-label needs-human --defer <when>   # e.g. tomorrow / +1d
+   ```
+
+2. **Two-places handoff.** Record the open questions in **both** places so
+   the information survives regardless of which one the human sees first:
+   - a ticket comment:
+     ```bash
+     bd comment <id> "Blocked at <stage>. What I tried: <summary>. What I need from you: <the ONE concrete question/decision/info/action>. How to resume: bd update <id> --remove-label needs-human --defer '' , then re-run."
+     ```
+   - the run's final "last words" (a closing `mitto_ui_notify` in silent mode,
+     or a direct chat message in interactive mode) naming the same blocker.
+
+3. **Stop the loop** so it does not keep re-firing on the same blocker:
+
+   ```
+   mitto_conversation_update(self_id: "{{ .Session.ID }}", conversation_id: "self", periodic_enabled: false)
+   ```
+
+**To resume:** clear the flag and the defer date —
+
+```bash
+bd update <id> --remove-label needs-human --defer ""
+```
+
+— which returns the issue to `bd ready`, and re-running the prompt (or
+re-enabling its periodic schedule) resumes at the **un-advanced** stage: no
+progress is lost, because the state is durable in the labels, not in
+conversation memory.
+
+### 13.8  Copy-pasteable skeleton prompt
+
+A minimal, internally-consistent two-stage (`started` → `done`) skeleton.
+Adapt the label vocabulary (§13.6), the per-stage work, and the `bd` calls to
+your workflow:
+
+```yaml
+name: "Iterate my workflow"
+menus: beadsIssues, conversation
+icon: periodic
+parameters:
+  - name: IssueID
+    type: beadsId
+    required: false
+    description: The beads issue ID to act on
+enabledWhen: '!Session.IsChild && CommandExists("bd") && DirExists(".beads") && Item.Status != "closed"'
+periodic:
+  mode: always
+  trigger: onCompletion
+  delay: 30
+  maxIterations: 20
+  maxDuration: "4h"
+prompt: |
+  {{ $target := "" -}}
+  {{ if .Session.BeadsIssue }}{{ $target = .Session.BeadsIssue }}
+  {{ else if .Args.IssueID }}{{ $target = .Args.IssueID }}{{ end -}}
+
+  {{ if not $target -}}
+  No target issue was supplied. Do not guess — see "Blocked" below.
+  {{- else -}}
+  ## Step 1 — Load LIVE state (never trust a stale snapshot or Item.*)
+
+      bd show {{ $target }} --json --include-comments
+
+  ## Step 2 — Branch on the live labels; do ONE stage this run
+
+  - No state label present → **do the "started" work**, then:
+
+        bd update {{ $target }} --add-label started
+        bd comment {{ $target }} "Started: <summary>."
+
+    Stop this turn; the next scheduled run will see `started`.
+
+  - `started` present, `done` absent → **do the "done" work**, then:
+
+        bd update {{ $target }} --add-label done
+        bd comment {{ $target }} "Done: <summary>."
+
+  - `done` present → **terminal state reached.** Self-terminate:
+
+        mitto_conversation_update(self_id: "{{ .Session.ID }}", conversation_id: "self", periodic_enabled: false)
+        mitto_ui_notify(self_id: "{{ .Session.ID }}", title: "Iterate my workflow — done", message: "<summary>", style: "success")
+  {{- end }}
+
+  ## Blocked → Defer + Handoff
+
+  If you cannot make progress autonomously at any stage above, do NOT guess:
+
+      bd update {{ if $target }}{{ $target }}{{ else }}<target-id>{{ end }} --add-label needs-human --defer +1d
+      bd comment {{ if $target }}{{ $target }}{{ else }}<target-id>{{ end }} "Blocked at <stage>. What I tried: <summary>. What I need: <the ONE concrete question>. How to resume: bd update <id> --remove-label needs-human --defer '' , then re-run."
+      mitto_conversation_update(self_id: "{{ .Session.ID }}", conversation_id: "self", periodic_enabled: false)
+```
+
+### 13.9  Worked example: the shipped bug-fix state machine
+
+`config/prompts/builtin/beads-issue-iterate-fixing-bug.prompt.yaml`
+(prompt name: **`Iterate fixing bug`**) is the real, shipped implementation of
+this pattern. It drives a single `bug`-type bead through
+`researched` → `reproduced` → `fixed`, one label per `onCompletion` re-fire:
+
+- **Step 1** loads live state (`bd show {{ $target }} --json --include-comments`).
+- **Step 2** checks the issue is still actionable (not `closed`, not
+  `needs-human` while deferred).
+- **Step 3** branches on which of `researched` / `reproduced` / `fixed` is
+  present and **dispatches** (rather than inlines) the matching per-phase
+  prompt via a self-send (`mitto_conversation_send_prompt(conversation_id:
+  "self", prompt_name: "Bug fix — investigate phase" | "...reproduce phase" |
+  "...fix phase", ...)`) — each phase prompt runs on its own preferred model
+  tier, adds its label, and stops; the driver's `onCompletion` schedule then
+  re-observes the advanced label on the next run. `fixed` present → close the
+  bead and self-terminate (§13.5).
+- **Step 4** is exactly the Blocked → Defer + Handoff pattern from §13.7.
+
+Two **list-level orchestrators** generalize this into a loop-inside-a-loop —
+enumerate eligible issues, spawn one per-issue driver conversation as a
+child, wait for it, then move to the next:
+
+- `config/prompts/builtin/beads-issue-iterate-fixing-bugs.prompt.yaml`
+  (`Iterate fixing bugs`) spawns children running the `Iterate fixing bug`
+  body, one bug at a time.
+- `config/prompts/builtin/beads-issue-iterate-implementing-features.prompt.yaml`
+  (`Iterate implementing features`) spawns children driving the
+  `planned` → `implemented` → `tested` → `verified` feature state machine, one
+  feature at a time.
+
+Both orchestrators are themselves **non-periodic, one-shot** runs (they loop
+internally via `mitto_children_tasks_wait`); the *children* they spawn are the
+periodic ones, and both fetch the child driver's body via `mitto_prompt_get`
+and pass it as both `initial_prompt` and `periodic_prompt` — a direct
+consequence of the `mitto_conversation_new` behavior documented in §13.4.
