@@ -2335,6 +2335,22 @@ func (c *SessionWSClient) OnContextUsageUpdate(size, used int) {
 	})
 }
 
+// Ensure SessionWSClient satisfies the optional AgentWorkingObserver.
+var _ conversation.AgentWorkingObserver = (*SessionWSClient)(nil)
+
+// OnAgentWorking forwards a transient "agent still working" heartbeat to the client.
+func (c *SessionWSClient) OnAgentWorking(data conversation.AgentWorkingData) {
+	payload := map[string]interface{}{
+		"session_id":   c.sessionID,
+		"idle_ms":      data.IdleMs,
+		"is_prompting": true,
+	}
+	if data.ToolTitle != "" {
+		payload["tool_title"] = data.ToolTitle
+	}
+	c.sendMessage(WSMsgTypeAgentWorking, payload)
+}
+
 // actionButtonsKey builds a lightweight dedup key from a slice of buttons.
 // It concatenates "label\x00response" pairs separated by "\x01" so that
 // different label/response orderings produce different keys.

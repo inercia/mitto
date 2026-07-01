@@ -4556,7 +4556,7 @@ func TestStartPromptInactivityWatchdog_PausesDuringToolCall(t *testing.T) {
 	// be marked in flight after it starts — mirroring the real flow where tool_call
 	// updates stream in only after the prompt begins.
 	bs.startPromptInactivityWatchdog(ctx, cancel, &fired)
-	bs.trackToolCallStatus("call_1", "in_progress")
+	bs.trackToolCallStatus("call_1", "", "in_progress")
 
 	// While the tool is in flight, the watchdog must stay quiet well past the timeout.
 	time.Sleep(250 * time.Millisecond)
@@ -4574,7 +4574,7 @@ func TestStartPromptInactivityWatchdog_PausesDuringToolCall(t *testing.T) {
 	}
 
 	// Complete the tool call; the watchdog should now observe idleness and warn.
-	bs.trackToolCallStatus("call_1", "completed")
+	bs.trackToolCallStatus("call_1", "", "completed")
 	if bs.hasInFlightToolCall() {
 		t.Fatal("tool call should no longer be in flight after a terminal status")
 	}
@@ -4668,6 +4668,103 @@ func TestStartPromptInactivityWatchdog_WarnOnlyWhenTimeoutZero(t *testing.T) {
 	}
 	if got := len(rec.entriesAt(slog.LevelError)); got != 0 {
 		t.Errorf("expected 0 ERROR entries in WARN-only mode, got %d", got)
+	}
+}
+
+// agentWorkingTestObserver is a minimal SessionObserver that also implements
+// AgentWorkingObserver, recording heartbeat calls for TestStartAgentWorkingHeartbeat_*.
+type agentWorkingTestObserver struct {
+	mockSessionObserver
+	count    atomic.Int64
+	mu       sync.Mutex
+	lastData AgentWorkingData
+}
+
+func (o *agentWorkingTestObserver) OnAgentWorking(data AgentWorkingData) {
+	o.mu.Lock()
+	o.lastData = data
+	o.mu.Unlock()
+	o.count.Add(1)
+}
+
+func (o *agentWorkingTestObserver) getLastData() AgentWorkingData {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return o.lastData
+}
+
+// TestStartAgentWorkingHeartbeat_EmitsDuringSilence verifies the heartbeat fires
+// repeatedly with IdleMs > 0 while the agent stays silent, and stops emitting once
+// its context is cancelled (the goroutine exits).
+func TestStartAgentWorkingHeartbeat_EmitsDuringSilence(t *testing.T) {
+	origInterval := agentWorkingHeartbeatInterval
+	origQuiet := agentWorkingHeartbeatQuietThreshold
+	agentWorkingHeartbeatInterval = 20 * time.Millisecond
+	agentWorkingHeartbeatQuietThreshold = 10 * time.Millisecond
+	defer func() {
+		agentWorkingHeartbeatInterval = origInterval
+		agentWorkingHeartbeatQuietThreshold = origQuiet
+	}()
+
+	bs := &BackgroundSession{persistedID: "test-agent-working"}
+	testObs := &agentWorkingTestObserver{}
+	bs.AddObserver(testObs)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	bs.startAgentWorkingHeartbeat(ctx)
+
+	// Do NOT signal activity — poll for at least one heartbeat.
+	deadline := time.After(2 * time.Second)
+	for testObs.count.Load() == 0 {
+		select {
+		case <-deadline:
+			t.Fatal("expected at least one OnAgentWorking heartbeat during silence")
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+
+	if got := testObs.getLastData().IdleMs; got <= 0 {
+		t.Errorf("expected IdleMs > 0, got %d", got)
+	}
+
+	cancel()
+	countAfterCancel := testObs.count.Load()
+	time.Sleep(3 * agentWorkingHeartbeatInterval)
+	if got := testObs.count.Load(); got != countAfterCancel {
+		t.Errorf("expected no further heartbeats after cancel, count went from %d to %d", countAfterCancel, got)
+	}
+}
+
+// TestStartAgentWorkingHeartbeat_PausesDuringUIPrompt verifies no heartbeat is emitted
+// while a UI prompt (permission dialog or MCP tool question) is active, mirroring the
+// same pause mechanism used by the prompt inactivity watchdog.
+func TestStartAgentWorkingHeartbeat_PausesDuringUIPrompt(t *testing.T) {
+	origInterval := agentWorkingHeartbeatInterval
+	origQuiet := agentWorkingHeartbeatQuietThreshold
+	agentWorkingHeartbeatInterval = 20 * time.Millisecond
+	agentWorkingHeartbeatQuietThreshold = 10 * time.Millisecond
+	defer func() {
+		agentWorkingHeartbeatInterval = origInterval
+		agentWorkingHeartbeatQuietThreshold = origQuiet
+	}()
+
+	bs := &BackgroundSession{persistedID: "test-agent-working-uiprompt"}
+	// Simulate a pending UI prompt (e.g. a permission dialog awaiting the user).
+	bs.activePrompt = &activeUIPrompt{request: UIPromptRequest{RequestID: "p1"}}
+	testObs := &agentWorkingTestObserver{}
+	bs.AddObserver(testObs)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	bs.startAgentWorkingHeartbeat(ctx)
+
+	time.Sleep(250 * time.Millisecond)
+
+	if got := testObs.count.Load(); got != 0 {
+		t.Errorf("expected no heartbeats while a UI prompt is active, got %d", got)
 	}
 }
 

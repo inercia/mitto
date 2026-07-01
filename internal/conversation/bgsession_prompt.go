@@ -534,6 +534,7 @@ retryAfterRestart:
 		// the prompt so is_prompting clears and the user can resend. This catches the
 		// "stuck, still responding" state that the process-death/connection monitors miss.
 		bs.startPromptInactivityWatchdog(promptCtx, promptCancel, &inactivityWatchdogFired)
+		bs.startAgentWorkingHeartbeat(promptCtx)
 
 		// On retry after ACP crash, freshContextSessionID is from the old (dead)
 		// connection; fall back to bs.acpID which holds the new session.

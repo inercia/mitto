@@ -100,6 +100,15 @@ type BackgroundSession struct {
 	// to detect a live-but-unresponsive agent (one that stops streaming without crashing).
 	lastAgentActivityAt atomic.Int64
 
+	// lastStreamActivityAt records the time (Unix nanos) of the most recent streamed
+	// update received from the agent, like lastAgentActivityAt, but is NOT reset by the
+	// inactivity watchdog while a tool call or UI prompt is pending. The agent-working
+	// heartbeat reads it so the reported idle time reflects genuine time since the last
+	// streamed activity (growing monotonically through a long silent tool call) rather
+	// than being repeatedly reset by the watchdog's tool-call pause. It is set at prompt
+	// start and updated on every ACP SessionUpdate.
+	lastStreamActivityAt atomic.Int64
+
 	// inFlightToolCalls tracks ACP tool calls that have started (pending/in_progress)
 	// but have not yet reached a terminal status (completed/failed) during the current
 	// prompt. The prompt inactivity watchdog pauses while any tool call is in flight:
@@ -108,6 +117,7 @@ type BackgroundSession struct {
 	// reset at prompt start. Guarded by inFlightToolCallsMu.
 	inFlightToolCallsMu sync.Mutex
 	inFlightToolCalls   map[string]struct{}
+	inFlightToolTitles  map[string]string // tool-call id -> title, guarded by inFlightToolCallsMu
 
 	// Configuration
 	autoApprove bool

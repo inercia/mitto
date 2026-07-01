@@ -2,7 +2,7 @@
 // Renders the scrollable messages area: empty state, reversed message list with
 // date separators and retry buttons, load-more controls, infinite-scroll sentinel,
 // and the scroll-to-bottom floating button.
-const { html, Fragment, useMemo } = window.preact;
+const { html, Fragment, useMemo, useState, useEffect } = window.preact;
 
 import { Message } from "./Message.js";
 import { SpinnerIcon, ArrowDownIcon, SettingsIcon } from "./Icons.js";
@@ -15,6 +15,8 @@ import { buildRetryTargets, messageKey } from "../lib.js";
  * @param {boolean}  hasReachedLimit
  * @param {boolean}  isLoadingMore
  * @param {boolean}  isStreaming
+ * @param {object}   agentWorking      - Transient "agent is still working" heartbeat
+ *                                       ({ idleMs, toolTitle, receivedAt }) or null
  * @param {Function} onLoadMore
  * @param {Function} onScrollToBottom
  * @param {boolean}  isUserAtBottom
@@ -36,6 +38,7 @@ export function MessageList({
   hasReachedLimit,
   isLoadingMore,
   isStreaming,
+  agentWorking,
   onLoadMore,
   onScrollToBottom,
   isUserAtBottom,
@@ -50,6 +53,44 @@ export function MessageList({
   workspaces,
   messagesContainerRef,
 }) {
+  // Tick every second while the "agent is still working" heartbeat is visible, to
+  // update the mm:ss timer and to re-evaluate staleness (auto-hide after 25s with
+  // no new heartbeat). The interval is cleared whenever streaming stops or there's
+  // no heartbeat to show, so it never runs needlessly in the background.
+  const [workingNow, setWorkingNow] = useState(Date.now());
+  useEffect(() => {
+    if (!isStreaming || !agentWorking) return undefined;
+    const interval = setInterval(() => setWorkingNow(Date.now()), 1000);
+    return () => clearInterval(interval);
+  }, [isStreaming, agentWorking]);
+
+  const showAgentWorking =
+    isStreaming && agentWorking && workingNow - agentWorking.receivedAt < 25000;
+
+  const agentWorkingChip = showAgentWorking
+    ? (() => {
+        const totalSeconds = Math.floor(
+          (agentWorking.idleMs + (workingNow - agentWorking.receivedAt)) / 1000,
+        );
+        const mm = String(Math.floor(totalSeconds / 60)).padStart(2, "0");
+        const ss = String(totalSeconds % 60).padStart(2, "0");
+        return html`
+          <div key="agent-working-chip" class="flex justify-center mb-1">
+            <div
+              class="text-xs text-mitto-text-muted flex items-center gap-2 bg-mitto-surface-2 px-3 py-1.5 rounded-lg opacity-70"
+            >
+              <span class="loading loading-spinner w-3 h-3"></span>
+              <span
+                >Working${agentWorking.toolTitle
+                  ? ` — ${agentWorking.toolTitle}`
+                  : ""}… (${mm}:${ss})</span
+              >
+            </div>
+          </div>
+        `;
+      })()
+    : null;
+
   // Memoize the reversed/flatMapped render list. Recomputes only when the
   // active session's messages, streaming state, or retry callback change —
   // not on every unrelated re-render (e.g. background-session streaming ticks).
@@ -239,6 +280,7 @@ export function MessageList({
               </div>
             `
           }
+          ${agentWorkingChip}
           ${renderedMessages}
           ${
             (hasMoreMessages || hasReachedLimit) &&

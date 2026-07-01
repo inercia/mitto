@@ -376,6 +376,14 @@ const (
 	// Sent when the agent sends a SessionUsageUpdate notification.
 	// Data: { "session_id": string, "size": int, "used": int }
 	WSMsgTypeContextUsageUpdate = "context_usage_update"
+
+	// WSMsgTypeAgentWorking is a transient heartbeat telling the client the agent is
+	// still working during a prolonged silent stretch of a prompt (e.g. a long tool
+	// call that streams no output), so the UI shows honest progress instead of an
+	// indefinite frozen spinner. Not persisted. Stops when activity resumes, the
+	// prompt ends, or the agent dies.
+	// Data: { "session_id": string, "idle_ms": int64, "tool_title": string (optional), "is_prompting": true }
+	WSMsgTypeAgentWorking = "agent_working"
 )
 
 // =============================================================================

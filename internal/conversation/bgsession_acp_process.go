@@ -520,7 +520,9 @@ var promptInactivityWatchdogTimeout time.Duration = 0
 // activity. It is called on every ACP SessionUpdate so the prompt inactivity watchdog
 // can distinguish a working agent from a wedged one.
 func (bs *BackgroundSession) signalAgentActivity() {
-	bs.lastAgentActivityAt.Store(time.Now().UnixNano())
+	now := time.Now().UnixNano()
+	bs.lastAgentActivityAt.Store(now)
+	bs.lastStreamActivityAt.Store(now)
 }
 
 // trackToolCallStatus records a tool call's status transition so the prompt
@@ -529,7 +531,9 @@ func (bs *BackgroundSession) signalAgentActivity() {
 // status (pending/in_progress) until a terminal status (completed/failed) is seen.
 // Unknown/empty statuses are treated as non-terminal (in flight) — failing toward
 // suppressing the warning, which is the desired behavior for a WARN-only signal.
-func (bs *BackgroundSession) trackToolCallStatus(id, status string) {
+// title, when non-empty, is recorded alongside the in-flight entry so the agent
+// working heartbeat can surface which tool the agent is blocked on.
+func (bs *BackgroundSession) trackToolCallStatus(id, title, status string) {
 	if id == "" {
 		return
 	}
@@ -538,12 +542,31 @@ func (bs *BackgroundSession) trackToolCallStatus(id, status string) {
 	switch status {
 	case string(acp.ToolCallStatusCompleted), string(acp.ToolCallStatusFailed):
 		delete(bs.inFlightToolCalls, id)
+		delete(bs.inFlightToolTitles, id)
 	default:
 		if bs.inFlightToolCalls == nil {
 			bs.inFlightToolCalls = make(map[string]struct{})
 		}
 		bs.inFlightToolCalls[id] = struct{}{}
+		if title != "" {
+			if bs.inFlightToolTitles == nil {
+				bs.inFlightToolTitles = make(map[string]string)
+			}
+			bs.inFlightToolTitles[id] = title
+		}
 	}
+}
+
+// currentInFlightToolTitle returns the title of any in-flight tool call, or "".
+func (bs *BackgroundSession) currentInFlightToolTitle() string {
+	bs.inFlightToolCallsMu.Lock()
+	defer bs.inFlightToolCallsMu.Unlock()
+	for _, t := range bs.inFlightToolTitles {
+		if t != "" {
+			return t
+		}
+	}
+	return ""
 }
 
 // hasInFlightToolCall reports whether at least one tool call is currently in flight.
@@ -560,6 +583,7 @@ func (bs *BackgroundSession) resetInFlightToolCalls() {
 	bs.inFlightToolCallsMu.Lock()
 	defer bs.inFlightToolCallsMu.Unlock()
 	bs.inFlightToolCalls = nil
+	bs.inFlightToolTitles = nil
 }
 
 // startPromptInactivityWatchdog launches a background goroutine that watches for a
@@ -648,6 +672,54 @@ func (bs *BackgroundSession) startPromptInactivityWatchdog(ctx context.Context, 
 							"warn_delay", warnDelay.String())
 					}
 				}
+			}
+		}
+	}()
+}
+
+// agentWorkingHeartbeatInterval is how often, during a prompt, the heartbeat is
+// re-evaluated. agentWorkingHeartbeatQuietThreshold is the minimum idle time (no
+// streamed activity) before a heartbeat is emitted, so it fires only during genuine
+// silence and never during active streaming. Vars so tests can override them.
+var agentWorkingHeartbeatInterval = 15 * time.Second
+var agentWorkingHeartbeatQuietThreshold = 10 * time.Second
+
+// startAgentWorkingHeartbeat launches a per-prompt goroutine that emits a transient
+// "agent is still working" heartbeat to observers while the agent is alive and working
+// but streaming no updates (e.g. blocked on a long silent tool call). Tied to ctx, so
+// it stops when the prompt completes/cancels or the ACP process/connection dies.
+func (bs *BackgroundSession) startAgentWorkingHeartbeat(ctx context.Context) {
+	interval := agentWorkingHeartbeatInterval
+	if interval <= 0 {
+		return
+	}
+	quiet := agentWorkingHeartbeatQuietThreshold
+	// Establish the heartbeat's own idle baseline. Unlike the watchdog, this baseline
+	// is advanced only by real streamed activity (signalAgentActivity), never reset by
+	// a tool-call/UI-prompt pause, so the reported idle grows monotonically through a
+	// long silent tool call.
+	bs.lastStreamActivityAt.Store(time.Now().UnixNano())
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				if bs.GetActiveUIPrompt() != nil {
+					continue
+				}
+				idle := time.Since(time.Unix(0, bs.lastStreamActivityAt.Load()))
+				if idle < quiet {
+					continue
+				}
+				data := AgentWorkingData{IdleMs: idle.Milliseconds(), ToolTitle: bs.currentInFlightToolTitle()}
+				bs.notifyObservers(func(o SessionObserver) {
+					if w, ok := o.(AgentWorkingObserver); ok {
+						w.OnAgentWorking(data)
+					}
+				})
 			}
 		}
 	}()

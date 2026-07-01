@@ -71,6 +71,22 @@ type SessionChangeObserver interface {
 	OnSessionChange(seq int64, data session.SessionChangeData)
 }
 
+// AgentWorkingData carries a transient "agent is still working" heartbeat emitted
+// during a prompt when the agent has been silent (no streamed updates) for a while —
+// typically blocked on a long-running tool call that streams no output. It lets the
+// UI show honest progress instead of an indefinite, frozen-looking spinner. Not persisted.
+type AgentWorkingData struct {
+	IdleMs    int64  // ms since last streamed agent activity
+	ToolTitle string // title of an in-flight tool call if known, else ""
+}
+
+// AgentWorkingObserver is an optional sibling of SessionObserver. Observers that
+// implement it receive transient "agent is still working" heartbeats during
+// prolonged agent silence within a prompt.
+type AgentWorkingObserver interface {
+	OnAgentWorking(data AgentWorkingData)
+}
+
 // SessionObserver defines the interface for receiving session events.
 // This allows multiple clients (WebSocket connections) to observe a single session.
 //

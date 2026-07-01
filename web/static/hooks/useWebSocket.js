@@ -1073,6 +1073,12 @@ export function useWebSocket({ onActiveSessionRemovedRef } = {}) {
     return activeSession?.isStreaming || false;
   }, [activeSession]);
 
+  // Get "agent is still working" heartbeat state for active session (transient,
+  // set by the agent_working WS message, cleared on prompt_complete).
+  const agentWorking = useMemo(() => {
+    return activeSession?.agentWorking || null;
+  }, [activeSession]);
+
   // Check if the ACP agent is running for the active session.
   // When false, the session exists but the agent process hasn't started yet
   // (e.g., during resume). Prompts should be blocked until acp_started arrives.
@@ -1864,6 +1870,7 @@ export function useWebSocket({ onActiveSessionRemovedRef } = {}) {
               messages,
               isStreaming: false,
               activeUIPrompt: null,
+              agentWorking: null,
               // Update processor stats from prompt_complete
               info: {
                 ...session.info,
@@ -3216,6 +3223,29 @@ export function useWebSocket({ onActiveSessionRemovedRef } = {}) {
                   size: msg.data.size,
                   used: msg.data.used,
                 },
+              },
+            },
+          };
+        });
+        break;
+      }
+
+      case "agent_working": {
+        // Transient "agent is still working" heartbeat during a prolonged silent
+        // stretch of a prompt (e.g. a long tool call streaming no output). Does
+        // NOT touch isStreaming — it only annotates the current streaming turn
+        // with idle time / in-flight tool title so the UI can show honest progress.
+        setSessions((prev) => {
+          const session = prev[sessionId];
+          if (!session) return prev;
+          return {
+            ...prev,
+            [sessionId]: {
+              ...session,
+              agentWorking: {
+                idleMs: msg.data.idle_ms || 0,
+                toolTitle: msg.data.tool_title || "",
+                receivedAt: Date.now(),
               },
             },
           };
@@ -6209,6 +6239,7 @@ export function useWebSocket({ onActiveSessionRemovedRef } = {}) {
     archiveSession,
     removeSession,
     isStreaming,
+    agentWorking,
     isRunning,
     hasMoreMessages,
     hasReachedLimit,

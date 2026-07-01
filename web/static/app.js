@@ -243,6 +243,7 @@ function App() {
     archiveSession,
     removeSession,
     isStreaming,
+    agentWorking,
     isRunning,
     hasMoreMessages,
     hasReachedLimit,
@@ -2847,6 +2848,7 @@ function App() {
                       hasReachedLimit=${hasReachedLimit}
                       isLoadingMore=${isLoadingMore}
                       isStreaming=${isStreaming}
+                      agentWorking=${agentWorking}
                       onLoadMore=${handleLoadMore}
                       onScrollToBottom=${scrollToBottom}
                       isUserAtBottom=${isUserAtBottom}
