@@ -1,0 +1,8 @@
+name: Conditional Test
+description: A conditional prompt gated by a per-conversation permission (UI test)
+group: Workflow
+menus: conversation
+enabledWhen: permissions.canPromptUser
+prompt: |
+  This prompt is gated by enabledWhen and is used to verify that the conversation
+  context menu evaluates conditions against the right-clicked conversation.

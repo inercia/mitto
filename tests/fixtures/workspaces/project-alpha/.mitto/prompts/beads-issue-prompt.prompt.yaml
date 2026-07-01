@@ -1,0 +1,6 @@
+name: Beads Issue Task
+description: A prompt for running against a specific beads issue (UI test — menus beadsIssues)
+menus: beadsIssues
+group: Task
+prompt: |
+  Analyze the beads issue ${ISSUE_ID} and summarize the current status.

@@ -169,6 +169,9 @@ test-results/
 
 # Local workspace config
 .mitto/
+# ...but always track UI test fixtures that live under a .mitto/ dir
+!tests/fixtures/**/.mitto/
+!tests/fixtures/**/.mitto/**
 
 # Playwright CLI testing artifacts
 .playwright-cli/

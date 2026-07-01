@@ -1,0 +1,15 @@
+name: Beads Param Test
+description: A beadsIssues prompt with a required text param (E2E dialog testing)
+menus: beadsIssues
+group: Param
+parameters:
+  - name: ISSUE_ID
+    type: beadsId
+    description: The beads issue ID (auto-filled by beadsIssues menu)
+  - name: CONDITION
+    type: text
+    multiLine: true
+    description: Condition to analyze
+    required: true
+prompt: |
+  Analyze the beads issue ${ISSUE_ID}: ${CONDITION}.
