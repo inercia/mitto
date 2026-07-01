@@ -387,7 +387,8 @@ func validateProcessor(proc *Processor, path string, docIndex int) error {
 }
 
 // validateProcessorParameters validates the parameters block of a prompt-mode processor.
-// Enforces: non-empty name, unique name, known type, mandatory non-empty default.
+// Enforces: non-empty name, unique name, known type, and a non-empty default unless the
+// parameter explicitly opts out via `required: false` (an optional, may-be-empty input).
 func validateProcessorParameters(params []config.PromptParameter, processorName, filePath string) error {
 	seen := make(map[string]bool, len(params))
 	for i, param := range params {
@@ -402,8 +403,11 @@ func validateProcessorParameters(params []config.PromptParameter, processorName,
 			return fmt.Errorf("processor %q (%s): parameter %q has unknown type %q (must be one of: %s)",
 				processorName, filePath, param.Name, param.Type, strings.Join(config.KnownPromptParameterTypes, ", "))
 		}
-		if param.Default == "" {
-			return fmt.Errorf("processor %q (%s): parameter %q is missing a mandatory 'default' value", processorName, filePath, param.Name)
+		// A non-empty default is mandatory unless the parameter explicitly declares
+		// `required: false`, marking it optional and allowed to render empty (e.g. a
+		// value that is auto-detected at dispatch when left blank).
+		if param.Default == "" && (param.Required == nil || *param.Required) {
+			return fmt.Errorf("processor %q (%s): parameter %q is missing a mandatory 'default' value (set a non-empty default or mark it 'required: false')", processorName, filePath, param.Name)
 		}
 	}
 	return nil

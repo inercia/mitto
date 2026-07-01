@@ -226,6 +226,7 @@ func BuildCELContext(input *ProcessorInput) *config.PromptEnabledContext {
 	// Parent context
 	if input.ParentSessionID != "" {
 		ctx.Parent.Exists = true
+		ctx.Parent.ID = input.ParentSessionID
 		ctx.Parent.Name = input.ParentSessionName
 		// ParentACPServer is not in ProcessorInput — leave empty
 	}

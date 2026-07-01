@@ -130,11 +130,26 @@ func ApplyProcessors(ctx context.Context, procs []*Processor, input *ProcessorIn
 
 		// Text-mode: directly prepend or append the static text (no external command).
 		if proc.IsTextMode() {
+			// Render Go-template {{ }} accessors against the session context. Unlike
+			// applyWithRerun, this path leaves @mitto: variables untouched (they are
+			// substituted downstream on the whole assembled message); templates have no
+			// downstream pass, so they must be rendered per-body here. Guarded by
+			// HasTemplateSyntax so non-template bodies skip the context build.
+			text := proc.Text
+			if config.HasTemplateSyntax(text) {
+				tctx := BuildCELContext(input)
+				funcs := config.BuildTemplateFuncMap(tctx)
+				if rendered, rerr := config.RenderPromptTemplate(proc.Name, text, tctx, funcs); rerr != nil {
+					logger.Warn("text-mode processor template render failed; using unrendered text", "name", proc.Name, "error", rerr)
+				} else {
+					text = rendered
+				}
+			}
 			switch proc.GetMutate() {
 			case config.ProcessorMutatePrepend:
-				result.Message = proc.Text + result.Message
+				result.Message = text + result.Message
 			case config.ProcessorMutateAppend:
-				appendBuf.WriteString(proc.Text)
+				appendBuf.WriteString(text)
 			}
 			logger.Info("text-mode processor applied",
 				"name", proc.Name,
@@ -737,7 +752,19 @@ func (m *Manager) applyWithRerun(ctx context.Context, input *ProcessorInput, ori
 
 		// Text-mode: directly prepend or append the static text (no external command).
 		if proc.IsTextMode() {
+			// First @mitto: variable substitution, then Go-template render exposing
+			// the session context as .Session/.ACP/.Parent/.Children/.Workspace etc.
+			// Guarded by HasTemplateSyntax so non-template bodies skip context build.
 			text := SubstituteVariables(proc.Text, input)
+			if config.HasTemplateSyntax(text) {
+				ctx := BuildCELContext(input)
+				funcs := config.BuildTemplateFuncMap(ctx)
+				if rendered, rerr := config.RenderPromptTemplate(proc.Name, text, ctx, funcs); rerr != nil {
+					m.logger.Warn("text-mode processor template render failed; using unrendered text", "name", proc.Name, "error", rerr)
+				} else {
+					text = rendered
+				}
+			}
 			switch proc.GetMutate() {
 			case config.ProcessorMutatePrepend:
 				result.Message = text + result.Message
@@ -765,6 +792,13 @@ func (m *Manager) applyWithRerun(ctx context.Context, input *ProcessorInput, ori
 				m.logger.Warn("prompt-mode processor template render failed; using unrendered body", "name", proc.Name, "error", rerr)
 			} else {
 				assembledPrompt = rendered
+			}
+			// Skip dispatch when the rendered prompt is empty: a template may
+			// deliberately render to nothing (e.g. no target file resolved), in
+			// which case there is nothing to send to the auxiliary session.
+			if strings.TrimSpace(assembledPrompt) == "" {
+				m.logger.Debug("prompt-mode processor skipped: rendered prompt is empty", "name", proc.Name)
+				continue
 			}
 			procTimeout := proc.GetTimeout().Duration()
 
@@ -1147,12 +1181,22 @@ func (m *Manager) ApplyAfter(ctx context.Context, input AfterProcessorInput) App
 			resolvedArgs := ResolveProcessorArgs(proc.Parameters, input.ProcessorArgOverrides[proc.Name])
 			tctx := &config.PromptEnabledContext{}
 			tctx.Session.ID = input.SessionID
+			tctx.Workspace.Folder = input.WorkingDir
 			tctx.Args = resolvedArgs
 			funcs := config.BuildTemplateFuncMap(tctx)
 			if rendered, rerr := config.RenderPromptTemplate(proc.Name, assembledPrompt, tctx, funcs); rerr != nil {
 				m.logger.Warn("prompt-mode processor template render failed; using unrendered body", "name", proc.Name, "error", rerr)
 			} else {
 				assembledPrompt = rendered
+			}
+			// Skip dispatch when the rendered prompt is empty: a template may
+			// deliberately render to nothing (e.g. no target file resolved), in
+			// which case there is nothing to send to the auxiliary session.
+			if strings.TrimSpace(assembledPrompt) == "" {
+				m.logger.Debug("after-phase prompt-mode processor skipped: rendered prompt is empty", "name", proc.Name)
+				skipped++
+				applied-- // undo the applied++ above
+				continue
 			}
 			procTimeout := proc.GetTimeout().Duration()
 			pendingPrompts = append(pendingPrompts, pendingPromptDispatch{

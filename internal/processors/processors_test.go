@@ -1882,6 +1882,68 @@ func TestApplyProcessorsWithVariableSubstitution(t *testing.T) {
 	}
 }
 
+// TestApplyProcessors_TextModeTemplateRendering verifies that a text-mode
+// processor body containing Go-template {{ }} accessors is rendered against the
+// session context (mirrors the session-context.yaml builtin after its migration
+// from @mitto: variables to templates). Rendering runs inside ApplyProcessors, so
+// the assembled message contains the resolved values and no literal "{{".
+func TestApplyProcessors_TextModeTemplateRendering(t *testing.T) {
+	procs := []*Processor{
+		{
+			Name: "session-context",
+			Text: "[Session Context]\n" +
+				"Session: {{ .Session.ID }} ({{ .Session.Name }})\n" +
+				"Agent: {{ .ACP.Name }}\n" +
+				"Working Directory: {{ .Workspace.Folder }}\n" +
+				"Parent: {{ .Parent.Ref }}\n" +
+				"Children: {{ .Children.AllText }}\n" +
+				"Available Agents: {{ .ACP.AvailableText }}\n---\n",
+			Mutate: config.ProcessorMutatePrepend,
+			When:   WhenConfig{On: PhaseUserPrompt, Match: MatchAll},
+		},
+	}
+
+	ctx := context.Background()
+	input := &ProcessorInput{
+		Message:           "Fix the login bug",
+		IsFirstMessage:    false, // avoid <user_request> wrapping for a simpler assertion
+		SessionID:         "sess-1",
+		SessionName:       "My Session",
+		WorkingDir:        "/work/dir",
+		ACPServer:         "auggie",
+		ParentSessionID:   "parent-1",
+		ParentSessionName: "Boss",
+		ChildSessions: []ChildSession{
+			{ID: "c1", Name: "Coder", ACPServer: "auggie", ChildOrigin: "mcp", IsPrompting: false},
+		},
+		AvailableACPServers: []AvailableACPServer{
+			{Name: "auggie", Type: "augment", Tags: []string{"coding"}, Current: true},
+		},
+	}
+
+	result, err := ApplyProcessors(ctx, procs, input, "", nil)
+	if err != nil {
+		t.Fatalf("ApplyProcessors() error = %v", err)
+	}
+
+	for _, want := range []string{
+		"Session: sess-1 (My Session)",
+		"Agent: auggie",
+		"Working Directory: /work/dir",
+		"Parent: parent-1 (Boss)",
+		"c1",     // child id rendered via {{ .Children.AllText }}
+		"Coder",  // child name rendered via {{ .Children.AllText }}
+		"auggie", // available ACP server rendered via {{ .ACP.AvailableText }}
+	} {
+		if !strings.Contains(result.Message, want) {
+			t.Errorf("expected rendered message to contain %q, got %q", want, result.Message)
+		}
+	}
+	if strings.Contains(result.Message, "{{") {
+		t.Errorf("expected all templates rendered (no literal {{), got %q", result.Message)
+	}
+}
+
 // TestApplyProcessorsVariablesInUserMessage tests that @mitto: variables
 // in the user's own message text are also substituted.
 func TestApplyProcessorsVariablesInUserMessage(t *testing.T) {
@@ -4750,4 +4812,135 @@ func TestBuildCELContext_Iteration(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestApplyAfter_PromptMode_SkipsWhenRenderedEmpty verifies the empty-prompt guard:
+// an after-phase prompt-mode processor whose body renders to an empty string is NOT
+// dispatched to the auxiliary session, while a non-empty body IS dispatched.
+func TestApplyAfter_PromptMode_SkipsWhenRenderedEmpty(t *testing.T) {
+	t.Run("empty render is not dispatched", func(t *testing.T) {
+		proc := &Processor{
+			Name:   "empty-body",
+			When:   WhenConfig{On: PhaseAgentResponded, Match: MatchAll, StopReasons: []string{"end_turn"}},
+			Prompt: `{{ if DirExists ".definitely-does-not-exist-xyz" }}should not appear{{ end }}`,
+		}
+		var mu sync.Mutex
+		var dispatched []string
+		m := makeAfterManager([]*Processor{proc})
+		m.SetPromptFunc(func(ctx context.Context, wsUUID, procName, prompt string) error {
+			mu.Lock()
+			dispatched = append(dispatched, prompt)
+			mu.Unlock()
+			return nil
+		})
+
+		input := makeAfterInput("user", "end_turn")
+		input.WorkingDir = t.TempDir() // empty workspace: no rules dir resolves
+		m.ApplyAfter(context.Background(), input)
+		time.Sleep(50 * time.Millisecond) // dispatch is fire-and-forget
+
+		mu.Lock()
+		defer mu.Unlock()
+		if len(dispatched) != 0 {
+			t.Fatalf("expected no dispatch for empty-rendered prompt, got %d: %q", len(dispatched), dispatched)
+		}
+	})
+
+	t.Run("non-empty render is dispatched", func(t *testing.T) {
+		proc := &Processor{
+			Name:   "non-empty-body",
+			When:   WhenConfig{On: PhaseAgentResponded, Match: MatchAll, StopReasons: []string{"end_turn"}},
+			Prompt: `{{ if not (DirExists ".definitely-does-not-exist-xyz") }}real work{{ end }}`,
+		}
+		var mu sync.Mutex
+		var dispatched []string
+		m := makeAfterManager([]*Processor{proc})
+		m.SetPromptFunc(func(ctx context.Context, wsUUID, procName, prompt string) error {
+			mu.Lock()
+			dispatched = append(dispatched, prompt)
+			mu.Unlock()
+			return nil
+		})
+
+		input := makeAfterInput("user", "end_turn")
+		input.WorkingDir = t.TempDir()
+		m.ApplyAfter(context.Background(), input)
+		time.Sleep(50 * time.Millisecond) // dispatch is fire-and-forget
+
+		mu.Lock()
+		defer mu.Unlock()
+		if len(dispatched) != 1 {
+			t.Fatalf("expected 1 dispatch for non-empty prompt, got %d", len(dispatched))
+		}
+		if strings.TrimSpace(dispatched[0]) != "real work" {
+			t.Errorf("dispatched prompt = %q, want %q", dispatched[0], "real work")
+		}
+	})
+}
+
+// TestMemorizePreferences_ResolveTargetFile verifies the auto-detection resolution
+// logic in the real builtin memorize-preferences.yaml template: an explicit
+// PreferencesFile wins; otherwise the rules directory is auto-detected; and when
+// nothing resolves the template renders to empty (which the dispatch guard skips).
+func TestMemorizePreferences_ResolveTargetFile(t *testing.T) {
+	srcPath := rootconfig.BuiltinProcessorsDir + "/memorize-preferences.yaml"
+	content, err := rootconfig.BuiltinProcessorsFS.ReadFile(srcPath)
+	if err != nil {
+		t.Fatalf("ReadFile(%s) error = %v", srcPath, err)
+	}
+	dir := t.TempDir()
+	dstPath := filepath.Join(dir, "memorize-preferences.yaml")
+	if err := os.WriteFile(dstPath, content, 0644); err != nil {
+		t.Fatalf("WriteFile error = %v", err)
+	}
+	proc, err := NewLoader(dir, nil).LoadFile(dstPath)
+	if err != nil {
+		t.Fatalf("LoadFile error = %v", err)
+	}
+	if proc == nil || proc.Prompt == "" {
+		t.Fatal("expected a non-empty prompt body from builtin YAML")
+	}
+
+	render := func(folder string, args map[string]string) string {
+		ctx := &config.PromptEnabledContext{Args: args}
+		ctx.Workspace.Folder = folder
+		funcs := config.BuildTemplateFuncMap(ctx)
+		out, rerr := config.RenderPromptTemplate(proc.Name, proc.Prompt, ctx, funcs)
+		if rerr != nil {
+			t.Fatalf("render error: %v", rerr)
+		}
+		return out
+	}
+
+	t.Run("no target resolves to empty", func(t *testing.T) {
+		out := render(t.TempDir(), nil)
+		if strings.TrimSpace(out) != "" {
+			t.Errorf("expected empty render when no file resolves, got %q", out)
+		}
+	})
+
+	t.Run("auto-detect .augment/rules", func(t *testing.T) {
+		ws := t.TempDir()
+		if err := os.MkdirAll(filepath.Join(ws, ".augment", "rules"), 0755); err != nil {
+			t.Fatalf("mkdir: %v", err)
+		}
+		out := render(ws, nil)
+		if !strings.Contains(out, ".augment/rules/90-local.md") {
+			t.Errorf("expected auto-detected .augment/rules/90-local.md in output, got:\n%s", out)
+		}
+	})
+
+	t.Run("explicit PreferencesFile wins over auto-detect", func(t *testing.T) {
+		ws := t.TempDir()
+		if err := os.MkdirAll(filepath.Join(ws, ".augment", "rules"), 0755); err != nil {
+			t.Fatalf("mkdir: %v", err)
+		}
+		out := render(ws, map[string]string{"PreferencesFile": "CUSTOM.md"})
+		if !strings.Contains(out, "CUSTOM.md") {
+			t.Errorf("expected explicit CUSTOM.md in output, got:\n%s", out)
+		}
+		if strings.Contains(out, ".augment/rules/90-local.md") {
+			t.Errorf("explicit PreferencesFile should override auto-detect, but auto path present:\n%s", out)
+		}
+	})
 }

@@ -345,7 +345,7 @@ when:
     afterSentMsgs: 10
 priority: 200
 timeout: 120s
-on_error: skip
+onError: skip
 
 prompt: |
   Analyze recent conversation messages and extract key insights.
@@ -378,10 +378,11 @@ parameters:
     type: text              # one of: beadsId beadsTitle sessionId childSessionId
                             #         workspaceId workspaceFolder acpServer text boolean
     description: "..."      # optional hint shown in the UI
-    default: "10"           # MANDATORY, must be non-empty — missing default is a load error
+    required: false         # optional; when false, an empty default is allowed
+    default: "10"           # MANDATORY (non-empty) unless required: false
 ```
 
-A missing or empty `default` is a **load error**: the processor is not loaded and appears as a red **error** badge with the full message as a tooltip in the Workspaces → Processors tab.
+A missing or empty `default` is a **load error** — the processor is not loaded and appears as a red **error** badge with the full message as a tooltip in the Workspaces → Processors tab — **unless** the parameter declares `required: false`, which marks it as an optional, may-be-empty input (useful when the value is auto-detected at dispatch when left blank).
 
 #### Substitution semantics
 
@@ -441,7 +442,7 @@ when:
     afterSentMsgs: 15
 priority: 200
 timeout: 120s
-on_error: skip
+onError: skip
 
 prompt: |
   Review the recent conversation and write a brief progress summary.
@@ -463,7 +464,7 @@ when:
     afterSentMsgs: 10
 priority: 200
 timeout: 60s
-on_error: skip
+onError: skip
 
 prompt: |
   Look through the agent's responses for any TODO items, action items,
@@ -532,7 +533,7 @@ outputFormat: json # "json" (default) or "raw"; command-mode only. "raw" uses tr
 # Execution settings
 timeout: 5s       # Command timeout (default: 5s); also caps auxiliary agent time in prompt-mode
 working_dir: session  # "session" or "hook" (default: session)
-on_error: skip    # "skip" or "fail" (default: skip)
+onError: skip     # "skip" or "fail" (default: skip)
 
 # Environment variables (in addition to automatic ones; command-mode only)
 environment:
@@ -874,7 +875,7 @@ when:
 ```
 
 With `outputFormat: raw`, whatever the command prints to stdout is prepended directly to the user's
-message without any JSON parsing. Error output (non-zero exit) is still handled according to `on_error`.
+message without any JSON parsing. Error output (non-zero exit) is still handled according to `onError`.
 
 ### Error Output
 
@@ -1115,7 +1116,7 @@ args:
   - "${MITTO_WORKING_DIR}/.ai-rules"
 input: none
 output: prepend
-on_error: skip
+onError: skip
 enabledWhen: 'Workspace.Folder.startsWith("/path/to/my-project")'
 ```
 
@@ -1148,7 +1149,7 @@ Within the same priority, order is undefined.
 
 ## Error Handling
 
-| `on_error`       | Behavior                                    |
+| `onError`        | Behavior                                    |
 | ---------------- | ------------------------------------------- |
 | `skip` (default) | Log warning, continue with original message |
 | `fail`           | Abort the message, return error to user     |

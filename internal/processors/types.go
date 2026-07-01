@@ -247,7 +247,8 @@ type Processor struct {
 
 	// Parameters declares named, typed inputs for prompt-mode processors.
 	// Each entry must have a non-empty, unique name; a recognised type (see
-	// config.KnownPromptParameterTypes); and a mandatory non-empty default value.
+	// config.KnownPromptParameterTypes); and a non-empty default value unless the
+	// parameter explicitly declares `required: false` (an optional, may-be-empty input).
 	// Parameters are exposed as .Args in the prompt template at dispatch time
 	// (workspace override → declared default).
 	// Only valid for prompt-mode processors; rejected on command-mode or text-mode.
@@ -272,7 +273,7 @@ type Processor struct {
 	Environment map[string]string `yaml:"environment,omitempty" json:"environment,omitempty"`
 
 	// OnError defines error handling: "skip" or "fail". Default: "skip".
-	OnError ErrorHandling `yaml:"on_error,omitempty" json:"on_error,omitempty"`
+	OnError ErrorHandling `yaml:"onError,omitempty" json:"on_error,omitempty"`
 
 	// EnabledWhen is an optional CEL expression that determines whether this processor applies.
 	// Uses the same CEL context as prompt enabledWhen expressions (ACP.*, Session.*, Parent.*,

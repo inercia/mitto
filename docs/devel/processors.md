@@ -128,7 +128,7 @@ output: prepend     # transform | prepend | append | discard
 priority: 50        # Lower = runs first (default: 100)
 timeout: 5s
 working_dir: session # session | hook
-on_error: skip      # skip | fail
+onError: skip       # skip | fail
 workspaces:         # Optional: limit to specific projects
   - /path/to/project
 ```

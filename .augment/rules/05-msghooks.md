@@ -47,7 +47,7 @@ when:                  # required block — BOTH on: and match: are required
 priority: 100          # lower = earlier
 enabled: true          # false = never loads (build-time gate)
 enabledWhen: 'acp.matchesServerType("augment") && !session.isPeriodic'  # CEL runtime gate
-on_error: skip         # skip | fail
+onError: skip          # skip | fail
 
 # Text-mode only (forbidden for agentResponded/agentIdle):
 text: "static text"
@@ -150,4 +150,4 @@ Key CEL variables/functions (full reference in `docs/config/processors.md`):
 
 ## Defaults
 
-`command` paths: `./`/`../` → processor dir; absolute; otherwise PATH. Defaults: `enabled=true`, `timeout=5s` (300s prompt-mode), `priority=100`, `input=message`, `output=transform`, `outputFormat=json`, `working_dir=session`, `on_error=skip`.
+`command` paths: `./`/`../` → processor dir; absolute; otherwise PATH. Defaults: `enabled=true`, `timeout=5s` (300s prompt-mode), `priority=100`, `input=message`, `output=transform`, `outputFormat=json`, `working_dir=session`, `onError=skip`.
