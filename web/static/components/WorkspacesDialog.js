@@ -51,7 +51,7 @@ import {
   RunnerRestrictionsEditor,
 } from "./SettingsDialog.js";
 
-import { ModelSelection } from "./ModelSelection.js";
+import { ModelProfileSelect } from "./ModelProfileSelect.js";
 import { Tooltip } from "./Tooltip.js";
 import { IconPicker } from "./IconPicker.js";
 import { promptMenuIncludes } from "../utils/prompts.js";
@@ -183,6 +183,8 @@ export function WorkspacesDialog({
 
   const [workspaces, setWorkspaces] = useState([]);
   const [acpServers, setAcpServers] = useState([]);
+  // Named Model profiles (config.models), used for the auxiliary model dropdown
+  const [modelProfiles, setModelProfiles] = useState([]);
   const [supportedRunners, setSupportedRunners] = useState([]);
   const [orphanedWorkspaces, setOrphanedWorkspaces] = useState([]);
 
@@ -204,8 +206,11 @@ export function WorkspacesDialog({
   const [editColor, setEditColor] = useState("");
   const [editGroup, setEditGroup] = useState("");
   const [editAcpServer, setEditAcpServer] = useState("");
-  const [editAuxModelMode, setEditAuxModelMode] = useState("");
-  const [editAuxModelPattern, setEditAuxModelPattern] = useState("");
+  const [editAuxModelProfile, setEditAuxModelProfile] = useState("");
+  // Whether the user has explicitly cleared a legacy raw auxiliary model
+  // constraint by picking "-- None --" (vs. never having touched the control).
+  const [editAuxModelConstraintCleared, setEditAuxModelConstraintCleared] =
+    useState(false);
   const [editRunner, setEditRunner] = useState("exec");
   const [editRunnerConfig, setEditRunnerConfig] = useState(null);
   const [editAutoApprove, setEditAutoApprove] = useState(false);
@@ -425,6 +430,26 @@ export function WorkspacesDialog({
     [workspaces, selectedWorkspaceKey],
   );
 
+  // Legacy raw matchMode/pattern constraint for the auxiliary model, if any,
+  // and whether it's shown as a disabled "Custom (legacy)" dropdown option
+  // (only when no profile is selected and it doesn't match a known profile).
+  const rawAuxModelConstraint = useMemo(
+    () => selectedWorkspace?.auxiliary_model_selection || null,
+    [selectedWorkspace],
+  );
+  const auxLegacyModelLabel = useMemo(() => {
+    if (editAuxModelProfile || !rawAuxModelConstraint) return null;
+    const matches = modelProfiles.some(
+      (p) =>
+        p.criteria &&
+        p.criteria.matchMode === rawAuxModelConstraint.matchMode &&
+        p.criteria.pattern === rawAuxModelConstraint.pattern,
+    );
+    return matches
+      ? null
+      : `Custom (legacy): ${rawAuxModelConstraint.matchMode} ${rawAuxModelConstraint.pattern}`;
+  }, [editAuxModelProfile, rawAuxModelConstraint, modelProfiles]);
+
   // Unique folder groups across all workspaces, used to suggest existing groups
   // (so users can unify on the same label). Includes the value currently being
   // edited so a freshly-typed group also appears in the list.
@@ -482,12 +507,8 @@ export function WorkspacesDialog({
   useEffect(() => {
     if (!selectedWorkspace) return;
     setEditAcpServer(selectedWorkspace.acp_server || "");
-    setEditAuxModelMode(
-      selectedWorkspace.auxiliary_model_selection?.matchMode || "",
-    );
-    setEditAuxModelPattern(
-      selectedWorkspace.auxiliary_model_selection?.pattern || "",
-    );
+    setEditAuxModelProfile(selectedWorkspace.auxiliary_model_profile || "");
+    setEditAuxModelConstraintCleared(false);
     setEditAcpCommandOverride(selectedWorkspace.acp_command_override || "");
     setEditRunner(selectedWorkspace.restricted_runner || "exec");
     setEditRunnerConfig(selectedWorkspace.restricted_runner_config || null);
@@ -653,6 +674,7 @@ export function WorkspacesDialog({
       ]);
       const servers = config.acp_servers || [];
       setAcpServers(servers);
+      setModelProfiles(Array.isArray(config.models) ? config.models : []);
       const serverNames = new Set(servers.map((s) => s.name));
       const rawWorkspaces = config.workspaces || [];
       const orphaned = [];
@@ -1099,14 +1121,20 @@ export function WorkspacesDialog({
   // Apply workspace-level edits (acp_server, runner, auto_approve) to the selected workspace
   const applyWorkspaceEdits = (ws) => {
     if (getWorkspaceKey(ws) !== selectedWorkspaceKey) return ws;
-    // Build auxiliary_model_selection object only when both mode and pattern are set
+    // A selected profile (or an explicit "-- None --") always wins over any
+    // legacy raw matchMode/pattern constraint. Otherwise, an untouched
+    // legacy raw constraint is preserved as-is.
+    const rawAuxModelConstraint = ws.auxiliary_model_selection || null;
     const auxModelSelection =
-      editAuxModelMode && editAuxModelPattern
-        ? { matchMode: editAuxModelMode, pattern: editAuxModelPattern }
+      !editAuxModelProfile &&
+      rawAuxModelConstraint &&
+      !editAuxModelConstraintCleared
+        ? rawAuxModelConstraint
         : undefined;
     return {
       ...ws,
       acp_server: editAcpServer,
+      auxiliary_model_profile: editAuxModelProfile || undefined,
       auxiliary_model_selection: auxModelSelection,
       restricted_runner: editRunner,
       restricted_runner_config:
@@ -4072,12 +4100,15 @@ export function WorkspacesDialog({
                             Switch auxiliary sessions (titles, suggestions) to a
                             specific model
                           </p>
-                          <${ModelSelection}
-                            matchMode=${editAuxModelMode}
-                            pattern=${editAuxModelPattern}
-                            onChange=${(mode, pat) => {
-                              setEditAuxModelMode(mode);
-                              setEditAuxModelPattern(pat);
+                          <${ModelProfileSelect}
+                            value=${editAuxModelProfile}
+                            profiles=${modelProfiles}
+                            legacyLabel=${auxLegacyModelLabel}
+                            onChange=${(name) => {
+                              setEditAuxModelProfile(name);
+                              if (!name && rawAuxModelConstraint) {
+                                setEditAuxModelConstraintCleared(true);
+                              }
                             }}
                           />
                         </div>

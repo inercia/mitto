@@ -50,6 +50,7 @@ import {
 import { AgentDiscoveryDialog } from "./AgentDiscoveryDialog.js";
 import { Modal } from "./Modal.js";
 import { ModelSelection } from "./ModelSelection.js";
+import { ModelProfileSelect } from "./ModelProfileSelect.js";
 import { Tooltip } from "./Tooltip.js";
 
 // Import constants
@@ -565,7 +566,12 @@ export function RunnerRestrictionsEditor({
  * Helper component for editing a server inline
  * Server-specific prompts are read-only (managed via prompt files with acps: field)
  */
-function ServerEditForm({ server, agentTypes = [], onChange }) {
+function ServerEditForm({
+  server,
+  agentTypes = [],
+  modelProfiles = [],
+  onChange,
+}) {
   const [name, setName] = useState(server.name);
   const [command, setCommand] = useState(server.command);
   const [type, setType] = useState(server.type || "");
@@ -582,13 +588,26 @@ function ServerEditForm({ server, agentTypes = [], onChange }) {
   // All prompts are now file-based (read-only)
   const filePrompts = server.prompts || [];
 
-  // Model constraint state
-  const [constraintModelMode, setConstraintModelMode] = useState(
-    server.constraints?.model?.matchMode || "",
-  );
-  const [constraintModelPattern, setConstraintModelPattern] = useState(
-    server.constraints?.model?.pattern || "",
-  );
+  // Model profile state — persists as the named profile (model_profile).
+  const [modelProfile, setModelProfile] = useState(server.model_profile || "");
+  // Whether the user has explicitly cleared a legacy raw constraint by
+  // picking "-- None --" (as opposed to never having touched the control).
+  const [modelConstraintCleared, setModelConstraintCleared] = useState(false);
+
+  // Legacy raw matchMode/pattern constraint (pre-profile config), if any.
+  const rawModelConstraint = server.constraints?.model || null;
+  const matchesExistingProfile = rawModelConstraint
+    ? modelProfiles.some(
+        (p) =>
+          p.criteria &&
+          p.criteria.matchMode === rawModelConstraint.matchMode &&
+          p.criteria.pattern === rawModelConstraint.pattern,
+      )
+    : false;
+  const legacyModelLabel =
+    !modelProfile && rawModelConstraint && !matchesExistingProfile
+      ? `Custom (legacy): ${rawModelConstraint.matchMode} ${rawModelConstraint.pattern}`
+      : null;
 
   // Build the current server state and notify the parent
   const emitChange = (overrides = {}) => {
@@ -602,14 +621,14 @@ function ServerEditForm({ server, agentTypes = [], onChange }) {
           : autoApprove,
       tags: overrides.tags !== undefined ? overrides.tags : tags,
       envVars: overrides.envVars !== undefined ? overrides.envVars : envVars,
-      constraintModelMode:
-        overrides.constraintModelMode !== undefined
-          ? overrides.constraintModelMode
-          : constraintModelMode,
-      constraintModelPattern:
-        overrides.constraintModelPattern !== undefined
-          ? overrides.constraintModelPattern
-          : constraintModelPattern,
+      modelProfile:
+        overrides.modelProfile !== undefined
+          ? overrides.modelProfile
+          : modelProfile,
+      modelConstraintCleared:
+        overrides.modelConstraintCleared !== undefined
+          ? overrides.modelConstraintCleared
+          : modelConstraintCleared,
       contextFlushCommand:
         overrides.contextFlushCommand !== undefined
           ? overrides.contextFlushCommand
@@ -630,16 +649,16 @@ function ServerEditForm({ server, agentTypes = [], onChange }) {
       .map((t) => t.trim())
       .filter((t) => t.length > 0);
 
-    // Build constraints
+    // Build constraints. A selected profile always wins over any legacy raw
+    // constraint; an explicit "-- None --" clears it too. Otherwise, an
+    // untouched legacy raw constraint is preserved as-is.
     const constraints = {};
     if (
-      currentState.constraintModelMode &&
-      currentState.constraintModelPattern
+      !currentState.modelProfile &&
+      rawModelConstraint &&
+      !currentState.modelConstraintCleared
     ) {
-      constraints.model = {
-        matchMode: currentState.constraintModelMode,
-        pattern: currentState.constraintModelPattern,
-      };
+      constraints.model = rawModelConstraint;
     }
 
     onChange(
@@ -651,6 +670,7 @@ function ServerEditForm({ server, agentTypes = [], onChange }) {
       parsedTags,
       Object.keys(constraints).length > 0 ? constraints : undefined,
       currentState.contextFlushCommand,
+      currentState.modelProfile,
     );
   };
 
@@ -702,16 +722,18 @@ function ServerEditForm({ server, agentTypes = [], onChange }) {
       <!-- Model Selection -->
       <div>
         <label class="label">Model Selection</label>
-        <p class="label">Switch to a model based on some selection criteria</p>
-        <${ModelSelection}
-          matchMode=${constraintModelMode}
-          pattern=${constraintModelPattern}
-          onChange=${(mode, pat) => {
-            setConstraintModelMode(mode);
-            setConstraintModelPattern(pat);
+        <p class="label">Switch to a model based on a named Model profile</p>
+        <${ModelProfileSelect}
+          value=${modelProfile}
+          profiles=${modelProfiles}
+          legacyLabel=${legacyModelLabel}
+          onChange=${(name) => {
+            setModelProfile(name);
+            const cleared = !name && !!rawModelConstraint;
+            if (cleared) setModelConstraintCleared(true);
             emitChange({
-              constraintModelMode: mode,
-              constraintModelPattern: pat,
+              modelProfile: name,
+              modelConstraintCleared: cleared || modelConstraintCleared,
             });
           }}
         />
@@ -1892,6 +1914,7 @@ export function SettingsDialog({
           env: srv.env || undefined, // Include env vars if present
           tags: srv.tags && srv.tags.length > 0 ? srv.tags : undefined, // Include tags if present
           constraints: srv.constraints || undefined, // Include constraints if present
+          model_profile: srv.model_profile || undefined, // Include model profile if present
           context_flush_command: srv.context_flush_command || undefined,
         };
         // Only include type if specified (otherwise name is used as type)
@@ -2149,6 +2172,7 @@ export function SettingsDialog({
     tags,
     constraints,
     contextFlushCommand,
+    modelProfile,
   ) => {
     // Update server in-memory (prompts are now read-only from files)
     setAcpServers(
@@ -2164,6 +2188,7 @@ export function SettingsDialog({
           env: env && Object.keys(env).length > 0 ? env : undefined, // undefined to omit if empty
           tags: tags && tags.length > 0 ? tags : undefined, // undefined to omit if empty
           constraints: constraints || undefined, // undefined to omit if empty
+          model_profile: modelProfile || undefined, // undefined to omit if none
           context_flush_command:
             contextFlushCommand && contextFlushCommand.trim()
               ? contextFlushCommand.trim()
@@ -2700,6 +2725,7 @@ export function SettingsDialog({
                                           <${ServerEditForm}
                                             server=${srv}
                                             agentTypes=${agentTypes}
+                                            modelProfiles=${modelProfiles}
                                             onChange=${(
                                               name,
                                               cmd,
@@ -2709,6 +2735,7 @@ export function SettingsDialog({
                                               tags,
                                               constraints,
                                               contextFlushCommand,
+                                              modelProfile,
                                             ) =>
                                               updateServer(
                                                 srv.name,
@@ -2720,6 +2747,7 @@ export function SettingsDialog({
                                                 tags,
                                                 constraints,
                                                 contextFlushCommand,
+                                                modelProfile,
                                               )}
                                           />
                                         `}
