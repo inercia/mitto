@@ -664,6 +664,12 @@ func NewServer(config Config) (*Server, error) {
 		})
 	}
 
+	// Wire the onTasks CEL condition compile-validator into the session package's
+	// injected seam. session must stay independent of config/acp/web, so it exposes
+	// session.ConditionValidator as a package-level func var that config supplies.
+	// Wired exactly once at startup.
+	session.ConditionValidator = configPkg.ValidateCondition
+
 	// Initialize periodic runner for scheduled prompt delivery and session housekeeping
 	s.periodicRunner = NewPeriodicRunner(store, sessionMgr, logger)
 	s.periodicRunner.SetOnPeriodicStarted(s.BroadcastPeriodicStarted)
@@ -803,6 +809,10 @@ func NewServer(config Config) (*Server, error) {
 			if s.beadsWatcher != nil {
 				s.beadsWatcher.Unsubscribe(s)
 				s.beadsWatcher.Subscribe(s, s.getBeadsWatchDirs())
+				if s.periodicRunner != nil {
+					s.beadsWatcher.Unsubscribe(s.periodicRunner)
+					s.beadsWatcher.Subscribe(s.periodicRunner, s.getBeadsWatchDirs())
+				}
 			}
 		},
 		RestartWorkspaceACP: func() func(string) error {
@@ -900,6 +910,9 @@ func NewServer(config Config) (*Server, error) {
 	} else {
 		s.beadsWatcher = beadsWatcher
 		s.beadsWatcher.Subscribe(s, s.getBeadsWatchDirs())
+		// Also subscribe the periodic runner so onTasks periodic conversations
+		// can fire (or rebase their diff baseline) when beads change.
+		s.beadsWatcher.Subscribe(s.periodicRunner, s.getBeadsWatchDirs())
 		s.beadsWatcher.Start()
 		logger.Info("Beads watcher started", "dirs", s.getBeadsWatchDirs())
 	}
@@ -1153,6 +1166,13 @@ func (s *Server) Store() *session.Store {
 // This is primarily used for testing to access session internals.
 func (s *Server) GetSessionManager() *conversation.SessionManager {
 	return s.sessionManager
+}
+
+// PeriodicRunner returns the server's periodic runner.
+// This is primarily used by integration tests to drive OnBeadsChanged directly
+// and to inject a fake beads.Client via SetBeadsClient.
+func (s *Server) PeriodicRunner() *PeriodicRunner {
+	return s.periodicRunner
 }
 
 // handleRobotsTxt serves a robots.txt that disallows all crawling.

@@ -287,4 +287,15 @@ test.describe("Periodic on-completion trigger", () => {
     await page.waitForTimeout(500);
     expect(patchBodies.length).toBe(0);
   });
+
+  // The "On tasks" trigger tab (mitto-oja.4) is gated to beads-enabled
+  // workspaces. This test's session has no `.beads` directory, so the tab
+  // must stay hidden alongside the two always-visible tabs.
+  test("on-tasks trigger tab is hidden for a non-beads workspace", async ({
+    page,
+  }) => {
+    await expect(
+      page.locator('[data-testid="periodic-trigger-tab-ontasks"]'),
+    ).toHaveCount(0);
+  });
 });

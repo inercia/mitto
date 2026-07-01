@@ -534,9 +534,13 @@ type SetPeriodicRequest struct {
 	Enabled       bool              `json:"enabled"`
 	MaxIterations int               `json:"max_iterations,omitempty"`
 	// On-completion trigger fields (mitto-icf).
-	Trigger            string `json:"trigger,omitempty"`              // "schedule" | "onCompletion"
+	Trigger            string `json:"trigger,omitempty"`              // "schedule" | "onCompletion" | "onTasks"
 	DelaySeconds       int    `json:"delay_seconds,omitempty"`        // clamped to server floor
 	MaxDurationSeconds int    `json:"max_duration_seconds,omitempty"` // 0 = unlimited
+	// onTasks trigger fields (mitto-oja).
+	Condition       string `json:"condition,omitempty"`        // CEL expression; empty = fire on ANY beads change
+	ConditionPreset string `json:"condition_preset,omitempty"` // optional UI preset id that compiled to Condition
+	CooldownSeconds int    `json:"cooldown_seconds,omitempty"` // per-conversation cooldown floor; 0 = use global floor
 }
 
 // PeriodicConfig represents the periodic configuration for a session.
@@ -553,6 +557,11 @@ type PeriodicConfig struct {
 	MaxDurationSeconds int    `json:"max_duration_seconds,omitempty"`
 	IterationCount     int    `json:"iteration_count,omitempty"`
 	FreshContext       bool   `json:"fresh_context,omitempty"`
+	// onTasks trigger fields (mitto-oja).
+	Condition       string `json:"condition,omitempty"`
+	ConditionPreset string `json:"condition_preset,omitempty"`
+	CooldownSeconds int    `json:"cooldown_seconds,omitempty"`
+	StoppedReason   string `json:"stopped_reason,omitempty"`
 }
 
 // SetPeriodic configures a periodic schedule on a session via PUT.
