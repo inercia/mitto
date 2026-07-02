@@ -94,3 +94,11 @@ Place in implementation file to catch interface breaking changes:
 // Verify component satisfies interface at compile time
 var _ conversation.SharedProcess = (*sharedSessionAnalyzer)(nil)
 ```
+
+## Post-Extraction Cleanup
+
+After extracting a component, **remove unused delegators** from original file:
+- **Scan before merge**: Run `golangci-lint run ./internal/conversation` to find unused methods
+- **Remove both**: Delegator method + corresponding test if only that method used the test
+- **Keep pattern**: Only delegators actively called by other packages or public API
+- **Example**: If `ConfigManager.GetConfig()` is extracted and `BackgroundSession.GetConfig()` delegator is never called externally, remove both (unless it's part of exported `SessionManager` interface)
