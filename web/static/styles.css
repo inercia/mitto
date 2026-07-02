@@ -2375,3 +2375,62 @@ mitto-action {
   background-color: rgb(51 65 85 / 0.5);
   color: #9ca3af;
 }
+
+/* =============================================================================
+   Global focus indicator — subtle accent glow
+   -----------------------------------------------------------------------------
+   daisyUI 5 focuses form controls with `outline: 2px solid var(--input-color);
+   outline-offset: 2px` — a thick outline in the (dark) base-content color,
+   detached from the control's own 1px border, which reads as a harsh
+   "double line". Replace it everywhere with a soft, low-opacity accent halo
+   driven by --mitto-accent, so it adapts to the active theme.
+
+   styles.css is UNLAYERED and loads after tailwind.css, so these rules beat
+   daisyUI's @layer rules regardless of specificity (layered author styles lose
+   to unlayered ones). A transparent (but solid-style) outline is retained so
+   the ring survives forced-colors / high-contrast mode, which ignores
+   box-shadow. On form controls, `position: relative; z-index: 1` lifts the glow
+   above welded neighbours in a daisyUI `join`.
+   ============================================================================= */
+:root {
+  --mitto-focus-ring:
+    0 0 0 1px color-mix(in oklab, var(--mitto-accent, #dc2626) 45%, transparent),
+    0 0 4px 1px
+      color-mix(in oklab, var(--mitto-accent, #dc2626) 30%, transparent);
+}
+
+/* Form controls: daisyUI applies its outline on :focus AND :focus-within
+   (fires on click too — the reported case). */
+.input:focus,
+.input:focus-within,
+.select:focus,
+.select:focus-within,
+.textarea:focus,
+.textarea:focus-within {
+  outline: 2px solid transparent;
+  outline-offset: 0;
+  box-shadow: var(--mitto-focus-ring);
+  position: relative;
+  z-index: 1;
+}
+
+/* Everything keyboard-focused (buttons, checkboxes, radios, toggles, links,
+   summaries, menu items, tabs, …) — daisyUI uses :focus-visible here. The bare
+   selector is unlayered, so it overrides every layered `.x:focus-visible`. */
+:focus-visible {
+  outline: 2px solid transparent;
+  outline-offset: 0;
+  box-shadow: var(--mitto-focus-ring);
+}
+
+/* Exclusion: the chat composition box owns its own focus treatment via
+   `.chat-input-box:focus-within` (a subtle border shift). Its inner textarea is
+   borderless and, being a text field, matches :focus-visible on plain click —
+   which would paint the accent glow as a red rectangle around the whole box.
+   Suppress the global glow there so only the box's border reacts. Higher
+   specificity (0,2,0) than the bare :focus-visible rule, both unlayered. */
+.chat-input-textarea:focus,
+.chat-input-textarea:focus-visible {
+  outline: none;
+  box-shadow: none;
+}
