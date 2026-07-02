@@ -605,7 +605,7 @@ that depends on an issue ID) in `{{ if $target }} … {{ end }}` so mode 3 emits
 {{- end }}
 ```
 
-The built-in `beads-issue-investigate`, `beads-issue-discuss`,
+The built-in `beads-issue-investigate`, `beads-issue-assess`,
 `beads-issue-status`, `beads-issue-resolved`, `beads-issue-work`, and
 `beads-followup-work` prompts all follow this three-mode pattern.
 

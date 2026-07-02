@@ -117,7 +117,7 @@ a plain conversation with no pre-selected issue.
 4. Gate **every** `bd` command and id-specific `git grep` behind
    `{{ if $target }} … {{ end }}` — mode 3 must emit **zero** `bd` calls.
 
-**Exemplars**: `beads-issue-investigate`, `beads-issue-discuss`,
+**Exemplars**: `beads-issue-investigate`, `beads-issue-assess`,
 `beads-issue-status`, `beads-issue-resolved`, `beads-issue-work`.
 
 **Guard tests**: `*ThreeModeTargetResolution` tests + `TestBuiltinPrompts_NoDeprecatedMittoVars`

@@ -226,7 +226,7 @@ see [Label-as-state-machine pattern for loop beads prompts](prompt-templates.md#
 For the full YAML header recipe, ladder, and gating examples see
 [Context-adaptive prompts (three modes)](../config/prompts.md#context-adaptive-prompts-three-modes)
 in the user-facing config reference. The six builtin exemplars are
-`beads-issue-investigate`, `beads-issue-discuss`, `beads-issue-status`,
+`beads-issue-investigate`, `beads-issue-assess`, `beads-issue-status`,
 `beads-issue-resolved`, `beads-issue-work`, and `beads-followup-work`; their
 render correctness is guarded by the `*ThreeModeTargetResolution` tests in
 `internal/config/prompt_template_test.go`.

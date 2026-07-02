@@ -574,7 +574,7 @@ func TestInvestigate_ThreeModeTargetResolution(t *testing.T) {
 }
 
 // TestDiscuss_ThreeModeTargetResolution tests the three target-bead
-// resolution branches of beads-issue-discuss.prompt.yaml:
+// resolution branches of beads-issue-assess.prompt.yaml:
 //
 //	(a) .Session.BeadsIssue set  → "linked-issue" mode: bead ID appears, no
 //	    "no linked bead" prose
@@ -587,12 +587,12 @@ func TestInvestigate_ThreeModeTargetResolution(t *testing.T) {
 // and "conversation", and the IssueID parameter is non-required.
 func TestDiscuss_ThreeModeTargetResolution(t *testing.T) {
 	builtinDir := "../../config/prompts/builtin"
-	path := filepath.Join(builtinDir, "beads-issue-discuss.prompt.yaml")
+	path := filepath.Join(builtinDir, "beads-issue-assess.prompt.yaml")
 	data, err := os.ReadFile(path)
 	if err != nil {
 		t.Skipf("prompt file not found at %s: %v", path, err)
 	}
-	prompt, err := ParsePromptFile("beads-issue-discuss.prompt.yaml", data, time.Now())
+	prompt, err := ParsePromptFile("beads-issue-assess.prompt.yaml", data, time.Now())
 	if err != nil {
 		t.Fatalf("ParsePromptFile: %v", err)
 	}
@@ -623,7 +623,7 @@ func TestDiscuss_ThreeModeTargetResolution(t *testing.T) {
 
 	render := func(ctx *PromptEnabledContext) string {
 		funcs := BuildTemplateFuncMap(ctx)
-		out, rerr := RenderPromptTemplate("beads-issue-discuss", body, ctx, funcs)
+		out, rerr := RenderPromptTemplate("beads-issue-assess", body, ctx, funcs)
 		if rerr != nil {
 			t.Fatalf("RenderPromptTemplate: %v", rerr)
 		}
