@@ -2109,8 +2109,8 @@ func (s *Server) handleSendPromptToConversation(ctx context.Context, req *mcp.Ca
 	// Get the queue for the target conversation
 	queue := store.Queue(input.ConversationID)
 
-	// Add the prompt to the queue
-	msg, err := queue.Add(input.Prompt, nil, nil, realSessionID, scheduledTime, 0, input.Arguments, input.PromptName)
+	// Add the prompt to the queue (agent origin: cross-session MCP dispatch, fail-closed on broken templates)
+	msg, err := queue.AddWithOrigin(input.Prompt, nil, nil, realSessionID, scheduledTime, 0, input.Arguments, input.PromptName, session.QueueOriginAgent)
 	if err != nil {
 		return nil, SendPromptOutput{
 			Success: false,
@@ -3217,7 +3217,7 @@ func (s *Server) handleConversationStart(ctx context.Context, req *mcp.CallToolR
 		}
 
 		queue := store.Queue(newSessionID)
-		_, err := queue.Add(initialPromptText, nil, nil, realSessionID, scheduledTime, 0, input.Arguments, "")
+		_, err := queue.AddWithOrigin(initialPromptText, nil, nil, realSessionID, scheduledTime, 0, input.Arguments, "", session.QueueOriginAgent)
 		if err != nil {
 			s.logger.Warn("Failed to queue initial prompt",
 				"session_id", newSessionID,
@@ -3271,7 +3271,7 @@ func (s *Server) reuseSingletonConversation(store *session.Store, existingID, in
 		return output, nil
 	}
 
-	if _, addErr := queue.Add(initialPromptText, nil, nil, clientID, nil, 0, arguments, ""); addErr != nil {
+	if _, addErr := queue.AddWithOrigin(initialPromptText, nil, nil, clientID, nil, 0, arguments, "", session.QueueOriginAgent); addErr != nil {
 		s.logger.Warn("Failed to re-seed reused singleton conversation",
 			"session_id", existingID, "error", addErr)
 		return output, nil
@@ -4737,7 +4737,7 @@ func (s *Server) handleChildrenTasksWait(ctx context.Context, req *mcp.CallToolR
 				continue
 			}
 
-			msg, err := queue.Add(promptText, nil, nil, realSessionID, nil, 0, nil, "")
+			msg, err := queue.AddWithOrigin(promptText, nil, nil, realSessionID, nil, 0, nil, "", session.QueueOriginAgent)
 			if err != nil {
 				s.logger.Warn("Failed to enqueue prompt to child",
 					"parent_session", realSessionID,

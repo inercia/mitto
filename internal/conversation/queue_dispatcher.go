@@ -156,11 +156,12 @@ func (queueDispatcher) send(d queueDeps, queue *session.Queue, msg session.Queue
 		o.OnQueueUpdated(queueLen, "removed", msg.ID)
 	})
 	meta := PromptMeta{
-		SenderID:   "queue",
-		PromptID:   msg.ID,
-		ImageIDs:   msg.ImageIDs,
-		Arguments:  msg.Arguments,
-		PromptName: msg.PromptName,
+		SenderID:    "queue",
+		PromptID:    msg.ID,
+		ImageIDs:    msg.ImageIDs,
+		Arguments:   msg.Arguments,
+		PromptName:  msg.PromptName,
+		QueueOrigin: msg.Origin,
 	}
 	if err := d.promptWithMeta(msg.Message, meta); err != nil {
 		if lg := d.queueLogger(); lg != nil {

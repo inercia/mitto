@@ -97,7 +97,18 @@ type QueuedMessage struct {
 	// PromptName is the name of the workspace prompt to send by name (resolved to
 	// full text at dispatch). Empty for ad-hoc messages.
 	PromptName string `json:"prompt_name,omitempty"`
+	// Origin marks who enqueued the message: user (human UI, default) or agent
+	// (cross-session/MCP dispatch). Empty = user for backward compatibility.
+	Origin string `json:"origin,omitempty"`
 }
+
+// Queue message origin sentinels (mitto-nvb): distinguish human-typed messages
+// that were queued (fail-open on template render errors) from cross-session/MCP
+// dispatches (fail-closed, preserving the mitto-e7u guarantee).
+const (
+	QueueOriginUser  = "user"
+	QueueOriginAgent = "agent"
+)
 
 // QueueFile represents the persisted queue state.
 type QueueFile struct {
@@ -172,7 +183,15 @@ func (q *Queue) writeQueue(qf *QueueFile) error {
 // message text when it is sent to the agent.
 // If promptName is non-empty, the message is stored by name and resolved to full text
 // at dispatch via PromptWithMeta (message should be empty in this case).
+// Delegates to AddWithOrigin with QueueOriginUser (human UI, the default origin).
 func (q *Queue) Add(message string, imageIDs, fileIDs []string, clientID string, scheduledTime *time.Time, maxSize int, arguments map[string]string, promptName string) (QueuedMessage, error) {
+	return q.AddWithOrigin(message, imageIDs, fileIDs, clientID, scheduledTime, maxSize, arguments, promptName, QueueOriginUser)
+}
+
+// AddWithOrigin is identical to Add but additionally records the message's origin
+// (QueueOriginUser or QueueOriginAgent). Used by cross-session/MCP dispatch sites
+// to mark the message as agent-originated (mitto-nvb).
+func (q *Queue) AddWithOrigin(message string, imageIDs, fileIDs []string, clientID string, scheduledTime *time.Time, maxSize int, arguments map[string]string, promptName string, origin string) (QueuedMessage, error) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 
@@ -196,6 +215,7 @@ func (q *Queue) Add(message string, imageIDs, fileIDs []string, clientID string,
 		ScheduledTime: scheduledTime,
 		Arguments:     arguments,
 		PromptName:    promptName,
+		Origin:        origin,
 	}
 
 	qf.Messages = append(qf.Messages, msg)

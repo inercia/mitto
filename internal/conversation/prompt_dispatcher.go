@@ -177,15 +177,6 @@ const (
 	senderIDLoop  = "loop-runner"
 )
 
-// isAutomatedDispatch reports whether a prompt originates from an automated /
-// cross-session dispatch path (queue or loop runner) rather than direct human
-// input. Automated free-text dispatches fail-closed on a template parse error so a
-// broken, unrenderable body is never silently delivered raw to a child that cannot
-// act on it — that cascaded into a 10m child-wait timeout (mitto-e7u).
-func isAutomatedDispatch(senderID string) bool {
-	return senderID == senderIDQueue || senderID == senderIDLoop
-}
-
 // resolveAndSubstitute covers the top of PromptWithMeta:
 //  1. Name-resolution: if meta.PromptName != "" && message == "", resolve via promptResolver
 //     (error if no resolver, or if resolution fails).
@@ -277,15 +268,20 @@ func (p promptDispatcher) resolveAndSubstitute(d promptDeps, message string, met
 		}
 		rendered, rerr := config.RenderPromptTemplate(name, message, tctx, funcs)
 		if rerr != nil {
-			// Named prompts always fail-closed. Automated/cross-session dispatches
-			// (queue, loop-runner) also fail-closed: a broken template body must
-			// not be silently delivered raw to a child that cannot act on it — that
-			// cascaded into a 10m child-wait timeout (mitto-e7u). Direct human input
-			// keeps fail-open so pasted text containing {{ is delivered literally.
-			if meta.PromptName != "" || isAutomatedDispatch(meta.SenderID) {
+			// Named prompts and loop-runner dispatches always fail-closed. Queue
+			// dispatches now distinguish origin: agent-originated (cross-session/MCP
+			// sends via mitto_conversation_send_prompt, or MCP-created initial
+			// prompts) fail-closed so a broken template body is never silently
+			// delivered raw to a child that cannot act on it — that cascaded into a
+			// 10m child-wait timeout (mitto-e7u). User-originated queue dispatches
+			// (human-typed free text that got queued) fail-open like direct human
+			// input, so pasted text containing {{ is delivered literally (mitto-nvb).
+			failClosed := meta.PromptName != "" || meta.SenderID == senderIDLoop ||
+				(meta.SenderID == senderIDQueue && meta.QueueOrigin == session.QueueOriginAgent)
+			if failClosed {
 				return "", 0, meta, rerr
 			}
-			// free-text (direct human input): fail-open — warn and deliver raw message
+			// free-text (direct human input, or user-originated queue dispatch): fail-open — warn and deliver raw message
 			if l := d.pdLogger(); l != nil {
 				l.Warn("free-text template render failed, delivering raw message",
 					"session_id", d.pdSessionID(),

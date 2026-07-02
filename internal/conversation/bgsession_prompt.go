@@ -130,6 +130,11 @@ type PromptMeta struct {
 	FileIDs      []string        // IDs of files attached to the prompt
 	OnComplete   func(err error) // Called when the async prompt goroutine finishes (nil = success)
 	IsLoopForced bool            // True when this loop prompt was triggered manually via "run now"
+	// QueueOrigin carries session.QueueOrigin* for queue dispatches: "agent" for
+	// cross-session/MCP sends (fail-closed on template errors), "user"/empty for
+	// human-typed messages that were queued (fail-open, delivered verbatim);
+	// empty for non-queue dispatches.
+	QueueOrigin string
 	// LoopKind classifies a loop run (none/scheduled/forced). Set by the
 	// LoopRunner. Drives the Iteration.IsUninterrupted continuation signal.
 	LoopKind LoopKind
