@@ -10,15 +10,15 @@ import (
 	"github.com/inercia/mitto/internal/client"
 )
 
-// TestPeriodicOnCompletionE2E verifies the on-completion periodic trigger and
+// TestLoopOnCompletionE2E verifies the on-completion loop trigger and
 // maxDuration auto-stop end-to-end against the mock ACP server.
 //
 // Trigger flow recap:
 //
-//   - SetPeriodic (with Enabled=true, Trigger=onCompletion) automatically boots
+//   - SetLoop (with Enabled=true, Trigger=onCompletion) automatically boots
 //     a fresh conversation's loop via BootstrapOnCompletion: it delivers run 1
 //     and, via OnConversationIdle, arms the ~5 s timer for the next auto-fire.
-//     An explicit RunPeriodicNow call is neither needed nor safe here — it would
+//     An explicit RunLoopNow call is neither needed nor safe here — it would
 //     race the auto-bootstrapped run 1 and get a 409 "session busy" conflict.
 //   - After each turn completes, OnConversationIdle fires the next run after
 //     DelaySeconds (clamped to the global floor, default 5 s).
@@ -26,17 +26,17 @@ import (
 //   - max_duration:   at the next firing, if now-FirstRunAt >= MaxDurationSeconds,
 //     the runner sets enabled=false WITHOUT delivering (so iteration_count stays at 1).
 //
-// Note: GetPeriodic polling is the auto-stop assertion; the disable and the
+// Note: GetLoop polling is the auto-stop assertion; the disable and the
 // WebSocket broadcast are the same server action so no WS observer is needed.
-func TestPeriodicOnCompletionE2E(t *testing.T) {
+func TestLoopOnCompletionE2E(t *testing.T) {
 	ts := SetupTestServer(t)
 
 	// -------------------------------------------------------------------------
 	// Subtest 1: max_iterations auto-stop
 	//
-	//   Configure MaxIterations=2.  RunPeriodicNow delivers run 1 (count→1) and
+	//   Configure MaxIterations=2.  RunLoopNow delivers run 1 (count→1) and
 	//   arms a 5 s timer.  After ~5 s the timer fires, delivers run 2 (count→2),
-	//   and the runner disables the periodic (count >= cap).
+	//   and the runner disables the loop (count >= cap).
 	// -------------------------------------------------------------------------
 	t.Run("max_iterations_auto_stop", func(t *testing.T) {
 		sess, err := ts.Client.CreateSession(client.CreateSessionRequest{Name: "oncomplete-maxiter"})
@@ -47,7 +47,7 @@ func TestPeriodicOnCompletionE2E(t *testing.T) {
 
 		// Zero Frequency is intentional: onCompletion skips frequency validation.
 		// DelaySeconds=0 is clamped to the server floor (5 s).
-		cfg, err := ts.Client.SetPeriodic(sess.SessionID, client.SetPeriodicRequest{
+		cfg, err := ts.Client.SetLoop(sess.SessionID, client.SetLoopRequest{
 			Prompt:        "ping",
 			Trigger:       "onCompletion",
 			DelaySeconds:  0,
@@ -55,29 +55,29 @@ func TestPeriodicOnCompletionE2E(t *testing.T) {
 			Enabled:       true,
 		})
 		if err != nil {
-			t.Fatalf("SetPeriodic failed: %v", err)
+			t.Fatalf("SetLoop failed: %v", err)
 		}
 		if cfg.Trigger != "onCompletion" {
 			t.Fatalf("expected trigger=onCompletion, got %q", cfg.Trigger)
 		}
 		if !cfg.Enabled {
-			t.Fatalf("expected enabled=true after SetPeriodic, got false")
+			t.Fatalf("expected enabled=true after SetLoop, got false")
 		}
 
-		// SetPeriodic above already booted the loop (BootstrapOnCompletion): it
+		// SetLoop above already booted the loop (BootstrapOnCompletion): it
 		// delivered run 1, set FirstRunAt, incremented iteration_count to 1, and
 		// armed the on-completion timer (~5 s) via OnConversationIdle. Calling
-		// RunPeriodicNow here would race that auto-delivered run 1 and fail with
+		// RunLoopNow here would race that auto-delivered run 1 and fail with
 		// a 409 "session busy" conflict.
 
-		// Poll until the runner disables the periodic after reaching MaxIterations=2.
+		// Poll until the runner disables the loop after reaching MaxIterations=2.
 		deadline := time.Now().Add(30 * time.Second)
-		var last *client.PeriodicConfig
+		var last *client.LoopConfig
 		for time.Now().Before(deadline) {
 			time.Sleep(250 * time.Millisecond)
-			got, err := ts.Client.GetPeriodic(sess.SessionID)
+			got, err := ts.Client.GetLoop(sess.SessionID)
 			if err != nil {
-				t.Logf("GetPeriodic transient error: %v", err)
+				t.Logf("GetLoop transient error: %v", err)
 				continue
 			}
 			last = got
@@ -92,7 +92,7 @@ func TestPeriodicOnCompletionE2E(t *testing.T) {
 			if last != nil {
 				enabled, count = last.Enabled, last.IterationCount
 			}
-			t.Fatalf("periodic not auto-stopped within 30 s: enabled=%v iteration_count=%d", enabled, count)
+			t.Fatalf("loop not auto-stopped within 30 s: enabled=%v iteration_count=%d", enabled, count)
 		}
 		if last.IterationCount != 2 {
 			t.Errorf("expected iteration_count=2 at auto-stop, got %d", last.IterationCount)
@@ -103,7 +103,7 @@ func TestPeriodicOnCompletionE2E(t *testing.T) {
 	// -------------------------------------------------------------------------
 	// Subtest 2: max_duration auto-stop
 	//
-	//   Configure MaxDurationSeconds=4.  RunPeriodicNow delivers run 1 (count→1,
+	//   Configure MaxDurationSeconds=4.  RunLoopNow delivers run 1 (count→1,
 	//   FirstRunAt=T0) and arms a ~5 s timer.  At T0+5 s the timer fires; elapsed
 	//   (≈5 s) >= MaxDurationSeconds (4 s) so the runner disables WITHOUT
 	//   delivering run 2 — iteration_count remains 1.
@@ -115,7 +115,7 @@ func TestPeriodicOnCompletionE2E(t *testing.T) {
 		}
 		defer ts.Client.DeleteSession(sess.SessionID)
 
-		cfg, err := ts.Client.SetPeriodic(sess.SessionID, client.SetPeriodicRequest{
+		cfg, err := ts.Client.SetLoop(sess.SessionID, client.SetLoopRequest{
 			Prompt:             "ping",
 			Trigger:            "onCompletion",
 			DelaySeconds:       0, // clamped to 5 s floor
@@ -124,28 +124,28 @@ func TestPeriodicOnCompletionE2E(t *testing.T) {
 			Enabled:            true,
 		})
 		if err != nil {
-			t.Fatalf("SetPeriodic failed: %v", err)
+			t.Fatalf("SetLoop failed: %v", err)
 		}
 		if cfg.Trigger != "onCompletion" {
 			t.Fatalf("expected trigger=onCompletion, got %q", cfg.Trigger)
 		}
 		if !cfg.Enabled {
-			t.Fatalf("expected enabled=true after SetPeriodic, got false")
+			t.Fatalf("expected enabled=true after SetLoop, got false")
 		}
 
-		// SetPeriodic above already booted the loop (BootstrapOnCompletion): run 1
+		// SetLoop above already booted the loop (BootstrapOnCompletion): run 1
 		// delivered, FirstRunAt=now, count→1, timer armed (~5 s). An explicit
-		// RunPeriodicNow call here would race that auto-delivered run and fail
+		// RunLoopNow call here would race that auto-delivered run and fail
 		// with a 409 "session busy" conflict.
 
 		// Poll until the runner disables (max duration reached at the next firing).
 		deadline := time.Now().Add(30 * time.Second)
-		var last *client.PeriodicConfig
+		var last *client.LoopConfig
 		for time.Now().Before(deadline) {
 			time.Sleep(250 * time.Millisecond)
-			got, err := ts.Client.GetPeriodic(sess.SessionID)
+			got, err := ts.Client.GetLoop(sess.SessionID)
 			if err != nil {
-				t.Logf("GetPeriodic transient error: %v", err)
+				t.Logf("GetLoop transient error: %v", err)
 				continue
 			}
 			last = got
@@ -160,7 +160,7 @@ func TestPeriodicOnCompletionE2E(t *testing.T) {
 			if last != nil {
 				enabled, count = last.Enabled, last.IterationCount
 			}
-			t.Fatalf("periodic not auto-stopped within 30 s (max_duration): enabled=%v iteration_count=%d", enabled, count)
+			t.Fatalf("loop not auto-stopped within 30 s (max_duration): enabled=%v iteration_count=%d", enabled, count)
 		}
 		// The second run must NOT have been delivered; the stop preceded delivery.
 		if last.IterationCount != 1 {

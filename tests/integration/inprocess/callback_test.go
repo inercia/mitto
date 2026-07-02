@@ -88,7 +88,7 @@ func TestCallback_EnableAndGet(t *testing.T) {
 	}
 }
 
-// TestCallback_TriggerSuccess tests triggering a callback with periodic configured.
+// TestCallback_TriggerSuccess tests triggering a callback with loop configured.
 func TestCallback_TriggerSuccess(t *testing.T) {
 	ts := SetupTestServer(t)
 
@@ -99,28 +99,28 @@ func TestCallback_TriggerSuccess(t *testing.T) {
 	}
 	defer ts.Client.DeleteSession(sess.SessionID)
 
-	// Configure periodic prompt
-	periodicBody := map[string]interface{}{
-		"prompt": "test periodic prompt",
+	// Configure loop prompt
+	loopBody := map[string]interface{}{
+		"prompt": "test loop prompt",
 		"frequency": map[string]interface{}{
 			"value": 30,
 			"unit":  "minutes",
 		},
 		"enabled": true,
 	}
-	periodicJSON, _ := json.Marshal(periodicBody)
-	periodicURL := ts.HTTPServer.URL + "/mitto/api/sessions/" + sess.SessionID + "/periodic"
-	periodicReq, _ := http.NewRequest(http.MethodPut, periodicURL, strings.NewReader(string(periodicJSON)))
-	periodicReq.Header.Set("Content-Type", "application/json")
-	periodicResp, err := ts.HTTPServer.Client().Do(periodicReq)
+	loopJSON, _ := json.Marshal(loopBody)
+	loopURL := ts.HTTPServer.URL + "/mitto/api/sessions/" + sess.SessionID + "/loop"
+	loopReq, _ := http.NewRequest(http.MethodPut, loopURL, strings.NewReader(string(loopJSON)))
+	loopReq.Header.Set("Content-Type", "application/json")
+	loopResp, err := ts.HTTPServer.Client().Do(loopReq)
 	if err != nil {
-		t.Fatalf("PUT periodic: %v", err)
+		t.Fatalf("PUT loop: %v", err)
 	}
-	defer periodicResp.Body.Close()
+	defer loopResp.Body.Close()
 
-	if periodicResp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(periodicResp.Body)
-		t.Fatalf("expected 200 for periodic, got %d: %s", periodicResp.StatusCode, body)
+	if loopResp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(loopResp.Body)
+		t.Fatalf("expected 200 for loop, got %d: %s", loopResp.StatusCode, body)
 	}
 
 	// Enable callback
@@ -246,19 +246,19 @@ func TestCallback_MethodNotAllowed(t *testing.T) {
 	}
 }
 
-// TestCallback_PeriodicDisabled tests that callback fails when periodic is disabled.
-func TestCallback_PeriodicDisabled(t *testing.T) {
+// TestCallback_LoopDisabled tests that callback fails when loop is disabled.
+func TestCallback_LoopDisabled(t *testing.T) {
 	ts := SetupTestServer(t)
 
 	// Create session
-	sess, err := ts.Client.CreateSession(client.CreateSessionRequest{Name: "periodic-disabled-test"})
+	sess, err := ts.Client.CreateSession(client.CreateSessionRequest{Name: "loop-disabled-test"})
 	if err != nil {
 		t.Fatalf("CreateSession: %v", err)
 	}
 	defer ts.Client.DeleteSession(sess.SessionID)
 
-	// Configure periodic (enabled)
-	periodicBody := map[string]interface{}{
+	// Configure loop (enabled)
+	loopBody := map[string]interface{}{
 		"prompt": "test prompt",
 		"frequency": map[string]interface{}{
 			"value": 30,
@@ -266,15 +266,15 @@ func TestCallback_PeriodicDisabled(t *testing.T) {
 		},
 		"enabled": true,
 	}
-	periodicJSON, _ := json.Marshal(periodicBody)
-	periodicURL := ts.HTTPServer.URL + "/mitto/api/sessions/" + sess.SessionID + "/periodic"
-	periodicReq, _ := http.NewRequest(http.MethodPut, periodicURL, strings.NewReader(string(periodicJSON)))
-	periodicReq.Header.Set("Content-Type", "application/json")
-	periodicResp, err := ts.HTTPServer.Client().Do(periodicReq)
+	loopJSON, _ := json.Marshal(loopBody)
+	loopURL := ts.HTTPServer.URL + "/mitto/api/sessions/" + sess.SessionID + "/loop"
+	loopReq, _ := http.NewRequest(http.MethodPut, loopURL, strings.NewReader(string(loopJSON)))
+	loopReq.Header.Set("Content-Type", "application/json")
+	loopResp, err := ts.HTTPServer.Client().Do(loopReq)
 	if err != nil {
-		t.Fatalf("PUT periodic: %v", err)
+		t.Fatalf("PUT loop: %v", err)
 	}
-	periodicResp.Body.Close()
+	loopResp.Body.Close()
 
 	// Enable callback
 	enableURL := ts.HTTPServer.URL + "/mitto/api/sessions/" + sess.SessionID + "/callback"
@@ -290,16 +290,16 @@ func TestCallback_PeriodicDisabled(t *testing.T) {
 	token := extractCallbackToken(callbackURL)
 	testCallbackURL := buildTestCallbackURL(ts, token)
 
-	// Disable periodic
-	periodicBody["enabled"] = false
-	periodicJSON, _ = json.Marshal(periodicBody)
-	periodicReq, _ = http.NewRequest(http.MethodPut, periodicURL, strings.NewReader(string(periodicJSON)))
-	periodicReq.Header.Set("Content-Type", "application/json")
-	periodicResp, err = ts.HTTPServer.Client().Do(periodicReq)
+	// Disable loop
+	loopBody["enabled"] = false
+	loopJSON, _ = json.Marshal(loopBody)
+	loopReq, _ = http.NewRequest(http.MethodPut, loopURL, strings.NewReader(string(loopJSON)))
+	loopReq.Header.Set("Content-Type", "application/json")
+	loopResp, err = ts.HTTPServer.Client().Do(loopReq)
 	if err != nil {
-		t.Fatalf("PUT periodic (disable): %v", err)
+		t.Fatalf("PUT loop (disable): %v", err)
 	}
-	periodicResp.Body.Close()
+	loopResp.Body.Close()
 
 	// Try to trigger callback
 	triggerResp, err := ts.HTTPServer.Client().Post(testCallbackURL, "application/json", nil)
@@ -308,7 +308,7 @@ func TestCallback_PeriodicDisabled(t *testing.T) {
 	}
 	defer triggerResp.Body.Close()
 
-	// Should get 410 Gone (periodic_disabled)
+	// Should get 410 Gone (loop_disabled)
 	if triggerResp.StatusCode != http.StatusGone {
 		body, _ := io.ReadAll(triggerResp.Body)
 		t.Fatalf("expected 410, got %d: %s", triggerResp.StatusCode, body)
@@ -319,25 +319,25 @@ func TestCallback_PeriodicDisabled(t *testing.T) {
 	if err := json.NewDecoder(triggerResp.Body).Decode(&errorResp); err != nil {
 		t.Logf("Note: couldn't decode error response (acceptable): %v", err)
 	} else if code, ok := errorResp["code"].(string); ok {
-		if code != "periodic_disabled" {
-			t.Errorf("expected error code 'periodic_disabled', got %v", code)
+		if code != "loop_disabled" {
+			t.Errorf("expected error code 'loop_disabled', got %v", code)
 		}
 	}
 }
 
-// TestCallback_PeriodicReEnabled_SameURL tests that re-enabling periodic works with same URL.
-func TestCallback_PeriodicReEnabled_SameURL(t *testing.T) {
+// TestCallback_LoopReEnabled_SameURL tests that re-enabling loop works with same URL.
+func TestCallback_LoopReEnabled_SameURL(t *testing.T) {
 	ts := SetupTestServer(t)
 
 	// Create session
-	sess, err := ts.Client.CreateSession(client.CreateSessionRequest{Name: "periodic-reenabled-test"})
+	sess, err := ts.Client.CreateSession(client.CreateSessionRequest{Name: "loop-reenabled-test"})
 	if err != nil {
 		t.Fatalf("CreateSession: %v", err)
 	}
 	defer ts.Client.DeleteSession(sess.SessionID)
 
-	// Configure periodic (enabled)
-	periodicBody := map[string]interface{}{
+	// Configure loop (enabled)
+	loopBody := map[string]interface{}{
 		"prompt": "test prompt",
 		"frequency": map[string]interface{}{
 			"value": 30,
@@ -345,15 +345,15 @@ func TestCallback_PeriodicReEnabled_SameURL(t *testing.T) {
 		},
 		"enabled": true,
 	}
-	periodicJSON, _ := json.Marshal(periodicBody)
-	periodicURL := ts.HTTPServer.URL + "/mitto/api/sessions/" + sess.SessionID + "/periodic"
-	periodicReq, _ := http.NewRequest(http.MethodPut, periodicURL, strings.NewReader(string(periodicJSON)))
-	periodicReq.Header.Set("Content-Type", "application/json")
-	periodicResp, err := ts.HTTPServer.Client().Do(periodicReq)
+	loopJSON, _ := json.Marshal(loopBody)
+	loopURL := ts.HTTPServer.URL + "/mitto/api/sessions/" + sess.SessionID + "/loop"
+	loopReq, _ := http.NewRequest(http.MethodPut, loopURL, strings.NewReader(string(loopJSON)))
+	loopReq.Header.Set("Content-Type", "application/json")
+	loopResp, err := ts.HTTPServer.Client().Do(loopReq)
 	if err != nil {
-		t.Fatalf("PUT periodic: %v", err)
+		t.Fatalf("PUT loop: %v", err)
 	}
-	periodicResp.Body.Close()
+	loopResp.Body.Close()
 
 	// Enable callback
 	enableURL := ts.HTTPServer.URL + "/mitto/api/sessions/" + sess.SessionID + "/callback"
@@ -369,27 +369,27 @@ func TestCallback_PeriodicReEnabled_SameURL(t *testing.T) {
 	token := extractCallbackToken(callbackURL)
 	testCallbackURL := buildTestCallbackURL(ts, token)
 
-	// Disable periodic
-	periodicBody["enabled"] = false
-	periodicJSON, _ = json.Marshal(periodicBody)
-	periodicReq, _ = http.NewRequest(http.MethodPut, periodicURL, strings.NewReader(string(periodicJSON)))
-	periodicReq.Header.Set("Content-Type", "application/json")
-	periodicResp, err = ts.HTTPServer.Client().Do(periodicReq)
+	// Disable loop
+	loopBody["enabled"] = false
+	loopJSON, _ = json.Marshal(loopBody)
+	loopReq, _ = http.NewRequest(http.MethodPut, loopURL, strings.NewReader(string(loopJSON)))
+	loopReq.Header.Set("Content-Type", "application/json")
+	loopResp, err = ts.HTTPServer.Client().Do(loopReq)
 	if err != nil {
-		t.Fatalf("PUT periodic (disable): %v", err)
+		t.Fatalf("PUT loop (disable): %v", err)
 	}
-	periodicResp.Body.Close()
+	loopResp.Body.Close()
 
-	// Re-enable periodic
-	periodicBody["enabled"] = true
-	periodicJSON, _ = json.Marshal(periodicBody)
-	periodicReq, _ = http.NewRequest(http.MethodPut, periodicURL, strings.NewReader(string(periodicJSON)))
-	periodicReq.Header.Set("Content-Type", "application/json")
-	periodicResp, err = ts.HTTPServer.Client().Do(periodicReq)
+	// Re-enable loop
+	loopBody["enabled"] = true
+	loopJSON, _ = json.Marshal(loopBody)
+	loopReq, _ = http.NewRequest(http.MethodPut, loopURL, strings.NewReader(string(loopJSON)))
+	loopReq.Header.Set("Content-Type", "application/json")
+	loopResp, err = ts.HTTPServer.Client().Do(loopReq)
 	if err != nil {
-		t.Fatalf("PUT periodic (re-enable): %v", err)
+		t.Fatalf("PUT loop (re-enable): %v", err)
 	}
-	periodicResp.Body.Close()
+	loopResp.Body.Close()
 
 	// Try to trigger callback with same URL
 	triggerResp, err := ts.HTTPServer.Client().Post(testCallbackURL, "application/json", nil)
@@ -401,7 +401,7 @@ func TestCallback_PeriodicReEnabled_SameURL(t *testing.T) {
 	// Should work (200, 409, or 500) - NOT 404 or 410
 	if triggerResp.StatusCode == http.StatusNotFound || triggerResp.StatusCode == http.StatusGone {
 		body, _ := io.ReadAll(triggerResp.Body)
-		t.Fatalf("callback should work after re-enabling periodic, got %d: %s", triggerResp.StatusCode, body)
+		t.Fatalf("callback should work after re-enabling loop, got %d: %s", triggerResp.StatusCode, body)
 	}
 
 	t.Logf("Callback works after re-enabling: %d", triggerResp.StatusCode)
@@ -581,8 +581,8 @@ func TestCallback_RateLimit(t *testing.T) {
 	}
 	defer ts.Client.DeleteSession(sess.SessionID)
 
-	// Configure periodic
-	periodicBody := map[string]interface{}{
+	// Configure loop
+	loopBody := map[string]interface{}{
 		"prompt": "test prompt",
 		"frequency": map[string]interface{}{
 			"value": 30,
@@ -590,15 +590,15 @@ func TestCallback_RateLimit(t *testing.T) {
 		},
 		"enabled": true,
 	}
-	periodicJSON, _ := json.Marshal(periodicBody)
-	periodicURL := ts.HTTPServer.URL + "/mitto/api/sessions/" + sess.SessionID + "/periodic"
-	periodicReq, _ := http.NewRequest(http.MethodPut, periodicURL, strings.NewReader(string(periodicJSON)))
-	periodicReq.Header.Set("Content-Type", "application/json")
-	periodicResp, err := ts.HTTPServer.Client().Do(periodicReq)
+	loopJSON, _ := json.Marshal(loopBody)
+	loopURL := ts.HTTPServer.URL + "/mitto/api/sessions/" + sess.SessionID + "/loop"
+	loopReq, _ := http.NewRequest(http.MethodPut, loopURL, strings.NewReader(string(loopJSON)))
+	loopReq.Header.Set("Content-Type", "application/json")
+	loopResp, err := ts.HTTPServer.Client().Do(loopReq)
 	if err != nil {
-		t.Fatalf("PUT periodic: %v", err)
+		t.Fatalf("PUT loop: %v", err)
 	}
-	periodicResp.Body.Close()
+	loopResp.Body.Close()
 
 	// Enable callback
 	enableURL := ts.HTTPServer.URL + "/mitto/api/sessions/" + sess.SessionID + "/callback"
@@ -671,18 +671,18 @@ func TestCallback_GetNotFound(t *testing.T) {
 	}
 }
 
-// TestCallback_PeriodicNotConfigured tests that callback trigger fails when periodic is not configured.
-func TestCallback_PeriodicNotConfigured(t *testing.T) {
+// TestCallback_LoopNotConfigured tests that callback trigger fails when loop is not configured.
+func TestCallback_LoopNotConfigured(t *testing.T) {
 	ts := SetupTestServer(t)
 
 	// Create session
-	sess, err := ts.Client.CreateSession(client.CreateSessionRequest{Name: "no-periodic-test"})
+	sess, err := ts.Client.CreateSession(client.CreateSessionRequest{Name: "no-loop-test"})
 	if err != nil {
 		t.Fatalf("CreateSession: %v", err)
 	}
 	defer ts.Client.DeleteSession(sess.SessionID)
 
-	// Enable callback WITHOUT configuring periodic
+	// Enable callback WITHOUT configuring loop
 	enableURL := ts.HTTPServer.URL + "/mitto/api/sessions/" + sess.SessionID + "/callback"
 	enableResp, err := ts.HTTPServer.Client().Post(enableURL, "application/json", nil)
 	if err != nil {
@@ -703,7 +703,7 @@ func TestCallback_PeriodicNotConfigured(t *testing.T) {
 	}
 	defer triggerResp.Body.Close()
 
-	// Should get 410 Gone (periodic not configured is same as disabled)
+	// Should get 410 Gone (loop not configured is same as disabled)
 	if triggerResp.StatusCode != http.StatusGone {
 		body, _ := io.ReadAll(triggerResp.Body)
 		t.Fatalf("expected 410, got %d: %s", triggerResp.StatusCode, body)
@@ -711,7 +711,7 @@ func TestCallback_PeriodicNotConfigured(t *testing.T) {
 
 	var errorResp map[string]interface{}
 	json.NewDecoder(triggerResp.Body).Decode(&errorResp)
-	if code, ok := errorResp["code"].(string); !ok || code != "periodic_not_configured" {
-		t.Logf("Note: error code is %v (may be 'periodic_not_configured' or 'periodic_disabled')", errorResp["code"])
+	if code, ok := errorResp["code"].(string); !ok || code != "loop_disabled" {
+		t.Logf("Note: error code is %v (expected 'loop_disabled')", errorResp["code"])
 	}
 }

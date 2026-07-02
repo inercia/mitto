@@ -121,10 +121,10 @@ func onTasksIssuesJSONEqual(t *testing.T, a, b []byte) bool {
 }
 
 // createOnTasksSession creates a session rooted at workingDir (created if
-// missing) with an enabled onTasks periodic prompt gated by condition.
-// Additional SetPeriodicRequest fields (MaxIterations, CooldownSeconds, ...)
+// missing) with an enabled onTasks loop prompt gated by condition.
+// Additional SetLoopRequest fields (MaxIterations, CooldownSeconds, ...)
 // can be set via opts.
-func createOnTasksSession(t *testing.T, ts *TestServer, workingDir, name, condition string, opts ...func(*client.SetPeriodicRequest)) *client.SessionInfo {
+func createOnTasksSession(t *testing.T, ts *TestServer, workingDir, name, condition string, opts ...func(*client.SetLoopRequest)) *client.SessionInfo {
 	t.Helper()
 	if err := os.MkdirAll(workingDir, 0755); err != nil {
 		t.Fatalf("MkdirAll(%s) error = %v", workingDir, err)
@@ -133,35 +133,35 @@ func createOnTasksSession(t *testing.T, ts *TestServer, workingDir, name, condit
 	if err != nil {
 		t.Fatalf("CreateSession failed: %v", err)
 	}
-	req := client.SetPeriodicRequest{Prompt: "iterate", Trigger: "onTasks", Condition: condition, Enabled: true}
+	req := client.SetLoopRequest{Prompt: "iterate", Trigger: "onTasks", Condition: condition, Enabled: true}
 	for _, opt := range opts {
 		opt(&req)
 	}
-	cfg, err := ts.Client.SetPeriodic(sess.SessionID, req)
+	cfg, err := ts.Client.SetLoop(sess.SessionID, req)
 	if err != nil {
-		t.Fatalf("SetPeriodic failed: %v", err)
+		t.Fatalf("SetLoop failed: %v", err)
 	}
 	if cfg.Trigger != "onTasks" {
 		t.Fatalf("expected trigger=onTasks, got %q", cfg.Trigger)
 	}
 	if !cfg.Enabled {
-		t.Fatalf("expected enabled=true after SetPeriodic, got false")
+		t.Fatalf("expected enabled=true after SetLoop, got false")
 	}
 	return sess
 }
 
-func getOnTasksPeriodic(t *testing.T, ts *TestServer, sessionID string) *client.PeriodicConfig {
+func getOnTasksLoop(t *testing.T, ts *TestServer, sessionID string) *client.LoopConfig {
 	t.Helper()
-	got, err := ts.Client.GetPeriodic(sessionID)
+	got, err := ts.Client.GetLoop(sessionID)
 	if err != nil {
-		t.Fatalf("GetPeriodic(%s) error = %v", sessionID, err)
+		t.Fatalf("GetLoop(%s) error = %v", sessionID, err)
 	}
 	return got
 }
 
 func assertOnTasksIterationCount(t *testing.T, ts *TestServer, sessionID string, want int) {
 	t.Helper()
-	if got := getOnTasksPeriodic(t, ts, sessionID).IterationCount; got != want {
+	if got := getOnTasksLoop(t, ts, sessionID).IterationCount; got != want {
 		t.Fatalf("iteration_count = %d, want %d", got, want)
 	}
 }
@@ -169,7 +169,7 @@ func assertOnTasksIterationCount(t *testing.T, ts *TestServer, sessionID string,
 func waitOnTasksIterationCount(t *testing.T, ts *TestServer, sessionID string, want int) {
 	t.Helper()
 	waitFor(t, 10*time.Second, func() bool {
-		got, err := ts.Client.GetPeriodic(sessionID)
+		got, err := ts.Client.GetLoop(sessionID)
 		return err == nil && got.IterationCount == want
 	}, fmt.Sprintf("iteration_count to reach %d for session %s", want, sessionID))
 }
@@ -182,25 +182,25 @@ func waitOnTasksSessionIdle(t *testing.T, ts *TestServer, sessionID string) {
 	}, "session "+sessionID+" to go idle")
 }
 
-// TestPeriodicOnTasksE2E verifies the onTasks periodic trigger end-to-end
+// TestLoopOnTasksE2E verifies the onTasks loop trigger end-to-end
 // against the mock ACP server: CEL-gated firing, the 4-layer loop-prevention
 // system (busy guard, quiescence rebase, cooldown floor, no-progress circuit
 // breaker), and MaxIterations/MaxDuration auto-stop.
 //
 // The `.beads/` filesystem watcher itself is out of scope here (unit-tested
 // separately in internal/config); this test drives the same entry point the
-// watcher uses — PeriodicRunner.OnBeadsChanged — directly, with a fake
+// watcher uses — LoopRunner.OnBeadsChanged — directly, with a fake
 // beads.Client standing in for `bd list`.
-func TestPeriodicOnTasksE2E(t *testing.T) {
+func TestLoopOnTasksE2E(t *testing.T) {
 	ts := SetupTestServer(t)
-	runner := ts.Server.PeriodicRunner()
+	runner := ts.Server.LoopRunner()
 
 	fake := newFakeOnTasksBeadsClient()
 	runner.SetBeadsClient(fake)
 	// Keep the global cooldown floor at 0 so per-session CooldownSeconds (or its
 	// absence) fully controls timing in each subtest; use a short quiescence
 	// window so the busy-guard/rebase subtest doesn't need to wait 30s.
-	runner.SetMinPeriodicTasksCooldownSeconds(0)
+	runner.SetMinLoopTasksCooldownSeconds(0)
 	runner.SetTasksQuiescenceWindow(400 * time.Millisecond)
 
 	// -------------------------------------------------------------------------
@@ -354,7 +354,7 @@ func TestPeriodicOnTasksE2E(t *testing.T) {
 	t.Run("cooldown_floor_blocks_rapid_refire", func(t *testing.T) {
 		dir := filepath.Join(ts.TempDir, "workspace", "ontasks-cooldown")
 		sess := createOnTasksSession(t, ts, dir, "ontasks-cooldown", "",
-			func(r *client.SetPeriodicRequest) { r.CooldownSeconds = 2 })
+			func(r *client.SetLoopRequest) { r.CooldownSeconds = 2 })
 		defer ts.Client.DeleteSession(sess.SessionID)
 
 		fake.setRaw(dir, marshalOnTasksIssues(t))
@@ -405,7 +405,7 @@ func TestPeriodicOnTasksE2E(t *testing.T) {
 
 		// Fires 2 and 3: the SAME issue touched again (only updated_at changes) —
 		// no genuine new progress. tasksNoProgressLimit (see
-		// internal/web/periodic_runner_tasks.go) is 3, so these bring the
+		// internal/web/loop_runner_tasks.go) is 3, so these bring the
 		// consecutive no-progress count to 1 and 2; the breaker must not trip yet.
 		for i, at := range []string{"2026-07-01T00:01:00Z", "2026-07-01T00:02:00Z"} {
 			fake.setRaw(dir, marshalOnTasksIssues(t,
@@ -414,8 +414,8 @@ func TestPeriodicOnTasksE2E(t *testing.T) {
 			waitOnTasksIterationCount(t, ts, sess.SessionID, 2+i)
 			waitOnTasksSessionIdle(t, ts, sess.SessionID)
 
-			if !getOnTasksPeriodic(t, ts, sess.SessionID).Enabled {
-				t.Fatalf("periodic should still be enabled before the no-progress limit is reached (fire %d)", i+2)
+			if !getOnTasksLoop(t, ts, sess.SessionID).Enabled {
+				t.Fatalf("loop should still be enabled before the no-progress limit is reached (fire %d)", i+2)
 			}
 		}
 
@@ -425,10 +425,10 @@ func TestPeriodicOnTasksE2E(t *testing.T) {
 		runner.OnBeadsChanged(onTasksChangeEvent(dir))
 
 		waitFor(t, 10*time.Second, func() bool {
-			return !getOnTasksPeriodic(t, ts, sess.SessionID).Enabled
+			return !getOnTasksLoop(t, ts, sess.SessionID).Enabled
 		}, "onTasks circuit breaker to auto-pause after repeated no-progress fires")
 
-		if got := getOnTasksPeriodic(t, ts, sess.SessionID).StoppedReason; got != "noProgress" {
+		if got := getOnTasksLoop(t, ts, sess.SessionID).StoppedReason; got != "noProgress" {
 			t.Errorf("StoppedReason = %q, want %q", got, "noProgress")
 		}
 	})
@@ -440,7 +440,7 @@ func TestPeriodicOnTasksE2E(t *testing.T) {
 	t.Run("max_iterations_auto_stop", func(t *testing.T) {
 		dir := filepath.Join(ts.TempDir, "workspace", "ontasks-maxiter")
 		sess := createOnTasksSession(t, ts, dir, "ontasks-maxiter", "",
-			func(r *client.SetPeriodicRequest) { r.MaxIterations = 1 })
+			func(r *client.SetLoopRequest) { r.MaxIterations = 1 })
 		defer ts.Client.DeleteSession(sess.SessionID)
 
 		fake.setRaw(dir, marshalOnTasksIssues(t))
@@ -452,10 +452,10 @@ func TestPeriodicOnTasksE2E(t *testing.T) {
 		runner.OnBeadsChanged(onTasksChangeEvent(dir))
 
 		waitFor(t, 10*time.Second, func() bool {
-			return !getOnTasksPeriodic(t, ts, sess.SessionID).Enabled
-		}, "onTasks periodic to auto-stop after max_iterations")
+			return !getOnTasksLoop(t, ts, sess.SessionID).Enabled
+		}, "onTasks loop to auto-stop after max_iterations")
 
-		got := getOnTasksPeriodic(t, ts, sess.SessionID)
+		got := getOnTasksLoop(t, ts, sess.SessionID)
 		if got.IterationCount != 1 {
 			t.Errorf("iteration_count = %d, want 1", got.IterationCount)
 		}
@@ -471,7 +471,7 @@ func TestPeriodicOnTasksE2E(t *testing.T) {
 	t.Run("max_duration_auto_stop", func(t *testing.T) {
 		dir := filepath.Join(ts.TempDir, "workspace", "ontasks-maxdur")
 		sess := createOnTasksSession(t, ts, dir, "ontasks-maxdur", "",
-			func(r *client.SetPeriodicRequest) { r.MaxDurationSeconds = 1 })
+			func(r *client.SetLoopRequest) { r.MaxDurationSeconds = 1 })
 		defer ts.Client.DeleteSession(sess.SessionID)
 
 		fake.setRaw(dir, marshalOnTasksIssues(t))
@@ -493,10 +493,10 @@ func TestPeriodicOnTasksE2E(t *testing.T) {
 		runner.OnBeadsChanged(onTasksChangeEvent(dir))
 
 		waitFor(t, 10*time.Second, func() bool {
-			return !getOnTasksPeriodic(t, ts, sess.SessionID).Enabled
-		}, "onTasks periodic to auto-stop after max_duration")
+			return !getOnTasksLoop(t, ts, sess.SessionID).Enabled
+		}, "onTasks loop to auto-stop after max_duration")
 
-		got := getOnTasksPeriodic(t, ts, sess.SessionID)
+		got := getOnTasksLoop(t, ts, sess.SessionID)
 		if got.IterationCount != 1 {
 			t.Errorf("iteration_count = %d, want 1 (no second delivery)", got.IterationCount)
 		}
