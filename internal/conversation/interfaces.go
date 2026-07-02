@@ -45,7 +45,7 @@ type SharedProcess interface {
 }
 
 // PromptResolver resolves a prompt name to its full text for a given working directory.
-// It is used by BackgroundSession, SessionManager, and PeriodicRunner to look up
+// It is used by BackgroundSession, SessionManager, and LoopRunner to look up
 // named workspace prompts at execution time.
 type PromptResolver func(promptName string, workingDir string) (string, error)
 

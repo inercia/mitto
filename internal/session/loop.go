@@ -33,7 +33,7 @@ const (
 	// StoppedReasonPromptUnresolved is set when the prompt name cannot be resolved after
 	// MaxPromptResolveFailures consecutive failures.
 	StoppedReasonPromptUnresolved StoppedReason = "promptUnresolved"
-	// StoppedReasonResumeFailures is set when ACP resume fails MaxPeriodicResumeFailures
+	// StoppedReasonResumeFailures is set when ACP resume fails MaxLoopResumeFailures
 	// consecutive times and the session is auto-archived.
 	StoppedReasonResumeFailures StoppedReason = "resumeFailures"
 

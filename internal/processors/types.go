@@ -391,7 +391,7 @@ type AfterProcessorInput struct {
 	WorkspaceUUID string `json:"-"`
 	// WorkingDir is the session's working directory (used for WorkingDirSession processors).
 	WorkingDir string `json:"workingDir,omitempty"`
-	// Origin is the source of the prompt: "user", "queue", or "periodic-runner".
+	// Origin is the source of the prompt: "user", "queue", or "loop-runner".
 	Origin string `json:"origin"`
 	// StopReason is the ACP stop reason string (e.g. "end_turn", "max_tokens").
 	// These match the ACP SDK StopReason constants (snake_case).

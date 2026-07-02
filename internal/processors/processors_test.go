@@ -3248,15 +3248,15 @@ func TestApplyAfter_OriginFilter(t *testing.T) {
 	os.WriteFile(scriptPath, []byte("#!/bin/sh\necho done"), 0755)
 
 	proc := &Processor{
-		Name:    "no-periodic",
-		When:    WhenConfig{On: PhaseAgentResponded, Match: MatchAll, StopReasons: []string{"end_turn"}, ExcludeOrigins: []string{"periodic-runner"}},
+		Name:    "no-loop",
+		When:    WhenConfig{On: PhaseAgentResponded, Match: MatchAll, StopReasons: []string{"end_turn"}, ExcludeOrigins: []string{"loop-runner"}},
 		Command: scriptPath,
 		Output:  OutputDiscard,
 	}
 	m := makeAfterManager([]*Processor{proc})
 
-	// Should skip for periodic-runner
-	result := m.ApplyAfter(context.Background(), makeAfterInput("periodic-runner", "end_turn"))
+	// Should skip for loop-runner
+	result := m.ApplyAfter(context.Background(), makeAfterInput("loop-runner", "end_turn"))
 	if len(result.Errors) != 0 {
 		t.Errorf("expected no errors for excluded origin, got %v", result.Errors)
 	}
