@@ -1555,6 +1555,20 @@ a.mailto-link:hover {
   .queue-item-actions {
     opacity: 1;
   }
+
+  /* Touch devices have no real hover, so hover-only tooltips can never be seen
+     the intended way; worse, iOS "sticky hover" leaves a tapped element in
+     :hover and fires the CSS-only daisyUI tooltip, whose bubble then overlaps
+     adjacent buttons (most visibly the segmented toolbar pills). Disable the
+     tooltip popup entirely on touch — in every state (:hover and .tooltip-open)
+     — by suppressing the base pseudo-elements. The data-tip attribute stays for
+     accessibility; the JS PortalTooltip variant already self-gates on
+     (hover: hover) and never renders here. */
+  .tooltip::before,
+  .tooltip::after,
+  .tooltip > .tooltip-content {
+    display: none !important;
+  }
 }
 
 /* Light theme adjustments */

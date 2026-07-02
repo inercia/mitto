@@ -686,27 +686,31 @@ a:hover {
   border-color: #475569;
 }
 
-/* Sidebar toolbar dropdown triggers are <summary> elements (daisyUI
-   details/dropdown pattern), so the generic per-<button> border rule above
-   does not reach them — leaving the Filter/Density buttons borderless while the
-   plain <button> items in the same join group are bordered. Mirror the button
-   border + hover here, scoped to the toolbar, so all items in the row match. */
-.light [data-testid="sidebar-toolbar"] summary.btn {
-  border: 1px solid #e4e4e7;
+/* Portable Toolbar component (components/Toolbar.js): a segmented "pill" of
+   grouped icon buttons. The single container carries the border + rounded
+   surface, so the resting border must be removed for the toolbar's own items —
+   otherwise each item would draw its own box and defeat the continuous-surface
+   look. Hover background and the active (btn-active) fill are left to the
+   global rules / daisyUI. This covers both plain <button> items and the
+   <summary> dropdown/overflow triggers: daisyUI's `.btn` applies a 1px solid
+   (transparent) border to summaries too, which the global `button` selector
+   never resets. */
+.mitto-toolbar > button,
+.mitto-toolbar > details > summary {
+  border: none !important;
 }
 
-.light [data-testid="sidebar-toolbar"] summary.btn:hover {
-  background: #f0f0f0;
-  border-color: #d4d4d8;
+/* Thin vertical separator between toolbar groups. Stretches to the row height
+   and reuses the same divider tones as the global button borders. */
+.mitto-toolbar-sep {
+  width: 1px;
+  align-self: stretch;
+  margin: 0.25rem 0.125rem;
+  background: #e4e4e7;
 }
 
-.dark [data-testid="sidebar-toolbar"] summary.btn {
-  border: 1px solid #334155;
-}
-
-.dark [data-testid="sidebar-toolbar"] summary.btn:hover {
+.dark .mitto-toolbar-sep {
   background: #334155;
-  border-color: #475569;
 }
 
 /* daisyUI menu items are <button>/<a> elements. They must NOT inherit the

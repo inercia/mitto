@@ -84,16 +84,23 @@ export function useConversationMenu({
 
   const closeContextMenu = useCallback(() => setContextMenu(null), []);
 
-  const contextMenuItems = useMemo(() => {
-    const promptGroupItems =
+  // Prompt group submenus (menus:conversation prompts), e.g. "Workflow".
+  // Exposed separately so surfaces like the conversation Toolbar can render
+  // these hierarchical groups inside a dedicated dropdown while promoting the
+  // fixed actions (Copy, Flush, Loop, Archive, Delete) to top-level buttons.
+  const promptGroupItems = useMemo(
+    () =>
       onSendPromptToConversation && menuPrompts && menuPrompts.length > 0
         ? buildPromptGroupMenuItems(
             menuPrompts,
             (p, opts) => onSendPromptToConversation(session, p, opts),
             html`<${LightningIcon} />`,
           )
-        : [];
+        : [],
+    [menuPrompts, onSendPromptToConversation, session],
+  );
 
+  const contextMenuItems = useMemo(() => {
     return [
       // Prompt group submenus (menus:conversation prompts), e.g. "Workflow"
       ...promptGroupItems,
@@ -175,8 +182,7 @@ export function useConversationMenu({
       },
     ];
   }, [
-    menuPrompts,
-    onSendPromptToConversation,
+    promptGroupItems,
     session,
     onRename,
     isLoopConfigured,
@@ -196,6 +202,7 @@ export function useConversationMenu({
   return {
     contextMenu,
     contextMenuItems,
+    promptGroupItems,
     openContextMenuAt,
     closeContextMenu,
     handleContextMenu,

@@ -50,6 +50,7 @@ import {
   LoopIcon,
   LinkIcon,
   ListIcon,
+  LightningIcon,
   BoldIcon,
   ItalicIcon,
   StrikethroughIcon,
@@ -73,6 +74,7 @@ import {
 import { ConfirmDialog } from "./ConfirmDialog.js";
 import { Drawer } from "./Drawer.js";
 import { Tooltip } from "./Tooltip.js";
+import { Toolbar } from "./Toolbar.js";
 import { usePullToRefresh } from "../hooks/usePullToRefresh.js";
 import { useSwipeToAction } from "../hooks/index.js";
 
@@ -3843,12 +3845,13 @@ export function BeadsView({
     return () => document.removeEventListener("mousedown", onDocClick);
   }, [showListPrompts]);
 
-  // Toggle the list-level prompts dropdown, lazily loading the `menus: beadsList`
-  // prompts for this workspace the first time it is opened.
-  const toggleListPrompts = useCallback(() => {
-    setShowListPrompts((open) => {
-      const next = !open;
-      if (next && onFetchBeadsListPrompts && workingDir) {
+  // Open/close the list-level prompts dropdown, lazily loading the
+  // `menus: beadsList` prompts for this workspace the first time it is opened.
+  // Open-driven (receives the next open state) because the Toolbar dropdown is
+  // backed by a controlled <details> whose onToggle reports the new state.
+  const handleListPromptsToggle = useCallback(
+    (open) => {
+      if (open && onFetchBeadsListPrompts && workingDir) {
         setListPromptsLoading(true);
         onFetchBeadsListPrompts(workingDir)
           .then((list) => {
@@ -3865,9 +3868,10 @@ export function BeadsView({
           })
           .finally(() => setListPromptsLoading(false));
       }
-      return next;
-    });
-  }, [onFetchBeadsListPrompts, workingDir]);
+      setShowListPrompts(open);
+    },
+    [onFetchBeadsListPrompts, workingDir],
+  );
 
   // Run a list-level prompt in a new conversation (no per-issue context).
   const handleRunListPrompt = useCallback(
@@ -4179,10 +4183,273 @@ export function BeadsView({
     `;
   }
 
+  // ---- Top toolbar (moved from the former bottom footer) --------------------
+  // The list-level actions now live in a portable Toolbar "pill" at the top of
+  // the view, vertically aligned with the sidebar toolbar (both sit right below
+  // their p-4 header, in a px-3 wrapper with no top padding). Order: new issue,
+  // list-prompts dropdown, refresh, clean up, | upstream sync group |,
+  // | shortcuts |, spacer, issue count, tasks-config. Conditional groups are
+  // set off by thin dividers.
+  const upstreamLabel = UPSTREAM_LABELS[upstream] || upstream;
+  const busySpinner = html`<span
+    class="loading loading-spinner w-4 h-4"
+  ></span>`;
+
+  const cleanupTip =
+    cleaningUp && cleanupProgress && cleanupProgress.total > 0
+      ? `Removing ${cleanupProgress.deleted}/${cleanupProgress.total}…`
+      : closedCount === 0
+        ? "No closed issues to clean up"
+        : `Clean up ${closedCount} closed issue${closedCount === 1 ? "" : "s"}`;
+  const cleanupAria =
+    closedCount === 0
+      ? "No closed issues to clean up"
+      : `Clean up ${closedCount} closed issue${closedCount === 1 ? "" : "s"}`;
+
+  // Upstream pull/push/sync buttons. Two flavours: "prompts" runs configured
+  // prompts via onLaunchPrompt; a real backend (jira/github/…) calls handleSync
+  // and shows an inline spinner on the in-flight action.
+  const upstreamItems =
+    upstream === "prompts"
+      ? [
+          {
+            kind: "button",
+            testId: "beads-pull-btn",
+            icon: html`<${ArrowDownIcon} className="w-4 h-4" />`,
+            tip: pullPromptName
+              ? `Pull: run "${pullPromptName}"`
+              : "No pull prompt configured",
+            ariaLabel: pullPromptName
+              ? `Pull: run "${pullPromptName}"`
+              : "No pull prompt configured",
+            disabled: !pullPromptName || !onLaunchPrompt,
+            onClick: () =>
+              pullPromptName &&
+              onLaunchPrompt &&
+              onLaunchPrompt("pull", pullPromptName),
+          },
+          {
+            kind: "button",
+            testId: "beads-push-btn",
+            icon: html`<${ArrowUpIcon} className="w-4 h-4" />`,
+            tip: pushPromptName
+              ? `Push: run "${pushPromptName}"`
+              : "No push prompt configured",
+            ariaLabel: pushPromptName
+              ? `Push: run "${pushPromptName}"`
+              : "No push prompt configured",
+            disabled: !pushPromptName || !onLaunchPrompt,
+            onClick: () =>
+              pushPromptName &&
+              onLaunchPrompt &&
+              onLaunchPrompt("push", pushPromptName),
+          },
+          {
+            kind: "button",
+            testId: "beads-sync-btn",
+            icon: html`<${SyncIcon} className="w-4 h-4" />`,
+            tip: syncPromptName
+              ? `Sync: run "${syncPromptName}"`
+              : "No sync prompt configured",
+            ariaLabel: syncPromptName
+              ? `Sync: run "${syncPromptName}"`
+              : "No sync prompt configured",
+            disabled: !syncPromptName || !onLaunchPrompt,
+            onClick: () =>
+              syncPromptName &&
+              onLaunchPrompt &&
+              onLaunchPrompt("sync", syncPromptName),
+          },
+        ]
+      : [
+          {
+            kind: "button",
+            testId: "beads-pull-btn",
+            icon:
+              syncAction === "pull"
+                ? busySpinner
+                : html`<${ArrowDownIcon} className="w-4 h-4" />`,
+            tip: `Pull from ${upstreamLabel}`,
+            ariaLabel: `Pull from ${upstreamLabel}`,
+            disabled: !!syncAction,
+            onClick: () => !syncAction && handleSync("pull"),
+          },
+          {
+            kind: "button",
+            testId: "beads-push-btn",
+            icon:
+              syncAction === "push"
+                ? busySpinner
+                : html`<${ArrowUpIcon} className="w-4 h-4" />`,
+            tip: `Push to ${upstreamLabel}`,
+            ariaLabel: `Push to ${upstreamLabel}`,
+            disabled: !!syncAction,
+            onClick: () => !syncAction && handleSync("push"),
+          },
+          {
+            kind: "button",
+            testId: "beads-sync-btn",
+            icon:
+              syncAction === "sync"
+                ? busySpinner
+                : html`<${SyncIcon} className="w-4 h-4" />`,
+            tip: `Sync with ${upstreamLabel} (pull then push)`,
+            ariaLabel: `Sync with ${upstreamLabel} (pull then push)`,
+            disabled: !!syncAction,
+            onClick: () => !syncAction && handleSync("sync"),
+          },
+        ];
+
+  // Per-folder shortcut buttons (tasksList section). A missing linked prompt is
+  // shown greyed/disabled, mirroring the former footer behaviour.
+  const shortcutItems = shortcuts.map((sc, i) => {
+    const prompt = shortcutPromptMap.get(sc.prompt);
+    const found = !!prompt;
+    const Icon = getPromptIconOrDefault(sc.icon || (prompt && prompt.icon));
+    return {
+      kind: "button",
+      testId: `beads-shortcut-btn-${i}`,
+      icon: html`<${Icon} className="w-4 h-4" />`,
+      tip: found ? `Run "${sc.prompt}"` : `Prompt "${sc.prompt}" not found`,
+      ariaLabel: found
+        ? `Run "${sc.prompt}"`
+        : `Prompt "${sc.prompt}" not found`,
+      disabled: !found,
+      onClick: () => found && handleRunListPrompt(prompt),
+    };
+  });
+
+  // List-prompts dropdown menu (opens downward now that the toolbar is on top).
+  const listPromptsMenu = html`
+    <ul
+      class="dropdown-content menu w-64 max-h-72 overflow-y-auto flex-nowrap bg-base-200 rounded-box shadow-xl z-10 mt-1"
+    >
+      ${listPromptsLoading &&
+      html`
+        <li class="px-3 py-2 flex items-center gap-2">
+          <span class="loading loading-spinner w-4 h-4"></span>
+          Loading…
+        </li>
+      `}
+      ${!listPromptsLoading &&
+      listPrompts.length === 0 &&
+      html` <li class="px-3 py-2 opacity-60">No task prompts</li> `}
+      ${!listPromptsLoading &&
+      listPrompts.map((p) => {
+        const PromptIcon = getPromptIconOrDefault(p.icon);
+        return html`
+          <li key=${p.name}>
+            <button
+              type="button"
+              onClick=${() => {
+                const mode = promptLoopMode(p);
+                const opts =
+                  mode === "optional"
+                    ? {
+                        asLoop:
+                          listLoopOn[p.name] !== undefined
+                            ? listLoopOn[p.name]
+                            : promptLoopDefaultOn(p),
+                      }
+                    : undefined;
+                handleRunListPrompt(p, opts);
+              }}
+              title=${p.description || p.name}
+            >
+              <span class="w-4 h-4 shrink-0"
+                ><${PromptIcon} className="w-4 h-4"
+              /></span>
+              <span class="truncate flex-1">${p.name}</span>
+              ${(() => {
+                const mode = promptLoopMode(p);
+                if (mode === "none") return null;
+                if (mode === "optional") {
+                  const on =
+                    listLoopOn[p.name] !== undefined
+                      ? listLoopOn[p.name]
+                      : promptLoopDefaultOn(p);
+                  return html`<input
+                    type="checkbox"
+                    class="checkbox checkbox-sm shrink-0"
+                    style="background-color: transparent"
+                    checked=${on}
+                    title=${on
+                      ? "Loop: ON — click to disable recurring runs"
+                      : "Loop: OFF — click to run as recurring conversation"}
+                    onClick=${(e) => e.stopPropagation()}
+                    onChange=${(e) => {
+                      e.stopPropagation();
+                      setListLoopOn((m) => ({
+                        ...m,
+                        [p.name]: e.target.checked,
+                      }));
+                    }}
+                  />`;
+                }
+                // mode === "always": locked badge (unchanged look)
+                return html`<span
+                  class="shrink-0 text-success opacity-80"
+                  title="Loop prompt — always sets the conversation to recurring mode"
+                  ><${LoopIcon} className="w-3.5 h-3.5"
+                /></span>`;
+              })()}
+            </button>
+          </li>
+        `;
+      })}
+    </ul>
+  `;
+
+  const listToolbarItems = [
+    {
+      kind: "button",
+      testId: "beads-new-issue-btn",
+      icon: html`<${PlusIcon} className="w-4 h-4" />`,
+      tip: "New issue",
+      ariaLabel: "New issue",
+      onClick: openCreate,
+    },
+    {
+      kind: "dropdown",
+      testId: "beads-list-prompts-btn",
+      icon: html`<${LightningIcon} className="w-4 h-4" />`,
+      tip: "Run a prompt over the issue list in a new conversation",
+      ariaLabel: "Run a prompt over the issue list in a new conversation",
+      open: showListPrompts,
+      onToggle: handleListPromptsToggle,
+      menu: listPromptsMenu,
+    },
+    {
+      kind: "button",
+      testId: "beads-refresh-btn",
+      icon: html`<${RefreshIcon} className="w-4 h-4" />`,
+      tip: "Refresh",
+      ariaLabel: "Refresh",
+      onClick: fetchList,
+    },
+    {
+      kind: "button",
+      testId: "beads-cleanup-btn",
+      icon: html`<${BroomIcon} className="w-4 h-4 group-hover:text-red-400" />`,
+      tip: cleanupTip,
+      ariaLabel: cleanupAria,
+      className: "group",
+      disabled: closedCount === 0 || cleaningUp,
+      onClick: () => {
+        if (closedCount === 0 || cleaningUp) return;
+        setShowCleanupConfirm(true);
+      },
+    },
+    ...(upstream && upstream !== "none"
+      ? [{ kind: "separator" }, ...upstreamItems]
+      : []),
+    ...(shortcuts.length > 0 ? [{ kind: "separator" }, ...shortcutItems] : []),
+  ];
+
   return html`
     <div class="relative flex h-full overflow-hidden">
     <div class="flex flex-col flex-1 min-w-0 overflow-hidden">
-      <div class="flex items-center gap-2 p-4 border-b border-mitto-border shrink-0">
+      <div class="flex items-center gap-2 p-4 shrink-0">
         <button
           onClick=${() => onShowSidebar && onShowSidebar()}
           class="btn btn-ghost btn-square btn-sm md:hidden shrink-0 inline-flex tooltip tooltip-bottom"
@@ -4191,7 +4458,24 @@ export function BeadsView({
         >
           <${MenuIcon} className="w-6 h-6" />
         </button>
-        <span class="font-semibold text-lg flex-1">Tasks — ${workspaceLabel}</span>
+        <span class="font-semibold text-2xl flex-1">Tasks — ${workspaceLabel}</span>
+      </div>
+
+      <!-- List-level actions rendered via the portable Toolbar component
+           (components/Toolbar.js) as a floating "pill", vertically aligned with
+           the sidebar toolbar. The wrapper carries listPromptsRef so the
+           existing outside-click handler still closes the prompts dropdown. -->
+      <div
+        class="px-3 pb-2 shrink-0"
+        ref=${listPromptsRef}
+        data-testid="beads-actions-toolbar"
+      >
+        <${Toolbar}
+          variant="block"
+          surface="bg-mitto-surface-3"
+          ariaLabel="Task list actions"
+          items=${listToolbarItems}
+        />
       </div>
 
       <div class="beads-toolbar flex items-center gap-2 px-4 border-b border-mitto-border shrink-0">
@@ -4439,7 +4723,7 @@ export function BeadsView({
                 No issues found
               </div>
               <div class="text-mitto-text-muted text-xs">
-                Create a new issue by pressing the "+" button below.
+                Create a new issue by pressing the "+" button above.
               </div>
             </div>
           `
@@ -4463,297 +4747,15 @@ export function BeadsView({
         }
       </div>
 
-      <div class="flex items-center gap-1 p-4 border-t border-mitto-border shrink-0">
-        <button
-          onClick=${openCreate}
-          class="btn btn-ghost btn-square btn-sm inline-flex tooltip tooltip-top"
-          data-tip="New issue"
-          aria-label="New issue"
+      <!-- Bottom status bar: issue count + tasks-configuration gear. The
+           action buttons moved to the top Toolbar pill; this area keeps only
+           the statistics and the config affordance. -->
+      <div
+        class="flex items-center gap-1 p-4 border-t border-mitto-border shrink-0"
+      >
+        <span class="text-xs text-mitto-text-secondary ml-auto"
+          >${filtered.length} issue${filtered.length === 1 ? "" : "s"}</span
         >
-          <${PlusIcon} className="w-4 h-4" />
-        </button>
-        <div class="relative" ref=${listPromptsRef}>
-          <button
-            type="button"
-            onClick=${toggleListPrompts}
-            class="btn btn-ghost btn-square btn-sm inline-flex tooltip tooltip-top"
-            data-tip="Run a prompt over the issue list in a new conversation"
-            aria-label="Run a prompt over the issue list in a new conversation"
-          >
-            <${ChevronUpIcon} className="w-4 h-4" />
-          </button>
-          ${
-            showListPrompts &&
-            html`
-              <ul
-                class="menu absolute bottom-full left-0 mb-2 w-64 max-h-72 overflow-y-auto flex-nowrap bg-base-200 rounded-box shadow-xl z-10"
-              >
-                ${listPromptsLoading &&
-                html`
-                  <li class="px-3 py-2 flex items-center gap-2">
-                    <span class="loading loading-spinner w-4 h-4"></span>
-                    Loading…
-                  </li>
-                `}
-                ${!listPromptsLoading &&
-                listPrompts.length === 0 &&
-                html` <li class="px-3 py-2 opacity-60">No task prompts</li> `}
-                ${!listPromptsLoading &&
-                listPrompts.map((p) => {
-                  const PromptIcon = getPromptIconOrDefault(p.icon);
-                  return html`
-                    <li key=${p.name}>
-                      <button
-                        type="button"
-                        onClick=${() => {
-                          const mode = promptLoopMode(p);
-                          const opts =
-                            mode === "optional"
-                              ? {
-                                  asLoop:
-                                    listLoopOn[p.name] !== undefined
-                                      ? listLoopOn[p.name]
-                                      : promptLoopDefaultOn(p),
-                                }
-                              : undefined;
-                          handleRunListPrompt(p, opts);
-                        }}
-                        title=${p.description || p.name}
-                      >
-                        <span class="w-4 h-4 shrink-0"
-                          ><${PromptIcon} className="w-4 h-4"
-                        /></span>
-                        <span class="truncate flex-1">${p.name}</span>
-                        ${(() => {
-                          const mode = promptLoopMode(p);
-                          if (mode === "none") return null;
-                          if (mode === "optional") {
-                            const on =
-                              listLoopOn[p.name] !== undefined
-                                ? listLoopOn[p.name]
-                                : promptLoopDefaultOn(p);
-                            return html`<input
-                              type="checkbox"
-                              class="checkbox checkbox-sm shrink-0"
-                              style="background-color: transparent"
-                              checked=${on}
-                              title=${on
-                                ? "Loop: ON — click to disable recurring runs"
-                                : "Loop: OFF — click to run as recurring conversation"}
-                              onClick=${(e) => e.stopPropagation()}
-                              onChange=${(e) => {
-                                e.stopPropagation();
-                                setListLoopOn((m) => ({
-                                  ...m,
-                                  [p.name]: e.target.checked,
-                                }));
-                              }}
-                            />`;
-                          }
-                          // mode === "always": locked badge (unchanged look)
-                          return html`<span
-                            class="shrink-0 text-success opacity-80"
-                            title="Loop prompt — always sets the conversation to recurring mode"
-                            ><${LoopIcon} className="w-3.5 h-3.5"
-                          /></span>`;
-                        })()}
-                      </button>
-                    </li>
-                  `;
-                })}
-              </ul>
-            `
-          }
-        </div>
-        <button
-          onClick=${fetchList}
-          class="btn btn-ghost btn-square btn-sm inline-flex tooltip tooltip-top"
-          data-tip="Refresh"
-          aria-label="Refresh"
-        >
-          <${RefreshIcon} className="w-4 h-4" />
-        </button>
-        <button
-          onClick=${() => {
-            if (closedCount === 0 || cleaningUp) return;
-            setShowCleanupConfirm(true);
-          }}
-          aria-disabled=${closedCount === 0 || cleaningUp ? "true" : "false"}
-          class="btn btn-ghost btn-square btn-sm group inline-flex tooltip tooltip-top ${closedCount === 0 || cleaningUp ? "opacity-40 pointer-events-none" : ""}"
-          data-tip=${cleaningUp && cleanupProgress && cleanupProgress.total > 0 ? `Removing ${cleanupProgress.deleted}/${cleanupProgress.total}…` : closedCount === 0 ? "No closed issues to clean up" : `Clean up ${closedCount} closed issue${closedCount === 1 ? "" : "s"}`}
-          aria-label=${closedCount === 0 ? "No closed issues to clean up" : `Clean up ${closedCount} closed issue${closedCount === 1 ? "" : "s"}`}
-        >
-          <${BroomIcon} className="w-4 h-4 group-hover:text-red-400" />
-        </button>
-
-        ${
-          upstream &&
-          upstream !== "none" &&
-          html`
-            <div
-              class="flex items-center gap-1 pl-2 ml-1 border-l border-mitto-border"
-            >
-              ${upstream === "prompts"
-                ? html`
-                    <button
-                      onClick=${() => {
-                        if (!pullPromptName || !onLaunchPrompt) return;
-                        onLaunchPrompt("pull", pullPromptName);
-                      }}
-                      aria-disabled=${!pullPromptName || !onLaunchPrompt
-                        ? "true"
-                        : "false"}
-                      class="btn btn-ghost btn-square btn-sm inline-flex tooltip tooltip-top ${!pullPromptName ||
-                      !onLaunchPrompt
-                        ? "opacity-40 pointer-events-none"
-                        : ""}"
-                      data-tip=${pullPromptName
-                        ? `Pull: run "${pullPromptName}"`
-                        : "No pull prompt configured"}
-                      aria-label=${pullPromptName
-                        ? `Pull: run "${pullPromptName}"`
-                        : "No pull prompt configured"}
-                    >
-                      <${ArrowDownIcon} className="w-4 h-4" />
-                    </button>
-                    <button
-                      onClick=${() => {
-                        if (!pushPromptName || !onLaunchPrompt) return;
-                        onLaunchPrompt("push", pushPromptName);
-                      }}
-                      aria-disabled=${!pushPromptName || !onLaunchPrompt
-                        ? "true"
-                        : "false"}
-                      class="btn btn-ghost btn-square btn-sm inline-flex tooltip tooltip-top ${!pushPromptName ||
-                      !onLaunchPrompt
-                        ? "opacity-40 pointer-events-none"
-                        : ""}"
-                      data-tip=${pushPromptName
-                        ? `Push: run "${pushPromptName}"`
-                        : "No push prompt configured"}
-                      aria-label=${pushPromptName
-                        ? `Push: run "${pushPromptName}"`
-                        : "No push prompt configured"}
-                    >
-                      <${ArrowUpIcon} className="w-4 h-4" />
-                    </button>
-                    <button
-                      onClick=${() => {
-                        if (!syncPromptName || !onLaunchPrompt) return;
-                        onLaunchPrompt("sync", syncPromptName);
-                      }}
-                      aria-disabled=${!syncPromptName || !onLaunchPrompt
-                        ? "true"
-                        : "false"}
-                      class="btn btn-ghost btn-square btn-sm inline-flex tooltip tooltip-top ${!syncPromptName ||
-                      !onLaunchPrompt
-                        ? "opacity-40 pointer-events-none"
-                        : ""}"
-                      data-tip=${syncPromptName
-                        ? `Sync: run "${syncPromptName}"`
-                        : "No sync prompt configured"}
-                      aria-label=${syncPromptName
-                        ? `Sync: run "${syncPromptName}"`
-                        : "No sync prompt configured"}
-                    >
-                      <${SyncIcon} className="w-4 h-4" />
-                    </button>
-                  `
-                : html`
-                    <button
-                      onClick=${() => {
-                        if (syncAction) return;
-                        handleSync("pull");
-                      }}
-                      aria-disabled=${syncAction ? "true" : "false"}
-                      class="btn btn-ghost btn-square btn-sm inline-flex tooltip tooltip-top ${syncAction
-                        ? "opacity-40 pointer-events-none"
-                        : ""}"
-                      data-tip=${`Pull from ${UPSTREAM_LABELS[upstream] || upstream}`}
-                      aria-label=${`Pull from ${UPSTREAM_LABELS[upstream] || upstream}`}
-                    >
-                      ${syncAction === "pull"
-                        ? html`<span
-                            class="loading loading-spinner w-4 h-4"
-                          ></span>`
-                        : html`<${ArrowDownIcon} className="w-4 h-4" />`}
-                    </button>
-                    <button
-                      onClick=${() => {
-                        if (syncAction) return;
-                        handleSync("push");
-                      }}
-                      aria-disabled=${syncAction ? "true" : "false"}
-                      class="btn btn-ghost btn-square btn-sm inline-flex tooltip tooltip-top ${syncAction
-                        ? "opacity-40 pointer-events-none"
-                        : ""}"
-                      data-tip=${`Push to ${UPSTREAM_LABELS[upstream] || upstream}`}
-                      aria-label=${`Push to ${UPSTREAM_LABELS[upstream] || upstream}`}
-                    >
-                      ${syncAction === "push"
-                        ? html`<span
-                            class="loading loading-spinner w-4 h-4"
-                          ></span>`
-                        : html`<${ArrowUpIcon} className="w-4 h-4" />`}
-                    </button>
-                    <button
-                      onClick=${() => {
-                        if (syncAction) return;
-                        handleSync("sync");
-                      }}
-                      aria-disabled=${syncAction ? "true" : "false"}
-                      class="btn btn-ghost btn-square btn-sm inline-flex tooltip tooltip-top ${syncAction
-                        ? "opacity-40 pointer-events-none"
-                        : ""}"
-                      data-tip=${`Sync with ${UPSTREAM_LABELS[upstream] || upstream} (pull then push)`}
-                      aria-label=${`Sync with ${UPSTREAM_LABELS[upstream] || upstream} (pull then push)`}
-                    >
-                      ${syncAction === "sync"
-                        ? html`<span
-                            class="loading loading-spinner w-4 h-4"
-                          ></span>`
-                        : html`<${SyncIcon} className="w-4 h-4" />`}
-                    </button>
-                  `}
-            </div>
-          `
-        }
-
-        ${shortcuts.length > 0 &&
-          html`
-            <div
-              class="flex items-center gap-1 pl-2 ml-1 border-l border-mitto-border"
-            >
-              ${shortcuts.map((sc, i) => {
-                const prompt = shortcutPromptMap.get(sc.prompt);
-                const found = !!prompt;
-                // Empty shortcut icon → fall back to the linked prompt's own icon.
-                const Icon = getPromptIconOrDefault(sc.icon || prompt?.icon);
-                return html`
-                  <button
-                    key=${i}
-                    type="button"
-                    onClick=${() => found && handleRunListPrompt(prompt)}
-                    aria-disabled=${found ? "false" : "true"}
-                    class="btn btn-ghost btn-square btn-sm inline-flex tooltip tooltip-top ${found ? "" : "opacity-40 pointer-events-none"}"
-                    data-tip=${found
-                      ? `Run "${sc.prompt}"`
-                      : `Prompt "${sc.prompt}" not found`}
-                    aria-label=${found
-                      ? `Run "${sc.prompt}"`
-                      : `Prompt "${sc.prompt}" not found`}
-                  >
-                    <span class="w-4 h-4">
-                      <${Icon} className="w-4 h-4" />
-                    </span>
-                  </button>
-                `;
-              })}
-            </div>
-          `}
-
-        <span class="text-xs text-mitto-text-secondary ml-auto">${filtered.length} issue${filtered.length === 1 ? "" : "s"}</span>
-
         ${
           onOpenConfig &&
           html`

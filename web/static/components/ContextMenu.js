@@ -172,13 +172,25 @@ function ContextMenuItem({ item, onClose }) {
     // Prefer opening to the right of the parent item; flip to the left when the
     // flyout would overflow the right edge of the viewport.
     let left = rect.right - 4;
-    if (left + sub.width > window.innerWidth - margin) {
-      left = rect.left - sub.width + 4;
-    }
-    // If flipping left pushed it past the left edge, pin it back inside.
-    if (left < margin) left = margin;
-    // Shift up if it would overflow the bottom of the viewport.
     let top = rect.top;
+    if (left + sub.width > window.innerWidth - margin) {
+      const flippedLeft = rect.left - sub.width + 4;
+      if (flippedLeft >= margin) {
+        // Room on the left edge: open as a left-side flyout.
+        left = flippedLeft;
+      } else {
+        // Narrow (mobile) viewport: the flyout fits on NEITHER side, so a
+        // horizontal placement would sit on top of and hide the parent menu.
+        // Drop it BELOW the parent item instead, left-aligned to that item, so
+        // the tapped row (and everything above it) stays visible — a natural
+        // drill-down feel rather than an occluding overlay.
+        left = Math.min(rect.left, window.innerWidth - sub.width - margin);
+        if (left < margin) left = margin;
+        top = rect.bottom + 4;
+      }
+    }
+    // Shift up if it would overflow the bottom of the viewport (its
+    // max-height/scroll caps very tall lists first).
     if (top + sub.height > window.innerHeight - margin) {
       top = Math.max(margin, window.innerHeight - sub.height - margin);
     }

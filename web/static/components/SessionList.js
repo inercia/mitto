@@ -33,6 +33,7 @@ import {
 import { SessionItem } from "./SessionItem.js";
 import { ContextMenu, PortalTooltip } from "./ContextMenu.js";
 import { Modal } from "./Modal.js";
+import { Toolbar } from "./Toolbar.js";
 import {
   FolderIcon,
   FolderOpenIcon,
@@ -1727,8 +1728,8 @@ export function SessionList({
       <div
         class="p-4 flex items-center justify-between"
       >
-        <h2 class="font-semibold text-lg flex items-center gap-2">
-          <${ChatBubbleIcon} className="w-5 h-5 shrink-0" />
+        <h2 class="font-semibold text-2xl flex items-center gap-2">
+          <${ChatBubbleIcon} className="w-6 h-6 shrink-0" />
           <span>Mitto</span>
         </h2>
         ${
@@ -1755,165 +1756,149 @@ export function SessionList({
         class="px-3 pb-8"
         data-testid="sidebar-toolbar"
       >
-        <!-- daisyUI join: welds the actions into one group spanning the full
-             panel width. Each direct child grows equally (flex-1); dropdown
-             triggers carry join-item on the <summary> (join styles apply even
-             when join-item is nested). -->
-        <div class="join w-full">
-          <button
-            data-testid="new-conversation-btn"
-            onClick=${() => !isCreatingSession && onNewSession(null, null)}
-            aria-disabled=${isCreatingSession ? "true" : "false"}
-            class="btn btn-ghost btn-sm join-item flex-auto tooltip tooltip-bottom ${isCreatingSession ? "opacity-40 pointer-events-none" : ""}"
-            data-tip=${isCreatingSession ? "Creating conversation\u2026" : "New Conversation"}
-            aria-label=${isCreatingSession ? "Creating conversation\u2026" : "New Conversation"}
-          >
-            ${
-              isCreatingSession
+        <!-- Actions rendered via the portable Toolbar component
+             (components/Toolbar.js) as a segmented "pill". Order: new
+             conversation, workspaces, category filter, density, search,
+             settings — evenly spaced, no separators. All six data-testids are
+             preserved so existing selectors/specs keep working. Filter/Density
+             keep their controlled open state (openToolbarMenu) and custom menu
+             content; Workspaces/Settings are disabled (greyed) when the
+             configuration is read-only. -->
+        <${Toolbar}
+          variant="block"
+          surface="bg-mitto-surface-3"
+          ariaLabel="Sidebar actions"
+          items=${[
+            {
+              kind: "button",
+              testId: "new-conversation-btn",
+              icon: isCreatingSession
                 ? html`<${SpinnerIcon} className="w-4 h-4 animate-spin" />`
-                : html`<${PlusIcon} className="w-4 h-4" />`
-            }
-          </button>
-          <!-- Workspaces: moved up from the footer. Disabled (greyed) instead
-               of hidden when the configuration is read-only. -->
-          <button
-            data-testid="workspaces-btn"
-            type="button"
-            onClick=${() => !configReadonly && onShowWorkspaces && onShowWorkspaces()}
-            aria-disabled=${configReadonly ? "true" : "false"}
-            class="btn btn-ghost btn-sm join-item flex-auto tooltip tooltip-bottom ${
-              configReadonly
-                ? "opacity-40 pointer-events-none text-mitto-text-muted"
-                : "text-mitto-text-muted hover:text-mitto-text-strong"
-            }"
-            data-tip=${configReadonly ? "Workspaces (read-only configuration)" : "Workspaces"}
-            aria-label="Workspaces"
-          >
-            <${FolderIcon} className="w-4 h-4" />
-          </button>
-          <!-- The dropdown trigger is the nested <summary>, so the join's
-               weld margin (applied to direct join-item children) never reaches
-               it. -ms-px reproduces that weld so the trigger sits flush with
-               the adjacent buttons, exactly like the plain <button> items. -->
-          <details
-            class="dropdown flex-auto -ms-px"
-            open=${openToolbarMenu === "filter"}
-            onToggle=${(e) => {
-              const open = e.currentTarget.open;
-              if (open !== (openToolbarMenu === "filter"))
-                handleToolbarMenuToggle("filter", open);
-            }}
-          >
-            <summary
-              data-testid="category-filter-btn"
-              class="btn btn-ghost btn-sm join-item w-full list-none tooltip tooltip-bottom ${
-                anyCategoryHidden
-                  ? "text-mitto-accent-400"
-                  : "text-mitto-text-muted"
-              }"
-              data-tip="Filter categories"
-              aria-label="Filter categories"
-            >
-              <${FilterIcon} className="w-4 h-4" />
-            </summary>
-            <ul
-              class="dropdown-content menu menu-sm bg-mitto-surface-2 rounded-box z-10 mt-1 w-44 p-2 shadow border border-mitto-border-1"
-            >
-              <li class="menu-title text-xs">Show categories</li>
-              ${[
-                { key: "regular", label: "Regular" },
-                { key: "loop", label: "Loop" },
-                { key: "archived", label: "Archived" },
-                { key: "tasks", label: "Tasks" },
-              ].map(
-                (opt) => html`
-                  <li key=${opt.key}>
-                    <label class="flex items-center gap-2 cursor-pointer">
-                      <input
-                        type="checkbox"
-                        class="checkbox checkbox-sm"
-                        checked=${categoryFilter[opt.key]}
-                        onInput=${() => handleCategoryToggle(opt.key)}
-                        data-testid=${`category-filter-${opt.key}`}
-                      />
-                      <span class="text-sm">${opt.label}</span>
-                    </label>
+                : html`<${PlusIcon} className="w-4 h-4" />`,
+              tip: isCreatingSession
+                ? "Creating conversation\u2026"
+                : "New Conversation",
+              ariaLabel: isCreatingSession
+                ? "Creating conversation\u2026"
+                : "New Conversation",
+              disabled: isCreatingSession,
+              onClick: () => !isCreatingSession && onNewSession(null, null),
+            },
+            {
+              kind: "button",
+              testId: "workspaces-btn",
+              icon: html`<${FolderIcon} className="w-4 h-4" />`,
+              tip: configReadonly
+                ? "Workspaces (read-only configuration)"
+                : "Workspaces",
+              ariaLabel: "Workspaces",
+              disabled: configReadonly,
+              onClick: () =>
+                !configReadonly && onShowWorkspaces && onShowWorkspaces(),
+            },
+            {
+              kind: "dropdown",
+              testId: "category-filter-btn",
+              icon: html`<${FilterIcon} className="w-4 h-4" />`,
+              tip: "Filter categories",
+              ariaLabel: "Filter categories",
+              active: anyCategoryHidden,
+              caret: true,
+              open: openToolbarMenu === "filter",
+              onToggle: (open) => handleToolbarMenuToggle("filter", open),
+              menu: html`
+                <ul
+                  class="dropdown-content menu menu-sm bg-mitto-surface-2 rounded-box z-10 mt-1 w-44 p-2 shadow border border-mitto-border-1"
+                >
+                  <li class="menu-title text-xs">Show categories</li>
+                  ${[
+                    { key: "regular", label: "Regular" },
+                    { key: "loop", label: "Loop" },
+                    { key: "archived", label: "Archived" },
+                    { key: "tasks", label: "Tasks" },
+                  ].map(
+                    (opt) => html`
+                      <li key=${opt.key}>
+                        <label class="flex items-center gap-2 cursor-pointer">
+                          <input
+                            type="checkbox"
+                            class="checkbox checkbox-sm"
+                            checked=${categoryFilter[opt.key]}
+                            onInput=${() => handleCategoryToggle(opt.key)}
+                            data-testid=${`category-filter-${opt.key}`}
+                          />
+                          <span class="text-sm">${opt.label}</span>
+                        </label>
+                      </li>
+                    `,
+                  )}
+                </ul>
+              `,
+            },
+            {
+              kind: "dropdown",
+              testId: "density-btn",
+              icon: html`<${SlidersIcon} className="w-4 h-4" />`,
+              tip: "Density",
+              ariaLabel: "Density",
+              caret: true,
+              open: openToolbarMenu === "density",
+              onToggle: (open) => handleToolbarMenuToggle("density", open),
+              menu: html`
+                <ul
+                  class="dropdown-content menu menu-sm bg-mitto-surface-2 rounded-box z-10 mt-1 w-44 p-2 shadow border border-mitto-border-1"
+                >
+                  <li class="menu-title text-xs">Density</li>
+                  <li>
+                    <button
+                      type="button"
+                      data-testid="density-comfortable"
+                      onClick=${() => handleDensityChange("comfortable")}
+                    >
+                      ${density === "comfortable"
+                        ? html`<${CheckIcon} className="w-4 h-4" />`
+                        : html`<span class="inline-block w-4 h-4"></span>`}
+                      <span class="text-sm">Comfortable</span>
+                    </button>
                   </li>
-                `,
-              )}
-            </ul>
-          </details>
-          <!-- Density control: opens a menu with "Comfortable" / "Condensed".
-               The active mode is checked; the choice persists in localStorage. -->
-          <details
-            class="dropdown flex-auto -ms-px"
-            open=${openToolbarMenu === "density"}
-            onToggle=${(e) => {
-              const open = e.currentTarget.open;
-              if (open !== (openToolbarMenu === "density"))
-                handleToolbarMenuToggle("density", open);
-            }}
-          >
-            <summary
-              data-testid="density-btn"
-              class="btn btn-ghost btn-sm join-item w-full list-none text-mitto-text-muted tooltip tooltip-bottom"
-              data-tip="Density"
-              aria-label="Density"
-            >
-              <${SlidersIcon} className="w-4 h-4" />
-            </summary>
-            <ul
-              class="dropdown-content menu menu-sm bg-mitto-surface-2 rounded-box z-10 mt-1 w-44 p-2 shadow border border-mitto-border-1"
-            >
-              <li class="menu-title text-xs">Density</li>
-              <li>
-                <button type="button" data-testid="density-comfortable" onClick=${() => handleDensityChange("comfortable")}>
-                  ${density === "comfortable" ? html`<${CheckIcon} className="w-4 h-4" />` : html`<span class="inline-block w-4 h-4"></span>`}
-                  <span class="text-sm">Comfortable</span>
-                </button>
-              </li>
-              <li>
-                <button type="button" data-testid="density-condensed" onClick=${() => handleDensityChange("condensed")}>
-                  ${density === "condensed" ? html`<${CheckIcon} className="w-4 h-4" />` : html`<span class="inline-block w-4 h-4"></span>`}
-                  <span class="text-sm">Condensed</span>
-                </button>
-              </li>
-            </ul>
-          </details>
-          <!-- Search (placeholder — search is not yet implemented). -->
-          <button
-            type="button"
-            data-testid="search-btn"
-            class="btn btn-ghost btn-sm join-item flex-auto text-mitto-text-muted tooltip tooltip-bottom"
-            aria-label="Search"
-            data-tip="Search"
-          >
-            <${SearchIcon} className="w-4 h-4" />
-          </button>
-          <!-- Settings: moved up from the footer. Disabled (greyed) instead of
-               hidden when the configuration is read-only. -->
-          <button
-            data-testid="settings-btn"
-            type="button"
-            onClick=${() => !configReadonly && onShowSettings && onShowSettings()}
-            aria-disabled=${configReadonly ? "true" : "false"}
-            class="btn btn-ghost btn-sm join-item flex-auto tooltip tooltip-bottom ${
-              configReadonly
-                ? "opacity-40 pointer-events-none text-mitto-text-muted"
-                : "text-mitto-text-muted hover:text-mitto-text-strong"
-            }"
-            data-tip=${
-              configReadonly
+                  <li>
+                    <button
+                      type="button"
+                      data-testid="density-condensed"
+                      onClick=${() => handleDensityChange("condensed")}
+                    >
+                      ${density === "condensed"
+                        ? html`<${CheckIcon} className="w-4 h-4" />`
+                        : html`<span class="inline-block w-4 h-4"></span>`}
+                      <span class="text-sm">Condensed</span>
+                    </button>
+                  </li>
+                </ul>
+              `,
+            },
+            {
+              kind: "button",
+              testId: "search-btn",
+              icon: html`<${SearchIcon} className="w-4 h-4" />`,
+              tip: "Search",
+              ariaLabel: "Search",
+            },
+            {
+              kind: "button",
+              testId: "settings-btn",
+              icon: html`<${SettingsIcon} className="w-4 h-4" />`,
+              tip: configReadonly
                 ? rcFilePath
                   ? `Using ${rcFilePath}`
                   : "Settings (read-only configuration)"
-                : "Settings"
-            }
-            aria-label="Settings"
-          >
-            <${SettingsIcon} className="w-4 h-4" />
-          </button>
-        </div>
+                : "Settings",
+              ariaLabel: "Settings",
+              disabled: configReadonly,
+              onClick: () =>
+                !configReadonly && onShowSettings && onShowSettings(),
+            },
+          ]}
+        />
       </div>
       <div class="flex-1 overflow-y-auto scrollbar-hide">
         ${
@@ -1978,8 +1963,13 @@ export function SessionList({
               <span class="text-base font-semibold">A</span>
             </button>
           </div>
-          <!-- Keyboard shortcuts button -->
-          <button
+          <!-- Keyboard shortcuts button. Hidden on touch/no-hover devices
+               (iPhone, tablets): there is no physical keyboard, so the
+               shortcuts dialog is meaningless and the button (with its
+               hover-only tooltip) would just add clutter. Gated on the same
+               (hover: hover) probe used elsewhere in this file. -->
+          ${SIDEBAR_SUPPORTS_HOVER &&
+          html`<button
             onClick=${onShowKeyboardShortcuts}
             class="btn btn-ghost btn-square btn-sm group tooltip tooltip-top"
             data-tip="Keyboard Shortcuts"
@@ -1988,7 +1978,7 @@ export function SessionList({
             <${KeyboardIcon}
               className="w-4 h-4 text-mitto-text-muted group-hover:text-mitto-text-strong"
             />
-          </button>
+          </button>`}
         </div>
       </div>
     </div>

@@ -17,6 +17,7 @@ export { NewSessionWorkspaceDialog } from "./NewSessionWorkspaceDialog.js";
 export { LoopScheduleDialog } from "./LoopScheduleDialog.js";
 export { SessionItem } from "./SessionItem.js";
 export { SessionList } from "./SessionList.js";
+export { Toolbar } from "./Toolbar.js";
 
 // Icon components
 export {

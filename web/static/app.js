@@ -109,6 +109,7 @@ import {
 // Import components
 import { SessionItem } from "./components/SessionItem.js";
 import { SessionList } from "./components/SessionList.js";
+import { Toolbar } from "./components/Toolbar.js";
 import { MessageList } from "./components/MessageList.js";
 import { Message } from "./components/Message.js";
 import { ChatInput } from "./components/ChatInput.js";
@@ -167,7 +168,9 @@ import {
   TerminalIcon,
   FolderOpenIcon,
   BeadsIcon,
-  EllipsisIcon,
+  CopyIcon,
+  BroomIcon,
+  MittoIcon,
 } from "./components/Icons.js";
 import { ContextMenu } from "./components/ContextMenu.js";
 import {
@@ -596,6 +599,45 @@ function App() {
       delete window.mittoOpenBeadsIssue;
     };
   }, [handleOpenBeadsIssue, activeSessionId, sessionInfo?.working_dir]);
+
+  // Linked beads issue status for the conversation-toolbar "linked issue" button
+  // badge dot. Fetched asynchronously (bd show can be slow) and keyed on the
+  // active conversation's linked issue; cleared when there is no linked issue.
+  // Mirrors the fetch in SessionPanel.js so both surfaces stay in sync.
+  const [headerBeadsStatus, setHeaderBeadsStatus] = useState(null);
+  useEffect(() => {
+    const issueId = sessionInfo?.beads_issue;
+    const workingDir = sessionInfo?.working_dir;
+    if (!issueId || !workingDir) {
+      setHeaderBeadsStatus(null);
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await authFetch(
+          endpoints.issues.show(issueId, { working_dir: workingDir }),
+        );
+        if (!res.ok) {
+          if (!cancelled) setHeaderBeadsStatus(null);
+          return;
+        }
+        const data = await res.json();
+        if (cancelled) return;
+        const issueObj = Array.isArray(data) ? data[0] : data;
+        if (issueObj && !issueObj.error && issueObj.status) {
+          setHeaderBeadsStatus(issueObj.status);
+        } else {
+          setHeaderBeadsStatus(null);
+        }
+      } catch (_err) {
+        if (!cancelled) setHeaderBeadsStatus(null);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [activeSessionId, sessionInfo?.beads_issue, sessionInfo?.working_dir]);
 
   // Wire the active-conversation-removed callback consumed by useWebSocket. When
   // the active conversation is deleted or archived (in this window or via a
@@ -2378,7 +2420,7 @@ function App() {
 
   const {
     contextMenu: headerMenu,
-    contextMenuItems: headerMenuItems,
+    promptGroupItems: headerPromptGroupItems,
     closeContextMenu: closeHeaderMenu,
     handleMenuButtonClick: handleHeaderMenuButtonClick,
   } = useConversationMenu({
@@ -2400,6 +2442,171 @@ function App() {
     flushCommand: sessionInfo?.context_flush_command || "",
     onFlushContext: activeSessionId ? handleFlushContext : undefined,
   });
+
+  // Conversation toolbar items (rendered as a portable Toolbar pill below the
+  // title header). The actions that used to live inside the "…" conversation
+  // menu are now promoted to individual buttons (Copy, Flush, loop toggle,
+  // Archive, Delete), each gated exactly like its former menu entry. The
+  // hierarchical prompt groups (menus:conversation prompts) stay behind a
+  // single dropdown button that opens the shared ContextMenu (lazy-loaded).
+  // "Properties" is intentionally omitted — the Session-details side-panel
+  // toggle already covers it. The toggle carries an active state while the
+  // panel is open.
+  const conversationHasFlush = !!(sessionInfo && sessionInfo.context_flush_command);
+  // Linked beads issue for the right-aligned toolbar button. The button is
+  // disabled when the conversation has no linked issue; the badge dot color
+  // reflects the fetched status (see headerBeadsStatus above). Dot colors use
+  // vivid 500-level tokens confirmed present in the precompiled tailwind.css.
+  const headerBeadsIssue = sessionInfo?.beads_issue || "";
+  const headerBeadsDotColor =
+    {
+      open: "bg-green-500",
+      in_progress: "bg-blue-500",
+      blocked: "bg-red-500",
+      deferred: "bg-cyan-800",
+      closed: "bg-slate-400",
+    }[headerBeadsStatus] || "bg-slate-400";
+
+  const conversationToolbarItems = [
+    ...(activeSessionId
+      ? [
+          {
+            kind: "button",
+            testId: "header-conversation-prompts",
+            icon: html`<${LightningIcon} className="w-4 h-4" />`,
+            tip: "Conversation prompts",
+            ariaLabel: "Conversation prompts",
+            active: !!headerMenu,
+            onClick: handleHeaderMenuButtonClick,
+          },
+          {
+            kind: "button",
+            testId: "header-copy-markdown",
+            icon: html`<${CopyIcon} className="w-4 h-4" />`,
+            tip: "Copy as Markdown",
+            ariaLabel: "Copy as Markdown",
+            onClick: handleCopyConversation,
+          },
+          ...(conversationHasFlush
+            ? [
+                {
+                  kind: "button",
+                  testId: "header-flush-context",
+                  icon: html`<${BroomIcon} className="w-4 h-4" />`,
+                  tip: `Flush context (${sessionInfo.context_flush_command})`,
+                  ariaLabel: "Flush context",
+                  onClick: () => handleFlushContext(activeSession),
+                },
+              ]
+            : []),
+          ...(!headerIsLoop && !headerIsSpawned && !headerIsArchived
+            ? [
+                {
+                  kind: "button",
+                  testId: "header-make-loop",
+                  icon: html`<${ClockIcon} className="w-4 h-4" />`,
+                  tip: "Loop",
+                  ariaLabel: "Loop",
+                  onClick: () => handleMakeLoop(activeSession),
+                },
+              ]
+            : []),
+          ...(headerIsLoop && !headerIsSpawned
+            ? [
+                {
+                  kind: "button",
+                  testId: "header-make-non-loop",
+                  icon: html`<${MittoIcon} className="w-4 h-4" />`,
+                  tip: "Unloop",
+                  ariaLabel: "Unloop",
+                  onClick: () => handleMakeNonLoop(activeSession),
+                },
+              ]
+            : []),
+          // Separator before the destructive group (archive + delete), keeping
+          // those two together but set apart from the actions above.
+          { kind: "separator" },
+          ...(headerIsSpawned
+            ? []
+            : [
+                {
+                  kind: "button",
+                  testId: "header-archive",
+                  icon: headerIsArchived
+                    ? html`<${ArchiveFilledIcon} className="w-4 h-4" />`
+                    : html`<${ArchiveIcon} className="w-4 h-4" />`,
+                  tip: !headerCanArchive
+                    ? headerArchiveBlockedReason
+                    : headerIsArchived
+                      ? "Unarchive"
+                      : "Archive",
+                  ariaLabel: headerIsArchived ? "Unarchive" : "Archive",
+                  disabled: !headerCanArchive,
+                  onClick: () =>
+                    handleArchiveSession(activeSession, !headerIsArchived),
+                },
+              ]),
+          {
+            kind: "button",
+            testId: "header-delete",
+            icon: html`<${TrashIcon} className="w-4 h-4" />`,
+            tip: "Delete",
+            ariaLabel: "Delete",
+            danger: true,
+            onClick: () => handleDeleteSession(activeSession),
+          },
+        ]
+      : []),
+    // Spacer pushes the right-aligned controls to the far right of the pill.
+    { kind: "spacer" },
+    // Linked beads issue: opens the docked issue viewer for the conversation's
+    // associated issue. Disabled when there is no linked issue; a status badge
+    // dot appears once the (possibly slow) status fetch resolves. Sits just to
+    // the left of the Session-details toggle.
+    ...(activeSessionId
+      ? [
+          {
+            kind: "button",
+            testId: "header-linked-issue",
+            icon: html`<span class="relative inline-flex">
+              <${BeadsIcon} className="w-4 h-4" />
+              ${headerBeadsIssue && headerBeadsStatus
+                ? html`<span
+                    class="absolute -top-1 -right-1 w-2 h-2 rounded-full ${headerBeadsDotColor} border border-mitto-border-1"
+                  ></span>`
+                : null}
+            </span>`,
+            tip: headerBeadsIssue
+              ? `Linked issue ${headerBeadsIssue}${
+                  headerBeadsStatus
+                    ? ` (${headerBeadsStatus.replace(/_/g, " ")})`
+                    : ""
+                }`
+              : "No linked issue",
+            ariaLabel: headerBeadsIssue
+              ? `Open linked issue ${headerBeadsIssue}`
+              : "No linked issue",
+            disabled: !headerBeadsIssue,
+            onClick: () =>
+              handleOpenBeadsIssue(
+                headerBeadsIssue,
+                sessionInfo?.working_dir || "",
+                activeSessionId,
+                { reopenProperties: false },
+              ),
+          },
+        ]
+      : []),
+    {
+      kind: "button",
+      testId: "header-session-details",
+      icon: html`<${SidePanelIcon} className="w-4 h-4" />`,
+      tip: "Session details",
+      ariaLabel: "Session details",
+      active: showSidePanel,
+      onClick: handleToggleSidePanel,
+    },
+  ];
 
   return html`
     <div class="drawer md:drawer-open h-screen-safe sidebar-shell">
@@ -2644,7 +2851,7 @@ function App() {
                 >
                   <!-- Header -->
                   <div
-                    class="relative p-4 bg-mitto-sidebar border-b border-mitto-border-1 flex items-center gap-3 shrink-0"
+                    class="relative pt-4 px-4 pb-2 bg-mitto-sidebar flex items-center gap-3 shrink-0"
                   >
                     <${Tooltip}
                       tip="Show conversations"
@@ -2776,51 +2983,31 @@ function App() {
               </${Fragment}>`}
                       </div>`}
                     </div>
-                    <div class="ml-auto flex items-center gap-2">
-                      <!-- Conversation actions menu (mirrors the sidebar row menu) -->
-                      ${activeSessionId
-                        ? html`
-                            <${Tooltip}
-                              tip="Conversation actions"
-                              placement="bottom"
-                              portal
-                            >
-                              <button
-                                type="button"
-                                onClick=${handleHeaderMenuButtonClick}
-                                class="p-1.5 rounded hover:bg-mitto-surface-hover transition-colors text-mitto-text-secondary hover:text-mitto-text-200"
-                                aria-label="Conversation actions"
-                                data-testid="header-conversation-menu"
-                              >
-                                <${EllipsisIcon} className="w-4 h-4" />
-                              </button>
-                            <//>
-                          `
-                        : null}
-                      <!-- Unified side panel toggle -->
-                      <${Tooltip}
-                        tip="Session details"
-                        placement="bottom"
-                        portal
-                      >
-                        <button
-                          onClick=${handleToggleSidePanel}
-                          class="p-1.5 rounded hover:bg-mitto-surface-hover transition-colors ${showSidePanel
-                            ? "bg-mitto-surface-3 text-mitto-accent"
-                            : "text-mitto-text-secondary hover:text-mitto-text-200"}"
-                          aria-label="Session details"
-                        >
-                          <${SidePanelIcon} className="w-4 h-4" />
-                        </button>
-                      <//>
-                    </div>
+                  </div>
+
+                  <!-- Conversation toolbar: the portable Toolbar pill, sitting
+                       right below the title header and vertically aligned with
+                       the sidebar toolbar (both live in a px-3 wrapper directly
+                       under their p-4 header). Holds the actions that used to
+                       sit top-right in the header: the "…" conversation-actions
+                       menu and the Session-details panel toggle. -->
+                  <div
+                    class="px-3 pb-2 shrink-0"
+                    data-testid="conversation-toolbar"
+                  >
+                    <${Toolbar}
+                      variant="block"
+                      surface="bg-mitto-surface-3"
+                      ariaLabel="Conversation actions"
+                      items=${conversationToolbarItems}
+                    />
                   </div>
                   ${headerMenu &&
                   html`
                     <${ContextMenu}
                       x=${headerMenu.x}
                       y=${headerMenu.y}
-                      items=${headerMenuItems}
+                      items=${headerPromptGroupItems}
                       onClose=${closeHeaderMenu}
                     />
                   `}
@@ -3108,9 +3295,13 @@ function App() {
           onClick=${() => setShowSidebar(false)}
         ></label>
         <!-- Panel: resizable on desktop (sidebarWidth), fixed w-80 class provides
-             fallback but inline style takes precedence when set via resize handle. -->
+             fallback but inline style takes precedence when set via resize handle.
+             Uses a soft grey surface (surface-2) rather than the white sidebar
+             tone so the conversation rail reads as a distinct panel; the sidebar
+             toolbar pill is bumped to the elevated surface-3 so it "floats"
+             above this panel (see SessionList.js Toolbar surface prop). -->
         <div
-          class="bg-mitto-sidebar border-r border-mitto-border-1 h-full relative"
+          class="bg-mitto-surface-2 border-r border-mitto-border-1 h-full relative"
           style="width: ${sidebarWidth}px;"
         >
           <${SessionList}
