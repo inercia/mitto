@@ -40,6 +40,12 @@ type ACPProcessManager struct {
 	// AuxiliaryModelSelection is used as-is.
 	ModelProfileResolver func(name string) *config.ModelProfile
 
+	// ModelProfilesByTagResolver returns all Model profiles (Config.Models) carrying
+	// a given capability tag, in definition order. Used to resolve AuxiliaryModelTag
+	// for new auxiliary sessions (mitto-9vz). May be nil, in which case
+	// AuxiliaryModelTag is ignored.
+	ModelProfilesByTagResolver func(tag string) []config.ModelProfile
+
 	// Auxiliary session tracking
 	auxMu       sync.Mutex
 	auxSessions map[auxSessionKey]*auxiliarySessionState
@@ -807,16 +813,30 @@ func (m *ACPProcessManager) getOrCreateAuxiliarySession(ctx context.Context, wor
 	}
 
 	// Apply auxiliary model selection if configured for this workspace.
-	// If AuxiliaryModelProfile is set (mitto-hke), it takes precedence and its resolved
-	// Criteria is used in place of the legacy AuxiliaryModelSelection matchMode/pattern.
-	// Falls back to AuxiliaryModelSelection when the profile field is empty or unresolved.
-	// On no match or nil selection, leave the ACP server's default model unchanged.
+	// Precedence: AuxiliaryModelProfile > AuxiliaryModelTag > AuxiliaryModelSelection
+	// (mitto-hke, mitto-9vz). If AuxiliaryModelProfile is set, it takes precedence and
+	// its resolved Criteria is used in place of the legacy AuxiliaryModelSelection
+	// matchMode/pattern. Else, if AuxiliaryModelTag is set, the first Model profile
+	// carrying that tag whose Criteria matches an available model is used. Falls back
+	// to AuxiliaryModelSelection when neither resolves. On no match or nil selection,
+	// leave the ACP server's default model unchanged.
 	if m.WorkspaceConfigProvider != nil {
 		if ws := m.WorkspaceConfigProvider(workspaceUUID); ws != nil {
 			auxConstraint := ws.AuxiliaryModelSelection
 			if ws.AuxiliaryModelProfile != "" && m.ModelProfileResolver != nil {
 				if profile := m.ModelProfileResolver(ws.AuxiliaryModelProfile); profile != nil && profile.Criteria != nil {
 					auxConstraint = profile.Criteria
+				}
+			} else if ws.AuxiliaryModelTag != "" && m.ModelProfilesByTagResolver != nil {
+				profiles := m.ModelProfilesByTagResolver(ws.AuxiliaryModelTag)
+				for i := range profiles {
+					if profiles[i].Criteria == nil {
+						continue
+					}
+					if conversation.ResolveProfileModel(&profiles[i], sessionHandle.Models) != "" {
+						auxConstraint = profiles[i].Criteria
+						break
+					}
 				}
 			}
 			if auxConstraint != nil && auxConstraint.Pattern != "" {

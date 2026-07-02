@@ -111,6 +111,12 @@ type WorkspaceSettings struct {
 	// AuxiliaryModelSelection matchMode/pattern. Empty falls back to
 	// AuxiliaryModelSelection when present.
 	AuxiliaryModelProfile string `json:"auxiliary_model_profile,omitempty" yaml:"auxiliary_model_profile,omitempty"`
+	// AuxiliaryModelTag selects the auxiliary-session model by capability tag
+	// (e.g. "Fast"). Resolved to the first Model profile (Config.Models, in
+	// definition order) carrying this tag whose Criteria matches an available
+	// model. Mutually exclusive with AuxiliaryModelProfile in the UI; when both
+	// are set, AuxiliaryModelProfile wins. Falls back to AuxiliaryModelSelection.
+	AuxiliaryModelTag string `json:"auxiliary_model_tag,omitempty" yaml:"auxiliary_model_tag,omitempty"`
 	// IsDefault marks this workspace as the default for its working directory.
 	// When multiple workspaces share the same folder (e.g. different ACP servers
 	// or model variants), the one with IsDefault set is preferred when a workspace

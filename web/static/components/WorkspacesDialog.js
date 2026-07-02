@@ -52,6 +52,7 @@ import {
 } from "./SettingsDialog.js";
 
 import { ModelProfileSelect } from "./ModelProfileSelect.js";
+import { ModelTagSelect } from "./ModelTagSelect.js";
 import { Tooltip } from "./Tooltip.js";
 import { IconPicker } from "./IconPicker.js";
 import { promptMenuIncludes } from "../utils/prompts.js";
@@ -213,6 +214,7 @@ export function WorkspacesDialog({
   const [editGroup, setEditGroup] = useState("");
   const [editAcpServer, setEditAcpServer] = useState("");
   const [editAuxModelProfile, setEditAuxModelProfile] = useState("");
+  const [editAuxModelTag, setEditAuxModelTag] = useState("");
   // Whether the user has explicitly cleared a legacy raw auxiliary model
   // constraint by picking "-- None --" (vs. never having touched the control).
   const [editAuxModelConstraintCleared, setEditAuxModelConstraintCleared] =
@@ -284,7 +286,13 @@ export function WorkspacesDialog({
   const [shortcutsLoading, setShortcutsLoading] = useState(false);
   const [shortcutsLoaded, setShortcutsLoaded] = useState(false);
   const [shortcutsError, setShortcutsError] = useState("");
-  const [tasksListPrompts, setTasksListPrompts] = useState([]);
+  // Per-section prompt lists, filtered by the section's prompt menu tag and
+  // sorted by name. Section ids match those persisted on the server side.
+  const [sectionPrompts, setSectionPrompts] = useState({
+    tasksList: [],
+    conversations: [],
+    beadsIssue: [],
+  });
 
   // Folder beads config state (for the Beads Config tab) — UI wrapper over `bd config`.
   // beadsConfig holds the raw {key: value} map last loaded from the server.
@@ -528,6 +536,7 @@ export function WorkspacesDialog({
     if (!selectedWorkspace) return;
     setEditAcpServer(selectedWorkspace.acp_server || "");
     setEditAuxModelProfile(selectedWorkspace.auxiliary_model_profile || "");
+    setEditAuxModelTag(selectedWorkspace.auxiliary_model_tag || "");
     setEditAuxModelConstraintCleared(false);
     setEditAcpCommandOverride(selectedWorkspace.acp_command_override || "");
     setEditRunner(selectedWorkspace.restricted_runner || "exec");
@@ -666,21 +675,28 @@ export function WorkspacesDialog({
         .then((r) => r.json())
         .then((data) => {
           const all = data.prompts || [];
-          const filtered = all
-            .filter((p) => promptMenuIncludes(p, "beadsList"))
-            .sort((a, b) => a.name.localeCompare(b.name));
-          setTasksListPrompts(filtered);
+          const byMenu = (menu) =>
+            all
+              .filter((p) => promptMenuIncludes(p, menu))
+              .sort((a, b) => a.name.localeCompare(b.name));
+          setSectionPrompts({
+            tasksList: byMenu("beadsList"),
+            conversations: byMenu("conversation"),
+            beadsIssue: byMenu("beadsIssues"),
+          });
         }),
     ])
       .then(() => setShortcutsLoaded(true))
-      .catch((err) => setShortcutsError("Failed to load shortcuts: " + err.message))
+      .catch((err) =>
+        setShortcutsError("Failed to load shortcuts: " + err.message),
+      )
       .finally(() => setShortcutsLoading(false));
   }, [activeTab, selectedFolder]);
 
   // Reset shortcuts state when switching folders.
   useEffect(() => {
     setShortcutsSections({});
-    setTasksListPrompts([]);
+    setSectionPrompts({ tasksList: [], conversations: [], beadsIssue: [] });
     setShortcutsError("");
     setShortcutsLoaded(false);
   }, [selectedFolder]);
@@ -818,7 +834,9 @@ export function WorkspacesDialog({
   const checkLiveAcpForWorkspace = useCallback(async (workspaceUUID) => {
     if (!workspaceUUID) return false;
     try {
-      const res = await authFetch(endpoints.workspaces.acpStatus(workspaceUUID));
+      const res = await authFetch(
+        endpoints.workspaces.acpStatus(workspaceUUID),
+      );
       if (!res.ok) return false;
       const data = await res.json();
       return !!data.alive;
@@ -951,11 +969,9 @@ export function WorkspacesDialog({
         setMcpInstallSuccess(`Successfully installed: ${names}`);
         // Check if a live ACP process needs restarting to pick up the new MCP server
         if (selectedWorkspace?.uuid) {
-          checkLiveAcpForWorkspace(selectedWorkspace.uuid).then(
-            (hasActive) => {
-              if (hasActive) setNeedsRestart(true);
-            },
-          );
+          checkLiveAcpForWorkspace(selectedWorkspace.uuid).then((hasActive) => {
+            if (hasActive) setNeedsRestart(true);
+          });
         }
         // Reload MCP tools list after successful install
         setTimeout(() => {
@@ -1081,11 +1097,9 @@ export function WorkspacesDialog({
       } else {
         setMcpInstallSuccess("Installed Mitto MCP server.");
         if (selectedWorkspace?.uuid) {
-          checkLiveAcpForWorkspace(selectedWorkspace.uuid).then(
-            (hasActive) => {
-              if (hasActive) setNeedsRestart(true);
-            },
-          );
+          checkLiveAcpForWorkspace(selectedWorkspace.uuid).then((hasActive) => {
+            if (hasActive) setNeedsRestart(true);
+          });
         }
         await loadMcpTools(acpServer, selectedWorkspace?.uuid);
       }
@@ -1183,6 +1197,7 @@ export function WorkspacesDialog({
       ...ws,
       acp_server: editAcpServer,
       auxiliary_model_profile: editAuxModelProfile || undefined,
+      auxiliary_model_tag: editAuxModelTag || undefined,
       auxiliary_model_selection: auxModelSelection,
       restricted_runner: editRunner,
       restricted_runner_config:
@@ -1875,43 +1890,43 @@ export function WorkspacesDialog({
 
   // ------ Shortcuts tab helpers -----------------------------------------------
 
-  // Immutably update a row in the tasksList section.
-  const updateShortcutRow = (idx, patch) => {
+  // Immutably update a row in the given section.
+  const updateShortcutRow = (section, idx, patch) => {
     setShortcutsSections((prev) => {
-      const list = [...(prev.tasksList || [])];
+      const list = [...(prev[section] || [])];
       list[idx] = { ...list[idx], ...patch };
-      return { ...prev, tasksList: list };
+      return { ...prev, [section]: list };
     });
   };
 
-  // Remove a row from the tasksList section.
-  const removeShortcutRow = (idx) => {
+  // Remove a row from the given section.
+  const removeShortcutRow = (section, idx) => {
     setShortcutsSections((prev) => {
-      const list = [...(prev.tasksList || [])];
+      const list = [...(prev[section] || [])];
       list.splice(idx, 1);
-      return { ...prev, tasksList: list };
+      return { ...prev, [section]: list };
     });
   };
 
-  // Move a row up (dir=-1) or down (dir=1) in the tasksList section.
-  const moveShortcutRow = (idx, dir) => {
+  // Move a row up (dir=-1) or down (dir=1) within the given section.
+  const moveShortcutRow = (section, idx, dir) => {
     setShortcutsSections((prev) => {
-      const list = [...(prev.tasksList || [])];
+      const list = [...(prev[section] || [])];
       const target = idx + dir;
       if (target < 0 || target >= list.length) return prev;
       [list[idx], list[target]] = [list[target], list[idx]];
-      return { ...prev, tasksList: list };
+      return { ...prev, [section]: list };
     });
   };
 
-  // Append a new empty row.
-  const addShortcutRow = () => {
+  // Append a new empty row to the given section.
+  const addShortcutRow = (section) => {
     setShortcutsSections((prev) => {
-      const list = [...(prev.tasksList || [])];
+      const list = [...(prev[section] || [])];
       if (list.length >= 10) return prev;
       // Empty icon → fall back to the linked prompt's own icon at render time.
       list.push({ icon: "", prompt: "" });
-      return { ...prev, tasksList: list };
+      return { ...prev, [section]: list };
     });
   };
 
@@ -1921,11 +1936,13 @@ export function WorkspacesDialog({
   const persistShortcuts = async () => {
     const workingDir = getSelectedFolderDir();
     if (!workingDir) return;
-    // Build sections: drop rows with empty prompt, cap to 10.
-    const tasksList = (shortcutsSections.tasksList || [])
-      .filter((r) => r.prompt)
-      .slice(0, 10);
-    const sections = { tasksList };
+    // Build all sections: drop rows with empty prompt, cap to 10 per section.
+    const sections = {};
+    for (const id of ["tasksList", "conversations", "beadsIssue"]) {
+      sections[id] = (shortcutsSections[id] || [])
+        .filter((r) => r.prompt)
+        .slice(0, 10);
+    }
     const res = await secureFetch(
       endpoints.folders.shortcuts({ working_dir: workingDir }),
       {
@@ -3903,117 +3920,166 @@ export function WorkspacesDialog({
                           ? html`<div
                               class="flex items-center justify-center p-4"
                             >
-                              <${SpinnerIcon} className="w-5 h-5 animate-spin" />
+                              <${SpinnerIcon}
+                                className="w-5 h-5 animate-spin"
+                              />
                             </div>`
                           : html`
                               <div class="space-y-4">
-                                <fieldset class="fieldset pt-2">
-                                  <legend class="fieldset-legend">
-                                    Tasks List
-                                  </legend>
-                                  <p class="text-sm text-mitto-text-muted mb-3">
-                                    Manage shortcut buttons for sending prompts
-                                    in the Tasks list.
-                                  </p>
+                                ${[
+                                  {
+                                    id: "tasksList",
+                                    label: "Tasks list",
+                                    desc: "Buttons shown in the Tasks list toolbar.",
+                                  },
+                                  {
+                                    id: "conversations",
+                                    label: "Conversation",
+                                    desc: "Buttons shown in the conversation toolbar; run in the current conversation.",
+                                  },
+                                  {
+                                    id: "beadsIssue",
+                                    label: "Beads issue",
+                                    desc: "Buttons shown in the beads issue detail toolbar; start a new conversation for the issue.",
+                                  },
+                                ].map(({ id: section, label, desc }) => {
+                                  const rows = shortcutsSections[section] || [];
+                                  const prompts = sectionPrompts[section] || [];
+                                  return html`
+                                    <fieldset
+                                      key=${section}
+                                      class="fieldset pt-2"
+                                    >
+                                      <legend class="fieldset-legend">
+                                        ${label}
+                                      </legend>
+                                      <p
+                                        class="text-sm text-mitto-text-muted mb-3"
+                                      >
+                                        ${desc}
+                                      </p>
 
-                                  <div class="space-y-2">
-                                    ${(shortcutsSections.tasksList || []).map(
-                                      (row, idx) => {
-                                        const linkedPrompt =
-                                          tasksListPrompts.find(
+                                      <div
+                                        class="space-y-2"
+                                        data-testid="shortcut-rows-${section}"
+                                      >
+                                        ${rows.map((row, idx) => {
+                                          const linkedPrompt = prompts.find(
                                             (p) => p.name === row.prompt,
                                           );
-                                        return html`
-                                          <div key=${idx} class="join w-full">
-                                            <${IconPicker}
-                                              value=${row.icon}
-                                              defaultIconName=${linkedPrompt?.icon ||
-                                              ""}
-                                              className="join-item border-mitto-border"
-                                              onChange=${(name) =>
-                                                updateShortcutRow(idx, {
-                                                  icon: name,
-                                                })}
-                                            />
-                                            <select
-                                              class="select select-sm join-item flex-1"
-                                              value=${row.prompt}
-                                              onChange=${(e) =>
-                                                updateShortcutRow(idx, {
-                                                  prompt: e.target.value,
-                                                })}
+                                          return html`
+                                            <div
+                                              key=${idx}
+                                              class="join w-full"
+                                              data-testid="shortcut-row-${section}-${idx}"
                                             >
-                                              <option value="">
-                                                Select a prompt…
-                                              </option>
-                                              ${tasksListPrompts.map(
-                                                (p) => html`
-                                                  <option
-                                                    key=${p.name}
-                                                    value=${p.name}
-                                                  >
-                                                    ${p.name}
-                                                  </option>
-                                                `,
-                                              )}
-                                            </select>
-                                            <button
-                                              type="button"
-                                              class="btn btn-ghost btn-square btn-sm join-item"
-                                              disabled=${idx === 0}
-                                              onClick=${() =>
-                                                moveShortcutRow(idx, -1)}
-                                              aria-label="Move up"
-                                              title="Move up"
-                                            >
-                                              ↑
-                                            </button>
-                                            <button
-                                              type="button"
-                                              class="btn btn-ghost btn-square btn-sm join-item"
-                                              disabled=${idx ===
-                                              (shortcutsSections.tasksList || [])
-                                                .length -
-                                                1}
-                                              onClick=${() =>
-                                                moveShortcutRow(idx, 1)}
-                                              aria-label="Move down"
-                                              title="Move down"
-                                            >
-                                              ↓
-                                            </button>
-                                            <button
-                                              type="button"
-                                              class="btn btn-ghost btn-square btn-sm join-item text-mitto-danger"
-                                              onClick=${() =>
-                                                removeShortcutRow(idx)}
-                                              aria-label="Remove"
-                                              title="Remove"
-                                            >
-                                              <${TrashIcon}
-                                                className="w-4 h-4"
+                                              <${IconPicker}
+                                                value=${row.icon}
+                                                defaultIconName=${linkedPrompt?.icon ||
+                                                ""}
+                                                className="join-item border-mitto-border"
+                                                onChange=${(name) =>
+                                                  updateShortcutRow(
+                                                    section,
+                                                    idx,
+                                                    { icon: name },
+                                                  )}
                                               />
-                                            </button>
-                                          </div>
-                                        `;
-                                      },
-                                    )}
-                                  </div>
+                                              <select
+                                                class="select select-sm join-item flex-1"
+                                                value=${row.prompt}
+                                                onChange=${(e) =>
+                                                  updateShortcutRow(
+                                                    section,
+                                                    idx,
+                                                    { prompt: e.target.value },
+                                                  )}
+                                              >
+                                                <option value="">
+                                                  Select a prompt…
+                                                </option>
+                                                ${prompts.map(
+                                                  (p) => html`
+                                                    <option
+                                                      key=${p.name}
+                                                      value=${p.name}
+                                                    >
+                                                      ${p.name}
+                                                    </option>
+                                                  `,
+                                                )}
+                                              </select>
+                                              <button
+                                                type="button"
+                                                class="btn btn-ghost btn-square btn-sm join-item"
+                                                disabled=${idx === 0}
+                                                onClick=${() =>
+                                                  moveShortcutRow(
+                                                    section,
+                                                    idx,
+                                                    -1,
+                                                  )}
+                                                aria-label="Move up"
+                                                title="Move up"
+                                              >
+                                                ↑
+                                              </button>
+                                              <button
+                                                type="button"
+                                                class="btn btn-ghost btn-square btn-sm join-item"
+                                                disabled=${idx ===
+                                                rows.length - 1}
+                                                onClick=${() =>
+                                                  moveShortcutRow(
+                                                    section,
+                                                    idx,
+                                                    1,
+                                                  )}
+                                                aria-label="Move down"
+                                                title="Move down"
+                                              >
+                                                ↓
+                                              </button>
+                                              <button
+                                                type="button"
+                                                class="btn btn-ghost btn-square btn-sm join-item text-mitto-danger"
+                                                onClick=${() =>
+                                                  removeShortcutRow(
+                                                    section,
+                                                    idx,
+                                                  )}
+                                                aria-label="Remove"
+                                                title="Remove"
+                                              >
+                                                <${TrashIcon}
+                                                  className="w-4 h-4"
+                                                />
+                                              </button>
+                                            </div>
+                                          `;
+                                        })}
+                                      </div>
 
-                                  <div class="mt-3 flex items-center gap-2">
-                                    <button
-                                      type="button"
-                                      class="btn btn-sm btn-ghost"
-                                      disabled=${(shortcutsSections.tasksList || []).length >= 10}
-                                      onClick=${addShortcutRow}
-                                    >
-                                      + Add shortcut
-                                    </button>
-                                    ${(shortcutsSections.tasksList || []).length >= 10 &&
-                                    html`<span class="text-xs text-mitto-text-muted">Maximum 10</span>`}
-                                  </div>
-                                </fieldset>
-
+                                      <div class="mt-3 flex items-center gap-2">
+                                        <button
+                                          type="button"
+                                          class="btn btn-sm btn-ghost"
+                                          disabled=${rows.length >= 10}
+                                          onClick=${() =>
+                                            addShortcutRow(section)}
+                                          data-testid="shortcut-add-${section}"
+                                        >
+                                          + Add shortcut
+                                        </button>
+                                        ${rows.length >= 10 &&
+                                        html`<span
+                                          class="text-xs text-mitto-text-muted"
+                                          >Maximum 10</span
+                                        >`}
+                                      </div>
+                                    </fieldset>
+                                  `;
+                                })}
                                 ${shortcutsError &&
                                 html`<p class="text-sm text-mitto-danger">
                                   ${shortcutsError}
@@ -4159,7 +4225,27 @@ export function WorkspacesDialog({
                             legacyLabel=${auxLegacyModelLabel}
                             onChange=${(name) => {
                               setEditAuxModelProfile(name);
+                              if (name) {
+                                setEditAuxModelTag("");
+                              }
                               if (!name && rawAuxModelConstraint) {
+                                setEditAuxModelConstraintCleared(true);
+                              }
+                            }}
+                          />
+                          <label
+                            class="block text-xs text-mitto-text-muted mt-2 mb-1"
+                            >Or by tag:</label
+                          >
+                          <${ModelTagSelect}
+                            value=${editAuxModelTag}
+                            profiles=${modelProfiles}
+                            onChange=${(tag) => {
+                              setEditAuxModelTag(tag);
+                              if (tag) {
+                                setEditAuxModelProfile("");
+                              }
+                              if (!tag && rawAuxModelConstraint) {
                                 setEditAuxModelConstraintCleared(true);
                               }
                             }}

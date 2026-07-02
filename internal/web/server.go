@@ -348,6 +348,10 @@ func NewServer(config Config) (*Server, error) {
 	acpProcessMgr.ModelProfileResolver = func(name string) *configPkg.ModelProfile {
 		return config.MittoConfig.FindModelProfile(name)
 	}
+	// Set Model profiles-by-tag resolver so process manager can resolve AuxiliaryModelTag (mitto-9vz).
+	acpProcessMgr.ModelProfilesByTagResolver = func(tag string) []configPkg.ModelProfile {
+		return config.MittoConfig.ModelProfilesByTag(tag)
+	}
 	sessionMgr.SetACPProcessManager(acpProcessManagerAdapter{acpProcessMgr})
 
 	// Apply the prompt inactivity watchdog cancellation timeout from settings. This
