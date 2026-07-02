@@ -366,6 +366,11 @@ type BackgroundSessionConfig struct {
 	// MittoConfig is the full Mitto configuration (used for default flags)
 	MittoConfig *config.Config
 
+	// ModelConstraintOverride, when non-nil with a non-empty Pattern, overrides the
+	// ACP-server-derived "model" auto-selection constraint for this session only.
+	// Used by auto-children to apply a per-child initial model profile.
+	ModelConstraintOverride *config.ACPServerConstraint
+
 	// AvailableACPServers is the pre-computed list of ACP servers that have workspaces
 	// configured for the session's working directory. Populated by SessionManager using
 	// the same logic as the mitto_conversation_get_current MCP tool.
@@ -584,7 +589,10 @@ func NewBackgroundSession(cfg BackgroundSessionConfig) (*BackgroundSession, erro
 	}
 
 	// Look up ACP server constraints from config
-	bs.acpServerConstraints = lookupACPServerConstraints(cfg.MittoConfig, cfg.ACPServer)
+	bs.acpServerConstraints = applyModelConstraintOverride(
+		lookupACPServerConstraints(cfg.MittoConfig, cfg.ACPServer),
+		cfg.ModelConstraintOverride,
+	)
 	// Store full config for model-tag resolution (config.ResolveModelTags).
 	bs.mittoConfig = cfg.MittoConfig
 	// Look up the agent-native context-flush command from config
@@ -799,7 +807,10 @@ func ResumeBackgroundSession(config BackgroundSessionConfig) (*BackgroundSession
 	}
 
 	// Look up ACP server constraints from config
-	bs.acpServerConstraints = lookupACPServerConstraints(config.MittoConfig, config.ACPServer)
+	bs.acpServerConstraints = applyModelConstraintOverride(
+		lookupACPServerConstraints(config.MittoConfig, config.ACPServer),
+		config.ModelConstraintOverride,
+	)
 	// Store full config for model-tag resolution (config.ResolveModelTags).
 	bs.mittoConfig = config.MittoConfig
 	// Look up the agent-native context-flush command from config

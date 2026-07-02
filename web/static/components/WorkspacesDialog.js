@@ -3985,6 +3985,7 @@ export function WorkspacesDialog({
                           currentWorkspaceUUID=${firstWs?.uuid}
                           onChange=${setEditAutoChildren}
                           getBasename=${getBasename}
+                          modelProfiles=${modelProfiles}
                         />
                       </div>
                     `}

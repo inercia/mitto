@@ -47,6 +47,9 @@ type AutoChild struct {
 	// TargetWorkspaceUUID is the UUID of the workspace to use for the child.
 	// If empty, uses the parent's workspace.
 	TargetWorkspaceUUID string `json:"target_workspace_uuid,omitempty" yaml:"target_workspace_uuid,omitempty"`
+	// ModelProfile is the name of a global Model profile (Config.Models) to apply as the
+	// child's initial/baseline model. Empty = use the ACP server's default model selection.
+	ModelProfile string `json:"model_profile,omitempty" yaml:"model_profile,omitempty"`
 }
 
 // WorkspaceSettings is the JSON representation of a workspace.

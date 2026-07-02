@@ -374,8 +374,19 @@ func (sm *SessionManager) createAutoChildren(parentBS *BackgroundSession, worksp
 			continue
 		}
 
+		// Resolve the child's initial model profile (mitto-9x8), if any.
+		var childModelConstraint *config.ACPServerConstraint
+		if child.ModelProfile != "" && sm.mittoConfig != nil {
+			if profile := sm.mittoConfig.FindModelProfile(child.ModelProfile); profile != nil && profile.Criteria != nil {
+				childModelConstraint = profile.Criteria
+			} else if sm.logger != nil {
+				sm.logger.Warn("Auto-child model profile not found or has no criteria; using ACP default",
+					"parent_session_id", parentID, "child_title", child.Title, "model_profile", child.ModelProfile)
+			}
+		}
+
 		// Resume the child session (start ACP process)
-		childBS, err := sm.ResumeSession(childID, child.Title, parentWorkingDir)
+		childBS, err := sm.ResumeSessionWithModelConstraint(childID, child.Title, parentWorkingDir, childModelConstraint)
 		if err != nil {
 			if sm.logger != nil {
 				sm.logger.Error("Failed to start auto-child ACP process",
@@ -396,6 +407,7 @@ func (sm *SessionManager) createAutoChildren(parentBS *BackgroundSession, worksp
 				"child_session_id", childID,
 				"child_title", child.Title,
 				"child_acp_server", targetWS.ACPServer,
+				"child_model_profile", child.ModelProfile,
 				"child_is_running", childBS != nil)
 		}
 	}
@@ -1594,6 +1606,23 @@ func (sm *SessionManager) GetOrCreateSession(sessionID, workingDir string) (*Bac
 // on the server side as well. Otherwise, we create a new ACP connection and continue
 // using the same persisted session ID for recording.
 func (sm *SessionManager) ResumeSession(sessionID, sessionName, workingDir string) (*BackgroundSession, error) {
+	return sm.resumeSessionWithConstraint(sessionID, sessionName, workingDir, nil)
+}
+
+// ResumeSessionWithModelConstraint resumes an existing persisted session like ResumeSession,
+// but additionally applies modelConstraint as a per-session override of the "model"
+// auto-selection constraint (mitto-9x8). Used by auto-children to apply a per-child initial
+// model profile. Pass nil to preserve the default ACP-server-derived model selection.
+func (sm *SessionManager) ResumeSessionWithModelConstraint(sessionID, sessionName, workingDir string, modelConstraint *config.ACPServerConstraint) (*BackgroundSession, error) {
+	return sm.resumeSessionWithConstraint(sessionID, sessionName, workingDir, modelConstraint)
+}
+
+// resumeSessionWithConstraint resumes an existing persisted session by creating a new ACP
+// process. This is used when switching to an old conversation. If the agent supports session
+// loading and we have a stored ACP session ID, we attempt to resume the ACP session
+// on the server side as well. Otherwise, we create a new ACP connection and continue
+// using the same persisted session ID for recording.
+func (sm *SessionManager) resumeSessionWithConstraint(sessionID, sessionName, workingDir string, modelConstraint *config.ACPServerConstraint) (*BackgroundSession, error) {
 	// Clear GC-suspended flag — any explicit resume (ensure_resumed, loop runner,
 	// queue processing) should allow the session to run. This must happen before the
 	// "already running" check to avoid stale flags.
@@ -1987,6 +2016,7 @@ func (sm *SessionManager) ResumeSession(sessionID, sessionName, workingDir strin
 		APIPrefix:                      sm.apiPrefix,
 		WorkspaceUUID:                  workspaceUUID,
 		MittoConfig:                    sm.mittoConfig,         // Pass config for default flags
+		ModelConstraintOverride:        modelConstraint,        // Per-child initial model profile override (mitto-9x8)
 		AvailableACPServers:            resumeAvailableServers, // Pre-computed workspace server list
 		GlobalMCPServer:                sm.mcpServer,
 		AuxiliaryManager:               sm.auxiliaryManager,

@@ -215,9 +215,13 @@ export function AutoChildrenEditor({
   currentWorkspaceUUID,
   onChange,
   getBasename,
+  modelProfiles,
 }) {
   const addChild = () =>
-    onChange([...(children || []), { title: "", target_workspace_uuid: "" }]);
+    onChange([
+      ...(children || []),
+      { title: "", target_workspace_uuid: "", model_profile: "" },
+    ]);
   const removeChild = (idx) =>
     onChange((children || []).filter((_, i) => i !== idx));
   const updateChild = (idx, field, value) => {
@@ -280,6 +284,19 @@ export function AutoChildrenEditor({
                             ${ws.name || ws.acp_server}
                             (${getBasename(ws.working_dir)})
                           </option>
+                        `,
+                      )}
+                    </select>
+                    <select
+                      value=${child.model_profile || ""}
+                      onChange=${(e) =>
+                        updateChild(idx, "model_profile", e.target.value)}
+                      class="select select-sm join-item"
+                    >
+                      <option value="">Default (ACP server criteria)</option>
+                      ${(modelProfiles || []).map(
+                        (p) => html`
+                          <option value=${p.name}>${p.name}</option>
                         `,
                       )}
                     </select>
