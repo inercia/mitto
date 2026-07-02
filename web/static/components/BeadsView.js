@@ -2925,9 +2925,9 @@ export function BeadsView({
   const [showListPrompts, setShowListPrompts] = useState(false);
   const [listPrompts, setListPrompts] = useState([]);
   const [listPromptsLoading, setListPromptsLoading] = useState(false);
-  // Per-send periodic override for beadsList prompts, keyed by prompt name.
+  // Per-send loop override for beadsList prompts, keyed by prompt name.
   // Reset whenever the list reloads (see effect below).
-  const [listPeriodicOn, setListPeriodicOn] = useState({});
+  const [listLoopOn, setListLoopOn] = useState({});
 
   // Shortcut buttons configured for this folder's tasksList section.
   const [shortcuts, setShortcuts] = useState([]);
@@ -3854,14 +3854,14 @@ export function BeadsView({
           .then((list) => {
             const prompts = list || [];
             setListPrompts(prompts);
-            // Seed per-item periodic toggle defaults from each prompt's mode/default.
+            // Seed per-item loop toggle defaults from each prompt's mode/default.
             const seed = {};
             for (const p of prompts) {
               if (promptLoopIsToggleable(p)) {
                 seed[p.name] = promptLoopDefaultOn(p);
               }
             }
-            setListPeriodicOn(seed);
+            setListLoopOn(seed);
           })
           .finally(() => setListPromptsLoading(false));
       }
@@ -4511,8 +4511,8 @@ export function BeadsView({
                             mode === "optional"
                               ? {
                                   asLoop:
-                                    listPeriodicOn[p.name] !== undefined
-                                      ? listPeriodicOn[p.name]
+                                    listLoopOn[p.name] !== undefined
+                                      ? listLoopOn[p.name]
                                       : promptLoopDefaultOn(p),
                                 }
                               : undefined;
@@ -4529,8 +4529,8 @@ export function BeadsView({
                           if (mode === "none") return null;
                           if (mode === "optional") {
                             const on =
-                              listPeriodicOn[p.name] !== undefined
-                                ? listPeriodicOn[p.name]
+                              listLoopOn[p.name] !== undefined
+                                ? listLoopOn[p.name]
                                 : promptLoopDefaultOn(p);
                             return html`<input
                               type="checkbox"
@@ -4538,12 +4538,12 @@ export function BeadsView({
                               style="background-color: transparent"
                               checked=${on}
                               title=${on
-                                ? "Periodic: ON — click to disable recurring runs"
-                                : "Periodic: OFF — click to run as recurring conversation"}
+                                ? "Loop: ON — click to disable recurring runs"
+                                : "Loop: OFF — click to run as recurring conversation"}
                               onClick=${(e) => e.stopPropagation()}
                               onChange=${(e) => {
                                 e.stopPropagation();
-                                setListPeriodicOn((m) => ({
+                                setListLoopOn((m) => ({
                                   ...m,
                                   [p.name]: e.target.checked,
                                 }));
@@ -4553,7 +4553,7 @@ export function BeadsView({
                           // mode === "always": locked badge (unchanged look)
                           return html`<span
                             class="shrink-0 text-success opacity-80"
-                            title="Periodic prompt — always sets the conversation to recurring mode"
+                            title="Loop prompt — always sets the conversation to recurring mode"
                             ><${LoopIcon} className="w-3.5 h-3.5"
                           /></span>`;
                         })()}

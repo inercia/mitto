@@ -1157,10 +1157,10 @@ describe("promptMenuIncludes", () => {
 });
 
 // =============================================================================
-// Periodic filter behaviour — union with !promptsLoop exclusion
+// Loop filter behaviour — union with !promptsLoop exclusion
 // =============================================================================
 
-describe("periodic prompt filter logic (union + exclusion)", () => {
+describe("loop prompt filter logic (union + exclusion)", () => {
   // Replicates the loopPrompts predicate from useWorkspacePrompts.js
   function isLoopPrompt(p) {
     if (promptMenuExcludes(p).has("promptsLoop")) return false;
@@ -1168,23 +1168,23 @@ describe("periodic prompt filter logic (union + exclusion)", () => {
     return menus.includes("prompts") || menus.includes("promptsLoop");
   }
 
-  test("prompts-only prompt IS in periodic selector (union rule)", () => {
+  test("prompts-only prompt IS in loop selector (union rule)", () => {
     expect(isLoopPrompt({ menus: "prompts" })).toBe(true);
   });
 
-  test("promptsLoop-only prompt IS in periodic selector", () => {
+  test("promptsLoop-only prompt IS in loop selector", () => {
     expect(isLoopPrompt({ menus: "promptsLoop" })).toBe(true);
   });
 
-  test("prompt with menus: prompts, !promptsLoop is NOT in periodic selector", () => {
+  test("prompt with menus: prompts, !promptsLoop is NOT in loop selector", () => {
     expect(isLoopPrompt({ menus: "prompts, !promptsLoop" })).toBe(false);
   });
 
-  test("prompt with menus: conversation is NOT in periodic selector", () => {
+  test("prompt with menus: conversation is NOT in loop selector", () => {
     expect(isLoopPrompt({ menus: "conversation" })).toBe(false);
   });
 
-  test("prompt with no menus field IS in periodic selector (defaults to prompts)", () => {
+  test("prompt with no menus field IS in loop selector (defaults to prompts)", () => {
     expect(isLoopPrompt({})).toBe(true);
   });
 });
@@ -1332,12 +1332,12 @@ describe("buildPromptGroupMenuItems", () => {
   const prompts = [
     { name: "Always On", group: "G" }, // no loop block -> "none"
     {
-      name: "Always Periodic",
+      name: "Always Loop",
       group: "G",
       loop: { mode: "always" },
     },
     {
-      name: "Maybe Periodic",
+      name: "Maybe Loop",
       group: "G",
       loop: { mode: "optional", default: false },
     },
@@ -1351,48 +1351,48 @@ describe("buildPromptGroupMenuItems", () => {
     return undefined;
   }
 
-  test("a 'none'-mode prompt yields periodicMode 'none'", () => {
+  test("a 'none'-mode prompt yields loopMode 'none'", () => {
     const items = buildPromptGroupMenuItems(prompts, () => {}, null);
     const sub = findSub(items, "Always On");
     expect(sub).toBeDefined();
-    expect(sub.periodicMode).toBe("none");
+    expect(sub.loopMode).toBe("none");
   });
 
-  test("an 'always'-mode prompt carries periodicMode 'always' and periodicDefaultOn true", () => {
+  test("an 'always'-mode prompt carries loopMode 'always' and loopDefaultOn true", () => {
     const items = buildPromptGroupMenuItems(prompts, () => {}, null);
-    const sub = findSub(items, "Always Periodic");
+    const sub = findSub(items, "Always Loop");
     expect(sub).toBeDefined();
-    expect(sub.periodicMode).toBe("always");
-    expect(sub.periodicDefaultOn).toBe(true);
+    expect(sub.loopMode).toBe("always");
+    expect(sub.loopDefaultOn).toBe(true);
   });
 
-  test("an 'optional'-mode prompt carries periodicMode 'optional' and periodicDefaultOn matching its default", () => {
+  test("an 'optional'-mode prompt carries loopMode 'optional' and loopDefaultOn matching its default", () => {
     const items = buildPromptGroupMenuItems(prompts, () => {}, null);
-    const sub = findSub(items, "Maybe Periodic");
+    const sub = findSub(items, "Maybe Loop");
     expect(sub).toBeDefined();
-    expect(sub.periodicMode).toBe("optional");
-    expect(sub.periodicDefaultOn).toBe(false);
+    expect(sub.loopMode).toBe("optional");
+    expect(sub.loopDefaultOn).toBe(false);
   });
 
   test("calling item.onClick({ asLoop: true }) invokes onRun with (prompt, { asLoop: true })", () => {
     const onRun = jest.fn();
     const items = buildPromptGroupMenuItems(prompts, onRun, null);
-    const sub = findSub(items, "Maybe Periodic");
+    const sub = findSub(items, "Maybe Loop");
     sub.onClick({ asLoop: true });
     expect(onRun).toHaveBeenCalledTimes(1);
     const [calledPrompt, calledOpts] = onRun.mock.calls[0];
-    expect(calledPrompt.name).toBe("Maybe Periodic");
+    expect(calledPrompt.name).toBe("Maybe Loop");
     expect(calledOpts).toEqual({ asLoop: true });
   });
 
   test("calling item.onClick({ asLoop: false }) forwards false", () => {
     const onRun = jest.fn();
     const items = buildPromptGroupMenuItems(prompts, onRun, null);
-    const sub = findSub(items, "Maybe Periodic");
+    const sub = findSub(items, "Maybe Loop");
     sub.onClick({ asLoop: false });
     expect(onRun).toHaveBeenCalledTimes(1);
     const [calledPrompt, calledOpts] = onRun.mock.calls[0];
-    expect(calledPrompt.name).toBe("Maybe Periodic");
+    expect(calledPrompt.name).toBe("Maybe Loop");
     expect(calledOpts).toEqual({ asLoop: false });
   });
 });

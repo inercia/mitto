@@ -730,25 +730,25 @@ describe("configureLoopSchedule — max_iterations", () => {
 });
 
 // =============================================================================
-// ChatInput.handlePredefinedPrompt routing — periodic branch
+// ChatInput.handlePredefinedPrompt routing — loop branch
 //
-// Tests the pure routing decision: when a prompt has .periodic set and
-// onPeriodicPrompt is provided, it must be called; otherwise the normal path runs.
+// Tests the pure routing decision: when a prompt has .loop set and
+// onLoopPrompt is provided, it must be called; otherwise the normal path runs.
 // This mirrors what ChatInput.handlePredefinedPrompt does after the shiftKey check.
 // =============================================================================
 
-describe("ChatInput periodic routing — onPeriodicPrompt delegation", () => {
+describe("ChatInput loop routing — onLoopPrompt delegation", () => {
   /**
    * Minimal simulation of the ChatInput.handlePredefinedPrompt routing logic.
    * Extracted here so we can test without mounting the full ChatInput component.
    * Mirrors the real code: const asLoop = prompt && promptResolveAsLoop(prompt);
-   * if (asLoop && onPeriodicPrompt) { onPeriodicPrompt(prompt); return; } (mitto-92x.3).
+   * if (asLoop && onLoopPrompt) { onLoopPrompt(prompt); return; } (mitto-92x.3).
    */
-  function routePrompt(prompt, { onPeriodicPrompt, onSend } = {}) {
+  function routePrompt(prompt, { onLoopPrompt, onSend } = {}) {
     const asLoop = prompt && promptResolveAsLoop(prompt);
-    if (asLoop && onPeriodicPrompt) {
-      onPeriodicPrompt(prompt);
-      return "periodic";
+    if (asLoop && onLoopPrompt) {
+      onLoopPrompt(prompt);
+      return "loop";
     }
     if (onSend && prompt?.name) {
       onSend(prompt.name);
@@ -757,35 +757,35 @@ describe("ChatInput periodic routing — onPeriodicPrompt delegation", () => {
     return "noop";
   }
 
-  test("calls onPeriodicPrompt for a periodic-flagged prompt", () => {
-    const onPeriodicPrompt = jest.fn();
+  test("calls onLoopPrompt for a loop-flagged prompt", () => {
+    const onLoopPrompt = jest.fn();
     const onSend = jest.fn();
     const prompt = {
       name: "daily-standup",
       loop: { value: 1, unit: "hours" },
     };
 
-    const result = routePrompt(prompt, { onPeriodicPrompt, onSend });
+    const result = routePrompt(prompt, { onLoopPrompt, onSend });
 
-    expect(onPeriodicPrompt).toHaveBeenCalledTimes(1);
-    expect(onPeriodicPrompt).toHaveBeenCalledWith(prompt);
+    expect(onLoopPrompt).toHaveBeenCalledTimes(1);
+    expect(onLoopPrompt).toHaveBeenCalledWith(prompt);
     expect(onSend).not.toHaveBeenCalled();
-    expect(result).toBe("periodic");
+    expect(result).toBe("loop");
   });
 
-  test("does NOT call onPeriodicPrompt for a non-periodic prompt — falls through to onSend", () => {
-    const onPeriodicPrompt = jest.fn();
+  test("does NOT call onLoopPrompt for a non-loop prompt — falls through to onSend", () => {
+    const onLoopPrompt = jest.fn();
     const onSend = jest.fn();
     const prompt = { name: "regular-prompt", prompt: "do something" };
 
-    const result = routePrompt(prompt, { onPeriodicPrompt, onSend });
+    const result = routePrompt(prompt, { onLoopPrompt, onSend });
 
-    expect(onPeriodicPrompt).not.toHaveBeenCalled();
+    expect(onLoopPrompt).not.toHaveBeenCalled();
     expect(onSend).toHaveBeenCalledWith("regular-prompt");
     expect(result).toBe("send");
   });
 
-  test("falls through to onSend when onPeriodicPrompt is absent (even for periodic prompt)", () => {
+  test("falls through to onSend when onLoopPrompt is absent (even for loop prompt)", () => {
     const onSend = jest.fn();
     const prompt = { name: "daily", loop: { value: 1, unit: "hours" } };
 
@@ -795,43 +795,43 @@ describe("ChatInput periodic routing — onPeriodicPrompt delegation", () => {
     expect(result).toBe("send");
   });
 
-  test("does nothing when prompt has no name and no periodic", () => {
-    const onPeriodicPrompt = jest.fn();
+  test("does nothing when prompt has no name and no loop", () => {
+    const onLoopPrompt = jest.fn();
     const onSend = jest.fn();
 
-    const result = routePrompt({}, { onPeriodicPrompt, onSend });
+    const result = routePrompt({}, { onLoopPrompt, onSend });
 
-    expect(onPeriodicPrompt).not.toHaveBeenCalled();
+    expect(onLoopPrompt).not.toHaveBeenCalled();
     expect(onSend).not.toHaveBeenCalled();
     expect(result).toBe("noop");
   });
 
   // mitto-92x.3: routing now flows through promptResolveAsLoop (mode-aware),
   // not a bare `prompt.loop` presence check.
-  test("mode: always (no explicit mode) routes to onPeriodicPrompt — unchanged behavior", () => {
-    const onPeriodicPrompt = jest.fn();
+  test("mode: always (no explicit mode) routes to onLoopPrompt — unchanged behavior", () => {
+    const onLoopPrompt = jest.fn();
     const onSend = jest.fn();
     const prompt = { name: "daily", loop: { value: 1, unit: "hours" } };
 
-    const result = routePrompt(prompt, { onPeriodicPrompt, onSend });
+    const result = routePrompt(prompt, { onLoopPrompt, onSend });
 
-    expect(onPeriodicPrompt).toHaveBeenCalledWith(prompt);
+    expect(onLoopPrompt).toHaveBeenCalledWith(prompt);
     expect(onSend).not.toHaveBeenCalled();
-    expect(result).toBe("periodic");
+    expect(result).toBe("loop");
   });
 
   test("mode: optional, default:false resolves to one-shot — falls through to onSend (no override in ChatInput yet)", () => {
-    const onPeriodicPrompt = jest.fn();
+    const onLoopPrompt = jest.fn();
     const onSend = jest.fn();
     const prompt = {
-      name: "maybe-periodic",
+      name: "maybe-loop",
       loop: { mode: "optional", default: false },
     };
 
-    const result = routePrompt(prompt, { onPeriodicPrompt, onSend });
+    const result = routePrompt(prompt, { onLoopPrompt, onSend });
 
-    expect(onPeriodicPrompt).not.toHaveBeenCalled();
-    expect(onSend).toHaveBeenCalledWith("maybe-periodic");
+    expect(onLoopPrompt).not.toHaveBeenCalled();
+    expect(onSend).toHaveBeenCalledWith("maybe-loop");
     expect(result).toBe("send");
   });
 });

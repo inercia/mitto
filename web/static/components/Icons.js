@@ -868,7 +868,7 @@ export function ArchiveFilledIcon({ className = "w-4 h-4" }) {
 }
 
 /**
- * Periodic/repeat icon (circular arrow) for recurring conversations
+ * Loop/repeat icon (circular arrow) for recurring conversations
  * @param {string} className - CSS classes (default: 'w-4 h-4')
  */
 export function LoopIcon({ className = "w-4 h-4" }) {
@@ -890,7 +890,7 @@ export function LoopIcon({ className = "w-4 h-4" }) {
 }
 
 /**
- * Periodic filled icon for active periodic state
+ * Loop filled icon for active loop state
  * Shows a filled circular badge with contrasting white arrows inside
  * Creates an "inverted" look compared to the outline LoopIcon
  * @param {string} className - CSS classes (default: 'w-4 h-4')
@@ -998,7 +998,7 @@ export function ChevronRightIcon({ className = "w-4 h-4" }) {
   `;
 }
 
-// Lock icon (closed padlock) - for locked periodic prompt state
+// Lock icon (closed padlock) - for locked loop prompt state
 export function LockIcon({ className = "w-5 h-5" }) {
   return html`
     <svg
@@ -1029,7 +1029,7 @@ export function LockIcon({ className = "w-5 h-5" }) {
   `;
 }
 
-// Unlock icon (open padlock) - for unlocked periodic prompt state
+// Unlock icon (open padlock) - for unlocked loop prompt state
 export function UnlockIcon({ className = "w-5 h-5" }) {
   return html`
     <svg
@@ -1451,7 +1451,7 @@ export function MittoIcon({ className = "w-4 h-4" }) {
 }
 
 /**
- * Clock icon for periodic (recurring) conversations
+ * Clock icon for loop (recurring) conversations
  * @param {string} className - CSS classes (default: 'w-4 h-4')
  */
 export function ClockIcon({ className = "w-4 h-4" }) {

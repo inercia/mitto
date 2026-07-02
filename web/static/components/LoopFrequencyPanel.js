@@ -30,7 +30,7 @@ const MIN_COMPLETION_DELAY_SECONDS = 5;
 
 /**
  * Schedules that repeat more frequently than this (in seconds) are considered
- * "too frequent" for an unbounded periodic conversation and trigger the
+ * "too frequent" for an unbounded loop conversation and trigger the
  * dangerous-config warning on save. 5 minutes.
  */
 const DANGEROUS_FREQUENCY_SECONDS = 5 * 60;
@@ -38,13 +38,13 @@ const DANGEROUS_FREQUENCY_SECONDS = 5 * 60;
 // Hover-only tooltips are pointless on touch devices (no hover); gate the portal
 // header tooltips the same way daisyUI gates its CSS tooltips so taps never
 // trigger a stuck bubble.
-const PERIODIC_SUPPORTS_HOVER =
+const LOOP_SUPPORTS_HOVER =
   typeof window !== "undefined" &&
   typeof window.matchMedia === "function" &&
   window.matchMedia("(hover: hover)").matches;
 
 // Delay before a header tooltip appears on hover (ms).
-const PERIODIC_TOOLTIP_DELAY_MS = 250;
+const LOOP_TOOLTIP_DELAY_MS = 250;
 
 /**
  * Convert a numeric value + unit string into total seconds.
@@ -130,13 +130,13 @@ function localToUtcTime(localTime) {
 }
 
 /**
- * LoopFrequencyPanel component - merged periodic settings card.
+ * LoopFrequencyPanel component - merged loop settings card.
  * Header (always visible when isOpen): run-now, prompt selector, status, pause/resume, expand toggle.
  * Body (collapsed by default): frequency inputs, fresh-context, max-runs.
  *
  * @param {Object} props
- * @param {boolean} props.isOpen - Whether the card is visible (shown when periodic is enabled)
- * @param {boolean} props.disabled - true when periodic is active/enabled (controls pause vs resume label)
+ * @param {boolean} props.isOpen - Whether the card is visible (shown when loop is enabled)
+ * @param {boolean} props.disabled - true when loop is active/enabled (controls pause vs resume label)
  * @param {string} props.sessionId - Current session ID
  * @param {Object} props.frequency - Current frequency config { value, unit, at } (at is in UTC)
  * @param {Function} props.onFrequencyChange - Callback when frequency is updated
@@ -147,10 +147,10 @@ function localToUtcTime(localTime) {
  * @param {number} props.maxIterations - Maximum number of runs (0 = unlimited)
  * @param {number} props.iterationCount - Number of runs delivered so far
  * @param {Function} props.onMaxIterationsChange - Callback when max iterations is updated
- * @param {Function} props.onPeriodicEnabledChange - Callback when periodic is paused/resumed
+ * @param {Function} props.onLoopEnabledChange - Callback when loop is paused/resumed
  * @param {Array} props.prompts - Available workspace prompts for the inline selector
- * @param {string} props.selectedPromptName - Currently selected periodic prompt name
- * @param {string} props.selectedPromptBody - Free-text periodic prompt body (used when no named prompt is set)
+ * @param {string} props.selectedPromptName - Currently selected loop prompt name
+ * @param {string} props.selectedPromptBody - Free-text loop prompt body (used when no named prompt is set)
  * @param {Function} props.onPromptSelect - Callback when a prompt is selected: (promptName) => void
  * @param {boolean} props.isPromptAreaVisible - Whether the prompt composition area is visible
  * @param {Function} props.onTogglePromptArea - Callback to toggle prompt composition area visibility
@@ -168,7 +168,7 @@ export function LoopFrequencyPanel({
   maxIterations = 0,
   iterationCount = 0,
   onMaxIterationsChange,
-  onPeriodicEnabledChange,
+  onLoopEnabledChange,
   prompts = [],
   selectedPromptName = "",
   selectedPromptBody = "",
@@ -215,9 +215,9 @@ export function LoopFrequencyPanel({
   const [isTriggering, setIsTriggering] = useState(false);
   // Confirmation dialog state
   const [showConfirmDialog, setShowConfirmDialog] = useState(false);
-  // Restore-periodic confirmation dialog state (shown when re-enabling a paused schedule)
+  // Restore-loop confirmation dialog state (shown when re-enabling a paused schedule)
   const [showRestoreDialog, setShowRestoreDialog] = useState(false);
-  // Dangerous-config confirmation dialog state (shown on Save for new, unbounded periodics)
+  // Dangerous-config confirmation dialog state (shown on Save for new, unbounded loops)
   const [showDangerDialog, setShowDangerDialog] = useState(false);
   // Reset timer checkbox state (default true = reset the countdown after manual run)
   const [resetTimer, setResetTimer] = useState(true);
@@ -275,13 +275,13 @@ export function LoopFrequencyPanel({
   const [headerTip, setHeaderTip] = useState(null);
   const headerTipTimerRef = useRef(null);
   const showHeaderTip = useCallback((e, text) => {
-    if (!PERIODIC_SUPPORTS_HOVER || !text) return;
+    if (!LOOP_SUPPORTS_HOVER || !text) return;
     const x = e.clientX;
     const y = e.clientY;
     clearTimeout(headerTipTimerRef.current);
     headerTipTimerRef.current = setTimeout(
       () => setHeaderTip({ x, y, text }),
-      PERIODIC_TOOLTIP_DELAY_MS,
+      LOOP_TOOLTIP_DELAY_MS,
     );
   }, []);
   const hideHeaderTip = useCallback(() => {
@@ -403,15 +403,15 @@ export function LoopFrequencyPanel({
     conditionPreset,
   ]);
 
-  // Derived: whether this periodic is in on-completion / on-tasks mode
+  // Derived: whether this loop is in on-completion / on-tasks mode
   const isOnCompletion = localTrigger === "onCompletion";
   const isOnTasks = localTrigger === "onTasks";
 
-  // A "new" periodic conversation is one that has never delivered a run yet
+  // A "new" loop conversation is one that has never delivered a run yet
   // (iteration_count is incremented only on actual delivery). Safety pre-fills
   // and the dangerous-config warning apply only while it is still new — once it
   // has started running we respect whatever the user has configured.
-  const isNewPeriodic = iterationCount === 0;
+  const isNewLoop = iterationCount === 0;
 
   // Staged config has no upper bound on runs or wall-clock time.
   const stagedHasNoLimits = useMemo(
@@ -432,10 +432,10 @@ export function LoopFrequencyPanel({
     );
   }, [localTrigger, localValue, localUnit]);
 
-  // Warn before saving a brand-new periodic conversation that could loop
+  // Warn before saving a brand-new loop conversation that could loop
   // indefinitely (dangerous cadence with no run/time limit).
   const needsDangerWarning =
-    isNewPeriodic && stagedHasDangerousCadence && stagedHasNoLimits;
+    isNewLoop && stagedHasDangerousCadence && stagedHasNoLimits;
 
   // Human-readable reason shown in the dangerous-config confirmation dialog.
   const dangerReason = isOnCompletion
@@ -444,7 +444,7 @@ export function LoopFrequencyPanel({
       ? "it fires every time a matching task change occurs"
       : `it repeats every ${localValue} ${localUnit}`;
   const dangerMessage =
-    `This periodic conversation has no limit on the number of runs or total ` +
+    `This loop conversation has no limit on the number of runs or total ` +
     `time, and ${dangerReason}. It could keep running indefinitely. ` +
     `Set a "Max runs" or "Max time" limit, or save anyway?`;
 
@@ -518,9 +518,9 @@ export function LoopFrequencyPanel({
         const errorData = await response.json().catch(() => ({}));
         const msg = errorMessageFromData(
           errorData,
-          "Failed to save periodic settings",
+          "Failed to save loop settings",
         );
-        console.error("Failed to save periodic settings:", msg);
+        console.error("Failed to save loop settings:", msg);
         // Surface invalid-CEL (and other onTasks) rejections inline near the
         // condition editor instead of failing silently.
         if (localTrigger === "onTasks") {
@@ -528,7 +528,7 @@ export function LoopFrequencyPanel({
         }
       }
     } catch (err) {
-      console.error("Failed to save periodic settings:", err);
+      console.error("Failed to save loop settings:", err);
     } finally {
       setIsSaving(false);
     }
@@ -558,7 +558,7 @@ export function LoopFrequencyPanel({
     onConditionPresetChange,
   ]);
 
-  // Save entry point (Save button). For a brand-new periodic conversation with
+  // Save entry point (Save button). For a brand-new loop conversation with
   // a dangerous, unbounded cadence, confirm first; otherwise persist directly.
   const handleSaveAll = useCallback(() => {
     if (isSaving) return;
@@ -681,11 +681,11 @@ export function LoopFrequencyPanel({
         );
       }
       // Pre-fill safety limits (5 runs, 1h max time) only for brand-new
-      // periodic conversations switching to an event-driven trigger; never
+      // loop conversations switching to an event-driven trigger; never
       // override an established config.
       if (
         (newTrigger === "onCompletion" || newTrigger === "onTasks") &&
-        isNewPeriodic
+        isNewLoop
       ) {
         setLocalMaxIterations((prev) => (prev > 0 ? prev : 5));
         if (valueUnitToSeconds(localMaxDurValue, localMaxDurUnit) === 0) {
@@ -694,7 +694,7 @@ export function LoopFrequencyPanel({
         }
       }
     },
-    [isNewPeriodic, localMaxDurValue, localMaxDurUnit, minDelaySeconds],
+    [isNewLoop, localMaxDurValue, localMaxDurUnit, minDelaySeconds],
   );
 
   // Clamp the on-completion delay to the minimum on blur (staged)
@@ -762,16 +762,16 @@ export function LoopFrequencyPanel({
         },
       );
       if (response.ok) {
-        if (onPeriodicEnabledChange) onPeriodicEnabledChange(newEnabled);
+        if (onLoopEnabledChange) onLoopEnabledChange(newEnabled);
       } else {
-        console.error("Failed to update periodic enabled");
+        console.error("Failed to update loop enabled");
       }
     } catch (err) {
-      console.error("Failed to update periodic enabled:", err);
+      console.error("Failed to update loop enabled:", err);
     } finally {
       setIsSavingEnabled(false);
     }
-  }, [sessionId, disabled, isSavingEnabled, onPeriodicEnabledChange]);
+  }, [sessionId, disabled, isSavingEnabled, onLoopEnabledChange]);
 
   // Handle click on the play button while paused - show restore confirmation
   const handleRestoreClick = useCallback(() => {
@@ -779,7 +779,7 @@ export function LoopFrequencyPanel({
     setShowRestoreDialog(true);
   }, [isSavingEnabled, sessionId]);
 
-  // Handle confirmation of restoring (re-enabling) the periodic schedule
+  // Handle confirmation of restoring (re-enabling) the loop schedule
   const handleConfirmRestore = useCallback(async () => {
     if (!sessionId) return;
     setIsSavingEnabled(true);
@@ -803,23 +803,23 @@ export function LoopFrequencyPanel({
         },
       );
       if (response.ok) {
-        if (onPeriodicEnabledChange) onPeriodicEnabledChange(true);
+        if (onLoopEnabledChange) onLoopEnabledChange(true);
         setShowRestoreDialog(false);
       } else {
-        console.error("Failed to restore periodic schedule");
+        console.error("Failed to restore loop schedule");
         setErrorMessage(
-          "Failed to restore the periodic schedule. Please try again.",
+          "Failed to restore the loop schedule. Please try again.",
         );
       }
     } catch (err) {
-      console.error("Failed to restore periodic schedule:", err);
+      console.error("Failed to restore loop schedule:", err);
       setErrorMessage(
-        "Failed to restore the periodic schedule. Please try again.",
+        "Failed to restore the loop schedule. Please try again.",
       );
     } finally {
       setIsSavingEnabled(false);
     }
-  }, [sessionId, onPeriodicEnabledChange, stoppedReason, resetCounters]);
+  }, [sessionId, onLoopEnabledChange, stoppedReason, resetCounters]);
 
   // Handle cancellation of the restore confirmation dialog
   const handleCancelRestore = useCallback(() => {
@@ -828,7 +828,7 @@ export function LoopFrequencyPanel({
 
   // Panel classes - part of normal document flow (not absolute positioned).
   // overflow-visible allows the prompt-selector dropdown to escape the card boundary upward.
-  const panelClasses = `periodic-frequency-panel w-full bg-mitto-surface-hover dark:bg-mitto-surface-3/95 backdrop-blur-sm border border-mitto-border dark:border-mitto-border-2 rounded-lg overflow-visible transition-all duration-300 ease-out ${
+  const panelClasses = `loop-frequency-panel w-full bg-mitto-surface-hover dark:bg-mitto-surface-3/95 backdrop-blur-sm border border-mitto-border dark:border-mitto-border-2 rounded-lg overflow-visible transition-all duration-300 ease-out ${
     isOpen
       ? "opacity-100 mb-3"
       : "opacity-0 pointer-events-none h-0 border-0 mb-0"
@@ -836,10 +836,10 @@ export function LoopFrequencyPanel({
 
   const panelStyle = isOpen ? "" : "height: 0px;";
 
-  // The `disabled` prop is true when periodic is ACTIVE/enabled. When the schedule has
-  // been paused (e.g. the conversation disabled its own periodic via MCP), the
+  // The `disabled` prop is true when loop is ACTIVE/enabled. When the schedule has
+  // been paused (e.g. the conversation disabled its own loop via MCP), the
   // play button restores the schedule and the pause button is greyed out.
-  const periodicPaused = !disabled;
+  const loopPaused = !disabled;
 
   // When the loop was auto-stopped by a cap (max-duration / max-iterations), the
   // restore dialog offers to reset the elapsed iterations and elapsed time so the
@@ -863,7 +863,7 @@ export function LoopFrequencyPanel({
       : "maximum number of iterations";
   const restoreMessage = limitStopped
     ? `This conversation stopped because it reached its ${stoppedReasonText}. Restore it to keep iterating.`
-    : "Do you want to restore the periodic schedule for this conversation?";
+    : "Do you want to restore the loop schedule for this conversation?";
 
   // Compute whether the edit-arguments button should be enabled
   const selectedPrompt = selectedPromptName
@@ -900,10 +900,10 @@ export function LoopFrequencyPanel({
         </label>
       </${ConfirmDialog}>
 
-      <!-- Confirmation dialog for restoring a paused periodic schedule -->
+      <!-- Confirmation dialog for restoring a paused loop schedule -->
       <${ConfirmDialog}
         isOpen=${showRestoreDialog}
-        title="Restore periodic schedule"
+        title="Restore loop schedule"
         message=${restoreMessage}
         confirmLabel="Restore"
         cancelLabel="Cancel"
@@ -956,26 +956,26 @@ export function LoopFrequencyPanel({
       <div
         class="${panelClasses}"
         style="${panelStyle}"
-        data-testid="periodic-frequency-panel"
+        data-testid="loop-frequency-panel"
       >
         <!-- HEADER: always visible when isOpen (single ~44px row) -->
         <div class="h-11 px-3 flex items-center gap-2 text-sm">
-          <!-- Play button: runs the prompt now when periodic is active, or
-               restores (re-enables) the schedule when periodic is paused. -->
+          <!-- Play button: runs the prompt now when loop is active, or
+               restores (re-enables) the schedule when loop is paused. -->
           <button
             type="button"
-            onClick=${periodicPaused ? handleRestoreClick : handleIconClick}
-            onMouseEnter=${(e) => showHeaderTip(e, periodicPaused ? "Restore periodic schedule" : isStreaming ? "Wait for agent to finish responding" : "Run this periodic prompt now")}
+            onClick=${loopPaused ? handleRestoreClick : handleIconClick}
+            onMouseEnter=${(e) => showHeaderTip(e, loopPaused ? "Restore loop schedule" : isStreaming ? "Wait for agent to finish responding" : "Run this loop prompt now")}
             onMouseLeave=${hideHeaderTip}
             onMouseDown=${hideHeaderTip}
-            disabled=${periodicPaused ? isSavingEnabled : isTriggering || isStreaming}
-            class="shrink-0 p-1.5 rounded border border-mitto-border dark:border-mitto-border-2 bg-white dark:bg-mitto-surface-2 transition-colors ${(periodicPaused ? isSavingEnabled : isTriggering || isStreaming) ? "opacity-50 cursor-not-allowed" : "cursor-pointer hover:bg-mitto-surface-hover dark:hover:bg-mitto-surface-3"}"
-            data-tip=${periodicPaused ? "Restore periodic schedule" : isStreaming ? "Wait for agent to finish responding" : "Run this periodic prompt now"}
-            aria-label=${periodicPaused ? "Restore periodic schedule" : isStreaming ? "Wait for agent to finish responding" : "Run this periodic prompt now"}
-            data-testid="periodic-run-now-button"
+            disabled=${loopPaused ? isSavingEnabled : isTriggering || isStreaming}
+            class="shrink-0 p-1.5 rounded border border-mitto-border dark:border-mitto-border-2 bg-white dark:bg-mitto-surface-2 transition-colors ${(loopPaused ? isSavingEnabled : isTriggering || isStreaming) ? "opacity-50 cursor-not-allowed" : "cursor-pointer hover:bg-mitto-surface-hover dark:hover:bg-mitto-surface-3"}"
+            data-tip=${loopPaused ? "Restore loop schedule" : isStreaming ? "Wait for agent to finish responding" : "Run this loop prompt now"}
+            aria-label=${loopPaused ? "Restore loop schedule" : isStreaming ? "Wait for agent to finish responding" : "Run this loop prompt now"}
+            data-testid="loop-run-now-button"
           >
             ${
-              (periodicPaused ? isSavingEnabled : isTriggering)
+              (loopPaused ? isSavingEnabled : isTriggering)
                 ? html`<span
                     class="loading loading-spinner w-4 h-4 text-mitto-text-secondary"
                   ></span>`
@@ -985,22 +985,22 @@ export function LoopFrequencyPanel({
             }
           </button>
 
-          <!-- Pause button: pauses periodic runs when active; greyed out when
+          <!-- Pause button: pauses loop runs when active; greyed out when
                already paused (use the play button to restore the schedule). -->
           <button
             type="button"
             onClick=${handlePauseResume}
-            onMouseEnter=${(e) => showHeaderTip(e, periodicPaused ? "Periodic runs are paused" : "Pause periodic runs")}
+            onMouseEnter=${(e) => showHeaderTip(e, loopPaused ? "Loop runs are paused" : "Pause loop runs")}
             onMouseLeave=${hideHeaderTip}
             onMouseDown=${hideHeaderTip}
-            disabled=${periodicPaused || isSavingEnabled}
-            class="shrink-0 p-1.5 rounded border border-mitto-border dark:border-mitto-border-2 bg-white dark:bg-mitto-surface-2 transition-colors ${periodicPaused || isSavingEnabled ? "opacity-50 cursor-not-allowed" : "cursor-pointer hover:bg-mitto-surface-hover dark:hover:bg-mitto-surface-3"}"
-            data-tip=${periodicPaused ? "Periodic runs are paused" : "Pause periodic runs"}
-            aria-label=${periodicPaused ? "Periodic runs are paused" : "Pause periodic runs"}
-            data-testid="periodic-pause-resume-button"
+            disabled=${loopPaused || isSavingEnabled}
+            class="shrink-0 p-1.5 rounded border border-mitto-border dark:border-mitto-border-2 bg-white dark:bg-mitto-surface-2 transition-colors ${loopPaused || isSavingEnabled ? "opacity-50 cursor-not-allowed" : "cursor-pointer hover:bg-mitto-surface-hover dark:hover:bg-mitto-surface-3"}"
+            data-tip=${loopPaused ? "Loop runs are paused" : "Pause loop runs"}
+            aria-label=${loopPaused ? "Loop runs are paused" : "Pause loop runs"}
+            data-testid="loop-pause-resume-button"
           >
             ${
-              !periodicPaused && isSavingEnabled
+              !loopPaused && isSavingEnabled
                 ? html`<span
                     class="loading loading-spinner w-4 h-4 text-mitto-text-secondary"
                   ></span>`
@@ -1036,7 +1036,7 @@ export function LoopFrequencyPanel({
             class="shrink-0 p-1.5 rounded border border-mitto-border dark:border-mitto-border-2 bg-white dark:bg-mitto-surface-2 transition-colors ${!canEditArgs ? "opacity-50 cursor-not-allowed" : "cursor-pointer hover:bg-mitto-surface-hover dark:hover:bg-mitto-surface-3"}"
             data-tip="Set prompt arguments"
             aria-label="Set prompt arguments"
-            data-testid="periodic-edit-args-button"
+            data-testid="loop-edit-args-button"
           >
             <${SlidersIcon} className="w-4 h-4 text-mitto-text-secondary" />
           </button>
@@ -1054,7 +1054,7 @@ export function LoopFrequencyPanel({
               onClick=${handleSaveAll}
               disabled=${isSaving}
               class="btn btn-primary btn-sm shrink-0"
-              data-testid="periodic-save-button"
+              data-testid="loop-save-button"
             >
               ${isSaving
                 ? html`<span class="loading loading-spinner w-4 h-4"></span>`
@@ -1088,7 +1088,7 @@ export function LoopFrequencyPanel({
               aria-label=${isPromptAreaVisible
                 ? "Hide message input"
                 : "Show message input"}
-              data-testid="periodic-toggle-prompt-area"
+              data-testid="loop-toggle-prompt-area"
             >
               <${ChatBubbleIcon}
                 className="w-4 h-4 text-mitto-text-secondary"
@@ -1106,7 +1106,7 @@ export function LoopFrequencyPanel({
             class="shrink-0 p-1.5 rounded border border-mitto-border dark:border-mitto-border-2 bg-white dark:bg-mitto-surface-2 cursor-pointer hover:bg-mitto-surface-hover dark:hover:bg-mitto-surface-3 transition-colors"
             data-tip=${expanded ? "Collapse settings" : "Expand settings"}
             aria-label=${expanded ? "Collapse settings" : "Expand settings"}
-            data-testid="periodic-expand-toggle"
+            data-testid="loop-expand-toggle"
           >
             <svg
               class="w-4 h-4 text-mitto-text-secondary transition-transform duration-200 ${expanded ? "rotate-180" : ""}"
@@ -1142,35 +1142,35 @@ export function LoopFrequencyPanel({
           <div class="tabs tabs-border px-4 pt-2">
             <input
               type="radio"
-              name="periodic-trigger-${sessionId}"
+              name="loop-trigger-${sessionId}"
               role="tab"
               aria-label="Schedule"
               class="tab text-sm"
               checked=${localTrigger === "schedule"}
               onChange=${() => handleTriggerSelect("schedule")}
-              data-testid="periodic-trigger-tab-schedule"
+              data-testid="loop-trigger-tab-schedule"
             />
             <input
               type="radio"
-              name="periodic-trigger-${sessionId}"
+              name="loop-trigger-${sessionId}"
               role="tab"
               aria-label="On completion"
               class="tab text-sm"
               checked=${localTrigger === "onCompletion"}
               onChange=${() => handleTriggerSelect("onCompletion")}
-              data-testid="periodic-trigger-tab-oncompletion"
+              data-testid="loop-trigger-tab-oncompletion"
             />
             ${hasBeadsWorkspace &&
             html`
               <input
                 type="radio"
-                name="periodic-trigger-${sessionId}"
+                name="loop-trigger-${sessionId}"
                 role="tab"
                 aria-label="On tasks"
                 class="tab text-sm"
                 checked=${localTrigger === "onTasks"}
                 onChange=${() => handleTriggerSelect("onTasks")}
-                data-testid="periodic-trigger-tab-ontasks"
+                data-testid="loop-trigger-tab-ontasks"
               />
             `}
           </div>
@@ -1195,7 +1195,7 @@ export function LoopFrequencyPanel({
                         )}
                       onBlur=${handleDelayBlur}
                       class="input input-sm w-20 shrink-0 text-center"
-                      data-testid="periodic-delay-input"
+                      data-testid="loop-delay-input"
                     />
                     <span
                       class="text-xs text-mitto-text-muted dark:text-mitto-text-300 shrink-0"
@@ -1207,7 +1207,7 @@ export function LoopFrequencyPanel({
                 ? html` <!-- On-tasks: condition editor (preset + advanced CEL) -->
                     <div
                       class="px-4 pt-2 pb-2 text-sm"
-                      data-testid="periodic-condition-editor"
+                      data-testid="loop-condition-editor"
                     >
                       <div class="flex items-center gap-3">
                         <span
@@ -1218,7 +1218,7 @@ export function LoopFrequencyPanel({
                           value=${localPresetId}
                           onChange=${handlePresetSelect}
                           class="select select-sm shrink-0 flex-1"
-                          data-testid="periodic-condition-preset-select"
+                          data-testid="loop-condition-preset-select"
                         >
                           ${CONDITION_PRESETS.map(
                             (p) => html`<option value=${p.id}>${p.label}</option>`,
@@ -1244,7 +1244,7 @@ export function LoopFrequencyPanel({
                                 onInput=${handlePresetParamChange}
                                 placeholder=${preset.paramPlaceholder}
                                 class="input input-sm flex-1"
-                                data-testid="periodic-condition-preset-param"
+                                data-testid="loop-condition-preset-param"
                               />
                             </div>
                           `
@@ -1267,7 +1267,7 @@ export function LoopFrequencyPanel({
                             placeholder="Empty = fire on any task change"
                             rows="2"
                             class="textarea textarea-sm w-full font-mono"
-                            data-testid="periodic-condition-textarea"
+                            data-testid="loop-condition-textarea"
                           ></textarea>
                           <div class="mt-2 text-mitto-text-muted dark:text-mitto-text-300">
                             Variables:
@@ -1287,7 +1287,7 @@ export function LoopFrequencyPanel({
                       html`
                         <div
                           class="mt-2 text-xs text-mitto-danger"
-                          data-testid="periodic-condition-error"
+                          data-testid="loop-condition-error"
                         >
                           ${conditionError}
                         </div>
@@ -1372,7 +1372,7 @@ export function LoopFrequencyPanel({
               value=${localMaxIterations}
               onInput=${handleMaxIterationsChange}
               class="input input-sm w-20 text-center shrink-0"
-              data-testid="periodic-panel-max-iterations"
+              data-testid="loop-panel-max-iterations"
             />
             <span class="text-xs text-mitto-text-muted dark:text-mitto-text-300 shrink-0">(0 =${" "}
               <span class="text-lg leading-none align-middle">∞</span>)</span>
@@ -1403,13 +1403,13 @@ export function LoopFrequencyPanel({
               value=${localMaxDurValue}
               onInput=${(e) => setLocalMaxDurValue(Math.max(0, parseInt(e.target.value, 10) || 0))}
               class="input input-sm w-20 text-center shrink-0"
-              data-testid="periodic-max-duration-value"
+              data-testid="loop-max-duration-value"
             />
             <select
               value=${localMaxDurUnit}
               onChange=${(e) => setLocalMaxDurUnit(e.target.value)}
               class="select select-sm shrink-0 w-24"
-              data-testid="periodic-max-duration-unit"
+              data-testid="loop-max-duration-unit"
             >
               <option value="minutes">minutes</option>
               <option value="hours">hours</option>

@@ -1,5 +1,5 @@
 // Mitto Web Interface - Loop Prompt Selector Component
-// Dropdown for selecting a workspace prompt as the periodic prompt.
+// Dropdown for selecting a workspace prompt as the loop prompt.
 // Renders inline (no outer panel chrome) — meant to be embedded in LoopFrequencyPanel header.
 
 const { useState, useEffect, useCallback, useRef, html } = window.preact;
@@ -12,14 +12,14 @@ import { getPromptSortMode } from "../utils/storage.js";
 const FREE_TEXT_PREVIEW_MAX = 40;
 
 /**
- * LoopPromptSelector - inline dropdown for selecting a workspace prompt as the periodic prompt.
+ * LoopPromptSelector - inline dropdown for selecting a workspace prompt as the loop prompt.
  * Renders just the trigger button + dropdown popover (no outer panel chrome).
  * The parent card (LoopFrequencyPanel) controls visibility via its own isOpen logic.
  *
  * @param {Object} props
  * @param {Array} props.prompts - Available workspace prompts (same as predefinedPrompts)
- * @param {string} props.selectedPromptName - Currently selected prompt name (from periodic config)
- * @param {string} props.selectedPromptBody - Free-text periodic prompt body (used when no named prompt is set)
+ * @param {string} props.selectedPromptName - Currently selected prompt name (from loop config)
+ * @param {string} props.selectedPromptBody - Free-text loop prompt body (used when no named prompt is set)
  * @param {boolean} props.disabled - Whether the selector is read-only
  * @param {Function} props.onSelect - Callback when a prompt is selected: (promptName) => void
  * @param {boolean} props.isOpen - Kept for API compat; parent card controls visibility now (ignored here)
@@ -36,7 +36,7 @@ export function LoopPromptSelector({
   fullWidth = false,
   // Testid roots. Distinct prefixes let multiple instances (header + mobile
   // body) coexist in the DOM without breaking strict-mode Playwright locators.
-  idPrefix = "periodic-prompt-selector",
+  idPrefix = "loop-prompt-selector",
 }) {
   const [showDropdown, setShowDropdown] = useState(false);
   const [filterText, setFilterText] = useState("");
@@ -203,7 +203,7 @@ export function LoopPromptSelector({
             showSourceBadge=${true}
             placeholder="Filter prompts..."
             emptyText="No matching prompts"
-            keyPrefix="periodic-prompts"
+            keyPrefix="loop-prompts"
             filterTestId="${idPrefix}-search"
             listTestId="${idPrefix}-list"
           />

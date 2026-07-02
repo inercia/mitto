@@ -14,7 +14,7 @@ import { flattenPrompts, promptLoopMode, promptLoopDefaultOn } from "../utils/pr
 // `onRun(prompt, opts)` handles selection; `groupIcon` is shown on each group
 // entry. Returns [] when there are no prompts. Shared by the conversation menu
 // and the Beads issue menus so all three surfaces present identical grouped
-// submenus. Each submenu item carries `periodicMode`/`periodicDefaultOn` so
+// submenus. Each submenu item carries `loopMode`/`loopDefaultOn` so
 // ContextMenuItem can render a mode-aware toggle/badge (mitto-92x.5) instead of
 // a static trailing element.
 export function buildPromptGroupMenuItems(prompts, onRun, groupIcon) {
@@ -25,9 +25,9 @@ export function buildPromptGroupMenuItems(prompts, onRun, groupIcon) {
     submenu: g.prompts.map((p) => ({
       label: p.name,
       icon: html`<${getPromptIconOrDefault(p.icon)} className="w-4 h-4" />`,
-      periodicMode: promptLoopMode(p),
-      periodicDefaultOn: promptLoopDefaultOn(p),
-      trailing: null, // periodic visual now derives from periodicMode in ContextMenuItem
+      loopMode: promptLoopMode(p),
+      loopDefaultOn: promptLoopDefaultOn(p),
+      trailing: null, // loop visual now derives from loopMode in ContextMenuItem
       onClick: (opts) => onRun(p, opts),
     })),
   }));
@@ -124,8 +124,8 @@ function ContextMenuItem({ item, onClose }) {
   const submenuCount = hasSubmenu ? item.submenu.length : 0;
   const [submenuOpen, setSubmenuOpen] = useState(false);
   const [submenuPos, setSubmenuPos] = useState({ left: 0, top: 0 });
-  // Per-submenu-item periodic override (mode "optional" only), keyed by sub.label.
-  const [periodicOverrides, setPeriodicOverrides] = useState({});
+  // Per-submenu-item loop override (mode "optional" only), keyed by sub.label.
+  const [loopOverrides, setLoopOverrides] = useState({});
   const itemRef = useRef(null);
   const submenuRef = useRef(null);
   const closeTimerRef = useRef(null);
@@ -233,10 +233,10 @@ function ContextMenuItem({ item, onClose }) {
                       e.stopPropagation();
                       if (!sub.disabled) {
                         const asLoop =
-                          sub.periodicMode === "optional"
-                            ? periodicOverrides[sub.label] !== undefined
-                              ? periodicOverrides[sub.label]
-                              : sub.periodicDefaultOn
+                          sub.loopMode === "optional"
+                            ? loopOverrides[sub.label] !== undefined
+                              ? loopOverrides[sub.label]
+                              : sub.loopDefaultOn
                             : undefined;
                         sub.onClick({ asLoop });
                         onClose();
@@ -248,38 +248,38 @@ function ContextMenuItem({ item, onClose }) {
                     ${sub.icon &&
                     html`<span class="w-4 h-4">${sub.icon}</span>`}
                     <span class="flex-1">${sub.label}</span>
-                    ${sub.periodicMode === "optional"
+                    ${sub.loopMode === "optional"
                       ? html`<input
                           type="checkbox"
                           class="checkbox checkbox-sm shrink-0"
                           style="background-color: transparent"
-                          checked=${periodicOverrides[sub.label] !== undefined
-                            ? periodicOverrides[sub.label]
-                            : sub.periodicDefaultOn}
+                          checked=${loopOverrides[sub.label] !== undefined
+                            ? loopOverrides[sub.label]
+                            : sub.loopDefaultOn}
                           title=${(
-                            periodicOverrides[sub.label] !== undefined
-                              ? periodicOverrides[sub.label]
-                              : sub.periodicDefaultOn
+                            loopOverrides[sub.label] !== undefined
+                              ? loopOverrides[sub.label]
+                              : sub.loopDefaultOn
                           )
-                            ? "Periodic: ON — click to disable recurring runs"
-                            : "Periodic: OFF — click to run as recurring conversation"}
+                            ? "Loop: ON — click to disable recurring runs"
+                            : "Loop: OFF — click to run as recurring conversation"}
                           onClick=${(e) => e.stopPropagation()}
                           onChange=${(e) => {
                             e.stopPropagation();
-                            setPeriodicOverrides((m) => ({
+                            setLoopOverrides((m) => ({
                               ...m,
                               [sub.label]: e.target.checked,
                             }));
                           }}
                         />`
-                      : sub.periodicMode === "always"
+                      : sub.loopMode === "always"
                         ? html`<input
                             type="checkbox"
                             class="checkbox checkbox-sm shrink-0"
                             style="background-color: transparent"
                             checked=${true}
                             disabled
-                            title="Always periodic — this prompt always runs as a recurring conversation (cannot be changed)"
+                            title="Always loop — this prompt always runs as a recurring conversation (cannot be changed)"
                             onClick=${(e) => e.stopPropagation()}
                           />`
                         : sub.trailing}

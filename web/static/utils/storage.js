@@ -296,7 +296,7 @@ export function migrateLegacyTabStorage() {
     // Remove orphaned top-level keys (use string literals; constants deleted)
     localStorage.removeItem("mitto_conversation_filter_tab");
     localStorage.removeItem("mitto_filter_tab_grouping");
-    ["conversations", "periodic", "archived"].forEach((t) =>
+    ["conversations", "loop", "archived"].forEach((t) =>
       localStorage.removeItem("mitto_last_session_id_" + t),
     );
 

@@ -4,7 +4,7 @@
 // sidebar conversation rows (SessionItem) and the chat header three-dot button
 // so both surfaces expose an identical menu. Encapsulates the context-menu
 // open/close state, lazy-loaded menus:conversation prompts, and the assembled
-// ContextMenu items array (prompt submenus, Properties, periodic toggle,
+// ContextMenu items array (prompt submenus, Properties, loop toggle,
 // archive/unarchive, delete).
 const { html, useState, useMemo, useCallback } = window.preact;
 
@@ -124,25 +124,25 @@ export function useConversationMenu({
             },
           ]
         : []),
-      // "Make periodic" — only for conversations without a periodic config yet,
+      // "Make loop" — only for conversations without a loop config yet,
       // non-spawned, non-archived. Gated on loop_configured (not
-      // loop_enabled) so a paused/draft periodic conversation is still
-      // treated as already periodic and does not offer "Make periodic" again.
+      // loop_enabled) so a paused/draft loop conversation is still
+      // treated as already loop and does not offer "Make loop" again.
       ...(!isLoopConfigured && !isSpawned && !isArchived
         ? [
             {
-              label: "Make periodic",
+              label: "Make loop",
               icon: html`<${ClockIcon} />`,
               onClick: () => onMakeLoop && onMakeLoop(session),
             },
           ]
         : []),
-      // "Make non-periodic" — inverse: any conversation that has a periodic
+      // "Make non-loop" — inverse: any conversation that has a loop
       // config (enabled OR paused/draft), non-spawned, can remove it.
       ...(isLoopConfigured && !isSpawned
         ? [
             {
-              label: "Make non-periodic",
+              label: "Make non-loop",
               icon: html`<${MittoIcon} />`,
               onClick: () => onMakeNonLoop && onMakeNonLoop(session),
             },

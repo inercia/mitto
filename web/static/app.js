@@ -431,7 +431,7 @@ function App() {
   const [keyboardShortcutsDialog, setKeyboardShortcutsDialog] = useState({
     isOpen: false,
   }); // Keyboard shortcuts dialog
-  // Periodic schedule dialog: opened when a periodic prompt is selected from any menu.
+  // Loop schedule dialog: opened when a loop prompt is selected from any menu.
   // Shape: null | { prompt, onSchedule: async ({ value, unit, at? }) => void }
   const [loopScheduleDialog, setLoopScheduleDialog] = useState(null);
   // Prompt parameter dialog: opened when a beadsIssues prompt has parameters that
@@ -456,7 +456,7 @@ function App() {
   // CommandExists("bd") && DirExists(".beads")) — no new fetch. If ANY workspace
   // prompt opts into the beadsIssues/beadsList menus, the backend has already
   // proven this workspace is beads-enabled for the active session's folder.
-  // Drives the "On tasks" periodic trigger tab's visibility (mitto-oja.4).
+  // Drives the "On tasks" loop trigger tab's visibility (mitto-oja.4).
   const hasBeadsWorkspace = useMemo(
     () =>
       (workspacePrompts || []).some(
@@ -539,7 +539,7 @@ function App() {
   }, [beadsIssueOpen]);
 
   // Conversation seeding: send a named prompt to an existing conversation via queue,
-  // or create a new (optionally periodic) conversation seeded with a named prompt.
+  // or create a new (optionally loop) conversation seeded with a named prompt.
   const { seedConversationWithPrompt, startConversationWithPrompt } =
     useConversationSeeding({ newSession });
 
@@ -671,7 +671,7 @@ function App() {
     focusSession,
   ]);
 
-  // Show toast and native notification when a periodic prompt starts
+  // Show toast and native notification when a loop prompt starts
   useEffect(() => {
     if (loopStarted) {
       // Show native macOS notification (not sticky — auto-dismisses)
@@ -680,8 +680,8 @@ function App() {
         typeof window.mittoShowNativeNotification === "function"
       ) {
         window.mittoShowNativeNotification(
-          loopStarted.sessionName || "Periodic Conversation",
-          "Periodic run started",
+          loopStarted.sessionName || "Loop Conversation",
+          "Loop run started",
           loopStarted.sessionId,
           false,
         );
@@ -690,8 +690,8 @@ function App() {
       // Show in-app toast
       showToast({
         style: "info",
-        title: loopStarted.sessionName || "Periodic Conversation",
-        message: "periodic run started",
+        title: loopStarted.sessionName || "Loop Conversation",
+        message: "loop run started",
         duration: 5000,
         onClick: () => focusSession(loopStarted.sessionId),
       });
@@ -1874,12 +1874,12 @@ function App() {
     // (cross-window), mirroring how deletion defers to removeSession (mitto-17d).
   };
 
-  // Convert an existing regular conversation to a periodic one by creating a
-  // draft periodic config (enabled:false). The loop_updated WebSocket event
-  // sets loop_configured=true (reveals the inline periodic editor in ChatInput)
+  // Convert an existing regular conversation to a loop one by creating a
+  // draft loop config (enabled:false). The loop_updated WebSocket event
+  // sets loop_configured=true (reveals the inline loop editor in ChatInput)
   // while loop_enabled stays false (conversation remains in the Conversations
-  // group). The user must explicitly enable scheduling to move it to Periodic group.
-  const handleMakePeriodic = useCallback(
+  // group). The user must explicitly enable scheduling to move it to Loop group.
+  const handleMakeLoop = useCallback(
     async (session) => {
       const sessionId = session?.session_id;
       if (!sessionId) return;
@@ -1887,7 +1887,7 @@ function App() {
         const res = await secureFetch(endpoints.sessions.loop(sessionId), {
           method: "PUT",
           headers: { "Content-Type": "application/json" },
-          // Draft body: "(pending)" satisfies PeriodicPrompt.Validate() while
+          // Draft body: "(pending)" satisfies LoopPrompt.Validate() while
           // enabled:false keeps it as DRAFT so nothing is scheduled yet.
           body: JSON.stringify({
             prompt: "(pending)",
@@ -1899,14 +1899,14 @@ function App() {
         focusSession(sessionId);
         showToast({
           style: "success",
-          title: "Conversation is now periodic",
+          title: "Conversation is now loop",
           message: "Choose a prompt and enable scheduling.",
           duration: 6000,
         });
       } catch (e) {
         showToast({
           style: "error",
-          title: "Failed to make conversation periodic",
+          title: "Failed to make conversation loop",
           duration: 5000,
         });
       }
@@ -1914,11 +1914,11 @@ function App() {
     [focusSession, showToast],
   );
 
-  // Remove the periodic config from a conversation, reverting it to a regular one.
+  // Remove the loop config from a conversation, reverting it to a regular one.
   // DELETE /api/sessions/{id}/loop broadcasts loop_updated (nil), which
-  // sets both loop_configured=false (hides the inline periodic editor) and
+  // sets both loop_configured=false (hides the inline loop editor) and
   // loop_enabled=false (moves conversation back to the Conversations group).
-  const handleMakeNonPeriodic = useCallback(
+  const handleMakeNonLoop = useCallback(
     async (session) => {
       const sessionId = session?.session_id;
       if (!sessionId) return;
@@ -1929,14 +1929,14 @@ function App() {
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         showToast({
           style: "success",
-          title: "Periodic scheduling removed",
+          title: "Loop scheduling removed",
           message: "The conversation is now a regular conversation.",
           duration: 6000,
         });
       } catch (e) {
         showToast({
           style: "error",
-          title: "Failed to remove periodic scheduling",
+          title: "Failed to remove loop scheduling",
           duration: 5000,
         });
       }
@@ -1962,7 +1962,7 @@ function App() {
         const action = decideLoopAction(session);
 
         if (action === "make-loop") {
-          // Regular conversation: configure it as periodic now and fire the first run.
+          // Regular conversation: configure it as loop now and fire the first run.
           const sessionId = session.session_id;
           let missing = getMissingPromptParameters(prompt, "conversation");
           if (missing.length > 0 && sessionId) {
@@ -1981,13 +1981,13 @@ function App() {
                 if (result.success) {
                   showToast({
                     style: "success",
-                    title: `Made conversation periodic with "${prompt.name}"`,
+                    title: `Made conversation loop with "${prompt.name}"`,
                     duration: 3000,
                   });
                 } else {
                   showToast({
                     style: "warning",
-                    title: "Failed to configure periodic schedule",
+                    title: "Failed to configure loop schedule",
                     duration: 4000,
                   });
                 }
@@ -1999,13 +1999,13 @@ function App() {
           if (result.success) {
             showToast({
               style: "success",
-              title: `Made conversation periodic with "${prompt.name}"`,
+              title: `Made conversation loop with "${prompt.name}"`,
               duration: 3000,
             });
           } else {
             showToast({
               style: "warning",
-              title: "Failed to configure periodic schedule",
+              title: "Failed to configure loop schedule",
               duration: 4000,
             });
           }
@@ -2013,7 +2013,7 @@ function App() {
         }
 
         if (action === "one-shot") {
-          // Already-periodic or child conversation: enqueue a single run without touching config.
+          // Already-loop or child conversation: enqueue a single run without touching config.
           const sessionId = session?.session_id;
           if (!sessionId) return;
           let missing = getMissingPromptParameters(prompt, "conversation");
@@ -2088,27 +2088,27 @@ function App() {
                 focusSession(result.sessionId);
                 showToast({
                   style: "success",
-                  title: `Started periodic "${prompt.name}"`,
+                  title: `Started loop "${prompt.name}"`,
                   duration: 3000,
                 });
               } else {
                 showToast({
                   style: "warning",
-                  title: "Failed to start periodic conversation",
+                  title: "Failed to start loop conversation",
                   duration: 4000,
                 });
               }
             },
           });
         };
-        const missingForNewPeriodic = getMissingPromptParameters(
+        const missingForNewLoop = getMissingPromptParameters(
           prompt,
           "conversation",
         );
-        if (missingForNewPeriodic.length > 0) {
+        if (missingForNewLoop.length > 0) {
           setPromptParamDialog({
             prompt,
-            parameters: missingForNewPeriodic,
+            parameters: missingForNewLoop,
             onSubmit: (userArgs) => openScheduleDialog(userArgs),
           });
           return;
@@ -2117,7 +2117,7 @@ function App() {
         return;
       }
 
-      // Non-periodic prompt: enqueue the named prompt to the existing conversation.
+      // Non-loop prompt: enqueue the named prompt to the existing conversation.
       const sessionId = session?.session_id;
       if (!sessionId) return;
       // Auto-fill what the host conversation can supply (e.g. a lone child for a
@@ -2208,7 +2208,7 @@ function App() {
     [allSessions, activeSessionId],
   );
   const headerIsArchived = activeSession?.archived || false;
-  const headerIsPeriodic = activeSession?.loop_configured || false;
+  const headerIsLoop = activeSession?.loop_configured || false;
   const headerIsSpawned =
     !!(activeSession && activeSession.parent_session_id) && !activeHasChildren;
   // Only the active conversation can have queued messages; streaming state comes
@@ -2223,8 +2223,8 @@ function App() {
   const headerWorkingDir =
     activeSession?.working_dir || sessionInfo?.working_dir || "";
 
-  // Header subtitle: ACP server name (always) plus, for periodic conversations, a
-  // live countdown + next scheduled run time. The periodic fields live on the
+  // Header subtitle: ACP server name (always) plus, for loop conversations, a
+  // live countdown + next scheduled run time. The loop fields live on the
   // stored session object (GET /api/sessions + loop_updated broadcasts carry
   // next_scheduled_at + frequency; the per-session "connected" message does not).
   const headerAcpServer =
@@ -2232,10 +2232,10 @@ function App() {
   const headerNextScheduledAt =
     (activeSession?.loop_configured && activeSession?.next_scheduled_at) ||
     null;
-  const headerPeriodicUnit = activeSession?.loop_frequency?.unit || "hours";
-  // Derive a single 3-state pill for the periodic status: running | paused | stopped | null.
-  // null means not periodic (no pill rendered).
-  const headerPeriodicState = (() => {
+  const headerLoopUnit = activeSession?.loop_frequency?.unit || "hours";
+  // Derive a single 3-state pill for the loop status: running | paused | stopped | null.
+  // null means not loop (no pill rendered).
+  const headerLoopState = (() => {
     if (!activeSession?.loop_configured) return null;
     if (activeSession?.loop_enabled) {
       return {
@@ -2274,9 +2274,9 @@ function App() {
       activeSession?.loop_stopped_reason) ||
     null;
 
-  // Periodic "glance" badges shown in the subtitle for ALL periodic sessions
+  // Loop "glance" badges shown in the subtitle for ALL loop sessions
   // (running or stopped, schedule or onCompletion).
-  const headerPeriodicTrigger = activeSession?.loop_trigger || null;
+  const headerLoopTrigger = activeSession?.loop_trigger || null;
   const headerIterationCount = activeSession?.loop_iteration_count ?? 0;
   const headerMaxIterations = activeSession?.loop_max_iterations ?? 0;
   const headerDelaySeconds = activeSession?.loop_delay_seconds ?? 0;
@@ -2287,7 +2287,7 @@ function App() {
   // onCompletion, "on task changes" for onTasks (mitto-oja.4).
   const headerTriggerLabel = activeSession?.loop_configured
     ? computeHeaderTriggerLabel(
-        headerPeriodicTrigger,
+        headerLoopTrigger,
         headerDelaySeconds,
         activeSession?.loop_frequency,
       )
@@ -2309,7 +2309,7 @@ function App() {
     activeSession?.loop_configured && headerMaxDurationSecs > 0
       ? `max ${formatLoopMaxDuration(headerMaxDurationSecs)}`
       : null;
-  // When a periodic loop is auto-stopped by a cap, soft-red highlight the
+  // When a loop loop is auto-stopped by a cap, soft-red highlight the
   // specific cap badge that was exceeded (and the Stopped badge) so the user
   // can see at a glance which limit was hit.
   const headerIterCapHit =
@@ -2385,15 +2385,15 @@ function App() {
     session: activeSession,
     workingDir: headerWorkingDir,
     isArchived: headerIsArchived,
-    isLoopConfigured: headerIsPeriodic,
+    isLoopConfigured: headerIsLoop,
     isSpawned: headerIsSpawned,
     canArchive: headerCanArchive,
     archiveBlockedReason: headerArchiveBlockedReason,
     onRename: handleOpenSessionProperties,
     onDelete: handleDeleteSession,
     onArchive: handleArchiveSession,
-    onMakeLoop: handleMakePeriodic,
-    onMakeNonLoop: handleMakeNonPeriodic,
+    onMakeLoop: handleMakeLoop,
+    onMakeNonLoop: handleMakeNonLoop,
     onFetchConversationPrompts: fetchConversationPromptsForSession,
     onSendPromptToConversation: handleSendPromptToConversation,
     onCopyConversation: activeSessionId ? handleCopyConversation : undefined,
@@ -2570,7 +2570,7 @@ function App() {
           onClose=${() => setKeyboardShortcutsDialog({ isOpen: false })}
         />
 
-        <!-- Periodic Schedule Dialog: opened when a periodic-declaring prompt is selected -->
+        <!-- Loop Schedule Dialog: opened when a loop-declaring prompt is selected -->
         <${LoopScheduleDialog}
           isOpen=${loopScheduleDialog !== null}
           prompt=${loopScheduleDialog?.prompt}
@@ -2680,18 +2680,18 @@ function App() {
                       ${activeSessionId &&
                       (headerAcpServer ||
                         headerNextScheduledAt ||
-                        headerPeriodicState ||
+                        headerLoopState ||
                         activeSession?.loop_configured) &&
                       html`<div
                         class="text-xs text-mitto-text-muted truncate flex items-center gap-2 min-w-0"
                         data-testid="conversation-header-subtitle"
                       >
-                        ${headerPeriodicState &&
+                        ${headerLoopState &&
                         html`<span
-                          class="badge badge-sm ${headerPeriodicState.badgeClass} whitespace-nowrap inline-flex items-center gap-1"
-                          data-testid="periodic-status-pill"
-                          title=${headerPeriodicState.state === "running"
-                            ? "Periodic loop is iterating"
+                          class="badge badge-sm ${headerLoopState.badgeClass} whitespace-nowrap inline-flex items-center gap-1"
+                          data-testid="loop-status-pill"
+                          title=${headerLoopState.state === "running"
+                            ? "Loop loop is iterating"
                             : (activeSession?.loop_stopped_reason || "") +
                               (activeSession?.stopped_at
                                 ? " · " +
@@ -2699,14 +2699,14 @@ function App() {
                                     activeSession.stopped_at,
                                   ).toLocaleString()
                                 : "")}
-                          >${headerPeriodicState.state === "running"
+                          >${headerLoopState.state === "running"
                             ? html`<${LoopIcon} className="w-3 h-3" />`
-                            : headerPeriodicState.state === "stopped"
+                            : headerLoopState.state === "stopped"
                               ? html`<${StopIcon} className="w-3 h-3" />`
                               : html`<${PauseFilledIcon}
                                   className="w-3 h-3"
                                 />`}<span class="badge-collapse-label"
-                            >${headerPeriodicState.label}</span
+                            >${headerLoopState.label}</span
                           ></span
                         >`}
                         ${headerAcpServer &&
@@ -2718,11 +2718,11 @@ function App() {
                 <span class="opacity-60">·</span>
                 <span
                   class="badge badge-sm badge-ghost whitespace-nowrap inline-flex items-center gap-1"
-                  data-testid="periodic-trigger-badge"
+                  data-testid="loop-trigger-badge"
                 >${
-                  headerPeriodicTrigger === "onCompletion"
+                  headerLoopTrigger === "onCompletion"
                     ? html`<${CheckIcon} className="w-3 h-3" />`
-                    : headerPeriodicTrigger === "onTasks"
+                    : headerLoopTrigger === "onTasks"
                       ? html`<${BeadsIcon} className="w-3 h-3" />`
                       : html`<${ClockIcon} className="w-3 h-3" />`
                 }<span
@@ -2735,7 +2735,7 @@ function App() {
                 <span class="opacity-60">·</span>
                 <span
                   class="badge badge-sm ${headerRunCountBadgeClass} whitespace-nowrap"
-                  data-testid="periodic-run-count-badge"
+                  data-testid="loop-run-count-badge"
                   title=${
                     headerIterCapHit
                       ? "Reached the maximum number of iterations"
@@ -2750,13 +2750,13 @@ function App() {
                 <span class="opacity-60">·</span>
                 <span
                   class="badge badge-sm ${headerMaxTimeBadgeClass} whitespace-nowrap"
-                  data-testid="periodic-max-time-badge"
+                  data-testid="loop-max-time-badge"
                   title=${
                     headerTimeCapHit ? "Reached the maximum run time" : null
                   }
                 >${headerMaxTimeLabel}</span>
               </${Fragment}>`}
-                        ${headerPeriodicState?.state === "running" &&
+                        ${headerLoopState?.state === "running" &&
                         headerNextScheduledAt &&
                         html`<${Fragment}>
                 ${
@@ -2769,7 +2769,7 @@ function App() {
                 }
                 <${CountdownDisplay}
                   targetIso=${headerNextScheduledAt}
-                  unit=${headerPeriodicUnit}
+                  unit=${headerLoopUnit}
                   active=${true}
                   className="whitespace-nowrap"
                 />
@@ -2983,7 +2983,7 @@ function App() {
                       availableCommands=${availableCommands}
                       loopConfigured=${sessionInfo?.loop_configured ||
                       false}
-                      onPeriodicPrompt=${(prompt, opts) =>
+                      onLoopPrompt=${(prompt, opts) =>
                         handleSendPromptToConversation(
                           activeSession,
                           prompt,
@@ -3152,8 +3152,8 @@ function App() {
             queueLength=${queueLength}
             onFetchConversationPrompts=${fetchConversationPromptsForSession}
             onSendPromptToConversation=${handleSendPromptToConversation}
-            onMakeLoop=${handleMakePeriodic}
-            onMakeNonLoop=${handleMakeNonPeriodic}
+            onMakeLoop=${handleMakeLoop}
+            onMakeNonLoop=${handleMakeNonLoop}
             isCreatingSession=${isCreatingSession}
             creatingWorkingDirs=${creatingWorkingDirs}
           />

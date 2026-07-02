@@ -388,7 +388,7 @@ export function formatLoopMaxDuration(seconds) {
 
 /**
  * Compact trigger-type label shown in the conversation-header subtitle badge next
- * to the periodic status pill. "schedule" (default) shows the frequency (e.g.
+ * to the loop status pill. "schedule" (default) shows the frequency (e.g.
  * "every 2h"); "onCompletion" shows the post-completion delay; "onTasks" shows a
  * fixed label (fires on beads/task changes, not on a cadence, so no "every N" or
  * countdown is meaningful).
@@ -417,7 +417,7 @@ export function computeHeaderTriggerLabel(trigger, delaySeconds, frequency) {
 }
 
 // =============================================================================
-// onTasks Condition Presets (periodic trigger CEL condition editor)
+// onTasks Condition Presets (loop trigger CEL condition editor)
 // =============================================================================
 
 /**
@@ -586,10 +586,10 @@ export function computeAllSessions(activeSessions, storedSessions) {
           s.next_scheduled_at ?? stored.next_scheduled_at ?? null,
         loop_frequency:
           s.loop_frequency ?? stored.loop_frequency ?? null,
-        // Reason the periodic loop stopped (maxDuration, maxIterations, etc.); null while running
+        // Reason the loop loop stopped (maxDuration, maxIterations, etc.); null while running
         loop_stopped_reason:
           s.loop_stopped_reason ?? stored.loop_stopped_reason ?? null,
-        // Periodic glance fields (shown in the conversation-header subtitle)
+        // Loop glance fields (shown in the conversation-header subtitle)
         loop_trigger: s.loop_trigger ?? stored.loop_trigger ?? null,
         loop_iteration_count:
           s.loop_iteration_count ?? stored.loop_iteration_count ?? null,
@@ -1053,7 +1053,7 @@ export function mergeMessagesWithSync(existingMessages, newMessages) {
     // with matching content. This handles the optimistic UI → server confirmation
     // case where the user's message was added before receiving a seq.
     // If no seq-less match exists, the message is a genuinely new event (e.g.,
-    // periodic prompts with the same text across different runs) — skip the
+    // loop prompts with the same text across different runs) — skip the
     // content hash check which would incorrectly deduplicate it.
     if (m.seq) {
       const hash = getMessageHash(m);

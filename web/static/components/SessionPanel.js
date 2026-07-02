@@ -301,12 +301,12 @@ export function SessionPanel({
       setIsLoadingFlags(true);
       setFlagsError(null);
 
-      // Periodic + callback endpoints only exist for periodic conversations.
+      // Loop + callback endpoints only exist for loop conversations.
       // Gating on loop_configured avoids 404 noise on regular sessions.
       const loopConfigured = sessionInfo?.loop_configured === true;
 
       try {
-        const [periodicRes, callbackRes, flagsRes, settingsRes] =
+        const [loopRes, callbackRes, flagsRes, settingsRes] =
           await Promise.all([
             loopConfigured
               ? authFetch(endpoints.sessions.loop(sessionId))
@@ -318,8 +318,8 @@ export function SessionPanel({
             authFetch(endpoints.sessions.settings(sessionId)),
           ]);
 
-        if (periodicRes && periodicRes.ok)
-          setLoopConfig(await periodicRes.json());
+        if (loopRes && loopRes.ok)
+          setLoopConfig(await loopRes.json());
         else setLoopConfig(null);
 
         if (callbackRes && callbackRes.ok)
@@ -1344,13 +1344,13 @@ export function SessionPanel({
           </div>
         `}
 
-        <!-- Periodic Prompts Section -->
+        <!-- Loop Prompts Section -->
         ${loopConfig?.enabled &&
         html`
           <div>
             <label
               class="block text-sm font-medium text-mitto-text-secondary mb-2"
-              >Periodic Prompts</label
+              >Loop Prompts</label
             >
             <div class="flex items-center gap-2 text-sm text-mitto-text-300">
               <${LoopFilledIcon}
@@ -1634,7 +1634,7 @@ export function SessionPanel({
           `,
         )}
 
-        <!-- Callback URL Section (only for periodic conversations) -->
+        <!-- Callback URL Section (only for loop conversations) -->
         ${loopConfig &&
         html`
           <div>
@@ -1675,7 +1675,7 @@ export function SessionPanel({
                         </div>
                       `
                     : html`
-                        <${Tooltip} tip="Generate a callback URL for triggering this periodic conversation externally" placement="top">
+                        <${Tooltip} tip="Generate a callback URL for triggering this loop conversation externally" placement="top">
                           <button
                             onClick=${handleEnableCallback}
                             class="btn btn-xs btn-soft"
@@ -1689,7 +1689,7 @@ export function SessionPanel({
                   ${callbackConfig?.callback_url
                     ? html`
                         <p class="text-xs text-mitto-text-muted mb-1.5 italic">
-                          Preserved but inactive while periodic is disabled
+                          Preserved but inactive while loop is disabled
                         </p>
                         <div class="flex items-center gap-1.5">
                           <button

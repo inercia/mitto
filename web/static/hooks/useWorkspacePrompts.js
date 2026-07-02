@@ -1,7 +1,7 @@
 // web/static/hooks/useWorkspacePrompts.js
 // Manages workspace-prompt fetching, caching, and derived prompt lists for the
 // App. Handles initial fetch on workspace change, re-fetch on session switch,
-// periodic 30-second refresh, visibility-based refresh, and file-watcher events
+// loop 30-second refresh, visibility-based refresh, and file-watcher events
 // (mitto:prompts_changed). Exposes the full prompt list, the "prompts" dropup
 // subset, the loop-selector subset, and per-session / per-beads-issue fetch
 // helpers.
@@ -107,7 +107,7 @@ export function useWorkspacePrompts({
   );
 
   // Fetch workspace prompts with conditional request support (If-Modified-Since)
-  // This enables efficient periodic refresh without transferring data if unchanged
+  // This enables efficient loop refresh without transferring data if unchanged
   const fetchWorkspacePrompts = useCallback(
     async (workingDir, forceRefresh = false) => {
       if (!workingDir) return;
@@ -201,7 +201,7 @@ export function useWorkspacePrompts({
     }
   }, [activeSessionId]); // intentionally omit workingDir/workspacePromptsDir/fetchWorkspacePrompts from deps
 
-  // Periodic refresh of workspace prompts (every 30 seconds)
+  // Loop refresh of workspace prompts (every 30 seconds)
   // Uses conditional requests to avoid unnecessary data transfer
   useEffect(() => {
     if (!workingDir) return;

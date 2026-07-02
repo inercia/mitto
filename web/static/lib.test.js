@@ -2324,7 +2324,7 @@ describe("mergeMessagesWithSync", () => {
     test("prompt retry creates new seq - distinct events", () => {
       // When both existing and new messages have seqs, they are treated as
       // distinct server-side events — even if the text is identical.
-      // This is critical for periodic prompts which reuse the same text
+      // This is critical for loop prompts which reuse the same text
       // across different runs. Content hash dedup only applies when the
       // existing message has NO seq (optimistic UI → server confirmation).
       //
@@ -2372,7 +2372,7 @@ describe("mergeMessagesWithSync", () => {
 
     test("multiple prompt retries - distinct events when all have seqs", () => {
       // When all messages have seqs, they are treated as distinct events.
-      // This ensures periodic prompts (same text, different runs) all appear.
+      // This ensures loop prompts (same text, different runs) all appear.
       const existing = [
         { role: ROLE_USER, text: "Fix the bug", seq: 10, timestamp: 1000 },
       ];
@@ -5738,10 +5738,10 @@ describe("LOOP_STOPPED_LABELS", () => {
     }
   });
 
-  // headerPeriodicState derivation logic
-  // Mirrors the IIFE in app.js that computes headerPeriodicState from an activeSession.
+  // headerLoopState derivation logic
+  // Mirrors the IIFE in app.js that computes headerLoopState from an activeSession.
 
-  function computeHeaderPeriodicState(session) {
+  function computeHeaderLoopState(session) {
     if (!session?.loop_configured) return null;
     if (session?.loop_enabled) {
       return {
@@ -5772,18 +5772,18 @@ describe("LOOP_STOPPED_LABELS", () => {
     };
   }
 
-  test("non-periodic session yields null (no pill)", () => {
+  test("non-loop session yields null (no pill)", () => {
     const session = { loop_configured: false };
-    expect(computeHeaderPeriodicState(session)).toBeNull();
+    expect(computeHeaderLoopState(session)).toBeNull();
   });
 
   test("null session yields null (no pill)", () => {
-    expect(computeHeaderPeriodicState(null)).toBeNull();
+    expect(computeHeaderLoopState(null)).toBeNull();
   });
 
-  test("enabled periodic session yields Auto/green", () => {
+  test("enabled loop session yields Auto/green", () => {
     const session = { loop_configured: true, loop_enabled: true };
-    const result = computeHeaderPeriodicState(session);
+    const result = computeHeaderLoopState(session);
     expect(result.state).toBe("running");
     expect(result.label).toBe("Auto");
     expect(result.badgeClass).toContain("badge-success");
@@ -5795,7 +5795,7 @@ describe("LOOP_STOPPED_LABELS", () => {
       loop_enabled: false,
       loop_stopped_reason: "maxDuration",
     };
-    const result = computeHeaderPeriodicState(session);
+    const result = computeHeaderLoopState(session);
     expect(result.state).toBe("stopped");
     expect(result.label).toBe("Stopped: max time");
     expect(result.badgeClass).toContain("badge-error");
@@ -5807,7 +5807,7 @@ describe("LOOP_STOPPED_LABELS", () => {
       loop_enabled: false,
       loop_stopped_reason: "pausedByUser",
     };
-    const result = computeHeaderPeriodicState(session);
+    const result = computeHeaderLoopState(session);
     expect(result.state).toBe("paused");
     expect(result.label).toBe("Paused by you");
     expect(result.badgeClass).toContain("badge-warning");
@@ -5819,7 +5819,7 @@ describe("LOOP_STOPPED_LABELS", () => {
       loop_enabled: false,
       loop_stopped_reason: "disabledByAgent",
     };
-    const result = computeHeaderPeriodicState(session);
+    const result = computeHeaderLoopState(session);
     expect(result.state).toBe("paused");
     expect(result.label).toBe("Paused by the agent");
     expect(result.badgeClass).toContain("badge-warning");
@@ -5831,7 +5831,7 @@ describe("LOOP_STOPPED_LABELS", () => {
       loop_enabled: false,
       loop_stopped_reason: null,
     };
-    const result = computeHeaderPeriodicState(session);
+    const result = computeHeaderLoopState(session);
     expect(result.state).toBe("paused");
     expect(result.label).toBe("Paused");
     expect(result.badgeClass).toContain("badge-warning");
@@ -5843,7 +5843,7 @@ describe("LOOP_STOPPED_LABELS", () => {
       loop_enabled: false,
       loop_stopped_reason: "someFutureReason",
     };
-    const result = computeHeaderPeriodicState(session);
+    const result = computeHeaderLoopState(session);
     expect(result.state).toBe("paused");
     expect(result.label).toBe("Paused");
     expect(result.badgeClass).toContain("badge-warning");
@@ -5906,10 +5906,10 @@ describe("formatLoopMaxDuration", () => {
 });
 
 // =============================================================================
-// Periodic header badge label logic tests
+// Loop header badge label logic tests
 // =============================================================================
 
-describe("Periodic header badge label logic", () => {
+describe("Loop header badge label logic", () => {
   // Mirrors the logic in app.js for deriving the trigger badge text:
   //   if (loop_trigger === "onCompletion") → "after agent finishes[· +Ns]"
   //   else if frequency set → "every <value><unit>"

@@ -1169,8 +1169,8 @@ export function SettingsDialog({
   const [autoArchiveInactiveAfter, setAutoArchiveInactiveAfter] = useState("");
   const [maxMessagesPerSession, setMaxMessagesPerSession] = useState(2000);
 
-  // Periodic suspend timeout setting (default "" = 30 minutes)
-  const [periodicSuspendTimeout, setPeriodicSuspendTimeout] = useState("");
+  // Loop suspend timeout setting (default "" = 30 minutes)
+  const [loopSuspendTimeout, setLoopSuspendTimeout] = useState("");
 
   // Memory recycle threshold setting (default "" = disabled, opt-in)
   const [memoryRecycleThreshold, setMemoryRecycleThreshold] = useState("");
@@ -1184,10 +1184,10 @@ export function SettingsDialog({
   // Max child conversations setting - default 10
   const [maxChildConversations, setMaxChildConversations] = useState(10);
 
-  // Max periodic iterations setting - default 100
-  const [maxPeriodicIterations, setMaxPeriodicIterations] = useState(100);
+  // Max loop iterations setting - default 100
+  const [maxLoopIterations, setMaxLoopIterations] = useState(100);
 
-  const [periodicBehaviorExpanded, setPeriodicBehaviorExpanded] =
+  const [loopBehaviorExpanded, setLoopBehaviorExpanded] =
     useState(false);
 
   // Default flags for new conversations
@@ -1598,8 +1598,8 @@ export function SettingsDialog({
         setMaxMessagesPerSession(rawMaxMessages || 2000);
       }
 
-      // Load periodic suspend timeout (default "" = 30 minutes)
-      setPeriodicSuspendTimeout(config.session?.loop_suspend_timeout || "");
+      // Load loop suspend timeout (default "" = 30 minutes)
+      setLoopSuspendTimeout(config.session?.loop_suspend_timeout || "");
 
       // Load memory recycle threshold (default "" = disabled)
       setMemoryRecycleThreshold(config.session?.memory_recycle_threshold || "");
@@ -1619,8 +1619,8 @@ export function SettingsDialog({
         config.conversations?.max_child_conversations ?? 10,
       );
 
-      // Load max periodic iterations setting - default to 100
-      setMaxPeriodicIterations(
+      // Load max loop iterations setting - default to 100
+      setMaxLoopIterations(
         config.conversations?.max_loop_iterations ?? 100,
       );
 
@@ -1883,7 +1883,7 @@ export function SettingsDialog({
           enabled: externalImagesEnabled,
         },
         max_child_conversations: maxChildConversations,
-        max_loop_iterations: maxPeriodicIterations,
+        max_loop_iterations: maxLoopIterations,
         // Only include default_flags if any are set
         ...(Object.keys(defaultFlags).length > 0 && {
           default_flags: defaultFlags,
@@ -1899,7 +1899,7 @@ export function SettingsDialog({
         auto_archive_inactive_after: autoArchiveInactiveAfter,
         max_messages_per_session:
           maxMessagesPerSession === 0 ? -1 : maxMessagesPerSession,
-        loop_suspend_timeout: periodicSuspendTimeout,
+        loop_suspend_timeout: loopSuspendTimeout,
         memory_recycle_threshold: memoryRecycleThreshold,
       };
 
@@ -3532,26 +3532,26 @@ export function SettingsDialog({
                       </div>
                     </div>
 
-                    <!-- Periodic Behavior (collapse) -->
+                    <!-- Loop Behavior (collapse) -->
                     <div
-                      data-testid="periodic-behavior-collapse"
-                      class="collapse collapse-arrow ${periodicBehaviorExpanded
+                      data-testid="loop-behavior-collapse"
+                      class="collapse collapse-arrow ${loopBehaviorExpanded
                         ? "collapse-open"
                         : "collapse-close"} border border-mitto-border-2/50 rounded-md bg-mitto-surface-3/20 mt-2"
                     >
                       <div
                         class="collapse-title flex items-center justify-between p-3 pr-12 min-h-0 cursor-pointer bg-mitto-surface-3/30 hover:bg-mitto-surface-3/50 transition-colors"
                         onClick=${() =>
-                          setPeriodicBehaviorExpanded(
-                            !periodicBehaviorExpanded,
+                          setLoopBehaviorExpanded(
+                            !loopBehaviorExpanded,
                           )}
                       >
                         <span class="text-sm font-medium"
-                          >Periodic Behavior</span
+                          >Loop Behavior</span
                         >
                       </div>
                       <div class="collapse-content px-0">
-                        ${periodicBehaviorExpanded &&
+                        ${loopBehaviorExpanded &&
                         html`
                           <div
                             class="p-4 space-y-4 border-t border-mitto-border-2/50"
@@ -3559,10 +3559,10 @@ export function SettingsDialog({
                             <div class="flex items-center justify-between">
                               <div>
                                 <div class="font-medium text-sm">
-                                  Suspend periodic conversations
+                                  Suspend loop conversations
                                 </div>
                                 <div class="text-xs text-mitto-text-muted">
-                                  Automatically suspend idle periodic
+                                  Automatically suspend idle loop
                                   conversations when their next run is farther
                                   away than this timeout. Saves memory by
                                   stopping ACP and MCP processes. Conversations
@@ -3570,9 +3570,9 @@ export function SettingsDialog({
                                 </div>
                               </div>
                               <select
-                                value=${periodicSuspendTimeout}
+                                value=${loopSuspendTimeout}
                                 onInput=${(e) =>
-                                  setPeriodicSuspendTimeout(e.target.value)}
+                                  setLoopSuspendTimeout(e.target.value)}
                                 class="select select-sm"
                               >
                                 <option value="">After 30 minutes</option>
@@ -3586,10 +3586,10 @@ export function SettingsDialog({
                             <div class="flex items-center justify-between">
                               <div>
                                 <div class="font-medium text-sm">
-                                  Max Periodic Iterations
+                                  Max Loop Iterations
                                 </div>
                                 <div class="text-xs text-mitto-text-muted">
-                                  Maximum number of scheduled runs a periodic
+                                  Maximum number of scheduled runs a loop
                                   conversation performs before it auto-stops.
                                   Set to 0 for unlimited (still bounded by a
                                   built-in safety ceiling of 1000).
@@ -3599,9 +3599,9 @@ export function SettingsDialog({
                                 type="number"
                                 min="0"
                                 max="1000"
-                                value=${maxPeriodicIterations}
+                                value=${maxLoopIterations}
                                 onInput=${(e) =>
-                                  setMaxPeriodicIterations(
+                                  setMaxLoopIterations(
                                     parseInt(e.target.value, 10) || 0,
                                   )}
                                 class="input input-sm w-20 text-center"

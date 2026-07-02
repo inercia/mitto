@@ -353,7 +353,7 @@ describe("onLaunchPrompt call convention", () => {
   /**
    * Simulates what the Pull/Push/Sync buttons do when clicked with a configured prompt:
    *   onLaunchPrompt(action, promptName)
-   * — no arguments object, no periodic, no acpServer (handled by handler in app.js).
+   * — no arguments object, no loop, no acpServer (handled by handler in app.js).
    */
   function simulateButtonClick(action, promptName, onLaunchPrompt) {
     if (!promptName || !onLaunchPrompt) return;
@@ -405,7 +405,7 @@ describe("onLaunchPrompt call convention", () => {
   test("launcher is NOT called with an arguments object (argument-free)", () => {
     const launcher = makeSpy();
     simulateButtonClick("sync", "sync-prompt", launcher);
-    // Must have exactly 2 args: action + promptName (no args/periodic object)
+    // Must have exactly 2 args: action + promptName (no args/loop object)
     expect(launcher.lastCall()).toHaveLength(2);
   });
 });
@@ -662,7 +662,7 @@ describe("cleanup progress toast — terminal outcomes reset state", () => {
 });
 
 // =============================================================================
-// beadsList per-item periodic control — toggle vs locked badge vs nothing
+// beadsList per-item loop control — toggle vs locked badge vs nothing
 // (mitto-92x.4)
 // =============================================================================
 
@@ -672,24 +672,24 @@ describe("cleanup progress toast — terminal outcomes reset state", () => {
  * nothing ("none") for a given prompt + per-item toggle-state map. Uses the real
  * promptLoopMode/promptLoopDefaultOn helpers (not a duplicate).
  */
-function decideListPromptPeriodicControl(p, listPeriodicOn) {
+function decideListPromptLoopControl(p, listLoopOn) {
   const mode = promptLoopMode(p);
   if (mode === "none") return { kind: "none" };
   if (mode === "optional") {
     const on =
-      listPeriodicOn[p.name] !== undefined
-        ? listPeriodicOn[p.name]
+      listLoopOn[p.name] !== undefined
+        ? listLoopOn[p.name]
         : promptLoopDefaultOn(p);
     return { kind: "toggle", checked: on };
   }
   return { kind: "badge" };
 }
 
-describe("beadsList per-item periodic control", () => {
+describe("beadsList per-item loop control", () => {
   test("mode: optional, default:false renders an unchecked toggle", () => {
     const p = { name: "maybe", loop: { mode: "optional", default: false } };
     expect(promptLoopIsToggleable(p)).toBe(true);
-    expect(decideListPromptPeriodicControl(p, {})).toEqual({
+    expect(decideListPromptLoopControl(p, {})).toEqual({
       kind: "toggle",
       checked: false,
     });
@@ -697,7 +697,7 @@ describe("beadsList per-item periodic control", () => {
 
   test("mode: optional, default:true renders a checked toggle", () => {
     const p = { name: "maybe", loop: { mode: "optional", default: true } };
-    expect(decideListPromptPeriodicControl(p, {})).toEqual({
+    expect(decideListPromptLoopControl(p, {})).toEqual({
       kind: "toggle",
       checked: true,
     });
@@ -705,32 +705,32 @@ describe("beadsList per-item periodic control", () => {
 
   test("mode: optional, no default renders a checked toggle (default => true)", () => {
     const p = { name: "maybe", loop: { mode: "optional" } };
-    expect(decideListPromptPeriodicControl(p, {})).toEqual({
+    expect(decideListPromptLoopControl(p, {})).toEqual({
       kind: "toggle",
       checked: true,
     });
   });
 
-  test("mode: optional honors the per-item listPeriodicOn override over the default", () => {
+  test("mode: optional honors the per-item listLoopOn override over the default", () => {
     const p = { name: "maybe", loop: { mode: "optional", default: true } };
     expect(
-      decideListPromptPeriodicControl(p, { maybe: false }),
+      decideListPromptLoopControl(p, { maybe: false }),
     ).toEqual({ kind: "toggle", checked: false });
   });
 
   test("mode: always renders the locked badge (no checkbox toggle)", () => {
     const p = { name: "always-on", loop: { mode: "always" } };
     expect(promptLoopIsToggleable(p)).toBe(false);
-    expect(decideListPromptPeriodicControl(p, {})).toEqual({ kind: "badge" });
+    expect(decideListPromptLoopControl(p, {})).toEqual({ kind: "badge" });
   });
 
-  test("periodic block with no mode renders the locked badge (absent => always)", () => {
-    const p = { name: "legacy-periodic", loop: { value: 1, unit: "hours" } };
-    expect(decideListPromptPeriodicControl(p, {})).toEqual({ kind: "badge" });
+  test("loop block with no mode renders the locked badge (absent => always)", () => {
+    const p = { name: "legacy-loop", loop: { value: 1, unit: "hours" } };
+    expect(decideListPromptLoopControl(p, {})).toEqual({ kind: "badge" });
   });
 
-  test("non-periodic prompt renders neither toggle nor badge", () => {
+  test("non-loop prompt renders neither toggle nor badge", () => {
     const p = { name: "plain" };
-    expect(decideListPromptPeriodicControl(p, {})).toEqual({ kind: "none" });
+    expect(decideListPromptLoopControl(p, {})).toEqual({ kind: "none" });
   });
 });

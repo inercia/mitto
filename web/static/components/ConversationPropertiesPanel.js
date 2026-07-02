@@ -225,7 +225,7 @@ export function ConversationPropertiesPanel({
   const [isSavingTitle, setIsSavingTitle] = useState(false);
   const titleInputRef = useRef(null);
 
-  // Periodic config state
+  // Loop config state
   const [loopConfig, setLoopConfig] = useState(null);
   const [callbackConfig, setCallbackConfig] = useState(null);
   const [callbackCopied, setCallbackCopied] = useState(false);
@@ -278,7 +278,7 @@ export function ConversationPropertiesPanel({
     setSavingFlags({});
   }, [sessionId, isOpen]);
 
-  // Fetch periodic config, callback config, flags, and session settings when panel opens
+  // Fetch loop config, callback config, flags, and session settings when panel opens
   useEffect(() => {
     if (!isOpen || !sessionId) return;
 
@@ -286,13 +286,13 @@ export function ConversationPropertiesPanel({
       setIsLoadingFlags(true);
       setFlagsError(null);
 
-      // Periodic + callback endpoints only exist for periodic conversations.
+      // Loop + callback endpoints only exist for loop conversations.
       // Gating on loop_configured avoids 404 noise on regular sessions.
       const loopConfigured = sessionInfo?.loop_configured === true;
 
       try {
-        // Fetch periodic config, callback config, available flags, and session settings in parallel
-        const [periodicRes, callbackRes, flagsRes, settingsRes] =
+        // Fetch loop config, callback config, available flags, and session settings in parallel
+        const [loopRes, callbackRes, flagsRes, settingsRes] =
           await Promise.all([
             loopConfigured
               ? authFetch(endpoints.sessions.loop(sessionId))
@@ -304,11 +304,11 @@ export function ConversationPropertiesPanel({
             authFetch(endpoints.sessions.settings(sessionId)),
           ]);
 
-        if (periodicRes && periodicRes.ok) {
-          const periodic = await periodicRes.json();
-          setLoopConfig(periodic);
+        if (loopRes && loopRes.ok) {
+          const loop = await loopRes.json();
+          setLoopConfig(loop);
         } else {
-          // No periodic config or error - clear state
+          // No loop config or error - clear state
           setLoopConfig(null);
         }
 
@@ -374,12 +374,12 @@ export function ConversationPropertiesPanel({
     };
   }, [isOpen, sessionId]);
 
-  // Listen for WebSocket loop_updated events so the periodic section (and the
+  // Listen for WebSocket loop_updated events so the loop section (and the
   // fresh-context toggle) stays in sync when changed from another panel/client.
   useEffect(() => {
     if (!isOpen || !sessionId) return;
 
-    const handlePeriodicUpdated = (event) => {
+    const handleLoopUpdated = (event) => {
       const {
         sessionId: updatedSessionId,
         loopConfigured,
@@ -392,7 +392,7 @@ export function ConversationPropertiesPanel({
       } = event.detail || {};
       if (updatedSessionId !== sessionId) return;
 
-      // Periodic config was deleted — clear local state.
+      // Loop config was deleted — clear local state.
       if (loopConfigured === false) {
         setLoopConfig(null);
         return;
@@ -423,12 +423,12 @@ export function ConversationPropertiesPanel({
 
     window.addEventListener(
       "mitto:loop_config_updated",
-      handlePeriodicUpdated,
+      handleLoopUpdated,
     );
     return () => {
       window.removeEventListener(
         "mitto:loop_config_updated",
-        handlePeriodicUpdated,
+        handleLoopUpdated,
       );
     };
   }, [isOpen, sessionId]);
@@ -509,7 +509,7 @@ export function ConversationPropertiesPanel({
     [sessionId],
   );
 
-  // Toggle "fresh context" for a periodic conversation. PATCHes the periodic
+  // Toggle "fresh context" for a loop conversation. PATCHes the loop
   // config so each scheduled run starts with a clean agent context (no history
   // injection, new ACP session). Updates local state optimistically from the
   // server-authoritative response.
@@ -1113,7 +1113,7 @@ export function ConversationPropertiesPanel({
           )
         }
 
-        <!-- Periodic Prompts Section (only shown when configured and enabled) -->
+        <!-- Loop Prompts Section (only shown when configured and enabled) -->
         ${
           loopConfig?.enabled &&
           html`
@@ -1121,7 +1121,7 @@ export function ConversationPropertiesPanel({
               <label
                 class="block text-sm font-medium text-mitto-text-secondary mb-2"
               >
-                Periodic Prompts
+                Loop Prompts
               </label>
               <div class="flex items-center gap-2 text-sm text-mitto-text-300">
                 <${LoopFilledIcon}
@@ -1229,14 +1229,14 @@ export function ConversationPropertiesPanel({
   }
 
   function renderAdvancedSection() {
-    // Only show if there are available flags or periodic config (for callback URL)
+    // Only show if there are available flags or loop config (for callback URL)
     if ((!availableFlags || availableFlags.length === 0) && !loopConfig) {
       return null;
     }
 
     return html`
       <div class="pt-4">
-        <!-- Callback URL Section (only for periodic conversations) -->
+        <!-- Callback URL Section (only for loop conversations) -->
         ${loopConfig &&
         html`
           <div class="mb-4">
@@ -1259,7 +1259,7 @@ export function ConversationPropertiesPanel({
                 </div>
               `
                     : html`
-                <${Tooltip} tip="Generate a callback URL for triggering this periodic conversation externally" placement="top">
+                <${Tooltip} tip="Generate a callback URL for triggering this loop conversation externally" placement="top">
                   <button onClick=${handleEnableCallback} class="text-xs px-2 py-1 rounded bg-mitto-surface-3 hover:bg-mitto-surface-hover text-mitto-text-300 transition-colors">
                     🔗 Enable Callback URL
                   </button>
@@ -1270,7 +1270,7 @@ export function ConversationPropertiesPanel({
                   ${callbackConfig?.callback_url
                     ? html`
                         <p class="text-xs text-mitto-text-muted mb-1.5 italic">
-                          Preserved but inactive while periodic is disabled
+                          Preserved but inactive while loop is disabled
                         </p>
                         <div class="flex items-center gap-1.5">
                           <button

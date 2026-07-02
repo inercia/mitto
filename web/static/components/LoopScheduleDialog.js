@@ -1,6 +1,6 @@
-// Mitto Web Interface - Periodic Schedule Dialog Component
-// A modal dialog for collecting a periodic schedule (value, unit, optional at time)
-// pre-filled from a prompt's `periodic` frontmatter defaults.
+// Mitto Web Interface - Loop Schedule Dialog Component
+// A modal dialog for collecting a loop schedule (value, unit, optional at time)
+// pre-filled from a prompt's `loop` frontmatter defaults.
 
 const { useState, useEffect, useCallback, html, Fragment } = window.preact;
 import { Modal } from "./Modal.js";
@@ -85,15 +85,15 @@ function localToUtcTime(localTime) {
 }
 
 /**
- * LoopScheduleDialog — modal to collect a periodic schedule for a prompt.
+ * LoopScheduleDialog — modal to collect a loop schedule for a prompt.
  *
- * Pre-fills from `prompt.periodic` defaults (if present).
+ * Pre-fills from `prompt.loop` defaults (if present).
  * Calls `onConfirm({ value, unit, at? })` with `at` in UTC HH:MM (days only).
  * Calls `onCancel()` when dismissed.
  *
  * @param {Object} props
  * @param {boolean} props.isOpen
- * @param {Object|null} props.prompt - Prompt object with optional .periodic defaults
+ * @param {Object|null} props.prompt - Prompt object with optional .loop defaults
  * @param {Function} props.onConfirm - Called with { value, unit, at? } on confirm
  * @param {Function} props.onCancel - Called on cancel / close
  */
@@ -103,7 +103,7 @@ export function LoopScheduleDialog({
   onConfirm,
   onCancel,
 }) {
-  const defaults = prompt?.periodic || {};
+  const defaults = prompt?.loop || {};
   const [value, setValue] = useState(defaults.value || 1);
   const [unit, setUnit] = useState(defaults.unit || "hours");
   // `at` stored in local time for display; defaults.at is in UTC — convert on init.
@@ -127,7 +127,7 @@ export function LoopScheduleDialog({
 
   // Reset to prompt defaults whenever the prompt changes (dialog re-opened).
   useEffect(() => {
-    const d = prompt?.periodic || {};
+    const d = prompt?.loop || {};
     setValue(d.value || 1);
     setUnit(d.unit || "hours");
     setAt(utcToLocalTime(d.at) || "");
@@ -178,16 +178,16 @@ export function LoopScheduleDialog({
     <button
       onClick=${handleCancel}
       class="btn btn-ghost btn-sm"
-      data-testid="periodic-schedule-cancel"
+      data-testid="loop-schedule-cancel"
     >
       Cancel
     </button>
     <button
       onClick=${handleConfirm}
       class="btn btn-primary btn-sm"
-      data-testid="periodic-schedule-confirm"
+      data-testid="loop-schedule-confirm"
     >
-      Start periodic conversation
+      Start loop conversation
     </button>
   `;
 
@@ -197,7 +197,7 @@ export function LoopScheduleDialog({
       onClose=${handleCancel}
       title="Set up recurring schedule"
       footer=${footer}
-      testid="periodic-schedule-dialog"
+      testid="loop-schedule-dialog"
     >
       <div class="flex flex-col gap-4 text-sm">
         ${
@@ -213,23 +213,23 @@ export function LoopScheduleDialog({
         <div class="tabs tabs-border">
           <input
             type="radio"
-            name="periodic-schedule-trigger"
+            name="loop-schedule-trigger"
             role="tab"
             aria-label="Schedule"
             class="tab"
             checked=${trigger === "schedule"}
             onChange=${() => setTrigger("schedule")}
-            data-testid="periodic-schedule-trigger-tab-schedule"
+            data-testid="loop-schedule-trigger-tab-schedule"
           />
           <input
             type="radio"
-            name="periodic-schedule-trigger"
+            name="loop-schedule-trigger"
             role="tab"
             aria-label="On completion"
             class="tab"
             checked=${trigger === "onCompletion"}
             onChange=${() => setTrigger("onCompletion")}
-            data-testid="periodic-schedule-trigger-tab-oncompletion"
+            data-testid="loop-schedule-trigger-tab-oncompletion"
           />
         </div>
 
@@ -248,13 +248,13 @@ export function LoopScheduleDialog({
                   value=${value}
                   onInput=${(e) => setValue(parseInt(e.target.value, 10) || 1)}
                   class="input input-sm w-20 text-center shrink-0"
-                  data-testid="periodic-schedule-value"
+                  data-testid="loop-schedule-value"
                 />
                 <select
                   value=${unit}
                   onChange=${handleUnitChange}
                   class="select select-sm w-28 shrink-0"
-                  data-testid="periodic-schedule-unit"
+                  data-testid="loop-schedule-unit"
                 >
                   <option value="minutes">minutes</option>
                   <option value="hours">hours</option>
@@ -272,7 +272,7 @@ export function LoopScheduleDialog({
                     onInput=${(e) => setAt(e.target.value)}
                     class="h-8 px-2 min-w-16 shrink-0 bg-white dark:bg-mitto-surface-2 border border-mitto-border dark:border-mitto-border-2 rounded text-sm focus:outline-none focus:ring-1 focus:ring-mitto-accent-500"
                     placeholder="HH:MM"
-                    data-testid="periodic-schedule-at"
+                    data-testid="loop-schedule-at"
                   />
                 `}
               </div>`
@@ -288,7 +288,7 @@ export function LoopScheduleDialog({
                   onInput=${(e) =>
                     setDelay(Math.max(5, parseInt(e.target.value, 10) || 5))}
                   class="input input-sm w-20 text-center shrink-0"
-                  data-testid="periodic-schedule-delay"
+                  data-testid="loop-schedule-delay"
                 />
                 <span
                   class="text-xs text-mitto-text-muted dark:text-mitto-text-300 shrink-0"
@@ -307,7 +307,7 @@ export function LoopScheduleDialog({
             value=${maxIterations}
             onInput=${(e) => setMaxIterations(Math.max(0, parseInt(e.target.value, 10) || 0))}
             class="input input-sm w-20 text-center shrink-0"
-            data-testid="periodic-schedule-max-iterations"
+            data-testid="loop-schedule-max-iterations"
           />
           <span class="text-xs text-mitto-text-muted dark:text-mitto-text-300 shrink-0">(0 = unlimited)</span>
         </div>
@@ -321,13 +321,13 @@ export function LoopScheduleDialog({
             value=${maxDurValue}
             onInput=${(e) => setMaxDurValue(Math.max(0, parseInt(e.target.value, 10) || 0))}
             class="input input-sm w-20 text-center shrink-0"
-            data-testid="periodic-schedule-max-duration-value"
+            data-testid="loop-schedule-max-duration-value"
           />
           <select
             value=${maxDurUnit}
             onChange=${(e) => setMaxDurUnit(e.target.value)}
             class="select select-sm w-28 shrink-0"
-            data-testid="periodic-schedule-max-duration-unit"
+            data-testid="loop-schedule-max-duration-unit"
           >
             <option value="minutes">minutes</option>
             <option value="hours">hours</option>

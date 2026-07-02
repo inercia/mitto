@@ -214,8 +214,8 @@ export function SessionList({
   queueLength = 0,
   onFetchConversationPrompts, // Async (session, workingDir) => prompts[] for the context menu
   onSendPromptToConversation,
-  onMakeLoop, // Called with (session) to convert a regular session to periodic
-  onMakeNonLoop, // Called with (session) to revert a periodic session to regular
+  onMakeLoop, // Called with (session) to convert a regular session to loop
+  onMakeNonLoop, // Called with (session) to revert a loop session to regular
   isCreatingSession = false, // True while ANY new-conversation request is in-flight or retrying
   creatingWorkingDirs = new Set(), // Set of workingDirs with an in-flight create request
 }) {
@@ -597,13 +597,13 @@ export function SessionList({
   }, [allSessions]);
 
   // Unified sidebar tree (mitto-1er.3): a single folder-grouped tree over ALL
-  // sessions (regular + periodic + archived), independent of the filter tab.
+  // sessions (regular + loop + archived), independent of the filter tab.
   const unifiedTree = useMemo(
     () => computeUnifiedTree(allSessions, workspaces),
     [allSessions, workspaces],
   );
 
-  // Category visibility filter (mitto-1er.10): show/hide Regular/Periodic/
+  // Category visibility filter (mitto-1er.10): show/hide Regular/Loop/
   // Archived/Tasks. Browser-session scoped (sessionStorage); all visible by
   // default. Applied as a pure predicate over the unified tree before render.
   const [categoryFilter, setCategoryFilterState] = useState(() =>
@@ -623,7 +623,7 @@ export function SessionList({
   }, []);
   const anyCategoryHidden =
     !categoryFilter.regular ||
-    !categoryFilter.periodic ||
+    !categoryFilter.loop ||
     !categoryFilter.archived ||
     !categoryFilter.tasks;
   const filteredTree = useMemo(

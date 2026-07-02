@@ -1,6 +1,6 @@
 // Mitto Web Interface - Shared Prompts Menu
 // A single searchable, grouped, color-aware prompt picker reused by the
-// ChatInput prompts dropup and the periodic-conversation prompt selector.
+// ChatInput prompts dropup and the loop-conversation prompt selector.
 
 const { html, Fragment, useState } = window.preact;
 
@@ -51,7 +51,7 @@ function getBadgeInfo(source) {
  * @param {number} [props.selectedIndex] - flat index highlighted via keyboard (-1 = none)
  * @param {Object} [props.selectedItemRef] - ref attached to the keyboard-highlighted item
  * @param {Function} props.onSelect - (prompt, event, opts?) => void. When
- *   periodicToggle is true, opts is { asLoop } for "optional"-mode prompts.
+ *   loopToggle is true, opts is { asLoop } for "optional"-mode prompts.
  * @param {string} [props.selectedName] - name of the currently-chosen prompt (shows a check)
  * @param {boolean} [props.showSourceBadge] - show the W/F/S source badge
  * @param {Object} [props.modelOption] - the "model" config option ({ current_value,
@@ -67,9 +67,9 @@ function getBadgeInfo(source) {
  * @param {string} [props.keyPrefix] - key namespace to keep instances distinct
  * @param {string} [props.filterTestId] - data-testid for the filter input
  * @param {string} [props.listTestId] - data-testid for the scrollable list container
- * @param {boolean} [props.periodicToggle] - when true, render a mode-aware periodic
+ * @param {boolean} [props.loopToggle] - when true, render a mode-aware loop
  *   control (toggle for "optional", locked badge for "always") instead of the
- *   static periodic badge; onSelect then receives a 3rd ({ asLoop }) arg.
+ *   static loop badge; onSelect then receives a 3rd ({ asLoop }) arg.
  *   Defaults to false (static badge, unchanged look) for config selectors.
  */
 export function PromptsMenu({
@@ -93,14 +93,14 @@ export function PromptsMenu({
   keyPrefix = "pm",
   filterTestId,
   listTestId,
-  periodicToggle = false,
+  loopToggle = false,
 }) {
   const { groups, flat } = flattenPrompts(prompts, { filterText, sortMode });
   const clampedIndex =
     flat.length === 0 ? -1 : Math.min(selectedIndex, flat.length - 1);
   const curModelName = currentModelName(modelOption);
-  // Per-item periodic override (mode "optional" only), keyed by prompt.name.
-  const [periodicOverrides, setPeriodicOverrides] = useState({});
+  // Per-item loop override (mode "optional" only), keyed by prompt.name.
+  const [loopOverrides, setLoopOverrides] = useState({});
 
   const renderItem = (prompt) => {
     const fi = flat.indexOf(prompt);
@@ -133,8 +133,8 @@ export function PromptsMenu({
           onClick=${(e) => {
             const asLoop =
               promptLoopMode(prompt) === "optional"
-                ? periodicOverrides[prompt.name] !== undefined
-                  ? periodicOverrides[prompt.name]
+                ? loopOverrides[prompt.name] !== undefined
+                  ? loopOverrides[prompt.name]
                   : promptLoopDefaultOn(prompt)
                 : undefined;
             onSelect && onSelect(prompt, e, { asLoop });
@@ -175,21 +175,21 @@ export function PromptsMenu({
                   />
                 </svg>`}
           <span class="truncate flex-1 min-w-0">${prompt.name}</span>
-          ${!periodicToggle &&
-          prompt.periodic &&
+          ${!loopToggle &&
+          prompt.loop &&
           html`<span
             class="shrink-0 text-success opacity-80"
-            title="Periodic prompt — sets the conversation to recurring mode"
+            title="Loop prompt — sets the conversation to recurring mode"
             ><${LoopIcon} className="w-3.5 h-3.5"
           /></span>`}
-          ${periodicToggle &&
+          ${loopToggle &&
           (() => {
             const mode = promptLoopMode(prompt);
             if (mode === "none") return null;
             if (mode === "optional") {
               const on =
-                periodicOverrides[prompt.name] !== undefined
-                  ? periodicOverrides[prompt.name]
+                loopOverrides[prompt.name] !== undefined
+                  ? loopOverrides[prompt.name]
                   : promptLoopDefaultOn(prompt);
               return html`<input
                 type="checkbox"
@@ -197,12 +197,12 @@ export function PromptsMenu({
                 style="background-color: transparent"
                 checked=${on}
                 title=${on
-                  ? "Periodic: ON — click to disable recurring runs"
-                  : "Periodic: OFF — click to run as recurring conversation"}
+                  ? "Loop: ON — click to disable recurring runs"
+                  : "Loop: OFF — click to run as recurring conversation"}
                 onClick=${(e) => e.stopPropagation()}
                 onChange=${(e) => {
                   e.stopPropagation();
-                  setPeriodicOverrides((m) => ({
+                  setLoopOverrides((m) => ({
                     ...m,
                     [prompt.name]: e.target.checked,
                   }));
@@ -218,7 +218,7 @@ export function PromptsMenu({
               style="background-color: transparent"
               checked=${true}
               disabled
-              title="Always periodic — this prompt always runs as a recurring conversation (cannot be changed)"
+              title="Always loop — this prompt always runs as a recurring conversation (cannot be changed)"
               onClick=${(e) => e.stopPropagation()}
             />`;
           })()}
