@@ -296,7 +296,10 @@ export function migrateLegacyTabStorage() {
     // Remove orphaned top-level keys (use string literals; constants deleted)
     localStorage.removeItem("mitto_conversation_filter_tab");
     localStorage.removeItem("mitto_filter_tab_grouping");
-    ["conversations", "loop", "archived"].forEach((t) =>
+    // "periodic" here is the historical 3-tab sidebar tab name (mitto-1er.8.4),
+    // not the loop feature — kept verbatim so this cleanup still matches the real
+    // legacy localStorage key "mitto_last_session_id_periodic" in old browsers.
+    ["conversations", "periodic", "archived"].forEach((t) =>
       localStorage.removeItem("mitto_last_session_id_" + t),
     );
 

@@ -510,7 +510,8 @@ describe("migrateLegacyTabStorage", () => {
       conversations: "folder",
     });
     mockStore["mitto_last_session_id_conversations"] = "s1";
-    mockStore["mitto_last_session_id_loop"] = "s2";
+    // Historical 3-tab sidebar key (tab was named "periodic" pre-rename)
+    mockStore["mitto_last_session_id_periodic"] = "s2";
     mockStore["mitto_last_session_id_archived"] = "s3";
 
     // Seed expanded-groups with a mix of old tab-scoped (\u0001) and new unscoped keys
@@ -527,7 +528,7 @@ describe("migrateLegacyTabStorage", () => {
     expect(mockStore["mitto_conversation_filter_tab"]).toBeUndefined();
     expect(mockStore["mitto_filter_tab_grouping"]).toBeUndefined();
     expect(mockStore["mitto_last_session_id_conversations"]).toBeUndefined();
-    expect(mockStore["mitto_last_session_id_loop"]).toBeUndefined();
+    expect(mockStore["mitto_last_session_id_periodic"]).toBeUndefined();
     expect(mockStore["mitto_last_session_id_archived"]).toBeUndefined();
 
     // Tab-scoped entry stripped; unscoped entries survive
