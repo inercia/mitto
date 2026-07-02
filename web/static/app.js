@@ -2467,6 +2467,97 @@ function App() {
       closed: "bg-slate-400",
     }[headerBeadsStatus] || "bg-slate-400";
 
+  // Per-folder shortcut buttons configured for this folder's `conversations`
+  // section (mirrors the `tasksList` shortcuts in BeadsView.js). Each button
+  // runs a `conversation`-menu prompt in the active conversation. A missing/
+  // renamed linked prompt renders disabled rather than erroring.
+  const [convShortcuts, setConvShortcuts] = useState([]);
+  const [convShortcutPromptMap, setConvShortcutPromptMap] = useState(
+    new Map(),
+  );
+
+  const loadConvShortcuts = useCallback(
+    async (isStale) => {
+      const wd = sessionInfo?.working_dir;
+      const sess = activeSession;
+      if (!wd || !activeSessionId) {
+        setConvShortcuts([]);
+        setConvShortcutPromptMap(new Map());
+        return;
+      }
+      try {
+        const res = await authFetch(
+          endpoints.folders.shortcuts({ working_dir: wd }),
+        );
+        const data = await res.json().catch(() => ({}));
+        const list = data?.sections?.conversations || [];
+        if (isStale && isStale()) return;
+        setConvShortcuts(list);
+        if (list.length > 0) {
+          const prompts = await fetchConversationPromptsForSession(sess, wd);
+          if (isStale && isStale()) return;
+          const map = new Map((prompts || []).map((p) => [p.name, p]));
+          setConvShortcutPromptMap(map);
+        } else {
+          setConvShortcutPromptMap(new Map());
+        }
+      } catch (_err) {
+        if (isStale && isStale()) return;
+        setConvShortcuts([]);
+        setConvShortcutPromptMap(new Map());
+      }
+    },
+    [
+      sessionInfo?.working_dir,
+      activeSessionId,
+      activeSession,
+      fetchConversationPromptsForSession,
+    ],
+  );
+
+  // Initial load (and reload on folder/conversation switch), with
+  // stale-fetch cancellation.
+  useEffect(() => {
+    let cancelled = false;
+    loadConvShortcuts(() => cancelled);
+    return () => {
+      cancelled = true;
+    };
+  }, [loadConvShortcuts]);
+
+  // Refresh shortcut buttons immediately when the Workspaces dialog saves new
+  // shortcuts for this folder, so no page reload is needed.
+  useEffect(() => {
+    const handler = (e) => {
+      const dir = e?.detail?.working_dir;
+      if (!dir || dir === sessionInfo?.working_dir) loadConvShortcuts();
+    };
+    window.addEventListener("mitto:folder_shortcuts_updated", handler);
+    return () =>
+      window.removeEventListener("mitto:folder_shortcuts_updated", handler);
+  }, [loadConvShortcuts, sessionInfo?.working_dir]);
+
+  // Shortcut items for the conversation toolbar (mirrors shortcutItems in
+  // BeadsView.js). Each button runs its linked prompt in the active
+  // conversation via handleSendPromptToConversation.
+  const convShortcutItems = convShortcuts.map((sc, i) => {
+    const prompt = convShortcutPromptMap.get(sc.prompt);
+    const found = !!prompt;
+    const Icon = getPromptIconOrDefault(sc.icon || (prompt && prompt.icon));
+    return {
+      kind: "button",
+      testId: `conversation-shortcut-btn-${i}`,
+      icon: html`<${Icon} className="w-4 h-4" />`,
+      tip: found ? `Run "${sc.prompt}"` : `Prompt "${sc.prompt}" not found`,
+      ariaLabel: found
+        ? `Run "${sc.prompt}"`
+        : `Prompt "${sc.prompt}" not found`,
+      disabled: !found,
+      onClick: () =>
+        found && handleSendPromptToConversation(activeSession, prompt),
+    };
+  });
+
   const conversationToolbarItems = [
     ...(activeSessionId
       ? [
@@ -2522,6 +2613,10 @@ function App() {
                   onClick: () => handleMakeNonLoop(activeSession),
                 },
               ]
+            : []),
+          // Per-folder configurable prompt shortcuts (conversations section).
+          ...(convShortcuts.length > 0
+            ? [{ kind: "separator" }, ...convShortcutItems]
             : []),
           // Separator before the destructive group (archive + delete), keeping
           // those two together but set apart from the actions above.

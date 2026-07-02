@@ -419,6 +419,13 @@ export function BeadsDetailPanel({
   // ~40rem side panel over the conversation; the toggle still lets the user
   // expand it to fill the area.
   const [fullscreen, setFullscreen] = useState(!!initialFullscreen);
+  // Shortcut buttons configured for this folder's beadsIssue section (mirrors
+  // the list toolbar's tasksList shortcuts, but keyed to the open issue).
+  const [issueShortcuts, setIssueShortcuts] = useState([]);
+  // Map from prompt name → prompt object, resolved from the beadsIssues menu.
+  const [issueShortcutPromptMap, setIssueShortcutPromptMap] = useState(
+    new Map(),
+  );
   // Phone detection drives the panel width. We deliberately use the user agent
   // (not a viewport-width breakpoint like Tailwind's `md:`): the native macOS
   // app runs in a WKWebView that reports a Macintosh UA but can have a narrow
@@ -836,6 +843,64 @@ export function BeadsDetailPanel({
     return () => document.removeEventListener("mousedown", onDocMouseDown);
   }, [isOpen, panelMenu, handleClose]);
 
+  // Load per-folder beadsIssue-section shortcut buttons for the detail toolbar.
+  // Mirrors BeadsView's tasksList loader: fetch section entries, then resolve
+  // each entry's prompt name against the beadsIssues menu via onFetchPrompts.
+  // `isStale` lets the mount effect below cancel a stale in-flight fetch when
+  // the folder changes mid-request.
+  const loadIssueShortcuts = useCallback(
+    async (isStale) => {
+      if (!workingDir) {
+        setIssueShortcuts([]);
+        setIssueShortcutPromptMap(new Map());
+        return;
+      }
+      try {
+        const res = await authFetch(
+          endpoints.folders.shortcuts({ working_dir: workingDir }),
+        );
+        const cfg = await res.json().catch(() => ({}));
+        const list = cfg?.sections?.beadsIssue || [];
+        if (isStale && isStale()) return;
+        setIssueShortcuts(list);
+        if (list.length > 0 && onFetchPrompts) {
+          const prompts = await onFetchPrompts(workingDir);
+          if (isStale && isStale()) return;
+          const map = new Map((prompts || []).map((p) => [p.name, p]));
+          setIssueShortcutPromptMap(map);
+        } else {
+          setIssueShortcutPromptMap(new Map());
+        }
+      } catch (_err) {
+        if (isStale && isStale()) return;
+        setIssueShortcuts([]);
+        setIssueShortcutPromptMap(new Map());
+      }
+    },
+    [workingDir, onFetchPrompts],
+  );
+
+  // Initial load (and reload on folder switch), with stale-fetch cancellation.
+  useEffect(() => {
+    let cancelled = false;
+    loadIssueShortcuts(() => cancelled);
+    return () => {
+      cancelled = true;
+    };
+  }, [loadIssueShortcuts]);
+
+  // Refresh shortcut buttons immediately when the Workspaces dialog saves new
+  // shortcuts for this folder, so no page reload is needed.
+  useEffect(() => {
+    const handler = (e) => {
+      const dir = e?.detail?.working_dir;
+      if (!dir || dir === workingDir) loadIssueShortcuts();
+    };
+    window.addEventListener("mitto:folder_shortcuts_updated", handler);
+    return () =>
+      window.removeEventListener("mitto:folder_shortcuts_updated", handler);
+  }, [loadIssueShortcuts, workingDir]);
+
   // The panel context menu is now prompts-only: the former Close/Defer/Delete
   // menu items are surfaced as direct buttons in the header Toolbar
   // (headerToolbarItems below). The toolbar's "Run a prompt" button opens it.
@@ -860,6 +925,24 @@ export function BeadsDetailPanel({
   // a destructive Delete set apart by a separator, a spacer, then fullscreen.
   const headerToolbarItems = useMemo(() => {
     if (!data) return [];
+    // Per-folder shortcut buttons (beadsIssue section). A missing linked prompt
+    // is shown greyed/disabled, mirroring the list toolbar's tasksList shortcuts.
+    const issueShortcutItems = issueShortcuts.map((sc, i) => {
+      const prompt = issueShortcutPromptMap.get(sc.prompt);
+      const found = !!prompt;
+      const Icon = getPromptIconOrDefault(sc.icon || (prompt && prompt.icon));
+      return {
+        kind: "button",
+        testId: `beads-issue-shortcut-btn-${i}`,
+        icon: html`<${Icon} className="w-4 h-4" />`,
+        tip: found ? `Run "${sc.prompt}"` : `Prompt "${sc.prompt}" not found`,
+        ariaLabel: found
+          ? `Run "${sc.prompt}"`
+          : `Prompt "${sc.prompt}" not found`,
+        disabled: !found,
+        onClick: () => found && onRunPrompt && onRunPrompt(prompt, data),
+      };
+    });
     return [
       {
         kind: "button",
@@ -915,6 +998,9 @@ export function BeadsDetailPanel({
         ariaLabel: fullscreen ? "Exit fullscreen" : "Fullscreen",
         onClick: () => setFullscreen((f) => !f),
       },
+      ...(issueShortcuts.length > 0
+        ? [{ kind: "separator" }, ...issueShortcutItems]
+        : []),
     ];
   }, [
     data,
@@ -924,6 +1010,9 @@ export function BeadsDetailPanel({
     onToggleStatus,
     onToggleDefer,
     onDelete,
+    onRunPrompt,
+    issueShortcuts,
+    issueShortcutPromptMap,
   ]);
 
   // Seed non-notes fields whenever a different issue opens (notes come from
@@ -2070,11 +2159,9 @@ ${viewDraft.description}</pre
                     data-tip=${fullscreen ? "Exit fullscreen" : "Fullscreen"}
                     aria-label=${fullscreen ? "Exit fullscreen" : "Fullscreen"}
                   >
-                    ${
-                      fullscreen
-                        ? html`<${CollapseIcon} className="w-5 h-5" />`
-                        : html`<${ExpandIcon} className="w-5 h-5" />`
-                    }
+                    ${fullscreen
+                      ? html`<${CollapseIcon} className="w-5 h-5" />`
+                      : html`<${ExpandIcon} className="w-5 h-5" />`}
                   </button>
                 `
               : null
@@ -2239,9 +2326,7 @@ ${viewDraft.description}</pre
                     </div>
                   </div>
                 `}
-
-                ${TitleField("view")}
-                ${DescriptionField("view")}
+                ${TitleField("view")} ${DescriptionField("view")}
                 ${subtasks.length > 0 &&
                 html`
                   <fieldset class="fieldset">
@@ -4617,9 +4702,11 @@ export function BeadsView({
                 }}
               >
                 <span class="w-4 h-4 shrink-0">
-                  ${typeFilter === "all"
-                    ? html`<${CheckIcon} className="w-4 h-4" />`
-                    : null}
+                  ${
+                    typeFilter === "all"
+                      ? html`<${CheckIcon} className="w-4 h-4" />`
+                      : null
+                  }
                 </span>
                 <span class="flex-1">All types</span>
               </button>
