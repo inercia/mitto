@@ -64,6 +64,7 @@ go test -v -tags integration ./tests/integration/inprocess/
 - **Log authoritative source**: Check `events.jsonl` (session dir) when debugging; server logs rotate and have gaps.
 - **daisyUI drawer GPU bug**: `.drawer-side` + fixed-position overlay compete for pointer events → blank artifacts. Fix: See `web/static/styles.css` for verified pattern. Do NOT use `translateZ(0)`.
 - **Zombie WebSocket recovery**: When phone sleeps or app backgrounded, WS may enter "zombie" state (appearing open but dead). On visibility change or app activate, force-close and reconnect. This is expected behavior — not a bug. See `.augment/rules/23-web-frontend-mobile.md` for resilience patterns.
+- **Verify prior edits actually persisted**: Don't trust that a previous turn's file edits are still on disk (session gaps, restarts, or reverted stashes can silently drop them). Before continuing/relying on earlier work, re-check with `git status`/`git diff` or re-view the file rather than assuming.
 
 ## New Agent Capability Checklist
 
@@ -113,6 +114,17 @@ if (response.status === 401) { redirectToLogin(); return; }
 **Public vs. authenticated**:
 - ✅ `authFetch`: All authenticated endpoints (via `endpoints` builders)
 - ❌ Keep raw `fetch` with `same-origin`: Public endpoints like `/api/supported-runners`
+
+## Reusable Toolbar Component
+
+`web/static/components/Toolbar.js` — config-driven action bar rendered as a segmented pill from an `items` array (`button`/`dropdown`/`overflow`/`separator`/`spacer`/`custom` kinds). Prefer it over bespoke "..." kebab menus or ad-hoc button rows for any new action bar.
+
+```javascript
+html`<${Toolbar} variant="block" surface="bg-mitto-surface-3"
+  ariaLabel="Issue actions" testId="beads-issue-toolbar" items=${headerToolbarItems} />`
+```
+
+Used in `BeadsView.js` for both the list actions (`listToolbarItems`, `variant="block"`) and the issue detail-panel header (`headerToolbarItems`, `variant="block"`).
 
 ## Model Selection & Preferred Models
 

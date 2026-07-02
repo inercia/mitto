@@ -836,6 +836,9 @@ export function BeadsDetailPanel({
     return () => document.removeEventListener("mousedown", onDocMouseDown);
   }, [isOpen, panelMenu, handleClose]);
 
+  // The panel context menu is now prompts-only: the former Close/Defer/Delete
+  // menu items are surfaced as direct buttons in the header Toolbar
+  // (headerToolbarItems below). The toolbar's "Run a prompt" button opens it.
   const panelMenuItems = useMemo(() => {
     if (!data) return [];
     const promptGroupItems = buildPromptGroupMenuItems(
@@ -846,38 +849,78 @@ export function BeadsDetailPanel({
       },
       html`<${PlusIcon} />`,
     );
+    if (promptGroupItems.length === 0) {
+      return [{ label: "No prompts available", disabled: true }];
+    }
+    return promptGroupItems;
+  }, [data, prompts, onRunPrompt]);
+
+  // Header action toolbar (view mode). Replaces the former "…" overflow menu and
+  // standalone fullscreen button: a prompts trigger, Close/Reopen, Defer/Undefer,
+  // a destructive Delete set apart by a separator, a spacer, then fullscreen.
+  const headerToolbarItems = useMemo(() => {
+    if (!data) return [];
     return [
-      ...promptGroupItems,
       {
-        label: data.status === "closed" ? "Reopen" : "Close",
+        kind: "button",
+        testId: "beads-panel-prompts",
+        icon: html`<${LightningIcon} className="w-4 h-4" />`,
+        tip: "Run a prompt",
+        ariaLabel: "Run a prompt",
+        onClick: openPanelMenu,
+      },
+      { kind: "separator" },
+      {
+        kind: "button",
+        testId: "beads-panel-status",
         icon:
           data.status === "closed"
-            ? html`<${RefreshIcon} />`
-            : html`<${CheckIcon} />`,
-        onClick: () => onToggleStatus && onToggleStatus(data),
+            ? html`<${RefreshIcon} className="w-4 h-4" />`
+            : html`<${CheckIcon} className="w-4 h-4" />`,
+        tip: data.status === "closed" ? "Reopen" : "Close",
+        ariaLabel: data.status === "closed" ? "Reopen" : "Close",
         disabled: statusBusy,
+        onClick: () => onToggleStatus && onToggleStatus(data),
       },
       {
-        label: data.status === "deferred" ? "Undefer" : "Defer",
+        kind: "button",
+        testId: "beads-panel-defer",
         icon:
           data.status === "deferred"
-            ? html`<${SunIcon} />`
-            : html`<${MoonIcon} />`,
-        onClick: () => onToggleDefer && onToggleDefer(data),
+            ? html`<${SunIcon} className="w-4 h-4" />`
+            : html`<${MoonIcon} className="w-4 h-4" />`,
+        tip: data.status === "deferred" ? "Undefer" : "Defer",
+        ariaLabel: data.status === "deferred" ? "Undefer" : "Defer",
         disabled: statusBusy,
+        onClick: () => onToggleDefer && onToggleDefer(data),
       },
+      { kind: "separator" },
       {
-        label: "Delete",
-        icon: html`<${TrashIcon} />`,
-        onClick: () => onDelete && onDelete(data),
+        kind: "button",
+        testId: "beads-panel-delete",
+        icon: html`<${TrashIcon} className="w-4 h-4" />`,
+        tip: "Delete",
+        ariaLabel: "Delete",
         danger: true,
+        onClick: () => onDelete && onDelete(data),
+      },
+      { kind: "spacer" },
+      {
+        kind: "button",
+        testId: "beads-panel-fullscreen",
+        icon: fullscreen
+          ? html`<${CollapseIcon} className="w-4 h-4" />`
+          : html`<${ExpandIcon} className="w-4 h-4" />`,
+        tip: fullscreen ? "Exit fullscreen" : "Fullscreen",
+        ariaLabel: fullscreen ? "Exit fullscreen" : "Fullscreen",
+        onClick: () => setFullscreen((f) => !f),
       },
     ];
   }, [
     data,
-    prompts,
     statusBusy,
-    onRunPrompt,
+    fullscreen,
+    openPanelMenu,
     onToggleStatus,
     onToggleDefer,
     onDelete,
@@ -1317,7 +1360,7 @@ export function BeadsDetailPanel({
   // is supplied: { text, setText } back the active field (create form or inline
   // edit draft) and `disabled` force-greys the row regardless (read-only view).
   const renderDescToolbar = ({ text, setText, disabled, editorApiRef }) => html`
-    <div class="flex items-center gap-1 mb-1">
+    <div class="flex flex-wrap items-center gap-1 mb-1">
       <button
         type="button"
         class="chat-input-action tooltip tooltip-bottom"
@@ -1993,77 +2036,65 @@ ${viewDraft.description}</pre
           fullscreen
             ? "--dock-w:100%;--dock-maxw:100%"
             : isMobile
-              ? "--dock-w:100%"
+              ? "--dock-w:100%;--dock-maxw:100%"
               : "--dock-w:40rem;--dock-maxw:85%"
         }
         widthClass="w-full"
         panelClass="bg-mitto-sidebar shrink-0 h-full flex flex-col border-l border-mitto-border-1"
       >
-      <div class="flex items-center gap-2 p-4 border-b border-mitto-border shrink-0">
-        <div class="flex-1 min-w-0">
+      <div class="p-4 border-b border-mitto-border shrink-0">
+        <div class="flex items-center gap-2">
+          <div class="flex-1 min-w-0">
+            ${
+              creating
+                ? html`<${Fragment}>
+                  ${TitleField("create")}
+                  ${createParentId ? html`<div class="font-mono text-xs text-mitto-text-secondary">in ${createParentId}</div>` : null}
+                </${Fragment}>`
+                : html`
+                    <h2
+                      class="font-semibold text-base text-mitto-text truncate"
+                      title=${viewDraft.title || data.title || data.id}
+                    >
+                      ${viewDraft.title || data.title || data.id}
+                    </h2>
+                  `
+            }
+          </div>
           ${
             creating
-              ? html`<${Fragment}>
-                ${TitleField("create")}
-                ${createParentId ? html`<div class="font-mono text-xs text-mitto-text-secondary">in ${createParentId}</div>` : null}
-              </${Fragment}>`
-              : html`
-                  <div class="flex items-center gap-1">
-                    <span class="font-mono text-xs text-mitto-text-secondary"
-                      >${data.id}</span
-                    >
-                    <button
-                      type="button"
-                      onClick=${async () => {
-                        const ok = await copyToClipboard(data.id);
-                        showToast &&
-                          showToast(
-                            ok
-                              ? { style: "success", title: `Copied ${data.id}` }
-                              : {
-                                  style: "error",
-                                  title: "Failed to copy issue ID",
-                                },
-                          );
-                      }}
-                      class="btn btn-ghost btn-xs btn-square inline-flex tooltip tooltip-bottom"
-                      data-tip="Copy issue ID ${data.id}"
-                      aria-label="Copy issue ID ${data.id}"
-                    >
-                      <${CopyIcon} className="w-3.5 h-3.5" />
-                    </button>
-                  </div>
-                  ${TitleField("view")}
+              ? html`
+                  <button
+                    onClick=${() => setFullscreen((f) => !f)}
+                    class="btn btn-ghost btn-square btn-sm shrink-0 inline-flex tooltip tooltip-bottom"
+                    data-tip=${fullscreen ? "Exit fullscreen" : "Fullscreen"}
+                    aria-label=${fullscreen ? "Exit fullscreen" : "Fullscreen"}
+                  >
+                    ${
+                      fullscreen
+                        ? html`<${CollapseIcon} className="w-5 h-5" />`
+                        : html`<${ExpandIcon} className="w-5 h-5" />`
+                    }
+                  </button>
                 `
+              : null
           }
         </div>
         ${
-          !creating &&
-          data &&
-          html`
-            <button
-              type="button"
-              onClick=${openPanelMenu}
-              class="btn btn-ghost btn-square btn-sm shrink-0 inline-flex tooltip tooltip-bottom"
-              data-tip="More actions"
-              aria-label="More actions"
-            >
-              <${EllipsisIcon} className="w-5 h-5" />
-            </button>
-          `
+          !creating && data
+            ? html`
+                <div class="mt-6">
+                  <${Toolbar}
+                    variant="block"
+                    surface="bg-mitto-surface-3"
+                    ariaLabel="Issue actions"
+                    testId="beads-issue-toolbar"
+                    items=${headerToolbarItems}
+                  />
+                </div>
+              `
+            : null
         }
-        <button
-          onClick=${() => setFullscreen((f) => !f)}
-          class="btn btn-ghost btn-square btn-sm shrink-0 inline-flex tooltip tooltip-bottom"
-          data-tip=${fullscreen ? "Exit fullscreen" : "Fullscreen"}
-          aria-label=${fullscreen ? "Exit fullscreen" : "Fullscreen"}
-        >
-          ${
-            fullscreen
-              ? html`<${CollapseIcon} className="w-5 h-5" />`
-              : html`<${ExpandIcon} className="w-5 h-5" />`
-          }
-        </button>
       </div>
 
       <div class="flex-1 overflow-y-auto p-4 space-y-4">
@@ -2127,6 +2158,37 @@ ${viewDraft.description}</pre
 
                 <div class="grid grid-cols-2 gap-3">
                   <div>
+                    <label class=${labelClass}>ID</label>
+                    <div class="flex items-center gap-1">
+                      <span class="font-mono text-sm text-mitto-text"
+                        >${data.id}</span
+                      >
+                      <button
+                        type="button"
+                        onClick=${async () => {
+                          const ok = await copyToClipboard(data.id);
+                          showToast &&
+                            showToast(
+                              ok
+                                ? {
+                                    style: "success",
+                                    title: `Copied ${data.id}`,
+                                  }
+                                : {
+                                    style: "error",
+                                    title: "Failed to copy issue ID",
+                                  },
+                            );
+                        }}
+                        class="btn btn-ghost btn-xs btn-square inline-flex tooltip tooltip-bottom"
+                        data-tip="Copy issue ID ${data.id}"
+                        aria-label="Copy issue ID ${data.id}"
+                      >
+                        <${CopyIcon} className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  </div>
+                  <div>
                     <label class=${labelClass}>Assignee</label>
                     ${AssigneeField("view")}
                   </div>
@@ -2178,6 +2240,7 @@ ${viewDraft.description}</pre
                   </div>
                 `}
 
+                ${TitleField("view")}
                 ${DescriptionField("view")}
                 ${subtasks.length > 0 &&
                 html`

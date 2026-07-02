@@ -48,6 +48,7 @@ All components use Preact/HTM with window globals: `const { useState, useEffect,
 | `SessionPanel`      | Unified overlay (Changes + Properties tabs)   |
 | `ContextMenu`       | Right-click menu with viewport-aware position |
 | `SessionItem`       | List item with swipe, menu, status            |
+| `Toolbar`           | Config-driven action bar (see below)          |
 
 ## ChatInput
 
@@ -67,31 +68,23 @@ Resizable via `useResizeHandle` (initialHeight: `getQueueDropdownHeight()`, min:
 
 ## Tooltip Patterns
 
-### PortalTooltip (Viewport-Clamped)
-
-For overflow-clipped rows (e.g., SessionList), render tooltips in a body-level portal to escape clip bounds:
-
+**PortalTooltip** (`SessionItem.js`): for overflow-clipped rows, renders via `createPortal()` to escape clip bounds, auto-clamps position to viewport (e.g. "top" → "bottom" near the edge), adds a `.tooltip-blur` background.
 ```javascript
-html`<${PortalTooltip} text=${"Long text..."} position=${"top"} >
-  <div class="truncate">Clipped row</div>
-</PortalTooltip>`
+html`<${PortalTooltip} text=${"Long text..."} position=${"top"}><div class="truncate">Row</div></PortalTooltip>`
 ```
 
-**Features**:
-- Escapes overflow:hidden containers via `createPortal()`
-- Auto-clamps position to viewport (e.g., "top" → "bottom" if near top edge)
-- Applies background blur behind tooltip (`.tooltip-blur`)
-- Used in `SessionItem.js` for session titles/paths
+**daisyUI tooltip** (non-clipped content): `<div class="tooltip tooltip-top" data-tip="Hover text"><button>Action</button></div>`
 
-### daisyUI Tooltip
+## Toolbar (Reusable Action Bar)
 
-For non-clipped content (in-component tooltips), use daisyUI `tooltip`:
+`Toolbar.js` — portable, config-driven action bar rendered as a segmented pill from an `items` array. Item kinds: `button`, `dropdown`, `overflow`, `separator`, `spacer`, `custom`. Props: `variant` (`"floating"` | `"block"`), `surface`, `ariaLabel`, `testId`.
 
 ```javascript
-html`<div class="tooltip tooltip-top" data-tip=${"Hover text"}>
-  <button>Action</button>
-</div>`
+html`<${Toolbar} variant="block" surface="bg-mitto-surface-3"
+  ariaLabel="Issue actions" testId="beads-issue-toolbar" items=${headerToolbarItems} />`
 ```
+
+Used in `BeadsView.js` for list-level actions (`listToolbarItems`, `variant="block"`) and the issue detail-panel header (`headerToolbarItems`, `variant="block"`) — replaces bespoke "..." kebab menus. Prefer this over ad-hoc button rows for any new action bar.
 
 ## Icons
 

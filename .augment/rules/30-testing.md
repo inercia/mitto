@@ -109,3 +109,5 @@ err := cmd.Run()  // Timeout kills shell + all children
 - Auth page assets must be in `publicStaticPaths` (symptom: unstyled login page with MIME error)
 - CDN resources may be blocked by tracking prevention (Firefox, Safari)
 - Timeout enforcement via context requires process group setup or subprocess escapes
+- Verify a previous turn's edits actually persisted (`git status`/`git diff`) before continuing — apparent changes can be lost across session gaps/restarts
+- When new test failures appear after a frontend/htm change, `git stash` and re-run the same tests against the base branch first — this distinguishes real regressions from pre-existing flakiness (e.g. test-isolation/state-leak failures) before spending time debugging your own code
