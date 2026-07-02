@@ -23,8 +23,8 @@ priority: 200
 timeout: 300s
 onError: skip
 
-# Only for Claude Code sessions, skip periodic prompts, and only when memory files don't exist yet
-enabledWhen: 'ACP.MatchesServerType("claude-code") && !Session.IsPeriodic && !FileExists("CLAUDE.md") && !DirExists(".claude")'
+# Only for Claude Code sessions, skip loop prompts, and only when memory files don't exist yet
+enabledWhen: 'ACP.MatchesServerType("claude-code") && !Session.IsLoop && !FileExists("CLAUDE.md") && !DirExists(".claude")'
 
 prompt: |
   You generate Claude Code memory files for this workspace for the first time.

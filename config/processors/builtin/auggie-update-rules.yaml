@@ -37,8 +37,8 @@ parameters:
     description: "How many recent user/agent messages the auxiliary agent reviews"
     default: "10"
 
-# Only for Auggie sessions, skip periodic prompts, and only when rules already exist
-enabledWhen: 'ACP.MatchesServerType("augment") && !Session.IsPeriodic && DirExists(".augment/rules")'
+# Only for Auggie sessions, skip loop prompts, and only when rules already exist
+enabledWhen: 'ACP.MatchesServerType("augment") && !Session.IsLoop && DirExists(".augment/rules")'
 
 prompt: |
   You update `.augment/rules` files for this workspace based on recent conversation insights.

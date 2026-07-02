@@ -26,8 +26,8 @@ priority: 190
 timeout: 120s
 onError: skip
 
-# Only activate when the workspace has a user data schema and this isn't a periodic prompt
-enabledWhen: 'Workspace.HasUserDataSchema && !Session.IsPeriodic'
+# Only activate when the workspace has a user data schema and this isn't a loop prompt
+enabledWhen: 'Workspace.HasUserDataSchema && !Session.IsLoop'
 
 prompt: |
   You are a metadata extractor. Your job is to analyze the conversation messages below
