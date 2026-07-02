@@ -694,7 +694,29 @@ export function WorkspacesDialog({
       setOrphanedWorkspaces(orphaned);
       setSelectedFolder(null);
       if (valid.length > 0) {
-        setSelectedWorkspaceKey(getWorkspaceKey(valid[0]));
+        // Preserve the previously-selected workspace across a reload/reopen when it
+        // still exists. Otherwise the selection resets to valid[0], whose order is
+        // not stable (it reflects the backend's map-iteration order, not the sorted
+        // tree). That made a just-saved edit appear "lost": the dialog reopened on a
+        // different workspace that legitimately still showed its own value. When no
+        // prior selection matches, fall back to a deterministic first entry (sorted
+        // by display name, then ACP server) so the initial selection is predictable.
+        const prevKey = selectedWorkspaceKey;
+        const preserved =
+          prevKey && valid.some((ws) => getWorkspaceKey(ws) === prevKey);
+        if (preserved) {
+          setSelectedWorkspaceKey(prevKey);
+        } else {
+          const firstByName = [...valid].sort((a, b) => {
+            const an = a.name || getBasename(a.working_dir) || "";
+            const bn = b.name || getBasename(b.working_dir) || "";
+            return (
+              an.localeCompare(bn) ||
+              (a.acp_server || "").localeCompare(b.acp_server || "")
+            );
+          })[0];
+          setSelectedWorkspaceKey(getWorkspaceKey(firstByName));
+        }
       } else {
         setSelectedWorkspaceKey(null);
       }
