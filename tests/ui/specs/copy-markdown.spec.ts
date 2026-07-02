@@ -137,17 +137,13 @@ test.describe("Copy as Markdown", () => {
     const msg = helpers.uniqueMessage("Convo copy");
     await helpers.sendMessageAndWait(page, msg);
 
-    await page.locator(selectors.headerConversationMenu).click();
-    const menu = page.locator(selectors.contextMenu).first();
-    await expect(menu).toBeVisible({ timeout: timeouts.shortAction });
-
-    const copyItem = page
-      .locator(`${selectors.contextMenu} button`)
-      .filter({ hasText: "Copy as Markdown" });
+    // "Copy as Markdown" is now a dedicated button in the conversation toolbar
+    // pill (previously it lived inside the "…" conversation-actions menu).
+    const copyItem = page.locator(selectors.headerCopyMarkdown);
     await expect(copyItem).toBeVisible({ timeout: timeouts.shortAction });
     await copyItem.click();
 
-    // Success toast and the menu closes.
+    // Success toast appears and no context menu is left open.
     await expect(page.getByText("Conversation copied as Markdown")).toBeVisible({
       timeout: timeouts.appReady,
     });
