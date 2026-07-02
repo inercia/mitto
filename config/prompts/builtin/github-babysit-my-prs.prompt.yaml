@@ -6,7 +6,7 @@ parameters:
     type: text
     required: false
     description: 'Optional GitHub repository (owner/repo) to babysit. If omitted, the repository of the current folder is used.'
-description: 'Periodically check your own open PRs: rebase stale branches, report CI failures, flag ready-to-merge PRs, and address review comments'
+description: 'Regularly check your own open PRs: rebase stale branches, report CI failures, flag ready-to-merge PRs, and address review comments'
 group: GitHub
 backgroundColor: '#BBDEFB'
 tags:
@@ -25,7 +25,7 @@ prompt: |
   Monitor your own open pull requests for the target repository (the current
   folder's repo by default, or the one supplied via the `Repository` parameter),
   keeping them up-to-date and reporting issues. Only acts on PRs where you are
-  the author. Designed to be run periodically via `mitto_conversation_set_loop`.
+  the author. Designed to be run as a loop via `mitto_conversation_set_loop`.
 
   ## Session Context
 

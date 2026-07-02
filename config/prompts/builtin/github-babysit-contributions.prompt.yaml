@@ -6,7 +6,7 @@ parameters:
     type: text
     required: false
     description: 'Optional GitHub repository (owner/repo) to monitor. If omitted, the repository of the current folder is used.'
-description: Periodically check for pending review requests, bot dependency PRs ready to merge, and stale remote branches from merged PRs
+description: Regularly check for pending review requests, bot dependency PRs ready to merge, and stale remote branches from merged PRs
 group: GitHub
 backgroundColor: '#C8E6C9'
 tags:
@@ -27,7 +27,7 @@ prompt: |
   parameter): pending review requests addressed to you, bot dependency PRs
   (Dependabot, Renovate) ready to merge, and stale remote branches from merged
   PRs. This prompt does **not** touch your own PRs — use "GitHub: babysit my
-  PRs" for that. Designed to be run periodically via `mitto_conversation_set_loop`.
+  PRs" for that. Designed to be run as a loop via `mitto_conversation_set_loop`.
 
   ## Session Context
 

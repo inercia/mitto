@@ -8,7 +8,7 @@ parameters:
   - name: CheckoutsRoot
     type: text
     description: Root directory that contains the local checkouts of the repositories you may review
-description: Scan a Slack channel for PR review requests, match each to a local checkout under a checkouts root, and review it — interactive when watched, silent & autonomous when run periodically
+description: Scan a Slack channel for PR review requests, match each to a local checkout under a checkouts root, and review it — interactive when watched, silent & autonomous when run as a loop
 group: GitHub
 backgroundColor: '#BBDEFB'
 tags:
@@ -26,7 +26,7 @@ prompt: |
   to the matching **local checkout** under a given checkouts root, and review each
   PR the same careful way as the **"GitHub: review a Pull Request"** prompt —
   inspecting the PR **without disturbing any local changes** and reviewing against
-  the repository's own conventions. Designed to be safe to run **periodically**.
+  the repository's own conventions. Designed to be safe to run **as a loop**.
 
   ## Session Context
 

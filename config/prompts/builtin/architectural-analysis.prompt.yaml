@@ -28,7 +28,7 @@ prompt: |
   which abstractions earn their keep, and where the design fights itself. Turn every finding worth
   acting on into a beads issue (`bd`), grouping related findings under epics so the work is coherent
   rather than a flat pile. Run it **on demand** in a regular conversation, or schedule it to run
-  periodically — it adapts its behaviour to whichever mode it is invoked in (see Interaction Mode).
+  as a loop — it adapts its behaviour to whichever mode it is invoked in (see Interaction Mode).
 
   ## Interaction Mode
   {{- if and .Session.IsLoop (not .Session.IsLoopForced) }}

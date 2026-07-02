@@ -1,7 +1,7 @@
 icon: tag
 name: 'JIRA: sync tasks'
 menus: prompts
-description: Periodically pull JIRA tickets matching the project's saved query into local beads issues
+description: Regularly pull JIRA tickets matching the project's saved query into local beads issues
 backgroundColor: '#D1C4E9'
 group: JIRA
 tags:
@@ -22,7 +22,7 @@ prompt: |
   keeping the beads copy in sync with changes made in JIRA (description, comments,
   priority, status). This is a **one-way pull** (JIRA → beads) for now; two-way
   sync may be added later. Run it **on demand** in a regular conversation, or
-  schedule it to run periodically via `mitto_conversation_set_loop` — it
+  schedule it to run as a loop via `mitto_conversation_set_loop` — it
   adapts its behaviour to whichever mode it is invoked in (see Interaction Mode).
 
   ## Session Context

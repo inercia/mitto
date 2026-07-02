@@ -12,7 +12,7 @@
 #   2. The workspace contains a `.beads` directory (DirExists CEL gate)
 #
 # Throttling:
-#   - Fires on the first message, then re-runs periodically to keep beads memories
+#   - Fires on the first message, then re-runs repeatedly to keep beads memories
 #     fresh as the conversation grows, without injecting on every single message.
 #
 # Uses command-mode with outputFormat:raw so that the plain-text markdown output
