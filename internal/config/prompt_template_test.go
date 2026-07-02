@@ -466,6 +466,77 @@ func TestIterateUntilComplete_TargetResolution(t *testing.T) {
 	}
 }
 
+// TestRefineImplementation_LoopAndModes verifies the beads-refine-implementation
+// builtin prompt (mitto-mx4):
+//
+//	(a) it parses cleanly — this exercises parse-time CEL validation of the
+//	    onTasks loop.condition, so a broken expression fails the test;
+//	(b) its loop block declares the onTasks trigger + the documented CEL
+//	    condition (mode: always) so selecting it starts a beads-change loop;
+//	(c) it renders without error and branches correctly between silent
+//	    (scheduled loop) and interactive (forced / first send) modes — a guard
+//	    against the pre-mitto-pei stale template vars (.Session.IsPeriodic*).
+//
+// Loaded from the real builtin directory so it exercises the on-disk content.
+func TestRefineImplementation_LoopAndModes(t *testing.T) {
+	builtinDir := "../../config/prompts/builtin"
+	name := "beads-refine-implementation.prompt.yaml"
+	path := filepath.Join(builtinDir, name)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Skipf("prompt file not found at %s: %v", path, err)
+	}
+	prompt, err := ParsePromptFile(name, data, time.Now())
+	if err != nil {
+		t.Fatalf("ParsePromptFile (parse-time CEL validation of loop.condition): %v", err)
+	}
+
+	// (b) Loop block: onTasks trigger, always mode, non-empty documented condition.
+	if prompt.Loop == nil {
+		t.Fatalf("expected a loop block; got nil")
+	}
+	if prompt.Loop.Trigger != "onTasks" {
+		t.Errorf("loop.trigger = %q, want %q", prompt.Loop.Trigger, "onTasks")
+	}
+	if prompt.Loop.Mode != PromptLoopModeAlways {
+		t.Errorf("loop.mode = %q, want %q", prompt.Loop.Mode, PromptLoopModeAlways)
+	}
+	if !strings.Contains(prompt.Loop.Condition, "implementation-refined") {
+		t.Errorf("loop.condition should gate on the implementation-refined label; got %q", prompt.Loop.Condition)
+	}
+
+	body := prompt.Content
+	render := func(ctx *PromptEnabledContext) string {
+		funcs := BuildTemplateFuncMap(ctx)
+		out, rerr := RenderPromptTemplate("beads-refine-implementation", body, ctx, funcs)
+		if rerr != nil {
+			t.Fatalf("RenderPromptTemplate: %v", rerr)
+		}
+		return out
+	}
+
+	// (c) Silent: a scheduled (non-forced) loop run.
+	outSilent := render(&PromptEnabledContext{Session: SessionContext{IsLoop: true, IsLoopForced: false}})
+	if !strings.Contains(outSilent, "Silent mode") {
+		t.Errorf("silent loop run: expected 'Silent mode' branch; got:\n%s", outSilent)
+	}
+	if strings.Contains(outSilent, "Interactive mode") {
+		t.Errorf("silent loop run: unexpected 'Interactive mode' branch")
+	}
+
+	// (c) Interactive: a forced loop run (user present).
+	outForced := render(&PromptEnabledContext{Session: SessionContext{IsLoop: true, IsLoopForced: true}})
+	if !strings.Contains(outForced, "Interactive mode") {
+		t.Errorf("forced run: expected 'Interactive mode' branch; got:\n%s", outForced)
+	}
+
+	// (c) Interactive: a first / normal send (no loop context at all).
+	outFirst := render(&PromptEnabledContext{})
+	if !strings.Contains(outFirst, "Interactive mode") {
+		t.Errorf("first send: expected 'Interactive mode' branch; got:\n%s", outFirst)
+	}
+}
+
 // TestInvestigate_ThreeModeTargetResolution tests the three target-bead
 // resolution branches of beads-issue-investigate.prompt.yaml:
 //
