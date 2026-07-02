@@ -51,6 +51,7 @@ import { AgentDiscoveryDialog } from "./AgentDiscoveryDialog.js";
 import { Modal } from "./Modal.js";
 import { ModelSelection } from "./ModelSelection.js";
 import { ModelProfileSelect } from "./ModelProfileSelect.js";
+import { RichSelect } from "./RichSelect.js";
 import { Tooltip } from "./Tooltip.js";
 
 // Import constants
@@ -239,6 +240,47 @@ export function AutoChildrenEditor({
       ws.working_dir === currentWs.working_dir,
   );
 
+  // Small inline workspace badge + label used in the rich workspace dropdown
+  // (both menu rows and the trigger). Inline styles avoid depending on
+  // tailwind utility classes that may be absent from the precompiled snapshot.
+  const renderWorkspaceItem = (ws) => {
+    const info = getWorkspaceVisualInfo(
+      ws.working_dir,
+      ws.color,
+      ws.code,
+      ws.name,
+    );
+    return html`
+      <span class="inline-flex items-center gap-2 min-w-0">
+        <span
+          class="inline-flex items-center justify-center rounded font-bold shrink-0"
+          style=${{
+            backgroundColor: info.color.background,
+            color: info.color.text,
+            width: "20px",
+            height: "20px",
+            fontSize: "10px",
+          }}
+          >${info.abbreviation}</span
+        >
+        <span class="truncate min-w-0"
+          >${ws.name || ws.acp_server} (${getBasename(ws.working_dir)})</span
+        >
+      </span>
+    `;
+  };
+
+  const workspaceOptions = targetOptions.map((ws) => ({
+    value: ws.uuid,
+    label: `${ws.name || ws.acp_server} (${getBasename(ws.working_dir)})`,
+    render: () => renderWorkspaceItem(ws),
+  }));
+
+  const profileOptions = [
+    { value: "", label: "Default (ACP server criteria)" },
+    ...(modelProfiles || []).map((p) => ({ value: p.name, label: p.name })),
+  ];
+
   const maxChildren = 5;
   const canAdd = (children || []).length < maxChildren;
 
@@ -266,44 +308,34 @@ export function AutoChildrenEditor({
                       placeholder="Child title"
                       onInput=${(e) =>
                         updateChild(idx, "title", e.target.value)}
-                      class="input input-sm join-item flex-1"
+                      class="input input-sm join-item flex-1 min-w-0"
                     />
-                    <select
+                    <${RichSelect}
+                      className="flex-1 min-w-0 join-item"
+                      triggerClass="input input-sm rounded-none w-full flex items-center justify-between gap-2 list-none cursor-pointer"
+                      ariaLabel="Target workspace"
                       value=${child.target_workspace_uuid || ""}
-                      onChange=${(e) =>
-                        updateChild(
-                          idx,
-                          "target_workspace_uuid",
-                          e.target.value,
-                        )}
-                      class="select select-sm join-item"
-                    >
-                      ${targetOptions.map(
-                        (ws) => html`
-                          <option value=${ws.uuid}>
-                            ${ws.name || ws.acp_server}
-                            (${getBasename(ws.working_dir)})
-                          </option>
-                        `,
-                      )}
-                    </select>
-                    <select
+                      options=${workspaceOptions}
+                      placeholder="Select workspace"
+                      renderTrigger=${(sel) =>
+                        sel
+                          ? sel.render()
+                          : html`<span>Select workspace</span>`}
+                      onChange=${(v) =>
+                        updateChild(idx, "target_workspace_uuid", v)}
+                    />
+                    <${RichSelect}
+                      className="flex-1 min-w-0 join-item"
+                      triggerClass="input input-sm rounded-none w-full flex items-center justify-between gap-2 list-none cursor-pointer"
+                      ariaLabel="Model profile"
                       value=${child.model_profile || ""}
-                      onChange=${(e) =>
-                        updateChild(idx, "model_profile", e.target.value)}
-                      class="select select-sm join-item"
-                    >
-                      <option value="">Default (ACP server criteria)</option>
-                      ${(modelProfiles || []).map(
-                        (p) => html`
-                          <option value=${p.name}>${p.name}</option>
-                        `,
-                      )}
-                    </select>
+                      options=${profileOptions}
+                      onChange=${(v) => updateChild(idx, "model_profile", v)}
+                    />
                     <button
                       type="button"
                       onClick=${() => removeChild(idx)}
-                      class="btn btn-ghost btn-square btn-sm join-item tooltip tooltip-bottom"
+                      class="btn btn-ghost btn-square btn-sm join-item tooltip tooltip-bottom shrink-0"
                       data-tip="Remove child"
                       aria-label="Remove child"
                     >
@@ -1092,8 +1124,8 @@ export function SettingsDialog({
   const [acpServers, setAcpServers] = useState([]);
   // Model profiles (named profiles pairing criteria with capability tags)
   const [modelProfiles, setModelProfiles] = useState([]);
-  // Accordion: index of the single expanded model profile
-  const [expandedProfileIndex, setExpandedProfileIndex] = useState(0);
+  // Accordion: index of the single expanded model profile (-1 = all collapsed)
+  const [expandedProfileIndex, setExpandedProfileIndex] = useState(-1);
   // Raw text drafts for the tags input, keyed by profile index — lets the
   // user type commas without the controlled value swallowing them
   const [tagDrafts, setTagDrafts] = useState({});
@@ -1204,8 +1236,7 @@ export function SettingsDialog({
   // Max loop iterations setting - default 100
   const [maxLoopIterations, setMaxLoopIterations] = useState(100);
 
-  const [loopBehaviorExpanded, setLoopBehaviorExpanded] =
-    useState(false);
+  const [loopBehaviorExpanded, setLoopBehaviorExpanded] = useState(false);
 
   // Default flags for new conversations
   const [availableFlags, setAvailableFlags] = useState([]);
@@ -1477,7 +1508,7 @@ export function SettingsDialog({
       servers.forEach(assignStableKey);
       setAcpServers(servers);
       setModelProfiles(Array.isArray(config.models) ? config.models : []);
-      setExpandedProfileIndex(0);
+      setExpandedProfileIndex(-1);
       setTagDrafts({});
 
       // Reset server renames when config is loaded
@@ -1637,9 +1668,7 @@ export function SettingsDialog({
       );
 
       // Load max loop iterations setting - default to 100
-      setMaxLoopIterations(
-        config.conversations?.max_loop_iterations ?? 100,
-      );
+      setMaxLoopIterations(config.conversations?.max_loop_iterations ?? 100);
 
       // Load input font family setting (web UI) - default to "system"
       setInputFontFamily(config.ui?.web?.input_font_family || "system");
@@ -3559,13 +3588,9 @@ export function SettingsDialog({
                       <div
                         class="collapse-title flex items-center justify-between p-3 pr-12 min-h-0 cursor-pointer bg-mitto-surface-3/30 hover:bg-mitto-surface-3/50 transition-colors"
                         onClick=${() =>
-                          setLoopBehaviorExpanded(
-                            !loopBehaviorExpanded,
-                          )}
+                          setLoopBehaviorExpanded(!loopBehaviorExpanded)}
                       >
-                        <span class="text-sm font-medium"
-                          >Loop Behavior</span
-                        >
+                        <span class="text-sm font-medium">Loop Behavior</span>
                       </div>
                       <div class="collapse-content px-0">
                         ${loopBehaviorExpanded &&
@@ -3579,11 +3604,11 @@ export function SettingsDialog({
                                   Suspend loop conversations
                                 </div>
                                 <div class="text-xs text-mitto-text-muted">
-                                  Automatically suspend idle loop
-                                  conversations when their next run is farther
-                                  away than this timeout. Saves memory by
-                                  stopping ACP and MCP processes. Conversations
-                                  resume transparently when focused.
+                                  Automatically suspend idle loop conversations
+                                  when their next run is farther away than this
+                                  timeout. Saves memory by stopping ACP and MCP
+                                  processes. Conversations resume transparently
+                                  when focused.
                                 </div>
                               </div>
                               <select
@@ -4684,8 +4709,7 @@ export function SettingsDialog({
                       const trimmedName = (p.name || "").trim();
                       const tags = p.tags || [];
                       const isPartialBlank =
-                        trimmedName === "" &&
-                        (!!p.criteria || tags.length > 0);
+                        trimmedName === "" && (!!p.criteria || tags.length > 0);
                       return html`
                         <div
                           key=${i}
@@ -4846,9 +4870,7 @@ export function SettingsDialog({
                                                 ),
                                               })}
                                           >
-                                            <${CloseIcon}
-                                              className="w-3 h-3"
-                                            />
+                                            <${CloseIcon} className="w-3 h-3" />
                                           </button>
                                         </span>
                                       `,
