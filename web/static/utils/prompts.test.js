@@ -1162,30 +1162,30 @@ describe("promptMenuIncludes", () => {
 
 describe("periodic prompt filter logic (union + exclusion)", () => {
   // Replicates the loopPrompts predicate from useWorkspacePrompts.js
-  function isPeriodicPrompt(p) {
+  function isLoopPrompt(p) {
     if (promptMenuExcludes(p).has("promptsLoop")) return false;
     const menus = promptMenus(p);
     return menus.includes("prompts") || menus.includes("promptsLoop");
   }
 
   test("prompts-only prompt IS in periodic selector (union rule)", () => {
-    expect(isPeriodicPrompt({ menus: "prompts" })).toBe(true);
+    expect(isLoopPrompt({ menus: "prompts" })).toBe(true);
   });
 
   test("promptsLoop-only prompt IS in periodic selector", () => {
-    expect(isPeriodicPrompt({ menus: "promptsLoop" })).toBe(true);
+    expect(isLoopPrompt({ menus: "promptsLoop" })).toBe(true);
   });
 
   test("prompt with menus: prompts, !promptsLoop is NOT in periodic selector", () => {
-    expect(isPeriodicPrompt({ menus: "prompts, !promptsLoop" })).toBe(false);
+    expect(isLoopPrompt({ menus: "prompts, !promptsLoop" })).toBe(false);
   });
 
   test("prompt with menus: conversation is NOT in periodic selector", () => {
-    expect(isPeriodicPrompt({ menus: "conversation" })).toBe(false);
+    expect(isLoopPrompt({ menus: "conversation" })).toBe(false);
   });
 
   test("prompt with no menus field IS in periodic selector (defaults to prompts)", () => {
-    expect(isPeriodicPrompt({})).toBe(true);
+    expect(isLoopPrompt({})).toBe(true);
   });
 });
 
@@ -1374,25 +1374,25 @@ describe("buildPromptGroupMenuItems", () => {
     expect(sub.periodicDefaultOn).toBe(false);
   });
 
-  test("calling item.onClick({ asPeriodic: true }) invokes onRun with (prompt, { asPeriodic: true })", () => {
+  test("calling item.onClick({ asLoop: true }) invokes onRun with (prompt, { asLoop: true })", () => {
     const onRun = jest.fn();
     const items = buildPromptGroupMenuItems(prompts, onRun, null);
     const sub = findSub(items, "Maybe Periodic");
-    sub.onClick({ asPeriodic: true });
+    sub.onClick({ asLoop: true });
     expect(onRun).toHaveBeenCalledTimes(1);
     const [calledPrompt, calledOpts] = onRun.mock.calls[0];
     expect(calledPrompt.name).toBe("Maybe Periodic");
-    expect(calledOpts).toEqual({ asPeriodic: true });
+    expect(calledOpts).toEqual({ asLoop: true });
   });
 
-  test("calling item.onClick({ asPeriodic: false }) forwards false", () => {
+  test("calling item.onClick({ asLoop: false }) forwards false", () => {
     const onRun = jest.fn();
     const items = buildPromptGroupMenuItems(prompts, onRun, null);
     const sub = findSub(items, "Maybe Periodic");
-    sub.onClick({ asPeriodic: false });
+    sub.onClick({ asLoop: false });
     expect(onRun).toHaveBeenCalledTimes(1);
     const [calledPrompt, calledOpts] = onRun.mock.calls[0];
     expect(calledPrompt.name).toBe("Maybe Periodic");
-    expect(calledOpts).toEqual({ asPeriodic: false });
+    expect(calledOpts).toEqual({ asLoop: false });
   });
 });

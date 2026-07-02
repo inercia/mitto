@@ -142,7 +142,7 @@ function PromptStopButton({ onStop }) {
  * @param {boolean} props.isArchived - Whether session is archived (disables input)
  * @param {boolean} props.isArchivePending - Whether archive is pending (waiting for agent to finish)
  * @param {Array} props.predefinedPrompts - Array of predefined prompts (ChatInput dropup)
- * @param {Array} props.periodicPrompts - Array of prompts for the periodic prompt selector
+ * @param {Array} props.loopPrompts - Array of prompts for the periodic prompt selector
  * @param {Object} props.inputRef - Ref for external focus control
  * @param {boolean} props.noSession - Whether there's no active session
  * @param {string} props.sessionId - Current session ID
@@ -156,8 +156,8 @@ function PromptStopButton({ onStop }) {
  * @param {boolean} props.showQueueDropdown - Whether the queue dropdown is currently visible
  * @param {Array} props.actionButtons - Array of action buttons from agent response { label, response }
  * @param {Array} props.availableCommands - Array of available slash commands { name, description, input_hint }
- * @param {boolean} props.periodicConfigured - Whether a periodic config exists (shows editor, disables queue buttons)
- * @param {Function} [props.onPeriodicPrompt] - Called with (prompt, opts) when a periodic-flagged prompt is selected, where opts is { asPeriodic } (the resolved per-send override). Routes to app-level branching (decidePeriodicAction). When absent, periodic prompts fall through to the normal send path.
+ * @param {boolean} props.loopConfigured - Whether a periodic config exists (shows editor, disables queue buttons)
+ * @param {Function} [props.onPeriodicPrompt] - Called with (prompt, opts) when a periodic-flagged prompt is selected, where opts is { asLoop } (the resolved per-send override). Routes to app-level branching (decidePeriodicAction). When absent, periodic prompts fall through to the normal send path.
  * @param {Object} props.activeUIPrompt - Active UI prompt from MCP tool { requestId, promptType, question, options, timeoutSeconds, receivedAt }
  * @param {Function} props.onUIPromptAnswer - Callback when user answers a UI prompt (requestId, optionId, label)
  * @param {string} props.workingDir - Workspace directory path (for smart file path insertion on native app drag & drop)
@@ -173,7 +173,7 @@ export function ChatInput({
   isArchived = false,
   isArchivePending = false,
   predefinedPrompts = [],
-  periodicPrompts = [],
+  loopPrompts = [],
   inputRef,
   noSession = false,
   sessionId,
@@ -188,7 +188,7 @@ export function ChatInput({
   showQueueDropdown = false,
   actionButtons = [],
   availableCommands = [],
-  periodicConfigured = false,
+  loopConfigured = false,
   onPeriodicPrompt,
   agentSupportsImages = false,
   acpReady = true,
@@ -381,9 +381,9 @@ export function ChatInput({
 
   // Periodic prompt lock state
   // When locked, the prompt is saved to the periodic config and textarea is read-only
-  const [isPeriodicLocked, setIsPeriodicLocked] = useState(false);
-  const [isPeriodicSaving, setIsPeriodicSaving] = useState(false);
-  const [periodicPromptName, setPeriodicPromptName] = useState("");
+  const [isLoopLocked, setIsLoopLocked] = useState(false);
+  const [isLoopSaving, setIsLoopSaving] = useState(false);
+  const [loopPromptName, setLoopPromptName] = useState("");
 
   // Resize handle for textarea min height (controls the visual size of the input area)
   // Hard max for auto-grow (scrollbar appears beyond this)
@@ -431,7 +431,7 @@ export function ChatInput({
       );
     };
   }, []);
-  const [periodicPrompt, setPeriodicPrompt] = useState(""); // The saved periodic prompt
+  const [loopPrompt, setLoopPrompt] = useState(""); // The saved periodic prompt
   const [periodicFrequency, setPeriodicFrequency] = useState({
     value: 1,
     unit: "hours",
@@ -477,10 +477,10 @@ export function ChatInput({
     setSlashSelectedIndex(0);
     setComboSelectedId(""); // Reset combo box selection
     // Reset periodic lock state when session changes
-    setIsPeriodicLocked(false);
-    setIsPeriodicSaving(false);
-    setPeriodicPrompt("");
-    setPeriodicPromptName("");
+    setIsLoopLocked(false);
+    setIsLoopSaving(false);
+    setLoopPrompt("");
+    setLoopPromptName("");
     setPeriodicFrequency({ value: 1, unit: "hours" });
     setPeriodicNextScheduledAt(null);
     setPeriodicMaxIterations(0);
@@ -494,7 +494,7 @@ export function ChatInput({
     setPeriodicArguments({});
     // Collapse the periodic properties body by default when switching
     // conversations (the prompt composition area is collapsed separately by
-    // the periodicConfigured effect below).
+    // the loopConfigured effect below).
     setPeriodicExpanded(false);
   }, [sessionId]);
 
@@ -520,18 +520,18 @@ export function ChatInput({
         prevCollapsedBeforeUIRef.current = prev;
         return true;
       });
-    } else if (!periodicConfigured) {
+    } else if (!loopConfigured) {
       // Restore previous collapsed state when MCP UI dismisses
       setIsPromptCollapsed(prevCollapsedBeforeUIRef.current);
     }
-  }, [activeUIPrompt?.requestId, periodicConfigured]);
+  }, [activeUIPrompt?.requestId, loopConfigured]);
 
   // Fetch periodic config when periodic is configured for this session
   useEffect(() => {
-    if (!periodicConfigured || !sessionId) {
-      setIsPeriodicLocked(false);
-      setPeriodicPrompt("");
-      setPeriodicPromptName("");
+    if (!loopConfigured || !sessionId) {
+      setIsLoopLocked(false);
+      setLoopPrompt("");
+      setLoopPromptName("");
       setPeriodicFrequency({ value: 1, unit: "hours" });
       setPeriodicNextScheduledAt(null);
       setPeriodicTrigger("schedule");
@@ -574,7 +574,7 @@ export function ChatInput({
           setPeriodicNextScheduledAt(null);
         }
         // Update prompt name and fresh context from config
-        setPeriodicPromptName(config.prompt_name || "");
+        setLoopPromptName(config.prompt_name || "");
         setPeriodicFreshContext(config.fresh_context === true);
         setPeriodicMaxIterations(config.max_iterations ?? 0);
         setPeriodicIterationCount(config.iteration_count ?? 0);
@@ -587,13 +587,13 @@ export function ChatInput({
         setPeriodicArguments(config.arguments || {});
         // Set lock state based on the enabled field
         const isLocked = config.enabled === true;
-        setIsPeriodicLocked(isLocked);
+        setIsLoopLocked(isLocked);
         // Set prompt state based on config
         const isPendingPlaceholder = config.prompt === "(pending)";
         if (config.prompt && !isPendingPlaceholder) {
-          setPeriodicPrompt(config.prompt);
+          setLoopPrompt(config.prompt);
         } else {
-          setPeriodicPrompt("");
+          setLoopPrompt("");
         }
       } catch (err) {
         console.error("Failed to fetch periodic config:", err);
@@ -601,15 +601,15 @@ export function ChatInput({
     };
 
     fetchPeriodicConfig();
-  }, [periodicConfigured, sessionId]);
+  }, [loopConfigured, sessionId]);
 
   // Listen for periodic config updates from other clients via WebSocket
   useEffect(() => {
     const handlePeriodicConfigUpdated = (event) => {
       const {
         sessionId: updatedSessionId,
-        periodicConfigured,
-        periodicEnabled: newPeriodicEnabled,
+        loopConfigured,
+        loopEnabled: newPeriodicEnabled,
         frequency,
         nextScheduledAt,
         iterationCount,
@@ -628,16 +628,16 @@ export function ChatInput({
       if (maxIterations !== undefined) setPeriodicMaxIterations(maxIterations);
 
       // If periodic config was deleted (not configured), reset state
-      if (periodicConfigured === false) {
-        setIsPeriodicLocked(false);
+      if (loopConfigured === false) {
+        setIsLoopLocked(false);
         setPeriodicNextScheduledAt(null);
-        setPeriodicPrompt("");
+        setLoopPrompt("");
         return;
       }
 
       // If periodic run is disabled (unlocked), update lock state
       if (newPeriodicEnabled === false) {
-        setIsPeriodicLocked(false);
+        setIsLoopLocked(false);
         setPeriodicNextScheduledAt(null);
         // Capture why the loop stopped so the restore dialog can offer to reset
         // the elapsed iterations/time when a max-iterations/max-duration cap was hit.
@@ -669,7 +669,7 @@ export function ChatInput({
           })
           .then((config) => {
             if (!config) return;
-            setPeriodicPromptName(config.prompt_name || "");
+            setLoopPromptName(config.prompt_name || "");
             setPeriodicFreshContext(config.fresh_context === true);
             setPeriodicMaxIterations(config.max_iterations ?? 0);
             setPeriodicIterationCount(config.iteration_count ?? 0);
@@ -682,8 +682,8 @@ export function ChatInput({
             setPeriodicArguments(config.arguments || {});
             const isPendingPlaceholder = config.prompt === "(pending)";
             if (config.prompt && !isPendingPlaceholder) {
-              setPeriodicPrompt(config.prompt);
-              setIsPeriodicLocked(true);
+              setLoopPrompt(config.prompt);
+              setIsLoopLocked(true);
             }
           })
           .catch((err) =>
@@ -902,7 +902,7 @@ export function ChatInput({
             }
             // In periodic conversations, hide the composition area after a
             // successful enqueue; the user re-opens it via the Mitto bubble.
-            if (periodicConfigured) setIsPromptCollapsed(true);
+            if (loopConfigured) setIsPromptCollapsed(true);
           }
         } catch (err) {
           console.error("Failed to add to queue:", err);
@@ -935,7 +935,7 @@ export function ChatInput({
         }
         // In periodic conversations, hide the composition area after a
         // successful send; the user re-opens it via the Mitto bubble.
-        if (periodicConfigured) setIsPromptCollapsed(true);
+        if (loopConfigured) setIsPromptCollapsed(true);
       } catch (err) {
         // Failed - show error and keep text for retry
         console.error("Failed to send message:", err);
@@ -975,7 +975,7 @@ export function ChatInput({
           }
           // In periodic conversations, hide the composition area after a
           // successful enqueue; the user re-opens it via the Mitto bubble.
-          if (periodicConfigured) setIsPromptCollapsed(true);
+          if (loopConfigured) setIsPromptCollapsed(true);
         }
       } catch (err) {
         console.error("Failed to add to queue:", err);
@@ -985,9 +985,9 @@ export function ChatInput({
 
   // Handle locking the periodic prompt (saves to backend and enables periodic run)
   const handleLockPeriodicPrompt = useCallback(async () => {
-    if (!sessionId || !text.trim() || isPeriodicSaving) return;
+    if (!sessionId || !text.trim() || isLoopSaving) return;
 
-    setIsPeriodicSaving(true);
+    setIsLoopSaving(true);
     try {
       const response = await secureFetch(
         endpoints.sessions.loop(sessionId),
@@ -999,8 +999,8 @@ export function ChatInput({
       );
       if (response.ok) {
         const data = await response.json();
-        setPeriodicPrompt(text.trim());
-        setIsPeriodicLocked(true);
+        setLoopPrompt(text.trim());
+        setIsLoopLocked(true);
         // Update next scheduled time from server response (keep as ISO string for consistency)
         if (data.next_scheduled_at) {
           setPeriodicNextScheduledAt(data.next_scheduled_at);
@@ -1011,15 +1011,15 @@ export function ChatInput({
     } catch (err) {
       console.error("Failed to lock periodic prompt:", err);
     } finally {
-      setIsPeriodicSaving(false);
+      setIsLoopSaving(false);
     }
-  }, [sessionId, text, isPeriodicSaving]);
+  }, [sessionId, text, isLoopSaving]);
 
   // Handle unlocking the periodic prompt (allows editing and disables periodic run)
   const handleUnlockPeriodicPrompt = useCallback(async () => {
-    if (!sessionId || isPeriodicSaving) return;
+    if (!sessionId || isLoopSaving) return;
 
-    setIsPeriodicSaving(true);
+    setIsLoopSaving(true);
     try {
       const response = await secureFetch(
         endpoints.sessions.loop(sessionId),
@@ -1030,7 +1030,7 @@ export function ChatInput({
         },
       );
       if (response.ok) {
-        setIsPeriodicLocked(false);
+        setIsLoopLocked(false);
         setPeriodicNextScheduledAt(null); // Clear next scheduled time when disabled
         // Focus the textarea so user can start editing
         if (textareaRef.current) {
@@ -1042,18 +1042,18 @@ export function ChatInput({
     } catch (err) {
       console.error("Failed to unlock periodic prompt:", err);
     } finally {
-      setIsPeriodicSaving(false);
+      setIsLoopSaving(false);
     }
-  }, [sessionId, isPeriodicSaving]);
+  }, [sessionId, isLoopSaving]);
 
   // Handle periodic prompt selection from LoopPromptSelector
   const handlePeriodicPromptSelect = useCallback(
     async (promptName) => {
-      if (!sessionId || isPeriodicSaving) return;
+      if (!sessionId || isLoopSaving) return;
 
       // Helper that performs the actual PATCH, optionally with arguments.
       const doPatch = async (extraArgs) => {
-        setIsPeriodicSaving(true);
+        setIsLoopSaving(true);
         try {
           const body = { prompt_name: promptName, enabled: true };
           if (extraArgs && Object.keys(extraArgs).length > 0) {
@@ -1069,8 +1069,8 @@ export function ChatInput({
           );
           if (response.ok) {
             const data = await response.json();
-            setPeriodicPromptName(promptName);
-            setIsPeriodicLocked(true);
+            setLoopPromptName(promptName);
+            setIsLoopLocked(true);
             if (data.next_scheduled_at) {
               setPeriodicNextScheduledAt(data.next_scheduled_at);
             }
@@ -1078,12 +1078,12 @@ export function ChatInput({
         } catch (err) {
           console.error("Failed to save periodic prompt selection:", err);
         } finally {
-          setIsPeriodicSaving(false);
+          setIsLoopSaving(false);
         }
       };
 
       // Check if the prompt declares parameters that need user input before saving.
-      const fullPrompt = periodicPrompts.find((p) => p.name === promptName);
+      const fullPrompt = loopPrompts.find((p) => p.name === promptName);
       let missing = fullPrompt
         ? getMissingPromptParameters(fullPrompt, "conversation")
         : [];
@@ -1100,13 +1100,13 @@ export function ChatInput({
 
       await doPatch(undefined);
     },
-    [sessionId, isPeriodicSaving, periodicPrompts, onOpenPromptParamDialog],
+    [sessionId, isLoopSaving, loopPrompts, onOpenPromptParamDialog],
   );
 
   // Open the PromptParameterDialog pre-filled with current periodic arguments
   const handleEditPeriodicArguments = useCallback(() => {
-    const prompt = (periodicPrompts || []).find(
-      (p) => p.name === periodicPromptName,
+    const prompt = (loopPrompts || []).find(
+      (p) => p.name === loopPromptName,
     );
     if (!prompt) return;
     const params = promptParameters(prompt);
@@ -1134,8 +1134,8 @@ export function ChatInput({
       { initialValues: periodicArguments, hostSessionId: sessionId },
     );
   }, [
-    periodicPrompts,
-    periodicPromptName,
+    loopPrompts,
+    loopPromptName,
     periodicArguments,
     sessionId,
     onOpenPromptParamDialog,
@@ -1159,7 +1159,7 @@ export function ChatInput({
 
   // Handle pause/resume toggle from the LoopFrequencyPanel
   const handlePeriodicEnabledChange = useCallback((newEnabled) => {
-    setIsPeriodicLocked(newEnabled);
+    setIsLoopLocked(newEnabled);
     if (!newEnabled) {
       setPeriodicNextScheduledAt(null);
     }
@@ -1319,9 +1319,9 @@ export function ChatInput({
 
     // Periodic-flagged prompts: route to app-level branching (decidePeriodicAction).
     // This handles make-periodic / one-shot / new-periodic without duplicating logic here.
-    const asPeriodic = prompt && promptResolveAsLoop(prompt, opts?.asPeriodic);
-    if (asPeriodic && onPeriodicPrompt) {
-      onPeriodicPrompt(prompt, { asPeriodic });
+    const asLoop = prompt && promptResolveAsLoop(prompt, opts?.asLoop);
+    if (asLoop && onPeriodicPrompt) {
+      onPeriodicPrompt(prompt, { asLoop });
       return;
     }
 
@@ -2454,8 +2454,8 @@ ${activeUIPrompt.text || ""}</textarea
       <!-- Single merged card: compact header always visible; body expands on demand. -->
       <div class="max-w-4xl mx-auto">
         <${LoopFrequencyPanel}
-          isOpen=${periodicConfigured && !hasActiveUIPrompt}
-          disabled=${isPeriodicLocked}
+          isOpen=${loopConfigured && !hasActiveUIPrompt}
+          disabled=${isLoopLocked}
           sessionId=${sessionId}
           frequency=${periodicFrequency}
           onFrequencyChange=${handlePeriodicFrequencyChange}
@@ -2467,9 +2467,9 @@ ${activeUIPrompt.text || ""}</textarea
           iterationCount=${periodicIterationCount}
           onMaxIterationsChange=${handlePeriodicMaxIterationsChange}
           onPeriodicEnabledChange=${handlePeriodicEnabledChange}
-          prompts=${periodicPrompts}
-          selectedPromptName=${periodicPromptName}
-          selectedPromptBody=${periodicPrompt}
+          prompts=${loopPrompts}
+          selectedPromptName=${loopPromptName}
+          selectedPromptBody=${loopPrompt}
           onPromptSelect=${handlePeriodicPromptSelect}
           isPromptAreaVisible=${!isPromptCollapsed}
           onTogglePromptArea=${() =>
@@ -2508,7 +2508,7 @@ ${activeUIPrompt.text || ""}</textarea
       !isStreaming &&
       !isReadOnly &&
       !noSession &&
-      !periodicConfigured &&
+      !loopConfigured &&
       !isResuming &&
       html`
         <div class="max-w-4xl mx-auto mb-3">
@@ -2669,7 +2669,7 @@ ${activeUIPrompt.text || ""}</textarea
           </div>
         </div>
       `}
-      ${!(isPromptCollapsed && (periodicConfigured || hasActiveUIPrompt)) &&
+      ${!(isPromptCollapsed && (loopConfigured || hasActiveUIPrompt)) &&
       html`
         <div class="max-w-4xl mx-auto chat-input-container">
           <div class="chat-input-box" ref=${dropupRef}>
@@ -3085,18 +3085,18 @@ ${activeUIPrompt.text || ""}</textarea
                   <button
                     type="button"
                     onClick=${() => {
-                      if (!periodicConfigured && onToggleQueue) onToggleQueue();
+                      if (!loopConfigured && onToggleQueue) onToggleQueue();
                     }}
-                    disabled=${periodicConfigured}
+                    disabled=${loopConfigured}
                     data-queue-toggle
                     class="chat-input-action relative tooltip tooltip-top"
-                    style="${showQueueDropdown && !periodicConfigured
+                    style="${showQueueDropdown && !loopConfigured
                       ? "background: #2563eb !important; color: white !important;"
                       : ""}"
-                    data-tip=${periodicConfigured
+                    data-tip=${loopConfigured
                       ? "Queue disabled for periodic sessions"
                       : `${queueLength}/${queueConfig.max_size} queued - Click to ${showQueueDropdown ? "hide" : "show"} queue`}
-                    aria-label=${periodicConfigured
+                    aria-label=${loopConfigured
                       ? "Queue disabled for periodic sessions"
                       : `${queueLength}/${queueConfig.max_size} queued - Click to ${showQueueDropdown ? "hide" : "show"} queue`}
                   >
@@ -3113,7 +3113,7 @@ ${activeUIPrompt.text || ""}</textarea
                         d="M4 6h16M4 10h16M4 14h16M4 18h16"
                       />
                     </svg>
-                    ${!periodicConfigured &&
+                    ${!loopConfigured &&
                     html`<span
                       class="absolute -top-1 -right-1 pointer-events-none"
                       style="display:flex;align-items:center;justify-content:center;min-width:16px;height:16px;padding:0 4px;border-radius:9999px;font-size:10px;font-weight:600;line-height:1;background:var(--mitto-accent,#dc2626);color:var(--mitto-accent-fg,#ffffff);box-sizing:border-box;"
@@ -3266,12 +3266,12 @@ ${activeUIPrompt.text || ""}</textarea
                     (!text.trim() && !hasPendingAttachments) ||
                     isReadOnly ||
                     isImproving ||
-                    periodicConfigured}
+                    loopConfigured}
                     class="chat-input-action tooltip tooltip-top"
-                    data-tip=${periodicConfigured
+                    data-tip=${loopConfigured
                       ? "Queue disabled for periodic sessions"
                       : "Add to queue (⌘/Ctrl+Enter)"}
-                    aria-label=${periodicConfigured
+                    aria-label=${loopConfigured
                       ? "Queue disabled for periodic sessions"
                       : "Add to queue (⌘/Ctrl+Enter)"}
                   >

@@ -741,12 +741,12 @@ describe("ChatInput periodic routing — onPeriodicPrompt delegation", () => {
   /**
    * Minimal simulation of the ChatInput.handlePredefinedPrompt routing logic.
    * Extracted here so we can test without mounting the full ChatInput component.
-   * Mirrors the real code: const asPeriodic = prompt && promptResolveAsLoop(prompt);
-   * if (asPeriodic && onPeriodicPrompt) { onPeriodicPrompt(prompt); return; } (mitto-92x.3).
+   * Mirrors the real code: const asLoop = prompt && promptResolveAsLoop(prompt);
+   * if (asLoop && onPeriodicPrompt) { onPeriodicPrompt(prompt); return; } (mitto-92x.3).
    */
   function routePrompt(prompt, { onPeriodicPrompt, onSend } = {}) {
-    const asPeriodic = prompt && promptResolveAsLoop(prompt);
-    if (asPeriodic && onPeriodicPrompt) {
+    const asLoop = prompt && promptResolveAsLoop(prompt);
+    if (asLoop && onPeriodicPrompt) {
       onPeriodicPrompt(prompt);
       return "periodic";
     }

@@ -4510,7 +4510,7 @@ export function BeadsView({
                           const opts =
                             mode === "optional"
                               ? {
-                                  asPeriodic:
+                                  asLoop:
                                     listPeriodicOn[p.name] !== undefined
                                       ? listPeriodicOn[p.name]
                                       : promptLoopDefaultOn(p),

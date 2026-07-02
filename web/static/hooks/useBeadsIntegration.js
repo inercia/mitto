@@ -29,7 +29,7 @@ import { useConversationSeeding } from "./useConversationSeeding.js";
  * @param {Function} deps.setShowSidebar        - Closes sidebar overlay (mobile).
  * @param {Function} deps.setShowSidePanel      - Closes/opens the side panel (used in handleOpenBeadsIssue / return).
  * @param {Function} deps.setSidePanelTab       - Selects the side panel tab (used when returning to a conversation).
- * @param {Function} [deps.onOpenPeriodicDialog] - Opens the periodic schedule dialog.
+ * @param {Function} [deps.onOpenLoopDialog] - Opens the periodic schedule dialog.
  *   Signature: (prompt, onSchedule: ({ value, unit, at? }) => void) => void.
  *   When absent, periodic prompts fall back to the one-time named-prompt path.
  * @param {Function} [deps.onOpenPromptParamDialog] - Opens the prompt parameter dialog
@@ -47,7 +47,7 @@ export function useBeadsIntegration({
   setShowSidebar,
   setShowSidePanel,
   setSidePanelTab,
-  onOpenPeriodicDialog,
+  onOpenLoopDialog,
   onOpenPromptParamDialog,
   activeSessionId,
 }) {
@@ -247,12 +247,12 @@ export function useBeadsIntegration({
       const missing = getMissingPromptParameters(prompt, "beadsIssues");
 
       // Periodic prompts create a recurring conversation instead of a one-time seed.
-      const asPeriodic = promptResolveAsLoop(prompt, opts?.asPeriodic);
-      if (asPeriodic && onOpenPeriodicDialog) {
+      const asLoop = promptResolveAsLoop(prompt, opts?.asLoop);
+      if (asLoop && onOpenLoopDialog) {
         // Open the periodic dialog and start the conversation with the resolved
         // arguments merged in (so ${VAR} substitution sees the issue context).
         const launchPeriodic = (args) => {
-          onOpenPeriodicDialog(prompt, async (schedule) => {
+          onOpenLoopDialog(prompt, async (schedule) => {
             const result = await startConversationWithPrompt({
               workingDir: beadsWorkingDir,
               acpServer: ws?.acp_server,
@@ -359,7 +359,7 @@ export function useBeadsIntegration({
       workspaces,
       startConversationWithPrompt,
       showToast,
-      onOpenPeriodicDialog,
+      onOpenLoopDialog,
       onOpenPromptParamDialog,
     ],
   );
@@ -382,9 +382,9 @@ export function useBeadsIntegration({
       const ws = beadsMatches.find((w) => w.is_default) || beadsMatches[0];
 
       // Periodic prompts create a recurring conversation instead of a one-time seed.
-      const asPeriodic = promptResolveAsLoop(prompt, opts?.asPeriodic);
-      if (asPeriodic && onOpenPeriodicDialog) {
-        onOpenPeriodicDialog(prompt, async (schedule) => {
+      const asLoop = promptResolveAsLoop(prompt, opts?.asLoop);
+      if (asLoop && onOpenLoopDialog) {
+        onOpenLoopDialog(prompt, async (schedule) => {
           const result = await startConversationWithPrompt({
             workingDir: wd,
             acpServer: ws?.acp_server,
@@ -441,7 +441,7 @@ export function useBeadsIntegration({
       workspaces,
       startConversationWithPrompt,
       showToast,
-      onOpenPeriodicDialog,
+      onOpenLoopDialog,
     ],
   );
 

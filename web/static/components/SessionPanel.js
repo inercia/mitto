@@ -247,7 +247,7 @@ export function SessionPanel({
   const [editedTitle, setEditedTitle] = useState("");
   const [isSavingTitle, setIsSavingTitle] = useState(false);
   const titleInputRef = useRef(null);
-  const [periodicConfig, setPeriodicConfig] = useState(null);
+  const [loopConfig, setLoopConfig] = useState(null);
   const [callbackConfig, setCallbackConfig] = useState(null);
   const [callbackCopied, setCallbackCopied] = useState(false);
   const [confirmDialog, setConfirmDialog] = useState(null);
@@ -284,7 +284,7 @@ export function SessionPanel({
   // --- Effects: reset on session change ---
   useEffect(() => {
     setIsEditingTitle(false);
-    setPeriodicConfig(null);
+    setLoopConfig(null);
     setCallbackConfig(null);
     setCallbackCopied(false);
     setFlagsError(null);
@@ -303,15 +303,15 @@ export function SessionPanel({
 
       // Periodic + callback endpoints only exist for periodic conversations.
       // Gating on loop_configured avoids 404 noise on regular sessions.
-      const periodicConfigured = sessionInfo?.loop_configured === true;
+      const loopConfigured = sessionInfo?.loop_configured === true;
 
       try {
         const [periodicRes, callbackRes, flagsRes, settingsRes] =
           await Promise.all([
-            periodicConfigured
+            loopConfigured
               ? authFetch(endpoints.sessions.loop(sessionId))
               : Promise.resolve(null),
-            periodicConfigured
+            loopConfigured
               ? authFetch(endpoints.sessions.callback(sessionId))
               : Promise.resolve(null),
             authFetch(endpoints.misc.advancedFlags()),
@@ -319,8 +319,8 @@ export function SessionPanel({
           ]);
 
         if (periodicRes && periodicRes.ok)
-          setPeriodicConfig(await periodicRes.json());
-        else setPeriodicConfig(null);
+          setLoopConfig(await periodicRes.json());
+        else setLoopConfig(null);
 
         if (callbackRes && callbackRes.ok)
           setCallbackConfig(await callbackRes.json());
@@ -1345,7 +1345,7 @@ export function SessionPanel({
         `}
 
         <!-- Periodic Prompts Section -->
-        ${periodicConfig?.enabled &&
+        ${loopConfig?.enabled &&
         html`
           <div>
             <label
@@ -1356,32 +1356,32 @@ export function SessionPanel({
               <${LoopFilledIcon}
                 className="w-4 h-4 shrink-0 text-mitto-accent"
               />
-              <span>${formatFrequency(periodicConfig.frequency)}</span>
+              <span>${formatFrequency(loopConfig.frequency)}</span>
             </div>
-            ${periodicConfig.last_sent_at &&
+            ${loopConfig.last_sent_at &&
             html`<p
               class="mt-1 flex items-baseline gap-2 text-xs text-mitto-text-500"
             >
               <strong>Last run:</strong>
               <span
-                >${new Date(periodicConfig.last_sent_at).toLocaleString()}</span
+                >${new Date(loopConfig.last_sent_at).toLocaleString()}</span
               >
             </p>`}
-            ${periodicConfig.next_scheduled_at &&
+            ${loopConfig.next_scheduled_at &&
             html`<p
               class="mt-1 flex items-baseline gap-2 text-xs text-mitto-text-500"
             >
               <strong>Next run:</strong>
               <span
                 >${new Date(
-                  periodicConfig.next_scheduled_at,
+                  loopConfig.next_scheduled_at,
                 ).toLocaleString()}</span
               >
             </p>`}
             <p class="mt-1 text-xs text-mitto-text-500">
-              ${(periodicConfig.max_iterations ?? 0) > 0
-                ? `Run ${periodicConfig.iteration_count ?? 0} of ${periodicConfig.max_iterations}`
-                : `${periodicConfig.iteration_count ?? 0} run${(periodicConfig.iteration_count ?? 0) !== 1 ? "s" : ""} · unlimited`}
+              ${(loopConfig.max_iterations ?? 0) > 0
+                ? `Run ${loopConfig.iteration_count ?? 0} of ${loopConfig.max_iterations}`
+                : `${loopConfig.iteration_count ?? 0} run${(loopConfig.iteration_count ?? 0) !== 1 ? "s" : ""} · unlimited`}
             </p>
           </div>
         `}
@@ -1635,14 +1635,14 @@ export function SessionPanel({
         )}
 
         <!-- Callback URL Section (only for periodic conversations) -->
-        ${periodicConfig &&
+        ${loopConfig &&
         html`
           <div>
             <label
               class="block text-sm font-medium text-mitto-text-secondary mb-2"
               >Callback URL</label
             >
-            ${periodicConfig.enabled
+            ${loopConfig.enabled
               ? html`
                   ${callbackConfig?.callback_url
                     ? html`

@@ -4339,10 +4339,10 @@ export function useWebSocket({ onActiveSessionRemovedRef } = {}) {
           new CustomEvent("mitto:loop_config_updated", {
             detail: {
               sessionId: msg.data.session_id,
-              // periodicConfigured controls UI mode
-              periodicConfigured: msg.data.loop_configured,
-              // periodicEnabled controls lock state (whether runs are active)
-              periodicEnabled: msg.data.loop_enabled,
+              // loopConfigured controls UI mode
+              loopConfigured: msg.data.loop_configured,
+              // loopEnabled controls lock state (whether runs are active)
+              loopEnabled: msg.data.loop_enabled,
               frequency: msg.data.frequency,
               nextScheduledAt: msg.data.next_scheduled_at,
               freshContext: msg.data.fresh_context,

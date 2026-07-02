@@ -214,8 +214,8 @@ export function SessionList({
   queueLength = 0,
   onFetchConversationPrompts, // Async (session, workingDir) => prompts[] for the context menu
   onSendPromptToConversation,
-  onMakePeriodic, // Called with (session) to convert a regular session to periodic
-  onMakeNonPeriodic, // Called with (session) to revert a periodic session to regular
+  onMakeLoop, // Called with (session) to convert a regular session to periodic
+  onMakeNonLoop, // Called with (session) to revert a periodic session to regular
   isCreatingSession = false, // True while ANY new-conversation request is in-flight or retrying
   creatingWorkingDirs = new Set(), // Set of workingDirs with an in-flight create request
 }) {
@@ -898,8 +898,8 @@ export function SessionList({
         groupingMode=${groupingMode}
         onFetchConversationPrompts=${onFetchConversationPrompts}
         onSendPromptToConversation=${onSendPromptToConversation}
-        onMakePeriodic=${onMakePeriodic}
-        onMakeNonPeriodic=${onMakeNonPeriodic}
+        onMakeLoop=${onMakeLoop}
+        onMakeNonLoop=${onMakeNonLoop}
         isSpawned=${isSpawned}
         extraLeftPadding=${extraLeftPadding}
         childCount=${childCount}

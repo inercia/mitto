@@ -523,7 +523,7 @@ function App() {
     setShowSidebar,
     setShowSidePanel,
     setSidePanelTab,
-    onOpenPeriodicDialog: (prompt, onSchedule) =>
+    onOpenLoopDialog: (prompt, onSchedule) =>
       setLoopScheduleDialog({ prompt, onSchedule }),
     onOpenPromptParamDialog: (prompt, parameters, onSubmit) =>
       setPromptParamDialog({ prompt, parameters, onSubmit }),
@@ -1957,8 +1957,8 @@ function App() {
     async (session, prompt, opts) => {
       if (!prompt?.name) return;
 
-      const asPeriodic = promptResolveAsLoop(prompt, opts?.asPeriodic);
-      if (asPeriodic) {
+      const asLoop = promptResolveAsLoop(prompt, opts?.asLoop);
+      if (asLoop) {
         const action = decideLoopAction(session);
 
         if (action === "make-loop") {
@@ -2385,15 +2385,15 @@ function App() {
     session: activeSession,
     workingDir: headerWorkingDir,
     isArchived: headerIsArchived,
-    isPeriodicConfigured: headerIsPeriodic,
+    isLoopConfigured: headerIsPeriodic,
     isSpawned: headerIsSpawned,
     canArchive: headerCanArchive,
     archiveBlockedReason: headerArchiveBlockedReason,
     onRename: handleOpenSessionProperties,
     onDelete: handleDeleteSession,
     onArchive: handleArchiveSession,
-    onMakePeriodic: handleMakePeriodic,
-    onMakeNonPeriodic: handleMakeNonPeriodic,
+    onMakeLoop: handleMakePeriodic,
+    onMakeNonLoop: handleMakeNonPeriodic,
     onFetchConversationPrompts: fetchConversationPromptsForSession,
     onSendPromptToConversation: handleSendPromptToConversation,
     onCopyConversation: activeSessionId ? handleCopyConversation : undefined,
@@ -2957,7 +2957,7 @@ function App() {
                       isReadOnly=${sessionInfo?.isReadOnly}
                       isArchived=${sessionInfo?.archived || false}
                       predefinedPrompts=${predefinedPrompts}
-                      periodicPrompts=${loopPrompts}
+                      loopPrompts=${loopPrompts}
                       hasBeadsWorkspace=${hasBeadsWorkspace}
                       inputRef=${chatInputRef}
                       noSession=${!activeSessionId}
@@ -2981,7 +2981,7 @@ function App() {
                       showQueueDropdown=${showQueueDropdown}
                       actionButtons=${actionButtons}
                       availableCommands=${availableCommands}
-                      periodicConfigured=${sessionInfo?.loop_configured ||
+                      loopConfigured=${sessionInfo?.loop_configured ||
                       false}
                       onPeriodicPrompt=${(prompt, opts) =>
                         handleSendPromptToConversation(
@@ -3152,8 +3152,8 @@ function App() {
             queueLength=${queueLength}
             onFetchConversationPrompts=${fetchConversationPromptsForSession}
             onSendPromptToConversation=${handleSendPromptToConversation}
-            onMakePeriodic=${handleMakePeriodic}
-            onMakeNonPeriodic=${handleMakeNonPeriodic}
+            onMakeLoop=${handleMakePeriodic}
+            onMakeNonLoop=${handleMakeNonPeriodic}
             isCreatingSession=${isCreatingSession}
             creatingWorkingDirs=${creatingWorkingDirs}
           />

@@ -51,7 +51,7 @@ function getBadgeInfo(source) {
  * @param {number} [props.selectedIndex] - flat index highlighted via keyboard (-1 = none)
  * @param {Object} [props.selectedItemRef] - ref attached to the keyboard-highlighted item
  * @param {Function} props.onSelect - (prompt, event, opts?) => void. When
- *   periodicToggle is true, opts is { asPeriodic } for "optional"-mode prompts.
+ *   periodicToggle is true, opts is { asLoop } for "optional"-mode prompts.
  * @param {string} [props.selectedName] - name of the currently-chosen prompt (shows a check)
  * @param {boolean} [props.showSourceBadge] - show the W/F/S source badge
  * @param {Object} [props.modelOption] - the "model" config option ({ current_value,
@@ -69,7 +69,7 @@ function getBadgeInfo(source) {
  * @param {string} [props.listTestId] - data-testid for the scrollable list container
  * @param {boolean} [props.periodicToggle] - when true, render a mode-aware periodic
  *   control (toggle for "optional", locked badge for "always") instead of the
- *   static periodic badge; onSelect then receives a 3rd ({ asPeriodic }) arg.
+ *   static periodic badge; onSelect then receives a 3rd ({ asLoop }) arg.
  *   Defaults to false (static badge, unchanged look) for config selectors.
  */
 export function PromptsMenu({
@@ -131,13 +131,13 @@ export function PromptsMenu({
         <button
           type="button"
           onClick=${(e) => {
-            const asPeriodic =
+            const asLoop =
               promptLoopMode(prompt) === "optional"
                 ? periodicOverrides[prompt.name] !== undefined
                   ? periodicOverrides[prompt.name]
                   : promptLoopDefaultOn(prompt)
                 : undefined;
-            onSelect && onSelect(prompt, e, { asPeriodic });
+            onSelect && onSelect(prompt, e, { asLoop });
           }}
           title=${prompt.description || prompt.name}
           class="prompt-item w-full text-left px-4 py-2.5 text-sm text-mitto-text hover:brightness-110 transition-all flex items-center gap-2 rounded-none"

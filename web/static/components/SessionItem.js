@@ -119,8 +119,8 @@ export function SessionItem({
   groupingMode = "none", // Current grouping mode (to hide spawned indicator in hierarchical mode)
   onFetchConversationPrompts, // Async (session, workingDir) => menus:conversation prompts evaluated for THIS conversation
   onSendPromptToConversation, // Called with (session, prompt) when a context-menu prompt is clicked
-  onMakePeriodic, // Called with (session) to convert a regular session to periodic
-  onMakeNonPeriodic, // Called with (session) to revert a periodic session to regular
+  onMakeLoop, // Called with (session) to convert a regular session to periodic
+  onMakeNonLoop, // Called with (session) to revert a periodic session to regular
   // New props for parent-child hierarchy display
   isSpawned = false, // If true, shows "spawned" indicator (child session)
   extraLeftPadding = "", // Additional CSS class for left padding (e.g., "pl-6")
@@ -143,7 +143,7 @@ export function SessionItem({
   // Whether a periodic config exists at all (enabled OR paused/draft). Used to
   // gate the "Make periodic" / "Make non-periodic" context-menu actions so a
   // paused periodic conversation is not offered "Make periodic" again.
-  const isPeriodicConfigured = session.loop_configured || false;
+  const isLoopConfigured = session.loop_configured || false;
 
   // Leading category icon for the unified-tree row:
   //   regular  -> mitto bubble (muted)
@@ -321,15 +321,15 @@ export function SessionItem({
     session,
     workingDir,
     isArchived,
-    isPeriodicConfigured,
+    isLoopConfigured,
     isSpawned,
     canArchive,
     archiveBlockedReason,
     onRename,
     onDelete,
     onArchive,
-    onMakePeriodic,
-    onMakeNonPeriodic,
+    onMakeLoop,
+    onMakeNonLoop,
     onFetchConversationPrompts,
     onSendPromptToConversation,
   });

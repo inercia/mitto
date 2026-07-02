@@ -226,7 +226,7 @@ export function ConversationPropertiesPanel({
   const titleInputRef = useRef(null);
 
   // Periodic config state
-  const [periodicConfig, setPeriodicConfig] = useState(null);
+  const [loopConfig, setLoopConfig] = useState(null);
   const [callbackConfig, setCallbackConfig] = useState(null);
   const [callbackCopied, setCallbackCopied] = useState(false);
 
@@ -257,7 +257,7 @@ export function ConversationPropertiesPanel({
 
   // Update relative time display every 30 seconds while panel is open
   useEffect(() => {
-    if (!isOpen || !periodicConfig?.next_scheduled_at) {
+    if (!isOpen || !loopConfig?.next_scheduled_at) {
       return;
     }
 
@@ -266,12 +266,12 @@ export function ConversationPropertiesPanel({
     }, 30000); // Update every 30 seconds
 
     return () => clearInterval(intervalId);
-  }, [isOpen, periodicConfig?.next_scheduled_at]);
+  }, [isOpen, loopConfig?.next_scheduled_at]);
 
   // Reset state when session changes or panel closes
   useEffect(() => {
     setIsEditingTitle(false);
-    setPeriodicConfig(null);
+    setLoopConfig(null);
     setCallbackConfig(null);
     setCallbackCopied(false);
     setFlagsError(null);
@@ -288,16 +288,16 @@ export function ConversationPropertiesPanel({
 
       // Periodic + callback endpoints only exist for periodic conversations.
       // Gating on loop_configured avoids 404 noise on regular sessions.
-      const periodicConfigured = sessionInfo?.loop_configured === true;
+      const loopConfigured = sessionInfo?.loop_configured === true;
 
       try {
         // Fetch periodic config, callback config, available flags, and session settings in parallel
         const [periodicRes, callbackRes, flagsRes, settingsRes] =
           await Promise.all([
-            periodicConfigured
+            loopConfigured
               ? authFetch(endpoints.sessions.loop(sessionId))
               : Promise.resolve(null),
-            periodicConfigured
+            loopConfigured
               ? authFetch(endpoints.sessions.callback(sessionId))
               : Promise.resolve(null),
             authFetch(endpoints.misc.advancedFlags()),
@@ -306,10 +306,10 @@ export function ConversationPropertiesPanel({
 
         if (periodicRes && periodicRes.ok) {
           const periodic = await periodicRes.json();
-          setPeriodicConfig(periodic);
+          setLoopConfig(periodic);
         } else {
           // No periodic config or error - clear state
-          setPeriodicConfig(null);
+          setLoopConfig(null);
         }
 
         if (callbackRes && callbackRes.ok) {
@@ -382,8 +382,8 @@ export function ConversationPropertiesPanel({
     const handlePeriodicUpdated = (event) => {
       const {
         sessionId: updatedSessionId,
-        periodicConfigured,
-        periodicEnabled,
+        loopConfigured,
+        loopEnabled,
         frequency,
         nextScheduledAt,
         freshContext,
@@ -393,17 +393,17 @@ export function ConversationPropertiesPanel({
       if (updatedSessionId !== sessionId) return;
 
       // Periodic config was deleted — clear local state.
-      if (periodicConfigured === false) {
-        setPeriodicConfig(null);
+      if (loopConfigured === false) {
+        setLoopConfig(null);
         return;
       }
 
       // Merge into existing config (the panel fetches the full config on open).
-      setPeriodicConfig((prev) =>
+      setLoopConfig((prev) =>
         prev
           ? {
               ...prev,
-              enabled: periodicEnabled,
+              enabled: loopEnabled,
               frequency: frequency || prev.frequency,
               next_scheduled_at: nextScheduledAt ?? prev.next_scheduled_at,
               fresh_context:
@@ -525,7 +525,7 @@ export function ConversationPropertiesPanel({
         });
         if (res.ok) {
           const data = await res.json();
-          setPeriodicConfig((prev) =>
+          setLoopConfig((prev) =>
             prev
               ? { ...prev, fresh_context: data.fresh_context ?? newValue }
               : prev,
@@ -1115,7 +1115,7 @@ export function ConversationPropertiesPanel({
 
         <!-- Periodic Prompts Section (only shown when configured and enabled) -->
         ${
-          periodicConfig?.enabled &&
+          loopConfig?.enabled &&
           html`
             <div>
               <label
@@ -1127,36 +1127,36 @@ export function ConversationPropertiesPanel({
                 <${LoopFilledIcon}
                   className="w-4 h-4 shrink-0 text-mitto-accent"
                 />
-                <span>${formatFrequency(periodicConfig.frequency)}</span>
+                <span>${formatFrequency(loopConfig.frequency)}</span>
               </div>
-              ${periodicConfig.last_sent_at &&
+              ${loopConfig.last_sent_at &&
               html`
                 <p class="mt-1 text-xs text-mitto-text-500">
                   Last run:
-                  ${new Date(periodicConfig.last_sent_at).toLocaleString()}
+                  ${new Date(loopConfig.last_sent_at).toLocaleString()}
                 </p>
               `}
-              ${periodicConfig.next_scheduled_at &&
+              ${loopConfig.next_scheduled_at &&
               html`
                 <p class="mt-1 text-xs text-mitto-text-500">
                   Next run:
-                  ${new Date(periodicConfig.next_scheduled_at).toLocaleString()}
+                  ${new Date(loopConfig.next_scheduled_at).toLocaleString()}
                   <span class="text-mitto-text-secondary ml-1">
-                    (${formatRelativeTime(periodicConfig.next_scheduled_at)})
+                    (${formatRelativeTime(loopConfig.next_scheduled_at)})
                   </span>
                 </p>
               `}
               <p class="mt-1 text-xs text-mitto-text-500">
-                ${(periodicConfig.max_iterations ?? 0) > 0
-                  ? `Run ${periodicConfig.iteration_count ?? 0} of ${periodicConfig.max_iterations}`
-                  : `${periodicConfig.iteration_count ?? 0} run${(periodicConfig.iteration_count ?? 0) !== 1 ? "s" : ""} · unlimited`}
+                ${(loopConfig.max_iterations ?? 0) > 0
+                  ? `Run ${loopConfig.iteration_count ?? 0} of ${loopConfig.max_iterations}`
+                  : `${loopConfig.iteration_count ?? 0} run${(loopConfig.iteration_count ?? 0) !== 1 ? "s" : ""} · unlimited`}
               </p>
               <!-- Fresh context toggle: each scheduled run starts with a clean agent context -->
               <div class="mt-3 flex items-center gap-2 text-sm">
                 <input
                   type="checkbox"
                   id="properties-fresh-context-checkbox-${sessionId}"
-                  checked=${!!periodicConfig.fresh_context}
+                  checked=${!!loopConfig.fresh_context}
                   onInput=${handleFreshContextChange}
                   class="w-4 h-4 rounded border-mitto-border-3 text-mitto-accent focus:ring-mitto-accent-500 cursor-pointer shrink-0"
                   data-testid="properties-fresh-context-checkbox"
@@ -1230,21 +1230,21 @@ export function ConversationPropertiesPanel({
 
   function renderAdvancedSection() {
     // Only show if there are available flags or periodic config (for callback URL)
-    if ((!availableFlags || availableFlags.length === 0) && !periodicConfig) {
+    if ((!availableFlags || availableFlags.length === 0) && !loopConfig) {
       return null;
     }
 
     return html`
       <div class="pt-4">
         <!-- Callback URL Section (only for periodic conversations) -->
-        ${periodicConfig &&
+        ${loopConfig &&
         html`
           <div class="mb-4">
             <label
               class="block text-sm font-medium text-mitto-text-secondary mb-2"
               >Callback URL</label
             >
-            ${periodicConfig.enabled
+            ${loopConfig.enabled
               ? html`
                   ${callbackConfig?.callback_url
                     ? html`

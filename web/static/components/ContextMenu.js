@@ -232,13 +232,13 @@ function ContextMenuItem({ item, onClose }) {
                     onClick=${(e) => {
                       e.stopPropagation();
                       if (!sub.disabled) {
-                        const asPeriodic =
+                        const asLoop =
                           sub.periodicMode === "optional"
                             ? periodicOverrides[sub.label] !== undefined
                               ? periodicOverrides[sub.label]
                               : sub.periodicDefaultOn
                             : undefined;
-                        sub.onClick({ asPeriodic });
+                        sub.onClick({ asLoop });
                         onClose();
                       }
                     }}

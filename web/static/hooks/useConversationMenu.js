@@ -25,15 +25,15 @@ export function useConversationMenu({
   session,
   workingDir = "",
   isArchived = false,
-  isPeriodicConfigured = false,
+  isLoopConfigured = false,
   isSpawned = false,
   canArchive = true,
   archiveBlockedReason = null,
   onRename,
   onDelete,
   onArchive,
-  onMakePeriodic,
-  onMakeNonPeriodic,
+  onMakeLoop,
+  onMakeNonLoop,
   onFetchConversationPrompts, // async (session, workingDir) => menus:conversation prompts
   onSendPromptToConversation, // (session, prompt) when a context-menu prompt is clicked
   onCopyConversation, // optional: (session) => void — shows "Copy as Markdown" item
@@ -128,23 +128,23 @@ export function useConversationMenu({
       // non-spawned, non-archived. Gated on loop_configured (not
       // loop_enabled) so a paused/draft periodic conversation is still
       // treated as already periodic and does not offer "Make periodic" again.
-      ...(!isPeriodicConfigured && !isSpawned && !isArchived
+      ...(!isLoopConfigured && !isSpawned && !isArchived
         ? [
             {
               label: "Make periodic",
               icon: html`<${ClockIcon} />`,
-              onClick: () => onMakePeriodic && onMakePeriodic(session),
+              onClick: () => onMakeLoop && onMakeLoop(session),
             },
           ]
         : []),
       // "Make non-periodic" — inverse: any conversation that has a periodic
       // config (enabled OR paused/draft), non-spawned, can remove it.
-      ...(isPeriodicConfigured && !isSpawned
+      ...(isLoopConfigured && !isSpawned
         ? [
             {
               label: "Make non-periodic",
               icon: html`<${MittoIcon} />`,
-              onClick: () => onMakeNonPeriodic && onMakeNonPeriodic(session),
+              onClick: () => onMakeNonLoop && onMakeNonLoop(session),
             },
           ]
         : []),
@@ -179,11 +179,11 @@ export function useConversationMenu({
     onSendPromptToConversation,
     session,
     onRename,
-    isPeriodicConfigured,
+    isLoopConfigured,
     isSpawned,
     isArchived,
-    onMakePeriodic,
-    onMakeNonPeriodic,
+    onMakeLoop,
+    onMakeNonLoop,
     canArchive,
     archiveBlockedReason,
     onArchive,
