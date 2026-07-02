@@ -1084,6 +1084,19 @@ export function ChatInput({
 
       // Check if the prompt declares parameters that need user input before saving.
       const fullPrompt = loopPrompts.find((p) => p.name === promptName);
+
+      // Pre-populate the local condition state from the prompt's onTasks
+      // frontmatter default so the LoopFrequencyPanel reflects it immediately
+      // (mitto-pei). The PATCH below only sends prompt_name, so the backend's
+      // stored trigger/condition are left untouched until the user explicitly
+      // saves via the panel.
+      if (
+        fullPrompt?.loop?.trigger === "onTasks" &&
+        fullPrompt?.loop?.condition
+      ) {
+        setLoopCondition(fullPrompt.loop.condition);
+      }
+
       let missing = fullPrompt
         ? getMissingPromptParameters(fullPrompt, "conversation")
         : [];

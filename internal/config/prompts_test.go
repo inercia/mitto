@@ -299,6 +299,68 @@ prompt: |
 	}
 }
 
+func TestParsePromptFile_WithLoop_OnTasksCondition(t *testing.T) {
+	data := []byte(`name: "On Tasks"
+loop:
+  trigger: onTasks
+  condition: 'Tasks.Open > Prev.Open'
+  maxIterations: 20
+  maxDuration: "4h"
+prompt: |
+  Fire when open task count grows.
+`)
+
+	prompt, err := ParsePromptFile("on-tasks.prompt.yaml", data, time.Now())
+	if err != nil {
+		t.Fatalf("ParsePromptFile failed: %v", err)
+	}
+	if prompt.Loop == nil {
+		t.Fatal("Loop = nil, want non-nil")
+	}
+	if prompt.Loop.Trigger != "onTasks" {
+		t.Errorf("Loop.Trigger = %q, want %q", prompt.Loop.Trigger, "onTasks")
+	}
+	if prompt.Loop.Condition != `Tasks.Open > Prev.Open` {
+		t.Errorf("Loop.Condition = %q, want %q", prompt.Loop.Condition, `Tasks.Open > Prev.Open`)
+	}
+	if prompt.Loop.MaxIterations != 20 {
+		t.Errorf("Loop.MaxIterations = %d, want 20", prompt.Loop.MaxIterations)
+	}
+	if prompt.Loop.MaxDuration != "4h" {
+		t.Errorf("Loop.MaxDuration = %q, want %q", prompt.Loop.MaxDuration, "4h")
+	}
+
+	// Verify ToWebPrompt carries the Condition and Trigger fields through.
+	wp := prompt.ToWebPrompt()
+	if wp.Loop == nil {
+		t.Fatal("WebPrompt.Loop = nil, want non-nil after ToWebPrompt()")
+	}
+	if wp.Loop.Trigger != "onTasks" {
+		t.Errorf("WebPrompt.Loop.Trigger = %q, want %q", wp.Loop.Trigger, "onTasks")
+	}
+	if wp.Loop.Condition != `Tasks.Open > Prev.Open` {
+		t.Errorf("WebPrompt.Loop.Condition = %q, want %q", wp.Loop.Condition, `Tasks.Open > Prev.Open`)
+	}
+}
+
+func TestParsePromptFile_WithLoop_InvalidCondition(t *testing.T) {
+	data := []byte(`name: "Bad Condition"
+loop:
+  trigger: onTasks
+  condition: 'Tasks.Open > '
+prompt: |
+  Broken CEL.
+`)
+
+	_, err := ParsePromptFile("bad-condition.prompt.yaml", data, time.Now())
+	if err == nil {
+		t.Fatal("ParsePromptFile succeeded, want error for invalid CEL condition")
+	}
+	if !strings.Contains(err.Error(), "loop.condition") {
+		t.Errorf("error = %q, want it to mention loop.condition", err.Error())
+	}
+}
+
 func TestParsePromptFile_WithSingleton(t *testing.T) {
 	data := []byte(`name: "Singleton Prompt"
 singleton: true

@@ -93,6 +93,9 @@ export async function makeLoopNow(
   const trigger = p.trigger || "schedule";
   const delaySeconds = p.delay ?? 0;
   const maxDurationSeconds = parseDurationToSeconds(p.maxDuration);
+  // onTasks CEL condition, from the prompt's loop frontmatter default.
+  // conditionPreset is intentionally NOT threaded here (mitto-pei).
+  const condition = p.condition ?? "";
 
   const fetch_ = fetchImpl || secureFetch;
 
@@ -109,6 +112,7 @@ export async function makeLoopNow(
         trigger,
         delay_seconds: delaySeconds,
         max_duration_seconds: maxDurationSeconds,
+        ...(trigger === "onTasks" ? { condition } : {}),
         ...(args && typeof args === "object" && Object.keys(args).length > 0
           ? { arguments: args }
           : {}),
@@ -261,6 +265,10 @@ export async function configureLoopSchedule(
   const maxDurationSeconds =
     loop.maxDurationSeconds ??
     parseDurationToSeconds(prompt?.loop?.maxDuration);
+  // onTasks CEL condition: from the dialog result, then the prompt's loop
+  // frontmatter default. conditionPreset is intentionally NOT threaded
+  // here (mitto-pei).
+  const condition = loop.condition ?? prompt?.loop?.condition ?? "";
 
   const fetch_ = fetchImpl || secureFetch;
   try {
@@ -275,6 +283,7 @@ export async function configureLoopSchedule(
         trigger,
         delay_seconds: delaySeconds,
         max_duration_seconds: maxDurationSeconds,
+        ...(trigger === "onTasks" ? { condition } : {}),
         ...(args && typeof args === "object" && Object.keys(args).length > 0
           ? { arguments: args }
           : {}),

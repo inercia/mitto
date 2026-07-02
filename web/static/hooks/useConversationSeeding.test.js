@@ -987,6 +987,89 @@ describe("configureLoopSchedule — trigger/delay/maxDuration fields", () => {
 });
 
 // =============================================================================
+// configureLoopSchedule — onTasks condition field (mitto-pei)
+// =============================================================================
+
+describe("configureLoopSchedule — onTasks condition field", () => {
+  function makeFetch(status) {
+    return jest.fn(() =>
+      Promise.resolve({
+        ok: status >= 200 && status < 300,
+        status,
+        json: () => Promise.resolve({}),
+      }),
+    );
+  }
+
+  test("trigger=onTasks: falls back to prompt.loop.condition when dialog result has none", async () => {
+    const fetchImpl = makeFetch(200);
+    await configureLoopSchedule(
+      "s1",
+      { name: "p", loop: { trigger: "onTasks", condition: "size(x) > 0" } },
+      { value: 1, unit: "hours", trigger: "onTasks" },
+      { fetchImpl },
+    );
+    const body = JSON.parse(fetchImpl.mock.calls[0][1].body);
+    expect(body.trigger).toBe("onTasks");
+    expect(body.condition).toBe("size(x) > 0");
+  });
+
+  test("trigger=onTasks: dialog loop.condition overrides the prompt default", async () => {
+    const fetchImpl = makeFetch(200);
+    await configureLoopSchedule(
+      "s1",
+      { name: "p", loop: { trigger: "onTasks", condition: "prompt default" } },
+      {
+        value: 1,
+        unit: "hours",
+        trigger: "onTasks",
+        condition: "dialog override",
+      },
+      { fetchImpl },
+    );
+    const body = JSON.parse(fetchImpl.mock.calls[0][1].body);
+    expect(body.condition).toBe("dialog override");
+  });
+
+  test("non-onTasks trigger: condition is not sent even if prompt declares one", async () => {
+    const fetchImpl = makeFetch(200);
+    await configureLoopSchedule(
+      "s1",
+      { name: "p", loop: { trigger: "onTasks", condition: "size(x) > 0" } },
+      { value: 1, unit: "hours", trigger: "schedule" },
+      { fetchImpl },
+    );
+    const body = JSON.parse(fetchImpl.mock.calls[0][1].body);
+    expect(body).not.toHaveProperty("condition");
+  });
+
+  test("trigger=onTasks with no condition anywhere: sends empty string", async () => {
+    const fetchImpl = makeFetch(200);
+    await configureLoopSchedule(
+      "s1",
+      { name: "p" },
+      { value: 1, unit: "hours", trigger: "onTasks" },
+      { fetchImpl },
+    );
+    const body = JSON.parse(fetchImpl.mock.calls[0][1].body);
+    expect(body.condition).toBe("");
+  });
+
+  test("conditionPreset is never sent (out of scope for mitto-pei)", async () => {
+    const fetchImpl = makeFetch(200);
+    await configureLoopSchedule(
+      "s1",
+      { name: "p", loop: { trigger: "onTasks", condition: "size(x) > 0" } },
+      { value: 1, unit: "hours", trigger: "onTasks" },
+      { fetchImpl },
+    );
+    const body = JSON.parse(fetchImpl.mock.calls[0][1].body);
+    expect(body).not.toHaveProperty("condition_preset");
+    expect(body).not.toHaveProperty("conditionPreset");
+  });
+});
+
+// =============================================================================
 // makeLoopNow — trigger/delay/maxDuration fields
 // =============================================================================
 
@@ -1036,6 +1119,75 @@ describe("makeLoopNow — trigger/delay/maxDuration fields", () => {
     expect(body.trigger).toBe("schedule");
     expect(body.delay_seconds).toBe(0);
     expect(body.max_duration_seconds).toBe(0);
+  });
+});
+
+// =============================================================================
+// makeLoopNow — onTasks condition field (mitto-pei)
+// =============================================================================
+
+describe("makeLoopNow — onTasks condition field", () => {
+  function makeFetchSequence(...responses) {
+    let i = 0;
+    return jest.fn(() => {
+      const r = responses[i++] || responses[responses.length - 1];
+      return Promise.resolve(r);
+    });
+  }
+
+  function makeResp(status, data = {}) {
+    return {
+      ok: status >= 200 && status < 300,
+      status,
+      json: () => Promise.resolve(data),
+    };
+  }
+
+  test("trigger=onTasks: includes condition from prompt.loop.condition", async () => {
+    const prompt = {
+      name: "p",
+      loop: {
+        value: 1,
+        unit: "hours",
+        trigger: "onTasks",
+        condition: "size(x) > 0",
+      },
+    };
+    const fetchImpl = makeFetchSequence(makeResp(200), makeResp(200));
+    await makeLoopNow("sess-1", prompt, { fetchImpl });
+
+    const body = JSON.parse(fetchImpl.mock.calls[0][1].body);
+    expect(body.trigger).toBe("onTasks");
+    expect(body.condition).toBe("size(x) > 0");
+  });
+
+  test("non-onTasks trigger: condition is not sent even if prompt declares one", async () => {
+    const prompt = {
+      name: "p",
+      loop: {
+        value: 1,
+        unit: "hours",
+        trigger: "schedule",
+        condition: "size(x) > 0",
+      },
+    };
+    const fetchImpl = makeFetchSequence(makeResp(200), makeResp(200));
+    await makeLoopNow("sess-1", prompt, { fetchImpl });
+
+    const body = JSON.parse(fetchImpl.mock.calls[0][1].body);
+    expect(body).not.toHaveProperty("condition");
+  });
+
+  test("trigger=onTasks with no prompt condition: sends empty string", async () => {
+    const prompt = {
+      name: "p",
+      loop: { value: 1, unit: "hours", trigger: "onTasks" },
+    };
+    const fetchImpl = makeFetchSequence(makeResp(200), makeResp(200));
+    await makeLoopNow("sess-1", prompt, { fetchImpl });
+
+    const body = JSON.parse(fetchImpl.mock.calls[0][1].body);
+    expect(body.condition).toBe("");
   });
 });
 

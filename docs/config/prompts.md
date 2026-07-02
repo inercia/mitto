@@ -625,9 +625,10 @@ loop:
   unit: hours        # minutes | hours | days; used by trigger: schedule
   at: "09:00"        # optional — time of day in HH:MM (local time in the UI, stored as UTC); only valid for unit: days
   maxIterations: 10  # optional; 0/absent = unlimited scheduled runs
-  trigger: schedule  # optional — schedule (default) | onCompletion
+  trigger: schedule  # optional — schedule (default) | onCompletion | onTasks
   delay: 30          # optional — seconds to wait after the agent stops, before the next onCompletion run
   maxDuration: "4h"  # optional — wall-clock cap (e.g. 30m, 4h, 1d); 0/absent = unlimited
+  condition: ''      # optional — CEL expression gating which beads/task changes fire the run; only meaningful for trigger: onTasks
   mode: always       # optional — always (default) | optional
   default: true      # optional — only meaningful for mode: optional; nil/absent = true
 ```
@@ -638,13 +639,14 @@ loop:
 | `unit`          | Yes¹     | `minutes`, `hours`, or `days` |
 | `at`            | No       | Time of day (`HH:MM`) for daily schedules only. Ignored for other units. |
 | `maxIterations` | No       | Cap on the number of scheduled runs (integer ≥ 0). `0` or absent means unlimited at the prompt level. See [Max iterations and auto-stop](#max-iterations-and-auto-stop). |
-| `trigger`       | No       | How runs fire: `schedule` (default — frequency-based) or `onCompletion` (fire after the agent stops responding). See [Triggers](#triggers-schedule-vs-on-completion). |
+| `trigger`       | No       | How runs fire: `schedule` (default — frequency-based), `onCompletion` (fire after the agent stops responding), or `onTasks` (fire when beads/tasks in the workspace change). See [Triggers](#triggers-schedule-vs-on-completion). |
 | `delay`         | No       | For `trigger: onCompletion` only — seconds to wait after the agent finishes before the next run. Clamped up to the global floor (`min_loop_completion_delay_seconds`, default 5). Ignored for `schedule`. |
 | `maxDuration`   | No       | Wall-clock cap as a duration string (`30m`, `4h`, `1d`). Once it elapses (measured from the first run), the conversation auto-stops. `0`/absent = unlimited. |
+| `condition`     | No       | For `trigger: onTasks` only — a CEL expression gating which beads/task changes fire the run. Empty/absent = fire on any change. Validated at parse time; a syntactically invalid or unknown-identifier expression fails prompt load. |
 | `mode`          | No       | `always` (default — not user-toggleable) or `optional` (user-choosable per send). Unknown values are rejected at load time. See [Always / optional / never](#always--optional--never). |
 | `default`       | No       | Initial per-send toggle state when `mode: optional`. `true`/absent = on, `false` = off. Ignored (with a load-time warning) when `mode` is `always` or absent. |
 
-¹ Required for `trigger: schedule` (the default). Ignored for `trigger: onCompletion`, which fires off the agent-idle event rather than a fixed period.
+¹ Required for `trigger: schedule` (the default). Ignored for `trigger: onCompletion` and `trigger: onTasks`, which fire off events rather than a fixed period.
 
 **Presence implies opt-in** — omitting the `loop:` block entirely keeps the prompt as a regular one-time prompt.
 
@@ -721,8 +723,14 @@ The `trigger` field selects **when** a loop run fires:
   one, so the loop is event-driven rather than clock-driven. The `delay` is clamped
   up to the global floor (`min_loop_completion_delay_seconds`, default 5 s) to
   prevent hot loops.
+- **`onTasks`** — runs fire when beads/tasks in the workspace change. An optional
+  `condition` (CEL expression) gates which changes actually fire the run; when empty
+  or absent, any change fires it. The expression is validated at prompt load time
+  and evaluated against the `Tasks`, `Prev`, and `Changes` variables at runtime.
+  Example: `condition: 'Tasks.Open > Prev.Open'` fires only when the open task
+  count grows.
 
-`maxDuration` applies to **both** triggers: it is a wall-clock cap measured from the
+`maxDuration` applies to all three triggers: it is a wall-clock cap measured from the
 first run. Once exceeded, the loop prompt is **disabled** (not deleted) on the
 next check, exactly like the [max-iterations auto-stop](#max-iterations-and-auto-stop).
 Combine `maxDuration` with `maxIterations` to bound a loop by either time or count,

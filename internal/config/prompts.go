@@ -38,6 +38,14 @@ import (
 //	  maxIterations: 20      # optional safety cap
 //	  maxDuration: "4h"      # optional wall-clock cap; 0/absent = unlimited
 //
+// Example frontmatter (always loop, on-tasks trigger with CEL condition):
+//
+//	loop:
+//	  trigger: onTasks
+//	  condition: 'tasks.exists(t, t.status == "open" && "backend" in t.labels)'
+//	  maxIterations: 20
+//	  maxDuration: "4h"
+//
 // Example frontmatter (optionally loop, off by default):
 //
 //	loop:
@@ -54,8 +62,9 @@ type PromptLoop struct {
 	At string `yaml:"at,omitempty" json:"at,omitempty"`
 	// MaxIterations caps the number of scheduled runs when the conversation is made loop (0 / absent = unlimited).
 	MaxIterations int `yaml:"maxIterations,omitempty" json:"maxIterations,omitempty"`
-	// Trigger selects how the loop run fires: "" or "schedule" (default, frequency-based)
-	// vs "onCompletion" (fire after the agent stops responding + Delay seconds).
+	// Trigger selects how the loop run fires: "" or "schedule" (default, frequency-based),
+	// "onCompletion" (fire after the agent stops responding + Delay seconds), or
+	// "onTasks" (fire when beads/tasks in the workspace change, optionally gated by Condition).
 	Trigger string `yaml:"trigger,omitempty" json:"trigger,omitempty"`
 	// Delay is the number of seconds to wait after the agent stops responding before the
 	// next run. Only meaningful for trigger: onCompletion. Clamped to a global minimum
@@ -64,6 +73,10 @@ type PromptLoop struct {
 	// MaxDuration is an optional wall-clock cap (e.g. "2h", "30m"); 0/absent = unlimited.
 	// Parsed to seconds at the consumption boundary.
 	MaxDuration string `yaml:"maxDuration,omitempty" json:"maxDuration,omitempty"`
+	// Condition is an optional CEL expression gating which beads/task changes fire
+	// the run; empty = fire on any change. Only meaningful for trigger: onTasks.
+	// Validated at parse time in ParsePromptFile.
+	Condition string `yaml:"condition,omitempty" json:"condition,omitempty"`
 	// Mode selects whether loop is mandatory or user-toggleable: "always"
 	// (default when empty/absent) or "optional". Validated by ValidatePromptLoop.
 	Mode string `yaml:"mode,omitempty" json:"mode,omitempty"`
@@ -325,6 +338,15 @@ func ParsePromptFile(path string, data []byte, modTime time.Time) (*PromptFile, 
 	// Validate loop block (mode/default combination).
 	if err := ValidatePromptLoop(prompt.Name, prompt.Loop); err != nil {
 		return nil, fmt.Errorf("prompt file %s: %w", path, err)
+	}
+
+	// Validate loop.condition CEL expression when non-empty (fail-fast, mirrors
+	// how the runtime seam is wired via session.ConditionValidator). Applies to
+	// any loop block that declares a Condition; only meaningful for trigger: onTasks.
+	if prompt.Loop != nil && prompt.Loop.Condition != "" {
+		if err := ValidateCondition(prompt.Loop.Condition); err != nil {
+			return nil, fmt.Errorf("prompt file %s: loop.condition: %w", path, err)
+		}
 	}
 
 	// Validate Go-template syntax + cond/when CEL literals (mitto-m7sb.6).
