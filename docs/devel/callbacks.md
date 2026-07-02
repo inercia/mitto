@@ -2,22 +2,22 @@
 
 ## Overview
 
-HTTP callback endpoints allow external systems to trigger an on-demand run of a periodic conversation's configured prompt. A callback is equivalent to the periodic scheduler firing — it calls `PeriodicRunner.TriggerNow(sessionID)`.
+HTTP callback endpoints allow external systems to trigger an on-demand run of a loop conversation's configured prompt. A callback is equivalent to the loop scheduler firing — it calls `LoopRunner.TriggerNow(sessionID)`.
 
 **Key characteristics:**
 
 - **Capability URL authentication**: The token in the URL IS the credential (no session cookies required)
-- **Independent lifecycle**: Callback tokens survive periodic config changes (disable/enable/reconfigure)
-- **Separate storage**: Callback config stored in `callback.json`, not `periodic.json`
+- **Independent lifecycle**: Callback tokens survive loop config changes (disable/enable/reconfigure)
+- **Separate storage**: Callback config stored in `callback.json`, not `loop.json`
 - **Rate-limited**: Per-token rate limiting (1 req/10s, burst of 3) protects against abuse
 - **Public endpoint**: Works identically on localhost and external listeners
 
 ## Quick Start
 
-Once you've enabled a callback URL for a periodic conversation (via the properties panel in the UI), you can trigger it with a simple `curl`:
+Once you've enabled a callback URL for a loop conversation (via the properties panel in the UI), you can trigger it with a simple `curl`:
 
 ```bash
-# Trigger a periodic conversation callback
+# Trigger a loop conversation callback
 curl -X POST https://your-mitto-server.com/mitto/api/callback/cb_YOUR_TOKEN_HERE
 ```
 
@@ -53,7 +53,7 @@ POST {apiPrefix}/api/callback/{callback-token}
 
 ### `POST {apiPrefix}/api/callback/{token}`
 
-Triggers the periodic prompt for the session associated with this token.
+Triggers the loop prompt for the session associated with this token.
 
 **Request body (optional):**
 
@@ -80,7 +80,7 @@ Triggers the periodic prompt for the session associated with this token.
 | 404    | `{"error": "not_found"}`          | Token doesn't match any session              |
 | 405    | `{"error": "method_not_allowed"}` | Non-POST method                              |
 | 409    | `{"error": "session_busy"}`       | Session is currently prompting               |
-| 410    | `{"error": "periodic_disabled"}`  | Periodic is disabled or not configured       |
+| 410    | `{"error": "loop_disabled"}`  | Loop is disabled or not configured       |
 | 429    | `{"error": "rate_limited"}`       | Too many requests for this token             |
 | 500    | `{"error": "internal"}`           | Delivery failure (session unavailable, etc.) |
 
@@ -176,19 +176,19 @@ curl -X DELETE https://mitto.example.com/mitto/api/sessions/20260409-131740-6840
 
 ```mermaid
 flowchart TB
-    START[Session Created] --> PERIODIC[Enable Periodic]
-    PERIODIC --> ENABLE[Enable Callback<br/>POST /api/sessions/id/callback]
+    START[Session Created] --> LOOP[Enable Loop]
+    LOOP --> ENABLE[Enable Callback<br/>POST /api/sessions/id/callback]
     ENABLE --> ACTIVE[callback.json created<br/>Token registered in index]
     ACTIVE --> SHARED[URL shared with<br/>CI/webhook systems]
 
     SHARED --> TRIGGER[External POST<br/>to callback URL]
-    TRIGGER --> CHECK{Periodic<br/>enabled?}
+    TRIGGER --> CHECK{Loop<br/>enabled?}
     CHECK -->|Yes| RUN[200: Trigger prompt]
-    CHECK -->|No| DISABLED[410: periodic_disabled]
+    CHECK -->|No| DISABLED[410: loop_disabled]
 
-    SHARED --> DISABLE[User disables periodic]
+    SHARED --> DISABLE[User disables loop]
     DISABLE --> PRESERVED[callback.json UNTOUCHED<br/>URL returns 410]
-    PRESERVED --> REENABLE[User re-enables periodic]
+    PRESERVED --> REENABLE[User re-enables loop]
     REENABLE --> WORKS[URL returns 200 again]
 
     SHARED --> ROTATE[User rotates token]
@@ -206,22 +206,22 @@ flowchart TB
 
 **Key points:**
 
-1. **Independent lifecycle**: Callback token survives periodic being disabled/reconfigured
-2. **Preserved on disable**: Disabling periodic doesn't delete `callback.json` (URL returns 410 instead of 404)
-3. **Re-enable works**: Re-enabling periodic makes the same callback URL work again (200)
+1. **Independent lifecycle**: Callback token survives loop being disabled/reconfigured
+2. **Preserved on disable**: Disabling loop doesn't delete `callback.json` (URL returns 410 instead of 404)
+3. **Re-enable works**: Re-enabling loop makes the same callback URL work again (200)
 4. **Rotation invalidates old token**: Rotating generates a new token and the old one returns 404 immediately
 5. **Revoke is permanent**: Deleting the callback removes `callback.json` and the URL returns 404
 6. **Session deletion**: Deleting the session removes the callback and cleans up the index
 
 ## Data Model
 
-Callback config is stored **separately** from periodic config to ensure independent lifecycles:
+Callback config is stored **separately** from loop config to ensure independent lifecycles:
 
 ```
 sessions/{session-id}/
   ├── metadata.json
   ├── events.jsonl
-  ├── periodic.json        ← periodic config (may not exist)
+  ├── loop.json        ← loop config (may not exist)
   └── callback.json        ← callback token (independent)
 ```
 
@@ -236,9 +236,9 @@ sessions/{session-id}/
 
 This separation ensures:
 
-- Callback URL survives periodic being disabled/deleted/reconfigured
-- Token rotation doesn't affect periodic settings
-- Callback can be revoked without touching periodic config
+- Callback URL survives loop being disabled/deleted/reconfigured
+- Token rotation doesn't affect loop settings
+- Callback can be revoked without touching loop config
 
 ## Security Model
 
@@ -279,12 +279,12 @@ This separation ensures:
 
 **Callback can ONLY:**
 
-- Call `TriggerNow()` on the periodic runner
+- Call `TriggerNow()` on the loop runner
 - Log metadata for auditing
 
 **Callback CANNOT:**
 
-- Change periodic configuration
+- Change loop configuration
 - Read session data
 - Modify session metadata
 - Execute arbitrary code
@@ -365,16 +365,16 @@ func (cr *CallbackRateLimiter) Allow(token string) bool
 
 ## Frontend
 
-The `ConversationPropertiesPanel` component shows callback controls in the **Periodic Prompts** section.
+The `ConversationPropertiesPanel` component shows callback controls in the **Loop Prompts** section.
 
 ### UI States
 
-| Periodic State | Callback State | UI Display                                                             |
+| Loop State | Callback State | UI Display                                                             |
 | -------------- | -------------- | ---------------------------------------------------------------------- |
-| Disabled       | None           | "Enable Periodic Prompts first" message                                |
+| Disabled       | None           | "Enable Loop Prompts first" message                                |
 | Enabled        | None           | "Enable Callback" button                                               |
 | Enabled        | Active         | URL display + Copy/Rotate/Revoke buttons                               |
-| Disabled       | Active         | Subdued display: "Callback preserved but inactive (periodic disabled)" |
+| Disabled       | Active         | Subdued display: "Callback preserved but inactive (loop disabled)" |
 
 ### Workflow
 
@@ -420,7 +420,7 @@ sequenceDiagram
 
 ### GitHub Webhook
 
-Configure a GitHub webhook to POST to the callback URL on push events. The periodic prompt might be "Check the latest commits and summarize changes."
+Configure a GitHub webhook to POST to the callback URL on push events. The loop prompt might be "Check the latest commits and summarize changes."
 
 **GitHub Webhook Settings:**
 
@@ -429,7 +429,7 @@ Configure a GitHub webhook to POST to the callback URL on push events. The perio
 - **Events**: Select "Just the push event" or custom events
 - **Active**: ✓
 
-**Example periodic prompt:**
+**Example loop prompt:**
 
 ```
 Check the latest commits in the repository and provide a summary of changes.
@@ -447,7 +447,7 @@ Trigger daily reports at 9am via system cron:
   -d '{"metadata": {"source": "cron", "job": "daily-report"}}'
 ```
 
-**Example periodic prompt:**
+**Example loop prompt:**
 
 ```
 Generate a daily status report for the team:
@@ -478,7 +478,7 @@ Add a step in your CI pipeline to trigger a Mitto conversation after deployment:
       }'
 ```
 
-**Example periodic prompt:**
+**Example loop prompt:**
 
 ```
 A deployment to production just completed. Please:
@@ -508,7 +508,7 @@ curl -X POST https://mitto.example.com/mitto/api/callback/cb_a1b2c3d4... \
   }'
 ```
 
-**Example periodic prompt:**
+**Example loop prompt:**
 
 ```
 An alert was triggered for high error rate. Please investigate:
@@ -523,7 +523,7 @@ An alert was triggered for high error rate. Please investigate:
 ### Manual Testing
 
 ```bash
-# 1. Enable periodic for a session (via UI or API)
+# 1. Enable loop for a session (via UI or API)
 # 2. Enable callback and get the URL
 curl -X POST http://localhost:5757/api/sessions/20260409-131740-68402925/callback \
   -H "Cookie: session=..."
@@ -551,10 +551,10 @@ curl -X POST http://localhost:5757/api/callback/invalid_token
 curl -X POST http://localhost:5757/api/callback/cb_0000000000000000...
 # Expected: 404 {"error": "not_found"}
 
-# Periodic disabled
-# (disable periodic via UI, then trigger callback)
+# Loop disabled
+# (disable loop via UI, then trigger callback)
 curl -X POST http://localhost:5757/api/callback/cb_a1b2c3d4...
-# Expected: 410 {"error": "periodic_disabled"}
+# Expected: 410 {"error": "loop_disabled"}
 
 # Rate limiting (send 4+ requests rapidly)
 for i in {1..5}; do
@@ -583,13 +583,13 @@ curl -X POST http://localhost:5757/api/callback/cb_a1b2c3d4...
 
 ### Callback returns 410 intermittently
 
-**Cause:** Periodic is being disabled/enabled by another client or configuration change.
+**Cause:** Loop is being disabled/enabled by another client or configuration change.
 
 **Solution:**
 
-1. Verify periodic is enabled via `GET /api/sessions/{id}/periodic`
+1. Verify loop is enabled via `GET /api/sessions/{id}/loop`
 2. Check if auto-disable conditions are met (e.g., error threshold)
-3. Review session events for periodic state changes
+3. Review session events for loop state changes
 
 ### Rate limiting too aggressive
 
@@ -609,7 +609,7 @@ curl -X POST http://localhost:5757/api/callback/cb_a1b2c3d4...
 
 1. Check session status via `GET /api/sessions/{id}`
 2. Review server logs for `TriggerNow` errors
-3. Verify session has a valid periodic configuration
+3. Verify session has a valid loop configuration
 4. Check `events.jsonl` for error events
 
 ## Security Considerations
@@ -653,7 +653,7 @@ curl -X POST http://localhost:5757/api/callback/cb_a1b2c3d4...
 **Mitigation:**
 
 1. Callback can **ONLY** trigger `TriggerNow()` — no other mutations
-2. Prompt content is controlled by session owner (via periodic config)
+2. Prompt content is controlled by session owner (via loop config)
 3. No data exposure — callback returns minimal response
 4. Session authentication required for all management endpoints
 

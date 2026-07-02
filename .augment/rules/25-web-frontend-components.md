@@ -146,4 +146,4 @@ html`<div class="tabs tabs-border">
 
 ## Session List Tab Filtering
 
-Filters by tab (Conversations, Periodic, Archived) via `getFilterTabForSession()`. On click, restore last-focused session via `getLastActiveSessionIdForTab()` — **user-clicks only**, not programmatic. Guard races with refs to avoid redundant localStorage updates.
+Filters by tab (Conversations, Loop, Archived) via `getFilterTabForSession()`. On click, restore last-focused session via `getLastActiveSessionIdForTab()` — **user-clicks only**, not programmatic. Guard races with refs to avoid redundant localStorage updates.

@@ -18,7 +18,7 @@ Events are persisted **immediately** when received from ACP, not buffered for la
 
 - **Consistent seq numbers**: Streaming and persisted events have identical `seq` values
 - **Crash resilience**: No data loss window (events are on disk immediately)
-- **Simpler architecture**: No periodic persistence timers or buffer management
+- **Simpler architecture**: No loop persistence timers or buffer management
 - **Correct reconnection**: Clients can sync from persisted events with matching seq values
 
 ## Sequence Number Assignment

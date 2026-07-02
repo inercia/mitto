@@ -41,7 +41,7 @@ Events are persisted **immediately** when received from ACP, preserving the sequ
 
 - **Consistent seq numbers**: Streaming and persisted events have identical `seq` values
 - **Crash resilience**: No data loss window (no buffering)
-- **Simpler architecture**: No periodic persistence timers or buffer management
+- **Simpler architecture**: No loop persistence timers or buffer management
 
 ### Event Flow
 
@@ -159,7 +159,7 @@ recorder.RecordUserPrompt(message, session.WithMeta("source", "queue"))
 
 // Merge a map.
 recorder.RecordUserPromptComplete(msg, imgs, files, pid, pname, argC,
-    session.WithMetaMap(map[string]any{"run_id": runID, "periodic": true}))
+    session.WithMetaMap(map[string]any{"run_id": runID, "loop": true}))
 ```
 
 `WithMeta` and `WithMetaMap` accumulate: multiple calls to either option on the same event merge their entries. Existing callers with no options compile and behave unchanged.

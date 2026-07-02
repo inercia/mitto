@@ -118,9 +118,9 @@ When `Pop()` is called, it selects the next ready message:
 2. If no immediate messages, the **earliest due scheduled message** (by ScheduledTime)
 3. Returns `ErrQueueEmpty` if no messages are ready (even if future-scheduled messages exist)
 
-### Periodic Check
+### Loop Check
 
-The `PeriodicRunner` checks all active sessions for due scheduled messages on each poll cycle (default: 1 minute). When a scheduled message becomes due, it triggers `TryProcessQueuedMessage()` on the session.
+The `LoopRunner` checks all active sessions for due scheduled messages on each poll cycle (default: 1 minute). When a scheduled message becomes due, it triggers `TryProcessQueuedMessage()` on the session.
 
 ### API
 
@@ -132,20 +132,20 @@ The `PeriodicRunner` checks all active sessions for due scheduled messages on ea
 
 Scheduled messages display a ⏰ badge with a relative time string (e.g., "in 5 min", "in 2h") in the queue dropdown. The display updates every 30 seconds.
 
-## Periodic Prompts: On-Completion Delivery
+## Loop Prompts: On-Completion Delivery
 
-Periodic prompts normally fire on a fixed schedule (checked by the `PeriodicRunner` poll loop). A periodic prompt may instead set `trigger: onCompletion`, which fires the next run **after the agent stops responding**, rather than on a clock.
+Loop prompts normally fire on a fixed schedule (checked by the `LoopRunner` poll loop). A loop prompt may instead set `trigger: onCompletion`, which fires the next run **after the agent stops responding**, rather than on a clock.
 
 ### Delivery model
 
-When a turn completes and a session goes fully idle, `BackgroundSession` invokes the `onTurnIdle` hook, which routes to `PeriodicRunner.OnConversationIdle(sessionID)`. For an enabled `onCompletion` config this arms a one-shot timer for `delay` seconds (clamped up to the global floor `min_periodic_completion_delay_seconds`, default 5). When the timer fires, `fireOnCompletion` re-validates the config, checks the max-duration cap, and delivers via `TriggerNow`. The delivered run's own completion produces another idle transition, which arms the next run — a self-sustaining loop.
+When a turn completes and a session goes fully idle, `BackgroundSession` invokes the `onTurnIdle` hook, which routes to `LoopRunner.OnConversationIdle(sessionID)`. For an enabled `onCompletion` config this arms a one-shot timer for `delay` seconds (clamped up to the global floor `min_loop_completion_delay_seconds`, default 5). When the timer fires, `fireOnCompletion` re-validates the config, checks the max-duration cap, and delivers via `TriggerNow`. The delivered run's own completion produces another idle transition, which arms the next run — a self-sustaining loop.
 
 ```mermaid
 sequenceDiagram
     participant Agent
     participant BS as BackgroundSession
-    participant PR as PeriodicRunner
-    participant Store as PeriodicStore
+    participant PR as LoopRunner
+    participant Store as LoopStore
 
     Agent->>BS: turn completes (stop_reason=end_turn)
     BS->>PR: onTurnIdle → OnConversationIdle(sessionID)
@@ -156,7 +156,7 @@ sequenceDiagram
         PR->>Store: ReachedMaxDuration(now)?
         alt maxDuration reached
             PR->>Store: Update(enabled=false)
-            PR-->>BS: onPeriodicAutoStopped → broadcast periodic_updated
+            PR-->>BS: onLoopAutoStopped → broadcast loop_updated
         else within cap
             PR->>BS: TriggerNow(resetTimer=true) → deliver run
             BS->>Agent: prompt
@@ -169,7 +169,7 @@ sequenceDiagram
 
 ### Loop safety
 
-- **Delay floor** — `delay` is clamped up to `min_periodic_completion_delay_seconds` (default 5) so a misconfigured `delay: 0` cannot spin a hot loop.
+- **Delay floor** — `delay` is clamped up to `min_loop_completion_delay_seconds` (default 5) so a misconfigured `delay: 0` cannot spin a hot loop.
 - **Single pending timer** — arming replaces (stops) any existing timer for the session, so at most one firing is queued.
 - **Max iterations** — the standard per-run counter still applies; reaching the effective cap disables the prompt.
 - **Max duration** — `maxDuration` is a wall-clock cap from the first run; `fireOnCompletion` checks it before delivering and auto-stops (disables + broadcasts) once exceeded.
@@ -177,15 +177,15 @@ sequenceDiagram
 
 ### Interplay with the runner and suspension
 
-The schedule-based poll loop and the on-completion timers are independent paths on the same `PeriodicRunner`. On-completion timers are armed by idle events, not the poll loop, so they are unaffected by the poll interval. A suspended periodic session (Tier-1 GC after `periodic_suspend_timeout`) has no live `BackgroundSession` to emit idle events; the on-completion loop resumes once the session is resumed. See [acp.md](acp.md) for suspension details.
+The schedule-based poll loop and the on-completion timers are independent paths on the same `LoopRunner`. On-completion timers are armed by idle events, not the poll loop, so they are unaffected by the poll interval. A suspended loop session (Tier-1 GC after `loop_suspend_timeout`) has no live `BackgroundSession` to emit idle events; the on-completion loop resumes once the session is resumed. See [acp.md](acp.md) for suspension details.
 
-## Periodic Prompts: On-Tasks Delivery
+## Loop Prompts: On-Tasks Delivery
 
-A periodic prompt may set `trigger: onTasks`, which fires whenever the **beads issues in the conversation's working directory change** on disk, optionally gated by a **CEL condition** so it only fires for meaningful changes (e.g. "the open bug count increased", "an issue labelled `PR opened` was created or updated"). Like `onCompletion`, this is event-driven, not clock-driven — `Frequency` is not required and is ignored.
+A loop prompt may set `trigger: onTasks`, which fires whenever the **beads issues in the conversation's working directory change** on disk, optionally gated by a **CEL condition** so it only fires for meaningful changes (e.g. "the open bug count increased", "an issue labelled `PR opened` was created or updated"). Like `onCompletion`, this is event-driven, not clock-driven — `Frequency` is not required and is ignored.
 
 ### Trigger semantics
 
-A workspace-wide `BeadsWatcher` (fsnotify on `.beads/`, debounced) calls `PeriodicRunner.OnBeadsChanged(event)` whenever a watched working directory changes. For every **enabled** `onTasks` conversation whose working directory is in `event.WorkingDirs`, the runner:
+A workspace-wide `BeadsWatcher` (fsnotify on `.beads/`, debounced) calls `LoopRunner.OnBeadsChanged(event)` whenever a watched working directory changes. For every **enabled** `onTasks` conversation whose working directory is in `event.WorkingDirs`, the runner:
 
 1. Fetches the latest beads snapshot once per working directory (`bd list --json --all -n 0`), shared across all conversations watching that directory.
 2. Diffs it against that **conversation's own persisted baseline** (see below) using `config.DiffTasks`.
@@ -225,7 +225,7 @@ Changes.Added.exists(i, i.type == "bug" && i.priority <= 1)
 
 ### The diff baseline (`internal/web/tasks_baseline.go`)
 
-Each `onTasks` conversation keeps its **own** baseline file (`tasks_baseline.json`, alongside `periodic.json`) holding the raw `bd list` JSON at the time it was last considered "current" for that conversation. The baseline is **per-conversation, not per-working-directory** — several `onTasks` conversations watching the same directory each diff against their own baseline, which is what makes Layer 2 loop prevention (below) possible without any actor/attribution support from `bd`.
+Each `onTasks` conversation keeps its **own** baseline file (`tasks_baseline.json`, alongside `loop.json`) holding the raw `bd list` JSON at the time it was last considered "current" for that conversation. The baseline is **per-conversation, not per-working-directory** — several `onTasks` conversations watching the same directory each diff against their own baseline, which is what makes Layer 2 loop prevention (below) possible without any actor/attribution support from `bd`.
 
 ### Loop prevention (4 layers)
 
@@ -234,7 +234,7 @@ An `onTasks` conversation (or a child it delegates to) will usually _edit_ beads
 ```mermaid
 sequenceDiagram
     participant Watcher as BeadsWatcher
-    participant PR as PeriodicRunner
+    participant PR as LoopRunner
     participant Baseline as TasksBaselineStore
     participant CEL as TasksConditionEvaluator
     participant Agent
@@ -271,14 +271,14 @@ sequenceDiagram
     Note over Baseline: absorbs the run's own edits — they never<br/>reappear as a delta against the NEXT event
 ```
 
-- **Layer 0 — hard backstops.** A per-conversation `CooldownSeconds` (clamped up to the global floor `SetMinPeriodicTasksCooldownSeconds`, default 30s) rate-limits fires regardless of the condition. `MaxIterations` and `MaxDurationSeconds` are the same caps used by every trigger; `MaxDurationSeconds` is checked (and auto-stops, mirroring `onCompletion`) before the cooldown check.
+- **Layer 0 — hard backstops.** A per-conversation `CooldownSeconds` (clamped up to the global floor `SetMinLoopTasksCooldownSeconds`, default 30s) rate-limits fires regardless of the condition. `MaxIterations` and `MaxDurationSeconds` are the same caps used by every trigger; `MaxDurationSeconds` is checked (and auto-stops, mirroring `onCompletion`) before the cooldown check.
 - **Layer 1 — busy guard (temporal).** While the conversation's turn is active — **or any delegated child conversation is still running or blocked on `mitto_children_tasks_wait`** (`isTasksSubtreeBusy`) — incoming events are deferred (`armTasksRebase`), not evaluated. This is the guard against the run's OWN in-flight edits.
 - **Layer 2 — quiescence rebase (the real fix).** Once the conversation's entire delegated-child subtree goes idle, a short quiescence timer (`SetTasksQuiescenceWindow`, default 30s) fires and **rebases the baseline to the current beads snapshot**, absorbing the run's own edits into the new "current" state before the next real event is evaluated. Trade-off: an external change that lands _during_ the busy window is also absorbed and won't trigger a follow-up fire — the fired conversation can re-check state at its own startup if that matters.
-- **Layer 3 — no-progress circuit breaker.** `recordTasksFireOutcome` tracks, per conversation, the set of issue IDs touched (`Changes.Touched`) by consecutive fires. When `tasksNoProgressLimit` (3) consecutive fires touch **no issue beyond** what the previous fire already touched, the trigger auto-pauses (`periodicStore.MarkStopped(session.StoppedReasonNoProgress)`) — this catches a condition that is steady-state-true (e.g. a threshold that baseline-rebase alone cannot silence) before it can hot-loop.
+- **Layer 3 — no-progress circuit breaker.** `recordTasksFireOutcome` tracks, per conversation, the set of issue IDs touched (`Changes.Touched`) by consecutive fires. When `tasksNoProgressLimit` (3) consecutive fires touch **no issue beyond** what the previous fire already touched, the trigger auto-pauses (`loopStore.MarkStopped(session.StoppedReasonNoProgress)`) — this catches a condition that is steady-state-true (e.g. a threshold that baseline-rebase alone cannot silence) before it can hot-loop.
 
 **Out of scope:** actor-based delta filtering (skipping only _other actors'_ edits) was investigated and explicitly deferred — `internal/beads/cli.go` does not stamp a per-change actor, and `bd list --json` exposes only `created_by`/`owner`, not a last-touched actor. The baseline-rebase approach (Layer 2) makes this unnecessary for correctness today.
 
-### Configuration fields (`session.PeriodicPrompt`)
+### Configuration fields (`session.LoopPrompt`)
 
 | Field             | JSON               | Meaning                                                                                                           |
 | ----------------- | ------------------ | ----------------------------------------------------------------------------------------------------------------- |
@@ -290,7 +290,7 @@ sequenceDiagram
 
 ### Testing
 
-`internal/config/tasks_condition_test.go` unit-tests snapshot parsing, diffing, and CEL evaluation (including the fail-closed cases). `internal/web/periodic_runner_test.go` unit-tests the guard/decision logic (`evaluateTasksChange`) and each loop-prevention layer in isolation. `tests/integration/inprocess/periodic_ontasks_e2e_test.go` drives the full stack end-to-end against the mock ACP server — CEL-gated firing, the busy-guard + quiescence-rebase interaction, the cooldown floor, the no-progress circuit breaker, and `MaxIterations`/`MaxDurationSeconds` auto-stop — by calling `PeriodicRunner.OnBeadsChanged` directly with a fake `beads.Client` standing in for `bd list` (the `BeadsWatcher` itself is out of scope for that test and is unit-tested separately).
+`internal/config/tasks_condition_test.go` unit-tests snapshot parsing, diffing, and CEL evaluation (including the fail-closed cases). `internal/web/loop_runner_test.go` unit-tests the guard/decision logic (`evaluateTasksChange`) and each loop-prevention layer in isolation. `tests/integration/inprocess/loop_ontasks_e2e_test.go` drives the full stack end-to-end against the mock ACP server — CEL-gated firing, the busy-guard + quiescence-rebase interaction, the cooldown floor, the no-progress circuit breaker, and `MaxIterations`/`MaxDurationSeconds` auto-stop — by calling `LoopRunner.OnBeadsChanged` directly with a fake `beads.Client` standing in for `bd list` (the `BeadsWatcher` itself is out of scope for that test and is unit-tested separately).
 
 ## Title Generation
 
@@ -377,12 +377,12 @@ All menu-driven prompt sends (prompts menu, Cmd+/ slash picker, beads-issue menu
 | ----------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------- |
 | `buildSeedQueueBody(prompt, {arguments})`                                                             | Builds `{prompt_name, arguments}` POST body (never includes `message`) |
 | `seedConversationWithPrompt(sessionId, prompt, {arguments})`                                          | POST `{prompt_name}` to an existing session's queue                    |
-| `startConversationWithPrompt({workingDir, acpServer, name, beadsIssue, prompt, arguments, periodic})` | Create a new conversation (one-time or periodic — see below)           |
-| `configurePeriodicSchedule(sessionId, prompt, periodic, {fetchImpl})`                                 | PUT periodic config onto an already-created session                    |
+| `startConversationWithPrompt({workingDir, acpServer, name, beadsIssue, prompt, arguments, loop})` | Create a new conversation (one-time or loop — see below)           |
+| `configureLoopSchedule(sessionId, prompt, loop, {fetchImpl})`                                 | PUT loop config onto an already-created session                    |
 
-#### One-time path (no `periodic`)
+#### One-time path (no `loop`)
 
-When `periodic` is absent, `startConversationWithPrompt` posts `initial_prompt_name` + `arguments` to `POST /api/sessions` — the backend seeds the queue atomically:
+When `loop` is absent, `startConversationWithPrompt` posts `initial_prompt_name` + `arguments` to `POST /api/sessions` — the backend seeds the queue atomically:
 
 ```javascript
 const { seedConversationWithPrompt, startConversationWithPrompt } =
@@ -404,12 +404,12 @@ await startConversationWithPrompt({
 });
 ```
 
-#### Periodic path (`periodic` present)
+#### Loop path (`loop` present)
 
-When `periodic: { value, unit, at? }` is provided, `startConversationWithPrompt`:
+When `loop: { value, unit, at? }` is provided, `startConversationWithPrompt`:
 
 1. Creates the session via `POST /api/sessions` **without** `initial_prompt_name` (no one-time queue seed).
-2. Calls `configurePeriodicSchedule` which PUTs `/api/sessions/{id}/periodic` with:
+2. Calls `configureLoopSchedule` which PUTs `/api/sessions/{id}/loop` with:
    ```json
    {
      "prompt_name": "...",
@@ -421,24 +421,24 @@ When `periodic: { value, unit, at? }` is provided, `startConversationWithPrompt`
 3. Returns `{ sessionId }` on success, or `{ error }` if the PUT fails (session already created — error is surfaced to the caller).
 
 ```javascript
-// Create a new PERIODIC conversation driven by a named prompt
+// Create a new LOOP conversation driven by a named prompt
 await startConversationWithPrompt({
   workingDir,
   acpServer,
   prompt: { name: "Daily Standup" },
-  periodic: { value: 1, unit: "days", at: "09:00" }, // at is UTC HH:MM
+  loop: { value: 1, unit: "days", at: "09:00" }, // at is UTC HH:MM
 });
 ```
 
-The `at` value in the `periodic` object must already be in **UTC** when passed to `startConversationWithPrompt`. The `PeriodicScheduleDialog` component handles the local→UTC conversion before calling the helper.
+The `at` value in the `loop` object must already be in **UTC** when passed to `startConversationWithPrompt`. The `LoopScheduleDialog` component handles the local→UTC conversion before calling the helper.
 
 #### Menu-branching rules
 
-Menus branch on `prompt.periodic` (non-null = periodic prompt):
+Menus branch on `prompt.loop` (non-null = loop prompt):
 
-- **`handleSendPromptToConversation`** (per-conversation context menu): if `prompt.periodic` is set and the session is **not a child** (`parent_session_id` is empty), opens `PeriodicScheduleDialog` then creates a NEW periodic conversation — it does not seed the existing one. Child conversations are silently skipped (the backend also 400s on periodic-for-child).
-- **`handleRunBeadsPrompt`** / **`handleRunBeadsListPrompt`** (beads menus): same branching via the `onOpenPeriodicDialog` callback passed from `app.js` into `useBeadsIntegration`.
-- Non-periodic prompts are completely unaffected.
+- **`handleSendPromptToConversation`** (per-conversation context menu): if `prompt.loop` is set and the session is **not a child** (`parent_session_id` is empty), opens `LoopScheduleDialog` then creates a NEW loop conversation — it does not seed the existing one. Child conversations are silently skipped (the backend also 400s on loop-for-child).
+- **`handleRunBeadsPrompt`** / **`handleRunBeadsListPrompt`** (beads menus): same branching via the `onOpenLoopDialog` callback passed from `app.js` into `useBeadsIntegration`.
+- Non-loop prompts are completely unaffected.
 
 ## REST API
 
@@ -680,7 +680,7 @@ The queue system supports automatic dequeuing for idle agent sessions:
 | Method                       | Location            | Purpose                                                         |
 | ---------------------------- | ------------------- | --------------------------------------------------------------- |
 | `processNextQueuedMessage()` | `BackgroundSession` | Called after prompt completion, applies delay synchronously     |
-| `TryProcessQueuedMessage()`  | `BackgroundSession` | Used for startup/periodic checking, respects delay elapsed time |
+| `TryProcessQueuedMessage()`  | `BackgroundSession` | Used for startup/loop checking, respects delay elapsed time |
 | `ProcessPendingQueues()`     | `SessionManager`    | Called on server startup, resumes sessions with queued items    |
 
 ## Frontend Integration

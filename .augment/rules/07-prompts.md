@@ -127,13 +127,13 @@ Full recipe: [docs/config/prompts.md § Context-adaptive prompts (three modes)](
 
 ## Key Types
 
-`WebPrompt`: Name, Prompt, Description, Group, BackgroundColor, Icon, Source ("builtin"|"file"|"settings"|"workspace"), Enabled (*bool: nil=enabled, false=disabled), EnabledWhen (CEL, server-side only), Periodic (non-nil = periodic conversation), Singleton (bool: `true` = no concurrent conversation instances for this prompt in the same working dir; see below).
+`WebPrompt`: Name, Prompt, Description, Group, BackgroundColor, Icon, Source ("builtin"|"file"|"settings"|"workspace"), Enabled (*bool: nil=enabled, false=disabled), EnabledWhen (CEL, server-side only), Loop (non-nil = loop conversation), Singleton (bool: `true` = no concurrent conversation instances for this prompt in the same working dir; see below).
 
 ### Singleton Prompts (find-or-route)
 
 A prompt with `singleton: true` must not have more than one non-archived conversation per working dir. A session records the prompt that created it in `session.Metadata.OriginPromptName` at create time (set on `POST /api/sessions` from `initial_prompt_name`/`origin_prompt_name`). When a singleton prompt is launched, `HandleCreateSession` (`internal/web/handlers/session_create.go`) scans existing non-archived sessions by `(WorkingDir, OriginPromptName)` under a keyed lock (`lockSingleton`); on a match it reuses that conversation instead of creating a new one — re-seeding the queue if idle, focus-only if busy — and responds with `reused: true`. The frontend threads `reused` through `useWebSocket.js` → `useConversationSeeding.js` and shows a "Reusing existing ..." toast instead of "Started ..." (`useBeadsIntegration.js`, `app.js`). Applied to the builtin beadsList maintenance prompts (overview, reevaluate, cleanup-stale, group-epics, status-all-inprogress) — deliberately **not** to "Start working on ready", since concurrent work-starting conversations are legitimate.
 
-`PromptPeriodic` (YAML `periodic:`): `value`/`unit`/`at` (schedule period), `maxIterations`, plus the on-completion fields `trigger` (`schedule` default | `onCompletion`), `delay` (int seconds for onCompletion; clamped to the global floor), and `maxDuration` (duration string e.g. `4h`; wall-clock cap from the first run). `MaxIterations` caps scheduled runs; effective cap = min(prompt maxIterations, config default 100, hardcoded 1000). Backend auto-disables (not archives) when either the iteration cap or `maxDuration` is hit.
+`PromptLoop` (YAML `loop:`): `value`/`unit`/`at` (schedule period), `maxIterations`, plus the on-completion fields `trigger` (`schedule` default | `onCompletion`), `delay` (int seconds for onCompletion; clamped to the global floor), and `maxDuration` (duration string e.g. `4h`; wall-clock cap from the first run). `MaxIterations` caps scheduled runs; effective cap = min(prompt maxIterations, config default 100, hardcoded 1000). Backend auto-disables (not archives) when either the iteration cap or `maxDuration` is hit.
 
 ## Merging & Caching
 
@@ -145,7 +145,7 @@ A prompt with `singleton: true` must not have more than one non-archived convers
 
 ## Menu-Driven Prompt Sends (Named-Prompt Mechanism)
 
-All menus (prompts, beadsIssues, beadsList) send `prompt_name` only — never the full body. Frontend helpers in `useConversationSeeding.js`: `seedConversationWithPrompt()` (existing session), `startConversationWithPrompt()` (new ± periodic), `makePeriodicNow()` (convert to periodic). Backend resolves name at dispatch via `resolvePromptByName()` in target workspace context; the body is then **Go-template rendered** (if it contains `{{`) before `${VAR}` substitution. **Anti-pattern**: never POST resolved text to `/api/sessions/{id}/queue` — send `prompt_name` instead.
+All menus (prompts, beadsIssues, beadsList) send `prompt_name` only — never the full body. Frontend helpers in `useConversationSeeding.js`: `seedConversationWithPrompt()` (existing session), `startConversationWithPrompt()` (new ± loop), `makeLoopNow()` (convert to loop). Backend resolves name at dispatch via `resolvePromptByName()` in target workspace context; the body is then **Go-template rendered** (if it contains `{{`) before `${VAR}` substitution. **Anti-pattern**: never POST resolved text to `/api/sessions/{id}/queue` — send `prompt_name` instead.
 
 ## MCP Prompt Tools
 
@@ -217,11 +217,11 @@ parameters:
 
 ## Iteration.IsUninterrupted (mitto-5xjn)
 
-`{{ .Iteration.IsUninterrupted }}` is `true` only on a **scheduled** (non-forced, non-FreshContext) periodic run that directly follows another such run with nothing in between — no user interjection, no forced "run now", no FreshContext, same process lifetime.
+`{{ .Iteration.IsUninterrupted }}` is `true` only on a **scheduled** (non-forced, non-FreshContext) loop run that directly follows another such run with nothing in between — no user interjection, no forced "run now", no FreshContext, same process lifetime.
 
 **Reset boundaries** (set marker to false):
 - Archive/unarchive, GC suspend/resume, process restart
 - ACP process reinit/restart
-- Periodic loop config change / pause / re-enable
+- Loop loop config change / pause / re-enable
 
 **Authoring rule**: compact "continue" branch must carry durable re-anchor (one-line goal + file/bead ref). Always render verbose form when `IsFirst || !IsUninterrupted` to reset context after interruptions.

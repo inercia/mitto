@@ -87,8 +87,8 @@ These endpoints do **not** require a session cookie.
 | `/api/sessions/{id}/files/from-path` | POST | Attach file by local path (native macOS app — external-stable) |
 | `/api/sessions/{id}/queue` | GET, POST | List pending prompts in queue (GET); enqueue a prompt (POST) |
 | `/api/sessions/{id}/queue/{msgId}` | GET, DELETE | Get or cancel a specific queued prompt |
-| `/api/sessions/{id}/periodic` | GET, PUT, DELETE | Get or set periodic execution configuration |
-| `/api/sessions/{id}/periodic/{subPath}` | varies | Periodic sub-resource actions (e.g. trigger-now) |
+| `/api/sessions/{id}/loop` | GET, PUT, DELETE | Get or set loop execution configuration |
+| `/api/sessions/{id}/loop/{subPath}` | varies | Loop sub-resource actions (e.g. trigger-now) |
 
 ---
 
@@ -196,7 +196,7 @@ The `/api/sessions` endpoint returns an array of session objects with the follow
 | `status`            | string    | Session status (active, idle, error)                                 |
 | `archived`          | boolean   | Whether session is archived                                          |
 | `parent_session_id` | string    | Parent session ID (if created via `mitto_conversation_new` MCP tool) |
-| `periodic_enabled`  | boolean   | Whether periodic execution is configured                             |
+| `loop_enabled`  | boolean   | Whether loop execution is configured                             |
 
 #### Parent-Child Relationships
 
@@ -357,14 +357,14 @@ App
 
 The sidebar renders all conversations as a single hierarchical daisyUI `menu`
 tree (`SessionList` → `SessionItem`), replacing the former three tabs
-(Conversations / Periodic / Archived) and the group-by toggle.
+(Conversations / Loop / Archived) and the group-by toggle.
 
 - **Folders** group conversations by working directory (resolved to the root
   parent for nested children). Child conversations nest under their parent.
 - Each folder has an **Archived** subgroup (collapsed by default) and a static
   **Tasks** node (opens the beads view for that folder).
 - A static **Dashboard** node clears the active conversation.
-- **Category filter** (sidebar header dropdown): show/hide Regular, Periodic,
+- **Category filter** (sidebar header dropdown): show/hide Regular, Loop,
   Archived, and Tasks. Persisted per-device in `sessionStorage`.
 - Each row exposes an always-visible **three-dot (ellipsis) menu** that opens the
   shared `ContextMenu` (rename, pin, archive, delete, prompt groups…).
@@ -376,8 +376,8 @@ tree (`SessionList` → `SessionItem`), replacing the former three tabs
   visual order, skipping static nodes and respecting the category filter; the
   target's folder/archived/parent auto-expands and scrolls into view.
 
-> Conversations are categorized by `getFilterTabForSession` (regular / periodic /
-> archived). Periodic prompts are configured per-conversation (ChatInput /
+> Conversations are categorized by `getFilterTabForSession` (regular / loop /
+> archived). Loop prompts are configured per-conversation (ChatInput /
 > SessionPanel), not via a creation tab. Startup restores the single last-active
 > conversation regardless of category (falling back to the most recent overall).
 

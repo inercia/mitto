@@ -1,46 +1,46 @@
 ---
-description: Periodic prompt design patterns, silent mode, spawn deduplication, gate testing
+description: Loop prompt design patterns, silent mode, spawn deduplication, gate testing
 globs:
   - "internal/config/prompts*.go"
   - "internal/web/handlers/session_*.go"
 keywords:
-  - periodic
+  - loop
   - silent-mode
-  - IsPeriodic
-  - IsPeriodicForced
+  - IsLoop
+  - IsLoopForced
   - spawn-deduplication
   - Children
   - MCPText
   - gate-testing
 ---
 
-# Periodic Prompt Design Patterns
+# Loop Prompt Design Patterns
 
 ## Silent Mode vs Interactive Mode
 
-Periodic prompts must detect runtime context and adapt behavior:
+Loop prompts must detect runtime context and adapt behavior:
 
 ```go
-{{ if and .Session.IsPeriodic (not .Session.IsPeriodicForced) }}
+{{ if and .Session.IsLoop (not .Session.IsLoopForced) }}
   // Silent mode: scheduled run, user not watching
   // Use mitto_ui_notify ONLY (non-blocking)
   // Do NOT use interactive tools: options, form, textbox
   // Act autonomously when safe; notify on failures
 {{ else }}
-  // Interactive mode: forced run or non-periodic conversation
+  // Interactive mode: forced run or non-loop conversation
   // May use all UI tools freely for confirmations
 {{ end }}
 ```
 
 **Key fields**:
-- `.Session.IsPeriodic` — true if conversation has periodic config enabled
-- `.Session.IsPeriodicForced` — true if user force-triggered the run (via `mitto_conversation_run_periodic_now_mitto`)
+- `.Session.IsLoop` — true if conversation has loop config enabled
+- `.Session.IsLoopForced` — true if user force-triggered the run (via `mitto_conversation_run_loop_now_mitto`)
 
 **Pattern**: Silent mode never blocks the user; interactive mode can present dialogs, options, textboxes for user input.
 
 ## Spawn Deduplication
 
-When a periodic prompt spawns child conversations for multi-step repairs, always check for existing children **before** spawning:
+When a loop prompt spawns child conversations for multi-step repairs, always check for existing children **before** spawning:
 
 ```go
 Existing child conversations:
@@ -54,7 +54,7 @@ If found and still idle, RE-PROMPT it instead of spawning a duplicate.
 - `.Children.MCPText` — list of non-archived child conversations (from `mitto_children_tasks_wait_mitto` context)
 - Search child titles for a substring match (e.g., "PR #66" in "Fix CI for PR #66")
 
-**Spawn cap**: Limit to **3 spawns per periodic run**. Prioritize by severity:
+**Spawn cap**: Limit to **3 spawns per loop run**. Prioritize by severity:
 1. Rebase conflicts (blocks merge)
 2. CI failures (blocks merge)
 3. Unresolved review comments (informational)
@@ -66,7 +66,7 @@ If found and still idle, RE-PROMPT it instead of spawning a duplicate.
 
 ## Gate Testing Before External Actions
 
-When a periodic prompt identifies CI failures and spawns a fixer conversation, instruct the fixer to **run the full local gate suite BEFORE pushing**:
+When a loop prompt identifies CI failures and spawns a fixer conversation, instruct the fixer to **run the full local gate suite BEFORE pushing**:
 
 ```yaml
 Before pushing, run ALL gates in order:
@@ -78,7 +78,7 @@ Before pushing, run ALL gates in order:
 Push only after ALL gates pass locally.
 ```
 
-**Why**: Periodic automation that reveals CI failures incrementally (fix one, reveal the next) creates unnecessary re-runs. Full local validation before push breaks this cycle.
+**Why**: Loop automation that reveals CI failures incrementally (fix one, reveal the next) creates unnecessary re-runs. Full local validation before push breaks this cycle.
 
 **Common gates in mitto**:
 - `make fmt-check` — Go format check (gofmt)
@@ -107,7 +107,7 @@ mitto_ui_notify_mitto(
 
 ## State Persistence
 
-For long-running periodic prompts that track external state (CI status, branch status, etc.):
+For long-running loop prompts that track external state (CI status, branch status, etc.):
 - Store state in a **file in the workspace** (`.mitto/state/` convention)
 - Reference state file path in compact continuation messages
 - Use `.Iteration.IsUninterrupted` to detect continuation vs restart

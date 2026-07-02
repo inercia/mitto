@@ -110,7 +110,7 @@ CEL expression always read the same field from the same struct.
 | `{{ .Session.ID }}` | `Session.ID` | `Session.ID` |
 | `{{ .Session.Name }}` | `Session.Name` | `Session.Name` |
 | `{{ .Session.IsChild }}` | `Session.IsChild` | `Session.IsChild` |
-| `{{ .Session.IsPeriodic }}` | `Session.IsPeriodic` | `Session.IsPeriodic` |
+| `{{ .Session.IsLoop }}` | `Session.IsLoop` | `Session.IsLoop` |
 | `{{ .Session.HasMessages }}` | `Session.HasMessages` | `Session.HasMessages` |
 | `{{ .Session.BeadsIssue }}` | `Session.BeadsIssue` | `Session.BeadsIssue` |
 | `{{ .Session.UserDataJSON }}` | — | `Session.UserDataJSON` — JSON of session user-data attributes |
@@ -130,12 +130,12 @@ CEL expression always read the same field from the same struct.
 | `{{ .Children.MCP }}` | — | `Children.MCP` — `[]config.ChildInfo` for MCP-origin children only |
 | `{{ .ACP.Available }}` | — | `ACP.Available` — `[]config.ACPServerInfo` for workspace ACP servers |
 | `{{ .Args.NAME }}` | `Args["NAME"]` (new) | `Args["NAME"]` (new) |
-| `{{ .Iteration.Number }}` | — | `Iteration.Number` — 0-based index of the current periodic run; 0 for non-periodic |
-| `{{ .Iteration.Max }}` | — | `Iteration.Max` — configured max runs (0 = unlimited); 0 for non-periodic |
-| `{{ .Iteration.IsPeriodic }}` | — | `Iteration.IsPeriodic` — `true` when triggered by the periodic runner |
+| `{{ .Iteration.Number }}` | — | `Iteration.Number` — 0-based index of the current loop run; 0 for non-loop |
+| `{{ .Iteration.Max }}` | — | `Iteration.Max` — configured max runs (0 = unlimited); 0 for non-loop |
+| `{{ .Iteration.IsLoop }}` | — | `Iteration.IsLoop` — `true` when triggered by the loop runner |
 | `{{ .Iteration.IsFirst }}` | — | `Iteration.IsFirst` — `true` when `Number == 0` |
 | `{{ .Iteration.IsLast }}` | — | `Iteration.IsLast` — `true` when `Max > 0 && Number == Max-1` |
-| `{{ .Iteration.IsUninterrupted }}` | — | `Iteration.IsUninterrupted` — `true` only on a scheduled, non-forced periodic run directly following another such run (no user interjection / forced run / FreshContext; same process lifetime) |
+| `{{ .Iteration.IsUninterrupted }}` | — | `Iteration.IsUninterrupted` — `true` only on a scheduled, non-forced loop run directly following another such run (no user interjection / forced run / FreshContext; same process lifetime) |
 
 `Args` is populated from `meta.Arguments` at send time. At menu time (`enabledWhen`
 evaluation), `Args` is `nil`. Template rendering runs at **send time only**, so `Args` is
@@ -247,8 +247,8 @@ no template syntax. This check is identical to the `@mitto:` fast-path in `Subst
 | `@mitto:workspace_uuid` | `{{ .Workspace.UUID }}` | |
 | `@mitto:beads_issue` | `{{ .Session.BeadsIssue }}` | |
 | `@mitto:mcp_children_count` | `{{ .Children.MCPCount }}` | int, not string |
-| `@mitto:periodic` | `{{ .Session.IsPeriodic }}` | bool, not `"true"`/`"false"` string |
-| `@mitto:periodic_forced` | `{{ .Session.IsPeriodicForced }}` | bool, not `"true"`/`"false"` string. Field added to `SessionContext` (mitto-m7sb.3); fully wired into the CEL env (`Session.IsPeriodicForced`). |
+| `@mitto:loop` | `{{ .Session.IsLoop }}` | bool, not `"true"`/`"false"` string |
+| `@mitto:loop_forced` | `{{ .Session.IsLoopForced }}` | bool, not `"true"`/`"false"` string. Field added to `SessionContext` (mitto-m7sb.3); fully wired into the CEL env (`Session.IsLoopForced`). |
 | `@mitto:available_acp_servers` | `{{ .ACP.AvailableText }}` | `config.FormatACPServers(ctx.ACP.Available)`; format: `"name [tags] (current), name2"` |
 | `@mitto:children` | `{{ .Children.AllText }}` | `config.FormatChildren(ctx.Children.All)`; format: `"id (name) [acp], id2"` |
 | `@mitto:mcp_children` | `{{ .Children.MCPText }}` | `config.FormatChildren(ctx.Children.MCP)`; MCP-origin only |
@@ -326,7 +326,7 @@ are caught at load time by `ParsePromptFile`.
 
 ### 10.8  Title-generation path must NOT render templates
 
-`BackgroundSession.TriggerTitleGenerationFromPeriodic` (in `bgsession_title.go`) resolves
+`BackgroundSession.TriggerTitleGenerationFromLoop` (in `bgsession_title.go`) resolves
 a prompt name and feeds the result to an auxiliary AI session for title generation. It does NOT
 call `PromptWithMeta`, so it is **outside the template-rendering chokepoint**. The raw prompt
 text (with un-rendered `{{ ... }}` tokens) is sent to the auxiliary title generator. This is
@@ -340,12 +340,12 @@ At menu time, `ToolsContext.Available == false` causes `Tools.HasPattern` to ret
 (template `cond` evaluation), the real tool list is always available (warm cache). No asymmetry
 issue for the `cond` function.
 
-### 10.10  Periodic runner IS covered
+### 10.10  Loop runner IS covered
 
-`internal/web/periodic_runner.go` dispatches prompts via `bs.PromptWithMeta(promptText, meta)`
-with `meta.SenderID = "periodic-runner"` (line ~1149). Because it goes through `PromptWithMeta`,
+`internal/web/loop_runner.go` dispatches prompts via `bs.PromptWithMeta(promptText, meta)`
+with `meta.SenderID = "loop-runner"` (line ~1149). Because it goes through `PromptWithMeta`,
 it passes through `resolveAndSubstitute` and therefore through template rendering. No special
-periodic-runner handling is needed.
+loop-runner handling is needed.
 
 ---
 
@@ -365,7 +365,7 @@ periodic-runner handling is needed.
 | Bead | Scope | Key files |
 |---|---|---|
 | **mitto-m7sb.2** | Core renderer: `renderTemplateBody`, insert in `resolveAndSubstitute`, `missingkey=zero`, fast-path, `text/template.FuncMap` skeleton | `internal/conversation/prompt_dispatcher.go`, new `internal/config/prompt_template.go` |
-| **mitto-m7sb.3** | Context builder: populate `PromptEnabledContext` at send time; add `Args map[string]string` field; add `IsPeriodicForced` to `SessionContext` | `internal/config/cel_context.go`, `internal/conversation/prompt_dispatcher.go` |
+| **mitto-m7sb.3** | Context builder: populate `PromptEnabledContext` at send time; add `Args map[string]string` field; add `IsLoopForced` to `SessionContext` | `internal/config/cel_context.go`, `internal/conversation/prompt_dispatcher.go` |
 | **mitto-m7sb.4** | Load-time validation: `ParsePromptFile` + MCP `mitto_prompt_update` parse-and-validate; `cond` literal pre-compile | `internal/config/prompts.go`, `internal/web/handlers/` (prompt update handler) |
 | **mitto-m7sb.5** | CEL env extension: add `args` map variable to `NewCELEvaluator` and `buildActivation` | `internal/config/cel_evaluator.go` |
 | **mitto-m7sb.6** | FuncMap full impl: `arg`, `default`, `fileExists`, `dirExists`, `commandExists`, `cond`/`when`; extract shared pure-Go helper package | `internal/config/cel_evaluator.go` (extract), new `internal/config/templatefuncs.go` |
@@ -374,17 +374,17 @@ periodic-runner handling is needed.
 
 ---
 
-## 13. Label-as-state-machine pattern for periodic beads prompts
+## 13. Label-as-state-machine pattern for loop beads prompts
 
 This section documents a higher-level **design pattern** built on top of the template
 context described in §4 and §10.1: using `bd` labels as a durable, ordered state
-machine that a periodic conversation advances one stage per run. It is the pattern
+machine that a loop conversation advances one stage per run. It is the pattern
 behind the shipped `Iterate fixing bug`, `Iterate fixing bugs`, and
 `Iterate implementing features` builtin prompts (§13.9).
 
 ### 13.1  Concept
 
-A **periodic conversation** advances a single beads issue through an ordered,
+A **loop conversation** advances a single beads issue through an ordered,
 finite set of states encoded as `bd` **labels** (e.g. `researched` → `reproduced`
 → `fixed`). Each scheduled run performs the same four-step cycle:
 
@@ -394,7 +394,7 @@ finite set of states encoded as `bd` **labels** (e.g. `researched` → `reproduc
    per run).
 4. **Advance** the label (add the label for the stage just completed), then
    either stop the turn (the next scheduled run picks up the next stage) or,
-   at the **terminal** label, **self-terminate** the periodic schedule (§13.5).
+   at the **terminal** label, **self-terminate** the loop schedule (§13.5).
 
 Because the state lives in the tracker (not in conversation memory), the loop
 survives conversation restarts, crashes, and even a full context reset —
@@ -433,10 +433,10 @@ reports where in the schedule the run sits:
 
 | Field | Meaning |
 |---|---|
-| `{{ .Session.BeadsIssue }}` | The conversation's **linked** beads issue (set via `beads_issue` at creation, or `mitto_conversation_update`). Preferred — durable across every periodic re-fire regardless of arguments. |
+| `{{ .Session.BeadsIssue }}` | The conversation's **linked** beads issue (set via `beads_issue` at creation, or `mitto_conversation_update`). Preferred — durable across every loop re-fire regardless of arguments. |
 | `{{ .Args.IssueID }}` | An explicit argument (e.g. auto-filled by the `beadsIssues` menu on the first send). Used when there is no linked issue yet, or as a one-shot override. |
 | `{{ .Iteration.IsFirst }}` | `true` on the very first run (`Iteration.Number == 0`) — no prior `bd comment` history to review yet. |
-| `{{ .Iteration.IsUninterrupted }}` | `true` only on a scheduled, non-forced periodic run directly following another such run — i.e. genuine machine-driven continuation, not a user-resumed or force-triggered run. |
+| `{{ .Iteration.IsUninterrupted }}` | `true` only on a scheduled, non-forced loop run directly following another such run — i.e. genuine machine-driven continuation, not a user-resumed or force-triggered run. |
 | `{{ .Iteration.IsLast }}` | `true` on the final scheduled run before `maxIterations` is hit — a hook to wrap up gracefully instead of starting a stage that won't finish. |
 
 The standard **target ladder** (also used by the context-adaptive prompts in
@@ -449,15 +449,15 @@ prefers the durable linked issue, falling back to the argument:
 {{ else if .Args.IssueID }}{{ $target = .Args.IssueID }}{{ end -}}
 ```
 
-### 13.4  Auto-periodic frontmatter block
+### 13.4  Auto-loop frontmatter block
 
-A label-as-state-machine prompt declares a `periodic:` block so each run
+A label-as-state-machine prompt declares a `loop:` block so each run
 re-fires automatically once the agent stops responding — see
-[docs/config/prompts.md § Periodic Prompts](../config/prompts.md#periodic-prompts)
+[docs/config/prompts.md § Loop Prompts](../config/prompts.md#loop-prompts)
 for the full field reference:
 
 ```yaml
-periodic:
+loop:
   mode: always
   trigger: onCompletion   # fire the next run after the agent stops, not on a fixed clock
   delay: 30               # seconds to wait after the agent finishes
@@ -468,27 +468,27 @@ periodic:
 **This block behaves differently depending on how the conversation was
 started — this distinction matters for orchestrator authors:**
 
-| How the prompt is dispatched | Does `periodic:` auto-apply? |
+| How the prompt is dispatched | Does `loop:` auto-apply? |
 |---|---|
-| Selected directly in the UI (ChatInput dropup, Beads context menu, periodic selector) | **Yes.** The frontend reads the prompt's `periodic:` block and configures the conversation accordingly (see [Behavior](../config/prompts.md#behavior)). |
-| Spawned programmatically via `mitto_conversation_new(prompt_name: "...")` (e.g. from an orchestrator prompt) | **No.** The prompt's own `periodic:` frontmatter is **not** read or applied. The caller must pass explicit `periodic_prompt`, `periodic_trigger`, `periodic_completion_delay_seconds`, `periodic_max_iterations`, and `periodic_max_duration_seconds` arguments to `mitto_conversation_new` to reproduce the same schedule. |
+| Selected directly in the UI (ChatInput dropup, Beads context menu, loop selector) | **Yes.** The frontend reads the prompt's `loop:` block and configures the conversation accordingly (see [Behavior](../config/prompts.md#behavior)). |
+| Spawned programmatically via `mitto_conversation_new(prompt_name: "...")` (e.g. from an orchestrator prompt) | **No.** The prompt's own `loop:` frontmatter is **not** read or applied. The caller must pass explicit `loop_prompt`, `loop_trigger`, `loop_completion_delay_seconds`, `loop_max_iterations`, and `loop_max_duration_seconds` arguments to `mitto_conversation_new` to reproduce the same schedule. |
 
 The shipped list-level orchestrators (`Iterate fixing bugs`,
 `Iterate implementing features`) work around this by fetching the per-issue
 driver's body once via `mitto_prompt_get`, then passing that body as **both**
-`initial_prompt` and `periodic_prompt`, with the numeric periodic fields
-copied from the driver's own `periodic:` block (see §13.9).
+`initial_prompt` and `loop_prompt`, with the numeric loop fields
+copied from the driver's own `loop:` block (see §13.9).
 
 ### 13.5  Self-termination
 
 At the terminal label — the stage after which there is no further work —
-the prompt turns off its own periodic schedule instead of continuing to fire:
+the prompt turns off its own loop schedule instead of continuing to fire:
 
 ```
-mitto_conversation_update(self_id: "{{ .Session.ID }}", conversation_id: "self", periodic_enabled: false)
+mitto_conversation_update(self_id: "{{ .Session.ID }}", conversation_id: "self", loop_enabled: false)
 ```
 
-This flips the conversation back into a regular (non-periodic) one; it is not
+This flips the conversation back into a regular (non-loop) one; it is not
 deleted or archived, and can be re-enabled later (e.g. after a human clears a
 `needs-human` label and wants to resume — §13.7).
 
@@ -539,7 +539,7 @@ drops out of scheduling and leaves a clear trail for a human to pick up:
 3. **Stop the loop** so it does not keep re-firing on the same blocker:
 
    ```
-   mitto_conversation_update(self_id: "{{ .Session.ID }}", conversation_id: "self", periodic_enabled: false)
+   mitto_conversation_update(self_id: "{{ .Session.ID }}", conversation_id: "self", loop_enabled: false)
    ```
 
 **To resume:** clear the flag and the defer date —
@@ -549,7 +549,7 @@ bd update <id> --remove-label needs-human --defer ""
 ```
 
 — which returns the issue to `bd ready`, and re-running the prompt (or
-re-enabling its periodic schedule) resumes at the **un-advanced** stage: no
+re-enabling its loop schedule) resumes at the **un-advanced** stage: no
 progress is lost, because the state is durable in the labels, not in
 conversation memory.
 
@@ -562,14 +562,14 @@ your workflow:
 ```yaml
 name: "Iterate my workflow"
 menus: beadsIssues, conversation
-icon: periodic
+icon: loop
 parameters:
   - name: IssueID
     type: beadsId
     required: false
     description: The beads issue ID to act on
 enabledWhen: '!Session.IsChild && CommandExists("bd") && DirExists(".beads") && Item.Status != "closed"'
-periodic:
+loop:
   mode: always
   trigger: onCompletion
   delay: 30
@@ -603,7 +603,7 @@ prompt: |
 
   - `done` present → **terminal state reached.** Self-terminate:
 
-        mitto_conversation_update(self_id: "{{ .Session.ID }}", conversation_id: "self", periodic_enabled: false)
+        mitto_conversation_update(self_id: "{{ .Session.ID }}", conversation_id: "self", loop_enabled: false)
         mitto_ui_notify(self_id: "{{ .Session.ID }}", title: "Iterate my workflow — done", message: "<summary>", style: "success")
   {{- end }}
 
@@ -613,7 +613,7 @@ prompt: |
 
       bd update {{ if $target }}{{ $target }}{{ else }}<target-id>{{ end }} --add-label needs-human --defer +1d
       bd comment {{ if $target }}{{ $target }}{{ else }}<target-id>{{ end }} "Blocked at <stage>. What I tried: <summary>. What I need: <the ONE concrete question>. How to resume: bd update <id> --remove-label needs-human --defer '' , then re-run."
-      mitto_conversation_update(self_id: "{{ .Session.ID }}", conversation_id: "self", periodic_enabled: false)
+      mitto_conversation_update(self_id: "{{ .Session.ID }}", conversation_id: "self", loop_enabled: false)
 ```
 
 ### 13.9  Worked example: the shipped bug-fix state machine
@@ -648,8 +648,8 @@ child, wait for it, then move to the next:
   `planned` → `implemented` → `tested` → `verified` feature state machine, one
   feature at a time.
 
-Both orchestrators are themselves **non-periodic, one-shot** runs (they loop
+Both orchestrators are themselves **non-loop, one-shot** runs (they loop
 internally via `mitto_children_tasks_wait`); the *children* they spawn are the
-periodic ones, and both fetch the child driver's body via `mitto_prompt_get`
-and pass it as both `initial_prompt` and `periodic_prompt` — a direct
+loop ones, and both fetch the child driver's body via `mitto_prompt_get`
+and pass it as both `initial_prompt` and `loop_prompt` — a direct
 consequence of the `mitto_conversation_new` behavior documented in §13.4.

@@ -259,7 +259,7 @@ prompt: |
 | `name`            | No\*     | string   | Display name for the button. If omitted, derived from filename.                              |
 | `description`     | No       | string   | Tooltip text shown on hover                                                                  |
 | `group`           | No       | string   | Group name for organizing prompts in the menu (e.g., `"Git"`, `"Testing"`)                   |
-| `menus`           | No       | string   | Comma-separated list of menus the prompt appears in: `prompts` (ChatInput dropup), `promptsPeriodic` (periodic prompt selector), `conversation` (per-conversation context menu), `beadsIssues` (per-issue context menu in the Beads list), and/or `beadsList` (list-level prompts button in the Beads list footer). Defaults to `prompts` if omitted. See [below](#menus). |
+| `menus`           | No       | string   | Comma-separated list of menus the prompt appears in: `prompts` (ChatInput dropup), `promptsLoop` (loop prompt selector), `conversation` (per-conversation context menu), `beadsIssues` (per-issue context menu in the Beads list), and/or `beadsList` (list-level prompts button in the Beads list footer). Defaults to `prompts` if omitted. See [below](#menus). |
 | `parameters`      | No       | list     | Typed input declarations. Each entry: `{ name, type, description?, required? }`. The menu must supply every declared type or the prompt is hidden. See [below](#parameters-typed-inputs--type-based-gating). |
 | `backgroundColor` | No       | string   | Hex color for the button (e.g., `"#E8F5E9"`)                                                 |
 | `icon`            | No       | string   | Icon name shown next to the prompt in menus. See [valid names](#icon-names). Unknown names fall back to the default icon. |
@@ -268,7 +268,7 @@ prompt: |
 | `acps`            | No       | string   | Comma-separated ACP server types this prompt belongs to. Makes the prompt server-specific.   |
 | `enabled`         | No       | bool     | Set to `false` to disable the prompt. Default: `true`                                        |
 | `enabledWhen`     | No       | string   | CEL expression for conditional enablement. See [below](#enabledwhen-conditional-enablement). |
-| `periodic`        | No       | mapping  | Opt-in periodic mode — presence makes the prompt behave **context-sensitively** when selected (start a new recurring conversation, convert an existing one to periodic, or send a single one-shot run). See [below](#periodic-prompts). |
+| `loop`        | No       | mapping  | Opt-in loop mode — presence makes the prompt behave **context-sensitively** when selected (start a new recurring conversation, convert an existing one to loop, or send a single one-shot run). See [below](#loop-prompts). |
 | `prompt`          | Yes\*\*  | string   | The prompt body text, written as a YAML literal block scalar (`\|`). |
 
 \*If `name` is not specified, it's derived from the filename (e.g., `code-review.prompt.yaml` →
@@ -288,7 +288,7 @@ Available names:
 `magic-wand`, `lightning`, `robot`, `person`, `image`, `folder`, `folder-open`,
 `terminal`, `server`, `globe`, `chat-bubble`, `shield`, `layers`, `list`, `tag`,
 `check`, `question`, `error`, `plus`, `hourglass`, `refresh`, `sync`, `keyboard`,
-`duplicate`, `pin`, `archive`, `periodic`, `queue`, `play`.
+`duplicate`, `pin`, `archive`, `loop`, `queue`, `play`.
 
 The registry is defined in `web/static/components/Icons.js` (`PROMPT_ICONS`); add an
 entry there to expose additional icons by name.
@@ -359,7 +359,7 @@ prompt appears in. The available menu values are:
 | Menu              | Where it appears                                                                                  |
 | ----------------- | ------------------------------------------------------------------------------------------------- |
 | `prompts`         | The **ChatInput dropup** — the "Insert predefined prompt" menu (the `^` button) above the chat input. |
-| `promptsPeriodic` | The **periodic prompt selector** — the prompt dropdown shown in the inline editor of a periodic conversation. |
+| `promptsLoop` | The **loop prompt selector** — the prompt dropdown shown in the inline editor of a loop conversation. |
 | `conversation`    | The **per-conversation context menu** — shown when you right-click a conversation in the sidebar.  |
 | `beadsIssues`     | The **per-issue context menu** — shown when you right-click an issue in the Beads list view.        |
 | `beadsList`       | The **list-level prompts button** — the dropdown next to the `+` button in the Beads list footer.   |
@@ -380,30 +380,30 @@ Whitespace around each entry is ignored. Because `menus` is an explicit list, a
 prompt with `menus: conversation` (without `prompts`) appears **only** in the
 conversation context menu and is **excluded** from the ChatInput dropup.
 
-### Periodic Prompt Selector Menu
+### Loop Prompt Selector Menu
 
-Prompts whose `menus` list includes `promptsPeriodic` appear in the **periodic
-prompt selector** — the prompt dropdown shown in the inline editor of a periodic
+Prompts whose `menus` list includes `promptsLoop` appear in the **loop
+prompt selector** — the prompt dropdown shown in the inline editor of a loop
 conversation, where you pick which prompt the scheduler runs on each tick.
 
-The periodic selector shows the **union** of `prompts` and `promptsPeriodic`: any
+The loop selector shows the **union** of `prompts` and `promptsLoop`: any
 prompt available in the ChatInput dropup also appears in the selector, so existing
 prompts keep working without changes. To make a prompt appear **only** in the
-periodic selector (and hide it from the regular dropup), set `menus:
-promptsPeriodic` without `prompts`:
+loop selector (and hide it from the regular dropup), set `menus:
+promptsLoop` without `prompts`:
 
 ```yaml
 name: "Babysit PRs"
 description: "Check for pending reviews and stale branches"
 group: "GitHub"
-menus: promptsPeriodic
+menus: promptsLoop
 prompt: |
   Check the repository for pending review requests and stale branches.
 ```
 
-Pair this with the `Session.IsPeriodicConversation` CEL variable (see
+Pair this with the `Session.IsLoopConversation` CEL variable (see
 [enabledWhen](#enabledwhen-conditional-enablement)) if you also want the prompt
-hidden everywhere outside periodic conversations.
+hidden everywhere outside loop conversations.
 
 ### Exclusion Syntax (`!menu`)
 
@@ -411,26 +411,26 @@ A `!`-prefixed token in `menus` **explicitly excludes** the prompt from that men
 even when a union or implicit rule would otherwise include it. Exclusions take
 precedence over inclusions.
 
-**Motivating case:** the periodic prompt selector uses a union rule — every
+**Motivating case:** the loop prompt selector uses a union rule — every
 `prompts` prompt also appears in the selector. To suppress a one-shot prompt from
-the periodic selector without removing it from the regular dropup, add
-`!promptsPeriodic`:
+the loop selector without removing it from the regular dropup, add
+`!promptsLoop`:
 
 ```yaml
 name: "JIRA: decompose"
 description: "Break a JIRA epic into subtasks — one-shot only, not for recurring runs"
 group: "JIRA"
-menus: prompts, !promptsPeriodic
+menus: prompts, !promptsLoop
 prompt: |
   Analyze the current JIRA epic and decompose it into actionable subtasks.
 ```
 
 This prompt appears in the ChatInput dropup (`prompts`) but is hidden from the
-periodic prompt selector (`!promptsPeriodic`).
+loop prompt selector (`!promptsLoop`).
 
 **Rules:**
 - A bare token (`prompts`) opts the prompt **into** that menu.
-- A `!`-prefixed token (`!promptsPeriodic`) opts the prompt **out of** that menu.
+- A `!`-prefixed token (`!promptsLoop`) opts the prompt **out of** that menu.
 - Exclusions take precedence over inclusions and union rules.
 - If all non-`!` tokens are stripped and nothing positive remains, `menus`
   defaults to `["prompts"]` (the prompt still appears in the dropup).
@@ -609,18 +609,18 @@ The built-in `beads-issue-investigate`, `beads-issue-discuss`,
 `beads-issue-status`, `beads-issue-resolved`, `beads-issue-work`, and
 `beads-followup-work` prompts all follow this three-mode pattern.
 
-## Periodic Prompts
+## Loop Prompts
 
-A prompt can declare a `periodic:` mapping to opt into **periodic mode**. How a
-periodic-declaring prompt behaves when selected is **context-sensitive** — it
+A prompt can declare a `loop:` mapping to opt into **loop mode**. How a
+loop-declaring prompt behaves when selected is **context-sensitive** — it
 depends on the conversation it targets. It can start a new recurring conversation,
-convert an existing conversation to periodic, or send a single one-shot run (see
+convert an existing conversation to loop, or send a single one-shot run (see
 [Behavior](#behavior) below).
 
-### Periodic Fields
+### Loop Fields
 
 ```yaml
-periodic:
+loop:
   value: 1           # number of time units between runs (integer ≥ 1); used by trigger: schedule
   unit: hours        # minutes | hours | days; used by trigger: schedule
   at: "09:00"        # optional — time of day in HH:MM (local time in the UI, stored as UTC); only valid for unit: days
@@ -639,34 +639,34 @@ periodic:
 | `at`            | No       | Time of day (`HH:MM`) for daily schedules only. Ignored for other units. |
 | `maxIterations` | No       | Cap on the number of scheduled runs (integer ≥ 0). `0` or absent means unlimited at the prompt level. See [Max iterations and auto-stop](#max-iterations-and-auto-stop). |
 | `trigger`       | No       | How runs fire: `schedule` (default — frequency-based) or `onCompletion` (fire after the agent stops responding). See [Triggers](#triggers-schedule-vs-on-completion). |
-| `delay`         | No       | For `trigger: onCompletion` only — seconds to wait after the agent finishes before the next run. Clamped up to the global floor (`min_periodic_completion_delay_seconds`, default 5). Ignored for `schedule`. |
+| `delay`         | No       | For `trigger: onCompletion` only — seconds to wait after the agent finishes before the next run. Clamped up to the global floor (`min_loop_completion_delay_seconds`, default 5). Ignored for `schedule`. |
 | `maxDuration`   | No       | Wall-clock cap as a duration string (`30m`, `4h`, `1d`). Once it elapses (measured from the first run), the conversation auto-stops. `0`/absent = unlimited. |
 | `mode`          | No       | `always` (default — not user-toggleable) or `optional` (user-choosable per send). Unknown values are rejected at load time. See [Always / optional / never](#always--optional--never). |
 | `default`       | No       | Initial per-send toggle state when `mode: optional`. `true`/absent = on, `false` = off. Ignored (with a load-time warning) when `mode` is `always` or absent. |
 
 ¹ Required for `trigger: schedule` (the default). Ignored for `trigger: onCompletion`, which fires off the agent-idle event rather than a fixed period.
 
-**Presence implies opt-in** — omitting the `periodic:` block entirely keeps the prompt as a regular one-time prompt.
+**Presence implies opt-in** — omitting the `loop:` block entirely keeps the prompt as a regular one-time prompt.
 
 The `value` / `unit` / `at` fields double as the **default period** applied
-whenever a conversation is made periodic (see [Default period](#default-period)).
+whenever a conversation is made loop (see [Default period](#default-period)).
 
 #### Always / optional / never
 
 Every prompt falls into one of three categories:
 
-- **Never periodic** — no `periodic:` block at all. Regular one-time prompt (unchanged).
-- **Always periodic** — `periodic:` block with `mode: always` (or `mode` absent). Periodic behavior is mandatory whenever the prompt is selected; not user-toggleable.
-- **Optionally periodic** — `periodic:` block with `mode: optional`. The user can choose whether this send is periodic; `default` sets the initial toggle state.
+- **Never loop** — no `loop:` block at all. Regular one-time prompt (unchanged).
+- **Always loop** — `loop:` block with `mode: always` (or `mode` absent). Loop behavior is mandatory whenever the prompt is selected; not user-toggleable.
+- **Optionally loop** — `loop:` block with `mode: optional`. The user can choose whether this send is loop; `default` sets the initial toggle state.
 
 ```yaml
-# Always periodic (mode omitted == always)
-periodic:
+# Always loop (mode omitted == always)
+loop:
   trigger: onCompletion
   delay: 30
 
-# Optionally periodic, off by default
-periodic:
+# Optionally loop, off by default
+loop:
   mode: optional
   default: false
   trigger: onCompletion
@@ -675,35 +675,35 @@ periodic:
 
 ### Behavior
 
-A periodic-declaring prompt is **context-sensitive**: what happens when you select
+A loop-declaring prompt is **context-sensitive**: what happens when you select
 it depends on the conversation it targets. The decision is made by
-`decidePeriodicAction` (see `web/static/hooks/useConversationSeeding.js`).
+`decideLoopAction` (see `web/static/hooks/useConversationSeeding.js`).
 
 | Context | What happens |
 | ------- | ------------ |
-| **No active conversation** (selecting the prompt to start fresh) | A **frequency dialog** (`PeriodicScheduleDialog`) opens, pre-filled from the prompt's `periodic` defaults (period, `at`, and **max runs**). On confirm, a **new periodic conversation** is created (no queue seed) and `PUT /api/sessions/{id}/periodic` configures the named prompt on the declared schedule. |
-| **Regular (running, non-periodic, top-level) conversation** | The conversation is made **immediately periodic** using the prompt's declared defaults — **no dialog** — and the **first run fires right away** (PUT periodic, then `POST /api/sessions/{id}/periodic/run-now`). The scheduled prompt is now this prompt. |
-| **Already-periodic conversation, or a child conversation** | The prompt contents are sent **once** (a one-shot enqueue) and the conversation's configured periodic prompt, schedule, and iteration cap are **left untouched**. |
+| **No active conversation** (selecting the prompt to start fresh) | A **frequency dialog** (`LoopScheduleDialog`) opens, pre-filled from the prompt's `loop` defaults (period, `at`, and **max runs**). On confirm, a **new loop conversation** is created (no queue seed) and `PUT /api/sessions/{id}/loop` configures the named prompt on the declared schedule. |
+| **Regular (running, non-loop, top-level) conversation** | The conversation is made **immediately loop** using the prompt's declared defaults — **no dialog** — and the **first run fires right away** (PUT loop, then `POST /api/sessions/{id}/loop/run-now`). The scheduled prompt is now this prompt. |
+| **Already-loop conversation, or a child conversation** | The prompt contents are sent **once** (a one-shot enqueue) and the conversation's configured loop prompt, schedule, and iteration cap are **left untouched**. |
 
 #### Default period
 
 The `value` / `unit` / `at` fields are the **default period** applied whenever a
-conversation is made periodic — both when creating a new periodic conversation
+conversation is made loop — both when creating a new loop conversation
 (pre-filled into the dialog, where the user may adjust them) and when converting a
-regular conversation (`makePeriodicNow` uses them directly, without showing the
+regular conversation (`makeLoopNow` uses them directly, without showing the
 dialog).
 
 #### Max iterations and auto-stop
 
 `maxIterations` caps the number of **scheduled runs** before the conversation
-auto-stops. The periodic engine counts each delivered run (`iteration_count`) and,
-when the cap is reached, **disables** the periodic prompt so it stops firing. The
+auto-stops. The loop engine counts each delivered run (`iteration_count`) and,
+when the cap is reached, **disables** the loop prompt so it stops firing. The
 prompt is **not** deleted or archived — you can re-enable it at any time.
 
 The binding cap is the **smallest positive** of:
 
 - the prompt's `maxIterations`,
-- the server's `conversations.max_periodic_iterations` setting (default `100`,
+- the server's `conversations.max_loop_iterations` setting (default `100`,
   `0` = unlimited), and
 - a hardcoded absolute backstop of `1000`.
 
@@ -712,18 +712,18 @@ config setting and the backstop still apply.
 
 #### Triggers: schedule vs on-completion
 
-The `trigger` field selects **when** a periodic run fires:
+The `trigger` field selects **when** a loop run fires:
 
 - **`schedule`** (default) — runs fire on a fixed period defined by `value`/`unit`
   (and optional `at` for daily). This is the classic interval behavior.
 - **`onCompletion`** — the next run is armed **after the agent stops responding**,
   waiting `delay` seconds first. Each delivered run's completion arms the following
   one, so the loop is event-driven rather than clock-driven. The `delay` is clamped
-  up to the global floor (`min_periodic_completion_delay_seconds`, default 5 s) to
+  up to the global floor (`min_loop_completion_delay_seconds`, default 5 s) to
   prevent hot loops.
 
 `maxDuration` applies to **both** triggers: it is a wall-clock cap measured from the
-first run. Once exceeded, the periodic prompt is **disabled** (not deleted) on the
+first run. Once exceeded, the loop prompt is **disabled** (not deleted) on the
 next check, exactly like the [max-iterations auto-stop](#max-iterations-and-auto-stop).
 Combine `maxDuration` with `maxIterations` to bound a loop by either time or count,
 whichever comes first. See
@@ -731,7 +731,7 @@ whichever comes first. See
 for the server-side floor and defaults.
 
 **Restrictions:**
-- Periodic conversations can only be **top-level** (not child) conversations. Selecting a periodic prompt on a child conversation falls through to the one-shot send; the backend also returns HTTP 400 for periodic-on-child.
+- Loop conversations can only be **top-level** (not child) conversations. Selecting a loop prompt on a child conversation falls through to the one-shot send; the backend also returns HTTP 400 for loop-on-child.
 - The `at` field is only sent for `unit: days`; it is ignored otherwise (matches `Frequency.Validate()` on the backend).
 
 ### Example
@@ -741,7 +741,7 @@ name: "Daily Standup"
 description: "Run the daily team standup"
 group: "Workflow"
 menus: conversation, beadsIssues
-periodic:
+loop:
   value: 1
   unit: days
   at: "09:00"
@@ -752,31 +752,31 @@ prompt: |
 
 Selecting **Daily Standup** with **no active conversation** opens a dialog
 pre-filled with "every 1 day at 09:00" and "max runs 0 (unlimited)"; confirming
-creates a new periodic conversation that runs this prompt daily at 09:00 UTC.
+creates a new loop conversation that runs this prompt daily at 09:00 UTC.
 Selecting it on a **regular running conversation** instead converts that
-conversation to periodic immediately (using the same defaults) and fires the first
-run. Selecting it on an **already-periodic** conversation just runs it once,
+conversation to loop immediately (using the same defaults) and fires the first
+run. Selecting it on an **already-loop** conversation just runs it once,
 leaving the schedule unchanged.
 
-### Real-world example: auto-periodic, self-terminating
+### Real-world example: auto-loop, self-terminating
 
 The builtin **"Iterate until issue complete"** prompt
 (`config/prompts/builtin/beads-iterate-until-complete.prompt.yaml`) is a real
-auto-periodic example: a `menus: beadsIssues` prompt with a `periodic:` block
+auto-loop example: a `menus: beadsIssues` prompt with a `loop:` block
 (`trigger: onCompletion`, `delay: 30`, `maxIterations: 20`, `maxDuration: 4h`).
-Selecting it on a beads issue or epic starts a periodic conversation that, on each
+Selecting it on a beads issue or epic starts a loop conversation that, on each
 run, **delegates** one concrete increment to a child conversation (for an epic, the
 next ready child) and logs progress to the tracker; the next run fires shortly
 after the agent stops responding. Scheduled runs are **non-interactive** (branch on
-`@mitto:periodic` / `@mitto:periodic_forced`; use `mitto_ui_notify` only). When
+`@mitto:loop` / `@mitto:loop_forced`; use `mitto_ui_notify` only). When
 nothing ready remains in scope, it **self-terminates** —
-`mitto_conversation_update(conversation_id: "self", periodic_enabled: false)` turns
+`mitto_conversation_update(conversation_id: "self", loop_enabled: false)` turns
 it back into a regular conversation. It is the automated sibling of the interactive
 "Start work" (`beads-issue-work`) prompt.
 
 For the general design pattern behind this kind of self-driving, self-terminating
 loop — encoding workflow progress as `bd` labels — see
-[Label-as-state-machine pattern for periodic beads prompts](../devel/prompt-templates.md#13-label-as-state-machine-pattern-for-periodic-beads-prompts).
+[Label-as-state-machine pattern for loop beads prompts](../devel/prompt-templates.md#13-label-as-state-machine-pattern-for-loop-beads-prompts).
 
 ## Prompt Arguments
 
@@ -914,7 +914,7 @@ which maps each `{ name, type }` to the value supplied for its type by the menu.
 | Menu | Supplied types |
 | ---- | -------------- |
 | `prompts` (ChatInput dropup) | *(none)* |
-| `promptsPeriodic` (periodic prompt selector) | *(none)* |
+| `promptsLoop` (loop prompt selector) | *(none)* |
 | `conversation` (per-conversation context menu) | *(none)* |
 | `beadsIssues` (Beads issue context menu) | `beadsId`, `beadsTitle` |
 | `beadsList` (Beads list-level prompts button) | *(none)* |
@@ -993,8 +993,8 @@ The following fields are available at send time. They are the **same fields used
 | `{{ .Session.ParentID }}` | Parent conversation ID (empty if root) |
 | `{{ .Session.Name }}` | Conversation title/name |
 | `{{ .Session.IsChild }}` | `true` in child conversations |
-| `{{ .Session.IsPeriodic }}` | `true` when triggered by the periodic runner |
-| `{{ .Session.IsPeriodicForced }}` | `true` when a periodic run was manually triggered ("run now") |
+| `{{ .Session.IsLoop }}` | `true` when triggered by the loop runner |
+| `{{ .Session.IsLoopForced }}` | `true` when a loop run was manually triggered ("run now") |
 | `{{ .Session.HasMessages }}` | `true` once the conversation has any user message |
 | `{{ .Session.BeadsIssue }}` | Linked beads issue ID (empty if none) |
 | `{{ .Session.ModelName }}` | Current model's display name (empty if unknown) |
@@ -1008,9 +1008,9 @@ The following fields are available at send time. They are the **same fields used
 | `{{ .Children.MCPCount }}` | Number of MCP-spawned children |
 | `{{ .Args.NAME }}` | Argument value for `NAME` (from prompt arguments) |
 | `{{ index .UserData "NAME" }}` | Per-conversation user-data field `NAME` (empty if unset); see also the `UserData` function below |
-| `{{ .Iteration.Number }}` | 0-based index of the current periodic run (0 for non-periodic) |
-| `{{ .Iteration.Max }}` | Configured max runs (0 = unlimited; 0 for non-periodic) |
-| `{{ .Iteration.IsPeriodic }}` | `true` when triggered by the periodic runner |
+| `{{ .Iteration.Number }}` | 0-based index of the current loop run (0 for non-loop) |
+| `{{ .Iteration.Max }}` | Configured max runs (0 = unlimited; 0 for non-loop) |
+| `{{ .Iteration.IsLoop }}` | `true` when triggered by the loop runner |
 | `{{ .Iteration.IsFirst }}` | `true` when `Number == 0` |
 | `{{ .Iteration.IsLast }}` | `true` when `Max > 0 && Number == Max-1` |
 
@@ -1105,8 +1105,8 @@ substitution system used by [message processors](processors.md#variable-substitu
 | `@mitto:beads_issue`           | Linked beads issue ID (e.g. "bd-123"), empty if none                         |
 | `@mitto:available_acp_servers` | ACP servers for this workspace, comma-separated with tags and current marker |
 | `@mitto:children`              | Child sessions, comma-separated with names and ACP servers                   |
-| `@mitto:periodic`              | `"true"` if this prompt was triggered by the periodic runner, `"false"` otherwise |
-| `@mitto:periodic_forced`       | `"true"` if this is a manually-triggered periodic run (via "run now"), `"false"` otherwise |
+| `@mitto:loop`              | `"true"` if this prompt was triggered by the loop runner, `"false"` otherwise |
+| `@mitto:loop_forced`       | `"true"` if this is a manually-triggered loop run (via "run now"), `"false"` otherwise |
 
 ### Migration Table
 
@@ -1123,15 +1123,15 @@ For each deprecated token, the recommended Go template replacement is listed. To
 | `@mitto:workspace_uuid` | `{{ .Workspace.UUID }}` | migrate |
 | `@mitto:beads_issue` | `{{ .Session.BeadsIssue }}` | migrate |
 | `@mitto:mcp_children_count` | `{{ .Children.MCPCount }}` | migrate |
-| `@mitto:periodic` | `{{ .Session.IsPeriodic }}` | migrate |
-| `@mitto:periodic_forced` | `{{ .Session.IsPeriodicForced }}` | migrate |
+| `@mitto:loop` | `{{ .Session.IsLoop }}` | migrate |
+| `@mitto:loop_forced` | `{{ .Session.IsLoopForced }}` | migrate |
 | `@mitto:available_acp_servers` | *(no template equivalent yet)* | **keep** — no warning |
 | `@mitto:children` | *(no template equivalent yet)* | **keep** — no warning |
 | `@mitto:mcp_children` | *(no template equivalent yet)* | **keep** — no warning |
 | `@mitto:user_data` | *(no template equivalent yet)* | **keep** — no warning |
 | `@mitto:user_data_schema` | *(no template equivalent yet)* | **keep** — no warning |
 
-Note: `@mitto:periodic` renders as a Go `bool` (`true`/`false`), identical in string form to the old `"true"`/`"false"` output.
+Note: `@mitto:loop` renders as a Go `bool` (`true`/`false`), identical in string form to the old `"true"`/`"false"` output.
 
 ### Behavior
 
@@ -1249,8 +1249,8 @@ Information about the current conversation/session.
 | `Session.IsChild`     | bool   | `true` if this is a child conversation                   |
 | `Session.IsAutoChild` | bool   | `true` if created automatically by parent                |
 | `Session.ParentID`    | string | Parent session ID (empty if not a child)                 |
-| `Session.IsPeriodic`  | bool   | `true` if this prompt was triggered by the periodic runner |
-| `Session.IsPeriodicConversation` | bool   | `true` if this is a periodic conversation (it has a periodic prompt configuration) |
+| `Session.IsLoop`  | bool   | `true` if this prompt was triggered by the loop runner |
+| `Session.IsLoopConversation` | bool   | `true` if this is a loop conversation (it has a loop prompt configuration) |
 | `Session.HasMessages` | bool   | `true` if the conversation has at least one user message (empty conversations are false) |
 | `Session.HasBeadsIssue` | bool   | `true` if the conversation has a beads issue associated                  |
 | `Session.BeadsIssue`  | string | Linked beads issue ID (empty if none)                                    |

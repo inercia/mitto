@@ -26,11 +26,11 @@ This directory contains technical documentation for developers working on Mitto.
 
 - **[Follow-up Suggestions](follow-up-suggestions.md)** — AI-generated response suggestions, persistence, multi-client sync, and lifecycle
 
-- **[Callbacks](callbacks.md)** — HTTP callback endpoints for triggering periodic conversations on-demand, token management, security model
+- **[Callbacks](callbacks.md)** — HTTP callback endpoints for triggering loop conversations on-demand, token management, security model
 
 ### Infrastructure
 
-- **[ACP Architecture](acp.md)** — Shared process model, concurrent RPC handling, MultiplexClient routing, auxiliary sessions, content blocks, multi-tier process GC (periodic suspend, memory-bloat recycling), and the prompt inactivity watchdog
+- **[ACP Architecture](acp.md)** — Shared process model, concurrent RPC handling, MultiplexClient routing, auxiliary sessions, content blocks, multi-tier process GC (loop suspend, memory-bloat recycling), and the prompt inactivity watchdog
 
 - **[Restricted Runner Integration](restricted-runners.md)** — Runner system architecture, sandbox types, configuration hierarchy, and ACP subprocess integration
 
@@ -52,7 +52,7 @@ This directory contains technical documentation for developers working on Mitto.
 | Configuration         | [Architecture](architecture.md)                        | `internal/config`                                     |
 | ACP architecture      | [ACP Architecture](acp.md)                             | Shared process, multiplexing, concurrency             |
 | ACP client            | [ACP Architecture](acp.md)                             | `internal/acp`                                        |
-| Process GC tiers      | [ACP Architecture](acp.md)                             | Multi-Tier GC, periodic suspend, memory recycle       |
+| Process GC tiers      | [ACP Architecture](acp.md)                             | Multi-Tier GC, loop suspend, memory recycle       |
 | Memory recycling      | [ACP Architecture](acp.md)                             | Tier 4 — Memory-Bloat Recycling, Configuration        |
 | Inactivity watchdog   | [ACP Architecture](acp.md)                             | Prompt Inactivity Watchdog                            |
 | Feature flags         | [Architecture](architecture.md)                        | Advanced Settings                                     |
@@ -60,8 +60,8 @@ This directory contains technical documentation for developers working on Mitto.
 | Session settings      | [Session Management](session-management.md)            | Advanced Settings                                     |
 | Queue API             | [Message Queue](message-queue.md)                      | REST API                                              |
 | Queue titles          | [Message Queue](message-queue.md)                      | Title Generation                                      |
-| Periodic onCompletion | [Message Queue](message-queue.md)                      | Periodic Prompts: On-Completion Delivery              |
-| Periodic onTasks      | [Message Queue](message-queue.md)                      | Periodic Prompts: On-Tasks Delivery                   |
+| Loop onCompletion | [Message Queue](message-queue.md)                      | Loop Prompts: On-Completion Delivery              |
+| Loop onTasks      | [Message Queue](message-queue.md)                      | Loop Prompts: On-Tasks Delivery                   |
 | Prompt menus          | [Prompt Menus & Dispatch](prompts.md)                  | The `menus` routing key                               |
 | Prompt dispatch       | [Prompt Menus & Dispatch](prompts.md)                  | The two start behaviors, deferred resolution          |
 | REST endpoints        | [Web Interface](web-interface.md)                      | REST API Endpoints                                    |

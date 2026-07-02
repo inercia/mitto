@@ -475,7 +475,7 @@ sequenceDiagram
 
 #### `mitto_conversation_update`
 
-Update properties of a conversation. Supports partial updates — only specified fields are changed, others are left untouched. Any registered session can update any conversation (no parent-child restriction). Pass `"self"` (or your own conversation ID) as `conversation_id` to update your own conversation (e.g. a periodic conversation disabling its own periodicity).
+Update properties of a conversation. Supports partial updates — only specified fields are changed, others are left untouched. Any registered session can update any conversation (no parent-child restriction). Pass `"self"` (or your own conversation ID) as `conversation_id` to update your own conversation (e.g. a loop conversation disabling its own looping).
 
 | Parameter         | Type                            | Required | Description                                                    |
 | ----------------- | ------------------------------- | -------- | -------------------------------------------------------------- |

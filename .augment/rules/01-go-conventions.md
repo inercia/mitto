@@ -137,4 +137,4 @@ if strings.Contains(err.Error(), "session not started") {
 ## JSON Marshaling
 
 - **Nil vs empty slices**: `json.Marshal` encodes nil as `null`, empty as `[]`. ACP rejects `null` where array is required. Always initialize: `MCPServers: []MCPServer{}`. Mark with `// Must be empty array, not nil — ACP validates this`.
-- **`omitempty` on bool**: Never use `omitempty` on `bool` fields where `false` is meaningful — Go omits `false` as zero value. Example: `PeriodicEnabled bool` must NOT have `omitempty`.
+- **`omitempty` on bool**: Never use `omitempty` on `bool` fields where `false` is meaningful — Go omits `false` as zero value. Example: `LoopEnabled bool` must NOT have `omitempty`.

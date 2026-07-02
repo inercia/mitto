@@ -132,14 +132,14 @@ Prompts can declare `preferredModels:` to route to specific ACP models. `selectP
 - **Processors**: Always see the real tool list (fail-open is disabled internally)
 - Once tools are fetched, evaluation uses the actual list. Useful for tool-gated prompt/processor gating via `enabledWhen`
 
-## Periodic Conversations
+## Loop Conversations
 
-**onCompletion trigger** (distinct from schedule-based periodic):
+**onCompletion trigger** (distinct from schedule-based loop):
 - Re-fires automatically 30s after agent finishes each turn (configurable `delay_seconds`)
-- Green "Running" pill = `periodic_enabled: true`, NOT generic "agent is active" status
+- Green "Running" pill = `loop_enabled: true`, NOT generic "agent is active" status
 - Limited by `max_iterations` and `max_duration_seconds`
-- Free-text periodic prompts NOT sent to frontend → selector can't display them (UI gap)
-- `app.js` line ~1928: `headerPeriodicState()` returns `{ state, label, badgeClass }` pill object
+- Free-text loop prompts NOT sent to frontend → selector can't display them (UI gap)
+- `app.js` line ~1928: `headerLoopState()` returns `{ state, label, badgeClass }` pill object
 - Issue `mitto-36nm` tracks UI clarity improvement (prompt visibility + pill disambiguation)
 
 ## Tokensave Rule (Mandatory)
