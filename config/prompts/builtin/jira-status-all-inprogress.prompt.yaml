@@ -4,7 +4,7 @@ menus: prompts
 description: Fact-check implementation status for all in-progress sprint tickets relevant to this repo
 backgroundColor: '#FFE0B2'
 group: JIRA
-enabledWhen: Tools.HasPattern("jira_*")
+enabledWhen: 'Tools.HasPattern("jira_*") || CommandExists("jira")'
 preferredModels:
   - modelTag: Coding
 loop:
@@ -14,6 +14,24 @@ loop:
   delay: 60
 prompt: |
   # JIRA: Status Check — All In-Progress Tickets
+
+  {{ if HasPattern "jira_*" }}
+  **Access method — JIRA MCP tools.** Every JIRA-fetch step below names a `jira_*` MCP tool; call each one directly as written.
+  {{- else }}
+  **Access method — the `jira` CLI** (ankitpokhrel/jira-cli). You do **not** have JIRA MCP tools, but the `jira` command is on PATH. Run the CLI equivalent below wherever a step names a `jira_*` operation. This prompt is **read-only** either way — never mutate JIRA.
+
+  | Canonical operation | `jira` CLI command |
+  |---|---|
+  | `jira_get_agile_boards_jira` | `jira board list` |
+  | `jira_get_sprints_from_board_jira` (active) | `jira sprint list --state active --table --plain --columns id,name,state` |
+  | `jira_search_jira` (JQL) | `jira issue list -q "<JQL>" --plain --no-headers` (append `--raw` for JSON) |
+  | `jira_get_issue_jira` (fields/renderedFields,changelog) | `jira issue list -q "key = <KEY>" --raw` for JSON (all fields, `issuelinks`); `jira issue view <KEY> --comments 10` for a rendered read (set `PAGER=cat`) |
+  | `jira_get_issue_development_info_jira` | no equivalent — rely on the local `git log`/`git branch` evidence this prompt already gathers (and `gh` if present) |
+
+  CLI notes:
+  - Use `--plain`/`--raw` (and `PAGER=cat` for `view`) so nothing blocks on the interactive TUI.
+  - The dev-panel (linked PRs/branches/commits) is MCP-only; lean on the git cross-referencing already described and mark evidence "❓ Unknown" when the CLI cannot confirm it.
+  {{- end }}
 
   ## Step 1 — Identify the current repository
 

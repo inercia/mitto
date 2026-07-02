@@ -7,7 +7,7 @@ group: JIRA
 tags:
 - loop
 - jira
-enabledWhen: Tools.HasPattern("jira_*") && CommandExists("bd")
+enabledWhen: '(Tools.HasPattern("jira_*") || CommandExists("jira")) && CommandExists("bd")'
 preferredModels:
   - modelTag: Cheap
   - modelTag: Coding
@@ -39,6 +39,25 @@ prompt: |
 
   **Interactive mode** — a regular conversation or a force-triggered loop run; the user is present.
   - Use interactive tools (`mitto_ui_options`, `mitto_ui_form`, `mitto_ui_textbox`) as well as `mitto_ui_notify`. This is the default when run on demand.
+  {{- end }}
+
+  ## Access Method
+  {{- if HasPattern "jira_*" }}
+
+  **JIRA MCP tools.** Step 3 fetches tickets with `jira_search_jira` — call it directly.
+  {{- else }}
+
+  **The `jira` CLI** (ankitpokhrel/jira-cli). You do **not** have JIRA MCP tools, but the `jira` command is on PATH. Wherever a step calls `jira_search_jira`, run the CLI instead:
+
+  ```bash
+  jira issue list -q "<the saved JQL>" --raw --paginate 500
+  ```
+
+  CLI notes:
+  - `--raw` returns JSON with most fields (key, summary, status, priority, issue type, labels, assignee, `updated`, `issuelinks`). Use `--plain --no-headers` if you only need columns.
+  - Comment bodies may be omitted from list `--raw`; fetch them per ticket with `jira issue view <KEY> --comments <N>` (set `PAGER=cat`), then feed each raw body through the Step 5.0 converter.
+  - Raise the result cap with `--paginate <N>` (the `from` offset is unsupported on Jira Cloud v3, so narrow the JQL rather than paging by offset).
+  - Everything else — the Step 5.0 wiki→Markdown converter, beads create/update, comment mirroring, dependency wiring — is unchanged.
   {{- end }}
 
   ## Step 1 — Get the "Jira Tasks" query
