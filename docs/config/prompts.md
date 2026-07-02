@@ -760,7 +760,7 @@ leaving the schedule unchanged.
 
 ### Real-world example: auto-loop, self-terminating
 
-The builtin **"Iterate until issue complete"** prompt
+The builtin **"Loop until issue complete"** prompt
 (`config/prompts/builtin/beads-iterate-until-complete.prompt.yaml`) is a real
 auto-loop example: a `menus: beadsIssues` prompt with a `loop:` block
 (`trigger: onCompletion`, `delay: 30`, `maxIterations: 20`, `maxDuration: 4h`).

@@ -1,5 +1,5 @@
 icon: refresh
-name: Iterate implementing
+name: Loop implementing
 menus: promptsLoop
 parameters:
   - name: Commit

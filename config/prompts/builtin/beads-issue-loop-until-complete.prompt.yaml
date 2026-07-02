@@ -1,5 +1,5 @@
 icon: loop
-name: Iterate until issue complete
+name: Loop until issue complete
 menus: beadsIssues, conversation
 parameters:
   - name: IssueID
@@ -26,7 +26,7 @@ prompt: |
   Available ACP servers: `{{ .ACP.AvailableText }}`
   Existing children: `{{ .Children.MCPText }}`
 
-  # Beads: Iterate Until Issue Complete
+  # Beads: Loop Until Issue Complete
 
   Beads is a CLI issue tracker (`bd`). Issues are called "beads" and have IDs like `bd-xyz`.
 

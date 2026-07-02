@@ -1,5 +1,5 @@
 icon: loop
-name: Iterate implementing feature
+name: Loop fixing bug
 menus: beadsIssues, conversation
 parameters:
   - name: IssueID
@@ -8,17 +8,17 @@ parameters:
     description: The beads issue ID to act on
   - name: Commit
     type: boolean
-    description: Commit the work at the end of the review stage
-description: Auto-loop — drive a feature bead through plan → implement → test → review by dispatching per-phase prompts (each on its own model tier), then self-terminate
-backgroundColor: '#C8E6C9'
+    description: Commit the fix at the end of the fix stage
+description: Auto-loop — drive a bug bead through investigate → reproduce → fix by dispatching per-phase prompts (each on its own model tier), then self-terminate
+backgroundColor: '#FFCDD2'
 group: Tasks
-enabledWhen: '!Session.IsChild && CommandExists("bd") && DirExists(".beads") && Tools.HasPattern("mitto_conversation_*") && Item.Type == "feature" && Item.Status != "closed"'
+enabledWhen: '!Session.IsChild && CommandExists("bd") && DirExists(".beads") && Tools.HasPattern("mitto_conversation_*") && Item.Type == "bug" && Item.Status != "closed"'
 loop:
   mode: always
   trigger: onCompletion
   delay: 30
-  maxIterations: 30
-  maxDuration: "8h"
+  maxIterations: 20
+  maxDuration: "4h"
 prompt: |
   ## Session Context
 
@@ -26,32 +26,32 @@ prompt: |
   Available ACP servers: `{{ .ACP.AvailableText }}`
   Existing children: `{{ .Children.MCPText }}`
 
-  # Beads: Iterate Implementing Feature
+  # Beads: Iterate Fixing Bug
 
   Beads is a CLI issue tracker (`bd`). Issues are called "beads" and have IDs like `bd-xyz`.
-  This prompt drives a single `feature`-type bead through a **label-encoded state
-  machine** — `planned` → `implemented` → `tested` → `verified` — advancing **exactly
-  one stage per run**, then removing its own loop flag once `verified` is reached.
+  This prompt drives a single `bug`-type bead through a **label-encoded state machine** —
+  `researched` → `reproduced` → `fixed` — advancing **exactly one stage per run**, then
+  removing its own loop flag once `fixed` is reached.
 
-  **Per-phase model tiering.** This driver does **not** do the plan / implement / test /
-  review work inline. It loads the bead's live labels, then **dispatches** the matching
+  **Per-phase model tiering.** This driver does **not** do the investigate / reproduce /
+  fix work inline. It loads the bead's live labels, then **dispatches** the matching
   phase prompt by name via `mitto_conversation_send_prompt` (a self-send). Each phase
   prompt declares its own `preferredModels` so the ACP session transiently switches to
-  the right tier for that stage (Reasoning for plan and review, Coding for implement and
-  test) without touching this conversation's baseline model. The phase adds its label
-  and ends; the driver's `onCompletion` schedule then re-runs this prompt, which
-  observes the newly-advanced label and dispatches the next phase.
+  the right tier for that stage (Reasoning for investigate, Coding for reproduce/fix)
+  without touching this conversation's baseline model. The phase adds its label and
+  ends; the driver's `onCompletion` schedule then re-runs this prompt, which observes
+  the newly-advanced label and dispatches the next phase.
 
   {{ $target := "" -}}
   {{ if .Session.BeadsIssue }}{{ $target = .Session.BeadsIssue }}{{ else if .Args.IssueID }}{{ $target = .Args.IssueID }}{{ end -}}
   {{ if $target -}}
-  The **target feature** for this run is `{{ $target }}`{{ if .Session.BeadsIssue }} (from this conversation's linked beads issue — preferred, durable across loop runs){{ else }} (supplied as the `IssueID` argument){{ end }}.
+  The **target bug** for this run is `{{ $target }}`{{ if .Session.BeadsIssue }} (from this conversation's linked beads issue — preferred, durable across loop runs){{ else }} (supplied as the `IssueID` argument){{ end }}.
   {{- else -}}
-  The **target feature** for this run is **not explicitly specified**. This prompt requires
-  one specific `feature` bead — do not guess an ID and do not scan the backlog for
-  candidates. If a user is present (see Interaction Mode below), ask which feature via
-  `mitto_ui_options`; in silent/scheduled mode, skip straight to the Blocked → Defer +
-  Handoff pattern (Step 4) using a `mitto_ui_notify` in place of a bead comment, then stop.
+  The **target bug** for this run is **not explicitly specified**. This prompt requires one
+  specific `bug` bead — do not guess an ID and do not scan the backlog for candidates. If a
+  user is present (see Interaction Mode below), ask which bug via `mitto_ui_options`; in
+  silent/scheduled mode, skip straight to the Blocked → Defer + Handoff pattern (Step 4) using
+  a `mitto_ui_notify` in place of a bead comment, then stop.
   {{- end }}
 
   {{- if .Iteration.IsUninterrupted }}
@@ -85,7 +85,7 @@ prompt: |
   {{- else }}
 
   **Interactive mode** (e.g. the very first send, or a force-triggered run): a user may be
-  present. During Plan/Design (Step 3a) only, you *may* ask clarifying questions via
+  present. During Investigate (Step 3a) only, you *may* ask clarifying questions via
   `mitto_ui_*` tools; every other stage still decides autonomously or defers (Step 4).
   {{- end }}
   {{- if not .Iteration.IsFirst }}
@@ -118,7 +118,7 @@ prompt: |
   ## Step 2 — Confirm it is still actionable
 
   If `{{ $target }}` is already `closed`, or carries `needs-human` and is still deferred,
-  stop here: post a `mitto_ui_notify` explaining why, and self-terminate (Step 3e's
+  stop here: post a `mitto_ui_notify` explaining why, and self-terminate (Step 3d's
   self-termination steps) without changing any label.
 
   ## Step 3 — Branch on the live labels; dispatch exactly ONE phase this run
@@ -129,105 +129,82 @@ prompt: |
   its label, and stops; the driver's `onCompletion` schedule re-fires this prompt to
   advance to the next phase.
 
-  - None of `planned`, `implemented`, `tested`, `verified` present → **Step 3a: dispatch Plan/Design.**
-  - `planned` present, `implemented` absent → **Step 3b: dispatch Implement.**
-  - `implemented` present, `tested` absent → **Step 3c: dispatch Test.**
-  - `tested` present, `verified` absent → **Step 3d: dispatch Review/Verify.**
-  - `verified` present → **Step 3e: Done (handled inline).**
+  - None of `researched`, `reproduced`, `fixed` present → **Step 3a: dispatch Investigate.**
+  - `researched` present, `reproduced` absent → **Step 3b: dispatch Reproduce.**
+  - `reproduced` present, `fixed` absent → **Step 3c: dispatch Fix.**
+  - `fixed` present → **Step 3d: Done (handled inline).**
 
   If the driver itself is unable to load state or resolve the target autonomously, go
   to **Step 4 (Blocked → Defer + Handoff)** instead of dispatching. The phase prompts
   themselves also handle their own in-phase blockers via their Step 4.
 
-  ### Step 3a — Dispatch Plan/Design (no state label yet)
+  ### Step 3a — Dispatch Investigate (no state label yet)
 
   ```
   mitto_conversation_send_prompt(
     self_id: "{{ .Session.ID }}",
     conversation_id: "self",
-    prompt_name: "Feature — plan phase",
+    prompt_name: "Bug fix — investigate phase",
     arguments: { "IssueID": "{{ $target }}" }
   )
   ```
 
-  Then end this turn. The Plan phase runs on the **Reasoning** tier, records a `Plan:`
-  comment (decomposing into sub-issues first if the work is large), adds the `planned`
-  label, and stops. The next scheduled run of this driver will observe `planned` and
-  dispatch Implement.
+  Then end this turn. The Investigate phase runs on the **Reasoning** tier, records an
+  `Investigation:` comment, adds the `researched` label, and stops. The next scheduled
+  run of this driver will observe `researched` and dispatch Reproduce.
 
-  ### Step 3b — Dispatch Implement (`planned` present, not yet `implemented`)
-
-  ```
-  mitto_conversation_send_prompt(
-    self_id: "{{ .Session.ID }}",
-    conversation_id: "self",
-    prompt_name: "Feature — implement phase",
-    arguments: { "IssueID": "{{ $target }}", "Commit": "{{ if eq .Args.Commit "true" }}true{{ else }}false{{ end }}" }
-  )
-  ```
-
-  Then end this turn. The Implement phase runs on the **Coding** tier, writes the
-  smallest coherent increment per the plan, records an `Implementation:` comment, adds
-  the `implemented` label{{ if eq .Args.Commit "true" }}, commits the increment{{ end }},
-  and stops. The next scheduled run of this driver will observe `implemented` and
-  dispatch Test.
-
-  ### Step 3c — Dispatch Test (`implemented` present, not yet `tested`)
+  ### Step 3b — Dispatch Reproduce (`researched` present, not yet `reproduced`)
 
   ```
   mitto_conversation_send_prompt(
     self_id: "{{ .Session.ID }}",
     conversation_id: "self",
-    prompt_name: "Feature — test phase",
-    arguments: { "IssueID": "{{ $target }}", "Commit": "{{ if eq .Args.Commit "true" }}true{{ else }}false{{ end }}" }
+    prompt_name: "Bug fix — reproduce phase",
+    arguments: { "IssueID": "{{ $target }}" }
   )
   ```
 
-  Then end this turn. The Test phase runs on the **Coding** tier, writes/extends tests
-  covering the acceptance criteria until the new tests and the full relevant suite
-  pass, records a `Testing:` comment, adds the `tested`
-  label{{ if eq .Args.Commit "true" }}, commits the test changes{{ end }}, and stops.
-  The next scheduled run of this driver will observe `tested` and dispatch Review.
+  Then end this turn. The Reproduce phase runs on the **Coding** tier, writes a
+  failing test, records a `Reproduction:` comment, adds the `reproduced` label, and
+  stops. The next scheduled run of this driver will observe `reproduced` and dispatch
+  Fix.
 
-  ### Step 3d — Dispatch Review/Verify (`tested` present, not yet `verified`)
+  ### Step 3c — Dispatch Fix (`reproduced` present, not yet `fixed`)
 
   ```
   mitto_conversation_send_prompt(
     self_id: "{{ .Session.ID }}",
     conversation_id: "self",
-    prompt_name: "Feature — review phase",
+    prompt_name: "Bug fix — fix phase",
     arguments: { "IssueID": "{{ $target }}", "Commit": "{{ if eq .Args.Commit "true" }}true{{ else }}false{{ end }}" }
   )
   ```
 
-  Then end this turn. The Review phase runs on the **Reasoning** tier, self-reviews
-  build/lint/docs/acceptance-criteria/downstream-impact — looping back **without**
-  advancing the label if any gap is found — and once genuinely satisfied records a
-  `Review:` comment, adds the `verified`
-  label{{ if eq .Args.Commit "true" }}, commits any review fix-ups{{ end }}, optionally
-  closes the bead, and stops. The next scheduled run of this driver will observe
-  `verified` and take the Done branch (Step 3e).
+  Then end this turn. The Fix phase runs on the **Coding** tier, implements the
+  minimum change that makes the reproduction test pass, records a `Fix:` comment,
+  adds the `fixed` label{{ if eq .Args.Commit "true" }}, commits the fix{{ end }},
+  and stops. The next scheduled run of this driver will observe `fixed` and take the
+  Done branch (Step 3d).
 
-  ### Step 3e — Done (`verified` present) — handled inline
+  ### Step 3d — Done (`fixed` present) — handled inline
 
-  All four phases are complete. Close the bead (if the review phase has not already)
-  and self-terminate — **no phase dispatch on this branch**, since there is no further
-  phase work to do:
+  All three phases are complete. Close the bead and self-terminate — **no phase
+  dispatch on this branch**, since there is no further phase work to do:
 
   ```bash
-  bd close {{ $target }} --reason "<short summary of what was delivered>"   # optional but recommended
+  bd close {{ $target }} --reason "<short summary of the fix>"   # optional but recommended
   ```
 
-  Then self-terminate so this conversation stops re-running:
+  Then stop this conversation from re-running:
 
   ```
   mitto_conversation_update(self_id: "{{ .Session.ID }}", conversation_id: "self", loop_enabled: false)
-  mitto_ui_notify(self_id: "{{ .Session.ID }}", title: "Iterate implementing feature — done", message: "<what was planned/implemented/tested/verified across runs>", style: "success")
+  mitto_ui_notify(self_id: "{{ .Session.ID }}", title: "Iterate fixing bug — done", message: "<what was investigated/reproduced/fixed across runs>", style: "success")
   ```
 
   After stopping, do nothing further this run.
   {{- else }}
-  ## Step 1 — No target feature to work on
+  ## Step 1 — No target bug to work on
 
   There is nothing to load or branch on without a target. Do not run any `bd` command.
   {{- end }}
@@ -242,13 +219,13 @@ prompt: |
   1. Defer and flag the bead so it drops out of `bd ready`:
 
      ```bash
-     bd update {{ if $target }}{{ $target }}{{ else }}<target-feature>{{ end }} --add-label needs-human --defer <when>   # e.g. tomorrow / +1d
+     bd update {{ if $target }}{{ $target }}{{ else }}<target-bug>{{ end }} --add-label needs-human --defer <when>   # e.g. tomorrow / +1d
      ```
 
   2. Write a **structured handoff** comment on the bead:
 
      ```bash
-     bd comment {{ if $target }}{{ $target }}{{ else }}<target-feature>{{ end }} "Blocked at <stage>. What I tried: <summary>. What I need from you: <the ONE concrete question/decision/info/action>. How to resume: bd update <id> --remove-label needs-human --defer '' , then re-run."
+     bd comment {{ if $target }}{{ $target }}{{ else }}<target-bug>{{ end }} "Blocked at <stage>. What I tried: <summary>. What I need from you: <the ONE concrete question/decision/info/action>. How to resume: bd update <id> --remove-label needs-human --defer '' , then re-run."
      ```
 
   3. End the iteration with a concise handoff message naming the blocker and the single
@@ -264,19 +241,18 @@ prompt: |
 
   ## Guidelines
 
-  - **One phase per run.** Dispatch a single phase prompt (`planned` → `implemented` →
-    `tested` → `verified`) via `mitto_conversation_send_prompt`, then end the turn.
-    Never skip a stage or dispatch two at once.
+  - **One phase per run.** Dispatch a single phase prompt (`researched` → `reproduced`
+    → `fixed`) via `mitto_conversation_send_prompt`, then end the turn. Never skip a
+    stage or dispatch two at once.
   - **Never do the phase work inline.** The whole point of this driver is per-phase
     model tiering. If you catch yourself running `bd update ... --add-label` for
-    `planned`/`implemented`/`tested`/`verified` inside *this* prompt, stop — that is the
-    phase prompt's job. This driver only labels `needs-human` (Step 4) and closes on
-    Done.
+    `researched`/`reproduced`/`fixed` inside *this* prompt, stop — that is the phase
+    prompt's job. This driver only labels `needs-human` (Step 4) and closes on Done.
   - **Live state only.** Always re-read labels via `bd show --json` at the start of the
     run; never assume labels from a prior run or from `Item.*`.
   - **Decide autonomously; never guess.** The only time you must not proceed is when
     something is genuinely unclear/unsolvable without the user — then use Step 4.
   - **Silent unless it matters.** On scheduled runs, `mitto_ui_notify` only for
-    meaningful milestones (phase dispatched, verified, blocked/deferred, or final stop).
+    meaningful milestones (phase dispatched, fixed, blocked/deferred, or final stop).
   - **Always log to the tracker** with `bd comment` so progress is auditable even when
     you stay silent in the UI.

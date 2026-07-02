@@ -1,5 +1,5 @@
 icon: refresh
-name: Iterate fixing
+name: Loop fixing
 menus: promptsLoop
 parameters:
   - name: Commit

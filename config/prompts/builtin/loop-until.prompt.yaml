@@ -1,5 +1,5 @@
 icon: loop
-name: Iterate until ...
+name: Loop until ...
 menus: conversation
 parameters:
   - name: Condition
