@@ -2,28 +2,28 @@ import { testWithCleanup as test, expect } from "../fixtures/test-fixtures";
 import { timeouts, apiUrl, selectors } from "../utils/selectors";
 
 /**
- * Periodic "edit arguments" button tests (mitto-2eu).
+ * Loop "edit arguments" button tests (mitto-2eu).
  *
- * Covers the SlidersIcon button rendered next to the PeriodicPromptSelector:
- *   - Enabled when the selected periodic prompt declares parameters; clicking
+ * Covers the SlidersIcon button rendered next to the LoopPromptSelector:
+ *   - Enabled when the selected loop prompt declares parameters; clicking
  *     opens the shared PromptParameterDialog.
- *   - Submitting the dialog PATCHes /api/sessions/:id/periodic with { arguments }.
+ *   - Submitting the dialog PATCHes /api/sessions/:id/loop with { arguments }.
  *   - Reopening the dialog pre-seeds the previously-saved value (initialValues).
  *   - Disabled when the selected prompt declares no parameters.
  *
  * Fixtures (project-alpha workspace):
- *   periodic-param-prompt.prompt.yaml  ("Periodic Param Test", menus: promptsPeriodic, TASK: text optional)
+ *   loop-param-prompt.prompt.yaml  ("Loop Param Test", menus: promptsLoop, TASK: text optional)
  *   greeting.prompt.yaml               ("Hello Greeting", no parameters)
  *
- * Note: the periodic selector only lists a prompt when menuSatisfies() holds for
- * the promptsPeriodic menu, which auto-supplies no parameter types. A prompt with
+ * Note: the loop selector only lists a prompt when menuSatisfies() holds for
+ * the promptsLoop menu, which auto-supplies no parameter types. A prompt with
  * a REQUIRED text param would therefore be hidden from the selector entirely, so
  * the editable-args case necessarily uses an optional (or boolean) parameter.
  */
 
-const PARAM_PROMPT = "Periodic Param Test";
+const PARAM_PROMPT = "Loop Param Test";
 const NO_PARAM_PROMPT = "Hello Greeting";
-const EDIT_ARGS_BTN = '[data-testid="periodic-edit-args-button"]';
+const EDIT_ARGS_BTN = '[data-testid="loop-edit-args-button"]';
 const DIALOG = '[data-testid="prompt-param-dialog"]';
 
 async function apiCreateSession(
@@ -46,18 +46,18 @@ async function apiCreateSession(
   return id;
 }
 
-async function enablePeriodic(
+async function enableLoop(
   request: import("@playwright/test").APIRequestContext,
   sessionId: string,
   promptName: string,
 ): Promise<void> {
-  const resp = await request.put(apiUrl(`/api/sessions/${sessionId}/periodic`), {
+  const resp = await request.put(apiUrl(`/api/sessions/${sessionId}/loop`), {
     data: { prompt_name: promptName, frequency: { value: 1, unit: "hours" }, enabled: true },
   });
-  expect(resp.ok(), `PUT periodic failed: ${resp.status()} ${await resp.text()}`).toBe(true);
+  expect(resp.ok(), `PUT loop failed: ${resp.status()} ${await resp.text()}`).toBe(true);
 }
 
-test.describe("Periodic edit-arguments button", () => {
+test.describe("Loop edit-arguments button", () => {
   test.beforeEach(async ({ page }) => {
     await page.goto("/");
     await page.waitForLoadState("networkidle");
@@ -69,9 +69,9 @@ test.describe("Periodic edit-arguments button", () => {
     timeouts: t,
   }) => {
     const sessionId = await apiCreateSession(page, request);
-    await enablePeriodic(request, sessionId, PARAM_PROMPT);
+    await enableLoop(request, sessionId, PARAM_PROMPT);
 
-    await expect(page.locator('[data-testid="periodic-frequency-panel"]')).toBeVisible({
+    await expect(page.locator('[data-testid="loop-frequency-panel"]')).toBeVisible({
       timeout: t.agentResponse,
     });
 
@@ -91,11 +91,11 @@ test.describe("Periodic edit-arguments button", () => {
     await expect(taskField).toHaveValue("");
     await taskField.fill("nightly cleanup");
 
-    // Submitting PATCHes the periodic config with the arguments map
+    // Submitting PATCHes the loop config with the arguments map
     const [patchReq] = await Promise.all([
       page.waitForRequest(
         (req) =>
-          req.url().includes(`/api/sessions/${sessionId}/periodic`) &&
+          req.url().includes(`/api/sessions/${sessionId}/loop`) &&
           req.method() === "PATCH",
         { timeout: t.appReady },
       ),
@@ -119,9 +119,9 @@ test.describe("Periodic edit-arguments button", () => {
     timeouts: t,
   }) => {
     const sessionId = await apiCreateSession(page, request);
-    await enablePeriodic(request, sessionId, NO_PARAM_PROMPT);
+    await enableLoop(request, sessionId, NO_PARAM_PROMPT);
 
-    await expect(page.locator('[data-testid="periodic-frequency-panel"]')).toBeVisible({
+    await expect(page.locator('[data-testid="loop-frequency-panel"]')).toBeVisible({
       timeout: t.agentResponse,
     });
 

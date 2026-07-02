@@ -216,10 +216,10 @@ export async function navigateToSession(
  * Wait for the Mitto app to be fully loaded and ready.
  * Accepts two ready states:
  *   1. The chat textarea is visible (regular active session).
- *   2. The "Conversations" sidebar heading is visible (periodic session selected,
+ *   2. The "Conversations" sidebar heading is visible (loop session selected,
  *      or no session — both hide the textarea but still render the sidebar).
  * Using an OR condition prevents waitForAppReady from timing out when a previous
- * test has left a periodic session as the active session.
+ * test has left a loop session as the active session.
  * `.first()` avoids a Playwright strict-mode violation when both elements exist.
  */
 export async function waitForAppReady(page: Page): Promise<void> {
@@ -245,7 +245,7 @@ export async function waitForActiveSession(page: Page): Promise<void> {
  * Returns the session ID.
  *
  * This also handles the case where the currently active session is a
- * PERIODIC session: periodic sessions hide the textarea entirely (they show a
+ * LOOP session: loop sessions hide the textarea entirely (they show a
  * different prompt-configuration UI). `locator.isDisabled()` returns false for
  * a non-existent element, so we must also check the element count to detect
  * the absent-textarea case.
@@ -254,15 +254,15 @@ export async function ensureActiveSession(page: Page): Promise<string> {
   const textarea = page.locator(selectors.chatInput);
 
   // Determine whether we need a new session:
-  //   • textarea absent → periodic session is active (no regular input area)
+  //   • textarea absent → loop session is active (no regular input area)
   //   • textarea disabled → session exists but ACP is not ready yet
   const textareaCount = await textarea.count();
   const needsNewSession = textareaCount === 0 || (await textarea.isDisabled());
 
   if (needsNewSession) {
     // Ensure we are on the Conversations tab before creating a new session.
-    // If the Periodic tab is active, clicking "New Conversation" would create
-    // a periodic session (which also hides the textarea), perpetuating the
+    // If the Loop tab is active, clicking "New Conversation" would create
+    // a loop session (which also hides the textarea), perpetuating the
     // problem.  Switching to Conversations first guarantees a regular session.
     const conversationsTab = page.getByRole("tab", { name: "Conversations" });
     if (await conversationsTab.isVisible()) {
@@ -356,7 +356,7 @@ export function uniqueMessage(prefix: string = "Test"): string {
 export async function navigateAndWait(page: Page): Promise<void> {
   // Clear the filter tab key BEFORE the page loads so the React app reads the
   // default (Conversations) on initialization. Without this a test such as
-  // periodic-prompt-pill.spec.ts can leave the Periodic tab selected in
+  // loop-prompt-pill.spec.ts can leave the Loop tab selected in
   // localStorage, causing subsequent tests to see the wrong tab.
   await page.addInitScript(() => {
     localStorage.removeItem("mitto_conversation_filter_tab");

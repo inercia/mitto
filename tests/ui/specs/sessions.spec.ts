@@ -15,9 +15,9 @@ test.describe("Session Management", () => {
   test.beforeEach(async ({ page, helpers }) => {
     // navigateAndWait resets the conversation filter tab in localStorage via
     // addInitScript before the page loads.  However the app's React side also
-    // has an auto-tab-switch effect that switches to the Periodic tab whenever
-    // the active session has periodic_enabled=true (e.g. after the
-    // periodic-prompt-pill.spec.ts suite).  We therefore explicitly click the
+    // has an auto-tab-switch effect that switches to the Loop tab whenever
+    // the active session has loop_enabled=true (e.g. after the
+    // loop-prompt-pill.spec.ts suite).  We therefore explicitly click the
     // Conversations tab after the app is ready so all session-management tests
     // always start on the correct tab.
     await helpers.navigateAndWait(page);

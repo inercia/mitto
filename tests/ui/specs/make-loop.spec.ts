@@ -2,14 +2,14 @@ import { testWithCleanup as test, expect } from "../fixtures/test-fixtures";
 import { apiUrl } from "../utils/selectors";
 
 /**
- * "Make periodic" context menu action tests.
+ * "Make loop" context menu action tests.
  *
- * Verifies that right-clicking a regular (non-periodic, non-child) conversation
- * and selecting "Make periodic" from the context menu:
- *   1. Sends PUT /api/sessions/{id}/periodic with the draft body.
- *   2. The periodic_updated broadcast triggers the frontend to flip
- *      session.periodic_enabled=true.
- *   3. The PeriodicFrequencyPanel (data-testid="periodic-frequency-panel") becomes
+ * Verifies that right-clicking a regular (non-loop, non-child) conversation
+ * and selecting "Make loop" from the context menu:
+ *   1. Sends PUT /api/sessions/{id}/loop with the draft body.
+ *   2. The loop_updated broadcast triggers the frontend to flip
+ *      session.loop_enabled=true.
+ *   3. The LoopFrequencyPanel (data-testid="loop-frequency-panel") becomes
  *      visible in the ChatInput, confirming the inline editor opened.
  *
  * Setup mirrors conversation-context-menu.spec.ts (right-click the session item).
@@ -18,13 +18,13 @@ import { apiUrl } from "../utils/selectors";
 // daisyUI context menus render as fixed-position <ul class="menu fixed z-50 …">
 const MENU = ".menu.fixed.z-50.shadow-xl";
 
-test.describe("Make periodic — context menu action", () => {
+test.describe("Make loop — context menu action", () => {
   let sessionId: string;
 
   test.beforeEach(async ({ page, request, helpers }) => {
-    // Create a fresh regular (non-periodic) top-level session.
+    // Create a fresh regular (non-loop) top-level session.
     const createResp = await request.post(apiUrl("/api/sessions"), {
-      data: { name: `Make Periodic Test ${Date.now()}` },
+      data: { name: `Make Loop Test ${Date.now()}` },
     });
     expect(createResp.ok(), `POST /api/sessions failed: ${createResp.status()}`).toBeTruthy();
     const created = await createResp.json();
@@ -35,7 +35,7 @@ test.describe("Make periodic — context menu action", () => {
     await helpers.navigateToSession(page, sessionId);
   });
 
-  test("shows 'Make periodic' in the context menu for a regular session", async ({
+  test("shows 'Make loop' in the context menu for a regular session", async ({
     page,
     timeouts,
   }) => {
@@ -47,16 +47,16 @@ test.describe("Make periodic — context menu action", () => {
     const menu = page.locator(MENU).first();
     await expect(menu).toBeVisible({ timeout: timeouts.shortAction });
 
-    // "Make periodic" must be present.
-    const makePeriodicBtn = menu.locator("button").filter({ hasText: "Make periodic" });
-    await expect(makePeriodicBtn).toBeVisible({ timeout: timeouts.shortAction });
+    // "Make loop" must be present.
+    const makeLoopBtn = menu.locator("button").filter({ hasText: "Make loop" });
+    await expect(makeLoopBtn).toBeVisible({ timeout: timeouts.shortAction });
   });
 
-  test("clicking 'Make periodic' converts the conversation and opens the periodic editor", async ({
+  test("clicking 'Make loop' converts the conversation and opens the loop editor", async ({
     page,
     timeouts,
   }) => {
-    // Open context menu and click "Make periodic".
+    // Open context menu and click "Make loop".
     const sessionItem = page.locator(`[data-session-id="${sessionId}"]`).first();
     await expect(sessionItem).toBeVisible({ timeout: timeouts.appReady });
     await sessionItem.click({ button: "right" });
@@ -64,24 +64,24 @@ test.describe("Make periodic — context menu action", () => {
     const menu = page.locator(MENU).first();
     await expect(menu).toBeVisible({ timeout: timeouts.shortAction });
 
-    const makePeriodicBtn = menu.locator("button").filter({ hasText: "Make periodic" });
-    await expect(makePeriodicBtn).toBeVisible({ timeout: timeouts.shortAction });
-    await makePeriodicBtn.click();
+    const makeLoopBtn = menu.locator("button").filter({ hasText: "Make loop" });
+    await expect(makeLoopBtn).toBeVisible({ timeout: timeouts.shortAction });
+    await makeLoopBtn.click();
 
     // The menu should close after selection.
     await expect(page.locator(MENU)).toHaveCount(0, { timeout: timeouts.shortAction });
 
-    // The periodic_updated WebSocket event flips periodic_enabled=true.
-    // PeriodicFrequencyPanel renders when periodicEnabled=true in ChatInput.
-    const periodicPanel = page.locator('[data-testid="periodic-frequency-panel"]');
-    await expect(periodicPanel).toBeVisible({ timeout: timeouts.appReady });
+    // The loop_updated WebSocket event flips loop_enabled=true.
+    // LoopFrequencyPanel renders when loopEnabled=true in ChatInput.
+    const loopPanel = page.locator('[data-testid="loop-frequency-panel"]');
+    await expect(loopPanel).toBeVisible({ timeout: timeouts.appReady });
   });
 
-  test("clicking 'Make non-periodic' reverts the conversation and hides the periodic editor", async ({
+  test("clicking 'Make non-loop' reverts the conversation and hides the loop editor", async ({
     page,
     timeouts,
   }) => {
-    // Step 1: Convert to periodic via "Make periodic" (reuse existing flow).
+    // Step 1: Convert to loop via "Make loop" (reuse existing flow).
     const sessionItem = page.locator(`[data-session-id="${sessionId}"]`).first();
     await expect(sessionItem).toBeVisible({ timeout: timeouts.appReady });
     await sessionItem.click({ button: "right" });
@@ -89,35 +89,35 @@ test.describe("Make periodic — context menu action", () => {
     let menu = page.locator(MENU).first();
     await expect(menu).toBeVisible({ timeout: timeouts.shortAction });
 
-    const makePeriodicBtn = menu.locator("button").filter({ hasText: "Make periodic" });
-    await expect(makePeriodicBtn).toBeVisible({ timeout: timeouts.shortAction });
-    await makePeriodicBtn.click();
+    const makeLoopBtn = menu.locator("button").filter({ hasText: "Make loop" });
+    await expect(makeLoopBtn).toBeVisible({ timeout: timeouts.shortAction });
+    await makeLoopBtn.click();
 
     await expect(page.locator(MENU)).toHaveCount(0, { timeout: timeouts.shortAction });
 
-    // Wait for the periodic editor to appear (confirms conversion succeeded).
-    const periodicPanel = page.locator('[data-testid="periodic-frequency-panel"]');
-    await expect(periodicPanel).toBeVisible({ timeout: timeouts.appReady });
+    // Wait for the loop editor to appear (confirms conversion succeeded).
+    const loopPanel = page.locator('[data-testid="loop-frequency-panel"]');
+    await expect(loopPanel).toBeVisible({ timeout: timeouts.appReady });
 
-    // Step 2: Right-click again — now "Make non-periodic" should be visible
-    // and "Make periodic" should be gone (they are mutually exclusive).
+    // Step 2: Right-click again — now "Make non-loop" should be visible
+    // and "Make loop" should be gone (they are mutually exclusive).
     await sessionItem.click({ button: "right" });
     menu = page.locator(MENU).first();
     await expect(menu).toBeVisible({ timeout: timeouts.shortAction });
 
-    const makeNonPeriodicBtn = menu.locator("button").filter({ hasText: "Make non-periodic" });
-    await expect(makeNonPeriodicBtn).toBeVisible({ timeout: timeouts.shortAction });
+    const makeNonLoopBtn = menu.locator("button").filter({ hasText: "Make non-loop" });
+    await expect(makeNonLoopBtn).toBeVisible({ timeout: timeouts.shortAction });
 
-    // "Make periodic" must NOT appear for an already-periodic session.
-    await expect(menu.locator("button").filter({ hasText: "Make periodic" })).toHaveCount(0);
+    // "Make loop" must NOT appear for an already-loop session.
+    await expect(menu.locator("button").filter({ hasText: "Make loop" })).toHaveCount(0);
 
-    // Step 3: Click "Make non-periodic" and confirm the editor disappears.
-    await makeNonPeriodicBtn.click();
+    // Step 3: Click "Make non-loop" and confirm the editor disappears.
+    await makeNonLoopBtn.click();
     await expect(page.locator(MENU)).toHaveCount(0, { timeout: timeouts.shortAction });
 
-    // The periodic_updated broadcast (nil) flips periodic_enabled=false.
-    // PeriodicFrequencyPanel stays in the DOM but collapses to h-0/opacity-0
+    // The loop_updated broadcast (nil) flips loop_enabled=false.
+    // LoopFrequencyPanel stays in the DOM but collapses to h-0/opacity-0
     // (CSS transition), so Playwright sees it as not visible.
-    await expect(periodicPanel).not.toBeVisible({ timeout: timeouts.appReady });
+    await expect(loopPanel).not.toBeVisible({ timeout: timeouts.appReady });
   });
 });

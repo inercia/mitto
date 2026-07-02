@@ -313,7 +313,7 @@ test.describe("Message Ordering After Sync", () => {
 });
 
 test.describe("Keepalive", () => {
-  test("should send keepalive messages periodically", async ({
+  test("should send keepalive messages at regular intervals", async ({
     page,
     helpers,
   }) => {

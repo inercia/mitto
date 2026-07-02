@@ -110,22 +110,22 @@ test.describe("MCP UI options panel — stop button", () => {
     await expect(page.locator(".chat-input-container")).toBeVisible();
   });
 
-  test("periodic frequency panel hides during a UI prompt and reappears after Stop", async ({
+  test("loop frequency panel hides during a UI prompt and reappears after Stop", async ({
     page,
     request,
     apiUrl,
     helpers,
     timeouts,
   }) => {
-    // Create a fresh, isolated session and convert it to periodic via the API.
-    // (The right-click "Make periodic" context menu flow is covered elsewhere;
+    // Create a fresh, isolated session and convert it to loop via the API.
+    // (The right-click "Make loop" context menu flow is covered elsewhere;
     // here we go straight through the REST endpoint so this test does not depend
     // on the session-list context menu.)
     const sessionId = await helpers.createFreshSession(page);
     expect(sessionId).toBeTruthy();
 
-    const periodicResponse = await request.put(
-      apiUrl(`/api/sessions/${sessionId}/periodic`),
+    const loopResponse = await request.put(
+      apiUrl(`/api/sessions/${sessionId}/loop`),
       {
         data: {
           prompt_name: "Hello Greeting",
@@ -135,16 +135,16 @@ test.describe("MCP UI options panel — stop button", () => {
       },
     );
     expect(
-      periodicResponse.ok(),
-      `PUT periodic failed: ${periodicResponse.status()} ${await periodicResponse.text()}`,
+      loopResponse.ok(),
+      `PUT loop failed: ${loopResponse.status()} ${await loopResponse.text()}`,
     ).toBe(true);
 
-    // The periodic_updated broadcast flips periodicConfigured=true, so the
-    // PeriodicFrequencyPanel opens (isOpen → opacity-100; collapsed → h-0).
-    const periodicPanel = page.locator(
-      '[data-testid="periodic-frequency-panel"]',
+    // The loop_updated broadcast flips loopConfigured=true, so the
+    // LoopFrequencyPanel opens (isOpen → opacity-100; collapsed → h-0).
+    const loopPanel = page.locator(
+      '[data-testid="loop-frequency-panel"]',
     );
-    await expect(periodicPanel).toBeVisible({ timeout: timeouts.appReady });
+    await expect(loopPanel).toBeVisible({ timeout: timeouts.appReady });
 
     // Inject a synthetic ui_prompt (options) into the active session WebSocket.
     const dispatched = await page.evaluate((sid) => {
@@ -153,9 +153,9 @@ test.describe("MCP UI options panel — stop button", () => {
         type: "ui_prompt",
         data: {
           session_id: sid,
-          request_id: "test-ui-periodic-1",
+          request_id: "test-ui-loop-1",
           prompt_type: "options_buttons",
-          question: "Periodic hide test question?",
+          question: "Loop hide test question?",
           options: [
             { id: "a", label: "Option A", description: "First option" },
             { id: "b", label: "Option B", description: "Second option" },
@@ -185,11 +185,11 @@ test.describe("MCP UI options panel — stop button", () => {
     const panel = page.locator(".ui-prompt-panel");
     await expect(panel).toBeVisible({ timeout: 5000 });
 
-    // ...and the periodic frequency panel collapses (hidden) while the UI prompt
+    // ...and the loop frequency panel collapses (hidden) while the UI prompt
     // is active — the two are mutually exclusive.
-    await expect(periodicPanel).toBeHidden({ timeout: 5000 });
+    await expect(loopPanel).toBeHidden({ timeout: 5000 });
 
-    // Stopping the prompt aborts it; the periodic frequency panel reappears.
+    // Stopping the prompt aborts it; the loop frequency panel reappears.
     const stopBtn = page.locator(
       '.ui-prompt-panel button[data-tip="Stop the agent"]',
     );
@@ -197,6 +197,6 @@ test.describe("MCP UI options panel — stop button", () => {
     await stopBtn.click();
 
     await expect(panel).toBeHidden();
-    await expect(periodicPanel).toBeVisible({ timeout: timeouts.appReady });
+    await expect(loopPanel).toBeVisible({ timeout: timeouts.appReady });
   });
 });

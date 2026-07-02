@@ -1,7 +1,7 @@
-name: Periodic Param Test
-description: A periodic-selector prompt with a required text param (E2E edit-args dialog testing)
-menus: promptsPeriodic
-group: Periodic
+name: Loop Param Test
+description: A loop-selector prompt with a required text param (E2E edit-args dialog testing)
+menus: promptsLoop
+group: Loop
 parameters:
   - name: TASK
     type: text

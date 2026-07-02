@@ -2,20 +2,20 @@ import { testWithCleanup as test, expect } from "../fixtures/test-fixtures";
 import { apiUrl } from "../utils/selectors";
 
 /**
- * On-completion periodic trigger UI tests.
+ * On-completion loop trigger UI tests.
  *
- * Verifies that the PeriodicFrequencyPanel correctly handles the
+ * Verifies that the LoopFrequencyPanel correctly handles the
  * "On completion" trigger tab: tab switching, delay input visibility,
  * delay clamping (>= minDelaySeconds), max time inputs, and that the
  * correct PATCH bodies are sent.
  *
- * Setup: creates a session and configures it as periodic via the REST API
+ * Setup: creates a session and configures it as loop via the REST API
  * (more reliable than context-menu UI flows in beforeEach). The backend
- * sends a periodic_updated WebSocket event that flips periodicEnabled=true
- * in the frontend, causing the PeriodicFrequencyPanel to appear.
+ * sends a loop_updated WebSocket event that flips loopEnabled=true
+ * in the frontend, causing the LoopFrequencyPanel to appear.
  */
 
-test.describe("Periodic on-completion trigger", () => {
+test.describe("Loop on-completion trigger", () => {
   let sessionId: string;
 
   test.beforeEach(async ({ page, request, helpers, timeouts }) => {
@@ -34,15 +34,15 @@ test.describe("Periodic on-completion trigger", () => {
     await helpers.navigateAndWait(page);
     await helpers.navigateToSession(page, sessionId);
 
-    // Configure the session as periodic directly via REST API.
+    // Configure the session as loop directly via REST API.
     // This is more reliable in beforeEach than UI-driven context menus because
-    // it avoids click-timing races; the backend still broadcasts periodic_updated
+    // it avoids click-timing races; the backend still broadcasts loop_updated
     // over WebSocket so the frontend panel appears as expected.
     const putResp = await request.put(
-      apiUrl(`/api/sessions/${sessionId}/periodic`),
+      apiUrl(`/api/sessions/${sessionId}/loop`),
       {
         data: {
-          prompt: "Test periodic",
+          prompt: "Test loop",
           frequency: { value: 1, unit: "hours" },
           enabled: true,
           max_iterations: 0,
@@ -51,24 +51,24 @@ test.describe("Periodic on-completion trigger", () => {
     );
     expect(
       putResp.ok(),
-      `PUT periodic failed: ${putResp.status()}`,
+      `PUT loop failed: ${putResp.status()}`,
     ).toBeTruthy();
 
-    // The periodic_updated WS event flips periodicEnabled=true in ChatInput,
-    // which makes the PeriodicFrequencyPanel visible.
+    // The loop_updated WS event flips loopEnabled=true in ChatInput,
+    // which makes the LoopFrequencyPanel visible.
     await expect(
-      page.locator('[data-testid="periodic-frequency-panel"]'),
+      page.locator('[data-testid="loop-frequency-panel"]'),
     ).toBeVisible({ timeout: timeouts.appReady });
 
     // Expand the settings body to show the trigger tabs and limit rows.
-    await page.locator('[data-testid="periodic-expand-toggle"]').click();
+    await page.locator('[data-testid="loop-expand-toggle"]').click();
 
     // Both trigger tabs should now be visible.
     await expect(
-      page.locator('[data-testid="periodic-trigger-tab-schedule"]'),
+      page.locator('[data-testid="loop-trigger-tab-schedule"]'),
     ).toBeVisible({ timeout: timeouts.shortAction });
     await expect(
-      page.locator('[data-testid="periodic-trigger-tab-oncompletion"]'),
+      page.locator('[data-testid="loop-trigger-tab-oncompletion"]'),
     ).toBeVisible({ timeout: timeouts.shortAction });
   });
 
@@ -78,10 +78,10 @@ test.describe("Periodic on-completion trigger", () => {
   }) => {
     // Tabs were asserted in beforeEach — confirm both are present
     await expect(
-      page.locator('[data-testid="periodic-trigger-tab-schedule"]'),
+      page.locator('[data-testid="loop-trigger-tab-schedule"]'),
     ).toBeVisible();
     await expect(
-      page.locator('[data-testid="periodic-trigger-tab-oncompletion"]'),
+      page.locator('[data-testid="loop-trigger-tab-oncompletion"]'),
     ).toBeVisible();
   });
 
@@ -90,10 +90,10 @@ test.describe("Periodic on-completion trigger", () => {
     timeouts,
   }) => {
     await expect(
-      page.locator('[data-testid="periodic-max-duration-value"]'),
+      page.locator('[data-testid="loop-max-duration-value"]'),
     ).toBeVisible();
     await expect(
-      page.locator('[data-testid="periodic-max-duration-unit"]'),
+      page.locator('[data-testid="loop-max-duration-unit"]'),
     ).toBeVisible();
   });
 
@@ -103,7 +103,7 @@ test.describe("Periodic on-completion trigger", () => {
   }) => {
     const patchBodies: any[] = [];
     await page.route(
-      `**${apiUrl(`/api/sessions/${sessionId}/periodic`)}`,
+      `**${apiUrl(`/api/sessions/${sessionId}/loop`)}`,
       async (route) => {
         if (route.request().method() === "PATCH") {
           patchBodies.push(route.request().postDataJSON());
@@ -113,11 +113,11 @@ test.describe("Periodic on-completion trigger", () => {
     );
 
     await page
-      .locator('[data-testid="periodic-trigger-tab-oncompletion"]')
+      .locator('[data-testid="loop-trigger-tab-oncompletion"]')
       .click();
 
     // Staged edits: changes are only persisted when the Save button is pressed.
-    await page.locator('[data-testid="periodic-save-button"]').click();
+    await page.locator('[data-testid="loop-save-button"]').click();
 
     await expect
       .poll(() => patchBodies.length, { timeout: timeouts.shortAction })
@@ -131,17 +131,17 @@ test.describe("Periodic on-completion trigger", () => {
   }) => {
     // Initially in schedule mode — delay input should not be visible
     await expect(
-      page.locator('[data-testid="periodic-delay-input"]'),
+      page.locator('[data-testid="loop-delay-input"]'),
     ).not.toBeVisible();
 
     // Switch to onCompletion
     await page
-      .locator('[data-testid="periodic-trigger-tab-oncompletion"]')
+      .locator('[data-testid="loop-trigger-tab-oncompletion"]')
       .click();
 
     // Delay input should now appear
     await expect(
-      page.locator('[data-testid="periodic-delay-input"]'),
+      page.locator('[data-testid="loop-delay-input"]'),
     ).toBeVisible({ timeout: timeouts.shortAction });
   });
 
@@ -151,14 +151,14 @@ test.describe("Periodic on-completion trigger", () => {
   }) => {
     // Switch to onCompletion
     await page
-      .locator('[data-testid="periodic-trigger-tab-oncompletion"]')
+      .locator('[data-testid="loop-trigger-tab-oncompletion"]')
       .click();
     await expect(
-      page.locator('[data-testid="periodic-delay-input"]'),
+      page.locator('[data-testid="loop-delay-input"]'),
     ).toBeVisible({ timeout: timeouts.shortAction });
 
     // Enter a value below the 5s floor
-    const delayInput = page.locator('[data-testid="periodic-delay-input"]');
+    const delayInput = page.locator('[data-testid="loop-delay-input"]');
     await delayInput.fill("2");
     await delayInput.blur();
 
@@ -176,7 +176,7 @@ test.describe("Periodic on-completion trigger", () => {
   }) => {
     const patchBodies: any[] = [];
     await page.route(
-      `**${apiUrl(`/api/sessions/${sessionId}/periodic`)}`,
+      `**${apiUrl(`/api/sessions/${sessionId}/loop`)}`,
       async (route) => {
         if (route.request().method() === "PATCH") {
           patchBodies.push(route.request().postDataJSON());
@@ -187,13 +187,13 @@ test.describe("Periodic on-completion trigger", () => {
 
     // Set max time to 2 hours
     const maxDurInput = page.locator(
-      '[data-testid="periodic-max-duration-value"]',
+      '[data-testid="loop-max-duration-value"]',
     );
     await maxDurInput.fill("2");
     await maxDurInput.blur();
 
     // Staged edits: changes are only persisted when the Save button is pressed.
-    await page.locator('[data-testid="periodic-save-button"]').click();
+    await page.locator('[data-testid="loop-save-button"]').click();
 
     await expect
       .poll(
@@ -209,13 +209,13 @@ test.describe("Periodic on-completion trigger", () => {
     expect(maxDurPatch.max_duration_seconds).toBeGreaterThan(0);
   });
 
-  test("saving a new unbounded on-completion periodic warns, then saves on confirm", async ({
+  test("saving a new unbounded on-completion loop warns, then saves on confirm", async ({
     page,
     timeouts,
   }) => {
     const patchBodies: any[] = [];
     await page.route(
-      `**${apiUrl(`/api/sessions/${sessionId}/periodic`)}`,
+      `**${apiUrl(`/api/sessions/${sessionId}/loop`)}`,
       async (route) => {
         if (route.request().method() === "PATCH") {
           patchBodies.push(route.request().postDataJSON());
@@ -226,17 +226,17 @@ test.describe("Periodic on-completion trigger", () => {
 
     // Switch to onCompletion (pre-fills safety limits for this new conversation).
     await page
-      .locator('[data-testid="periodic-trigger-tab-oncompletion"]')
+      .locator('[data-testid="loop-trigger-tab-oncompletion"]')
       .click();
 
-    // Clear both limits → unbounded config (dangerous for a brand-new periodic).
+    // Clear both limits → unbounded config (dangerous for a brand-new loop).
     await page
-      .locator('[data-testid="periodic-panel-max-iterations"]')
+      .locator('[data-testid="loop-panel-max-iterations"]')
       .fill("0");
-    await page.locator('[data-testid="periodic-max-duration-value"]').fill("0");
+    await page.locator('[data-testid="loop-max-duration-value"]').fill("0");
 
-    // Saving an unbounded, dangerous, brand-new periodic must prompt first.
-    await page.locator('[data-testid="periodic-save-button"]').click();
+    // Saving an unbounded, dangerous, brand-new loop must prompt first.
+    await page.locator('[data-testid="loop-save-button"]').click();
     const dialog = page.locator('[data-testid="confirm-dialog"]');
     await expect(dialog).toBeVisible({ timeout: timeouts.shortAction });
     await expect(dialog).toContainText("could keep running indefinitely");
@@ -260,7 +260,7 @@ test.describe("Periodic on-completion trigger", () => {
   }) => {
     const patchBodies: any[] = [];
     await page.route(
-      `**${apiUrl(`/api/sessions/${sessionId}/periodic`)}`,
+      `**${apiUrl(`/api/sessions/${sessionId}/loop`)}`,
       async (route) => {
         if (route.request().method() === "PATCH") {
           patchBodies.push(route.request().postDataJSON());
@@ -270,14 +270,14 @@ test.describe("Periodic on-completion trigger", () => {
     );
 
     await page
-      .locator('[data-testid="periodic-trigger-tab-oncompletion"]')
+      .locator('[data-testid="loop-trigger-tab-oncompletion"]')
       .click();
     await page
-      .locator('[data-testid="periodic-panel-max-iterations"]')
+      .locator('[data-testid="loop-panel-max-iterations"]')
       .fill("0");
-    await page.locator('[data-testid="periodic-max-duration-value"]').fill("0");
+    await page.locator('[data-testid="loop-max-duration-value"]').fill("0");
 
-    await page.locator('[data-testid="periodic-save-button"]').click();
+    await page.locator('[data-testid="loop-save-button"]').click();
     const dialog = page.locator('[data-testid="confirm-dialog"]');
     await expect(dialog).toBeVisible({ timeout: timeouts.shortAction });
 
@@ -295,7 +295,7 @@ test.describe("Periodic on-completion trigger", () => {
     page,
   }) => {
     await expect(
-      page.locator('[data-testid="periodic-trigger-tab-ontasks"]'),
+      page.locator('[data-testid="loop-trigger-tab-ontasks"]'),
     ).toHaveCount(0);
   });
 });

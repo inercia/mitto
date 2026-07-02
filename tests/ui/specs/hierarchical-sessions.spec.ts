@@ -472,7 +472,7 @@ test.describe("Hierarchical Session Grouping", () => {
     await filterBtn.click();
 
     // All four category checkboxes must be visible and checked by default
-    for (const key of ["regular", "periodic", "archived", "tasks"]) {
+    for (const key of ["regular", "loop", "archived", "tasks"]) {
       const cb = page.locator(`[data-testid="category-filter-${key}"]`);
       await expect(cb).toBeVisible({ timeout: 3000 });
       await expect(cb).toBeChecked();

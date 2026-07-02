@@ -2,7 +2,7 @@ import { testWithCleanup as test, expect } from "../fixtures/test-fixtures";
 import { timeouts, apiUrl, selectors } from "../utils/selectors";
 
 /**
- * PeriodicPromptSelector internals tests.
+ * LoopPromptSelector internals tests.
  *
  * Regression net: catches a daisyUI restyle breaking:
  *   - The selector dropdown opening/closing
@@ -10,15 +10,15 @@ import { timeouts, apiUrl, selectors } from "../utils/selectors";
  *   - Search filter narrowing the list
  *   - Prompt selection updating the displayed name
  *
- * The existing periodic-prompt-pill.spec.ts only tests the pill trigger
- * (NamedPromptPill) after a periodic run. This spec goes deeper, opening
- * the PeriodicPromptSelector *picker* dropdown itself.
+ * The existing loop-prompt-pill.spec.ts only tests the pill trigger
+ * (NamedPromptPill) after a loop run. This spec goes deeper, opening
+ * the LoopPromptSelector *picker* dropdown itself.
  *
  * Setup:
  *   - Uses the project-alpha workspace fixture which has a "Hello Greeting"
  *     prompt in .mitto/prompts/greeting.md
- *   - Configures periodic via PUT /api/sessions/:id/periodic so the UI
- *     renders PeriodicPromptSelector with isOpen=true.
+ *   - Configures loop via PUT /api/sessions/:id/loop so the UI
+ *     renders LoopPromptSelector with isOpen=true.
  */
 
 /**
@@ -47,30 +47,30 @@ async function apiCreateSession(
 }
 
 /**
- * Configure periodic on a session via REST API.
+ * Configure loop on a session via REST API.
  *
- * The `periodic_updated` broadcast arrives on the global events WebSocket
+ * The `loop_updated` broadcast arrives on the global events WebSocket
  * (/api/events) which may connect slightly after the session WS. We retry
  * the PUT a few times with a brief delay to ensure the message is received.
- * Callers should then wait for a UI signal (e.g. periodic-frequency-panel
+ * Callers should then wait for a UI signal (e.g. loop-frequency-panel
  * visible) with a generous timeout.
  */
-async function enablePeriodic(
+async function enableLoop(
   request: import("@playwright/test").APIRequestContext,
   sessionId: string,
   promptName: string,
 ): Promise<void> {
-  const resp = await request.put(apiUrl(`/api/sessions/${sessionId}/periodic`), {
+  const resp = await request.put(apiUrl(`/api/sessions/${sessionId}/loop`), {
     data: {
       prompt_name: promptName,
       frequency: { value: 1, unit: "hours" },
       enabled: true,
     },
   });
-  expect(resp.ok(), `PUT periodic failed: ${resp.status()} ${await resp.text()}`).toBe(true);
+  expect(resp.ok(), `PUT loop failed: ${resp.status()} ${await resp.text()}`).toBe(true);
 }
 
-test.describe("PeriodicPromptSelector internals", () => {
+test.describe("LoopPromptSelector internals", () => {
   test.beforeEach(async ({ page }) => {
     await page.goto("/");
     await page.waitForLoadState("networkidle");
@@ -81,20 +81,20 @@ test.describe("PeriodicPromptSelector internals", () => {
     request,
     timeouts: t,
   }) => {
-    // Create a fresh session and enable periodic
+    // Create a fresh session and enable loop
     const sessionId = await apiCreateSession(page, request);
     expect(sessionId).toBeTruthy();
-    await enablePeriodic(request, sessionId, "Hello Greeting");
+    await enableLoop(request, sessionId, "Hello Greeting");
 
-    // PeriodicFrequencyPanel becomes visible when periodic_enabled=true.
+    // LoopFrequencyPanel becomes visible when loop_enabled=true.
     // Use agentResponse timeout to handle the global events WS race: the
-    // periodic_updated broadcast arrives on /api/events which may connect
+    // loop_updated broadcast arrives on /api/events which may connect
     // slightly after the session WS, so the state update can take a few seconds.
-    const frequencyPanel = page.locator('[data-testid="periodic-frequency-panel"]');
+    const frequencyPanel = page.locator('[data-testid="loop-frequency-panel"]');
     await expect(frequencyPanel).toBeVisible({ timeout: t.agentResponse });
 
     // The trigger button should show the currently selected prompt name
-    const triggerBtn = page.locator('[data-testid="periodic-prompt-selector-button"]');
+    const triggerBtn = page.locator('[data-testid="loop-prompt-selector-button"]');
     await expect(triggerBtn).toBeAttached();
     await expect(triggerBtn).toContainText("Hello Greeting");
 
@@ -102,17 +102,17 @@ test.describe("PeriodicPromptSelector internals", () => {
     await triggerBtn.click();
 
     // Dropdown panel should now appear
-    const dropdown = page.locator('[data-testid="periodic-prompt-selector-dropdown"]');
+    const dropdown = page.locator('[data-testid="loop-prompt-selector-dropdown"]');
     await expect(dropdown).toBeVisible({ timeout: t.shortAction });
 
     // Search filter input should be focused
-    const searchInput = page.locator('[data-testid="periodic-prompt-selector-search"]');
+    const searchInput = page.locator('[data-testid="loop-prompt-selector-search"]');
     await expect(searchInput).toBeVisible();
     await expect(searchInput).toBeFocused();
 
     // At least the "Hello Greeting" prompt from the project-alpha workspace should appear
     const promptList = page.locator(
-      '[data-testid="periodic-prompt-selector-list"]',
+      '[data-testid="loop-prompt-selector-list"]',
     );
     await expect(promptList).toBeVisible();
 
@@ -133,24 +133,24 @@ test.describe("PeriodicPromptSelector internals", () => {
   }) => {
     const sessionId = await apiCreateSession(page, request);
     expect(sessionId).toBeTruthy();
-    await enablePeriodic(request, sessionId, "Hello Greeting");
+    await enableLoop(request, sessionId, "Hello Greeting");
 
-    await expect(page.locator('[data-testid="periodic-frequency-panel"]')).toBeVisible({
+    await expect(page.locator('[data-testid="loop-frequency-panel"]')).toBeVisible({
       timeout: t.agentResponse,
     });
 
-    const triggerBtn = page.locator('[data-testid="periodic-prompt-selector-button"]');
+    const triggerBtn = page.locator('[data-testid="loop-prompt-selector-button"]');
     await triggerBtn.click();
 
-    const dropdown = page.locator('[data-testid="periodic-prompt-selector-dropdown"]');
+    const dropdown = page.locator('[data-testid="loop-prompt-selector-dropdown"]');
     await expect(dropdown).toBeVisible({ timeout: t.shortAction });
 
-    const searchInput = page.locator('[data-testid="periodic-prompt-selector-search"]');
+    const searchInput = page.locator('[data-testid="loop-prompt-selector-search"]');
 
     // Type a filter that matches "Hello Greeting"
     await searchInput.fill("hello");
     const promptList = page.locator(
-      '[data-testid="periodic-prompt-selector-list"]',
+      '[data-testid="loop-prompt-selector-list"]',
     );
     const greetingItem = promptList.locator("button.prompt-item", {
       hasText: "Hello Greeting",
@@ -181,14 +181,14 @@ test.describe("PeriodicPromptSelector internals", () => {
     timeouts: t,
   }) => {
     const sessionId = await apiCreateSession(page, request);
-    await enablePeriodic(request, sessionId, "Hello Greeting");
+    await enableLoop(request, sessionId, "Hello Greeting");
 
-    await expect(page.locator('[data-testid="periodic-frequency-panel"]')).toBeVisible({
+    await expect(page.locator('[data-testid="loop-frequency-panel"]')).toBeVisible({
       timeout: t.agentResponse,
     });
 
-    await page.locator('[data-testid="periodic-prompt-selector-button"]').click();
-    const dropdown = page.locator('[data-testid="periodic-prompt-selector-dropdown"]');
+    await page.locator('[data-testid="loop-prompt-selector-button"]').click();
+    const dropdown = page.locator('[data-testid="loop-prompt-selector-dropdown"]');
     await expect(dropdown).toBeVisible({ timeout: t.shortAction });
 
     // Click somewhere outside the dropdown
