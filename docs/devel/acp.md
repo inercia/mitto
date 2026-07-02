@@ -589,13 +589,26 @@ a per-prompt goroutine that watches `lastAgentActivityAt`, a timestamp bumped by
 - Cancels the in-flight prompt once idle time crosses `promptInactivityWatchdogTimeout`
   (unblocking the RPC so `is_prompting` clears and the session recovers).
 
-**Defaults (WARN-only):** `promptInactivityWatchdogWarnDelay = 2m`, and
-`promptInactivityWatchdogTimeout = 0`. A timeout of `0` **disables automatic
-cancellation** — out of the box the watchdog only warns. This is intentional: it avoids
-ever cancelling a legitimate long-running tool call that produces no intermediate
-streamed output (e.g. a multi-minute build). Setting the timeout to a positive duration
-opts in to automatic cancellation. Both values are package vars (overridable in tests);
-there is currently no settings/UI exposure.
+**Defaults:** `promptInactivityWatchdogWarnDelay = 2m` (package var, WARN-only, not
+configurable). The cancellation timeout is exposed via settings as
+`agent_inactivity_timeout` (`SessionConfig`), defaulting to **10m enabled** — unlike
+`memory_recycle_threshold`, this feature is opt-out rather than opt-in, since a wedged
+prompt otherwise deadlocks GC recycling of the process (mitto-54y). A timeout of `0`
+(`"disabled"`) turns off automatic cancellation entirely (WARN-only). This avoids ever
+cancelling a legitimate long-running tool call that produces no intermediate streamed
+output (e.g. a multi-minute build) — the watchdog already pauses its idle clock while a
+tool call or UI prompt is in flight, so a live-but-busy agent is never cancelled.
+
+| Setting (JSON key)          | Valid values                         | Default   | Effect                                                                 |
+| ---------------------------- | ------------------------------------- | --------- | ----------------------------------------------------------------------- |
+| `agent_inactivity_timeout`   | `""`, `disabled`, `5m`, `10m`, `15m`, `30m` | `""` → 10m | Cancels a prompt with zero streamed activity after this long, clearing `is_prompting`. |
+
+Parsing lives in `ParseAgentInactivityTimeout()` (returns `(value, enabled)`). The
+runtime timeout is stored in `conversation.promptInactivityWatchdogTimeoutNanos` (an
+`atomic.Int64`, race-safe against concurrent watchdog goroutines) and set via the
+exported `conversation.SetPromptInactivityTimeout()`. `server.go` applies it at startup;
+`config_handlers.go` re-applies it live when settings change, mirroring the GC threshold
+wiring above.
 
 When the timeout fires, the prompt error path treats it as a **recoverable** error: it
 emits an `OnError` to the user and skips the auto-restart / queue-advance logic, so the

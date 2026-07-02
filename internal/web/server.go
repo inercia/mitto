@@ -350,6 +350,20 @@ func NewServer(config Config) (*Server, error) {
 	}
 	sessionMgr.SetACPProcessManager(acpProcessManagerAdapter{acpProcessMgr})
 
+	// Apply the prompt inactivity watchdog cancellation timeout from settings. This
+	// breaks the GC deadlock where a wedged shared ACP process pins a session as
+	// stuck forever (mitto-54y): once idle exceeds the timeout, the watchdog cancels
+	// the in-flight prompt, clearing is_prompting so GC can recycle the process.
+	// Independent of the GC/auxiliary-prewarm gating below since it governs prompt
+	// handling, not process GC.
+	if config.MittoConfig != nil && config.MittoConfig.Session != nil {
+		if d, enabled := config.MittoConfig.Session.ParseAgentInactivityTimeout(); enabled {
+			conversation.SetPromptInactivityTimeout(d)
+		} else {
+			conversation.SetPromptInactivityTimeout(0)
+		}
+	}
+
 	// Start ACP process garbage collector to clean up idle sessions and processes.
 	// The GC periodically checks for sessions with no observers, no active prompts,
 	// and no pending work, and stops shared ACP processes that have no active sessions.

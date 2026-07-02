@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	configPkg "github.com/inercia/mitto/internal/config"
+	"github.com/inercia/mitto/internal/conversation"
 	"github.com/inercia/mitto/internal/secrets"
 	"github.com/inercia/mitto/internal/web/handlers"
 	"github.com/inercia/mitto/internal/web/middleware"
@@ -410,6 +411,16 @@ func (s *Server) applyConfigChanges(req *ConfigSaveRequest, settings *configPkg.
 				s.acpProcessManager.UpdateMemoryRecycleThreshold(bytes)
 			} else {
 				s.acpProcessManager.UpdateMemoryRecycleThreshold(0)
+			}
+		}
+
+		// Update the prompt inactivity watchdog timeout at runtime if session config
+		// changed, so a live settings change takes effect without a restart (mitto-54y).
+		if settings.Session != nil {
+			if d, enabled := settings.Session.ParseAgentInactivityTimeout(); enabled {
+				conversation.SetPromptInactivityTimeout(d)
+			} else {
+				conversation.SetPromptInactivityTimeout(0)
 			}
 		}
 	}

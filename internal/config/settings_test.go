@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/inercia/mitto/internal/appdir"
 )
@@ -446,6 +447,37 @@ func TestParseMemoryRecycleThreshold(t *testing.T) {
 	var nilCfg *SessionConfig
 	if gotBytes, gotEnabled := nilCfg.ParseMemoryRecycleThreshold(); gotBytes != 0 || gotEnabled {
 		t.Errorf("nil ParseMemoryRecycleThreshold() = (%d, %t), want (0, false)", gotBytes, gotEnabled)
+	}
+}
+
+func TestParseAgentInactivityTimeout(t *testing.T) {
+	tests := []struct {
+		value       string
+		wantDur     time.Duration
+		wantEnabled bool
+	}{
+		{"", 10 * time.Minute, true}, // empty defaults to enabled, unlike MemoryRecycleThreshold
+		{"disabled", 0, false},
+		{"5m", 5 * time.Minute, true},
+		{"10m", 10 * time.Minute, true},
+		{"15m", 15 * time.Minute, true},
+		{"30m", 30 * time.Minute, true},
+		{"bogus", 10 * time.Minute, true}, // unknown → default (10m, enabled)
+	}
+
+	for _, tc := range tests {
+		c := &SessionConfig{AgentInactivityTimeout: tc.value}
+		gotDur, gotEnabled := c.ParseAgentInactivityTimeout()
+		if gotDur != tc.wantDur || gotEnabled != tc.wantEnabled {
+			t.Errorf("ParseAgentInactivityTimeout(%q) = (%s, %t), want (%s, %t)",
+				tc.value, gotDur, gotEnabled, tc.wantDur, tc.wantEnabled)
+		}
+	}
+
+	// Nil receiver must be safe and report the enabled default.
+	var nilCfg *SessionConfig
+	if gotDur, gotEnabled := nilCfg.ParseAgentInactivityTimeout(); gotDur != 10*time.Minute || !gotEnabled {
+		t.Errorf("nil ParseAgentInactivityTimeout() = (%s, %t), want (10m, true)", gotDur, gotEnabled)
 	}
 }
 

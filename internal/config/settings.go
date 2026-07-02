@@ -126,6 +126,12 @@ type SessionConfig struct {
 	// conversations resume transparently when focused. Values: "" (default,
 	// disabled), "disabled", "3g", "4g", "6g", "8g".
 	MemoryRecycleThreshold string `json:"memory_recycle_threshold,omitempty"`
+	// AgentInactivityTimeout controls how long a prompt may go with zero streamed
+	// agent activity (no tool call/UI prompt in flight) before the prompt inactivity
+	// watchdog cancels it, clearing is_prompting and surfacing a recoverable error.
+	// This breaks the GC deadlock where a wedged shared ACP process pins a session
+	// as stuck forever. Values: "" (default, 10m), "disabled", "5m", "10m", "15m", "30m".
+	AgentInactivityTimeout string `json:"agent_inactivity_timeout,omitempty"`
 }
 
 // ArchiveRetentionNever is the value for keeping archived conversations forever.
@@ -211,6 +217,39 @@ func (c *SessionConfig) ParseMemoryRecycleThreshold() (uint64, bool) {
 	default:
 		// Unknown → disabled (safe)
 		return 0, false
+	}
+}
+
+// ValidAgentInactivityTimeouts contains all valid agent inactivity timeout values.
+var ValidAgentInactivityTimeouts = []string{"", "disabled", "5m", "10m", "15m", "30m"}
+
+// GetAgentInactivityTimeout returns the agent inactivity timeout string, or "" if not set.
+func (c *SessionConfig) GetAgentInactivityTimeout() string {
+	if c == nil {
+		return ""
+	}
+	return c.AgentInactivityTimeout
+}
+
+// ParseAgentInactivityTimeout converts the agent inactivity timeout string to a
+// time.Duration. Returns the duration and true if the watchdog cancellation is
+// enabled, or 0 and false if disabled. An empty string returns the default of 10
+// minutes (enabled) — unlike MemoryRecycleThreshold, this feature defaults to on.
+func (c *SessionConfig) ParseAgentInactivityTimeout() (time.Duration, bool) {
+	switch c.GetAgentInactivityTimeout() {
+	case "disabled":
+		return 0, false
+	case "", "10m":
+		return 10 * time.Minute, true
+	case "5m":
+		return 5 * time.Minute, true
+	case "15m":
+		return 15 * time.Minute, true
+	case "30m":
+		return 30 * time.Minute, true
+	default:
+		// Unknown value — use default
+		return 10 * time.Minute, true
 	}
 }
 

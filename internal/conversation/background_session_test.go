@@ -4420,12 +4420,12 @@ func TestStartACPStartupWatchdog_NilLoggerNoop(t *testing.T) {
 // configured timeout, emitting both a WARN and an ERROR log along the way.
 func TestStartPromptInactivityWatchdog_FiresWhenIdle(t *testing.T) {
 	origWarn := promptInactivityWatchdogWarnDelay
-	origTimeout := promptInactivityWatchdogTimeout
+	origTimeout := promptInactivityWatchdogTimeout()
 	promptInactivityWatchdogWarnDelay = 20 * time.Millisecond
-	promptInactivityWatchdogTimeout = 60 * time.Millisecond
+	SetPromptInactivityTimeout(60 * time.Millisecond)
 	defer func() {
 		promptInactivityWatchdogWarnDelay = origWarn
-		promptInactivityWatchdogTimeout = origTimeout
+		SetPromptInactivityTimeout(origTimeout)
 	}()
 
 	rec := newCapturingLogHandler()
@@ -4461,12 +4461,12 @@ func TestStartPromptInactivityWatchdog_FiresWhenIdle(t *testing.T) {
 // and does not fire while streamed activity continues to arrive.
 func TestStartPromptInactivityWatchdog_SilentWhenActive(t *testing.T) {
 	origWarn := promptInactivityWatchdogWarnDelay
-	origTimeout := promptInactivityWatchdogTimeout
+	origTimeout := promptInactivityWatchdogTimeout()
 	promptInactivityWatchdogWarnDelay = 40 * time.Millisecond
-	promptInactivityWatchdogTimeout = 80 * time.Millisecond
+	SetPromptInactivityTimeout(80 * time.Millisecond)
 	defer func() {
 		promptInactivityWatchdogWarnDelay = origWarn
-		promptInactivityWatchdogTimeout = origTimeout
+		SetPromptInactivityTimeout(origTimeout)
 	}()
 
 	rec := newCapturingLogHandler()
@@ -4505,12 +4505,12 @@ loop:
 // agent is legitimately blocked waiting on user input.
 func TestStartPromptInactivityWatchdog_PausesDuringUIPrompt(t *testing.T) {
 	origWarn := promptInactivityWatchdogWarnDelay
-	origTimeout := promptInactivityWatchdogTimeout
+	origTimeout := promptInactivityWatchdogTimeout()
 	promptInactivityWatchdogWarnDelay = 20 * time.Millisecond
-	promptInactivityWatchdogTimeout = 50 * time.Millisecond
+	SetPromptInactivityTimeout(50 * time.Millisecond)
 	defer func() {
 		promptInactivityWatchdogWarnDelay = origWarn
-		promptInactivityWatchdogTimeout = origTimeout
+		SetPromptInactivityTimeout(origTimeout)
 	}()
 
 	rec := newCapturingLogHandler()
@@ -4539,12 +4539,12 @@ func TestStartPromptInactivityWatchdog_PausesDuringUIPrompt(t *testing.T) {
 // the tool reaches a terminal status the idle clock resumes and the warning may fire.
 func TestStartPromptInactivityWatchdog_PausesDuringToolCall(t *testing.T) {
 	origWarn := promptInactivityWatchdogWarnDelay
-	origTimeout := promptInactivityWatchdogTimeout
+	origTimeout := promptInactivityWatchdogTimeout()
 	promptInactivityWatchdogWarnDelay = 20 * time.Millisecond
-	promptInactivityWatchdogTimeout = 50 * time.Millisecond
+	SetPromptInactivityTimeout(50 * time.Millisecond)
 	defer func() {
 		promptInactivityWatchdogWarnDelay = origWarn
-		promptInactivityWatchdogTimeout = origTimeout
+		SetPromptInactivityTimeout(origTimeout)
 	}()
 
 	rec := newCapturingLogHandler()
@@ -4594,12 +4594,12 @@ func TestStartPromptInactivityWatchdog_PausesDuringToolCall(t *testing.T) {
 // when both the warn delay and timeout are non-positive.
 func TestStartPromptInactivityWatchdog_DisabledWhenZero(t *testing.T) {
 	origWarn := promptInactivityWatchdogWarnDelay
-	origTimeout := promptInactivityWatchdogTimeout
+	origTimeout := promptInactivityWatchdogTimeout()
 	promptInactivityWatchdogWarnDelay = 0
-	promptInactivityWatchdogTimeout = 0
+	SetPromptInactivityTimeout(0)
 	defer func() {
 		promptInactivityWatchdogWarnDelay = origWarn
-		promptInactivityWatchdogTimeout = origTimeout
+		SetPromptInactivityTimeout(origTimeout)
 	}()
 
 	rec := newCapturingLogHandler()
@@ -4630,12 +4630,12 @@ func TestStartPromptInactivityWatchdog_DisabledWhenZero(t *testing.T) {
 // to an automatic cancel that could kill a legitimate long-running, silent tool call.
 func TestStartPromptInactivityWatchdog_WarnOnlyWhenTimeoutZero(t *testing.T) {
 	origWarn := promptInactivityWatchdogWarnDelay
-	origTimeout := promptInactivityWatchdogTimeout
+	origTimeout := promptInactivityWatchdogTimeout()
 	promptInactivityWatchdogWarnDelay = 20 * time.Millisecond
-	promptInactivityWatchdogTimeout = 0 // production default: cancellation disabled
+	SetPromptInactivityTimeout(0) // production default: cancellation disabled
 	defer func() {
 		promptInactivityWatchdogWarnDelay = origWarn
-		promptInactivityWatchdogTimeout = origTimeout
+		SetPromptInactivityTimeout(origTimeout)
 	}()
 
 	rec := newCapturingLogHandler()
