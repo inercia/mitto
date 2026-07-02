@@ -195,6 +195,12 @@ export function WorkspacesDialog({
   // so we hand the desired tab off here and consume it there.
   const pendingInitialTabRef = useRef(null);
 
+  // Tracks the workspace whose transient edit fields are currently loaded, so we
+  // can flush those edits back into the `workspaces` array before switching to a
+  // different workspace. Without this, edits to multiple workspaces in a single
+  // dialog session would be lost (only the last-selected workspace would save).
+  const prevSelectedWorkspaceKeyRef = useRef(null);
+
   // Key of a newly created workspace that doesn't have a valid working_dir yet
   const [newFolderKey, setNewFolderKey] = useState(null);
 
@@ -505,6 +511,20 @@ export function WorkspacesDialog({
 
   // When a workspace child is selected, populate workspace-level edit fields
   useEffect(() => {
+    // Flush the previously-selected workspace's transient edits into the
+    // workspaces array before repopulating the fields for the new selection.
+    // The scalar edit state (editAcpServer, editAuxModelProfile, etc.) still
+    // holds the previous workspace's values at this point, so applying them
+    // against prevKey commits those edits. This also runs when navigating to a
+    // folder (selectedWorkspaceKey becomes null) so edits are not lost there.
+    const prevKey = prevSelectedWorkspaceKeyRef.current;
+    if (prevKey && prevKey !== selectedWorkspaceKey) {
+      setWorkspaces((prev) =>
+        prev.map((ws) => buildWorkspaceEditsFor(ws, prevKey)),
+      );
+    }
+    prevSelectedWorkspaceKeyRef.current = selectedWorkspaceKey;
+
     if (!selectedWorkspace) return;
     setEditAcpServer(selectedWorkspace.acp_server || "");
     setEditAuxModelProfile(selectedWorkspace.auxiliary_model_profile || "");
@@ -666,6 +686,9 @@ export function WorkspacesDialog({
   }, [selectedFolder]);
 
   const loadData = async () => {
+    // Reset the flush tracker so stale edit-field values from a previous dialog
+    // session are not flushed onto a workspace after a reload/reopen.
+    prevSelectedWorkspaceKeyRef.current = null;
     setLoading(true);
     try {
       const [config, runnersRes] = await Promise.all([
@@ -1140,9 +1163,12 @@ export function WorkspacesDialog({
     }
   };
 
-  // Apply workspace-level edits (acp_server, runner, auto_approve) to the selected workspace
-  const applyWorkspaceEdits = (ws) => {
-    if (getWorkspaceKey(ws) !== selectedWorkspaceKey) return ws;
+  // Build a workspace object with the current transient edit fields applied,
+  // but only for the workspace matching targetKey; all others pass through
+  // unchanged. This is used both to flush edits on selection change and to
+  // commit the currently-selected workspace at save time.
+  const buildWorkspaceEditsFor = (ws, targetKey) => {
+    if (getWorkspaceKey(ws) !== targetKey) return ws;
     // A selected profile (or an explicit "-- None --") always wins over any
     // legacy raw matchMode/pattern constraint. Otherwise, an untouched
     // legacy raw constraint is preserved as-is.
@@ -1166,6 +1192,10 @@ export function WorkspacesDialog({
       acp_command_override: editAcpCommandOverride || undefined,
     };
   };
+
+  // Apply workspace-level edits (acp_server, runner, auto_approve) to the selected workspace
+  const applyWorkspaceEdits = (ws) =>
+    buildWorkspaceEditsFor(ws, selectedWorkspaceKey);
 
   const handleSave = async () => {
     // Block save if there's an incomplete new folder
