@@ -1291,7 +1291,7 @@ type rawACPServerConfig struct {
 		Menus           string            `yaml:"menus"`
 		Enabled         *bool             `yaml:"enabled"`
 		EnabledWhen     string            `yaml:"enabledWhen"`
-		Loop        *PromptLoop   `yaml:"loop,omitempty"`
+		Loop            *PromptLoop       `yaml:"loop,omitempty"`
 		Parameters      []PromptParameter `yaml:"parameters"`
 		Tags            []string          `yaml:"tags"`
 		Singleton       bool              `yaml:"singleton"`
@@ -1316,7 +1316,7 @@ type rawConfig struct {
 		Menus           string            `yaml:"menus"`
 		Enabled         *bool             `yaml:"enabled"`
 		EnabledWhen     string            `yaml:"enabledWhen"`
-		Loop        *PromptLoop   `yaml:"loop,omitempty"`
+		Loop            *PromptLoop       `yaml:"loop,omitempty"`
 		Parameters      []PromptParameter `yaml:"parameters"`
 		Tags            []string          `yaml:"tags"`
 		Singleton       bool              `yaml:"singleton"`
@@ -1418,8 +1418,8 @@ type rawConfig struct {
 		ExternalImages *struct {
 			Enabled *bool `yaml:"enabled"`
 		} `yaml:"external_images"`
-		DefaultFlags                      map[string]bool `yaml:"default_flags"`
-		MaxChildConversations             *int            `yaml:"max_child_conversations"`
+		DefaultFlags                  map[string]bool `yaml:"default_flags"`
+		MaxChildConversations         *int            `yaml:"max_child_conversations"`
 		MaxLoopIterations             *int            `yaml:"max_loop_iterations"`
 		MinLoopCompletionDelaySeconds *int            `yaml:"min_loop_completion_delay_seconds"`
 	} `yaml:"conversations"`
@@ -1431,14 +1431,14 @@ type rawConfig struct {
 	} `yaml:"permissions"`
 	// Session is the session storage/startup configuration
 	Session *struct {
-		MaxMessagesPerSession       int    `yaml:"max_messages_per_session"`
-		MaxSessionSizeBytes         int64  `yaml:"max_session_size_bytes"`
-		ArchiveRetentionPeriod      string `yaml:"archive_retention_period"`
-		AutoArchiveInactiveAfter    string `yaml:"auto_archive_inactive_after"`
-		StartupStaggerMs            int    `yaml:"startup_stagger_ms"`
-		StartupLoopDelaySeconds int    `yaml:"startup_loop_delay_seconds"`
-		LoopSuspendTimeout      string `yaml:"loop_suspend_timeout"`
-		MemoryRecycleThreshold      string `yaml:"memory_recycle_threshold"`
+		MaxMessagesPerSession    int    `yaml:"max_messages_per_session"`
+		MaxSessionSizeBytes      int64  `yaml:"max_session_size_bytes"`
+		ArchiveRetentionPeriod   string `yaml:"archive_retention_period"`
+		AutoArchiveInactiveAfter string `yaml:"auto_archive_inactive_after"`
+		StartupStaggerMs         int    `yaml:"startup_stagger_ms"`
+		StartupLoopDelaySeconds  int    `yaml:"startup_loop_delay_seconds"`
+		LoopSuspendTimeout       string `yaml:"loop_suspend_timeout"`
+		MemoryRecycleThreshold   string `yaml:"memory_recycle_threshold"`
 	} `yaml:"session"`
 	// MCP is the MCP server configuration
 	MCP *struct {
@@ -1523,7 +1523,7 @@ func Parse(data []byte) (*Config, error) {
 					Singleton:       p.Singleton,
 					Tags:            p.Tags,
 					EnabledWhen:     p.EnabledWhen,
-					Loop:        p.Loop,
+					Loop:            p.Loop,
 					Parameters:      p.Parameters,
 				}
 				acpServer.Prompts = append(acpServer.Prompts, wp)
@@ -1577,7 +1577,7 @@ func Parse(data []byte) (*Config, error) {
 			Tags:            p.Tags,
 			EnabledWhen:     p.EnabledWhen,
 			Enabled:         p.Enabled,
-			Loop:        p.Loop,
+			Loop:            p.Loop,
 			Parameters:      p.Parameters,
 		}
 		cfg.Prompts = append(cfg.Prompts, wp)
@@ -1790,14 +1790,14 @@ func Parse(data []byte) (*Config, error) {
 	// Parse session config
 	if raw.Session != nil {
 		cfg.Session = &SessionConfig{
-			MaxMessagesPerSession:       raw.Session.MaxMessagesPerSession,
-			MaxSessionSizeBytes:         raw.Session.MaxSessionSizeBytes,
-			ArchiveRetentionPeriod:      raw.Session.ArchiveRetentionPeriod,
-			AutoArchiveInactiveAfter:    raw.Session.AutoArchiveInactiveAfter,
-			StartupStaggerMs:            raw.Session.StartupStaggerMs,
-			StartupLoopDelaySeconds: raw.Session.StartupLoopDelaySeconds,
-			LoopSuspendTimeout:      raw.Session.LoopSuspendTimeout,
-			MemoryRecycleThreshold:      raw.Session.MemoryRecycleThreshold,
+			MaxMessagesPerSession:    raw.Session.MaxMessagesPerSession,
+			MaxSessionSizeBytes:      raw.Session.MaxSessionSizeBytes,
+			ArchiveRetentionPeriod:   raw.Session.ArchiveRetentionPeriod,
+			AutoArchiveInactiveAfter: raw.Session.AutoArchiveInactiveAfter,
+			StartupStaggerMs:         raw.Session.StartupStaggerMs,
+			StartupLoopDelaySeconds:  raw.Session.StartupLoopDelaySeconds,
+			LoopSuspendTimeout:       raw.Session.LoopSuspendTimeout,
+			MemoryRecycleThreshold:   raw.Session.MemoryRecycleThreshold,
 		}
 	}
 

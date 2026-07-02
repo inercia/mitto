@@ -274,7 +274,7 @@ func (p *PromptFile) ToWebPrompt() WebPrompt {
 		Source:          PromptSourceFile,
 		EnabledWhen:     p.EnabledWhen,
 		Enabled:         p.Enabled,
-		Loop:        p.Loop,
+		Loop:            p.Loop,
 		PreferredModels: p.PreferredModels,
 		Parameters:      p.Parameters,
 		Tags:            p.Tags,
