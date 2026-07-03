@@ -15,6 +15,7 @@ import (
 
 	acp "github.com/coder/acp-go-sdk"
 
+	"github.com/inercia/mitto/internal/auxiliary"
 	"github.com/inercia/mitto/internal/config"
 	"github.com/inercia/mitto/internal/conversation"
 	"github.com/inercia/mitto/internal/logging"
@@ -1648,6 +1649,24 @@ func (c *SessionWSClient) triggerMCPToolsFetch(workspaceUUID string) {
 		c.server.eventsManager.Broadcast(conversation.WSMsgTypeMCPToolsAvailable, map[string]interface{}{
 			"workspace_uuid": workspaceUUID,
 			"tools":          tools,
+		})
+	}
+
+	// Late-starting servers (mitto-sys.5): keep re-probing configured-but-
+	// unreachable MCP servers with bounded backoff and broadcast tools as they
+	// come online. Use context.Background(), NOT the fetch's 30-min ctx (it is
+	// cancelled by defer cancel() when this function returns); the backoff's
+	// MaxAttempts terminates the loop. Deduped per workspace inside the manager.
+	if c.server != nil && c.server.auxiliaryManager != nil {
+		srv := c.server
+		wsUUID := workspaceUUID
+		srv.auxiliaryManager.EnsureMCPBackoffRetry(context.Background(), wsUUID, func(tools []auxiliary.MCPToolInfo) {
+			if srv.eventsManager != nil {
+				srv.eventsManager.Broadcast(conversation.WSMsgTypeMCPToolsAvailable, map[string]interface{}{
+					"workspace_uuid": wsUUID,
+					"tools":          tools,
+				})
+			}
 		})
 	}
 

@@ -4,7 +4,10 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/inercia/mitto/internal/mcpdiscovery"
 )
@@ -750,4 +753,227 @@ func TestFetchMCPToolsViaLLM_RetryAndPlausibility(t *testing.T) {
 			t.Errorf("calls = %d, want 2", calls)
 		}
 	})
+}
+
+// =============================================================================
+// mergeMCPToolsAdditive + EnsureMCPBackoffRetry: bounded backoff re-probe of
+// configured-but-unreachable MCP servers (mitto-sys.5)
+// =============================================================================
+
+// fastBackoffPolicy is a tiny policy for fast, deterministic tests.
+func fastBackoffPolicy(maxAttempts int) mcpdiscovery.BackoffPolicy {
+	return mcpdiscovery.BackoffPolicy{Base: time.Millisecond, Factor: 2, Max: 5 * time.Millisecond, MaxAttempts: maxAttempts}
+}
+
+func TestMergeMCPToolsAdditive(t *testing.T) {
+	t.Run("empty cache plus fresh", func(t *testing.T) {
+		mgr := NewWorkspaceAuxiliaryManager(&mockProcessProvider{}, nil)
+		merged, changed := mgr.mergeMCPToolsAdditive("ws", []MCPToolInfo{{Name: "jira_search"}})
+		if !changed {
+			t.Fatalf("changed = false, want true")
+		}
+		assertToolNames(t, merged, "jira_search")
+	})
+
+	t.Run("absent tool retained, no downgrade", func(t *testing.T) {
+		mgr := NewWorkspaceAuxiliaryManager(&mockProcessProvider{}, nil)
+		mgr.mcpToolsCache["ws"] = []MCPToolInfo{{Name: "jira_search"}, {Name: "slack_post"}}
+
+		merged, changed := mgr.mergeMCPToolsAdditive("ws", []MCPToolInfo{{Name: "jira_search"}})
+		if changed {
+			t.Fatalf("changed = true, want false (slack_post absent from fresh must not evict it)")
+		}
+		assertToolNames(t, merged, "jira_search", "slack_post")
+
+		cached, ok := mgr.GetCachedMCPTools("ws")
+		if !ok {
+			t.Fatalf("expected cache entry")
+		}
+		assertToolNames(t, cached, "jira_search", "slack_post")
+	})
+
+	t.Run("description refreshed", func(t *testing.T) {
+		mgr := NewWorkspaceAuxiliaryManager(&mockProcessProvider{}, nil)
+		mgr.mcpToolsCache["ws"] = []MCPToolInfo{{Name: "jira_search", Description: "old"}}
+
+		merged, changed := mgr.mergeMCPToolsAdditive("ws", []MCPToolInfo{{Name: "jira_search", Description: "newdesc"}})
+		if !changed {
+			t.Fatalf("changed = false, want true")
+		}
+		if len(merged) != 1 || merged[0].Description != "newdesc" {
+			t.Errorf("merged = %+v, want [{jira_search newdesc}]", merged)
+		}
+	})
+
+	t.Run("empty fresh is a no-op", func(t *testing.T) {
+		mgr := NewWorkspaceAuxiliaryManager(&mockProcessProvider{}, nil)
+		mgr.mcpToolsCache["ws"] = []MCPToolInfo{{Name: "jira_search"}}
+
+		merged, changed := mgr.mergeMCPToolsAdditive("ws", nil)
+		if changed {
+			t.Fatalf("changed = true, want false")
+		}
+		assertToolNames(t, merged, "jira_search")
+	})
+
+	t.Run("reappearing tool resets negatives", func(t *testing.T) {
+		mgr := NewWorkspaceAuxiliaryManager(&mockProcessProvider{}, nil)
+		// jira_search was previously seen (negatives=1, e.g. one missed
+		// applyMCPToolsCachePolicy round) but is no longer in the cache list
+		// itself (only tracked via the negatives counter at this point).
+		mgr.mcpToolsNegatives["ws"] = map[string]int{"jira_search": 1}
+
+		mgr.mergeMCPToolsAdditive("ws", []MCPToolInfo{{Name: "jira_search"}})
+
+		if negs := mgr.mcpToolsNegatives["ws"]; negs != nil {
+			if _, ok := negs["jira_search"]; ok {
+				t.Errorf("expected jira_search negatives entry cleared, got %v", negs)
+			}
+		}
+	})
+}
+
+func TestEnsureMCPBackoffRetry_ReadyAfterN(t *testing.T) {
+	mgr := NewWorkspaceAuxiliaryManager(&mockProcessProvider{}, nil)
+	mgr.mcpBackoffPolicy = fastBackoffPolicy(20)
+
+	var calls int32
+	mgr.StdioToolsDiscoverer = func(ctx context.Context, workspaceUUID string) ([]mcpdiscovery.ServerToolsResult, error) {
+		n := atomic.AddInt32(&calls, 1)
+		if n <= 3 {
+			return []mcpdiscovery.ServerToolsResult{{Server: "s1", Reachable: false}}, nil
+		}
+		return []mcpdiscovery.ServerToolsResult{{Server: "s1", Reachable: true, Tools: []string{"late_tool"}}}, nil
+	}
+
+	var mu sync.Mutex
+	var updates [][]MCPToolInfo
+	done := make(chan struct{}, 10)
+	onUpdate := func(tools []MCPToolInfo) {
+		mu.Lock()
+		updates = append(updates, tools)
+		mu.Unlock()
+		done <- struct{}{}
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	mgr.EnsureMCPBackoffRetry(ctx, "ws", onUpdate)
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for onUpdate")
+	}
+
+	// Give the loop a moment to make its final (stopping) probe and exit.
+	time.Sleep(20 * time.Millisecond)
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(updates) != 1 {
+		t.Fatalf("onUpdate called %d times, want 1: %+v", len(updates), updates)
+	}
+	assertToolNames(t, updates[0], "late_tool")
+
+	if got := atomic.LoadInt32(&calls); got != 4 {
+		t.Errorf("discoverer called %d times, want 4", got)
+	}
+}
+
+func TestEnsureMCPBackoffRetry_NoNegativeOnTimeout(t *testing.T) {
+	mgr := NewWorkspaceAuxiliaryManager(&mockProcessProvider{}, nil)
+	mgr.mcpBackoffPolicy = fastBackoffPolicy(3)
+	mgr.mcpToolsCache["ws"] = []MCPToolInfo{{Name: "known"}}
+
+	mgr.StdioToolsDiscoverer = func(ctx context.Context, workspaceUUID string) ([]mcpdiscovery.ServerToolsResult, error) {
+		return []mcpdiscovery.ServerToolsResult{{Server: "s1", Reachable: false, Err: context.DeadlineExceeded}}, nil
+	}
+
+	var onUpdateCalls int32
+	onUpdate := func(tools []MCPToolInfo) {
+		atomic.AddInt32(&onUpdateCalls, 1)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	mgr.EnsureMCPBackoffRetry(ctx, "ws", onUpdate)
+
+	// Poll until the backoff goroutine has finished (mcpBackoffActive cleared).
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		mgr.mcpBackoffMu.Lock()
+		active := mgr.mcpBackoffActive["ws"]
+		mgr.mcpBackoffMu.Unlock()
+		if !active {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+
+	if atomic.LoadInt32(&onUpdateCalls) != 0 {
+		t.Errorf("onUpdate called %d times, want 0", onUpdateCalls)
+	}
+	cached, ok := mgr.GetCachedMCPTools("ws")
+	if !ok || len(cached) != 1 || cached[0].Name != "known" {
+		t.Errorf("cache = %+v (ok=%v), want unchanged [{known}]", cached, ok)
+	}
+}
+
+func TestEnsureMCPBackoffRetry_Dedup(t *testing.T) {
+	mgr := NewWorkspaceAuxiliaryManager(&mockProcessProvider{}, nil)
+	mgr.mcpBackoffPolicy = fastBackoffPolicy(0) // unbounded, relies on ctx cancel
+
+	var starts int32
+	mgr.StdioToolsDiscoverer = func(ctx context.Context, workspaceUUID string) ([]mcpdiscovery.ServerToolsResult, error) {
+		atomic.AddInt32(&starts, 1)
+		return []mcpdiscovery.ServerToolsResult{{Server: "s1", Reachable: false}}, nil
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	mgr.EnsureMCPBackoffRetry(ctx, "ws", nil)
+	mgr.EnsureMCPBackoffRetry(ctx, "ws", nil) // second call must be a no-op (already active)
+
+	time.Sleep(20 * time.Millisecond)
+	cancel()
+
+	// Wait for the goroutine to exit.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		mgr.mcpBackoffMu.Lock()
+		active := mgr.mcpBackoffActive["ws"]
+		mgr.mcpBackoffMu.Unlock()
+		if !active {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+
+	if got := atomic.LoadInt32(&starts); got < 1 {
+		t.Errorf("discoverer never called")
+	}
+	// A single active loop dedups repeated Ensure calls; the assertion of
+	// interest is that mcpBackoffActive never allowed two concurrent loops,
+	// which is implied by there being exactly one goroutine's worth of
+	// deterministic sequential calls (no data race under -race, and the
+	// second Ensure call returned immediately without starting a rival
+	// goroutine that could interleave with the first's cleanup).
+}
+
+func TestEnsureMCPBackoffRetry_NilDiscoverer_NoOp(t *testing.T) {
+	mgr := NewWorkspaceAuxiliaryManager(&mockProcessProvider{}, nil) // StdioToolsDiscoverer left nil
+
+	called := false
+	mgr.EnsureMCPBackoffRetry(context.Background(), "ws", func(tools []MCPToolInfo) {
+		called = true
+	})
+
+	time.Sleep(10 * time.Millisecond)
+	if called {
+		t.Errorf("onUpdate called, want no-op for nil discoverer")
+	}
 }

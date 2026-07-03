@@ -67,6 +67,14 @@ type WorkspaceAuxiliaryManager struct {
 	// by the web layer. When nil (tests/CLI), FetchMCPTools uses the LLM path
 	// only (legacy).
 	StdioToolsDiscoverer func(ctx context.Context, workspaceUUID string) ([]mcpdiscovery.ServerToolsResult, error)
+
+	// mcpBackoffActive dedups the per-workspace backoff re-probe goroutine
+	// (at most one per workspace). Guarded by mcpBackoffMu.
+	mcpBackoffActive map[string]bool
+	mcpBackoffMu     sync.Mutex
+	// mcpBackoffPolicy is the schedule used by EnsureMCPBackoffRetry; defaults
+	// to mcpdiscovery.DefaultBackoffPolicy(), overridable in tests for speed.
+	mcpBackoffPolicy mcpdiscovery.BackoffPolicy
 }
 
 // NewWorkspaceAuxiliaryManager creates a new workspace-scoped auxiliary manager.
@@ -77,6 +85,8 @@ func NewWorkspaceAuxiliaryManager(provider ProcessProvider, logger *slog.Logger)
 		mcpCheckCache:     make(map[string]*MCPAvailabilityResult),
 		mcpToolsCache:     make(map[string][]MCPToolInfo),
 		mcpToolsNegatives: make(map[string]map[string]int),
+		mcpBackoffActive:  make(map[string]bool),
+		mcpBackoffPolicy:  mcpdiscovery.DefaultBackoffPolicy(),
 	}
 }
 
@@ -560,6 +570,138 @@ func (m *WorkspaceAuxiliaryManager) applyMCPToolsCachePolicy(workspaceUUID strin
 	m.mcpToolsCache[workspaceUUID] = merged
 
 	return merged
+}
+
+// mergeMCPToolsAdditive merges freshly-discovered tools into the workspace
+// cache WITHOUT the two-negatives downgrade: tools absent from `fresh` are
+// retained unconditionally, so a partial backoff re-probe (which only sees
+// currently-reachable servers) never evicts tools contributed by other
+// servers or the LLM fallback. Refreshes descriptions of tools present in
+// fresh. Returns the merged, name-sorted list and whether it changed vs the
+// prior cache. Takes mcpToolsCacheMu.
+func (m *WorkspaceAuxiliaryManager) mergeMCPToolsAdditive(workspaceUUID string, fresh []MCPToolInfo) ([]MCPToolInfo, bool) {
+	m.mcpToolsCacheMu.Lock()
+	defer m.mcpToolsCacheMu.Unlock()
+
+	cached := m.mcpToolsCache[workspaceUUID]
+
+	byName := make(map[string]MCPToolInfo, len(cached)+len(fresh))
+	order := make([]string, 0, len(cached)+len(fresh))
+	for _, tool := range cached {
+		byName[tool.Name] = tool
+		order = append(order, tool.Name)
+	}
+
+	changed := false
+	for _, tool := range fresh {
+		if existing, ok := byName[tool.Name]; ok {
+			if existing != tool {
+				byName[tool.Name] = tool
+				changed = true
+			}
+			continue
+		}
+		byName[tool.Name] = tool
+		order = append(order, tool.Name)
+		changed = true
+	}
+
+	if !changed {
+		return cached, false
+	}
+
+	merged := make([]MCPToolInfo, 0, len(order))
+	for _, name := range order {
+		merged = append(merged, byName[name])
+	}
+	sort.Slice(merged, func(i, j int) bool { return merged[i].Name < merged[j].Name })
+	m.mcpToolsCache[workspaceUUID] = merged
+
+	if negatives := m.mcpToolsNegatives[workspaceUUID]; negatives != nil {
+		for _, tool := range fresh {
+			delete(negatives, tool.Name)
+		}
+		if len(negatives) == 0 {
+			delete(m.mcpToolsNegatives, workspaceUUID)
+		}
+	}
+
+	return merged, true
+}
+
+// EnsureMCPBackoffRetry starts, at most once per workspace, a bounded
+// exponential-backoff goroutine that re-probes configured-but-unreachable
+// MCP servers via StdioToolsDiscoverer until every server is reachable, ctx
+// is cancelled, or the backoff attempts are exhausted (mitto-sys.5). Each
+// round additively merges newly-reachable servers' tools into the cache
+// (last-known-good; never downgrades) and, when the tool set changed,
+// invokes onUpdate with the merged list so the caller can broadcast. No-op
+// when StdioToolsDiscoverer is nil or a loop is already active for the ws.
+func (m *WorkspaceAuxiliaryManager) EnsureMCPBackoffRetry(ctx context.Context, workspaceUUID string, onUpdate func([]MCPToolInfo)) {
+	if m.StdioToolsDiscoverer == nil {
+		return
+	}
+
+	m.mcpBackoffMu.Lock()
+	if m.mcpBackoffActive[workspaceUUID] {
+		m.mcpBackoffMu.Unlock()
+		return
+	}
+	m.mcpBackoffActive[workspaceUUID] = true
+	m.mcpBackoffMu.Unlock()
+
+	go func() {
+		defer func() {
+			m.mcpBackoffMu.Lock()
+			delete(m.mcpBackoffActive, workspaceUUID)
+			m.mcpBackoffMu.Unlock()
+		}()
+
+		if m.logger != nil {
+			m.logger.Debug("mcp backoff: starting", "workspace_uuid", workspaceUUID)
+		}
+
+		policy := m.mcpBackoffPolicy
+		probe := func(pctx context.Context) mcpdiscovery.ServerToolsResult {
+			results, err := m.StdioToolsDiscoverer(pctx, workspaceUUID)
+			if err != nil {
+				return mcpdiscovery.ServerToolsResult{Server: workspaceUUID, Reachable: false, Err: err}
+			}
+
+			var reachableTools []MCPToolInfo
+			seen := map[string]bool{}
+			unreachable := 0
+			for _, r := range results {
+				if !r.Reachable {
+					unreachable++
+					continue
+				}
+				for _, name := range r.Tools {
+					if seen[name] {
+						continue
+					}
+					seen[name] = true
+					reachableTools = append(reachableTools, MCPToolInfo{Name: name})
+				}
+			}
+
+			merged, changed := m.mergeMCPToolsAdditive(workspaceUUID, reachableTools)
+			if changed && onUpdate != nil {
+				onUpdate(merged)
+			}
+
+			// Stop only when every configured server responded (none unreachable).
+			return mcpdiscovery.ServerToolsResult{Server: workspaceUUID, Reachable: unreachable == 0}
+		}
+
+		_, allReachable := mcpdiscovery.RetryUntilReachable(ctx, policy, probe, nil)
+
+		if m.logger != nil {
+			m.logger.Debug("mcp backoff: stopped",
+				"workspace_uuid", workspaceUUID,
+				"all_reachable", allReachable)
+		}
+	}()
 }
 
 // ClearMCPToolsCache clears the cached MCP tools list for a workspace.
