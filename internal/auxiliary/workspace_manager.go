@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/inercia/mitto/internal/agents"
 	"github.com/inercia/mitto/internal/mcpdiscovery"
 )
 
@@ -75,6 +76,26 @@ type WorkspaceAuxiliaryManager struct {
 	// mcpBackoffPolicy is the schedule used by EnsureMCPBackoffRetry; defaults
 	// to mcpdiscovery.DefaultBackoffPolicy(), overridable in tests for speed.
 	mcpBackoffPolicy mcpdiscovery.BackoffPolicy
+
+	// MCPServerLister, when set, enumerates a workspace's configured MCP
+	// servers (Command/Args/URL/Env) so EnsureMCPWatchers can open one
+	// persistent notifications/tools/list_changed watcher per server.
+	// Injected by the web layer (mitto-sys.4 increment 3/N). When nil
+	// (tests/CLI), EnsureMCPWatchers is a no-op.
+	MCPServerLister func(ctx context.Context, workspaceUUID string) ([]agents.MCPServer, error)
+
+	// MCPWatchTransportFactory builds the transport used by EnsureMCPWatchers'
+	// mcpdiscovery.WatchServer calls; nil defaults to
+	// mcpdiscovery.DefaultTransportFactory. Overridable in tests to inject
+	// in-memory transports.
+	MCPWatchTransportFactory mcpdiscovery.TransportFactory
+
+	// mcpWatchers holds, per workspace, the live persistent watchers opened
+	// by EnsureMCPWatchers (one per configured server). Key presence (not
+	// list length) marks a pool as active/starting — see EnsureMCPWatchers'
+	// dedup and StopMCPWatchers' teardown. Guarded by mcpWatchersMu.
+	mcpWatchers   map[string][]*mcpdiscovery.ToolListWatcher
+	mcpWatchersMu sync.Mutex
 }
 
 // NewWorkspaceAuxiliaryManager creates a new workspace-scoped auxiliary manager.
@@ -87,6 +108,7 @@ func NewWorkspaceAuxiliaryManager(provider ProcessProvider, logger *slog.Logger)
 		mcpToolsNegatives: make(map[string]map[string]int),
 		mcpBackoffActive:  make(map[string]bool),
 		mcpBackoffPolicy:  mcpdiscovery.DefaultBackoffPolicy(),
+		mcpWatchers:       make(map[string][]*mcpdiscovery.ToolListWatcher),
 	}
 }
 
@@ -702,6 +724,127 @@ func (m *WorkspaceAuxiliaryManager) EnsureMCPBackoffRetry(ctx context.Context, w
 				"all_reachable", allReachable)
 		}
 	}()
+}
+
+// EnsureMCPWatchers starts, at most once per workspace, a pool of persistent
+// notifications/tools/list_changed watchers — one per server returned by
+// MCPServerLister (mitto-sys.4, event-driven tool refresh, complementary to
+// EnsureMCPBackoffRetry's polling). Each watcher's initial tools/list result
+// and every subsequent change notification are additively merged into the
+// workspace's tools cache via mergeMCPToolsAdditive (never removes tools —
+// removal-on-list_changed is a documented follow-up, kept out of this
+// increment for parity with the backoff path); onUpdate is invoked with the
+// merged list whenever a merge actually changes it. No-op when
+// MCPServerLister is nil or a pool is already active/starting for the
+// workspace.
+func (m *WorkspaceAuxiliaryManager) EnsureMCPWatchers(ctx context.Context, workspaceUUID string, onUpdate func([]MCPToolInfo)) {
+	if m.MCPServerLister == nil {
+		return
+	}
+
+	m.mcpWatchersMu.Lock()
+	if _, exists := m.mcpWatchers[workspaceUUID]; exists {
+		m.mcpWatchersMu.Unlock()
+		return
+	}
+	// Reserve the slot immediately (present-but-nil) so concurrent Ensure
+	// calls dedup against this pool while servers are still being listed
+	// and connected.
+	m.mcpWatchers[workspaceUUID] = nil
+	m.mcpWatchersMu.Unlock()
+
+	go func() {
+		if m.logger != nil {
+			m.logger.Debug("mcp watchers: starting", "workspace_uuid", workspaceUUID)
+		}
+
+		servers, err := m.MCPServerLister(ctx, workspaceUUID)
+		if err != nil {
+			if m.logger != nil {
+				m.logger.Debug("mcp watchers: server lister failed",
+					"workspace_uuid", workspaceUUID, "error", err.Error())
+			}
+			return
+		}
+
+		started := 0
+		for _, srv := range servers {
+			onChange := func(res mcpdiscovery.ServerToolsResult) {
+				if !res.Reachable {
+					return
+				}
+				tools := make([]MCPToolInfo, 0, len(res.Tools))
+				for _, name := range res.Tools {
+					tools = append(tools, MCPToolInfo{Name: name})
+				}
+				merged, changed := m.mergeMCPToolsAdditive(workspaceUUID, tools)
+				if changed && onUpdate != nil {
+					onUpdate(merged)
+				}
+			}
+
+			w, initial, werr := mcpdiscovery.WatchServer(ctx, srv, m.MCPWatchTransportFactory, onChange)
+			if werr != nil {
+				// Unreachable at watch-time: EnsureMCPBackoffRetry's polling
+				// path is responsible for retrying this server.
+				if m.logger != nil {
+					m.logger.Debug("mcp watchers: server unreachable, skipping",
+						"workspace_uuid", workspaceUUID, "server", srv.Name, "error", werr.Error())
+				}
+				continue
+			}
+
+			onChange(initial) // surface tools already present at startup
+
+			m.mcpWatchersMu.Lock()
+			if _, exists := m.mcpWatchers[workspaceUUID]; !exists {
+				// StopMCPWatchers/CloseAllMCPWatchers ran while we were
+				// connecting: this pool was torn down. Close the just-opened
+				// watcher and stop starting any more.
+				m.mcpWatchersMu.Unlock()
+				w.Close()
+				return
+			}
+			m.mcpWatchers[workspaceUUID] = append(m.mcpWatchers[workspaceUUID], w)
+			m.mcpWatchersMu.Unlock()
+			started++
+		}
+
+		if m.logger != nil {
+			m.logger.Debug("mcp watchers: started",
+				"workspace_uuid", workspaceUUID,
+				"server_count", len(servers),
+				"watcher_count", started)
+		}
+	}()
+}
+
+// StopMCPWatchers closes and removes all active watchers for a workspace.
+// Safe to call when no pool is active (no-op).
+func (m *WorkspaceAuxiliaryManager) StopMCPWatchers(workspaceUUID string) {
+	m.mcpWatchersMu.Lock()
+	watchers := m.mcpWatchers[workspaceUUID]
+	delete(m.mcpWatchers, workspaceUUID)
+	m.mcpWatchersMu.Unlock()
+
+	for _, w := range watchers {
+		w.Close()
+	}
+}
+
+// CloseAllMCPWatchers tears down every active watcher across all workspaces.
+// Intended for server shutdown. Idempotent/safe when there are none.
+func (m *WorkspaceAuxiliaryManager) CloseAllMCPWatchers() {
+	m.mcpWatchersMu.Lock()
+	all := m.mcpWatchers
+	m.mcpWatchers = make(map[string][]*mcpdiscovery.ToolListWatcher)
+	m.mcpWatchersMu.Unlock()
+
+	for _, watchers := range all {
+		for _, w := range watchers {
+			w.Close()
+		}
+	}
 }
 
 // ClearMCPToolsCache clears the cached MCP tools list for a workspace.
