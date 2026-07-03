@@ -60,6 +60,54 @@
   z-index: 1000;
 }
 
+/* daisyUI centers the tooltip bubble/arrow with translateX(-50%) (top/bottom)
+   and translateY(-50%) (left/right). On an odd-width/height bubble that lands
+   the box on a half-pixel, so WebKit rasterizes the text with sub-pixel
+   anti-aliasing → the "blurry tooltip font" symptom. Snap the centering
+   translate to a whole pixel with round() so the text sits on the pixel grid.
+   Guarded by @supports: browsers without round() fall back to daisyUI's
+   default (no regression). The dynamic translateY(var(--tt-pos)) that drives
+   the open/close animation is preserved verbatim (the open state only flips
+   --tt-pos to 0rem), so transitions still work. Selectors mirror daisyUI's
+   base placement rules; styles.css loads after tailwind.css, so equal
+   specificity resolves in our favor by source order. */
+@supports (transform: translateX(round(-50%, 1px))) {
+  .tooltip > .tooltip-content,
+  .tooltip[data-tip]::before,
+  .tooltip-top > .tooltip-content,
+  .tooltip-top[data-tip]::before,
+  .tooltip::after,
+  .tooltip-top::after {
+    transform: translateX(round(-50%, 1px)) translateY(var(--tt-pos, 0.25rem));
+  }
+  .tooltip-bottom > .tooltip-content,
+  .tooltip-bottom[data-tip]::before {
+    transform: translateX(round(-50%, 1px)) translateY(var(--tt-pos, -0.25rem));
+  }
+  .tooltip-bottom::after {
+    transform: translateX(round(-50%, 1px)) translateY(var(--tt-pos, -0.25rem))
+      rotate(180deg);
+  }
+  .tooltip-left > .tooltip-content,
+  .tooltip-left[data-tip]::before {
+    transform: translateX(calc(var(--tt-pos, 0.25rem) - 0.25rem))
+      translateY(round(-50%, 1px));
+  }
+  .tooltip-left::after {
+    transform: translateX(var(--tt-pos, 0.25rem)) translateY(round(-50%, 1px))
+      rotate(-90deg);
+  }
+  .tooltip-right > .tooltip-content,
+  .tooltip-right[data-tip]::before {
+    transform: translateX(calc(var(--tt-pos, -0.25rem) + 0.25rem))
+      translateY(round(-50%, 1px));
+  }
+  .tooltip-right::after {
+    transform: translateX(var(--tt-pos, -0.25rem)) translateY(round(-50%, 1px))
+      rotate(90deg);
+  }
+}
+
 /* Messages container scrollbar - show scrollbar for better Edge compatibility.
    Edge (Chromium) can have scrolling issues when scrollbar is hidden with
    flex-col-reverse layouts. We show a thin, styled scrollbar instead. */

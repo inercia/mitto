@@ -76,7 +76,13 @@ export function Portal({ children }) {
 // off any edge. `text` may contain "\n"; rendered with white-space: pre-line.
 export function PortalTooltip({ x, y, text }) {
   const ref = useRef(null);
-  const [pos, setPos] = useState({ x: x + 14, y: y + 18 });
+  // Round to whole pixels: fractional left/top under position:fixed lands the
+  // bubble on a half-pixel, which WebKit renders with sub-pixel anti-aliasing
+  // → blurry tooltip text (same class of bug as the Leaflet tooltip fix).
+  const [pos, setPos] = useState({
+    x: Math.round(x + 14),
+    y: Math.round(y + 18),
+  });
 
   // Clamp inside the viewport before paint (useLayoutEffect runs synchronously
   // after the Portal child mounts but before the browser paints, so the parked
@@ -98,6 +104,10 @@ export function PortalTooltip({ x, y, text }) {
       ny = window.innerHeight - rect.height - margin;
     }
     if (ny < margin) ny = margin;
+    // Snap to whole pixels (rect.width/height and viewport math can be
+    // fractional) so the bubble never lands on a half-pixel and blurs.
+    nx = Math.round(nx);
+    ny = Math.round(ny);
     setPos((prev) =>
       prev.x === nx && prev.y === ny ? prev : { x: nx, y: ny },
     );
