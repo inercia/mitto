@@ -2624,3 +2624,38 @@ func TestParse_EmbeddedDefaultModelProfiles(t *testing.T) {
 		t.Errorf("ResolveModelTags(Gemini 2.5 Pro) = %v, want [Smart LongContext]", got)
 	}
 }
+
+// TestParse_EmbeddedDefaultShortcuts pins the safe default global shortcuts
+// seeded into new installs via the embedded config/config.default.yaml. It
+// guards against the shipped defaults drifting (bad YAML, renamed sections, or
+// dropped buttons) so first-time users always get working shortcut buttons.
+func TestParse_EmbeddedDefaultShortcuts(t *testing.T) {
+	cfg, err := Parse(defaultConfig.DefaultConfigYAML)
+	if err != nil {
+		t.Fatalf("Parse(embedded default) failed: %v", err)
+	}
+
+	want := map[string]string{
+		"conversations": "Commit changes",
+		"beadsIssue":    "Start work",
+		"tasksList":     "Overview",
+	}
+
+	if len(cfg.Shortcuts) != len(want) {
+		t.Fatalf("embedded default Shortcuts sections = %d, want %d (%v)", len(cfg.Shortcuts), len(want), cfg.Shortcuts)
+	}
+	for section, wantPrompt := range want {
+		buttons, ok := cfg.Shortcuts[section]
+		if !ok {
+			t.Errorf("embedded default missing shortcuts section %q", section)
+			continue
+		}
+		if len(buttons) != 1 {
+			t.Errorf("section %q buttons = %d, want 1", section, len(buttons))
+			continue
+		}
+		if buttons[0].Prompt != wantPrompt {
+			t.Errorf("section %q prompt = %q, want %q", section, buttons[0].Prompt, wantPrompt)
+		}
+	}
+}

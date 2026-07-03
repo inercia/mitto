@@ -1257,6 +1257,10 @@ type Config struct {
 	// Models is the list of named model profiles (criteria + tags) for tag-based
 	// model-capability lookups.
 	Models []ModelProfile
+	// Shortcuts holds global per-section configurable shortcut buttons, keyed by
+	// section ID (e.g. "conversations", "tasksList", "beadsIssue"). These are
+	// merged with folder-level shortcuts at render time (global entries first).
+	Shortcuts map[string][]ShortcutButton
 }
 
 // rawModelCriteria is used for YAML unmarshaling of a model profile's criteria.
@@ -1323,7 +1327,9 @@ type rawConfig struct {
 	} `yaml:"prompts"`
 	// PromptsDirs is a list of additional directories to search for prompt files
 	PromptsDirs []string `yaml:"prompts_dirs"`
-	Web         struct {
+	// Shortcuts is the top-level global shortcut buttons section, keyed by section ID.
+	Shortcuts map[string][]ShortcutButton `yaml:"shortcuts"`
+	Web       struct {
 		Host         string `yaml:"host"`
 		Port         int    `yaml:"port"`
 		ExternalPort int    `yaml:"external_port"`
@@ -1586,6 +1592,9 @@ func Parse(data []byte) (*Config, error) {
 
 	// Populate prompts directories
 	cfg.PromptsDirs = raw.PromptsDirs
+
+	// Populate global shortcut buttons
+	cfg.Shortcuts = raw.Shortcuts
 
 	// Populate web config
 	cfg.Web.Host = raw.Web.Host

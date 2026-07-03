@@ -72,6 +72,26 @@ models:
       pattern: Gemini
     tags: [Smart, LongContext]
 
+# Global shortcut buttons
+# Quick-action buttons shown across the UI, keyed by the section they appear in:
+#   conversations: the conversation toolbar (runs the prompt in the current conversation)
+#   beadsIssue:    the beads issue detail toolbar (starts work on the open issue)
+#   tasksList:     the Tasks list toolbar
+# Each button links to a prompt by name (`prompt:`) and may set an optional
+# `icon:` (a PROMPT_ICONS key); an empty icon falls back to the prompt's own icon.
+#
+# These seed NEW installs only (written to settings.json on first run); existing
+# settings.json files are left untouched. Global shortcuts are MERGED with any
+# per-folder shortcuts at render time (global entries appear first). Edit or
+# extend them via Settings → Shortcuts.
+shortcuts:
+  conversations:
+    - prompt: Commit changes
+  beadsIssue:
+    - prompt: Start work
+  tasksList:
+    - prompt: Overview
+
 # Web server configuration
 web:
   host: 127.0.0.1  # Local listener always binds to 127.0.0.1 for security

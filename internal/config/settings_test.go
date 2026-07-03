@@ -39,6 +39,55 @@ func TestLoadSettings_CreatesDefaultSettings(t *testing.T) {
 	_ = cfg // config is valid even with no servers
 }
 
+func TestGlobalShortcuts_RoundTrip(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv(appdir.MittoDirEnv, tmpDir)
+	appdir.ResetCache()
+	t.Cleanup(appdir.ResetCache)
+
+	// Persist a couple of sections.
+	in := map[string][]ShortcutButton{
+		"conversations": {{Prompt: "Commit changes"}},
+		"beadsIssue":    {{Icon: "lightning", Prompt: "Start work"}},
+		// Empty section must be pruned on save.
+		"tasksList": {},
+	}
+	if err := SetGlobalShortcuts(in); err != nil {
+		t.Fatalf("SetGlobalShortcuts failed: %v", err)
+	}
+
+	got := GlobalShortcuts()
+	if len(got) != 2 {
+		t.Fatalf("GlobalShortcuts sections = %d, want 2 (%v)", len(got), got)
+	}
+	if len(got["conversations"]) != 1 || got["conversations"][0].Prompt != "Commit changes" {
+		t.Errorf("conversations = %+v, want one Commit changes button", got["conversations"])
+	}
+	if len(got["beadsIssue"]) != 1 || got["beadsIssue"][0].Icon != "lightning" {
+		t.Errorf("beadsIssue = %+v, want one button with icon lightning", got["beadsIssue"])
+	}
+	if _, ok := got["tasksList"]; ok {
+		t.Errorf("empty tasksList section should have been pruned, got %+v", got["tasksList"])
+	}
+
+	// Global shortcuts must survive a full settings load/convert round-trip.
+	cfg, err := LoadSettings()
+	if err != nil {
+		t.Fatalf("LoadSettings failed: %v", err)
+	}
+	if len(cfg.Shortcuts) != 2 {
+		t.Errorf("cfg.Shortcuts sections = %d, want 2 (%v)", len(cfg.Shortcuts), cfg.Shortcuts)
+	}
+
+	// Clearing all sections removes the field entirely.
+	if err := SetGlobalShortcuts(map[string][]ShortcutButton{}); err != nil {
+		t.Fatalf("SetGlobalShortcuts(clear) failed: %v", err)
+	}
+	if got := GlobalShortcuts(); len(got) != 0 {
+		t.Errorf("GlobalShortcuts after clear = %v, want empty", got)
+	}
+}
+
 func TestLoadSettings_ReadsExistingSettings(t *testing.T) {
 	// Use temp dir - t.Setenv automatically restores original value
 	tmpDir := t.TempDir()

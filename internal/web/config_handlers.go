@@ -330,6 +330,14 @@ func (s *Server) buildNewSettings(req *ConfigSaveRequest) (*configPkg.Settings, 
 		modelsConfig = filteredModels
 	}
 
+	// Preserve global shortcut buttons. They are not part of the config-save
+	// request body (edited via the dedicated /api/global/shortcuts endpoint), so
+	// carry the existing value forward to avoid wiping them on an unrelated save.
+	var shortcutsConfig map[string][]configPkg.ShortcutButton
+	if s.config.MittoConfig != nil {
+		shortcutsConfig = s.config.MittoConfig.Shortcuts
+	}
+
 	return &configPkg.Settings{
 		ACPServers:    newACPServers,
 		Prompts:       settingsPrompts,
@@ -340,6 +348,7 @@ func (s *Server) buildNewSettings(req *ConfigSaveRequest) (*configPkg.Settings, 
 		Permissions:   permissionsConfig,
 		MCP:           mcpConfig,
 		Models:        modelsConfig,
+		Shortcuts:     shortcutsConfig,
 	}, nil
 }
 

@@ -73,6 +73,10 @@ type Settings struct {
 	MCP *MCPConfig `json:"mcp,omitempty"`
 	// Models is the list of named model profiles (criteria + tags)
 	Models []ModelProfile `json:"models,omitempty"`
+	// Shortcuts holds global per-section configurable shortcut buttons, keyed by
+	// section ID (e.g. "conversations"). Merged with folder-level shortcuts at
+	// render time (global entries first).
+	Shortcuts map[string][]ShortcutButton `json:"shortcuts,omitempty"`
 }
 
 // DefaultStartupStaggerMs is the default stagger delay in milliseconds between
@@ -355,6 +359,7 @@ func (s *Settings) ToConfig() *Config {
 		RestrictedRunners: s.RestrictedRunners,
 		MCP:               s.MCP,
 		Models:            s.Models,
+		Shortcuts:         s.Shortcuts,
 	}
 	for i, srv := range s.ACPServers {
 		cfg.ACPServers[i] = ACPServer(srv)
@@ -376,11 +381,71 @@ func ConfigToSettings(cfg *Config) *Settings {
 		RestrictedRunners: cfg.RestrictedRunners,
 		MCP:               cfg.MCP,
 		Models:            cfg.Models,
+		Shortcuts:         cfg.Shortcuts,
 	}
 	for i, srv := range cfg.ACPServers {
 		s.ACPServers[i] = ACPServerSettings(srv)
 	}
 	return s
+}
+
+// loadRawSettings reads settings.json into a Settings struct WITHOUT the
+// keychain/password migration performed by LoadSettings. It ensures the file
+// exists (creating it from embedded defaults if missing) so callers always get
+// a usable struct. Reading raw avoids materialising the keychain-stored auth
+// password back into settings.json on rewrite.
+func loadRawSettings() (*Settings, error) {
+	if err := appdir.EnsureDir(); err != nil {
+		return nil, fmt.Errorf("failed to create Mitto directory: %w", err)
+	}
+	settingsPath, err := appdir.SettingsPath()
+	if err != nil {
+		return nil, err
+	}
+	if _, statErr := os.Stat(settingsPath); os.IsNotExist(statErr) {
+		if err := createDefaultSettings(); err != nil {
+			return nil, fmt.Errorf("failed to create default settings: %w", err)
+		}
+	}
+	var settings Settings
+	if err := fileutil.ReadJSON(settingsPath, &settings); err != nil {
+		return nil, fmt.Errorf("failed to read settings file %s: %w", settingsPath, err)
+	}
+	return &settings, nil
+}
+
+// GlobalShortcuts returns the global shortcut sections stored in settings.json,
+// or nil if none are configured or settings cannot be read.
+func GlobalShortcuts() map[string][]ShortcutButton {
+	settings, err := loadRawSettings()
+	if err != nil || settings == nil {
+		return nil
+	}
+	return settings.Shortcuts
+}
+
+// SetGlobalShortcuts persists global shortcut sections to settings.json.
+// Empty/absent sections are pruned. The existing settings file is read raw, its
+// Shortcuts field replaced, and the whole file rewritten so no other settings
+// (including the keychain-managed auth password) are lost or leaked.
+func SetGlobalShortcuts(sections map[string][]ShortcutButton) error {
+	settings, err := loadRawSettings()
+	if err != nil {
+		return err
+	}
+	// Prune sections with no buttons.
+	cleaned := map[string][]ShortcutButton{}
+	for k, v := range sections {
+		if len(v) > 0 {
+			cleaned[k] = v
+		}
+	}
+	if len(cleaned) == 0 {
+		settings.Shortcuts = nil
+	} else {
+		settings.Shortcuts = cleaned
+	}
+	return SaveSettings(settings)
 }
 
 // LoadSettings loads settings from the Mitto data directory.
