@@ -2,6 +2,7 @@ package auxiliary
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -190,4 +191,58 @@ func TestEnsureMCPWatchers_NilLister_NoOp(t *testing.T) {
 	if exists {
 		t.Errorf("expected no workspace entry created for nil MCPServerLister")
 	}
+}
+
+func TestEnsureMCPWatchers_ListerErrorReleasesReservation(t *testing.T) {
+	mgr := NewWorkspaceAuxiliaryManager(&mockProcessProvider{}, nil)
+	_, factory, stop := newWatchableMCPServer(t, "jira_search")
+	defer stop()
+
+	mgr.MCPWatchTransportFactory = factory
+	mgr.MCPServerLister = func(ctx context.Context, workspaceUUID string) ([]agents.MCPServer, error) {
+		return nil, errors.New("lister boom")
+	}
+
+	mgr.EnsureMCPWatchers(context.Background(), "ws", nil)
+
+	// Poll until the failed attempt has released its reservation.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		mgr.mcpWatchersMu.Lock()
+		_, exists := mgr.mcpWatchers["ws"]
+		mgr.mcpWatchersMu.Unlock()
+		if !exists {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	mgr.mcpWatchersMu.Lock()
+	_, stillReserved := mgr.mcpWatchers["ws"]
+	mgr.mcpWatchersMu.Unlock()
+	if stillReserved {
+		t.Fatalf("expected reservation released after lister error, workspace still present in mcpWatchers")
+	}
+
+	var workingListerCalls int32
+	mgr.MCPServerLister = func(ctx context.Context, workspaceUUID string) ([]agents.MCPServer, error) {
+		atomic.AddInt32(&workingListerCalls, 1)
+		return []agents.MCPServer{{Name: "jira", Command: "unused"}}, nil
+	}
+
+	done := make(chan struct{}, 4)
+	mgr.EnsureMCPWatchers(context.Background(), "ws", func(tools []MCPToolInfo) {
+		done <- struct{}{}
+	})
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for onUpdate after retrying with a working lister")
+	}
+
+	if got := atomic.LoadInt32(&workingListerCalls); got != 1 {
+		t.Errorf("working MCPServerLister called %d times, want 1 (retry must not be blocked by the earlier failure)", got)
+	}
+
+	mgr.StopMCPWatchers("ws")
 }

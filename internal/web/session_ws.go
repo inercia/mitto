@@ -1668,6 +1668,29 @@ func (c *SessionWSClient) triggerMCPToolsFetch(workspaceUUID string) {
 				})
 			}
 		})
+
+		// Event-driven tool refresh (mitto-sys.4): keep a persistent
+		// notifications/tools/list_changed watcher per configured server and
+		// broadcast tools as they change, without waiting for the next
+		// polling round. Use context.Background() (NOT the fetch ctx, which
+		// is cancelled on return); watcher lifetime is bounded by teardown
+		// (Shutdown/RemoveWorkspace). Deduped per workspace inside the manager.
+		srv.auxiliaryManager.EnsureMCPWatchers(context.Background(), wsUUID, func(tools []auxiliary.MCPToolInfo) {
+			if srv.eventsManager != nil {
+				srv.eventsManager.Broadcast(conversation.WSMsgTypeMCPToolsAvailable, map[string]interface{}{
+					"workspace_uuid": wsUUID,
+					"tools":          tools,
+				})
+				// Event-driven prompts_changed (no dependence on the 30/60/120s timer).
+				// Server-scoped: this callback outlives the per-client `c`, so we must
+				// NOT capture c here — mirror broadcastPromptsChanged inline instead.
+				srv.eventsManager.Broadcast(WSMsgTypePromptsChanged, map[string]interface{}{
+					"changed_dirs": []string{},
+					"timestamp":    time.Now().UTC().Format(time.RFC3339),
+					"reason":       "mcp_tools_event",
+				})
+			}
+		})
 	}
 
 	// After broadcasting tools, check required tool patterns from prompts.

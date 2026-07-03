@@ -764,6 +764,17 @@ func (m *WorkspaceAuxiliaryManager) EnsureMCPWatchers(ctx context.Context, works
 				m.logger.Debug("mcp watchers: server lister failed",
 					"workspace_uuid", workspaceUUID, "error", err.Error())
 			}
+			// Release the reservation so a future EnsureMCPWatchers call for
+			// this workspace can retry, instead of being permanently deduped
+			// against a pool that never started. Only clear it if it's still
+			// the empty reservation we made above (a concurrent pool may have
+			// since been created/populated after StopMCPWatchers, though that
+			// races with this failed attempt).
+			m.mcpWatchersMu.Lock()
+			if w, ok := m.mcpWatchers[workspaceUUID]; ok && len(w) == 0 {
+				delete(m.mcpWatchers, workspaceUUID)
+			}
+			m.mcpWatchersMu.Unlock()
 			return
 		}
 

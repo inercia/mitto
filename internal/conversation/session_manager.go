@@ -607,6 +607,16 @@ func (sm *SessionManager) AddWorkspace(ws config.WorkspaceSettings) {
 // the workspaces will be persisted to disk.
 func (sm *SessionManager) RemoveWorkspace(uuid string) {
 	sm.wsRegistry.RemoveWorkspace(uuid)
+
+	// Tear down any event-driven MCP tool watchers for this workspace
+	// (mitto-sys.4): they hold persistent connections that must not outlive
+	// the workspace.
+	sm.mu.RLock()
+	auxMgr := sm.auxiliaryManager
+	sm.mu.RUnlock()
+	if auxMgr != nil {
+		auxMgr.StopMCPWatchers(uuid)
+	}
 }
 
 // HasWorkspaces returns true if there are any configured workspaces.

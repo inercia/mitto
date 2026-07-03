@@ -560,6 +560,35 @@ func NewServer(config Config) (*Server, error) {
 			}
 			return mcpdiscovery.DiscoverWorkspaceTools(ctx, agentMgr, agent.DirName, ws.WorkingDir, 8*time.Second, nil)
 		}
+
+		// Wire event-driven MCP tool refresh (mitto-sys.4): enumerates a
+		// workspace's configured MCP servers so EnsureMCPWatchers can open a
+		// persistent notifications/tools/list_changed watcher per server.
+		auxiliaryManager.MCPServerLister = func(ctx context.Context, workspaceUUID string) ([]agents.MCPServer, error) {
+			ws := sessionMgr.GetWorkspaceByUUID(workspaceUUID)
+			if ws == nil {
+				return nil, fmt.Errorf("workspace %q not found", workspaceUUID)
+			}
+			acpType := ""
+			if config.MittoConfig != nil {
+				acpType = config.MittoConfig.GetServerType(ws.ACPServer)
+			}
+			if acpType == "" {
+				acpType = ws.ACPServer
+			}
+			agent, gerr := agentMgr.GetAgentByACPId(acpType)
+			if gerr != nil {
+				return nil, gerr
+			}
+			out, lerr := agentMgr.ListMCPServers(ctx, agent.DirName, &agents.MCPListInput{Path: ws.WorkingDir})
+			if lerr != nil {
+				return nil, lerr
+			}
+			if out == nil {
+				return nil, nil
+			}
+			return out.Servers, nil
+		}
 	} else {
 		logger.Warn("stdio MCP discovery disabled: cannot resolve agents dir", "error", aerr)
 	}
@@ -1136,6 +1165,11 @@ func (s *Server) Shutdown() error {
 	// Close all background sessions
 	if s.sessionManager != nil {
 		s.sessionManager.CloseAll("server_shutdown")
+	}
+
+	// Close all MCP event-driven tool watchers (mitto-sys.4)
+	if s.auxiliaryManager != nil {
+		s.auxiliaryManager.CloseAllMCPWatchers()
 	}
 
 	// Close rate limiter
