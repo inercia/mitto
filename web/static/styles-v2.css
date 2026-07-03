@@ -1237,3 +1237,12 @@ a:hover {
   padding-right: 2.5rem;
   height: 38px; /* Match input height: py-2 (8px * 2) + text-sm line-height (~20px) + border */
 }
+
+/* ShortcutsEditor rows group a compact `select select-sm` with `btn-sm`
+   buttons inside a daisyUI `join`. The broad `.settings-dialog select` rule
+   above forces 38px, which is taller than the 32px btn-sm join items and
+   misaligns the row. Restore the daisyUI select-sm height (2rem) for selects
+   grouped in a join, leaving all other settings-dialog selects at 38px. */
+.settings-dialog .join select.select-sm {
+  height: var(--size);
+}
