@@ -157,6 +157,18 @@ prompt: |
 
   ### Step 3b — Dispatch Implement (`planned` present, not yet `implemented`)
 
+  **First assess parallelizability.** If the plan is a single coherent increment, do
+  **not** split; dispatch the single Implement phase below. But if the plan decomposes
+  into **two or more genuinely independent, non-conflicting parts** (distinct
+  modules/files, no shared state, no ordering dependency — e.g. the plan phase already
+  carved the feature into independent sub-issues), implement them **in parallel across
+  child conversations** instead of one inline phase — provided this conversation can spawn
+  children (it is top-level and the **Can start conversation** flag is enabled, in
+  addition to **Can Send Prompt**). See **Step 3f — Parallel fan-out**; after all parts
+  report back and verify, add the `implemented` label yourself and end the turn (a
+  deliberate, documented exception to the self-send rule, justified because the work was
+  genuinely distributed). Otherwise dispatch the single Implement phase:
+
   ```
   mitto_conversation_send_prompt(
     self_id: "{{ .Session.ID }}",
@@ -226,6 +238,35 @@ prompt: |
   ```
 
   After stopping, do nothing further this run.
+
+  ### Step 3f — Parallel fan-out (only when a stage is genuinely decomposable)
+
+  Reached only from a stage above (today: Implement) whose work splits into independent,
+  non-conflicting parts — typically when the plan phase already decomposed the feature
+  into independent sub-issues. **Never** split a tightly-coupled increment, work with
+  shared files, or work with interdependencies — those go through the normal single
+  self-send phase. Cap at **3–4** parallel children.
+
+  1. Define each part completely and self-contained: the exact sub-scope (ideally a
+     sub-issue ID), the **disjoint** set of files/modules it owns (confirm the sets do not
+     overlap), acceptance criteria, and a definition of done.
+  2. For each part, reuse a suitable **idle** child from `{{ .Children.MCPText }}` when
+     possible, otherwise create one with `mitto_conversation_new` (prefer a
+     faster/cheaper Coding-tier agent), seeding a fully self-contained worker prompt that
+     ends by reporting via `mitto_children_tasks_report`.
+  3. Block on all of them:
+     `mitto_children_tasks_wait(self_id: "{{ .Session.ID }}", children_list: [<child ids>], task_id: "impl-{{ $target }}", timeout_seconds: 3600)`.
+     On timeout, retry the pending children with the **same** `task_id` (omit the prompt);
+     after a second timeout treat those parts as failed and finish the remainder via a
+     single Implement phase on the next run.
+  4. **Synthesize** the reports and verify the combined increment (build/lint clean, the
+     parts integrate). If verified, record an `Implementation:` comment summarising the
+     distributed work, add the `implemented` label{{ if eq .Args.Commit "true" }} and
+     commit only the changed files (staged by path){{ end }}, archive the finished
+     children, and end the turn. The next scheduled run will observe `implemented` and
+     dispatch Test. If any part reports a conflict, abandon the split and finish via the
+     single Implement phase on the next run. If a spawn call errors because **Can start
+     conversation** is off, fall back to the single Implement phase (Step 3b).
   {{- else }}
   ## Step 1 — No target feature to work on
 
@@ -266,12 +307,20 @@ prompt: |
 
   - **One phase per run.** Dispatch a single phase prompt (`planned` → `implemented` →
     `tested` → `verified`) via `mitto_conversation_send_prompt`, then end the turn.
-    Never skip a stage or dispatch two at once.
+    Never skip a stage or dispatch two at once. The sole exception is **Step 3f (Parallel
+    fan-out)**, which resolves one genuinely decomposable stage across parallel children
+    within a single run.
+  - **Parallelize only when genuinely independent.** Prefer the single self-send phase by
+    default. Only fan out (Step 3f) when the stage's work splits into disjoint,
+    non-conflicting parts with no interdependencies and children can be spawned; never
+    split a tightly-coupled increment or work that shares files.
   - **Never do the phase work inline.** The whole point of this driver is per-phase
     model tiering. If you catch yourself running `bd update ... --add-label` for
     `planned`/`implemented`/`tested`/`verified` inside *this* prompt, stop — that is the
     phase prompt's job. This driver only labels `needs-human` (Step 4) and closes on
-    Done.
+    Done. The one documented exception is **Step 3f**: when a stage is distributed across
+    parallel children, this driver adds that stage's label itself after synthesizing and
+    verifying the children's reports.
   - **Live state only.** Always re-read labels via `bd show --json` at the start of the
     run; never assume labels from a prior run or from `Item.*`.
   - **Decide autonomously; never guess.** The only time you must not proceed is when

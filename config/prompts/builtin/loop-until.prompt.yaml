@@ -72,6 +72,17 @@ prompt: |
          message: "<how the condition was satisfied>", style: "success"). Do nothing further.
       4. If it is NOT met: do exactly ONE concrete increment toward it, verify that
          increment, briefly note progress, then stop responding so the next run continues.
+         When that increment decomposes into two or more genuinely independent subtasks
+         (different files/modules, no ordering dependencies, no possible conflict) and
+         this conversation can spawn children (Can start conversation + Can Send Prompt
+         flags on), fan them out to run in parallel instead of serially: give each child a
+         self-contained task over a DISJOINT file set that ends by reporting via
+         mitto_children_tasks_report, block on them all with
+         mitto_children_tasks_wait(self_id: "{{ .Session.ID }}", children_list: [...],
+         task_id: "<label>", timeout_seconds: 1800), then synthesize the reports and
+         verify the combined result. Never split work with interdependencies or shared
+         files; do it inline instead. If a spawn call errors because a flag is off, fall
+         back to doing the increment inline.
   {{- if eq .Args.Commit "true" }}
          If you changed files and verified them, commit ONLY those files, staged
          explicitly by path (git add <file> ...); never git add -A, git add ., or
