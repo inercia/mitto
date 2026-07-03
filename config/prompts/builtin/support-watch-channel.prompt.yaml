@@ -1,0 +1,212 @@
+icon: loop
+name: 'Support: watch channel'
+menus: prompts
+description: 'Watch a Slack channel for customer questions: triage each new question (and its thread) into a beads issue with state labels, gather information to answer, and keep every bead in sync with the real Slack conversation. Never posts to Slack.'
+backgroundColor: '#C8E6C9'
+group: Support
+tags:
+- loop
+- support
+parameters:
+  - name: SlackChannelID
+    type: text
+    required: true
+    description: 'The Slack channel ID to watch for customer questions (e.g. C0XXXXXXX).'
+  - name: SlackWorkspaceURL
+    type: text
+    required: true
+    description: 'Base Slack workspace URL used to build message permalinks (e.g. https://yourteam.slack.com). No trailing slash.'
+  - name: LookbackDays
+    type: text
+    required: false
+    description: 'How many days of channel history to scan each run (default 2).'
+enabledWhen: '!Session.IsChild && CommandExists("bd") && DirExists(".beads") && Tools.HasAnyPattern(["slack_*", "*_slack"])'
+loop:
+  mode: optional
+  default: true
+  value: 15
+  unit: minutes
+prompt: |-
+  {{- $channel := .Args.SlackChannelID -}}
+  {{- $ws := .Args.SlackWorkspaceURL -}}
+  {{- $days := Arg "LookbackDays" "2" -}}
+  # Support — Watch Channel (Triage + Keep Beads in Sync)
+
+  ## Session Context
+
+  Your session ID is `{{ .Session.ID }}` — use it as `self_id` for all `mitto_*` MCP tool calls.
+
+  ## What this does
+
+  Listen to the Slack channel **`{{ $channel }}`**. For every **new open customer question**
+  (and its thread) create/maintain a **beads** (`bd`) issue whose `state:*` label tracks where the
+  conversation stands. Gather the information needed to answer, and keep every tracked bead in sync
+  with the real Slack thread.
+
+  > ⚠️ **This prompt NEVER posts to Slack.** Posting a reply is done — with your explicit approval —
+  > by the **"Support: reply to user"** and **"Support: gather more information"** prompts.
+
+  ## Run mode
+  {{- if and .Session.IsLoop (not .Session.IsLoopForced) }}
+
+  **Silent scheduled run** — nobody is watching.
+  - Use **only** `mitto_ui_notify`. Do **NOT** call `mitto_ui_options` / `mitto_ui_form` /
+    `mitto_ui_textbox` — they would block with no one to answer.
+  - Do triage + reconcile beads normally. If you do **not** yet know how to gather answers (see the
+    **Knowledge self-check** below), notify and **skip drafting** this run.
+  {{- else }}
+
+  **Interactive run** (first send, or force-triggered ▶️) — a user may be present, so you MAY use the
+  interactive `mitto_ui_*` tools. This is the moment to run the **Knowledge self-check** and, if
+  needed, ask the user how to gather answers and persist it to AGENTS.md.
+  {{- end }}
+
+  ## CRITICAL: user interaction rules
+
+  > - ❌ NEVER present numbered options and ask the user to type a number/keyword.
+  > - ✅ Use `mitto_ui_options` (choices), `mitto_ui_textbox` (review/edit), `mitto_ui_form`
+  >   (structured input), `mitto_ui_notify` (non-blocking notifications).
+  > - ⚠️ NEVER post a reply to the Slack channel from this prompt.
+
+  ## Slack tools (names vary by MCP server)
+
+  Different Slack MCP servers expose different tool names (e.g. `slack_get_channel_history*`,
+  `conversations_history_slack`, `slack_get_thread_replies*`). **Match by capability, not exact name.**
+  You need tools that can: (a) read recent channel history, and (b) read a thread's replies. You do
+  **not** need a posting tool here — this prompt never posts.
+
+  ## Beads tracking model (one bead per Slack thread)
+
+  Run `bd` from the workspace root. If `bd list` reports no database, run `bd init` first.
+
+  - **Deduplicate by thread.** Before creating, look up the thread:
+    `bd list --metadata-field slack_thread_ts=<ts> --all`. If a match exists, **reuse** it. Never
+    create a second bead for the same thread.
+  - **Permalink.** Build it from the thread ts by removing the dot and prefixing `p`:
+    `{{ $ws }}/archives/{{ $channel }}/p<ts_without_dot>` (e.g. `1770802214.391359` → `p1770802214391359`).
+  - **Create** with the `support, support-question` labels, a triage priority (`-p`), the fixed
+    markdown description via `-d`, and metadata. Use `$'...'` so `\n` become real newlines:
+    ```
+    bd create "<short question summary>" -t task -p <P0-P3> -l support,support-question \
+      -d $'# Question\n\n<question text>\n\n# User\n\n<display name>\n\n# Links\n\n[Slack]({{ $ws }}/archives/{{ $channel }}/p<ts_without_dot>)\n' \
+      --metadata '{"slack_thread_ts":"<ts>","slack_channel":"{{ $channel }}","slack_url":"<permalink>"}'
+    ```
+  - **Triage priority (`-p`):** `P0` outage/broad impact · `P1` urgent/blocking a customer ·
+    `P2` standard question (default) · `P3` minor/how-to.
+  - **Comments = full history.** Log every relevant message as a markdown comment (preserve layout
+    with `$'...'` or `printf '%s' "$c" | bd comment <id> --stdin`). Header then blank line then body:
+    ```
+    **[TAG @author · YYYY-MM-DD HH:MM UTC]**
+
+    <content in markdown>
+    ```
+    Tags: `[INBOUND @user]` customer messages · `[OUTBOUND us]` our posted replies ·
+    `[CONTEXT @other]` messages from other participants · `[STATE]` a state transition + reason.
+  - **State via a single `state:*` label** (never `bd set-state` — it spawns child event beads).
+    Read the current label from `bd show <id>`, then swap in place:
+    `bd update <id> --remove-label state:<previous> --add-label state:<new>` (for the first
+    transition just `--add-label state:triaged`). Lifecycle:
+
+    | state | meaning |
+    |-------|---------|
+    | `triaged` | auto-created during triage, not yet worked (initial) |
+    | `engaged` | actively working it |
+    | `gathering-info` | gathering information to answer (docs/tools/investigation) |
+    | `need-info` | need more details from the customer before we can answer |
+    | `drafting` | have a draft answer, pending your review |
+    | `awaiting-customer` | we posted a reply, waiting on the customer |
+    | `awaiting-us` | customer responded, our turn to act |
+    | `resolved` | answered/accepted (also `bd close <id>`) |
+    | `stale` | auto-closed after 10+ days of inactivity (also `bd close <id>`) |
+
+  ## Knowledge self-check: how to answer customer questions
+
+  Before you can help a customer you must know a **reliable way to gather answers** for this
+  project's domain. This knowledge lives in your project rules — **AGENTS.md** (or `CLAUDE.md` /
+  `.augment/rules/` / equivalent).
+
+  1. **Self-check.** Read the rules/docs you already have and ask yourself honestly: *"Do I know a
+     reliable way to gather information to answer questions about this project?"* A reliable method
+     could be a documented MCP tool (a Q&A / knowledge / docs-search assistant), a runbook, a docs
+     site, a specific set of commands, or a knowledge base. Look for a section such as
+     **"## How to answer customer questions"** in AGENTS.md.
+  2. **If you DO know** — use that method to gather what you need, then draft (Step 4).
+  3. **If you do NOT know** — you must find out; do not silently guess:
+     - **Interactive run:** ASK the user (via `mitto_ui_form` / `mitto_ui_textbox`) exactly how to
+       gather information to answer customer questions reliably — which tools, docs, commands,
+       knowledge bases, or people to consult. **Do not be satisfied until you get a concrete, usable
+       answer** — if the reply is vague, re-ask for specifics. Once you have it, **persist it to
+       AGENTS.md** under a `## How to answer customer questions` section (append, or update in place
+       if it already exists), then confirm the write. From then on, future runs will find it in
+       step 1.
+     - **Silent scheduled run:** nobody is watching, so do **NOT** block. Send a `mitto_ui_notify`
+       (warning) explaining that you don't yet know how to gather answers and the user should
+       force-run this prompt (▶️) once to teach you. Continue triage + keeping beads in sync, but
+       **skip drafting** answers this run.
+
+  ## Instructions
+
+  ### 0. Ensure beads ready + housekeeping
+
+  - Verify the database (`bd list`; if none, `bd init`).
+  - Load tracked questions: `bd list -l support-question --all` and review their `state:*` labels.
+  - **Auto-close stale:** find tracked issues with no activity for **10+ days**
+    (`bd list -l support-question --status open,in_progress --updated-before <cutoff> --all`, e.g.
+    cutoff `date -u -v-10d +%Y-%m-%d`). For each, verify it is truly stale (no recent comments, no
+    open blockers, no unanswered customer message), then
+    `bd update <id> --remove-label state:<prev> --add-label state:stale` and
+    `bd close <id> -r "auto-closed: no activity for 10+ days"`.
+
+  ### 1. Fetch recent questions
+
+  - Read the last **{{ $days }} days** of history from `{{ $channel }}`.
+  - Keep messages that look like **open** questions/requests for help. Skip ones that already look
+    resolved — the asker said "thanks / that worked", someone gave an accepted answer, or a positive
+    reaction marks it helpful. Treat a clearly-negative reaction (answer not helpful) as still open.
+
+  ### 2. Triage — create a bead per NEW open question
+
+  - For each candidate, dedup by thread ts. If a bead exists, it is ongoing → handle in Step 3.
+  - If none exists, **create** one now (see **Beads tracking model**): priority `-p`, labels
+    `support,support-question`, the fixed `# Question / # User / # Links` description via `-d`,
+    metadata with `slack_thread_ts` / `slack_channel` / `slack_url`, an `[INBOUND]` comment with the
+    original question, and `bd update <id> --add-label state:triaged`.
+  - If a **tracked** thread got a helpful reaction / accepted answer, close it:
+    `bd update <id> --remove-label state:<prev> --add-label state:resolved` then `bd close <id>`.
+
+  ### 3. Reconcile ongoing threads with their beads
+
+  For each tracked, still-open bead (`bd list -l support-question --status open,in_progress --all`):
+
+  - Load `bd show <id>` + `bd comments <id>`, then re-fetch its Slack thread using the stored
+    `slack_thread_ts`.
+  - Add a markdown comment for **each new** thread message not yet captured (`[INBOUND]` customer /
+    `[CONTEXT]` others / `[OUTBOUND]` any of our own replies). Do not duplicate existing comments.
+  - Update the `state:*` label to reflect reality: last message from the customer needing action →
+    `state:awaiting-us`; last message is ours, waiting on them → `state:awaiting-customer`. Do not
+    override `need-info` / `drafting` if our pending action still stands. Add a short `[STATE]`
+    comment noting any change.
+
+  ### 4. Gather info + draft (only if the Knowledge self-check passed)
+
+  - For beads where it is **our turn** (`state:triaged` / `awaiting-us` / `engaged`) and we can
+    answer: set `state:gathering-info`, use the project's documented method to gather the answer,
+    then record a **proposed reply** as an `[OUTBOUND]`-style *draft* comment (clearly marked
+    "DRAFT — not yet posted") and set `state:drafting`.
+  - If you cannot answer without more detail from the customer, set `state:need-info` and note what
+    is missing (the interactive **"Support: gather more information"** prompt will ask them).
+  - **Never post to Slack here.** Drafts wait for review in **"Support: reply to user"**.
+  - If the Knowledge self-check did **not** pass, skip this step (see that section).
+
+  ### 5. Summary
+
+  - Send a `mitto_ui_notify` summarizing the run: new questions triaged, beads updated, how many are
+    `drafting` (ready for your review) vs `need-info` vs `awaiting-customer`. On silent runs keep
+    inline output concise. On interactive runs you may also print a short table.
+
+  ## Notes
+
+  - The bead is the single source of truth — always load it (`bd show` + `bd comments`) before acting.
+  - Per-bead follow-ups: **"Support: check status"** (refresh a thread onto its bead),
+    **"Support: gather more information"** (ask the customer), **"Support: reply to user"** (post our
+    answer). All posting requires your explicit approval.
