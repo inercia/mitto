@@ -12,7 +12,7 @@ parameters:
 description: Make this conversation a loop (on completion) and keep iterating until your condition is met, then self-terminate
 backgroundColor: '#D1C4E9'
 group: Work flow
-enabledWhen: '!Session.IsChild && !Session.IsLoopConversation && Tools.HasPattern("mitto_conversation_*")'
+enabledWhen: '!Session.IsChild && !Session.IsLoopConversation'
 loop:
   mode: always
   trigger: onCompletion

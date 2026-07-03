@@ -8,7 +8,7 @@ parameters:
 description: One-shot list orchestrator — implement eligible open features one at a time by spawning a self-driving per-feature loop for each, waiting for it to finish, then moving on
 backgroundColor: '#C8E6C9'
 group: Tasks
-enabledWhen: '!Session.IsChild && CommandExists("bd") && DirExists(".beads") && Tools.HasPattern("mitto_conversation_*")'
+enabledWhen: '!Session.IsChild && CommandExists("bd") && DirExists(".beads") && Permissions.CanStartConversation'
 prompt: |
   ## Session Context
 

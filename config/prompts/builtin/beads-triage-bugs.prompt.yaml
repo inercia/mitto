@@ -4,7 +4,7 @@ menus: prompts, beadsList
 description: Auto-loop — triage every open untriaged bug in a single pass, mark each `triaged` so future runs skip it, and self-terminate once no untriaged bugs remain
 backgroundColor: '#B3E5FC'
 group: Tasks
-enabledWhen: 'CommandExists("bd") && DirExists(".beads") && Tools.HasPattern("mitto_conversation_*")'
+enabledWhen: 'CommandExists("bd") && DirExists(".beads")'
 loop:
   mode: always
   trigger: onCompletion

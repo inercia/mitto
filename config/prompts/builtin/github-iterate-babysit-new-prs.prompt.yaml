@@ -12,7 +12,7 @@ backgroundColor: '#BBDEFB'
 tags:
 - loop
 - github
-enabledWhen: '!Session.IsChild && FileExists(".git/config") && (Tools.HasPattern("github_*") || CommandExists("gh")) && Tools.HasPattern("mitto_conversation_*")'
+enabledWhen: '!Session.IsChild && FileExists(".git/config") && (Tools.HasPattern("github_*") || CommandExists("gh")) && Permissions.CanStartConversation'
 loop:
   mode: always
   trigger: onCompletion

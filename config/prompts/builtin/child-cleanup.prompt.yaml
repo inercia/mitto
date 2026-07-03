@@ -4,7 +4,7 @@ description: Review child conversations and delete the finished ones that are no
 group: Work flow
 menus: prompts, conversation
 backgroundColor: '#FFF9C4'
-enabledWhen: Children.Exists && Tools.HasPattern("mitto_conversation_*") && !Session.IsLoopConversation
+enabledWhen: Children.Exists && !Session.IsLoopConversation
 preferredModels:
   - modelTag: Cheap
   - modelTag: Coding

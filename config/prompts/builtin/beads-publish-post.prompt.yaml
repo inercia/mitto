@@ -9,7 +9,7 @@ parameters:
 description: Auto-loop — drive a blog-post bead through draft → review → publish (one label per run), then self-terminate
 backgroundColor: '#BBDEFB'
 group: Tasks
-enabledWhen: '!Session.IsChild && CommandExists("bd") && DirExists(".beads") && Tools.HasPattern("mitto_conversation_*") && "blog" in Item.Labels && Item.Status != "closed"'
+enabledWhen: '!Session.IsChild && CommandExists("bd") && DirExists(".beads") && "blog" in Item.Labels && Item.Status != "closed"'
 loop:
   mode: always
   trigger: onCompletion

@@ -12,7 +12,7 @@ parameters:
 description: Auto-loop — drive a bug bead through investigate → reproduce → fix by dispatching per-phase prompts (each on its own model tier), then self-terminate
 backgroundColor: '#FFCDD2'
 group: Tasks
-enabledWhen: '!Session.IsChild && CommandExists("bd") && DirExists(".beads") && Tools.HasPattern("mitto_conversation_*") && Item.Type == "bug" && Item.Status != "closed"'
+enabledWhen: '!Session.IsChild && CommandExists("bd") && DirExists(".beads") && Permissions.CanSendPrompt && Item.Type == "bug" && Item.Status != "closed"'
 loop:
   mode: always
   trigger: onCompletion

@@ -12,7 +12,7 @@ parameters:
 description: Auto-loop — drive a feature bead through plan → implement → test → review by dispatching per-phase prompts (each on its own model tier), then self-terminate
 backgroundColor: '#C8E6C9'
 group: Tasks
-enabledWhen: '!Session.IsChild && CommandExists("bd") && DirExists(".beads") && Tools.HasPattern("mitto_conversation_*") && Item.Type == "feature" && Item.Status != "closed"'
+enabledWhen: '!Session.IsChild && CommandExists("bd") && DirExists(".beads") && Permissions.CanSendPrompt && Item.Type == "feature" && Item.Status != "closed"'
 loop:
   mode: always
   trigger: onCompletion
