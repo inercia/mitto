@@ -43,14 +43,14 @@ func TestCELEvaluator_ExampleExpressions(t *testing.T) {
 		Session:  SessionContext{ID: "child-1", IsChild: true, ParentID: "parent-1"},
 		Parent:   ParentContext{Exists: true, Name: "Parent Session", ACPServer: "auggie"},
 		Children: ChildrenContext{Count: 0, Exists: false},
-		Tools:    ToolsContext{Available: true, Names: []string{"github_create_pr", "github_list_issues", "slack_post"}},
+		Tools:    NewReachableToolsContext([]string{"github_create_pr", "github_list_issues", "slack_post"}),
 	}
 
 	rootCtx := &PromptEnabledContext{
 		ACP:      ACPContext{Name: "claude-code", Type: "claude", Tags: []string{"thinking"}},
 		Session:  SessionContext{ID: "root-1", IsChild: false},
 		Children: ChildrenContext{Count: 2, Exists: true, Names: []string{"Child A", "Child B"}},
-		Tools:    ToolsContext{Available: true, Names: []string{"jira_create_issue", "confluence_search"}},
+		Tools:    NewReachableToolsContext([]string{"jira_create_issue", "confluence_search"}),
 	}
 
 	tests := []struct {
@@ -74,9 +74,13 @@ func TestCELEvaluator_ExampleExpressions(t *testing.T) {
 		{expr: "Children.Count > 0", ctx: rootCtx, want: true},
 		{expr: "Children.Count > 0", ctx: childCtx, want: false},
 
-		// Tools.HasPattern("github_*") — only if GitHub tools available
+		// Tools.HasPattern("github_*") — per-server matching (mitto-sys.1):
+		// true when the "github" server is Reachable and a name matches
+		// (childCtx). An entirely unknown server (not in rootCtx's per-server
+		// map, which only has "jira"/"confluence") now fails OPEN rather than
+		// closed — it may simply not have been discovered/started yet.
 		{expr: `Tools.HasPattern("github_*")`, ctx: childCtx, want: true},
-		{expr: `Tools.HasPattern("github_*")`, ctx: rootCtx, want: false},
+		{expr: `Tools.HasPattern("github_*")`, ctx: rootCtx, want: true},
 
 		// Children.MCPCount — only if enough MCP-created children
 		{expr: "Children.MCPCount >= 2", ctx: &PromptEnabledContext{
@@ -203,24 +207,29 @@ func TestCELConvenienceFunctions(t *testing.T) {
 
 	augCtx := &PromptEnabledContext{
 		ACP:   ACPContext{Name: "Auggie (Opus 4.6)", Type: "augment"},
-		Tools: ToolsContext{Available: true, Names: []string{"mitto_list", "jira_create_issue", "github_pr"}},
+		Tools: NewReachableToolsContext([]string{"mitto_list", "jira_create_issue", "github_pr"}),
 	}
 	noACPCtx := &PromptEnabledContext{
 		ACP:   ACPContext{Name: "", Type: ""},
-		Tools: ToolsContext{Available: true, Names: []string{"mitto_list"}},
+		Tools: NewReachableToolsContext([]string{"mitto_list"}),
 	}
-	// fetchedEmptyCtx: the tool list has been fetched and is known to be empty
-	// (Available: true). Tool-pattern functions evaluate normally and fail closed.
+	// fetchedEmptyCtx: the tool list has been fetched and is known to be
+	// empty (no names at all, so GroupToolNamesByServer/NewReachableToolsContext
+	// yields an empty Servers map). Under the per-server model (mitto-sys.1,
+	// edge case a) an empty Servers map is indistinguishable from a genuine
+	// cold start and preserves the legacy GLOBAL fail-open behavior — there is
+	// no server identity at all to resolve a pattern against.
 	fetchedEmptyCtx := &PromptEnabledContext{
 		ACP:   ACPContext{Name: "Auggie (Opus 4.6)", Type: "augment"},
-		Tools: ToolsContext{Available: true, Names: nil},
+		Tools: NewReachableToolsContext(nil),
 	}
-	// unknownToolsCtx: the tool list has not been fetched yet (Available: false).
-	// Tool-pattern functions fail open (return true) so prompts are not hidden
-	// during the MCP-tools cache warm-up window.
+	// unknownToolsCtx: the tool list has not been fetched yet (zero-value
+	// ToolsContext, empty Servers map). Tool-pattern functions fail open
+	// (return true) so prompts are not hidden during the MCP-tools cache
+	// warm-up window.
 	unknownToolsCtx := &PromptEnabledContext{
 		ACP:   ACPContext{Name: "Auggie (Opus 4.6)", Type: "augment"},
-		Tools: ToolsContext{Available: false, Names: nil},
+		Tools: ToolsContext{},
 	}
 
 	tests := []struct {
@@ -248,26 +257,36 @@ func TestCELConvenienceFunctions(t *testing.T) {
 		{"matchesServerType list none match", `ACP.MatchesServerType(["cursor", "claude-code"])`, augCtx, false},
 		{"matchesServerType empty list", `ACP.MatchesServerType([])`, augCtx, false},
 
-		// Tools.HasAllPatterns — single string arg
+		// Tools.HasAllPatterns — single string arg. augCtx's per-server map
+		// only knows "mitto"/"jira"/"github"; "slack" is an unknown server,
+		// so it fails OPEN under the per-server model (mitto-sys.1) — unlike
+		// the pre-refactor global-latch behavior, where any absent tool name
+		// failed closed once the tool list was known.
 		{"hasAllPatterns single satisfied", `Tools.HasAllPatterns("mitto_*")`, augCtx, true},
-		{"hasAllPatterns single not satisfied", `Tools.HasAllPatterns("slack_*")`, augCtx, false},
+		{"hasAllPatterns single unknown server fails open", `Tools.HasAllPatterns("slack_*")`, augCtx, true},
+		{"hasAllPatterns single no match on reachable server", `Tools.HasAllPatterns("jira_other")`, augCtx, false},
 
 		// Tools.HasAllPatterns — list arg
 		{"hasAllPatterns list all satisfied", `Tools.HasAllPatterns(["mitto_*", "jira_*"])`, augCtx, true},
-		{"hasAllPatterns list some unsatisfied", `Tools.HasAllPatterns(["mitto_*", "slack_*"])`, augCtx, false},
-		{"hasAllPatterns fetched-empty fails closed", `Tools.HasAllPatterns(["mitto_*"])`, fetchedEmptyCtx, false},
+		{"hasAllPatterns list some unsatisfied on reachable server", `Tools.HasAllPatterns(["mitto_*", "jira_other"])`, augCtx, false},
+		{"hasAllPatterns list unknown server fails open (does not fail the AND)", `Tools.HasAllPatterns(["mitto_*", "slack_*"])`, augCtx, true},
+		{"hasAllPatterns cold-start empty servers fails open", `Tools.HasAllPatterns(["mitto_*"])`, fetchedEmptyCtx, true},
 		{"hasAllPatterns unknown tools fails open", `Tools.HasAllPatterns(["mitto_*"])`, unknownToolsCtx, true},
 
-		// Tools.HasAnyPattern — list arg
+		// Tools.HasAnyPattern — list arg. "slack"/"notion" are unknown
+		// servers in augCtx, so they fail open individually and thus satisfy
+		// the OR — see the reachable-but-no-match case below for a genuine
+		// negative.
 		{"hasAnyPattern list one satisfied", `Tools.HasAnyPattern(["slack_*", "jira_*"])`, augCtx, true},
-		{"hasAnyPattern list none satisfied", `Tools.HasAnyPattern(["slack_*", "notion_*"])`, augCtx, false},
+		{"hasAnyPattern list unknown servers fail open", `Tools.HasAnyPattern(["slack_*", "notion_*"])`, augCtx, true},
+		{"hasAnyPattern list none satisfied on reachable servers", `Tools.HasAnyPattern(["mitto_other", "jira_other"])`, augCtx, false},
 
 		// Tools.HasAnyPattern — single string arg
 		{"hasAnyPattern single satisfied", `Tools.HasAnyPattern("github_*")`, augCtx, true},
-		{"hasAnyPattern fetched-empty fails closed", `Tools.HasAnyPattern(["mitto_*"])`, fetchedEmptyCtx, false},
+		{"hasAnyPattern cold-start empty servers fails open", `Tools.HasAnyPattern(["mitto_*"])`, fetchedEmptyCtx, true},
 		{"hasAnyPattern unknown tools fails open", `Tools.HasAnyPattern(["mitto_*"])`, unknownToolsCtx, true},
 		{"hasPattern unknown tools fails open", `Tools.HasPattern("mitto_*")`, unknownToolsCtx, true},
-		{"hasPattern fetched-empty fails closed", `Tools.HasPattern("mitto_*")`, fetchedEmptyCtx, false},
+		{"hasPattern cold-start empty servers fails open", `Tools.HasPattern("mitto_*")`, fetchedEmptyCtx, true},
 
 		// Combined expression
 		{"combined matchesServerType and hasAllPatterns",
@@ -421,7 +440,7 @@ func TestCELEvaluator_AllContextFields(t *testing.T) {
 		Session:   SessionContext{ID: "sid", Name: "sname", IsChild: true, IsAutoChild: false, ParentID: "pid", IsLoopConversation: true, HasMessages: true, ModelTags: []string{"smart"}},
 		Parent:    ParentContext{Exists: true, Name: "pname", ACPServer: "pacp"},
 		Children:  ChildrenContext{Count: 3, Exists: true, MCPCount: 2, Names: []string{"c1"}, ACPServers: []string{"a1"}, PromptingCount: 1, IdleCount: 2},
-		Tools:     ToolsContext{Available: true, Names: []string{"tool_a", "tool_b"}},
+		Tools:     NewReachableToolsContext([]string{"tool_a", "tool_b"}),
 		Permissions: PermissionsContext{
 			CanDoIntrospection:         true,
 			CanSendPrompt:              true,
@@ -736,7 +755,7 @@ var benchEvalCtx = &PromptEnabledContext{
 	Session:  SessionContext{ID: "s1", IsChild: true, ParentID: "p1"},
 	Parent:   ParentContext{Exists: true, Name: "Parent", ACPServer: "augment"},
 	Children: ChildrenContext{Count: 2, Exists: true},
-	Tools:    ToolsContext{Available: true, Names: []string{"github_create_pr", "github_list_issues", "mitto_list"}},
+	Tools:    NewReachableToolsContext([]string{"github_create_pr", "github_list_issues", "mitto_list"}),
 }
 
 // BenchmarkEvaluate measures the per-evaluation cost after the program is compiled

@@ -347,14 +347,20 @@ func (s *Server) buildPromptEnabledContext(sessionID string) *config.PromptEnabl
 		ctx.UserData = udMap
 	}
 
-	// Tools context - get from auxiliary manager if available
-	// (This may be empty if tools haven't been fetched yet)
+	// Tools context - get from auxiliary manager if available (This may be
+	// empty if tools haven't been fetched yet, leaving ctx.Tools zero-valued
+	// — a genuine cold start under the per-server model, see
+	// config.ToolsContext). Cached tool names are grouped by their inferred
+	// owning server (token before the first underscore) and marked
+	// Reachable; a server with no cached tools is simply absent, so it still
+	// fails open until it's actually discovered (mitto-sys.1).
 	if s.auxiliaryManager != nil && ctx.Workspace.UUID != "" {
 		if tools, ok := s.auxiliaryManager.GetCachedMCPTools(ctx.Workspace.UUID); ok {
-			ctx.Tools.Available = true
+			names := make([]string, 0, len(tools))
 			for _, tool := range tools {
-				ctx.Tools.Names = append(ctx.Tools.Names, tool.Name)
+				names = append(names, tool.Name)
 			}
+			ctx.Tools = config.NewReachableToolsContext(names)
 		}
 	}
 
@@ -488,15 +494,17 @@ func (s *Server) applyWorkspaceNamespace(ctx *config.PromptEnabledContext, worki
 		ctx.ACP.Type = acpServerName
 	}
 
-	// Tools context (workspace-level cache; may be empty if not yet fetched)
-	ctx.Tools.Available = false
-	ctx.Tools.Names = nil
+	// Tools context (workspace-level cache; may be empty if not yet fetched).
+	// Reset to a genuine cold start, then populate per-server state from the
+	// cache the same way buildSessionPromptEnabledContext does (mitto-sys.1).
+	ctx.Tools = config.ToolsContext{}
 	if s.auxiliaryManager != nil && ctx.Workspace.UUID != "" {
 		if tools, ok := s.auxiliaryManager.GetCachedMCPTools(ctx.Workspace.UUID); ok {
-			ctx.Tools.Available = true
+			names := make([]string, 0, len(tools))
 			for _, tool := range tools {
-				ctx.Tools.Names = append(ctx.Tools.Names, tool.Name)
+				names = append(names, tool.Name)
 			}
+			ctx.Tools = config.NewReachableToolsContext(names)
 		}
 	}
 }

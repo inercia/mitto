@@ -266,11 +266,12 @@ func BuildCELContext(input *ProcessorInput) *config.PromptEnabledContext {
 	ctx.Session.ModelName = input.ModelName
 
 	// Tools context. Processors evaluate at message-processing time, where the
-	// tool list is treated as known (the cache is warmed on connect). Mark it
-	// Available so tool-pattern functions use name-based matching rather than the
-	// warm-up fail-open path used by the prompt menus.
-	ctx.Tools.Available = true
-	ctx.Tools.Names = input.MCPToolNames
+	// tool list is treated as known (the cache is warmed on connect) but no
+	// real per-server identity is available. NewProcessorToolsContext marks a
+	// catch-all server Reachable so tool-pattern functions always use
+	// name-based matching (fail-closed) rather than the per-server warm-up
+	// fail-open grace used by the prompt menus (mitto-sys.1).
+	ctx.Tools = config.NewProcessorToolsContext(input.MCPToolNames)
 
 	// Permissions context - resolve flags with defaults
 	ctx.Permissions.CanDoIntrospection = session.GetFlagValue(input.AdvancedSettings, session.FlagCanDoIntrospection)

@@ -1690,16 +1690,18 @@ func TestFilterPromptsByEnabled(t *testing.T) {
 			name:    "tools_hasPattern satisfied",
 			prompts: []config.WebPrompt{makePrompt("p", withEnabledWhen(`Tools.HasPattern("mitto_*")`))},
 			ctx: &config.PromptEnabledContext{
-				Tools: config.ToolsContext{Available: true, Names: []string{"mitto_conversation_new", "other_tool"}},
+				Tools: config.NewReachableToolsContext([]string{"mitto_conversation_new", "other_tool"}),
 			},
 			wantNames: []string{"p"},
 		},
-		// 9. Tools.HasPattern unsatisfied
+		// 9. Tools.HasPattern unsatisfied on a reachable server (mitto is known
+		// reachable via "mitto_other_thing", but the exact pattern doesn't
+		// match it — a genuine per-server negative, unlike an unknown server).
 		{
-			name:    "tools_hasPattern unsatisfied",
-			prompts: []config.WebPrompt{makePrompt("p", withEnabledWhen(`Tools.HasPattern("mitto_*")`))},
+			name:    "tools_hasPattern unsatisfied on reachable server",
+			prompts: []config.WebPrompt{makePrompt("p", withEnabledWhen(`Tools.HasPattern("mitto_specific_tool")`))},
 			ctx: &config.PromptEnabledContext{
-				Tools: config.ToolsContext{Available: true, Names: []string{"other_tool"}},
+				Tools: config.NewReachableToolsContext([]string{"mitto_other_thing"}),
 			},
 			wantNames: nil,
 		},
@@ -1708,34 +1710,40 @@ func TestFilterPromptsByEnabled(t *testing.T) {
 			name:    "tools_hasAllPatterns all satisfied",
 			prompts: []config.WebPrompt{makePrompt("p", withEnabledWhen(`Tools.HasAllPatterns(["mitto_*", "jira_*"])`))},
 			ctx: &config.PromptEnabledContext{
-				Tools: config.ToolsContext{Available: true, Names: []string{"mitto_foo", "jira_bar"}},
+				Tools: config.NewReachableToolsContext([]string{"mitto_foo", "jira_bar"}),
 			},
 			wantNames: []string{"p"},
 		},
-		// 11. Tools.HasAllPatterns partially satisfied — excluded
+		// 11. Tools.HasAllPatterns partially satisfied on reachable servers — excluded.
+		// Both "mitto" and "jira" are known/reachable; "jira_bar" doesn't match
+		// jira's actual tool ("jira_other"), a genuine negative (an entirely
+		// unknown "jira" server would instead fail OPEN — see case 18/20).
 		{
-			name:    "tools_hasAllPatterns partially satisfied excluded",
-			prompts: []config.WebPrompt{makePrompt("p", withEnabledWhen(`Tools.HasAllPatterns(["mitto_*", "jira_*"])`))},
+			name:    "tools_hasAllPatterns partially satisfied on reachable servers excluded",
+			prompts: []config.WebPrompt{makePrompt("p", withEnabledWhen(`Tools.HasAllPatterns(["mitto_*", "jira_bar"])`))},
 			ctx: &config.PromptEnabledContext{
-				Tools: config.ToolsContext{Available: true, Names: []string{"mitto_foo"}},
+				Tools: config.NewReachableToolsContext([]string{"mitto_foo", "jira_other"}),
 			},
 			wantNames: nil,
 		},
-		// 12. Tools.HasPattern fetched-empty tools — excluded (fail-closed)
+		// 12. Tools.HasPattern with a genuine cold start (no server ever
+		// probed at all) — included (fail-open, mitto-sys.1 edge case: an
+		// empty per-server map cannot be distinguished from "not yet
+		// fetched", so it preserves the legacy global fail-open behavior).
 		{
-			name:    "tools_hasPattern fetched-empty tools excluded",
+			name:    "tools_hasPattern cold start (no servers known) fail-open included",
 			prompts: []config.WebPrompt{makePrompt("p", withEnabledWhen(`Tools.HasPattern("mitto_*")`))},
 			ctx: &config.PromptEnabledContext{
-				Tools: config.ToolsContext{Available: true, Names: nil},
+				Tools: config.NewReachableToolsContext(nil),
 			},
-			wantNames: nil,
+			wantNames: []string{"p"},
 		},
 		// 12b. Tools.HasPattern unknown tools — included (fail-open during warm-up)
 		{
 			name:    "tools_hasPattern unknown tools fail-open included",
 			prompts: []config.WebPrompt{makePrompt("p", withEnabledWhen(`Tools.HasPattern("mitto_*")`))},
 			ctx: &config.PromptEnabledContext{
-				Tools: config.ToolsContext{Available: false, Names: nil},
+				Tools: config.ToolsContext{},
 			},
 			wantNames: []string{"p"},
 		},
@@ -1785,22 +1793,25 @@ func TestFilterPromptsByEnabled(t *testing.T) {
 			},
 			ctx: &config.PromptEnabledContext{
 				ACP:     config.ACPContext{Name: "Auggie (Opus 4.6)", Type: "augment"},
-				Tools:   config.ToolsContext{Available: true, Names: []string{"mitto_conversation_new"}},
+				Tools:   config.NewReachableToolsContext([]string{"mitto_conversation_new"}),
 				Session: config.SessionContext{IsChild: false},
 			},
 			wantNames: []string{"p"},
 		},
-		// 18. Combined: ACP.MatchesServerType passes, Tools.HasPattern fails
+		// 18. Combined: ACP.MatchesServerType passes, Tools.HasPattern fails on
+		// a reachable "jira" server (jira known via "jira_other_tool", but the
+		// exact pattern doesn't match it — an entirely unknown "jira" would
+		// instead fail OPEN, so this pins the genuine-negative case).
 		{
-			name: "combined acp_matchesServerType passes tools_hasPattern fails excluded",
+			name: "combined acp_matchesServerType passes tools_hasPattern fails on reachable server excluded",
 			prompts: []config.WebPrompt{
 				makePrompt("p",
-					withEnabledWhen(`ACP.MatchesServerType("augment") && Tools.HasPattern("jira_*")`),
+					withEnabledWhen(`ACP.MatchesServerType("augment") && Tools.HasPattern("jira_specific_tool")`),
 				),
 			},
 			ctx: &config.PromptEnabledContext{
 				ACP:   config.ACPContext{Name: "Auggie (Opus 4.6)", Type: "augment"},
-				Tools: config.ToolsContext{Available: true, Names: []string{"mitto_foo"}},
+				Tools: config.NewReachableToolsContext([]string{"mitto_foo", "jira_other_tool"}),
 			},
 			wantNames: nil,
 		},
@@ -1814,23 +1825,25 @@ func TestFilterPromptsByEnabled(t *testing.T) {
 			},
 			ctx: &config.PromptEnabledContext{
 				ACP:   config.ACPContext{Name: "Auggie (Opus 4.6)", Type: "augment"},
-				Tools: config.ToolsContext{Available: true, Names: []string{"mitto_foo"}},
+				Tools: config.NewReachableToolsContext([]string{"mitto_foo"}),
 			},
 			wantNames: nil,
 		},
-		// 20. Mixed prompts — some pass, some fail, order preserved
+		// 20. Mixed prompts — some pass, some fail, order preserved. "jira" is
+		// known/reachable via "jira_other_tool" but the exact pattern doesn't
+		// match it (a genuine negative — an unknown server would fail open).
 		{
 			name: "mixed prompts correct order",
 			prompts: []config.WebPrompt{
 				makePrompt("included-1"),
 				makePrompt("excluded-acp", withEnabledWhen(`ACP.MatchesServerType("claude")`)),
 				makePrompt("included-2", withEnabledWhen("!Session.IsChild")),
-				makePrompt("excluded-mcp", withEnabledWhen(`Tools.HasPattern("jira_*")`)),
+				makePrompt("excluded-mcp", withEnabledWhen(`Tools.HasPattern("jira_specific_tool")`)),
 				makePrompt("included-3", withEnabledWhen(`ACP.MatchesServerType("augment")`)),
 			},
 			ctx: &config.PromptEnabledContext{
 				ACP:     config.ACPContext{Name: "Auggie (Opus 4.6)", Type: "augment"},
-				Tools:   config.ToolsContext{Available: true, Names: []string{"mitto_foo"}},
+				Tools:   config.NewReachableToolsContext([]string{"mitto_foo", "jira_other_tool"}),
 				Session: config.SessionContext{IsChild: false},
 			},
 			wantNames: []string{"included-1", "included-2", "included-3"},
