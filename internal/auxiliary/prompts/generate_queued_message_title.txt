@@ -1,0 +1,5 @@
+
+Summarize this message in 2-3 words for a queue display: "%s"
+
+Reply with ONLY the short title, nothing else.
+You MUST not call any tool for this task.

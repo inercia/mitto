@@ -28,6 +28,22 @@ func wrapUserRequest(message string) string {
 	return userRequestOpenTag + message + userRequestCloseTag
 }
 
+const (
+	systemNotesOpenTag  = "\n<mitto_system_notes>\n"
+	systemNotesCloseTag = "\n</mitto_system_notes>"
+)
+
+// wrapSystemNotes wraps the appended processor instruction region (standing
+// reminders) in an explicitly labeled block so the agent treats it as system
+// guidance rather than additional user tasks. Whitespace-only input is returned
+// unchanged.
+func wrapSystemNotes(text string) string {
+	if strings.TrimSpace(text) == "" {
+		return text
+	}
+	return systemNotesOpenTag + text + systemNotesCloseTag
+}
+
 // pendingPromptDispatch holds a prompt-mode processor ready for dispatch.
 type pendingPromptDispatch struct {
 	name    string
@@ -82,6 +98,10 @@ func ApplyProcessors(ctx context.Context, procs []*Processor, input *ProcessorIn
 	applied := 0
 	skipped := 0
 
+	// appendBuf accumulates all append contributions so they can be wrapped once
+	// in <mitto_system_notes> on first-message assemblies.
+	var appendBuf strings.Builder
+
 	for _, proc := range procs {
 		// Check if processor should apply
 		shouldApply, skipReason := proc.ShouldApply(input.IsFirstMessage, input)
@@ -110,11 +130,26 @@ func ApplyProcessors(ctx context.Context, procs []*Processor, input *ProcessorIn
 
 		// Text-mode: directly prepend or append the static text (no external command).
 		if proc.IsTextMode() {
+			// Render Go-template {{ }} accessors against the session context. Unlike
+			// applyWithRerun, this path leaves @mitto: variables untouched (they are
+			// substituted downstream on the whole assembled message); templates have no
+			// downstream pass, so they must be rendered per-body here. Guarded by
+			// HasTemplateSyntax so non-template bodies skip the context build.
+			text := proc.Text
+			if config.HasTemplateSyntax(text) {
+				tctx := BuildCELContext(input)
+				funcs := config.BuildTemplateFuncMap(tctx)
+				if rendered, rerr := config.RenderPromptTemplate(proc.Name, text, tctx, funcs); rerr != nil {
+					logger.Warn("text-mode processor template render failed; using unrendered text", "name", proc.Name, "error", rerr)
+				} else {
+					text = rendered
+				}
+			}
 			switch proc.GetMutate() {
 			case config.ProcessorMutatePrepend:
-				result.Message = proc.Text + result.Message
+				result.Message = text + result.Message
 			case config.ProcessorMutateAppend:
-				result.Message += proc.Text
+				appendBuf.WriteString(text)
 			}
 			logger.Info("text-mode processor applied",
 				"name", proc.Name,
@@ -192,7 +227,7 @@ func ApplyProcessors(ctx context.Context, procs []*Processor, input *ProcessorIn
 			}
 		case OutputAppend:
 			if output.Text != "" {
-				result.Message += output.Text
+				appendBuf.WriteString(output.Text)
 			}
 		case OutputDiscard:
 			// Do nothing with output
@@ -211,6 +246,17 @@ func ApplyProcessors(ctx context.Context, procs []*Processor, input *ProcessorIn
 			"name", proc.Name,
 			"output_type", proc.GetOutput(),
 		)
+	}
+
+	// Flush the append buffer once after all processors. On first-message assemblies,
+	// wrap the accumulated region in <mitto_system_notes> so the agent treats it as
+	// standing guidance rather than new tasks.
+	if appendBuf.Len() > 0 {
+		if input.IsFirstMessage {
+			result.Message += wrapSystemNotes(appendBuf.String())
+		} else {
+			result.Message += appendBuf.String()
+		}
 	}
 
 	logger.Info("processor pipeline complete",
@@ -245,6 +291,10 @@ type Manager struct {
 	totalActivations int       // Total number of pipeline invocations (Apply calls) across session lifetime
 	lastActivationAt time.Time // When the pipeline was last invoked (zero if never)
 	lastAppliedNames []string  // Names of processors applied on the most recent activation
+
+	// loadErrors holds processor documents that failed to load or validate.
+	// Retained (not silently dropped) so the web layer can surface them in the UI.
+	loadErrors []ProcessorLoadError
 
 	// stateStore persists agentResponseCount and per-processor cadence state across
 	// session restarts. Defaults to FileStateStore (writes processor_state.json in
@@ -386,6 +436,7 @@ func (m *Manager) CloneWithDirProcessors(dirs []string, logger *slog.Logger) *Ma
 		lastActivationAt: lastAt,
 		stateStore:       m.stateStore,
 		clock:            m.clock,
+		loadErrors:       append([]ProcessorLoadError(nil), m.loadErrors...),
 	}
 	copy(clone.processors, m.processors)
 
@@ -399,6 +450,14 @@ func (m *Manager) CloneWithDirProcessors(dirs []string, logger *slog.Logger) *Ma
 	for _, dir := range dirs {
 		loader := NewLoader(dir, logger)
 		procs, err := loader.Load()
+		// Always capture load errors; stamp them as workspace-sourced.
+		dirErrs := loader.Errors()
+		for i := range dirErrs {
+			if dirErrs[i].Source == "" {
+				dirErrs[i].Source = ProcessorSourceWorkspace
+			}
+		}
+		clone.loadErrors = append(clone.loadErrors, dirErrs...)
 		if err != nil {
 			logger.Debug("Skipping workspace processors directory", "dir", dir, "error", err)
 			continue
@@ -474,6 +533,7 @@ func (m *Manager) CloneWithEnabledOverrides(overrides []config.ProcessorOverride
 		lastActivationAt: lastAt,
 		stateStore:       m.stateStore,
 		clock:            m.clock,
+		loadErrors:       m.loadErrors, // read-only; safe to share
 	}
 
 	// Deep-copy processor pointers so we can modify Enabled without affecting the original.
@@ -491,10 +551,21 @@ func (m *Manager) CloneWithEnabledOverrides(overrides []config.ProcessorOverride
 	return clone
 }
 
+// LoadErrors returns processor load/validation errors retained during loading.
+func (m *Manager) LoadErrors() []ProcessorLoadError { return m.loadErrors }
+
 // Load loads all processors from the processors directory.
 func (m *Manager) Load() error {
 	loader := NewLoader(m.processorsDir, m.logger)
 	procs, err := loader.Load()
+	// Capture load errors regardless of whether the directory-level walk succeeded.
+	errs := loader.Errors()
+	for i := range errs {
+		if errs[i].Source == "" {
+			errs[i].Source = ProcessorSourceGlobal
+		}
+	}
+	m.loadErrors = errs
 	if err != nil {
 		return err
 	}
@@ -640,6 +711,10 @@ func (m *Manager) applyWithRerun(ctx context.Context, input *ProcessorInput, ori
 	// Collect prompt-mode processors for batched dispatch after the loop.
 	var pendingPrompts []pendingPromptDispatch
 
+	// appendBuf accumulates all append contributions so they can be wrapped once
+	// in <mitto_system_notes> on first-message assemblies.
+	var appendBuf strings.Builder
+
 	for _, proc := range m.processors {
 		// Determine effective isFirstMessage for this processor
 		effectiveIsFirst := origIsFirst
@@ -677,14 +752,26 @@ func (m *Manager) applyWithRerun(ctx context.Context, input *ProcessorInput, ori
 
 		// Text-mode: directly prepend or append the static text (no external command).
 		if proc.IsTextMode() {
+			// First @mitto: variable substitution, then Go-template render exposing
+			// the session context as .Session/.ACP/.Parent/.Children/.Workspace etc.
+			// Guarded by HasTemplateSyntax so non-template bodies skip context build.
 			text := SubstituteVariables(proc.Text, input)
+			if config.HasTemplateSyntax(text) {
+				ctx := BuildCELContext(input)
+				funcs := config.BuildTemplateFuncMap(ctx)
+				if rendered, rerr := config.RenderPromptTemplate(proc.Name, text, ctx, funcs); rerr != nil {
+					m.logger.Warn("text-mode processor template render failed; using unrendered text", "name", proc.Name, "error", rerr)
+				} else {
+					text = rendered
+				}
+			}
 			switch proc.GetMutate() {
 			case config.ProcessorMutatePrepend:
 				result.Message = text + result.Message
+				input.Message = result.Message
 			case config.ProcessorMutateAppend:
-				result.Message += text
+				appendBuf.WriteString(text)
 			}
-			input.Message = result.Message
 		} else if proc.IsPromptMode() {
 			// Prompt-mode: collect for batched dispatch after loop.
 			if m.promptFunc == nil {
@@ -694,8 +781,25 @@ func (m *Manager) applyWithRerun(ctx context.Context, input *ProcessorInput, ori
 				continue
 			}
 
-			// Build the prompt with variable substitution.
+			// Build the prompt: first @mitto: variable substitution, then
+			// Go-template render exposing resolved args as .Args.
 			assembledPrompt := SubstituteVariables(proc.Prompt, input)
+			resolvedArgs := ResolveProcessorArgs(proc.Parameters, input.ProcessorArgOverrides[proc.Name])
+			ctx := BuildCELContext(input)
+			ctx.Args = resolvedArgs
+			funcs := config.BuildTemplateFuncMap(ctx)
+			if rendered, rerr := config.RenderPromptTemplate(proc.Name, assembledPrompt, ctx, funcs); rerr != nil {
+				m.logger.Warn("prompt-mode processor template render failed; using unrendered body", "name", proc.Name, "error", rerr)
+			} else {
+				assembledPrompt = rendered
+			}
+			// Skip dispatch when the rendered prompt is empty: a template may
+			// deliberately render to nothing (e.g. no target file resolved), in
+			// which case there is nothing to send to the auxiliary session.
+			if strings.TrimSpace(assembledPrompt) == "" {
+				m.logger.Debug("prompt-mode processor skipped: rendered prompt is empty", "name", proc.Name)
+				continue
+			}
 			procTimeout := proc.GetTimeout().Duration()
 
 			// Collect for batched dispatch.
@@ -755,7 +859,7 @@ func (m *Manager) applyWithRerun(ctx context.Context, input *ProcessorInput, ori
 				}
 			case OutputAppend:
 				if output.Text != "" {
-					result.Message += output.Text
+					appendBuf.WriteString(output.Text)
 				}
 			case OutputDiscard:
 				// Do nothing with output
@@ -773,6 +877,17 @@ func (m *Manager) applyWithRerun(ctx context.Context, input *ProcessorInput, ori
 				messagesSince: 0,
 				tokensSince:   0,
 			}
+		}
+	}
+
+	// Flush the append buffer once after all processors. On first-message-style
+	// assemblies, wrap the accumulated region in <mitto_system_notes> so the agent
+	// treats it as standing guidance rather than new tasks.
+	if appendBuf.Len() > 0 {
+		if origIsFirst || len(rerunOverrides) > 0 {
+			result.Message += wrapSystemNotes(appendBuf.String())
+		} else {
+			result.Message += appendBuf.String()
 		}
 	}
 
@@ -1060,7 +1175,29 @@ func (m *Manager) ApplyAfter(ctx context.Context, input AfterProcessorInput) App
 				continue
 			}
 
+			// Build the prompt: first @mitto: variable substitution, then
+			// Go-template render exposing resolved args as .Args.
 			assembledPrompt := substituteAfterVariables(proc.Prompt, input)
+			resolvedArgs := ResolveProcessorArgs(proc.Parameters, input.ProcessorArgOverrides[proc.Name])
+			tctx := &config.PromptEnabledContext{}
+			tctx.Session.ID = input.SessionID
+			tctx.Workspace.Folder = input.WorkingDir
+			tctx.Args = resolvedArgs
+			funcs := config.BuildTemplateFuncMap(tctx)
+			if rendered, rerr := config.RenderPromptTemplate(proc.Name, assembledPrompt, tctx, funcs); rerr != nil {
+				m.logger.Warn("prompt-mode processor template render failed; using unrendered body", "name", proc.Name, "error", rerr)
+			} else {
+				assembledPrompt = rendered
+			}
+			// Skip dispatch when the rendered prompt is empty: a template may
+			// deliberately render to nothing (e.g. no target file resolved), in
+			// which case there is nothing to send to the auxiliary session.
+			if strings.TrimSpace(assembledPrompt) == "" {
+				m.logger.Debug("after-phase prompt-mode processor skipped: rendered prompt is empty", "name", proc.Name)
+				skipped++
+				applied-- // undo the applied++ above
+				continue
+			}
 			procTimeout := proc.GetTimeout().Duration()
 			pendingPrompts = append(pendingPrompts, pendingPromptDispatch{
 				name:    proc.Name,

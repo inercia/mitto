@@ -3,7 +3,6 @@ package config
 import (
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -47,67 +46,80 @@ type CELEvaluator struct {
 func NewCELEvaluator() (*CELEvaluator, error) {
 	env, err := cel.NewEnv(
 		// ACP variables
-		cel.Variable("acp.name", cel.StringType),
-		cel.Variable("acp.type", cel.StringType),
-		cel.Variable("acp.tags", cel.ListType(cel.StringType)),
-		cel.Variable("acp.autoApprove", cel.BoolType),
+		cel.Variable("ACP.Name", cel.StringType),
+		cel.Variable("ACP.Type", cel.StringType),
+		cel.Variable("ACP.Tags", cel.ListType(cel.StringType)),
+		cel.Variable("ACP.AutoApprove", cel.BoolType),
 
 		// Workspace variables
-		cel.Variable("workspace.uuid", cel.StringType),
-		cel.Variable("workspace.folder", cel.StringType),
-		cel.Variable("workspace.name", cel.StringType),
-		cel.Variable("workspace.hasUserDataSchema", cel.BoolType),
-		cel.Variable("workspace.hasMittoRC", cel.BoolType),
-		cel.Variable("workspace.hasMetadataDescription", cel.BoolType),
+		cel.Variable("Workspace.UUID", cel.StringType),
+		cel.Variable("Workspace.Folder", cel.StringType),
+		cel.Variable("Workspace.Name", cel.StringType),
+		cel.Variable("Workspace.HasUserDataSchema", cel.BoolType),
+		cel.Variable("Workspace.HasMittoRC", cel.BoolType),
+		cel.Variable("Workspace.HasMetadataDescription", cel.BoolType),
 
 		// Session variables
-		cel.Variable("session.id", cel.StringType),
-		cel.Variable("session.name", cel.StringType),
-		cel.Variable("session.isChild", cel.BoolType),
-		cel.Variable("session.isAutoChild", cel.BoolType),
-		cel.Variable("session.parentId", cel.StringType),
-		cel.Variable("session.isPeriodic", cel.BoolType),
-		cel.Variable("session.isPeriodicConversation", cel.BoolType),
-		cel.Variable("session.hasBeadsIssue", cel.BoolType),
-		cel.Variable("session.beadsIssue", cel.StringType),
+		cel.Variable("Session.ID", cel.StringType),
+		cel.Variable("Session.Name", cel.StringType),
+		cel.Variable("Session.IsChild", cel.BoolType),
+		cel.Variable("Session.IsAutoChild", cel.BoolType),
+		cel.Variable("Session.ParentID", cel.StringType),
+		cel.Variable("Session.IsPeriodic", cel.BoolType),
+		cel.Variable("Session.IsPeriodicForced", cel.BoolType),
+		cel.Variable("Session.IsPeriodicConversation", cel.BoolType),
+		cel.Variable("Session.HasMessages", cel.BoolType),
+		cel.Variable("Session.HasBeadsIssue", cel.BoolType),
+		cel.Variable("Session.BeadsIssue", cel.StringType),
+		cel.Variable("Session.ModelTags", cel.ListType(cel.StringType)),
 
 		// Parent variables
-		cel.Variable("parent.exists", cel.BoolType),
-		cel.Variable("parent.name", cel.StringType),
-		cel.Variable("parent.acpServer", cel.StringType),
+		cel.Variable("Parent.Exists", cel.BoolType),
+		cel.Variable("Parent.Name", cel.StringType),
+		cel.Variable("Parent.ACPServer", cel.StringType),
 
 		// Children variables
-		cel.Variable("children.count", cel.IntType),
-		cel.Variable("children.exists", cel.BoolType),
-		cel.Variable("children.mcpCount", cel.IntType),
-		cel.Variable("children.mcp_count", cel.IntType), // deprecated alias for children.mcpCount
-		cel.Variable("children.names", cel.ListType(cel.StringType)),
-		cel.Variable("children.acpServers", cel.ListType(cel.StringType)),
-		cel.Variable("children.promptingCount", cel.IntType),
-		cel.Variable("children.idleCount", cel.IntType),
+		cel.Variable("Children.Count", cel.IntType),
+		cel.Variable("Children.Exists", cel.BoolType),
+		cel.Variable("Children.MCPCount", cel.IntType),
+		cel.Variable("Children.Names", cel.ListType(cel.StringType)),
+		cel.Variable("Children.ACPServers", cel.ListType(cel.StringType)),
+		cel.Variable("Children.PromptingCount", cel.IntType),
+		cel.Variable("Children.IdleCount", cel.IntType),
 
 		// Tools variables
-		cel.Variable("tools.available", cel.BoolType),
-		cel.Variable("tools.names", cel.ListType(cel.StringType)),
+		cel.Variable("Tools.Available", cel.BoolType),
+		cel.Variable("Tools.Names", cel.ListType(cel.StringType)),
 
 		// Permissions variables
-		cel.Variable("permissions.canDoIntrospection", cel.BoolType),
-		cel.Variable("permissions.canSendPrompt", cel.BoolType),
-		cel.Variable("permissions.canPromptUser", cel.BoolType),
-		cel.Variable("permissions.canStartConversation", cel.BoolType),
-		cel.Variable("permissions.canInteractOtherWorkspaces", cel.BoolType),
-		cel.Variable("permissions.autoApprovePermissions", cel.BoolType),
+		cel.Variable("Permissions.CanDoIntrospection", cel.BoolType),
+		cel.Variable("Permissions.CanSendPrompt", cel.BoolType),
+		cel.Variable("Permissions.CanPromptUser", cel.BoolType),
+		cel.Variable("Permissions.CanStartConversation", cel.BoolType),
+		cel.Variable("Permissions.CanInteractOtherWorkspaces", cel.BoolType),
+		cel.Variable("Permissions.AutoApprovePermissions", cel.BoolType),
 
-		// item.* namespace variable (generic per-row context for list menus).
-		// Declared as a map so expressions like item.status compile; values are
+		// Item namespace variable (generic per-row context for list menus).
+		// Declared as a map so expressions like Item.Status compile; values are
 		// supplied per-row by callers via the activation. ReferencesItem reports
 		// whether a compiled expression touches this namespace.
-		cel.Variable("item", cel.MapType(cel.StringType, cel.DynType)),
+		cel.Variable("Item", cel.MapType(cel.StringType, cel.DynType)),
 
-		// commandExists(name) bool — context-free; bound once here.
+		// Args — prompt arguments supplied at send time (nil/empty at menu time).
+		// Declared as map<string,dyn> (same pattern as Item) so CEL's native adapter
+		// handles map[string]any values correctly. Nil ctx.Args is normalized to an
+		// empty map in buildActivation. Use `"KEY" in Args && Args["KEY"] == "val"`
+		// to safely branch — bare `Args["KEY"]` throws when the key is absent.
+		cel.Variable("Args", cel.MapType(cel.StringType, cel.DynType)),
+
+		// UserData — per-conversation user data (name→value). Nil at menu time;
+		// normalized to empty map in buildActivation so `"KEY" in UserData` is safe.
+		cel.Variable("UserData", cel.MapType(cel.StringType, cel.DynType)),
+
+		// CommandExists(name) bool — context-free; bound once here.
 		// Returns true if the given command name is found in the system PATH.
-		cel.Function("commandExists",
-			cel.Overload("commandExists_string",
+		cel.Function("CommandExists",
+			cel.Overload("CommandExists_string",
 				[]*cel.Type{cel.StringType},
 				cel.BoolType,
 				cel.UnaryBinding(commandExistsImpl()),
@@ -121,34 +133,41 @@ func NewCELEvaluator() (*CELEvaluator, error) {
 		// Because the bindings are pure functions of their arguments, the compiled
 		// cel.Program can be created once at compile time and reused per evaluation.
 		cel.Function("__mitto_hasPattern",
-			cel.Overload("__mitto_hasPattern_list_string",
-				[]*cel.Type{cel.ListType(cel.StringType), cel.StringType},
+			cel.Overload("__mitto_hasPattern_bool_list_string",
+				[]*cel.Type{cel.BoolType, cel.ListType(cel.StringType), cel.StringType},
 				cel.BoolType,
-				cel.BinaryBinding(mittoHasPattern),
+				cel.FunctionBinding(mittoHasPattern),
 			),
 		),
 		cel.Function("__mitto_hasAllPatterns",
-			cel.Overload("__mitto_hasAllPatterns_list_string",
-				[]*cel.Type{cel.ListType(cel.StringType), cel.StringType},
+			cel.Overload("__mitto_hasAllPatterns_bool_list_string",
+				[]*cel.Type{cel.BoolType, cel.ListType(cel.StringType), cel.StringType},
 				cel.BoolType,
-				cel.BinaryBinding(mittoHasAllPatterns),
+				cel.FunctionBinding(mittoHasAllPatterns),
 			),
-			cel.Overload("__mitto_hasAllPatterns_list_list",
-				[]*cel.Type{cel.ListType(cel.StringType), cel.ListType(cel.StringType)},
+			cel.Overload("__mitto_hasAllPatterns_bool_list_list",
+				[]*cel.Type{cel.BoolType, cel.ListType(cel.StringType), cel.ListType(cel.StringType)},
 				cel.BoolType,
-				cel.BinaryBinding(mittoHasAllPatterns),
+				cel.FunctionBinding(mittoHasAllPatterns),
 			),
 		),
 		cel.Function("__mitto_hasAnyPattern",
-			cel.Overload("__mitto_hasAnyPattern_list_string",
+			cel.Overload("__mitto_hasAnyPattern_bool_list_string",
+				[]*cel.Type{cel.BoolType, cel.ListType(cel.StringType), cel.StringType},
+				cel.BoolType,
+				cel.FunctionBinding(mittoHasAnyPattern),
+			),
+			cel.Overload("__mitto_hasAnyPattern_bool_list_list",
+				[]*cel.Type{cel.BoolType, cel.ListType(cel.StringType), cel.ListType(cel.StringType)},
+				cel.BoolType,
+				cel.FunctionBinding(mittoHasAnyPattern),
+			),
+		),
+		cel.Function("__mitto_hasModelTag",
+			cel.Overload("__mitto_hasModelTag_list_string",
 				[]*cel.Type{cel.ListType(cel.StringType), cel.StringType},
 				cel.BoolType,
-				cel.BinaryBinding(mittoHasAnyPattern),
-			),
-			cel.Overload("__mitto_hasAnyPattern_list_list",
-				[]*cel.Type{cel.ListType(cel.StringType), cel.ListType(cel.StringType)},
-				cel.BoolType,
-				cel.BinaryBinding(mittoHasAnyPattern),
+				cel.FunctionBinding(mittoHasModelTag),
 			),
 		),
 		cel.Function("__mitto_matchesServerType",
@@ -177,18 +196,71 @@ func NewCELEvaluator() (*CELEvaluator, error) {
 				cel.BinaryBinding(mittoDirExists),
 			),
 		),
+		cel.Function("__mitto_gitRepo",
+			cel.Overload("__mitto_gitRepo_string",
+				[]*cel.Type{cel.StringType},
+				cel.BoolType,
+				cel.UnaryBinding(mittoGitRepoUnary),
+			),
+			cel.Overload("__mitto_gitRepo_string_string",
+				[]*cel.Type{cel.StringType, cel.StringType},
+				cel.BoolType,
+				cel.BinaryBinding(mittoGitRepoBinary),
+			),
+		),
+		cel.Function("__mitto_gitFileModified",
+			cel.Overload("__mitto_gitFileModified_string_string",
+				[]*cel.Type{cel.StringType, cel.StringType},
+				cel.BoolType,
+				cel.BinaryBinding(mittoGitFileModified),
+			),
+		),
+		cel.Function("__mitto_gitDirModified",
+			cel.Overload("__mitto_gitDirModified_string",
+				[]*cel.Type{cel.StringType},
+				cel.BoolType,
+				cel.UnaryBinding(mittoGitDirModifiedUnary),
+			),
+			cel.Overload("__mitto_gitDirModified_string_string",
+				[]*cel.Type{cel.StringType, cel.StringType},
+				cel.BoolType,
+				cel.BinaryBinding(mittoGitDirModifiedBinary),
+			),
+		),
+		cel.Function("__mitto_gitFileTracked",
+			cel.Overload("__mitto_gitFileTracked_string_string",
+				[]*cel.Type{cel.StringType, cel.StringType},
+				cel.BoolType,
+				cel.BinaryBinding(mittoGitFileTracked),
+			),
+		),
+		cel.Function("__mitto_gitFileDeleted",
+			cel.Overload("__mitto_gitFileDeleted_string_string",
+				[]*cel.Type{cel.StringType, cel.StringType},
+				cel.BoolType,
+				cel.BinaryBinding(mittoGitFileDeleted),
+			),
+		),
 
 		// Macros rewrite user-facing convenience calls into the internal
 		// context-free functions above, injecting activation-sourced arguments.
 		// They run at parse time (before type-checking), so the original
 		// tools.*/acp.*/fileExists/dirExists calls never reach the checker.
 		cel.Macros(
-			cel.ReceiverMacro("hasPattern", 1, toolsHasPatternMacro),
-			cel.ReceiverMacro("hasAllPatterns", 1, toolsHasAllPatternsMacro),
-			cel.ReceiverMacro("hasAnyPattern", 1, toolsHasAnyPatternMacro),
-			cel.ReceiverMacro("matchesServerType", 1, acpMatchesServerTypeMacro),
-			cel.GlobalMacro("fileExists", 1, fileExistsMacro),
-			cel.GlobalMacro("dirExists", 1, dirExistsMacro),
+			cel.ReceiverMacro("HasPattern", 1, toolsHasPatternMacro),
+			cel.ReceiverMacro("HasModelTag", 1, sessionHasModelTagMacro),
+			cel.ReceiverMacro("HasAllPatterns", 1, toolsHasAllPatternsMacro),
+			cel.ReceiverMacro("HasAnyPattern", 1, toolsHasAnyPatternMacro),
+			cel.ReceiverMacro("MatchesServerType", 1, acpMatchesServerTypeMacro),
+			cel.GlobalMacro("FileExists", 1, fileExistsMacro),
+			cel.GlobalMacro("DirExists", 1, dirExistsMacro),
+			cel.GlobalMacro("GitRepo", 0, gitRepoMacro0),
+			cel.GlobalMacro("GitRepo", 1, gitRepoMacro1),
+			cel.GlobalMacro("GitFileModified", 1, gitFileModifiedMacro),
+			cel.GlobalMacro("GitDirModified", 0, gitDirModifiedMacro0),
+			cel.GlobalMacro("GitDirModified", 1, gitDirModifiedMacro1),
+			cel.GlobalMacro("GitFileTracked", 1, gitFileTrackedMacro),
+			cel.GlobalMacro("GitFileDeleted", 1, gitFileDeletedMacro),
 		),
 	)
 	if err != nil {
@@ -237,8 +309,8 @@ func (e *CELEvaluator) Compile(expression string) (*CompiledExpression, error) {
 	return ce, nil
 }
 
-// referencesItemNamespace reports whether the AST references the item.* namespace
-// (the bare "item" identifier or any "item."-prefixed qualified name).
+// referencesItemNamespace reports whether the AST references the Item namespace
+// (the bare "Item" identifier or any "Item."-prefixed qualified name).
 func referencesItemNamespace(ast *cel.Ast) bool {
 	matches := celast.MatchDescendants(
 		celast.NavigateAST(ast.NativeRep()),
@@ -247,7 +319,7 @@ func referencesItemNamespace(ast *cel.Ast) bool {
 				return false
 			}
 			name := e.AsIdent()
-			return name == "item" || strings.HasPrefix(name, "item.")
+			return name == "Item" || strings.HasPrefix(name, "Item.")
 		},
 	)
 	return len(matches) > 0
@@ -276,63 +348,90 @@ func (e *CELEvaluator) Evaluate(compiled *CompiledExpression, ctx *PromptEnabled
 
 // buildActivation converts a PromptEnabledContext into a CEL activation map.
 func buildActivation(ctx *PromptEnabledContext) map[string]any {
+	// Convert Args to map[string]any (matching the args variable's DynType declaration)
+	// so CEL's native adapter can handle subscript access correctly. Nil args is
+	// normalized to an empty map so `"KEY" in args` never panics.
+	argsAny := make(map[string]any, len(ctx.Args))
+	for k, v := range ctx.Args {
+		argsAny[k] = v
+	}
+	// Convert UserData to map[string]any; normalized to empty so `"KEY" in UserData` is safe.
+	userDataAny := make(map[string]any, len(ctx.UserData))
+	for k, v := range ctx.UserData {
+		userDataAny[k] = v
+	}
+	// Normalize Item.Labels: nil → empty slice so `"x" in Item.Labels` is always safe.
+	itemLabels := ctx.Item.Labels
+	if itemLabels == nil {
+		itemLabels = []string{}
+	}
 	return map[string]any{
-		"acp.name":        ctx.ACP.Name,
-		"acp.type":        ctx.ACP.Type,
-		"acp.tags":        ctx.ACP.Tags,
-		"acp.autoApprove": ctx.ACP.AutoApprove,
+		"ACP.Name":        ctx.ACP.Name,
+		"ACP.Type":        ctx.ACP.Type,
+		"ACP.Tags":        ctx.ACP.Tags,
+		"ACP.AutoApprove": ctx.ACP.AutoApprove,
 
-		"workspace.uuid":                   ctx.Workspace.UUID,
-		"workspace.folder":                 ctx.Workspace.Folder,
-		"workspace.name":                   ctx.Workspace.Name,
-		"workspace.hasUserDataSchema":      ctx.Workspace.HasUserDataSchema,
-		"workspace.hasMittoRC":             ctx.Workspace.HasMittoRC,
-		"workspace.hasMetadataDescription": ctx.Workspace.HasMetadataDescription,
+		"Workspace.UUID":                   ctx.Workspace.UUID,
+		"Workspace.Folder":                 ctx.Workspace.Folder,
+		"Workspace.Name":                   ctx.Workspace.Name,
+		"Workspace.HasUserDataSchema":      ctx.Workspace.HasUserDataSchema,
+		"Workspace.HasMittoRC":             ctx.Workspace.HasMittoRC,
+		"Workspace.HasMetadataDescription": ctx.Workspace.HasMetadataDescription,
 
-		"session.id":                     ctx.Session.ID,
-		"session.name":                   ctx.Session.Name,
-		"session.isChild":                ctx.Session.IsChild,
-		"session.isAutoChild":            ctx.Session.IsAutoChild,
-		"session.parentId":               ctx.Session.ParentID,
-		"session.isPeriodic":             ctx.Session.IsPeriodic,
-		"session.isPeriodicConversation": ctx.Session.IsPeriodicConversation,
-		"session.hasBeadsIssue":          ctx.Session.HasBeadsIssue,
-		"session.beadsIssue":             ctx.Session.BeadsIssue,
+		"Session.ID":                     ctx.Session.ID,
+		"Session.Name":                   ctx.Session.Name,
+		"Session.IsChild":                ctx.Session.IsChild,
+		"Session.IsAutoChild":            ctx.Session.IsAutoChild,
+		"Session.ParentID":               ctx.Session.ParentID,
+		"Session.IsPeriodic":             ctx.Session.IsPeriodic,
+		"Session.IsPeriodicForced":       ctx.Session.IsPeriodicForced,
+		"Session.IsPeriodicConversation": ctx.Session.IsPeriodicConversation,
+		"Session.HasMessages":            ctx.Session.HasMessages,
+		"Session.HasBeadsIssue":          ctx.Session.HasBeadsIssue,
+		"Session.BeadsIssue":             ctx.Session.BeadsIssue,
+		"Session.ModelTags":              ctx.Session.ModelTags,
 
-		"parent.exists":    ctx.Parent.Exists,
-		"parent.name":      ctx.Parent.Name,
-		"parent.acpServer": ctx.Parent.ACPServer,
+		"Parent.Exists":    ctx.Parent.Exists,
+		"Parent.Name":      ctx.Parent.Name,
+		"Parent.ACPServer": ctx.Parent.ACPServer,
 
-		"children.count":          int64(ctx.Children.Count),
-		"children.exists":         ctx.Children.Exists,
-		"children.mcpCount":       int64(ctx.Children.MCPCount),
-		"children.mcp_count":      int64(ctx.Children.MCPCount), // deprecated alias
-		"children.names":          ctx.Children.Names,
-		"children.acpServers":     ctx.Children.ACPServers,
-		"children.promptingCount": int64(ctx.Children.PromptingCount),
-		"children.idleCount":      int64(ctx.Children.IdleCount),
+		"Children.Count":          int64(ctx.Children.Count),
+		"Children.Exists":         ctx.Children.Exists,
+		"Children.MCPCount":       int64(ctx.Children.MCPCount),
+		"Children.Names":          ctx.Children.Names,
+		"Children.ACPServers":     ctx.Children.ACPServers,
+		"Children.PromptingCount": int64(ctx.Children.PromptingCount),
+		"Children.IdleCount":      int64(ctx.Children.IdleCount),
 
-		"tools.available": ctx.Tools.Available,
-		"tools.names":     ctx.Tools.Names,
+		"Tools.Available": ctx.Tools.Available,
+		"Tools.Names":     ctx.Tools.Names,
 
-		"permissions.canDoIntrospection":         ctx.Permissions.CanDoIntrospection,
-		"permissions.canSendPrompt":              ctx.Permissions.CanSendPrompt,
-		"permissions.canPromptUser":              ctx.Permissions.CanPromptUser,
-		"permissions.canStartConversation":       ctx.Permissions.CanStartConversation,
-		"permissions.canInteractOtherWorkspaces": ctx.Permissions.CanInteractOtherWorkspaces,
-		"permissions.autoApprovePermissions":     ctx.Permissions.AutoApprovePermissions,
+		"Permissions.CanDoIntrospection":         ctx.Permissions.CanDoIntrospection,
+		"Permissions.CanSendPrompt":              ctx.Permissions.CanSendPrompt,
+		"Permissions.CanPromptUser":              ctx.Permissions.CanPromptUser,
+		"Permissions.CanStartConversation":       ctx.Permissions.CanStartConversation,
+		"Permissions.CanInteractOtherWorkspaces": ctx.Permissions.CanInteractOtherWorkspaces,
+		"Permissions.AutoApprovePermissions":     ctx.Permissions.AutoApprovePermissions,
 
-		// item.* per-row context. All keys are always present (empty string when
-		// no item context is set) so expressions like item.status resolve cleanly.
+		// Item per-row context. All keys are always present (empty string when
+		// no item context is set) so expressions like Item["Status"] resolve cleanly.
 		// Callers populate ctx.Item for per-row list-menu evaluation (mitto-o0u.1).
 		// See ReferencesItem for how callers detect item-dependent expressions.
-		"item": map[string]any{
-			"id":       ctx.Item.Id,
-			"status":   ctx.Item.Status,
-			"type":     ctx.Item.Type,
-			"priority": ctx.Item.Priority,
-			"kind":     ctx.Item.Kind,
+		// Labels is a list so `"x" in Item.Labels` and `Item.Labels.exists(...)` work.
+		"Item": map[string]any{
+			"Id":       ctx.Item.Id,
+			"Status":   ctx.Item.Status,
+			"Type":     ctx.Item.Type,
+			"Priority": ctx.Item.Priority,
+			"Labels":   itemLabels,
+			"Kind":     ctx.Item.Kind,
 		},
+
+		// Args — prompt arguments. Empty at menu time; populated at send time.
+		"Args": argsAny,
+
+		// UserData — per-conversation user data. Empty at menu time; populated at send time.
+		"UserData": userDataAny,
 	}
 }
 
@@ -357,47 +456,90 @@ func isIdent(e celast.Expr, name string) bool {
 	return e != nil && e.Kind() == celast.IdentKind && e.AsIdent() == name
 }
 
-// toolsHasPatternMacro rewrites tools.hasPattern(p) -> __mitto_hasPattern(tools.names, p).
+// toolsHasPatternMacro rewrites Tools.HasPattern(p) -> __mitto_hasPattern(Tools.Available, Tools.Names, p).
 func toolsHasPatternMacro(eh cel.MacroExprFactory, target celast.Expr, args []celast.Expr) (celast.Expr, *celcommon.Error) {
-	if !isIdent(target, "tools") {
+	if !isIdent(target, "Tools") {
 		return nil, nil
 	}
-	return eh.NewCall("__mitto_hasPattern", eh.NewIdent("tools.names"), args[0]), nil
+	return eh.NewCall("__mitto_hasPattern", eh.NewIdent("Tools.Available"), eh.NewIdent("Tools.Names"), args[0]), nil
 }
 
-// toolsHasAllPatternsMacro rewrites tools.hasAllPatterns(a) -> __mitto_hasAllPatterns(tools.names, a).
+// toolsHasAllPatternsMacro rewrites Tools.HasAllPatterns(a) -> __mitto_hasAllPatterns(Tools.Available, Tools.Names, a).
 func toolsHasAllPatternsMacro(eh cel.MacroExprFactory, target celast.Expr, args []celast.Expr) (celast.Expr, *celcommon.Error) {
-	if !isIdent(target, "tools") {
+	if !isIdent(target, "Tools") {
 		return nil, nil
 	}
-	return eh.NewCall("__mitto_hasAllPatterns", eh.NewIdent("tools.names"), args[0]), nil
+	return eh.NewCall("__mitto_hasAllPatterns", eh.NewIdent("Tools.Available"), eh.NewIdent("Tools.Names"), args[0]), nil
 }
 
-// toolsHasAnyPatternMacro rewrites tools.hasAnyPattern(a) -> __mitto_hasAnyPattern(tools.names, a).
+// toolsHasAnyPatternMacro rewrites Tools.HasAnyPattern(a) -> __mitto_hasAnyPattern(Tools.Available, Tools.Names, a).
 func toolsHasAnyPatternMacro(eh cel.MacroExprFactory, target celast.Expr, args []celast.Expr) (celast.Expr, *celcommon.Error) {
-	if !isIdent(target, "tools") {
+	if !isIdent(target, "Tools") {
 		return nil, nil
 	}
-	return eh.NewCall("__mitto_hasAnyPattern", eh.NewIdent("tools.names"), args[0]), nil
+	return eh.NewCall("__mitto_hasAnyPattern", eh.NewIdent("Tools.Available"), eh.NewIdent("Tools.Names"), args[0]), nil
 }
 
-// acpMatchesServerTypeMacro rewrites acp.matchesServerType(t) ->
-// __mitto_matchesServerType(acp.name, acp.type, t).
+// sessionHasModelTagMacro rewrites Session.HasModelTag(t) -> __mitto_hasModelTag(Session.ModelTags, t).
+func sessionHasModelTagMacro(eh cel.MacroExprFactory, target celast.Expr, args []celast.Expr) (celast.Expr, *celcommon.Error) {
+	if !isIdent(target, "Session") {
+		return nil, nil
+	}
+	return eh.NewCall("__mitto_hasModelTag", eh.NewIdent("Session.ModelTags"), args[0]), nil
+}
+
+// acpMatchesServerTypeMacro rewrites ACP.MatchesServerType(t) ->
+// __mitto_matchesServerType(ACP.Name, ACP.Type, t).
 func acpMatchesServerTypeMacro(eh cel.MacroExprFactory, target celast.Expr, args []celast.Expr) (celast.Expr, *celcommon.Error) {
-	if !isIdent(target, "acp") {
+	if !isIdent(target, "ACP") {
 		return nil, nil
 	}
-	return eh.NewCall("__mitto_matchesServerType", eh.NewIdent("acp.name"), eh.NewIdent("acp.type"), args[0]), nil
+	return eh.NewCall("__mitto_matchesServerType", eh.NewIdent("ACP.Name"), eh.NewIdent("ACP.Type"), args[0]), nil
 }
 
-// fileExistsMacro rewrites fileExists(p) -> __mitto_fileExists(workspace.folder, p).
+// fileExistsMacro rewrites FileExists(p) -> __mitto_fileExists(Workspace.Folder, p).
 func fileExistsMacro(eh cel.MacroExprFactory, _ celast.Expr, args []celast.Expr) (celast.Expr, *celcommon.Error) {
-	return eh.NewCall("__mitto_fileExists", eh.NewIdent("workspace.folder"), args[0]), nil
+	return eh.NewCall("__mitto_fileExists", eh.NewIdent("Workspace.Folder"), args[0]), nil
 }
 
-// dirExistsMacro rewrites dirExists(p) -> __mitto_dirExists(workspace.folder, p).
+// dirExistsMacro rewrites DirExists(p) -> __mitto_dirExists(Workspace.Folder, p).
 func dirExistsMacro(eh cel.MacroExprFactory, _ celast.Expr, args []celast.Expr) (celast.Expr, *celcommon.Error) {
-	return eh.NewCall("__mitto_dirExists", eh.NewIdent("workspace.folder"), args[0]), nil
+	return eh.NewCall("__mitto_dirExists", eh.NewIdent("Workspace.Folder"), args[0]), nil
+}
+
+// gitRepoMacro0 rewrites GitRepo() -> __mitto_gitRepo(Workspace.Folder).
+func gitRepoMacro0(eh cel.MacroExprFactory, _ celast.Expr, _ []celast.Expr) (celast.Expr, *celcommon.Error) {
+	return eh.NewCall("__mitto_gitRepo", eh.NewIdent("Workspace.Folder")), nil
+}
+
+// gitRepoMacro1 rewrites GitRepo(p) -> __mitto_gitRepo(Workspace.Folder, p).
+func gitRepoMacro1(eh cel.MacroExprFactory, _ celast.Expr, args []celast.Expr) (celast.Expr, *celcommon.Error) {
+	return eh.NewCall("__mitto_gitRepo", eh.NewIdent("Workspace.Folder"), args[0]), nil
+}
+
+// gitFileModifiedMacro rewrites GitFileModified(p) -> __mitto_gitFileModified(Workspace.Folder, p).
+func gitFileModifiedMacro(eh cel.MacroExprFactory, _ celast.Expr, args []celast.Expr) (celast.Expr, *celcommon.Error) {
+	return eh.NewCall("__mitto_gitFileModified", eh.NewIdent("Workspace.Folder"), args[0]), nil
+}
+
+// gitDirModifiedMacro0 rewrites GitDirModified() -> __mitto_gitDirModified(Workspace.Folder).
+func gitDirModifiedMacro0(eh cel.MacroExprFactory, _ celast.Expr, _ []celast.Expr) (celast.Expr, *celcommon.Error) {
+	return eh.NewCall("__mitto_gitDirModified", eh.NewIdent("Workspace.Folder")), nil
+}
+
+// gitDirModifiedMacro1 rewrites GitDirModified(p) -> __mitto_gitDirModified(Workspace.Folder, p).
+func gitDirModifiedMacro1(eh cel.MacroExprFactory, _ celast.Expr, args []celast.Expr) (celast.Expr, *celcommon.Error) {
+	return eh.NewCall("__mitto_gitDirModified", eh.NewIdent("Workspace.Folder"), args[0]), nil
+}
+
+// gitFileTrackedMacro rewrites GitFileTracked(p) -> __mitto_gitFileTracked(Workspace.Folder, p).
+func gitFileTrackedMacro(eh cel.MacroExprFactory, _ celast.Expr, args []celast.Expr) (celast.Expr, *celcommon.Error) {
+	return eh.NewCall("__mitto_gitFileTracked", eh.NewIdent("Workspace.Folder"), args[0]), nil
+}
+
+// gitFileDeletedMacro rewrites GitFileDeleted(p) -> __mitto_gitFileDeleted(Workspace.Folder, p).
+func gitFileDeletedMacro(eh cel.MacroExprFactory, _ celast.Expr, args []celast.Expr) (celast.Expr, *celcommon.Error) {
+	return eh.NewCall("__mitto_gitFileDeleted", eh.NewIdent("Workspace.Folder"), args[0]), nil
 }
 
 // valToString returns the Go string for a CEL string value, or "" otherwise.
@@ -408,85 +550,93 @@ func valToString(v ref.Val) string {
 	return ""
 }
 
-// mittoHasPattern reports whether any name (first arg, a list) matches the glob
-// pattern (second arg). Context-free so the compiled program can be cached.
-func mittoHasPattern(namesVal, patternVal ref.Val) ref.Val {
-	pattern, ok := patternVal.(types.String)
+// mittoHasPattern reports whether any name (args[1], a list) matches the glob
+// pattern (args[2]). args[0] is tools.available. Context-free so the compiled
+// program can be cached. Delegates to hasPattern (templatefuncs.go) for the
+// pure-Go logic (single source of truth shared with the template FuncMap).
+func mittoHasPattern(args ...ref.Val) ref.Val {
+	if len(args) != 3 {
+		return types.Bool(false)
+	}
+	available, ok := args[0].(types.Bool)
+	if !ok {
+		return types.Bool(true) // type error → treat as unavailable → fail-open
+	}
+	pattern, ok := args[2].(types.String)
 	if !ok {
 		return types.Bool(false)
 	}
-	for _, name := range extractStringArgs([]ref.Val{namesVal}) {
-		if matched, err := filepath.Match(string(pattern), name); err == nil && matched {
-			return types.Bool(true)
-		}
-	}
-	return types.Bool(false)
+	names := extractStringArgs([]ref.Val{args[1]})
+	return types.Bool(hasPattern(bool(available), names, string(pattern)))
 }
 
-// mittoHasAllPatterns reports whether ALL patterns (second arg, string or list)
-// are satisfied by at least one name each (first arg, a list).
-func mittoHasAllPatterns(namesVal, argVal ref.Val) ref.Val {
-	names := extractStringArgs([]ref.Val{namesVal})
-	for _, pattern := range extractStringArgs([]ref.Val{argVal}) {
-		found := false
-		for _, name := range names {
-			if matched, err := filepath.Match(pattern, name); err == nil && matched {
-				found = true
-				break
-			}
-		}
-		if !found {
-			return types.Bool(false)
-		}
+// mittoHasAllPatterns reports whether ALL patterns (args[2], string or list)
+// are satisfied by at least one name each (args[1], a list). args[0] is
+// tools.available. Delegates to hasAllPatterns (templatefuncs.go).
+func mittoHasAllPatterns(args ...ref.Val) ref.Val {
+	if len(args) != 3 {
+		return types.Bool(false)
 	}
-	return types.Bool(true)
+	available, ok := args[0].(types.Bool)
+	if !ok {
+		return types.Bool(true) // type error → fail-open
+	}
+	names := extractStringArgs([]ref.Val{args[1]})
+	patterns := extractStringArgs([]ref.Val{args[2]})
+	return types.Bool(hasAllPatterns(bool(available), names, patterns))
 }
 
-// mittoHasAnyPattern reports whether ANY pattern (second arg, string or list)
-// is satisfied by at least one name (first arg, a list).
-func mittoHasAnyPattern(namesVal, argVal ref.Val) ref.Val {
-	names := extractStringArgs([]ref.Val{namesVal})
-	for _, pattern := range extractStringArgs([]ref.Val{argVal}) {
-		for _, name := range names {
-			if matched, err := filepath.Match(pattern, name); err == nil && matched {
-				return types.Bool(true)
-			}
-		}
+// mittoHasAnyPattern reports whether ANY pattern (args[2], string or list)
+// is satisfied by at least one name (args[1], a list). args[0] is
+// tools.available. Delegates to hasAnyPattern (templatefuncs.go).
+func mittoHasAnyPattern(args ...ref.Val) ref.Val {
+	if len(args) != 3 {
+		return types.Bool(false)
 	}
-	return types.Bool(false)
+	available, ok := args[0].(types.Bool)
+	if !ok {
+		return types.Bool(true) // type error → fail-open
+	}
+	names := extractStringArgs([]ref.Val{args[1]})
+	patterns := extractStringArgs([]ref.Val{args[2]})
+	return types.Bool(hasAnyPattern(bool(available), names, patterns))
+}
+
+// mittoHasModelTag reports whether tag (args[1]) is present in the model tag list
+// (args[0]). Context-free so the compiled program can be cached. Delegates to hasModelTag
+// (templatefuncs.go) — single source of truth shared with the Model(tag) template func.
+func mittoHasModelTag(args ...ref.Val) ref.Val {
+	if len(args) != 2 {
+		return types.Bool(false)
+	}
+	tags := extractStringArgs([]ref.Val{args[0]})
+	tag := valToString(args[1])
+	return types.Bool(hasModelTag(tags, tag))
 }
 
 // mittoMatchesServerType reports whether the ACP server type matches any of the
 // given types (case-insensitive). args[0]=acp.name, args[1]=acp.type, args[2:]=types.
 // Only compares the server type (e.g., "augment"), not the display name.
-// Fail-open: returns true when no ACP server is active (acp.name == "").
+// Delegates to matchesServerType (templatefuncs.go).
 func mittoMatchesServerType(args ...ref.Val) ref.Val {
 	if len(args) < 2 {
 		return types.Bool(false)
 	}
 	acpName := valToString(args[0])
 	acpType := valToString(args[1])
-	if acpName == "" {
-		return types.Bool(true)
-	}
-	for _, server := range extractStringArgs(args[2:]) {
-		if strings.EqualFold(server, acpType) {
-			return types.Bool(true)
-		}
-	}
-	return types.Bool(false)
+	serverTypes := extractStringArgs(args[2:])
+	return types.Bool(matchesServerType(acpName, acpType, serverTypes))
 }
 
 // commandExistsImpl returns a CEL UnaryOp that checks whether a command
-// is available in the system PATH using exec.LookPath.
+// is available in the system PATH. Delegates to commandExists (templatefuncs.go).
 func commandExistsImpl() func(ref.Val) ref.Val {
 	return func(nameVal ref.Val) ref.Val {
 		name, ok := nameVal.(types.String)
 		if !ok {
 			return types.Bool(false)
 		}
-		_, err := exec.LookPath(string(name))
-		return types.Bool(err == nil)
+		return types.Bool(commandExists(string(name)))
 	}
 }
 
@@ -508,22 +658,60 @@ func statResolved(workspaceFolder, path string) (os.FileInfo, bool) {
 
 // mittoFileExists reports whether path exists and is a regular file (not a dir).
 // Relative paths are resolved against the workspace folder (first argument).
+// Delegates to fileExists (templatefuncs.go).
 func mittoFileExists(folderVal, pathVal ref.Val) ref.Val {
-	info, ok := statResolved(valToString(folderVal), valToString(pathVal))
-	if !ok {
-		return types.Bool(false)
-	}
-	return types.Bool(!info.IsDir())
+	return types.Bool(fileExists(valToString(folderVal), valToString(pathVal)))
 }
 
 // mittoDirExists reports whether path exists and is a directory.
 // Relative paths are resolved against the workspace folder (first argument).
+// Delegates to dirExists (templatefuncs.go).
 func mittoDirExists(folderVal, pathVal ref.Val) ref.Val {
-	info, ok := statResolved(valToString(folderVal), valToString(pathVal))
-	if !ok {
-		return types.Bool(false)
-	}
-	return types.Bool(info.IsDir())
+	return types.Bool(dirExists(valToString(folderVal), valToString(pathVal)))
+}
+
+// mittoGitRepoUnary reports whether the workspace folder is inside a git work
+// tree. Delegates to gitRepo with an empty path.
+func mittoGitRepoUnary(folderVal ref.Val) ref.Val {
+	return types.Bool(gitRepo(valToString(folderVal), ""))
+}
+
+// mittoGitRepoBinary reports whether the given directory (second arg, relative
+// to the workspace folder) is inside a git work tree. Delegates to gitRepo.
+func mittoGitRepoBinary(folderVal, pathVal ref.Val) ref.Val {
+	return types.Bool(gitRepo(valToString(folderVal), valToString(pathVal)))
+}
+
+// mittoGitFileModified reports whether a tracked file has pending changes.
+// Relative paths are resolved against the workspace folder (first argument).
+// Delegates to gitFileModified (templatefuncs.go).
+func mittoGitFileModified(folderVal, pathVal ref.Val) ref.Val {
+	return types.Bool(gitFileModified(valToString(folderVal), valToString(pathVal)))
+}
+
+// mittoGitDirModifiedUnary reports whether the whole work tree under the
+// workspace folder is dirty. Delegates to gitDirModified with an empty path.
+func mittoGitDirModifiedUnary(folderVal ref.Val) ref.Val {
+	return types.Bool(gitDirModified(valToString(folderVal), ""))
+}
+
+// mittoGitDirModifiedBinary reports whether the given directory (second arg,
+// relative to the workspace folder) is dirty. Delegates to gitDirModified.
+func mittoGitDirModifiedBinary(folderVal, pathVal ref.Val) ref.Val {
+	return types.Bool(gitDirModified(valToString(folderVal), valToString(pathVal)))
+}
+
+// mittoGitFileTracked reports whether path is tracked by git. Relative paths are
+// resolved against the workspace folder (first argument). Delegates to gitFileTracked.
+func mittoGitFileTracked(folderVal, pathVal ref.Val) ref.Val {
+	return types.Bool(gitFileTracked(valToString(folderVal), valToString(pathVal)))
+}
+
+// mittoGitFileDeleted reports whether a tracked file has been deleted. Relative
+// paths are resolved against the workspace folder (first argument). Delegates
+// to gitFileDeleted.
+func mittoGitFileDeleted(folderVal, pathVal ref.Val) ref.Val {
+	return types.Bool(gitFileDeleted(valToString(folderVal), valToString(pathVal)))
 }
 
 // extractStringArgs extracts string values from CEL function arguments.

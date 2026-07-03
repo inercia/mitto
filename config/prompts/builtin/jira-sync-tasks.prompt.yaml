@@ -7,7 +7,16 @@ group: JIRA
 tags:
 - periodic
 - jira
-enabledWhen: tools.hasPattern("jira_*") && commandExists("bd")
+enabledWhen: Tools.HasPattern("jira_*") && CommandExists("bd")
+preferredModels:
+  - modelTag: Cheap
+  - modelTag: Coding
+periodic:
+  mode: optional
+  default: true
+  value: 1
+  unit: days
+  at: "09:00"
 prompt: |
   Pull JIRA tickets matching this project's saved query into local beads issues,
   keeping the beads copy in sync with changes made in JIRA (description, comments,
@@ -18,58 +27,56 @@ prompt: |
 
   ## Session Context
 
-  Your session ID is `@mitto:session_id` — use this as `self_id` for all `mitto_*` MCP tool calls.
-
-  Project user data (JSON):
-  @mitto:user_data
+  Your session ID is `{{ .Session.ID }}` — use this as `self_id` for all `mitto_*` MCP tool calls.
 
   ## Interaction Mode
+  {{- if and .Session.IsPeriodic (not .Session.IsPeriodicForced) }}
 
-  This prompt runs in two modes. Check these variables to decide which applies:
-
-  - `@mitto:periodic` = is this a scheduled periodic execution?
-  - `@mitto:periodic_forced` = was a periodic run manually triggered by the user?
-
-  **Interactive mode — a regular conversation** (`@mitto:periodic` = "false") **or a force-triggered periodic run** (`@mitto:periodic_forced` = "true"):
-  - The user is present. Use interactive tools (`mitto_ui_options`, `mitto_ui_form`, `mitto_ui_textbox`) as well as `mitto_ui_notify`. This is the default when run on demand.
-
-  **Silent mode — a scheduled periodic run** (`@mitto:periodic` = "true" AND `@mitto:periodic_forced` = "false"):
+  **Silent mode** — a scheduled periodic run; the user is not watching.
   - Use **only** `mitto_ui_notify` — non-blocking notifications only.
-  - Do **NOT** use `mitto_ui_options`, `mitto_ui_form`, or `mitto_ui_textbox`. The user is not watching.
+  - Do **NOT** use `mitto_ui_options`, `mitto_ui_form`, or `mitto_ui_textbox`.
+  {{- else }}
+
+  **Interactive mode** — a regular conversation or a force-triggered periodic run; the user is present.
+  - Use interactive tools (`mitto_ui_options`, `mitto_ui_form`, `mitto_ui_textbox`) as well as `mitto_ui_notify`. This is the default when run on demand.
+  {{- end }}
 
   ## Step 1 — Get the "Jira Tasks" query
 
-  Inspect the **Project user data** JSON above (an array of `{"name", "value"}` objects). Find the attribute whose `name` is **"Jira Tasks"** (case-insensitive). Its `value` is the **JQL query** that selects the tickets to mirror.
+  {{ if UserData "Jira Tasks" -}}
+  The saved JQL query for this conversation is:
 
-  - If a non-empty **"Jira Tasks"** value exists: use it as the JQL query and continue to Step 2.
+  > `{{ UserData "Jira Tasks" }}`
 
-  - If **no** "Jira Tasks" attribute exists, or its value is empty:
+  Use this as the JQL query and continue to Step 2.
+  {{- else }}
 
-    - **Silent mode** (scheduled periodic run): the query cannot be requested unattended. Send one `mitto_ui_notify` explaining the project has no "Jira Tasks" query configured, then **stop**.
+  No "Jira Tasks" query is saved for this conversation.
 
-    - **Interactive mode**: ask the user for the JQL query with `mitto_ui_form` (a single text field for the query, e.g. `project = ABC AND statusCategory != Done`). Once you have a non-empty value, persist it to the conversation's user data so future runs (including scheduled ones) reuse it:
+  - **Silent mode** (scheduled periodic run): the query cannot be requested unattended. Send one `mitto_ui_notify` explaining the project has no "Jira Tasks" query configured, then **stop**.
 
-      ```
-      mitto_conversation_update(self_id: "@mitto:session_id",
-        conversation_id: "@mitto:session_id",
-        user_data: [{"name": "Jira Tasks", "value": "<the JQL the user provided>"}])
-      ```
+  - **Interactive mode**: ask the user for the JQL query with `mitto_ui_form` (a single text field for the query, e.g. `project = ABC AND statusCategory != Done`). Once you have a non-empty value, persist it to the conversation's user data so future runs (including scheduled ones) reuse it:
 
-      **Ensure the schema allows the attribute first.** User data is validated against the workspace's user-data **schema** (in `.mittorc`). If that schema does not define a **"Jira Tasks"** field, the `mitto_conversation_update` above will be **rejected** (e.g. `unknown attribute "Jira Tasks": not defined in schema`, or `no user data schema defined for this workspace`). The **Project user data** JSON above only shows *values*, not the schema, so you cannot tell from it whether the field is defined — be ready to handle a rejection.
+    ```
+    mitto_conversation_update(self_id: "{{ .Session.ID }}",
+      conversation_id: "{{ .Session.ID }}",
+      user_data: [{"name": "Jira Tasks", "value": "<the JQL the user provided>"}])
+    ```
 
-      To make the save succeed, add the field to the schema with `mitto_workspace_update` (this edits the workspace `.mittorc`), then retry the conversation update:
+    **Ensure the schema allows the attribute first.** User data is validated against the workspace's user-data **schema** (in `.mittorc`). If that schema does not define a **"Jira Tasks"** field, the `mitto_conversation_update` above will be **rejected** (e.g. `unknown attribute "Jira Tasks": not defined in schema`, or `no user data schema defined for this workspace`). To make the save succeed, add the field to the schema with `mitto_workspace_update` (this edits the workspace `.mittorc`), then retry the conversation update:
 
-      ```
-      mitto_workspace_update(self_id: "@mitto:session_id",
-        user_data_schema: [{"name": "Jira Tasks",
-                            "description": "JQL query selecting the JIRA tickets to mirror into beads",
-                            "type": "string"}],
-        user_data_schema_merge: true)
-      ```
+    ```
+    mitto_workspace_update(self_id: "{{ .Session.ID }}",
+      user_data_schema: [{"name": "Jira Tasks",
+                          "description": "JQL query selecting the JIRA tickets to mirror into beads",
+                          "type": "string"}],
+      user_data_schema_merge: true)
+    ```
 
-      `user_data_schema_merge: true` (the default) merges this field into the existing schema by name, so it **adds** "Jira Tasks" without disturbing other defined fields. Practically: attempt the `mitto_conversation_update` first; if it fails with a schema/unknown-attribute error, call `mitto_workspace_update` to register the field, then repeat the `mitto_conversation_update`. (Proactively calling `mitto_workspace_update` before the first save is also fine, since the merge is idempotent.)
+    `user_data_schema_merge: true` (the default) merges this field into the existing schema by name, so it **adds** "Jira Tasks" without disturbing other defined fields. Practically: attempt the `mitto_conversation_update` first; if it fails with a schema/unknown-attribute error, call `mitto_workspace_update` to register the field, then repeat the `mitto_conversation_update`. (Proactively calling `mitto_workspace_update` before the first save is also fine, since the merge is idempotent.)
 
-      Then use that JQL query for this run and continue to Step 2.
+    Then use that JQL query for this run and continue to Step 2.
+  {{- end }}
 
   ## Step 2 — Ensure beads is ready
 
@@ -100,7 +107,7 @@ prompt: |
 
   ### Step 5.0 — JIRA wiki markup → Markdown helper
 
-  JIRA descriptions and comments often use JIRA wiki markup (`h1.`/`h2.` headers, `{code}`/`{noformat}` blocks, `{{monospace}}`, `[text|url]` links, `*bold*`, `_italic_`). Run every raw description and comment body through this **good-enough** converter before storing it — it preserves the most important structure (headers and code blocks) and is not meant to be perfect. Write it once to a temp file and reuse it:
+  JIRA descriptions and comments often use JIRA wiki markup (`h1.`/`h2.` headers, `{code}`/`{noformat}` blocks, `{{ "{{" }}monospace}}`, `[text|url]` links, `*bold*`, `_italic_`). Run every raw description and comment body through this **good-enough** converter before storing it — it preserves the most important structure (headers and code blocks) and is not meant to be perfect. Write it once to a temp file and reuse it:
 
   ```python
   #!/usr/bin/env python3
@@ -136,7 +143,7 @@ prompt: |
       s = "".join(res)
       if in_code:
           s += "\n" + fence + "\n"
-      # Inline monospace {{...}} -> `...`
+      # Inline monospace {{ "{{" }}...}} -> `...`
       s = re.sub(r"\{\{(.+?)\}\}", lambda m: chr(96) + m.group(1) + chr(96), s)
       # Links [text|url] -> [text](url)
       s = re.sub(r"\[([^|\]]+)\|([^\]]+)\]", r"[\1](\2)", s)

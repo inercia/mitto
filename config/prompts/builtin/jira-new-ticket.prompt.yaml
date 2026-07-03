@@ -1,14 +1,16 @@
 icon: tag
 name: 'JIRA: new ticket'
-menus: prompts
+menus: prompts, !promptsPeriodic
 description: Create a JIRA ticket — from the current conversation context or from scratch
 backgroundColor: '#C8E6C9'
 group: JIRA
-enabledWhen: tools.hasPattern("jira_*")
+enabledWhen: Tools.HasPattern("jira_*")
+preferredModels:
+  - modelTag: Coding
 prompt: |
   ## Session Context
 
-  Your session ID is `@mitto:session_id` — use this as `self_id` for all `mitto_*` MCP tool calls.
+  Your session ID is `{{ .Session.ID }}` — use this as `self_id` for all `mitto_*` MCP tool calls.
 
   # JIRA: Create a New Ticket
 
@@ -16,7 +18,7 @@ prompt: |
 
   First, check the conversation history for meaningful prior work context (investigation, debugging, feature discussion, research findings, etc.).
 
-  - If the conversation contains **prior work context**: use `mitto_ui_options_mitto(self_id: "@mitto:session_id")` to ask: "What should the new ticket be about?" with the following options:
+  - If the conversation contains **prior work context**: use `mitto_ui_options(self_id: "{{ .Session.ID }}")` to ask: "What should the new ticket be about?" with the following options:
     - "Based on what we've been working on" (with a short description of the detected topic, e.g., "Based on what we've been working on — the auth timeout bug in the login flow")
     - "Something entirely new — I'll describe it"
 
@@ -59,7 +61,7 @@ prompt: |
 
   ## Step 3 — Collect ticket fields via form
 
-  Use `mitto_ui_form_mitto(self_id: "@mitto:session_id")` to present a form with the following fields, pre-filled with intelligent defaults derived from Steps 1 and 2:
+  Use `mitto_ui_form_mitto(self_id: "{{ .Session.ID }}")` to present a form with the following fields, pre-filled with intelligent defaults derived from Steps 1 and 2:
 
   ```html
   <label>Project Key</label>
@@ -108,7 +110,7 @@ prompt: |
   - **Proposed Solution** (if discussed): What approach was identified
   - **Acceptance Criteria**: Concrete, testable conditions for "done"
 
-  Present the description using `mitto_ui_textbox_mitto(self_id: "@mitto:session_id")` with:
+  Present the description using `mitto_ui_textbox_mitto(self_id: "{{ .Session.ID }}")` with:
   - `title`: "Ticket Description — Review & Edit"
   - `text`: the composed description
   - `result`: "full"
@@ -135,7 +137,7 @@ prompt: |
 
   ## Step 6 — Sprint and status
 
-  Immediately after creation, use `mitto_ui_form_mitto(self_id: "@mitto:session_id")` to ask:
+  Immediately after creation, use `mitto_ui_form_mitto(self_id: "{{ .Session.ID }}")` to ask:
 
   ```html
   <label>Assign to me?</label>
@@ -168,12 +170,15 @@ prompt: |
   After completing sprint/status changes:
 
   1. Report the new ticket key and confirm what was done (created, added to sprint, transitioned).
-  2. Use `mitto_ui_options_mitto(self_id: "@mitto:session_id")` to ask: "Ticket `<KEY>` is ready. Would you like to:"
+  2. Use `mitto_ui_options(self_id: "{{ .Session.ID }}")` to ask: "Ticket `<KEY>` is ready. Would you like to:"
      - "Link it to another ticket"
      - "Start working on it now"
      - "Done — no further action"
 
   3. If the user chooses to **link**: ask for the target ticket key, use `jira_get_link_types_jira` to confirm available link types, then call `jira_create_issue_link_jira`.
-  4. If the user chooses to **start working**: inform them to use the "JIRA: start work" prompt with the new ticket key.
+  4. If the user chooses to **start working**: persist the new ticket key to conversation user data so the "JIRA: start work" prompt can pick it up automatically:
+     1. Call `mitto_conversation_update(self_id: "{{ .Session.ID }}", conversation_id: "{{ .Session.ID }}", user_data: [{"name": "JIRA Ticket", "value": "<KEY>"}])`.
+     2. If it fails with a schema/unknown-attribute error, first call `mitto_workspace_update(self_id: "{{ .Session.ID }}", user_data_schema: [{"name": "JIRA Ticket", "description": "The JIRA ticket key for the current task", "type": "string"}], user_data_schema_merge: true)`, then retry step 1.
+     Then inform the user to use the "JIRA: start work" prompt — the ticket key is already saved and will be pre-selected.
 
   Always end by displaying the full URL to the newly created ticket (e.g., `https://<jira-instance>/browse/<KEY>`) so the user can open it directly in their browser.

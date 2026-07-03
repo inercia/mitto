@@ -1,0 +1,6 @@
+name: Context Menu Test
+description: A prompt surfaced in the conversation context menu for UI testing
+group: Workflow
+menus: conversation
+prompt: |
+  This prompt is used by the conversation context-menu UI test.

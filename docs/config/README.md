@@ -56,6 +56,7 @@ Use the remaining Settings tabs to fine-tune Mitto:
 | Topic | Document | UI Location | Description |
 |-------|----------|-------------|-------------|
 | 🤖 **ACP Servers** | [acp.md](acp.md) | Settings → ACP Servers | Claude Code, Auggie, Gemini, Copilot setup |
+| 🏷️ **Model Profiles** | [models.md](models.md) | Settings (`models:`) | Tag models by capability; branch prompts on tags |
 | ⚡ **Prompts** | [prompts.md](prompts.md) | Workspaces → Prompts tab | Quick actions and predefined prompts |
 | 🔗 **Processors** | [processors.md](processors.md) | Workspaces → Processors tab | Message transformation (text, command, prompt modes) |
 | 💬 **Conversations** | [conversations.md](conversations.md) | Settings → Conversations | Auto-approve, auto-archive, external images |

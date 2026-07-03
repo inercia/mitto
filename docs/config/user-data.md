@@ -192,6 +192,39 @@ User data is stored per-conversation and persists across sessions.
 If you try to set an attribute that isn't in the schema, or provide an invalid
 value for the type, the save will fail with a validation error.
 
+## Accessing User Data in Prompts
+
+User data fields are available in prompt bodies (Go templates) and in `enabledWhen`
+CEL expressions as a structured `name → value` map. This lets a prompt branch on a
+single field — for example, set it if unset, otherwise continue.
+
+In a prompt body (template), use the `UserData` function or the `.UserData` map:
+
+```yaml
+prompt: |
+  {{ if UserData "JIRA Ticket" }}
+  Continue work on {{ UserData "JIRA Ticket" }}.
+  {{ else }}
+  No JIRA ticket is set yet. Determine it from the conversation and call
+  mitto_conversation_update with user_data to set "JIRA Ticket", then proceed.
+  {{ end }}
+```
+
+`{{ UserData "NAME" }}` returns the field value, or `""` when unset (it handles
+names with spaces). `{{ index .UserData "NAME" }}` accesses the same map directly.
+
+In `enabledWhen` (menu-time visibility), reference the `UserData` map:
+
+```yaml
+enabledWhen: '"JIRA Ticket" in UserData && UserData["JIRA Ticket"] != ""'
+```
+
+The full JSON blob is still available via `{{ .Session.UserDataJSON }}` (and the
+legacy `@mitto:user_data` placeholder) when you need every attribute at once.
+
+See [Prompt Configuration → Go Template Syntax](prompts.md#go-template-syntax-in-prompts)
+for the complete template reference.
+
 ## Storage
 
 User data is stored in `user-data.json` within each session's directory:

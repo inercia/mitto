@@ -215,9 +215,7 @@ export function AgentPlanPanel({
                     key=${index}
                     class="agent-plan-item flex items-start gap-2 px-3 py-2 hover:bg-base-300/50 transition-colors border-b border-base-300/50 last:border-b-0"
                   >
-                    <span
-                      class="shrink-0 mt-0.5 ${statusDisplay.colorClass}"
-                    >
+                    <span class="shrink-0 mt-0.5 ${statusDisplay.colorClass}">
                       ${statusDisplay.icon}
                     </span>
                     <span class="flex-1 text-sm text-mitto-text">
@@ -285,15 +283,18 @@ export function AgentPlanIndicator({
     <button
       type="button"
       onClick=${onClick}
-      class="agent-plan-indicator btn btn-xs gap-1.5 ${hasNewUpdate
+      class="agent-plan-indicator btn btn-xs gap-1.5 tooltip tooltip-bottom ${hasNewUpdate
         ? "ring-2 ring-mitto-accent-400/50"
         : ""}"
-      title="View agent plan"
+      data-tip="View agent plan"
+      aria-label="View agent plan"
     >
       ${inProgressCount > 0
         ? html`<span class="text-mitto-accent-400 animate-pulse">●</span>`
         : html`<span class="text-mitto-text-muted">○</span>`}
-      <span class="text-mitto-text-secondary">${completedCount}/${totalCount}</span>
+      <span class="text-mitto-text-secondary"
+        >${completedCount}/${totalCount}</span
+      >
       <${ChevronDownIcon} className="w-3 h-3 text-mitto-text-muted" />
     </button>
   `;

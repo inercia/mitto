@@ -146,3 +146,57 @@ func TestAuthMiddleware(t *testing.T) {
 ## External Connections and IP Allow List
 
 External listener requests are always authenticated, regardless of source IP. CIDR-based allow list (config `web.auth.allow.ips`) bypasses auth for trusted networks.
+
+## Frontend Fetch Credentials Pattern
+
+**Problem**: Raw `fetch()` with `credentials: "same-origin"` drops auth under cross-origin/proxy (Tailscale) access and never handles 401.
+
+**Solution**: Use `authFetch(url, options?)` helper from `web/static/utils/csrf.js`:
+
+```javascript
+// Import
+import { authFetch } from '../utils/index.js';
+
+// Use
+const response = await authFetch(apiUrl("/api/config"));
+```
+
+### What authFetch Does
+
+```javascript
+export async function authFetch(url, options = {}) {
+  const response = await fetch(url, { ...options, credentials: "include" });
+  return handleUnauthorized(response);
+}
+```
+
+- Sends `credentials: "include"` (works cross-origin/Tailscale)
+- Routes 401 through `handleUnauthorized` → `redirectToLogin()`
+- On 401: Returns a never-resolving promise (prevents downstream execution)
+
+### When to Use authFetch
+
+✅ **Use authFetch** for authenticated endpoints:
+- All API probes (e.g., `/api/config`, `/api/runner-defaults`, `/api/advanced-flags`)
+- File operations (reads/writes in `viewer.html`)
+- Session settings and external status checks
+
+❌ **Do NOT use authFetch** for public endpoints:
+- `/api/supported-runners` (explicitly in `publicAPIPaths`)
+- Other endpoints explicitly listed in `publicAPIPaths`
+
+For public endpoints, keep raw `fetch` with `credentials: "same-origin"`.
+
+### Inline 401 Handling
+
+Always add explicit 401 guard in critical read-path code:
+
+```javascript
+const response = await authFetch(apiUrl("/api/files"));
+if (response.status === 401) {
+  redirectToLogin();
+  return;
+}
+```
+
+This is a defensive fallback. The primary redirect happens inside `authFetch`.

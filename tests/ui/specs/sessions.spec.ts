@@ -152,7 +152,7 @@ test.describe("Session API", () => {
  * onActiveSessionRemoved callback wiring in useWebSocket).
  *
  * The Beads backend shells out to the external `bd` binary, which is not
- * guaranteed in CI, so /api/beads/list is mocked with an empty list — the test
+ * guaranteed in CI, so /api/issues is mocked with an empty list — the test
  * only asserts that the Tasks view for the right folder mounts.
  */
 const projectRoot = path.resolve(__dirname, "../../..");
@@ -166,7 +166,7 @@ testWithCleanup.describe("Active conversation removal opens the folder Tasks vie
   testWithCleanup.beforeEach(async ({ page, request, apiUrl }) => {
     // Mock the beads list so the Tasks view renders without the external `bd`
     // binary; an empty list is enough to confirm the view mounted.
-    await page.route("**/api/beads/list**", async (route) => {
+    await page.route(/\/api\/issues(\?|$)/, async (route) => {
       await route.fulfill({
         status: 200,
         contentType: "application/json",

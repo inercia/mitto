@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -23,12 +24,20 @@ type Runner interface {
 	Run(ctx context.Context, dir string, args ...string) (stdout []byte, stderr string, err error)
 }
 
-// execRunner is the default Runner that invokes the real bd binary.
-type execRunner struct{}
+// execRunner is the default Runner that invokes the real bd binary. When actor
+// is non-empty it is exported to the bd subprocess as BEADS_ACTOR, which bd uses
+// as the default --actor for its audit trail. An empty actor leaves the
+// subprocess environment untouched (bd falls back to git user.name / $USER).
+type execRunner struct {
+	actor string
+}
 
-func (execRunner) Run(ctx context.Context, dir string, args ...string) ([]byte, string, error) {
+func (r execRunner) Run(ctx context.Context, dir string, args ...string) ([]byte, string, error) {
 	cmd := exec.CommandContext(ctx, "bd", args...)
 	cmd.Dir = dir
+	if r.actor != "" {
+		cmd.Env = envWithActor(r.actor)
+	}
 
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
@@ -46,6 +55,22 @@ func (execRunner) Run(ctx context.Context, dir string, args ...string) ([]byte, 
 	}
 
 	return stdout.Bytes(), "", nil
+}
+
+// envWithActor returns a copy of the current process environment with any
+// existing BEADS_ACTOR entry removed and a single BEADS_ACTOR=actor appended, so
+// the bd subprocess is stamped with the given actor regardless of what the
+// parent process inherited.
+func envWithActor(actor string) []string {
+	base := os.Environ()
+	out := make([]string, 0, len(base)+1)
+	for _, kv := range base {
+		if strings.HasPrefix(kv, "BEADS_ACTOR=") {
+			continue
+		}
+		out = append(out, kv)
+	}
+	return append(out, "BEADS_ACTOR="+actor)
 }
 
 // cliClient implements Client using a Runner.
@@ -143,37 +168,48 @@ type listItem struct {
 	ID string `json:"id"`
 }
 
-func (c *cliClient) Cleanup(ctx context.Context, dir string) (int, error) {
+// cleanupTimeout scales the bulk-delete timeout with the number of closed
+// issues being removed. On the Dolt backend each delete rewrites dependency
+// links, updates text references in connected issues, and commits, so large
+// closed-issue sets routinely take far longer than defaultTimeout. We budget a
+// generous per-issue allowance on top of a high floor.
+func cleanupTimeout(n int) time.Duration {
+	const perIssue = 750 * time.Millisecond
+	d := time.Duration(n) * perIssue
+	if d < syncTimeout {
+		return syncTimeout
+	}
+	return d
+}
+
+func (c *cliClient) ListClosedIDs(ctx context.Context, dir string) ([]string, error) {
 	out, err := c.runJSON(ctx, dir, "list", "--json", "--status", "closed", "-n", "0")
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
-
 	var items []listItem
 	if err := json.Unmarshal(out, &items); err != nil {
-		return 0, &CmdError{Err: errors.New("failed to parse closed issues")}
+		return nil, &CmdError{Err: errors.New("failed to parse closed issues")}
 	}
-
 	ids := make([]string, 0, len(items))
 	for _, it := range items {
 		if it.ID != "" {
 			ids = append(ids, it.ID)
 		}
 	}
+	return ids, nil
+}
 
+func (c *cliClient) DeleteIDs(ctx context.Context, dir string, ids []string) error {
 	if len(ids) == 0 {
-		return 0, nil
+		return nil
 	}
-
 	args := make([]string, 0, len(ids)+2)
 	args = append(args, "delete")
 	args = append(args, ids...)
 	args = append(args, "--force")
-
-	if _, err := c.runRaw(ctx, defaultTimeout, dir, args...); err != nil {
-		return 0, err
-	}
-	return len(ids), nil
+	_, err := c.runRaw(ctx, cleanupTimeout(len(ids)), dir, args...)
+	return err
 }
 
 func (c *cliClient) SetStatus(ctx context.Context, dir, id, action string) error {

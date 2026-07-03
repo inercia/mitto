@@ -75,7 +75,8 @@ export function useBackgroundNotifications({
         showToast({
           style: "error",
           title: "AI Agent Failed to Start",
-          message: "Try switching to the session and sending a message to retry.",
+          message:
+            "Try switching to the session and sending a message to retry.",
           duration: 10000,
           onClick: data.session_id ? () => focusSession(data.session_id) : null,
         });
@@ -83,7 +84,10 @@ export function useBackgroundNotifications({
     };
     window.addEventListener("mitto:acp_start_failed", handleAcpStartFailed);
     return () => {
-      window.removeEventListener("mitto:acp_start_failed", handleAcpStartFailed);
+      window.removeEventListener(
+        "mitto:acp_start_failed",
+        handleAcpStartFailed,
+      );
     };
   }, [showToast, focusSession]);
 
@@ -92,7 +96,10 @@ export function useBackgroundNotifications({
     const handleAcpPermanentError = (event) => {
       const data = event.detail;
       if (data) {
-        const detail = [data.user_guidance, data.command ? `Command: ${data.command}` : ""]
+        const detail = [
+          data.user_guidance,
+          data.command ? `Command: ${data.command}` : "",
+        ]
           .filter(Boolean)
           .join(" — ");
         showToast({
@@ -103,9 +110,15 @@ export function useBackgroundNotifications({
         });
       }
     };
-    window.addEventListener("mitto:acp_error_permanent", handleAcpPermanentError);
+    window.addEventListener(
+      "mitto:acp_error_permanent",
+      handleAcpPermanentError,
+    );
     return () => {
-      window.removeEventListener("mitto:acp_error_permanent", handleAcpPermanentError);
+      window.removeEventListener(
+        "mitto:acp_error_permanent",
+        handleAcpPermanentError,
+      );
     };
   }, [showToast]);
 
@@ -114,7 +127,8 @@ export function useBackgroundNotifications({
     const handleHookFailed = (event) => {
       const data = event.detail;
       if (data) {
-        const exitPart = data.exit_code !== undefined ? ` (exit code ${data.exit_code})` : "";
+        const exitPart =
+          data.exit_code !== undefined ? ` (exit code ${data.exit_code})` : "";
         showToast({
           style: "warning",
           title: `Hook Failed: ${data.name || "up"}${exitPart}`,

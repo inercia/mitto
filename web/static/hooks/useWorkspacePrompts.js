@@ -7,8 +7,13 @@
 // helpers.
 const { useState, useEffect, useCallback, useMemo } = window.preact;
 
-import { apiUrl, authFetch } from "../utils/index.js";
-import { promptMenus, menuSatisfiesRequires } from "../utils/prompts.js";
+import { authFetch, endpoints } from "../utils/index.js";
+import {
+  promptMenus,
+  promptMenuExcludes,
+  promptMenuIncludes,
+  menuSatisfies,
+} from "../utils/prompts.js";
 
 /**
  * Workspace-prompts fetch/cache hook.
@@ -22,20 +27,21 @@ import { promptMenus, menuSatisfiesRequires } from "../utils/prompts.js";
  *   periodicPrompts: Array, fetchWorkspacePrompts: Function,
  *   fetchConversationPromptsForSession: Function }}
  */
-export function useWorkspacePrompts({ workingDir, activeSessionId, showToast }) {
+export function useWorkspacePrompts({
+  workingDir,
+  activeSessionId,
+  showToast,
+}) {
   const [workspacePrompts, setWorkspacePrompts] = useState([]); // All prompts for current workspace (merged from all sources by backend)
   const [workspacePromptsDir, setWorkspacePromptsDir] = useState(null); // Current workspace dir for prompts cache
   const [workspacePromptsLastModified, setWorkspacePromptsLastModified] =
     useState(null); // Last-Modified header for conditional requests
 
   // Predefined prompts: prompts whose `menus` list includes "prompts" (the ChatInput dropup).
+  // Parameters that the "prompts" menu cannot auto-fill are collected via the
+  // PromptParameterDialog when the user selects such a prompt (mitto-hcf.3).
   const predefinedPrompts = useMemo(
-    () =>
-      workspacePrompts.filter(
-        (p) =>
-          promptMenus(p).includes("prompts") &&
-          menuSatisfiesRequires(p, "prompts"),
-      ),
+    () => workspacePrompts.filter((p) => promptMenuIncludes(p, "prompts")),
     [workspacePrompts],
   );
 
@@ -44,14 +50,21 @@ export function useWorkspacePrompts({ workingDir, activeSessionId, showToast }) 
   // "promptsPeriodic" (periodic-selector-specific). The union keeps existing
   // prompts available in the selector while letting authors target a prompt
   // ONLY at the periodic selector via `menus: promptsPeriodic`.
+  //
+  // Exclusion: `!promptsPeriodic` in a prompt's `menus` field suppresses it
+  // from the periodic selector even when it would otherwise be included via
+  // the union (e.g. a one-shot prompt with `menus: prompts, !promptsPeriodic`).
+  // The exclusion is applied BEFORE the satisfaction check so it always wins.
   const periodicPrompts = useMemo(
     () =>
       workspacePrompts.filter((p) => {
+        // Explicit exclusion takes precedence over the union rule.
+        if (promptMenuExcludes(p).has("promptsPeriodic")) return false;
         const menus = promptMenus(p);
         return (
-          (menus.includes("prompts") && menuSatisfiesRequires(p, "prompts")) ||
+          (menus.includes("prompts") && menuSatisfies(p, "prompts")) ||
           (menus.includes("promptsPeriodic") &&
-            menuSatisfiesRequires(p, "promptsPeriodic"))
+            menuSatisfies(p, "promptsPeriodic"))
         );
       }),
     [workspacePrompts],
@@ -73,24 +86,20 @@ export function useWorkspacePrompts({ workingDir, activeSessionId, showToast }) 
       if (!sessionId || !dir) return [];
       try {
         const res = await authFetch(
-          apiUrl(
-            `/api/workspace-prompts?dir=${encodeURIComponent(dir)}&session_id=${encodeURIComponent(sessionId)}`,
-          ),
+          endpoints.workspacePrompts.list({
+            working_dir: dir,
+            session_id: sessionId,
+          }),
         );
         if (!res.ok) return [];
         const data = await res.json();
         const all = data?.prompts || [];
-        return all.filter(
-          (p) =>
-            p &&
-            promptMenus(p).includes("conversation") &&
-            menuSatisfiesRequires(p, "conversation"),
-        );
+        // Parameters that the "conversation" menu cannot auto-fill are collected
+        // via the PromptParameterDialog when the user selects such a prompt
+        // (mitto-hcf.3). No menuSatisfies gate — all params can be user-filled.
+        return all.filter((p) => p && promptMenuIncludes(p, "conversation"));
       } catch (err) {
-        console.error(
-          "Failed to fetch conversation prompts for session:",
-          err,
-        );
+        console.error("Failed to fetch conversation prompts for session:", err);
         return [];
       }
     },
@@ -114,13 +123,11 @@ export function useWorkspacePrompts({ workingDir, activeSessionId, showToast }) 
       }
 
       try {
-        const sessionParam = activeSessionId
-          ? `&session_id=${encodeURIComponent(activeSessionId)}`
-          : "";
         const res = await authFetch(
-          apiUrl(
-            `/api/workspace-prompts?dir=${encodeURIComponent(workingDir)}${sessionParam}`,
-          ),
+          endpoints.workspacePrompts.list({
+            working_dir: workingDir,
+            session_id: activeSessionId,
+          }),
           { headers },
         );
 
@@ -238,10 +245,7 @@ export function useWorkspacePrompts({ workingDir, activeSessionId, showToast }) 
     window.addEventListener("mitto:prompts_changed", handlePromptsChanged);
     return () =>
       window.removeEventListener("mitto:prompts_changed", handlePromptsChanged);
-  }, [
-    workingDir,
-    fetchWorkspacePrompts,
-  ]);
+  }, [workingDir, fetchWorkspacePrompts]);
 
   return {
     workspacePrompts,

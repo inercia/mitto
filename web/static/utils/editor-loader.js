@@ -19,7 +19,10 @@ const ESM_BASE = "https://esm.sh";
 
 // Local CodeMirror bundle (resolved relative to this module so it works under
 // API-prefix deployments). Memoized so it imports at most once.
-const LOCAL_BUNDLE = new URL("../vendor/codemirror/codemirror.js", import.meta.url).href;
+const LOCAL_BUNDLE = new URL(
+  "../vendor/codemirror/codemirror.js",
+  import.meta.url,
+).href;
 let _bundlePromise = null;
 function loadBundle() {
   if (!_bundlePromise) _bundlePromise = import(LOCAL_BUNDLE);
@@ -73,12 +76,24 @@ export async function loadDarkTheme() {
  */
 const LANG_MAP = {
   // JavaScript/TypeScript
-  js:  { pkg: "@codemirror/lang-javascript@6", fn: "javascript" },
+  js: { pkg: "@codemirror/lang-javascript@6", fn: "javascript" },
   mjs: { pkg: "@codemirror/lang-javascript@6", fn: "javascript" },
   cjs: { pkg: "@codemirror/lang-javascript@6", fn: "javascript" },
-  ts:  { pkg: "@codemirror/lang-javascript@6", fn: "javascript", opts: { typescript: true } },
-  tsx: { pkg: "@codemirror/lang-javascript@6", fn: "javascript", opts: { typescript: true, jsx: true } },
-  jsx: { pkg: "@codemirror/lang-javascript@6", fn: "javascript", opts: { jsx: true } },
+  ts: {
+    pkg: "@codemirror/lang-javascript@6",
+    fn: "javascript",
+    opts: { typescript: true },
+  },
+  tsx: {
+    pkg: "@codemirror/lang-javascript@6",
+    fn: "javascript",
+    opts: { typescript: true, jsx: true },
+  },
+  jsx: {
+    pkg: "@codemirror/lang-javascript@6",
+    fn: "javascript",
+    opts: { jsx: true },
+  },
 
   // Python
   py: { pkg: "@codemirror/lang-python@6", fn: "python" },
@@ -91,40 +106,64 @@ const LANG_MAP = {
 
   // Web
   html: { pkg: "@codemirror/lang-html@6", fn: "html" },
-  htm:  { pkg: "@codemirror/lang-html@6", fn: "html" },
-  css:  { pkg: "@codemirror/lang-css@6", fn: "css" },
+  htm: { pkg: "@codemirror/lang-html@6", fn: "html" },
+  css: { pkg: "@codemirror/lang-css@6", fn: "css" },
   scss: { pkg: "@codemirror/lang-css@6", fn: "css" },
   less: { pkg: "@codemirror/lang-css@6", fn: "css" },
 
   // Data formats
   json: { pkg: "@codemirror/lang-json@6", fn: "json" },
   yaml: { pkg: "@codemirror/lang-yaml@6", fn: "yaml" },
-  yml:  { pkg: "@codemirror/lang-yaml@6", fn: "yaml" },
+  yml: { pkg: "@codemirror/lang-yaml@6", fn: "yaml" },
 
   // Markup (markdown is bundled locally — handled in loadLanguage, not here)
-  xml:      { pkg: "@codemirror/lang-xml@6", fn: "xml" },
+  xml: { pkg: "@codemirror/lang-xml@6", fn: "xml" },
 
   // Other languages
   java: { pkg: "@codemirror/lang-java@6", fn: "java" },
-  cpp:  { pkg: "@codemirror/lang-cpp@6", fn: "cpp" },
-  cc:   { pkg: "@codemirror/lang-cpp@6", fn: "cpp" },
-  c:    { pkg: "@codemirror/lang-cpp@6", fn: "cpp" },
-  h:    { pkg: "@codemirror/lang-cpp@6", fn: "cpp" },
-  hpp:  { pkg: "@codemirror/lang-cpp@6", fn: "cpp" },
-  php:  { pkg: "@codemirror/lang-php@6", fn: "php" },
-  sql:  { pkg: "@codemirror/lang-sql@6", fn: "sql" },
+  cpp: { pkg: "@codemirror/lang-cpp@6", fn: "cpp" },
+  cc: { pkg: "@codemirror/lang-cpp@6", fn: "cpp" },
+  c: { pkg: "@codemirror/lang-cpp@6", fn: "cpp" },
+  h: { pkg: "@codemirror/lang-cpp@6", fn: "cpp" },
+  hpp: { pkg: "@codemirror/lang-cpp@6", fn: "cpp" },
+  php: { pkg: "@codemirror/lang-php@6", fn: "php" },
+  sql: { pkg: "@codemirror/lang-sql@6", fn: "sql" },
 
   // Shell (legacy modes)
-  sh:   { pkg: "@codemirror/legacy-modes@6/mode/shell", legacy: true, modKey: "shell" },
-  bash: { pkg: "@codemirror/legacy-modes@6/mode/shell", legacy: true, modKey: "shell" },
-  zsh:  { pkg: "@codemirror/legacy-modes@6/mode/shell", legacy: true, modKey: "shell" },
+  sh: {
+    pkg: "@codemirror/legacy-modes@6/mode/shell",
+    legacy: true,
+    modKey: "shell",
+  },
+  bash: {
+    pkg: "@codemirror/legacy-modes@6/mode/shell",
+    legacy: true,
+    modKey: "shell",
+  },
+  zsh: {
+    pkg: "@codemirror/legacy-modes@6/mode/shell",
+    legacy: true,
+    modKey: "shell",
+  },
 
   // Config (legacy modes)
-  toml:       { pkg: "@codemirror/legacy-modes@6/mode/toml", legacy: true, modKey: "toml" },
-  dockerfile: { pkg: "@codemirror/legacy-modes@6/mode/dockerfile", legacy: true, modKey: "dockerfile" },
+  toml: {
+    pkg: "@codemirror/legacy-modes@6/mode/toml",
+    legacy: true,
+    modKey: "toml",
+  },
+  dockerfile: {
+    pkg: "@codemirror/legacy-modes@6/mode/dockerfile",
+    legacy: true,
+    modKey: "dockerfile",
+  },
 
   // Diff
-  diff: { pkg: "@codemirror/legacy-modes@6/mode/diff", legacy: true, modKey: "diff" },
+  diff: {
+    pkg: "@codemirror/legacy-modes@6/mode/diff",
+    legacy: true,
+    modKey: "diff",
+  },
 };
 
 /**
@@ -155,9 +194,14 @@ export async function loadLanguage(ext) {
         loadBundle(),
       ]);
       // Legacy mode modules export the mode directly by modKey or first object export
-      const mode = entry.modKey ? langMod[entry.modKey] : Object.values(langMod).find(
-        (v) => typeof v === "object" && v !== null && typeof v.token === "function"
-      );
+      const mode = entry.modKey
+        ? langMod[entry.modKey]
+        : Object.values(langMod).find(
+            (v) =>
+              typeof v === "object" &&
+              v !== null &&
+              typeof v.token === "function",
+          );
       if (mode) {
         return b.language.StreamLanguage.define(mode);
       }

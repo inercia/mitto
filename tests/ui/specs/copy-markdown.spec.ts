@@ -84,8 +84,12 @@ test.describe("Copy as Markdown", () => {
 
     await copyBtn.click();
 
-    // UI confirmation: the title flips to "Copied!" for ~1.5s.
-    await expect(copyBtn).toHaveAttribute("title", "Copied!", {
+    // UI confirmation: the daisyUI tooltip wrapper flips its data-tip to
+    // "Copied!" (and force-opens) for ~1.5s.
+    const userCopyTip = bubble.locator(
+      '.tooltip:has([data-testid="copy-message-markdown"])',
+    );
+    await expect(userCopyTip).toHaveAttribute("data-tip", "Copied!", {
       timeout: timeouts.shortAction,
     });
 
@@ -108,7 +112,10 @@ test.describe("Copy as Markdown", () => {
     await bubble.hover();
     await copyBtn.click();
 
-    await expect(copyBtn).toHaveAttribute("title", "Copied!", {
+    const agentCopyTip = bubble.locator(
+      '.tooltip:has([data-testid="copy-message-markdown"])',
+    );
+    await expect(agentCopyTip).toHaveAttribute("data-tip", "Copied!", {
       timeout: timeouts.shortAction,
     });
 

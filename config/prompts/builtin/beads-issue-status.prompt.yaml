@@ -1,52 +1,85 @@
-icon: beads
+icon: list
 name: Show status
-menus: beadsIssues
-requires: parameters
+menus: beadsIssues, conversation
+parameters:
+  - name: IssueID
+    type: beadsId
+    required: false
+    description: The beads issue ID to act on
 description: Fact-check this bead's implementation status against the codebase
 backgroundColor: '#F0F4C3'
 group: Tasks
-enabledWhen: commandExists("bd") && dirExists(".beads")
+enabledWhen: CommandExists("bd") && DirExists(".beads")
+preferredModels:
+  - modelTag: Coding
 prompt: |
   # Beads: Status Check — One Bead
 
   Beads is a CLI issue tracker (`bd`). Issues are called "beads" and have IDs like `bd-xyz`.
 
+  {{ $target := "" -}}
+  {{ if .Session.BeadsIssue }}{{ $target = .Session.BeadsIssue }}{{ else if .Args.IssueID }}{{ $target = .Args.IssueID }}{{ end -}}
+  {{ if $target -}}
+  The **target bead** is `{{ $target }}`.
+  {{- else -}}
+  There is **no linked bead** for this conversation. Fact-check the **current problem / topic under
+  discussion here** against the codebase — what appears implemented vs. missing for the work being
+  discussed. Do **not** run any `bd` commands — there is no bead to load.
+  {{- end }}
+
   ## Session Context
 
-  Your session ID is `@mitto:session_id` — use this as `self_id` for all `mitto_*` MCP tool calls.
+  Your session ID is `{{ .Session.ID }}` — use this as `self_id` for all `mitto_*` MCP tool calls.
 
-  The **target bead** is `${ISSUE_ID}`.
-
+  {{ if $target -}}
   ## Step 1 — Fetch full bead details
 
   Load everything about the target bead:
 
   ```bash
-  bd show ${ISSUE_ID} --long --json     # description, acceptance, design, assignee, metadata
-  bd dep tree ${ISSUE_ID}               # blockers and dependents
+  bd show {{ $target }} --long --json     # description, acceptance, design, assignee, metadata
+  bd dep tree {{ $target }}               # blockers and dependents
   ```
 
   Also run locally to gather implementation evidence:
 
   ```bash
   # Find commits that reference this bead ID
-  git log --oneline --all | grep -i "${ISSUE_ID}"
+  git log --oneline --all | grep -i "{{ $target }}"
 
   # Check branches containing the bead ID
-  git branch -a | grep -i "${ISSUE_ID}"
+  git branch -a | grep -i "{{ $target }}"
   ```
+  {{- else }}
+  ## Step 1 — Gather codebase evidence for the current problem
+
+  There is no bead to load. Gather evidence about the current problem or topic under discussion by
+  inspecting the relevant codebase areas:
+
+  ```bash
+  git log --oneline -50                  # recent work that touches the area
+  ```
+
+  Locate the relevant files, symbols, or config by exploring the codebase directly so you can assess
+  the current implementation state against the work being discussed.
+  {{- end }}
 
   ## Step 2 — Fact-check implementation status
 
-  Analyse all gathered evidence and produce a **Status Report** for the bead:
+  Analyse all gathered evidence and produce a **Status Report**:
 
-  ### Bead: `${ISSUE_ID}` — `<Title>`
+  {{ if $target -}}
+  ### Bead: `{{ $target }}` — `<Title>`
+  {{- else -}}
+  ### Current problem — `<topic>`
+  {{- end }}
 
-  **Goal** (one sentence restating what this bead is supposed to deliver)
+  **Goal** (one sentence restating what this bead or current problem is supposed to deliver)
 
   #### Acceptance Criteria — Status
 
-  For each acceptance criterion listed in the bead (or inferred from the description if not explicitly listed):
+  For each acceptance criterion listed in the bead (or, when there is no bead, each requirement
+  inferred from the current discussion):
 
   | # | Criterion | Status | Evidence |
   |---|-----------|--------|----------|
@@ -64,25 +97,29 @@ prompt: |
   - **Completion estimate**: `<percentage or qualitative: Not started / Early / Midway / Nearly done / Done>`
   - **What appears to be done**: bullet list of concrete evidence of completed work
   - **What appears to be missing**: bullet list of acceptance criteria with no evidence of completion
-  - **Blockers or risks**: anything preventing completion (e.g., an open blocking bead in `bd dep tree`, a failing test, an unanswered question in notes)
+  - **Blockers or risks**: anything preventing completion (e.g., a failing test, an unanswered question in notes)
 
+  {{ if $target -}}
   > ⚠️ **This report is read-only.** No code changes and no beads updates will be performed. Use the "Start work" prompt to continue implementation.
+  {{- else -}}
+  > ⚠️ **This report is read-only.** No code changes and no beads updates were performed.
+  {{- end }}
 
   ## Final step — Offer to delete this conversation
 
   The task is complete. Offer to tidy up so finished conversations do not accumulate.
 
   1. Ask the user whether to delete this conversation now, via
-     `mitto_ui_options_mitto(self_id: "@mitto:session_id", question: "All done — delete this conversation now?", timeout_seconds: 120)` with options:
+     `mitto_ui_options(self_id: "{{ .Session.ID }}", question: "All done — delete this conversation now?", timeout_seconds: 120)` with options:
      - **"Yes, delete it"**
      - **"No, keep it"**
 
   2. Honour the answer:
      - **Delete** → first notify the user (the deletion is deferred until your turn ends, so the
        message is delivered first) with
-       `mitto_ui_notify_mitto(self_id: "@mitto:session_id", title: "<short outcome>", message: "<one-line summary of what was done>", style: "success")`,
+       `mitto_ui_notify_mitto(self_id: "{{ .Session.ID }}", title: "<short outcome>", message: "<one-line summary of what was done>", style: "success")`,
        then self-destruct with
-       `mitto_conversation_delete_mitto(self_id: "@mitto:session_id", conversation_id: "self")`.
+       `mitto_conversation_delete_mitto(self_id: "{{ .Session.ID }}", conversation_id: "self")`.
      - **Keep** → leave the conversation in place.
 
   3. **On timeout** (no response): only delete this conversation if **all** of the following hold —

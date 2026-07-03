@@ -1,0 +1,135 @@
+icon: error
+name: Reproduce bug
+menus: prompts, conversation, beadsIssues, !promptsPeriodic
+parameters:
+  - name: IssueID
+    type: beadsId
+    required: false
+    description: The beads issue ID to act on (auto-filled from the Beads issue menu)
+description: Reliably reproduce a bug — from the conversation or a bug-type beads issue — and capture the reproduction as an automated failing test
+group: Debugging
+backgroundColor: '#FFCDD2'
+enabledWhen: Item.Kind != "beadsIssue" || Item.Type == "bug"
+prompt: |
+  ## Session Context
+
+  Your session ID is `{{ .Session.ID }}` — use this as `self_id` for all `mitto_*` MCP tool calls.
+
+  # Reproduce a Bug
+
+  {{ $target := "" -}}
+  {{ if .Session.BeadsIssue }}{{ $target = .Session.BeadsIssue }}{{ else if .Args.IssueID }}{{ $target = .Args.IssueID }}{{ end -}}
+  {{ if $target -}}
+  The **target bug** is tracked by beads issue `{{ $target }}`. Reliably **reproduce** the
+  bug it describes and capture that reproduction as an **automated failing test**, then
+  record your findings back on the bead. The goal is reproduction and evidence — **not**
+  fixing the bug.
+  {{- else -}}
+  Reliably **reproduce** the bug under discussion and capture that reproduction as an
+  **automated failing test**, so the failure is provable now and, later, verifiably fixed.
+  The goal is reproduction and evidence — **not** fixing the bug.
+  {{- end }}
+
+  ## Step 1 — Pin down the bug
+
+  {{ if $target -}}
+  Load the bead's full detail first — it is the source of truth for the expected vs. actual
+  behavior:
+
+  ```bash
+  bd show {{ $target }} --long --json     # description, acceptance, repro steps, metadata
+  bd comments {{ $target }}               # prior discussion, repro notes, earlier attempts
+  bd dep tree {{ $target }}               # related / blocking beads for extra context
+  ```
+
+  Extract from the bead (and any linked discussion) what was expected, what actually
+  happens, and any steps, inputs, or environment already noted.
+  {{- else -}}
+  Determine exactly which bug to reproduce. **Default to the current conversation** — we
+  have most likely already been discussing a specific bug; re-read the relevant messages
+  and take that as the target.
+
+  If the bug is genuinely ambiguous or you cannot tell which one is meant, **ask** via
+  `mitto_ui_options(self_id: "{{ .Session.ID }}", allow_free_text: true)` rather
+  than guessing.
+  {{- end }}
+
+  State, in one or two lines:
+
+  - **Expected behavior** — what *should* happen.
+  - **Actual behavior** — what happens instead (the symptom: wrong output, panic, crash,
+    error message, hang, etc.).
+
+  ## Step 2 — Find the minimal reproduction
+
+  Read the relevant source before theorizing — do not speculate about code you haven't opened.
+
+  - Identify the **entry point** and the code path that exhibits the bug.
+  - Establish the **preconditions** (inputs, state, config, environment) needed to trigger it.
+  - Reduce to the **smallest** set of steps / inputs that still triggers the failure.
+  - Confirm the failure is **deterministic**; if it is intermittent, note what makes it flaky
+    (timing, ordering, concurrency, external state) and how reliably it reproduces.
+
+  ## Step 3 — Capture it as a test
+
+  Write an **automated test that fails because of the bug** — it encodes the expected
+  behavior and currently fails on the actual (buggy) behavior.
+
+  - Use the project's existing test framework and conventions (mirror a nearby test).
+  - Prefer the **narrowest** level that still demonstrates the bug (unit > integration > e2e).
+  - Assert the **expected** behavior so the test fails **specifically** on this bug — not
+    on an unrelated error or a crash during setup.
+  - Name it descriptively and reference the bug/issue in a comment.
+  - Keep it minimal and focused on this one defect.
+
+  ## Step 4 — Prove the reproduction
+
+  - **Run the test** and confirm it fails, with the failure matching the reported symptom.
+  - Capture the exact command and the **failing output** as evidence.
+  - If it does **not** fail as expected, the reproduction is not yet correct — refine the
+    steps/inputs and repeat. A test that passes has not reproduced the bug.
+
+  **Leave the failing test in place** (do not delete or skip it) so it documents the bug
+  and can verify a future fix.
+
+  {{ if $target -}}
+  ## Step 5 — Record the conclusions on the bead
+
+  Post your findings back to `{{ $target }}` so the reproduction is durable and a future
+  fix run can build on it. Write the details to a temp Markdown file and pass it via
+  `--file` to preserve formatting:
+
+  ```bash
+  bd comment {{ $target }} --file /tmp/repro-findings.md
+  ```
+
+  The comment should contain: the minimal reproduction steps / inputs, the failing test
+  (file + name + command to run it), the failing output as evidence, and any suspected
+  cause (marked unverified). Then append a short audit note; if the bead lacked testable
+  acceptance criteria, this reproduction is a good basis for them:
+
+  ```bash
+  bd update {{ $target }} --append-notes "Reproduced the bug; added failing test <path>::<name>. See latest comment for steps and evidence."
+  ```
+
+  Do **not** close the bead — it is reproduced, not fixed.
+  {{- end }}
+
+  ## Report
+
+  Finish with a concise summary:
+
+  1. **Bug** — expected vs. actual behavior, in one or two lines{{ if $target }} (bead `{{ $target }}`){{ end }}.
+  2. **Reproduction** — the minimal steps / inputs that trigger it (and reliability if flaky).
+  3. **Test added** — file and test name, plus the exact command to run it.
+  4. **Evidence** — the failing output proving the reproduction.
+  5. **Suspected cause** — a hypothesis about the root cause, if you have one (mark as unverified).
+  {{- if $target }}
+  6. **Recorded on bead** — confirm the findings comment (and audit note) posted to `{{ $target }}`.
+  7. **Next step** — the fix is out of scope here; the failing test should pass once the bug is fixed.
+  {{- else }}
+  6. **Next step** — the fix is out of scope here; the failing test should pass once the bug is fixed.
+  {{- end }}
+
+  Do **not** fix the bug in this run unless the user explicitly asks — a reliable
+  reproduction and a failing test are the deliverables.

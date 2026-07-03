@@ -27,14 +27,68 @@ func writeJSONCreated(w http.ResponseWriter, data interface{}) {
 	writeJSON(w, http.StatusCreated, data)
 }
 
-// writeError writes an error response with the given status code.
+// errorBody is the inner object of the canonical API error envelope.
+type errorBody struct {
+	Code    string         `json:"code"`
+	Message string         `json:"message"`
+	Details map[string]any `json:"details,omitempty"`
+}
+
+// errorEnvelope is the canonical error response shape for all non-exception API
+// responses. See docs/devel/rest-api-conventions.md §4.
+type errorEnvelope struct {
+	Error errorBody `json:"error"`
+}
+
+// Canonical API error codes, mapped 1:1 to HTTP status codes per
+// docs/devel/rest-api-conventions.md §4.
+const (
+	errCodeBadRequest       = "bad_request"
+	errCodeUnauthenticated  = "unauthenticated"
+	errCodeForbidden        = "forbidden"
+	errCodeNotFound         = "not_found"
+	errCodeMethodNotAllowed = "method_not_allowed"
+	errCodeConflict         = "conflict"
+	errCodeTooLarge         = "too_large"
+	errCodeRateLimited      = "rate_limited"
+	errCodeServerError      = "server_error"
+)
+
+// defaultCodeForStatus returns the canonical error code string for an HTTP
+// status code, per the policy table in rest-api-conventions.md §4. Unmapped
+// statuses fall back to server_error.
+func defaultCodeForStatus(status int) string {
+	switch status {
+	case http.StatusBadRequest:
+		return errCodeBadRequest
+	case http.StatusUnauthorized:
+		return errCodeUnauthenticated
+	case http.StatusForbidden:
+		return errCodeForbidden
+	case http.StatusNotFound:
+		return errCodeNotFound
+	case http.StatusMethodNotAllowed:
+		return errCodeMethodNotAllowed
+	case http.StatusConflict:
+		return errCodeConflict
+	case http.StatusRequestEntityTooLarge:
+		return errCodeTooLarge
+	case http.StatusTooManyRequests:
+		return errCodeRateLimited
+	default:
+		return errCodeServerError
+	}
+}
+
+// writeErrorJSON writes a structured JSON error response using the canonical
+// error envelope: {"error":{"code":...,"message":...}}.
 // For simple text errors, use http.Error directly.
-// This function is for JSON error responses with structured data.
+// An empty errorCode derives the canonical code from the status.
 func writeErrorJSON(w http.ResponseWriter, status int, errorCode, message string) {
-	writeJSON(w, status, map[string]string{
-		"error":   errorCode,
-		"message": message,
-	})
+	if errorCode == "" {
+		errorCode = defaultCodeForStatus(status)
+	}
+	writeJSON(w, status, errorEnvelope{Error: errorBody{Code: errorCode, Message: message}})
 }
 
 // writeNoContent writes a 204 No Content response.
@@ -46,7 +100,7 @@ func writeNoContent(w http.ResponseWriter) {
 // Returns true if successful, false if there was an error (error response already sent).
 func parseJSONBody(w http.ResponseWriter, r *http.Request, v interface{}) bool {
 	if err := json.NewDecoder(r.Body).Decode(v); err != nil {
-		http.Error(w, "Invalid request body: "+err.Error(), http.StatusBadRequest)
+		writeErrorJSON(w, http.StatusBadRequest, "", "Invalid request body: "+err.Error())
 		return false
 	}
 	return true
@@ -82,5 +136,5 @@ func writeJSONWithETag(w http.ResponseWriter, r *http.Request, data interface{})
 
 // methodNotAllowed writes a 405 Method Not Allowed response.
 func methodNotAllowed(w http.ResponseWriter) {
-	http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+	writeErrorJSON(w, http.StatusMethodNotAllowed, "", "Method not allowed")
 }

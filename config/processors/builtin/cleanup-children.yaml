@@ -7,8 +7,8 @@
 #
 # Activation conditions:
 #   1. At least 1 child conversation exists (enabledWhen CEL)
-#   2. All children are currently idle, i.e. none are prompting (children.promptingCount == 0)
-#   3. The mitto_conversation_delete_* MCP tool is available (tools.hasPattern CEL)
+#   2. All children are currently idle, i.e. none are prompting (Children.PromptingCount == 0)
+#   3. The mitto_conversation_delete_* MCP tool is available (Tools.HasPattern CEL)
 #
 # Throttling:
 #   - Fires on the first message, then re-runs every 10 user messages or 15 minutes
@@ -26,16 +26,19 @@ when:
     afterTokens: 40000
 mutate: append
 priority: 95
-enabledWhen: 'children.count > 0 && children.promptingCount == 0 && tools.hasPattern("mitto_conversation_delete_*")'
+enabledWhen: 'Children.Count > 0 && Children.PromptingCount == 0 && Tools.HasPattern("mitto_conversation_delete_*")'
 text: |
+  {{- $count := .Children.MCPCount -}}
+  {{- if gt $count 0 -}}
   ---
   [Child Conversation Cleanup Reminder]
-  You have @mitto:mcp_children_count active child conversations that were created
-  by you, and all of them are currently idle (not responding to any prompts).
+  You have {{ $count }} active child conversation{{ if ne $count 1 }}s{{ end }} that {{ if eq $count 1 }}was{{ else }}were{{ end }} created
+  by you, and {{ if eq $count 1 }}it is{{ else }}all of them are{{ end }} currently idle (not responding to any prompts).
   Consider deleting child conversations you no longer need using
   `mitto_conversation_delete` to free up resources.
 
   Your MCP-created children:
-  @mitto:mcp_children
+  {{ .Children.MCPText }}
 
-  Use your session ID (@mitto:session_id) as self_id when calling the delete tool.
+  Use your session ID ({{ .Session.ID }}) as self_id when calling the delete tool.
+  {{- end -}}

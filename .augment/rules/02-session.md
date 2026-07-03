@@ -69,6 +69,27 @@ func (bs *BackgroundSession) onAgentMessage(seq int64, html string) {
 }
 ```
 
+### Event.Meta: Generic Metadata Bag
+
+Attach optional metadata to events using `RecordOption` during persistence:
+
+```go
+// Persist with metadata
+recorder.RecordEventWithSeq(event,
+    session.WithMeta(session.EventMeta{
+        WorkingDir: "/path/to/dir",
+        TaskID:     "task-123",
+    }),
+)
+```
+
+**Key patterns**:
+- `Event.Meta` is a generic map (`map[string]interface{}`), size-capped at 64 KB
+- Metadata is **not persisted to events.jsonl** — stored separately in `event_meta.jsonl`
+- On event read, metadata is attached if a corresponding entry exists
+- Use `WithMeta()` `RecordOption` to inject metadata during `RecordEventWithSeq()`
+- Observers notified via `EventMetaObserver` interface (see `11-web-backend-sequences.md`)
+
 ### MaxSeq Tracking
 
 The `Metadata.MaxSeq` field tracks the highest persisted sequence number. `ACPStartFailureCount` persists cold-start failure state across app restarts — `session_manager.go` increments it on exhausted retries and auto-archives when it reaches 3:
@@ -98,26 +119,16 @@ lock.SetWaitingPermission("File write")  // During permission request
 
 ## Periodic Prompts (PeriodicStore)
 
-Stored in `periodic.json` per session. API: `GET/PUT/PATCH/DELETE /api/sessions/{id}/periodic`, `POST /api/sessions/{id}/periodic/run-now`.
+Stored in `periodic.json`. Only top-level sessions may have periodic prompts (child → 400).
 
-```go
-ps := store.Periodic(sessionID)
-ps.Set(&session.PeriodicPrompt{Prompt: "...", Frequency: ..., Enabled: true})
-ps.Update(prompt, promptName, frequency, enabled, freshContext, maxIterations)  // partial update (pointer args, nil = no-op)
-ps.RecordSent()                         // increments iteration_count + updates last_sent_at + next_scheduled_at
-ps.TriggerNow(sessionID, resetTimer)    // immediate delivery via periodicRunner
-```
+**Key fields**:
+- `PromptName` — references workspace prompt by name (resolved at send time via cache)
+- `MaxIterations` — cap on runs (0 = unlimited). Auto-disables when reached.
+- `Trigger` — `schedule` (default) or `onCompletion` (event-driven)
+- `DelaySeconds` — wait after agent idle before firing (onCompletion only)
+- `MaxDurationSeconds` — wall-clock cap since first run
 
-**Max iterations / auto-stop** (`PeriodicPrompt` fields):
-- `MaxIterations` (json `max_iterations`, 0/absent = unlimited) — per-conversation cap on scheduled runs.
-- `IterationCount` (json `iteration_count`) — runs delivered so far; incremented **only** by `RecordSent` (never by `Update`/`Set`, which preserve it).
-- `ReachedMaxIterations()` → true when `MaxIterations > 0 && IterationCount >= MaxIterations`.
-- **Auto-stop**: in `periodic_runner.go` `deliverPrompt`'s `OnComplete`, after `RecordSent` the runner compares `IterationCount` against `config.EffectiveMaxPeriodicIterations(promptMax, configMax)` (smallest positive of prompt cap, config `max_periodic_iterations` default 100, hardcoded `GlobalMaxPeriodicIterations`=1000). When reached it **disables** the periodic (`Update(enabled=false)`) — it is **not** archived/deleted — and broadcasts via the `onPeriodicAutoStopped` callback.
-
-**Key rules**:
-- Only top-level/parent sessions may have periodic prompts (child sessions return 400)
-- `PromptName` references a named workspace prompt by name instead of embedding full text. `Validate()` accepts empty `Prompt` when `PromptName` is set. The periodic runner resolves the name to text at send time via the prompts cache.
-- **Caller update required**: Changing `PeriodicStore.Update()` signature requires updating **both** `internal/web/session_periodic_api.go` (PATCH handler) AND `internal/mcpserver/server.go` (MCP tool handler) — both call `Update()`.
+**Critical**: Changing `PeriodicStore.Update()` signature requires updating BOTH `session_periodic_api.go` (PATCH handler) AND `mcpserver/server.go` (MCP tool) — both call `Update()`.
 
 ## Auxiliary Package
 

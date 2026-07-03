@@ -351,6 +351,47 @@ const clientMaxSeq = Math.max(refSeq, stateSeq);
 
 This ensures accurate gap detection even when React state is temporarily empty during reconnection or fast reconnects.
 
+## Session-Activation Health Check (Zombie-WS Recovery)
+
+Distinct from the keepalive-based detection above, the frontend also performs an on-demand health check whenever a session becomes active. This recovers per-session WebSockets that died while the session was in the background (e.g., the macOS WKWebView suspended JS timers while the app was hidden, or the lazy-connect sweep dropped an idle background socket).
+
+### How It Works
+
+In `switchSession` (`web/static/hooks/useWebSocket.js`), once a session that already has loaded messages is re-activated, the handler inspects `sessionWsRefs.current[sessionId]`. If the ref is missing or its `readyState !== WebSocket.OPEN`, the session has a stored history but no live socket — the "zombie WS" state. The handler then:
+
+1. Removes the stale ref from `sessionWsRefs.current`.
+2. Closes the dead socket (best-effort).
+3. Calls `connectToSession(sessionId)`, which opens a new WebSocket. The `ws.onopen` handler resolves the three-tier watermark (see [Sync (after reconnect or app restart)](#sync-after-reconnect-or-app-restart)) and sends `load_events {after_seq: lastSeq}`, so no events are lost.
+
+The exact log line emitted by this path is:
+
+```
+Session <id> has messages but WebSocket is not connected, reconnecting...
+```
+
+A related wake/visibility path, `reconnectAllSessionsStaggered`, iterates every currently-connected per-session WebSocket and force-reconnects them with `STARTUP_STAGGER_MS` delays so their `load_events` requests do not hit the server simultaneously. It is guarded by a leading-edge debounce of `STAGGERED_RECONNECT_DEBOUNCE_MS` (5000 ms) to collapse the multiple macOS activation events (`NSWorkspaceDidWakeNotification`, `NSWorkspaceScreensDidWakeNotification`, `applicationDidBecomeActive`) that fire 4–10 s apart for the same wake/focus event.
+
+### Expected Guard Logs During Recovery
+
+The recovery and staggered-reconnect paths emit two log lines that look like noise but are actually **healthy guard rails** — they indicate the protections are working, not that something failed:
+
+| Log Line                                                                              | What It Means                                                                                                                                                                                                                |
+| ------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `WebSocket <id> closed but ref points to different WebSocket - not deleting`          | Ref-identity guard. A newer WebSocket has already replaced the old ref in `sessionWsRefs.current`, so the old socket's `onclose` correctly refuses to evict the new one. Expected during back-to-back recoveries.            |
+| `[stagger] Skipping duplicate staggered reconnect (<elapsed>ms since last, debounce=5000ms)` | The `STAGGERED_RECONNECT_DEBOUNCE_MS` leading-edge debounce working as intended — a second wake/activation event arrived within 5 s of the first and was correctly collapsed, preventing duplicate observer registration. |
+
+### Expected Recovery Volume
+
+Long-running measurement of the recovery rate shows a stable baseline of **~133/day** (~732–734 occurrences over ~6 days), with no reconnect storms (peaks ≤ ~19 connects/min). All recoveries are self-healing and not user-visible: the client reconnects, syncs via `after_seq`, and resumes streaming transparently.
+
+Three legitimate drivers explain the volume:
+
+1. **Long-lived sessions** naturally accumulate more reconnect cycles. A long-lived "Logs Analyzer" parent session, for example, contributed 54 of the recoveries in a single measurement window. Periodic conversations (see [Periodic Conversations](../../../CLAUDE.md)) are long-lived by design and behave the same way.
+2. **macOS app hide/resume cycles** suspend the WKWebView per-session WebSocket while the app is hidden, so each `App became active` event finds dead sockets that must be re-established. See sibling issue `mitto-1o2` for the WKWebView timer-suspension details.
+3. **Idle per-session sockets may be released server-side or by the lazy-connect background sweep** (see `BACKGROUND_DISCONNECT_GRACE_MS` in `useWebSocket.js`). When the user switches back, the session-activation health check above re-establishes the connection on demand.
+
+A stable ~133/day rate — no storms, all self-healing — is the **expected baseline** and not a defect. Investigate only if the rate spikes well above baseline, recoveries stop self-healing (e.g., the same session reconnects repeatedly without ever staying open), or guard logs are accompanied by user-visible errors.
+
 ## Immediate Gap Detection (max_seq Piggybacking)
 
 While keepalive-based sync works well, it has latency of 5-10 seconds. For faster gap detection, all streaming messages include a `max_seq` field.

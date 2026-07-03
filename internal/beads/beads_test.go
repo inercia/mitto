@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // ---------------------------------------------------------------------------
@@ -83,6 +84,29 @@ func TestCmdError_StderrOf(t *testing.T) {
 	}
 }
 
+func TestIsNotFound(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"nil", nil, false},
+		{"missing issue", &CmdError{Err: errors.New("bd exited with non-zero status"),
+			Stderr: `Error fetching mitto-cam: no issue found matching "mitto-cam"`}, true},
+		{"mixed case", &CmdError{Stderr: `No Issue Found Matching "x"`}, true},
+		{"other bd failure", &CmdError{Stderr: "database is locked"}, false},
+		{"empty stderr", &CmdError{Stderr: ""}, false},
+		{"plain error", errors.New("no issue found matching"), false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := IsNotFound(tc.err); got != tc.want {
+				t.Errorf("IsNotFound = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Validators
 // ---------------------------------------------------------------------------
@@ -103,7 +127,7 @@ func TestIsValidConfigKey(t *testing.T) {
 }
 
 func TestIsValidUpstream(t *testing.T) {
-	for _, u := range []string{"none", "jira", "github", "gitlab", "linear"} {
+	for _, u := range []string{"none", "jira", "github", "gitlab", "linear", "prompts"} {
 		if !IsValidUpstream(u) {
 			t.Errorf("IsValidUpstream(%q) = false, want true", u)
 		}
@@ -359,50 +383,100 @@ func TestClient_SetStatus_PassesVerb(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Cleanup
+// ListClosedIDs / DeleteIDs
 // ---------------------------------------------------------------------------
 
-func TestClient_Cleanup_ZeroClosed_NoDeleteCall(t *testing.T) {
+func TestClient_ListClosedIDs_Empty(t *testing.T) {
 	r := &recordingRunner{responses: []runnerResp{
 		{stdout: []byte(`[]`)}, // empty list
 	}}
 	c := newClient(r)
-	count, err := c.Cleanup(context.Background(), "/dir")
+	ids, err := c.ListClosedIDs(context.Background(), "/dir")
 	if err != nil {
-		t.Fatalf("Cleanup() error: %v", err)
+		t.Fatalf("ListClosedIDs() error: %v", err)
 	}
-	if count != 0 {
-		t.Errorf("count = %d, want 0", count)
+	if len(ids) != 0 {
+		t.Errorf("ids = %v, want empty", ids)
 	}
 	if len(r.calls) != 1 {
 		t.Errorf("expected 1 runner call (list only), got %d", len(r.calls))
 	}
 }
 
-func TestClient_Cleanup_DeletesWithForce(t *testing.T) {
+func TestClient_ListClosedIDs_ReturnIDs(t *testing.T) {
 	listJSON := `[{"id":"abc-1"},{"id":"abc-2"}]`
 	r := &recordingRunner{responses: []runnerResp{
-		{stdout: []byte(listJSON)}, // list call
-		{stdout: []byte("")},       // delete call
+		{stdout: []byte(listJSON)},
 	}}
 	c := newClient(r)
-	count, err := c.Cleanup(context.Background(), "/dir")
+	ids, err := c.ListClosedIDs(context.Background(), "/dir")
 	if err != nil {
-		t.Fatalf("Cleanup() error: %v", err)
+		t.Fatalf("ListClosedIDs() error: %v", err)
 	}
-	if count != 2 {
-		t.Errorf("count = %d, want 2", count)
+	if len(ids) != 2 {
+		t.Fatalf("expected 2 ids, got %d", len(ids))
 	}
-	if len(r.calls) != 2 {
-		t.Fatalf("expected 2 calls, got %d", len(r.calls))
+	if ids[0] != "abc-1" || ids[1] != "abc-2" {
+		t.Errorf("ids = %v, want [abc-1, abc-2]", ids)
 	}
-	deleteArgs := r.calls[1].args
-	joined := strings.Join(deleteArgs, " ")
+}
+
+func TestClient_DeleteIDs_NoOp_WhenEmpty(t *testing.T) {
+	r := &recordingRunner{}
+	c := newClient(r)
+	if err := c.DeleteIDs(context.Background(), "/dir", nil); err != nil {
+		t.Fatalf("DeleteIDs(nil) error: %v", err)
+	}
+	if len(r.calls) != 0 {
+		t.Errorf("expected 0 runner calls, got %d", len(r.calls))
+	}
+}
+
+func TestClient_DeleteIDs_DeletesWithForce(t *testing.T) {
+	r := &recordingRunner{responses: []runnerResp{
+		{stdout: []byte("")}, // delete call
+	}}
+	c := newClient(r)
+	ids := []string{"abc-1", "abc-2"}
+	if err := c.DeleteIDs(context.Background(), "/dir", ids); err != nil {
+		t.Fatalf("DeleteIDs() error: %v", err)
+	}
+	if len(r.calls) != 1 {
+		t.Fatalf("expected 1 call, got %d", len(r.calls))
+	}
+	joined := strings.Join(r.calls[0].args, " ")
 	if !strings.Contains(joined, "--force") {
-		t.Errorf("delete args missing --force: %v", deleteArgs)
+		t.Errorf("delete args missing --force: %v", r.calls[0].args)
 	}
 	if !strings.Contains(joined, "abc-1") || !strings.Contains(joined, "abc-2") {
-		t.Errorf("delete args missing IDs: %v", deleteArgs)
+		t.Errorf("delete args missing IDs: %v", r.calls[0].args)
+	}
+}
+
+func TestCleanupTimeout_ScalesWithCount(t *testing.T) {
+	// Small counts use the high floor (syncTimeout), not the old 15s default.
+	if got := cleanupTimeout(0); got != syncTimeout {
+		t.Errorf("cleanupTimeout(0) = %v, want floor %v", got, syncTimeout)
+	}
+	if got := cleanupTimeout(10); got != syncTimeout {
+		t.Errorf("cleanupTimeout(10) = %v, want floor %v", got, syncTimeout)
+	}
+	// The floor must comfortably exceed the previous defaultTimeout.
+	if syncTimeout <= defaultTimeout {
+		t.Errorf("floor %v must exceed old defaultTimeout %v", syncTimeout, defaultTimeout)
+	}
+	// Large counts scale above the floor and grow monotonically.
+	big := cleanupTimeout(1000)
+	if big <= syncTimeout {
+		t.Errorf("cleanupTimeout(1000) = %v, want > floor %v", big, syncTimeout)
+	}
+	if cleanupTimeout(2000) <= big {
+		t.Errorf("cleanupTimeout must increase with count: 2000 (%v) <= 1000 (%v)", cleanupTimeout(2000), big)
+	}
+	// 363 closed issues (the case that exceeded the old 15s timeout) must get a
+	// budget well beyond the measured bulk-delete duration.
+	if got, want := cleanupTimeout(363), 363*750*time.Millisecond; got != want {
+		t.Errorf("cleanupTimeout(363) = %v, want %v", got, want)
 	}
 }
 
@@ -678,5 +752,40 @@ func TestAppendGitignorePattern_AppendsNewlineToTruncatedFile(t *testing.T) {
 	}
 	if got := countPatternLines(t, path, "new-pattern"); got != 1 {
 		t.Fatalf("new-pattern count = %d, want 1 (content: %q)", got, data)
+	}
+}
+
+func TestEnvWithActor_OverridesAndDedupes(t *testing.T) {
+	// A stale BEADS_ACTOR inherited from the parent process must be replaced,
+	// not duplicated, so the bd subprocess sees exactly our actor.
+	t.Setenv("BEADS_ACTOR", "stale:value")
+
+	env := envWithActor("mitto:webui")
+
+	var actors []string
+	for _, kv := range env {
+		if strings.HasPrefix(kv, "BEADS_ACTOR=") {
+			actors = append(actors, strings.TrimPrefix(kv, "BEADS_ACTOR="))
+		}
+	}
+	if len(actors) != 1 {
+		t.Fatalf("BEADS_ACTOR entries = %d (%v), want exactly 1", len(actors), actors)
+	}
+	if actors[0] != "mitto:webui" {
+		t.Errorf("BEADS_ACTOR = %q, want %q", actors[0], "mitto:webui")
+	}
+}
+
+func TestNewClient_DefaultsWebUIActor(t *testing.T) {
+	c, ok := NewClient().(*cliClient)
+	if !ok {
+		t.Fatalf("NewClient did not return *cliClient")
+	}
+	r, ok := c.runner.(execRunner)
+	if !ok {
+		t.Fatalf("NewClient runner is %T, want execRunner", c.runner)
+	}
+	if r.actor != webUIActor {
+		t.Errorf("execRunner.actor = %q, want %q", r.actor, webUIActor)
 	}
 }

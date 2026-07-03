@@ -1,16 +1,53 @@
 icon: refresh
 name: Iterate implementing
 menus: promptsPeriodic
+parameters:
+  - name: Commit
+    type: boolean
+    description: Commit the changes made at the end of each iteration
 description: Continue iterating to implement the feature we have been working on
 group: Development
 backgroundColor: '#BBDEFB'
+periodic:
+  mode: always
+  trigger: onCompletion
+  delay: 30
+  maxIterations: 20
 prompt: |
+  {{- if .Iteration.IsUninterrupted }}
+  Continue implementing the feature you have been working on in this loop. Read the
+  state file `implement-<problem>-<date>.md` and the relevant source first — do
+  not speculate about code you haven't opened.
+
+  Do exactly one increment this run:
+
+  1. Review the state file: what's done and what's still missing.
+  2. Pick the next work item from the spec — no extra features or abstractions.
+  3. Implement it.
+  4. Verify the implementation.
+  5. Update the state file (Progress / Issues remaining).
+  {{- if eq .Args.Commit "true" }}
+  6. Commit only the files you changed, staged explicitly by path (never
+     `git add -A`, `git add .`, or `git commit -a`); concise conventional
+     message; skip the commit if nothing changed.
+  {{- end }}
+
+  **Decide autonomously; do not ask the user.** Only when part of the spec is
+  genuinely ill-defined, record it under "Issues remaining", report it, and stop
+  — never guess.
+  {{- else }}
   Read the state file and relevant source files first. Do not speculate about
   code you haven't opened.
 
   Continue implementing features using a state file to track progress across iterations.
 
   Only implement what's in the spec. No extra features or abstractions.
+
+  **Decide autonomously; do not ask the user.** Take every decision needed to make
+  progress yourself. The sole exception is when part of the spec is **not properly
+  defined or understood** (a genuinely ambiguous requirement or unknown you cannot
+  resolve from the available context): then do **not** guess — record it in the state
+  file under "Issues remaining", report it, and stop rather than asking.
 
   # Preparation
 
@@ -35,5 +72,14 @@ prompt: |
   4. Prioritize and implement next work item
   5. Verify implementation
   6. Update state file
+  {{- if eq .Args.Commit "true" }}
+  7. Commit your work — but only if you actually changed files this iteration.
+     Stage **only** the files you changed for this work, explicitly by path
+     (`git add <file> ...`). Do **NOT** use `git add -A`, `git add .`, or
+     `git commit -a`: other unrelated, uncommitted changes may exist in the repo
+     and must be left untouched. Write a concise, conventional commit message
+     describing this increment. If nothing changed this iteration, skip the commit.
+  {{- end }}
 
   Once complete, verify against original problem description.
+  {{- end }}

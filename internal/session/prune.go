@@ -5,9 +5,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"sync/atomic"
 
 	"github.com/inercia/mitto/internal/logging"
 )
+
+// pruneTmpCounter provides a process-unique suffix for temp event files in
+// performPrune, preventing ENOENT rename collisions across concurrent processes.
+var pruneTmpCounter uint64
 
 const (
 	// DefaultPruneKeepLast is the default number of events to keep when pruning.
@@ -156,13 +161,19 @@ func (s *Store) readEventsInternal(sessionID string) ([]Event, error) {
 	defer f.Close()
 
 	var events []Event
+	log := logging.Session()
 	scanner := bufio.NewScanner(f)
 	const maxScannerBuffer = 10 * 1024 * 1024
 	scanner.Buffer(make([]byte, 0, 64*1024), maxScannerBuffer)
+	lineNum := 0
 	for scanner.Scan() {
+		lineNum++
 		var event Event
 		if err := json.Unmarshal(scanner.Bytes(), &event); err != nil {
-			return nil, fmt.Errorf("failed to unmarshal event: %w", err)
+			// Skip corrupt lines so pruning can still proceed; the rewrite drops
+			// the bad line, healing the file. Don't log content (user data).
+			log.Warn("skipping corrupt event line", "session_id", sessionID, "line", lineNum, "bytes", len(scanner.Bytes()), "error", err)
+			continue
 		}
 		events = append(events, event)
 	}
@@ -228,7 +239,8 @@ func (s *Store) performPrune(
 	// (load_events after_seq). Renumbering breaks the invariant that seq values
 	// are stable identifiers — clients that have already seen seq N would never
 	// receive events between the pruned-away seq and the new file's max_seq.
-	tmpPath := eventsPath + ".tmp"
+	// Unique suffix prevents ENOENT collision when two processes prune concurrently.
+	tmpPath := fmt.Sprintf("%s.%d.%d.tmp", eventsPath, os.Getpid(), atomic.AddUint64(&pruneTmpCounter, 1))
 	tmpFile, err := os.Create(tmpPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create temp events file: %w", err)

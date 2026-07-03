@@ -717,19 +717,29 @@ a:hover {
   border: none !important;
 }
 
-/* Sidebar action buttons ("+" / "..." on project group headers, and the
-   per-conversation "..." button) opt back in to a subtle circular outline
-   (paired with .btn-circle) so they read as discrete round buttons. The
-   --size override shrinks them below daisyUI's btn-xs (1.5rem) to a compact,
-   uniform 1.25rem circle. Also applies to the per-row action buttons in the
-   beads issue list. */
+/* Sidebar action buttons ("+" / "..." on project group headers, the Tasks
+   node, and the per-conversation "..." button, plus the per-row action
+   buttons in the beads issue list). The --size override shrinks them below
+   daisyUI's btn-xs (1.5rem) to a compact, uniform 1.25rem circle. */
 .menu button.sidebar-group-action,
 .beads-table-scroll button.sidebar-group-action {
-  border: 1px solid var(--mitto-border-2) !important;
   --size: 1.25rem;
   width: 1.25rem;
   height: 1.25rem;
   min-height: 1.25rem;
+}
+
+/* Conversations tree action buttons ("+" / "..." on group/Tasks headers and
+   the per-conversation "...") drop the circular outline for a flatter look
+   (they inherit border: none from the general .menu button rule above). */
+.menu button.sidebar-group-action {
+  border: none !important;
+}
+
+/* The beads issue list keeps a subtle circular outline so its round buttons
+   read as discrete controls within the table. */
+.beads-table-scroll button.sidebar-group-action {
+  border: 1px solid var(--mitto-border-2) !important;
 }
 
 /* "Select Workspace" dialog: cap the height so it never fills the whole
@@ -937,6 +947,35 @@ a:hover {
   margin-top: 0.75rem;
 }
 .ui-form-content label:first-child {
+  margin-top: 0;
+}
+/* Section-heading safety net. Agents frequently introduce a radio/checkbox
+   group with the question rendered as a <p>, heading, or inline <strong>/<b>,
+   then list the options as bare <input> elements separated by <br> instead of
+   wrapping each option in a <label>. Without this rule the question shares its
+   line with the first option (the remaining options break correctly via <br>).
+   Forcing standalone headings to display:block puts the question on its own
+   line so every option lines up beneath it. <strong>/<b> are scoped to
+   standalone heading usage (direct child of the form, a wrapper <div>, or a
+   <fieldset>) so inline emphasis inside a sentence is left untouched. */
+.ui-form-content p,
+.ui-form-content h3,
+.ui-form-content h4,
+.ui-form-content h5,
+.ui-form-content h6,
+.ui-form-content > strong,
+.ui-form-content > b,
+.ui-form-content > div > strong,
+.ui-form-content > div > b,
+.ui-form-content fieldset > strong,
+.ui-form-content fieldset > b {
+  display: block;
+  margin-top: 0.75rem;
+  margin-bottom: 0.25rem;
+}
+.ui-form-content > p:first-child,
+.ui-form-content > strong:first-child,
+.ui-form-content > b:first-child {
   margin-top: 0;
 }
 .ui-form-content input[type="text"],

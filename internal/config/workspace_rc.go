@@ -61,12 +61,15 @@ type WorkspaceRC struct {
 	FileModTime time.Time `json:"-"`
 }
 
-// ProcessorOverride represents a per-processor enabled/disabled override in .mittorc.
-// Mirrors the prompts pattern: entries with just {name, enabled} override the
-// processor's default enabled state from its YAML file.
+// ProcessorOverride represents a per-processor override in .mittorc.
+// Mirrors the prompts pattern: entries with {name, enabled?, arguments?} override
+// the processor's default enabled state and/or argument values from its YAML file.
+// Arguments is a map of parameter name to per-workspace value override; missing
+// keys fall back to the parameter's declared default.
 type ProcessorOverride struct {
-	Name    string `json:"name" yaml:"name"`
-	Enabled *bool  `json:"enabled,omitempty" yaml:"enabled,omitempty"`
+	Name      string            `json:"name" yaml:"name"`
+	Enabled   *bool             `json:"enabled,omitempty" yaml:"enabled,omitempty"`
+	Arguments map[string]string `json:"arguments,omitempty" yaml:"arguments,omitempty"`
 }
 
 // GetRunnerConfigForType returns the runner config for a specific runner type.
@@ -84,16 +87,16 @@ func (rc *WorkspaceRC) GetRunnerConfigForType(runnerType string) *WorkspaceRunne
 type rawWorkspaceRC struct {
 	// Prompts section
 	Prompts []struct {
-		Name            string `yaml:"name"`
-		Prompt          string `yaml:"prompt"`
-		BackgroundColor string `yaml:"backgroundColor"`
-		Icon            string `yaml:"icon"`
-		Description     string `yaml:"description"`
-		Group           string `yaml:"group"`
-		Menus           string `yaml:"menus"`
-		Requires        string `yaml:"requires"`
-		Enabled         *bool  `yaml:"enabled"`
-		EnabledWhen     string `yaml:"enabledWhen"`
+		Name            string            `yaml:"name"`
+		Prompt          string            `yaml:"prompt"`
+		BackgroundColor string            `yaml:"backgroundColor"`
+		Icon            string            `yaml:"icon"`
+		Description     string            `yaml:"description"`
+		Group           string            `yaml:"group"`
+		Menus           string            `yaml:"menus"`
+		Enabled         *bool             `yaml:"enabled"`
+		EnabledWhen     string            `yaml:"enabledWhen"`
+		Parameters      []PromptParameter `yaml:"parameters"`
 	} `yaml:"prompts"`
 	// PromptsDirs is a list of additional directories to search for prompt files
 	PromptsDirs []string `yaml:"prompts_dirs"`
@@ -102,11 +105,12 @@ type rawWorkspaceRC struct {
 	// DisabledProcessors is the legacy list of processor names disabled for this workspace.
 	// Kept for backward compatibility — new code uses ProcessorOverrides instead.
 	DisabledProcessors []string `yaml:"disabled_processors"`
-	// ProcessorOverrides is the list of processor enabled/disabled overrides.
-	// Mirrors the prompts pattern: [{name: "xxx", enabled: true/false}].
+	// ProcessorOverrides is the list of processor overrides.
+	// Mirrors the prompts pattern: [{name: "xxx", enabled?: true/false, arguments?: {k: v}}].
 	ProcessorOverrides []struct {
-		Name    string `yaml:"name"`
-		Enabled *bool  `yaml:"enabled"`
+		Name      string            `yaml:"name"`
+		Enabled   *bool             `yaml:"enabled"`
+		Arguments map[string]string `yaml:"arguments"`
 	} `yaml:"processors"`
 	// Conversations section for message processing and user data schema
 	Conversations *struct {
@@ -624,6 +628,152 @@ func SaveWorkspaceRCProcessorEnabled(workspaceDir, processorName string, enabled
 	return nil
 }
 
+// SaveWorkspaceRCProcessorArguments persists per-workspace processor argument overrides
+// in the workspace .mittorc file. It mirrors SaveWorkspaceRCProcessorEnabled in style:
+// locates or creates the processor entry by name in the "processors:" section, merges
+// the supplied values into its "arguments:" map, and writes the file back atomically.
+//
+// Merge semantics:
+//   - For each (k, v) in arguments: if v is "", the key is removed from the entry's
+//     arguments (treated as "clear this override, fall back to declared default");
+//     otherwise the value is set/overwritten.
+//   - After the merge, if the entry has no remaining arguments AND no enabled override,
+//     the entry is removed from the processors list.
+//   - If the processors list becomes empty, the "processors:" key is removed.
+//
+// Only the processors section is touched; all other sections in .mittorc are preserved.
+// Callers should invalidate the workspace RC cache (config.InvalidateWorkspaceRC) after
+// a successful write so the new values are picked up.
+func SaveWorkspaceRCProcessorArguments(workspaceDir, processorName string, arguments map[string]string) error {
+	if workspaceDir == "" {
+		return fmt.Errorf("workspace directory is required")
+	}
+	if processorName == "" {
+		return fmt.Errorf("processor name is required")
+	}
+
+	// Find existing .mittorc file path, or use default
+	rcPath, _, err := FindWorkspaceRCPath(workspaceDir)
+	if err != nil {
+		return fmt.Errorf("failed to check workspace config: %w", err)
+	}
+	if rcPath == "" {
+		rcPath = filepath.Join(workspaceDir, WorkspaceRCFileName)
+	}
+
+	// Read existing file content (may not exist yet)
+	var content map[string]interface{}
+	data, err := os.ReadFile(rcPath)
+	if err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("failed to read workspace config: %w", err)
+	}
+	if len(data) > 0 {
+		if err := yaml.Unmarshal(data, &content); err != nil {
+			return fmt.Errorf("failed to parse workspace config: %w", err)
+		}
+	}
+	if content == nil {
+		content = make(map[string]interface{})
+	}
+
+	// Get or create processors section as []interface{} (mirrors enabled path)
+	var processors []interface{}
+	if p, ok := content["processors"]; ok {
+		if pSlice, ok := p.([]interface{}); ok {
+			processors = pSlice
+		}
+	}
+
+	// Find existing entry by name
+	var entry map[string]interface{}
+	entryIdx := -1
+	for i, raw := range processors {
+		if m, ok := raw.(map[string]interface{}); ok {
+			if n, ok := m["name"]; ok && n == processorName {
+				entry = m
+				entryIdx = i
+				break
+			}
+		}
+	}
+	if entry == nil {
+		entry = map[string]interface{}{"name": processorName}
+	}
+
+	// Extract current arguments sub-map (may be nil, may be a typed map)
+	args := map[string]interface{}{}
+	if existing, ok := entry["arguments"]; ok {
+		switch m := existing.(type) {
+		case map[string]interface{}:
+			args = m
+		case map[interface{}]interface{}:
+			for k, v := range m {
+				if ks, ok := k.(string); ok {
+					args[ks] = v
+				}
+			}
+		}
+	}
+
+	// Merge: empty value removes the key; non-empty sets/overwrites it.
+	for k, v := range arguments {
+		if k == "" {
+			continue
+		}
+		if v == "" {
+			delete(args, k)
+			continue
+		}
+		args[k] = v
+	}
+
+	if len(args) == 0 {
+		delete(entry, "arguments")
+	} else {
+		entry["arguments"] = args
+	}
+
+	// Detect whether the entry still carries any override information.
+	_, hasEnabled := entry["enabled"]
+	_, hasArgs := entry["arguments"]
+
+	if !hasEnabled && !hasArgs {
+		// Nothing left to override — drop the entry entirely if it existed.
+		if entryIdx >= 0 {
+			processors = append(processors[:entryIdx], processors[entryIdx+1:]...)
+		}
+	} else {
+		if entryIdx >= 0 {
+			processors[entryIdx] = entry
+		} else {
+			processors = append(processors, entry)
+		}
+	}
+
+	if len(processors) == 0 {
+		delete(content, "processors")
+	} else {
+		content["processors"] = processors
+	}
+
+	// Marshal and write back
+	out, err := yaml.Marshal(content)
+	if err != nil {
+		return fmt.Errorf("failed to marshal workspace config: %w", err)
+	}
+
+	// Ensure parent directory exists
+	if err := os.MkdirAll(filepath.Dir(rcPath), 0755); err != nil {
+		return fmt.Errorf("failed to create config directory: %w", err)
+	}
+
+	if err := os.WriteFile(rcPath, out, 0644); err != nil {
+		return fmt.Errorf("failed to write workspace config: %w", err)
+	}
+
+	return nil
+}
+
 // parseWorkspaceRC parses the YAML data from a workspace .mittorc file.
 func parseWorkspaceRC(data []byte) (*WorkspaceRC, error) {
 	var raw rawWorkspaceRC
@@ -647,6 +797,9 @@ func parseWorkspaceRC(data []byte) (*WorkspaceRC, error) {
 		if p.Prompt == "" && !isDisabled {
 			continue
 		}
+		if err := ValidatePromptParameters(p.Menus, p.Parameters); err != nil {
+			continue
+		}
 		wp := WebPrompt{
 			Name:            p.Name,
 			Prompt:          p.Prompt,
@@ -655,9 +808,9 @@ func parseWorkspaceRC(data []byte) (*WorkspaceRC, error) {
 			Description:     p.Description,
 			Group:           p.Group,
 			Menus:           p.Menus,
-			Requires:        p.Requires,
 			EnabledWhen:     p.EnabledWhen,
 			Enabled:         p.Enabled,
+			Parameters:      p.Parameters,
 		}
 		rc.Prompts = append(rc.Prompts, wp)
 	}
@@ -673,9 +826,24 @@ func parseWorkspaceRC(data []byte) (*WorkspaceRC, error) {
 		if p.Name == "" {
 			continue
 		}
+		// Drop empty-value keys so they don't shadow declared defaults at resolution time.
+		var args map[string]string
+		if len(p.Arguments) > 0 {
+			args = make(map[string]string, len(p.Arguments))
+			for k, v := range p.Arguments {
+				if k == "" || v == "" {
+					continue
+				}
+				args[k] = v
+			}
+			if len(args) == 0 {
+				args = nil
+			}
+		}
 		rc.ProcessorOverrides = append(rc.ProcessorOverrides, ProcessorOverride{
-			Name:    p.Name,
-			Enabled: p.Enabled,
+			Name:      p.Name,
+			Enabled:   p.Enabled,
+			Arguments: args,
 		})
 	}
 	// Backward compatibility: migrate legacy "disabled_processors:" entries.

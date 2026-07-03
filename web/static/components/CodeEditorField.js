@@ -21,9 +21,22 @@ import { CodeEditor } from "../utils/code-editor.js";
  * @param {boolean}  [props.lineWrapping=false] - Wrap long lines instead of scrolling horizontally
  * @param {boolean}  [props.highlightActiveLine=true] - Tint the current line's background
  * @param {string}   [props.className]  - Extra classes appended to the editor container
- * @param {Object}   [props.editorApiRef] - Assigned { getValue, setValue, focus } after init
+ * @param {Object}   [props.editorApiRef] - Assigned { getValue, setValue, focus, wrapSelection, prefixLines, insertLink } after init
  */
-export function CodeEditorField({ value, onChange, onBlur, disabled, darkMode, minHeight, autoFocus, lineNumbers, lineWrapping, highlightActiveLine, className, editorApiRef }) {
+export function CodeEditorField({
+  value,
+  onChange,
+  onBlur,
+  disabled,
+  darkMode,
+  minHeight,
+  autoFocus,
+  lineNumbers,
+  lineWrapping,
+  highlightActiveLine,
+  className,
+  editorApiRef,
+}) {
   const containerRef = useRef(null);
   const editorRef = useRef(null);
   const destroyedRef = useRef(false);
@@ -51,6 +64,10 @@ export function CodeEditorField({ value, onChange, onBlur, disabled, darkMode, m
           getValue: () => editor.getValue(),
           setValue: (text) => editor.setValue(text),
           focus: () => editor.focus(),
+          wrapSelection: (before, after, placeholder) =>
+            editor.wrapSelection(before, after, placeholder),
+          prefixLines: (marker) => editor.prefixLines(marker),
+          insertLink: (t, u) => editor.insertLink(t, u),
         };
       }
       if (autoFocus) editor.focus();
@@ -74,9 +91,15 @@ export function CodeEditorField({ value, onChange, onBlur, disabled, darkMode, m
     "w-full min-w-0 max-w-full border border-mitto-border rounded bg-mitto-input-box text-sm text-mitto-text overflow-auto",
     "focus-within:border-mitto-text-secondary transition-colors",
     className || "",
-  ].join(" ").trim();
+  ]
+    .join(" ")
+    .trim();
 
   const style = minHeight ? `min-height:${minHeight}px` : undefined;
 
-  return html`<div ref=${containerRef} class=${containerStyle} style=${style} />`;
+  return html`<div
+    ref=${containerRef}
+    class=${containerStyle}
+    style=${style}
+  />`;
 }

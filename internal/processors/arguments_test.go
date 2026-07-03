@@ -1,131 +1,65 @@
 package processors
 
-import "testing"
+import (
+	"testing"
 
-func TestSubstituteArguments(t *testing.T) {
+	"github.com/inercia/mitto/internal/config"
+)
+
+func TestResolveProcessorArgs(t *testing.T) {
 	tests := []struct {
-		name string
-		text string
-		args map[string]string
-		want string
+		name      string
+		params    []config.PromptParameter
+		overrides map[string]string
+		want      map[string]string
 	}{
 		{
-			name: "no placeholders fast path",
-			text: "plain text with no vars",
-			args: map[string]string{"VAR": "x"},
-			want: "plain text with no vars",
+			name:      "nil params and nil overrides returns nil",
+			params:    nil,
+			overrides: nil,
+			want:      nil,
 		},
 		{
-			name: "simple variable present",
-			text: "issue ${ISSUE_ID} here",
-			args: map[string]string{"ISSUE_ID": "mitto-t93"},
-			want: "issue mitto-t93 here",
+			name:      "empty params and empty overrides returns nil",
+			params:    []config.PromptParameter{},
+			overrides: map[string]string{},
+			want:      nil,
 		},
 		{
-			name: "missing variable becomes empty",
-			text: "value=[${MISSING}]",
-			args: map[string]string{},
-			want: "value=[]",
+			name:   "default seeded from params",
+			params: []config.PromptParameter{{Name: "ENV", Default: "prod"}},
+			want:   map[string]string{"ENV": "prod"},
 		},
 		{
-			name: "default used when missing",
-			text: "n=${COUNT:-5}",
-			args: map[string]string{},
-			want: "n=5",
+			name:      "override wins over default when non-empty",
+			params:    []config.PromptParameter{{Name: "ENV", Default: "prod"}},
+			overrides: map[string]string{"ENV": "staging"},
+			want:      map[string]string{"ENV": "staging"},
 		},
 		{
-			name: "default used when empty",
-			text: "n=${COUNT:-5}",
-			args: map[string]string{"COUNT": ""},
-			want: "n=5",
+			name:      "empty override falls back to default",
+			params:    []config.PromptParameter{{Name: "ENV", Default: "prod"}},
+			overrides: map[string]string{"ENV": ""},
+			want:      map[string]string{"ENV": "prod"},
 		},
 		{
-			name: "value wins over default when non-empty",
-			text: "n=${COUNT:-5}",
-			args: map[string]string{"COUNT": "9"},
-			want: "n=9",
-		},
-		{
-			name: "double-quoted default is stripped",
-			text: "x=${NAME:-\"a random number\"}",
-			args: map[string]string{},
-			want: "x=a random number",
-		},
-		{
-			name: "single-quoted default is stripped",
-			text: "x=${NAME:-'hello world'}",
-			args: map[string]string{},
-			want: "x=hello world",
-		},
-		{
-			name: "empty default yields empty",
-			text: "x=[${NAME:-}]",
-			args: map[string]string{},
-			want: "x=[]",
-		},
-		{
-			name: "multiple variables",
-			text: "${A}-${B}-${C:-z}",
-			args: map[string]string{"A": "1", "B": "2"},
-			want: "1-2-z",
-		},
-		{
-			name: "escaped placeholder is literal",
-			text: `keep \${VAR} literal`,
-			args: map[string]string{"VAR": "x"},
-			want: "keep ${VAR} literal",
-		},
-		{
-			name: "escaped and substituted mix",
-			text: `\${LITERAL} but ${REAL}`,
-			args: map[string]string{"REAL": "ok"},
-			want: "${LITERAL} but ok",
-		},
-		{
-			name: "unmatched brace left untouched",
-			text: "shell ${ malformed",
-			args: map[string]string{},
-			want: "shell ${ malformed",
-		},
-		{
-			name: "lowercase and digits in name",
-			text: "${my_var2}",
-			args: map[string]string{"my_var2": "ok"},
-			want: "ok",
-		},
-		{
-			name: "nil args map",
-			text: "a=${X:-def} b=${Y}",
-			args: nil,
-			want: "a=def b=",
+			name:      "extra key in overrides added to map",
+			params:    []config.PromptParameter{},
+			overrides: map[string]string{"EXTRA": "val"},
+			want:      map[string]string{"EXTRA": "val"},
 		},
 	}
-
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := SubstituteArguments(tt.text, tt.args)
-			if got != tt.want {
-				t.Errorf("SubstituteArguments(%q, %v) = %q, want %q", tt.text, tt.args, got, tt.want)
+			got := ResolveProcessorArgs(tt.params, tt.overrides)
+			if len(got) != len(tt.want) {
+				t.Fatalf("ResolveProcessorArgs len = %d, want %d; got=%v, want=%v", len(got), len(tt.want), got, tt.want)
+			}
+			for k, wv := range tt.want {
+				if gv := got[k]; gv != wv {
+					t.Errorf("key %q = %q, want %q", k, gv, wv)
+				}
 			}
 		})
-	}
-}
-
-func TestStripSurroundingQuotes(t *testing.T) {
-	tests := []struct {
-		in, want string
-	}{
-		{`"quoted"`, "quoted"},
-		{`'quoted'`, "quoted"},
-		{`unquoted`, "unquoted"},
-		{`"mismatched'`, `"mismatched'`},
-		{`"`, `"`},
-		{``, ``},
-		{`""`, ``},
-	}
-	for _, tt := range tests {
-		if got := stripSurroundingQuotes(tt.in); got != tt.want {
-			t.Errorf("stripSurroundingQuotes(%q) = %q, want %q", tt.in, got, tt.want)
-		}
 	}
 }

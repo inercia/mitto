@@ -10,7 +10,7 @@
 name: check-mcp-tools
 description: "Checks if Mitto MCP tools are available and suggests installation"
 enabled: true
-enabledWhen: '!tools.hasPattern("mitto_*")'
+enabledWhen: '!Tools.HasPattern("mitto_*")'
 when:
   on: userPrompt
   match: first

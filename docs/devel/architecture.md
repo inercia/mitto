@@ -147,16 +147,31 @@ Implements MCP (Model Context Protocol) server for tool exposure.
 
 See [MCP Documentation](mcp.md) for detailed documentation.
 
+### `internal/conversation` - Conversation Domain
+
+Owns the runtime conversation domain, independent of the web/delivery layer.
+
+Dependency rule: `internal/web` depends on `internal/conversation`; `internal/conversation` MUST NEVER import `internal/web` (enforced — no import cycle).
+
+**Key Components:**
+
+- **BackgroundSession**: Manages an ACP session lifecycle (prompt, streaming, cancel, reconnect) independently of WebSocket connections (moved here from `internal/web`).
+- **SessionManager**: Multi-session / multi-workspace orchestration — create/resume/archive/delete, periodic prompts, prompt routing, GC integration.
+- **QueueTitleWorker**: Async title generation for queued prompts.
+- **Streaming buffers**: `StreamBuffer`, `MarkdownBuffer`, `ThoughtBuffer` — buffer and transform ACP streaming events.
+- **Domain interfaces** (`interfaces.go`): `SharedProcess`, `ProcessManager`, `EventsBroadcaster`, `PromptResolver` — abstractions that let the domain interact with infrastructure remaining in `internal/web` (implemented there via small adapter types), so the domain never imports web.
+- **Observer pattern** (`observer.go`): `SessionObserver` interface for broadcasting events to transports.
+- **Supporting types**: action buttons, ACP error classification, title generation, model-state mapping, constraints, available commands, `SessionInfo`, WebSocket event type constants.
+
 ### `internal/web` - Web Interface Server
 
-Provides a browser-based UI for ACP communication via HTTP and WebSocket.
+Provides the HTTP/WebSocket delivery layer and infrastructure wiring that serves the conversation domain. It no longer owns `BackgroundSession` or `SessionManager` — those live in `internal/conversation`. The web package provides the concrete implementations of the domain interfaces (`acpProcessManagerAdapter`, `GlobalEventsManager`) and wires everything together via `Server`.
 
 **Key Components:**
 
 - **Server**: HTTP server with static file serving and REST API endpoints
-- **BackgroundSession**: Manages ACP sessions that run independently of WebSocket connections
 - **WebClient**: Implements `acp.Client` for web-based interaction, handles streaming events
-- **MarkdownBuffer**: Buffers streaming markdown and converts to HTML with smart flushing
+- **MarkdownBuffer**: Buffers streaming markdown and converts to HTML with smart flushing (streaming buffer types live in `internal/conversation`)
 - **SessionWSClient**: WebSocket handler for real-time communication with browser clients
 
 **Event Flow and Sequence Numbers:**

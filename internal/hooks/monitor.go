@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math/rand"
 	"net/http"
 	"strings"
 	"sync"
@@ -17,15 +18,17 @@ import (
 )
 
 const (
-	monitorInitialDelay           = 1 * time.Minute
-	monitorCheckInterval          = 30 * time.Second
-	monitorPostRestartDelay       = 1 * time.Minute
-	monitorPreRestartWait         = 30 * time.Second
-	monitorRequestTimeout         = 10 * time.Second
-	monitorMaxConsecutiveRestarts = 10
-	monitorMaxCheckInterval       = 5 * time.Minute
-	monitorFailureRetries         = 2                // Additional retries before restarting
-	monitorRetryDelay             = 10 * time.Second // Delay between retries
+	monitorInitialDelay     = 1 * time.Minute
+	monitorCheckInterval    = 30 * time.Second
+	monitorPostRestartDelay = 1 * time.Minute
+	monitorPreRestartWait   = 30 * time.Second
+	monitorRequestTimeout   = 10 * time.Second
+	monitorMaxCheckInterval = 5 * time.Minute
+	// monitorFailureRetries × monitorRetryDelay sets the confirmation window before a
+	// restart is triggered. 5×15 s = 75 s, so a tunnel blip shorter than ~1 minute
+	// will recover during retries and never cause a restart.
+	monitorFailureRetries = 5                // Additional retries before restarting
+	monitorRetryDelay     = 15 * time.Second // Delay between retries
 )
 
 // HealthMonitorConfig contains the configuration for a HealthMonitor.
@@ -98,11 +101,12 @@ func (m *HealthMonitor) run(ctx context.Context) {
 	consecutiveFailures := 0
 
 	for {
+		// Jitter the sleep so multiple instances don't check in lockstep.
 		select {
 		case <-ctx.Done():
 			logger.Debug("Health monitor stopped")
 			return
-		case <-time.After(checkInterval):
+		case <-time.After(jitter(checkInterval)):
 		}
 
 		if m.checkHealth(ctx) {
@@ -118,7 +122,9 @@ func (m *HealthMonitor) run(ctx context.Context) {
 			continue
 		}
 
-		// First check failed — retry a few times to confirm before restarting
+		// First check failed — retry to confirm before restarting.
+		// Total confirmation window: monitorFailureRetries × monitorRetryDelay ≈ 75 s,
+		// so brief blips (<1 min) recover during this window without triggering a restart.
 		logger.Info("Health check failed, retrying to confirm",
 			"address", m.cfg.Address,
 			"retries", monitorFailureRetries,
@@ -130,7 +136,7 @@ func (m *HealthMonitor) run(ctx context.Context) {
 			select {
 			case <-ctx.Done():
 				return
-			case <-time.After(monitorRetryDelay):
+			case <-time.After(jitter(monitorRetryDelay)):
 			}
 			if m.checkHealth(ctx) {
 				logger.Info("Health check recovered on retry",
@@ -175,17 +181,17 @@ func (m *HealthMonitor) run(ctx context.Context) {
 		// Restart hooks
 		m.restartHooks(ctx)
 
-		// Apply backoff if we've hit max consecutive restarts
-		if consecutiveFailures >= monitorMaxConsecutiveRestarts {
-			checkInterval *= 2
-			if checkInterval > monitorMaxCheckInterval {
-				checkInterval = monitorMaxCheckInterval
-			}
-			logger.Warn("Max consecutive restarts reached, backing off",
-				"new_interval", checkInterval,
-				"consecutive_failures", consecutiveFailures,
-			)
+		// Gradual backoff: double the check interval after every confirmed failure
+		// (starting from the very first one) so a sustained outage quickly slows
+		// the restart cadence rather than hammering the tunnel on each cycle.
+		checkInterval *= 2
+		if checkInterval > monitorMaxCheckInterval {
+			checkInterval = monitorMaxCheckInterval
 		}
+		logger.Warn("Backing off check interval after consecutive failure",
+			"new_interval", checkInterval,
+			"consecutive_failures", consecutiveFailures,
+		)
 
 		// Post-restart stabilization delay
 		select {
@@ -195,6 +201,15 @@ func (m *HealthMonitor) run(ctx context.Context) {
 		case <-time.After(monitorPostRestartDelay):
 		}
 	}
+}
+
+// jitter returns d randomized by ±20% to prevent synchronized thundering-herd behavior
+// when multiple monitors or retries fire at the same wall-clock instant.
+// Go 1.20+ auto-seeds the global rand source, so no explicit seeding is needed.
+func jitter(d time.Duration) time.Duration {
+	// factor ∈ [0.8, 1.2)
+	factor := 0.8 + 0.4*rand.Float64()
+	return time.Duration(float64(d) * factor)
 }
 
 // checkHealth performs an HTTP GET to the health endpoint at the external address.

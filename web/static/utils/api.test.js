@@ -5,7 +5,7 @@
  * external access via Tailscale Funnel and other reverse proxies.
  */
 
-import { getApiPrefix, apiUrl, wsUrl } from "./api.js";
+import { getApiPrefix, apiUrl, wsUrl, errorMessageFromData } from "./api.js";
 
 // =============================================================================
 // Setup and Teardown
@@ -157,6 +157,54 @@ describe("API Utilities", () => {
       window.location.host = "example.com";
 
       expect(wsUrl("/api/events")).toBe("wss://example.com/api/events");
+    });
+  });
+
+  // =============================================================================
+  // errorMessageFromData Tests
+  // =============================================================================
+
+  describe("errorMessageFromData", () => {
+    test("extracts message from canonical nested envelope", () => {
+      expect(
+        errorMessageFromData(
+          { error: { code: "bad_request", message: "Bad thing" } },
+          "fb",
+        ),
+      ).toBe("Bad thing");
+    });
+
+    test("extracts legacy flat-string error", () => {
+      expect(errorMessageFromData({ error: "legacy msg" }, "fb")).toBe(
+        "legacy msg",
+      );
+    });
+
+    test("extracts top-level message", () => {
+      expect(errorMessageFromData({ message: "top msg" }, "fb")).toBe(
+        "top msg",
+      );
+    });
+
+    test("returns fallback for empty object", () => {
+      expect(errorMessageFromData({}, "fb")).toBe("fb");
+    });
+
+    test("returns fallback for null", () => {
+      expect(errorMessageFromData(null, "fb")).toBe("fb");
+    });
+
+    test("returns fallback for undefined", () => {
+      expect(errorMessageFromData(undefined, "fb")).toBe("fb");
+    });
+
+    test("nested envelope wins over top-level message", () => {
+      expect(
+        errorMessageFromData(
+          { error: { message: "nested" }, message: "top" },
+          "fb",
+        ),
+      ).toBe("nested");
     });
   });
 });

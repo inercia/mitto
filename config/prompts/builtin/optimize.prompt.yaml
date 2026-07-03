@@ -1,6 +1,6 @@
 icon: sliders
 name: Optimize
-menus: prompts
+menus: prompts, !promptsPeriodic
 description: Identify and propose performance improvements
 group: Code Quality
 backgroundColor: '#C8E6C9'
@@ -39,7 +39,7 @@ prompt: |
 
   ### 3. Wait for Approval
 
-  **With Mitto UI**: `mitto_ui_options(self_id: "@mitto:session_id", ...` → "Approve all / Approve selected / Investigate / Cancel"
+  **With Mitto UI**: `mitto_ui_options(self_id: "{{ .Session.ID }}", ...` → "Approve all / Approve selected / Investigate / Cancel"
   **Without**: Ask in conversation. Wait for explicit approval.
 
   ### 4. Execute
@@ -52,13 +52,15 @@ prompt: |
 
   **Session context for delegation:**
 
-  Your session ID is `@mitto:session_id` — use as `self_id` for all `mitto_*` tool calls.
+  Your session ID is `{{ .Session.ID }}` — use as `self_id` for all `mitto_*` tool calls.
 
   Available ACP servers:
-  @mitto:available_acp_servers
+  {{ .ACP.AvailableText }}
+  {{- if .Children.AllText }}
 
   Existing children:
-  @mitto:children
+  {{ .Children.AllText }}
+  {{- end }}
 
   **Choosing the right ACP server:**
 
@@ -67,8 +69,8 @@ prompt: |
      - Complex optimizations (concurrency redesign, algorithmic tradeoffs) → prefer `"reasoning"`/`"planning"` servers
      - No match → server marked `(current)`, then first available
   2. If relevant children already exist, consider sending work to them via `mitto_conversation_send_prompt` instead of creating new ones
-  3. `mitto_conversation_new(self_id: "@mitto:session_id")` with full context, constraints, and reporting directive
-  4. `mitto_children_tasks_wait(self_id: "@mitto:session_id", task_id: "<short task description>", timeout_seconds: 600)`
+  3. `mitto_conversation_new(self_id: "{{ .Session.ID }}")` with full context, constraints, and reporting directive
+  4. `mitto_children_tasks_wait(self_id: "{{ .Session.ID }}", task_id: "<short task description>", timeout_seconds: 600)`
   5. Review results, verify correctness, check tradeoffs
   6. `mitto_conversation_delete` for completed children
 

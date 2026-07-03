@@ -1,0 +1,12 @@
+name: Convo Param Test
+description: A conversation menu prompt with a required text param (E2E dialog testing)
+menus: conversation
+group: ConvoParam
+parameters:
+  - name: TASK
+    type: text
+    multiLine: true
+    description: The task to perform
+    required: true
+prompt: |
+  Perform the following task: ${TASK}.

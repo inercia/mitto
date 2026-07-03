@@ -31,13 +31,15 @@ self.addEventListener("install", (event) => {
 // Activate: clean up old caches
 self.addEventListener("activate", (event) => {
   event.waitUntil(
-    caches.keys().then((keys) =>
-      Promise.all(
-        keys
-          .filter((key) => key !== CACHE_NAME)
-          .map((key) => caches.delete(key)),
+    caches
+      .keys()
+      .then((keys) =>
+        Promise.all(
+          keys
+            .filter((key) => key !== CACHE_NAME)
+            .map((key) => caches.delete(key)),
+        ),
       ),
-    ),
   );
   // Take control of all open clients immediately
   self.clients.claim();
@@ -48,6 +50,14 @@ self.addEventListener("activate", (event) => {
 // Static assets fall back to cache when offline.
 self.addEventListener("fetch", (event) => {
   const url = new URL(event.request.url);
+
+  // Skip cross-origin requests entirely. Re-fetching them from inside the SW
+  // is treated as a connect-src operation by the page CSP and triggers
+  // violations for resources like Google Fonts (referenced from styles-v2.css)
+  // or proxy-injected scripts (e.g. Cloudflare beacon when fronted by CF).
+  if (url.origin !== self.location.origin) {
+    return;
+  }
 
   // Skip non-GET requests, API calls, and WebSocket upgrades.
   // Use segment-based matching to handle API prefix deployments (e.g., /mitto/api/...).

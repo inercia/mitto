@@ -30,9 +30,9 @@ func TestPeriodicContextSemantics(t *testing.T) {
 		defer ts.Client.DeleteSession(sess.SessionID)
 
 		req := client.SetPeriodicRequest{
-			PromptName: "daily-standup",
-			Frequency:  client.PeriodicFrequency{Value: 2, Unit: "hours"},
-			Enabled:    true,
+			PromptName:    "daily-standup",
+			Frequency:     client.PeriodicFrequency{Value: 2, Unit: "hours"},
+			Enabled:       true,
 			MaxIterations: 5,
 		}
 		cfg, err := ts.Client.SetPeriodic(sess.SessionID, req)

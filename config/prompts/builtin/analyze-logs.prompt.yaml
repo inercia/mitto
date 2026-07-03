@@ -1,0 +1,213 @@
+icon: search
+name: Analyze logs
+menus: prompts
+description: Analyze logs from any program (a file, a folder, or a command that produces them), triage and investigate the problems found, and file beads issues for the bugs and things worth a deeper look
+backgroundColor: '#FFCDD2'
+group: Debugging
+parameters:
+  - name: Logs
+    type: text
+    required: true
+    description: 'What logs to analyze — a path to a log file, a folder of logs, or how to obtain them (e.g. "kubectl logs deploy/api -n prod --since=1h", "docker logs my-container", "journalctl -u nginx --since today")'
+  - name: Instructions
+    type: text
+    required: false
+    multiLine: true
+    description: 'Optional additional instructions to steer the analysis (e.g. "these are nginx access logs — focus on security and abuse", "this is the payment service, flag any data-consistency issues", "ignore deprecation warnings", "correlate by request-id")'
+enabledWhen: CommandExists("bd") && DirExists(".beads")
+periodic:
+  mode: optional
+  default: false
+  trigger: onCompletion
+  delay: 60
+prompt: |
+  ## Session Context
+
+  Your session ID is `{{ .Session.ID }}` — use this as `self_id` for all `mitto_*` MCP tool calls.
+
+  # Analyze Logs
+
+  Analyze the logs the user pointed you at, triage what you find, and record every
+  actionable problem as a beads issue (`bd`) so nothing is lost. This works for **any
+  program's logs**, not just one specific application.
+
+  **Logs to analyze:**
+
+  > {{ .Args.Logs }}
+  {{- if .Args.Instructions }}
+
+  **Additional instructions from the user — prioritize these and let them override the
+  defaults below:**
+
+  > {{ .Args.Instructions }}
+  {{- end }}
+
+  ## Step 1 — Locate and obtain the logs
+
+  The source above is free-form. Figure out which kind it is and get the log text:
+
+  - **A path to a log file** (e.g. `/var/log/app.log`, `./run.log`) — read it directly.
+    Prefer bounded reads: `tail -n 2000 <file>`, and `grep`/`rg` for patterns rather
+    than dumping the whole file.
+  - **A folder** (e.g. `/var/log/myapp/`, `./logs`) — enumerate the log files
+    (`ls -la`, then `*.log`, rotated `*.log.1`, `*.gz`) and analyze each. Use
+    `zgrep`/`zcat` for compressed archives.
+  - **A command or description** (e.g. `kubectl logs ...`, `docker logs ...`,
+    `journalctl ...`) — run the command to obtain the logs. If it streams, bound it
+    (`--since`, `--tail`, `-n`) so it terminates. If the description is informal,
+    translate it into the concrete command, run it, and report what you ran.
+
+  If the source is ambiguous or you cannot access it (missing file, command fails, no
+  permissions), say so clearly and ask the user how to proceed via
+  `mitto_ui_options(self_id: "{{ .Session.ID }}", allow_free_text: true)` rather
+  than guessing.
+
+  **Secret safety:** logs may contain tokens, passwords, or keys. Never copy secret
+  values into issue bodies, notes, or tool arguments — refer to them as redacted.
+
+  ## Step 2 — Triage and investigate
+
+  **First, frame what matters for *these* logs.** Interpret them in the context of the
+  project and their type before scanning — the same line can be benign in one system and
+  a red flag in another:
+
+  - **Default to the current project.** Unless the user says otherwise (see additional
+    instructions above) or the source clearly points elsewhere, assume the logs belong to
+    the project in this working directory. If this repo builds an application, treat them
+    as that application's runtime logs and consult the codebase as needed to interpret
+    messages, module names, and error strings.
+  - **Match the lens to the log type:**
+    - *Access / request logs* (web server, proxy, gateway) → a **security & abuse** lens:
+      auth failures, unexpected source IPs or paths, scanning/probing, injection attempts,
+      spikes in 4xx/5xx, plus traffic and latency anomalies.
+    - *Application / service logs* → a **correctness** lens: bugs, errors, panics,
+      exceptions, stack traces, and behavior that contradicts what the code intends.
+    - *Infrastructure / system logs* (kernel, container, systemd) → a **stability** lens:
+      crashes, OOM kills, restarts, and resource exhaustion.
+    - *Build / CI logs* → a **pipeline** lens: failing steps, flaky tests, toolchain errors.
+  - When the type is mixed or unclear, infer it from the format and content, **state your
+    assumption** in the report, and apply the most relevant lens(es).
+
+  Then scan for the signals that matter, through that lens:
+
+  - **Errors & failures:** `error`, `ERR`, `fatal`, `panic`, `exception`, `traceback`,
+    stack traces, non-zero exit codes.
+  - **Warnings:** `warn`/`WARN` that hint at latent problems.
+  - **Crashes & restarts:** segfaults, OOM kills, process/container restarts, repeated
+    startup banners.
+  - **Connectivity:** timeouts, connection refused/reset, DNS failures, retries.
+  - **Repetition & storms:** the same error or event repeating rapidly (loops,
+    reconnection/retry storms, flapping).
+  - **Security:** auth failures, unauthorized access, unexpected source IPs, suspicious
+    paths or requests.
+  - **Performance:** slow operations, growing latency, queue/backlog buildup.
+
+  For each candidate problem, do a **basic investigation** before filing it:
+
+  - Establish **how often** and **over what time window** it occurs (first/last
+    timestamps, count).
+  - Capture a **representative log snippet** (a few lines with timestamps) as evidence.
+  - Note any **correlation IDs** (request/session/trace IDs, PIDs) that tie related
+    lines together, and correlate across files by timestamp.
+  - Form a **hypothesis** about the likely cause and assess **severity/impact**.
+  - For anything genuinely unclear that needs deeper code- or system-level digging,
+    mark it as **"needs investigation"** rather than asserting a root cause.
+
+  ## Step 3 — File findings as beads issues
+
+  Persist every actionable finding as a bead. Beads (`bd`) is a CLI issue tracker;
+  issues support parent/child hierarchy (epics) and labels.
+
+  Issues created here are **managed**: a fixed label marks them as ours and a stable
+  dedup key lets re-runs **update** the existing bead instead of duplicating it.
+
+  ### 3.1 — Label and dedup key
+
+  - **Label:** tag every bead with **`log-analysis`**.
+  - **Dedup key:** derive a stable, deterministic key from the finding itself
+    (category + canonical signature of the error/pattern — e.g. `oom-kill-worker`,
+    `db-connection-refused`, `auth-fail-spike`). Do **not** include volatile data
+    (timestamps, counts). Store it as `--external-ref "log-analysis:<key>"`.
+
+  ### 3.2 — Load already-managed beads (idempotency)
+
+  Before creating anything, list what this prompt already manages:
+
+  ```bash
+  bd list --label log-analysis --json             # all managed beads (open + closed)
+  bd list --type epic --label log-analysis --json # managed epics, for grouping
+  ```
+
+  Build a map of existing `external_ref` (`log-analysis:<key>`) → bead ID.
+
+  ### 3.3 — Decide create vs. update
+
+  For each actionable finding:
+
+  - **No existing bead** for its key → **create** one (3.5).
+  - **Existing open bead** → **update** it: refresh evidence (newest snippet, current
+    count/window), re-evaluate priority, and append a one-line recurrence note.
+  - **Existing closed bead that has recurred** → reopen (`bd update <id> --status open`)
+    and note "recurred on <date>".
+  - A finding is **actionable** if it warrants future work (a real error/crash, a storm,
+    a security concern, or a "needs investigation" item). Skip purely informational lines.
+
+  ### 3.4 — Group related findings under epics
+
+  When **two or more** findings share a theme (e.g. *connectivity*, *crashes*,
+  *security*), create or reuse an **epic** and attach them via `--parent <epic-id>`.
+  Give each epic its own dedup key (e.g. `epic-connectivity`) and the `log-analysis`
+  label. Keep genuinely standalone findings at the top level.
+
+  ### 3.5 — Create / update commands
+
+  Write each description to a temp Markdown file (Summary, Evidence with log snippets +
+  timestamps, Suspected cause, Suggested next step / fix, Acceptance criteria) and pass
+  it via `--body-file` to avoid shell-quoting issues. Create epics first so children can
+  reference them.
+
+  ```bash
+  # Managed epic (parent) — grouping a theme
+  bd create "<theme> issues from log analysis" \
+    --type epic --priority <0-4> \
+    --labels "log-analysis" \
+    --external-ref "log-analysis:epic-<theme>" \
+    --body-file /tmp/log-epic.md
+
+  # Child under an epic, or standalone (drop --parent for a standalone finding)
+  bd create "<finding title>" \
+    --type <bug|task|chore> --priority <0-4> \
+    --parent <epic-id> \
+    --labels "log-analysis" \
+    --external-ref "log-analysis:<key>" \
+    --body-file /tmp/log-task.md
+
+  # Update an existing managed bead (recurrence / severity change)
+  bd update <id> --body-file /tmp/log-task.md --priority <0-4> \
+    --append-notes "Recurred during log analysis on <date>: <one-line context>."
+  ```
+
+  Type: `bug` for defects, `chore` for hardening/cleanup, `task` otherwise. Set the
+  priority by impact and **re-evaluate it on every run** — raise it if a problem
+  escalated, lower it (with a one-line reason) if it subsided:
+
+  | Priority | When |
+  |----------|------|
+  | **P0** | Security breaches, panics/crashes, data loss, or an active outage. |
+  | **P1** | Recurring errors or storms actively degrading the program. |
+  | **P2** | Isolated errors or one-off failures with limited impact. |
+  | **P3** | Warnings, hardening opportunities, or low-severity anomalies. |
+
+  ## Report
+
+  Finish with a concise, structured report:
+
+  1. **Source analyzed** — what logs were read and how (the resolved file/folder/command).
+  2. **Health** — overall assessment (Healthy / Minor issues / Concerning / Critical).
+  3. **Findings** — errors, warnings, crashes, storms, security, performance — each with
+     evidence (snippet + timestamps), frequency, and a hypothesis.
+  4. **Needs investigation** — items where the root cause is still unclear.
+  5. **Beads filed** — epics with their child beads indented beneath them, then standalone
+     beads; show each bead's priority, flag any priority changes (e.g. `bd-12 P2→P0`), and
+     note which were created vs. updated/reopened.
+  6. **Recommendations** — suggested next actions.

@@ -7,8 +7,8 @@
 // - On app load, we sync from server to localStorage
 // - On changes, we update both localStorage and server
 
-import { apiUrl } from "./api.js";
 import { secureFetch, authFetch } from "./csrf.js";
+import { endpoints } from "./endpoints.js";
 
 // =============================================================================
 // UI Preferences Server Sync
@@ -64,7 +64,7 @@ export async function initUIPreferences() {
     migrateLegacyTabStorage();
     try {
       // Use authFetch to include credentials for cross-origin requests
-      const response = await authFetch(apiUrl("/api/ui-preferences"));
+      const response = await authFetch(endpoints.misc.uiPreferences());
       if (response.ok) {
         const prefs = await response.json();
         uiPreferencesCache = prefs;
@@ -121,7 +121,7 @@ function saveUIPreferencesToServer(prefs) {
   saveTimeout = setTimeout(async () => {
     try {
       // Use secureFetch to include CSRF token and credentials for cross-origin requests
-      const response = await secureFetch(apiUrl("/api/ui-preferences"), {
+      const response = await secureFetch(endpoints.misc.uiPreferences(), {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(prefs),
@@ -324,7 +324,10 @@ export function migrateLegacyTabStorage() {
         }
       }
     } catch (innerErr) {
-      console.warn("[Mitto] Failed to prune tab-scoped expanded groups:", innerErr);
+      console.warn(
+        "[Mitto] Failed to prune tab-scoped expanded groups:",
+        innerErr,
+      );
     }
 
     localStorage.setItem(DETAB_MIGRATION_KEY, "1");
@@ -802,6 +805,10 @@ export const FILTER_TAB = {
  * Derive which filter tab a session belongs to from its state. Mirrors the
  * tab-filtering logic used throughout the app (archived → archived,
  * periodic_enabled → periodic, otherwise → conversations).
+ *
+ * NOTE: uses periodic_enabled (runs active), NOT periodic_configured (config exists).
+ * A paused/draft periodic conversation (configured but not enabled) falls into
+ * the CONVERSATIONS group — its editor is still visible via periodic_configured.
  * @param {Object} session - A session object (archived, periodic_enabled flags)
  * @returns {string} The filter tab for the session
  */
@@ -945,8 +952,14 @@ export function getBeadsFilters() {
     if (value) {
       const parsed = JSON.parse(value);
       return {
-        type: typeof parsed.type === "string" ? parsed.type : DEFAULT_BEADS_FILTERS.type,
-        search: typeof parsed.search === "string" ? parsed.search : DEFAULT_BEADS_FILTERS.search,
+        type:
+          typeof parsed.type === "string"
+            ? parsed.type
+            : DEFAULT_BEADS_FILTERS.type,
+        search:
+          typeof parsed.search === "string"
+            ? parsed.search
+            : DEFAULT_BEADS_FILTERS.search,
       };
     }
   } catch (e) {
@@ -995,8 +1008,13 @@ export function getBeadsGrouping() {
     if (value) {
       const parsed = JSON.parse(value);
       return {
-        enabled: typeof parsed.enabled === "boolean" ? parsed.enabled : DEFAULT_BEADS_GROUPING.enabled,
-        collapsedEpics: Array.isArray(parsed.collapsedEpics) ? parsed.collapsedEpics.filter(x => typeof x === "string") : DEFAULT_BEADS_GROUPING.collapsedEpics,
+        enabled:
+          typeof parsed.enabled === "boolean"
+            ? parsed.enabled
+            : DEFAULT_BEADS_GROUPING.enabled,
+        collapsedEpics: Array.isArray(parsed.collapsedEpics)
+          ? parsed.collapsedEpics.filter((x) => typeof x === "string")
+          : DEFAULT_BEADS_GROUPING.collapsedEpics,
       };
     }
   } catch (e) {
@@ -1012,8 +1030,13 @@ export function getBeadsGrouping() {
 export function setBeadsGrouping(state) {
   try {
     const toStore = {
-      enabled: typeof state?.enabled === "boolean" ? state.enabled : DEFAULT_BEADS_GROUPING.enabled,
-      collapsedEpics: Array.isArray(state?.collapsedEpics) ? state.collapsedEpics : DEFAULT_BEADS_GROUPING.collapsedEpics,
+      enabled:
+        typeof state?.enabled === "boolean"
+          ? state.enabled
+          : DEFAULT_BEADS_GROUPING.enabled,
+      collapsedEpics: Array.isArray(state?.collapsedEpics)
+        ? state.collapsedEpics
+        : DEFAULT_BEADS_GROUPING.collapsedEpics,
     };
     localStorage.setItem(BEADS_GROUPING_KEY, JSON.stringify(toStore));
   } catch (e) {
@@ -1045,8 +1068,12 @@ export function getBeadsSort() {
     if (value) {
       const parsed = JSON.parse(value);
       return {
-        field: BEADS_SORT_FIELDS.includes(parsed.field) ? parsed.field : DEFAULT_BEADS_SORT.field,
-        direction: BEADS_SORT_DIRECTIONS.includes(parsed.direction) ? parsed.direction : DEFAULT_BEADS_SORT.direction,
+        field: BEADS_SORT_FIELDS.includes(parsed.field)
+          ? parsed.field
+          : DEFAULT_BEADS_SORT.field,
+        direction: BEADS_SORT_DIRECTIONS.includes(parsed.direction)
+          ? parsed.direction
+          : DEFAULT_BEADS_SORT.direction,
       };
     }
   } catch (e) {
@@ -1062,8 +1089,12 @@ export function getBeadsSort() {
 export function setBeadsSort(sort) {
   try {
     const toStore = {
-      field: BEADS_SORT_FIELDS.includes(sort?.field) ? sort.field : DEFAULT_BEADS_SORT.field,
-      direction: BEADS_SORT_DIRECTIONS.includes(sort?.direction) ? sort.direction : DEFAULT_BEADS_SORT.direction,
+      field: BEADS_SORT_FIELDS.includes(sort?.field)
+        ? sort.field
+        : DEFAULT_BEADS_SORT.field,
+      direction: BEADS_SORT_DIRECTIONS.includes(sort?.direction)
+        ? sort.direction
+        : DEFAULT_BEADS_SORT.direction,
     };
     localStorage.setItem(BEADS_SORT_KEY, JSON.stringify(toStore));
   } catch (e) {

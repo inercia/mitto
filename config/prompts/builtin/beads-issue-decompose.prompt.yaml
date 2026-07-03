@@ -1,30 +1,33 @@
-icon: beads
+icon: layers
 name: Decompose issue
 menus: beadsIssues
-requires: parameters
+parameters:
+  - name: IssueID
+    type: beadsId
+    description: The beads issue ID to act on
 description: Break this bead into child beads with dependencies and create them automatically
 backgroundColor: '#D1C4E9'
 group: Tasks
-enabledWhen: '!session.isChild && commandExists("bd") && dirExists(".beads") && item.status != "closed" && item.type != "epic"'
+enabledWhen: '!Session.IsChild && CommandExists("bd") && DirExists(".beads") && Item.Status != "closed" && Item.Type != "epic"'
 prompt: |
   ## Session Context
 
-  Your session ID is `@mitto:session_id` — use this as `self_id` for all `mitto_*` MCP tool calls.
+  Your session ID is `{{ .Session.ID }}` — use this as `self_id` for all `mitto_*` MCP tool calls.
 
   # Beads: Decompose a Bead into Child Beads
 
   Beads is a CLI issue tracker (`bd`). Issues are called "beads" and have IDs like `bd-xyz`. Beads supports first-class parent/child hierarchy and blocking dependencies.
 
-  The **target bead** is `${ISSUE_ID}`.
+  The **target bead** is `{{ .Args.IssueID }}`.
 
   ## Step 1 — Fetch full bead details
 
   Load everything about the target bead:
 
   ```bash
-  bd show ${ISSUE_ID} --long --json     # full fields, design, acceptance, metadata
-  bd show ${ISSUE_ID} --children --json # existing children (if any)
-  bd dep tree ${ISSUE_ID}               # existing dependencies
+  bd show {{ .Args.IssueID }} --long --json     # full fields, design, acceptance, metadata
+  bd show {{ .Args.IssueID }} --children --json # existing children (if any)
+  bd dep tree {{ .Args.IssueID }}               # existing dependencies
   ```
 
   Analyse all gathered context thoroughly: understand the full scope, acceptance criteria, constraints, and any prior discussion.
@@ -45,14 +48,14 @@ prompt: |
   - The bead is large enough that a single PR would be difficult to review
   - Multiple distinct acceptance criteria map cleanly to separate deliverables
 
-  If decomposition is **not** recommended: use `mitto_ui_options_mitto(self_id: "@mitto:session_id")` to inform the user of your reasoning and ask if they want to proceed anyway. If they say No, skip to the final **Offer to delete this conversation** step.
+  If decomposition is **not** recommended: use `mitto_ui_options(self_id: "{{ .Session.ID }}")` to inform the user of your reasoning and ask if they want to proceed anyway. If they say No, skip to the final **Offer to delete this conversation** step.
 
   ## Step 3 — Produce a decomposition plan
 
   Create a breakdown with:
 
   ### Parent Bead Summary
-  Brief restatement of what the parent bead (`${ISSUE_ID}`) is about.
+  Brief restatement of what the parent bead (`{{ .Args.IssueID }}`) is about.
 
   ### Decomposition Rationale
   Why splitting this bead makes sense: what the independent concerns are and how parallelism or reviewability is improved.
@@ -70,7 +73,7 @@ prompt: |
 
   ## Step 4 — Present the plan and iterate
 
-  Use `mitto_ui_options_mitto(self_id: "@mitto:session_id")` to show the decomposition plan and ask: "Does this breakdown look correct? Shall I create these child beads?"
+  Use `mitto_ui_options(self_id: "{{ .Session.ID }}")` to show the decomposition plan and ask: "Does this breakdown look correct? Shall I create these child beads?"
 
   - If the user says **No** or provides feedback: revise and present again. Repeat until the user explicitly approves.
   - If the user says **Yes**: proceed to Step 5.
@@ -81,7 +84,7 @@ prompt: |
 
   ```bash
   bd create "<child title>" \
-    --parent ${ISSUE_ID} \
+    --parent {{ .Args.IssueID }} \
     --type <type> \
     --priority <priority> \
     --body-file /tmp/child-bead.md
@@ -109,27 +112,27 @@ prompt: |
   Record the decomposition in the parent bead's history for future reference. Write the breakdown summary — the **decomposition rationale**, each child bead (**ID + title**), and the **dependency edges** created — to a temp file and post it as a comment, then add a terse audit note:
 
   ```bash
-  bd comment ${ISSUE_ID} --file /tmp/decomposition-summary.md   # analysis + design + resulting structure
-  bd update ${ISSUE_ID} --append-notes "Decomposed into <N> sub-issues (<child-ids>): <one-line rationale for the breakdown>."
+  bd comment {{ .Args.IssueID }} --file /tmp/decomposition-summary.md   # analysis + design + resulting structure
+  bd update {{ .Args.IssueID }} --append-notes "Decomposed into <N> sub-issues (<child-ids>): <one-line rationale for the breakdown>."
   ```
 
-  Run `bd dep tree ${ISSUE_ID}` to display the final structure.
+  Run `bd dep tree {{ .Args.IssueID }}` to display the final structure.
 
   ## Final step — Offer to delete this conversation
 
   The task is complete. Offer to tidy up so finished conversations do not accumulate.
 
   1. Ask the user whether to delete this conversation now, via
-     `mitto_ui_options_mitto(self_id: "@mitto:session_id", question: "All done — delete this conversation now?", timeout_seconds: 120)` with options:
+     `mitto_ui_options(self_id: "{{ .Session.ID }}", question: "All done — delete this conversation now?", timeout_seconds: 120)` with options:
      - **"Yes, delete it"**
      - **"No, keep it"**
 
   2. Honour the answer:
      - **Delete** → first notify the user (the deletion is deferred until your turn ends, so the
        message is delivered first) with
-       `mitto_ui_notify_mitto(self_id: "@mitto:session_id", title: "<short outcome>", message: "<one-line summary of what was done>", style: "success")`,
+       `mitto_ui_notify_mitto(self_id: "{{ .Session.ID }}", title: "<short outcome>", message: "<one-line summary of what was done>", style: "success")`,
        then self-destruct with
-       `mitto_conversation_delete_mitto(self_id: "@mitto:session_id", conversation_id: "self")`.
+       `mitto_conversation_delete_mitto(self_id: "{{ .Session.ID }}", conversation_id: "self")`.
      - **Keep** → leave the conversation in place.
 
   3. **On timeout** (no response): only delete this conversation if **all** of the following hold —

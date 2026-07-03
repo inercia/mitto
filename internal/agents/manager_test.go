@@ -370,6 +370,7 @@ defaults:
     - coding
     - smart
   autoApprove: true
+  contextFlushCommand: "/flush"
 `
 	if err := os.WriteFile(filepath.Join(agentDir, "metadata.yaml"), []byte(meta), 0644); err != nil {
 		t.Fatal(err)
@@ -415,6 +416,11 @@ defaults:
 	if !d.AutoApprove {
 		t.Error("expected AutoApprove to be true")
 	}
+
+	// ContextFlushCommand
+	if d.ContextFlushCommand != "/flush" {
+		t.Errorf("ContextFlushCommand = %q, want %q", d.ContextFlushCommand, "/flush")
+	}
 }
 
 // TestAgentMetadataDefaults_Absent verifies that agents without a `defaults` block
@@ -430,5 +436,143 @@ func TestAgentMetadataDefaults_Absent(t *testing.T) {
 
 	if agent.Metadata.Defaults != nil {
 		t.Errorf("expected Defaults to be nil for agent without defaults block, got %+v", agent.Metadata.Defaults)
+	}
+}
+
+// TestAgentMetadataDefaults_PartialSections verifies that a `defaults` block with only
+// some sub-sections present (tags only) parses correctly without errors.
+func TestAgentMetadataDefaults_PartialSections(t *testing.T) {
+	agentsDir := t.TempDir()
+	agentDir := filepath.Join(agentsDir, "builtin", "partial-agent")
+	if err := os.MkdirAll(agentDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	meta := `name: "Partial Agent"
+displayName: "Partial Agent"
+acpId: "partial"
+defaults:
+  tags:
+    - coding
+    - smart
+`
+	if err := os.WriteFile(filepath.Join(agentDir, "metadata.yaml"), []byte(meta), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	m := NewManager(agentsDir, nil)
+	agent, err := m.GetAgent("partial-agent", "builtin")
+	if err != nil {
+		t.Fatalf("GetAgent failed: %v", err)
+	}
+
+	d := agent.Metadata.Defaults
+	if d == nil {
+		t.Fatal("expected Defaults to be non-nil")
+	}
+	if len(d.Tags) != 2 || d.Tags[0] != "coding" || d.Tags[1] != "smart" {
+		t.Errorf("Tags = %v, want [coding smart]", d.Tags)
+	}
+	if len(d.Env) != 0 {
+		t.Errorf("Env = %v, want empty", d.Env)
+	}
+	if len(d.Constraints) != 0 {
+		t.Errorf("Constraints = %v, want empty", d.Constraints)
+	}
+	if d.AutoApprove {
+		t.Error("AutoApprove should be false when not specified")
+	}
+}
+
+// TestAgentMetadataDefaults_EmptyMaps verifies that a `defaults` block with explicitly
+// empty env, constraints, and tags parses without error and yields empty (not nil) maps.
+func TestAgentMetadataDefaults_EmptyMaps(t *testing.T) {
+	agentsDir := t.TempDir()
+	agentDir := filepath.Join(agentsDir, "builtin", "empty-defaults-agent")
+	if err := os.MkdirAll(agentDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	meta := `name: "Empty Defaults Agent"
+displayName: "Empty Defaults Agent"
+acpId: "empty-defaults"
+defaults:
+  env: {}
+  constraints: {}
+  tags: []
+`
+	if err := os.WriteFile(filepath.Join(agentDir, "metadata.yaml"), []byte(meta), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	m := NewManager(agentsDir, nil)
+	agent, err := m.GetAgent("empty-defaults-agent", "builtin")
+	if err != nil {
+		t.Fatalf("GetAgent failed: %v", err)
+	}
+
+	d := agent.Metadata.Defaults
+	if d == nil {
+		t.Fatal("expected Defaults to be non-nil even with empty maps")
+	}
+	if len(d.Env) != 0 {
+		t.Errorf("Env = %v, want empty", d.Env)
+	}
+	if len(d.Constraints) != 0 {
+		t.Errorf("Constraints = %v, want empty", d.Constraints)
+	}
+	if len(d.Tags) != 0 {
+		t.Errorf("Tags = %v, want empty", d.Tags)
+	}
+	if d.AutoApprove {
+		t.Error("AutoApprove should be false")
+	}
+}
+
+// TestMCPServer_EnvUnmarshal verifies that the MCPServer.Env field is populated
+// when an mcp-list.sh script emits an "env" object, so the value can be surfaced
+// by GET /api/workspace-mcp-tools and copied for round-trip into the Add dialog.
+func TestMCPServer_EnvUnmarshal(t *testing.T) {
+	raw := `{"servers":[{"name":"with-env","command":"node","args":["server.js"],"env":{"API_KEY":"secret","DEBUG":"1"}},{"name":"url-only","url":"http://127.0.0.1:5757/mcp"}]}`
+
+	var out MCPListOutput
+	if err := json.Unmarshal([]byte(raw), &out); err != nil {
+		t.Fatalf("failed to unmarshal MCPListOutput: %v", err)
+	}
+	if len(out.Servers) != 2 {
+		t.Fatalf("servers = %d, want 2", len(out.Servers))
+	}
+
+	withEnv := out.Servers[0]
+	if got := withEnv.Env["API_KEY"]; got != "secret" {
+		t.Errorf("Env[API_KEY] = %q, want %q", got, "secret")
+	}
+	if got := withEnv.Env["DEBUG"]; got != "1" {
+		t.Errorf("Env[DEBUG] = %q, want %q", got, "1")
+	}
+
+	urlOnly := out.Servers[1]
+	if urlOnly.Env != nil {
+		t.Errorf("expected nil Env for server without env, got %+v", urlOnly.Env)
+	}
+}
+
+// TestMCPServer_EnvOmitEmpty verifies that an MCPServer with no env vars marshals
+// without an "env" key (json:",omitempty"), keeping the listing output clean.
+func TestMCPServer_EnvOmitEmpty(t *testing.T) {
+	b, err := json.Marshal(MCPServer{Name: "no-env", Command: "node"})
+	if err != nil {
+		t.Fatalf("marshal failed: %v", err)
+	}
+	if got := string(b); got != `{"name":"no-env","command":"node"}` {
+		t.Errorf("marshaled = %s, want env omitted", got)
+	}
+
+	b, err = json.Marshal(MCPServer{Name: "with-env", Env: map[string]string{"K": "v"}})
+	if err != nil {
+		t.Fatalf("marshal failed: %v", err)
+	}
+	if got := string(b); got != `{"name":"with-env","env":{"K":"v"}}` {
+		t.Errorf("marshaled = %s, want env included", got)
 	}
 }

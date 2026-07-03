@@ -67,6 +67,10 @@ type Settings struct {
 	Permissions *PermissionsConfig `json:"permissions,omitempty"`
 	// RestrictedRunners contains per-runner-type global configuration
 	RestrictedRunners map[string]*WorkspaceRunnerConfig `json:"restricted_runners,omitempty"`
+	// MCP contains MCP (Model Context Protocol) server configuration
+	MCP *MCPConfig `json:"mcp,omitempty"`
+	// Models is the list of named model profiles (criteria + tags)
+	Models []ModelProfile `json:"models,omitempty"`
 }
 
 // DefaultStartupStaggerMs is the default stagger delay in milliseconds between
@@ -285,9 +289,15 @@ type ACPServerSettings struct {
 	AutoApprove bool `json:"auto_approve,omitempty"`
 	// Tags is an optional list of categorization tags for this ACP server.
 	Tags []string `json:"tags,omitempty"`
+	// ModelProfile is the name of a Model profile (Config.Models) used for
+	// session-start model auto-selection; empty falls back to legacy Constraints.
+	ModelProfile string `json:"model_profile,omitempty"`
 	// Constraints is an optional map of config option auto-selection rules.
 	// The key is the config option category (e.g., "model", "mode").
 	Constraints map[string]*ACPServerConstraint `json:"constraints,omitempty"`
+	// ContextFlushCommand is an optional agent-native slash command (e.g. "/clear")
+	// that flushes/clears the conversation context without restarting the agent.
+	ContextFlushCommand string `json:"context_flush_command,omitempty"`
 }
 
 // ToConfig converts Settings to the internal Config struct.
@@ -302,6 +312,8 @@ func (s *Settings) ToConfig() *Config {
 		Conversations:     s.Conversations,
 		Permissions:       s.Permissions,
 		RestrictedRunners: s.RestrictedRunners,
+		MCP:               s.MCP,
+		Models:            s.Models,
 	}
 	for i, srv := range s.ACPServers {
 		cfg.ACPServers[i] = ACPServer(srv)
@@ -321,6 +333,8 @@ func ConfigToSettings(cfg *Config) *Settings {
 		Conversations:     cfg.Conversations,
 		Permissions:       cfg.Permissions,
 		RestrictedRunners: cfg.RestrictedRunners,
+		MCP:               cfg.MCP,
+		Models:            cfg.Models,
 	}
 	for i, srv := range cfg.ACPServers {
 		s.ACPServers[i] = ACPServerSettings(srv)
@@ -612,6 +626,11 @@ func LoadSettingsWithFallback() (*LoadResult, error) {
 	// If settings.json has 0.0.0.0 (external access enabled), use it
 	if settingsCfg.Web.Host == "0.0.0.0" {
 		mergedCfg.Web.Host = settingsCfg.Web.Host
+	}
+
+	// MCP settings (configured via UI, saved to settings.json) — apply when RC file doesn't set them
+	if mergedCfg.MCP == nil && settingsCfg.MCP != nil {
+		mergedCfg.MCP = settingsCfg.MCP
 	}
 
 	// Load keychain password for the merged config

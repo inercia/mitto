@@ -360,4 +360,3 @@ export function useSwipeToAction(options = {}) {
     triggerAction,
   };
 }
-

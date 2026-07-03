@@ -3,6 +3,7 @@ package session
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -705,6 +706,50 @@ func TestStore_ChildSessions_ClosedStore(t *testing.T) {
 	}
 }
 
+func TestStore_UpdateMetadata_OriginPromptName(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	sessionID := "test-origin-prompt-name"
+
+	meta := Metadata{
+		SessionID:  sessionID,
+		ACPServer:  "test-server",
+		WorkingDir: "/test/dir",
+	}
+	if err := store.Create(meta); err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+
+	// Verify initial state has no origin prompt name.
+	gotMeta, err := store.GetMetadata(sessionID)
+	if err != nil {
+		t.Fatalf("GetMetadata failed: %v", err)
+	}
+	if gotMeta.OriginPromptName != "" {
+		t.Errorf("OriginPromptName should be empty initially, got %q", gotMeta.OriginPromptName)
+	}
+
+	// Set it via UpdateMetadata, mirroring how HandleCreateSession persists it.
+	if err := store.UpdateMetadata(sessionID, func(m *Metadata) {
+		m.OriginPromptName = "Reevaluate all issues"
+	}); err != nil {
+		t.Fatalf("UpdateMetadata failed: %v", err)
+	}
+
+	gotMeta, err = store.GetMetadata(sessionID)
+	if err != nil {
+		t.Fatalf("GetMetadata failed: %v", err)
+	}
+	if gotMeta.OriginPromptName != "Reevaluate all issues" {
+		t.Errorf("OriginPromptName = %q, want %q", gotMeta.OriginPromptName, "Reevaluate all issues")
+	}
+}
+
 func TestStore_AdvancedSettings(t *testing.T) {
 	tmpDir := t.TempDir()
 	store, err := NewStore(tmpDir)
@@ -830,5 +875,146 @@ func TestStore_AdvancedSettings_BackwardCompatibility(t *testing.T) {
 	}
 	if !gotMeta.AdvancedSettings["existing_flag"] {
 		t.Error("existing_flag should still be true after store reopen")
+	}
+}
+
+// TestStore_ReadEvents_SkipsCorruptLine verifies that a single corrupt JSONL
+// TestStore_ReadEventsFrom_DeduplicatesSeq verifies that ReadEventsFrom drops
+// duplicate seq lines (keeping the first occurrence) rather than surfacing them
+// to clients. This guards against files corrupted by the pre-fix concurrent
+// AppendEvent / RecordEvent race.
+func TestStore_ReadEventsFrom_DeduplicatesSeq(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	const sessionID = "test-session-dedup"
+	if err := store.Create(Metadata{SessionID: sessionID, ACPServer: "test-server", WorkingDir: "/test/dir"}); err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+
+	// Write three events via AppendEvent so they get seq 1, 2, 3.
+	msgs := []string{"first", "second", "third"}
+	for _, m := range msgs {
+		if err := store.AppendEvent(sessionID, Event{
+			Type:      EventTypeUserPrompt,
+			Timestamp: time.Now(),
+			Data:      UserPromptData{Message: m},
+		}); err != nil {
+			t.Fatalf("AppendEvent failed: %v", err)
+		}
+	}
+
+	// Manually inject a duplicate of seq=2 into the events file.
+	eventsPath := filepath.Join(store.SessionDir(sessionID), eventsFileName)
+	data, err := os.ReadFile(eventsPath)
+	if err != nil {
+		t.Fatalf("ReadFile failed: %v", err)
+	}
+	lines := strings.Split(strings.TrimRight(string(data), "\n"), "\n")
+	if len(lines) != 3 {
+		t.Fatalf("expected 3 event lines, got %d", len(lines))
+	}
+	// Insert duplicate of line[1] (seq=2) between line[1] and line[2].
+	rewritten := lines[0] + "\n" + lines[1] + "\n" + lines[1] + "\n" + lines[2] + "\n"
+	if err := os.WriteFile(eventsPath, []byte(rewritten), 0o644); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
+
+	// ReadEventsFrom must drop the duplicate and return exactly 3 events.
+	got, err := store.ReadEventsFrom(sessionID, 0, 0)
+	if err != nil {
+		t.Fatalf("ReadEventsFrom failed: %v", err)
+	}
+	if len(got) != 3 {
+		t.Fatalf("ReadEventsFrom returned %d events, want 3 (duplicate seq must be dropped)", len(got))
+	}
+	// Verify seq numbers are unique and in order.
+	for i, e := range got {
+		want := int64(i + 1)
+		if e.Seq != want {
+			t.Errorf("got[%d].Seq = %d, want %d", i, e.Seq, want)
+		}
+	}
+
+	// ReadEvents (full) must also deduplicate.
+	all, err := store.ReadEvents(sessionID)
+	if err != nil {
+		t.Fatalf("ReadEvents failed: %v", err)
+	}
+	if len(all) != 3 {
+		t.Errorf("ReadEvents returned %d events, want 3", len(all))
+	}
+}
+
+// line (e.g. a torn write) does not abort the whole conversation load: the
+// reader skips the bad line and still returns the surrounding valid events.
+func TestStore_ReadEvents_SkipsCorruptLine(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	const sessionID = "test-session-corrupt"
+	if err := store.Create(Metadata{SessionID: sessionID, ACPServer: "test-server", WorkingDir: "/test/dir"}); err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+
+	events := []Event{
+		{Type: EventTypeUserPrompt, Timestamp: time.Now(), Data: UserPromptData{Message: "one"}},
+		{Type: EventTypeAgentMessage, Timestamp: time.Now(), Data: AgentMessageData{Text: "two"}},
+		{Type: EventTypeUserPrompt, Timestamp: time.Now(), Data: UserPromptData{Message: "three"}},
+	}
+	for _, e := range events {
+		if err := store.AppendEvent(sessionID, e); err != nil {
+			t.Fatalf("AppendEvent failed: %v", err)
+		}
+	}
+
+	// Inject a malformed line (a torn-write fragment) between valid records.
+	eventsPath := filepath.Join(store.SessionDir(sessionID), eventsFileName)
+	data, err := os.ReadFile(eventsPath)
+	if err != nil {
+		t.Fatalf("ReadFile failed: %v", err)
+	}
+	lines := strings.Split(strings.TrimRight(string(data), "\n"), "\n")
+	if len(lines) != 3 {
+		t.Fatalf("expected 3 event lines, got %d", len(lines))
+	}
+	corrupt := `1T08:02:01.170419+02:00","data":{"status":"","title":"torn"}}`
+	rewritten := lines[0] + "\n" + lines[1] + "\n" + corrupt + "\n" + lines[2] + "\n"
+	if err := os.WriteFile(eventsPath, []byte(rewritten), 0o644); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
+
+	// ReadEvents must skip the corrupt line and return the 3 valid events.
+	got, err := store.ReadEvents(sessionID)
+	if err != nil {
+		t.Fatalf("ReadEvents failed: %v", err)
+	}
+	if len(got) != 3 {
+		t.Fatalf("ReadEvents returned %d events, want 3 (corrupt line should be skipped)", len(got))
+	}
+
+	// ReadEventsFrom and ReadEventsLast must be equally tolerant.
+	fromAll, err := store.ReadEventsFrom(sessionID, 0, 0)
+	if err != nil {
+		t.Fatalf("ReadEventsFrom failed: %v", err)
+	}
+	if len(fromAll) != 3 {
+		t.Errorf("ReadEventsFrom returned %d events, want 3", len(fromAll))
+	}
+
+	last, err := store.ReadEventsLast(sessionID, 0, 0)
+	if err != nil {
+		t.Fatalf("ReadEventsLast failed: %v", err)
+	}
+	if len(last) != 3 {
+		t.Errorf("ReadEventsLast returned %d events, want 3", len(last))
 	}
 }

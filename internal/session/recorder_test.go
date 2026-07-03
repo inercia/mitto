@@ -1,6 +1,8 @@
 package session
 
 import (
+	"bytes"
+	"encoding/json"
 	"strings"
 	"testing"
 )
@@ -1079,6 +1081,68 @@ func TestRecorder_RecordUserPromptWithImages(t *testing.T) {
 	}
 }
 
+// TestRecorder_RecordUserPromptComplete_ArgumentCount tests that RecordUserPromptComplete
+// persists the ArgumentCount field correctly, and that the convenience wrappers default to 0.
+func TestRecorder_RecordUserPromptComplete_ArgumentCount(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	recorder := NewRecorder(store)
+	if err := recorder.Start("test-server", "/test/dir", ""); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+
+	// Record a named prompt with arguments.
+	if err := recorder.RecordUserPromptComplete("Hello world", nil, nil, "pid-1", "my-prompt", 3); err != nil {
+		t.Fatalf("RecordUserPromptComplete failed: %v", err)
+	}
+
+	// Record an ad-hoc prompt via the wrapper — should default to 0.
+	if err := recorder.RecordUserPrompt("plain message"); err != nil {
+		t.Fatalf("RecordUserPrompt failed: %v", err)
+	}
+
+	events, err := store.ReadEvents(recorder.SessionID())
+	if err != nil {
+		t.Fatalf("ReadEvents failed: %v", err)
+	}
+	// events[0] = session_start, events[1] = named prompt, events[2] = plain prompt
+	if len(events) != 3 {
+		t.Fatalf("expected 3 events, got %d", len(events))
+	}
+
+	// Verify named prompt event has argument_count=3.
+	namedEvent := events[1]
+	if namedEvent.Type != EventTypeUserPrompt {
+		t.Fatalf("events[1] type = %q, want %q", namedEvent.Type, EventTypeUserPrompt)
+	}
+	namedDataMap, ok := namedEvent.Data.(map[string]interface{})
+	if !ok {
+		t.Fatalf("events[1].Data is %T, want map[string]interface{}", namedEvent.Data)
+	}
+	// JSON numbers unmarshal as float64.
+	argCount, _ := namedDataMap["argument_count"].(float64)
+	if int(argCount) != 3 {
+		t.Errorf("argument_count = %v, want 3", namedDataMap["argument_count"])
+	}
+
+	// Verify plain prompt event has no argument_count (omitempty → absent or zero).
+	plainEvent := events[2]
+	plainDataMap, ok := plainEvent.Data.(map[string]interface{})
+	if !ok {
+		t.Fatalf("events[2].Data is %T, want map[string]interface{}", plainEvent.Data)
+	}
+	if v, exists := plainDataMap["argument_count"]; exists && v != nil {
+		if f, ok := v.(float64); ok && f != 0 {
+			t.Errorf("plain prompt argument_count = %v, want absent/0", v)
+		}
+	}
+}
+
 // TestRecorder_EndIsIdempotent tests that calling End() multiple times is safe
 // and only records a single session_end event.
 func TestRecorder_EndIsIdempotent(t *testing.T) {
@@ -1577,5 +1641,273 @@ func TestRecorder_ConcurrentRecordingAndEnd(t *testing.T) {
 		if lastEvent.Type != EventTypeSessionEnd {
 			t.Errorf("Last event should be session_end, got %s", lastEvent.Type)
 		}
+	}
+}
+
+// --- RecordOption / WithMeta / WithMetaMap tests ---
+
+func setupRecorder(t *testing.T) (*Recorder, *Store) {
+	t.Helper()
+	tmpDir := t.TempDir()
+	store, err := NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	r := NewRecorder(store)
+	if err := r.Start("test-server", "/test/dir", ""); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	return r, store
+}
+
+func lastEvent(t *testing.T, store *Store, sessionID string) Event {
+	t.Helper()
+	events, err := store.ReadEvents(sessionID)
+	if err != nil {
+		t.Fatalf("ReadEvents: %v", err)
+	}
+	if len(events) == 0 {
+		t.Fatal("no events in store")
+	}
+	// Skip session_start; return the last non-start event if present.
+	for i := len(events) - 1; i >= 0; i-- {
+		if events[i].Type != EventTypeSessionStart {
+			return events[i]
+		}
+	}
+	return events[len(events)-1]
+}
+
+func TestRecordOption_NoMeta_AbsentInJSON(t *testing.T) {
+	r, store := setupRecorder(t)
+	defer store.Close()
+
+	if err := r.RecordUserPrompt("hello"); err != nil {
+		t.Fatalf("RecordUserPrompt: %v", err)
+	}
+
+	ev := lastEvent(t, store, r.SessionID())
+	if ev.Type != EventTypeUserPrompt {
+		t.Fatalf("expected user_prompt, got %s", ev.Type)
+	}
+	if ev.Meta != nil {
+		t.Errorf("expected nil Meta when no options used, got %v", ev.Meta)
+	}
+
+	// Verify JSON round-trip: "meta" key must be absent (omitempty).
+	jsonBytes, err := json.Marshal(ev)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if bytes.Contains(jsonBytes, []byte(`"meta"`)) {
+		t.Errorf("JSON should not contain \"meta\" key when Meta is nil, got: %s", jsonBytes)
+	}
+}
+
+func TestRecordOption_WithMeta_SingleKey(t *testing.T) {
+	r, store := setupRecorder(t)
+	defer store.Close()
+
+	if err := r.RecordUserPrompt("hello", WithMeta("k", "v")); err != nil {
+		t.Fatalf("RecordUserPrompt: %v", err)
+	}
+
+	ev := lastEvent(t, store, r.SessionID())
+	if ev.Meta == nil {
+		t.Fatal("expected non-nil Meta")
+	}
+	if got, ok := ev.Meta["k"]; !ok || got != "v" {
+		t.Errorf(`Meta["k"] = %v, want "v"`, got)
+	}
+}
+
+func TestRecordOption_WithMetaMap_Merged(t *testing.T) {
+	r, store := setupRecorder(t)
+	defer store.Close()
+
+	if err := r.RecordAgentMessage("hi", WithMetaMap(map[string]any{"a": 42, "b": "two"})); err != nil {
+		t.Fatalf("RecordAgentMessage: %v", err)
+	}
+
+	ev := lastEvent(t, store, r.SessionID())
+	if ev.Meta == nil {
+		t.Fatal("expected non-nil Meta")
+	}
+	// JSON round-trip converts int to float64; accept both.
+	switch v := ev.Meta["a"].(type) {
+	case int:
+		if v != 42 {
+			t.Errorf(`Meta["a"] = %v, want 42`, v)
+		}
+	case float64:
+		if v != 42 {
+			t.Errorf(`Meta["a"] = %v, want 42`, v)
+		}
+	default:
+		t.Errorf(`Meta["a"] has unexpected type %T, value %v`, ev.Meta["a"], ev.Meta["a"])
+	}
+	if ev.Meta["b"] != "two" {
+		t.Errorf(`Meta["b"] = %v, want "two"`, ev.Meta["b"])
+	}
+}
+
+func TestRecordOption_SizeCap_DropsEntireMap(t *testing.T) {
+	r, store := setupRecorder(t)
+	defer store.Close()
+
+	// Build a meta map that exceeds MaxMetaBytes.
+	bigVal := make([]byte, MaxMetaBytes+100)
+	for i := range bigVal {
+		bigVal[i] = 'x'
+	}
+	if err := r.RecordUserPrompt("hello", WithMeta("big", string(bigVal))); err != nil {
+		t.Fatalf("RecordUserPrompt: %v", err)
+	}
+
+	// Event must still be recorded (drop ≠ failure).
+	ev := lastEvent(t, store, r.SessionID())
+	if ev.Type != EventTypeUserPrompt {
+		t.Fatalf("expected user_prompt, got %s", ev.Type)
+	}
+	// Meta must be nil after cap enforcement.
+	if ev.Meta != nil {
+		t.Errorf("expected Meta to be dropped (nil) when oversized, got %v", ev.Meta)
+	}
+}
+
+// TestRecorder_RecordSessionChange_ScalarKind tests recording a scalar session change
+// (e.g. model switch with Value and PreviousValue).
+func TestRecorder_RecordSessionChange_ScalarKind(t *testing.T) {
+	r, store := setupRecorder(t)
+	defer store.Close()
+
+	data := SessionChangeData{
+		Kind:          "model",
+		Label:         "Claude Sonnet 4.5",
+		Value:         "claude-sonnet-4-5",
+		PreviousValue: "claude-opus-4",
+	}
+	if err := r.RecordSessionChange(data); err != nil {
+		t.Fatalf("RecordSessionChange failed: %v", err)
+	}
+
+	ev := lastEvent(t, store, r.SessionID())
+	if ev.Type != EventTypeSessionChange {
+		t.Fatalf("event type = %q, want %q", ev.Type, EventTypeSessionChange)
+	}
+	if ev.Seq <= 0 {
+		t.Errorf("expected positive seq, got %d", ev.Seq)
+	}
+
+	dataMap, ok := ev.Data.(map[string]interface{})
+	if !ok {
+		t.Fatalf("event data is %T, want map[string]interface{}", ev.Data)
+	}
+	if kind, _ := dataMap["kind"].(string); kind != "model" {
+		t.Errorf("kind = %q, want %q", kind, "model")
+	}
+	if val, _ := dataMap["value"].(string); val != "claude-sonnet-4-5" {
+		t.Errorf("value = %q, want %q", val, "claude-sonnet-4-5")
+	}
+	if prev, _ := dataMap["previous_value"].(string); prev != "claude-opus-4" {
+		t.Errorf("previous_value = %q, want %q", prev, "claude-opus-4")
+	}
+	if _, exists := dataMap["items"]; exists {
+		t.Errorf("items should be absent (omitempty) for scalar kind, got %v", dataMap["items"])
+	}
+}
+
+// TestRecorder_RecordSessionChange_ListKind tests recording a list session change
+// (e.g. prompt_arguments with Items only — never argument values).
+func TestRecorder_RecordSessionChange_ListKind(t *testing.T) {
+	r, store := setupRecorder(t)
+	defer store.Close()
+
+	data := SessionChangeData{
+		Kind:  "prompt_arguments",
+		Items: []string{"repo_name", "branch"},
+	}
+	if err := r.RecordSessionChange(data); err != nil {
+		t.Fatalf("RecordSessionChange failed: %v", err)
+	}
+
+	ev := lastEvent(t, store, r.SessionID())
+	if ev.Type != EventTypeSessionChange {
+		t.Fatalf("event type = %q, want %q", ev.Type, EventTypeSessionChange)
+	}
+	if ev.Seq <= 0 {
+		t.Errorf("expected positive seq, got %d", ev.Seq)
+	}
+
+	raw, err := json.Marshal(ev.Data)
+	if err != nil {
+		t.Fatalf("json.Marshal failed: %v", err)
+	}
+	var decoded SessionChangeData
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		t.Fatalf("json.Unmarshal failed: %v", err)
+	}
+	if decoded.Kind != "prompt_arguments" {
+		t.Errorf("kind = %q, want %q", decoded.Kind, "prompt_arguments")
+	}
+	if len(decoded.Items) != 2 || decoded.Items[0] != "repo_name" || decoded.Items[1] != "branch" {
+		t.Errorf("items = %v, want [repo_name branch]", decoded.Items)
+	}
+	if decoded.Value != "" || decoded.PreviousValue != "" {
+		t.Errorf("value/previous_value should be empty for list kind, got %q / %q", decoded.Value, decoded.PreviousValue)
+	}
+}
+
+// TestRecorder_RecordSessionChangeWithSeq tests the pre-assigned-seq variant,
+// mirroring TestRecorder_RecordUserPromptCompleteWithSeq conventions.
+func TestRecorder_RecordSessionChangeWithSeq(t *testing.T) {
+	r, store := setupRecorder(t)
+	defer store.Close()
+
+	const wantSeq int64 = 42
+	data := SessionChangeData{
+		Kind:          "model",
+		Value:         "claude-opus-4",
+		PreviousValue: "claude-sonnet-4-5",
+	}
+	if err := r.RecordSessionChangeWithSeq(wantSeq, data); err != nil {
+		t.Fatalf("RecordSessionChangeWithSeq failed: %v", err)
+	}
+
+	events, err := store.ReadEvents(r.SessionID())
+	if err != nil {
+		t.Fatalf("ReadEvents failed: %v", err)
+	}
+	// Find the session_change event.
+	var found *Event
+	for i := range events {
+		if events[i].Type == EventTypeSessionChange {
+			found = &events[i]
+			break
+		}
+	}
+	if found == nil {
+		t.Fatal("session_change event not found")
+	}
+	if found.Seq != wantSeq {
+		t.Errorf("seq = %d, want %d", found.Seq, wantSeq)
+	}
+
+	raw, err := json.Marshal(found.Data)
+	if err != nil {
+		t.Fatalf("json.Marshal failed: %v", err)
+	}
+	var decoded SessionChangeData
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		t.Fatalf("json.Unmarshal failed: %v", err)
+	}
+	if decoded.Kind != "model" {
+		t.Errorf("kind = %q, want %q", decoded.Kind, "model")
+	}
+	if decoded.Value != "claude-opus-4" {
+		t.Errorf("value = %q, want %q", decoded.Value, "claude-opus-4")
+	}
+	if decoded.PreviousValue != "claude-sonnet-4-5" {
+		t.Errorf("previous_value = %q, want %q", decoded.PreviousValue, "claude-sonnet-4-5")
 	}
 }

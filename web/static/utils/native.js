@@ -139,6 +139,81 @@ export function convertFileURLToHTTP(fileUrl) {
 }
 
 /**
+ * Builds a Mitto file-viewer URL for a workspace-relative file path.
+ *
+ * Used to open files referenced by relative links (e.g. in beads issue
+ * descriptions/comments/notes) in the internal viewer instead of letting the
+ * browser navigate the SPA to a non-existent route (which renders a blank
+ * "Not Found" page).
+ *
+ * The href is treated as a path relative to the workspace root: any leading
+ * "./" or "/" is stripped, a trailing ?query is dropped and a trailing
+ * #fragment is preserved and re-appended. The workspace is identified by the
+ * current workspace UUID when available, falling back to the legacy workspace
+ * path.
+ * @param {string} href - The relative file reference (may include ?query / #fragment).
+ * @param {string} [workspacePath] - Optional workspace working directory for the legacy fallback / ws_path.
+ * @returns {string|null} The viewer URL, or null if it cannot be built.
+ */
+export function buildWorkspaceViewerURL(href, workspacePath) {
+  if (!href || typeof href !== "string") return null;
+  let rest = href.trim();
+  if (!rest) return null;
+
+  // Split off a trailing fragment so it can be re-appended to the viewer URL.
+  let fragment = "";
+  const hashIdx = rest.indexOf("#");
+  if (hashIdx >= 0) {
+    fragment = rest.slice(hashIdx); // includes leading '#'
+    rest = rest.slice(0, hashIdx);
+  }
+  // Drop any query string; the viewer does not consume relative-link queries.
+  const qIdx = rest.indexOf("?");
+  if (qIdx >= 0) rest = rest.slice(0, qIdx);
+
+  // Normalize to a workspace-relative path.
+  let relPath = rest.replace(/^\.\//, "").replace(/^\/+/, "");
+  try {
+    relPath = decodeURIComponent(relPath);
+  } catch (_e) {
+    // Leave relPath as-is if it is not valid percent-encoding.
+  }
+  if (!relPath) return null;
+
+  const apiPrefix = getAPIPrefix();
+  const workspaceUUID = getCurrentWorkspaceUUID();
+  const wsPath = workspacePath || getCurrentWorkspace() || "";
+
+  let url;
+  if (workspaceUUID) {
+    url = `${apiPrefix}/viewer.html?ws=${encodeURIComponent(workspaceUUID)}&path=${encodeURIComponent(relPath)}`;
+  } else if (wsPath) {
+    url = `${apiPrefix}/viewer.html?workspace=${encodeURIComponent(wsPath)}&path=${encodeURIComponent(relPath)}`;
+  } else {
+    return null;
+  }
+  if (wsPath) {
+    url += `&ws_path=${encodeURIComponent(wsPath)}`;
+  }
+  if (fragment) url += fragment;
+  return url;
+}
+
+/**
+ * Opens a Mitto viewer URL in the internal file viewer: a native viewer window
+ * in the macOS app, or a new browser tab on the web.
+ * @param {string} viewerUrl - The viewer URL (as built by buildWorkspaceViewerURL / convertFileURLToViewer).
+ */
+export function openViewerUrl(viewerUrl) {
+  if (!viewerUrl) return;
+  if (isNativeApp() && typeof window.mittoOpenViewer === "function") {
+    window.mittoOpenViewer(new URL(viewerUrl, window.location.origin).href);
+  } else {
+    window.open(viewerUrl, "_blank", "noopener,noreferrer");
+  }
+}
+
+/**
  * Parses an HTTP file API URL and extracts workspace UUID and path parameters.
  * @param {string} httpUrl - The HTTP URL (e.g., /mitto/api/files?ws=...&path=...)
  * @returns {{url: URL, workspaceUUID: string, path: string, apiPrefix: string}|null} Parsed URL info, or null if parsing failed

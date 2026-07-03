@@ -39,7 +39,7 @@ function patternInput(page: Page) {
 
 // Open the Workspaces dialog and select the project-alpha workspace (General tab).
 async function openWorkspaceGeneralTab(page: Page) {
-  await page.locator('button[title="Workspaces"]').first().click();
+  await page.locator('button[data-testid="workspaces-btn"]').first().click();
   await expect(page.locator(".workspaces-dialog")).toBeVisible({ timeout: 5000 });
 
   const folderGroup = page
@@ -105,7 +105,7 @@ test.describe("Auxiliary Model Selection", () => {
 
     // Verify the values are restored after a full page reload.
     await page.reload();
-    await page.locator('button[title="Workspaces"]').first().waitFor();
+    await page.locator('button[data-testid="workspaces-btn"]').first().waitFor();
     await openWorkspaceGeneralTab(page);
     await expect(modeSelect(page)).toHaveValue("contains");
     await expect(patternInput(page)).toHaveValue("Opus");

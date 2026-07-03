@@ -342,7 +342,7 @@ type DeleteConversationOutput struct {
 // ConversationUpdateInput is the input for mitto_conversation_update tool.
 type ConversationUpdateInput struct {
 	SelfID         string `json:"self_id"`         // YOUR session ID (the caller)
-	ConversationID string `json:"conversation_id"` // Target conversation to update
+	ConversationID string `json:"conversation_id"` // Target conversation to update, or "self"/your own ID to update yourself
 
 	// Patchable properties — all optional, only non-nil fields are applied
 	Name       *string `json:"name,omitempty"`        // Update conversation title
@@ -360,6 +360,21 @@ type ConversationUpdateInput struct {
 	PeriodicEnabled        *bool   `json:"periodic_enabled,omitempty"`         // Whether periodic is active (defaults to true)
 	PeriodicFreshContext   *bool   `json:"periodic_fresh_context,omitempty"`   // Start each run with a fresh agent context (default false)
 	PeriodicMaxIterations  *int    `json:"periodic_max_iterations,omitempty"`  // Maximum number of scheduled runs (0 = unlimited)
+	// PeriodicTrigger selects how the prompt fires: "schedule" (frequency-based, default),
+	// "onCompletion" (event-driven: fire after the agent stops responding + the completion delay),
+	// or "onTasks" (event-driven: fire when beads/tasks in the workspace change, optionally
+	// gated by periodic_condition).
+	PeriodicTrigger *string `json:"periodic_trigger,omitempty"`
+	// PeriodicCompletionDelaySeconds is the wait (seconds) after the agent stops before the next
+	// run; only meaningful for the onCompletion trigger. Clamped to the global floor on write.
+	PeriodicCompletionDelaySeconds *int `json:"periodic_completion_delay_seconds,omitempty"`
+	// PeriodicMaxDurationSeconds is the wall-clock cap (seconds) since iterating started (0 = unlimited).
+	PeriodicMaxDurationSeconds *int `json:"periodic_max_duration_seconds,omitempty"`
+	// PeriodicCondition is a CEL expression gating onTasks firing (only meaningful when
+	// periodic_trigger is "onTasks"). Empty means fire on ANY beads/task change.
+	PeriodicCondition *string `json:"periodic_condition,omitempty"`
+	// PeriodicConditionPreset is an optional UI preset id that was compiled into periodic_condition.
+	PeriodicConditionPreset *string `json:"periodic_condition_preset,omitempty"`
 }
 
 // UserDataAttributeUpdate represents a single user data attribute to set.
@@ -386,7 +401,14 @@ type ConversationUpdateOutput struct {
 	PeriodicMaxIterations  int    `json:"periodic_max_iterations,omitempty"`
 	PeriodicIterationCount int    `json:"periodic_iteration_count,omitempty"`
 	PeriodicNextRun        string `json:"periodic_next_run,omitempty"` // RFC3339 format
-	Error                  string `json:"error,omitempty"`
+	// On-completion trigger fields (returned when configured)
+	PeriodicTrigger                string `json:"periodic_trigger,omitempty"`
+	PeriodicCompletionDelaySeconds int    `json:"periodic_completion_delay_seconds,omitempty"`
+	PeriodicMaxDurationSeconds     int    `json:"periodic_max_duration_seconds,omitempty"`
+	// onTasks trigger fields (returned when configured)
+	PeriodicCondition       string `json:"periodic_condition,omitempty"`
+	PeriodicConditionPreset string `json:"periodic_condition_preset,omitempty"`
+	Error                   string `json:"error,omitempty"`
 }
 
 // UITextboxInput is the input for the mitto_ui_textbox tool.
@@ -518,6 +540,53 @@ func (c *childReportCollector) markChildAutoCompleted(childID string, reason str
 	c.checkAndSignalWait()
 }
 
+// markChildFailed marks a child as failed due to a queued-send error, so the
+// parent's wait loop sees status=failed instead of treating it as frozen/idle.
+func (c *childReportCollector) markChildFailed(childID string, msg string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	// Don't overwrite a real report
+	r := c.reports[childID]
+	if r != nil && r.Completed && !r.AutoCompleted && !r.Failed {
+		return
+	}
+
+	reportJSON, _ := json.Marshal(map[string]string{
+		"status":  "failed",
+		"summary": "Queued send failed: " + msg,
+	})
+
+	if r == nil {
+		r = &childReport{}
+		c.reports[childID] = r
+	}
+	r.Report = reportJSON
+	r.Completed = true
+	r.Timestamp = time.Now()
+	r.Failed = true
+	r.FailMessage = msg
+
+	c.checkAndSignalWait()
+}
+
+// reportSatisfiesCurrentTask returns true if the given report counts as a completed
+// result for the current wait's task. Must be called with c.mu held.
+//
+// A report satisfies the current task when:
+//   - it is non-nil and marked Completed, AND
+//   - either: no task scoping is in effect (currentTaskID == ""),
+//     OR: the report carries the matching task_id,
+//     OR: the entry was auto-completed (agent_idle / session_stopped, which carry
+//     no real task_id and must always count toward completion),
+//     OR: the entry was failed (queued-send error, which also carries no real task_id).
+func (c *childReportCollector) reportSatisfiesCurrentTask(r *childReport) bool {
+	if r == nil || !r.Completed {
+		return false
+	}
+	return c.currentTaskID == "" || r.TaskID == c.currentTaskID || r.AutoCompleted || r.Failed
+}
+
 // checkAndSignalWait checks if all waited-on children have reported and signals if so.
 // Must be called with c.mu held.
 func (c *childReportCollector) checkAndSignalWait() {
@@ -526,7 +595,7 @@ func (c *childReportCollector) checkAndSignalWait() {
 	}
 	for childID := range c.waitingFor {
 		r := c.reports[childID]
-		if r == nil || !r.Completed {
+		if !c.reportSatisfiesCurrentTask(r) {
 			return // Still waiting on this child
 		}
 	}
@@ -626,12 +695,14 @@ func (c *childReportCollector) clearWait() {
 
 // getPendingAndReported returns the lists of child IDs that are still pending
 // and those that have already reported, from the current waitingFor set.
+// Uses the same task-matching logic as checkAndSignalWait so the two views
+// stay consistent: a stale-task report is treated as pending here too.
 func (c *childReportCollector) getPendingAndReported() (pending []string, reported []string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	for childID := range c.waitingFor {
 		r := c.reports[childID]
-		if r != nil && r.Completed {
+		if c.reportSatisfiesCurrentTask(r) {
 			reported = append(reported, childID)
 		} else {
 			pending = append(pending, childID)
@@ -677,6 +748,8 @@ type childReport struct {
 	TaskID        string          `json:"task_id,omitempty"`
 	AutoCompleted bool            `json:"auto_completed,omitempty"` // true if auto-completed (agent went idle without reporting)
 	AutoReason    string          `json:"auto_reason,omitempty"`    // reason for auto-completion
+	Failed        bool            `json:"failed,omitempty"`         // true if the queued send failed before the agent could process it
+	FailMessage   string          `json:"fail_message,omitempty"`   // error message from the failed send
 }
 
 // ChildrenTasksWaitInput is the input for mitto_children_tasks_wait tool.
@@ -807,14 +880,15 @@ type PromptListInput struct {
 
 // PromptInfo contains basic metadata about a prompt (without full text).
 type PromptInfo struct {
-	Name            string                 `json:"name"`
-	Description     string                 `json:"description,omitempty"`
-	Group           string                 `json:"group,omitempty"`
-	BackgroundColor string                 `json:"background_color,omitempty"`
-	Icon            string                 `json:"icon,omitempty"`
-	Source          string                 `json:"source,omitempty"`   // "file", "settings", "workspace", "builtin"
-	Enabled         *bool                  `json:"enabled,omitempty"`  // nil = enabled (default true)
-	Periodic        *config.PromptPeriodic `json:"periodic,omitempty"` // non-nil = prompt starts a periodic conversation
+	Name            string                   `json:"name"`
+	Description     string                   `json:"description,omitempty"`
+	Group           string                   `json:"group,omitempty"`
+	BackgroundColor string                   `json:"background_color,omitempty"`
+	Icon            string                   `json:"icon,omitempty"`
+	Source          string                   `json:"source,omitempty"`     // "file", "settings", "workspace", "builtin"
+	Enabled         *bool                    `json:"enabled,omitempty"`    // nil = enabled (default true)
+	Periodic        *config.PromptPeriodic   `json:"periodic,omitempty"`   // non-nil = prompt starts a periodic conversation
+	Parameters      []config.PromptParameter `json:"parameters,omitempty"` // Declared typed input parameters (omitted when empty)
 }
 
 // PromptListOutput is the output for mitto_prompt_list tool.
@@ -834,15 +908,16 @@ type PromptGetInput struct {
 
 // PromptDetail contains full details about a prompt including text.
 type PromptDetail struct {
-	Name            string                 `json:"name"`
-	Prompt          string                 `json:"prompt"` // Full prompt text
-	Description     string                 `json:"description,omitempty"`
-	Group           string                 `json:"group,omitempty"`
-	BackgroundColor string                 `json:"background_color,omitempty"`
-	Icon            string                 `json:"icon,omitempty"`
-	Source          string                 `json:"source,omitempty"`   // "file", "settings", "workspace", "builtin"
-	Enabled         *bool                  `json:"enabled,omitempty"`  // nil = enabled (default true)
-	Periodic        *config.PromptPeriodic `json:"periodic,omitempty"` // non-nil = prompt starts a periodic conversation
+	Name            string                   `json:"name"`
+	Prompt          string                   `json:"prompt"` // Full prompt text
+	Description     string                   `json:"description,omitempty"`
+	Group           string                   `json:"group,omitempty"`
+	BackgroundColor string                   `json:"background_color,omitempty"`
+	Icon            string                   `json:"icon,omitempty"`
+	Source          string                   `json:"source,omitempty"`     // "file", "settings", "workspace", "builtin"
+	Enabled         *bool                    `json:"enabled,omitempty"`    // nil = enabled (default true)
+	Periodic        *config.PromptPeriodic   `json:"periodic,omitempty"`   // non-nil = prompt starts a periodic conversation
+	Parameters      []config.PromptParameter `json:"parameters,omitempty"` // Declared typed input parameters (omitted when empty)
 }
 
 // PromptGetOutput is the output for mitto_prompt_get tool.

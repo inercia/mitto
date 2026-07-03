@@ -35,6 +35,7 @@ import {
   COALESCE_DEFAULTS,
   getMaxSeq,
   isStaleClientState,
+  resolveHasMoreAfterEventsLoaded,
   getMessageHash,
   mergeMessagesWithSync,
   safeJsonParse,
@@ -63,6 +64,15 @@ import {
   htmlToMarkdown,
   messageToMarkdown,
   conversationToMarkdown,
+  PERIODIC_STOPPED_LABELS,
+  formatPeriodicMaxDuration,
+  buildRetryTargets,
+  messageKey,
+  computeHeaderTriggerLabel,
+  CONDITION_PRESETS,
+  presetConditionFor,
+  extractPresetParam,
+  resolveConditionPresetId,
 } from "./lib.js";
 
 // =============================================================================
@@ -202,6 +212,50 @@ describe("computeAllSessions", () => {
     const result = computeAllSessions(active, stored);
     expect(result).toHaveLength(1);
     expect(result[0].name).toBe("My Custom Name");
+  });
+
+  // ---------------------------------------------------------------------------
+  // periodic_stopped_reason merge tests
+  // ---------------------------------------------------------------------------
+
+  test("merges periodic_stopped_reason from stored session when active lacks it", () => {
+    const active = [{ session_id: "1", created_at: "2024-01-01T10:00:00Z" }];
+    const stored = [
+      {
+        session_id: "1",
+        periodic_configured: true,
+        periodic_stopped_reason: "maxDuration",
+        created_at: "2024-01-01T10:00:00Z",
+      },
+    ];
+    const result = computeAllSessions(active, stored);
+    expect(result[0].periodic_stopped_reason).toBe("maxDuration");
+  });
+
+  test("active periodic_stopped_reason takes precedence over stored", () => {
+    const active = [
+      {
+        session_id: "1",
+        periodic_stopped_reason: "maxIterations",
+        created_at: "2024-01-01T10:00:00Z",
+      },
+    ];
+    const stored = [
+      {
+        session_id: "1",
+        periodic_stopped_reason: "maxDuration",
+        created_at: "2024-01-01T10:00:00Z",
+      },
+    ];
+    const result = computeAllSessions(active, stored);
+    expect(result[0].periodic_stopped_reason).toBe("maxIterations");
+  });
+
+  test("periodic_stopped_reason is null when neither active nor stored has it", () => {
+    const active = [{ session_id: "1", created_at: "2024-01-01T10:00:00Z" }];
+    const stored = [{ session_id: "1", created_at: "2024-01-01T10:00:00Z" }];
+    const result = computeAllSessions(active, stored);
+    expect(result[0].periodic_stopped_reason).toBeNull();
   });
 
   // ---------------------------------------------------------------------------
@@ -480,6 +534,32 @@ describe("convertEventsToMessages", () => {
     expect(result).toHaveLength(1);
     expect(result[0].role).toBe(ROLE_USER);
     expect(result[0].text).toBe("Hello");
+  });
+
+  test("converts user_prompt with argument_count", () => {
+    const events = [
+      {
+        type: "user_prompt",
+        data: { message: "Hello", prompt_name: "my-prompt", argument_count: 3 },
+        timestamp: "2024-01-01T10:00:00Z",
+      },
+    ];
+    const result = convertEventsToMessages(events);
+    expect(result).toHaveLength(1);
+    expect(result[0].argumentCount).toBe(3);
+    expect(result[0].promptName).toBe("my-prompt");
+  });
+
+  test("user_prompt without argument_count has undefined argumentCount", () => {
+    const events = [
+      {
+        type: "user_prompt",
+        data: { message: "plain" },
+        timestamp: "2024-01-01T10:00:00Z",
+      },
+    ];
+    const result = convertEventsToMessages(events);
+    expect(result[0].argumentCount).toBeUndefined();
   });
 
   test("converts agent_message event", () => {
@@ -791,6 +871,41 @@ describe("convertEventsToMessages", () => {
     });
     expect(result).toHaveLength(1);
     expect(result[0].images).toBeUndefined();
+  });
+
+  test("converts session_change event (model kind) to ROLE_SYSTEM message", () => {
+    const events = [
+      {
+        type: "session_change",
+        data: { kind: "model", value: "claude-x" },
+        timestamp: "2024-01-01T10:00:00Z",
+        seq: 7,
+      },
+    ];
+    const result = convertEventsToMessages(events);
+    expect(result).toHaveLength(1);
+    expect(result[0].role).toBe(ROLE_SYSTEM);
+    expect(result[0].kind).toBe("model");
+    expect(result[0].value).toBe("claude-x");
+    expect(result[0].seq).toBe(7);
+  });
+
+  test("converts session_change event (unknown kind) to ROLE_SYSTEM message carrying raw fields", () => {
+    const events = [
+      {
+        type: "session_change",
+        data: { kind: "future_thing", label: "Foo", value: "bar" },
+        timestamp: "2024-01-01T10:00:00Z",
+        seq: 8,
+      },
+    ];
+    const result = convertEventsToMessages(events);
+    expect(result).toHaveLength(1);
+    expect(result[0].role).toBe(ROLE_SYSTEM);
+    expect(result[0].kind).toBe("future_thing");
+    expect(result[0].label).toBe("Foo");
+    expect(result[0].value).toBe("bar");
+    expect(result[0].seq).toBe(8);
   });
 });
 
@@ -1334,7 +1449,8 @@ describe("prepend cascade prevention (2026-04-16 fix)", () => {
     // const isStaleClient = !isPrepend && isStaleClientState(clientLastSeq, maxSeq);
     // When isPrepend=true, isStaleClient is always false regardless of seq comparison.
     const isPrepend = true;
-    const isStaleClient = !isPrepend && isStaleClientState(clientLastSeq, serverMaxSeq);
+    const isStaleClient =
+      !isPrepend && isStaleClientState(clientLastSeq, serverMaxSeq);
     expect(isStaleClient).toBe(false); // Cascade prevented!
   });
 
@@ -1342,7 +1458,8 @@ describe("prepend cascade prevention (2026-04-16 fix)", () => {
     const clientLastSeq = 2181;
     const serverMaxSeq = 2180;
     const isPrepend = false;
-    const isStaleClient = !isPrepend && isStaleClientState(clientLastSeq, serverMaxSeq);
+    const isStaleClient =
+      !isPrepend && isStaleClientState(clientLastSeq, serverMaxSeq);
     expect(isStaleClient).toBe(true); // Stale detection works for non-prepend
   });
 });
@@ -4685,6 +4802,135 @@ describe("UI State Consistency", () => {
     });
   });
 
+  describe("resolveHasMoreAfterEventsLoaded (load-more flag preservation)", () => {
+    // Regression: on startup the app connects to a session and runs a forward
+    // sync (load_events with after_seq=watermark). For an idle session the delta
+    // is empty and the server returns has_more=false. Previously this was applied
+    // unconditionally, clearing hasMoreMessages and hiding the "Load earlier
+    // messages" button until a manual reload. The flag must instead be preserved
+    // on a merge-sync, since has_more from a forward sync says nothing about
+    // whether older history is still missing from memory.
+
+    test("preserves existing has-more flag on a forward merge-sync (idle session, empty/false delta)", () => {
+      // Session already has messages and knows more history exists, then a
+      // forward sync returns has_more=false. The flag must stay true.
+      const result = resolveHasMoreAfterEventsLoaded({
+        isPrepend: false,
+        isStaleClient: false,
+        existingMessageCount: 40,
+        serverHasMore: false,
+        existingHasMore: true,
+      });
+
+      expect(result).toBe(true);
+    });
+
+    test("does not resurrect has-more on a merge-sync when client already had none", () => {
+      const result = resolveHasMoreAfterEventsLoaded({
+        isPrepend: false,
+        isStaleClient: false,
+        existingMessageCount: 40,
+        serverHasMore: false,
+        existingHasMore: false,
+      });
+
+      expect(result).toBe(false);
+    });
+
+    test("uses server has_more on initial load (no messages in memory)", () => {
+      // Initial load replaces the message list, so the server is authoritative.
+      expect(
+        resolveHasMoreAfterEventsLoaded({
+          isPrepend: false,
+          isStaleClient: false,
+          existingMessageCount: 0,
+          serverHasMore: true,
+          existingHasMore: false,
+        }),
+      ).toBe(true);
+
+      expect(
+        resolveHasMoreAfterEventsLoaded({
+          isPrepend: false,
+          isStaleClient: false,
+          existingMessageCount: 0,
+          serverHasMore: false,
+          existingHasMore: true,
+        }),
+      ).toBe(false);
+    });
+
+    test("uses server has_more on prepend (load more older history)", () => {
+      // Prepend fetches older events, so has_more reflects whether even older
+      // history remains and is authoritative.
+      expect(
+        resolveHasMoreAfterEventsLoaded({
+          isPrepend: true,
+          isStaleClient: false,
+          existingMessageCount: 40,
+          serverHasMore: false,
+          existingHasMore: true,
+        }),
+      ).toBe(false);
+
+      expect(
+        resolveHasMoreAfterEventsLoaded({
+          isPrepend: true,
+          isStaleClient: false,
+          existingMessageCount: 40,
+          serverHasMore: true,
+          existingHasMore: false,
+        }),
+      ).toBe(true);
+    });
+
+    test("uses server has_more on stale-client recovery (server replaces state)", () => {
+      expect(
+        resolveHasMoreAfterEventsLoaded({
+          isPrepend: false,
+          isStaleClient: true,
+          existingMessageCount: 40,
+          serverHasMore: false,
+          existingHasMore: true,
+        }),
+      ).toBe(false);
+
+      expect(
+        resolveHasMoreAfterEventsLoaded({
+          isPrepend: false,
+          isStaleClient: true,
+          existingMessageCount: 40,
+          serverHasMore: true,
+          existingHasMore: false,
+        }),
+      ).toBe(true);
+    });
+
+    test("normalizes undefined inputs to booleans", () => {
+      // serverHasMore undefined on a replace → false (not undefined)
+      expect(
+        resolveHasMoreAfterEventsLoaded({
+          isPrepend: false,
+          isStaleClient: false,
+          existingMessageCount: 0,
+          serverHasMore: undefined,
+          existingHasMore: undefined,
+        }),
+      ).toBe(false);
+
+      // existingHasMore undefined on a merge-sync → false (not undefined)
+      expect(
+        resolveHasMoreAfterEventsLoaded({
+          isPrepend: false,
+          isStaleClient: false,
+          existingMessageCount: 40,
+          serverHasMore: false,
+          existingHasMore: undefined,
+        }),
+      ).toBe(false);
+    });
+  });
+
   describe("Inconsistent State Detection", () => {
     // These tests document the logic for detecting inconsistent state
     // where hasMoreMessages=true but messages=[]
@@ -4869,7 +5115,6 @@ describe("formatTimeAgo", () => {
   });
 });
 
-
 describe("User Prompt Image Construction (WebSocket handler)", () => {
   // This tests the logic used in the user_prompt WebSocket handler
   // (useWebSocket.js) to construct image objects from raw image_ids.
@@ -4883,7 +5128,12 @@ describe("User Prompt Image Construction (WebSocket handler)", () => {
   // from convertEventsToMessages.
 
   // Helper that mimics the FIXED user_prompt handler image construction
-  function buildUserMessageWithImages(sessionId, message, imageIds, apiPrefix = "") {
+  function buildUserMessageWithImages(
+    sessionId,
+    message,
+    imageIds,
+    apiPrefix = "",
+  ) {
     const userMessage = {
       role: ROLE_USER,
       text: message,
@@ -4915,7 +5165,10 @@ describe("User Prompt Image Construction (WebSocket handler)", () => {
   }
 
   test("constructs images array with URLs from image_ids", () => {
-    const msg = buildUserMessageWithImages("sess-123", "Check this", ["img_001", "img_002"]);
+    const msg = buildUserMessageWithImages("sess-123", "Check this", [
+      "img_001",
+      "img_002",
+    ]);
     expect(msg.images).toHaveLength(2);
     expect(msg.images[0]).toEqual({
       id: "img_001",
@@ -4940,8 +5193,15 @@ describe("User Prompt Image Construction (WebSocket handler)", () => {
   });
 
   test("image URLs include apiPrefix when set", () => {
-    const msg = buildUserMessageWithImages("sess-123", "Test", ["img_001"], "/mitto");
-    expect(msg.images[0].url).toBe("/mitto/api/sessions/sess-123/images/img_001");
+    const msg = buildUserMessageWithImages(
+      "sess-123",
+      "Test",
+      ["img_001"],
+      "/mitto",
+    );
+    expect(msg.images[0].url).toBe(
+      "/mitto/api/sessions/sess-123/images/img_001",
+    );
   });
 
   test("image format matches convertEventsToMessages output", () => {
@@ -4954,15 +5214,17 @@ describe("User Prompt Image Construction (WebSocket handler)", () => {
     const wsMessage = buildUserMessageWithImages(sessionId, "Test", [imageId]);
 
     // What convertEventsToMessages produces
-    const events = [{
-      type: "user_prompt",
-      data: {
-        message: "Test",
-        images: [{ id: imageId, mime_type: "image/png" }],
+    const events = [
+      {
+        type: "user_prompt",
+        data: {
+          message: "Test",
+          images: [{ id: imageId, mime_type: "image/png" }],
+        },
+        timestamp: "2024-01-01T10:00:00Z",
+        seq: 1,
       },
-      timestamp: "2024-01-01T10:00:00Z",
-      seq: 1,
-    }];
+    ];
     const loadedMessages = convertEventsToMessages(events, { sessionId });
 
     // Both should have images with id and url
@@ -4973,7 +5235,9 @@ describe("User Prompt Image Construction (WebSocket handler)", () => {
   test("Message component can render images from WebSocket handler", () => {
     // Message.js checks: message.images && message.images.length > 0
     // and renders: message.images.map(img => img.url)
-    const msg = buildUserMessageWithImages("sess-123", "Check this", ["img_001"]);
+    const msg = buildUserMessageWithImages("sess-123", "Check this", [
+      "img_001",
+    ]);
     const hasImages = msg.images && msg.images.length > 0;
     expect(hasImages).toBe(true);
     expect(msg.images[0].url).toBeDefined();
@@ -4990,7 +5254,6 @@ describe("User Prompt Image Construction (WebSocket handler)", () => {
   });
 });
 
-
 // =============================================================================
 // parseToolTitlePaths Tests
 // =============================================================================
@@ -5002,7 +5265,9 @@ describe("parseToolTitlePaths", () => {
   });
 
   test("returns empty text segment for undefined", () => {
-    expect(parseToolTitlePaths(undefined)).toEqual([{ type: "text", value: "" }]);
+    expect(parseToolTitlePaths(undefined)).toEqual([
+      { type: "text", value: "" },
+    ]);
   });
 
   test("returns empty text segment for empty string", () => {
@@ -5037,7 +5302,7 @@ describe("parseToolTitlePaths", () => {
   // Backtick-delimited paths with spaces
   test("detects backtick-delimited path with spaces in directory name", () => {
     const result = parseToolTitlePaths(
-      "Read `symbols/Alphabet Inc./analysis-2026-04-27.md`"
+      "Read `symbols/Alphabet Inc./analysis-2026-04-27.md`",
     );
     expect(result).toEqual([
       { type: "text", value: "Read " },
@@ -5055,9 +5320,7 @@ describe("parseToolTitlePaths", () => {
 
   // Single-quote-delimited paths with spaces
   test("detects single-quote-delimited path with spaces", () => {
-    const result = parseToolTitlePaths(
-      "Edit 'My Documents/project/notes.md'"
-    );
+    const result = parseToolTitlePaths("Edit 'My Documents/project/notes.md'");
     expect(result).toEqual([
       { type: "text", value: "Edit " },
       { type: "path", value: "My Documents/project/notes.md" },
@@ -5083,7 +5346,7 @@ describe("parseToolTitlePaths", () => {
   // Action prefix + remainder as path (no delimiters, spaces in path)
   test("detects path with spaces via action prefix + remainder", () => {
     const result = parseToolTitlePaths(
-      "Read symbols/Alphabet Inc./analysis-2026-04-27.md"
+      "Read symbols/Alphabet Inc./analysis-2026-04-27.md",
     );
     expect(result).toEqual([
       { type: "text", value: "Read " },
@@ -5093,9 +5356,7 @@ describe("parseToolTitlePaths", () => {
 
   // Multiple paths in one title (via backticks)
   test("detects multiple backtick-delimited paths", () => {
-    const result = parseToolTitlePaths(
-      "Diff `src/a.go` and `src/b.go`"
-    );
+    const result = parseToolTitlePaths("Diff `src/a.go` and `src/b.go`");
     const paths = result.filter((s) => s.type === "path").map((s) => s.value);
     expect(paths).toContain("src/a.go");
     expect(paths).toContain("src/b.go");
@@ -5124,7 +5385,7 @@ describe("getArchiveReasonText", () => {
 
   test("returns inactivity message without date", () => {
     expect(getArchiveReasonText("inactivity", null)).toBe(
-      "Auto-archived due to inactivity"
+      "Auto-archived due to inactivity",
     );
   });
 
@@ -5135,14 +5396,17 @@ describe("getArchiveReasonText", () => {
 
   test("returns acp_start_failures message without date", () => {
     expect(getArchiveReasonText("acp_start_failures", null)).toBe(
-      "Auto-archived: agent failed to start after repeated attempts"
+      "Auto-archived: agent failed to start after repeated attempts",
     );
   });
 
   test("returns acp_start_failures message with date", () => {
-    const result = getArchiveReasonText("acp_start_failures", "2024-06-01T00:00:00Z");
+    const result = getArchiveReasonText(
+      "acp_start_failures",
+      "2024-06-01T00:00:00Z",
+    );
     expect(result).toMatch(
-      /^Auto-archived: agent failed to start after repeated attempts on /
+      /^Auto-archived: agent failed to start after repeated attempts on /,
     );
   });
 
@@ -5151,7 +5415,10 @@ describe("getArchiveReasonText", () => {
   });
 
   test("returns default 'Archived on <date>' for unknown reason with date", () => {
-    const result = getArchiveReasonText("some_other_reason", "2024-06-01T00:00:00Z");
+    const result = getArchiveReasonText(
+      "some_other_reason",
+      "2024-06-01T00:00:00Z",
+    );
     expect(result).toMatch(/^Archived on /);
   });
 
@@ -5201,17 +5468,23 @@ describe("htmlToMarkdown", () => {
   });
 
   test("fenced code block with language class", () => {
-    const result = htmlToMarkdown('<pre><code class="language-javascript">const x = 1;</code></pre>');
+    const result = htmlToMarkdown(
+      '<pre><code class="language-javascript">const x = 1;</code></pre>',
+    );
     expect(result).toBe("```javascript\nconst x = 1;\n```");
   });
 
   test("fenced code block preserves content verbatim (no whitespace collapse)", () => {
-    const result = htmlToMarkdown("<pre><code>line1\n  line2\nline3</code></pre>");
+    const result = htmlToMarkdown(
+      "<pre><code>line1\n  line2\nline3</code></pre>",
+    );
     expect(result).toBe("```\nline1\n  line2\nline3\n```");
   });
 
   test("link", () => {
-    expect(htmlToMarkdown('<a href="https://example.com">Click</a>')).toBe("[Click](https://example.com)");
+    expect(htmlToMarkdown('<a href="https://example.com">Click</a>')).toBe(
+      "[Click](https://example.com)",
+    );
   });
 
   test("unordered list", () => {
@@ -5225,13 +5498,17 @@ describe("htmlToMarkdown", () => {
   });
 
   test("nested unordered list", () => {
-    const result = htmlToMarkdown("<ul><li>Top<ul><li>Nested</li></ul></li></ul>");
+    const result = htmlToMarkdown(
+      "<ul><li>Top<ul><li>Nested</li></ul></li></ul>",
+    );
     expect(result).toContain("- Top");
     expect(result).toContain("  - Nested");
   });
 
   test("blockquote", () => {
-    const result = htmlToMarkdown("<blockquote><p>Quoted text</p></blockquote>");
+    const result = htmlToMarkdown(
+      "<blockquote><p>Quoted text</p></blockquote>",
+    );
     expect(result).toContain("> Quoted text");
   });
 
@@ -5311,11 +5588,15 @@ describe("messageToMarkdown", () => {
   });
 
   test("thought message returns empty string", () => {
-    expect(messageToMarkdown({ role: ROLE_THOUGHT, text: "thinking..." })).toBe("");
+    expect(messageToMarkdown({ role: ROLE_THOUGHT, text: "thinking..." })).toBe(
+      "",
+    );
   });
 
   test("tool message returns empty string", () => {
-    expect(messageToMarkdown({ role: ROLE_TOOL, title: "Edit file.js" })).toBe("");
+    expect(messageToMarkdown({ role: ROLE_TOOL, title: "Edit file.js" })).toBe(
+      "",
+    );
   });
 
   test("error message returns empty string", () => {
@@ -5388,5 +5669,670 @@ describe("conversationToMarkdown", () => {
     const thirdIdx = result.indexOf("Third");
     expect(firstIdx).toBeLessThan(secondIdx);
     expect(secondIdx).toBeLessThan(thirdIdx);
+  });
+});
+
+// =============================================================================
+// PERIODIC_STOPPED_LABELS Tests
+// =============================================================================
+
+describe("PERIODIC_STOPPED_LABELS", () => {
+  test("maps all seven known reason codes to {label, kind} objects", () => {
+    expect(PERIODIC_STOPPED_LABELS.maxDuration).toEqual({
+      label: "Stopped: max time",
+      kind: "stopped",
+    });
+    expect(PERIODIC_STOPPED_LABELS.maxIterations).toEqual({
+      label: "Stopped: max iters",
+      kind: "stopped",
+    });
+    expect(PERIODIC_STOPPED_LABELS.iterationSafeguard).toEqual({
+      label: "Stopped: max iters",
+      kind: "stopped",
+    });
+    expect(PERIODIC_STOPPED_LABELS.promptUnresolved).toEqual({
+      label: "Stopped: prompt missing",
+      kind: "stopped",
+    });
+    expect(PERIODIC_STOPPED_LABELS.resumeFailures).toEqual({
+      label: "Stopped: resume errors",
+      kind: "stopped",
+    });
+    expect(PERIODIC_STOPPED_LABELS.pausedByUser).toEqual({
+      label: "Paused by you",
+      kind: "paused",
+    });
+    expect(PERIODIC_STOPPED_LABELS.disabledByAgent).toEqual({
+      label: "Paused by the agent",
+      kind: "paused",
+    });
+  });
+
+  test("maxIterations and iterationSafeguard share the same label", () => {
+    expect(PERIODIC_STOPPED_LABELS.maxIterations.label).toBe(
+      PERIODIC_STOPPED_LABELS.iterationSafeguard.label,
+    );
+  });
+
+  test("unknown reason is not in the map", () => {
+    expect(PERIODIC_STOPPED_LABELS["unknownReason"]).toBeUndefined();
+  });
+
+  test("all stopped reasons have kind='stopped'", () => {
+    const stoppedReasons = [
+      "maxDuration",
+      "maxIterations",
+      "iterationSafeguard",
+      "promptUnresolved",
+      "resumeFailures",
+    ];
+    for (const reason of stoppedReasons) {
+      expect(PERIODIC_STOPPED_LABELS[reason].kind).toBe("stopped");
+    }
+  });
+
+  test("all paused reasons have kind='paused'", () => {
+    const pausedReasons = ["pausedByUser", "disabledByAgent"];
+    for (const reason of pausedReasons) {
+      expect(PERIODIC_STOPPED_LABELS[reason].kind).toBe("paused");
+    }
+  });
+
+  // headerPeriodicState derivation logic
+  // Mirrors the IIFE in app.js that computes headerPeriodicState from an activeSession.
+
+  function computeHeaderPeriodicState(session) {
+    if (!session?.periodic_configured) return null;
+    if (session?.periodic_enabled) {
+      return {
+        state: "running",
+        label: "Auto",
+        badgeClass: "badge-success badge-soft",
+      };
+    }
+    const entry = PERIODIC_STOPPED_LABELS[session?.periodic_stopped_reason];
+    if (entry && entry.kind === "stopped") {
+      return {
+        state: "stopped",
+        label: entry.label,
+        badgeClass: "badge-error badge-soft",
+      };
+    }
+    if (entry && entry.kind === "paused") {
+      return {
+        state: "paused",
+        label: entry.label,
+        badgeClass: "badge-warning badge-soft",
+      };
+    }
+    return {
+      state: "paused",
+      label: "Paused",
+      badgeClass: "badge-warning badge-soft",
+    };
+  }
+
+  test("non-periodic session yields null (no pill)", () => {
+    const session = { periodic_configured: false };
+    expect(computeHeaderPeriodicState(session)).toBeNull();
+  });
+
+  test("null session yields null (no pill)", () => {
+    expect(computeHeaderPeriodicState(null)).toBeNull();
+  });
+
+  test("enabled periodic session yields Auto/green", () => {
+    const session = { periodic_configured: true, periodic_enabled: true };
+    const result = computeHeaderPeriodicState(session);
+    expect(result.state).toBe("running");
+    expect(result.label).toBe("Auto");
+    expect(result.badgeClass).toContain("badge-success");
+  });
+
+  test("stopped reason yields Stopped/red", () => {
+    const session = {
+      periodic_configured: true,
+      periodic_enabled: false,
+      periodic_stopped_reason: "maxDuration",
+    };
+    const result = computeHeaderPeriodicState(session);
+    expect(result.state).toBe("stopped");
+    expect(result.label).toBe("Stopped: max time");
+    expect(result.badgeClass).toContain("badge-error");
+  });
+
+  test("pausedByUser reason yields Paused/amber", () => {
+    const session = {
+      periodic_configured: true,
+      periodic_enabled: false,
+      periodic_stopped_reason: "pausedByUser",
+    };
+    const result = computeHeaderPeriodicState(session);
+    expect(result.state).toBe("paused");
+    expect(result.label).toBe("Paused by you");
+    expect(result.badgeClass).toContain("badge-warning");
+  });
+
+  test("disabledByAgent reason yields Paused/amber", () => {
+    const session = {
+      periodic_configured: true,
+      periodic_enabled: false,
+      periodic_stopped_reason: "disabledByAgent",
+    };
+    const result = computeHeaderPeriodicState(session);
+    expect(result.state).toBe("paused");
+    expect(result.label).toBe("Paused by the agent");
+    expect(result.badgeClass).toContain("badge-warning");
+  });
+
+  test("no reason (manual pause) yields generic Paused/amber", () => {
+    const session = {
+      periodic_configured: true,
+      periodic_enabled: false,
+      periodic_stopped_reason: null,
+    };
+    const result = computeHeaderPeriodicState(session);
+    expect(result.state).toBe("paused");
+    expect(result.label).toBe("Paused");
+    expect(result.badgeClass).toContain("badge-warning");
+  });
+
+  test("unknown future reason falls back to generic Paused/amber", () => {
+    const session = {
+      periodic_configured: true,
+      periodic_enabled: false,
+      periodic_stopped_reason: "someFutureReason",
+    };
+    const result = computeHeaderPeriodicState(session);
+    expect(result.state).toBe("paused");
+    expect(result.label).toBe("Paused");
+    expect(result.badgeClass).toContain("badge-warning");
+  });
+
+  test("all known reasons produce a non-empty label", () => {
+    const knownReasons = Object.keys(PERIODIC_STOPPED_LABELS);
+    for (const reason of knownReasons) {
+      expect(PERIODIC_STOPPED_LABELS[reason].label).toBeTruthy();
+    }
+  });
+});
+
+// =============================================================================
+// formatPeriodicMaxDuration Tests
+// =============================================================================
+
+describe("formatPeriodicMaxDuration", () => {
+  test("formats whole days", () => {
+    expect(formatPeriodicMaxDuration(86400)).toBe("1d");
+    expect(formatPeriodicMaxDuration(172800)).toBe("2d");
+    expect(formatPeriodicMaxDuration(604800)).toBe("7d");
+  });
+
+  test("formats whole hours", () => {
+    expect(formatPeriodicMaxDuration(3600)).toBe("1h");
+    expect(formatPeriodicMaxDuration(7200)).toBe("2h");
+    expect(formatPeriodicMaxDuration(18000)).toBe("5h");
+  });
+
+  test("formats whole minutes", () => {
+    expect(formatPeriodicMaxDuration(60)).toBe("1min");
+    expect(formatPeriodicMaxDuration(1800)).toBe("30min");
+    expect(formatPeriodicMaxDuration(3540)).toBe("59min");
+  });
+
+  test("formats seconds for non-round values", () => {
+    expect(formatPeriodicMaxDuration(1)).toBe("1s");
+    expect(formatPeriodicMaxDuration(45)).toBe("45s");
+    expect(formatPeriodicMaxDuration(90)).toBe("90s");
+    expect(formatPeriodicMaxDuration(3601)).toBe("3601s");
+  });
+
+  test("days takes priority over hours when divisible", () => {
+    // 86400 is both a multiple of 3600 and 86400 — days wins
+    expect(formatPeriodicMaxDuration(86400)).toBe("1d");
+    expect(formatPeriodicMaxDuration(172800)).toBe("2d");
+  });
+
+  test("hours takes priority over minutes when divisible by 3600", () => {
+    // 7200 is divisible by both 60 and 3600 — hours wins
+    expect(formatPeriodicMaxDuration(7200)).toBe("2h");
+  });
+
+  test("non-divisible values fall through to seconds", () => {
+    // 3661 = 1 hour + 1 minute + 1 second — not cleanly divisible by any unit
+    expect(formatPeriodicMaxDuration(3661)).toBe("3661s");
+    expect(formatPeriodicMaxDuration(61)).toBe("61s");
+  });
+});
+
+// =============================================================================
+// Periodic header badge label logic tests
+// =============================================================================
+
+describe("Periodic header badge label logic", () => {
+  // Mirrors the logic in app.js for deriving the trigger badge text:
+  //   if (periodic_trigger === "onCompletion") → "after agent finishes[· +Ns]"
+  //   else if frequency set → "every <value><unit>"
+  function computeTriggerLabel(session) {
+    if (!session?.periodic_configured) return null;
+    if (session.periodic_trigger === "onCompletion") {
+      const delay = session.periodic_delay_seconds ?? 0;
+      return `after agent finishes${delay > 0 ? ` · +${delay}s` : ""}`;
+    }
+    const freq = session.periodic_frequency;
+    if (!freq) return null;
+    const u =
+      freq.unit === "minutes" ? "min" : freq.unit === "hours" ? "h" : "d";
+    return `every ${freq.value}${u}`;
+  }
+
+  // Mirrors the run-count badge logic:
+  //   maxIterations > 0 → "Run N of M"
+  //   else → "N run(s) · ∞"
+  function computeRunCountLabel(iterationCount, maxIterations, configured) {
+    if (!configured) return null;
+    return maxIterations > 0
+      ? `Run ${iterationCount} of ${maxIterations}`
+      : `${iterationCount} run${iterationCount !== 1 ? "s" : ""} · ∞`;
+  }
+
+  describe("trigger badge", () => {
+    test("schedule trigger with hours frequency", () => {
+      const session = {
+        periodic_configured: true,
+        periodic_trigger: "schedule",
+        periodic_frequency: { value: 2, unit: "hours" },
+      };
+      expect(computeTriggerLabel(session)).toBe("every 2h");
+    });
+
+    test("schedule trigger with minutes frequency", () => {
+      const session = {
+        periodic_configured: true,
+        periodic_trigger: "schedule",
+        periodic_frequency: { value: 30, unit: "minutes" },
+      };
+      expect(computeTriggerLabel(session)).toBe("every 30min");
+    });
+
+    test("schedule trigger with days frequency", () => {
+      const session = {
+        periodic_configured: true,
+        periodic_trigger: "schedule",
+        periodic_frequency: { value: 1, unit: "days" },
+      };
+      expect(computeTriggerLabel(session)).toBe("every 1d");
+    });
+
+    test("onCompletion trigger without delay", () => {
+      const session = {
+        periodic_configured: true,
+        periodic_trigger: "onCompletion",
+        periodic_delay_seconds: 0,
+      };
+      expect(computeTriggerLabel(session)).toBe("after agent finishes");
+    });
+
+    test("onCompletion trigger with delay", () => {
+      const session = {
+        periodic_configured: true,
+        periodic_trigger: "onCompletion",
+        periodic_delay_seconds: 30,
+      };
+      expect(computeTriggerLabel(session)).toBe("after agent finishes · +30s");
+    });
+
+    test("returns null when not periodic_configured", () => {
+      const session = {
+        periodic_configured: false,
+        periodic_trigger: "schedule",
+        periodic_frequency: { value: 1, unit: "hours" },
+      };
+      expect(computeTriggerLabel(session)).toBeNull();
+    });
+
+    test("returns null when schedule has no frequency set", () => {
+      const session = {
+        periodic_configured: true,
+        periodic_trigger: "schedule",
+        periodic_frequency: null,
+      };
+      expect(computeTriggerLabel(session)).toBeNull();
+    });
+  });
+
+  describe("run-count badge", () => {
+    test("finite max shows 'Run N of M'", () => {
+      expect(computeRunCountLabel(3, 10, true)).toBe("Run 3 of 10");
+    });
+
+    test("unlimited max shows singular 'run' for count 1", () => {
+      expect(computeRunCountLabel(1, 0, true)).toBe("1 run · ∞");
+    });
+
+    test("unlimited max shows plural 'runs' for count != 1", () => {
+      expect(computeRunCountLabel(0, 0, true)).toBe("0 runs · ∞");
+      expect(computeRunCountLabel(5, 0, true)).toBe("5 runs · ∞");
+    });
+
+    test("returns null when not configured", () => {
+      expect(computeRunCountLabel(5, 0, false)).toBeNull();
+    });
+
+    test("run 0 of N before first run", () => {
+      expect(computeRunCountLabel(0, 5, true)).toBe("Run 0 of 5");
+    });
+  });
+});
+
+// =============================================================================
+// computeHeaderTriggerLabel Tests (real exported function, mitto-oja.4)
+// =============================================================================
+
+describe("computeHeaderTriggerLabel", () => {
+  test("schedule trigger returns 'every N<unit>'", () => {
+    expect(
+      computeHeaderTriggerLabel("schedule", 0, { value: 2, unit: "hours" }),
+    ).toBe("every 2h");
+    expect(
+      computeHeaderTriggerLabel("schedule", 0, { value: 30, unit: "minutes" }),
+    ).toBe("every 30min");
+    expect(
+      computeHeaderTriggerLabel("schedule", 0, { value: 1, unit: "days" }),
+    ).toBe("every 1d");
+  });
+
+  test("schedule trigger with no frequency returns null", () => {
+    expect(computeHeaderTriggerLabel("schedule", 0, null)).toBeNull();
+  });
+
+  test("onCompletion trigger without delay omits the +Ns suffix", () => {
+    expect(computeHeaderTriggerLabel("onCompletion", 0, null)).toBe(
+      "after agent finishes",
+    );
+  });
+
+  test("onCompletion trigger with delay appends +Ns", () => {
+    expect(computeHeaderTriggerLabel("onCompletion", 30, null)).toBe(
+      "after agent finishes · +30s",
+    );
+  });
+
+  test("onTasks trigger returns the fixed label regardless of frequency/delay", () => {
+    expect(computeHeaderTriggerLabel("onTasks", 0, null)).toBe(
+      "on task changes",
+    );
+    expect(
+      computeHeaderTriggerLabel("onTasks", 30, { value: 1, unit: "hours" }),
+    ).toBe("on task changes");
+  });
+});
+
+// =============================================================================
+// onTasks Condition Presets Tests (mitto-oja.4)
+// =============================================================================
+
+describe("presetConditionFor", () => {
+  test("'any' preset compiles to the empty string (fire on any change)", () => {
+    expect(presetConditionFor("any", "")).toBe("");
+  });
+
+  test("new-issue-type compiles to a Changes.Added.exists expression", () => {
+    expect(presetConditionFor("new-issue-type", "bug")).toBe(
+      'Changes.Added.exists(i, i.type == "bug")',
+    );
+  });
+
+  test("label-touched compiles to a Changes.Touched.exists expression", () => {
+    expect(presetConditionFor("label-touched", "PR opened")).toBe(
+      'Changes.Touched.exists(i, "PR opened" in i.labels)',
+    );
+  });
+
+  test("open-type-increased compiles to an OpenByType comparison", () => {
+    expect(presetConditionFor("open-type-increased", "bug")).toBe(
+      'Tasks.OpenByType["bug"] > Prev.OpenByType["bug"]',
+    );
+  });
+
+  test("param-requiring presets return '' when the param is empty/blank", () => {
+    expect(presetConditionFor("new-issue-type", "")).toBe("");
+    expect(presetConditionFor("label-touched", "   ")).toBe("");
+    expect(presetConditionFor("open-type-increased", undefined)).toBe("");
+  });
+
+  test("unrecognized preset id returns ''", () => {
+    expect(presetConditionFor("custom", "bug")).toBe("");
+    expect(presetConditionFor("bogus", "bug")).toBe("");
+  });
+
+  test("trims whitespace from the param", () => {
+    expect(presetConditionFor("new-issue-type", "  bug  ")).toBe(
+      'Changes.Added.exists(i, i.type == "bug")',
+    );
+  });
+});
+
+describe("extractPresetParam", () => {
+  test("round-trips the param for each param-requiring preset", () => {
+    expect(
+      extractPresetParam(
+        "new-issue-type",
+        'Changes.Added.exists(i, i.type == "bug")',
+      ),
+    ).toBe("bug");
+    expect(
+      extractPresetParam(
+        "label-touched",
+        'Changes.Touched.exists(i, "PR opened" in i.labels)',
+      ),
+    ).toBe("PR opened");
+    expect(
+      extractPresetParam(
+        "open-type-increased",
+        'Tasks.OpenByType["bug"] > Prev.OpenByType["bug"]',
+      ),
+    ).toBe("bug");
+  });
+
+  test("returns '' when the condition doesn't match the preset's shape", () => {
+    expect(extractPresetParam("new-issue-type", "some.other.expr")).toBe("");
+    expect(extractPresetParam("new-issue-type", "")).toBe("");
+  });
+
+  test("returns '' when the two OpenByType keys differ (not a canonical match)", () => {
+    expect(
+      extractPresetParam(
+        "open-type-increased",
+        'Tasks.OpenByType["bug"] > Prev.OpenByType["feature"]',
+      ),
+    ).toBe("");
+  });
+
+  test("returns '' for an unrecognized preset id", () => {
+    expect(extractPresetParam("any", "")).toBe("");
+    expect(extractPresetParam("custom", "anything")).toBe("");
+  });
+});
+
+describe("resolveConditionPresetId", () => {
+  test("returns the stored preset id when it's a recognized preset", () => {
+    expect(resolveConditionPresetId("", "new-issue-type")).toBe(
+      "new-issue-type",
+    );
+    expect(
+      CONDITION_PRESETS.some((p) => p.id === "open-type-increased"),
+    ).toBe(true);
+  });
+
+  test("returns 'any' when condition is empty and no recognized preset id is stored", () => {
+    expect(resolveConditionPresetId("", "")).toBe("any");
+    expect(resolveConditionPresetId(null, null)).toBe("any");
+  });
+
+  test("returns 'custom' for a non-empty condition with no recognized preset id", () => {
+    expect(resolveConditionPresetId("Tasks.Open > 0", "")).toBe("custom");
+  });
+
+  test("an unrecognized stored preset id falls back to condition-based resolution", () => {
+    expect(resolveConditionPresetId("", "not-a-real-preset")).toBe("any");
+    expect(
+      resolveConditionPresetId("Tasks.Open > 0", "not-a-real-preset"),
+    ).toBe("custom");
+  });
+});
+
+// =============================================================================
+// buildRetryTargets Tests
+// =============================================================================
+
+describe("buildRetryTargets", () => {
+  test("returns empty map for empty array", () => {
+    expect(buildRetryTargets([]).size).toBe(0);
+  });
+
+  test("returns empty map for null/undefined input", () => {
+    expect(buildRetryTargets(null).size).toBe(0);
+    expect(buildRetryTargets(undefined).size).toBe(0);
+  });
+
+  test("maps error index to preceding user prompt text and images", () => {
+    const msgs = [
+      { role: ROLE_USER, text: "hello", images: [] },
+      { role: ROLE_ERROR, text: "oops" },
+    ];
+    const map = buildRetryTargets(msgs);
+    expect(map.size).toBe(1);
+    expect(map.get(1)).toEqual({ text: "hello", images: [] });
+  });
+
+  test("resolves to the NEAREST preceding user prompt (not an older one)", () => {
+    const imgs = [{ id: "img1" }];
+    const msgs = [
+      { role: ROLE_USER, text: "first" },
+      { role: ROLE_USER, text: "second", images: imgs },
+      { role: ROLE_ERROR, text: "err" },
+    ];
+    const map = buildRetryTargets(msgs);
+    expect(map.get(2)).toEqual({ text: "second", images: imgs });
+  });
+
+  test("error with no preceding user prompt → not in map", () => {
+    const msgs = [
+      { role: ROLE_AGENT, text: "hi" },
+      { role: ROLE_ERROR, text: "err" },
+    ];
+    const map = buildRetryTargets(msgs);
+    expect(map.has(1)).toBe(false);
+  });
+
+  test("user message without truthy text is ignored", () => {
+    const msgs = [
+      { role: ROLE_USER, text: "" },
+      { role: ROLE_ERROR, text: "err" },
+    ];
+    const map = buildRetryTargets(msgs);
+    expect(map.has(1)).toBe(false);
+  });
+
+  test("user message with null text is ignored", () => {
+    const msgs = [
+      { role: ROLE_USER, text: null },
+      { role: ROLE_ERROR, text: "err" },
+    ];
+    expect(buildRetryTargets(msgs).has(1)).toBe(false);
+  });
+
+  test("multiple errors each resolve to their own nearest preceding user prompt", () => {
+    const msgs = [
+      { role: ROLE_USER, text: "prompt-a" },
+      { role: ROLE_ERROR, text: "err-a" },
+      { role: ROLE_USER, text: "prompt-b" },
+      { role: ROLE_ERROR, text: "err-b" },
+    ];
+    const map = buildRetryTargets(msgs);
+    expect(map.get(1)).toEqual({ text: "prompt-a", images: [] });
+    expect(map.get(3)).toEqual({ text: "prompt-b", images: [] });
+  });
+
+  test("defaults images to [] when the user message has no images", () => {
+    const msgs = [
+      { role: ROLE_USER, text: "hi" },
+      { role: ROLE_ERROR, text: "err" },
+    ];
+    expect(buildRetryTargets(msgs).get(1).images).toEqual([]);
+  });
+
+  test("preserves image array reference from the user message", () => {
+    const imgs = [{ id: "x" }];
+    const msgs = [
+      { role: ROLE_USER, text: "hi", images: imgs },
+      { role: ROLE_ERROR, text: "err" },
+    ];
+    expect(buildRetryTargets(msgs).get(1).images).toBe(imgs);
+  });
+
+  test("non-error, non-user messages are ignored", () => {
+    const msgs = [
+      { role: ROLE_USER, text: "hello" },
+      { role: ROLE_AGENT, text: "reply" },
+      { role: ROLE_THOUGHT, text: "thinking" },
+      { role: ROLE_TOOL, text: "tool" },
+    ];
+    expect(buildRetryTargets(msgs).size).toBe(0);
+  });
+});
+
+// =============================================================================
+// messageKey Tests
+// =============================================================================
+
+describe("messageKey", () => {
+  test("prefers seq when present", () => {
+    expect(
+      messageKey({ seq: 42, id: "abc", timestamp: 1000, role: "agent" }),
+    ).toBe("seq-42");
+  });
+
+  test("prefers seq even when seq is 0", () => {
+    expect(messageKey({ seq: 0, id: "abc" })).toBe("seq-0");
+  });
+
+  test("falls back to id when seq is null", () => {
+    expect(
+      messageKey({ seq: null, id: "abc", timestamp: 1000, role: "agent" }),
+    ).toBe("id-abc");
+  });
+
+  test("falls back to id when seq is undefined", () => {
+    expect(messageKey({ id: "abc", timestamp: 1000, role: "agent" })).toBe(
+      "id-abc",
+    );
+  });
+
+  test("falls back to timestamp+role when both seq and id are absent", () => {
+    expect(messageKey({ timestamp: 1620000000000, role: "user" })).toBe(
+      "ts-1620000000000-user",
+    );
+  });
+
+  test("falls back to timestamp+role when id is null", () => {
+    expect(messageKey({ id: null, timestamp: 999, role: "error" })).toBe(
+      "ts-999-error",
+    );
+  });
+
+  test("returns distinct keys for different seqs", () => {
+    expect(messageKey({ seq: 1 })).not.toBe(messageKey({ seq: 2 }));
+  });
+
+  test("returns distinct keys for different ids", () => {
+    expect(messageKey({ id: "a" })).not.toBe(messageKey({ id: "b" }));
+  });
+
+  test("returns distinct keys for different timestamp+role combos", () => {
+    const a = messageKey({ timestamp: 1000, role: "user" });
+    const b = messageKey({ timestamp: 1000, role: "agent" });
+    expect(a).not.toBe(b);
   });
 });

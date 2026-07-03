@@ -410,6 +410,82 @@ func TestSaveWorkspaces_OrphanBeadsPruned(t *testing.T) {
 	}
 }
 
+func TestSetFolderBeadsPromptUpstream_RoundTrip(t *testing.T) {
+	setupFoldersTestDir(t)
+
+	// Before any set, getters return empty.
+	if got := FolderBeadsUpstream("/proj"); got != "" {
+		t.Errorf("FolderBeadsUpstream() before set = %q, want empty", got)
+	}
+	pull, push, sync := FolderBeadsPrompts("/proj")
+	if pull != "" || push != "" || sync != "" {
+		t.Errorf("FolderBeadsPrompts() before set = (%q,%q,%q), want all empty", pull, push, sync)
+	}
+
+	// Set prompts upstream with three names.
+	if err := SetFolderBeadsPromptUpstream("/proj", "My Pull", "My Push", "My Sync"); err != nil {
+		t.Fatalf("SetFolderBeadsPromptUpstream() returned error: %v", err)
+	}
+
+	if got := FolderBeadsUpstream("/proj"); got != "prompts" {
+		t.Errorf("FolderBeadsUpstream() = %q, want prompts", got)
+	}
+	pull, push, sync = FolderBeadsPrompts("/proj")
+	if pull != "My Pull" || push != "My Push" || sync != "My Sync" {
+		t.Errorf("FolderBeadsPrompts() = (%q,%q,%q), want (My Pull,My Push,My Sync)", pull, push, sync)
+	}
+}
+
+func TestSetFolderBeadsUpstream_ClearsPromptNames(t *testing.T) {
+	setupFoldersTestDir(t)
+
+	// Set prompts upstream first.
+	if err := SetFolderBeadsPromptUpstream("/proj", "Pull", "Push", "Sync"); err != nil {
+		t.Fatalf("SetFolderBeadsPromptUpstream() returned error: %v", err)
+	}
+
+	// Switch to a regular tracker — prompt names must be cleared.
+	if err := SetFolderBeadsUpstream("/proj", "jira"); err != nil {
+		t.Fatalf("SetFolderBeadsUpstream() returned error: %v", err)
+	}
+	if got := FolderBeadsUpstream("/proj"); got != "jira" {
+		t.Errorf("FolderBeadsUpstream() = %q, want jira", got)
+	}
+	pull, push, sync := FolderBeadsPrompts("/proj")
+	if pull != "" || push != "" || sync != "" {
+		t.Errorf("FolderBeadsPrompts() after switch to jira = (%q,%q,%q), want all empty", pull, push, sync)
+	}
+}
+
+func TestSaveWorkspaces_PreservesBeadsPromptUpstream(t *testing.T) {
+	setupFoldersTestDir(t)
+
+	// Register /proj as a valid workspace directory before persisting.
+	ws := []WorkspaceSettings{
+		{UUID: "u1", ACPServer: "auggie", WorkingDir: "/proj", Name: "P"},
+	}
+	if err := SaveWorkspaces(ws); err != nil {
+		t.Fatalf("SaveWorkspaces() initial returned error: %v", err)
+	}
+
+	if err := SetFolderBeadsPromptUpstream("/proj", "Pull", "Push", "Sync"); err != nil {
+		t.Fatalf("SetFolderBeadsPromptUpstream() returned error: %v", err)
+	}
+
+	// A second workspace save must not wipe the prompt names.
+	if err := SaveWorkspaces(ws); err != nil {
+		t.Fatalf("SaveWorkspaces() second returned error: %v", err)
+	}
+
+	if got := FolderBeadsUpstream("/proj"); got != "prompts" {
+		t.Errorf("FolderBeadsUpstream() after SaveWorkspaces = %q, want prompts", got)
+	}
+	pull, push, sync := FolderBeadsPrompts("/proj")
+	if pull != "Pull" || push != "Push" || sync != "Sync" {
+		t.Errorf("FolderBeadsPrompts() after SaveWorkspaces = (%q,%q,%q), want (Pull,Push,Sync)", pull, push, sync)
+	}
+}
+
 // ---- LoadFoldersFromFile tests ----
 
 func TestLoadFoldersFromFile_JSON(t *testing.T) {
@@ -535,5 +611,104 @@ func TestLoadFoldersFromFile_Empty(t *testing.T) {
 	}
 	if len(folders) != 0 {
 		t.Errorf("expected empty map, got len=%d", len(folders))
+	}
+}
+
+// ---- Shortcuts tests ---------------------------------------------------------
+
+func TestSetFolderShortcuts_RoundTrip(t *testing.T) {
+	setupFoldersTestDir(t)
+	const wd = "/proj"
+	buttons := []ShortcutButton{{Icon: "lightning", Prompt: "my-prompt"}}
+	if err := SetFolderShortcuts(wd, map[string][]ShortcutButton{"tasksList": buttons}); err != nil {
+		t.Fatalf("SetFolderShortcuts: %v", err)
+	}
+	got := FolderShortcuts(wd)
+	if got == nil {
+		t.Fatal("FolderShortcuts returned nil after save")
+	}
+	list, ok := got["tasksList"]
+	if !ok || len(list) != 1 {
+		t.Fatalf("tasksList = %v, want 1 entry", list)
+	}
+	if list[0].Icon != "lightning" || list[0].Prompt != "my-prompt" {
+		t.Errorf("entry = %+v, want {Icon:lightning Prompt:my-prompt}", list[0])
+	}
+}
+
+func TestSetFolderShortcuts_EmptyPrunesFolder(t *testing.T) {
+	setupFoldersTestDir(t)
+	const wd = "/proj"
+	// Seed with a shortcut so folders.json gets created.
+	if err := SetFolderShortcuts(wd, map[string][]ShortcutButton{
+		"tasksList": {{Icon: "x", Prompt: "p"}},
+	}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	// Clear all sections.
+	if err := SetFolderShortcuts(wd, map[string][]ShortcutButton{}); err != nil {
+		t.Fatalf("clear: %v", err)
+	}
+	folders, err := LoadFolders()
+	if err != nil {
+		t.Fatalf("LoadFolders: %v", err)
+	}
+	if _, ok := folders[wd]; ok {
+		t.Error("expected folder entry to be removed after clearing shortcuts")
+	}
+}
+
+func TestFolderSettingsEmpty_WithShortcuts(t *testing.T) {
+	// A non-empty tasksList section makes the entry non-empty.
+	fs := FolderSettings{
+		Shortcuts: map[string][]ShortcutButton{
+			"tasksList": {{Icon: "x", Prompt: "p"}},
+		},
+	}
+	if folderSettingsEmpty(fs) {
+		t.Error("folderSettingsEmpty = true, want false (non-empty shortcuts section)")
+	}
+	// An empty section slice should be treated as empty.
+	fs2 := FolderSettings{
+		Shortcuts: map[string][]ShortcutButton{"tasksList": {}},
+	}
+	if !folderSettingsEmpty(fs2) {
+		t.Error("folderSettingsEmpty = false, want true (all sections empty)")
+	}
+}
+
+func TestPreserveFolderNativeFields_PreservesShortcuts(t *testing.T) {
+	setupFoldersTestDir(t)
+	const wd = "/proj"
+	// Write a shortcuts entry to the on-disk folders.json.
+	initial := map[string]FolderSettings{
+		wd: {
+			Shortcuts: map[string][]ShortcutButton{
+				"tasksList": {{Icon: "lightning", Prompt: "sprint"}},
+			},
+		},
+	}
+	if err := SaveFolders(initial); err != nil {
+		t.Fatalf("SaveFolders: %v", err)
+	}
+
+	// Simulate a workspace-driven save: extractFolderSettings yields no Shortcuts
+	// (they are folder-native, not workspace-derived), so preserve must restore them.
+	workspaces := []WorkspaceSettings{{WorkingDir: wd, Name: "Proj"}}
+	extracted := map[string]FolderSettings{
+		wd: {Name: "Proj"},
+	}
+	merged := preserveFolderNativeFields(workspaces, extracted)
+	fs, ok := merged[wd]
+	if !ok {
+		t.Fatal("folder entry missing after preserveFolderNativeFields")
+	}
+	list := fs.Shortcuts["tasksList"]
+	if len(list) != 1 || list[0].Prompt != "sprint" {
+		t.Errorf("Shortcuts not preserved: got %v", fs.Shortcuts)
+	}
+	// Name should still be set (workspace-derived field untouched).
+	if fs.Name != "Proj" {
+		t.Errorf("Name = %q, want Proj", fs.Name)
 	}
 }

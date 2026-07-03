@@ -64,86 +64,66 @@ When a tool call or thought arrives from ACP, force-flush the MarkdownBuffer:
 | `Flush()`     | Force flush, ignores markdown state  | Tool calls, thoughts, prompt complete |
 | `SafeFlush()` | Only flush if not in table/list/code | Periodic/timeout flushes              |
 
-## Observer Cleanup
+## Observer Patterns
+
+### Multiple Observer Interfaces
+
+`BackgroundSession` supports multiple observer types:
+
+| Observer | Purpose | Implements |
+|----------|---------|------------|
+| `SessionObserver` | Session events (msg, error, close) | in `observer.go` |
+| `EventMetaObserver` | Event metadata propagation | in `observer.go` |
+
+### EventMetaObserver
+
+Propagates `Event.Meta` (generic metadata bag) to interested parties:
+
+```go
+type EventMetaObserver interface {
+    OnEventMeta(sessionID string, eventMeta *session.EventMeta)
+}
+```
+
+Register via `AddMetaObserver(ctx, observer)`. Notified after metadata is persisted to `events.jsonl`. Use for:
+- Streaming metadata to WebSocket clients
+- Analytics/logging enrichment
+- Cross-session metadata aggregation
+
+### Observer Cleanup
 
 **Always** remove observers when WebSocket connections close:
 
 ```go
 defer func() {
     if c.bgSession != nil {
-        c.bgSession.RemoveObserver(c)  // MUST remove
+        c.bgSession.RemoveObserver(c)      // Remove SessionObserver
+        c.bgSession.RemoveMetaObserver(c)  // Remove EventMetaObserver if registered
     }
 }()
 ```
 
 ## Race Condition Prevention
 
-Check for duplicates after reacquiring lock in `SessionManager`:
+Duplicate sessions: check after reacquiring lock in `SessionManager`:
 
 ```go
 sm.mu.Lock()
 if existing, ok := sm.sessions[id]; ok {
     sm.mu.Unlock()
     bs.Close("duplicate")
-    return existing, nil
+    return existing, nil  // Return existing, don't create new
 }
 sm.sessions[id] = bs
 sm.mu.Unlock()
 ```
 
-## Prompt ACK Flow
+## Key Patterns (Abbreviated)
 
-```
-Frontend --- prompt {prompt_id} --> Backend
-                                    Validate & persist
-Frontend <-- prompt_received ------ (or error if rejected)
-Frontend <-- agent_message ---------
-Frontend <-- prompt_complete -------
-```
-
-The `connected` message includes `last_user_prompt_id` for delivery verification after reconnect.
-
-## max_seq Piggybacking
-
-All streaming messages include `max_seq` for immediate gap detection:
-
-```go
-func (c *SessionWSClient) getServerMaxSeq() int64 {
-    // Check persisted events AND assigned seq (includes unpersisted)
-    maxSeq := metadata.EventCount
-    if assignedSeq := bs.GetMaxAssignedSeq(); assignedSeq > maxSeq {
-        maxSeq = assignedSeq
-    }
-    return maxSeq
-}
-```
-
-`GetMaxAssignedSeq()` returns `nextSeq - 1` (highest ever assigned), preventing false stale detection during streaming.
-
-## Terminal Session Messages
-
-When sending `session_gone` for a deleted session: start pumps → send terminal message → close after 100ms delay (ensures writePump delivers).
-
-## Send Buffer Backpressure
-
-On full buffer: wait up to 100ms, then close connection. Never silently drop (unrecoverable sequence gaps). Client reconnects and syncs from persisted events.
-
-## WritePump Close Frames
-
-WritePump sends proper close frames (1000 for clean, 1001 for shutdown/error, 1006 for backpressure timeout) instead of abrupt TCP teardown. See [synchronization.md — WebSocket Close Codes](../../docs/devel/websockets/synchronization.md#websocket-close-codes) for full table.
-
-## Backend Anti-Pattern: lastSentSeq Reset
-
-```go
-// BAD: Resetting lastSentSeq on fallback loses observer-delivered events
-if afterSeq > serverMaxSeq {
-    events, err = c.store.ReadEventsLast(c.sessionID, limit, 0)
-    c.lastSentSeq = 0  // BUG: observer already delivered higher seq!
-}
-
-// GOOD: Preserve lastSentSeq
-if afterSeq > serverMaxSeq {
-    events, err = c.store.ReadEventsLast(c.sessionID, limit, 0)
-    // Do NOT reset lastSentSeq
-}
-```
+| Pattern | Rule |
+|---------|------|
+| Prompt ACK | `connected` includes `last_user_prompt_id` for delivery verification |
+| max_seq | All messages include it; `GetMaxAssignedSeq()` prevents false stale detection |
+| Backpressure | Wait 100ms on full buffer, then close (never drop) |
+| Close codes | 1000=clean, 1001=shutdown/error, 1006=backpressure timeout |
+| Anti-pattern | Never reset `lastSentSeq` in fallback paths (observer already sent higher seqs) |

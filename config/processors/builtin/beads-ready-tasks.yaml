@@ -7,8 +7,8 @@
 # nudging the agent to check the list of ready tasks and consider picking up open work.
 #
 # Activation conditions:
-#   1. The `bd` command exists on PATH (commandExists CEL gate)
-#   2. The workspace contains a `.beads` directory (dirExists CEL gate)
+#   1. The `bd` command exists on PATH (CommandExists CEL gate)
+#   2. The workspace contains a `.beads` directory (DirExists CEL gate)
 #
 # Throttling:
 #   - Fires on the first message, then re-runs periodically so the agent is reminded
@@ -20,7 +20,7 @@
 name: beads-ready-tasks
 description: "Reminds the agent to review available tasks in the beads database"
 enabled: true
-enabledWhen: 'commandExists("bd") && dirExists(".beads")'
+enabledWhen: 'CommandExists("bd") && DirExists(".beads")'
 when:
   on: userPrompt
   match: first

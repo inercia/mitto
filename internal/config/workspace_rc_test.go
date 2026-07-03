@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -95,7 +96,7 @@ prompts:
     prompt: "Review this code"
 ui:
   confirmations:
-    delete_session: false
+    delete_conversation: never
 `
 	rc, err := parseWorkspaceRC([]byte(yaml))
 	if err != nil {
@@ -1054,5 +1055,261 @@ conversations:
 	}
 	if rc.Metadata.UserDataSchema.Fields[0].Name != "New Field" {
 		t.Errorf("Field 0 name = %q, want %q", rc.Metadata.UserDataSchema.Fields[0].Name, "New Field")
+	}
+}
+
+// ---- ProcessorOverride arguments: parse + SaveWorkspaceRCProcessorArguments ----
+
+func TestParseWorkspaceRC_ProcessorArguments(t *testing.T) {
+	yaml := `
+processors:
+  - name: auggie-manage-rules
+    enabled: true
+    arguments:
+      filename: AGENTS.md
+      mode: append
+  - name: only-args
+    arguments:
+      filename: CONTRIBUTORS.md
+  - name: empty-value-key
+    arguments:
+      keep: ok
+      drop: ""
+`
+	rc, err := parseWorkspaceRC([]byte(yaml))
+	if err != nil {
+		t.Fatalf("parseWorkspaceRC failed: %v", err)
+	}
+	if len(rc.ProcessorOverrides) != 3 {
+		t.Fatalf("ProcessorOverrides count = %d, want 3", len(rc.ProcessorOverrides))
+	}
+
+	o0 := rc.ProcessorOverrides[0]
+	if o0.Name != "auggie-manage-rules" {
+		t.Errorf("override[0].Name = %q, want %q", o0.Name, "auggie-manage-rules")
+	}
+	if o0.Enabled == nil || !*o0.Enabled {
+		t.Errorf("override[0].Enabled = %v, want pointer to true", o0.Enabled)
+	}
+	if got := o0.Arguments["filename"]; got != "AGENTS.md" {
+		t.Errorf("override[0].Arguments[filename] = %q, want %q", got, "AGENTS.md")
+	}
+	if got := o0.Arguments["mode"]; got != "append" {
+		t.Errorf("override[0].Arguments[mode] = %q, want %q", got, "append")
+	}
+
+	o1 := rc.ProcessorOverrides[1]
+	if o1.Name != "only-args" || o1.Enabled != nil {
+		t.Errorf("override[1] = %+v, want only-args with nil Enabled", o1)
+	}
+	if got := o1.Arguments["filename"]; got != "CONTRIBUTORS.md" {
+		t.Errorf("override[1].Arguments[filename] = %q, want %q", got, "CONTRIBUTORS.md")
+	}
+
+	// Empty-value keys must be dropped at parse time so they don't shadow defaults.
+	o2 := rc.ProcessorOverrides[2]
+	if _, has := o2.Arguments["drop"]; has {
+		t.Errorf("override[2].Arguments should not contain empty-value key 'drop'; got %v", o2.Arguments)
+	}
+	if got := o2.Arguments["keep"]; got != "ok" {
+		t.Errorf("override[2].Arguments[keep] = %q, want %q", got, "ok")
+	}
+}
+
+func TestSaveWorkspaceRCProcessorArguments_NewFile(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	args := map[string]string{"filename": "AGENTS.md"}
+	if err := SaveWorkspaceRCProcessorArguments(tmpDir, "auggie-manage-rules", args); err != nil {
+		t.Fatalf("SaveWorkspaceRCProcessorArguments failed: %v", err)
+	}
+
+	rc, err := LoadWorkspaceRC(tmpDir)
+	if err != nil {
+		t.Fatalf("LoadWorkspaceRC failed: %v", err)
+	}
+	if rc == nil || len(rc.ProcessorOverrides) != 1 {
+		t.Fatalf("expected 1 override, got rc=%v", rc)
+	}
+	o := rc.ProcessorOverrides[0]
+	if o.Name != "auggie-manage-rules" {
+		t.Errorf("Name = %q, want %q", o.Name, "auggie-manage-rules")
+	}
+	if o.Enabled != nil {
+		t.Errorf("Enabled should be nil (arguments-only entry), got %v", *o.Enabled)
+	}
+	if got := o.Arguments["filename"]; got != "AGENTS.md" {
+		t.Errorf("Arguments[filename] = %q, want %q", got, "AGENTS.md")
+	}
+}
+
+func TestSaveWorkspaceRCProcessorArguments_CoexistWithEnabled(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	if err := SaveWorkspaceRCProcessorEnabled(tmpDir, "p1", false); err != nil {
+		t.Fatalf("SaveWorkspaceRCProcessorEnabled failed: %v", err)
+	}
+	if err := SaveWorkspaceRCProcessorArguments(tmpDir, "p1", map[string]string{"filename": "AGENTS.md"}); err != nil {
+		t.Fatalf("SaveWorkspaceRCProcessorArguments failed: %v", err)
+	}
+
+	rc, err := LoadWorkspaceRC(tmpDir)
+	if err != nil {
+		t.Fatalf("LoadWorkspaceRC failed: %v", err)
+	}
+	if rc == nil || len(rc.ProcessorOverrides) != 1 {
+		t.Fatalf("expected 1 override, got rc=%v", rc)
+	}
+	o := rc.ProcessorOverrides[0]
+	if o.Name != "p1" {
+		t.Errorf("Name = %q, want %q", o.Name, "p1")
+	}
+	if o.Enabled == nil || *o.Enabled {
+		t.Errorf("Enabled = %v, want pointer to false", o.Enabled)
+	}
+	if got := o.Arguments["filename"]; got != "AGENTS.md" {
+		t.Errorf("Arguments[filename] = %q, want %q", got, "AGENTS.md")
+	}
+}
+
+func TestSaveWorkspaceRCProcessorArguments_MergeAndEmptyRemovesKey(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	if err := SaveWorkspaceRCProcessorArguments(tmpDir, "p1", map[string]string{
+		"filename": "AGENTS.md",
+		"mode":     "append",
+	}); err != nil {
+		t.Fatalf("first save failed: %v", err)
+	}
+
+	// Update one key, leave another untouched, clear a third.
+	if err := SaveWorkspaceRCProcessorArguments(tmpDir, "p1", map[string]string{
+		"filename": "CONTRIBUTORS.md",
+		"mode":     "", // should be removed
+	}); err != nil {
+		t.Fatalf("second save failed: %v", err)
+	}
+
+	rc, err := LoadWorkspaceRC(tmpDir)
+	if err != nil {
+		t.Fatalf("LoadWorkspaceRC failed: %v", err)
+	}
+	if len(rc.ProcessorOverrides) != 1 {
+		t.Fatalf("expected 1 override, got %d", len(rc.ProcessorOverrides))
+	}
+	o := rc.ProcessorOverrides[0]
+	if got := o.Arguments["filename"]; got != "CONTRIBUTORS.md" {
+		t.Errorf("Arguments[filename] = %q, want %q", got, "CONTRIBUTORS.md")
+	}
+	if _, has := o.Arguments["mode"]; has {
+		t.Errorf("Arguments[mode] should have been removed, got %v", o.Arguments)
+	}
+}
+
+func TestSaveWorkspaceRCProcessorArguments_RemovesEmptyEntry(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Seed an arguments-only entry.
+	if err := SaveWorkspaceRCProcessorArguments(tmpDir, "p1", map[string]string{
+		"filename": "AGENTS.md",
+	}); err != nil {
+		t.Fatalf("seed save failed: %v", err)
+	}
+
+	// Clear the only argument — entry has no enabled override and no arguments,
+	// so it should be removed entirely; processors key should disappear.
+	if err := SaveWorkspaceRCProcessorArguments(tmpDir, "p1", map[string]string{
+		"filename": "",
+	}); err != nil {
+		t.Fatalf("clear save failed: %v", err)
+	}
+
+	rc, err := LoadWorkspaceRC(tmpDir)
+	if err != nil {
+		t.Fatalf("LoadWorkspaceRC failed: %v", err)
+	}
+	if rc != nil && len(rc.ProcessorOverrides) != 0 {
+		t.Errorf("expected no ProcessorOverrides, got %+v", rc.ProcessorOverrides)
+	}
+
+	// Confirm the "processors:" key is also gone from the raw file.
+	data, err := os.ReadFile(filepath.Join(tmpDir, WorkspaceRCFileName))
+	if err != nil {
+		t.Fatalf("read .mittorc failed: %v", err)
+	}
+	if strings.Contains(string(data), "processors:") {
+		t.Errorf(".mittorc should not contain 'processors:' key after entry removal; got:\n%s", string(data))
+	}
+}
+
+func TestSaveWorkspaceRCProcessorArguments_PreservesOtherSections(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Seed an .mittorc with unrelated sections.
+	seed := `
+metadata:
+  description: "My project"
+  url: "https://example.com"
+prompts:
+  - name: "Hello"
+    prompt: "Say hi"
+conversations:
+  processing:
+    processors:
+      - when:
+          on: userPrompt
+          match: first
+        mutate: prepend
+        text: "ctx"
+processors:
+  - name: keep-me
+    enabled: false
+`
+	rcPath := filepath.Join(tmpDir, WorkspaceRCFileName)
+	if err := os.WriteFile(rcPath, []byte(seed), 0644); err != nil {
+		t.Fatalf("seed write failed: %v", err)
+	}
+
+	if err := SaveWorkspaceRCProcessorArguments(tmpDir, "p-new", map[string]string{
+		"filename": "AGENTS.md",
+	}); err != nil {
+		t.Fatalf("SaveWorkspaceRCProcessorArguments failed: %v", err)
+	}
+
+	rc, err := LoadWorkspaceRC(tmpDir)
+	if err != nil {
+		t.Fatalf("LoadWorkspaceRC failed: %v", err)
+	}
+	if rc == nil {
+		t.Fatal("LoadWorkspaceRC returned nil")
+	}
+
+	// Metadata preserved.
+	if rc.Metadata == nil || rc.Metadata.Description != "My project" || rc.Metadata.URL != "https://example.com" {
+		t.Errorf("metadata lost or wrong: %+v", rc.Metadata)
+	}
+	// Inline prompt preserved.
+	if len(rc.Prompts) != 1 || rc.Prompts[0].Name != "Hello" {
+		t.Errorf("prompts lost or wrong: %+v", rc.Prompts)
+	}
+	// Conversations.processing preserved.
+	if rc.Conversations == nil || rc.Conversations.Processing == nil || len(rc.Conversations.Processing.Processors) != 1 {
+		t.Errorf("conversations.processing lost or wrong: %+v", rc.Conversations)
+	}
+
+	// Both processor entries present (keep-me + p-new).
+	names := map[string]ProcessorOverride{}
+	for _, o := range rc.ProcessorOverrides {
+		names[o.Name] = o
+	}
+	if _, ok := names["keep-me"]; !ok {
+		t.Errorf("expected 'keep-me' override preserved; got names=%v", names)
+	}
+	pNew, ok := names["p-new"]
+	if !ok {
+		t.Fatalf("expected new 'p-new' override; got names=%v", names)
+	}
+	if pNew.Arguments["filename"] != "AGENTS.md" {
+		t.Errorf("p-new.Arguments[filename] = %q, want %q", pNew.Arguments["filename"], "AGENTS.md")
 	}
 }

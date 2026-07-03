@@ -1,9 +1,11 @@
 icon: check
 name: Add tests
-menus: prompts
+menus: prompts, !promptsPeriodic
 description: Write comprehensive tests for new or modified code
 group: Testing
 backgroundColor: '#FFE0B2'
+preferredModels:
+  - modelTag: Coding
 prompt: |
   Read the modified code and existing test files to understand testing conventions.
 

@@ -196,10 +196,16 @@ func readCleanupEvents(path string) ([]cleanupEvent, error) {
 	const maxScannerBuffer = 10 * 1024 * 1024
 	scanner.Buffer(make([]byte, 0, 64*1024), maxScannerBuffer)
 
+	lineNum := 0
 	for scanner.Scan() {
+		lineNum++
 		var event cleanupEvent
 		if err := json.Unmarshal(scanner.Bytes(), &event); err != nil {
-			return nil, fmt.Errorf("failed to unmarshal event: %w", err)
+			// Skip corrupt lines so one bad line does not abort the cleanup scan.
+			if cleanupVerbose {
+				fmt.Fprintf(os.Stderr, "  skipping corrupt line %d in %s: %v\n", lineNum, path, err)
+			}
+			continue
 		}
 		events = append(events, event)
 	}

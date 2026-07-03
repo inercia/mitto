@@ -1,54 +1,65 @@
-icon: beads
+icon: search
 name: Investigate more
-menus: beadsIssues
-requires: parameters
+menus: beadsIssues, conversation
+parameters:
+  - name: IssueID
+    type: beadsId
+    required: false
+    description: The beads issue ID to act on
 description: 'Deep-dive a bead: gather context, clarify unclear details, enrich it, and split off sub-issues if complex'
 backgroundColor: '#B3E5FC'
 group: Tasks
-enabledWhen: commandExists("bd") && dirExists(".beads") && item.status != "closed"
+enabledWhen: CommandExists("bd") && DirExists(".beads") && Item.Status != "closed"
 prompt: |
   ## Session Context
 
-  Your session ID is `@mitto:session_id` — use this as `self_id` for all `mitto_*` MCP tool calls.
+  Your session ID is `{{ .Session.ID }}` — use this as `self_id` for all `mitto_*` MCP tool calls.
 
   # Beads: Investigate a Bead in Depth
 
   Beads is a CLI issue tracker (`bd`). Issues are called "beads" and have IDs like `bd-xyz`.
 
-  The **target bead** is `${ISSUE_ID}`. Your job is to **deepen the understanding** of this bead:
-  gather the context it is missing, clarify anything vague or underspecified, and enrich it so it is
-  genuinely ready to work on. If the problem turns out to be larger or more complex than the bead
-  currently captures, **split it into sub-issues**.
+  {{ $target := "" -}}
+  {{ if .Session.BeadsIssue }}{{ $target = .Session.BeadsIssue }}{{ else if .Args.IssueID }}{{ $target = .Args.IssueID }}{{ end -}}
+  {{ if $target -}}
+  The **target bead** is `{{ $target }}`. Your job is to **deepen the understanding** of this bead: gather the context it is missing, clarify anything vague or underspecified, and enrich it so it is genuinely ready to work on. If the problem turns out to be larger or more complex than the bead currently captures, **split it into sub-issues**.
+  {{- else -}}
+  There is **no linked bead** for this conversation. Investigate the **current problem** under discussion here — the topic, code, error, or question raised in this conversation. Treat the conversation itself as the subject: gather the missing context from the codebase and history, clarify what is vague, and produce an Investigation Report. Do **not** run any `bd` commands — there is no bead to load, enrich, or close.
+  {{- end }}
 
+  {{ if $target -}}
   ## Step 1 — Load the bead's full detail
 
   ```bash
-  bd show ${ISSUE_ID} --long --json     # description, acceptance, design, notes, metadata
-  bd dep tree ${ISSUE_ID}               # blockers and what it blocks
-  bd show ${ISSUE_ID} --children --json # existing child beads (if any)
-  bd comments ${ISSUE_ID}               # prior discussion, if any
+  bd show {{ $target }} --long --json     # description, acceptance, design, notes, metadata
+  bd dep tree {{ $target }}               # blockers and what it blocks
+  bd show {{ $target }} --children --json # existing child beads (if any)
+  bd comments {{ $target }}               # prior discussion, if any
   ```
 
   Note what is already well-specified versus what is thin, vague, or missing.
+  {{- end }}
 
   ## Step 2 — Investigate against the codebase and history
 
-  Do **not** rely on the bead text alone. Gather hard evidence to flesh it out:
+  Do **not** rely on the bead or current problem statement alone. Gather hard evidence to flesh it out:
 
-  - **Codebase**: locate the files, symbols, APIs, UI, or config the bead concerns. Understand the
-    current behaviour, the relevant constraints, and what a solution would realistically touch.
+  - **Codebase**: locate the files, symbols, APIs, UI, or config the bead or current problem concerns.
+    Understand the current behaviour, the relevant constraints, and what a solution would realistically touch.
   - **Related beads**: search for beads that overlap, block, or inform this one.
   - **History**: prior or in-flight work that affects scope.
 
   ```bash
-  git log --oneline --all | grep -i "${ISSUE_ID}"   # commits referencing this bead
+  {{ if $target -}}
+  git log --oneline --all | grep -i "{{ $target }}"   # commits referencing this bead
   bd list --json                                      # scan for related beads by topic
+  {{ end -}}
   git log --oneline -200                              # recent work that touches the area
   ```
 
   ## Step 3 — Identify gaps and open questions
 
-  From Steps 1–2, list precisely what is unclear or underspecified, e.g.:
+  From Steps 1–2, list precisely what is unclear or underspecified about the bead or current problem, e.g.:
 
   - Vague or overly broad scope; unclear problem statement
   - Missing or untestable **acceptance criteria**
@@ -62,15 +73,15 @@ prompt: |
   ## Step 4 — Resolve open questions with the user
 
   For anything you **cannot** settle from evidence, ask the user — do not invent answers. Batch
-  related questions into a single `mitto_ui_options_mitto(self_id: "@mitto:session_id",
+  related questions into a single `mitto_ui_options(self_id: "{{ .Session.ID }}",
   allow_free_text: true)` call, and for each, offer your **best-guess answer** as an option the user
   can confirm, correct, or override via free text. Skip this step if nothing is genuinely ambiguous.
 
   ## Step 5 — Assess complexity & whether to decompose
 
-  Decide whether the (now clearer) bead should stay a single unit or be split:
+  Decide whether the (now clearer) bead or current problem should stay a single unit or be split:
 
-  - **Keep as one bead** if the work is atomic, tightly coupled, or small with narrow criteria.
+  - **Keep as one** if the work is atomic, tightly coupled, or small with narrow criteria.
   - **Split into sub-issues** if it spans independent concerns, is too large for one reviewable PR,
     or has distinct acceptance criteria that map to separate deliverables.
 
@@ -81,9 +92,13 @@ prompt: |
 
   Produce a concise **Investigation Report** and the concrete updates you propose:
 
-  ### Bead: `${ISSUE_ID}` — `<Title>`
+  {{ if $target -}}
+  ### Bead: `{{ $target }}` — `<Title>`
+  {{- else -}}
+  ### Current problem — `<Topic>`
+  {{- end }}
 
-  - **Clarified problem & scope**: a tightened statement of what this bead delivers.
+  - **Clarified problem & scope**: a tightened statement of what this bead or current problem covers.
   - **Findings & code locations**: key files/symbols and current behaviour, with evidence.
   - **Refined acceptance criteria**: specific, testable conditions for "done".
   - **Design notes**: the recommended approach, trade-offs, and constraints (if applicable).
@@ -92,11 +107,12 @@ prompt: |
   - **Recommended sub-issues** (only if Step 5 says split): for each, a **title**, one-line scope,
     type/priority, and any dependency on a sibling.
 
+  {{ if $target -}}
   ## Step 7 — Confirm before writing
 
   This is **read-only until you confirm**. Present the report, then confirm via
-  `mitto_ui_options_mitto(self_id: "@mitto:session_id", allow_free_text: true)`, e.g. "Apply this
-  enrichment to `${ISSUE_ID}`?" with options:
+  `mitto_ui_options(self_id: "{{ .Session.ID }}", allow_free_text: true)`, e.g. "Apply this
+  enrichment to `{{ $target }}`?" with options:
 
   - **"Apply the enrichment"** — update the bead's fields only.
   - **"Apply and create the sub-issues"** — also create the recommended children.
@@ -111,15 +127,15 @@ prompt: |
   `*-file` flag to preserve Markdown:
 
   ```bash
-  bd update ${ISSUE_ID} --body-file /tmp/bead-desc.md     # enriched description
-  bd update ${ISSUE_ID} --acceptance "<testable criteria>"
-  bd update ${ISSUE_ID} --design-file /tmp/bead-design.md # design/approach notes
+  bd update {{ $target }} --body-file /tmp/bead-desc.md     # enriched description
+  bd update {{ $target }} --acceptance "<testable criteria>"
+  bd update {{ $target }} --design-file /tmp/bead-design.md # design/approach notes
   # Record the investigation in the bead's history for future reference — write the Investigation
   # Report from Step 6 (findings, code locations, design notes, resolved questions) to a temp file
   # and post it as a comment:
-  bd comment ${ISSUE_ID} --file /tmp/investigation-report.md
+  bd comment {{ $target }} --file /tmp/investigation-report.md
   # Audit note (always) — what changed and why, in plain language:
-  bd update ${ISSUE_ID} --append-notes "<what changed and why — e.g. 'After deeper investigation, the bug stems from <root cause>; updated the description and acceptance criteria accordingly.'>"
+  bd update {{ $target }} --append-notes "<what changed and why — e.g. 'After deeper investigation, the bug stems from <root cause>; updated the description and acceptance criteria accordingly.'>"
   # Optional: --add-label <l>, -p <0-4>, -t <type> if the investigation changed them
   ```
 
@@ -130,33 +146,38 @@ prompt: |
   Create approved **sub-issues** as children, then wire any dependencies:
 
   ```bash
-  bd create "<child title>" --parent ${ISSUE_ID} --type <type> --priority <0-4> --body-file /tmp/child.md
+  bd create "<child title>" --parent {{ $target }} --type <type> --priority <0-4> --body-file /tmp/child.md
   bd dep add <blocked-child-id> <blocker-child-id>   # only if one child must precede another
   ```
 
   Report any command that failed and why.
+  {{- else }}
+  ## Step 8 — Present the Investigation Report
+
+  Present the Investigation Report from Step 6 to the user. If unattended, simply emit it as the
+  conversation output. There is **no bead or tracker** to persist these findings to — the report
+  itself is the deliverable.
+  {{- end }}
 
   ## Step 9 — Final summary
 
-  Summarise what was learned, which fields were enriched, and any sub-issues created (with their IDs
-  and titles). If the bead is now ready to implement, suggest the **"Start work"**
-  prompt.
+  Summarise what was learned{{ if $target }}, which fields were enriched, and any sub-issues created (with their IDs and titles). If the bead is now ready to implement, suggest the **"Start work"** prompt{{ end }}.
 
   ## Final step — Offer to delete this conversation
 
   The task is complete. Offer to tidy up so finished conversations do not accumulate.
 
   1. Ask the user whether to delete this conversation now, via
-     `mitto_ui_options_mitto(self_id: "@mitto:session_id", question: "All done — delete this conversation now?", timeout_seconds: 120)` with options:
+     `mitto_ui_options(self_id: "{{ .Session.ID }}", question: "All done — delete this conversation now?", timeout_seconds: 120)` with options:
      - **"Yes, delete it"**
      - **"No, keep it"**
 
   2. Honour the answer:
      - **Delete** → first notify the user (the deletion is deferred until your turn ends, so the
        message is delivered first) with
-       `mitto_ui_notify_mitto(self_id: "@mitto:session_id", title: "<short outcome>", message: "<one-line summary of what was done>", style: "success")`,
+       `mitto_ui_notify_mitto(self_id: "{{ .Session.ID }}", title: "<short outcome>", message: "<one-line summary of what was done>", style: "success")`,
        then self-destruct with
-       `mitto_conversation_delete_mitto(self_id: "@mitto:session_id", conversation_id: "self")`.
+       `mitto_conversation_delete_mitto(self_id: "{{ .Session.ID }}", conversation_id: "self")`.
      - **Keep** → leave the conversation in place.
 
   3. **On timeout** (no response): only delete this conversation if **all** of the following hold —

@@ -1285,11 +1285,17 @@ func run() error {
 	// External port: -1 = disabled, 0 = random, >0 = specific port
 	// Track the actual external port for the up hook
 	var actualExternalPort int
+	// Capture any startup failure so we can show a native notification after
+	// initNotifications() is called (which happens later in this function).
+	var externalStartErr error
+	var externalFailedPort int
 	if cfg != nil && cfg.Web.Auth != nil && cfg.Web.ExternalPort >= 0 {
 		var err error
 		actualExternalPort, err = srv.StartExternalListener(cfg.Web.ExternalPort)
 		if err != nil {
 			slog.Error("Failed to start external listener", "error", err)
+			externalStartErr = err
+			externalFailedPort = cfg.Web.ExternalPort
 		} else {
 			// Acquire a power assertion so macOS does not suspend network
 			// activity when the screen locks (e.g. during Tailscale access).
@@ -1348,7 +1354,7 @@ func run() error {
 	// Set up quit confirmation interceptor
 	confirmQuit := true
 	if cfg != nil {
-		confirmQuit = cfg.ShouldConfirmQuitWithRunningSessions()
+		confirmQuit = cfg.ShouldConfirmDeleteRespondingSession()
 	}
 	setupQuitInterceptor(confirmQuit, port)
 
@@ -1388,6 +1394,33 @@ func run() error {
 
 	// Initialize notification center (must be done after app is running)
 	initNotifications()
+
+	// Now that the notification center is initialized, surface any external-listener
+	// startup failure as a sticky native notification so the user cannot miss it.
+	if externalStartErr != nil {
+		portStr := fmt.Sprintf("port %d", externalFailedPort)
+		if externalFailedPort == 0 {
+			portStr = "the external port"
+		}
+		notifBody := fmt.Sprintf(
+			"The external listener failed to start on %s: %v. External access (Cloudflare/Tailscale tunnels) is unavailable.",
+			portStr, externalStartErr,
+		)
+		showNativeNotification("External access is DOWN", notifBody, "external-access", true)
+	}
+
+	// Warn when no authentication is configured — the web interface is then
+	// unprotected and anyone who can reach it has full access.
+	noAuth := cfg == nil || cfg.Web.Auth == nil ||
+		(cfg.Web.Auth.Simple == nil && cfg.Web.Auth.Cloudflare == nil)
+	if noAuth {
+		showNativeNotification(
+			"Authentication not configured",
+			"Authentication is not configured — the Mitto web interface is unprotected. Anyone who can reach it has full access.",
+			"no-auth",
+			true,
+		)
+	}
 
 	// Register global hotkey to toggle app visibility
 	hotkeyStr, hotkeyEnabled := getHotkeyConfig(cfg)

@@ -1,13 +1,11 @@
 package web
 
 import (
-	"encoding/json"
 	"log/slog"
-	"net/http"
-	"net/http/httptest"
 	"testing"
 
 	"github.com/inercia/mitto/internal/config"
+	"github.com/inercia/mitto/internal/conversation"
 	"github.com/inercia/mitto/internal/session"
 )
 
@@ -247,104 +245,107 @@ func TestServer_Logger_Nil(t *testing.T) {
 	}
 }
 
-func TestServer_HealthCheck(t *testing.T) {
-	// Create a minimal server with session manager
-	sm := NewSessionManager("", "test-server", false, nil)
-	server := &Server{
-		sessionManager: sm,
+// =============================================================================
+// conversation.BuildPeriodicUpdatedData tests
+// =============================================================================
+
+func TestBuildPeriodicUpdatedData_NilPeriodic(t *testing.T) {
+	data := conversation.BuildPeriodicUpdatedData("s1", nil)
+	if data["periodic_configured"] != false {
+		t.Errorf("periodic_configured = %v, want false", data["periodic_configured"])
 	}
-
-	// Create a test request
-	req, err := http.NewRequest(http.MethodGet, "/api/health", nil)
-	if err != nil {
-		t.Fatalf("Failed to create request: %v", err)
+	if data["periodic_enabled"] != false {
+		t.Errorf("periodic_enabled = %v, want false", data["periodic_enabled"])
 	}
-
-	// Create a response recorder
-	rr := httptest.NewRecorder()
-
-	// Call the handler
-	server.handleHealthCheck(rr, req)
-
-	// Check status code
-	if rr.Code != http.StatusOK {
-		t.Errorf("handleHealthCheck returned status %d, want %d", rr.Code, http.StatusOK)
-	}
-
-	// Check content type
-	contentType := rr.Header().Get("Content-Type")
-	if contentType != "application/json" {
-		t.Errorf("Content-Type = %q, want %q", contentType, "application/json")
-	}
-
-	// Parse response
-	var response map[string]interface{}
-	if err := json.Unmarshal(rr.Body.Bytes(), &response); err != nil {
-		t.Fatalf("Failed to parse response: %v", err)
-	}
-
-	// Check status field
-	if status, ok := response["status"].(string); !ok || status != "healthy" {
-		t.Errorf("status = %v, want %q", response["status"], "healthy")
-	}
-
-	// Check timestamp field exists
-	if _, ok := response["timestamp"]; !ok {
-		t.Error("Response should contain timestamp field")
-	}
-
-	// Check sessions field exists
-	if sessions, ok := response["sessions"].(map[string]interface{}); !ok {
-		t.Error("Response should contain sessions field")
-	} else {
-		if _, ok := sessions["active"]; !ok {
-			t.Error("sessions should contain active field")
-		}
-		if _, ok := sessions["prompting"]; !ok {
-			t.Error("sessions should contain prompting field")
+	// New keys must NOT be present when there's no config.
+	for _, key := range []string{"trigger", "delay_seconds", "max_duration_seconds"} {
+		if _, ok := data[key]; ok {
+			t.Errorf("key %q must be absent when periodic is nil", key)
 		}
 	}
 }
 
-func TestServer_HealthCheck_MethodNotAllowed(t *testing.T) {
-	server := &Server{}
-
-	// Create a POST request (should be rejected)
-	req, err := http.NewRequest(http.MethodPost, "/api/health", nil)
-	if err != nil {
-		t.Fatalf("Failed to create request: %v", err)
+func TestBuildPeriodicUpdatedData_SchedulePeriodic(t *testing.T) {
+	p := &session.PeriodicPrompt{
+		Prompt:             "Test",
+		Frequency:          session.Frequency{Value: 30, Unit: session.FrequencyMinutes},
+		Enabled:            true,
+		Trigger:            session.TriggerSchedule,
+		MaxIterations:      5,
+		IterationCount:     2,
+		DelaySeconds:       0,
+		MaxDurationSeconds: 3600,
 	}
+	data := conversation.BuildPeriodicUpdatedData("s1", p)
 
-	rr := httptest.NewRecorder()
-	server.handleHealthCheck(rr, req)
-
-	if rr.Code != http.StatusMethodNotAllowed {
-		t.Errorf("handleHealthCheck with POST returned status %d, want %d", rr.Code, http.StatusMethodNotAllowed)
+	if data["periodic_configured"] != true {
+		t.Errorf("periodic_configured = %v, want true", data["periodic_configured"])
+	}
+	if data["trigger"] != "schedule" {
+		t.Errorf("trigger = %v, want %q", data["trigger"], "schedule")
+	}
+	if data["delay_seconds"] != 0 {
+		t.Errorf("delay_seconds = %v, want 0", data["delay_seconds"])
+	}
+	if data["max_duration_seconds"] != 3600 {
+		t.Errorf("max_duration_seconds = %v, want 3600", data["max_duration_seconds"])
+	}
+	if data["max_iterations"] != 5 {
+		t.Errorf("max_iterations = %v, want 5", data["max_iterations"])
+	}
+	if data["iteration_count"] != 2 {
+		t.Errorf("iteration_count = %v, want 2", data["iteration_count"])
 	}
 }
 
-func TestServer_HealthCheck_Shutdown(t *testing.T) {
-	server := &Server{}
-	server.shutdown.Store(true)
-
-	req, err := http.NewRequest(http.MethodGet, "/api/health", nil)
-	if err != nil {
-		t.Fatalf("Failed to create request: %v", err)
+func TestBuildPeriodicUpdatedData_EmptyTriggerReportsSchedule(t *testing.T) {
+	// Trigger="" defaults to "schedule" via EffectiveTrigger().
+	p := &session.PeriodicPrompt{
+		Prompt:    "Test",
+		Frequency: session.Frequency{Value: 1, Unit: session.FrequencyHours},
+		Enabled:   true,
+		Trigger:   "", // empty — must be resolved to "schedule"
 	}
-
-	rr := httptest.NewRecorder()
-	server.handleHealthCheck(rr, req)
-
-	if rr.Code != http.StatusServiceUnavailable {
-		t.Errorf("handleHealthCheck during shutdown returned status %d, want %d", rr.Code, http.StatusServiceUnavailable)
+	data := conversation.BuildPeriodicUpdatedData("s1", p)
+	if data["trigger"] != "schedule" {
+		t.Errorf("trigger = %v, want %q (empty trigger must resolve to 'schedule')", data["trigger"], "schedule")
 	}
+}
 
-	var response map[string]interface{}
-	if err := json.Unmarshal(rr.Body.Bytes(), &response); err != nil {
-		t.Fatalf("Failed to parse response: %v", err)
+func TestBuildPeriodicUpdatedData_OnCompletionPeriodic(t *testing.T) {
+	p := &session.PeriodicPrompt{
+		Prompt:             "Test",
+		Enabled:            true,
+		Trigger:            session.TriggerOnCompletion,
+		DelaySeconds:       30,
+		MaxDurationSeconds: 7200,
 	}
+	data := conversation.BuildPeriodicUpdatedData("s1", p)
 
-	if status, ok := response["status"].(string); !ok || status != "unhealthy" {
-		t.Errorf("status = %v, want %q", response["status"], "unhealthy")
+	if data["trigger"] != "onCompletion" {
+		t.Errorf("trigger = %v, want %q", data["trigger"], "onCompletion")
+	}
+	if data["delay_seconds"] != 30 {
+		t.Errorf("delay_seconds = %v, want 30", data["delay_seconds"])
+	}
+	if data["max_duration_seconds"] != 7200 {
+		t.Errorf("max_duration_seconds = %v, want 7200", data["max_duration_seconds"])
+	}
+}
+
+func TestBuildPeriodicUpdatedData_StoppedReasonPresent(t *testing.T) {
+	p := &session.PeriodicPrompt{
+		Prompt:        "Test",
+		Frequency:     session.Frequency{Value: 1, Unit: session.FrequencyHours},
+		Enabled:       false,
+		StoppedReason: session.StoppedReasonMaxDuration,
+	}
+	data := conversation.BuildPeriodicUpdatedData("s1", p)
+	if data["periodic_stopped_reason"] != "maxDuration" {
+		t.Errorf("periodic_stopped_reason = %v, want %q", data["periodic_stopped_reason"], "maxDuration")
+	}
+	// trigger must still be present even when stopped.
+	if data["trigger"] != "schedule" {
+		t.Errorf("trigger = %v, want %q when stopped", data["trigger"], "schedule")
 	}
 }

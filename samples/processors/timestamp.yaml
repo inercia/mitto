@@ -27,5 +27,5 @@ input: none       # Don't need the message content
 output: prepend   # Add timestamp before the message
 
 timeout: 2s
-on_error: skip
+onError: skip
 

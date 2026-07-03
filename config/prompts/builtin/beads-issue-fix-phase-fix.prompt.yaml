@@ -1,0 +1,152 @@
+icon: build
+name: Bug fix — fix phase
+menus: internal
+parameters:
+  - name: IssueID
+    type: beadsId
+    required: false
+    description: The beads issue ID to fix
+  - name: Commit
+    type: text
+    required: false
+    description: If "true", commit the fix after tests pass; otherwise leave changes staged for review
+description: Internal phase-tier prompt — implement the fix so the reproducing test passes, add the `fixed` label, and (optionally) commit. Invoked by name from the bug-fix driver; runs on the Coding tier.
+group: Tasks
+backgroundColor: '#C8E6C9'
+preferredModels:
+  - modelTag: Coding
+prompt: |
+  ## Session Context
+
+  Your session ID is `{{ .Session.ID }}` — use this as `self_id` for all `mitto_*` MCP tool calls.
+
+  # Bug Fix — Fix Phase
+
+  This is the **fix** stage of the label-encoded bug-fix state machine
+  (`researched` → `reproduced` → `fixed`). It is normally invoked by name from the
+  `Iterate fixing bug` driver (or by a list orchestrator), which selects this phase
+  when the target bead carries `reproduced` but not yet `fixed`.
+
+  {{ $target := "" -}}
+  {{ if .Session.BeadsIssue }}{{ $target = .Session.BeadsIssue }}{{ else if .Args.IssueID }}{{ $target = .Args.IssueID }}{{ end -}}
+  {{ $commit := eq .Args.Commit "true" -}}
+  {{ if $target -}}
+  The **target bug** for this phase is `{{ $target }}`{{ if .Session.BeadsIssue }} (from this conversation's linked beads issue){{ else }} (supplied as the `IssueID` argument){{ end }}.
+  Commit-after-fix is **{{ if $commit }}enabled{{ else }}disabled{{ end }}** (`Commit` argument).
+  {{- else -}}
+  No target bug is resolvable (neither `.Session.BeadsIssue` nor an `IssueID` argument
+  was supplied). Do not guess. Post a `mitto_ui_notify` explaining the missing target,
+  then stop this phase without changing anything.
+  {{- end }}
+
+  {{ if $target -}}
+  ## Step 1 — Load LIVE state
+
+  Labels drift between runs. Load the bead's **current** state fresh:
+
+  ```bash
+  bd show {{ $target }} --json --include-comments
+  ```
+
+  Read its `labels` array and prior comments (especially the `Investigation:` and
+  `Reproduction:` comments recorded during the earlier phases — they tell you the
+  root cause and where the failing test lives). If `fixed` is already present, this
+  phase's work is already done — `bd comment` a note that the phase re-ran
+  redundantly and stop **without** re-adding the label.
+
+  ## Step 2 — Implement the fix
+
+  This is a **scheduled, silent** phase (invoked by the driver's on-completion
+  loop). Do **not** call `mitto_ui_options`, `mitto_ui_form`, or `mitto_ui_textbox` —
+  decide autonomously; if something is genuinely unclear or unsolvable without user
+  input, defer via **Step 4**.
+
+  Apply the **minimum** change that makes the failing reproduction test pass:
+
+  - Address the root cause identified in the `Investigation:` comment, not just the
+    symptom.
+  - Keep the change surgical — do not refactor unrelated code, rename symbols, or
+    reformat files. Match the surrounding style and commenting density.
+  - Update or add adjacent tests only when the fix genuinely requires it (e.g. an
+    existing test encoded the bug and now needs correcting).
+
+  Run the reproduction test recorded on the bead and confirm it now **passes**. Then
+  run the broader relevant test suite (package tests, related integration tests) and
+  confirm nothing else broke. Capture the exact commands and passing output as
+  evidence.
+
+  If tests do not pass, iterate on the fix — do **not** advance the `fixed` label
+  with red tests. If after reasonable effort you cannot make them pass, defer via
+  Step 4.
+
+  ## Step 3 — Record, advance the label{{ if $commit }}, and commit{{ end }}
+
+  When the reproduction test passes and adjacent tests are still green, record the
+  fix and advance the state:
+
+  ```bash
+  bd comment {{ $target }} "Fix: <one-line description of the change>. Reproduction test now passes: <command>. Adjacent tests green: <command>."
+  bd update {{ $target }} --add-label fixed
+  ```
+
+  Only add the label after the comment is posted{{ if not $commit }} and the diff is
+  clean{{ end }}.
+
+  {{ if $commit -}}
+  Then commit the fix as a **single, focused commit** using the project's commit
+  conventions and reference the bead ID in the message:
+
+  ```bash
+  git add -A
+  git commit -m "fix({{ $target }}): <one-line summary>" -m "<body: what changed and why, reference {{ $target }}>"
+  ```
+
+  Do **not** push automatically — the driver / user decides when to push. If the
+  working tree has unrelated staged changes, do not include them in this commit;
+  reset them and commit only the fix hunks.
+  {{- else -}}
+  Do **not** commit. Leave the fix changes staged/unstaged for the user to review;
+  the bead comment already records what changed.
+  {{- end }}
+
+  Then stop — the driver's next scheduled run will observe `fixed` and close the
+  bug via its inline "Done" branch.
+  {{- end }}
+
+  ## Step 4 — Blocked → Defer + Handoff
+
+  Use this whenever this phase cannot make progress autonomously (tests will not go
+  green, the required change is architecturally larger than a bug fix, external
+  input is needed). **Do not** advance the `fixed` label. Instead:
+
+  1. Defer and flag the bead so it drops out of `bd ready`:
+
+     ```bash
+     bd update {{ if $target }}{{ $target }}{{ else }}<target-bug>{{ end }} --add-label needs-human --defer <when>
+     ```
+
+  2. Write a structured handoff comment:
+
+     ```bash
+     bd comment {{ if $target }}{{ $target }}{{ else }}<target-bug>{{ end }} "Blocked at fix. What I tried: <summary>. What I need from you: <the ONE concrete question/decision/info/action>. How to resume: bd update <id> --remove-label needs-human --defer '' , then re-run."
+     ```
+
+  3. End with a concise handoff message naming the blocker and the single thing
+     needed, and disable the enclosing conversation's periodic flag so the driver
+     loop does not spin on the blocker:
+
+     ```
+     mitto_conversation_update(self_id: "{{ .Session.ID }}", conversation_id: "self", periodic_enabled: false)
+     ```
+
+  ## Guidelines
+
+  - **One stage only.** This phase advances at most one label (`fixed`).
+    Do not close the bead — the driver's Done branch handles closure.
+  - **Minimum change.** Fix the root cause, not the symptom; do not refactor unrelated
+    code in the same pass.
+  - **Green before green label.** Never add `fixed` while the reproduction test or
+    adjacent tests are red.
+  - **Live state only.** Always re-read labels via `bd show --json` at the start of
+    the phase; never assume labels from a prior run.
+  - **Always log to the tracker** with `bd comment` so progress is auditable.

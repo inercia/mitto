@@ -91,8 +91,8 @@ type QueuedMessage struct {
 	Title string `json:"title,omitempty"`
 	// ScheduledTime is when this message should be delivered. If nil, deliver immediately.
 	ScheduledTime *time.Time `json:"scheduled_time,omitempty"`
-	// Arguments are optional ${VAR}/${VAR:-default} substitution values applied to
-	// the message text when it is sent. Empty/nil means no substitution.
+	// Arguments are optional Go-template .Args values applied to
+	// the message text when it is sent. Empty/nil means no rendering.
 	Arguments map[string]string `json:"arguments,omitempty"`
 	// PromptName is the name of the workspace prompt to send by name (resolved to
 	// full text at dispatch). Empty for ad-hoc messages.
@@ -168,7 +168,7 @@ func (q *Queue) writeQueue(qf *QueueFile) error {
 // If maxSize > 0 and the queue already has maxSize messages, ErrQueueFull is returned.
 // If maxSize <= 0, no size limit is enforced.
 // If scheduledTime is non-nil, the message will only be delivered after that time.
-// If arguments is non-empty, ${VAR}/${VAR:-default} substitution is applied to the
+// If arguments is non-empty, Go-template .Args rendering is applied to the
 // message text when it is sent to the agent.
 // If promptName is non-empty, the message is stored by name and resolved to full text
 // at dispatch via PromptWithMeta (message should be empty in this case).

@@ -144,3 +144,79 @@ bs.logger = logging.WithSessionContext(config.Logger, sessionID, workingDir, acp
 // Client-scoped (auto-includes client_id, session_id)
 clientLogger := logging.WithClient(s.logger, clientID, sessionID)
 ```
+
+## Session API Routing: Method+Pattern (Complete)
+
+✅ **COMPLETE**: Replaced hand-rolled path-splitting dispatch with Go 1.22+ `http.ServeMux` method+pattern routing.
+
+### Pattern: Dynamic Route Params with `r.PathValue()`
+
+Instead of `strings.Split` on `r.URL.Path`:
+
+```go
+// OLD (eliminated):
+parts := strings.Split(r.URL.Path, "/")
+sessionID := parts[4]  // Fragile, magic indices
+
+// NEW (Go 1.22+):
+if id, ok := s.sessionIDFromPath(w, r); ok {
+    s.apiHandlers.HandleGetSession(w, r, id)
+}
+
+// Helper:
+func (s *Server) sessionIDFromPath(w http.ResponseWriter, r *http.Request) (string, bool) {
+    id := r.PathValue("id")
+    if !session.IsValidSessionID(id) {
+        writeErrorJSON(w, http.StatusBadRequest, "invalid_session_id", "")
+        return "", false
+    }
+    return id, true
+}
+```
+
+### Route Table Pattern (`routes.go`)
+
+Use declarative method+pattern table instead of subtree fallback:
+
+```go
+apiRoute{http.MethodGet, "/api/sessions/{id}", s.handleSessionGet},
+apiRoute{http.MethodPatch, "/api/sessions/{id}", s.handleSessionUpdate},
+apiRoute{http.MethodDelete, "/api/sessions/{id}", s.handleSessionDelete},
+apiRoute{http.MethodGet, "/api/sessions/{id}/events", s.handleSessionEvents},
+apiRoute{http.MethodGet, "/api/sessions/{id}/ws", s.handleSessionWS},
+```
+
+**Benefit**: No `strings.Split` ambiguity; Go's mux ensures specificity via pattern precedence.
+
+### Thin Wrapper Pattern
+
+Session handlers are thin wrappers that:
+1. Extract IDs from path using `r.PathValue()`
+2. Validate session ID (call IsValidSessionID)
+3. Delegate to handler in `handlers` sub-package
+
+Example:
+```go
+func (s *Server) handleSessionGet(w http.ResponseWriter, r *http.Request) {
+    if id, ok := s.sessionIDFromPath(w, r); ok {
+        s.apiHandlers.HandleGetSession(w, r, id, false)
+    }
+}
+```
+
+## Handler Migration to Sub-packages (Complete)
+
+✅ All 16 REST handlers extracted into `internal/web/handlers/` sub-package.
+
+### Deps Facade
+
+```go
+handlers.New(handlers.Deps{
+    Store:             store,
+    SessionManager:    sessionMgr,
+    Logger:            logger,
+    // Add conservatively; only fields needed for current handler(s)
+})
+```
+
+**Key constraint**: `handlers` pkg must NOT import `internal/web` (no circular deps). Dependency direction: `web → handlers` only. All dependencies injected via `Deps` struct.

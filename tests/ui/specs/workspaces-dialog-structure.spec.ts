@@ -34,7 +34,7 @@ const dialog = (page: Page) => page.locator('[data-testid="workspaces-dialog"]')
 const tabContent = (page: Page) => page.locator('[data-testid="ws-tab-content"]');
 
 async function openDialog(page: Page) {
-  await page.locator('button[title="Workspaces"]').first().click();
+  await page.locator('button[data-testid="workspaces-btn"]').first().click();
   await expect(dialog(page)).toBeVisible({ timeout: 5000 });
 }
 
@@ -117,6 +117,7 @@ test.describe("WorkspacesDialog structure (daisyUI conversion safety net)", () =
       "beads",
       "prompts",
       "processors",
+      "shortcuts",
       "children",
     ];
     for (const id of folderTabs) {

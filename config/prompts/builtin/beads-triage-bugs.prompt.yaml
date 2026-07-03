@@ -1,0 +1,247 @@
+icon: tag
+name: Triage untriaged bugs
+menus: prompts, beadsList
+description: Auto-periodic — triage every open untriaged bug in a single pass, mark each `triaged` so future runs skip it, and self-terminate once no untriaged bugs remain
+backgroundColor: '#B3E5FC'
+group: Tasks
+enabledWhen: 'CommandExists("bd") && DirExists(".beads") && Tools.HasPattern("mitto_conversation_*")'
+periodic:
+  mode: always
+  trigger: onCompletion
+  delay: 30
+  maxIterations: 5
+  maxDuration: "1h"
+prompt: |
+  ## Session Context
+
+  Your session ID is `{{ .Session.ID }}` — use this as `self_id` for all `mitto_*` MCP tool calls.
+  Available ACP servers: `{{ .ACP.AvailableText }}`
+  {{- if .Children.AllText }}
+  Existing children: `{{ .Children.AllText }}`
+  {{- end }}
+
+  # Beads: Triage Untriaged Bugs
+
+  Beads is a CLI issue tracker (`bd`). Issues are called "beads" and have IDs like `bd-xyz`.
+  This prompt performs an **automated bug-triage pass** over every open `bug`-type bead
+  that has not yet been triaged. It is a **single-state label-as-state-machine**:
+  each bug is either **untriaged** (no `triaged` label) or **triaged** (carries the bare
+  `triaged` label). The whole pass runs **inline in this conversation** — it does NOT
+  spawn child conversations.
+
+  The `onCompletion` schedule re-fires this prompt after each pass so newly-filed bugs
+  get picked up automatically. When a run finds **zero untriaged open bugs**, the
+  conversation **self-terminates** (Step 3) so it stops re-firing on an empty set.
+
+  {{- if .Iteration.IsUninterrupted }}
+  ## Continuation — uninterrupted scheduled run
+
+  **Silent mode.** Use **only** `mitto_ui_notify`; never call `mitto_ui_options`,
+  `mitto_ui_form`, or `mitto_ui_textbox`. **Decide autonomously** and **auto-apply**
+  triage actions without asking. If a specific bug cannot be triaged autonomously (a
+  real product/architecture decision is required — not mere missing repro info, which
+  is handled by `needs-info`), use the per-bug **Blocked → Defer + Handoff** pattern
+  (Step 5) for that bug and continue with the remaining bugs.
+  {{- if .Iteration.IsLast }}
+
+  **Final scheduled run** (the `maxIterations` cap is reached after this run): do the
+  pass, then post a closing summary via `mitto_ui_notify` regardless of outcome.
+  {{- end }}
+  {{- else }}
+  ## Interaction Mode — READ THIS FIRST
+
+  This prompt is designed to run **unattended on a schedule**, but the first send (and
+  any force-triggered run) may have a user present.
+  {{- if and .Session.IsPeriodic (not .Session.IsPeriodicForced) }}
+
+  **Silent mode — a scheduled periodic run.**
+  - Use **only** `mitto_ui_notify` — non-blocking notifications.
+  - Do **NOT** call `mitto_ui_options`, `mitto_ui_form`, or `mitto_ui_textbox`. Nobody
+    is watching. **Auto-apply** all triage actions.
+  - For per-bug blockers, use Step 5 (Blocked → Defer + Handoff) instead of guessing.
+  {{- else }}
+
+  **Interactive mode** (the very first send, or a force-triggered run). A user is
+  present. **Do not auto-apply**: build the full list of planned per-bug triage actions
+  first, then present ONE consolidated confirmation via `mitto_ui_options` (Step 4c)
+  before writing anything to the tracker. Silent runs after this one will auto-apply.
+  {{- end }}
+  {{- end }}
+
+  ## Step 1 — Enumerate open bugs
+
+  Load every currently-open `bug`-type bead as JSON:
+
+  ```bash
+  bd list --status open --type bug --json
+  ```
+
+  From the resulting array, collect each bead's `id`. Do **not** trust any `labels`
+  field from a stale snapshot for the triage decision — Step 2 re-reads labels live.
+
+  ## Step 2 — Filter to untriaged (LIVE labels only)
+
+  > **Warning — do not branch on `Item.*` in the prompt body.** `Item.*` fields
+  > (`Item.Labels`, `Item.Status`, `Item.Type`, …) are populated **only at menu time**
+  > for the Beads context menu's `enabledWhen` gating. At send time they are empty, so
+  > `{{ "{{" }} .Item.Labels {{ "}}" }}` is useless in the body. Always read the **live**
+  > state fresh via `bd show <id> --json` — see `docs/devel/prompt-templates.md` §13.2.
+
+  For each bead id from Step 1, load its live state and skip any whose labels already
+  contain the bare `triaged` marker:
+
+  ```bash
+  bd show <id> --json --include-comments
+  ```
+
+  Keep only beads whose `labels` array does **not** contain `triaged`. Call this the
+  **untriaged set** for this run.
+
+  ## Step 3 — Zero untriaged → self-terminate (STOP condition)
+
+  If the untriaged set is empty, this run has nothing to do and the loop should stop
+  so it doesn't keep re-firing on an empty backlog:
+
+  ```
+  mitto_conversation_update(self_id: "{{ .Session.ID }}", conversation_id: "self", periodic_enabled: false)
+  mitto_ui_notify(self_id: "{{ .Session.ID }}", title: "Bug triage — done", message: "No untriaged open bugs remain.", style: "success")
+  ```
+
+  After self-terminating, do nothing further this run. Skip Steps 4–6.
+
+  ## Step 4 — Triage every untriaged bug (single pass)
+
+  For each bead in the untriaged set, in one pass:
+
+  ### 4a. Assess
+
+  From the `bd show ... --json --include-comments` output collected in Step 2:
+
+  - Re-read the title, description, and every existing comment for context.
+  - Assess **severity** (`critical` / `high` / `medium` / `low`), based on user impact,
+    data-loss risk, and scope.
+  - Assess **priority** (relative urgency vs. other open bugs) as a recommendation.
+  - Assess **reproducibility**: is there a clear repro path in the description or
+    comments?
+  - Identify **missing info**: repro steps, environment (OS / version / build),
+    expected vs actual behavior, logs, screenshots.
+
+  ### 4b. Decide labels and comment
+
+  Determine the label set to apply to this bug:
+
+  - Exactly one of `severity/critical`, `severity/high`, `severity/medium`,
+    `severity/low`.
+  - Zero or more `area/*` labels naming the affected component(s) (e.g. `area/web`,
+    `area/acp`, `area/session`). Use labels the repo already uses where possible; do
+    not invent an area if the correct one is unclear.
+  - `needs-info` **if and only if** required info is missing from the report.
+  - Always add the bare `triaged` marker last, so future runs skip this bug — **even
+    when `needs-info` is applied** (per the epic's resolved decisions: a bug missing
+    info still counts as triaged; the missing-info checklist goes in the triage
+    comment).
+
+  Compose a **triage summary** comment recording the severity rationale, priority
+  recommendation, reproducibility note, and — if `needs-info` was applied — an
+  explicit checklist of the missing fields the reporter should provide.
+
+  ### 4c. Apply — gated on interaction mode
+
+  {{- if .Iteration.IsUninterrupted }}
+  **Silent uninterrupted run — auto-apply.** For each bug, run:
+
+  ```bash
+  bd comment <id> "Triage: severity=<lvl>; priority=<rec>; repro=<clear|unclear|missing>. <rationale>. Missing info (if any): <checklist>."
+  bd update <id> --add-label triaged --add-label severity/<lvl>
+  # then, per bug, additional --add-label calls for area/* and needs-info as decided in 4b
+  ```
+
+  Log a running tally as you go so the closing summary in Step 6 is accurate.
+  {{- else if and .Session.IsPeriodic (not .Session.IsPeriodicForced) }}
+  **Silent scheduled run — auto-apply.** Same as the uninterrupted case above: for
+  each bug run `bd comment` then `bd update --add-label triaged --add-label severity/<lvl>`
+  plus the `area/*` and `needs-info` labels decided in 4b. Log a running tally for
+  Step 6.
+  {{- else }}
+  **Interactive run — confirm ONCE, then apply.** Do **not** write anything to the
+  tracker yet. Build a consolidated proposal table listing every bug you plan to
+  triage in this run, e.g.:
+
+  | Bug | Title | Severity | Area(s) | needs-info | Summary |
+  |-----|-------|----------|---------|-----------|---------|
+  | `bd-…` | `<title>` | high | area/web | no | Crash on submit; clear repro |
+  | `bd-…` | `<title>` | medium | area/session | **yes** | Missing OS + repro steps |
+
+  Then present the table and ask for a single sign-off via
+  `mitto_ui_options(self_id: "{{ .Session.ID }}", allow_free_text: true)`, e.g.
+  "Apply triage to these N bugs?" with options:
+
+  - **"Apply all"** — apply every proposed triage exactly as tabled.
+  - **"Apply only some"** — let the user list the bugs to skip via free text.
+  - **"Don't change anything — report only"** — write nothing; skip to Step 6.
+
+  Honour the choice. For each bug the user approved, run:
+
+  ```bash
+  bd comment <id> "Triage: severity=<lvl>; priority=<rec>; repro=<clear|unclear|missing>. <rationale>. Missing info (if any): <checklist>."
+  bd update <id> --add-label triaged --add-label severity/<lvl>
+  # plus additional --add-label calls for area/* and needs-info per 4b
+  ```
+  {{- end }}
+
+  ## Step 5 — Blocked → Defer + Handoff (per bug, not per pass)
+
+  If triaging a **specific** bug genuinely requires a human decision you cannot make
+  autonomously — not mere missing repro info (that is what `needs-info` is for), but a
+  real product / architecture / prioritisation call — do **not** force a triage on
+  that bug. Instead, per the pattern in `docs/devel/prompt-templates.md` §13.7:
+
+  1. Defer and flag **that one bug** so it drops out of `bd ready`:
+
+     ```bash
+     bd update <id> --add-label needs-human --defer <when>   # e.g. tomorrow / +1d
+     ```
+
+  2. Write a **structured handoff** comment on that bug:
+
+     ```bash
+     bd comment <id> "Blocked at triage. What I tried: <summary>. What I need from you: <the ONE concrete question/decision>. How to resume: bd update <id> --remove-label needs-human --defer '' , then re-run."
+     ```
+
+  3. **Do not** add the `triaged` label on this bug (it is genuinely un-triaged until
+     the human answers). **Continue with the remaining untriaged bugs** — this Blocked
+     path is per-bug and does **not** stop the whole pass, and does **not** disable
+     this conversation's periodic schedule (a future run may still find newly-filed
+     bugs to triage).
+
+  ## Step 6 — Closing summary
+
+  There is no single "target bead" to comment on for a list-level pass, so do NOT
+  invent one. Instead post a concise one-line pass summary as the run's closing
+  message:
+
+  ```
+  Triage pass complete — triaged: <n>; needs-info: <n>; deferred (needs-human): <n>; skipped (already triaged): <n>.
+  ```
+
+  Interactive runs (and silent runs on meaningful outcomes such as "N deferred" or
+  "final scheduled run") may **also** call `mitto_ui_notify` with the same summary.
+  Do **not** call `mitto_ui_options` in silent mode.
+
+  ## Guidelines
+
+  - **Single pass per run.** One `onCompletion` re-fire = one full sweep over the
+    then-current untriaged set. The zero-untriaged check in Step 3 is the exit
+    condition; `maxIterations` / `maxDuration` are backstops only.
+  - **Live state only.** Always re-read labels via `bd show --json` at the start of
+    the run; never assume labels from a prior run or from `Item.*`.
+  - **Bare `triaged` marker.** Always the un-namespaced label — this is the shared
+    convention across the label-as-state-machine family.
+  - **`needs-info` still gets `triaged`.** A bug missing repro info counts as triaged
+    (label applied + missing-info checklist in the comment); the reporter, not this
+    pass, unblocks it.
+  - **Blocked is per-bug.** A single blocker defers only that bug — it does not stop
+    the pass and does not disable this conversation's periodic schedule.
+  - **Decide autonomously in silent mode; confirm once in interactive mode.** Never
+    prompt the user in silent mode; never auto-apply in interactive mode without the
+    Step 4c sign-off.

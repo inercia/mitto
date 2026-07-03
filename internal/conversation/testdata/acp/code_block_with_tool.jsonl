@@ -1,0 +1,13 @@
+# Code block with tool call in the middle
+# This tests that tool calls don't split code blocks
+{"timestamp": "2026-01-25T14:30:57.000Z", "type": "agent_message", "data": {"html": "Here's the code:\n\n"}}
+{"timestamp": "2026-01-25T14:30:57.050Z", "type": "agent_message", "data": {"html": "```go\n"}}
+{"timestamp": "2026-01-25T14:30:57.100Z", "type": "agent_message", "data": {"html": "func main() {\n"}}
+{"timestamp": "2026-01-25T14:30:57.150Z", "type": "agent_message", "data": {"html": "    fmt.Println(\"Hello\")\n"}}
+# Tool call arrives while we're in the code block
+{"timestamp": "2026-01-25T14:30:57.200Z", "type": "tool_call", "data": {"tool_call_id": "tc1", "title": "Read file", "status": "running"}}
+{"timestamp": "2026-01-25T14:30:57.250Z", "type": "agent_message", "data": {"html": "}\n"}}
+{"timestamp": "2026-01-25T14:30:57.300Z", "type": "agent_message", "data": {"html": "```\n"}}
+{"timestamp": "2026-01-25T14:30:57.350Z", "type": "tool_update", "data": {"tool_call_id": "tc1", "status": "completed"}}
+{"timestamp": "2026-01-25T14:30:57.400Z", "type": "agent_message", "data": {"html": "\nThat's the code.\n"}}
+

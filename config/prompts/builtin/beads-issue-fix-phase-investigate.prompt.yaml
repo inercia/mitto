@@ -1,0 +1,108 @@
+icon: search
+name: Bug fix — investigate phase
+menus: internal
+parameters:
+  - name: IssueID
+    type: beadsId
+    required: false
+    description: The beads issue ID to investigate
+description: Internal phase-tier prompt — investigate a bug and add the `researched` label. Invoked by name from the bug-fix driver; runs on the Reasoning tier.
+group: Tasks
+backgroundColor: '#B3E5FC'
+preferredModels:
+  - modelTag: Reasoning
+prompt: |
+  ## Session Context
+
+  Your session ID is `{{ .Session.ID }}` — use this as `self_id` for all `mitto_*` MCP tool calls.
+
+  # Bug Fix — Investigate Phase
+
+  This is the **investigate** stage of the label-encoded bug-fix state machine
+  (`researched` → `reproduced` → `fixed`). It is normally invoked by name from the
+  `Iterate fixing bug` driver (or by a list orchestrator), which selects this phase
+  because the target bead has none of `researched`/`reproduced`/`fixed` yet.
+
+  {{ $target := "" -}}
+  {{ if .Session.BeadsIssue }}{{ $target = .Session.BeadsIssue }}{{ else if .Args.IssueID }}{{ $target = .Args.IssueID }}{{ end -}}
+  {{ if $target -}}
+  The **target bug** for this phase is `{{ $target }}`{{ if .Session.BeadsIssue }} (from this conversation's linked beads issue){{ else }} (supplied as the `IssueID` argument){{ end }}.
+  {{- else -}}
+  No target bug is resolvable (neither `.Session.BeadsIssue` nor an `IssueID` argument
+  was supplied). Do not guess. Post a `mitto_ui_notify` explaining the missing target,
+  then stop this phase without changing anything.
+  {{- end }}
+
+  {{ if $target -}}
+  ## Step 1 — Load LIVE state
+
+  Labels drift between runs. Load the bead's **current** state fresh:
+
+  ```bash
+  bd show {{ $target }} --json --include-comments
+  ```
+
+  Read its `labels` array and any prior comments. If `researched` is already present,
+  this phase's work is already done — `bd comment` a note that the phase re-ran
+  redundantly and stop **without** re-adding the label.
+
+  ## Step 2 — Investigate the bug
+
+  Read the relevant code, logs, and bead history to understand the bug — do not
+  speculate about code you have not opened. Interaction mode depends on how this
+  phase was invoked:
+
+  - {{- if and .Session.IsPeriodic (not .Session.IsPeriodicForced) }} **Silent mode** (scheduled continuation of the driver's loop). Do **not** call `mitto_ui_options`, `mitto_ui_form`, or `mitto_ui_textbox`. Decide autonomously; if something is genuinely unclear/unsolvable, defer via **Step 4** rather than guess.
+    {{- else }} **Interactive mode** may apply (a user is present, e.g. first send). You *may* ask clarifying questions via `mitto_ui_options` during investigation; every other phase decides autonomously or defers.
+    {{- end }}
+
+  Gather the concrete evidence you need: root-cause hypothesis, code locations, logs,
+  reproduction preconditions.
+
+  ## Step 3 — Record findings and advance the label
+
+  When you understand the bug well enough for the next phase to reproduce it, record
+  your findings on the bead and advance the state:
+
+  ```bash
+  bd comment {{ $target }} "Investigation: <root cause hypothesis, code locations, evidence>."
+  bd update {{ $target }} --add-label researched
+  ```
+
+  Only add the label after the comment is posted. Then stop — the driver's next
+  scheduled run will pick up the `researched` state and dispatch the reproduce phase.
+  {{- end }}
+
+  ## Step 4 — Blocked → Defer + Handoff
+
+  Use this whenever this phase cannot make progress autonomously (something unclear,
+  a decision only the user can give, an external action is required). **Do not**
+  advance the `researched` label. Instead:
+
+  1. Defer and flag the bead so it drops out of `bd ready`:
+
+     ```bash
+     bd update {{ if $target }}{{ $target }}{{ else }}<target-bug>{{ end }} --add-label needs-human --defer <when>
+     ```
+
+  2. Write a structured handoff comment:
+
+     ```bash
+     bd comment {{ if $target }}{{ $target }}{{ else }}<target-bug>{{ end }} "Blocked at investigate. What I tried: <summary>. What I need from you: <the ONE concrete question/decision/info/action>. How to resume: bd update <id> --remove-label needs-human --defer '' , then re-run."
+     ```
+
+  3. End with a concise handoff message naming the blocker and the single thing
+     needed (interactive runs also `mitto_ui_notify`), and disable the enclosing
+     conversation's periodic flag so the driver loop does not spin on the blocker:
+
+     ```
+     mitto_conversation_update(self_id: "{{ .Session.ID }}", conversation_id: "self", periodic_enabled: false)
+     ```
+
+  ## Guidelines
+
+  - **One stage only.** This phase advances at most one label (`researched`).
+    Do not attempt to reproduce or fix — those are separate phases.
+  - **Live state only.** Always re-read labels via `bd show --json` at the start of
+    the phase; never assume labels from a prior run or from `Item.*`.
+  - **Always log to the tracker** with `bd comment` so progress is auditable.

@@ -10,9 +10,11 @@ import {
   hasNativeFilePicker,
   pickFiles,
   isNativeApp,
+  getAPIPrefix,
 } from "../utils/native.js";
 import { secureFetch, authFetch } from "../utils/csrf.js";
-import { apiUrl } from "../utils/api.js";
+import { apiUrl, errorMessageFromData } from "../utils/api.js";
+import { endpoints } from "../utils/index.js";
 import { getContextWindowSize } from "../utils/models.js";
 import {
   getPromptSortMode,
@@ -24,64 +26,107 @@ import {
 import { useResizeHandle } from "../hooks/useResizeHandle.js";
 import { SlashCommandPicker } from "./SlashCommandPicker.js";
 import { PeriodicFrequencyPanel } from "./PeriodicFrequencyPanel.js";
-import { PeriodicPromptSelector } from "./PeriodicPromptSelector.js";
 import { SavePromptDialog } from "./SavePromptDialog.js";
-import { GripIcon, ChatBubbleIcon } from "./Icons.js";
+import { GripIcon, SettingsIcon } from "./Icons.js";
+import { ConfigOptionSelect } from "./ConfigOptionSelect.js";
 import { PromptsMenu } from "./PromptsMenu.js";
-import { flattenPrompts } from "../utils/prompts.js";
+import {
+  flattenPrompts,
+  getMissingPromptParameters,
+  fetchCachedParamNames,
+  effectiveMissingParams,
+  promptParameters,
+  promptResolveAsPeriodic,
+} from "../utils/prompts.js";
 
 /**
- * ChatInputConfigSelect - Select dropdown for a config option with optimistic local state.
- * Prevents the select from reverting to the old value while waiting for the server's
- * config_option_changed WebSocket response.
+ * wireMittoFileMarkers - Convert inert <span data-mitto-file="..." data-mitto-line="..."> markers
+ * inside a sanitized mitto_ui_form into clickable links that open Mitto's internal file viewer.
+ *
+ * The agent never emits anchors/hrefs — the URL is built from the trusted current workspace
+ * UUID + a validated workspace-relative path + optional line number. Idempotent: only wires
+ * elements that haven't been wired yet (guarded by dataset.mittoFileLinkWired).
  */
-function ChatInputConfigSelect({ configOption, onSetConfigOption, isStreaming }) {
-  const [localValue, setLocalValue] = useState(configOption.current_value);
+function wireMittoFileMarkers(root) {
+  if (!root || typeof root.querySelectorAll !== "function") return;
+  const markers = root.querySelectorAll("[data-mitto-file]");
+  if (!markers.length) return;
 
-  // Sync local value when server confirms the change
-  useEffect(() => {
-    setLocalValue(configOption.current_value);
-  }, [configOption.current_value]);
+  const apiPrefix = getAPIPrefix();
+  const workspaceUUID =
+    window.mittoCurrentWorkspaceUUID ||
+    sessionStorage.getItem("mittoCurrentWorkspaceUUID") ||
+    "";
+  const wsPath = window.mittoCurrentWorkspace || "";
+  if (!workspaceUUID) return;
 
-  const handleInput = useCallback(
-    (e) => {
-      const newValue = e.target.value;
-      setLocalValue(newValue); // Update immediately (optimistic)
-      onSetConfigOption?.(configOption.id, newValue);
-    },
-    [configOption.id, onSetConfigOption],
-  );
+  markers.forEach((el) => {
+    if (el.dataset.mittoFileLinkWired === "true") return;
+    const rel = el.getAttribute("data-mitto-file");
+    if (!rel) return;
+    // Defensive re-validation: the backend sanitizer already enforces this,
+    // but never trust agent-supplied content even after sanitization.
+    if (rel.startsWith("/") || rel.includes("..") || rel.includes("://"))
+      return;
+    const lower = rel.toLowerCase();
+    if (
+      lower.startsWith("javascript:") ||
+      lower.startsWith("data:") ||
+      lower.startsWith("file:") ||
+      lower.startsWith("mailto:")
+    )
+      return;
 
-  return html`
-    <select
-      class="select select-ghost select-xs max-w-[200px]"
-      value=${localValue || ""}
-      onInput=${handleInput}
-      disabled=${isStreaming}
-      title=${isStreaming
-        ? "Cannot change " + configOption.name.toLowerCase() + " while streaming"
-        : configOption.description || "Select " + configOption.name.toLowerCase()}
-    >
-      ${configOption.options.map(
-        (opt) => html` <option value=${opt.value}>${opt.name}</option> `,
-      )}
-    </select>
-  `;
+    const lineRaw = el.getAttribute("data-mitto-line") || "";
+    const line = /^\d+$/.test(lineRaw) ? lineRaw : "";
+
+    let viewerUrl = `${apiPrefix}/viewer.html?ws=${encodeURIComponent(workspaceUUID)}&path=${encodeURIComponent(rel)}`;
+    if (line) viewerUrl += `&line=${encodeURIComponent(line)}`;
+    if (wsPath) viewerUrl += `&ws_path=${encodeURIComponent(wsPath)}`;
+
+    el.classList.add("file-link");
+    el.style.cursor = "pointer";
+    el.dataset.mittoFileLinkWired = "true";
+    el.addEventListener("click", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      if (isNativeApp() && typeof window.mittoOpenViewer === "function") {
+        const fullUrl = new URL(viewerUrl, window.location.origin).href;
+        window.mittoOpenViewer(fullUrl);
+      } else {
+        window.open(viewerUrl, "_blank", "noopener,noreferrer");
+      }
+    });
+  });
 }
 
+// ChatInputConfigSelect has been extracted to the shared ConfigOptionSelect
+// component (./ConfigOptionSelect.js), used here with the "toolbar" variant so
+// the menu opens upward from the bottom composition toolbar.
+
 /**
- * PromptCollapseToggle - Chat-bubble button to show/hide the chat input area
- * while an MCP UI prompt panel is active.
+ * PromptStopButton - Stop button shown inside an active MCP UI prompt panel.
+ * Aborts the pending prompt and stops the agent turn. Replaces the former
+ * show/hide chat-input toggle: the composition area and an active UI prompt are
+ * mutually exclusive, so there is nothing to toggle to.
  */
-function PromptCollapseToggle({ collapsed, onToggle }) {
+function PromptStopButton({ onStop }) {
   return html`
     <button
       type="button"
-      onClick=${onToggle}
-      class="btn btn-ghost btn-square btn-sm"
-      title=${collapsed ? "Show prompt area" : "Hide prompt area"}
+      onClick=${onStop}
+      class="chat-input-action stop-active tooltip tooltip-top"
+      data-tip="Stop the agent"
+      aria-label="Stop the agent"
     >
-      <${ChatBubbleIcon} className="w-4 h-4" />
+      <svg
+        class="w-4 h-4"
+        fill="none"
+        stroke="currentColor"
+        viewBox="0 0 24 24"
+      >
+        <rect x="6" y="6" width="12" height="12" rx="2" stroke-width="2" />
+      </svg>
     </button>
   `;
 }
@@ -111,8 +156,8 @@ function PromptCollapseToggle({ collapsed, onToggle }) {
  * @param {boolean} props.showQueueDropdown - Whether the queue dropdown is currently visible
  * @param {Array} props.actionButtons - Array of action buttons from agent response { label, response }
  * @param {Array} props.availableCommands - Array of available slash commands { name, description, input_hint }
- * @param {boolean} props.periodicEnabled - Whether periodic prompts are enabled (disables queue buttons)
- * @param {Function} [props.onPeriodicPrompt] - Called with (prompt) when a periodic-flagged prompt is selected. Routes to app-level branching (decidePeriodicAction). When absent, periodic prompts fall through to the normal send path.
+ * @param {boolean} props.periodicConfigured - Whether a periodic config exists (shows editor, disables queue buttons)
+ * @param {Function} [props.onPeriodicPrompt] - Called with (prompt, opts) when a periodic-flagged prompt is selected, where opts is { asPeriodic } (the resolved per-send override). Routes to app-level branching (decidePeriodicAction). When absent, periodic prompts fall through to the normal send path.
  * @param {Object} props.activeUIPrompt - Active UI prompt from MCP tool { requestId, promptType, question, options, timeoutSeconds, receivedAt }
  * @param {Function} props.onUIPromptAnswer - Callback when user answers a UI prompt (requestId, optionId, label)
  * @param {string} props.workingDir - Workspace directory path (for smart file path insertion on native app drag & drop)
@@ -135,6 +180,7 @@ export function ChatInput({
   draft = "",
   onDraftChange,
   onPromptsOpen,
+  onConfigurePrompts,
   queueLength = 0,
   queueConfig = { enabled: true, max_size: 10, delay_seconds: 0 },
   onAddToQueue,
@@ -142,7 +188,7 @@ export function ChatInput({
   showQueueDropdown = false,
   actionButtons = [],
   availableCommands = [],
-  periodicEnabled = false,
+  periodicConfigured = false,
   onPeriodicPrompt,
   agentSupportsImages = false,
   acpReady = true,
@@ -154,8 +200,15 @@ export function ChatInput({
   sendKeyMode = "enter",
   configOptions = [],
   onSetConfigOption,
+  // Global model profiles (config.models) — needed by PromptsMenu to resolve
+  // structured preferredModels ({modelName}/{modelTag}) into an override chip.
+  modelProfiles = [],
   contextUsage = null,
   tokenUsage = null,
+  onOpenPromptParamDialog,
+  // Whether the active workspace has beads (`.beads` + `bd`). Gates the "On
+  // tasks" periodic trigger tab in PeriodicFrequencyPanel (mitto-oja.4).
+  hasBeadsWorkspace = false,
 }) {
   // Use the draft from parent state instead of local state
   const text = draft;
@@ -184,8 +237,20 @@ export function ChatInput({
 
   // Find all "select" type config options with options (e.g. "Mode", "Model")
   const selectConfigOptions = useMemo(() => {
-    return configOptions?.filter((o) => o.type === "select" && o.options?.length > 0) || [];
+    return (
+      configOptions?.filter(
+        (o) => o.type === "select" && o.options?.length > 0,
+      ) || []
+    );
   }, [configOptions]);
+
+  // The "model" config option, used to surface a per-prompt model-override chip
+  // in the prompts dropup (prompts whose preferredModels resolve to a different
+  // model than the current conversation model).
+  const modelOption = useMemo(
+    () => configOptions?.find((o) => o.category === "model") || null,
+    [configOptions],
+  );
 
   // Compute context window usage percentage (null when no data available).
   // Prefers context_usage from ACP SessionUsageUpdate (exact size/used).
@@ -193,7 +258,10 @@ export function ChatInput({
   const contextPct = useMemo(() => {
     // Primary: use SessionUsageUpdate data if available
     if (contextUsage?.size > 0 && contextUsage?.used != null) {
-      return Math.min(Math.round((contextUsage.used / contextUsage.size) * 100), 100);
+      return Math.min(
+        Math.round((contextUsage.used / contextUsage.size) * 100),
+        100,
+      );
     }
     // Fallback: compute from input_tokens + known model context window
     if (tokenUsage?.input_tokens) {
@@ -203,7 +271,10 @@ export function ChatInput({
       if (modelId) {
         const ctxWindow = getContextWindowSize(modelId);
         if (ctxWindow) {
-          return Math.min(Math.round((tokenUsage.input_tokens / ctxWindow) * 100), 100);
+          return Math.min(
+            Math.round((tokenUsage.input_tokens / ctxWindow) * 100),
+            100,
+          );
         }
       }
     }
@@ -289,6 +360,10 @@ export function ChatInput({
   const textboxRef = useRef(null);
   const [isPromptCollapsed, setIsPromptCollapsed] = useState(false);
   const prevCollapsedBeforeUIRef = useRef(false);
+  // Expand/collapse state for the periodic settings body (chevron). Lifted here so
+  // it stays mutually exclusive with the prompt composition area: only one may be
+  // expanded at a time.
+  const [periodicExpanded, setPeriodicExpanded] = useState(false);
 
   // Resize handle for UI prompt panels (textbox, form, options)
   const {
@@ -365,6 +440,18 @@ export function ChatInput({
   const [periodicFreshContext, setPeriodicFreshContext] = useState(false);
   const [periodicMaxIterations, setPeriodicMaxIterations] = useState(0);
   const [periodicIterationCount, setPeriodicIterationCount] = useState(0);
+  const [periodicTrigger, setPeriodicTrigger] = useState("schedule");
+  const [periodicDelaySeconds, setPeriodicDelaySeconds] = useState(5);
+  const [periodicMaxDurationSeconds, setPeriodicMaxDurationSeconds] =
+    useState(0);
+  // onTasks trigger fields: CEL condition gating firing + the UI preset id
+  // compiled into it (empty condition = fire on any beads/task change).
+  const [periodicCondition, setPeriodicCondition] = useState("");
+  const [periodicConditionPreset, setPeriodicConditionPreset] = useState("");
+  // Reason the periodic loop was auto-stopped (e.g. "maxDuration", "maxIterations",
+  // "iterationSafeguard"); empty when running. Drives the restore-dialog wording.
+  const [periodicStoppedReason, setPeriodicStoppedReason] = useState("");
+  const [periodicArguments, setPeriodicArguments] = useState({});
 
   // Track window width for responsive placeholder
   const [isSmallWindow, setIsSmallWindow] = useState(window.innerWidth < 640);
@@ -398,6 +485,17 @@ export function ChatInput({
     setPeriodicNextScheduledAt(null);
     setPeriodicMaxIterations(0);
     setPeriodicIterationCount(0);
+    setPeriodicTrigger("schedule");
+    setPeriodicDelaySeconds(5);
+    setPeriodicMaxDurationSeconds(0);
+    setPeriodicCondition("");
+    setPeriodicConditionPreset("");
+    setPeriodicStoppedReason("");
+    setPeriodicArguments({});
+    // Collapse the periodic properties body by default when switching
+    // conversations (the prompt composition area is collapsed separately by
+    // the periodicConfigured effect below).
+    setPeriodicExpanded(false);
   }, [sessionId]);
 
   // Reset combo box selection and free text input when UI prompt changes
@@ -422,20 +520,27 @@ export function ChatInput({
         prevCollapsedBeforeUIRef.current = prev;
         return true;
       });
-    } else if (!periodicEnabled) {
+    } else if (!periodicConfigured) {
       // Restore previous collapsed state when MCP UI dismisses
       setIsPromptCollapsed(prevCollapsedBeforeUIRef.current);
     }
-  }, [activeUIPrompt?.requestId, periodicEnabled]);
+  }, [activeUIPrompt?.requestId, periodicConfigured]);
 
-  // Fetch periodic config when periodic is enabled for this session
+  // Fetch periodic config when periodic is configured for this session
   useEffect(() => {
-    if (!periodicEnabled || !sessionId) {
+    if (!periodicConfigured || !sessionId) {
       setIsPeriodicLocked(false);
       setPeriodicPrompt("");
       setPeriodicPromptName("");
       setPeriodicFrequency({ value: 1, unit: "hours" });
       setPeriodicNextScheduledAt(null);
+      setPeriodicTrigger("schedule");
+      setPeriodicDelaySeconds(5);
+      setPeriodicMaxDurationSeconds(0);
+      setPeriodicCondition("");
+      setPeriodicConditionPreset("");
+      setPeriodicStoppedReason("");
+      setPeriodicArguments({});
       // Don't clear the draft when disabling periodic - preserve user's text
       return;
     }
@@ -446,35 +551,49 @@ export function ChatInput({
     const fetchPeriodicConfig = async () => {
       try {
         const response = await authFetch(
-          apiUrl(`/api/sessions/${sessionId}/periodic`),
+          endpoints.sessions.periodic(sessionId),
         );
-        if (response.ok) {
-          const config = await response.json();
-          // Always update frequency
-          if (config.frequency) {
-            setPeriodicFrequency(config.frequency);
-          }
-          // Update next_scheduled_at (only set if enabled)
-          if (config.enabled && config.next_scheduled_at) {
-            setPeriodicNextScheduledAt(config.next_scheduled_at);
-          } else {
-            setPeriodicNextScheduledAt(null);
-          }
-          // Update prompt name and fresh context from config
-          setPeriodicPromptName(config.prompt_name || "");
-          setPeriodicFreshContext(config.fresh_context === true);
-          setPeriodicMaxIterations(config.max_iterations ?? 0);
-          setPeriodicIterationCount(config.iteration_count ?? 0);
-          // Set lock state based on the enabled field
-          const isLocked = config.enabled === true;
-          setIsPeriodicLocked(isLocked);
-          // Set prompt state based on config
-          const isPendingPlaceholder = config.prompt === "(pending)";
-          if (config.prompt && !isPendingPlaceholder) {
-            setPeriodicPrompt(config.prompt);
-          } else {
-            setPeriodicPrompt("");
-          }
+        const ct = response.headers.get("content-type");
+        if (!response.ok || !ct || !ct.includes("application/json")) {
+          console.warn(
+            "Periodic config fetch returned non-JSON response:",
+            response.status,
+            ct,
+          );
+          return;
+        }
+        const config = await response.json();
+        // Always update frequency
+        if (config.frequency) {
+          setPeriodicFrequency(config.frequency);
+        }
+        // Update next_scheduled_at (only set if enabled)
+        if (config.enabled && config.next_scheduled_at) {
+          setPeriodicNextScheduledAt(config.next_scheduled_at);
+        } else {
+          setPeriodicNextScheduledAt(null);
+        }
+        // Update prompt name and fresh context from config
+        setPeriodicPromptName(config.prompt_name || "");
+        setPeriodicFreshContext(config.fresh_context === true);
+        setPeriodicMaxIterations(config.max_iterations ?? 0);
+        setPeriodicIterationCount(config.iteration_count ?? 0);
+        setPeriodicTrigger(config.trigger || "schedule");
+        setPeriodicDelaySeconds(config.delay_seconds ?? 5);
+        setPeriodicMaxDurationSeconds(config.max_duration_seconds ?? 0);
+        setPeriodicCondition(config.condition || "");
+        setPeriodicConditionPreset(config.condition_preset || "");
+        setPeriodicStoppedReason(config.stopped_reason || "");
+        setPeriodicArguments(config.arguments || {});
+        // Set lock state based on the enabled field
+        const isLocked = config.enabled === true;
+        setIsPeriodicLocked(isLocked);
+        // Set prompt state based on config
+        const isPendingPlaceholder = config.prompt === "(pending)";
+        if (config.prompt && !isPendingPlaceholder) {
+          setPeriodicPrompt(config.prompt);
+        } else {
+          setPeriodicPrompt("");
         }
       } catch (err) {
         console.error("Failed to fetch periodic config:", err);
@@ -482,7 +601,7 @@ export function ChatInput({
     };
 
     fetchPeriodicConfig();
-  }, [periodicEnabled, sessionId]);
+  }, [periodicConfigured, sessionId]);
 
   // Listen for periodic config updates from other clients via WebSocket
   useEffect(() => {
@@ -495,6 +614,7 @@ export function ChatInput({
         nextScheduledAt,
         iterationCount,
         maxIterations,
+        stoppedReason,
       } = event.detail;
       // Only update if this is for our session
       if (updatedSessionId !== sessionId) return;
@@ -503,7 +623,8 @@ export function ChatInput({
       if (frequency) {
         setPeriodicFrequency(frequency);
       }
-      if (iterationCount !== undefined) setPeriodicIterationCount(iterationCount);
+      if (iterationCount !== undefined)
+        setPeriodicIterationCount(iterationCount);
       if (maxIterations !== undefined) setPeriodicMaxIterations(maxIterations);
 
       // If periodic config was deleted (not configured), reset state
@@ -518,6 +639,9 @@ export function ChatInput({
       if (newPeriodicEnabled === false) {
         setIsPeriodicLocked(false);
         setPeriodicNextScheduledAt(null);
+        // Capture why the loop stopped so the restore dialog can offer to reset
+        // the elapsed iterations/time when a max-iterations/max-duration cap was hit.
+        setPeriodicStoppedReason(stoppedReason || "");
         // Don't clear the prompt - user may want to re-enable without re-typing
         return;
       }
@@ -529,13 +653,33 @@ export function ChatInput({
           setPeriodicNextScheduledAt(nextScheduledAt);
         }
         // Fetch the full config to get the prompt name and fresh_context
-        authFetch(apiUrl(`/api/sessions/${sessionId}/periodic`))
-          .then((response) => response.json())
+        authFetch(endpoints.sessions.periodic(sessionId))
+          .then(async (response) => {
+            if (!response.ok) return null;
+            const ct = response.headers.get("content-type");
+            if (!ct || !ct.includes("application/json")) {
+              console.warn(
+                "Periodic config fetch returned non-JSON response:",
+                response.status,
+                ct,
+              );
+              return null;
+            }
+            return response.json();
+          })
           .then((config) => {
+            if (!config) return;
             setPeriodicPromptName(config.prompt_name || "");
             setPeriodicFreshContext(config.fresh_context === true);
             setPeriodicMaxIterations(config.max_iterations ?? 0);
             setPeriodicIterationCount(config.iteration_count ?? 0);
+            setPeriodicTrigger(config.trigger || "schedule");
+            setPeriodicDelaySeconds(config.delay_seconds ?? 5);
+            setPeriodicMaxDurationSeconds(config.max_duration_seconds ?? 0);
+            setPeriodicCondition(config.condition || "");
+            setPeriodicConditionPreset(config.condition_preset || "");
+            setPeriodicStoppedReason(config.stopped_reason || "");
+            setPeriodicArguments(config.arguments || {});
             const isPendingPlaceholder = config.prompt === "(pending)";
             if (config.prompt && !isPendingPlaceholder) {
               setPeriodicPrompt(config.prompt);
@@ -581,7 +725,8 @@ export function ChatInput({
   // Session exists but ACP agent hasn't started yet (e.g., during resume).
   // Blocks sending and action buttons, but allows typing so drafts are preserved.
   // GC-suspended sessions are intentionally paused — don't show the "Resuming" banner.
-  const isResuming = !isRunning && !isArchived && !noSession && !disabled && !gcSuspended;
+  const isResuming =
+    !isRunning && !isArchived && !noSession && !disabled && !gcSuspended;
 
   // Expose focus and togglePrompts methods via inputRef for external control
   useEffect(() => {
@@ -755,6 +900,9 @@ export function ChatInput({
             if (textareaRef.current) {
               textareaRef.current.style.height = "auto";
             }
+            // In periodic conversations, hide the composition area after a
+            // successful enqueue; the user re-opens it via the Mitto bubble.
+            if (periodicConfigured) setIsPromptCollapsed(true);
           }
         } catch (err) {
           console.error("Failed to add to queue:", err);
@@ -785,6 +933,9 @@ export function ChatInput({
         if (textareaRef.current) {
           textareaRef.current.style.height = "auto";
         }
+        // In periodic conversations, hide the composition area after a
+        // successful send; the user re-opens it via the Mitto bubble.
+        if (periodicConfigured) setIsPromptCollapsed(true);
       } catch (err) {
         // Failed - show error and keep text for retry
         console.error("Failed to send message:", err);
@@ -822,6 +973,9 @@ export function ChatInput({
           if (textareaRef.current) {
             textareaRef.current.style.height = "auto";
           }
+          // In periodic conversations, hide the composition area after a
+          // successful enqueue; the user re-opens it via the Mitto bubble.
+          if (periodicConfigured) setIsPromptCollapsed(true);
         }
       } catch (err) {
         console.error("Failed to add to queue:", err);
@@ -836,7 +990,7 @@ export function ChatInput({
     setIsPeriodicSaving(true);
     try {
       const response = await secureFetch(
-        apiUrl(`/api/sessions/${sessionId}/periodic`),
+        endpoints.sessions.periodic(sessionId),
         {
           method: "PATCH",
           headers: { "Content-Type": "application/json" },
@@ -868,7 +1022,7 @@ export function ChatInput({
     setIsPeriodicSaving(true);
     try {
       const response = await secureFetch(
-        apiUrl(`/api/sessions/${sessionId}/periodic`),
+        endpoints.sessions.periodic(sessionId),
         {
           method: "PATCH",
           headers: { "Content-Type": "application/json" },
@@ -893,32 +1047,99 @@ export function ChatInput({
   }, [sessionId, isPeriodicSaving]);
 
   // Handle periodic prompt selection from PeriodicPromptSelector
-  const handlePeriodicPromptSelect = useCallback(async (promptName) => {
-    if (!sessionId || isPeriodicSaving) return;
-    setIsPeriodicSaving(true);
-    try {
-      const response = await secureFetch(
-        apiUrl(`/api/sessions/${sessionId}/periodic`),
-        {
-          method: "PATCH",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ prompt_name: promptName, enabled: true }),
-        },
-      );
-      if (response.ok) {
-        const data = await response.json();
-        setPeriodicPromptName(promptName);
-        setIsPeriodicLocked(true);
-        if (data.next_scheduled_at) {
-          setPeriodicNextScheduledAt(data.next_scheduled_at);
+  const handlePeriodicPromptSelect = useCallback(
+    async (promptName) => {
+      if (!sessionId || isPeriodicSaving) return;
+
+      // Helper that performs the actual PATCH, optionally with arguments.
+      const doPatch = async (extraArgs) => {
+        setIsPeriodicSaving(true);
+        try {
+          const body = { prompt_name: promptName, enabled: true };
+          if (extraArgs && Object.keys(extraArgs).length > 0) {
+            body.arguments = extraArgs;
+          }
+          const response = await secureFetch(
+            endpoints.sessions.periodic(sessionId),
+            {
+              method: "PATCH",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify(body),
+            },
+          );
+          if (response.ok) {
+            const data = await response.json();
+            setPeriodicPromptName(promptName);
+            setIsPeriodicLocked(true);
+            if (data.next_scheduled_at) {
+              setPeriodicNextScheduledAt(data.next_scheduled_at);
+            }
+          }
+        } catch (err) {
+          console.error("Failed to save periodic prompt selection:", err);
+        } finally {
+          setIsPeriodicSaving(false);
         }
+      };
+
+      // Check if the prompt declares parameters that need user input before saving.
+      const fullPrompt = periodicPrompts.find((p) => p.name === promptName);
+      let missing = fullPrompt
+        ? getMissingPromptParameters(fullPrompt, "conversation")
+        : [];
+      if (missing.length > 0 && sessionId && fullPrompt) {
+        const cached = await fetchCachedParamNames(sessionId, fullPrompt.name);
+        missing = effectiveMissingParams(missing, cached);
       }
-    } catch (err) {
-      console.error("Failed to save periodic prompt selection:", err);
-    } finally {
-      setIsPeriodicSaving(false);
-    }
-  }, [sessionId, isPeriodicSaving]);
+      if (missing.length > 0 && onOpenPromptParamDialog) {
+        onOpenPromptParamDialog(fullPrompt, missing, async (userArgs) => {
+          await doPatch(userArgs);
+        });
+        return;
+      }
+
+      await doPatch(undefined);
+    },
+    [sessionId, isPeriodicSaving, periodicPrompts, onOpenPromptParamDialog],
+  );
+
+  // Open the PromptParameterDialog pre-filled with current periodic arguments
+  const handleEditPeriodicArguments = useCallback(() => {
+    const prompt = (periodicPrompts || []).find(
+      (p) => p.name === periodicPromptName,
+    );
+    if (!prompt) return;
+    const params = promptParameters(prompt);
+    if (params.length === 0) return;
+    if (!onOpenPromptParamDialog) return;
+    onOpenPromptParamDialog(
+      prompt,
+      params,
+      async (userArgs) => {
+        try {
+          const resp = await secureFetch(
+            endpoints.sessions.periodic(sessionId),
+            {
+              method: "PATCH",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ arguments: userArgs }),
+            },
+          );
+          if (resp.ok) setPeriodicArguments(userArgs);
+          else console.error("Failed to save periodic arguments");
+        } catch (err) {
+          console.error("Failed to save periodic arguments:", err);
+        }
+      },
+      { initialValues: periodicArguments, hostSessionId: sessionId },
+    );
+  }, [
+    periodicPrompts,
+    periodicPromptName,
+    periodicArguments,
+    sessionId,
+    onOpenPromptParamDialog,
+  ]);
 
   // Handle frequency change from the PeriodicFrequencyPanel
   const handlePeriodicFrequencyChange = useCallback(
@@ -1030,6 +1251,7 @@ export function ChatInput({
     }
     // Close dropup on Escape
     if (e.key === "Escape") {
+      e.preventDefault();
       setShowDropup(false);
       setShowSlashPicker(false);
     }
@@ -1046,7 +1268,10 @@ export function ChatInput({
     const textarea = e.target;
     textarea.style.height = "auto";
     textarea.style.height =
-      Math.max(textareaMinHeight, Math.min(textarea.scrollHeight, textareaHardMax)) + "px";
+      Math.max(
+        textareaMinHeight,
+        Math.min(textarea.scrollHeight, textareaHardMax),
+      ) + "px";
 
     // Show slash command picker when typing '/' at the start
     if (
@@ -1060,7 +1285,7 @@ export function ChatInput({
     }
   };
 
-  const handlePredefinedPrompt = async (prompt, event) => {
+  const handlePredefinedPrompt = async (prompt, event, opts) => {
     setShowDropup(false);
 
     // Shift+click/Enter = insert into composition area (legacy behavior)
@@ -1083,7 +1308,10 @@ export function ChatInput({
           // Adjust height to fit content
           textarea.style.height = "auto";
           textarea.style.height =
-            Math.max(textareaMinHeight, Math.min(textarea.scrollHeight, textareaHardMax)) + "px";
+            Math.max(
+              textareaMinHeight,
+              Math.min(textarea.scrollHeight, textareaHardMax),
+            ) + "px";
         });
       }
       return;
@@ -1091,8 +1319,9 @@ export function ChatInput({
 
     // Periodic-flagged prompts: route to app-level branching (decidePeriodicAction).
     // This handles make-periodic / one-shot / new-periodic without duplicating logic here.
-    if (prompt && prompt.periodic && onPeriodicPrompt) {
-      onPeriodicPrompt(prompt);
+    const asPeriodic = prompt && promptResolveAsPeriodic(prompt, opts?.asPeriodic);
+    if (asPeriodic && onPeriodicPrompt) {
+      onPeriodicPrompt(prompt, { asPeriodic });
       return;
     }
 
@@ -1115,8 +1344,23 @@ export function ChatInput({
       return;
     }
 
-    // Default: send prompt immediately by name
+    // Default: send prompt immediately by name.
+    // When the prompt declares parameters the "prompts" menu cannot auto-fill,
+    // open the parameter dialog so the user can supply them.  On submit the
+    // options.arguments map is passed to onSend, which routes through the queue
+    // API so the backend can apply ${VAR} substitution.
     if (onSend && prompt.name) {
+      let missing = getMissingPromptParameters(prompt, "prompts");
+      if (missing.length > 0 && sessionId) {
+        const cached = await fetchCachedParamNames(sessionId, prompt.name);
+        missing = effectiveMissingParams(missing, cached);
+      }
+      if (missing.length > 0 && onOpenPromptParamDialog) {
+        onOpenPromptParamDialog(prompt, missing, async (userArgs) => {
+          onSend("", [], [], { promptName: prompt.name, arguments: userArgs });
+        });
+        return;
+      }
       onSend("", [], [], { promptName: prompt.name });
     }
   };
@@ -1138,7 +1382,7 @@ export function ChatInput({
     try {
       const timeoutId = setTimeout(() => controller.abort(), 65000); // 65s timeout
 
-      const response = await secureFetch(apiUrl("/api/aux/improve-prompt"), {
+      const response = await secureFetch(endpoints.aux.improvePrompt(), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -1154,8 +1398,10 @@ export function ChatInput({
       clearTimeout(timeoutId);
 
       if (!response.ok) {
-        const errorText = await response.text();
-        throw new Error(errorText || "Failed to improve prompt");
+        const errData = await response.json().catch(() => ({}));
+        throw new Error(
+          errorMessageFromData(errData, "Failed to improve prompt"),
+        );
       }
 
       const data = await response.json();
@@ -1167,7 +1413,10 @@ export function ChatInput({
             if (textarea) {
               textarea.style.height = "auto";
               textarea.style.height =
-                Math.max(textareaMinHeight, Math.min(textarea.scrollHeight, textareaHardMax)) + "px";
+                Math.max(
+                  textareaMinHeight,
+                  Math.min(textarea.scrollHeight, textareaHardMax),
+                ) + "px";
               textarea.focus();
             }
           });
@@ -1181,8 +1430,11 @@ export function ChatInput({
           setImproveError("Request timed out. Please try again.");
         } else {
           const msg = err.message || "Failed to improve prompt";
-          const hasCrashHint = msg.includes("crashed") || msg.includes("try again");
-          setImproveError(hasCrashHint ? msg : msg + " \u2014 please try again.");
+          const hasCrashHint =
+            msg.includes("crashed") || msg.includes("try again");
+          setImproveError(
+            hasCrashHint ? msg : msg + " \u2014 please try again.",
+          );
         }
         setTimeout(() => setImproveError(null), 5000);
       }
@@ -1253,17 +1505,14 @@ export function ChatInput({
       const formData = new FormData();
       formData.append("image", file);
 
-      const response = await secureFetch(
-        apiUrl(`/api/sessions/${sessionId}/images`),
-        {
-          method: "POST",
-          body: formData,
-        },
-      );
+      const response = await secureFetch(endpoints.sessions.images(sessionId), {
+        method: "POST",
+        body: formData,
+      });
 
       if (!response.ok) {
         const error = await response.json();
-        throw new Error(error.message || "Failed to upload image");
+        throw new Error(errorMessageFromData(error, "Failed to upload image"));
       }
 
       const data = await response.json();
@@ -1311,7 +1560,7 @@ export function ChatInput({
 
     try {
       const response = await secureFetch(
-        apiUrl(`/api/sessions/${sessionId}/images/from-path`),
+        endpoints.sessions.imagesFromPath(sessionId),
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -1321,7 +1570,7 @@ export function ChatInput({
 
       if (!response.ok) {
         const error = await response.json();
-        throw new Error(error.message || "Failed to upload images");
+        throw new Error(errorMessageFromData(error, "Failed to upload images"));
       }
 
       const results = await response.json();
@@ -1372,14 +1621,14 @@ export function ChatInput({
       const formData = new FormData();
       formData.append("file", file);
 
-      const response = await secureFetch(
-        apiUrl(`/api/sessions/${sessionId}/files`),
-        { method: "POST", body: formData },
-      );
+      const response = await secureFetch(endpoints.sessions.files(sessionId), {
+        method: "POST",
+        body: formData,
+      });
 
       if (!response.ok) {
         const error = await response.json();
-        throw new Error(error.message || "Failed to upload file");
+        throw new Error(errorMessageFromData(error, "Failed to upload file"));
       }
 
       const data = await response.json();
@@ -1431,7 +1680,7 @@ export function ChatInput({
 
     try {
       const response = await secureFetch(
-        apiUrl(`/api/sessions/${sessionId}/files/from-path`),
+        endpoints.sessions.filesFromPath(sessionId),
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -1441,7 +1690,7 @@ export function ChatInput({
 
       if (!response.ok) {
         const error = await response.json();
-        throw new Error(error.message || "Failed to upload files");
+        throw new Error(errorMessageFromData(error, "Failed to upload files"));
       }
 
       const results = await response.json();
@@ -1725,6 +1974,15 @@ export function ChatInput({
     [activeUIPrompt, onUIPromptAnswer],
   );
 
+  // Stop the agent turn from within an active MCP UI prompt panel. Aborts the
+  // pending prompt (so the blocking tool call resolves) and stops streaming.
+  const handleUIPromptStop = useCallback(() => {
+    if (hasActiveUIPrompt) {
+      handleUIPromptAnswer("abort", "Abort");
+    }
+    if (onCancel) onCancel();
+  }, [hasActiveUIPrompt, handleUIPromptAnswer, onCancel]);
+
   // Debug logging for action buttons — only log when buttons actually change
   useEffect(() => {
     if (actionButtons && actionButtons.length > 0) {
@@ -1746,7 +2004,10 @@ export function ChatInput({
           textarea.focus();
           textarea.style.height = "auto";
           textarea.style.height =
-            Math.max(textareaMinHeight, Math.min(textarea.scrollHeight, textareaHardMax)) + "px";
+            Math.max(
+              textareaMinHeight,
+              Math.min(textarea.scrollHeight, textareaHardMax),
+            ) + "px";
         }
       });
     },
@@ -1765,11 +2026,17 @@ export function ChatInput({
     >
       <!-- Resize handle for ChatInput height -->
       <div
-        class="flex items-center justify-center h-2 cursor-ns-resize hover:bg-mitto-surface-4/30 transition-colors select-none touch-none ${isTextareaDragging ? 'bg-mitto-surface-4/30' : ''}"
+        class="flex items-center justify-center h-2 cursor-ns-resize hover:bg-mitto-surface-4/30 transition-colors select-none touch-none ${isTextareaDragging
+          ? "bg-mitto-surface-4/30"
+          : ""}"
         ...${textareaHandleProps}
         title="Drag to resize input area"
       >
-        <div class="w-8 h-0.5 rounded-full bg-mitto-surface-4 ${isTextareaDragging ? 'bg-slate-400' : ''}"></div>
+        <div
+          class="w-8 h-0.5 rounded-full bg-mitto-surface-4 ${isTextareaDragging
+            ? "bg-slate-400"
+            : ""}"
+        ></div>
       </div>
       <!-- Hidden file input for images -->
       <input
@@ -1862,13 +2129,20 @@ export function ChatInput({
                         ...${promptHandleProps}
                         title="Drag to resize"
                       >
-                        <${GripIcon} className="w-6 h-1.5 text-mitto-text-muted" />
+                        <${GripIcon}
+                          className="w-6 h-1.5 text-mitto-text-muted"
+                        />
                       </div>
 
                       <!-- Title -->
                       <div class="px-4 pt-2 pb-2 shrink-0">
-                        <p class="ui-prompt-question text-sm font-medium" style="white-space: pre-wrap">
-                          ${(activeUIPrompt.title || activeUIPrompt.question)?.replace(/\\n/g, '\n')}
+                        <p
+                          class="ui-prompt-question text-sm font-medium"
+                          style="white-space: pre-wrap"
+                        >
+                          ${(
+                            activeUIPrompt.title || activeUIPrompt.question
+                          )?.replace(/\\n/g, "\n")}
                         </p>
                       </div>
 
@@ -1883,7 +2157,8 @@ export function ChatInput({
                           onInput=${(e) => {
                             setTextboxValue(e.target.value);
                             e.target.style.height = "auto";
-                            e.target.style.height = e.target.scrollHeight + "px";
+                            e.target.style.height =
+                              e.target.scrollHeight + "px";
                           }}
                         >
 ${activeUIPrompt.text || ""}</textarea
@@ -1905,10 +2180,7 @@ ${activeUIPrompt.text || ""}</textarea
                           / 16,384
                         </span>
                         <div class="flex gap-2 items-center">
-                          <${PromptCollapseToggle}
-                            collapsed=${isPromptCollapsed}
-                            onToggle=${() => setIsPromptCollapsed((v) => !v)}
-                          />
+                          <${PromptStopButton} onStop=${handleUIPromptStop} />
                           <button
                             type="button"
                             onClick=${() =>
@@ -1948,13 +2220,20 @@ ${activeUIPrompt.text || ""}</textarea
                           ...${promptHandleProps}
                           title="Drag to resize"
                         >
-                          <${GripIcon} className="w-6 h-1.5 text-mitto-text-muted" />
+                          <${GripIcon}
+                            className="w-6 h-1.5 text-mitto-text-muted"
+                          />
                         </div>
 
                         <!-- Title -->
                         <div class="px-4 pt-2 pb-2 shrink-0">
-                          <p class="ui-prompt-question text-sm font-medium" style="white-space: pre-wrap">
-                            ${(activeUIPrompt.title || activeUIPrompt.question)?.replace(/\\n/g, '\n')}
+                          <p
+                            class="ui-prompt-question text-sm font-medium"
+                            style="white-space: pre-wrap"
+                          >
+                            ${(
+                              activeUIPrompt.title || activeUIPrompt.question
+                            )?.replace(/\\n/g, "\n")}
                           </p>
                         </div>
 
@@ -1969,6 +2248,7 @@ ${activeUIPrompt.text || ""}</textarea
                             ) {
                               el.innerHTML = activeUIPrompt.formHTML;
                               el.dataset.formInitialized = "true";
+                              wireMittoFileMarkers(el);
                             }
                           }}
                         ></div>
@@ -1978,10 +2258,7 @@ ${activeUIPrompt.text || ""}</textarea
                           class="flex items-center justify-end gap-2 px-4 pt-2 pb-3 shrink-0"
                         >
                           <div class="flex gap-2 items-center">
-                            <${PromptCollapseToggle}
-                              collapsed=${isPromptCollapsed}
-                              onToggle=${() => setIsPromptCollapsed((v) => !v)}
-                            />
+                            <${PromptStopButton} onStop=${handleUIPromptStop} />
                             <button
                               type="button"
                               onClick=${() =>
@@ -2044,13 +2321,18 @@ ${activeUIPrompt.text || ""}</textarea
                           ...${promptHandleProps}
                           title="Drag to resize"
                         >
-                          <${GripIcon} className="w-6 h-1.5 text-mitto-text-muted" />
+                          <${GripIcon}
+                            className="w-6 h-1.5 text-mitto-text-muted"
+                          />
                         </div>
 
                         <!-- Question -->
                         <div class="px-4 pt-2 pb-2 shrink-0">
-                          <p class="ui-prompt-question text-sm font-medium" style="white-space: pre-wrap">
-                            ${activeUIPrompt.question?.replace(/\\n/g, '\n')}
+                          <p
+                            class="ui-prompt-question text-sm font-medium"
+                            style="white-space: pre-wrap"
+                          >
+                            ${activeUIPrompt.question?.replace(/\\n/g, "\n")}
                           </p>
                         </div>
 
@@ -2076,7 +2358,8 @@ ${activeUIPrompt.text || ""}</textarea
                                   ${idx + 1}
                                 </span>
                                 <div class="min-w-0 flex-1">
-                                  <span class="text-sm font-medium text-mitto-text-strong"
+                                  <span
+                                    class="text-sm font-medium text-mitto-text-strong"
                                     >${opt.label}</span
                                   >
                                   ${opt.description &&
@@ -2099,16 +2382,20 @@ ${activeUIPrompt.text || ""}</textarea
                                 onInput=${(e) =>
                                   setFreeTextInput(e.target.value)}
                                 onKeyDown=${(e) => {
-                                  if (
-                                    e.key === "Enter" &&
-                                    freeTextInput.trim()
-                                  ) {
-                                    handleUIPromptAnswer(
-                                      "free_text",
-                                      freeTextInput.trim(),
-                                      freeTextInput.trim(),
-                                    );
-                                    setFreeTextInput("");
+                                  if (e.key === "Enter") {
+                                    // Consume the Enter keypress so it doesn't
+                                    // propagate to the native layer (WKWebView),
+                                    // which beeps on unhandled keys in inputs
+                                    // that aren't inside a <form>.
+                                    e.preventDefault();
+                                    if (freeTextInput.trim()) {
+                                      handleUIPromptAnswer(
+                                        "free_text",
+                                        freeTextInput.trim(),
+                                        freeTextInput.trim(),
+                                      );
+                                      setFreeTextInput("");
+                                    }
                                   }
                                 }}
                                 placeholder=${activeUIPrompt.freeTextPlaceholder ||
@@ -2128,8 +2415,9 @@ ${activeUIPrompt.text || ""}</textarea
                                   }
                                 }}
                                 disabled=${!freeTextInput.trim()}
-                                class="btn btn-primary btn-square btn-sm shrink-0"
-                                title="Send response"
+                                class="btn btn-primary btn-square btn-sm shrink-0 tooltip tooltip-left"
+                                data-tip="Send response"
+                                aria-label="Send response"
                               >
                                 <svg
                                   class="w-4 h-4"
@@ -2153,10 +2441,7 @@ ${activeUIPrompt.text || ""}</textarea
                         <div
                           class="flex items-center justify-end px-4 pt-2 pb-3 shrink-0"
                         >
-                          <${PromptCollapseToggle}
-                            collapsed=${isPromptCollapsed}
-                            onToggle=${() => setIsPromptCollapsed((v) => !v)}
-                          />
+                          <${PromptStopButton} onStop=${handleUIPromptStop} />
                         </div>
                       </div>
                     `
@@ -2164,50 +2449,66 @@ ${activeUIPrompt.text || ""}</textarea
         </div>
       `}
 
-      <!-- Periodic settings (shown when periodic is enabled) -->
+      <!-- Periodic settings card (shown when periodic is enabled) -->
       <!-- Part of normal document flow - pushes conversation area up. -->
-      <!-- Prompt selector + frequency sit on one line at lg+, stacked on small/tablet screens. -->
-      <div class="max-w-4xl mx-auto flex flex-col lg:flex-row lg:gap-3 lg:items-start">
-        <!-- Periodic Prompt Selector -->
-        <div class="lg:flex-1 lg:min-w-0">
-          <${PeriodicPromptSelector}
-            isOpen=${periodicEnabled}
-            prompts=${periodicPrompts}
-            selectedPromptName=${periodicPromptName}
-            disabled=${false}
-            onSelect=${handlePeriodicPromptSelect}
-            isPromptAreaVisible=${!isPromptCollapsed}
-            onTogglePromptArea=${() => setIsPromptCollapsed((v) => !v)}
-          />
-        </div>
-
-        <!-- Periodic Frequency Panel (editable when unlocked, read-only when locked) -->
-        <!-- Size to content (flex-none) so the full "Run every … Next: …" row stays -->
-        <!-- visible; the prompt selector (flex-1) absorbs the remaining width. -->
-        <div class="lg:flex-none">
-          <${PeriodicFrequencyPanel}
-            isOpen=${periodicEnabled}
-            disabled=${isPeriodicLocked}
-            sessionId=${sessionId}
-            frequency=${periodicFrequency}
-            onFrequencyChange=${handlePeriodicFrequencyChange}
-            nextScheduledAt=${periodicNextScheduledAt}
-            isStreaming=${isStreaming}
-            freshContext=${periodicFreshContext}
-            onFreshContextChange=${setPeriodicFreshContext}
-            maxIterations=${periodicMaxIterations}
-            iterationCount=${periodicIterationCount}
-            onMaxIterationsChange=${handlePeriodicMaxIterationsChange}
-            onPeriodicEnabledChange=${handlePeriodicEnabledChange}
-          />
-        </div>
+      <!-- Single merged card: compact header always visible; body expands on demand. -->
+      <div class="max-w-4xl mx-auto">
+        <${PeriodicFrequencyPanel}
+          isOpen=${periodicConfigured && !hasActiveUIPrompt}
+          disabled=${isPeriodicLocked}
+          sessionId=${sessionId}
+          frequency=${periodicFrequency}
+          onFrequencyChange=${handlePeriodicFrequencyChange}
+          nextScheduledAt=${periodicNextScheduledAt}
+          isStreaming=${isStreaming}
+          freshContext=${periodicFreshContext}
+          onFreshContextChange=${setPeriodicFreshContext}
+          maxIterations=${periodicMaxIterations}
+          iterationCount=${periodicIterationCount}
+          onMaxIterationsChange=${handlePeriodicMaxIterationsChange}
+          onPeriodicEnabledChange=${handlePeriodicEnabledChange}
+          prompts=${periodicPrompts}
+          selectedPromptName=${periodicPromptName}
+          selectedPromptBody=${periodicPrompt}
+          onPromptSelect=${handlePeriodicPromptSelect}
+          isPromptAreaVisible=${!isPromptCollapsed}
+          onTogglePromptArea=${() =>
+            setIsPromptCollapsed((v) => {
+              const nextCollapsed = !v;
+              // Expanding the prompt area collapses the periodic properties.
+              if (!nextCollapsed) setPeriodicExpanded(false);
+              return nextCollapsed;
+            })}
+          expanded=${periodicExpanded}
+          onToggleExpanded=${() =>
+            setPeriodicExpanded((v) => {
+              const next = !v;
+              // Expanding the periodic properties collapses the prompt area.
+              if (next) setIsPromptCollapsed(true);
+              return next;
+            })}
+          trigger=${periodicTrigger}
+          delaySeconds=${periodicDelaySeconds}
+          maxDurationSeconds=${periodicMaxDurationSeconds}
+          condition=${periodicCondition}
+          conditionPreset=${periodicConditionPreset}
+          hasBeadsWorkspace=${hasBeadsWorkspace}
+          stoppedReason=${periodicStoppedReason}
+          minDelaySeconds=${5}
+          onTriggerChange=${setPeriodicTrigger}
+          onDelayChange=${setPeriodicDelaySeconds}
+          onMaxDurationChange=${setPeriodicMaxDurationSeconds}
+          onConditionChange=${setPeriodicCondition}
+          onConditionPresetChange=${setPeriodicConditionPreset}
+          onEditArguments=${handleEditPeriodicArguments}
+        />
       </div>
 
       ${hasActionButtons &&
       !isStreaming &&
       !isReadOnly &&
       !noSession &&
-      !periodicEnabled &&
+      !periodicConfigured &&
       !isResuming &&
       html`
         <div class="max-w-4xl mx-auto mb-3">
@@ -2328,9 +2629,7 @@ ${activeUIPrompt.text || ""}</textarea
       ${sendError &&
       html`
         <div class="max-w-4xl mx-auto mb-2">
-          <div
-            class="alert alert-warning text-sm"
-          >
+          <div class="alert alert-warning text-sm">
             <svg
               class="w-4 h-4 shrink-0"
               fill="none"
@@ -2370,7 +2669,7 @@ ${activeUIPrompt.text || ""}</textarea
           </div>
         </div>
       `}
-      ${!(isPromptCollapsed && (periodicEnabled || hasActiveUIPrompt)) &&
+      ${!(isPromptCollapsed && (periodicConfigured || hasActiveUIPrompt)) &&
       html`
         <div class="max-w-4xl mx-auto chat-input-container">
           <div class="chat-input-box" ref=${dropupRef}>
@@ -2393,7 +2692,13 @@ ${activeUIPrompt.text || ""}</textarea
                 autocomplete=${isNativeApp() ? "off" : "on"}
                 autocapitalize=${isNativeApp() ? "off" : "sentences"}
                 spellcheck=${isNativeApp() ? "false" : "true"}
-                ...${isNativeApp() ? {} : { inputmode: "text", enterkeyhint: sendKeyMode === "ctrl-enter" ? "enter" : "send" }}
+                ...${isNativeApp()
+                  ? {}
+                  : {
+                      inputmode: "text",
+                      enterkeyhint:
+                        sendKeyMode === "ctrl-enter" ? "enter" : "send",
+                    }}
                 value=${text}
                 onInput=${handleInput}
                 onKeyDown=${handleKeyDown}
@@ -2409,17 +2714,19 @@ ${activeUIPrompt.text || ""}</textarea
                 isImproving
                   ? "opacity-50 cursor-not-allowed"
                   : ""}"
-                disabled=${isFullyDisabled ||
-                isReadOnly ||
-                isImproving}
+                disabled=${isFullyDisabled || isReadOnly || isImproving}
               />
 
               <!-- Improving prompt overlay with spinner -->
               ${isImproving &&
               html`
                 <div class="textarea-improving-overlay">
-                  <span class="loading loading-spinner w-6 h-6 text-mitto-accent"></span>
-                  <span class="text-sm text-mitto-accent-300 mt-2">Improving prompt...</span>
+                  <span
+                    class="loading loading-spinner w-6 h-6 text-mitto-accent"
+                  ></span>
+                  <span class="text-sm text-mitto-accent-300 mt-2"
+                    >Improving prompt...</span
+                  >
                 </div>
               `}
             </div>
@@ -2436,30 +2743,57 @@ ${activeUIPrompt.text || ""}</textarea
                           ? html`<img
                               src=${img.url}
                               alt=${img.name || "Pending image"}
-                              class="w-16 h-16 rounded-lg object-cover border border-mitto-border-2 ${img.uploading ? "opacity-50" : ""}"
+                              class="w-16 h-16 rounded-lg object-cover border border-mitto-border-2 ${img.uploading
+                                ? "opacity-50"
+                                : ""}"
                             />`
                           : html`<div
                               class="w-16 h-16 rounded-lg bg-mitto-surface-3 border border-mitto-border-2 flex items-center justify-center"
                             >
-                              <svg class="w-6 h-6 text-mitto-text-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
+                              <svg
+                                class="w-6 h-6 text-mitto-text-500"
+                                fill="none"
+                                stroke="currentColor"
+                                viewBox="0 0 24 24"
+                              >
+                                <path
+                                  stroke-linecap="round"
+                                  stroke-linejoin="round"
+                                  stroke-width="2"
+                                  d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"
+                                />
                               </svg>
                             </div>`}
                         ${img.uploading
                           ? html`
-                              <div class="absolute inset-0 flex items-center justify-center">
-                                <span class="loading loading-spinner w-5 h-5 text-mitto-text-strong"></span>
+                              <div
+                                class="absolute inset-0 flex items-center justify-center"
+                              >
+                                <span
+                                  class="loading loading-spinner w-5 h-5 text-mitto-text-strong"
+                                ></span>
                               </div>
                             `
                           : html`
                               <button
                                 type="button"
                                 onClick=${() => removeImage(img.id)}
-                                class="absolute -top-1 -right-1 w-5 h-5 bg-mitto-danger hover:bg-mitto-danger-hover rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
-                                title="Remove image"
+                                class="absolute -top-1 -right-1 w-5 h-5 bg-mitto-danger hover:bg-mitto-danger-hover rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity tooltip tooltip-left"
+                                data-tip="Remove image"
+                                aria-label="Remove image"
                               >
-                                <svg class="w-3 h-3 text-mitto-danger-fg" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+                                <svg
+                                  class="w-3 h-3 text-mitto-danger-fg"
+                                  fill="none"
+                                  stroke="currentColor"
+                                  viewBox="0 0 24 24"
+                                >
+                                  <path
+                                    stroke-linecap="round"
+                                    stroke-linejoin="round"
+                                    stroke-width="2"
+                                    d="M6 18L18 6M6 6l12 12"
+                                  />
                                 </svg>
                               </button>
                             `}
@@ -2477,29 +2811,66 @@ ${activeUIPrompt.text || ""}</textarea
                 <div class="flex flex-wrap gap-2">
                   ${pendingFiles.map(
                     (file) => html`
-                      <div key=${file.id} class="relative group flex items-center gap-2 bg-mitto-surface-3 rounded-lg px-3 py-2 border border-mitto-border-2">
-                        <svg class="w-5 h-5 text-mitto-text-muted shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                      <div
+                        key=${file.id}
+                        class="relative group flex items-center gap-2 bg-mitto-surface-3 rounded-lg px-3 py-2 border border-mitto-border-2"
+                      >
+                        <svg
+                          class="w-5 h-5 text-mitto-text-muted shrink-0"
+                          fill="none"
+                          stroke="currentColor"
+                          viewBox="0 0 24 24"
+                        >
+                          <path
+                            stroke-linecap="round"
+                            stroke-linejoin="round"
+                            stroke-width="2"
+                            d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"
+                          />
                         </svg>
-                        <span class="text-sm text-mitto-text-secondary max-w-[150px] truncate" title=${file.name}>${file.name}</span>
-                        ${file.category && html`
-                          <span class="text-xs px-1.5 py-0.5 rounded ${file.category === "text" ? "bg-green-900 text-green-300" : "bg-mitto-accent-900 text-mitto-accent-300"}">${file.category}</span>
+                        <span
+                          class="text-sm text-mitto-text-secondary max-w-[150px] truncate"
+                          title=${file.name}
+                          >${file.name}</span
+                        >
+                        ${file.category &&
+                        html`
+                          <span
+                            class="text-xs px-1.5 py-0.5 rounded ${file.category ===
+                            "text"
+                              ? "bg-green-900 text-green-300"
+                              : "bg-mitto-accent-900 text-mitto-accent-300"}"
+                            >${file.category}</span
+                          >
                         `}
                         ${file.uploading
                           ? html`
                               <div class="flex items-center justify-center">
-                                <span class="loading loading-spinner w-4 h-4 text-mitto-accent"></span>
+                                <span
+                                  class="loading loading-spinner w-4 h-4 text-mitto-accent"
+                                ></span>
                               </div>
                             `
                           : html`
                               <button
                                 type="button"
                                 onClick=${() => removeFile(file.id)}
-                                class="w-5 h-5 bg-mitto-danger hover:bg-mitto-danger-hover rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
-                                title="Remove file"
+                                class="w-5 h-5 bg-mitto-danger hover:bg-mitto-danger-hover rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity tooltip tooltip-left"
+                                data-tip="Remove file"
+                                aria-label="Remove file"
                               >
-                                <svg class="w-3 h-3 text-mitto-danger-fg" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+                                <svg
+                                  class="w-3 h-3 text-mitto-danger-fg"
+                                  fill="none"
+                                  stroke="currentColor"
+                                  viewBox="0 0 24 24"
+                                >
+                                  <path
+                                    stroke-linecap="round"
+                                    stroke-linejoin="round"
+                                    stroke-width="2"
+                                    d="M6 18L18 6M6 6l12 12"
+                                  />
                                 </svg>
                               </button>
                             `}
@@ -2519,17 +2890,33 @@ ${activeUIPrompt.text || ""}</textarea
                   type="button"
                   onClick=${handleImprovePrompt}
                   onMouseDown=${(e) => e.preventDefault()}
-                  disabled=${isFullyDisabled || !text.trim() || isReadOnly || isImproving}
-                  class="chat-input-action ${isImproving ? "improving" : ""}"
-                  title="Improve prompt with AI (Ctrl+P)"
+                  disabled=${isFullyDisabled ||
+                  !text.trim() ||
+                  isReadOnly ||
+                  isImproving}
+                  class="chat-input-action tooltip tooltip-top ${isImproving
+                    ? "improving"
+                    : ""}"
+                  data-tip="Improve prompt with AI (Ctrl+P)"
+                  aria-label="Improve prompt with AI (Ctrl+P)"
                 >
                   ${isImproving
                     ? html`
                         <span class="loading loading-spinner w-4 h-4"></span>
                       `
                     : html`
-                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 3v4M3 5h4M6 17v4m-2-2h4m5-16l2.286 6.857L21 12l-5.714 2.143L13 21l-2.286-6.857L5 12l5.714-2.143L13 3z" />
+                        <svg
+                          class="w-4 h-4"
+                          fill="none"
+                          stroke="currentColor"
+                          viewBox="0 0 24 24"
+                        >
+                          <path
+                            stroke-linecap="round"
+                            stroke-linejoin="round"
+                            stroke-width="2"
+                            d="M5 3v4M3 5h4M6 17v4m-2-2h4m5-16l2.286 6.857L21 12l-5.714 2.143L13 21l-2.286-6.857L5 12l5.714-2.143L13 3z"
+                          />
                         </svg>
                       `}
                 </button>
@@ -2540,11 +2927,22 @@ ${activeUIPrompt.text || ""}</textarea
                   onClick=${handleAttachImageClick}
                   onMouseDown=${(e) => e.preventDefault()}
                   disabled=${isFullyDisabled || isReadOnly || isImproving}
-                  class="chat-input-action"
-                  title="Attach image"
+                  class="chat-input-action tooltip tooltip-top"
+                  data-tip="Attach image"
+                  aria-label="Attach image"
                 >
-                  <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
+                  <svg
+                    class="w-4 h-4"
+                    fill="none"
+                    stroke="currentColor"
+                    viewBox="0 0 24 24"
+                  >
+                    <path
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                      stroke-width="2"
+                      d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"
+                    />
                   </svg>
                 </button>
 
@@ -2554,11 +2952,22 @@ ${activeUIPrompt.text || ""}</textarea
                   onClick=${handleAttachFileClick}
                   onMouseDown=${(e) => e.preventDefault()}
                   disabled=${isFullyDisabled || isReadOnly || isImproving}
-                  class="chat-input-action"
-                  title="Attach file"
+                  class="chat-input-action tooltip tooltip-top"
+                  data-tip="Attach file"
+                  aria-label="Attach file"
                 >
-                  <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13" />
+                  <svg
+                    class="w-4 h-4"
+                    fill="none"
+                    stroke="currentColor"
+                    viewBox="0 0 24 24"
+                  >
+                    <path
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                      stroke-width="2"
+                      d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13"
+                    />
                   </svg>
                 </button>
 
@@ -2570,12 +2979,26 @@ ${activeUIPrompt.text || ""}</textarea
                     type="button"
                     onClick=${() => setShowSaveDialog(true)}
                     onMouseDown=${(e) => e.preventDefault()}
-                    disabled=${isFullyDisabled || !text.trim() || isReadOnly || isImproving}
-                    class="chat-input-action"
-                    title="Save prompt as file"
+                    disabled=${isFullyDisabled ||
+                    !text.trim() ||
+                    isReadOnly ||
+                    isImproving}
+                    class="chat-input-action tooltip tooltip-top"
+                    data-tip="Save prompt as file"
+                    aria-label="Save prompt as file"
                   >
-                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7H5a2 2 0 00-2 2v9a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-3m-1 4l-3 3m0 0l-3-3m3 3V4" />
+                    <svg
+                      class="w-4 h-4"
+                      fill="none"
+                      stroke="currentColor"
+                      viewBox="0 0 24 24"
+                    >
+                      <path
+                        stroke-linecap="round"
+                        stroke-linejoin="round"
+                        stroke-width="2"
+                        d="M8 7H5a2 2 0 00-2 2v9a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-3m-1 4l-3 3m0 0l-3-3m3 3V4"
+                      />
                     </svg>
                   </button>
                 `}
@@ -2589,35 +3012,67 @@ ${activeUIPrompt.text || ""}</textarea
                     setPendingFiles([]);
                   }}
                   onMouseDown=${(e) => e.preventDefault()}
-                  disabled=${isFullyDisabled || isReadOnly || isImproving || (!text.trim() && !hasPendingAttachments)}
-                  class="chat-input-action"
-                  title="Clear message"
+                  disabled=${isFullyDisabled ||
+                  isReadOnly ||
+                  isImproving ||
+                  (!text.trim() && !hasPendingAttachments)}
+                  class="chat-input-action tooltip tooltip-top"
+                  data-tip="Clear message"
+                  aria-label="Clear message"
                 >
-                  <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                  <svg
+                    class="w-4 h-4"
+                    fill="none"
+                    stroke="currentColor"
+                    viewBox="0 0 24 24"
+                  >
+                    <path
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                      stroke-width="2"
+                      d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"
+                    />
                   </svg>
                 </button>
               </div>
 
               <!-- Center: Config selectors and context usage (shown when either is available) -->
-              ${(selectConfigOptions.length > 0 || contextPct !== null) && html`
+              ${(selectConfigOptions.length > 0 || contextPct !== null) &&
+              html`
                 <div class="chat-input-model-selector">
-                  ${selectConfigOptions.map((configOpt) => html`
-                    <${ChatInputConfigSelect}
-                      key=${configOpt.id}
-                      configOption=${configOpt}
-                      onSetConfigOption=${onSetConfigOption}
-                      isStreaming=${isStreaming}
-                    />
-                  `)}
-                  ${contextPct !== null && html`
+                  ${selectConfigOptions.map(
+                    (configOpt) => html`
+                      <${ConfigOptionSelect}
+                        key=${configOpt.id}
+                        configOption=${configOpt}
+                        onSetConfigOption=${onSetConfigOption}
+                        isStreaming=${isStreaming}
+                        variant="toolbar"
+                        placement="top"
+                      />
+                    `,
+                  )}
+                  ${contextPct !== null &&
+                  html`
                     <span
-                      class="chat-input-context-pct"
-                      style=${"color: " + (contextPct > 80 ? "#ef4444" : contextPct > 50 ? "#f59e0b" : "#64748b")}
-                      title=${contextUsage?.size
-                        ? "Context: " + (contextUsage.used || 0).toLocaleString() + " / " + contextUsage.size.toLocaleString() + " tokens"
-                        : "Context: ~" + (tokenUsage?.input_tokens || 0).toLocaleString() + " input tokens"}
-                    >${contextPct}%</span>
+                      class="chat-input-context-pct tooltip tooltip-top"
+                      style=${"color: " +
+                      (contextPct > 80
+                        ? "#ef4444"
+                        : contextPct > 50
+                          ? "#f59e0b"
+                          : "#64748b")}
+                      data-tip=${contextUsage?.size
+                        ? "Context: " +
+                          (contextUsage.used || 0).toLocaleString() +
+                          " / " +
+                          contextUsage.size.toLocaleString() +
+                          " tokens"
+                        : "Context: ~" +
+                          (tokenUsage?.input_tokens || 0).toLocaleString() +
+                          " input tokens"}
+                      >${contextPct}%</span
+                    >
                   `}
                 </div>
               `}
@@ -2625,28 +3080,46 @@ ${activeUIPrompt.text || ""}</textarea
               <!-- Right action buttons: queue-toggle, prompts, enqueue, send/stop/lock -->
               <div class="chat-input-actions-right">
                 <!-- Queue toggle button: shown when queue has items OR dropdown is open -->
-                ${(queueLength > 0 || showQueueDropdown) && html`
-                <button
-                  type="button"
-                  onClick=${() => {
-                    if (!periodicEnabled && onToggleQueue) onToggleQueue();
-                  }}
-                  disabled=${periodicEnabled}
-                  data-queue-toggle
-                  class="chat-input-action relative"
-                  style="${showQueueDropdown && !periodicEnabled ? "background: #2563eb !important; color: white !important;" : ""}"
-                  title=${periodicEnabled
-                    ? "Queue disabled for periodic sessions"
-                    : `${queueLength}/${queueConfig.max_size} queued - Click to ${showQueueDropdown ? "hide" : "show"} queue`}
-                >
-                  <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 10h16M4 14h16M4 18h16" />
-                  </svg>
-                  ${!periodicEnabled && html`<span
-                    class="absolute -top-1 -right-1 pointer-events-none"
-                    style="display:flex;align-items:center;justify-content:center;min-width:16px;height:16px;padding:0 4px;border-radius:9999px;font-size:10px;font-weight:600;line-height:1;background:var(--mitto-accent,#dc2626);color:var(--mitto-accent-fg,#ffffff);box-sizing:border-box;"
-                  >${queueLength}</span>`}
-                </button>
+                ${(queueLength > 0 || showQueueDropdown) &&
+                html`
+                  <button
+                    type="button"
+                    onClick=${() => {
+                      if (!periodicConfigured && onToggleQueue) onToggleQueue();
+                    }}
+                    disabled=${periodicConfigured}
+                    data-queue-toggle
+                    class="chat-input-action relative tooltip tooltip-top"
+                    style="${showQueueDropdown && !periodicConfigured
+                      ? "background: #2563eb !important; color: white !important;"
+                      : ""}"
+                    data-tip=${periodicConfigured
+                      ? "Queue disabled for periodic sessions"
+                      : `${queueLength}/${queueConfig.max_size} queued - Click to ${showQueueDropdown ? "hide" : "show"} queue`}
+                    aria-label=${periodicConfigured
+                      ? "Queue disabled for periodic sessions"
+                      : `${queueLength}/${queueConfig.max_size} queued - Click to ${showQueueDropdown ? "hide" : "show"} queue`}
+                  >
+                    <svg
+                      class="w-4 h-4"
+                      fill="none"
+                      stroke="currentColor"
+                      viewBox="0 0 24 24"
+                    >
+                      <path
+                        stroke-linecap="round"
+                        stroke-linejoin="round"
+                        stroke-width="2"
+                        d="M4 6h16M4 10h16M4 14h16M4 18h16"
+                      />
+                    </svg>
+                    ${!periodicConfigured &&
+                    html`<span
+                      class="absolute -top-1 -right-1 pointer-events-none"
+                      style="display:flex;align-items:center;justify-content:center;min-width:16px;height:16px;padding:0 4px;border-radius:9999px;font-size:10px;font-weight:600;line-height:1;background:var(--mitto-accent,#dc2626);color:var(--mitto-accent-fg,#ffffff);box-sizing:border-box;"
+                      >${queueLength}</span
+                    >`}
+                  </button>
                 `}
 
                 <!-- Prompts Toggle Button -->
@@ -2657,11 +3130,13 @@ ${activeUIPrompt.text || ""}</textarea
                     ${showDropup &&
                     html`
                       <div
-                        class="absolute bottom-full right-0 mb-2 w-72 min-w-72 max-w-72 bg-mitto-surface-2 border border-mitto-border-2 rounded-lg overflow-hidden z-50 flex flex-col"
-                        style="max-height: 400px; box-shadow: 0 20px 40px rgba(0, 0, 0, 0.5), 0 8px 16px rgba(0, 0, 0, 0.4), 0 0 0 1px rgba(255, 255, 255, 0.1);"
+                        class="absolute bottom-full right-0 mb-2 bg-mitto-surface-2 border border-mitto-border-2 rounded-lg overflow-hidden z-50 flex flex-col"
+                        style="width: 20rem; min-width: 20rem; max-width: 20rem; max-height: 400px; box-shadow: 0 20px 40px rgba(0, 0, 0, 0.5), 0 8px 16px rgba(0, 0, 0, 0.4), 0 0 0 1px rgba(255, 255, 255, 0.1);"
                       >
                         <${PromptsMenu}
                           prompts=${predefinedPrompts}
+                          modelOption=${modelOption}
+                          modelProfiles=${modelProfiles}
                           filterText=${promptFilterText}
                           onFilterChange=${(value) => {
                             setPromptFilterText(value);
@@ -2671,19 +3146,25 @@ ${activeUIPrompt.text || ""}</textarea
                             // Prevent the event from bubbling to the textarea
                             e.stopPropagation();
                             if (e.key === "Escape") {
+                              e.preventDefault();
                               setShowDropup(false);
                               return;
                             }
                             if (e.key === "ArrowDown") {
                               e.preventDefault();
                               setPromptSelectedIndex((prev) =>
-                                Math.min(prev + 1, flatFilteredPrompts.length - 1),
+                                Math.min(
+                                  prev + 1,
+                                  flatFilteredPrompts.length - 1,
+                                ),
                               );
                               return;
                             }
                             if (e.key === "ArrowUp") {
                               e.preventDefault();
-                              setPromptSelectedIndex((prev) => Math.max(-1, prev - 1));
+                              setPromptSelectedIndex((prev) =>
+                                Math.max(-1, prev - 1),
+                              );
                               return;
                             }
                             if (e.key === "Enter") {
@@ -2708,21 +3189,42 @@ ${activeUIPrompt.text || ""}</textarea
                           sortMode=${promptSortMode}
                           selectedIndex=${promptSelectedIndex}
                           selectedItemRef=${selectedPromptItemRef}
-                          onSelect=${(prompt, e) =>
-                            handlePredefinedPrompt(prompt, e)}
+                          onSelect=${(prompt, e, opts) =>
+                            handlePredefinedPrompt(prompt, e, opts)}
                           showSourceBadge=${true}
                           shiftHeld=${shiftHeld}
+                          periodicToggle=${true}
                           placeholder="Filter prompts..."
                           emptyText="No matching prompts"
                           keyPrefix="chat-prompts"
-                          footer=${html`<span
-                            class="text-[10px] ${shiftHeld
-                              ? "text-mitto-accent"
-                              : "text-mitto-text-muted"}"
-                            >${shiftHeld
-                              ? "✏️ Will insert into editor"
-                              : "⇧ Hold Shift to edit before sending"}</span
-                          >`}
+                          footer=${html`<div
+                            class="flex items-center justify-between gap-2"
+                          >
+                            <span
+                              class="text-[10px] ${shiftHeld
+                                ? "text-mitto-accent"
+                                : "text-mitto-text-muted"}"
+                              >${shiftHeld
+                                ? "✏️ Will insert into editor"
+                                : "⇧ Hold Shift to edit before sending"}</span
+                            >
+                            ${onConfigurePrompts &&
+                            html`<button
+                              type="button"
+                              class="btn btn-ghost btn-square btn-sm tooltip tooltip-left"
+                              data-tip="Configure prompts"
+                              aria-label="Configure prompts"
+                              onMouseDown=${(e) => e.preventDefault()}
+                              onClick=${(e) => {
+                                e.stopPropagation();
+                                e.preventDefault();
+                                setShowDropup(false);
+                                onConfigurePrompts();
+                              }}
+                            >
+                              <${SettingsIcon} className="w-4 h-4" />
+                            </button>`}
+                          </div>`}
                         />
                       </div>
                     `}
@@ -2731,85 +3233,171 @@ ${activeUIPrompt.text || ""}</textarea
                       onClick=${handleTogglePrompts}
                       onMouseDown=${(e) => e.preventDefault()}
                       disabled=${isFullyDisabled || isReadOnly}
-                      class="chat-input-action"
-                      title="Insert predefined prompt"
+                      class="chat-input-action tooltip tooltip-top"
+                      data-tip="Insert predefined prompt"
+                      aria-label="Insert predefined prompt"
                     >
                       <svg
-                        class="w-4 h-4 transition-transform ${showDropup ? "rotate-180" : ""}"
+                        class="w-4 h-4 transition-transform ${showDropup
+                          ? "rotate-180"
+                          : ""}"
                         fill="none"
                         stroke="currentColor"
                         viewBox="0 0 24 24"
                       >
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 15l7-7 7 7" />
+                        <path
+                          stroke-linecap="round"
+                          stroke-linejoin="round"
+                          stroke-width="2"
+                          d="M5 15l7-7 7 7"
+                        />
                       </svg>
                     </button>
                   </div>
                 `}
 
                 <!-- Enqueue button: shown when streaming (so user can enqueue while agent works) -->
-                ${isStreaming && html`
-                <button
-                  type="button"
-                  onClick=${handleAddToQueueClick}
-                  disabled=${isFullyDisabled || (!text.trim() && !hasPendingAttachments) || isReadOnly || isImproving || periodicEnabled}
-                  class="chat-input-action"
-                  title=${periodicEnabled ? "Queue disabled for periodic sessions" : "Add to queue (⌘/Ctrl+Enter)"}
-                >
-                  <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4" />
-                  </svg>
-                </button>
+                ${isStreaming &&
+                html`
+                  <button
+                    type="button"
+                    onClick=${handleAddToQueueClick}
+                    disabled=${isFullyDisabled ||
+                    (!text.trim() && !hasPendingAttachments) ||
+                    isReadOnly ||
+                    isImproving ||
+                    periodicConfigured}
+                    class="chat-input-action tooltip tooltip-top"
+                    data-tip=${periodicConfigured
+                      ? "Queue disabled for periodic sessions"
+                      : "Add to queue (⌘/Ctrl+Enter)"}
+                    aria-label=${periodicConfigured
+                      ? "Queue disabled for periodic sessions"
+                      : "Add to queue (⌘/Ctrl+Enter)"}
+                  >
+                    <svg
+                      class="w-4 h-4"
+                      fill="none"
+                      stroke="currentColor"
+                      viewBox="0 0 24 24"
+                    >
+                      <path
+                        stroke-linecap="round"
+                        stroke-linejoin="round"
+                        stroke-width="2"
+                        d="M12 4v16m8-8H4"
+                      />
+                    </svg>
+                  </button>
                 `}
 
                 <!-- Send/Stop button -->
                 ${isStreaming
+                  ? html`
+                      <!-- Stop button -->
+                      <button
+                        type="button"
+                        onClick=${() => {
+                          if (hasActiveUIPrompt) {
+                            handleUIPromptAnswer("abort", "Abort");
+                          }
+                          onCancel();
+                        }}
+                        class="chat-input-action stop-active tooltip tooltip-top"
+                        data-tip=${hasActiveUIPrompt
+                          ? "Dismiss prompt and stop"
+                          : "Stop streaming"}
+                        aria-label=${hasActiveUIPrompt
+                          ? "Dismiss prompt and stop"
+                          : "Stop streaming"}
+                      >
+                        <svg
+                          class="w-4 h-4"
+                          fill="none"
+                          stroke="currentColor"
+                          viewBox="0 0 24 24"
+                        >
+                          <rect
+                            x="6"
+                            y="6"
+                            width="12"
+                            height="12"
+                            rx="2"
+                            stroke-width="2"
+                          />
+                        </svg>
+                      </button>
+                    `
+                  : isSending
                     ? html`
-                        <!-- Stop button -->
+                        <!-- Sending spinner -->
                         <button
                           type="button"
-                          onClick=${() => {
-                            if (hasActiveUIPrompt) {
-                              handleUIPromptAnswer("abort", "Abort");
-                            }
-                            onCancel();
-                          }}
-                          class="chat-input-action stop-active"
-                          title=${hasActiveUIPrompt ? "Dismiss prompt and stop" : "Stop streaming"}
+                          disabled
+                          class="chat-input-action"
                         >
-                          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <rect x="6" y="6" width="12" height="12" rx="2" stroke-width="2" />
-                          </svg>
+                          <span class="loading loading-spinner w-4 h-4"></span>
                         </button>
                       `
-                    : isSending
-                      ? html`
-                          <!-- Sending spinner -->
-                          <button type="button" disabled class="chat-input-action">
-                            <span class="loading loading-spinner w-4 h-4"></span>
-                          </button>
-                        `
-                      : html`
-                          <!-- Send button -->
-                          <button
-                            type="submit"
-                            disabled=${isFullyDisabled || isResuming || !acpReady || (!text.trim() && !hasPendingAttachments) || isReadOnly || isImproving || isQueueFull}
-                            class="chat-input-action ${(!text.trim() && !hasPendingAttachments) || isQueueFull ? "" : "send-active"} ${isQueueFull ? "queue-full" : ""}"
-                            style="${isQueueFull ? "background: #ea580c !important; color: white !important;" : ""}"
-                            title=${isQueueFull ? `Queue full (${queueConfig.max_size}/${queueConfig.max_size})` : "Send message"}
-                          >
-                            ${isQueueFull
-                              ? html`
-                                  <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M18.364 18.364A9 9 0 005.636 5.636m12.728 12.728A9 9 0 015.636 5.636m12.728 12.728L5.636 5.636" />
-                                  </svg>
-                                `
-                              : html`
-                                  <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M22 2L11 13M22 2l-7 20-4-9-9-4 20-7z" />
-                                  </svg>
-                                `}
-                          </button>
-                        `}
+                    : html`
+                        <!-- Send button -->
+                        <button
+                          type="submit"
+                          disabled=${isFullyDisabled ||
+                          isResuming ||
+                          !acpReady ||
+                          (!text.trim() && !hasPendingAttachments) ||
+                          isReadOnly ||
+                          isImproving ||
+                          isQueueFull}
+                          class="chat-input-action tooltip tooltip-top ${(!text.trim() &&
+                            !hasPendingAttachments) ||
+                          isQueueFull
+                            ? ""
+                            : "send-active"} ${isQueueFull ? "queue-full" : ""}"
+                          style="${isQueueFull
+                            ? "background: #ea580c !important; color: white !important;"
+                            : ""}"
+                          data-tip=${isQueueFull
+                            ? `Queue full (${queueConfig.max_size}/${queueConfig.max_size})`
+                            : "Send message"}
+                          aria-label=${isQueueFull
+                            ? `Queue full (${queueConfig.max_size}/${queueConfig.max_size})`
+                            : "Send message"}
+                        >
+                          ${isQueueFull
+                            ? html`
+                                <svg
+                                  class="w-4 h-4"
+                                  fill="none"
+                                  stroke="currentColor"
+                                  viewBox="0 0 24 24"
+                                >
+                                  <path
+                                    stroke-linecap="round"
+                                    stroke-linejoin="round"
+                                    stroke-width="2"
+                                    d="M18.364 18.364A9 9 0 005.636 5.636m12.728 12.728A9 9 0 015.636 5.636m12.728 12.728L5.636 5.636"
+                                  />
+                                </svg>
+                              `
+                            : html`
+                                <svg
+                                  class="w-4 h-4"
+                                  fill="none"
+                                  stroke="currentColor"
+                                  viewBox="0 0 24 24"
+                                >
+                                  <path
+                                    stroke-linecap="round"
+                                    stroke-linejoin="round"
+                                    stroke-width="2"
+                                    d="M22 2L11 13M22 2l-7 20-4-9-9-4 20-7z"
+                                  />
+                                </svg>
+                              `}
+                        </button>
+                      `}
               </div>
             </div>
           </div>
@@ -2826,4 +3414,3 @@ ${activeUIPrompt.text || ""}</textarea
     </form>
   `;
 }
-

@@ -1,0 +1,8 @@
+{"seq": 1, "type": "agent_message", "timestamp": "2026-01-25T14:30:57.000Z", "data": {"html": "```go\n"}}
+{"seq": 2, "type": "agent_message", "timestamp": "2026-01-25T14:30:57.050Z", "data": {"html": "func main() {\n"}}
+{"seq": 3, "type": "agent_message", "timestamp": "2026-01-25T14:30:57.100Z", "data": {"html": "    fmt.Println(\"Hello\")\n"}}
+{"seq": 4, "type": "agent_message", "timestamp": "2026-01-25T14:30:59.600Z", "data": {"html": "    // After 2.5s pause\n"}}
+{"seq": 5, "type": "agent_message", "timestamp": "2026-01-25T14:30:59.650Z", "data": {"html": "}\n"}}
+{"seq": 6, "type": "agent_message", "timestamp": "2026-01-25T14:30:59.700Z", "data": {"html": "```\n"}}
+{"seq": 7, "type": "agent_message", "timestamp": "2026-01-25T14:30:59.750Z", "data": {"html": "\nDone.\n"}}
+

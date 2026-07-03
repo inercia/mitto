@@ -6,7 +6,7 @@
 # in beads instead of ad-hoc markdown TODO lists.
 #
 # Activation conditions:
-#   - The `bd` command exists on PATH (commandExists CEL gate)
+#   - The `bd` command exists on PATH (CommandExists CEL gate)
 #
 # Throttling:
 #   - Fires on the first message, then re-runs periodically to keep the reminder fresh
@@ -17,7 +17,7 @@
 name: beads-track-tasks
 description: "Reminds the agent to track tasks and knowledge in beads (bd)"
 enabled: true
-enabledWhen: 'commandExists("bd")'
+enabledWhen: 'CommandExists("bd")'
 when:
   on: userPrompt
   match: first

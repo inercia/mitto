@@ -15,11 +15,7 @@ const { useState, useEffect, useRef } = window.preact;
  * @returns {{ pullDistance: number, refreshing: boolean }}
  */
 export function usePullToRefresh(ref, onRefresh, options = {}) {
-  const {
-    enabled = true,
-    threshold = 70,
-    resistance = 0.5,
-  } = options;
+  const { enabled = true, threshold = 70, resistance = 0.5 } = options;
 
   const [pullDistance, setPullDistance] = useState(0);
   const [refreshing, setRefreshing] = useState(false);

@@ -5,6 +5,7 @@ package config
 import (
 	"fmt"
 	"io/fs"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -15,25 +16,147 @@ import (
 )
 
 // PromptPeriodic declares that selecting this prompt should start a periodic
-// (recurring) conversation instead of a one-time one. Presence implies opt-in;
-// the fields provide sensible defaults for the schedule dialog.
+// (recurring) conversation instead of a one-time one. A prompt falls into one
+// of three categories:
+//   - No `periodic:` block at all → never periodic (unchanged one-time send).
+//   - `mode: always` (or `mode` absent) → always periodic; not user-toggleable.
+//   - `mode: optional` → user-choosable; `default` sets the initial per-send state.
 //
-// Example frontmatter:
+// Example frontmatter (always periodic, schedule-based):
 //
 //	periodic:
 //	  value: 1
 //	  unit: hours          # minutes | hours | days
 //	  at: "09:00"          # optional, only for days (UTC)
 //	  maxIterations: 10    # optional; 0/absent = unlimited scheduled runs
+//
+// Example frontmatter (always periodic, on-completion trigger):
+//
+//	periodic:
+//	  trigger: onCompletion  # fire after the agent stops responding
+//	  delay: 30              # seconds to wait after agent stops (clamped to floor at consumption)
+//	  maxIterations: 20      # optional safety cap
+//	  maxDuration: "4h"      # optional wall-clock cap; 0/absent = unlimited
+//
+// Example frontmatter (optionally periodic, off by default):
+//
+//	periodic:
+//	  mode: optional
+//	  default: false         # initial per-send toggle state; nil/absent => true (on)
+//	  trigger: onCompletion
+//	  delay: 30
 type PromptPeriodic struct {
-	// Value is the number of time units between runs (min 1).
+	// Value is the number of time units between runs (min 1). Used for trigger: schedule (default).
 	Value int `yaml:"value" json:"value"`
-	// Unit is the time unit: "minutes", "hours", or "days".
+	// Unit is the time unit: "minutes", "hours", or "days". Used for trigger: schedule (default).
 	Unit string `yaml:"unit" json:"unit"`
 	// At is the time of day in HH:MM format (UTC). Only meaningful for the "days" unit.
 	At string `yaml:"at,omitempty" json:"at,omitempty"`
 	// MaxIterations caps the number of scheduled runs when the conversation is made periodic (0 / absent = unlimited).
 	MaxIterations int `yaml:"maxIterations,omitempty" json:"maxIterations,omitempty"`
+	// Trigger selects how the periodic run fires: "" or "schedule" (default, frequency-based)
+	// vs "onCompletion" (fire after the agent stops responding + Delay seconds).
+	Trigger string `yaml:"trigger,omitempty" json:"trigger,omitempty"`
+	// Delay is the number of seconds to wait after the agent stops responding before the
+	// next run. Only meaningful for trigger: onCompletion. Clamped to a global minimum
+	// (default 5s) at the consumption boundary.
+	Delay int `yaml:"delay,omitempty" json:"delay,omitempty"`
+	// MaxDuration is an optional wall-clock cap (e.g. "2h", "30m"); 0/absent = unlimited.
+	// Parsed to seconds at the consumption boundary.
+	MaxDuration string `yaml:"maxDuration,omitempty" json:"maxDuration,omitempty"`
+	// Mode selects whether periodic is mandatory or user-toggleable: "always"
+	// (default when empty/absent) or "optional". Validated by ValidatePromptPeriodic.
+	Mode string `yaml:"mode,omitempty" json:"mode,omitempty"`
+	// Default is the initial per-send toggle state when Mode is "optional".
+	// nil/absent => true (on). Ignored (with a lint warning) when Mode is "always".
+	Default *bool `yaml:"default,omitempty" json:"default,omitempty"`
+}
+
+// PromptPeriodicModeAlways means the prompt is always periodic; not user-toggleable.
+// Also the implied mode when PromptPeriodic.Mode is empty.
+const PromptPeriodicModeAlways = "always"
+
+// PromptPeriodicModeOptional means periodic is user-choosable for this prompt;
+// PromptPeriodic.Default sets the initial per-send toggle state.
+const PromptPeriodicModeOptional = "optional"
+
+// knownPromptPeriodicModes enumerates valid PromptPeriodic.Mode values (besides "").
+var knownPromptPeriodicModes = map[string]bool{
+	PromptPeriodicModeAlways:   true,
+	PromptPeriodicModeOptional: true,
+}
+
+// ValidatePromptPeriodic validates the periodic block's mode/default combination.
+// Returns an error for unknown mode values. Emits a non-fatal warning when default
+// is set together with mode: always (or mode absent), since the value is ignored.
+func ValidatePromptPeriodic(promptName string, p *PromptPeriodic) error {
+	if p == nil {
+		return nil
+	}
+	if p.Mode != "" && !knownPromptPeriodicModes[p.Mode] {
+		return fmt.Errorf("prompt %q: periodic.mode %q is not valid (must be one of: always, optional)", promptName, p.Mode)
+	}
+	if p.Default != nil && p.Mode != PromptPeriodicModeOptional {
+		slog.Warn("prompt periodic.default is ignored unless periodic.mode is \"optional\"",
+			"prompt", promptName, "mode", p.Mode)
+	}
+	return nil
+}
+
+// PromptParameterCache configures value caching for a single prompt parameter.
+// When present, a successfully collected argument value may be reused within the
+// same conversation without re-prompting the user.
+//
+// Example YAML:
+//
+//	cache:
+//	  destination: memory   # only "memory" is valid in v1
+//	  ttl: 1h               # optional Go duration; absent => cached for conversation lifetime
+type PromptParameterCache struct {
+	// Destination is the cache backend. Only "memory" is valid in v1; future versions
+	// may introduce additional backends (e.g. "disk"). The value is validated at parse
+	// time against KnownPromptCacheDestinations.
+	Destination string `yaml:"destination" json:"destination"`
+	// TTL is an optional Go duration string (e.g. "1h", "30m") that limits how long
+	// the cached value is valid. When absent or empty, the value is cached for the
+	// entire conversation lifetime (no expiry).
+	TTL string `yaml:"ttl,omitempty" json:"ttl,omitempty"`
+}
+
+// PromptParameter declares a single named, typed parameter that the prompt body
+// references via Go-template {{ .Args.NAME }} or {{ Arg "NAME" "default" }} syntax.
+type PromptParameter struct {
+	// Name is the placeholder name used in the prompt body (e.g. "id" for {{ .Args.id }}).
+	Name string `yaml:"name" json:"name"`
+	// Type is one of the known parameter types (see KnownPromptParameterTypes).
+	Type string `yaml:"type" json:"type"`
+	// Description is an optional human-readable hint shown in the UI / MCP schema.
+	Description string `yaml:"description,omitempty" json:"description,omitempty"`
+	// MultiLine, when true, renders the input as a multi-line, resizable textarea
+	// instead of a single-line field. Only meaningful for the "text" type (see
+	// ValidatePromptParameters); ignored when collected outside the UI.
+	MultiLine bool `yaml:"multiLine,omitempty" json:"multiLine,omitempty"`
+	// Required, when explicitly set to true, signals that the parameter must be
+	// supplied before the prompt is dispatched. Defaults to unset (caller decides).
+	// Declarative defaults are handled by the Arg helper in the template body, not here.
+	Required *bool `yaml:"required,omitempty" json:"required,omitempty"`
+	// Default is the default value substituted when the parameter is not explicitly
+	// supplied. Required for processor parameters (mandatory); optional for prompt-file
+	// parameters (the Arg helper in the template body also provides per-site defaults).
+	Default string `yaml:"default,omitempty" json:"default,omitempty"`
+	// Cache, when non-nil, enables per-conversation value caching for this parameter.
+	// The collected argument value is stored so the UI can skip re-asking within the
+	// same conversation. See PromptParameterCache for the configuration schema.
+	Cache *PromptParameterCache `yaml:"cache,omitempty" json:"cache,omitempty"`
+}
+
+// PromptPreferredModel references a global model profile (Settings → Models) either
+// by profile name or by capability tag. Exactly one of ModelName / ModelTag is set per entry.
+type PromptPreferredModel struct {
+	// ModelName is the name of a Model profile (Config.Models) to resolve, e.g. "Opus".
+	ModelName string `yaml:"modelName,omitempty" json:"modelName,omitempty"`
+	// ModelTag selects any Model profile carrying this capability tag, e.g. "Cheap".
+	ModelTag string `yaml:"modelTag,omitempty" json:"modelTag,omitempty"`
 }
 
 // PromptFile represents a parsed YAML prompt file.
@@ -60,11 +183,6 @@ type PromptFile struct {
 	// combined, e.g. "conversation,group".
 	Menus string `yaml:"menus,omitempty" json:"menus,omitempty"`
 
-	// Requires is a comma-separated list of capability names this prompt needs
-	// (parsed like Menus). A menu only shows the prompt if the menu provides every
-	// capability the prompt requires. Empty means no requirements.
-	Requires string `yaml:"requires,omitempty" json:"requires,omitempty"`
-
 	// BackgroundColor is an optional hex color for the prompt button (e.g., "#E8F5E9").
 	BackgroundColor string `yaml:"backgroundColor,omitempty" json:"backgroundColor,omitempty"`
 
@@ -73,6 +191,10 @@ type PromptFile struct {
 
 	// Tags is an optional list of categorization tags for future use.
 	Tags []string `yaml:"tags,omitempty" json:"tags,omitempty"`
+
+	// Singleton, when true, declares that this prompt must not have multiple
+	// concurrent conversation instances (subject to find-or-route logic).
+	Singleton bool `yaml:"singleton,omitempty" json:"singleton,omitempty"`
 
 	// Enabled controls whether the prompt is active. Defaults to true if not specified.
 	Enabled *bool `yaml:"enabled,omitempty" json:"-"`
@@ -89,6 +211,17 @@ type PromptFile struct {
 	// Presence implies opt-in; the fields provide default values for the schedule
 	// dialog. The "at" field is in HH:MM UTC and is only valid for the "days" unit.
 	Periodic *PromptPeriodic `yaml:"periodic,omitempty" json:"periodic,omitempty"`
+
+	// PreferredModels is an ordered list of references to global model profiles
+	// (Settings → Models), by profile name or capability tag. The first entry that
+	// resolves to an available model wins. Empty/absent means use the session's
+	// baseline model. See PromptPreferredModel.
+	PreferredModels []PromptPreferredModel `yaml:"preferredModels,omitempty" json:"preferredModels,omitempty"`
+
+	// Parameters declares the named, typed inputs this prompt expects.
+	// Each entry must have a non-empty name and a recognised type (see KnownPromptParameterTypes).
+	// Callers substitute values via Go-template .Args.NAME or Arg helper in Content.
+	Parameters []PromptParameter `yaml:"parameters,omitempty" json:"parameters,omitempty"`
 
 	// Content is the prompt body text, stored under the "prompt" key in the YAML file.
 	Content string `yaml:"prompt" json:"prompt"`
@@ -111,11 +244,14 @@ func (p *PromptFile) IsSpecificToACP(acpServer string) bool {
 		return false
 	}
 
-	// Check enabledWhen CEL expression for acp.matchesServerType("serverType")
+	// Check enabledWhen CEL expression for ACP.MatchesServerType("serverType").
+	// We lowercase both sides for a case-insensitive prefix match: "acp.matchesserver"
+	// is a deliberate prefix of the lowercased canonical form "acp.matchesservertype",
+	// which still matches correctly while tolerating minor capitalisation variations.
 	if p.EnabledWhen != "" {
 		lowerExpr := strings.ToLower(p.EnabledWhen)
 		lowerServer := strings.ToLower(acpServer)
-		if strings.Contains(lowerExpr, "acp.matchesserver") && strings.Contains(lowerExpr, lowerServer) {
+		if strings.Contains(lowerExpr, "acp.matchesservertype") && strings.Contains(lowerExpr, lowerServer) {
 			return true
 		}
 	}
@@ -134,11 +270,14 @@ func (p *PromptFile) ToWebPrompt() WebPrompt {
 		Description:     p.Description,
 		Group:           p.Group,
 		Menus:           p.Menus,
-		Requires:        p.Requires,
+		Singleton:       p.Singleton,
 		Source:          PromptSourceFile,
 		EnabledWhen:     p.EnabledWhen,
 		Enabled:         p.Enabled,
 		Periodic:        p.Periodic,
+		PreferredModels: p.PreferredModels,
+		Parameters:      p.Parameters,
+		Tags:            p.Tags,
 	}
 }
 
@@ -177,6 +316,25 @@ func ParsePromptFile(path string, data []byte, modTime time.Time) (*PromptFile, 
 		}
 		prompt.Name = name
 	}
+
+	// Validate parameters block.
+	if err := ValidatePromptParameters(prompt.Menus, prompt.Parameters); err != nil {
+		return nil, fmt.Errorf("prompt file %s: %w", path, err)
+	}
+
+	// Validate periodic block (mode/default combination).
+	if err := ValidatePromptPeriodic(prompt.Name, prompt.Periodic); err != nil {
+		return nil, fmt.Errorf("prompt file %s: %w", path, err)
+	}
+
+	// Validate Go-template syntax + cond/when CEL literals (mitto-m7sb.6).
+	// Fast-path no-op for bodies without "{{". Fail-fast on invalid templates.
+	if err := PrecompileTemplateConds(prompt.Name, prompt.Content); err != nil {
+		return nil, fmt.Errorf("prompt file %s: %w", path, err)
+	}
+
+	// Warn (non-fatal) when the body still uses deprecated @mitto: tokens (mitto-m7sb.9).
+	WarnDeprecatedMittoVars(prompt.Name, prompt.Content)
 
 	return prompt, nil
 }
@@ -311,16 +469,16 @@ func GetPromptsDirModTime(dir string) time.Time {
 	return latest
 }
 
-// toolPatternCallRe matches tools.has*Pattern* function calls in CEL expressions.
-var toolPatternCallRe = regexp.MustCompile(`tools\.has(?:All|Any)?Patterns?\([^)]*`)
+// toolPatternCallRe matches Tools.Has*Pattern* function calls in CEL expressions.
+var toolPatternCallRe = regexp.MustCompile(`Tools\.Has(?:All|Any)?Patterns?\([^)]*`)
 
 // quotedStringRe matches double-quoted string literals.
 var quotedStringRe = regexp.MustCompile(`"([^"]+)"`)
 
 // extractToolPatternsFromCEL extracts tool glob patterns from enabledWhen CEL expressions.
-// Looks for tools.hasPattern("..."), tools.hasAllPatterns([...]), tools.hasAnyPattern([...]).
+// Looks for Tools.HasPattern("..."), Tools.HasAllPatterns([...]), Tools.HasAnyPattern([...]).
 func extractToolPatternsFromCEL(expr string) []string {
-	if expr == "" || !strings.Contains(expr, "tools.has") {
+	if expr == "" || !strings.Contains(expr, "Tools.Has") {
 		return nil
 	}
 	var patterns []string
@@ -337,7 +495,7 @@ func extractToolPatternsFromCEL(expr string) []string {
 }
 
 // CollectRequiredToolPatterns extracts all unique required tool patterns from a list of prompts.
-// Patterns come from enabledWhen CEL expressions (tools.hasPattern, tools.hasAllPatterns, etc.).
+// Patterns come from enabledWhen CEL expressions (Tools.HasPattern, Tools.HasAllPatterns, etc.).
 func CollectRequiredToolPatterns(prompts []*PromptFile) []string {
 	seen := make(map[string]bool)
 	var patterns []string
@@ -359,7 +517,7 @@ func CollectRequiredToolPatterns(prompts []*PromptFile) []string {
 }
 
 // CollectRequiredToolPatternsFromWebPrompts extracts all unique required tool patterns from WebPrompts.
-// Patterns come from enabledWhen CEL expressions (tools.hasPattern, tools.hasAllPatterns, etc.).
+// Patterns come from enabledWhen CEL expressions (Tools.HasPattern, Tools.HasAllPatterns, etc.).
 func CollectRequiredToolPatternsFromWebPrompts(prompts []WebPrompt) []string {
 	seen := make(map[string]bool)
 	var patterns []string

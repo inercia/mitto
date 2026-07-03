@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	"github.com/inercia/mitto/internal/web/middleware"
 )
 
 const (
@@ -23,7 +24,7 @@ const (
 type WSConn struct {
 	conn     *websocket.Conn
 	send     chan []byte
-	config   WebSocketSecurityConfig
+	config   middleware.WebSocketSecurityConfig
 	logger   *slog.Logger
 	clientIP string
 }
@@ -31,7 +32,7 @@ type WSConn struct {
 // WSConnConfig contains configuration for creating a new WSConn.
 type WSConnConfig struct {
 	Conn     *websocket.Conn
-	Config   WebSocketSecurityConfig
+	Config   middleware.WebSocketSecurityConfig
 	Logger   *slog.Logger
 	ClientIP string
 	SendSize int // Size of send channel buffer (default: 256)
@@ -45,7 +46,7 @@ func NewWSConn(cfg WSConnConfig) *WSConn {
 	}
 
 	// Configure the connection with security settings
-	configureWebSocketConn(cfg.Conn, cfg.Config)
+	middleware.ConfigureWebSocketConn(cfg.Conn, cfg.Config)
 
 	return &WSConn{
 		conn:     cfg.Conn,

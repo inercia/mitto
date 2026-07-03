@@ -6,7 +6,9 @@ processors:
       name: auggie-manage-rules
     - enabled: true
       name: claude-manage-memory
-    - enabled: true
+    - arguments:
+        PreferencesFile: .augment/rules/99-local.md
+      enabled: true
       name: memorize-preferences
     - enabled: true
       name: identify-user-data

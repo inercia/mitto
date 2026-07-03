@@ -121,6 +121,93 @@ test.describe("MCP UI form panel — compact sizing", () => {
     expect(overflow).toBeLessThanOrEqual(2);
   });
 
+  test("radio-group question renders on its own line above stacked options", async ({
+    page,
+  }) => {
+    const sessionId = await page.evaluate(
+      () => localStorage.getItem("mitto_last_session_id") || "",
+    );
+    expect(sessionId).not.toBe("");
+
+    // Inject a radio group using the imperfect markup agents commonly emit: the
+    // question is a standalone (inline-by-default) <strong> heading inside a
+    // <fieldset>, immediately followed by bare <input> options separated by
+    // <br> (NOT each wrapped in a <label>). Without the form CSS safety net the
+    // first option renders glued to the question line; the net forces such
+    // headings to display:block so the question sits on its own row.
+    const dispatched = await page.evaluate((sid) => {
+      const sockets = (window as any).__testWebSockets || [];
+      const formHTML = [
+        "<fieldset>",
+        "<strong id='q-head'>Scope of the drop:</strong>",
+        "<input type='radio' name='scope' value='a' id='opt-a' checked> Drop only MCP requests<br>",
+        "<input type='radio' name='scope' value='b' id='opt-b'> Drop by literal path match<br>",
+        "<input type='radio' name='scope' value='c' id='opt-c'> Blanket: drop all spans",
+        "</fieldset>",
+      ].join("\n");
+      const payload = JSON.stringify({
+        type: "ui_prompt",
+        data: {
+          session_id: sid,
+          request_id: "test-ui-form-radio-1",
+          prompt_type: "form",
+          title: "Radio group test",
+          question: "Radio group test",
+          form_html: formHTML,
+          timeout_seconds: 60,
+          blocking: true,
+        },
+      });
+      let count = 0;
+      for (const ws of sockets) {
+        if (
+          ws.readyState === WebSocket.OPEN &&
+          typeof ws.url === "string" &&
+          ws.url.includes(`/sessions/${sid}/ws`)
+        ) {
+          ws.dispatchEvent(new MessageEvent("message", { data: payload }));
+          count++;
+        }
+      }
+      return count;
+    }, sessionId);
+
+    expect(dispatched).toBeGreaterThan(0);
+
+    const panel = page.locator(".ui-prompt-panel");
+    await expect(panel).toBeVisible({ timeout: 5000 });
+    const head = panel.locator(".ui-form-content #q-head");
+    const optA = panel.locator(".ui-form-content #opt-a");
+    const optB = panel.locator(".ui-form-content #opt-b");
+    const optC = panel.locator(".ui-form-content #opt-c");
+    await expect(head).toBeVisible();
+    await expect(optA).toBeVisible();
+
+    // The safety net rule must make the standalone question heading block-level.
+    const headDisplay = await head.evaluate(
+      (el) => getComputedStyle(el).display,
+    );
+    expect(headDisplay).toBe("block");
+
+    // Geometry: the question heading occupies its own row — the first radio
+    // option starts at or below the heading's bottom (they do not share a line).
+    const headBox = await head.boundingBox();
+    const aBox = await optA.boundingBox();
+    const bBox = await optB.boundingBox();
+    const cBox = await optC.boundingBox();
+    expect(headBox).not.toBeNull();
+    expect(aBox).not.toBeNull();
+    expect(bBox).not.toBeNull();
+    expect(cBox).not.toBeNull();
+    // First option's top is at/after the heading's bottom (small tolerance for
+    // sub-pixel rounding) — i.e. the option is on a new line, not glued to the
+    // question.
+    expect(aBox!.y).toBeGreaterThanOrEqual(headBox!.y + headBox!.height - 4);
+    // All three options are stacked on separate rows.
+    expect(bBox!.y).toBeGreaterThan(aBox!.y + 4);
+    expect(cBox!.y).toBeGreaterThan(bBox!.y + 4);
+  });
+
   test("short textbox panel fits content instead of stretching to the cap", async ({
     page,
   }) => {

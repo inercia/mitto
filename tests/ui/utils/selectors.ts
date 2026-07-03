@@ -36,7 +36,7 @@ export const selectors = {
   // Send button is now icon-only (paper plane SVG), use type="submit" to identify it
   sendButton: 'button[type="submit"]',
   // Stop button appears when streaming (red square icon)
-  stopButton: 'button[title="Stop streaming"]',
+  stopButton: 'button[data-tip="Stop streaming"]',
   cancelButton: 'button:has-text("Cancel")',
 
   // Messages
@@ -57,7 +57,7 @@ export const selectors = {
   sessionsHeader: 'h2:has-text("Conversations")', // Alias for backwards compatibility
   // Session items are in containers with class "session-item-container"
   sessionsList: '.session-item-container',
-  newSessionButton: 'button[title="New Conversation"]',
+  newSessionButton: 'button[data-testid="new-conversation-btn"]',
   sessionItem: (name: string) =>
     `.session-item-container:has-text("${name}")`,
   // Active session: the clickable inner div gets a solid bg-mitto-accent fill when isActive
@@ -101,7 +101,7 @@ export const selectors = {
 
   // Message list — error bubble and retry button
   errorMessageBubble: '.alert.alert-error',
-  retryButton: 'button[title="Retry — resend the last prompt"]',
+  retryButton: 'button[aria-label="Retry — resend the last prompt"]',
 
   // Copy as Markdown
   // Per-message hover-reveal copy button (present on both user and agent bubbles)

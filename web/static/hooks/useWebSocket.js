@@ -24,6 +24,7 @@ import {
   cleanupExpiredPrompts,
   getMaxSeq,
   isStaleClientState,
+  resolveHasMoreAfterEventsLoaded,
 } from "../lib.js";
 
 import {
@@ -46,7 +47,8 @@ import {
   redirectToLogin,
 } from "../utils/csrf.js";
 
-import { apiUrl, wsUrl, getApiPrefix } from "../utils/api.js";
+import { getApiPrefix } from "../utils/api.js";
+import { endpoints } from "../utils/index.js";
 
 import { isNativeApp } from "../utils/native.js";
 
@@ -56,12 +58,12 @@ import {
   isSeqDuplicate as isSeqDuplicateUtil,
   markSeqSeen as markSeqSeenUtil,
   calculateReconnectDelay,
-
   createReconnectDebounceTracker,
   shouldDebounceReconnect,
   isReconnectLimitReached,
   checkSessionExists,
   isTerminalSessionError,
+  isReusedConversationResponse,
 } from "../utils/websocket.js";
 
 // =============================================================================
@@ -124,10 +126,15 @@ const STARTUP_STAGGER_MS = 300;
 // Debounce window for reconnectAllSessionsStaggered (ms).
 // Multiple macOS activation sources (NSWorkspaceDidWakeNotification,
 // NSWorkspaceScreensDidWakeNotification, applicationDidBecomeActive) can fire
-// 4–10 seconds apart for the same wake/focus event.  Collapsing these into a
-// single staggered reconnect prevents duplicate background-session timers from
-// firing concurrently and accumulating observers on BackgroundSession.
-const STAGGERED_RECONNECT_DEBOUNCE_MS = 5000;
+// 4–10 seconds apart for the same wake/focus event.  In addition, the native
+// "App became active" callback and the WKWebView visibilitychange "App became
+// visible" event are distinct triggers that both funnel here ~6 s apart for a
+// single wake.  Collapsing these into a single staggered reconnect prevents a
+// redundant active-session force-reconnect (which tears down a freshly opened
+// WebSocket) and avoids duplicate background-session timers accumulating
+// observers on BackgroundSession.  Matches APP_ACTIVATE_RESYNC_DEBOUNCE_MS
+// (one resync per wake) so the active+visible pair coalesces into one reconnect.
+const STAGGERED_RECONNECT_DEBOUNCE_MS = 15000;
 
 // Grace period (ms) before a background session's per-session WebSocket is
 // disconnected after it stops being the active session. Lazy-connect keeps only
@@ -202,9 +209,9 @@ async function checkAuthOrRedirect() {
   // Deduplicate: if an auth check is already in-flight, share that Promise
   // rather than firing a fresh HTTP request for each concurrent caller.
   if (!_authCheckInflight) {
-    _authCheckInflight = fetch(apiUrl("/api/config"), {
-      credentials: "same-origin",
-    })
+    // authFetch sends credentials: "include" (cross-origin / Tailscale safe) and
+    // routes 401s through the shared handleUnauthorized → redirectToLogin().
+    _authCheckInflight = authFetch(endpoints.config.get())
       .then((res) => ({ status: res.status, ok: res.ok }))
       .finally(() => {
         _authCheckInflight = null;
@@ -252,9 +259,9 @@ async function checkAuthOrRedirect() {
 async function checkAuthWithRetry(maxRetries = 3, retryDelay = 500) {
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     try {
-      const response = await fetch(apiUrl("/api/config"), {
-        credentials: "same-origin",
-      });
+      // authFetch sends credentials: "include" (cross-origin / Tailscale safe) and
+      // routes 401s through the shared handleUnauthorized → redirectToLogin().
+      const response = await authFetch(endpoints.config.get());
 
       // Got a response - check if authenticated
       if (response.status === 401) {
@@ -316,14 +323,22 @@ export function useWebSocket({ onActiveSessionRemovedRef } = {}) {
 
   const [eventsConnected, setEventsConnected] = useState(false);
 
-  // True while a session-creation request is in-flight or an auto-retry is pending.
-  // Used to show a spinner on the "New Conversation" button and prevent duplicate clicks.
-  const [isCreatingSession, setIsCreatingSession] = useState(false);
+  // Set of workingDir strings with an in-flight session-creation request or pending auto-retry.
+  // Used to show a per-folder spinner on the "+" button and prevent duplicate clicks.
+  const [creatingWorkingDirs, setCreatingWorkingDirs] = useState(
+    () => new Set(),
+  );
+
+  // Derived: true if ANY folder has an in-flight create (for non-folder consumers).
+  const isCreatingSession = creatingWorkingDirs.size > 0;
 
   // Multi-session state: { sessionId: { messages: [], info: {}, lastSeq: 0, isStreaming: false, ws: WebSocket } }
   const [sessions, setSessions] = useState({});
   const [activeSessionId, setActiveSessionId] = useState(null);
   const [storedSessions, setStoredSessions] = useState([]); // Sessions from the store
+
+  // Global MCP server bind status from the `connected` message: { available, reason, port } | null
+  const [mcpStatus, setMcpStatus] = useState(null);
 
   // Workspaces state: list of configured workspaces from server
   const [workspaces, setWorkspaces] = useState([]);
@@ -771,7 +786,7 @@ export function useWebSocket({ onActiveSessionRemovedRef } = {}) {
   // Fetch workspaces and ACP servers
   const fetchWorkspaces = useCallback(async () => {
     try {
-      const response = await authFetch(apiUrl("/api/workspaces"));
+      const response = await authFetch(endpoints.workspaces.list());
       if (response.ok) {
         const data = await response.json();
         setWorkspaces(data.workspaces || []);
@@ -791,7 +806,7 @@ export function useWebSocket({ onActiveSessionRemovedRef } = {}) {
   const addWorkspace = useCallback(
     async (workingDir, acpServer) => {
       try {
-        const response = await secureFetch(apiUrl("/api/workspaces"), {
+        const response = await secureFetch(endpoints.workspaces.create(), {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
@@ -801,8 +816,14 @@ export function useWebSocket({ onActiveSessionRemovedRef } = {}) {
         });
 
         if (!response.ok) {
-          const errorText = await response.text();
-          return { error: errorText };
+          let msg = "Failed to add workspace";
+          try {
+            const data = await response.json();
+            msg = data.error?.message || msg;
+          } catch (_e) {
+            /* keep default */
+          }
+          return { error: msg };
         }
 
         const data = await response.json();
@@ -822,7 +843,7 @@ export function useWebSocket({ onActiveSessionRemovedRef } = {}) {
     async (workingDir) => {
       try {
         const response = await secureFetch(
-          apiUrl(`/api/workspaces?dir=${encodeURIComponent(workingDir)}`),
+          endpoints.workspaces.list({ working_dir: workingDir }),
           {
             method: "DELETE",
           },
@@ -834,10 +855,11 @@ export function useWebSocket({ onActiveSessionRemovedRef } = {}) {
           if (contentType && contentType.includes("application/json")) {
             const errorData = await response.json();
             const error = new Error(
-              errorData.message || "Failed to remove workspace",
+              errorData.error?.message || "Failed to remove workspace",
             );
-            error.code = errorData.error;
-            error.conversationCount = errorData.conversation_count;
+            error.code = errorData.error?.code;
+            error.conversationCount =
+              errorData.error?.details?.conversation_count;
             throw error;
           }
           const errorText = await response.text();
@@ -862,7 +884,7 @@ export function useWebSocket({ onActiveSessionRemovedRef } = {}) {
     }
     try {
       const response = await authFetch(
-        apiUrl(`/api/sessions/${activeSessionId}/queue`),
+        endpoints.sessions.queue(activeSessionId),
       );
       if (response.ok) {
         const data = await response.json();
@@ -891,7 +913,7 @@ export function useWebSocket({ onActiveSessionRemovedRef } = {}) {
       if (!activeSessionId || !messageId) return false;
       try {
         const response = await secureFetch(
-          apiUrl(`/api/sessions/${activeSessionId}/queue/${messageId}`),
+          endpoints.sessions.queueMsg(activeSessionId, messageId),
           { method: "DELETE" },
         );
         if (response.ok || response.status === 204) {
@@ -913,7 +935,8 @@ export function useWebSocket({ onActiveSessionRemovedRef } = {}) {
   const addToQueue = useCallback(
     async (message, imageIds = [], fileIds = [], opts = {}) => {
       const { promptName } = opts;
-      if (!activeSessionId || (!message?.trim() && !promptName)) return { success: false };
+      if (!activeSessionId || (!message?.trim() && !promptName))
+        return { success: false };
       try {
         const body = {
           message: message?.trim() || "",
@@ -922,7 +945,7 @@ export function useWebSocket({ onActiveSessionRemovedRef } = {}) {
         };
         if (promptName) body.prompt_name = promptName;
         const response = await secureFetch(
-          apiUrl(`/api/sessions/${activeSessionId}/queue`),
+          endpoints.sessions.queue(activeSessionId),
           {
             method: "POST",
             headers: { "Content-Type": "application/json" },
@@ -941,8 +964,8 @@ export function useWebSocket({ onActiveSessionRemovedRef } = {}) {
           const data = await response.json().catch(() => ({}));
           return {
             success: false,
-            error: data.error || "queue_full",
-            message: data.message,
+            error: data.error?.code || data.error || "queue_full",
+            message: data.error?.message || data.message,
           };
         }
         console.error("Failed to add to queue:", response.status);
@@ -962,7 +985,7 @@ export function useWebSocket({ onActiveSessionRemovedRef } = {}) {
       if (direction !== "up" && direction !== "down") return false;
       try {
         const response = await secureFetch(
-          apiUrl(`/api/sessions/${activeSessionId}/queue/${messageId}/move`),
+          endpoints.sessions.queueMove(activeSessionId, messageId),
           {
             method: "POST",
             headers: { "Content-Type": "application/json" },
@@ -1022,57 +1045,63 @@ export function useWebSocket({ onActiveSessionRemovedRef } = {}) {
     }
   }, [storedSessions]);
 
+  // Stable reference to the active session's entry. setSessions() preserves
+  // unchanged session entries by reference, so this only changes identity when
+  // the ACTIVE session's own data changes — not when a background session ticks.
+  // Deriving active-session values from this (instead of the whole `sessions`
+  // map) keeps their references stable across background streaming updates.
+  const activeSession = activeSessionId ? sessions[activeSessionId] : null;
+
   // Get current session's messages
   const messages = useMemo(() => {
-    if (!activeSessionId || !sessions[activeSessionId]) return [];
-    return sessions[activeSessionId].messages || [];
-  }, [sessions, activeSessionId]);
+    return activeSession?.messages || [];
+  }, [activeSession]);
 
   // Get current session info (enhanced with message count)
   const sessionInfo = useMemo(() => {
-    if (!activeSessionId || !sessions[activeSessionId]) return null;
-    const session = sessions[activeSessionId];
-    const info = session.info || {};
+    if (!activeSession) return null;
+    const info = activeSession.info || {};
     // Include message count from the messages array
     return {
       ...info,
-      messageCount: session.messages?.length || 0,
+      messageCount: activeSession.messages?.length || 0,
     };
-  }, [sessions, activeSessionId]);
+  }, [activeSession]);
 
   // Get streaming state for active session
   const isStreaming = useMemo(() => {
-    if (!activeSessionId || !sessions[activeSessionId]) return false;
-    return sessions[activeSessionId].isStreaming || false;
-  }, [sessions, activeSessionId]);
+    return activeSession?.isStreaming || false;
+  }, [activeSession]);
+
+  // Get "agent is still working" heartbeat state for active session (transient,
+  // set by the agent_working WS message, cleared on prompt_complete).
+  const agentWorking = useMemo(() => {
+    return activeSession?.agentWorking || null;
+  }, [activeSession]);
 
   // Check if the ACP agent is running for the active session.
   // When false, the session exists but the agent process hasn't started yet
   // (e.g., during resume). Prompts should be blocked until acp_started arrives.
   const isRunning = useMemo(() => {
-    if (!activeSessionId || !sessions[activeSessionId]) return false;
-    return sessions[activeSessionId].isRunning ?? false;
-  }, [sessions, activeSessionId]);
+    return activeSession?.isRunning ?? false;
+  }, [activeSession]);
 
   // Check if active session has more messages to load
   const hasMoreMessages = useMemo(() => {
-    if (!activeSessionId || !sessions[activeSessionId]) return false;
-    return sessions[activeSessionId].hasMoreMessages || false;
-  }, [sessions, activeSessionId]);
+    return activeSession?.hasMoreMessages || false;
+  }, [activeSession]);
 
   // Check if active session is currently loading more messages
   const isLoadingMore = useMemo(() => {
-    if (!activeSessionId || !sessions[activeSessionId]) return false;
-    return sessions[activeSessionId].isLoadingMore || false;
-  }, [sessions, activeSessionId]);
+    return activeSession?.isLoadingMore || false;
+  }, [activeSession]);
 
   // Check if active session has reached the message limit
   // When true, we've loaded MAX_MESSAGES and can't load more to protect memory
   const hasReachedLimit = useMemo(() => {
-    if (!activeSessionId || !sessions[activeSessionId]) return false;
-    const messageCount = sessions[activeSessionId].messages?.length || 0;
+    const messageCount = activeSession?.messages?.length || 0;
     return messageCount >= MAX_MESSAGES;
-  }, [sessions, activeSessionId]);
+  }, [activeSession]);
 
   // Extract action buttons reference — stable across streaming updates.
   // During streaming, setSessions() spreads the session object which copies
@@ -1185,8 +1214,8 @@ export function useWebSocket({ onActiveSessionRemovedRef } = {}) {
   // Derive configOptions from the active session's info (per-session, not global)
   const configOptions = useMemo(() => {
     if (!activeSessionId) return [];
-    return sessions[activeSessionId]?.info?.config_options || [];
-  }, [activeSessionId, sessions]);
+    return activeSession?.info?.config_options || [];
+  }, [activeSession, activeSessionId]);
 
   // Handle messages from per-session WebSocket
   const handleSessionMessage = useCallback((sessionId, msg) => {
@@ -1213,6 +1242,11 @@ export function useWebSocket({ onActiveSessionRemovedRef } = {}) {
         // Update queue configuration from server
         if (msg.data.queue_config) {
           setQueueConfig(msg.data.queue_config);
+        }
+
+        // Global MCP bind status (same for all sessions); drives a persistent badge.
+        if (msg.data.mcp) {
+          setMcpStatus(msg.data.mcp);
         }
 
         // Update available slash commands from agent
@@ -1265,11 +1299,33 @@ export function useWebSocket({ onActiveSessionRemovedRef } = {}) {
                   msg.data.archived_at ?? session.info?.archived_at ?? null,
                 // Preserve archive_pending flag from existing session info
                 archive_pending: session.info?.archive_pending || false,
-                // Periodic enabled state from server
+                // Periodic state from server:
+                // periodic_configured: config exists → drives editor UI + reconnect long-lived check
+                // periodic_enabled: runs active → drives sidebar category + clock icon
+                periodic_configured:
+                  msg.data.periodic_configured ??
+                  session.info?.periodic_configured ??
+                  false,
                 periodic_enabled:
                   msg.data.periodic_enabled ??
                   session.info?.periodic_enabled ??
                   false,
+                periodic_stopped_reason:
+                  msg.data.periodic_stopped_reason ??
+                  session.info?.periodic_stopped_reason ??
+                  null,
+                periodic_trigger:
+                  msg.data.periodic_trigger ??
+                  session.info?.periodic_trigger ??
+                  null,
+                periodic_delay_seconds:
+                  msg.data.periodic_delay_seconds ??
+                  session.info?.periodic_delay_seconds ??
+                  null,
+                periodic_max_duration_seconds:
+                  msg.data.periodic_max_duration_seconds ??
+                  session.info?.periodic_max_duration_seconds ??
+                  null,
                 workspace_uuid: msg.data.workspace_uuid ?? null,
                 // ACP readiness: false until acp_started event or explicit true in connected msg
                 acp_ready: msg.data.acp_ready ?? false,
@@ -1277,7 +1333,8 @@ export function useWebSocket({ onActiveSessionRemovedRef } = {}) {
                 gc_suspended:
                   msg.data.gc_suspended ?? session.info?.gc_suspended ?? false,
                 // Linked beads issue ID (always include, even if empty, so frontend can clear the control)
-                beads_issue: msg.data.beads_issue ?? session.info?.beads_issue ?? "",
+                beads_issue:
+                  msg.data.beads_issue ?? session.info?.beads_issue ?? "",
                 // Processor stats
                 processor_count:
                   msg.data.processor_count ??
@@ -1813,6 +1870,7 @@ export function useWebSocket({ onActiveSessionRemovedRef } = {}) {
               messages,
               isStreaming: false,
               activeUIPrompt: null,
+              agentWorking: null,
               // Update processor stats from prompt_complete
               info: {
                 ...session.info,
@@ -2403,11 +2461,23 @@ export function useWebSocket({ onActiveSessionRemovedRef } = {}) {
             ? lastSeq
             : Math.max(session.lastLoadedSeq || 0, lastSeq, maxSeq);
 
+          // has_more from a forward sync (after_seq) only reflects whether events
+          // exist older than the fetched delta — NOT whether older history is still
+          // missing from memory. resolveHasMoreAfterEventsLoaded keeps has_more
+          // authoritative only on replace (initial load / stale recovery) or
+          // prepend (load more), and preserves the existing flag on a merge-sync.
+          // See lib.js for the full rationale.
           const updatedSession = {
             ...session,
             messages: limitMessages(messages),
             isStreaming: isPrompting,
-            hasMoreMessages: hasMore,
+            hasMoreMessages: resolveHasMoreAfterEventsLoaded({
+              isPrepend,
+              isStaleClient,
+              existingMessageCount: session.messages.length,
+              serverHasMore: hasMore,
+              existingHasMore: session.hasMoreMessages,
+            }),
             // For stale client recovery, reset firstLoadedSeq to server's value
             firstLoadedSeq: isPrepend
               ? firstSeq
@@ -2546,6 +2616,8 @@ export function useWebSocket({ onActiveSessionRemovedRef } = {}) {
           sender_id,
           is_prompting,
           prompt_name,
+          argument_count,
+          meta,
         } = msg.data;
         console.log("user_prompt received:", {
           seq,
@@ -2727,6 +2799,8 @@ export function useWebSocket({ onActiveSessionRemovedRef } = {}) {
               fromOtherClient: true,
               seq, // Include seq for ordering and deduplication
               promptName: prompt_name || undefined,
+              argumentCount: argument_count || undefined,
+              meta: meta || undefined, // Generic event metadata conduit (experimental annotations only)
             };
             // Add image references if present, constructing full image objects
             // with URLs so the Message component can render them immediately
@@ -2734,7 +2808,7 @@ export function useWebSocket({ onActiveSessionRemovedRef } = {}) {
             if (image_ids && image_ids.length > 0) {
               userMessage.images = image_ids.map((id) => ({
                 id,
-                url: `${getApiPrefix()}/api/sessions/${sessionId}/images/${id}`,
+                url: endpoints.sessions.image(sessionId, id),
                 name: id,
               }));
             }
@@ -2751,6 +2825,41 @@ export function useWebSocket({ onActiveSessionRemovedRef } = {}) {
             return { ...prev, [sessionId]: { ...session, messages } };
           });
         }
+        break;
+      }
+
+      case "session_change": {
+        const { seq, max_seq, kind, label, value, previous_value, items } =
+          msg.data;
+        if (max_seq) {
+          checkAndFillGap(sessionId, max_seq, seq);
+        }
+        updateLastKnownSeq(sessionId, Math.max(seq || 0, max_seq || 0));
+        if (seq) markSeqSeen(sessionId, seq);
+        setSessions((prev) => {
+          const session = prev[sessionId];
+          if (!session) return prev;
+          // Dedup by seq: skip if a message with this seq already exists.
+          if (seq && (session.messages || []).some((m) => m.seq === seq))
+            return prev;
+          const newMessage = {
+            role: ROLE_SYSTEM,
+            kind,
+            label,
+            value,
+            previousValue: previous_value,
+            items,
+            seq,
+            timestamp: Date.now(),
+          };
+          return {
+            ...prev,
+            [sessionId]: {
+              ...session,
+              messages: [...(session.messages || []), newMessage],
+            },
+          };
+        });
         break;
       }
 
@@ -3121,6 +3230,29 @@ export function useWebSocket({ onActiveSessionRemovedRef } = {}) {
         break;
       }
 
+      case "agent_working": {
+        // Transient "agent is still working" heartbeat during a prolonged silent
+        // stretch of a prompt (e.g. a long tool call streaming no output). Does
+        // NOT touch isStreaming — it only annotates the current streaming turn
+        // with idle time / in-flight tool title so the UI can show honest progress.
+        setSessions((prev) => {
+          const session = prev[sessionId];
+          if (!session) return prev;
+          return {
+            ...prev,
+            [sessionId]: {
+              ...session,
+              agentWorking: {
+                idleMs: msg.data.idle_ms || 0,
+                toolTitle: msg.data.tool_title || "",
+                receivedAt: Date.now(),
+              },
+            },
+          };
+        });
+        break;
+      }
+
       case "config_option_changed":
         // Config option changed (by user or agent)
         // Update the current_value for the specified config option in session info
@@ -3165,7 +3297,7 @@ export function useWebSocket({ onActiveSessionRemovedRef } = {}) {
         return sessionWsRefs.current[sessionId];
       }
 
-      const ws = new WebSocket(wsUrl(`/api/sessions/${sessionId}/ws`));
+      const ws = new WebSocket(endpoints.sessions.ws(sessionId));
       const wsId = Math.random().toString(36).substring(2, 8); // Debug ID for this connection
       ws._debugId = wsId;
 
@@ -3440,12 +3572,14 @@ export function useWebSocket({ onActiveSessionRemovedRef } = {}) {
           //    The counter resets on the next successful onopen, and is cleared
           //    when the user explicitly switches to this session (switchSession).
 
-          // Check if this is a periodic session — they're long-lived by design
+          // Check if this conversation has a periodic config — those are long-lived by design
           // and should always be allowed to reconnect regardless of age.
+          // Use periodic_configured (config exists) not periodic_enabled (runs active),
+          // so paused/draft periodic conversations still count as long-lived.
           const isPeriodic =
-            sessionsRef.current[sessionId]?.info?.periodic_enabled ||
+            sessionsRef.current[sessionId]?.info?.periodic_configured ||
             storedSessionsRef.current?.find((s) => s.session_id === sessionId)
-              ?.periodic_enabled;
+              ?.periodic_configured;
 
           const sessionAgeMs = getSessionAgeMs(sessionId);
           const isTooOld =
@@ -3555,7 +3689,7 @@ export function useWebSocket({ onActiveSessionRemovedRef } = {}) {
   // Fetch stored sessions
   const fetchStoredSessions = useCallback(async () => {
     try {
-      const res = await authFetch(apiUrl("/api/sessions"));
+      const res = await authFetch(endpoints.sessions.list());
       const data = await res.json();
       // Update global working_dir map for each session
       (data || []).forEach((s) => {
@@ -3574,6 +3708,7 @@ export function useWebSocket({ onActiveSessionRemovedRef } = {}) {
         // amber "Not connected" dot even though they are perfectly available.
         isActive: !s.archived,
         isWaitingForChildren: s.is_waiting_for_children || false,
+        isStreaming: s.is_streaming || false,
       }));
       setStoredSessions(mapped);
       return mapped;
@@ -3749,9 +3884,7 @@ export function useWebSocket({ onActiveSessionRemovedRef } = {}) {
       // Load session events from API (with limit for faster initial load)
       try {
         // Get session metadata first to know total event count and working_dir
-        const metaResponse = await authFetch(
-          apiUrl(`/api/sessions/${sessionId}`),
-        );
+        const metaResponse = await authFetch(endpoints.sessions.get(sessionId));
         const meta = metaResponse.ok ? await metaResponse.json() : {};
 
         // If we already have messages, just update the info with working_dir
@@ -3856,9 +3989,14 @@ export function useWebSocket({ onActiveSessionRemovedRef } = {}) {
           setGroupExpanded(parentKey, true);
 
           // Also expand the folder containing the parent session (unscoped key).
-          const folderKey = resolveFolderKey(msg.data, storedSessionsRef.current, msg.data.working_dir);
+          const folderKey = resolveFolderKey(
+            msg.data,
+            storedSessionsRef.current,
+            msg.data.working_dir,
+          );
           if (folderKey) setGroupExpanded(folderKey, true);
-          if (msg.data.archived && folderKey) setGroupExpanded(`archived:${folderKey}`, true);
+          if (msg.data.archived && folderKey)
+            setGroupExpanded(`archived:${folderKey}`, true);
         }
 
         setStoredSessions((prev) => {
@@ -4143,18 +4281,26 @@ export function useWebSocket({ onActiveSessionRemovedRef } = {}) {
         console.log(
           `[global] Session periodic state changed: ${msg.data.session_id} -> configured=${msg.data.periodic_configured}, enabled=${msg.data.periodic_enabled}`,
         );
-        // Update in stored sessions (for sidebar display - uses periodic_configured for UI)
-        // Also store next_scheduled_at and frequency for progress indicator
+        // Update in stored sessions:
+        // periodic_enabled: runs active → sidebar category + clock icon
+        // periodic_configured: config exists → editor UI mode
         setStoredSessions((prev) =>
           prev.map((s) =>
             s.session_id === msg.data.session_id
               ? {
                   ...s,
-                  periodic_enabled: msg.data.periodic_configured,
+                  periodic_enabled: msg.data.periodic_enabled,
+                  periodic_configured: msg.data.periodic_configured,
                   next_scheduled_at: msg.data.next_scheduled_at || null,
                   periodic_frequency: msg.data.frequency || null,
                   periodic_iteration_count: msg.data.iteration_count ?? null,
                   periodic_max_iterations: msg.data.max_iterations ?? null,
+                  periodic_stopped_reason:
+                    msg.data.periodic_stopped_reason || null,
+                  periodic_trigger: msg.data.trigger ?? null,
+                  periodic_delay_seconds: msg.data.delay_seconds ?? null,
+                  periodic_max_duration_seconds:
+                    msg.data.max_duration_seconds ?? null,
                 }
               : s,
           ),
@@ -4169,12 +4315,20 @@ export function useWebSocket({ onActiveSessionRemovedRef } = {}) {
               ...session,
               info: {
                 ...session.info,
-                // Use periodic_configured for UI mode (shows frequency panel, lock/unlock buttons)
-                periodic_enabled: msg.data.periodic_configured,
+                // periodic_enabled: runs active → sidebar category + clock icon
+                periodic_enabled: msg.data.periodic_enabled,
+                // periodic_configured: config exists → editor UI mode
+                periodic_configured: msg.data.periodic_configured,
                 next_scheduled_at: msg.data.next_scheduled_at || null,
                 periodic_frequency: msg.data.frequency || null,
                 periodic_iteration_count: msg.data.iteration_count ?? null,
                 periodic_max_iterations: msg.data.max_iterations ?? null,
+                periodic_stopped_reason:
+                  msg.data.periodic_stopped_reason || null,
+                periodic_trigger: msg.data.trigger ?? null,
+                periodic_delay_seconds: msg.data.delay_seconds ?? null,
+                periodic_max_duration_seconds:
+                  msg.data.max_duration_seconds ?? null,
               },
             },
           };
@@ -4194,6 +4348,7 @@ export function useWebSocket({ onActiveSessionRemovedRef } = {}) {
               freshContext: msg.data.fresh_context,
               iterationCount: msg.data.iteration_count,
               maxIterations: msg.data.max_iterations,
+              stoppedReason: msg.data.periodic_stopped_reason || null,
             },
           }),
         );
@@ -4357,6 +4512,24 @@ export function useWebSocket({ onActiveSessionRemovedRef } = {}) {
         );
         break;
 
+      case "beads_cleanup_progress":
+        if (msg.data) {
+          window.dispatchEvent(
+            new CustomEvent("mitto:beads_cleanup_progress", {
+              detail: msg.data,
+            }),
+          );
+        }
+        break;
+
+      case "beads_changed":
+        if (msg.data) {
+          window.dispatchEvent(
+            new CustomEvent("mitto:beads_changed", { detail: msg.data }),
+          );
+        }
+        break;
+
       case "mcp_tools_unavailable":
         // Server notifies that Mitto MCP tools are not available in the ACP agent.
         // Dispatches an event so UI components can show an installation prompt.
@@ -4393,7 +4566,7 @@ export function useWebSocket({ onActiveSessionRemovedRef } = {}) {
 
   // Connect to global events WebSocket
   const connectToEvents = useCallback(() => {
-    const socket = new WebSocket(wsUrl("/api/events"));
+    const socket = new WebSocket(endpoints.events.ws());
 
     socket.onopen = () => {
       setEventsConnected(true);
@@ -4425,7 +4598,8 @@ export function useWebSocket({ onActiveSessionRemovedRef } = {}) {
 
           const lastSessionId = getLastActiveSessionId();
           const lastSession =
-            lastSessionId && sessions.find((s) => s.session_id === lastSessionId);
+            lastSessionId &&
+            sessions.find((s) => s.session_id === lastSessionId);
 
           // Lazy-connect: only the active session opens a per-session WebSocket
           // at startup. Background sessions are NOT pre-connected — they connect
@@ -4533,24 +4707,31 @@ export function useWebSocket({ onActiveSessionRemovedRef } = {}) {
         _sessionCreationRetryTimer = null;
       }
 
-      // Mark creation as in-flight so the button shows a spinner.
-      setIsCreatingSession(true);
+      // Support both old (name string) and new (options object) signatures
+      const opts = typeof options === "string" ? { name: options } : options;
+      // Capture the working dir early so all clear sites use the same value.
+      const wd = opts.workingDir || "";
+
+      // Mark creation as in-flight so the targeted folder button shows a spinner.
+      setCreatingWorkingDirs((prev) => {
+        const s = new Set(prev);
+        s.add(wd);
+        return s;
+      });
 
       try {
-        // Support both old (name string) and new (options object) signatures
-        const opts = typeof options === "string" ? { name: options } : options;
-
         const sessionBody = {
           name: opts.name || "",
-          working_dir: opts.workingDir || "",
+          working_dir: wd,
           acp_server: opts.acpServer || "",
           beads_issue: opts.beadsIssue || "",
+          origin_prompt_name: opts.originPromptName || "",
           initial_prompt_name: opts.initialPromptName || "",
         };
         if (opts.arguments && Object.keys(opts.arguments).length > 0) {
           sessionBody.arguments = opts.arguments;
         }
-        const response = await secureFetch(apiUrl("/api/sessions"), {
+        const response = await secureFetch(endpoints.sessions.create(), {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(sessionBody),
@@ -4563,8 +4744,9 @@ export function useWebSocket({ onActiveSessionRemovedRef } = {}) {
           if (contentType && contentType.includes("application/json")) {
             const errorData = await response.json();
             console.error("Failed to create session:", errorData);
-            errorCode = errorData.error;
-            errorMessage = errorData.message || "Failed to create session";
+            errorCode = errorData.error?.code;
+            errorMessage =
+              errorData.error?.message || "Failed to create session";
           } else {
             const errorText = await response.text();
             console.error("Failed to create session:", errorText);
@@ -4603,17 +4785,40 @@ export function useWebSocket({ onActiveSessionRemovedRef } = {}) {
           // Other errors, or retry limit exhausted — clear busy state.
           _sessionCreationRetryCount = 0;
           _sessionCreationPendingOpts = null;
-          setIsCreatingSession(false);
+          setCreatingWorkingDirs((prev) => {
+            const s = new Set(prev);
+            s.delete(wd);
+            return s;
+          });
           return { error: errorMessage, errorCode };
         }
 
         // Success — reset all retry state and clear busy indicator.
         _sessionCreationRetryCount = 0;
         _sessionCreationPendingOpts = null;
-        setIsCreatingSession(false);
+        setCreatingWorkingDirs((prev) => {
+          const s = new Set(prev);
+          s.delete(wd);
+          return s;
+        });
 
         const data = await response.json();
         const sessionId = data.session_id;
+
+        // Singleton find-or-route: backend routed this create to an EXISTING
+        // conversation. Do NOT seed placeholder state — that would clobber the
+        // already-loaded messages/info and flash "Start chatting with undefined".
+        // Focus it instead; connect/sync restores/loads its real state. (mitto-4mb.10)
+        if (isReusedConversationResponse(data)) {
+          const existing = sessionsRef.current[sessionId];
+          const wdForGroup = existing?.info?.working_dir || wd;
+          const acpForGroup =
+            existing?.info?.acp_server || opts.acpServer || "";
+          expandGroupForSession(sessionId, wdForGroup, acpForGroup);
+          connectToSession(sessionId);
+          setActiveSessionId(sessionId);
+          return { sessionId, reused: true };
+        }
 
         // Build system message with workspace info
         let systemMsg = `Start chatting with ${data.acp_server}`;
@@ -4652,12 +4857,16 @@ export function useWebSocket({ onActiveSessionRemovedRef } = {}) {
         connectToSession(sessionId);
         setActiveSessionId(sessionId);
 
-        return { sessionId };
+        return { sessionId, reused: data.reused === true };
       } catch (err) {
         // Network/fetch error — clear busy state
         _sessionCreationRetryCount = 0;
         _sessionCreationPendingOpts = null;
-        setIsCreatingSession(false);
+        setCreatingWorkingDirs((prev) => {
+          const s = new Set(prev);
+          s.delete(wd);
+          return s;
+        });
         console.error(`[createNewSession] Network error:`, err);
         return { error: err.message || "Network error" };
       }
@@ -4788,7 +4997,7 @@ export function useWebSocket({ onActiveSessionRemovedRef } = {}) {
         }, timeout);
 
         // Create new WebSocket connection
-        const ws = new WebSocket(wsUrl(`/api/sessions/${sessionId}/ws`));
+        const ws = new WebSocket(endpoints.sessions.ws(sessionId));
         const wsId = Math.random().toString(36).substring(2, 8);
         ws._debugId = wsId;
 
@@ -5294,7 +5503,7 @@ export function useWebSocket({ onActiveSessionRemovedRef } = {}) {
     async (sessionId, name) => {
       try {
         const response = await secureFetch(
-          apiUrl(`/api/sessions/${sessionId}`),
+          endpoints.sessions.update(sessionId),
           {
             method: "PATCH",
             headers: { "Content-Type": "application/json" },
@@ -5321,7 +5530,7 @@ export function useWebSocket({ onActiveSessionRemovedRef } = {}) {
   // Pin/unpin a session via REST API
   const pinSession = useCallback(async (sessionId, pinned) => {
     try {
-      const response = await secureFetch(apiUrl(`/api/sessions/${sessionId}`), {
+      const response = await secureFetch(endpoints.sessions.update(sessionId), {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ pinned }),
@@ -5354,7 +5563,7 @@ export function useWebSocket({ onActiveSessionRemovedRef } = {}) {
   // Archive/unarchive a session via REST API
   const archiveSession = useCallback(async (sessionId, archived) => {
     try {
-      const response = await secureFetch(apiUrl(`/api/sessions/${sessionId}`), {
+      const response = await secureFetch(endpoints.sessions.update(sessionId), {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ archived }),
@@ -5438,7 +5647,7 @@ export function useWebSocket({ onActiveSessionRemovedRef } = {}) {
 
       // Delete from server first
       try {
-        await secureFetch(apiUrl(`/api/sessions/${sessionId}`), {
+        await secureFetch(endpoints.sessions.remove(sessionId), {
           method: "DELETE",
         });
       } catch (err) {
@@ -5618,10 +5827,13 @@ export function useWebSocket({ onActiveSessionRemovedRef } = {}) {
   //
   // Two-layer protection:
   //   1. Leading-edge debounce: suppress calls within STAGGERED_RECONNECT_DEBOUNCE_MS
-  //      of the last accepted call (handles 4–5 s pairs).
+  //      (15 s) of the last accepted call.  This coalesces the macOS native
+  //      "App became active" and WKWebView "App became visible" pair (which fire
+  //      ~6–10 s apart for a single wake) into one reconnect, preventing a
+  //      redundant active-session force-reconnect.
   //   2. Timer cancellation: cancel any still-pending background-session timers from
-  //      a previous call before scheduling new ones (handles 6–10 s pairs where the
-  //      debounce window has expired but the previous timers haven't fired yet).
+  //      a previous call before scheduling new ones (defense-in-depth for any pair
+  //      that still slips past the debounce window before its timers have fired).
   const reconnectAllSessionsStaggered = useCallback(() => {
     // Layer 1: leading-edge debounce.
     const now = Date.now();
@@ -5998,9 +6210,8 @@ export function useWebSocket({ onActiveSessionRemovedRef } = {}) {
 
   // Get active UI prompt for the current session
   const activeUIPrompt = useMemo(() => {
-    const session = sessions[activeSessionId];
-    return session?.activeUIPrompt || null;
-  }, [sessions, activeSessionId]);
+    return activeSession?.activeUIPrompt || null;
+  }, [activeSession]);
 
   // MCP tools for the currently active session's workspace
   const mcpTools = useMemo(() => {
@@ -6017,6 +6228,7 @@ export function useWebSocket({ onActiveSessionRemovedRef } = {}) {
     forceReset,
     newSession,
     isCreatingSession,
+    creatingWorkingDirs,
     switchSession,
     setActiveSessionId,
     loadSession,
@@ -6027,6 +6239,7 @@ export function useWebSocket({ onActiveSessionRemovedRef } = {}) {
     archiveSession,
     removeSession,
     isStreaming,
+    agentWorking,
     isRunning,
     hasMoreMessages,
     hasReachedLimit,
@@ -6034,6 +6247,7 @@ export function useWebSocket({ onActiveSessionRemovedRef } = {}) {
     actionButtons,
     sessionInfo,
     mcpTools,
+    mcpStatus,
     activeSessionId,
     activeSessions,
     storedSessions,

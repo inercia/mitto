@@ -1,0 +1,5 @@
+name: Beads List Review
+description: A prompt for running against the full beads issue list (UI test — menus beadsList)
+menus: beadsList
+prompt: |
+  Review the current beads issue list and provide a summary of all work items.

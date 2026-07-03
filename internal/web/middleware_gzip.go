@@ -9,6 +9,8 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+
+	"github.com/inercia/mitto/internal/web/middleware"
 )
 
 // Gzip compression configuration
@@ -266,7 +268,7 @@ func gzipMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Skip compression for non-external connections
 		// Local connections don't benefit from compression (network is free)
-		if !IsExternalConnection(r) {
+		if !middleware.IsExternalConnection(r) {
 			next.ServeHTTP(w, r)
 			return
 		}

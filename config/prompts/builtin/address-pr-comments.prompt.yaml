@@ -1,11 +1,53 @@
 icon: chat-bubble
 name: Address PR Comments
-menus: prompts
+menus: prompts, !promptsPeriodic
 description: Systematically address all pull request review feedback
 group: Submission of changes
 backgroundColor: '#B2DFDB'
+tags:
+- periodic
+- github
+enabledWhen: FileExists(".git/config") && (Tools.HasPattern("github_*") || CommandExists("gh") || CommandExists("glab"))
 prompt: |
   Address all review comments on the current pull request with thoughtful responses and code changes.
+
+  ## Session Context
+
+  Your session ID is `{{ .Session.ID }}` — use this as `self_id` for all `mitto_*` MCP tool calls.
+
+  ## Interaction Mode
+  {{- if and .Session.IsPeriodic (not .Session.IsPeriodicForced) }}
+
+  **Scheduled mode** — a periodic run; the user is not watching.
+  - Use **only** `mitto_ui_notify` for all communication — non-blocking notifications only.
+  - Do **NOT** use `mitto_ui_options`, `mitto_ui_form`, `mitto_ui_textbox`, or any
+    interactive/blocking UI tool. They will stall an unattended run.
+  - Act **autonomously** on comments that are objectively valid and low-risk (see
+    "Autonomy criteria" below). For anything subjective, ambiguous, or risky,
+    reply requesting clarification and notify — do not guess or act unilaterally.
+  - If no PR matches the current branch (or the match is ambiguous), end the run
+    quietly with a single notification — do not block waiting for input.
+  {{- else }}
+
+  **Interactive mode** — a force-triggered run or a non-periodic conversation; the user may be present.
+  - You may freely use `mitto_ui_options`, `mitto_ui_form`, and other interactive
+    tools in addition to `mitto_ui_notify`.
+  - Confirm analysis and ask before pushing, as described in the steps below.
+  {{- end }}
+
+  ### Autonomy criteria (scheduled mode)
+
+  When running unattended, **only implement** a comment when it is:
+  - **Objectively valid** — a real typo, lint/format issue, obvious bug, dead code,
+    or a small change explicitly requested and aligned with project conventions.
+  - **Low-risk** — localized, well-understood, covered by (or easy to add) tests.
+
+  **Do NOT act autonomously** on comments that are subjective, design/architecture
+  decisions, scope changes, anything you'd "disagree" with, or that need product
+  context. For those: reply on the thread requesting clarification (or explaining
+  your reasoning), leave the thread unresolved, skip the change, and include the
+  item in the final notification so a human can follow up. Never resolve a thread
+  you did not author.
 
   ### 1. Identify the PR/MR
 
@@ -15,7 +57,12 @@ prompt: |
   glab mr view          # GitLab
   ```
 
+  {{- if and .Session.IsPeriodic (not .Session.IsPeriodicForced) }}
+  In scheduled mode: auto-select the PR for the current branch. If multiple or
+  none match, end the run quietly with a `mitto_ui_notify` note — do not ask.
+  {{- else }}
   If multiple or none found, ask the user to specify.
+  {{- end }}
 
   ### 2. Retrieve All Comments
 
@@ -41,7 +88,13 @@ prompt: |
   - **Disagree**: Acknowledge perspective, explain reasoning with evidence, offer alternatives
   - **Already addressed**: Point to relevant code/commit
 
+  {{- if and .Session.IsPeriodic (not .Session.IsPeriodicForced) }}
+  In scheduled mode: apply the **Autonomy criteria** above. Implement only
+  objectively-valid, low-risk comments; for the rest, reply requesting
+  clarification and collect them for the final notification.
+  {{- else }}
   Ask me for confirmation if any question arises.
+  {{- end }}
 
   ### 5. Group and Prioritize
 
@@ -55,8 +108,13 @@ prompt: |
   |---------|------|----------|----------|--------|
   | ...     | ...  | ...      | ...      | ...    |
 
-  **With Mitto UI**: `mitto_ui_options(self_id: "@mitto:session_id", ...)` → "Does this analysis look correct?"
+  {{- if and .Session.IsPeriodic (not .Session.IsPeriodicForced) }}
+  In scheduled mode: skip confirmation — proceed with the autonomy-approved
+  subset and defer the rest (no blocking UI).
+  {{- else }}
+  **With Mitto UI**: `mitto_ui_options(self_id: "{{ .Session.ID }}", ...)` → "Does this analysis look correct?"
   **Without**: Ask in conversation for confirmation.
+  {{- end }}
 
   ### 6. Implement Changes
 
@@ -70,15 +128,24 @@ prompt: |
 
   For fixes requiring **significant work** (3+ files, substantial new code, risky refactors), delegate to Mitto child conversations for parallel execution.
 
+  {{- if and .Session.IsPeriodic (not .Session.IsPeriodicForced) }}
+  In scheduled mode: before spawning, check `{{ .Children.AllText }}` for an
+  existing child for the same PR/comment and reuse it instead of creating a
+  duplicate. Spawn at most **3 conversations per run**. **Spawned conversations
+  must never be periodic** — they are one-off tasks.
+  {{- end }}
+
   **How to delegate (requires Mitto MCP tools):**
 
-  Your session ID is `@mitto:session_id` — use as `self_id` for all `mitto_*` tool calls.
-  Available ACP servers: `@mitto:available_acp_servers`
-  Existing children: `@mitto:children`
+  Your session ID is `{{ .Session.ID }}` — use as `self_id` for all `mitto_*` tool calls.
+  Available ACP servers: `{{ .ACP.AvailableText }}`
+  {{- if .Children.AllText }}
+  Existing children: `{{ .Children.AllText }}`
+  {{- end }}
 
   1. Select ACP server: prefer `"coding"`/`"fast"` tagged servers for implementation tasks. Fallback: current server (marked `(current)` in the list above).
   2. If relevant children already exist, consider sending work to them via `mitto_conversation_send_prompt` instead of creating new ones
-  3. `mitto_conversation_new(self_id: "@mitto:session_id")`:
+  3. `mitto_conversation_new(self_id: "{{ .Session.ID }}")`:
      ```
      title: "PR fix: <description>"
      initial_prompt: |
@@ -92,7 +159,7 @@ prompt: |
        (Get your own self_id by calling mitto_conversation_get_current(self_id: "init").)
      acp_server: <selected server>
      ```
-  4. `mitto_children_tasks_wait(self_id: "@mitto:session_id", children_list: [...], task_id: "<short task description>", timeout_seconds: 600)`
+  4. `mitto_children_tasks_wait(self_id: "{{ .Session.ID }}", children_list: [...], task_id: "<short task description>", timeout_seconds: 600)`
   5. Review results, verify changes, run tests
   6. `mitto_conversation_delete` for completed children
   7. Commit combined changes
@@ -118,8 +185,15 @@ prompt: |
 
   ### 9. Push and Request Re-review
 
-  **With Mitto UI**: `mitto_ui_options(self_id: "@mitto:session_id", ...)` → "Ready to push and request re-review?"
+  {{- if and .Session.IsPeriodic (not .Session.IsPeriodicForced) }}
+  In scheduled mode: push the autonomy-approved fixes and request re-review
+  automatically (no confirmation), then `mitto_ui_notify` the result. If there
+  are **no** autonomy-approved changes, do not push — just notify which items
+  need a human.
+  {{- else }}
+  **With Mitto UI**: `mitto_ui_options(self_id: "{{ .Session.ID }}", ...)` → "Ready to push and request re-review?"
   **Without**: Ask in conversation.
+  {{- end }}
 
   ```bash
   git push <push-remote> <branch-name>
@@ -128,8 +202,6 @@ prompt: |
   ```
 
   ### 10. Summary Report
-
-
 
   ```console
   ✅ PR Review Comments Addressed
@@ -159,3 +231,13 @@ prompt: |
   - When delegating, prefer `"coding"`/`"fast"` tagged ACP servers
   - Max 4 parallel child conversations
   - In fork workflows, push to `origin`, not `upstream`
+  - **Interaction mode** (see "Interaction Mode" section above):
+  {{- if and .Session.IsPeriodic (not .Session.IsPeriodicForced) }}
+    - **Scheduled periodic**: use only `mitto_ui_notify`; act on objectively-valid,
+      low-risk comments per the Autonomy criteria; reply-and-defer the rest; never
+      resolve threads you didn't author; spawned children must never be periodic.
+  {{- else }}
+    - **Force-triggered or non-periodic**: you may use `mitto_ui_options`,
+      `mitto_ui_form`, and other interactive tools; confirm analysis and ask
+      before pushing.
+  {{- end }}

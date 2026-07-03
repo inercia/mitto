@@ -1,0 +1,292 @@
+icon: periodic
+name: Iterate until issue complete
+menus: beadsIssues, conversation
+parameters:
+  - name: IssueID
+    type: beadsId
+    required: false
+    description: The beads issue ID to act on
+  - name: Commit
+    type: boolean
+    description: Have the delegated worker commit its changes at the end of each increment
+description: Auto-periodic — keep advancing this bead toward completion, then self-terminate when nothing ready remains
+backgroundColor: '#C8E6C9'
+group: Tasks
+enabledWhen: '!Session.IsChild && CommandExists("bd") && DirExists(".beads") && Tools.HasPattern("mitto_conversation_*") && Item.Status != "closed"'
+periodic:
+  mode: always
+  trigger: onCompletion
+  delay: 30
+  maxIterations: 20
+  maxDuration: "4h"
+prompt: |
+  ## Session Context
+
+  Your session ID is `{{ .Session.ID }}` — use this as `self_id` for all `mitto_*` MCP tool calls.
+  Available ACP servers: `{{ .ACP.AvailableText }}`
+  Existing children: `{{ .Children.MCPText }}`
+
+  # Beads: Iterate Until Issue Complete
+
+  Beads is a CLI issue tracker (`bd`). Issues are called "beads" and have IDs like `bd-xyz`.
+
+  {{ if .Session.BeadsIssue -}}
+  The **target bead** for this run is `{{ .Session.BeadsIssue }}` (from this conversation's linked beads issue — preferred, durable across periodic runs).
+  {{- else if .Args.IssueID -}}
+  The **target bead** for this run is `{{ .Args.IssueID }}` (supplied as the `IssueID` argument).
+  {{- else -}}
+  The **target bead** for this run is **not explicitly specified** — infer it from this conversation (recent messages, current git branch, linked PRs). If you cannot determine it confidently, **do not ask the user which ticket to work on** — just pick **any ready, unblocked bead** in scope (apply the Step 2 ranking: highest blocking leverage, then highest declared priority). Any ready, not-blocked bead is fair game. Only if there is no ready, unblocked bead at all do you stop (Step 5).
+  {{- end }}
+  This is the **automated, non-interactive** sibling of "Start work": on every scheduled run you advance the target **one concrete increment** toward completion, and when there is **nothing ready left to do in scope**, you remove your own periodic flag and stop.
+
+  {{- if .Iteration.IsUninterrupted }}
+  ## Continuation — uninterrupted scheduled run
+
+  **Silent mode.** Use **only** `mitto_ui_notify`; never call `mitto_ui_options`,
+  `mitto_ui_form`, or `mitto_ui_textbox`. **Decide autonomously** — do not ask which
+  ticket to work on or how to proceed. The sole exception is a requirement that is
+  **not properly defined** in the ticket: **defer it** (Step 4) rather than ask or guess.
+
+  Durable anchor for this loop: {{ if .Session.BeadsIssue }}bead `{{ .Session.BeadsIssue }}`{{ else }}this conversation's linked bead{{ end }}. Earlier runs already
+  advanced this work — review the prior `bd comment` "Iterate run:" entries on the
+  target bead and the existing children (`{{ .Children.MCPText }}`) so you continue
+  from where the last run stopped instead of repeating it. Then proceed straight to
+  the steps below.
+  {{- if .Iteration.IsLast }}
+
+  **Final scheduled run** (the `maxIterations` cap is reached after this run): do **not**
+  begin an increment you cannot finish now — wrap up, log status with `bd comment`, then
+  post a closing summary via `mitto_ui_notify`.
+  {{- end }}
+  {{- else }}
+  ## Interaction Mode — READ THIS FIRST
+
+  This prompt almost always runs **unattended on a schedule**.
+  {{- if and .Session.IsPeriodic (not .Session.IsPeriodicForced) }}
+
+  **Silent mode — a scheduled periodic run.**
+  - Use **only** `mitto_ui_notify` — non-blocking notifications.
+  - Do **NOT** call `mitto_ui_options`, `mitto_ui_form`, or `mitto_ui_textbox`.
+    Nobody is watching. Never block waiting for input.
+  - When a decision is ambiguous, do **not** guess and do **not** ask — record the
+    question on the bead and defer it (see Step 4).
+  {{- else }}
+
+  **Interactive mode** (e.g. the very first send, or a force-triggered run): a user may be
+  present, so you *may* surface progress more freely with notifications.
+  {{- end }}
+  {{- if not .Iteration.IsFirst }}
+
+  **Continuation run.** Earlier runs of this conversation have already advanced this
+  work. Before doing anything else, review the prior `bd comment` "Iterate run:"
+  entries on the target bead and the existing children in `{{ .Children.MCPText }}`,
+  so you continue from where the last run stopped instead of repeating it.
+  {{- end }}
+  {{- if .Iteration.IsLast }}
+
+  **Final scheduled run.** This is the last automatic iteration (the `maxIterations`
+  cap is reached after this run, so no further run will fire). Do **not** begin an
+  increment you cannot finish now — instead wrap up: log current status with
+  `bd comment`, then post a closing summary via `mitto_ui_notify`.
+  {{- end }}
+
+  **Decision-making is identical in both modes**: **do not ask the user to make work decisions** — not which ticket to work on, not
+  how to proceed, not which design option to take. **Decide autonomously.** The *only* thing
+  you must never decide alone is a requirement that is **not properly defined or understood**
+  in the ticket itself — in that case you **defer the ticket** (Step 4) rather than asking or
+  guessing. The goal is identical: advance the work one increment, or stop cleanly when
+  nothing is ready.
+  {{- end }}
+
+  ## Step 1 — Resolve the target issue for this run
+
+  Load the target and its tree:
+
+  ```bash
+  bd show <target-bead> --long --json        # full fields, status, acceptance, design
+  bd dep tree <target-bead>                   # blockers and what it blocks
+  bd show <target-bead> --children --json     # child beads (is this an epic/parent?)
+  ```
+
+  Decide what to actually work on **this run**:
+
+  - **Normal issue (no children)** → the target *is* the target bead.
+  - **Epic / parent (has children)** → an epic is a container, not directly
+    implementable; you must advance it by working on **the next issue inside the
+    epic**, one child per run:
+    - **Finish before you start.** If a child is already `in_progress` with active,
+      well-scoped work, continue and finish **that** child before picking up
+      anything new.
+    - **Otherwise start the next ready child in logical order.** Among open,
+      unblocked children (not `closed`/`in_progress`), map explicit edges (`blocks` /
+      `depends-on` from `bd dep tree`) and implicit ordering you infer from the
+      children's descriptions (schema/infrastructure/scaffolding first), build a
+      topological order, and choose the first workable child. When several are
+      equally workable, apply common sense — **highest priority, then highest
+      blocking leverage** over its siblings — and proceed with **one**.
+    - **Defer what is not ready.** Any child that is **not clearly defined** (vague
+      or missing acceptance criteria) or **not genuinely ready for work** must be
+      **deferred**, not guessed at — record the gap on that child and drop it out of
+      `ready` (see Step 4), then move on to the next candidate.
+    - **Record your decision.** Add a `bd comment` on the epic noting which child you
+      chose for this run and why (or why none was actionable), so the reasoning is
+      auditable across runs.
+    **Do NOT ask the user** which child; this is automated.
+
+  Treat the issue chosen here as **`<target>`** for the rest of this run.
+
+  ## Step 1b — Keep the durable conversation link correct
+
+  This conversation's linked beads issue is the **durable anchor** that future periodic
+  runs resolve from (see the target resolution above), so it must always point at the
+  **top-level target** — the epic or standalone issue — never at a per-run child:
+
+  - If this conversation is **not yet linked** to a beads issue but you resolved the target
+    from the `IssueID` argument, link the top-level target now so subsequent runs are
+    durable:
+
+    ```
+    mitto_conversation_update(self_id: "{{ .Session.ID }}", conversation_id: "self", beads_issue: "<top-level target: the epic or standalone issue>")
+    ```
+
+  - **Do NOT** overwrite this link with the per-run child when advancing an epic. Each child
+    you dispatch already receives its own `beads_issue` link on its **child conversation**
+    (Step 3); overwriting the anchor here would make the next run lose the epic and break
+    iteration.
+
+  ## Step 2 — Only act on READY issues
+
+  Confirm `<target>` is genuinely **ready** (open + unblocked) before doing anything:
+
+  ```bash
+  bd ready --json                           # is <target> in the ready set?
+  bd show <target> --long --json
+  bd dep tree <target>
+  ```
+
+  If `<target>` is **not ready** (blocked, already closed, deferred, or
+  `in_progress` by someone else with active work), **skip it** and look for the
+  next ready issue **within the target bead's scope** (the target issue itself, or —
+  for an epic — its subtree of children). If nothing in scope is ready, go to
+  **Step 5 (stop)**.
+
+  ## Step 3 — Evaluate and advance one increment
+
+  For `<target>`:
+
+  1. Understand what "complete" means — read its **acceptance criteria**, design
+     notes, and any prior `bd comment` history. Assess current status and what is
+     still missing.
+  2. Claim it so others know it is being worked on:
+
+     ```bash
+     bd update <target> --claim
+     ```
+
+  3. **Delegate the next concrete increment to a child conversation — never do the
+     implementation work yourself.** This conversation is an **orchestrator**: it
+     plans, dispatches, tracks progress, and stops. All actual work happens in a
+     child.
+     - **Hand the child a fully-defined problem.** Before dispatching, make sure the
+       work is unambiguous and self-contained. If `<target>` is itself a small,
+       well-defined bead, you may hand the child the **whole bead**; otherwise carve
+       out **one** clearly-scoped increment and define it completely (bead ID, title,
+       description, acceptance criteria, the specific increment, and an explicit
+       definition of done). If you cannot define it cleanly, **do not dispatch** —
+       defer it instead (Step 4).
+     - **Prefer a cheaper, less "smart" model.** Choose `acp_server` to match the
+       difficulty: use a **faster/cheaper** agent for routine or well-scoped work,
+       and reserve a more capable (slower/expensive) agent only for genuinely complex
+       increments.
+     - Reuse a suitable **idle** child from `{{ .Children.MCPText }}` when possible via
+       `mitto_conversation_send_prompt_mitto(self_id: "{{ .Session.ID }}", conversation_id: "<child-id>", prompt: "<fully self-contained worker prompt>")`.
+     - Otherwise create one with `mitto_conversation_new_mitto(self_id: "{{ .Session.ID }}", title: "<target-bead> · <increment>", beads_issue: "<target>", acp_server: "<prefer faster/cheaper; escalate to a capable agent only for complex work>", initial_prompt: "<fully self-contained worker prompt incl. bead ID, title, description, acceptance criteria, the specific increment, definition of done, and an instruction to report back via mitto_children_tasks_report_mitto>")`.
+     - Cap spawning at **one** new child per run to avoid runaway fan-out.
+  {{- if eq .Args.Commit "true" }}
+     - **Tell the worker to commit its work.** Include in the worker prompt an
+       explicit instruction to commit **only** the files it changed for this
+       increment — staged by path (`git add <file> ...`), never `git add -A`,
+       `git add .`, or `git commit -a`, since unrelated uncommitted changes may
+       exist and must be left untouched — using a concise, conventional commit
+       message, and to skip the commit if it changed nothing.
+  {{- end }}
+  4. **Wait for the child to finish, then judge the outcome.** Block until the
+     child reports back so this run can act on the result:
+
+     ```
+     mitto_children_tasks_wait_mitto(self_id: "{{ .Session.ID }}", children_list: ["<child-id>"])
+     ```
+
+     Read the report to decide whether the increment **succeeded**, only
+     **partially advanced**, or **got stuck** — this drives what you log below and
+     whether you close.
+  5. Log progress on the bead so the tracker reflects what happened:
+
+     ```bash
+     bd comment <target> "Iterate run: <what the child advanced this increment / what remains>."
+     ```
+
+  6. If this increment **completes** the acceptance criteria, close it:
+
+     ```bash
+     bd comment <target> "Completed: <what was delivered, verification performed>."
+     bd close <target> --reason "<short summary>"
+     ```
+
+  ## Step 4 — When the problem is ill-defined, defer the ticket (never ask, never guess)
+
+  Decide everything you reasonably can on your own. The **only** time you must not proceed
+  is when a requirement is **not properly defined or understood** in the ticket — ambiguous
+  or missing acceptance criteria, an undecided design question, or a genuine unknown you
+  cannot resolve from the available context. In that case — **in any mode**, interactive or
+  silent — do **NOT** ask the user and do **NOT** guess. Instead, record the open questions
+  on the bead and **defer the ticket** so it drops out of `ready`:
+
+  ```bash
+  bd comment <target> "Blocked on decision: <the open questions / options considered>."
+  bd update <target> --defer <when>      # e.g. tomorrow / +1d — drops out of `ready`
+  ```
+
+  Then continue to the next ready issue in scope (back to Step 2), or — if nothing
+  ready remains — go to Step 5.
+
+  ## Step 5 — Stop condition: nothing ready left in scope
+
+  When there is **nothing ready** left within the target bead's scope (the issue
+  itself is done/deferred/blocked, and — for an epic — no child is ready), the
+  loop is finished. **Self-terminate**: remove your own periodic flag so this
+  becomes a regular (non-periodic) conversation, and post a final summary.
+
+  ```
+  mitto_conversation_update(self_id: "{{ .Session.ID }}", conversation_id: "self", periodic_enabled: false)
+  ```
+
+  Then notify the user (works in both modes):
+
+  ```
+  mitto_ui_notify(self_id: "{{ .Session.ID }}", title: "Iterate until issue complete — done", message: "<what was completed across runs, what was deferred/blocked, and why iteration stopped>", style: "success")
+  ```
+
+  After stopping, do nothing further this run.
+
+  ## Guidelines
+
+  - **Decide autonomously; never ask the user.** In any mode, do not ask which
+    ticket to work on (any ready, unblocked bead is fair game) or how to proceed —
+    make the call yourself. The sole exception is a requirement that is **not
+    properly defined or understood** in the ticket: then **defer the ticket**
+    (Step 4) instead of asking or guessing.
+  - **Orchestrate, don't implement.** You never do the work yourself — always
+    delegate the increment to a child conversation (Step 3), preferring a
+    faster/cheaper model and handing it a fully-defined problem.
+  - **One increment per run.** Advance the work a meaningful step, then return —
+    the next scheduled run continues. Do not try to finish everything in one run.
+  - **Stay in scope.** Only ever act on the target bead or, for an epic, its subtree.
+    Never wander into unrelated backlog issues.
+  - **Bounded loop.** This conversation is capped by `maxIterations`; the Step 5
+    stop condition is the primary exit. Both must hold the loop in check.
+  - **Silent unless it matters.** On scheduled runs, send a `mitto_ui_notify` only
+    for meaningful milestones (increment completed, issue closed, blocked/deferred,
+    or final stop). Stay quiet for routine no-op runs.
+  - **Always log to the tracker** with `bd comment` so progress is auditable even
+    when you stay silent in the UI.

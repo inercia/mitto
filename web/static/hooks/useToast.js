@@ -43,13 +43,13 @@ export function useToast({ maxToasts = 5 } = {}) {
 
   const showToast = useCallback(
     ({
-      style = "info",     // "info" | "success" | "warning" | "error"
-      title,              // Required: main text
-      message = "",       // Optional: detail text below title
-      duration = null,    // Override auto-duration (ms). null = use severity default
-      onClick = null,     // Optional click handler (e.g., switch session)
+      style = "info", // "info" | "success" | "warning" | "error"
+      title, // Required: main text
+      message = "", // Optional: detail text below title
+      duration = null, // Override auto-duration (ms). null = use severity default
+      onClick = null, // Optional click handler (e.g., switch session)
       dismissable = true, // Show close button
-      sticky = false,     // Never auto-dismiss (overrides duration)
+      sticky = false, // Never auto-dismiss (overrides duration)
     }) => {
       const id = ++toastIdCounter;
       const toast = { id, style, title, message, onClick, dismissable };

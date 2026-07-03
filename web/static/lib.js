@@ -310,7 +310,7 @@ function _parseUndelimited(text, segments) {
   // ── Pass 2: action-prefix + remainder as path ────────────────────────────
   // Match "Read ", "Edit ", etc. at the very start of `text`
   const prefixPattern = new RegExp(
-    `^((?:${TOOL_ACTION_PREFIXES.join("|")})\\s+)(.+)$`
+    `^((?:${TOOL_ACTION_PREFIXES.join("|")})\\s+)(.+)$`,
   );
   const prefixMatch = text.match(prefixPattern);
   if (prefixMatch) {
@@ -360,6 +360,162 @@ function _parseUndelimited(text, segments) {
  * @param {Array} storedSessions - Sessions loaded from storage
  * @returns {Array} Combined and sorted sessions
  */
+// Labels shown in the conversation-header subtitle when a periodic loop has stopped or paused.
+// Keyed by the `periodic_stopped_reason` string sent by the backend.
+// Each entry has { label, kind } where kind is "stopped" (terminal/red) or "paused" (resumable/amber).
+export const PERIODIC_STOPPED_LABELS = {
+  maxDuration: { label: "Stopped: max time", kind: "stopped" },
+  maxIterations: { label: "Stopped: max iters", kind: "stopped" },
+  iterationSafeguard: { label: "Stopped: max iters", kind: "stopped" },
+  promptUnresolved: { label: "Stopped: prompt missing", kind: "stopped" },
+  resumeFailures: { label: "Stopped: resume errors", kind: "stopped" },
+  pausedByUser: { label: "Paused by you", kind: "paused" },
+  disabledByAgent: { label: "Paused by the agent", kind: "paused" },
+};
+
+/**
+ * Compact human-readable duration for a periodic max-duration cap.
+ * Rounds down to the largest whole unit (days > hours > minutes > seconds).
+ * @param {number} seconds
+ * @returns {string} e.g. "2d", "3h", "30min", "45s"
+ */
+export function formatPeriodicMaxDuration(seconds) {
+  if (seconds >= 86400 && seconds % 86400 === 0) return `${seconds / 86400}d`;
+  if (seconds >= 3600 && seconds % 3600 === 0) return `${seconds / 3600}h`;
+  if (seconds >= 60 && seconds % 60 === 0) return `${seconds / 60}min`;
+  return `${seconds}s`;
+}
+
+/**
+ * Compact trigger-type label shown in the conversation-header subtitle badge next
+ * to the periodic status pill. "schedule" (default) shows the frequency (e.g.
+ * "every 2h"); "onCompletion" shows the post-completion delay; "onTasks" shows a
+ * fixed label (fires on beads/task changes, not on a cadence, so no "every N" or
+ * countdown is meaningful).
+ * @param {string} trigger - "schedule" | "onCompletion" | "onTasks" (falsy/other → schedule)
+ * @param {number} delaySeconds - onCompletion delay in seconds (ignored otherwise)
+ * @param {{value:number, unit:string}|null} frequency - schedule frequency (ignored for event-driven triggers)
+ * @returns {string|null} the label, or null when nothing can be derived (e.g. no frequency yet)
+ */
+export function computeHeaderTriggerLabel(trigger, delaySeconds, frequency) {
+  if (trigger === "onCompletion") {
+    return `after agent finishes${delaySeconds > 0 ? ` · +${delaySeconds}s` : ""}`;
+  }
+  if (trigger === "onTasks") {
+    return "on task changes";
+  }
+  if (frequency) {
+    const u =
+      frequency.unit === "minutes"
+        ? "min"
+        : frequency.unit === "hours"
+          ? "h"
+          : "d";
+    return `every ${frequency.value}${u}`;
+  }
+  return null;
+}
+
+// =============================================================================
+// onTasks Condition Presets (periodic trigger CEL condition editor)
+// =============================================================================
+
+/**
+ * Preset options for the onTasks condition editor's dropdown. Each preset (except
+ * "any") requires a single parameter (an issue type or label) filled via a small
+ * text input; presetConditionFor() compiles the (id, param) pair into a CEL string.
+ */
+export const CONDITION_PRESETS = [
+  { id: "any", label: "Any change in tasks", needsParam: false },
+  {
+    id: "new-issue-type",
+    label: "New issue of type …",
+    needsParam: true,
+    paramLabel: "Issue type",
+    paramPlaceholder: "bug",
+  },
+  {
+    id: "label-touched",
+    label: "Issue created/updated with label …",
+    needsParam: true,
+    paramLabel: "Label",
+    paramPlaceholder: "PR opened",
+  },
+  {
+    id: "open-type-increased",
+    label: "Open count of type … increased",
+    needsParam: true,
+    paramLabel: "Issue type",
+    paramPlaceholder: "bug",
+  },
+];
+
+/**
+ * Compiles a condition preset + parameter into the CEL expression sent to the
+ * backend as `condition`. Returns "" (fire on any change) for the "any" preset,
+ * an unrecognized preset id, or a param-requiring preset with an empty param.
+ * @param {string} presetId
+ * @param {string} param
+ * @returns {string}
+ */
+export function presetConditionFor(presetId, param) {
+  const p = (param || "").trim();
+  switch (presetId) {
+    case "new-issue-type":
+      return p ? `Changes.Added.exists(i, i.type == "${p}")` : "";
+    case "label-touched":
+      return p ? `Changes.Touched.exists(i, "${p}" in i.labels)` : "";
+    case "open-type-increased":
+      return p ? `Tasks.OpenByType["${p}"] > Prev.OpenByType["${p}"]` : "";
+    default:
+      return "";
+  }
+}
+
+// Regexes matching the exact CEL shape produced by presetConditionFor, used to
+// extract the original parameter back out when restoring a saved condition
+// (GET → editor round-trip) so the small param input can be pre-filled.
+const CONDITION_PRESET_PATTERNS = {
+  "new-issue-type": /^Changes\.Added\.exists\(i, i\.type == "([^"]*)"\)$/,
+  "label-touched": /^Changes\.Touched\.exists\(i, "([^"]*)" in i\.labels\)$/,
+  "open-type-increased":
+    /^Tasks\.OpenByType\["([^"]*)"\] > Prev\.OpenByType\["\1"\]$/,
+};
+
+/**
+ * Extracts the parameter (issue type or label) from a stored condition string
+ * that matches the given preset's canonical shape. Returns "" if it doesn't
+ * match (e.g. the condition was hand-edited into something else).
+ * @param {string} presetId
+ * @param {string} condition
+ * @returns {string}
+ */
+export function extractPresetParam(presetId, condition) {
+  const re = CONDITION_PRESET_PATTERNS[presetId];
+  if (!re) return "";
+  const m = re.exec((condition || "").trim());
+  return m ? m[1] : "";
+}
+
+/**
+ * Resolves which preset id a stored (condition, conditionPreset) pair should
+ * show as selected in the dropdown: the stored preset id if recognized, "any"
+ * if the condition is empty, otherwise "custom" (hand-edited CEL).
+ * @param {string} condition
+ * @param {string} conditionPreset
+ * @returns {string}
+ */
+export function resolveConditionPresetId(condition, conditionPreset) {
+  if (
+    conditionPreset &&
+    CONDITION_PRESETS.some((p) => p.id === conditionPreset)
+  ) {
+    return conditionPreset;
+  }
+  if (!condition) return "any";
+  return "custom";
+}
+
 // Global map to store working_dir values from API responses
 // This is used as a fallback when React state updates haven't propagated yet
 const globalWorkingDirMap = new Map();
@@ -402,9 +558,10 @@ export function computeAllSessions(activeSessions, storedSessions) {
       "";
 
     // Flatten acp_server from info so session.acp_server is set for grouping/tooltips
-    const acpServer = s.acp_server || s.info?.acp_server || stored?.acp_server || "";
+    const acpServer =
+      s.acp_server || s.info?.acp_server || stored?.acp_server || "";
 
-    // Always merge stored properties (archived, name, pinned, periodic_enabled, next_scheduled_at, periodic_frequency) if stored session exists
+    // Always merge stored properties (archived, name, pinned, periodic_enabled, periodic_configured, next_scheduled_at, periodic_frequency) if stored session exists
     if (stored) {
       return {
         ...s,
@@ -420,13 +577,33 @@ export function computeAllSessions(activeSessions, storedSessions) {
         // session_streaming events out of order, causing the sidebar dot to stay lit
         // after the per-session WebSocket has already received prompt_complete.
         isStreaming: s.isStreaming || false,
-        // Periodic enabled state (from stored session, updated via WebSocket)
+        // periodic_enabled: runs active → sidebar category + clock icon
         periodic_enabled: stored.periodic_enabled || false,
+        // periodic_configured: config exists → editor UI mode + reconnect long-lived check
+        periodic_configured: stored.periodic_configured || false,
         // Progress bar: next run time and frequency (from API list or WebSocket periodic_updated)
-        next_scheduled_at: s.next_scheduled_at ?? stored.next_scheduled_at ?? null,
-        periodic_frequency: s.periodic_frequency ?? stored.periodic_frequency ?? null,
+        next_scheduled_at:
+          s.next_scheduled_at ?? stored.next_scheduled_at ?? null,
+        periodic_frequency:
+          s.periodic_frequency ?? stored.periodic_frequency ?? null,
+        // Reason the periodic loop stopped (maxDuration, maxIterations, etc.); null while running
+        periodic_stopped_reason:
+          s.periodic_stopped_reason ?? stored.periodic_stopped_reason ?? null,
+        // Periodic glance fields (shown in the conversation-header subtitle)
+        periodic_trigger: s.periodic_trigger ?? stored.periodic_trigger ?? null,
+        periodic_iteration_count:
+          s.periodic_iteration_count ?? stored.periodic_iteration_count ?? null,
+        periodic_max_iterations:
+          s.periodic_max_iterations ?? stored.periodic_max_iterations ?? null,
+        periodic_delay_seconds:
+          s.periodic_delay_seconds ?? stored.periodic_delay_seconds ?? null,
+        periodic_max_duration_seconds:
+          s.periodic_max_duration_seconds ??
+          stored.periodic_max_duration_seconds ??
+          null,
         // CRITICAL: Preserve parent_session_id for hierarchical conversation tree
-        parent_session_id: s.parent_session_id || stored.parent_session_id || null,
+        parent_session_id:
+          s.parent_session_id || stored.parent_session_id || null,
         // Preserve child_origin for child session icon rendering (lightning/robot/person)
         child_origin: s.child_origin || stored.child_origin || null,
         // Preserve the linked beads issue ID — the active session object may not
@@ -491,6 +668,8 @@ export function convertEventsToMessages(events, options = {}) {
           timestamp: new Date(event.timestamp).getTime(),
           seq,
           promptName: event.data?.prompt_name || undefined,
+          argumentCount: event.data?.argument_count || undefined,
+          meta: event.data?.meta || undefined,
         };
         // Convert stored image references to full image objects with URLs
         // Image refs are stored as: [{id, name?, mime_type}]
@@ -548,6 +727,18 @@ export function convertEventsToMessages(events, options = {}) {
         messages.push({
           role: ROLE_ERROR,
           text: event.data?.message || "",
+          timestamp: new Date(event.timestamp).getTime(),
+          seq,
+        });
+        break;
+      case "session_change":
+        messages.push({
+          role: ROLE_SYSTEM,
+          kind: event.data?.kind,
+          label: event.data?.label,
+          value: event.data?.value,
+          previousValue: event.data?.previous_value,
+          items: event.data?.items,
           timestamp: new Date(event.timestamp).getTime(),
           seq,
         });
@@ -717,6 +908,41 @@ export function isStaleClientState(clientLastSeq, serverLastSeq) {
 }
 
 /**
+ * Resolve the authoritative "has more (older) history" flag after an
+ * events_loaded response.
+ *
+ * A forward sync (load_events with after_seq) only ever fetches NEWER events.
+ * Its has_more reflects whether events exist older than the DELTA's first event
+ * (after_seq+1) — NOT whether older history is still missing from memory. For an
+ * idle session the delta is empty, so the server returns has_more=false; blindly
+ * applying that would wrongly clear the "Load earlier messages" button for a
+ * session that genuinely has more history not yet loaded.
+ *
+ * has_more is therefore only authoritative when we REPLACE the message list
+ * (initial load / stale recovery) or PREPEND (load more). On a merge-sync we
+ * preserve the client's existing flag.
+ *
+ * @param {Object} params
+ * @param {boolean} params.isPrepend - Loading older history (load more)
+ * @param {boolean} params.isStaleClient - Stale recovery (server replaces state)
+ * @param {number} params.existingMessageCount - Messages already in memory
+ * @param {boolean} params.serverHasMore - has_more from the events_loaded response
+ * @param {boolean} params.existingHasMore - Client's current hasMoreMessages flag
+ * @returns {boolean} The resolved hasMoreMessages value
+ */
+export function resolveHasMoreAfterEventsLoaded({
+  isPrepend,
+  isStaleClient,
+  existingMessageCount,
+  serverHasMore,
+  existingHasMore,
+}) {
+  const isReplaceOrPrepend =
+    isPrepend || existingMessageCount === 0 || isStaleClient;
+  return isReplaceOrPrepend ? Boolean(serverHasMore) : Boolean(existingHasMore);
+}
+
+/**
  * Create a content hash for a message for deduplication.
  * Handles different message types appropriately:
  * - user/agent/thought/error: use text or html content
@@ -864,7 +1090,11 @@ export function mergeMessagesWithSync(existingMessages, newMessages) {
   });
 
   // Add filtered new messages
-  if (filteredNewMessages.length === 0 && seqsToUpdate.size === 0 && pendingUpdates.size === 0) {
+  if (
+    filteredNewMessages.length === 0 &&
+    seqsToUpdate.size === 0 &&
+    pendingUpdates.size === 0
+  ) {
     return existingMessages;
   }
 
@@ -1554,7 +1784,8 @@ export function formatTimeAgo(date) {
 
 /** @param {Node} node @param {{ inPre: boolean, listDepth: number }} ctx @returns {string} */
 function _serializeNode(node, ctx) {
-  if (node.nodeType === 3) { // TEXT_NODE
+  if (node.nodeType === 3) {
+    // TEXT_NODE
     const text = node.textContent;
     return ctx.inPre ? text : text.replace(/[\n\r\t ]+/g, " ");
   }
@@ -1568,29 +1799,58 @@ function _serializeNode(node, ctx) {
     const lang = codeEl
       ? (codeEl.className.match(/language-(\S+)/) || [])[1] || ""
       : "";
-    const content = (codeEl ? codeEl.textContent : node.textContent).replace(/\n$/, "");
+    const content = (codeEl ? codeEl.textContent : node.textContent).replace(
+      /\n$/,
+      "",
+    );
     return "\n\n```" + lang + "\n" + content + "\n```\n\n";
   }
 
   // Inline code (pre handled above, so any code here is inline)
   if (tag === "code") return "`" + node.textContent + "`";
 
-  const HEADINGS = { h1: "#", h2: "##", h3: "###", h4: "####", h5: "#####", h6: "######" };
+  const HEADINGS = {
+    h1: "#",
+    h2: "##",
+    h3: "###",
+    h4: "####",
+    h5: "#####",
+    h6: "######",
+  };
   if (HEADINGS[tag]) {
-    return "\n\n" + HEADINGS[tag] + " " + _serializeChildren(node, ctx).trim() + "\n\n";
+    return (
+      "\n\n" +
+      HEADINGS[tag] +
+      " " +
+      _serializeChildren(node, ctx).trim() +
+      "\n\n"
+    );
   }
 
   switch (tag) {
-    case "p": return "\n\n" + _serializeChildren(node, ctx).trim() + "\n\n";
+    case "p":
+      return "\n\n" + _serializeChildren(node, ctx).trim() + "\n\n";
     case "strong":
-    case "b": return "**" + _serializeChildren(node, ctx) + "**";
+    case "b":
+      return "**" + _serializeChildren(node, ctx) + "**";
     case "em":
-    case "i": return "*" + _serializeChildren(node, ctx) + "*";
+    case "i":
+      return "*" + _serializeChildren(node, ctx) + "*";
     case "del":
-    case "s": return "~~" + _serializeChildren(node, ctx) + "~~";
-    case "a": return "[" + _serializeChildren(node, ctx) + "](" + (node.getAttribute("href") || "") + ")";
-    case "br": return "\n";
-    case "hr": return "\n\n---\n\n";
+    case "s":
+      return "~~" + _serializeChildren(node, ctx) + "~~";
+    case "a":
+      return (
+        "[" +
+        _serializeChildren(node, ctx) +
+        "](" +
+        (node.getAttribute("href") || "") +
+        ")"
+      );
+    case "br":
+      return "\n";
+    case "hr":
+      return "\n\n---\n\n";
     case "ul":
     case "ol": {
       const ordered = tag === "ol";
@@ -1601,21 +1861,37 @@ function _serializeNode(node, ctx) {
         .filter((c) => c.nodeType === 1 && c.tagName.toLowerCase() === "li")
         .map((li) => {
           const bullet = ordered ? ++idx + "." : "-";
-          return indent + bullet + " " + _serializeLi(li, { ...ctx, listDepth: depth + 1 });
+          return (
+            indent +
+            bullet +
+            " " +
+            _serializeLi(li, { ...ctx, listDepth: depth + 1 })
+          );
         });
       return "\n\n" + lines.join("\n") + "\n\n";
     }
     case "blockquote": {
       const inner = _serializeChildren(node, ctx).trim();
-      return "\n\n" + inner.split("\n").map((l) => "> " + l).join("\n") + "\n\n";
+      return (
+        "\n\n" +
+        inner
+          .split("\n")
+          .map((l) => "> " + l)
+          .join("\n") +
+        "\n\n"
+      );
     }
-    case "table": return "\n\n" + _serializeTable(node) + "\n\n";
-    default: return _serializeChildren(node, ctx);
+    case "table":
+      return "\n\n" + _serializeTable(node) + "\n\n";
+    default:
+      return _serializeChildren(node, ctx);
   }
 }
 
 function _serializeChildren(node, ctx) {
-  return Array.from(node.childNodes).map((c) => _serializeNode(c, ctx)).join("");
+  return Array.from(node.childNodes)
+    .map((c) => _serializeNode(c, ctx))
+    .join("");
 }
 
 function _serializeLi(li, ctx) {
@@ -1637,7 +1913,9 @@ function _serializeLi(li, ctx) {
 function _serializeTable(table) {
   const thead = table.querySelector("thead");
   const getCells = (row, sel) =>
-    Array.from(row.querySelectorAll(sel)).map((c) => c.textContent.replace(/\|/g, "\\|").trim());
+    Array.from(row.querySelectorAll(sel)).map((c) =>
+      c.textContent.replace(/\|/g, "\\|").trim(),
+    );
 
   let headers = [];
   if (thead) {
@@ -1745,6 +2023,44 @@ export async function copyToClipboard(text) {
  * @param {string|null} archivedAt - ISO 8601 timestamp when the session was archived
  * @returns {string}
  */
+/**
+ * Build a map from error-message index → retry payload { text, images }.
+ * Single forward pass: tracks the most recent user message that has truthy
+ * `.text`; when an error message is encountered, records that payload.
+ *
+ * @param {Array} displayMessages - The ordered (forward) array of messages
+ * @returns {Map<number, {text: string, images: Array}>} index → retry payload
+ */
+export function buildRetryTargets(displayMessages) {
+  const map = new Map();
+  if (!Array.isArray(displayMessages)) return map;
+  let lastUserText = null;
+  let lastUserImages = [];
+  for (let i = 0; i < displayMessages.length; i++) {
+    const msg = displayMessages[i];
+    if (msg.role === ROLE_USER && msg.text) {
+      lastUserText = msg.text;
+      lastUserImages = msg.images || [];
+    } else if (msg.role === ROLE_ERROR && lastUserText !== null) {
+      map.set(i, { text: lastUserText, images: lastUserImages });
+    }
+  }
+  return map;
+}
+
+/**
+ * Compute a stable string key for a message, for use in Preact reconciliation.
+ * Preference order: seq → id → timestamp+role (never index-based).
+ *
+ * @param {object} msg - Message object
+ * @returns {string} Stable key string
+ */
+export function messageKey(msg) {
+  if (msg.seq != null) return "seq-" + msg.seq;
+  if (msg.id != null) return "id-" + msg.id;
+  return "ts-" + msg.timestamp + "-" + msg.role;
+}
+
 export function getArchiveReasonText(reason, archivedAt) {
   const dateStr = archivedAt ? new Date(archivedAt).toLocaleDateString() : "";
   switch (reason) {

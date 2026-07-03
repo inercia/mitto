@@ -4,7 +4,14 @@ menus: prompts
 description: Fact-check implementation status for all in-progress sprint tickets relevant to this repo
 backgroundColor: '#FFE0B2'
 group: JIRA
-enabledWhen: tools.hasPattern("jira_*")
+enabledWhen: Tools.HasPattern("jira_*")
+preferredModels:
+  - modelTag: Coding
+periodic:
+  mode: optional
+  default: false
+  trigger: onCompletion
+  delay: 60
 prompt: |
   # JIRA: Status Check — All In-Progress Tickets
 

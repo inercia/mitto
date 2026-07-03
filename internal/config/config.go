@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -19,6 +20,56 @@ type ACPServerConstraint struct {
 	MatchMode string `json:"matchMode"`
 	// Pattern is the text to match against option names (e.g., "Opus 4.6").
 	Pattern string `json:"pattern"`
+}
+
+// ModelProfile is a named model profile pairing a selection criteria with tags.
+// Profiles let users tag models by capability (e.g. "Smart", "Cheap") independently
+// of the raw model name, so other parts of Mitto can branch on capability tags rather
+// than brittle model-name strings.
+type ModelProfile struct {
+	// Name is the display name for this profile (e.g. "Opus").
+	Name string `json:"name"`
+	// Criteria selects which model(s) this profile applies to, reusing the same
+	// match-mode + pattern mechanism as ACPServer config-option constraints.
+	Criteria *ACPServerConstraint `json:"criteria,omitempty"`
+	// Tags is the list of capability tags carried by matching models (e.g. "Smart", "Cheap").
+	Tags []string `json:"tags,omitempty"`
+}
+
+// ConstraintMatchesName reports whether name matches the constraint's Pattern under
+// its MatchMode. It is the single-string core of the constraint match engine, shared by
+// MatchConstraintOption (which applies it across a list of option names) and by model-tag
+// resolution, so the contains/exact/startsWith/regex/lookAlike semantics never drift.
+// Matching is case-insensitive (regex uses the (?i) flag). A nil constraint never matches.
+func ConstraintMatchesName(c *ACPServerConstraint, name string) bool {
+	if c == nil {
+		return false
+	}
+	patternLower := strings.ToLower(c.Pattern)
+	nameLower := strings.ToLower(name)
+	switch c.MatchMode {
+	case "contains":
+		return strings.Contains(nameLower, patternLower)
+	case "exact":
+		return nameLower == patternLower
+	case "startsWith":
+		return strings.HasPrefix(nameLower, patternLower)
+	case "regex":
+		matched, _ := regexp.MatchString("(?i)"+c.Pattern, name)
+		return matched
+	case "lookAlike":
+		words := strings.Fields(patternLower)
+		if len(words) == 0 {
+			return false
+		}
+		for _, word := range words {
+			if !strings.Contains(nameLower, word) {
+				return false
+			}
+		}
+		return true
+	}
+	return false
 }
 
 // ACPServer represents a single ACP server configuration.
@@ -50,10 +101,20 @@ type ACPServer struct {
 	// Tags is an optional list of categorization tags for this ACP server.
 	// Tags are single words or hyphenated-words (e.g., "coding", "fast-model").
 	Tags []string
+	// ModelProfile is the name of a Model profile (Config.Models) whose Criteria
+	// should be used for session-start model auto-selection, replacing the
+	// legacy free-text matchMode/pattern constraint under Constraints["model"].
+	// Empty means no profile is selected; legacy Constraints["model"] (if any)
+	// is used as a fallback. See FindModelProfile.
+	ModelProfile string
 	// Constraints is an optional map of config option auto-selection rules.
 	// The key is the config option category (e.g., "model", "mode").
 	// When a session starts, matching constraints auto-select the appropriate option value.
 	Constraints map[string]*ACPServerConstraint
+	// ContextFlushCommand is an optional agent-native slash command (e.g. "/clear")
+	// that flushes/clears the conversation context without restarting the agent.
+	// Empty means the feature is disabled for this server.
+	ContextFlushCommand string
 }
 
 // GetType returns the type identifier for prompt matching.
@@ -63,6 +124,20 @@ func (s *ACPServer) GetType() string {
 		return s.Type
 	}
 	return s.Name
+}
+
+// FindModelProfile returns the named Model profile (case-insensitive match on
+// ModelProfile.Name), or nil if name is empty or no profile matches.
+func (c *Config) FindModelProfile(name string) *ModelProfile {
+	if c == nil || name == "" {
+		return nil
+	}
+	for i := range c.Models {
+		if strings.EqualFold(c.Models[i].Name, name) {
+			return &c.Models[i]
+		}
+	}
+	return nil
 }
 
 // PromptSource indicates where a prompt originated from.
@@ -102,10 +177,11 @@ type WebPrompt struct {
 	// example, "conversation" makes the prompt available in the per-conversation
 	// context menu. Multiple values may be combined, e.g. "conversation,group".
 	Menus string `json:"menus,omitempty"`
-	// Requires is a comma-separated list of capability names this prompt needs
-	// (parsed like Menus). A menu only shows the prompt if the menu provides every
-	// capability the prompt requires. Empty means no requirements.
-	Requires string `json:"requires,omitempty"`
+	// Singleton, when true, declares that this prompt must not have multiple
+	// concurrent conversation instances (subject to find-or-route logic).
+	Singleton bool `json:"singleton,omitempty"`
+	// Tags is an optional list of categorization tags for this prompt.
+	Tags []string `json:"tags,omitempty"`
 	// Source indicates where this prompt originated from (file, settings, workspace).
 	// This is used by the frontend to determine which prompts should be saved back to settings.
 	// Only prompts with Source="settings" or empty Source should be saved.
@@ -121,6 +197,15 @@ type WebPrompt struct {
 	// a periodic (recurring) conversation instead of a one-time seed. The fields
 	// provide default schedule values for the schedule dialog.
 	Periodic *PromptPeriodic `json:"periodic,omitempty"`
+	// PreferredModels is an ordered list of references to global model profiles
+	// (Settings → Models), by profile name or capability tag. The first entry that
+	// resolves to an available model wins. Empty/absent means use the session's
+	// baseline model. This field is carried through PromptMeta to enable
+	// per-prompt model selection without mutating the user's model preference.
+	PreferredModels []PromptPreferredModel `json:"preferredModels,omitempty"`
+	// Parameters declares the named, typed inputs this prompt expects.
+	// Populated from the `parameters:` block in .prompt.yaml or inline config prompts.
+	Parameters []PromptParameter `json:"parameters,omitempty"`
 }
 
 // WebHook represents a shell command hook configuration.
@@ -348,13 +433,23 @@ type MacUIConfig struct {
 	TerminalAction *TerminalActionConfig `json:"terminal_action,omitempty"`
 }
 
+// DeleteConversation confirmation modes for ConfirmationsConfig.DeleteConversation.
+const (
+	// DeleteConversationAlways confirms on every conversation destruction (default).
+	DeleteConversationAlways = "always"
+	// DeleteConversationResponding confirms only when the agent is responding.
+	DeleteConversationResponding = "responding"
+	// DeleteConversationNever never confirms before destroying a conversation.
+	DeleteConversationNever = "never"
+)
+
 // ConfirmationsConfig represents confirmation dialog settings.
 type ConfirmationsConfig struct {
-	// DeleteSession controls whether to show confirmation when deleting a session (default: true)
-	DeleteSession *bool `json:"delete_session,omitempty"`
-	// QuitWithRunningSessions controls whether to show confirmation when quitting with running sessions (default: true)
-	// This only applies to the macOS desktop app.
-	QuitWithRunningSessions *bool `json:"quit_with_running_sessions,omitempty"`
+	// DeleteConversation controls when to show a confirmation dialog before
+	// destroying a conversation (closing via Cmd+W, deleting from the sidebar,
+	// or quitting the macOS app while an agent is responding). One of "always"
+	// (default), "responding" (only when the agent is responding), or "never".
+	DeleteConversation string `json:"delete_conversation,omitempty"`
 }
 
 // Conversation cycling mode constants.
@@ -625,6 +720,9 @@ type ConversationsConfig struct {
 	// performs before it auto-stops. nil = use default (DefaultMaxPeriodicIterations);
 	// 0 = unlimited (still bounded by the hardcoded GlobalMaxPeriodicIterations backstop).
 	MaxPeriodicIterations *int `json:"max_periodic_iterations,omitempty" yaml:"max_periodic_iterations,omitempty"`
+	// MinPeriodicCompletionDelaySeconds is the global lower limit (floor) for the
+	// on-completion periodic trigger's delay. nil = use default (DefaultMinPeriodicCompletionDelaySeconds).
+	MinPeriodicCompletionDelaySeconds *int `json:"min_periodic_completion_delay_seconds,omitempty" yaml:"min_periodic_completion_delay_seconds,omitempty"`
 }
 
 // ActionButtonsConfig configures the follow-up suggestions feature.
@@ -835,6 +933,10 @@ func (c *ConversationsConfig) GetMaxChildConversations() int {
 // for a periodic conversation when no explicit limit is configured.
 const DefaultMaxPeriodicIterations = 100
 
+// DefaultMinPeriodicCompletionDelaySeconds is the default floor (seconds) applied to the
+// on-completion periodic delay to prevent hot loops.
+const DefaultMinPeriodicCompletionDelaySeconds = 5
+
 // GlobalMaxPeriodicIterations is the hardcoded absolute backstop on scheduled runs
 // for any periodic conversation. It can never be exceeded by config.
 const GlobalMaxPeriodicIterations = 1000
@@ -849,6 +951,20 @@ func (c *ConversationsConfig) GetMaxPeriodicIterations() int {
 	v := *c.MaxPeriodicIterations
 	if v > GlobalMaxPeriodicIterations {
 		return GlobalMaxPeriodicIterations
+	}
+	return v
+}
+
+// GetMinPeriodicCompletionDelaySeconds returns the configured floor for the on-completion delay.
+// Safe to call on nil receiver - returns DefaultMinPeriodicCompletionDelaySeconds when unset.
+// A configured value < 0 is treated as 0.
+func (c *ConversationsConfig) GetMinPeriodicCompletionDelaySeconds() int {
+	if c == nil || c.MinPeriodicCompletionDelaySeconds == nil {
+		return DefaultMinPeriodicCompletionDelaySeconds
+	}
+	v := *c.MinPeriodicCompletionDelaySeconds
+	if v < 0 {
+		return 0
 	}
 	return v
 }
@@ -1085,22 +1201,15 @@ func (p *PermissionsConfig) IsAutoApprove() bool {
 
 // MCPConfig contains configuration for the MCP (Model Context Protocol) server.
 // The MCP server provides debugging tools and UI prompt functionality to AI agents.
+// The server is always started; only its bind host/port are configurable.
 type MCPConfig struct {
-	// Enabled controls whether the MCP server is started. Default: true.
-	Enabled *bool `json:"enabled,omitempty" yaml:"enabled,omitempty"`
 	// Host is the address to bind the MCP server to. Default: "127.0.0.1".
 	Host string `json:"host,omitempty" yaml:"host,omitempty"`
 	// Port is the port to listen on. Default: 5757.
-	// Use 0 to let the system pick a free port.
+	// Must be a fixed port (1-65535). 0 (auto-assigned / random) is NOT allowed:
+	// the full MCP address must be known in advance so ACP servers can be
+	// configured to connect to it.
 	Port *int `json:"port,omitempty" yaml:"port,omitempty"`
-}
-
-// IsEnabled returns whether the MCP server should be started.
-func (c *MCPConfig) IsEnabled() bool {
-	if c == nil || c.Enabled == nil {
-		return true // Default: enabled
-	}
-	return *c.Enabled
 }
 
 // GetHost returns the host to bind the MCP server to.
@@ -1145,6 +1254,24 @@ type Config struct {
 	RestrictedRunners map[string]*WorkspaceRunnerConfig
 	// MCP contains MCP (Model Context Protocol) server configuration
 	MCP *MCPConfig
+	// Models is the list of named model profiles (criteria + tags) for tag-based
+	// model-capability lookups.
+	Models []ModelProfile
+}
+
+// rawModelCriteria is used for YAML unmarshaling of a model profile's criteria.
+// It mirrors ACPServerConstraint but with explicit yaml tags (yaml.v3 lowercases
+// field names by default, which would turn MatchMode into "matchmode").
+type rawModelCriteria struct {
+	MatchMode string `yaml:"matchMode"`
+	Pattern   string `yaml:"pattern"`
+}
+
+// rawModelProfile is used for YAML unmarshaling of model profile entries.
+type rawModelProfile struct {
+	Name     string            `yaml:"name"`
+	Criteria *rawModelCriteria `yaml:"criteria"`
+	Tags     []string          `yaml:"tags"`
 }
 
 // rawACPServerConfig is used for YAML unmarshaling of ACP server entries.
@@ -1155,37 +1282,44 @@ type rawACPServerConfig struct {
 	Env     map[string]string `yaml:"env"`  // Environment variables to set when starting the server
 	Tags    []string          `yaml:"tags"` // Optional categorization tags
 	Prompts []struct {
-		Name            string          `yaml:"name"`
-		Prompt          string          `yaml:"prompt"`
-		BackgroundColor string          `yaml:"backgroundColor"`
-		Icon            string          `yaml:"icon"`
-		Description     string          `yaml:"description"`
-		Group           string          `yaml:"group"`
-		Menus           string          `yaml:"menus"`
-		Requires        string          `yaml:"requires"`
-		Enabled         *bool           `yaml:"enabled"`
-		EnabledWhen     string          `yaml:"enabledWhen"`
-		Periodic        *PromptPeriodic `yaml:"periodic,omitempty"`
+		Name            string            `yaml:"name"`
+		Prompt          string            `yaml:"prompt"`
+		BackgroundColor string            `yaml:"backgroundColor"`
+		Icon            string            `yaml:"icon"`
+		Description     string            `yaml:"description"`
+		Group           string            `yaml:"group"`
+		Menus           string            `yaml:"menus"`
+		Enabled         *bool             `yaml:"enabled"`
+		EnabledWhen     string            `yaml:"enabledWhen"`
+		Periodic        *PromptPeriodic   `yaml:"periodic,omitempty"`
+		Parameters      []PromptParameter `yaml:"parameters"`
+		Tags            []string          `yaml:"tags"`
+		Singleton       bool              `yaml:"singleton"`
 	} `yaml:"prompts"`
-	RestrictedRunners map[string]*WorkspaceRunnerConfig `yaml:"restricted_runners"`
+	RestrictedRunners   map[string]*WorkspaceRunnerConfig `yaml:"restricted_runners"`
+	ContextFlushCommand string                            `yaml:"contextFlushCommand"`
 }
 
 // rawConfig is used for YAML unmarshaling to handle the map-based format.
 type rawConfig struct {
 	ACP []map[string]rawACPServerConfig `yaml:"acp"`
+	// Models is the top-level named model profiles section
+	Models []rawModelProfile `yaml:"models"`
 	// Prompts is the top-level prompts section for global prompts
 	Prompts []struct {
-		Name            string          `yaml:"name"`
-		Prompt          string          `yaml:"prompt"`
-		BackgroundColor string          `yaml:"backgroundColor"`
-		Icon            string          `yaml:"icon"`
-		Description     string          `yaml:"description"`
-		Group           string          `yaml:"group"`
-		Menus           string          `yaml:"menus"`
-		Requires        string          `yaml:"requires"`
-		Enabled         *bool           `yaml:"enabled"`
-		EnabledWhen     string          `yaml:"enabledWhen"`
-		Periodic        *PromptPeriodic `yaml:"periodic,omitempty"`
+		Name            string            `yaml:"name"`
+		Prompt          string            `yaml:"prompt"`
+		BackgroundColor string            `yaml:"backgroundColor"`
+		Icon            string            `yaml:"icon"`
+		Description     string            `yaml:"description"`
+		Group           string            `yaml:"group"`
+		Menus           string            `yaml:"menus"`
+		Enabled         *bool             `yaml:"enabled"`
+		EnabledWhen     string            `yaml:"enabledWhen"`
+		Periodic        *PromptPeriodic   `yaml:"periodic,omitempty"`
+		Parameters      []PromptParameter `yaml:"parameters"`
+		Tags            []string          `yaml:"tags"`
+		Singleton       bool              `yaml:"singleton"`
 	} `yaml:"prompts"`
 	// PromptsDirs is a list of additional directories to search for prompt files
 	PromptsDirs []string `yaml:"prompts_dirs"`
@@ -1230,8 +1364,7 @@ type rawConfig struct {
 	} `yaml:"web"`
 	UI *struct {
 		Confirmations *struct {
-			DeleteSession           *bool `yaml:"delete_session"`
-			QuitWithRunningSessions *bool `yaml:"quit_with_running_sessions"`
+			DeleteConversation string `yaml:"delete_conversation"`
 		} `yaml:"confirmations"`
 		Web *struct {
 			InputFontFamily         string `yaml:"input_font_family"`
@@ -1285,9 +1418,10 @@ type rawConfig struct {
 		ExternalImages *struct {
 			Enabled *bool `yaml:"enabled"`
 		} `yaml:"external_images"`
-		DefaultFlags          map[string]bool `yaml:"default_flags"`
-		MaxChildConversations *int            `yaml:"max_child_conversations"`
-		MaxPeriodicIterations *int            `yaml:"max_periodic_iterations"`
+		DefaultFlags                      map[string]bool `yaml:"default_flags"`
+		MaxChildConversations             *int            `yaml:"max_child_conversations"`
+		MaxPeriodicIterations             *int            `yaml:"max_periodic_iterations"`
+		MinPeriodicCompletionDelaySeconds *int            `yaml:"min_periodic_completion_delay_seconds"`
 	} `yaml:"conversations"`
 	// RestrictedRunners is the top-level per-runner-type configuration
 	RestrictedRunners map[string]*WorkspaceRunnerConfig `yaml:"restricted_runners"`
@@ -1308,9 +1442,8 @@ type rawConfig struct {
 	} `yaml:"session"`
 	// MCP is the MCP server configuration
 	MCP *struct {
-		Enabled *bool  `yaml:"enabled"`
-		Host    string `yaml:"host"`
-		Port    *int   `yaml:"port"`
+		Host string `yaml:"host"`
+		Port *int   `yaml:"port"`
 	} `yaml:"mcp"`
 }
 
@@ -1360,13 +1493,14 @@ func Parse(data []byte) (*Config, error) {
 	for _, entry := range raw.ACP {
 		for name, server := range entry {
 			acpServer := ACPServer{
-				Name:              name,
-				Command:           server.Command,
-				Cwd:               server.Cwd,
-				Type:              server.Type, // Optional type for prompt matching
-				Env:               server.Env,  // Environment variables
-				RestrictedRunners: server.RestrictedRunners,
-				Tags:              server.Tags, // Optional categorization tags
+				Name:                name,
+				Command:             server.Command,
+				Cwd:                 server.Cwd,
+				Type:                server.Type, // Optional type for prompt matching
+				Env:                 server.Env,  // Environment variables
+				RestrictedRunners:   server.RestrictedRunners,
+				Tags:                server.Tags, // Optional categorization tags
+				ContextFlushCommand: server.ContextFlushCommand,
 			}
 			// Copy server-specific prompts
 			for _, p := range server.Prompts {
@@ -1386,14 +1520,35 @@ func Parse(data []byte) (*Config, error) {
 					Description:     p.Description,
 					Group:           p.Group,
 					Menus:           p.Menus,
-					Requires:        p.Requires,
+					Singleton:       p.Singleton,
+					Tags:            p.Tags,
 					EnabledWhen:     p.EnabledWhen,
 					Periodic:        p.Periodic,
+					Parameters:      p.Parameters,
 				}
 				acpServer.Prompts = append(acpServer.Prompts, wp)
 			}
 			cfg.ACPServers = append(cfg.ACPServers, acpServer)
 		}
+	}
+
+	// Populate model profiles (top-level models:)
+	for _, m := range raw.Models {
+		// Skip profiles without a name
+		if m.Name == "" {
+			continue
+		}
+		mp := ModelProfile{
+			Name: m.Name,
+			Tags: m.Tags,
+		}
+		if m.Criteria != nil {
+			mp.Criteria = &ACPServerConstraint{
+				MatchMode: m.Criteria.MatchMode,
+				Pattern:   m.Criteria.Pattern,
+			}
+		}
+		cfg.Models = append(cfg.Models, mp)
 	}
 
 	// Populate global prompts (top-level)
@@ -1407,6 +1562,9 @@ func Parse(data []byte) (*Config, error) {
 		if p.Prompt == "" && !isDisabled {
 			continue
 		}
+		if err := ValidatePromptParameters(p.Menus, p.Parameters); err != nil {
+			continue
+		}
 		wp := WebPrompt{
 			Name:            p.Name,
 			Prompt:          p.Prompt,
@@ -1415,10 +1573,12 @@ func Parse(data []byte) (*Config, error) {
 			Description:     p.Description,
 			Group:           p.Group,
 			Menus:           p.Menus,
-			Requires:        p.Requires,
+			Singleton:       p.Singleton,
+			Tags:            p.Tags,
 			EnabledWhen:     p.EnabledWhen,
 			Enabled:         p.Enabled,
 			Periodic:        p.Periodic,
+			Parameters:      p.Parameters,
 		}
 		cfg.Prompts = append(cfg.Prompts, wp)
 	}
@@ -1477,8 +1637,7 @@ func Parse(data []byte) (*Config, error) {
 		// Populate confirmations
 		if raw.UI.Confirmations != nil {
 			cfg.UI.Confirmations = &ConfirmationsConfig{
-				DeleteSession:           raw.UI.Confirmations.DeleteSession,
-				QuitWithRunningSessions: raw.UI.Confirmations.QuitWithRunningSessions,
+				DeleteConversation: raw.UI.Confirmations.DeleteConversation,
 			}
 		}
 
@@ -1604,11 +1763,16 @@ func Parse(data []byte) (*Config, error) {
 			cfg.Conversations.MaxPeriodicIterations = raw.Conversations.MaxPeriodicIterations
 		}
 
+		// Copy min periodic completion delay
+		if raw.Conversations.MinPeriodicCompletionDelaySeconds != nil {
+			cfg.Conversations.MinPeriodicCompletionDelaySeconds = raw.Conversations.MinPeriodicCompletionDelaySeconds
+		}
+
 		// If no config was actually set, nil out the conversations config
 		if cfg.Conversations.Processing == nil && cfg.Conversations.Queue == nil &&
 			cfg.Conversations.ActionButtons == nil && cfg.Conversations.ExternalImages == nil &&
 			cfg.Conversations.DefaultFlags == nil && cfg.Conversations.MaxChildConversations == nil &&
-			cfg.Conversations.MaxPeriodicIterations == nil {
+			cfg.Conversations.MaxPeriodicIterations == nil && cfg.Conversations.MinPeriodicCompletionDelaySeconds == nil {
 			cfg.Conversations = nil
 		}
 	}
@@ -1640,9 +1804,8 @@ func Parse(data []byte) (*Config, error) {
 	// Parse MCP config
 	if raw.MCP != nil {
 		cfg.MCP = &MCPConfig{
-			Enabled: raw.MCP.Enabled,
-			Host:    raw.MCP.Host,
-			Port:    raw.MCP.Port,
+			Host: raw.MCP.Host,
+			Port: raw.MCP.Port,
 		}
 	}
 
@@ -1676,6 +1839,77 @@ func (c *Config) GetServerType(name string) string {
 		return ""
 	}
 	return srv.GetType()
+}
+
+// ProfileByName returns a pointer to the profile in profiles with the given name
+// (case-insensitive), or nil when none matches. This is the pure, slice-based core
+// shared by (*Config).ModelProfileByName and by conversation.SelectPreferredModel,
+// which only has a []ModelProfile (not a *Config) available at call time.
+func ProfileByName(profiles []ModelProfile, name string) *ModelProfile {
+	for i := range profiles {
+		if strings.EqualFold(profiles[i].Name, name) {
+			return &profiles[i]
+		}
+	}
+	return nil
+}
+
+// ProfilesByTag returns all profiles in profiles carrying the given tag
+// (case-insensitive). Returns nil when none match. This is the pure, slice-based
+// core shared by (*Config).ModelProfilesByTag and by conversation.SelectPreferredModel.
+func ProfilesByTag(profiles []ModelProfile, tag string) []ModelProfile {
+	var out []ModelProfile
+	for _, p := range profiles {
+		for _, t := range p.Tags {
+			if strings.EqualFold(t, tag) {
+				out = append(out, p)
+				break
+			}
+		}
+	}
+	return out
+}
+
+// ModelProfileByName returns the model profile with the given name (case-insensitive).
+// The bool is false when no profile matches. Intended for consumers that need to look up
+// a profile's tags or criteria by its display name.
+func (c *Config) ModelProfileByName(name string) (*ModelProfile, bool) {
+	p := ProfileByName(c.Models, name)
+	return p, p != nil
+}
+
+// ModelProfilesByTag returns all model profiles carrying the given tag (case-insensitive),
+// mirroring how ACP server tags are compared elsewhere. Returns an empty slice when none match.
+func (c *Config) ModelProfilesByTag(tag string) []ModelProfile {
+	return ProfilesByTag(c.Models, tag)
+}
+
+// ResolveModelTags returns the UNION of capability tags from every model profile whose
+// Criteria matches modelName (using the shared ConstraintMatchesName engine). Tags are
+// de-duplicated case-insensitively, preserving first-seen order. It is a pure function of
+// (profiles, name) so config never needs to import conversation. Returns nil when modelName
+// is empty, no profile has criteria, or nothing matches (a nil slice is safe to range/index).
+func (c *Config) ResolveModelTags(modelName string) []string {
+	if modelName == "" {
+		return nil
+	}
+	var tags []string
+	seen := make(map[string]struct{})
+	for i := range c.Models {
+		p := &c.Models[i]
+		if !ConstraintMatchesName(p.Criteria, modelName) {
+			continue
+		}
+		for _, t := range p.Tags {
+			key := strings.ToLower(t)
+			if _, dup := seen[key]; dup {
+				continue
+			}
+			seen[key] = struct{}{}
+			tags = append(tags, t)
+		}
+	}
+	return tags
 }
 
 // ServerNames returns a list of all configured server names.
@@ -1717,11 +1951,23 @@ func (c *Config) GetShowHideHotkey() (key string, enabled bool) {
 	return key, enabled
 }
 
-// ShouldConfirmQuitWithRunningSessions returns whether to show a confirmation dialog
-// when quitting the app with running sessions. Defaults to true.
-func (c *Config) ShouldConfirmQuitWithRunningSessions() bool {
-	if c.UI.Confirmations == nil || c.UI.Confirmations.QuitWithRunningSessions == nil {
-		return true // Default to true
+// DeleteConversationMode returns the configured confirmation mode for destroying
+// a conversation. Defaults to DeleteConversationAlways when unset or invalid.
+func (c *Config) DeleteConversationMode() string {
+	if c.UI.Confirmations == nil {
+		return DeleteConversationAlways
 	}
-	return *c.UI.Confirmations.QuitWithRunningSessions
+	switch c.UI.Confirmations.DeleteConversation {
+	case DeleteConversationResponding, DeleteConversationNever:
+		return c.UI.Confirmations.DeleteConversation
+	default:
+		return DeleteConversationAlways
+	}
+}
+
+// ShouldConfirmDeleteRespondingSession returns whether to show a confirmation dialog
+// before destroying a conversation while its agent is actively responding (and, on the
+// macOS app, before quitting with responding agents). True unless the mode is "never".
+func (c *Config) ShouldConfirmDeleteRespondingSession() bool {
+	return c.DeleteConversationMode() != DeleteConversationNever
 }

@@ -1,0 +1,261 @@
+icon: periodic
+name: Publish post
+menus: beadsIssues, conversation
+parameters:
+  - name: IssueID
+    type: beadsId
+    required: false
+    description: The beads issue ID to act on
+description: Auto-periodic — drive a blog-post bead through draft → review → publish (one label per run), then self-terminate
+backgroundColor: '#BBDEFB'
+group: Tasks
+enabledWhen: '!Session.IsChild && CommandExists("bd") && DirExists(".beads") && Tools.HasPattern("mitto_conversation_*") && "blog" in Item.Labels && Item.Status != "closed"'
+periodic:
+  mode: always
+  trigger: onCompletion
+  delay: 30
+  maxIterations: 10
+  maxDuration: "2h"
+prompt: |
+  ## Session Context
+
+  Your session ID is `{{ .Session.ID }}` — use this as `self_id` for all `mitto_*` MCP tool calls.
+  Available ACP servers: `{{ .ACP.AvailableText }}`
+  Existing children: `{{ .Children.MCPText }}`
+
+  # Beads: Publish Post
+
+  Beads is a CLI issue tracker (`bd`). Issues are called "beads" and have IDs like `bd-xyz`.
+  This prompt drives a single bead carrying the `blog` label through a **label-encoded
+  state machine** — `drafted` → `reviewed` → `published` — advancing **exactly one stage
+  per run**, then removing its own periodic flag once `published` is reached.
+
+  Unlike the `Iterate fixing bug` driver, this prompt does the per-stage work **inline**
+  (no per-phase model tiering / dispatch). Each `onCompletion` re-fire reads the bead's
+  live labels and performs the single next stage.
+
+  {{ $target := "" -}}
+  {{ if .Session.BeadsIssue }}{{ $target = .Session.BeadsIssue }}{{ else if .Args.IssueID }}{{ $target = .Args.IssueID }}{{ end -}}
+  {{ if $target -}}
+  The **target post** for this run is `{{ $target }}`{{ if .Session.BeadsIssue }} (from this conversation's linked beads issue — preferred, durable across periodic runs){{ else }} (supplied as the `IssueID` argument){{ end }}.
+  {{- else -}}
+  The **target post** for this run is **not explicitly specified**. This prompt requires one
+  specific `blog`-labelled bead — do not guess an ID and do not scan the backlog for
+  candidates. If a user is present (see Interaction Mode below), ask which post via
+  `mitto_ui_options`; in silent/scheduled mode, skip straight to the Blocked → Defer +
+  Handoff pattern (Step 4) using a `mitto_ui_notify` in place of a bead comment, then stop.
+  {{- end }}
+
+  {{- if .Iteration.IsUninterrupted }}
+  ## Continuation — uninterrupted scheduled run
+
+  **Silent mode.** Use **only** `mitto_ui_notify`; never call `mitto_ui_options`,
+  `mitto_ui_form`, or `mitto_ui_textbox`. **Decide autonomously** — do not ask which
+  stage to work on or how to proceed. If a run cannot make progress autonomously, use
+  the **Blocked → Defer + Handoff** pattern (Step 4) instead of guessing.
+
+  Review the prior `bd comment` entries on `{{ $target }}` so you continue from where
+  the last run stopped instead of repeating it. Then proceed straight to Step 1.
+  {{- if .Iteration.IsLast }}
+
+  **Final scheduled run** (the `maxIterations` cap is reached after this run): do **not**
+  begin a stage you cannot finish now — wrap up, log status with `bd comment`, then post a
+  closing summary via `mitto_ui_notify`.
+  {{- end }}
+  {{- else }}
+  ## Interaction Mode — READ THIS FIRST
+
+  This prompt almost always runs **unattended on a schedule**.
+  {{- if and .Session.IsPeriodic (not .Session.IsPeriodicForced) }}
+
+  **Silent mode — a scheduled periodic run.**
+  - Use **only** `mitto_ui_notify` — non-blocking notifications.
+  - Do **NOT** call `mitto_ui_options`, `mitto_ui_form`, or `mitto_ui_textbox`. Nobody is
+    watching. Never block waiting for input.
+  - When you cannot make progress autonomously, do **not** guess and do **not** ask — use
+    the **Blocked → Defer + Handoff** pattern (Step 4).
+  {{- else }}
+
+  **Interactive mode** (e.g. the very first send, or a force-triggered run): a user may be
+  present. During the Review stage (Step 3b) you *may* surface the current draft for
+  sign-off via `mitto_ui_options` / `mitto_ui_notify` before adding the `reviewed` label;
+  every other stage still decides autonomously or defers (Step 4).
+  {{- end }}
+  {{- if not .Iteration.IsFirst }}
+
+  **Continuation run.** Earlier runs of this conversation already advanced this work.
+  Before doing anything else, review the prior `bd comment` entries on `{{ $target }}` so
+  you continue from where the last run stopped instead of repeating it.
+  {{- end }}
+  {{- if .Iteration.IsLast }}
+
+  **Final scheduled run.** This is the last automatic iteration (the `maxIterations` cap is
+  reached after this run, so no further run will fire). Do **not** begin a stage you cannot
+  finish now — instead wrap up: log current status with `bd comment`, then post a closing
+  summary via `mitto_ui_notify`.
+  {{- end }}
+  {{- end }}
+
+  {{ if $target -}}
+  ## Step 1 — Load LIVE state (never rely on a stale snapshot)
+
+  Labels drift between runs. Load the bead's **current** state fresh, every run:
+
+  ```bash
+  bd show {{ $target }} --json --include-comments
+  ```
+
+  Read its `labels` array. **Branch on this live JSON, not on any `Item.*` template
+  field** — `Item.*` is empty at send time and only usable in `enabledWhen`.
+
+  ## Step 2 — Confirm it is still actionable
+
+  If `{{ $target }}` is already `closed`, or carries `needs-human` and is still deferred,
+  stop here: post a `mitto_ui_notify` explaining why, and self-terminate (Step 3d's
+  self-termination steps) without changing any label.
+
+  ## Step 3 — Branch on the live labels; advance exactly ONE stage this run
+
+  - None of `drafted`, `reviewed`, `published` present → **Step 3a: Draft.**
+  - `drafted` present, `reviewed` absent → **Step 3b: Review.**
+  - `reviewed` present, `published` absent → **Step 3c: Publish.**
+  - `published` present → **Step 3d: Done.**
+
+  Do the matching stage's work inline, add the single next label, and end this turn.
+  The `onCompletion` schedule then re-fires this prompt, which observes the newly-added
+  label and takes the next branch. Never add two labels in one run.
+
+  ### Step 3a — Draft (no state label yet)
+
+  Produce or refine the post draft (title, body, links, front-matter, tags — whatever the
+  post file requires). Record the full draft text on the bead so the next run can review
+  it without regenerating:
+
+  ```bash
+  bd comment {{ $target }} "Draft: <full draft text or a link to it in the repo>"
+  bd update {{ $target }} --add-label drafted
+  ```
+
+  Then end this turn. The next scheduled run will observe `drafted` and take the Review
+  branch.
+
+  ### Step 3b — Review (`drafted` present, not yet `reviewed`)
+
+  Re-read the drafted comment from Step 1's `bd show ... --include-comments` output and
+  self-review it for tone, factual accuracy, working links, code fences, front-matter,
+  headings, and formatting. Note any concrete edits you apply.
+  {{- if or .Iteration.IsFirst (not .Session.IsPeriodic) .Session.IsPeriodicForced }}
+
+  On this interactive run you *may* surface the reviewed draft for sign-off via
+  `mitto_ui_options` (Approve / Request changes) or `mitto_ui_notify` before adding the
+  `reviewed` label. If the user requests changes, apply them, record what changed via
+  `bd comment`, and **still add** `reviewed` at the end so the next run advances to
+  Publish — unless the requested changes cannot be resolved autonomously, in which case
+  fall through to **Step 4 (Blocked → Defer + Handoff)** instead.
+  {{- end }}
+
+  ```bash
+  bd comment {{ $target }} "Review: <summary of edits applied and sign-off status>"
+  bd update {{ $target }} --add-label reviewed
+  ```
+
+  Then end this turn. The next scheduled run will observe `reviewed` and take the
+  Publish branch.
+
+  ### Step 3c — Publish (`reviewed` present, not yet `published`)
+
+  Run the project's publish/deploy step. **This is a GENERALIZATION EXAMPLE**: no real
+  blog pipeline is wired into this repo, so the publish action here is a
+  **project-specific placeholder** — replace the command below with your site's actual
+  publish/deploy command (e.g. `hugo deploy`, `jekyll build && rsync ...`,
+  `npm run deploy`, a `gh workflow run publish.yml`, etc.). Do not invent a command
+  that does not exist in this project.
+
+  ```bash
+  # PLACEHOLDER — replace with the actual publish/deploy command for this project.
+  # Example shapes (pick ONE that exists in your repo):
+  #   hugo deploy
+  #   jekyll build && rsync -av _site/ user@host:/var/www/blog/
+  #   npm run deploy
+  #   gh workflow run publish.yml -f post={{ $target }}
+  echo "TODO: replace this line with the real publish command for {{ $target }}"
+  ```
+
+  If the placeholder command above is still in place (i.e. the operator has not wired a
+  real publish command yet), do **not** add the `published` label and do **not** close
+  the bead — fall through to **Step 4 (Blocked → Defer + Handoff)** with a handoff that
+  names the missing publish command as the single thing needed.
+
+  Once the real publish command has succeeded:
+
+  ```bash
+  bd comment {{ $target }} "Publish: <what was published, where, and any URL>"
+  bd update {{ $target }} --add-label published
+  bd close {{ $target }} --reason "Post published"   # optional but recommended
+  ```
+
+  Then end this turn. The next scheduled run will observe `published` and take the Done
+  branch (Step 3d).
+
+  ### Step 3d — Done (`published` present)
+
+  All three stages are complete. Stop this conversation from re-running:
+
+  ```
+  mitto_conversation_update(self_id: "{{ .Session.ID }}", conversation_id: "self", periodic_enabled: false)
+  mitto_ui_notify(self_id: "{{ .Session.ID }}", title: "Publish post — done", message: "<what was drafted / reviewed / published across runs>", style: "success")
+  ```
+
+  After stopping, do nothing further this run.
+  {{- else }}
+  ## Step 1 — No target post to work on
+
+  There is nothing to load or branch on without a target. Do not run any `bd` command.
+  {{- end }}
+
+  ## Step 4 — Blocked → Defer + Handoff (applies at EVERY stage above)
+
+  Use this whenever a run cannot make progress autonomously: something is unclear (a
+  decision/info only the user can give), something can't be solved without help (a
+  secret, an external action, a product decision — including "the publish command is
+  still a placeholder"), or you are otherwise stuck. **Do not** advance the state label
+  in this case. Instead:
+
+  1. Defer and flag the bead so it drops out of `bd ready`:
+
+     ```bash
+     bd update {{ if $target }}{{ $target }}{{ else }}<target-post>{{ end }} --add-label needs-human --defer <when>   # e.g. tomorrow / +1d
+     ```
+
+  2. Write a **structured handoff** comment on the bead:
+
+     ```bash
+     bd comment {{ if $target }}{{ $target }}{{ else }}<target-post>{{ end }} "Blocked at <stage>. What I tried: <summary>. What I need from you: <the ONE concrete question/decision/info/action>. How to resume: bd update <id> --remove-label needs-human --defer '' , then re-run."
+     ```
+
+  3. End the iteration with a concise handoff message naming the blocker and the single
+     thing needed (interactive runs also `mitto_ui_notify`), and disable this
+     conversation's own periodic flag so the loop does not spin on the blocker:
+
+     ```
+     mitto_conversation_update(self_id: "{{ .Session.ID }}", conversation_id: "self", periodic_enabled: false)
+     ```
+
+  The user resumes the loop (re-enabling periodic, or force-running) after clearing the
+  `needs-human` label and addressing the handoff.
+
+  ## Guidelines
+
+  - **One stage per run.** Add a single next label (`drafted` → `reviewed` → `published`),
+    then end the turn. Never skip a stage or add two labels at once.
+  - **Live state only.** Always re-read labels via `bd show --json` at the start of the
+    run; never assume labels from a prior run or from `Item.*`.
+  - **Decide autonomously; never guess.** The only time you must not proceed is when
+    something is genuinely unclear/unsolvable without the user — then use Step 4.
+  - **Publish step is a placeholder.** The `Step 3c` command block above is intentionally
+    a placeholder; wire it to your project's real publish/deploy command before relying
+    on this driver in a live blog workflow.
+  - **Silent unless it matters.** On scheduled runs, `mitto_ui_notify` only for
+    meaningful milestones (stage advanced, published, blocked/deferred, or final stop).
+  - **Always log to the tracker** with `bd comment` so progress is auditable even when
+    you stay silent in the UI.

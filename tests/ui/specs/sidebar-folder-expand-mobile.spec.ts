@@ -52,7 +52,7 @@ testWithCleanup.describe("Sidebar - mobile folder expansion", () => {
   async function openSidebarAndGetFolder(page, timeouts) {
     await page.setViewportSize(MOBILE_VIEWPORT);
 
-    const hamburger = page.locator('button[title="Show conversations"]');
+    const hamburger = page.locator('button[aria-label="Show conversations"]');
     await expect(hamburger).toBeVisible({ timeout: timeouts.appReady });
     await hamburger.click();
 

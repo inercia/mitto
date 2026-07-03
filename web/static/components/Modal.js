@@ -113,6 +113,7 @@ export function Modal({
       if (modalStack[modalStack.length - 1] !== token) return;
 
       if (e.key === "Escape") {
+        e.preventDefault();
         onCloseRef.current?.();
         return;
       }
@@ -183,8 +184,9 @@ export function Modal({
             <h3 id=${titleId} class="text-lg font-semibold">${title}</h3>
             <button
               onClick=${onClose}
-              class="btn btn-ghost btn-square btn-sm"
-              title="Close"
+              class="btn btn-ghost btn-square btn-sm tooltip tooltip-bottom"
+              data-tip="Close"
+              aria-label="Close"
               data-testid=${closeTestid}
             >
               <${CloseIcon} className="w-5 h-5" />

@@ -27,6 +27,19 @@
 //                            supply its own full-window backdrop — this variant's
 //                            drawer-overlay is transparent. Used by BeadsView so
 //                            the panel/fullscreen fills only the beads view area.
+//   dock          {boolean}  dock the panel to the right edge of the nearest
+//                            positioned ancestor, confined to the PANEL's own
+//                            width with no dimming backdrop (adds `drawer-dock`;
+//                            see styles.css). The content to the panel's left is
+//                            never under a composited layer, which avoids the
+//                            WebKit/Chromium backing-store drop that blanked the
+//                            conversation on pointer-move (mitto-cdf). On phones
+//                            the panel covers the whole viewport. No outside-click
+//                            backdrop — close via Escape or the panel's own UI.
+//   rootStyle     {string}   inline style applied to the `.drawer` root. In dock
+//                            mode set the docked width via CSS vars, e.g.
+//                            "--dock-w:40rem;--dock-maxw:85%" (defaults: 20rem /
+//                            100%). Ignored on phones (dock covers the viewport).
 //   className     {string}   extra classes for the `.drawer` root (e.g. md:hidden)
 //   children      {any}      panel content
 //   testid        {string}   data-testid applied to the panel element
@@ -43,6 +56,8 @@ export function Drawer({
   panelClass = "bg-mitto-sidebar border-l border-mitto-border-1",
   zClass = "z-50",
   scoped = false,
+  dock = false,
+  rootStyle = "",
   className = "",
   children,
   testid,
@@ -50,7 +65,10 @@ export function Drawer({
 }) {
   useEffect(() => {
     const onKey = (e) => {
-      if (e.key === "Escape") onClose?.();
+      if (e.key === "Escape") {
+        e.preventDefault();
+        onClose?.();
+      }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
@@ -59,14 +77,19 @@ export function Drawer({
   const closing = isClosing ? "closing" : "";
 
   return html`
-    <div class="drawer ${side === "end" ? "drawer-end" : ""} ${scoped ? "drawer-scoped" : ""} ${className}">
+    <div
+      class="drawer ${side === "end" ? "drawer-end" : ""} ${scoped
+        ? "drawer-scoped"
+        : ""} ${dock ? "drawer-dock" : ""} ${className}"
+      style=${rootStyle}
+    >
       <!-- Kept permanently checked: visibility is Preact-controlled (mount /
            unmount), the checkbox only makes daisyUI resolve the open state. -->
       <input
         type="checkbox"
         class="drawer-toggle"
         defaultChecked
-        tabIndex=${-1}
+        tabindex=${-1}
         aria-hidden="true"
       />
       <div class="drawer-side ${zClass}">
@@ -80,7 +103,9 @@ export function Drawer({
              carries cursor:pointer, so without it outside-taps would never
              close the drawer on iPhone. -->
         <div
-          class="drawer-overlay cursor-pointer ${animate && !scoped ? "properties-backdrop" : ""} ${closing}"
+          class="drawer-overlay cursor-pointer ${animate && !scoped
+            ? "properties-backdrop"
+            : ""} ${closing}"
           onClick=${onClose}
           data-testid=${overlayTestid}
         ></div>

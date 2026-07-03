@@ -17,6 +17,7 @@ import {
   ArchiveFilledIcon,
   TrashIcon,
   CopyIcon,
+  BroomIcon,
 } from "../components/Icons.js";
 import { buildPromptGroupMenuItems } from "../components/ContextMenu.js";
 
@@ -24,7 +25,7 @@ export function useConversationMenu({
   session,
   workingDir = "",
   isArchived = false,
-  isPeriodicEnabled = false,
+  isPeriodicConfigured = false,
   isSpawned = false,
   canArchive = true,
   archiveBlockedReason = null,
@@ -35,7 +36,9 @@ export function useConversationMenu({
   onMakeNonPeriodic,
   onFetchConversationPrompts, // async (session, workingDir) => menus:conversation prompts
   onSendPromptToConversation, // (session, prompt) when a context-menu prompt is clicked
-  onCopyConversation,         // optional: (session) => void — shows "Copy as Markdown" item
+  onCopyConversation, // optional: (session) => void — shows "Copy as Markdown" item
+  flushCommand = "", // optional: when non-empty, shows "Flush context" item
+  onFlushContext, // optional: (session) => void — invoked when "Flush context" is clicked
 }) {
   const [contextMenu, setContextMenu] = useState(null);
   // menus:conversation prompts evaluated for THIS conversation. Loaded lazily
@@ -86,7 +89,7 @@ export function useConversationMenu({
       onSendPromptToConversation && menuPrompts && menuPrompts.length > 0
         ? buildPromptGroupMenuItems(
             menuPrompts,
-            (p) => onSendPromptToConversation(session, p),
+            (p, opts) => onSendPromptToConversation(session, p, opts),
             html`<${LightningIcon} />`,
           )
         : [];
@@ -109,8 +112,23 @@ export function useConversationMenu({
             },
           ]
         : []),
-      // "Make periodic" — only for non-periodic, non-spawned, non-archived sessions
-      ...(!isPeriodicEnabled && !isSpawned && !isArchived
+      // "Flush context" — only shown when the conversation's ACP server has a
+      // context-flush command configured and the caller provides the callback.
+      ...(flushCommand && onFlushContext
+        ? [
+            {
+              label: "Flush context",
+              icon: html`<${BroomIcon} />`,
+              title: `Send ${flushCommand} to clear the agent's context`,
+              onClick: () => onFlushContext(session),
+            },
+          ]
+        : []),
+      // "Make periodic" — only for conversations without a periodic config yet,
+      // non-spawned, non-archived. Gated on periodic_configured (not
+      // periodic_enabled) so a paused/draft periodic conversation is still
+      // treated as already periodic and does not offer "Make periodic" again.
+      ...(!isPeriodicConfigured && !isSpawned && !isArchived
         ? [
             {
               label: "Make periodic",
@@ -119,8 +137,9 @@ export function useConversationMenu({
             },
           ]
         : []),
-      // "Make non-periodic" — inverse: only for periodic, non-spawned sessions
-      ...(isPeriodicEnabled && !isSpawned
+      // "Make non-periodic" — inverse: any conversation that has a periodic
+      // config (enabled OR paused/draft), non-spawned, can remove it.
+      ...(isPeriodicConfigured && !isSpawned
         ? [
             {
               label: "Make non-periodic",
@@ -160,7 +179,7 @@ export function useConversationMenu({
     onSendPromptToConversation,
     session,
     onRename,
-    isPeriodicEnabled,
+    isPeriodicConfigured,
     isSpawned,
     isArchived,
     onMakePeriodic,
@@ -170,6 +189,8 @@ export function useConversationMenu({
     onArchive,
     onDelete,
     onCopyConversation,
+    flushCommand,
+    onFlushContext,
   ]);
 
   return {

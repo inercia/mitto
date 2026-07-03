@@ -10,13 +10,53 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
 	"github.com/inercia/mitto/internal/config"
+	"github.com/inercia/mitto/internal/conversation"
 	"github.com/inercia/mitto/internal/session"
+	"github.com/inercia/mitto/internal/web/handlers"
 )
+
+// handleListSessions is a test-only shim delegating to the migrated
+// handlers.HandleListSessions. It lets the existing web-package list-sessions
+// tests keep calling server.handleListSessions while the full test-suite
+// migration to the handlers package is deferred to a later increment.
+func (s *Server) handleListSessions(w http.ResponseWriter, r *http.Request) {
+	handlers.New(handlers.Deps{Store: s.Store(), SessionManager: s.sessionManager}).HandleListSessions(w, r)
+}
+
+// handleCreateSession is a test-only shim delegating to the migrated
+// handlers.HandleCreateSession, mirroring the handleListSessions shim above so
+// the existing web-package create-session tests keep their call sites.
+func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
+	handlers.New(handlers.Deps{
+		Store:            s.Store(),
+		SessionManager:   s.sessionManager,
+		DefaultACPServer: s.config.ACPServer,
+	}).HandleCreateSession(w, r)
+}
+
+// handleUpdateSession is a test-only shim delegating to the migrated
+// handlers.HandleUpdateSession, wiring the broadcast closures from the server's
+// nil-safe methods so the existing web-package update/archive tests keep their
+// call sites.
+func (s *Server) handleUpdateSession(w http.ResponseWriter, r *http.Request, sessionID string) {
+	handlers.New(handlers.Deps{
+		Logger:                   s.logger,
+		Store:                    s.Store(),
+		SessionManager:           s.sessionManager,
+		CallbackIndex:            s.callbackIndex,
+		BroadcastSessionDeleted:  s.BroadcastSessionDeleted,
+		BroadcastACPStopped:      s.BroadcastACPStopped,
+		BroadcastACPStarted:      s.BroadcastACPStarted,
+		BroadcastACPStartFailed:  s.BroadcastACPStartFailed,
+		BroadcastSessionRenamed:  s.BroadcastSessionRenamed,
+		BroadcastSessionPinned:   s.BroadcastSessionPinned,
+		BroadcastSessionArchived: s.BroadcastSessionArchived,
+	}).HandleUpdateSession(w, r, sessionID)
+}
 
 func TestHandleListSessions_EmptyStore(t *testing.T) {
 	tmpDir := t.TempDir()
@@ -27,7 +67,7 @@ func TestHandleListSessions_EmptyStore(t *testing.T) {
 	defer store.Close()
 
 	server := &Server{
-		sessionManager: NewSessionManager("", "", false, nil),
+		sessionManager: conversation.NewSessionManager("", "", false, nil),
 		store:          store,
 	}
 
@@ -71,7 +111,7 @@ func TestHandleListSessions_WithSessions(t *testing.T) {
 	}
 
 	server := &Server{
-		sessionManager: NewSessionManager("", "", false, nil),
+		sessionManager: conversation.NewSessionManager("", "", false, nil),
 		store:          store,
 	}
 
@@ -95,81 +135,9 @@ func TestHandleListSessions_WithSessions(t *testing.T) {
 	}
 }
 
-func TestHandleGetWorkspaces(t *testing.T) {
-	sm := NewSessionManager("test-cmd", "test-server", false, nil)
-	sm.AddWorkspace(config.WorkspaceSettings{
-		WorkingDir: "/workspace1",
-		ACPServer:  "server1",
-	})
-
-	server := &Server{
-		sessionManager: sm,
-	}
-
-	req := httptest.NewRequest(http.MethodGet, "/api/workspaces", nil)
-	w := httptest.NewRecorder()
-
-	server.handleGetWorkspaces(w, req)
-
-	if w.Code != http.StatusOK {
-		t.Errorf("Status = %d, want %d", w.Code, http.StatusOK)
-	}
-
-	var response struct {
-		Workspaces []interface{} `json:"workspaces"`
-	}
-	if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
-		t.Fatalf("Failed to unmarshal response: %v", err)
-	}
-
-	// Should have at least 1 workspace
-	if len(response.Workspaces) < 1 {
-		t.Errorf("Workspaces count = %d, want >= 1", len(response.Workspaces))
-	}
-}
-
-func TestHandleRunningSessions_Empty(t *testing.T) {
-	tmpDir := t.TempDir()
-	store, err := session.NewStore(tmpDir)
-	if err != nil {
-		t.Fatalf("NewStore failed: %v", err)
-	}
-	defer store.Close()
-
-	sm := NewSessionManager("", "", false, nil)
-
-	server := &Server{
-		sessionManager: sm,
-		store:          store,
-	}
-
-	req := httptest.NewRequest(http.MethodGet, "/api/sessions/running", nil)
-	w := httptest.NewRecorder()
-
-	server.handleRunningSessions(w, req)
-
-	if w.Code != http.StatusOK {
-		t.Errorf("Status = %d, want %d", w.Code, http.StatusOK)
-	}
-
-	// Response is a RunningSessionsResponse object
-	var response RunningSessionsResponse
-	if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
-		t.Fatalf("Failed to unmarshal response: %v", err)
-	}
-
-	if response.TotalRunning != 0 {
-		t.Errorf("TotalRunning = %d, want 0", response.TotalRunning)
-	}
-
-	if len(response.Sessions) != 0 {
-		t.Errorf("Sessions count = %d, want 0", len(response.Sessions))
-	}
-}
-
 func TestHandleSessions_MethodNotAllowed(t *testing.T) {
 	server := &Server{
-		sessionManager: NewSessionManager("", "", false, nil),
+		sessionManager: conversation.NewSessionManager("", "", false, nil),
 	}
 
 	// Test PUT method (not allowed)
@@ -183,42 +151,15 @@ func TestHandleSessions_MethodNotAllowed(t *testing.T) {
 	}
 }
 
-func TestHandleWorkspaces_MethodNotAllowed(t *testing.T) {
-	server := &Server{
-		sessionManager: NewSessionManager("", "", false, nil),
-	}
-
-	// Test PUT method (not allowed)
-	req := httptest.NewRequest(http.MethodPut, "/api/workspaces", nil)
-	w := httptest.NewRecorder()
-
-	server.handleWorkspaces(w, req)
-
-	if w.Code != http.StatusMethodNotAllowed {
-		t.Errorf("Status = %d, want %d", w.Code, http.StatusMethodNotAllowed)
-	}
-}
-
-func TestHandleDeleteSession_NotFound(t *testing.T) {
-	tmpDir := t.TempDir()
-	store, err := session.NewStore(tmpDir)
-	if err != nil {
-		t.Fatalf("NewStore failed: %v", err)
-	}
-	defer store.Close()
-
-	server := &Server{
-		sessionManager: NewSessionManager("", "", false, nil),
-		store:          store,
-	}
-
-	w := httptest.NewRecorder()
-
-	server.handleDeleteSession(w, "nonexistent")
-
-	if w.Code != http.StatusNotFound {
-		t.Errorf("Status = %d, want %d", w.Code, http.StatusNotFound)
-	}
+// newSessionDetailMux registers the migrated base session routes onto a fresh
+// ServeMux so tests exercise real Go 1.22 method+pattern routing (incl. 405).
+func newSessionDetailMux(s *Server) *http.ServeMux {
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /api/sessions/{id}", s.handleSessionGet)
+	mux.HandleFunc("PATCH /api/sessions/{id}", s.handleSessionUpdate)
+	mux.HandleFunc("DELETE /api/sessions/{id}", s.handleSessionDelete)
+	mux.HandleFunc("GET /api/sessions/{id}/events", s.handleSessionEvents)
+	return mux
 }
 
 func TestHandleSessionDetail_MethodNotAllowed(t *testing.T) {
@@ -230,7 +171,7 @@ func TestHandleSessionDetail_MethodNotAllowed(t *testing.T) {
 	defer store.Close()
 
 	server := &Server{
-		sessionManager: NewSessionManager("", "", false, nil),
+		sessionManager: conversation.NewSessionManager("", "", false, nil),
 		store:          store,
 	}
 
@@ -239,67 +180,10 @@ func TestHandleSessionDetail_MethodNotAllowed(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/api/sessions/20260131-120000-abcd1234", nil)
 	w := httptest.NewRecorder()
 
-	server.handleSessionDetail(w, req)
+	newSessionDetailMux(server).ServeHTTP(w, req)
 
 	if w.Code != http.StatusMethodNotAllowed {
 		t.Errorf("Status = %d, want %d", w.Code, http.StatusMethodNotAllowed)
-	}
-}
-
-func TestHandleGetSession_NotFound(t *testing.T) {
-	tmpDir := t.TempDir()
-	store, err := session.NewStore(tmpDir)
-	if err != nil {
-		t.Fatalf("NewStore failed: %v", err)
-	}
-	defer store.Close()
-
-	server := &Server{
-		sessionManager: NewSessionManager("", "", false, nil),
-		store:          store,
-	}
-
-	req := httptest.NewRequest(http.MethodGet, "/api/sessions/20260131-120000-abcd1234", nil)
-	w := httptest.NewRecorder()
-
-	server.handleGetSession(w, req, "20260131-120000-abcd1234", false)
-
-	if w.Code != http.StatusNotFound {
-		t.Errorf("Status = %d, want %d", w.Code, http.StatusNotFound)
-	}
-}
-
-func TestHandleGetSession_Found(t *testing.T) {
-	tmpDir := t.TempDir()
-	store, err := session.NewStore(tmpDir)
-	if err != nil {
-		t.Fatalf("NewStore failed: %v", err)
-	}
-	defer store.Close()
-
-	// Create a session
-	meta := session.Metadata{
-		SessionID:  "test-session-get",
-		ACPServer:  "test-server",
-		WorkingDir: "/tmp",
-		Name:       "Test Session",
-	}
-	if err := store.Create(meta); err != nil {
-		t.Fatalf("Create failed: %v", err)
-	}
-
-	server := &Server{
-		sessionManager: NewSessionManager("", "", false, nil),
-		store:          store,
-	}
-
-	req := httptest.NewRequest(http.MethodGet, "/api/sessions/test-session-get", nil)
-	w := httptest.NewRecorder()
-
-	server.handleGetSession(w, req, "test-session-get", false)
-
-	if w.Code != http.StatusOK {
-		t.Errorf("Status = %d, want %d", w.Code, http.StatusOK)
 	}
 }
 
@@ -312,7 +196,7 @@ func TestHandleUpdateSession_NotFound(t *testing.T) {
 	defer store.Close()
 
 	server := &Server{
-		sessionManager: NewSessionManager("", "", false, nil),
+		sessionManager: conversation.NewSessionManager("", "", false, nil),
 		store:          store,
 	}
 
@@ -327,62 +211,27 @@ func TestHandleUpdateSession_NotFound(t *testing.T) {
 	}
 }
 
-func TestHandleAddWorkspace_InvalidJSON(t *testing.T) {
-	server := &Server{
-		sessionManager: NewSessionManager("", "", false, nil),
-		config:         Config{},
-	}
-
-	req := httptest.NewRequest(http.MethodPost, "/api/workspaces", nil)
-	w := httptest.NewRecorder()
-
-	server.handleAddWorkspace(w, req)
-
-	// Should return 400 for invalid JSON body
-	if w.Code != http.StatusBadRequest {
-		t.Errorf("Status = %d, want %d", w.Code, http.StatusBadRequest)
-	}
-}
-
-func TestHandleRemoveWorkspace_MissingDir(t *testing.T) {
-	server := &Server{
-		sessionManager: NewSessionManager("", "", false, nil),
-		config:         Config{},
-	}
-
-	// Request without dir query parameter
-	req := httptest.NewRequest(http.MethodDelete, "/api/workspaces", nil)
-	w := httptest.NewRecorder()
-
-	server.handleRemoveWorkspace(w, req)
-
-	// Should return 400 for missing dir parameter
-	if w.Code != http.StatusBadRequest {
-		t.Errorf("Status = %d, want %d", w.Code, http.StatusBadRequest)
-	}
-}
-
-func TestHandleRemoveWorkspace_NotFound(t *testing.T) {
-	server := &Server{
-		sessionManager: NewSessionManager("", "", false, nil),
-		config:         Config{},
-	}
-
-	// Request with non-existent workspace
-	req := httptest.NewRequest(http.MethodDelete, "/api/workspaces?dir=/nonexistent", nil)
-	w := httptest.NewRecorder()
-
-	server.handleRemoveWorkspace(w, req)
-
-	// Should return 404 for non-existent workspace
-	if w.Code != http.StatusNotFound {
-		t.Errorf("Status = %d, want %d", w.Code, http.StatusNotFound)
-	}
+// wireWorkspacePromptsTestDeps wires server.apiHandlers with the dependencies the
+// migrated workspace-prompts GET handler needs, using method values bound to the
+// test server so the extracted handler exercises the same logic as before.
+func wireWorkspacePromptsTestDeps(s *Server) {
+	s.apiHandlers = handlers.New(handlers.Deps{
+		Logger:                             s.logger,
+		MittoConfig:                        s.config.MittoConfig,
+		PromptsCache:                       s.config.PromptsCache,
+		SessionManager:                     s.sessionManager,
+		MigrateWorkspacePrompts:            s.migrateWorkspacePrompts,
+		LoadPromptsFromDirs:                s.loadPromptsFromDirs,
+		BuildPromptEnabledContext:          s.buildPromptEnabledContext,
+		ApplyWorkspaceNamespace:            s.applyWorkspaceNamespace,
+		BuildWorkspacePromptEnabledContext: s.buildWorkspacePromptEnabledContext,
+		FilterPromptsByEnabled:             s.filterPromptsByEnabled,
+	})
 }
 
 func TestHandleWorkspacePrompts_MethodNotAllowed(t *testing.T) {
 	server := &Server{
-		sessionManager: NewSessionManager("", "", false, nil),
+		sessionManager: conversation.NewSessionManager("", "", false, nil),
 	}
 
 	// PUT is not supported (GET, POST, DELETE are)
@@ -398,8 +247,9 @@ func TestHandleWorkspacePrompts_MethodNotAllowed(t *testing.T) {
 
 func TestHandleWorkspacePrompts_MissingDir(t *testing.T) {
 	server := &Server{
-		sessionManager: NewSessionManager("", "", false, nil),
+		sessionManager: conversation.NewSessionManager("", "", false, nil),
 	}
+	wireWorkspacePromptsTestDeps(server)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/workspaces/prompts", nil)
 	w := httptest.NewRecorder()
@@ -413,10 +263,11 @@ func TestHandleWorkspacePrompts_MissingDir(t *testing.T) {
 
 func TestHandleWorkspacePrompts_Success(t *testing.T) {
 	server := &Server{
-		sessionManager: NewSessionManager("", "", false, nil),
+		sessionManager: conversation.NewSessionManager("", "", false, nil),
 	}
+	wireWorkspacePromptsTestDeps(server)
 
-	req := httptest.NewRequest(http.MethodGet, "/api/workspaces/prompts?dir=/tmp", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/workspace-prompts?working_dir=/tmp", nil)
 	w := httptest.NewRecorder()
 
 	server.handleWorkspacePrompts(w, req)
@@ -441,11 +292,12 @@ func TestHandleWorkspacePrompts_ConditionalRequest(t *testing.T) {
 	}
 
 	server := &Server{
-		sessionManager: NewSessionManager("", "", false, nil),
+		sessionManager: conversation.NewSessionManager("", "", false, nil),
 	}
+	wireWorkspacePromptsTestDeps(server)
 
 	// First request - should return prompts with Last-Modified header
-	req1 := httptest.NewRequest(http.MethodGet, "/api/workspace-prompts?dir="+tmpDir, nil)
+	req1 := httptest.NewRequest(http.MethodGet, "/api/workspace-prompts?working_dir="+tmpDir, nil)
 	w1 := httptest.NewRecorder()
 	server.handleWorkspacePrompts(w1, req1)
 
@@ -459,7 +311,7 @@ func TestHandleWorkspacePrompts_ConditionalRequest(t *testing.T) {
 	}
 
 	// Second request with If-Modified-Since - should return 304
-	req2 := httptest.NewRequest(http.MethodGet, "/api/workspace-prompts?dir="+tmpDir, nil)
+	req2 := httptest.NewRequest(http.MethodGet, "/api/workspace-prompts?working_dir="+tmpDir, nil)
 	req2.Header.Set("If-Modified-Since", lastModified)
 	w2 := httptest.NewRecorder()
 	server.handleWorkspacePrompts(w2, req2)
@@ -484,11 +336,12 @@ func TestHandleWorkspacePrompts_FileDeleted(t *testing.T) {
 	}
 
 	server := &Server{
-		sessionManager: NewSessionManager("", "", false, nil),
+		sessionManager: conversation.NewSessionManager("", "", false, nil),
 	}
+	wireWorkspacePromptsTestDeps(server)
 
 	// First request - should return prompts
-	req1 := httptest.NewRequest(http.MethodGet, "/api/workspace-prompts?dir="+tmpDir, nil)
+	req1 := httptest.NewRequest(http.MethodGet, "/api/workspace-prompts?working_dir="+tmpDir, nil)
 	w1 := httptest.NewRecorder()
 	server.handleWorkspacePrompts(w1, req1)
 
@@ -502,7 +355,7 @@ func TestHandleWorkspacePrompts_FileDeleted(t *testing.T) {
 	}
 
 	// Request after file deletion - should return OK with empty prompts
-	req2 := httptest.NewRequest(http.MethodGet, "/api/workspace-prompts?dir="+tmpDir, nil)
+	req2 := httptest.NewRequest(http.MethodGet, "/api/workspace-prompts?working_dir="+tmpDir, nil)
 	w2 := httptest.NewRecorder()
 	server.handleWorkspacePrompts(w2, req2)
 
@@ -538,11 +391,12 @@ prompt: |
 	}
 
 	server := &Server{
-		sessionManager: NewSessionManager("", "", false, nil),
+		sessionManager: conversation.NewSessionManager("", "", false, nil),
 	}
+	wireWorkspacePromptsTestDeps(server)
 
 	// Request workspace prompts - should include the prompt from .mitto/prompts
-	req := httptest.NewRequest(http.MethodGet, "/api/workspace-prompts?dir="+tmpDir, nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/workspace-prompts?working_dir="+tmpDir, nil)
 	w := httptest.NewRecorder()
 	server.handleWorkspacePrompts(w, req)
 
@@ -614,11 +468,12 @@ prompt: |
 	}
 
 	server := &Server{
-		sessionManager: NewSessionManager("", "", false, nil),
+		sessionManager: conversation.NewSessionManager("", "", false, nil),
 	}
+	wireWorkspacePromptsTestDeps(server)
 
 	// Request workspace prompts
-	req := httptest.NewRequest(http.MethodGet, "/api/workspace-prompts?dir="+tmpDir, nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/workspace-prompts?working_dir="+tmpDir, nil)
 	w := httptest.NewRecorder()
 	server.handleWorkspacePrompts(w, req)
 
@@ -646,6 +501,45 @@ prompt: |
 	}
 }
 
+func TestHandleWorkspacePromptsToggleEnabled_PATCH(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Create a prompt file the handler can update in-place.
+	promptsDir := tmpDir + "/.mitto/prompts"
+	if err := os.MkdirAll(promptsDir, 0755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	promptFile := promptsDir + "/my-prompt.prompt.yaml"
+	if err := os.WriteFile(promptFile, []byte("name: my-prompt\nprompt: hello\n"), 0644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	server := &Server{
+		sessionManager: conversation.NewSessionManager("", "", false, nil),
+	}
+	wireWorkspacePromptsTestDeps(server)
+
+	body := strings.NewReader(`{"enabled":false}`)
+	req := httptest.NewRequest(http.MethodPatch, "/api/workspace-prompts/my-prompt?working_dir="+tmpDir, body)
+	req.SetPathValue("name", "my-prompt")
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	server.apiHandlers.HandleWorkspacePromptsToggleEnabled(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("Status = %d, want 200; body: %s", w.Code, w.Body.String())
+	}
+	// Prompt file should now contain enabled: false
+	data, err := os.ReadFile(promptFile)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if !strings.Contains(string(data), "enabled: false") {
+		t.Errorf("expected 'enabled: false' in file; got:\n%s", string(data))
+	}
+}
+
 func TestHandleCreateSession_NoWorkspace(t *testing.T) {
 	tmpDir := t.TempDir()
 	store, err := session.NewStore(tmpDir)
@@ -655,7 +549,7 @@ func TestHandleCreateSession_NoWorkspace(t *testing.T) {
 	defer store.Close()
 
 	server := &Server{
-		sessionManager: NewSessionManager("", "", false, nil),
+		sessionManager: conversation.NewSessionManager("", "", false, nil),
 		store:          store,
 		config:         Config{},
 	}
@@ -681,9 +575,10 @@ func TestHandleSessions_GET(t *testing.T) {
 	defer store.Close()
 
 	server := &Server{
-		sessionManager: NewSessionManager("", "", false, nil),
+		sessionManager: conversation.NewSessionManager("", "", false, nil),
 		store:          store,
 	}
+	server.apiHandlers = handlers.New(handlers.Deps{Store: store, SessionManager: server.sessionManager})
 
 	req := httptest.NewRequest(http.MethodGet, "/api/sessions", nil)
 	w := httptest.NewRecorder()
@@ -692,179 +587,6 @@ func TestHandleSessions_GET(t *testing.T) {
 
 	if w.Code != http.StatusOK {
 		t.Errorf("Status = %d, want %d", w.Code, http.StatusOK)
-	}
-}
-
-func TestHandleGetSession_Events(t *testing.T) {
-	tmpDir := t.TempDir()
-	store, err := session.NewStore(tmpDir)
-	if err != nil {
-		t.Fatalf("NewStore failed: %v", err)
-	}
-	defer store.Close()
-
-	// Create a session
-	meta := session.Metadata{
-		SessionID:  "test-session-events",
-		ACPServer:  "test-server",
-		WorkingDir: "/tmp",
-	}
-	if err := store.Create(meta); err != nil {
-		t.Fatalf("Create failed: %v", err)
-	}
-
-	server := &Server{
-		sessionManager: NewSessionManager("", "", false, nil),
-		store:          store,
-	}
-
-	req := httptest.NewRequest(http.MethodGet, "/api/sessions/test-session-events/events", nil)
-	w := httptest.NewRecorder()
-
-	server.handleGetSession(w, req, "test-session-events", true)
-
-	if w.Code != http.StatusOK {
-		t.Errorf("Status = %d, want %d", w.Code, http.StatusOK)
-	}
-}
-
-func TestHandleDeleteSession_Success(t *testing.T) {
-	tmpDir := t.TempDir()
-	store, err := session.NewStore(tmpDir)
-	if err != nil {
-		t.Fatalf("NewStore failed: %v", err)
-	}
-	defer store.Close()
-
-	// Create a session
-	meta := session.Metadata{
-		SessionID:  "test-session-delete",
-		ACPServer:  "test-server",
-		WorkingDir: "/tmp",
-	}
-	if err := store.Create(meta); err != nil {
-		t.Fatalf("Create failed: %v", err)
-	}
-
-	server := &Server{
-		sessionManager: NewSessionManager("", "", false, nil),
-		store:          store,
-		eventsManager:  NewGlobalEventsManager(),
-	}
-
-	w := httptest.NewRecorder()
-
-	server.handleDeleteSession(w, "test-session-delete")
-
-	if w.Code != http.StatusNoContent {
-		t.Errorf("Status = %d, want %d", w.Code, http.StatusNoContent)
-	}
-}
-
-// TestHandleDeleteSession_ClearsParentReferences verifies that deleting a parent session
-// via the API clears the ParentSessionID field in all child sessions.
-func TestHandleDeleteSession_ClearsParentReferences(t *testing.T) {
-	tmpDir := t.TempDir()
-	store, err := session.NewStore(tmpDir)
-	if err != nil {
-		t.Fatalf("NewStore failed: %v", err)
-	}
-	defer store.Close()
-
-	// Create a parent session
-	parentMeta := session.Metadata{
-		SessionID:  "parent-api-test",
-		ACPServer:  "test-server",
-		WorkingDir: "/tmp",
-		Name:       "Parent Session",
-	}
-	if err := store.Create(parentMeta); err != nil {
-		t.Fatalf("Create parent failed: %v", err)
-	}
-
-	// Create child sessions
-	child1Meta := session.Metadata{
-		SessionID:       "child-api-1",
-		ACPServer:       "test-server",
-		WorkingDir:      "/tmp",
-		Name:            "Child 1",
-		ParentSessionID: "parent-api-test",
-	}
-	if err := store.Create(child1Meta); err != nil {
-		t.Fatalf("Create child1 failed: %v", err)
-	}
-
-	child2Meta := session.Metadata{
-		SessionID:       "child-api-2",
-		ACPServer:       "test-server",
-		WorkingDir:      "/tmp",
-		Name:            "Child 2",
-		ParentSessionID: "parent-api-test",
-	}
-	if err := store.Create(child2Meta); err != nil {
-		t.Fatalf("Create child2 failed: %v", err)
-	}
-
-	server := &Server{
-		sessionManager: NewSessionManager("", "", false, nil),
-		store:          store,
-		eventsManager:  NewGlobalEventsManager(),
-	}
-
-	// Delete the parent session via API
-	w := httptest.NewRecorder()
-	server.handleDeleteSession(w, "parent-api-test")
-
-	if w.Code != http.StatusNoContent {
-		t.Errorf("Status = %d, want %d", w.Code, http.StatusNoContent)
-	}
-
-	// Verify parent is deleted
-	if store.Exists("parent-api-test") {
-		t.Error("Parent session still exists after deletion")
-	}
-
-	// Verify child sessions are cascade-deleted along with the parent
-	if store.Exists("child-api-1") {
-		t.Error("Child 1 still exists after parent deletion — expected cascade delete")
-	}
-	if store.Exists("child-api-2") {
-		t.Error("Child 2 still exists after parent deletion — expected cascade delete")
-	}
-}
-
-func TestHandleWorkspaces_GET(t *testing.T) {
-	sm := NewSessionManager("test-cmd", "test-server", false, nil)
-
-	server := &Server{
-		sessionManager: sm,
-	}
-
-	req := httptest.NewRequest(http.MethodGet, "/api/workspaces", nil)
-	w := httptest.NewRecorder()
-
-	server.handleWorkspaces(w, req)
-
-	if w.Code != http.StatusOK {
-		t.Errorf("Status = %d, want %d", w.Code, http.StatusOK)
-	}
-}
-
-func TestHandleWorkspaces_POST_InvalidJSON(t *testing.T) {
-	sm := NewSessionManager("test-cmd", "test-server", false, nil)
-
-	server := &Server{
-		sessionManager: sm,
-		config:         Config{},
-	}
-
-	req := httptest.NewRequest(http.MethodPost, "/api/workspaces", nil)
-	w := httptest.NewRecorder()
-
-	server.handleWorkspaces(w, req)
-
-	if w.Code != http.StatusBadRequest {
-		t.Errorf("Status = %d, want %d", w.Code, http.StatusBadRequest)
 	}
 }
 
@@ -887,14 +609,15 @@ func TestHandleSessionDetail_GET(t *testing.T) {
 	}
 
 	server := &Server{
-		sessionManager: NewSessionManager("", "", false, nil),
+		sessionManager: conversation.NewSessionManager("", "", false, nil),
 		store:          store,
 	}
+	server.apiHandlers = handlers.New(handlers.Deps{Store: store})
 
 	req := httptest.NewRequest(http.MethodGet, "/api/sessions/20260131-120000-abcd1234", nil)
 	w := httptest.NewRecorder()
 
-	server.handleSessionDetail(w, req)
+	newSessionDetailMux(server).ServeHTTP(w, req)
 
 	if w.Code != http.StatusOK {
 		t.Errorf("Status = %d, want %d", w.Code, http.StatusOK)
@@ -920,15 +643,20 @@ func TestHandleSessionDetail_DELETE(t *testing.T) {
 	}
 
 	server := &Server{
-		sessionManager: NewSessionManager("", "", false, nil),
+		sessionManager: conversation.NewSessionManager("", "", false, nil),
 		store:          store,
 		eventsManager:  NewGlobalEventsManager(),
 	}
+	server.apiHandlers = handlers.New(handlers.Deps{
+		Store:                   store,
+		SessionManager:          server.sessionManager,
+		BroadcastSessionDeleted: server.BroadcastSessionDeleted,
+	})
 
 	req := httptest.NewRequest(http.MethodDelete, "/api/sessions/20260131-120000-de123456", nil)
 	w := httptest.NewRecorder()
 
-	server.handleSessionDetail(w, req)
+	newSessionDetailMux(server).ServeHTTP(w, req)
 
 	if w.Code != http.StatusNoContent {
 		t.Errorf("Status = %d, want %d", w.Code, http.StatusNoContent)
@@ -954,7 +682,7 @@ func TestHandleUpdateSession_Success(t *testing.T) {
 	}
 
 	server := &Server{
-		sessionManager: NewSessionManager("", "", false, nil),
+		sessionManager: conversation.NewSessionManager("", "", false, nil),
 		store:          store,
 		eventsManager:  NewGlobalEventsManager(),
 	}
@@ -992,7 +720,7 @@ func TestHandleListSessions_Pagination(t *testing.T) {
 	}
 
 	server := &Server{
-		sessionManager: NewSessionManager("", "", false, nil),
+		sessionManager: conversation.NewSessionManager("", "", false, nil),
 		store:          store,
 	}
 
@@ -1004,21 +732,6 @@ func TestHandleListSessions_Pagination(t *testing.T) {
 
 	if w.Code != http.StatusOK {
 		t.Errorf("Status = %d, want %d", w.Code, http.StatusOK)
-	}
-}
-
-func TestHandleRunningSessions_MethodNotAllowed(t *testing.T) {
-	server := &Server{
-		sessionManager: NewSessionManager("", "", false, nil),
-	}
-
-	req := httptest.NewRequest(http.MethodPost, "/api/sessions/running", nil)
-	w := httptest.NewRecorder()
-
-	server.handleRunningSessions(w, req)
-
-	if w.Code != http.StatusMethodNotAllowed {
-		t.Errorf("Status = %d, want %d", w.Code, http.StatusMethodNotAllowed)
 	}
 }
 
@@ -1050,7 +763,7 @@ func TestHandleListSessions_WorkspaceFilter(t *testing.T) {
 	}
 
 	server := &Server{
-		sessionManager: NewSessionManager("", "", false, nil),
+		sessionManager: conversation.NewSessionManager("", "", false, nil),
 		store:          store,
 	}
 
@@ -1086,7 +799,7 @@ func TestHandleListSessions_Offset(t *testing.T) {
 	}
 
 	server := &Server{
-		sessionManager: NewSessionManager("", "", false, nil),
+		sessionManager: conversation.NewSessionManager("", "", false, nil),
 		store:          store,
 	}
 
@@ -1121,7 +834,7 @@ func TestHandleListSessions_WithSearch(t *testing.T) {
 	}
 
 	server := &Server{
-		sessionManager: NewSessionManager("", "", false, nil),
+		sessionManager: conversation.NewSessionManager("", "", false, nil),
 		store:          store,
 	}
 
@@ -1136,67 +849,6 @@ func TestHandleListSessions_WithSearch(t *testing.T) {
 	}
 }
 
-func TestHandleAddWorkspace_MissingWorkingDir(t *testing.T) {
-	sm := NewSessionManager("test-cmd", "test-server", false, nil)
-
-	server := &Server{
-		sessionManager: sm,
-		config:         Config{},
-	}
-
-	body := strings.NewReader(`{"acp_server": "test"}`)
-	req := httptest.NewRequest(http.MethodPost, "/api/workspaces", body)
-	req.Header.Set("Content-Type", "application/json")
-	w := httptest.NewRecorder()
-
-	server.handleAddWorkspace(w, req)
-
-	if w.Code != http.StatusBadRequest {
-		t.Errorf("Status = %d, want %d", w.Code, http.StatusBadRequest)
-	}
-}
-
-func TestHandleAddWorkspace_MissingACPServer(t *testing.T) {
-	sm := NewSessionManager("test-cmd", "test-server", false, nil)
-
-	server := &Server{
-		sessionManager: sm,
-		config:         Config{},
-	}
-
-	body := strings.NewReader(`{"working_dir": "/tmp"}`)
-	req := httptest.NewRequest(http.MethodPost, "/api/workspaces", body)
-	req.Header.Set("Content-Type", "application/json")
-	w := httptest.NewRecorder()
-
-	server.handleAddWorkspace(w, req)
-
-	if w.Code != http.StatusBadRequest {
-		t.Errorf("Status = %d, want %d", w.Code, http.StatusBadRequest)
-	}
-}
-
-func TestHandleRemoveWorkspace_WithDir(t *testing.T) {
-	sm := NewSessionManager("test-cmd", "test-server", false, nil)
-	sm.SetWorkspaces([]config.WorkspaceSettings{
-		{WorkingDir: "/workspace1", ACPServer: "server1"},
-	})
-
-	server := &Server{
-		sessionManager: sm,
-		config:         Config{},
-	}
-
-	req := httptest.NewRequest(http.MethodDelete, "/api/workspaces?dir=/nonexistent", nil)
-	w := httptest.NewRecorder()
-
-	server.handleRemoveWorkspace(w, req)
-
-	if w.Code != http.StatusNotFound {
-		t.Errorf("Status = %d, want %d", w.Code, http.StatusNotFound)
-	}
-}
-
 func TestHandleCreateSession_InvalidWorkspace(t *testing.T) {
 	tmpDir := t.TempDir()
 	store, err := session.NewStore(tmpDir)
@@ -1205,10 +857,10 @@ func TestHandleCreateSession_InvalidWorkspace(t *testing.T) {
 	}
 	defer store.Close()
 
-	// Use NewSessionManagerWithOptions with empty workspaces list to ensure
+	// Use conversation.NewSessionManagerWithOptions with empty workspaces list to ensure
 	// no default workspace is configured. This simulates the case where
 	// a user hasn't configured any workspaces yet.
-	sm := NewSessionManagerWithOptions(SessionManagerOptions{
+	sm := conversation.NewSessionManagerWithOptions(conversation.SessionManagerOptions{
 		Workspaces:  []config.WorkspaceSettings{},
 		AutoApprove: false,
 		Logger:      nil,
@@ -1230,50 +882,6 @@ func TestHandleCreateSession_InvalidWorkspace(t *testing.T) {
 	// Should return 400 Bad Request for invalid workspace
 	if w.Code != http.StatusBadRequest {
 		t.Errorf("Status = %d, want %d", w.Code, http.StatusBadRequest)
-	}
-}
-
-func TestHandleGetWorkspaces_WithWorkspaces(t *testing.T) {
-	sm := NewSessionManager("test-cmd", "test-server", false, nil)
-	sm.SetWorkspaces([]config.WorkspaceSettings{
-		{WorkingDir: "/workspace1", ACPServer: "server1"},
-		{WorkingDir: "/workspace2", ACPServer: "server2"},
-	})
-
-	server := &Server{
-		sessionManager: sm,
-	}
-
-	req := httptest.NewRequest(http.MethodGet, "/api/workspaces", nil)
-	w := httptest.NewRecorder()
-
-	server.handleGetWorkspaces(w, req)
-
-	if w.Code != http.StatusOK {
-		t.Errorf("Status = %d, want %d", w.Code, http.StatusOK)
-	}
-
-	// Verify response contains JSON
-	contentType := w.Header().Get("Content-Type")
-	if contentType != "application/json" {
-		t.Errorf("Content-Type = %q, want %q", contentType, "application/json")
-	}
-}
-
-func TestHandleGetWorkspaces_Empty(t *testing.T) {
-	sm := NewSessionManager("", "", false, nil)
-
-	server := &Server{
-		sessionManager: sm,
-	}
-
-	req := httptest.NewRequest(http.MethodGet, "/api/workspaces", nil)
-	w := httptest.NewRecorder()
-
-	server.handleGetWorkspaces(w, req)
-
-	if w.Code != http.StatusOK {
-		t.Errorf("Status = %d, want %d", w.Code, http.StatusOK)
 	}
 }
 
@@ -1305,7 +913,7 @@ func TestHandleListSessions_WithACPServer(t *testing.T) {
 	}
 
 	server := &Server{
-		sessionManager: NewSessionManager("", "", false, nil),
+		sessionManager: conversation.NewSessionManager("", "", false, nil),
 		store:          store,
 	}
 
@@ -1339,17 +947,28 @@ func TestHandleSessionDetail_PATCH(t *testing.T) {
 	}
 
 	server := &Server{
-		sessionManager: NewSessionManager("", "", false, nil),
+		sessionManager: conversation.NewSessionManager("", "", false, nil),
 		store:          store,
 		eventsManager:  NewGlobalEventsManager(),
 	}
+	server.apiHandlers = handlers.New(handlers.Deps{
+		Store:                    store,
+		SessionManager:           server.sessionManager,
+		BroadcastSessionRenamed:  server.BroadcastSessionRenamed,
+		BroadcastSessionPinned:   server.BroadcastSessionPinned,
+		BroadcastSessionArchived: server.BroadcastSessionArchived,
+		BroadcastACPStopped:      server.BroadcastACPStopped,
+		BroadcastACPStarted:      server.BroadcastACPStarted,
+		BroadcastACPStartFailed:  server.BroadcastACPStartFailed,
+		BroadcastSessionDeleted:  server.BroadcastSessionDeleted,
+	})
 
 	body := strings.NewReader(`{"name": "Updated Name"}`)
 	req := httptest.NewRequest(http.MethodPatch, "/api/sessions/20260131-120050-abcd1234", body)
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 
-	server.handleSessionDetail(w, req)
+	newSessionDetailMux(server).ServeHTTP(w, req)
 
 	if w.Code != http.StatusOK {
 		t.Errorf("Status = %d, want %d", w.Code, http.StatusOK)
@@ -1376,7 +995,7 @@ func TestHandleListSessions_WithName(t *testing.T) {
 	}
 
 	server := &Server{
-		sessionManager: NewSessionManager("", "", false, nil),
+		sessionManager: conversation.NewSessionManager("", "", false, nil),
 		store:          store,
 	}
 
@@ -1410,7 +1029,7 @@ func TestHandleUpdateSession_InvalidJSON(t *testing.T) {
 	}
 
 	server := &Server{
-		sessionManager: NewSessionManager("", "", false, nil),
+		sessionManager: conversation.NewSessionManager("", "", false, nil),
 		store:          store,
 	}
 
@@ -1421,67 +1040,6 @@ func TestHandleUpdateSession_InvalidJSON(t *testing.T) {
 	w := httptest.NewRecorder()
 
 	server.handleUpdateSession(w, req, "20260131-120070-abcd1234")
-
-	if w.Code != http.StatusBadRequest {
-		t.Errorf("Status = %d, want %d", w.Code, http.StatusBadRequest)
-	}
-}
-
-func TestHandleRunningSessions_WithSessions(t *testing.T) {
-	tmpDir := t.TempDir()
-	store, err := session.NewStore(tmpDir)
-	if err != nil {
-		t.Fatalf("NewStore failed: %v", err)
-	}
-	defer store.Close()
-
-	// Create a session
-	meta := session.Metadata{
-		SessionID:  "20260131-120030-abcd1234",
-		ACPServer:  "test-server",
-		WorkingDir: "/tmp",
-	}
-	if err := store.Create(meta); err != nil {
-		t.Fatalf("Create failed: %v", err)
-	}
-
-	sm := NewSessionManager("", "", false, nil)
-	// Add a mock running session
-	sm.mu.Lock()
-	sm.sessions["20260131-120030-abcd1234"] = &BackgroundSession{
-		persistedID: "20260131-120030-abcd1234",
-		workingDir:  "/tmp",
-	}
-	sm.mu.Unlock()
-
-	server := &Server{
-		sessionManager: sm,
-		store:          store,
-	}
-
-	req := httptest.NewRequest(http.MethodGet, "/api/sessions/running", nil)
-	w := httptest.NewRecorder()
-
-	server.handleRunningSessions(w, req)
-
-	if w.Code != http.StatusOK {
-		t.Errorf("Status = %d, want %d", w.Code, http.StatusOK)
-	}
-}
-
-func TestHandleWorkspaces_DELETE(t *testing.T) {
-	sm := NewSessionManager("test-cmd", "test-server", false, nil)
-
-	server := &Server{
-		sessionManager: sm,
-		config:         Config{},
-	}
-
-	// DELETE without dir parameter should return 400
-	req := httptest.NewRequest(http.MethodDelete, "/api/workspaces", nil)
-	w := httptest.NewRecorder()
-
-	server.handleWorkspaces(w, req)
 
 	if w.Code != http.StatusBadRequest {
 		t.Errorf("Status = %d, want %d", w.Code, http.StatusBadRequest)
@@ -1509,7 +1067,7 @@ func TestHandleListSessions_SortOrder(t *testing.T) {
 	}
 
 	server := &Server{
-		sessionManager: NewSessionManager("", "", false, nil),
+		sessionManager: conversation.NewSessionManager("", "", false, nil),
 		store:          store,
 	}
 
@@ -1533,7 +1091,7 @@ func TestHandleListSessions_InvalidLimit(t *testing.T) {
 	defer store.Close()
 
 	server := &Server{
-		sessionManager: NewSessionManager("", "", false, nil),
+		sessionManager: conversation.NewSessionManager("", "", false, nil),
 		store:          store,
 	}
 
@@ -1557,7 +1115,7 @@ func TestHandleListSessions_InvalidOffset(t *testing.T) {
 	defer store.Close()
 
 	server := &Server{
-		sessionManager: NewSessionManager("", "", false, nil),
+		sessionManager: conversation.NewSessionManager("", "", false, nil),
 		store:          store,
 	}
 
@@ -1569,6 +1127,164 @@ func TestHandleListSessions_InvalidOffset(t *testing.T) {
 
 	if w.Code != http.StatusOK {
 		t.Errorf("Status = %d, want %d", w.Code, http.StatusOK)
+	}
+}
+
+// =============================================================================
+// Periodic glance-fields tests for handleListSessions / SessionListResponse
+// =============================================================================
+
+func TestHandleListSessions_PeriodicGlanceFields_Schedule(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := session.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	sid := "20260131-120090-abcd1234"
+	if err := store.Create(session.Metadata{SessionID: sid, ACPServer: "test", WorkingDir: "/tmp"}); err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+	// Schedule periodic with explicit cap and duration.
+	if err := store.Periodic(sid).Set(&session.PeriodicPrompt{
+		Prompt:             "hello",
+		Frequency:          session.Frequency{Value: 30, Unit: session.FrequencyMinutes},
+		Enabled:            true,
+		Trigger:            session.TriggerSchedule,
+		MaxIterations:      10,
+		IterationCount:     3,
+		DelaySeconds:       0,
+		MaxDurationSeconds: 3600,
+	}); err != nil {
+		t.Fatalf("Set failed: %v", err)
+	}
+
+	server := &Server{sessionManager: conversation.NewSessionManager("", "", false, nil), store: store}
+	req := httptest.NewRequest(http.MethodGet, "/api/sessions", nil)
+	w := httptest.NewRecorder()
+	server.handleListSessions(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("Status = %d, want %d", w.Code, http.StatusOK)
+	}
+
+	var sessions []map[string]interface{}
+	if err := json.NewDecoder(w.Body).Decode(&sessions); err != nil {
+		t.Fatalf("decode error: %v", err)
+	}
+	if len(sessions) == 0 {
+		t.Fatal("expected at least one session")
+	}
+	s := sessions[0]
+
+	if s["periodic_trigger"] != "schedule" {
+		t.Errorf("periodic_trigger = %v, want %q", s["periodic_trigger"], "schedule")
+	}
+	if s["periodic_iteration_count"] != float64(3) {
+		t.Errorf("periodic_iteration_count = %v, want 3", s["periodic_iteration_count"])
+	}
+	if s["periodic_max_iterations"] != float64(10) {
+		t.Errorf("periodic_max_iterations = %v, want 10", s["periodic_max_iterations"])
+	}
+	if s["periodic_max_duration_seconds"] != float64(3600) {
+		t.Errorf("periodic_max_duration_seconds = %v, want 3600", s["periodic_max_duration_seconds"])
+	}
+	// delay_seconds=0 is omitempty so it must be absent.
+	if _, ok := s["periodic_delay_seconds"]; ok {
+		t.Errorf("periodic_delay_seconds should be absent for schedule trigger with 0 delay")
+	}
+}
+
+func TestHandleListSessions_PeriodicGlanceFields_OnCompletion(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := session.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	sid := "20260131-120091-abcd1234"
+	if err := store.Create(session.Metadata{SessionID: sid, ACPServer: "test", WorkingDir: "/tmp"}); err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+	// onCompletion with delay and max duration.
+	if err := store.Periodic(sid).Set(&session.PeriodicPrompt{
+		Prompt:             "run on idle",
+		Enabled:            true,
+		Trigger:            session.TriggerOnCompletion,
+		DelaySeconds:       60,
+		MaxDurationSeconds: 7200,
+	}); err != nil {
+		t.Fatalf("Set failed: %v", err)
+	}
+
+	server := &Server{sessionManager: conversation.NewSessionManager("", "", false, nil), store: store}
+	req := httptest.NewRequest(http.MethodGet, "/api/sessions", nil)
+	w := httptest.NewRecorder()
+	server.handleListSessions(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("Status = %d, want %d", w.Code, http.StatusOK)
+	}
+
+	var sessions []map[string]interface{}
+	if err := json.NewDecoder(w.Body).Decode(&sessions); err != nil {
+		t.Fatalf("decode error: %v", err)
+	}
+	if len(sessions) == 0 {
+		t.Fatal("expected at least one session")
+	}
+	s := sessions[0]
+
+	if s["periodic_trigger"] != "onCompletion" {
+		t.Errorf("periodic_trigger = %v, want %q", s["periodic_trigger"], "onCompletion")
+	}
+	if s["periodic_delay_seconds"] != float64(60) {
+		t.Errorf("periodic_delay_seconds = %v, want 60", s["periodic_delay_seconds"])
+	}
+	if s["periodic_max_duration_seconds"] != float64(7200) {
+		t.Errorf("periodic_max_duration_seconds = %v, want 7200", s["periodic_max_duration_seconds"])
+	}
+}
+
+func TestHandleListSessions_PeriodicGlanceFields_EmptyTriggerReportsSchedule(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := session.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	sid := "20260131-120092-abcd1234"
+	if err := store.Create(session.Metadata{SessionID: sid, ACPServer: "test", WorkingDir: "/tmp"}); err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+	// Trigger="" is the zero-value default; EffectiveTrigger() must resolve it to "schedule".
+	if err := store.Periodic(sid).Set(&session.PeriodicPrompt{
+		Prompt:    "hello",
+		Frequency: session.Frequency{Value: 1, Unit: session.FrequencyHours},
+		Enabled:   true,
+		Trigger:   "",
+	}); err != nil {
+		t.Fatalf("Set failed: %v", err)
+	}
+
+	server := &Server{sessionManager: conversation.NewSessionManager("", "", false, nil), store: store}
+	req := httptest.NewRequest(http.MethodGet, "/api/sessions", nil)
+	w := httptest.NewRecorder()
+	server.handleListSessions(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("Status = %d, want %d", w.Code, http.StatusOK)
+	}
+
+	var sessions []map[string]interface{}
+	if err := json.NewDecoder(w.Body).Decode(&sessions); err != nil {
+		t.Fatalf("decode error: %v", err)
+	}
+	if len(sessions) == 0 {
+		t.Fatal("expected at least one session")
+	}
+	if sessions[0]["periodic_trigger"] != "schedule" {
+		t.Errorf("periodic_trigger = %v, want %q for empty Trigger field", sessions[0]["periodic_trigger"], "schedule")
 	}
 }
 
@@ -1598,18 +1314,10 @@ func TestHandleUpdateSession_ArchiveStopsACP(t *testing.T) {
 	}
 
 	// Create session manager with a mock running session
-	sm := NewSessionManager("echo test", "test-server", true, nil)
+	sm := conversation.NewSessionManager("echo test", "test-server", true, nil)
 	ctx, cancel := context.WithCancel(context.Background())
-	mockSession := &BackgroundSession{
-		persistedID: "test-session-archive",
-		isPrompting: false,
-		ctx:         ctx,
-		cancel:      cancel,
-	}
-	mockSession.promptCond = sync.NewCond(&mockSession.promptMu)
-	sm.mu.Lock()
-	sm.sessions["test-session-archive"] = mockSession
-	sm.mu.Unlock()
+	mockSession := conversation.NewTestBackgroundSessionWithCtx("test-session-archive", ctx, cancel)
+	sm.AddSessionForTest(mockSession)
 
 	server := &Server{
 		sessionManager: sm,
@@ -1670,18 +1378,10 @@ func TestHandleUpdateSession_ArchiveWaitsForPrompt(t *testing.T) {
 	}
 
 	// Create session manager with a mock running session that is prompting
-	sm := NewSessionManager("echo test", "test-server", true, nil)
+	sm := conversation.NewSessionManager("echo test", "test-server", true, nil)
 	ctx, cancel := context.WithCancel(context.Background())
-	mockSession := &BackgroundSession{
-		persistedID: "test-session-archive-wait",
-		isPrompting: true,
-		ctx:         ctx,
-		cancel:      cancel,
-	}
-	mockSession.promptCond = sync.NewCond(&mockSession.promptMu)
-	sm.mu.Lock()
-	sm.sessions["test-session-archive-wait"] = mockSession
-	sm.mu.Unlock()
+	mockSession := conversation.NewTestBackgroundSessionPromptingWithCtx("test-session-archive-wait", true, ctx, cancel)
+	sm.AddSessionForTest(mockSession)
 
 	server := &Server{
 		sessionManager: sm,
@@ -1692,10 +1392,7 @@ func TestHandleUpdateSession_ArchiveWaitsForPrompt(t *testing.T) {
 	// Simulate prompt completion after 100ms
 	go func() {
 		time.Sleep(100 * time.Millisecond)
-		mockSession.promptMu.Lock()
-		mockSession.isPrompting = false
-		mockSession.promptCond.Broadcast()
-		mockSession.promptMu.Unlock()
+		mockSession.SimulatePromptComplete()
 	}()
 
 	// Archive the session
@@ -1748,7 +1445,7 @@ func TestHandleUpdateSession_UnarchiveDoesNotStartACP(t *testing.T) {
 	}
 
 	// Create session manager (no running sessions)
-	sm := NewSessionManager("echo test", "test-server", true, nil)
+	sm := conversation.NewSessionManager("echo test", "test-server", true, nil)
 	sm.SetStore(store)
 
 	server := &Server{
@@ -1822,10 +1519,15 @@ func TestHandleUpdateSession_ArchiveChildDeletesInstead(t *testing.T) {
 	}
 
 	server := &Server{
-		sessionManager: NewSessionManager("", "", false, nil),
+		sessionManager: conversation.NewSessionManager("", "", false, nil),
 		store:          store,
 		eventsManager:  NewGlobalEventsManager(),
 	}
+	server.apiHandlers = handlers.New(handlers.Deps{
+		Store:                   store,
+		SessionManager:          server.sessionManager,
+		BroadcastSessionDeleted: server.BroadcastSessionDeleted,
+	})
 
 	// Try to archive the child — should be converted to delete (HTTP 204)
 	archived := true
@@ -1867,7 +1569,7 @@ func TestHandleUpdateSession_ArchiveTopLevelAllowed(t *testing.T) {
 	}
 
 	server := &Server{
-		sessionManager: NewSessionManager("", "", false, nil),
+		sessionManager: conversation.NewSessionManager("", "", false, nil),
 		store:          store,
 		eventsManager:  NewGlobalEventsManager(),
 	}
@@ -1887,218 +1589,6 @@ func TestHandleUpdateSession_ArchiveTopLevelAllowed(t *testing.T) {
 	updatedMeta, _ := store.GetMetadata("test-toplevel-archive")
 	if !updatedMeta.Archived {
 		t.Error("Top-level session should be archived")
-	}
-}
-
-// =============================================================================
-// Periodic Guard Tests
-// =============================================================================
-
-// TestHandleSessionPeriodic_ChildRejected tests that setting periodic on a child session is rejected.
-func TestHandleSessionPeriodic_ChildRejected(t *testing.T) {
-	tmpDir := t.TempDir()
-	store, err := session.NewStore(tmpDir)
-	if err != nil {
-		t.Fatalf("NewStore failed: %v", err)
-	}
-	defer store.Close()
-
-	if err := store.Create(session.Metadata{
-		SessionID:  "test-parent-periodic",
-		ACPServer:  "test-server",
-		WorkingDir: tmpDir,
-	}); err != nil {
-		t.Fatalf("Create parent failed: %v", err)
-	}
-
-	if err := store.Create(session.Metadata{
-		SessionID:       "test-child-periodic",
-		ACPServer:       "test-server",
-		WorkingDir:      tmpDir,
-		ParentSessionID: "test-parent-periodic",
-	}); err != nil {
-		t.Fatalf("Create child failed: %v", err)
-	}
-
-	server := &Server{store: store}
-
-	// PUT periodic on child — should be rejected
-	body, _ := json.Marshal(PeriodicPromptRequest{
-		Prompt:    "check updates",
-		Frequency: session.Frequency{Value: 1, Unit: session.FrequencyHours},
-		Enabled:   true,
-	})
-	req := httptest.NewRequest(http.MethodPut, "/api/sessions/test-child-periodic/periodic", bytes.NewReader(body))
-	req.Header.Set("Content-Type", "application/json")
-	w := httptest.NewRecorder()
-
-	server.handleSessionPeriodic(w, req, "test-child-periodic", "")
-
-	if w.Code != http.StatusBadRequest {
-		t.Errorf("PUT periodic on child: Status = %d, want %d", w.Code, http.StatusBadRequest)
-	}
-
-	// GET should still work (not rejected as 400)
-	req2 := httptest.NewRequest(http.MethodGet, "/api/sessions/test-child-periodic/periodic", nil)
-	w2 := httptest.NewRecorder()
-
-	server.handleSessionPeriodic(w2, req2, "test-child-periodic", "")
-
-	if w2.Code == http.StatusBadRequest {
-		t.Error("GET periodic on child should NOT be rejected with 400")
-	}
-}
-
-// TestHandleSessionPeriodic_TopLevelAllowed tests that setting periodic on a top-level session works.
-func TestHandleSessionPeriodic_TopLevelAllowed(t *testing.T) {
-	tmpDir := t.TempDir()
-	store, err := session.NewStore(tmpDir)
-	if err != nil {
-		t.Fatalf("NewStore failed: %v", err)
-	}
-	defer store.Close()
-
-	if err := store.Create(session.Metadata{
-		SessionID:  "test-toplevel-periodic",
-		ACPServer:  "test-server",
-		WorkingDir: tmpDir,
-	}); err != nil {
-		t.Fatalf("Create failed: %v", err)
-	}
-
-	server := &Server{
-		store:         store,
-		eventsManager: NewGlobalEventsManager(),
-	}
-
-	body, _ := json.Marshal(PeriodicPromptRequest{
-		Prompt:    "check updates",
-		Frequency: session.Frequency{Value: 1, Unit: session.FrequencyHours},
-		Enabled:   true,
-	})
-	req := httptest.NewRequest(http.MethodPut, "/api/sessions/test-toplevel-periodic/periodic", bytes.NewReader(body))
-	req.Header.Set("Content-Type", "application/json")
-	w := httptest.NewRecorder()
-
-	server.handleSessionPeriodic(w, req, "test-toplevel-periodic", "")
-
-	if w.Code != http.StatusOK {
-		t.Errorf("PUT periodic on top-level: Status = %d, want %d. Body: %s", w.Code, http.StatusOK, w.Body.String())
-	}
-}
-
-// TestHandleSessionPeriodic_MakePeriodicDraft verifies the "Make periodic" frontend flow:
-// PUT /api/sessions/{id}/periodic with a draft body (enabled:false, prompt:"(pending)")
-// on an existing top-level session succeeds and stores the draft config.
-func TestHandleSessionPeriodic_MakePeriodicDraft(t *testing.T) {
-	tmpDir := t.TempDir()
-	store, err := session.NewStore(tmpDir)
-	if err != nil {
-		t.Fatalf("NewStore failed: %v", err)
-	}
-	defer store.Close()
-
-	if err := store.Create(session.Metadata{
-		SessionID:  "test-make-periodic-draft",
-		ACPServer:  "test-server",
-		WorkingDir: tmpDir,
-	}); err != nil {
-		t.Fatalf("Create failed: %v", err)
-	}
-
-	server := &Server{
-		store:         store,
-		eventsManager: NewGlobalEventsManager(),
-	}
-
-	// Draft body — mirrors what handleMakePeriodic in app.js sends.
-	body, _ := json.Marshal(PeriodicPromptRequest{
-		Prompt:    "(pending)",
-		Frequency: session.Frequency{Value: 1, Unit: session.FrequencyHours},
-		Enabled:   false,
-	})
-	req := httptest.NewRequest(http.MethodPut, "/api/sessions/test-make-periodic-draft/periodic", bytes.NewReader(body))
-	req.Header.Set("Content-Type", "application/json")
-	w := httptest.NewRecorder()
-
-	server.handleSessionPeriodic(w, req, "test-make-periodic-draft", "")
-
-	if w.Code != http.StatusOK {
-		t.Errorf("PUT periodic draft: Status = %d, want %d. Body: %s", w.Code, http.StatusOK, w.Body.String())
-	}
-
-	// Verify the stored periodic config reflects the draft state.
-	ps := store.Periodic("test-make-periodic-draft")
-	stored, err := ps.Get()
-	if err != nil {
-		t.Fatalf("Get periodic after PUT: %v", err)
-	}
-	if stored.Enabled {
-		t.Errorf("Draft periodic should have Enabled=false, got true")
-	}
-	if stored.Prompt != "(pending)" {
-		t.Errorf("Draft periodic prompt = %q, want %q", stored.Prompt, "(pending)")
-	}
-}
-
-// TestHandleSessionPeriodic_DeleteRemovesConfig verifies the "Make non-periodic" frontend flow:
-// PUT a draft config, confirm it exists, then DELETE it via handleSessionPeriodic,
-// assert HTTP 204, and confirm the config is gone from the store.
-func TestHandleSessionPeriodic_DeleteRemovesConfig(t *testing.T) {
-	tmpDir := t.TempDir()
-	store, err := session.NewStore(tmpDir)
-	if err != nil {
-		t.Fatalf("NewStore failed: %v", err)
-	}
-	defer store.Close()
-
-	const sid = "test-delete-periodic"
-	if err := store.Create(session.Metadata{
-		SessionID:  sid,
-		ACPServer:  "test-server",
-		WorkingDir: tmpDir,
-	}); err != nil {
-		t.Fatalf("Create failed: %v", err)
-	}
-
-	server := &Server{
-		store:         store,
-		eventsManager: NewGlobalEventsManager(),
-	}
-
-	// Step 1: PUT a draft periodic config so there is something to delete.
-	putBody, _ := json.Marshal(PeriodicPromptRequest{
-		Prompt:    "(pending)",
-		Frequency: session.Frequency{Value: 1, Unit: session.FrequencyHours},
-		Enabled:   false,
-	})
-	putReq := httptest.NewRequest(http.MethodPut, "/api/sessions/"+sid+"/periodic", bytes.NewReader(putBody))
-	putReq.Header.Set("Content-Type", "application/json")
-	putW := httptest.NewRecorder()
-	server.handleSessionPeriodic(putW, putReq, sid, "")
-	if putW.Code != http.StatusOK {
-		t.Fatalf("PUT periodic: Status = %d, want 200. Body: %s", putW.Code, putW.Body.String())
-	}
-
-	// Confirm the config exists before deleting.
-	if _, err := store.Periodic(sid).Get(); err != nil {
-		t.Fatalf("Get periodic before DELETE: %v", err)
-	}
-
-	// Step 2: DELETE — mirrors what handleMakeNonPeriodic in app.js sends.
-	delReq := httptest.NewRequest(http.MethodDelete, "/api/sessions/"+sid+"/periodic", nil)
-	delW := httptest.NewRecorder()
-	server.handleSessionPeriodic(delW, delReq, sid, "")
-
-	// handleDeletePeriodic calls writeNoContent → HTTP 204.
-	if delW.Code != http.StatusNoContent {
-		t.Errorf("DELETE periodic: Status = %d, want %d. Body: %s", delW.Code, http.StatusNoContent, delW.Body.String())
-	}
-
-	// Step 3: Confirm the config is gone.
-	_, getErr := store.Periodic(sid).Get()
-	if getErr == nil {
-		t.Errorf("Expected error (config gone) after DELETE, got nil")
 	}
 }
 
@@ -2128,8 +1618,8 @@ func TestFilterPromptsByEnabled(t *testing.T) {
 		{
 			name: "nil context returns all prompts",
 			prompts: []config.WebPrompt{
-				makePrompt("a", withEnabledWhen(`acp.matchesServerType("augment")`)),
-				makePrompt("b", withEnabledWhen("session.isChild")),
+				makePrompt("a", withEnabledWhen(`ACP.MatchesServerType("augment")`)),
+				makePrompt("b", withEnabledWhen("Session.IsChild")),
 			},
 			ctx:       nil,
 			wantNames: []string{"a", "b"},
@@ -2141,109 +1631,118 @@ func TestFilterPromptsByEnabled(t *testing.T) {
 			ctx:       &config.PromptEnabledContext{},
 			wantNames: []string{"plain"},
 		},
-		// 3a. acp.matchesServerType type match — included
+		// 3a. ACP.MatchesServerType type match — included
 		{
 			name:    "acp_matchesServerType type match included",
-			prompts: []config.WebPrompt{makePrompt("p", withEnabledWhen(`acp.matchesServerType("augment")`))},
+			prompts: []config.WebPrompt{makePrompt("p", withEnabledWhen(`ACP.MatchesServerType("augment")`))},
 			ctx: &config.PromptEnabledContext{
 				ACP: config.ACPContext{Name: "Auggie (Opus 4.6)", Type: "augment"},
 			},
 			wantNames: []string{"p"},
 		},
-		// 3b. acp.matchesServerType display name does not match — excluded
+		// 3b. ACP.MatchesServerType display name does not match — excluded
 		{
 			name:    "acp_matchesServerType display name does not match excluded",
-			prompts: []config.WebPrompt{makePrompt("p", withEnabledWhen(`acp.matchesServerType("Auggie (Opus 4.6)")`))},
+			prompts: []config.WebPrompt{makePrompt("p", withEnabledWhen(`ACP.MatchesServerType("Auggie (Opus 4.6)")`))},
 			ctx: &config.PromptEnabledContext{
 				ACP: config.ACPContext{Name: "Auggie (Opus 4.6)", Type: "augment"},
 			},
 			wantNames: nil,
 		},
-		// 4. acp.matchesServerType type match with different display name
+		// 4. ACP.MatchesServerType type match with different display name
 		{
 			name:    "acp_matchesServerType type match different display name",
-			prompts: []config.WebPrompt{makePrompt("p", withEnabledWhen(`acp.matchesServerType("augment")`))},
+			prompts: []config.WebPrompt{makePrompt("p", withEnabledWhen(`ACP.MatchesServerType("augment")`))},
 			ctx: &config.PromptEnabledContext{
 				ACP: config.ACPContext{Name: "Auggie (Sonnet 4.6)", Type: "augment"},
 			},
 			wantNames: []string{"p"},
 		},
-		// 5. acp.matchesServerType list of server types
+		// 5. ACP.MatchesServerType list of server types
 		{
 			name:    "acp_matchesServerType list match",
-			prompts: []config.WebPrompt{makePrompt("p", withEnabledWhen(`acp.matchesServerType(["augment", "claude-code"])`))},
+			prompts: []config.WebPrompt{makePrompt("p", withEnabledWhen(`ACP.MatchesServerType(["augment", "claude-code"])`))},
 			ctx: &config.PromptEnabledContext{
 				ACP: config.ACPContext{Name: "Claude Code (Opus 4.6)", Type: "claude-code"},
 			},
 			wantNames: []string{"p"},
 		},
-		// 6. acp.matchesServerType case insensitive (matches type)
+		// 6. ACP.MatchesServerType case insensitive (matches type)
 		{
 			name:    "acp_matchesServerType case insensitive",
-			prompts: []config.WebPrompt{makePrompt("p", withEnabledWhen(`acp.matchesServerType("AUGMENT")`))},
+			prompts: []config.WebPrompt{makePrompt("p", withEnabledWhen(`ACP.MatchesServerType("AUGMENT")`))},
 			ctx: &config.PromptEnabledContext{
 				ACP: config.ACPContext{Name: "Auggie (Opus 4.6)", Type: "augment"},
 			},
 			wantNames: []string{"p"},
 		},
-		// 7. acp.matchesServerType fail-open when no ACP active
+		// 7. ACP.MatchesServerType fail-open when no ACP active
 		{
 			name:    "acp_matchesServerType fail-open no acp active",
-			prompts: []config.WebPrompt{makePrompt("p", withEnabledWhen(`acp.matchesServerType("augment")`))},
+			prompts: []config.WebPrompt{makePrompt("p", withEnabledWhen(`ACP.MatchesServerType("augment")`))},
 			ctx: &config.PromptEnabledContext{
 				ACP: config.ACPContext{Name: "", Type: ""},
 			},
 			wantNames: []string{"p"},
 		},
-		// 8. tools.hasPattern satisfied
+		// 8. Tools.HasPattern satisfied
 		{
 			name:    "tools_hasPattern satisfied",
-			prompts: []config.WebPrompt{makePrompt("p", withEnabledWhen(`tools.hasPattern("mitto_*")`))},
+			prompts: []config.WebPrompt{makePrompt("p", withEnabledWhen(`Tools.HasPattern("mitto_*")`))},
 			ctx: &config.PromptEnabledContext{
-				Tools: config.ToolsContext{Names: []string{"mitto_conversation_new", "other_tool"}},
+				Tools: config.ToolsContext{Available: true, Names: []string{"mitto_conversation_new", "other_tool"}},
 			},
 			wantNames: []string{"p"},
 		},
-		// 9. tools.hasPattern unsatisfied
+		// 9. Tools.HasPattern unsatisfied
 		{
 			name:    "tools_hasPattern unsatisfied",
-			prompts: []config.WebPrompt{makePrompt("p", withEnabledWhen(`tools.hasPattern("mitto_*")`))},
+			prompts: []config.WebPrompt{makePrompt("p", withEnabledWhen(`Tools.HasPattern("mitto_*")`))},
 			ctx: &config.PromptEnabledContext{
-				Tools: config.ToolsContext{Names: []string{"other_tool"}},
+				Tools: config.ToolsContext{Available: true, Names: []string{"other_tool"}},
 			},
 			wantNames: nil,
 		},
-		// 10. tools.hasAllPatterns all satisfied
+		// 10. Tools.HasAllPatterns all satisfied
 		{
 			name:    "tools_hasAllPatterns all satisfied",
-			prompts: []config.WebPrompt{makePrompt("p", withEnabledWhen(`tools.hasAllPatterns(["mitto_*", "jira_*"])`))},
+			prompts: []config.WebPrompt{makePrompt("p", withEnabledWhen(`Tools.HasAllPatterns(["mitto_*", "jira_*"])`))},
 			ctx: &config.PromptEnabledContext{
-				Tools: config.ToolsContext{Names: []string{"mitto_foo", "jira_bar"}},
+				Tools: config.ToolsContext{Available: true, Names: []string{"mitto_foo", "jira_bar"}},
 			},
 			wantNames: []string{"p"},
 		},
-		// 11. tools.hasAllPatterns partially satisfied — excluded
+		// 11. Tools.HasAllPatterns partially satisfied — excluded
 		{
 			name:    "tools_hasAllPatterns partially satisfied excluded",
-			prompts: []config.WebPrompt{makePrompt("p", withEnabledWhen(`tools.hasAllPatterns(["mitto_*", "jira_*"])`))},
+			prompts: []config.WebPrompt{makePrompt("p", withEnabledWhen(`Tools.HasAllPatterns(["mitto_*", "jira_*"])`))},
 			ctx: &config.PromptEnabledContext{
-				Tools: config.ToolsContext{Names: []string{"mitto_foo"}},
+				Tools: config.ToolsContext{Available: true, Names: []string{"mitto_foo"}},
 			},
 			wantNames: nil,
 		},
-		// 12. tools.hasPattern empty tools — excluded
+		// 12. Tools.HasPattern fetched-empty tools — excluded (fail-closed)
 		{
-			name:    "tools_hasPattern empty tools excluded",
-			prompts: []config.WebPrompt{makePrompt("p", withEnabledWhen(`tools.hasPattern("mitto_*")`))},
+			name:    "tools_hasPattern fetched-empty tools excluded",
+			prompts: []config.WebPrompt{makePrompt("p", withEnabledWhen(`Tools.HasPattern("mitto_*")`))},
 			ctx: &config.PromptEnabledContext{
-				Tools: config.ToolsContext{Names: nil},
+				Tools: config.ToolsContext{Available: true, Names: nil},
 			},
 			wantNames: nil,
+		},
+		// 12b. Tools.HasPattern unknown tools — included (fail-open during warm-up)
+		{
+			name:    "tools_hasPattern unknown tools fail-open included",
+			prompts: []config.WebPrompt{makePrompt("p", withEnabledWhen(`Tools.HasPattern("mitto_*")`))},
+			ctx: &config.PromptEnabledContext{
+				Tools: config.ToolsContext{Available: false, Names: nil},
+			},
+			wantNames: []string{"p"},
 		},
 		// 13. enabledWhen CEL true expression
 		{
 			name:    "enabledWhen CEL true expression included",
-			prompts: []config.WebPrompt{makePrompt("p", withEnabledWhen("session.isChild"))},
+			prompts: []config.WebPrompt{makePrompt("p", withEnabledWhen("Session.IsChild"))},
 			ctx: &config.PromptEnabledContext{
 				Session: config.SessionContext{IsChild: true},
 			},
@@ -2252,7 +1751,7 @@ func TestFilterPromptsByEnabled(t *testing.T) {
 		// 14. enabledWhen CEL false expression
 		{
 			name:    "enabledWhen CEL false expression excluded",
-			prompts: []config.WebPrompt{makePrompt("p", withEnabledWhen("session.isChild"))},
+			prompts: []config.WebPrompt{makePrompt("p", withEnabledWhen("Session.IsChild"))},
 			ctx: &config.PromptEnabledContext{
 				Session: config.SessionContext{IsChild: false},
 			},
@@ -2262,7 +1761,7 @@ func TestFilterPromptsByEnabled(t *testing.T) {
 		{
 			name: "enabledWhen CEL complex expression included",
 			prompts: []config.WebPrompt{
-				makePrompt("p", withEnabledWhen(`"reasoning" in acp.tags`)),
+				makePrompt("p", withEnabledWhen(`"reasoning" in ACP.Tags`)),
 			},
 			ctx: &config.PromptEnabledContext{
 				ACP: config.ACPContext{Tags: []string{"reasoning", "fast"}},
@@ -2276,46 +1775,46 @@ func TestFilterPromptsByEnabled(t *testing.T) {
 			ctx:       &config.PromptEnabledContext{},
 			wantNames: []string{"p"},
 		},
-		// 17. Combined: acp.matchesServerType + tools.hasPattern + CEL all pass
+		// 17. Combined: ACP.MatchesServerType + Tools.HasPattern + CEL all pass
 		{
 			name: "combined acp_matchesServerType and tools_hasPattern and CEL all pass",
 			prompts: []config.WebPrompt{
 				makePrompt("p",
-					withEnabledWhen(`acp.matchesServerType("augment") && tools.hasPattern("mitto_*") && !session.isChild`),
+					withEnabledWhen(`ACP.MatchesServerType("augment") && Tools.HasPattern("mitto_*") && !Session.IsChild`),
 				),
 			},
 			ctx: &config.PromptEnabledContext{
 				ACP:     config.ACPContext{Name: "Auggie (Opus 4.6)", Type: "augment"},
-				Tools:   config.ToolsContext{Names: []string{"mitto_conversation_new"}},
+				Tools:   config.ToolsContext{Available: true, Names: []string{"mitto_conversation_new"}},
 				Session: config.SessionContext{IsChild: false},
 			},
 			wantNames: []string{"p"},
 		},
-		// 18. Combined: acp.matchesServerType passes, tools.hasPattern fails
+		// 18. Combined: ACP.MatchesServerType passes, Tools.HasPattern fails
 		{
 			name: "combined acp_matchesServerType passes tools_hasPattern fails excluded",
 			prompts: []config.WebPrompt{
 				makePrompt("p",
-					withEnabledWhen(`acp.matchesServerType("augment") && tools.hasPattern("jira_*")`),
+					withEnabledWhen(`ACP.MatchesServerType("augment") && Tools.HasPattern("jira_*")`),
 				),
 			},
 			ctx: &config.PromptEnabledContext{
 				ACP:   config.ACPContext{Name: "Auggie (Opus 4.6)", Type: "augment"},
-				Tools: config.ToolsContext{Names: []string{"mitto_foo"}},
+				Tools: config.ToolsContext{Available: true, Names: []string{"mitto_foo"}},
 			},
 			wantNames: nil,
 		},
-		// 19. Combined: acp.matchesServerType fails — whole expression excluded
+		// 19. Combined: ACP.MatchesServerType fails — whole expression excluded
 		{
 			name: "combined acp_matchesServerType fails excluded",
 			prompts: []config.WebPrompt{
 				makePrompt("p",
-					withEnabledWhen(`acp.matchesServerType("claude") && tools.hasPattern("mitto_*") && true`),
+					withEnabledWhen(`ACP.MatchesServerType("claude") && Tools.HasPattern("mitto_*") && true`),
 				),
 			},
 			ctx: &config.PromptEnabledContext{
 				ACP:   config.ACPContext{Name: "Auggie (Opus 4.6)", Type: "augment"},
-				Tools: config.ToolsContext{Names: []string{"mitto_foo"}},
+				Tools: config.ToolsContext{Available: true, Names: []string{"mitto_foo"}},
 			},
 			wantNames: nil,
 		},
@@ -2324,14 +1823,14 @@ func TestFilterPromptsByEnabled(t *testing.T) {
 			name: "mixed prompts correct order",
 			prompts: []config.WebPrompt{
 				makePrompt("included-1"),
-				makePrompt("excluded-acp", withEnabledWhen(`acp.matchesServerType("claude")`)),
-				makePrompt("included-2", withEnabledWhen("!session.isChild")),
-				makePrompt("excluded-mcp", withEnabledWhen(`tools.hasPattern("jira_*")`)),
-				makePrompt("included-3", withEnabledWhen(`acp.matchesServerType("augment")`)),
+				makePrompt("excluded-acp", withEnabledWhen(`ACP.MatchesServerType("claude")`)),
+				makePrompt("included-2", withEnabledWhen("!Session.IsChild")),
+				makePrompt("excluded-mcp", withEnabledWhen(`Tools.HasPattern("jira_*")`)),
+				makePrompt("included-3", withEnabledWhen(`ACP.MatchesServerType("augment")`)),
 			},
 			ctx: &config.PromptEnabledContext{
 				ACP:     config.ACPContext{Name: "Auggie (Opus 4.6)", Type: "augment"},
-				Tools:   config.ToolsContext{Names: []string{"mitto_foo"}},
+				Tools:   config.ToolsContext{Available: true, Names: []string{"mitto_foo"}},
 				Session: config.SessionContext{IsChild: false},
 			},
 			wantNames: []string{"included-1", "included-2", "included-3"},
@@ -2381,7 +1880,7 @@ func TestHandleUpdateSession_BeadsIssue(t *testing.T) {
 	}
 
 	server := &Server{
-		sessionManager: NewSessionManager("", "", false, nil),
+		sessionManager: conversation.NewSessionManager("", "", false, nil),
 		store:          store,
 		eventsManager:  NewGlobalEventsManager(),
 	}
@@ -2421,154 +1920,6 @@ func TestHandleUpdateSession_BeadsIssue(t *testing.T) {
 	}
 	if cleared.BeadsIssue != "" {
 		t.Errorf("BeadsIssue after clear = %q, want empty", cleared.BeadsIssue)
-	}
-}
-
-// TestToggleEnabled_SingleDocFile verifies that toggling a processor whose YAML
-// file contains a single document updates the file in-place (existing behavior).
-func TestToggleEnabled_SingleDocFile(t *testing.T) {
-	wsDir := t.TempDir()
-
-	// Create the workspace processors directory and a single-doc processor file.
-	procDir := filepath.Join(wsDir, ".mitto", "processors")
-	if err := os.MkdirAll(procDir, 0755); err != nil {
-		t.Fatalf("MkdirAll: %v", err)
-	}
-	procFile := filepath.Join(procDir, "my-proc.yaml")
-	original := "name: my-proc\nwhen:\n  on: userPrompt\n  match: all\ncommand: /bin/echo\n"
-	if err := os.WriteFile(procFile, []byte(original), 0644); err != nil {
-		t.Fatalf("WriteFile: %v", err)
-	}
-
-	server := &Server{
-		sessionManager: NewSessionManager("", "", false, nil),
-	}
-
-	body, _ := json.Marshal(map[string]interface{}{
-		"dir":     wsDir,
-		"name":    "my-proc",
-		"enabled": false,
-	})
-	req := httptest.NewRequest(http.MethodPut, "/api/workspace-processors/toggle-enabled", bytes.NewReader(body))
-	req.Header.Set("Content-Type", "application/json")
-	w := httptest.NewRecorder()
-
-	server.handleWorkspaceProcessorsToggleEnabled(w, req)
-
-	if w.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200; body: %s", w.Code, w.Body.String())
-	}
-
-	// The processor file must have been updated in-place.
-	data, err := os.ReadFile(procFile)
-	if err != nil {
-		t.Fatalf("ReadFile: %v", err)
-	}
-	if !strings.Contains(string(data), "enabled: false") {
-		t.Errorf("expected 'enabled: false' in file after toggle; got:\n%s", string(data))
-	}
-
-	// No .mittorc should have been created (in-place path, not .mittorc path).
-	rcPath := filepath.Join(wsDir, ".mittorc")
-	if _, err := os.Stat(rcPath); err == nil {
-		data, _ := os.ReadFile(rcPath)
-		t.Errorf(".mittorc should NOT be created for single-doc toggle; content:\n%s", string(data))
-	}
-}
-
-// TestToggleEnabled_MultiDocFile verifies that toggling a processor whose YAML
-// file contains multiple `---`-separated documents writes to .mittorc and leaves
-// the YAML file byte-identical to the original.
-func TestToggleEnabled_MultiDocFile(t *testing.T) {
-	wsDir := t.TempDir()
-
-	// Create the workspace processors directory and a multi-doc processor file.
-	procDir := filepath.Join(wsDir, ".mitto", "processors")
-	if err := os.MkdirAll(procDir, 0755); err != nil {
-		t.Fatalf("MkdirAll: %v", err)
-	}
-	procFile := filepath.Join(procDir, "multi-proc.yaml")
-	original := "name: multi-proc\nwhen:\n  on: userPrompt\n  match: all\ncommand: /bin/echo\n---\nname: multi-proc-b\nwhen:\n  on: agentResponded\n  match: all\ncommand: /bin/echo\n"
-	if err := os.WriteFile(procFile, []byte(original), 0644); err != nil {
-		t.Fatalf("WriteFile: %v", err)
-	}
-
-	server := &Server{
-		sessionManager: NewSessionManager("", "", false, nil),
-	}
-
-	body, _ := json.Marshal(map[string]interface{}{
-		"dir":     wsDir,
-		"name":    "multi-proc",
-		"enabled": false,
-	})
-	req := httptest.NewRequest(http.MethodPut, "/api/workspace-processors/toggle-enabled", bytes.NewReader(body))
-	req.Header.Set("Content-Type", "application/json")
-	w := httptest.NewRecorder()
-
-	server.handleWorkspaceProcessorsToggleEnabled(w, req)
-
-	if w.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200; body: %s", w.Code, w.Body.String())
-	}
-
-	// The multi-doc file must be byte-identical to the original (not rewritten).
-	data, err := os.ReadFile(procFile)
-	if err != nil {
-		t.Fatalf("ReadFile: %v", err)
-	}
-	if string(data) != original {
-		t.Errorf("multi-doc YAML file was modified:\ngot:\n%s\nwant:\n%s", string(data), original)
-	}
-
-	// .mittorc must have been created with the processors override.
-	rcPath := filepath.Join(wsDir, ".mittorc")
-	rcData, err := os.ReadFile(rcPath)
-	if err != nil {
-		t.Fatalf(".mittorc not created: %v", err)
-	}
-	if !strings.Contains(string(rcData), "multi-proc") {
-		t.Errorf(".mittorc does not contain 'multi-proc':\n%s", string(rcData))
-	}
-	if !strings.Contains(string(rcData), "enabled: false") {
-		t.Errorf(".mittorc does not contain 'enabled: false':\n%s", string(rcData))
-	}
-}
-
-// TestToggleEnabled_GlobalProcessor verifies that toggling a global processor
-// (not found in workspace dirs) writes to .mittorc.
-func TestToggleEnabled_GlobalProcessor(t *testing.T) {
-	wsDir := t.TempDir()
-	// Do NOT create any processor file in the workspace dir —
-	// simulates a global/builtin processor.
-
-	server := &Server{
-		sessionManager: NewSessionManager("", "", false, nil),
-	}
-
-	body, _ := json.Marshal(map[string]interface{}{
-		"dir":     wsDir,
-		"name":    "global-proc",
-		"enabled": false,
-	})
-	req := httptest.NewRequest(http.MethodPut, "/api/workspace-processors/toggle-enabled", bytes.NewReader(body))
-	req.Header.Set("Content-Type", "application/json")
-	w := httptest.NewRecorder()
-
-	server.handleWorkspaceProcessorsToggleEnabled(w, req)
-
-	if w.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200; body: %s", w.Code, w.Body.String())
-	}
-
-	// .mittorc must record the override.
-	rcPath := filepath.Join(wsDir, ".mittorc")
-	rcData, err := os.ReadFile(rcPath)
-	if err != nil {
-		t.Fatalf(".mittorc not created: %v", err)
-	}
-	if !strings.Contains(string(rcData), "global-proc") {
-		t.Errorf(".mittorc does not contain 'global-proc':\n%s", string(rcData))
 	}
 }
 
@@ -2644,7 +1995,7 @@ func TestResolveOwningWorkspace(t *testing.T) {
 // the PromptEnabledContext.Item) while still evaluating non-item prompts against
 // the rest of the context. This replaces the old per-row-only item filter: with
 // mitto-gns the beads menus run the full filterPromptsByEnabled so every gate
-// (item.*, session.isChild, permissions, commandExists, …) is applied at once.
+// (item.*, Session.IsChild, permissions, CommandExists, …) is applied at once.
 func TestFilterPromptsByEnabled_ItemGating(t *testing.T) {
 	s := &Server{}
 
@@ -2655,8 +2006,8 @@ func TestFilterPromptsByEnabled_ItemGating(t *testing.T) {
 		return p
 	}
 
-	itemPrompt := makePrompt("start-work", `item.status != "closed"`)
-	nonItemPrompt := makePrompt("triage", `session.isChild == false`)
+	itemPrompt := makePrompt("start-work", `Item.Status != "closed"`)
+	nonItemPrompt := makePrompt("triage", `Session.IsChild == false`)
 	noExprPrompt := makePrompt("review", "")
 
 	closedCtx := &config.PromptEnabledContext{
@@ -2749,8 +2100,9 @@ func TestHandleWorkspacePrompts_EnabledContextWorkspaceFallback(t *testing.T) {
 	}
 
 	server := &Server{
-		sessionManager: NewSessionManager("", "", false, nil),
+		sessionManager: conversation.NewSessionManager("", "", false, nil),
 	}
+	wireWorkspacePromptsTestDeps(server)
 
 	decode := func(t *testing.T, body []byte) ([]string, bool) {
 		t.Helper()
@@ -2778,7 +2130,7 @@ func TestHandleWorkspacePrompts_EnabledContextWorkspaceFallback(t *testing.T) {
 	}
 
 	// Without enabled_context: no filtering, both prompts returned.
-	req1 := httptest.NewRequest(http.MethodGet, "/api/workspace-prompts?dir="+tmpDir, nil)
+	req1 := httptest.NewRequest(http.MethodGet, "/api/workspace-prompts?working_dir="+tmpDir, nil)
 	w1 := httptest.NewRecorder()
 	server.handleWorkspacePrompts(w1, req1)
 	if w1.Code != http.StatusOK {
@@ -2793,7 +2145,7 @@ func TestHandleWorkspacePrompts_EnabledContextWorkspaceFallback(t *testing.T) {
 	}
 
 	// With enabled_context=workspace: full filter applied, "false"-gated prompt hidden.
-	req2 := httptest.NewRequest(http.MethodGet, "/api/workspace-prompts?dir="+tmpDir+"&enabled_context=workspace", nil)
+	req2 := httptest.NewRequest(http.MethodGet, "/api/workspace-prompts?working_dir="+tmpDir+"&enabled_context=workspace", nil)
 	w2 := httptest.NewRecorder()
 	server.handleWorkspacePrompts(w2, req2)
 	if w2.Code != http.StatusOK {
@@ -2812,11 +2164,11 @@ func TestHandleWorkspacePrompts_EnabledContextWorkspaceFallback(t *testing.T) {
 }
 
 // TestHandleWorkspacePrompts_DirGatesUseDirParamNotSession is a regression test
-// for the beads-menu bug where dir-based enabledWhen gates (dirExists/fileExists)
+// for the beads-menu bug where dir-based enabledWhen gates (DirExists/FileExists)
 // were evaluated against the active session's working dir instead of the dir
 // query param. The frontend always appends &session_id=<activeConversation>, so
 // when that conversation lived in a folder without ".beads" the gate
-// dirExists(".beads") evaluated false and every beads prompt was filtered out —
+// DirExists(".beads") evaluated false and every beads prompt was filtered out —
 // leaving the per-issue context menu empty. The fix makes the requested dir
 // authoritative for the workspace namespace (applyWorkspaceNamespace), so the
 // gate evaluates against the dir param even with a session_id present.
@@ -2831,7 +2183,7 @@ func TestHandleWorkspacePrompts_DirGatesUseDirParamNotSession(t *testing.T) {
 	rcContent := `prompts:
   - name: "Beads Gated"
     prompt: "x"
-    enabledWhen: 'dirExists(".beads")'
+    enabledWhen: 'DirExists(".beads")'
   - name: "Ungated"
     prompt: "y"
 `
@@ -2857,9 +2209,10 @@ func TestHandleWorkspacePrompts_DirGatesUseDirParamNotSession(t *testing.T) {
 	}
 
 	server := &Server{
-		sessionManager: NewSessionManager("", "", false, nil),
+		sessionManager: conversation.NewSessionManager("", "", false, nil),
 		store:          store,
 	}
+	wireWorkspacePromptsTestDeps(server)
 
 	decode := func(t *testing.T, body []byte) []string {
 		t.Helper()
@@ -2886,7 +2239,7 @@ func TestHandleWorkspacePrompts_DirGatesUseDirParamNotSession(t *testing.T) {
 
 	// dir=beadsDir (has .beads) but session_id points at otherDir (no .beads).
 	// The dir-gated prompt must still be returned because dir is authoritative.
-	url := "/api/workspace-prompts?dir=" + beadsDir + "&enabled_context=workspace&session_id=active-session"
+	url := "/api/workspace-prompts?working_dir=" + beadsDir + "&enabled_context=workspace&session_id=active-session"
 	req := httptest.NewRequest(http.MethodGet, url, nil)
 	w := httptest.NewRecorder()
 	server.handleWorkspacePrompts(w, req)
@@ -2895,9 +2248,146 @@ func TestHandleWorkspacePrompts_DirGatesUseDirParamNotSession(t *testing.T) {
 	}
 	names := decode(t, w.Body.Bytes())
 	if !hasName(names, "Beads Gated") {
-		t.Errorf("dir-gated prompt was filtered out: dirExists(\".beads\") evaluated against the session's folder instead of the dir param; got %v", names)
+		t.Errorf("dir-gated prompt was filtered out: DirExists(\".beads\") evaluated against the session's folder instead of the dir param; got %v", names)
 	}
 	if !hasName(names, "Ungated") {
 		t.Errorf("ungated prompt missing, got %v", names)
+	}
+}
+
+// TestSessionSubresourceRoutingPrecedence proves that specific sub-resource
+// patterns coexist correctly with the base /api/sessions/{id} route: each
+// registered sub-path wins over the base, and the base/events routes respond
+// independently. No subtree fallback exists in the final routing model.
+func TestSessionSubresourceRoutingPrecedence(t *testing.T) {
+	mux := http.NewServeMux()
+	hit := ""
+	// Base routes (increment 5 — method-qualified, no subtree fallback).
+	mux.HandleFunc("GET /api/sessions/{id}", func(w http.ResponseWriter, r *http.Request) { hit = "base:" + r.PathValue("id") })
+	mux.HandleFunc("GET /api/sessions/{id}/events", func(w http.ResponseWriter, r *http.Request) { hit = "events:" + r.PathValue("id") })
+	// Leaf sub-resources (increments 3+4).
+	for _, sub := range []string{"user-data", "callback", "settings", "prune", "changes"} {
+		s := sub
+		mux.HandleFunc("/api/sessions/{id}/"+s, func(w http.ResponseWriter, r *http.Request) { hit = s + ":" + r.PathValue("id") })
+	}
+	// Sub-resources with optional trailing sub-ID (same handler registered for both).
+	mux.HandleFunc("/api/sessions/{id}/images", func(w http.ResponseWriter, r *http.Request) {
+		hit = "images:" + r.PathValue("id") + ":" + r.PathValue("imageId")
+	})
+	mux.HandleFunc("/api/sessions/{id}/images/{imageId}", func(w http.ResponseWriter, r *http.Request) {
+		hit = "images:" + r.PathValue("id") + ":" + r.PathValue("imageId")
+	})
+	mux.HandleFunc("/api/sessions/{id}/files", func(w http.ResponseWriter, r *http.Request) {
+		hit = "files:" + r.PathValue("id") + ":" + r.PathValue("fileId")
+	})
+	mux.HandleFunc("/api/sessions/{id}/files/{fileId}", func(w http.ResponseWriter, r *http.Request) {
+		hit = "files:" + r.PathValue("id") + ":" + r.PathValue("fileId")
+	})
+	mux.HandleFunc("/api/sessions/{id}/queue", func(w http.ResponseWriter, r *http.Request) {
+		hit = "queue:" + r.PathValue("id") + ":" + r.PathValue("msgId")
+	})
+	mux.HandleFunc("/api/sessions/{id}/queue/{msgId}", func(w http.ResponseWriter, r *http.Request) {
+		hit = "queue:" + r.PathValue("id") + ":" + r.PathValue("msgId")
+	})
+	mux.HandleFunc("/api/sessions/{id}/queue/{msgId}/{subAction}", func(w http.ResponseWriter, r *http.Request) {
+		hit = "queue:" + r.PathValue("id") + ":" + r.PathValue("msgId") + ":" + r.PathValue("subAction")
+	})
+	mux.HandleFunc("/api/sessions/{id}/periodic", func(w http.ResponseWriter, r *http.Request) {
+		hit = "periodic:" + r.PathValue("id") + ":" + r.PathValue("subPath")
+	})
+	mux.HandleFunc("/api/sessions/{id}/periodic/{subPath}", func(w http.ResponseWriter, r *http.Request) {
+		hit = "periodic:" + r.PathValue("id") + ":" + r.PathValue("subPath")
+	})
+
+	cases := map[string]string{
+		// Leaf sub-resources from increment 3 — still routed correctly.
+		"/api/sessions/abc123/settings":  "settings:abc123",
+		"/api/sessions/abc123/prune":     "prune:abc123",
+		"/api/sessions/abc123/changes":   "changes:abc123",
+		"/api/sessions/abc123/user-data": "user-data:abc123",
+		"/api/sessions/abc123/callback":  "callback:abc123",
+		// Sub-resources with optional trailing sub-ID (increment 4).
+		"/api/sessions/abc123/images":           "images:abc123:",
+		"/api/sessions/abc123/images/img7":      "images:abc123:img7",
+		"/api/sessions/abc123/files":            "files:abc123:",
+		"/api/sessions/abc123/files/f9":         "files:abc123:f9",
+		"/api/sessions/abc123/queue":            "queue:abc123:",
+		"/api/sessions/abc123/queue/m42":        "queue:abc123:m42",
+		"/api/sessions/abc123/queue/m42/move":   "queue:abc123:m42:move",
+		"/api/sessions/abc123/periodic":         "periodic:abc123:",
+		"/api/sessions/abc123/periodic/run-now": "periodic:abc123:run-now",
+		// Base and events routes (increment 5 — explicit, no subtree).
+		"/api/sessions/abc123":        "base:abc123",
+		"/api/sessions/abc123/events": "events:abc123",
+	}
+	for path, want := range cases {
+		hit = ""
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		mux.ServeHTTP(httptest.NewRecorder(), req)
+		if hit != want {
+			t.Errorf("path %s routed to %q, want %q", path, hit, want)
+		}
+	}
+}
+
+// TestQueueMoveViaRouter is a through-the-mux regression test for mitto-lv0t.
+// Before the fix, POST /api/sessions/{id}/queue/{msgId}/move was not in the
+// route table, so the mux returned 404 and the frontend move buttons silently
+// failed. This test drives the request through the real mux (with the real
+// queue handler wired in) and asserts HTTP 200 + correct reorder.
+func TestQueueMoveViaRouter(t *testing.T) {
+	s := newContractServer(t)
+
+	// Build a mux with the three queue routes (same patterns as routes.go).
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/sessions/{id}/queue", s.handleSessionQueue)
+	mux.HandleFunc("/api/sessions/{id}/queue/{msgId}", s.handleSessionQueue)
+	mux.HandleFunc("/api/sessions/{id}/queue/{msgId}/{subAction}", s.handleSessionQueue)
+
+	// Create a session in the store so the handler finds it.
+	// Session ID must match YYYYMMDD-HHMMSS-8hex (see IsValidSessionID).
+	sessionID := "20260101-120000-deadbeef"
+	if err := s.store.Create(session.Metadata{SessionID: sessionID, WorkingDir: "/tmp", ACPServer: "test-acp"}); err != nil {
+		t.Fatalf("store.Create: %v", err)
+	}
+	t.Cleanup(func() { s.store.Delete(sessionID) })
+
+	// Add two messages. We want to move msg2 up (before msg1).
+	queue := s.store.Queue(sessionID)
+	msg1, err := queue.Add("first", nil, nil, "", nil, 0, nil, "")
+	if err != nil {
+		t.Fatalf("Add msg1: %v", err)
+	}
+	msg2, err := queue.Add("second", nil, nil, "", nil, 0, nil, "")
+	if err != nil {
+		t.Fatalf("Add msg2: %v", err)
+	}
+
+	// POST /api/sessions/{id}/queue/{msg2.ID}/move — the route that was broken.
+	body := strings.NewReader(`{"direction":"up"}`)
+	req := httptest.NewRequest(http.MethodPost,
+		"/api/sessions/"+sessionID+"/queue/"+msg2.ID+"/move", body)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (route was probably not matched — 404 indicates the mux fix is missing); body: %s",
+			w.Code, w.Body.String())
+	}
+
+	// Verify the response contains the reordered queue: [msg2, msg1].
+	var resp handlers.QueueListResponse
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(resp.Messages) != 2 {
+		t.Fatalf("len(messages) = %d, want 2", len(resp.Messages))
+	}
+	if resp.Messages[0].ID != msg2.ID {
+		t.Errorf("messages[0].ID = %q, want %q (msg2 should be first after moving up)", resp.Messages[0].ID, msg2.ID)
+	}
+	if resp.Messages[1].ID != msg1.ID {
+		t.Errorf("messages[1].ID = %q, want %q (msg1 should be second)", resp.Messages[1].ID, msg1.ID)
 	}
 }

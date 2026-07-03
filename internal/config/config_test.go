@@ -4,6 +4,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	defaultConfig "github.com/inercia/mitto/config"
 )
 
 func TestParse_ValidConfig(t *testing.T) {
@@ -454,6 +456,93 @@ prompts:
 	}
 	if cfg.Prompts[1].BackgroundColor != "" {
 		t.Errorf("second global prompt backgroundColor = %q, want empty", cfg.Prompts[1].BackgroundColor)
+	}
+}
+
+// TestParse_PromptSingletonAndTags verifies that top-level (global) inline
+// `prompts:` entries in config.yaml carry `singleton` and `tags` through
+// Parse() into the resulting WebPrompt (mitto-4mb.7). A prompt that omits
+// both keys must default to Singleton=false and empty Tags, guarding
+// against accidental coupling between sibling prompt entries.
+func TestParse_PromptSingletonAndTags(t *testing.T) {
+	yaml := `
+prompts:
+  - name: "Singleton Prompt"
+    prompt: "Singleton prompt text"
+    singleton: true
+    tags: ["foo", "bar"]
+  - name: "Plain Prompt"
+    prompt: "Plain prompt text"
+`
+	cfg, err := Parse([]byte(yaml))
+	if err != nil {
+		t.Fatalf("Parse failed: %v", err)
+	}
+
+	if len(cfg.Prompts) != 2 {
+		t.Fatalf("global prompts count = %d, want 2", len(cfg.Prompts))
+	}
+
+	singleton := cfg.Prompts[0]
+	if !singleton.Singleton {
+		t.Errorf("singleton prompt Singleton = %v, want true", singleton.Singleton)
+	}
+	if len(singleton.Tags) != 2 || singleton.Tags[0] != "foo" || singleton.Tags[1] != "bar" {
+		t.Errorf("singleton prompt Tags = %v, want [foo bar]", singleton.Tags)
+	}
+
+	plain := cfg.Prompts[1]
+	if plain.Singleton {
+		t.Errorf("plain prompt Singleton = %v, want false", plain.Singleton)
+	}
+	if len(plain.Tags) != 0 {
+		t.Errorf("plain prompt Tags = %v, want empty", plain.Tags)
+	}
+}
+
+// TestParse_PerServerPromptSingletonAndTags is the per-ACP-server counterpart
+// of TestParse_PromptSingletonAndTags: it verifies the same round-trip for
+// prompts nested under `acp[].prompts:` (mitto-4mb.7).
+func TestParse_PerServerPromptSingletonAndTags(t *testing.T) {
+	yaml := `
+acp:
+  - auggie:
+      command: "auggie --acp"
+      prompts:
+        - name: "Singleton Server Prompt"
+          prompt: "Singleton server prompt text"
+          singleton: true
+          tags: ["foo", "bar"]
+        - name: "Plain Server Prompt"
+          prompt: "Plain server prompt text"
+`
+	cfg, err := Parse([]byte(yaml))
+	if err != nil {
+		t.Fatalf("Parse failed: %v", err)
+	}
+
+	if len(cfg.ACPServers) != 1 {
+		t.Fatalf("ACPServers count = %d, want 1", len(cfg.ACPServers))
+	}
+	auggie := cfg.ACPServers[0]
+	if len(auggie.Prompts) != 2 {
+		t.Fatalf("auggie prompts count = %d, want 2", len(auggie.Prompts))
+	}
+
+	singleton := auggie.Prompts[0]
+	if !singleton.Singleton {
+		t.Errorf("singleton server prompt Singleton = %v, want true", singleton.Singleton)
+	}
+	if len(singleton.Tags) != 2 || singleton.Tags[0] != "foo" || singleton.Tags[1] != "bar" {
+		t.Errorf("singleton server prompt Tags = %v, want [foo bar]", singleton.Tags)
+	}
+
+	plain := auggie.Prompts[1]
+	if plain.Singleton {
+		t.Errorf("plain server prompt Singleton = %v, want false", plain.Singleton)
+	}
+	if len(plain.Tags) != 0 {
+		t.Errorf("plain server prompt Tags = %v, want empty", plain.Tags)
 	}
 }
 
@@ -1195,7 +1284,7 @@ acp:
       command: "claude"
 ui:
   confirmations:
-    delete_session: false
+    delete_conversation: never
 `
 	cfg, err := Parse([]byte(yaml))
 	if err != nil {
@@ -1206,23 +1295,19 @@ ui:
 		t.Fatal("UI.Confirmations is nil")
 	}
 
-	if cfg.UI.Confirmations.DeleteSession == nil {
-		t.Fatal("UI.Confirmations.DeleteSession is nil")
-	}
-
-	if *cfg.UI.Confirmations.DeleteSession != false {
-		t.Error("Confirmations.DeleteSession = true, want false")
+	if cfg.UI.Confirmations.DeleteConversation != DeleteConversationNever {
+		t.Errorf("Confirmations.DeleteConversation = %q, want %q", cfg.UI.Confirmations.DeleteConversation, DeleteConversationNever)
 	}
 }
 
-func TestParse_UIConfirmationsTrue(t *testing.T) {
+func TestParse_UIConfirmationsAlways(t *testing.T) {
 	yaml := `
 acp:
   - claude:
       command: "claude"
 ui:
   confirmations:
-    delete_session: true
+    delete_conversation: always
 `
 	cfg, err := Parse([]byte(yaml))
 	if err != nil {
@@ -1233,12 +1318,8 @@ ui:
 		t.Fatal("UI.Confirmations is nil")
 	}
 
-	if cfg.UI.Confirmations.DeleteSession == nil {
-		t.Fatal("UI.Confirmations.DeleteSession is nil")
-	}
-
-	if *cfg.UI.Confirmations.DeleteSession != true {
-		t.Error("Confirmations.DeleteSession = false, want true")
+	if cfg.UI.Confirmations.DeleteConversation != DeleteConversationAlways {
+		t.Errorf("Confirmations.DeleteConversation = %q, want %q", cfg.UI.Confirmations.DeleteConversation, DeleteConversationAlways)
 	}
 }
 
@@ -1249,7 +1330,7 @@ acp:
       command: "claude"
 ui:
   confirmations:
-    delete_session: false
+    delete_conversation: never
   mac:
     notifications:
       sounds:
@@ -1261,11 +1342,11 @@ ui:
 	}
 
 	// Check confirmations
-	if cfg.UI.Confirmations == nil || cfg.UI.Confirmations.DeleteSession == nil {
+	if cfg.UI.Confirmations == nil {
 		t.Fatal("UI.Confirmations not properly parsed")
 	}
-	if *cfg.UI.Confirmations.DeleteSession != false {
-		t.Error("Confirmations.DeleteSession = true, want false")
+	if cfg.UI.Confirmations.DeleteConversation != DeleteConversationNever {
+		t.Errorf("Confirmations.DeleteConversation = %q, want %q", cfg.UI.Confirmations.DeleteConversation, DeleteConversationNever)
 	}
 
 	// Check Mac notifications
@@ -1277,15 +1358,14 @@ ui:
 	}
 }
 
-func TestParse_UIConfirmationsQuitWithRunningSessions(t *testing.T) {
+func TestParse_UIConfirmationsDeleteConversationResponding(t *testing.T) {
 	yaml := `
 acp:
   - claude:
       command: "claude"
 ui:
   confirmations:
-    delete_session: true
-    quit_with_running_sessions: false
+    delete_conversation: responding
 `
 	cfg, err := Parse([]byte(yaml))
 	if err != nil {
@@ -1296,17 +1376,17 @@ ui:
 		t.Fatal("UI.Confirmations is nil")
 	}
 
-	if cfg.UI.Confirmations.QuitWithRunningSessions == nil {
-		t.Fatal("UI.Confirmations.QuitWithRunningSessions is nil")
+	if cfg.UI.Confirmations.DeleteConversation != DeleteConversationResponding {
+		t.Errorf("Confirmations.DeleteConversation = %q, want %q", cfg.UI.Confirmations.DeleteConversation, DeleteConversationResponding)
 	}
 
-	if *cfg.UI.Confirmations.QuitWithRunningSessions != false {
-		t.Error("Confirmations.QuitWithRunningSessions = true, want false")
+	// "responding" still confirms before quitting with a responding agent.
+	if cfg.ShouldConfirmDeleteRespondingSession() != true {
+		t.Error("ShouldConfirmDeleteRespondingSession() = false, want true")
 	}
 
-	// Also verify the helper method
-	if cfg.ShouldConfirmQuitWithRunningSessions() != false {
-		t.Error("ShouldConfirmQuitWithRunningSessions() = true, want false")
+	if cfg.DeleteConversationMode() != DeleteConversationResponding {
+		t.Errorf("DeleteConversationMode() = %q, want %q", cfg.DeleteConversationMode(), DeleteConversationResponding)
 	}
 }
 
@@ -1438,7 +1518,7 @@ func TestBadgeClickActionConfig_Defaults(t *testing.T) {
 	}
 }
 
-func TestShouldConfirmQuitWithRunningSessions(t *testing.T) {
+func TestShouldConfirmDeleteRespondingSession(t *testing.T) {
 	tests := []struct {
 		name     string
 		config   *Config
@@ -1450,7 +1530,7 @@ func TestShouldConfirmQuitWithRunningSessions(t *testing.T) {
 			expected: true,
 		},
 		{
-			name: "nil QuitWithRunningSessions returns true",
+			name: "empty mode returns true",
 			config: &Config{
 				UI: UIConfig{
 					Confirmations: &ConfirmationsConfig{},
@@ -1459,22 +1539,33 @@ func TestShouldConfirmQuitWithRunningSessions(t *testing.T) {
 			expected: true,
 		},
 		{
-			name: "explicit true returns true",
+			name: "always returns true",
 			config: &Config{
 				UI: UIConfig{
 					Confirmations: &ConfirmationsConfig{
-						QuitWithRunningSessions: boolPtr(true),
+						DeleteConversation: DeleteConversationAlways,
 					},
 				},
 			},
 			expected: true,
 		},
 		{
-			name: "explicit false returns false",
+			name: "responding returns true",
 			config: &Config{
 				UI: UIConfig{
 					Confirmations: &ConfirmationsConfig{
-						QuitWithRunningSessions: boolPtr(false),
+						DeleteConversation: DeleteConversationResponding,
+					},
+				},
+			},
+			expected: true,
+		},
+		{
+			name: "never returns false",
+			config: &Config{
+				UI: UIConfig{
+					Confirmations: &ConfirmationsConfig{
+						DeleteConversation: DeleteConversationNever,
 					},
 				},
 			},
@@ -1484,16 +1575,63 @@ func TestShouldConfirmQuitWithRunningSessions(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := tt.config.ShouldConfirmQuitWithRunningSessions()
+			got := tt.config.ShouldConfirmDeleteRespondingSession()
 			if got != tt.expected {
-				t.Errorf("ShouldConfirmQuitWithRunningSessions() = %v, want %v", got, tt.expected)
+				t.Errorf("ShouldConfirmDeleteRespondingSession() = %v, want %v", got, tt.expected)
 			}
 		})
 	}
 }
 
-func boolPtr(b bool) *bool {
-	return &b
+func TestDeleteConversationMode(t *testing.T) {
+	tests := []struct {
+		name     string
+		config   *Config
+		expected string
+	}{
+		{
+			name:     "nil confirmations defaults to always",
+			config:   &Config{},
+			expected: DeleteConversationAlways,
+		},
+		{
+			name: "empty value defaults to always",
+			config: &Config{
+				UI: UIConfig{Confirmations: &ConfirmationsConfig{}},
+			},
+			expected: DeleteConversationAlways,
+		},
+		{
+			name: "invalid value defaults to always",
+			config: &Config{
+				UI: UIConfig{Confirmations: &ConfirmationsConfig{DeleteConversation: "bogus"}},
+			},
+			expected: DeleteConversationAlways,
+		},
+		{
+			name: "responding is preserved",
+			config: &Config{
+				UI: UIConfig{Confirmations: &ConfirmationsConfig{DeleteConversation: DeleteConversationResponding}},
+			},
+			expected: DeleteConversationResponding,
+		},
+		{
+			name: "never is preserved",
+			config: &Config{
+				UI: UIConfig{Confirmations: &ConfirmationsConfig{DeleteConversation: DeleteConversationNever}},
+			},
+			expected: DeleteConversationNever,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := tt.config.DeleteConversationMode()
+			if got != tt.expected {
+				t.Errorf("DeleteConversationMode() = %q, want %q", got, tt.expected)
+			}
+		})
+	}
 }
 
 // Tests for MessageProcessor
@@ -2161,5 +2299,328 @@ conversations:
 	}
 	if cfg.Conversations.GetMaxPeriodicIterations() != 0 {
 		t.Errorf("GetMaxPeriodicIterations() = %d, want 0 (unlimited)", cfg.Conversations.GetMaxPeriodicIterations())
+	}
+}
+
+func TestGetMinPeriodicCompletionDelaySeconds(t *testing.T) {
+	t.Run("nil config returns default", func(t *testing.T) {
+		var c *ConversationsConfig
+		got := c.GetMinPeriodicCompletionDelaySeconds()
+		if got != DefaultMinPeriodicCompletionDelaySeconds {
+			t.Errorf("GetMinPeriodicCompletionDelaySeconds() = %d, want %d", got, DefaultMinPeriodicCompletionDelaySeconds)
+		}
+	})
+
+	t.Run("nil field returns default", func(t *testing.T) {
+		c := &ConversationsConfig{}
+		got := c.GetMinPeriodicCompletionDelaySeconds()
+		if got != DefaultMinPeriodicCompletionDelaySeconds {
+			t.Errorf("GetMinPeriodicCompletionDelaySeconds() = %d, want %d", got, DefaultMinPeriodicCompletionDelaySeconds)
+		}
+	})
+
+	t.Run("set value returned", func(t *testing.T) {
+		v := 10
+		c := &ConversationsConfig{MinPeriodicCompletionDelaySeconds: &v}
+		got := c.GetMinPeriodicCompletionDelaySeconds()
+		if got != 10 {
+			t.Errorf("GetMinPeriodicCompletionDelaySeconds() = %d, want 10", got)
+		}
+	})
+
+	t.Run("negative value treated as zero", func(t *testing.T) {
+		v := -3
+		c := &ConversationsConfig{MinPeriodicCompletionDelaySeconds: &v}
+		got := c.GetMinPeriodicCompletionDelaySeconds()
+		if got != 0 {
+			t.Errorf("GetMinPeriodicCompletionDelaySeconds() = %d, want 0 (negative → 0)", got)
+		}
+	})
+
+	t.Run("zero is valid (no floor)", func(t *testing.T) {
+		v := 0
+		c := &ConversationsConfig{MinPeriodicCompletionDelaySeconds: &v}
+		got := c.GetMinPeriodicCompletionDelaySeconds()
+		if got != 0 {
+			t.Errorf("GetMinPeriodicCompletionDelaySeconds() = %d, want 0", got)
+		}
+	})
+}
+
+func TestParse_MinPeriodicCompletionDelaySeconds(t *testing.T) {
+	yaml := `
+acp:
+  - test:
+      command: "test --acp"
+conversations:
+  min_periodic_completion_delay_seconds: 10
+`
+	cfg, err := Parse([]byte(yaml))
+	if err != nil {
+		t.Fatalf("Parse failed: %v", err)
+	}
+	if cfg.Conversations == nil {
+		t.Fatal("Conversations is nil")
+	}
+	if cfg.Conversations.MinPeriodicCompletionDelaySeconds == nil {
+		t.Fatal("MinPeriodicCompletionDelaySeconds is nil, want 10")
+	}
+	if *cfg.Conversations.MinPeriodicCompletionDelaySeconds != 10 {
+		t.Errorf("MinPeriodicCompletionDelaySeconds = %d, want 10", *cfg.Conversations.MinPeriodicCompletionDelaySeconds)
+	}
+	if cfg.Conversations.GetMinPeriodicCompletionDelaySeconds() != 10 {
+		t.Errorf("GetMinPeriodicCompletionDelaySeconds() = %d, want 10", cfg.Conversations.GetMinPeriodicCompletionDelaySeconds())
+	}
+}
+
+func TestParse_Models(t *testing.T) {
+	yaml := `
+models:
+  - name: Opus
+    criteria:
+      matchMode: contains
+      pattern: Opus
+    tags: [Smartest, Expensive]
+  - name: Sonnet
+    criteria:
+      matchMode: contains
+      pattern: Sonnet
+    tags: [Smart, Cheap]
+`
+	cfg, err := Parse([]byte(yaml))
+	if err != nil {
+		t.Fatalf("Parse failed: %v", err)
+	}
+
+	if len(cfg.Models) != 2 {
+		t.Fatalf("Models count = %d, want 2", len(cfg.Models))
+	}
+
+	opus := cfg.Models[0]
+	if opus.Name != "Opus" {
+		t.Errorf("Models[0].Name = %q, want %q", opus.Name, "Opus")
+	}
+	if opus.Criteria == nil {
+		t.Fatalf("Models[0].Criteria is nil, want non-nil")
+	}
+	if opus.Criteria.MatchMode != "contains" {
+		t.Errorf("Models[0].Criteria.MatchMode = %q, want %q", opus.Criteria.MatchMode, "contains")
+	}
+	if opus.Criteria.Pattern != "Opus" {
+		t.Errorf("Models[0].Criteria.Pattern = %q, want %q", opus.Criteria.Pattern, "Opus")
+	}
+	if len(opus.Tags) != 2 || opus.Tags[0] != "Smartest" || opus.Tags[1] != "Expensive" {
+		t.Errorf("Models[0].Tags = %v, want [Smartest Expensive]", opus.Tags)
+	}
+
+	sonnet := cfg.Models[1]
+	if sonnet.Name != "Sonnet" {
+		t.Errorf("Models[1].Name = %q, want %q", sonnet.Name, "Sonnet")
+	}
+	if len(sonnet.Tags) != 2 || sonnet.Tags[0] != "Smart" || sonnet.Tags[1] != "Cheap" {
+		t.Errorf("Models[1].Tags = %v, want [Smart Cheap]", sonnet.Tags)
+	}
+}
+
+func TestParse_ModelsEmptyAndNameless(t *testing.T) {
+	// A profile without a name must be skipped; a profile without criteria is allowed.
+	yaml := `
+models:
+  - name: ""
+    tags: [ignored]
+  - name: TagsOnly
+    tags: [Fast]
+`
+	cfg, err := Parse([]byte(yaml))
+	if err != nil {
+		t.Fatalf("Parse failed: %v", err)
+	}
+	if len(cfg.Models) != 1 {
+		t.Fatalf("Models count = %d, want 1", len(cfg.Models))
+	}
+	if cfg.Models[0].Name != "TagsOnly" {
+		t.Errorf("Models[0].Name = %q, want %q", cfg.Models[0].Name, "TagsOnly")
+	}
+	if cfg.Models[0].Criteria != nil {
+		t.Errorf("Models[0].Criteria = %v, want nil", cfg.Models[0].Criteria)
+	}
+}
+
+// TestConstraintMatchesName pins the single-string match engine shared by
+// MatchConstraintOption and model-tag resolution across all match modes.
+func TestConstraintMatchesName(t *testing.T) {
+	tests := []struct {
+		name       string
+		constraint *ACPServerConstraint
+		input      string
+		want       bool
+	}{
+		{name: "nil constraint never matches", constraint: nil, input: "Opus 4.8", want: false},
+		{name: "contains hit", constraint: &ACPServerConstraint{MatchMode: "contains", Pattern: "opus"}, input: "Opus 4.8", want: true},
+		{name: "contains case insensitive", constraint: &ACPServerConstraint{MatchMode: "contains", Pattern: "OPUS"}, input: "opus-4.8", want: true},
+		{name: "contains miss", constraint: &ACPServerConstraint{MatchMode: "contains", Pattern: "sonnet"}, input: "Opus 4.8", want: false},
+		{name: "exact hit case insensitive", constraint: &ACPServerConstraint{MatchMode: "exact", Pattern: "gpt-4o"}, input: "GPT-4o", want: true},
+		{name: "exact miss for partial", constraint: &ACPServerConstraint{MatchMode: "exact", Pattern: "opus"}, input: "opus-4.8", want: false},
+		{name: "startsWith hit", constraint: &ACPServerConstraint{MatchMode: "startsWith", Pattern: "opus"}, input: "Opus 4.8", want: true},
+		{name: "startsWith miss", constraint: &ACPServerConstraint{MatchMode: "startsWith", Pattern: "4.8"}, input: "Opus 4.8", want: false},
+		{name: "regex hit case insensitive", constraint: &ACPServerConstraint{MatchMode: "regex", Pattern: "opus-4\\.[78]"}, input: "OPUS-4.8", want: true},
+		{name: "regex miss", constraint: &ACPServerConstraint{MatchMode: "regex", Pattern: "^claude"}, input: "Opus 4.8", want: false},
+		{name: "lookAlike all words present", constraint: &ACPServerConstraint{MatchMode: "lookAlike", Pattern: "Opus 4.8"}, input: "opus-4.8", want: true},
+		{name: "lookAlike word missing", constraint: &ACPServerConstraint{MatchMode: "lookAlike", Pattern: "opus 5.0"}, input: "opus-4.8", want: false},
+		{name: "lookAlike empty pattern", constraint: &ACPServerConstraint{MatchMode: "lookAlike", Pattern: ""}, input: "opus-4.8", want: false},
+		{name: "unknown mode", constraint: &ACPServerConstraint{MatchMode: "nope", Pattern: "opus"}, input: "opus-4.8", want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := ConstraintMatchesName(tt.constraint, tt.input); got != tt.want {
+				t.Errorf("ConstraintMatchesName() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestModelProfileByName covers case-insensitive profile lookup by name.
+func TestModelProfileByName(t *testing.T) {
+	cfg := &Config{Models: []ModelProfile{
+		{Name: "Opus", Tags: []string{"Smartest"}},
+		{Name: "Sonnet", Tags: []string{"Smart"}},
+	}}
+
+	p, ok := cfg.ModelProfileByName("opus")
+	if !ok {
+		t.Fatalf("ModelProfileByName(opus) ok = false, want true")
+	}
+	if p.Name != "Opus" {
+		t.Errorf("ModelProfileByName(opus).Name = %q, want %q", p.Name, "Opus")
+	}
+
+	if _, ok := cfg.ModelProfileByName("haiku"); ok {
+		t.Errorf("ModelProfileByName(haiku) ok = true, want false")
+	}
+}
+
+// TestModelProfilesByTag covers case-insensitive tag filtering, including a tag shared
+// by multiple profiles.
+func TestModelProfilesByTag(t *testing.T) {
+	cfg := &Config{Models: []ModelProfile{
+		{Name: "Opus", Tags: []string{"Smartest", "Expensive"}},
+		{Name: "Sonnet", Tags: []string{"Smart", "Cheap"}},
+		{Name: "Haiku", Tags: []string{"Fast", "Cheap"}},
+	}}
+
+	cheap := cfg.ModelProfilesByTag("cheap")
+	if len(cheap) != 2 {
+		t.Fatalf("ModelProfilesByTag(cheap) count = %d, want 2", len(cheap))
+	}
+	if cheap[0].Name != "Sonnet" || cheap[1].Name != "Haiku" {
+		t.Errorf("ModelProfilesByTag(cheap) = [%s %s], want [Sonnet Haiku]", cheap[0].Name, cheap[1].Name)
+	}
+
+	if got := cfg.ModelProfilesByTag("missing"); len(got) != 0 {
+		t.Errorf("ModelProfilesByTag(missing) count = %d, want 0", len(got))
+	}
+}
+
+// TestResolveModelTags covers tag resolution across every match mode, the union (with
+// case-insensitive de-dup) across multiple matching profiles, the no-match / empty cases,
+// and that criteria-less profiles never contribute tags.
+func TestResolveModelTags(t *testing.T) {
+	cfg := &Config{Models: []ModelProfile{
+		{Name: "Opus", Criteria: &ACPServerConstraint{MatchMode: "contains", Pattern: "Opus"}, Tags: []string{"Smart", "Expensive"}},
+		{Name: "Claude", Criteria: &ACPServerConstraint{MatchMode: "regex", Pattern: "opus|sonnet"}, Tags: []string{"Anthropic", "smart"}},
+		{Name: "Sonnet", Criteria: &ACPServerConstraint{MatchMode: "exact", Pattern: "Sonnet 4.6"}, Tags: []string{"Cheap"}},
+		{Name: "Pro", Criteria: &ACPServerConstraint{MatchMode: "startsWith", Pattern: "opus"}, Tags: []string{"Pro"}},
+		{Name: "Look", Criteria: &ACPServerConstraint{MatchMode: "lookAlike", Pattern: "Opus 4.8"}, Tags: []string{"Latest"}},
+		{Name: "TagsOnly", Tags: []string{"NeverApplied"}}, // nil criteria → never matches
+	}}
+
+	tests := []struct {
+		name      string
+		modelName string
+		want      []string
+	}{
+		// "Opus 4.8" matches Opus (contains), Claude (regex), Pro (startsWith), Look (lookAlike).
+		// Union with case-insensitive de-dup: Smart, Expensive, Anthropic, Pro, Latest
+		// ("smart" from Claude is dropped as a dup of "Smart").
+		{name: "union across modes", modelName: "Opus 4.8", want: []string{"Smart", "Expensive", "Anthropic", "Pro", "Latest"}},
+		{name: "exact only", modelName: "Sonnet 4.6", want: []string{"Anthropic", "smart", "Cheap"}},
+		{name: "no match", modelName: "GPT-4o", want: nil},
+		{name: "empty name", modelName: "", want: nil},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := cfg.ResolveModelTags(tt.modelName)
+			if len(got) != len(tt.want) {
+				t.Fatalf("ResolveModelTags(%q) = %v, want %v", tt.modelName, got, tt.want)
+			}
+			for i := range tt.want {
+				if got[i] != tt.want[i] {
+					t.Errorf("ResolveModelTags(%q)[%d] = %q, want %q", tt.modelName, i, got[i], tt.want[i])
+				}
+			}
+		})
+	}
+}
+
+// TestParse_EmbeddedDefaultModelProfiles pins the well-known model profiles seeded into
+// new installs via the embedded config/config.default.yaml. It guards against the shipped
+// default drifting (bad YAML, renamed profiles, or dropped tags) and verifies that the
+// union resolution behaves as documented for representative model names.
+func TestParse_EmbeddedDefaultModelProfiles(t *testing.T) {
+	cfg, err := Parse(defaultConfig.DefaultConfigYAML)
+	if err != nil {
+		t.Fatalf("Parse(embedded default) failed: %v", err)
+	}
+
+	wantProfiles := map[string][]string{
+		"Claude":        {"Anthropic"},
+		"Claude Opus":   {"Smartest", "Reasoning", "Expensive"},
+		"Claude Sonnet": {"Smart", "Coding"},
+		"Claude Haiku":  {"Fast", "Cheap"},
+		"GPT-5":         {"Smart", "Reasoning", "Coding"},
+		"GPT-4":         {"Smart", "Coding"},
+		"Gemini":        {"Smart", "LongContext"},
+	}
+
+	if len(cfg.Models) != len(wantProfiles) {
+		t.Fatalf("embedded default Models count = %d, want %d", len(cfg.Models), len(wantProfiles))
+	}
+
+	for name, wantTags := range wantProfiles {
+		p, ok := cfg.ModelProfileByName(name)
+		if !ok {
+			t.Errorf("embedded default missing profile %q", name)
+			continue
+		}
+		if p.Criteria == nil || p.Criteria.MatchMode != "contains" {
+			t.Errorf("profile %q criteria = %+v, want matchMode contains", name, p.Criteria)
+		}
+		if len(p.Tags) != len(wantTags) {
+			t.Errorf("profile %q tags = %v, want %v", name, p.Tags, wantTags)
+			continue
+		}
+		for i := range wantTags {
+			if p.Tags[i] != wantTags[i] {
+				t.Errorf("profile %q tags[%d] = %q, want %q", name, i, p.Tags[i], wantTags[i])
+			}
+		}
+	}
+
+	// "Claude Opus 4.x" matches the vendor-level Claude (contains "Claude") and the Opus
+	// profile (contains "Opus"); the union de-dups case-insensitively.
+	opusTags := cfg.ResolveModelTags("Claude Opus 4.5")
+	wantOpus := []string{"Anthropic", "Smartest", "Reasoning", "Expensive"}
+	if len(opusTags) != len(wantOpus) {
+		t.Fatalf("ResolveModelTags(Claude Opus 4.5) = %v, want %v", opusTags, wantOpus)
+	}
+	for i := range wantOpus {
+		if opusTags[i] != wantOpus[i] {
+			t.Errorf("ResolveModelTags(Claude Opus 4.5)[%d] = %q, want %q", i, opusTags[i], wantOpus[i])
+		}
+	}
+
+	// A non-Anthropic model only picks up its own profile's tags.
+	if got := cfg.ResolveModelTags("Gemini 2.5 Pro"); len(got) != 2 || got[0] != "Smart" || got[1] != "LongContext" {
+		t.Errorf("ResolveModelTags(Gemini 2.5 Pro) = %v, want [Smart LongContext]", got)
 	}
 }

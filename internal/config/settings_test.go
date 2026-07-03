@@ -1,6 +1,7 @@
 package config
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
@@ -444,5 +445,91 @@ func TestParseMemoryRecycleThreshold(t *testing.T) {
 	var nilCfg *SessionConfig
 	if gotBytes, gotEnabled := nilCfg.ParseMemoryRecycleThreshold(); gotBytes != 0 || gotEnabled {
 		t.Errorf("nil ParseMemoryRecycleThreshold() = (%d, %t), want (0, false)", gotBytes, gotEnabled)
+	}
+}
+
+func TestContextFlushCommand_RoundTrip(t *testing.T) {
+	original := &Config{
+		ACPServers: []ACPServer{
+			{Name: "server1", Command: "cmd1", ContextFlushCommand: "/clear"},
+			{Name: "server2", Command: "cmd2"}, // no ContextFlushCommand
+		},
+	}
+
+	settings := ConfigToSettings(original)
+
+	// Verify JSON tag is present
+	if settings.ACPServers[0].ContextFlushCommand != "/clear" {
+		t.Errorf("ACPServers[0].ContextFlushCommand = %q, want %q", settings.ACPServers[0].ContextFlushCommand, "/clear")
+	}
+	if settings.ACPServers[1].ContextFlushCommand != "" {
+		t.Errorf("ACPServers[1].ContextFlushCommand = %q, want empty", settings.ACPServers[1].ContextFlushCommand)
+	}
+
+	result := settings.ToConfig()
+
+	if result.ACPServers[0].ContextFlushCommand != "/clear" {
+		t.Errorf("round-trip ACPServers[0].ContextFlushCommand = %q, want %q", result.ACPServers[0].ContextFlushCommand, "/clear")
+	}
+	if result.ACPServers[1].ContextFlushCommand != "" {
+		t.Errorf("round-trip ACPServers[1].ContextFlushCommand = %q, want empty", result.ACPServers[1].ContextFlushCommand)
+	}
+}
+
+func TestConfigToSettings_RoundTripWithModels(t *testing.T) {
+	original := &Config{
+		Models: []ModelProfile{
+			{
+				Name:     "Opus",
+				Criteria: &ACPServerConstraint{MatchMode: "contains", Pattern: "Opus"},
+				Tags:     []string{"Smartest", "Expensive"},
+			},
+			{
+				Name: "TagsOnly",
+				Tags: []string{"Fast"},
+			},
+		},
+		Web: WebConfig{Host: "127.0.0.1", Port: 8080},
+	}
+
+	// Round-trip through Settings and JSON (settings.json) to ensure no loss.
+	settings := ConfigToSettings(original)
+	data, err := json.Marshal(settings)
+	if err != nil {
+		t.Fatalf("json.Marshal(settings) failed: %v", err)
+	}
+	var reloaded Settings
+	if err := json.Unmarshal(data, &reloaded); err != nil {
+		t.Fatalf("json.Unmarshal(settings) failed: %v", err)
+	}
+	result := reloaded.ToConfig()
+
+	if len(result.Models) != 2 {
+		t.Fatalf("Models count = %d, want 2", len(result.Models))
+	}
+
+	opus := result.Models[0]
+	if opus.Name != "Opus" {
+		t.Errorf("Models[0].Name = %q, want %q", opus.Name, "Opus")
+	}
+	if opus.Criteria == nil {
+		t.Fatalf("Models[0].Criteria is nil after round-trip")
+	}
+	if opus.Criteria.MatchMode != "contains" || opus.Criteria.Pattern != "Opus" {
+		t.Errorf("Models[0].Criteria = %+v, want {contains Opus}", *opus.Criteria)
+	}
+	if len(opus.Tags) != 2 || opus.Tags[0] != "Smartest" || opus.Tags[1] != "Expensive" {
+		t.Errorf("Models[0].Tags = %v, want [Smartest Expensive]", opus.Tags)
+	}
+
+	tagsOnly := result.Models[1]
+	if tagsOnly.Name != "TagsOnly" {
+		t.Errorf("Models[1].Name = %q, want %q", tagsOnly.Name, "TagsOnly")
+	}
+	if tagsOnly.Criteria != nil {
+		t.Errorf("Models[1].Criteria = %+v, want nil", tagsOnly.Criteria)
+	}
+	if len(tagsOnly.Tags) != 1 || tagsOnly.Tags[0] != "Fast" {
+		t.Errorf("Models[1].Tags = %v, want [Fast]", tagsOnly.Tags)
 	}
 }

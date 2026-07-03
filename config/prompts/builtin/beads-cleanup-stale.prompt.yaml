@@ -1,14 +1,17 @@
-icon: beads
+icon: broom
 name: Cleanup stale issues
 menus: prompts, beadsList
 description: Find stale, obsolete, or duplicate beads and close them after confirmation
 backgroundColor: '#BCAAA4'
 group: Tasks
-enabledWhen: commandExists("bd") && dirExists(".beads")
+singleton: true
+enabledWhen: CommandExists("bd") && DirExists(".beads")
+preferredModels:
+  - modelTag: Coding
 prompt: |
   ## Session Context
 
-  Your session ID is `@mitto:session_id` — use this as `self_id` for all `mitto_*` MCP tool calls.
+  Your session ID is `{{ .Session.ID }}` — use this as `self_id` for all `mitto_*` MCP tool calls.
 
   # Beads: Cleanup Stale Issues
 
@@ -76,7 +79,7 @@ prompt: |
   ## Step 4 — Let the user choose closures via a checkbox form
 
   This cleanup is **read-only until you confirm**. Present **every** recommended-for-closure bead in
-  a single `mitto_ui_form_mitto(self_id: "@mitto:session_id")` as a checkbox, **checked by default**,
+  a single `mitto_ui_form_mitto(self_id: "{{ .Session.ID }}")` as a checkbox, **checked by default**,
   so the user can simply uncheck any bead they want to keep open. Put the key facts (bead ID,
   category, title, and a short reason) in each checkbox's label:
 
@@ -132,16 +135,16 @@ prompt: |
   The task is complete. Offer to tidy up so finished conversations do not accumulate.
 
   1. Ask the user whether to delete this conversation now, via
-     `mitto_ui_options_mitto(self_id: "@mitto:session_id", question: "All done — delete this conversation now?", timeout_seconds: 120)` with options:
+     `mitto_ui_options(self_id: "{{ .Session.ID }}", question: "All done — delete this conversation now?", timeout_seconds: 120)` with options:
      - **"Yes, delete it"**
      - **"No, keep it"**
 
   2. Honour the answer:
      - **Delete** → first notify the user (the deletion is deferred until your turn ends, so the
        message is delivered first) with
-       `mitto_ui_notify_mitto(self_id: "@mitto:session_id", title: "<short outcome>", message: "<one-line summary of what was done>", style: "success")`,
+       `mitto_ui_notify_mitto(self_id: "{{ .Session.ID }}", title: "<short outcome>", message: "<one-line summary of what was done>", style: "success")`,
        then self-destruct with
-       `mitto_conversation_delete_mitto(self_id: "@mitto:session_id", conversation_id: "self")`.
+       `mitto_conversation_delete_mitto(self_id: "{{ .Session.ID }}", conversation_id: "self")`.
      - **Keep** → leave the conversation in place.
 
   3. **On timeout** (no response): only delete this conversation if **all** of the following hold —

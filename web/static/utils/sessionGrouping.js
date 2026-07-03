@@ -28,7 +28,7 @@ export function computeSessionFingerprint(filteredSessions, groupingMode) {
     filteredSessions
       .map(
         (s) =>
-          `${s.session_id}|${s.parent_session_id || ""}|${s.working_dir || ""}|${s.archived || false}|${s.periodic_enabled || false}|${s.pinned || false}|${s.name || ""}`,
+          `${s.session_id}|${s.parent_session_id || ""}|${s.working_dir || ""}|${s.archived || false}|${s.periodic_enabled || false}|${s.periodic_configured || false}|${s.pinned || false}|${s.name || ""}`,
       )
       .sort()
       .join("\n")
@@ -42,9 +42,7 @@ export function computeSessionFingerprint(filteredSessions, groupingMode) {
 function getSessionInfo(session) {
   return {
     workingDir:
-      session.working_dir ||
-      getGlobalWorkingDir(session.session_id) ||
-      "",
+      session.working_dir || getGlobalWorkingDir(session.session_id) || "",
     acpServer: session.acp_server || "",
   };
 }
@@ -149,7 +147,12 @@ function computeFolderGroups(filteredSessions, allSessions, workspaces) {
 // Flat modes: server and workspace
 // ---------------------------------------------------------------------------
 
-function computeFlatGroups(filteredSessions, groupingMode, allSessions, workspaces) {
+function computeFlatGroups(
+  filteredSessions,
+  groupingMode,
+  allSessions,
+  workspaces,
+) {
   const sessionById = new Map(filteredSessions.map((s) => [s.session_id, s]));
   const allKnownSessionIds = new Set(allSessions.map((s) => s.session_id));
 
@@ -176,7 +179,8 @@ function computeFlatGroups(filteredSessions, groupingMode, allSessions, workspac
           w.working_dir === workingDir &&
           (!acpServer || w.acp_server === acpServer),
       );
-      groupLabel = ws?.name || (workingDir ? getBasename(workingDir) : "Unknown");
+      groupLabel =
+        ws?.name || (workingDir ? getBasename(workingDir) : "Unknown");
       groupWorkingDir = workingDir;
       groupAcpServer = acpServer;
     }
@@ -238,20 +242,18 @@ function annotateWithCategory(nodes) {
 /**
  * Compute the unified sidebar tree over ALL sessions (regular + periodic +
  * archived) without any tab pre-filtering. Returns a stable data model with
- * static injected nodes (dashboard, per-folder tasks) and conversation nodes
- * annotated with their category and partitioned into active vs. archived roots.
+ * static injected nodes (per-folder tasks) and conversation nodes annotated
+ * with their category and partitioned into active vs. archived roots.
  *
  * @param {Array}  allSessions - Full session list (may be undefined/null)
  * @param {Array}  workspaces  - Workspace metadata list (for labels / names)
- * @returns {{ dashboard: Object, folders: Array }}
+ * @returns {{ folders: Array }}
  */
 export function computeUnifiedTree(allSessions, workspaces = []) {
   const sessions = allSessions || [];
 
-  const dashboard = { type: "dashboard", id: "__dashboard__", label: "Dashboard" };
-
   if (sessions.length === 0) {
-    return { dashboard, folders: [] };
+    return { folders: [] };
   }
 
   const folderGroups = computeFolderGroups(sessions, sessions, workspaces);
@@ -284,7 +286,7 @@ export function computeUnifiedTree(allSessions, workspaces = []) {
     };
   });
 
-  return { dashboard, folders };
+  return { folders };
 }
 
 // ---------------------------------------------------------------------------
@@ -372,12 +374,12 @@ export function computeFolderGroupSections(folders) {
  * dropped). A folder with no visible conversations, no visible archived, and
  * Tasks hidden is pruned entirely.
  *
- * @param {{dashboard: Object, folders: Array}} tree - from computeUnifiedTree
+ * @param {{folders: Array}} tree - from computeUnifiedTree
  * @param {{regular: boolean, periodic: boolean, archived: boolean, tasks: boolean}} filter
- * @returns {{dashboard: Object, folders: Array}} new tree; each folder gains showTasks
+ * @returns {{folders: Array}} new tree; each folder gains showTasks
  */
 export function filterUnifiedTree(tree, filter) {
-  if (!tree) return { dashboard: null, folders: [] };
+  if (!tree) return { folders: [] };
   const f = filter || {};
   const regular = f.regular !== false;
   const periodic = f.periodic !== false;
@@ -412,7 +414,7 @@ export function filterUnifiedTree(tree, filter) {
         folder.showTasks,
     );
 
-  return { dashboard: tree.dashboard, folders };
+  return { folders };
 }
 
 /**
@@ -420,7 +422,7 @@ export function filterUnifiedTree(tree, filter) {
  * (mitto-1er.8). Produces the exact sidebar visual order: for each folder (in
  * render order — folders are alphabetical by label), emit each conversation
  * root followed by its children, then each archived root followed by its
- * children. Static nodes (Dashboard, per-folder Tasks) are NOT sessions and are
+ * children. Static nodes (per-folder Tasks) are NOT sessions and are
  * excluded.
  *
  * Each entry carries navigation metadata so visible-groups filtering can
@@ -430,7 +432,7 @@ export function filterUnifiedTree(tree, filter) {
  *   - archived:  true when the entry is in the Archived subgroup
  *   - parentKey: 'parent:<rootId>' when the entry is a nested child, else null
  *
- * @param {{dashboard: Object, folders: Array}} tree - filtered unified tree
+ * @param {{folders: Array}} tree - filtered unified tree
  * @returns {Array<{session: Object, folderKey: string, archived: boolean, parentKey: (string|null)}>}
  */
 export function flattenUnifiedTreeForNav(tree) {
@@ -456,6 +458,51 @@ export function flattenUnifiedTreeForNav(tree) {
   return entries;
 }
 
+/**
+ * Restrict flattened navigation entries to the conversations that swipe/keyboard
+ * cycling should visit: top-level (parent), non-archived conversations in the
+ * active conversation's folder only.
+ *
+ * Child conversations (parentKey != null — e.g. agent-spawned "Coder" sessions)
+ * are never cycling targets even though they remain visible in the sidebar.
+ * Archived conversations are likewise never cycling targets (they remain visible
+ * in the sidebar's Archived subgroup). Cycling is also scoped to a single
+ * folder: the folder of the active conversation. The active conversation's
+ * folder is taken from its own entry (whose folderKey is the root parent's
+ * working_dir); if the active conversation is not present in the entries (e.g.
+ * filtered out by category), the provided fallback folder key is used. When no
+ * folder key can be determined, only the parent-only and non-archived
+ * restrictions are applied (no folder scoping).
+ *
+ * @param {Array<{session: Object, folderKey: string, archived: boolean, parentKey: (string|null)}>} entries
+ *   - from flattenUnifiedTreeForNav
+ * @param {string|null} activeSessionId - currently focused conversation
+ * @param {string|null} [activeFolderKeyFallback] - folder key to use when the
+ *   active conversation is not present in entries
+ * @returns {Array} subset of entries (same shape) in the same order
+ */
+export function scopeNavEntriesToCurrentFolder(
+  entries,
+  activeSessionId,
+  activeFolderKeyFallback = null,
+) {
+  const list = entries || [];
+  const activeEntry = list.find(
+    (e) => e.session.session_id === activeSessionId,
+  );
+  const currentFolderKey = activeEntry
+    ? activeEntry.folderKey
+    : activeFolderKeyFallback;
+
+  return list.filter((e) => {
+    if (e.parentKey !== null) return false; // skip child conversations
+    if (e.archived) return false; // skip archived conversations
+    if (currentFolderKey != null && e.folderKey !== currentFolderKey)
+      return false; // restrict to the active conversation's folder
+    return true;
+  });
+}
+
 export function computeGroupedSessions(
   filteredSessions,
   groupingMode,
@@ -468,5 +515,10 @@ export function computeGroupedSessions(
   if (groupingMode === "folder") {
     return computeFolderGroups(filteredSessions, allSessions, workspaces);
   }
-  return computeFlatGroups(filteredSessions, groupingMode, allSessions, workspaces);
+  return computeFlatGroups(
+    filteredSessions,
+    groupingMode,
+    allSessions,
+    workspaces,
+  );
 }

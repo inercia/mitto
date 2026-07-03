@@ -8,8 +8,8 @@
 # The user's original message is always preserved.
 #
 # Activation conditions:
-#   1. The `bd` command exists on PATH (commandExists CEL gate)
-#   2. The workspace contains a `.beads` directory (dirExists CEL gate)
+#   1. The `bd` command exists on PATH (CommandExists CEL gate)
+#   2. The workspace contains a `.beads` directory (DirExists CEL gate)
 #
 # Throttling:
 #   - Fires on the first message, then re-runs periodically to keep beads memories
@@ -21,7 +21,7 @@
 name: beads-prime
 description: "Injects beads memories (bd prime --memories-only) at the start of a conversation"
 enabled: true
-enabledWhen: 'commandExists("bd") && dirExists(".beads")'
+enabledWhen: 'CommandExists("bd") && DirExists(".beads")'
 when:
   on: userPrompt
   match: first

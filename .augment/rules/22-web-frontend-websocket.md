@@ -86,6 +86,21 @@ function calculateReconnectDelay(attempt) {
 }
 ```
 
+### Reconnect Debounce
+
+Multiple reconnect triggers (visibility change, keepalive miss, app activate) can fire within milliseconds of each other. Debounce collapses these into a single reconnect:
+
+```javascript
+const RECONNECT_DEBOUNCE_MS = 3000; // General debounce window (3s)
+const APP_ACTIVATE_RESYNC_DEBOUNCE_MS = 15000; // macOS app-activate (15s)
+
+// Leading-edge debounce: first call goes through, subsequent within window are suppressed
+const { debounced, elapsed } = shouldDebounceReconnect(tracker, sessionId, {
+  windowMs: RECONNECT_DEBOUNCE_MS,
+});
+if (debounced) return; // Skip this reconnect
+```
+
 ## Keepalive Mechanism
 
 Dual purpose: zombie connection detection + sequence sync (see `24-web-frontend-sync.md` for sync details).

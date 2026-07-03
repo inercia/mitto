@@ -1,10 +1,10 @@
 icon: magic-wand
 name: Specialize prompts
-menus: prompts
+menus: prompts, !promptsPeriodic
 description: Analyze and specialize workspace prompts for this project
 group: Agents & Mitto
 backgroundColor: '#B3E5FC'
-enabledWhen: '!session.isPeriodicConversation'
+enabledWhen: '!Session.IsPeriodicConversation'
 prompt: |
   Specialize the available prompts for this workspace by analyzing the project and tailoring
   generic prompts to its specific technologies, commands, and workflows.

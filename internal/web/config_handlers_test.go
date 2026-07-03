@@ -2,6 +2,7 @@ package web
 
 import (
 	"encoding/json"
+	"github.com/inercia/mitto/internal/conversation"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -12,7 +13,51 @@ import (
 	"github.com/inercia/mitto/internal/appdir"
 	"github.com/inercia/mitto/internal/config"
 	"github.com/inercia/mitto/internal/session"
+	"github.com/inercia/mitto/internal/web/handlers"
+	"github.com/inercia/mitto/internal/web/middleware"
 )
+
+// handleGetConfig is a test-only shim delegating to the migrated
+// handlers.HandleGetConfig. It lets the existing web-package config tests keep
+// calling server.handleGetConfig directly, wiring the Deps from the server's
+// fields and nil-safe methods.
+func (s *Server) handleGetConfig(w http.ResponseWriter, r *http.Request) {
+	handlers.New(handlers.Deps{
+		Logger:                s.logger,
+		ConfigReadOnly:        s.config.ConfigReadOnly,
+		MittoConfig:           s.config.MittoConfig,
+		RCFilePath:            s.config.RCFilePath,
+		HasRCFileServers:      s.config.HasRCFileServers,
+		PromptsCache:          s.config.PromptsCache,
+		HasExistingSimpleAuth: s.hasExistingSimpleAuth,
+		Store:                 s.Store(),
+		SessionManager:        s.sessionManager,
+		APIPrefix:             s.apiPrefix,
+		FilterPromptsForSession: func(prompts []config.WebPrompt, sessionID string) []config.WebPrompt {
+			if visCtx := s.buildPromptEnabledContext(sessionID); visCtx != nil {
+				return s.filterPromptsByEnabled(prompts, visCtx)
+			}
+			return prompts
+		},
+	}).HandleGetConfig(w, r)
+}
+
+// handleSaveConfig is a test-only shim delegating to the migrated
+// handlers.HandleSaveConfig. It lets the existing web-package config tests keep
+// calling server.handleSaveConfig directly, wiring the Deps from the server's
+// fields and nil-safe methods.
+func (s *Server) handleSaveConfig(w http.ResponseWriter, r *http.Request) {
+	handlers.New(handlers.Deps{
+		Logger:                    s.logger,
+		ConfigReadOnly:            s.config.ConfigReadOnly,
+		ValidateAndPrepareConfig:  s.validateAndPrepareSaveConfig,
+		BuildNewSettings:          s.buildNewSettings,
+		ApplyConfigChanges:        s.applyConfigChanges,
+		AuthEnabled:               func() bool { return s.authManager != nil && s.authManager.IsEnabled() },
+		IsExternalListenerRunning: s.IsExternalListenerRunning,
+		GetExternalPort:           s.GetExternalPort,
+	}).HandleSaveConfig(w, r)
+}
 
 func TestHandleConfig_MethodNotAllowed(t *testing.T) {
 	server := &Server{
@@ -39,7 +84,7 @@ func TestHandleGetConfig(t *testing.T) {
 				},
 			},
 		},
-		sessionManager: NewSessionManager("", "", false, nil),
+		sessionManager: conversation.NewSessionManager("", "", false, nil),
 	}
 
 	req := httptest.NewRequest(http.MethodGet, "/api/config", nil)
@@ -61,7 +106,7 @@ func TestHandleGetConfig(t *testing.T) {
 func TestHandleGetConfig_NilMittoConfig(t *testing.T) {
 	server := &Server{
 		config:         Config{},
-		sessionManager: NewSessionManager("", "", false, nil),
+		sessionManager: conversation.NewSessionManager("", "", false, nil),
 	}
 
 	req := httptest.NewRequest(http.MethodGet, "/api/config", nil)
@@ -111,8 +156,9 @@ func TestHandleSaveConfig_ReadOnly(t *testing.T) {
 func TestHandleConfig_GET(t *testing.T) {
 	server := &Server{
 		config:         Config{},
-		sessionManager: NewSessionManager("", "", false, nil),
+		sessionManager: conversation.NewSessionManager("", "", false, nil),
 	}
+	server.apiHandlers = handlers.New(handlers.Deps{SessionManager: server.sessionManager})
 
 	req := httptest.NewRequest(http.MethodGet, "/api/config", nil)
 	w := httptest.NewRecorder()
@@ -128,53 +174,16 @@ func TestHandleConfig_POST(t *testing.T) {
 	server := &Server{
 		config: Config{},
 	}
+	// The POST branch of the dispatcher delegates to apiHandlers.HandleSaveConfig,
+	// so apiHandlers must be wired. Empty Deps suffice: with ConfigReadOnly=false
+	// the empty body fails JSON parsing and yields 400 before any closure is used.
+	server.apiHandlers = handlers.New(handlers.Deps{})
 
 	// POST without body should return 400
 	req := httptest.NewRequest(http.MethodPost, "/api/config", nil)
 	w := httptest.NewRecorder()
 
 	server.handleConfig(w, req)
-
-	if w.Code != http.StatusBadRequest {
-		t.Errorf("Status = %d, want %d", w.Code, http.StatusBadRequest)
-	}
-}
-
-func TestHandleImprovePrompt_MethodNotAllowed(t *testing.T) {
-	server := &Server{}
-
-	req := httptest.NewRequest(http.MethodGet, "/api/improve-prompt", nil)
-	w := httptest.NewRecorder()
-
-	server.handleImprovePrompt(w, req)
-
-	if w.Code != http.StatusMethodNotAllowed {
-		t.Errorf("Status = %d, want %d", w.Code, http.StatusMethodNotAllowed)
-	}
-}
-
-func TestHandleImprovePrompt_EmptyPrompt(t *testing.T) {
-	server := &Server{}
-
-	body := strings.NewReader(`{"prompt": ""}`)
-	req := httptest.NewRequest(http.MethodPost, "/api/improve-prompt", body)
-	req.Header.Set("Content-Type", "application/json")
-	w := httptest.NewRecorder()
-
-	server.handleImprovePrompt(w, req)
-
-	if w.Code != http.StatusBadRequest {
-		t.Errorf("Status = %d, want %d", w.Code, http.StatusBadRequest)
-	}
-}
-
-func TestHandleImprovePrompt_InvalidJSON(t *testing.T) {
-	server := &Server{}
-
-	req := httptest.NewRequest(http.MethodPost, "/api/improve-prompt", nil)
-	w := httptest.NewRecorder()
-
-	server.handleImprovePrompt(w, req)
 
 	if w.Code != http.StatusBadRequest {
 		t.Errorf("Status = %d, want %d", w.Code, http.StatusBadRequest)
@@ -188,7 +197,7 @@ func TestHandleSaveConfig_ValidRequest(t *testing.T) {
 	appdir.ResetCache()
 	t.Cleanup(appdir.ResetCache)
 
-	sm := NewSessionManager("test-cmd", "test-server", false, nil)
+	sm := conversation.NewSessionManager("test-cmd", "test-server", false, nil)
 	sm.SetWorkspaces([]config.WorkspaceSettings{
 		{WorkingDir: "/workspace1", ACPServer: "test-server"},
 	})
@@ -242,7 +251,7 @@ func TestHandleSaveConfig_ServerRenames_MigratesConversation(t *testing.T) {
 		t.Fatalf("Create failed: %v", err)
 	}
 
-	sm := NewSessionManager("test-cmd", "old-server", false, nil)
+	sm := conversation.NewSessionManager("test-cmd", "old-server", false, nil)
 	sm.SetStore(store)
 	sm.SetWorkspaces([]config.WorkspaceSettings{
 		{WorkingDir: "/workspace1", ACPServer: "old-server"},
@@ -292,7 +301,7 @@ func TestHandleSaveConfig_EmptyWorkspaces(t *testing.T) {
 	appdir.ResetCache()
 	t.Cleanup(appdir.ResetCache)
 
-	sm := NewSessionManager("test-cmd", "test-server", false, nil)
+	sm := conversation.NewSessionManager("test-cmd", "test-server", false, nil)
 
 	server := &Server{
 		config:         Config{},
@@ -321,7 +330,7 @@ func TestHandleSaveConfig_EmptyACPServers(t *testing.T) {
 	appdir.ResetCache()
 	t.Cleanup(appdir.ResetCache)
 
-	sm := NewSessionManager("test-cmd", "test-server", false, nil)
+	sm := conversation.NewSessionManager("test-cmd", "test-server", false, nil)
 
 	server := &Server{
 		config:         Config{},
@@ -399,70 +408,6 @@ func TestApplyAuthChanges_DisabledToEnabled_InvalidCredentials(t *testing.T) {
 	}
 }
 
-func TestHandleSupportedRunners(t *testing.T) {
-	server := &Server{
-		config: Config{},
-	}
-
-	req := httptest.NewRequest(http.MethodGet, "/api/supported-runners", nil)
-	w := httptest.NewRecorder()
-
-	server.handleSupportedRunners(w, req)
-
-	if w.Code != http.StatusOK {
-		t.Errorf("Status = %d, want %d", w.Code, http.StatusOK)
-	}
-
-	// Verify response contains JSON array
-	contentType := w.Header().Get("Content-Type")
-	if contentType != "application/json" {
-		t.Errorf("Content-Type = %q, want %q", contentType, "application/json")
-	}
-
-	// Decode and verify structure
-	var runners []RunnerInfo
-	if err := json.NewDecoder(w.Body).Decode(&runners); err != nil {
-		t.Fatalf("Failed to decode response: %v", err)
-	}
-
-	// Should have at least exec runner
-	if len(runners) == 0 {
-		t.Error("Expected at least one runner")
-	}
-
-	// Verify exec runner is always present and supported
-	foundExec := false
-	for _, r := range runners {
-		if r.Type == "exec" {
-			foundExec = true
-			if !r.Supported {
-				t.Error("exec runner should always be supported")
-			}
-			if r.Label == "" {
-				t.Error("exec runner should have a label")
-			}
-		}
-	}
-	if !foundExec {
-		t.Error("exec runner should always be present")
-	}
-}
-
-func TestHandleSupportedRunners_MethodNotAllowed(t *testing.T) {
-	server := &Server{
-		config: Config{},
-	}
-
-	req := httptest.NewRequest(http.MethodPost, "/api/supported-runners", nil)
-	w := httptest.NewRecorder()
-
-	server.handleSupportedRunners(w, req)
-
-	if w.Code != http.StatusMethodNotAllowed {
-		t.Errorf("Status = %d, want %d", w.Code, http.StatusMethodNotAllowed)
-	}
-}
-
 func TestApplyAuthChanges_DisabledToEnabled_ValidCredentials(t *testing.T) {
 	server := &Server{
 		config: Config{
@@ -500,7 +445,7 @@ func TestApplyAuthChanges_EnabledToDisabled(t *testing.T) {
 
 	server := &Server{
 		config:      Config{},
-		authManager: NewAuthManager(authConfig),
+		authManager: middleware.NewAuthManager(authConfig),
 	}
 
 	server.applyAuthChanges(true, false, nil)
@@ -528,7 +473,7 @@ func TestApplyAuthChanges_EnabledToEnabled_UpdateCredentials(t *testing.T) {
 				},
 			},
 		},
-		authManager:  NewAuthManager(oldConfig),
+		authManager:  middleware.NewAuthManager(oldConfig),
 		externalPort: -1, // Also set the server's external port to disabled
 	}
 
@@ -557,7 +502,7 @@ func TestApplyAuthChanges_EnabledToEnabled_InvalidCredentials(t *testing.T) {
 
 	server := &Server{
 		config:      Config{},
-		authManager: NewAuthManager(oldConfig),
+		authManager: middleware.NewAuthManager(oldConfig),
 	}
 
 	// Update with invalid credentials
@@ -584,6 +529,85 @@ func TestApplyAuthChanges_DisabledToDisabled(t *testing.T) {
 	}
 }
 
+// TestApplyAuthChanges_Case3_IncompleteCredentials_ReturnsWarning verifies that a
+// Case-3 (auth enabled → still enabled) save with incomplete credentials tears down
+// the listener AND returns a non-nil ExternalAccessWarning with the attempted port.
+func TestApplyAuthChanges_Case3_IncompleteCredentials_ReturnsWarning(t *testing.T) {
+	oldConfig := &config.WebAuth{
+		Simple: &config.SimpleAuth{
+			Username: "user",
+			Password: "pass",
+		},
+	}
+
+	const expectedPort = 58343
+	server := &Server{
+		config: Config{
+			MittoConfig: &config.Config{
+				Web: config.WebConfig{
+					ExternalPort: expectedPort,
+				},
+			},
+		},
+		authManager:  middleware.NewAuthManager(oldConfig),
+		externalPort: expectedPort,
+	}
+
+	// Update with incomplete credentials (nil config = no password) — Case 3.
+	warning := server.applyAuthChanges(true, true, nil)
+
+	if warning == nil {
+		t.Fatal("Expected non-nil ExternalAccessWarning for Case-3 incomplete-credentials teardown")
+	}
+	if warning.Port != expectedPort {
+		t.Errorf("warning.Port = %d, want %d", warning.Port, expectedPort)
+	}
+	if warning.Reason == "" {
+		t.Error("warning.Reason should not be empty")
+	}
+	if warning.Message == "" {
+		t.Error("warning.Message should not be empty")
+	}
+}
+
+// TestApplyAuthChanges_Case2_IntentionalDisable_ReturnsNil verifies that
+// intentionally disabling auth (Case 2) returns nil — no user-facing warning.
+func TestApplyAuthChanges_Case2_IntentionalDisable_ReturnsNil(t *testing.T) {
+	oldConfig := &config.WebAuth{
+		Simple: &config.SimpleAuth{
+			Username: "user",
+			Password: "pass",
+		},
+	}
+
+	server := &Server{
+		config:      Config{},
+		authManager: middleware.NewAuthManager(oldConfig),
+	}
+
+	// Disable auth intentionally (Case 2) — must not warn.
+	warning := server.applyAuthChanges(true, false, nil)
+
+	if warning != nil {
+		t.Errorf("Expected nil warning when auth is intentionally disabled, got: %+v", warning)
+	}
+}
+
+// TestApplyAuthChanges_DisabledToDisabled_ReturnsNil verifies Case 4 (never
+// enabled) also returns nil.
+func TestApplyAuthChanges_DisabledToDisabled_ReturnsNil(t *testing.T) {
+	server := &Server{
+		config:       Config{},
+		externalPort: -1,
+	}
+
+	warning := server.applyAuthChanges(false, false, nil)
+
+	if warning != nil {
+		t.Errorf("Expected nil warning for disabled-to-disabled, got: %+v", warning)
+	}
+}
+
 func TestHandleSaveConfig_UIWithNativeNotifications(t *testing.T) {
 	// Use temp dir to avoid writing to real settings file
 	tmpDir := t.TempDir()
@@ -591,7 +615,7 @@ func TestHandleSaveConfig_UIWithNativeNotifications(t *testing.T) {
 	appdir.ResetCache()
 	t.Cleanup(appdir.ResetCache)
 
-	sm := NewSessionManager("test-cmd", "test-server", false, nil)
+	sm := conversation.NewSessionManager("test-cmd", "test-server", false, nil)
 	sm.SetWorkspaces([]config.WorkspaceSettings{
 		{WorkingDir: "/workspace1", ACPServer: "test-server"},
 	})
@@ -613,7 +637,7 @@ func TestHandleSaveConfig_UIWithNativeNotifications(t *testing.T) {
 		"acp_servers": [{"name": "test-server", "command": "test-cmd"}],
 		"ui": {
 			"confirmations": {
-				"delete_session": false
+				"delete_conversation": "never"
 			},
 			"mac": {
 				"notifications": {
@@ -667,70 +691,6 @@ func TestHandleSaveConfig_UIWithNativeNotifications(t *testing.T) {
 	}
 }
 
-func TestHandleAdvancedFlags(t *testing.T) {
-	server := &Server{}
-
-	req := httptest.NewRequest(http.MethodGet, "/api/advanced-flags", nil)
-	w := httptest.NewRecorder()
-
-	server.handleAdvancedFlags(w, req)
-
-	if w.Code != http.StatusOK {
-		t.Errorf("Status = %d, want %d", w.Code, http.StatusOK)
-	}
-
-	// Verify response contains JSON
-	contentType := w.Header().Get("Content-Type")
-	if contentType != "application/json" {
-		t.Errorf("Content-Type = %q, want %q", contentType, "application/json")
-	}
-
-	// Parse response - now returns an object with flags and configured_defaults
-	var response struct {
-		Flags []struct {
-			Name        string `json:"name"`
-			Label       string `json:"label"`
-			Description string `json:"description"`
-			Default     bool   `json:"default"`
-		} `json:"flags"`
-		ConfiguredDefaults map[string]bool `json:"configured_defaults"`
-	}
-	if err := json.NewDecoder(w.Body).Decode(&response); err != nil {
-		t.Fatalf("Failed to decode response: %v", err)
-	}
-
-	// Should have at least the can_do_introspection flag
-	if len(response.Flags) < 1 {
-		t.Fatalf("Expected at least 1 flag, got %d", len(response.Flags))
-	}
-
-	// Configured defaults should be non-nil (even if empty)
-	if response.ConfiguredDefaults == nil {
-		t.Error("configured_defaults should not be nil")
-	}
-
-	// Find can_do_introspection flag
-	found := false
-	for _, flag := range response.Flags {
-		if flag.Name == "can_do_introspection" {
-			found = true
-			if flag.Label == "" {
-				t.Error("can_do_introspection should have a label")
-			}
-			if flag.Description == "" {
-				t.Error("can_do_introspection should have a description")
-			}
-			if flag.Default != false {
-				t.Errorf("can_do_introspection default should be false, got %v", flag.Default)
-			}
-			break
-		}
-	}
-	if !found {
-		t.Error("can_do_introspection flag not found in response")
-	}
-}
-
 func TestHandleGetConfig_ETag(t *testing.T) {
 	server := &Server{
 		config: Config{
@@ -740,7 +700,7 @@ func TestHandleGetConfig_ETag(t *testing.T) {
 				},
 			},
 		},
-		sessionManager: NewSessionManager("", "", false, nil),
+		sessionManager: conversation.NewSessionManager("", "", false, nil),
 	}
 
 	// First request — should get 200 with ETag
@@ -786,15 +746,175 @@ func TestHandleGetConfig_ETag(t *testing.T) {
 	}
 }
 
-func TestHandleAdvancedFlags_MethodNotAllowed(t *testing.T) {
-	server := &Server{}
+// twoProfileFixture returns two model profiles used across model-profile tests.
+func twoProfileFixture() []config.ModelProfile {
+	return []config.ModelProfile{
+		{
+			Name:     "Opus",
+			Criteria: &config.ACPServerConstraint{MatchMode: "contains", Pattern: "Opus"},
+			Tags:     []string{"Smartest", "Expensive"},
+		},
+		{
+			Name:     "Sonnet",
+			Criteria: &config.ACPServerConstraint{MatchMode: "contains", Pattern: "Sonnet"},
+			Tags:     []string{"Smart", "Cheap"},
+		},
+	}
+}
 
-	req := httptest.NewRequest(http.MethodPost, "/api/advanced-flags", nil)
+// TestHandleGetConfig_ModelProfiles verifies that GET /api/config includes
+// the model profiles configured in MittoConfig.Models.
+func TestHandleGetConfig_ModelProfiles(t *testing.T) {
+	server := &Server{
+		config: Config{
+			MittoConfig: &config.Config{
+				Models: twoProfileFixture(),
+			},
+		},
+		sessionManager: conversation.NewSessionManager("", "", false, nil),
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/config", nil)
 	w := httptest.NewRecorder()
+	server.handleGetConfig(w, req)
 
-	server.handleAdvancedFlags(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("Status = %d, want %d, body: %s", w.Code, http.StatusOK, w.Body.String())
+	}
 
-	if w.Code != http.StatusMethodNotAllowed {
-		t.Errorf("Status = %d, want %d", w.Code, http.StatusMethodNotAllowed)
+	var resp map[string]json.RawMessage
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("Failed to parse response JSON: %v", err)
+	}
+
+	modelsRaw, ok := resp["models"]
+	if !ok {
+		t.Fatal("Response missing 'models' key")
+	}
+
+	var models []map[string]interface{}
+	if err := json.Unmarshal(modelsRaw, &models); err != nil {
+		t.Fatalf("Failed to parse models array: %v", err)
+	}
+
+	if len(models) != 2 {
+		t.Fatalf("models len = %d, want 2", len(models))
+	}
+
+	// Check first profile (Opus)
+	if models[0]["name"] != "Opus" {
+		t.Errorf("models[0].name = %v, want Opus", models[0]["name"])
+	}
+	criteria0, ok := models[0]["criteria"].(map[string]interface{})
+	if !ok {
+		t.Fatal("models[0].criteria is not an object")
+	}
+	if criteria0["matchMode"] != "contains" {
+		t.Errorf("models[0].criteria.matchMode = %v, want contains", criteria0["matchMode"])
+	}
+	if criteria0["pattern"] != "Opus" {
+		t.Errorf("models[0].criteria.pattern = %v, want Opus", criteria0["pattern"])
+	}
+	tags0, _ := models[0]["tags"].([]interface{})
+	if len(tags0) != 2 || tags0[0] != "Smartest" || tags0[1] != "Expensive" {
+		t.Errorf("models[0].tags = %v, want [Smartest Expensive]", tags0)
+	}
+
+	// Check second profile (Sonnet)
+	if models[1]["name"] != "Sonnet" {
+		t.Errorf("models[1].name = %v, want Sonnet", models[1]["name"])
+	}
+}
+
+// TestBuildNewSettings_ModelsPresent verifies that when req.Models is non-nil,
+// buildNewSettings returns the provided list as the authoritative profiles.
+func TestBuildNewSettings_ModelsPresent(t *testing.T) {
+	profiles := twoProfileFixture()
+	server := &Server{
+		config: Config{
+			MittoConfig: &config.Config{},
+		},
+	}
+
+	req := &ConfigSaveRequest{
+		Models: &profiles,
+	}
+	settings, err := server.buildNewSettings(req)
+	if err != nil {
+		t.Fatalf("buildNewSettings returned error: %v", err)
+	}
+
+	if len(settings.Models) != 2 {
+		t.Fatalf("settings.Models len = %d, want 2", len(settings.Models))
+	}
+	if settings.Models[0].Name != "Opus" {
+		t.Errorf("settings.Models[0].Name = %q, want Opus", settings.Models[0].Name)
+	}
+	if settings.Models[1].Name != "Sonnet" {
+		t.Errorf("settings.Models[1].Name = %q, want Sonnet", settings.Models[1].Name)
+	}
+}
+
+// TestBuildNewSettings_ModelsOmitted verifies that when req.Models is nil
+// (section omitted), buildNewSettings preserves the existing profiles from
+// MittoConfig rather than wiping them.
+func TestBuildNewSettings_ModelsOmitted(t *testing.T) {
+	existing := twoProfileFixture()
+	server := &Server{
+		config: Config{
+			MittoConfig: &config.Config{
+				Models: existing,
+			},
+		},
+	}
+
+	req := &ConfigSaveRequest{
+		// Models intentionally omitted (nil) — preserve existing
+	}
+	settings, err := server.buildNewSettings(req)
+	if err != nil {
+		t.Fatalf("buildNewSettings returned error: %v", err)
+	}
+
+	if len(settings.Models) != len(existing) {
+		t.Fatalf("settings.Models len = %d, want %d (preserve existing)", len(settings.Models), len(existing))
+	}
+	if settings.Models[0].Name != existing[0].Name {
+		t.Errorf("settings.Models[0].Name = %q, want %q", settings.Models[0].Name, existing[0].Name)
+	}
+	if settings.Models[1].Name != existing[1].Name {
+		t.Errorf("settings.Models[1].Name = %q, want %q", settings.Models[1].Name, existing[1].Name)
+	}
+}
+
+// TestBuildNewSettings_ModelsFiltersBlankNames verifies that profiles with a
+// blank (or whitespace-only) name are dropped before being persisted, as
+// defense-in-depth alongside the UI validation and Config.Parse's own skip.
+func TestBuildNewSettings_ModelsFiltersBlankNames(t *testing.T) {
+	profiles := append(twoProfileFixture(), config.ModelProfile{
+		Name: "   ",
+		Tags: []string{"Orphan"},
+	})
+	server := &Server{
+		config: Config{
+			MittoConfig: &config.Config{},
+		},
+	}
+
+	req := &ConfigSaveRequest{
+		Models: &profiles,
+	}
+	settings, err := server.buildNewSettings(req)
+	if err != nil {
+		t.Fatalf("buildNewSettings returned error: %v", err)
+	}
+
+	if len(settings.Models) != 2 {
+		t.Fatalf("settings.Models len = %d, want 2 (blank-name profile filtered out)", len(settings.Models))
+	}
+	for _, m := range settings.Models {
+		if strings.TrimSpace(m.Name) == "" {
+			t.Errorf("settings.Models contains a blank-name profile: %+v", m)
+		}
 	}
 }

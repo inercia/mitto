@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # List MCP servers configured for Opencode
 # Input: {"path": "/optional/workspace/path"} (optional, via stdin)
-# Output: {"servers": [{"name": "...", "command": "...", "args": [...], "url": "..."}]}
+# Output: {"servers": [{"name": "...", "command": "...", "args": [...], "url": "...", "env": {...}}]}
 
 INPUT=$(cat 2>/dev/null || echo '{}')
 CONFIG_FILE="${HOME}/.opencode/settings.json"
@@ -26,6 +26,8 @@ try:
             entry['args'] = cfg['args']
         if 'url' in cfg:
             entry['url'] = cfg['url']
+        if 'env' in cfg:
+            entry['env'] = cfg['env']
         result.append(entry)
     print(json.dumps({'servers': result}))
 except Exception:

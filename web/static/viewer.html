@@ -205,6 +205,11 @@
         width: 100%;
       }
 
+      /* Row highlight when navigating via ?line=N */
+      .hljs-ln-highlight {
+        background-color: rgba(56, 139, 253, 0.20);
+      }
+
       .loading,
       .error {
         display: flex;
@@ -594,6 +599,8 @@
       const path = params.get("path");
       const wsPath = params.get("ws_path");
       const viewMode = params.get("view"); // "diff" to open in diff mode by default
+      const lineParamRaw = params.get("line") || "";
+      const lineParam = /^\d+$/.test(lineParamRaw) ? parseInt(lineParamRaw, 10) : 0;
 
       // Show "Open in System App" button in native macOS app.
       // The native viewer injects mittoOpenFileURL via WKScriptMessageHandler,
@@ -748,26 +755,36 @@
             imgContainer.style.cssText = "display: flex; justify-content: center; align-items: flex-start; padding: 20px; overflow: auto; min-height: 200px;";
 
             const img = document.createElement("img");
-            img.src = fileUrl;
             img.alt = path;
             img.style.cssText = "max-width: 100%; height: auto; object-fit: contain;";
-            img.onerror = () => showError("Failed to load image: " + path);
 
             imgContainer.appendChild(img);
             container.appendChild(imgContainer);
 
-            // Set up download for image
-            document.getElementById("downloadBtn").addEventListener("click", () => {
-              const a = document.createElement("a");
-              a.href = fileUrl;
-              a.download = path.split("/").pop();
-              a.click();
+            // Site 1: load image via credentialed fetch (fixes cross-origin auth bypass).
+            loadCredentialedImage(img, fileUrl, () => showError("Failed to load image: " + path));
+
+            // Site 2: download image via credentialed fetch -> Blob (fixes cross-origin auth bypass).
+            document.getElementById("downloadBtn").addEventListener("click", async () => {
+              try {
+                const res = await fetch(fileUrl, { credentials: "include", cache: "no-store" });
+                if (res.status === 401) { redirectToLogin(); return; }
+                if (!res.ok) { showError("Failed to download image: " + path); return; }
+                const blob = await res.blob();
+                const dlUrl = URL.createObjectURL(blob);
+                const a = document.createElement("a");
+                a.href = dlUrl;
+                a.download = path.split("/").pop();
+                a.click();
+                URL.revokeObjectURL(dlUrl);
+              } catch (e) { showError("Failed to download image: " + path); }
             });
 
             return;
           }
 
-          const response = await fetch(fileUrl, { cache: 'no-store' });
+          const response = await fetch(fileUrl, { credentials: "include", cache: 'no-store' });
+          if (response.status === 401) { redirectToLogin(); return; }
           if (!response.ok) {
             throw new Error(
               response.status === 404
@@ -829,6 +846,22 @@
             document.getElementById("editBtn").style.display = "none";
           }
 
+          // Highlight a line in the highlight.js fallback table. The line-numbers
+          // plugin populates the table asynchronously, so we retry a few times.
+          function tryHighlightHljsLine(n, attempts) {
+            if (!n) return;
+            const cells = document.querySelectorAll(
+              `td.hljs-ln-line[data-line-number="${n}"]`
+            );
+            if (cells.length > 0) {
+              cells.forEach((c) => c.classList.add("hljs-ln-highlight"));
+              cells[0].scrollIntoView({ block: "center" });
+              return;
+            }
+            const next = (attempts || 0) + 1;
+            if (next <= 10) setTimeout(() => tryHighlightHljsLine(n, next), 50);
+          }
+
           function clearAllActive() {
             // Clear active state on all toggle buttons in both toggle groups
             document.querySelectorAll(".toggle-btn").forEach(btn => btn.classList.remove("active"));
@@ -845,7 +878,7 @@
                 renderedStale = false;
                 try {
                   const renderUrl = `${apiPrefix}/api/files?${wsParam}&path=${encodeURIComponent(path)}&render=html`;
-                  const renderResponse = await fetch(renderUrl, { cache: 'no-store' });
+                  const renderResponse = await fetch(renderUrl, { credentials: "include", cache: 'no-store' });
                   if (renderResponse.ok) {
                     let htmlContent = await renderResponse.text();
                     if (htmlContent.trimStart().startsWith("<!DOCTYPE") || htmlContent.trimStart().toLowerCase().startsWith("<html")) {
@@ -862,7 +895,9 @@
                       if (/^(https?:\/\/|data:|\/\/|\/)/i.test(src)) return;
                       const resolved = resolveWorkspacePath(src);
                       if (resolved) {
-                        img.src = `${apiPrefix}/api/files?${wsParam}&path=${encodeURIComponent(resolved.path)}`;
+                        // Site 3: load via credentialed fetch (fixes cross-origin auth bypass).
+                        img.removeAttribute('src');
+                        loadCredentialedImage(img, `${apiPrefix}/api/files?${wsParam}&path=${encodeURIComponent(resolved.path)}`);
                       }
                     });
                   }
@@ -928,6 +963,7 @@
               codeElement._highlighted = true;
             }
             document.getElementById("codeBlock").style.display = "block";
+            if (lineParam) tryHighlightHljsLine(lineParam, 0);
 
             // Try to load CodeMirror; fall back to highlight.js on failure
             editorLoadPromise = (async () => {
@@ -949,6 +985,9 @@
                 if (currentMode === "source") {
                   document.getElementById("codeBlock").style.display = "none";
                   container.style.display = "block";
+                }
+                if (lineParam && typeof codeEditor.scrollToLine === "function") {
+                  codeEditor.scrollToLine(lineParam);
                 }
               } catch (err) {
                 console.warn("CodeMirror failed to load, using highlight.js fallback:", err);
@@ -982,7 +1021,7 @@
               diffEl.innerHTML = '<div class="diff-no-changes">Loading diff...</div>';
               try {
                 const diffUrl = `${apiPrefix}/api/files?${wsParam}&path=${encodeURIComponent(path)}&diff=true`;
-                const resp = await fetch(diffUrl, { cache: 'no-store' });
+                const resp = await fetch(diffUrl, { credentials: "include", cache: 'no-store' });
                 diffContent = await resp.text();
                 diffLoaded = true;
               } catch (err) {
@@ -1085,6 +1124,28 @@
           function getCSRFToken() {
             const match = document.cookie.match(/(^| )mitto_csrf=([^;]+)/);
             return match ? match[2] : null;
+          }
+
+          // Redirect to the login page (auth middleware returned 401).
+          function redirectToLogin() {
+            window.location.href = `${apiPrefix}/auth.html`;
+          }
+
+          // Fetch an image via credentialed fetch, assign a Blob object URL to img.src,
+          // and revoke the object URL once the browser has decoded it.
+          // This works identically for same-origin and cross-origin (proxy/Tailscale) requests.
+          async function loadCredentialedImage(img, url, onFail) {
+            try {
+              const res = await fetch(url, { credentials: "include", cache: "no-store" });
+              if (res.status === 401) { redirectToLogin(); return; }
+              if (!res.ok) { if (onFail) onFail(); return; }
+              const blob = await res.blob();
+              const objUrl = URL.createObjectURL(blob);
+              img.src = objUrl;
+              const revoke = () => URL.revokeObjectURL(objUrl);
+              img.addEventListener("load", revoke, { once: true });
+              img.addEventListener("error", revoke, { once: true });
+            } catch (e) { if (onFail) onFail(); }
           }
 
           async function ensureCSRFToken() {
@@ -1334,7 +1395,8 @@
           if (isMarkdown) {
             // Fetch server-rendered HTML for markdown
             const renderUrl = `${apiPrefix}/api/files?${wsParam}&path=${encodeURIComponent(path)}&render=html`;
-            const renderResponse = await fetch(renderUrl, { cache: 'no-store' });
+            const renderResponse = await fetch(renderUrl, { credentials: "include", cache: 'no-store' });
+            if (renderResponse.status === 401) { redirectToLogin(); return; }
             if (!renderResponse.ok) throw new Error(`HTTP ${renderResponse.status}`);
             let htmlContent = await renderResponse.text();
 
@@ -1359,7 +1421,9 @@
               if (/^(https?:\/\/|data:|\/\/|\/)/i.test(src)) return;
               const resolved = resolveWorkspacePath(src);
               if (resolved) {
-                img.src = `${apiPrefix}/api/files?${wsParam}&path=${encodeURIComponent(resolved.path)}`;
+                // Site 4: load via credentialed fetch (fixes cross-origin auth bypass).
+                img.removeAttribute('src');
+                loadCredentialedImage(img, `${apiPrefix}/api/files?${wsParam}&path=${encodeURIComponent(resolved.path)}`);
               }
             });
 
@@ -1564,7 +1628,7 @@
               : `workspace=${encodeURIComponent(wsPath || "")}`;
             const url = `${apiPrefix}/api/files?${wsParam}&path=${encodeURIComponent(filePath)}`;
             try {
-              const resp = await fetch(url, { method: "HEAD", cache: 'no-store' });
+              const resp = await fetch(url, { method: "HEAD", credentials: "include", cache: 'no-store' });
               return resp.ok;
             } catch { return false; }
           }

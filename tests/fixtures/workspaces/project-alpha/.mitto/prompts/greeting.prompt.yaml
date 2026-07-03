@@ -1,0 +1,4 @@
+name: Hello Greeting
+description: A simple greeting prompt for testing
+prompt: |
+  Hello! How are you doing today?

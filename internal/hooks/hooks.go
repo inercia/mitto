@@ -5,6 +5,7 @@ package hooks
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"io"
 	"os"
@@ -13,6 +14,7 @@ import (
 	"strings"
 	"sync"
 	"syscall"
+	"time"
 
 	"github.com/inercia/mitto/internal/config"
 	"github.com/inercia/mitto/internal/logging"
@@ -21,6 +23,10 @@ import (
 // maxHookOutputBytes is the maximum number of bytes captured from hook stdout+stderr.
 // Output beyond this limit is silently discarded to prevent memory issues from chatty hooks.
 const maxHookOutputBytes = 4096
+
+// downHookTimeout is the maximum time RunDown will wait for a down hook to complete.
+// It is a var (not const) so tests can temporarily override it.
+var downHookTimeout = 30 * time.Second
 
 // limitedBuffer is an io.Writer that writes to an underlying bytes.Buffer
 // but stops accepting data once maxSize bytes have been written.
@@ -266,9 +272,15 @@ func (hp *Process) Stop() {
 }
 
 // RunDown runs the web.hooks.down command synchronously.
-// It waits for the command to complete before returning.
+// It waits for the command to complete before returning, subject to downHookTimeout.
 // It replaces ${PORT} in the command with the actual port number.
 // Does nothing if the hook command is empty.
+//
+// Error handling:
+//   - If the command times out (context deadline exceeded), logs Warn and returns.
+//   - If the command is killed by a signal (exit_code == -1, e.g. "signal: terminated"),
+//     logs at Debug level — this is normal during hook restarts and mirrors StartUp's behavior.
+//   - Any other non-zero exit code is logged as Error for diagnosis.
 func RunDown(hook config.WebHook, port int) {
 	if hook.Command == "" {
 		return
@@ -291,8 +303,32 @@ func RunDown(hook config.WebHook, port int) {
 		"port", port,
 	)
 
-	// Create and run the command synchronously
-	cmd := exec.Command("sh", "-c", command)
+	// Use a timeout context so a hanging down hook cannot block indefinitely.
+	ctx, cancel := context.WithTimeout(context.Background(), downHookTimeout)
+	defer cancel()
+
+	// Create and run the command synchronously with timeout enforcement.
+	cmd := exec.CommandContext(ctx, "sh", "-c", command)
+	// Put the child in its own process group so we can kill the whole tree on
+	// timeout. Without this, "sh -c 'sleep 5'" may fork the sleep, and killing
+	// only the shell leaves sleep holding our stdout/stderr pipes — which
+	// blocks cmd.Wait() until sleep exits naturally (see TestRunDown_Timeout).
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	// Override the default Cancel (which only kills cmd.Process) to signal the
+	// entire process group instead.
+	cmd.Cancel = func() error {
+		if cmd.Process == nil {
+			return os.ErrProcessDone
+		}
+		if pgid, err := syscall.Getpgid(cmd.Process.Pid); err == nil {
+			return syscall.Kill(-pgid, syscall.SIGTERM)
+		}
+		return cmd.Process.Kill()
+	}
+	// WaitDelay bounds how long we wait after Cancel for the process/pipes to
+	// close. If children still hold the pipes, this force-closes them so
+	// cmd.Wait() can return promptly.
+	cmd.WaitDelay = 500 * time.Millisecond
 	// Capture stdout+stderr into a limited buffer while still streaming to the console.
 	var rawBuf bytes.Buffer
 	capBuf := &limitedBuffer{buf: &rawBuf, maxSize: maxHookOutputBytes}
@@ -306,16 +342,49 @@ func RunDown(hook config.WebHook, port int) {
 			exitCode = exitErr.ExitCode()
 		}
 		output := rawBuf.String()
+
+		// Check timeout first: when CommandContext kills the process the error looks
+		// like a signal kill, so we must distinguish the two cases explicitly.
+		if ctx.Err() == context.DeadlineExceeded {
+			fmt.Printf("⚠️  Down hook '%s' timed out after %v\n", hookName, downHookTimeout)
+			logger.Warn("Down hook timed out",
+				"name", hookName,
+				"timeout", downHookTimeout,
+			)
+			return
+		}
+
+		// Killed by an external signal (e.g. "signal: terminated" during restart).
+		// This is normal — mirror StartUp's goroutine behavior by logging at Debug.
+		if exitCode == -1 {
+			logger.Debug("Down hook terminated by signal",
+				"name", hookName,
+			)
+			return
+		}
+
+		// Genuine non-zero exit: log as error for diagnosis.
 		fmt.Printf("⚠️  Down hook '%s' exited with code %d: %v\n", hookName, exitCode, err)
 		if output != "" {
 			fmt.Printf("   Output: %s\n", output)
 		}
-		logger.Error("Down hook failed",
-			"name", hookName,
-			"exit_code", exitCode,
-			"error", err,
-			"output", output,
-		)
+		if output == "" {
+			// No output captured — flag explicitly so log analysis can distinguish
+			// "command produced nothing" from "output was not collected".
+			logger.Error("Down hook failed",
+				"name", hookName,
+				"exit_code", exitCode,
+				"error", err,
+				"output_empty", true,
+			)
+		} else {
+			logger.Error("Down hook failed",
+				"name", hookName,
+				"exit_code", exitCode,
+				"error", err,
+				"output", output,
+			)
+		}
 	} else {
 		fmt.Printf("🔗 Down hook '%s' completed (exit code 0)\n", hookName)
 		logger.Info("Down hook completed",

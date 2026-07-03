@@ -6,14 +6,53 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/inercia/mitto/internal/fileutil"
 )
 
 const (
 	periodicFileName = "periodic.json"
+)
+
+// StoppedReason is the reason a periodic conversation was automatically stopped.
+// These values are part of the frontend contract — do not change.
+type StoppedReason string
+
+const (
+	// StoppedReasonMaxDuration is set when the wall-clock cap (MaxDurationSeconds) is reached.
+	StoppedReasonMaxDuration StoppedReason = "maxDuration"
+	// StoppedReasonMaxIterations is set when the per-prompt MaxIterations cap is reached.
+	StoppedReasonMaxIterations StoppedReason = "maxIterations"
+	// StoppedReasonIterationSafeguard is set when the global/config iteration backstop is hit
+	// (MaxIterations was 0/unlimited but the effective safeguard stopped the loop).
+	StoppedReasonIterationSafeguard StoppedReason = "iterationSafeguard"
+	// StoppedReasonPromptUnresolved is set when the prompt name cannot be resolved after
+	// MaxPromptResolveFailures consecutive failures.
+	StoppedReasonPromptUnresolved StoppedReason = "promptUnresolved"
+	// StoppedReasonResumeFailures is set when ACP resume fails MaxPeriodicResumeFailures
+	// consecutive times and the session is auto-archived.
+	StoppedReasonResumeFailures StoppedReason = "resumeFailures"
+
+	// StoppedReasonPausedByUser is a resumable (paused) reason set when the user manually
+	// disables the loop (e.g. via the pause button). Re-enabling clears it.
+	StoppedReasonPausedByUser StoppedReason = "pausedByUser"
+	// StoppedReasonDisabledByAgent is a resumable (paused) reason set when the agent
+	// self-disables the loop via mitto_conversation_update. Re-enabling clears it.
+	StoppedReasonDisabledByAgent StoppedReason = "disabledByAgent"
+
+	// StoppedReasonArchived is set when the conversation is archived (manual or auto),
+	// which authoritatively stops the periodic loop.
+	StoppedReasonArchived StoppedReason = "archived"
+
+	// StoppedReasonNoProgress is set when the onTasks trigger's circuit breaker fires
+	// repeatedly with no newly-touched issue relative to the previous fire (e.g. a
+	// steady-state-true condition with no genuine forward progress), auto-pausing the
+	// loop to stop the hot-fire storm. Re-enabling clears it.
+	StoppedReasonNoProgress StoppedReason = "noProgress"
 )
 
 var (
@@ -25,7 +64,32 @@ var (
 	ErrPromptEmpty = errors.New("prompt cannot be empty")
 	// ErrInvalidMaxIterations is returned when max_iterations is negative.
 	ErrInvalidMaxIterations = errors.New("invalid max_iterations: must be >= 0")
+	// ErrInvalidTrigger is returned when the trigger value is not recognised.
+	ErrInvalidTrigger = errors.New("invalid trigger: must be empty, schedule, onCompletion, or onTasks")
+	// ErrInvalidDelay is returned when delay_seconds is negative.
+	ErrInvalidDelay = errors.New("invalid delay_seconds: must be >= 0")
+	// ErrInvalidMaxDuration is returned when max_duration_seconds is negative.
+	ErrInvalidMaxDuration = errors.New("invalid max_duration_seconds: must be >= 0")
 )
+
+// PeriodicTrigger defines how/when a periodic prompt is fired.
+type PeriodicTrigger string
+
+const (
+	// TriggerSchedule is the default trigger: fire based on Frequency.
+	TriggerSchedule PeriodicTrigger = "schedule"
+	// TriggerOnCompletion fires after the agent stops responding (event-driven).
+	TriggerOnCompletion PeriodicTrigger = "onCompletion"
+	// TriggerOnTasks fires when beads/tasks in the workspace change, optionally
+	// gated by a CEL Condition (event-driven).
+	TriggerOnTasks PeriodicTrigger = "onTasks"
+)
+
+// ConditionValidator is an optional package-level seam that compile-validates a
+// CEL Condition expression. It is nil by default; the config package wires it up
+// at startup to avoid an import cycle (session must stay independent of config).
+// When nil, Condition compile-validation is skipped in Validate().
+var ConditionValidator func(string) error
 
 // FrequencyUnit represents the time unit for periodic scheduling.
 type FrequencyUnit string
@@ -105,6 +169,10 @@ type PeriodicPrompt struct {
 	// When set, the prompt text is resolved from the workspace prompts at execution time.
 	// Either Prompt or PromptName must be set.
 	PromptName string `json:"prompt_name,omitempty"`
+	// Arguments holds user-supplied values for Go-template .Args placeholders
+	// when PromptName is set. Applied to the resolved prompt text at execution time.
+	// Empty for free-text prompts (Prompt field only).
+	Arguments map[string]string `json:"arguments,omitempty"`
 	// Frequency defines how often the prompt should be sent.
 	Frequency Frequency `json:"frequency"`
 	// Enabled indicates whether the periodic prompt is active.
@@ -124,12 +192,105 @@ type PeriodicPrompt struct {
 	LastSentAt *time.Time `json:"last_sent_at,omitempty"`
 	// NextScheduledAt is the computed next delivery time (nil if not scheduled).
 	NextScheduledAt *time.Time `json:"next_scheduled_at,omitempty"`
+	// Trigger controls how this periodic prompt is fired.
+	// Empty or "schedule" means frequency-based; "onCompletion" means event-driven.
+	Trigger PeriodicTrigger `json:"trigger,omitempty"`
+	// DelaySeconds is the number of seconds to wait after the agent stops responding
+	// before the next run. Only meaningful when Trigger is onCompletion.
+	DelaySeconds int `json:"delay_seconds,omitempty"`
+	// MaxDurationSeconds is the wall-clock cap in seconds since iterating started (0 = unlimited).
+	MaxDurationSeconds int `json:"max_duration_seconds,omitempty"`
+	// FirstRunAt is the elapsed-time anchor: set on the first RecordSent call.
+	// Used by ReachedMaxDuration to compute how long iterating has been running.
+	FirstRunAt *time.Time `json:"first_run_at,omitempty"`
+	// StoppedReason records why the periodic loop was automatically stopped.
+	// Empty when still running or not yet stopped.
+	StoppedReason StoppedReason `json:"stopped_reason,omitempty"`
+	// StoppedAt is the timestamp when the loop was auto-stopped (nil when still running).
+	StoppedAt *time.Time `json:"stopped_at,omitempty"`
+	// Condition is a CEL expression gating onTasks firing. Empty means fire on ANY
+	// beads/task change. Only meaningful when Trigger is onTasks.
+	Condition string `json:"condition,omitempty"`
+	// ConditionPreset is an optional UI preset id that was compiled into Condition.
+	ConditionPreset string `json:"condition_preset,omitempty"`
+	// CooldownSeconds is the per-conversation cooldown floor honoured by the runner
+	// between onTasks firings. 0 means use the global floor.
+	CooldownSeconds int `json:"cooldown_seconds,omitempty"`
 }
 
 // ReachedMaxIterations returns true if the prompt has been delivered the maximum number of scheduled times.
 // Returns false when MaxIterations is 0 (unlimited).
 func (p *PeriodicPrompt) ReachedMaxIterations() bool {
 	return p.MaxIterations > 0 && p.IterationCount >= p.MaxIterations
+}
+
+// EffectiveTrigger returns the resolved trigger type.
+// When Trigger is empty, TriggerSchedule (the default) is returned.
+func (p *PeriodicPrompt) EffectiveTrigger() PeriodicTrigger {
+	if p.Trigger == "" {
+		return TriggerSchedule
+	}
+	return p.Trigger
+}
+
+// IsOnCompletion returns true when this periodic prompt uses the onCompletion trigger.
+func (p *PeriodicPrompt) IsOnCompletion() bool {
+	return p.EffectiveTrigger() == TriggerOnCompletion
+}
+
+// IsOnTasks returns true when this periodic prompt uses the onTasks trigger.
+func (p *PeriodicPrompt) IsOnTasks() bool {
+	return p.EffectiveTrigger() == TriggerOnTasks
+}
+
+// pendingPlaceholder is the placeholder value treated as "no prompt" for preview purposes.
+const pendingPlaceholder = "(pending)"
+
+// promptPreviewMaxRunes is the maximum number of runes shown in PromptPreview.
+const promptPreviewMaxRunes = 80
+
+// PromptPreview returns a short preview of the free-text Prompt body.
+// Returns "" when Prompt is empty or the literal placeholder "(pending)".
+// Otherwise returns the first line, trimmed, truncated to 80 runes with a
+// trailing "…" appended when the original first line exceeded that length.
+// Named-prompt-only configs (PromptName set, Prompt empty) also return "".
+func (p *PeriodicPrompt) PromptPreview() string {
+	body := strings.TrimSpace(p.Prompt)
+	if body == "" || body == pendingPlaceholder {
+		return ""
+	}
+	// Use the first line only.
+	firstLine := body
+	if idx := strings.IndexByte(body, '\n'); idx >= 0 {
+		firstLine = strings.TrimSpace(body[:idx])
+	}
+	if utf8.RuneCountInString(firstLine) <= promptPreviewMaxRunes {
+		return firstLine
+	}
+	// Truncate to promptPreviewMaxRunes runes and append ellipsis.
+	runes := []rune(firstLine)
+	return string(runes[:promptPreviewMaxRunes]) + "…"
+}
+
+// ReachedMaxDuration returns true if the elapsed time since the first run exceeds MaxDurationSeconds.
+// Returns false when MaxDurationSeconds is 0 (unlimited) or FirstRunAt is nil (not yet started).
+func (p *PeriodicPrompt) ReachedMaxDuration(now time.Time) bool {
+	if p.MaxDurationSeconds <= 0 || p.FirstRunAt == nil {
+		return false
+	}
+	return now.Sub(*p.FirstRunAt) >= time.Duration(p.MaxDurationSeconds)*time.Second
+}
+
+// ClampDelay ensures DelaySeconds is at least floorSeconds.
+// Only applies when the trigger is onCompletion; schedule prompts are not clamped.
+// The floor value is injected by the caller — this method does NOT hardcode any policy minimum.
+func (p *PeriodicPrompt) ClampDelay(floorSeconds int) {
+	if !p.IsOnCompletion() {
+		return
+	}
+	if p.DelaySeconds < floorSeconds {
+		p.DelaySeconds = floorSeconds
+	}
 }
 
 // Validate checks if the periodic prompt configuration is valid.
@@ -140,7 +301,29 @@ func (p *PeriodicPrompt) Validate() error {
 	if p.MaxIterations < 0 {
 		return ErrInvalidMaxIterations
 	}
-	return p.Frequency.Validate()
+	switch p.Trigger {
+	case "", TriggerSchedule, TriggerOnCompletion, TriggerOnTasks:
+		// valid
+	default:
+		return ErrInvalidTrigger
+	}
+	if p.DelaySeconds < 0 {
+		return ErrInvalidDelay
+	}
+	if p.MaxDurationSeconds < 0 {
+		return ErrInvalidMaxDuration
+	}
+	if p.Condition != "" && ConditionValidator != nil {
+		if err := ConditionValidator(p.Condition); err != nil {
+			return fmt.Errorf("invalid condition: %w", err)
+		}
+	}
+	// For schedule trigger (default), Frequency must be valid.
+	// For onCompletion and onTasks, frequency is not required.
+	if p.EffectiveTrigger() == TriggerSchedule {
+		return p.Frequency.Validate()
+	}
+	return nil
 }
 
 // PeriodicStore manages the periodic prompt for a single session.
@@ -196,9 +379,11 @@ func (ps *PeriodicStore) Set(p *PeriodicPrompt) error {
 		// Preserve immutable/accumulated fields across a replace.
 		// IterationCount is preserved so re-saving config doesn't reset the delivery counter;
 		// the counter only resets if the user explicitly sets it via the API (not supported yet).
+		// FirstRunAt is preserved so the maxDuration elapsed-time anchor is not lost on config replace.
 		p.CreatedAt = existing.CreatedAt
 		p.LastSentAt = existing.LastSentAt
 		p.IterationCount = existing.IterationCount
+		p.FirstRunAt = existing.FirstRunAt
 	} else {
 		// Create: set created_at
 		p.CreatedAt = now
@@ -216,7 +401,7 @@ func (ps *PeriodicStore) Set(p *PeriodicPrompt) error {
 // Update applies a partial update to the periodic prompt.
 // Only non-nil fields in the update are applied.
 // IterationCount is never modified by Update — it is managed exclusively by RecordSent.
-func (ps *PeriodicStore) Update(prompt *string, promptName *string, frequency *Frequency, enabled *bool, freshContext *bool, maxIterations *int) error {
+func (ps *PeriodicStore) Update(prompt *string, promptName *string, frequency *Frequency, enabled *bool, freshContext *bool, maxIterations *int, trigger *PeriodicTrigger, delaySeconds *int, maxDurationSeconds *int, arguments *map[string]string, condition *string, conditionPreset *string, cooldownSeconds *int) error {
 	ps.mu.Lock()
 	defer ps.mu.Unlock()
 
@@ -236,12 +421,38 @@ func (ps *PeriodicStore) Update(prompt *string, promptName *string, frequency *F
 	}
 	if enabled != nil {
 		existing.Enabled = *enabled
+		// Re-enabling a stopped loop removes the badge so the UI shows a clean slate.
+		if *enabled {
+			existing.StoppedReason = ""
+			existing.StoppedAt = nil
+		}
 	}
 	if freshContext != nil {
 		existing.FreshContext = *freshContext
 	}
 	if maxIterations != nil {
 		existing.MaxIterations = *maxIterations
+	}
+	if trigger != nil {
+		existing.Trigger = *trigger
+	}
+	if delaySeconds != nil {
+		existing.DelaySeconds = *delaySeconds
+	}
+	if maxDurationSeconds != nil {
+		existing.MaxDurationSeconds = *maxDurationSeconds
+	}
+	if arguments != nil {
+		existing.Arguments = *arguments
+	}
+	if condition != nil {
+		existing.Condition = *condition
+	}
+	if conditionPreset != nil {
+		existing.ConditionPreset = *conditionPreset
+	}
+	if cooldownSeconds != nil {
+		existing.CooldownSeconds = *cooldownSeconds
 	}
 
 	if err := existing.Validate(); err != nil {
@@ -272,6 +483,36 @@ func (ps *PeriodicStore) Delete() error {
 	return nil
 }
 
+// ResetCounters resets the iteration and elapsed-time anchors so the loop starts
+// fresh: IterationCount is set to 0, FirstRunAt is cleared (elapsed time = 0), and
+// LastSentAt is cleared (never-sent). This is used when restoring a periodic
+// conversation that was auto-stopped after reaching its max-iterations or
+// max-duration cap. Clearing LastSentAt makes the conversation look brand-new so
+// that the restore behaves like the initial run: an onCompletion loop bootstraps
+// its first run immediately (no delay_seconds wait — the delay is a between-runs
+// gap, not a pre-first-run delay) rather than waiting out the configured delay. It
+// does not change Enabled or the prompt configuration; re-enabling is handled
+// separately by Update.
+func (ps *PeriodicStore) ResetCounters() error {
+	ps.mu.Lock()
+	defer ps.mu.Unlock()
+
+	existing, err := ps.getUnlocked()
+	if err != nil {
+		return err
+	}
+
+	existing.IterationCount = 0
+	existing.FirstRunAt = nil
+	existing.LastSentAt = nil
+	existing.UpdatedAt = time.Now().UTC()
+
+	if err := fileutil.WriteJSONAtomic(ps.periodicPath(), existing, 0644); err != nil {
+		return fmt.Errorf("failed to write periodic file: %w", err)
+	}
+	return nil
+}
+
 // RecordSent updates the last_sent_at timestamp, increments iteration_count, and computes next_scheduled_at.
 func (ps *PeriodicStore) RecordSent() error {
 	ps.mu.Lock()
@@ -283,10 +524,68 @@ func (ps *PeriodicStore) RecordSent() error {
 	}
 
 	now := time.Now().UTC()
+	// Set the elapsed-time anchor on the very first delivery; preserve it thereafter.
+	if existing.FirstRunAt == nil {
+		existing.FirstRunAt = &now
+	}
 	existing.IterationCount++
 	existing.LastSentAt = &now
 	existing.UpdatedAt = now
 	existing.NextScheduledAt = ps.computeNextScheduledTime(existing)
+
+	if err := fileutil.WriteJSONAtomic(ps.periodicPath(), existing, 0644); err != nil {
+		return fmt.Errorf("failed to write periodic file: %w", err)
+	}
+	return nil
+}
+
+// DeferNextSchedule pushes NextScheduledAt out to now+delay WITHOUT advancing the
+// iteration count or LastSentAt. It is used to back off after a transient delivery
+// failure so the runner does not re-fire the same prompt on every poll tick.
+// It is a no-op (returns nil) for disabled configs and for onCompletion/onTasks
+// triggers, whose next run is event-driven (NextScheduledAt is always nil).
+func (ps *PeriodicStore) DeferNextSchedule(delay time.Duration) error {
+	ps.mu.Lock()
+	defer ps.mu.Unlock()
+
+	existing, err := ps.getUnlocked()
+	if err != nil {
+		return err
+	}
+	if !existing.Enabled || existing.IsOnCompletion() || existing.IsOnTasks() {
+		return nil
+	}
+
+	now := time.Now().UTC()
+	next := now.Add(delay)
+	existing.NextScheduledAt = &next
+	existing.UpdatedAt = now
+
+	if err := fileutil.WriteJSONAtomic(ps.periodicPath(), existing, 0644); err != nil {
+		return fmt.Errorf("failed to write periodic file: %w", err)
+	}
+	return nil
+}
+
+// MarkStopped disables the periodic prompt and records the reason it was stopped.
+// It sets Enabled=false, StoppedReason=reason, StoppedAt=now (UTC),
+// NextScheduledAt=nil, and UpdatedAt=now.
+// Returns ErrPeriodicNotFound if no periodic config exists.
+func (ps *PeriodicStore) MarkStopped(reason StoppedReason) error {
+	ps.mu.Lock()
+	defer ps.mu.Unlock()
+
+	existing, err := ps.getUnlocked()
+	if err != nil {
+		return err
+	}
+
+	now := time.Now().UTC()
+	existing.Enabled = false
+	existing.StoppedReason = reason
+	existing.StoppedAt = &now
+	existing.NextScheduledAt = nil
+	existing.UpdatedAt = now
 
 	if err := fileutil.WriteJSONAtomic(ps.periodicPath(), existing, 0644); err != nil {
 		return fmt.Errorf("failed to write periodic file: %w", err)
@@ -308,8 +607,14 @@ func (ps *PeriodicStore) getUnlocked() (*PeriodicPrompt, error) {
 }
 
 // computeNextScheduledTime calculates when the next prompt should be sent.
+// Returns nil for onCompletion/onTasks triggers — their next run is armed by the
+// event-driven firing path, not a frequency-based schedule.
 func (ps *PeriodicStore) computeNextScheduledTime(p *PeriodicPrompt) *time.Time {
 	if !p.Enabled {
+		return nil
+	}
+	// Event-driven triggers do not use a frequency-based schedule.
+	if p.IsOnCompletion() || p.IsOnTasks() {
 		return nil
 	}
 

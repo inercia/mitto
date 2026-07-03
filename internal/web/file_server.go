@@ -4,6 +4,7 @@ package web
 import (
 	"context"
 	"fmt"
+	"github.com/inercia/mitto/internal/conversation"
 	"io"
 	"log/slog"
 	"mime"
@@ -22,12 +23,12 @@ import (
 // FileServer provides secure file serving from workspace directories.
 // It enforces strict security checks to prevent unauthorized file access.
 type FileServer struct {
-	sessionManager *SessionManager
+	sessionManager *conversation.SessionManager
 	logger         *slog.Logger
 }
 
 // NewFileServer creates a new FileServer.
-func NewFileServer(sessionManager *SessionManager, logger *slog.Logger) *FileServer {
+func NewFileServer(sessionManager *conversation.SessionManager, logger *slog.Logger) *FileServer {
 	return &FileServer{
 		sessionManager: sessionManager,
 		logger:         logger,

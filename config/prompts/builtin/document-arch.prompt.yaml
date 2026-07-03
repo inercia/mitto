@@ -1,9 +1,11 @@
 icon: layers
 name: Document Architecture
-menus: prompts
+menus: prompts, !promptsPeriodic
 description: Update developer/architecture documentation for the changes we just made
 group: Documentation
 backgroundColor: '#CE93D8'
+preferredModels:
+  - modelTag: Coding
 prompt: |
   Before updating any documentation, read the code changes we made and any existing
   architecture documentation. Understand what changed and how it affects the system's

@@ -1,0 +1,17 @@
+Check if you have any MCP tools matching each of these name patterns.
+Patterns use * as a wildcard (e.g., "jira_*" matches any tool starting with "jira_").
+
+Patterns to check: %s
+
+For each pattern, respond with true if you have at least one matching tool, false otherwise.
+
+Respond ONLY with a valid JSON object in this exact format:
+{
+  "patterns": {
+    "pattern1": true,
+    "pattern2": false
+  }
+}
+
+Do NOT call any tools. Just check your list of available tools and respond with the JSON.
+Return ONLY the JSON object, with no extra text.

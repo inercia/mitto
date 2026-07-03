@@ -15,6 +15,7 @@ import (
 	"github.com/inercia/mitto/internal/appdir"
 	"github.com/inercia/mitto/internal/client"
 	"github.com/inercia/mitto/internal/config"
+	"github.com/inercia/mitto/internal/conversation"
 	"github.com/inercia/mitto/internal/web"
 )
 
@@ -112,7 +113,7 @@ func TestConcurrentModelSetBurst(t *testing.T) {
 
 	type sessionResult struct {
 		id string
-		bs *web.BackgroundSession
+		bs *conversation.BackgroundSession
 	}
 
 	results := make([]sessionResult, numSessions)

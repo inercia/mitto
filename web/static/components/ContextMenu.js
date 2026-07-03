@@ -6,14 +6,17 @@ const { html, useState, useEffect, useLayoutEffect, useRef, render } =
   window.preact;
 
 import { ChevronRightIcon, getPromptIconOrDefault } from "./Icons.js";
-import { flattenPrompts } from "../utils/prompts.js";
+import { flattenPrompts, promptPeriodicMode, promptPeriodicDefaultOn } from "../utils/prompts.js";
 
 // Build ContextMenu submenu items that group `prompts` by their `group`
 // attribute (ungrouped prompts fall under "Other"), each group sorted by name.
 // Every group becomes one ContextMenu entry whose `submenu` lists its prompts.
-// `onRun(prompt)` handles selection; `groupIcon` is shown on each group entry.
-// Returns [] when there are no prompts. Shared by the conversation menu and the
-// Beads issue menus so all three surfaces present identical grouped submenus.
+// `onRun(prompt, opts)` handles selection; `groupIcon` is shown on each group
+// entry. Returns [] when there are no prompts. Shared by the conversation menu
+// and the Beads issue menus so all three surfaces present identical grouped
+// submenus. Each submenu item carries `periodicMode`/`periodicDefaultOn` so
+// ContextMenuItem can render a mode-aware toggle/badge (mitto-92x.5) instead of
+// a static trailing element.
 export function buildPromptGroupMenuItems(prompts, onRun, groupIcon) {
   const { groups } = flattenPrompts(prompts || [], {});
   return groups.map((g) => ({
@@ -22,7 +25,10 @@ export function buildPromptGroupMenuItems(prompts, onRun, groupIcon) {
     submenu: g.prompts.map((p) => ({
       label: p.name,
       icon: html`<${getPromptIconOrDefault(p.icon)} className="w-4 h-4" />`,
-      onClick: () => onRun(p),
+      periodicMode: promptPeriodicMode(p),
+      periodicDefaultOn: promptPeriodicDefaultOn(p),
+      trailing: null, // periodic visual now derives from periodicMode in ContextMenuItem
+      onClick: (opts) => onRun(p, opts),
     })),
   }));
 }
@@ -34,7 +40,7 @@ export function buildPromptGroupMenuItems(prompts, onRun, groupIcon) {
 // position:fixed descendants AND a stacking context, which traps the menu's
 // `fixed z-50` inside the sidebar's width and paints it BEHIND the chat panel.
 // Rendering at the document.body level sidesteps this entirely.
-function Portal({ children }) {
+export function Portal({ children }) {
   const containerRef = useRef(null);
   if (containerRef.current === null) {
     containerRef.current = document.createElement("div");
@@ -58,6 +64,58 @@ function Portal({ children }) {
   return null;
 }
 
+// A portal-rendered tooltip bubble anchored near a cursor position. Used for
+// multi-line metadata tooltips on elements whose ancestors clip CSS tooltips —
+// e.g. the swipeable conversation rows, which need `overflow-hidden` for the
+// swipe-to-archive reveal and sit inside the sidebar's `overflow-x: hidden`.
+// daisyUI's CSS `::before` tooltip cannot escape those overflow boundaries and
+// gets cropped; rendering at document.body (via Portal) does. Styled with the
+// same CSS variables daisyUI's tooltip uses (var(--color-neutral) bubble,
+// var(--color-neutral-content) text, var(--radius-field) corners) so it matches
+// the other tooltips visually, and clamped to the viewport so it never spills
+// off any edge. `text` may contain "\n"; rendered with white-space: pre-line.
+export function PortalTooltip({ x, y, text }) {
+  const ref = useRef(null);
+  const [pos, setPos] = useState({ x: x + 14, y: y + 18 });
+
+  // Clamp inside the viewport before paint (useLayoutEffect runs synchronously
+  // after the Portal child mounts but before the browser paints, so the parked
+  // initial offset is never visible). Prefer below-right of the cursor; flip to
+  // the left and/or pin to an edge so the bubble is never cropped — the exact
+  // failure this component fixes.
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const rect = el.getBoundingClientRect();
+    const margin = 8;
+    let nx = x + 14;
+    let ny = y + 18;
+    if (nx + rect.width > window.innerWidth - margin) {
+      nx = x - rect.width - 14;
+    }
+    if (nx < margin) nx = margin;
+    if (ny + rect.height > window.innerHeight - margin) {
+      ny = window.innerHeight - rect.height - margin;
+    }
+    if (ny < margin) ny = margin;
+    setPos((prev) =>
+      prev.x === nx && prev.y === ny ? prev : { x: nx, y: ny },
+    );
+  }, [x, y, text]);
+
+  return html`
+    <${Portal}>
+      <div
+        ref=${ref}
+        class="fixed pointer-events-none"
+        style="left: ${pos.x}px; top: ${pos.y}px; z-index: 9999; max-width: 20rem; white-space: pre-line; background: var(--color-neutral); color: var(--color-neutral-content); border-radius: var(--radius-field); padding: .375rem .625rem; font-size: .8125rem; line-height: 1.4; box-shadow: 0 4px 14px rgba(0, 0, 0, 0.35);"
+      >
+        ${text}
+      </div>
+    <//>
+  `;
+}
+
 // Renders a single context menu entry. Entries with a non-empty `submenu`
 // array expand a flyout submenu on hover (positioned to the right, flipping
 // left or shifting up when it would overflow the viewport).
@@ -66,6 +124,8 @@ function ContextMenuItem({ item, onClose }) {
   const submenuCount = hasSubmenu ? item.submenu.length : 0;
   const [submenuOpen, setSubmenuOpen] = useState(false);
   const [submenuPos, setSubmenuPos] = useState({ left: 0, top: 0 });
+  // Per-submenu-item periodic override (mode "optional" only), keyed by sub.label.
+  const [periodicOverrides, setPeriodicOverrides] = useState({});
   const itemRef = useRef(null);
   const submenuRef = useRef(null);
   const closeTimerRef = useRef(null);
@@ -172,7 +232,13 @@ function ContextMenuItem({ item, onClose }) {
                     onClick=${(e) => {
                       e.stopPropagation();
                       if (!sub.disabled) {
-                        sub.onClick();
+                        const asPeriodic =
+                          sub.periodicMode === "optional"
+                            ? periodicOverrides[sub.label] !== undefined
+                              ? periodicOverrides[sub.label]
+                              : sub.periodicDefaultOn
+                            : undefined;
+                        sub.onClick({ asPeriodic });
                         onClose();
                       }
                     }}
@@ -181,7 +247,42 @@ function ContextMenuItem({ item, onClose }) {
                   >
                     ${sub.icon &&
                     html`<span class="w-4 h-4">${sub.icon}</span>`}
-                    ${sub.label}
+                    <span class="flex-1">${sub.label}</span>
+                    ${sub.periodicMode === "optional"
+                      ? html`<input
+                          type="checkbox"
+                          class="checkbox checkbox-sm shrink-0"
+                          style="background-color: transparent"
+                          checked=${periodicOverrides[sub.label] !== undefined
+                            ? periodicOverrides[sub.label]
+                            : sub.periodicDefaultOn}
+                          title=${(
+                            periodicOverrides[sub.label] !== undefined
+                              ? periodicOverrides[sub.label]
+                              : sub.periodicDefaultOn
+                          )
+                            ? "Periodic: ON — click to disable recurring runs"
+                            : "Periodic: OFF — click to run as recurring conversation"}
+                          onClick=${(e) => e.stopPropagation()}
+                          onChange=${(e) => {
+                            e.stopPropagation();
+                            setPeriodicOverrides((m) => ({
+                              ...m,
+                              [sub.label]: e.target.checked,
+                            }));
+                          }}
+                        />`
+                      : sub.periodicMode === "always"
+                        ? html`<input
+                            type="checkbox"
+                            class="checkbox checkbox-sm shrink-0"
+                            style="background-color: transparent"
+                            checked=${true}
+                            disabled
+                            title="Always periodic — this prompt always runs as a recurring conversation (cannot be changed)"
+                            onClick=${(e) => e.stopPropagation()}
+                          />`
+                        : sub.trailing}
                   </button>
                 </li>
               `,
@@ -209,7 +310,8 @@ function ContextMenuItem({ item, onClose }) {
         class="${item.danger ? "text-error" : ""}"
       >
         ${item.icon && html`<span class="w-4 h-4">${item.icon}</span>`}
-        ${item.label}
+        <span class="flex-1">${item.label}</span>
+        ${item.trailing}
       </button>
     </li>
   `;
@@ -228,6 +330,7 @@ export function ContextMenu({ x, y, items, onClose }) {
     };
     const handleEscape = (e) => {
       if (e.key === "Escape") {
+        e.preventDefault();
         onClose();
       }
     };

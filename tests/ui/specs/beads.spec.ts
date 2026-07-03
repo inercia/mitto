@@ -17,7 +17,7 @@ const __dirname = path.dirname(__filename);
  *     viewports.
  *
  * The Beads backend shells out to the external `bd` binary, which is not
- * guaranteed in CI. To keep the list deterministic, /api/beads/list is mocked
+ * guaranteed in CI. To keep the list deterministic, /api/issues is mocked
  * with a fixed set of issues — including one with a very long title.
  */
 
@@ -63,7 +63,7 @@ const MOCK_ISSUES = [
 // The mobile sidebar is a daisyUI `drawer` (side="start", zClass="z-40"); its
 // full-viewport container is `.drawer-side` (position:fixed/inset via daisyUI),
 // which becomes visible when the permanently-checked drawer-toggle resolves the
-// open state and holds the panel with the "Conversations" heading.
+// open state and holds the SessionList panel, whose header is the "Mitto" heading.
 const MOBILE_OVERLAY = ".drawer-side.z-40";
 const MOBILE_VIEWPORT = { width: 390, height: 844 };
 
@@ -108,7 +108,7 @@ async function openBeads(page, timeouts) {
 testWithCleanup.describe("Beads view - mobile", () => {
   testWithCleanup.beforeEach(async ({ page, request, apiUrl, helpers }) => {
     // Mock the beads list so the table renders without the external `bd` binary.
-    await page.route("**/api/beads/list**", async (route) => {
+    await page.route(/\/api\/issues(\?|$)/, async (route) => {
       await route.fulfill({
         status: 200,
         contentType: "application/json",
@@ -137,15 +137,17 @@ testWithCleanup.describe("Beads view - mobile", () => {
       await openBeads(page, timeouts);
       await page.setViewportSize(MOBILE_VIEWPORT);
 
-      const hamburger = page.locator('button[title="Show conversations"]');
+      const hamburger = page.locator('button[data-tip="Show conversations"]');
       await expect(hamburger).toBeVisible({ timeout: timeouts.shortAction });
 
       await hamburger.click();
 
       const overlay = page.locator(MOBILE_OVERLAY);
       await expect(overlay).toBeVisible({ timeout: timeouts.shortAction });
+      // The overlay holds the SessionList panel, whose header is the "Mitto"
+      // heading (renamed from "Conversations" in the daisyUI 5 upgrade).
       await expect(
-        overlay.locator('h2:has-text("Conversations")'),
+        overlay.locator('h2:has-text("Mitto")'),
       ).toBeVisible();
     },
   );
@@ -179,7 +181,7 @@ testWithCleanup.describe("Beads view - mobile", () => {
       await openBeads(page, timeouts);
       // Default Desktop Chrome viewport is >= md, so md:hidden applies.
       await expect(
-        page.locator('button[title="Show conversations"]'),
+        page.locator('button[data-tip="Show conversations"]'),
       ).toBeHidden();
     },
   );
@@ -188,18 +190,19 @@ testWithCleanup.describe("Beads view - mobile", () => {
 /**
  * Beads detail panel behavior tests (desktop).
  *
- * The detail panel uses two stacked layers: a full-window `fixed inset-0`
- * dimming backdrop (like SessionPanel, so the conversations sidebar is dimmed
- * too) and a `pointer-events-none` panel layer scoped to the beads view area so
- * `expand` fills only that area and never covers the sidebar. Clicking the
- * backdrop (anywhere outside the panel) dismisses it.
+ * The detail panel is a dock-mode daisyUI Drawer (drawer-dock) docked to the
+ * right edge of the beads view area and confined to its own width, with NO
+ * dimming backdrop (a composited full-area overlay over the list dropped its GPU
+ * backing store on pointer-move, mitto-cdf). Clicking anywhere outside the panel
+ * (the issue list / header to its left) dismisses it via a document mousedown
+ * listener rather than a backdrop element.
  *
  * These run on the default desktop viewport.
  */
 testWithCleanup.describe("Beads view - detail panel", () => {
   testWithCleanup.beforeEach(async ({ page, request, apiUrl, helpers }) => {
     // Mock the beads list so the table renders without the external `bd` binary.
-    await page.route("**/api/beads/list**", async (route) => {
+    await page.route(/\/api\/issues(\?|$)/, async (route) => {
       await route.fulfill({
         status: 200,
         contentType: "application/json",
@@ -222,7 +225,7 @@ testWithCleanup.describe("Beads view - detail panel", () => {
   });
 
   testWithCleanup(
-    "clicking the backdrop closes the open detail panel",
+    "clicking outside the panel closes the open detail panel",
     async ({ page, timeouts }) => {
       await openBeads(page, timeouts);
       const panel = page.locator(DETAIL_PANEL);
@@ -235,11 +238,15 @@ testWithCleanup.describe("Beads view - detail panel", () => {
       await expect(panel).toBeVisible({ timeout: timeouts.shortAction });
       await expect(panel.getByText("mitto-bbb")).toBeVisible();
 
-      // Clicking the dimming backdrop (outside the panel) dismisses it. The
-      // backdrop now spans the whole window and the panel sits above it on the
-      // right, so click near the top-left (over the sidebar region) to land on
-      // the backdrop rather than the panel.
-      await page.locator(PANEL_BACKDROP).click({ position: { x: 5, y: 5 } });
+      // Dock mode has no dimming backdrop; clicking anywhere outside the docked
+      // panel dismisses it via a document mousedown listener. Click the beads
+      // view header ("Tasks — …") on the LEFT — a non-interactive span that sits
+      // outside the right-docked panel. The span is flex-1 (its center lies
+      // under the panel), so click near its left edge to land on the list side.
+      await page
+        .locator("span.text-lg.font-semibold")
+        .filter({ hasText: "Tasks" })
+        .click({ position: { x: 5, y: 10 } });
       await expect(panel).toBeHidden({ timeout: timeouts.shortAction });
     },
   );
@@ -267,14 +274,14 @@ testWithCleanup.describe("Beads view - detail panel", () => {
 
       // Toggle fullscreen: the panel fills the beads view width (w-full) and the
       // backdrop is gone.
-      await page.getByTitle("Fullscreen").click();
+      await page.locator('button[data-tip="Fullscreen"]').click();
       await expect(panel).toHaveClass(/w-full/);
       await expect(panel).not.toHaveClass(/w-\[40rem\]/);
       await expect(page.locator(PANEL_BACKDROP)).toHaveCount(0);
 
       // Toggle back: the panel returns to its fixed doubled width and the
       // backdrop reappears.
-      await page.getByTitle("Exit fullscreen").click();
+      await page.locator('button[data-tip="Exit fullscreen"]').click();
       await expect(panel).toHaveClass(/w-\[40rem\]/);
       await expect(page.locator(PANEL_BACKDROP)).toBeVisible();
     },
@@ -285,8 +292,12 @@ testWithCleanup.describe("Beads view - detail panel", () => {
     async ({ page, timeouts }) => {
       // Capture the update request so we can assert the new title is sent.
       let updateBody: any = null;
-      await page.route("**/api/beads/update", async (route) => {
+      let updatedId: string | null = null;
+      await page.route("**/api/issues/*", async (route) => {
+        if (route.request().method() !== "PATCH") return route.fallback();
         updateBody = route.request().postDataJSON();
+        const m = route.request().url().match(/\/api\/issues\/([^/?]+)/);
+        updatedId = m ? decodeURIComponent(m[1]) : null;
         await route.fulfill({
           status: 200,
           contentType: "application/json",
@@ -315,12 +326,12 @@ testWithCleanup.describe("Beads view - detail panel", () => {
       await titleInput.press("Enter");
 
       // Click the unified Save button to persist all dirty fields.
-      await panel.locator('button[title="Save changes"]').click();
+      await panel.locator('button[data-tip="Save changes"]').click();
 
       await expect
         .poll(() => updateBody, { timeout: timeouts.shortAction })
         .not.toBeNull();
-      expect(updateBody.id).toBe("mitto-bbb");
+      expect(updatedId).toBe("mitto-bbb");
       expect(updateBody.title).toBe("Renamed issue");
     },
   );
@@ -328,7 +339,8 @@ testWithCleanup.describe("Beads view - detail panel", () => {
   testWithCleanup(
     "delete confirmation dialog renders above the open detail panel",
     async ({ page, timeouts }) => {
-      await page.route("**/api/beads/delete", async (route) => {
+      await page.route("**/api/issues/*", async (route) => {
+        if (route.request().method() !== "DELETE") return route.fallback();
         await route.fulfill({
           status: 200,
           contentType: "application/json",
@@ -347,7 +359,7 @@ testWithCleanup.describe("Beads view - detail panel", () => {
       await expect(panel).toBeVisible({ timeout: timeouts.shortAction });
 
       // Delete moved to the kebab menu (now a ContextMenu portaled to body).
-      await panel.locator('button[title="More actions"]').click();
+      await panel.locator('button[data-tip="More actions"]').click();
       await page.locator("ul.menu.fixed").getByRole("button", { name: "Delete", exact: true }).click();
 
       const dialog = page.locator('[data-testid="confirm-dialog"]');
@@ -391,7 +403,8 @@ testWithCleanup.describe("Beads view - detail panel", () => {
     "pressing Escape cancels the title edit without saving",
     async ({ page, timeouts }) => {
       let updateCalled = false;
-      await page.route("**/api/beads/update", async (route) => {
+      await page.route("**/api/issues/*", async (route) => {
+        if (route.request().method() !== "PATCH") return route.fallback();
         updateCalled = true;
         await route.fulfill({
           status: 200,
@@ -484,8 +497,12 @@ testWithCleanup.describe("Beads view - detail panel", () => {
     async ({ page, timeouts }) => {
       // Capture the update request so we can assert the new type is sent.
       let updateBody: any = null;
-      await page.route("**/api/beads/update", async (route) => {
+      let updatedId: string | null = null;
+      await page.route("**/api/issues/*", async (route) => {
+        if (route.request().method() !== "PATCH") return route.fallback();
         updateBody = route.request().postDataJSON();
+        const m = route.request().url().match(/\/api\/issues\/([^/?]+)/);
+        updatedId = m ? decodeURIComponent(m[1]) : null;
         await route.fulfill({
           status: 200,
           contentType: "application/json",
@@ -505,16 +522,16 @@ testWithCleanup.describe("Beads view - detail panel", () => {
 
       // Click the type badge button to open the dropdown.
       // mitto-bbb has issue_type "bug"; select a different type to make the draft dirty.
-      await panel.locator('button[title="Click to change type"]').click();
+      await panel.locator('button[data-tip="Click to change type"]').click();
       await panel.locator('button:has-text("task")').first().click();
 
       // Click the unified Save button.
-      await panel.locator('button[title="Save changes"]').click();
+      await panel.locator('button[data-tip="Save changes"]').click();
 
       await expect
         .poll(() => updateBody, { timeout: timeouts.shortAction })
         .not.toBeNull();
-      expect(updateBody.id).toBe("mitto-bbb");
+      expect(updatedId).toBe("mitto-bbb");
       expect(updateBody.type).toBe("task");
     },
   );
@@ -526,8 +543,8 @@ testWithCleanup.describe("Beads view - detail panel", () => {
  * When deleting an epic (an issue with descendants), the confirmation dialog
  * offers a radio group controlling what happens to the whole descendant subtree
  * (recursive): leave them unchanged (default), close the open ones via
- * /api/beads/status (action "close"), or permanently delete all of them via
- * /api/beads/delete. The epic itself is always deleted last.
+ * POST /api/issues/{id}/status (action "close"), or permanently delete all of
+ * them via DELETE /api/issues/{id}. The epic itself is always deleted last.
  *
  * The mock tree is:
  *   mitto-epic (epic, open)
@@ -602,7 +619,7 @@ testWithCleanup.describe("Beads view - epic deletion", () => {
   testWithCleanup.beforeEach(async ({ page, request, apiUrl, helpers }) => {
     // Mock the beads list with an epic + children so the table renders without
     // the external `bd` binary.
-    await page.route("**/api/beads/list**", async (route) => {
+    await page.route(/\/api\/issues(\?|$)/, async (route) => {
       await route.fulfill({
         status: 200,
         contentType: "application/json",
@@ -641,7 +658,7 @@ testWithCleanup.describe("Beads view - epic deletion", () => {
     await expect(panel.getByText("mitto-epic")).toBeVisible();
 
     // Delete moved to the kebab menu (now a ContextMenu portaled to body).
-    await panel.locator('button[title="More actions"]').click();
+    await panel.locator('button[data-tip="More actions"]').click();
     await page.locator("ul.menu.fixed").getByRole("button", { name: "Delete", exact: true }).click();
     const dialog = page.locator('[data-testid="confirm-dialog"]');
     await expect(dialog).toBeVisible({ timeout: timeouts.shortAction });
@@ -653,9 +670,12 @@ testWithCleanup.describe("Beads view - epic deletion", () => {
     async ({ page, timeouts }) => {
       // Capture the close (status) and delete calls the frontend makes.
       const closedIds: string[] = [];
-      await page.route("**/api/beads/status", async (route) => {
+      await page.route(/\/api\/issues\/[^/?]+\/status(\?|$)/, async (route) => {
+        if (route.request().method() !== "POST") return route.fallback();
         const body = route.request().postDataJSON();
-        if (body && body.action === "close") closedIds.push(body.id);
+        const m = route.request().url().match(/\/api\/issues\/([^/]+)\/status/);
+        const id = m ? decodeURIComponent(m[1]) : null;
+        if (body && body.action === "close" && id) closedIds.push(id);
         await route.fulfill({
           status: 200,
           contentType: "application/json",
@@ -663,9 +683,10 @@ testWithCleanup.describe("Beads view - epic deletion", () => {
         });
       });
       let deletedId: string | null = null;
-      await page.route("**/api/beads/delete", async (route) => {
-        const body = route.request().postDataJSON();
-        deletedId = body && body.id;
+      await page.route(/\/api\/issues\/[^/?]+(\?|$)/, async (route) => {
+        if (route.request().method() !== "DELETE") return route.fallback();
+        const m = route.request().url().match(/\/api\/issues\/([^/?]+)/);
+        deletedId = m ? decodeURIComponent(m[1]) : null;
         await route.fulfill({
           status: 200,
           contentType: "application/json",
@@ -706,7 +727,8 @@ testWithCleanup.describe("Beads view - epic deletion", () => {
     "choosing 'delete children' permanently deletes the whole subtree",
     async ({ page, timeouts }) => {
       let statusCalled = false;
-      await page.route("**/api/beads/status", async (route) => {
+      await page.route(/\/api\/issues\/[^/?]+\/status(\?|$)/, async (route) => {
+        if (route.request().method() !== "POST") return route.fallback();
         statusCalled = true;
         await route.fulfill({
           status: 200,
@@ -715,9 +737,10 @@ testWithCleanup.describe("Beads view - epic deletion", () => {
         });
       });
       const deletedIds: string[] = [];
-      await page.route("**/api/beads/delete", async (route) => {
-        const body = route.request().postDataJSON();
-        if (body && body.id) deletedIds.push(body.id);
+      await page.route(/\/api\/issues\/[^/?]+(\?|$)/, async (route) => {
+        if (route.request().method() !== "DELETE") return route.fallback();
+        const m = route.request().url().match(/\/api\/issues\/([^/?]+)/);
+        if (m) deletedIds.push(decodeURIComponent(m[1]));
         await route.fulfill({
           status: 200,
           contentType: "application/json",
@@ -748,7 +771,8 @@ testWithCleanup.describe("Beads view - epic deletion", () => {
     "the default 'leave unchanged' option leaves the subtree untouched",
     async ({ page, timeouts }) => {
       let statusCalled = false;
-      await page.route("**/api/beads/status", async (route) => {
+      await page.route(/\/api\/issues\/[^/?]+\/status(\?|$)/, async (route) => {
+        if (route.request().method() !== "POST") return route.fallback();
         statusCalled = true;
         await route.fulfill({
           status: 200,
@@ -757,9 +781,10 @@ testWithCleanup.describe("Beads view - epic deletion", () => {
         });
       });
       const deletedIds: string[] = [];
-      await page.route("**/api/beads/delete", async (route) => {
-        const body = route.request().postDataJSON();
-        if (body && body.id) deletedIds.push(body.id);
+      await page.route(/\/api\/issues\/[^/?]+(\?|$)/, async (route) => {
+        if (route.request().method() !== "DELETE") return route.fallback();
+        const m = route.request().url().match(/\/api\/issues\/([^/?]+)/);
+        if (m) deletedIds.push(decodeURIComponent(m[1]));
         await route.fulfill({
           status: 200,
           contentType: "application/json",
@@ -798,7 +823,7 @@ testWithCleanup.describe("Beads view - epic deletion", () => {
  */
 testWithCleanup.describe("Beads view - epic grouping", () => {
   testWithCleanup.beforeEach(async ({ page, request, apiUrl, helpers }) => {
-    await page.route("**/api/beads/list**", async (route) => {
+    await page.route(/\/api\/issues(\?|$)/, async (route) => {
       await route.fulfill({
         status: 200,
         contentType: "application/json",
@@ -867,14 +892,15 @@ testWithCleanup.describe("Beads view - epic grouping", () => {
       const epicGroup = page.locator("details.beads-epic-group").first();
       await expect(epicGroup).toHaveJSProperty("open", true);
       await expect(
-        epicGroup.locator(".pl-8").getByText("Child one", { exact: true }),
+        epicGroup.locator(":scope > .pl-8").getByText("Child one", { exact: true }),
       ).toBeVisible();
 
-      // Collapse the epic via its summary; the indented children disappear.
-      await epicGroup.locator("summary").click();
+      // Collapse the epic via its OWN summary (a nested sub-epic has its own
+      // summary now, so scope to the direct child); the children disappear.
+      await epicGroup.locator(":scope > summary").click();
       await expect(epicGroup).toHaveJSProperty("open", false);
       await expect(
-        epicGroup.locator(".pl-8").getByText("Child one", { exact: true }),
+        epicGroup.locator(":scope > .pl-8").getByText("Child one", { exact: true }),
       ).toBeHidden();
 
       // Reload: the grouping toggle (enabled) and the collapsed epic are both
@@ -891,7 +917,7 @@ testWithCleanup.describe("Beads view - epic grouping", () => {
       const epicGroup2 = page.locator("details.beads-epic-group").first();
       await expect(epicGroup2).toHaveJSProperty("open", false);
       await expect(
-        epicGroup2.locator(".pl-8").getByText("Child one", { exact: true }),
+        epicGroup2.locator(":scope > .pl-8").getByText("Child one", { exact: true }),
       ).toBeHidden();
     },
   );
@@ -910,15 +936,16 @@ testWithCleanup.describe("Beads view - epic grouping", () => {
       const epicGroup = page.locator("details.beads-epic-group").first();
       await expect(epicGroup).toHaveJSProperty("open", true);
 
-      // Expanded by default → the summary chevron is the "down" glyph.
+      // Expanded by default → the summary chevron is the "down" glyph. Scope to
+      // the top-level epic's OWN summary (nested sub-epics have their own).
       const chevronPath = epicGroup.locator(
-        'summary [data-testid="beads-epic-chevron"] path',
+        ':scope > summary [data-testid="beads-epic-chevron"] path',
       );
       await expect(chevronPath).toBeVisible();
       await expect(chevronPath).toHaveAttribute("d", "M19 9l-7 7-7-7");
 
       // Collapsing the epic flips the chevron to the "right" glyph.
-      await epicGroup.locator("summary").click();
+      await epicGroup.locator(":scope > summary").click();
       await expect(epicGroup).toHaveJSProperty("open", false);
       await expect(chevronPath).toHaveAttribute("d", "M9 5l7 7-7 7");
     },
@@ -939,7 +966,7 @@ testWithCleanup.describe("Beads view - epic grouping", () => {
       await expect(epicGroup).toHaveJSProperty("open", true);
       const panel = page.locator(DETAIL_PANEL);
       const chevron = epicGroup.locator(
-        'summary [data-testid="beads-epic-chevron"]',
+        ':scope > summary [data-testid="beads-epic-chevron"]',
       );
 
       // Clicking the chevron collapses the epic and leaves the panel closed.
@@ -954,7 +981,7 @@ testWithCleanup.describe("Beads view - epic grouping", () => {
 
       // The rest of the epic header still selects the epic (opens the panel).
       await epicGroup
-        .locator("summary")
+        .locator(":scope > summary")
         .getByText(EPIC_TITLE)
         .first()
         .click();
@@ -975,7 +1002,7 @@ testWithCleanup.describe("Beads view - epic grouping", () => {
       // as the new issue's parent.
       const epicGroup = page.locator("details.beads-epic-group").first();
       await epicGroup
-        .locator('summary [data-testid="beads-issue-add-child"]')
+        .locator(':scope > summary [data-testid="beads-issue-add-child"]')
         .click();
 
       const panel = page.locator(NEW_ISSUE_PANEL);
@@ -1029,7 +1056,7 @@ const CLOSED_EPIC_ISSUES = [
 
 testWithCleanup.describe("Beads view - closed epic with open children", () => {
   testWithCleanup.beforeEach(async ({ page, request, apiUrl, helpers }) => {
-    await page.route("**/api/beads/list**", async (route) => {
+    await page.route(/\/api\/issues(\?|$)/, async (route) => {
       await route.fulfill({
         status: 200,
         contentType: "application/json",
@@ -1094,9 +1121,9 @@ testWithCleanup.describe("Beads view - closed epic with open children", () => {
  * Covers the navigation flow for the properties panel's "Linked beads issue"
  * link:
  *   1. Fast-open: the issue's detail panel appears immediately from a single
- *      `/api/beads/show` fetch, without waiting for the full `/api/beads/list`
- *      to load. The list is deliberately gated (held pending) to prove the
- *      panel opens before any list row renders.
+ *      `/api/issues/{id}` fetch, without waiting for the full `/api/issues`
+ *      list to load. The list is deliberately gated (held pending) to prove
+ *      the panel opens before any list row renders.
  *   2. Return-to-origin: closing that detail panel returns the user to the
  *      originating conversation with its properties panel re-opened — instead
  *      of leaving them stranded on the beads list.
@@ -1116,13 +1143,13 @@ const ISSUE_PANEL = 'div.properties-panel:has(h2:has-text("Short issue"))';
 
 // The list-vs-show race test ("opens the linked issue even when the list loads
 // before the show fetch") was removed: BeadsIssueView is now a standalone
-// component that only calls /api/beads/show — there is no full-list fetch to
+// component that only calls /api/issues/{id} — there is no full-list fetch to
 // race against. The list is never mounted in this flow.
 testWithCleanup.describe("Beads view - return to conversation", () => {
   testWithCleanup.beforeEach(async ({ page, request, apiUrl, helpers }) => {
     // Mock the single-issue show endpoint so the detail panel resolves
     // immediately. Returns mitto-bbb.
-    await page.route("**/api/beads/show**", async (route) => {
+    await page.route(/\/api\/issues\/[^/?]+/, async (route) => {
       await route.fulfill({
         status: 200,
         contentType: "application/json",
@@ -1166,13 +1193,15 @@ testWithCleanup.describe("Beads view - return to conversation", () => {
 
       // Open the conversation properties side panel; confirm the linked-issue
       // link is present.
-      await page.getByTitle("Session details").click();
+      await page.locator('button[aria-label="Session details"]').click();
       const convPanel = page.locator(CONV_PANEL);
       await expect(convPanel).toBeVisible({ timeout: timeouts.shortAction });
-      await expect(page.getByTitle("Open beads issue mitto-bbb")).toBeVisible();
+      await expect(
+        page.locator('[data-tip="Open beads issue mitto-bbb"]'),
+      ).toBeVisible();
 
       // Follow the linked-issue link → opens the standalone BeadsIssueView.
-      await page.getByTitle("Open beads issue mitto-bbb").click();
+      await page.locator('[data-tip="Open beads issue mitto-bbb"]').click();
 
       // The issue detail panel opens from the show fetch.
       const issuePanel = page.locator(ISSUE_PANEL);
@@ -1183,14 +1212,44 @@ testWithCleanup.describe("Beads view - return to conversation", () => {
       await expect(page.locator("div.beads-table-scroll")).toHaveCount(0);
       await expect(page.getByText(LONG_TITLE)).toHaveCount(0);
 
+      // The standalone viewer opens expanded (fullscreen) but exposes a toggle
+      // so it can be collapsed to the docked strip. The dock-mode Drawer drives
+      // its width via the --dock-w CSS var on the .drawer-dock root: 100% when
+      // fullscreen, 40rem when collapsed. The data-tip attribute selectors
+      // match exactly so "Fullscreen" never substring-matches "Exit fullscreen".
+      const drawerRoot = page.locator(
+        'div.drawer-dock:has(h2:has-text("Short issue"))',
+      );
+      await expect(drawerRoot).toHaveAttribute("style", /--dock-w:\s*100%/);
+      const collapseBtn = issuePanel.locator(
+        'button[data-tip="Exit fullscreen"]',
+      );
+      await expect(collapseBtn).toBeVisible();
+
+      // Collapse: the panel shrinks to the 40rem docked strip and the toggle
+      // flips to the expand state ("Fullscreen").
+      await collapseBtn.click();
+      await expect(drawerRoot).toHaveAttribute("style", /--dock-w:\s*40rem/);
+      const expandBtn = issuePanel.locator('button[data-tip="Fullscreen"]');
+      await expect(expandBtn).toBeVisible();
+
+      // Expand again: back to fullscreen, toggle returns to "Exit fullscreen".
+      await expandBtn.click();
+      await expect(drawerRoot).toHaveAttribute("style", /--dock-w:\s*100%/);
+      await expect(
+        issuePanel.locator('button[data-tip="Exit fullscreen"]'),
+      ).toBeVisible();
+
       // Close the detail panel → returns to the originating conversation with
       // its properties panel re-opened (not left on the beads list).
-      await issuePanel.getByTitle("Close", { exact: true }).click();
+      await issuePanel.locator('button[data-tip="Close"]').click();
 
       // Back in the conversation: the conversation properties panel (with the
       // linked-issue link) is shown again and the beads table remains absent.
       await expect(convPanel).toBeVisible({ timeout: timeouts.shortAction });
-      await expect(page.getByTitle("Open beads issue mitto-bbb")).toBeVisible();
+      await expect(
+        page.locator('[data-tip="Open beads issue mitto-bbb"]'),
+      ).toBeVisible();
       await expect(page.locator("div.beads-table-scroll")).toHaveCount(0);
     },
   );
@@ -1232,7 +1291,7 @@ const NEW_ISSUE_PANEL = 'div.properties-panel:has(h2:has-text("New Issue"))';
 
 testWithCleanup.describe("Beads view - submenu positioning", () => {
   testWithCleanup.beforeEach(async ({ page, request, apiUrl, helpers }) => {
-    await page.route("**/api/beads/list**", async (route) => {
+    await page.route(/\/api\/issues(\?|$)/, async (route) => {
       await route.fulfill({
         status: 200,
         contentType: "application/json",
@@ -1308,12 +1367,12 @@ testWithCleanup.describe("Beads view - submenu positioning", () => {
  *
  * Opens the "New Issue" panel via the "+" toolbar button, fills in a
  * description, adds a dependency, sets an assignee and notes, then clicks
- * Save. The POST /api/beads/create request is intercepted and the body is
+ * Save. The POST /api/issues request is intercepted and the body is
  * asserted to contain the `dependencies`, `assignee`, and `notes` fields.
  */
 testWithCleanup.describe("Beads view - create form fields", () => {
   testWithCleanup.beforeEach(async ({ page, request, apiUrl, helpers }) => {
-    await page.route("**/api/beads/list**", async (route) => {
+    await page.route(/\/api\/issues(\?|$)/, async (route) => {
       await route.fulfill({
         status: 200,
         contentType: "application/json",
@@ -1339,7 +1398,8 @@ testWithCleanup.describe("Beads view - create form fields", () => {
 
       // Capture the create request body before clicking Save.
       let capturedBody: Record<string, unknown> | null = null;
-      await page.route("**/api/beads/create", async (route) => {
+      await page.route(/\/api\/issues(\?|$)/, async (route) => {
+        if (route.request().method() !== "POST") return route.fallback();
         capturedBody = JSON.parse(route.request().postData() ?? "{}");
         await route.fulfill({
           status: 200,
@@ -1349,7 +1409,7 @@ testWithCleanup.describe("Beads view - create form fields", () => {
       });
 
       // Open the create panel via the "+" button in the beads toolbar.
-      await page.locator('button[title="New issue"]').first().click();
+      await page.locator('button[data-tip="New issue"]').first().click();
       const panel = page.locator(NEW_ISSUE_PANEL);
       await expect(panel).toBeVisible({ timeout: timeouts.shortAction });
 
@@ -1361,7 +1421,7 @@ testWithCleanup.describe("Beads view - create form fields", () => {
       // Add a dependency: type an issue id in the dep input and click "+".
       const depInput = panel.locator('input[list="beads-create-dep-options"]');
       await depInput.fill("mitto-aaa");
-      await panel.locator('button[title="Add dependency"]').click();
+      await panel.locator('button[data-tip="Add dependency"]').click();
 
       // Fill assignee.
       await panel.locator("#new-issue-assignee").fill("alice");

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	"github.com/inercia/mitto/internal/web/middleware"
 )
 
 func TestParseMessage(t *testing.T) {
@@ -117,7 +118,7 @@ func TestWSConnConfig_Fields(t *testing.T) {
 	// Test that WSConnConfig fields are properly defined
 	cfg := WSConnConfig{
 		Conn:     nil,
-		Config:   DefaultWebSocketSecurityConfig(),
+		Config:   middleware.DefaultWebSocketSecurityConfig(),
 		Logger:   nil,
 		ClientIP: "192.168.1.1",
 		SendSize: 128,
@@ -263,7 +264,7 @@ func setupWritePumpTestServer(t *testing.T) (*httptest.Server, chan *WSConn, con
 		wc := &WSConn{
 			conn: conn,
 			send: make(chan []byte, 64),
-			config: WebSocketSecurityConfig{
+			config: middleware.WebSocketSecurityConfig{
 				WriteWait:  10 * time.Second,
 				PingPeriod: 60 * time.Second, // Long period so it doesn't fire during test
 			},

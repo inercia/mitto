@@ -8,6 +8,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/inercia/mitto/internal/web/middleware"
 )
 
 func TestShouldGzipContentType(t *testing.T) {
@@ -67,7 +69,7 @@ func TestGzipMiddleware_ExternalConnection(t *testing.T) {
 	req := httptest.NewRequest("GET", "/api/test", nil)
 	req.Header.Set("Accept-Encoding", "gzip, deflate")
 	// Mark as external connection
-	ctx := context.WithValue(req.Context(), ContextKeyExternalConnection, true)
+	ctx := context.WithValue(req.Context(), middleware.ContextKeyExternalConnection, true)
 	req = req.WithContext(ctx)
 
 	// Record response
@@ -144,7 +146,7 @@ func TestGzipMiddleware_WebSocketUpgrade(t *testing.T) {
 	req.Header.Set("Accept-Encoding", "gzip")
 	req.Header.Set("Upgrade", "websocket")
 	req.Header.Set("Connection", "Upgrade")
-	ctx := context.WithValue(req.Context(), ContextKeyExternalConnection, true)
+	ctx := context.WithValue(req.Context(), middleware.ContextKeyExternalConnection, true)
 	req = req.WithContext(ctx)
 
 	rec := httptest.NewRecorder()
@@ -170,7 +172,7 @@ func TestGzipMiddleware_SmallContent(t *testing.T) {
 	// Create request with external connection context
 	req := httptest.NewRequest("GET", "/api/test", nil)
 	req.Header.Set("Accept-Encoding", "gzip")
-	ctx := context.WithValue(req.Context(), ContextKeyExternalConnection, true)
+	ctx := context.WithValue(req.Context(), middleware.ContextKeyExternalConnection, true)
 	req = req.WithContext(ctx)
 
 	// Record response

@@ -3,6 +3,7 @@ package web
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"io"
 	"net"
@@ -12,6 +13,8 @@ import (
 	"time"
 
 	"gopkg.in/natefinch/lumberjack.v2"
+
+	"github.com/inercia/mitto/internal/web/middleware"
 )
 
 // AccessLogConfig holds configuration for access logging.
@@ -50,9 +53,9 @@ func DefaultAccessLogConfig() AccessLogConfig {
 type AccessLogger struct {
 	writer    io.WriteCloser
 	mu        sync.Mutex
-	authMgr   *AuthManager // Reference to auth manager for enriched logging
-	apiPrefix string       // API prefix for detecting security-relevant paths
-	logAll    bool         // Whether to log all requests (not just security events)
+	authMgr   *middleware.AuthManager // Reference to auth manager for enriched logging
+	apiPrefix string                  // API prefix for detecting security-relevant paths
+	logAll    bool                    // Whether to log all requests (not just security events)
 }
 
 // NewAccessLogger creates a new access logger that writes to the specified file.
@@ -88,7 +91,7 @@ func NewAccessLogger(config AccessLogConfig) *AccessLogger {
 }
 
 // SetAuthManager sets the auth manager reference for enriched logging.
-func (a *AccessLogger) SetAuthManager(authMgr *AuthManager) {
+func (a *AccessLogger) SetAuthManager(authMgr *middleware.AuthManager) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.authMgr = authMgr
@@ -263,8 +266,15 @@ func (a *AccessLogger) Middleware(next http.Handler) http.Handler {
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
-		clientIP := getClientIPWithProxyCheck(r)
-		isExternal := IsExternalConnection(r)
+		clientIP := middleware.GetClientIPWithProxyCheck(r)
+		isExternal := middleware.IsExternalConnection(r)
+
+		// Inject a mutable identity holder into the context BEFORE calling inner
+		// handlers. AuthMiddleware writes into this holder via SetAuthIdentity so
+		// that the identity is visible here after ServeHTTP returns, even though
+		// context values only flow downward.
+		identity := &middleware.AuthIdentity{}
+		r = r.WithContext(context.WithValue(r.Context(), middleware.ContextKeyAuthIdentity, identity))
 
 		// Wrap response writer to capture status code
 		wrapped := &accessLogResponseWriter{
@@ -281,11 +291,14 @@ func (a *AccessLogger) Middleware(next http.Handler) http.Handler {
 			return // Not a security-relevant event, skip logging
 		}
 
-		// Extract username: prefer identity set in context by auth middleware
-		// (covers IP allow list and Cloudflare JWT paths), then fall back to
-		// reading the session cookie directly.
+		// Extract username: prefer the mutable holder written by AuthMiddleware
+		// (covers loopback bypass, IP allow-list, Cloudflare JWT, and session
+		// auth), then the immutable context string (legacy path), then the
+		// cookie fallback.
 		username := ""
-		if ctxUser, ok := r.Context().Value(contextKeyAuthUser).(string); ok && ctxUser != "" {
+		if identity.User != "" {
+			username = identity.User
+		} else if ctxUser, ok := r.Context().Value(middleware.ContextKeyAuthUser).(string); ok && ctxUser != "" {
 			username = ctxUser
 		} else if a.authMgr != nil {
 			if session, valid := a.authMgr.GetSessionFromRequest(r); valid {
