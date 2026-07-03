@@ -145,20 +145,28 @@ type beadsUpstreamRequest struct {
 	PullPrompt string `json:"pull_prompt"`
 	PushPrompt string `json:"push_prompt"`
 	SyncPrompt string `json:"sync_prompt"`
+	// PullPromptArgs, PushPromptArgs, SyncPromptArgs are the argument values to
+	// forward to the corresponding prompt when it is dispatched.
+	PullPromptArgs map[string]string `json:"pull_prompt_args,omitempty"`
+	PushPromptArgs map[string]string `json:"push_prompt_args,omitempty"`
+	SyncPromptArgs map[string]string `json:"sync_prompt_args,omitempty"`
 }
 
 // beadsUpstreamResponse reports the configured upstream task system for a folder.
 type beadsUpstreamResponse struct {
-	Upstream   string `json:"upstream"`
-	PullPrompt string `json:"pull_prompt,omitempty"`
-	PushPrompt string `json:"push_prompt,omitempty"`
-	SyncPrompt string `json:"sync_prompt,omitempty"`
+	Upstream       string            `json:"upstream"`
+	PullPrompt     string            `json:"pull_prompt,omitempty"`
+	PushPrompt     string            `json:"push_prompt,omitempty"`
+	SyncPrompt     string            `json:"sync_prompt,omitempty"`
+	PullPromptArgs map[string]string `json:"pull_prompt_args,omitempty"`
+	PushPromptArgs map[string]string `json:"push_prompt_args,omitempty"`
+	SyncPromptArgs map[string]string `json:"sync_prompt_args,omitempty"`
 }
 
 // HandleBeadsUpstream manages the per-folder beads upstream task system stored
 // in folders.json (folder-native, not a bd config value):
-//   - GET /api/issues/upstream?working_dir=...        -> {"upstream":"none|jira|github|gitlab|linear|prompts","pull_prompt","push_prompt","sync_prompt"}
-//   - PUT /api/issues/upstream?working_dir=... (body: upstream,pull_prompt,push_prompt,sync_prompt) -> persists the choice
+//   - GET /api/issues/upstream?working_dir=...        -> {"upstream":"none|jira|github|gitlab|linear|prompts","pull_prompt","push_prompt","sync_prompt","pull_prompt_args","push_prompt_args","sync_prompt_args"}
+//   - PUT /api/issues/upstream?working_dir=... (body: upstream,pull_prompt,push_prompt,sync_prompt,pull_prompt_args,push_prompt_args,sync_prompt_args) -> persists the choice
 //
 // Requires authentication via the standard auth middleware (same as other API endpoints).
 func (h *Handlers) HandleBeadsUpstream(w http.ResponseWriter, r *http.Request) {
@@ -192,11 +200,15 @@ func (h *Handlers) handleBeadsUpstreamGet(w http.ResponseWriter, r *http.Request
 		upstream = "none"
 	}
 	pull, push, sync := config.FolderBeadsPrompts(workingDir)
+	pullArgs, pushArgs, syncArgs := config.FolderBeadsPromptArgs(workingDir)
 	writeJSONOK(w, beadsUpstreamResponse{
-		Upstream:   upstream,
-		PullPrompt: pull,
-		PushPrompt: push,
-		SyncPrompt: sync,
+		Upstream:       upstream,
+		PullPrompt:     pull,
+		PushPrompt:     push,
+		SyncPrompt:     sync,
+		PullPromptArgs: pullArgs,
+		PushPromptArgs: pushArgs,
+		SyncPromptArgs: syncArgs,
 	})
 }
 
@@ -227,8 +239,9 @@ func (h *Handlers) handleBeadsUpstreamSet(w http.ResponseWriter, r *http.Request
 	}
 
 	if req.Upstream == "prompts" {
-		// Validate each non-empty prompt name: it must exist in the folder's
-		// effective prompt list and must have no parameters (len(Parameters)==0).
+		// Validate each non-empty prompt name exists in the folder's effective
+		// prompt list. Parametrized prompts are allowed: their arguments are
+		// supplied via req.*PromptArgs and forwarded at dispatch time.
 		var allPrompts []config.WebPrompt
 		if h.deps.GetWorkspacePromptsAll != nil {
 			allPrompts = h.deps.GetWorkspacePromptsAll(workingDir)
@@ -245,17 +258,13 @@ func (h *Handlers) handleBeadsUpstreamSet(w http.ResponseWriter, r *http.Request
 			if name == "" {
 				continue // empty is allowed; operation simply unconfigured
 			}
-			p, ok := promptIdx[strings.ToLower(name)]
-			if !ok {
+			if _, ok := promptIdx[strings.ToLower(name)]; !ok {
 				writeErrorJSON(w, http.StatusBadRequest, "", fmt.Sprintf("%s: prompt %q not found in this folder's prompt list", field, name))
 				return
 			}
-			if len(p.Parameters) > 0 {
-				writeErrorJSON(w, http.StatusBadRequest, "", fmt.Sprintf("%s: prompt %q requires parameters and cannot be used as a beads action prompt", field, name))
-				return
-			}
 		}
-		if err := config.SetFolderBeadsPromptUpstream(workingDir, req.PullPrompt, req.PushPrompt, req.SyncPrompt); err != nil {
+		if err := config.SetFolderBeadsPromptUpstream(workingDir, req.PullPrompt, req.PushPrompt, req.SyncPrompt,
+			req.PullPromptArgs, req.PushPromptArgs, req.SyncPromptArgs); err != nil {
 			writeBeadsError(w, err)
 			return
 		}
@@ -271,11 +280,15 @@ func (h *Handlers) handleBeadsUpstreamSet(w http.ResponseWriter, r *http.Request
 		upstream = "none"
 	}
 	pull, push, sync := config.FolderBeadsPrompts(workingDir)
+	pullArgs, pushArgs, syncArgs := config.FolderBeadsPromptArgs(workingDir)
 	writeJSONOK(w, beadsUpstreamResponse{
-		Upstream:   upstream,
-		PullPrompt: pull,
-		PushPrompt: push,
-		SyncPrompt: sync,
+		Upstream:       upstream,
+		PullPrompt:     pull,
+		PushPrompt:     push,
+		SyncPrompt:     sync,
+		PullPromptArgs: pullArgs,
+		PushPromptArgs: pushArgs,
+		SyncPromptArgs: syncArgs,
 	})
 }
 

@@ -548,8 +548,9 @@ function App() {
 
   // Launch a named prompt in a new conversation for the "prompts" upstream type in BeadsView.
   // action is "pull"|"push"|"sync"; conversationName is set to "Pull tasks" etc.
+  // args is an optional map of prompt argument name→value forwarded to the queue seed.
   const handleBeadsLaunchPrompt = useCallback(
-    async (action, promptName) => {
+    async (action, promptName, args) => {
       const names = {
         pull: "Pull tasks",
         push: "Push tasks",
@@ -561,6 +562,7 @@ function App() {
         // omit acpServer — use the folder default
         name: conversationName,
         prompt: { name: promptName },
+        arguments: args,
       });
       if (!result?.sessionId) {
         showToast({
@@ -2864,6 +2866,14 @@ function App() {
             refreshWorkspaces();
             invalidateConfigCache();
           }}
+          onOpenPromptParamDialog=${(prompt, parameters, onSubmit, opts = {}) =>
+            setPromptParamDialog({
+              prompt,
+              parameters,
+              onSubmit,
+              initialValues: opts.initialValues,
+              hostSessionId: opts.hostSessionId,
+            })}
         />
 
         <!-- Keyboard Shortcuts Dialog -->

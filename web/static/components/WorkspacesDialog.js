@@ -40,7 +40,10 @@ import {
   MittoIcon,
   CopyIcon,
   ErrorIcon,
+  SlidersIcon,
 } from "./Icons.js";
+
+import { promptParameters } from "../utils/prompts.js";
 
 import { ConfirmDialog } from "./ConfirmDialog.js";
 import { Modal } from "./Modal.js";
@@ -177,6 +180,7 @@ export function WorkspacesDialog({
   initialWorkingDir,
   initialTab,
   showToast,
+  onOpenPromptParamDialog,
 }) {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -311,7 +315,11 @@ export function WorkspacesDialog({
   const [beadsPullPrompt, setBeadsPullPrompt] = useState("");
   const [beadsPushPrompt, setBeadsPushPrompt] = useState("");
   const [beadsSyncPrompt, setBeadsSyncPrompt] = useState("");
-  // Available argument-free, enabled folder prompts (populated when upstream === "prompts").
+  // Saved argument maps (name→string) for each prompt action.
+  const [beadsPullPromptArgs, setBeadsPullPromptArgs] = useState({});
+  const [beadsPushPromptArgs, setBeadsPushPromptArgs] = useState({});
+  const [beadsSyncPromptArgs, setBeadsSyncPromptArgs] = useState({});
+  // Available enabled folder prompts (populated when upstream === "prompts").
   const [beadsUpstreamPrompts, setBeadsUpstreamPrompts] = useState([]);
   const [beadsUpstreamPromptsLoading, setBeadsUpstreamPromptsLoading] =
     useState(false);
@@ -652,6 +660,9 @@ export function WorkspacesDialog({
     setBeadsPullPrompt("");
     setBeadsPushPrompt("");
     setBeadsSyncPrompt("");
+    setBeadsPullPromptArgs({});
+    setBeadsPushPromptArgs({});
+    setBeadsSyncPromptArgs({});
     setBeadsUpstreamPrompts([]);
   }, [selectedFolder]);
 
@@ -1708,12 +1719,17 @@ export function WorkspacesDialog({
       setBeadsPullPrompt((data && data.pull_prompt) || "");
       setBeadsPushPrompt((data && data.push_prompt) || "");
       setBeadsSyncPrompt((data && data.sync_prompt) || "");
+      setBeadsPullPromptArgs((data && data.pull_prompt_args) || {});
+      setBeadsPushPromptArgs((data && data.push_prompt_args) || {});
+      setBeadsSyncPromptArgs((data && data.sync_prompt_args) || {});
     } catch (_err) {
       setBeadsUpstream("none");
     }
   };
 
-  // Load available argument-free, enabled folder prompts for the "prompts" upstream pickers.
+  // Load available enabled folder prompts for the "prompts" upstream pickers.
+  // Parametrized prompts are included; per-prompt arguments are configured via
+  // the sliders button next to each row.
   const loadBeadsUpstreamPrompts = async (workingDir) => {
     if (!workingDir) return;
     setBeadsUpstreamPromptsLoading(true);
@@ -1726,13 +1742,7 @@ export function WorkspacesDialog({
       );
       const data = await res.json().catch(() => ({}));
       const all = (data && data.prompts) || [];
-      // Only offer enabled prompts with no parameters (argument-free).
-      setBeadsUpstreamPrompts(
-        all.filter(
-          (p) =>
-            p.enabled !== false && (!p.parameters || p.parameters.length === 0),
-        ),
-      );
+      setBeadsUpstreamPrompts(all.filter((p) => p.enabled !== false));
     } catch (_err) {
       setBeadsUpstreamPrompts([]);
     } finally {
@@ -1753,6 +1763,9 @@ export function WorkspacesDialog({
         body.pull_prompt = beadsPullPrompt;
         body.push_prompt = beadsPushPrompt;
         body.sync_prompt = beadsSyncPrompt;
+        body.pull_prompt_args = beadsPullPromptArgs;
+        body.push_prompt_args = beadsPushPromptArgs;
+        body.sync_prompt_args = beadsSyncPromptArgs;
       }
       const res = await secureFetch(
         endpoints.issues.upstream({ working_dir: workingDir }),
@@ -1770,6 +1783,9 @@ export function WorkspacesDialog({
       setBeadsPullPrompt((data && data.pull_prompt) || "");
       setBeadsPushPrompt((data && data.push_prompt) || "");
       setBeadsSyncPrompt((data && data.sync_prompt) || "");
+      setBeadsPullPromptArgs((data && data.pull_prompt_args) || {});
+      setBeadsPushPromptArgs((data && data.push_prompt_args) || {});
+      setBeadsSyncPromptArgs((data && data.sync_prompt_args) || {});
     } catch (err) {
       setBeadsUpstream(prev); // revert on failure
       setBeadsConfigError(err.message || "Failed to set upstream");
@@ -1808,6 +1824,9 @@ export function WorkspacesDialog({
             pull_prompt: field === "pull_prompt" ? value : beadsPullPrompt,
             push_prompt: field === "push_prompt" ? value : beadsPushPrompt,
             sync_prompt: field === "sync_prompt" ? value : beadsSyncPrompt,
+            pull_prompt_args: beadsPullPromptArgs,
+            push_prompt_args: beadsPushPromptArgs,
+            sync_prompt_args: beadsSyncPromptArgs,
           }),
         },
       );
@@ -1818,6 +1837,59 @@ export function WorkspacesDialog({
     } catch (err) {
       setter(prev); // revert on failure
       setBeadsConfigError(err.message || "Failed to save prompt");
+    } finally {
+      setBeadsUpstreamSaving(false);
+    }
+  };
+
+  // Persist the saved argument map for a single pull/push/sync prompt.
+  // Sends the FULL upstream body (all three names + all three arg maps) so the
+  // backend can round-trip; reverts on failure.
+  const saveBeadsPromptArgs = async (field, args) => {
+    const workingDir = getSelectedFolderDir();
+    if (!workingDir) return;
+    const setterMap = {
+      pull_prompt: setBeadsPullPromptArgs,
+      push_prompt: setBeadsPushPromptArgs,
+      sync_prompt: setBeadsSyncPromptArgs,
+    };
+    const prevMap = {
+      pull_prompt: beadsPullPromptArgs,
+      push_prompt: beadsPushPromptArgs,
+      sync_prompt: beadsSyncPromptArgs,
+    };
+    const setter = setterMap[field];
+    const prev = prevMap[field];
+    if (!setter) return;
+    setter(args); // optimistic
+    setBeadsUpstreamSaving(true);
+    try {
+      const res = await secureFetch(
+        endpoints.issues.upstream({ working_dir: workingDir }),
+        {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            upstream: "prompts",
+            pull_prompt: beadsPullPrompt,
+            push_prompt: beadsPushPrompt,
+            sync_prompt: beadsSyncPrompt,
+            pull_prompt_args:
+              field === "pull_prompt" ? args : beadsPullPromptArgs,
+            push_prompt_args:
+              field === "push_prompt" ? args : beadsPushPromptArgs,
+            sync_prompt_args:
+              field === "sync_prompt" ? args : beadsSyncPromptArgs,
+          }),
+        },
+      );
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok)
+        throw new Error(beadsErrorMessage(data) || "Failed to save arguments");
+      if (data && data.error) throw new Error(beadsErrorMessage(data));
+    } catch (err) {
+      setter(prev); // revert on failure
+      setBeadsConfigError(err.message || "Failed to save arguments");
     } finally {
       setBeadsUpstreamSaving(false);
     }
@@ -2835,9 +2907,9 @@ export function WorkspacesDialog({
                               Prompt Actions
                             </legend>
                             <p class="label">
-                              Choose an argument-free prompt for each button.
-                              Only enabled prompts with no parameters are listed
-                              here.
+                              Choose an enabled prompt for each button. Use the
+                              sliders button to configure arguments for
+                              parametrized prompts.
                             </p>
                             ${beadsUpstreamPromptsLoading
                               ? html`<div
@@ -2855,19 +2927,34 @@ export function WorkspacesDialog({
                                         label: "Pull",
                                         field: "pull_prompt",
                                         value: beadsPullPrompt,
+                                        args: beadsPullPromptArgs,
                                       },
                                       {
                                         label: "Push",
                                         field: "push_prompt",
                                         value: beadsPushPrompt,
+                                        args: beadsPushPromptArgs,
                                       },
                                       {
                                         label: "Sync",
                                         field: "sync_prompt",
                                         value: beadsSyncPrompt,
+                                        args: beadsSyncPromptArgs,
                                       },
-                                    ].map(
-                                      ({ label, field, value }) => html`
+                                    ].map(({ label, field, value, args }) => {
+                                      const selectedPrompt = value
+                                        ? beadsUpstreamPrompts.find(
+                                            (p) => p.name === value,
+                                          )
+                                        : null;
+                                      const params = selectedPrompt
+                                        ? promptParameters(selectedPrompt)
+                                        : [];
+                                      const canEditArgs =
+                                        !!value && params.length > 0;
+                                      const argsDisabled =
+                                        !canEditArgs || beadsUpstreamSaving;
+                                      return html`
                                         <div
                                           key=${field}
                                           class="flex items-center gap-2 max-w-md"
@@ -2903,9 +2990,41 @@ export function WorkspacesDialog({
                                               `,
                                             )}
                                           </select>
+                                          <button
+                                            type="button"
+                                            onClick=${() => {
+                                              if (
+                                                !canEditArgs ||
+                                                !onOpenPromptParamDialog ||
+                                                !selectedPrompt
+                                              )
+                                                return;
+                                              onOpenPromptParamDialog(
+                                                selectedPrompt,
+                                                params,
+                                                async (userArgs) => {
+                                                  await saveBeadsPromptArgs(
+                                                    field,
+                                                    userArgs,
+                                                  );
+                                                },
+                                                { initialValues: args || {} },
+                                              );
+                                            }}
+                                            disabled=${argsDisabled}
+                                            class="shrink-0 p-1.5 rounded border border-mitto-border dark:border-mitto-border-2 bg-white dark:bg-mitto-surface-2 transition-colors ${argsDisabled
+                                              ? "opacity-50 cursor-not-allowed"
+                                              : "cursor-pointer hover:bg-mitto-surface-hover dark:hover:bg-mitto-surface-3"}"
+                                            aria-label=${`Set ${label.toLowerCase()} prompt arguments`}
+                                            data-testid=${`beads-${field}-args-btn`}
+                                          >
+                                            <${SlidersIcon}
+                                              className="w-4 h-4 text-mitto-text-secondary"
+                                            />
+                                          </button>
                                         </div>
-                                      `,
-                                    )}
+                                      `;
+                                    })}
                                   </div>
                                 `}
                           </fieldset>

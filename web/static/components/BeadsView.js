@@ -3068,6 +3068,10 @@ export function BeadsView({
   const [pullPromptName, setPullPromptName] = useState("");
   const [pushPromptName, setPushPromptName] = useState("");
   const [syncPromptName, setSyncPromptName] = useState("");
+  // Saved argument maps (name→string) for the configured pull/push/sync prompts.
+  const [pullPromptArgs, setPullPromptArgs] = useState({});
+  const [pushPromptArgs, setPushPromptArgs] = useState({});
+  const [syncPromptArgs, setSyncPromptArgs] = useState({});
 
   // List-level "Prompts" dropdown state (footer toolbar). These are the
   // `menus: beadsList` prompts that operate on the whole issue list rather than
@@ -3145,6 +3149,9 @@ export function BeadsView({
           setPullPromptName((data && data.pull_prompt) || "");
           setPushPromptName((data && data.push_prompt) || "");
           setSyncPromptName((data && data.sync_prompt) || "");
+          setPullPromptArgs((data && data.pull_prompt_args) || {});
+          setPushPromptArgs((data && data.push_prompt_args) || {});
+          setSyncPromptArgs((data && data.sync_prompt_args) || {});
         }
       } catch (_err) {
         if (!cancelled) setUpstream("none");
@@ -4374,7 +4381,7 @@ export function BeadsView({
             onClick: () =>
               pullPromptName &&
               onLaunchPrompt &&
-              onLaunchPrompt("pull", pullPromptName),
+              onLaunchPrompt("pull", pullPromptName, pullPromptArgs),
           },
           {
             kind: "button",
@@ -4390,7 +4397,7 @@ export function BeadsView({
             onClick: () =>
               pushPromptName &&
               onLaunchPrompt &&
-              onLaunchPrompt("push", pushPromptName),
+              onLaunchPrompt("push", pushPromptName, pushPromptArgs),
           },
           {
             kind: "button",
@@ -4406,7 +4413,7 @@ export function BeadsView({
             onClick: () =>
               syncPromptName &&
               onLaunchPrompt &&
-              onLaunchPrompt("sync", syncPromptName),
+              onLaunchPrompt("sync", syncPromptName, syncPromptArgs),
           },
         ]
       : [

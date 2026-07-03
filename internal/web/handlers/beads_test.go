@@ -1669,8 +1669,9 @@ func TestHandleBeadsUpstream_SetPromptsUpstream_NonExistentPrompt(t *testing.T) 
 	}
 }
 
-func TestHandleBeadsUpstream_SetPromptsUpstream_ParameterizedPromptRejected(t *testing.T) {
-	// A prompt with parameters must be rejected with 400.
+func TestHandleBeadsUpstream_SetPromptsUpstream_ParameterizedPromptAccepted(t *testing.T) {
+	// A prompt with parameters must now be ACCEPTED — its arguments are
+	// supplied via *_prompt_args and forwarded at dispatch time.
 	setupMittoDir(t)
 	sm := conversation.NewSessionManager("", "", false, nil)
 	sm.SetWorkspaces([]config.WorkspaceSettings{
@@ -1693,13 +1694,28 @@ func TestHandleBeadsUpstream_SetPromptsUpstream_ParameterizedPromptRejected(t *t
 	})
 
 	put := httptest.NewRequest(http.MethodPut, "/api/issues/upstream?working_dir=/test/workspace",
-		strings.NewReader(`{"upstream":"prompts","pull_prompt":"parameterized-prompt"}`))
+		strings.NewReader(`{"upstream":"prompts","pull_prompt":"parameterized-prompt","pull_prompt_args":{"id":"mitto-1"}}`))
 	put.RemoteAddr = "127.0.0.1:1"
 	put.Header.Set("Content-Type", "application/json")
 	pw := httptest.NewRecorder()
 	s.handleBeadsUpstream(pw, put)
-	if pw.Code != http.StatusBadRequest {
-		t.Errorf("PUT status = %d, want %d (%s)", pw.Code, http.StatusBadRequest, pw.Body.String())
+	if pw.Code != http.StatusOK {
+		t.Fatalf("PUT status = %d, want %d (%s)", pw.Code, http.StatusOK, pw.Body.String())
+	}
+
+	// GET must return the stored pull_prompt and its args.
+	get := localhostRequest("/api/issues/upstream?working_dir=/test/workspace")
+	gw := httptest.NewRecorder()
+	s.handleBeadsUpstream(gw, get)
+	if gw.Code != http.StatusOK {
+		t.Fatalf("GET status = %d, want %d", gw.Code, http.StatusOK)
+	}
+	body := gw.Body.String()
+	if !strings.Contains(body, `"pull_prompt":"parameterized-prompt"`) {
+		t.Errorf("GET body = %q, want pull_prompt parameterized-prompt", body)
+	}
+	if !strings.Contains(body, `"pull_prompt_args":{"id":"mitto-1"}`) {
+		t.Errorf("GET body = %q, want pull_prompt_args {\"id\":\"mitto-1\"}", body)
 	}
 }
 
