@@ -131,3 +131,36 @@ func DiscoverStdioServers(ctx context.Context, servers []agents.MCPServer, timeo
 	}
 	return results
 }
+
+// ServerLister abstracts agents.Manager.ListMCPServers so the workspace-level
+// discovery bridge can be tested without a real agent or mcp-list.sh script.
+// *agents.Manager satisfies it.
+type ServerLister interface {
+	ListMCPServers(ctx context.Context, agentName string, input *agents.MCPListInput) (*agents.MCPListOutput, error)
+}
+
+// Compile-time assertion that the production *agents.Manager satisfies
+// ServerLister, so DiscoverWorkspaceStdioTools can be wired to it directly.
+var _ ServerLister = (*agents.Manager)(nil)
+
+// DiscoverWorkspaceStdioTools resolves a workspace's configured MCP servers via
+// lister.ListMCPServers(agentName, {Path: workspacePath}) — the same
+// deterministic mcp-list.sh discovery the MCP handler uses — then probes the
+// stdio ones with DiscoverStdioServers. The returned results cover only stdio
+// servers (http/sse are skipped, see mitto-sys.3). An error is returned only
+// when the server list itself cannot be obtained; per-server probe failures are
+// reported in-band via ServerToolsResult (Reachable=false, Err set), never as a
+// top-level error.
+func DiscoverWorkspaceStdioTools(ctx context.Context, lister ServerLister, agentName, workspacePath string, timeout time.Duration, factory TransportFactory) ([]ServerToolsResult, error) {
+	if lister == nil {
+		return nil, fmt.Errorf("mcpdiscovery: nil server lister")
+	}
+	out, err := lister.ListMCPServers(ctx, agentName, &agents.MCPListInput{Path: workspacePath})
+	if err != nil {
+		return nil, fmt.Errorf("mcpdiscovery: list mcp servers for agent %q: %w", agentName, err)
+	}
+	if out == nil {
+		return nil, nil
+	}
+	return DiscoverStdioServers(ctx, out.Servers, timeout, factory), nil
+}

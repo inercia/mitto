@@ -152,3 +152,65 @@ func TestDiscoverStdioServers_MixedIsolatesFailuresAndSkipsNonStdio(t *testing.T
 		t.Errorf("broken result = %+v, want Reachable=false with Err set", broken)
 	}
 }
+
+// stubLister is a mock ServerLister that returns a fixed output/error and
+// records the arguments it was called with.
+type stubLister struct {
+	out       *agents.MCPListOutput
+	err       error
+	gotAgent  string
+	gotInput  *agents.MCPListInput
+	callCount int
+}
+
+func (s *stubLister) ListMCPServers(_ context.Context, agentName string, input *agents.MCPListInput) (*agents.MCPListOutput, error) {
+	s.callCount++
+	s.gotAgent = agentName
+	s.gotInput = input
+	return s.out, s.err
+}
+
+func TestDiscoverWorkspaceStdioTools_ListsThenProbes(t *testing.T) {
+	factory, stop := newMockStdioServer(t, "jira_create_issue", "jira_search")
+	defer stop()
+
+	lister := &stubLister{out: &agents.MCPListOutput{Servers: []agents.MCPServer{
+		{Name: "jira", Command: "unused"},
+		{Name: "http-only", URL: "https://example.com/mcp"}, // skipped: not stdio
+	}}}
+
+	results, err := DiscoverWorkspaceStdioTools(context.Background(), lister, "auggie", "/ws/path", time.Second, factory)
+	if err != nil {
+		t.Fatalf("err = %v, want nil", err)
+	}
+	if lister.callCount != 1 || lister.gotAgent != "auggie" {
+		t.Errorf("lister called %d times with agent %q, want 1 with %q", lister.callCount, lister.gotAgent, "auggie")
+	}
+	if lister.gotInput == nil || lister.gotInput.Path != "/ws/path" {
+		t.Errorf("lister input = %+v, want Path=/ws/path", lister.gotInput)
+	}
+	if len(results) != 1 {
+		t.Fatalf("len(results) = %d, want 1 (http-only skipped): %+v", len(results), results)
+	}
+	if !results[0].Reachable || results[0].Server != "jira" {
+		t.Errorf("result = %+v, want Reachable=true Server=jira", results[0])
+	}
+}
+
+func TestDiscoverWorkspaceStdioTools_ListError(t *testing.T) {
+	lister := &stubLister{err: errors.New("mcp-list.sh failed")}
+
+	results, err := DiscoverWorkspaceStdioTools(context.Background(), lister, "auggie", "/ws/path", time.Second, nil)
+	if err == nil {
+		t.Fatalf("err = nil, want non-nil (list failure must be a top-level error)")
+	}
+	if results != nil {
+		t.Errorf("results = %+v, want nil on list error", results)
+	}
+}
+
+func TestDiscoverWorkspaceStdioTools_NilLister(t *testing.T) {
+	if _, err := DiscoverWorkspaceStdioTools(context.Background(), nil, "auggie", "/ws", time.Second, nil); err == nil {
+		t.Fatalf("err = nil, want non-nil for nil lister")
+	}
+}
