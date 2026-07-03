@@ -631,6 +631,33 @@ a:hover {
   background: #1d4ed8 !important;  /* Original blue-700 */
 }
 
+/* Draw attention to in-progress issues: the in_progress status badge pulses
+   with a bright blue flash, an expanding glow ring, and a slight scale so
+   active work clearly stands out in the list. The color flash uses !important
+   to win over the pinned blue background above. */
+@keyframes beadsInProgressPulse {
+  0%,
+  100% {
+    background-color: #1d4ed8 !important;  /* blue-700 */
+    box-shadow: 0 0 0 0 rgba(59, 130, 246, 0.75);
+    transform: scale(1);
+  }
+  50% {
+    background-color: #3b82f6 !important;  /* blue-500 (brighter) */
+    box-shadow: 0 0 10px 3px rgba(59, 130, 246, 0.55);
+    transform: scale(1.08);
+  }
+}
+.beads-status-inprogress {
+  animation: beadsInProgressPulse 1.2s ease-in-out infinite;
+  will-change: background-color, box-shadow, transform;
+}
+@media (prefers-reduced-motion: reduce) {
+  .beads-status-inprogress {
+    animation: none;
+  }
+}
+
 .light .bg-yellow-400,
 .dark .bg-yellow-400 {
   background: #facc15 !important;
