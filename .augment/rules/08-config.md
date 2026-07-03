@@ -21,6 +21,8 @@ keywords:
   - folder deduplication
   - LoadFolders
   - SaveFolders
+  - ShortcutButton
+  - global shortcuts
 ---
 
 # Configuration System
@@ -116,6 +118,18 @@ Use `matchMode: contains` for robust cross-version matching. Tags are interface-
 Prompt `preferredModels` field (see `07-prompts.md`) references these profiles by **name** (`modelName:`) or **tag** (`modelTag:`) — it does NOT use match-mode globs directly. The profile's own `criteria.matchMode` is applied indirectly, via `selectPreferredModel()`, when the resolved profile's criteria are matched against the ACP server's available models.
 
 Agent metadata can pre-seed these at discovery: `metadata.yaml` `defaults.constraints` (plus `defaults.env`/`tags`/`autoApprove`) map onto `ACPServer.Constraints`/`Env`/`Tags`/`AutoApprove` via `seedACPServerDefaults` (see [03-cli-acp.md](03-cli-acp.md#agent-defaults-seeded-at-discovery)). Seeding is request-wins (user-supplied values are not overwritten).
+
+## Global Shortcuts
+
+Global shortcut buttons (`shortcuts:` in `settings.json`) mirror per-folder shortcuts (`folders.json`) and are merged with them **at render time** on the frontend — the backend stores and serves each level independently:
+
+- Type: `config.ShortcutButton{Icon, Prompt}` (`internal/config/folders.go`) — `Prompt` is a workspace prompt name, `Icon` an optional `PROMPT_ICONS` key.
+- Sections (map key in both global and folder JSON): `conversations`, `beadsIssue`, `tasksList`.
+- API: `GET/PUT /api/global/shortcuts` (`internal/web/handlers/global_shortcuts.go`) mirrors the folder shortcuts endpoint; GET also returns the available `Prompts` so the editor needs only one request.
+- `buildNewSettings` must preserve `shortcuts:` so an unrelated Settings save never wipes global shortcuts.
+- Defaults for new installs are seeded in embedded `config/config.default.yaml` (`shortcuts:` key) — written to `settings.json` on first run only; existing installs are untouched.
+
+Frontend merge/dedupe logic (duplicated in `BeadsView.js` ×2 and `app.js`): global list first, then folder entries whose `prompt` isn't already in the global list. See `25-web-frontend-components.md` for the shared `ShortcutsEditor` UI component.
 
 ## WorkspaceSettings Override Pattern
 

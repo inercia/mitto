@@ -31,6 +31,8 @@ keywords:
   - radio tabs
   - WorkspacesDialog
   - daisyUI tabs
+  - ShortcutsEditor
+  - global shortcuts
 ---
 
 # Frontend Components and Hooks
@@ -49,6 +51,7 @@ All components use Preact/HTM with window globals: `const { useState, useEffect,
 | `ContextMenu`       | Right-click menu with viewport-aware position |
 | `SessionItem`       | List item with swipe, menu, status            |
 | `Toolbar`           | Config-driven action bar (see below)          |
+| `ShortcutsEditor`   | Global+folder shortcut button config panel    |
 
 ## ChatInput
 
@@ -75,16 +78,18 @@ html`<${PortalTooltip} text=${"Long text..."} position=${"top"}><div class="trun
 
 **daisyUI tooltip** (non-clipped content): `<div class="tooltip tooltip-top" data-tip="Hover text"><button>Action</button></div>`
 
-## Toolbar (Reusable Action Bar)
+## Reusable Config-Driven Components
 
-`Toolbar.js` — portable, config-driven action bar rendered as a segmented pill from an `items` array. Item kinds: `button`, `dropdown`, `overflow`, `separator`, `spacer`, `custom`. Props: `variant` (`"floating"` | `"block"`), `surface`, `ariaLabel`, `testId`.
+**Toolbar** (`Toolbar.js`) — portable action bar rendered as a segmented pill from an `items` array. Item kinds: `button`, `dropdown`, `overflow`, `separator`, `spacer`, `custom`. Props: `variant` (`"floating"` | `"block"`), `surface`, `ariaLabel`, `testId`.
 
 ```javascript
 html`<${Toolbar} variant="block" surface="bg-mitto-surface-3"
   ariaLabel="Issue actions" testId="beads-issue-toolbar" items=${headerToolbarItems} />`
 ```
 
-Used in `BeadsView.js` for list-level actions (`listToolbarItems`, `variant="block"`) and the issue detail-panel header (`headerToolbarItems`, `variant="block"`) — replaces bespoke "..." kebab menus. Prefer this over ad-hoc button rows for any new action bar.
+Used in `BeadsView.js` list actions and issue-detail header — prefer over ad-hoc "..." kebab menus.
+
+**ShortcutsEditor** (`ShortcutsEditor.js`) — one panel reused for both **global** (Settings dialog) and **folder** (Workspaces dialog) shortcut config. Consumers (conversations/beadsIssue/tasksList toolbars) merge global + folder shortcuts at render: global first, folder duplicates of a global `prompt` dropped; leftover duplicates render greyed-out via `redundantPromptNames`. Backend mirror: `GET/PUT /api/global/shortcuts` (`internal/web/handlers/global_shortcuts.go`); type `config.ShortcutButton{Icon, Prompt}`. Refresh via `mitto:global_shortcuts_updated`/`mitto:folder_shortcuts_updated` window events. See `08-config.md` for backend details.
 
 ## Icons
 

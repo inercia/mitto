@@ -74,57 +74,30 @@ go test -v -tags integration ./tests/integration/inprocess/
 4. Store in `useWebSocket.js` and pass through `app.js`
 5. Update mock ACP server and add integration test
 
-## Go 1.22+ Routing Pattern (Complete)
+## Go 1.22+ Routing Pattern
 
-**Status**: ✅ COMPLETE. Eliminated `strings.Split` path-parsing via Go 1.22+ `http.ServeMux` method+pattern routing with `r.PathValue()`.
-
-**Pattern**: Extract path params, validate, delegate to handler:
-```go
-func (s *Server) handleSessionGet(w http.ResponseWriter, r *http.Request) {
-    if id, ok := s.sessionIDFromPath(w, r); ok {
-        s.apiHandlers.HandleGetSession(w, r, id, false)
-    }
-}
-```
-
-**Route table** (`routes.go`): Declarative method+pattern entries (no subtree fallback):
+`http.ServeMux` method+pattern routing (`r.PathValue()`), no manual path parsing. Route table (`routes.go`) is declarative:
 ```go
 apiRoute{http.MethodGet, "/api/sessions/{id}", s.handleSessionGet},
-apiRoute{http.MethodPatch, "/api/sessions/{id}", s.handleSessionUpdate},
-apiRoute{http.MethodDelete, "/api/sessions/{id}", s.handleSessionDelete},
 ```
 
-## Frontend authFetch Pattern (Complete)
+## Frontend authFetch Pattern
 
-**Pattern**: Use `authFetch(url, options?)` for all authenticated API calls. Ensures `credentials: "include"` (cross-origin/Tailscale safe) + unified 401 handling.
-
+Use `authFetch(url, options?)` for all authenticated calls — adds `credentials: "include"` + unified 401 handling. URLs always from `web/static/utils/endpoints.js` (never hardcoded):
 ```javascript
-// Use endpoints registry (never hardcoded URLs)
-const response = await authFetch(endpoints.config.get());
 const response = await authFetch(endpoints.sessions.get(sessionId));
 ```
+Exception: public endpoints (e.g. `/api/supported-runners`) use raw `fetch` with `same-origin`.
 
-**Key**: All URLs come from `web/static/utils/endpoints.js` registry. Never construct URLs manually.
+## Reusable Config-Driven Components
 
-**Defense-in-depth**: Add explicit 401 guard in critical paths:
+**Toolbar** (`Toolbar.js`) — segmented-pill action bar from an `items` array (`button`/`dropdown`/`overflow`/`separator`/`spacer`/`custom`). Prefer over bespoke "..." kebab menus.
 ```javascript
-if (response.status === 401) { redirectToLogin(); return; }
+html`<${Toolbar} variant="block" surface="bg-mitto-surface-3" items=${headerToolbarItems} />`
 ```
+Used in `BeadsView.js` (list actions + issue-detail header).
 
-**Public vs. authenticated**:
-- ✅ `authFetch`: All authenticated endpoints (via `endpoints` builders)
-- ❌ Keep raw `fetch` with `same-origin`: Public endpoints like `/api/supported-runners`
-
-## Reusable Toolbar Component
-
-`web/static/components/Toolbar.js` — config-driven action bar rendered as a segmented pill from an `items` array (`button`/`dropdown`/`overflow`/`separator`/`spacer`/`custom` kinds). Prefer it over bespoke "..." kebab menus or ad-hoc button rows for any new action bar.
-
-```javascript
-html`<${Toolbar} variant="block" surface="bg-mitto-surface-3"
-  ariaLabel="Issue actions" testId="beads-issue-toolbar" items=${headerToolbarItems} />`
-```
-
-Used in `BeadsView.js` for both the list actions (`listToolbarItems`, `variant="block"`) and the issue detail-panel header (`headerToolbarItems`, `variant="block"`).
+**ShortcutsEditor** (`ShortcutsEditor.js`) — one panel reused for both **global** (Settings dialog) and **folder** (Workspaces dialog) shortcut config. The three consumers (conversations/beadsIssue/tasksList toolbars) merge global + folder shortcuts **at render time**: global entries first, folder entries whose `prompt` duplicates a global one are dropped; any remaining duplicate renders greyed-out via `redundantPromptNames`. Backend: `config.ShortcutButton{Icon, Prompt}`, mirrored `GET/PUT /api/global/shortcuts` (`internal/web/handlers/global_shortcuts.go`). Refresh via `mitto:global_shortcuts_updated`/`mitto:folder_shortcuts_updated` window events — no reload needed. Safe defaults seeded in `config/config.default.yaml` (`shortcuts:`, new installs only).
 
 ## Model Selection & Preferred Models
 
