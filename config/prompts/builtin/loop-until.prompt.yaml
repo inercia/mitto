@@ -1,6 +1,6 @@
 icon: loop
 name: Loop until ...
-menus: conversation
+menus: prompts, conversation
 parameters:
   - name: Condition
     type: text
