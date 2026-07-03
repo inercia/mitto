@@ -54,7 +54,7 @@ only advertises transport support booleans (`Http`, `Sse`), not tool names.
 There is no `tools/list`-equivalent RPC exposed to the client in this SDK.
 
 **Real MCP `tools/list` against agent-configured servers: yes, and mostly
-already wired for server *discovery*.** `agents.Manager.ListMCPServers`
+already wired for server _discovery_.** `agents.Manager.ListMCPServers`
 (`internal/agents/manager.go:299`, `agents.CommandMCPList`) already runs each
 agent's `mcp-list.sh` and returns `[]MCPServer{Name, Command, Args, URL, Env}`
 **deterministically** (parses the agent's own settings file, e.g.
@@ -72,11 +72,11 @@ server-side (`internal/mcpserver`); nothing currently uses its client side.
 
 **Feasibility table:**
 
-| Agent (ACP type) | Server discovery (`ListMCPServers`) | stdio `tools/list` | http/sse `tools/list` |
-|---|---|---|---|
-| augment (auggie), claude-code, amp, cline, kilo, codex, gemini, mistral-vibe | Deterministic (local settings JSON) | High feasibility via `mcp.CommandTransport`; effort=moderate (process lifecycle + bounded timeout); risk=slow/side-effecting cold starts for heavy `npx`-based servers | Medium feasibility via `StreamableClientTransport`/`SSEClientTransport`; risk=`agents.MCPServer` has no `Headers` field, so servers needing bearer/auth headers can't be reached yet |
-| junie | `mcp-list.sh` is an unimplemented stub | N/A until server discovery is implemented | N/A |
-| cursor, opencode, github-copilot, goose, qwen-code | Not inspected in this spike | Unknown — needs per-agent script audit | Unknown |
+| Agent (ACP type)                                                             | Server discovery (`ListMCPServers`)    | stdio `tools/list`                                                                                                                                                     | http/sse `tools/list`                                                                                                                                                                |
+| ---------------------------------------------------------------------------- | -------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| augment (auggie), claude-code, amp, cline, kilo, codex, gemini, mistral-vibe | Deterministic (local settings JSON)    | High feasibility via `mcp.CommandTransport`; effort=moderate (process lifecycle + bounded timeout); risk=slow/side-effecting cold starts for heavy `npx`-based servers | Medium feasibility via `StreamableClientTransport`/`SSEClientTransport`; risk=`agents.MCPServer` has no `Headers` field, so servers needing bearer/auth headers can't be reached yet |
+| junie                                                                        | `mcp-list.sh` is an unimplemented stub | N/A until server discovery is implemented                                                                                                                              | N/A                                                                                                                                                                                  |
+| cursor, opencode, github-copilot, goose, qwen-code                           | Not inspected in this spike            | Unknown — needs per-agent script audit                                                                                                                                 | Unknown                                                                                                                                                                              |
 
 ### Q2 — Hardening the LLM fallback (for agents/servers a direct connection can't reach)
 
@@ -114,6 +114,42 @@ server-side (`internal/mcpserver`); nothing currently uses its client side.
    connection resolves synchronously, so this polling can be removed once
    real discovery lands for a given agent/transport.
 
+### Q4 — Dynamic / late-starting servers (the tool list changes over time)
+
+MCP servers can come online _after_ the ACP agent starts (e.g. a slow `npx`
+cold start that is only ready ~30s in), and a server may add/remove tools
+mid-session. The Q3 policy above is written for _flicker_ (stop tools spuriously
+disappearing/reappearing) and, taken alone, would **regress** this legitimate
+case: once the first fetch completes, `Available` latches `true` and matching
+becomes fail-closed (Q3.2); last-known-good guards only against _downgrades_,
+not _appearances_ (Q3.1); and retiring the 30s/60s/120s re-broadcast (Q3.4)
+plus a 15-min TTL (Q3.3) removes the only fast late-detection path — a tool that
+appears at t=40s could stay hidden for up to 15 min.
+
+Refinements so late/dynamic tools surface without reintroducing flicker:
+
+1. **Per-server availability state, not one global `Available` bit.**
+   Distinguish "server _configured_ (from `ListMCPServers`) but not yet
+   _reachable_" from "server reachable, tool genuinely absent." Keep fail-open +
+   short backoff for the former (that server's namespace only); treat only the
+   latter as a real negative for the two-consecutive-negatives rule. A single
+   global latch cannot express this.
+2. **Event-driven refresh via MCP `notifications/tools/list_changed`.** MCP
+   servers advertise a `listChanged` capability and push a notification when
+   their tool set changes; a held `ClientSession` can react immediately. Verify
+   the vendored `modelcontextprotocol/go-sdk` client exposes a handler
+   (`mcp/client.go`) — if so, this is the proper replacement for blind polling.
+3. **Bounded backoff for configured-but-unreachable servers.** When a direct
+   `tools/list` times out (the 5-10s bound from Q1) against a still-starting
+   server, schedule short exponential-backoff retries (up to a cap) rather than
+   waiting for the flat TTL — and do **not** cache that timeout as a negative.
+4. **Do not remove the fast re-broadcast (Q3.4) until an event-driven or
+   backoff-based equivalent exists**, otherwise late-starting servers regress.
+
+Note: server _identity_ is unaffected by startup timing — `ListMCPServers` reads
+static config, so the set of servers to probe is known immediately; only tool
+_names_ depend on a live connection.
+
 ## Recommendation / Decision
 
 **Prefer real MCP `tools/list` via the servers already discovered by
@@ -126,6 +162,11 @@ rule; fail-open is a cold-start-only exception, never a steady-state behavior.
 This removes LLM non-determinism entirely for the common case (locally
 configured stdio/plain-URL MCP servers for auggie/claude-code) and confines
 the flaky path to the genuinely hard cases.
+
+**Caveat (Q4):** the cold-start-only fail-open above must be scoped
+_per server_, not as one global latch, and paired with event-driven refresh
+(`notifications/tools/list_changed`) or bounded backoff so late-starting servers
+still surface. The fast re-broadcast must stay until that equivalent exists.
 
 ## Proposed follow-up implementation issues (not implemented here)
 
@@ -142,7 +183,14 @@ the flaky path to the genuinely hard cases.
   `WorkspaceAuxiliaryManager.mcpToolsCache`.
 - Persist the real-MCP-derived tools cache to disk per workspace with TTL
   refresh + manual refresh action.
-- Remove the blind 30s/60s/120s re-broadcast retries in `session_ws.go` once
-  real discovery covers the relevant agent/transport.
+- Remove the blind 30s/60s/120s re-broadcast retries in `session_ws.go` **only
+  after** an event-driven or backoff-based late-detection replacement exists
+  (see Q4) — removing it earlier regresses late-starting servers.
+- Scope fail-open state **per configured server** (not one global `Available`
+  bit) so "configured-but-unreachable" keeps that namespace fail-open with
+  bounded backoff, while "reachable, tool absent" is a genuine negative (Q4).
+- Implement event-driven refresh via MCP `notifications/tools/list_changed`:
+  verify the vendored `modelcontextprotocol/go-sdk` client exposes a handler and
+  react to it on held `ClientSession`s to surface late/changed tools (Q4).
 - Audit `mcp-list.sh` support for `cursor`, `opencode`, `github-copilot`,
   `goose`, `qwen-code` (not inspected in this spike).
