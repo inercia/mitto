@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/hex"
+	"net"
 	"net/http"
 	"strings"
 
@@ -66,42 +67,66 @@ func (c *CSRFManager) GenerateToken() (string, error) {
 	return hex.EncodeToString(bytes), nil
 }
 
-// embedIPInToken appends a non-reversible IP fingerprint to a bare CSRF token.
+// normalizeIPForFingerprint coarsens ip to its containing network prefix
+// (/24 for IPv4, /64 for IPv6) so that benign IP drift within the same
+// network (mobile carrier NAT, Wi-Fi/cellular handoff) does not change the
+// fingerprint. Falls back to returning ip unchanged if it is empty or
+// cannot be parsed.
+func normalizeIPForFingerprint(ip string) string {
+	if ip == "" {
+		return ip
+	}
+	parsed := net.ParseIP(ip)
+	if parsed == nil {
+		return ip
+	}
+	if ip4 := parsed.To4(); ip4 != nil {
+		return ip4.Mask(net.CIDRMask(24, 32)).String()
+	}
+	return parsed.Mask(net.CIDRMask(64, 128)).String()
+}
+
+// embedFingerprint appends a non-reversible client fingerprint to a bare CSRF token.
 //
-// Format: {64-char-hex-token}.{16-char-hex-sha256-prefix(token+ip)}
+// Format: {64-char-hex-token}.{16-char-hex-sha256-prefix(token+network-prefix+user-agent)}
 //
 // The fingerprint lets the server detect split-IP login patterns (the token was
-// issued to one IP and then the POST arrives from a different IP) without storing
-// any server-side state.  Because the fingerprint is derived from both the random
-// token and the IP, an attacker cannot forge a valid fingerprint for a new IP
-// without knowing the original token value.
-func embedIPInToken(token, ip string) string {
+// issued to one client and then the POST arrives from a different one) without
+// storing any server-side state. The IP is coarsened to its /24 (IPv4) or /64
+// (IPv6) network prefix so that benign IP drift within the same network doesn't
+// trip the check, and the User-Agent is folded in so a genuinely different
+// client still trips it. Because the fingerprint is derived from the random
+// token as well, an attacker cannot forge a valid fingerprint for a new
+// network/UA without knowing the original token value.
+func embedFingerprint(token, ip, userAgent string) string {
 	if ip == "" {
 		return token
 	}
 	h := sha256.New()
 	h.Write([]byte(token))
-	h.Write([]byte(ip))
+	h.Write([]byte(normalizeIPForFingerprint(ip)))
+	h.Write([]byte(userAgent))
 	return token + csrfIPHashSep + hex.EncodeToString(h.Sum(nil)[:csrfIPHashLen])
 }
 
-// VerifyIPFromToken returns true when the IP fingerprint embedded in tokenValue matches ip.
+// VerifyIPFromToken returns true when the client fingerprint embedded in tokenValue
+// matches ip and userAgent (after coarsening ip to its network prefix).
 //
 // Returns true (no anomaly) when tokenValue has no embedded fingerprint — this handles
 // tokens that were issued before this feature was deployed (graceful degradation).
-func VerifyIPFromToken(tokenValue, ip string) bool {
+func VerifyIPFromToken(tokenValue, ip, userAgent string) bool {
 	idx := strings.LastIndex(tokenValue, csrfIPHashSep)
 	if idx < 0 {
-		return true // Old format — no IP fingerprint to check
+		return true // Old format — no fingerprint to check
 	}
 	base := tokenValue[:idx]
 	if len(base) != csrfTokenLength*2 { // each byte → 2 hex chars
 		return true // Unexpected format — skip check to avoid false positives
 	}
 	storedHash := tokenValue[idx+1:]
-	expected := embedIPInToken(base, ip)
+	expected := embedFingerprint(base, ip, userAgent)
 	expectedHash := expected[idx+1:]
-	// Constant-time compare to prevent timing-based IP enumeration
+	// Constant-time compare to prevent timing-based fingerprint enumeration
 	return subtle.ConstantTimeCompare([]byte(storedHash), []byte(expectedHash)) == 1
 }
 
@@ -155,13 +180,13 @@ func (c *CSRFManager) HandleCSRFToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Embed the issuing IP as a fingerprint so that HandleLogin can detect
-	// split-IP anomalies (auth page loaded from one IP, POST from another).
-	// The double-submit cookie pattern (cookie == header) is unchanged because
-	// both the cookie and the JavaScript-read header value carry the same full
-	// string (token + "." + ip-hash).
+	// Embed the issuing IP + User-Agent as a fingerprint so that HandleLogin can
+	// detect split-IP anomalies (auth page loaded from one client, POST from
+	// another). The double-submit cookie pattern (cookie == header) is unchanged
+	// because both the cookie and the JavaScript-read header value carry the
+	// same full string (token + "." + fingerprint-hash).
 	ip := GetClientIPWithProxyCheck(r)
-	tokenWithIP := embedIPInToken(token, ip)
+	tokenWithIP := embedFingerprint(token, ip, r.Header.Get("User-Agent"))
 
 	c.SetCSRFCookie(w, r, tokenWithIP)
 	writeJSONOK(w, map[string]string{"token": tokenWithIP})
