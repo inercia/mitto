@@ -639,3 +639,115 @@ func TestFetchMCPTools_DedupBetweenDeterministicAndLLM(t *testing.T) {
 		t.Errorf("expected the deterministic entry (empty Description) to win, got %q", desc)
 	}
 }
+
+// =============================================================================
+// fetchMCPToolsViaLLM: strict parsing + single retry + plausibility (mitto-sys.7)
+// =============================================================================
+
+func TestFetchMCPToolsViaLLM_RetryAndPlausibility(t *testing.T) {
+	t.Run("parse-fail-then-success", func(t *testing.T) {
+		calls := 0
+		mock := &mockProcessProvider{
+			promptFunc: func(ctx context.Context, workspaceUUID, purpose, message string) (string, error) {
+				calls++
+				if calls == 1 {
+					return "garbage", nil
+				}
+				return `{"tools":[{"name":"t"}]}`, nil
+			},
+		}
+		mgr := NewWorkspaceAuxiliaryManager(mock, nil)
+
+		tools, err := mgr.fetchMCPToolsViaLLM(context.Background(), "ws", -1)
+		if err != nil {
+			t.Fatalf("fetchMCPToolsViaLLM error = %v", err)
+		}
+		assertToolNames(t, tools, "t")
+		if calls != 2 {
+			t.Errorf("calls = %d, want 2", calls)
+		}
+	})
+
+	t.Run("empty-plausible-then-success", func(t *testing.T) {
+		calls := 0
+		mock := &mockProcessProvider{
+			promptFunc: func(ctx context.Context, workspaceUUID, purpose, message string) (string, error) {
+				calls++
+				if calls == 1 {
+					return `{"tools":[]}`, nil
+				}
+				return `{"tools":[{"name":"t"}]}`, nil
+			},
+		}
+		mgr := NewWorkspaceAuxiliaryManager(mock, nil)
+
+		tools, err := mgr.fetchMCPToolsViaLLM(context.Background(), "ws", 2)
+		if err != nil {
+			t.Fatalf("fetchMCPToolsViaLLM error = %v", err)
+		}
+		assertToolNames(t, tools, "t")
+		if calls != 2 {
+			t.Errorf("calls = %d, want 2", calls)
+		}
+	})
+
+	t.Run("empty-accepted-when-count-not-positive", func(t *testing.T) {
+		calls := 0
+		mock := &mockProcessProvider{
+			promptFunc: func(ctx context.Context, workspaceUUID, purpose, message string) (string, error) {
+				calls++
+				return `{"tools":[]}`, nil
+			},
+		}
+		mgr := NewWorkspaceAuxiliaryManager(mock, nil)
+
+		tools, err := mgr.fetchMCPToolsViaLLM(context.Background(), "ws", -1)
+		if err != nil {
+			t.Fatalf("fetchMCPToolsViaLLM error = %v", err)
+		}
+		if len(tools) != 0 {
+			t.Errorf("tools = %v, want empty", tools)
+		}
+		if calls != 1 {
+			t.Errorf("calls = %d, want 1 (no retry when configuredServerCount <= 0)", calls)
+		}
+	})
+
+	t.Run("explicit-error-no-retry", func(t *testing.T) {
+		calls := 0
+		mock := &mockProcessProvider{
+			promptFunc: func(ctx context.Context, workspaceUUID, purpose, message string) (string, error) {
+				calls++
+				return `{"error":"none"}`, nil
+			},
+		}
+		mgr := NewWorkspaceAuxiliaryManager(mock, nil)
+
+		_, err := mgr.fetchMCPToolsViaLLM(context.Background(), "ws", 2)
+		if err == nil {
+			t.Fatalf("expected error, got nil")
+		}
+		if calls != 1 {
+			t.Errorf("calls = %d, want 1 (agent error is definitive, never retried)", calls)
+		}
+	})
+
+	t.Run("both-attempts-fail", func(t *testing.T) {
+		calls := 0
+		mock := &mockProcessProvider{
+			promptFunc: func(ctx context.Context, workspaceUUID, purpose, message string) (string, error) {
+				calls++
+				return "garbage", nil
+			},
+		}
+		mgr := NewWorkspaceAuxiliaryManager(mock, nil)
+
+		_, err := mgr.fetchMCPToolsViaLLM(context.Background(), "ws", 2)
+		if err == nil {
+			t.Fatalf("expected error, got nil")
+		}
+		if calls != 2 {
+			t.Errorf("calls = %d, want 2", calls)
+		}
+	})
+}

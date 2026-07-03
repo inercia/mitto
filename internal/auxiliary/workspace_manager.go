@@ -310,6 +310,7 @@ func (m *WorkspaceAuxiliaryManager) FetchMCPTools(ctx context.Context, workspace
 	var deterministic []MCPToolInfo
 	detNames := map[string]bool{}
 	needLLM := true
+	configuredServerCount := -1
 
 	if m.StdioToolsDiscoverer != nil {
 		results, derr := m.StdioToolsDiscoverer(ctx, workspaceUUID)
@@ -320,6 +321,7 @@ func (m *WorkspaceAuxiliaryManager) FetchMCPTools(ctx context.Context, workspace
 					"error", derr.Error())
 			}
 		} else {
+			configuredServerCount = len(results)
 			anyUnreachable := false
 			for _, r := range results {
 				if !r.Reachable {
@@ -349,7 +351,7 @@ func (m *WorkspaceAuxiliaryManager) FetchMCPTools(ctx context.Context, workspace
 	merged := deterministic
 
 	if needLLM {
-		llmTools, err := m.fetchMCPToolsViaLLM(ctx, workspaceUUID)
+		llmTools, err := m.fetchMCPToolsViaLLM(ctx, workspaceUUID, configuredServerCount)
 		if err != nil {
 			if len(deterministic) == 0 {
 				return nil, err
@@ -388,58 +390,104 @@ func (m *WorkspaceAuxiliaryManager) FetchMCPTools(ctx context.Context, workspace
 	return result, nil
 }
 
+// maxMCPToolsAttempts bounds fetchMCPToolsViaLLM's retry loop (mitto-sys.7):
+// one initial attempt plus one retry when the response fails strict parsing
+// or is implausibly empty.
+const maxMCPToolsAttempts = 2
+
 // fetchMCPToolsViaLLM queries the agent's own LLM to introspect its MCP
 // tools — the pre-mitto-sys.2 fallback path, used by FetchMCPTools when
 // deterministic stdio discovery is unavailable, errors, or reports an
 // unreachable server. Callers decide whether an error here is fatal
 // (no deterministic tools to fall back on) or can be ignored.
-func (m *WorkspaceAuxiliaryManager) fetchMCPToolsViaLLM(ctx context.Context, workspaceUUID string) ([]MCPToolInfo, error) {
-	if m.logger != nil {
-		m.logger.Debug("mcp tools fetch: starting",
-			"workspace_uuid", workspaceUUID)
-	}
+//
+// It retries once (mitto-sys.7, ADR Q2) when the response fails strict
+// parsing, or when it plausibility-fails: zero tools returned while
+// configuredServerCount indicates servers were actually configured
+// (configuredServerCount <= 0 means "unknown/no discoverer", which skips the
+// plausibility check and accepts a zero-tool response outright). An explicit
+// agent-reported error is always definitive and never retried.
+func (m *WorkspaceAuxiliaryManager) fetchMCPToolsViaLLM(ctx context.Context, workspaceUUID string, configuredServerCount int) ([]MCPToolInfo, error) {
+	var lastErr error
 
-	response, err := m.provider.PromptAuxiliary(ctx, workspaceUUID, PurposeMCPTools, FetchMCPToolsPromptTemplate)
-	if err != nil {
+	for attempt := 1; attempt <= maxMCPToolsAttempts; attempt++ {
 		if m.logger != nil {
-			m.logger.Debug("mcp tools fetch: request failed",
+			m.logger.Debug("mcp tools fetch: starting",
 				"workspace_uuid", workspaceUUID,
-				"error", err.Error())
+				"attempt", attempt)
 		}
-		return nil, fmt.Errorf("failed to fetch MCP tools: %w", err)
-	}
 
-	if m.logger != nil {
-		m.logger.Debug("mcp tools fetch: received response",
-			"workspace_uuid", workspaceUUID,
-			"response_length", len(response))
-	}
+		prompt := FetchMCPToolsPromptTemplate
+		if attempt > 1 {
+			prompt += "\n\n" + mcpToolsRetryReminder
+		}
 
-	tools, agentError, err := parseMCPToolsList(response)
-	if err != nil {
+		response, err := m.provider.PromptAuxiliary(ctx, workspaceUUID, PurposeMCPTools, prompt)
+		if err != nil {
+			if m.logger != nil {
+				m.logger.Debug("mcp tools fetch: request failed",
+					"workspace_uuid", workspaceUUID,
+					"attempt", attempt,
+					"error", err.Error())
+			}
+			lastErr = fmt.Errorf("failed to fetch MCP tools: %w", err)
+			if ctx.Err() != nil {
+				return nil, lastErr
+			}
+			continue
+		}
+
 		if m.logger != nil {
-			m.logger.Warn("mcp tools fetch: failed to parse response",
+			m.logger.Debug("mcp tools fetch: received response",
 				"workspace_uuid", workspaceUUID,
-				"error", err.Error(),
-				"response", truncateForLog(response, 200))
+				"attempt", attempt,
+				"response_length", len(response))
 		}
-		return nil, fmt.Errorf("failed to parse MCP tools response: %w", err)
+
+		tools, agentError, perr := parseMCPToolsList(response)
+		if perr != nil {
+			if m.logger != nil {
+				m.logger.Warn("mcp tools fetch: failed to parse response",
+					"workspace_uuid", workspaceUUID,
+					"attempt", attempt,
+					"error", perr.Error(),
+					"response", truncateForLog(response, 200))
+			}
+			lastErr = fmt.Errorf("failed to parse MCP tools response: %w", perr)
+			continue
+		}
+
+		if agentError != "" {
+			if m.logger != nil {
+				m.logger.Warn("mcp tools fetch: agent reported error",
+					"workspace_uuid", workspaceUUID,
+					"attempt", attempt,
+					"agent_error", agentError)
+			}
+			// If the agent reported an error but also returned some tools, use
+			// them. If no tools were returned, propagate the error. Either way,
+			// this is definitive — never retried.
+			if len(tools) == 0 {
+				return nil, fmt.Errorf("agent error: %s", agentError)
+			}
+			return tools, nil
+		}
+
+		if len(tools) == 0 && configuredServerCount > 0 && attempt < maxMCPToolsAttempts {
+			if m.logger != nil {
+				m.logger.Debug("mcp tools fetch: implausible empty response, retrying",
+					"workspace_uuid", workspaceUUID,
+					"attempt", attempt,
+					"configured_server_count", configuredServerCount)
+			}
+			lastErr = fmt.Errorf("implausible empty tools: %d server(s) configured", configuredServerCount)
+			continue
+		}
+
+		return tools, nil
 	}
 
-	if agentError != "" {
-		if m.logger != nil {
-			m.logger.Warn("mcp tools fetch: agent reported error",
-				"workspace_uuid", workspaceUUID,
-				"agent_error", agentError)
-		}
-		// If the agent reported an error but also returned some tools, use them.
-		// If no tools were returned, propagate the error.
-		if len(tools) == 0 {
-			return nil, fmt.Errorf("agent error: %s", agentError)
-		}
-	}
-
-	return tools, nil
+	return nil, lastErr
 }
 
 // applyMCPToolsCachePolicy merges a fresh, successful MCP tools fetch into

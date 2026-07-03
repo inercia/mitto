@@ -87,14 +87,14 @@ func TestParseMCPToolsList(t *testing.T) {
 			wantTools: 1,
 		},
 		{
-			name:      "bare JSON array fallback",
-			input:     `[{"name": "tool1", "description": "desc1"}]`,
-			wantTools: 1,
+			name:    "bare JSON array fallback",
+			input:   `[{"name": "tool1", "description": "desc1"}]`,
+			wantErr: true,
 		},
 		{
-			name:      "fenced bare JSON array",
-			input:     "```\n[{\"name\": \"tool1\", \"description\": \"desc1\"}]\n```",
-			wantTools: 1,
+			name:    "fenced bare JSON array",
+			input:   "```\n[{\"name\": \"tool1\", \"description\": \"desc1\"}]\n```",
+			wantErr: true,
 		},
 		{
 			name:       "agent error response",
@@ -104,6 +104,21 @@ func TestParseMCPToolsList(t *testing.T) {
 		{
 			name:    "invalid JSON fails",
 			input:   `not json at all`,
+			wantErr: true,
+		},
+		{
+			name:      "valid empty tools object",
+			input:     `{"tools": []}`,
+			wantTools: 0,
+		},
+		{
+			name:    "empty object with neither key fails",
+			input:   `{}`,
+			wantErr: true,
+		},
+		{
+			name:    "prose with embedded object fails",
+			input:   `prefix {"tools":[{"name":"tool1"}]} suffix`,
 			wantErr: true,
 		},
 	}
