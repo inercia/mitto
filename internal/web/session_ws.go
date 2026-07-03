@@ -1698,11 +1698,13 @@ func (c *SessionWSClient) triggerMCPToolsFetch(workspaceUUID string) {
 }
 
 // checkRequiredToolPatterns checks if any prompts have tool pattern requirements in their
-// enabledWhen CEL expressions and, if so, broadcasts prompts_changed immediately plus at
-// delayed intervals so the frontend re-fetches and the backend re-evaluates with whatever
-// MCP tools are cached at that point.
-// MCP tools from external servers can take time to appear (e.g., external Python programs),
-// so delayed re-broadcasts are used to catch late-appearing tools.
+// enabledWhen CEL expressions and, if so, broadcasts prompts_changed immediately so the
+// frontend re-fetches and the backend re-evaluates with whatever MCP tools are cached at
+// that point.
+// Late-appearing or changed MCP tools no longer need a blind timed re-broadcast here: they
+// surface via the event-driven watcher (mitto-sys.4: EnsureMCPWatchers -> onUpdate ->
+// broadcastPromptsChanged("mcp_tools_event")) and the bounded-backoff re-probe path
+// (mitto-sys.5), both of which re-broadcast prompts_changed as soon as tools actually change.
 func (c *SessionWSClient) checkRequiredToolPatterns(workspaceUUID string) {
 	patterns := c.collectRequiredToolPatterns()
 	if len(patterns) == 0 {
@@ -1714,32 +1716,15 @@ func (c *SessionWSClient) checkRequiredToolPatterns(workspaceUUID string) {
 	}
 
 	if c.logger != nil {
-		c.logger.Debug("required tools check: scheduling re-broadcasts for late-loading tools",
+		c.logger.Debug("required tools check: broadcasting initial filtered prompts list",
 			"workspace_uuid", workspaceUUID,
 			"pattern_count", len(patterns),
 			"patterns", patterns)
 	}
 
-	// Broadcast immediately so frontend gets initial filtered list.
+	// Broadcast immediately so frontend gets initial filtered list. Late/changed
+	// tools are handled by the event-driven watcher and backoff paths, not here.
 	c.broadcastPromptsChanged("mcp_tools_initial")
-
-	// Schedule delayed re-broadcasts to catch late-appearing MCP tools.
-	retryDelays := []time.Duration{30 * time.Second, 60 * time.Second, 120 * time.Second}
-	for _, delay := range retryDelays {
-		timer := time.NewTimer(delay)
-		select {
-		case <-timer.C:
-			c.broadcastPromptsChanged("mcp_tools_retry")
-		case <-c.ctx.Done():
-			if !timer.Stop() {
-				select {
-				case <-timer.C:
-				default:
-				}
-			}
-			return
-		}
-	}
 }
 
 // collectRequiredToolPatterns collects all unique tool patterns from enabledWhen CEL expressions across all prompt sources.

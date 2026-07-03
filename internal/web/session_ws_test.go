@@ -3,10 +3,13 @@ package web
 import (
 	"encoding/json"
 	"os"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/inercia/mitto/internal/appdir"
+	"github.com/inercia/mitto/internal/config"
 	"github.com/inercia/mitto/internal/conversation"
 	"github.com/inercia/mitto/internal/session"
 )
@@ -1227,4 +1230,114 @@ func TestSessionWSClient_OnEventMeta_AttachedToUserPrompt(t *testing.T) {
 			t.Fatal("expected user_prompt on send channel, got none")
 		}
 	})
+}
+
+// =============================================================================
+// checkRequiredToolPatterns: no blind timed re-broadcast (mitto-sys.12)
+// =============================================================================
+
+// TestCheckRequiredToolPatterns_NoTimedRetry proves that checkRequiredToolPatterns
+// no longer schedules a 30/60/120s re-broadcast loop: it must return promptly
+// (well under 1s) and must broadcast prompts_changed with reason
+// "mcp_tools_initial" exactly once, never with reason "mcp_tools_retry". Late/
+// changed tools now surface via the event-driven watcher (mitto-sys.4) and the
+// bounded-backoff path (mitto-sys.5) instead.
+func TestCheckRequiredToolPatterns_NoTimedRetry(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv(appdir.MittoDirEnv, tmpDir)
+	appdir.ResetCache()
+	t.Cleanup(appdir.ResetCache)
+
+	promptsDir := filepath.Join(tmpDir, appdir.PromptsDirName)
+	if err := os.MkdirAll(promptsDir, 0755); err != nil {
+		t.Fatalf("failed to create prompts dir: %v", err)
+	}
+	// A prompt with an enabledWhen tool-pattern requirement so
+	// collectRequiredToolPatterns returns a non-empty list, which is the
+	// precondition for the (formerly timed) broadcast path to run at all.
+	promptContent := `name: "Slack Prompt"
+enabledWhen: 'Tools.HasPattern("slack_*")'
+prompt: |
+  Do something with Slack.
+`
+	if err := os.WriteFile(filepath.Join(promptsDir, "slack.prompt.yaml"), []byte(promptContent), 0644); err != nil {
+		t.Fatalf("failed to write prompt file: %v", err)
+	}
+
+	promptsCache := config.NewPromptsCache()
+	if _, err := promptsCache.Get(); err != nil {
+		t.Fatalf("PromptsCache.Get() failed: %v", err)
+	}
+
+	eventsManager := NewGlobalEventsManager()
+	captureSend := make(chan []byte, 16)
+	eventsClient := &GlobalEventsClient{
+		wsConn: &WSConn{send: captureSend},
+		done:   make(chan struct{}),
+	}
+	eventsManager.Register(eventsClient)
+	defer eventsManager.Unregister(eventsClient)
+
+	server := &Server{
+		config:        Config{PromptsCache: promptsCache},
+		eventsManager: eventsManager,
+	}
+	client := &SessionWSClient{
+		sessionID: "test-session",
+		server:    server,
+	}
+
+	done := make(chan struct{})
+	start := time.Now()
+	go func() {
+		client.checkRequiredToolPatterns("ws-uuid")
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("checkRequiredToolPatterns did not return within 1s — a blind timed re-broadcast loop appears to still be present")
+	}
+	if elapsed := time.Since(start); elapsed > 500*time.Millisecond {
+		t.Errorf("checkRequiredToolPatterns took %v, want well under 1s (no timed retry loop)", elapsed)
+	}
+
+	// Drain and inspect every broadcast message; give the (already-returned)
+	// call a brief moment in case of any async send.
+	var reasons []string
+	deadline := time.After(200 * time.Millisecond)
+drain:
+	for {
+		select {
+		case raw := <-captureSend:
+			var msg struct {
+				Type string `json:"type"`
+				Data struct {
+					Reason string `json:"reason"`
+				} `json:"data"`
+			}
+			if err := json.Unmarshal(raw, &msg); err != nil {
+				t.Fatalf("failed to unmarshal broadcast message: %v", err)
+			}
+			if msg.Type != WSMsgTypePromptsChanged {
+				t.Errorf("broadcast type = %q, want %q", msg.Type, WSMsgTypePromptsChanged)
+			}
+			reasons = append(reasons, msg.Data.Reason)
+		case <-deadline:
+			break drain
+		}
+	}
+
+	if len(reasons) != 1 {
+		t.Fatalf("got %d prompts_changed broadcasts %v, want exactly 1", len(reasons), reasons)
+	}
+	if reasons[0] != "mcp_tools_initial" {
+		t.Errorf("broadcast reason = %q, want %q", reasons[0], "mcp_tools_initial")
+	}
+	for _, r := range reasons {
+		if r == "mcp_tools_retry" {
+			t.Errorf("found a mcp_tools_retry broadcast — the timed re-broadcast loop must be fully removed")
+		}
+	}
 }
