@@ -41,6 +41,8 @@ export const endpoints = {
       apiUrl(`/api/issues/${enc(id)}/comments`) + qs(params),
     dependencies: (id, params) =>
       apiUrl(`/api/issues/${enc(id)}/dependencies`) + qs(params),
+    labels: (id, params) => apiUrl(`/api/issues/${enc(id)}/labels`) + qs(params),
+    labelsAll: (params) => apiUrl("/api/issues/labels") + qs(params),
     cleanup: (params) => apiUrl("/api/issues/cleanup") + qs(params),
     config: (params) => apiUrl("/api/issues/config") + qs(params),
     upstream: (params) => apiUrl("/api/issues/upstream") + qs(params),

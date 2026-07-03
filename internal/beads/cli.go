@@ -269,3 +269,28 @@ func (c *cliClient) Dep(ctx context.Context, dir string, p DepParams) error {
 	_, err := c.runRaw(ctx, defaultTimeout, dir, args...)
 	return err
 }
+
+func (c *cliClient) Label(ctx context.Context, dir string, p LabelParams) error {
+	var args []string
+	switch p.Action {
+	case "add":
+		args = []string{"label", "add", p.ID, p.Label}
+	case "remove":
+		args = []string{"label", "remove", p.ID, p.Label}
+	default:
+		return &CmdError{Err: errors.New("invalid label action: " + p.Action)}
+	}
+	_, err := c.runRaw(ctx, defaultTimeout, dir, args...)
+	return err
+}
+
+// ListAllLabels returns the JSON array produced by "bd label list-all --json":
+// a list of {"label","count"} objects for every unique label in the database.
+// An uninitialized folder has no label database, so an empty JSON array is
+// returned rather than letting bd fail.
+func (c *cliClient) ListAllLabels(ctx context.Context, dir string) ([]byte, error) {
+	if !isInitialized(dir) {
+		return []byte("[]"), nil
+	}
+	return c.runJSON(ctx, dir, "label", "list-all", "--json")
+}

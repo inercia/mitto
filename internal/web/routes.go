@@ -114,6 +114,8 @@ func (s *Server) apiRoutes(authMgr *middleware.AuthManager, csrfMgr *middleware.
 		apiRoute{method: "DELETE", pattern: "/api/issues/{id}", handler: http.HandlerFunc(s.apiHandlers.HandleBeadsDelete)},
 		apiRoute{method: "POST", pattern: "/api/issues/{id}/comments", handler: http.HandlerFunc(s.apiHandlers.HandleBeadsComment)},
 		apiRoute{method: "POST", pattern: "/api/issues/{id}/dependencies", handler: http.HandlerFunc(s.apiHandlers.HandleBeadsDep)},
+		apiRoute{method: "GET", pattern: "/api/issues/labels", handler: http.HandlerFunc(s.apiHandlers.HandleBeadsLabelsAll)},
+		apiRoute{method: "POST", pattern: "/api/issues/{id}/labels", handler: http.HandlerFunc(s.apiHandlers.HandleBeadsLabel)},
 		apiRoute{method: "GET", pattern: "/api/issues/config", handler: http.HandlerFunc(s.apiHandlers.HandleBeadsConfig)},
 		apiRoute{method: "PUT", pattern: "/api/issues/config", handler: http.HandlerFunc(s.apiHandlers.HandleBeadsConfig)},
 		apiRoute{method: "DELETE", pattern: "/api/issues/config", handler: http.HandlerFunc(s.apiHandlers.HandleBeadsConfig)},

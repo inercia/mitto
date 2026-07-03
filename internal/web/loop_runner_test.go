@@ -2566,6 +2566,12 @@ func (c *fakeTasksBeadsClient) Update(context.Context, string, beads.UpdateParam
 }
 func (c *fakeTasksBeadsClient) Comment(context.Context, string, string, string) error { return nil }
 func (c *fakeTasksBeadsClient) Dep(context.Context, string, beads.DepParams) error    { return nil }
+func (c *fakeTasksBeadsClient) Label(context.Context, string, beads.LabelParams) error {
+	return nil
+}
+func (c *fakeTasksBeadsClient) ListAllLabels(context.Context, string) ([]byte, error) {
+	return []byte(`[]`), nil
+}
 func (c *fakeTasksBeadsClient) ConfigShow(context.Context, string) (map[string]string, error) {
 	return nil, nil
 }

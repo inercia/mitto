@@ -525,6 +525,14 @@ export function BeadsDetailPanel({
   const [depsBusy, setDepsBusy] = useState(false);
   const [newDepType, setNewDepType] = useState("blocks");
   const [newDepId, setNewDepId] = useState("");
+  // Labels shown in view mode. `labels` mirrors the issue's current labels
+  // (refreshed via fetchDeps); `labelsBusy` gates add/remove requests;
+  // `newLabel` backs the add-label input; `allLabels` holds the workspace-wide
+  // label suggestions rendered in the add-label datalist.
+  const [labels, setLabels] = useState([]);
+  const [labelsBusy, setLabelsBusy] = useState(false);
+  const [newLabel, setNewLabel] = useState("");
+  const [allLabels, setAllLabels] = useState([]);
   const [comments, setComments] = useState([]);
   const [notes, setNotes] = useState("");
 
@@ -1233,12 +1241,14 @@ export function BeadsDetailPanel({
         const respData = await readBeadsResponse(res);
         if (!res.ok || respData.error) {
           setDeps([]);
+          setLabels([]);
           setComments([]);
           setNotes("");
           if (seedDraftNotes) setViewDraft((prev) => ({ ...prev, notes: "" }));
         } else {
           const issueObj = Array.isArray(respData) ? respData[0] : respData;
           setDeps((issueObj && issueObj.dependencies) || []);
+          setLabels((issueObj && issueObj.labels) || []);
           setComments((issueObj && issueObj.comments) || []);
           const fetchedNotes = (issueObj && issueObj.notes) || "";
           setNotes(fetchedNotes);
@@ -1247,6 +1257,7 @@ export function BeadsDetailPanel({
         }
       } catch (_err) {
         setDeps([]);
+        setLabels([]);
         setComments([]);
         setNotes("");
         if (seedDraftNotes) setViewDraft((prev) => ({ ...prev, notes: "" }));
@@ -1319,10 +1330,12 @@ export function BeadsDetailPanel({
   // seedDraftNotes=true so the initial open seeds viewDraft.notes from the response.
   useEffect(() => {
     setDeps([]);
+    setLabels([]);
     setComments([]);
     setNotes("");
     setNewDepId("");
     setNewDepType("blocks");
+    setNewLabel("");
     if (isOpen && !creating && data && data.id) {
       fetchDeps(true);
     }
@@ -1385,6 +1398,97 @@ export function BeadsDetailPanel({
     const ok = await mutateDep("add", target, newDepType);
     if (ok) setNewDepId("");
   }, [newDepId, newDepType, depsBusy, mutateDep]);
+
+  // Fetch the workspace's unique labels to suggest when adding a label. bd
+  // returns [{label,count}, ...]; we keep only the names. Refreshed when the
+  // panel opens and after a label is added. Non-fatal on failure.
+  const fetchAllLabels = useCallback(async () => {
+    if (!workingDir) return;
+    try {
+      const res = await authFetch(
+        endpoints.issues.labelsAll({ working_dir: workingDir }),
+      );
+      const respData = await readBeadsResponse(res);
+      if (res.ok && Array.isArray(respData)) {
+        setAllLabels(
+          respData
+            .map((l) => (typeof l === "string" ? l : l && l.label))
+            .filter(Boolean),
+        );
+      }
+    } catch (_err) {
+      // Non-fatal: label suggestions just won't populate.
+    }
+  }, [workingDir]);
+
+  useEffect(() => {
+    if (isOpen && !creating) fetchAllLabels();
+  }, [isOpen, creating, fetchAllLabels]);
+
+  // Add or remove a label on the current issue, then refresh the issue (so the
+  // labels list stays current) and notify the parent list. Mirrors mutateDep.
+  const mutateLabel = useCallback(
+    async (action, label) => {
+      const value = (label || "").trim();
+      if (!data || !data.id || !value) return false;
+      setLabelsBusy(true);
+      try {
+        const res = await secureFetch(
+          endpoints.issues.labels(data.id, { working_dir: workingDir }),
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ label: value, action }),
+          },
+        );
+        const respData = await readBeadsResponse(res);
+        if (!res.ok || respData.error) {
+          showToast &&
+            showToast({
+              style: "error",
+              title: respData.error || `Failed to ${action} label`,
+            });
+          return false;
+        }
+        showToast &&
+          showToast({
+            style: "success",
+            title:
+              action === "add"
+                ? `Added label "${value}"`
+                : `Removed label "${value}"`,
+          });
+        await fetchDeps(false);
+        if (action === "add") fetchAllLabels();
+        onUpdated && onUpdated();
+        return true;
+      } catch (err) {
+        showToast &&
+          showToast({
+            style: "error",
+            title: err.message || `Failed to ${action} label`,
+          });
+        return false;
+      } finally {
+        setLabelsBusy(false);
+      }
+    },
+    [
+      data && data.id,
+      workingDir,
+      showToast,
+      fetchDeps,
+      fetchAllLabels,
+      onUpdated,
+    ],
+  );
+
+  const handleAddLabel = useCallback(async () => {
+    const value = newLabel.trim();
+    if (!value || labelsBusy) return;
+    const ok = await mutateLabel("add", value);
+    if (ok) setNewLabel("");
+  }, [newLabel, labelsBusy, mutateLabel]);
 
   // Change the kind of an existing edge. bd has no in-place type update, so this
   // removes the edge and re-adds it with the new type. A single combined toast
@@ -2333,20 +2437,88 @@ ${viewDraft.description}</pre
                   )}
                 </div>
 
-                ${Array.isArray(data.labels) &&
-                data.labels.length > 0 &&
-                html`
-                  <div>
-                    <div class="text-xs text-mitto-text-secondary mb-0.5">
-                      Labels
-                    </div>
-                    <div class="flex flex-wrap gap-2">
-                      ${data.labels.map((l) =>
-                        badge(l, "bg-mitto-surface-4 text-mitto-text-strong"),
-                      )}
-                    </div>
+                <div>
+                  <div class="text-xs text-mitto-text-secondary mb-1">
+                    Labels
                   </div>
-                `}
+                  <datalist id="beads-label-options">
+                    ${allLabels
+                      .filter((l) => !labels.includes(l))
+                      .map((l) => html`<option key=${l} value=${l}></option>`)}
+                  </datalist>
+                  <div class="flex flex-wrap gap-2 items-center">
+                    ${labels.length === 0 &&
+                    html`<span class="text-xs text-mitto-text-secondary italic"
+                      >No labels.</span
+                    >`}
+                    ${labels.map(
+                      (l) => html`
+                        <span
+                          key=${l}
+                          class="inline-flex items-center gap-1"
+                        >
+                          ${badge(l, "bg-mitto-surface-4 text-mitto-text-strong")}
+                          <button
+                            type="button"
+                            onClick=${() => {
+                              if (labelsBusy) return;
+                              mutateLabel("remove", l);
+                            }}
+                            aria-disabled=${labelsBusy ? "true" : "false"}
+                            class="btn btn-ghost btn-square btn-xs group inline-flex tooltip tooltip-bottom ${labelsBusy
+                              ? "opacity-40 pointer-events-none"
+                              : ""}"
+                            data-tip=${'Remove label "' + l + '"'}
+                            aria-label=${'Remove label "' + l + '"'}
+                          >
+                            <${CloseIcon}
+                              className="w-3 h-3 group-hover:text-red-400"
+                            />
+                          </button>
+                        </span>
+                      `,
+                    )}
+                  </div>
+                  <div class="join w-full mt-1">
+                    <input
+                      type="text"
+                      list="beads-label-options"
+                      placeholder="add label…"
+                      value=${newLabel}
+                      disabled=${labelsBusy}
+                      onInput=${(e) => setNewLabel(e.target.value)}
+                      onKeyDown=${(e) => {
+                        if (e.key === "Enter") {
+                          e.preventDefault();
+                          handleAddLabel();
+                        }
+                      }}
+                      class="input input-xs flex-1 min-w-0 join-item"
+                    />
+                    <button
+                      type="button"
+                      onClick=${() => {
+                        if (labelsBusy || !newLabel.trim()) return;
+                        handleAddLabel();
+                      }}
+                      aria-disabled=${labelsBusy || !newLabel.trim()
+                        ? "true"
+                        : "false"}
+                      class="btn btn-ghost btn-square btn-xs shrink-0 join-item inline-flex tooltip tooltip-bottom ${labelsBusy ||
+                      !newLabel.trim()
+                        ? "opacity-40 pointer-events-none"
+                        : ""}"
+                      data-tip="Add label"
+                      aria-label="Add label"
+                    >
+                      ${labelsBusy
+                        ? html`<span
+                            class="loading loading-spinner w-3.5 h-3.5"
+                          ></span>`
+                        : html`<${PlusIcon} className="w-3.5 h-3.5" />`}
+                    </button>
+                  </div>
+                </div>
                 ${TitleField("view")} ${DescriptionField("view")}
                 ${subtasks.length > 0 &&
                 html`

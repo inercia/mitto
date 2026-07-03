@@ -87,6 +87,12 @@ func (c *stubBeadsClient) Comment(_ context.Context, _, _, _ string) error { ret
 func (c *stubBeadsClient) Dep(_ context.Context, _ string, _ beads.DepParams) error {
 	return nil
 }
+func (c *stubBeadsClient) Label(_ context.Context, _ string, _ beads.LabelParams) error {
+	return nil
+}
+func (c *stubBeadsClient) ListAllLabels(_ context.Context, _ string) ([]byte, error) {
+	return []byte(`[]`), nil
+}
 func (c *stubBeadsClient) ConfigShow(_ context.Context, _ string) (map[string]string, error) {
 	return nil, nil
 }
