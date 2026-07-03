@@ -868,10 +868,11 @@ export function ArchiveFilledIcon({ className = "w-4 h-4" }) {
 }
 
 /**
- * Loop/repeat icon (circular arrow) for recurring conversations
+ * Loop-off icon (single circular arrow with a diagonal slash) for removing the
+ * recurring/loop state — the visual opposite of LoopIcon.
  * @param {string} className - CSS classes (default: 'w-4 h-4')
  */
-export function LoopIcon({ className = "w-4 h-4" }) {
+export function LoopOffIcon({ className = "w-4 h-4" }) {
   return html`
     <svg
       class="${className}"
@@ -883,7 +884,13 @@ export function LoopIcon({ className = "w-4 h-4" }) {
         stroke-linecap="round"
         stroke-linejoin="round"
         stroke-width="2"
-        d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"
+        d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10M23 4v6h-6"
+      />
+      <path
+        stroke-linecap="round"
+        stroke-linejoin="round"
+        stroke-width="2"
+        d="M4 20L20 4"
       />
     </svg>
   `;
@@ -915,6 +922,28 @@ export function LoopFilledIcon({ className = "w-4 h-4" }) {
         <path d="M7.5 15.5A5 5 0 0 0 16 16" />
         <polyline points="7 19 7 15 11 15" />
       </g>
+    </svg>
+  `;
+}
+
+/**
+ * Loop/repeat icon (single circular arrow) for recurring conversations
+ * @param {string} className - CSS classes (default: 'w-4 h-4')
+ */
+export function LoopIcon({ className = "w-4 h-4" }) {
+  return html`
+    <svg
+      class="${className}"
+      fill="none"
+      stroke="currentColor"
+      viewBox="0 0 24 24"
+    >
+      <path
+        stroke-linecap="round"
+        stroke-linejoin="round"
+        stroke-width="2"
+        d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10M23 4v6h-6"
+      />
     </svg>
   `;
 }

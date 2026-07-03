@@ -156,6 +156,7 @@ import {
   ArchiveFilledIcon,
   ListIcon,
   LoopIcon,
+  LoopOffIcon,
   LoopFilledIcon,
   CheckIcon,
   ClockIcon,
@@ -170,7 +171,6 @@ import {
   BeadsIcon,
   CopyIcon,
   BroomIcon,
-  MittoIcon,
 } from "./components/Icons.js";
 import { ContextMenu } from "./components/ContextMenu.js";
 import {
@@ -2619,7 +2619,7 @@ function App() {
                 {
                   kind: "button",
                   testId: "header-make-loop",
-                  icon: html`<${ClockIcon} className="w-4 h-4" />`,
+                  icon: html`<${LoopIcon} className="w-4 h-4" />`,
                   tip: "Loop",
                   ariaLabel: "Loop",
                   onClick: () => handleMakeLoop(activeSession),
@@ -2631,7 +2631,7 @@ function App() {
                 {
                   kind: "button",
                   testId: "header-make-non-loop",
-                  icon: html`<${MittoIcon} className="w-4 h-4" />`,
+                  icon: html`<${LoopOffIcon} className="w-4 h-4" />`,
                   tip: "Unloop",
                   ariaLabel: "Unloop",
                   onClick: () => handleMakeNonLoop(activeSession),
