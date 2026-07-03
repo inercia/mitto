@@ -533,6 +533,10 @@ export function BeadsDetailPanel({
   const [labelsBusy, setLabelsBusy] = useState(false);
   const [newLabel, setNewLabel] = useState("");
   const [allLabels, setAllLabels] = useState([]);
+  // `addingLabel` toggles the inline add-label input (revealed by the "+"
+  // button); `labelInputRef` lets us focus it as soon as it opens.
+  const [addingLabel, setAddingLabel] = useState(false);
+  const labelInputRef = useRef(null);
   const [comments, setComments] = useState([]);
   const [notes, setNotes] = useState("");
 
@@ -1336,6 +1340,7 @@ export function BeadsDetailPanel({
     setNewDepId("");
     setNewDepType("blocks");
     setNewLabel("");
+    setAddingLabel(false);
     if (isOpen && !creating && data && data.id) {
       fetchDeps(true);
     }
@@ -1489,6 +1494,11 @@ export function BeadsDetailPanel({
     const ok = await mutateLabel("add", value);
     if (ok) setNewLabel("");
   }, [newLabel, labelsBusy, mutateLabel]);
+
+  // Focus the add-label input as soon as the "+" reveals it.
+  useEffect(() => {
+    if (addingLabel && labelInputRef.current) labelInputRef.current.focus();
+  }, [addingLabel]);
 
   // Change the kind of an existing edge. bd has no in-place type update, so this
   // removes the edge and re-adds it with the new type. A single combined toast
@@ -2448,6 +2458,7 @@ ${viewDraft.description}</pre
                   </datalist>
                   <div class="flex flex-wrap gap-2 items-center">
                     ${labels.length === 0 &&
+                    !addingLabel &&
                     html`<span class="text-xs text-mitto-text-secondary italic"
                       >No labels.</span
                     >`}
@@ -2455,9 +2466,9 @@ ${viewDraft.description}</pre
                       (l) => html`
                         <span
                           key=${l}
-                          class="inline-flex items-center gap-1"
+                          class="badge badge-sm font-medium bg-mitto-surface-4 text-mitto-text-strong"
                         >
-                          ${badge(l, "bg-mitto-surface-4 text-mitto-text-strong")}
+                          ${l}
                           <button
                             type="button"
                             onClick=${() => {
@@ -2465,58 +2476,79 @@ ${viewDraft.description}</pre
                               mutateLabel("remove", l);
                             }}
                             aria-disabled=${labelsBusy ? "true" : "false"}
-                            class="btn btn-ghost btn-square btn-xs group inline-flex tooltip tooltip-bottom ${labelsBusy
+                            class="inline-flex items-center opacity-60 hover:opacity-100 hover:text-red-400 cursor-pointer tooltip tooltip-bottom ${labelsBusy
                               ? "opacity-40 pointer-events-none"
                               : ""}"
                             data-tip=${'Remove label "' + l + '"'}
                             aria-label=${'Remove label "' + l + '"'}
                           >
-                            <${CloseIcon}
-                              className="w-3 h-3 group-hover:text-red-400"
-                            />
+                            <${CloseIcon} className="w-3 h-3" />
                           </button>
                         </span>
                       `,
                     )}
-                  </div>
-                  <div class="join w-full mt-1">
-                    <input
-                      type="text"
-                      list="beads-label-options"
-                      placeholder="add label…"
-                      value=${newLabel}
-                      disabled=${labelsBusy}
-                      onInput=${(e) => setNewLabel(e.target.value)}
-                      onKeyDown=${(e) => {
-                        if (e.key === "Enter") {
-                          e.preventDefault();
-                          handleAddLabel();
-                        }
-                      }}
-                      class="input input-xs flex-1 min-w-0 join-item"
-                    />
-                    <button
-                      type="button"
-                      onClick=${() => {
-                        if (labelsBusy || !newLabel.trim()) return;
-                        handleAddLabel();
-                      }}
-                      aria-disabled=${labelsBusy || !newLabel.trim()
-                        ? "true"
-                        : "false"}
-                      class="btn btn-ghost btn-square btn-xs shrink-0 join-item inline-flex tooltip tooltip-bottom ${labelsBusy ||
-                      !newLabel.trim()
-                        ? "opacity-40 pointer-events-none"
-                        : ""}"
-                      data-tip="Add label"
-                      aria-label="Add label"
-                    >
-                      ${labelsBusy
-                        ? html`<span
-                            class="loading loading-spinner w-3.5 h-3.5"
-                          ></span>`
-                        : html`<${PlusIcon} className="w-3.5 h-3.5" />`}
-                    </button>
+                    ${addingLabel
+                      ? html`
+                          <div class="join w-52 max-w-full">
+                            <input
+                              ref=${labelInputRef}
+                              type="text"
+                              list="beads-label-options"
+                              placeholder="add label…"
+                              value=${newLabel}
+                              disabled=${labelsBusy}
+                              onInput=${(e) => setNewLabel(e.target.value)}
+                              onKeyDown=${(e) => {
+                                if (e.key === "Enter") {
+                                  e.preventDefault();
+                                  handleAddLabel();
+                                } else if (e.key === "Escape") {
+                                  e.preventDefault();
+                                  setNewLabel("");
+                                  setAddingLabel(false);
+                                }
+                              }}
+                              onBlur=${() => {
+                                if (!newLabel.trim()) setAddingLabel(false);
+                              }}
+                              class="input input-xs flex-1 min-w-0 join-item"
+                            />
+                            <button
+                              type="button"
+                              onMouseDown=${(e) => e.preventDefault()}
+                              onClick=${() => {
+                                if (labelsBusy || !newLabel.trim()) return;
+                                handleAddLabel();
+                              }}
+                              aria-disabled=${labelsBusy || !newLabel.trim()
+                                ? "true"
+                                : "false"}
+                              class="btn btn-ghost btn-square btn-xs shrink-0 join-item inline-flex tooltip tooltip-bottom ${labelsBusy ||
+                              !newLabel.trim()
+                                ? "opacity-40 pointer-events-none"
+                                : ""}"
+                              data-tip="Add label"
+                              aria-label="Add label"
+                            >
+                              ${labelsBusy
+                                ? html`<span
+                                    class="loading loading-spinner w-3 h-3"
+                                  ></span>`
+                                : html`<${PlusIcon} className="w-3 h-3" />`}
+                            </button>
+                          </div>
+                        `
+                      : html`
+                          <button
+                            type="button"
+                            onClick=${() => setAddingLabel(true)}
+                            class="btn btn-ghost btn-square btn-xs inline-flex tooltip tooltip-bottom"
+                            data-tip="Add label"
+                            aria-label="Add label"
+                          >
+                            <${PlusIcon} className="w-3 h-3" />
+                          </button>
+                        `}
                   </div>
                 </div>
                 ${TitleField("view")} ${DescriptionField("view")}
