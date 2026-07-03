@@ -5,6 +5,8 @@ import (
 	"errors"
 	"strings"
 	"testing"
+
+	"github.com/inercia/mitto/internal/mcpdiscovery"
 )
 
 // mockProcessProvider is a mock implementation of ProcessProvider for testing.
@@ -480,4 +482,160 @@ func TestApplyMCPToolsCachePolicy_WorkspacesAreIsolated(t *testing.T) {
 		t.Fatalf("expected ws-b cache entry to remain untouched")
 	}
 	assertToolNames(t, cachedB, "slack_post")
+}
+
+// =============================================================================
+// FetchMCPTools + StdioToolsDiscoverer: deterministic discovery with LLM
+// fallback (mitto-sys.2 acceptance #1, mitto-sys.6)
+// =============================================================================
+
+func TestFetchMCPTools_NilDiscoverer_PureLLM(t *testing.T) {
+	mock := &mockProcessProvider{
+		promptFunc: func(ctx context.Context, workspaceUUID, purpose, message string) (string, error) {
+			return `{"tools":[{"name":"jira_search","description":"search"}]}`, nil
+		},
+	}
+	mgr := NewWorkspaceAuxiliaryManager(mock, nil) // StdioToolsDiscoverer left nil
+
+	tools, err := mgr.FetchMCPTools(context.Background(), "ws")
+	if err != nil {
+		t.Fatalf("FetchMCPTools error = %v", err)
+	}
+	assertToolNames(t, tools, "jira_search")
+
+	cached, ok := mgr.GetCachedMCPTools("ws")
+	if !ok {
+		t.Fatalf("expected cache entry")
+	}
+	assertToolNames(t, cached, "jira_search")
+}
+
+func TestFetchMCPTools_AllReachable_SkipsLLM(t *testing.T) {
+	mock := &mockProcessProvider{
+		promptFunc: func(ctx context.Context, workspaceUUID, purpose, message string) (string, error) {
+			t.Fatal("LLM provider must not be called when all servers are reachable")
+			return "", nil
+		},
+	}
+	mgr := NewWorkspaceAuxiliaryManager(mock, nil)
+	mgr.StdioToolsDiscoverer = func(ctx context.Context, workspaceUUID string) ([]mcpdiscovery.ServerToolsResult, error) {
+		return []mcpdiscovery.ServerToolsResult{
+			{Server: "jira", Reachable: true, Tools: []string{"jira_create_issue", "jira_search"}},
+		}, nil
+	}
+
+	tools, err := mgr.FetchMCPTools(context.Background(), "ws")
+	if err != nil {
+		t.Fatalf("FetchMCPTools error = %v", err)
+	}
+	assertToolNames(t, tools, "jira_create_issue", "jira_search")
+
+	cached, ok := mgr.GetCachedMCPTools("ws")
+	if !ok {
+		t.Fatalf("expected cache entry")
+	}
+	assertToolNames(t, cached, "jira_create_issue", "jira_search")
+}
+
+func TestFetchMCPTools_UnreachableServer_UnionsWithLLM(t *testing.T) {
+	mock := &mockProcessProvider{
+		promptFunc: func(ctx context.Context, workspaceUUID, purpose, message string) (string, error) {
+			return `{"tools":[{"name":"slack_post","description":"post"}]}`, nil
+		},
+	}
+	mgr := NewWorkspaceAuxiliaryManager(mock, nil)
+	mgr.StdioToolsDiscoverer = func(ctx context.Context, workspaceUUID string) ([]mcpdiscovery.ServerToolsResult, error) {
+		return []mcpdiscovery.ServerToolsResult{
+			{Server: "jira", Reachable: true, Tools: []string{"jira_search"}},
+			{Server: "slack", Reachable: false, Err: errors.New("timeout")},
+		}, nil
+	}
+
+	tools, err := mgr.FetchMCPTools(context.Background(), "ws")
+	if err != nil {
+		t.Fatalf("FetchMCPTools error = %v", err)
+	}
+	assertToolNames(t, tools, "jira_search", "slack_post")
+}
+
+func TestFetchMCPTools_DiscovererError_FallsBackToLLM(t *testing.T) {
+	mock := &mockProcessProvider{
+		promptFunc: func(ctx context.Context, workspaceUUID, purpose, message string) (string, error) {
+			return `{"tools":[{"name":"jira_search","description":"search"}]}`, nil
+		},
+	}
+	mgr := NewWorkspaceAuxiliaryManager(mock, nil)
+	mgr.StdioToolsDiscoverer = func(ctx context.Context, workspaceUUID string) ([]mcpdiscovery.ServerToolsResult, error) {
+		return nil, errors.New("boom")
+	}
+
+	tools, err := mgr.FetchMCPTools(context.Background(), "ws")
+	if err != nil {
+		t.Fatalf("FetchMCPTools error = %v", err)
+	}
+	assertToolNames(t, tools, "jira_search")
+}
+
+func TestFetchMCPTools_AllReachableZeroTools_NoCacheEntry(t *testing.T) {
+	mock := &mockProcessProvider{
+		promptFunc: func(ctx context.Context, workspaceUUID, purpose, message string) (string, error) {
+			t.Fatal("LLM provider must not be called when all servers are reachable")
+			return "", nil
+		},
+	}
+	mgr := NewWorkspaceAuxiliaryManager(mock, nil)
+	mgr.StdioToolsDiscoverer = func(ctx context.Context, workspaceUUID string) ([]mcpdiscovery.ServerToolsResult, error) {
+		return []mcpdiscovery.ServerToolsResult{
+			{Server: "empty-server", Reachable: true, Tools: nil},
+		}, nil
+	}
+
+	tools, err := mgr.FetchMCPTools(context.Background(), "ws")
+	if err != nil {
+		t.Fatalf("FetchMCPTools error = %v", err)
+	}
+	if len(tools) != 0 {
+		t.Fatalf("expected empty tools, got %v", tools)
+	}
+	if _, ok := mgr.GetCachedMCPTools("ws"); ok {
+		t.Fatalf("expected no cache entry (policy no-op on first empty fetch)")
+	}
+}
+
+func TestFetchMCPTools_DedupBetweenDeterministicAndLLM(t *testing.T) {
+	mock := &mockProcessProvider{
+		promptFunc: func(ctx context.Context, workspaceUUID, purpose, message string) (string, error) {
+			return `{"tools":[{"name":"jira_search","description":"llm description"},{"name":"slack_post","description":"post"}]}`, nil
+		},
+	}
+	mgr := NewWorkspaceAuxiliaryManager(mock, nil)
+	mgr.StdioToolsDiscoverer = func(ctx context.Context, workspaceUUID string) ([]mcpdiscovery.ServerToolsResult, error) {
+		return []mcpdiscovery.ServerToolsResult{
+			{Server: "jira", Reachable: true, Tools: []string{"jira_search"}},
+			{Server: "slack", Reachable: false, Err: errors.New("timeout")},
+		}, nil
+	}
+
+	tools, err := mgr.FetchMCPTools(context.Background(), "ws")
+	if err != nil {
+		t.Fatalf("FetchMCPTools error = %v", err)
+	}
+	assertToolNames(t, tools, "jira_search", "slack_post")
+
+	// jira_search must appear exactly once, from the deterministic result
+	// (empty Description), not duplicated or overwritten by the LLM version.
+	count := 0
+	var desc string
+	for _, tool := range tools {
+		if tool.Name == "jira_search" {
+			count++
+			desc = tool.Description
+		}
+	}
+	if count != 1 {
+		t.Fatalf("expected exactly one jira_search entry, got %d", count)
+	}
+	if desc != "" {
+		t.Errorf("expected the deterministic entry (empty Description) to win, got %q", desc)
+	}
 }

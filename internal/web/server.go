@@ -16,6 +16,7 @@ import (
 
 	builtinConfig "github.com/inercia/mitto/config"
 	"github.com/inercia/mitto/internal/acpproc"
+	"github.com/inercia/mitto/internal/agents"
 	"github.com/inercia/mitto/internal/appdir"
 	"github.com/inercia/mitto/internal/auxiliary"
 	"github.com/inercia/mitto/internal/beads"
@@ -24,6 +25,7 @@ import (
 	"github.com/inercia/mitto/internal/defense"
 	"github.com/inercia/mitto/internal/hooks"
 	"github.com/inercia/mitto/internal/logging"
+	"github.com/inercia/mitto/internal/mcpdiscovery"
 	"github.com/inercia/mitto/internal/mcpserver"
 	"github.com/inercia/mitto/internal/processors"
 	"github.com/inercia/mitto/internal/session"
@@ -533,6 +535,34 @@ func NewServer(config Config) (*Server, error) {
 	// auxiliary sessions can find the workspace processes registered by user sessions.
 	auxiliaryManager := auxiliary.NewWorkspaceAuxiliaryManager(acpProcessMgr, logger)
 	sessionMgr.SetAuxiliaryManager(auxiliaryManager)
+
+	// Wire deterministic stdio MCP tool discovery (mitto-sys.2/mitto-sys.6):
+	// resolves a workspace to its ACP agent and probes its configured stdio
+	// MCP servers directly via tools/list, so FetchMCPTools can skip the LLM
+	// introspection fallback whenever every server is reachable.
+	if agentsDir, aerr := appdir.AgentsDir(); aerr == nil {
+		agentMgr := agents.NewManager(agentsDir, logger)
+		auxiliaryManager.StdioToolsDiscoverer = func(ctx context.Context, workspaceUUID string) ([]mcpdiscovery.ServerToolsResult, error) {
+			ws := sessionMgr.GetWorkspaceByUUID(workspaceUUID)
+			if ws == nil {
+				return nil, fmt.Errorf("workspace %q not found", workspaceUUID)
+			}
+			acpType := ""
+			if config.MittoConfig != nil {
+				acpType = config.MittoConfig.GetServerType(ws.ACPServer)
+			}
+			if acpType == "" {
+				acpType = ws.ACPServer
+			}
+			agent, gerr := agentMgr.GetAgentByACPId(acpType)
+			if gerr != nil {
+				return nil, gerr
+			}
+			return mcpdiscovery.DiscoverWorkspaceStdioTools(ctx, agentMgr, agent.DirName, ws.WorkingDir, 8*time.Second, nil)
+		}
+	} else {
+		logger.Warn("stdio MCP discovery disabled: cannot resolve agents dir", "error", aerr)
+	}
 
 	// Initialize scanner defense
 	// Enabled by default when external access is configured (ExternalPort >= 0)

@@ -7,6 +7,8 @@ import (
 	"sort"
 	"strings"
 	"sync"
+
+	"github.com/inercia/mitto/internal/mcpdiscovery"
 )
 
 // Purpose constants for auxiliary sessions
@@ -59,6 +61,12 @@ type WorkspaceAuxiliaryManager struct {
 	// writes both together). See docs/devel/mcp-tool-discovery.md (Q3.1):
 	// a tool is only downgraded to absent after 2 consecutive negatives.
 	mcpToolsNegatives map[string]map[string]int
+
+	// StdioToolsDiscoverer, when set, deterministically discovers a workspace's
+	// MCP tools via direct tools/list (per configured stdio server). Injected
+	// by the web layer. When nil (tests/CLI), FetchMCPTools uses the LLM path
+	// only (legacy).
+	StdioToolsDiscoverer func(ctx context.Context, workspaceUUID string) ([]mcpdiscovery.ServerToolsResult, error)
 }
 
 // NewWorkspaceAuxiliaryManager creates a new workspace-scoped auxiliary manager.
@@ -294,6 +302,98 @@ func (m *WorkspaceAuxiliaryManager) FetchMCPTools(ctx context.Context, workspace
 	}
 	m.mcpToolsCacheMu.RUnlock()
 
+	// Try deterministic stdio discovery first (mitto-sys.2/mitto-sys.6): a
+	// real tools/list per configured stdio server, no LLM involved. The LLM
+	// fallback below only runs when discovery is unavailable, errors, or
+	// reports at least one unreachable server (that server's tools may still
+	// only be knowable via the LLM, or it may just be starting up).
+	var deterministic []MCPToolInfo
+	detNames := map[string]bool{}
+	needLLM := true
+
+	if m.StdioToolsDiscoverer != nil {
+		results, derr := m.StdioToolsDiscoverer(ctx, workspaceUUID)
+		if derr != nil {
+			if m.logger != nil {
+				m.logger.Debug("mcp tools fetch: stdio discovery failed, falling back to LLM",
+					"workspace_uuid", workspaceUUID,
+					"error", derr.Error())
+			}
+		} else {
+			anyUnreachable := false
+			for _, r := range results {
+				if !r.Reachable {
+					anyUnreachable = true
+					continue
+				}
+				for _, name := range r.Tools {
+					if detNames[name] {
+						continue
+					}
+					detNames[name] = true
+					deterministic = append(deterministic, MCPToolInfo{Name: name})
+				}
+			}
+			needLLM = anyUnreachable || len(results) == 0
+			if m.logger != nil {
+				m.logger.Debug("mcp tools fetch: stdio discovery completed",
+					"workspace_uuid", workspaceUUID,
+					"server_count", len(results),
+					"tool_count", len(deterministic),
+					"any_unreachable", anyUnreachable,
+					"need_llm", needLLM)
+			}
+		}
+	}
+
+	merged := deterministic
+
+	if needLLM {
+		llmTools, err := m.fetchMCPToolsViaLLM(ctx, workspaceUUID)
+		if err != nil {
+			if len(deterministic) == 0 {
+				return nil, err
+			}
+			if m.logger != nil {
+				m.logger.Warn("mcp tools fetch: LLM fallback failed, using deterministic tools only",
+					"workspace_uuid", workspaceUUID,
+					"error", err.Error())
+			}
+		} else {
+			for _, tool := range llmTools {
+				if detNames[tool.Name] {
+					continue // deterministic entries win on name collision
+				}
+				merged = append(merged, tool)
+			}
+		}
+	}
+
+	// Sort tools alphabetically by name.
+	sort.Slice(merged, func(i, j int) bool {
+		return merged[i].Name < merged[j].Name
+	})
+
+	// Merge into the cache using the last-known-good policy: a previously
+	// observed tool is never downgraded to absent on a single negative
+	// fetch (see applyMCPToolsCachePolicy).
+	result := m.applyMCPToolsCachePolicy(workspaceUUID, merged)
+
+	if m.logger != nil {
+		m.logger.Info("MCP tools fetch completed",
+			"workspace_uuid", workspaceUUID,
+			"tool_count", len(result))
+	}
+
+	return result, nil
+}
+
+// fetchMCPToolsViaLLM queries the agent's own LLM to introspect its MCP
+// tools — the pre-mitto-sys.2 fallback path, used by FetchMCPTools when
+// deterministic stdio discovery is unavailable, errors, or reports an
+// unreachable server. Callers decide whether an error here is fatal
+// (no deterministic tools to fall back on) or can be ignored.
+func (m *WorkspaceAuxiliaryManager) fetchMCPToolsViaLLM(ctx context.Context, workspaceUUID string) ([]MCPToolInfo, error) {
 	if m.logger != nil {
 		m.logger.Debug("mcp tools fetch: starting",
 			"workspace_uuid", workspaceUUID)
@@ -339,23 +439,7 @@ func (m *WorkspaceAuxiliaryManager) FetchMCPTools(ctx context.Context, workspace
 		}
 	}
 
-	// Sort tools alphabetically by name.
-	sort.Slice(tools, func(i, j int) bool {
-		return tools[i].Name < tools[j].Name
-	})
-
-	// Merge into the cache using the last-known-good policy: a previously
-	// observed tool is never downgraded to absent on a single negative
-	// fetch (see applyMCPToolsCachePolicy).
-	merged := m.applyMCPToolsCachePolicy(workspaceUUID, tools)
-
-	if m.logger != nil {
-		m.logger.Info("MCP tools fetch completed",
-			"workspace_uuid", workspaceUUID,
-			"tool_count", len(merged))
-	}
-
-	return merged, nil
+	return tools, nil
 }
 
 // applyMCPToolsCachePolicy merges a fresh, successful MCP tools fetch into
