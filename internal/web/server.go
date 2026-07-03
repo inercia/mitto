@@ -536,10 +536,10 @@ func NewServer(config Config) (*Server, error) {
 	auxiliaryManager := auxiliary.NewWorkspaceAuxiliaryManager(acpProcessMgr, logger)
 	sessionMgr.SetAuxiliaryManager(auxiliaryManager)
 
-	// Wire deterministic stdio MCP tool discovery (mitto-sys.2/mitto-sys.6):
-	// resolves a workspace to its ACP agent and probes its configured stdio
-	// MCP servers directly via tools/list, so FetchMCPTools can skip the LLM
-	// introspection fallback whenever every server is reachable.
+	// Wire deterministic MCP tool discovery (mitto-sys.2/mitto-sys.3/mitto-sys.6):
+	// resolves a workspace to its ACP agent and probes its configured stdio +
+	// http/sse MCP servers directly via tools/list, so FetchMCPTools can skip
+	// the LLM introspection fallback whenever every server is reachable.
 	if agentsDir, aerr := appdir.AgentsDir(); aerr == nil {
 		agentMgr := agents.NewManager(agentsDir, logger)
 		auxiliaryManager.StdioToolsDiscoverer = func(ctx context.Context, workspaceUUID string) ([]mcpdiscovery.ServerToolsResult, error) {
@@ -558,7 +558,7 @@ func NewServer(config Config) (*Server, error) {
 			if gerr != nil {
 				return nil, gerr
 			}
-			return mcpdiscovery.DiscoverWorkspaceStdioTools(ctx, agentMgr, agent.DirName, ws.WorkingDir, 8*time.Second, nil)
+			return mcpdiscovery.DiscoverWorkspaceTools(ctx, agentMgr, agent.DirName, ws.WorkingDir, 8*time.Second, nil)
 		}
 	} else {
 		logger.Warn("stdio MCP discovery disabled: cannot resolve agents dir", "error", aerr)

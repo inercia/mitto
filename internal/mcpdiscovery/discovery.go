@@ -9,8 +9,10 @@ package mcpdiscovery
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"os"
 	"os/exec"
+	"strings"
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -68,19 +70,16 @@ func CommandTransportFactory(ctx context.Context, srv agents.MCPServer) (mcp.Tra
 	return &mcp.CommandTransport{Command: cmd}, func() {}, nil
 }
 
-// DiscoverStdioServer connects to a single stdio MCP server and lists its
-// tools. It never panics: any transport/connect/list failure or timeout is
-// reported via ServerToolsResult.Err with Reachable=false, distinct from a
-// genuine reachable-but-empty tool list (Reachable=true, Tools=nil/empty).
-// timeout bounds the whole probe; DefaultTimeout is used when timeout <= 0.
-// factory builds the underlying transport; pass CommandTransportFactory (or
-// nil, which defaults to it) in production, or an injected factory in tests.
-func DiscoverStdioServer(ctx context.Context, srv agents.MCPServer, timeout time.Duration, factory TransportFactory) ServerToolsResult {
+// probeServer connects to a single MCP server (any transport, as built by
+// factory) and lists its tools. It never panics: any transport/connect/list
+// failure or timeout is reported via ServerToolsResult.Err with
+// Reachable=false, distinct from a genuine reachable-but-empty tool list
+// (Reachable=true, Tools=nil/empty). timeout bounds the whole probe;
+// DefaultTimeout is used when timeout <= 0. factory must be non-nil; callers
+// (DiscoverStdioServer, DiscoverNetworkServer) apply their own default.
+func probeServer(ctx context.Context, srv agents.MCPServer, timeout time.Duration, factory TransportFactory) ServerToolsResult {
 	if timeout <= 0 {
 		timeout = DefaultTimeout
-	}
-	if factory == nil {
-		factory = CommandTransportFactory
 	}
 
 	ctx, cancel := context.WithTimeout(ctx, timeout)
@@ -113,6 +112,65 @@ func DiscoverStdioServer(ctx context.Context, srv agents.MCPServer, timeout time
 	return ServerToolsResult{Server: srv.Name, Tools: names, Reachable: true}
 }
 
+// DiscoverStdioServer connects to a single stdio MCP server and lists its
+// tools. See probeServer for behavior details. factory defaults to
+// CommandTransportFactory when nil.
+func DiscoverStdioServer(ctx context.Context, srv agents.MCPServer, timeout time.Duration, factory TransportFactory) ServerToolsResult {
+	if factory == nil {
+		factory = CommandTransportFactory
+	}
+	return probeServer(ctx, srv, timeout, factory)
+}
+
+// NetworkTransportFactory is the production TransportFactory for http/sse MCP
+// servers. It builds an *mcp.SSEClientTransport when srv.URL's path ends in
+// "/sse" (case-insensitive) — the conventional SSE endpoint suffix — and an
+// *mcp.StreamableClientTransport (the modern default) otherwise. Cleanup is a
+// no-op; ClientSession.Close (in probeServer) tears down the connection.
+// NOTE: srv.Env and auth Headers are NOT applied (no Headers field yet —
+// mitto-sys.9); auth-required endpoints therefore fail at Connect/ListTools
+// and surface as Reachable=false, letting callers fall back to the LLM path.
+func NetworkTransportFactory(_ context.Context, srv agents.MCPServer) (mcp.Transport, func(), error) {
+	if srv.URL == "" {
+		return nil, nil, fmt.Errorf("mcpdiscovery: server %q has no URL", srv.Name)
+	}
+
+	isSSE := strings.HasSuffix(strings.ToLower(srv.URL), "/sse")
+	if parsed, err := url.Parse(srv.URL); err == nil {
+		isSSE = strings.HasSuffix(strings.ToLower(parsed.Path), "/sse")
+	}
+
+	if isSSE {
+		return &mcp.SSEClientTransport{Endpoint: srv.URL}, func() {}, nil
+	}
+	return &mcp.StreamableClientTransport{Endpoint: srv.URL}, func() {}, nil
+}
+
+// DefaultTransportFactory dispatches to CommandTransportFactory for stdio
+// servers (Command != "") and NetworkTransportFactory for network servers
+// (URL != ""), erroring when a server has neither. It is the production
+// factory for DiscoverServers, which probes mixed-transport server lists.
+func DefaultTransportFactory(ctx context.Context, srv agents.MCPServer) (mcp.Transport, func(), error) {
+	switch {
+	case srv.Command != "":
+		return CommandTransportFactory(ctx, srv)
+	case srv.URL != "":
+		return NetworkTransportFactory(ctx, srv)
+	default:
+		return nil, nil, fmt.Errorf("mcpdiscovery: server %q has neither Command nor URL", srv.Name)
+	}
+}
+
+// DiscoverNetworkServer connects to a single http/sse MCP server and lists
+// its tools. See probeServer for behavior details. factory defaults to
+// NetworkTransportFactory when nil.
+func DiscoverNetworkServer(ctx context.Context, srv agents.MCPServer, timeout time.Duration, factory TransportFactory) ServerToolsResult {
+	if factory == nil {
+		factory = NetworkTransportFactory
+	}
+	return probeServer(ctx, srv, timeout, factory)
+}
+
 // DiscoverStdioServers probes every stdio server in servers (srv.Command !=
 // "" — http/sse-only servers are skipped, see mitto-sys.3) and returns one
 // ServerToolsResult per stdio server, in input order. Servers are probed
@@ -128,6 +186,44 @@ func DiscoverStdioServers(ctx context.Context, servers []agents.MCPServer, timeo
 			continue
 		}
 		results = append(results, DiscoverStdioServer(ctx, srv, timeout, factory))
+	}
+	return results
+}
+
+// DiscoverNetworkServers probes every network server in servers (srv.URL !=
+// "" && srv.Command == "" — stdio servers are skipped) and returns one
+// ServerToolsResult per network server, in input order. Servers are probed
+// sequentially, each isolated: one server's failure or timeout never aborts
+// the others. factory defaults to NetworkTransportFactory when nil.
+func DiscoverNetworkServers(ctx context.Context, servers []agents.MCPServer, timeout time.Duration, factory TransportFactory) []ServerToolsResult {
+	if factory == nil {
+		factory = NetworkTransportFactory
+	}
+	var results []ServerToolsResult
+	for _, srv := range servers {
+		if srv.URL == "" || srv.Command != "" {
+			continue
+		}
+		results = append(results, DiscoverNetworkServer(ctx, srv, timeout, factory))
+	}
+	return results
+}
+
+// DiscoverServers probes every server in servers regardless of transport,
+// skipping only servers with neither Command nor URL set. Servers are probed
+// sequentially, each isolated: one server's failure or timeout never aborts
+// the others. factory defaults to DefaultTransportFactory when nil, which
+// dispatches each server to the appropriate stdio/network transport.
+func DiscoverServers(ctx context.Context, servers []agents.MCPServer, timeout time.Duration, factory TransportFactory) []ServerToolsResult {
+	if factory == nil {
+		factory = DefaultTransportFactory
+	}
+	var results []ServerToolsResult
+	for _, srv := range servers {
+		if srv.Command == "" && srv.URL == "" {
+			continue
+		}
+		results = append(results, probeServer(ctx, srv, timeout, factory))
 	}
 	return results
 }
@@ -163,4 +259,25 @@ func DiscoverWorkspaceStdioTools(ctx context.Context, lister ServerLister, agent
 		return nil, nil
 	}
 	return DiscoverStdioServers(ctx, out.Servers, timeout, factory), nil
+}
+
+// DiscoverWorkspaceTools resolves a workspace's configured MCP servers via
+// lister.ListMCPServers(agentName, {Path: workspacePath}) — the same
+// deterministic mcp-list.sh discovery the MCP handler uses — then probes ALL
+// of them (stdio + http/sse) with DiscoverServers. An error is returned only
+// when the server list itself cannot be obtained; per-server probe failures
+// are reported in-band via ServerToolsResult (Reachable=false, Err set),
+// never as a top-level error.
+func DiscoverWorkspaceTools(ctx context.Context, lister ServerLister, agentName, workspacePath string, timeout time.Duration, factory TransportFactory) ([]ServerToolsResult, error) {
+	if lister == nil {
+		return nil, fmt.Errorf("mcpdiscovery: nil server lister")
+	}
+	out, err := lister.ListMCPServers(ctx, agentName, &agents.MCPListInput{Path: workspacePath})
+	if err != nil {
+		return nil, fmt.Errorf("mcpdiscovery: list mcp servers for agent %q: %w", agentName, err)
+	}
+	if out == nil {
+		return nil, nil
+	}
+	return DiscoverServers(ctx, out.Servers, timeout, factory), nil
 }

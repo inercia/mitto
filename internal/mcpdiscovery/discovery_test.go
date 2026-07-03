@@ -3,6 +3,8 @@ package mcpdiscovery
 import (
 	"context"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"sort"
 	"testing"
 	"time"
@@ -212,5 +214,231 @@ func TestDiscoverWorkspaceStdioTools_ListError(t *testing.T) {
 func TestDiscoverWorkspaceStdioTools_NilLister(t *testing.T) {
 	if _, err := DiscoverWorkspaceStdioTools(context.Background(), nil, "auggie", "/ws", time.Second, nil); err == nil {
 		t.Fatalf("err = nil, want non-nil for nil lister")
+	}
+}
+
+// =============================================================================
+// http/sse transport discovery (mitto-sys.3)
+// =============================================================================
+
+func TestNetworkTransportFactory_SelectsSSEBySuffix(t *testing.T) {
+	transport, cleanup, err := NetworkTransportFactory(context.Background(), agents.MCPServer{Name: "s", URL: "https://example.com/sse"})
+	if err != nil {
+		t.Fatalf("err = %v, want nil", err)
+	}
+	defer cleanup()
+
+	sseT, ok := transport.(*mcp.SSEClientTransport)
+	if !ok {
+		t.Fatalf("transport = %T, want *mcp.SSEClientTransport", transport)
+	}
+	if sseT.Endpoint != "https://example.com/sse" {
+		t.Errorf("Endpoint = %q, want %q", sseT.Endpoint, "https://example.com/sse")
+	}
+}
+
+func TestNetworkTransportFactory_SelectsStreamableByDefault(t *testing.T) {
+	transport, cleanup, err := NetworkTransportFactory(context.Background(), agents.MCPServer{Name: "s", URL: "https://example.com/mcp"})
+	if err != nil {
+		t.Fatalf("err = %v, want nil", err)
+	}
+	defer cleanup()
+
+	streamT, ok := transport.(*mcp.StreamableClientTransport)
+	if !ok {
+		t.Fatalf("transport = %T, want *mcp.StreamableClientTransport", transport)
+	}
+	if streamT.Endpoint != "https://example.com/mcp" {
+		t.Errorf("Endpoint = %q, want %q", streamT.Endpoint, "https://example.com/mcp")
+	}
+}
+
+func TestNetworkTransportFactory_EmptyURL(t *testing.T) {
+	_, _, err := NetworkTransportFactory(context.Background(), agents.MCPServer{Name: "s"})
+	if err == nil {
+		t.Fatalf("err = nil, want non-nil for empty URL")
+	}
+}
+
+func TestDefaultTransportFactory_Dispatch(t *testing.T) {
+	t.Run("stdio", func(t *testing.T) {
+		transport, cleanup, err := DefaultTransportFactory(context.Background(), agents.MCPServer{Name: "s", Command: "echo"})
+		if err != nil {
+			t.Fatalf("err = %v, want nil", err)
+		}
+		defer cleanup()
+		if _, ok := transport.(*mcp.CommandTransport); !ok {
+			t.Fatalf("transport = %T, want *mcp.CommandTransport", transport)
+		}
+	})
+
+	t.Run("network", func(t *testing.T) {
+		transport, cleanup, err := DefaultTransportFactory(context.Background(), agents.MCPServer{Name: "s", URL: "https://example.com/mcp"})
+		if err != nil {
+			t.Fatalf("err = %v, want nil", err)
+		}
+		defer cleanup()
+		switch transport.(type) {
+		case *mcp.StreamableClientTransport, *mcp.SSEClientTransport:
+			// ok
+		default:
+			t.Fatalf("transport = %T, want a network transport", transport)
+		}
+	})
+
+	t.Run("neither", func(t *testing.T) {
+		_, _, err := DefaultTransportFactory(context.Background(), agents.MCPServer{Name: "s"})
+		if err == nil {
+			t.Fatalf("err = nil, want non-nil when server has neither Command nor URL")
+		}
+	})
+}
+
+func TestDiscoverNetworkServer_ReachableWithTools(t *testing.T) {
+	factory, stop := newMockStdioServer(t, "web_search")
+	defer stop()
+
+	result := DiscoverNetworkServer(context.Background(), agents.MCPServer{Name: "web", URL: "https://example.com/mcp"}, time.Second, factory)
+
+	if !result.Reachable {
+		t.Fatalf("Reachable = false, want true (err=%v)", result.Err)
+	}
+	if len(result.Tools) != 1 || result.Tools[0] != "web_search" {
+		t.Errorf("Tools = %v, want [web_search]", result.Tools)
+	}
+}
+
+func TestDiscoverNetworkServer_RealStreamableHTTP(t *testing.T) {
+	srv := mcp.NewServer(&mcp.Implementation{Name: "mock", Version: "0"}, nil)
+	mcp.AddTool(srv, &mcp.Tool{Name: "http_tool", Description: "mock http tool"}, noopToolHandler)
+
+	handler := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return srv }, nil)
+	ts := httptest.NewServer(handler)
+	defer ts.Close()
+
+	result := DiscoverNetworkServer(context.Background(), agents.MCPServer{Name: "http", URL: ts.URL}, 5*time.Second, nil)
+
+	if !result.Reachable {
+		t.Fatalf("Reachable = false, want true (err=%v)", result.Err)
+	}
+	if len(result.Tools) != 1 || result.Tools[0] != "http_tool" {
+		t.Errorf("Tools = %v, want [http_tool]", result.Tools)
+	}
+}
+
+// TestDiscoverNetworkServer_RealSSE exercises a genuine SSE round-trip
+// against mcp.NewSSEHandler. SSEHandler computes its session endpoint
+// relative to the incoming request's own path (see mcp/sse.go ServeHTTP:
+// it builds "?sessionid=..." off req.URL, and POSTs are routed by mux to
+// whatever path the handler is mounted on), so mounting it at "/sse" and
+// probing ts.URL+"/sse" makes the client hit the real code path for both
+// endpoint-suffix detection (NetworkTransportFactory picks SSEClientTransport)
+// and the SSE round-trip itself — no need to fall back to an in-memory-only
+// test for SSE.
+func TestDiscoverNetworkServer_RealSSE(t *testing.T) {
+	srv := mcp.NewServer(&mcp.Implementation{Name: "mock", Version: "0"}, nil)
+	mcp.AddTool(srv, &mcp.Tool{Name: "sse_tool", Description: "mock sse tool"}, noopToolHandler)
+
+	handler := mcp.NewSSEHandler(func(*http.Request) *mcp.Server { return srv }, nil)
+	mux := http.NewServeMux()
+	mux.Handle("/sse", handler)
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+
+	result := DiscoverNetworkServer(context.Background(), agents.MCPServer{Name: "sse", URL: ts.URL + "/sse"}, 5*time.Second, nil)
+
+	if !result.Reachable {
+		t.Fatalf("Reachable = false, want true (err=%v)", result.Err)
+	}
+	if len(result.Tools) != 1 || result.Tools[0] != "sse_tool" {
+		t.Errorf("Tools = %v, want [sse_tool]", result.Tools)
+	}
+}
+
+func TestDiscoverNetworkServer_AuthRequiredGracefulFailure(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+	}))
+	defer ts.Close()
+
+	result := DiscoverNetworkServer(context.Background(), agents.MCPServer{Name: "secured", URL: ts.URL}, 5*time.Second, nil)
+
+	if result.Reachable {
+		t.Fatalf("Reachable = true, want false")
+	}
+	if result.Err == nil {
+		t.Fatalf("Err = nil, want non-nil")
+	}
+	if len(result.Tools) != 0 {
+		t.Errorf("Tools = %v, want empty", result.Tools)
+	}
+}
+
+func TestDiscoverServers_MixedTransportsSkipsNeither(t *testing.T) {
+	stdioFactory, stopStdio := newMockStdioServer(t, "stdio_tool")
+	defer stopStdio()
+	netFactory, stopNet := newMockStdioServer(t, "net_tool")
+	defer stopNet()
+
+	servers := []agents.MCPServer{
+		{Name: "stdio-srv", Command: "unused"},
+		{Name: "net-srv", URL: "https://example.com/mcp"},
+		{Name: "neither-srv"}, // no Command, no URL: must be skipped
+	}
+
+	mixedFactory := func(ctx context.Context, s agents.MCPServer) (mcp.Transport, func(), error) {
+		if s.Name == "stdio-srv" {
+			return stdioFactory(ctx, s)
+		}
+		return netFactory(ctx, s)
+	}
+
+	results := DiscoverServers(context.Background(), servers, time.Second, mixedFactory)
+
+	if len(results) != 2 {
+		t.Fatalf("len(results) = %d, want 2 (neither-srv must be skipped): %+v", len(results), results)
+	}
+	for _, r := range results {
+		if !r.Reachable {
+			t.Errorf("result for %q: Reachable = false, want true (err=%v)", r.Server, r.Err)
+		}
+	}
+}
+
+func TestDiscoverWorkspaceTools_ProbesBothStdioAndNetwork(t *testing.T) {
+	stdioFactory, stopStdio := newMockStdioServer(t, "stdio_tool")
+	defer stopStdio()
+	netFactory, stopNet := newMockStdioServer(t, "net_tool")
+	defer stopNet()
+
+	lister := &stubLister{out: &agents.MCPListOutput{Servers: []agents.MCPServer{
+		{Name: "jira", Command: "unused"},
+		{Name: "http-only", URL: "https://example.com/mcp"},
+	}}}
+
+	mixedFactory := func(ctx context.Context, s agents.MCPServer) (mcp.Transport, func(), error) {
+		if s.Name == "jira" {
+			return stdioFactory(ctx, s)
+		}
+		return netFactory(ctx, s)
+	}
+
+	results, err := DiscoverWorkspaceTools(context.Background(), lister, "auggie", "/ws/path", time.Second, mixedFactory)
+	if err != nil {
+		t.Fatalf("err = %v, want nil", err)
+	}
+	if len(results) != 2 {
+		t.Fatalf("len(results) = %d, want 2 (both stdio and network probed): %+v", len(results), results)
+	}
+
+	byName := map[string]ServerToolsResult{}
+	for _, r := range results {
+		byName[r.Server] = r
+	}
+	if jira, ok := byName["jira"]; !ok || !jira.Reachable {
+		t.Errorf("jira result = %+v, want Reachable=true", jira)
+	}
+	if httpOnly, ok := byName["http-only"]; !ok || !httpOnly.Reachable {
+		t.Errorf("http-only result = %+v, want Reachable=true", httpOnly)
 	}
 }
