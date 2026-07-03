@@ -122,6 +122,11 @@ export const endpoints = {
     shortcuts: (params) => apiUrl("/api/folders/shortcuts") + qs(params),
   },
 
+  /** Global settings (stored in settings.json). */
+  global: {
+    shortcuts: () => apiUrl("/api/global/shortcuts"),
+  },
+
   /** Global server configuration. */
   config: {
     get: (params) => apiUrl("/api/config" + qs(params)),

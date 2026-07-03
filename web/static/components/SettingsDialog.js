@@ -46,6 +46,7 @@ import {
   ShieldIcon,
   SearchIcon,
   LayersIcon,
+  KeyboardIcon,
 } from "./Icons.js";
 import { AgentDiscoveryDialog } from "./AgentDiscoveryDialog.js";
 import { Modal } from "./Modal.js";
@@ -53,6 +54,32 @@ import { ModelSelection } from "./ModelSelection.js";
 import { ModelProfileSelect } from "./ModelProfileSelect.js";
 import { RichSelect } from "./RichSelect.js";
 import { Tooltip } from "./Tooltip.js";
+import { ShortcutsEditor } from "./ShortcutsEditor.js";
+import { promptMenuIncludes } from "../utils/prompts.js";
+
+// Section descriptors for the global Shortcuts tab. Section IDs match those used
+// by the folder-level editor and the render-time toolbars; each maps to the
+// prompt menu whose prompts are offered for that section.
+const GLOBAL_SHORTCUT_SECTIONS = [
+  {
+    id: "tasksList",
+    label: "Tasks list",
+    desc: "Buttons shown in every Tasks list toolbar.",
+    menu: "beadsList",
+  },
+  {
+    id: "conversations",
+    label: "Conversation",
+    desc: "Buttons shown in every conversation toolbar; run in the current conversation.",
+    menu: "prompts",
+  },
+  {
+    id: "beadsIssue",
+    label: "Beads issue",
+    desc: "Buttons shown in every beads issue detail toolbar; start a new conversation for the issue.",
+    menu: "beadsIssues",
+  },
+];
 
 // Import constants
 import { CYCLING_MODE, CYCLING_MODE_OPTIONS } from "../constants.js";
@@ -1119,6 +1146,115 @@ export function SettingsDialog({
   // Agent discovery dialog (triggered from Servers tab)
   const [showDiscoverAgents, setShowDiscoverAgents] = useState(false);
 
+  // ------ Global Shortcuts tab state ------------------------------------------
+  // Global shortcut buttons stored in settings.json, keyed by section ID. These
+  // are merged with folder-level shortcuts at render time.
+  const [shortcutsSections, setShortcutsSections] = useState({});
+  // Per-section available prompts, filtered by the section's menu tag.
+  const [shortcutsSectionPrompts, setShortcutsSectionPrompts] = useState({});
+  const [shortcutsLoading, setShortcutsLoading] = useState(false);
+  const [shortcutsLoaded, setShortcutsLoaded] = useState(false);
+  const [shortcutsError, setShortcutsError] = useState("");
+
+  // Lazily load global shortcuts (and the global prompt list) when the Shortcuts
+  // tab is first opened. Guarded by shortcutsLoaded so we only persist on Save
+  // when we actually hold the authoritative state (never wipe an untouched tab).
+  useEffect(() => {
+    if (!isOpen || activeTab !== "shortcuts" || shortcutsLoaded) return;
+    setShortcutsLoading(true);
+    setShortcutsError("");
+    authFetch(endpoints.global.shortcuts())
+      .then((r) => r.json())
+      .then((data) => {
+        setShortcutsSections(data.sections || {});
+        const all = data.prompts || [];
+        const byMenu = (menu) =>
+          all
+            .filter((p) => promptMenuIncludes(p, menu))
+            .sort((a, b) => a.name.localeCompare(b.name));
+        const perSection = {};
+        for (const { id, menu } of GLOBAL_SHORTCUT_SECTIONS) {
+          perSection[id] = byMenu(menu);
+        }
+        setShortcutsSectionPrompts(perSection);
+        setShortcutsLoaded(true);
+      })
+      .catch((err) =>
+        setShortcutsError("Failed to load shortcuts: " + err.message),
+      )
+      .finally(() => setShortcutsLoading(false));
+  }, [isOpen, activeTab, shortcutsLoaded]);
+
+  // Reset the loaded flag when the dialog closes so a reopen fetches fresh data.
+  useEffect(() => {
+    if (!isOpen) {
+      setShortcutsLoaded(false);
+      setShortcutsSections({});
+      setShortcutsSectionPrompts({});
+    }
+  }, [isOpen]);
+
+  // ------ Global Shortcuts row helpers (mirror the folder-level editor) --------
+  const addShortcutRow = (section) => {
+    const available = shortcutsSectionPrompts[section] || [];
+    const defaultPrompt = available.length > 0 ? available[0].name : "";
+    setShortcutsSections((prev) => {
+      const list = [...(prev[section] || [])];
+      if (list.length >= 10) return prev;
+      list.push({ icon: "", prompt: defaultPrompt });
+      return { ...prev, [section]: list };
+    });
+  };
+  const updateShortcutRow = (section, idx, patch) => {
+    setShortcutsSections((prev) => {
+      const list = [...(prev[section] || [])];
+      list[idx] = { ...list[idx], ...patch };
+      return { ...prev, [section]: list };
+    });
+  };
+  const removeShortcutRow = (section, idx) => {
+    setShortcutsSections((prev) => {
+      const list = [...(prev[section] || [])];
+      list.splice(idx, 1);
+      return { ...prev, [section]: list };
+    });
+  };
+  const moveShortcutRow = (section, idx, dir) => {
+    setShortcutsSections((prev) => {
+      const list = [...(prev[section] || [])];
+      const target = idx + dir;
+      if (target < 0 || target >= list.length) return prev;
+      [list[idx], list[target]] = [list[target], list[idx]];
+      return { ...prev, [section]: list };
+    });
+  };
+
+  // Persist global shortcuts via PUT /api/global/shortcuts. Only invoked from
+  // handleSave when the tab was loaded (so an untouched tab never wipes them).
+  const persistGlobalShortcuts = async () => {
+    if (!shortcutsLoaded) return;
+    const sections = {};
+    for (const { id } of GLOBAL_SHORTCUT_SECTIONS) {
+      sections[id] = (shortcutsSections[id] || [])
+        .filter((r) => r.prompt)
+        .slice(0, 10);
+    }
+    const res = await secureFetch(endpoints.global.shortcuts(), {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ sections }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok)
+      throw new Error(
+        errorMessageFromData(data, "Failed to save global shortcuts"),
+      );
+    setShortcutsSections(data.sections || {});
+    // Notify open Tasks lists / conversation toolbars so their merged shortcut
+    // buttons refresh immediately, without a full page reload.
+    window.dispatchEvent(new CustomEvent("mitto:global_shortcuts_updated"));
+  };
+
   // Configuration state
   const [workspaces, setWorkspaces] = useState([]);
   const [acpServers, setAcpServers] = useState([]);
@@ -2059,6 +2195,10 @@ export function SettingsDialog({
       // Config changed on disk — invalidate cache so next read is fresh.
       invalidateConfigCache();
 
+      // Persist global shortcuts (dedicated endpoint; no-op if the Shortcuts tab
+      // was never opened). Runs after the main config save so its write wins.
+      await persistGlobalShortcuts();
+
       // Update the global sound and notification setting flags
       if (isMacApp) {
         window.mittoAgentCompletedSoundEnabled = agentCompletedSound;
@@ -2405,6 +2545,7 @@ export function SettingsDialog({
     { id: "web", label: "Web", icon: GlobeIcon },
     { id: "mcp", label: "MCP", icon: LightningIcon },
     { id: "ui", label: "UI", icon: SlidersIcon },
+    { id: "shortcuts", label: "Shortcuts", icon: KeyboardIcon },
   ];
 
   return html`
@@ -4691,6 +4832,29 @@ export function SettingsDialog({
                         </div>
                       </div>
                     `}
+                  </div>
+                `}
+
+                <!-- Shortcuts Tab -->
+                ${activeTab === "shortcuts" &&
+                html`
+                  <div class="space-y-4">
+                    <p class="text-mitto-text-muted text-sm">
+                      Global shortcut buttons appear across every workspace.
+                      They are merged with any per-folder shortcuts (configured
+                      in the Workspaces dialog); global buttons appear first.
+                    </p>
+                    <${ShortcutsEditor}
+                      sections=${GLOBAL_SHORTCUT_SECTIONS}
+                      shortcutsSections=${shortcutsSections}
+                      sectionPrompts=${shortcutsSectionPrompts}
+                      loading=${shortcutsLoading}
+                      error=${shortcutsError}
+                      onAdd=${addShortcutRow}
+                      onUpdate=${updateShortcutRow}
+                      onRemove=${removeShortcutRow}
+                      onMove=${moveShortcutRow}
+                    />
                   </div>
                 `}
 

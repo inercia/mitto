@@ -856,11 +856,23 @@ export function BeadsDetailPanel({
         return;
       }
       try {
-        const res = await authFetch(
-          endpoints.folders.shortcuts({ working_dir: workingDir }),
-        );
-        const cfg = await res.json().catch(() => ({}));
-        const list = cfg?.sections?.beadsIssue || [];
+        // Merge global + folder shortcuts for the beadsIssue section. Global
+        // buttons come first; folder buttons duplicating a global prompt drop out.
+        const [folderRes, globalRes] = await Promise.all([
+          authFetch(endpoints.folders.shortcuts({ working_dir: workingDir })),
+          authFetch(endpoints.global.shortcuts()).catch(() => null),
+        ]);
+        const cfg = await folderRes.json().catch(() => ({}));
+        const globalData = globalRes
+          ? await globalRes.json().catch(() => ({}))
+          : {};
+        const globalList = globalData?.sections?.beadsIssue || [];
+        const folderList = cfg?.sections?.beadsIssue || [];
+        const globalNames = new Set(globalList.map((s) => s.prompt));
+        const list = [
+          ...globalList,
+          ...folderList.filter((s) => !globalNames.has(s.prompt)),
+        ];
         if (isStale && isStale()) return;
         setIssueShortcuts(list);
         if (list.length > 0 && onFetchPrompts) {
@@ -896,9 +908,17 @@ export function BeadsDetailPanel({
       const dir = e?.detail?.working_dir;
       if (!dir || dir === workingDir) loadIssueShortcuts();
     };
+    // Global shortcuts changes affect every folder, so always refresh.
+    const globalHandler = () => loadIssueShortcuts();
     window.addEventListener("mitto:folder_shortcuts_updated", handler);
-    return () =>
+    window.addEventListener("mitto:global_shortcuts_updated", globalHandler);
+    return () => {
       window.removeEventListener("mitto:folder_shortcuts_updated", handler);
+      window.removeEventListener(
+        "mitto:global_shortcuts_updated",
+        globalHandler,
+      );
+    };
   }, [loadIssueShortcuts, workingDir]);
 
   // The panel context menu is now prompts-only: the former Close/Defer/Delete
@@ -922,7 +942,8 @@ export function BeadsDetailPanel({
 
   // Header action toolbar (view mode). Replaces the former "…" overflow menu and
   // standalone fullscreen button: a prompts trigger, Close/Reopen, Defer/Undefer,
-  // a destructive Delete set apart by a separator, a spacer, then fullscreen.
+  // a destructive Delete set apart by a separator, then the per-folder shortcut
+  // buttons (separated), a spacer, then fullscreen at the right edge.
   const headerToolbarItems = useMemo(() => {
     if (!data) return [];
     // Per-folder shortcut buttons (beadsIssue section). A missing linked prompt
@@ -987,6 +1008,9 @@ export function BeadsDetailPanel({
         danger: true,
         onClick: () => onDelete && onDelete(data),
       },
+      ...(issueShortcuts.length > 0
+        ? [{ kind: "separator" }, ...issueShortcutItems]
+        : []),
       { kind: "spacer" },
       {
         kind: "button",
@@ -998,9 +1022,6 @@ export function BeadsDetailPanel({
         ariaLabel: fullscreen ? "Exit fullscreen" : "Fullscreen",
         onClick: () => setFullscreen((f) => !f),
       },
-      ...(issueShortcuts.length > 0
-        ? [{ kind: "separator" }, ...issueShortcutItems]
-        : []),
     ];
   }, [
     data,
@@ -3175,11 +3196,24 @@ export function BeadsView({
         return;
       }
       try {
-        const res = await authFetch(
-          endpoints.folders.shortcuts({ working_dir: workingDir }),
-        );
-        const data = await res.json().catch(() => ({}));
-        const list = data?.sections?.tasksList || [];
+        // Merge global (settings.json) + folder (folders.json) shortcuts for the
+        // tasksList section. Global buttons come first; folder buttons that
+        // duplicate a global prompt are dropped.
+        const [folderRes, globalRes] = await Promise.all([
+          authFetch(endpoints.folders.shortcuts({ working_dir: workingDir })),
+          authFetch(endpoints.global.shortcuts()).catch(() => null),
+        ]);
+        const folderData = await folderRes.json().catch(() => ({}));
+        const globalData = globalRes
+          ? await globalRes.json().catch(() => ({}))
+          : {};
+        const globalList = globalData?.sections?.tasksList || [];
+        const folderList = folderData?.sections?.tasksList || [];
+        const globalNames = new Set(globalList.map((s) => s.prompt));
+        const list = [
+          ...globalList,
+          ...folderList.filter((s) => !globalNames.has(s.prompt)),
+        ];
         if (isStale && isStale()) return;
         setShortcuts(list);
         if (list.length > 0 && onFetchBeadsListPrompts) {
@@ -3215,9 +3249,17 @@ export function BeadsView({
       const dir = e?.detail?.working_dir;
       if (!dir || dir === workingDir) loadShortcuts();
     };
+    // Global shortcuts changes affect every folder, so always refresh.
+    const globalHandler = () => loadShortcuts();
     window.addEventListener("mitto:folder_shortcuts_updated", handler);
-    return () =>
+    window.addEventListener("mitto:global_shortcuts_updated", globalHandler);
+    return () => {
       window.removeEventListener("mitto:folder_shortcuts_updated", handler);
+      window.removeEventListener(
+        "mitto:global_shortcuts_updated",
+        globalHandler,
+      );
+    };
   }, [loadShortcuts, workingDir]);
 
   // Auto-refresh the issue list when the backend fsnotify watcher reports

@@ -57,8 +57,28 @@ import {
 import { ModelProfileSelect } from "./ModelProfileSelect.js";
 import { ModelTagSelect } from "./ModelTagSelect.js";
 import { Tooltip } from "./Tooltip.js";
-import { IconPicker } from "./IconPicker.js";
+import { ShortcutsEditor } from "./ShortcutsEditor.js";
 import { promptMenuIncludes } from "../utils/prompts.js";
+
+// Section descriptors for the folder Shortcuts tab. Section IDs match those
+// persisted on the server (folders.json) and used by the render-time toolbars.
+const SHORTCUT_SECTIONS = [
+  {
+    id: "tasksList",
+    label: "Tasks list",
+    desc: "Buttons shown in the Tasks list toolbar.",
+  },
+  {
+    id: "conversations",
+    label: "Conversation",
+    desc: "Buttons shown in the conversation toolbar; run in the current conversation.",
+  },
+  {
+    id: "beadsIssue",
+    label: "Beads issue",
+    desc: "Buttons shown in the beads issue detail toolbar; start a new conversation for the issue.",
+  },
+];
 
 // Flatten the canonical nested error envelope {error:{code,message,details}} to a
 // flat message string. Returns "" when there is no error. Also accepts the legacy
@@ -297,6 +317,10 @@ export function WorkspacesDialog({
     conversations: [],
     beadsIssue: [],
   });
+  // Global shortcut sections (from settings.json). Used only to derive which
+  // prompts are already configured globally so they can be excluded from the
+  // folder-level dropdowns and any duplicate folder rows greyed out.
+  const [globalShortcutsSections, setGlobalShortcutsSections] = useState({});
 
   // Folder beads config state (for the Beads Config tab) — UI wrapper over `bd config`.
   // beadsConfig holds the raw {key: value} map last loaded from the server.
@@ -677,6 +701,12 @@ export function WorkspacesDialog({
       authFetch(endpoints.folders.shortcuts({ working_dir: workingDir }))
         .then((r) => r.json())
         .then((data) => setShortcutsSections(data.sections || {})),
+      // Global shortcuts: prompts already configured here are excluded from the
+      // folder dropdowns (and any duplicate folder rows are greyed out).
+      authFetch(endpoints.global.shortcuts())
+        .then((r) => r.json())
+        .then((data) => setGlobalShortcutsSections(data.sections || {}))
+        .catch(() => setGlobalShortcutsSections({})),
       authFetch(
         endpoints.workspacePrompts.list({
           working_dir: workingDir,
@@ -692,7 +722,7 @@ export function WorkspacesDialog({
               .sort((a, b) => a.name.localeCompare(b.name));
           setSectionPrompts({
             tasksList: byMenu("beadsList"),
-            conversations: byMenu("conversation"),
+            conversations: byMenu("prompts"),
             beadsIssue: byMenu("beadsIssues"),
           });
         }),
@@ -1991,13 +2021,18 @@ export function WorkspacesDialog({
     });
   };
 
-  // Append a new empty row to the given section.
+  // Append a new row to the given section, seeded with sensible defaults so it
+  // renders as a complete, usable shortcut right away.
   const addShortcutRow = (section) => {
+    // Default the prompt to the first available prompt for this section (if any)
+    // so the row is immediately editable rather than showing an empty selector.
+    const available = sectionPrompts[section] || [];
+    const defaultPrompt = available.length > 0 ? available[0].name : "";
     setShortcutsSections((prev) => {
       const list = [...(prev[section] || [])];
       if (list.length >= 10) return prev;
       // Empty icon → fall back to the linked prompt's own icon at render time.
-      list.push({ icon: "", prompt: "" });
+      list.push({ icon: "", prompt: defaultPrompt });
       return { ...prev, [section]: list };
     });
   };
@@ -2035,6 +2070,21 @@ export function WorkspacesDialog({
       }),
     );
   };
+
+  // Per-section set of prompt names configured at the GLOBAL level. Folder rows
+  // referencing these are greyed out and the prompts are excluded from the
+  // folder-level dropdowns (they are already shown via the global shortcuts).
+  const shortcutRedundantPromptNames = useMemo(() => {
+    const out = {};
+    for (const { id } of SHORTCUT_SECTIONS) {
+      out[id] = new Set(
+        (globalShortcutsSections[id] || [])
+          .map((r) => r.prompt)
+          .filter(Boolean),
+      );
+    }
+    return out;
+  }, [globalShortcutsSections]);
 
   // ---------------------------------------------------------------------------
 
@@ -4035,176 +4085,18 @@ export function WorkspacesDialog({
                     ${activeTab === "shortcuts" &&
                     html`
                       <div class="space-y-4">
-                        ${shortcutsLoading
-                          ? html`<div
-                              class="flex items-center justify-center p-4"
-                            >
-                              <${SpinnerIcon}
-                                className="w-5 h-5 animate-spin"
-                              />
-                            </div>`
-                          : html`
-                              <div class="space-y-4">
-                                ${[
-                                  {
-                                    id: "tasksList",
-                                    label: "Tasks list",
-                                    desc: "Buttons shown in the Tasks list toolbar.",
-                                  },
-                                  {
-                                    id: "conversations",
-                                    label: "Conversation",
-                                    desc: "Buttons shown in the conversation toolbar; run in the current conversation.",
-                                  },
-                                  {
-                                    id: "beadsIssue",
-                                    label: "Beads issue",
-                                    desc: "Buttons shown in the beads issue detail toolbar; start a new conversation for the issue.",
-                                  },
-                                ].map(({ id: section, label, desc }) => {
-                                  const rows = shortcutsSections[section] || [];
-                                  const prompts = sectionPrompts[section] || [];
-                                  return html`
-                                    <fieldset
-                                      key=${section}
-                                      class="fieldset pt-2"
-                                    >
-                                      <legend class="fieldset-legend">
-                                        ${label}
-                                      </legend>
-                                      <p
-                                        class="text-sm text-mitto-text-muted mb-3"
-                                      >
-                                        ${desc}
-                                      </p>
-
-                                      <div
-                                        class="space-y-2"
-                                        data-testid="shortcut-rows-${section}"
-                                      >
-                                        ${rows.map((row, idx) => {
-                                          const linkedPrompt = prompts.find(
-                                            (p) => p.name === row.prompt,
-                                          );
-                                          return html`
-                                            <div
-                                              key=${idx}
-                                              class="join w-full"
-                                              data-testid="shortcut-row-${section}-${idx}"
-                                            >
-                                              <${IconPicker}
-                                                value=${row.icon}
-                                                defaultIconName=${linkedPrompt?.icon ||
-                                                ""}
-                                                className="join-item border-mitto-border"
-                                                onChange=${(name) =>
-                                                  updateShortcutRow(
-                                                    section,
-                                                    idx,
-                                                    { icon: name },
-                                                  )}
-                                              />
-                                              <select
-                                                class="select select-sm join-item flex-1"
-                                                value=${row.prompt}
-                                                onChange=${(e) =>
-                                                  updateShortcutRow(
-                                                    section,
-                                                    idx,
-                                                    { prompt: e.target.value },
-                                                  )}
-                                              >
-                                                <option value="">
-                                                  Select a prompt…
-                                                </option>
-                                                ${prompts.map(
-                                                  (p) => html`
-                                                    <option
-                                                      key=${p.name}
-                                                      value=${p.name}
-                                                    >
-                                                      ${p.name}
-                                                    </option>
-                                                  `,
-                                                )}
-                                              </select>
-                                              <button
-                                                type="button"
-                                                class="btn btn-ghost btn-square btn-sm join-item"
-                                                disabled=${idx === 0}
-                                                onClick=${() =>
-                                                  moveShortcutRow(
-                                                    section,
-                                                    idx,
-                                                    -1,
-                                                  )}
-                                                aria-label="Move up"
-                                                title="Move up"
-                                              >
-                                                ↑
-                                              </button>
-                                              <button
-                                                type="button"
-                                                class="btn btn-ghost btn-square btn-sm join-item"
-                                                disabled=${idx ===
-                                                rows.length - 1}
-                                                onClick=${() =>
-                                                  moveShortcutRow(
-                                                    section,
-                                                    idx,
-                                                    1,
-                                                  )}
-                                                aria-label="Move down"
-                                                title="Move down"
-                                              >
-                                                ↓
-                                              </button>
-                                              <button
-                                                type="button"
-                                                class="btn btn-ghost btn-square btn-sm join-item text-mitto-danger"
-                                                onClick=${() =>
-                                                  removeShortcutRow(
-                                                    section,
-                                                    idx,
-                                                  )}
-                                                aria-label="Remove"
-                                                title="Remove"
-                                              >
-                                                <${TrashIcon}
-                                                  className="w-4 h-4"
-                                                />
-                                              </button>
-                                            </div>
-                                          `;
-                                        })}
-                                      </div>
-
-                                      <div class="mt-3 flex items-center gap-2">
-                                        <button
-                                          type="button"
-                                          class="btn btn-sm btn-ghost"
-                                          disabled=${rows.length >= 10}
-                                          onClick=${() =>
-                                            addShortcutRow(section)}
-                                          data-testid="shortcut-add-${section}"
-                                        >
-                                          + Add shortcut
-                                        </button>
-                                        ${rows.length >= 10 &&
-                                        html`<span
-                                          class="text-xs text-mitto-text-muted"
-                                          >Maximum 10</span
-                                        >`}
-                                      </div>
-                                    </fieldset>
-                                  `;
-                                })}
-                                ${shortcutsError &&
-                                html`<p class="text-sm text-mitto-danger">
-                                  ${shortcutsError}
-                                </p>`}
-                              </div>
-                            `}
+                        <${ShortcutsEditor}
+                          sections=${SHORTCUT_SECTIONS}
+                          shortcutsSections=${shortcutsSections}
+                          sectionPrompts=${sectionPrompts}
+                          loading=${shortcutsLoading}
+                          error=${shortcutsError}
+                          redundantPromptNames=${shortcutRedundantPromptNames}
+                          onAdd=${addShortcutRow}
+                          onUpdate=${updateShortcutRow}
+                          onRemove=${removeShortcutRow}
+                          onMove=${moveShortcutRow}
+                        />
                       </div>
                     `}
 

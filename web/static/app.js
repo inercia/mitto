@@ -2289,8 +2289,7 @@ function App() {
       };
     }
     // Loop is disabled — check the reason for stopped vs paused distinction
-    const entry =
-      LOOP_STOPPED_LABELS[activeSession?.loop_stopped_reason];
+    const entry = LOOP_STOPPED_LABELS[activeSession?.loop_stopped_reason];
     if (entry && entry.kind === "stopped") {
       return {
         state: "stopped",
@@ -2314,8 +2313,7 @@ function App() {
   })();
   // Keep backwards-compat references used by cap-highlight logic below
   const headerStoppedReason =
-    (activeSession?.loop_configured &&
-      activeSession?.loop_stopped_reason) ||
+    (activeSession?.loop_configured && activeSession?.loop_stopped_reason) ||
     null;
 
   // Loop "glance" badges shown in the subtitle for ALL loop sessions
@@ -2324,8 +2322,7 @@ function App() {
   const headerIterationCount = activeSession?.loop_iteration_count ?? 0;
   const headerMaxIterations = activeSession?.loop_max_iterations ?? 0;
   const headerDelaySeconds = activeSession?.loop_delay_seconds ?? 0;
-  const headerMaxDurationSecs =
-    activeSession?.loop_max_duration_seconds ?? 0;
+  const headerMaxDurationSecs = activeSession?.loop_max_duration_seconds ?? 0;
 
   // Trigger badge: "every 2h" for schedule, "after agent finishes [· +Ns]" for
   // onCompletion, "on task changes" for onTasks (mitto-oja.4).
@@ -2454,7 +2451,9 @@ function App() {
   // "Properties" is intentionally omitted — the Session-details side-panel
   // toggle already covers it. The toggle carries an active state while the
   // panel is open.
-  const conversationHasFlush = !!(sessionInfo && sessionInfo.context_flush_command);
+  const conversationHasFlush = !!(
+    sessionInfo && sessionInfo.context_flush_command
+  );
   // Linked beads issue for the right-aligned toolbar button. The button is
   // disabled when the conversation has no linked issue; the badge dot color
   // reflects the fetched status (see headerBeadsStatus above). Dot colors use
@@ -2471,12 +2470,10 @@ function App() {
 
   // Per-folder shortcut buttons configured for this folder's `conversations`
   // section (mirrors the `tasksList` shortcuts in BeadsView.js). Each button
-  // runs a `conversation`-menu prompt in the active conversation. A missing/
-  // renamed linked prompt renders disabled rather than erroring.
+  // runs a `prompts`/`conversation`-menu prompt in the active conversation. A
+  // missing/renamed linked prompt renders disabled rather than erroring.
   const [convShortcuts, setConvShortcuts] = useState([]);
-  const [convShortcutPromptMap, setConvShortcutPromptMap] = useState(
-    new Map(),
-  );
+  const [convShortcutPromptMap, setConvShortcutPromptMap] = useState(new Map());
 
   const loadConvShortcuts = useCallback(
     async (isStale) => {
@@ -2488,15 +2485,32 @@ function App() {
         return;
       }
       try {
-        const res = await authFetch(
-          endpoints.folders.shortcuts({ working_dir: wd }),
-        );
-        const data = await res.json().catch(() => ({}));
-        const list = data?.sections?.conversations || [];
+        // Merge global + folder shortcuts for the conversations section. Global
+        // buttons come first; folder buttons duplicating a global prompt drop out.
+        const [folderRes, globalRes] = await Promise.all([
+          authFetch(endpoints.folders.shortcuts({ working_dir: wd })),
+          authFetch(endpoints.global.shortcuts()).catch(() => null),
+        ]);
+        const data = await folderRes.json().catch(() => ({}));
+        const globalData = globalRes
+          ? await globalRes.json().catch(() => ({}))
+          : {};
+        const globalList = globalData?.sections?.conversations || [];
+        const folderList = data?.sections?.conversations || [];
+        const globalNames = new Set(globalList.map((s) => s.prompt));
+        const list = [
+          ...globalList,
+          ...folderList.filter((s) => !globalNames.has(s.prompt)),
+        ];
         if (isStale && isStale()) return;
         setConvShortcuts(list);
         if (list.length > 0) {
-          const prompts = await fetchConversationPromptsForSession(sess, wd);
+          // Resolve against the union of the `prompts` (ChatInput dropup) and
+          // `conversation` menus so buttons configured from either list run.
+          const prompts = await fetchConversationPromptsForSession(sess, wd, [
+            "prompts",
+            "conversation",
+          ]);
           if (isStale && isStale()) return;
           const map = new Map((prompts || []).map((p) => [p.name, p]));
           setConvShortcutPromptMap(map);
@@ -2534,9 +2548,17 @@ function App() {
       const dir = e?.detail?.working_dir;
       if (!dir || dir === sessionInfo?.working_dir) loadConvShortcuts();
     };
+    // Global shortcuts changes affect every folder, so always refresh.
+    const globalHandler = () => loadConvShortcuts();
     window.addEventListener("mitto:folder_shortcuts_updated", handler);
-    return () =>
+    window.addEventListener("mitto:global_shortcuts_updated", globalHandler);
+    return () => {
       window.removeEventListener("mitto:folder_shortcuts_updated", handler);
+      window.removeEventListener(
+        "mitto:global_shortcuts_updated",
+        globalHandler,
+      );
+    };
   }, [loadConvShortcuts, sessionInfo?.working_dir]);
 
   // Shortcut items for the conversation toolbar (mirrors shortcutItems in
@@ -2918,115 +2940,112 @@ function App() {
 
         <!-- Main content area: beads view or conversation -->
         ${mainView === "beads" && beadsWorkingDir
-            ? html`
+          ? html`
+              <div
+                class="flex-1 flex flex-col min-w-0 overflow-hidden bg-mitto-bg"
+              >
+                <${BeadsView}
+                  workingDir=${beadsWorkingDir}
+                  onClose=${() => setMainView("conversation")}
+                  showToast=${showToast}
+                  dismissToast=${dismissToast}
+                  onFetchBeadsPrompts=${fetchBeadsPromptsForWorkspace}
+                  onRunBeadsPrompt=${handleRunBeadsPrompt}
+                  onFetchBeadsListPrompts=${fetchBeadsListPromptsForWorkspace}
+                  onRunBeadsListPrompt=${handleRunBeadsListPrompt}
+                  onShowSidebar=${() => setShowSidebar(true)}
+                  onOpenConfig=${window.mittoIsExternal === true
+                    ? undefined
+                    : () =>
+                        handleShowWorkspacesForFolder(beadsWorkingDir, "beads")}
+                  issueSessionMap=${beadsIssueSessionMap}
+                  issueStreamingSet=${beadsIssueStreamingSet}
+                  onOpenConversation=${handleSelectSession}
+                  onLaunchPrompt=${handleBeadsLaunchPrompt}
+                  initialCreateNonce=${beadsCreateNonce}
+                  initialRefreshNonce=${beadsRefreshNonce}
+                  initialCleanupNonce=${beadsCleanupNonce}
+                />
+              </div>
+            `
+          : html`
+              <div
+                ref=${mainContentRef}
+                class="flex-1 flex flex-col min-w-0 overflow-hidden"
+              >
+                <!-- Header -->
                 <div
-                  class="flex-1 flex flex-col min-w-0 overflow-hidden bg-mitto-bg"
+                  class="relative pt-4 px-4 pb-2 bg-mitto-sidebar flex items-center gap-3 shrink-0"
                 >
-                  <${BeadsView}
-                    workingDir=${beadsWorkingDir}
-                    onClose=${() => setMainView("conversation")}
-                    showToast=${showToast}
-                    dismissToast=${dismissToast}
-                    onFetchBeadsPrompts=${fetchBeadsPromptsForWorkspace}
-                    onRunBeadsPrompt=${handleRunBeadsPrompt}
-                    onFetchBeadsListPrompts=${fetchBeadsListPromptsForWorkspace}
-                    onRunBeadsListPrompt=${handleRunBeadsListPrompt}
-                    onShowSidebar=${() => setShowSidebar(true)}
-                    onOpenConfig=${window.mittoIsExternal === true
-                      ? undefined
-                      : () =>
-                          handleShowWorkspacesForFolder(
-                            beadsWorkingDir,
-                            "beads",
-                          )}
-                    issueSessionMap=${beadsIssueSessionMap}
-                    issueStreamingSet=${beadsIssueStreamingSet}
-                    onOpenConversation=${handleSelectSession}
-                    onLaunchPrompt=${handleBeadsLaunchPrompt}
-                    initialCreateNonce=${beadsCreateNonce}
-                    initialRefreshNonce=${beadsRefreshNonce}
-                    initialCleanupNonce=${beadsCleanupNonce}
-                  />
-                </div>
-              `
-            : html`
-                <div
-                  ref=${mainContentRef}
-                  class="flex-1 flex flex-col min-w-0 overflow-hidden"
-                >
-                  <!-- Header -->
-                  <div
-                    class="relative pt-4 px-4 pb-2 bg-mitto-sidebar flex items-center gap-3 shrink-0"
+                  <${Tooltip}
+                    tip="Show conversations"
+                    placement="bottom"
+                    className="md:hidden"
                   >
-                    <${Tooltip}
-                      tip="Show conversations"
-                      placement="bottom"
-                      className="md:hidden"
+                    <button
+                      class="p-2 hover:bg-mitto-surface-hover rounded-lg transition-colors"
+                      onClick=${() => setShowSidebar(true)}
+                      aria-label="Show conversations"
                     >
-                      <button
-                        class="p-2 hover:bg-mitto-surface-hover rounded-lg transition-colors"
-                        onClick=${() => setShowSidebar(true)}
-                        aria-label="Show conversations"
-                      >
-                        <${MenuIcon} className="w-6 h-6" />
-                      </button>
-                    <//>
-                    <div class="flex-1 min-w-0 flex flex-col justify-center">
-                      <h1
-                        class="font-bold text-xl truncate no-underline tooltip tooltip-bottom ${!activeSessionId
-                          ? "text-mitto-text-muted"
-                          : connected
-                            ? ""
-                            : "text-mitto-text-muted"}"
-                        data-tip=${activeSessionId
-                          ? sessionInfo?.name || "New conversation"
-                          : ""}
-                        aria-label=${activeSessionId
-                          ? sessionInfo?.name || "New conversation"
-                          : ""}
-                      >
-                        ${activeSessionId
-                          ? sessionInfo?.name || "New conversation"
-                          : "No Active Session"}
-                      </h1>
-                      ${activeSessionId &&
-                      (headerAcpServer ||
-                        headerNextScheduledAt ||
-                        headerLoopState ||
-                        activeSession?.loop_configured) &&
-                      html`<div
-                        class="text-xs text-mitto-text-muted truncate flex items-center gap-2 min-w-0"
-                        data-testid="conversation-header-subtitle"
-                      >
-                        ${headerLoopState &&
-                        html`<span
-                          class="badge badge-sm ${headerLoopState.badgeClass} whitespace-nowrap inline-flex items-center gap-1"
-                          data-testid="loop-status-pill"
-                          title=${headerLoopState.state === "running"
-                            ? "Loop loop is iterating"
-                            : (activeSession?.loop_stopped_reason || "") +
-                              (activeSession?.stopped_at
-                                ? " · " +
-                                  new Date(
-                                    activeSession.stopped_at,
-                                  ).toLocaleString()
-                                : "")}
-                          >${headerLoopState.state === "running"
-                            ? html`<${LoopIcon} className="w-3 h-3" />`
-                            : headerLoopState.state === "stopped"
-                              ? html`<${StopIcon} className="w-3 h-3" />`
-                              : html`<${PauseFilledIcon}
-                                  className="w-3 h-3"
-                                />`}<span class="badge-collapse-label"
-                            >${headerLoopState.label}</span
-                          ></span
-                        >`}
-                        ${headerAcpServer &&
-                        html`<span class="truncate min-w-0"
-                          >${headerAcpServer}</span
-                        >`}
-                        ${headerTriggerLabel &&
-                        html`<${Fragment}>
+                      <${MenuIcon} className="w-6 h-6" />
+                    </button>
+                  <//>
+                  <div class="flex-1 min-w-0 flex flex-col justify-center">
+                    <h1
+                      class="font-bold text-xl truncate no-underline tooltip tooltip-bottom ${!activeSessionId
+                        ? "text-mitto-text-muted"
+                        : connected
+                          ? ""
+                          : "text-mitto-text-muted"}"
+                      data-tip=${activeSessionId
+                        ? sessionInfo?.name || "New conversation"
+                        : ""}
+                      aria-label=${activeSessionId
+                        ? sessionInfo?.name || "New conversation"
+                        : ""}
+                    >
+                      ${activeSessionId
+                        ? sessionInfo?.name || "New conversation"
+                        : "No Active Session"}
+                    </h1>
+                    ${activeSessionId &&
+                    (headerAcpServer ||
+                      headerNextScheduledAt ||
+                      headerLoopState ||
+                      activeSession?.loop_configured) &&
+                    html`<div
+                      class="text-xs text-mitto-text-muted truncate flex items-center gap-2 min-w-0"
+                      data-testid="conversation-header-subtitle"
+                    >
+                      ${headerLoopState &&
+                      html`<span
+                        class="badge badge-sm ${headerLoopState.badgeClass} whitespace-nowrap inline-flex items-center gap-1"
+                        data-testid="loop-status-pill"
+                        title=${headerLoopState.state === "running"
+                          ? "Loop loop is iterating"
+                          : (activeSession?.loop_stopped_reason || "") +
+                            (activeSession?.stopped_at
+                              ? " · " +
+                                new Date(
+                                  activeSession.stopped_at,
+                                ).toLocaleString()
+                              : "")}
+                        >${headerLoopState.state === "running"
+                          ? html`<${LoopIcon} className="w-3 h-3" />`
+                          : headerLoopState.state === "stopped"
+                            ? html`<${StopIcon} className="w-3 h-3" />`
+                            : html`<${PauseFilledIcon}
+                                className="w-3 h-3"
+                              />`}<span class="badge-collapse-label"
+                          >${headerLoopState.label}</span
+                        ></span
+                      >`}
+                      ${headerAcpServer &&
+                      html`<span class="truncate min-w-0"
+                        >${headerAcpServer}</span
+                      >`}
+                      ${headerTriggerLabel &&
+                      html`<${Fragment}>
                 <span class="opacity-60">·</span>
                 <span
                   class="badge badge-sm badge-ghost whitespace-nowrap inline-flex items-center gap-1"
@@ -3042,8 +3061,8 @@ function App() {
                     >${headerTriggerLabel}</span
                   ></span>
               </${Fragment}>`}
-                        ${headerRunCountLabel !== null &&
-                        html`<${Fragment}>
+                      ${headerRunCountLabel !== null &&
+                      html`<${Fragment}>
                 <span class="opacity-60">·</span>
                 <span
                   class="badge badge-sm ${headerRunCountBadgeClass} whitespace-nowrap"
@@ -3057,8 +3076,8 @@ function App() {
                   ><span class="runcount-short">${headerRunCountLabelShort}</span
                 ></span>
               </${Fragment}>`}
-                        ${headerMaxTimeLabel &&
-                        html`<${Fragment}>
+                      ${headerMaxTimeLabel &&
+                      html`<${Fragment}>
                 <span class="opacity-60">·</span>
                 <span
                   class="badge badge-sm ${headerMaxTimeBadgeClass} whitespace-nowrap"
@@ -3068,9 +3087,9 @@ function App() {
                   }
                 >${headerMaxTimeLabel}</span>
               </${Fragment}>`}
-                        ${headerLoopState?.state === "running" &&
-                        headerNextScheduledAt &&
-                        html`<${Fragment}>
+                      ${headerLoopState?.state === "running" &&
+                      headerNextScheduledAt &&
+                      html`<${Fragment}>
                 ${
                   headerAcpServer ||
                   headerTriggerLabel ||
@@ -3086,246 +3105,239 @@ function App() {
                   className="whitespace-nowrap"
                 />
               </${Fragment}>`}
-                      </div>`}
-                    </div>
+                    </div>`}
                   </div>
+                </div>
 
-                  <!-- Conversation toolbar: the portable Toolbar pill, sitting
+                <!-- Conversation toolbar: the portable Toolbar pill, sitting
                        right below the title header and vertically aligned with
                        the sidebar toolbar (both live in a px-3 wrapper directly
                        under their p-4 header). Holds the actions that used to
                        sit top-right in the header: the "…" conversation-actions
                        menu and the Session-details panel toggle. -->
-                  <div
-                    class="px-3 pb-2 shrink-0"
-                    data-testid="conversation-toolbar"
-                  >
-                    <${Toolbar}
-                      variant="block"
-                      surface="bg-mitto-surface-3"
-                      ariaLabel="Conversation actions"
-                      items=${conversationToolbarItems}
-                    />
+                <div
+                  class="px-3 pb-2 shrink-0"
+                  data-testid="conversation-toolbar"
+                >
+                  <${Toolbar}
+                    variant="block"
+                    surface="bg-mitto-surface-3"
+                    ariaLabel="Conversation actions"
+                    items=${conversationToolbarItems}
+                  />
+                </div>
+                ${headerMenu &&
+                html`
+                  <${ContextMenu}
+                    x=${headerMenu.x}
+                    y=${headerMenu.y}
+                    items=${headerPromptGroupItems}
+                    onClose=${closeHeaderMenu}
+                  />
+                `}
+
+                <!-- Messages wrapper (for positioning scroll-to-bottom button and plan panel) -->
+                <div class="flex-1 relative min-h-0 overflow-hidden">
+                  <!-- Agent Plan Panel (floating overlay at top) -->
+                  <${AgentPlanPanel}
+                    isOpen=${showPlanPanel}
+                    onClose=${handleClosePlanPanel}
+                    onToggle=${handleTogglePlanPanel}
+                    entries=${planEntries}
+                    userPinned=${planUserPinned}
+                  />
+                  <!-- Agent Plan Indicator (shown when panel is collapsed but has entries) -->
+                  ${!showPlanPanel &&
+                  planEntries.length > 0 &&
+                  html`
+                    <div
+                      class="absolute top-2 left-1/2 transform -translate-x-1/2 z-10"
+                    >
+                      <${AgentPlanIndicator}
+                        onClick=${handleTogglePlanPanel}
+                        entries=${planEntries}
+                      />
+                    </div>
+                  `}
+                  <!-- Messages list (scrollable container + scroll-to-bottom button) -->
+                  <${MessageList}
+                    displayMessages=${displayMessages}
+                    messages=${messages}
+                    hasMoreMessages=${hasMoreMessages}
+                    hasReachedLimit=${hasReachedLimit}
+                    isLoadingMore=${isLoadingMore}
+                    isStreaming=${isStreaming}
+                    agentWorking=${agentWorking}
+                    onLoadMore=${handleLoadMore}
+                    onScrollToBottom=${scrollToBottom}
+                    isUserAtBottom=${isUserAtBottom}
+                    hasNewMessages=${hasNewMessages}
+                    sentinelRef=${sentinelRef}
+                    onRetry=${handleSendPrompt}
+                    activeSessionId=${activeSessionId}
+                    swipeDirection=${swipeDirection}
+                    swipeArrow=${swipeArrow}
+                    connected=${connected}
+                    sessionInfo=${sessionInfo}
+                    workspaces=${workspaces}
+                    messagesContainerRef=${messagesContainerRef}
+                  />
+                </div>
+                <!-- End of messages wrapper -->
+
+                <!-- Persistent MCP-unavailable banner (global; survives reconnects). -->
+                ${mcpStatus &&
+                mcpStatus.available === false &&
+                html`
+                  <div class="flex justify-center my-2">
+                    <div
+                      role="alert"
+                      class="alert alert-warning max-w-2xl text-sm py-2"
+                    >
+                      <span>
+                        MCP server
+                        unavailable${mcpStatus.reason === "port_in_use"
+                          ? ` — port ${mcpStatus.port} is already in use (another Mitto instance may be running)`
+                          : mcpStatus.port
+                            ? ` (port ${mcpStatus.port})`
+                            : ""}.
+                        Mitto continues without MCP tools.
+                      </span>
+                    </div>
                   </div>
-                  ${headerMenu &&
-                  html`
-                    <${ContextMenu}
-                      x=${headerMenu.x}
-                      y=${headerMenu.y}
-                      items=${headerPromptGroupItems}
-                      onClose=${closeHeaderMenu}
-                    />
-                  `}
+                `}
 
-                  <!-- Messages wrapper (for positioning scroll-to-bottom button and plan panel) -->
-                  <div class="flex-1 relative min-h-0 overflow-hidden">
-                    <!-- Agent Plan Panel (floating overlay at top) -->
-                    <${AgentPlanPanel}
-                      isOpen=${showPlanPanel}
-                      onClose=${handleClosePlanPanel}
-                      onToggle=${handleTogglePlanPanel}
-                      entries=${planEntries}
-                      userPinned=${planUserPinned}
-                    />
-                    <!-- Agent Plan Indicator (shown when panel is collapsed but has entries) -->
-                    ${!showPlanPanel &&
-                    planEntries.length > 0 &&
-                    html`
-                      <div
-                        class="absolute top-2 left-1/2 transform -translate-x-1/2 z-10"
-                      >
-                        <${AgentPlanIndicator}
-                          onClick=${handleTogglePlanPanel}
-                          entries=${planEntries}
-                        />
-                      </div>
-                    `}
-                    <!-- Messages list (scrollable container + scroll-to-bottom button) -->
-                    <${MessageList}
-                      displayMessages=${displayMessages}
-                      messages=${messages}
-                      hasMoreMessages=${hasMoreMessages}
-                      hasReachedLimit=${hasReachedLimit}
-                      isLoadingMore=${isLoadingMore}
-                      isStreaming=${isStreaming}
-                      agentWorking=${agentWorking}
-                      onLoadMore=${handleLoadMore}
-                      onScrollToBottom=${scrollToBottom}
-                      isUserAtBottom=${isUserAtBottom}
-                      hasNewMessages=${hasNewMessages}
-                      sentinelRef=${sentinelRef}
-                      onRetry=${handleSendPrompt}
-                      activeSessionId=${activeSessionId}
-                      swipeDirection=${swipeDirection}
-                      swipeArrow=${swipeArrow}
-                      connected=${connected}
-                      sessionInfo=${sessionInfo}
-                      workspaces=${workspaces}
-                      messagesContainerRef=${messagesContainerRef}
-                    />
+                <!-- ACP reconnecting banner (shown when ACP not ready and there are messages) -->
+                <!-- Only show when global WS is connected — during shutdown, WS disconnects and we don't want to show this -->
+                <!-- Skip for GC-suspended sessions — they are intentionally paused, not reconnecting -->
+                ${connected &&
+                activeSessionId &&
+                sessionInfo &&
+                !sessionInfo.acp_ready &&
+                !sessionInfo.archived &&
+                !sessionInfo.gc_suspended &&
+                messages.length > 0 &&
+                html`
+                  <div class="flex items-center justify-center py-2 text-sm">
+                    <span class="skeleton skeleton-text skeleton-text-readable"
+                      >Establishing ACP session...</span
+                    >
                   </div>
-                  <!-- End of messages wrapper -->
+                `}
 
-                  <!-- Persistent MCP-unavailable banner (global; survives reconnects). -->
-                  ${mcpStatus &&
-                  mcpStatus.available === false &&
-                  html`
-                    <div class="flex justify-center my-2">
-                      <div
-                        role="alert"
-                        class="alert alert-warning max-w-2xl text-sm py-2"
-                      >
-                        <span>
-                          MCP server
-                          unavailable${mcpStatus.reason === "port_in_use"
-                            ? ` — port ${mcpStatus.port} is already in use (another Mitto instance may be running)`
-                            : mcpStatus.port
-                              ? ` (port ${mcpStatus.port})`
-                              : ""}.
-                          Mitto continues without MCP tools.
-                        </span>
-                      </div>
+                <!-- Archive reason banner (shown when conversation is archived and has a reason) -->
+                <!-- Uses the same balloon style as system messages for visual consistency -->
+                ${sessionInfo?.archived &&
+                sessionInfo?.archive_reason &&
+                html`
+                  <div class="flex justify-center mb-3">
+                    <div
+                      class="text-xs text-mitto-text-muted bg-mitto-surface-2/50 px-3 py-1 rounded-full"
+                    >
+                      ${getArchiveReasonText(
+                        sessionInfo.archive_reason,
+                        sessionInfo.archived_at,
+                      )}
                     </div>
-                  `}
+                  </div>
+                `}
 
-                  <!-- ACP reconnecting banner (shown when ACP not ready and there are messages) -->
-                  <!-- Only show when global WS is connected — during shutdown, WS disconnects and we don't want to show this -->
-                  <!-- Skip for GC-suspended sessions — they are intentionally paused, not reconnecting -->
-                  ${connected &&
-                  activeSessionId &&
-                  sessionInfo &&
-                  !sessionInfo.acp_ready &&
-                  !sessionInfo.archived &&
-                  !sessionInfo.gc_suspended &&
-                  messages.length > 0 &&
-                  html`
-                    <div class="flex items-center justify-center py-2 text-sm">
-                      <span
-                        class="skeleton skeleton-text skeleton-text-readable"
-                        >Establishing ACP session...</span
-                      >
-                    </div>
-                  `}
+                <!-- Input Area Container (relative for QueueDropdown positioning) -->
+                <div class="relative shrink-0">
+                  <!-- Queue Dropdown (floating overlay above input) -->
+                  <${QueueDropdown}
+                    isOpen=${showQueueDropdown}
+                    onClose=${handleCloseQueueDropdown}
+                    messages=${queueMessages}
+                    onDelete=${handleDeleteQueueMessage}
+                    onMove=${handleMoveQueueMessage}
+                    isDeleting=${isDeletingQueueMessage}
+                    isMoving=${isMovingQueueMessage}
+                    queueLength=${queueLength}
+                    maxSize=${queueConfig.max_size}
+                  />
 
-                  <!-- Archive reason banner (shown when conversation is archived and has a reason) -->
-                  <!-- Uses the same balloon style as system messages for visual consistency -->
-                  ${sessionInfo?.archived &&
-                  sessionInfo?.archive_reason &&
-                  html`
-                    <div class="flex justify-center mb-3">
-                      <div
-                        class="text-xs text-mitto-text-muted bg-mitto-surface-2/50 px-3 py-1 rounded-full"
-                      >
-                        ${getArchiveReasonText(
-                          sessionInfo.archive_reason,
-                          sessionInfo.archived_at,
-                        )}
-                      </div>
-                    </div>
-                  `}
-
-                  <!-- Input Area Container (relative for QueueDropdown positioning) -->
-                  <div class="relative shrink-0">
-                    <!-- Queue Dropdown (floating overlay above input) -->
-                    <${QueueDropdown}
-                      isOpen=${showQueueDropdown}
-                      onClose=${handleCloseQueueDropdown}
-                      messages=${queueMessages}
-                      onDelete=${handleDeleteQueueMessage}
-                      onMove=${handleMoveQueueMessage}
-                      isDeleting=${isDeletingQueueMessage}
-                      isMoving=${isMovingQueueMessage}
-                      queueLength=${queueLength}
-                      maxSize=${queueConfig.max_size}
-                    />
-
-                    <!-- Input -->
-                    <${ChatInput}
-                      onSend=${handleSendPrompt}
-                      onCancel=${cancelPrompt}
-                      disabled=${!connected || !activeSessionId}
-                      isStreaming=${isStreaming}
-                      isRunning=${isRunning}
-                      isReadOnly=${sessionInfo?.isReadOnly}
-                      isArchived=${sessionInfo?.archived || false}
-                      predefinedPrompts=${predefinedPrompts}
-                      loopPrompts=${loopPrompts}
-                      hasBeadsWorkspace=${hasBeadsWorkspace}
-                      inputRef=${chatInputRef}
-                      noSession=${!activeSessionId}
-                      sessionId=${activeSessionId}
-                      draft=${currentDraft}
-                      onDraftChange=${updateDraft}
-                      sessionDraftsRef=${sessionDraftsRef}
-                      onPromptsOpen=${handlePromptsOpen}
-                      onConfigurePrompts=${!configReadonly &&
-                      sessionInfo?.working_dir
-                        ? () =>
-                            handleShowWorkspacesForFolder(
-                              sessionInfo.working_dir,
-                              "prompts",
-                            )
-                        : undefined}
-                      queueLength=${queueLength}
-                      queueConfig=${queueConfig}
-                      onAddToQueue=${handleAddToQueue}
-                      onToggleQueue=${handleToggleQueueDropdown}
-                      showQueueDropdown=${showQueueDropdown}
-                      actionButtons=${actionButtons}
-                      availableCommands=${availableCommands}
-                      loopConfigured=${sessionInfo?.loop_configured ||
-                      false}
-                      onLoopPrompt=${(prompt, opts) =>
-                        handleSendPromptToConversation(
-                          activeSession,
-                          prompt,
-                          opts,
-                        )}
-                      onOpenPromptParamDialog=${(
+                  <!-- Input -->
+                  <${ChatInput}
+                    onSend=${handleSendPrompt}
+                    onCancel=${cancelPrompt}
+                    disabled=${!connected || !activeSessionId}
+                    isStreaming=${isStreaming}
+                    isRunning=${isRunning}
+                    isReadOnly=${sessionInfo?.isReadOnly}
+                    isArchived=${sessionInfo?.archived || false}
+                    predefinedPrompts=${predefinedPrompts}
+                    loopPrompts=${loopPrompts}
+                    hasBeadsWorkspace=${hasBeadsWorkspace}
+                    inputRef=${chatInputRef}
+                    noSession=${!activeSessionId}
+                    sessionId=${activeSessionId}
+                    draft=${currentDraft}
+                    onDraftChange=${updateDraft}
+                    sessionDraftsRef=${sessionDraftsRef}
+                    onPromptsOpen=${handlePromptsOpen}
+                    onConfigurePrompts=${!configReadonly &&
+                    sessionInfo?.working_dir
+                      ? () =>
+                          handleShowWorkspacesForFolder(
+                            sessionInfo.working_dir,
+                            "prompts",
+                          )
+                      : undefined}
+                    queueLength=${queueLength}
+                    queueConfig=${queueConfig}
+                    onAddToQueue=${handleAddToQueue}
+                    onToggleQueue=${handleToggleQueueDropdown}
+                    showQueueDropdown=${showQueueDropdown}
+                    actionButtons=${actionButtons}
+                    availableCommands=${availableCommands}
+                    loopConfigured=${sessionInfo?.loop_configured || false}
+                    onLoopPrompt=${(prompt, opts) =>
+                      handleSendPromptToConversation(
+                        activeSession,
+                        prompt,
+                        opts,
+                      )}
+                    onOpenPromptParamDialog=${(
+                      prompt,
+                      parameters,
+                      onSubmit,
+                      opts = {},
+                    ) =>
+                      setPromptParamDialog({
                         prompt,
                         parameters,
                         onSubmit,
-                        opts = {},
-                      ) =>
-                        setPromptParamDialog({
-                          prompt,
-                          parameters,
-                          onSubmit,
-                          initialValues: opts.initialValues,
-                          hostSessionId: opts.hostSessionId,
-                        })}
-                      agentSupportsImages=${sessionInfo?.agent_supports_images ??
-                      false}
-                      acpReady=${connected && sessionInfo
-                        ? (sessionInfo.acp_ready ?? true)
-                        : true}
-                      gcSuspended=${sessionInfo?.gc_suspended || false}
-                      onResume=${() => ensureResumed(activeSessionId)}
-                      activeUIPrompt=${activeUIPrompt}
-                      onUIPromptAnswer=${(
+                        initialValues: opts.initialValues,
+                        hostSessionId: opts.hostSessionId,
+                      })}
+                    agentSupportsImages=${sessionInfo?.agent_supports_images ??
+                    false}
+                    acpReady=${connected && sessionInfo
+                      ? (sessionInfo.acp_ready ?? true)
+                      : true}
+                    gcSuspended=${sessionInfo?.gc_suspended || false}
+                    onResume=${() => ensureResumed(activeSessionId)}
+                    activeUIPrompt=${activeUIPrompt}
+                    onUIPromptAnswer=${(requestId, optionId, label, freeText) =>
+                      sendUIPromptAnswer(
+                        activeSessionId,
                         requestId,
                         optionId,
                         label,
                         freeText,
-                      ) =>
-                        sendUIPromptAnswer(
-                          activeSessionId,
-                          requestId,
-                          optionId,
-                          label,
-                          freeText,
-                        )}
-                      workingDir=${sessionInfo?.working_dir || ""}
-                      sendKeyMode=${sendKeyMode}
-                      configOptions=${configOptions}
-                      onSetConfigOption=${setConfigOption}
-                      modelProfiles=${modelProfiles}
-                      contextUsage=${sessionInfo?.context_usage ?? null}
-                      tokenUsage=${sessionInfo?.usage ?? null}
-                    />
-                  </div>
+                      )}
+                    workingDir=${sessionInfo?.working_dir || ""}
+                    sendKeyMode=${sendKeyMode}
+                    configOptions=${configOptions}
+                    onSetConfigOption=${setConfigOption}
+                    modelProfiles=${modelProfiles}
+                    contextUsage=${sessionInfo?.context_usage ?? null}
+                    tokenUsage=${sessionInfo?.usage ?? null}
+                  />
                 </div>
-              `}
+              </div>
+            `}
 
         <!-- Unified Session Panel: docks to the right edge of drawer-content as a
            confined overlay (Drawer dock mode + styles.css), so it does NOT

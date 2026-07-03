@@ -63,8 +63,7 @@ export function useWorkspacePrompts({
         const menus = promptMenus(p);
         return (
           (menus.includes("prompts") && menuSatisfies(p, "prompts")) ||
-          (menus.includes("promptsLoop") &&
-            menuSatisfies(p, "promptsLoop"))
+          (menus.includes("promptsLoop") && menuSatisfies(p, "promptsLoop"))
         );
       }),
     [workspacePrompts],
@@ -80,7 +79,7 @@ export function useWorkspacePrompts({
   // the backend evaluates `enabledWhen` for that conversation, then keep only the
   // prompts that opt into the conversation menu via `menus`.
   const fetchConversationPromptsForSession = useCallback(
-    async (session, workingDir) => {
+    async (session, workingDir, menus = ["conversation"]) => {
       const sessionId = session?.session_id;
       const dir = workingDir || session?.working_dir;
       if (!sessionId || !dir) return [];
@@ -94,10 +93,13 @@ export function useWorkspacePrompts({
         if (!res.ok) return [];
         const data = await res.json();
         const all = data?.prompts || [];
-        // Parameters that the "conversation" menu cannot auto-fill are collected
-        // via the PromptParameterDialog when the user selects such a prompt
-        // (mitto-hcf.3). No menuSatisfies gate — all params can be user-filled.
-        return all.filter((p) => p && promptMenuIncludes(p, "conversation"));
+        // Keep prompts that opt into ANY of the requested menus. Parameters that
+        // a menu cannot auto-fill are collected via the PromptParameterDialog
+        // when the user selects such a prompt (mitto-hcf.3). No menuSatisfies
+        // gate — all params can be user-filled.
+        return all.filter(
+          (p) => p && menus.some((m) => promptMenuIncludes(p, m)),
+        );
       } catch (err) {
         console.error("Failed to fetch conversation prompts for session:", err);
         return [];
