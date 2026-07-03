@@ -956,7 +956,7 @@ export function BeadsDetailPanel({
         kind: "button",
         testId: `beads-issue-shortcut-btn-${i}`,
         icon: html`<${Icon} className="w-4 h-4" />`,
-        tip: found ? `Run "${sc.prompt}"` : `Prompt "${sc.prompt}" not found`,
+        tip: found ? sc.prompt : `Prompt "${sc.prompt}" not found`,
         ariaLabel: found
           ? `Run "${sc.prompt}"`
           : `Prompt "${sc.prompt}" not found`,
@@ -4507,7 +4507,7 @@ export function BeadsView({
       kind: "button",
       testId: `beads-shortcut-btn-${i}`,
       icon: html`<${Icon} className="w-4 h-4" />`,
-      tip: found ? `Run "${sc.prompt}"` : `Prompt "${sc.prompt}" not found`,
+      tip: found ? sc.prompt : `Prompt "${sc.prompt}" not found`,
       ariaLabel: found
         ? `Run "${sc.prompt}"`
         : `Prompt "${sc.prompt}" not found`,

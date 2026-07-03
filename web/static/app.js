@@ -2572,7 +2572,7 @@ function App() {
       kind: "button",
       testId: `conversation-shortcut-btn-${i}`,
       icon: html`<${Icon} className="w-4 h-4" />`,
-      tip: found ? `Run "${sc.prompt}"` : `Prompt "${sc.prompt}" not found`,
+      tip: found ? sc.prompt : `Prompt "${sc.prompt}" not found`,
       ariaLabel: found
         ? `Run "${sc.prompt}"`
         : `Prompt "${sc.prompt}" not found`,
