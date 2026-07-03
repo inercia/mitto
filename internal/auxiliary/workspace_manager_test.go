@@ -339,3 +339,145 @@ func TestWorkspaceAuxiliaryManager_ClearMCPCheckCache(t *testing.T) {
 		t.Errorf("Expected 2 calls after cache clear, got %d", callCount)
 	}
 }
+
+// =============================================================================
+// applyMCPToolsCachePolicy: last-known-good / two-consecutive-negatives
+// (mitto-sys.6, docs/devel/mcp-tool-discovery.md Q3.1)
+// =============================================================================
+
+// mcpToolNames returns the sorted tool names from a []MCPToolInfo, for
+// concise assertions.
+func mcpToolNames(tools []MCPToolInfo) []string {
+	names := make([]string, len(tools))
+	for i, tool := range tools {
+		names[i] = tool.Name
+	}
+	return names
+}
+
+func assertToolNames(t *testing.T, got []MCPToolInfo, want ...string) {
+	t.Helper()
+	gotNames := mcpToolNames(got)
+	if len(gotNames) != len(want) {
+		t.Fatalf("tool names = %v, want %v", gotNames, want)
+	}
+	for i, name := range want {
+		if gotNames[i] != name {
+			t.Fatalf("tool names = %v, want %v", gotNames, want)
+		}
+	}
+}
+
+func TestApplyMCPToolsCachePolicy_FirstNonEmptyFetchStores(t *testing.T) {
+	mgr := NewWorkspaceAuxiliaryManager(&mockProcessProvider{}, nil)
+
+	got := mgr.applyMCPToolsCachePolicy("ws", []MCPToolInfo{
+		{Name: "jira_create_issue", Description: "create"},
+		{Name: "jira_search", Description: "search"},
+	})
+
+	assertToolNames(t, got, "jira_create_issue", "jira_search")
+	cached, ok := mgr.GetCachedMCPTools("ws")
+	if !ok {
+		t.Fatalf("expected cache entry after first non-empty fetch")
+	}
+	assertToolNames(t, cached, "jira_create_issue", "jira_search")
+}
+
+func TestApplyMCPToolsCachePolicy_FirstEmptyFetchEstablishesNothing(t *testing.T) {
+	mgr := NewWorkspaceAuxiliaryManager(&mockProcessProvider{}, nil)
+
+	got := mgr.applyMCPToolsCachePolicy("ws", nil)
+
+	if got != nil {
+		t.Fatalf("expected nil result for first empty fetch, got %v", got)
+	}
+	if _, ok := mgr.GetCachedMCPTools("ws"); ok {
+		t.Fatalf("expected no cache entry after first empty fetch")
+	}
+}
+
+func TestApplyMCPToolsCachePolicy_OneNegativeRetainsTool(t *testing.T) {
+	mgr := NewWorkspaceAuxiliaryManager(&mockProcessProvider{}, nil)
+
+	mgr.applyMCPToolsCachePolicy("ws", []MCPToolInfo{{Name: "jira_search", Description: "search"}})
+
+	// One empty fetch: the previously-known tool must be retained.
+	got := mgr.applyMCPToolsCachePolicy("ws", nil)
+
+	assertToolNames(t, got, "jira_search")
+}
+
+func TestApplyMCPToolsCachePolicy_TwoConsecutiveNegativesRemove(t *testing.T) {
+	mgr := NewWorkspaceAuxiliaryManager(&mockProcessProvider{}, nil)
+
+	mgr.applyMCPToolsCachePolicy("ws", []MCPToolInfo{{Name: "jira_search", Description: "search"}})
+	mgr.applyMCPToolsCachePolicy("ws", nil) // 1st negative: retained
+
+	got := mgr.applyMCPToolsCachePolicy("ws", nil) // 2nd consecutive negative: removed
+
+	if len(got) != 0 {
+		t.Fatalf("expected tool removed after 2 consecutive negatives, got %v", mcpToolNames(got))
+	}
+	cached, ok := mgr.GetCachedMCPTools("ws")
+	if !ok || len(cached) != 0 {
+		t.Fatalf("expected an empty (but present) cache entry, got ok=%v cached=%v", ok, cached)
+	}
+}
+
+func TestApplyMCPToolsCachePolicy_ReappearanceResetsCounter(t *testing.T) {
+	mgr := NewWorkspaceAuxiliaryManager(&mockProcessProvider{}, nil)
+
+	mgr.applyMCPToolsCachePolicy("ws", []MCPToolInfo{{Name: "jira_search", Description: "search"}})
+	mgr.applyMCPToolsCachePolicy("ws", nil) // 1st negative: retained
+
+	// Tool reappears: counter must reset.
+	got := mgr.applyMCPToolsCachePolicy("ws", []MCPToolInfo{{Name: "jira_search", Description: "search v2"}})
+	assertToolNames(t, got, "jira_search")
+
+	// A single subsequent empty fetch must NOT remove it (counter was reset,
+	// this is only the first negative again).
+	got = mgr.applyMCPToolsCachePolicy("ws", nil)
+	assertToolNames(t, got, "jira_search")
+}
+
+func TestApplyMCPToolsCachePolicy_NewToolAdded(t *testing.T) {
+	mgr := NewWorkspaceAuxiliaryManager(&mockProcessProvider{}, nil)
+
+	mgr.applyMCPToolsCachePolicy("ws", []MCPToolInfo{{Name: "jira_search", Description: "search"}})
+
+	got := mgr.applyMCPToolsCachePolicy("ws", []MCPToolInfo{
+		{Name: "jira_search", Description: "search"},
+		{Name: "jira_create_issue", Description: "create"},
+	})
+
+	assertToolNames(t, got, "jira_create_issue", "jira_search")
+}
+
+func TestApplyMCPToolsCachePolicy_DescriptionRefreshedWhenPresentInFresh(t *testing.T) {
+	mgr := NewWorkspaceAuxiliaryManager(&mockProcessProvider{}, nil)
+
+	mgr.applyMCPToolsCachePolicy("ws", []MCPToolInfo{{Name: "jira_search", Description: "old description"}})
+
+	got := mgr.applyMCPToolsCachePolicy("ws", []MCPToolInfo{{Name: "jira_search", Description: "new description"}})
+
+	if len(got) != 1 || got[0].Description != "new description" {
+		t.Fatalf("expected description refreshed to %q, got %+v", "new description", got)
+	}
+}
+
+func TestApplyMCPToolsCachePolicy_WorkspacesAreIsolated(t *testing.T) {
+	mgr := NewWorkspaceAuxiliaryManager(&mockProcessProvider{}, nil)
+
+	mgr.applyMCPToolsCachePolicy("ws-a", []MCPToolInfo{{Name: "jira_search"}})
+	mgr.applyMCPToolsCachePolicy("ws-b", []MCPToolInfo{{Name: "slack_post"}})
+
+	// A negative fetch for ws-a must not affect ws-b's cache/negatives.
+	mgr.applyMCPToolsCachePolicy("ws-a", nil)
+
+	cachedB, ok := mgr.GetCachedMCPTools("ws-b")
+	if !ok {
+		t.Fatalf("expected ws-b cache entry to remain untouched")
+	}
+	assertToolNames(t, cachedB, "slack_post")
+}

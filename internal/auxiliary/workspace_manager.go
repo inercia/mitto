@@ -51,15 +51,24 @@ type WorkspaceAuxiliaryManager struct {
 	// Cache for MCP tools list per workspace
 	mcpToolsCache   map[string][]MCPToolInfo
 	mcpToolsCacheMu sync.RWMutex
+
+	// mcpToolsNegatives tracks, per workspace and tool name, the number of
+	// consecutive successful-but-negative fetches (the tool was previously
+	// known but absent from the latest fetch). Guarded by mcpToolsCacheMu
+	// (same lock as mcpToolsCache, since applyMCPToolsCachePolicy reads and
+	// writes both together). See docs/devel/mcp-tool-discovery.md (Q3.1):
+	// a tool is only downgraded to absent after 2 consecutive negatives.
+	mcpToolsNegatives map[string]map[string]int
 }
 
 // NewWorkspaceAuxiliaryManager creates a new workspace-scoped auxiliary manager.
 func NewWorkspaceAuxiliaryManager(provider ProcessProvider, logger *slog.Logger) *WorkspaceAuxiliaryManager {
 	return &WorkspaceAuxiliaryManager{
-		provider:      provider,
-		logger:        logger,
-		mcpCheckCache: make(map[string]*MCPAvailabilityResult),
-		mcpToolsCache: make(map[string][]MCPToolInfo),
+		provider:          provider,
+		logger:            logger,
+		mcpCheckCache:     make(map[string]*MCPAvailabilityResult),
+		mcpToolsCache:     make(map[string][]MCPToolInfo),
+		mcpToolsNegatives: make(map[string]map[string]int),
 	}
 }
 
@@ -335,20 +344,90 @@ func (m *WorkspaceAuxiliaryManager) FetchMCPTools(ctx context.Context, workspace
 		return tools[i].Name < tools[j].Name
 	})
 
-	// Only cache non-empty results.
-	if len(tools) > 0 {
-		m.mcpToolsCacheMu.Lock()
-		m.mcpToolsCache[workspaceUUID] = tools
-		m.mcpToolsCacheMu.Unlock()
-	}
+	// Merge into the cache using the last-known-good policy: a previously
+	// observed tool is never downgraded to absent on a single negative
+	// fetch (see applyMCPToolsCachePolicy).
+	merged := m.applyMCPToolsCachePolicy(workspaceUUID, tools)
 
 	if m.logger != nil {
 		m.logger.Info("MCP tools fetch completed",
 			"workspace_uuid", workspaceUUID,
-			"tool_count", len(tools))
+			"tool_count", len(merged))
 	}
 
-	return tools, nil
+	return merged, nil
+}
+
+// applyMCPToolsCachePolicy merges a fresh, successful MCP tools fetch into
+// the per-workspace cache using a last-known-good policy
+// (docs/devel/mcp-tool-discovery.md, Q3.1): a tool observed in a previous
+// fetch is never downgraded to absent on a single negative fetch — removal
+// requires two consecutive independent negative fetches. A tool that
+// reappears in fresh resets its negative counter. Callers must only invoke
+// this for a SUCCESSFUL fetch; errors/timeouts must never count as a negative.
+//
+// fresh is the tool list from the latest successful fetch (may be empty).
+// The merged result is retained-known-tools (refreshed from fresh when
+// present) plus any new fresh tools, sorted alphabetically by Name; it is
+// stored into mcpToolsCache[workspaceUUID] and returned. When there is no
+// prior cache entry and fresh is empty, no entry is created (returns nil,
+// cache left untouched) — an empty first fetch establishes nothing.
+func (m *WorkspaceAuxiliaryManager) applyMCPToolsCachePolicy(workspaceUUID string, fresh []MCPToolInfo) []MCPToolInfo {
+	m.mcpToolsCacheMu.Lock()
+	defer m.mcpToolsCacheMu.Unlock()
+
+	cached, hadCache := m.mcpToolsCache[workspaceUUID]
+	if !hadCache && len(fresh) == 0 {
+		return nil
+	}
+
+	freshByName := make(map[string]MCPToolInfo, len(fresh))
+	for _, tool := range fresh {
+		freshByName[tool.Name] = tool
+	}
+
+	negatives := m.mcpToolsNegatives[workspaceUUID]
+	if negatives == nil {
+		negatives = make(map[string]int)
+	}
+
+	merged := make([]MCPToolInfo, 0, len(cached)+len(fresh))
+	kept := make(map[string]bool, len(cached))
+
+	for _, tool := range cached {
+		if freshTool, ok := freshByName[tool.Name]; ok {
+			delete(negatives, tool.Name)
+			merged = append(merged, freshTool)
+			kept[tool.Name] = true
+			continue
+		}
+		negatives[tool.Name]++
+		if negatives[tool.Name] >= 2 {
+			delete(negatives, tool.Name) // two consecutive negatives: remove
+			continue
+		}
+		merged = append(merged, tool) // last-known-good: retain as-is
+		kept[tool.Name] = true
+	}
+
+	for _, tool := range fresh {
+		if kept[tool.Name] {
+			continue
+		}
+		merged = append(merged, tool)
+		delete(negatives, tool.Name)
+	}
+
+	sort.Slice(merged, func(i, j int) bool { return merged[i].Name < merged[j].Name })
+
+	if len(negatives) > 0 {
+		m.mcpToolsNegatives[workspaceUUID] = negatives
+	} else {
+		delete(m.mcpToolsNegatives, workspaceUUID)
+	}
+	m.mcpToolsCache[workspaceUUID] = merged
+
+	return merged
 }
 
 // ClearMCPToolsCache clears the cached MCP tools list for a workspace.
