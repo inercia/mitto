@@ -117,6 +117,19 @@ Prompts can declare `preferredModels:` to route to specific ACP models. `selectP
 - **Processors**: Always see the real tool list (fail-open is disabled internally)
 - Once tools are fetched, evaluation uses the actual list. Useful for tool-gated prompt/processor gating via `enabledWhen`
 
+## MCP Tool Discovery
+
+Two-tier discovery for `enabledWhen`/CEL `tools.*` gating (see `docs/devel/mcp-tool-discovery.md`):
+1. **Deterministic** (`internal/mcpdiscovery`): connects directly to configured MCP servers (stdio/http/sse) via `modelcontextprotocol/go-sdk` client and calls `tools/list`. Preferred — no LLM involved.
+2. **LLM fallback** (`internal/auxiliary/workspace_manager.go` `fetchMCPToolsViaLLM`): used only when a server can't be reached deterministically. `parseMCPToolsList` (`utils.go`) is **strict**: whole trimmed/unfenced response must be one JSON object with `tools`/`error` keys — no substring or bare-array extraction (that leniency caused false negatives/hallucinated tools). Retries once with a reminder prompt on parse failure or an implausible zero-tools result (checked against the deterministically-known configured server count).
+3. **Disk persistence** (mitto-sys.8): deterministic tool lists survive restarts via `appdir.MCPToolsCacheDir()` (`$MITTO_DIR/mcp-tools-cache`), one JSON snapshot per workspace, 15-min TTL (`persistedMCPTools` + `loadPersistedMCPTools`/`savePersistedMCPTools` in `workspace_manager.go`). The **LLM fallback is never written to disk** — in-memory only. `ClearMCPToolsCache` also deletes the snapshot, forcing re-probe.
+
+**Anti-pattern**: lenient JSON extraction (searching for `{...}` substrings or bare arrays in free-form LLM text) silently accepts malformed/partial answers. Prefer strict whole-response parsing + explicit retry over "try to salvage whatever looks like JSON."
+
+`checkRequiredToolPatterns` (`internal/web/session_ws.go`) no longer runs a blind 30/60/120s `prompts_changed` re-broadcast timer (removed, mitto-sys.12) — it emits one immediate broadcast; late/changed tools surface only via the event-driven watcher and bounded-backoff paths above.
+
+Per-agent `mcp-list.sh` config paths/keys are **not** interchangeable across agents — verify against real docs before writing/trusting one (audit + known-broken scripts: `.augment/rules/42-mcpserver-development.md`).
+
 ## Loop Conversations
 
 **onCompletion trigger** (distinct from schedule-based loop):

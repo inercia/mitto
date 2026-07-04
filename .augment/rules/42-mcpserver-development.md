@@ -137,3 +137,13 @@ if agent.HasCommand(agents.CommandMCPList) {
 ```
 
 API endpoint: `GET /api/workspace-mcp-tools?acp_server=NAME&dir=PATH` (handler in `config_handlers.go`).
+
+**`mcp-list.sh` audit (mitto-sys.11)** — scripts are often copy-pasted from the claude-code template but never repointed at the target agent's real config path/key/shape, so `ListMCPServers` silently returns empty. Verify against actual docs/source when adding or fixing one:
+
+| Agent | Status | Notes |
+|---|---|---|
+| cursor, goose | OK | `~/.cursor/mcp.json`/`mcpServers`; `~/.config/goose/config.yaml`/`extensions` |
+| opencode | BROKEN (mitto-sys.13) | wrong path/key (`mcp` not `mcpServers`), command-as-array, `environment` not `env` |
+| github-copilot | BROKEN (mitto-sys.14) | wrong path: real is `~/.copilot/mcp-config.json` |
+| qwen-code | BROKEN (mitto-sys.15) | wrong path: real is `~/.qwen` |
+| junie | stub (mitto-sys.10) | always returns `{"servers": []}` |
