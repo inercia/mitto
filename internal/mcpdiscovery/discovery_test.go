@@ -374,6 +374,42 @@ func TestDiscoverNetworkServer_AuthRequiredGracefulFailure(t *testing.T) {
 	}
 }
 
+func TestDiscoverNetworkServer_HeaderProtected(t *testing.T) {
+	srv := mcp.NewServer(&mcp.Implementation{Name: "mock", Version: "0"}, nil)
+	mcp.AddTool(srv, &mcp.Tool{Name: "secured_tool", Description: "mock http tool"}, noopToolHandler)
+	mcpHandler := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return srv }, nil)
+
+	const wantAuth = "Bearer test-token" // dummy test token, not a real secret
+	gated := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != wantAuth {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		mcpHandler.ServeHTTP(w, r)
+	})
+	ts := httptest.NewServer(gated)
+	defer ts.Close()
+
+	// Without headers -> gate returns 401 -> unreachable.
+	noHdr := DiscoverNetworkServer(context.Background(), agents.MCPServer{Name: "secured", URL: ts.URL}, 5*time.Second, nil)
+	if noHdr.Reachable {
+		t.Fatalf("without headers: Reachable = true, want false (err=%v)", noHdr.Err)
+	}
+
+	// With correct headers -> gate passes -> reachable, tool listed.
+	withHdr := DiscoverNetworkServer(context.Background(), agents.MCPServer{
+		Name:    "secured",
+		URL:     ts.URL,
+		Headers: map[string]string{"Authorization": wantAuth},
+	}, 5*time.Second, nil)
+	if !withHdr.Reachable {
+		t.Fatalf("with headers: Reachable = false, want true (err=%v)", withHdr.Err)
+	}
+	if len(withHdr.Tools) != 1 || withHdr.Tools[0] != "secured_tool" {
+		t.Errorf("Tools = %v, want [secured_tool]", withHdr.Tools)
+	}
+}
+
 func TestDiscoverServers_MixedTransportsSkipsNeither(t *testing.T) {
 	stdioFactory, stopStdio := newMockStdioServer(t, "stdio_tool")
 	defer stopStdio()

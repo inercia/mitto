@@ -9,6 +9,7 @@ package mcpdiscovery
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"net/url"
 	"os"
 	"os/exec"
@@ -122,16 +123,52 @@ func DiscoverStdioServer(ctx context.Context, srv agents.MCPServer, timeout time
 	return probeServer(ctx, srv, timeout, factory)
 }
 
+// headerRoundTripper injects a fixed set of HTTP headers onto every outgoing
+// request before delegating to base. It lets NetworkTransportFactory attach
+// auth headers (agents.MCPServer.Headers) to network MCP probes even though the
+// go-sdk transports expose only an *http.Client, not a header field. Per the
+// http.RoundTripper contract it must not mutate the caller's request, so it
+// clones the request (and its header map) before setting headers.
+type headerRoundTripper struct {
+	base    http.RoundTripper
+	headers map[string]string
+}
+
+func (h headerRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	base := h.base
+	if base == nil {
+		base = http.DefaultTransport
+	}
+	if len(h.headers) == 0 {
+		return base.RoundTrip(req)
+	}
+	req = req.Clone(req.Context())
+	for k, v := range h.headers {
+		req.Header.Set(k, v)
+	}
+	return base.RoundTrip(req)
+}
+
+// httpClientForHeaders returns an *http.Client that injects headers on every
+// request, or nil when there are no headers (so the transport falls back to the
+// SDK default client and existing behavior is unchanged).
+func httpClientForHeaders(headers map[string]string) *http.Client {
+	if len(headers) == 0 {
+		return nil
+	}
+	return &http.Client{Transport: headerRoundTripper{base: http.DefaultTransport, headers: headers}}
+}
+
 // NetworkTransportFactory is the production TransportFactory for http/sse MCP
 // servers. It builds an *mcp.SSEClientTransport when srv.URL's path ends in
 // "/sse" (case-insensitive) — the conventional SSE endpoint suffix — and an
 // *mcp.StreamableClientTransport (the modern default) otherwise. Cleanup is a
 // no-op; ClientSession.Close (in probeServer) tears down the connection.
-// NOTE: agents.MCPServer now has a Headers field (mitto-sys.9 part A/B), but
-// this factory does not yet apply srv.Env or srv.Headers to the transport
-// (that wiring is mitto-sys.9 part C, still pending); auth-required endpoints
-// therefore still fail at Connect/ListTools and surface as Reachable=false,
-// letting callers fall back to the LLM path.
+// NOTE: srv.Headers (mitto-sys.9) is applied to the network transport via a
+// header-injecting *http.Client (httpClientForHeaders), so authed HTTP/SSE
+// endpoints can be probed directly. srv.Env is stdio-only and is applied in
+// CommandTransportFactory (subprocess env); it is not meaningful for HTTP and
+// is not used here.
 func NetworkTransportFactory(_ context.Context, srv agents.MCPServer) (mcp.Transport, func(), error) {
 	if srv.URL == "" {
 		return nil, nil, fmt.Errorf("mcpdiscovery: server %q has no URL", srv.Name)
@@ -142,10 +179,11 @@ func NetworkTransportFactory(_ context.Context, srv agents.MCPServer) (mcp.Trans
 		isSSE = strings.HasSuffix(strings.ToLower(parsed.Path), "/sse")
 	}
 
+	client := httpClientForHeaders(srv.Headers)
 	if isSSE {
-		return &mcp.SSEClientTransport{Endpoint: srv.URL}, func() {}, nil
+		return &mcp.SSEClientTransport{Endpoint: srv.URL, HTTPClient: client}, func() {}, nil
 	}
-	return &mcp.StreamableClientTransport{Endpoint: srv.URL}, func() {}, nil
+	return &mcp.StreamableClientTransport{Endpoint: srv.URL, HTTPClient: client}, func() {}, nil
 }
 
 // DefaultTransportFactory dispatches to CommandTransportFactory for stdio
