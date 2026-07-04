@@ -127,9 +127,11 @@ func DiscoverStdioServer(ctx context.Context, srv agents.MCPServer, timeout time
 // "/sse" (case-insensitive) — the conventional SSE endpoint suffix — and an
 // *mcp.StreamableClientTransport (the modern default) otherwise. Cleanup is a
 // no-op; ClientSession.Close (in probeServer) tears down the connection.
-// NOTE: srv.Env and auth Headers are NOT applied (no Headers field yet —
-// mitto-sys.9); auth-required endpoints therefore fail at Connect/ListTools
-// and surface as Reachable=false, letting callers fall back to the LLM path.
+// NOTE: agents.MCPServer now has a Headers field (mitto-sys.9 part A/B), but
+// this factory does not yet apply srv.Env or srv.Headers to the transport
+// (that wiring is mitto-sys.9 part C, still pending); auth-required endpoints
+// therefore still fail at Connect/ListTools and surface as Reachable=false,
+// letting callers fall back to the LLM path.
 func NetworkTransportFactory(_ context.Context, srv agents.MCPServer) (mcp.Transport, func(), error) {
 	if srv.URL == "" {
 		return nil, nil, fmt.Errorf("mcpdiscovery: server %q has no URL", srv.Name)

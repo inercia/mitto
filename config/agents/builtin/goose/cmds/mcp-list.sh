@@ -33,6 +33,8 @@ try:
                 entry['env'] = cfg['envs']
         elif cfg.get('type') == 'sse':
             entry['url'] = cfg.get('uri', '')
+            if cfg.get('headers'):
+                entry['headers'] = cfg['headers']
         result.append(entry)
     print(json.dumps({'servers': result}))
 except Exception:

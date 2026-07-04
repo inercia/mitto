@@ -557,6 +557,34 @@ func TestMCPServer_EnvUnmarshal(t *testing.T) {
 	}
 }
 
+// TestMCPServer_HeadersUnmarshal verifies that the MCPServer.Headers field is
+// populated when an mcp-list.sh script emits a "headers" object for a remote
+// server, so auth headers can be surfaced/round-tripped like Env.
+func TestMCPServer_HeadersUnmarshal(t *testing.T) {
+	raw := `{"servers":[{"name":"authed","url":"https://example.com/mcp","headers":{"Authorization":"Bearer tkn","X-Api":"v1"}},{"name":"plain","url":"http://127.0.0.1:5757/mcp"}]}`
+
+	var out MCPListOutput
+	if err := json.Unmarshal([]byte(raw), &out); err != nil {
+		t.Fatalf("failed to unmarshal MCPListOutput: %v", err)
+	}
+	if len(out.Servers) != 2 {
+		t.Fatalf("servers = %d, want 2", len(out.Servers))
+	}
+
+	authed := out.Servers[0]
+	if got := authed.Headers["Authorization"]; got != "Bearer tkn" {
+		t.Errorf("Headers[Authorization] = %q, want %q", got, "Bearer tkn")
+	}
+	if got := authed.Headers["X-Api"]; got != "v1" {
+		t.Errorf("Headers[X-Api] = %q, want %q", got, "v1")
+	}
+
+	plain := out.Servers[1]
+	if plain.Headers != nil {
+		t.Errorf("expected nil Headers for server without headers, got %+v", plain.Headers)
+	}
+}
+
 // TestMCPServer_EnvOmitEmpty verifies that an MCPServer with no env vars marshals
 // without an "env" key (json:",omitempty"), keeping the listing output clean.
 func TestMCPServer_EnvOmitEmpty(t *testing.T) {

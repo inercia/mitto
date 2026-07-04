@@ -35,6 +35,8 @@ try:
         if t == 'remote' or (t is None and 'url' in cfg):
             if 'url' in cfg:
                 entry['url'] = cfg['url']
+            if 'headers' in cfg:
+                entry['headers'] = cfg['headers']
         result.append(entry)
     print(json.dumps({'servers': result}))
 except Exception:
