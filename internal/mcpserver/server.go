@@ -219,6 +219,9 @@ type BackgroundSession interface {
 	// LastQueuedSendError returns the most recent queued-send failure message and its
 	// timestamp. Used by the parent wait loop to surface dispatch failures as status=failed.
 	LastQueuedSendError() (string, time.Time)
+	// RecordChildWait accumulates a completed blocking wait duration for
+	// mitto_children_tasks_wait calls made from this session. In-memory only.
+	RecordChildWait(d time.Duration)
 }
 
 // Config holds the configuration for the MCP server.
@@ -4782,6 +4785,17 @@ func (s *Server) handleChildrenTasksWait(ctx context.Context, req *mcp.CallToolR
 		"running_children", len(runningChildren),
 		"not_running_children", len(notRunningChildren),
 		"timeout", timeout)
+
+	// Record how long this call actually blocked, on the parent session, for the
+	// "child wait" statistics surfaced in the conversation properties panel.
+	waitStart := time.Now()
+	defer func() {
+		if s.sessionManager != nil {
+			if parentBS := s.sessionManager.GetSession(realSessionID); parentBS != nil {
+				parentBS.RecordChildWait(time.Since(waitStart))
+			}
+		}
+	}()
 
 	var timedOut bool
 

@@ -250,6 +250,18 @@ type BackgroundSession struct {
 	lastUsage   *acp.Usage
 	lastUsageMu sync.Mutex
 
+	// Cumulative token usage across all prompts on this session. In-memory only;
+	// resets on restart (unlike event-derived statistics, which survive restarts).
+	cumInputTokens  atomic.Int64
+	cumOutputTokens atomic.Int64
+	cumTotalTokens  atomic.Int64
+
+	// Child-wait accumulation for blocking mitto_children_tasks_wait calls made
+	// FROM this session (i.e. this session acting as a parent). In-memory only;
+	// resets on restart.
+	mcpChildWaitCount      atomic.Int64
+	mcpChildWaitTotalNanos atomic.Int64
+
 	// Context window usage — updated from SessionUsageUpdate notifications.
 	contextSize    int
 	contextUsed    int
@@ -1545,6 +1557,26 @@ func (bs *BackgroundSession) GetContextUsage() (size, used int) {
 	bs.contextUsageMu.Lock()
 	defer bs.contextUsageMu.Unlock()
 	return bs.contextSize, bs.contextUsed
+}
+
+// GetCumulativeUsage returns the cumulative token usage accumulated across all
+// prompts on this session. In-memory only; resets on restart.
+func (bs *BackgroundSession) GetCumulativeUsage() (input, output, total int64) {
+	return bs.cumInputTokens.Load(), bs.cumOutputTokens.Load(), bs.cumTotalTokens.Load()
+}
+
+// RecordChildWait accumulates a completed blocking wait duration for
+// mitto_children_tasks_wait calls made from this session. In-memory only;
+// resets on restart.
+func (bs *BackgroundSession) RecordChildWait(d time.Duration) {
+	bs.mcpChildWaitCount.Add(1)
+	bs.mcpChildWaitTotalNanos.Add(int64(d))
+}
+
+// GetChildWaitStats returns the number of completed blocking child waits and
+// their total accumulated duration. In-memory only; resets on restart.
+func (bs *BackgroundSession) GetChildWaitStats() (count int64, total time.Duration) {
+	return bs.mcpChildWaitCount.Load(), time.Duration(bs.mcpChildWaitTotalNanos.Load())
 }
 
 // sessionError is a simple error type for session errors.

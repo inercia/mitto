@@ -1078,6 +1078,15 @@ sequenceDiagram
 - **Idempotent reports**: A child can report multiple times during a single wait cycle; each report overwrites the previous one.
 - **Reports between waits are stored**: If a child calls `_report` when no wait is active, the report is accepted and stored. It will be available when the parent next calls `_wait` with the same `task_id`.
 
+### Conversation Statistics
+
+The conversation properties panel Statistics section (see `web/static/components/ConversationPropertiesPanel.js`) surfaces MCP-usage, orchestration, and activity counters computed by `internal/web/session_ws.go` at WebSocket connect time (not on every `prompt_complete`, to bound cost). Two sourcing strategies are used, with different restart behavior:
+
+- **Event-derived (survive restart)**: `mcp_calls_total`, `mcp_ui_calls`, `mcp_children_wait_calls`, `turns`, `acp_tool_calls`, `permissions_allowed`/`permissions_denied`, `errors`, and `images_uploaded` are computed by a single pass over `store.ReadEvents()` (`computeEventStats` in `session_ws.go`). `mitto_*` MCP tool calls are recorded as `tool_call` events with the tool name in the `title` field, so they can be recovered from `events.jsonl` after a restart. `tool_call` events are deduplicated by `tool_call_id` so status re-emissions aren't double-counted. `children_spawned` is derived from `store.CountChildSessions()` (metadata-based).
+- **In-memory (reset on restart)**: `child_wait_count`/`child_wait_total_ms` (accumulated via `BackgroundSession.RecordChildWait`, called from `handleChildrenTasksWait` on the PARENT session for calls that actually block) and `usage_cumulative` (accumulated via `BackgroundSession.GetCumulativeUsage`, updated alongside `lastUsage` in `promptDispatcher.accumulateTokenUsage`) are not persisted anywhere and reset to zero when the Mitto server restarts, since token usage is not recorded in `events.jsonl`.
+
+Permission outcomes are recorded as `"auto_approved"`, `"user_selected"`, or `"timed_out"` (see `PermissionData.Outcome`) — none of these directly encodes allow/deny. Auto-approved permissions always count as allowed; user-made choices are classified by inspecting the selected option ID for `"allow"` vs. `"deny"`/`"reject"` substrings (agent-defined, not a protocol guarantee). Timed-out or unrecognized choices count as neither.
+
 ---
 
 ## Session Registration

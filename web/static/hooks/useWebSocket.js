@@ -1357,6 +1357,53 @@ export function useWebSocket({ onActiveSessionRemovedRef } = {}) {
                 // Context window usage (size/used from ACP)
                 context_usage:
                   msg.data.context_usage ?? session.info?.context_usage ?? null,
+                // MCP usage stats (event-derived, survive restart)
+                mcp_calls_total:
+                  msg.data.mcp_calls_total ??
+                  session.info?.mcp_calls_total ??
+                  0,
+                mcp_ui_calls:
+                  msg.data.mcp_ui_calls ?? session.info?.mcp_ui_calls ?? 0,
+                mcp_children_wait_calls:
+                  msg.data.mcp_children_wait_calls ??
+                  session.info?.mcp_children_wait_calls ??
+                  0,
+                // Orchestration stats: children spawned (event-derived) + child
+                // wait times (in-memory, resets on restart)
+                children_spawned:
+                  msg.data.children_spawned ??
+                  session.info?.children_spawned ??
+                  0,
+                child_wait_count:
+                  msg.data.child_wait_count ??
+                  session.info?.child_wait_count ??
+                  0,
+                child_wait_total_ms:
+                  msg.data.child_wait_total_ms ??
+                  session.info?.child_wait_total_ms ??
+                  0,
+                // Activity stats (event-derived, survive restart)
+                turns: msg.data.turns ?? session.info?.turns ?? 0,
+                acp_tool_calls:
+                  msg.data.acp_tool_calls ?? session.info?.acp_tool_calls ?? 0,
+                permissions_allowed:
+                  msg.data.permissions_allowed ??
+                  session.info?.permissions_allowed ??
+                  0,
+                permissions_denied:
+                  msg.data.permissions_denied ??
+                  session.info?.permissions_denied ??
+                  0,
+                errors: msg.data.errors ?? session.info?.errors ?? 0,
+                images_uploaded:
+                  msg.data.images_uploaded ??
+                  session.info?.images_uploaded ??
+                  0,
+                // Cumulative token usage across all turns (in-memory, resets on restart)
+                usage_cumulative:
+                  msg.data.usage_cumulative ??
+                  session.info?.usage_cumulative ??
+                  null,
                 // Config options (model, mode, etc.) - per-session
                 // Use ?? to preserve existing options when server omits the field (e.g. pre-acp_started reconnect)
                 config_options:

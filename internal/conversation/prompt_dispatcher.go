@@ -114,10 +114,11 @@ type promptDeps interface {
 	// === New in 2.5-d: post-prompt completion helpers ===
 
 	// Token usage bookkeeping
-	pdSetLastUsage(usage *acp.Usage)            // lastUsageMu.Lock + lastUsage = usage + Unlock
-	pdAccumulateTokenUsage(tokens int)          // processorManager.AccumulateTokenUsage
-	pdEstimateTokensFromMessage(msg string) int // processors.EstimateTokens(msg)
-	pdReadLastAgentMessage() string             // ReadEvents + GetLastAgentMessage; returns "" on any error
+	pdSetLastUsage(usage *acp.Usage)              // lastUsageMu.Lock + lastUsage = usage + Unlock
+	pdAccumulateTokenUsage(tokens int)            // processorManager.AccumulateTokenUsage
+	pdAccumulateCumulativeUsage(usage *acp.Usage) // adds usage into cumulative in-memory counters
+	pdEstimateTokensFromMessage(msg string) int   // processors.EstimateTokens(msg)
+	pdReadLastAgentMessage() string               // ReadEvents + GetLastAgentMessage; returns "" on any error
 
 	// Streaming state completion (promptMu critical section)
 	pdMarkPromptComplete() // promptMu: isPrompting=false, promptStartTime=time.Time{}, lastResponseComplete=time.Now(), Broadcast
@@ -818,6 +819,7 @@ func (p promptDispatcher) applyModelPreference(d promptDeps, meta PromptMeta) {
 func (p promptDispatcher) accumulateTokenUsage(d promptDeps, promptResp acp.PromptResponse, message string) {
 	if promptResp.Usage != nil {
 		d.pdSetLastUsage(promptResp.Usage)
+		d.pdAccumulateCumulativeUsage(promptResp.Usage)
 	}
 
 	if !d.pdHasProcessorManager() {

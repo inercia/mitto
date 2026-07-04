@@ -45,6 +45,95 @@ func buildContextUsageMap(size, used int) map[string]interface{} {
 	}
 }
 
+// eventStats holds counters derived from a single pass over a session's
+// persisted events. These counts survive process restarts (unlike the
+// in-memory counters on BackgroundSession such as child-wait stats and
+// cumulative token usage).
+type eventStats struct {
+	mcpCallsTotal        int
+	mcpUICalls           int
+	mcpChildrenWaitCalls int
+	turns                int
+	acpToolCalls         int
+	permissionsAllowed   int
+	permissionsDenied    int
+	errors               int
+	imagesUploaded       int
+}
+
+// computeEventStats performs a single pass over a session's events, deriving
+// MCP-usage, turn, tool-call, permission, error, and image-upload counts.
+// tool_call events are deduplicated by ToolCallID so status re-emissions
+// (recorded as separate events with the same ID) are only counted once.
+func computeEventStats(events []session.Event) eventStats {
+	var stats eventStats
+	seenToolCalls := make(map[string]struct{})
+
+	for _, e := range events {
+		data, err := session.DecodeEventData(e)
+		if err != nil {
+			continue
+		}
+
+		switch e.Type {
+		case session.EventTypeToolCall:
+			d, ok := data.(session.ToolCallData)
+			if !ok {
+				continue
+			}
+			if _, seen := seenToolCalls[d.ToolCallID]; seen {
+				continue
+			}
+			seenToolCalls[d.ToolCallID] = struct{}{}
+
+			if strings.HasPrefix(d.Title, "mitto_") {
+				stats.mcpCallsTotal++
+				if strings.HasPrefix(d.Title, "mitto_ui_") {
+					stats.mcpUICalls++
+				}
+				if strings.HasPrefix(d.Title, "mitto_children_tasks_wait") {
+					stats.mcpChildrenWaitCalls++
+				}
+			} else {
+				stats.acpToolCalls++
+			}
+
+		case session.EventTypeUserPrompt:
+			stats.turns++
+			if d, ok := data.(session.UserPromptData); ok {
+				stats.imagesUploaded += len(d.Images)
+			}
+
+		case session.EventTypePermission:
+			d, ok := data.(session.PermissionData)
+			if !ok {
+				continue
+			}
+			// The recorded Outcome values today are "auto_approved", "user_selected",
+			// and "timed_out" — none of which directly say "denied". Auto-approved
+			// permissions are always allowed. For user-made choices, classify by the
+			// selected option ID (agent-defined, but conventionally "allow*"/"deny*"
+			// or "reject*"). Timed-out or unrecognised choices count as neither.
+			option := strings.ToLower(d.SelectedOption)
+			switch {
+			case d.Outcome == "auto_approved":
+				stats.permissionsAllowed++
+			case d.Outcome == "denied":
+				stats.permissionsDenied++
+			case d.Outcome == "user_selected" && strings.Contains(option, "allow"):
+				stats.permissionsAllowed++
+			case d.Outcome == "user_selected" && (strings.Contains(option, "deny") || strings.Contains(option, "reject")):
+				stats.permissionsDenied++
+			}
+
+		case session.EventTypeError:
+			stats.errors++
+		}
+	}
+
+	return stats
+}
+
 // buildUsageMap converts an acp.Usage value into a JSON-serialisable map
 // suitable for embedding in WebSocket messages.  Returns nil when usage is nil.
 func buildUsageMap(usage *acp.Usage) map[string]interface{} {
@@ -527,6 +616,59 @@ func (c *SessionWSClient) sendSessionConnected(bs *conversation.BackgroundSessio
 		// Include context window usage if available.
 		if ctxUsageMap := buildContextUsageMap(bs.GetContextUsage()); ctxUsageMap != nil {
 			data["context_usage"] = ctxUsageMap
+		}
+	}
+
+	// Include richer statistics (MCP usage, orchestration, activity). Event-derived
+	// counts survive restarts; child-wait and cumulative-usage counts are in-memory
+	// and reset on restart (see BackgroundSession.RecordChildWait / GetCumulativeUsage).
+	// Computed at connect only (not on every prompt_complete) to bound cost.
+	if c.store != nil {
+		if events, err := c.store.ReadEvents(c.sessionID); err == nil {
+			stats := computeEventStats(events)
+			if stats.mcpCallsTotal > 0 {
+				data["mcp_calls_total"] = stats.mcpCallsTotal
+			}
+			if stats.mcpUICalls > 0 {
+				data["mcp_ui_calls"] = stats.mcpUICalls
+			}
+			if stats.mcpChildrenWaitCalls > 0 {
+				data["mcp_children_wait_calls"] = stats.mcpChildrenWaitCalls
+			}
+			if stats.turns > 0 {
+				data["turns"] = stats.turns
+			}
+			if stats.acpToolCalls > 0 {
+				data["acp_tool_calls"] = stats.acpToolCalls
+			}
+			if stats.permissionsAllowed > 0 {
+				data["permissions_allowed"] = stats.permissionsAllowed
+			}
+			if stats.permissionsDenied > 0 {
+				data["permissions_denied"] = stats.permissionsDenied
+			}
+			if stats.errors > 0 {
+				data["errors"] = stats.errors
+			}
+			if stats.imagesUploaded > 0 {
+				data["images_uploaded"] = stats.imagesUploaded
+			}
+		}
+		if count, err := c.store.CountChildSessions(c.sessionID); err == nil && count > 0 {
+			data["children_spawned"] = count
+		}
+	}
+	if bs != nil {
+		if waitCount, waitTotal := bs.GetChildWaitStats(); waitCount > 0 {
+			data["child_wait_count"] = waitCount
+			data["child_wait_total_ms"] = waitTotal.Milliseconds()
+		}
+		if in, out, total := bs.GetCumulativeUsage(); total > 0 {
+			data["usage_cumulative"] = map[string]interface{}{
+				"input_tokens":  in,
+				"output_tokens": out,
+				"total_tokens":  total,
+			}
 		}
 	}
 

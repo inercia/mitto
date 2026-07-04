@@ -86,6 +86,7 @@ type fakePromptDeps struct {
 
 	// === New in 2.5-d ===
 	lastUsageSet          *acp.Usage
+	cumulativeUsageSet    []*acp.Usage
 	accumulatedTokens     []int
 	estimatedTokenCalls   []string // messages passed to pdEstimateTokensFromMessage
 	lastAgentMessage      string   // returned by pdReadLastAgentMessage / pdReadLastAgentMessageFromStore
@@ -307,6 +308,11 @@ func (f *fakePromptDeps) pdAccumulateTokenUsage(tokens int) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.accumulatedTokens = append(f.accumulatedTokens, tokens)
+}
+func (f *fakePromptDeps) pdAccumulateCumulativeUsage(usage *acp.Usage) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.cumulativeUsageSet = append(f.cumulativeUsageSet, usage)
 }
 func (f *fakePromptDeps) pdEstimateTokensFromMessage(msg string) int {
 	f.mu.Lock()

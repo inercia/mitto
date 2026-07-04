@@ -3848,6 +3848,7 @@ func (m *mockBackgroundSessionForWait) RequestSelfDestruct()                    
 func (m *mockBackgroundSessionForWait) LastQueuedSendError() (string, time.Time) {
 	return "", time.Time{}
 }
+func (m *mockBackgroundSessionForWait) RecordChildWait(time.Duration) {}
 func (m *mockBackgroundSessionForWait) WaitForResponseComplete(timeout time.Duration) bool {
 	if !m.prompting.Load() {
 		return true
@@ -5568,6 +5569,7 @@ func (m *mockBackgroundSessionForAutoResume) RequestSelfDestruct()              
 func (m *mockBackgroundSessionForAutoResume) LastQueuedSendError() (string, time.Time) {
 	return "", time.Time{}
 }
+func (m *mockBackgroundSessionForAutoResume) RecordChildWait(time.Duration) {}
 func (m *mockBackgroundSessionForAutoResume) TryProcessQueuedMessage() bool {
 	m.tryProcessCalled.Store(true)
 	return false

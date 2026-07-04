@@ -1341,3 +1341,72 @@ drain:
 		}
 	}
 }
+
+func TestComputeEventStats(t *testing.T) {
+	tests := []struct {
+		name   string
+		events []session.Event
+		want   eventStats
+	}{
+		{
+			name:   "empty",
+			events: nil,
+			want:   eventStats{},
+		},
+		{
+			name: "mcp and acp tool calls counted separately",
+			events: []session.Event{
+				{Type: session.EventTypeToolCall, Data: session.ToolCallData{ToolCallID: "1", Title: "mitto_conversation_get_current_mitto"}},
+				{Type: session.EventTypeToolCall, Data: session.ToolCallData{ToolCallID: "2", Title: "mitto_ui_options_mitto"}},
+				{Type: session.EventTypeToolCall, Data: session.ToolCallData{ToolCallID: "3", Title: "mitto_children_tasks_wait_mitto"}},
+				{Type: session.EventTypeToolCall, Data: session.ToolCallData{ToolCallID: "4", Title: "str-replace-editor"}},
+			},
+			want: eventStats{mcpCallsTotal: 3, mcpUICalls: 1, mcpChildrenWaitCalls: 1, acpToolCalls: 1},
+		},
+		{
+			name: "duplicate tool_call_id counted once",
+			events: []session.Event{
+				{Type: session.EventTypeToolCall, Data: session.ToolCallData{ToolCallID: "1", Title: "mitto_ui_notify_mitto", Status: "pending"}},
+				{Type: session.EventTypeToolCall, Data: session.ToolCallData{ToolCallID: "1", Title: "mitto_ui_notify_mitto", Status: "completed"}},
+			},
+			want: eventStats{mcpCallsTotal: 1, mcpUICalls: 1},
+		},
+		{
+			name: "turns and images from user prompts",
+			events: []session.Event{
+				{Type: session.EventTypeUserPrompt, Data: session.UserPromptData{Message: "hi"}},
+				{Type: session.EventTypeUserPrompt, Data: session.UserPromptData{Message: "again", Images: []session.ImageRef{{ID: "a"}, {ID: "b"}}}},
+			},
+			want: eventStats{turns: 2, imagesUploaded: 2},
+		},
+		{
+			name: "errors counted",
+			events: []session.Event{
+				{Type: session.EventTypeError, Data: session.ErrorData{Message: "boom"}},
+				{Type: session.EventTypeError, Data: session.ErrorData{Message: "boom2"}},
+			},
+			want: eventStats{errors: 2},
+		},
+		{
+			name: "permissions bucketed by outcome and selected option",
+			events: []session.Event{
+				{Type: session.EventTypePermission, Data: session.PermissionData{Outcome: "auto_approved", SelectedOption: "allow-once"}},
+				{Type: session.EventTypePermission, Data: session.PermissionData{Outcome: "user_selected", SelectedOption: "allow"}},
+				{Type: session.EventTypePermission, Data: session.PermissionData{Outcome: "user_selected", SelectedOption: "deny"}},
+				{Type: session.EventTypePermission, Data: session.PermissionData{Outcome: "user_selected", SelectedOption: "reject-once"}},
+				{Type: session.EventTypePermission, Data: session.PermissionData{Outcome: "timed_out", SelectedOption: ""}},
+				{Type: session.EventTypePermission, Data: session.PermissionData{Outcome: "user_selected", SelectedOption: "unknown-option"}},
+			},
+			want: eventStats{permissionsAllowed: 2, permissionsDenied: 2},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := computeEventStats(tt.events)
+			if got != tt.want {
+				t.Errorf("computeEventStats() = %+v, want %+v", got, tt.want)
+			}
+		})
+	}
+}

@@ -918,6 +918,15 @@ func (bs *BackgroundSession) pdAccumulateTokenUsage(tokens int) {
 	bs.processorManager.AccumulateTokenUsage(tokens)
 }
 
+func (bs *BackgroundSession) pdAccumulateCumulativeUsage(usage *acp.Usage) {
+	if usage == nil {
+		return
+	}
+	bs.cumInputTokens.Add(int64(usage.InputTokens))
+	bs.cumOutputTokens.Add(int64(usage.OutputTokens))
+	bs.cumTotalTokens.Add(int64(usage.TotalTokens))
+}
+
 func (bs *BackgroundSession) pdEstimateTokensFromMessage(msg string) int {
 	return processors.EstimateTokens(msg)
 }

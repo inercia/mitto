@@ -5027,3 +5027,49 @@ func TestACPInitializeAttemptTimeoutBound(t *testing.T) {
 	t.Logf("acpInitializeAttemptTimeout=%v, maxRetries=%d, maxBackoff=%v → total max=%v (pre-fix was %v)",
 		acpInitializeAttemptTimeout, maxACPStartRetries, maxBackoffTotal, totalMax, preFix)
 }
+
+// TestBackgroundSession_ChildWaitStats verifies RecordChildWait accumulates
+// count and total duration, and GetChildWaitStats reports them correctly.
+func TestBackgroundSession_ChildWaitStats(t *testing.T) {
+	bs := &BackgroundSession{}
+
+	if count, total := bs.GetChildWaitStats(); count != 0 || total != 0 {
+		t.Fatalf("expected zero stats before any recording, got count=%d total=%v", count, total)
+	}
+
+	bs.RecordChildWait(100 * time.Millisecond)
+	bs.RecordChildWait(250 * time.Millisecond)
+
+	count, total := bs.GetChildWaitStats()
+	if count != 2 {
+		t.Errorf("count = %d, want 2", count)
+	}
+	if total != 350*time.Millisecond {
+		t.Errorf("total = %v, want %v", total, 350*time.Millisecond)
+	}
+}
+
+// TestBackgroundSession_CumulativeUsage verifies pdAccumulateCumulativeUsage
+// adds usage across multiple calls and GetCumulativeUsage reports the sum.
+func TestBackgroundSession_CumulativeUsage(t *testing.T) {
+	bs := &BackgroundSession{}
+
+	if in, out, total := bs.GetCumulativeUsage(); in != 0 || out != 0 || total != 0 {
+		t.Fatalf("expected zero usage before any accumulation, got in=%d out=%d total=%d", in, out, total)
+	}
+
+	bs.pdAccumulateCumulativeUsage(&acp.Usage{InputTokens: 10, OutputTokens: 5, TotalTokens: 15})
+	bs.pdAccumulateCumulativeUsage(&acp.Usage{InputTokens: 20, OutputTokens: 8, TotalTokens: 28})
+	bs.pdAccumulateCumulativeUsage(nil) // must be a no-op
+
+	in, out, total := bs.GetCumulativeUsage()
+	if in != 30 {
+		t.Errorf("input = %d, want 30", in)
+	}
+	if out != 13 {
+		t.Errorf("output = %d, want 13", out)
+	}
+	if total != 43 {
+		t.Errorf("total = %d, want 43", total)
+	}
+}

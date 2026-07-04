@@ -36,6 +36,21 @@ function formatTokenCount(count) {
 }
 
 /**
+ * Format a duration given in milliseconds into a compact human-readable string.
+ * @param {number} ms
+ * @returns {string} e.g. "850ms", "12.3s", "1m2s"
+ */
+function formatDuration(ms) {
+  if (!ms || ms < 0) return "0ms";
+  if (ms < 1000) return `${Math.round(ms)}ms`;
+  const totalSeconds = ms / 1000;
+  if (totalSeconds < 60) return `${totalSeconds.toFixed(1)}s`;
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = Math.round(totalSeconds % 60);
+  return `${minutes}m${seconds}s`;
+}
+
+/**
  * TriStateCheckbox - A checkbox with three states: unset, enabled, disabled
  * @param {Object} props
  * @param {boolean|null} props.value - Current value (null = unset, true = enabled, false = disabled)
@@ -874,6 +889,119 @@ export function ConversationPropertiesPanel({
                 </div>
               `
             }
+            ${
+              sessionInfo?.mcp_calls_total > 0 &&
+              html`
+                <div class="flex justify-between">
+                  <span>Mitto MCP calls</span>
+                  <span class="text-mitto-text-300"
+                    >${sessionInfo.mcp_calls_total}</span
+                  >
+                </div>
+              `
+            }
+            ${
+              sessionInfo?.mcp_ui_calls > 0 &&
+              html`
+                <div class="flex justify-between">
+                  <span>Mitto UI calls</span>
+                  <span class="text-mitto-text-300"
+                    >${sessionInfo.mcp_ui_calls}</span
+                  >
+                </div>
+              `
+            }
+            ${
+              sessionInfo?.mcp_children_wait_calls > 0 &&
+              html`
+                <div class="flex justify-between">
+                  <span>Wait-for-children calls</span>
+                  <span class="text-mitto-text-300"
+                    >${sessionInfo.mcp_children_wait_calls}</span
+                  >
+                </div>
+              `
+            }
+            ${
+              sessionInfo?.children_spawned > 0 &&
+              html`
+                <div class="flex justify-between">
+                  <span>Children</span>
+                  <span class="text-mitto-text-300"
+                    >${sessionInfo.children_spawned}</span
+                  >
+                </div>
+              `
+            }
+            ${
+              sessionInfo?.child_wait_count > 0 &&
+              html`
+                <div class="flex justify-between">
+                  <span>Child wait</span>
+                  <span class="text-mitto-text-300"
+                    >${formatDuration(
+                      sessionInfo.child_wait_total_ms /
+                        sessionInfo.child_wait_count,
+                    )}
+                    avg (${formatDuration(sessionInfo.child_wait_total_ms)}
+                    total)</span
+                  >
+                </div>
+              `
+            }
+            ${
+              sessionInfo?.turns > 0 &&
+              html`
+                <div class="flex justify-between">
+                  <span>Turns</span>
+                  <span class="text-mitto-text-300">${sessionInfo.turns}</span>
+                </div>
+              `
+            }
+            ${
+              sessionInfo?.acp_tool_calls > 0 &&
+              html`
+                <div class="flex justify-between">
+                  <span>Agent tool calls</span>
+                  <span class="text-mitto-text-300"
+                    >${sessionInfo.acp_tool_calls}</span
+                  >
+                </div>
+              `
+            }
+            ${
+              (sessionInfo?.permissions_allowed > 0 ||
+                sessionInfo?.permissions_denied > 0) &&
+              html`
+                <div class="flex justify-between">
+                  <span>Permissions</span>
+                  <span class="text-mitto-text-300"
+                    >${sessionInfo.permissions_allowed || 0} allowed /
+                    ${sessionInfo.permissions_denied || 0} denied</span
+                  >
+                </div>
+              `
+            }
+            ${
+              sessionInfo?.errors > 0 &&
+              html`
+                <div class="flex justify-between">
+                  <span>Errors</span>
+                  <span class="text-mitto-text-300">${sessionInfo.errors}</span>
+                </div>
+              `
+            }
+            ${
+              sessionInfo?.images_uploaded > 0 &&
+              html`
+                <div class="flex justify-between">
+                  <span>Images</span>
+                  <span class="text-mitto-text-300"
+                    >${sessionInfo.images_uploaded}</span
+                  >
+                </div>
+              `
+            }
           </div>
 
           ${
@@ -996,6 +1124,45 @@ export function ConversationPropertiesPanel({
                       >
                     </div>
                   `}
+                </div>
+              </div>
+            `
+          }
+
+          ${
+            sessionInfo?.usage_cumulative &&
+            html`
+              <div class="mt-2 pt-2 border-t border-mitto-border-1/50">
+                <label
+                  class="block text-xs font-medium text-mitto-text-500 mb-1"
+                >
+                  Cumulative Tokens
+                </label>
+                <div class="text-xs text-mitto-text-secondary space-y-0.5">
+                  <div class="flex justify-between">
+                    <span>Input</span>
+                    <span class="text-mitto-text-300"
+                      >${formatTokenCount(
+                        sessionInfo.usage_cumulative.input_tokens,
+                      )}</span
+                    >
+                  </div>
+                  <div class="flex justify-between">
+                    <span>Output</span>
+                    <span class="text-mitto-text-300"
+                      >${formatTokenCount(
+                        sessionInfo.usage_cumulative.output_tokens,
+                      )}</span
+                    >
+                  </div>
+                  <div class="flex justify-between">
+                    <span>Total</span>
+                    <span class="text-mitto-text-300 font-medium"
+                      >${formatTokenCount(
+                        sessionInfo.usage_cumulative.total_tokens,
+                      )}</span
+                    >
+                  </div>
                 </div>
               </div>
             `
