@@ -4,7 +4,7 @@
 # Output: {"servers": [{"name": "...", "command": "...", "args": [...], "url": "...", "env": {...}}]}
 
 INPUT=$(cat 2>/dev/null || echo '{}')
-CONFIG_FILE="${HOME}/.qwen-code/settings.json"
+CONFIG_FILE="${HOME}/.qwen/settings.json"
 
 if [ ! -f "$CONFIG_FILE" ]; then
     echo '{"servers": []}'

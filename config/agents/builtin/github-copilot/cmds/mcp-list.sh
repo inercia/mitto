@@ -4,7 +4,7 @@
 # Output: {"servers": [{"name": "...", "command": "...", "args": [...], "url": "...", "env": {...}}]}
 
 INPUT=$(cat 2>/dev/null || echo '{}')
-CONFIG_FILE="${HOME}/.github-copilot/settings.json"
+CONFIG_FILE="${HOME}/.copilot/mcp-config.json"
 
 if [ ! -f "$CONFIG_FILE" ]; then
     echo '{"servers": []}'
