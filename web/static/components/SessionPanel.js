@@ -734,7 +734,7 @@ export function SessionPanel({
           class="tabs tabs-lift shrink-0 pt-2"
           style="--tab-border-color: var(--mitto-border-1);"
         >
-          <label class="tab flex-1 tooltip tooltip-bottom" data-tip="Properties" aria-label="Properties">
+          <label class="tab flex-1" title="Properties" aria-label="Properties">
             <input
               type="radio"
               name="session-panel-tabs"
@@ -743,7 +743,7 @@ export function SessionPanel({
             />
             <${SettingsIcon} className="w-4 h-4" />
           </label>
-          <label class="tab flex-1 tooltip tooltip-bottom" data-tip="Changes" aria-label="Changes">
+          <label class="tab flex-1" title="Changes" aria-label="Changes">
             <input
               type="radio"
               name="session-panel-tabs"
@@ -764,7 +764,7 @@ export function SessionPanel({
               />
             </svg>
           </label>
-          <label class="tab flex-1 tooltip tooltip-bottom" data-tip="Advanced" aria-label="Advanced">
+          <label class="tab flex-1" title="Advanced" aria-label="Advanced">
             <input
               type="radio"
               name="session-panel-tabs"
