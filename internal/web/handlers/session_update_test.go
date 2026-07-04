@@ -1,0 +1,256 @@
+package handlers
+
+import (
+	"bytes"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"sync"
+	"testing"
+
+	"github.com/inercia/mitto/internal/session"
+)
+
+// seedArchivedLoopSession creates a session store + archived session with a
+// loop config that was stopped for the given reason, mimicking the state
+// left behind by an archive.
+func seedArchivedLoopSession(t *testing.T, sid string, stoppedReason session.StoppedReason) (*session.Store, *session.LoopPrompt) {
+	t.Helper()
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	t.Cleanup(func() { store.Close() })
+
+	if err := store.Create(session.Metadata{
+		SessionID:  sid,
+		ACPServer:  "test-server",
+		WorkingDir: t.TempDir(),
+	}); err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+
+	loop := &session.LoopPrompt{
+		Prompt:    "do the thing",
+		Arguments: map[string]string{"foo": "bar"},
+		Trigger:   session.TriggerOnCompletion,
+		Enabled:   true,
+	}
+	if err := store.Loop(sid).Set(loop); err != nil {
+		t.Fatalf("Loop Set failed: %v", err)
+	}
+	if err := store.Loop(sid).MarkStopped(stoppedReason); err != nil {
+		t.Fatalf("MarkStopped failed: %v", err)
+	}
+
+	// Mark the session as archived (metadata only; MarkStopped doesn't do this).
+	if err := store.UpdateMetadata(sid, func(meta *session.Metadata) {
+		meta.Archived = true
+		meta.ArchiveReason = session.ArchiveReasonManual
+	}); err != nil {
+		t.Fatalf("UpdateMetadata failed: %v", err)
+	}
+
+	return store, loop
+}
+
+// unarchiveViaHandler issues a PATCH {"archived": false} against the given
+// session and returns the recorded response.
+func unarchiveViaHandler(t *testing.T, h *Handlers, sid string) *httptest.ResponseRecorder {
+	t.Helper()
+	archived := false
+	body, _ := json.Marshal(SessionUpdateRequest{Archived: &archived})
+	req := httptest.NewRequest(http.MethodPatch, "/api/sessions/"+sid, bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	h.HandleUpdateSession(w, req, sid)
+	return w
+}
+
+func TestRestoreLoopOnUnarchive_RoundTripsOriginalConfig(t *testing.T) {
+	sid := "test-loop-unarchive-roundtrip"
+	store, original := seedArchivedLoopSession(t, sid, session.StoppedReasonArchived)
+	h := New(Deps{Store: store})
+
+	w := unarchiveViaHandler(t, h, sid)
+	if w.Code != http.StatusOK {
+		t.Fatalf("Status = %d, want %d. Body: %s", w.Code, http.StatusOK, w.Body.String())
+	}
+
+	got, err := store.Loop(sid).Get()
+	if err != nil {
+		t.Fatalf("Get() after unarchive error = %v", err)
+	}
+	if got.Prompt != original.Prompt {
+		t.Errorf("Prompt = %q, want %q", got.Prompt, original.Prompt)
+	}
+	if got.Arguments["foo"] != original.Arguments["foo"] {
+		t.Errorf("Arguments = %v, want %v", got.Arguments, original.Arguments)
+	}
+	if got.Trigger != original.Trigger {
+		t.Errorf("Trigger = %q, want %q", got.Trigger, original.Trigger)
+	}
+	if !got.Enabled {
+		t.Error("Enabled should be true after unarchive of an archive-stopped loop")
+	}
+	if got.StoppedReason != "" {
+		t.Errorf("StoppedReason = %q, want empty", got.StoppedReason)
+	}
+}
+
+func TestRestoreLoopOnUnarchive_AutoResumeArchived(t *testing.T) {
+	sid := "test-loop-unarchive-archived"
+	store, _ := seedArchivedLoopSession(t, sid, session.StoppedReasonArchived)
+
+	var mu sync.Mutex
+	var broadcastCount int
+	var lastLoop *session.LoopPrompt
+	h := New(Deps{
+		Store: store,
+		BroadcastLoopUpdated: func(_ string, loop *session.LoopPrompt) {
+			mu.Lock()
+			defer mu.Unlock()
+			broadcastCount++
+			lastLoop = loop
+		},
+	})
+
+	w := unarchiveViaHandler(t, h, sid)
+	if w.Code != http.StatusOK {
+		t.Fatalf("Status = %d, want %d", w.Code, http.StatusOK)
+	}
+
+	got, err := store.Loop(sid).Get()
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	if !got.Enabled {
+		t.Error("Enabled should be true")
+	}
+	if got.StoppedReason != "" {
+		t.Errorf("StoppedReason = %q, want empty", got.StoppedReason)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if broadcastCount != 1 {
+		t.Errorf("BroadcastLoopUpdated call count = %d, want 1", broadcastCount)
+	}
+	if lastLoop == nil {
+		t.Error("BroadcastLoopUpdated called with nil loop")
+	}
+}
+
+func TestRestoreLoopOnUnarchive_AutoResumeResumeFailures(t *testing.T) {
+	sid := "test-loop-unarchive-resumefailures"
+	store, _ := seedArchivedLoopSession(t, sid, session.StoppedReasonResumeFailures)
+
+	var mu sync.Mutex
+	var broadcastCount int
+	h := New(Deps{
+		Store: store,
+		BroadcastLoopUpdated: func(_ string, _ *session.LoopPrompt) {
+			mu.Lock()
+			defer mu.Unlock()
+			broadcastCount++
+		},
+	})
+
+	w := unarchiveViaHandler(t, h, sid)
+	if w.Code != http.StatusOK {
+		t.Fatalf("Status = %d, want %d", w.Code, http.StatusOK)
+	}
+
+	got, err := store.Loop(sid).Get()
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	if !got.Enabled {
+		t.Error("Enabled should be true")
+	}
+	if got.StoppedReason != "" {
+		t.Errorf("StoppedReason = %q, want empty", got.StoppedReason)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if broadcastCount != 1 {
+		t.Errorf("BroadcastLoopUpdated call count = %d, want 1", broadcastCount)
+	}
+}
+
+func TestRestoreLoopOnUnarchive_NonArchivePauseStaysPaused(t *testing.T) {
+	sid := "test-loop-unarchive-maxiterations"
+	store, _ := seedArchivedLoopSession(t, sid, session.StoppedReasonMaxIterations)
+
+	var mu sync.Mutex
+	var broadcastCount int
+	h := New(Deps{
+		Store: store,
+		BroadcastLoopUpdated: func(_ string, _ *session.LoopPrompt) {
+			mu.Lock()
+			defer mu.Unlock()
+			broadcastCount++
+		},
+	})
+
+	w := unarchiveViaHandler(t, h, sid)
+	if w.Code != http.StatusOK {
+		t.Fatalf("Status = %d, want %d", w.Code, http.StatusOK)
+	}
+
+	got, err := store.Loop(sid).Get()
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	if got.Enabled {
+		t.Error("Enabled should stay false for a non-archive-related stop reason")
+	}
+	if got.StoppedReason != session.StoppedReasonMaxIterations {
+		t.Errorf("StoppedReason = %q, want %q", got.StoppedReason, session.StoppedReasonMaxIterations)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if broadcastCount != 1 {
+		t.Errorf("BroadcastLoopUpdated call count = %d, want 1 (config should still be surfaced)", broadcastCount)
+	}
+}
+
+func TestRestoreLoopOnUnarchive_NoLoopSessionIsNoop(t *testing.T) {
+	sid := "test-no-loop-unarchive"
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	t.Cleanup(func() { store.Close() })
+
+	if err := store.Create(session.Metadata{
+		SessionID:  sid,
+		ACPServer:  "test-server",
+		WorkingDir: t.TempDir(),
+		Archived:   true,
+	}); err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+
+	var broadcastCount int
+	h := New(Deps{
+		Store: store,
+		BroadcastLoopUpdated: func(_ string, _ *session.LoopPrompt) {
+			broadcastCount++
+		},
+	})
+
+	w := unarchiveViaHandler(t, h, sid)
+	if w.Code != http.StatusOK {
+		t.Fatalf("Status = %d, want %d", w.Code, http.StatusOK)
+	}
+
+	if _, err := store.Loop(sid).Get(); err != session.ErrLoopNotFound {
+		t.Errorf("Loop Get() error = %v, want ErrLoopNotFound", err)
+	}
+	if broadcastCount != 0 {
+		t.Errorf("BroadcastLoopUpdated call count = %d, want 0 for a non-loop session", broadcastCount)
+	}
+}

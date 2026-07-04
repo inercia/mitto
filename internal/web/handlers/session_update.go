@@ -177,7 +177,68 @@ func (h *Handlers) HandleUpdateSession(w http.ResponseWriter, r *http.Request, s
 		if h.deps.BroadcastSessionArchived != nil {
 			h.deps.BroadcastSessionArchived(sessionID, false)
 		}
+
+		// Restore/re-surface any loop configuration that was left disabled by
+		// the archive (mitto-vmp): auto-resume archive-related stops, keep
+		// other pauses paused, and always re-broadcast the current config.
+		h.restoreLoopOnUnarchive(sessionID)
 	}
 
 	writeJSONOK(w, meta)
+}
+
+// restoreLoopOnUnarchive re-surfaces a session's loop configuration after
+// unarchive. Loop config (prompt/arguments/trigger/etc.) survives archive in
+// loop.json, but MarkStopped(StoppedReasonArchived/ResumeFailures) leaves it
+// disabled with no broadcast, so clients never learn it's still there
+// (mitto-vmp). This:
+//  1. Does nothing when the session has no loop configured.
+//  2. Auto-re-enables the loop when it was stopped for an archive-related
+//     reason (manual archive or ACP resume-failure auto-archive), kicking off
+//     BootstrapOnCompletion for onCompletion loops.
+//  3. Leaves other pause reasons (user-paused, max iterations, etc.) alone.
+//  4. Always re-broadcasts the current loop state so the UI can re-render it.
+func (h *Handlers) restoreLoopOnUnarchive(sessionID string) {
+	store := h.deps.Store
+	if store == nil {
+		return
+	}
+
+	loopStore := store.Loop(sessionID)
+	loop, err := loopStore.Get()
+	if err != nil {
+		if err != session.ErrLoopNotFound {
+			if h.deps.Logger != nil {
+				h.deps.Logger.Warn("Failed to read loop config on unarchive",
+					"session_id", sessionID, "error", err)
+			}
+		}
+		return
+	}
+	if loop == nil {
+		return
+	}
+
+	archiveRelated := loop.StoppedReason == session.StoppedReasonArchived ||
+		loop.StoppedReason == session.StoppedReasonResumeFailures
+
+	if archiveRelated && !loop.Enabled {
+		enabled := true
+		if err := loopStore.Update(nil, nil, nil, &enabled, nil, nil, nil, nil, nil, nil, nil, nil, nil); err != nil {
+			if h.deps.Logger != nil {
+				h.deps.Logger.Warn("Failed to re-enable loop on unarchive",
+					"session_id", sessionID, "error", err)
+			}
+		} else if updated, gErr := loopStore.Get(); gErr == nil && updated != nil && updated.IsOnCompletion() {
+			if h.deps.BootstrapOnCompletion != nil {
+				h.deps.BootstrapOnCompletion(sessionID)
+			}
+		}
+	}
+
+	// Always re-broadcast the latest loop state so the editor/pill render,
+	// whether the loop was just re-enabled or is still paused.
+	if final, gErr := loopStore.Get(); gErr == nil && h.deps.BroadcastLoopUpdated != nil {
+		h.deps.BroadcastLoopUpdated(sessionID, final)
+	}
 }
