@@ -3,12 +3,15 @@ package auxiliary
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/inercia/mitto/internal/fileutil"
 	"github.com/inercia/mitto/internal/mcpdiscovery"
 )
 
@@ -640,6 +643,161 @@ func TestFetchMCPTools_DedupBetweenDeterministicAndLLM(t *testing.T) {
 	}
 	if desc != "" {
 		t.Errorf("expected the deterministic entry (empty Description) to win, got %q", desc)
+	}
+}
+
+// =============================================================================
+// FetchMCPTools disk persistence: real-MCP only, TTL, manual refresh (mitto-sys.8)
+// =============================================================================
+
+func readPersistedSnapshot(t *testing.T, dir, workspaceUUID string) persistedMCPTools {
+	t.Helper()
+	var snap persistedMCPTools
+	if err := fileutil.ReadJSON(filepath.Join(dir, workspaceUUID+".json"), &snap); err != nil {
+		t.Fatalf("read persisted snapshot: %v", err)
+	}
+	return snap
+}
+
+func TestFetchMCPTools_PersistsRealMCPToDisk(t *testing.T) {
+	dir := t.TempDir()
+	mock := &mockProcessProvider{
+		promptFunc: func(ctx context.Context, workspaceUUID, purpose, message string) (string, error) {
+			t.Fatal("LLM provider must not be called when all servers are reachable")
+			return "", nil
+		},
+	}
+	mgr := NewWorkspaceAuxiliaryManager(mock, nil)
+	mgr.MCPToolsPersistDir = dir
+	mgr.StdioToolsDiscoverer = func(ctx context.Context, workspaceUUID string) ([]mcpdiscovery.ServerToolsResult, error) {
+		return []mcpdiscovery.ServerToolsResult{
+			{Server: "jira", Reachable: true, Tools: []string{"jira_create_issue", "jira_search"}},
+		}, nil
+	}
+
+	if _, err := mgr.FetchMCPTools(context.Background(), "ws"); err != nil {
+		t.Fatalf("FetchMCPTools error = %v", err)
+	}
+
+	snap := readPersistedSnapshot(t, dir, "ws")
+	assertToolNames(t, snap.Tools, "jira_create_issue", "jira_search")
+	if snap.UpdatedAt.IsZero() {
+		t.Errorf("expected UpdatedAt to be set")
+	}
+	if time.Since(snap.UpdatedAt) > time.Minute {
+		t.Errorf("expected a recent UpdatedAt, got %v", snap.UpdatedAt)
+	}
+}
+
+func TestFetchMCPTools_DoesNotPersistLLMFallback(t *testing.T) {
+	dir := t.TempDir()
+	mock := &mockProcessProvider{
+		promptFunc: func(ctx context.Context, workspaceUUID, purpose, message string) (string, error) {
+			return `{"tools":[{"name":"slack_post","description":"post"}]}`, nil
+		},
+	}
+	mgr := NewWorkspaceAuxiliaryManager(mock, nil)
+	mgr.MCPToolsPersistDir = dir
+	// No StdioToolsDiscoverer → pure-LLM path; nothing real-MCP to persist.
+
+	tools, err := mgr.FetchMCPTools(context.Background(), "ws")
+	if err != nil {
+		t.Fatalf("FetchMCPTools error = %v", err)
+	}
+	assertToolNames(t, tools, "slack_post")
+
+	if _, err := os.Stat(filepath.Join(dir, "ws.json")); !os.IsNotExist(err) {
+		t.Fatalf("LLM-fallback result must not be persisted (stat err = %v)", err)
+	}
+}
+
+func TestFetchMCPTools_LoadsPersistedWithinTTL_SkipsProbe(t *testing.T) {
+	dir := t.TempDir()
+	// Pre-seed a fresh snapshot on disk.
+	snap := persistedMCPTools{
+		Tools:     []MCPToolInfo{{Name: "jira_search"}, {Name: "slack_post"}},
+		UpdatedAt: time.Now(),
+	}
+	if err := fileutil.WriteJSONAtomic(filepath.Join(dir, "ws.json"), &snap, 0o644); err != nil {
+		t.Fatalf("seed snapshot: %v", err)
+	}
+
+	mock := &mockProcessProvider{
+		promptFunc: func(ctx context.Context, workspaceUUID, purpose, message string) (string, error) {
+			t.Fatal("LLM provider must not be called when a fresh snapshot exists")
+			return "", nil
+		},
+	}
+	mgr := NewWorkspaceAuxiliaryManager(mock, nil)
+	mgr.MCPToolsPersistDir = dir
+	mgr.StdioToolsDiscoverer = func(ctx context.Context, workspaceUUID string) ([]mcpdiscovery.ServerToolsResult, error) {
+		t.Fatal("discovery must not run when a fresh snapshot exists")
+		return nil, nil
+	}
+
+	tools, err := mgr.FetchMCPTools(context.Background(), "ws")
+	if err != nil {
+		t.Fatalf("FetchMCPTools error = %v", err)
+	}
+	assertToolNames(t, tools, "jira_search", "slack_post")
+}
+
+func TestFetchMCPTools_ExpiredSnapshot_ReProbes(t *testing.T) {
+	dir := t.TempDir()
+	// Pre-seed a stale snapshot (older than the TTL).
+	stale := persistedMCPTools{
+		Tools:     []MCPToolInfo{{Name: "old_tool"}},
+		UpdatedAt: time.Now().Add(-30 * time.Minute),
+	}
+	if err := fileutil.WriteJSONAtomic(filepath.Join(dir, "ws.json"), &stale, 0o644); err != nil {
+		t.Fatalf("seed snapshot: %v", err)
+	}
+
+	mock := &mockProcessProvider{
+		promptFunc: func(ctx context.Context, workspaceUUID, purpose, message string) (string, error) {
+			t.Fatal("LLM provider must not be called when all servers are reachable")
+			return "", nil
+		},
+	}
+	mgr := NewWorkspaceAuxiliaryManager(mock, nil)
+	mgr.MCPToolsPersistDir = dir
+	mgr.mcpToolsTTL = 15 * time.Minute
+	probed := false
+	mgr.StdioToolsDiscoverer = func(ctx context.Context, workspaceUUID string) ([]mcpdiscovery.ServerToolsResult, error) {
+		probed = true
+		return []mcpdiscovery.ServerToolsResult{
+			{Server: "jira", Reachable: true, Tools: []string{"jira_search"}},
+		}, nil
+	}
+
+	tools, err := mgr.FetchMCPTools(context.Background(), "ws")
+	if err != nil {
+		t.Fatalf("FetchMCPTools error = %v", err)
+	}
+	if !probed {
+		t.Fatalf("expected a fresh probe after TTL expiry")
+	}
+	assertToolNames(t, tools, "jira_search")
+
+	// The stale snapshot must have been overwritten with the fresh probe.
+	snap := readPersistedSnapshot(t, dir, "ws")
+	assertToolNames(t, snap.Tools, "jira_search")
+}
+
+func TestClearMCPToolsCache_RemovesPersistedSnapshot(t *testing.T) {
+	dir := t.TempDir()
+	snap := persistedMCPTools{Tools: []MCPToolInfo{{Name: "jira_search"}}, UpdatedAt: time.Now()}
+	path := filepath.Join(dir, "ws.json")
+	if err := fileutil.WriteJSONAtomic(path, &snap, 0o644); err != nil {
+		t.Fatalf("seed snapshot: %v", err)
+	}
+
+	mgr := NewWorkspaceAuxiliaryManager(&mockProcessProvider{}, nil)
+	mgr.MCPToolsPersistDir = dir
+	mgr.ClearMCPToolsCache("ws")
+
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("expected persisted snapshot removed, stat err = %v", err)
 	}
 }
 

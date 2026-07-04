@@ -65,6 +65,10 @@ const (
 
 	// DefenseBlocklistFileName is the name of the scanner defense blocklist file.
 	DefenseBlocklistFileName = "scanner_blocklist.json"
+
+	// MCPToolsCacheDirName is the name of the subdirectory holding per-workspace
+	// persisted real-MCP tools snapshots (one JSON file per workspace UUID).
+	MCPToolsCacheDirName = "mcp-tools-cache"
 )
 
 var (
@@ -397,6 +401,18 @@ func DefenseBlocklistPath() (string, error) {
 		return "", err
 	}
 	return filepath.Join(dir, DefenseBlocklistFileName), nil
+}
+
+// MCPToolsCacheDir returns the directory holding per-workspace persisted
+// real-MCP tools snapshots ($MITTO_DIR/mcp-tools-cache). The directory is not
+// created here; callers persist via fileutil.WriteJSONAtomic, which creates it
+// on first write.
+func MCPToolsCacheDir() (string, error) {
+	dir, err := Dir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, MCPToolsCacheDirName), nil
 }
 
 // ResetCache clears the cached directory path.

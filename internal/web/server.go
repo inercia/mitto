@@ -536,6 +536,15 @@ func NewServer(config Config) (*Server, error) {
 	auxiliaryManager := auxiliary.NewWorkspaceAuxiliaryManager(acpProcessMgr, logger)
 	sessionMgr.SetAuxiliaryManager(auxiliaryManager)
 
+	// Persist the real-MCP-derived tools snapshot per workspace (mitto-sys.8)
+	// so a restart reuses it within the TTL instead of re-probing every server.
+	// Only deterministic results are written; the LLM fallback stays in-memory.
+	if mcpCacheDir, cerr := appdir.MCPToolsCacheDir(); cerr == nil {
+		auxiliaryManager.MCPToolsPersistDir = mcpCacheDir
+	} else {
+		logger.Warn("mcp tools persistence disabled: cannot resolve cache dir", "error", cerr)
+	}
+
 	// Wire deterministic MCP tool discovery (mitto-sys.2/mitto-sys.3/mitto-sys.6):
 	// resolves a workspace to its ACP agent and probes its configured stdio +
 	// http/sse MCP servers directly via tools/list, so FetchMCPTools can skip

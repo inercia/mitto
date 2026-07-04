@@ -4,13 +4,21 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/inercia/mitto/internal/agents"
+	"github.com/inercia/mitto/internal/fileutil"
 	"github.com/inercia/mitto/internal/mcpdiscovery"
 )
+
+// defaultMCPToolsTTL bounds how long a persisted real-MCP tools snapshot is
+// reused after a restart before a fresh probe is required (mitto-sys.8).
+const defaultMCPToolsTTL = 15 * time.Minute
 
 // Purpose constants for auxiliary sessions
 const (
@@ -96,6 +104,17 @@ type WorkspaceAuxiliaryManager struct {
 	// dedup and StopMCPWatchers' teardown. Guarded by mcpWatchersMu.
 	mcpWatchers   map[string][]*mcpdiscovery.ToolListWatcher
 	mcpWatchersMu sync.Mutex
+
+	// MCPToolsPersistDir, when non-empty, enables on-disk persistence of the
+	// real-MCP-derived (deterministic) tools list per workspace, so a restart
+	// reuses the last snapshot within the TTL instead of re-probing every
+	// server. The web layer wires it to an appdir-based directory; empty
+	// (tests/CLI) disables persistence. Only deterministic results are ever
+	// written — never the LLM fallback (docs/devel/mcp-tool-discovery.md, Q3.3).
+	MCPToolsPersistDir string
+	// mcpToolsTTL bounds reuse of a persisted snapshot; defaults to
+	// defaultMCPToolsTTL. Overridable in tests for speed.
+	mcpToolsTTL time.Duration
 }
 
 // NewWorkspaceAuxiliaryManager creates a new workspace-scoped auxiliary manager.
@@ -109,6 +128,7 @@ func NewWorkspaceAuxiliaryManager(provider ProcessProvider, logger *slog.Logger)
 		mcpBackoffActive:  make(map[string]bool),
 		mcpBackoffPolicy:  mcpdiscovery.DefaultBackoffPolicy(),
 		mcpWatchers:       make(map[string][]*mcpdiscovery.ToolListWatcher),
+		mcpToolsTTL:       defaultMCPToolsTTL,
 	}
 }
 
@@ -334,6 +354,23 @@ func (m *WorkspaceAuxiliaryManager) FetchMCPTools(ctx context.Context, workspace
 	}
 	m.mcpToolsCacheMu.RUnlock()
 
+	// Real-MCP persistence (mitto-sys.8): within the TTL, reuse the on-disk
+	// snapshot of the last deterministic tools/list result instead of
+	// re-probing every server on restart. Only real-MCP results are ever
+	// persisted, so this never resurrects an LLM-hallucinated list. A missing
+	// or expired snapshot falls through to a fresh probe below.
+	if persisted, ok := m.loadPersistedMCPTools(workspaceUUID); ok {
+		m.mcpToolsCacheMu.Lock()
+		m.mcpToolsCache[workspaceUUID] = persisted
+		m.mcpToolsCacheMu.Unlock()
+		if m.logger != nil {
+			m.logger.Debug("mcp tools fetch: using persisted real-MCP snapshot",
+				"workspace_uuid", workspaceUUID,
+				"tool_count", len(persisted))
+		}
+		return persisted, nil
+	}
+
 	// Try deterministic stdio discovery first (mitto-sys.2/mitto-sys.6): a
 	// real tools/list per configured stdio server, no LLM involved. The LLM
 	// fallback below only runs when discovery is unavailable, errors, or
@@ -412,6 +449,12 @@ func (m *WorkspaceAuxiliaryManager) FetchMCPTools(ctx context.Context, workspace
 	// observed tool is never downgraded to absent on a single negative
 	// fetch (see applyMCPToolsCachePolicy).
 	result := m.applyMCPToolsCachePolicy(workspaceUUID, merged)
+
+	// Persist ONLY the real-MCP-derived (deterministic) list to disk — never
+	// the LLM fallback (mitto-sys.8, ADR Q3.3). A no-op when persistence is
+	// disabled or discovery produced no tools. A subsequent restart reuses this
+	// snapshot within the TTL instead of re-probing.
+	m.savePersistedMCPTools(workspaceUUID, deterministic)
 
 	if m.logger != nil {
 		m.logger.Info("MCP tools fetch completed",
@@ -865,6 +908,10 @@ func (m *WorkspaceAuxiliaryManager) ClearMCPToolsCache(workspaceUUID string) {
 	delete(m.mcpToolsCache, workspaceUUID)
 	m.mcpToolsCacheMu.Unlock()
 
+	// Also drop the persisted snapshot so a manual refresh forces a fresh
+	// probe rather than reusing stale disk state (mitto-sys.8).
+	m.deletePersistedMCPTools(workspaceUUID)
+
 	if m.logger != nil {
 		m.logger.Debug("cleared MCP tools cache",
 			"workspace_uuid", workspaceUUID)
@@ -878,6 +925,94 @@ func (m *WorkspaceAuxiliaryManager) GetCachedMCPTools(workspaceUUID string) ([]M
 	defer m.mcpToolsCacheMu.RUnlock()
 	cached, ok := m.mcpToolsCache[workspaceUUID]
 	return cached, ok
+}
+
+// persistedMCPTools is the on-disk representation of a workspace's
+// real-MCP-derived tools snapshot (mitto-sys.8). Only deterministic
+// (direct tools/list) results are persisted; the LLM fallback is never
+// written to disk (docs/devel/mcp-tool-discovery.md, Q3.3).
+type persistedMCPTools struct {
+	Tools     []MCPToolInfo `json:"tools"`
+	UpdatedAt time.Time     `json:"updated_at"`
+}
+
+// mcpToolsPersistPath returns the on-disk path for a workspace's persisted
+// real-MCP tools snapshot, or "" when persistence is disabled or the workspace
+// UUID is empty.
+func (m *WorkspaceAuxiliaryManager) mcpToolsPersistPath(workspaceUUID string) string {
+	if m.MCPToolsPersistDir == "" || workspaceUUID == "" {
+		return ""
+	}
+	return filepath.Join(m.MCPToolsPersistDir, workspaceUUID+".json")
+}
+
+// loadPersistedMCPTools returns the persisted real-MCP tools for a workspace
+// when a snapshot exists and is still within the TTL. Returns (nil, false) when
+// persistence is disabled, the file is missing/unreadable, the snapshot is
+// empty, or it has expired (a stale snapshot forces a fresh probe).
+func (m *WorkspaceAuxiliaryManager) loadPersistedMCPTools(workspaceUUID string) ([]MCPToolInfo, bool) {
+	path := m.mcpToolsPersistPath(workspaceUUID)
+	if path == "" {
+		return nil, false
+	}
+
+	var snapshot persistedMCPTools
+	if err := fileutil.ReadJSON(path, &snapshot); err != nil {
+		return nil, false
+	}
+	if len(snapshot.Tools) == 0 {
+		return nil, false
+	}
+
+	ttl := m.mcpToolsTTL
+	if ttl <= 0 {
+		ttl = defaultMCPToolsTTL
+	}
+	if age := time.Since(snapshot.UpdatedAt); age > ttl {
+		if m.logger != nil {
+			m.logger.Debug("mcp tools persist: snapshot expired, forcing re-probe",
+				"workspace_uuid", workspaceUUID,
+				"age", age.String())
+		}
+		return nil, false
+	}
+
+	return snapshot.Tools, true
+}
+
+// savePersistedMCPTools writes a workspace's real-MCP-derived tools snapshot to
+// disk atomically. It is a no-op when persistence is disabled or tools is empty.
+// Only deterministic results must be passed here — never the LLM fallback list.
+func (m *WorkspaceAuxiliaryManager) savePersistedMCPTools(workspaceUUID string, tools []MCPToolInfo) {
+	path := m.mcpToolsPersistPath(workspaceUUID)
+	if path == "" || len(tools) == 0 {
+		return
+	}
+
+	snapshot := persistedMCPTools{Tools: tools, UpdatedAt: time.Now()}
+	if err := fileutil.WriteJSONAtomic(path, &snapshot, 0o644); err != nil {
+		if m.logger != nil {
+			m.logger.Warn("mcp tools persist: failed to write snapshot",
+				"workspace_uuid", workspaceUUID,
+				"error", err.Error())
+		}
+	}
+}
+
+// deletePersistedMCPTools removes a workspace's persisted tools snapshot, if
+// any. Used by ClearMCPToolsCache so a manual refresh forces a fresh probe.
+func (m *WorkspaceAuxiliaryManager) deletePersistedMCPTools(workspaceUUID string) {
+	path := m.mcpToolsPersistPath(workspaceUUID)
+	if path == "" {
+		return
+	}
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		if m.logger != nil {
+			m.logger.Warn("mcp tools persist: failed to remove snapshot",
+				"workspace_uuid", workspaceUUID,
+				"error", err.Error())
+		}
+	}
 }
 
 // ClearMCPCheckCache clears the cached MCP availability result for a workspace.
