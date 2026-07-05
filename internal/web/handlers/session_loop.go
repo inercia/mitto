@@ -82,6 +82,7 @@ func (h *Handlers) loopDelayFloor() int {
 // HandleSessionLoop handles loop prompt operations for a session.
 // Routes: GET, PUT, PATCH, DELETE /api/sessions/{id}/loop
 // Route: POST /api/sessions/{id}/loop/run-now (immediate delivery)
+// Route: POST /api/sessions/{id}/loop/restore (restore detached settings)
 func (h *Handlers) HandleSessionLoop(w http.ResponseWriter, r *http.Request, sessionID, subPath string) {
 	store := h.deps.Store
 	if store == nil {
@@ -113,6 +114,12 @@ func (h *Handlers) HandleSessionLoop(w http.ResponseWriter, r *http.Request, ses
 	}
 
 	loopStore := store.Loop(sessionID)
+
+	// Handle restore sub-path (re-loop from previously-saved settings).
+	if subPath == "restore" {
+		h.handleRestoreLoop(w, r, sessionID, loopStore)
+		return
+	}
 
 	switch r.Method {
 	case http.MethodGet:

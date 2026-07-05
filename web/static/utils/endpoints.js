@@ -64,6 +64,7 @@ export const endpoints = {
     settings: (id) => apiUrl(`/api/sessions/${enc(id)}/settings`),
     loop: (id) => apiUrl(`/api/sessions/${enc(id)}/loop`),
     loopRunNow: (id) => apiUrl(`/api/sessions/${enc(id)}/loop/run-now`),
+    loopRestore: (id) => apiUrl(`/api/sessions/${enc(id)}/loop/restore`),
     flush: (id) => apiUrl(`/api/sessions/${enc(id)}/flush`),
     callback: (id) => apiUrl(`/api/sessions/${enc(id)}/callback`),
     userData: (id) => apiUrl(`/api/sessions/${enc(id)}/user-data`),

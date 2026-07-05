@@ -9755,6 +9755,63 @@ func TestConversationUpdate_SelfAlias(t *testing.T) {
 	}
 }
 
+// TestConversationUpdate_CreateLoopClearsSavedSlot verifies that creating a fresh
+// loop via MCP drops any previously-detached (un-looped) settings, so the
+// un-loop⇄re-loop toggle stays symmetric regardless of which interface recreated
+// the loop. A stale saved slot would otherwise be resurrected by a later restore.
+func TestConversationUpdate_CreateLoopClearsSavedSlot(t *testing.T) {
+	store, srv, parentID := setupConversationStartServer(t)
+	ctx := context.Background()
+
+	// Simulate a prior un-loop: seed a loop then Detach it to the saved slot.
+	loopStore := store.Loop(parentID)
+	if err := loopStore.Set(&session.LoopPrompt{
+		Prompt:    "old detached loop",
+		Frequency: session.Frequency{Value: 5, Unit: session.FrequencyHours},
+		Enabled:   true,
+	}); err != nil {
+		t.Fatalf("Set (seed) error = %v", err)
+	}
+	if err := loopStore.Detach(); err != nil {
+		t.Fatalf("Detach error = %v", err)
+	}
+	if _, err := loopStore.GetSaved(); err != nil {
+		t.Fatalf("GetSaved after Detach = %v, want nil (settings preserved)", err)
+	}
+
+	// Create a fresh loop via MCP (isNew path).
+	prompt := "brand new loop"
+	freqValue := 2
+	freqUnit := "hours"
+	_, out, err := srv.handleConversationUpdate(ctx, nil, ConversationUpdateInput{
+		SelfID:             parentID,
+		ConversationID:     parentID,
+		LoopPrompt:         &prompt,
+		LoopFrequencyValue: &freqValue,
+		LoopFrequencyUnit:  &freqUnit,
+	})
+	if err != nil {
+		t.Fatalf("handleConversationUpdate error: %v", err)
+	}
+	if !out.Success {
+		t.Fatalf("update not successful: %s", out.Error)
+	}
+
+	// The active config is the fresh one.
+	active, err := loopStore.Get()
+	if err != nil {
+		t.Fatalf("Get after create = %v", err)
+	}
+	if active.Prompt != "brand new loop" {
+		t.Errorf("active.Prompt = %q, want %q", active.Prompt, "brand new loop")
+	}
+
+	// The stale saved slot must be cleared so a later restore cannot resurrect it.
+	if _, err := loopStore.GetSaved(); err != session.ErrLoopNotFound {
+		t.Errorf("GetSaved after MCP create = %v, want ErrLoopNotFound (stale slot cleared)", err)
+	}
+}
+
 // TestStartProgressHeartbeat verifies that startProgressHeartbeat returns a stop
 // function that terminates the background goroutine promptly without panicking.
 // The goroutine must exit via hbCtx.Done() before the 15-second ticker fires,

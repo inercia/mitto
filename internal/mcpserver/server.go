@@ -4084,6 +4084,13 @@ func (s *Server) handleConversationUpdate(ctx context.Context, req *mcp.CallTool
 					Error:   fmt.Sprintf("failed to set loop: %v", err),
 				}, nil
 			}
+			// A freshly-defined loop supersedes any previously-detached settings, so
+			// drop the saved slot — parity with the REST make-loop path so the
+			// un-loop⇄re-loop toggle stays symmetric regardless of which interface
+			// (re)created the loop.
+			if err := loopStore.ClearSaved(); err != nil {
+				s.logger.Warn("Failed to clear stale saved loop settings on MCP set", "error", err)
+			}
 		} else {
 			// Updating existing loop config — use partial update
 			var prompt *string

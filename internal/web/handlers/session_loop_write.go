@@ -60,6 +60,12 @@ func (h *Handlers) handleSetLoop(w http.ResponseWriter, r *http.Request, session
 		writeErrorJSON(w, http.StatusInternalServerError, "", "Failed to set loop prompt")
 		return
 	}
+	// A freshly-defined loop supersedes any previously-detached settings, so drop
+	// the saved slot. This keeps the un-loop⇄re-loop toggle symmetric: the saved
+	// slot only ever holds the last active config (see Detach), never a stale one.
+	if err := ps.ClearSaved(); err != nil && h.deps.Logger != nil {
+		h.deps.Logger.Warn("Failed to clear stale saved loop settings on set", "error", err)
+	}
 	h.resetLoopContinuation(sessionID)
 
 	// Return the updated loop prompt
