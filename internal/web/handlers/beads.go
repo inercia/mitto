@@ -6,9 +6,19 @@ import (
 	"net/http"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/inercia/mitto/internal/beads"
 )
+
+// beadsReadRetries is the number of extra attempts for read-only bd queries
+// when they fail transiently (dolt store warm-up / instability). Read queries
+// are idempotent so retrying is safe. It is a var only so tests can adjust it.
+var beadsReadRetries = 2
+
+// beadsRetryBackoff is the base backoff between read retries. It is a var
+// only so tests can shorten it.
+var beadsRetryBackoff = 150 * time.Millisecond
 
 // beadsClient returns the injectable beads Client. When the handlers were
 // constructed without an explicit client (e.g. in tests), it falls back to a
@@ -55,12 +65,45 @@ func isValidBeadsIssueRef(s string) bool {
 
 // writeBeadsError reports a bd-command failure using the canonical error
 // envelope (HTTP 500), carrying any captured stderr under error.details.stderr.
-func writeBeadsError(w http.ResponseWriter, err error) {
+// It also logs the failure (nil-guarded) so 500s are never silent in mitto.log.
+func (h *Handlers) writeBeadsError(w http.ResponseWriter, r *http.Request, err error) {
+	if h.deps.Logger != nil {
+		h.deps.Logger.Error("beads command failed", "error", err, "stderr", beads.StderrOf(err), "path", r.URL.Path)
+	}
 	var details map[string]any
 	if s := beads.StderrOf(err); s != "" {
 		details = map[string]any{"stderr": s}
 	}
 	writeJSON(w, http.StatusInternalServerError, errorEnvelope{Error: errorBody{Code: errCodeServerError, Message: err.Error(), Details: details}})
+}
+
+// runBeadsRead executes a read-only bd query with bounded retries on transient
+// failures. It stops retrying on context cancellation and on not-found errors,
+// since retrying either would be pointless (the former can never succeed, the
+// latter is a genuine result rather than a transient failure).
+func (h *Handlers) runBeadsRead(ctx context.Context, fn func(context.Context) ([]byte, error)) ([]byte, error) {
+	var out []byte
+	var err error
+	for attempt := 0; attempt <= beadsReadRetries; attempt++ {
+		out, err = fn(ctx)
+		if err == nil {
+			return out, nil
+		}
+		if errors.Is(err, context.DeadlineExceeded) || ctx.Err() != nil || beads.IsNotFound(err) {
+			return out, err
+		}
+		if attempt < beadsReadRetries {
+			if h.deps.Logger != nil {
+				h.deps.Logger.Warn("beads read failed, retrying", "attempt", attempt+1, "error", err)
+			}
+			select {
+			case <-ctx.Done():
+				return out, ctx.Err()
+			case <-time.After(beadsRetryBackoff * time.Duration(attempt+1)):
+			}
+		}
+	}
+	return out, err
 }
 
 // HandleBeadsList handles GET /api/issues?working_dir=...
@@ -88,13 +131,15 @@ func (h *Handlers) HandleBeadsList(w http.ResponseWriter, r *http.Request) {
 
 	ctx, cancel := context.WithTimeout(r.Context(), auxBackedRequestTimeout)
 	defer cancel()
-	out, err := h.beadsClient().List(ctx, workingDir)
+	out, err := h.runBeadsRead(ctx, func(ctx context.Context) ([]byte, error) {
+		return h.beadsClient().List(ctx, workingDir)
+	})
 	if err != nil {
 		if errors.Is(err, context.DeadlineExceeded) || errors.Is(ctx.Err(), context.DeadlineExceeded) {
 			writeRetryableUnavailable(w, "Task service is busy. Please try again in a few seconds.", 5)
 			return
 		}
-		writeBeadsError(w, err)
+		h.writeBeadsError(w, r, err)
 		return
 	}
 
@@ -131,13 +176,15 @@ func (h *Handlers) HandleBeadsStats(w http.ResponseWriter, r *http.Request) {
 
 	ctx, cancel := context.WithTimeout(r.Context(), auxBackedRequestTimeout)
 	defer cancel()
-	out, err := h.beadsClient().Status(ctx, workingDir)
+	out, err := h.runBeadsRead(ctx, func(ctx context.Context) ([]byte, error) {
+		return h.beadsClient().Status(ctx, workingDir)
+	})
 	if err != nil {
 		if errors.Is(err, context.DeadlineExceeded) || errors.Is(ctx.Err(), context.DeadlineExceeded) {
 			writeRetryableUnavailable(w, "Task service is busy. Please try again in a few seconds.", 5)
 			return
 		}
-		writeBeadsError(w, err)
+		h.writeBeadsError(w, r, err)
 		return
 	}
 
@@ -181,7 +228,9 @@ func (h *Handlers) HandleBeadsShow(w http.ResponseWriter, r *http.Request) {
 
 	ctx, cancel := context.WithTimeout(r.Context(), auxBackedRequestTimeout)
 	defer cancel()
-	out, err := h.beadsClient().Show(ctx, workingDir, id)
+	out, err := h.runBeadsRead(ctx, func(ctx context.Context) ([]byte, error) {
+		return h.beadsClient().Show(ctx, workingDir, id)
+	})
 	if err != nil {
 		if errors.Is(err, context.DeadlineExceeded) || errors.Is(ctx.Err(), context.DeadlineExceeded) {
 			writeRetryableUnavailable(w, "Task service is busy. Please try again in a few seconds.", 5)
@@ -191,7 +240,7 @@ func (h *Handlers) HandleBeadsShow(w http.ResponseWriter, r *http.Request) {
 			writeErrorJSON(w, http.StatusNotFound, "", "Issue not found")
 			return
 		}
-		writeBeadsError(w, err)
+		h.writeBeadsError(w, r, err)
 		return
 	}
 

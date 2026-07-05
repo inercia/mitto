@@ -61,7 +61,7 @@ func (h *Handlers) handleBeadsConfigGet(w http.ResponseWriter, r *http.Request) 
 
 	result, err := h.beadsClient().ConfigShow(r.Context(), workingDir)
 	if err != nil {
-		writeBeadsError(w, err)
+		h.writeBeadsError(w, r, err)
 		return
 	}
 
@@ -99,7 +99,7 @@ func (h *Handlers) handleBeadsConfigSet(w http.ResponseWriter, r *http.Request) 
 	}
 
 	if err := h.beadsClient().ConfigSet(r.Context(), workingDir, req.Key, req.Value); err != nil {
-		writeBeadsError(w, err)
+		h.writeBeadsError(w, r, err)
 		return
 	}
 
@@ -129,7 +129,7 @@ func (h *Handlers) handleBeadsConfigUnset(w http.ResponseWriter, r *http.Request
 	}
 
 	if err := h.beadsClient().ConfigUnset(r.Context(), workingDir, key); err != nil {
-		writeBeadsError(w, err)
+		h.writeBeadsError(w, r, err)
 		return
 	}
 
@@ -265,12 +265,12 @@ func (h *Handlers) handleBeadsUpstreamSet(w http.ResponseWriter, r *http.Request
 		}
 		if err := config.SetFolderBeadsPromptUpstream(workingDir, req.PullPrompt, req.PushPrompt, req.SyncPrompt,
 			req.PullPromptArgs, req.PushPromptArgs, req.SyncPromptArgs); err != nil {
-			writeBeadsError(w, err)
+			h.writeBeadsError(w, r, err)
 			return
 		}
 	} else {
 		if err := config.SetFolderBeadsUpstream(workingDir, req.Upstream); err != nil {
-			writeBeadsError(w, err)
+			h.writeBeadsError(w, r, err)
 			return
 		}
 	}
@@ -353,7 +353,7 @@ func (h *Handlers) HandleBeadsSync(w http.ResponseWriter, r *http.Request) {
 
 	out, err := h.beadsClient().Sync(r.Context(), workingDir, upstream, req.Action)
 	if err != nil {
-		writeBeadsError(w, err)
+		h.writeBeadsError(w, r, err)
 		return
 	}
 

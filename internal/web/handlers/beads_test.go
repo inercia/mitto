@@ -1,12 +1,15 @@
 package handlers
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -303,6 +306,110 @@ func TestHandleBeadsList_Timeout_ReturnsRetryable503(t *testing.T) {
 	}
 	if env.Error.Code != "unavailable" {
 		t.Errorf("error.code = %q, want %q", env.Error.Code, "unavailable")
+	}
+}
+
+// TestHandleBeadsList_PersistentError_LogsError verifies AC1: a persistent
+// (non-not-found, non-timeout) bd failure both returns the canonical 500
+// envelope AND emits a backend error log carrying the underlying cause, so
+// the failure is never silent in mitto.log (regression test for mitto-rxd).
+func TestHandleBeadsList_PersistentError_LogsError(t *testing.T) {
+	old := beadsReadRetries
+	beadsReadRetries = 0 // fail immediately, no retries needed for this test
+	defer func() { beadsReadRetries = old }()
+
+	var logBuf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logBuf, nil))
+
+	sm := newBeadsTestSM()
+	s := New(Deps{SessionManager: sm, BeadsClient: &listErrorClient{}, Logger: logger})
+
+	req := localhostRequest("/api/issues?working_dir=/test/workspace")
+	w := httptest.NewRecorder()
+	s.handleBeadsList(w, req)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want %d", w.Code, http.StatusInternalServerError)
+	}
+	logged := logBuf.String()
+	if !strings.Contains(logged, "level=ERROR") {
+		t.Errorf("log output = %q, want it to contain %q", logged, "level=ERROR")
+	}
+	if !strings.Contains(logged, "beads command failed") {
+		t.Errorf("log output = %q, want it to contain %q", logged, "beads command failed")
+	}
+	if !strings.Contains(logged, "bd: command failed: exit status 1") {
+		t.Errorf("log output = %q, want it to contain the underlying error", logged)
+	}
+}
+
+// flakyListClient's List fails failCount times, then succeeds. Used to verify
+// AC2: transient bd failures are retried instead of surfacing as bare 500s.
+type flakyListClient struct {
+	stubBeadsClient
+	failCount int32
+	calls     int32
+}
+
+func (c *flakyListClient) List(_ context.Context, _ string) ([]byte, error) {
+	n := atomic.AddInt32(&c.calls, 1)
+	if n <= c.failCount {
+		return nil, errors.New("bd: transient dolt error")
+	}
+	return []byte(`[]`), nil
+}
+
+// TestHandleBeadsList_TransientFailure_RetriesThenSucceeds verifies AC2: a
+// fail-then-succeed sequence from a read-only bd query is retried internally
+// and returns HTTP 200 to the client, rather than a bare 500.
+func TestHandleBeadsList_TransientFailure_RetriesThenSucceeds(t *testing.T) {
+	oldRetries := beadsReadRetries
+	oldBackoff := beadsRetryBackoff
+	beadsReadRetries = 2
+	beadsRetryBackoff = time.Millisecond
+	defer func() {
+		beadsReadRetries = oldRetries
+		beadsRetryBackoff = oldBackoff
+	}()
+
+	client := &flakyListClient{failCount: 2}
+	s := newBeadsTestServerWithClient(client)
+	req := localhostRequest("/api/issues?working_dir=/test/workspace")
+	w := httptest.NewRecorder()
+	s.handleBeadsList(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body=%s", w.Code, http.StatusOK, w.Body.String())
+	}
+	if got := atomic.LoadInt32(&client.calls); got != 3 {
+		t.Errorf("List call count = %d, want 3 (2 failures + 1 success)", got)
+	}
+}
+
+// TestHandleBeadsList_PersistentTransientFailure_ExhaustsRetries verifies that
+// when every attempt fails, the handler still returns the canonical 500
+// envelope after exhausting beadsReadRetries (not an infinite/unbounded retry).
+func TestHandleBeadsList_PersistentTransientFailure_ExhaustsRetries(t *testing.T) {
+	oldRetries := beadsReadRetries
+	oldBackoff := beadsRetryBackoff
+	beadsReadRetries = 2
+	beadsRetryBackoff = time.Millisecond
+	defer func() {
+		beadsReadRetries = oldRetries
+		beadsRetryBackoff = oldBackoff
+	}()
+
+	client := &flakyListClient{failCount: 100}
+	s := newBeadsTestServerWithClient(client)
+	req := localhostRequest("/api/issues?working_dir=/test/workspace")
+	w := httptest.NewRecorder()
+	s.handleBeadsList(w, req)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want %d", w.Code, http.StatusInternalServerError)
+	}
+	if got := atomic.LoadInt32(&client.calls); got != 3 {
+		t.Errorf("List call count = %d, want 3 (1 initial + 2 retries)", got)
 	}
 }
 

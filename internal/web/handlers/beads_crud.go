@@ -128,7 +128,7 @@ func (h *Handlers) HandleBeadsCreate(w http.ResponseWriter, r *http.Request) {
 		Notes:       strings.TrimSpace(req.Notes),
 	})
 	if err != nil {
-		writeBeadsError(w, err)
+		h.writeBeadsError(w, r, err)
 		return
 	}
 
@@ -181,7 +181,7 @@ func (h *Handlers) HandleBeadsCleanup(w http.ResponseWriter, r *http.Request) {
 			writeRetryableUnavailable(w, "Task service is busy. Please try again in a few seconds.", 5)
 			return
 		}
-		writeBeadsError(w, err)
+		h.writeBeadsError(w, r, err)
 		return
 	}
 	total := len(ids)
@@ -285,7 +285,7 @@ func (h *Handlers) HandleBeadsDelete(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := h.beadsClient().Delete(r.Context(), workingDir, id); err != nil {
-		writeBeadsError(w, err)
+		h.writeBeadsError(w, r, err)
 		return
 	}
 
@@ -342,7 +342,7 @@ func (h *Handlers) HandleBeadsStatus(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := h.beadsClient().SetStatus(r.Context(), workingDir, id, verb); err != nil {
-		writeBeadsError(w, err)
+		h.writeBeadsError(w, r, err)
 		return
 	}
 
@@ -423,7 +423,7 @@ func (h *Handlers) HandleBeadsUpdate(w http.ResponseWriter, r *http.Request) {
 		Assignee:    req.Assignee,
 		Notes:       req.Notes,
 	}); err != nil {
-		writeBeadsError(w, err)
+		h.writeBeadsError(w, r, err)
 		return
 	}
 
@@ -475,7 +475,7 @@ func (h *Handlers) HandleBeadsComment(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := h.beadsClient().Comment(r.Context(), workingDir, id, req.Text); err != nil {
-		writeBeadsError(w, err)
+		h.writeBeadsError(w, r, err)
 		return
 	}
 
@@ -554,7 +554,7 @@ func (h *Handlers) HandleBeadsDep(w http.ResponseWriter, r *http.Request) {
 		Type:      req.Type,
 		Action:    req.Action,
 	}); err != nil {
-		writeBeadsError(w, err)
+		h.writeBeadsError(w, r, err)
 		return
 	}
 
@@ -619,7 +619,7 @@ func (h *Handlers) HandleBeadsLabel(w http.ResponseWriter, r *http.Request) {
 		Label:  strings.TrimSpace(req.Label),
 		Action: req.Action,
 	}); err != nil {
-		writeBeadsError(w, err)
+		h.writeBeadsError(w, r, err)
 		return
 	}
 
@@ -659,7 +659,7 @@ func (h *Handlers) HandleBeadsLabelsAll(w http.ResponseWriter, r *http.Request) 
 			writeRetryableUnavailable(w, "Task service is busy. Please try again in a few seconds.", 5)
 			return
 		}
-		writeBeadsError(w, err)
+		h.writeBeadsError(w, r, err)
 		return
 	}
 
