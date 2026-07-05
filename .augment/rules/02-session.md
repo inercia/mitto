@@ -130,6 +130,8 @@ Stored in `loop.json`. Only top-level sessions may have loop prompts (child → 
 
 **Critical**: Changing `LoopStore.Update()` signature requires updating BOTH `session_loop_api.go` (PATCH handler) AND `mcpserver/server.go` (MCP tool) — both call `Update()`.
 
+**Un-loop/re-loop persistence symmetry**: `Detach()` saves settings to a slot and clears the active config (un-loop); `GetSaved()`/restore reads it back. A fresh loop `Set()` (not a restore) must be followed by `ClearSaved()` so a stale saved slot doesn't leak in later — required in both `session_loop_write.go` (`handleSetLoop`) and `mcpserver/server.go` (MCP create-loop path).
+
 ## Auxiliary Package
 
 The `internal/auxiliary` package provides a hidden ACP session for utility tasks. Lazy init, auto-approve permissions, file writes denied, thread-safe.

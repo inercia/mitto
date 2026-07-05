@@ -101,15 +101,11 @@ Used in `BeadsView.js` (list actions + issue-detail header).
 
 ## Model Selection & Preferred Models
 
-Prompts can declare `preferredModels:` to route to specific ACP models. `selectPreferredModel()` in `constraints.go` picks the best match using configurable match modes (`"contains"`, `"exact"`, `"startsWith"`, `"regex"`, `"lookAlike"`). **Key insight**: If the active model already satisfies the preference, it's kept; otherwise the preference is applied. This avoids unnecessary model switches in multi-model sessions.
+Prompts can declare `preferredModels:` to route to specific ACP models. `selectPreferredModel()` in `constraints.go` picks the best match using configurable match modes (`"contains"`, `"exact"`, `"startsWith"`, `"regex"`, `"lookAlike"`). If the active model already satisfies the preference, it's kept; otherwise applied — avoids unnecessary switches in multi-model sessions.
 
-**Per-prompt transient overrides**: When a prompt declares `preferredModels`, `setActiveModelOnly()` temporarily switches models for that prompt's execution **without** recording a `session_change` event. This is **intentional**:
-- Baseline model (conversation-level setting) remains unchanged
-- No "Model changed to X" message in timeline (silent override)
-- After prompt completes, `restoreBaselineIfOverride()` flips model back to baseline
-- Result: Heavy-lift work runs on cheaper models (e.g., Sonnet) while conversation stays on your chosen baseline (e.g., Opus)
+**Per-prompt transient overrides**: `setActiveModelOnly()` switches models for a prompt's execution **without** recording a `session_change` event (silent; conversation-level baseline is untouched). `restoreBaselineIfOverride()` flips back after the prompt completes. **Contrast**: manual UI selection → `applyConfigOption()` → `cmRecordSessionChange()` → persistent event, updates baseline.
 
-**Contrast**: Manual model selection (via UI dropdown) → `applyConfigOption()` → `cmRecordSessionChange()` → records persistent `session_change` event and updates baseline.
+**Config-level tag resolution**: `(*Config).EffectiveModelProfiles()` unions `settings.json`'s `Models` with hardcoded `config.DefaultModelProfiles()` (7 canonical profiles), user wins by name — so `modelTag:` always resolves even when `settings.json` predates/omits `models:`. `make check-model-tags` keeps `config.default.yaml` and the Go defaults in sync and rejects unknown tags in builtin prompts. See `.augment/rules/08-config.md`.
 
 ## CEL Tool Evaluation (Fail-Open Behavior)
 

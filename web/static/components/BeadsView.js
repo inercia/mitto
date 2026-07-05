@@ -967,6 +967,9 @@ export function BeadsDetailPanel({
       return {
         kind: "button",
         testId: `beads-issue-shortcut-btn-${i}`,
+        // On phone-width screens only the first shortcut is shown; the rest are
+        // hidden (see .mitto-shortcut-extra in styles-v2.css) to avoid overflow.
+        className: i > 0 ? "mitto-shortcut-extra" : undefined,
         icon: html`<${Icon} className="w-4 h-4" />`,
         tip: found ? sc.prompt : `Prompt "${sc.prompt}" not found`,
         ariaLabel: found
@@ -4710,6 +4713,9 @@ export function BeadsView({
     return {
       kind: "button",
       testId: `beads-shortcut-btn-${i}`,
+      // On phone-width screens only the first shortcut is shown; the rest are
+      // hidden (see .mitto-shortcut-extra in styles-v2.css) to avoid overflow.
+      className: i > 0 ? "mitto-shortcut-extra" : undefined,
       icon: html`<${Icon} className="w-4 h-4" />`,
       tip: found ? sc.prompt : `Prompt "${sc.prompt}" not found`,
       ariaLabel: found
