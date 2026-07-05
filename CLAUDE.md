@@ -64,7 +64,7 @@ go test -v -tags integration ./tests/integration/inprocess/
 - **Log authoritative source**: Check `events.jsonl` (session dir) when debugging; server logs rotate and have gaps.
 - **daisyUI drawer GPU bug**: `.drawer-side` + fixed-position overlay compete for pointer events → blank artifacts. Fix: See `web/static/styles.css` for verified pattern. Do NOT use `translateZ(0)`.
 - **Zombie WebSocket recovery**: When phone sleeps or app backgrounded, WS may enter "zombie" state (appearing open but dead). On visibility change or app activate, force-close and reconnect. This is expected behavior — not a bug. See `.augment/rules/23-web-frontend-mobile.md` for resilience patterns.
-- **Verify prior edits actually persisted**: Don't trust that a previous turn's file edits are still on disk (session gaps, restarts, or reverted stashes can silently drop them). Before continuing/relying on earlier work, re-check with `git status`/`git diff` or re-view the file rather than assuming.
+- **Verify prior edits actually persisted**: Don't trust that a previous turn's file edits are still on disk — session gaps, restarts, or a **concurrent loop conversation** (e.g. a PR-babysitting/cleanup loop sharing the same repo) stashing/resetting the working directory mid-task can silently drop them. Re-check with `git status`/`git diff`/re-view before relying on earlier work; if files vanish unexpectedly, check `git stash list` first — work is often auto-stashed, not lost.
 
 ## New Agent Capability Checklist
 
@@ -139,6 +139,8 @@ Per-agent `mcp-list.sh` config paths/keys are **not** interchangeable across age
 - Free-text loop prompts NOT sent to frontend → selector can't display them (UI gap)
 - `app.js` line ~1928: `headerLoopState()` returns `{ state, label, badgeClass }` pill object
 - Issue `mitto-36nm` tracks UI clarity improvement (prompt visibility + pill disambiguation)
+
+**Persistence symmetry (LoopStore, `internal/session/loop.go`)**: un-loop calls `Detach()` (saves settings to a slot, clears active config); re-loop/restore reads it back via `GetSaved()`. A **fresh** loop create must call `ClearSaved()` right after `Set()` so a stale saved slot doesn't leak into a later un-loop — done identically in REST (`session_loop_write.go` `handleSetLoop`) and MCP (`mcpserver/server.go` create-loop path) to keep both interfaces symmetric.
 
 ## Tokensave Rule (Mandatory)
 

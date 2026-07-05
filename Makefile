@@ -1,4 +1,4 @@
-.PHONY: build install test test-go test-js test-integration test-integration-go test-integration-cli test-integration-api test-integration-client test-ui test-ui-headed test-ui-debug test-ui-report test-all test-ci test-setup test-clean clean run fmt fmt-check fmt-docs fmt-docs-check lint lint-go lint-frontend deps-go deps-js deps tailwind vendor-codemirror build-mac-app clean-mac-app test-webviewlog build-mock-acp ci install-hooks homebrew-generate homebrew-test homebrew-test-style homebrew-test-install homebrew-test-cask homebrew-tap-setup homebrew-clean smoke-build smoke-test-cli smoke-test smoke-clean
+.PHONY: build install test test-go test-js check-model-tags test-integration test-integration-go test-integration-cli test-integration-api test-integration-client test-ui test-ui-headed test-ui-debug test-ui-report test-all test-ci test-setup test-clean clean run fmt fmt-check fmt-docs fmt-docs-check lint lint-go lint-frontend deps-go deps-js deps tailwind vendor-codemirror build-mac-app clean-mac-app test-webviewlog build-mock-acp ci install-hooks homebrew-generate homebrew-test homebrew-test-style homebrew-test-install homebrew-test-cask homebrew-tap-setup homebrew-clean smoke-build smoke-test-cli smoke-test smoke-clean
 
 # Binary name
 BINARY_NAME=mitto
@@ -43,6 +43,13 @@ test-go:
 test-js: deps-js
 	@echo "Running JavaScript tests..."
 	$(NPM) test
+
+# Validate builtin prompt model tags against the canonical Go tag set.
+# Fails if any builtin prompt references a modelTag not in config.CanonicalModelTags(),
+# or if config/config.default.yaml `models:` drifts from config.DefaultModelProfiles().
+check-model-tags:
+	@echo "Validating builtin prompt model tags..."
+	$(GOTEST) -run 'TestBuiltinPrompts_ModelTagsAreCanonical|TestDefaultModelProfiles_MatchesEmbeddedYAML|TestCanonicalModelTags|TestEffectiveModelProfiles_MergeAndPrecedence' ./internal/config/
 
 # =============================================================================
 # Integration & UI Tests

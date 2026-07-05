@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -34,6 +35,77 @@ type ModelProfile struct {
 	Criteria *ACPServerConstraint `json:"criteria,omitempty"`
 	// Tags is the list of capability tags carried by matching models (e.g. "Smart", "Cheap").
 	Tags []string `json:"tags,omitempty"`
+}
+
+// DefaultModelProfiles returns the canonical, hardcoded set of model profiles.
+// This is the single Go source of truth for well-known model-capability tags and
+// mirrors the `models:` block in config/config.default.yaml (kept in sync by the
+// `make check-model-tags` target).
+//
+// Unlike config.default.yaml — which only seeds settings.json on first run — these
+// profiles are always available at runtime via EffectiveModelProfiles, so tag-based
+// prompt preferredModels (e.g. `modelTag: Coding`) resolve even when the user's
+// settings.json has an empty or partial `Models` list. A fresh copy is returned on
+// each call so callers may mutate the result freely.
+func DefaultModelProfiles() []ModelProfile {
+	contains := func(pattern string) *ACPServerConstraint {
+		return &ACPServerConstraint{MatchMode: "contains", Pattern: pattern}
+	}
+	return []ModelProfile{
+		{Name: "Claude", Criteria: contains("Claude"), Tags: []string{"Anthropic"}},
+		{Name: "Claude Opus", Criteria: contains("Opus"), Tags: []string{"Smartest", "Reasoning", "Expensive"}},
+		{Name: "Claude Sonnet", Criteria: contains("Sonnet"), Tags: []string{"Smart", "Coding"}},
+		{Name: "Claude Haiku", Criteria: contains("Haiku"), Tags: []string{"Fast", "Cheap"}},
+		{Name: "GPT-5", Criteria: contains("GPT-5"), Tags: []string{"Smart", "Reasoning", "Coding"}},
+		{Name: "GPT-4", Criteria: contains("GPT-4"), Tags: []string{"Smart", "Coding"}},
+		{Name: "Gemini", Criteria: contains("Gemini"), Tags: []string{"Smart", "LongContext"}},
+	}
+}
+
+// CanonicalModelTags returns the sorted, de-duplicated set of capability tags carried
+// by DefaultModelProfiles. It is the authoritative list of tags that a prompt's
+// preferredModels `modelTag:` may reference and is used by the `make check-model-tags`
+// validator to reject unknown tags in builtin prompts.
+func CanonicalModelTags() []string {
+	seen := make(map[string]struct{})
+	var tags []string
+	for _, p := range DefaultModelProfiles() {
+		for _, t := range p.Tags {
+			if _, dup := seen[t]; dup {
+				continue
+			}
+			seen[t] = struct{}{}
+			tags = append(tags, t)
+		}
+	}
+	sort.Strings(tags)
+	return tags
+}
+
+// EffectiveModelProfiles returns the model profiles that should be used for tag/name
+// resolution: the user-configured profiles (Config.Models) unioned with the canonical
+// DefaultModelProfiles as a fallback. User profiles take precedence — a default profile
+// is only appended when no user profile shares its name (case-insensitive). This
+// guarantees well-known tags always resolve even when settings.json omits `models:`,
+// without overriding any customisation the user has made. Safe to call on a nil Config.
+func (c *Config) EffectiveModelProfiles() []ModelProfile {
+	var user []ModelProfile
+	if c != nil {
+		user = c.Models
+	}
+	out := make([]ModelProfile, len(user))
+	copy(out, user)
+	haveName := make(map[string]struct{}, len(user))
+	for _, p := range user {
+		haveName[strings.ToLower(p.Name)] = struct{}{}
+	}
+	for _, d := range DefaultModelProfiles() {
+		if _, ok := haveName[strings.ToLower(d.Name)]; ok {
+			continue
+		}
+		out = append(out, d)
+	}
+	return out
 }
 
 // ConstraintMatchesName reports whether name matches the constraint's Pattern under
@@ -1883,31 +1955,43 @@ func ProfilesByTag(profiles []ModelProfile, tag string) []ModelProfile {
 
 // ModelProfileByName returns the model profile with the given name (case-insensitive).
 // The bool is false when no profile matches. Intended for consumers that need to look up
-// a profile's tags or criteria by its display name.
+// a profile's tags or criteria by its display name. Resolution uses EffectiveModelProfiles
+// so well-known profiles resolve even when settings.json omits `models:`.
 func (c *Config) ModelProfileByName(name string) (*ModelProfile, bool) {
-	p := ProfileByName(c.Models, name)
+	profiles := c.EffectiveModelProfiles()
+	p := ProfileByName(profiles, name)
 	return p, p != nil
 }
 
 // ModelProfilesByTag returns all model profiles carrying the given tag (case-insensitive),
 // mirroring how ACP server tags are compared elsewhere. Returns an empty slice when none match.
+// Resolution uses EffectiveModelProfiles so well-known tags resolve even when settings.json
+// omits `models:`.
 func (c *Config) ModelProfilesByTag(tag string) []ModelProfile {
-	return ProfilesByTag(c.Models, tag)
+	return ProfilesByTag(c.EffectiveModelProfiles(), tag)
 }
 
 // ResolveModelTags returns the UNION of capability tags from every model profile whose
 // Criteria matches modelName (using the shared ConstraintMatchesName engine). Tags are
-// de-duplicated case-insensitively, preserving first-seen order. It is a pure function of
-// (profiles, name) so config never needs to import conversation. Returns nil when modelName
-// is empty, no profile has criteria, or nothing matches (a nil slice is safe to range/index).
+// de-duplicated case-insensitively, preserving first-seen order. Resolution uses
+// EffectiveModelProfiles so well-known tags resolve even when settings.json omits `models:`.
+// Returns nil when modelName is empty or nothing matches (a nil slice is safe to range/index).
 func (c *Config) ResolveModelTags(modelName string) []string {
 	if modelName == "" {
 		return nil
 	}
+	return resolveModelTags(c.EffectiveModelProfiles(), modelName)
+}
+
+// resolveModelTags is the pure, slice-based core shared by (*Config).ResolveModelTags.
+// It returns the union (case-insensitive de-dup, first-seen order) of tags from every
+// profile whose Criteria matches modelName. Kept separate so callers with a plain
+// []ModelProfile (and tests) can resolve without the canonical-default merge.
+func resolveModelTags(profiles []ModelProfile, modelName string) []string {
 	var tags []string
 	seen := make(map[string]struct{})
-	for i := range c.Models {
-		p := &c.Models[i]
+	for i := range profiles {
+		p := &profiles[i]
 		if !ConstraintMatchesName(p.Criteria, modelName) {
 			continue
 		}

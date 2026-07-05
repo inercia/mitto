@@ -71,6 +71,9 @@ func (h *Handlers) HandleGetConfig(w http.ResponseWriter, r *http.Request) {
 		"config_readonly": h.deps.ConfigReadOnly,
 		"api_prefix":      h.deps.APIPrefix, // Include API prefix for frontend to use
 		"models":          []configPkg.ModelProfile{},
+		// Canonical capability tags (single Go source of truth) so the frontend can
+		// suggest them when editing model-profile tags, without duplicating the list.
+		"model_tags": configPkg.CanonicalModelTags(),
 	}
 
 	// Include RC file path if config is from an RC file

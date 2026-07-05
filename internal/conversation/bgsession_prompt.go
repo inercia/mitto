@@ -862,13 +862,12 @@ func (bs *BackgroundSession) pdResolvePreferredModels(promptName string) []confi
 	return bs.preferredModelsResolver(promptName, bs.workingDir)
 }
 
-// pdModelProfiles exposes the global model profiles (Settings → Models) so
-// SelectPreferredModel can resolve PromptPreferredModel entries by name/tag.
+// pdModelProfiles exposes the model profiles used to resolve PromptPreferredModel
+// entries by name/tag. It returns the user-configured profiles (Settings → Models)
+// unioned with the canonical DefaultModelProfiles as a fallback, so well-known tags
+// (e.g. "Coding", "Cheap") always resolve even when settings.json omits `models:`.
 func (bs *BackgroundSession) pdModelProfiles() []config.ModelProfile {
-	if bs.mittoConfig == nil {
-		return nil
-	}
-	return bs.mittoConfig.Models
+	return bs.mittoConfig.EffectiveModelProfiles()
 }
 
 func (bs *BackgroundSession) pdResolvePromptParameters(promptName string) []config.PromptParameter {

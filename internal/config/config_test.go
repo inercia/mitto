@@ -1,9 +1,13 @@
 package config
 
 import (
+	"io/fs"
 	"os"
 	"path/filepath"
+	"sort"
+	"strings"
 	"testing"
+	"time"
 
 	defaultConfig "github.com/inercia/mitto/config"
 )
@@ -2500,39 +2504,43 @@ func TestModelProfileByName(t *testing.T) {
 }
 
 // TestModelProfilesByTag covers case-insensitive tag filtering, including a tag shared
-// by multiple profiles.
+// by multiple profiles. It exercises the pure slice-based engine (ProfilesByTag) so it
+// stays free of the canonical-default merge that (*Config).ModelProfilesByTag applies;
+// the merge itself is covered by TestEffectiveModelProfiles_MergeAndPrecedence.
 func TestModelProfilesByTag(t *testing.T) {
-	cfg := &Config{Models: []ModelProfile{
+	profiles := []ModelProfile{
 		{Name: "Opus", Tags: []string{"Smartest", "Expensive"}},
 		{Name: "Sonnet", Tags: []string{"Smart", "Cheap"}},
 		{Name: "Haiku", Tags: []string{"Fast", "Cheap"}},
-	}}
+	}
 
-	cheap := cfg.ModelProfilesByTag("cheap")
+	cheap := ProfilesByTag(profiles, "cheap")
 	if len(cheap) != 2 {
-		t.Fatalf("ModelProfilesByTag(cheap) count = %d, want 2", len(cheap))
+		t.Fatalf("ProfilesByTag(cheap) count = %d, want 2", len(cheap))
 	}
 	if cheap[0].Name != "Sonnet" || cheap[1].Name != "Haiku" {
-		t.Errorf("ModelProfilesByTag(cheap) = [%s %s], want [Sonnet Haiku]", cheap[0].Name, cheap[1].Name)
+		t.Errorf("ProfilesByTag(cheap) = [%s %s], want [Sonnet Haiku]", cheap[0].Name, cheap[1].Name)
 	}
 
-	if got := cfg.ModelProfilesByTag("missing"); len(got) != 0 {
-		t.Errorf("ModelProfilesByTag(missing) count = %d, want 0", len(got))
+	if got := ProfilesByTag(profiles, "missing"); len(got) != 0 {
+		t.Errorf("ProfilesByTag(missing) count = %d, want 0", len(got))
 	}
 }
 
 // TestResolveModelTags covers tag resolution across every match mode, the union (with
 // case-insensitive de-dup) across multiple matching profiles, the no-match / empty cases,
-// and that criteria-less profiles never contribute tags.
+// and that criteria-less profiles never contribute tags. It exercises the pure slice-based
+// core (resolveModelTags) so it stays free of the canonical-default merge that
+// (*Config).ResolveModelTags applies; the merge is covered elsewhere.
 func TestResolveModelTags(t *testing.T) {
-	cfg := &Config{Models: []ModelProfile{
+	profiles := []ModelProfile{
 		{Name: "Opus", Criteria: &ACPServerConstraint{MatchMode: "contains", Pattern: "Opus"}, Tags: []string{"Smart", "Expensive"}},
 		{Name: "Claude", Criteria: &ACPServerConstraint{MatchMode: "regex", Pattern: "opus|sonnet"}, Tags: []string{"Anthropic", "smart"}},
 		{Name: "Sonnet", Criteria: &ACPServerConstraint{MatchMode: "exact", Pattern: "Sonnet 4.6"}, Tags: []string{"Cheap"}},
 		{Name: "Pro", Criteria: &ACPServerConstraint{MatchMode: "startsWith", Pattern: "opus"}, Tags: []string{"Pro"}},
 		{Name: "Look", Criteria: &ACPServerConstraint{MatchMode: "lookAlike", Pattern: "Opus 4.8"}, Tags: []string{"Latest"}},
 		{Name: "TagsOnly", Tags: []string{"NeverApplied"}}, // nil criteria → never matches
-	}}
+	}
 
 	tests := []struct {
 		name      string
@@ -2549,7 +2557,13 @@ func TestResolveModelTags(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := cfg.ResolveModelTags(tt.modelName)
+			if tt.modelName == "" {
+				if got := (&Config{Models: profiles}).ResolveModelTags(""); got != nil {
+					t.Fatalf("ResolveModelTags(\"\") = %v, want nil", got)
+				}
+				return
+			}
+			got := resolveModelTags(profiles, tt.modelName)
 			if len(got) != len(tt.want) {
 				t.Fatalf("ResolveModelTags(%q) = %v, want %v", tt.modelName, got, tt.want)
 			}
@@ -2657,5 +2671,139 @@ func TestParse_EmbeddedDefaultShortcuts(t *testing.T) {
 		if buttons[0].Prompt != wantPrompt {
 			t.Errorf("section %q prompt = %q, want %q", section, buttons[0].Prompt, wantPrompt)
 		}
+	}
+}
+
+// TestDefaultModelProfiles_MatchesEmbeddedYAML asserts the hardcoded Go source of
+// truth (DefaultModelProfiles) stays in sync with the shipped config.default.yaml
+// `models:` block — same profile names, criteria, and tags in the same order. This is
+// the drift guard invoked by `make check-model-tags`.
+func TestDefaultModelProfiles_MatchesEmbeddedYAML(t *testing.T) {
+	cfg, err := Parse(defaultConfig.DefaultConfigYAML)
+	if err != nil {
+		t.Fatalf("Parse(embedded default) failed: %v", err)
+	}
+	got := DefaultModelProfiles()
+	if len(got) != len(cfg.Models) {
+		t.Fatalf("DefaultModelProfiles() count = %d, config.default.yaml models = %d", len(got), len(cfg.Models))
+	}
+	for i := range got {
+		g, y := got[i], cfg.Models[i]
+		if g.Name != y.Name {
+			t.Errorf("profile[%d] name = %q (Go) vs %q (YAML)", i, g.Name, y.Name)
+		}
+		if g.Criteria == nil || y.Criteria == nil {
+			t.Errorf("profile[%d] %q missing criteria (Go=%v YAML=%v)", i, g.Name, g.Criteria, y.Criteria)
+			continue
+		}
+		if g.Criteria.MatchMode != y.Criteria.MatchMode || g.Criteria.Pattern != y.Criteria.Pattern {
+			t.Errorf("profile[%d] %q criteria = %+v (Go) vs %+v (YAML)", i, g.Name, g.Criteria, y.Criteria)
+		}
+		if strings.Join(g.Tags, ",") != strings.Join(y.Tags, ",") {
+			t.Errorf("profile[%d] %q tags = %v (Go) vs %v (YAML)", i, g.Name, g.Tags, y.Tags)
+		}
+	}
+}
+
+// TestCanonicalModelTags pins the canonical capability-tag set (sorted, de-duplicated)
+// derived from DefaultModelProfiles.
+func TestCanonicalModelTags(t *testing.T) {
+	want := []string{"Anthropic", "Cheap", "Coding", "Expensive", "Fast", "LongContext", "Reasoning", "Smart", "Smartest"}
+	got := CanonicalModelTags()
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("CanonicalModelTags() = %v, want %v", got, want)
+	}
+}
+
+// TestEffectiveModelProfiles_MergeAndPrecedence verifies that user-configured profiles
+// win on name collision and canonical defaults fill the gaps, including the empty and
+// nil-Config cases (the exact scenario behind tag routing silently no-oping when
+// settings.json omits `models:`).
+func TestEffectiveModelProfiles_MergeAndPrecedence(t *testing.T) {
+	// Nil Config → all canonical defaults.
+	var nilCfg *Config
+	if got := nilCfg.EffectiveModelProfiles(); len(got) != len(DefaultModelProfiles()) {
+		t.Fatalf("nil Config EffectiveModelProfiles() = %d, want %d", len(got), len(DefaultModelProfiles()))
+	}
+
+	// Empty Models → all canonical defaults, and a tag resolves.
+	empty := &Config{}
+	if got := empty.ModelProfilesByTag("Coding"); len(got) == 0 {
+		t.Errorf("empty Config: modelTag Coding resolved to no profile (regression: routing no-ops)")
+	}
+
+	// User override on a colliding name wins; a non-colliding user profile is preserved;
+	// defaults fill the rest.
+	user := &Config{Models: []ModelProfile{
+		{Name: "Claude Sonnet", Criteria: &ACPServerConstraint{MatchMode: "exact", Pattern: "My Sonnet"}, Tags: []string{"Custom"}},
+		{Name: "MyLocal", Criteria: &ACPServerConstraint{MatchMode: "contains", Pattern: "local"}, Tags: []string{"Cheap"}},
+	}}
+	eff := user.EffectiveModelProfiles()
+	// User profiles come first, in order.
+	if eff[0].Name != "Claude Sonnet" || eff[0].Criteria.Pattern != "My Sonnet" || eff[0].Tags[0] != "Custom" {
+		t.Errorf("user override not preserved/first: %+v", eff[0])
+	}
+	if eff[1].Name != "MyLocal" {
+		t.Errorf("non-colliding user profile not preserved at index 1: %+v", eff[1])
+	}
+	// The colliding default (Claude Sonnet) must NOT be appended again.
+	sonnetCount := 0
+	for _, p := range eff {
+		if p.Name == "Claude Sonnet" {
+			sonnetCount++
+		}
+	}
+	if sonnetCount != 1 {
+		t.Errorf("Claude Sonnet appears %d times, want 1 (default should be dropped on collision)", sonnetCount)
+	}
+	// A default with a unique name (e.g. Claude Opus) is still present.
+	if p, ok := user.ModelProfileByName("Claude Opus"); !ok || p == nil {
+		t.Errorf("canonical default 'Claude Opus' missing after merge")
+	}
+}
+
+// TestBuiltinPrompts_ModelTagsAreCanonical is the validator behind `make check-model-tags`:
+// every `modelTag:` used by any embedded builtin prompt must be a known canonical tag.
+// This fails CI if a prompt references a tag that no model profile can carry.
+func TestBuiltinPrompts_ModelTagsAreCanonical(t *testing.T) {
+	canonical := make(map[string]struct{})
+	for _, tag := range CanonicalModelTags() {
+		canonical[strings.ToLower(tag)] = struct{}{}
+	}
+
+	entries, err := fs.ReadDir(defaultConfig.BuiltinPromptsFS, defaultConfig.BuiltinPromptsDir)
+	if err != nil {
+		t.Fatalf("read embedded builtin prompts: %v", err)
+	}
+	if len(entries) == 0 {
+		t.Fatal("no embedded builtin prompts found")
+	}
+
+	var unknown []string
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		data, err := fs.ReadFile(defaultConfig.BuiltinPromptsFS, defaultConfig.BuiltinPromptsDir+"/"+e.Name())
+		if err != nil {
+			t.Fatalf("read %s: %v", e.Name(), err)
+		}
+		pf, err := ParsePromptFile(e.Name(), data, time.Time{})
+		if err != nil {
+			t.Fatalf("parse %s: %v", e.Name(), err)
+		}
+		for _, pm := range pf.PreferredModels {
+			if pm.ModelTag == "" {
+				continue
+			}
+			if _, ok := canonical[strings.ToLower(pm.ModelTag)]; !ok {
+				unknown = append(unknown, e.Name()+": "+pm.ModelTag)
+			}
+		}
+	}
+	if len(unknown) > 0 {
+		sort.Strings(unknown)
+		t.Fatalf("builtin prompts reference unknown modelTag(s) not in CanonicalModelTags():\n  %s",
+			strings.Join(unknown, "\n  "))
 	}
 }

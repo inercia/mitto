@@ -101,7 +101,7 @@ Note: `/mitto/api/settings` manages global `settings.json`. For per-session feat
 models:
   - name: Claude Opus          # UI label (read-only)
     criteria: { matchMode: contains, pattern: Opus }  # Case-insensitive pattern matching
-    tags: [Smartest, Reasoning, Expensive]            # Interface-only semantic tags
+    tags: [Smartest, Reasoning, Expensive]            # Capability tags, consumed at runtime
 ```
 
 **Tag union matching** (additive): If a model name matches multiple profiles (e.g., `Claude Opus 4.5`):
@@ -109,7 +109,9 @@ models:
 - Then: Matches `Opus` profile → Adds `[Smartest, Reasoning, Expensive]`
 - Result: `[Anthropic, Smartest, Reasoning, Expensive]` (union)
 
-Use `matchMode: contains` for robust cross-version matching. Tags are interface-only; runtime consumption is tracked separately (see `mitto-2cc`). Shipped defaults include: Claude, Opus, Sonnet, Haiku, GPT-5, GPT-4, Gemini. Test: `TestParse_EmbeddedDefaultModelProfiles()` in `internal/config/config_test.go`.
+Use `matchMode: contains` for robust cross-version matching. Shipped defaults include: Claude, Opus, Sonnet, Haiku, GPT-5, GPT-4, Gemini. Test: `TestParse_EmbeddedDefaultModelProfiles()` in `internal/config/config_test.go`.
+
+**Canonical Go defaults (always available, not just first-run seed)**: `config.DefaultModelProfiles()` hardcodes the same 7 profiles in Go — the single source of truth, kept in sync with `config.default.yaml`'s `models:` block by `make check-model-tags`. `(*Config).EffectiveModelProfiles()` returns `settings.json`'s `Models` unioned with these defaults (user profile wins on name collision, defaults fill gaps; nil-safe). All tag/name resolution — `ModelProfileByName`, `ModelProfilesByTag`, `ResolveModelTags` — routes through `EffectiveModelProfiles()`, so a prompt's `preferredModels: {modelTag: Coding}` resolves even when `settings.json` predates or omits `models:` (previously it silently no-opped to the baseline model — this was the root cause of `preferredModels` "not working" for users with pre-existing settings). `config.CanonicalModelTags()` returns the sorted, de-duped tag set; `make check-model-tags` rejects any builtin prompt's `modelTag` that isn't in this set.
 
 ## ACP Server Constraints
 

@@ -33,8 +33,12 @@ acp: []
 # first run); existing settings.json files are left untouched. Tags overlap by design:
 # a model name is matched against every profile and the union of matching tags applies
 # (e.g. "Claude Opus 4.x" resolves to Anthropic + Smartest + Reasoning + Expensive).
-# Tags are interface-only today (parsed and exposed via the Go API, not yet consumed
-# at runtime). Edit or extend these to match the models you use.
+#
+# Tags ARE consumed at runtime: a prompt's `preferredModels` (modelTag/modelName)
+# resolves against these profiles to pick the model a prompt runs on. This YAML is only
+# the first-run seed — the canonical, always-available set lives in Go
+# (config.DefaultModelProfiles); the two are kept in sync by `make check-model-tags`.
+# Edit or extend these to match the models you use.
 models:
   - name: Claude
     criteria:

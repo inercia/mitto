@@ -1260,6 +1260,11 @@ export function SettingsDialog({
   const [acpServers, setAcpServers] = useState([]);
   // Model profiles (named profiles pairing criteria with capability tags)
   const [modelProfiles, setModelProfiles] = useState([]);
+  // Canonical capability tags suggested when editing a profile's tags. Sourced
+  // from the backend (config.model_tags → config.CanonicalModelTags), so the
+  // suggestion list stays in sync with Go and is always present. Free-text entry
+  // of other tags remains allowed (these are only <datalist> hints).
+  const [modelTags, setModelTags] = useState([]);
   // Accordion: index of the single expanded model profile (-1 = all collapsed)
   const [expandedProfileIndex, setExpandedProfileIndex] = useState(-1);
   // Raw text drafts for the tags input, keyed by profile index — lets the
@@ -1644,6 +1649,7 @@ export function SettingsDialog({
       servers.forEach(assignStableKey);
       setAcpServers(servers);
       setModelProfiles(Array.isArray(config.models) ? config.models : []);
+      setModelTags(Array.isArray(config.model_tags) ? config.model_tags : []);
       setExpandedProfileIndex(-1);
       setTagDrafts({});
 
@@ -4868,6 +4874,14 @@ export function SettingsDialog({
                       Mitto can branch on tags instead of raw model names.
                     </p>
 
+                    <!-- Shared suggestions for every profile's Tags input.
+                         Canonical tags from the backend; free text still allowed. -->
+                    <datalist id="model-tag-suggestions">
+                      ${modelTags.map(
+                        (t) => html`<option key=${t} value=${t}></option>`,
+                      )}
+                    </datalist>
+
                     ${modelProfiles.map((p, i) => {
                       const isExpanded = expandedProfileIndex === i;
                       const trimmedName = (p.name || "").trim();
@@ -4972,6 +4986,7 @@ export function SettingsDialog({
                                   type="text"
                                   class="input input-sm w-full"
                                   placeholder="e.g., Smart, Cheap"
+                                  list="model-tag-suggestions"
                                   value=${tagDrafts[i] !== undefined
                                     ? tagDrafts[i]
                                     : tags.join(", ")}
