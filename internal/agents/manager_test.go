@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 )
@@ -582,6 +583,105 @@ func TestMCPServer_HeadersUnmarshal(t *testing.T) {
 	plain := out.Servers[1]
 	if plain.Headers != nil {
 		t.Errorf("expected nil Headers for server without headers, got %+v", plain.Headers)
+	}
+}
+
+// TestMCPList_RealConfigPaths_mitto_llr reproduces mitto-llr: the mcp-list.sh
+// scripts for claude-code, codex, and cline read the WRONG on-disk config
+// location (and, for codex, the wrong format), so a genuinely-configured MCP
+// server is silently never surfaced — ListMCPServers fails-soft to an empty
+// list. Each sub-test writes a server config at the tool's REAL location
+// (verified against current vendor docs) under a fake HOME, then runs the real
+// builtin mcp-list.sh via the Manager and asserts the server is surfaced.
+//
+// These sub-tests FAIL until the paths/format are fixed:
+//   - claude-code: reads ~/.claude/settings.json; real is ~/.claude.json
+//   - codex:       reads ~/.codex/config.json (JSON); real is ~/.codex/config.toml (TOML [mcp_servers.*])
+//   - cline:       reads ~/.cline/mcp_settings.json; real is the VSCode extension globalStorage file
+func TestMCPList_RealConfigPaths_mitto_llr(t *testing.T) {
+	agentsDir, err := filepath.Abs(filepath.Join("..", "..", "config", "agents"))
+	if err != nil {
+		t.Fatalf("failed to resolve agents dir: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(agentsDir, "builtin")); err != nil {
+		t.Fatalf("builtin agents dir not found at %s: %v", agentsDir, err)
+	}
+
+	// clineRealConfigPath returns the canonical Cline VSCode extension MCP
+	// settings location (globalStorage) for the current OS.
+	clineRealConfigPath := func(home string) string {
+		switch runtime.GOOS {
+		case "darwin":
+			return filepath.Join(home, "Library", "Application Support", "Code", "User", "globalStorage", "saoudrizwan.claude-dev", "settings", "cline_mcp_settings.json")
+		case "windows":
+			return filepath.Join(home, "AppData", "Roaming", "Code", "User", "globalStorage", "saoudrizwan.claude-dev", "settings", "cline_mcp_settings.json")
+		default:
+			return filepath.Join(home, ".config", "Code", "User", "globalStorage", "saoudrizwan.claude-dev", "settings", "cline_mcp_settings.json")
+		}
+	}
+
+	tests := []struct {
+		agent      string
+		serverName string
+		// configFor returns (absolute path, file contents) for the config to
+		// write under the given fake HOME.
+		configFor func(home string) (string, string)
+	}{
+		{
+			agent:      "claude-code",
+			serverName: "repro-claude",
+			configFor: func(home string) (string, string) {
+				return filepath.Join(home, ".claude.json"),
+					`{"mcpServers":{"repro-claude":{"command":"node","args":["srv.js"],"env":{"API_KEY":"secret"}}}}`
+			},
+		},
+		{
+			agent:      "codex",
+			serverName: "repro-codex",
+			configFor: func(home string) (string, string) {
+				return filepath.Join(home, ".codex", "config.toml"),
+					"[mcp_servers.repro-codex]\ncommand = \"node\"\nargs = [\"srv.js\"]\n"
+			},
+		},
+		{
+			agent:      "cline",
+			serverName: "repro-cline",
+			configFor: func(home string) (string, string) {
+				return clineRealConfigPath(home),
+					`{"mcpServers":{"repro-cline":{"command":"node","args":["srv.js"]}}}`
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.agent, func(t *testing.T) {
+			home := t.TempDir()
+			t.Setenv("HOME", home)
+
+			cfgPath, cfgBody := tc.configFor(home)
+			if err := os.MkdirAll(filepath.Dir(cfgPath), 0755); err != nil {
+				t.Fatalf("mkdir for config: %v", err)
+			}
+			if err := os.WriteFile(cfgPath, []byte(cfgBody), 0644); err != nil {
+				t.Fatalf("write config: %v", err)
+			}
+
+			m := NewManager(agentsDir, nil)
+			out, err := m.ListMCPServers(context.Background(), tc.agent, &MCPListInput{Path: home})
+			if err != nil {
+				t.Fatalf("ListMCPServers(%s) error: %v", tc.agent, err)
+			}
+
+			var names []string
+			for _, s := range out.Servers {
+				names = append(names, s.Name)
+				if s.Name == tc.serverName {
+					return // surfaced — behavior is correct
+				}
+			}
+			t.Fatalf("mitto-llr: %s mcp-list.sh did not surface server %q configured at real path %s; got servers=%v (script reads the wrong location)",
+				tc.agent, tc.serverName, cfgPath, names)
+		})
 	}
 }
 
