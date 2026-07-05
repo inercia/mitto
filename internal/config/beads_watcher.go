@@ -231,14 +231,22 @@ func (bw *BeadsWatcher) addWatch(dir string) error {
 
 	parent := filepath.Dir(dir)
 	if parent == dir {
-		return err
+		// Reached the filesystem root without an existing directory to watch.
+		// The .beads dir is simply absent; handle quietly rather than as an error.
+		if bw.logger != nil {
+			bw.logger.Debug("Beads dir absent up to filesystem root, not watching", "dir", dir)
+		}
+		return nil
 	}
 	if _, err := os.Stat(parent); err != nil {
+		// Neither the .beads dir nor its parent exists. Nothing to watch, but a
+		// missing .beads dir is expected for workspaces without beads tracking, so
+		// this is not a warnable condition.
 		if bw.logger != nil {
 			bw.logger.Debug("Parent directory doesn't exist, cannot watch beads dir",
 				"dir", dir, "parent", parent)
 		}
-		return err
+		return nil
 	}
 	if bw.logger != nil {
 		bw.logger.Debug("Watching parent directory for beads dir creation",
