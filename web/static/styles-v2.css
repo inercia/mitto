@@ -633,17 +633,17 @@ a:hover {
 
 /* Draw attention to in-progress issues: the in_progress status badge pulses
    with a bright blue flash, an expanding glow ring, and a slight scale so
-   active work clearly stands out in the list. The color flash uses !important
-   to win over the pinned blue background above. */
+   active work clearly stands out in the list. Keyframe values already take
+   precedence during the animation, so !important is not needed here. */
 @keyframes beadsInProgressPulse {
   0%,
   100% {
-    background-color: #1d4ed8 !important;  /* blue-700 */
+    background-color: #1d4ed8;  /* blue-700 */
     box-shadow: 0 0 0 0 rgba(59, 130, 246, 0.75);
     transform: scale(1);
   }
   50% {
-    background-color: #3b82f6 !important;  /* blue-500 (brighter) */
+    background-color: #3b82f6;  /* blue-500 (brighter) */
     box-shadow: 0 0 10px 3px rgba(59, 130, 246, 0.55);
     transform: scale(1.08);
   }
