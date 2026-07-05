@@ -40,6 +40,16 @@ const (
 
 	// sessionCleanupInterval is how often to clean up expired sessions
 	sessionCleanupInterval = 5 * time.Minute
+
+	// splitIPWarnWindow is the minimum time between repeated "Split-IP login
+	// detected" WARN log lines for the same (network-prefix, user-agent) key.
+	// This keeps benign, recurring IP drift (mobile network handoff) from
+	// spamming the logs while still surfacing genuinely new anomalies.
+	splitIPWarnWindow = 10 * time.Minute
+
+	// splitIPWarnDedupCap bounds the dedup map size; once exceeded, stale
+	// entries are pruned opportunistically to avoid unbounded growth.
+	splitIPWarnDedupCap = 1000
 )
 
 // Credential validation errors
@@ -85,6 +95,10 @@ type AuthManager struct {
 
 	cfVerifier *oidc.IDTokenVerifier // Cloudflare Access JWT verifier (nil if not configured)
 
+	// splitIPWarnMu guards splitIPWarnSeen (dedup for the Split-IP login WARN).
+	splitIPWarnMu   sync.Mutex
+	splitIPWarnSeen map[string]time.Time
+
 	// Cleanup goroutine control
 	stopCleanup chan struct{}
 	cleanupDone chan struct{}
@@ -93,11 +107,12 @@ type AuthManager struct {
 // NewAuthManager creates a new auth manager.
 func NewAuthManager(authConfig *config.WebAuth) *AuthManager {
 	am := &AuthManager{
-		config:      authConfig,
-		sessions:    make(map[string]*AuthSession),
-		rateLimiter: NewAuthRateLimiter(),
-		stopCleanup: make(chan struct{}),
-		cleanupDone: make(chan struct{}),
+		config:          authConfig,
+		sessions:        make(map[string]*AuthSession),
+		rateLimiter:     NewAuthRateLimiter(),
+		splitIPWarnSeen: make(map[string]time.Time),
+		stopCleanup:     make(chan struct{}),
+		cleanupDone:     make(chan struct{}),
 	}
 
 	// Parse the allow list
@@ -358,6 +373,48 @@ func (a *AuthManager) cleanupExpiredSessions() {
 	// Only save if we actually removed something
 	if removed > 0 {
 		a.saveSessionsLocked()
+	}
+
+	a.pruneSplitIPWarnSeen()
+}
+
+// shouldWarnSplitIP reports whether the Split-IP login WARN should be emitted
+// for the given dedup key (normalized network prefix + User-Agent), rate-limited
+// to at most once per splitIPWarnWindow. Thread-safe.
+func (a *AuthManager) shouldWarnSplitIP(key string) bool {
+	now := time.Now()
+
+	a.splitIPWarnMu.Lock()
+	defer a.splitIPWarnMu.Unlock()
+
+	if last, ok := a.splitIPWarnSeen[key]; ok && now.Sub(last) < splitIPWarnWindow {
+		return false
+	}
+	a.splitIPWarnSeen[key] = now
+
+	// Opportunistically prune if the map has grown large, to avoid unbounded
+	// growth from many distinct keys between cleanup ticks.
+	if len(a.splitIPWarnSeen) > splitIPWarnDedupCap {
+		a.pruneSplitIPWarnSeenLocked(now)
+	}
+
+	return true
+}
+
+// pruneSplitIPWarnSeen removes stale entries from the Split-IP WARN dedup map.
+func (a *AuthManager) pruneSplitIPWarnSeen() {
+	a.splitIPWarnMu.Lock()
+	defer a.splitIPWarnMu.Unlock()
+	a.pruneSplitIPWarnSeenLocked(time.Now())
+}
+
+// pruneSplitIPWarnSeenLocked removes entries older than splitIPWarnWindow.
+// Must be called with a.splitIPWarnMu held.
+func (a *AuthManager) pruneSplitIPWarnSeenLocked(now time.Time) {
+	for key, last := range a.splitIPWarnSeen {
+		if now.Sub(last) >= splitIPWarnWindow {
+			delete(a.splitIPWarnSeen, key)
+		}
 	}
 }
 
@@ -1040,12 +1097,16 @@ func (a *AuthManager) HandleLogin(w http.ResponseWriter, r *http.Request) {
 	//   • A compromised token being reused from a different machine.
 	// It can also occur legitimately (mobile network handoff, VPN/NAT changes) so we
 	// only log — never block — on this signal alone.
+	userAgent := r.Header.Get("User-Agent")
 	if cookie, err := r.Cookie(csrfCookieName); err == nil {
-		if !VerifyIPFromToken(cookie.Value, ipKey) {
-			logger.Warn("Split-IP login detected: CSRF token IP fingerprint mismatch",
-				"login_ip", ipKey,
-				"user_agent", r.Header.Get("User-Agent"),
-			)
+		if !VerifyIPFromToken(cookie.Value, ipKey, userAgent) {
+			dedupKey := normalizeIPForFingerprint(ipKey) + "|" + userAgent
+			if a.shouldWarnSplitIP(dedupKey) {
+				logger.Warn("Split-IP login detected: CSRF token IP fingerprint mismatch",
+					"login_ip", ipKey,
+					"user_agent", userAgent,
+				)
+			}
 		}
 	}
 

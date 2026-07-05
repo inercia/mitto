@@ -4,7 +4,7 @@
 // sidebar conversation rows (SessionItem) and the chat header three-dot button
 // so both surfaces expose an identical menu. Encapsulates the context-menu
 // open/close state, lazy-loaded menus:conversation prompts, and the assembled
-// ContextMenu items array (prompt submenus, Properties, periodic toggle,
+// ContextMenu items array (prompt submenus, Properties, loop toggle,
 // archive/unarchive, delete).
 const { html, useState, useMemo, useCallback } = window.preact;
 
@@ -25,15 +25,15 @@ export function useConversationMenu({
   session,
   workingDir = "",
   isArchived = false,
-  isPeriodicConfigured = false,
+  isLoopConfigured = false,
   isSpawned = false,
   canArchive = true,
   archiveBlockedReason = null,
   onRename,
   onDelete,
   onArchive,
-  onMakePeriodic,
-  onMakeNonPeriodic,
+  onMakeLoop,
+  onMakeNonLoop,
   onFetchConversationPrompts, // async (session, workingDir) => menus:conversation prompts
   onSendPromptToConversation, // (session, prompt) when a context-menu prompt is clicked
   onCopyConversation, // optional: (session) => void — shows "Copy as Markdown" item
@@ -84,16 +84,23 @@ export function useConversationMenu({
 
   const closeContextMenu = useCallback(() => setContextMenu(null), []);
 
-  const contextMenuItems = useMemo(() => {
-    const promptGroupItems =
+  // Prompt group submenus (menus:conversation prompts), e.g. "Workflow".
+  // Exposed separately so surfaces like the conversation Toolbar can render
+  // these hierarchical groups inside a dedicated dropdown while promoting the
+  // fixed actions (Copy, Flush, Loop, Archive, Delete) to top-level buttons.
+  const promptGroupItems = useMemo(
+    () =>
       onSendPromptToConversation && menuPrompts && menuPrompts.length > 0
         ? buildPromptGroupMenuItems(
             menuPrompts,
             (p, opts) => onSendPromptToConversation(session, p, opts),
             html`<${LightningIcon} />`,
           )
-        : [];
+        : [],
+    [menuPrompts, onSendPromptToConversation, session],
+  );
 
+  const contextMenuItems = useMemo(() => {
     return [
       // Prompt group submenus (menus:conversation prompts), e.g. "Workflow"
       ...promptGroupItems,
@@ -124,27 +131,27 @@ export function useConversationMenu({
             },
           ]
         : []),
-      // "Make periodic" — only for conversations without a periodic config yet,
-      // non-spawned, non-archived. Gated on periodic_configured (not
-      // periodic_enabled) so a paused/draft periodic conversation is still
-      // treated as already periodic and does not offer "Make periodic" again.
-      ...(!isPeriodicConfigured && !isSpawned && !isArchived
+      // "Make loop" — only for conversations without a loop config yet,
+      // non-spawned, non-archived. Gated on loop_configured (not
+      // loop_enabled) so a paused/draft loop conversation is still
+      // treated as already loop and does not offer "Make loop" again.
+      ...(!isLoopConfigured && !isSpawned && !isArchived
         ? [
             {
-              label: "Make periodic",
+              label: "Make loop",
               icon: html`<${ClockIcon} />`,
-              onClick: () => onMakePeriodic && onMakePeriodic(session),
+              onClick: () => onMakeLoop && onMakeLoop(session),
             },
           ]
         : []),
-      // "Make non-periodic" — inverse: any conversation that has a periodic
+      // "Make non-loop" — inverse: any conversation that has a loop
       // config (enabled OR paused/draft), non-spawned, can remove it.
-      ...(isPeriodicConfigured && !isSpawned
+      ...(isLoopConfigured && !isSpawned
         ? [
             {
-              label: "Make non-periodic",
+              label: "Make non-loop",
               icon: html`<${MittoIcon} />`,
-              onClick: () => onMakeNonPeriodic && onMakeNonPeriodic(session),
+              onClick: () => onMakeNonLoop && onMakeNonLoop(session),
             },
           ]
         : []),
@@ -175,15 +182,14 @@ export function useConversationMenu({
       },
     ];
   }, [
-    menuPrompts,
-    onSendPromptToConversation,
+    promptGroupItems,
     session,
     onRename,
-    isPeriodicConfigured,
+    isLoopConfigured,
     isSpawned,
     isArchived,
-    onMakePeriodic,
-    onMakeNonPeriodic,
+    onMakeLoop,
+    onMakeNonLoop,
     canArchive,
     archiveBlockedReason,
     onArchive,
@@ -196,6 +202,7 @@ export function useConversationMenu({
   return {
     contextMenu,
     contextMenuItems,
+    promptGroupItems,
     openContextMenuAt,
     closeContextMenu,
     handleContextMenu,

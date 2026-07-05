@@ -4420,12 +4420,12 @@ func TestStartACPStartupWatchdog_NilLoggerNoop(t *testing.T) {
 // configured timeout, emitting both a WARN and an ERROR log along the way.
 func TestStartPromptInactivityWatchdog_FiresWhenIdle(t *testing.T) {
 	origWarn := promptInactivityWatchdogWarnDelay
-	origTimeout := promptInactivityWatchdogTimeout
+	origTimeout := promptInactivityWatchdogTimeout()
 	promptInactivityWatchdogWarnDelay = 20 * time.Millisecond
-	promptInactivityWatchdogTimeout = 60 * time.Millisecond
+	SetPromptInactivityTimeout(60 * time.Millisecond)
 	defer func() {
 		promptInactivityWatchdogWarnDelay = origWarn
-		promptInactivityWatchdogTimeout = origTimeout
+		SetPromptInactivityTimeout(origTimeout)
 	}()
 
 	rec := newCapturingLogHandler()
@@ -4461,12 +4461,12 @@ func TestStartPromptInactivityWatchdog_FiresWhenIdle(t *testing.T) {
 // and does not fire while streamed activity continues to arrive.
 func TestStartPromptInactivityWatchdog_SilentWhenActive(t *testing.T) {
 	origWarn := promptInactivityWatchdogWarnDelay
-	origTimeout := promptInactivityWatchdogTimeout
+	origTimeout := promptInactivityWatchdogTimeout()
 	promptInactivityWatchdogWarnDelay = 40 * time.Millisecond
-	promptInactivityWatchdogTimeout = 80 * time.Millisecond
+	SetPromptInactivityTimeout(80 * time.Millisecond)
 	defer func() {
 		promptInactivityWatchdogWarnDelay = origWarn
-		promptInactivityWatchdogTimeout = origTimeout
+		SetPromptInactivityTimeout(origTimeout)
 	}()
 
 	rec := newCapturingLogHandler()
@@ -4505,12 +4505,12 @@ loop:
 // agent is legitimately blocked waiting on user input.
 func TestStartPromptInactivityWatchdog_PausesDuringUIPrompt(t *testing.T) {
 	origWarn := promptInactivityWatchdogWarnDelay
-	origTimeout := promptInactivityWatchdogTimeout
+	origTimeout := promptInactivityWatchdogTimeout()
 	promptInactivityWatchdogWarnDelay = 20 * time.Millisecond
-	promptInactivityWatchdogTimeout = 50 * time.Millisecond
+	SetPromptInactivityTimeout(50 * time.Millisecond)
 	defer func() {
 		promptInactivityWatchdogWarnDelay = origWarn
-		promptInactivityWatchdogTimeout = origTimeout
+		SetPromptInactivityTimeout(origTimeout)
 	}()
 
 	rec := newCapturingLogHandler()
@@ -4539,12 +4539,12 @@ func TestStartPromptInactivityWatchdog_PausesDuringUIPrompt(t *testing.T) {
 // the tool reaches a terminal status the idle clock resumes and the warning may fire.
 func TestStartPromptInactivityWatchdog_PausesDuringToolCall(t *testing.T) {
 	origWarn := promptInactivityWatchdogWarnDelay
-	origTimeout := promptInactivityWatchdogTimeout
+	origTimeout := promptInactivityWatchdogTimeout()
 	promptInactivityWatchdogWarnDelay = 20 * time.Millisecond
-	promptInactivityWatchdogTimeout = 50 * time.Millisecond
+	SetPromptInactivityTimeout(50 * time.Millisecond)
 	defer func() {
 		promptInactivityWatchdogWarnDelay = origWarn
-		promptInactivityWatchdogTimeout = origTimeout
+		SetPromptInactivityTimeout(origTimeout)
 	}()
 
 	rec := newCapturingLogHandler()
@@ -4594,12 +4594,12 @@ func TestStartPromptInactivityWatchdog_PausesDuringToolCall(t *testing.T) {
 // when both the warn delay and timeout are non-positive.
 func TestStartPromptInactivityWatchdog_DisabledWhenZero(t *testing.T) {
 	origWarn := promptInactivityWatchdogWarnDelay
-	origTimeout := promptInactivityWatchdogTimeout
+	origTimeout := promptInactivityWatchdogTimeout()
 	promptInactivityWatchdogWarnDelay = 0
-	promptInactivityWatchdogTimeout = 0
+	SetPromptInactivityTimeout(0)
 	defer func() {
 		promptInactivityWatchdogWarnDelay = origWarn
-		promptInactivityWatchdogTimeout = origTimeout
+		SetPromptInactivityTimeout(origTimeout)
 	}()
 
 	rec := newCapturingLogHandler()
@@ -4630,12 +4630,12 @@ func TestStartPromptInactivityWatchdog_DisabledWhenZero(t *testing.T) {
 // to an automatic cancel that could kill a legitimate long-running, silent tool call.
 func TestStartPromptInactivityWatchdog_WarnOnlyWhenTimeoutZero(t *testing.T) {
 	origWarn := promptInactivityWatchdogWarnDelay
-	origTimeout := promptInactivityWatchdogTimeout
+	origTimeout := promptInactivityWatchdogTimeout()
 	promptInactivityWatchdogWarnDelay = 20 * time.Millisecond
-	promptInactivityWatchdogTimeout = 0 // production default: cancellation disabled
+	SetPromptInactivityTimeout(0) // production default: cancellation disabled
 	defer func() {
 		promptInactivityWatchdogWarnDelay = origWarn
-		promptInactivityWatchdogTimeout = origTimeout
+		SetPromptInactivityTimeout(origTimeout)
 	}()
 
 	rec := newCapturingLogHandler()
@@ -4853,10 +4853,10 @@ func TestBuildACPProcessEnv_MittoEnvOverridesServerEnv(t *testing.T) {
 	}
 }
 
-// TestTriggerTitleGenerationFromPeriodic verifies that the helper correctly selects
+// TestTriggerTitleGenerationFromLoop verifies that the helper correctly selects
 // the source text for title generation given various combinations of inline prompt
 // and prompt_name, including the UI placeholder "(pending)".
-func TestTriggerTitleGenerationFromPeriodic(t *testing.T) {
+func TestTriggerTitleGenerationFromLoop(t *testing.T) {
 	// makeBS creates a minimal BackgroundSession backed by a real session.Store.
 	// The session has no name, so NeedsTitle() returns true and retryTitleGenerationIfNeeded
 	// will synchronously set a quick fallback title via GenerateAndSetTitle.
@@ -4896,7 +4896,7 @@ func TestTriggerTitleGenerationFromPeriodic(t *testing.T) {
 			resolverCalled = true
 			return "should not be used", nil
 		})
-		bs.TriggerTitleGenerationFromPeriodic("Real text here", "SomeName")
+		bs.TriggerTitleGenerationFromLoop("Real text here", "SomeName")
 		if resolverCalled {
 			t.Error("resolver should not be called when inline prompt is usable")
 		}
@@ -4915,7 +4915,7 @@ func TestTriggerTitleGenerationFromPeriodic(t *testing.T) {
 			}
 			return "", fmt.Errorf("unexpected name %q", name)
 		})
-		bs.TriggerTitleGenerationFromPeriodic("(pending)", "X")
+		bs.TriggerTitleGenerationFromLoop("(pending)", "X")
 		got := getName(t, store, "sid-2")
 		if strings.Contains(strings.ToLower(got), "pending") {
 			t.Errorf("title must not be derived from '(pending)' placeholder, got %q", got)
@@ -4930,7 +4930,7 @@ func TestTriggerTitleGenerationFromPeriodic(t *testing.T) {
 		bs, store := makeBS(t, "sid-3", func(name, dir string) (string, error) {
 			return "", fmt.Errorf("resolution failed")
 		})
-		bs.TriggerTitleGenerationFromPeriodic("(pending)", "MyPromptName")
+		bs.TriggerTitleGenerationFromLoop("(pending)", "MyPromptName")
 		got := getName(t, store, "sid-3")
 		if !strings.Contains(got, "MyPromptName") {
 			t.Errorf("expected fallback to prompt name 'MyPromptName', got %q", got)
@@ -4940,7 +4940,7 @@ func TestTriggerTitleGenerationFromPeriodic(t *testing.T) {
 	// Case 4: empty inline, no resolver configured → uses prompt name directly.
 	t.Run("empty inline no resolver - uses name", func(t *testing.T) {
 		bs, store := makeBS(t, "sid-4", nil)
-		bs.TriggerTitleGenerationFromPeriodic("", "PromptXYZ")
+		bs.TriggerTitleGenerationFromLoop("", "PromptXYZ")
 		got := getName(t, store, "sid-4")
 		if !strings.Contains(got, "PromptXYZ") {
 			t.Errorf("expected title from prompt name, got %q", got)
@@ -4950,7 +4950,7 @@ func TestTriggerTitleGenerationFromPeriodic(t *testing.T) {
 	// Case 5: both empty → no-op, no title set.
 	t.Run("both empty - no-op", func(t *testing.T) {
 		bs, store := makeBS(t, "sid-5", nil)
-		bs.TriggerTitleGenerationFromPeriodic("", "")
+		bs.TriggerTitleGenerationFromLoop("", "")
 		got := getName(t, store, "sid-5")
 		if got != "" {
 			t.Errorf("expected no title set when both args are empty, got %q", got)
@@ -4960,7 +4960,7 @@ func TestTriggerTitleGenerationFromPeriodic(t *testing.T) {
 	// Case 6: whitespace-only inline is treated as empty; falls back to prompt name.
 	t.Run("whitespace-only inline treated as empty", func(t *testing.T) {
 		bs, store := makeBS(t, "sid-6", nil)
-		bs.TriggerTitleGenerationFromPeriodic("   ", "WhitespaceName")
+		bs.TriggerTitleGenerationFromLoop("   ", "WhitespaceName")
 		got := getName(t, store, "sid-6")
 		if !strings.Contains(got, "WhitespaceName") {
 			t.Errorf("expected title from prompt name, got %q", got)
@@ -5026,4 +5026,50 @@ func TestACPInitializeAttemptTimeoutBound(t *testing.T) {
 	}
 	t.Logf("acpInitializeAttemptTimeout=%v, maxRetries=%d, maxBackoff=%v → total max=%v (pre-fix was %v)",
 		acpInitializeAttemptTimeout, maxACPStartRetries, maxBackoffTotal, totalMax, preFix)
+}
+
+// TestBackgroundSession_ChildWaitStats verifies RecordChildWait accumulates
+// count and total duration, and GetChildWaitStats reports them correctly.
+func TestBackgroundSession_ChildWaitStats(t *testing.T) {
+	bs := &BackgroundSession{}
+
+	if count, total := bs.GetChildWaitStats(); count != 0 || total != 0 {
+		t.Fatalf("expected zero stats before any recording, got count=%d total=%v", count, total)
+	}
+
+	bs.RecordChildWait(100 * time.Millisecond)
+	bs.RecordChildWait(250 * time.Millisecond)
+
+	count, total := bs.GetChildWaitStats()
+	if count != 2 {
+		t.Errorf("count = %d, want 2", count)
+	}
+	if total != 350*time.Millisecond {
+		t.Errorf("total = %v, want %v", total, 350*time.Millisecond)
+	}
+}
+
+// TestBackgroundSession_CumulativeUsage verifies pdAccumulateCumulativeUsage
+// adds usage across multiple calls and GetCumulativeUsage reports the sum.
+func TestBackgroundSession_CumulativeUsage(t *testing.T) {
+	bs := &BackgroundSession{}
+
+	if in, out, total := bs.GetCumulativeUsage(); in != 0 || out != 0 || total != 0 {
+		t.Fatalf("expected zero usage before any accumulation, got in=%d out=%d total=%d", in, out, total)
+	}
+
+	bs.pdAccumulateCumulativeUsage(&acp.Usage{InputTokens: 10, OutputTokens: 5, TotalTokens: 15})
+	bs.pdAccumulateCumulativeUsage(&acp.Usage{InputTokens: 20, OutputTokens: 8, TotalTokens: 28})
+	bs.pdAccumulateCumulativeUsage(nil) // must be a no-op
+
+	in, out, total := bs.GetCumulativeUsage()
+	if in != 30 {
+		t.Errorf("input = %d, want 30", in)
+	}
+	if out != 13 {
+		t.Errorf("output = %d, want 13", out)
+	}
+	if total != 43 {
+		t.Errorf("total = %d, want 43", total)
+	}
 }

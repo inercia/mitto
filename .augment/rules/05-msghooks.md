@@ -46,7 +46,7 @@ when:                  # required block — BOTH on: and match: are required
     everyNTurns: 3     # fire every N responses; everyNTokens: 15000; afterInterval: 5m (all AND-logic)
 priority: 100          # lower = earlier
 enabled: true          # false = never loads (build-time gate)
-enabledWhen: 'acp.matchesServerType("augment") && !session.isPeriodic'  # CEL runtime gate
+enabledWhen: 'acp.matchesServerType("augment") && !session.isLoop'  # CEL runtime gate
 onError: skip          # skip | fail
 
 # Text-mode only (forbidden for agentResponded/agentIdle):
@@ -130,7 +130,7 @@ Key CEL variables/functions (full reference in `docs/config/processors.md`):
 | Context                 | Examples                                                                    |
 | ----------------------- | --------------------------------------------------------------------------- |
 | `acp.*`                 | `acp.matchesServerType("augment")`, `acp.name`, `acp.type`, `acp.tags`     |
-| `session.*`             | `session.isPeriodic`, `session.isChild`, `session.id`                       |
+| `session.*`             | `session.isLoop`, `session.isChild`, `session.id`                       |
 | `Session.ModelTags`     | `Session.HasModelTag("smart")`, `"smart" in Session.ModelTags` — current model's tags from `models:` profiles (template: `{{ if Model "smart" }}`); empty when model unknown |
 | `workspace.*`           | `workspace.hasUserDataSchema`, `workspace.hasMittoRC`, `workspace.hasMetadataDescription`, `workspace.folder` |
 | `children.*`            | `children.exists`, `children.count`, `children.mcp_count`, `children.promptingCount`, `children.idleCount` |

@@ -631,6 +631,33 @@ a:hover {
   background: #1d4ed8 !important;  /* Original blue-700 */
 }
 
+/* Draw attention to in-progress issues: the in_progress status badge pulses
+   with a bright blue flash, an expanding glow ring, and a slight scale so
+   active work clearly stands out in the list. Keyframe values already take
+   precedence during the animation, so !important is not needed here. */
+@keyframes beadsInProgressPulse {
+  0%,
+  100% {
+    background-color: #1d4ed8;  /* blue-700 */
+    box-shadow: 0 0 0 0 rgba(59, 130, 246, 0.75);
+    transform: scale(1);
+  }
+  50% {
+    background-color: #3b82f6;  /* blue-500 (brighter) */
+    box-shadow: 0 0 10px 3px rgba(59, 130, 246, 0.55);
+    transform: scale(1.08);
+  }
+}
+.beads-status-inprogress {
+  animation: beadsInProgressPulse 1.2s ease-in-out infinite;
+  will-change: background-color, box-shadow, transform;
+}
+@media (prefers-reduced-motion: reduce) {
+  .beads-status-inprogress {
+    animation: none;
+  }
+}
+
 .light .bg-yellow-400,
 .dark .bg-yellow-400 {
   background: #facc15 !important;
@@ -686,27 +713,31 @@ a:hover {
   border-color: #475569;
 }
 
-/* Sidebar toolbar dropdown triggers are <summary> elements (daisyUI
-   details/dropdown pattern), so the generic per-<button> border rule above
-   does not reach them — leaving the Filter/Density buttons borderless while the
-   plain <button> items in the same join group are bordered. Mirror the button
-   border + hover here, scoped to the toolbar, so all items in the row match. */
-.light [data-testid="sidebar-toolbar"] summary.btn {
-  border: 1px solid #e4e4e7;
+/* Portable Toolbar component (components/Toolbar.js): a segmented "pill" of
+   grouped icon buttons. The single container carries the border + rounded
+   surface, so the resting border must be removed for the toolbar's own items —
+   otherwise each item would draw its own box and defeat the continuous-surface
+   look. Hover background and the active (btn-active) fill are left to the
+   global rules / daisyUI. This covers both plain <button> items and the
+   <summary> dropdown/overflow triggers: daisyUI's `.btn` applies a 1px solid
+   (transparent) border to summaries too, which the global `button` selector
+   never resets. */
+.mitto-toolbar > button,
+.mitto-toolbar > details > summary {
+  border: none !important;
 }
 
-.light [data-testid="sidebar-toolbar"] summary.btn:hover {
-  background: #f0f0f0;
-  border-color: #d4d4d8;
+/* Thin vertical separator between toolbar groups. Stretches to the row height
+   and reuses the same divider tones as the global button borders. */
+.mitto-toolbar-sep {
+  width: 1px;
+  align-self: stretch;
+  margin: 0.25rem 0.125rem;
+  background: #e4e4e7;
 }
 
-.dark [data-testid="sidebar-toolbar"] summary.btn {
-  border: 1px solid #334155;
-}
-
-.dark [data-testid="sidebar-toolbar"] summary.btn:hover {
+.dark .mitto-toolbar-sep {
   background: #334155;
-  border-color: #475569;
 }
 
 /* daisyUI menu items are <button>/<a> elements. They must NOT inherit the
@@ -910,7 +941,7 @@ a:hover {
 }
 
 /* =============================================================================
-   Named Prompt Pill (periodic / by-name prompts)
+   Named Prompt Pill (loop / by-name prompts)
    ============================================================================= */
 
 /* =============================================================================
@@ -1232,4 +1263,13 @@ a:hover {
   background-position: right 0.75rem center;
   padding-right: 2.5rem;
   height: 38px; /* Match input height: py-2 (8px * 2) + text-sm line-height (~20px) + border */
+}
+
+/* ShortcutsEditor rows group a compact `select select-sm` with `btn-sm`
+   buttons inside a daisyUI `join`. The broad `.settings-dialog select` rule
+   above forces 38px, which is taller than the 32px btn-sm join items and
+   misaligns the row. Restore the daisyUI select-sm height (2rem) for selects
+   grouped in a join, leaving all other settings-dialog selects at 38px. */
+.settings-dialog .join select.select-sm {
+  height: var(--size);
 }

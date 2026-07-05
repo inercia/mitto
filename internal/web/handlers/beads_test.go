@@ -1,12 +1,15 @@
 package handlers
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -86,6 +89,12 @@ func (c *stubBeadsClient) Update(_ context.Context, _ string, p beads.UpdatePara
 func (c *stubBeadsClient) Comment(_ context.Context, _, _, _ string) error { return nil }
 func (c *stubBeadsClient) Dep(_ context.Context, _ string, _ beads.DepParams) error {
 	return nil
+}
+func (c *stubBeadsClient) Label(_ context.Context, _ string, _ beads.LabelParams) error {
+	return nil
+}
+func (c *stubBeadsClient) ListAllLabels(_ context.Context, _ string) ([]byte, error) {
+	return []byte(`[]`), nil
 }
 func (c *stubBeadsClient) ConfigShow(_ context.Context, _ string) (map[string]string, error) {
 	return nil, nil
@@ -297,6 +306,110 @@ func TestHandleBeadsList_Timeout_ReturnsRetryable503(t *testing.T) {
 	}
 	if env.Error.Code != "unavailable" {
 		t.Errorf("error.code = %q, want %q", env.Error.Code, "unavailable")
+	}
+}
+
+// TestHandleBeadsList_PersistentError_LogsError verifies AC1: a persistent
+// (non-not-found, non-timeout) bd failure both returns the canonical 500
+// envelope AND emits a backend error log carrying the underlying cause, so
+// the failure is never silent in mitto.log (regression test for mitto-rxd).
+func TestHandleBeadsList_PersistentError_LogsError(t *testing.T) {
+	old := beadsReadRetries
+	beadsReadRetries = 0 // fail immediately, no retries needed for this test
+	defer func() { beadsReadRetries = old }()
+
+	var logBuf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logBuf, nil))
+
+	sm := newBeadsTestSM()
+	s := New(Deps{SessionManager: sm, BeadsClient: &listErrorClient{}, Logger: logger})
+
+	req := localhostRequest("/api/issues?working_dir=/test/workspace")
+	w := httptest.NewRecorder()
+	s.handleBeadsList(w, req)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want %d", w.Code, http.StatusInternalServerError)
+	}
+	logged := logBuf.String()
+	if !strings.Contains(logged, "level=ERROR") {
+		t.Errorf("log output = %q, want it to contain %q", logged, "level=ERROR")
+	}
+	if !strings.Contains(logged, "beads command failed") {
+		t.Errorf("log output = %q, want it to contain %q", logged, "beads command failed")
+	}
+	if !strings.Contains(logged, "bd: command failed: exit status 1") {
+		t.Errorf("log output = %q, want it to contain the underlying error", logged)
+	}
+}
+
+// flakyListClient's List fails failCount times, then succeeds. Used to verify
+// AC2: transient bd failures are retried instead of surfacing as bare 500s.
+type flakyListClient struct {
+	stubBeadsClient
+	failCount int32
+	calls     int32
+}
+
+func (c *flakyListClient) List(_ context.Context, _ string) ([]byte, error) {
+	n := atomic.AddInt32(&c.calls, 1)
+	if n <= c.failCount {
+		return nil, errors.New("bd: transient dolt error")
+	}
+	return []byte(`[]`), nil
+}
+
+// TestHandleBeadsList_TransientFailure_RetriesThenSucceeds verifies AC2: a
+// fail-then-succeed sequence from a read-only bd query is retried internally
+// and returns HTTP 200 to the client, rather than a bare 500.
+func TestHandleBeadsList_TransientFailure_RetriesThenSucceeds(t *testing.T) {
+	oldRetries := beadsReadRetries
+	oldBackoff := beadsRetryBackoff
+	beadsReadRetries = 2
+	beadsRetryBackoff = time.Millisecond
+	defer func() {
+		beadsReadRetries = oldRetries
+		beadsRetryBackoff = oldBackoff
+	}()
+
+	client := &flakyListClient{failCount: 2}
+	s := newBeadsTestServerWithClient(client)
+	req := localhostRequest("/api/issues?working_dir=/test/workspace")
+	w := httptest.NewRecorder()
+	s.handleBeadsList(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body=%s", w.Code, http.StatusOK, w.Body.String())
+	}
+	if got := atomic.LoadInt32(&client.calls); got != 3 {
+		t.Errorf("List call count = %d, want 3 (2 failures + 1 success)", got)
+	}
+}
+
+// TestHandleBeadsList_PersistentTransientFailure_ExhaustsRetries verifies that
+// when every attempt fails, the handler still returns the canonical 500
+// envelope after exhausting beadsReadRetries (not an infinite/unbounded retry).
+func TestHandleBeadsList_PersistentTransientFailure_ExhaustsRetries(t *testing.T) {
+	oldRetries := beadsReadRetries
+	oldBackoff := beadsRetryBackoff
+	beadsReadRetries = 2
+	beadsRetryBackoff = time.Millisecond
+	defer func() {
+		beadsReadRetries = oldRetries
+		beadsRetryBackoff = oldBackoff
+	}()
+
+	client := &flakyListClient{failCount: 100}
+	s := newBeadsTestServerWithClient(client)
+	req := localhostRequest("/api/issues?working_dir=/test/workspace")
+	w := httptest.NewRecorder()
+	s.handleBeadsList(w, req)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want %d", w.Code, http.StatusInternalServerError)
+	}
+	if got := atomic.LoadInt32(&client.calls); got != 3 {
+		t.Errorf("List call count = %d, want 3 (1 initial + 2 retries)", got)
 	}
 }
 
@@ -1669,8 +1782,9 @@ func TestHandleBeadsUpstream_SetPromptsUpstream_NonExistentPrompt(t *testing.T) 
 	}
 }
 
-func TestHandleBeadsUpstream_SetPromptsUpstream_ParameterizedPromptRejected(t *testing.T) {
-	// A prompt with parameters must be rejected with 400.
+func TestHandleBeadsUpstream_SetPromptsUpstream_ParameterizedPromptAccepted(t *testing.T) {
+	// A prompt with parameters must now be ACCEPTED — its arguments are
+	// supplied via *_prompt_args and forwarded at dispatch time.
 	setupMittoDir(t)
 	sm := conversation.NewSessionManager("", "", false, nil)
 	sm.SetWorkspaces([]config.WorkspaceSettings{
@@ -1693,13 +1807,28 @@ func TestHandleBeadsUpstream_SetPromptsUpstream_ParameterizedPromptRejected(t *t
 	})
 
 	put := httptest.NewRequest(http.MethodPut, "/api/issues/upstream?working_dir=/test/workspace",
-		strings.NewReader(`{"upstream":"prompts","pull_prompt":"parameterized-prompt"}`))
+		strings.NewReader(`{"upstream":"prompts","pull_prompt":"parameterized-prompt","pull_prompt_args":{"id":"mitto-1"}}`))
 	put.RemoteAddr = "127.0.0.1:1"
 	put.Header.Set("Content-Type", "application/json")
 	pw := httptest.NewRecorder()
 	s.handleBeadsUpstream(pw, put)
-	if pw.Code != http.StatusBadRequest {
-		t.Errorf("PUT status = %d, want %d (%s)", pw.Code, http.StatusBadRequest, pw.Body.String())
+	if pw.Code != http.StatusOK {
+		t.Fatalf("PUT status = %d, want %d (%s)", pw.Code, http.StatusOK, pw.Body.String())
+	}
+
+	// GET must return the stored pull_prompt and its args.
+	get := localhostRequest("/api/issues/upstream?working_dir=/test/workspace")
+	gw := httptest.NewRecorder()
+	s.handleBeadsUpstream(gw, get)
+	if gw.Code != http.StatusOK {
+		t.Fatalf("GET status = %d, want %d", gw.Code, http.StatusOK)
+	}
+	body := gw.Body.String()
+	if !strings.Contains(body, `"pull_prompt":"parameterized-prompt"`) {
+		t.Errorf("GET body = %q, want pull_prompt parameterized-prompt", body)
+	}
+	if !strings.Contains(body, `"pull_prompt_args":{"id":"mitto-1"}`) {
+		t.Errorf("GET body = %q, want pull_prompt_args {\"id\":\"mitto-1\"}", body)
 	}
 }
 

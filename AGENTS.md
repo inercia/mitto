@@ -82,3 +82,14 @@ bd close <id>         # Complete work
 - NEVER say "ready to push when you are" - YOU must push
 - If push fails, resolve and retry until it succeeds
 <!-- END BEADS INTEGRATION -->
+
+<!-- BEGIN USER PREFERENCES (auto-managed by memorize-preferences processor) -->
+## User Preferences
+
+- **Autonomous action in loop mode**: In scheduled loop runs, act autonomously on safe, routine actions (spawning fix conversations, clean rebases) without asking. Use `mitto_ui_notify` for communication only. Never use interactive/blocking UI tools.
+- **Deduplication before spawning**: Always check existing child conversations and reuse idle ones rather than spawning duplicates. This avoids unnecessary parallel work and keeps PR monitoring focused.
+- **Full gate execution before push**: When fixing CI failures, run the complete local gate (format check → lint → unit → integration) before pushing. Never push partial fixes.
+- **Root cause investigation**: When issues recur across multiple runs, investigate the root cause (e.g., external commits landing without proper formatting) and communicate findings.
+- **Targeted problem analysis**: When only a single file or small set of issues is found, provide precise, targeted instructions rather than attempting broad fixes.
+- **Pre-commit discipline enforcement**: Communicate that developers should always run `make fmt` before committing to avoid reintroducing CI failures from formatting issues.
+<!-- END USER PREFERENCES -->

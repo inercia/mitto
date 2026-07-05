@@ -1,0 +1,152 @@
+name: 'Support: continue conversation'
+description: 'Find a Slack channel conversation you have been participating in, summarize it, and help craft a reply. Posts to Slack only on your approval.'
+group: Support
+backgroundColor: '#C8E6C9'
+icon: chat-bubble
+menus: prompts
+enabledWhen: 'Tools.HasAnyPattern(["slack_*", "*_slack"])'
+tags:
+- support
+parameters:
+  - name: SlackChannelID
+    type: text
+    required: true
+    description: 'The Slack channel ID to scan for conversations you are participating in (e.g. C0XXXXXXX).'
+  - name: SlackWorkspaceURL
+    type: text
+    required: true
+    description: 'Base Slack workspace URL used to build message permalinks (e.g. https://yourteam.slack.com). No trailing slash.'
+  - name: LookbackDays
+    type: text
+    required: false
+    description: 'How many days of channel history to scan (default 7).'
+prompt: |-
+  {{- $channel := .Args.SlackChannelID -}}
+  {{- $ws := .Args.SlackWorkspaceURL -}}
+  {{- $days := Arg "LookbackDays" "7" -}}
+  # Support — Continue Conversation
+
+  ## Session Context
+
+  Your session ID is `{{ .Session.ID }}` — use it as `self_id` for all `mitto_*` MCP tool calls.
+
+  ## Description
+
+  Find recent conversations in the Slack channel **`{{ $channel }}`** where the current user has been
+  participating, let the user pick one, summarize it, and help craft a reply — either by gathering an
+  answer via the project's documented method or by rephrasing user-provided text.
+
+  ## CRITICAL: User Interaction Rules
+
+  > ⚠️ **NEVER use text-based interaction prompts.**
+  >
+  > - ❌ NEVER write things like `Type "do #N"`, `Type "post #N"`, or any variation
+  > - ❌ NEVER ask the user to type a number, command, or keyword to make a selection
+  > - ✅ ALWAYS use `mitto_ui_options` (choices), `mitto_ui_textbox` (review/edit),
+  >   `mitto_ui_form` (structured input), `mitto_ui_notify` (non-blocking notifications)
+  >
+  > ⚠️ **NEVER post to Slack without explicit user review and approval.**
+
+  ## Slack tools (names vary by MCP server)
+
+  Match Slack MCP tools **by capability, not exact name**. You need: (a) identify the current user,
+  (b) read recent channel history, (c) read a thread's replies, and (d) post a reply to a thread
+  (e.g. `slack_get_users*`, `slack_get_channel_history*`, `slack_get_thread_replies*`,
+  `slack_reply_to_thread*`, or their `*_slack` equivalents).
+
+  ## Step 1: Identify the current user
+
+  - Determine the current user's Slack user ID and display name (user-lookup / who-am-I tool).
+  - Store the user ID for filtering in the next step.
+
+  ## Step 2: Fetch recent channel messages
+
+  - Read the latest messages from `{{ $channel }}` (a reasonable limit, e.g. 50–100 messages).
+  - **Only consider messages from the last {{ $days }} days.** Discard anything older.
+  - For each message that has a thread (reply_count > 0), fetch the thread replies.
+  - **Filter**: keep ONLY threads where the current user has posted at least one message (the
+    original message or a reply in the thread).
+  - **Exclude resolved conversations.** Discard threads where the user appears satisfied or no longer
+    needs help. Signals include:
+    - A positive reaction on an answer
+    - The user's last message is a "thanks", "got it", "that worked", or similar acknowledgement
+    - The conversation naturally concluded with no outstanding questions
+    - Someone else already provided a comprehensive answer and the user accepted it
+    Only keep conversations where there is still an open question, an unresolved problem, or someone
+    is clearly waiting for a response.
+
+  ## Step 3: Present conversations to the user
+
+  - Build a permalink per thread from its ts: `{{ $ws }}/archives/{{ $channel }}/p<ts_without_dot>`
+    (e.g. `1234567890.123456` → `p1234567890123456`).
+  - Present a selection menu with `mitto_ui_options`:
+    - First option: `{label: "None - Cancel"}`
+    - Then one option per conversation: `{label: "<brief summary> — <last activity>"}`
+    - Timeout: 300 seconds
+  - If the user selects "None - Cancel", acknowledge and end.
+
+  ## Step 4: Show conversation summary
+
+  - Fetch the full thread (read-thread-replies tool) if not already fetched.
+  - Present a **chronological summary** to the user in this conversation:
+
+    ```markdown
+    ## Conversation Summary
+
+    **Topic:** <brief topic>
+    **Started:** <date/time>
+    **Participants:** <list>
+
+    ### Thread history
+    1. [@user1] (2d ago): <original question>
+    2. [@you] (1d ago): <what you said>
+    3. [@user1] (3h ago): <latest follow-up>
+
+    ### Current status
+    <what is still open / unanswered / needs attention>
+    ```
+
+  ## Step 5: Propose next action
+
+  - Use `mitto_ui_options`:
+    - **Question**: "How would you like to reply?"
+    - **Options**: `[{label: "Gather an answer for me"}, {label: "I'll provide the answer"}, {label: "Cancel"}]`
+    - **Timeout**: 300 seconds
+
+  ### Option A — "Gather an answer for me"
+
+  - Use the **project's documented method to gather answers** (see AGENTS.md → "How to answer
+    customer questions", or `.augment/rules/` / a docs-search MCP tool / runbook / knowledge base).
+    If you do **not** know a reliable method, ASK the user how to gather it (via `mitto_ui_form` /
+    `mitto_ui_textbox`) and persist their answer to AGENTS.md under a
+    `## How to answer customer questions` section before proceeding.
+  - Feed the full conversation context (original question, thread history, the specific unanswered
+    question) and ask for a response that addresses the open point, avoids repeating what was said,
+    and links docs/tickets if relevant. Proceed to Step 6.
+
+  ### Option B — "I'll provide the answer"
+
+  - Use `mitto_ui_textbox` (Title "Type your reply", Text "", Result "full", Abort true, Timeout 300).
+  - If the user submits, rephrase their answer to be clearer/professional: fix grammar and typos, add
+    structure if complex, keep the technical accuracy and the user's voice/intent. Proceed to Step 6.
+  - If the user aborts, acknowledge and end.
+
+  ## Step 6: Review and post reply
+
+  - Show the thread link so the user can review context:
+    `📤 Replying to [this thread]({{ $ws }}/archives/{{ $channel }}/p<thread_ts_without_dot>)`.
+  - **Response formatting guidelines:**
+    1. **No direct addressing** — do not address the user by name.
+    2. **No follow-up offers** — do not end with "let me know if you need anything else".
+    3. **Express uncertainty when appropriate** — "I think that…", "Based on my understanding…".
+  - Use `mitto_ui_textbox` to present the proposed reply for review/editing (Title "📤 Review reply
+    before posting to Slack", Result "full", Abort true, Timeout 300).
+  - **If the user submits:** the returned text (possibly edited) is the final message. Post it with
+    the post-reply-to-thread tool using channel `{{ $channel }}` and the thread's parent `thread_ts`.
+    Confirm success and show the permalink.
+  - **If the user aborts:** acknowledge and end. Do **NOT** post anything to Slack.
+
+  ## Notes
+
+  - **Slack message approval**: NEVER post to Slack without explicit user approval.
+  - Thread timestamps: convert `1234567890.123456` → `p1234567890123456` for URLs.

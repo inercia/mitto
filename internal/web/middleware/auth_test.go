@@ -1179,3 +1179,59 @@ func TestAuthManager_CleanupExpiredSessions(t *testing.T) {
 		t.Error("Session should still be valid after cleanup")
 	}
 }
+
+func TestAuthManager_ShouldWarnSplitIP(t *testing.T) {
+	am := NewAuthManager(&config.WebAuth{
+		Simple: &config.SimpleAuth{Username: "user", Password: "pass"},
+	})
+	defer am.Close()
+
+	const key = "192.168.1.0|some-ua"
+
+	if !am.shouldWarnSplitIP(key) {
+		t.Error("first call for a key should warn")
+	}
+	if am.shouldWarnSplitIP(key) {
+		t.Error("second call within the dedup window should not warn again")
+	}
+
+	// A different key should warn independently.
+	if !am.shouldWarnSplitIP("10.0.0.0|other-ua") {
+		t.Error("a different key should warn")
+	}
+
+	// Simulate the dedup window having elapsed by backdating the seen time.
+	am.splitIPWarnMu.Lock()
+	am.splitIPWarnSeen[key] = time.Now().Add(-splitIPWarnWindow - time.Second)
+	am.splitIPWarnMu.Unlock()
+
+	if !am.shouldWarnSplitIP(key) {
+		t.Error("call after the dedup window elapsed should warn again")
+	}
+}
+
+func TestAuthManager_PruneSplitIPWarnSeen(t *testing.T) {
+	am := NewAuthManager(&config.WebAuth{
+		Simple: &config.SimpleAuth{Username: "user", Password: "pass"},
+	})
+	defer am.Close()
+
+	am.splitIPWarnMu.Lock()
+	am.splitIPWarnSeen["stale"] = time.Now().Add(-splitIPWarnWindow - time.Second)
+	am.splitIPWarnSeen["fresh"] = time.Now()
+	am.splitIPWarnMu.Unlock()
+
+	am.pruneSplitIPWarnSeen()
+
+	am.splitIPWarnMu.Lock()
+	_, staleExists := am.splitIPWarnSeen["stale"]
+	_, freshExists := am.splitIPWarnSeen["fresh"]
+	am.splitIPWarnMu.Unlock()
+
+	if staleExists {
+		t.Error("stale entry should have been pruned")
+	}
+	if !freshExists {
+		t.Error("fresh entry should not have been pruned")
+	}
+}

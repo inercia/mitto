@@ -52,7 +52,7 @@ prompt: |
   speculate about code you have not opened. Interaction mode depends on how this
   phase was invoked:
 
-  - {{- if and .Session.IsPeriodic (not .Session.IsPeriodicForced) }} **Silent mode** (scheduled continuation of the driver's loop). Do **not** call `mitto_ui_options`, `mitto_ui_form`, or `mitto_ui_textbox`. Decide autonomously; if something is genuinely unclear/unsolvable, defer via **Step 4** rather than guess.
+  - {{- if and .Session.IsLoop (not .Session.IsLoopForced) }} **Silent mode** (scheduled continuation of the driver's loop). Do **not** call `mitto_ui_options`, `mitto_ui_form`, or `mitto_ui_textbox`. Decide autonomously; if something is genuinely unclear/unsolvable, defer via **Step 4** rather than guess.
     {{- else }} **Interactive mode** may apply (a user is present, e.g. first send). You *may* ask clarifying questions via `mitto_ui_options` during investigation; every other phase decides autonomously or defers.
     {{- end }}
 
@@ -93,10 +93,10 @@ prompt: |
 
   3. End with a concise handoff message naming the blocker and the single thing
      needed (interactive runs also `mitto_ui_notify`), and disable the enclosing
-     conversation's periodic flag so the driver loop does not spin on the blocker:
+     conversation's loop flag so the driver loop does not spin on the blocker:
 
      ```
-     mitto_conversation_update(self_id: "{{ .Session.ID }}", conversation_id: "self", periodic_enabled: false)
+     mitto_conversation_update(self_id: "{{ .Session.ID }}", conversation_id: "self", loop_enabled: false)
      ```
 
   ## Guidelines

@@ -22,7 +22,7 @@ func writeCallbackError(w http.ResponseWriter, status int, errorCode, message st
 }
 
 // HandleCallbackTrigger handles POST /api/callback/{token}
-// This is a PUBLIC endpoint (no auth required) that triggers a periodic prompt delivery.
+// This is a PUBLIC endpoint (no auth required) that triggers a loop prompt delivery.
 func (h *Handlers) HandleCallbackTrigger(w http.ResponseWriter, r *http.Request) {
 	// 1. Only accept POST requests
 	if r.Method != http.MethodPost {
@@ -90,37 +90,37 @@ func (h *Handlers) HandleCallbackTrigger(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	// 8. Check periodic config exists and is enabled
-	periodicStore := store.Periodic(sessionID)
-	periodic, err := periodicStore.Get()
+	// 8. Check loop config exists and is enabled
+	loopStore := store.Loop(sessionID)
+	loop, err := loopStore.Get()
 	if err != nil {
-		if err == session.ErrPeriodicNotFound {
-			writeCallbackError(w, http.StatusGone, "periodic_disabled", "No periodic prompt configured")
+		if err == session.ErrLoopNotFound {
+			writeCallbackError(w, http.StatusGone, "loop_disabled", "No loop prompt configured")
 			return
 		}
-		writeCallbackError(w, http.StatusInternalServerError, "internal", "Failed to get periodic config")
+		writeCallbackError(w, http.StatusInternalServerError, "internal", "Failed to get loop config")
 		return
 	}
 
-	if !periodic.Enabled {
-		writeCallbackError(w, http.StatusGone, "periodic_disabled", "Periodic is disabled")
+	if !loop.Enabled {
+		writeCallbackError(w, http.StatusGone, "loop_disabled", "Loop is disabled")
 		return
 	}
 
-	// 9. Trigger the periodic prompt via the runner
-	if h.deps.TriggerPeriodicNow == nil {
-		writeCallbackError(w, http.StatusInternalServerError, "internal", "Periodic runner not available")
+	// 9. Trigger the loop prompt via the runner
+	if h.deps.TriggerLoopNow == nil {
+		writeCallbackError(w, http.StatusInternalServerError, "internal", "Loop runner not available")
 		return
 	}
 
-	if err := h.deps.TriggerPeriodicNow(sessionID, true); err != nil {
+	if err := h.deps.TriggerLoopNow(sessionID, true); err != nil {
 		switch err {
 		case h.deps.ErrSessionBusy:
 			writeCallbackError(w, http.StatusConflict, "session_busy", "Session is currently processing")
-		case h.deps.ErrPeriodicNotEnabled:
-			writeCallbackError(w, http.StatusGone, "periodic_disabled", "Periodic is not enabled")
-		case session.ErrPeriodicNotFound:
-			writeCallbackError(w, http.StatusGone, "periodic_disabled", "No periodic prompt configured")
+		case h.deps.ErrLoopNotEnabled:
+			writeCallbackError(w, http.StatusGone, "loop_disabled", "Loop is not enabled")
+		case session.ErrLoopNotFound:
+			writeCallbackError(w, http.StatusGone, "loop_disabled", "No loop prompt configured")
 		default:
 			if h.deps.Logger != nil {
 				h.deps.Logger.Error("Failed to trigger callback", "error", err, "session_id", sessionID)

@@ -160,9 +160,9 @@ func (bs *BackgroundSession) restartACPProcess(reason RestartReason) error {
 	// Clear the old connection
 	bs.acpConn = nil
 
-	// Breaking the periodic continuation: an ACP reinit disrupts agent context, so the next
-	// periodic run must render the verbose form (mitto-5xjn).
-	bs.ResetPeriodicContinuation()
+	// Breaking the loop continuation: an ACP reinit disrupts agent context, so the next
+	// loop run must render the verbose form (mitto-5xjn).
+	bs.ResetLoopContinuation()
 
 	// Record this restart attempt with reason
 	bs.recordRestart(reason)
@@ -504,17 +504,32 @@ func StartACPStartupWatchdog(ctx context.Context, logger *slog.Logger, command, 
 // Exposed as a var so tests can override it.
 var promptInactivityWatchdogWarnDelay = 2 * time.Minute
 
-// promptInactivityWatchdogTimeout is the idle duration (no streamed agent activity)
-// after which the prompt inactivity watchdog cancels the in-flight prompt so the
-// session can recover from a live-but-unresponsive agent (one that stops streaming
-// without crashing — e.g. wedged during MCP init or GC-thrashing).
-//
-// Default 0: automatic cancellation is DISABLED — the watchdog is WARN-only out of
-// the box. This avoids ever cancelling a legitimate long-running tool call that
-// produces no intermediate streamed output (the residual false-positive of an
-// automatic cancel). Set to a positive duration to opt in to automatic cancellation.
-// Exposed as a var so tests can override it.
-var promptInactivityWatchdogTimeout time.Duration = 0
+// promptInactivityWatchdogTimeoutNanos holds the configured prompt inactivity
+// watchdog cancellation timeout, in nanoseconds. It is an atomic.Int64 (rather than
+// a plain time.Duration var) because it can be updated at runtime from a live config
+// change (see SetPromptInactivityTimeout) while watchdog goroutines started by prior
+// prompts concurrently read it. Zero means automatic cancellation is DISABLED — the
+// watchdog is WARN-only. This avoids ever cancelling a legitimate long-running tool
+// call that produces no intermediate streamed output (the residual false-positive of
+// an automatic cancel). The zero value (disabled) is the safe default before startup
+// config wiring calls SetPromptInactivityTimeout; production wires a 10m default via
+// SessionConfig.ParseAgentInactivityTimeout.
+var promptInactivityWatchdogTimeoutNanos atomic.Int64
+
+// SetPromptInactivityTimeout sets the process-wide duration of no streamed agent
+// activity after which the prompt inactivity watchdog cancels an in-flight prompt,
+// clearing is_prompting and surfacing a recoverable error. Zero disables automatic
+// cancellation (WARN-only). Safe to call concurrently with running watchdog
+// goroutines, e.g. from a live settings update.
+func SetPromptInactivityTimeout(d time.Duration) {
+	promptInactivityWatchdogTimeoutNanos.Store(int64(d))
+}
+
+// promptInactivityWatchdogTimeout returns the currently configured watchdog
+// cancellation timeout. See SetPromptInactivityTimeout.
+func promptInactivityWatchdogTimeout() time.Duration {
+	return time.Duration(promptInactivityWatchdogTimeoutNanos.Load())
+}
 
 // signalAgentActivity records the current time as the most recent streamed agent
 // activity. It is called on every ACP SessionUpdate so the prompt inactivity watchdog
@@ -606,7 +621,7 @@ func (bs *BackgroundSession) resetInFlightToolCalls() {
 // Prompt() returns. It is a no-op when both delays are non-positive.
 func (bs *BackgroundSession) startPromptInactivityWatchdog(ctx context.Context, cancel context.CancelFunc, fired *atomic.Bool) {
 	warnDelay := promptInactivityWatchdogWarnDelay
-	timeout := promptInactivityWatchdogTimeout
+	timeout := promptInactivityWatchdogTimeout()
 	if warnDelay <= 0 && timeout <= 0 {
 		return
 	}

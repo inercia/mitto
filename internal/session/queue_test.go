@@ -61,6 +61,29 @@ func TestQueue_AddAndList(t *testing.T) {
 	}
 }
 
+func TestQueue_AddWithOrigin(t *testing.T) {
+	dir := t.TempDir()
+	q := NewQueue(dir)
+
+	// AddWithOrigin with QueueOriginAgent persists Origin == QueueOriginAgent.
+	agentMsg, err := q.AddWithOrigin("agent message", nil, nil, "client1", nil, 0, nil, "", QueueOriginAgent)
+	if err != nil {
+		t.Fatalf("AddWithOrigin() error = %v", err)
+	}
+	if agentMsg.Origin != QueueOriginAgent {
+		t.Errorf("AddWithOrigin() origin = %q, want %q", agentMsg.Origin, QueueOriginAgent)
+	}
+
+	// Plain Add() defaults to QueueOriginUser.
+	userMsg, err := q.Add("user message", nil, nil, "client2", nil, 0, nil, "")
+	if err != nil {
+		t.Fatalf("Add() error = %v", err)
+	}
+	if userMsg.Origin != QueueOriginUser {
+		t.Errorf("Add() origin = %q, want %q", userMsg.Origin, QueueOriginUser)
+	}
+}
+
 func TestQueue_Get(t *testing.T) {
 	dir := t.TempDir()
 	q := NewQueue(dir)

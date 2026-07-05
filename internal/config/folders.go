@@ -3,6 +3,7 @@ package config
 import (
 	"encoding/json"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"strings"
@@ -75,6 +76,12 @@ type BeadsFolderSettings struct {
 	// SyncPrompt is the name of the workspace prompt to run for a sync operation.
 	// Only meaningful when Upstream == "prompts".
 	SyncPrompt string `json:"syncPrompt,omitempty" yaml:"syncPrompt,omitempty"`
+	// PullPromptArgs, PushPromptArgs, SyncPromptArgs hold the argument values to
+	// forward to the corresponding prompt when it is dispatched. Only meaningful
+	// when Upstream == "prompts".
+	PullPromptArgs map[string]string `json:"pullPromptArgs,omitempty" yaml:"pullPromptArgs,omitempty"`
+	PushPromptArgs map[string]string `json:"pushPromptArgs,omitempty" yaml:"pushPromptArgs,omitempty"`
+	SyncPromptArgs map[string]string `json:"syncPromptArgs,omitempty" yaml:"syncPromptArgs,omitempty"`
 }
 
 // FoldersFile is the on-disk representation of folders.json. It maps a working
@@ -328,7 +335,10 @@ func beadsEqual(a, b *BeadsFolderSettings) bool {
 	return a.Upstream == b.Upstream &&
 		a.PullPrompt == b.PullPrompt &&
 		a.PushPrompt == b.PushPrompt &&
-		a.SyncPrompt == b.SyncPrompt
+		a.SyncPrompt == b.SyncPrompt &&
+		maps.Equal(a.PullPromptArgs, b.PullPromptArgs) &&
+		maps.Equal(a.PushPromptArgs, b.PushPromptArgs) &&
+		maps.Equal(a.SyncPromptArgs, b.SyncPromptArgs)
 }
 
 // folderSettingsEmpty reports whether a FolderSettings carries no information
@@ -428,11 +438,11 @@ func SetFolderBeadsUpstream(workingDir, upstream string) error {
 }
 
 // SetFolderBeadsPromptUpstream sets the beads upstream to "prompts" and
-// persists the three configured prompt names to folders.json. Empty prompt names
-// are allowed (the corresponding operation is simply unconfigured). This is a
-// folder-native field, preserved across workspace-driven saves by
-// preserveFolderNativeFields.
-func SetFolderBeadsPromptUpstream(workingDir, pull, push, sync string) error {
+// persists the three configured prompt names (and their argument maps) to
+// folders.json. Empty prompt names are allowed (the corresponding operation is
+// simply unconfigured). This is a folder-native field, preserved across
+// workspace-driven saves by preserveFolderNativeFields.
+func SetFolderBeadsPromptUpstream(workingDir, pull, push, sync string, pullArgs, pushArgs, syncArgs map[string]string) error {
 	folders, err := LoadFolders()
 	if err != nil {
 		return err
@@ -442,10 +452,13 @@ func SetFolderBeadsPromptUpstream(workingDir, pull, push, sync string) error {
 	}
 	fs := folders[workingDir]
 	fs.Beads = &BeadsFolderSettings{
-		Upstream:   "prompts",
-		PullPrompt: pull,
-		PushPrompt: push,
-		SyncPrompt: sync,
+		Upstream:       "prompts",
+		PullPrompt:     pull,
+		PushPrompt:     push,
+		SyncPrompt:     sync,
+		PullPromptArgs: pullArgs,
+		PushPromptArgs: pushArgs,
+		SyncPromptArgs: syncArgs,
 	}
 	if folderSettingsEmpty(fs) {
 		delete(folders, workingDir)
@@ -482,6 +495,21 @@ func FolderBeadsPrompts(workingDir string) (pull, push, sync string) {
 		return "", "", ""
 	}
 	return fs.Beads.PullPrompt, fs.Beads.PushPrompt, fs.Beads.SyncPrompt
+}
+
+// FolderBeadsPromptArgs returns the three configured prompt argument maps for
+// the "prompts" upstream of a folder. Returns nil maps if none are set or
+// folders.json cannot be read.
+func FolderBeadsPromptArgs(workingDir string) (pull, push, sync map[string]string) {
+	folders, err := LoadFolders()
+	if err != nil {
+		return nil, nil, nil
+	}
+	fs, ok := folders[workingDir]
+	if !ok || fs.Beads == nil {
+		return nil, nil, nil
+	}
+	return fs.Beads.PullPromptArgs, fs.Beads.PushPromptArgs, fs.Beads.SyncPromptArgs
 }
 
 // FolderShortcuts returns the configured shortcut sections for a folder, or nil.

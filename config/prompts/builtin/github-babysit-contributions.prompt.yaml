@@ -6,14 +6,14 @@ parameters:
     type: text
     required: false
     description: 'Optional GitHub repository (owner/repo) to monitor. If omitted, the repository of the current folder is used.'
-description: Periodically check for pending review requests, bot dependency PRs ready to merge, and stale remote branches from merged PRs
+description: Regularly check for pending review requests, bot dependency PRs ready to merge, and stale remote branches from merged PRs
 group: GitHub
 backgroundColor: '#C8E6C9'
 tags:
-- periodic
+- loop
 - github
 enabledWhen: FileExists(".git/config") && (Tools.HasPattern("github_*") || CommandExists("gh"))
-periodic:
+loop:
   mode: optional
   default: true
   trigger: onCompletion
@@ -27,7 +27,7 @@ prompt: |
   parameter): pending review requests addressed to you, bot dependency PRs
   (Dependabot, Renovate) ready to merge, and stale remote branches from merged
   PRs. This prompt does **not** touch your own PRs — use "GitHub: babysit my
-  PRs" for that. Designed to be run periodically via `mitto_conversation_set_periodic`.
+  PRs" for that. Designed to be run as a loop via `mitto_conversation_set_loop`.
 
   ## Session Context
 
@@ -37,15 +37,15 @@ prompt: |
   {{ .ACP.AvailableText }}
 
   ## Interaction Mode
-  {{- if and .Session.IsPeriodic (not .Session.IsPeriodicForced) }}
+  {{- if and .Session.IsLoop (not .Session.IsLoopForced) }}
 
-  **Silent mode** — a scheduled periodic run; the user is not watching.
+  **Silent mode** — a scheduled loop run; the user is not watching.
   - Use **only** `mitto_ui_notify` for all communication — non-blocking notifications only.
   - Do **NOT** use `mitto_ui_options`, `mitto_ui_form`, `mitto_ui_textbox`, or any
     interactive/blocking UI tool.
   {{- else }}
 
-  **Interactive mode** — a force-triggered run or a non-periodic conversation; the user may be present.
+  **Interactive mode** — a force-triggered run or a non-loop conversation; the user may be present.
   - You may freely interact with the user using `mitto_ui_options`, `mitto_ui_form`,
     and other interactive tools in addition to `mitto_ui_notify`.
   {{- end }}
@@ -196,7 +196,7 @@ prompt: |
   Pending reviews for you: <count>
   Bot PRs ready to merge: <count>
   Merged branches to clean up: <count>
-  Next check: <if periodic, mention the schedule>
+  Next check: <if loop, mention the schedule>
   ```
 
   ## Guidelines
@@ -211,17 +211,17 @@ prompt: |
   {{- end }}
   - If `gh` authentication fails, stop immediately and inform the user.
   - **Interaction mode** (see "Interaction Mode" section above):
-  {{- if and .Session.IsPeriodic (not .Session.IsPeriodicForced) }}
-    - **Scheduled periodic**: Use only `mitto_ui_notify`. No interactive UI. Skip the
+  {{- if and .Session.IsLoop (not .Session.IsLoopForced) }}
+    - **Scheduled loop**: Use only `mitto_ui_notify`. No interactive UI. Skip the
       summary — only send notifications for actionable items.
   {{- else }}
-    - **Force-triggered or non-periodic**: You may use `mitto_ui_options`,
+    - **Force-triggered or non-loop**: You may use `mitto_ui_options`,
       `mitto_ui_form`, and other interactive tools. Ask the user before risky
       actions (merges, branch deletions). Show the full summary at the end.
   {{- end }}
   - **Notification batching**: batch repetitive items (pending reviews, bot PRs)
     into a single notification per category to avoid spamming the user —
-    especially important in periodic mode.
+    especially important in loop mode.
   - In **scheduled mode**: do not merge PRs or delete branches automatically —
     only notify. In **interactive mode**: offer to merge or delete with user
     confirmation.

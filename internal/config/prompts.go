@@ -15,47 +15,56 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// PromptPeriodic declares that selecting this prompt should start a periodic
+// PromptLoop declares that selecting this prompt should start a loop
 // (recurring) conversation instead of a one-time one. A prompt falls into one
 // of three categories:
-//   - No `periodic:` block at all → never periodic (unchanged one-time send).
-//   - `mode: always` (or `mode` absent) → always periodic; not user-toggleable.
+//   - No `loop:` block at all → never loop (unchanged one-time send).
+//   - `mode: always` (or `mode` absent) → always loop; not user-toggleable.
 //   - `mode: optional` → user-choosable; `default` sets the initial per-send state.
 //
-// Example frontmatter (always periodic, schedule-based):
+// Example frontmatter (always loop, schedule-based):
 //
-//	periodic:
+//	loop:
 //	  value: 1
 //	  unit: hours          # minutes | hours | days
 //	  at: "09:00"          # optional, only for days (UTC)
 //	  maxIterations: 10    # optional; 0/absent = unlimited scheduled runs
 //
-// Example frontmatter (always periodic, on-completion trigger):
+// Example frontmatter (always loop, on-completion trigger):
 //
-//	periodic:
+//	loop:
 //	  trigger: onCompletion  # fire after the agent stops responding
 //	  delay: 30              # seconds to wait after agent stops (clamped to floor at consumption)
 //	  maxIterations: 20      # optional safety cap
 //	  maxDuration: "4h"      # optional wall-clock cap; 0/absent = unlimited
 //
-// Example frontmatter (optionally periodic, off by default):
+// Example frontmatter (always loop, on-tasks trigger with CEL condition):
 //
-//	periodic:
+//	loop:
+//	  trigger: onTasks
+//	  condition: 'tasks.exists(t, t.status == "open" && "backend" in t.labels)'
+//	  maxIterations: 20
+//	  maxDuration: "4h"
+//
+// Example frontmatter (optionally loop, off by default):
+//
+//	loop:
 //	  mode: optional
 //	  default: false         # initial per-send toggle state; nil/absent => true (on)
 //	  trigger: onCompletion
 //	  delay: 30
-type PromptPeriodic struct {
+type PromptLoop struct {
 	// Value is the number of time units between runs (min 1). Used for trigger: schedule (default).
 	Value int `yaml:"value" json:"value"`
 	// Unit is the time unit: "minutes", "hours", or "days". Used for trigger: schedule (default).
 	Unit string `yaml:"unit" json:"unit"`
 	// At is the time of day in HH:MM format (UTC). Only meaningful for the "days" unit.
 	At string `yaml:"at,omitempty" json:"at,omitempty"`
-	// MaxIterations caps the number of scheduled runs when the conversation is made periodic (0 / absent = unlimited).
+	// MaxIterations caps the number of scheduled runs when the conversation is made loop (0 / absent = unlimited).
 	MaxIterations int `yaml:"maxIterations,omitempty" json:"maxIterations,omitempty"`
-	// Trigger selects how the periodic run fires: "" or "schedule" (default, frequency-based)
-	// vs "onCompletion" (fire after the agent stops responding + Delay seconds).
+	// Trigger selects how the loop run fires: "" or "schedule" (default, frequency-based),
+	// "onCompletion" (fire after the agent stops responding + Delay seconds), or
+	// "onTasks" (fire when beads/tasks in the workspace change, optionally gated by Condition).
 	Trigger string `yaml:"trigger,omitempty" json:"trigger,omitempty"`
 	// Delay is the number of seconds to wait after the agent stops responding before the
 	// next run. Only meaningful for trigger: onCompletion. Clamped to a global minimum
@@ -64,40 +73,44 @@ type PromptPeriodic struct {
 	// MaxDuration is an optional wall-clock cap (e.g. "2h", "30m"); 0/absent = unlimited.
 	// Parsed to seconds at the consumption boundary.
 	MaxDuration string `yaml:"maxDuration,omitempty" json:"maxDuration,omitempty"`
-	// Mode selects whether periodic is mandatory or user-toggleable: "always"
-	// (default when empty/absent) or "optional". Validated by ValidatePromptPeriodic.
+	// Condition is an optional CEL expression gating which beads/task changes fire
+	// the run; empty = fire on any change. Only meaningful for trigger: onTasks.
+	// Validated at parse time in ParsePromptFile.
+	Condition string `yaml:"condition,omitempty" json:"condition,omitempty"`
+	// Mode selects whether loop is mandatory or user-toggleable: "always"
+	// (default when empty/absent) or "optional". Validated by ValidatePromptLoop.
 	Mode string `yaml:"mode,omitempty" json:"mode,omitempty"`
 	// Default is the initial per-send toggle state when Mode is "optional".
 	// nil/absent => true (on). Ignored (with a lint warning) when Mode is "always".
 	Default *bool `yaml:"default,omitempty" json:"default,omitempty"`
 }
 
-// PromptPeriodicModeAlways means the prompt is always periodic; not user-toggleable.
-// Also the implied mode when PromptPeriodic.Mode is empty.
-const PromptPeriodicModeAlways = "always"
+// PromptLoopModeAlways means the prompt is always loop; not user-toggleable.
+// Also the implied mode when PromptLoop.Mode is empty.
+const PromptLoopModeAlways = "always"
 
-// PromptPeriodicModeOptional means periodic is user-choosable for this prompt;
-// PromptPeriodic.Default sets the initial per-send toggle state.
-const PromptPeriodicModeOptional = "optional"
+// PromptLoopModeOptional means loop is user-choosable for this prompt;
+// PromptLoop.Default sets the initial per-send toggle state.
+const PromptLoopModeOptional = "optional"
 
-// knownPromptPeriodicModes enumerates valid PromptPeriodic.Mode values (besides "").
-var knownPromptPeriodicModes = map[string]bool{
-	PromptPeriodicModeAlways:   true,
-	PromptPeriodicModeOptional: true,
+// knownPromptLoopModes enumerates valid PromptLoop.Mode values (besides "").
+var knownPromptLoopModes = map[string]bool{
+	PromptLoopModeAlways:   true,
+	PromptLoopModeOptional: true,
 }
 
-// ValidatePromptPeriodic validates the periodic block's mode/default combination.
+// ValidatePromptLoop validates the loop block's mode/default combination.
 // Returns an error for unknown mode values. Emits a non-fatal warning when default
 // is set together with mode: always (or mode absent), since the value is ignored.
-func ValidatePromptPeriodic(promptName string, p *PromptPeriodic) error {
+func ValidatePromptLoop(promptName string, p *PromptLoop) error {
 	if p == nil {
 		return nil
 	}
-	if p.Mode != "" && !knownPromptPeriodicModes[p.Mode] {
-		return fmt.Errorf("prompt %q: periodic.mode %q is not valid (must be one of: always, optional)", promptName, p.Mode)
+	if p.Mode != "" && !knownPromptLoopModes[p.Mode] {
+		return fmt.Errorf("prompt %q: loop.mode %q is not valid (must be one of: always, optional)", promptName, p.Mode)
 	}
-	if p.Default != nil && p.Mode != PromptPeriodicModeOptional {
-		slog.Warn("prompt periodic.default is ignored unless periodic.mode is \"optional\"",
+	if p.Default != nil && p.Mode != PromptLoopModeOptional {
+		slog.Warn("prompt loop.default is ignored unless loop.mode is \"optional\"",
 			"prompt", promptName, "mode", p.Mode)
 	}
 	return nil
@@ -206,11 +219,11 @@ type PromptFile struct {
 	// Example: "!session.isChild" hides the prompt in child conversations.
 	EnabledWhen string `yaml:"enabledWhen,omitempty" json:"-"`
 
-	// Periodic, if set, declares that selecting this prompt in a menu creates a
-	// periodic (recurring) conversation instead of a one-time seed.
+	// Loop, if set, declares that selecting this prompt in a menu creates a
+	// loop (recurring) conversation instead of a one-time seed.
 	// Presence implies opt-in; the fields provide default values for the schedule
 	// dialog. The "at" field is in HH:MM UTC and is only valid for the "days" unit.
-	Periodic *PromptPeriodic `yaml:"periodic,omitempty" json:"periodic,omitempty"`
+	Loop *PromptLoop `yaml:"loop,omitempty" json:"loop,omitempty"`
 
 	// PreferredModels is an ordered list of references to global model profiles
 	// (Settings → Models), by profile name or capability tag. The first entry that
@@ -274,7 +287,7 @@ func (p *PromptFile) ToWebPrompt() WebPrompt {
 		Source:          PromptSourceFile,
 		EnabledWhen:     p.EnabledWhen,
 		Enabled:         p.Enabled,
-		Periodic:        p.Periodic,
+		Loop:            p.Loop,
 		PreferredModels: p.PreferredModels,
 		Parameters:      p.Parameters,
 		Tags:            p.Tags,
@@ -322,9 +335,18 @@ func ParsePromptFile(path string, data []byte, modTime time.Time) (*PromptFile, 
 		return nil, fmt.Errorf("prompt file %s: %w", path, err)
 	}
 
-	// Validate periodic block (mode/default combination).
-	if err := ValidatePromptPeriodic(prompt.Name, prompt.Periodic); err != nil {
+	// Validate loop block (mode/default combination).
+	if err := ValidatePromptLoop(prompt.Name, prompt.Loop); err != nil {
 		return nil, fmt.Errorf("prompt file %s: %w", path, err)
+	}
+
+	// Validate loop.condition CEL expression when non-empty (fail-fast, mirrors
+	// how the runtime seam is wired via session.ConditionValidator). Applies to
+	// any loop block that declares a Condition; only meaningful for trigger: onTasks.
+	if prompt.Loop != nil && prompt.Loop.Condition != "" {
+		if err := ValidateCondition(prompt.Loop.Condition); err != nil {
+			return nil, fmt.Errorf("prompt file %s: loop.condition: %w", path, err)
+		}
 	}
 
 	// Validate Go-template syntax + cond/when CEL literals (mitto-m7sb.6).

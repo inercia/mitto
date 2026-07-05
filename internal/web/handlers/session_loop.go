@@ -1,0 +1,164 @@
+package handlers
+
+import (
+	"net/http"
+
+	configPkg "github.com/inercia/mitto/internal/config"
+	"github.com/inercia/mitto/internal/conversation"
+	"github.com/inercia/mitto/internal/session"
+)
+
+// LoopPromptRequest is the request body for creating/updating a loop prompt.
+type LoopPromptRequest struct {
+	Prompt        string            `json:"prompt"`
+	PromptName    string            `json:"prompt_name,omitempty"`
+	Frequency     session.Frequency `json:"frequency"`
+	Enabled       bool              `json:"enabled"`
+	FreshContext  bool              `json:"fresh_context,omitempty"`
+	MaxIterations int               `json:"max_iterations,omitempty"`
+	// Trigger selects how the prompt fires: "" or "schedule" (frequency-based, default)
+	// vs "onCompletion" (event-driven, after the agent stops + DelaySeconds).
+	Trigger session.LoopTrigger `json:"trigger,omitempty"`
+	// DelaySeconds is the wait after the agent stops before the next run (onCompletion only).
+	// Clamped to the global floor on write.
+	DelaySeconds int `json:"delay_seconds,omitempty"`
+	// MaxDurationSeconds is the wall-clock cap since iterating started (0 = unlimited).
+	MaxDurationSeconds int `json:"max_duration_seconds,omitempty"`
+	// Arguments holds user-supplied values for Go-template .Args placeholders
+	// when PromptName is set. Ignored for free-text prompts.
+	Arguments map[string]string `json:"arguments,omitempty"`
+	// Condition is a CEL expression gating onTasks firing. Empty means fire on
+	// ANY beads/task change. Only meaningful when Trigger is "onTasks".
+	Condition *string `json:"condition,omitempty"`
+	// ConditionPreset is an optional UI preset id that was compiled into Condition.
+	ConditionPreset *string `json:"condition_preset,omitempty"`
+	// CooldownSeconds is the per-conversation cooldown floor honoured by the runner
+	// between onTasks firings. 0/nil means use the global floor.
+	CooldownSeconds *int `json:"cooldown_seconds,omitempty"`
+}
+
+// LoopPromptPatchRequest is the request body for partial updates.
+type LoopPromptPatchRequest struct {
+	Prompt        *string            `json:"prompt,omitempty"`
+	PromptName    *string            `json:"prompt_name,omitempty"`
+	Frequency     *session.Frequency `json:"frequency,omitempty"`
+	Enabled       *bool              `json:"enabled,omitempty"`
+	FreshContext  *bool              `json:"fresh_context,omitempty"`
+	MaxIterations *int               `json:"max_iterations,omitempty"`
+	// Trigger, DelaySeconds, MaxDurationSeconds are partial updates for the on-completion fields.
+	Trigger            *session.LoopTrigger `json:"trigger,omitempty"`
+	DelaySeconds       *int                 `json:"delay_seconds,omitempty"`
+	MaxDurationSeconds *int                 `json:"max_duration_seconds,omitempty"`
+	// Arguments is a partial update for the substitution arguments map.
+	// nil = leave unchanged; non-nil = replace the entire map (including empty map to clear it).
+	Arguments *map[string]string `json:"arguments,omitempty"`
+	// Condition, ConditionPreset, CooldownSeconds are partial updates for the onTasks fields.
+	Condition       *string `json:"condition,omitempty"`
+	ConditionPreset *string `json:"condition_preset,omitempty"`
+	CooldownSeconds *int    `json:"cooldown_seconds,omitempty"`
+	// ResetCounters, when true, resets IterationCount=0, FirstRunAt=nil, and
+	// LastSentAt=nil so the elapsed iterations and elapsed time start from zero and
+	// the loop looks never-sent. Used when restoring a conversation that auto-stopped
+	// after reaching its max-iterations/max-duration cap. Clearing LastSentAt makes
+	// the restore fire its first run immediately (like an initial run) instead of
+	// waiting out the onCompletion delay.
+	ResetCounters *bool `json:"reset_counters,omitempty"`
+}
+
+// RunLoopNowRequest is the optional request body for POST /api/sessions/{id}/loop/run-now.
+type RunLoopNowRequest struct {
+	ResetTimer *bool `json:"reset_timer,omitempty"`
+}
+
+// loopDelayFloor returns the configured global floor for the on-completion delay.
+// Falls back to the package default when the loop runner is unavailable (e.g. tests).
+func (h *Handlers) loopDelayFloor() int {
+	if h.deps.LoopDelayFloor != nil {
+		return h.deps.LoopDelayFloor()
+	}
+	return configPkg.DefaultMinLoopCompletionDelaySeconds
+}
+
+// HandleSessionLoop handles loop prompt operations for a session.
+// Routes: GET, PUT, PATCH, DELETE /api/sessions/{id}/loop
+// Route: POST /api/sessions/{id}/loop/run-now (immediate delivery)
+func (h *Handlers) HandleSessionLoop(w http.ResponseWriter, r *http.Request, sessionID, subPath string) {
+	store := h.deps.Store
+	if store == nil {
+		writeErrorJSON(w, http.StatusInternalServerError, "", "Session store not available")
+		return
+	}
+
+	// Verify session exists
+	meta, err := store.GetMetadata(sessionID)
+	if err != nil {
+		if err == session.ErrSessionNotFound {
+			writeErrorJSON(w, http.StatusNotFound, "", "Session not found")
+			return
+		}
+		writeErrorJSON(w, http.StatusInternalServerError, "", "Failed to get session")
+		return
+	}
+
+	// Prevent setting loop on child sessions - only parents/top-level sessions can be loops
+	if r.Method != http.MethodGet && meta.ParentSessionID != "" {
+		writeErrorJSON(w, http.StatusBadRequest, "", "Cannot set loop on a child conversation. Only parent or top-level conversations can be loops.")
+		return
+	}
+
+	// Handle run-now sub-path
+	if subPath == "run-now" {
+		h.handleRunLoopNow(w, r, sessionID)
+		return
+	}
+
+	loopStore := store.Loop(sessionID)
+
+	switch r.Method {
+	case http.MethodGet:
+		h.handleGetLoop(w, loopStore)
+	case http.MethodPut:
+		h.handleSetLoop(w, r, sessionID, loopStore)
+	case http.MethodPatch:
+		h.handlePatchLoop(w, r, sessionID, loopStore)
+	case http.MethodDelete:
+		h.handleDeleteLoop(w, sessionID, loopStore)
+	default:
+		methodNotAllowed(w)
+	}
+}
+
+// handleGetLoop handles GET /api/sessions/{id}/loop
+func (h *Handlers) handleGetLoop(w http.ResponseWriter, ps *session.LoopStore) {
+	p, err := ps.Get()
+	if err != nil {
+		if err == session.ErrLoopNotFound {
+			writeErrorJSON(w, http.StatusNotFound, "", "No loop prompt configured")
+			return
+		}
+		if h.deps.Logger != nil {
+			h.deps.Logger.Error("Failed to get loop prompt", "error", err)
+		}
+		writeErrorJSON(w, http.StatusInternalServerError, "", "Failed to get loop prompt")
+		return
+	}
+
+	writeJSONOK(w, p)
+}
+
+// triggerTitleFromLoop triggers title generation from a loop prompt when
+// the session has no title yet. Shared by the PUT and PATCH handlers.
+func (h *Handlers) triggerTitleFromLoop(sessionID, prompt, promptName string) {
+	if h.deps.SessionManager != nil && conversation.SessionNeedsTitle(h.deps.Store, sessionID) {
+		if bs := h.deps.SessionManager.GetSession(sessionID); bs != nil {
+			bs.TriggerTitleGenerationFromLoop(prompt, promptName)
+		}
+	}
+}
+
+// broadcastLoop broadcasts a loop-config change when a broadcaster is wired.
+func (h *Handlers) broadcastLoop(sessionID string, updated *session.LoopPrompt) {
+	if h.deps.BroadcastLoopUpdated != nil {
+		h.deps.BroadcastLoopUpdated(sessionID, updated)
+	}
+}

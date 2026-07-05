@@ -3,7 +3,7 @@
 #
 # This processor appends a note asking the agent to verify MCP tool availability
 # and show installation instructions if needed. It runs on the first message
-# and re-runs periodically to re-check.
+# and re-runs repeatedly to re-check.
 #
 # Uses text-mode (no external command).
 ##########################################################################################

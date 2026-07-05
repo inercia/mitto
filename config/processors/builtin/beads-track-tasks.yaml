@@ -9,7 +9,7 @@
 #   - The `bd` command exists on PATH (CommandExists CEL gate)
 #
 # Throttling:
-#   - Fires on the first message, then re-runs periodically to keep the reminder fresh
+#   - Fires on the first message, then re-runs repeatedly to keep the reminder fresh
 #     without spamming every single message.
 #
 # Uses text-mode (no external command).

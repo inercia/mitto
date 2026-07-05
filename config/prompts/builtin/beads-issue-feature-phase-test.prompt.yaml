@@ -123,11 +123,11 @@ prompt: |
      ```
 
   3. End with a concise handoff message naming the blocker and the single thing
-     needed, and disable the enclosing conversation's periodic flag so the driver
+     needed, and disable the enclosing conversation's loop flag so the driver
      loop does not spin on the blocker:
 
      ```
-     mitto_conversation_update(self_id: "{{ .Session.ID }}", conversation_id: "self", periodic_enabled: false)
+     mitto_conversation_update(self_id: "{{ .Session.ID }}", conversation_id: "self", loop_enabled: false)
      ```
 
   ## Guidelines
@@ -136,7 +136,7 @@ prompt: |
     self-review or close — the review phase runs next.
   - **Green before green label.** Never add `tested` while any new or existing
     relevant test is red.
-  - **Commit to persist across iterations.** Each phase runs in a separate periodic
+  - **Commit to persist across iterations.** Each phase runs in a separate loop
     iteration; without `Commit: "true"`, work here is only as durable as the
     conversation's working tree.
   - **Live state only.** Always re-read labels via `bd show --json` at the start of

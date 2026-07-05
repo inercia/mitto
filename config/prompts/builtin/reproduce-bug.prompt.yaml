@@ -1,6 +1,6 @@
 icon: error
 name: Reproduce bug
-menus: prompts, conversation, beadsIssues, !promptsPeriodic
+menus: prompts, conversation, beadsIssues, !promptsLoop
 parameters:
   - name: IssueID
     type: beadsId

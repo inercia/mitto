@@ -28,7 +28,7 @@ export function computeSessionFingerprint(filteredSessions, groupingMode) {
     filteredSessions
       .map(
         (s) =>
-          `${s.session_id}|${s.parent_session_id || ""}|${s.working_dir || ""}|${s.archived || false}|${s.periodic_enabled || false}|${s.periodic_configured || false}|${s.pinned || false}|${s.name || ""}`,
+          `${s.session_id}|${s.parent_session_id || ""}|${s.working_dir || ""}|${s.archived || false}|${s.loop_enabled || false}|${s.loop_configured || false}|${s.pinned || false}|${s.name || ""}`,
       )
       .sort()
       .join("\n")
@@ -240,7 +240,7 @@ function annotateWithCategory(nodes) {
 }
 
 /**
- * Compute the unified sidebar tree over ALL sessions (regular + periodic +
+ * Compute the unified sidebar tree over ALL sessions (regular + loop +
  * archived) without any tab pre-filtering. Returns a stable data model with
  * static injected nodes (per-folder tasks) and conversation nodes annotated
  * with their category and partitioned into active vs. archived roots.
@@ -367,7 +367,7 @@ export function computeFolderGroupSections(folders) {
  *
  * Pure predicate applied to the unified tree (after grouping/nesting), before
  * render. Category derives from each conversation node's `category`
- * (getFilterTabForSession): conversations→regular, periodic→periodic,
+ * (getFilterTabForSession): conversations→regular, loop→loop,
  * archived→archived. Per-folder Tasks nodes are the 'tasks' category.
  *
  * Hiding a parent conversation hides its children too (the whole subtree is
@@ -375,19 +375,19 @@ export function computeFolderGroupSections(folders) {
  * Tasks hidden is pruned entirely.
  *
  * @param {{folders: Array}} tree - from computeUnifiedTree
- * @param {{regular: boolean, periodic: boolean, archived: boolean, tasks: boolean}} filter
+ * @param {{regular: boolean, loop: boolean, archived: boolean, tasks: boolean}} filter
  * @returns {{folders: Array}} new tree; each folder gains showTasks
  */
 export function filterUnifiedTree(tree, filter) {
   if (!tree) return { folders: [] };
   const f = filter || {};
   const regular = f.regular !== false;
-  const periodic = f.periodic !== false;
+  const loop = f.loop !== false;
   const archived = f.archived !== false;
   const tasks = f.tasks !== false;
 
   const categoryEnabled = (category) => {
-    if (category === FILTER_TAB.PERIODIC) return periodic;
+    if (category === FILTER_TAB.LOOP) return loop;
     if (category === FILTER_TAB.ARCHIVED) return archived;
     return regular;
   };

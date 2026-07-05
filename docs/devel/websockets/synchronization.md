@@ -265,7 +265,7 @@ On mobile devices, WebSocket connections can become "zombies" - they appear open
 
 ### The Solution: Client-Side Keepalive with Sequence Sync
 
-The frontend sends periodic `keepalive` messages that serve two purposes:
+The frontend sends loop `keepalive` messages that serve two purposes:
 
 1. **Detect zombie connections** - Force reconnect if keepalives aren't acknowledged
 2. **Detect out-of-sync state** - Compare sequence numbers to catch missed messages
@@ -386,7 +386,7 @@ Long-running measurement of the recovery rate shows a stable baseline of **~133/
 
 Three legitimate drivers explain the volume:
 
-1. **Long-lived sessions** naturally accumulate more reconnect cycles. A long-lived "Logs Analyzer" parent session, for example, contributed 54 of the recoveries in a single measurement window. Periodic conversations (see [Periodic Conversations](../../../CLAUDE.md)) are long-lived by design and behave the same way.
+1. **Long-lived sessions** naturally accumulate more reconnect cycles. A long-lived "Logs Analyzer" parent session, for example, contributed 54 of the recoveries in a single measurement window. Loop conversations (see [Loop Conversations](../../../CLAUDE.md)) are long-lived by design and behave the same way.
 2. **macOS app hide/resume cycles** suspend the WKWebView per-session WebSocket while the app is hidden, so each `App became active` event finds dead sockets that must be re-established. See sibling issue `mitto-1o2` for the WKWebView timer-suspension details.
 3. **Idle per-session sockets may be released server-side or by the lazy-connect background sweep** (see `BACKGROUND_DISCONNECT_GRACE_MS` in `useWebSocket.js`). When the user switches back, the session-activation health check above re-establishes the connection on demand.
 

@@ -177,7 +177,7 @@ func (s *Server) handlePromptList(ctx context.Context, req *mcp.CallToolRequest,
 			Icon:            p.Icon,
 			Source:          string(p.Source),
 			Enabled:         p.Enabled,
-			Periodic:        p.Periodic,
+			Loop:            p.Loop,
 			Parameters:      p.Parameters,
 		})
 	}
@@ -217,7 +217,7 @@ func (s *Server) handlePromptGet(ctx context.Context, req *mcp.CallToolRequest, 
 			Icon:            p.Icon,
 			Source:          string(p.Source),
 			Enabled:         p.Enabled,
-			Periodic:        p.Periodic,
+			Loop:            p.Loop,
 			Parameters:      p.Parameters,
 		},
 	}, nil

@@ -1,6 +1,6 @@
 // Mitto Web Interface - Conversation Seeding Hook
 // Shared helper to seed a conversation with a named prompt via prompt_name,
-// or to create a new periodic conversation driven by a named prompt.
+// or to create a new loop conversation driven by a named prompt.
 
 import { secureFetch } from "../utils/csrf.js";
 import { apiUrl } from "../utils/api.js";
@@ -36,38 +36,38 @@ export function parseDurationToSeconds(input) {
 }
 
 /**
- * Decide which periodic action to take based on the target session's state.
+ * Decide which loop action to take based on the target session's state.
  *
  * Returns one of:
- *   "new-periodic"  — no session (or no session_id): create a NEW periodic conversation.
- *   "one-shot"      — session is already periodic, or it is a child: send once, do NOT modify config.
- *   "make-periodic" — regular running conversation: configure it as periodic now.
+ *   "new-loop"  — no session (or no session_id): create a NEW loop conversation.
+ *   "one-shot"  — session is already a loop, or it is a child: send once, do NOT modify config.
+ *   "make-loop" — regular running conversation: configure it as a loop now.
  *
  * @param {Object|null|undefined} session - The target session object (from session list / info).
- * @returns {"new-periodic" | "one-shot" | "make-periodic"}
+ * @returns {"new-loop" | "one-shot" | "make-loop"}
  */
-export function decidePeriodicAction(session) {
-  if (!session || !session.session_id) return "new-periodic";
-  if (session.periodic_enabled || session.periodic_configured)
+export function decideLoopAction(session) {
+  if (!session || !session.session_id) return "new-loop";
+  if (session.loop_enabled || session.loop_configured)
     return "one-shot";
   if (session.parent_session_id) return "one-shot";
-  return "make-periodic";
+  return "make-loop";
 }
 
 /**
- * Make an existing regular conversation immediately periodic using a prompt's
+ * Make an existing regular conversation immediately a loop using a prompt's
  * declared defaults, then fire the first run.
  *
  * Steps:
- *   1. PUT /api/sessions/{id}/periodic  — configure prompt_name + frequency + max_iterations
- *   2. POST /api/sessions/{id}/periodic/run-now  — fire first run (reset_timer: true)
+ *   1. PUT /api/sessions/{id}/loop  — configure prompt_name + frequency + max_iterations
+ *   2. POST /api/sessions/{id}/loop/run-now  — fire first run (reset_timer: true)
  *
  * @param {string} sessionId
- * @param {{ name: string, periodic?: { value?: number, unit?: string, at?: string, maxIterations?: number } }} prompt
+ * @param {{ name: string, loop?: { value?: number, unit?: string, at?: string, maxIterations?: number } }} prompt
  * @param {{ arguments?: Object, fetchImpl?: Function }} [opts]
  * @returns {Promise<{ success: boolean, error?: string }>}
  */
-export async function makePeriodicNow(
+export async function makeLoopNow(
   sessionId,
   prompt,
   { arguments: args, fetchImpl } = {},
@@ -76,7 +76,7 @@ export async function makePeriodicNow(
     return { success: false, error: "invalid_request" };
   }
 
-  const p = prompt?.periodic || {};
+  const p = prompt?.loop || {};
   const value = p.value || 1;
   const unit = p.unit || "hours";
   const frequency = { value, unit };
@@ -89,16 +89,19 @@ export async function makePeriodicNow(
       ? p.maxIterations
       : 0;
 
-  // New trigger/delay/maxDuration fields from prompt periodic defaults.
+  // New trigger/delay/maxDuration fields from prompt loop defaults.
   const trigger = p.trigger || "schedule";
   const delaySeconds = p.delay ?? 0;
   const maxDurationSeconds = parseDurationToSeconds(p.maxDuration);
+  // onTasks CEL condition, from the prompt's loop frontmatter default.
+  // conditionPreset is intentionally NOT threaded here (mitto-pei).
+  const condition = p.condition ?? "";
 
   const fetch_ = fetchImpl || secureFetch;
 
-  // Step 1: configure periodic
+  // Step 1: configure loop
   try {
-    const putResp = await fetch_(endpoints.sessions.periodic(sessionId), {
+    const putResp = await fetch_(endpoints.sessions.loop(sessionId), {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -109,6 +112,7 @@ export async function makePeriodicNow(
         trigger,
         delay_seconds: delaySeconds,
         max_duration_seconds: maxDurationSeconds,
+        ...(trigger === "onTasks" ? { condition } : {}),
         ...(args && typeof args === "object" && Object.keys(args).length > 0
           ? { arguments: args }
           : {}),
@@ -121,23 +125,23 @@ export async function makePeriodicNow(
       } catch (_) {}
       return {
         success: false,
-        error: errData.error || "periodic_setup_failed",
+        error: errData.error || "loop_setup_failed",
       };
     }
   } catch (err) {
-    console.error("makePeriodicNow PUT error:", err);
-    return { success: false, error: "periodic_setup_failed" };
+    console.error("makeLoopNow PUT error:", err);
+    return { success: false, error: "loop_setup_failed" };
   }
 
   // Step 2: fire first run.
-  // NOTE: by this point the PUT above has already persisted the periodic config
-  // (the conversation IS periodic). The run-now POST is best-effort: a 409
+  // NOTE: by this point the PUT above has already persisted the loop config
+  // (the conversation IS a loop). The run-now POST is best-effort: a 409
   // (Conflict / session busy) means a run is already in flight — e.g. enabling a
-  // schedule-based config immediately fired its first run — so periodic is set
+  // schedule-based config immediately fired its first run — so the loop is set
   // and running. Treat 409 as success rather than surfacing a misleading
-  // "failed to configure periodic" error to the user.
+  // "failed to configure loop" error to the user.
   try {
-    const runResp = await fetch_(endpoints.sessions.periodicRunNow(sessionId), {
+    const runResp = await fetch_(endpoints.sessions.loopRunNow(sessionId), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ reset_timer: true }),
@@ -154,7 +158,7 @@ export async function makePeriodicNow(
       return { success: false, error: errData.error || "run_now_failed" };
     }
   } catch (err) {
-    console.error("makePeriodicNow run-now error:", err);
+    console.error("makeLoopNow run-now error:", err);
     return { success: false, error: "run_now_failed" };
   }
 
@@ -221,22 +225,22 @@ export async function seedConversationWithPrompt(
 }
 
 /**
- * Configure a periodic schedule on a newly-created session via PUT.
- * Includes max_iterations when periodic.maxIterations is a positive number,
- * or falls back to prompt?.periodic?.maxIterations. Sends 0 (unlimited) otherwise.
+ * Configure a loop schedule on a newly-created session via PUT.
+ * Includes max_iterations when loop.maxIterations is a positive number,
+ * or falls back to prompt?.loop?.maxIterations. Sends 0 (unlimited) otherwise.
  * @param {string} sessionId
- * @param {{ name: string, periodic?: { maxIterations?: number } }} prompt
- * @param {{ value: number, unit: string, at?: string, maxIterations?: number }} periodic
+ * @param {{ name: string, loop?: { maxIterations?: number } }} prompt
+ * @param {{ value: number, unit: string, at?: string, maxIterations?: number }} loop
  * @param {{ arguments?: Object, fetchImpl?: Function }} [opts]
  * @returns {Promise<{ success: boolean, error?: string }>}
  */
-export async function configurePeriodicSchedule(
+export async function configureLoopSchedule(
   sessionId,
   prompt,
-  periodic,
+  loop,
   { arguments: args, fetchImpl } = {},
 ) {
-  const { value, unit, at } = periodic;
+  const { value, unit, at } = loop;
   const frequency = { value, unit };
   // Only include 'at' for daily schedules (matches backend Frequency.Validate() rules)
   if (unit === "days" && at) {
@@ -246,28 +250,29 @@ export async function configurePeriodicSchedule(
   // Resolve max_iterations: from the dialog's returned value, then from prompt defaults.
   // A positive number is sent as-is; 0 means unlimited.
   let maxIterations = 0;
-  if (
-    typeof periodic.maxIterations === "number" &&
-    periodic.maxIterations > 0
-  ) {
-    maxIterations = periodic.maxIterations;
+  if (typeof loop.maxIterations === "number" && loop.maxIterations > 0) {
+    maxIterations = loop.maxIterations;
   } else if (
-    typeof prompt?.periodic?.maxIterations === "number" &&
-    prompt.periodic.maxIterations > 0
+    typeof prompt?.loop?.maxIterations === "number" &&
+    prompt.loop.maxIterations > 0
   ) {
-    maxIterations = prompt.periodic.maxIterations;
+    maxIterations = prompt.loop.maxIterations;
   }
 
   // New trigger/delay/maxDuration fields: from dialog result, then prompt defaults.
-  const trigger = periodic.trigger || prompt?.periodic?.trigger || "schedule";
-  const delaySeconds = periodic.delaySeconds ?? prompt?.periodic?.delay ?? 0;
+  const trigger = loop.trigger || prompt?.loop?.trigger || "schedule";
+  const delaySeconds = loop.delaySeconds ?? prompt?.loop?.delay ?? 0;
   const maxDurationSeconds =
-    periodic.maxDurationSeconds ??
-    parseDurationToSeconds(prompt?.periodic?.maxDuration);
+    loop.maxDurationSeconds ??
+    parseDurationToSeconds(prompt?.loop?.maxDuration);
+  // onTasks CEL condition: from the dialog result, then the prompt's loop
+  // frontmatter default. conditionPreset is intentionally NOT threaded
+  // here (mitto-pei).
+  const condition = loop.condition ?? prompt?.loop?.condition ?? "";
 
   const fetch_ = fetchImpl || secureFetch;
   try {
-    const resp = await fetch_(endpoints.sessions.periodic(sessionId), {
+    const resp = await fetch_(endpoints.sessions.loop(sessionId), {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -278,6 +283,7 @@ export async function configurePeriodicSchedule(
         trigger,
         delay_seconds: delaySeconds,
         max_duration_seconds: maxDurationSeconds,
+        ...(trigger === "onTasks" ? { condition } : {}),
         ...(args && typeof args === "object" && Object.keys(args).length > 0
           ? { arguments: args }
           : {}),
@@ -291,10 +297,10 @@ export async function configurePeriodicSchedule(
     try {
       errData = await resp.json();
     } catch (_) {}
-    return { success: false, error: errData.error || "periodic_setup_failed" };
+    return { success: false, error: errData.error || "loop_setup_failed" };
   } catch (err) {
-    console.error("configurePeriodicSchedule error:", err);
-    return { success: false, error: "periodic_setup_failed" };
+    console.error("configureLoopSchedule error:", err);
+    return { success: false, error: "loop_setup_failed" };
   }
 }
 
@@ -313,20 +319,20 @@ export function useConversationSeeding({ newSession }) {
   const startConversationWithPrompt = useCallback(
     /**
      * Create a new conversation seeded with a named prompt (one-time queue),
-     * or create a new periodic conversation driven by the named prompt.
+     * or create a new loop conversation driven by the named prompt.
      *
-     * When `periodic` is absent (or falsy): behave exactly as before — the
+     * When `loop` is absent (or falsy): behave exactly as before — the
      * session is created with `initialPromptName` so the queue delivers the
      * prompt as a one-time message.
      *
-     * When `periodic` is present: the session is created WITHOUT a queue seed,
-     * then `PUT /api/sessions/{id}/periodic` configures the named prompt on the
-     * periodic schedule. `at` (if provided) must already be in UTC HH:MM.
+     * When `loop` is present: the session is created WITHOUT a queue seed,
+     * then `PUT /api/sessions/{id}/loop` configures the named prompt on the
+     * loop schedule. `at` (if provided) must already be in UTC HH:MM.
      *
      * originPromptName is set on the session opts from prompt.name so the
      * backend can later detect duplicate singleton-prompt conversations.
      *
-     * @param {{ workingDir, acpServer, name, beadsIssue, prompt, arguments, periodic, fetchImpl }} opts
+     * @param {{ workingDir, acpServer, name, beadsIssue, prompt, arguments, loop, fetchImpl }} opts
      * @returns {Promise<{ sessionId: string, reused?: boolean } | { error: string }>}
      */
     async ({
@@ -336,10 +342,10 @@ export function useConversationSeeding({ newSession }) {
       beadsIssue,
       prompt,
       arguments: args,
-      periodic,
+      loop,
       fetchImpl,
     }) => {
-      // Build the newSession call — skip the queue seed when periodic is present.
+      // Build the newSession call — skip the queue seed when loop is present.
       const sessionOpts = {
         workingDir,
         acpServer,
@@ -347,7 +353,7 @@ export function useConversationSeeding({ newSession }) {
         beadsIssue,
         originPromptName: prompt?.name,
       };
-      if (!periodic) {
+      if (!loop) {
         // One-time path: pass the named prompt so the queue delivers it once.
         sessionOpts.initialPromptName = prompt?.name;
         sessionOpts.arguments = args;
@@ -358,16 +364,16 @@ export function useConversationSeeding({ newSession }) {
         return { error: result?.error || "session_creation_failed" };
       }
 
-      if (periodic) {
-        // Periodic path: configure the schedule via PUT after creation.
-        const putResult = await configurePeriodicSchedule(
+      if (loop) {
+        // Loop path: configure the schedule via PUT after creation.
+        const putResult = await configureLoopSchedule(
           result.sessionId,
           prompt,
-          periodic,
+          loop,
           { arguments: args, fetchImpl },
         );
         if (!putResult.success) {
-          // Session was created but periodic config failed — surface the error.
+          // Session was created but loop config failed — surface the error.
           return { error: putResult.error };
         }
       }

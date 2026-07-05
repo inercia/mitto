@@ -59,6 +59,22 @@ func lookupACPServerConstraints(cfg *config.Config, serverName string) map[strin
 	return nil
 }
 
+// applyModelConstraintOverride merges a per-session "model" constraint override into an
+// existing ACP-server-constraints map, returning the (possibly newly allocated) map. Used
+// by auto-children to apply a per-child initial model profile (mitto-9x8) without mutating
+// the server's shared constraints map. No-op (returns constraints unchanged) when override
+// is nil or has an empty Pattern.
+func applyModelConstraintOverride(constraints map[string]*config.ACPServerConstraint, override *config.ACPServerConstraint) map[string]*config.ACPServerConstraint {
+	if override == nil || override.Pattern == "" {
+		return constraints
+	}
+	if constraints == nil {
+		constraints = make(map[string]*config.ACPServerConstraint)
+	}
+	constraints[ConfigOptionCategoryModel] = override
+	return constraints
+}
+
 // lookupContextFlushCommand returns the agent-native context-flush command (e.g.
 // "/clear") configured for the named ACP server, or "" when none is configured.
 func lookupContextFlushCommand(cfg *config.Config, serverName string) string {

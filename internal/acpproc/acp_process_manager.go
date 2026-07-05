@@ -40,6 +40,12 @@ type ACPProcessManager struct {
 	// AuxiliaryModelSelection is used as-is.
 	ModelProfileResolver func(name string) *config.ModelProfile
 
+	// ModelProfilesByTagResolver returns all Model profiles (Config.Models) carrying
+	// a given capability tag, in definition order. Used to resolve AuxiliaryModelTag
+	// for new auxiliary sessions (mitto-9vz). May be nil, in which case
+	// AuxiliaryModelTag is ignored.
+	ModelProfilesByTagResolver func(tag string) []config.ModelProfile
+
 	// Auxiliary session tracking
 	auxMu       sync.Mutex
 	auxSessions map[auxSessionKey]*auxiliarySessionState
@@ -85,13 +91,13 @@ type ACPProcessManager struct {
 	onMemoryRecycled func(workspaceUUID string, rssBytes, threshold uint64, sessionCount int)
 
 	// gcSuspendedSessions tracks session IDs that were intentionally suspended
-	// by the GC's periodic-suspend heuristic. When a periodic session's next run
+	// by the GC's loop-suspend heuristic. When a loop session's next run
 	// is far away, the GC closes it and adds it here. The WebSocket auto-resume
 	// handler checks this set and skips resume for flagged sessions, preventing
 	// a suspend/resume thrashing loop (GC closes → WS reconnects → auto-resume
 	// → GC closes again). The flag is cleared by:
 	//   - ensure_resumed (explicit user focus)
-	//   - PeriodicRunner (when the prompt is due)
+	//   - LoopRunner (when the prompt is due)
 	//   - ResumeSession (any explicit resume call)
 	gcSuspendedSessions map[string]bool // protected by gcMu
 
@@ -105,7 +111,7 @@ type ACPProcessManager struct {
 }
 
 // MarkGCSuspended records that a session was intentionally suspended by the GC's
-// periodic-suspend heuristic. The WebSocket auto-resume handler checks this flag
+// loop-suspend heuristic. The WebSocket auto-resume handler checks this flag
 // and skips resume to prevent suspend/resume thrashing.
 func (m *ACPProcessManager) MarkGCSuspended(sessionID string) {
 	m.gcMu.Lock()
@@ -118,7 +124,7 @@ func (m *ACPProcessManager) MarkGCSuspended(sessionID string) {
 
 // ClearGCSuspended removes the GC-suspended flag for a session, allowing
 // WebSocket auto-resume to proceed normally. Called by ensure_resumed (explicit
-// user focus), PeriodicRunner (when the prompt is due), and ResumeSession.
+// user focus), LoopRunner (when the prompt is due), and ResumeSession.
 func (m *ACPProcessManager) ClearGCSuspended(sessionID string) {
 	m.gcMu.Lock()
 	defer m.gcMu.Unlock()
@@ -807,16 +813,30 @@ func (m *ACPProcessManager) getOrCreateAuxiliarySession(ctx context.Context, wor
 	}
 
 	// Apply auxiliary model selection if configured for this workspace.
-	// If AuxiliaryModelProfile is set (mitto-hke), it takes precedence and its resolved
-	// Criteria is used in place of the legacy AuxiliaryModelSelection matchMode/pattern.
-	// Falls back to AuxiliaryModelSelection when the profile field is empty or unresolved.
-	// On no match or nil selection, leave the ACP server's default model unchanged.
+	// Precedence: AuxiliaryModelProfile > AuxiliaryModelTag > AuxiliaryModelSelection
+	// (mitto-hke, mitto-9vz). If AuxiliaryModelProfile is set, it takes precedence and
+	// its resolved Criteria is used in place of the legacy AuxiliaryModelSelection
+	// matchMode/pattern. Else, if AuxiliaryModelTag is set, the first Model profile
+	// carrying that tag whose Criteria matches an available model is used. Falls back
+	// to AuxiliaryModelSelection when neither resolves. On no match or nil selection,
+	// leave the ACP server's default model unchanged.
 	if m.WorkspaceConfigProvider != nil {
 		if ws := m.WorkspaceConfigProvider(workspaceUUID); ws != nil {
 			auxConstraint := ws.AuxiliaryModelSelection
 			if ws.AuxiliaryModelProfile != "" && m.ModelProfileResolver != nil {
 				if profile := m.ModelProfileResolver(ws.AuxiliaryModelProfile); profile != nil && profile.Criteria != nil {
 					auxConstraint = profile.Criteria
+				}
+			} else if ws.AuxiliaryModelTag != "" && m.ModelProfilesByTagResolver != nil {
+				profiles := m.ModelProfilesByTagResolver(ws.AuxiliaryModelTag)
+				for i := range profiles {
+					if profiles[i].Criteria == nil {
+						continue
+					}
+					if conversation.ResolveProfileModel(&profiles[i], sessionHandle.Models) != "" {
+						auxConstraint = profiles[i].Criteria
+						break
+					}
 				}
 			}
 			if auxConstraint != nil && auxConstraint.Pattern != "" {

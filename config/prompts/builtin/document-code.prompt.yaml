@@ -1,6 +1,6 @@
 icon: edit
 name: Document Code
-menus: prompts, !promptsPeriodic
+menus: prompts, !promptsLoop
 description: Add inline documentation and comments to the code we just wrote
 group: Documentation
 backgroundColor: '#B39DDB'

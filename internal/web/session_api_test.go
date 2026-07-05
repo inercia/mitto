@@ -1131,10 +1131,10 @@ func TestHandleListSessions_InvalidOffset(t *testing.T) {
 }
 
 // =============================================================================
-// Periodic glance-fields tests for handleListSessions / SessionListResponse
+// Loop glance-fields tests for handleListSessions / SessionListResponse
 // =============================================================================
 
-func TestHandleListSessions_PeriodicGlanceFields_Schedule(t *testing.T) {
+func TestHandleListSessions_LoopGlanceFields_Schedule(t *testing.T) {
 	tmpDir := t.TempDir()
 	store, err := session.NewStore(tmpDir)
 	if err != nil {
@@ -1146,8 +1146,8 @@ func TestHandleListSessions_PeriodicGlanceFields_Schedule(t *testing.T) {
 	if err := store.Create(session.Metadata{SessionID: sid, ACPServer: "test", WorkingDir: "/tmp"}); err != nil {
 		t.Fatalf("Create failed: %v", err)
 	}
-	// Schedule periodic with explicit cap and duration.
-	if err := store.Periodic(sid).Set(&session.PeriodicPrompt{
+	// Schedule loop with explicit cap and duration.
+	if err := store.Loop(sid).Set(&session.LoopPrompt{
 		Prompt:             "hello",
 		Frequency:          session.Frequency{Value: 30, Unit: session.FrequencyMinutes},
 		Enabled:            true,
@@ -1177,25 +1177,25 @@ func TestHandleListSessions_PeriodicGlanceFields_Schedule(t *testing.T) {
 	}
 	s := sessions[0]
 
-	if s["periodic_trigger"] != "schedule" {
-		t.Errorf("periodic_trigger = %v, want %q", s["periodic_trigger"], "schedule")
+	if s["loop_trigger"] != "schedule" {
+		t.Errorf("loop_trigger = %v, want %q", s["loop_trigger"], "schedule")
 	}
-	if s["periodic_iteration_count"] != float64(3) {
-		t.Errorf("periodic_iteration_count = %v, want 3", s["periodic_iteration_count"])
+	if s["loop_iteration_count"] != float64(3) {
+		t.Errorf("loop_iteration_count = %v, want 3", s["loop_iteration_count"])
 	}
-	if s["periodic_max_iterations"] != float64(10) {
-		t.Errorf("periodic_max_iterations = %v, want 10", s["periodic_max_iterations"])
+	if s["loop_max_iterations"] != float64(10) {
+		t.Errorf("loop_max_iterations = %v, want 10", s["loop_max_iterations"])
 	}
-	if s["periodic_max_duration_seconds"] != float64(3600) {
-		t.Errorf("periodic_max_duration_seconds = %v, want 3600", s["periodic_max_duration_seconds"])
+	if s["loop_max_duration_seconds"] != float64(3600) {
+		t.Errorf("loop_max_duration_seconds = %v, want 3600", s["loop_max_duration_seconds"])
 	}
 	// delay_seconds=0 is omitempty so it must be absent.
-	if _, ok := s["periodic_delay_seconds"]; ok {
-		t.Errorf("periodic_delay_seconds should be absent for schedule trigger with 0 delay")
+	if _, ok := s["loop_delay_seconds"]; ok {
+		t.Errorf("loop_delay_seconds should be absent for schedule trigger with 0 delay")
 	}
 }
 
-func TestHandleListSessions_PeriodicGlanceFields_OnCompletion(t *testing.T) {
+func TestHandleListSessions_LoopGlanceFields_OnCompletion(t *testing.T) {
 	tmpDir := t.TempDir()
 	store, err := session.NewStore(tmpDir)
 	if err != nil {
@@ -1208,7 +1208,7 @@ func TestHandleListSessions_PeriodicGlanceFields_OnCompletion(t *testing.T) {
 		t.Fatalf("Create failed: %v", err)
 	}
 	// onCompletion with delay and max duration.
-	if err := store.Periodic(sid).Set(&session.PeriodicPrompt{
+	if err := store.Loop(sid).Set(&session.LoopPrompt{
 		Prompt:             "run on idle",
 		Enabled:            true,
 		Trigger:            session.TriggerOnCompletion,
@@ -1235,18 +1235,18 @@ func TestHandleListSessions_PeriodicGlanceFields_OnCompletion(t *testing.T) {
 	}
 	s := sessions[0]
 
-	if s["periodic_trigger"] != "onCompletion" {
-		t.Errorf("periodic_trigger = %v, want %q", s["periodic_trigger"], "onCompletion")
+	if s["loop_trigger"] != "onCompletion" {
+		t.Errorf("loop_trigger = %v, want %q", s["loop_trigger"], "onCompletion")
 	}
-	if s["periodic_delay_seconds"] != float64(60) {
-		t.Errorf("periodic_delay_seconds = %v, want 60", s["periodic_delay_seconds"])
+	if s["loop_delay_seconds"] != float64(60) {
+		t.Errorf("loop_delay_seconds = %v, want 60", s["loop_delay_seconds"])
 	}
-	if s["periodic_max_duration_seconds"] != float64(7200) {
-		t.Errorf("periodic_max_duration_seconds = %v, want 7200", s["periodic_max_duration_seconds"])
+	if s["loop_max_duration_seconds"] != float64(7200) {
+		t.Errorf("loop_max_duration_seconds = %v, want 7200", s["loop_max_duration_seconds"])
 	}
 }
 
-func TestHandleListSessions_PeriodicGlanceFields_EmptyTriggerReportsSchedule(t *testing.T) {
+func TestHandleListSessions_LoopGlanceFields_EmptyTriggerReportsSchedule(t *testing.T) {
 	tmpDir := t.TempDir()
 	store, err := session.NewStore(tmpDir)
 	if err != nil {
@@ -1259,7 +1259,7 @@ func TestHandleListSessions_PeriodicGlanceFields_EmptyTriggerReportsSchedule(t *
 		t.Fatalf("Create failed: %v", err)
 	}
 	// Trigger="" is the zero-value default; EffectiveTrigger() must resolve it to "schedule".
-	if err := store.Periodic(sid).Set(&session.PeriodicPrompt{
+	if err := store.Loop(sid).Set(&session.LoopPrompt{
 		Prompt:    "hello",
 		Frequency: session.Frequency{Value: 1, Unit: session.FrequencyHours},
 		Enabled:   true,
@@ -1283,8 +1283,8 @@ func TestHandleListSessions_PeriodicGlanceFields_EmptyTriggerReportsSchedule(t *
 	if len(sessions) == 0 {
 		t.Fatal("expected at least one session")
 	}
-	if sessions[0]["periodic_trigger"] != "schedule" {
-		t.Errorf("periodic_trigger = %v, want %q for empty Trigger field", sessions[0]["periodic_trigger"], "schedule")
+	if sessions[0]["loop_trigger"] != "schedule" {
+		t.Errorf("loop_trigger = %v, want %q for empty Trigger field", sessions[0]["loop_trigger"], "schedule")
 	}
 }
 
@@ -1690,16 +1690,18 @@ func TestFilterPromptsByEnabled(t *testing.T) {
 			name:    "tools_hasPattern satisfied",
 			prompts: []config.WebPrompt{makePrompt("p", withEnabledWhen(`Tools.HasPattern("mitto_*")`))},
 			ctx: &config.PromptEnabledContext{
-				Tools: config.ToolsContext{Available: true, Names: []string{"mitto_conversation_new", "other_tool"}},
+				Tools: config.NewReachableToolsContext([]string{"mitto_conversation_new", "other_tool"}),
 			},
 			wantNames: []string{"p"},
 		},
-		// 9. Tools.HasPattern unsatisfied
+		// 9. Tools.HasPattern unsatisfied on a reachable server (mitto is known
+		// reachable via "mitto_other_thing", but the exact pattern doesn't
+		// match it — a genuine per-server negative, unlike an unknown server).
 		{
-			name:    "tools_hasPattern unsatisfied",
-			prompts: []config.WebPrompt{makePrompt("p", withEnabledWhen(`Tools.HasPattern("mitto_*")`))},
+			name:    "tools_hasPattern unsatisfied on reachable server",
+			prompts: []config.WebPrompt{makePrompt("p", withEnabledWhen(`Tools.HasPattern("mitto_specific_tool")`))},
 			ctx: &config.PromptEnabledContext{
-				Tools: config.ToolsContext{Available: true, Names: []string{"other_tool"}},
+				Tools: config.NewReachableToolsContext([]string{"mitto_other_thing"}),
 			},
 			wantNames: nil,
 		},
@@ -1708,34 +1710,40 @@ func TestFilterPromptsByEnabled(t *testing.T) {
 			name:    "tools_hasAllPatterns all satisfied",
 			prompts: []config.WebPrompt{makePrompt("p", withEnabledWhen(`Tools.HasAllPatterns(["mitto_*", "jira_*"])`))},
 			ctx: &config.PromptEnabledContext{
-				Tools: config.ToolsContext{Available: true, Names: []string{"mitto_foo", "jira_bar"}},
+				Tools: config.NewReachableToolsContext([]string{"mitto_foo", "jira_bar"}),
 			},
 			wantNames: []string{"p"},
 		},
-		// 11. Tools.HasAllPatterns partially satisfied — excluded
+		// 11. Tools.HasAllPatterns partially satisfied on reachable servers — excluded.
+		// Both "mitto" and "jira" are known/reachable; "jira_bar" doesn't match
+		// jira's actual tool ("jira_other"), a genuine negative (an entirely
+		// unknown "jira" server would instead fail OPEN — see case 18/20).
 		{
-			name:    "tools_hasAllPatterns partially satisfied excluded",
-			prompts: []config.WebPrompt{makePrompt("p", withEnabledWhen(`Tools.HasAllPatterns(["mitto_*", "jira_*"])`))},
+			name:    "tools_hasAllPatterns partially satisfied on reachable servers excluded",
+			prompts: []config.WebPrompt{makePrompt("p", withEnabledWhen(`Tools.HasAllPatterns(["mitto_*", "jira_bar"])`))},
 			ctx: &config.PromptEnabledContext{
-				Tools: config.ToolsContext{Available: true, Names: []string{"mitto_foo"}},
+				Tools: config.NewReachableToolsContext([]string{"mitto_foo", "jira_other"}),
 			},
 			wantNames: nil,
 		},
-		// 12. Tools.HasPattern fetched-empty tools — excluded (fail-closed)
+		// 12. Tools.HasPattern with a genuine cold start (no server ever
+		// probed at all) — included (fail-open, mitto-sys.1 edge case: an
+		// empty per-server map cannot be distinguished from "not yet
+		// fetched", so it preserves the legacy global fail-open behavior).
 		{
-			name:    "tools_hasPattern fetched-empty tools excluded",
+			name:    "tools_hasPattern cold start (no servers known) fail-open included",
 			prompts: []config.WebPrompt{makePrompt("p", withEnabledWhen(`Tools.HasPattern("mitto_*")`))},
 			ctx: &config.PromptEnabledContext{
-				Tools: config.ToolsContext{Available: true, Names: nil},
+				Tools: config.NewReachableToolsContext(nil),
 			},
-			wantNames: nil,
+			wantNames: []string{"p"},
 		},
 		// 12b. Tools.HasPattern unknown tools — included (fail-open during warm-up)
 		{
 			name:    "tools_hasPattern unknown tools fail-open included",
 			prompts: []config.WebPrompt{makePrompt("p", withEnabledWhen(`Tools.HasPattern("mitto_*")`))},
 			ctx: &config.PromptEnabledContext{
-				Tools: config.ToolsContext{Available: false, Names: nil},
+				Tools: config.ToolsContext{},
 			},
 			wantNames: []string{"p"},
 		},
@@ -1785,22 +1793,25 @@ func TestFilterPromptsByEnabled(t *testing.T) {
 			},
 			ctx: &config.PromptEnabledContext{
 				ACP:     config.ACPContext{Name: "Auggie (Opus 4.6)", Type: "augment"},
-				Tools:   config.ToolsContext{Available: true, Names: []string{"mitto_conversation_new"}},
+				Tools:   config.NewReachableToolsContext([]string{"mitto_conversation_new"}),
 				Session: config.SessionContext{IsChild: false},
 			},
 			wantNames: []string{"p"},
 		},
-		// 18. Combined: ACP.MatchesServerType passes, Tools.HasPattern fails
+		// 18. Combined: ACP.MatchesServerType passes, Tools.HasPattern fails on
+		// a reachable "jira" server (jira known via "jira_other_tool", but the
+		// exact pattern doesn't match it — an entirely unknown "jira" would
+		// instead fail OPEN, so this pins the genuine-negative case).
 		{
-			name: "combined acp_matchesServerType passes tools_hasPattern fails excluded",
+			name: "combined acp_matchesServerType passes tools_hasPattern fails on reachable server excluded",
 			prompts: []config.WebPrompt{
 				makePrompt("p",
-					withEnabledWhen(`ACP.MatchesServerType("augment") && Tools.HasPattern("jira_*")`),
+					withEnabledWhen(`ACP.MatchesServerType("augment") && Tools.HasPattern("jira_specific_tool")`),
 				),
 			},
 			ctx: &config.PromptEnabledContext{
 				ACP:   config.ACPContext{Name: "Auggie (Opus 4.6)", Type: "augment"},
-				Tools: config.ToolsContext{Available: true, Names: []string{"mitto_foo"}},
+				Tools: config.NewReachableToolsContext([]string{"mitto_foo", "jira_other_tool"}),
 			},
 			wantNames: nil,
 		},
@@ -1814,23 +1825,25 @@ func TestFilterPromptsByEnabled(t *testing.T) {
 			},
 			ctx: &config.PromptEnabledContext{
 				ACP:   config.ACPContext{Name: "Auggie (Opus 4.6)", Type: "augment"},
-				Tools: config.ToolsContext{Available: true, Names: []string{"mitto_foo"}},
+				Tools: config.NewReachableToolsContext([]string{"mitto_foo"}),
 			},
 			wantNames: nil,
 		},
-		// 20. Mixed prompts — some pass, some fail, order preserved
+		// 20. Mixed prompts — some pass, some fail, order preserved. "jira" is
+		// known/reachable via "jira_other_tool" but the exact pattern doesn't
+		// match it (a genuine negative — an unknown server would fail open).
 		{
 			name: "mixed prompts correct order",
 			prompts: []config.WebPrompt{
 				makePrompt("included-1"),
 				makePrompt("excluded-acp", withEnabledWhen(`ACP.MatchesServerType("claude")`)),
 				makePrompt("included-2", withEnabledWhen("!Session.IsChild")),
-				makePrompt("excluded-mcp", withEnabledWhen(`Tools.HasPattern("jira_*")`)),
+				makePrompt("excluded-mcp", withEnabledWhen(`Tools.HasPattern("jira_specific_tool")`)),
 				makePrompt("included-3", withEnabledWhen(`ACP.MatchesServerType("augment")`)),
 			},
 			ctx: &config.PromptEnabledContext{
 				ACP:     config.ACPContext{Name: "Auggie (Opus 4.6)", Type: "augment"},
-				Tools:   config.ToolsContext{Available: true, Names: []string{"mitto_foo"}},
+				Tools:   config.NewReachableToolsContext([]string{"mitto_foo", "jira_other_tool"}),
 				Session: config.SessionContext{IsChild: false},
 			},
 			wantNames: []string{"included-1", "included-2", "included-3"},
@@ -2292,11 +2305,11 @@ func TestSessionSubresourceRoutingPrecedence(t *testing.T) {
 	mux.HandleFunc("/api/sessions/{id}/queue/{msgId}/{subAction}", func(w http.ResponseWriter, r *http.Request) {
 		hit = "queue:" + r.PathValue("id") + ":" + r.PathValue("msgId") + ":" + r.PathValue("subAction")
 	})
-	mux.HandleFunc("/api/sessions/{id}/periodic", func(w http.ResponseWriter, r *http.Request) {
-		hit = "periodic:" + r.PathValue("id") + ":" + r.PathValue("subPath")
+	mux.HandleFunc("/api/sessions/{id}/loop", func(w http.ResponseWriter, r *http.Request) {
+		hit = "loop:" + r.PathValue("id") + ":" + r.PathValue("subPath")
 	})
-	mux.HandleFunc("/api/sessions/{id}/periodic/{subPath}", func(w http.ResponseWriter, r *http.Request) {
-		hit = "periodic:" + r.PathValue("id") + ":" + r.PathValue("subPath")
+	mux.HandleFunc("/api/sessions/{id}/loop/{subPath}", func(w http.ResponseWriter, r *http.Request) {
+		hit = "loop:" + r.PathValue("id") + ":" + r.PathValue("subPath")
 	})
 
 	cases := map[string]string{
@@ -2307,15 +2320,15 @@ func TestSessionSubresourceRoutingPrecedence(t *testing.T) {
 		"/api/sessions/abc123/user-data": "user-data:abc123",
 		"/api/sessions/abc123/callback":  "callback:abc123",
 		// Sub-resources with optional trailing sub-ID (increment 4).
-		"/api/sessions/abc123/images":           "images:abc123:",
-		"/api/sessions/abc123/images/img7":      "images:abc123:img7",
-		"/api/sessions/abc123/files":            "files:abc123:",
-		"/api/sessions/abc123/files/f9":         "files:abc123:f9",
-		"/api/sessions/abc123/queue":            "queue:abc123:",
-		"/api/sessions/abc123/queue/m42":        "queue:abc123:m42",
-		"/api/sessions/abc123/queue/m42/move":   "queue:abc123:m42:move",
-		"/api/sessions/abc123/periodic":         "periodic:abc123:",
-		"/api/sessions/abc123/periodic/run-now": "periodic:abc123:run-now",
+		"/api/sessions/abc123/images":         "images:abc123:",
+		"/api/sessions/abc123/images/img7":    "images:abc123:img7",
+		"/api/sessions/abc123/files":          "files:abc123:",
+		"/api/sessions/abc123/files/f9":       "files:abc123:f9",
+		"/api/sessions/abc123/queue":          "queue:abc123:",
+		"/api/sessions/abc123/queue/m42":      "queue:abc123:m42",
+		"/api/sessions/abc123/queue/m42/move": "queue:abc123:m42:move",
+		"/api/sessions/abc123/loop":           "loop:abc123:",
+		"/api/sessions/abc123/loop/run-now":   "loop:abc123:run-now",
 		// Base and events routes (increment 5 — explicit, no subtree).
 		"/api/sessions/abc123":        "base:abc123",
 		"/api/sessions/abc123/events": "events:abc123",

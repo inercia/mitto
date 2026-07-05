@@ -130,7 +130,7 @@ func (inj *TestEventInjector) InjectMixed(rounds int) (firstSeq, lastSeq int64) 
 }
 
 // InjectUserPromptWithName injects a single user_prompt event with the given
-// message text and prompt name. This simulates what the periodic runner records
+// message text and prompt name. This simulates what the loop runner records
 // when delivering a workspace prompt. Returns the seq of the injected event.
 func (inj *TestEventInjector) InjectUserPromptWithName(message, promptName string) int64 {
 	inj.t.Helper()

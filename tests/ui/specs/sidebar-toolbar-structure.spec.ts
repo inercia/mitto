@@ -2,22 +2,23 @@ import { test, expect } from "../fixtures/test-fixtures";
 import type { Page } from "@playwright/test";
 
 /**
- * Structural regression net for the sidebar toolbar button row (the join group
- * holding New Conversation / Workspaces / Filter / Density / Search / Settings).
+ * Structural regression net for the sidebar toolbar button row (New
+ * Conversation / Workspaces / Filter / Density / Search / Settings).
  *
- * Locks down two bugs that were fixed separately:
- *   1. SIZING: the Filter/Density triggers are <summary> elements inside a
- *      <details>, and a <details> silently ignores flex-grow when flex-basis is
- *      0 (the `flex-1` utility). That left those two items at content width
- *      (~44px) while the plain <button> items grew to ~70px. The fix switches
- *      all children to `flex-auto` (flex-basis auto) so every item gets an
- *      equal share. This spec asserts all items share the same width/height.
- *   2. BORDER: the global per-<button> border rule never reached the <summary>
- *      triggers, leaving Filter/Density borderless. A scoped styles-v2.css rule
- *      mirrors the border onto the toolbar's summaries. This spec asserts all
- *      items share the same border-top color.
- *
- * Selectors are anchored on stable data-testids so they survive restyles.
+ * The toolbar is now rendered by the portable Toolbar component
+ * (web/static/components/Toolbar.js) as a segmented "pill": a single bordered,
+ * rounded container (`.mitto-toolbar`) holding borderless ghost icon buttons.
+ * This spec locks the invariants of that shape:
+ *   1. PRESENCE: all six items are present and visible (anchored on stable
+ *      data-testids so selectors survive restyles).
+ *   2. HEIGHT: every item shares the same height (all btn-sm) so the row reads
+ *      as one continuous surface. Widths intentionally differ now — the
+ *      Filter/Density dropdowns carry a caret and are wider than plain icon
+ *      buttons — so width equality is NOT asserted.
+ *   3. BORDERS: the single pill container carries the visible border; the
+ *      individual items are borderless at rest (the global per-<button> resting
+ *      border is suppressed for `.mitto-toolbar > button`). This documents the
+ *      restyle and guards against a regression back to per-item boxes.
  */
 
 const ITEM_IDS = [
@@ -32,26 +33,39 @@ const ITEM_IDS = [
 const toolbar = (page: Page) =>
   page.locator('[data-testid="sidebar-toolbar"]').first();
 
-// Collect per-item box metrics + resting border-top color. The mouse defaults
-// to (0,0) so no item is hovered; ghost buttons only show their border at rest
-// via the app's global/scoped border rules, which is exactly what we assert.
+const pill = (page: Page) =>
+  page.locator('[data-testid="sidebar-toolbar"] .mitto-toolbar').first();
+
+// Collect per-item box metrics + resting border-top width/style. The mouse
+// defaults to (0,0) so no item is hovered; we assert the resting appearance.
 async function collectItemMetrics(page: Page) {
   const tb = toolbar(page);
-  const metrics: { id: string; w: number; h: number; border: string }[] = [];
+  const metrics: {
+    id: string;
+    w: number;
+    h: number;
+    borderWidth: number;
+    borderStyle: string;
+  }[] = [];
   for (const id of ITEM_IDS) {
     const el = tb.locator(`[data-testid="${id}"]`).first();
     await expect(el).toBeVisible();
     const m = await el.evaluate((node) => {
       const r = node.getBoundingClientRect();
       const cs = getComputedStyle(node);
-      return { w: r.width, h: r.height, border: cs.borderTopColor };
+      return {
+        w: r.width,
+        h: r.height,
+        borderWidth: parseFloat(cs.borderTopWidth) || 0,
+        borderStyle: cs.borderTopStyle,
+      };
     });
     metrics.push({ id, ...m });
   }
   return metrics;
 }
 
-test.describe("Sidebar toolbar structure (sizing + border regression)", () => {
+test.describe("Sidebar toolbar structure (segmented pill)", () => {
   test.beforeEach(async ({ page, helpers }) => {
     await helpers.navigateAndWait(page);
     await expect(toolbar(page)).toBeVisible({ timeout: 5000 });
@@ -64,26 +78,10 @@ test.describe("Sidebar toolbar structure (sizing + border regression)", () => {
     }
   });
 
-  test("all toolbar items share identical width and height", async ({
-    page,
-  }) => {
+  test("all toolbar items share the same height", async ({ page }) => {
     const metrics = await collectItemMetrics(page);
-
-    const widths = metrics.map((m) => m.w);
     const heights = metrics.map((m) => m.h);
-
-    // Sub-pixel flex rounding can differ by a fraction of a pixel between
-    // items; allow a 1.5px spread but nothing close to the old 70 vs 44 gap.
-    const widthSpread = Math.max(...widths) - Math.min(...widths);
     const heightSpread = Math.max(...heights) - Math.min(...heights);
-
-    expect(
-      widthSpread,
-      `toolbar item widths must match (got ${JSON.stringify(
-        metrics.map((m) => [m.id, Math.round(m.w)]),
-      )})`,
-    ).toBeLessThanOrEqual(1.5);
-
     expect(
       heightSpread,
       `toolbar item heights must match (got ${JSON.stringify(
@@ -92,16 +90,30 @@ test.describe("Sidebar toolbar structure (sizing + border regression)", () => {
     ).toBeLessThanOrEqual(1.5);
   });
 
-  test("all toolbar items share the same border-top color", async ({
-    page,
-  }) => {
+  test("pill container is bordered and rounded", async ({ page }) => {
+    const el = pill(page);
+    await expect(el).toBeVisible();
+    const box = await el.evaluate((node) => {
+      const cs = getComputedStyle(node);
+      return {
+        borderWidth: parseFloat(cs.borderTopWidth) || 0,
+        borderStyle: cs.borderTopStyle,
+        radius: parseFloat(cs.borderTopLeftRadius) || 0,
+      };
+    });
+    expect(box.borderStyle).not.toBe("none");
+    expect(box.borderWidth).toBeGreaterThan(0);
+    expect(box.radius).toBeGreaterThan(0);
+  });
+
+  test("toolbar items are borderless at rest", async ({ page }) => {
     const metrics = await collectItemMetrics(page);
-    const colors = new Set(metrics.map((m) => m.border));
-    expect(
-      colors.size,
-      `toolbar item borders must match (got ${JSON.stringify(
-        metrics.map((m) => [m.id, m.border]),
-      )})`,
-    ).toBe(1);
+    for (const m of metrics) {
+      const borderless = m.borderStyle === "none" || m.borderWidth === 0;
+      expect(
+        borderless,
+        `${m.id} must be borderless at rest (style=${m.borderStyle}, width=${m.borderWidth})`,
+      ).toBe(true);
+    }
   });
 });

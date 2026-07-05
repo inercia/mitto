@@ -106,8 +106,10 @@ export const selectors = {
   // Copy as Markdown
   // Per-message hover-reveal copy button (present on both user and agent bubbles)
   copyMessageMarkdown: '[data-testid="copy-message-markdown"]',
-  // Header three-dot button that opens the conversation actions menu
-  headerConversationMenu: '[data-testid="header-conversation-menu"]',
+  // Header toolbar button that opens the conversation prompt-groups menu
+  headerConversationMenu: '[data-testid="header-conversation-prompts"]',
+  // Header toolbar button: copy the whole conversation as Markdown
+  headerCopyMarkdown: '[data-testid="header-copy-markdown"]',
   // Fixed-position daisyUI context menu rendered by the ContextMenu component
   // (shared by the conversation header menu and the sidebar row menu).
   contextMenu: '.menu.fixed.z-50.shadow-xl',

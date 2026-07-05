@@ -147,8 +147,8 @@ graph TB
 | `session_archive_pending`  | Session archiving initiated          |
 | `session_streaming`        | Session streaming state changed      |
 | `session_settings_updated` | Session advanced settings changed    |
-| `periodic_updated`         | Periodic prompt config changed       |
-| `periodic_started`         | Periodic prompt was delivered        |
+| `loop_updated`         | Loop prompt config changed       |
+| `loop_started`         | Loop prompt was delivered        |
 | `acp_started`              | ACP process started for session      |
 | `acp_start_failed`         | ACP process failed to start          |
 | `hook_failed`              | Lifecycle hook failed                |

@@ -65,9 +65,9 @@ func NewCELEvaluator() (*CELEvaluator, error) {
 		cel.Variable("Session.IsChild", cel.BoolType),
 		cel.Variable("Session.IsAutoChild", cel.BoolType),
 		cel.Variable("Session.ParentID", cel.StringType),
-		cel.Variable("Session.IsPeriodic", cel.BoolType),
-		cel.Variable("Session.IsPeriodicForced", cel.BoolType),
-		cel.Variable("Session.IsPeriodicConversation", cel.BoolType),
+		cel.Variable("Session.IsLoop", cel.BoolType),
+		cel.Variable("Session.IsLoopForced", cel.BoolType),
+		cel.Variable("Session.IsLoopConversation", cel.BoolType),
 		cel.Variable("Session.HasMessages", cel.BoolType),
 		cel.Variable("Session.HasBeadsIssue", cel.BoolType),
 		cel.Variable("Session.BeadsIssue", cel.StringType),
@@ -87,9 +87,18 @@ func NewCELEvaluator() (*CELEvaluator, error) {
 		cel.Variable("Children.PromptingCount", cel.IntType),
 		cel.Variable("Children.IdleCount", cel.IntType),
 
-		// Tools variables
+		// Tools variables. ServerStates/ServerNames back the per-server
+		// availability model (docs/devel/mcp-tool-discovery.md, Q3.2/Q4.1):
+		// server name -> state string (see ServerToolState.String()) and
+		// server name -> that server's own tool names, respectively.
+		// Available/Names remain as flattened, legacy convenience signals for
+		// expressions that reference them directly (e.g. `Tools.Available`,
+		// `"x" in Tools.Names`); they no longer drive HasPattern/
+		// HasAllPatterns/HasAnyPattern — see the macros below.
 		cel.Variable("Tools.Available", cel.BoolType),
 		cel.Variable("Tools.Names", cel.ListType(cel.StringType)),
+		cel.Variable("Tools.ServerStates", cel.MapType(cel.StringType, cel.StringType)),
+		cel.Variable("Tools.ServerNames", cel.MapType(cel.StringType, cel.ListType(cel.StringType))),
 
 		// Permissions variables
 		cel.Variable("Permissions.CanDoIntrospection", cel.BoolType),
@@ -133,32 +142,32 @@ func NewCELEvaluator() (*CELEvaluator, error) {
 		// Because the bindings are pure functions of their arguments, the compiled
 		// cel.Program can be created once at compile time and reused per evaluation.
 		cel.Function("__mitto_hasPattern",
-			cel.Overload("__mitto_hasPattern_bool_list_string",
-				[]*cel.Type{cel.BoolType, cel.ListType(cel.StringType), cel.StringType},
+			cel.Overload("__mitto_hasPattern_map_map_string",
+				[]*cel.Type{cel.MapType(cel.StringType, cel.StringType), cel.MapType(cel.StringType, cel.ListType(cel.StringType)), cel.StringType},
 				cel.BoolType,
 				cel.FunctionBinding(mittoHasPattern),
 			),
 		),
 		cel.Function("__mitto_hasAllPatterns",
-			cel.Overload("__mitto_hasAllPatterns_bool_list_string",
-				[]*cel.Type{cel.BoolType, cel.ListType(cel.StringType), cel.StringType},
+			cel.Overload("__mitto_hasAllPatterns_map_map_string",
+				[]*cel.Type{cel.MapType(cel.StringType, cel.StringType), cel.MapType(cel.StringType, cel.ListType(cel.StringType)), cel.StringType},
 				cel.BoolType,
 				cel.FunctionBinding(mittoHasAllPatterns),
 			),
-			cel.Overload("__mitto_hasAllPatterns_bool_list_list",
-				[]*cel.Type{cel.BoolType, cel.ListType(cel.StringType), cel.ListType(cel.StringType)},
+			cel.Overload("__mitto_hasAllPatterns_map_map_list",
+				[]*cel.Type{cel.MapType(cel.StringType, cel.StringType), cel.MapType(cel.StringType, cel.ListType(cel.StringType)), cel.ListType(cel.StringType)},
 				cel.BoolType,
 				cel.FunctionBinding(mittoHasAllPatterns),
 			),
 		),
 		cel.Function("__mitto_hasAnyPattern",
-			cel.Overload("__mitto_hasAnyPattern_bool_list_string",
-				[]*cel.Type{cel.BoolType, cel.ListType(cel.StringType), cel.StringType},
+			cel.Overload("__mitto_hasAnyPattern_map_map_string",
+				[]*cel.Type{cel.MapType(cel.StringType, cel.StringType), cel.MapType(cel.StringType, cel.ListType(cel.StringType)), cel.StringType},
 				cel.BoolType,
 				cel.FunctionBinding(mittoHasAnyPattern),
 			),
-			cel.Overload("__mitto_hasAnyPattern_bool_list_list",
-				[]*cel.Type{cel.BoolType, cel.ListType(cel.StringType), cel.ListType(cel.StringType)},
+			cel.Overload("__mitto_hasAnyPattern_map_map_list",
+				[]*cel.Type{cel.MapType(cel.StringType, cel.StringType), cel.MapType(cel.StringType, cel.ListType(cel.StringType)), cel.ListType(cel.StringType)},
 				cel.BoolType,
 				cel.FunctionBinding(mittoHasAnyPattern),
 			),
@@ -346,6 +355,28 @@ func (e *CELEvaluator) Evaluate(compiled *CompiledExpression, ctx *PromptEnabled
 	return bool(result), nil
 }
 
+// toolServerStatesMap converts ctx.Tools.Servers into the server-name ->
+// state-string map fed to the CEL Tools.ServerStates activation variable
+// (see ServerToolState.String()). Never nil, so an empty/nil Servers map
+// (genuine cold start) still yields a valid, empty CEL map value.
+func toolServerStatesMap(servers map[string]ServerToolInfo) map[string]string {
+	m := make(map[string]string, len(servers))
+	for name, info := range servers {
+		m[name] = info.State.String()
+	}
+	return m
+}
+
+// toolServerNamesMap converts ctx.Tools.Servers into the server-name ->
+// tool-names map fed to the CEL Tools.ServerNames activation variable.
+func toolServerNamesMap(servers map[string]ServerToolInfo) map[string][]string {
+	m := make(map[string][]string, len(servers))
+	for name, info := range servers {
+		m[name] = info.Names
+	}
+	return m
+}
+
 // buildActivation converts a PromptEnabledContext into a CEL activation map.
 func buildActivation(ctx *PromptEnabledContext) map[string]any {
 	// Convert Args to map[string]any (matching the args variable's DynType declaration)
@@ -378,18 +409,18 @@ func buildActivation(ctx *PromptEnabledContext) map[string]any {
 		"Workspace.HasMittoRC":             ctx.Workspace.HasMittoRC,
 		"Workspace.HasMetadataDescription": ctx.Workspace.HasMetadataDescription,
 
-		"Session.ID":                     ctx.Session.ID,
-		"Session.Name":                   ctx.Session.Name,
-		"Session.IsChild":                ctx.Session.IsChild,
-		"Session.IsAutoChild":            ctx.Session.IsAutoChild,
-		"Session.ParentID":               ctx.Session.ParentID,
-		"Session.IsPeriodic":             ctx.Session.IsPeriodic,
-		"Session.IsPeriodicForced":       ctx.Session.IsPeriodicForced,
-		"Session.IsPeriodicConversation": ctx.Session.IsPeriodicConversation,
-		"Session.HasMessages":            ctx.Session.HasMessages,
-		"Session.HasBeadsIssue":          ctx.Session.HasBeadsIssue,
-		"Session.BeadsIssue":             ctx.Session.BeadsIssue,
-		"Session.ModelTags":              ctx.Session.ModelTags,
+		"Session.ID":                 ctx.Session.ID,
+		"Session.Name":               ctx.Session.Name,
+		"Session.IsChild":            ctx.Session.IsChild,
+		"Session.IsAutoChild":        ctx.Session.IsAutoChild,
+		"Session.ParentID":           ctx.Session.ParentID,
+		"Session.IsLoop":             ctx.Session.IsLoop,
+		"Session.IsLoopForced":       ctx.Session.IsLoopForced,
+		"Session.IsLoopConversation": ctx.Session.IsLoopConversation,
+		"Session.HasMessages":        ctx.Session.HasMessages,
+		"Session.HasBeadsIssue":      ctx.Session.HasBeadsIssue,
+		"Session.BeadsIssue":         ctx.Session.BeadsIssue,
+		"Session.ModelTags":          ctx.Session.ModelTags,
 
 		"Parent.Exists":    ctx.Parent.Exists,
 		"Parent.Name":      ctx.Parent.Name,
@@ -403,8 +434,10 @@ func buildActivation(ctx *PromptEnabledContext) map[string]any {
 		"Children.PromptingCount": int64(ctx.Children.PromptingCount),
 		"Children.IdleCount":      int64(ctx.Children.IdleCount),
 
-		"Tools.Available": ctx.Tools.Available,
-		"Tools.Names":     ctx.Tools.Names,
+		"Tools.Available":    ctx.Tools.Available,
+		"Tools.Names":        ctx.Tools.Names,
+		"Tools.ServerStates": toolServerStatesMap(ctx.Tools.Servers),
+		"Tools.ServerNames":  toolServerNamesMap(ctx.Tools.Servers),
 
 		"Permissions.CanDoIntrospection":         ctx.Permissions.CanDoIntrospection,
 		"Permissions.CanSendPrompt":              ctx.Permissions.CanSendPrompt,
@@ -456,28 +489,31 @@ func isIdent(e celast.Expr, name string) bool {
 	return e != nil && e.Kind() == celast.IdentKind && e.AsIdent() == name
 }
 
-// toolsHasPatternMacro rewrites Tools.HasPattern(p) -> __mitto_hasPattern(Tools.Available, Tools.Names, p).
+// toolsHasPatternMacro rewrites Tools.HasPattern(p) ->
+// __mitto_hasPattern(Tools.ServerStates, Tools.ServerNames, p).
 func toolsHasPatternMacro(eh cel.MacroExprFactory, target celast.Expr, args []celast.Expr) (celast.Expr, *celcommon.Error) {
 	if !isIdent(target, "Tools") {
 		return nil, nil
 	}
-	return eh.NewCall("__mitto_hasPattern", eh.NewIdent("Tools.Available"), eh.NewIdent("Tools.Names"), args[0]), nil
+	return eh.NewCall("__mitto_hasPattern", eh.NewIdent("Tools.ServerStates"), eh.NewIdent("Tools.ServerNames"), args[0]), nil
 }
 
-// toolsHasAllPatternsMacro rewrites Tools.HasAllPatterns(a) -> __mitto_hasAllPatterns(Tools.Available, Tools.Names, a).
+// toolsHasAllPatternsMacro rewrites Tools.HasAllPatterns(a) ->
+// __mitto_hasAllPatterns(Tools.ServerStates, Tools.ServerNames, a).
 func toolsHasAllPatternsMacro(eh cel.MacroExprFactory, target celast.Expr, args []celast.Expr) (celast.Expr, *celcommon.Error) {
 	if !isIdent(target, "Tools") {
 		return nil, nil
 	}
-	return eh.NewCall("__mitto_hasAllPatterns", eh.NewIdent("Tools.Available"), eh.NewIdent("Tools.Names"), args[0]), nil
+	return eh.NewCall("__mitto_hasAllPatterns", eh.NewIdent("Tools.ServerStates"), eh.NewIdent("Tools.ServerNames"), args[0]), nil
 }
 
-// toolsHasAnyPatternMacro rewrites Tools.HasAnyPattern(a) -> __mitto_hasAnyPattern(Tools.Available, Tools.Names, a).
+// toolsHasAnyPatternMacro rewrites Tools.HasAnyPattern(a) ->
+// __mitto_hasAnyPattern(Tools.ServerStates, Tools.ServerNames, a).
 func toolsHasAnyPatternMacro(eh cel.MacroExprFactory, target celast.Expr, args []celast.Expr) (celast.Expr, *celcommon.Error) {
 	if !isIdent(target, "Tools") {
 		return nil, nil
 	}
-	return eh.NewCall("__mitto_hasAnyPattern", eh.NewIdent("Tools.Available"), eh.NewIdent("Tools.Names"), args[0]), nil
+	return eh.NewCall("__mitto_hasAnyPattern", eh.NewIdent("Tools.ServerStates"), eh.NewIdent("Tools.ServerNames"), args[0]), nil
 }
 
 // sessionHasModelTagMacro rewrites Session.HasModelTag(t) -> __mitto_hasModelTag(Session.ModelTags, t).
@@ -550,56 +586,116 @@ func valToString(v ref.Val) string {
 	return ""
 }
 
-// mittoHasPattern reports whether any name (args[1], a list) matches the glob
-// pattern (args[2]). args[0] is tools.available. Context-free so the compiled
-// program can be cached. Delegates to hasPattern (templatefuncs.go) for the
-// pure-Go logic (single source of truth shared with the template FuncMap).
+// extractServerStates converts the CEL Tools.ServerStates map value (server
+// name -> state string, see toolServerStatesMap) into a Go map[string]string.
+// Returns nil when v isn't map-shaped (unexpected type — treated by callers
+// as an empty/cold-start Servers set, i.e. fail-open).
+func extractServerStates(v ref.Val) map[string]string {
+	mapper, ok := v.(traits.Mapper)
+	if !ok {
+		return nil
+	}
+	result := make(map[string]string)
+	it := mapper.Iterator()
+	for it.HasNext() == types.True {
+		k := it.Next()
+		ks, ok := k.(types.String)
+		if !ok {
+			continue
+		}
+		val, found := mapper.Find(k)
+		if !found {
+			continue
+		}
+		if vs, ok := val.(types.String); ok {
+			result[string(ks)] = string(vs)
+		}
+	}
+	return result
+}
+
+// extractServerNamesMap converts the CEL Tools.ServerNames map value (server
+// name -> tool names, see toolServerNamesMap) into a Go map[string][]string.
+func extractServerNamesMap(v ref.Val) map[string][]string {
+	mapper, ok := v.(traits.Mapper)
+	if !ok {
+		return nil
+	}
+	result := make(map[string][]string)
+	it := mapper.Iterator()
+	for it.HasNext() == types.True {
+		k := it.Next()
+		ks, ok := k.(types.String)
+		if !ok {
+			continue
+		}
+		val, found := mapper.Find(k)
+		if !found {
+			continue
+		}
+		result[string(ks)] = extractStringArgs([]ref.Val{val})
+	}
+	return result
+}
+
+// buildServersFromCEL reconstructs the map[string]ServerToolInfo shape from
+// the CEL Tools.ServerStates/Tools.ServerNames activation values so
+// mittoHasPattern/mittoHasAllPatterns/mittoHasAnyPattern can delegate to the
+// exact same hasPattern/hasAllPatterns/hasAnyPattern logic used by the
+// template FuncMap path (templatefuncs.go) — single source of truth for the
+// per-server MCP tool availability rule (docs/devel/mcp-tool-discovery.md,
+// Q3.2/Q4.1). Returns nil when statesVal isn't map-shaped, which hasPattern
+// treats the same as an empty Servers map (fail-open).
+func buildServersFromCEL(statesVal, namesVal ref.Val) map[string]ServerToolInfo {
+	states := extractServerStates(statesVal)
+	if states == nil {
+		return nil
+	}
+	names := extractServerNamesMap(namesVal)
+	servers := make(map[string]ServerToolInfo, len(states))
+	for name, stateStr := range states {
+		servers[name] = ServerToolInfo{State: parseServerToolState(stateStr), Names: names[name]}
+	}
+	return servers
+}
+
+// mittoHasPattern reports whether the pattern (args[2]) is satisfied per the
+// per-server MCP tool availability rule, given the CEL Tools.ServerStates
+// (args[0]) and Tools.ServerNames (args[1]) activation values. Context-free
+// so the compiled program can be cached. Delegates to hasPattern
+// (templatefuncs.go) for the actual resolution logic.
 func mittoHasPattern(args ...ref.Val) ref.Val {
 	if len(args) != 3 {
 		return types.Bool(false)
 	}
-	available, ok := args[0].(types.Bool)
-	if !ok {
-		return types.Bool(true) // type error → treat as unavailable → fail-open
-	}
+	servers := buildServersFromCEL(args[0], args[1])
 	pattern, ok := args[2].(types.String)
 	if !ok {
 		return types.Bool(false)
 	}
-	names := extractStringArgs([]ref.Val{args[1]})
-	return types.Bool(hasPattern(bool(available), names, string(pattern)))
+	return types.Bool(hasPattern(servers, string(pattern)))
 }
 
 // mittoHasAllPatterns reports whether ALL patterns (args[2], string or list)
-// are satisfied by at least one name each (args[1], a list). args[0] is
-// tools.available. Delegates to hasAllPatterns (templatefuncs.go).
+// are satisfied. Delegates to hasAllPatterns (templatefuncs.go).
 func mittoHasAllPatterns(args ...ref.Val) ref.Val {
 	if len(args) != 3 {
 		return types.Bool(false)
 	}
-	available, ok := args[0].(types.Bool)
-	if !ok {
-		return types.Bool(true) // type error → fail-open
-	}
-	names := extractStringArgs([]ref.Val{args[1]})
+	servers := buildServersFromCEL(args[0], args[1])
 	patterns := extractStringArgs([]ref.Val{args[2]})
-	return types.Bool(hasAllPatterns(bool(available), names, patterns))
+	return types.Bool(hasAllPatterns(servers, patterns))
 }
 
-// mittoHasAnyPattern reports whether ANY pattern (args[2], string or list)
-// is satisfied by at least one name (args[1], a list). args[0] is
-// tools.available. Delegates to hasAnyPattern (templatefuncs.go).
+// mittoHasAnyPattern reports whether ANY pattern (args[2], string or list) is
+// satisfied. Delegates to hasAnyPattern (templatefuncs.go).
 func mittoHasAnyPattern(args ...ref.Val) ref.Val {
 	if len(args) != 3 {
 		return types.Bool(false)
 	}
-	available, ok := args[0].(types.Bool)
-	if !ok {
-		return types.Bool(true) // type error → fail-open
-	}
-	names := extractStringArgs([]ref.Val{args[1]})
+	servers := buildServersFromCEL(args[0], args[1])
 	patterns := extractStringArgs([]ref.Val{args[2]})
-	return types.Bool(hasAnyPattern(bool(available), names, patterns))
+	return types.Bool(hasAnyPattern(servers, patterns))
 }
 
 // mittoHasModelTag reports whether tag (args[1]) is present in the model tag list

@@ -3,10 +3,13 @@ package web
 import (
 	"encoding/json"
 	"os"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/inercia/mitto/internal/appdir"
+	"github.com/inercia/mitto/internal/config"
 	"github.com/inercia/mitto/internal/conversation"
 	"github.com/inercia/mitto/internal/session"
 )
@@ -1227,4 +1230,183 @@ func TestSessionWSClient_OnEventMeta_AttachedToUserPrompt(t *testing.T) {
 			t.Fatal("expected user_prompt on send channel, got none")
 		}
 	})
+}
+
+// =============================================================================
+// checkRequiredToolPatterns: no blind timed re-broadcast (mitto-sys.12)
+// =============================================================================
+
+// TestCheckRequiredToolPatterns_NoTimedRetry proves that checkRequiredToolPatterns
+// no longer schedules a 30/60/120s re-broadcast loop: it must return promptly
+// (well under 1s) and must broadcast prompts_changed with reason
+// "mcp_tools_initial" exactly once, never with reason "mcp_tools_retry". Late/
+// changed tools now surface via the event-driven watcher (mitto-sys.4) and the
+// bounded-backoff path (mitto-sys.5) instead.
+func TestCheckRequiredToolPatterns_NoTimedRetry(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv(appdir.MittoDirEnv, tmpDir)
+	appdir.ResetCache()
+	t.Cleanup(appdir.ResetCache)
+
+	promptsDir := filepath.Join(tmpDir, appdir.PromptsDirName)
+	if err := os.MkdirAll(promptsDir, 0755); err != nil {
+		t.Fatalf("failed to create prompts dir: %v", err)
+	}
+	// A prompt with an enabledWhen tool-pattern requirement so
+	// collectRequiredToolPatterns returns a non-empty list, which is the
+	// precondition for the (formerly timed) broadcast path to run at all.
+	promptContent := `name: "Slack Prompt"
+enabledWhen: 'Tools.HasPattern("slack_*")'
+prompt: |
+  Do something with Slack.
+`
+	if err := os.WriteFile(filepath.Join(promptsDir, "slack.prompt.yaml"), []byte(promptContent), 0644); err != nil {
+		t.Fatalf("failed to write prompt file: %v", err)
+	}
+
+	promptsCache := config.NewPromptsCache()
+	if _, err := promptsCache.Get(); err != nil {
+		t.Fatalf("PromptsCache.Get() failed: %v", err)
+	}
+
+	eventsManager := NewGlobalEventsManager()
+	captureSend := make(chan []byte, 16)
+	eventsClient := &GlobalEventsClient{
+		wsConn: &WSConn{send: captureSend},
+		done:   make(chan struct{}),
+	}
+	eventsManager.Register(eventsClient)
+	defer eventsManager.Unregister(eventsClient)
+
+	server := &Server{
+		config:        Config{PromptsCache: promptsCache},
+		eventsManager: eventsManager,
+	}
+	client := &SessionWSClient{
+		sessionID: "test-session",
+		server:    server,
+	}
+
+	done := make(chan struct{})
+	start := time.Now()
+	go func() {
+		client.checkRequiredToolPatterns("ws-uuid")
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("checkRequiredToolPatterns did not return within 1s — a blind timed re-broadcast loop appears to still be present")
+	}
+	if elapsed := time.Since(start); elapsed > 500*time.Millisecond {
+		t.Errorf("checkRequiredToolPatterns took %v, want well under 1s (no timed retry loop)", elapsed)
+	}
+
+	// Drain and inspect every broadcast message; give the (already-returned)
+	// call a brief moment in case of any async send.
+	var reasons []string
+	deadline := time.After(200 * time.Millisecond)
+drain:
+	for {
+		select {
+		case raw := <-captureSend:
+			var msg struct {
+				Type string `json:"type"`
+				Data struct {
+					Reason string `json:"reason"`
+				} `json:"data"`
+			}
+			if err := json.Unmarshal(raw, &msg); err != nil {
+				t.Fatalf("failed to unmarshal broadcast message: %v", err)
+			}
+			if msg.Type != WSMsgTypePromptsChanged {
+				t.Errorf("broadcast type = %q, want %q", msg.Type, WSMsgTypePromptsChanged)
+			}
+			reasons = append(reasons, msg.Data.Reason)
+		case <-deadline:
+			break drain
+		}
+	}
+
+	if len(reasons) != 1 {
+		t.Fatalf("got %d prompts_changed broadcasts %v, want exactly 1", len(reasons), reasons)
+	}
+	if reasons[0] != "mcp_tools_initial" {
+		t.Errorf("broadcast reason = %q, want %q", reasons[0], "mcp_tools_initial")
+	}
+	for _, r := range reasons {
+		if r == "mcp_tools_retry" {
+			t.Errorf("found a mcp_tools_retry broadcast — the timed re-broadcast loop must be fully removed")
+		}
+	}
+}
+
+func TestComputeEventStats(t *testing.T) {
+	tests := []struct {
+		name   string
+		events []session.Event
+		want   eventStats
+	}{
+		{
+			name:   "empty",
+			events: nil,
+			want:   eventStats{},
+		},
+		{
+			name: "mcp and acp tool calls counted separately",
+			events: []session.Event{
+				{Type: session.EventTypeToolCall, Data: session.ToolCallData{ToolCallID: "1", Title: "mitto_conversation_get_current_mitto"}},
+				{Type: session.EventTypeToolCall, Data: session.ToolCallData{ToolCallID: "2", Title: "mitto_ui_options_mitto"}},
+				{Type: session.EventTypeToolCall, Data: session.ToolCallData{ToolCallID: "3", Title: "mitto_children_tasks_wait_mitto"}},
+				{Type: session.EventTypeToolCall, Data: session.ToolCallData{ToolCallID: "4", Title: "str-replace-editor"}},
+			},
+			want: eventStats{mcpCallsTotal: 3, mcpUICalls: 1, mcpChildrenWaitCalls: 1, acpToolCalls: 1},
+		},
+		{
+			name: "duplicate tool_call_id counted once",
+			events: []session.Event{
+				{Type: session.EventTypeToolCall, Data: session.ToolCallData{ToolCallID: "1", Title: "mitto_ui_notify_mitto", Status: "pending"}},
+				{Type: session.EventTypeToolCall, Data: session.ToolCallData{ToolCallID: "1", Title: "mitto_ui_notify_mitto", Status: "completed"}},
+			},
+			want: eventStats{mcpCallsTotal: 1, mcpUICalls: 1},
+		},
+		{
+			name: "turns and images from user prompts",
+			events: []session.Event{
+				{Type: session.EventTypeUserPrompt, Data: session.UserPromptData{Message: "hi"}},
+				{Type: session.EventTypeUserPrompt, Data: session.UserPromptData{Message: "again", Images: []session.ImageRef{{ID: "a"}, {ID: "b"}}}},
+			},
+			want: eventStats{turns: 2, imagesUploaded: 2},
+		},
+		{
+			name: "errors counted",
+			events: []session.Event{
+				{Type: session.EventTypeError, Data: session.ErrorData{Message: "boom"}},
+				{Type: session.EventTypeError, Data: session.ErrorData{Message: "boom2"}},
+			},
+			want: eventStats{errors: 2},
+		},
+		{
+			name: "permissions bucketed by outcome and selected option",
+			events: []session.Event{
+				{Type: session.EventTypePermission, Data: session.PermissionData{Outcome: "auto_approved", SelectedOption: "allow-once"}},
+				{Type: session.EventTypePermission, Data: session.PermissionData{Outcome: "user_selected", SelectedOption: "allow"}},
+				{Type: session.EventTypePermission, Data: session.PermissionData{Outcome: "user_selected", SelectedOption: "deny"}},
+				{Type: session.EventTypePermission, Data: session.PermissionData{Outcome: "user_selected", SelectedOption: "reject-once"}},
+				{Type: session.EventTypePermission, Data: session.PermissionData{Outcome: "timed_out", SelectedOption: ""}},
+				{Type: session.EventTypePermission, Data: session.PermissionData{Outcome: "user_selected", SelectedOption: "unknown-option"}},
+			},
+			want: eventStats{permissionsAllowed: 2, permissionsDenied: 2},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := computeEventStats(tt.events)
+			if got != tt.want {
+				t.Errorf("computeEventStats() = %+v, want %+v", got, tt.want)
+			}
+		})
+	}
 }

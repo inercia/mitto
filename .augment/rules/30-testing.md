@@ -66,73 +66,41 @@ func TestSomething(t *testing.T) {
 
 ## Integration Tests
 
-### Mock ACP Server
+**Mock ACP**: `make build-mock-acp` always before integration tests. Scenario matching via regex in `tests/fixtures/responses/*.json`.
 
-```bash
-make build-mock-acp  # Always rebuild after changes!
-```
+**Setup**: `SetupTestServer(t)` in `internal/client/test_helpers.go` — isolates temp dir + resets appdir cache.
 
-**Structure**: `main.go` (entry point, stdin/stdout loop), `types.go` (protocol types), `handler.go` (request handlers), `sender.go` (thread-safe sending).
-
-**Scenario matching**: Prompt text matched against regex patterns in `tests/fixtures/responses/*.json`. If images detected, mock responds with acknowledgment before checking scenarios.
-
-### In-Process Test Setup
-
-```go
-func SetupTestServer(t *testing.T) *TestServer {
-    t.Helper()
-    tmpDir := t.TempDir()
-    t.Setenv(appdir.MittoDirEnv, tmpDir)
-    appdir.ResetCache()
-    t.Cleanup(appdir.ResetCache)
-
-    srv, _ := web.NewServer(web.Config{
-        ACPCommand: findMockACPServer(t),
-        ACPServer: "mock-acp",
-        DefaultWorkingDir: filepath.Join(tmpDir, "workspace"),
-        AutoApprove: true,
-    })
-    httpServer := httptest.NewServer(srv.Handler())
-    t.Cleanup(httpServer.Close)
-    return &TestServer{Server: srv, HTTPServer: httpServer, Client: client.New(httpServer.URL)}
-}
-```
-
-### Running Integration Tests
-
-```bash
-go test -tags integration -v ./tests/integration/inprocess
-go test -tags integration -coverprofile=coverage.out \
-    -coverpkg=./internal/web/...,./internal/client/... \
-    ./tests/integration/inprocess
-```
+**Run**: `go test -tags integration ./tests/integration/inprocess`
 
 ## JavaScript Tests
 
-- Browser globals (`window.marked`, `window.DOMPurify`): check `typeof window === "undefined"` and return `null` as graceful fallback — makes code testable in Node.js
-- `localStorage`: mock with a plain object implementing `getItem/setItem/removeItem/clear`, assigned via `Object.defineProperty(global, "localStorage", { value: mock })`
+Mock browser globals (`window.marked`, `window.DOMPurify`, `localStorage`) for Node.js testability.
 
-## Text Processing Testing Strategy
+## Smoke Tests
 
-Use `contains`/`excludes` fields in table-driven tests for HTML output assertions (see `internal/conversion/*_test.go` for examples).
+Docker-based verification in pristine Linux. Cross-compiled binaries in `tests/smoke/.build/`. Health check: `GET /mitto/api/health`.
 
-## Smoke Tests (Docker / Linux)
+## Timeout Testing Anti-Pattern: Shell Command Subprocess Escapes
 
-Smoke tests verify Mitto works in a pristine Linux environment using Docker + cross-compiled binaries.
+**Problem**: `exec.CommandContext(ctx, "sh", "-c", "sleep 5")` does NOT kill the child process on context timeout.
+- The shell (`sh`) is spawned in a new process group
+- When context deadline expires, only the shell is killed
+- The original child process (`sleep`) continues running in the background
+- Result: `cmd.Run()` unblocks from shell exit, but the actual work process is orphaned
 
-**Location**: `tests/smoke/` — Dockerfile, entrypoint.sh, smoke-test.sh, docker-compose.yml, run.sh
+**Fix**: For commands that spawn subprocesses, use process group killing:
+```go
+// WRONG: Child process escapes the timeout
+cmd := exec.CommandContext(ctx, "sh", "-c", command)
+err := cmd.Run()  // Returns quickly but sleep 5 still running
 
-**Key architecture**:
-- Mitto binds to `0.0.0.0:8089` via `mitto web --host 0.0.0.0 --port 8089`
-- Docker maps host `8089 → container 8089` directly (no socat needed)
-- Cross-compiled binaries are staged in `tests/smoke/.build/` (gitignored)
-- `MITTO_DIR` env var controls Mitto's data directory inside the container
+// RIGHT: Kill entire process group on timeout
+cmd := exec.CommandContext(ctx, "sh", "-c", command)
+cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+err := cmd.Run()  // Timeout kills shell + all children
+```
 
-**entrypoint.sh** writes `settings.json` + `workspaces.json`, then `exec mitto web --host 0.0.0.0`
-
-**Health check**: `GET /mitto/api/health` → `{"status":"healthy",...}`
-
-**Full Playwright smoke run** uses `MITTO_EXTERNAL_SERVER=1` and `MITTO_TEST_URL=http://localhost:8089`
+**See**: `internal/hooks/hooks.go` StartUp() line 132 for correct pattern. RunDown() must be updated similarly.
 
 ## Lessons Learned
 
@@ -140,3 +108,6 @@ Smoke tests verify Mitto works in a pristine Linux environment using Docker + cr
 - Test edge cases and negative cases, not just happy paths
 - Auth page assets must be in `publicStaticPaths` (symptom: unstyled login page with MIME error)
 - CDN resources may be blocked by tracking prevention (Firefox, Safari)
+- Timeout enforcement via context requires process group setup or subprocess escapes
+- Verify a previous turn's edits actually persisted (`git status`/`git diff`) before continuing — apparent changes can be lost across session gaps/restarts
+- When new test failures appear after a frontend/htm change, `git stash` and re-run the same tests against the base branch first — this distinguishes real regressions from pre-existing flakiness (e.g. test-isolation/state-leak failures) before spending time debugging your own code

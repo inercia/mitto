@@ -300,14 +300,14 @@ func TestDeprecatedMittoVars(t *testing.T) {
 			want: []string{"session_id", "working_dir"},
 		},
 		{
-			name: "periodic_forced before periodic",
-			body: "@mitto:periodic_forced and @mitto:periodic",
-			want: []string{"periodic", "periodic_forced"},
+			name: "loop_forced before loop",
+			body: "@mitto:loop_forced and @mitto:loop",
+			want: []string{"loop", "loop_forced"},
 		},
 		{
 			name: "all migratable tokens",
-			body: "@mitto:session_id @mitto:parent_session_id @mitto:parent @mitto:session_name @mitto:working_dir @mitto:acp_server @mitto:workspace_uuid @mitto:beads_issue @mitto:mcp_children_count @mitto:periodic @mitto:periodic_forced @mitto:available_acp_servers @mitto:children @mitto:mcp_children @mitto:user_data @mitto:user_data_schema",
-			want: []string{"acp_server", "available_acp_servers", "beads_issue", "children", "mcp_children", "mcp_children_count", "parent", "parent_session_id", "periodic", "periodic_forced", "session_id", "session_name", "user_data", "user_data_schema", "working_dir", "workspace_uuid"},
+			body: "@mitto:session_id @mitto:parent_session_id @mitto:parent @mitto:session_name @mitto:working_dir @mitto:acp_server @mitto:workspace_uuid @mitto:beads_issue @mitto:mcp_children_count @mitto:loop @mitto:loop_forced @mitto:available_acp_servers @mitto:children @mitto:mcp_children @mitto:user_data @mitto:user_data_schema",
+			want: []string{"acp_server", "available_acp_servers", "beads_issue", "children", "loop", "loop_forced", "mcp_children", "mcp_children_count", "parent", "parent_session_id", "session_id", "session_name", "user_data", "user_data_schema", "working_dir", "workspace_uuid"},
 		},
 	}
 
@@ -466,6 +466,77 @@ func TestIterateUntilComplete_TargetResolution(t *testing.T) {
 	}
 }
 
+// TestRefineImplementation_LoopAndModes verifies the beads-refine-implementation
+// builtin prompt (mitto-mx4):
+//
+//	(a) it parses cleanly — this exercises parse-time CEL validation of the
+//	    onTasks loop.condition, so a broken expression fails the test;
+//	(b) its loop block declares the onTasks trigger + the documented CEL
+//	    condition (mode: always) so selecting it starts a beads-change loop;
+//	(c) it renders without error and branches correctly between silent
+//	    (scheduled loop) and interactive (forced / first send) modes — a guard
+//	    against the pre-mitto-pei stale template vars (.Session.IsPeriodic*).
+//
+// Loaded from the real builtin directory so it exercises the on-disk content.
+func TestRefineImplementation_LoopAndModes(t *testing.T) {
+	builtinDir := "../../config/prompts/builtin"
+	name := "beads-refine-implementation.prompt.yaml"
+	path := filepath.Join(builtinDir, name)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Skipf("prompt file not found at %s: %v", path, err)
+	}
+	prompt, err := ParsePromptFile(name, data, time.Now())
+	if err != nil {
+		t.Fatalf("ParsePromptFile (parse-time CEL validation of loop.condition): %v", err)
+	}
+
+	// (b) Loop block: onTasks trigger, always mode, non-empty documented condition.
+	if prompt.Loop == nil {
+		t.Fatalf("expected a loop block; got nil")
+	}
+	if prompt.Loop.Trigger != "onTasks" {
+		t.Errorf("loop.trigger = %q, want %q", prompt.Loop.Trigger, "onTasks")
+	}
+	if prompt.Loop.Mode != PromptLoopModeAlways {
+		t.Errorf("loop.mode = %q, want %q", prompt.Loop.Mode, PromptLoopModeAlways)
+	}
+	if !strings.Contains(prompt.Loop.Condition, "implementation-refined") {
+		t.Errorf("loop.condition should gate on the implementation-refined label; got %q", prompt.Loop.Condition)
+	}
+
+	body := prompt.Content
+	render := func(ctx *PromptEnabledContext) string {
+		funcs := BuildTemplateFuncMap(ctx)
+		out, rerr := RenderPromptTemplate("beads-refine-implementation", body, ctx, funcs)
+		if rerr != nil {
+			t.Fatalf("RenderPromptTemplate: %v", rerr)
+		}
+		return out
+	}
+
+	// (c) Silent: a scheduled (non-forced) loop run.
+	outSilent := render(&PromptEnabledContext{Session: SessionContext{IsLoop: true, IsLoopForced: false}})
+	if !strings.Contains(outSilent, "Silent mode") {
+		t.Errorf("silent loop run: expected 'Silent mode' branch; got:\n%s", outSilent)
+	}
+	if strings.Contains(outSilent, "Interactive mode") {
+		t.Errorf("silent loop run: unexpected 'Interactive mode' branch")
+	}
+
+	// (c) Interactive: a forced loop run (user present).
+	outForced := render(&PromptEnabledContext{Session: SessionContext{IsLoop: true, IsLoopForced: true}})
+	if !strings.Contains(outForced, "Interactive mode") {
+		t.Errorf("forced run: expected 'Interactive mode' branch; got:\n%s", outForced)
+	}
+
+	// (c) Interactive: a first / normal send (no loop context at all).
+	outFirst := render(&PromptEnabledContext{})
+	if !strings.Contains(outFirst, "Interactive mode") {
+		t.Errorf("first send: expected 'Interactive mode' branch; got:\n%s", outFirst)
+	}
+}
+
 // TestInvestigate_ThreeModeTargetResolution tests the three target-bead
 // resolution branches of beads-issue-investigate.prompt.yaml:
 //
@@ -574,7 +645,7 @@ func TestInvestigate_ThreeModeTargetResolution(t *testing.T) {
 }
 
 // TestDiscuss_ThreeModeTargetResolution tests the three target-bead
-// resolution branches of beads-issue-discuss.prompt.yaml:
+// resolution branches of beads-issue-assess.prompt.yaml:
 //
 //	(a) .Session.BeadsIssue set  → "linked-issue" mode: bead ID appears, no
 //	    "no linked bead" prose
@@ -587,12 +658,12 @@ func TestInvestigate_ThreeModeTargetResolution(t *testing.T) {
 // and "conversation", and the IssueID parameter is non-required.
 func TestDiscuss_ThreeModeTargetResolution(t *testing.T) {
 	builtinDir := "../../config/prompts/builtin"
-	path := filepath.Join(builtinDir, "beads-issue-discuss.prompt.yaml")
+	path := filepath.Join(builtinDir, "beads-issue-assess.prompt.yaml")
 	data, err := os.ReadFile(path)
 	if err != nil {
 		t.Skipf("prompt file not found at %s: %v", path, err)
 	}
-	prompt, err := ParsePromptFile("beads-issue-discuss.prompt.yaml", data, time.Now())
+	prompt, err := ParsePromptFile("beads-issue-assess.prompt.yaml", data, time.Now())
 	if err != nil {
 		t.Fatalf("ParsePromptFile: %v", err)
 	}
@@ -623,7 +694,7 @@ func TestDiscuss_ThreeModeTargetResolution(t *testing.T) {
 
 	render := func(ctx *PromptEnabledContext) string {
 		funcs := BuildTemplateFuncMap(ctx)
-		out, rerr := RenderPromptTemplate("beads-issue-discuss", body, ctx, funcs)
+		out, rerr := RenderPromptTemplate("beads-issue-assess", body, ctx, funcs)
 		if rerr != nil {
 			t.Fatalf("RenderPromptTemplate: %v", rerr)
 		}
@@ -1238,15 +1309,15 @@ func TestFollowupWork_ThreeModeTargetResolution(t *testing.T) {
 
 // TestInteractionMode_ConditionalRendering verifies that the builtin prompts
 // which were migrated from verbose "Interaction Mode" prose (that manually
-// dumped {{ .Session.IsPeriodic }} / {{ .Session.IsPeriodicForced }}) to Go
+// dumped {{ .Session.IsLoop }} / {{ .Session.IsLoopForced }}) to Go
 // template conditionals render the correct branch for each of the three
 // possible session states:
 //
-//	(1) Scheduled periodic  → IsPeriodic=true,  IsPeriodicForced=false → Silent
-//	(2) Force-triggered      → IsPeriodic=true,  IsPeriodicForced=true  → Interactive
-//	(3) Regular conversation → IsPeriodic=false, IsPeriodicForced=false → Interactive
+//	(1) Scheduled loop      → IsLoop=true,  IsLoopForced=false → Silent
+//	(2) Force-triggered      → IsLoop=true,  IsLoopForced=true  → Interactive
+//	(3) Regular conversation → IsLoop=false, IsLoopForced=false → Interactive
 //
-// It also asserts that no raw .Session.IsPeriodic* variable text survives in
+// It also asserts that no raw .Session.IsLoop* variable text survives in
 // the rendered output — proving the conditional directives were consumed by the
 // template engine and that the old verbose variable dumps are gone.
 //
@@ -1267,43 +1338,43 @@ func TestInteractionMode_ConditionalRendering(t *testing.T) {
 		{
 			file:              "architectural-analysis.prompt.yaml",
 			name:              "architectural-analysis",
-			silentMarker:      "a scheduled periodic run; the user is not watching.",
-			interactiveMarker: "a regular conversation or a force-triggered periodic run; the user is present.",
+			silentMarker:      "a scheduled loop run; the user is not watching.",
+			interactiveMarker: "a regular conversation or a force-triggered loop run; the user is present.",
 		},
 		{
 			file:              "jira-sync-tasks.prompt.yaml",
 			name:              "jira-sync-tasks",
-			silentMarker:      "a scheduled periodic run; the user is not watching.",
-			interactiveMarker: "a regular conversation or a force-triggered periodic run; the user is present.",
+			silentMarker:      "a scheduled loop run; the user is not watching.",
+			interactiveMarker: "a regular conversation or a force-triggered loop run; the user is present.",
 		},
 		{
 			file:              "github-sync-tasks.prompt.yaml",
 			name:              "github-sync-tasks",
-			silentMarker:      "a scheduled periodic run; the user is not watching.",
-			interactiveMarker: "a regular conversation or a force-triggered periodic run; the user is present.",
+			silentMarker:      "a scheduled loop run; the user is not watching.",
+			interactiveMarker: "a regular conversation or a force-triggered loop run; the user is present.",
 		},
 		{
 			file:              "github-babysit-contributions.prompt.yaml",
 			name:              "github-babysit-contributions",
-			silentMarker:      "a scheduled periodic run; the user is not watching.",
-			interactiveMarker: "a force-triggered run or a non-periodic conversation; the user may be present.",
+			silentMarker:      "a scheduled loop run; the user is not watching.",
+			interactiveMarker: "a force-triggered run or a non-loop conversation; the user may be present.",
 		},
 		{
 			file:              "github-babysit-my-prs.prompt.yaml",
 			name:              "github-babysit-my-prs",
-			silentMarker:      "a scheduled periodic run; the user is not watching.",
-			interactiveMarker: "a force-triggered run or a non-periodic conversation; the user may be present.",
+			silentMarker:      "a scheduled loop run; the user is not watching.",
+			interactiveMarker: "a force-triggered run or a non-loop conversation; the user may be present.",
 		},
 		{
 			file:              "beads-issue-iterate-until-complete.prompt.yaml",
 			name:              "beads-issue-iterate-until-complete",
-			silentMarker:      "Silent mode — a scheduled periodic run.",
+			silentMarker:      "Silent mode — a scheduled loop run.",
 			interactiveMarker: "(e.g. the very first send, or a force-triggered run): a user may be",
 		},
 		{
 			file:              "github-iterate-babysit-new-prs.prompt.yaml",
 			name:              "github-iterate-babysit-new-prs",
-			silentMarker:      "Silent mode — scheduled periodic run.",
+			silentMarker:      "Silent mode — scheduled loop run.",
 			interactiveMarker: "(e.g. the very first send, or a force-triggered run): a user may be",
 		},
 	}
@@ -1315,37 +1386,38 @@ func TestInteractionMode_ConditionalRendering(t *testing.T) {
 			if err != nil {
 				t.Skipf("prompt file not found at %s: %v", path, err)
 			}
+
 			prompt, err := ParsePromptFile(tc.file, data, time.Now())
 			if err != nil {
 				t.Fatalf("ParsePromptFile(%s): %v", tc.file, err)
 			}
 			body := prompt.Content
 
-			render := func(periodic, forced bool) string {
+			render := func(loop, forced bool) string {
 				ctx := &PromptEnabledContext{
 					Session: SessionContext{
-						IsPeriodic:       periodic,
-						IsPeriodicForced: forced,
+						IsLoop:       loop,
+						IsLoopForced: forced,
 					},
 				}
 				out, rerr := RenderPromptTemplate(tc.name, body, ctx, BuildTemplateFuncMap(ctx))
 				if rerr != nil {
-					t.Fatalf("RenderPromptTemplate(%s) periodic=%v forced=%v: %v", tc.name, periodic, forced, rerr)
+					t.Fatalf("RenderPromptTemplate(%s) loop=%v forced=%v: %v", tc.name, loop, forced, rerr)
 				}
 				// The conditionals must be consumed; no raw variable dumps may survive.
-				if strings.Contains(out, ".Session.IsPeriodic") {
-					t.Errorf("%s periodic=%v forced=%v: raw '.Session.IsPeriodic' leaked into rendered output:\n%s", tc.name, periodic, forced, out)
+				if strings.Contains(out, ".Session.IsLoop") {
+					t.Errorf("%s loop=%v forced=%v: raw '.Session.IsLoop' leaked into rendered output:\n%s", tc.name, loop, forced, out)
 				}
 				return out
 			}
 
-			// (1) Scheduled periodic → Silent branch.
+			// (1) Scheduled loop → Silent branch.
 			silent := render(true, false)
 			if !strings.Contains(silent, tc.silentMarker) {
-				t.Errorf("scheduled periodic: expected silent marker %q in output; got:\n%s", tc.silentMarker, silent)
+				t.Errorf("scheduled loop: expected silent marker %q in output; got:\n%s", tc.silentMarker, silent)
 			}
 			if strings.Contains(silent, tc.interactiveMarker) {
-				t.Errorf("scheduled periodic: unexpected interactive marker %q in silent output:\n%s", tc.interactiveMarker, silent)
+				t.Errorf("scheduled loop: unexpected interactive marker %q in silent output:\n%s", tc.interactiveMarker, silent)
 			}
 
 			// (2) Force-triggered → Interactive branch.
@@ -1377,11 +1449,11 @@ func TestRenderPromptTemplate_Iteration(t *testing.T) {
 	// Number=0, Max=3 → "first run"
 	ctxFirst := &PromptEnabledContext{
 		Iteration: IterationContext{
-			Number:     0,
-			Max:        3,
-			IsPeriodic: true,
-			IsFirst:    true,
-			IsLast:     false,
+			Number:  0,
+			Max:     3,
+			IsLoop:  true,
+			IsFirst: true,
+			IsLast:  false,
 		},
 	}
 	gotFirst, err := RenderPromptTemplate("test-first", body, ctxFirst, nil)
@@ -1395,11 +1467,11 @@ func TestRenderPromptTemplate_Iteration(t *testing.T) {
 	// Number=2, Max=3 → "run 2 of 3"
 	ctxLast := &PromptEnabledContext{
 		Iteration: IterationContext{
-			Number:     2,
-			Max:        3,
-			IsPeriodic: true,
-			IsFirst:    false,
-			IsLast:     true,
+			Number:  2,
+			Max:     3,
+			IsLoop:  true,
+			IsFirst: false,
+			IsLast:  true,
 		},
 	}
 	gotLast, err := RenderPromptTemplate("test-last", body, ctxLast, nil)
@@ -1419,7 +1491,7 @@ func TestRenderPromptTemplate_Iteration(t *testing.T) {
 
 	ctxContinue := &PromptEnabledContext{
 		Iteration: IterationContext{
-			IsPeriodic:      true,
+			IsLoop:          true,
 			IsUninterrupted: true,
 		},
 	}
@@ -1433,7 +1505,7 @@ func TestRenderPromptTemplate_Iteration(t *testing.T) {
 
 	ctxVerbose := &PromptEnabledContext{
 		Iteration: IterationContext{
-			IsPeriodic:      true,
+			IsLoop:          true,
 			IsUninterrupted: false,
 		},
 	}
@@ -1544,7 +1616,7 @@ func TestIterateFixingBug_RendersForRepresentativeContexts(t *testing.T) {
 	// (b) Arg-only context, uninterrupted silent continuation run, with Commit=true.
 	ctxB := &PromptEnabledContext{
 		Args:      map[string]string{"IssueID": "mitto-xyz", "Commit": "true"},
-		Iteration: IterationContext{IsPeriodic: true, IsUninterrupted: true},
+		Iteration: IterationContext{IsLoop: true, IsUninterrupted: true},
 	}
 	outB := render(ctxB)
 	if !strings.Contains(outB, "mitto-xyz") {
@@ -1597,13 +1669,13 @@ func TestIterateFixingBug_RendersForRepresentativeContexts(t *testing.T) {
 //	(a) default context   — no Args, no Session.BeadsIssue → body renders,
 //	    references the per-bug driver name "Iterate fixing bug", declares itself
 //	    a list-level orchestrator, calls out the top-level-only rule, and shows
-//	    the spawn+wait+archive tool triplet with the exact periodic budget
+//	    the spawn+wait+archive tool triplet with the exact loop budget
 //	    (30 / 20 / 14400) that mirrors the per-bug driver's own block. Commit
 //	    defaults to "true" in the child arguments when the Commit arg is absent.
 //	(b) Commit="false"    — the child-arguments literal for Commit flips to
 //	    "false", confirming the boolean forwarding is wired correctly.
 //
-// The frontmatter assertions (menus: beadsList; NO periodic: block; name is
+// The frontmatter assertions (menus: beadsList; NO loop: block; name is
 // "Iterate fixing bugs") are checked once, alongside the (a) render.
 //
 // The test loads the file from the real builtin directory so it always
@@ -1622,15 +1694,15 @@ func TestIterateFixingBugs_RendersForRepresentativeContexts(t *testing.T) {
 	}
 
 	// Frontmatter assertions — this is a list-level orchestrator with no
-	// Item.* context and no periodic block of its own (single-run internal loop).
+	// Item.* context and no loop block of its own (single-run internal loop).
 	if prompt.Name != "Iterate fixing bugs" {
 		t.Errorf("Name = %q, want %q", prompt.Name, "Iterate fixing bugs")
 	}
 	if strings.TrimSpace(prompt.Menus) != "beadsList" {
 		t.Errorf("Menus = %q, want %q", prompt.Menus, "beadsList")
 	}
-	if prompt.Periodic != nil {
-		t.Errorf("Periodic = %+v, want nil — this orchestrator is a single-run internal loop", prompt.Periodic)
+	if prompt.Loop != nil {
+		t.Errorf("Loop = %+v, want nil — this orchestrator is a single-run internal loop", prompt.Loop)
 	}
 
 	body := prompt.Content
@@ -1666,16 +1738,16 @@ func TestIterateFixingBugs_RendersForRepresentativeContexts(t *testing.T) {
 			t.Errorf("branch (a): expected orchestration tool call %q in body; got:\n%s", tool, outA)
 		}
 	}
-	// Periodic re-fire mechanics that make each child self-drive.
+	// Loop re-fire mechanics that make each child self-drive.
 	for _, hint := range []string{
 		"onCompletion",
-		"periodic_prompt",
-		"periodic_completion_delay_seconds: 30",
-		"periodic_max_iterations: 20",
-		"periodic_max_duration_seconds: 14400",
+		"loop_prompt",
+		"loop_completion_delay_seconds: 30",
+		"loop_max_iterations: 20",
+		"loop_max_duration_seconds: 14400",
 	} {
 		if !strings.Contains(outA, hint) {
-			t.Errorf("branch (a): expected periodic-budget hint %q in body; got:\n%s", hint, outA)
+			t.Errorf("branch (a): expected loop-budget hint %q in body; got:\n%s", hint, outA)
 		}
 	}
 	// Preflight-flag guidance so a user with either flag off gets a graceful stop.
@@ -1705,18 +1777,18 @@ func TestIterateFixingBugs_RendersForRepresentativeContexts(t *testing.T) {
 // TestIterateImplementingFeatures_RendersForRepresentativeContexts is the
 // list-level orchestrator counterpart for the feature flow (mitto-gap.6):
 // it parses beads-issue-iterate-implementing-features.prompt.yaml from disk,
-// asserts the orchestrator frontmatter shape (menus: beadsList, no periodic
+// asserts the orchestrator frontmatter shape (menus: beadsList, no loop
 // block, name = "Iterate implementing features"), and renders the body across
 // two representative Args contexts:
 //
 //	(a) Commit absent      — the child arguments literal defaults to "true";
 //	    the body dispatches to the per-feature driver by name and wires up
-//	    the spawn+wait+archive tool triplet with the exact periodic budget
+//	    the spawn+wait+archive tool triplet with the exact loop budget
 //	    (30 / 30 / 28800) that mirrors the per-feature driver's own block.
 //	(b) Commit="false"     — the child-arguments literal for Commit flips to
 //	    "false", confirming the boolean forwarding is wired correctly.
 //
-// The frontmatter assertions (menus: beadsList; NO periodic: block; name is
+// The frontmatter assertions (menus: beadsList; NO loop: block; name is
 // "Iterate implementing features") are checked once, alongside the (a) render.
 //
 // The test loads the file from the real builtin directory so it always
@@ -1735,15 +1807,15 @@ func TestIterateImplementingFeatures_RendersForRepresentativeContexts(t *testing
 	}
 
 	// Frontmatter assertions — this is a list-level orchestrator with no
-	// Item.* context and no periodic block of its own (single-run internal loop).
+	// Item.* context and no loop block of its own (single-run internal loop).
 	if prompt.Name != "Iterate implementing features" {
 		t.Errorf("Name = %q, want %q", prompt.Name, "Iterate implementing features")
 	}
 	if strings.TrimSpace(prompt.Menus) != "beadsList" {
 		t.Errorf("Menus = %q, want %q", prompt.Menus, "beadsList")
 	}
-	if prompt.Periodic != nil {
-		t.Errorf("Periodic = %+v, want nil — this orchestrator is a single-run internal loop", prompt.Periodic)
+	if prompt.Loop != nil {
+		t.Errorf("Loop = %+v, want nil — this orchestrator is a single-run internal loop", prompt.Loop)
 	}
 
 	body := prompt.Content
@@ -1779,16 +1851,16 @@ func TestIterateImplementingFeatures_RendersForRepresentativeContexts(t *testing
 			t.Errorf("branch (a): expected orchestration tool call %q in body; got:\n%s", tool, outA)
 		}
 	}
-	// Periodic re-fire mechanics that make each child self-drive.
+	// Loop re-fire mechanics that make each child self-drive.
 	for _, hint := range []string{
 		"onCompletion",
-		"periodic_prompt",
-		"periodic_completion_delay_seconds: 30",
-		"periodic_max_iterations: 30",
-		"periodic_max_duration_seconds: 28800",
+		"loop_prompt",
+		"loop_completion_delay_seconds: 30",
+		"loop_max_iterations: 30",
+		"loop_max_duration_seconds: 28800",
 	} {
 		if !strings.Contains(outA, hint) {
-			t.Errorf("branch (a): expected periodic-budget hint %q in body; got:\n%s", hint, outA)
+			t.Errorf("branch (a): expected loop-budget hint %q in body; got:\n%s", hint, outA)
 		}
 	}
 	// Preflight-flag guidance so a user with either flag off gets a graceful stop.
@@ -2072,7 +2144,7 @@ func TestIterateImplementingFeature_RendersForRepresentativeContexts(t *testing.
 	// (b) Arg-only context, uninterrupted silent continuation run, with Commit=true.
 	ctxB := &PromptEnabledContext{
 		Args:      map[string]string{"IssueID": "mitto-xyz", "Commit": "true"},
-		Iteration: IterationContext{IsPeriodic: true, IsUninterrupted: true},
+		Iteration: IterationContext{IsLoop: true, IsUninterrupted: true},
 	}
 	outB := render(ctxB)
 	if !strings.Contains(outB, "mitto-xyz") {
@@ -2275,19 +2347,19 @@ func TestFeaturePhasePrompts_RenderForRepresentativeContexts(t *testing.T) {
 	}
 }
 
-// TestBuiltinPromptPeriodicModes verifies the mitto-92x.6 mechanical flagging
+// TestBuiltinPromptLoopModes verifies the mitto-92x.6 mechanical flagging
 // pass: every builtin prompt assigned a mode/default in the epic's
-// classification table parses with the expected PromptPeriodic.Mode/Default,
-// and a representative sample of the "never periodic" set has no periodic
+// classification table parses with the expected PromptLoop.Mode/Default,
+// and a representative sample of the "never loop" set has no loop
 // block at all.
-func TestBuiltinPromptPeriodicModes(t *testing.T) {
+func TestBuiltinPromptLoopModes(t *testing.T) {
 	builtinDir := "../../config/prompts/builtin"
 
 	boolPtr := func(b bool) *bool { return &b }
 
 	type want struct {
 		mode string
-		def  *bool // nil means PromptPeriodic.Default must be nil
+		def  *bool // nil means PromptLoop.Default must be nil
 	}
 
 	cases := map[string]want{
@@ -2329,27 +2401,27 @@ func TestBuiltinPromptPeriodicModes(t *testing.T) {
 			if err != nil {
 				t.Fatalf("ParsePromptFile(%s): %v", file, err)
 			}
-			if prompt.Periodic == nil {
-				t.Fatalf("%s: Periodic = nil, want non-nil", file)
+			if prompt.Loop == nil {
+				t.Fatalf("%s: Loop = nil, want non-nil", file)
 			}
-			if prompt.Periodic.Mode != w.mode {
-				t.Errorf("%s: Periodic.Mode = %q, want %q", file, prompt.Periodic.Mode, w.mode)
+			if prompt.Loop.Mode != w.mode {
+				t.Errorf("%s: Loop.Mode = %q, want %q", file, prompt.Loop.Mode, w.mode)
 			}
 			if w.def == nil {
-				if prompt.Periodic.Default != nil {
-					t.Errorf("%s: Periodic.Default = %v, want nil", file, *prompt.Periodic.Default)
+				if prompt.Loop.Default != nil {
+					t.Errorf("%s: Loop.Default = %v, want nil", file, *prompt.Loop.Default)
 				}
 			} else {
-				if prompt.Periodic.Default == nil {
-					t.Errorf("%s: Periodic.Default = nil, want %v", file, *w.def)
-				} else if *prompt.Periodic.Default != *w.def {
-					t.Errorf("%s: Periodic.Default = %v, want %v", file, *prompt.Periodic.Default, *w.def)
+				if prompt.Loop.Default == nil {
+					t.Errorf("%s: Loop.Default = nil, want %v", file, *w.def)
+				} else if *prompt.Loop.Default != *w.def {
+					t.Errorf("%s: Loop.Default = %v, want %v", file, *prompt.Loop.Default, *w.def)
 				}
 			}
 		})
 	}
 
-	// Representative sample of the "never periodic" set: no periodic block at all.
+	// Representative sample of the "never loop" set: no loop block at all.
 	neverFiles := []string{
 		"explain.prompt.yaml",
 		"refactor.prompt.yaml",
@@ -2360,7 +2432,7 @@ func TestBuiltinPromptPeriodicModes(t *testing.T) {
 		"continue.prompt.yaml",
 		"beads-issue-decompose.prompt.yaml",
 		// Tasks prompts that are one-shot reports, context-bound, or
-		// confirmation-gated — periodic re-firing makes no sense for them.
+		// confirmation-gated — loop re-firing makes no sense for them.
 		"beads-followup-work.prompt.yaml",
 		"beads-cleanup-stale.prompt.yaml",
 		"beads-group-epics.prompt.yaml",
@@ -2383,8 +2455,8 @@ func TestBuiltinPromptPeriodicModes(t *testing.T) {
 			if err != nil {
 				t.Fatalf("ParsePromptFile(%s): %v", file, err)
 			}
-			if prompt.Periodic != nil {
-				t.Errorf("%s: Periodic = %+v, want nil (never-periodic set)", file, prompt.Periodic)
+			if prompt.Loop != nil {
+				t.Errorf("%s: Loop = %+v, want nil (never-loop set)", file, prompt.Loop)
 			}
 		})
 	}

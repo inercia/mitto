@@ -28,6 +28,8 @@ try:
             entry['url'] = cfg['url']
         if 'env' in cfg:
             entry['env'] = cfg['env']
+        if 'headers' in cfg:
+            entry['headers'] = cfg['headers']
         result.append(entry)
     print(json.dumps({'servers': result}))
 except Exception:

@@ -30,7 +30,7 @@ keywords:
 | `Lock`               | Session locking, heartbeat, cleanup         | Yes (mutex + goroutine) |
 | `Queue`              | Message queue for busy agent                | Yes (mutex)             |
 | `ActionButtonsStore` | Follow-up suggestions persistence           | Yes (mutex)             |
-| `PeriodicStore`      | Periodic prompt config per session          | Yes (mutex)             |
+| `LoopStore`      | Loop prompt config per session          | Yes (mutex)             |
 | `Flags`              | Available feature flags registry            | N/A (read-only)         |
 
 ## Immediate Persistence (Web Interface)
@@ -117,9 +117,9 @@ lock.SetWaitingPermission("File write")  // During permission request
 
 **Important**: Queue configuration is **global/workspace-scoped**, NOT per-session. See [docs/devel/message-queue.md](../docs/devel/message-queue.md) for config options, REST API, WebSocket notifications, and title auto-generation.
 
-## Periodic Prompts (PeriodicStore)
+## Loop Prompts (LoopStore)
 
-Stored in `periodic.json`. Only top-level sessions may have periodic prompts (child → 400).
+Stored in `loop.json`. Only top-level sessions may have loop prompts (child → 400).
 
 **Key fields**:
 - `PromptName` — references workspace prompt by name (resolved at send time via cache)
@@ -128,7 +128,7 @@ Stored in `periodic.json`. Only top-level sessions may have periodic prompts (ch
 - `DelaySeconds` — wait after agent idle before firing (onCompletion only)
 - `MaxDurationSeconds` — wall-clock cap since first run
 
-**Critical**: Changing `PeriodicStore.Update()` signature requires updating BOTH `session_periodic_api.go` (PATCH handler) AND `mcpserver/server.go` (MCP tool) — both call `Update()`.
+**Critical**: Changing `LoopStore.Update()` signature requires updating BOTH `session_loop_api.go` (PATCH handler) AND `mcpserver/server.go` (MCP tool) — both call `Update()`.
 
 ## Auxiliary Package
 

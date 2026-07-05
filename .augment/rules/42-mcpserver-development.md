@@ -24,7 +24,7 @@ The Mitto MCP server (`internal/mcpserver/`) provides a **single global server**
 
 Single global MCP server at `http://127.0.0.1:5757/mcp`. Two tool classes:
 - **Global tools** (no session): `mitto_conversation_list`, `mitto_get_config`, `mitto_get_runtime_info`
-- **Session-scoped tools** (require `self_id`): UI prompts, conversation control, history, prompt management (`mitto_prompt_list/get/update`), periodic control (`mitto_conversation_set_periodic`, `mitto_conversation_run_periodic_now`)
+- **Session-scoped tools** (require `self_id`): UI prompts, conversation control, history, prompt management (`mitto_prompt_list/get/update`), loop control (`mitto_conversation_set_loop`, `mitto_conversation_run_loop_now`)
 
 ## Adding New Tools
 
@@ -96,16 +96,16 @@ if callerMeta.WorkingDir != targetWS.WorkingDir {
 
 ## Optional Late-Bound Dependencies
 
-Some dependencies (e.g. `PeriodicRunner`) are initialized after the MCP server and wired in via setter methods rather than through `Dependencies`:
+Some dependencies (e.g. `LoopRunner`) are initialized after the MCP server and wired in via setter methods rather than through `Dependencies`:
 
 ```go
-// In internal/web/server.go — after s.periodicRunner.Start():
+// In internal/web/server.go — after s.loopRunner.Start():
 if s.mcpServer != nil {
-    s.mcpServer.SetPeriodicRunner(s.periodicRunner)
+    s.mcpServer.SetLoopRunner(s.loopRunner)
 }
 ```
 
-The `PeriodicRunner` interface (defined in `mcpserver/server.go`) is satisfied by `*web.PeriodicRunner`. Use setter methods (not `Dependencies`) when a dependency must exist before `NewServer()` completes but the dependency itself starts later.
+The `LoopRunner` interface (defined in `mcpserver/server.go`) is satisfied by `*web.LoopRunner`. Use setter methods (not `Dependencies`) when a dependency must exist before `NewServer()` completes but the dependency itself starts later.
 
 ## Processor Auxiliary Session MCP Access
 
@@ -137,3 +137,13 @@ if agent.HasCommand(agents.CommandMCPList) {
 ```
 
 API endpoint: `GET /api/workspace-mcp-tools?acp_server=NAME&dir=PATH` (handler in `config_handlers.go`).
+
+**`mcp-list.sh` audit (mitto-sys.11)** — scripts are often copy-pasted from the claude-code template but never repointed at the target agent's real config path/key/shape, so `ListMCPServers` silently returns empty. Verify against actual docs/source when adding or fixing one:
+
+| Agent | Status | Notes |
+|---|---|---|
+| cursor, goose | OK | `~/.cursor/mcp.json`/`mcpServers`; `~/.config/goose/config.yaml`/`extensions` |
+| opencode | BROKEN (mitto-sys.13) | wrong path/key (`mcp` not `mcpServers`), command-as-array, `environment` not `env` |
+| github-copilot | BROKEN (mitto-sys.14) | wrong path: real is `~/.copilot/mcp-config.json` |
+| qwen-code | BROKEN (mitto-sys.15) | wrong path: real is `~/.qwen` |
+| junie | stub (mitto-sys.10) | always returns `{"servers": []}` |

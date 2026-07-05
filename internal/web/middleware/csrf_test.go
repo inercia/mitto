@@ -357,3 +357,111 @@ func TestCSRFManager_CloseIsNoOp(t *testing.T) {
 		t.Error("GenerateToken after Close returned empty token")
 	}
 }
+
+func TestNormalizeIPForFingerprint(t *testing.T) {
+	tests := []struct {
+		name string
+		ip   string
+		want string
+	}{
+		{"IPv4 masks to /24", "192.168.1.42", "192.168.1.0"},
+		{"IPv4 masks to /24 (different host)", "192.168.1.200", "192.168.1.0"},
+		{"IPv6 masks to /64", "2001:db8:1234:5678:aaaa:bbbb:cccc:dddd", "2001:db8:1234:5678::"},
+		{"empty returns unchanged", "", ""},
+		{"unparseable returns unchanged", "not-an-ip", "not-an-ip"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := normalizeIPForFingerprint(tt.ip)
+			if got != tt.want {
+				t.Errorf("normalizeIPForFingerprint(%q) = %q, want %q", tt.ip, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestVerifyIPFromToken_SameNetworkSameUA(t *testing.T) {
+	const ua = "Mozilla/5.0 (iPhone)"
+
+	// Use a base of csrfTokenLength*2 hex chars to exercise the real
+	// comparison path (shorter bases hit the graceful-degradation guard).
+	realBase := make([]byte, csrfTokenLength*2)
+	for i := range realBase {
+		realBase[i] = '0'
+	}
+	token := embedFingerprint(string(realBase), "192.168.1.10", ua)
+
+	// Different IP in the same /24, same UA -> no anomaly.
+	if !VerifyIPFromToken(token, "192.168.1.250", ua) {
+		t.Error("expected true for different IP in same /24 with same UA")
+	}
+}
+
+func TestVerifyIPFromToken_DifferentNetwork(t *testing.T) {
+	const ua = "Mozilla/5.0 (iPhone)"
+
+	// Use a base of csrfTokenLength*2 hex chars to exercise the real
+	// comparison path (shorter bases hit the graceful-degradation guard).
+	realBase := make([]byte, csrfTokenLength*2)
+	for i := range realBase {
+		realBase[i] = '0'
+	}
+	token := embedFingerprint(string(realBase), "192.168.1.10", ua)
+
+	// Different /24 network, same UA -> anomaly (fingerprint mismatch).
+	if VerifyIPFromToken(token, "192.168.2.10", ua) {
+		t.Error("expected false for different /24 network with same UA")
+	}
+}
+
+func TestVerifyIPFromToken_DifferentUserAgent(t *testing.T) {
+	realBase := make([]byte, csrfTokenLength*2)
+	for i := range realBase {
+		realBase[i] = '0'
+	}
+	token := embedFingerprint(string(realBase), "192.168.1.10", "UA-A")
+
+	if VerifyIPFromToken(token, "192.168.1.10", "UA-B") {
+		t.Error("expected false for same IP with different User-Agent")
+	}
+}
+
+func TestVerifyIPFromToken_GracefulDegradation(t *testing.T) {
+	// Old-format token with no embedded fingerprint.
+	if !VerifyIPFromToken("plain-token-no-suffix", "1.2.3.4", "UA") {
+		t.Error("expected true (no anomaly) for token without embedded fingerprint")
+	}
+
+	// Token with a suffix but an unexpected base length.
+	if !VerifyIPFromToken("shortbase.deadbeefdeadbeef", "1.2.3.4", "UA") {
+		t.Error("expected true (no anomaly) for token with unexpected base length")
+	}
+}
+
+func TestVerifyIPFromToken_RoundTrip(t *testing.T) {
+	cm := NewCSRFManager()
+	defer cm.Close()
+
+	token, err := cm.GenerateToken()
+	if err != nil {
+		t.Fatalf("GenerateToken failed: %v", err)
+	}
+
+	const ua = "curl/8.0"
+	tokenWithFingerprint := embedFingerprint(token, "10.0.0.5", ua)
+
+	// Same network prefix (/24), same UA -> verified.
+	if !VerifyIPFromToken(tokenWithFingerprint, "10.0.0.99", ua) {
+		t.Error("expected true for round-trip within same /24 and same UA")
+	}
+
+	// Different network prefix -> mismatch.
+	if VerifyIPFromToken(tokenWithFingerprint, "10.0.1.5", ua) {
+		t.Error("expected false for round-trip with different /24")
+	}
+
+	// Different UA -> mismatch.
+	if VerifyIPFromToken(tokenWithFingerprint, "10.0.0.5", "different-ua") {
+		t.Error("expected false for round-trip with different User-Agent")
+	}
+}

@@ -198,6 +198,7 @@ type MCPServer struct {
 	Args    []string          `json:"args,omitempty"`
 	URL     string            `json:"url,omitempty"`
 	Env     map[string]string `json:"env,omitempty"`
+	Headers map[string]string `json:"headers,omitempty"`
 }
 
 // MCPListOutput is the expected JSON output from mcp-list.sh.

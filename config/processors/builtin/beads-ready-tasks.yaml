@@ -11,7 +11,7 @@
 #   2. The workspace contains a `.beads` directory (DirExists CEL gate)
 #
 # Throttling:
-#   - Fires on the first message, then re-runs periodically so the agent is reminded
+#   - Fires on the first message, then re-runs repeatedly so the agent is reminded
 #     about outstanding work without spamming every message.
 #
 # Uses text-mode (no external command). The agent itself runs `bd ready` to see the

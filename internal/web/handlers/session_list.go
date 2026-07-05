@@ -11,45 +11,45 @@ import (
 // SessionListResponse extends session.Metadata with additional runtime fields.
 type SessionListResponse struct {
 	session.Metadata
-	// PeriodicConfigured is true when a periodic config exists for this session.
+	// LoopConfigured is true when a loop config exists for this session.
 	// Controls editor UI mode (shows frequency panel and lock/unlock buttons).
-	// A conversation with PeriodicConfigured=true but PeriodicEnabled=false is
-	// a "draft" periodic — editor visible but runs not yet active.
-	PeriodicConfigured bool `json:"periodic_configured"`
-	// PeriodicEnabled is true when periodic runs are active (config.Enabled == true).
-	// Drives the sidebar PERIODIC category and clock icon. A paused/draft periodic
-	// conversation has PeriodicConfigured=true but PeriodicEnabled=false and falls
+	// A conversation with LoopConfigured=true but LoopEnabled=false is
+	// a "draft" loop — editor visible but runs not yet active.
+	LoopConfigured bool `json:"loop_configured"`
+	// LoopEnabled is true when loop runs are active (config.Enabled == true).
+	// Drives the sidebar LOOP category and clock icon. A paused/draft loop
+	// conversation has LoopConfigured=true but LoopEnabled=false and falls
 	// into the regular Conversations group.
-	PeriodicEnabled bool `json:"periodic_enabled"`
-	// NextScheduledAt is the next scheduled time for periodic sessions (nil if not periodic or not scheduled).
+	LoopEnabled bool `json:"loop_enabled"`
+	// NextScheduledAt is the next scheduled time for loop sessions (nil if not loop or not scheduled).
 	NextScheduledAt *time.Time `json:"next_scheduled_at,omitempty"`
-	// PeriodicFrequency is the frequency configuration for periodic sessions (nil if not periodic).
-	PeriodicFrequency *session.Frequency `json:"periodic_frequency,omitempty"`
+	// LoopFrequency is the frequency configuration for loop sessions (nil if not loop).
+	LoopFrequency *session.Frequency `json:"loop_frequency,omitempty"`
 	// IsWaitingForChildren is true when the session is currently blocked on mitto_children_tasks_wait.
 	// This is a runtime state (not persisted) tracked by the SessionManager.
 	IsWaitingForChildren bool `json:"is_waiting_for_children,omitempty"`
 	// IsStreaming is true when the session is currently prompting (agent streaming).
 	// This is a runtime state (not persisted) tracked by the SessionManager.
 	IsStreaming bool `json:"is_streaming,omitempty"`
-	// PeriodicStoppedReason is the reason the periodic loop was auto-stopped (empty when still running).
-	PeriodicStoppedReason string `json:"periodic_stopped_reason,omitempty"`
-	// PeriodicTrigger is "schedule" or "onCompletion" (resolved via EffectiveTrigger so schedule loops
+	// LoopStoppedReason is the reason the loop was auto-stopped (empty when still running).
+	LoopStoppedReason string `json:"loop_stopped_reason,omitempty"`
+	// LoopTrigger is "schedule" or "onCompletion" (resolved via EffectiveTrigger so schedule loops
 	// always report "schedule", never the empty-string default).
-	PeriodicTrigger string `json:"periodic_trigger,omitempty"`
-	// PeriodicIterationCount is the number of scheduled runs delivered so far.
-	PeriodicIterationCount int `json:"periodic_iteration_count,omitempty"`
-	// PeriodicMaxIterations is the per-prompt cap on scheduled runs (0 = unlimited).
-	PeriodicMaxIterations int `json:"periodic_max_iterations,omitempty"`
-	// PeriodicDelaySeconds is the wait in seconds after agent idle before the next onCompletion run.
-	PeriodicDelaySeconds int `json:"periodic_delay_seconds,omitempty"`
-	// PeriodicMaxDurationSeconds is the wall-clock cap in seconds since iterating started (0 = unlimited).
-	PeriodicMaxDurationSeconds int `json:"periodic_max_duration_seconds,omitempty"`
-	// PeriodicHasPrompt is true when the periodic config has a prompt set
+	LoopTrigger string `json:"loop_trigger,omitempty"`
+	// LoopIterationCount is the number of scheduled runs delivered so far.
+	LoopIterationCount int `json:"loop_iteration_count,omitempty"`
+	// LoopMaxIterations is the per-prompt cap on scheduled runs (0 = unlimited).
+	LoopMaxIterations int `json:"loop_max_iterations,omitempty"`
+	// LoopDelaySeconds is the wait in seconds after agent idle before the next onCompletion run.
+	LoopDelaySeconds int `json:"loop_delay_seconds,omitempty"`
+	// LoopMaxDurationSeconds is the wall-clock cap in seconds since iterating started (0 = unlimited).
+	LoopMaxDurationSeconds int `json:"loop_max_duration_seconds,omitempty"`
+	// LoopHasPrompt is true when the loop config has a prompt set
 	// (either a free-text Prompt body or a named PromptName).
-	PeriodicHasPrompt bool `json:"periodic_has_prompt,omitempty"`
-	// PeriodicPromptPreview is a short preview of the free-text Prompt body only
+	LoopHasPrompt bool `json:"loop_has_prompt,omitempty"`
+	// LoopPromptPreview is a short preview of the free-text Prompt body only
 	// (first line, trimmed, truncated to ~80 runes). Empty for named-prompt-only configs.
-	PeriodicPromptPreview string `json:"periodic_prompt_preview,omitempty"`
+	LoopPromptPreview string `json:"loop_prompt_preview,omitempty"`
 }
 
 // HandleListSessions handles GET /api/sessions
@@ -75,39 +75,39 @@ func (h *Handlers) HandleListSessions(w http.ResponseWriter, r *http.Request) {
 		return sessions[i].UpdatedAt.After(sessions[j].UpdatedAt)
 	})
 
-	// Build response with periodic status and scheduling info
+	// Build response with loop status and scheduling info
 	response := make([]SessionListResponse, len(sessions))
 	for i := range sessions {
 		meta := sessions[i]
 		response[i] = SessionListResponse{
-			Metadata:           meta,
-			PeriodicConfigured: false, // Default to false
-			PeriodicEnabled:    false, // Default to false
+			Metadata:       meta,
+			LoopConfigured: false, // Default to false
+			LoopEnabled:    false, // Default to false
 		}
-		// Check if a periodic config exists for this session
-		periodicStore := store.Periodic(meta.SessionID)
-		if periodic, err := periodicStore.Get(); err == nil && periodic != nil {
-			// Periodic config exists — show editor UI regardless of enabled state
-			response[i].PeriodicConfigured = true
-			// PeriodicEnabled reflects whether runs are active (config.Enabled)
-			response[i].PeriodicEnabled = periodic.Enabled
+		// Check if a loop config exists for this session
+		loopStore := store.Loop(meta.SessionID)
+		if loop, err := loopStore.Get(); err == nil && loop != nil {
+			// Loop config exists — show editor UI regardless of enabled state
+			response[i].LoopConfigured = true
+			// LoopEnabled reflects whether runs are active (config.Enabled)
+			response[i].LoopEnabled = loop.Enabled
 			// Include scheduling info for progress indicator
-			if periodic.NextScheduledAt != nil && !periodic.NextScheduledAt.IsZero() {
-				response[i].NextScheduledAt = periodic.NextScheduledAt
+			if loop.NextScheduledAt != nil && !loop.NextScheduledAt.IsZero() {
+				response[i].NextScheduledAt = loop.NextScheduledAt
 			}
-			response[i].PeriodicFrequency = &periodic.Frequency
-			if periodic.StoppedReason != "" {
-				response[i].PeriodicStoppedReason = string(periodic.StoppedReason)
+			response[i].LoopFrequency = &loop.Frequency
+			if loop.StoppedReason != "" {
+				response[i].LoopStoppedReason = string(loop.StoppedReason)
 			}
 			// Glance fields for conversation header display.
-			response[i].PeriodicTrigger = string(periodic.EffectiveTrigger())
-			response[i].PeriodicIterationCount = periodic.IterationCount
-			response[i].PeriodicMaxIterations = periodic.MaxIterations
-			response[i].PeriodicDelaySeconds = periodic.DelaySeconds
-			response[i].PeriodicMaxDurationSeconds = periodic.MaxDurationSeconds
+			response[i].LoopTrigger = string(loop.EffectiveTrigger())
+			response[i].LoopIterationCount = loop.IterationCount
+			response[i].LoopMaxIterations = loop.MaxIterations
+			response[i].LoopDelaySeconds = loop.DelaySeconds
+			response[i].LoopMaxDurationSeconds = loop.MaxDurationSeconds
 			// Prompt presence flag and free-text preview for the selector UI.
-			response[i].PeriodicHasPrompt = periodic.Prompt != "" || periodic.PromptName != ""
-			response[i].PeriodicPromptPreview = periodic.PromptPreview()
+			response[i].LoopHasPrompt = loop.Prompt != "" || loop.PromptName != ""
+			response[i].LoopPromptPreview = loop.PromptPreview()
 		}
 		// Check if session is currently waiting for children (runtime state from SessionManager)
 		if h.deps.SessionManager != nil {

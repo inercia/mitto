@@ -193,10 +193,10 @@ type WebPrompt struct {
 	// A nil value means enabled (default true). Only explicit false disables.
 	// This is used during merge to allow higher-priority sources to disable prompts.
 	Enabled *bool `json:"enabled,omitempty"`
-	// Periodic, if non-nil, declares that selecting this prompt in a menu creates
-	// a periodic (recurring) conversation instead of a one-time seed. The fields
+	// Loop, if non-nil, declares that selecting this prompt in a menu creates
+	// a loop (recurring) conversation instead of a one-time seed. The fields
 	// provide default schedule values for the schedule dialog.
-	Periodic *PromptPeriodic `json:"periodic,omitempty"`
+	Loop *PromptLoop `json:"loop,omitempty"`
 	// PreferredModels is an ordered list of references to global model profiles
 	// (Settings → Models), by profile name or capability tag. The first entry that
 	// resolves to an available model wins. Empty/absent means use the session's
@@ -716,13 +716,13 @@ type ConversationsConfig struct {
 	// workspace auto_children config) are NOT counted toward this limit.
 	// nil means use default (10). 0 means unlimited.
 	MaxChildConversations *int `json:"max_child_conversations,omitempty" yaml:"max_child_conversations,omitempty"`
-	// MaxPeriodicIterations caps the number of scheduled runs a periodic conversation
-	// performs before it auto-stops. nil = use default (DefaultMaxPeriodicIterations);
-	// 0 = unlimited (still bounded by the hardcoded GlobalMaxPeriodicIterations backstop).
-	MaxPeriodicIterations *int `json:"max_periodic_iterations,omitempty" yaml:"max_periodic_iterations,omitempty"`
-	// MinPeriodicCompletionDelaySeconds is the global lower limit (floor) for the
-	// on-completion periodic trigger's delay. nil = use default (DefaultMinPeriodicCompletionDelaySeconds).
-	MinPeriodicCompletionDelaySeconds *int `json:"min_periodic_completion_delay_seconds,omitempty" yaml:"min_periodic_completion_delay_seconds,omitempty"`
+	// MaxLoopIterations caps the number of scheduled runs a loop conversation
+	// performs before it auto-stops. nil = use default (DefaultMaxLoopIterations);
+	// 0 = unlimited (still bounded by the hardcoded GlobalMaxLoopIterations backstop).
+	MaxLoopIterations *int `json:"max_loop_iterations,omitempty" yaml:"max_loop_iterations,omitempty"`
+	// MinLoopCompletionDelaySeconds is the global lower limit (floor) for the
+	// on-completion loop trigger's delay. nil = use default (DefaultMinLoopCompletionDelaySeconds).
+	MinLoopCompletionDelaySeconds *int `json:"min_loop_completion_delay_seconds,omitempty" yaml:"min_loop_completion_delay_seconds,omitempty"`
 }
 
 // ActionButtonsConfig configures the follow-up suggestions feature.
@@ -929,51 +929,51 @@ func (c *ConversationsConfig) GetMaxChildConversations() int {
 	return *c.MaxChildConversations
 }
 
-// DefaultMaxPeriodicIterations is the default user-facing cap on scheduled runs
-// for a periodic conversation when no explicit limit is configured.
-const DefaultMaxPeriodicIterations = 100
+// DefaultMaxLoopIterations is the default user-facing cap on scheduled runs
+// for a loop conversation when no explicit limit is configured.
+const DefaultMaxLoopIterations = 100
 
-// DefaultMinPeriodicCompletionDelaySeconds is the default floor (seconds) applied to the
-// on-completion periodic delay to prevent hot loops.
-const DefaultMinPeriodicCompletionDelaySeconds = 5
+// DefaultMinLoopCompletionDelaySeconds is the default floor (seconds) applied to the
+// on-completion loop delay to prevent hot loops.
+const DefaultMinLoopCompletionDelaySeconds = 5
 
-// GlobalMaxPeriodicIterations is the hardcoded absolute backstop on scheduled runs
-// for any periodic conversation. It can never be exceeded by config.
-const GlobalMaxPeriodicIterations = 1000
+// GlobalMaxLoopIterations is the hardcoded absolute backstop on scheduled runs
+// for any loop conversation. It can never be exceeded by config.
+const GlobalMaxLoopIterations = 1000
 
-// GetMaxPeriodicIterations returns the configured default max periodic-iterations cap.
-// Safe to call on nil receiver - returns DefaultMaxPeriodicIterations when unset.
-// Returns 0 for unlimited. The returned value is clamped to GlobalMaxPeriodicIterations.
-func (c *ConversationsConfig) GetMaxPeriodicIterations() int {
-	if c == nil || c.MaxPeriodicIterations == nil {
-		return DefaultMaxPeriodicIterations
+// GetMaxLoopIterations returns the configured default max loop-iterations cap.
+// Safe to call on nil receiver - returns DefaultMaxLoopIterations when unset.
+// Returns 0 for unlimited. The returned value is clamped to GlobalMaxLoopIterations.
+func (c *ConversationsConfig) GetMaxLoopIterations() int {
+	if c == nil || c.MaxLoopIterations == nil {
+		return DefaultMaxLoopIterations
 	}
-	v := *c.MaxPeriodicIterations
-	if v > GlobalMaxPeriodicIterations {
-		return GlobalMaxPeriodicIterations
+	v := *c.MaxLoopIterations
+	if v > GlobalMaxLoopIterations {
+		return GlobalMaxLoopIterations
 	}
 	return v
 }
 
-// GetMinPeriodicCompletionDelaySeconds returns the configured floor for the on-completion delay.
-// Safe to call on nil receiver - returns DefaultMinPeriodicCompletionDelaySeconds when unset.
+// GetMinLoopCompletionDelaySeconds returns the configured floor for the on-completion delay.
+// Safe to call on nil receiver - returns DefaultMinLoopCompletionDelaySeconds when unset.
 // A configured value < 0 is treated as 0.
-func (c *ConversationsConfig) GetMinPeriodicCompletionDelaySeconds() int {
-	if c == nil || c.MinPeriodicCompletionDelaySeconds == nil {
-		return DefaultMinPeriodicCompletionDelaySeconds
+func (c *ConversationsConfig) GetMinLoopCompletionDelaySeconds() int {
+	if c == nil || c.MinLoopCompletionDelaySeconds == nil {
+		return DefaultMinLoopCompletionDelaySeconds
 	}
-	v := *c.MinPeriodicCompletionDelaySeconds
+	v := *c.MinLoopCompletionDelaySeconds
 	if v < 0 {
 		return 0
 	}
 	return v
 }
 
-// EffectiveMaxPeriodicIterations returns the binding iteration cap for a periodic
-// conversation: the smallest positive of { promptMax, configMax, GlobalMaxPeriodicIterations }.
+// EffectiveMaxLoopIterations returns the binding iteration cap for a loop
+// conversation: the smallest positive of { promptMax, configMax, GlobalMaxLoopIterations }.
 // The hardcoded backstop always applies, so the result is always positive.
-func EffectiveMaxPeriodicIterations(promptMax, configMax int) int {
-	effective := GlobalMaxPeriodicIterations
+func EffectiveMaxLoopIterations(promptMax, configMax int) int {
+	effective := GlobalMaxLoopIterations
 	if promptMax > 0 && promptMax < effective {
 		effective = promptMax
 	}
@@ -1257,6 +1257,10 @@ type Config struct {
 	// Models is the list of named model profiles (criteria + tags) for tag-based
 	// model-capability lookups.
 	Models []ModelProfile
+	// Shortcuts holds global per-section configurable shortcut buttons, keyed by
+	// section ID (e.g. "conversations", "tasksList", "beadsIssue"). These are
+	// merged with folder-level shortcuts at render time (global entries first).
+	Shortcuts map[string][]ShortcutButton
 }
 
 // rawModelCriteria is used for YAML unmarshaling of a model profile's criteria.
@@ -1291,7 +1295,7 @@ type rawACPServerConfig struct {
 		Menus           string            `yaml:"menus"`
 		Enabled         *bool             `yaml:"enabled"`
 		EnabledWhen     string            `yaml:"enabledWhen"`
-		Periodic        *PromptPeriodic   `yaml:"periodic,omitempty"`
+		Loop            *PromptLoop       `yaml:"loop,omitempty"`
 		Parameters      []PromptParameter `yaml:"parameters"`
 		Tags            []string          `yaml:"tags"`
 		Singleton       bool              `yaml:"singleton"`
@@ -1316,14 +1320,16 @@ type rawConfig struct {
 		Menus           string            `yaml:"menus"`
 		Enabled         *bool             `yaml:"enabled"`
 		EnabledWhen     string            `yaml:"enabledWhen"`
-		Periodic        *PromptPeriodic   `yaml:"periodic,omitempty"`
+		Loop            *PromptLoop       `yaml:"loop,omitempty"`
 		Parameters      []PromptParameter `yaml:"parameters"`
 		Tags            []string          `yaml:"tags"`
 		Singleton       bool              `yaml:"singleton"`
 	} `yaml:"prompts"`
 	// PromptsDirs is a list of additional directories to search for prompt files
 	PromptsDirs []string `yaml:"prompts_dirs"`
-	Web         struct {
+	// Shortcuts is the top-level global shortcut buttons section, keyed by section ID.
+	Shortcuts map[string][]ShortcutButton `yaml:"shortcuts"`
+	Web       struct {
 		Host         string `yaml:"host"`
 		Port         int    `yaml:"port"`
 		ExternalPort int    `yaml:"external_port"`
@@ -1418,10 +1424,10 @@ type rawConfig struct {
 		ExternalImages *struct {
 			Enabled *bool `yaml:"enabled"`
 		} `yaml:"external_images"`
-		DefaultFlags                      map[string]bool `yaml:"default_flags"`
-		MaxChildConversations             *int            `yaml:"max_child_conversations"`
-		MaxPeriodicIterations             *int            `yaml:"max_periodic_iterations"`
-		MinPeriodicCompletionDelaySeconds *int            `yaml:"min_periodic_completion_delay_seconds"`
+		DefaultFlags                  map[string]bool `yaml:"default_flags"`
+		MaxChildConversations         *int            `yaml:"max_child_conversations"`
+		MaxLoopIterations             *int            `yaml:"max_loop_iterations"`
+		MinLoopCompletionDelaySeconds *int            `yaml:"min_loop_completion_delay_seconds"`
 	} `yaml:"conversations"`
 	// RestrictedRunners is the top-level per-runner-type configuration
 	RestrictedRunners map[string]*WorkspaceRunnerConfig `yaml:"restricted_runners"`
@@ -1431,14 +1437,15 @@ type rawConfig struct {
 	} `yaml:"permissions"`
 	// Session is the session storage/startup configuration
 	Session *struct {
-		MaxMessagesPerSession       int    `yaml:"max_messages_per_session"`
-		MaxSessionSizeBytes         int64  `yaml:"max_session_size_bytes"`
-		ArchiveRetentionPeriod      string `yaml:"archive_retention_period"`
-		AutoArchiveInactiveAfter    string `yaml:"auto_archive_inactive_after"`
-		StartupStaggerMs            int    `yaml:"startup_stagger_ms"`
-		StartupPeriodicDelaySeconds int    `yaml:"startup_periodic_delay_seconds"`
-		PeriodicSuspendTimeout      string `yaml:"periodic_suspend_timeout"`
-		MemoryRecycleThreshold      string `yaml:"memory_recycle_threshold"`
+		MaxMessagesPerSession    int    `yaml:"max_messages_per_session"`
+		MaxSessionSizeBytes      int64  `yaml:"max_session_size_bytes"`
+		ArchiveRetentionPeriod   string `yaml:"archive_retention_period"`
+		AutoArchiveInactiveAfter string `yaml:"auto_archive_inactive_after"`
+		StartupStaggerMs         int    `yaml:"startup_stagger_ms"`
+		StartupLoopDelaySeconds  int    `yaml:"startup_loop_delay_seconds"`
+		LoopSuspendTimeout       string `yaml:"loop_suspend_timeout"`
+		MemoryRecycleThreshold   string `yaml:"memory_recycle_threshold"`
+		AgentInactivityTimeout   string `yaml:"agent_inactivity_timeout"`
 	} `yaml:"session"`
 	// MCP is the MCP server configuration
 	MCP *struct {
@@ -1523,7 +1530,7 @@ func Parse(data []byte) (*Config, error) {
 					Singleton:       p.Singleton,
 					Tags:            p.Tags,
 					EnabledWhen:     p.EnabledWhen,
-					Periodic:        p.Periodic,
+					Loop:            p.Loop,
 					Parameters:      p.Parameters,
 				}
 				acpServer.Prompts = append(acpServer.Prompts, wp)
@@ -1577,7 +1584,7 @@ func Parse(data []byte) (*Config, error) {
 			Tags:            p.Tags,
 			EnabledWhen:     p.EnabledWhen,
 			Enabled:         p.Enabled,
-			Periodic:        p.Periodic,
+			Loop:            p.Loop,
 			Parameters:      p.Parameters,
 		}
 		cfg.Prompts = append(cfg.Prompts, wp)
@@ -1585,6 +1592,9 @@ func Parse(data []byte) (*Config, error) {
 
 	// Populate prompts directories
 	cfg.PromptsDirs = raw.PromptsDirs
+
+	// Populate global shortcut buttons
+	cfg.Shortcuts = raw.Shortcuts
 
 	// Populate web config
 	cfg.Web.Host = raw.Web.Host
@@ -1758,21 +1768,21 @@ func Parse(data []byte) (*Config, error) {
 			cfg.Conversations.MaxChildConversations = raw.Conversations.MaxChildConversations
 		}
 
-		// Copy max periodic iterations
-		if raw.Conversations.MaxPeriodicIterations != nil {
-			cfg.Conversations.MaxPeriodicIterations = raw.Conversations.MaxPeriodicIterations
+		// Copy max loop iterations
+		if raw.Conversations.MaxLoopIterations != nil {
+			cfg.Conversations.MaxLoopIterations = raw.Conversations.MaxLoopIterations
 		}
 
-		// Copy min periodic completion delay
-		if raw.Conversations.MinPeriodicCompletionDelaySeconds != nil {
-			cfg.Conversations.MinPeriodicCompletionDelaySeconds = raw.Conversations.MinPeriodicCompletionDelaySeconds
+		// Copy min loop completion delay
+		if raw.Conversations.MinLoopCompletionDelaySeconds != nil {
+			cfg.Conversations.MinLoopCompletionDelaySeconds = raw.Conversations.MinLoopCompletionDelaySeconds
 		}
 
 		// If no config was actually set, nil out the conversations config
 		if cfg.Conversations.Processing == nil && cfg.Conversations.Queue == nil &&
 			cfg.Conversations.ActionButtons == nil && cfg.Conversations.ExternalImages == nil &&
 			cfg.Conversations.DefaultFlags == nil && cfg.Conversations.MaxChildConversations == nil &&
-			cfg.Conversations.MaxPeriodicIterations == nil && cfg.Conversations.MinPeriodicCompletionDelaySeconds == nil {
+			cfg.Conversations.MaxLoopIterations == nil && cfg.Conversations.MinLoopCompletionDelaySeconds == nil {
 			cfg.Conversations = nil
 		}
 	}
@@ -1790,14 +1800,15 @@ func Parse(data []byte) (*Config, error) {
 	// Parse session config
 	if raw.Session != nil {
 		cfg.Session = &SessionConfig{
-			MaxMessagesPerSession:       raw.Session.MaxMessagesPerSession,
-			MaxSessionSizeBytes:         raw.Session.MaxSessionSizeBytes,
-			ArchiveRetentionPeriod:      raw.Session.ArchiveRetentionPeriod,
-			AutoArchiveInactiveAfter:    raw.Session.AutoArchiveInactiveAfter,
-			StartupStaggerMs:            raw.Session.StartupStaggerMs,
-			StartupPeriodicDelaySeconds: raw.Session.StartupPeriodicDelaySeconds,
-			PeriodicSuspendTimeout:      raw.Session.PeriodicSuspendTimeout,
-			MemoryRecycleThreshold:      raw.Session.MemoryRecycleThreshold,
+			MaxMessagesPerSession:    raw.Session.MaxMessagesPerSession,
+			MaxSessionSizeBytes:      raw.Session.MaxSessionSizeBytes,
+			ArchiveRetentionPeriod:   raw.Session.ArchiveRetentionPeriod,
+			AutoArchiveInactiveAfter: raw.Session.AutoArchiveInactiveAfter,
+			StartupStaggerMs:         raw.Session.StartupStaggerMs,
+			StartupLoopDelaySeconds:  raw.Session.StartupLoopDelaySeconds,
+			LoopSuspendTimeout:       raw.Session.LoopSuspendTimeout,
+			MemoryRecycleThreshold:   raw.Session.MemoryRecycleThreshold,
+			AgentInactivityTimeout:   raw.Session.AgentInactivityTimeout,
 		}
 	}
 

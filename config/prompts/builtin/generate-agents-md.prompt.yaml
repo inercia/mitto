@@ -1,10 +1,10 @@
 icon: robot
 name: Generate AGENTS.md
-menus: prompts, !promptsPeriodic
+menus: prompts, !promptsLoop
 description: Analyze project and generate an AGENTS.md file for AI coding agents
 group: Agents & Mitto
 backgroundColor: '#B3E5FC'
-enabledWhen: '!Session.IsPeriodicConversation'
+enabledWhen: '!Session.IsLoopConversation'
 preferredModels:
   - modelTag: Coding
 prompt: |

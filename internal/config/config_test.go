@@ -2143,52 +2143,52 @@ func TestPermissionsConfig_IsAutoApprove(t *testing.T) {
 	}
 }
 
-func TestGetMaxPeriodicIterations(t *testing.T) {
+func TestGetMaxLoopIterations(t *testing.T) {
 	t.Run("nil config returns default", func(t *testing.T) {
 		var c *ConversationsConfig
-		got := c.GetMaxPeriodicIterations()
-		if got != DefaultMaxPeriodicIterations {
-			t.Errorf("GetMaxPeriodicIterations() = %d, want %d", got, DefaultMaxPeriodicIterations)
+		got := c.GetMaxLoopIterations()
+		if got != DefaultMaxLoopIterations {
+			t.Errorf("GetMaxLoopIterations() = %d, want %d", got, DefaultMaxLoopIterations)
 		}
 	})
 
 	t.Run("nil field returns default", func(t *testing.T) {
 		c := &ConversationsConfig{}
-		got := c.GetMaxPeriodicIterations()
-		if got != DefaultMaxPeriodicIterations {
-			t.Errorf("GetMaxPeriodicIterations() = %d, want %d", got, DefaultMaxPeriodicIterations)
+		got := c.GetMaxLoopIterations()
+		if got != DefaultMaxLoopIterations {
+			t.Errorf("GetMaxLoopIterations() = %d, want %d", got, DefaultMaxLoopIterations)
 		}
 	})
 
 	t.Run("set value returned", func(t *testing.T) {
 		v := 50
-		c := &ConversationsConfig{MaxPeriodicIterations: &v}
-		got := c.GetMaxPeriodicIterations()
+		c := &ConversationsConfig{MaxLoopIterations: &v}
+		got := c.GetMaxLoopIterations()
 		if got != 50 {
-			t.Errorf("GetMaxPeriodicIterations() = %d, want 50", got)
+			t.Errorf("GetMaxLoopIterations() = %d, want 50", got)
 		}
 	})
 
 	t.Run("value above backstop clamped to backstop", func(t *testing.T) {
-		v := GlobalMaxPeriodicIterations + 500
-		c := &ConversationsConfig{MaxPeriodicIterations: &v}
-		got := c.GetMaxPeriodicIterations()
-		if got != GlobalMaxPeriodicIterations {
-			t.Errorf("GetMaxPeriodicIterations() = %d, want %d (backstop)", got, GlobalMaxPeriodicIterations)
+		v := GlobalMaxLoopIterations + 500
+		c := &ConversationsConfig{MaxLoopIterations: &v}
+		got := c.GetMaxLoopIterations()
+		if got != GlobalMaxLoopIterations {
+			t.Errorf("GetMaxLoopIterations() = %d, want %d (backstop)", got, GlobalMaxLoopIterations)
 		}
 	})
 
 	t.Run("zero returns zero (unlimited)", func(t *testing.T) {
 		v := 0
-		c := &ConversationsConfig{MaxPeriodicIterations: &v}
-		got := c.GetMaxPeriodicIterations()
+		c := &ConversationsConfig{MaxLoopIterations: &v}
+		got := c.GetMaxLoopIterations()
 		if got != 0 {
-			t.Errorf("GetMaxPeriodicIterations() = %d, want 0 (unlimited)", got)
+			t.Errorf("GetMaxLoopIterations() = %d, want 0 (unlimited)", got)
 		}
 	})
 }
 
-func TestEffectiveMaxPeriodicIterations(t *testing.T) {
+func TestEffectiveMaxLoopIterations(t *testing.T) {
 	tests := []struct {
 		name      string
 		promptMax int
@@ -2199,7 +2199,7 @@ func TestEffectiveMaxPeriodicIterations(t *testing.T) {
 			name:      "both zero → backstop",
 			promptMax: 0,
 			configMax: 0,
-			want:      GlobalMaxPeriodicIterations,
+			want:      GlobalMaxLoopIterations,
 		},
 		{
 			name:      "prompt cap wins (smallest positive)",
@@ -2229,34 +2229,34 @@ func TestEffectiveMaxPeriodicIterations(t *testing.T) {
 			name:      "both above backstop → backstop",
 			promptMax: 1500,
 			configMax: 2000,
-			want:      GlobalMaxPeriodicIterations,
+			want:      GlobalMaxLoopIterations,
 		},
 		{
 			name:      "prompt at backstop, config zero → backstop",
-			promptMax: GlobalMaxPeriodicIterations,
+			promptMax: GlobalMaxLoopIterations,
 			configMax: 0,
-			want:      GlobalMaxPeriodicIterations,
+			want:      GlobalMaxLoopIterations,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := EffectiveMaxPeriodicIterations(tt.promptMax, tt.configMax)
+			got := EffectiveMaxLoopIterations(tt.promptMax, tt.configMax)
 			if got != tt.want {
-				t.Errorf("EffectiveMaxPeriodicIterations(%d, %d) = %d, want %d",
+				t.Errorf("EffectiveMaxLoopIterations(%d, %d) = %d, want %d",
 					tt.promptMax, tt.configMax, got, tt.want)
 			}
 		})
 	}
 }
 
-func TestParse_MaxPeriodicIterations(t *testing.T) {
+func TestParse_MaxLoopIterations(t *testing.T) {
 	yaml := `
 acp:
   - test:
       command: "test --acp"
 conversations:
-  max_periodic_iterations: 42
+  max_loop_iterations: 42
 `
 	cfg, err := Parse([]byte(yaml))
 	if err != nil {
@@ -2265,24 +2265,24 @@ conversations:
 	if cfg.Conversations == nil {
 		t.Fatal("Conversations is nil")
 	}
-	if cfg.Conversations.MaxPeriodicIterations == nil {
-		t.Fatal("MaxPeriodicIterations is nil, want 42")
+	if cfg.Conversations.MaxLoopIterations == nil {
+		t.Fatal("MaxLoopIterations is nil, want 42")
 	}
-	if *cfg.Conversations.MaxPeriodicIterations != 42 {
-		t.Errorf("MaxPeriodicIterations = %d, want 42", *cfg.Conversations.MaxPeriodicIterations)
+	if *cfg.Conversations.MaxLoopIterations != 42 {
+		t.Errorf("MaxLoopIterations = %d, want 42", *cfg.Conversations.MaxLoopIterations)
 	}
-	if cfg.Conversations.GetMaxPeriodicIterations() != 42 {
-		t.Errorf("GetMaxPeriodicIterations() = %d, want 42", cfg.Conversations.GetMaxPeriodicIterations())
+	if cfg.Conversations.GetMaxLoopIterations() != 42 {
+		t.Errorf("GetMaxLoopIterations() = %d, want 42", cfg.Conversations.GetMaxLoopIterations())
 	}
 }
 
-func TestParse_MaxPeriodicIterations_Zero(t *testing.T) {
+func TestParse_MaxLoopIterations_Zero(t *testing.T) {
 	yaml := `
 acp:
   - test:
       command: "test --acp"
 conversations:
-  max_periodic_iterations: 0
+  max_loop_iterations: 0
 `
 	cfg, err := Parse([]byte(yaml))
 	if err != nil {
@@ -2291,69 +2291,69 @@ conversations:
 	if cfg.Conversations == nil {
 		t.Fatal("Conversations is nil")
 	}
-	if cfg.Conversations.MaxPeriodicIterations == nil {
-		t.Fatal("MaxPeriodicIterations is nil, want 0")
+	if cfg.Conversations.MaxLoopIterations == nil {
+		t.Fatal("MaxLoopIterations is nil, want 0")
 	}
-	if *cfg.Conversations.MaxPeriodicIterations != 0 {
-		t.Errorf("MaxPeriodicIterations = %d, want 0", *cfg.Conversations.MaxPeriodicIterations)
+	if *cfg.Conversations.MaxLoopIterations != 0 {
+		t.Errorf("MaxLoopIterations = %d, want 0", *cfg.Conversations.MaxLoopIterations)
 	}
-	if cfg.Conversations.GetMaxPeriodicIterations() != 0 {
-		t.Errorf("GetMaxPeriodicIterations() = %d, want 0 (unlimited)", cfg.Conversations.GetMaxPeriodicIterations())
+	if cfg.Conversations.GetMaxLoopIterations() != 0 {
+		t.Errorf("GetMaxLoopIterations() = %d, want 0 (unlimited)", cfg.Conversations.GetMaxLoopIterations())
 	}
 }
 
-func TestGetMinPeriodicCompletionDelaySeconds(t *testing.T) {
+func TestGetMinLoopCompletionDelaySeconds(t *testing.T) {
 	t.Run("nil config returns default", func(t *testing.T) {
 		var c *ConversationsConfig
-		got := c.GetMinPeriodicCompletionDelaySeconds()
-		if got != DefaultMinPeriodicCompletionDelaySeconds {
-			t.Errorf("GetMinPeriodicCompletionDelaySeconds() = %d, want %d", got, DefaultMinPeriodicCompletionDelaySeconds)
+		got := c.GetMinLoopCompletionDelaySeconds()
+		if got != DefaultMinLoopCompletionDelaySeconds {
+			t.Errorf("GetMinLoopCompletionDelaySeconds() = %d, want %d", got, DefaultMinLoopCompletionDelaySeconds)
 		}
 	})
 
 	t.Run("nil field returns default", func(t *testing.T) {
 		c := &ConversationsConfig{}
-		got := c.GetMinPeriodicCompletionDelaySeconds()
-		if got != DefaultMinPeriodicCompletionDelaySeconds {
-			t.Errorf("GetMinPeriodicCompletionDelaySeconds() = %d, want %d", got, DefaultMinPeriodicCompletionDelaySeconds)
+		got := c.GetMinLoopCompletionDelaySeconds()
+		if got != DefaultMinLoopCompletionDelaySeconds {
+			t.Errorf("GetMinLoopCompletionDelaySeconds() = %d, want %d", got, DefaultMinLoopCompletionDelaySeconds)
 		}
 	})
 
 	t.Run("set value returned", func(t *testing.T) {
 		v := 10
-		c := &ConversationsConfig{MinPeriodicCompletionDelaySeconds: &v}
-		got := c.GetMinPeriodicCompletionDelaySeconds()
+		c := &ConversationsConfig{MinLoopCompletionDelaySeconds: &v}
+		got := c.GetMinLoopCompletionDelaySeconds()
 		if got != 10 {
-			t.Errorf("GetMinPeriodicCompletionDelaySeconds() = %d, want 10", got)
+			t.Errorf("GetMinLoopCompletionDelaySeconds() = %d, want 10", got)
 		}
 	})
 
 	t.Run("negative value treated as zero", func(t *testing.T) {
 		v := -3
-		c := &ConversationsConfig{MinPeriodicCompletionDelaySeconds: &v}
-		got := c.GetMinPeriodicCompletionDelaySeconds()
+		c := &ConversationsConfig{MinLoopCompletionDelaySeconds: &v}
+		got := c.GetMinLoopCompletionDelaySeconds()
 		if got != 0 {
-			t.Errorf("GetMinPeriodicCompletionDelaySeconds() = %d, want 0 (negative → 0)", got)
+			t.Errorf("GetMinLoopCompletionDelaySeconds() = %d, want 0 (negative → 0)", got)
 		}
 	})
 
 	t.Run("zero is valid (no floor)", func(t *testing.T) {
 		v := 0
-		c := &ConversationsConfig{MinPeriodicCompletionDelaySeconds: &v}
-		got := c.GetMinPeriodicCompletionDelaySeconds()
+		c := &ConversationsConfig{MinLoopCompletionDelaySeconds: &v}
+		got := c.GetMinLoopCompletionDelaySeconds()
 		if got != 0 {
-			t.Errorf("GetMinPeriodicCompletionDelaySeconds() = %d, want 0", got)
+			t.Errorf("GetMinLoopCompletionDelaySeconds() = %d, want 0", got)
 		}
 	})
 }
 
-func TestParse_MinPeriodicCompletionDelaySeconds(t *testing.T) {
+func TestParse_MinLoopCompletionDelaySeconds(t *testing.T) {
 	yaml := `
 acp:
   - test:
       command: "test --acp"
 conversations:
-  min_periodic_completion_delay_seconds: 10
+  min_loop_completion_delay_seconds: 10
 `
 	cfg, err := Parse([]byte(yaml))
 	if err != nil {
@@ -2362,14 +2362,14 @@ conversations:
 	if cfg.Conversations == nil {
 		t.Fatal("Conversations is nil")
 	}
-	if cfg.Conversations.MinPeriodicCompletionDelaySeconds == nil {
-		t.Fatal("MinPeriodicCompletionDelaySeconds is nil, want 10")
+	if cfg.Conversations.MinLoopCompletionDelaySeconds == nil {
+		t.Fatal("MinLoopCompletionDelaySeconds is nil, want 10")
 	}
-	if *cfg.Conversations.MinPeriodicCompletionDelaySeconds != 10 {
-		t.Errorf("MinPeriodicCompletionDelaySeconds = %d, want 10", *cfg.Conversations.MinPeriodicCompletionDelaySeconds)
+	if *cfg.Conversations.MinLoopCompletionDelaySeconds != 10 {
+		t.Errorf("MinLoopCompletionDelaySeconds = %d, want 10", *cfg.Conversations.MinLoopCompletionDelaySeconds)
 	}
-	if cfg.Conversations.GetMinPeriodicCompletionDelaySeconds() != 10 {
-		t.Errorf("GetMinPeriodicCompletionDelaySeconds() = %d, want 10", cfg.Conversations.GetMinPeriodicCompletionDelaySeconds())
+	if cfg.Conversations.GetMinLoopCompletionDelaySeconds() != 10 {
+		t.Errorf("GetMinLoopCompletionDelaySeconds() = %d, want 10", cfg.Conversations.GetMinLoopCompletionDelaySeconds())
 	}
 }
 
@@ -2622,5 +2622,40 @@ func TestParse_EmbeddedDefaultModelProfiles(t *testing.T) {
 	// A non-Anthropic model only picks up its own profile's tags.
 	if got := cfg.ResolveModelTags("Gemini 2.5 Pro"); len(got) != 2 || got[0] != "Smart" || got[1] != "LongContext" {
 		t.Errorf("ResolveModelTags(Gemini 2.5 Pro) = %v, want [Smart LongContext]", got)
+	}
+}
+
+// TestParse_EmbeddedDefaultShortcuts pins the safe default global shortcuts
+// seeded into new installs via the embedded config/config.default.yaml. It
+// guards against the shipped defaults drifting (bad YAML, renamed sections, or
+// dropped buttons) so first-time users always get working shortcut buttons.
+func TestParse_EmbeddedDefaultShortcuts(t *testing.T) {
+	cfg, err := Parse(defaultConfig.DefaultConfigYAML)
+	if err != nil {
+		t.Fatalf("Parse(embedded default) failed: %v", err)
+	}
+
+	want := map[string]string{
+		"conversations": "Commit changes",
+		"beadsIssue":    "Start work",
+		"tasksList":     "Overview",
+	}
+
+	if len(cfg.Shortcuts) != len(want) {
+		t.Fatalf("embedded default Shortcuts sections = %d, want %d (%v)", len(cfg.Shortcuts), len(want), cfg.Shortcuts)
+	}
+	for section, wantPrompt := range want {
+		buttons, ok := cfg.Shortcuts[section]
+		if !ok {
+			t.Errorf("embedded default missing shortcuts section %q", section)
+			continue
+		}
+		if len(buttons) != 1 {
+			t.Errorf("section %q buttons = %d, want 1", section, len(buttons))
+			continue
+		}
+		if buttons[0].Prompt != wantPrompt {
+			t.Errorf("section %q prompt = %q, want %q", section, buttons[0].Prompt, wantPrompt)
+		}
 	}
 }

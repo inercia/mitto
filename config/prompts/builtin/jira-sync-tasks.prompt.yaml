@@ -1,17 +1,17 @@
 icon: tag
 name: 'JIRA: sync tasks'
 menus: prompts
-description: Periodically pull JIRA tickets matching the project's saved query into local beads issues
+description: Regularly pull JIRA tickets matching the project's saved query into local beads issues
 backgroundColor: '#D1C4E9'
 group: JIRA
 tags:
-- periodic
+- loop
 - jira
-enabledWhen: Tools.HasPattern("jira_*") && CommandExists("bd")
+enabledWhen: '(Tools.HasPattern("jira_*") || CommandExists("jira")) && CommandExists("bd")'
 preferredModels:
   - modelTag: Cheap
   - modelTag: Coding
-periodic:
+loop:
   mode: optional
   default: true
   value: 1
@@ -22,7 +22,7 @@ prompt: |
   keeping the beads copy in sync with changes made in JIRA (description, comments,
   priority, status). This is a **one-way pull** (JIRA → beads) for now; two-way
   sync may be added later. Run it **on demand** in a regular conversation, or
-  schedule it to run periodically via `mitto_conversation_set_periodic` — it
+  schedule it to run as a loop via `mitto_conversation_set_loop` — it
   adapts its behaviour to whichever mode it is invoked in (see Interaction Mode).
 
   ## Session Context
@@ -30,15 +30,34 @@ prompt: |
   Your session ID is `{{ .Session.ID }}` — use this as `self_id` for all `mitto_*` MCP tool calls.
 
   ## Interaction Mode
-  {{- if and .Session.IsPeriodic (not .Session.IsPeriodicForced) }}
+  {{- if and .Session.IsLoop (not .Session.IsLoopForced) }}
 
-  **Silent mode** — a scheduled periodic run; the user is not watching.
+  **Silent mode** — a scheduled loop run; the user is not watching.
   - Use **only** `mitto_ui_notify` — non-blocking notifications only.
   - Do **NOT** use `mitto_ui_options`, `mitto_ui_form`, or `mitto_ui_textbox`.
   {{- else }}
 
-  **Interactive mode** — a regular conversation or a force-triggered periodic run; the user is present.
+  **Interactive mode** — a regular conversation or a force-triggered loop run; the user is present.
   - Use interactive tools (`mitto_ui_options`, `mitto_ui_form`, `mitto_ui_textbox`) as well as `mitto_ui_notify`. This is the default when run on demand.
+  {{- end }}
+
+  ## Access Method
+  {{- if HasPattern "jira_*" }}
+
+  **JIRA MCP tools.** Step 3 fetches tickets with `jira_search_jira` — call it directly.
+  {{- else }}
+
+  **The `jira` CLI** (ankitpokhrel/jira-cli). You do **not** have JIRA MCP tools, but the `jira` command is on PATH. Wherever a step calls `jira_search_jira`, run the CLI instead:
+
+  ```bash
+  jira issue list -q "<the saved JQL>" --raw --paginate 500
+  ```
+
+  CLI notes:
+  - `--raw` returns JSON with most fields (key, summary, status, priority, issue type, labels, assignee, `updated`, `issuelinks`). Use `--plain --no-headers` if you only need columns.
+  - Comment bodies may be omitted from list `--raw`; fetch them per ticket with `jira issue view <KEY> --comments <N>` (set `PAGER=cat`), then feed each raw body through the Step 5.0 converter.
+  - Raise the result cap with `--paginate <N>` (the `from` offset is unsupported on Jira Cloud v3, so narrow the JQL rather than paging by offset).
+  - Everything else — the Step 5.0 wiki→Markdown converter, beads create/update, comment mirroring, dependency wiring — is unchanged.
   {{- end }}
 
   ## Step 1 — Get the "Jira Tasks" query
@@ -53,7 +72,7 @@ prompt: |
 
   No "Jira Tasks" query is saved for this conversation.
 
-  - **Silent mode** (scheduled periodic run): the query cannot be requested unattended. Send one `mitto_ui_notify` explaining the project has no "Jira Tasks" query configured, then **stop**.
+  - **Silent mode** (scheduled loop run): the query cannot be requested unattended. Send one `mitto_ui_notify` explaining the project has no "Jira Tasks" query configured, then **stop**.
 
   - **Interactive mode**: ask the user for the JQL query with `mitto_ui_form` (a single text field for the query, e.g. `project = ABC AND statusCategory != Done`). Once you have a non-empty value, persist it to the conversation's user data so future runs (including scheduled ones) reuse it:
 
@@ -85,7 +104,7 @@ prompt: |
   ```
 
   - If `.beads` exists: continue.
-  - If it does **not** exist: in interactive mode, run `bd init --non-interactive`; in periodic mode, notify and **stop** (do not initialise unattended).
+  - If it does **not** exist: in interactive mode, run `bd init --non-interactive`; in loop mode, notify and **stop** (do not initialise unattended).
 
   ## Step 3 — Fetch matching JIRA tickets
 
@@ -262,13 +281,13 @@ prompt: |
 
     If a stale bead has local-only comments/notes (comments without the `[jira]` prefix), call that out in the list so the user does not discard local work unknowingly.
 
-  - **Silent mode** (scheduled periodic): **never delete unattended.** If there are stale beads, send a single `mitto_ui_notify` listing them so the user can review and remove them on the next interactive run; otherwise stay silent.
+  - **Silent mode** (scheduled loop): **never delete unattended.** If there are stale beads, send a single `mitto_ui_notify` listing them so the user can review and remove them on the next interactive run; otherwise stay silent.
 
   ## Step 8 — Summary
 
   Report counts: tickets matched, beads created, beads updated, comments mirrored, dependencies wired (blocking links), beads closed, beads deleted (stale), unchanged (skipped).
 
-  - Silent mode (scheduled periodic): send a single `mitto_ui_notify` only if anything changed; stay silent otherwise.
+  - Silent mode (scheduled loop): send a single `mitto_ui_notify` only if anything changed; stay silent otherwise.
   - Interactive mode: print the full summary.
 
   ## Guidelines

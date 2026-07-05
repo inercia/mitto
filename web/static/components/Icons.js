@@ -868,10 +868,11 @@ export function ArchiveFilledIcon({ className = "w-4 h-4" }) {
 }
 
 /**
- * Periodic/repeat icon (circular arrow) for recurring conversations
+ * Loop-off icon (single circular arrow with a diagonal slash) for removing the
+ * recurring/loop state — the visual opposite of LoopIcon.
  * @param {string} className - CSS classes (default: 'w-4 h-4')
  */
-export function PeriodicIcon({ className = "w-4 h-4" }) {
+export function LoopOffIcon({ className = "w-4 h-4" }) {
   return html`
     <svg
       class="${className}"
@@ -883,19 +884,25 @@ export function PeriodicIcon({ className = "w-4 h-4" }) {
         stroke-linecap="round"
         stroke-linejoin="round"
         stroke-width="2"
-        d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"
+        d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10M23 4v6h-6"
+      />
+      <path
+        stroke-linecap="round"
+        stroke-linejoin="round"
+        stroke-width="2"
+        d="M4 20L20 4"
       />
     </svg>
   `;
 }
 
 /**
- * Periodic filled icon for active periodic state
+ * Loop filled icon for active loop state
  * Shows a filled circular badge with contrasting white arrows inside
- * Creates an "inverted" look compared to the outline PeriodicIcon
+ * Creates an "inverted" look compared to the outline LoopIcon
  * @param {string} className - CSS classes (default: 'w-4 h-4')
  */
-export function PeriodicFilledIcon({ className = "w-4 h-4" }) {
+export function LoopFilledIcon({ className = "w-4 h-4" }) {
   return html`
     <svg class="${className}" viewBox="0 0 24 24">
       <!-- Filled circle background using currentColor (will be blue/colored) -->
@@ -920,9 +927,31 @@ export function PeriodicFilledIcon({ className = "w-4 h-4" }) {
 }
 
 /**
+ * Loop/repeat icon (single circular arrow) for recurring conversations
+ * @param {string} className - CSS classes (default: 'w-4 h-4')
+ */
+export function LoopIcon({ className = "w-4 h-4" }) {
+  return html`
+    <svg
+      class="${className}"
+      fill="none"
+      stroke="currentColor"
+      viewBox="0 0 24 24"
+    >
+      <path
+        stroke-linecap="round"
+        stroke-linejoin="round"
+        stroke-width="2"
+        d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10M23 4v6h-6"
+      />
+    </svg>
+  `;
+}
+
+/**
  * Play filled icon for "run now" action
  * Shows a filled circular badge with a white triangle (play arrow) inside
- * Similar style to PeriodicFilledIcon but indicates "run/play" action
+ * Similar style to LoopFilledIcon but indicates "run/play" action
  * @param {string} className - CSS classes (default: 'w-4 h-4')
  */
 export function PlayFilledIcon({ className = "w-4 h-4" }) {
@@ -998,7 +1027,7 @@ export function ChevronRightIcon({ className = "w-4 h-4" }) {
   `;
 }
 
-// Lock icon (closed padlock) - for locked periodic prompt state
+// Lock icon (closed padlock) - for locked loop prompt state
 export function LockIcon({ className = "w-5 h-5" }) {
   return html`
     <svg
@@ -1029,7 +1058,7 @@ export function LockIcon({ className = "w-5 h-5" }) {
   `;
 }
 
-// Unlock icon (open padlock) - for unlocked periodic prompt state
+// Unlock icon (open padlock) - for unlocked loop prompt state
 export function UnlockIcon({ className = "w-5 h-5" }) {
   return html`
     <svg
@@ -1451,7 +1480,7 @@ export function MittoIcon({ className = "w-4 h-4" }) {
 }
 
 /**
- * Clock icon for periodic (recurring) conversations
+ * Clock icon for loop (recurring) conversations
  * @param {string} className - CSS classes (default: 'w-4 h-4')
  */
 export function ClockIcon({ className = "w-4 h-4" }) {
@@ -1565,7 +1594,7 @@ export const PROMPT_ICONS = {
   duplicate: DuplicateIcon,
   pin: PinIcon,
   archive: ArchiveIcon,
-  periodic: PeriodicIcon,
+  loop: LoopIcon,
   queue: QueueIcon,
   play: PlayFilledIcon,
 };

@@ -9,7 +9,7 @@ import {
   EditIcon,
   CheckIcon,
   FolderIcon,
-  PeriodicFilledIcon,
+  LoopFilledIcon,
   SettingsIcon,
   SlidersIcon,
 } from "./Icons.js";
@@ -247,7 +247,7 @@ export function SessionPanel({
   const [editedTitle, setEditedTitle] = useState("");
   const [isSavingTitle, setIsSavingTitle] = useState(false);
   const titleInputRef = useRef(null);
-  const [periodicConfig, setPeriodicConfig] = useState(null);
+  const [loopConfig, setLoopConfig] = useState(null);
   const [callbackConfig, setCallbackConfig] = useState(null);
   const [callbackCopied, setCallbackCopied] = useState(false);
   const [confirmDialog, setConfirmDialog] = useState(null);
@@ -284,7 +284,7 @@ export function SessionPanel({
   // --- Effects: reset on session change ---
   useEffect(() => {
     setIsEditingTitle(false);
-    setPeriodicConfig(null);
+    setLoopConfig(null);
     setCallbackConfig(null);
     setCallbackCopied(false);
     setFlagsError(null);
@@ -301,26 +301,26 @@ export function SessionPanel({
       setIsLoadingFlags(true);
       setFlagsError(null);
 
-      // Periodic + callback endpoints only exist for periodic conversations.
-      // Gating on periodic_configured avoids 404 noise on regular sessions.
-      const periodicConfigured = sessionInfo?.periodic_configured === true;
+      // Loop + callback endpoints only exist for loop conversations.
+      // Gating on loop_configured avoids 404 noise on regular sessions.
+      const loopConfigured = sessionInfo?.loop_configured === true;
 
       try {
-        const [periodicRes, callbackRes, flagsRes, settingsRes] =
+        const [loopRes, callbackRes, flagsRes, settingsRes] =
           await Promise.all([
-            periodicConfigured
-              ? authFetch(endpoints.sessions.periodic(sessionId))
+            loopConfigured
+              ? authFetch(endpoints.sessions.loop(sessionId))
               : Promise.resolve(null),
-            periodicConfigured
+            loopConfigured
               ? authFetch(endpoints.sessions.callback(sessionId))
               : Promise.resolve(null),
             authFetch(endpoints.misc.advancedFlags()),
             authFetch(endpoints.sessions.settings(sessionId)),
           ]);
 
-        if (periodicRes && periodicRes.ok)
-          setPeriodicConfig(await periodicRes.json());
-        else setPeriodicConfig(null);
+        if (loopRes && loopRes.ok)
+          setLoopConfig(await loopRes.json());
+        else setLoopConfig(null);
 
         if (callbackRes && callbackRes.ok)
           setCallbackConfig(await callbackRes.json());
@@ -344,7 +344,7 @@ export function SessionPanel({
     };
 
     fetchData();
-  }, [isOpen, sessionId, sessionInfo?.periodic_configured]);
+  }, [isOpen, sessionId, sessionInfo?.loop_configured]);
 
   // --- Effects: fetch linked beads issue status when open ---
   // The status badge mirrors the style used in the Beads view. The status
@@ -734,7 +734,7 @@ export function SessionPanel({
           class="tabs tabs-lift shrink-0 pt-2"
           style="--tab-border-color: var(--mitto-border-1);"
         >
-          <label class="tab flex-1 tooltip tooltip-bottom" data-tip="Properties" aria-label="Properties">
+          <label class="tab flex-1" title="Properties" aria-label="Properties">
             <input
               type="radio"
               name="session-panel-tabs"
@@ -743,7 +743,7 @@ export function SessionPanel({
             />
             <${SettingsIcon} className="w-4 h-4" />
           </label>
-          <label class="tab flex-1 tooltip tooltip-bottom" data-tip="Changes" aria-label="Changes">
+          <label class="tab flex-1" title="Changes" aria-label="Changes">
             <input
               type="radio"
               name="session-panel-tabs"
@@ -764,7 +764,7 @@ export function SessionPanel({
               />
             </svg>
           </label>
-          <label class="tab flex-1 tooltip tooltip-bottom" data-tip="Advanced" aria-label="Advanced">
+          <label class="tab flex-1" title="Advanced" aria-label="Advanced">
             <input
               type="radio"
               name="session-panel-tabs"
@@ -1344,44 +1344,44 @@ export function SessionPanel({
           </div>
         `}
 
-        <!-- Periodic Prompts Section -->
-        ${periodicConfig?.enabled &&
+        <!-- Loop Prompts Section -->
+        ${loopConfig?.enabled &&
         html`
           <div>
             <label
               class="block text-sm font-medium text-mitto-text-secondary mb-2"
-              >Periodic Prompts</label
+              >Loop Prompts</label
             >
             <div class="flex items-center gap-2 text-sm text-mitto-text-300">
-              <${PeriodicFilledIcon}
+              <${LoopFilledIcon}
                 className="w-4 h-4 shrink-0 text-mitto-accent"
               />
-              <span>${formatFrequency(periodicConfig.frequency)}</span>
+              <span>${formatFrequency(loopConfig.frequency)}</span>
             </div>
-            ${periodicConfig.last_sent_at &&
+            ${loopConfig.last_sent_at &&
             html`<p
               class="mt-1 flex items-baseline gap-2 text-xs text-mitto-text-500"
             >
               <strong>Last run:</strong>
               <span
-                >${new Date(periodicConfig.last_sent_at).toLocaleString()}</span
+                >${new Date(loopConfig.last_sent_at).toLocaleString()}</span
               >
             </p>`}
-            ${periodicConfig.next_scheduled_at &&
+            ${loopConfig.next_scheduled_at &&
             html`<p
               class="mt-1 flex items-baseline gap-2 text-xs text-mitto-text-500"
             >
               <strong>Next run:</strong>
               <span
                 >${new Date(
-                  periodicConfig.next_scheduled_at,
+                  loopConfig.next_scheduled_at,
                 ).toLocaleString()}</span
               >
             </p>`}
             <p class="mt-1 text-xs text-mitto-text-500">
-              ${(periodicConfig.max_iterations ?? 0) > 0
-                ? `Run ${periodicConfig.iteration_count ?? 0} of ${periodicConfig.max_iterations}`
-                : `${periodicConfig.iteration_count ?? 0} run${(periodicConfig.iteration_count ?? 0) !== 1 ? "s" : ""} · unlimited`}
+              ${(loopConfig.max_iterations ?? 0) > 0
+                ? `Run ${loopConfig.iteration_count ?? 0} of ${loopConfig.max_iterations}`
+                : `${loopConfig.iteration_count ?? 0} run${(loopConfig.iteration_count ?? 0) !== 1 ? "s" : ""} · unlimited`}
             </p>
           </div>
         `}
@@ -1634,15 +1634,15 @@ export function SessionPanel({
           `,
         )}
 
-        <!-- Callback URL Section (only for periodic conversations) -->
-        ${periodicConfig &&
+        <!-- Callback URL Section (only for loop conversations) -->
+        ${loopConfig &&
         html`
           <div>
             <label
               class="block text-sm font-medium text-mitto-text-secondary mb-2"
               >Callback URL</label
             >
-            ${periodicConfig.enabled
+            ${loopConfig.enabled
               ? html`
                   ${callbackConfig?.callback_url
                     ? html`
@@ -1675,7 +1675,7 @@ export function SessionPanel({
                         </div>
                       `
                     : html`
-                        <${Tooltip} tip="Generate a callback URL for triggering this periodic conversation externally" placement="top">
+                        <${Tooltip} tip="Generate a callback URL for triggering this loop conversation externally" placement="top">
                           <button
                             onClick=${handleEnableCallback}
                             class="btn btn-xs btn-soft"
@@ -1689,7 +1689,7 @@ export function SessionPanel({
                   ${callbackConfig?.callback_url
                     ? html`
                         <p class="text-xs text-mitto-text-muted mb-1.5 italic">
-                          Preserved but inactive while periodic is disabled
+                          Preserved but inactive while loop is disabled
                         </p>
                         <div class="flex items-center gap-1.5">
                           <button

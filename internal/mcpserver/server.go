@@ -67,7 +67,7 @@ type Server struct {
 	config         *config.Config
 	promptsCache   *config.PromptsCache
 	sessionManager SessionManager
-	periodicRunner PeriodicRunner // Optional — for triggering periodic runs via MCP
+	loopRunner     LoopRunner // Optional — for triggering loop runs via MCP
 	running        bool
 	shutdown       bool
 
@@ -163,8 +163,8 @@ type SessionManager interface {
 	GetWorkspaceByUUID(uuid string) *config.WorkspaceSettings
 	// BroadcastSessionRenamed broadcasts a session_renamed event to all connected clients.
 	BroadcastSessionRenamed(sessionID string, newName string)
-	// BroadcastPeriodicUpdated broadcasts a periodic_updated event to all connected clients.
-	BroadcastPeriodicUpdated(sessionID string, periodic *session.PeriodicPrompt)
+	// BroadcastLoopUpdated broadcasts a loop_updated event to all connected clients.
+	BroadcastLoopUpdated(sessionID string, loop *session.LoopPrompt)
 	// GetUserDataSchema returns the user data schema for a workspace.
 	GetUserDataSchema(workingDir string) *config.UserDataSchema
 	// GetWorkspacePrompts returns prompts defined in the workspace's .mittorc file.
@@ -179,11 +179,11 @@ type SessionManager interface {
 	InvalidateWorkspaceRC(workingDir string)
 }
 
-// PeriodicRunner interface for triggering immediate periodic prompt delivery.
-type PeriodicRunner interface {
+// LoopRunner interface for triggering immediate loop prompt delivery.
+type LoopRunner interface {
 	TriggerNow(sessionID string, resetTimer bool) error
 	// BootstrapOnCompletion delivers the very first run of a fresh onCompletion
-	// periodic conversation (IterationCount==0, LastSentAt==nil). No-op otherwise.
+	// loop conversation (IterationCount==0, LastSentAt==nil). No-op otherwise.
 	BootstrapOnCompletion(sessionID string)
 }
 
@@ -207,11 +207,11 @@ type BackgroundSession interface {
 	WaitForResponseComplete(timeout time.Duration) bool
 	// TriggerTitleGeneration triggers async title generation if the session has no title yet.
 	// Used by MCP tools and API handlers to generate titles for sessions that received
-	// prompts via paths that don't normally trigger title generation (e.g., periodic config).
+	// prompts via paths that don't normally trigger title generation (e.g., loop config).
 	TriggerTitleGeneration(message string)
-	// TriggerTitleGenerationFromPeriodic picks the best source text (prompt text or prompt
-	// name) for title generation when a periodic config is saved.
-	TriggerTitleGenerationFromPeriodic(prompt, promptName string)
+	// TriggerTitleGenerationFromLoop picks the best source text (prompt text or prompt
+	// name) for title generation when a loop config is saved.
+	TriggerTitleGenerationFromLoop(prompt, promptName string)
 	// RequestSelfDestruct marks the conversation for deletion once the current turn
 	// completes. Used by the mitto_conversation_delete tool when an agent requests
 	// deletion of its own conversation.
@@ -219,6 +219,9 @@ type BackgroundSession interface {
 	// LastQueuedSendError returns the most recent queued-send failure message and its
 	// timestamp. Used by the parent wait loop to surface dispatch failures as status=failed.
 	LastQueuedSendError() (string, time.Time)
+	// RecordChildWait accumulates a completed blocking wait duration for
+	// mitto_children_tasks_wait calls made from this session. In-memory only.
+	RecordChildWait(d time.Duration)
 }
 
 // Config holds the configuration for the MCP server.
@@ -493,21 +496,21 @@ func (s *Server) UpdateDependencies(deps Dependencies) {
 	}
 }
 
-// periodicDelayFloor returns the configured global floor for the on-completion periodic
+// loopDelayFloor returns the configured global floor for the on-completion loop
 // delay. Falls back to the package default when no config is available.
-func (s *Server) periodicDelayFloor() int {
+func (s *Server) loopDelayFloor() int {
 	if s.config != nil {
-		return s.config.Conversations.GetMinPeriodicCompletionDelaySeconds()
+		return s.config.Conversations.GetMinLoopCompletionDelaySeconds()
 	}
-	return config.DefaultMinPeriodicCompletionDelaySeconds
+	return config.DefaultMinLoopCompletionDelaySeconds
 }
 
-// SetPeriodicRunner sets the periodic runner for triggering periodic runs via MCP tools.
-// It may be called after NewServer since the periodic runner is created after the MCP server.
-func (s *Server) SetPeriodicRunner(runner PeriodicRunner) {
+// SetLoopRunner sets the loop runner for triggering loop runs via MCP tools.
+// It may be called after NewServer since the loop runner is created after the MCP server.
+func (s *Server) SetLoopRunner(runner LoopRunner) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.periodicRunner = runner
+	s.loopRunner = runner
 }
 
 // RegisterSession registers a session with the MCP server.
@@ -932,9 +935,9 @@ func (s *Server) buildConversationDetails(meta session.Metadata, sessionFolder s
 			details.IsPrompting = lockInfo.Status == session.LockStatusProcessing
 		}
 
-		// Check if conversation has an active periodic prompt
-		if p, err := store.Periodic(meta.SessionID).Get(); err == nil && p != nil {
-			details.IsPeriodic = p.Enabled
+		// Check if conversation has an active loop prompt
+		if p, err := store.Loop(meta.SessionID).Get(); err == nil && p != nil {
+			details.IsLoop = p.Enabled
 		}
 
 		// Load message queue
@@ -1178,16 +1181,16 @@ func (s *Server) registerSessionScopedTools(mcpSrv *mcp.Server) {
 			"Requires 'initial_prompt' or 'prompt_name' to be set. " +
 			"Optionally specify a 'workspace' UUID to create the conversation in a different workspace (requires user confirmation). " +
 			"Optionally provide 'beads_issue' to link the new conversation to a beads issue ID (e.g. 'mitto-123'). " +
-			"Optionally configure the conversation as periodic by providing 'periodic_prompt', 'periodic_frequency_value', and 'periodic_frequency_unit'. " +
-			"This is equivalent to configuring periodic via 'mitto_conversation_update' after creation, but done in one step. " +
-			"For periodic with days, optionally specify 'periodic_frequency_at' (HH:MM in UTC). " +
-			"Set 'periodic_enabled' to false to create the periodic configuration in a paused state. " +
-			"Set 'periodic_fresh_context' to true to start each run with a clean agent context (no history injection, new ACP session). " +
-			"Set 'periodic_max_iterations' to limit the number of scheduled runs (0 = unlimited). " +
-			"Set 'periodic_trigger' to 'onCompletion' to fire the next run after the agent stops responding (event-driven), or 'onTasks' to fire when beads/tasks in the workspace change (event-driven), instead of on a fixed 'schedule'; neither onCompletion nor onTasks requires a frequency. " +
-			"For 'onCompletion', set 'periodic_completion_delay_seconds' to the wait after the agent stops (clamped to the global floor). " +
-			"For 'onTasks', optionally set 'periodic_condition' to a CEL expression gating which task changes fire the run (empty = fire on ANY beads/task change); 'periodic_condition_preset' records an optional UI preset id compiled into the condition. " +
-			"Set 'periodic_max_duration_seconds' to auto-stop the conversation after a wall-clock cap since iterating started (0 = unlimited). " +
+			"Optionally configure the conversation as a loop by providing 'loop_prompt', 'loop_frequency_value', and 'loop_frequency_unit'. " +
+			"This is equivalent to configuring the loop via 'mitto_conversation_update' after creation, but done in one step. " +
+			"For a daily loop, optionally specify 'loop_frequency_at' (HH:MM in UTC). " +
+			"Set 'loop_enabled' to false to create the loop configuration in a paused state. " +
+			"Set 'loop_fresh_context' to true to start each run with a clean agent context (no history injection, new ACP session). " +
+			"Set 'loop_max_iterations' to limit the number of scheduled runs (0 = unlimited). " +
+			"Set 'loop_trigger' to 'onCompletion' to fire the next run after the agent stops responding (event-driven), or 'onTasks' to fire when beads/tasks in the workspace change (event-driven), instead of on a fixed 'schedule'; neither onCompletion nor onTasks requires a frequency. " +
+			"For 'onCompletion', set 'loop_completion_delay_seconds' to the wait after the agent stops (clamped to the global floor). " +
+			"For 'onTasks', optionally set 'loop_condition' to a CEL expression gating which task changes fire the run (empty = fire on ANY beads/task change); 'loop_condition_preset' records an optional UI preset id compiled into the condition. " +
+			"Set 'loop_max_duration_seconds' to auto-stop the conversation after a wall-clock cap since iterating started (0 = unlimited). " +
 			"Cannot be used together with 'acp_server'. " +
 			"Requires 'Can start conversation' flag to be enabled in Advanced Settings (disabled by default for security). " +
 			"Note: Conversations created by this tool cannot spawn further conversations (to prevent infinite recursion). " +
@@ -1206,17 +1209,17 @@ func (s *Server) registerSessionScopedTools(mcpSrv *mcp.Server) {
 			selfIDNote,
 	}, s.handleGetConversation)
 
-	// mitto_conversation_run_periodic_now - Trigger immediate periodic run
+	// mitto_conversation_run_loop_now - Trigger immediate loop run
 	mcp.AddTool(mcpSrv, &mcp.Tool{
-		Name: "mitto_conversation_run_periodic_now",
-		Description: "Trigger an immediate run of a periodic conversation's configured prompt, bypassing the normal schedule. " +
-			"The conversation must have periodic prompts configured and enabled. " +
+		Name: "mitto_conversation_run_loop_now",
+		Description: "Trigger an immediate run of a loop conversation's configured prompt, bypassing the normal schedule. " +
+			"The conversation must have loop prompts configured and enabled. " +
 			"Use 'reset_timer' to control whether the countdown for the next scheduled run resets (default: true). " +
 			"When reset_timer is true, the next run is scheduled from now (as if a normal run just occurred). " +
 			"When reset_timer is false, the existing next-run schedule is preserved unchanged. " +
 			"Use 'mitto_conversation_list' first to find available conversation IDs. " +
 			selfIDNote,
-	}, s.handleRunPeriodicNow)
+	}, s.handleRunLoopNow)
 
 	// mitto_conversation_archive - Archive or unarchive a conversation
 	mcp.AddTool(mcpSrv, &mcp.Tool{
@@ -1245,23 +1248,23 @@ func (s *Server) registerSessionScopedTools(mcpSrv *mcp.Server) {
 		Name: "mitto_conversation_update",
 		Description: "Update properties of a conversation. " +
 			"Supports partial updates — only specified fields are changed, others are left untouched. " +
-			"To update YOUR OWN conversation (e.g. a periodic conversation disabling its own periodicity), " +
+			"To update YOUR OWN conversation (e.g. a loop conversation disabling its own loop), " +
 			"pass \"self\" (or your own conversation ID) as conversation_id. " +
 			"Updatable properties: 'name' (conversation title), 'user_data' (workspace-defined metadata attributes), " +
 			"'beads_issue' (linked beads issue ID, e.g. \"mitto-123\"; empty string clears it), " +
-			"'periodic' (periodic prompt configuration). " +
+			"'loop' (loop prompt configuration). " +
 			"User data is validated against the workspace's schema defined in .mittorc. " +
 			"Set 'user_data_merge' to true (default) to merge with existing attributes, or false to replace all. " +
-			"Periodic configuration: provide 'periodic_prompt', 'periodic_frequency_value', and 'periodic_frequency_unit' " +
-			"to configure or update periodic prompts. Use 'periodic_frequency_at' (HH:MM UTC) for daily schedules. " +
-			"Set 'periodic_enabled' to false to pause periodic execution without deleting the configuration. " +
-			"To disable periodic entirely, set 'periodic_enabled' to false. " +
-			"Set 'periodic_fresh_context' to true to start each run with a clean agent context (no history injection, new ACP session). " +
-			"Set 'periodic_max_iterations' to limit the number of scheduled runs (0 = unlimited). " +
-			"Set 'periodic_trigger' to 'onCompletion' (event-driven: fire after the agent stops), 'onTasks' (event-driven: fire when beads/tasks in the workspace change), or 'schedule' (frequency-based, default); neither onCompletion nor onTasks requires a frequency. " +
-			"For 'onCompletion', set 'periodic_completion_delay_seconds' to the wait after the agent stops (clamped to the global floor). " +
-			"For 'onTasks', optionally set 'periodic_condition' to a CEL expression gating which task changes fire the run (empty = fire on ANY beads/task change); 'periodic_condition_preset' records an optional UI preset id compiled into the condition. " +
-			"Set 'periodic_max_duration_seconds' to auto-stop the conversation after a wall-clock cap since iterating started (0 = unlimited). " +
+			"Loop configuration: provide 'loop_prompt', 'loop_frequency_value', and 'loop_frequency_unit' " +
+			"to configure or update loop prompts. Use 'loop_frequency_at' (HH:MM UTC) for daily schedules. " +
+			"Set 'loop_enabled' to false to pause loop execution without deleting the configuration. " +
+			"To disable loop entirely, set 'loop_enabled' to false. " +
+			"Set 'loop_fresh_context' to true to start each run with a clean agent context (no history injection, new ACP session). " +
+			"Set 'loop_max_iterations' to limit the number of scheduled runs (0 = unlimited). " +
+			"Set 'loop_trigger' to 'onCompletion' (event-driven: fire after the agent stops), 'onTasks' (event-driven: fire when beads/tasks in the workspace change), or 'schedule' (frequency-based, default); neither onCompletion nor onTasks requires a frequency. " +
+			"For 'onCompletion', set 'loop_completion_delay_seconds' to the wait after the agent stops (clamped to the global floor). " +
+			"For 'onTasks', optionally set 'loop_condition' to a CEL expression gating which task changes fire the run (empty = fire on ANY beads/task change); 'loop_condition_preset' records an optional UI preset id compiled into the condition. " +
+			"Set 'loop_max_duration_seconds' to auto-stop the conversation after a wall-clock cap since iterating started (0 = unlimited). " +
 			selfIDNote,
 	}, s.handleConversationUpdate)
 
@@ -1842,9 +1845,9 @@ func (s *Server) createListConversationsHandler(sm SessionManager) mcp.ToolHandl
 				}
 			}
 
-			// Check if conversation has an active periodic prompt.
-			if p, err := store.Periodic(meta.SessionID).Get(); err == nil && p != nil {
-				info.IsPeriodic = p.Enabled
+			// Check if conversation has an active loop prompt.
+			if p, err := store.Loop(meta.SessionID).Get(); err == nil && p != nil {
+				info.IsLoop = p.Enabled
 			}
 
 			// Apply is_running filter after runtime status is resolved.
@@ -2109,8 +2112,8 @@ func (s *Server) handleSendPromptToConversation(ctx context.Context, req *mcp.Ca
 	// Get the queue for the target conversation
 	queue := store.Queue(input.ConversationID)
 
-	// Add the prompt to the queue
-	msg, err := queue.Add(input.Prompt, nil, nil, realSessionID, scheduledTime, 0, input.Arguments, input.PromptName)
+	// Add the prompt to the queue (agent origin: cross-session MCP dispatch, fail-closed on broken templates)
+	msg, err := queue.AddWithOrigin(input.Prompt, nil, nil, realSessionID, scheduledTime, 0, input.Arguments, input.PromptName, session.QueueOriginAgent)
 	if err != nil {
 		return nil, SendPromptOutput{
 			Success: false,
@@ -2129,7 +2132,7 @@ func (s *Server) handleSendPromptToConversation(ctx context.Context, req *mcp.Ca
 		"scheduled", scheduledTime != nil)
 
 	// Try to process the queued message immediately if agent is idle.
-	// Skip for scheduled messages — the periodic runner will deliver them when due.
+	// Skip for scheduled messages — the loop runner will deliver them when due.
 	if scheduledTime == nil {
 		if s.sessionManager != nil {
 			bs := s.sessionManager.GetSession(input.ConversationID)
@@ -2721,33 +2724,33 @@ type ConversationStartInput struct {
 	ACPServer          string            `json:"acp_server,omitempty"`           // Optional ACP server name (defaults to parent's server)
 	BeadsIssue         string            `json:"beads_issue,omitempty"`          // Optional: link the new conversation to a beads issue ID (e.g. "mitto-123")
 	Workspace          string            `json:"workspace,omitempty"`            // Optional workspace UUID for cross-workspace operations
-	// Periodic configuration (optional) - creates the conversation as periodic
-	PeriodicPrompt         string `json:"periodic_prompt,omitempty"`          // The prompt to send periodically
-	PeriodicFrequencyValue int    `json:"periodic_frequency_value,omitempty"` // Number of units between sends
-	PeriodicFrequencyUnit  string `json:"periodic_frequency_unit,omitempty"`  // Time unit: "minutes", "hours", or "days"
-	PeriodicFrequencyAt    string `json:"periodic_frequency_at,omitempty"`    // Time of day HH:MM (UTC), only for "days"
-	PeriodicEnabled        *bool  `json:"periodic_enabled,omitempty"`         // Whether periodic is active (defaults to true)
-	PeriodicFreshContext   *bool  `json:"periodic_fresh_context,omitempty"`   // Start each run with a fresh agent context (default false)
-	PeriodicMaxIterations  *int   `json:"periodic_max_iterations,omitempty"`  // Maximum number of scheduled runs (0 = unlimited)
+	// Loop configuration (optional) - creates the conversation as a loop
+	LoopPrompt         string `json:"loop_prompt,omitempty"`          // The prompt to send in the loop
+	LoopFrequencyValue int    `json:"loop_frequency_value,omitempty"` // Number of units between sends
+	LoopFrequencyUnit  string `json:"loop_frequency_unit,omitempty"`  // Time unit: "minutes", "hours", or "days"
+	LoopFrequencyAt    string `json:"loop_frequency_at,omitempty"`    // Time of day HH:MM (UTC), only for "days"
+	LoopEnabled        *bool  `json:"loop_enabled,omitempty"`         // Whether loop is active (defaults to true)
+	LoopFreshContext   *bool  `json:"loop_fresh_context,omitempty"`   // Start each run with a fresh agent context (default false)
+	LoopMaxIterations  *int   `json:"loop_max_iterations,omitempty"`  // Maximum number of scheduled runs (0 = unlimited)
 	// On-completion / on-tasks trigger configuration (optional)
-	PeriodicTrigger                string `json:"periodic_trigger,omitempty"`                  // "schedule" (default), "onCompletion", or "onTasks"
-	PeriodicCompletionDelaySeconds *int   `json:"periodic_completion_delay_seconds,omitempty"` // Wait (s) after agent stops, onCompletion only; clamped to floor
-	PeriodicMaxDurationSeconds     *int   `json:"periodic_max_duration_seconds,omitempty"`     // Wall-clock cap (s) since iterating started (0 = unlimited)
-	// PeriodicCondition is a CEL expression gating onTasks firing (only meaningful when
-	// periodic_trigger is "onTasks"). Empty means fire on ANY beads/task change.
-	PeriodicCondition string `json:"periodic_condition,omitempty"`
-	// PeriodicConditionPreset is an optional UI preset id that was compiled into periodic_condition.
-	PeriodicConditionPreset string `json:"periodic_condition_preset,omitempty"`
+	LoopTrigger                string `json:"loop_trigger,omitempty"`                  // "schedule" (default), "onCompletion", or "onTasks"
+	LoopCompletionDelaySeconds *int   `json:"loop_completion_delay_seconds,omitempty"` // Wait (s) after agent stops, onCompletion only; clamped to floor
+	LoopMaxDurationSeconds     *int   `json:"loop_max_duration_seconds,omitempty"`     // Wall-clock cap (s) since iterating started (0 = unlimited)
+	// LoopCondition is a CEL expression gating onTasks firing (only meaningful when
+	// loop_trigger is "onTasks"). Empty means fire on ANY beads/task change.
+	LoopCondition string `json:"loop_condition,omitempty"`
+	// LoopConditionPreset is an optional UI preset id that was compiled into loop_condition.
+	LoopConditionPreset string `json:"loop_condition_preset,omitempty"`
 }
 
 // ConversationStartOutput is the output for mitto_conversation_new tool.
 // Embeds ConversationDetails for the newly created conversation.
 type ConversationStartOutput struct {
 	ConversationDetails        // Embedded conversation details
-	QueuePosition       int    `json:"queue_position,omitempty"`      // Queue position if initial prompt was provided
-	PeriodicConfigured  bool   `json:"periodic_configured,omitempty"` // Whether periodic was configured
-	PeriodicNextRun     string `json:"periodic_next_run,omitempty"`   // Next scheduled run (RFC3339)
-	Reused              bool   `json:"reused,omitempty"`              // True when routed to an existing singleton conversation instead of creating a new one
+	QueuePosition       int    `json:"queue_position,omitempty"`  // Queue position if initial prompt was provided
+	LoopConfigured      bool   `json:"loop_configured,omitempty"` // Whether loop was configured
+	LoopNextRun         string `json:"loop_next_run,omitempty"`   // Next scheduled run (RFC3339)
+	Reused              bool   `json:"reused,omitempty"`          // True when routed to an existing singleton conversation instead of creating a new one
 	Error               string `json:"error,omitempty"`
 }
 
@@ -3059,30 +3062,30 @@ func (s *Server) handleConversationStart(ctx context.Context, req *mcp.CallToolR
 		)
 	}
 
-	// If periodic configuration provided, set it up
-	var periodicConfigured bool
-	var periodicNextRun string
-	if input.PeriodicPrompt != "" {
+	// If loop configuration provided, set it up
+	var loopConfigured bool
+	var loopNextRun string
+	if input.LoopPrompt != "" {
 		// Resolve the trigger (default schedule). onCompletion and onTasks are
 		// event-driven and do not require a frequency.
-		trigger := session.PeriodicTrigger(input.PeriodicTrigger)
+		trigger := session.LoopTrigger(input.LoopTrigger)
 		switch trigger {
 		case "", session.TriggerSchedule, session.TriggerOnCompletion, session.TriggerOnTasks:
 			// valid
 		default:
-			return nil, ConversationStartOutput{}, fmt.Errorf("periodic_trigger must be 'schedule', 'onCompletion', or 'onTasks'")
+			return nil, ConversationStartOutput{}, fmt.Errorf("loop_trigger must be 'schedule', 'onCompletion', or 'onTasks'")
 		}
 		skipFrequency := trigger == session.TriggerOnCompletion || trigger == session.TriggerOnTasks
 
 		var freq session.Frequency
 		if !skipFrequency {
 			// Schedule trigger: frequency is required.
-			if input.PeriodicFrequencyValue < 1 {
-				return nil, ConversationStartOutput{}, fmt.Errorf("periodic_frequency_value must be >= 1 when periodic_prompt is provided")
+			if input.LoopFrequencyValue < 1 {
+				return nil, ConversationStartOutput{}, fmt.Errorf("loop_frequency_value must be >= 1 when loop_prompt is provided")
 			}
 
 			var freqUnit session.FrequencyUnit
-			switch input.PeriodicFrequencyUnit {
+			switch input.LoopFrequencyUnit {
 			case "minutes":
 				freqUnit = session.FrequencyMinutes
 			case "hours":
@@ -3090,46 +3093,46 @@ func (s *Server) handleConversationStart(ctx context.Context, req *mcp.CallToolR
 			case "days":
 				freqUnit = session.FrequencyDays
 			default:
-				return nil, ConversationStartOutput{}, fmt.Errorf("periodic_frequency_unit must be 'minutes', 'hours', or 'days'")
+				return nil, ConversationStartOutput{}, fmt.Errorf("loop_frequency_unit must be 'minutes', 'hours', or 'days'")
 			}
 
 			freq = session.Frequency{
-				Value: input.PeriodicFrequencyValue,
+				Value: input.LoopFrequencyValue,
 				Unit:  freqUnit,
-				At:    input.PeriodicFrequencyAt,
+				At:    input.LoopFrequencyAt,
 			}
 			if err := freq.Validate(); err != nil {
-				return nil, ConversationStartOutput{}, fmt.Errorf("invalid periodic frequency: %v", err)
+				return nil, ConversationStartOutput{}, fmt.Errorf("invalid loop frequency: %v", err)
 			}
 		}
 
 		enabled := true
-		if input.PeriodicEnabled != nil {
-			enabled = *input.PeriodicEnabled
+		if input.LoopEnabled != nil {
+			enabled = *input.LoopEnabled
 		}
 
 		freshContext := false
-		if input.PeriodicFreshContext != nil {
-			freshContext = *input.PeriodicFreshContext
+		if input.LoopFreshContext != nil {
+			freshContext = *input.LoopFreshContext
 		}
 
 		maxIterations := 0
-		if input.PeriodicMaxIterations != nil {
-			maxIterations = *input.PeriodicMaxIterations
+		if input.LoopMaxIterations != nil {
+			maxIterations = *input.LoopMaxIterations
 		}
 
 		delaySeconds := 0
-		if input.PeriodicCompletionDelaySeconds != nil {
-			delaySeconds = *input.PeriodicCompletionDelaySeconds
+		if input.LoopCompletionDelaySeconds != nil {
+			delaySeconds = *input.LoopCompletionDelaySeconds
 		}
 
 		maxDurationSeconds := 0
-		if input.PeriodicMaxDurationSeconds != nil {
-			maxDurationSeconds = *input.PeriodicMaxDurationSeconds
+		if input.LoopMaxDurationSeconds != nil {
+			maxDurationSeconds = *input.LoopMaxDurationSeconds
 		}
 
-		periodic := &session.PeriodicPrompt{
-			Prompt:             input.PeriodicPrompt,
+		loop := &session.LoopPrompt{
+			Prompt:             input.LoopPrompt,
 			Frequency:          freq,
 			Enabled:            enabled,
 			FreshContext:       freshContext,
@@ -3137,34 +3140,34 @@ func (s *Server) handleConversationStart(ctx context.Context, req *mcp.CallToolR
 			Trigger:            trigger,
 			DelaySeconds:       delaySeconds,
 			MaxDurationSeconds: maxDurationSeconds,
-			Condition:          input.PeriodicCondition,
-			ConditionPreset:    input.PeriodicConditionPreset,
+			Condition:          input.LoopCondition,
+			ConditionPreset:    input.LoopConditionPreset,
 		}
 		// Clamp the on-completion delay to the global floor (no-op for schedule).
-		periodic.ClampDelay(s.periodicDelayFloor())
+		loop.ClampDelay(s.loopDelayFloor())
 
-		periodicStore := store.Periodic(newSessionID)
-		if err := periodicStore.Set(periodic); err != nil {
-			s.logger.Error("Failed to set periodic on new conversation",
+		loopStore := store.Loop(newSessionID)
+		if err := loopStore.Set(loop); err != nil {
+			s.logger.Error("Failed to set loop on new conversation",
 				"session_id", newSessionID,
 				"error", err)
 			// Don't fail the whole creation - just log the error
 		} else {
-			periodicConfigured = true
-			updated, err := periodicStore.Get()
+			loopConfigured = true
+			updated, err := loopStore.Get()
 			if err == nil && updated.NextScheduledAt != nil {
-				periodicNextRun = updated.NextScheduledAt.Format("2006-01-02T15:04:05Z07:00")
+				loopNextRun = updated.NextScheduledAt.Format("2006-01-02T15:04:05Z07:00")
 			}
-			s.logger.Info("Periodic prompt configured on new conversation",
+			s.logger.Info("Loop prompt configured on new conversation",
 				"session_id", newSessionID,
-				"periodic_prompt", input.PeriodicPrompt,
-				"frequency_value", input.PeriodicFrequencyValue,
-				"frequency_unit", input.PeriodicFrequencyUnit,
+				"loop_prompt", input.LoopPrompt,
+				"frequency_value", input.LoopFrequencyValue,
+				"frequency_unit", input.LoopFrequencyUnit,
 				"enabled", enabled)
 
 			// Kick off the very first run for a fresh onCompletion conversation.
 			s.mu.RLock()
-			runner := s.periodicRunner
+			runner := s.loopRunner
 			s.mu.RUnlock()
 			if runner != nil {
 				runner.BootstrapOnCompletion(newSessionID)
@@ -3172,18 +3175,18 @@ func (s *Server) handleConversationStart(ctx context.Context, req *mcp.CallToolR
 		}
 	}
 
-	// If no explicit title was provided and periodic was configured, trigger title
-	// generation from the periodic prompt text so the conversation has a name right away.
-	// ConversationStartInput has no PeriodicPromptName field, so prompt name is passed as "".
-	if input.Title == "" && periodicConfigured && bs != nil {
-		bs.TriggerTitleGenerationFromPeriodic(input.PeriodicPrompt, "")
+	// If no explicit title was provided and loop was configured, trigger title
+	// generation from the loop prompt text so the conversation has a name right away.
+	// ConversationStartInput has no LoopPromptName field, so prompt name is passed as "".
+	if input.Title == "" && loopConfigured && bs != nil {
+		bs.TriggerTitleGenerationFromLoop(input.LoopPrompt, "")
 	}
 
 	// Build unified conversation details
 	output := ConversationStartOutput{
 		ConversationDetails: s.buildConversationDetails(createdMeta, store.SessionDir(newSessionID)),
-		PeriodicConfigured:  periodicConfigured,
-		PeriodicNextRun:     periodicNextRun,
+		LoopConfigured:      loopConfigured,
+		LoopNextRun:         loopNextRun,
 	}
 	// Update runtime status to reflect the running ACP session
 	if bs != nil {
@@ -3217,7 +3220,7 @@ func (s *Server) handleConversationStart(ctx context.Context, req *mcp.CallToolR
 		}
 
 		queue := store.Queue(newSessionID)
-		_, err := queue.Add(initialPromptText, nil, nil, realSessionID, scheduledTime, 0, input.Arguments, "")
+		_, err := queue.AddWithOrigin(initialPromptText, nil, nil, realSessionID, scheduledTime, 0, input.Arguments, "", session.QueueOriginAgent)
 		if err != nil {
 			s.logger.Warn("Failed to queue initial prompt",
 				"session_id", newSessionID,
@@ -3271,7 +3274,7 @@ func (s *Server) reuseSingletonConversation(store *session.Store, existingID, in
 		return output, nil
 	}
 
-	if _, addErr := queue.Add(initialPromptText, nil, nil, clientID, nil, 0, arguments, ""); addErr != nil {
+	if _, addErr := queue.AddWithOrigin(initialPromptText, nil, nil, clientID, nil, 0, arguments, "", session.QueueOriginAgent); addErr != nil {
 		s.logger.Warn("Failed to re-seed reused singleton conversation",
 			"session_id", existingID, "error", addErr)
 		return output, nil
@@ -3381,35 +3384,35 @@ func (s *Server) handleGetConversation(ctx context.Context, req *mcp.CallToolReq
 	return nil, output, nil
 }
 
-// RunPeriodicNowInput is the input for mitto_conversation_run_periodic_now tool.
-type RunPeriodicNowInput struct {
+// RunLoopNowInput is the input for mitto_conversation_run_loop_now tool.
+type RunLoopNowInput struct {
 	SelfID         string `json:"self_id"`               // YOUR session ID (the caller)
 	ConversationID string `json:"conversation_id"`       // Target conversation to trigger
 	ResetTimer     *bool  `json:"reset_timer,omitempty"` // Whether to reset the countdown timer (default: true)
 }
 
-// RunPeriodicNowOutput is the output for mitto_conversation_run_periodic_now tool.
-type RunPeriodicNowOutput struct {
+// RunLoopNowOutput is the output for mitto_conversation_run_loop_now tool.
+type RunLoopNowOutput struct {
 	Success bool   `json:"success"`
 	Message string `json:"message,omitempty"`
 	Error   string `json:"error,omitempty"`
 }
 
-func (s *Server) handleRunPeriodicNow(ctx context.Context, req *mcp.CallToolRequest, input RunPeriodicNowInput) (*mcp.CallToolResult, RunPeriodicNowOutput, error) {
+func (s *Server) handleRunLoopNow(ctx context.Context, req *mcp.CallToolRequest, input RunLoopNowInput) (*mcp.CallToolResult, RunLoopNowOutput, error) {
 	// Validate self_id
 	if input.SelfID == "" {
-		return nil, RunPeriodicNowOutput{Error: "self_id is required"}, nil
+		return nil, RunLoopNowOutput{Error: "self_id is required"}, nil
 	}
 
 	// Validate conversation_id
 	if input.ConversationID == "" {
-		return nil, RunPeriodicNowOutput{Error: "conversation_id is required"}, nil
+		return nil, RunLoopNowOutput{Error: "conversation_id is required"}, nil
 	}
 
 	// Resolve the self_id to a real session ID
 	realSessionID := s.resolveSelfIDWithMCP(input.SelfID, req)
 	if realSessionID == "" {
-		return nil, RunPeriodicNowOutput{
+		return nil, RunLoopNowOutput{
 			Error: fmt.Sprintf("session not found: the self_id '%s' could not be resolved", input.SelfID),
 		}, nil
 	}
@@ -3417,16 +3420,16 @@ func (s *Server) handleRunPeriodicNow(ctx context.Context, req *mcp.CallToolRequ
 	// Check if source session is registered (must be running to use this tool)
 	reg := s.getSession(realSessionID)
 	if reg == nil {
-		return nil, RunPeriodicNowOutput{Error: fmt.Sprintf("session not found or not running: %s", realSessionID)}, nil
+		return nil, RunLoopNowOutput{Error: fmt.Sprintf("session not found or not running: %s", realSessionID)}, nil
 	}
 
-	// Check if periodic runner is available
+	// Check if loop runner is available
 	s.mu.RLock()
-	runner := s.periodicRunner
+	runner := s.loopRunner
 	s.mu.RUnlock()
 
 	if runner == nil {
-		return nil, RunPeriodicNowOutput{Error: "periodic runner not available"}, nil
+		return nil, RunLoopNowOutput{Error: "loop runner not available"}, nil
 	}
 
 	// Determine reset_timer (default: true — same as normal scheduled runs)
@@ -3437,22 +3440,22 @@ func (s *Server) handleRunPeriodicNow(ctx context.Context, req *mcp.CallToolRequ
 
 	// Trigger immediate delivery
 	if err := runner.TriggerNow(input.ConversationID, resetTimer); err != nil {
-		return nil, RunPeriodicNowOutput{Error: fmt.Sprintf("failed to trigger periodic run: %v", err)}, nil
+		return nil, RunLoopNowOutput{Error: fmt.Sprintf("failed to trigger loop run: %v", err)}, nil
 	}
 
-	msg := "Periodic prompt triggered successfully"
+	msg := "Loop prompt triggered successfully"
 	if !resetTimer {
 		msg += " (countdown timer preserved)"
 	} else {
 		msg += " (countdown timer reset)"
 	}
 
-	s.logger.Info("Periodic prompt triggered via MCP",
+	s.logger.Info("Loop prompt triggered via MCP",
 		"source_session", realSessionID,
 		"target_conversation", input.ConversationID,
 		"reset_timer", resetTimer)
 
-	return nil, RunPeriodicNowOutput{Success: true, Message: msg}, nil
+	return nil, RunLoopNowOutput{Success: true, Message: msg}, nil
 }
 
 // ArchiveConversationInput is the input for mitto_conversation_archive tool.
@@ -3813,8 +3816,8 @@ func (s *Server) handleConversationUpdate(ctx context.Context, req *mcp.CallTool
 	}
 
 	// Self-targeting: agents may pass "self" to update their OWN conversation
-	// (e.g. a periodic conversation disabling its own periodicity). Unlike delete,
-	// an update only touches metadata/periodic config and is safe to perform
+	// (e.g. a loop conversation disabling its own loop). Unlike delete,
+	// an update only touches metadata/loop config and is safe to perform
 	// synchronously, so we simply resolve the alias to the caller's real ID. This
 	// keeps the tool consistent with mitto_conversation_delete, which also accepts "self".
 	if input.ConversationID == "self" {
@@ -3949,22 +3952,22 @@ func (s *Server) handleConversationUpdate(ctx context.Context, req *mcp.CallTool
 			"merge", merge)
 	}
 
-	// Update periodic configuration if any periodic fields provided
-	if input.PeriodicPrompt != nil || input.PeriodicFrequencyValue != nil || input.PeriodicFrequencyUnit != nil || input.PeriodicEnabled != nil || input.PeriodicFreshContext != nil || input.PeriodicMaxIterations != nil ||
-		input.PeriodicTrigger != nil || input.PeriodicCompletionDelaySeconds != nil || input.PeriodicMaxDurationSeconds != nil ||
-		input.PeriodicCondition != nil || input.PeriodicConditionPreset != nil {
-		periodicStore := store.Periodic(input.ConversationID)
+	// Update loop configuration if any loop fields provided
+	if input.LoopPrompt != nil || input.LoopFrequencyValue != nil || input.LoopFrequencyUnit != nil || input.LoopEnabled != nil || input.LoopFreshContext != nil || input.LoopMaxIterations != nil ||
+		input.LoopTrigger != nil || input.LoopCompletionDelaySeconds != nil || input.LoopMaxDurationSeconds != nil ||
+		input.LoopCondition != nil || input.LoopConditionPreset != nil {
+		loopStore := store.Loop(input.ConversationID)
 
-		// Check if this is an update to existing periodic config or a new setup
-		existing, existErr := periodicStore.Get()
+		// Check if this is an update to existing loop config or a new setup
+		existing, existErr := loopStore.Get()
 		isNew := existErr != nil || existing == nil
 
 		if isNew {
 			// Resolve the trigger (default schedule). onCompletion and onTasks are
 			// event-driven and do not require a frequency.
 			trigger := session.TriggerSchedule
-			if input.PeriodicTrigger != nil {
-				trigger = session.PeriodicTrigger(*input.PeriodicTrigger)
+			if input.LoopTrigger != nil {
+				trigger = session.LoopTrigger(*input.LoopTrigger)
 			}
 			switch trigger {
 			case "", session.TriggerSchedule, session.TriggerOnCompletion, session.TriggerOnTasks:
@@ -3972,37 +3975,37 @@ func (s *Server) handleConversationUpdate(ctx context.Context, req *mcp.CallTool
 			default:
 				return nil, ConversationUpdateOutput{
 					Success: false,
-					Error:   "periodic_trigger must be 'schedule', 'onCompletion', or 'onTasks'",
+					Error:   "loop_trigger must be 'schedule', 'onCompletion', or 'onTasks'",
 				}, nil
 			}
 			skipFrequency := trigger == session.TriggerOnCompletion || trigger == session.TriggerOnTasks
 
-			// Creating new periodic config — require the prompt always.
-			if input.PeriodicPrompt == nil || *input.PeriodicPrompt == "" {
+			// Creating new loop config — require the prompt always.
+			if input.LoopPrompt == nil || *input.LoopPrompt == "" {
 				return nil, ConversationUpdateOutput{
 					Success: false,
-					Error:   "periodic_prompt is required when creating new periodic configuration",
+					Error:   "loop_prompt is required when creating new loop configuration",
 				}, nil
 			}
 
 			var freq session.Frequency
 			if !skipFrequency {
 				// Schedule trigger: frequency is mandatory.
-				if input.PeriodicFrequencyValue == nil || *input.PeriodicFrequencyValue < 1 {
+				if input.LoopFrequencyValue == nil || *input.LoopFrequencyValue < 1 {
 					return nil, ConversationUpdateOutput{
 						Success: false,
-						Error:   "periodic_frequency_value (>= 1) is required when creating new periodic configuration",
+						Error:   "loop_frequency_value (>= 1) is required when creating new loop configuration",
 					}, nil
 				}
-				if input.PeriodicFrequencyUnit == nil || *input.PeriodicFrequencyUnit == "" {
+				if input.LoopFrequencyUnit == nil || *input.LoopFrequencyUnit == "" {
 					return nil, ConversationUpdateOutput{
 						Success: false,
-						Error:   "periodic_frequency_unit is required when creating new periodic configuration",
+						Error:   "loop_frequency_unit is required when creating new loop configuration",
 					}, nil
 				}
 
 				var freqUnit session.FrequencyUnit
-				switch *input.PeriodicFrequencyUnit {
+				switch *input.LoopFrequencyUnit {
 				case "minutes":
 					freqUnit = session.FrequencyMinutes
 				case "hours":
@@ -4012,52 +4015,52 @@ func (s *Server) handleConversationUpdate(ctx context.Context, req *mcp.CallTool
 				default:
 					return nil, ConversationUpdateOutput{
 						Success: false,
-						Error:   "periodic_frequency_unit must be 'minutes', 'hours', or 'days'",
+						Error:   "loop_frequency_unit must be 'minutes', 'hours', or 'days'",
 					}, nil
 				}
 
 				freq = session.Frequency{
-					Value: *input.PeriodicFrequencyValue,
+					Value: *input.LoopFrequencyValue,
 					Unit:  freqUnit,
 				}
-				if input.PeriodicFrequencyAt != nil {
-					freq.At = *input.PeriodicFrequencyAt
+				if input.LoopFrequencyAt != nil {
+					freq.At = *input.LoopFrequencyAt
 				}
 				if err := freq.Validate(); err != nil {
 					return nil, ConversationUpdateOutput{
 						Success: false,
-						Error:   fmt.Sprintf("invalid periodic frequency: %v", err),
+						Error:   fmt.Sprintf("invalid loop frequency: %v", err),
 					}, nil
 				}
 			}
 
 			enabled := true
-			if input.PeriodicEnabled != nil {
-				enabled = *input.PeriodicEnabled
+			if input.LoopEnabled != nil {
+				enabled = *input.LoopEnabled
 			}
 
 			freshContext := false
-			if input.PeriodicFreshContext != nil {
-				freshContext = *input.PeriodicFreshContext
+			if input.LoopFreshContext != nil {
+				freshContext = *input.LoopFreshContext
 			}
 
 			maxIterations := 0
-			if input.PeriodicMaxIterations != nil {
-				maxIterations = *input.PeriodicMaxIterations
+			if input.LoopMaxIterations != nil {
+				maxIterations = *input.LoopMaxIterations
 			}
 
 			delaySeconds := 0
-			if input.PeriodicCompletionDelaySeconds != nil {
-				delaySeconds = *input.PeriodicCompletionDelaySeconds
+			if input.LoopCompletionDelaySeconds != nil {
+				delaySeconds = *input.LoopCompletionDelaySeconds
 			}
 
 			maxDurationSeconds := 0
-			if input.PeriodicMaxDurationSeconds != nil {
-				maxDurationSeconds = *input.PeriodicMaxDurationSeconds
+			if input.LoopMaxDurationSeconds != nil {
+				maxDurationSeconds = *input.LoopMaxDurationSeconds
 			}
 
-			periodic := &session.PeriodicPrompt{
-				Prompt:             *input.PeriodicPrompt,
+			loop := &session.LoopPrompt{
+				Prompt:             *input.LoopPrompt,
 				Frequency:          freq,
 				Enabled:            enabled,
 				FreshContext:       freshContext,
@@ -4066,39 +4069,39 @@ func (s *Server) handleConversationUpdate(ctx context.Context, req *mcp.CallTool
 				DelaySeconds:       delaySeconds,
 				MaxDurationSeconds: maxDurationSeconds,
 			}
-			if input.PeriodicCondition != nil {
-				periodic.Condition = *input.PeriodicCondition
+			if input.LoopCondition != nil {
+				loop.Condition = *input.LoopCondition
 			}
-			if input.PeriodicConditionPreset != nil {
-				periodic.ConditionPreset = *input.PeriodicConditionPreset
+			if input.LoopConditionPreset != nil {
+				loop.ConditionPreset = *input.LoopConditionPreset
 			}
 			// Clamp the on-completion delay to the global floor (no-op for schedule).
-			periodic.ClampDelay(s.periodicDelayFloor())
+			loop.ClampDelay(s.loopDelayFloor())
 
-			if err := periodicStore.Set(periodic); err != nil {
+			if err := loopStore.Set(loop); err != nil {
 				return nil, ConversationUpdateOutput{
 					Success: false,
-					Error:   fmt.Sprintf("failed to set periodic: %v", err),
+					Error:   fmt.Sprintf("failed to set loop: %v", err),
 				}, nil
 			}
 		} else {
-			// Updating existing periodic config — use partial update
+			// Updating existing loop config — use partial update
 			var prompt *string
 			var freq *session.Frequency
 			var enabled *bool
 
-			if input.PeriodicPrompt != nil {
-				prompt = input.PeriodicPrompt
+			if input.LoopPrompt != nil {
+				prompt = input.LoopPrompt
 			}
 
-			if input.PeriodicFrequencyValue != nil || input.PeriodicFrequencyUnit != nil || input.PeriodicFrequencyAt != nil {
+			if input.LoopFrequencyValue != nil || input.LoopFrequencyUnit != nil || input.LoopFrequencyAt != nil {
 				// Build frequency from existing + overrides
 				f := existing.Frequency
-				if input.PeriodicFrequencyValue != nil {
-					f.Value = *input.PeriodicFrequencyValue
+				if input.LoopFrequencyValue != nil {
+					f.Value = *input.LoopFrequencyValue
 				}
-				if input.PeriodicFrequencyUnit != nil {
-					switch *input.PeriodicFrequencyUnit {
+				if input.LoopFrequencyUnit != nil {
+					switch *input.LoopFrequencyUnit {
 					case "minutes":
 						f.Unit = session.FrequencyMinutes
 					case "hours":
@@ -4108,32 +4111,32 @@ func (s *Server) handleConversationUpdate(ctx context.Context, req *mcp.CallTool
 					default:
 						return nil, ConversationUpdateOutput{
 							Success: false,
-							Error:   "periodic_frequency_unit must be 'minutes', 'hours', or 'days'",
+							Error:   "loop_frequency_unit must be 'minutes', 'hours', or 'days'",
 						}, nil
 					}
 				}
-				if input.PeriodicFrequencyAt != nil {
-					f.At = *input.PeriodicFrequencyAt
+				if input.LoopFrequencyAt != nil {
+					f.At = *input.LoopFrequencyAt
 				}
 				freq = &f
 			}
 
-			if input.PeriodicEnabled != nil {
-				enabled = input.PeriodicEnabled
+			if input.LoopEnabled != nil {
+				enabled = input.LoopEnabled
 			}
 
 			// On-completion fields (partial). Convert the trigger string to the typed pointer.
-			var trigger *session.PeriodicTrigger
-			if input.PeriodicTrigger != nil {
-				t := session.PeriodicTrigger(*input.PeriodicTrigger)
+			var trigger *session.LoopTrigger
+			if input.LoopTrigger != nil {
+				t := session.LoopTrigger(*input.LoopTrigger)
 				trigger = &t
 			}
-			delaySeconds := input.PeriodicCompletionDelaySeconds
+			delaySeconds := input.LoopCompletionDelaySeconds
 
 			// Clamp the on-completion delay to the global floor on write. The effective
 			// trigger is the patched value when provided, otherwise the stored one.
 			if delaySeconds != nil {
-				floor := s.periodicDelayFloor()
+				floor := s.loopDelayFloor()
 				if *delaySeconds < floor {
 					effTrigger := existing.Trigger
 					if trigger != nil {
@@ -4146,60 +4149,60 @@ func (s *Server) handleConversationUpdate(ctx context.Context, req *mcp.CallTool
 				}
 			}
 
-			if err := periodicStore.Update(prompt, nil, freq, enabled, input.PeriodicFreshContext, input.PeriodicMaxIterations, trigger, delaySeconds, input.PeriodicMaxDurationSeconds, nil, input.PeriodicCondition, input.PeriodicConditionPreset, nil); err != nil {
+			if err := loopStore.Update(prompt, nil, freq, enabled, input.LoopFreshContext, input.LoopMaxIterations, trigger, delaySeconds, input.LoopMaxDurationSeconds, nil, input.LoopCondition, input.LoopConditionPreset, nil); err != nil {
 				return nil, ConversationUpdateOutput{
 					Success: false,
-					Error:   fmt.Sprintf("failed to update periodic: %v", err),
+					Error:   fmt.Sprintf("failed to update loop: %v", err),
 				}, nil
 			}
 
-			// Agent self-disabled periodic — record it as a resumable "Paused by the agent"
+			// Agent self-disabled loop — record it as a resumable "Paused by the agent"
 			// (amber) reason so the header pill is unambiguous. Re-enabling clears it.
-			if input.PeriodicEnabled != nil && !*input.PeriodicEnabled {
-				if err := periodicStore.MarkStopped(session.StoppedReasonDisabledByAgent); err != nil {
+			if input.LoopEnabled != nil && !*input.LoopEnabled {
+				if err := loopStore.MarkStopped(session.StoppedReasonDisabledByAgent); err != nil {
 					s.logger.Warn("Failed to record disabledByAgent reason", "error", err)
 				}
 			}
 		}
 
-		updated = append(updated, "periodic")
+		updated = append(updated, "loop")
 
-		// Broadcast the periodic state change so all clients refresh live (parity with REST paths).
+		// Broadcast the loop state change so all clients refresh live (parity with REST paths).
 		if sm != nil {
-			if p, getErr := periodicStore.Get(); getErr == nil {
-				sm.BroadcastPeriodicUpdated(input.ConversationID, p)
+			if p, getErr := loopStore.Get(); getErr == nil {
+				sm.BroadcastLoopUpdated(input.ConversationID, p)
 			}
 		}
 
 		// Kick off the very first run for a fresh onCompletion conversation.
 		s.mu.RLock()
-		runner := s.periodicRunner
+		runner := s.loopRunner
 		s.mu.RUnlock()
 		if runner != nil {
 			runner.BootstrapOnCompletion(input.ConversationID)
 		}
 
-		// If the session has no title and a periodic prompt was set, trigger title generation.
+		// If the session has no title and a loop prompt was set, trigger title generation.
 		if input.Name == nil && meta.Name == "" && sm != nil {
 			if bs := sm.GetSession(input.ConversationID); bs != nil {
 				var pPrompt, pName string
-				if input.PeriodicPrompt != nil {
-					pPrompt = *input.PeriodicPrompt
+				if input.LoopPrompt != nil {
+					pPrompt = *input.LoopPrompt
 				}
-				// ConversationUpdateInput has no PeriodicPromptName field; read prompt name
-				// from the stored periodic config so the resolver can be used when inline
+				// ConversationUpdateInput has no LoopPromptName field; read prompt name
+				// from the stored loop config so the resolver can be used when inline
 				// prompt is empty or the UI placeholder "(pending)".
-				if p, getErr := periodicStore.Get(); getErr == nil && p != nil {
+				if p, getErr := loopStore.Get(); getErr == nil && p != nil {
 					if pPrompt == "" {
 						pPrompt = p.Prompt
 					}
 					pName = p.PromptName
 				}
-				bs.TriggerTitleGenerationFromPeriodic(pPrompt, pName)
+				bs.TriggerTitleGenerationFromLoop(pPrompt, pName)
 			}
 		}
 
-		s.logger.Info("Periodic configuration updated via MCP",
+		s.logger.Info("Loop configuration updated via MCP",
 			"source_session", realSessionID,
 			"target_conversation", input.ConversationID,
 			"is_new", isNew)
@@ -4209,7 +4212,7 @@ func (s *Server) handleConversationUpdate(ctx context.Context, req *mcp.CallTool
 	if len(updated) == 0 {
 		return nil, ConversationUpdateOutput{
 			Success: false,
-			Error:   "no properties to update: specify at least one of 'name', 'beads_issue', 'user_data', or periodic fields",
+			Error:   "no properties to update: specify at least one of 'name', 'beads_issue', 'user_data', or loop fields",
 		}, nil
 	}
 
@@ -4233,23 +4236,23 @@ func (s *Server) handleConversationUpdate(ctx context.Context, req *mcp.CallTool
 		}
 	}
 
-	// Read back current periodic config
-	if p, err := store.Periodic(input.ConversationID).Get(); err == nil && p != nil {
-		output.PeriodicPrompt = p.Prompt
-		output.PeriodicFrequencyValue = p.Frequency.Value
-		output.PeriodicFrequencyUnit = string(p.Frequency.Unit)
-		output.PeriodicFrequencyAt = p.Frequency.At
-		output.PeriodicEnabled = p.Enabled
-		output.PeriodicFreshContext = p.FreshContext
-		output.PeriodicMaxIterations = p.MaxIterations
-		output.PeriodicIterationCount = p.IterationCount
-		output.PeriodicTrigger = string(p.EffectiveTrigger())
-		output.PeriodicCompletionDelaySeconds = p.DelaySeconds
-		output.PeriodicMaxDurationSeconds = p.MaxDurationSeconds
-		output.PeriodicCondition = p.Condition
-		output.PeriodicConditionPreset = p.ConditionPreset
+	// Read back current loop config
+	if p, err := store.Loop(input.ConversationID).Get(); err == nil && p != nil {
+		output.LoopPrompt = p.Prompt
+		output.LoopFrequencyValue = p.Frequency.Value
+		output.LoopFrequencyUnit = string(p.Frequency.Unit)
+		output.LoopFrequencyAt = p.Frequency.At
+		output.LoopEnabled = p.Enabled
+		output.LoopFreshContext = p.FreshContext
+		output.LoopMaxIterations = p.MaxIterations
+		output.LoopIterationCount = p.IterationCount
+		output.LoopTrigger = string(p.EffectiveTrigger())
+		output.LoopCompletionDelaySeconds = p.DelaySeconds
+		output.LoopMaxDurationSeconds = p.MaxDurationSeconds
+		output.LoopCondition = p.Condition
+		output.LoopConditionPreset = p.ConditionPreset
 		if p.NextScheduledAt != nil {
-			output.PeriodicNextRun = p.NextScheduledAt.Format("2006-01-02T15:04:05Z07:00")
+			output.LoopNextRun = p.NextScheduledAt.Format("2006-01-02T15:04:05Z07:00")
 		}
 	}
 
@@ -4737,7 +4740,7 @@ func (s *Server) handleChildrenTasksWait(ctx context.Context, req *mcp.CallToolR
 				continue
 			}
 
-			msg, err := queue.Add(promptText, nil, nil, realSessionID, nil, 0, nil, "")
+			msg, err := queue.AddWithOrigin(promptText, nil, nil, realSessionID, nil, 0, nil, "", session.QueueOriginAgent)
 			if err != nil {
 				s.logger.Warn("Failed to enqueue prompt to child",
 					"parent_session", realSessionID,
@@ -4782,6 +4785,17 @@ func (s *Server) handleChildrenTasksWait(ctx context.Context, req *mcp.CallToolR
 		"running_children", len(runningChildren),
 		"not_running_children", len(notRunningChildren),
 		"timeout", timeout)
+
+	// Record how long this call actually blocked, on the parent session, for the
+	// "child wait" statistics surfaced in the conversation properties panel.
+	waitStart := time.Now()
+	defer func() {
+		if s.sessionManager != nil {
+			if parentBS := s.sessionManager.GetSession(realSessionID); parentBS != nil {
+				parentBS.RecordChildWait(time.Since(waitStart))
+			}
+		}
+	}()
 
 	var timedOut bool
 

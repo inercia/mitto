@@ -7,6 +7,8 @@
  * include only non-empty fields, with `env` included only when it has keys.
  */
 
+import { jest } from "@jest/globals";
+
 /**
  * Duplicated from WorkspacesDialog.js for testing (the component imports
  * window.preact globals, so it cannot be imported directly under jsdom).
@@ -241,5 +243,300 @@ describe("buildSaveArgs (argument map for PUT endpoint)", () => {
   test("empty parameters array produces empty args object", () => {
     const emptyProc = { name: "x", parameters: [] };
     expect(buildSaveArgs({}, emptyProc)).toEqual({});
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Beads upstream "prompts" — args button gating and PUT body composition.
+// Mirrors the inline logic in the Pull/Push/Sync row renderer and in
+// saveBeadsPromptArgs. Duplicated for jsdom-friendly unit tests.
+// ---------------------------------------------------------------------------
+
+/**
+ * Mirrors promptParameters(prompt) from web/static/utils/prompts.js — returns
+ * the structured parameters array for a prompt, or [] if absent/empty.
+ */
+function promptParameters(prompt) {
+  const params = prompt?.parameters;
+  if (Array.isArray(params) && params.length > 0) return params;
+  return [];
+}
+
+/**
+ * Mirrors the canEditArgs / argsDisabled computation for a single row of the
+ * "Prompt Actions" fieldset. `selectedName` is the value of the row's <select>;
+ * `prompts` is the list of enabled folder prompts; `saving` reflects
+ * beadsUpstreamSaving.
+ */
+function computeArgsButtonState(selectedName, prompts, saving) {
+  const selectedPrompt = selectedName
+    ? (prompts || []).find((p) => p.name === selectedName)
+    : null;
+  const params = selectedPrompt ? promptParameters(selectedPrompt) : [];
+  const canEditArgs = !!selectedName && params.length > 0;
+  const disabled = !canEditArgs || !!saving;
+  return { selectedPrompt, params, canEditArgs, disabled };
+}
+
+/**
+ * Mirrors the body composition of saveBeadsPromptArgs — the full upstream body
+ * includes all three prompt names + all three arg maps, with the target
+ * field's map replaced by `args`.
+ */
+function buildSavePromptArgsBody(field, args, state) {
+  return {
+    upstream: "prompts",
+    pull_prompt: state.pullPrompt,
+    push_prompt: state.pushPrompt,
+    sync_prompt: state.syncPrompt,
+    pull_prompt_args:
+      field === "pull_prompt" ? args : state.pullPromptArgs,
+    push_prompt_args:
+      field === "push_prompt" ? args : state.pushPromptArgs,
+    sync_prompt_args:
+      field === "sync_prompt" ? args : state.syncPromptArgs,
+  };
+}
+
+describe("beads upstream args button — computeArgsButtonState", () => {
+  const paramFree = { name: "sync-plain", parameters: [] };
+  const paramFul = {
+    name: "sync-with-args",
+    parameters: [{ name: "target", type: "string" }],
+  };
+  const prompts = [paramFree, paramFul];
+
+  test("disabled when no prompt is selected (empty value)", () => {
+    const s = computeArgsButtonState("", prompts, false);
+    expect(s.canEditArgs).toBe(false);
+    expect(s.disabled).toBe(true);
+    expect(s.params).toEqual([]);
+  });
+
+  test("disabled when selected prompt has no parameters", () => {
+    const s = computeArgsButtonState("sync-plain", prompts, false);
+    expect(s.selectedPrompt).toBe(paramFree);
+    expect(s.params).toEqual([]);
+    expect(s.canEditArgs).toBe(false);
+    expect(s.disabled).toBe(true);
+  });
+
+  test("enabled when selected prompt declares parameters", () => {
+    const s = computeArgsButtonState("sync-with-args", prompts, false);
+    expect(s.selectedPrompt).toBe(paramFul);
+    expect(s.params).toEqual([{ name: "target", type: "string" }]);
+    expect(s.canEditArgs).toBe(true);
+    expect(s.disabled).toBe(false);
+  });
+
+  test("disabled while upstream is saving even when parametrized", () => {
+    const s = computeArgsButtonState("sync-with-args", prompts, true);
+    expect(s.canEditArgs).toBe(true);
+    expect(s.disabled).toBe(true);
+  });
+
+  test("disabled when selected name is not in the prompts list", () => {
+    const s = computeArgsButtonState("missing", prompts, false);
+    expect(s.selectedPrompt).toBeUndefined();
+    expect(s.params).toEqual([]);
+    expect(s.canEditArgs).toBe(false);
+    expect(s.disabled).toBe(true);
+  });
+});
+
+describe("saveBeadsPromptArgs PUT body (buildSavePromptArgsBody)", () => {
+  const baseState = {
+    pullPrompt: "pull-p",
+    pushPrompt: "push-p",
+    syncPrompt: "sync-p",
+    pullPromptArgs: { a: "1" },
+    pushPromptArgs: { b: "2" },
+    syncPromptArgs: { c: "3" },
+  };
+
+  test("replaces pull_prompt_args, keeps the others intact", () => {
+    const body = buildSavePromptArgsBody(
+      "pull_prompt",
+      { a: "new" },
+      baseState,
+    );
+    expect(body).toEqual({
+      upstream: "prompts",
+      pull_prompt: "pull-p",
+      push_prompt: "push-p",
+      sync_prompt: "sync-p",
+      pull_prompt_args: { a: "new" },
+      push_prompt_args: { b: "2" },
+      sync_prompt_args: { c: "3" },
+    });
+  });
+
+  test("replaces push_prompt_args only", () => {
+    const body = buildSavePromptArgsBody(
+      "push_prompt",
+      { b: "new" },
+      baseState,
+    );
+    expect(body.pull_prompt_args).toEqual({ a: "1" });
+    expect(body.push_prompt_args).toEqual({ b: "new" });
+    expect(body.sync_prompt_args).toEqual({ c: "3" });
+  });
+
+  test("replaces sync_prompt_args only", () => {
+    const body = buildSavePromptArgsBody(
+      "sync_prompt",
+      { c: "new" },
+      baseState,
+    );
+    expect(body.pull_prompt_args).toEqual({ a: "1" });
+    expect(body.push_prompt_args).toEqual({ b: "2" });
+    expect(body.sync_prompt_args).toEqual({ c: "new" });
+  });
+
+  test("always carries all three prompt names so switching a name does not wipe args", () => {
+    const body = buildSavePromptArgsBody("pull_prompt", {}, baseState);
+    expect(body.pull_prompt).toBe("pull-p");
+    expect(body.push_prompt).toBe("push-p");
+    expect(body.sync_prompt).toBe("sync-p");
+  });
+
+  test("passes empty args map through (clears saved args)", () => {
+    const body = buildSavePromptArgsBody("sync_prompt", {}, baseState);
+    expect(body.sync_prompt_args).toEqual({});
+  });
+});
+
+// ---------------------------------------------------------------------------
+// onOpenPromptParamDialog dispatch — mirrors the args-button onClick guard.
+// ---------------------------------------------------------------------------
+
+/**
+ * Mirrors the args-button onClick: bails when disabled, when no dialog opener
+ * is available, or when no prompt is resolved. Otherwise forwards prompt,
+ * params, an onSubmit callback, and initialValues.
+ */
+function dispatchArgsButtonClick({
+  canEditArgs,
+  onOpenPromptParamDialog,
+  selectedPrompt,
+  params,
+  savedArgs,
+  saveBeadsPromptArgs,
+  field,
+}) {
+  if (!canEditArgs || !onOpenPromptParamDialog || !selectedPrompt) return false;
+  onOpenPromptParamDialog(
+    selectedPrompt,
+    params,
+    async (userArgs) => {
+      await saveBeadsPromptArgs(field, userArgs);
+    },
+    { initialValues: savedArgs || {} },
+  );
+  return true;
+}
+
+describe("args-button onClick (dispatchArgsButtonClick)", () => {
+  const prompt = {
+    name: "sync-with-args",
+    parameters: [{ name: "target", type: "string" }],
+  };
+  const params = prompt.parameters;
+
+  test("no-op when canEditArgs is false", () => {
+    const spy = jest.fn();
+    const ok = dispatchArgsButtonClick({
+      canEditArgs: false,
+      onOpenPromptParamDialog: spy,
+      selectedPrompt: prompt,
+      params,
+      savedArgs: {},
+      saveBeadsPromptArgs: jest.fn(),
+      field: "sync_prompt",
+    });
+    expect(ok).toBe(false);
+    expect(spy).not.toHaveBeenCalled();
+  });
+
+  test("no-op when onOpenPromptParamDialog is missing", () => {
+    const ok = dispatchArgsButtonClick({
+      canEditArgs: true,
+      onOpenPromptParamDialog: null,
+      selectedPrompt: prompt,
+      params,
+      savedArgs: {},
+      saveBeadsPromptArgs: jest.fn(),
+      field: "sync_prompt",
+    });
+    expect(ok).toBe(false);
+  });
+
+  test("no-op when selectedPrompt is null", () => {
+    const spy = jest.fn();
+    const ok = dispatchArgsButtonClick({
+      canEditArgs: true,
+      onOpenPromptParamDialog: spy,
+      selectedPrompt: null,
+      params,
+      savedArgs: {},
+      saveBeadsPromptArgs: jest.fn(),
+      field: "sync_prompt",
+    });
+    expect(ok).toBe(false);
+    expect(spy).not.toHaveBeenCalled();
+  });
+
+  test("opens the dialog with prompt, params, onSubmit, and initialValues", () => {
+    const spy = jest.fn();
+    const savedArgs = { target: "prod" };
+    const ok = dispatchArgsButtonClick({
+      canEditArgs: true,
+      onOpenPromptParamDialog: spy,
+      selectedPrompt: prompt,
+      params,
+      savedArgs,
+      saveBeadsPromptArgs: jest.fn(),
+      field: "pull_prompt",
+    });
+    expect(ok).toBe(true);
+    expect(spy).toHaveBeenCalledTimes(1);
+    const [passedPrompt, passedParams, onSubmit, opts] = spy.mock.calls[0];
+    expect(passedPrompt).toBe(prompt);
+    expect(passedParams).toBe(params);
+    expect(typeof onSubmit).toBe("function");
+    expect(opts).toEqual({ initialValues: savedArgs });
+  });
+
+  test("onSubmit forwards user args to saveBeadsPromptArgs with the correct field", async () => {
+    const save = jest.fn().mockResolvedValue(undefined);
+    let captured = null;
+    dispatchArgsButtonClick({
+      canEditArgs: true,
+      onOpenPromptParamDialog: (_p, _params, onSubmit) => {
+        captured = onSubmit;
+      },
+      selectedPrompt: prompt,
+      params,
+      savedArgs: {},
+      saveBeadsPromptArgs: save,
+      field: "push_prompt",
+    });
+    await captured({ target: "staging" });
+    expect(save).toHaveBeenCalledWith("push_prompt", { target: "staging" });
+  });
+
+  test("defaults savedArgs to {} when absent", () => {
+    const spy = jest.fn();
+    dispatchArgsButtonClick({
+      canEditArgs: true,
+      onOpenPromptParamDialog: spy,
+      selectedPrompt: prompt,
+      params,
+      savedArgs: undefined,
+      saveBeadsPromptArgs: jest.fn(),
+      field: "pull_prompt",
+    });
+    const [, , , opts] = spy.mock.calls[0];
+    expect(opts).toEqual({ initialValues: {} });
   });
 });

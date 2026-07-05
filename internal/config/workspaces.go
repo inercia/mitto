@@ -47,6 +47,9 @@ type AutoChild struct {
 	// TargetWorkspaceUUID is the UUID of the workspace to use for the child.
 	// If empty, uses the parent's workspace.
 	TargetWorkspaceUUID string `json:"target_workspace_uuid,omitempty" yaml:"target_workspace_uuid,omitempty"`
+	// ModelProfile is the name of a global Model profile (Config.Models) to apply as the
+	// child's initial/baseline model. Empty = use the ACP server's default model selection.
+	ModelProfile string `json:"model_profile,omitempty" yaml:"model_profile,omitempty"`
 }
 
 // WorkspaceSettings is the JSON representation of a workspace.
@@ -108,6 +111,12 @@ type WorkspaceSettings struct {
 	// AuxiliaryModelSelection matchMode/pattern. Empty falls back to
 	// AuxiliaryModelSelection when present.
 	AuxiliaryModelProfile string `json:"auxiliary_model_profile,omitempty" yaml:"auxiliary_model_profile,omitempty"`
+	// AuxiliaryModelTag selects the auxiliary-session model by capability tag
+	// (e.g. "Fast"). Resolved to the first Model profile (Config.Models, in
+	// definition order) carrying this tag whose Criteria matches an available
+	// model. Mutually exclusive with AuxiliaryModelProfile in the UI; when both
+	// are set, AuxiliaryModelProfile wins. Falls back to AuxiliaryModelSelection.
+	AuxiliaryModelTag string `json:"auxiliary_model_tag,omitempty" yaml:"auxiliary_model_tag,omitempty"`
 	// IsDefault marks this workspace as the default for its working directory.
 	// When multiple workspaces share the same folder (e.g. different ACP servers
 	// or model variants), the one with IsDefault set is preferred when a workspace

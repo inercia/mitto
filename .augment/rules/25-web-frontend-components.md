@@ -31,6 +31,8 @@ keywords:
   - radio tabs
   - WorkspacesDialog
   - daisyUI tabs
+  - ShortcutsEditor
+  - global shortcuts
 ---
 
 # Frontend Components and Hooks
@@ -48,6 +50,8 @@ All components use Preact/HTM with window globals: `const { useState, useEffect,
 | `SessionPanel`      | Unified overlay (Changes + Properties tabs)   |
 | `ContextMenu`       | Right-click menu with viewport-aware position |
 | `SessionItem`       | List item with swipe, menu, status            |
+| `Toolbar`           | Config-driven action bar (see below)          |
+| `ShortcutsEditor`   | Global+folder shortcut button config panel    |
 
 ## ChatInput
 
@@ -67,31 +71,25 @@ Resizable via `useResizeHandle` (initialHeight: `getQueueDropdownHeight()`, min:
 
 ## Tooltip Patterns
 
-### PortalTooltip (Viewport-Clamped)
-
-For overflow-clipped rows (e.g., SessionList), render tooltips in a body-level portal to escape clip bounds:
-
+**PortalTooltip** (`SessionItem.js`): for overflow-clipped rows, renders via `createPortal()` to escape clip bounds, auto-clamps position to viewport (e.g. "top" → "bottom" near the edge), adds a `.tooltip-blur` background.
 ```javascript
-html`<${PortalTooltip} text=${"Long text..."} position=${"top"} >
-  <div class="truncate">Clipped row</div>
-</PortalTooltip>`
+html`<${PortalTooltip} text=${"Long text..."} position=${"top"}><div class="truncate">Row</div></PortalTooltip>`
 ```
 
-**Features**:
-- Escapes overflow:hidden containers via `createPortal()`
-- Auto-clamps position to viewport (e.g., "top" → "bottom" if near top edge)
-- Applies background blur behind tooltip (`.tooltip-blur`)
-- Used in `SessionItem.js` for session titles/paths
+**daisyUI tooltip** (non-clipped content): `<div class="tooltip tooltip-top" data-tip="Hover text"><button>Action</button></div>`
 
-### daisyUI Tooltip
+## Reusable Config-Driven Components
 
-For non-clipped content (in-component tooltips), use daisyUI `tooltip`:
+**Toolbar** (`Toolbar.js`) — portable action bar rendered as a segmented pill from an `items` array. Item kinds: `button`, `dropdown`, `overflow`, `separator`, `spacer`, `custom`. Props: `variant` (`"floating"` | `"block"`), `surface`, `ariaLabel`, `testId`.
 
 ```javascript
-html`<div class="tooltip tooltip-top" data-tip=${"Hover text"}>
-  <button>Action</button>
-</div>`
+html`<${Toolbar} variant="block" surface="bg-mitto-surface-3"
+  ariaLabel="Issue actions" testId="beads-issue-toolbar" items=${headerToolbarItems} />`
 ```
+
+Used in `BeadsView.js` list actions and issue-detail header — prefer over ad-hoc "..." kebab menus.
+
+**ShortcutsEditor** (`ShortcutsEditor.js`) — one panel reused for both **global** (Settings dialog) and **folder** (Workspaces dialog) shortcut config. Consumers (conversations/beadsIssue/tasksList toolbars) merge global + folder shortcuts at render: global first, folder duplicates of a global `prompt` dropped; leftover duplicates render greyed-out via `redundantPromptNames`. Backend mirror: `GET/PUT /api/global/shortcuts` (`internal/web/handlers/global_shortcuts.go`); type `config.ShortcutButton{Icon, Prompt}`. Refresh via `mitto:global_shortcuts_updated`/`mitto:folder_shortcuts_updated` window events. See `08-config.md` for backend details.
 
 ## Icons
 
@@ -146,4 +144,4 @@ html`<div class="tabs tabs-border">
 
 ## Session List Tab Filtering
 
-Filters by tab (Conversations, Periodic, Archived) via `getFilterTabForSession()`. On click, restore last-focused session via `getLastActiveSessionIdForTab()` — **user-clicks only**, not programmatic. Guard races with refs to avoid redundant localStorage updates.
+Filters by tab (Conversations, Loop, Archived) via `getFilterTabForSession()`. On click, restore last-focused session via `getLastActiveSessionIdForTab()` — **user-clicks only**, not programmatic. Guard races with refs to avoid redundant localStorage updates.

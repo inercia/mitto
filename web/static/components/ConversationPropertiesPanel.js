@@ -10,7 +10,7 @@ import {
   EditIcon,
   CheckIcon,
   FolderIcon,
-  PeriodicFilledIcon,
+  LoopFilledIcon,
 } from "./Icons.js";
 import { apiUrl, errorMessageFromData } from "../utils/api.js";
 import { secureFetch, authFetch } from "../utils/csrf.js";
@@ -33,6 +33,21 @@ function formatTokenCount(count) {
   if (count >= 1000000) return `${(count / 1000000).toFixed(1)}M`;
   if (count >= 1000) return `${(count / 1000).toFixed(1)}k`;
   return count.toString();
+}
+
+/**
+ * Format a duration given in milliseconds into a compact human-readable string.
+ * @param {number} ms
+ * @returns {string} e.g. "850ms", "12.3s", "1m2s"
+ */
+function formatDuration(ms) {
+  if (!ms || ms < 0) return "0ms";
+  if (ms < 1000) return `${Math.round(ms)}ms`;
+  const totalSeconds = ms / 1000;
+  if (totalSeconds < 60) return `${totalSeconds.toFixed(1)}s`;
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = Math.round(totalSeconds % 60);
+  return `${minutes}m${seconds}s`;
 }
 
 /**
@@ -225,8 +240,8 @@ export function ConversationPropertiesPanel({
   const [isSavingTitle, setIsSavingTitle] = useState(false);
   const titleInputRef = useRef(null);
 
-  // Periodic config state
-  const [periodicConfig, setPeriodicConfig] = useState(null);
+  // Loop config state
+  const [loopConfig, setLoopConfig] = useState(null);
   const [callbackConfig, setCallbackConfig] = useState(null);
   const [callbackCopied, setCallbackCopied] = useState(false);
 
@@ -257,7 +272,7 @@ export function ConversationPropertiesPanel({
 
   // Update relative time display every 30 seconds while panel is open
   useEffect(() => {
-    if (!isOpen || !periodicConfig?.next_scheduled_at) {
+    if (!isOpen || !loopConfig?.next_scheduled_at) {
       return;
     }
 
@@ -266,19 +281,19 @@ export function ConversationPropertiesPanel({
     }, 30000); // Update every 30 seconds
 
     return () => clearInterval(intervalId);
-  }, [isOpen, periodicConfig?.next_scheduled_at]);
+  }, [isOpen, loopConfig?.next_scheduled_at]);
 
   // Reset state when session changes or panel closes
   useEffect(() => {
     setIsEditingTitle(false);
-    setPeriodicConfig(null);
+    setLoopConfig(null);
     setCallbackConfig(null);
     setCallbackCopied(false);
     setFlagsError(null);
     setSavingFlags({});
   }, [sessionId, isOpen]);
 
-  // Fetch periodic config, callback config, flags, and session settings when panel opens
+  // Fetch loop config, callback config, flags, and session settings when panel opens
   useEffect(() => {
     if (!isOpen || !sessionId) return;
 
@@ -286,30 +301,30 @@ export function ConversationPropertiesPanel({
       setIsLoadingFlags(true);
       setFlagsError(null);
 
-      // Periodic + callback endpoints only exist for periodic conversations.
-      // Gating on periodic_configured avoids 404 noise on regular sessions.
-      const periodicConfigured = sessionInfo?.periodic_configured === true;
+      // Loop + callback endpoints only exist for loop conversations.
+      // Gating on loop_configured avoids 404 noise on regular sessions.
+      const loopConfigured = sessionInfo?.loop_configured === true;
 
       try {
-        // Fetch periodic config, callback config, available flags, and session settings in parallel
-        const [periodicRes, callbackRes, flagsRes, settingsRes] =
+        // Fetch loop config, callback config, available flags, and session settings in parallel
+        const [loopRes, callbackRes, flagsRes, settingsRes] =
           await Promise.all([
-            periodicConfigured
-              ? authFetch(endpoints.sessions.periodic(sessionId))
+            loopConfigured
+              ? authFetch(endpoints.sessions.loop(sessionId))
               : Promise.resolve(null),
-            periodicConfigured
+            loopConfigured
               ? authFetch(endpoints.sessions.callback(sessionId))
               : Promise.resolve(null),
             authFetch(endpoints.misc.advancedFlags()),
             authFetch(endpoints.sessions.settings(sessionId)),
           ]);
 
-        if (periodicRes && periodicRes.ok) {
-          const periodic = await periodicRes.json();
-          setPeriodicConfig(periodic);
+        if (loopRes && loopRes.ok) {
+          const loop = await loopRes.json();
+          setLoopConfig(loop);
         } else {
-          // No periodic config or error - clear state
-          setPeriodicConfig(null);
+          // No loop config or error - clear state
+          setLoopConfig(null);
         }
 
         if (callbackRes && callbackRes.ok) {
@@ -337,7 +352,7 @@ export function ConversationPropertiesPanel({
     };
 
     fetchData();
-  }, [isOpen, sessionId, sessionInfo?.periodic_configured]);
+  }, [isOpen, sessionId, sessionInfo?.loop_configured]);
 
   // Focus title input when entering edit mode
   useEffect(() => {
@@ -374,16 +389,16 @@ export function ConversationPropertiesPanel({
     };
   }, [isOpen, sessionId]);
 
-  // Listen for WebSocket periodic_updated events so the periodic section (and the
+  // Listen for WebSocket loop_updated events so the loop section (and the
   // fresh-context toggle) stays in sync when changed from another panel/client.
   useEffect(() => {
     if (!isOpen || !sessionId) return;
 
-    const handlePeriodicUpdated = (event) => {
+    const handleLoopUpdated = (event) => {
       const {
         sessionId: updatedSessionId,
-        periodicConfigured,
-        periodicEnabled,
+        loopConfigured,
+        loopEnabled,
         frequency,
         nextScheduledAt,
         freshContext,
@@ -392,18 +407,18 @@ export function ConversationPropertiesPanel({
       } = event.detail || {};
       if (updatedSessionId !== sessionId) return;
 
-      // Periodic config was deleted — clear local state.
-      if (periodicConfigured === false) {
-        setPeriodicConfig(null);
+      // Loop config was deleted — clear local state.
+      if (loopConfigured === false) {
+        setLoopConfig(null);
         return;
       }
 
       // Merge into existing config (the panel fetches the full config on open).
-      setPeriodicConfig((prev) =>
+      setLoopConfig((prev) =>
         prev
           ? {
               ...prev,
-              enabled: periodicEnabled,
+              enabled: loopEnabled,
               frequency: frequency || prev.frequency,
               next_scheduled_at: nextScheduledAt ?? prev.next_scheduled_at,
               fresh_context:
@@ -422,13 +437,13 @@ export function ConversationPropertiesPanel({
     };
 
     window.addEventListener(
-      "mitto:periodic_config_updated",
-      handlePeriodicUpdated,
+      "mitto:loop_config_updated",
+      handleLoopUpdated,
     );
     return () => {
       window.removeEventListener(
-        "mitto:periodic_config_updated",
-        handlePeriodicUpdated,
+        "mitto:loop_config_updated",
+        handleLoopUpdated,
       );
     };
   }, [isOpen, sessionId]);
@@ -509,7 +524,7 @@ export function ConversationPropertiesPanel({
     [sessionId],
   );
 
-  // Toggle "fresh context" for a periodic conversation. PATCHes the periodic
+  // Toggle "fresh context" for a loop conversation. PATCHes the loop
   // config so each scheduled run starts with a clean agent context (no history
   // injection, new ACP session). Updates local state optimistically from the
   // server-authoritative response.
@@ -518,14 +533,14 @@ export function ConversationPropertiesPanel({
       const newValue = e.target.checked;
       if (!sessionId) return;
       try {
-        const res = await secureFetch(endpoints.sessions.periodic(sessionId), {
+        const res = await secureFetch(endpoints.sessions.loop(sessionId), {
           method: "PATCH",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ fresh_context: newValue }),
         });
         if (res.ok) {
           const data = await res.json();
-          setPeriodicConfig((prev) =>
+          setLoopConfig((prev) =>
             prev
               ? { ...prev, fresh_context: data.fresh_context ?? newValue }
               : prev,
@@ -874,6 +889,119 @@ export function ConversationPropertiesPanel({
                 </div>
               `
             }
+            ${
+              sessionInfo?.mcp_calls_total > 0 &&
+              html`
+                <div class="flex justify-between">
+                  <span>Mitto MCP calls</span>
+                  <span class="text-mitto-text-300"
+                    >${sessionInfo.mcp_calls_total}</span
+                  >
+                </div>
+              `
+            }
+            ${
+              sessionInfo?.mcp_ui_calls > 0 &&
+              html`
+                <div class="flex justify-between">
+                  <span>Mitto UI calls</span>
+                  <span class="text-mitto-text-300"
+                    >${sessionInfo.mcp_ui_calls}</span
+                  >
+                </div>
+              `
+            }
+            ${
+              sessionInfo?.mcp_children_wait_calls > 0 &&
+              html`
+                <div class="flex justify-between">
+                  <span>Wait-for-children calls</span>
+                  <span class="text-mitto-text-300"
+                    >${sessionInfo.mcp_children_wait_calls}</span
+                  >
+                </div>
+              `
+            }
+            ${
+              sessionInfo?.children_spawned > 0 &&
+              html`
+                <div class="flex justify-between">
+                  <span>Children</span>
+                  <span class="text-mitto-text-300"
+                    >${sessionInfo.children_spawned}</span
+                  >
+                </div>
+              `
+            }
+            ${
+              sessionInfo?.child_wait_count > 0 &&
+              html`
+                <div class="flex justify-between">
+                  <span>Child wait</span>
+                  <span class="text-mitto-text-300"
+                    >${formatDuration(
+                      sessionInfo.child_wait_total_ms /
+                        sessionInfo.child_wait_count,
+                    )}
+                    avg (${formatDuration(sessionInfo.child_wait_total_ms)}
+                    total)</span
+                  >
+                </div>
+              `
+            }
+            ${
+              sessionInfo?.turns > 0 &&
+              html`
+                <div class="flex justify-between">
+                  <span>Turns</span>
+                  <span class="text-mitto-text-300">${sessionInfo.turns}</span>
+                </div>
+              `
+            }
+            ${
+              sessionInfo?.acp_tool_calls > 0 &&
+              html`
+                <div class="flex justify-between">
+                  <span>Agent tool calls</span>
+                  <span class="text-mitto-text-300"
+                    >${sessionInfo.acp_tool_calls}</span
+                  >
+                </div>
+              `
+            }
+            ${
+              (sessionInfo?.permissions_allowed > 0 ||
+                sessionInfo?.permissions_denied > 0) &&
+              html`
+                <div class="flex justify-between">
+                  <span>Permissions</span>
+                  <span class="text-mitto-text-300"
+                    >${sessionInfo.permissions_allowed || 0} allowed /
+                    ${sessionInfo.permissions_denied || 0} denied</span
+                  >
+                </div>
+              `
+            }
+            ${
+              sessionInfo?.errors > 0 &&
+              html`
+                <div class="flex justify-between">
+                  <span>Errors</span>
+                  <span class="text-mitto-text-300">${sessionInfo.errors}</span>
+                </div>
+              `
+            }
+            ${
+              sessionInfo?.images_uploaded > 0 &&
+              html`
+                <div class="flex justify-between">
+                  <span>Images</span>
+                  <span class="text-mitto-text-300"
+                    >${sessionInfo.images_uploaded}</span
+                  >
+                </div>
+              `
+            }
           </div>
 
           ${
@@ -1000,6 +1128,45 @@ export function ConversationPropertiesPanel({
               </div>
             `
           }
+
+          ${
+            sessionInfo?.usage_cumulative &&
+            html`
+              <div class="mt-2 pt-2 border-t border-mitto-border-1/50">
+                <label
+                  class="block text-xs font-medium text-mitto-text-500 mb-1"
+                >
+                  Cumulative Tokens
+                </label>
+                <div class="text-xs text-mitto-text-secondary space-y-0.5">
+                  <div class="flex justify-between">
+                    <span>Input</span>
+                    <span class="text-mitto-text-300"
+                      >${formatTokenCount(
+                        sessionInfo.usage_cumulative.input_tokens,
+                      )}</span
+                    >
+                  </div>
+                  <div class="flex justify-between">
+                    <span>Output</span>
+                    <span class="text-mitto-text-300"
+                      >${formatTokenCount(
+                        sessionInfo.usage_cumulative.output_tokens,
+                      )}</span
+                    >
+                  </div>
+                  <div class="flex justify-between">
+                    <span>Total</span>
+                    <span class="text-mitto-text-300 font-medium"
+                      >${formatTokenCount(
+                        sessionInfo.usage_cumulative.total_tokens,
+                      )}</span
+                    >
+                  </div>
+                </div>
+              </div>
+            `
+          }
         </div>
 
         <!-- Workspace Section -->
@@ -1113,50 +1280,50 @@ export function ConversationPropertiesPanel({
           )
         }
 
-        <!-- Periodic Prompts Section (only shown when configured and enabled) -->
+        <!-- Loop Prompts Section (only shown when configured and enabled) -->
         ${
-          periodicConfig?.enabled &&
+          loopConfig?.enabled &&
           html`
             <div>
               <label
                 class="block text-sm font-medium text-mitto-text-secondary mb-2"
               >
-                Periodic Prompts
+                Loop Prompts
               </label>
               <div class="flex items-center gap-2 text-sm text-mitto-text-300">
-                <${PeriodicFilledIcon}
+                <${LoopFilledIcon}
                   className="w-4 h-4 shrink-0 text-mitto-accent"
                 />
-                <span>${formatFrequency(periodicConfig.frequency)}</span>
+                <span>${formatFrequency(loopConfig.frequency)}</span>
               </div>
-              ${periodicConfig.last_sent_at &&
+              ${loopConfig.last_sent_at &&
               html`
                 <p class="mt-1 text-xs text-mitto-text-500">
                   Last run:
-                  ${new Date(periodicConfig.last_sent_at).toLocaleString()}
+                  ${new Date(loopConfig.last_sent_at).toLocaleString()}
                 </p>
               `}
-              ${periodicConfig.next_scheduled_at &&
+              ${loopConfig.next_scheduled_at &&
               html`
                 <p class="mt-1 text-xs text-mitto-text-500">
                   Next run:
-                  ${new Date(periodicConfig.next_scheduled_at).toLocaleString()}
+                  ${new Date(loopConfig.next_scheduled_at).toLocaleString()}
                   <span class="text-mitto-text-secondary ml-1">
-                    (${formatRelativeTime(periodicConfig.next_scheduled_at)})
+                    (${formatRelativeTime(loopConfig.next_scheduled_at)})
                   </span>
                 </p>
               `}
               <p class="mt-1 text-xs text-mitto-text-500">
-                ${(periodicConfig.max_iterations ?? 0) > 0
-                  ? `Run ${periodicConfig.iteration_count ?? 0} of ${periodicConfig.max_iterations}`
-                  : `${periodicConfig.iteration_count ?? 0} run${(periodicConfig.iteration_count ?? 0) !== 1 ? "s" : ""} · unlimited`}
+                ${(loopConfig.max_iterations ?? 0) > 0
+                  ? `Run ${loopConfig.iteration_count ?? 0} of ${loopConfig.max_iterations}`
+                  : `${loopConfig.iteration_count ?? 0} run${(loopConfig.iteration_count ?? 0) !== 1 ? "s" : ""} · unlimited`}
               </p>
               <!-- Fresh context toggle: each scheduled run starts with a clean agent context -->
               <div class="mt-3 flex items-center gap-2 text-sm">
                 <input
                   type="checkbox"
                   id="properties-fresh-context-checkbox-${sessionId}"
-                  checked=${!!periodicConfig.fresh_context}
+                  checked=${!!loopConfig.fresh_context}
                   onInput=${handleFreshContextChange}
                   class="w-4 h-4 rounded border-mitto-border-3 text-mitto-accent focus:ring-mitto-accent-500 cursor-pointer shrink-0"
                   data-testid="properties-fresh-context-checkbox"
@@ -1229,22 +1396,22 @@ export function ConversationPropertiesPanel({
   }
 
   function renderAdvancedSection() {
-    // Only show if there are available flags or periodic config (for callback URL)
-    if ((!availableFlags || availableFlags.length === 0) && !periodicConfig) {
+    // Only show if there are available flags or loop config (for callback URL)
+    if ((!availableFlags || availableFlags.length === 0) && !loopConfig) {
       return null;
     }
 
     return html`
       <div class="pt-4">
-        <!-- Callback URL Section (only for periodic conversations) -->
-        ${periodicConfig &&
+        <!-- Callback URL Section (only for loop conversations) -->
+        ${loopConfig &&
         html`
           <div class="mb-4">
             <label
               class="block text-sm font-medium text-mitto-text-secondary mb-2"
               >Callback URL</label
             >
-            ${periodicConfig.enabled
+            ${loopConfig.enabled
               ? html`
                   ${callbackConfig?.callback_url
                     ? html`
@@ -1259,7 +1426,7 @@ export function ConversationPropertiesPanel({
                 </div>
               `
                     : html`
-                <${Tooltip} tip="Generate a callback URL for triggering this periodic conversation externally" placement="top">
+                <${Tooltip} tip="Generate a callback URL for triggering this loop conversation externally" placement="top">
                   <button onClick=${handleEnableCallback} class="text-xs px-2 py-1 rounded bg-mitto-surface-3 hover:bg-mitto-surface-hover text-mitto-text-300 transition-colors">
                     🔗 Enable Callback URL
                   </button>
@@ -1270,7 +1437,7 @@ export function ConversationPropertiesPanel({
                   ${callbackConfig?.callback_url
                     ? html`
                         <p class="text-xs text-mitto-text-muted mb-1.5 italic">
-                          Preserved but inactive while periodic is disabled
+                          Preserved but inactive while loop is disabled
                         </p>
                         <div class="flex items-center gap-1.5">
                           <button

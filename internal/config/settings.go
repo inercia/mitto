@@ -1,8 +1,10 @@
 package config
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/inercia/mitto/internal/appdir"
@@ -71,16 +73,20 @@ type Settings struct {
 	MCP *MCPConfig `json:"mcp,omitempty"`
 	// Models is the list of named model profiles (criteria + tags)
 	Models []ModelProfile `json:"models,omitempty"`
+	// Shortcuts holds global per-section configurable shortcut buttons, keyed by
+	// section ID (e.g. "conversations"). Merged with folder-level shortcuts at
+	// render time (global entries first).
+	Shortcuts map[string][]ShortcutButton `json:"shortcuts,omitempty"`
 }
 
 // DefaultStartupStaggerMs is the default stagger delay in milliseconds between
 // session resumes on startup for sessions sharing the same ACP process.
 const DefaultStartupStaggerMs = 300
 
-// DefaultStartupPeriodicDelay is the default delay before the periodic runner
+// DefaultStartupLoopDelay is the default delay before the loop runner
 // starts its first poll on startup. This gives interactive sessions time to
 // resume first via WebSocket connections.
-const DefaultStartupPeriodicDelay = 15 * time.Second
+const DefaultStartupLoopDelay = 15 * time.Second
 
 // SessionConfig represents session storage configuration.
 type SessionConfig struct {
@@ -105,25 +111,31 @@ type SessionConfig struct {
 	// notification channel when many sessions resume simultaneously.
 	// Default: 0 (use DefaultStartupStaggerMs = 300 ms). Set to -1 to disable staggering entirely.
 	StartupStaggerMs int `json:"startup_stagger_ms,omitempty"`
-	// StartupPeriodicDelaySeconds is the delay in seconds before the periodic runner
+	// StartupLoopDelaySeconds is the delay in seconds before the loop runner
 	// starts its first poll on startup. This gives interactive sessions time to resume
 	// first via WebSocket connections, preventing thundering herd on ACP.
 	// Default: 15 seconds. Set to 0 to disable (not recommended).
-	StartupPeriodicDelaySeconds int `json:"startup_periodic_delay_seconds,omitempty"`
-	// PeriodicSuspendTimeout controls when idle periodic conversations have their ACP
-	// connection suspended to save memory. When a periodic conversation's next prompt
+	StartupLoopDelaySeconds int `json:"startup_loop_delay_seconds,omitempty"`
+	// LoopSuspendTimeout controls when idle loop conversations have their ACP
+	// connection suspended to save memory. When a loop conversation's next prompt
 	// is farther away than this timeout, its ACP session is closed even if the user has
 	// it open in the sidebar. The conversation resumes transparently when focused or
-	// when its periodic prompt is due.
+	// when its loop prompt is due.
 	// Values: "" (default - 30 minutes), "disabled", "15m", "30m", "1h", "2h"
 	// Exposed in the Settings dialog under Conversations > Suspend Settings.
-	PeriodicSuspendTimeout string `json:"periodic_suspend_timeout,omitempty"`
+	LoopSuspendTimeout string `json:"loop_suspend_timeout,omitempty"`
 	// MemoryRecycleThreshold controls when an idle shared ACP agent process is
 	// recycled (stopped) to reclaim memory once its RSS (summed over the process
 	// tree) exceeds this size. Recycling only affects fully-idle processes;
 	// conversations resume transparently when focused. Values: "" (default,
 	// disabled), "disabled", "3g", "4g", "6g", "8g".
 	MemoryRecycleThreshold string `json:"memory_recycle_threshold,omitempty"`
+	// AgentInactivityTimeout controls how long a prompt may go with zero streamed
+	// agent activity (no tool call/UI prompt in flight) before the prompt inactivity
+	// watchdog cancels it, clearing is_prompting and surfacing a recoverable error.
+	// This breaks the GC deadlock where a wedged shared ACP process pins a session
+	// as stuck forever. Values: "" (default, 10m), "disabled", "5m", "10m", "15m", "30m".
+	AgentInactivityTimeout string `json:"agent_inactivity_timeout,omitempty"`
 }
 
 // ArchiveRetentionNever is the value for keeping archived conversations forever.
@@ -148,22 +160,22 @@ func (c *SessionConfig) GetAutoArchiveInactiveAfter() string {
 	return c.AutoArchiveInactiveAfter
 }
 
-// ValidPeriodicSuspendTimeouts contains all valid periodic suspend timeout values.
-var ValidPeriodicSuspendTimeouts = []string{"", "disabled", "15m", "30m", "1h", "2h"}
+// ValidLoopSuspendTimeouts contains all valid loop suspend timeout values.
+var ValidLoopSuspendTimeouts = []string{"", "disabled", "15m", "30m", "1h", "2h"}
 
-// GetPeriodicSuspendTimeout returns the periodic suspend timeout string, or "" if not set.
-func (c *SessionConfig) GetPeriodicSuspendTimeout() string {
+// GetLoopSuspendTimeout returns the loop suspend timeout string, or "" if not set.
+func (c *SessionConfig) GetLoopSuspendTimeout() string {
 	if c == nil {
 		return ""
 	}
-	return c.PeriodicSuspendTimeout
+	return c.LoopSuspendTimeout
 }
 
-// ParsePeriodicSuspendTimeout converts the periodic suspend timeout string to a time.Duration.
+// ParseLoopSuspendTimeout converts the loop suspend timeout string to a time.Duration.
 // Returns the duration and true if the feature is enabled, or 0 and false if disabled.
 // An empty string returns the default of 30 minutes.
-func (c *SessionConfig) ParsePeriodicSuspendTimeout() (time.Duration, bool) {
-	val := c.GetPeriodicSuspendTimeout()
+func (c *SessionConfig) ParseLoopSuspendTimeout() (time.Duration, bool) {
+	val := c.GetLoopSuspendTimeout()
 	switch val {
 	case "disabled":
 		return 0, false
@@ -212,6 +224,39 @@ func (c *SessionConfig) ParseMemoryRecycleThreshold() (uint64, bool) {
 	}
 }
 
+// ValidAgentInactivityTimeouts contains all valid agent inactivity timeout values.
+var ValidAgentInactivityTimeouts = []string{"", "disabled", "5m", "10m", "15m", "30m"}
+
+// GetAgentInactivityTimeout returns the agent inactivity timeout string, or "" if not set.
+func (c *SessionConfig) GetAgentInactivityTimeout() string {
+	if c == nil {
+		return ""
+	}
+	return c.AgentInactivityTimeout
+}
+
+// ParseAgentInactivityTimeout converts the agent inactivity timeout string to a
+// time.Duration. Returns the duration and true if the watchdog cancellation is
+// enabled, or 0 and false if disabled. An empty string returns the default of 10
+// minutes (enabled) — unlike MemoryRecycleThreshold, this feature defaults to on.
+func (c *SessionConfig) ParseAgentInactivityTimeout() (time.Duration, bool) {
+	switch c.GetAgentInactivityTimeout() {
+	case "disabled":
+		return 0, false
+	case "", "10m":
+		return 10 * time.Minute, true
+	case "5m":
+		return 5 * time.Minute, true
+	case "15m":
+		return 15 * time.Minute, true
+	case "30m":
+		return 30 * time.Minute, true
+	default:
+		// Unknown value — use default
+		return 10 * time.Minute, true
+	}
+}
+
 // GetStartupStaggerMs returns the stagger delay in milliseconds between consecutive session
 // resumes on startup for sessions sharing the same ACP process.
 // Returns DefaultStartupStaggerMs (300 ms) if not configured (0).
@@ -226,17 +271,17 @@ func (c *SessionConfig) GetStartupStaggerMs() int {
 	return c.StartupStaggerMs
 }
 
-// GetStartupPeriodicDelay returns the startup delay for the periodic runner.
-// Returns DefaultStartupPeriodicDelay (15s) if not configured (0).
+// GetStartupLoopDelay returns the startup delay for the loop runner.
+// Returns DefaultStartupLoopDelay (15s) if not configured (0).
 // Returns 0 to disable if explicitly set to a negative value.
-func (c *SessionConfig) GetStartupPeriodicDelay() time.Duration {
-	if c == nil || c.StartupPeriodicDelaySeconds == 0 {
-		return DefaultStartupPeriodicDelay
+func (c *SessionConfig) GetStartupLoopDelay() time.Duration {
+	if c == nil || c.StartupLoopDelaySeconds == 0 {
+		return DefaultStartupLoopDelay
 	}
-	if c.StartupPeriodicDelaySeconds < 0 {
+	if c.StartupLoopDelaySeconds < 0 {
 		return 0
 	}
-	return time.Duration(c.StartupPeriodicDelaySeconds) * time.Second
+	return time.Duration(c.StartupLoopDelaySeconds) * time.Second
 }
 
 // ScannerDefenseConfig holds configuration for the scanner defense system.
@@ -314,6 +359,7 @@ func (s *Settings) ToConfig() *Config {
 		RestrictedRunners: s.RestrictedRunners,
 		MCP:               s.MCP,
 		Models:            s.Models,
+		Shortcuts:         s.Shortcuts,
 	}
 	for i, srv := range s.ACPServers {
 		cfg.ACPServers[i] = ACPServer(srv)
@@ -335,11 +381,71 @@ func ConfigToSettings(cfg *Config) *Settings {
 		RestrictedRunners: cfg.RestrictedRunners,
 		MCP:               cfg.MCP,
 		Models:            cfg.Models,
+		Shortcuts:         cfg.Shortcuts,
 	}
 	for i, srv := range cfg.ACPServers {
 		s.ACPServers[i] = ACPServerSettings(srv)
 	}
 	return s
+}
+
+// loadRawSettings reads settings.json into a Settings struct WITHOUT the
+// keychain/password migration performed by LoadSettings. It ensures the file
+// exists (creating it from embedded defaults if missing) so callers always get
+// a usable struct. Reading raw avoids materialising the keychain-stored auth
+// password back into settings.json on rewrite.
+func loadRawSettings() (*Settings, error) {
+	if err := appdir.EnsureDir(); err != nil {
+		return nil, fmt.Errorf("failed to create Mitto directory: %w", err)
+	}
+	settingsPath, err := appdir.SettingsPath()
+	if err != nil {
+		return nil, err
+	}
+	if _, statErr := os.Stat(settingsPath); os.IsNotExist(statErr) {
+		if err := createDefaultSettings(); err != nil {
+			return nil, fmt.Errorf("failed to create default settings: %w", err)
+		}
+	}
+	var settings Settings
+	if err := fileutil.ReadJSON(settingsPath, &settings); err != nil {
+		return nil, fmt.Errorf("failed to read settings file %s: %w", settingsPath, err)
+	}
+	return &settings, nil
+}
+
+// GlobalShortcuts returns the global shortcut sections stored in settings.json,
+// or nil if none are configured or settings cannot be read.
+func GlobalShortcuts() map[string][]ShortcutButton {
+	settings, err := loadRawSettings()
+	if err != nil || settings == nil {
+		return nil
+	}
+	return settings.Shortcuts
+}
+
+// SetGlobalShortcuts persists global shortcut sections to settings.json.
+// Empty/absent sections are pruned. The existing settings file is read raw, its
+// Shortcuts field replaced, and the whole file rewritten so no other settings
+// (including the keychain-managed auth password) are lost or leaked.
+func SetGlobalShortcuts(sections map[string][]ShortcutButton) error {
+	settings, err := loadRawSettings()
+	if err != nil {
+		return err
+	}
+	// Prune sections with no buttons.
+	cleaned := map[string][]ShortcutButton{}
+	for k, v := range sections {
+		if len(v) > 0 {
+			cleaned[k] = v
+		}
+	}
+	if len(cleaned) == 0 {
+		settings.Shortcuts = nil
+	} else {
+		settings.Shortcuts = cleaned
+	}
+	return SaveSettings(settings)
 }
 
 // LoadSettings loads settings from the Mitto data directory.
@@ -367,6 +473,12 @@ func LoadSettings() (*Config, error) {
 		if err := createDefaultSettings(); err != nil {
 			return nil, fmt.Errorf("failed to create default settings: %w", err)
 		}
+	}
+
+	// One-time, idempotent rewrite of legacy periodic_* keys to loop_* (mitto-8ir.12).
+	// Runs on the raw JSON before unmarshalling so old data isn't silently dropped.
+	if err := migrateSettingsFileIfNeeded(settingsPath); err != nil {
+		return nil, fmt.Errorf("failed to migrate settings file %s: %w", settingsPath, err)
 	}
 
 	// Load settings from JSON file
@@ -409,6 +521,83 @@ func LoadSettings() (*Config, error) {
 	}
 
 	return cfg, nil
+}
+
+// migrateSettingsFileIfNeeded performs a one-time, idempotent rewrite of legacy
+// periodic_* keys in settings.json to their loop_* equivalents (mitto-8ir.12).
+// It operates on the raw JSON (map[string]interface{}), not the typed Settings
+// struct, so old data is fixed BEFORE the new (loop_*-only) struct tags read it.
+//
+// It is a no-op when settings.json doesn't exist yet, is empty, isn't a JSON
+// object, or contains none of the legacy keys.
+func migrateSettingsFileIfNeeded(settingsPath string) error {
+	data, err := os.ReadFile(settingsPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	if len(strings.TrimSpace(string(data))) == 0 {
+		return nil
+	}
+
+	var raw map[string]interface{}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		// Malformed or non-object JSON — let the normal load path surface the error.
+		return nil
+	}
+
+	if !migrateSettingsPeriodicKeys(raw) {
+		return nil
+	}
+
+	return fileutil.WriteJSONAtomic(settingsPath, raw, 0644)
+}
+
+// migrateSettingsPeriodicKeys renames legacy periodic_* settings keys to their
+// loop_* equivalents in-place on the raw settings map. These settings live
+// nested under the "session" and "conversations" objects (matching the
+// SessionConfig and ConversationsConfig struct layout):
+//
+//	session.startup_periodic_delay_seconds            -> session.startup_loop_delay_seconds
+//	session.periodic_suspend_timeout                  -> session.loop_suspend_timeout
+//	conversations.max_periodic_iterations              -> conversations.max_loop_iterations
+//	conversations.min_periodic_completion_delay_seconds -> conversations.min_loop_completion_delay_seconds
+//
+// For each mapping, the value is moved only when the old key is present and
+// the new key is absent (old moved only when new absent); an already-migrated
+// or partially-migrated file is left untouched for that key. Returns true if
+// any key was renamed.
+func migrateSettingsPeriodicKeys(raw map[string]interface{}) bool {
+	changed := false
+
+	renameKey := func(m map[string]interface{}, oldKey, newKey string) {
+		if m == nil {
+			return
+		}
+		oldVal, hasOld := m[oldKey]
+		if !hasOld {
+			return
+		}
+		if _, hasNew := m[newKey]; hasNew {
+			return
+		}
+		m[newKey] = oldVal
+		delete(m, oldKey)
+		changed = true
+	}
+
+	if session, ok := raw["session"].(map[string]interface{}); ok {
+		renameKey(session, "startup_periodic_delay_seconds", "startup_loop_delay_seconds")
+		renameKey(session, "periodic_suspend_timeout", "loop_suspend_timeout")
+	}
+	if conversations, ok := raw["conversations"].(map[string]interface{}); ok {
+		renameKey(conversations, "max_periodic_iterations", "max_loop_iterations")
+		renameKey(conversations, "min_periodic_completion_delay_seconds", "min_loop_completion_delay_seconds")
+	}
+
+	return changed
 }
 
 // deduplicateACPServerPrompts removes duplicate prompts from ACP server configurations.
@@ -545,6 +734,12 @@ func LoadSettingsWithFallback() (*LoadResult, error) {
 		if err := createDefaultSettings(); err != nil {
 			return nil, fmt.Errorf("failed to create default settings: %w", err)
 		}
+	}
+
+	// One-time, idempotent rewrite of legacy periodic_* keys to loop_* (mitto-8ir.12).
+	// Runs on the raw JSON before unmarshalling so old data isn't silently dropped.
+	if err := migrateSettingsFileIfNeeded(settingsPath); err != nil {
+		return nil, fmt.Errorf("failed to migrate settings file %s: %w", settingsPath, err)
 	}
 
 	// Load settings.json

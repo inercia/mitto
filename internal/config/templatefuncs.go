@@ -20,13 +20,40 @@ const gitCmdTimeout = 5 * time.Second
 // Changing logic here propagates identically to both callers.
 // =============================================================================
 
-// hasPattern reports whether any name in names matches the glob pattern.
-// Fail-open: returns true when available is false (tool list not yet fetched).
-func hasPattern(available bool, names []string, pattern string) bool {
-	if !available {
-		return true // fail-open during MCP-tools cache warm-up
+// resolveServerName extracts the owning server name from a tool pattern or
+// concrete tool name: the token before the first underscore (e.g. "jira_*"
+// or "jira_create_issue" -> "jira"). A pattern/name with no underscore
+// resolves to itself.
+func resolveServerName(pattern string) string {
+	if idx := strings.IndexByte(pattern, '_'); idx > 0 {
+		return pattern[:idx]
 	}
-	for _, name := range names {
+	return pattern
+}
+
+// resolveServerEntry returns pattern's owning server entry from servers,
+// falling back to AllServersToolKey when the specific server isn't present
+// (used by callers without real per-server identity, e.g. processors — see
+// NewProcessorToolsContext). ok is false when neither is found.
+func resolveServerEntry(servers map[string]ServerToolInfo, pattern string) (ServerToolInfo, bool) {
+	if info, ok := servers[resolveServerName(pattern)]; ok {
+		return info, true
+	}
+	info, ok := servers[AllServersToolKey]
+	return info, ok
+}
+
+// hasPattern reports whether pattern is satisfied under the per-server MCP
+// tool availability rule (docs/devel/mcp-tool-discovery.md, Q3.2/Q4.1):
+// fail-open (true) unless pattern's owning server is known AND Reachable, in
+// which case matching is name-based against that server's own tool names.
+// Single source of truth shared with the CEL path (cel_evaluator.go).
+func hasPattern(servers map[string]ServerToolInfo, pattern string) bool {
+	info, ok := resolveServerEntry(servers, pattern)
+	if !ok || info.State != ServerToolStateReachable {
+		return true
+	}
+	for _, name := range info.Names {
 		if matched, err := filepath.Match(pattern, name); err == nil && matched {
 			return true
 		}
@@ -34,38 +61,21 @@ func hasPattern(available bool, names []string, pattern string) bool {
 	return false
 }
 
-// hasAllPatterns reports whether every pattern is matched by at least one name.
-// Fail-open: returns true when available is false.
-func hasAllPatterns(available bool, names []string, patterns []string) bool {
-	if !available {
-		return true
-	}
+// hasAllPatterns reports whether every pattern is satisfied (see hasPattern).
+func hasAllPatterns(servers map[string]ServerToolInfo, patterns []string) bool {
 	for _, pattern := range patterns {
-		found := false
-		for _, name := range names {
-			if matched, err := filepath.Match(pattern, name); err == nil && matched {
-				found = true
-				break
-			}
-		}
-		if !found {
+		if !hasPattern(servers, pattern) {
 			return false
 		}
 	}
 	return true
 }
 
-// hasAnyPattern reports whether any pattern is matched by at least one name.
-// Fail-open: returns true when available is false.
-func hasAnyPattern(available bool, names []string, patterns []string) bool {
-	if !available {
-		return true
-	}
+// hasAnyPattern reports whether any pattern is satisfied (see hasPattern).
+func hasAnyPattern(servers map[string]ServerToolInfo, patterns []string) bool {
 	for _, pattern := range patterns {
-		for _, name := range names {
-			if matched, err := filepath.Match(pattern, name); err == nil && matched {
-				return true
-			}
+		if hasPattern(servers, pattern) {
+			return true
 		}
 	}
 	return false
@@ -337,17 +347,15 @@ func FormatChildren(children []ChildInfo) string {
 //   - join(sep, elems) — strings.Join with sep first (template-natural argument order).
 func BuildTemplateFuncMap(ctx *PromptEnabledContext) template.FuncMap {
 	var (
-		folder         string
-		toolsAvailable bool
-		toolNames      []string
-		args           map[string]string
-		userData       map[string]string
-		modelTags      []string
+		folder      string
+		toolServers map[string]ServerToolInfo
+		args        map[string]string
+		userData    map[string]string
+		modelTags   []string
 	)
 	if ctx != nil {
 		folder = ctx.Workspace.Folder
-		toolsAvailable = ctx.Tools.Available
-		toolNames = ctx.Tools.Names
+		toolServers = ctx.Tools.Servers
 		args = ctx.Args
 		userData = ctx.UserData
 		modelTags = ctx.Session.ModelTags
@@ -406,7 +414,7 @@ func BuildTemplateFuncMap(ctx *PromptEnabledContext) template.FuncMap {
 		},
 		"GitFileTracked": func(path string) bool { return gitFileTracked(folder, path) },
 		"GitFileDeleted": func(path string) bool { return gitFileDeleted(folder, path) },
-		"HasPattern":     func(pattern string) bool { return hasPattern(toolsAvailable, toolNames, pattern) },
+		"HasPattern":     func(pattern string) bool { return hasPattern(toolServers, pattern) },
 		// Model(tag) — true iff the session's current model carries the capability tag
 		// (case-insensitive), resolved from the models: profiles. False for an unknown model.
 		"Model":     func(tag string) bool { return hasModelTag(modelTags, tag) },

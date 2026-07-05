@@ -62,7 +62,7 @@ When a tool call or thought arrives from ACP, force-flush the MarkdownBuffer:
 | Method        | Behavior                             | When to Use                           |
 | ------------- | ------------------------------------ | ------------------------------------- |
 | `Flush()`     | Force flush, ignores markdown state  | Tool calls, thoughts, prompt complete |
-| `SafeFlush()` | Only flush if not in table/list/code | Periodic/timeout flushes              |
+| `SafeFlush()` | Only flush if not in table/list/code | Loop/timeout flushes              |
 
 ## Observer Patterns
 

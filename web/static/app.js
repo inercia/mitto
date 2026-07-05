@@ -31,8 +31,8 @@ import {
   getArchiveReasonText,
   conversationToMarkdown,
   copyToClipboard,
-  PERIODIC_STOPPED_LABELS,
-  formatPeriodicMaxDuration,
+  LOOP_STOPPED_LABELS,
+  formatLoopMaxDuration,
   computeHeaderTriggerLabel,
 } from "./lib.js";
 
@@ -102,13 +102,14 @@ import {
   useSessionNavigation,
   useConversationMenu,
   useConversationSeeding,
-  decidePeriodicAction,
-  makePeriodicNow,
+  decideLoopAction,
+  makeLoopNow,
 } from "./hooks/index.js";
 
 // Import components
 import { SessionItem } from "./components/SessionItem.js";
 import { SessionList } from "./components/SessionList.js";
+import { Toolbar } from "./components/Toolbar.js";
 import { MessageList } from "./components/MessageList.js";
 import { Message } from "./components/Message.js";
 import { ChatInput } from "./components/ChatInput.js";
@@ -122,7 +123,7 @@ import {
 } from "./components/AgentPlanPanel.js";
 import { SessionPanel } from "./components/SessionPanel.js";
 import { Drawer } from "./components/Drawer.js";
-import { PeriodicFrequencyPanel } from "./components/PeriodicFrequencyPanel.js";
+import { LoopFrequencyPanel } from "./components/LoopFrequencyPanel.js";
 import { CountdownDisplay } from "./components/CountdownDisplay.js";
 import { ToastContainer } from "./components/ToastContainer.js";
 import {
@@ -154,8 +155,9 @@ import {
   ArchiveIcon,
   ArchiveFilledIcon,
   ListIcon,
-  PeriodicIcon,
-  PeriodicFilledIcon,
+  LoopIcon,
+  LoopOffIcon,
+  LoopFilledIcon,
   CheckIcon,
   ClockIcon,
   StopIcon,
@@ -167,7 +169,8 @@ import {
   TerminalIcon,
   FolderOpenIcon,
   BeadsIcon,
-  EllipsisIcon,
+  CopyIcon,
+  BroomIcon,
 } from "./components/Icons.js";
 import { ContextMenu } from "./components/ContextMenu.js";
 import {
@@ -179,9 +182,9 @@ import {
 // Import constants
 import {
   CYCLING_MODE,
-  PERIODIC_PROGRESS_STYLE,
-  PERIODIC_PROGRESS_COLORS,
-  PERIODIC_PROGRESS_URGENT_THRESHOLD,
+  LOOP_PROGRESS_STYLE,
+  LOOP_PROGRESS_COLORS,
+  LOOP_PROGRESS_URGENT_THRESHOLD,
 } from "./constants.js";
 
 // Import prompt utilities
@@ -192,7 +195,7 @@ import {
   autofillConversationMenuArgs,
   fetchCachedParamNames,
   effectiveMissingParams,
-  promptResolveAsPeriodic,
+  promptResolveAsLoop,
 } from "./utils/prompts.js";
 
 // Import global event handlers (registers side effects on module load) and predicates
@@ -206,7 +209,7 @@ import { WorkspaceBadge, WorkspacePill } from "./components/WorkspaceBadge.js";
 import { DeleteDialog } from "./components/DeleteDialog.js";
 import { KeyboardShortcutsDialog } from "./components/KeyboardShortcutsDialog.js";
 import { NewSessionWorkspaceDialog } from "./components/NewSessionWorkspaceDialog.js";
-import { PeriodicScheduleDialog } from "./components/PeriodicScheduleDialog.js";
+import { LoopScheduleDialog } from "./components/LoopScheduleDialog.js";
 import { PromptParameterDialog } from "./components/PromptParameterDialog.js";
 import { Tooltip } from "./components/Tooltip.js";
 
@@ -256,8 +259,8 @@ function App() {
     fetchStoredSessions,
     backgroundCompletion,
     clearBackgroundCompletion,
-    periodicStarted,
-    clearPeriodicStarted,
+    loopStarted,
+    clearLoopStarted,
     backgroundUIPrompt,
     clearBackgroundUIPrompt,
     backgroundUIPromptTimeout,
@@ -431,9 +434,9 @@ function App() {
   const [keyboardShortcutsDialog, setKeyboardShortcutsDialog] = useState({
     isOpen: false,
   }); // Keyboard shortcuts dialog
-  // Periodic schedule dialog: opened when a periodic prompt is selected from any menu.
+  // Loop schedule dialog: opened when a loop prompt is selected from any menu.
   // Shape: null | { prompt, onSchedule: async ({ value, unit, at? }) => void }
-  const [periodicScheduleDialog, setPeriodicScheduleDialog] = useState(null);
+  const [loopScheduleDialog, setLoopScheduleDialog] = useState(null);
   // Prompt parameter dialog: opened when a beadsIssues prompt has parameters that
   // the menu cannot auto-fill. Shape: null | { prompt, parameters, onSubmit }
   const [promptParamDialog, setPromptParamDialog] = useState(null);
@@ -442,7 +445,7 @@ function App() {
   const {
     workspacePrompts,
     predefinedPrompts,
-    periodicPrompts,
+    loopPrompts,
     fetchWorkspacePrompts,
     fetchConversationPromptsForSession,
   } = useWorkspacePrompts({
@@ -456,7 +459,7 @@ function App() {
   // CommandExists("bd") && DirExists(".beads")) — no new fetch. If ANY workspace
   // prompt opts into the beadsIssues/beadsList menus, the backend has already
   // proven this workspace is beads-enabled for the active session's folder.
-  // Drives the "On tasks" periodic trigger tab's visibility (mitto-oja.4).
+  // Drives the "On tasks" loop trigger tab's visibility (mitto-oja.4).
   const hasBeadsWorkspace = useMemo(
     () =>
       (workspacePrompts || []).some(
@@ -523,8 +526,8 @@ function App() {
     setShowSidebar,
     setShowSidePanel,
     setSidePanelTab,
-    onOpenPeriodicDialog: (prompt, onSchedule) =>
-      setPeriodicScheduleDialog({ prompt, onSchedule }),
+    onOpenLoopDialog: (prompt, onSchedule) =>
+      setLoopScheduleDialog({ prompt, onSchedule }),
     onOpenPromptParamDialog: (prompt, parameters, onSubmit) =>
       setPromptParamDialog({ prompt, parameters, onSubmit }),
     activeSessionId,
@@ -539,14 +542,15 @@ function App() {
   }, [beadsIssueOpen]);
 
   // Conversation seeding: send a named prompt to an existing conversation via queue,
-  // or create a new (optionally periodic) conversation seeded with a named prompt.
+  // or create a new (optionally loop) conversation seeded with a named prompt.
   const { seedConversationWithPrompt, startConversationWithPrompt } =
     useConversationSeeding({ newSession });
 
   // Launch a named prompt in a new conversation for the "prompts" upstream type in BeadsView.
   // action is "pull"|"push"|"sync"; conversationName is set to "Pull tasks" etc.
+  // args is an optional map of prompt argument name→value forwarded to the queue seed.
   const handleBeadsLaunchPrompt = useCallback(
-    async (action, promptName) => {
+    async (action, promptName, args) => {
       const names = {
         pull: "Pull tasks",
         push: "Push tasks",
@@ -558,6 +562,7 @@ function App() {
         // omit acpServer — use the folder default
         name: conversationName,
         prompt: { name: promptName },
+        arguments: args,
       });
       if (!result?.sessionId) {
         showToast({
@@ -596,6 +601,45 @@ function App() {
       delete window.mittoOpenBeadsIssue;
     };
   }, [handleOpenBeadsIssue, activeSessionId, sessionInfo?.working_dir]);
+
+  // Linked beads issue status for the conversation-toolbar "linked issue" button
+  // badge dot. Fetched asynchronously (bd show can be slow) and keyed on the
+  // active conversation's linked issue; cleared when there is no linked issue.
+  // Mirrors the fetch in SessionPanel.js so both surfaces stay in sync.
+  const [headerBeadsStatus, setHeaderBeadsStatus] = useState(null);
+  useEffect(() => {
+    const issueId = sessionInfo?.beads_issue;
+    const workingDir = sessionInfo?.working_dir;
+    if (!issueId || !workingDir) {
+      setHeaderBeadsStatus(null);
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await authFetch(
+          endpoints.issues.show(issueId, { working_dir: workingDir }),
+        );
+        if (!res.ok) {
+          if (!cancelled) setHeaderBeadsStatus(null);
+          return;
+        }
+        const data = await res.json();
+        if (cancelled) return;
+        const issueObj = Array.isArray(data) ? data[0] : data;
+        if (issueObj && !issueObj.error && issueObj.status) {
+          setHeaderBeadsStatus(issueObj.status);
+        } else {
+          setHeaderBeadsStatus(null);
+        }
+      } catch (_err) {
+        if (!cancelled) setHeaderBeadsStatus(null);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [activeSessionId, sessionInfo?.beads_issue, sessionInfo?.working_dir]);
 
   // Wire the active-conversation-removed callback consumed by useWebSocket. When
   // the active conversation is deleted or archived (in this window or via a
@@ -671,18 +715,18 @@ function App() {
     focusSession,
   ]);
 
-  // Show toast and native notification when a periodic prompt starts
+  // Show toast and native notification when a loop prompt starts
   useEffect(() => {
-    if (periodicStarted) {
+    if (loopStarted) {
       // Show native macOS notification (not sticky — auto-dismisses)
       if (
         window.mittoNativeNotificationsEnabled &&
         typeof window.mittoShowNativeNotification === "function"
       ) {
         window.mittoShowNativeNotification(
-          periodicStarted.sessionName || "Periodic Conversation",
-          "Periodic run started",
-          periodicStarted.sessionId,
+          loopStarted.sessionName || "Loop Conversation",
+          "Loop run started",
+          loopStarted.sessionId,
           false,
         );
       }
@@ -690,14 +734,14 @@ function App() {
       // Show in-app toast
       showToast({
         style: "info",
-        title: periodicStarted.sessionName || "Periodic Conversation",
-        message: "periodic run started",
+        title: loopStarted.sessionName || "Loop Conversation",
+        message: "loop run started",
         duration: 5000,
-        onClick: () => focusSession(periodicStarted.sessionId),
+        onClick: () => focusSession(loopStarted.sessionId),
       });
-      clearPeriodicStarted();
+      clearLoopStarted();
     }
-  }, [periodicStarted, clearPeriodicStarted, showToast, focusSession]);
+  }, [loopStarted, clearLoopStarted, showToast, focusSession]);
 
   // Show toast when a UI prompt arrives in a background session
   useEffect(() => {
@@ -1874,42 +1918,39 @@ function App() {
     // (cross-window), mirroring how deletion defers to removeSession (mitto-17d).
   };
 
-  // Convert an existing regular conversation to a periodic one by creating a
-  // draft periodic config (enabled:false). The periodic_updated WebSocket event
-  // sets periodic_configured=true (reveals the inline periodic editor in ChatInput)
-  // while periodic_enabled stays false (conversation remains in the Conversations
-  // group). The user must explicitly enable scheduling to move it to Periodic group.
-  const handleMakePeriodic = useCallback(
+  // Convert an existing regular conversation to a loop one by creating a
+  // draft loop config (enabled:false). The loop_updated WebSocket event
+  // sets loop_configured=true (reveals the inline loop editor in ChatInput)
+  // while loop_enabled stays false (conversation remains in the Conversations
+  // group). The user must explicitly enable scheduling to move it to Loop group.
+  const handleMakeLoop = useCallback(
     async (session) => {
       const sessionId = session?.session_id;
       if (!sessionId) return;
       try {
-        const res = await secureFetch(
-          apiUrl(`/api/sessions/${sessionId}/periodic`),
-          {
-            method: "PUT",
-            headers: { "Content-Type": "application/json" },
-            // Draft body: "(pending)" satisfies PeriodicPrompt.Validate() while
-            // enabled:false keeps it as DRAFT so nothing is scheduled yet.
-            body: JSON.stringify({
-              prompt: "(pending)",
-              frequency: { value: 1, unit: "hours" },
-              enabled: false,
-            }),
-          },
-        );
+        const res = await secureFetch(endpoints.sessions.loop(sessionId), {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          // Draft body: "(pending)" satisfies LoopPrompt.Validate() while
+          // enabled:false keeps it as DRAFT so nothing is scheduled yet.
+          body: JSON.stringify({
+            prompt: "(pending)",
+            frequency: { value: 1, unit: "hours" },
+            enabled: false,
+          }),
+        });
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         focusSession(sessionId);
         showToast({
           style: "success",
-          title: "Conversation is now periodic",
+          title: "Conversation is now loop",
           message: "Choose a prompt and enable scheduling.",
           duration: 6000,
         });
       } catch (e) {
         showToast({
           style: "error",
-          title: "Failed to make conversation periodic",
+          title: "Failed to make conversation loop",
           duration: 5000,
         });
       }
@@ -1917,30 +1958,29 @@ function App() {
     [focusSession, showToast],
   );
 
-  // Remove the periodic config from a conversation, reverting it to a regular one.
-  // DELETE /api/sessions/{id}/periodic broadcasts periodic_updated (nil), which
-  // sets both periodic_configured=false (hides the inline periodic editor) and
-  // periodic_enabled=false (moves conversation back to the Conversations group).
-  const handleMakeNonPeriodic = useCallback(
+  // Remove the loop config from a conversation, reverting it to a regular one.
+  // DELETE /api/sessions/{id}/loop broadcasts loop_updated (nil), which
+  // sets both loop_configured=false (hides the inline loop editor) and
+  // loop_enabled=false (moves conversation back to the Conversations group).
+  const handleMakeNonLoop = useCallback(
     async (session) => {
       const sessionId = session?.session_id;
       if (!sessionId) return;
       try {
-        const res = await secureFetch(
-          apiUrl(`/api/sessions/${sessionId}/periodic`),
-          { method: "DELETE" },
-        );
+        const res = await secureFetch(endpoints.sessions.loop(sessionId), {
+          method: "DELETE",
+        });
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         showToast({
           style: "success",
-          title: "Periodic scheduling removed",
+          title: "Loop scheduling removed",
           message: "The conversation is now a regular conversation.",
           duration: 6000,
         });
       } catch (e) {
         showToast({
           style: "error",
-          title: "Failed to remove periodic scheduling",
+          title: "Failed to remove loop scheduling",
           duration: 5000,
         });
       }
@@ -1952,21 +1992,21 @@ function App() {
   // text. The queue delivers it to the agent when the conversation is idle, so
   // this works for any conversation (not just the active one).
   //
-  // When the chosen prompt declares `periodic`, the handler branches on the target
-  // conversation's state (decidePeriodicAction):
-  //   "new-periodic"  — no session: open schedule dialog → create NEW periodic conversation.
-  //   "make-periodic" — regular conversation: configure as periodic + fire first run.
-  //   "one-shot"      — already periodic / child conversation: send prompt once, no config change.
+  // When the chosen prompt declares `loop`, the handler branches on the target
+  // conversation's state (decideLoopAction):
+  //   "new-loop"  — no session: open schedule dialog → create NEW loop conversation.
+  //   "make-loop" — regular conversation: configure as loop + fire first run.
+  //   "one-shot"  — already a loop / child conversation: send prompt once, no config change.
   const handleSendPromptToConversation = useCallback(
     async (session, prompt, opts) => {
       if (!prompt?.name) return;
 
-      const asPeriodic = promptResolveAsPeriodic(prompt, opts?.asPeriodic);
-      if (asPeriodic) {
-        const action = decidePeriodicAction(session);
+      const asLoop = promptResolveAsLoop(prompt, opts?.asLoop);
+      if (asLoop) {
+        const action = decideLoopAction(session);
 
-        if (action === "make-periodic") {
-          // Regular conversation: configure it as periodic now and fire the first run.
+        if (action === "make-loop") {
+          // Regular conversation: configure it as loop now and fire the first run.
           const sessionId = session.session_id;
           let missing = getMissingPromptParameters(prompt, "conversation");
           if (missing.length > 0 && sessionId) {
@@ -1979,19 +2019,19 @@ function App() {
               parameters: missing,
               hostSessionId: sessionId,
               onSubmit: async (userArgs) => {
-                const result = await makePeriodicNow(sessionId, prompt, {
+                const result = await makeLoopNow(sessionId, prompt, {
                   arguments: userArgs,
                 });
                 if (result.success) {
                   showToast({
                     style: "success",
-                    title: `Made conversation periodic with "${prompt.name}"`,
+                    title: `Made conversation loop with "${prompt.name}"`,
                     duration: 3000,
                   });
                 } else {
                   showToast({
                     style: "warning",
-                    title: "Failed to configure periodic schedule",
+                    title: "Failed to configure loop schedule",
                     duration: 4000,
                   });
                 }
@@ -1999,17 +2039,17 @@ function App() {
             });
             return;
           }
-          const result = await makePeriodicNow(sessionId, prompt);
+          const result = await makeLoopNow(sessionId, prompt);
           if (result.success) {
             showToast({
               style: "success",
-              title: `Made conversation periodic with "${prompt.name}"`,
+              title: `Made conversation loop with "${prompt.name}"`,
               duration: 3000,
             });
           } else {
             showToast({
               style: "warning",
-              title: "Failed to configure periodic schedule",
+              title: "Failed to configure loop schedule",
               duration: 4000,
             });
           }
@@ -2017,7 +2057,7 @@ function App() {
         }
 
         if (action === "one-shot") {
-          // Already-periodic or child conversation: enqueue a single run without touching config.
+          // Already-loop or child conversation: enqueue a single run without touching config.
           const sessionId = session?.session_id;
           if (!sessionId) return;
           let missing = getMissingPromptParameters(prompt, "conversation");
@@ -2070,13 +2110,13 @@ function App() {
           return;
         }
 
-        // action === "new-periodic": no session — open schedule dialog → create NEW periodic conversation.
+        // action === "new-loop": no session — open schedule dialog → create NEW loop conversation.
         // When the prompt has parameters, collect them first, then open the schedule dialog.
         const openScheduleDialog = (collectedArgs) => {
-          setPeriodicScheduleDialog({
+          setLoopScheduleDialog({
             prompt,
             onSchedule: async (schedule) => {
-              setPeriodicScheduleDialog(null);
+              setLoopScheduleDialog(null);
               const workingDir = session?.working_dir;
               const acpServer = session?.acp_server;
               const result = await startConversationWithPrompt({
@@ -2086,33 +2126,33 @@ function App() {
                 ...(collectedArgs && Object.keys(collectedArgs).length > 0
                   ? { arguments: collectedArgs }
                   : {}),
-                periodic: schedule,
+                loop: schedule,
               });
               if (result?.sessionId) {
                 focusSession(result.sessionId);
                 showToast({
                   style: "success",
-                  title: `Started periodic "${prompt.name}"`,
+                  title: `Started loop "${prompt.name}"`,
                   duration: 3000,
                 });
               } else {
                 showToast({
                   style: "warning",
-                  title: "Failed to start periodic conversation",
+                  title: "Failed to start loop conversation",
                   duration: 4000,
                 });
               }
             },
           });
         };
-        const missingForNewPeriodic = getMissingPromptParameters(
+        const missingForNewLoop = getMissingPromptParameters(
           prompt,
           "conversation",
         );
-        if (missingForNewPeriodic.length > 0) {
+        if (missingForNewLoop.length > 0) {
           setPromptParamDialog({
             prompt,
-            parameters: missingForNewPeriodic,
+            parameters: missingForNewLoop,
             onSubmit: (userArgs) => openScheduleDialog(userArgs),
           });
           return;
@@ -2121,7 +2161,7 @@ function App() {
         return;
       }
 
-      // Non-periodic prompt: enqueue the named prompt to the existing conversation.
+      // Non-loop prompt: enqueue the named prompt to the existing conversation.
       const sessionId = session?.session_id;
       if (!sessionId) return;
       // Auto-fill what the host conversation can supply (e.g. a lone child for a
@@ -2212,7 +2252,7 @@ function App() {
     [allSessions, activeSessionId],
   );
   const headerIsArchived = activeSession?.archived || false;
-  const headerIsPeriodic = activeSession?.periodic_configured || false;
+  const headerIsLoop = activeSession?.loop_configured || false;
   const headerIsSpawned =
     !!(activeSession && activeSession.parent_session_id) && !activeHasChildren;
   // Only the active conversation can have queued messages; streaming state comes
@@ -2227,21 +2267,21 @@ function App() {
   const headerWorkingDir =
     activeSession?.working_dir || sessionInfo?.working_dir || "";
 
-  // Header subtitle: ACP server name (always) plus, for periodic conversations, a
-  // live countdown + next scheduled run time. The periodic fields live on the
-  // stored session object (GET /api/sessions + periodic_updated broadcasts carry
+  // Header subtitle: ACP server name (always) plus, for loop conversations, a
+  // live countdown + next scheduled run time. The loop fields live on the
+  // stored session object (GET /api/sessions + loop_updated broadcasts carry
   // next_scheduled_at + frequency; the per-session "connected" message does not).
   const headerAcpServer =
     sessionInfo?.acp_server || activeSession?.acp_server || "";
   const headerNextScheduledAt =
-    (activeSession?.periodic_configured && activeSession?.next_scheduled_at) ||
+    (activeSession?.loop_configured && activeSession?.next_scheduled_at) ||
     null;
-  const headerPeriodicUnit = activeSession?.periodic_frequency?.unit || "hours";
-  // Derive a single 3-state pill for the periodic status: running | paused | stopped | null.
-  // null means not periodic (no pill rendered).
-  const headerPeriodicState = (() => {
-    if (!activeSession?.periodic_configured) return null;
-    if (activeSession?.periodic_enabled) {
+  const headerLoopUnit = activeSession?.loop_frequency?.unit || "hours";
+  // Derive a single 3-state pill for the loop status: running | paused | stopped | null.
+  // null means not loop (no pill rendered).
+  const headerLoopState = (() => {
+    if (!activeSession?.loop_configured) return null;
+    if (activeSession?.loop_enabled) {
       return {
         state: "running",
         label: "Auto",
@@ -2249,8 +2289,7 @@ function App() {
       };
     }
     // Loop is disabled — check the reason for stopped vs paused distinction
-    const entry =
-      PERIODIC_STOPPED_LABELS[activeSession?.periodic_stopped_reason];
+    const entry = LOOP_STOPPED_LABELS[activeSession?.loop_stopped_reason];
     if (entry && entry.kind === "stopped") {
       return {
         state: "stopped",
@@ -2274,46 +2313,44 @@ function App() {
   })();
   // Keep backwards-compat references used by cap-highlight logic below
   const headerStoppedReason =
-    (activeSession?.periodic_configured &&
-      activeSession?.periodic_stopped_reason) ||
+    (activeSession?.loop_configured && activeSession?.loop_stopped_reason) ||
     null;
 
-  // Periodic "glance" badges shown in the subtitle for ALL periodic sessions
+  // Loop "glance" badges shown in the subtitle for ALL loop sessions
   // (running or stopped, schedule or onCompletion).
-  const headerPeriodicTrigger = activeSession?.periodic_trigger || null;
-  const headerIterationCount = activeSession?.periodic_iteration_count ?? 0;
-  const headerMaxIterations = activeSession?.periodic_max_iterations ?? 0;
-  const headerDelaySeconds = activeSession?.periodic_delay_seconds ?? 0;
-  const headerMaxDurationSecs =
-    activeSession?.periodic_max_duration_seconds ?? 0;
+  const headerLoopTrigger = activeSession?.loop_trigger || null;
+  const headerIterationCount = activeSession?.loop_iteration_count ?? 0;
+  const headerMaxIterations = activeSession?.loop_max_iterations ?? 0;
+  const headerDelaySeconds = activeSession?.loop_delay_seconds ?? 0;
+  const headerMaxDurationSecs = activeSession?.loop_max_duration_seconds ?? 0;
 
   // Trigger badge: "every 2h" for schedule, "after agent finishes [· +Ns]" for
   // onCompletion, "on task changes" for onTasks (mitto-oja.4).
-  const headerTriggerLabel = activeSession?.periodic_configured
+  const headerTriggerLabel = activeSession?.loop_configured
     ? computeHeaderTriggerLabel(
-        headerPeriodicTrigger,
+        headerLoopTrigger,
         headerDelaySeconds,
-        activeSession?.periodic_frequency,
+        activeSession?.loop_frequency,
       )
     : null;
   // Run-count badge: "Run N of M" or "N run(s) · ∞". A compact variant ("N/M" or
   // "N·∞") is rendered alongside and CSS-swapped in on narrow screens (styles.css).
-  const headerRunCountLabel = activeSession?.periodic_configured
+  const headerRunCountLabel = activeSession?.loop_configured
     ? headerMaxIterations > 0
       ? `Run ${headerIterationCount} of ${headerMaxIterations}`
       : `${headerIterationCount} run${headerIterationCount !== 1 ? "s" : ""} · ∞`
     : null;
-  const headerRunCountLabelShort = activeSession?.periodic_configured
+  const headerRunCountLabelShort = activeSession?.loop_configured
     ? headerMaxIterations > 0
       ? `${headerIterationCount}/${headerMaxIterations}`
       : `${headerIterationCount}·∞`
     : null;
   // Max-time badge: "max 2h" etc; omitted when not set (0 means unlimited)
   const headerMaxTimeLabel =
-    activeSession?.periodic_configured && headerMaxDurationSecs > 0
-      ? `max ${formatPeriodicMaxDuration(headerMaxDurationSecs)}`
+    activeSession?.loop_configured && headerMaxDurationSecs > 0
+      ? `max ${formatLoopMaxDuration(headerMaxDurationSecs)}`
       : null;
-  // When a periodic loop is auto-stopped by a cap, soft-red highlight the
+  // When a loop loop is auto-stopped by a cap, soft-red highlight the
   // specific cap badge that was exceeded (and the Stopped badge) so the user
   // can see at a glance which limit was hit.
   const headerIterCapHit =
@@ -2382,28 +2419,313 @@ function App() {
 
   const {
     contextMenu: headerMenu,
-    contextMenuItems: headerMenuItems,
+    promptGroupItems: headerPromptGroupItems,
     closeContextMenu: closeHeaderMenu,
     handleMenuButtonClick: handleHeaderMenuButtonClick,
   } = useConversationMenu({
     session: activeSession,
     workingDir: headerWorkingDir,
     isArchived: headerIsArchived,
-    isPeriodicConfigured: headerIsPeriodic,
+    isLoopConfigured: headerIsLoop,
     isSpawned: headerIsSpawned,
     canArchive: headerCanArchive,
     archiveBlockedReason: headerArchiveBlockedReason,
     onRename: handleOpenSessionProperties,
     onDelete: handleDeleteSession,
     onArchive: handleArchiveSession,
-    onMakePeriodic: handleMakePeriodic,
-    onMakeNonPeriodic: handleMakeNonPeriodic,
+    onMakeLoop: handleMakeLoop,
+    onMakeNonLoop: handleMakeNonLoop,
     onFetchConversationPrompts: fetchConversationPromptsForSession,
     onSendPromptToConversation: handleSendPromptToConversation,
     onCopyConversation: activeSessionId ? handleCopyConversation : undefined,
     flushCommand: sessionInfo?.context_flush_command || "",
     onFlushContext: activeSessionId ? handleFlushContext : undefined,
   });
+
+  // Conversation toolbar items (rendered as a portable Toolbar pill below the
+  // title header). The actions that used to live inside the "…" conversation
+  // menu are now promoted to individual buttons (Copy, Flush, loop toggle,
+  // Archive, Delete), each gated exactly like its former menu entry. The
+  // hierarchical prompt groups (menus:conversation prompts) stay behind a
+  // single dropdown button that opens the shared ContextMenu (lazy-loaded).
+  // "Properties" is intentionally omitted — the Session-details side-panel
+  // toggle already covers it. The toggle carries an active state while the
+  // panel is open.
+  const conversationHasFlush = !!(
+    sessionInfo && sessionInfo.context_flush_command
+  );
+  // Linked beads issue for the right-aligned toolbar button. The button is
+  // disabled when the conversation has no linked issue; the badge dot color
+  // reflects the fetched status (see headerBeadsStatus above). Dot colors use
+  // vivid 500-level tokens confirmed present in the precompiled tailwind.css.
+  const headerBeadsIssue = sessionInfo?.beads_issue || "";
+  const headerBeadsDotColor =
+    {
+      open: "bg-green-500",
+      in_progress: "bg-blue-500",
+      blocked: "bg-red-500",
+      deferred: "bg-cyan-800",
+      closed: "bg-slate-400",
+    }[headerBeadsStatus] || "bg-slate-400";
+
+  // Per-folder shortcut buttons configured for this folder's `conversations`
+  // section (mirrors the `tasksList` shortcuts in BeadsView.js). Each button
+  // runs a `prompts`/`conversation`-menu prompt in the active conversation. A
+  // missing/renamed linked prompt renders disabled rather than erroring.
+  const [convShortcuts, setConvShortcuts] = useState([]);
+  const [convShortcutPromptMap, setConvShortcutPromptMap] = useState(new Map());
+
+  const loadConvShortcuts = useCallback(
+    async (isStale) => {
+      const wd = sessionInfo?.working_dir;
+      const sess = activeSession;
+      if (!wd || !activeSessionId) {
+        setConvShortcuts([]);
+        setConvShortcutPromptMap(new Map());
+        return;
+      }
+      try {
+        // Merge global + folder shortcuts for the conversations section. Global
+        // buttons come first; folder buttons duplicating a global prompt drop out.
+        const [folderRes, globalRes] = await Promise.all([
+          authFetch(endpoints.folders.shortcuts({ working_dir: wd })),
+          authFetch(endpoints.global.shortcuts()).catch(() => null),
+        ]);
+        const data = await folderRes.json().catch(() => ({}));
+        const globalData = globalRes
+          ? await globalRes.json().catch(() => ({}))
+          : {};
+        const globalList = globalData?.sections?.conversations || [];
+        const folderList = data?.sections?.conversations || [];
+        const globalNames = new Set(globalList.map((s) => s.prompt));
+        const list = [
+          ...globalList,
+          ...folderList.filter((s) => !globalNames.has(s.prompt)),
+        ];
+        if (isStale && isStale()) return;
+        setConvShortcuts(list);
+        if (list.length > 0) {
+          // Resolve against the union of the `prompts` (ChatInput dropup) and
+          // `conversation` menus so buttons configured from either list run.
+          const prompts = await fetchConversationPromptsForSession(sess, wd, [
+            "prompts",
+            "conversation",
+          ]);
+          if (isStale && isStale()) return;
+          const map = new Map((prompts || []).map((p) => [p.name, p]));
+          setConvShortcutPromptMap(map);
+        } else {
+          setConvShortcutPromptMap(new Map());
+        }
+      } catch (_err) {
+        if (isStale && isStale()) return;
+        setConvShortcuts([]);
+        setConvShortcutPromptMap(new Map());
+      }
+    },
+    [
+      sessionInfo?.working_dir,
+      activeSessionId,
+      activeSession,
+      fetchConversationPromptsForSession,
+    ],
+  );
+
+  // Initial load (and reload on folder/conversation switch), with
+  // stale-fetch cancellation.
+  useEffect(() => {
+    let cancelled = false;
+    loadConvShortcuts(() => cancelled);
+    return () => {
+      cancelled = true;
+    };
+  }, [loadConvShortcuts]);
+
+  // Refresh shortcut buttons immediately when the Workspaces dialog saves new
+  // shortcuts for this folder, so no page reload is needed.
+  useEffect(() => {
+    const handler = (e) => {
+      const dir = e?.detail?.working_dir;
+      if (!dir || dir === sessionInfo?.working_dir) loadConvShortcuts();
+    };
+    // Global shortcuts changes affect every folder, so always refresh.
+    const globalHandler = () => loadConvShortcuts();
+    window.addEventListener("mitto:folder_shortcuts_updated", handler);
+    window.addEventListener("mitto:global_shortcuts_updated", globalHandler);
+    return () => {
+      window.removeEventListener("mitto:folder_shortcuts_updated", handler);
+      window.removeEventListener(
+        "mitto:global_shortcuts_updated",
+        globalHandler,
+      );
+    };
+  }, [loadConvShortcuts, sessionInfo?.working_dir]);
+
+  // Shortcut items for the conversation toolbar (mirrors shortcutItems in
+  // BeadsView.js). Each button runs its linked prompt in the active
+  // conversation via handleSendPromptToConversation.
+  const convShortcutItems = convShortcuts.map((sc, i) => {
+    const prompt = convShortcutPromptMap.get(sc.prompt);
+    const found = !!prompt;
+    const Icon = getPromptIconOrDefault(sc.icon || (prompt && prompt.icon));
+    return {
+      kind: "button",
+      testId: `conversation-shortcut-btn-${i}`,
+      icon: html`<${Icon} className="w-4 h-4" />`,
+      tip: found ? sc.prompt : `Prompt "${sc.prompt}" not found`,
+      ariaLabel: found
+        ? `Run "${sc.prompt}"`
+        : `Prompt "${sc.prompt}" not found`,
+      disabled: !found,
+      onClick: () =>
+        found && handleSendPromptToConversation(activeSession, prompt),
+    };
+  });
+
+  const conversationToolbarItems = [
+    ...(activeSessionId
+      ? [
+          {
+            kind: "button",
+            testId: "header-conversation-prompts",
+            icon: html`<${LightningIcon} className="w-4 h-4" />`,
+            tip: "Conversation prompts",
+            ariaLabel: "Conversation prompts",
+            active: !!headerMenu,
+            onClick: handleHeaderMenuButtonClick,
+          },
+          {
+            kind: "button",
+            testId: "header-copy-markdown",
+            icon: html`<${CopyIcon} className="w-4 h-4" />`,
+            tip: "Copy as Markdown",
+            ariaLabel: "Copy as Markdown",
+            onClick: handleCopyConversation,
+          },
+          ...(conversationHasFlush
+            ? [
+                {
+                  kind: "button",
+                  testId: "header-flush-context",
+                  icon: html`<${BroomIcon} className="w-4 h-4" />`,
+                  tip: `Flush context (${sessionInfo.context_flush_command})`,
+                  ariaLabel: "Flush context",
+                  onClick: () => handleFlushContext(activeSession),
+                },
+              ]
+            : []),
+          ...(!headerIsLoop && !headerIsSpawned && !headerIsArchived
+            ? [
+                {
+                  kind: "button",
+                  testId: "header-make-loop",
+                  icon: html`<${LoopIcon} className="w-4 h-4" />`,
+                  tip: "Loop",
+                  ariaLabel: "Loop",
+                  onClick: () => handleMakeLoop(activeSession),
+                },
+              ]
+            : []),
+          ...(headerIsLoop && !headerIsSpawned
+            ? [
+                {
+                  kind: "button",
+                  testId: "header-make-non-loop",
+                  icon: html`<${LoopOffIcon} className="w-4 h-4" />`,
+                  tip: "Unloop",
+                  ariaLabel: "Unloop",
+                  onClick: () => handleMakeNonLoop(activeSession),
+                },
+              ]
+            : []),
+          // Per-folder configurable prompt shortcuts (conversations section).
+          ...(convShortcuts.length > 0
+            ? [{ kind: "separator" }, ...convShortcutItems]
+            : []),
+          // Separator before the destructive group (archive + delete), keeping
+          // those two together but set apart from the actions above.
+          { kind: "separator" },
+          ...(headerIsSpawned
+            ? []
+            : [
+                {
+                  kind: "button",
+                  testId: "header-archive",
+                  icon: headerIsArchived
+                    ? html`<${ArchiveFilledIcon} className="w-4 h-4" />`
+                    : html`<${ArchiveIcon} className="w-4 h-4" />`,
+                  tip: !headerCanArchive
+                    ? headerArchiveBlockedReason
+                    : headerIsArchived
+                      ? "Unarchive"
+                      : "Archive",
+                  ariaLabel: headerIsArchived ? "Unarchive" : "Archive",
+                  disabled: !headerCanArchive,
+                  onClick: () =>
+                    handleArchiveSession(activeSession, !headerIsArchived),
+                },
+              ]),
+          {
+            kind: "button",
+            testId: "header-delete",
+            icon: html`<${TrashIcon} className="w-4 h-4" />`,
+            tip: "Delete",
+            ariaLabel: "Delete",
+            danger: true,
+            onClick: () => handleDeleteSession(activeSession),
+          },
+        ]
+      : []),
+    // Spacer pushes the right-aligned controls to the far right of the pill.
+    { kind: "spacer" },
+    // Linked beads issue: opens the docked issue viewer for the conversation's
+    // associated issue. Disabled when there is no linked issue; a status badge
+    // dot appears once the (possibly slow) status fetch resolves. Sits just to
+    // the left of the Session-details toggle.
+    ...(activeSessionId
+      ? [
+          {
+            kind: "button",
+            testId: "header-linked-issue",
+            icon: html`<span class="relative inline-flex">
+              <${BeadsIcon} className="w-4 h-4" />
+              ${headerBeadsIssue && headerBeadsStatus
+                ? html`<span
+                    class="absolute -top-1 -right-1 w-2 h-2 rounded-full ${headerBeadsDotColor} border border-mitto-border-1"
+                  ></span>`
+                : null}
+            </span>`,
+            tip: headerBeadsIssue
+              ? `Linked issue ${headerBeadsIssue}${
+                  headerBeadsStatus
+                    ? ` (${headerBeadsStatus.replace(/_/g, " ")})`
+                    : ""
+                }`
+              : "No linked issue",
+            ariaLabel: headerBeadsIssue
+              ? `Open linked issue ${headerBeadsIssue}`
+              : "No linked issue",
+            disabled: !headerBeadsIssue,
+            onClick: () =>
+              handleOpenBeadsIssue(
+                headerBeadsIssue,
+                sessionInfo?.working_dir || "",
+                activeSessionId,
+                { reopenProperties: false },
+              ),
+          },
+        ]
+      : []),
+    {
+      kind: "button",
+      testId: "header-session-details",
+      icon: html`<${SidePanelIcon} className="w-4 h-4" />`,
+      tip: "Session details",
+      ariaLabel: "Session details",
+      active: showSidePanel,
+      onClick: handleToggleSidePanel,
+    },
+  ];
 
   return html`
     <div class="drawer md:drawer-open h-screen-safe sidebar-shell">
@@ -2566,6 +2888,14 @@ function App() {
             refreshWorkspaces();
             invalidateConfigCache();
           }}
+          onOpenPromptParamDialog=${(prompt, parameters, onSubmit, opts = {}) =>
+            setPromptParamDialog({
+              prompt,
+              parameters,
+              onSubmit,
+              initialValues: opts.initialValues,
+              hostSessionId: opts.hostSessionId,
+            })}
         />
 
         <!-- Keyboard Shortcuts Dialog -->
@@ -2574,16 +2904,16 @@ function App() {
           onClose=${() => setKeyboardShortcutsDialog({ isOpen: false })}
         />
 
-        <!-- Periodic Schedule Dialog: opened when a periodic-declaring prompt is selected -->
-        <${PeriodicScheduleDialog}
-          isOpen=${periodicScheduleDialog !== null}
-          prompt=${periodicScheduleDialog?.prompt}
+        <!-- Loop Schedule Dialog: opened when a loop-declaring prompt is selected -->
+        <${LoopScheduleDialog}
+          isOpen=${loopScheduleDialog !== null}
+          prompt=${loopScheduleDialog?.prompt}
           onConfirm=${(schedule) => {
-            const { onSchedule } = periodicScheduleDialog || {};
-            setPeriodicScheduleDialog(null);
+            const { onSchedule } = loopScheduleDialog || {};
+            setLoopScheduleDialog(null);
             onSchedule?.(schedule);
           }}
-          onCancel=${() => setPeriodicScheduleDialog(null)}
+          onCancel=${() => setLoopScheduleDialog(null)}
         />
 
         <!-- Prompt Parameter Dialog: opened when a menu (beads, conversation, or
@@ -2610,123 +2940,120 @@ function App() {
 
         <!-- Main content area: beads view or conversation -->
         ${mainView === "beads" && beadsWorkingDir
-            ? html`
+          ? html`
+              <div
+                class="flex-1 flex flex-col min-w-0 overflow-hidden bg-mitto-bg"
+              >
+                <${BeadsView}
+                  workingDir=${beadsWorkingDir}
+                  onClose=${() => setMainView("conversation")}
+                  showToast=${showToast}
+                  dismissToast=${dismissToast}
+                  onFetchBeadsPrompts=${fetchBeadsPromptsForWorkspace}
+                  onRunBeadsPrompt=${handleRunBeadsPrompt}
+                  onFetchBeadsListPrompts=${fetchBeadsListPromptsForWorkspace}
+                  onRunBeadsListPrompt=${handleRunBeadsListPrompt}
+                  onShowSidebar=${() => setShowSidebar(true)}
+                  onOpenConfig=${window.mittoIsExternal === true
+                    ? undefined
+                    : () =>
+                        handleShowWorkspacesForFolder(beadsWorkingDir, "beads")}
+                  issueSessionMap=${beadsIssueSessionMap}
+                  issueStreamingSet=${beadsIssueStreamingSet}
+                  onOpenConversation=${handleSelectSession}
+                  onLaunchPrompt=${handleBeadsLaunchPrompt}
+                  initialCreateNonce=${beadsCreateNonce}
+                  initialRefreshNonce=${beadsRefreshNonce}
+                  initialCleanupNonce=${beadsCleanupNonce}
+                />
+              </div>
+            `
+          : html`
+              <div
+                ref=${mainContentRef}
+                class="flex-1 flex flex-col min-w-0 overflow-hidden"
+              >
+                <!-- Header -->
                 <div
-                  class="flex-1 flex flex-col min-w-0 overflow-hidden bg-mitto-bg"
+                  class="relative pt-4 px-4 pb-2 bg-mitto-sidebar flex items-center gap-3 shrink-0"
                 >
-                  <${BeadsView}
-                    workingDir=${beadsWorkingDir}
-                    onClose=${() => setMainView("conversation")}
-                    showToast=${showToast}
-                    dismissToast=${dismissToast}
-                    onFetchBeadsPrompts=${fetchBeadsPromptsForWorkspace}
-                    onRunBeadsPrompt=${handleRunBeadsPrompt}
-                    onFetchBeadsListPrompts=${fetchBeadsListPromptsForWorkspace}
-                    onRunBeadsListPrompt=${handleRunBeadsListPrompt}
-                    onShowSidebar=${() => setShowSidebar(true)}
-                    onOpenConfig=${window.mittoIsExternal === true
-                      ? undefined
-                      : () =>
-                          handleShowWorkspacesForFolder(
-                            beadsWorkingDir,
-                            "beads",
-                          )}
-                    issueSessionMap=${beadsIssueSessionMap}
-                    issueStreamingSet=${beadsIssueStreamingSet}
-                    onOpenConversation=${handleSelectSession}
-                    onLaunchPrompt=${handleBeadsLaunchPrompt}
-                    initialCreateNonce=${beadsCreateNonce}
-                    initialRefreshNonce=${beadsRefreshNonce}
-                    initialCleanupNonce=${beadsCleanupNonce}
-                  />
-                </div>
-              `
-            : html`
-                <div
-                  ref=${mainContentRef}
-                  class="flex-1 flex flex-col min-w-0 overflow-hidden"
-                >
-                  <!-- Header -->
-                  <div
-                    class="relative p-4 bg-mitto-sidebar border-b border-mitto-border-1 flex items-center gap-3 shrink-0"
+                  <${Tooltip}
+                    tip="Show conversations"
+                    placement="bottom"
+                    className="md:hidden"
                   >
-                    <${Tooltip}
-                      tip="Show conversations"
-                      placement="bottom"
-                      className="md:hidden"
+                    <button
+                      class="p-2 hover:bg-mitto-surface-hover rounded-lg transition-colors"
+                      onClick=${() => setShowSidebar(true)}
+                      aria-label="Show conversations"
                     >
-                      <button
-                        class="p-2 hover:bg-mitto-surface-hover rounded-lg transition-colors"
-                        onClick=${() => setShowSidebar(true)}
-                        aria-label="Show conversations"
-                      >
-                        <${MenuIcon} className="w-6 h-6" />
-                      </button>
-                    <//>
-                    <div class="flex-1 min-w-0 flex flex-col justify-center">
-                      <h1
-                        class="font-bold text-xl truncate no-underline tooltip tooltip-bottom ${!activeSessionId
-                          ? "text-mitto-text-muted"
-                          : connected
-                            ? ""
-                            : "text-mitto-text-muted"}"
-                        data-tip=${activeSessionId
-                          ? sessionInfo?.name || "New conversation"
-                          : ""}
-                        aria-label=${activeSessionId
-                          ? sessionInfo?.name || "New conversation"
-                          : ""}
-                      >
-                        ${activeSessionId
-                          ? sessionInfo?.name || "New conversation"
-                          : "No Active Session"}
-                      </h1>
-                      ${activeSessionId &&
-                      (headerAcpServer ||
-                        headerNextScheduledAt ||
-                        headerPeriodicState ||
-                        activeSession?.periodic_configured) &&
-                      html`<div
-                        class="text-xs text-mitto-text-muted truncate flex items-center gap-2 min-w-0"
-                        data-testid="conversation-header-subtitle"
-                      >
-                        ${headerPeriodicState &&
-                        html`<span
-                          class="badge badge-sm ${headerPeriodicState.badgeClass} whitespace-nowrap inline-flex items-center gap-1"
-                          data-testid="periodic-status-pill"
-                          title=${headerPeriodicState.state === "running"
-                            ? "Periodic loop is iterating"
-                            : (activeSession?.periodic_stopped_reason || "") +
-                              (activeSession?.stopped_at
-                                ? " · " +
-                                  new Date(
-                                    activeSession.stopped_at,
-                                  ).toLocaleString()
-                                : "")}
-                          >${headerPeriodicState.state === "running"
-                            ? html`<${PeriodicIcon} className="w-3 h-3" />`
-                            : headerPeriodicState.state === "stopped"
-                              ? html`<${StopIcon} className="w-3 h-3" />`
-                              : html`<${PauseFilledIcon}
-                                  className="w-3 h-3"
-                                />`}<span class="badge-collapse-label"
-                            >${headerPeriodicState.label}</span
-                          ></span
-                        >`}
-                        ${headerAcpServer &&
-                        html`<span class="truncate min-w-0"
-                          >${headerAcpServer}</span
-                        >`}
-                        ${headerTriggerLabel &&
-                        html`<${Fragment}>
+                      <${MenuIcon} className="w-6 h-6" />
+                    </button>
+                  <//>
+                  <div class="flex-1 min-w-0 flex flex-col justify-center">
+                    <h1
+                      class="font-bold text-xl truncate no-underline tooltip tooltip-bottom ${!activeSessionId
+                        ? "text-mitto-text-muted"
+                        : connected
+                          ? ""
+                          : "text-mitto-text-muted"}"
+                      data-tip=${activeSessionId
+                        ? sessionInfo?.name || "New conversation"
+                        : ""}
+                      aria-label=${activeSessionId
+                        ? sessionInfo?.name || "New conversation"
+                        : ""}
+                    >
+                      ${activeSessionId
+                        ? sessionInfo?.name || "New conversation"
+                        : "No Active Session"}
+                    </h1>
+                    ${activeSessionId &&
+                    (headerAcpServer ||
+                      headerNextScheduledAt ||
+                      headerLoopState ||
+                      activeSession?.loop_configured) &&
+                    html`<div
+                      class="text-xs text-mitto-text-muted truncate flex items-center gap-2 min-w-0"
+                      data-testid="conversation-header-subtitle"
+                    >
+                      ${headerLoopState &&
+                      html`<span
+                        class="badge badge-sm ${headerLoopState.badgeClass} whitespace-nowrap inline-flex items-center gap-1"
+                        data-testid="loop-status-pill"
+                        title=${headerLoopState.state === "running"
+                          ? "Loop loop is iterating"
+                          : (activeSession?.loop_stopped_reason || "") +
+                            (activeSession?.stopped_at
+                              ? " · " +
+                                new Date(
+                                  activeSession.stopped_at,
+                                ).toLocaleString()
+                              : "")}
+                        >${headerLoopState.state === "running"
+                          ? html`<${LoopIcon} className="w-3 h-3" />`
+                          : headerLoopState.state === "stopped"
+                            ? html`<${StopIcon} className="w-3 h-3" />`
+                            : html`<${PauseFilledIcon}
+                                className="w-3 h-3"
+                              />`}<span class="badge-collapse-label"
+                          >${headerLoopState.label}</span
+                        ></span
+                      >`}
+                      ${headerAcpServer &&
+                      html`<span class="truncate min-w-0"
+                        >${headerAcpServer}</span
+                      >`}
+                      ${headerTriggerLabel &&
+                      html`<${Fragment}>
                 <span class="opacity-60">·</span>
                 <span
                   class="badge badge-sm badge-ghost whitespace-nowrap inline-flex items-center gap-1"
-                  data-testid="periodic-trigger-badge"
+                  data-testid="loop-trigger-badge"
                 >${
-                  headerPeriodicTrigger === "onCompletion"
+                  headerLoopTrigger === "onCompletion"
                     ? html`<${CheckIcon} className="w-3 h-3" />`
-                    : headerPeriodicTrigger === "onTasks"
+                    : headerLoopTrigger === "onTasks"
                       ? html`<${BeadsIcon} className="w-3 h-3" />`
                       : html`<${ClockIcon} className="w-3 h-3" />`
                 }<span
@@ -2734,12 +3061,12 @@ function App() {
                     >${headerTriggerLabel}</span
                   ></span>
               </${Fragment}>`}
-                        ${headerRunCountLabel !== null &&
-                        html`<${Fragment}>
+                      ${headerRunCountLabel !== null &&
+                      html`<${Fragment}>
                 <span class="opacity-60">·</span>
                 <span
                   class="badge badge-sm ${headerRunCountBadgeClass} whitespace-nowrap"
-                  data-testid="periodic-run-count-badge"
+                  data-testid="loop-run-count-badge"
                   title=${
                     headerIterCapHit
                       ? "Reached the maximum number of iterations"
@@ -2749,20 +3076,20 @@ function App() {
                   ><span class="runcount-short">${headerRunCountLabelShort}</span
                 ></span>
               </${Fragment}>`}
-                        ${headerMaxTimeLabel &&
-                        html`<${Fragment}>
+                      ${headerMaxTimeLabel &&
+                      html`<${Fragment}>
                 <span class="opacity-60">·</span>
                 <span
                   class="badge badge-sm ${headerMaxTimeBadgeClass} whitespace-nowrap"
-                  data-testid="periodic-max-time-badge"
+                  data-testid="loop-max-time-badge"
                   title=${
                     headerTimeCapHit ? "Reached the maximum run time" : null
                   }
                 >${headerMaxTimeLabel}</span>
               </${Fragment}>`}
-                        ${headerPeriodicState?.state === "running" &&
-                        headerNextScheduledAt &&
-                        html`<${Fragment}>
+                      ${headerLoopState?.state === "running" &&
+                      headerNextScheduledAt &&
+                      html`<${Fragment}>
                 ${
                   headerAcpServer ||
                   headerTriggerLabel ||
@@ -2773,271 +3100,244 @@ function App() {
                 }
                 <${CountdownDisplay}
                   targetIso=${headerNextScheduledAt}
-                  unit=${headerPeriodicUnit}
+                  unit=${headerLoopUnit}
                   active=${true}
                   className="whitespace-nowrap"
                 />
               </${Fragment}>`}
-                      </div>`}
+                    </div>`}
+                  </div>
+                </div>
+
+                <!-- Conversation toolbar: the portable Toolbar pill, sitting
+                       right below the title header and vertically aligned with
+                       the sidebar toolbar (both live in a px-3 wrapper directly
+                       under their p-4 header). Holds the actions that used to
+                       sit top-right in the header: the "…" conversation-actions
+                       menu and the Session-details panel toggle. -->
+                <div
+                  class="px-3 pb-2 shrink-0"
+                  data-testid="conversation-toolbar"
+                >
+                  <${Toolbar}
+                    variant="block"
+                    surface="bg-mitto-surface-3"
+                    ariaLabel="Conversation actions"
+                    items=${conversationToolbarItems}
+                  />
+                </div>
+                ${headerMenu &&
+                html`
+                  <${ContextMenu}
+                    x=${headerMenu.x}
+                    y=${headerMenu.y}
+                    items=${headerPromptGroupItems}
+                    onClose=${closeHeaderMenu}
+                  />
+                `}
+
+                <!-- Messages wrapper (for positioning scroll-to-bottom button and plan panel) -->
+                <div class="flex-1 relative min-h-0 overflow-hidden">
+                  <!-- Agent Plan Panel (floating overlay at top) -->
+                  <${AgentPlanPanel}
+                    isOpen=${showPlanPanel}
+                    onClose=${handleClosePlanPanel}
+                    onToggle=${handleTogglePlanPanel}
+                    entries=${planEntries}
+                    userPinned=${planUserPinned}
+                  />
+                  <!-- Agent Plan Indicator (shown when panel is collapsed but has entries) -->
+                  ${!showPlanPanel &&
+                  planEntries.length > 0 &&
+                  html`
+                    <div
+                      class="absolute top-2 left-1/2 transform -translate-x-1/2 z-10"
+                    >
+                      <${AgentPlanIndicator}
+                        onClick=${handleTogglePlanPanel}
+                        entries=${planEntries}
+                      />
                     </div>
-                    <div class="ml-auto flex items-center gap-2">
-                      <!-- Conversation actions menu (mirrors the sidebar row menu) -->
-                      ${activeSessionId
-                        ? html`
-                            <${Tooltip}
-                              tip="Conversation actions"
-                              placement="bottom"
-                              portal
-                            >
-                              <button
-                                type="button"
-                                onClick=${handleHeaderMenuButtonClick}
-                                class="p-1.5 rounded hover:bg-mitto-surface-hover transition-colors text-mitto-text-secondary hover:text-mitto-text-200"
-                                aria-label="Conversation actions"
-                                data-testid="header-conversation-menu"
-                              >
-                                <${EllipsisIcon} className="w-4 h-4" />
-                              </button>
-                            <//>
-                          `
-                        : null}
-                      <!-- Unified side panel toggle -->
-                      <${Tooltip}
-                        tip="Session details"
-                        placement="bottom"
-                        portal
-                      >
-                        <button
-                          onClick=${handleToggleSidePanel}
-                          class="p-1.5 rounded hover:bg-mitto-surface-hover transition-colors ${showSidePanel
-                            ? "bg-mitto-surface-3 text-mitto-accent"
-                            : "text-mitto-text-secondary hover:text-mitto-text-200"}"
-                          aria-label="Session details"
-                        >
-                          <${SidePanelIcon} className="w-4 h-4" />
-                        </button>
-                      <//>
+                  `}
+                  <!-- Messages list (scrollable container + scroll-to-bottom button) -->
+                  <${MessageList}
+                    displayMessages=${displayMessages}
+                    messages=${messages}
+                    hasMoreMessages=${hasMoreMessages}
+                    hasReachedLimit=${hasReachedLimit}
+                    isLoadingMore=${isLoadingMore}
+                    isStreaming=${isStreaming}
+                    agentWorking=${agentWorking}
+                    onLoadMore=${handleLoadMore}
+                    onScrollToBottom=${scrollToBottom}
+                    isUserAtBottom=${isUserAtBottom}
+                    hasNewMessages=${hasNewMessages}
+                    sentinelRef=${sentinelRef}
+                    onRetry=${handleSendPrompt}
+                    activeSessionId=${activeSessionId}
+                    swipeDirection=${swipeDirection}
+                    swipeArrow=${swipeArrow}
+                    connected=${connected}
+                    sessionInfo=${sessionInfo}
+                    workspaces=${workspaces}
+                    messagesContainerRef=${messagesContainerRef}
+                  />
+                </div>
+                <!-- End of messages wrapper -->
+
+                <!-- Persistent MCP-unavailable banner (global; survives reconnects). -->
+                ${mcpStatus &&
+                mcpStatus.available === false &&
+                html`
+                  <div class="flex justify-center my-2">
+                    <div
+                      role="alert"
+                      class="alert alert-warning max-w-2xl text-sm py-2"
+                    >
+                      <span>
+                        MCP server
+                        unavailable${mcpStatus.reason === "port_in_use"
+                          ? ` — port ${mcpStatus.port} is already in use (another Mitto instance may be running)`
+                          : mcpStatus.port
+                            ? ` (port ${mcpStatus.port})`
+                            : ""}.
+                        Mitto continues without MCP tools.
+                      </span>
                     </div>
                   </div>
-                  ${headerMenu &&
-                  html`
-                    <${ContextMenu}
-                      x=${headerMenu.x}
-                      y=${headerMenu.y}
-                      items=${headerMenuItems}
-                      onClose=${closeHeaderMenu}
-                    />
-                  `}
+                `}
 
-                  <!-- Messages wrapper (for positioning scroll-to-bottom button and plan panel) -->
-                  <div class="flex-1 relative min-h-0 overflow-hidden">
-                    <!-- Agent Plan Panel (floating overlay at top) -->
-                    <${AgentPlanPanel}
-                      isOpen=${showPlanPanel}
-                      onClose=${handleClosePlanPanel}
-                      onToggle=${handleTogglePlanPanel}
-                      entries=${planEntries}
-                      userPinned=${planUserPinned}
-                    />
-                    <!-- Agent Plan Indicator (shown when panel is collapsed but has entries) -->
-                    ${!showPlanPanel &&
-                    planEntries.length > 0 &&
-                    html`
-                      <div
-                        class="absolute top-2 left-1/2 transform -translate-x-1/2 z-10"
-                      >
-                        <${AgentPlanIndicator}
-                          onClick=${handleTogglePlanPanel}
-                          entries=${planEntries}
-                        />
-                      </div>
-                    `}
-                    <!-- Messages list (scrollable container + scroll-to-bottom button) -->
-                    <${MessageList}
-                      displayMessages=${displayMessages}
-                      messages=${messages}
-                      hasMoreMessages=${hasMoreMessages}
-                      hasReachedLimit=${hasReachedLimit}
-                      isLoadingMore=${isLoadingMore}
-                      isStreaming=${isStreaming}
-                      agentWorking=${agentWorking}
-                      onLoadMore=${handleLoadMore}
-                      onScrollToBottom=${scrollToBottom}
-                      isUserAtBottom=${isUserAtBottom}
-                      hasNewMessages=${hasNewMessages}
-                      sentinelRef=${sentinelRef}
-                      onRetry=${handleSendPrompt}
-                      activeSessionId=${activeSessionId}
-                      swipeDirection=${swipeDirection}
-                      swipeArrow=${swipeArrow}
-                      connected=${connected}
-                      sessionInfo=${sessionInfo}
-                      workspaces=${workspaces}
-                      messagesContainerRef=${messagesContainerRef}
-                    />
+                <!-- ACP reconnecting banner (shown when ACP not ready and there are messages) -->
+                <!-- Only show when global WS is connected — during shutdown, WS disconnects and we don't want to show this -->
+                <!-- Skip for GC-suspended sessions — they are intentionally paused, not reconnecting -->
+                ${connected &&
+                activeSessionId &&
+                sessionInfo &&
+                !sessionInfo.acp_ready &&
+                !sessionInfo.archived &&
+                !sessionInfo.gc_suspended &&
+                messages.length > 0 &&
+                html`
+                  <div class="flex items-center justify-center py-2 text-sm">
+                    <span class="skeleton skeleton-text skeleton-text-readable"
+                      >Establishing ACP session...</span
+                    >
                   </div>
-                  <!-- End of messages wrapper -->
+                `}
 
-                  <!-- Persistent MCP-unavailable banner (global; survives reconnects). -->
-                  ${mcpStatus &&
-                  mcpStatus.available === false &&
-                  html`
-                    <div class="flex justify-center my-2">
-                      <div
-                        role="alert"
-                        class="alert alert-warning max-w-2xl text-sm py-2"
-                      >
-                        <span>
-                          MCP server
-                          unavailable${mcpStatus.reason === "port_in_use"
-                            ? ` — port ${mcpStatus.port} is already in use (another Mitto instance may be running)`
-                            : mcpStatus.port
-                              ? ` (port ${mcpStatus.port})`
-                              : ""}.
-                          Mitto continues without MCP tools.
-                        </span>
-                      </div>
+                <!-- Archive reason banner (shown when conversation is archived and has a reason) -->
+                <!-- Uses the same balloon style as system messages for visual consistency -->
+                ${sessionInfo?.archived &&
+                sessionInfo?.archive_reason &&
+                html`
+                  <div class="flex justify-center mb-3">
+                    <div
+                      class="text-xs text-mitto-text-muted bg-mitto-surface-2/50 px-3 py-1 rounded-full"
+                    >
+                      ${getArchiveReasonText(
+                        sessionInfo.archive_reason,
+                        sessionInfo.archived_at,
+                      )}
                     </div>
-                  `}
+                  </div>
+                `}
 
-                  <!-- ACP reconnecting banner (shown when ACP not ready and there are messages) -->
-                  <!-- Only show when global WS is connected — during shutdown, WS disconnects and we don't want to show this -->
-                  <!-- Skip for GC-suspended sessions — they are intentionally paused, not reconnecting -->
-                  ${connected &&
-                  activeSessionId &&
-                  sessionInfo &&
-                  !sessionInfo.acp_ready &&
-                  !sessionInfo.archived &&
-                  !sessionInfo.gc_suspended &&
-                  messages.length > 0 &&
-                  html`
-                    <div class="flex items-center justify-center py-2 text-sm">
-                      <span
-                        class="skeleton skeleton-text skeleton-text-readable"
-                        >Establishing ACP session...</span
-                      >
-                    </div>
-                  `}
+                <!-- Input Area Container (relative for QueueDropdown positioning) -->
+                <div class="relative shrink-0">
+                  <!-- Queue Dropdown (floating overlay above input) -->
+                  <${QueueDropdown}
+                    isOpen=${showQueueDropdown}
+                    onClose=${handleCloseQueueDropdown}
+                    messages=${queueMessages}
+                    onDelete=${handleDeleteQueueMessage}
+                    onMove=${handleMoveQueueMessage}
+                    isDeleting=${isDeletingQueueMessage}
+                    isMoving=${isMovingQueueMessage}
+                    queueLength=${queueLength}
+                    maxSize=${queueConfig.max_size}
+                  />
 
-                  <!-- Archive reason banner (shown when conversation is archived and has a reason) -->
-                  <!-- Uses the same balloon style as system messages for visual consistency -->
-                  ${sessionInfo?.archived &&
-                  sessionInfo?.archive_reason &&
-                  html`
-                    <div class="flex justify-center mb-3">
-                      <div
-                        class="text-xs text-mitto-text-muted bg-mitto-surface-2/50 px-3 py-1 rounded-full"
-                      >
-                        ${getArchiveReasonText(
-                          sessionInfo.archive_reason,
-                          sessionInfo.archived_at,
-                        )}
-                      </div>
-                    </div>
-                  `}
-
-                  <!-- Input Area Container (relative for QueueDropdown positioning) -->
-                  <div class="relative shrink-0">
-                    <!-- Queue Dropdown (floating overlay above input) -->
-                    <${QueueDropdown}
-                      isOpen=${showQueueDropdown}
-                      onClose=${handleCloseQueueDropdown}
-                      messages=${queueMessages}
-                      onDelete=${handleDeleteQueueMessage}
-                      onMove=${handleMoveQueueMessage}
-                      isDeleting=${isDeletingQueueMessage}
-                      isMoving=${isMovingQueueMessage}
-                      queueLength=${queueLength}
-                      maxSize=${queueConfig.max_size}
-                    />
-
-                    <!-- Input -->
-                    <${ChatInput}
-                      onSend=${handleSendPrompt}
-                      onCancel=${cancelPrompt}
-                      disabled=${!connected || !activeSessionId}
-                      isStreaming=${isStreaming}
-                      isRunning=${isRunning}
-                      isReadOnly=${sessionInfo?.isReadOnly}
-                      isArchived=${sessionInfo?.archived || false}
-                      predefinedPrompts=${predefinedPrompts}
-                      periodicPrompts=${periodicPrompts}
-                      hasBeadsWorkspace=${hasBeadsWorkspace}
-                      inputRef=${chatInputRef}
-                      noSession=${!activeSessionId}
-                      sessionId=${activeSessionId}
-                      draft=${currentDraft}
-                      onDraftChange=${updateDraft}
-                      sessionDraftsRef=${sessionDraftsRef}
-                      onPromptsOpen=${handlePromptsOpen}
-                      onConfigurePrompts=${!configReadonly &&
-                      sessionInfo?.working_dir
-                        ? () =>
-                            handleShowWorkspacesForFolder(
-                              sessionInfo.working_dir,
-                              "prompts",
-                            )
-                        : undefined}
-                      queueLength=${queueLength}
-                      queueConfig=${queueConfig}
-                      onAddToQueue=${handleAddToQueue}
-                      onToggleQueue=${handleToggleQueueDropdown}
-                      showQueueDropdown=${showQueueDropdown}
-                      actionButtons=${actionButtons}
-                      availableCommands=${availableCommands}
-                      periodicConfigured=${sessionInfo?.periodic_configured ||
-                      false}
-                      onPeriodicPrompt=${(prompt, opts) =>
-                        handleSendPromptToConversation(
-                          activeSession,
-                          prompt,
-                          opts,
-                        )}
-                      onOpenPromptParamDialog=${(
+                  <!-- Input -->
+                  <${ChatInput}
+                    onSend=${handleSendPrompt}
+                    onCancel=${cancelPrompt}
+                    disabled=${!connected || !activeSessionId}
+                    isStreaming=${isStreaming}
+                    isRunning=${isRunning}
+                    isReadOnly=${sessionInfo?.isReadOnly}
+                    isArchived=${sessionInfo?.archived || false}
+                    predefinedPrompts=${predefinedPrompts}
+                    loopPrompts=${loopPrompts}
+                    hasBeadsWorkspace=${hasBeadsWorkspace}
+                    inputRef=${chatInputRef}
+                    noSession=${!activeSessionId}
+                    sessionId=${activeSessionId}
+                    draft=${currentDraft}
+                    onDraftChange=${updateDraft}
+                    sessionDraftsRef=${sessionDraftsRef}
+                    onPromptsOpen=${handlePromptsOpen}
+                    onConfigurePrompts=${!configReadonly &&
+                    sessionInfo?.working_dir
+                      ? () =>
+                          handleShowWorkspacesForFolder(
+                            sessionInfo.working_dir,
+                            "prompts",
+                          )
+                      : undefined}
+                    queueLength=${queueLength}
+                    queueConfig=${queueConfig}
+                    onAddToQueue=${handleAddToQueue}
+                    onToggleQueue=${handleToggleQueueDropdown}
+                    showQueueDropdown=${showQueueDropdown}
+                    actionButtons=${actionButtons}
+                    availableCommands=${availableCommands}
+                    loopConfigured=${sessionInfo?.loop_configured || false}
+                    onLoopPrompt=${(prompt, opts) =>
+                      handleSendPromptToConversation(
+                        activeSession,
+                        prompt,
+                        opts,
+                      )}
+                    onOpenPromptParamDialog=${(
+                      prompt,
+                      parameters,
+                      onSubmit,
+                      opts = {},
+                    ) =>
+                      setPromptParamDialog({
                         prompt,
                         parameters,
                         onSubmit,
-                        opts = {},
-                      ) =>
-                        setPromptParamDialog({
-                          prompt,
-                          parameters,
-                          onSubmit,
-                          initialValues: opts.initialValues,
-                          hostSessionId: opts.hostSessionId,
-                        })}
-                      agentSupportsImages=${sessionInfo?.agent_supports_images ??
-                      false}
-                      acpReady=${connected && sessionInfo
-                        ? (sessionInfo.acp_ready ?? true)
-                        : true}
-                      gcSuspended=${sessionInfo?.gc_suspended || false}
-                      onResume=${() => ensureResumed(activeSessionId)}
-                      activeUIPrompt=${activeUIPrompt}
-                      onUIPromptAnswer=${(
+                        initialValues: opts.initialValues,
+                        hostSessionId: opts.hostSessionId,
+                      })}
+                    agentSupportsImages=${sessionInfo?.agent_supports_images ??
+                    false}
+                    acpReady=${connected && sessionInfo
+                      ? (sessionInfo.acp_ready ?? true)
+                      : true}
+                    gcSuspended=${sessionInfo?.gc_suspended || false}
+                    onResume=${() => ensureResumed(activeSessionId)}
+                    activeUIPrompt=${activeUIPrompt}
+                    onUIPromptAnswer=${(requestId, optionId, label, freeText) =>
+                      sendUIPromptAnswer(
+                        activeSessionId,
                         requestId,
                         optionId,
                         label,
                         freeText,
-                      ) =>
-                        sendUIPromptAnswer(
-                          activeSessionId,
-                          requestId,
-                          optionId,
-                          label,
-                          freeText,
-                        )}
-                      workingDir=${sessionInfo?.working_dir || ""}
-                      sendKeyMode=${sendKeyMode}
-                      configOptions=${configOptions}
-                      onSetConfigOption=${setConfigOption}
-                      modelProfiles=${modelProfiles}
-                      contextUsage=${sessionInfo?.context_usage ?? null}
-                      tokenUsage=${sessionInfo?.usage ?? null}
-                    />
-                  </div>
+                      )}
+                    workingDir=${sessionInfo?.working_dir || ""}
+                    sendKeyMode=${sendKeyMode}
+                    configOptions=${configOptions}
+                    onSetConfigOption=${setConfigOption}
+                    modelProfiles=${modelProfiles}
+                    contextUsage=${sessionInfo?.context_usage ?? null}
+                    tokenUsage=${sessionInfo?.usage ?? null}
+                  />
                 </div>
-              `}
+              </div>
+            `}
 
         <!-- Unified Session Panel: docks to the right edge of drawer-content as a
            confined overlay (Drawer dock mode + styles.css), so it does NOT
@@ -3112,9 +3412,13 @@ function App() {
           onClick=${() => setShowSidebar(false)}
         ></label>
         <!-- Panel: resizable on desktop (sidebarWidth), fixed w-80 class provides
-             fallback but inline style takes precedence when set via resize handle. -->
+             fallback but inline style takes precedence when set via resize handle.
+             Uses a soft grey surface (surface-2) rather than the white sidebar
+             tone so the conversation rail reads as a distinct panel; the sidebar
+             toolbar pill is bumped to the elevated surface-3 so it "floats"
+             above this panel (see SessionList.js Toolbar surface prop). -->
         <div
-          class="bg-mitto-sidebar border-r border-mitto-border-1 h-full relative"
+          class="bg-mitto-surface-2 border-r border-mitto-border-1 h-full relative"
           style="width: ${sidebarWidth}px;"
         >
           <${SessionList}
@@ -3156,8 +3460,8 @@ function App() {
             queueLength=${queueLength}
             onFetchConversationPrompts=${fetchConversationPromptsForSession}
             onSendPromptToConversation=${handleSendPromptToConversation}
-            onMakePeriodic=${handleMakePeriodic}
-            onMakeNonPeriodic=${handleMakeNonPeriodic}
+            onMakeLoop=${handleMakeLoop}
+            onMakeNonLoop=${handleMakeNonLoop}
             isCreatingSession=${isCreatingSession}
             creatingWorkingDirs=${creatingWorkingDirs}
           />

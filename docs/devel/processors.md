@@ -432,8 +432,8 @@ This is consistent with the existing `@namespace:value` convention used by proce
 | `@mitto:acp_server`            | ACP server name (e.g., `"claude-code"`)                          |
 | `@mitto:workspace_uuid`        | Workspace identifier                                             |
 | `@mitto:available_acp_servers` | ACP servers with workspaces for the session's folder — see below |
-| `@mitto:periodic`              | `"true"` if this prompt was triggered by the periodic runner, `"false"` otherwise |
-| `@mitto:periodic_forced`       | `"true"` if this is a manually-triggered periodic run (via "run now"), `"false"` otherwise |
+| `@mitto:loop`              | `"true"` if this prompt was triggered by the loop runner, `"false"` otherwise |
+| `@mitto:loop_forced`       | `"true"` if this is a manually-triggered loop run (via "run now"), `"false"` otherwise |
 
 ### `@mitto:available_acp_servers` detail
 
@@ -572,7 +572,7 @@ Getters: `ProcessorCount()`, `TotalActivations()`, `LastActivationAt()`.
 Stats are sent to the frontend via:
 - `connected` WebSocket message (initial values)
 - `prompt_complete` message (after each prompt)
-- `keepalive_ack` message (periodic refresh)
+- `keepalive_ack` message (loop refresh)
 
 Fields in WebSocket payloads: `processor_count`, `processor_activations`, `processor_last_activation`.
 

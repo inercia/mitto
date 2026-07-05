@@ -19,8 +19,8 @@ export { useConversationMenu } from "./useConversationMenu.js";
 export {
   buildSeedQueueBody,
   seedConversationWithPrompt,
-  decidePeriodicAction,
-  makePeriodicNow,
+  decideLoopAction,
+  makeLoopNow,
   useConversationSeeding,
 } from "./useConversationSeeding.js";
 export { useBeadsKnownIds } from "./useBeadsKnownIds.js";

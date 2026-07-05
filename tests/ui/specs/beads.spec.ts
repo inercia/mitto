@@ -315,8 +315,10 @@ testWithCleanup.describe("Beads view - detail panel", () => {
         .click();
       await expect(panel).toBeVisible({ timeout: timeouts.shortAction });
 
-      // Click the title heading to enter inline edit mode.
-      await panel.locator('h2:has-text("Short issue")').click();
+      // Click the (editable) body title heading to enter inline edit mode. A
+      // second, read-only truncated title now lives in the header, so target the
+      // editable one via its cursor-text class.
+      await panel.locator('h2.cursor-text:has-text("Short issue")').click();
       const titleInput = panel.locator('input.font-semibold');
       await expect(titleInput).toBeVisible({ timeout: timeouts.shortAction });
       await expect(titleInput).toHaveValue("Short issue");
@@ -358,9 +360,8 @@ testWithCleanup.describe("Beads view - detail panel", () => {
         .click();
       await expect(panel).toBeVisible({ timeout: timeouts.shortAction });
 
-      // Delete moved to the kebab menu (now a ContextMenu portaled to body).
-      await panel.locator('button[data-tip="More actions"]').click();
-      await page.locator("ul.menu.fixed").getByRole("button", { name: "Delete", exact: true }).click();
+      // Delete is now a direct button in the header Toolbar.
+      await panel.locator('[data-testid="beads-panel-delete"]').click();
 
       const dialog = page.locator('[data-testid="confirm-dialog"]');
       await expect(dialog).toBeVisible({ timeout: timeouts.shortAction });
@@ -422,7 +423,7 @@ testWithCleanup.describe("Beads view - detail panel", () => {
         .click();
       await expect(panel).toBeVisible({ timeout: timeouts.shortAction });
 
-      await panel.locator('h2:has-text("Short issue")').click();
+      await panel.locator('h2.cursor-text:has-text("Short issue")').click();
       const titleInput = panel.locator('input.font-semibold');
       await expect(titleInput).toBeVisible({ timeout: timeouts.shortAction });
 
@@ -431,7 +432,7 @@ testWithCleanup.describe("Beads view - detail panel", () => {
       await titleInput.press("Escape");
 
       await expect(
-        panel.locator('h2:has-text("Short issue")'),
+        panel.locator('h2.cursor-text:has-text("Short issue")'),
       ).toBeVisible({ timeout: timeouts.shortAction });
       expect(updateCalled).toBe(false);
     },
@@ -657,9 +658,8 @@ testWithCleanup.describe("Beads view - epic deletion", () => {
     await expect(panel).toBeVisible({ timeout: timeouts.shortAction });
     await expect(panel.getByText("mitto-epic")).toBeVisible();
 
-    // Delete moved to the kebab menu (now a ContextMenu portaled to body).
-    await panel.locator('button[data-tip="More actions"]').click();
-    await page.locator("ul.menu.fixed").getByRole("button", { name: "Delete", exact: true }).click();
+    // Delete is now a direct button in the header Toolbar.
+    await panel.locator('[data-testid="beads-panel-delete"]').click();
     const dialog = page.locator('[data-testid="confirm-dialog"]');
     await expect(dialog).toBeVisible({ timeout: timeouts.shortAction });
     return dialog;

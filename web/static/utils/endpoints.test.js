@@ -233,13 +233,11 @@ describe("endpoints registry", () => {
       expect(endpoints.sessions.running()).toBe("/api/sessions/running"));
     test("get(id)", () =>
       expect(endpoints.sessions.get("s1")).toBe("/api/sessions/s1"));
-    test("periodic", () =>
-      expect(endpoints.sessions.periodic("s1")).toBe(
-        "/api/sessions/s1/periodic",
-      ));
-    test("periodicRunNow", () =>
-      expect(endpoints.sessions.periodicRunNow("s1")).toBe(
-        "/api/sessions/s1/periodic/run-now",
+    test("loop", () =>
+      expect(endpoints.sessions.loop("s1")).toBe("/api/sessions/s1/loop"));
+    test("loopRunNow", () =>
+      expect(endpoints.sessions.loopRunNow("s1")).toBe(
+        "/api/sessions/s1/loop/run-now",
       ));
     test("queueMove", () =>
       expect(endpoints.sessions.queueMove("s1", "m1")).toBe(

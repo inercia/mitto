@@ -517,22 +517,22 @@ func (c *Client) GetPromptArgCache(sessionID, promptName string) ([]string, erro
 	return result.Cached, nil
 }
 
-// --- Periodic API ---
+// --- Loop API ---
 
-// PeriodicFrequency represents a periodic schedule frequency.
-type PeriodicFrequency struct {
+// LoopFrequency represents a loop schedule frequency.
+type LoopFrequency struct {
 	Value int    `json:"value"`
 	Unit  string `json:"unit"`
 	At    string `json:"at,omitempty"` // HH:MM in UTC, only for unit=days
 }
 
-// SetPeriodicRequest is the request body for PUT /api/sessions/{id}/periodic.
-type SetPeriodicRequest struct {
-	PromptName    string            `json:"prompt_name,omitempty"`
-	Prompt        string            `json:"prompt,omitempty"`
-	Frequency     PeriodicFrequency `json:"frequency"`
-	Enabled       bool              `json:"enabled"`
-	MaxIterations int               `json:"max_iterations,omitempty"`
+// SetLoopRequest is the request body for PUT /api/sessions/{id}/loop.
+type SetLoopRequest struct {
+	PromptName    string        `json:"prompt_name,omitempty"`
+	Prompt        string        `json:"prompt,omitempty"`
+	Frequency     LoopFrequency `json:"frequency"`
+	Enabled       bool          `json:"enabled"`
+	MaxIterations int           `json:"max_iterations,omitempty"`
 	// On-completion trigger fields (mitto-icf).
 	Trigger            string `json:"trigger,omitempty"`              // "schedule" | "onCompletion" | "onTasks"
 	DelaySeconds       int    `json:"delay_seconds,omitempty"`        // clamped to server floor
@@ -543,14 +543,14 @@ type SetPeriodicRequest struct {
 	CooldownSeconds int    `json:"cooldown_seconds,omitempty"` // per-conversation cooldown floor; 0 = use global floor
 }
 
-// PeriodicConfig represents the periodic configuration for a session.
-type PeriodicConfig struct {
-	Prompt          string            `json:"prompt,omitempty"`
-	PromptName      string            `json:"prompt_name,omitempty"`
-	Frequency       PeriodicFrequency `json:"frequency"`
-	Enabled         bool              `json:"enabled"`
-	MaxIterations   int               `json:"max_iterations,omitempty"`
-	NextScheduledAt string            `json:"next_scheduled_at,omitempty"`
+// LoopConfig represents the loop configuration for a session.
+type LoopConfig struct {
+	Prompt          string        `json:"prompt,omitempty"`
+	PromptName      string        `json:"prompt_name,omitempty"`
+	Frequency       LoopFrequency `json:"frequency"`
+	Enabled         bool          `json:"enabled"`
+	MaxIterations   int           `json:"max_iterations,omitempty"`
+	NextScheduledAt string        `json:"next_scheduled_at,omitempty"`
 	// On-completion trigger fields (mitto-icf).
 	Trigger            string `json:"trigger,omitempty"`
 	DelaySeconds       int    `json:"delay_seconds,omitempty"`
@@ -564,87 +564,87 @@ type PeriodicConfig struct {
 	StoppedReason   string `json:"stopped_reason,omitempty"`
 }
 
-// SetPeriodic configures a periodic schedule on a session via PUT.
-func (c *Client) SetPeriodic(sessionID string, req SetPeriodicRequest) (*PeriodicConfig, error) {
+// SetLoop configures a loop schedule on a session via PUT.
+func (c *Client) SetLoop(sessionID string, req SetLoopRequest) (*LoopConfig, error) {
 	body, err := json.Marshal(req)
 	if err != nil {
-		return nil, fmt.Errorf("set periodic: marshal: %w", err)
+		return nil, fmt.Errorf("set loop: marshal: %w", err)
 	}
 
 	httpReq, err := http.NewRequest(http.MethodPut,
-		c.apiURL("/api/sessions/"+url.PathEscape(sessionID)+"/periodic"),
+		c.apiURL("/api/sessions/"+url.PathEscape(sessionID)+"/loop"),
 		bytes.NewReader(body),
 	)
 	if err != nil {
-		return nil, fmt.Errorf("set periodic: build request: %w", err)
+		return nil, fmt.Errorf("set loop: build request: %w", err)
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 
 	resp, err := c.httpClient.Do(httpReq)
 	if err != nil {
-		return nil, fmt.Errorf("set periodic: %w", err)
+		return nil, fmt.Errorf("set loop: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		respBody, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("set periodic: status %d: %s", resp.StatusCode, string(respBody))
+		return nil, fmt.Errorf("set loop: status %d: %s", resp.StatusCode, string(respBody))
 	}
 
-	var config PeriodicConfig
+	var config LoopConfig
 	if err := json.NewDecoder(resp.Body).Decode(&config); err != nil {
-		return nil, fmt.Errorf("set periodic: decode: %w", err)
+		return nil, fmt.Errorf("set loop: decode: %w", err)
 	}
 	return &config, nil
 }
 
-// GetPeriodic returns the periodic configuration for a session.
-func (c *Client) GetPeriodic(sessionID string) (*PeriodicConfig, error) {
-	resp, err := c.httpClient.Get(c.apiURL("/api/sessions/" + url.PathEscape(sessionID) + "/periodic"))
+// GetLoop returns the loop configuration for a session.
+func (c *Client) GetLoop(sessionID string) (*LoopConfig, error) {
+	resp, err := c.httpClient.Get(c.apiURL("/api/sessions/" + url.PathEscape(sessionID) + "/loop"))
 	if err != nil {
-		return nil, fmt.Errorf("get periodic: %w", err)
+		return nil, fmt.Errorf("get loop: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode == http.StatusNotFound {
-		return nil, fmt.Errorf("periodic not configured for session: %s", sessionID)
+		return nil, fmt.Errorf("loop not configured for session: %s", sessionID)
 	}
 	if resp.StatusCode != http.StatusOK {
 		respBody, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("get periodic: status %d: %s", resp.StatusCode, string(respBody))
+		return nil, fmt.Errorf("get loop: status %d: %s", resp.StatusCode, string(respBody))
 	}
 
-	var config PeriodicConfig
+	var config LoopConfig
 	if err := json.NewDecoder(resp.Body).Decode(&config); err != nil {
-		return nil, fmt.Errorf("get periodic: decode: %w", err)
+		return nil, fmt.Errorf("get loop: decode: %w", err)
 	}
 	return &config, nil
 }
 
-// RunPeriodicNow triggers an immediate run of the periodic prompt.
+// RunLoopNow triggers an immediate run of the loop prompt.
 // resetTimer controls whether the next scheduled run timer is reset.
-func (c *Client) RunPeriodicNow(sessionID string, resetTimer bool) error {
+func (c *Client) RunLoopNow(sessionID string, resetTimer bool) error {
 	reqBody := struct {
 		ResetTimer bool `json:"reset_timer"`
 	}{ResetTimer: resetTimer}
 	body, err := json.Marshal(reqBody)
 	if err != nil {
-		return fmt.Errorf("run periodic now: marshal: %w", err)
+		return fmt.Errorf("run loop now: marshal: %w", err)
 	}
 
 	resp, err := c.httpClient.Post(
-		c.apiURL("/api/sessions/"+url.PathEscape(sessionID)+"/periodic/run-now"),
+		c.apiURL("/api/sessions/"+url.PathEscape(sessionID)+"/loop/run-now"),
 		"application/json",
 		bytes.NewReader(body),
 	)
 	if err != nil {
-		return fmt.Errorf("run periodic now: %w", err)
+		return fmt.Errorf("run loop now: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusNoContent {
 		respBody, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("run periodic now: status %d: %s", resp.StatusCode, string(respBody))
+		return fmt.Errorf("run loop now: status %d: %s", resp.StatusCode, string(respBody))
 	}
 	return nil
 }

@@ -462,7 +462,7 @@ test.describe("Message List Rendering", () => {
     await page.addInitScript(() => {
       localStorage.removeItem("mitto_last_session_id");
       localStorage.removeItem("mitto_last_session_id_conversations");
-      localStorage.removeItem("mitto_last_session_id_periodic");
+      localStorage.removeItem("mitto_last_session_id_loop");
       localStorage.removeItem("mitto_last_session_id_archived");
       localStorage.removeItem("mitto_conversation_filter_tab");
     });

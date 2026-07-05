@@ -64,8 +64,8 @@ import {
   htmlToMarkdown,
   messageToMarkdown,
   conversationToMarkdown,
-  PERIODIC_STOPPED_LABELS,
-  formatPeriodicMaxDuration,
+  LOOP_STOPPED_LABELS,
+  formatLoopMaxDuration,
   buildRetryTargets,
   messageKey,
   computeHeaderTriggerLabel,
@@ -215,47 +215,47 @@ describe("computeAllSessions", () => {
   });
 
   // ---------------------------------------------------------------------------
-  // periodic_stopped_reason merge tests
+  // loop_stopped_reason merge tests
   // ---------------------------------------------------------------------------
 
-  test("merges periodic_stopped_reason from stored session when active lacks it", () => {
+  test("merges loop_stopped_reason from stored session when active lacks it", () => {
     const active = [{ session_id: "1", created_at: "2024-01-01T10:00:00Z" }];
     const stored = [
       {
         session_id: "1",
-        periodic_configured: true,
-        periodic_stopped_reason: "maxDuration",
+        loop_configured: true,
+        loop_stopped_reason: "maxDuration",
         created_at: "2024-01-01T10:00:00Z",
       },
     ];
     const result = computeAllSessions(active, stored);
-    expect(result[0].periodic_stopped_reason).toBe("maxDuration");
+    expect(result[0].loop_stopped_reason).toBe("maxDuration");
   });
 
-  test("active periodic_stopped_reason takes precedence over stored", () => {
+  test("active loop_stopped_reason takes precedence over stored", () => {
     const active = [
       {
         session_id: "1",
-        periodic_stopped_reason: "maxIterations",
+        loop_stopped_reason: "maxIterations",
         created_at: "2024-01-01T10:00:00Z",
       },
     ];
     const stored = [
       {
         session_id: "1",
-        periodic_stopped_reason: "maxDuration",
+        loop_stopped_reason: "maxDuration",
         created_at: "2024-01-01T10:00:00Z",
       },
     ];
     const result = computeAllSessions(active, stored);
-    expect(result[0].periodic_stopped_reason).toBe("maxIterations");
+    expect(result[0].loop_stopped_reason).toBe("maxIterations");
   });
 
-  test("periodic_stopped_reason is null when neither active nor stored has it", () => {
+  test("loop_stopped_reason is null when neither active nor stored has it", () => {
     const active = [{ session_id: "1", created_at: "2024-01-01T10:00:00Z" }];
     const stored = [{ session_id: "1", created_at: "2024-01-01T10:00:00Z" }];
     const result = computeAllSessions(active, stored);
-    expect(result[0].periodic_stopped_reason).toBeNull();
+    expect(result[0].loop_stopped_reason).toBeNull();
   });
 
   // ---------------------------------------------------------------------------
@@ -2324,7 +2324,7 @@ describe("mergeMessagesWithSync", () => {
     test("prompt retry creates new seq - distinct events", () => {
       // When both existing and new messages have seqs, they are treated as
       // distinct server-side events — even if the text is identical.
-      // This is critical for periodic prompts which reuse the same text
+      // This is critical for loop prompts which reuse the same text
       // across different runs. Content hash dedup only applies when the
       // existing message has NO seq (optimistic UI → server confirmation).
       //
@@ -2372,7 +2372,7 @@ describe("mergeMessagesWithSync", () => {
 
     test("multiple prompt retries - distinct events when all have seqs", () => {
       // When all messages have seqs, they are treated as distinct events.
-      // This ensures periodic prompts (same text, different runs) all appear.
+      // This ensures loop prompts (same text, different runs) all appear.
       const existing = [
         { role: ROLE_USER, text: "Fix the bug", seq: 10, timestamp: 1000 },
       ];
@@ -5673,49 +5673,49 @@ describe("conversationToMarkdown", () => {
 });
 
 // =============================================================================
-// PERIODIC_STOPPED_LABELS Tests
+// LOOP_STOPPED_LABELS Tests
 // =============================================================================
 
-describe("PERIODIC_STOPPED_LABELS", () => {
+describe("LOOP_STOPPED_LABELS", () => {
   test("maps all seven known reason codes to {label, kind} objects", () => {
-    expect(PERIODIC_STOPPED_LABELS.maxDuration).toEqual({
+    expect(LOOP_STOPPED_LABELS.maxDuration).toEqual({
       label: "Stopped: max time",
       kind: "stopped",
     });
-    expect(PERIODIC_STOPPED_LABELS.maxIterations).toEqual({
+    expect(LOOP_STOPPED_LABELS.maxIterations).toEqual({
       label: "Stopped: max iters",
       kind: "stopped",
     });
-    expect(PERIODIC_STOPPED_LABELS.iterationSafeguard).toEqual({
+    expect(LOOP_STOPPED_LABELS.iterationSafeguard).toEqual({
       label: "Stopped: max iters",
       kind: "stopped",
     });
-    expect(PERIODIC_STOPPED_LABELS.promptUnresolved).toEqual({
+    expect(LOOP_STOPPED_LABELS.promptUnresolved).toEqual({
       label: "Stopped: prompt missing",
       kind: "stopped",
     });
-    expect(PERIODIC_STOPPED_LABELS.resumeFailures).toEqual({
+    expect(LOOP_STOPPED_LABELS.resumeFailures).toEqual({
       label: "Stopped: resume errors",
       kind: "stopped",
     });
-    expect(PERIODIC_STOPPED_LABELS.pausedByUser).toEqual({
+    expect(LOOP_STOPPED_LABELS.pausedByUser).toEqual({
       label: "Paused by you",
       kind: "paused",
     });
-    expect(PERIODIC_STOPPED_LABELS.disabledByAgent).toEqual({
+    expect(LOOP_STOPPED_LABELS.disabledByAgent).toEqual({
       label: "Paused by the agent",
       kind: "paused",
     });
   });
 
   test("maxIterations and iterationSafeguard share the same label", () => {
-    expect(PERIODIC_STOPPED_LABELS.maxIterations.label).toBe(
-      PERIODIC_STOPPED_LABELS.iterationSafeguard.label,
+    expect(LOOP_STOPPED_LABELS.maxIterations.label).toBe(
+      LOOP_STOPPED_LABELS.iterationSafeguard.label,
     );
   });
 
   test("unknown reason is not in the map", () => {
-    expect(PERIODIC_STOPPED_LABELS["unknownReason"]).toBeUndefined();
+    expect(LOOP_STOPPED_LABELS["unknownReason"]).toBeUndefined();
   });
 
   test("all stopped reasons have kind='stopped'", () => {
@@ -5727,30 +5727,30 @@ describe("PERIODIC_STOPPED_LABELS", () => {
       "resumeFailures",
     ];
     for (const reason of stoppedReasons) {
-      expect(PERIODIC_STOPPED_LABELS[reason].kind).toBe("stopped");
+      expect(LOOP_STOPPED_LABELS[reason].kind).toBe("stopped");
     }
   });
 
   test("all paused reasons have kind='paused'", () => {
     const pausedReasons = ["pausedByUser", "disabledByAgent"];
     for (const reason of pausedReasons) {
-      expect(PERIODIC_STOPPED_LABELS[reason].kind).toBe("paused");
+      expect(LOOP_STOPPED_LABELS[reason].kind).toBe("paused");
     }
   });
 
-  // headerPeriodicState derivation logic
-  // Mirrors the IIFE in app.js that computes headerPeriodicState from an activeSession.
+  // headerLoopState derivation logic
+  // Mirrors the IIFE in app.js that computes headerLoopState from an activeSession.
 
-  function computeHeaderPeriodicState(session) {
-    if (!session?.periodic_configured) return null;
-    if (session?.periodic_enabled) {
+  function computeHeaderLoopState(session) {
+    if (!session?.loop_configured) return null;
+    if (session?.loop_enabled) {
       return {
         state: "running",
         label: "Auto",
         badgeClass: "badge-success badge-soft",
       };
     }
-    const entry = PERIODIC_STOPPED_LABELS[session?.periodic_stopped_reason];
+    const entry = LOOP_STOPPED_LABELS[session?.loop_stopped_reason];
     if (entry && entry.kind === "stopped") {
       return {
         state: "stopped",
@@ -5772,18 +5772,18 @@ describe("PERIODIC_STOPPED_LABELS", () => {
     };
   }
 
-  test("non-periodic session yields null (no pill)", () => {
-    const session = { periodic_configured: false };
-    expect(computeHeaderPeriodicState(session)).toBeNull();
+  test("non-loop session yields null (no pill)", () => {
+    const session = { loop_configured: false };
+    expect(computeHeaderLoopState(session)).toBeNull();
   });
 
   test("null session yields null (no pill)", () => {
-    expect(computeHeaderPeriodicState(null)).toBeNull();
+    expect(computeHeaderLoopState(null)).toBeNull();
   });
 
-  test("enabled periodic session yields Auto/green", () => {
-    const session = { periodic_configured: true, periodic_enabled: true };
-    const result = computeHeaderPeriodicState(session);
+  test("enabled loop session yields Auto/green", () => {
+    const session = { loop_configured: true, loop_enabled: true };
+    const result = computeHeaderLoopState(session);
     expect(result.state).toBe("running");
     expect(result.label).toBe("Auto");
     expect(result.badgeClass).toContain("badge-success");
@@ -5791,11 +5791,11 @@ describe("PERIODIC_STOPPED_LABELS", () => {
 
   test("stopped reason yields Stopped/red", () => {
     const session = {
-      periodic_configured: true,
-      periodic_enabled: false,
-      periodic_stopped_reason: "maxDuration",
+      loop_configured: true,
+      loop_enabled: false,
+      loop_stopped_reason: "maxDuration",
     };
-    const result = computeHeaderPeriodicState(session);
+    const result = computeHeaderLoopState(session);
     expect(result.state).toBe("stopped");
     expect(result.label).toBe("Stopped: max time");
     expect(result.badgeClass).toContain("badge-error");
@@ -5803,11 +5803,11 @@ describe("PERIODIC_STOPPED_LABELS", () => {
 
   test("pausedByUser reason yields Paused/amber", () => {
     const session = {
-      periodic_configured: true,
-      periodic_enabled: false,
-      periodic_stopped_reason: "pausedByUser",
+      loop_configured: true,
+      loop_enabled: false,
+      loop_stopped_reason: "pausedByUser",
     };
-    const result = computeHeaderPeriodicState(session);
+    const result = computeHeaderLoopState(session);
     expect(result.state).toBe("paused");
     expect(result.label).toBe("Paused by you");
     expect(result.badgeClass).toContain("badge-warning");
@@ -5815,11 +5815,11 @@ describe("PERIODIC_STOPPED_LABELS", () => {
 
   test("disabledByAgent reason yields Paused/amber", () => {
     const session = {
-      periodic_configured: true,
-      periodic_enabled: false,
-      periodic_stopped_reason: "disabledByAgent",
+      loop_configured: true,
+      loop_enabled: false,
+      loop_stopped_reason: "disabledByAgent",
     };
-    const result = computeHeaderPeriodicState(session);
+    const result = computeHeaderLoopState(session);
     expect(result.state).toBe("paused");
     expect(result.label).toBe("Paused by the agent");
     expect(result.badgeClass).toContain("badge-warning");
@@ -5827,11 +5827,11 @@ describe("PERIODIC_STOPPED_LABELS", () => {
 
   test("no reason (manual pause) yields generic Paused/amber", () => {
     const session = {
-      periodic_configured: true,
-      periodic_enabled: false,
-      periodic_stopped_reason: null,
+      loop_configured: true,
+      loop_enabled: false,
+      loop_stopped_reason: null,
     };
-    const result = computeHeaderPeriodicState(session);
+    const result = computeHeaderLoopState(session);
     expect(result.state).toBe("paused");
     expect(result.label).toBe("Paused");
     expect(result.badgeClass).toContain("badge-warning");
@@ -5839,87 +5839,87 @@ describe("PERIODIC_STOPPED_LABELS", () => {
 
   test("unknown future reason falls back to generic Paused/amber", () => {
     const session = {
-      periodic_configured: true,
-      periodic_enabled: false,
-      periodic_stopped_reason: "someFutureReason",
+      loop_configured: true,
+      loop_enabled: false,
+      loop_stopped_reason: "someFutureReason",
     };
-    const result = computeHeaderPeriodicState(session);
+    const result = computeHeaderLoopState(session);
     expect(result.state).toBe("paused");
     expect(result.label).toBe("Paused");
     expect(result.badgeClass).toContain("badge-warning");
   });
 
   test("all known reasons produce a non-empty label", () => {
-    const knownReasons = Object.keys(PERIODIC_STOPPED_LABELS);
+    const knownReasons = Object.keys(LOOP_STOPPED_LABELS);
     for (const reason of knownReasons) {
-      expect(PERIODIC_STOPPED_LABELS[reason].label).toBeTruthy();
+      expect(LOOP_STOPPED_LABELS[reason].label).toBeTruthy();
     }
   });
 });
 
 // =============================================================================
-// formatPeriodicMaxDuration Tests
+// formatLoopMaxDuration Tests
 // =============================================================================
 
-describe("formatPeriodicMaxDuration", () => {
+describe("formatLoopMaxDuration", () => {
   test("formats whole days", () => {
-    expect(formatPeriodicMaxDuration(86400)).toBe("1d");
-    expect(formatPeriodicMaxDuration(172800)).toBe("2d");
-    expect(formatPeriodicMaxDuration(604800)).toBe("7d");
+    expect(formatLoopMaxDuration(86400)).toBe("1d");
+    expect(formatLoopMaxDuration(172800)).toBe("2d");
+    expect(formatLoopMaxDuration(604800)).toBe("7d");
   });
 
   test("formats whole hours", () => {
-    expect(formatPeriodicMaxDuration(3600)).toBe("1h");
-    expect(formatPeriodicMaxDuration(7200)).toBe("2h");
-    expect(formatPeriodicMaxDuration(18000)).toBe("5h");
+    expect(formatLoopMaxDuration(3600)).toBe("1h");
+    expect(formatLoopMaxDuration(7200)).toBe("2h");
+    expect(formatLoopMaxDuration(18000)).toBe("5h");
   });
 
   test("formats whole minutes", () => {
-    expect(formatPeriodicMaxDuration(60)).toBe("1min");
-    expect(formatPeriodicMaxDuration(1800)).toBe("30min");
-    expect(formatPeriodicMaxDuration(3540)).toBe("59min");
+    expect(formatLoopMaxDuration(60)).toBe("1min");
+    expect(formatLoopMaxDuration(1800)).toBe("30min");
+    expect(formatLoopMaxDuration(3540)).toBe("59min");
   });
 
   test("formats seconds for non-round values", () => {
-    expect(formatPeriodicMaxDuration(1)).toBe("1s");
-    expect(formatPeriodicMaxDuration(45)).toBe("45s");
-    expect(formatPeriodicMaxDuration(90)).toBe("90s");
-    expect(formatPeriodicMaxDuration(3601)).toBe("3601s");
+    expect(formatLoopMaxDuration(1)).toBe("1s");
+    expect(formatLoopMaxDuration(45)).toBe("45s");
+    expect(formatLoopMaxDuration(90)).toBe("90s");
+    expect(formatLoopMaxDuration(3601)).toBe("3601s");
   });
 
   test("days takes priority over hours when divisible", () => {
     // 86400 is both a multiple of 3600 and 86400 — days wins
-    expect(formatPeriodicMaxDuration(86400)).toBe("1d");
-    expect(formatPeriodicMaxDuration(172800)).toBe("2d");
+    expect(formatLoopMaxDuration(86400)).toBe("1d");
+    expect(formatLoopMaxDuration(172800)).toBe("2d");
   });
 
   test("hours takes priority over minutes when divisible by 3600", () => {
     // 7200 is divisible by both 60 and 3600 — hours wins
-    expect(formatPeriodicMaxDuration(7200)).toBe("2h");
+    expect(formatLoopMaxDuration(7200)).toBe("2h");
   });
 
   test("non-divisible values fall through to seconds", () => {
     // 3661 = 1 hour + 1 minute + 1 second — not cleanly divisible by any unit
-    expect(formatPeriodicMaxDuration(3661)).toBe("3661s");
-    expect(formatPeriodicMaxDuration(61)).toBe("61s");
+    expect(formatLoopMaxDuration(3661)).toBe("3661s");
+    expect(formatLoopMaxDuration(61)).toBe("61s");
   });
 });
 
 // =============================================================================
-// Periodic header badge label logic tests
+// Loop header badge label logic tests
 // =============================================================================
 
-describe("Periodic header badge label logic", () => {
+describe("Loop header badge label logic", () => {
   // Mirrors the logic in app.js for deriving the trigger badge text:
-  //   if (periodic_trigger === "onCompletion") → "after agent finishes[· +Ns]"
+  //   if (loop_trigger === "onCompletion") → "after agent finishes[· +Ns]"
   //   else if frequency set → "every <value><unit>"
   function computeTriggerLabel(session) {
-    if (!session?.periodic_configured) return null;
-    if (session.periodic_trigger === "onCompletion") {
-      const delay = session.periodic_delay_seconds ?? 0;
+    if (!session?.loop_configured) return null;
+    if (session.loop_trigger === "onCompletion") {
+      const delay = session.loop_delay_seconds ?? 0;
       return `after agent finishes${delay > 0 ? ` · +${delay}s` : ""}`;
     }
-    const freq = session.periodic_frequency;
+    const freq = session.loop_frequency;
     if (!freq) return null;
     const u =
       freq.unit === "minutes" ? "min" : freq.unit === "hours" ? "h" : "d";
@@ -5939,63 +5939,63 @@ describe("Periodic header badge label logic", () => {
   describe("trigger badge", () => {
     test("schedule trigger with hours frequency", () => {
       const session = {
-        periodic_configured: true,
-        periodic_trigger: "schedule",
-        periodic_frequency: { value: 2, unit: "hours" },
+        loop_configured: true,
+        loop_trigger: "schedule",
+        loop_frequency: { value: 2, unit: "hours" },
       };
       expect(computeTriggerLabel(session)).toBe("every 2h");
     });
 
     test("schedule trigger with minutes frequency", () => {
       const session = {
-        periodic_configured: true,
-        periodic_trigger: "schedule",
-        periodic_frequency: { value: 30, unit: "minutes" },
+        loop_configured: true,
+        loop_trigger: "schedule",
+        loop_frequency: { value: 30, unit: "minutes" },
       };
       expect(computeTriggerLabel(session)).toBe("every 30min");
     });
 
     test("schedule trigger with days frequency", () => {
       const session = {
-        periodic_configured: true,
-        periodic_trigger: "schedule",
-        periodic_frequency: { value: 1, unit: "days" },
+        loop_configured: true,
+        loop_trigger: "schedule",
+        loop_frequency: { value: 1, unit: "days" },
       };
       expect(computeTriggerLabel(session)).toBe("every 1d");
     });
 
     test("onCompletion trigger without delay", () => {
       const session = {
-        periodic_configured: true,
-        periodic_trigger: "onCompletion",
-        periodic_delay_seconds: 0,
+        loop_configured: true,
+        loop_trigger: "onCompletion",
+        loop_delay_seconds: 0,
       };
       expect(computeTriggerLabel(session)).toBe("after agent finishes");
     });
 
     test("onCompletion trigger with delay", () => {
       const session = {
-        periodic_configured: true,
-        periodic_trigger: "onCompletion",
-        periodic_delay_seconds: 30,
+        loop_configured: true,
+        loop_trigger: "onCompletion",
+        loop_delay_seconds: 30,
       };
       expect(computeTriggerLabel(session)).toBe("after agent finishes · +30s");
     });
 
-    test("returns null when not periodic_configured", () => {
+    test("returns null when not loop_configured", () => {
       const session = {
-        periodic_configured: false,
-        periodic_trigger: "schedule",
-        periodic_frequency: { value: 1, unit: "hours" },
+        loop_configured: false,
+        loop_trigger: "schedule",
+        loop_frequency: { value: 1, unit: "hours" },
       };
       expect(computeTriggerLabel(session)).toBeNull();
     });
 
     test("returns null when schedule has no frequency set", () => {
       const session = {
-        periodic_configured: true,
-        periodic_trigger: "schedule",
-        periodic_frequency: null,
+        loop_configured: true,
+        loop_trigger: "schedule",
+        loop_frequency: null,
       };
       expect(computeTriggerLabel(session)).toBeNull();
     });

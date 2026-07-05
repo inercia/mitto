@@ -205,7 +205,7 @@ type Deps struct {
 	APIPrefix string
 
 	// CallbackIndex mirrors Server.callbackIndex: the in-memory token→session
-	// index for periodic callback triggers. May be nil; callers must nil-guard.
+	// index for loop callback triggers. May be nil; callers must nil-guard.
 	CallbackIndex *conversation.CallbackIndex
 
 	// CallbackRateLimiter mirrors Server.callbackRateLimiter: the per-token rate
@@ -221,38 +221,38 @@ type Deps struct {
 	// May be nil; callers must nil-guard.
 	IsExternalListenerRunning func() bool
 
-	// TriggerPeriodicNow mirrors Server.periodicRunner.TriggerNow: triggers an
-	// immediate periodic run for a session. May be nil; callers must nil-guard.
-	TriggerPeriodicNow func(sessionID string, resetTimer bool) error
+	// TriggerLoopNow mirrors Server.loopRunner.TriggerNow: triggers an
+	// immediate loop run for a session. May be nil; callers must nil-guard.
+	TriggerLoopNow func(sessionID string, resetTimer bool) error
 
-	// StopPeriodicForArchive mirrors Server.periodicRunner.StopPeriodicForArchive bound
+	// StopLoopForArchive mirrors Server.loopRunner.StopLoopForArchive bound
 	// to the "archived" stopped reason: it authoritatively stops a conversation's
-	// periodic loop when the conversation is archived. May be nil; callers must nil-guard.
-	StopPeriodicForArchive func(sessionID string)
+	// loop when the conversation is archived. May be nil; callers must nil-guard.
+	StopLoopForArchive func(sessionID string)
 
-	// ErrSessionBusy and ErrPeriodicNotEnabled mirror the web package's
-	// periodic-runner sentinel errors. They are exposed here so callback handlers
-	// can map TriggerPeriodicNow failures to HTTP status codes without importing
+	// ErrSessionBusy and ErrLoopNotEnabled mirror the web package's
+	// loop-runner sentinel errors. They are exposed here so callback handlers
+	// can map TriggerLoopNow failures to HTTP status codes without importing
 	// the web package (which would create an import cycle). May be nil.
-	ErrSessionBusy        error
-	ErrPeriodicNotEnabled error
+	ErrSessionBusy    error
+	ErrLoopNotEnabled error
 
-	// PeriodicDelayFloor mirrors Server.periodicDelayFloor: the configured global
+	// LoopDelayFloor mirrors Server.loopDelayFloor: the configured global
 	// floor (in seconds) for the on-completion delay. When nil, handlers fall back
 	// to the package default.
-	PeriodicDelayFloor func() int
+	LoopDelayFloor func() int
 
-	// BroadcastPeriodicUpdated mirrors Server.BroadcastPeriodicUpdated: broadcasts
-	// a periodic-config change to all connected clients for the given session
-	// (nil periodic means deleted/disabled). May be nil; callers must nil-guard.
-	BroadcastPeriodicUpdated func(sessionID string, periodic *session.PeriodicPrompt)
+	// BroadcastLoopUpdated mirrors Server.BroadcastLoopUpdated: broadcasts
+	// a loop-config change to all connected clients for the given session
+	// (nil loop means deleted/disabled). May be nil; callers must nil-guard.
+	BroadcastLoopUpdated func(sessionID string, loop *session.LoopPrompt)
 
 	// BroadcastBeadsCleanupProgress mirrors Server.BroadcastBeadsCleanupProgress:
 	// it broadcasts a global-events message reporting bulk closed-issue cleanup
 	// progress to all connected clients. May be nil.
 	BroadcastBeadsCleanupProgress func(workingDir string, deleted, total int, done bool, errMsg string)
 
-	// BootstrapOnCompletion mirrors Server.periodicRunner.BootstrapOnCompletion:
+	// BootstrapOnCompletion mirrors Server.loopRunner.BootstrapOnCompletion:
 	// kicks off the very first run for a fresh onCompletion conversation. May be
 	// nil; callers must nil-guard.
 	BootstrapOnCompletion func(sessionID string)

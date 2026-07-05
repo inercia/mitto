@@ -14,15 +14,15 @@ import (
 	"github.com/inercia/mitto/internal/config"
 )
 
-func TestBuildCELContext_ArgsAndPeriodicForced(t *testing.T) {
+func TestBuildCELContext_ArgsAndLoopForced(t *testing.T) {
 	input := &ProcessorInput{
-		SessionID:        "sess-1",
-		IsPeriodicForced: true,
-		Arguments:        map[string]string{"BRANCH": "main"},
+		SessionID:    "sess-1",
+		IsLoopForced: true,
+		Arguments:    map[string]string{"BRANCH": "main"},
 	}
 	ctx := BuildCELContext(input)
-	if !ctx.Session.IsPeriodicForced {
-		t.Error("expected ctx.Session.IsPeriodicForced=true")
+	if !ctx.Session.IsLoopForced {
+		t.Error("expected ctx.Session.IsLoopForced=true")
 	}
 	if ctx.Args == nil || ctx.Args["BRANCH"] != "main" {
 		t.Fatalf("expected ctx.Args populated from input.Arguments, got %#v", ctx.Args)
@@ -33,8 +33,8 @@ func TestBuildCELContext_ArgsAndPeriodicForced(t *testing.T) {
 	if empty.Args != nil {
 		t.Errorf("expected nil Args when input.Arguments is nil, got %#v", empty.Args)
 	}
-	if empty.Session.IsPeriodicForced {
-		t.Error("expected IsPeriodicForced=false by default")
+	if empty.Session.IsLoopForced {
+		t.Error("expected IsLoopForced=false by default")
 	}
 }
 
@@ -3248,15 +3248,15 @@ func TestApplyAfter_OriginFilter(t *testing.T) {
 	os.WriteFile(scriptPath, []byte("#!/bin/sh\necho done"), 0755)
 
 	proc := &Processor{
-		Name:    "no-periodic",
-		When:    WhenConfig{On: PhaseAgentResponded, Match: MatchAll, StopReasons: []string{"end_turn"}, ExcludeOrigins: []string{"periodic-runner"}},
+		Name:    "no-loop",
+		When:    WhenConfig{On: PhaseAgentResponded, Match: MatchAll, StopReasons: []string{"end_turn"}, ExcludeOrigins: []string{"loop-runner"}},
 		Command: scriptPath,
 		Output:  OutputDiscard,
 	}
 	m := makeAfterManager([]*Processor{proc})
 
-	// Should skip for periodic-runner
-	result := m.ApplyAfter(context.Background(), makeAfterInput("periodic-runner", "end_turn"))
+	// Should skip for loop-runner
+	result := m.ApplyAfter(context.Background(), makeAfterInput("loop-runner", "end_turn"))
 	if len(result.Errors) != 0 {
 		t.Errorf("expected no errors for excluded origin, got %v", result.Errors)
 	}
@@ -4718,11 +4718,11 @@ func buildProcessorYAML(cadence *CadenceConfig) string {
 }
 
 // TestBuildCELContext_Iteration verifies that BuildCELContext correctly populates
-// the ctx.Iteration.* fields from ProcessorInput.IterationNumber / MaxIterations / IsPeriodic.
+// the ctx.Iteration.* fields from ProcessorInput.IterationNumber / MaxIterations / IsLoop.
 func TestBuildCELContext_Iteration(t *testing.T) {
 	cases := []struct {
 		name                   string
-		isPeriodic             bool
+		isLoop                 bool
 		iterationNum           int
 		maxIterations          int
 		iterationUninterrupted bool
@@ -4730,19 +4730,19 @@ func TestBuildCELContext_Iteration(t *testing.T) {
 		wantIsLast             bool
 		wantIsUninterrupted    bool
 	}{
-		// (1) First run of a 3-run periodic sequence.
+		// (1) First run of a 3-run loop sequence.
 		{
 			name:          "first-of-three",
-			isPeriodic:    true,
+			isLoop:        true,
 			iterationNum:  0,
 			maxIterations: 3,
 			wantIsFirst:   true,
 			wantIsLast:    false,
 		},
-		// (2) Last run of a 3-run periodic sequence.
+		// (2) Last run of a 3-run loop sequence.
 		{
 			name:          "last-of-three",
-			isPeriodic:    true,
+			isLoop:        true,
 			iterationNum:  2,
 			maxIterations: 3,
 			wantIsFirst:   false,
@@ -4751,7 +4751,7 @@ func TestBuildCELContext_Iteration(t *testing.T) {
 		// (3) Unlimited sequence (Max=0) — IsLast must always be false.
 		{
 			name:          "unlimited",
-			isPeriodic:    true,
+			isLoop:        true,
 			iterationNum:  5,
 			maxIterations: 0,
 			wantIsFirst:   false,
@@ -4760,7 +4760,7 @@ func TestBuildCELContext_Iteration(t *testing.T) {
 		// (4) Uninterrupted continuation (mitto-5xjn).
 		{
 			name:                   "uninterrupted",
-			isPeriodic:             true,
+			isLoop:                 true,
 			iterationNum:           3,
 			maxIterations:          0,
 			iterationUninterrupted: true,
@@ -4771,7 +4771,7 @@ func TestBuildCELContext_Iteration(t *testing.T) {
 		// (5) Interrupted (user prompt between runs) — IsUninterrupted must be false.
 		{
 			name:                   "interrupted",
-			isPeriodic:             true,
+			isLoop:                 true,
 			iterationNum:           3,
 			maxIterations:          0,
 			iterationUninterrupted: false,
@@ -4785,7 +4785,7 @@ func TestBuildCELContext_Iteration(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			input := &ProcessorInput{
 				SessionID:              "sess-iter",
-				IsPeriodic:             tc.isPeriodic,
+				IsLoop:                 tc.isLoop,
 				IterationNumber:        tc.iterationNum,
 				MaxIterations:          tc.maxIterations,
 				IterationUninterrupted: tc.iterationUninterrupted,
@@ -4798,8 +4798,8 @@ func TestBuildCELContext_Iteration(t *testing.T) {
 			if ctx.Iteration.Max != tc.maxIterations {
 				t.Errorf("Max: got %d, want %d", ctx.Iteration.Max, tc.maxIterations)
 			}
-			if ctx.Iteration.IsPeriodic != tc.isPeriodic {
-				t.Errorf("IsPeriodic: got %v, want %v", ctx.Iteration.IsPeriodic, tc.isPeriodic)
+			if ctx.Iteration.IsLoop != tc.isLoop {
+				t.Errorf("IsLoop: got %v, want %v", ctx.Iteration.IsLoop, tc.isLoop)
 			}
 			if ctx.Iteration.IsFirst != tc.wantIsFirst {
 				t.Errorf("IsFirst: got %v, want %v", ctx.Iteration.IsFirst, tc.wantIsFirst)

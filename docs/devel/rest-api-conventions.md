@@ -47,7 +47,7 @@ Some operations are genuinely non-CRUD and do not map cleanly to a resource:
 
 | Path pattern                                | Reason acceptable                              |
 | ------------------------------------------- | ---------------------------------------------- |
-| `POST .../periodic/run-now`                 | One-shot trigger, not a resource mutation      |
+| `POST .../loop/run-now`                 | One-shot trigger, not a resource mutation      |
 | `POST .../queue/{id}/move`                  | Reorder within queue, no natural PATCH target  |
 | `POST .../sessions/{id}/prune`              | Destructive bulk operation on opaque internals |
 | `POST /api/agents/scan`                     | Long-running discovery action                  |
@@ -161,8 +161,8 @@ Legend: **migrate** = path/method change needed · **keep** = stays as-is · **e
 | `/api/sessions/{id}/queue/{msgId}` | GET, DELETE | `/api/sessions/{id}/queue/{msgId}` | GET, DELETE | keep | Correct already |
 | `/api/sessions/{id}/queue/{msgId}/move` | POST | `/api/sessions/{id}/queue/{msgId}/move` | POST | keep | Non-CRUD action; acceptable |
 | `/api/sessions/{id}/user-data` | GET, PUT | `/api/sessions/{id}/user-data` | GET, PUT | keep | Correct already |
-| `/api/sessions/{id}/periodic` | GET, PUT, PATCH, DELETE | `/api/sessions/{id}/periodic` | GET, PUT, PATCH, DELETE | keep | Correct already |
-| `/api/sessions/{id}/periodic/run-now` | POST | `/api/sessions/{id}/periodic/run-now` | POST | keep | Non-CRUD action; acceptable |
+| `/api/sessions/{id}/loop` | GET, PUT, PATCH, DELETE | `/api/sessions/{id}/loop` | GET, PUT, PATCH, DELETE | keep | Correct already |
+| `/api/sessions/{id}/loop/run-now` | POST | `/api/sessions/{id}/loop/run-now` | POST | keep | Non-CRUD action; acceptable |
 | `/api/sessions/{id}/callback` | GET, POST, DELETE | `/api/sessions/{id}/callback` | GET, POST, DELETE | keep | Correct already |
 | `/api/sessions/{id}/settings` | GET, PATCH | `/api/sessions/{id}/settings` | GET, PATCH | keep | Correct already |
 | `/api/sessions/{id}/prune` | POST | `/api/sessions/{id}/prune` | POST | keep | Non-CRUD bulk action; acceptable |

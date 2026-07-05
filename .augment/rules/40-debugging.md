@@ -61,6 +61,8 @@ All logs in `~/Library/Logs/Mitto/` (macOS):
 | `client_id=`        | WebSocket client events  |
 | `seq=`              | Sequence numbers (DEBUG) |
 
+> ⚠️ **Logfmt field-order assumption**: Don't assume relative field order when regex-matching logfmt lines (e.g. expecting `session_id=` before `msg=`). Actual order varies by call site and can cause false-negative counts (e.g. an `acp_sdk_event_received` count reading 0 when events did stream). Match fields independently, not by position.
+
 ### Quick Commands
 
 > ⚠️ **Self-referential matches**: When grep runs inside a live Mitto session, the log captures the prompt/agent messages containing the grep query strings, causing false matches. Use `grep -E 'level=(ERROR|WARN)'` (exact field syntax) instead of `-i 'error|warn'` to avoid this.
@@ -83,10 +85,8 @@ grep -v '127\.0\.0\.1\|::1' ~/Library/Logs/Mitto/access.log   # non-localhost
 ### Processor Log Patterns
 
 ```bash
-grep 'processor pipeline starting\|processor pipeline complete' ~/Library/Logs/Mitto/mitto.log | tail -20
-grep 'applying processor\|processor applied\|processor executed' ~/Library/Logs/Mitto/mitto.log | tail -30
-grep 'processor skipped\|processor rerun triggered' ~/Library/Logs/Mitto/mitto.log | tail -20
-grep 'processor execution failed\|processor returned error\|processor failed' ~/Library/Logs/Mitto/mitto.log
+grep 'processor pipeline starting\|processor pipeline complete\|applying processor\|processor applied\|processor executed' ~/Library/Logs/Mitto/mitto.log | tail -30
+grep 'processor skipped\|processor rerun triggered\|processor execution failed\|processor returned error\|processor failed' ~/Library/Logs/Mitto/mitto.log
 ```
 
 ### Anomaly Detection Patterns

@@ -292,31 +292,32 @@ func TestBuildTemplateFuncMap_GitFuncsRenderSmoke(t *testing.T) {
 
 func TestParity_HasPattern(t *testing.T) {
 	e := newTestEvaluator(t)
-	names := []string{"github_pr", "jira_create", "slack_post"}
+	reachable := NewReachableToolsContext([]string{"github_pr", "jira_create", "slack_post"}).Servers
 
 	cases := []struct {
-		name      string
-		available bool
-		pattern   string
-		want      bool
+		name    string
+		servers map[string]ServerToolInfo
+		pattern string
+		want    bool
 	}{
-		{"match", true, "github_*", true},
-		{"no match", true, "notion_*", false},
-		{"fail-open unavailable", false, "anything_*", true},
-		{"exact match", true, "jira_create", true},
+		{"match", reachable, "github_*", true},
+		{"unknown server fails open", reachable, "notion_*", true},
+		{"no match on reachable server", reachable, "jira_other", false},
+		{"cold start fails open", nil, "anything_*", true},
+		{"exact match", reachable, "jira_create", true},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			goResult := hasPattern(tc.available, names, tc.pattern)
+			goResult := hasPattern(tc.servers, tc.pattern)
 			if goResult != tc.want {
-				t.Errorf("hasPattern(%v, names, %q) = %v, want %v", tc.available, tc.pattern, goResult, tc.want)
+				t.Errorf("hasPattern(servers, %q) = %v, want %v", tc.pattern, goResult, tc.want)
 			}
-			ctx := &PromptEnabledContext{Tools: ToolsContext{Available: tc.available, Names: names}}
+			ctx := &PromptEnabledContext{Tools: ToolsContext{Servers: tc.servers}}
 			celExpr := fmt.Sprintf("Tools.HasPattern(%q)", tc.pattern)
 			celResult := evalCEL(t, e, celExpr, ctx)
 			if goResult != celResult {
-				t.Errorf("parity failure: go=%v cel=%v for pattern %q available=%v", goResult, celResult, tc.pattern, tc.available)
+				t.Errorf("parity failure: go=%v cel=%v for pattern %q", goResult, celResult, tc.pattern)
 			}
 		})
 	}
@@ -324,28 +325,29 @@ func TestParity_HasPattern(t *testing.T) {
 
 func TestParity_HasAllPatterns(t *testing.T) {
 	e := newTestEvaluator(t)
-	names := []string{"github_pr", "jira_create", "slack_post"}
+	reachable := NewReachableToolsContext([]string{"github_pr", "jira_create", "slack_post"}).Servers
 
 	cases := []struct {
-		name      string
-		available bool
-		patterns  []string
-		want      bool
+		name     string
+		servers  map[string]ServerToolInfo
+		patterns []string
+		want     bool
 	}{
-		{"all satisfied", true, []string{"github_*", "jira_*"}, true},
-		{"one unsatisfied", true, []string{"github_*", "notion_*"}, false},
-		{"fail-open unavailable", false, []string{"notion_*"}, true},
-		{"empty patterns", true, []string{}, true},
+		{"all satisfied", reachable, []string{"github_*", "jira_*"}, true},
+		{"one unsatisfied on reachable server", reachable, []string{"github_*", "jira_other"}, false},
+		{"unknown server fails open (does not fail the AND)", reachable, []string{"notion_*"}, true},
+		{"cold start fails open", nil, []string{"notion_*"}, true},
+		{"empty patterns", reachable, []string{}, true},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			goResult := hasAllPatterns(tc.available, names, tc.patterns)
+			goResult := hasAllPatterns(tc.servers, tc.patterns)
 			if goResult != tc.want {
 				t.Errorf("hasAllPatterns = %v, want %v", goResult, tc.want)
 			}
 			// Build CEL list literal for patterns
-			ctx := &PromptEnabledContext{Tools: ToolsContext{Available: tc.available, Names: names}}
+			ctx := &PromptEnabledContext{Tools: ToolsContext{Servers: tc.servers}}
 			var celPatterns string
 			for i, p := range tc.patterns {
 				if i > 0 {
@@ -356,7 +358,7 @@ func TestParity_HasAllPatterns(t *testing.T) {
 			celExpr := fmt.Sprintf("Tools.HasAllPatterns([%s])", celPatterns)
 			celResult := evalCEL(t, e, celExpr, ctx)
 			if goResult != celResult {
-				t.Errorf("parity failure: go=%v cel=%v for patterns %v available=%v", goResult, celResult, tc.patterns, tc.available)
+				t.Errorf("parity failure: go=%v cel=%v for patterns %v", goResult, celResult, tc.patterns)
 			}
 		})
 	}
@@ -364,26 +366,27 @@ func TestParity_HasAllPatterns(t *testing.T) {
 
 func TestParity_HasAnyPattern(t *testing.T) {
 	e := newTestEvaluator(t)
-	names := []string{"github_pr", "jira_create"}
+	reachable := NewReachableToolsContext([]string{"github_pr", "jira_create"}).Servers
 
 	cases := []struct {
-		name      string
-		available bool
-		patterns  []string
-		want      bool
+		name     string
+		servers  map[string]ServerToolInfo
+		patterns []string
+		want     bool
 	}{
-		{"one matches", true, []string{"github_*", "notion_*"}, true},
-		{"none match", true, []string{"slack_*", "notion_*"}, false},
-		{"fail-open unavailable", false, []string{"notion_*"}, true},
+		{"one matches", reachable, []string{"github_*", "notion_*"}, true},
+		{"none match on reachable servers", reachable, []string{"github_other", "jira_other"}, false},
+		{"unknown server fails open (satisfies the OR)", reachable, []string{"notion_*"}, true},
+		{"cold start fails open", nil, []string{"notion_*"}, true},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			goResult := hasAnyPattern(tc.available, names, tc.patterns)
+			goResult := hasAnyPattern(tc.servers, tc.patterns)
 			if goResult != tc.want {
 				t.Errorf("hasAnyPattern = %v, want %v", goResult, tc.want)
 			}
-			ctx := &PromptEnabledContext{Tools: ToolsContext{Available: tc.available, Names: names}}
+			ctx := &PromptEnabledContext{Tools: ToolsContext{Servers: tc.servers}}
 			var celPatterns string
 			for i, p := range tc.patterns {
 				if i > 0 {
@@ -395,6 +398,52 @@ func TestParity_HasAnyPattern(t *testing.T) {
 			celResult := evalCEL(t, e, celExpr, ctx)
 			if goResult != celResult {
 				t.Errorf("parity failure: go=%v cel=%v", goResult, celResult)
+			}
+		})
+	}
+}
+
+// TestHasPattern_PerServerStates covers the three per-server MCP tool
+// availability states (docs/devel/mcp-tool-discovery.md, Q3.2/Q4.1) and the
+// prefix->server pattern resolution required by mitto-sys.1, keeping the Go
+// template path (hasPattern) and the CEL path (Tools.HasPattern) in parity.
+func TestHasPattern_PerServerStates(t *testing.T) {
+	e := newTestEvaluator(t)
+
+	servers := map[string]ServerToolInfo{
+		"jira":   {State: ServerToolStateReachable, Names: []string{"jira_create_issue"}},
+		"github": {State: ServerToolStateReachable, Names: []string{"github_list_prs"}},
+		"slack":  {State: ServerToolStateUnknown},
+		"notion": {State: ServerToolStateUnreachable},
+	}
+
+	cases := []struct {
+		name    string
+		servers map[string]ServerToolInfo
+		pattern string
+		want    bool
+	}{
+		{"unknown server fails open even with no matching tool", servers, "slack_post", true},
+		{"configured-but-unreachable server fails open", servers, "notion_search", true},
+		{"reachable server fails closed on match", servers, "jira_*", true},
+		{"reachable server fails closed on no match", servers, "jira_other_thing", false},
+		{"prefix mapping resolves to owning server, unaffected by a different reachable server", servers, "github_*", true},
+		{"prefix mapping: no match on owning reachable server, unaffected by a different reachable server", servers, "github_nonexistent", false},
+		{"cold start: nil server map globally fails open", nil, "jira_*", true},
+		{"cold start: empty (non-nil) server map globally fails open", map[string]ServerToolInfo{}, "jira_*", true},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			goResult := hasPattern(tc.servers, tc.pattern)
+			if goResult != tc.want {
+				t.Errorf("hasPattern(servers, %q) = %v, want %v", tc.pattern, goResult, tc.want)
+			}
+			ctx := &PromptEnabledContext{Tools: ToolsContext{Servers: tc.servers}}
+			celExpr := fmt.Sprintf("Tools.HasPattern(%q)", tc.pattern)
+			celResult := evalCEL(t, e, celExpr, ctx)
+			if goResult != celResult {
+				t.Errorf("parity failure: go=%v cel=%v for pattern %q", goResult, celResult, tc.pattern)
 			}
 		})
 	}
@@ -913,7 +962,7 @@ func TestCond_Parity(t *testing.T) {
 		ACP:       ACPContext{Name: "auggie", Type: "augment"},
 		Session:   SessionContext{IsChild: true},
 		Workspace: WorkspaceContext{Folder: tmpDir},
-		Tools:     ToolsContext{Available: true, Names: []string{"mitto_list", "jira_create"}},
+		Tools:     NewReachableToolsContext([]string{"mitto_list", "jira_create"}),
 	}
 
 	e := newTestEvaluator(t)

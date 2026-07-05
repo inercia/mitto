@@ -46,12 +46,40 @@ import {
   ShieldIcon,
   SearchIcon,
   LayersIcon,
+  KeyboardIcon,
 } from "./Icons.js";
 import { AgentDiscoveryDialog } from "./AgentDiscoveryDialog.js";
 import { Modal } from "./Modal.js";
 import { ModelSelection } from "./ModelSelection.js";
 import { ModelProfileSelect } from "./ModelProfileSelect.js";
+import { RichSelect } from "./RichSelect.js";
 import { Tooltip } from "./Tooltip.js";
+import { ShortcutsEditor } from "./ShortcutsEditor.js";
+import { promptMenuIncludes } from "../utils/prompts.js";
+
+// Section descriptors for the global Shortcuts tab. Section IDs match those used
+// by the folder-level editor and the render-time toolbars; each maps to the
+// prompt menu whose prompts are offered for that section.
+const GLOBAL_SHORTCUT_SECTIONS = [
+  {
+    id: "tasksList",
+    label: "Tasks list",
+    desc: "Buttons shown in every Tasks list toolbar.",
+    menu: "beadsList",
+  },
+  {
+    id: "conversations",
+    label: "Conversation",
+    desc: "Buttons shown in every conversation toolbar; run in the current conversation.",
+    menu: "prompts",
+  },
+  {
+    id: "beadsIssue",
+    label: "Beads issue",
+    desc: "Buttons shown in every beads issue detail toolbar; start a new conversation for the issue.",
+    menu: "beadsIssues",
+  },
+];
 
 // Import constants
 import { CYCLING_MODE, CYCLING_MODE_OPTIONS } from "../constants.js";
@@ -215,9 +243,13 @@ export function AutoChildrenEditor({
   currentWorkspaceUUID,
   onChange,
   getBasename,
+  modelProfiles,
 }) {
   const addChild = () =>
-    onChange([...(children || []), { title: "", target_workspace_uuid: "" }]);
+    onChange([
+      ...(children || []),
+      { title: "", target_workspace_uuid: "", model_profile: "" },
+    ]);
   const removeChild = (idx) =>
     onChange((children || []).filter((_, i) => i !== idx));
   const updateChild = (idx, field, value) => {
@@ -234,6 +266,47 @@ export function AutoChildrenEditor({
       currentWs &&
       ws.working_dir === currentWs.working_dir,
   );
+
+  // Small inline workspace badge + label used in the rich workspace dropdown
+  // (both menu rows and the trigger). Inline styles avoid depending on
+  // tailwind utility classes that may be absent from the precompiled snapshot.
+  const renderWorkspaceItem = (ws) => {
+    const info = getWorkspaceVisualInfo(
+      ws.working_dir,
+      ws.color,
+      ws.code,
+      ws.name,
+    );
+    return html`
+      <span class="inline-flex items-center gap-2 min-w-0">
+        <span
+          class="inline-flex items-center justify-center rounded font-bold shrink-0"
+          style=${{
+            backgroundColor: info.color.background,
+            color: info.color.text,
+            width: "20px",
+            height: "20px",
+            fontSize: "10px",
+          }}
+          >${info.abbreviation}</span
+        >
+        <span class="truncate min-w-0"
+          >${ws.name || ws.acp_server} (${getBasename(ws.working_dir)})</span
+        >
+      </span>
+    `;
+  };
+
+  const workspaceOptions = targetOptions.map((ws) => ({
+    value: ws.uuid,
+    label: `${ws.name || ws.acp_server} (${getBasename(ws.working_dir)})`,
+    render: () => renderWorkspaceItem(ws),
+  }));
+
+  const profileOptions = [
+    { value: "", label: "Default (ACP server criteria)" },
+    ...(modelProfiles || []).map((p) => ({ value: p.name, label: p.name })),
+  ];
 
   const maxChildren = 5;
   const canAdd = (children || []).length < maxChildren;
@@ -262,31 +335,34 @@ export function AutoChildrenEditor({
                       placeholder="Child title"
                       onInput=${(e) =>
                         updateChild(idx, "title", e.target.value)}
-                      class="input input-sm join-item flex-1"
+                      class="input input-sm join-item flex-1 min-w-0"
                     />
-                    <select
+                    <${RichSelect}
+                      className="flex-1 min-w-0 join-item"
+                      triggerClass="input input-sm rounded-none w-full flex items-center justify-between gap-2 list-none cursor-pointer"
+                      ariaLabel="Target workspace"
                       value=${child.target_workspace_uuid || ""}
-                      onChange=${(e) =>
-                        updateChild(
-                          idx,
-                          "target_workspace_uuid",
-                          e.target.value,
-                        )}
-                      class="select select-sm join-item"
-                    >
-                      ${targetOptions.map(
-                        (ws) => html`
-                          <option value=${ws.uuid}>
-                            ${ws.name || ws.acp_server}
-                            (${getBasename(ws.working_dir)})
-                          </option>
-                        `,
-                      )}
-                    </select>
+                      options=${workspaceOptions}
+                      placeholder="Select workspace"
+                      renderTrigger=${(sel) =>
+                        sel
+                          ? sel.render()
+                          : html`<span>Select workspace</span>`}
+                      onChange=${(v) =>
+                        updateChild(idx, "target_workspace_uuid", v)}
+                    />
+                    <${RichSelect}
+                      className="flex-1 min-w-0 join-item"
+                      triggerClass="input input-sm rounded-none w-full flex items-center justify-between gap-2 list-none cursor-pointer"
+                      ariaLabel="Model profile"
+                      value=${child.model_profile || ""}
+                      options=${profileOptions}
+                      onChange=${(v) => updateChild(idx, "model_profile", v)}
+                    />
                     <button
                       type="button"
                       onClick=${() => removeChild(idx)}
-                      class="btn btn-ghost btn-square btn-sm join-item tooltip tooltip-bottom"
+                      class="btn btn-ghost btn-square btn-sm join-item tooltip tooltip-bottom shrink-0"
                       data-tip="Remove child"
                       aria-label="Remove child"
                     >
@@ -1070,13 +1146,122 @@ export function SettingsDialog({
   // Agent discovery dialog (triggered from Servers tab)
   const [showDiscoverAgents, setShowDiscoverAgents] = useState(false);
 
+  // ------ Global Shortcuts tab state ------------------------------------------
+  // Global shortcut buttons stored in settings.json, keyed by section ID. These
+  // are merged with folder-level shortcuts at render time.
+  const [shortcutsSections, setShortcutsSections] = useState({});
+  // Per-section available prompts, filtered by the section's menu tag.
+  const [shortcutsSectionPrompts, setShortcutsSectionPrompts] = useState({});
+  const [shortcutsLoading, setShortcutsLoading] = useState(false);
+  const [shortcutsLoaded, setShortcutsLoaded] = useState(false);
+  const [shortcutsError, setShortcutsError] = useState("");
+
+  // Lazily load global shortcuts (and the global prompt list) when the Shortcuts
+  // tab is first opened. Guarded by shortcutsLoaded so we only persist on Save
+  // when we actually hold the authoritative state (never wipe an untouched tab).
+  useEffect(() => {
+    if (!isOpen || activeTab !== "shortcuts" || shortcutsLoaded) return;
+    setShortcutsLoading(true);
+    setShortcutsError("");
+    authFetch(endpoints.global.shortcuts())
+      .then((r) => r.json())
+      .then((data) => {
+        setShortcutsSections(data.sections || {});
+        const all = data.prompts || [];
+        const byMenu = (menu) =>
+          all
+            .filter((p) => promptMenuIncludes(p, menu))
+            .sort((a, b) => a.name.localeCompare(b.name));
+        const perSection = {};
+        for (const { id, menu } of GLOBAL_SHORTCUT_SECTIONS) {
+          perSection[id] = byMenu(menu);
+        }
+        setShortcutsSectionPrompts(perSection);
+        setShortcutsLoaded(true);
+      })
+      .catch((err) =>
+        setShortcutsError("Failed to load shortcuts: " + err.message),
+      )
+      .finally(() => setShortcutsLoading(false));
+  }, [isOpen, activeTab, shortcutsLoaded]);
+
+  // Reset the loaded flag when the dialog closes so a reopen fetches fresh data.
+  useEffect(() => {
+    if (!isOpen) {
+      setShortcutsLoaded(false);
+      setShortcutsSections({});
+      setShortcutsSectionPrompts({});
+    }
+  }, [isOpen]);
+
+  // ------ Global Shortcuts row helpers (mirror the folder-level editor) --------
+  const addShortcutRow = (section) => {
+    const available = shortcutsSectionPrompts[section] || [];
+    const defaultPrompt = available.length > 0 ? available[0].name : "";
+    setShortcutsSections((prev) => {
+      const list = [...(prev[section] || [])];
+      if (list.length >= 10) return prev;
+      list.push({ icon: "", prompt: defaultPrompt });
+      return { ...prev, [section]: list };
+    });
+  };
+  const updateShortcutRow = (section, idx, patch) => {
+    setShortcutsSections((prev) => {
+      const list = [...(prev[section] || [])];
+      list[idx] = { ...list[idx], ...patch };
+      return { ...prev, [section]: list };
+    });
+  };
+  const removeShortcutRow = (section, idx) => {
+    setShortcutsSections((prev) => {
+      const list = [...(prev[section] || [])];
+      list.splice(idx, 1);
+      return { ...prev, [section]: list };
+    });
+  };
+  const moveShortcutRow = (section, idx, dir) => {
+    setShortcutsSections((prev) => {
+      const list = [...(prev[section] || [])];
+      const target = idx + dir;
+      if (target < 0 || target >= list.length) return prev;
+      [list[idx], list[target]] = [list[target], list[idx]];
+      return { ...prev, [section]: list };
+    });
+  };
+
+  // Persist global shortcuts via PUT /api/global/shortcuts. Only invoked from
+  // handleSave when the tab was loaded (so an untouched tab never wipes them).
+  const persistGlobalShortcuts = async () => {
+    if (!shortcutsLoaded) return;
+    const sections = {};
+    for (const { id } of GLOBAL_SHORTCUT_SECTIONS) {
+      sections[id] = (shortcutsSections[id] || [])
+        .filter((r) => r.prompt)
+        .slice(0, 10);
+    }
+    const res = await secureFetch(endpoints.global.shortcuts(), {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ sections }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok)
+      throw new Error(
+        errorMessageFromData(data, "Failed to save global shortcuts"),
+      );
+    setShortcutsSections(data.sections || {});
+    // Notify open Tasks lists / conversation toolbars so their merged shortcut
+    // buttons refresh immediately, without a full page reload.
+    window.dispatchEvent(new CustomEvent("mitto:global_shortcuts_updated"));
+  };
+
   // Configuration state
   const [workspaces, setWorkspaces] = useState([]);
   const [acpServers, setAcpServers] = useState([]);
   // Model profiles (named profiles pairing criteria with capability tags)
   const [modelProfiles, setModelProfiles] = useState([]);
-  // Accordion: index of the single expanded model profile
-  const [expandedProfileIndex, setExpandedProfileIndex] = useState(0);
+  // Accordion: index of the single expanded model profile (-1 = all collapsed)
+  const [expandedProfileIndex, setExpandedProfileIndex] = useState(-1);
   // Raw text drafts for the tags input, keyed by profile index — lets the
   // user type commas without the controlled value swallowing them
   const [tagDrafts, setTagDrafts] = useState({});
@@ -1169,8 +1354,8 @@ export function SettingsDialog({
   const [autoArchiveInactiveAfter, setAutoArchiveInactiveAfter] = useState("");
   const [maxMessagesPerSession, setMaxMessagesPerSession] = useState(2000);
 
-  // Periodic suspend timeout setting (default "" = 30 minutes)
-  const [periodicSuspendTimeout, setPeriodicSuspendTimeout] = useState("");
+  // Loop suspend timeout setting (default "" = 30 minutes)
+  const [loopSuspendTimeout, setLoopSuspendTimeout] = useState("");
 
   // Memory recycle threshold setting (default "" = disabled, opt-in)
   const [memoryRecycleThreshold, setMemoryRecycleThreshold] = useState("");
@@ -1184,11 +1369,10 @@ export function SettingsDialog({
   // Max child conversations setting - default 10
   const [maxChildConversations, setMaxChildConversations] = useState(10);
 
-  // Max periodic iterations setting - default 100
-  const [maxPeriodicIterations, setMaxPeriodicIterations] = useState(100);
+  // Max loop iterations setting - default 100
+  const [maxLoopIterations, setMaxLoopIterations] = useState(100);
 
-  const [periodicBehaviorExpanded, setPeriodicBehaviorExpanded] =
-    useState(false);
+  const [loopBehaviorExpanded, setLoopBehaviorExpanded] = useState(false);
 
   // Default flags for new conversations
   const [availableFlags, setAvailableFlags] = useState([]);
@@ -1460,7 +1644,7 @@ export function SettingsDialog({
       servers.forEach(assignStableKey);
       setAcpServers(servers);
       setModelProfiles(Array.isArray(config.models) ? config.models : []);
-      setExpandedProfileIndex(0);
+      setExpandedProfileIndex(-1);
       setTagDrafts({});
 
       // Reset server renames when config is loaded
@@ -1598,8 +1782,8 @@ export function SettingsDialog({
         setMaxMessagesPerSession(rawMaxMessages || 2000);
       }
 
-      // Load periodic suspend timeout (default "" = 30 minutes)
-      setPeriodicSuspendTimeout(config.session?.periodic_suspend_timeout || "");
+      // Load loop suspend timeout (default "" = 30 minutes)
+      setLoopSuspendTimeout(config.session?.loop_suspend_timeout || "");
 
       // Load memory recycle threshold (default "" = disabled)
       setMemoryRecycleThreshold(config.session?.memory_recycle_threshold || "");
@@ -1619,10 +1803,8 @@ export function SettingsDialog({
         config.conversations?.max_child_conversations ?? 10,
       );
 
-      // Load max periodic iterations setting - default to 100
-      setMaxPeriodicIterations(
-        config.conversations?.max_periodic_iterations ?? 100,
-      );
+      // Load max loop iterations setting - default to 100
+      setMaxLoopIterations(config.conversations?.max_loop_iterations ?? 100);
 
       // Load input font family setting (web UI) - default to "system"
       setInputFontFamily(config.ui?.web?.input_font_family || "system");
@@ -1883,7 +2065,7 @@ export function SettingsDialog({
           enabled: externalImagesEnabled,
         },
         max_child_conversations: maxChildConversations,
-        max_periodic_iterations: maxPeriodicIterations,
+        max_loop_iterations: maxLoopIterations,
         // Only include default_flags if any are set
         ...(Object.keys(defaultFlags).length > 0 && {
           default_flags: defaultFlags,
@@ -1899,7 +2081,7 @@ export function SettingsDialog({
         auto_archive_inactive_after: autoArchiveInactiveAfter,
         max_messages_per_session:
           maxMessagesPerSession === 0 ? -1 : maxMessagesPerSession,
-        periodic_suspend_timeout: periodicSuspendTimeout,
+        loop_suspend_timeout: loopSuspendTimeout,
         memory_recycle_threshold: memoryRecycleThreshold,
       };
 
@@ -2012,6 +2194,10 @@ export function SettingsDialog({
 
       // Config changed on disk — invalidate cache so next read is fresh.
       invalidateConfigCache();
+
+      // Persist global shortcuts (dedicated endpoint; no-op if the Shortcuts tab
+      // was never opened). Runs after the main config save so its write wins.
+      await persistGlobalShortcuts();
 
       // Update the global sound and notification setting flags
       if (isMacApp) {
@@ -2359,6 +2545,7 @@ export function SettingsDialog({
     { id: "web", label: "Web", icon: GlobeIcon },
     { id: "mcp", label: "MCP", icon: LightningIcon },
     { id: "ui", label: "UI", icon: SlidersIcon },
+    { id: "shortcuts", label: "Shortcuts", icon: KeyboardIcon },
   ];
 
   return html`
@@ -3532,26 +3719,22 @@ export function SettingsDialog({
                       </div>
                     </div>
 
-                    <!-- Periodic Behavior (collapse) -->
+                    <!-- Loop Behavior (collapse) -->
                     <div
-                      data-testid="periodic-behavior-collapse"
-                      class="collapse collapse-arrow ${periodicBehaviorExpanded
+                      data-testid="loop-behavior-collapse"
+                      class="collapse collapse-arrow ${loopBehaviorExpanded
                         ? "collapse-open"
                         : "collapse-close"} border border-mitto-border-2/50 rounded-md bg-mitto-surface-3/20 mt-2"
                     >
                       <div
                         class="collapse-title flex items-center justify-between p-3 pr-12 min-h-0 cursor-pointer bg-mitto-surface-3/30 hover:bg-mitto-surface-3/50 transition-colors"
                         onClick=${() =>
-                          setPeriodicBehaviorExpanded(
-                            !periodicBehaviorExpanded,
-                          )}
+                          setLoopBehaviorExpanded(!loopBehaviorExpanded)}
                       >
-                        <span class="text-sm font-medium"
-                          >Periodic Behavior</span
-                        >
+                        <span class="text-sm font-medium">Loop Behavior</span>
                       </div>
                       <div class="collapse-content px-0">
-                        ${periodicBehaviorExpanded &&
+                        ${loopBehaviorExpanded &&
                         html`
                           <div
                             class="p-4 space-y-4 border-t border-mitto-border-2/50"
@@ -3559,20 +3742,20 @@ export function SettingsDialog({
                             <div class="flex items-center justify-between">
                               <div>
                                 <div class="font-medium text-sm">
-                                  Suspend periodic conversations
+                                  Suspend loop conversations
                                 </div>
                                 <div class="text-xs text-mitto-text-muted">
-                                  Automatically suspend idle periodic
-                                  conversations when their next run is farther
-                                  away than this timeout. Saves memory by
-                                  stopping ACP and MCP processes. Conversations
-                                  resume transparently when focused.
+                                  Automatically suspend idle loop conversations
+                                  when their next run is farther away than this
+                                  timeout. Saves memory by stopping ACP and MCP
+                                  processes. Conversations resume transparently
+                                  when focused.
                                 </div>
                               </div>
                               <select
-                                value=${periodicSuspendTimeout}
+                                value=${loopSuspendTimeout}
                                 onInput=${(e) =>
-                                  setPeriodicSuspendTimeout(e.target.value)}
+                                  setLoopSuspendTimeout(e.target.value)}
                                 class="select select-sm"
                               >
                                 <option value="">After 30 minutes</option>
@@ -3586,10 +3769,10 @@ export function SettingsDialog({
                             <div class="flex items-center justify-between">
                               <div>
                                 <div class="font-medium text-sm">
-                                  Max Periodic Iterations
+                                  Max Loop Iterations
                                 </div>
                                 <div class="text-xs text-mitto-text-muted">
-                                  Maximum number of scheduled runs a periodic
+                                  Maximum number of scheduled runs a loop
                                   conversation performs before it auto-stops.
                                   Set to 0 for unlimited (still bounded by a
                                   built-in safety ceiling of 1000).
@@ -3599,9 +3782,9 @@ export function SettingsDialog({
                                 type="number"
                                 min="0"
                                 max="1000"
-                                value=${maxPeriodicIterations}
+                                value=${maxLoopIterations}
                                 onInput=${(e) =>
-                                  setMaxPeriodicIterations(
+                                  setMaxLoopIterations(
                                     parseInt(e.target.value, 10) || 0,
                                   )}
                                 class="input input-sm w-20 text-center"
@@ -4652,6 +4835,29 @@ export function SettingsDialog({
                   </div>
                 `}
 
+                <!-- Shortcuts Tab -->
+                ${activeTab === "shortcuts" &&
+                html`
+                  <div class="space-y-4">
+                    <p class="text-mitto-text-muted text-sm">
+                      Global shortcut buttons appear across every workspace.
+                      They are merged with any per-folder shortcuts (configured
+                      in the Workspaces dialog); global buttons appear first.
+                    </p>
+                    <${ShortcutsEditor}
+                      sections=${GLOBAL_SHORTCUT_SECTIONS}
+                      shortcutsSections=${shortcutsSections}
+                      sectionPrompts=${shortcutsSectionPrompts}
+                      loading=${shortcutsLoading}
+                      error=${shortcutsError}
+                      onAdd=${addShortcutRow}
+                      onUpdate=${updateShortcutRow}
+                      onRemove=${removeShortcutRow}
+                      onMove=${moveShortcutRow}
+                    />
+                  </div>
+                `}
+
                 <!-- Models Tab -->
                 ${activeTab === "models" &&
                 html`
@@ -4667,8 +4873,7 @@ export function SettingsDialog({
                       const trimmedName = (p.name || "").trim();
                       const tags = p.tags || [];
                       const isPartialBlank =
-                        trimmedName === "" &&
-                        (!!p.criteria || tags.length > 0);
+                        trimmedName === "" && (!!p.criteria || tags.length > 0);
                       return html`
                         <div
                           key=${i}
@@ -4829,9 +5034,7 @@ export function SettingsDialog({
                                                 ),
                                               })}
                                           >
-                                            <${CloseIcon}
-                                              className="w-3 h-3"
-                                            />
+                                            <${CloseIcon} className="w-3 h-3" />
                                           </button>
                                         </span>
                                       `,

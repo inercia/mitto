@@ -434,7 +434,7 @@ pattern — see [Builtin Processors](#builtin-processors).
 
 ```yaml
 name: progress-summary
-description: "Summarizes session progress periodically"
+description: "Summarizes session progress at regular intervals"
 when:
   on: userPrompt
   match: first
@@ -495,7 +495,7 @@ when:                # Trigger condition — always a block
   stopReasons:       # which ACP stop reasons trigger this processor (default: ["end_turn"])
     - end_turn       # valid values: end_turn, max_tokens, max_turn_requests, refusal, cancelled
   excludeOrigins:    # skip processor when message origin matches any of these
-    - periodic-runner
+    - loop-runner
 
 # --- Text-mode (use ONE of the three modes) ---
 # Only valid for on:userPrompt; forbidden for on:agentResponded and on:agentIdle
@@ -578,7 +578,7 @@ The `when:` block is required for all processors. Both `on:` and `match:` are re
 | ----------------- | ---------------------------------------------------- |
 | `user`            | Message sent by the user via the UI                  |
 | `queue`           | Message dispatched from the conversation queue       |
-| `periodic-runner` | Message triggered by the periodic runner             |
+| `loop-runner` | Message triggered by the loop runner             |
 | `mcp-send-prompt` | Message sent via the `mitto_conversation_send_prompt` MCP tool |
 
 ### Phase/Field Rules
@@ -627,7 +627,7 @@ expression must evaluate to `true`.
 
 - `ACP.Name`, `ACP.Type`, `ACP.Tags`, `ACP.AutoApprove`
 - `ACP.MatchesServerType("type")`, `ACP.MatchesServerType(["a", "b"])` — matches ACP server type only, not display name
-- `Session.ID`, `Session.Name`, `Session.IsChild`, `Session.IsAutoChild`, `Session.ParentID`, `Session.IsPeriodic`
+- `Session.ID`, `Session.Name`, `Session.IsChild`, `Session.IsAutoChild`, `Session.ParentID`, `Session.IsLoop`
 - `Parent.Exists`, `Parent.Name`, `Parent.ACPServer`
 - `Children.Count`, `Children.Exists`, `Children.MCPCount`, `Children.Names`, `Children.ACPServers`
 - `Workspace.UUID`, `Workspace.Folder`, `Workspace.Name`
@@ -642,7 +642,7 @@ expression must evaluate to `true`.
 
 Processors with `on: userPrompt` and `match: first` normally fire only once (on the first
 message after session start or resume). The `rerun` field allows them to fire again
-periodically, refreshing context for the LLM. Thresholds can be based on time, message
+at regular intervals, refreshing context for the LLM. Thresholds can be based on time, message
 count, or token usage.
 
 ```yaml
@@ -962,8 +962,8 @@ The `@mitto:` prefix followed by a lowercase, underscored variable name. This is
 | `@mitto:workspace_uuid`        | Workspace UUID                                                                 |
 | `@mitto:available_acp_servers` | Human-readable list of ACP servers with workspaces for this folder — see below |
 | `@mitto:children`              | Human-readable list of child sessions — see below                              |
-| `@mitto:periodic`              | `"true"` if this prompt was triggered by the periodic runner, `"false"` otherwise |
-| `@mitto:periodic_forced`       | `"true"` if this is a manually-triggered periodic run (via "run now"), `"false"` otherwise |
+| `@mitto:loop`              | `"true"` if this prompt was triggered by the loop runner, `"false"` otherwise |
+| `@mitto:loop_forced`       | `"true"` if this is a manually-triggered loop run (via "run now"), `"false"` otherwise |
 
 
 ### `@mitto:available_acp_servers` format
@@ -1180,4 +1180,4 @@ The conversation properties panel displays real-time processor statistics:
 - **Activations** — Total number of times the processor pipeline has run
 - **Last activation** — Relative time since the last processor execution (e.g., "2m ago")
 
-These statistics are updated after each prompt completes and during periodic keepalive messages. They are tracked in-memory and reset when the session restarts.
+These statistics are updated after each prompt completes and during loop keepalive messages. They are tracked in-memory and reset when the session restarts.

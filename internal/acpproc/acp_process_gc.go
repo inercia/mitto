@@ -30,18 +30,18 @@ type GCConfig struct {
 	// than user-created sessions and should be reclaimed faster to reduce memory pressure.
 	// Default: 5m (same as IdleTimeout). Set shorter than IdleTimeout for faster child GC.
 	ChildIdleTimeout time.Duration
-	// PeriodicSuspendThreshold is the minimum time until the next periodic prompt
-	// before a periodic session is eligible for suspension. Periodic sessions whose
+	// LoopSuspendThreshold is the minimum time until the next loop prompt
+	// before a loop session is eligible for suspension. Loop sessions whose
 	// next run is farther away than this threshold will have their ACP connection
 	// closed even if they have active WebSocket observers. The session is NOT archived —
 	// it remains visible in the sidebar and resumes transparently via ensure_resumed
-	// when the user focuses it, or via the PeriodicRunner when the prompt is due.
-	// This saves significant memory by stopping MCP server processes for idle periodic
-	// conversations. Set to 0 to disable periodic suspension (default: 30m).
-	PeriodicSuspendThreshold time.Duration
-	// PeriodicSuspendGracePeriod is a generous post-activity buffer that protects a
-	// periodic session from being suspended too soon after it finishes a turn. A
-	// periodic session is NOT suspended while its most recent activity — the agent
+	// when the user focuses it, or via the LoopRunner when the prompt is due.
+	// This saves significant memory by stopping MCP server processes for idle loop
+	// conversations. Set to 0 to disable loop suspension (default: 30m).
+	LoopSuspendThreshold time.Duration
+	// LoopSuspendGracePeriod is a generous post-activity buffer that protects a
+	// loop session from being suspended too soon after it finishes a turn. A
+	// loop session is NOT suspended while its most recent activity — the agent
 	// completing a response (LastResponseCompleteAt) or a prompt/observer change
 	// (LastActivityAt) — is within this window. This prevents aggressively reclaiming
 	// a conversation that just ended a turn and may be about to continue (a queued
@@ -49,11 +49,11 @@ type GCConfig struct {
 	// from LastActivityAt-only checks because LastActivityAt is set at prompt START and
 	// is therefore stale after a long-running task. Set to a negative value to disable
 	// the grace window (default: 10m).
-	PeriodicSuspendGracePeriod time.Duration
+	LoopSuspendGracePeriod time.Duration
 	// MemoryRecycleThreshold is the RSS threshold in bytes (summed over the agent
 	// process tree) above which an IDLE shared ACP process is recycled (stopped) to
 	// reclaim memory. Recycling only happens when the process has no prompting
-	// session, no in-flight RPCs, empty queues, and no periodic prompt due soon —
+	// session, no in-flight RPCs, empty queues, and no loop prompt due soon —
 	// affected conversations resume transparently on next focus. 0 means disabled
 	// (opt-in; no default is applied).
 	MemoryRecycleThreshold uint64
@@ -69,15 +69,15 @@ type SessionCloseFunc func(sessionID string)
 // defaultGCConfig returns a GCConfig with sensible defaults.
 func defaultGCConfig() GCConfig {
 	return GCConfig{
-		Interval:                   30 * time.Second,
-		GracePeriod:                60 * time.Second,
-		ObserverGracePeriod:        60 * time.Second,
-		IdleTimeout:                5 * time.Minute,
-		ChildIdleTimeout:           5 * time.Minute,
-		MaxClosuresPerCycle:        3,
-		AuxIdleTimeout:             10 * time.Minute,
-		PeriodicSuspendThreshold:   30 * time.Minute,
-		PeriodicSuspendGracePeriod: 10 * time.Minute,
+		Interval:               30 * time.Second,
+		GracePeriod:            60 * time.Second,
+		ObserverGracePeriod:    60 * time.Second,
+		IdleTimeout:            5 * time.Minute,
+		ChildIdleTimeout:       5 * time.Minute,
+		MaxClosuresPerCycle:    3,
+		AuxIdleTimeout:         10 * time.Minute,
+		LoopSuspendThreshold:   30 * time.Minute,
+		LoopSuspendGracePeriod: 10 * time.Minute,
 	}
 }
 
@@ -110,19 +110,19 @@ func (m *ACPProcessManager) StartGC(config GCConfig, query SessionQueryFunc, clo
 	if config.ChildIdleTimeout <= 0 {
 		config.ChildIdleTimeout = defaultGCConfig().ChildIdleTimeout
 	}
-	// PeriodicSuspendThreshold: 0 means "not set" → use default.
+	// LoopSuspendThreshold: 0 means "not set" → use default.
 	// Negative means "explicitly disabled" → set to 0 so RunGCOnce skips the heuristic.
-	if config.PeriodicSuspendThreshold == 0 {
-		config.PeriodicSuspendThreshold = defaultGCConfig().PeriodicSuspendThreshold
-	} else if config.PeriodicSuspendThreshold < 0 {
-		config.PeriodicSuspendThreshold = 0
+	if config.LoopSuspendThreshold == 0 {
+		config.LoopSuspendThreshold = defaultGCConfig().LoopSuspendThreshold
+	} else if config.LoopSuspendThreshold < 0 {
+		config.LoopSuspendThreshold = 0
 	}
-	// PeriodicSuspendGracePeriod: 0 means "not set" → use generous default.
+	// LoopSuspendGracePeriod: 0 means "not set" → use generous default.
 	// Negative means "explicitly disabled" → set to 0 so RunGCOnce skips the grace check.
-	if config.PeriodicSuspendGracePeriod == 0 {
-		config.PeriodicSuspendGracePeriod = defaultGCConfig().PeriodicSuspendGracePeriod
-	} else if config.PeriodicSuspendGracePeriod < 0 {
-		config.PeriodicSuspendGracePeriod = 0
+	if config.LoopSuspendGracePeriod == 0 {
+		config.LoopSuspendGracePeriod = defaultGCConfig().LoopSuspendGracePeriod
+	} else if config.LoopSuspendGracePeriod < 0 {
+		config.LoopSuspendGracePeriod = 0
 	}
 	// Note: MaxClosuresPerCycle == 0 means unlimited — no default applied.
 
@@ -146,15 +146,15 @@ func (m *ACPProcessManager) StartGC(config GCConfig, query SessionQueryFunc, clo
 	}
 }
 
-// UpdatePeriodicSuspendThreshold updates the periodic suspend threshold on the
+// UpdateLoopSuspendThreshold updates the loop suspend threshold on the
 // running GC. This is safe to call while the GC is running. A threshold of 0
-// disables the periodic suspend heuristic.
-func (m *ACPProcessManager) UpdatePeriodicSuspendThreshold(d time.Duration) {
+// disables the loop suspend heuristic.
+func (m *ACPProcessManager) UpdateLoopSuspendThreshold(d time.Duration) {
 	m.gcMu.Lock()
 	defer m.gcMu.Unlock()
-	m.gcConfig.PeriodicSuspendThreshold = d
+	m.gcConfig.LoopSuspendThreshold = d
 	if m.logger != nil {
-		m.logger.Info("GC: updated periodic suspend threshold", "threshold", d)
+		m.logger.Info("GC: updated loop suspend threshold", "threshold", d)
 	}
 }
 
@@ -214,15 +214,15 @@ func (m *ACPProcessManager) gcLoop() {
 // RunGCOnce executes a single GC iteration. It is exported for testing.
 //
 // Tier 1 closes idle sessions — those with no WebSocket observers, no active
-// prompt, an empty queue, and no periodic prompt due within 2× the GC interval.
+// prompt, an empty queue, and no loop prompt due within 2× the GC interval.
 //
-// Periodic suspend heuristic: periodic sessions whose next prompt is farther
-// away than PeriodicSuspendThreshold (default 30m) are eligible for suspension
+// Loop suspend heuristic: loop sessions whose next prompt is farther
+// away than LoopSuspendThreshold (default 30m) are eligible for suspension
 // even when they have active WebSocket observers. The session is NOT archived —
 // it stays visible and resumes transparently via ensure_resumed (user focus)
-// or PeriodicRunner (when the prompt is due). This saves memory by stopping
-// MCP server processes for idle periodic conversations. A generous
-// PeriodicSuspendGracePeriod (default 10m) protects sessions that recently
+// or LoopRunner (when the prompt is due). This saves memory by stopping
+// MCP server processes for idle loop conversations. A generous
+// LoopSuspendGracePeriod (default 10m) protects sessions that recently
 // finished a turn from being suspended too aggressively.
 //
 // Tier 2 stops shared ACP processes that have had no active sessions for longer
@@ -231,7 +231,7 @@ func (m *ACPProcessManager) gcLoop() {
 // Tier 4 recycles memory-bloated idle processes: when a shared process's RSS
 // (summed over its process tree) exceeds MemoryRecycleThreshold and the process
 // is fully idle (no in-flight RPCs, no prompting session, empty queues, no
-// periodic prompt due soon), its sessions are GC-suspended and closed and the
+// loop prompt due soon), its sessions are GC-suspended and closed and the
 // process is stopped to reclaim memory. Disabled when MemoryRecycleThreshold is 0.
 //
 // Tier 3 cleans up auxiliary sessions that have been idle longer than AuxIdleTimeout.
@@ -273,48 +273,48 @@ gcTier1:
 				continue
 			}
 
-			// Determine if this is a periodic session eligible for suspension.
-			// A periodic session qualifies when:
-			//   1. It has a NextPeriodicAt set (i.e., has an enabled periodic prompt)
-			//   2. The next prompt is farther away than PeriodicSuspendThreshold
+			// Determine if this is a loop session eligible for suspension.
+			// A loop session qualifies when:
+			//   1. It has a NextLoopAt set (i.e., has an enabled loop prompt)
+			//   2. The next prompt is farther away than LoopSuspendThreshold
 			//   3. The session is not actively prompting (checked above)
 			//   4. The queue is empty (checked below)
 			// When eligible, we bypass the observer, connected-client, and idle-timeout
 			// checks — the session is suspended even if the user has it open in the
 			// sidebar. The user will see it transition to "not running" and it resumes
 			// instantly via ensure_resumed when they focus it.
-			periodicSuspendEligible := false
-			if m.gcConfig.PeriodicSuspendThreshold > 0 && s.NextPeriodicAt != nil {
-				suspendThreshold := now.Add(m.gcConfig.PeriodicSuspendThreshold)
-				if s.NextPeriodicAt.After(suspendThreshold) {
-					periodicSuspendEligible = true
+			loopSuspendEligible := false
+			if m.gcConfig.LoopSuspendThreshold > 0 && s.NextLoopAt != nil {
+				suspendThreshold := now.Add(m.gcConfig.LoopSuspendThreshold)
+				if s.NextLoopAt.After(suspendThreshold) {
+					loopSuspendEligible = true
 				}
 			}
 
-			// Generous post-activity grace: never suspend a periodic session that
+			// Generous post-activity grace: never suspend a loop session that
 			// recently finished a turn. The agent may be about to continue (a queued
 			// follow-up, a nudge, or the user inspecting results). We use the most
 			// recent of LastResponseCompleteAt (turn END) and LastActivityAt (prompt
 			// START / observer change); the former is the reliable signal here because
 			// LastActivityAt is stale by the end of a long-running task.
-			if periodicSuspendEligible && m.gcConfig.PeriodicSuspendGracePeriod > 0 {
+			if loopSuspendEligible && m.gcConfig.LoopSuspendGracePeriod > 0 {
 				recentActivity := s.LastActivityAt
 				if s.LastResponseCompleteAt.After(recentActivity) {
 					recentActivity = s.LastResponseCompleteAt
 				}
-				if !recentActivity.IsZero() && now.Sub(recentActivity) < m.gcConfig.PeriodicSuspendGracePeriod {
+				if !recentActivity.IsZero() && now.Sub(recentActivity) < m.gcConfig.LoopSuspendGracePeriod {
 					if m.logger != nil {
-						m.logger.Debug("GC: skipping periodic suspend (recently active, within grace)",
+						m.logger.Debug("GC: skipping loop suspend (recently active, within grace)",
 							"session_id", s.SessionID,
 							"workspace_uuid", workspaceUUID,
 							"active_ago", now.Sub(recentActivity),
-							"grace", m.gcConfig.PeriodicSuspendGracePeriod)
+							"grace", m.gcConfig.LoopSuspendGracePeriod)
 					}
 					continue
 				}
 			}
 
-			if !periodicSuspendEligible {
+			if !loopSuspendEligible {
 				// Standard idle-session checks (apply only to non-suspend-eligible sessions).
 				if s.HasObservers {
 					if m.logger != nil {
@@ -364,8 +364,8 @@ gcTier1:
 				}
 			}
 
-			// Queue and periodic-due-soon checks apply to both standard and
-			// periodic-suspend-eligible sessions.
+			// Queue and loop-due-soon checks apply to both standard and
+			// loop-suspend-eligible sessions.
 			if s.QueueLength > 0 {
 				if m.logger != nil {
 					m.logger.Debug("GC: skipping session (non-empty queue)",
@@ -375,26 +375,26 @@ gcTier1:
 				}
 				continue
 			}
-			if s.NextPeriodicAt != nil {
+			if s.NextLoopAt != nil {
 				threshold := now.Add(2 * m.gcConfig.Interval)
-				if s.NextPeriodicAt.Before(threshold) {
+				if s.NextLoopAt.Before(threshold) {
 					if m.logger != nil {
-						m.logger.Debug("GC: skipping session (periodic prompt due soon)",
+						m.logger.Debug("GC: skipping session (loop prompt due soon)",
 							"session_id", s.SessionID,
 							"workspace_uuid", workspaceUUID,
-							"next_periodic_at", s.NextPeriodicAt)
+							"next_loop_at", s.NextLoopAt)
 					}
 					continue
 				}
 			}
 
-			if periodicSuspendEligible {
+			if loopSuspendEligible {
 				if m.logger != nil {
-					m.logger.Info("GC: suspending periodic session (next run far away)",
+					m.logger.Info("GC: suspending loop session (next run far away)",
 						"session_id", s.SessionID,
 						"workspace_uuid", workspaceUUID,
-						"next_periodic_at", s.NextPeriodicAt,
-						"threshold", m.gcConfig.PeriodicSuspendThreshold)
+						"next_loop_at", s.NextLoopAt,
+						"threshold", m.gcConfig.LoopSuspendThreshold)
 				}
 				// Mark session as GC-suspended BEFORE closing, so the WebSocket
 				// auto-resume handler sees the flag and skips resume. This prevents
@@ -559,13 +559,13 @@ gcTier1:
 					busy = true
 					break
 				}
-				if s.NextPeriodicAt != nil && s.NextPeriodicAt.Before(now.Add(2*m.gcConfig.Interval)) {
+				if s.NextLoopAt != nil && s.NextLoopAt.Before(now.Add(2*m.gcConfig.Interval)) {
 					if m.logger != nil {
 						m.logger.Debug("GC: skipping memory recycle (busy)",
 							"workspace_uuid", workspaceUUID,
-							"reason", "periodic prompt due soon",
+							"reason", "loop prompt due soon",
 							"session_id", s.SessionID,
-							"next_periodic_at", s.NextPeriodicAt)
+							"next_loop_at", s.NextLoopAt)
 					}
 					busy = true
 					break
@@ -605,7 +605,7 @@ gcTier1:
 			}
 			// Mark each session GC-suspended BEFORE closing so the WebSocket
 			// auto-resume handler skips resume and avoids a thrash loop — same
-			// ordering as Tier 1's periodic-suspend path.
+			// ordering as Tier 1's loop-suspend path.
 			recycledCount := len(sessions)
 			for _, s := range sessions {
 				m.MarkGCSuspended(s.SessionID)

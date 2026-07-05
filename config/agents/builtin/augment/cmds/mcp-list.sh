@@ -60,6 +60,8 @@ for name, cfg in merged.items():
         entry['url'] = cfg['url']
     if cfg.get('env'):
         entry['env'] = cfg['env']
+    if cfg.get('headers'):
+        entry['headers'] = cfg['headers']
     result.append(entry)
 
 print(json.dumps({'servers': result}))

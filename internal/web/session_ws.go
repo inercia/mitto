@@ -15,6 +15,7 @@ import (
 
 	acp "github.com/coder/acp-go-sdk"
 
+	"github.com/inercia/mitto/internal/auxiliary"
 	"github.com/inercia/mitto/internal/config"
 	"github.com/inercia/mitto/internal/conversation"
 	"github.com/inercia/mitto/internal/logging"
@@ -42,6 +43,95 @@ func buildContextUsageMap(size, used int) map[string]interface{} {
 		"size": size,
 		"used": used,
 	}
+}
+
+// eventStats holds counters derived from a single pass over a session's
+// persisted events. These counts survive process restarts (unlike the
+// in-memory counters on BackgroundSession such as child-wait stats and
+// cumulative token usage).
+type eventStats struct {
+	mcpCallsTotal        int
+	mcpUICalls           int
+	mcpChildrenWaitCalls int
+	turns                int
+	acpToolCalls         int
+	permissionsAllowed   int
+	permissionsDenied    int
+	errors               int
+	imagesUploaded       int
+}
+
+// computeEventStats performs a single pass over a session's events, deriving
+// MCP-usage, turn, tool-call, permission, error, and image-upload counts.
+// tool_call events are deduplicated by ToolCallID so status re-emissions
+// (recorded as separate events with the same ID) are only counted once.
+func computeEventStats(events []session.Event) eventStats {
+	var stats eventStats
+	seenToolCalls := make(map[string]struct{})
+
+	for _, e := range events {
+		data, err := session.DecodeEventData(e)
+		if err != nil {
+			continue
+		}
+
+		switch e.Type {
+		case session.EventTypeToolCall:
+			d, ok := data.(session.ToolCallData)
+			if !ok {
+				continue
+			}
+			if _, seen := seenToolCalls[d.ToolCallID]; seen {
+				continue
+			}
+			seenToolCalls[d.ToolCallID] = struct{}{}
+
+			if strings.HasPrefix(d.Title, "mitto_") {
+				stats.mcpCallsTotal++
+				if strings.HasPrefix(d.Title, "mitto_ui_") {
+					stats.mcpUICalls++
+				}
+				if strings.HasPrefix(d.Title, "mitto_children_tasks_wait") {
+					stats.mcpChildrenWaitCalls++
+				}
+			} else {
+				stats.acpToolCalls++
+			}
+
+		case session.EventTypeUserPrompt:
+			stats.turns++
+			if d, ok := data.(session.UserPromptData); ok {
+				stats.imagesUploaded += len(d.Images)
+			}
+
+		case session.EventTypePermission:
+			d, ok := data.(session.PermissionData)
+			if !ok {
+				continue
+			}
+			// The recorded Outcome values today are "auto_approved", "user_selected",
+			// and "timed_out" — none of which directly say "denied". Auto-approved
+			// permissions are always allowed. For user-made choices, classify by the
+			// selected option ID (agent-defined, but conventionally "allow*"/"deny*"
+			// or "reject*"). Timed-out or unrecognised choices count as neither.
+			option := strings.ToLower(d.SelectedOption)
+			switch {
+			case d.Outcome == "auto_approved":
+				stats.permissionsAllowed++
+			case d.Outcome == "denied":
+				stats.permissionsDenied++
+			case d.Outcome == "user_selected" && strings.Contains(option, "allow"):
+				stats.permissionsAllowed++
+			case d.Outcome == "user_selected" && (strings.Contains(option, "deny") || strings.Contains(option, "reject")):
+				stats.permissionsDenied++
+			}
+
+		case session.EventTypeError:
+			stats.errors++
+		}
+	}
+
+	return stats
 }
 
 // buildUsageMap converts an acp.Usage value into a JSON-serialisable map
@@ -265,11 +355,11 @@ func (s *Server) handleSessionWS(w http.ResponseWriter, r *http.Request) {
 						"session_id", sessionID)
 				}
 			} else if s.acpProcessManager != nil && s.acpProcessManager.IsGCSuspended(sessionID) {
-				// Session was intentionally suspended by the GC's periodic-suspend
+				// Session was intentionally suspended by the GC's loop-suspend
 				// heuristic. Skip auto-resume to prevent the suspend/resume thrashing
 				// loop (GC closes → frontend reconnects WS → auto-resume → GC closes).
 				// The session will be resumed by ensure_resumed (user focus) or the
-				// PeriodicRunner (when the prompt is due).
+				// LoopRunner (when the prompt is due).
 				if clientLogger != nil {
 					clientLogger.Debug("Session is GC-suspended, not auto-resuming",
 						"session_id", sessionID)
@@ -443,16 +533,16 @@ func (c *SessionWSClient) sendSessionConnected(bs *conversation.BackgroundSessio
 			c.logger.Warn("Failed to get metadata for connected message", "error", err)
 		}
 
-		// Get periodic prompts state.
-		// periodic_configured = true means a periodic config exists (shows editor UI).
-		// periodic_enabled = true means runs are active (drives sidebar category + clock icon).
-		periodicStore := c.store.Periodic(c.sessionID)
-		if periodic, err := periodicStore.Get(); err == nil && periodic != nil {
-			data["periodic_configured"] = true
-			data["periodic_enabled"] = periodic.Enabled
+		// Get loop prompts state.
+		// loop_configured = true means a loop config exists (shows editor UI).
+		// loop_enabled = true means runs are active (drives sidebar category + clock icon).
+		loopStore := c.store.Loop(c.sessionID)
+		if loop, err := loopStore.Get(); err == nil && loop != nil {
+			data["loop_configured"] = true
+			data["loop_enabled"] = loop.Enabled
 		} else {
-			data["periodic_configured"] = false
-			data["periodic_enabled"] = false
+			data["loop_configured"] = false
+			data["loop_enabled"] = false
 		}
 
 		// Get queue length for the session
@@ -526,6 +616,59 @@ func (c *SessionWSClient) sendSessionConnected(bs *conversation.BackgroundSessio
 		// Include context window usage if available.
 		if ctxUsageMap := buildContextUsageMap(bs.GetContextUsage()); ctxUsageMap != nil {
 			data["context_usage"] = ctxUsageMap
+		}
+	}
+
+	// Include richer statistics (MCP usage, orchestration, activity). Event-derived
+	// counts survive restarts; child-wait and cumulative-usage counts are in-memory
+	// and reset on restart (see BackgroundSession.RecordChildWait / GetCumulativeUsage).
+	// Computed at connect only (not on every prompt_complete) to bound cost.
+	if c.store != nil {
+		if events, err := c.store.ReadEvents(c.sessionID); err == nil {
+			stats := computeEventStats(events)
+			if stats.mcpCallsTotal > 0 {
+				data["mcp_calls_total"] = stats.mcpCallsTotal
+			}
+			if stats.mcpUICalls > 0 {
+				data["mcp_ui_calls"] = stats.mcpUICalls
+			}
+			if stats.mcpChildrenWaitCalls > 0 {
+				data["mcp_children_wait_calls"] = stats.mcpChildrenWaitCalls
+			}
+			if stats.turns > 0 {
+				data["turns"] = stats.turns
+			}
+			if stats.acpToolCalls > 0 {
+				data["acp_tool_calls"] = stats.acpToolCalls
+			}
+			if stats.permissionsAllowed > 0 {
+				data["permissions_allowed"] = stats.permissionsAllowed
+			}
+			if stats.permissionsDenied > 0 {
+				data["permissions_denied"] = stats.permissionsDenied
+			}
+			if stats.errors > 0 {
+				data["errors"] = stats.errors
+			}
+			if stats.imagesUploaded > 0 {
+				data["images_uploaded"] = stats.imagesUploaded
+			}
+		}
+		if count, err := c.store.CountChildSessions(c.sessionID); err == nil && count > 0 {
+			data["children_spawned"] = count
+		}
+	}
+	if bs != nil {
+		if waitCount, waitTotal := bs.GetChildWaitStats(); waitCount > 0 {
+			data["child_wait_count"] = waitCount
+			data["child_wait_total_ms"] = waitTotal.Milliseconds()
+		}
+		if in, out, total := bs.GetCumulativeUsage(); total > 0 {
+			data["usage_cumulative"] = map[string]interface{}{
+				"input_tokens":  in,
+				"output_tokens": out,
+				"total_tokens":  total,
+			}
 		}
 	}
 
@@ -1397,7 +1540,7 @@ func (c *SessionWSClient) handleKeepalive(clientTime int64, clientLastSeenSeq in
 		"queue_length":   queueLength,
 		"status":         status,
 	}
-	// Include processor stats for periodic UI refresh
+	// Include processor stats for loop UI refresh
 	if c.bgSession != nil {
 		procCount, procActivations, procLastAt, procLastNames := c.bgSession.GetProcessorStats()
 		keepaliveData["processor_count"] = procCount
@@ -1651,16 +1794,59 @@ func (c *SessionWSClient) triggerMCPToolsFetch(workspaceUUID string) {
 		})
 	}
 
+	// Late-starting servers (mitto-sys.5): keep re-probing configured-but-
+	// unreachable MCP servers with bounded backoff and broadcast tools as they
+	// come online. Use context.Background(), NOT the fetch's 30-min ctx (it is
+	// cancelled by defer cancel() when this function returns); the backoff's
+	// MaxAttempts terminates the loop. Deduped per workspace inside the manager.
+	if c.server != nil && c.server.auxiliaryManager != nil {
+		srv := c.server
+		wsUUID := workspaceUUID
+		srv.auxiliaryManager.EnsureMCPBackoffRetry(context.Background(), wsUUID, func(tools []auxiliary.MCPToolInfo) {
+			if srv.eventsManager != nil {
+				srv.eventsManager.Broadcast(conversation.WSMsgTypeMCPToolsAvailable, map[string]interface{}{
+					"workspace_uuid": wsUUID,
+					"tools":          tools,
+				})
+			}
+		})
+
+		// Event-driven tool refresh (mitto-sys.4): keep a persistent
+		// notifications/tools/list_changed watcher per configured server and
+		// broadcast tools as they change, without waiting for the next
+		// polling round. Use context.Background() (NOT the fetch ctx, which
+		// is cancelled on return); watcher lifetime is bounded by teardown
+		// (Shutdown/RemoveWorkspace). Deduped per workspace inside the manager.
+		srv.auxiliaryManager.EnsureMCPWatchers(context.Background(), wsUUID, func(tools []auxiliary.MCPToolInfo) {
+			if srv.eventsManager != nil {
+				srv.eventsManager.Broadcast(conversation.WSMsgTypeMCPToolsAvailable, map[string]interface{}{
+					"workspace_uuid": wsUUID,
+					"tools":          tools,
+				})
+				// Event-driven prompts_changed (no dependence on the 30/60/120s timer).
+				// Server-scoped: this callback outlives the per-client `c`, so we must
+				// NOT capture c here — mirror broadcastPromptsChanged inline instead.
+				srv.eventsManager.Broadcast(WSMsgTypePromptsChanged, map[string]interface{}{
+					"changed_dirs": []string{},
+					"timestamp":    time.Now().UTC().Format(time.RFC3339),
+					"reason":       "mcp_tools_event",
+				})
+			}
+		})
+	}
+
 	// After broadcasting tools, check required tool patterns from prompts.
 	go c.checkRequiredToolPatterns(workspaceUUID)
 }
 
 // checkRequiredToolPatterns checks if any prompts have tool pattern requirements in their
-// enabledWhen CEL expressions and, if so, broadcasts prompts_changed immediately plus at
-// delayed intervals so the frontend re-fetches and the backend re-evaluates with whatever
-// MCP tools are cached at that point.
-// MCP tools from external servers can take time to appear (e.g., external Python programs),
-// so delayed re-broadcasts are used to catch late-appearing tools.
+// enabledWhen CEL expressions and, if so, broadcasts prompts_changed immediately so the
+// frontend re-fetches and the backend re-evaluates with whatever MCP tools are cached at
+// that point.
+// Late-appearing or changed MCP tools no longer need a blind timed re-broadcast here: they
+// surface via the event-driven watcher (mitto-sys.4: EnsureMCPWatchers -> onUpdate ->
+// broadcastPromptsChanged("mcp_tools_event")) and the bounded-backoff re-probe path
+// (mitto-sys.5), both of which re-broadcast prompts_changed as soon as tools actually change.
 func (c *SessionWSClient) checkRequiredToolPatterns(workspaceUUID string) {
 	patterns := c.collectRequiredToolPatterns()
 	if len(patterns) == 0 {
@@ -1672,32 +1858,15 @@ func (c *SessionWSClient) checkRequiredToolPatterns(workspaceUUID string) {
 	}
 
 	if c.logger != nil {
-		c.logger.Debug("required tools check: scheduling re-broadcasts for late-loading tools",
+		c.logger.Debug("required tools check: broadcasting initial filtered prompts list",
 			"workspace_uuid", workspaceUUID,
 			"pattern_count", len(patterns),
 			"patterns", patterns)
 	}
 
-	// Broadcast immediately so frontend gets initial filtered list.
+	// Broadcast immediately so frontend gets initial filtered list. Late/changed
+	// tools are handled by the event-driven watcher and backoff paths, not here.
 	c.broadcastPromptsChanged("mcp_tools_initial")
-
-	// Schedule delayed re-broadcasts to catch late-appearing MCP tools.
-	retryDelays := []time.Duration{30 * time.Second, 60 * time.Second, 120 * time.Second}
-	for _, delay := range retryDelays {
-		timer := time.NewTimer(delay)
-		select {
-		case <-timer.C:
-			c.broadcastPromptsChanged("mcp_tools_retry")
-		case <-c.ctx.Done():
-			if !timer.Stop() {
-				select {
-				case <-timer.C:
-				default:
-				}
-			}
-			return
-		}
-	}
 }
 
 // collectRequiredToolPatterns collects all unique tool patterns from enabledWhen CEL expressions across all prompt sources.
@@ -1811,7 +1980,7 @@ func (c *SessionWSClient) handleEnsureResumed() {
 	}
 
 	// Clear GC-suspended flag — the user explicitly focused this session,
-	// so it should resume regardless of the periodic suspend heuristic.
+	// so it should resume regardless of the loop suspend heuristic.
 	if c.server.acpProcessManager != nil {
 		c.server.acpProcessManager.ClearGCSuspended(c.sessionID)
 	}
@@ -2415,7 +2584,7 @@ func (c *SessionWSClient) OnUserPrompt(seq int64, senderID, promptID, message st
 	// also delivered this event. Skipping here races with handleLoadEvents:
 	// a concurrent load_events can update lastSentSeq to include this seq before
 	// the observer notification runs, silently dropping the live notification.
-	// This caused periodic prompt pills to never appear in real-time.
+	// This caused loop prompt pills to never appear in real-time.
 	c.seqMu.Lock()
 	if seq > c.lastSentSeq {
 		c.lastSentSeq = seq

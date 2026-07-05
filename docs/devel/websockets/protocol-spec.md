@@ -845,28 +845,28 @@ stateDiagram-v2
 }
 ```
 
-### Periodic Prompt Events
+### Loop Prompt Events
 
-#### `periodic_updated`
+#### `loop_updated`
 
 ```json
 {
-  "type": "periodic_updated",
+  "type": "loop_updated",
   "data": {
     "session_id": "...",
     "session_name": "Daily Report",
-    "periodic_enabled": true,
-    "periodic_frequency": "daily",
+    "loop_enabled": true,
+    "loop_frequency": "daily",
     "next_scheduled_at": "2026-02-01T09:00:00Z"
   }
 }
 ```
 
-#### `periodic_started`
+#### `loop_started`
 
 ```json
 {
-  "type": "periodic_started",
+  "type": "loop_started",
   "data": { "session_id": "...", "session_name": "Daily Report" }
 }
 ```

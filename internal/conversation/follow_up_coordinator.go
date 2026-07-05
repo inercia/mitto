@@ -392,8 +392,8 @@ func (c followUpCoordinator) applyAfterProcessors(
 // promptOriginFromSenderID maps a PromptMeta.SenderID to the canonical origin tag.
 func promptOriginFromSenderID(senderID string) string {
 	switch senderID {
-	case "periodic-runner":
-		return "periodic-runner"
+	case "loop-runner":
+		return "loop-runner"
 	case "queue":
 		return "queue"
 	default:

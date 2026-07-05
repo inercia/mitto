@@ -89,12 +89,12 @@ func TestTitleCoordinator_Trigger(t *testing.T) {
 	})
 }
 
-func TestTitleCoordinator_TriggerFromPeriodic(t *testing.T) {
+func TestTitleCoordinator_TriggerFromLoop(t *testing.T) {
 	tc := titleCoordinator{}
 
 	t.Run("usable inline used; resolver not consulted", func(t *testing.T) {
 		d := &fakeTitleDeps{noTitle: true, configured: true}
-		tc.triggerFromPeriodic(d, "Real text here", "some-prompt")
+		tc.triggerFromLoop(d, "Real text here", "some-prompt")
 		if len(d.started) != 1 || d.started[0] != "Real text here" {
 			t.Fatalf("expected \"Real text here\", got %v", d.started)
 		}
@@ -105,7 +105,7 @@ func TestTitleCoordinator_TriggerFromPeriodic(t *testing.T) {
 
 	t.Run("(pending) + resolver returns non-empty → use resolved", func(t *testing.T) {
 		d := &fakeTitleDeps{noTitle: true, configured: true, resolved: "Resolved prompt text"}
-		tc.triggerFromPeriodic(d, "(pending)", "my-prompt")
+		tc.triggerFromLoop(d, "(pending)", "my-prompt")
 		if len(d.started) != 1 || d.started[0] != "Resolved prompt text" {
 			t.Fatalf("expected resolved text, got %v", d.started)
 		}
@@ -113,7 +113,7 @@ func TestTitleCoordinator_TriggerFromPeriodic(t *testing.T) {
 
 	t.Run("(pending) + resolver error → use bare name", func(t *testing.T) {
 		d := &fakeTitleDeps{noTitle: true, configured: true, resolveErr: errors.New("lookup failed")}
-		tc.triggerFromPeriodic(d, "(pending)", "my-prompt")
+		tc.triggerFromLoop(d, "(pending)", "my-prompt")
 		if len(d.started) != 1 || d.started[0] != "my-prompt" {
 			t.Fatalf("expected bare name \"my-prompt\", got %v", d.started)
 		}
@@ -121,7 +121,7 @@ func TestTitleCoordinator_TriggerFromPeriodic(t *testing.T) {
 
 	t.Run("empty inline + no resolver configured → use bare name", func(t *testing.T) {
 		d := &fakeTitleDeps{noTitle: true, configured: false}
-		tc.triggerFromPeriodic(d, "", "bare-prompt")
+		tc.triggerFromLoop(d, "", "bare-prompt")
 		if len(d.started) != 1 || d.started[0] != "bare-prompt" {
 			t.Fatalf("expected bare name, got %v", d.started)
 		}
@@ -129,7 +129,7 @@ func TestTitleCoordinator_TriggerFromPeriodic(t *testing.T) {
 
 	t.Run("both empty → noop", func(t *testing.T) {
 		d := &fakeTitleDeps{noTitle: true}
-		tc.triggerFromPeriodic(d, "", "")
+		tc.triggerFromLoop(d, "", "")
 		if len(d.started) != 0 {
 			t.Fatalf("expected no call, got %v", d.started)
 		}
@@ -137,7 +137,7 @@ func TestTitleCoordinator_TriggerFromPeriodic(t *testing.T) {
 
 	t.Run("whitespace-only inline treated as empty → use bare name", func(t *testing.T) {
 		d := &fakeTitleDeps{noTitle: true, configured: false}
-		tc.triggerFromPeriodic(d, "   ", "the-prompt")
+		tc.triggerFromLoop(d, "   ", "the-prompt")
 		if len(d.started) != 1 || d.started[0] != "the-prompt" {
 			t.Fatalf("expected bare name, got %v", d.started)
 		}
@@ -145,7 +145,7 @@ func TestTitleCoordinator_TriggerFromPeriodic(t *testing.T) {
 
 	t.Run("resolver configured but returns empty, no err → fall back to bare name", func(t *testing.T) {
 		d := &fakeTitleDeps{noTitle: true, configured: true, resolved: ""}
-		tc.triggerFromPeriodic(d, "(pending)", "my-prompt")
+		tc.triggerFromLoop(d, "(pending)", "my-prompt")
 		if len(d.started) != 1 || d.started[0] != "my-prompt" {
 			t.Fatalf("expected bare name, got %v", d.started)
 		}

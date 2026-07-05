@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	configPkg "github.com/inercia/mitto/internal/config"
+	"github.com/inercia/mitto/internal/conversation"
 	"github.com/inercia/mitto/internal/secrets"
 	"github.com/inercia/mitto/internal/web/handlers"
 	"github.com/inercia/mitto/internal/web/middleware"
@@ -329,6 +330,14 @@ func (s *Server) buildNewSettings(req *ConfigSaveRequest) (*configPkg.Settings, 
 		modelsConfig = filteredModels
 	}
 
+	// Preserve global shortcut buttons. They are not part of the config-save
+	// request body (edited via the dedicated /api/global/shortcuts endpoint), so
+	// carry the existing value forward to avoid wiping them on an unrelated save.
+	var shortcutsConfig map[string][]configPkg.ShortcutButton
+	if s.config.MittoConfig != nil {
+		shortcutsConfig = s.config.MittoConfig.Shortcuts
+	}
+
 	return &configPkg.Settings{
 		ACPServers:    newACPServers,
 		Prompts:       settingsPrompts,
@@ -339,6 +348,7 @@ func (s *Server) buildNewSettings(req *ConfigSaveRequest) (*configPkg.Settings, 
 		Permissions:   permissionsConfig,
 		MCP:           mcpConfig,
 		Models:        modelsConfig,
+		Shortcuts:     shortcutsConfig,
 	}, nil
 }
 
@@ -399,17 +409,27 @@ func (s *Server) applyConfigChanges(req *ConfigSaveRequest, settings *configPkg.
 		// Update session manager's global conversations config so new sessions use the updated settings
 		s.sessionManager.SetGlobalConversations(settings.Conversations)
 
-		// Update GC periodic suspend threshold at runtime if session config changed
+		// Update GC loop suspend threshold at runtime if session config changed
 		if settings.Session != nil && s.acpProcessManager != nil {
-			if d, enabled := settings.Session.ParsePeriodicSuspendTimeout(); enabled {
-				s.acpProcessManager.UpdatePeriodicSuspendThreshold(d)
+			if d, enabled := settings.Session.ParseLoopSuspendTimeout(); enabled {
+				s.acpProcessManager.UpdateLoopSuspendThreshold(d)
 			} else {
-				s.acpProcessManager.UpdatePeriodicSuspendThreshold(0)
+				s.acpProcessManager.UpdateLoopSuspendThreshold(0)
 			}
 			if bytes, enabled := settings.Session.ParseMemoryRecycleThreshold(); enabled {
 				s.acpProcessManager.UpdateMemoryRecycleThreshold(bytes)
 			} else {
 				s.acpProcessManager.UpdateMemoryRecycleThreshold(0)
+			}
+		}
+
+		// Update the prompt inactivity watchdog timeout at runtime if session config
+		// changed, so a live settings change takes effect without a restart (mitto-54y).
+		if settings.Session != nil {
+			if d, enabled := settings.Session.ParseAgentInactivityTimeout(); enabled {
+				conversation.SetPromptInactivityTimeout(d)
+			} else {
+				conversation.SetPromptInactivityTimeout(0)
 			}
 		}
 	}

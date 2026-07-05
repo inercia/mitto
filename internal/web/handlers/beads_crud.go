@@ -128,7 +128,7 @@ func (h *Handlers) HandleBeadsCreate(w http.ResponseWriter, r *http.Request) {
 		Notes:       strings.TrimSpace(req.Notes),
 	})
 	if err != nil {
-		writeBeadsError(w, err)
+		h.writeBeadsError(w, r, err)
 		return
 	}
 
@@ -181,7 +181,7 @@ func (h *Handlers) HandleBeadsCleanup(w http.ResponseWriter, r *http.Request) {
 			writeRetryableUnavailable(w, "Task service is busy. Please try again in a few seconds.", 5)
 			return
 		}
-		writeBeadsError(w, err)
+		h.writeBeadsError(w, r, err)
 		return
 	}
 	total := len(ids)
@@ -285,7 +285,7 @@ func (h *Handlers) HandleBeadsDelete(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := h.beadsClient().Delete(r.Context(), workingDir, id); err != nil {
-		writeBeadsError(w, err)
+		h.writeBeadsError(w, r, err)
 		return
 	}
 
@@ -342,7 +342,7 @@ func (h *Handlers) HandleBeadsStatus(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := h.beadsClient().SetStatus(r.Context(), workingDir, id, verb); err != nil {
-		writeBeadsError(w, err)
+		h.writeBeadsError(w, r, err)
 		return
 	}
 
@@ -423,7 +423,7 @@ func (h *Handlers) HandleBeadsUpdate(w http.ResponseWriter, r *http.Request) {
 		Assignee:    req.Assignee,
 		Notes:       req.Notes,
 	}); err != nil {
-		writeBeadsError(w, err)
+		h.writeBeadsError(w, r, err)
 		return
 	}
 
@@ -475,7 +475,7 @@ func (h *Handlers) HandleBeadsComment(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := h.beadsClient().Comment(r.Context(), workingDir, id, req.Text); err != nil {
-		writeBeadsError(w, err)
+		h.writeBeadsError(w, r, err)
 		return
 	}
 
@@ -554,9 +554,117 @@ func (h *Handlers) HandleBeadsDep(w http.ResponseWriter, r *http.Request) {
 		Type:      req.Type,
 		Action:    req.Action,
 	}); err != nil {
-		writeBeadsError(w, err)
+		h.writeBeadsError(w, r, err)
 		return
 	}
 
 	writeJSONOK(w, beadsActionResponse{OK: true})
+}
+
+// beadsLabelRequest is the JSON body for POST /api/issues/{id}/labels.
+// Action must be "add" or "remove"; Label is the label name to add or remove.
+type beadsLabelRequest struct {
+	Label  string `json:"label"`
+	Action string `json:"action"`
+}
+
+// HandleBeadsLabel handles POST /api/issues/{id}/labels?working_dir=...
+// For action "add" it runs "bd label add <id> <label>"; for "remove" it runs
+// "bd label remove <id> <label>".
+// Requires authentication via the standard auth middleware (same as other API endpoints).
+func (h *Handlers) HandleBeadsLabel(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		methodNotAllowed(w)
+		return
+	}
+
+	var req beadsLabelRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErrorJSON(w, http.StatusBadRequest, "", "Invalid request body")
+		return
+	}
+
+	workingDir := r.URL.Query().Get("working_dir")
+	id := r.PathValue("id")
+	if workingDir == "" {
+		writeErrorJSON(w, http.StatusBadRequest, "", "working_dir is required")
+		return
+	}
+	if !filepath.IsAbs(workingDir) {
+		writeErrorJSON(w, http.StatusBadRequest, "", "working_dir must be an absolute path")
+		return
+	}
+	if !isValidBeadsIssueRef(id) {
+		writeErrorJSON(w, http.StatusBadRequest, "", "id is required")
+		return
+	}
+	if !beads.IsValidLabel(req.Label) {
+		writeErrorJSON(w, http.StatusBadRequest, "", "label is required")
+		return
+	}
+	switch req.Action {
+	case "add", "remove":
+		// valid
+	default:
+		writeErrorJSON(w, http.StatusBadRequest, "", "action must be 'add' or 'remove'")
+		return
+	}
+	if !h.isKnownWorkspaceDir(workingDir) {
+		writeErrorJSON(w, http.StatusBadRequest, "", "working_dir does not match any known workspace")
+		return
+	}
+
+	if err := h.beadsClient().Label(r.Context(), workingDir, beads.LabelParams{
+		ID:     id,
+		Label:  strings.TrimSpace(req.Label),
+		Action: req.Action,
+	}); err != nil {
+		h.writeBeadsError(w, r, err)
+		return
+	}
+
+	writeJSONOK(w, beadsActionResponse{OK: true})
+}
+
+// HandleBeadsLabelsAll handles GET /api/issues/labels?working_dir=...
+// Runs "bd label list-all --json" in the workspace directory, returning the
+// list of {"label","count"} objects for every unique label in the database.
+// Used by the Tasks view to suggest existing labels when adding one to an issue.
+// Requires authentication via the standard auth middleware (same as other API endpoints).
+func (h *Handlers) HandleBeadsLabelsAll(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		methodNotAllowed(w)
+		return
+	}
+
+	workingDir := r.URL.Query().Get("working_dir")
+	if workingDir == "" {
+		writeErrorJSON(w, http.StatusBadRequest, "", "working_dir is required")
+		return
+	}
+	if !filepath.IsAbs(workingDir) {
+		writeErrorJSON(w, http.StatusBadRequest, "", "working_dir must be an absolute path")
+		return
+	}
+	if !h.isKnownWorkspaceDir(workingDir) {
+		writeErrorJSON(w, http.StatusBadRequest, "", "working_dir does not match any known workspace")
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), auxBackedRequestTimeout)
+	defer cancel()
+	out, err := h.beadsClient().ListAllLabels(ctx, workingDir)
+	if err != nil {
+		if errors.Is(err, context.DeadlineExceeded) || errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			writeRetryableUnavailable(w, "Task service is busy. Please try again in a few seconds.", 5)
+			return
+		}
+		h.writeBeadsError(w, r, err)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(http.StatusOK)
+	w.Write(out) //nolint:errcheck
 }

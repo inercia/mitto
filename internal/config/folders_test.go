@@ -2,6 +2,7 @@ package config
 
 import (
 	"encoding/json"
+	"maps"
 	"os"
 	"path/filepath"
 	"testing"
@@ -422,8 +423,18 @@ func TestSetFolderBeadsPromptUpstream_RoundTrip(t *testing.T) {
 		t.Errorf("FolderBeadsPrompts() before set = (%q,%q,%q), want all empty", pull, push, sync)
 	}
 
-	// Set prompts upstream with three names.
-	if err := SetFolderBeadsPromptUpstream("/proj", "My Pull", "My Push", "My Sync"); err != nil {
+	// Before any set, FolderBeadsPromptArgs also returns nil maps.
+	pullArgs, pushArgs, syncArgs := FolderBeadsPromptArgs("/proj")
+	if pullArgs != nil || pushArgs != nil || syncArgs != nil {
+		t.Errorf("FolderBeadsPromptArgs() before set = (%v,%v,%v), want all nil", pullArgs, pushArgs, syncArgs)
+	}
+
+	// Set prompts upstream with three names and argument maps.
+	wantPullArgs := map[string]string{"IssueID": "mitto-1"}
+	wantPushArgs := map[string]string{"Force": "true"}
+	wantSyncArgs := map[string]string{"Verbose": "true"}
+	if err := SetFolderBeadsPromptUpstream("/proj", "My Pull", "My Push", "My Sync",
+		wantPullArgs, wantPushArgs, wantSyncArgs); err != nil {
 		t.Fatalf("SetFolderBeadsPromptUpstream() returned error: %v", err)
 	}
 
@@ -434,13 +445,17 @@ func TestSetFolderBeadsPromptUpstream_RoundTrip(t *testing.T) {
 	if pull != "My Pull" || push != "My Push" || sync != "My Sync" {
 		t.Errorf("FolderBeadsPrompts() = (%q,%q,%q), want (My Pull,My Push,My Sync)", pull, push, sync)
 	}
+	pullArgs, pushArgs, syncArgs = FolderBeadsPromptArgs("/proj")
+	if !maps.Equal(pullArgs, wantPullArgs) || !maps.Equal(pushArgs, wantPushArgs) || !maps.Equal(syncArgs, wantSyncArgs) {
+		t.Errorf("FolderBeadsPromptArgs() = (%v,%v,%v), want (%v,%v,%v)", pullArgs, pushArgs, syncArgs, wantPullArgs, wantPushArgs, wantSyncArgs)
+	}
 }
 
 func TestSetFolderBeadsUpstream_ClearsPromptNames(t *testing.T) {
 	setupFoldersTestDir(t)
 
 	// Set prompts upstream first.
-	if err := SetFolderBeadsPromptUpstream("/proj", "Pull", "Push", "Sync"); err != nil {
+	if err := SetFolderBeadsPromptUpstream("/proj", "Pull", "Push", "Sync", nil, nil, nil); err != nil {
 		t.Fatalf("SetFolderBeadsPromptUpstream() returned error: %v", err)
 	}
 
@@ -468,7 +483,8 @@ func TestSaveWorkspaces_PreservesBeadsPromptUpstream(t *testing.T) {
 		t.Fatalf("SaveWorkspaces() initial returned error: %v", err)
 	}
 
-	if err := SetFolderBeadsPromptUpstream("/proj", "Pull", "Push", "Sync"); err != nil {
+	pullArgs := map[string]string{"IssueID": "mitto-1"}
+	if err := SetFolderBeadsPromptUpstream("/proj", "Pull", "Push", "Sync", pullArgs, nil, nil); err != nil {
 		t.Fatalf("SetFolderBeadsPromptUpstream() returned error: %v", err)
 	}
 
@@ -483,6 +499,10 @@ func TestSaveWorkspaces_PreservesBeadsPromptUpstream(t *testing.T) {
 	pull, push, sync := FolderBeadsPrompts("/proj")
 	if pull != "Pull" || push != "Push" || sync != "Sync" {
 		t.Errorf("FolderBeadsPrompts() after SaveWorkspaces = (%q,%q,%q), want (Pull,Push,Sync)", pull, push, sync)
+	}
+	gotPullArgs, _, _ := FolderBeadsPromptArgs("/proj")
+	if !maps.Equal(gotPullArgs, pullArgs) {
+		t.Errorf("FolderBeadsPromptArgs() after SaveWorkspaces = %v, want %v", gotPullArgs, pullArgs)
 	}
 }
 

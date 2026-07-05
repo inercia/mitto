@@ -96,10 +96,10 @@ func (s *Store) ActionButtons(sessionID string) *ActionButtonsStore {
 	return NewActionButtonsStore(s.sessionDir(sessionID))
 }
 
-// Periodic returns a PeriodicStore instance for managing the periodic prompt of a session.
-// The returned PeriodicStore is safe for concurrent use.
-func (s *Store) Periodic(sessionID string) *PeriodicStore {
-	return NewPeriodicStore(s.sessionDir(sessionID))
+// Loop returns a LoopStore instance for managing the loop prompt of a session.
+// The returned LoopStore is safe for concurrent use.
+func (s *Store) Loop(sessionID string) *LoopStore {
+	return NewLoopStore(s.sessionDir(sessionID))
 }
 
 // Callback returns a CallbackStore instance for managing the callback token of a session.

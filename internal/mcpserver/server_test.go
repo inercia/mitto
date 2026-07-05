@@ -983,7 +983,7 @@ func (m *mockSessionManager) DeleteChildSessions(parentID string)               
 func (m *mockSessionManager) GetWorkspaces() []config.WorkspaceSettings                    { return nil }
 func (m *mockSessionManager) GetWorkspaceByUUID(uuid string) *config.WorkspaceSettings     { return nil }
 func (m *mockSessionManager) BroadcastSessionRenamed(sessionID string, newName string)     {}
-func (m *mockSessionManager) BroadcastPeriodicUpdated(string, *session.PeriodicPrompt)     {}
+func (m *mockSessionManager) BroadcastLoopUpdated(string, *session.LoopPrompt)             {}
 func (m *mockSessionManager) GetUserDataSchema(workingDir string) *config.UserDataSchema   { return nil }
 func (m *mockSessionManager) GetWorkspacePrompts(workingDir string) []config.WebPrompt     { return nil }
 func (m *mockSessionManager) GetWorkspacePromptsDirs(workingDir string) []string           { return nil }
@@ -3188,7 +3188,7 @@ func (m *mockSessionManagerForWorkspaces) GetWorkspaceByUUID(uuid string) *confi
 }
 func (m *mockSessionManagerForWorkspaces) BroadcastSessionRenamed(sessionID string, newName string) {
 }
-func (m *mockSessionManagerForWorkspaces) BroadcastPeriodicUpdated(string, *session.PeriodicPrompt) {
+func (m *mockSessionManagerForWorkspaces) BroadcastLoopUpdated(string, *session.LoopPrompt) {
 }
 func (m *mockSessionManagerForWorkspaces) GetUserDataSchema(workingDir string) *config.UserDataSchema {
 	return nil
@@ -3540,7 +3540,7 @@ func (m *mockSessionManagerForWorkspaceUpdate) GetWorkspaceByUUID(uuid string) *
 	return nil
 }
 func (m *mockSessionManagerForWorkspaceUpdate) BroadcastSessionRenamed(string, string) {}
-func (m *mockSessionManagerForWorkspaceUpdate) BroadcastPeriodicUpdated(string, *session.PeriodicPrompt) {
+func (m *mockSessionManagerForWorkspaceUpdate) BroadcastLoopUpdated(string, *session.LoopPrompt) {
 }
 func (m *mockSessionManagerForWorkspaceUpdate) GetUserDataSchema(string) *config.UserDataSchema {
 	return nil
@@ -3842,12 +3842,13 @@ func (m *mockBackgroundSessionForWait) TryProcessQueuedMessage() bool {
 	m.tryProcessCalledCount.Add(1)
 	return false
 }
-func (m *mockBackgroundSessionForWait) TriggerTitleGeneration(string)                     {}
-func (m *mockBackgroundSessionForWait) TriggerTitleGenerationFromPeriodic(string, string) {}
-func (m *mockBackgroundSessionForWait) RequestSelfDestruct()                              { m.selfDestructCalled.Store(true) }
+func (m *mockBackgroundSessionForWait) TriggerTitleGeneration(string)                 {}
+func (m *mockBackgroundSessionForWait) TriggerTitleGenerationFromLoop(string, string) {}
+func (m *mockBackgroundSessionForWait) RequestSelfDestruct()                          { m.selfDestructCalled.Store(true) }
 func (m *mockBackgroundSessionForWait) LastQueuedSendError() (string, time.Time) {
 	return "", time.Time{}
 }
+func (m *mockBackgroundSessionForWait) RecordChildWait(time.Duration) {}
 func (m *mockBackgroundSessionForWait) WaitForResponseComplete(timeout time.Duration) bool {
 	if !m.prompting.Load() {
 		return true
@@ -3888,19 +3889,19 @@ func (m *mockSessionManagerForWait) BroadcastSessionCreated(string, string, stri
 }
 func (m *mockSessionManagerForWait) BroadcastSessionArchived(string, bool, ...session.ArchiveReason) {
 }
-func (m *mockSessionManagerForWait) BroadcastSessionDeleted(string)                           {}
-func (m *mockSessionManagerForWait) BroadcastWaitingForChildren(string, bool)                 {}
-func (m *mockSessionManagerForWait) DeleteChildSessions(string)                               {}
-func (m *mockSessionManagerForWait) GetWorkspaces() []config.WorkspaceSettings                { return nil }
-func (m *mockSessionManagerForWait) GetWorkspaceByUUID(string) *config.WorkspaceSettings      { return nil }
-func (m *mockSessionManagerForWait) BroadcastSessionRenamed(string, string)                   {}
-func (m *mockSessionManagerForWait) BroadcastPeriodicUpdated(string, *session.PeriodicPrompt) {}
-func (m *mockSessionManagerForWait) GetUserDataSchema(string) *config.UserDataSchema          { return nil }
-func (m *mockSessionManagerForWait) GetWorkspacePrompts(string) []config.WebPrompt            { return nil }
-func (m *mockSessionManagerForWait) GetWorkspacePromptsDirs(string) []string                  { return nil }
-func (m *mockSessionManagerForWait) GetWorkspaceRCLastModified(string) time.Time              { return time.Time{} }
-func (m *mockSessionManagerForWait) GetWorkspace(string) *config.WorkspaceSettings            { return nil }
-func (m *mockSessionManagerForWait) InvalidateWorkspaceRC(string)                             {}
+func (m *mockSessionManagerForWait) BroadcastSessionDeleted(string)                      {}
+func (m *mockSessionManagerForWait) BroadcastWaitingForChildren(string, bool)            {}
+func (m *mockSessionManagerForWait) DeleteChildSessions(string)                          {}
+func (m *mockSessionManagerForWait) GetWorkspaces() []config.WorkspaceSettings           { return nil }
+func (m *mockSessionManagerForWait) GetWorkspaceByUUID(string) *config.WorkspaceSettings { return nil }
+func (m *mockSessionManagerForWait) BroadcastSessionRenamed(string, string)              {}
+func (m *mockSessionManagerForWait) BroadcastLoopUpdated(string, *session.LoopPrompt)    {}
+func (m *mockSessionManagerForWait) GetUserDataSchema(string) *config.UserDataSchema     { return nil }
+func (m *mockSessionManagerForWait) GetWorkspacePrompts(string) []config.WebPrompt       { return nil }
+func (m *mockSessionManagerForWait) GetWorkspacePromptsDirs(string) []string             { return nil }
+func (m *mockSessionManagerForWait) GetWorkspaceRCLastModified(string) time.Time         { return time.Time{} }
+func (m *mockSessionManagerForWait) GetWorkspace(string) *config.WorkspaceSettings       { return nil }
+func (m *mockSessionManagerForWait) InvalidateWorkspaceRC(string)                        {}
 
 // setupServerForWait creates a server with a SessionManager mock for wait tool tests.
 func setupServerForWait(t *testing.T, targetID string, targetBS BackgroundSession) (*Server, string) {
@@ -4802,11 +4803,11 @@ func (m *mockSessionManagerForChildren) GetWorkspaces() []config.WorkspaceSettin
 func (m *mockSessionManagerForChildren) GetWorkspaceByUUID(string) *config.WorkspaceSettings {
 	return nil
 }
-func (m *mockSessionManagerForChildren) BroadcastSessionRenamed(string, string)                   {}
-func (m *mockSessionManagerForChildren) BroadcastPeriodicUpdated(string, *session.PeriodicPrompt) {}
-func (m *mockSessionManagerForChildren) GetUserDataSchema(string) *config.UserDataSchema          { return nil }
-func (m *mockSessionManagerForChildren) GetWorkspacePrompts(string) []config.WebPrompt            { return nil }
-func (m *mockSessionManagerForChildren) GetWorkspacePromptsDirs(string) []string                  { return nil }
+func (m *mockSessionManagerForChildren) BroadcastSessionRenamed(string, string)           {}
+func (m *mockSessionManagerForChildren) BroadcastLoopUpdated(string, *session.LoopPrompt) {}
+func (m *mockSessionManagerForChildren) GetUserDataSchema(string) *config.UserDataSchema  { return nil }
+func (m *mockSessionManagerForChildren) GetWorkspacePrompts(string) []config.WebPrompt    { return nil }
+func (m *mockSessionManagerForChildren) GetWorkspacePromptsDirs(string) []string          { return nil }
 func (m *mockSessionManagerForChildren) GetWorkspaceRCLastModified(string) time.Time {
 	return time.Time{}
 }
@@ -4997,7 +4998,7 @@ func (m *mockSessionManagerForChildrenMutable) GetWorkspaceByUUID(string) *confi
 	return nil
 }
 func (m *mockSessionManagerForChildrenMutable) BroadcastSessionRenamed(string, string) {}
-func (m *mockSessionManagerForChildrenMutable) BroadcastPeriodicUpdated(string, *session.PeriodicPrompt) {
+func (m *mockSessionManagerForChildrenMutable) BroadcastLoopUpdated(string, *session.LoopPrompt) {
 }
 func (m *mockSessionManagerForChildrenMutable) GetUserDataSchema(string) *config.UserDataSchema {
 	return nil
@@ -5556,18 +5557,19 @@ type mockBackgroundSessionForAutoResume struct {
 	tryProcessCalled atomic.Bool
 }
 
-func (m *mockBackgroundSessionForAutoResume) IsPrompting() bool                                 { return false }
-func (m *mockBackgroundSessionForAutoResume) HasQueuedDeliveryInProgress() bool                 { return false }
-func (m *mockBackgroundSessionForAutoResume) GetQueueConfig() *config.QueueConfig               { return nil }
-func (m *mockBackgroundSessionForAutoResume) GetEventCount() int                                { return 0 }
-func (m *mockBackgroundSessionForAutoResume) GetMaxAssignedSeq() int64                          { return 0 }
-func (m *mockBackgroundSessionForAutoResume) WaitForResponseComplete(time.Duration) bool        { return true }
-func (m *mockBackgroundSessionForAutoResume) TriggerTitleGeneration(string)                     {}
-func (m *mockBackgroundSessionForAutoResume) TriggerTitleGenerationFromPeriodic(string, string) {}
-func (m *mockBackgroundSessionForAutoResume) RequestSelfDestruct()                              {}
+func (m *mockBackgroundSessionForAutoResume) IsPrompting() bool                             { return false }
+func (m *mockBackgroundSessionForAutoResume) HasQueuedDeliveryInProgress() bool             { return false }
+func (m *mockBackgroundSessionForAutoResume) GetQueueConfig() *config.QueueConfig           { return nil }
+func (m *mockBackgroundSessionForAutoResume) GetEventCount() int                            { return 0 }
+func (m *mockBackgroundSessionForAutoResume) GetMaxAssignedSeq() int64                      { return 0 }
+func (m *mockBackgroundSessionForAutoResume) WaitForResponseComplete(time.Duration) bool    { return true }
+func (m *mockBackgroundSessionForAutoResume) TriggerTitleGeneration(string)                 {}
+func (m *mockBackgroundSessionForAutoResume) TriggerTitleGenerationFromLoop(string, string) {}
+func (m *mockBackgroundSessionForAutoResume) RequestSelfDestruct()                          {}
 func (m *mockBackgroundSessionForAutoResume) LastQueuedSendError() (string, time.Time) {
 	return "", time.Time{}
 }
+func (m *mockBackgroundSessionForAutoResume) RecordChildWait(time.Duration) {}
 func (m *mockBackgroundSessionForAutoResume) TryProcessQueuedMessage() bool {
 	m.tryProcessCalled.Store(true)
 	return false
@@ -5644,7 +5646,7 @@ func (m *mockSessionManagerForAutoResume) GetWorkspaceByUUID(string) *config.Wor
 	return nil
 }
 func (m *mockSessionManagerForAutoResume) BroadcastSessionRenamed(string, string) {}
-func (m *mockSessionManagerForAutoResume) BroadcastPeriodicUpdated(string, *session.PeriodicPrompt) {
+func (m *mockSessionManagerForAutoResume) BroadcastLoopUpdated(string, *session.LoopPrompt) {
 }
 func (m *mockSessionManagerForAutoResume) GetUserDataSchema(string) *config.UserDataSchema {
 	return nil
@@ -7124,7 +7126,7 @@ func (m *mockSessionManagerCrossWorkspace) GetWorkspaceByUUID(uuid string) *conf
 	return m.workspaces[uuid]
 }
 func (m *mockSessionManagerCrossWorkspace) BroadcastSessionRenamed(string, string) {}
-func (m *mockSessionManagerCrossWorkspace) BroadcastPeriodicUpdated(string, *session.PeriodicPrompt) {
+func (m *mockSessionManagerCrossWorkspace) BroadcastLoopUpdated(string, *session.LoopPrompt) {
 }
 func (m *mockSessionManagerCrossWorkspace) GetUserDataSchema(string) *config.UserDataSchema {
 	return nil
@@ -8912,11 +8914,11 @@ func TestPromptUpdate_EnableDisableOnly(t *testing.T) {
 }
 
 // =============================================================================
-// handleRunPeriodicNow Tests
+// handleRunLoopNow Tests
 // =============================================================================
 
-// mockPeriodicRunner is a mock implementation of PeriodicRunner for testing.
-type mockPeriodicRunner struct {
+// mockLoopRunner is a mock implementation of LoopRunner for testing.
+type mockLoopRunner struct {
 	mu             sync.Mutex
 	calls          []triggerNowCall
 	triggerErr     error    // if set, TriggerNow returns this error
@@ -8928,21 +8930,21 @@ type triggerNowCall struct {
 	resetTimer bool
 }
 
-func (m *mockPeriodicRunner) TriggerNow(sessionID string, resetTimer bool) error {
+func (m *mockLoopRunner) TriggerNow(sessionID string, resetTimer bool) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.calls = append(m.calls, triggerNowCall{sessionID: sessionID, resetTimer: resetTimer})
 	return m.triggerErr
 }
 
-func (m *mockPeriodicRunner) BootstrapOnCompletion(sessionID string) {
+func (m *mockLoopRunner) BootstrapOnCompletion(sessionID string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.bootstrapCalls = append(m.bootstrapCalls, sessionID)
 }
 
-// setupRunPeriodicNowServer creates a server with a registered session and a mock runner.
-func setupRunPeriodicNowServer(t *testing.T) (*Server, string, *mockPeriodicRunner) {
+// setupRunLoopNowServer creates a server with a registered session and a mock runner.
+func setupRunLoopNowServer(t *testing.T) (*Server, string, *mockLoopRunner) {
 	t.Helper()
 
 	tmpDir := t.TempDir()
@@ -8972,24 +8974,24 @@ func setupRunPeriodicNowServer(t *testing.T) (*Server, string, *mockPeriodicRunn
 		t.Fatalf("RegisterSession failed: %v", err)
 	}
 
-	mock := &mockPeriodicRunner{}
-	srv.SetPeriodicRunner(mock)
+	mock := &mockLoopRunner{}
+	srv.SetLoopRunner(mock)
 
 	return srv, sessionID, mock
 }
 
-func TestHandleRunPeriodicNow_ResetTimerTrue(t *testing.T) {
-	srv, sessionID, mock := setupRunPeriodicNowServer(t)
+func TestHandleRunLoopNow_ResetTimerTrue(t *testing.T) {
+	srv, sessionID, mock := setupRunLoopNowServer(t)
 
 	ctx := context.Background()
 	resetTimer := true
-	_, out, err := srv.handleRunPeriodicNow(ctx, nil, RunPeriodicNowInput{
+	_, out, err := srv.handleRunLoopNow(ctx, nil, RunLoopNowInput{
 		SelfID:         sessionID,
 		ConversationID: sessionID,
 		ResetTimer:     &resetTimer,
 	})
 	if err != nil {
-		t.Fatalf("handleRunPeriodicNow returned error: %v", err)
+		t.Fatalf("handleRunLoopNow returned error: %v", err)
 	}
 	if !out.Success {
 		t.Errorf("Expected success=true, got error: %s", out.Error)
@@ -9005,18 +9007,18 @@ func TestHandleRunPeriodicNow_ResetTimerTrue(t *testing.T) {
 	}
 }
 
-func TestHandleRunPeriodicNow_ResetTimerFalse(t *testing.T) {
-	srv, sessionID, mock := setupRunPeriodicNowServer(t)
+func TestHandleRunLoopNow_ResetTimerFalse(t *testing.T) {
+	srv, sessionID, mock := setupRunLoopNowServer(t)
 
 	ctx := context.Background()
 	resetTimer := false
-	_, out, err := srv.handleRunPeriodicNow(ctx, nil, RunPeriodicNowInput{
+	_, out, err := srv.handleRunLoopNow(ctx, nil, RunLoopNowInput{
 		SelfID:         sessionID,
 		ConversationID: sessionID,
 		ResetTimer:     &resetTimer,
 	})
 	if err != nil {
-		t.Fatalf("handleRunPeriodicNow returned error: %v", err)
+		t.Fatalf("handleRunLoopNow returned error: %v", err)
 	}
 	if !out.Success {
 		t.Errorf("Expected success=true, got error: %s", out.Error)
@@ -9035,17 +9037,17 @@ func TestHandleRunPeriodicNow_ResetTimerFalse(t *testing.T) {
 	}
 }
 
-func TestHandleRunPeriodicNow_DefaultsResetTimerToTrue(t *testing.T) {
-	srv, sessionID, mock := setupRunPeriodicNowServer(t)
+func TestHandleRunLoopNow_DefaultsResetTimerToTrue(t *testing.T) {
+	srv, sessionID, mock := setupRunLoopNowServer(t)
 
 	ctx := context.Background()
 	// Do NOT set ResetTimer — should default to true
-	_, out, err := srv.handleRunPeriodicNow(ctx, nil, RunPeriodicNowInput{
+	_, out, err := srv.handleRunLoopNow(ctx, nil, RunLoopNowInput{
 		SelfID:         sessionID,
 		ConversationID: sessionID,
 	})
 	if err != nil {
-		t.Fatalf("handleRunPeriodicNow returned error: %v", err)
+		t.Fatalf("handleRunLoopNow returned error: %v", err)
 	}
 	if !out.Success {
 		t.Errorf("Expected success=true, got error: %s", out.Error)
@@ -9061,53 +9063,53 @@ func TestHandleRunPeriodicNow_DefaultsResetTimerToTrue(t *testing.T) {
 	}
 }
 
-func TestHandleRunPeriodicNow_NoPeriodicRunner(t *testing.T) {
-	srv, sessionID, _ := setupRunPeriodicNowServer(t)
+func TestHandleRunLoopNow_NoLoopRunner(t *testing.T) {
+	srv, sessionID, _ := setupRunLoopNowServer(t)
 	// Remove the runner to simulate it not being available
-	srv.SetPeriodicRunner(nil)
+	srv.SetLoopRunner(nil)
 
 	ctx := context.Background()
-	_, out, err := srv.handleRunPeriodicNow(ctx, nil, RunPeriodicNowInput{
+	_, out, err := srv.handleRunLoopNow(ctx, nil, RunLoopNowInput{
 		SelfID:         sessionID,
 		ConversationID: sessionID,
 	})
 	if err != nil {
-		t.Fatalf("handleRunPeriodicNow returned error: %v", err)
+		t.Fatalf("handleRunLoopNow returned error: %v", err)
 	}
 	if out.Success {
-		t.Error("Expected failure when periodic runner is nil")
+		t.Error("Expected failure when loop runner is nil")
 	}
 	if out.Error == "" {
-		t.Error("Expected non-empty error message when periodic runner is nil")
+		t.Error("Expected non-empty error message when loop runner is nil")
 	}
 }
 
-func TestHandleRunPeriodicNow_MissingSelfID(t *testing.T) {
-	srv, _, _ := setupRunPeriodicNowServer(t)
+func TestHandleRunLoopNow_MissingSelfID(t *testing.T) {
+	srv, _, _ := setupRunLoopNowServer(t)
 
 	ctx := context.Background()
-	_, out, err := srv.handleRunPeriodicNow(ctx, nil, RunPeriodicNowInput{
+	_, out, err := srv.handleRunLoopNow(ctx, nil, RunLoopNowInput{
 		SelfID:         "",
 		ConversationID: "some-session",
 	})
 	if err != nil {
-		t.Fatalf("handleRunPeriodicNow returned error: %v", err)
+		t.Fatalf("handleRunLoopNow returned error: %v", err)
 	}
 	if out.Success {
 		t.Error("Expected failure with empty self_id")
 	}
 }
 
-func TestHandleRunPeriodicNow_MissingConversationID(t *testing.T) {
-	srv, sessionID, _ := setupRunPeriodicNowServer(t)
+func TestHandleRunLoopNow_MissingConversationID(t *testing.T) {
+	srv, sessionID, _ := setupRunLoopNowServer(t)
 
 	ctx := context.Background()
-	_, out, err := srv.handleRunPeriodicNow(ctx, nil, RunPeriodicNowInput{
+	_, out, err := srv.handleRunLoopNow(ctx, nil, RunLoopNowInput{
 		SelfID:         sessionID,
 		ConversationID: "",
 	})
 	if err != nil {
-		t.Fatalf("handleRunPeriodicNow returned error: %v", err)
+		t.Fatalf("handleRunLoopNow returned error: %v", err)
 	}
 	if out.Success {
 		t.Error("Expected failure with empty conversation_id")
@@ -9485,11 +9487,11 @@ func TestSendPrompt_InvalidTemplate_Rejected(t *testing.T) {
 	}
 }
 
-// TestConversationUpdate_OnCompletionPeriodic verifies the MCP _update tool can create an
-// on-completion periodic conversation (no frequency required) with a completion delay and
+// TestConversationUpdate_OnCompletionLoop verifies the MCP _update tool can create an
+// on-completion loop conversation (no frequency required) with a completion delay and
 // max-duration cap, and that a partial update clamps the delay to the floor without clobbering
 // the other on-completion fields.
-func TestConversationUpdate_OnCompletionPeriodic(t *testing.T) {
+func TestConversationUpdate_OnCompletionLoop(t *testing.T) {
 	store, srv, parentID := setupConversationStartServer(t)
 	ctx := context.Background()
 
@@ -9498,14 +9500,14 @@ func TestConversationUpdate_OnCompletionPeriodic(t *testing.T) {
 	delay := 30
 	maxDur := 3600
 
-	// Create a new on-completion periodic config via MCP (isNew path, no frequency).
+	// Create a new on-completion loop config via MCP (isNew path, no frequency).
 	_, out, err := srv.handleConversationUpdate(ctx, nil, ConversationUpdateInput{
-		SelfID:                         parentID,
-		ConversationID:                 parentID,
-		PeriodicPrompt:                 &prompt,
-		PeriodicTrigger:                &trigger,
-		PeriodicCompletionDelaySeconds: &delay,
-		PeriodicMaxDurationSeconds:     &maxDur,
+		SelfID:                     parentID,
+		ConversationID:             parentID,
+		LoopPrompt:                 &prompt,
+		LoopTrigger:                &trigger,
+		LoopCompletionDelaySeconds: &delay,
+		LoopMaxDurationSeconds:     &maxDur,
 	})
 	if err != nil {
 		t.Fatalf("handleConversationUpdate error: %v", err)
@@ -9513,20 +9515,20 @@ func TestConversationUpdate_OnCompletionPeriodic(t *testing.T) {
 	if !out.Success {
 		t.Fatalf("update not successful: %s", out.Error)
 	}
-	if out.PeriodicTrigger != string(session.TriggerOnCompletion) {
-		t.Errorf("output PeriodicTrigger = %q, want %q", out.PeriodicTrigger, session.TriggerOnCompletion)
+	if out.LoopTrigger != string(session.TriggerOnCompletion) {
+		t.Errorf("output LoopTrigger = %q, want %q", out.LoopTrigger, session.TriggerOnCompletion)
 	}
-	if out.PeriodicCompletionDelaySeconds != 30 {
-		t.Errorf("output PeriodicCompletionDelaySeconds = %d, want 30", out.PeriodicCompletionDelaySeconds)
+	if out.LoopCompletionDelaySeconds != 30 {
+		t.Errorf("output LoopCompletionDelaySeconds = %d, want 30", out.LoopCompletionDelaySeconds)
 	}
-	if out.PeriodicMaxDurationSeconds != 3600 {
-		t.Errorf("output PeriodicMaxDurationSeconds = %d, want 3600", out.PeriodicMaxDurationSeconds)
+	if out.LoopMaxDurationSeconds != 3600 {
+		t.Errorf("output LoopMaxDurationSeconds = %d, want 3600", out.LoopMaxDurationSeconds)
 	}
 
 	// Verify the stored config persisted the on-completion fields (no frequency needed).
-	stored, err := store.Periodic(parentID).Get()
+	stored, err := store.Loop(parentID).Get()
 	if err != nil {
-		t.Fatalf("Get periodic: %v", err)
+		t.Fatalf("Get loop: %v", err)
 	}
 	if !stored.IsOnCompletion() {
 		t.Errorf("stored trigger = %q, want onCompletion", stored.Trigger)
@@ -9538,9 +9540,9 @@ func TestConversationUpdate_OnCompletionPeriodic(t *testing.T) {
 	// Partial update: lower the delay below the floor → clamped; max-duration preserved.
 	below := 1
 	_, out2, err := srv.handleConversationUpdate(ctx, nil, ConversationUpdateInput{
-		SelfID:                         parentID,
-		ConversationID:                 parentID,
-		PeriodicCompletionDelaySeconds: &below,
+		SelfID:                     parentID,
+		ConversationID:             parentID,
+		LoopCompletionDelaySeconds: &below,
 	})
 	if err != nil {
 		t.Fatalf("handleConversationUpdate (patch) error: %v", err)
@@ -9548,40 +9550,40 @@ func TestConversationUpdate_OnCompletionPeriodic(t *testing.T) {
 	if !out2.Success {
 		t.Fatalf("patch not successful: %s", out2.Error)
 	}
-	if out2.PeriodicCompletionDelaySeconds != srv.periodicDelayFloor() {
-		t.Errorf("patched delay = %d, want clamped to floor %d", out2.PeriodicCompletionDelaySeconds, srv.periodicDelayFloor())
+	if out2.LoopCompletionDelaySeconds != srv.loopDelayFloor() {
+		t.Errorf("patched delay = %d, want clamped to floor %d", out2.LoopCompletionDelaySeconds, srv.loopDelayFloor())
 	}
-	if out2.PeriodicMaxDurationSeconds != 3600 {
-		t.Errorf("patched maxDur = %d, want preserved 3600", out2.PeriodicMaxDurationSeconds)
+	if out2.LoopMaxDurationSeconds != 3600 {
+		t.Errorf("patched maxDur = %d, want preserved 3600", out2.LoopMaxDurationSeconds)
 	}
 }
 
-// TestConversationStart_OnTasksPeriodic verifies that mitto_conversation_new accepts
-// periodic_trigger:"onTasks" (no frequency required) and persists periodic_condition
-// (+ periodic_condition_preset) on the new conversation.
-func TestConversationStart_OnTasksPeriodic(t *testing.T) {
+// TestConversationStart_OnTasksLoop verifies that mitto_conversation_new accepts
+// loop_trigger:"onTasks" (no frequency required) and persists loop_condition
+// (+ loop_condition_preset) on the new conversation.
+func TestConversationStart_OnTasksLoop(t *testing.T) {
 	store, srv, parentID := setupConversationStartServer(t)
 	ctx := context.Background()
 
 	cond := `Changes.Touched.exists(i, i.type == "bug")`
 	_, output, err := srv.handleConversationStart(ctx, nil, ConversationStartInput{
-		SelfID:                  parentID,
-		Title:                   "onTasks child",
-		PeriodicPrompt:          "review beads changes",
-		PeriodicTrigger:         string(session.TriggerOnTasks),
-		PeriodicCondition:       cond,
-		PeriodicConditionPreset: "bug-touched",
+		SelfID:              parentID,
+		Title:               "onTasks child",
+		LoopPrompt:          "review beads changes",
+		LoopTrigger:         string(session.TriggerOnTasks),
+		LoopCondition:       cond,
+		LoopConditionPreset: "bug-touched",
 	})
 	if err != nil {
 		t.Fatalf("handleConversationStart error: %v", err)
 	}
-	if !output.PeriodicConfigured {
-		t.Fatalf("expected periodic to be configured: %s", output.Error)
+	if !output.LoopConfigured {
+		t.Fatalf("expected loop to be configured: %s", output.Error)
 	}
 
-	stored, err := store.Periodic(output.SessionID).Get()
+	stored, err := store.Loop(output.SessionID).Get()
 	if err != nil {
-		t.Fatalf("Get periodic: %v", err)
+		t.Fatalf("Get loop: %v", err)
 	}
 	if !stored.IsOnTasks() {
 		t.Errorf("stored trigger = %q, want onTasks", stored.Trigger)
@@ -9594,11 +9596,11 @@ func TestConversationStart_OnTasksPeriodic(t *testing.T) {
 	}
 }
 
-// TestConversationUpdate_OnTasksPeriodic verifies that mitto_conversation_update can
-// create an onTasks periodic conversation (no frequency required) with a CEL condition,
+// TestConversationUpdate_OnTasksLoop verifies that mitto_conversation_update can
+// create an onTasks loop conversation (no frequency required) with a CEL condition,
 // and that a subsequent partial update can change just the condition_preset without
 // clobbering the condition or trigger.
-func TestConversationUpdate_OnTasksPeriodic(t *testing.T) {
+func TestConversationUpdate_OnTasksLoop(t *testing.T) {
 	store, srv, parentID := setupConversationStartServer(t)
 	ctx := context.Background()
 
@@ -9607,11 +9609,11 @@ func TestConversationUpdate_OnTasksPeriodic(t *testing.T) {
 	cond := `Tasks.Open > Prev.Open`
 
 	_, out, err := srv.handleConversationUpdate(ctx, nil, ConversationUpdateInput{
-		SelfID:            parentID,
-		ConversationID:    parentID,
-		PeriodicPrompt:    &prompt,
-		PeriodicTrigger:   &trigger,
-		PeriodicCondition: &cond,
+		SelfID:         parentID,
+		ConversationID: parentID,
+		LoopPrompt:     &prompt,
+		LoopTrigger:    &trigger,
+		LoopCondition:  &cond,
 	})
 	if err != nil {
 		t.Fatalf("handleConversationUpdate error: %v", err)
@@ -9619,16 +9621,16 @@ func TestConversationUpdate_OnTasksPeriodic(t *testing.T) {
 	if !out.Success {
 		t.Fatalf("update not successful: %s", out.Error)
 	}
-	if out.PeriodicTrigger != string(session.TriggerOnTasks) {
-		t.Errorf("output PeriodicTrigger = %q, want %q", out.PeriodicTrigger, session.TriggerOnTasks)
+	if out.LoopTrigger != string(session.TriggerOnTasks) {
+		t.Errorf("output LoopTrigger = %q, want %q", out.LoopTrigger, session.TriggerOnTasks)
 	}
-	if out.PeriodicCondition != cond {
-		t.Errorf("output PeriodicCondition = %q, want %q", out.PeriodicCondition, cond)
+	if out.LoopCondition != cond {
+		t.Errorf("output LoopCondition = %q, want %q", out.LoopCondition, cond)
 	}
 
-	stored, err := store.Periodic(parentID).Get()
+	stored, err := store.Loop(parentID).Get()
 	if err != nil {
-		t.Fatalf("Get periodic: %v", err)
+		t.Fatalf("Get loop: %v", err)
 	}
 	if !stored.IsOnTasks() {
 		t.Errorf("stored trigger = %q, want onTasks", stored.Trigger)
@@ -9640,9 +9642,9 @@ func TestConversationUpdate_OnTasksPeriodic(t *testing.T) {
 	// Partial update: change only the condition preset; condition/trigger must be preserved.
 	preset := "bug-only"
 	_, out2, err := srv.handleConversationUpdate(ctx, nil, ConversationUpdateInput{
-		SelfID:                  parentID,
-		ConversationID:          parentID,
-		PeriodicConditionPreset: &preset,
+		SelfID:              parentID,
+		ConversationID:      parentID,
+		LoopConditionPreset: &preset,
 	})
 	if err != nil {
 		t.Fatalf("handleConversationUpdate (patch) error: %v", err)
@@ -9650,14 +9652,14 @@ func TestConversationUpdate_OnTasksPeriodic(t *testing.T) {
 	if !out2.Success {
 		t.Fatalf("patch not successful: %s", out2.Error)
 	}
-	if out2.PeriodicConditionPreset != preset {
-		t.Errorf("patched preset = %q, want %q", out2.PeriodicConditionPreset, preset)
+	if out2.LoopConditionPreset != preset {
+		t.Errorf("patched preset = %q, want %q", out2.LoopConditionPreset, preset)
 	}
-	if out2.PeriodicCondition != cond {
-		t.Errorf("patched condition should be preserved = %q, want %q", out2.PeriodicCondition, cond)
+	if out2.LoopCondition != cond {
+		t.Errorf("patched condition should be preserved = %q, want %q", out2.LoopCondition, cond)
 	}
-	if out2.PeriodicTrigger != string(session.TriggerOnTasks) {
-		t.Errorf("patched trigger should be preserved = %q, want %q", out2.PeriodicTrigger, session.TriggerOnTasks)
+	if out2.LoopTrigger != string(session.TriggerOnTasks) {
+		t.Errorf("patched trigger should be preserved = %q, want %q", out2.LoopTrigger, session.TriggerOnTasks)
 	}
 }
 
@@ -9680,11 +9682,11 @@ func TestConversationUpdate_OnTasksInvalidConditionRejected(t *testing.T) {
 	cond := `this is not valid CEL`
 
 	_, out, err := srv.handleConversationUpdate(ctx, nil, ConversationUpdateInput{
-		SelfID:            parentID,
-		ConversationID:    parentID,
-		PeriodicPrompt:    &prompt,
-		PeriodicTrigger:   &trigger,
-		PeriodicCondition: &cond,
+		SelfID:         parentID,
+		ConversationID: parentID,
+		LoopPrompt:     &prompt,
+		LoopTrigger:    &trigger,
+		LoopCondition:  &cond,
 	})
 	if err != nil {
 		t.Fatalf("handleConversationUpdate unexpected transport error: %v", err)
@@ -9698,25 +9700,25 @@ func TestConversationUpdate_OnTasksInvalidConditionRejected(t *testing.T) {
 }
 
 // TestConversationUpdate_SelfAlias verifies that a conversation can update itself by
-// passing "self" as the conversation_id — the case where a periodic conversation
-// disables its own periodicity. The "self" alias must resolve to the caller's real
+// passing "self" as the conversation_id — the case where a loop conversation
+// disables its own loop. The "self" alias must resolve to the caller's real
 // session ID, mirroring mitto_conversation_delete's self-targeting support.
 func TestConversationUpdate_SelfAlias(t *testing.T) {
 	store, srv, sessionID := setupConversationStartServer(t)
 	ctx := context.Background()
 
-	// Seed an enabled scheduled periodic config on the calling session.
+	// Seed an enabled scheduled loop config on the calling session.
 	prompt := "keep going"
 	freqValue := 1
 	freqUnit := "hours"
 	enabled := true
 	_, out, err := srv.handleConversationUpdate(ctx, nil, ConversationUpdateInput{
-		SelfID:                 sessionID,
-		ConversationID:         sessionID,
-		PeriodicPrompt:         &prompt,
-		PeriodicFrequencyValue: &freqValue,
-		PeriodicFrequencyUnit:  &freqUnit,
-		PeriodicEnabled:        &enabled,
+		SelfID:             sessionID,
+		ConversationID:     sessionID,
+		LoopPrompt:         &prompt,
+		LoopFrequencyValue: &freqValue,
+		LoopFrequencyUnit:  &freqUnit,
+		LoopEnabled:        &enabled,
 	})
 	if err != nil {
 		t.Fatalf("handleConversationUpdate (seed) error: %v", err)
@@ -9725,12 +9727,12 @@ func TestConversationUpdate_SelfAlias(t *testing.T) {
 		t.Fatalf("seed update not successful: %s", out.Error)
 	}
 
-	// Disable periodicity using the "self" alias instead of the real ID.
+	// Disable the loop using the "self" alias instead of the real ID.
 	disabled := false
 	_, selfOut, err := srv.handleConversationUpdate(ctx, nil, ConversationUpdateInput{
-		SelfID:          sessionID,
-		ConversationID:  "self",
-		PeriodicEnabled: &disabled,
+		SelfID:         sessionID,
+		ConversationID: "self",
+		LoopEnabled:    &disabled,
 	})
 	if err != nil {
 		t.Fatalf("handleConversationUpdate (self) error: %v", err)
@@ -9743,13 +9745,13 @@ func TestConversationUpdate_SelfAlias(t *testing.T) {
 		t.Errorf("output ConversationID = %q, want resolved real ID %q", selfOut.ConversationID, sessionID)
 	}
 
-	// Verify the stored periodic config is now disabled.
-	stored, err := store.Periodic(sessionID).Get()
+	// Verify the stored loop config is now disabled.
+	stored, err := store.Loop(sessionID).Get()
 	if err != nil {
-		t.Fatalf("Get periodic: %v", err)
+		t.Fatalf("Get loop: %v", err)
 	}
 	if stored.Enabled {
-		t.Error("expected periodic config to be disabled after self update, but it is still enabled")
+		t.Error("expected loop config to be disabled after self update, but it is still enabled")
 	}
 }
 

@@ -60,6 +60,54 @@
   z-index: 1000;
 }
 
+/* daisyUI centers the tooltip bubble/arrow with translateX(-50%) (top/bottom)
+   and translateY(-50%) (left/right). On an odd-width/height bubble that lands
+   the box on a half-pixel, so WebKit rasterizes the text with sub-pixel
+   anti-aliasing → the "blurry tooltip font" symptom. Snap the centering
+   translate to a whole pixel with round() so the text sits on the pixel grid.
+   Guarded by @supports: browsers without round() fall back to daisyUI's
+   default (no regression). The dynamic translateY(var(--tt-pos)) that drives
+   the open/close animation is preserved verbatim (the open state only flips
+   --tt-pos to 0rem), so transitions still work. Selectors mirror daisyUI's
+   base placement rules; styles.css loads after tailwind.css, so equal
+   specificity resolves in our favor by source order. */
+@supports (transform: translateX(round(-50%, 1px))) {
+  .tooltip > .tooltip-content,
+  .tooltip[data-tip]::before,
+  .tooltip-top > .tooltip-content,
+  .tooltip-top[data-tip]::before,
+  .tooltip::after,
+  .tooltip-top::after {
+    transform: translateX(round(-50%, 1px)) translateY(var(--tt-pos, 0.25rem));
+  }
+  .tooltip-bottom > .tooltip-content,
+  .tooltip-bottom[data-tip]::before {
+    transform: translateX(round(-50%, 1px)) translateY(var(--tt-pos, -0.25rem));
+  }
+  .tooltip-bottom::after {
+    transform: translateX(round(-50%, 1px)) translateY(var(--tt-pos, -0.25rem))
+      rotate(180deg);
+  }
+  .tooltip-left > .tooltip-content,
+  .tooltip-left[data-tip]::before {
+    transform: translateX(calc(var(--tt-pos, 0.25rem) - 0.25rem))
+      translateY(round(-50%, 1px));
+  }
+  .tooltip-left::after {
+    transform: translateX(var(--tt-pos, 0.25rem)) translateY(round(-50%, 1px))
+      rotate(-90deg);
+  }
+  .tooltip-right > .tooltip-content,
+  .tooltip-right[data-tip]::before {
+    transform: translateX(calc(var(--tt-pos, -0.25rem) + 0.25rem))
+      translateY(round(-50%, 1px));
+  }
+  .tooltip-right::after {
+    transform: translateX(var(--tt-pos, -0.25rem)) translateY(round(-50%, 1px))
+      rotate(90deg);
+  }
+}
+
 /* Messages container scrollbar - show scrollbar for better Edge compatibility.
    Edge (Chromium) can have scrolling issues when scrollbar is hidden with
    flex-col-reverse layouts. We show a thin, styled scrollbar instead. */
@@ -446,7 +494,12 @@
 
 /* Light theme: slightly more subtle blue for child expand button */
 .light .child-expand-streaming::before {
-  background-color: rgba(59, 130, 246, 0.3); /* blue-500, slightly lighter for light theme */
+  background-color: rgba(
+    59,
+    130,
+    246,
+    0.3
+  ); /* blue-500, slightly lighter for light theme */
 }
 
 /* Thought bubble expand/collapse — subtle fade transition on content change */
@@ -916,7 +969,6 @@ a.mailto-link:hover {
   color: #1d4ed8;
 }
 
-
 /* =============================================================================
    Font Size Classes (applied to markdown-content)
    ============================================================================= */
@@ -963,8 +1015,15 @@ a.mailto-link:hover {
    the exact same font as the compose box, kept in sync from a single source. */
 .input-font-system textarea.chat-input-textarea,
 .input-font-system .input-font-target .cm-content {
-  font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
-    "Helvetica Neue", Arial, sans-serif;
+  font-family:
+    system-ui,
+    -apple-system,
+    BlinkMacSystemFont,
+    "Segoe UI",
+    Roboto,
+    "Helvetica Neue",
+    Arial,
+    sans-serif;
 }
 
 .input-font-sans-serif textarea.chat-input-textarea,
@@ -979,14 +1038,15 @@ a.mailto-link:hover {
 
 .input-font-monospace textarea.chat-input-textarea,
 .input-font-monospace .input-font-target .cm-content {
-  font-family: "SF Mono", Menlo, Monaco, Consolas, "Liberation Mono",
-    "Courier New", monospace;
+  font-family:
+    "SF Mono", Menlo, Monaco, Consolas, "Liberation Mono", "Courier New",
+    monospace;
 }
 
 .input-font-menlo textarea.chat-input-textarea,
 .input-font-menlo .input-font-target .cm-content {
-  font-family: Menlo, Monaco, Consolas, "Liberation Mono", "Courier New",
-    monospace;
+  font-family:
+    Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
 }
 
 .input-font-monaco textarea.chat-input-textarea,
@@ -1006,7 +1066,8 @@ a.mailto-link:hover {
 
 .input-font-jetbrains-mono textarea.chat-input-textarea,
 .input-font-jetbrains-mono .input-font-target .cm-content {
-  font-family: "JetBrains Mono", "Fira Code", Menlo, Monaco, Consolas, monospace;
+  font-family:
+    "JetBrains Mono", "Fira Code", Menlo, Monaco, Consolas, monospace;
 }
 
 .input-font-sf-mono textarea.chat-input-textarea,
@@ -1016,8 +1077,8 @@ a.mailto-link:hover {
 
 .input-font-cascadia-code textarea.chat-input-textarea,
 .input-font-cascadia-code .input-font-target .cm-content {
-  font-family: "Cascadia Code", "Cascadia Mono", Consolas, "Courier New",
-    monospace;
+  font-family:
+    "Cascadia Code", "Cascadia Mono", Consolas, "Courier New", monospace;
 }
 
 /* =============================================================================
@@ -1198,7 +1259,7 @@ a.mailto-link:hover {
   }
 }
 
-/* On small screens, collapse the categorical header badges (the periodic
+/* On small screens, collapse the categorical header badges (the loop
    status pill — Auto/Paused/Stopped — and the trigger badge) to icon-only by
    hiding their text labels. The leading icon stays visible and conveys the
    state. Numeric badges (max 2h, countdown) keep their full values; the
@@ -1212,14 +1273,14 @@ a.mailto-link:hover {
 
 /* Run-count badge: show the full form ("Run N of M") on wider screens and a
    compact form ("N/M") on narrow screens. */
-[data-testid="periodic-run-count-badge"] .runcount-short {
+[data-testid="loop-run-count-badge"] .runcount-short {
   display: none;
 }
 @media (max-width: 640px) {
-  [data-testid="periodic-run-count-badge"] .runcount-full {
+  [data-testid="loop-run-count-badge"] .runcount-full {
     display: none;
   }
-  [data-testid="periodic-run-count-badge"] .runcount-short {
+  [data-testid="loop-run-count-badge"] .runcount-short {
     display: inline;
   }
 }
@@ -1531,11 +1592,31 @@ a.mailto-link:hover {
 }
 
 /* Queue item action buttons: always visible at reduced opacity, full on hover/focus, always full on touch */
-.queue-item-actions { opacity: 0.45; }
+.queue-item-actions {
+  opacity: 0.45;
+}
 .group:hover .queue-item-actions,
-.group:focus-within .queue-item-actions { opacity: 1; }
+.group:focus-within .queue-item-actions {
+  opacity: 1;
+}
 @media (hover: none) {
-  .queue-item-actions { opacity: 1; }
+  .queue-item-actions {
+    opacity: 1;
+  }
+
+  /* Touch devices have no real hover, so hover-only tooltips can never be seen
+     the intended way; worse, iOS "sticky hover" leaves a tapped element in
+     :hover and fires the CSS-only daisyUI tooltip, whose bubble then overlaps
+     adjacent buttons (most visibly the segmented toolbar pills). Disable the
+     tooltip popup entirely on touch — in every state (:hover and .tooltip-open)
+     — by suppressing the base pseudo-elements. The data-tip attribute stays for
+     accessibility; the JS PortalTooltip variant already self-gates on
+     (hover: hover) and never renders here. */
+  .tooltip::before,
+  .tooltip::after,
+  .tooltip > .tooltip-content {
+    display: none !important;
+  }
 }
 
 /* Light theme adjustments */
@@ -1909,13 +1990,11 @@ mitto-action {
   margin-bottom: 0;
 }
 
-
 .chat-input-context-pct {
   font-size: 11px;
   white-space: nowrap;
   padding: 1px 4px;
 }
-
 
 /* Flat inline action button — matches p-1.5 rounded (28px, 4px radius) */
 .chat-input-action {
@@ -1929,7 +2008,9 @@ mitto-action {
   align-items: center;
   justify-content: center;
   cursor: pointer;
-  transition: background 0.15s ease, color 0.15s ease;
+  transition:
+    background 0.15s ease,
+    color 0.15s ease;
   flex-shrink: 0;
 }
 
@@ -1987,7 +2068,6 @@ mitto-action {
 .chat-input-action.queue-full {
   color: #fb923c;
 }
-
 
 /* UI Textbox textarea (mitto_ui_textbox) - base dark theme */
 .ui-textbox-textarea {
@@ -2065,7 +2145,6 @@ mitto-action {
   color: #cbd5e1;
 }
 
-
 /* Send/Stop buttons in light theme — same filled accent style */
 .light .chat-input-action.send-active,
 .light .chat-input-action.stop-active {
@@ -2100,7 +2179,11 @@ mitto-action {
 /* Workspace pill clickable hover effect - uses filter instead of opacity
    to maintain text legibility on colored backgrounds */
 .workspace-pill-clickable {
-  transition: filter 0.15s ease, transform 0.15s ease, background-color 0.15s ease, color 0.15s ease;
+  transition:
+    filter 0.15s ease,
+    transform 0.15s ease,
+    background-color 0.15s ease,
+    color 0.15s ease;
 }
 /* Dark theme: darken on hover */
 .workspace-pill-clickable:hover {
@@ -2290,7 +2373,6 @@ mitto-action {
   }
 }
 
-
 /* Child session items.
    Apply the compact vertical padding to the inner padded block (the clickable
    row content), NOT the .session-item-container wrapper. The wrapper sits
@@ -2318,14 +2400,14 @@ mitto-action {
   border: none !important;
 }
 
-
-
 /* Session children container animation */
 .session-children {
   overflow: hidden;
   max-height: 0;
   opacity: 0;
-  transition: max-height 0.2s ease-out, opacity 0.15s ease-out;
+  transition:
+    max-height 0.2s ease-out,
+    opacity 0.15s ease-out;
 }
 
 .session-children--expanded {
@@ -2354,4 +2436,63 @@ mitto-action {
   border-radius: 0.25rem;
   background-color: rgb(51 65 85 / 0.5);
   color: #9ca3af;
+}
+
+/* =============================================================================
+   Global focus indicator — subtle accent glow
+   -----------------------------------------------------------------------------
+   daisyUI 5 focuses form controls with `outline: 2px solid var(--input-color);
+   outline-offset: 2px` — a thick outline in the (dark) base-content color,
+   detached from the control's own 1px border, which reads as a harsh
+   "double line". Replace it everywhere with a soft, low-opacity accent halo
+   driven by --mitto-accent, so it adapts to the active theme.
+
+   styles.css is UNLAYERED and loads after tailwind.css, so these rules beat
+   daisyUI's @layer rules regardless of specificity (layered author styles lose
+   to unlayered ones). A transparent (but solid-style) outline is retained so
+   the ring survives forced-colors / high-contrast mode, which ignores
+   box-shadow. On form controls, `position: relative; z-index: 1` lifts the glow
+   above welded neighbours in a daisyUI `join`.
+   ============================================================================= */
+:root {
+  --mitto-focus-ring:
+    0 0 0 1px color-mix(in oklab, var(--mitto-accent, #dc2626) 45%, transparent),
+    0 0 4px 1px
+      color-mix(in oklab, var(--mitto-accent, #dc2626) 30%, transparent);
+}
+
+/* Form controls: daisyUI applies its outline on :focus AND :focus-within
+   (fires on click too — the reported case). */
+.input:focus,
+.input:focus-within,
+.select:focus,
+.select:focus-within,
+.textarea:focus,
+.textarea:focus-within {
+  outline: 2px solid transparent;
+  outline-offset: 0;
+  box-shadow: var(--mitto-focus-ring);
+  position: relative;
+  z-index: 1;
+}
+
+/* Everything keyboard-focused (buttons, checkboxes, radios, toggles, links,
+   summaries, menu items, tabs, …) — daisyUI uses :focus-visible here. The bare
+   selector is unlayered, so it overrides every layered `.x:focus-visible`. */
+:focus-visible {
+  outline: 2px solid transparent;
+  outline-offset: 0;
+  box-shadow: var(--mitto-focus-ring);
+}
+
+/* Exclusion: the chat composition box owns its own focus treatment via
+   `.chat-input-box:focus-within` (a subtle border shift). Its inner textarea is
+   borderless and, being a text field, matches :focus-visible on plain click —
+   which would paint the accent glow as a red rectangle around the whole box.
+   Suppress the global glow there so only the box's border reacts. Higher
+   specificity (0,2,0) than the bare :focus-visible rule, both unlayered. */
+.chat-input-textarea:focus,
+.chat-input-textarea:focus-visible {
+  outline: none;
+  box-shadow: none;
 }

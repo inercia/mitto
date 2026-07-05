@@ -41,6 +41,8 @@ export const endpoints = {
       apiUrl(`/api/issues/${enc(id)}/comments`) + qs(params),
     dependencies: (id, params) =>
       apiUrl(`/api/issues/${enc(id)}/dependencies`) + qs(params),
+    labels: (id, params) => apiUrl(`/api/issues/${enc(id)}/labels`) + qs(params),
+    labelsAll: (params) => apiUrl("/api/issues/labels") + qs(params),
     cleanup: (params) => apiUrl("/api/issues/cleanup") + qs(params),
     config: (params) => apiUrl("/api/issues/config") + qs(params),
     upstream: (params) => apiUrl("/api/issues/upstream") + qs(params),
@@ -60,8 +62,8 @@ export const endpoints = {
     ws: (id) => wsUrl(`/api/sessions/${enc(id)}/ws`),
     changes: (id) => apiUrl(`/api/sessions/${enc(id)}/changes`),
     settings: (id) => apiUrl(`/api/sessions/${enc(id)}/settings`),
-    periodic: (id) => apiUrl(`/api/sessions/${enc(id)}/periodic`),
-    periodicRunNow: (id) => apiUrl(`/api/sessions/${enc(id)}/periodic/run-now`),
+    loop: (id) => apiUrl(`/api/sessions/${enc(id)}/loop`),
+    loopRunNow: (id) => apiUrl(`/api/sessions/${enc(id)}/loop/run-now`),
     flush: (id) => apiUrl(`/api/sessions/${enc(id)}/flush`),
     callback: (id) => apiUrl(`/api/sessions/${enc(id)}/callback`),
     userData: (id) => apiUrl(`/api/sessions/${enc(id)}/user-data`),
@@ -120,6 +122,11 @@ export const endpoints = {
   /** Folder-level settings (stored in folders.json, per-user). */
   folders: {
     shortcuts: (params) => apiUrl("/api/folders/shortcuts") + qs(params),
+  },
+
+  /** Global settings (stored in settings.json). */
+  global: {
+    shortcuts: () => apiUrl("/api/global/shortcuts"),
   },
 
   /** Global server configuration. */

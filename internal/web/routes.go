@@ -57,8 +57,8 @@ func (s *Server) apiRoutes(authMgr *middleware.AuthManager, csrfMgr *middleware.
 		apiRoute{pattern: "/api/sessions/{id}/queue", handler: http.HandlerFunc(s.handleSessionQueue)},
 		apiRoute{pattern: "/api/sessions/{id}/queue/{msgId}", handler: http.HandlerFunc(s.handleSessionQueue)},
 		apiRoute{pattern: "/api/sessions/{id}/queue/{msgId}/{subAction}", handler: http.HandlerFunc(s.handleSessionQueue)},
-		apiRoute{pattern: "/api/sessions/{id}/periodic", handler: http.HandlerFunc(s.handleSessionPeriodic)},
-		apiRoute{pattern: "/api/sessions/{id}/periodic/{subPath}", handler: http.HandlerFunc(s.handleSessionPeriodic)},
+		apiRoute{pattern: "/api/sessions/{id}/loop", handler: http.HandlerFunc(s.handleSessionLoop)},
+		apiRoute{pattern: "/api/sessions/{id}/loop/{subPath}", handler: http.HandlerFunc(s.handleSessionLoop)},
 		apiRoute{method: "GET", pattern: "/api/sessions/{id}/prompt-arg-cache", handler: http.HandlerFunc(s.handleSessionPromptArgCache)},
 	)
 
@@ -114,6 +114,8 @@ func (s *Server) apiRoutes(authMgr *middleware.AuthManager, csrfMgr *middleware.
 		apiRoute{method: "DELETE", pattern: "/api/issues/{id}", handler: http.HandlerFunc(s.apiHandlers.HandleBeadsDelete)},
 		apiRoute{method: "POST", pattern: "/api/issues/{id}/comments", handler: http.HandlerFunc(s.apiHandlers.HandleBeadsComment)},
 		apiRoute{method: "POST", pattern: "/api/issues/{id}/dependencies", handler: http.HandlerFunc(s.apiHandlers.HandleBeadsDep)},
+		apiRoute{method: "GET", pattern: "/api/issues/labels", handler: http.HandlerFunc(s.apiHandlers.HandleBeadsLabelsAll)},
+		apiRoute{method: "POST", pattern: "/api/issues/{id}/labels", handler: http.HandlerFunc(s.apiHandlers.HandleBeadsLabel)},
 		apiRoute{method: "GET", pattern: "/api/issues/config", handler: http.HandlerFunc(s.apiHandlers.HandleBeadsConfig)},
 		apiRoute{method: "PUT", pattern: "/api/issues/config", handler: http.HandlerFunc(s.apiHandlers.HandleBeadsConfig)},
 		apiRoute{method: "DELETE", pattern: "/api/issues/config", handler: http.HandlerFunc(s.apiHandlers.HandleBeadsConfig)},
@@ -122,6 +124,9 @@ func (s *Server) apiRoutes(authMgr *middleware.AuthManager, csrfMgr *middleware.
 		// Folder shortcut buttons (folder-native, stored in folders.json).
 		apiRoute{method: "GET", pattern: "/api/folders/shortcuts", handler: http.HandlerFunc(s.apiHandlers.HandleFolderShortcuts)},
 		apiRoute{method: "PUT", pattern: "/api/folders/shortcuts", handler: http.HandlerFunc(s.apiHandlers.HandleFolderShortcuts)},
+		// Global shortcut buttons (stored in settings.json, merged with folder shortcuts at render time).
+		apiRoute{method: "GET", pattern: "/api/global/shortcuts", handler: http.HandlerFunc(s.apiHandlers.HandleGlobalShortcuts)},
+		apiRoute{method: "PUT", pattern: "/api/global/shortcuts", handler: http.HandlerFunc(s.apiHandlers.HandleGlobalShortcuts)},
 		apiRoute{method: "POST", pattern: "/api/issues/cleanup", handler: http.HandlerFunc(s.apiHandlers.HandleBeadsCleanup)},
 		apiRoute{method: "POST", pattern: "/api/issues/sync", handler: http.HandlerFunc(s.apiHandlers.HandleBeadsSync)},
 		apiRoute{method: "POST", pattern: "/api/issues/{id}/status", handler: http.HandlerFunc(s.apiHandlers.HandleBeadsStatus)},

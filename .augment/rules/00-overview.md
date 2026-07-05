@@ -21,6 +21,7 @@ Mitto is a CLI client for the Agent Client Protocol (ACP). It enables terminal-b
 | [websockets/](../docs/devel/websockets/)                           | **WebSocket protocol** (message types, seq numbers, sync, reconnection, delivery verification)      |
 | [workspaces.md](../docs/devel/workspaces.md)                       | Multi-workspace, persistence                                                                        |
 | [follow-up-suggestions.md](../docs/devel/follow-up-suggestions.md) | Action buttons, auxiliary analysis, persistence                                                     |
+| [mcp-tool-discovery.md](../docs/devel/mcp-tool-discovery.md)       | Deterministic MCP tool discovery (stdio/http/sse) vs LLM-introspection fallback                     |
 
 ## Package Structure
 
@@ -35,6 +36,7 @@ internal/client/      → Go client for Mitto REST API + WebSocket (used in test
 internal/config/      → Configuration loading (YAML/JSON)
 internal/conversion/  → Markdown-to-HTML conversion, file link detection
 internal/defense/     → Scanner defense, blocklist, IP metrics (used by web middleware)
+internal/mcpdiscovery/→ Deterministic MCP tool discovery: connects to configured servers (stdio/http/sse) via modelcontextprotocol/go-sdk client; no internal/config or internal/web imports
 internal/mcpserver/   → MCP servers (global debug + per-session)
 internal/processors/  → Command processors (pre/post processing via external commands)
 internal/runner/      → Restricted runner, sandbox execution (go-restricted-runner)

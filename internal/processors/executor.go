@@ -172,7 +172,7 @@ func (e *Executor) prepareInput(proc *Processor, input *ProcessorInput) ([]byte,
 			WorkspaceUUID       string               `json:"workspace_uuid,omitempty"`
 			AvailableACPServers []AvailableACPServer `json:"available_acp_servers,omitempty"`
 			ChildSessions       []ChildSession       `json:"child_sessions,omitempty"`
-			IsPeriodic          bool                 `json:"is_periodic,omitempty"`
+			IsLoop              bool                 `json:"is_loop,omitempty"`
 		}{
 			Message:             input.Message,
 			IsFirstMessage:      input.IsFirstMessage,
@@ -185,7 +185,7 @@ func (e *Executor) prepareInput(proc *Processor, input *ProcessorInput) ([]byte,
 			WorkspaceUUID:       input.WorkspaceUUID,
 			AvailableACPServers: input.AvailableACPServers,
 			ChildSessions:       input.ChildSessions,
-			IsPeriodic:          input.IsPeriodic,
+			IsLoop:              input.IsLoop,
 		}
 		return json.Marshal(msgInput)
 	}

@@ -6,9 +6,9 @@ import { FILTER_TAB } from "../utils/index.js";
 import { useSwipeToAction, useConversationMenu } from "../hooks/index.js";
 import { getArchiveReasonText, getGlobalWorkingDir } from "../lib.js";
 import {
-  PERIODIC_PROGRESS_STYLE,
-  PERIODIC_PROGRESS_COLORS,
-  PERIODIC_PROGRESS_URGENT_THRESHOLD,
+  LOOP_PROGRESS_STYLE,
+  LOOP_PROGRESS_COLORS,
+  LOOP_PROGRESS_URGENT_THRESHOLD,
 } from "../constants.js";
 import { WorkspacePill } from "./WorkspaceBadge.js";
 import { ContextMenu, PortalTooltip } from "./ContextMenu.js";
@@ -38,7 +38,7 @@ const SUPPORTS_HOVER =
 const META_TOOLTIP_DELAY_MS = 450;
 
 /**
- * Calculate periodic progress background style.
+ * Calculate loop progress background style.
  * Returns a CSS background style showing elapsed time as a progress indicator.
  *
  * @param {Object} params - Parameters
@@ -47,17 +47,13 @@ const META_TOOLTIP_DELAY_MS = 450;
  * @param {boolean} params.isLight - Whether light theme is active
  * @returns {string|null} CSS background style or null if not applicable
  */
-export function getPeriodicProgressStyle({
-  nextScheduledAt,
-  frequency,
-  isLight,
-}) {
+export function getLoopProgressStyle({ nextScheduledAt, frequency, isLight }) {
   // Skip if progress indicator is disabled
-  if (PERIODIC_PROGRESS_STYLE === "none" || !nextScheduledAt || !frequency) {
+  if (LOOP_PROGRESS_STYLE === "none" || !nextScheduledAt || !frequency) {
     return null;
   }
 
-  const colors = PERIODIC_PROGRESS_COLORS[PERIODIC_PROGRESS_STYLE];
+  const colors = LOOP_PROGRESS_COLORS[LOOP_PROGRESS_STYLE];
   if (!colors) return null;
 
   const themeColors = isLight ? colors.light : colors.dark;
@@ -87,7 +83,7 @@ export function getPeriodicProgressStyle({
 
   // Determine if we're in "urgent" state (close to next run)
   const remaining = 1 - progress;
-  const isUrgent = remaining < PERIODIC_PROGRESS_URGENT_THRESHOLD;
+  const isUrgent = remaining < LOOP_PROGRESS_URGENT_THRESHOLD;
 
   // Get the appropriate color
   const elapsedColor = isUrgent
@@ -123,8 +119,8 @@ export function SessionItem({
   groupingMode = "none", // Current grouping mode (to hide spawned indicator in hierarchical mode)
   onFetchConversationPrompts, // Async (session, workingDir) => menus:conversation prompts evaluated for THIS conversation
   onSendPromptToConversation, // Called with (session, prompt) when a context-menu prompt is clicked
-  onMakePeriodic, // Called with (session) to convert a regular session to periodic
-  onMakeNonPeriodic, // Called with (session) to revert a periodic session to regular
+  onMakeLoop, // Called with (session) to convert a regular session to loop
+  onMakeNonLoop, // Called with (session) to revert a loop session to regular
   // New props for parent-child hierarchy display
   isSpawned = false, // If true, shows "spawned" indicator (child session)
   extraLeftPadding = "", // Additional CSS class for left padding (e.g., "pl-6")
@@ -140,18 +136,18 @@ export function SessionItem({
   // Check if session is archived
   const isArchived = session.archived || false;
 
-  // Check if periodic is enabled for this session (runs active → clock icon +
-  // progress bar). Distinct from periodic_configured, which is true even when a
-  // periodic conversation is paused/draft.
-  const isPeriodicEnabled = session.periodic_enabled || false;
-  // Whether a periodic config exists at all (enabled OR paused/draft). Used to
-  // gate the "Make periodic" / "Make non-periodic" context-menu actions so a
-  // paused periodic conversation is not offered "Make periodic" again.
-  const isPeriodicConfigured = session.periodic_configured || false;
+  // Check if loop is enabled for this session (runs active → clock icon +
+  // progress bar). Distinct from loop_configured, which is true even when a
+  // loop conversation is paused/draft.
+  const isLoopEnabled = session.loop_enabled || false;
+  // Whether a loop config exists at all (enabled OR paused/draft). Used to
+  // gate the "Make loop" / "Make non-loop" context-menu actions so a
+  // paused loop conversation is not offered "Make loop" again.
+  const isLoopConfigured = session.loop_configured || false;
 
   // Leading category icon for the unified-tree row:
   //   regular  -> mitto bubble (muted)
-  //   periodic -> clock (muted)
+  //   loop -> clock (muted)
   //   archived -> archive (muted)
   // Spawned/child rows keep their ↳ marker + child-origin glyph instead.
   let CategoryIcon = MittoIcon;
@@ -159,24 +155,24 @@ export function SessionItem({
   if (isArchived) {
     CategoryIcon = ArchiveIcon;
     categoryIconClass = "text-mitto-text-muted";
-  } else if (isPeriodicEnabled) {
+  } else if (isLoopEnabled) {
     CategoryIcon = ClockIcon;
     categoryIconClass = "text-mitto-text-muted";
   }
 
-  // Calculate periodic progress background style
-  const periodicProgressBg = useMemo(() => {
-    if (!isPeriodicEnabled || isArchived) return null;
-    return getPeriodicProgressStyle({
+  // Calculate loop progress background style
+  const loopProgressBg = useMemo(() => {
+    if (!isLoopEnabled || isArchived) return null;
+    return getLoopProgressStyle({
       nextScheduledAt: session.next_scheduled_at,
-      frequency: session.periodic_frequency,
+      frequency: session.loop_frequency,
       isLight: isLightTheme,
     });
   }, [
-    isPeriodicEnabled,
+    isLoopEnabled,
     isArchived,
     session.next_scheduled_at,
-    session.periodic_frequency,
+    session.loop_frequency,
     isLightTheme,
   ]);
 
@@ -248,13 +244,13 @@ export function SessionItem({
       parts.push(`Archived: ${archivedDate.toLocaleString()}`);
     }
 
-    // GC-suspended status (for periodic sessions paused to save resources)
+    // GC-suspended status (for loop sessions paused to save resources)
     if (session.gc_suspended) {
       parts.push("Status: Suspended (saving resources)");
     }
 
-    // Next scheduled run (for periodic sessions)
-    if (isPeriodicEnabled && session.next_scheduled_at) {
+    // Next scheduled run (for loop sessions)
+    if (isLoopEnabled && session.next_scheduled_at) {
       const nextDate = new Date(session.next_scheduled_at);
       const now = Date.now();
       const diff = nextDate.getTime() - now;
@@ -283,7 +279,7 @@ export function SessionItem({
   // Determine swipe action based on filter tab and session type:
   // - Archived tab: swipe to delete
   // - Child (spawned) sessions: swipe to delete (archive not applicable)
-  // - Regular/Periodic tabs: swipe to archive
+  // - Regular/Loop tabs: swipe to archive
   const isSwipeToDelete = filterTab === FILTER_TAB.ARCHIVED || isSpawned;
 
   // Swipe action handler - archive or delete based on current tab
@@ -325,15 +321,15 @@ export function SessionItem({
     session,
     workingDir,
     isArchived,
-    isPeriodicConfigured,
+    isLoopConfigured,
     isSpawned,
     canArchive,
     archiveBlockedReason,
     onRename,
     onDelete,
     onArchive,
-    onMakePeriodic,
-    onMakeNonPeriodic,
+    onMakeLoop,
+    onMakeNonLoop,
     onFetchConversationPrompts,
     onSendPromptToConversation,
   });
@@ -459,7 +455,7 @@ export function SessionItem({
         ...${containerProps}
       >
         <!-- Swipe action background (revealed when swiping left) -->
-        <!-- Shows Archive (amber) for regular/periodic tabs, Delete (red) for archived tab -->
+        <!-- Shows Archive (amber) for regular/loop tabs, Delete (red) for archived tab -->
         <div
           class="absolute inset-0 ${isSwipeToDelete
             ? "bg-red-600"
@@ -507,10 +503,10 @@ export function SessionItem({
           data-session-id=${session.session_id}
           data-has-context-menu="true"
         >
-          ${periodicProgressBg
+          ${loopProgressBg
             ? html`<div
                 class="absolute inset-0 z-0 pointer-events-none"
-                style="background: ${periodicProgressBg};"
+                style="background: ${loopProgressBg};"
                 aria-hidden="true"
               ></div>`
             : ""}

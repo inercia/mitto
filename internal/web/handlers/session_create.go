@@ -192,7 +192,7 @@ func (h *Handlers) HandleCreateSession(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Persist the originating prompt name (if provided), independent of seeding
-	// so it also works for the periodic path. Used for singleton find-or-route.
+	// so it also works for the loop path. Used for singleton find-or-route.
 	// Falls back to InitialPromptName (matching the lookup in promptName above)
 	// so callers that seed via initial_prompt_name without an explicit
 	// origin_prompt_name still get tracked for singleton find-or-route.

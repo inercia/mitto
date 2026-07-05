@@ -8,15 +8,15 @@ parameters:
   - name: CheckoutsRoot
     type: text
     description: Root directory that contains the local checkouts of the repositories you may review
-description: Scan a Slack channel for PR review requests, match each to a local checkout under a checkouts root, and review it — interactive when watched, silent & autonomous when run periodically
+description: Scan a Slack channel for PR review requests, match each to a local checkout under a checkouts root, and review it — interactive when watched, silent & autonomous when run as a loop
 group: GitHub
 backgroundColor: '#BBDEFB'
 tags:
 - github
 - slack
-- periodic
+- loop
 enabledWhen: Tools.HasPattern("slack_*") && (Tools.HasPattern("github_*") || CommandExists("gh"))
-periodic:
+loop:
   mode: optional
   default: false
   trigger: onCompletion
@@ -26,7 +26,7 @@ prompt: |
   to the matching **local checkout** under a given checkouts root, and review each
   PR the same careful way as the **"GitHub: review a Pull Request"** prompt —
   inspecting the PR **without disturbing any local changes** and reviewing against
-  the repository's own conventions. Designed to be safe to run **periodically**.
+  the repository's own conventions. Designed to be safe to run **as a loop**.
 
   ## Session Context
 
@@ -39,13 +39,13 @@ prompt: |
 
   If either argument is missing: in **interactive** mode ask for it with
   `mitto_ui_options(self_id: "{{ .Session.ID }}", ..., allow_free_text: true)`;
-  in **silent periodic** mode, post a `mitto_ui_notify` explaining what is missing
+  in **silent loop** mode, post a `mitto_ui_notify` explaining what is missing
   and stop.
 
   ## Interaction Mode — READ THIS FIRST
-  {{- if and .Session.IsPeriodic (not .Session.IsPeriodicForced) }}
+  {{- if and .Session.IsLoop (not .Session.IsLoopForced) }}
 
-  **Silent autonomous mode — scheduled periodic run.** Nobody is watching.
+  **Silent autonomous mode — scheduled loop run.** Nobody is watching.
   - Use **only** `mitto_ui_notify`. Do **NOT** call `mitto_ui_options`,
     `mitto_ui_form`, or `mitto_ui_textbox` — never block waiting for a human.
   - You **may post review comments without asking**, but only findings you are
@@ -58,7 +58,7 @@ prompt: |
     just record that you looked (a brief `mitto_ui_notify` summary is enough).
   {{- else }}
 
-  **Interactive mode** (a normal send, or a force-triggered periodic run): a user
+  **Interactive mode** (a normal send, or a force-triggered loop run): a user
   may be present.
   - Present candidate comments in a `mitto_ui_form` and **confirm with
     `mitto_ui_options` before posting** anything.
@@ -84,7 +84,7 @@ prompt: |
 
   Use the available **Slack MCP tools (`slack_*`)** to read the **most recent**
   messages from that channel (a recent window is enough — e.g. the last day or the
-  last ~50 messages; in periodic mode only look at messages new since the previous
+  last ~50 messages; in loop mode only look at messages new since the previous
   run is ideal, but a recent window with the Step 3 dedup is sufficient).
 
   Identify messages that are **review requests**: typically they mention a review
@@ -115,7 +115,7 @@ prompt: |
 
   ## Step 3 — Deduplicate (skip already-reviewed / unchanged PRs)
 
-  For periodic safety, **do not re-review the same PR at the same point in time.**
+  For loop safety, **do not re-review the same PR at the same point in time.**
   Check, statelessly against GitHub, whether **you have already reviewed this PR at
   its current head commit**:
 
@@ -185,9 +185,9 @@ prompt: |
   ```
 
   ## Step 5 — Present and post the review
-  {{- if and .Session.IsPeriodic (not .Session.IsPeriodicForced) }}
+  {{- if and .Session.IsLoop (not .Session.IsLoopForced) }}
 
-  **Silent periodic mode** — no forms, no confirmations:
+  **Silent loop mode** — no forms, no confirmations:
   - Keep **only** the findings you are **really sure** about (drop everything
     uncertain/stylistic, per the Interaction Mode rules).
   - If at least one confident finding remains, post a single **COMMENT** review.
@@ -262,7 +262,7 @@ prompt: |
   - **Process each PR at most once per run**, and skip PRs already reviewed at their
     current head commit (re-review only when new commits arrive).
   - Review against each **repo's conventions** first, generic best practice second.
-  - In **silent periodic** mode never block on UI, post only comments you are
+  - In **silent loop** mode never block on UI, post only comments you are
     **really sure** about, and only as a `COMMENT` review.
   - In **interactive** mode, pre-fill every textarea and **confirm before posting**;
     if the user cancels, post nothing.

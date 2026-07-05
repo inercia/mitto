@@ -1,6 +1,6 @@
 icon: check
 name: Add tests
-menus: prompts, !promptsPeriodic
+menus: prompts, !promptsLoop
 description: Write comprehensive tests for new or modified code
 group: Testing
 backgroundColor: '#FFE0B2'

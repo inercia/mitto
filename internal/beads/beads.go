@@ -75,6 +75,13 @@ type DepParams struct {
 	Action    string // "add" or "remove"
 }
 
+// LabelParams carries the fields for Client.Label.
+type LabelParams struct {
+	ID     string
+	Label  string
+	Action string // "add" or "remove"
+}
+
 // Client executes bd subcommands for a workspace directory.
 // Each method accepts a context and an absolute workspace directory as its
 // first two arguments.
@@ -90,6 +97,8 @@ type Client interface {
 	Update(ctx context.Context, dir string, p UpdateParams) error
 	Comment(ctx context.Context, dir, id, text string) error
 	Dep(ctx context.Context, dir string, p DepParams) error
+	Label(ctx context.Context, dir string, p LabelParams) error
+	ListAllLabels(ctx context.Context, dir string) ([]byte, error)
 	ConfigShow(ctx context.Context, dir string) (map[string]string, error)
 	ConfigSet(ctx context.Context, dir, key, value string) error
 	ConfigUnset(ctx context.Context, dir, key string) error
@@ -149,6 +158,18 @@ func IsValidUpstream(u string) bool {
 func IsValidDepType(t string) bool {
 	_, ok := validDepTypes[t]
 	return ok
+}
+
+// IsValidLabel reports whether l is a safe bd label: non-empty after trimming
+// and not flag-like (no leading '-'). Guarding against a leading dash prevents
+// the label from being parsed as a flag in the bd argument list. bd itself
+// enforces any further naming rules and reports a descriptive error otherwise.
+func IsValidLabel(l string) bool {
+	l = strings.TrimSpace(l)
+	if l == "" || strings.HasPrefix(l, "-") {
+		return false
+	}
+	return true
 }
 
 // validDepTypes is the set of dependency edge kinds accepted by "bd dep add -t".

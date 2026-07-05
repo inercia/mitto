@@ -32,27 +32,27 @@ type PromptEnabledContext struct {
 	// template func ({{ UserData "NAME" }}), the .UserData map, and the CEL UserData
 	// variable. nil at menu time is safe (nil map indexes to "").
 	UserData map[string]string
-	// Iteration holds periodic-iteration info for the current run, enabling prompt
+	// Iteration holds loop-iteration info for the current run, enabling prompt
 	// bodies to branch on which run they are in (e.g. {{ if .Iteration.IsFirst }}).
-	// All-zero (Number=0, IsPeriodic=false) for non-periodic prompts.
+	// All-zero (Number=0, IsLoop=false) for non-loop prompts.
 	Iteration IterationContext
 }
 
-// IterationContext holds periodic-iteration info for CEL/template evaluation.
+// IterationContext holds loop-iteration info for CEL/template evaluation.
 // Number is the 0-based index of the current run (IterationCount at dispatch).
-// Values are zero for non-periodic prompts.
+// Values are zero for non-loop prompts.
 type IterationContext struct {
-	// Number is the 0-based index of the current periodic run.
+	// Number is the 0-based index of the current loop run.
 	Number int
 	// Max is the configured maximum number of runs (0 = unlimited).
 	Max int
-	// IsPeriodic indicates the current prompt was triggered by the periodic runner.
-	IsPeriodic bool
+	// IsLoop indicates the current prompt was triggered by the loop runner.
+	IsLoop bool
 	// IsFirst is true when Number == 0.
 	IsFirst bool
 	// IsLast is true when Max > 0 && Number == Max-1.
 	IsLast bool
-	// IsUninterrupted is true ONLY on a scheduled (non-forced) periodic run that
+	// IsUninterrupted is true ONLY on a scheduled (non-forced) loop run that
 	// directly follows another such run of this same loop with nothing in between:
 	// no user interjection, no forced "run now", no FreshContext, and within the same
 	// process lifetime. Powered by a session-scoped in-memory marker that resets across
@@ -130,17 +130,17 @@ type SessionContext struct {
 	IsAutoChild bool
 	// ParentID is the ID of the parent session (empty if not a child)
 	ParentID string
-	// IsPeriodic indicates whether the current prompt was triggered by the periodic runner
-	IsPeriodic bool
-	// IsPeriodicForced indicates whether a periodic prompt was triggered manually via
+	// IsLoop indicates whether the current prompt was triggered by the loop runner
+	IsLoop bool
+	// IsLoopForced indicates whether a loop prompt was triggered manually via
 	// "run now" (as opposed to the normal scheduled delivery). Mirrors
-	// ProcessorInput.IsPeriodicForced and the @mitto:periodic_forced placeholder.
-	IsPeriodicForced bool
-	// IsPeriodicConversation indicates whether the conversation is configured as a
-	// periodic conversation (it has a periodic prompt configuration). Unlike
-	// IsPeriodic, this reflects the conversation TYPE, not whether the current run
+	// ProcessorInput.IsLoopForced and the @mitto:loop_forced placeholder.
+	IsLoopForced bool
+	// IsLoopConversation indicates whether the conversation is configured as a
+	// loop conversation (it has a loop prompt configuration). Unlike
+	// IsLoop, this reflects the conversation TYPE, not whether the current run
 	// was triggered by the scheduler. Populated in the prompt-menu evaluation context.
-	IsPeriodicConversation bool
+	IsLoopConversation bool
 	// HasBeadsIssue indicates whether the conversation has a beads issue associated
 	// (the session metadata BeadsIssue field is non-empty).
 	HasBeadsIssue bool
@@ -232,16 +232,146 @@ func (c ChildrenContext) AllText() string { return FormatChildren(c.All) }
 // MCPText renders MCP-origin child sessions only, comma-separated. Empty when none.
 func (c ChildrenContext) MCPText() string { return FormatChildren(c.MCP) }
 
-// ToolsContext holds MCP tools context for CEL evaluation.
-type ToolsContext struct {
-	// Available indicates whether the tool list is known (a definitive, non-empty
-	// result has been fetched). When false, the tool list is unknown / not yet
-	// fetched, and the tool-pattern functions (tools.hasPattern/hasAllPatterns/
-	// hasAnyPattern) fail open (return true) so tool-gated prompts are not hidden
-	// during the MCP-tools cache warm-up window.
-	Available bool
-	// Names contains the names of available tools
+// ServerToolState represents a single MCP server's tool-list availability
+// state, used to decide fail-open vs fail-closed matching in
+// hasPattern/hasAllPatterns/hasAnyPattern. See docs/devel/mcp-tool-discovery.md
+// (Q3.2, Q4.1): a single global latch cannot distinguish a late-starting or
+// unreachable server (which should stay fail-open) from a reachable one
+// (which is authoritative), so state is tracked per server instead.
+type ServerToolState int
+
+const (
+	// ServerToolStateUnknown is the cold-start default: the server has not
+	// yet been probed. Pattern matching against its namespace fails open.
+	ServerToolStateUnknown ServerToolState = iota
+	// ServerToolStateReachable indicates a successful probe/tool-list fetch.
+	// Its Names are authoritative: pattern matching is name-based (fail-closed).
+	ServerToolStateReachable
+	// ServerToolStateUnreachable indicates the server is known (e.g. present
+	// in ListMCPServers) but could not be reached. Matching against its
+	// namespace fails open, same as Unknown, pending bounded backoff retries
+	// (out of scope here; see mitto-sys.5).
+	ServerToolStateUnreachable
+)
+
+// String returns a stable, human-readable name for the state. Also used as
+// the wire representation in the CEL activation map (see buildActivation in
+// cel_evaluator.go) and parsed back via parseServerToolState.
+func (s ServerToolState) String() string {
+	switch s {
+	case ServerToolStateReachable:
+		return "reachable"
+	case ServerToolStateUnreachable:
+		return "configured-but-unreachable"
+	default:
+		return "unknown"
+	}
+}
+
+// parseServerToolState parses the String() representation back into a
+// ServerToolState. Unrecognized values default to Unknown (fail-open).
+func parseServerToolState(s string) ServerToolState {
+	switch s {
+	case "reachable":
+		return ServerToolStateReachable
+	case "configured-but-unreachable":
+		return ServerToolStateUnreachable
+	default:
+		return ServerToolStateUnknown
+	}
+}
+
+// ServerToolInfo holds one MCP server's tool-list availability state and,
+// when State == ServerToolStateReachable, the tool names it exposes.
+type ServerToolInfo struct {
+	// State is the server's current tool-list availability state.
+	State ServerToolState
+	// Names contains the tool names this server exposes. Only meaningful
+	// when State == ServerToolStateReachable.
 	Names []string
+}
+
+// AllServersToolKey is a synthetic "catch-all" server key in
+// ToolsContext.Servers, used by callers that don't have real per-server
+// identity for their tool names (currently: message processors — see
+// NewProcessorToolsContext and internal/processors/hook.go).
+// hasPattern/hasAllPatterns/hasAnyPattern fall back to this entry when a
+// pattern's specific owning server isn't found in Servers, so such callers
+// get flat, always-authoritative matching (no per-server fail-open grace) —
+// preserving pre-mitto-sys.1 processor behavior. General per-server callers
+// (e.g. internal/web/session_api.go via NewReachableToolsContext) never set
+// this key, so an unrecognized server still fails open for them as intended.
+// "" can never be produced by resolveServerName for a non-empty pattern, so
+// it can't collide with a real server name.
+const AllServersToolKey = ""
+
+// ToolsContext holds MCP tools context for CEL evaluation.
+//
+// Availability is tracked PER SERVER (docs/devel/mcp-tool-discovery.md,
+// Q3.2/Q4.1) instead of one global latch: hasPattern/hasAllPatterns/
+// hasAnyPattern (templatefuncs.go) resolve a pattern (e.g. "jira_*") to its
+// owning server (the token before the first underscore — see
+// resolveServerName) and match name-based (fail-closed) only when that
+// server is Reachable; Unknown/Unreachable servers, or servers absent from
+// Servers entirely, fail open.
+type ToolsContext struct {
+	// Servers maps server name (e.g. "jira", "github") to its state and tool
+	// names. Nil/empty means no server has been probed at all yet (genuine
+	// cold start): every pattern falls through to fail-open, since no server
+	// name is ever found. See AllServersToolKey for the processor-only
+	// catch-all fallback.
+	Servers map[string]ServerToolInfo
+	// Names is the flattened list of all known tool names across all
+	// Reachable servers (kept for legacy readers/template display, e.g.
+	// `"x" in Tools.Names`). Does not drive hasPattern/hasAllPatterns/
+	// hasAnyPattern directly anymore — see Servers.
+	Names []string
+	// Available is a derived, legacy convenience signal: true when Servers is
+	// non-empty (some server has been probed / is known). It does NOT drive
+	// hasPattern/hasAllPatterns/hasAnyPattern — those resolve per-server
+	// state — but is kept for callers/tests that only care whether ANY tool
+	// discovery has happened yet (e.g. `Tools.Available` in CEL expressions).
+	Available bool
+}
+
+// GroupToolNamesByServer groups tool names by their owning server: the token
+// before the first underscore (e.g. "jira_create_issue" -> "jira"). A name
+// with no underscore is grouped under itself.
+func GroupToolNamesByServer(names []string) map[string][]string {
+	groups := make(map[string][]string)
+	for _, name := range names {
+		server := resolveServerName(name)
+		groups[server] = append(groups[server], name)
+	}
+	return groups
+}
+
+// NewReachableToolsContext builds a ToolsContext from a flat, already-trusted
+// tool-name list (e.g. the MCP tools cache), grouping names by their inferred
+// owning server (GroupToolNamesByServer) and marking every such server
+// Reachable (authoritative, fail-closed). A server with no names in the list
+// is never represented, so an unrelated/not-yet-discovered server's patterns
+// still fail open (per-server grace) — see internal/web/session_api.go.
+func NewReachableToolsContext(names []string) ToolsContext {
+	servers := make(map[string]ServerToolInfo)
+	for server, ns := range GroupToolNamesByServer(names) {
+		servers[server] = ServerToolInfo{State: ServerToolStateReachable, Names: ns}
+	}
+	return ToolsContext{Servers: servers, Names: names, Available: len(servers) > 0}
+}
+
+// NewProcessorToolsContext builds a ToolsContext for processor (message hook)
+// evaluation, where names is the full, authoritative tool list at message-
+// processing time (the cache is warmed on connect) but no real per-server
+// identity is available. It marks a single AllServersToolKey entry Reachable
+// so hasPattern/hasAllPatterns/hasAnyPattern are always fail-closed —
+// matching pre-mitto-sys.1 processor behavior (no warm-up grace period),
+// regardless of whether names is empty. See internal/processors/hook.go.
+func NewProcessorToolsContext(names []string) ToolsContext {
+	servers := map[string]ServerToolInfo{
+		AllServersToolKey: {State: ServerToolStateReachable, Names: names},
+	}
+	return ToolsContext{Servers: servers, Names: names, Available: true}
 }
 
 // ItemContext holds the generic per-row item context for CEL evaluation of list menus.

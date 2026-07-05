@@ -186,7 +186,7 @@ type BackgroundSession struct {
 
 	// onTurnIdle is called after a turn completes and the session is fully idle
 	// (turn succeeded and no further queued message was dispatched). Used to arm
-	// the on-completion periodic timer.
+	// the on-completion loop timer.
 	onTurnIdle func(sessionID string)
 
 	// isChildPrompting checks if a child session is currently prompting.
@@ -249,6 +249,18 @@ type BackgroundSession struct {
 	// Last prompt token usage — updated after each successful prompt completes.
 	lastUsage   *acp.Usage
 	lastUsageMu sync.Mutex
+
+	// Cumulative token usage across all prompts on this session. In-memory only;
+	// resets on restart (unlike event-derived statistics, which survive restarts).
+	cumInputTokens  atomic.Int64
+	cumOutputTokens atomic.Int64
+	cumTotalTokens  atomic.Int64
+
+	// Child-wait accumulation for blocking mitto_children_tasks_wait calls made
+	// FROM this session (i.e. this session acting as a parent). In-memory only;
+	// resets on restart.
+	mcpChildWaitCount      atomic.Int64
+	mcpChildWaitTotalNanos atomic.Int64
 
 	// Context window usage — updated from SessionUsageUpdate notifications.
 	contextSize    int
@@ -313,14 +325,14 @@ type BackgroundSession struct {
 	lastQueueSendError string
 	lastQueueSendErrAt time.Time
 
-	// Periodic continuation marker (mitto-5xjn). lastTurnScheduledPeriodic records whether
+	// Loop continuation marker (mitto-5xjn). lastTurnScheduledLoop records whether
 	// the most recent COMMITTED dispatch was a scheduled (non-forced, non-FreshContext)
-	// periodic run of this loop. It powers Iteration.IsUninterrupted. Session-scoped +
+	// run of this loop. It powers Iteration.IsUninterrupted. Session-scoped +
 	// in-memory so it auto-resets to false across archive/unarchive, GC suspend/resume, and
 	// process restart (all recreate the BackgroundSession). Explicitly cleared on ACP reinit
-	// and periodic config changes (those keep the same BackgroundSession).
-	periodicContinuationMu    sync.Mutex
-	lastTurnScheduledPeriodic bool
+	// and loop config changes (those keep the same BackgroundSession).
+	loopContinuationMu    sync.Mutex
+	lastTurnScheduledLoop bool
 
 	// streamingSuppressed gates streaming callbacks during an in-place context flush
 	// (flushContextInPlace). When true the acpCallbackSink short-circuits all streaming
@@ -366,6 +378,11 @@ type BackgroundSessionConfig struct {
 	// MittoConfig is the full Mitto configuration (used for default flags)
 	MittoConfig *config.Config
 
+	// ModelConstraintOverride, when non-nil with a non-empty Pattern, overrides the
+	// ACP-server-derived "model" auto-selection constraint for this session only.
+	// Used by auto-children to apply a per-child initial model profile.
+	ModelConstraintOverride *config.ACPServerConstraint
+
 	// AvailableACPServers is the pre-computed list of ACP servers that have workspaces
 	// configured for the session's working directory. Populated by SessionManager using
 	// the same logic as the mitto_conversation_get_current MCP tool.
@@ -401,7 +418,7 @@ type BackgroundSessionConfig struct {
 	OnSelfDestruct func(sessionID string)
 
 	// OnTurnIdle is called after a turn completes and the session is fully idle.
-	// Used to drive event-driven on-completion periodic firing via the runner.
+	// Used to drive event-driven on-completion loop firing via the runner.
 	OnTurnIdle func(sessionID string)
 
 	// GlobalMCPServer is the global MCP server for session registration.
@@ -584,7 +601,10 @@ func NewBackgroundSession(cfg BackgroundSessionConfig) (*BackgroundSession, erro
 	}
 
 	// Look up ACP server constraints from config
-	bs.acpServerConstraints = lookupACPServerConstraints(cfg.MittoConfig, cfg.ACPServer)
+	bs.acpServerConstraints = applyModelConstraintOverride(
+		lookupACPServerConstraints(cfg.MittoConfig, cfg.ACPServer),
+		cfg.ModelConstraintOverride,
+	)
 	// Store full config for model-tag resolution (config.ResolveModelTags).
 	bs.mittoConfig = cfg.MittoConfig
 	// Look up the agent-native context-flush command from config
@@ -799,7 +819,10 @@ func ResumeBackgroundSession(config BackgroundSessionConfig) (*BackgroundSession
 	}
 
 	// Look up ACP server constraints from config
-	bs.acpServerConstraints = lookupACPServerConstraints(config.MittoConfig, config.ACPServer)
+	bs.acpServerConstraints = applyModelConstraintOverride(
+		lookupACPServerConstraints(config.MittoConfig, config.ACPServer),
+		config.ModelConstraintOverride,
+	)
 	// Store full config for model-tag resolution (config.ResolveModelTags).
 	bs.mittoConfig = config.MittoConfig
 	// Look up the agent-native context-flush command from config
@@ -1534,6 +1557,26 @@ func (bs *BackgroundSession) GetContextUsage() (size, used int) {
 	bs.contextUsageMu.Lock()
 	defer bs.contextUsageMu.Unlock()
 	return bs.contextSize, bs.contextUsed
+}
+
+// GetCumulativeUsage returns the cumulative token usage accumulated across all
+// prompts on this session. In-memory only; resets on restart.
+func (bs *BackgroundSession) GetCumulativeUsage() (input, output, total int64) {
+	return bs.cumInputTokens.Load(), bs.cumOutputTokens.Load(), bs.cumTotalTokens.Load()
+}
+
+// RecordChildWait accumulates a completed blocking wait duration for
+// mitto_children_tasks_wait calls made from this session. In-memory only;
+// resets on restart.
+func (bs *BackgroundSession) RecordChildWait(d time.Duration) {
+	bs.mcpChildWaitCount.Add(1)
+	bs.mcpChildWaitTotalNanos.Add(int64(d))
+}
+
+// GetChildWaitStats returns the number of completed blocking child waits and
+// their total accumulated duration. In-memory only; resets on restart.
+func (bs *BackgroundSession) GetChildWaitStats() (count int64, total time.Duration) {
+	return bs.mcpChildWaitCount.Load(), time.Duration(bs.mcpChildWaitTotalNanos.Load())
 }
 
 // sessionError is a simple error type for session errors.

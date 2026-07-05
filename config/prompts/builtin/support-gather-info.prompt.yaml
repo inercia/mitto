@@ -1,0 +1,131 @@
+name: 'Support: gather more information'
+description: 'Ask the customer for missing details on a tracked support question (bead in state:need-info). Posts to Slack only on your approval.'
+group: Support
+backgroundColor: '#FFE0B2'
+icon: question
+menus: beadsIssues
+enabledWhen: 'CommandExists("bd") && DirExists(".beads") && Item.Status != "closed" && "support-question" in Item.Labels && "state:need-info" in Item.Labels'
+tags:
+- support
+parameters:
+  - name: IssueID
+    description: 'The beads issue ID to act on (auto-filled from the Beads issue menu)'
+    required: false
+    type: beadsId
+prompt: |-
+  # Support — Gather More Information
+
+  ## Session Context
+
+  Your session ID is `{{ .Session.ID }}` — use it as `self_id` for all `mitto_*` MCP tool calls.
+
+  ## Description
+
+  Ask the customer for the details we are missing before we can help. Use this when we **cannot
+  answer yet** because the question is unclear or we need more context (environment, identifiers,
+  error codes, timing, a reproduction, etc.). It drafts a short, targeted clarifying message, lets
+  you edit it, posts it to the Slack thread **on your approval**, and records it on the bead.
+
+  > **Applicable state:** `state:need-info`. If the bead is in a different state, warn and let the
+  > user decide whether to continue or stop (see Step 2).
+
+  ## CRITICAL: User Interaction Rules
+
+  > ⚠️ **NEVER use text-based interaction prompts.**
+  >
+  > - ❌ NEVER ask the user to type a number, command, or keyword to make a selection
+  > - ❌ NEVER present numbered options and ask the user to respond with text
+  > - ✅ ALWAYS use `mitto_ui_options` for choices, `mitto_ui_textbox` for review/editing,
+  >   `mitto_ui_form` for structured input, and `mitto_ui_notify` for non-blocking notifications
+  >
+  > ⚠️ **NEVER post to Slack without explicit user review and approval.**
+
+  ## Slack tools (names vary by MCP server)
+
+  Match Slack MCP tools **by capability, not exact name**. You need: (a) **read a thread's replies**
+  and (b) **post a reply to a thread** (e.g. `slack_reply_to_thread*`). Read the target channel and
+  parent `thread_ts` from the bead metadata (`slack_channel` / `slack_thread_ts`).
+
+  ## Step 1: Identify the target bead
+
+  {{ $target := "" -}}
+  {{ if .Session.BeadsIssue }}{{ $target = .Session.BeadsIssue }}{{ else if .Args.IssueID }}{{ $target = .Args.IssueID }}{{ end -}}
+  {{ if $target }}
+  - This prompt was launched from bead **`{{ $target }}`** — operate on it directly (skip the picker).
+  {{- else }}
+  - **No linked bead** — show a picker: list candidates and keep only those in `state:need-info`:
+    `bd list -l support-question --status open,in_progress --all` (read each `state:*` label from
+    `bd show`). Present them with `mitto_ui_options` (first option `{label: "None - Cancel"}`, then
+    one `{label: "<id> — <short summary>"}` per bead, timeout 300).
+  - If there are no `state:need-info` beads, `mitto_ui_notify` (info) that nothing needs clarification
+    and stop. If the user cancels, acknowledge and stop.
+  {{- end }}
+
+  ## Step 2: Load history + verify state (self-check)
+
+  - Load the full history: `bd show <id>` and `bd comments <id>`. Note the stored `slack_thread_ts`
+    / `slack_channel` / `slack_url` metadata.
+  - Confirm the `state:*` label is `need-info`. If it is **not**, use `mitto_ui_options` to warn:
+    - **Question**: "This bead is in `state:<current>`, not `need-info`. Continue anyway?"
+    - **Options**: `[{label: "Continue anyway"}, {label: "Cancel"}]`, timeout 300.
+    - On "Cancel", stop. On "Continue anyway", proceed.
+
+  ## Step 3: Refresh the thread + identify the gap
+
+  - Re-fetch the Slack thread (read-thread-replies tool) using the stored `slack_thread_ts` so the
+    ask reflects the latest state (the customer may have already provided some of it).
+  - From the bead history + thread, determine **exactly what is missing**. Be specific — list the
+    concrete facts we need, for example:
+    - Affected **environment** / host / namespace or service
+    - Exact **error code(s)** and a sample request/response identifier or body
+    - **When** it started and whether it is continuous or intermittent
+    - A **reproduction** (a `curl`/Postman example) if relevant
+
+  ## Step 4: Draft the clarifying message
+
+  - Write a **short, friendly, specific** message that asks only for what we actually need — ideally
+    one or two concrete questions, not a long checklist. Follow the reply style:
+    1. **No direct addressing** — do not use the user's name.
+    2. **Hedge** — "To help dig into this, could you share…".
+    3. **Explain briefly why** the detail helps, if it is not obvious.
+    4. **Keep it short** — avoid walls of text; make it easy to answer.
+  - Show a clickable link to the thread for context (use the stored `slack_url`):
+    `📤 Asking in [this thread](<slack_url>)`.
+
+  ## Step 5: Review in an editable textbox
+
+  - Use `mitto_ui_textbox`:
+    - **Title**: "📤 Review clarifying question before posting to Slack"
+    - **Text**: the proposed message
+    - **Result**: "full"
+    - **Abort**: true
+    - **Timeout**: 300
+
+  ## Step 6: Post + log (on submit)
+
+  - The returned text (possibly edited) is the final message. Post it with the post-reply-to-thread
+    tool, using the stored `slack_channel` and the thread's parent `slack_thread_ts`.
+  - Confirm success and show the permalink (build it from the posted ts: `<slack_url base>/archives/
+    <slack_channel>/p<posted_ts_without_dot>`).
+  - **Log to the bead** — add a markdown `[OUTBOUND]` comment with the final text and the permalink.
+    Preserve the markdown layout with `$'...'` (real `\n`) or stdin:
+    ```
+    printf '%s' "$comment_markdown" | bd comment <id> --stdin
+    ```
+    Header: `**[OUTBOUND us · YYYY-MM-DD HH:MM UTC]**` — and note in the body that this is a request
+    for more information.
+  - **Transition state** (same issue, no subtasks — never `bd set-state`):
+    `bd update <id> --remove-label state:need-info --add-label state:awaiting-customer`.
+    (If Step 2 continued from a different state, remove that state label instead.)
+
+  ## On abort
+
+  - Do **NOT** post anything to Slack. Leave the bead in `state:need-info`.
+  - Acknowledge and stop.
+
+  ## Notes
+
+  - Load the bead (`bd show` + `bd comments`) **before** drafting — it is the source of truth.
+  - When the customer replies, the thread moves to `state:awaiting-us`; use **"Support: check
+    status"** to pull the reply onto the bead, then **"Support: reply to user"** once we can answer.
+  - **NEVER** post in the support channel without explicit review and approval.

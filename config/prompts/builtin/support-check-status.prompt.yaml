@@ -1,0 +1,138 @@
+name: 'Support: check status'
+description: 'Refresh a tracked support question from Slack, update its bead, and propose closing if resolved. Never posts to Slack.'
+group: Support
+backgroundColor: '#E1BEE7'
+icon: sync
+menus: beadsIssues
+enabledWhen: 'CommandExists("bd") && DirExists(".beads") && Item.Status != "closed" && "support-question" in Item.Labels'
+tags:
+- support
+parameters:
+  - name: IssueID
+    description: 'The beads issue ID to act on (auto-filled from the Beads issue menu)'
+    required: false
+    type: beadsId
+prompt: |-
+  # Support — Check Status
+
+  ## Session Context
+
+  Your session ID is `{{ .Session.ID }}` — use it as `self_id` for all `mitto_*` MCP tool calls.
+
+  ## Description
+
+  Bring a tracked support question up to date. This prompt re-fetches the Slack thread, records any
+  new messages on the bead, updates the state to reflect whose turn it is, presents a summary of
+  where the conversation stands, and — if the customer looks satisfied and there is no open question
+  — proposes to **close** the bead.
+
+  > **Applicable state:** any open bead (no gate).
+
+  ## CRITICAL: User Interaction Rules
+
+  > ⚠️ **NEVER use text-based interaction prompts.**
+  >
+  > - ❌ NEVER ask the user to type a number, command, or keyword to make a selection
+  > - ❌ NEVER present numbered options and ask the user to respond with text
+  > - ✅ ALWAYS use `mitto_ui_options` for choices, `mitto_ui_textbox` for review/editing,
+  >   `mitto_ui_form` for structured input, and `mitto_ui_notify` for non-blocking notifications
+  >
+  > ⚠️ This prompt presents its summary **in the conversation**, not in Slack. It must **NEVER** post
+  > to the Slack channel.
+
+  ## Slack tools (names vary by MCP server)
+
+  Match Slack MCP tools **by capability, not exact name**. Here you only need to **read a thread's
+  replies** (e.g. `slack_get_thread_replies*`, `conversations_replies_slack`). No posting tool is
+  needed — this prompt never posts.
+
+  ## Step 1: Identify the target bead
+
+  {{ $target := "" -}}
+  {{ if .Session.BeadsIssue }}{{ $target = .Session.BeadsIssue }}{{ else if .Args.IssueID }}{{ $target = .Args.IssueID }}{{ end -}}
+  {{ if $target }}
+  - This prompt was launched from bead **`{{ $target }}`** — operate on it directly (skip the picker).
+  {{- else }}
+  - **No linked bead** — show a picker: list open tracked questions
+    `bd list -l support-question --status open,in_progress --all` and present them with
+    `mitto_ui_options` (first option `{label: "None - Cancel"}`, then one
+    `{label: "<id> [state] — <short summary>"}` per bead, timeout 300). If the user cancels,
+    acknowledge and stop.
+  {{- end }}
+
+  ## Step 2: Load the bead history
+
+  - Load `bd show <id>` and `bd comments <id>` so you know what is already captured and what the last
+    recorded state and message were.
+  - Note the current `state:*` label, the stored `slack_thread_ts` / `slack_channel` / `slack_url`
+    metadata, and the timestamp/author of the most recent comment.
+
+  ## Step 3: Refresh the Slack thread
+
+  - Re-fetch the full thread (read-thread-replies tool) using the stored `slack_thread_ts` and
+    `slack_channel` from the bead metadata / `# Links`.
+  - Build the chronological list of thread messages with author + UTC time. Identify which messages
+    are **new** (not yet captured as comments on the bead) since our last recorded activity.
+  - Note any reactions on our answers (a positive reaction = helpful, a negative one = not helpful).
+
+  ## Step 4: Reconcile new messages onto the bead
+
+  - For **each** new thread message, add a markdown comment (preserve layout with `$'...'` or
+    `printf '%s' "$c" | bd comment <id> --stdin`):
+    - Customer messages → `**[INBOUND @user · YYYY-MM-DD HH:MM UTC]**`
+    - Team / other participants → `**[CONTEXT @user · YYYY-MM-DD HH:MM UTC]**`
+    - Any of our own replies not yet logged → `**[OUTBOUND us · YYYY-MM-DD HH:MM UTC]**`
+  - Do **not** duplicate comments that are already on the bead.
+
+  ## Step 5: Update the state to reflect reality
+
+  Update the `state:*` label in place (same issue — never `bd set-state`), based on who spoke last
+  and what they said:
+
+  - The **last message is from the customer** and it asks something / provides info we must act on →
+    `state:awaiting-us`.
+  - The **last message is ours** and we are waiting on the customer → `state:awaiting-customer`.
+  - Do **not** override `state:need-info` or `state:drafting` if the situation has not changed (those
+    reflect a pending action of ours). Only change the label when the thread clearly moved on.
+
+  Apply with: `bd update <id> --remove-label state:<previous> --add-label state:<new>`, and add a
+  short `**[STATE · <time>]** <prev> → <new>` comment noting why.
+
+  ## Step 6: Present the current-status summary (in the conversation)
+
+  - Present a concise, chronological summary **to the user in this conversation** (not to Slack):
+
+    ```markdown
+    ## Status — <id> ([thread](<slack_url>))
+
+    **Topic:** <brief topic>
+    **State:** <state:* label> (updated from <previous> if changed)
+
+    ### Thread history
+    1. [@user] (2d ago): <summary>
+    2. [OUR REPLY] (1d ago): <summary>
+    3. [@user] (2h ago): <summary>  ← new
+
+    ### Where it stands
+    <what is open / who owes the next move / any helpful/not-helpful reactions>
+    ```
+
+  ## Step 7: Propose closing if resolved
+
+  - Judge whether the question is **resolved**. Signals: a positive reaction on our answer; the
+    customer's last message is a "thanks / that worked / got it"; the thread concluded with no
+    outstanding question.
+  - **If resolved**, use `mitto_ui_options`:
+    - **Question**: "This looks resolved. Close the bead?"
+    - **Options**: `[{label: "Close it"}, {label: "Keep open"}]`, timeout 300.
+    - On **"Close it"**: `bd update <id> --remove-label state:<previous> --add-label state:resolved`
+      then `bd close <id> -r "resolved: customer satisfied / question answered"`.
+    - On **"Keep open"**: leave as-is and acknowledge.
+  - **If not resolved**, `mitto_ui_notify` (info) with the next suggested action, e.g. run
+    **"Support: reply to user"** (if we can answer) or **"Support: gather more information"** (if we
+    still need details), then stop.
+
+  ## Notes
+
+  - This prompt is **read-and-record** on Slack — it never posts a reply to the channel.
+  - Keep the bead the single source of truth: log every new thread message and every state change.

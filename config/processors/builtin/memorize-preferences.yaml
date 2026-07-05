@@ -56,8 +56,8 @@ priority: 200
 timeout: 120s
 onError: skip
 
-# Skip periodic prompts — only process real user messages
-enabledWhen: '!Session.IsPeriodic'
+# Skip loop prompts — only process real user messages
+enabledWhen: '!Session.IsLoop'
 
 parameters:
   - name: PreferencesFile

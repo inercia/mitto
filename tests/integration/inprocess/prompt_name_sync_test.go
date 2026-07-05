@@ -24,7 +24,7 @@ func extractPromptName(e client.SyncEvent) string {
 }
 
 // TestGapFill_UserPromptWithPromptName verifies that when a user_prompt event
-// with prompt_name (simulating a periodic prompt) is missed and later recovered
+// with prompt_name (simulating a loop prompt) is missed and later recovered
 // via load_events, the prompt_name field survives the store round-trip.
 func TestGapFill_UserPromptWithPromptName(t *testing.T) {
 	ts := SetupTestServer(t)
@@ -91,7 +91,7 @@ func TestGapFill_UserPromptWithPromptName(t *testing.T) {
 
 	clientMaxSeq := initialLastSeq
 
-	// Phase 2: Inject missed events — a periodic prompt + agent response.
+	// Phase 2: Inject missed events — a loop prompt + agent response.
 	promptSeq := inj.InjectUserPromptWithName("Run daily health check", "daily-check")
 	inj.InjectAgentMessages(1) // agent response
 
@@ -142,11 +142,11 @@ func TestGapFill_UserPromptWithPromptName(t *testing.T) {
 		gotName, recovered[0].Seq)
 }
 
-// TestGapFill_MultiplePeriodicPromptsWithSameText verifies that multiple periodic
+// TestGapFill_MultipleLoopPromptsWithSameText verifies that multiple loop
 // prompts with identical message text but different seqs are all delivered by the
 // server (no server-side content dedup). This is the backend counterpart of the
 // mergeMessagesWithSync fix in lib.js.
-func TestGapFill_MultiplePeriodicPromptsWithSameText(t *testing.T) {
+func TestGapFill_MultipleLoopPromptsWithSameText(t *testing.T) {
 	ts := SetupTestServer(t)
 
 	sess, err := ts.Client.CreateSession(client.CreateSessionRequest{})
@@ -182,7 +182,7 @@ func TestGapFill_MultiplePeriodicPromptsWithSameText(t *testing.T) {
 	}
 	defer ws.Close()
 
-	// Inject 3 periodic prompts with identical text (simulates 3 scheduled runs).
+	// Inject 3 loop prompts with identical text (simulates 3 scheduled runs).
 	seq1 := inj.InjectUserPromptWithName("Run scheduled task", "cron-job")
 	seq2 := inj.InjectUserPromptWithName("Run scheduled task", "cron-job")
 	seq3 := inj.InjectUserPromptWithName("Run scheduled task", "cron-job")
@@ -210,7 +210,7 @@ func TestGapFill_MultiplePeriodicPromptsWithSameText(t *testing.T) {
 		}
 	}
 
-	// ASSERT 1: All 3 periodic prompts are returned (no server-side content dedup).
+	// ASSERT 1: All 3 loop prompts are returned (no server-side content dedup).
 	if len(prompts) != 3 {
 		t.Fatalf("expected 3 user_prompt events, got %d (total events: %d)", len(prompts), len(events))
 	}
@@ -235,7 +235,7 @@ func TestGapFill_MultiplePeriodicPromptsWithSameText(t *testing.T) {
 		}
 	}
 
-	t.Logf("All 3 periodic prompts with identical text delivered with distinct seqs ✓")
+	t.Logf("All 3 loop prompts with identical text delivered with distinct seqs ✓")
 }
 
 // TestGapFill_PromptNameSurvivesFullReload verifies the simplest path:
@@ -321,7 +321,7 @@ func TestGapFill_PromptNameSurvivesFullReload(t *testing.T) {
 }
 
 // TestGapFill_PromptNameEmptyForAdHocPrompts verifies that ad-hoc prompts
-// (without prompt_name) are distinguishable from periodic prompts in the
+// (without prompt_name) are distinguishable from loop prompts in the
 // same event stream.
 func TestGapFill_PromptNameEmptyForAdHocPrompts(t *testing.T) {
 	ts := SetupTestServer(t)
@@ -334,9 +334,9 @@ func TestGapFill_PromptNameEmptyForAdHocPrompts(t *testing.T) {
 
 	inj := NewEventInjector(t, ts, sess.SessionID)
 
-	// Inject an ad-hoc prompt (no prompt_name) and a periodic prompt.
+	// Inject an ad-hoc prompt (no prompt_name) and a loop prompt.
 	inj.InjectUserPrompts(1)                                              // seq 1: ad-hoc
-	inj.InjectUserPromptWithName("Weekly status report", "weekly-report") // seq 2: periodic
+	inj.InjectUserPromptWithName("Weekly status report", "weekly-report") // seq 2: loop
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -395,12 +395,12 @@ func TestGapFill_PromptNameEmptyForAdHocPrompts(t *testing.T) {
 		t.Errorf("ad-hoc prompt[0]: expected empty prompt_name, got %q", adHocName)
 	}
 
-	// ASSERT: Second prompt (periodic) has prompt_name.
-	periodicName := extractPromptName(prompts[1])
-	if periodicName != "weekly-report" {
-		t.Errorf("periodic prompt[1]: expected prompt_name=%q, got %q", "weekly-report", periodicName)
+	// ASSERT: Second prompt (loop) has prompt_name.
+	loopName := extractPromptName(prompts[1])
+	if loopName != "weekly-report" {
+		t.Errorf("loop prompt[1]: expected prompt_name=%q, got %q", "weekly-report", loopName)
 	}
 
-	t.Logf("Ad-hoc prompt_name=%q, periodic prompt_name=%q — correctly distinguished ✓",
-		adHocName, periodicName)
+	t.Logf("Ad-hoc prompt_name=%q, loop prompt_name=%q — correctly distinguished ✓",
+		adHocName, loopName)
 }

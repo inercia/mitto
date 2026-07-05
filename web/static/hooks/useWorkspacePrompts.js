@@ -1,9 +1,9 @@
 // web/static/hooks/useWorkspacePrompts.js
 // Manages workspace-prompt fetching, caching, and derived prompt lists for the
 // App. Handles initial fetch on workspace change, re-fetch on session switch,
-// periodic 30-second refresh, visibility-based refresh, and file-watcher events
+// loop 30-second refresh, visibility-based refresh, and file-watcher events
 // (mitto:prompts_changed). Exposes the full prompt list, the "prompts" dropup
-// subset, the periodic-selector subset, and per-session / per-beads-issue fetch
+// subset, the loop-selector subset, and per-session / per-beads-issue fetch
 // helpers.
 const { useState, useEffect, useCallback, useMemo } = window.preact;
 
@@ -24,7 +24,7 @@ import {
  * @param {string|null|undefined} deps.activeSessionId - Active session id.
  *   Drives per-session re-fetches (CEL expressions vary per session).
  * @returns {{ workspacePrompts: Array, predefinedPrompts: Array,
- *   periodicPrompts: Array, fetchWorkspacePrompts: Function,
+ *   loopPrompts: Array, fetchWorkspacePrompts: Function,
  *   fetchConversationPromptsForSession: Function }}
  */
 export function useWorkspacePrompts({
@@ -45,26 +45,25 @@ export function useWorkspacePrompts({
     [workspacePrompts],
   );
 
-  // Periodic prompts: prompts shown in the PeriodicPromptSelector dropdown. A
+  // Loop prompts: prompts shown in the LoopPromptSelector dropdown. A
   // prompt appears here if it opts into "prompts" (default dropup) OR
-  // "promptsPeriodic" (periodic-selector-specific). The union keeps existing
+  // "promptsLoop" (loop-selector-specific). The union keeps existing
   // prompts available in the selector while letting authors target a prompt
-  // ONLY at the periodic selector via `menus: promptsPeriodic`.
+  // ONLY at the loop selector via `menus: promptsLoop`.
   //
-  // Exclusion: `!promptsPeriodic` in a prompt's `menus` field suppresses it
-  // from the periodic selector even when it would otherwise be included via
-  // the union (e.g. a one-shot prompt with `menus: prompts, !promptsPeriodic`).
+  // Exclusion: `!promptsLoop` in a prompt's `menus` field suppresses it
+  // from the loop selector even when it would otherwise be included via
+  // the union (e.g. a one-shot prompt with `menus: prompts, !promptsLoop`).
   // The exclusion is applied BEFORE the satisfaction check so it always wins.
-  const periodicPrompts = useMemo(
+  const loopPrompts = useMemo(
     () =>
       workspacePrompts.filter((p) => {
         // Explicit exclusion takes precedence over the union rule.
-        if (promptMenuExcludes(p).has("promptsPeriodic")) return false;
+        if (promptMenuExcludes(p).has("promptsLoop")) return false;
         const menus = promptMenus(p);
         return (
           (menus.includes("prompts") && menuSatisfies(p, "prompts")) ||
-          (menus.includes("promptsPeriodic") &&
-            menuSatisfies(p, "promptsPeriodic"))
+          (menus.includes("promptsLoop") && menuSatisfies(p, "promptsLoop"))
         );
       }),
     [workspacePrompts],
@@ -80,7 +79,7 @@ export function useWorkspacePrompts({
   // the backend evaluates `enabledWhen` for that conversation, then keep only the
   // prompts that opt into the conversation menu via `menus`.
   const fetchConversationPromptsForSession = useCallback(
-    async (session, workingDir) => {
+    async (session, workingDir, menus = ["conversation"]) => {
       const sessionId = session?.session_id;
       const dir = workingDir || session?.working_dir;
       if (!sessionId || !dir) return [];
@@ -94,10 +93,13 @@ export function useWorkspacePrompts({
         if (!res.ok) return [];
         const data = await res.json();
         const all = data?.prompts || [];
-        // Parameters that the "conversation" menu cannot auto-fill are collected
-        // via the PromptParameterDialog when the user selects such a prompt
-        // (mitto-hcf.3). No menuSatisfies gate — all params can be user-filled.
-        return all.filter((p) => p && promptMenuIncludes(p, "conversation"));
+        // Keep prompts that opt into ANY of the requested menus. Parameters that
+        // a menu cannot auto-fill are collected via the PromptParameterDialog
+        // when the user selects such a prompt (mitto-hcf.3). No menuSatisfies
+        // gate — all params can be user-filled.
+        return all.filter(
+          (p) => p && menus.some((m) => promptMenuIncludes(p, m)),
+        );
       } catch (err) {
         console.error("Failed to fetch conversation prompts for session:", err);
         return [];
@@ -107,7 +109,7 @@ export function useWorkspacePrompts({
   );
 
   // Fetch workspace prompts with conditional request support (If-Modified-Since)
-  // This enables efficient periodic refresh without transferring data if unchanged
+  // This enables efficient loop refresh without transferring data if unchanged
   const fetchWorkspacePrompts = useCallback(
     async (workingDir, forceRefresh = false) => {
       if (!workingDir) return;
@@ -201,7 +203,7 @@ export function useWorkspacePrompts({
     }
   }, [activeSessionId]); // intentionally omit workingDir/workspacePromptsDir/fetchWorkspacePrompts from deps
 
-  // Periodic refresh of workspace prompts (every 30 seconds)
+  // Loop refresh of workspace prompts (every 30 seconds)
   // Uses conditional requests to avoid unnecessary data transfer
   useEffect(() => {
     if (!workingDir) return;
@@ -250,7 +252,7 @@ export function useWorkspacePrompts({
   return {
     workspacePrompts,
     predefinedPrompts,
-    periodicPrompts,
+    loopPrompts,
     fetchWorkspacePrompts,
     fetchConversationPromptsForSession,
   };

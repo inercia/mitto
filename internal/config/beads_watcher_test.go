@@ -1,6 +1,8 @@
 package config
 
 import (
+	"context"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sync"
@@ -8,6 +10,33 @@ import (
 	"testing"
 	"time"
 )
+
+// warnCountHandler is a minimal slog.Handler that counts records at WARN or above.
+type warnCountHandler struct {
+	mu    sync.Mutex
+	warns int
+}
+
+func (h *warnCountHandler) Enabled(_ context.Context, _ slog.Level) bool { return true }
+
+func (h *warnCountHandler) Handle(_ context.Context, r slog.Record) error {
+	if r.Level >= slog.LevelWarn {
+		h.mu.Lock()
+		h.warns++
+		h.mu.Unlock()
+	}
+	return nil
+}
+
+func (h *warnCountHandler) WithAttrs(_ []slog.Attr) slog.Handler { return h }
+
+func (h *warnCountHandler) WithGroup(_ string) slog.Handler { return h }
+
+func (h *warnCountHandler) count() int {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.warns
+}
 
 // mockBeadsSubscriber implements BeadsSubscriber for testing.
 type mockBeadsSubscriber struct {
@@ -140,6 +169,37 @@ func TestBeadsWatcher_NotYetExistingBeadsDir(t *testing.T) {
 
 	if !sub.WaitForEvent(3 * time.Second) {
 		t.Fatal("Timed out waiting for event after .beads dir was created")
+	}
+}
+
+func TestBeadsWatcher_MissingBeadsAndParent_NoWarn(t *testing.T) {
+	// A configured workspace whose directory (and therefore its .beads dir) does
+	// not exist must not produce a WARN — absence is expected and handled at
+	// DEBUG at most (mitto-3zr).
+	tmpDir := t.TempDir()
+	missingWorkspace := filepath.Join(tmpDir, "does-not-exist")
+	beadsDir := filepath.Join(missingWorkspace, ".beads")
+
+	h := &warnCountHandler{}
+	bw, err := NewBeadsWatcher(slog.New(h))
+	if err != nil {
+		t.Fatalf("NewBeadsWatcher: %v", err)
+	}
+	defer bw.Close()
+	bw.Start()
+
+	sub := newMockBeadsSubscriber()
+	if err := bw.Subscribe(sub, []string{beadsDir}); err != nil {
+		t.Fatalf("Subscribe returned error for missing beads dir: %v", err)
+	}
+
+	if got := h.count(); got != 0 {
+		t.Errorf("Expected no WARN for missing .beads dir, got %d", got)
+	}
+
+	// The subscriber is still registered even though nothing can be watched yet.
+	if bw.SubscriberCount() != 1 {
+		t.Errorf("Expected 1 subscriber, got %d", bw.SubscriberCount())
 	}
 }
 

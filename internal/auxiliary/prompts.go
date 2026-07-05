@@ -39,6 +39,11 @@ var AnalyzeFollowUpQuestionsPromptTemplate string
 //go:embed prompts/fetch_mcp_tools.txt
 var FetchMCPToolsPromptTemplate string
 
+// mcpToolsRetryReminder is appended to FetchMCPToolsPromptTemplate on retry
+// attempts (mitto-sys.7) after the agent's previous reply failed strict
+// parsing, so the retry explicitly restates the required response shape.
+const mcpToolsRetryReminder = `IMPORTANT: Your previous reply was not accepted. Reply with ONLY a single JSON object of the exact form {"tools":[{"name":"...","description":"..."}]} (or {"error":"..."} if you truly have no MCP tools). No prose, no markdown fences, no extra text.`
+
 // CheckToolPatternsPromptTemplate asks the agent to check if specific tool patterns
 // have matching MCP tools available. Use with fmt.Sprintf, passing the comma-separated patterns.
 // This is sent to the same PurposeMCPTools auxiliary session, so the agent already has

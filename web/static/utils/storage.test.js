@@ -458,7 +458,7 @@ describe("getCategoryFilter / setCategoryFilter", () => {
     const result = getCategoryFilter();
     expect(result).toEqual(DEFAULT_CATEGORY_FILTER);
     expect(result.regular).toBe(true);
-    expect(result.periodic).toBe(true);
+    expect(result.loop).toBe(true);
     expect(result.archived).toBe(true);
     expect(result.tasks).toBe(true);
   });
@@ -466,13 +466,13 @@ describe("getCategoryFilter / setCategoryFilter", () => {
   test("round-trips: setCategoryFilter then getCategoryFilter", () => {
     setCategoryFilter({
       regular: false,
-      periodic: true,
+      loop: true,
       archived: true,
       tasks: false,
     });
     const result = getCategoryFilter();
     expect(result.regular).toBe(false);
-    expect(result.periodic).toBe(true);
+    expect(result.loop).toBe(true);
     expect(result.archived).toBe(true);
     expect(result.tasks).toBe(false);
   });
@@ -489,7 +489,7 @@ describe("getCategoryFilter / setCategoryFilter", () => {
     });
     const result = getCategoryFilter();
     expect(result.regular).toBe(false);
-    expect(result.periodic).toBe(true);
+    expect(result.loop).toBe(true);
     expect(result.archived).toBe(true);
     expect(result.tasks).toBe(true);
   });
@@ -510,6 +510,7 @@ describe("migrateLegacyTabStorage", () => {
       conversations: "folder",
     });
     mockStore["mitto_last_session_id_conversations"] = "s1";
+    // Historical 3-tab sidebar key (tab was named "periodic" pre-rename)
     mockStore["mitto_last_session_id_periodic"] = "s2";
     mockStore["mitto_last_session_id_archived"] = "s3";
 
@@ -548,11 +549,11 @@ describe("migrateLegacyTabStorage", () => {
     expect(mockStore[DONE_KEY]).toBe("1");
 
     // Re-seed the orphaned key (simulating stale state)
-    mockStore["mitto_conversation_filter_tab"] = "periodic";
+    mockStore["mitto_conversation_filter_tab"] = "loop";
 
     // Second call should not touch anything
     migrateLegacyTabStorage();
-    expect(mockStore["mitto_conversation_filter_tab"]).toBe("periodic");
+    expect(mockStore["mitto_conversation_filter_tab"]).toBe("loop");
   });
 });
 

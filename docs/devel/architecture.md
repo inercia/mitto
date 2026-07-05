@@ -156,7 +156,7 @@ Dependency rule: `internal/web` depends on `internal/conversation`; `internal/co
 **Key Components:**
 
 - **BackgroundSession**: Manages an ACP session lifecycle (prompt, streaming, cancel, reconnect) independently of WebSocket connections (moved here from `internal/web`).
-- **SessionManager**: Multi-session / multi-workspace orchestration — create/resume/archive/delete, periodic prompts, prompt routing, GC integration.
+- **SessionManager**: Multi-session / multi-workspace orchestration — create/resume/archive/delete, loop prompts, prompt routing, GC integration.
 - **QueueTitleWorker**: Async title generation for queued prompts.
 - **Streaming buffers**: `StreamBuffer`, `MarkdownBuffer`, `ThoughtBuffer` — buffer and transform ACP streaming events.
 - **Domain interfaces** (`interfaces.go`): `SharedProcess`, `ProcessManager`, `EventsBroadcaster`, `PromptResolver` — abstractions that let the domain interact with infrastructure remaining in `internal/web` (implemented there via small adapter types), so the domain never imports web.

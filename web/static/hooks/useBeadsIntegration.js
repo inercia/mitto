@@ -12,7 +12,7 @@ import {
   menuSatisfies,
   collectPromptArguments,
   getMissingPromptParameters,
-  promptResolveAsPeriodic,
+  promptResolveAsLoop,
 } from "../utils/prompts.js";
 import { useConversationSeeding } from "./useConversationSeeding.js";
 
@@ -29,9 +29,9 @@ import { useConversationSeeding } from "./useConversationSeeding.js";
  * @param {Function} deps.setShowSidebar        - Closes sidebar overlay (mobile).
  * @param {Function} deps.setShowSidePanel      - Closes/opens the side panel (used in handleOpenBeadsIssue / return).
  * @param {Function} deps.setSidePanelTab       - Selects the side panel tab (used when returning to a conversation).
- * @param {Function} [deps.onOpenPeriodicDialog] - Opens the periodic schedule dialog.
+ * @param {Function} [deps.onOpenLoopDialog] - Opens the loop schedule dialog.
  *   Signature: (prompt, onSchedule: ({ value, unit, at? }) => void) => void.
- *   When absent, periodic prompts fall back to the one-time named-prompt path.
+ *   When absent, loop prompts fall back to the one-time named-prompt path.
  * @param {Function} [deps.onOpenPromptParamDialog] - Opens the prompt parameter dialog
  *   to collect free-text parameters that the beadsIssues menu cannot auto-fill.
  *   Signature: (prompt, parameters, onSubmit: (argsMap) => void) => void.
@@ -47,7 +47,7 @@ export function useBeadsIntegration({
   setShowSidebar,
   setShowSidePanel,
   setSidePanelTab,
-  onOpenPeriodicDialog,
+  onOpenLoopDialog,
   onOpenPromptParamDialog,
   activeSessionId,
 }) {
@@ -236,9 +236,9 @@ export function useBeadsIntegration({
       const convName = issue.title ? `${issue.id} · ${issue.title}` : issue.id;
 
       // Build the auto-filled args map and the list of parameters the menu
-      // cannot supply UP-FRONT, so BOTH the periodic and one-time paths receive
-      // the issue context (e.g. ${ISSUE_ID}). Previously the periodic branch
-      // returned before these were computed, so periodic conversations were
+      // cannot supply UP-FRONT, so BOTH the loop and one-time paths receive
+      // the issue context (e.g. ${ISSUE_ID}). Previously the loop branch
+      // returned before these were computed, so loop conversations were
       // created with no arguments and ${ISSUE_ID} was never substituted.
       const autoArgs = collectPromptArguments(prompt, {
         beadsId: issue.id,
@@ -246,13 +246,13 @@ export function useBeadsIntegration({
       });
       const missing = getMissingPromptParameters(prompt, "beadsIssues");
 
-      // Periodic prompts create a recurring conversation instead of a one-time seed.
-      const asPeriodic = promptResolveAsPeriodic(prompt, opts?.asPeriodic);
-      if (asPeriodic && onOpenPeriodicDialog) {
-        // Open the periodic dialog and start the conversation with the resolved
+      // Loop prompts create a recurring conversation instead of a one-time seed.
+      const asLoop = promptResolveAsLoop(prompt, opts?.asLoop);
+      if (asLoop && onOpenLoopDialog) {
+        // Open the loop dialog and start the conversation with the resolved
         // arguments merged in (so ${VAR} substitution sees the issue context).
-        const launchPeriodic = (args) => {
-          onOpenPeriodicDialog(prompt, async (schedule) => {
+        const launchLoop = (args) => {
+          onOpenLoopDialog(prompt, async (schedule) => {
             const result = await startConversationWithPrompt({
               workingDir: beadsWorkingDir,
               acpServer: ws?.acp_server,
@@ -260,13 +260,13 @@ export function useBeadsIntegration({
               beadsIssue: issue.id,
               prompt,
               arguments: args,
-              periodic: schedule,
+              loop: schedule,
             });
             if (!result?.sessionId) {
               showToast({
                 style: "error",
                 title:
-                  result?.error || "Failed to create periodic conversation",
+                  result?.error || "Failed to create loop conversation",
                 duration: 4000,
               });
               return;
@@ -274,22 +274,22 @@ export function useBeadsIntegration({
             setMainView("conversation");
             showToast({
               style: "success",
-              title: `Started periodic "${prompt.name}" for ${issue.id}`,
+              title: `Started loop "${prompt.name}" for ${issue.id}`,
               duration: 3000,
             });
           });
         };
 
         // When the menu can't auto-fill every parameter, collect the rest first,
-        // then open the periodic dialog with the merged arguments.
+        // then open the loop dialog with the merged arguments.
         if (missing.length > 0 && onOpenPromptParamDialog) {
           onOpenPromptParamDialog(prompt, missing, async (userArgs) => {
-            launchPeriodic({ ...autoArgs, ...userArgs });
+            launchLoop({ ...autoArgs, ...userArgs });
           });
           return;
         }
 
-        launchPeriodic(autoArgs);
+        launchLoop(autoArgs);
         return;
       }
 
@@ -359,7 +359,7 @@ export function useBeadsIntegration({
       workspaces,
       startConversationWithPrompt,
       showToast,
-      onOpenPeriodicDialog,
+      onOpenLoopDialog,
       onOpenPromptParamDialog,
     ],
   );
@@ -381,21 +381,21 @@ export function useBeadsIntegration({
       const beadsMatches = workspaces.filter((w) => w.working_dir === wd);
       const ws = beadsMatches.find((w) => w.is_default) || beadsMatches[0];
 
-      // Periodic prompts create a recurring conversation instead of a one-time seed.
-      const asPeriodic = promptResolveAsPeriodic(prompt, opts?.asPeriodic);
-      if (asPeriodic && onOpenPeriodicDialog) {
-        onOpenPeriodicDialog(prompt, async (schedule) => {
+      // Loop prompts create a recurring conversation instead of a one-time seed.
+      const asLoop = promptResolveAsLoop(prompt, opts?.asLoop);
+      if (asLoop && onOpenLoopDialog) {
+        onOpenLoopDialog(prompt, async (schedule) => {
           const result = await startConversationWithPrompt({
             workingDir: wd,
             acpServer: ws?.acp_server,
             name: prompt.name,
             prompt,
-            periodic: schedule,
+            loop: schedule,
           });
           if (!result?.sessionId) {
             showToast({
               style: "error",
-              title: result?.error || "Failed to create periodic conversation",
+              title: result?.error || "Failed to create loop conversation",
               duration: 4000,
             });
             return;
@@ -403,7 +403,7 @@ export function useBeadsIntegration({
           setMainView("conversation");
           showToast({
             style: "success",
-            title: `Started periodic "${prompt.name}"`,
+            title: `Started loop "${prompt.name}"`,
             duration: 3000,
           });
         });
@@ -441,7 +441,7 @@ export function useBeadsIntegration({
       workspaces,
       startConversationWithPrompt,
       showToast,
-      onOpenPeriodicDialog,
+      onOpenLoopDialog,
     ],
   );
 

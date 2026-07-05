@@ -451,7 +451,7 @@ func TestFormatAvailableACPServers(t *testing.T) {
 	}
 }
 
-func TestSubstituteVariables_Periodic(t *testing.T) {
+func TestSubstituteVariables_Loop(t *testing.T) {
 	tests := []struct {
 		name     string
 		message  string
@@ -459,22 +459,22 @@ func TestSubstituteVariables_Periodic(t *testing.T) {
 		expected string
 	}{
 		{
-			name:     "periodic true",
-			message:  "periodic: @mitto:periodic",
-			input:    &ProcessorInput{IsPeriodic: true},
-			expected: "periodic: true",
+			name:     "loop true",
+			message:  "loop: @mitto:loop",
+			input:    &ProcessorInput{IsLoop: true},
+			expected: "loop: true",
 		},
 		{
-			name:     "periodic false",
-			message:  "periodic: @mitto:periodic",
-			input:    &ProcessorInput{IsPeriodic: false},
-			expected: "periodic: false",
+			name:     "loop false",
+			message:  "loop: @mitto:loop",
+			input:    &ProcessorInput{IsLoop: false},
+			expected: "loop: false",
 		},
 		{
-			name:     "periodic default (false)",
-			message:  "periodic: @mitto:periodic",
+			name:     "loop default (false)",
+			message:  "loop: @mitto:loop",
 			input:    &ProcessorInput{},
-			expected: "periodic: false",
+			expected: "loop: false",
 		},
 	}
 
@@ -488,7 +488,7 @@ func TestSubstituteVariables_Periodic(t *testing.T) {
 	}
 }
 
-func TestSubstituteVariables_PeriodicForced(t *testing.T) {
+func TestSubstituteVariables_LoopForced(t *testing.T) {
 	tests := []struct {
 		name     string
 		message  string
@@ -496,27 +496,27 @@ func TestSubstituteVariables_PeriodicForced(t *testing.T) {
 		expected string
 	}{
 		{
-			name:     "periodic_forced true",
-			message:  "forced: @mitto:periodic_forced",
-			input:    &ProcessorInput{IsPeriodicForced: true},
+			name:     "loop_forced true",
+			message:  "forced: @mitto:loop_forced",
+			input:    &ProcessorInput{IsLoopForced: true},
 			expected: "forced: true",
 		},
 		{
-			name:     "periodic_forced false",
-			message:  "forced: @mitto:periodic_forced",
-			input:    &ProcessorInput{IsPeriodicForced: false},
+			name:     "loop_forced false",
+			message:  "forced: @mitto:loop_forced",
+			input:    &ProcessorInput{IsLoopForced: false},
 			expected: "forced: false",
 		},
 		{
-			name:     "periodic_forced default (false)",
-			message:  "forced: @mitto:periodic_forced",
+			name:     "loop_forced default (false)",
+			message:  "forced: @mitto:loop_forced",
 			input:    &ProcessorInput{},
 			expected: "forced: false",
 		},
 		{
-			name:     "periodic_forced does not affect periodic",
-			message:  "p: @mitto:periodic, f: @mitto:periodic_forced",
-			input:    &ProcessorInput{IsPeriodic: true, IsPeriodicForced: true},
+			name:     "loop_forced does not affect loop",
+			message:  "p: @mitto:loop, f: @mitto:loop_forced",
+			input:    &ProcessorInput{IsLoop: true, IsLoopForced: true},
 			expected: "p: true, f: true",
 		},
 	}

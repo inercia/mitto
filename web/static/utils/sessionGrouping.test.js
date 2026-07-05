@@ -26,7 +26,7 @@ function makeSession(overrides = {}) {
     acp_server: "auggie",
     parent_session_id: null,
     archived: false,
-    periodic_enabled: false,
+    loop_enabled: false,
     pinned: false,
     name: "",
     created_at: "2024-01-01T10:00:00Z",
@@ -321,12 +321,12 @@ describe("computeUnifiedTree", () => {
     );
   });
 
-  test("category tagging: regular → conversations, periodic → periodic, archived → archived", () => {
+  test("category tagging: regular → conversations, loop → loop, archived → archived", () => {
     const regular = makeSession({ session_id: "r1", working_dir: "/proj" });
-    const periodic = makeSession({
+    const loop = makeSession({
       session_id: "p1",
       working_dir: "/proj",
-      periodic_enabled: true,
+      loop_enabled: true,
       created_at: "2024-01-02T00:00:00Z",
     });
     const archived = makeSession({
@@ -335,14 +335,14 @@ describe("computeUnifiedTree", () => {
       archived: true,
       created_at: "2024-01-03T00:00:00Z",
     });
-    const result = computeUnifiedTree([regular, periodic, archived], []);
+    const result = computeUnifiedTree([regular, loop, archived], []);
     const folder = result.folders[0];
     const allNodes = [...folder.conversations, ...folder.archived];
     const r = allNodes.find((n) => n.session_id === "r1");
     const p = allNodes.find((n) => n.session_id === "p1");
     const a = allNodes.find((n) => n.session_id === "a1");
     expect(r.category).toBe("conversations");
-    expect(p.category).toBe("periodic");
+    expect(p.category).toBe("loop");
     expect(a.category).toBe("archived");
   });
 
@@ -357,7 +357,7 @@ describe("computeUnifiedTree", () => {
       session_id: "child",
       working_dir: "/proj",
       parent_session_id: "parent",
-      periodic_enabled: true,
+      loop_enabled: true,
       created_at: "2024-01-02T00:00:00Z",
     });
     const result = computeUnifiedTree([parent, child], []);
@@ -366,7 +366,7 @@ describe("computeUnifiedTree", () => {
       (n) => n.session_id === "parent",
     );
     const childNode = parentNode.children.find((c) => c.session_id === "child");
-    expect(childNode.category).toBe("periodic");
+    expect(childNode.category).toBe("loop");
   });
 
   test("archived partitioning: archived root → folder.archived, active root → folder.conversations", () => {
@@ -467,10 +467,10 @@ describe("filterUnifiedTree", () => {
   function makeRegular(overrides = {}) {
     return makeSession({ session_id: `r-${Math.random()}`, ...overrides });
   }
-  function makePeriodic(overrides = {}) {
+  function makeLoop(overrides = {}) {
     return makeSession({
       session_id: `p-${Math.random()}`,
-      periodic_enabled: true,
+      loop_enabled: true,
       ...overrides,
     });
   }
@@ -485,11 +485,11 @@ describe("filterUnifiedTree", () => {
   const WS = [{ working_dir: "/home/user/project" }];
 
   test("all-true filter → folders/conversations/archived unchanged; showTasks true", () => {
-    const sessions = [makeRegular(), makePeriodic(), makeArchived()];
+    const sessions = [makeRegular(), makeLoop(), makeArchived()];
     const tree = computeUnifiedTree(sessions, WS);
     const result = filterUnifiedTree(tree, {
       regular: true,
-      periodic: true,
+      loop: true,
       archived: true,
       tasks: true,
     });
@@ -497,7 +497,7 @@ describe("filterUnifiedTree", () => {
     result.folders.forEach((folder) => {
       expect(folder.showTasks).toBe(true);
     });
-    // total conversations (non-archived) should include regular + periodic
+    // total conversations (non-archived) should include regular + loop
     const totalConvs = result.folders.reduce(
       (sum, f) => sum + f.conversations.length,
       0,
@@ -510,12 +510,12 @@ describe("filterUnifiedTree", () => {
     expect(totalArchived).toBeGreaterThanOrEqual(1);
   });
 
-  test("regular:false → regular nodes removed; periodic kept", () => {
-    const sessions = [makeRegular(), makePeriodic()];
+  test("regular:false → regular nodes removed; loop kept", () => {
+    const sessions = [makeRegular(), makeLoop()];
     const tree = computeUnifiedTree(sessions, WS);
     const result = filterUnifiedTree(tree, {
       regular: false,
-      periodic: true,
+      loop: true,
       archived: true,
       tasks: true,
     });
@@ -524,25 +524,25 @@ describe("filterUnifiedTree", () => {
         expect(node.category).not.toBe("conversations");
       });
     });
-    const totalPeriodic = result.folders.reduce(
+    const totalLoop = result.folders.reduce(
       (sum, f) => sum + f.conversations.length,
       0,
     );
-    expect(totalPeriodic).toBeGreaterThanOrEqual(1);
+    expect(totalLoop).toBeGreaterThanOrEqual(1);
   });
 
-  test("periodic:false → periodic nodes removed", () => {
-    const sessions = [makeRegular(), makePeriodic()];
+  test("loop:false → loop nodes removed", () => {
+    const sessions = [makeRegular(), makeLoop()];
     const tree = computeUnifiedTree(sessions, WS);
     const result = filterUnifiedTree(tree, {
       regular: true,
-      periodic: false,
+      loop: false,
       archived: true,
       tasks: true,
     });
     result.folders.forEach((folder) => {
       folder.conversations.forEach((node) => {
-        expect(node.category).not.toBe("periodic");
+        expect(node.category).not.toBe("loop");
       });
     });
   });
@@ -552,7 +552,7 @@ describe("filterUnifiedTree", () => {
     const tree = computeUnifiedTree(sessions, WS);
     const result = filterUnifiedTree(tree, {
       regular: true,
-      periodic: true,
+      loop: true,
       archived: false,
       tasks: true,
     });
@@ -566,7 +566,7 @@ describe("filterUnifiedTree", () => {
     const tree = computeUnifiedTree(sessions, WS);
     const result = filterUnifiedTree(tree, {
       regular: true,
-      periodic: true,
+      loop: true,
       archived: true,
       tasks: false,
     });
@@ -580,15 +580,15 @@ describe("filterUnifiedTree", () => {
     const tree = computeUnifiedTree(sessions, WS);
     const result = filterUnifiedTree(tree, {
       regular: false,
-      periodic: false,
+      loop: false,
       archived: false,
       tasks: false,
     });
     expect(result.folders).toHaveLength(0);
   });
 
-  test("hiding a periodic parent drops the whole subtree", () => {
-    const parent = makePeriodic({ session_id: "parent-1" });
+  test("hiding a loop parent drops the whole subtree", () => {
+    const parent = makeLoop({ session_id: "parent-1" });
     const child = makeRegular({
       session_id: "child-1",
       parent_session_id: "parent-1",
@@ -597,11 +597,11 @@ describe("filterUnifiedTree", () => {
     const tree = computeUnifiedTree(sessions, WS);
     const result = filterUnifiedTree(tree, {
       regular: true,
-      periodic: false,
+      loop: false,
       archived: true,
       tasks: true,
     });
-    // parent (periodic) should not appear
+    // parent (loop) should not appear
     result.folders.forEach((folder) => {
       folder.conversations.forEach((node) => {
         expect(node.session_id).not.toBe("parent-1");
@@ -619,7 +619,7 @@ describe("filterUnifiedTree", () => {
   });
 
   test("missing filter (undefined) → treated as all-true", () => {
-    const sessions = [makeRegular(), makePeriodic(), makeArchived()];
+    const sessions = [makeRegular(), makeLoop(), makeArchived()];
     const tree = computeUnifiedTree(sessions, WS);
     const result = filterUnifiedTree(tree, undefined);
     result.folders.forEach((folder) => {
@@ -724,7 +724,7 @@ describe("flattenUnifiedTreeForNav", () => {
     );
     const filtered = filterUnifiedTree(tree, {
       regular: true,
-      periodic: true,
+      loop: true,
       archived: false,
       tasks: true,
     });

@@ -246,27 +246,27 @@ func TestServer_Logger_Nil(t *testing.T) {
 }
 
 // =============================================================================
-// conversation.BuildPeriodicUpdatedData tests
+// conversation.BuildLoopUpdatedData tests
 // =============================================================================
 
-func TestBuildPeriodicUpdatedData_NilPeriodic(t *testing.T) {
-	data := conversation.BuildPeriodicUpdatedData("s1", nil)
-	if data["periodic_configured"] != false {
-		t.Errorf("periodic_configured = %v, want false", data["periodic_configured"])
+func TestBuildLoopUpdatedData_NilLoop(t *testing.T) {
+	data := conversation.BuildLoopUpdatedData("s1", nil)
+	if data["loop_configured"] != false {
+		t.Errorf("loop_configured = %v, want false", data["loop_configured"])
 	}
-	if data["periodic_enabled"] != false {
-		t.Errorf("periodic_enabled = %v, want false", data["periodic_enabled"])
+	if data["loop_enabled"] != false {
+		t.Errorf("loop_enabled = %v, want false", data["loop_enabled"])
 	}
 	// New keys must NOT be present when there's no config.
 	for _, key := range []string{"trigger", "delay_seconds", "max_duration_seconds"} {
 		if _, ok := data[key]; ok {
-			t.Errorf("key %q must be absent when periodic is nil", key)
+			t.Errorf("key %q must be absent when loop is nil", key)
 		}
 	}
 }
 
-func TestBuildPeriodicUpdatedData_SchedulePeriodic(t *testing.T) {
-	p := &session.PeriodicPrompt{
+func TestBuildLoopUpdatedData_ScheduleLoop(t *testing.T) {
+	p := &session.LoopPrompt{
 		Prompt:             "Test",
 		Frequency:          session.Frequency{Value: 30, Unit: session.FrequencyMinutes},
 		Enabled:            true,
@@ -276,10 +276,10 @@ func TestBuildPeriodicUpdatedData_SchedulePeriodic(t *testing.T) {
 		DelaySeconds:       0,
 		MaxDurationSeconds: 3600,
 	}
-	data := conversation.BuildPeriodicUpdatedData("s1", p)
+	data := conversation.BuildLoopUpdatedData("s1", p)
 
-	if data["periodic_configured"] != true {
-		t.Errorf("periodic_configured = %v, want true", data["periodic_configured"])
+	if data["loop_configured"] != true {
+		t.Errorf("loop_configured = %v, want true", data["loop_configured"])
 	}
 	if data["trigger"] != "schedule" {
 		t.Errorf("trigger = %v, want %q", data["trigger"], "schedule")
@@ -298,29 +298,29 @@ func TestBuildPeriodicUpdatedData_SchedulePeriodic(t *testing.T) {
 	}
 }
 
-func TestBuildPeriodicUpdatedData_EmptyTriggerReportsSchedule(t *testing.T) {
+func TestBuildLoopUpdatedData_EmptyTriggerReportsSchedule(t *testing.T) {
 	// Trigger="" defaults to "schedule" via EffectiveTrigger().
-	p := &session.PeriodicPrompt{
+	p := &session.LoopPrompt{
 		Prompt:    "Test",
 		Frequency: session.Frequency{Value: 1, Unit: session.FrequencyHours},
 		Enabled:   true,
 		Trigger:   "", // empty — must be resolved to "schedule"
 	}
-	data := conversation.BuildPeriodicUpdatedData("s1", p)
+	data := conversation.BuildLoopUpdatedData("s1", p)
 	if data["trigger"] != "schedule" {
 		t.Errorf("trigger = %v, want %q (empty trigger must resolve to 'schedule')", data["trigger"], "schedule")
 	}
 }
 
-func TestBuildPeriodicUpdatedData_OnCompletionPeriodic(t *testing.T) {
-	p := &session.PeriodicPrompt{
+func TestBuildLoopUpdatedData_OnCompletionLoop(t *testing.T) {
+	p := &session.LoopPrompt{
 		Prompt:             "Test",
 		Enabled:            true,
 		Trigger:            session.TriggerOnCompletion,
 		DelaySeconds:       30,
 		MaxDurationSeconds: 7200,
 	}
-	data := conversation.BuildPeriodicUpdatedData("s1", p)
+	data := conversation.BuildLoopUpdatedData("s1", p)
 
 	if data["trigger"] != "onCompletion" {
 		t.Errorf("trigger = %v, want %q", data["trigger"], "onCompletion")
@@ -333,16 +333,16 @@ func TestBuildPeriodicUpdatedData_OnCompletionPeriodic(t *testing.T) {
 	}
 }
 
-func TestBuildPeriodicUpdatedData_StoppedReasonPresent(t *testing.T) {
-	p := &session.PeriodicPrompt{
+func TestBuildLoopUpdatedData_StoppedReasonPresent(t *testing.T) {
+	p := &session.LoopPrompt{
 		Prompt:        "Test",
 		Frequency:     session.Frequency{Value: 1, Unit: session.FrequencyHours},
 		Enabled:       false,
 		StoppedReason: session.StoppedReasonMaxDuration,
 	}
-	data := conversation.BuildPeriodicUpdatedData("s1", p)
-	if data["periodic_stopped_reason"] != "maxDuration" {
-		t.Errorf("periodic_stopped_reason = %v, want %q", data["periodic_stopped_reason"], "maxDuration")
+	data := conversation.BuildLoopUpdatedData("s1", p)
+	if data["loop_stopped_reason"] != "maxDuration" {
+		t.Errorf("loop_stopped_reason = %v, want %q", data["loop_stopped_reason"], "maxDuration")
 	}
 	// trigger must still be present even when stopped.
 	if data["trigger"] != "schedule" {

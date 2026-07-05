@@ -86,6 +86,7 @@ type fakePromptDeps struct {
 
 	// === New in 2.5-d ===
 	lastUsageSet          *acp.Usage
+	cumulativeUsageSet    []*acp.Usage
 	accumulatedTokens     []int
 	estimatedTokenCalls   []string // messages passed to pdEstimateTokensFromMessage
 	lastAgentMessage      string   // returned by pdReadLastAgentMessage / pdReadLastAgentMessageFromStore
@@ -307,6 +308,11 @@ func (f *fakePromptDeps) pdAccumulateTokenUsage(tokens int) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.accumulatedTokens = append(f.accumulatedTokens, tokens)
+}
+func (f *fakePromptDeps) pdAccumulateCumulativeUsage(usage *acp.Usage) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.cumulativeUsageSet = append(f.cumulativeUsageSet, usage)
 }
 func (f *fakePromptDeps) pdEstimateTokensFromMessage(msg string) int {
 	f.mu.Lock()
@@ -674,21 +680,62 @@ func TestResolveAndSubstitute_FreeText_InvalidTemplate_FailOpen(t *testing.T) {
 
 // TestResolveAndSubstitute_AutomatedDispatch_InvalidTemplate_FailClosed verifies
 // that a free-text body with unbalanced template syntax dispatched via an automated
-// path (queue / periodic-runner) fails CLOSED — it returns a non-nil error instead
-// of silently delivering the raw, unrenderable body to a child (mitto-e7u).
+// path (agent-originated queue dispatch / loop-runner) fails CLOSED — it returns a
+// non-nil error instead of silently delivering the raw, unrenderable body to a
+// child (mitto-e7u).
 func TestResolveAndSubstitute_AutomatedDispatch_InvalidTemplate_FailClosed(t *testing.T) {
 	p := promptDispatcher{}
 	body := "{{ if .Broken }}" // unbalanced action -> "unexpected EOF"
 
-	for _, senderID := range []string{senderIDQueue, senderIDPeriodic} {
-		t.Run(senderID, func(t *testing.T) {
+	cases := []struct {
+		name string
+		meta PromptMeta
+	}{
+		{name: senderIDQueue, meta: PromptMeta{SenderID: senderIDQueue, QueueOrigin: session.QueueOriginAgent}},
+		{name: senderIDLoop, meta: PromptMeta{SenderID: senderIDLoop}},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
 			d := newFakePromptDeps()
-			msg, _, _, err := p.resolveAndSubstitute(d, body, PromptMeta{SenderID: senderID})
+			msg, _, _, err := p.resolveAndSubstitute(d, body, tc.meta)
 			if err == nil {
-				t.Fatalf("expected non-nil error for automated dispatch (sender=%q) with invalid template, got msg=%q", senderID, msg)
+				t.Fatalf("expected non-nil error for automated dispatch (sender=%q) with invalid template, got msg=%q", tc.name, msg)
 			}
 			if msg != "" {
 				t.Fatalf("expected empty message on fail-closed, got %q", msg)
+			}
+		})
+	}
+}
+
+// TestResolveAndSubstitute_QueueUserOrigin_InvalidTemplate_FailOpen verifies that a
+// queue dispatch ORIGINATING FROM A HUMAN (QueueOrigin == user, or empty for
+// backward compatibility) fails OPEN on an invalid template body — the raw text is
+// delivered verbatim instead of being dropped (mitto-nvb). Only agent-originated
+// queue dispatches (cross-session/MCP) fail closed.
+func TestResolveAndSubstitute_QueueUserOrigin_InvalidTemplate_FailOpen(t *testing.T) {
+	p := promptDispatcher{}
+	body := "{{ if .Broken }}" // unbalanced action -> "unexpected EOF"
+
+	cases := []struct {
+		name        string
+		queueOrigin string
+	}{
+		{name: "explicit_user_origin", queueOrigin: session.QueueOriginUser},
+		{name: "empty_origin_backward_compat", queueOrigin: ""},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			d := newFakePromptDeps()
+			meta := PromptMeta{SenderID: senderIDQueue, QueueOrigin: tc.queueOrigin}
+			msg, _, _, err := p.resolveAndSubstitute(d, body, meta)
+			if err != nil {
+				t.Fatalf("expected nil error for user-origin queue dispatch with invalid template, got: %v", err)
+			}
+			if msg != body {
+				t.Fatalf("expected raw body byte-for-byte, got %q", msg)
 			}
 		})
 	}
@@ -842,8 +889,8 @@ func TestPromptDispatcher_BuildProcessorInput_NoStore_MinimalInput(t *testing.T)
 	if input.IsFirstMessage {
 		t.Fatal("expected IsFirstMessage=false")
 	}
-	if input.IsPeriodic {
-		t.Fatal("expected IsPeriodic=false for non-periodic sender")
+	if input.IsLoop {
+		t.Fatal("expected IsLoop=false for non-loop sender")
 	}
 	// Store-dependent fields must be empty
 	if input.SessionName != "" || input.ParentSessionID != "" || input.UserDataJSON != "" {
@@ -868,7 +915,7 @@ func TestPromptDispatcher_BuildProcessorInput_WithMetadata(t *testing.T) {
 	d.childPrompting["child-1"] = true
 	d.mcpToolNames = []string{"tool_a", "tool_b"}
 
-	input := p.buildProcessorInput(d, "test", true, PromptMeta{SenderID: "periodic-runner"})
+	input := p.buildProcessorInput(d, "test", true, PromptMeta{SenderID: "loop-runner"})
 
 	if input.SessionName != "My Session" {
 		t.Fatalf("expected SessionName='My Session', got %q", input.SessionName)
@@ -885,23 +932,23 @@ func TestPromptDispatcher_BuildProcessorInput_WithMetadata(t *testing.T) {
 	if len(input.MCPToolNames) != 2 {
 		t.Fatalf("expected 2 MCP tool names, got %v", input.MCPToolNames)
 	}
-	if !input.IsPeriodic {
-		t.Fatal("expected IsPeriodic=true for periodic-runner sender")
+	if !input.IsLoop {
+		t.Fatal("expected IsLoop=true for loop-runner sender")
 	}
 	if input.BeadsIssue != "mitto-123" {
 		t.Fatalf("expected BeadsIssue='mitto-123', got %q", input.BeadsIssue)
 	}
 }
 
-func TestPromptDispatcher_BuildProcessorInput_IsPeriodicForced(t *testing.T) {
+func TestPromptDispatcher_BuildProcessorInput_IsLoopForced(t *testing.T) {
 	p := promptDispatcher{}
 	d := newFakePromptDeps()
 	d.hasStore = false
 
-	meta := PromptMeta{IsPeriodicForced: true}
+	meta := PromptMeta{IsLoopForced: true}
 	input := p.buildProcessorInput(d, "msg", false, meta)
-	if !input.IsPeriodicForced {
-		t.Fatal("expected IsPeriodicForced=true")
+	if !input.IsLoopForced {
+		t.Fatal("expected IsLoopForced=true")
 	}
 }
 

@@ -74,15 +74,15 @@ When external images are enabled:
 
 **Recommendation:** Keep external images disabled unless you specifically need them.
 
-## Periodic Conversation Iteration Limit
+## Loop Conversation Iteration Limit
 
-Periodic conversations run on a schedule indefinitely by default. To prevent runaway loops, Mitto enforces a two-layer safeguard:
+Loop conversations run on a schedule indefinitely by default. To prevent runaway loops, Mitto enforces a two-layer safeguard:
 
-1. **Per-prompt cap** (`max_iterations` on the periodic prompt itself) — set via the API or `mitto_conversation_update`.
-2. **User-configurable default cap** (`max_periodic_iterations` in settings) — applies when no per-prompt cap is set.
-3. **Hardcoded backstop** (`GlobalMaxPeriodicIterations = 1000`) — an absolute ceiling that always applies, even when both the per-prompt cap and user cap are set to 0 (unlimited).
+1. **Per-prompt cap** (`max_iterations` on the loop prompt itself) — set via the API or `mitto_conversation_update`.
+2. **User-configurable default cap** (`max_loop_iterations` in settings) — applies when no per-prompt cap is set.
+3. **Hardcoded backstop** (`GlobalMaxLoopIterations = 1000`) — an absolute ceiling that always applies, even when both the per-prompt cap and user cap are set to 0 (unlimited).
 
-The **effective cap** is the smallest positive value among the three: per-prompt `max_iterations`, the configured `max_periodic_iterations`, and the hardcoded backstop of 1000.
+The **effective cap** is the smallest positive value among the three: per-prompt `max_iterations`, the configured `max_loop_iterations`, and the hardcoded backstop of 1000.
 
 Examples:
 - Per-prompt cap = 0 (unlimited), config cap = 0 (unlimited) → effective cap = 1000 (backstop)
@@ -94,38 +94,38 @@ Examples:
 
 ```yaml
 conversations:
-  max_periodic_iterations: 100  # Default cap for all periodic conversations (default: 100, 0 = unlimited)
+  max_loop_iterations: 100  # Default cap for all loop conversations (default: 100, 0 = unlimited)
 ```
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `max_periodic_iterations` | integer | `100` | Default maximum number of scheduled runs for any periodic conversation. `0` means unlimited (still bounded by the built-in backstop of 1000). |
+| `max_loop_iterations` | integer | `100` | Default maximum number of scheduled runs for any loop conversation. `0` means unlimited (still bounded by the built-in backstop of 1000). |
 
 **Via Settings UI:**
 
 1. Open Settings (⚙️ button)
 2. Go to the **Conversations** tab
-3. Under **Periodic Conversations**, set **Max Periodic Iterations**
+3. Under **Loop Conversations**, set **Max Loop Iterations**
 4. Save your settings
 
 ## On-Completion Trigger and Max Duration
 
-Periodic conversations can fire on a fixed schedule (the default) or **after the agent stops responding** (`trigger: onCompletion`). On-completion runs are event-driven: when the agent finishes a turn and the conversation goes idle, the next run is armed after a `delay`. Each run's completion arms the next, forming a self-sustaining loop.
+Loop conversations can fire on a fixed schedule (the default) or **after the agent stops responding** (`trigger: onCompletion`). On-completion runs are event-driven: when the agent finishes a turn and the conversation goes idle, the next run is armed after a `delay`. Each run's completion arms the next, forming a self-sustaining loop.
 
 To prevent runaway hot loops, the on-completion `delay` is clamped up to a global floor:
 
 ```yaml
 conversations:
-  min_periodic_completion_delay_seconds: 5  # Floor for the onCompletion delay (default: 5)
+  min_loop_completion_delay_seconds: 5  # Floor for the onCompletion delay (default: 5)
 ```
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `min_periodic_completion_delay_seconds` | integer | `5` | Lower bound (seconds) applied to every on-completion periodic `delay`. A per-prompt `delay` below this floor is raised to it. `0` disables the floor (not recommended). |
+| `min_loop_completion_delay_seconds` | integer | `5` | Lower bound (seconds) applied to every on-completion loop `delay`. A per-prompt `delay` below this floor is raised to it. `0` disables the floor (not recommended). |
 
-A conversation can also be bounded by **wall-clock time** via the periodic prompt's `maxDuration` (a duration string such as `30m`, `4h`, `1d`). Measured from the first run, once it elapses the conversation auto-stops (the periodic prompt is **disabled**, not deleted) on the next check — for both `schedule` and `onCompletion` triggers. This complements the iteration limit above: a loop stops at whichever bound (max iterations or max duration) is reached first.
+A conversation can also be bounded by **wall-clock time** via the loop prompt's `maxDuration` (a duration string such as `30m`, `4h`, `1d`). Measured from the first run, once it elapses the conversation auto-stops (the loop prompt is **disabled**, not deleted) on the next check — for both `schedule` and `onCompletion` triggers. This complements the iteration limit above: a loop stops at whichever bound (max iterations or max duration) is reached first.
 
-See the prompt-side schema in [Periodic Prompts → Triggers](prompts.md#triggers-schedule-vs-on-completion).
+See the prompt-side schema in [Loop Prompts → Triggers](prompts.md#triggers-schedule-vs-on-completion).
 
 ## Related Documentation
 

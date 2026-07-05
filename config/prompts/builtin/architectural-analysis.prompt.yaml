@@ -5,9 +5,9 @@ description: Analyze the codebase architecture from a 10,000-ft view and file be
 backgroundColor: '#C8E6C9'
 group: Code Quality
 tags:
-- periodic
+- loop
 enabledWhen: CommandExists("bd") && DirExists(".beads")
-periodic:
+loop:
   mode: optional
   default: false
   trigger: onCompletion
@@ -28,18 +28,18 @@ prompt: |
   which abstractions earn their keep, and where the design fights itself. Turn every finding worth
   acting on into a beads issue (`bd`), grouping related findings under epics so the work is coherent
   rather than a flat pile. Run it **on demand** in a regular conversation, or schedule it to run
-  periodically — it adapts its behaviour to whichever mode it is invoked in (see Interaction Mode).
+  as a loop — it adapts its behaviour to whichever mode it is invoked in (see Interaction Mode).
 
   ## Interaction Mode
-  {{- if and .Session.IsPeriodic (not .Session.IsPeriodicForced) }}
+  {{- if and .Session.IsLoop (not .Session.IsLoopForced) }}
 
-  **Silent mode** — a scheduled periodic run; the user is not watching.
+  **Silent mode** — a scheduled loop run; the user is not watching.
   - Use **only** `mitto_ui_notify` — non-blocking notifications.
   - Do **NOT** use `mitto_ui_options`, `mitto_ui_form`, or `mitto_ui_textbox`.
   - File only **high-confidence, high-value** findings (skip anything speculative), then notify with a summary.
   {{- else }}
 
-  **Interactive mode** — a regular conversation or a force-triggered periodic run; the user is present.
+  **Interactive mode** — a regular conversation or a force-triggered loop run; the user is present.
   - Present findings for approval with `mitto_ui_form` and **wait for confirmation
     before filing any bead**. You may also use `mitto_ui_options` / `mitto_ui_textbox` and `mitto_ui_notify`.
   {{- end }}
@@ -123,11 +123,11 @@ prompt: |
 
   ## Step 6 — Confirm before filing
 
-  **Silent mode** (scheduled periodic, not forced): skip confirmation entirely. File only the
+  **Silent mode** (scheduled loop, not forced): skip confirmation entirely. File only the
   high-confidence findings directly (Step 7), then notify with `mitto_ui_notify` summarizing what was
   created. Do not block.
 
-  **Interactive mode** (regular conversation or forced periodic run): this is **read-only until you
+  **Interactive mode** (regular conversation or forced loop run): this is **read-only until you
   confirm**. First, **print the organized list as a regular message** — existing epics with their
   newly-attached children, then proposed new epics with their children, then standalone findings — each
   line as:

@@ -168,47 +168,32 @@ type mcpToolsResponse struct {
 	Error string        `json:"error"`
 }
 
-// parseMCPToolsList parses the JSON response from the MCP tools fetch.
-// Accepts either a JSON object {"tools":[...], "error":"..."} or a bare JSON array [...].
-// Returns the tools list and any error message reported by the agent.
+// parseMCPToolsList parses the JSON response from the MCP tools fetch. It is
+// STRICT (mitto-sys.7, ADR Q2): the whole (trimmed, unfenced) response must be
+// a single JSON object with a "tools" and/or "error" key — no substring
+// extraction, no bare-array fallback. {"tools":[]} is a valid, legitimate
+// "zero tools" answer, distinct from a parse failure. Returns the tools list
+// and any error message reported by the agent.
 func parseMCPToolsList(response string) ([]MCPToolInfo, string, error) {
 	response = strings.TrimSpace(response)
 	response = stripMarkdownFences(response)
+	response = strings.TrimSpace(response)
 
-	// Try parsing as a JSON object {"tools": [...], "error": "..."}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(response), &raw); err != nil {
+		return nil, "", fmt.Errorf("invalid JSON response: %s", truncateForLog(response, 100))
+	}
+	if _, hasTools := raw["tools"]; !hasTools {
+		if _, hasError := raw["error"]; !hasError {
+			return nil, "", fmt.Errorf("invalid JSON response: %s", truncateForLog(response, 100))
+		}
+	}
+
 	var obj mcpToolsResponse
-	if err := json.Unmarshal([]byte(response), &obj); err == nil && (len(obj.Tools) > 0 || obj.Error != "") {
-		return obj.Tools, obj.Error, nil
+	if err := json.Unmarshal([]byte(response), &obj); err != nil {
+		return nil, "", fmt.Errorf("invalid JSON response: %s", truncateForLog(response, 100))
 	}
-
-	// Try to find a JSON object in the response (may have surrounding text)
-	start := strings.Index(response, "{")
-	end := strings.LastIndex(response, "}")
-	if start >= 0 && end > start {
-		jsonStr := response[start : end+1]
-		if err := json.Unmarshal([]byte(jsonStr), &obj); err == nil && (len(obj.Tools) > 0 || obj.Error != "") {
-			return obj.Tools, obj.Error, nil
-		}
-	}
-
-	// Fallback: try parsing as a bare JSON array (backward compatibility)
-	var tools []MCPToolInfo
-	if err := json.Unmarshal([]byte(response), &tools); err == nil {
-		return tools, "", nil
-	}
-
-	// Try to find a JSON array in the response
-	arrStart := strings.Index(response, "[")
-	arrEnd := strings.LastIndex(response, "]")
-	if arrStart >= 0 && arrEnd > arrStart {
-		jsonStr := response[arrStart : arrEnd+1]
-		if err := json.Unmarshal([]byte(jsonStr), &tools); err == nil {
-			return tools, "", nil
-		}
-	}
-
-	// Parsing failed
-	return nil, "", fmt.Errorf("invalid JSON response: %s", truncateForLog(response, 100))
+	return obj.Tools, obj.Error, nil
 }
 
 // parseMCPAvailabilityResult parses the JSON response from the MCP availability check.

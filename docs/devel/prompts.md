@@ -4,7 +4,7 @@ This document covers how prompts are surfaced across the different UI menus
 (ChatInput drop-up, per-conversation context menu, Beads list menus) and how
 selecting one either **sends into an existing conversation** or **creates a new
 conversation**. For the user-facing front-matter reference (all fields, `menus`,
-`enabledWhen`, `requires`, `periodic`, parameters), see
+`enabledWhen`, `requires`, `loop`, parameters), see
 [docs/config/prompts.md](../config/prompts.md). For the underlying queue
 mechanics, see [Message Queue](message-queue.md).
 
@@ -46,15 +46,15 @@ Defined on both `PromptFile` and `WebPrompt` in `internal/config/prompts.go` /
 | `menus` value     | UI surface                                                    | Start behavior                                  |
 | ----------------- | ------------------------------------------------------------ | ----------------------------------------------- |
 | `prompts`         | ChatInput drop-up (default)                                   | sends into the **active** conversation          |
-| `promptsPeriodic` | periodic prompt selector                                      | configures a periodic schedule                  |
+| `promptsLoop` | loop prompt selector                                      | configures a loop schedule                  |
 | `conversation`    | per-conversation context menu (sidebar row + chat header ⋯)  | **sends into the clicked existing conversation** |
 | `beadsIssues`     | per-issue right-click **New ›** submenu in the Beads list     | **creates a new conversation** (with `ISSUE_ID`) |
 | `beadsList`       | list-level prompts button in the Beads list footer           | **creates a new conversation** (no per-issue arg)|
 
 **Exclusion syntax (`!menu`):** A `!`-prefixed token explicitly opts the prompt
 *out* of a menu, taking precedence over any union or implicit inclusion rule.
-For example, `menus: prompts, !promptsPeriodic` shows the prompt in the ChatInput
-dropup but hides it from the periodic prompt selector (which otherwise includes all
+For example, `menus: prompts, !promptsLoop` shows the prompt in the ChatInput
+dropup but hides it from the loop prompt selector (which otherwise includes all
 `prompts`-tagged prompts via a union rule). Exclusion tokens are parsed and applied
 on the frontend (`promptMenuExcludes` / `promptMenuIncludes` in
 `web/static/utils/prompts.js`); the backend ignores them during validation.
@@ -136,7 +136,7 @@ Flow: per-issue **New ›** click → `handleRunBeadsPrompt(prompt, issue)` (or
 `handleRunBeadsListPrompt`) in `web/static/hooks/useBeadsIntegration.js` →
 `startConversationWithPrompt({ ... })`.
 
-`startConversationWithPrompt` (non-periodic) calls `newSession` with
+`startConversationWithPrompt` (non-loop) calls `newSession` with
 `initialPromptName` + `arguments`:
 
 ```
@@ -206,7 +206,7 @@ can serve **both** the per-issue `beadsIssues` menu and the generic
    {{ if .Session.BeadsIssue }}{{ $target = .Session.BeadsIssue }}
    {{ else if .Args.IssueID }}{{ $target = .Args.IssueID }}{{ end -}}
    ```
-   Priority: `.Session.BeadsIssue` first (durable across periodic re-runs),
+   Priority: `.Session.BeadsIssue` first (durable across loop re-runs),
    then `.Args.IssueID` (auto-filled by the Beads per-issue menu), then empty
    (mode 3 — no linked issue).
 
@@ -219,14 +219,14 @@ can serve **both** the per-issue `beadsIssues` menu and the generic
 > The body MUST resolve the target from `$target` (or `.Session.BeadsIssue` /
 > `.Args.IssueID` directly), never from `.Item.*`.
 
-This same menu-time/send-time split underpins periodic, multi-run prompts that
+This same menu-time/send-time split underpins loop, multi-run prompts that
 advance a beads issue through a sequence of `bd` labels one stage per run —
-see [Label-as-state-machine pattern for periodic beads prompts](prompt-templates.md#13-label-as-state-machine-pattern-for-periodic-beads-prompts).
+see [Label-as-state-machine pattern for loop beads prompts](prompt-templates.md#13-label-as-state-machine-pattern-for-loop-beads-prompts).
 
 For the full YAML header recipe, ladder, and gating examples see
 [Context-adaptive prompts (three modes)](../config/prompts.md#context-adaptive-prompts-three-modes)
 in the user-facing config reference. The six builtin exemplars are
-`beads-issue-investigate`, `beads-issue-discuss`, `beads-issue-status`,
+`beads-issue-investigate`, `beads-issue-assess`, `beads-issue-status`,
 `beads-issue-resolved`, `beads-issue-work`, and `beads-followup-work`; their
 render correctness is guarded by the `*ThreeModeTargetResolution` tests in
 `internal/config/prompt_template_test.go`.
@@ -294,31 +294,31 @@ from the "missing" list; it never reads or displays cached values.
 
 - [docs/config/prompts.md](../config/prompts.md) — `cache` block schema, field reference, validation rules.
 
-## 5. The periodic overlay
+## 5. The loop overlay
 
-Any prompt in any of these menus may additionally declare `periodic:`. When
+Any prompt in any of these menus may additionally declare `loop:`. When
 present, the start handlers branch instead of doing a one-shot seed:
 
-- **Conversation menu** — `decidePeriodicAction` chooses:
-  - `new-periodic` — no session yet → open the schedule dialog → create a NEW
-    periodic conversation.
-  - `make-periodic` — a regular conversation → configure it as periodic + fire
+- **Conversation menu** — `decideLoopAction` chooses:
+  - `new-loop` — no session yet → open the schedule dialog → create a NEW
+    loop conversation.
+  - `make-loop` — a regular conversation → configure it as loop + fire
     the first run.
-  - `one-shot` — already periodic, or a child conversation → enqueue once
+  - `one-shot` — already loop, or a child conversation → enqueue once
     without changing config (the backend also returns HTTP 400 for
-    periodic-on-child).
-- **Beads menus** — `onOpenPeriodicDialog` → `startConversationWithPrompt({
-  periodic })`, which creates the session **without** a queue seed and instead
-  `PUT`s `/api/sessions/{id}/periodic` with the `prompt_name` + frequency.
+    loop-on-child).
+- **Beads menus** — `onOpenLoopDialog` → `startConversationWithPrompt({
+  loop })`, which creates the session **without** a queue seed and instead
+  `PUT`s `/api/sessions/{id}/loop` with the `prompt_name` + frequency.
 
-Periodic conversations can only be **top-level** (not children). The `at` field
+Loop conversations can only be **top-level** (not children). The `at` field
 (HH:MM UTC) is only sent for `unit: days`.
 
 ## 6. Key files
 
 | Layer    | File                                              | Responsibility                                                        |
 | -------- | ------------------------------------------------- | --------------------------------------------------------------------- |
-| Model    | `internal/config/prompts.go`, `config.go`         | `PromptFile`/`WebPrompt`, `Menus`, `EnabledWhen`, `Periodic`, params   |
+| Model    | `internal/config/prompts.go`, `config.go`         | `PromptFile`/`WebPrompt`, `Menus`, `EnabledWhen`, `Loop`, params   |
 | Backend  | `internal/web/session_api.go`                     | `handleWorkspacePromptsGET`, `seedQueueWithNamedPrompt`, contexts      |
 | Backend  | `internal/web/queue_api.go`                       | `handleAddToQueue` (stores `prompt_name`/`arguments`)                  |
 | Backend  | `internal/web/background_session.go`              | dispatch-time `promptResolver` + `SubstituteArguments`                 |
@@ -332,14 +332,14 @@ Periodic conversations can only be **top-level** (not children). The `at` field
 | Frontend | `web/static/hooks/useBeadsIntegration.js`         | `fetchBeads*PromptsForWorkspace`, `handleRunBeads*Prompt`              |
 | Frontend | `web/static/hooks/useConversationSeeding.js`      | `seedConversationWithPrompt`, `startConversationWithPrompt`            |
 | Frontend | `web/static/hooks/useConversationMenu.js`         | per-conversation context menu assembly                                |
-| Frontend | `web/static/app.js`                               | `handleSendPromptToConversation` (periodic branching)                 |
+| Frontend | `web/static/app.js`                               | `handleSendPromptToConversation` (loop branching)                 |
 | Builtin  | `config/prompts/builtin/beads-issue-*.prompt.yaml` | Five context-adaptive exemplar prompts (three-mode pattern)          |
 | Test     | `internal/config/prompt_template_test.go`          | `*ThreeModeTargetResolution` render tests + `TestBuiltinPrompts_NoDeprecatedMittoVars` guard |
 
 ## See Also
 
 - [docs/config/prompts.md](../config/prompts.md) — user-facing front-matter
-  reference (`menus`, `enabledWhen`, `requires`, `periodic`, parameters)
+  reference (`menus`, `enabledWhen`, `requires`, `loop`, parameters)
 - [Message Queue](message-queue.md) — queue storage, named-prompt dispatch,
   REST API
 - [Message Processing Pipeline](processors.md) — `@mitto:` variable substitution in processors

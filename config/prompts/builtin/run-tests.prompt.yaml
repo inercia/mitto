@@ -6,7 +6,7 @@ group: Testing
 backgroundColor: '#FFE0B2'
 preferredModels:
   - modelTag: Coding
-periodic:
+loop:
   mode: optional
   default: false
   trigger: onCompletion

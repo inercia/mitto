@@ -103,9 +103,9 @@ func (s *Server) handleSessionQueue(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (s *Server) handleSessionPeriodic(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleSessionLoop(w http.ResponseWriter, r *http.Request) {
 	if id, ok := s.sessionIDFromPath(w, r); ok {
-		s.apiHandlers.HandleSessionPeriodic(w, r, id, r.PathValue("subPath"))
+		s.apiHandlers.HandleSessionLoop(w, r, id, r.PathValue("subPath"))
 	}
 }
 
@@ -243,11 +243,11 @@ func (s *Server) buildPromptEnabledContext(sessionID string) *config.PromptEnabl
 	// prompt. Gates "continue"-style prompts that are meaningless when empty.
 	ctx.Session.HasMessages = !meta.LastUserMessageAt.IsZero()
 
-	// Periodic conversation type: true when a periodic configuration exists for this
-	// conversation (matches the PeriodicEnabled UI mode). Distinct from
-	// session.isPeriodic, which marks a scheduler-triggered run.
-	if periodic, err := store.Periodic(sessionID).Get(); err == nil && periodic != nil {
-		ctx.Session.IsPeriodicConversation = true
+	// Loop conversation type: true when a loop configuration exists for this
+	// conversation (matches the LoopEnabled UI mode). Distinct from
+	// session.isLoop, which marks a scheduler-triggered run.
+	if loop, err := store.Loop(sessionID).Get(); err == nil && loop != nil {
+		ctx.Session.IsLoopConversation = true
 	}
 
 	// Parent context (if this is a child)
@@ -347,14 +347,20 @@ func (s *Server) buildPromptEnabledContext(sessionID string) *config.PromptEnabl
 		ctx.UserData = udMap
 	}
 
-	// Tools context - get from auxiliary manager if available
-	// (This may be empty if tools haven't been fetched yet)
+	// Tools context - get from auxiliary manager if available (This may be
+	// empty if tools haven't been fetched yet, leaving ctx.Tools zero-valued
+	// — a genuine cold start under the per-server model, see
+	// config.ToolsContext). Cached tool names are grouped by their inferred
+	// owning server (token before the first underscore) and marked
+	// Reachable; a server with no cached tools is simply absent, so it still
+	// fails open until it's actually discovered (mitto-sys.1).
 	if s.auxiliaryManager != nil && ctx.Workspace.UUID != "" {
 		if tools, ok := s.auxiliaryManager.GetCachedMCPTools(ctx.Workspace.UUID); ok {
-			ctx.Tools.Available = true
+			names := make([]string, 0, len(tools))
 			for _, tool := range tools {
-				ctx.Tools.Names = append(ctx.Tools.Names, tool.Name)
+				names = append(names, tool.Name)
 			}
+			ctx.Tools = config.NewReachableToolsContext(names)
 		}
 	}
 
@@ -488,15 +494,17 @@ func (s *Server) applyWorkspaceNamespace(ctx *config.PromptEnabledContext, worki
 		ctx.ACP.Type = acpServerName
 	}
 
-	// Tools context (workspace-level cache; may be empty if not yet fetched)
-	ctx.Tools.Available = false
-	ctx.Tools.Names = nil
+	// Tools context (workspace-level cache; may be empty if not yet fetched).
+	// Reset to a genuine cold start, then populate per-server state from the
+	// cache the same way buildSessionPromptEnabledContext does (mitto-sys.1).
+	ctx.Tools = config.ToolsContext{}
 	if s.auxiliaryManager != nil && ctx.Workspace.UUID != "" {
 		if tools, ok := s.auxiliaryManager.GetCachedMCPTools(ctx.Workspace.UUID); ok {
-			ctx.Tools.Available = true
+			names := make([]string, 0, len(tools))
 			for _, tool := range tools {
-				ctx.Tools.Names = append(ctx.Tools.Names, tool.Name)
+				names = append(names, tool.Name)
 			}
+			ctx.Tools = config.NewReachableToolsContext(names)
 		}
 	}
 }

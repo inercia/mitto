@@ -6,7 +6,7 @@ const { html, useState, useEffect, useLayoutEffect, useRef, render } =
   window.preact;
 
 import { ChevronRightIcon, getPromptIconOrDefault } from "./Icons.js";
-import { flattenPrompts, promptPeriodicMode, promptPeriodicDefaultOn } from "../utils/prompts.js";
+import { flattenPrompts, promptLoopMode, promptLoopDefaultOn } from "../utils/prompts.js";
 
 // Build ContextMenu submenu items that group `prompts` by their `group`
 // attribute (ungrouped prompts fall under "Other"), each group sorted by name.
@@ -14,7 +14,7 @@ import { flattenPrompts, promptPeriodicMode, promptPeriodicDefaultOn } from "../
 // `onRun(prompt, opts)` handles selection; `groupIcon` is shown on each group
 // entry. Returns [] when there are no prompts. Shared by the conversation menu
 // and the Beads issue menus so all three surfaces present identical grouped
-// submenus. Each submenu item carries `periodicMode`/`periodicDefaultOn` so
+// submenus. Each submenu item carries `loopMode`/`loopDefaultOn` so
 // ContextMenuItem can render a mode-aware toggle/badge (mitto-92x.5) instead of
 // a static trailing element.
 export function buildPromptGroupMenuItems(prompts, onRun, groupIcon) {
@@ -25,9 +25,9 @@ export function buildPromptGroupMenuItems(prompts, onRun, groupIcon) {
     submenu: g.prompts.map((p) => ({
       label: p.name,
       icon: html`<${getPromptIconOrDefault(p.icon)} className="w-4 h-4" />`,
-      periodicMode: promptPeriodicMode(p),
-      periodicDefaultOn: promptPeriodicDefaultOn(p),
-      trailing: null, // periodic visual now derives from periodicMode in ContextMenuItem
+      loopMode: promptLoopMode(p),
+      loopDefaultOn: promptLoopDefaultOn(p),
+      trailing: null, // loop visual now derives from loopMode in ContextMenuItem
       onClick: (opts) => onRun(p, opts),
     })),
   }));
@@ -76,7 +76,13 @@ export function Portal({ children }) {
 // off any edge. `text` may contain "\n"; rendered with white-space: pre-line.
 export function PortalTooltip({ x, y, text }) {
   const ref = useRef(null);
-  const [pos, setPos] = useState({ x: x + 14, y: y + 18 });
+  // Round to whole pixels: fractional left/top under position:fixed lands the
+  // bubble on a half-pixel, which WebKit renders with sub-pixel anti-aliasing
+  // → blurry tooltip text (same class of bug as the Leaflet tooltip fix).
+  const [pos, setPos] = useState({
+    x: Math.round(x + 14),
+    y: Math.round(y + 18),
+  });
 
   // Clamp inside the viewport before paint (useLayoutEffect runs synchronously
   // after the Portal child mounts but before the browser paints, so the parked
@@ -98,6 +104,10 @@ export function PortalTooltip({ x, y, text }) {
       ny = window.innerHeight - rect.height - margin;
     }
     if (ny < margin) ny = margin;
+    // Snap to whole pixels (rect.width/height and viewport math can be
+    // fractional) so the bubble never lands on a half-pixel and blurs.
+    nx = Math.round(nx);
+    ny = Math.round(ny);
     setPos((prev) =>
       prev.x === nx && prev.y === ny ? prev : { x: nx, y: ny },
     );
@@ -124,8 +134,8 @@ function ContextMenuItem({ item, onClose }) {
   const submenuCount = hasSubmenu ? item.submenu.length : 0;
   const [submenuOpen, setSubmenuOpen] = useState(false);
   const [submenuPos, setSubmenuPos] = useState({ left: 0, top: 0 });
-  // Per-submenu-item periodic override (mode "optional" only), keyed by sub.label.
-  const [periodicOverrides, setPeriodicOverrides] = useState({});
+  // Per-submenu-item loop override (mode "optional" only), keyed by sub.label.
+  const [loopOverrides, setLoopOverrides] = useState({});
   const itemRef = useRef(null);
   const submenuRef = useRef(null);
   const closeTimerRef = useRef(null);
@@ -172,13 +182,25 @@ function ContextMenuItem({ item, onClose }) {
     // Prefer opening to the right of the parent item; flip to the left when the
     // flyout would overflow the right edge of the viewport.
     let left = rect.right - 4;
-    if (left + sub.width > window.innerWidth - margin) {
-      left = rect.left - sub.width + 4;
-    }
-    // If flipping left pushed it past the left edge, pin it back inside.
-    if (left < margin) left = margin;
-    // Shift up if it would overflow the bottom of the viewport.
     let top = rect.top;
+    if (left + sub.width > window.innerWidth - margin) {
+      const flippedLeft = rect.left - sub.width + 4;
+      if (flippedLeft >= margin) {
+        // Room on the left edge: open as a left-side flyout.
+        left = flippedLeft;
+      } else {
+        // Narrow (mobile) viewport: the flyout fits on NEITHER side, so a
+        // horizontal placement would sit on top of and hide the parent menu.
+        // Drop it BELOW the parent item instead, left-aligned to that item, so
+        // the tapped row (and everything above it) stays visible — a natural
+        // drill-down feel rather than an occluding overlay.
+        left = Math.min(rect.left, window.innerWidth - sub.width - margin);
+        if (left < margin) left = margin;
+        top = rect.bottom + 4;
+      }
+    }
+    // Shift up if it would overflow the bottom of the viewport (its
+    // max-height/scroll caps very tall lists first).
     if (top + sub.height > window.innerHeight - margin) {
       top = Math.max(margin, window.innerHeight - sub.height - margin);
     }
@@ -232,13 +254,13 @@ function ContextMenuItem({ item, onClose }) {
                     onClick=${(e) => {
                       e.stopPropagation();
                       if (!sub.disabled) {
-                        const asPeriodic =
-                          sub.periodicMode === "optional"
-                            ? periodicOverrides[sub.label] !== undefined
-                              ? periodicOverrides[sub.label]
-                              : sub.periodicDefaultOn
+                        const asLoop =
+                          sub.loopMode === "optional"
+                            ? loopOverrides[sub.label] !== undefined
+                              ? loopOverrides[sub.label]
+                              : sub.loopDefaultOn
                             : undefined;
-                        sub.onClick({ asPeriodic });
+                        sub.onClick({ asLoop });
                         onClose();
                       }
                     }}
@@ -248,38 +270,38 @@ function ContextMenuItem({ item, onClose }) {
                     ${sub.icon &&
                     html`<span class="w-4 h-4">${sub.icon}</span>`}
                     <span class="flex-1">${sub.label}</span>
-                    ${sub.periodicMode === "optional"
+                    ${sub.loopMode === "optional"
                       ? html`<input
                           type="checkbox"
                           class="checkbox checkbox-sm shrink-0"
                           style="background-color: transparent"
-                          checked=${periodicOverrides[sub.label] !== undefined
-                            ? periodicOverrides[sub.label]
-                            : sub.periodicDefaultOn}
+                          checked=${loopOverrides[sub.label] !== undefined
+                            ? loopOverrides[sub.label]
+                            : sub.loopDefaultOn}
                           title=${(
-                            periodicOverrides[sub.label] !== undefined
-                              ? periodicOverrides[sub.label]
-                              : sub.periodicDefaultOn
+                            loopOverrides[sub.label] !== undefined
+                              ? loopOverrides[sub.label]
+                              : sub.loopDefaultOn
                           )
-                            ? "Periodic: ON — click to disable recurring runs"
-                            : "Periodic: OFF — click to run as recurring conversation"}
+                            ? "Loop: ON — click to disable recurring runs"
+                            : "Loop: OFF — click to run as recurring conversation"}
                           onClick=${(e) => e.stopPropagation()}
                           onChange=${(e) => {
                             e.stopPropagation();
-                            setPeriodicOverrides((m) => ({
+                            setLoopOverrides((m) => ({
                               ...m,
                               [sub.label]: e.target.checked,
                             }));
                           }}
                         />`
-                      : sub.periodicMode === "always"
+                      : sub.loopMode === "always"
                         ? html`<input
                             type="checkbox"
                             class="checkbox checkbox-sm shrink-0"
                             style="background-color: transparent"
                             checked=${true}
                             disabled
-                            title="Always periodic — this prompt always runs as a recurring conversation (cannot be changed)"
+                            title="Always loop — this prompt always runs as a recurring conversation (cannot be changed)"
                             onClick=${(e) => e.stopPropagation()}
                           />`
                         : sub.trailing}

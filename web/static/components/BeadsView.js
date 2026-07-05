@@ -47,9 +47,10 @@ import {
   SortIcon,
   CopyIcon,
   getPromptIconOrDefault,
-  PeriodicIcon,
+  LoopIcon,
   LinkIcon,
   ListIcon,
+  LightningIcon,
   BoldIcon,
   ItalicIcon,
   StrikethroughIcon,
@@ -60,9 +61,9 @@ import {
   QuoteIcon,
 } from "./Icons.js";
 import {
-  promptPeriodicMode,
-  promptPeriodicIsToggleable,
-  promptPeriodicDefaultOn,
+  promptLoopMode,
+  promptLoopIsToggleable,
+  promptLoopDefaultOn,
 } from "../utils/prompts.js";
 import { CodeEditorField } from "./CodeEditorField.js";
 import {
@@ -73,6 +74,7 @@ import {
 import { ConfirmDialog } from "./ConfirmDialog.js";
 import { Drawer } from "./Drawer.js";
 import { Tooltip } from "./Tooltip.js";
+import { Toolbar } from "./Toolbar.js";
 import { usePullToRefresh } from "../hooks/usePullToRefresh.js";
 import { useSwipeToAction } from "../hooks/index.js";
 
@@ -417,6 +419,13 @@ export function BeadsDetailPanel({
   // ~40rem side panel over the conversation; the toggle still lets the user
   // expand it to fill the area.
   const [fullscreen, setFullscreen] = useState(!!initialFullscreen);
+  // Shortcut buttons configured for this folder's beadsIssue section (mirrors
+  // the list toolbar's tasksList shortcuts, but keyed to the open issue).
+  const [issueShortcuts, setIssueShortcuts] = useState([]);
+  // Map from prompt name → prompt object, resolved from the beadsIssues menu.
+  const [issueShortcutPromptMap, setIssueShortcutPromptMap] = useState(
+    new Map(),
+  );
   // Phone detection drives the panel width. We deliberately use the user agent
   // (not a viewport-width breakpoint like Tailwind's `md:`): the native macOS
   // app runs in a WKWebView that reports a Macintosh UA but can have a narrow
@@ -516,6 +525,18 @@ export function BeadsDetailPanel({
   const [depsBusy, setDepsBusy] = useState(false);
   const [newDepType, setNewDepType] = useState("blocks");
   const [newDepId, setNewDepId] = useState("");
+  // Labels shown in view mode. `labels` mirrors the issue's current labels
+  // (refreshed via fetchDeps); `labelsBusy` gates add/remove requests;
+  // `newLabel` backs the add-label input; `allLabels` holds the workspace-wide
+  // label suggestions rendered in the add-label datalist.
+  const [labels, setLabels] = useState([]);
+  const [labelsBusy, setLabelsBusy] = useState(false);
+  const [newLabel, setNewLabel] = useState("");
+  const [allLabels, setAllLabels] = useState([]);
+  // `addingLabel` toggles the inline add-label input (revealed by the "+"
+  // button); `labelInputRef` lets us focus it as soon as it opens.
+  const [addingLabel, setAddingLabel] = useState(false);
+  const labelInputRef = useRef(null);
   const [comments, setComments] = useState([]);
   const [notes, setNotes] = useState("");
 
@@ -834,6 +855,87 @@ export function BeadsDetailPanel({
     return () => document.removeEventListener("mousedown", onDocMouseDown);
   }, [isOpen, panelMenu, handleClose]);
 
+  // Load per-folder beadsIssue-section shortcut buttons for the detail toolbar.
+  // Mirrors BeadsView's tasksList loader: fetch section entries, then resolve
+  // each entry's prompt name against the beadsIssues menu via onFetchPrompts.
+  // `isStale` lets the mount effect below cancel a stale in-flight fetch when
+  // the folder changes mid-request.
+  const loadIssueShortcuts = useCallback(
+    async (isStale) => {
+      if (!workingDir) {
+        setIssueShortcuts([]);
+        setIssueShortcutPromptMap(new Map());
+        return;
+      }
+      try {
+        // Merge global + folder shortcuts for the beadsIssue section. Global
+        // buttons come first; folder buttons duplicating a global prompt drop out.
+        const [folderRes, globalRes] = await Promise.all([
+          authFetch(endpoints.folders.shortcuts({ working_dir: workingDir })),
+          authFetch(endpoints.global.shortcuts()).catch(() => null),
+        ]);
+        const cfg = await folderRes.json().catch(() => ({}));
+        const globalData = globalRes
+          ? await globalRes.json().catch(() => ({}))
+          : {};
+        const globalList = globalData?.sections?.beadsIssue || [];
+        const folderList = cfg?.sections?.beadsIssue || [];
+        const globalNames = new Set(globalList.map((s) => s.prompt));
+        const list = [
+          ...globalList,
+          ...folderList.filter((s) => !globalNames.has(s.prompt)),
+        ];
+        if (isStale && isStale()) return;
+        setIssueShortcuts(list);
+        if (list.length > 0 && onFetchPrompts) {
+          const prompts = await onFetchPrompts(workingDir);
+          if (isStale && isStale()) return;
+          const map = new Map((prompts || []).map((p) => [p.name, p]));
+          setIssueShortcutPromptMap(map);
+        } else {
+          setIssueShortcutPromptMap(new Map());
+        }
+      } catch (_err) {
+        if (isStale && isStale()) return;
+        setIssueShortcuts([]);
+        setIssueShortcutPromptMap(new Map());
+      }
+    },
+    [workingDir, onFetchPrompts],
+  );
+
+  // Initial load (and reload on folder switch), with stale-fetch cancellation.
+  useEffect(() => {
+    let cancelled = false;
+    loadIssueShortcuts(() => cancelled);
+    return () => {
+      cancelled = true;
+    };
+  }, [loadIssueShortcuts]);
+
+  // Refresh shortcut buttons immediately when the Workspaces dialog saves new
+  // shortcuts for this folder, so no page reload is needed.
+  useEffect(() => {
+    const handler = (e) => {
+      const dir = e?.detail?.working_dir;
+      if (!dir || dir === workingDir) loadIssueShortcuts();
+    };
+    // Global shortcuts changes affect every folder, so always refresh.
+    const globalHandler = () => loadIssueShortcuts();
+    window.addEventListener("mitto:folder_shortcuts_updated", handler);
+    window.addEventListener("mitto:global_shortcuts_updated", globalHandler);
+    return () => {
+      window.removeEventListener("mitto:folder_shortcuts_updated", handler);
+      window.removeEventListener(
+        "mitto:global_shortcuts_updated",
+        globalHandler,
+      );
+    };
+  }, [loadIssueShortcuts, workingDir]);
+
+  // The panel context menu is now prompts-only: the former Close/Defer/Delete
+  // menu items are surfaced as direct buttons in the header Toolbar
+  // (headerToolbarItems below). The toolbar's "Run a prompt" button opens it.
   const panelMenuItems = useMemo(() => {
     if (!data) return [];
     const promptGroupItems = buildPromptGroupMenuItems(
@@ -844,41 +946,106 @@ export function BeadsDetailPanel({
       },
       html`<${PlusIcon} />`,
     );
+    if (promptGroupItems.length === 0) {
+      return [{ label: "No prompts available", disabled: true }];
+    }
+    return promptGroupItems;
+  }, [data, prompts, onRunPrompt]);
+
+  // Header action toolbar (view mode). Replaces the former "…" overflow menu and
+  // standalone fullscreen button: a prompts trigger, Close/Reopen, Defer/Undefer,
+  // a destructive Delete set apart by a separator, then the per-folder shortcut
+  // buttons (separated), a spacer, then fullscreen at the right edge.
+  const headerToolbarItems = useMemo(() => {
+    if (!data) return [];
+    // Per-folder shortcut buttons (beadsIssue section). A missing linked prompt
+    // is shown greyed/disabled, mirroring the list toolbar's tasksList shortcuts.
+    const issueShortcutItems = issueShortcuts.map((sc, i) => {
+      const prompt = issueShortcutPromptMap.get(sc.prompt);
+      const found = !!prompt;
+      const Icon = getPromptIconOrDefault(sc.icon || (prompt && prompt.icon));
+      return {
+        kind: "button",
+        testId: `beads-issue-shortcut-btn-${i}`,
+        icon: html`<${Icon} className="w-4 h-4" />`,
+        tip: found ? sc.prompt : `Prompt "${sc.prompt}" not found`,
+        ariaLabel: found
+          ? `Run "${sc.prompt}"`
+          : `Prompt "${sc.prompt}" not found`,
+        disabled: !found,
+        onClick: () => found && onRunPrompt && onRunPrompt(prompt, data),
+      };
+    });
     return [
-      ...promptGroupItems,
       {
-        label: data.status === "closed" ? "Reopen" : "Close",
+        kind: "button",
+        testId: "beads-panel-prompts",
+        icon: html`<${LightningIcon} className="w-4 h-4" />`,
+        tip: "Run a prompt",
+        ariaLabel: "Run a prompt",
+        onClick: openPanelMenu,
+      },
+      { kind: "separator" },
+      {
+        kind: "button",
+        testId: "beads-panel-status",
         icon:
           data.status === "closed"
-            ? html`<${RefreshIcon} />`
-            : html`<${CheckIcon} />`,
-        onClick: () => onToggleStatus && onToggleStatus(data),
+            ? html`<${RefreshIcon} className="w-4 h-4" />`
+            : html`<${CheckIcon} className="w-4 h-4" />`,
+        tip: data.status === "closed" ? "Reopen" : "Close",
+        ariaLabel: data.status === "closed" ? "Reopen" : "Close",
         disabled: statusBusy,
+        onClick: () => onToggleStatus && onToggleStatus(data),
       },
       {
-        label: data.status === "deferred" ? "Undefer" : "Defer",
+        kind: "button",
+        testId: "beads-panel-defer",
         icon:
           data.status === "deferred"
-            ? html`<${SunIcon} />`
-            : html`<${MoonIcon} />`,
-        onClick: () => onToggleDefer && onToggleDefer(data),
+            ? html`<${SunIcon} className="w-4 h-4" />`
+            : html`<${MoonIcon} className="w-4 h-4" />`,
+        tip: data.status === "deferred" ? "Undefer" : "Defer",
+        ariaLabel: data.status === "deferred" ? "Undefer" : "Defer",
         disabled: statusBusy,
+        onClick: () => onToggleDefer && onToggleDefer(data),
       },
+      { kind: "separator" },
       {
-        label: "Delete",
-        icon: html`<${TrashIcon} />`,
-        onClick: () => onDelete && onDelete(data),
+        kind: "button",
+        testId: "beads-panel-delete",
+        icon: html`<${TrashIcon} className="w-4 h-4" />`,
+        tip: "Delete",
+        ariaLabel: "Delete",
         danger: true,
+        onClick: () => onDelete && onDelete(data),
+      },
+      ...(issueShortcuts.length > 0
+        ? [{ kind: "separator" }, ...issueShortcutItems]
+        : []),
+      { kind: "spacer" },
+      {
+        kind: "button",
+        testId: "beads-panel-fullscreen",
+        icon: fullscreen
+          ? html`<${CollapseIcon} className="w-4 h-4" />`
+          : html`<${ExpandIcon} className="w-4 h-4" />`,
+        tip: fullscreen ? "Exit fullscreen" : "Fullscreen",
+        ariaLabel: fullscreen ? "Exit fullscreen" : "Fullscreen",
+        onClick: () => setFullscreen((f) => !f),
       },
     ];
   }, [
     data,
-    prompts,
     statusBusy,
-    onRunPrompt,
+    fullscreen,
+    openPanelMenu,
     onToggleStatus,
     onToggleDefer,
     onDelete,
+    onRunPrompt,
+    issueShortcuts,
+    issueShortcutPromptMap,
   ]);
 
   // Seed non-notes fields whenever a different issue opens (notes come from
@@ -1078,12 +1245,14 @@ export function BeadsDetailPanel({
         const respData = await readBeadsResponse(res);
         if (!res.ok || respData.error) {
           setDeps([]);
+          setLabels([]);
           setComments([]);
           setNotes("");
           if (seedDraftNotes) setViewDraft((prev) => ({ ...prev, notes: "" }));
         } else {
           const issueObj = Array.isArray(respData) ? respData[0] : respData;
           setDeps((issueObj && issueObj.dependencies) || []);
+          setLabels((issueObj && issueObj.labels) || []);
           setComments((issueObj && issueObj.comments) || []);
           const fetchedNotes = (issueObj && issueObj.notes) || "";
           setNotes(fetchedNotes);
@@ -1092,6 +1261,7 @@ export function BeadsDetailPanel({
         }
       } catch (_err) {
         setDeps([]);
+        setLabels([]);
         setComments([]);
         setNotes("");
         if (seedDraftNotes) setViewDraft((prev) => ({ ...prev, notes: "" }));
@@ -1164,10 +1334,13 @@ export function BeadsDetailPanel({
   // seedDraftNotes=true so the initial open seeds viewDraft.notes from the response.
   useEffect(() => {
     setDeps([]);
+    setLabels([]);
     setComments([]);
     setNotes("");
     setNewDepId("");
     setNewDepType("blocks");
+    setNewLabel("");
+    setAddingLabel(false);
     if (isOpen && !creating && data && data.id) {
       fetchDeps(true);
     }
@@ -1230,6 +1403,102 @@ export function BeadsDetailPanel({
     const ok = await mutateDep("add", target, newDepType);
     if (ok) setNewDepId("");
   }, [newDepId, newDepType, depsBusy, mutateDep]);
+
+  // Fetch the workspace's unique labels to suggest when adding a label. bd
+  // returns [{label,count}, ...]; we keep only the names. Refreshed when the
+  // panel opens and after a label is added. Non-fatal on failure.
+  const fetchAllLabels = useCallback(async () => {
+    if (!workingDir) return;
+    try {
+      const res = await authFetch(
+        endpoints.issues.labelsAll({ working_dir: workingDir }),
+      );
+      const respData = await readBeadsResponse(res);
+      if (res.ok && Array.isArray(respData)) {
+        setAllLabels(
+          respData
+            .map((l) => (typeof l === "string" ? l : l && l.label))
+            .filter(Boolean),
+        );
+      }
+    } catch (_err) {
+      // Non-fatal: label suggestions just won't populate.
+    }
+  }, [workingDir]);
+
+  useEffect(() => {
+    if (isOpen && !creating) fetchAllLabels();
+  }, [isOpen, creating, fetchAllLabels]);
+
+  // Add or remove a label on the current issue, then refresh the issue (so the
+  // labels list stays current) and notify the parent list. Mirrors mutateDep.
+  const mutateLabel = useCallback(
+    async (action, label) => {
+      const value = (label || "").trim();
+      if (!data || !data.id || !value) return false;
+      setLabelsBusy(true);
+      try {
+        const res = await secureFetch(
+          endpoints.issues.labels(data.id, { working_dir: workingDir }),
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ label: value, action }),
+          },
+        );
+        const respData = await readBeadsResponse(res);
+        if (!res.ok || respData.error) {
+          showToast &&
+            showToast({
+              style: "error",
+              title: respData.error || `Failed to ${action} label`,
+            });
+          return false;
+        }
+        showToast &&
+          showToast({
+            style: "success",
+            title:
+              action === "add"
+                ? `Added label "${value}"`
+                : `Removed label "${value}"`,
+          });
+        await fetchDeps(false);
+        if (action === "add") fetchAllLabels();
+        onUpdated && onUpdated();
+        return true;
+      } catch (err) {
+        showToast &&
+          showToast({
+            style: "error",
+            title: err.message || `Failed to ${action} label`,
+          });
+        return false;
+      } finally {
+        setLabelsBusy(false);
+      }
+    },
+    [
+      data && data.id,
+      workingDir,
+      showToast,
+      fetchDeps,
+      fetchAllLabels,
+      onUpdated,
+    ],
+  );
+
+  const handleAddLabel = useCallback(async () => {
+    const value = newLabel.trim();
+    if (!value || labelsBusy) return;
+    const ok = await mutateLabel("add", value);
+    if (ok) setNewLabel("");
+  }, [newLabel, labelsBusy, mutateLabel]);
+
+  // Focus the add-label input as soon as the "+" reveals it.
+  useEffect(() => {
+    if (addingLabel && labelInputRef.current) labelInputRef.current.focus();
+  }, [addingLabel]);
 
   // Change the kind of an existing edge. bd has no in-place type update, so this
   // removes the edge and re-adds it with the new type. A single combined toast
@@ -1315,7 +1584,7 @@ export function BeadsDetailPanel({
   // is supplied: { text, setText } back the active field (create form or inline
   // edit draft) and `disabled` force-greys the row regardless (read-only view).
   const renderDescToolbar = ({ text, setText, disabled, editorApiRef }) => html`
-    <div class="flex items-center gap-1 mb-1">
+    <div class="flex flex-wrap items-center gap-1 mb-1">
       <button
         type="button"
         class="chat-input-action tooltip tooltip-bottom"
@@ -1991,77 +2260,63 @@ ${viewDraft.description}</pre
           fullscreen
             ? "--dock-w:100%;--dock-maxw:100%"
             : isMobile
-              ? "--dock-w:100%"
+              ? "--dock-w:100%;--dock-maxw:100%"
               : "--dock-w:40rem;--dock-maxw:85%"
         }
         widthClass="w-full"
         panelClass="bg-mitto-sidebar shrink-0 h-full flex flex-col border-l border-mitto-border-1"
       >
-      <div class="flex items-center gap-2 p-4 border-b border-mitto-border shrink-0">
-        <div class="flex-1 min-w-0">
+      <div class="p-4 border-b border-mitto-border shrink-0">
+        <div class="flex items-center gap-2">
+          <div class="flex-1 min-w-0">
+            ${
+              creating
+                ? html`<${Fragment}>
+                  ${TitleField("create")}
+                  ${createParentId ? html`<div class="font-mono text-xs text-mitto-text-secondary">in ${createParentId}</div>` : null}
+                </${Fragment}>`
+                : html`
+                    <h2
+                      class="font-semibold text-base text-mitto-text truncate"
+                      title=${viewDraft.title || data.title || data.id}
+                    >
+                      ${viewDraft.title || data.title || data.id}
+                    </h2>
+                  `
+            }
+          </div>
           ${
             creating
-              ? html`<${Fragment}>
-                ${TitleField("create")}
-                ${createParentId ? html`<div class="font-mono text-xs text-mitto-text-secondary">in ${createParentId}</div>` : null}
-              </${Fragment}>`
-              : html`
-                  <div class="flex items-center gap-1">
-                    <span class="font-mono text-xs text-mitto-text-secondary"
-                      >${data.id}</span
-                    >
-                    <button
-                      type="button"
-                      onClick=${async () => {
-                        const ok = await copyToClipboard(data.id);
-                        showToast &&
-                          showToast(
-                            ok
-                              ? { style: "success", title: `Copied ${data.id}` }
-                              : {
-                                  style: "error",
-                                  title: "Failed to copy issue ID",
-                                },
-                          );
-                      }}
-                      class="btn btn-ghost btn-xs btn-square inline-flex tooltip tooltip-bottom"
-                      data-tip="Copy issue ID ${data.id}"
-                      aria-label="Copy issue ID ${data.id}"
-                    >
-                      <${CopyIcon} className="w-3.5 h-3.5" />
-                    </button>
-                  </div>
-                  ${TitleField("view")}
+              ? html`
+                  <button
+                    onClick=${() => setFullscreen((f) => !f)}
+                    class="btn btn-ghost btn-square btn-sm shrink-0 inline-flex tooltip tooltip-bottom"
+                    data-tip=${fullscreen ? "Exit fullscreen" : "Fullscreen"}
+                    aria-label=${fullscreen ? "Exit fullscreen" : "Fullscreen"}
+                  >
+                    ${fullscreen
+                      ? html`<${CollapseIcon} className="w-5 h-5" />`
+                      : html`<${ExpandIcon} className="w-5 h-5" />`}
+                  </button>
                 `
+              : null
           }
         </div>
         ${
-          !creating &&
-          data &&
-          html`
-            <button
-              type="button"
-              onClick=${openPanelMenu}
-              class="btn btn-ghost btn-square btn-sm shrink-0 inline-flex tooltip tooltip-bottom"
-              data-tip="More actions"
-              aria-label="More actions"
-            >
-              <${EllipsisIcon} className="w-5 h-5" />
-            </button>
-          `
+          !creating && data
+            ? html`
+                <div class="mt-6">
+                  <${Toolbar}
+                    variant="block"
+                    surface="bg-mitto-surface-3"
+                    ariaLabel="Issue actions"
+                    testId="beads-issue-toolbar"
+                    items=${headerToolbarItems}
+                  />
+                </div>
+              `
+            : null
         }
-        <button
-          onClick=${() => setFullscreen((f) => !f)}
-          class="btn btn-ghost btn-square btn-sm shrink-0 inline-flex tooltip tooltip-bottom"
-          data-tip=${fullscreen ? "Exit fullscreen" : "Fullscreen"}
-          aria-label=${fullscreen ? "Exit fullscreen" : "Fullscreen"}
-        >
-          ${
-            fullscreen
-              ? html`<${CollapseIcon} className="w-5 h-5" />`
-              : html`<${ExpandIcon} className="w-5 h-5" />`
-          }
-        </button>
       </div>
 
       <div class="flex-1 overflow-y-auto p-4 space-y-4">
@@ -2125,6 +2380,37 @@ ${viewDraft.description}</pre
 
                 <div class="grid grid-cols-2 gap-3">
                   <div>
+                    <label class=${labelClass}>ID</label>
+                    <div class="flex items-center gap-1">
+                      <span class="font-mono text-sm text-mitto-text"
+                        >${data.id}</span
+                      >
+                      <button
+                        type="button"
+                        onClick=${async () => {
+                          const ok = await copyToClipboard(data.id);
+                          showToast &&
+                            showToast(
+                              ok
+                                ? {
+                                    style: "success",
+                                    title: `Copied ${data.id}`,
+                                  }
+                                : {
+                                    style: "error",
+                                    title: "Failed to copy issue ID",
+                                  },
+                            );
+                        }}
+                        class="btn btn-ghost btn-xs btn-square inline-flex tooltip tooltip-bottom"
+                        data-tip="Copy issue ID ${data.id}"
+                        aria-label="Copy issue ID ${data.id}"
+                      >
+                        <${CopyIcon} className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  </div>
+                  <div>
                     <label class=${labelClass}>Assignee</label>
                     ${AssigneeField("view")}
                   </div>
@@ -2161,22 +2447,111 @@ ${viewDraft.description}</pre
                   )}
                 </div>
 
-                ${Array.isArray(data.labels) &&
-                data.labels.length > 0 &&
-                html`
-                  <div>
-                    <div class="text-xs text-mitto-text-secondary mb-0.5">
-                      Labels
-                    </div>
-                    <div class="flex flex-wrap gap-2">
-                      ${data.labels.map((l) =>
-                        badge(l, "bg-mitto-surface-4 text-mitto-text-strong"),
-                      )}
-                    </div>
+                <div>
+                  <div class="text-xs text-mitto-text-secondary mb-1">
+                    Labels
                   </div>
-                `}
-
-                ${DescriptionField("view")}
+                  <datalist id="beads-label-options">
+                    ${allLabels
+                      .filter((l) => !labels.includes(l))
+                      .map((l) => html`<option key=${l} value=${l}></option>`)}
+                  </datalist>
+                  <div class="flex flex-wrap gap-2 items-center">
+                    ${labels.length === 0 &&
+                    !addingLabel &&
+                    html`<span class="text-xs text-mitto-text-secondary italic"
+                      >No labels.</span
+                    >`}
+                    ${labels.map(
+                      (l) => html`
+                        <span
+                          key=${l}
+                          class="badge badge-sm font-medium bg-mitto-surface-4 text-mitto-text-strong"
+                        >
+                          ${l}
+                          <button
+                            type="button"
+                            onClick=${() => {
+                              if (labelsBusy) return;
+                              mutateLabel("remove", l);
+                            }}
+                            aria-disabled=${labelsBusy ? "true" : "false"}
+                            class="inline-flex items-center opacity-60 hover:opacity-100 hover:text-red-400 cursor-pointer tooltip tooltip-bottom ${labelsBusy
+                              ? "opacity-40 pointer-events-none"
+                              : ""}"
+                            data-tip=${'Remove label "' + l + '"'}
+                            aria-label=${'Remove label "' + l + '"'}
+                          >
+                            <${CloseIcon} className="w-3 h-3" />
+                          </button>
+                        </span>
+                      `,
+                    )}
+                    ${addingLabel
+                      ? html`
+                          <div class="join w-52 max-w-full">
+                            <input
+                              ref=${labelInputRef}
+                              type="text"
+                              list="beads-label-options"
+                              placeholder="add label…"
+                              value=${newLabel}
+                              disabled=${labelsBusy}
+                              onInput=${(e) => setNewLabel(e.target.value)}
+                              onKeyDown=${(e) => {
+                                if (e.key === "Enter") {
+                                  e.preventDefault();
+                                  handleAddLabel();
+                                } else if (e.key === "Escape") {
+                                  e.preventDefault();
+                                  setNewLabel("");
+                                  setAddingLabel(false);
+                                }
+                              }}
+                              onBlur=${() => {
+                                if (!newLabel.trim()) setAddingLabel(false);
+                              }}
+                              class="input input-xs flex-1 min-w-0 join-item"
+                            />
+                            <button
+                              type="button"
+                              onMouseDown=${(e) => e.preventDefault()}
+                              onClick=${() => {
+                                if (labelsBusy || !newLabel.trim()) return;
+                                handleAddLabel();
+                              }}
+                              aria-disabled=${labelsBusy || !newLabel.trim()
+                                ? "true"
+                                : "false"}
+                              class="btn btn-ghost btn-square btn-xs shrink-0 join-item inline-flex tooltip tooltip-bottom ${labelsBusy ||
+                              !newLabel.trim()
+                                ? "opacity-40 pointer-events-none"
+                                : ""}"
+                              data-tip="Add label"
+                              aria-label="Add label"
+                            >
+                              ${labelsBusy
+                                ? html`<span
+                                    class="loading loading-spinner w-3 h-3"
+                                  ></span>`
+                                : html`<${PlusIcon} className="w-3 h-3" />`}
+                            </button>
+                          </div>
+                        `
+                      : html`
+                          <button
+                            type="button"
+                            onClick=${() => setAddingLabel(true)}
+                            class="btn btn-ghost btn-square btn-xs inline-flex tooltip tooltip-bottom"
+                            data-tip="Add label"
+                            aria-label="Add label"
+                          >
+                            <${PlusIcon} className="w-3 h-3" />
+                          </button>
+                        `}
+                  </div>
+                </div>
+                ${TitleField("view")} ${DescriptionField("view")}
                 ${subtasks.length > 0 &&
                 html`
                   <fieldset class="fieldset">
@@ -2918,6 +3293,10 @@ export function BeadsView({
   const [pullPromptName, setPullPromptName] = useState("");
   const [pushPromptName, setPushPromptName] = useState("");
   const [syncPromptName, setSyncPromptName] = useState("");
+  // Saved argument maps (name→string) for the configured pull/push/sync prompts.
+  const [pullPromptArgs, setPullPromptArgs] = useState({});
+  const [pushPromptArgs, setPushPromptArgs] = useState({});
+  const [syncPromptArgs, setSyncPromptArgs] = useState({});
 
   // List-level "Prompts" dropdown state (footer toolbar). These are the
   // `menus: beadsList` prompts that operate on the whole issue list rather than
@@ -2925,9 +3304,9 @@ export function BeadsView({
   const [showListPrompts, setShowListPrompts] = useState(false);
   const [listPrompts, setListPrompts] = useState([]);
   const [listPromptsLoading, setListPromptsLoading] = useState(false);
-  // Per-send periodic override for beadsList prompts, keyed by prompt name.
+  // Per-send loop override for beadsList prompts, keyed by prompt name.
   // Reset whenever the list reloads (see effect below).
-  const [listPeriodicOn, setListPeriodicOn] = useState({});
+  const [listLoopOn, setListLoopOn] = useState({});
 
   // Shortcut buttons configured for this folder's tasksList section.
   const [shortcuts, setShortcuts] = useState([]);
@@ -2995,6 +3374,9 @@ export function BeadsView({
           setPullPromptName((data && data.pull_prompt) || "");
           setPushPromptName((data && data.push_prompt) || "");
           setSyncPromptName((data && data.sync_prompt) || "");
+          setPullPromptArgs((data && data.pull_prompt_args) || {});
+          setPushPromptArgs((data && data.push_prompt_args) || {});
+          setSyncPromptArgs((data && data.sync_prompt_args) || {});
         }
       } catch (_err) {
         if (!cancelled) setUpstream("none");
@@ -3018,11 +3400,24 @@ export function BeadsView({
         return;
       }
       try {
-        const res = await authFetch(
-          endpoints.folders.shortcuts({ working_dir: workingDir }),
-        );
-        const data = await res.json().catch(() => ({}));
-        const list = data?.sections?.tasksList || [];
+        // Merge global (settings.json) + folder (folders.json) shortcuts for the
+        // tasksList section. Global buttons come first; folder buttons that
+        // duplicate a global prompt are dropped.
+        const [folderRes, globalRes] = await Promise.all([
+          authFetch(endpoints.folders.shortcuts({ working_dir: workingDir })),
+          authFetch(endpoints.global.shortcuts()).catch(() => null),
+        ]);
+        const folderData = await folderRes.json().catch(() => ({}));
+        const globalData = globalRes
+          ? await globalRes.json().catch(() => ({}))
+          : {};
+        const globalList = globalData?.sections?.tasksList || [];
+        const folderList = folderData?.sections?.tasksList || [];
+        const globalNames = new Set(globalList.map((s) => s.prompt));
+        const list = [
+          ...globalList,
+          ...folderList.filter((s) => !globalNames.has(s.prompt)),
+        ];
         if (isStale && isStale()) return;
         setShortcuts(list);
         if (list.length > 0 && onFetchBeadsListPrompts) {
@@ -3058,9 +3453,17 @@ export function BeadsView({
       const dir = e?.detail?.working_dir;
       if (!dir || dir === workingDir) loadShortcuts();
     };
+    // Global shortcuts changes affect every folder, so always refresh.
+    const globalHandler = () => loadShortcuts();
     window.addEventListener("mitto:folder_shortcuts_updated", handler);
-    return () =>
+    window.addEventListener("mitto:global_shortcuts_updated", globalHandler);
+    return () => {
       window.removeEventListener("mitto:folder_shortcuts_updated", handler);
+      window.removeEventListener(
+        "mitto:global_shortcuts_updated",
+        globalHandler,
+      );
+    };
   }, [loadShortcuts, workingDir]);
 
   // Auto-refresh the issue list when the backend fsnotify watcher reports
@@ -3843,31 +4246,33 @@ export function BeadsView({
     return () => document.removeEventListener("mousedown", onDocClick);
   }, [showListPrompts]);
 
-  // Toggle the list-level prompts dropdown, lazily loading the `menus: beadsList`
-  // prompts for this workspace the first time it is opened.
-  const toggleListPrompts = useCallback(() => {
-    setShowListPrompts((open) => {
-      const next = !open;
-      if (next && onFetchBeadsListPrompts && workingDir) {
+  // Open/close the list-level prompts dropdown, lazily loading the
+  // `menus: beadsList` prompts for this workspace the first time it is opened.
+  // Open-driven (receives the next open state) because the Toolbar dropdown is
+  // backed by a controlled <details> whose onToggle reports the new state.
+  const handleListPromptsToggle = useCallback(
+    (open) => {
+      if (open && onFetchBeadsListPrompts && workingDir) {
         setListPromptsLoading(true);
         onFetchBeadsListPrompts(workingDir)
           .then((list) => {
             const prompts = list || [];
             setListPrompts(prompts);
-            // Seed per-item periodic toggle defaults from each prompt's mode/default.
+            // Seed per-item loop toggle defaults from each prompt's mode/default.
             const seed = {};
             for (const p of prompts) {
-              if (promptPeriodicIsToggleable(p)) {
-                seed[p.name] = promptPeriodicDefaultOn(p);
+              if (promptLoopIsToggleable(p)) {
+                seed[p.name] = promptLoopDefaultOn(p);
               }
             }
-            setListPeriodicOn(seed);
+            setListLoopOn(seed);
           })
           .finally(() => setListPromptsLoading(false));
       }
-      return next;
-    });
-  }, [onFetchBeadsListPrompts, workingDir]);
+      setShowListPrompts(open);
+    },
+    [onFetchBeadsListPrompts, workingDir],
+  );
 
   // Run a list-level prompt in a new conversation (no per-issue context).
   const handleRunListPrompt = useCallback(
@@ -4179,10 +4584,273 @@ export function BeadsView({
     `;
   }
 
+  // ---- Top toolbar (moved from the former bottom footer) --------------------
+  // The list-level actions now live in a portable Toolbar "pill" at the top of
+  // the view, vertically aligned with the sidebar toolbar (both sit right below
+  // their p-4 header, in a px-3 wrapper with no top padding). Order: new issue,
+  // list-prompts dropdown, refresh, clean up, | upstream sync group |,
+  // | shortcuts |, spacer, issue count, tasks-config. Conditional groups are
+  // set off by thin dividers.
+  const upstreamLabel = UPSTREAM_LABELS[upstream] || upstream;
+  const busySpinner = html`<span
+    class="loading loading-spinner w-4 h-4"
+  ></span>`;
+
+  const cleanupTip =
+    cleaningUp && cleanupProgress && cleanupProgress.total > 0
+      ? `Removing ${cleanupProgress.deleted}/${cleanupProgress.total}…`
+      : closedCount === 0
+        ? "No closed issues to clean up"
+        : `Clean up ${closedCount} closed issue${closedCount === 1 ? "" : "s"}`;
+  const cleanupAria =
+    closedCount === 0
+      ? "No closed issues to clean up"
+      : `Clean up ${closedCount} closed issue${closedCount === 1 ? "" : "s"}`;
+
+  // Upstream pull/push/sync buttons. Two flavours: "prompts" runs configured
+  // prompts via onLaunchPrompt; a real backend (jira/github/…) calls handleSync
+  // and shows an inline spinner on the in-flight action.
+  const upstreamItems =
+    upstream === "prompts"
+      ? [
+          {
+            kind: "button",
+            testId: "beads-pull-btn",
+            icon: html`<${ArrowDownIcon} className="w-4 h-4" />`,
+            tip: pullPromptName
+              ? `Pull: run "${pullPromptName}"`
+              : "No pull prompt configured",
+            ariaLabel: pullPromptName
+              ? `Pull: run "${pullPromptName}"`
+              : "No pull prompt configured",
+            disabled: !pullPromptName || !onLaunchPrompt,
+            onClick: () =>
+              pullPromptName &&
+              onLaunchPrompt &&
+              onLaunchPrompt("pull", pullPromptName, pullPromptArgs),
+          },
+          {
+            kind: "button",
+            testId: "beads-push-btn",
+            icon: html`<${ArrowUpIcon} className="w-4 h-4" />`,
+            tip: pushPromptName
+              ? `Push: run "${pushPromptName}"`
+              : "No push prompt configured",
+            ariaLabel: pushPromptName
+              ? `Push: run "${pushPromptName}"`
+              : "No push prompt configured",
+            disabled: !pushPromptName || !onLaunchPrompt,
+            onClick: () =>
+              pushPromptName &&
+              onLaunchPrompt &&
+              onLaunchPrompt("push", pushPromptName, pushPromptArgs),
+          },
+          {
+            kind: "button",
+            testId: "beads-sync-btn",
+            icon: html`<${SyncIcon} className="w-4 h-4" />`,
+            tip: syncPromptName
+              ? `Sync: run "${syncPromptName}"`
+              : "No sync prompt configured",
+            ariaLabel: syncPromptName
+              ? `Sync: run "${syncPromptName}"`
+              : "No sync prompt configured",
+            disabled: !syncPromptName || !onLaunchPrompt,
+            onClick: () =>
+              syncPromptName &&
+              onLaunchPrompt &&
+              onLaunchPrompt("sync", syncPromptName, syncPromptArgs),
+          },
+        ]
+      : [
+          {
+            kind: "button",
+            testId: "beads-pull-btn",
+            icon:
+              syncAction === "pull"
+                ? busySpinner
+                : html`<${ArrowDownIcon} className="w-4 h-4" />`,
+            tip: `Pull from ${upstreamLabel}`,
+            ariaLabel: `Pull from ${upstreamLabel}`,
+            disabled: !!syncAction,
+            onClick: () => !syncAction && handleSync("pull"),
+          },
+          {
+            kind: "button",
+            testId: "beads-push-btn",
+            icon:
+              syncAction === "push"
+                ? busySpinner
+                : html`<${ArrowUpIcon} className="w-4 h-4" />`,
+            tip: `Push to ${upstreamLabel}`,
+            ariaLabel: `Push to ${upstreamLabel}`,
+            disabled: !!syncAction,
+            onClick: () => !syncAction && handleSync("push"),
+          },
+          {
+            kind: "button",
+            testId: "beads-sync-btn",
+            icon:
+              syncAction === "sync"
+                ? busySpinner
+                : html`<${SyncIcon} className="w-4 h-4" />`,
+            tip: `Sync with ${upstreamLabel} (pull then push)`,
+            ariaLabel: `Sync with ${upstreamLabel} (pull then push)`,
+            disabled: !!syncAction,
+            onClick: () => !syncAction && handleSync("sync"),
+          },
+        ];
+
+  // Per-folder shortcut buttons (tasksList section). A missing linked prompt is
+  // shown greyed/disabled, mirroring the former footer behaviour.
+  const shortcutItems = shortcuts.map((sc, i) => {
+    const prompt = shortcutPromptMap.get(sc.prompt);
+    const found = !!prompt;
+    const Icon = getPromptIconOrDefault(sc.icon || (prompt && prompt.icon));
+    return {
+      kind: "button",
+      testId: `beads-shortcut-btn-${i}`,
+      icon: html`<${Icon} className="w-4 h-4" />`,
+      tip: found ? sc.prompt : `Prompt "${sc.prompt}" not found`,
+      ariaLabel: found
+        ? `Run "${sc.prompt}"`
+        : `Prompt "${sc.prompt}" not found`,
+      disabled: !found,
+      onClick: () => found && handleRunListPrompt(prompt),
+    };
+  });
+
+  // List-prompts dropdown menu (opens downward now that the toolbar is on top).
+  const listPromptsMenu = html`
+    <ul
+      class="dropdown-content menu w-64 max-h-72 overflow-y-auto flex-nowrap bg-base-200 rounded-box shadow-xl z-10 mt-1"
+    >
+      ${listPromptsLoading &&
+      html`
+        <li class="px-3 py-2 flex items-center gap-2">
+          <span class="loading loading-spinner w-4 h-4"></span>
+          Loading…
+        </li>
+      `}
+      ${!listPromptsLoading &&
+      listPrompts.length === 0 &&
+      html` <li class="px-3 py-2 opacity-60">No task prompts</li> `}
+      ${!listPromptsLoading &&
+      listPrompts.map((p) => {
+        const PromptIcon = getPromptIconOrDefault(p.icon);
+        return html`
+          <li key=${p.name}>
+            <button
+              type="button"
+              onClick=${() => {
+                const mode = promptLoopMode(p);
+                const opts =
+                  mode === "optional"
+                    ? {
+                        asLoop:
+                          listLoopOn[p.name] !== undefined
+                            ? listLoopOn[p.name]
+                            : promptLoopDefaultOn(p),
+                      }
+                    : undefined;
+                handleRunListPrompt(p, opts);
+              }}
+              title=${p.description || p.name}
+            >
+              <span class="w-4 h-4 shrink-0"
+                ><${PromptIcon} className="w-4 h-4"
+              /></span>
+              <span class="truncate flex-1">${p.name}</span>
+              ${(() => {
+                const mode = promptLoopMode(p);
+                if (mode === "none") return null;
+                if (mode === "optional") {
+                  const on =
+                    listLoopOn[p.name] !== undefined
+                      ? listLoopOn[p.name]
+                      : promptLoopDefaultOn(p);
+                  return html`<input
+                    type="checkbox"
+                    class="checkbox checkbox-sm shrink-0"
+                    style="background-color: transparent"
+                    checked=${on}
+                    title=${on
+                      ? "Loop: ON — click to disable recurring runs"
+                      : "Loop: OFF — click to run as recurring conversation"}
+                    onClick=${(e) => e.stopPropagation()}
+                    onChange=${(e) => {
+                      e.stopPropagation();
+                      setListLoopOn((m) => ({
+                        ...m,
+                        [p.name]: e.target.checked,
+                      }));
+                    }}
+                  />`;
+                }
+                // mode === "always": locked badge (unchanged look)
+                return html`<span
+                  class="shrink-0 text-success opacity-80"
+                  title="Loop prompt — always sets the conversation to recurring mode"
+                  ><${LoopIcon} className="w-3.5 h-3.5"
+                /></span>`;
+              })()}
+            </button>
+          </li>
+        `;
+      })}
+    </ul>
+  `;
+
+  const listToolbarItems = [
+    {
+      kind: "button",
+      testId: "beads-new-issue-btn",
+      icon: html`<${PlusIcon} className="w-4 h-4" />`,
+      tip: "New issue",
+      ariaLabel: "New issue",
+      onClick: openCreate,
+    },
+    {
+      kind: "dropdown",
+      testId: "beads-list-prompts-btn",
+      icon: html`<${LightningIcon} className="w-4 h-4" />`,
+      tip: "Run a prompt over the issue list in a new conversation",
+      ariaLabel: "Run a prompt over the issue list in a new conversation",
+      open: showListPrompts,
+      onToggle: handleListPromptsToggle,
+      menu: listPromptsMenu,
+    },
+    {
+      kind: "button",
+      testId: "beads-refresh-btn",
+      icon: html`<${RefreshIcon} className="w-4 h-4" />`,
+      tip: "Refresh",
+      ariaLabel: "Refresh",
+      onClick: fetchList,
+    },
+    {
+      kind: "button",
+      testId: "beads-cleanup-btn",
+      icon: html`<${BroomIcon} className="w-4 h-4 group-hover:text-red-400" />`,
+      tip: cleanupTip,
+      ariaLabel: cleanupAria,
+      className: "group",
+      disabled: closedCount === 0 || cleaningUp,
+      onClick: () => {
+        if (closedCount === 0 || cleaningUp) return;
+        setShowCleanupConfirm(true);
+      },
+    },
+    ...(upstream && upstream !== "none"
+      ? [{ kind: "separator" }, ...upstreamItems]
+      : []),
+    ...(shortcuts.length > 0 ? [{ kind: "separator" }, ...shortcutItems] : []),
+  ];
+
   return html`
     <div class="relative flex h-full overflow-hidden">
     <div class="flex flex-col flex-1 min-w-0 overflow-hidden">
-      <div class="flex items-center gap-2 p-4 border-b border-mitto-border shrink-0">
+      <div class="flex items-center gap-2 p-4 shrink-0">
         <button
           onClick=${() => onShowSidebar && onShowSidebar()}
           class="btn btn-ghost btn-square btn-sm md:hidden shrink-0 inline-flex tooltip tooltip-bottom"
@@ -4191,7 +4859,24 @@ export function BeadsView({
         >
           <${MenuIcon} className="w-6 h-6" />
         </button>
-        <span class="font-semibold text-lg flex-1">Tasks — ${workspaceLabel}</span>
+        <span class="font-semibold text-2xl flex-1">Tasks — ${workspaceLabel}</span>
+      </div>
+
+      <!-- List-level actions rendered via the portable Toolbar component
+           (components/Toolbar.js) as a floating "pill", vertically aligned with
+           the sidebar toolbar. The wrapper carries listPromptsRef so the
+           existing outside-click handler still closes the prompts dropdown. -->
+      <div
+        class="px-3 pb-2 shrink-0"
+        ref=${listPromptsRef}
+        data-testid="beads-actions-toolbar"
+      >
+        <${Toolbar}
+          variant="block"
+          surface="bg-mitto-surface-3"
+          ariaLabel="Task list actions"
+          items=${listToolbarItems}
+        />
       </div>
 
       <div class="beads-toolbar flex items-center gap-2 px-4 border-b border-mitto-border shrink-0">
@@ -4270,9 +4955,11 @@ export function BeadsView({
                 }}
               >
                 <span class="w-4 h-4 shrink-0">
-                  ${typeFilter === "all"
-                    ? html`<${CheckIcon} className="w-4 h-4" />`
-                    : null}
+                  ${
+                    typeFilter === "all"
+                      ? html`<${CheckIcon} className="w-4 h-4" />`
+                      : null
+                  }
                 </span>
                 <span class="flex-1">All types</span>
               </button>
@@ -4439,7 +5126,7 @@ export function BeadsView({
                 No issues found
               </div>
               <div class="text-mitto-text-muted text-xs">
-                Create a new issue by pressing the "+" button below.
+                Create a new issue by pressing the "+" button above.
               </div>
             </div>
           `
@@ -4463,297 +5150,15 @@ export function BeadsView({
         }
       </div>
 
-      <div class="flex items-center gap-1 p-4 border-t border-mitto-border shrink-0">
-        <button
-          onClick=${openCreate}
-          class="btn btn-ghost btn-square btn-sm inline-flex tooltip tooltip-top"
-          data-tip="New issue"
-          aria-label="New issue"
+      <!-- Bottom status bar: issue count + tasks-configuration gear. The
+           action buttons moved to the top Toolbar pill; this area keeps only
+           the statistics and the config affordance. -->
+      <div
+        class="flex items-center gap-1 p-4 border-t border-mitto-border shrink-0"
+      >
+        <span class="text-xs text-mitto-text-secondary ml-auto"
+          >${filtered.length} issue${filtered.length === 1 ? "" : "s"}</span
         >
-          <${PlusIcon} className="w-4 h-4" />
-        </button>
-        <div class="relative" ref=${listPromptsRef}>
-          <button
-            type="button"
-            onClick=${toggleListPrompts}
-            class="btn btn-ghost btn-square btn-sm inline-flex tooltip tooltip-top"
-            data-tip="Run a prompt over the issue list in a new conversation"
-            aria-label="Run a prompt over the issue list in a new conversation"
-          >
-            <${ChevronUpIcon} className="w-4 h-4" />
-          </button>
-          ${
-            showListPrompts &&
-            html`
-              <ul
-                class="menu absolute bottom-full left-0 mb-2 w-64 max-h-72 overflow-y-auto flex-nowrap bg-base-200 rounded-box shadow-xl z-10"
-              >
-                ${listPromptsLoading &&
-                html`
-                  <li class="px-3 py-2 flex items-center gap-2">
-                    <span class="loading loading-spinner w-4 h-4"></span>
-                    Loading…
-                  </li>
-                `}
-                ${!listPromptsLoading &&
-                listPrompts.length === 0 &&
-                html` <li class="px-3 py-2 opacity-60">No task prompts</li> `}
-                ${!listPromptsLoading &&
-                listPrompts.map((p) => {
-                  const PromptIcon = getPromptIconOrDefault(p.icon);
-                  return html`
-                    <li key=${p.name}>
-                      <button
-                        type="button"
-                        onClick=${() => {
-                          const mode = promptPeriodicMode(p);
-                          const opts =
-                            mode === "optional"
-                              ? {
-                                  asPeriodic:
-                                    listPeriodicOn[p.name] !== undefined
-                                      ? listPeriodicOn[p.name]
-                                      : promptPeriodicDefaultOn(p),
-                                }
-                              : undefined;
-                          handleRunListPrompt(p, opts);
-                        }}
-                        title=${p.description || p.name}
-                      >
-                        <span class="w-4 h-4 shrink-0"
-                          ><${PromptIcon} className="w-4 h-4"
-                        /></span>
-                        <span class="truncate flex-1">${p.name}</span>
-                        ${(() => {
-                          const mode = promptPeriodicMode(p);
-                          if (mode === "none") return null;
-                          if (mode === "optional") {
-                            const on =
-                              listPeriodicOn[p.name] !== undefined
-                                ? listPeriodicOn[p.name]
-                                : promptPeriodicDefaultOn(p);
-                            return html`<input
-                              type="checkbox"
-                              class="checkbox checkbox-sm shrink-0"
-                              style="background-color: transparent"
-                              checked=${on}
-                              title=${on
-                                ? "Periodic: ON — click to disable recurring runs"
-                                : "Periodic: OFF — click to run as recurring conversation"}
-                              onClick=${(e) => e.stopPropagation()}
-                              onChange=${(e) => {
-                                e.stopPropagation();
-                                setListPeriodicOn((m) => ({
-                                  ...m,
-                                  [p.name]: e.target.checked,
-                                }));
-                              }}
-                            />`;
-                          }
-                          // mode === "always": locked badge (unchanged look)
-                          return html`<span
-                            class="shrink-0 text-success opacity-80"
-                            title="Periodic prompt — always sets the conversation to recurring mode"
-                            ><${PeriodicIcon} className="w-3.5 h-3.5"
-                          /></span>`;
-                        })()}
-                      </button>
-                    </li>
-                  `;
-                })}
-              </ul>
-            `
-          }
-        </div>
-        <button
-          onClick=${fetchList}
-          class="btn btn-ghost btn-square btn-sm inline-flex tooltip tooltip-top"
-          data-tip="Refresh"
-          aria-label="Refresh"
-        >
-          <${RefreshIcon} className="w-4 h-4" />
-        </button>
-        <button
-          onClick=${() => {
-            if (closedCount === 0 || cleaningUp) return;
-            setShowCleanupConfirm(true);
-          }}
-          aria-disabled=${closedCount === 0 || cleaningUp ? "true" : "false"}
-          class="btn btn-ghost btn-square btn-sm group inline-flex tooltip tooltip-top ${closedCount === 0 || cleaningUp ? "opacity-40 pointer-events-none" : ""}"
-          data-tip=${cleaningUp && cleanupProgress && cleanupProgress.total > 0 ? `Removing ${cleanupProgress.deleted}/${cleanupProgress.total}…` : closedCount === 0 ? "No closed issues to clean up" : `Clean up ${closedCount} closed issue${closedCount === 1 ? "" : "s"}`}
-          aria-label=${closedCount === 0 ? "No closed issues to clean up" : `Clean up ${closedCount} closed issue${closedCount === 1 ? "" : "s"}`}
-        >
-          <${BroomIcon} className="w-4 h-4 group-hover:text-red-400" />
-        </button>
-
-        ${
-          upstream &&
-          upstream !== "none" &&
-          html`
-            <div
-              class="flex items-center gap-1 pl-2 ml-1 border-l border-mitto-border"
-            >
-              ${upstream === "prompts"
-                ? html`
-                    <button
-                      onClick=${() => {
-                        if (!pullPromptName || !onLaunchPrompt) return;
-                        onLaunchPrompt("pull", pullPromptName);
-                      }}
-                      aria-disabled=${!pullPromptName || !onLaunchPrompt
-                        ? "true"
-                        : "false"}
-                      class="btn btn-ghost btn-square btn-sm inline-flex tooltip tooltip-top ${!pullPromptName ||
-                      !onLaunchPrompt
-                        ? "opacity-40 pointer-events-none"
-                        : ""}"
-                      data-tip=${pullPromptName
-                        ? `Pull: run "${pullPromptName}"`
-                        : "No pull prompt configured"}
-                      aria-label=${pullPromptName
-                        ? `Pull: run "${pullPromptName}"`
-                        : "No pull prompt configured"}
-                    >
-                      <${ArrowDownIcon} className="w-4 h-4" />
-                    </button>
-                    <button
-                      onClick=${() => {
-                        if (!pushPromptName || !onLaunchPrompt) return;
-                        onLaunchPrompt("push", pushPromptName);
-                      }}
-                      aria-disabled=${!pushPromptName || !onLaunchPrompt
-                        ? "true"
-                        : "false"}
-                      class="btn btn-ghost btn-square btn-sm inline-flex tooltip tooltip-top ${!pushPromptName ||
-                      !onLaunchPrompt
-                        ? "opacity-40 pointer-events-none"
-                        : ""}"
-                      data-tip=${pushPromptName
-                        ? `Push: run "${pushPromptName}"`
-                        : "No push prompt configured"}
-                      aria-label=${pushPromptName
-                        ? `Push: run "${pushPromptName}"`
-                        : "No push prompt configured"}
-                    >
-                      <${ArrowUpIcon} className="w-4 h-4" />
-                    </button>
-                    <button
-                      onClick=${() => {
-                        if (!syncPromptName || !onLaunchPrompt) return;
-                        onLaunchPrompt("sync", syncPromptName);
-                      }}
-                      aria-disabled=${!syncPromptName || !onLaunchPrompt
-                        ? "true"
-                        : "false"}
-                      class="btn btn-ghost btn-square btn-sm inline-flex tooltip tooltip-top ${!syncPromptName ||
-                      !onLaunchPrompt
-                        ? "opacity-40 pointer-events-none"
-                        : ""}"
-                      data-tip=${syncPromptName
-                        ? `Sync: run "${syncPromptName}"`
-                        : "No sync prompt configured"}
-                      aria-label=${syncPromptName
-                        ? `Sync: run "${syncPromptName}"`
-                        : "No sync prompt configured"}
-                    >
-                      <${SyncIcon} className="w-4 h-4" />
-                    </button>
-                  `
-                : html`
-                    <button
-                      onClick=${() => {
-                        if (syncAction) return;
-                        handleSync("pull");
-                      }}
-                      aria-disabled=${syncAction ? "true" : "false"}
-                      class="btn btn-ghost btn-square btn-sm inline-flex tooltip tooltip-top ${syncAction
-                        ? "opacity-40 pointer-events-none"
-                        : ""}"
-                      data-tip=${`Pull from ${UPSTREAM_LABELS[upstream] || upstream}`}
-                      aria-label=${`Pull from ${UPSTREAM_LABELS[upstream] || upstream}`}
-                    >
-                      ${syncAction === "pull"
-                        ? html`<span
-                            class="loading loading-spinner w-4 h-4"
-                          ></span>`
-                        : html`<${ArrowDownIcon} className="w-4 h-4" />`}
-                    </button>
-                    <button
-                      onClick=${() => {
-                        if (syncAction) return;
-                        handleSync("push");
-                      }}
-                      aria-disabled=${syncAction ? "true" : "false"}
-                      class="btn btn-ghost btn-square btn-sm inline-flex tooltip tooltip-top ${syncAction
-                        ? "opacity-40 pointer-events-none"
-                        : ""}"
-                      data-tip=${`Push to ${UPSTREAM_LABELS[upstream] || upstream}`}
-                      aria-label=${`Push to ${UPSTREAM_LABELS[upstream] || upstream}`}
-                    >
-                      ${syncAction === "push"
-                        ? html`<span
-                            class="loading loading-spinner w-4 h-4"
-                          ></span>`
-                        : html`<${ArrowUpIcon} className="w-4 h-4" />`}
-                    </button>
-                    <button
-                      onClick=${() => {
-                        if (syncAction) return;
-                        handleSync("sync");
-                      }}
-                      aria-disabled=${syncAction ? "true" : "false"}
-                      class="btn btn-ghost btn-square btn-sm inline-flex tooltip tooltip-top ${syncAction
-                        ? "opacity-40 pointer-events-none"
-                        : ""}"
-                      data-tip=${`Sync with ${UPSTREAM_LABELS[upstream] || upstream} (pull then push)`}
-                      aria-label=${`Sync with ${UPSTREAM_LABELS[upstream] || upstream} (pull then push)`}
-                    >
-                      ${syncAction === "sync"
-                        ? html`<span
-                            class="loading loading-spinner w-4 h-4"
-                          ></span>`
-                        : html`<${SyncIcon} className="w-4 h-4" />`}
-                    </button>
-                  `}
-            </div>
-          `
-        }
-
-        ${shortcuts.length > 0 &&
-          html`
-            <div
-              class="flex items-center gap-1 pl-2 ml-1 border-l border-mitto-border"
-            >
-              ${shortcuts.map((sc, i) => {
-                const prompt = shortcutPromptMap.get(sc.prompt);
-                const found = !!prompt;
-                // Empty shortcut icon → fall back to the linked prompt's own icon.
-                const Icon = getPromptIconOrDefault(sc.icon || prompt?.icon);
-                return html`
-                  <button
-                    key=${i}
-                    type="button"
-                    onClick=${() => found && handleRunListPrompt(prompt)}
-                    aria-disabled=${found ? "false" : "true"}
-                    class="btn btn-ghost btn-square btn-sm inline-flex tooltip tooltip-top ${found ? "" : "opacity-40 pointer-events-none"}"
-                    data-tip=${found
-                      ? `Run "${sc.prompt}"`
-                      : `Prompt "${sc.prompt}" not found`}
-                    aria-label=${found
-                      ? `Run "${sc.prompt}"`
-                      : `Prompt "${sc.prompt}" not found`}
-                  >
-                    <span class="w-4 h-4">
-                      <${Icon} className="w-4 h-4" />
-                    </span>
-                  </button>
-                `;
-              })}
-            </div>
-          `}
-
-        <span class="text-xs text-mitto-text-secondary ml-auto">${filtered.length} issue${filtered.length === 1 ? "" : "s"}</span>
-
         ${
           onOpenConfig &&
           html`

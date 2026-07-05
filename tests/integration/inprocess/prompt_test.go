@@ -384,7 +384,7 @@ func TestTemplateRender_CoexistWithMitto(t *testing.T) {
 // instead of aborting the send. This is intentional (see the isAutomatedDispatch
 // comment in prompt_dispatcher.go): pasted text containing "{{" must still be
 // delivered literally for direct human input. Named prompts and automated
-// dispatches (queue, periodic-runner) still fail closed.
+// dispatches (queue, loop-runner) still fail closed.
 func TestTemplateRender_FailOpen_RawMessage(t *testing.T) {
 	ts, orderFile := setupDeferredConfigServer(t)
 
@@ -456,18 +456,18 @@ func truncate(s string, maxLen int) string {
 	return s[:maxLen]
 }
 
-// TestTemplateRender_PeriodicRun verifies that Go template rendering works correctly
-// on the periodic-run dispatch path: .Session.IsPeriodic == true and
-// .Session.IsPeriodicForced == true when triggered via RunPeriodicNow (manual "run now").
-func TestTemplateRender_PeriodicRun(t *testing.T) {
+// TestTemplateRender_LoopRun verifies that Go template rendering works correctly
+// on the loop-run dispatch path: .Session.IsLoop == true and
+// .Session.IsLoopForced == true when triggered via RunLoopNow (manual "run now").
+func TestTemplateRender_LoopRun(t *testing.T) {
 	ts, orderFile := setupDeferredConfigServer(t)
 
-	// Write a named prompt whose body uses the periodic context fields.
-	writeTemplatePrompt(t, ts, "tmpl-periodic", "tmpl-periodic",
-		`PeriodicMarker: {{ if .Session.IsPeriodic }}PERIODIC{{ else }}ONESHOT{{ end }}{{ if .Session.IsPeriodicForced }}-FORCED{{ end }}`)
+	// Write a named prompt whose body uses the loop context fields.
+	writeTemplatePrompt(t, ts, "tmpl-loop", "tmpl-loop",
+		`LoopMarker: {{ if .Session.IsLoop }}LOOP{{ else }}ONESHOT{{ end }}{{ if .Session.IsLoopForced }}-FORCED{{ end }}`)
 
-	// Create session without an initial prompt (avoids a concurrent-prompt 409 during SetPeriodic).
-	sess, err := ts.Client.CreateSession(client.CreateSessionRequest{Name: "periodic-template-test"})
+	// Create session without an initial prompt (avoids a concurrent-prompt 409 during SetLoop).
+	sess, err := ts.Client.CreateSession(client.CreateSessionRequest{Name: "loop-template-test"})
 	if err != nil {
 		t.Fatalf("CreateSession: %v", err)
 	}
@@ -491,50 +491,50 @@ func TestTemplateRender_PeriodicRun(t *testing.T) {
 		t.Fatalf("LoadEvents: %v", err)
 	}
 
-	// Configure periodic with the named template prompt.
-	cfg, err := ts.Client.SetPeriodic(sess.SessionID, client.SetPeriodicRequest{
-		PromptName: "tmpl-periodic",
-		Frequency:  client.PeriodicFrequency{Value: 1, Unit: "hours"},
+	// Configure loop with the named template prompt.
+	cfg, err := ts.Client.SetLoop(sess.SessionID, client.SetLoopRequest{
+		PromptName: "tmpl-loop",
+		Frequency:  client.LoopFrequency{Value: 1, Unit: "hours"},
 		Enabled:    true,
 	})
 	if err != nil {
-		t.Fatalf("SetPeriodic: %v", err)
+		t.Fatalf("SetLoop: %v", err)
 	}
 	if !cfg.Enabled {
-		t.Fatalf("expected enabled=true after SetPeriodic, got false")
+		t.Fatalf("expected enabled=true after SetLoop, got false")
 	}
 
-	// Trigger run 1 via RunPeriodicNow (the manual "run now" path; forced=true → IsPeriodicForced=true).
-	if err := ts.Client.RunPeriodicNow(sess.SessionID, true); err != nil {
-		t.Fatalf("RunPeriodicNow: %v", err)
+	// Trigger run 1 via RunLoopNow (the manual "run now" path; forced=true → IsLoopForced=true).
+	if err := ts.Client.RunLoopNow(sess.SessionID, true); err != nil {
+		t.Fatalf("RunLoopNow: %v", err)
 	}
 
-	// Wait for the periodic prompt to complete.
+	// Wait for the loop prompt to complete.
 	waitFor(t, 25*time.Second, func() bool {
 		mu.Lock()
 		defer mu.Unlock()
 		return completes >= 1
-	}, "periodic prompt complete")
+	}, "loop prompt complete")
 
 	// Inspect the rendered text the mock agent received.
 	lines := readRPCOrder(t, orderFile)
-	got := promptLineFor(lines, "PeriodicMarker:")
+	got := promptLineFor(lines, "LoopMarker:")
 	if got == "" {
-		t.Fatalf("PeriodicMarker: line not found in RPC order; all lines: %v", lines)
+		t.Fatalf("LoopMarker: line not found in RPC order; all lines: %v", lines)
 	}
 	t.Logf("captured line: %q", got)
 
-	// Core acceptance: template must see IsPeriodic == true.
-	if !strings.Contains(got, "PERIODIC") {
-		t.Errorf("expected PERIODIC in rendered line, got %q", got)
+	// Core acceptance: template must see IsLoop == true.
+	if !strings.Contains(got, "LOOP") {
+		t.Errorf("expected LOOP in rendered line, got %q", got)
 	}
 	if strings.Contains(got, "ONESHOT") {
-		t.Errorf("ONESHOT rendered — IsPeriodic was false; got %q", got)
+		t.Errorf("ONESHOT rendered — IsLoop was false; got %q", got)
 	}
 
-	// RunPeriodicNow sets IsPeriodicForced=true (periodic_runner.go:TriggerNow forced=true).
+	// RunLoopNow sets IsLoopForced=true (loop_runner.go:TriggerNow forced=true).
 	if !strings.Contains(got, "-FORCED") {
-		t.Errorf("expected -FORCED in rendered line (RunPeriodicNow sets IsPeriodicForced=true); got %q", got)
+		t.Errorf("expected -FORCED in rendered line (RunLoopNow sets IsLoopForced=true); got %q", got)
 	}
 }
 

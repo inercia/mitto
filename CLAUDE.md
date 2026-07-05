@@ -64,6 +64,7 @@ go test -v -tags integration ./tests/integration/inprocess/
 - **Log authoritative source**: Check `events.jsonl` (session dir) when debugging; server logs rotate and have gaps.
 - **daisyUI drawer GPU bug**: `.drawer-side` + fixed-position overlay compete for pointer events → blank artifacts. Fix: See `web/static/styles.css` for verified pattern. Do NOT use `translateZ(0)`.
 - **Zombie WebSocket recovery**: When phone sleeps or app backgrounded, WS may enter "zombie" state (appearing open but dead). On visibility change or app activate, force-close and reconnect. This is expected behavior — not a bug. See `.augment/rules/23-web-frontend-mobile.md` for resilience patterns.
+- **Verify prior edits actually persisted**: Don't trust that a previous turn's file edits are still on disk (session gaps, restarts, or reverted stashes can silently drop them). Before continuing/relying on earlier work, re-check with `git status`/`git diff` or re-view the file rather than assuming.
 
 ## New Agent Capability Checklist
 
@@ -73,46 +74,30 @@ go test -v -tags integration ./tests/integration/inprocess/
 4. Store in `useWebSocket.js` and pass through `app.js`
 5. Update mock ACP server and add integration test
 
-## Go 1.22+ Routing Pattern (Complete)
+## Go 1.22+ Routing Pattern
 
-**Status**: ✅ COMPLETE. Eliminated `strings.Split` path-parsing via Go 1.22+ `http.ServeMux` method+pattern routing with `r.PathValue()`.
-
-**Pattern**: Extract path params, validate, delegate to handler:
-```go
-func (s *Server) handleSessionGet(w http.ResponseWriter, r *http.Request) {
-    if id, ok := s.sessionIDFromPath(w, r); ok {
-        s.apiHandlers.HandleGetSession(w, r, id, false)
-    }
-}
-```
-
-**Route table** (`routes.go`): Declarative method+pattern entries (no subtree fallback):
+`http.ServeMux` method+pattern routing (`r.PathValue()`), no manual path parsing. Route table (`routes.go`) is declarative:
 ```go
 apiRoute{http.MethodGet, "/api/sessions/{id}", s.handleSessionGet},
-apiRoute{http.MethodPatch, "/api/sessions/{id}", s.handleSessionUpdate},
-apiRoute{http.MethodDelete, "/api/sessions/{id}", s.handleSessionDelete},
 ```
 
-## Frontend authFetch Pattern (Complete)
+## Frontend authFetch Pattern
 
-**Pattern**: Use `authFetch(url, options?)` for all authenticated API calls. Ensures `credentials: "include"` (cross-origin/Tailscale safe) + unified 401 handling.
-
+Use `authFetch(url, options?)` for all authenticated calls — adds `credentials: "include"` + unified 401 handling. URLs always from `web/static/utils/endpoints.js` (never hardcoded):
 ```javascript
-// Use endpoints registry (never hardcoded URLs)
-const response = await authFetch(endpoints.config.get());
 const response = await authFetch(endpoints.sessions.get(sessionId));
 ```
+Exception: public endpoints (e.g. `/api/supported-runners`) use raw `fetch` with `same-origin`.
 
-**Key**: All URLs come from `web/static/utils/endpoints.js` registry. Never construct URLs manually.
+## Reusable Config-Driven Components
 
-**Defense-in-depth**: Add explicit 401 guard in critical paths:
+**Toolbar** (`Toolbar.js`) — segmented-pill action bar from an `items` array (`button`/`dropdown`/`overflow`/`separator`/`spacer`/`custom`). Prefer over bespoke "..." kebab menus.
 ```javascript
-if (response.status === 401) { redirectToLogin(); return; }
+html`<${Toolbar} variant="block" surface="bg-mitto-surface-3" items=${headerToolbarItems} />`
 ```
+Used in `BeadsView.js` (list actions + issue-detail header).
 
-**Public vs. authenticated**:
-- ✅ `authFetch`: All authenticated endpoints (via `endpoints` builders)
-- ❌ Keep raw `fetch` with `same-origin`: Public endpoints like `/api/supported-runners`
+**ShortcutsEditor** (`ShortcutsEditor.js`) — one panel reused for both **global** (Settings dialog) and **folder** (Workspaces dialog) shortcut config. The three consumers (conversations/beadsIssue/tasksList toolbars) merge global + folder shortcuts **at render time**: global entries first, folder entries whose `prompt` duplicates a global one are dropped; any remaining duplicate renders greyed-out via `redundantPromptNames`. Backend: `config.ShortcutButton{Icon, Prompt}`, mirrored `GET/PUT /api/global/shortcuts` (`internal/web/handlers/global_shortcuts.go`). Refresh via `mitto:global_shortcuts_updated`/`mitto:folder_shortcuts_updated` window events — no reload needed. Safe defaults seeded in `config/config.default.yaml` (`shortcuts:`, new installs only).
 
 ## Model Selection & Preferred Models
 
@@ -132,14 +117,27 @@ Prompts can declare `preferredModels:` to route to specific ACP models. `selectP
 - **Processors**: Always see the real tool list (fail-open is disabled internally)
 - Once tools are fetched, evaluation uses the actual list. Useful for tool-gated prompt/processor gating via `enabledWhen`
 
-## Periodic Conversations
+## MCP Tool Discovery
 
-**onCompletion trigger** (distinct from schedule-based periodic):
+Two-tier discovery for `enabledWhen`/CEL `tools.*` gating (see `docs/devel/mcp-tool-discovery.md`):
+1. **Deterministic** (`internal/mcpdiscovery`): connects directly to configured MCP servers (stdio/http/sse) via `modelcontextprotocol/go-sdk` client and calls `tools/list`. Preferred — no LLM involved.
+2. **LLM fallback** (`internal/auxiliary/workspace_manager.go` `fetchMCPToolsViaLLM`): used only when a server can't be reached deterministically. `parseMCPToolsList` (`utils.go`) is **strict**: whole trimmed/unfenced response must be one JSON object with `tools`/`error` keys — no substring or bare-array extraction (that leniency caused false negatives/hallucinated tools). Retries once with a reminder prompt on parse failure or an implausible zero-tools result (checked against the deterministically-known configured server count).
+3. **Disk persistence** (mitto-sys.8): deterministic tool lists survive restarts via `appdir.MCPToolsCacheDir()` (`$MITTO_DIR/mcp-tools-cache`), one JSON snapshot per workspace, 15-min TTL (`persistedMCPTools` + `loadPersistedMCPTools`/`savePersistedMCPTools` in `workspace_manager.go`). The **LLM fallback is never written to disk** — in-memory only. `ClearMCPToolsCache` also deletes the snapshot, forcing re-probe.
+
+**Anti-pattern**: lenient JSON extraction (searching for `{...}` substrings or bare arrays in free-form LLM text) silently accepts malformed/partial answers. Prefer strict whole-response parsing + explicit retry over "try to salvage whatever looks like JSON."
+
+`checkRequiredToolPatterns` (`internal/web/session_ws.go`) no longer runs a blind 30/60/120s `prompts_changed` re-broadcast timer (removed, mitto-sys.12) — it emits one immediate broadcast; late/changed tools surface only via the event-driven watcher and bounded-backoff paths above.
+
+Per-agent `mcp-list.sh` config paths/keys are **not** interchangeable across agents — verify against real docs before writing/trusting one (audit + known-broken scripts: `.augment/rules/42-mcpserver-development.md`).
+
+## Loop Conversations
+
+**onCompletion trigger** (distinct from schedule-based loop):
 - Re-fires automatically 30s after agent finishes each turn (configurable `delay_seconds`)
-- Green "Running" pill = `periodic_enabled: true`, NOT generic "agent is active" status
+- Green "Running" pill = `loop_enabled: true`, NOT generic "agent is active" status
 - Limited by `max_iterations` and `max_duration_seconds`
-- Free-text periodic prompts NOT sent to frontend → selector can't display them (UI gap)
-- `app.js` line ~1928: `headerPeriodicState()` returns `{ state, label, badgeClass }` pill object
+- Free-text loop prompts NOT sent to frontend → selector can't display them (UI gap)
+- `app.js` line ~1928: `headerLoopState()` returns `{ state, label, badgeClass }` pill object
 - Issue `mitto-36nm` tracks UI clarity improvement (prompt visibility + pill disambiguation)
 
 ## Tokensave Rule (Mandatory)

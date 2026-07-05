@@ -40,7 +40,10 @@ import {
   MittoIcon,
   CopyIcon,
   ErrorIcon,
+  SlidersIcon,
 } from "./Icons.js";
+
+import { promptParameters } from "../utils/prompts.js";
 
 import { ConfirmDialog } from "./ConfirmDialog.js";
 import { Modal } from "./Modal.js";
@@ -52,9 +55,30 @@ import {
 } from "./SettingsDialog.js";
 
 import { ModelProfileSelect } from "./ModelProfileSelect.js";
+import { ModelTagSelect } from "./ModelTagSelect.js";
 import { Tooltip } from "./Tooltip.js";
-import { IconPicker } from "./IconPicker.js";
+import { ShortcutsEditor } from "./ShortcutsEditor.js";
 import { promptMenuIncludes } from "../utils/prompts.js";
+
+// Section descriptors for the folder Shortcuts tab. Section IDs match those
+// persisted on the server (folders.json) and used by the render-time toolbars.
+const SHORTCUT_SECTIONS = [
+  {
+    id: "tasksList",
+    label: "Tasks list",
+    desc: "Buttons shown in the Tasks list toolbar.",
+  },
+  {
+    id: "conversations",
+    label: "Conversation",
+    desc: "Buttons shown in the conversation toolbar; run in the current conversation.",
+  },
+  {
+    id: "beadsIssue",
+    label: "Beads issue",
+    desc: "Buttons shown in the beads issue detail toolbar; start a new conversation for the issue.",
+  },
+];
 
 // Flatten the canonical nested error envelope {error:{code,message,details}} to a
 // flat message string. Returns "" when there is no error. Also accepts the legacy
@@ -176,6 +200,7 @@ export function WorkspacesDialog({
   initialWorkingDir,
   initialTab,
   showToast,
+  onOpenPromptParamDialog,
 }) {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -195,6 +220,12 @@ export function WorkspacesDialog({
   // so we hand the desired tab off here and consume it there.
   const pendingInitialTabRef = useRef(null);
 
+  // Tracks the workspace whose transient edit fields are currently loaded, so we
+  // can flush those edits back into the `workspaces` array before switching to a
+  // different workspace. Without this, edits to multiple workspaces in a single
+  // dialog session would be lost (only the last-selected workspace would save).
+  const prevSelectedWorkspaceKeyRef = useRef(null);
+
   // Key of a newly created workspace that doesn't have a valid working_dir yet
   const [newFolderKey, setNewFolderKey] = useState(null);
 
@@ -207,6 +238,7 @@ export function WorkspacesDialog({
   const [editGroup, setEditGroup] = useState("");
   const [editAcpServer, setEditAcpServer] = useState("");
   const [editAuxModelProfile, setEditAuxModelProfile] = useState("");
+  const [editAuxModelTag, setEditAuxModelTag] = useState("");
   // Whether the user has explicitly cleared a legacy raw auxiliary model
   // constraint by picking "-- None --" (vs. never having touched the control).
   const [editAuxModelConstraintCleared, setEditAuxModelConstraintCleared] =
@@ -278,7 +310,17 @@ export function WorkspacesDialog({
   const [shortcutsLoading, setShortcutsLoading] = useState(false);
   const [shortcutsLoaded, setShortcutsLoaded] = useState(false);
   const [shortcutsError, setShortcutsError] = useState("");
-  const [tasksListPrompts, setTasksListPrompts] = useState([]);
+  // Per-section prompt lists, filtered by the section's prompt menu tag and
+  // sorted by name. Section ids match those persisted on the server side.
+  const [sectionPrompts, setSectionPrompts] = useState({
+    tasksList: [],
+    conversations: [],
+    beadsIssue: [],
+  });
+  // Global shortcut sections (from settings.json). Used only to derive which
+  // prompts are already configured globally so they can be excluded from the
+  // folder-level dropdowns and any duplicate folder rows greyed out.
+  const [globalShortcutsSections, setGlobalShortcutsSections] = useState({});
 
   // Folder beads config state (for the Beads Config tab) — UI wrapper over `bd config`.
   // beadsConfig holds the raw {key: value} map last loaded from the server.
@@ -297,7 +339,11 @@ export function WorkspacesDialog({
   const [beadsPullPrompt, setBeadsPullPrompt] = useState("");
   const [beadsPushPrompt, setBeadsPushPrompt] = useState("");
   const [beadsSyncPrompt, setBeadsSyncPrompt] = useState("");
-  // Available argument-free, enabled folder prompts (populated when upstream === "prompts").
+  // Saved argument maps (name→string) for each prompt action.
+  const [beadsPullPromptArgs, setBeadsPullPromptArgs] = useState({});
+  const [beadsPushPromptArgs, setBeadsPushPromptArgs] = useState({});
+  const [beadsSyncPromptArgs, setBeadsSyncPromptArgs] = useState({});
+  // Available enabled folder prompts (populated when upstream === "prompts").
   const [beadsUpstreamPrompts, setBeadsUpstreamPrompts] = useState([]);
   const [beadsUpstreamPromptsLoading, setBeadsUpstreamPromptsLoading] =
     useState(false);
@@ -505,9 +551,24 @@ export function WorkspacesDialog({
 
   // When a workspace child is selected, populate workspace-level edit fields
   useEffect(() => {
+    // Flush the previously-selected workspace's transient edits into the
+    // workspaces array before repopulating the fields for the new selection.
+    // The scalar edit state (editAcpServer, editAuxModelProfile, etc.) still
+    // holds the previous workspace's values at this point, so applying them
+    // against prevKey commits those edits. This also runs when navigating to a
+    // folder (selectedWorkspaceKey becomes null) so edits are not lost there.
+    const prevKey = prevSelectedWorkspaceKeyRef.current;
+    if (prevKey && prevKey !== selectedWorkspaceKey) {
+      setWorkspaces((prev) =>
+        prev.map((ws) => buildWorkspaceEditsFor(ws, prevKey)),
+      );
+    }
+    prevSelectedWorkspaceKeyRef.current = selectedWorkspaceKey;
+
     if (!selectedWorkspace) return;
     setEditAcpServer(selectedWorkspace.acp_server || "");
     setEditAuxModelProfile(selectedWorkspace.auxiliary_model_profile || "");
+    setEditAuxModelTag(selectedWorkspace.auxiliary_model_tag || "");
     setEditAuxModelConstraintCleared(false);
     setEditAcpCommandOverride(selectedWorkspace.acp_command_override || "");
     setEditRunner(selectedWorkspace.restricted_runner || "exec");
@@ -623,6 +684,9 @@ export function WorkspacesDialog({
     setBeadsPullPrompt("");
     setBeadsPushPrompt("");
     setBeadsSyncPrompt("");
+    setBeadsPullPromptArgs({});
+    setBeadsPushPromptArgs({});
+    setBeadsSyncPromptArgs({});
     setBeadsUpstreamPrompts([]);
   }, [selectedFolder]);
 
@@ -637,6 +701,12 @@ export function WorkspacesDialog({
       authFetch(endpoints.folders.shortcuts({ working_dir: workingDir }))
         .then((r) => r.json())
         .then((data) => setShortcutsSections(data.sections || {})),
+      // Global shortcuts: prompts already configured here are excluded from the
+      // folder dropdowns (and any duplicate folder rows are greyed out).
+      authFetch(endpoints.global.shortcuts())
+        .then((r) => r.json())
+        .then((data) => setGlobalShortcutsSections(data.sections || {}))
+        .catch(() => setGlobalShortcutsSections({})),
       authFetch(
         endpoints.workspacePrompts.list({
           working_dir: workingDir,
@@ -646,26 +716,36 @@ export function WorkspacesDialog({
         .then((r) => r.json())
         .then((data) => {
           const all = data.prompts || [];
-          const filtered = all
-            .filter((p) => promptMenuIncludes(p, "beadsList"))
-            .sort((a, b) => a.name.localeCompare(b.name));
-          setTasksListPrompts(filtered);
+          const byMenu = (menu) =>
+            all
+              .filter((p) => promptMenuIncludes(p, menu))
+              .sort((a, b) => a.name.localeCompare(b.name));
+          setSectionPrompts({
+            tasksList: byMenu("beadsList"),
+            conversations: byMenu("prompts"),
+            beadsIssue: byMenu("beadsIssues"),
+          });
         }),
     ])
       .then(() => setShortcutsLoaded(true))
-      .catch((err) => setShortcutsError("Failed to load shortcuts: " + err.message))
+      .catch((err) =>
+        setShortcutsError("Failed to load shortcuts: " + err.message),
+      )
       .finally(() => setShortcutsLoading(false));
   }, [activeTab, selectedFolder]);
 
   // Reset shortcuts state when switching folders.
   useEffect(() => {
     setShortcutsSections({});
-    setTasksListPrompts([]);
+    setSectionPrompts({ tasksList: [], conversations: [], beadsIssue: [] });
     setShortcutsError("");
     setShortcutsLoaded(false);
   }, [selectedFolder]);
 
   const loadData = async () => {
+    // Reset the flush tracker so stale edit-field values from a previous dialog
+    // session are not flushed onto a workspace after a reload/reopen.
+    prevSelectedWorkspaceKeyRef.current = null;
     setLoading(true);
     try {
       const [config, runnersRes] = await Promise.all([
@@ -694,7 +774,29 @@ export function WorkspacesDialog({
       setOrphanedWorkspaces(orphaned);
       setSelectedFolder(null);
       if (valid.length > 0) {
-        setSelectedWorkspaceKey(getWorkspaceKey(valid[0]));
+        // Preserve the previously-selected workspace across a reload/reopen when it
+        // still exists. Otherwise the selection resets to valid[0], whose order is
+        // not stable (it reflects the backend's map-iteration order, not the sorted
+        // tree). That made a just-saved edit appear "lost": the dialog reopened on a
+        // different workspace that legitimately still showed its own value. When no
+        // prior selection matches, fall back to a deterministic first entry (sorted
+        // by display name, then ACP server) so the initial selection is predictable.
+        const prevKey = selectedWorkspaceKey;
+        const preserved =
+          prevKey && valid.some((ws) => getWorkspaceKey(ws) === prevKey);
+        if (preserved) {
+          setSelectedWorkspaceKey(prevKey);
+        } else {
+          const firstByName = [...valid].sort((a, b) => {
+            const an = a.name || getBasename(a.working_dir) || "";
+            const bn = b.name || getBasename(b.working_dir) || "";
+            return (
+              an.localeCompare(bn) ||
+              (a.acp_server || "").localeCompare(b.acp_server || "")
+            );
+          })[0];
+          setSelectedWorkspaceKey(getWorkspaceKey(firstByName));
+        }
       } else {
         setSelectedWorkspaceKey(null);
       }
@@ -773,7 +875,9 @@ export function WorkspacesDialog({
   const checkLiveAcpForWorkspace = useCallback(async (workspaceUUID) => {
     if (!workspaceUUID) return false;
     try {
-      const res = await authFetch(endpoints.workspaces.acpStatus(workspaceUUID));
+      const res = await authFetch(
+        endpoints.workspaces.acpStatus(workspaceUUID),
+      );
       if (!res.ok) return false;
       const data = await res.json();
       return !!data.alive;
@@ -906,11 +1010,9 @@ export function WorkspacesDialog({
         setMcpInstallSuccess(`Successfully installed: ${names}`);
         // Check if a live ACP process needs restarting to pick up the new MCP server
         if (selectedWorkspace?.uuid) {
-          checkLiveAcpForWorkspace(selectedWorkspace.uuid).then(
-            (hasActive) => {
-              if (hasActive) setNeedsRestart(true);
-            },
-          );
+          checkLiveAcpForWorkspace(selectedWorkspace.uuid).then((hasActive) => {
+            if (hasActive) setNeedsRestart(true);
+          });
         }
         // Reload MCP tools list after successful install
         setTimeout(() => {
@@ -1036,11 +1138,9 @@ export function WorkspacesDialog({
       } else {
         setMcpInstallSuccess("Installed Mitto MCP server.");
         if (selectedWorkspace?.uuid) {
-          checkLiveAcpForWorkspace(selectedWorkspace.uuid).then(
-            (hasActive) => {
-              if (hasActive) setNeedsRestart(true);
-            },
-          );
+          checkLiveAcpForWorkspace(selectedWorkspace.uuid).then((hasActive) => {
+            if (hasActive) setNeedsRestart(true);
+          });
         }
         await loadMcpTools(acpServer, selectedWorkspace?.uuid);
       }
@@ -1118,9 +1218,12 @@ export function WorkspacesDialog({
     }
   };
 
-  // Apply workspace-level edits (acp_server, runner, auto_approve) to the selected workspace
-  const applyWorkspaceEdits = (ws) => {
-    if (getWorkspaceKey(ws) !== selectedWorkspaceKey) return ws;
+  // Build a workspace object with the current transient edit fields applied,
+  // but only for the workspace matching targetKey; all others pass through
+  // unchanged. This is used both to flush edits on selection change and to
+  // commit the currently-selected workspace at save time.
+  const buildWorkspaceEditsFor = (ws, targetKey) => {
+    if (getWorkspaceKey(ws) !== targetKey) return ws;
     // A selected profile (or an explicit "-- None --") always wins over any
     // legacy raw matchMode/pattern constraint. Otherwise, an untouched
     // legacy raw constraint is preserved as-is.
@@ -1135,6 +1238,7 @@ export function WorkspacesDialog({
       ...ws,
       acp_server: editAcpServer,
       auxiliary_model_profile: editAuxModelProfile || undefined,
+      auxiliary_model_tag: editAuxModelTag || undefined,
       auxiliary_model_selection: auxModelSelection,
       restricted_runner: editRunner,
       restricted_runner_config:
@@ -1144,6 +1248,10 @@ export function WorkspacesDialog({
       acp_command_override: editAcpCommandOverride || undefined,
     };
   };
+
+  // Apply workspace-level edits (acp_server, runner, auto_approve) to the selected workspace
+  const applyWorkspaceEdits = (ws) =>
+    buildWorkspaceEditsFor(ws, selectedWorkspaceKey);
 
   const handleSave = async () => {
     // Block save if there's an incomplete new folder
@@ -1641,12 +1749,17 @@ export function WorkspacesDialog({
       setBeadsPullPrompt((data && data.pull_prompt) || "");
       setBeadsPushPrompt((data && data.push_prompt) || "");
       setBeadsSyncPrompt((data && data.sync_prompt) || "");
+      setBeadsPullPromptArgs((data && data.pull_prompt_args) || {});
+      setBeadsPushPromptArgs((data && data.push_prompt_args) || {});
+      setBeadsSyncPromptArgs((data && data.sync_prompt_args) || {});
     } catch (_err) {
       setBeadsUpstream("none");
     }
   };
 
-  // Load available argument-free, enabled folder prompts for the "prompts" upstream pickers.
+  // Load available enabled folder prompts for the "prompts" upstream pickers.
+  // Parametrized prompts are included; per-prompt arguments are configured via
+  // the sliders button next to each row.
   const loadBeadsUpstreamPrompts = async (workingDir) => {
     if (!workingDir) return;
     setBeadsUpstreamPromptsLoading(true);
@@ -1659,13 +1772,7 @@ export function WorkspacesDialog({
       );
       const data = await res.json().catch(() => ({}));
       const all = (data && data.prompts) || [];
-      // Only offer enabled prompts with no parameters (argument-free).
-      setBeadsUpstreamPrompts(
-        all.filter(
-          (p) =>
-            p.enabled !== false && (!p.parameters || p.parameters.length === 0),
-        ),
-      );
+      setBeadsUpstreamPrompts(all.filter((p) => p.enabled !== false));
     } catch (_err) {
       setBeadsUpstreamPrompts([]);
     } finally {
@@ -1686,6 +1793,9 @@ export function WorkspacesDialog({
         body.pull_prompt = beadsPullPrompt;
         body.push_prompt = beadsPushPrompt;
         body.sync_prompt = beadsSyncPrompt;
+        body.pull_prompt_args = beadsPullPromptArgs;
+        body.push_prompt_args = beadsPushPromptArgs;
+        body.sync_prompt_args = beadsSyncPromptArgs;
       }
       const res = await secureFetch(
         endpoints.issues.upstream({ working_dir: workingDir }),
@@ -1703,6 +1813,9 @@ export function WorkspacesDialog({
       setBeadsPullPrompt((data && data.pull_prompt) || "");
       setBeadsPushPrompt((data && data.push_prompt) || "");
       setBeadsSyncPrompt((data && data.sync_prompt) || "");
+      setBeadsPullPromptArgs((data && data.pull_prompt_args) || {});
+      setBeadsPushPromptArgs((data && data.push_prompt_args) || {});
+      setBeadsSyncPromptArgs((data && data.sync_prompt_args) || {});
     } catch (err) {
       setBeadsUpstream(prev); // revert on failure
       setBeadsConfigError(err.message || "Failed to set upstream");
@@ -1741,6 +1854,9 @@ export function WorkspacesDialog({
             pull_prompt: field === "pull_prompt" ? value : beadsPullPrompt,
             push_prompt: field === "push_prompt" ? value : beadsPushPrompt,
             sync_prompt: field === "sync_prompt" ? value : beadsSyncPrompt,
+            pull_prompt_args: beadsPullPromptArgs,
+            push_prompt_args: beadsPushPromptArgs,
+            sync_prompt_args: beadsSyncPromptArgs,
           }),
         },
       );
@@ -1751,6 +1867,59 @@ export function WorkspacesDialog({
     } catch (err) {
       setter(prev); // revert on failure
       setBeadsConfigError(err.message || "Failed to save prompt");
+    } finally {
+      setBeadsUpstreamSaving(false);
+    }
+  };
+
+  // Persist the saved argument map for a single pull/push/sync prompt.
+  // Sends the FULL upstream body (all three names + all three arg maps) so the
+  // backend can round-trip; reverts on failure.
+  const saveBeadsPromptArgs = async (field, args) => {
+    const workingDir = getSelectedFolderDir();
+    if (!workingDir) return;
+    const setterMap = {
+      pull_prompt: setBeadsPullPromptArgs,
+      push_prompt: setBeadsPushPromptArgs,
+      sync_prompt: setBeadsSyncPromptArgs,
+    };
+    const prevMap = {
+      pull_prompt: beadsPullPromptArgs,
+      push_prompt: beadsPushPromptArgs,
+      sync_prompt: beadsSyncPromptArgs,
+    };
+    const setter = setterMap[field];
+    const prev = prevMap[field];
+    if (!setter) return;
+    setter(args); // optimistic
+    setBeadsUpstreamSaving(true);
+    try {
+      const res = await secureFetch(
+        endpoints.issues.upstream({ working_dir: workingDir }),
+        {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            upstream: "prompts",
+            pull_prompt: beadsPullPrompt,
+            push_prompt: beadsPushPrompt,
+            sync_prompt: beadsSyncPrompt,
+            pull_prompt_args:
+              field === "pull_prompt" ? args : beadsPullPromptArgs,
+            push_prompt_args:
+              field === "push_prompt" ? args : beadsPushPromptArgs,
+            sync_prompt_args:
+              field === "sync_prompt" ? args : beadsSyncPromptArgs,
+          }),
+        },
+      );
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok)
+        throw new Error(beadsErrorMessage(data) || "Failed to save arguments");
+      if (data && data.error) throw new Error(beadsErrorMessage(data));
+    } catch (err) {
+      setter(prev); // revert on failure
+      setBeadsConfigError(err.message || "Failed to save arguments");
     } finally {
       setBeadsUpstreamSaving(false);
     }
@@ -1823,43 +1992,48 @@ export function WorkspacesDialog({
 
   // ------ Shortcuts tab helpers -----------------------------------------------
 
-  // Immutably update a row in the tasksList section.
-  const updateShortcutRow = (idx, patch) => {
+  // Immutably update a row in the given section.
+  const updateShortcutRow = (section, idx, patch) => {
     setShortcutsSections((prev) => {
-      const list = [...(prev.tasksList || [])];
+      const list = [...(prev[section] || [])];
       list[idx] = { ...list[idx], ...patch };
-      return { ...prev, tasksList: list };
+      return { ...prev, [section]: list };
     });
   };
 
-  // Remove a row from the tasksList section.
-  const removeShortcutRow = (idx) => {
+  // Remove a row from the given section.
+  const removeShortcutRow = (section, idx) => {
     setShortcutsSections((prev) => {
-      const list = [...(prev.tasksList || [])];
+      const list = [...(prev[section] || [])];
       list.splice(idx, 1);
-      return { ...prev, tasksList: list };
+      return { ...prev, [section]: list };
     });
   };
 
-  // Move a row up (dir=-1) or down (dir=1) in the tasksList section.
-  const moveShortcutRow = (idx, dir) => {
+  // Move a row up (dir=-1) or down (dir=1) within the given section.
+  const moveShortcutRow = (section, idx, dir) => {
     setShortcutsSections((prev) => {
-      const list = [...(prev.tasksList || [])];
+      const list = [...(prev[section] || [])];
       const target = idx + dir;
       if (target < 0 || target >= list.length) return prev;
       [list[idx], list[target]] = [list[target], list[idx]];
-      return { ...prev, tasksList: list };
+      return { ...prev, [section]: list };
     });
   };
 
-  // Append a new empty row.
-  const addShortcutRow = () => {
+  // Append a new row to the given section, seeded with sensible defaults so it
+  // renders as a complete, usable shortcut right away.
+  const addShortcutRow = (section) => {
+    // Default the prompt to the first available prompt for this section (if any)
+    // so the row is immediately editable rather than showing an empty selector.
+    const available = sectionPrompts[section] || [];
+    const defaultPrompt = available.length > 0 ? available[0].name : "";
     setShortcutsSections((prev) => {
-      const list = [...(prev.tasksList || [])];
+      const list = [...(prev[section] || [])];
       if (list.length >= 10) return prev;
       // Empty icon → fall back to the linked prompt's own icon at render time.
-      list.push({ icon: "", prompt: "" });
-      return { ...prev, tasksList: list };
+      list.push({ icon: "", prompt: defaultPrompt });
+      return { ...prev, [section]: list };
     });
   };
 
@@ -1869,11 +2043,13 @@ export function WorkspacesDialog({
   const persistShortcuts = async () => {
     const workingDir = getSelectedFolderDir();
     if (!workingDir) return;
-    // Build sections: drop rows with empty prompt, cap to 10.
-    const tasksList = (shortcutsSections.tasksList || [])
-      .filter((r) => r.prompt)
-      .slice(0, 10);
-    const sections = { tasksList };
+    // Build all sections: drop rows with empty prompt, cap to 10 per section.
+    const sections = {};
+    for (const id of ["tasksList", "conversations", "beadsIssue"]) {
+      sections[id] = (shortcutsSections[id] || [])
+        .filter((r) => r.prompt)
+        .slice(0, 10);
+    }
     const res = await secureFetch(
       endpoints.folders.shortcuts({ working_dir: workingDir }),
       {
@@ -1894,6 +2070,21 @@ export function WorkspacesDialog({
       }),
     );
   };
+
+  // Per-section set of prompt names configured at the GLOBAL level. Folder rows
+  // referencing these are greyed out and the prompts are excluded from the
+  // folder-level dropdowns (they are already shown via the global shortcuts).
+  const shortcutRedundantPromptNames = useMemo(() => {
+    const out = {};
+    for (const { id } of SHORTCUT_SECTIONS) {
+      out[id] = new Set(
+        (globalShortcutsSections[id] || [])
+          .map((r) => r.prompt)
+          .filter(Boolean),
+      );
+    }
+    return out;
+  }, [globalShortcutsSections]);
 
   // ---------------------------------------------------------------------------
 
@@ -2766,9 +2957,9 @@ export function WorkspacesDialog({
                               Prompt Actions
                             </legend>
                             <p class="label">
-                              Choose an argument-free prompt for each button.
-                              Only enabled prompts with no parameters are listed
-                              here.
+                              Choose an enabled prompt for each button. Use the
+                              sliders button to configure arguments for
+                              parametrized prompts.
                             </p>
                             ${beadsUpstreamPromptsLoading
                               ? html`<div
@@ -2786,19 +2977,34 @@ export function WorkspacesDialog({
                                         label: "Pull",
                                         field: "pull_prompt",
                                         value: beadsPullPrompt,
+                                        args: beadsPullPromptArgs,
                                       },
                                       {
                                         label: "Push",
                                         field: "push_prompt",
                                         value: beadsPushPrompt,
+                                        args: beadsPushPromptArgs,
                                       },
                                       {
                                         label: "Sync",
                                         field: "sync_prompt",
                                         value: beadsSyncPrompt,
+                                        args: beadsSyncPromptArgs,
                                       },
-                                    ].map(
-                                      ({ label, field, value }) => html`
+                                    ].map(({ label, field, value, args }) => {
+                                      const selectedPrompt = value
+                                        ? beadsUpstreamPrompts.find(
+                                            (p) => p.name === value,
+                                          )
+                                        : null;
+                                      const params = selectedPrompt
+                                        ? promptParameters(selectedPrompt)
+                                        : [];
+                                      const canEditArgs =
+                                        !!value && params.length > 0;
+                                      const argsDisabled =
+                                        !canEditArgs || beadsUpstreamSaving;
+                                      return html`
                                         <div
                                           key=${field}
                                           class="flex items-center gap-2 max-w-md"
@@ -2834,9 +3040,41 @@ export function WorkspacesDialog({
                                               `,
                                             )}
                                           </select>
+                                          <button
+                                            type="button"
+                                            onClick=${() => {
+                                              if (
+                                                !canEditArgs ||
+                                                !onOpenPromptParamDialog ||
+                                                !selectedPrompt
+                                              )
+                                                return;
+                                              onOpenPromptParamDialog(
+                                                selectedPrompt,
+                                                params,
+                                                async (userArgs) => {
+                                                  await saveBeadsPromptArgs(
+                                                    field,
+                                                    userArgs,
+                                                  );
+                                                },
+                                                { initialValues: args || {} },
+                                              );
+                                            }}
+                                            disabled=${argsDisabled}
+                                            class="shrink-0 p-1.5 rounded border border-mitto-border dark:border-mitto-border-2 bg-white dark:bg-mitto-surface-2 transition-colors ${argsDisabled
+                                              ? "opacity-50 cursor-not-allowed"
+                                              : "cursor-pointer hover:bg-mitto-surface-hover dark:hover:bg-mitto-surface-3"}"
+                                            aria-label=${`Set ${label.toLowerCase()} prompt arguments`}
+                                            data-testid=${`beads-${field}-args-btn`}
+                                          >
+                                            <${SlidersIcon}
+                                              className="w-4 h-4 text-mitto-text-secondary"
+                                            />
+                                          </button>
                                         </div>
-                                      `,
-                                    )}
+                                      `;
+                                    })}
                                   </div>
                                 `}
                           </fieldset>
@@ -3847,127 +4085,18 @@ export function WorkspacesDialog({
                     ${activeTab === "shortcuts" &&
                     html`
                       <div class="space-y-4">
-                        ${shortcutsLoading
-                          ? html`<div
-                              class="flex items-center justify-center p-4"
-                            >
-                              <${SpinnerIcon} className="w-5 h-5 animate-spin" />
-                            </div>`
-                          : html`
-                              <div class="space-y-4">
-                                <fieldset class="fieldset pt-2">
-                                  <legend class="fieldset-legend">
-                                    Tasks List
-                                  </legend>
-                                  <p class="text-sm text-mitto-text-muted mb-3">
-                                    Manage shortcut buttons for sending prompts
-                                    in the Tasks list.
-                                  </p>
-
-                                  <div class="space-y-2">
-                                    ${(shortcutsSections.tasksList || []).map(
-                                      (row, idx) => {
-                                        const linkedPrompt =
-                                          tasksListPrompts.find(
-                                            (p) => p.name === row.prompt,
-                                          );
-                                        return html`
-                                          <div key=${idx} class="join w-full">
-                                            <${IconPicker}
-                                              value=${row.icon}
-                                              defaultIconName=${linkedPrompt?.icon ||
-                                              ""}
-                                              className="join-item border-mitto-border"
-                                              onChange=${(name) =>
-                                                updateShortcutRow(idx, {
-                                                  icon: name,
-                                                })}
-                                            />
-                                            <select
-                                              class="select select-sm join-item flex-1"
-                                              value=${row.prompt}
-                                              onChange=${(e) =>
-                                                updateShortcutRow(idx, {
-                                                  prompt: e.target.value,
-                                                })}
-                                            >
-                                              <option value="">
-                                                Select a prompt…
-                                              </option>
-                                              ${tasksListPrompts.map(
-                                                (p) => html`
-                                                  <option
-                                                    key=${p.name}
-                                                    value=${p.name}
-                                                  >
-                                                    ${p.name}
-                                                  </option>
-                                                `,
-                                              )}
-                                            </select>
-                                            <button
-                                              type="button"
-                                              class="btn btn-ghost btn-square btn-sm join-item"
-                                              disabled=${idx === 0}
-                                              onClick=${() =>
-                                                moveShortcutRow(idx, -1)}
-                                              aria-label="Move up"
-                                              title="Move up"
-                                            >
-                                              ↑
-                                            </button>
-                                            <button
-                                              type="button"
-                                              class="btn btn-ghost btn-square btn-sm join-item"
-                                              disabled=${idx ===
-                                              (shortcutsSections.tasksList || [])
-                                                .length -
-                                                1}
-                                              onClick=${() =>
-                                                moveShortcutRow(idx, 1)}
-                                              aria-label="Move down"
-                                              title="Move down"
-                                            >
-                                              ↓
-                                            </button>
-                                            <button
-                                              type="button"
-                                              class="btn btn-ghost btn-square btn-sm join-item text-mitto-danger"
-                                              onClick=${() =>
-                                                removeShortcutRow(idx)}
-                                              aria-label="Remove"
-                                              title="Remove"
-                                            >
-                                              <${TrashIcon}
-                                                className="w-4 h-4"
-                                              />
-                                            </button>
-                                          </div>
-                                        `;
-                                      },
-                                    )}
-                                  </div>
-
-                                  <div class="mt-3 flex items-center gap-2">
-                                    <button
-                                      type="button"
-                                      class="btn btn-sm btn-ghost"
-                                      disabled=${(shortcutsSections.tasksList || []).length >= 10}
-                                      onClick=${addShortcutRow}
-                                    >
-                                      + Add shortcut
-                                    </button>
-                                    ${(shortcutsSections.tasksList || []).length >= 10 &&
-                                    html`<span class="text-xs text-mitto-text-muted">Maximum 10</span>`}
-                                  </div>
-                                </fieldset>
-
-                                ${shortcutsError &&
-                                html`<p class="text-sm text-mitto-danger">
-                                  ${shortcutsError}
-                                </p>`}
-                              </div>
-                            `}
+                        <${ShortcutsEditor}
+                          sections=${SHORTCUT_SECTIONS}
+                          shortcutsSections=${shortcutsSections}
+                          sectionPrompts=${sectionPrompts}
+                          loading=${shortcutsLoading}
+                          error=${shortcutsError}
+                          redundantPromptNames=${shortcutRedundantPromptNames}
+                          onAdd=${addShortcutRow}
+                          onUpdate=${updateShortcutRow}
+                          onRemove=${removeShortcutRow}
+                          onMove=${moveShortcutRow}
+                        />
                       </div>
                     `}
 
@@ -3985,6 +4114,7 @@ export function WorkspacesDialog({
                           currentWorkspaceUUID=${firstWs?.uuid}
                           onChange=${setEditAutoChildren}
                           getBasename=${getBasename}
+                          modelProfiles=${modelProfiles}
                         />
                       </div>
                     `}
@@ -4106,7 +4236,27 @@ export function WorkspacesDialog({
                             legacyLabel=${auxLegacyModelLabel}
                             onChange=${(name) => {
                               setEditAuxModelProfile(name);
+                              if (name) {
+                                setEditAuxModelTag("");
+                              }
                               if (!name && rawAuxModelConstraint) {
+                                setEditAuxModelConstraintCleared(true);
+                              }
+                            }}
+                          />
+                          <label
+                            class="block text-xs text-mitto-text-muted mt-2 mb-1"
+                            >Or by tag:</label
+                          >
+                          <${ModelTagSelect}
+                            value=${editAuxModelTag}
+                            profiles=${modelProfiles}
+                            onChange=${(tag) => {
+                              setEditAuxModelTag(tag);
+                              if (tag) {
+                                setEditAuxModelProfile("");
+                              }
+                              if (!tag && rawAuxModelConstraint) {
                                 setEditAuxModelConstraintCleared(true);
                               }
                             }}
