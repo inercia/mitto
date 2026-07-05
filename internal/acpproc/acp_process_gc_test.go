@@ -1474,3 +1474,87 @@ func TestGCTier4_DisabledWhenThresholdZero(t *testing.T) {
 		t.Error("process should NOT be recycled when memory recycling is disabled")
 	}
 }
+
+// TestGCHealthTier_RecyclesSaturatedIdleProcess reproduces mitto-tfb: a shared
+// ACP process that has become saturated/degraded (repeated session/new + LoadSession
+// context-deadlines tracked by mitto-13ck.2) is NOT recycled by GC, even though it
+// is fully idle and safe to recycle. The saturation infra only fails fast on new
+// requests; nothing converts "repeated deadlines" into a fresh process, so the
+// degraded process keeps starving the next resume / loop-prompt.
+//
+// This test drives the process to saturation via recordRPCTimeout() (mirroring the
+// signal from real session/new timeouts) while keeping RSS well BELOW the Tier 4
+// memory threshold — isolating the HEALTH signal from the memory signal. With the
+// process fully idle (no in-flight RPCs, no prompting/queued/loop-due sessions), a
+// proactive-health GC tier SHOULD recycle it so the next resume lands on a fresh,
+// healthy process.
+//
+// Before the fix this FAILS: no health-based recycle tier exists, so the saturated
+// process survives GC. After the fix it passes: the idle saturated process is
+// GC-suspended, its sessions closed, and the process stopped.
+func TestGCHealthTier_RecyclesSaturatedIdleProcess(t *testing.T) {
+	workspaceUUID := "ws-saturated"
+	proc := newTestSharedProcess()
+
+	// Drive the process to saturation: consecutive RPC timeouts up to the
+	// threshold trip the saturated state (same path real session/new deadlines
+	// take via recordRPCTimeout).
+	for i := 0; i < sessionSaturationTimeoutThreshold; i++ {
+		proc.recordRPCTimeout()
+	}
+	if !proc.isSaturated() {
+		t.Fatalf("test setup: process should be saturated after %d timeouts", sessionSaturationTimeoutThreshold)
+	}
+	// isSaturated() self-clears to a probe when the cooldown elapses; re-trip so
+	// the process is unambiguously saturated for the GC pass below.
+	for i := 0; i < sessionSaturationTimeoutThreshold; i++ {
+		proc.recordRPCTimeout()
+	}
+
+	sessions := map[string][]conversation.SessionInfo{
+		workspaceUUID: {
+			{SessionID: "s1", WorkspaceUUID: workspaceUUID, HasObservers: true},
+			{SessionID: "s2", WorkspaceUUID: workspaceUUID, HasObservers: true},
+		},
+	}
+
+	var mu sync.Mutex
+	closed := make(map[string]bool)
+
+	m := newTestGCManager(
+		func() map[string][]conversation.SessionInfo { return sessions },
+		func(id string) {
+			mu.Lock()
+			defer mu.Unlock()
+			closed[id] = true
+		},
+	)
+	m.mu.Lock()
+	m.processes[workspaceUUID] = proc
+	m.mu.Unlock()
+
+	// Keep RSS BELOW the memory threshold so Tier 4 does NOT fire — only the
+	// health/saturation signal should drive the recycle.
+	m.gcConfig.MemoryRecycleThreshold = gcTier4Threshold
+	m.rssSampler = func(p *SharedACPProcess) (uint64, error) { return gcTier4Threshold / 2, nil }
+
+	m.RunGCOnce()
+
+	m.mu.RLock()
+	_, exists := m.processes[workspaceUUID]
+	m.mu.RUnlock()
+	if exists {
+		t.Error("saturated idle process should have been recycled (stopped) by the health tier")
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	for _, id := range []string{"s1", "s2"} {
+		if !closed[id] {
+			t.Errorf("expected session %s to be closed during health recycle", id)
+		}
+		if !m.IsGCSuspended(id) {
+			t.Errorf("expected session %s to be marked GC-suspended before close", id)
+		}
+	}
+}

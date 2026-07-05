@@ -234,6 +234,13 @@ func (m *ACPProcessManager) gcLoop() {
 // loop prompt due soon), its sessions are GC-suspended and closed and the
 // process is stopped to reclaim memory. Disabled when MemoryRecycleThreshold is 0.
 //
+// Tier 5 proactively recycles degraded (saturated) idle processes (mitto-tfb): when
+// a shared process has been flagged saturated by the mitto-13ck.2 infra (repeated
+// NewSession/LoadSession deadlines) and is fully idle (same gates as Tier 4), its
+// sessions are GC-suspended and closed and the process is stopped so the next
+// NewSession lazily builds a fresh, healthy process — instead of the degraded one
+// continuing to starve resumes/loop-prompts.
+//
 // Tier 3 cleans up auxiliary sessions that have been idle longer than AuxIdleTimeout.
 // Cleaned-up sessions are lazily re-created on next use via getOrCreateAuxiliarySession.
 func (m *ACPProcessManager) RunGCOnce() {
@@ -622,6 +629,110 @@ gcTier1:
 			if m.onMemoryRecycled != nil {
 				m.onMemoryRecycled(workspaceUUID, rss, m.gcConfig.MemoryRecycleThreshold, recycledCount)
 			}
+		}
+	}
+
+	// ----------------------------------------------------------------
+	// Tier 5: proactively recycle degraded (saturated) idle processes (mitto-tfb)
+	// The saturation infra (mitto-13ck.2) only fails fast on new requests; it never
+	// recycles the degraded process, so a shared process that has starved one resume
+	// keeps starving the next resume/loop-prompt. Convert repeated NewSession/
+	// LoadSession deadlines into a fresh process: when a process is flagged saturated
+	// AND fully idle (same hard safety gates as Tier 4), close its sessions and stop
+	// it so the next NewSession lazily builds a healthy replacement. Re-query sessions
+	// so any closed by earlier tiers are excluded.
+	// ----------------------------------------------------------------
+	{
+		sessionsByWorkspace = m.sessionQuery()
+
+		m.mu.RLock()
+		healthUUIDs := make([]string, 0, len(m.processes))
+		for uuid := range m.processes {
+			healthUUIDs = append(healthUUIDs, uuid)
+		}
+		m.mu.RUnlock()
+
+		for _, workspaceUUID := range healthUUIDs {
+			p := m.GetProcess(workspaceUUID)
+			if p == nil {
+				continue
+			}
+
+			// Only act on degraded processes.
+			if !p.IsSaturated() {
+				continue
+			}
+
+			// Hard safety gates: only recycle a fully-idle process (same as Tier 4).
+			if rpcs := p.ActiveRPCs(); rpcs > 0 {
+				if m.logger != nil {
+					m.logger.Debug("GC: skipping health recycle (busy)",
+						"workspace_uuid", workspaceUUID,
+						"reason", "in-flight RPCs",
+						"active_rpcs", rpcs)
+				}
+				continue
+			}
+			sessions := sessionsByWorkspace[workspaceUUID]
+			busy := false
+			for _, s := range sessions {
+				if s.IsPrompting {
+					if m.logger != nil {
+						m.logger.Debug("GC: skipping health recycle (busy)",
+							"workspace_uuid", workspaceUUID,
+							"reason", "session prompting",
+							"session_id", s.SessionID)
+					}
+					busy = true
+					break
+				}
+				if s.QueueLength > 0 {
+					if m.logger != nil {
+						m.logger.Debug("GC: skipping health recycle (busy)",
+							"workspace_uuid", workspaceUUID,
+							"reason", "non-empty queue",
+							"session_id", s.SessionID,
+							"queue_length", s.QueueLength)
+					}
+					busy = true
+					break
+				}
+				if s.NextLoopAt != nil && s.NextLoopAt.Before(now.Add(2*m.gcConfig.Interval)) {
+					if m.logger != nil {
+						m.logger.Debug("GC: skipping health recycle (busy)",
+							"workspace_uuid", workspaceUUID,
+							"reason", "loop prompt due soon",
+							"session_id", s.SessionID,
+							"next_loop_at", s.NextLoopAt)
+					}
+					busy = true
+					break
+				}
+			}
+			if busy {
+				continue
+			}
+
+			// Saturated and idle — recycle to reclaim a healthy process.
+			if m.logger != nil {
+				m.logger.Info("GC: recycling saturated idle shared ACP process",
+					"workspace_uuid", workspaceUUID,
+					"session_count", len(sessions))
+			}
+			// Mark each session GC-suspended BEFORE closing so the WebSocket
+			// auto-resume handler skips resume and avoids a thrash loop — same
+			// ordering as Tier 1's loop-suspend and Tier 4's memory-recycle paths.
+			for _, s := range sessions {
+				m.MarkGCSuspended(s.SessionID)
+				m.sessionClose(s.SessionID)
+			}
+			// Stop the now-sessionless process; the next NewSession lazily builds a
+			// fresh one with zeroed saturation state.
+			m.StopProcess(workspaceUUID)
+			// Keep sessionless bookkeeping consistent.
+			m.gcMu.Lock()
+			delete(m.lastSessionSeen, workspaceUUID)
+			m.gcMu.Unlock()
 		}
 	}
 

@@ -859,6 +859,20 @@ func (p *SharedACPProcess) isSaturated() bool {
 	return true
 }
 
+// IsSaturated reports whether the shared process is currently flagged saturated
+// (mitto-tfb Phase 2). Unlike the private isSaturated(), this is a NON-mutating read:
+// it never self-clears to probe mode, so the GC's proactive health-recycle tier can
+// poll it without perturbing the saturation state machine. It returns true while the
+// cooldown window (saturatedUntil) is set and has not yet elapsed.
+func (p *SharedACPProcess) IsSaturated() bool {
+	p.saturationMu.Lock()
+	defer p.saturationMu.Unlock()
+	if p.saturatedUntil.IsZero() {
+		return false
+	}
+	return time.Now().Before(p.saturatedUntil)
+}
+
 // rpcErrorCode extracts the JSON-RPC error code from err when it (or any error it
 // wraps) is an *acp.RequestError. The second return reports whether a code was
 // found. Used to surface a structured, queryable rpc_code on NewSession failures
