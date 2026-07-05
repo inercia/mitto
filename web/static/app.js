@@ -1918,16 +1918,38 @@ function App() {
     // (cross-window), mirroring how deletion defers to removeSession (mitto-17d).
   };
 
-  // Convert an existing regular conversation to a loop one by creating a
-  // draft loop config (enabled:false). The loop_updated WebSocket event
-  // sets loop_configured=true (reveals the inline loop editor in ChatInput)
-  // while loop_enabled stays false (conversation remains in the Conversations
-  // group). The user must explicitly enable scheduling to move it to Loop group.
+  // Convert an existing regular conversation to a loop one. First try to restore
+  // settings that were preserved by a previous "un-loop" (POST /loop/restore);
+  // this brings back the saved prompt/frequency/trigger and its enabled state,
+  // making loop ⇄ un-loop a symmetric toggle. When there is nothing saved (404),
+  // fall back to creating a blank draft config (enabled:false). Either way the
+  // loop_updated WebSocket event sets loop_configured=true (reveals the inline
+  // loop editor in ChatInput).
   const handleMakeLoop = useCallback(
     async (session) => {
       const sessionId = session?.session_id;
       if (!sessionId) return;
       try {
+        // Attempt to restore previously-saved loop settings.
+        const restoreRes = await secureFetch(
+          endpoints.sessions.loopRestore(sessionId),
+          { method: "POST" },
+        );
+        if (restoreRes.ok) {
+          focusSession(sessionId);
+          showToast({
+            style: "success",
+            title: "Loop settings restored",
+            message: "Your previous loop settings were restored.",
+            duration: 6000,
+          });
+          return;
+        }
+        if (restoreRes.status !== 404) {
+          throw new Error(`HTTP ${restoreRes.status}`);
+        }
+
+        // Nothing saved — create a fresh draft config.
         const res = await secureFetch(endpoints.sessions.loop(sessionId), {
           method: "PUT",
           headers: { "Content-Type": "application/json" },
@@ -1974,7 +1996,8 @@ function App() {
         showToast({
           style: "success",
           title: "Loop scheduling removed",
-          message: "The conversation is now a regular conversation.",
+          message:
+            "Now a regular conversation. Your loop settings are saved and will be restored if you loop it again.",
           duration: 6000,
         });
       } catch (e) {

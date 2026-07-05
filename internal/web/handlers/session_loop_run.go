@@ -9,23 +9,95 @@ import (
 )
 
 // handleDeleteLoop handles DELETE /api/sessions/{id}/loop
+//
+// This is the "un-loop" action. Instead of hard-deleting the config, it detaches
+// it: the settings are preserved in loop.saved.json so a later "Make loop" can
+// restore them (mirroring the archive/unarchive loop-persistence flow). The
+// active loop.json is removed, so the conversation reverts to a regular one
+// (loop_configured=false), exactly as before.
 func (h *Handlers) handleDeleteLoop(w http.ResponseWriter, sessionID string, ps *session.LoopStore) {
-	if err := ps.Delete(); err != nil {
+	if err := ps.Detach(); err != nil {
 		if err == session.ErrLoopNotFound {
 			writeErrorJSON(w, http.StatusNotFound, "", "No loop prompt configured")
 			return
 		}
 		if h.deps.Logger != nil {
-			h.deps.Logger.Error("Failed to delete loop prompt", "error", err)
+			h.deps.Logger.Error("Failed to detach loop prompt", "error", err)
 		}
-		writeErrorJSON(w, http.StatusInternalServerError, "", "Failed to delete loop prompt")
+		writeErrorJSON(w, http.StatusInternalServerError, "", "Failed to remove loop prompt")
 		return
 	}
 
-	// Broadcast loop disabled to all clients (nil means deleted)
+	// Broadcast loop disabled to all clients (nil means removed)
 	h.broadcastLoop(sessionID, nil)
 
 	writeNoContent(w)
+}
+
+// handleRestoreLoop handles POST /api/sessions/{id}/loop/restore
+//
+// This is the re-loop counterpart of handleDeleteLoop: it restores a loop
+// configuration previously preserved by Detach (loop.saved.json), preserving the
+// enabled state it had at un-loop time so loop ⇄ un-loop is a symmetric toggle.
+// Iteration/duration counters and the stopped reason are reset so the restored
+// loop starts its budget fresh. Returns 404 when there is nothing saved to
+// restore, letting the frontend fall back to creating a blank draft.
+func (h *Handlers) handleRestoreLoop(w http.ResponseWriter, r *http.Request, sessionID string, ps *session.LoopStore) {
+	if r.Method != http.MethodPost {
+		methodNotAllowed(w)
+		return
+	}
+
+	saved, err := ps.GetSaved()
+	if err != nil {
+		if err == session.ErrLoopNotFound {
+			writeErrorJSON(w, http.StatusNotFound, "", "No saved loop settings to restore")
+			return
+		}
+		if h.deps.Logger != nil {
+			h.deps.Logger.Error("Failed to read saved loop settings", "error", err)
+		}
+		writeErrorJSON(w, http.StatusInternalServerError, "", "Failed to read saved loop settings")
+		return
+	}
+
+	// Reset the run counters/anchors and stopped reason so the restored loop
+	// starts fresh; keep the saved enabled state so an actively-looping
+	// conversation resumes and a paused draft comes back paused.
+	saved.IterationCount = 0
+	saved.FirstRunAt = nil
+	saved.LastSentAt = nil
+	saved.StoppedReason = ""
+	saved.StoppedAt = nil
+	saved.NextScheduledAt = nil
+
+	if err := ps.Set(saved); err != nil {
+		if h.deps.Logger != nil {
+			h.deps.Logger.Error("Failed to restore loop settings", "error", err)
+		}
+		writeErrorJSON(w, http.StatusInternalServerError, "", "Failed to restore loop settings")
+		return
+	}
+	if err := ps.ClearSaved(); err != nil && h.deps.Logger != nil {
+		h.deps.Logger.Warn("Failed to clear saved loop settings after restore", "error", err)
+	}
+	h.resetLoopContinuation(sessionID)
+
+	updated, err := ps.Get()
+	if err != nil {
+		writeErrorJSON(w, http.StatusInternalServerError, "", "Failed to get restored loop prompt")
+		return
+	}
+
+	// Broadcast the restored loop state (includes full config).
+	h.broadcastLoop(sessionID, updated)
+
+	// Kick off the first run for a restored, enabled onCompletion conversation.
+	if h.deps.BootstrapOnCompletion != nil {
+		h.deps.BootstrapOnCompletion(sessionID)
+	}
+
+	writeJSONOK(w, updated)
 }
 
 // handleRunLoopNow handles POST /api/sessions/{id}/loop/run-now

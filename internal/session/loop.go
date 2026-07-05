@@ -16,6 +16,11 @@ import (
 
 const (
 	loopFileName = "loop.json"
+	// savedLoopFileName holds a detached loop configuration preserved when a
+	// conversation is reverted to a regular one via the "un-loop" button. It lets
+	// the settings (prompt, frequency, trigger, enabled state, …) be restored when
+	// the conversation is looped again, mirroring the archive/unarchive flow.
+	savedLoopFileName = "loop.saved.json"
 )
 
 // StoppedReason is the reason a loop conversation was automatically stopped.
@@ -479,6 +484,63 @@ func (ps *LoopStore) Delete() error {
 			return ErrLoopNotFound
 		}
 		return fmt.Errorf("failed to delete loop file: %w", err)
+	}
+	return nil
+}
+
+// savedLoopPath returns the path to the detached loop.saved.json file.
+func (ps *LoopStore) savedLoopPath() string {
+	return filepath.Join(ps.sessionDir, savedLoopFileName)
+}
+
+// Detach preserves the current loop configuration and removes the active one.
+// It copies loop.json to loop.saved.json and then deletes loop.json, so the
+// conversation reverts to a regular one (loop_configured=false) while its
+// settings survive for a later Restore. Any previously-saved config is
+// overwritten. Returns ErrLoopNotFound if no loop config exists.
+func (ps *LoopStore) Detach() error {
+	ps.mu.Lock()
+	defer ps.mu.Unlock()
+
+	existing, err := ps.getUnlocked()
+	if err != nil {
+		return err
+	}
+
+	if err := fileutil.WriteJSONAtomic(ps.savedLoopPath(), existing, 0644); err != nil {
+		return fmt.Errorf("failed to write saved loop file: %w", err)
+	}
+	if err := os.Remove(ps.loopPath()); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("failed to delete loop file: %w", err)
+	}
+	return nil
+}
+
+// GetSaved retrieves the detached loop configuration preserved by Detach.
+// Returns ErrLoopNotFound if no saved config exists.
+func (ps *LoopStore) GetSaved() (*LoopPrompt, error) {
+	ps.mu.RLock()
+	defer ps.mu.RUnlock()
+
+	var p LoopPrompt
+	err := fileutil.ReadJSON(ps.savedLoopPath(), &p)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, ErrLoopNotFound
+		}
+		return nil, fmt.Errorf("failed to read saved loop file: %w", err)
+	}
+	return &p, nil
+}
+
+// ClearSaved removes the detached loop configuration. It is a no-op (returns nil)
+// when no saved config exists.
+func (ps *LoopStore) ClearSaved() error {
+	ps.mu.Lock()
+	defer ps.mu.Unlock()
+
+	if err := os.Remove(ps.savedLoopPath()); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("failed to delete saved loop file: %w", err)
 	}
 	return nil
 }

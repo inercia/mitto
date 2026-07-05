@@ -1550,3 +1550,123 @@ func TestLoopStore_DeferNextSchedule_NotFound(t *testing.T) {
 		t.Errorf("DeferNextSchedule() on empty store error = %v, want ErrLoopNotFound", err)
 	}
 }
+
+// TestLoopStore_Detach_PreservesConfig verifies Detach moves the active loop
+// config to the saved slot: Get returns ErrLoopNotFound (conversation reverts to
+// regular) while GetSaved returns the preserved settings.
+func TestLoopStore_Detach_PreservesConfig(t *testing.T) {
+	dir := t.TempDir()
+	ps := NewLoopStore(dir)
+
+	orig := &LoopPrompt{
+		Prompt:    "keep going",
+		Frequency: Frequency{Value: 2, Unit: FrequencyHours},
+		Trigger:   TriggerOnCompletion,
+		Enabled:   true,
+	}
+	if err := ps.Set(orig); err != nil {
+		t.Fatalf("Set() error = %v", err)
+	}
+
+	if err := ps.Detach(); err != nil {
+		t.Fatalf("Detach() error = %v", err)
+	}
+
+	// Active config is gone.
+	if _, err := ps.Get(); err != ErrLoopNotFound {
+		t.Errorf("Get() after Detach error = %v, want ErrLoopNotFound", err)
+	}
+
+	// Saved config preserved.
+	saved, err := ps.GetSaved()
+	if err != nil {
+		t.Fatalf("GetSaved() error = %v", err)
+	}
+	if saved.Prompt != "keep going" {
+		t.Errorf("saved.Prompt = %q, want %q", saved.Prompt, "keep going")
+	}
+	if !saved.Enabled {
+		t.Errorf("saved.Enabled = false, want true (enabled state preserved)")
+	}
+	if saved.Trigger != TriggerOnCompletion {
+		t.Errorf("saved.Trigger = %q, want %q", saved.Trigger, TriggerOnCompletion)
+	}
+}
+
+// TestLoopStore_Detach_NotFound verifies Detach returns ErrLoopNotFound when
+// there is no active loop config.
+func TestLoopStore_Detach_NotFound(t *testing.T) {
+	dir := t.TempDir()
+	ps := NewLoopStore(dir)
+
+	if err := ps.Detach(); err != ErrLoopNotFound {
+		t.Errorf("Detach() on empty store error = %v, want ErrLoopNotFound", err)
+	}
+}
+
+// TestLoopStore_GetSaved_NotFound verifies GetSaved returns ErrLoopNotFound when
+// nothing has been detached.
+func TestLoopStore_GetSaved_NotFound(t *testing.T) {
+	dir := t.TempDir()
+	ps := NewLoopStore(dir)
+
+	if _, err := ps.GetSaved(); err != ErrLoopNotFound {
+		t.Errorf("GetSaved() on empty store error = %v, want ErrLoopNotFound", err)
+	}
+}
+
+// TestLoopStore_ClearSaved removes the saved slot and is a no-op when absent.
+func TestLoopStore_ClearSaved(t *testing.T) {
+	dir := t.TempDir()
+	ps := NewLoopStore(dir)
+
+	// No-op when nothing saved.
+	if err := ps.ClearSaved(); err != nil {
+		t.Errorf("ClearSaved() with no saved config error = %v, want nil", err)
+	}
+
+	if err := ps.Set(&LoopPrompt{
+		Prompt:    "x",
+		Frequency: Frequency{Value: 1, Unit: FrequencyHours},
+		Enabled:   true,
+	}); err != nil {
+		t.Fatalf("Set() error = %v", err)
+	}
+	if err := ps.Detach(); err != nil {
+		t.Fatalf("Detach() error = %v", err)
+	}
+	if err := ps.ClearSaved(); err != nil {
+		t.Fatalf("ClearSaved() error = %v", err)
+	}
+	if _, err := ps.GetSaved(); err != ErrLoopNotFound {
+		t.Errorf("GetSaved() after ClearSaved error = %v, want ErrLoopNotFound", err)
+	}
+}
+
+// TestLoopStore_Detach_OverwritesPreviousSaved verifies a second Detach replaces
+// an earlier saved config rather than appending.
+func TestLoopStore_Detach_OverwritesPreviousSaved(t *testing.T) {
+	dir := t.TempDir()
+	ps := NewLoopStore(dir)
+
+	if err := ps.Set(&LoopPrompt{Prompt: "first", Frequency: Frequency{Value: 1, Unit: FrequencyHours}, Enabled: true}); err != nil {
+		t.Fatalf("Set() first error = %v", err)
+	}
+	if err := ps.Detach(); err != nil {
+		t.Fatalf("Detach() first error = %v", err)
+	}
+	if err := ps.Set(&LoopPrompt{Prompt: "second", Frequency: Frequency{Value: 1, Unit: FrequencyHours}, Enabled: false}); err != nil {
+		t.Fatalf("Set() second error = %v", err)
+	}
+	if err := ps.Detach(); err != nil {
+		t.Fatalf("Detach() second error = %v", err)
+	}
+
+	saved, err := ps.GetSaved()
+	if err != nil {
+		t.Fatalf("GetSaved() error = %v", err)
+	}
+	if saved.Prompt != "second" {
+		t.Errorf("saved.Prompt = %q, want %q (latest Detach wins)", saved.Prompt, "second")
+	}
+}

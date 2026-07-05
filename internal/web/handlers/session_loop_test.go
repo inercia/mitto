@@ -489,6 +489,145 @@ func TestHandleSessionLoop_DeleteRemovesConfig(t *testing.T) {
 	}
 }
 
+// TestHandleSessionLoop_UnloopRestoreRoundTrip verifies the un-loop → re-loop
+// symmetric toggle: DELETE detaches the config (preserving settings), a
+// subsequent POST /loop/restore brings it back with the same prompt and enabled
+// state, and the saved slot is cleared afterwards.
+func TestHandleSessionLoop_UnloopRestoreRoundTrip(t *testing.T) {
+	store, h := newLoopStore(t)
+	tmpDir := t.TempDir()
+
+	const sid = "test-unloop-restore"
+	if err := store.Create(session.Metadata{
+		SessionID:  sid,
+		ACPServer:  "test-server",
+		WorkingDir: tmpDir,
+	}); err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+
+	// Step 1: configure an active loop.
+	putLoopForTest(t, h, sid, LoopPromptRequest{
+		Prompt:    "keep going",
+		Frequency: session.Frequency{Value: 3, Unit: session.FrequencyHours},
+		Enabled:   true,
+	})
+
+	// Step 2: un-loop (DELETE) — detaches, config gone but saved.
+	delReq := httptest.NewRequest(http.MethodDelete, "/api/sessions/"+sid+"/loop", nil)
+	delW := httptest.NewRecorder()
+	h.HandleSessionLoop(delW, delReq, sid, "")
+	if delW.Code != http.StatusNoContent {
+		t.Fatalf("DELETE loop: Status = %d, want %d. Body: %s", delW.Code, http.StatusNoContent, delW.Body.String())
+	}
+	if _, err := store.Loop(sid).Get(); err != session.ErrLoopNotFound {
+		t.Fatalf("Get after un-loop = %v, want ErrLoopNotFound", err)
+	}
+	if _, err := store.Loop(sid).GetSaved(); err != nil {
+		t.Fatalf("GetSaved after un-loop = %v, want nil (settings preserved)", err)
+	}
+
+	// Step 3: re-loop (POST /loop/restore) — restores config + enabled state.
+	restReq := httptest.NewRequest(http.MethodPost, "/api/sessions/"+sid+"/loop/restore", nil)
+	restW := httptest.NewRecorder()
+	h.HandleSessionLoop(restW, restReq, sid, "restore")
+	if restW.Code != http.StatusOK {
+		t.Fatalf("POST restore: Status = %d, want %d. Body: %s", restW.Code, http.StatusOK, restW.Body.String())
+	}
+	var restored session.LoopPrompt
+	if err := json.Unmarshal(restW.Body.Bytes(), &restored); err != nil {
+		t.Fatalf("decode restore response: %v", err)
+	}
+	if restored.Prompt != "keep going" {
+		t.Errorf("restored.Prompt = %q, want %q", restored.Prompt, "keep going")
+	}
+	if !restored.Enabled {
+		t.Errorf("restored.Enabled = false, want true (enabled state preserved)")
+	}
+	if restored.IterationCount != 0 {
+		t.Errorf("restored.IterationCount = %d, want 0 (counters reset)", restored.IterationCount)
+	}
+	if restored.StoppedReason != "" {
+		t.Errorf("restored.StoppedReason = %q, want empty", restored.StoppedReason)
+	}
+
+	// Active config is back.
+	if _, err := store.Loop(sid).Get(); err != nil {
+		t.Errorf("Get after restore = %v, want nil", err)
+	}
+	// Saved slot cleared after a successful restore.
+	if _, err := store.Loop(sid).GetSaved(); err != session.ErrLoopNotFound {
+		t.Errorf("GetSaved after restore = %v, want ErrLoopNotFound (cleared)", err)
+	}
+}
+
+// TestHandleSessionLoop_Restore_NotFound verifies POST /loop/restore returns 404
+// when there are no saved settings, so the frontend can fall back to a draft.
+func TestHandleSessionLoop_Restore_NotFound(t *testing.T) {
+	store, h := newLoopStore(t)
+	tmpDir := t.TempDir()
+
+	const sid = "test-restore-notfound"
+	if err := store.Create(session.Metadata{
+		SessionID:  sid,
+		ACPServer:  "test-server",
+		WorkingDir: tmpDir,
+	}); err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/sessions/"+sid+"/loop/restore", nil)
+	w := httptest.NewRecorder()
+	h.HandleSessionLoop(w, req, sid, "restore")
+	if w.Code != http.StatusNotFound {
+		t.Errorf("POST restore with nothing saved: Status = %d, want %d. Body: %s", w.Code, http.StatusNotFound, w.Body.String())
+	}
+}
+
+// TestHandleSessionLoop_SetClearsSavedSlot verifies that a fresh make-loop (PUT)
+// drops any previously-detached settings: the saved slot is cleared so a later
+// restore cannot resurrect stale settings over the freshly-defined loop.
+func TestHandleSessionLoop_SetClearsSavedSlot(t *testing.T) {
+	store, h := newLoopStore(t)
+	tmpDir := t.TempDir()
+
+	const sid = "test-set-clears-saved"
+	if err := store.Create(session.Metadata{
+		SessionID:  sid,
+		ACPServer:  "test-server",
+		WorkingDir: tmpDir,
+	}); err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+
+	// Simulate a prior un-loop: seed a loop then Detach it to the saved slot.
+	if err := store.Loop(sid).Set(&session.LoopPrompt{
+		Prompt:    "old detached loop",
+		Frequency: session.Frequency{Value: 5, Unit: session.FrequencyHours},
+		Enabled:   true,
+	}); err != nil {
+		t.Fatalf("Set (seed) error = %v", err)
+	}
+	if err := store.Loop(sid).Detach(); err != nil {
+		t.Fatalf("Detach error = %v", err)
+	}
+	if _, err := store.Loop(sid).GetSaved(); err != nil {
+		t.Fatalf("GetSaved after Detach = %v, want nil (settings preserved)", err)
+	}
+
+	// Make a fresh loop via PUT.
+	putLoopForTest(t, h, sid, LoopPromptRequest{
+		Prompt:    "brand new loop",
+		Frequency: session.Frequency{Value: 2, Unit: session.FrequencyHours},
+		Enabled:   true,
+	})
+
+	// The stale saved slot must be cleared so a later restore cannot resurrect it.
+	if _, err := store.Loop(sid).GetSaved(); err != session.ErrLoopNotFound {
+		t.Errorf("GetSaved after PUT = %v, want ErrLoopNotFound (stale slot cleared)", err)
+	}
+}
+
 // TestHandleSetLoop_PendingPlaceholderDoesNotBecomeTitle verifies that when a loop
 // prompt is set with a "(pending)" placeholder body plus a prompt_name, the generated title
 // is derived from the resolved prompt body rather than the placeholder.
