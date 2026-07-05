@@ -41,10 +41,31 @@ func (h *Handlers) handleDeleteLoop(w http.ResponseWriter, sessionID string, ps 
 // enabled state it had at un-loop time so loop ⇄ un-loop is a symmetric toggle.
 // Iteration/duration counters and the stopped reason are reset so the restored
 // loop starts its budget fresh. Returns 404 when there is nothing saved to
-// restore, letting the frontend fall back to creating a blank draft.
+// restore, letting the frontend fall back to creating a blank draft. Returns
+// 409 when an active loop already exists (both loop.json and loop.saved.json
+// are present) to prevent Set()'s update path from silently preserving stale
+// counters/CreatedAt from the active config and clobbering it.
 func (h *Handlers) handleRestoreLoop(w http.ResponseWriter, r *http.Request, sessionID string, ps *session.LoopStore) {
 	if r.Method != http.MethodPost {
 		methodNotAllowed(w)
+		return
+	}
+
+	// Guard: refuse to restore when an active loop already exists. Otherwise a
+	// stale loop.saved.json (e.g. a previous ClearSaved failure) combined with
+	// LoopStore.Set()'s update path — which preserves CreatedAt/IterationCount/
+	// FirstRunAt/LastSentAt from the existing active config — would silently
+	// clobber the live loop and undo the counter reset performed here. Callers
+	// must explicitly resolve the conflict (e.g. via DELETE /loop) before
+	// restoring the previously-saved settings.
+	if _, err := ps.Get(); err == nil {
+		writeErrorJSON(w, http.StatusConflict, "", "A loop is already configured; cannot restore saved settings")
+		return
+	} else if err != session.ErrLoopNotFound {
+		if h.deps.Logger != nil {
+			h.deps.Logger.Error("Failed to read active loop settings before restore", "error", err)
+		}
+		writeErrorJSON(w, http.StatusInternalServerError, "", "Failed to read active loop settings")
 		return
 	}
 

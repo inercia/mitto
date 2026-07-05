@@ -628,6 +628,115 @@ func TestHandleSessionLoop_SetClearsSavedSlot(t *testing.T) {
 	}
 }
 
+// TestHandleSessionLoop_RestoreRejectedWhenLoopActive verifies that POST
+// /loop/restore returns 409 Conflict when an active loop.json already exists
+// alongside a saved loop.saved.json (e.g. a previous ClearSaved silently
+// failed), and that the active loop's accumulated counters/anchors are NOT
+// modified by the rejected restore. This guards against LoopStore.Set()'s
+// update path silently preserving stale IterationCount/CreatedAt/FirstRunAt
+// from the active config and clobbering it with saved settings.
+func TestHandleSessionLoop_RestoreRejectedWhenLoopActive(t *testing.T) {
+	store, h := newLoopStore(t)
+	tmpDir := t.TempDir()
+
+	const sid = "test-restore-rejected-active"
+	if err := store.Create(session.Metadata{
+		SessionID:  sid,
+		ACPServer:  "test-server",
+		WorkingDir: tmpDir,
+	}); err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+
+	// Step 1: seed and detach an initial loop so loop.saved.json exists.
+	if err := store.Loop(sid).Set(&session.LoopPrompt{
+		Prompt:    "old saved settings",
+		Frequency: session.Frequency{Value: 5, Unit: session.FrequencyHours},
+		Enabled:   true,
+	}); err != nil {
+		t.Fatalf("Set (saved seed) error = %v", err)
+	}
+	if err := store.Loop(sid).Detach(); err != nil {
+		t.Fatalf("Detach error = %v", err)
+	}
+	if _, err := store.Loop(sid).GetSaved(); err != nil {
+		t.Fatalf("GetSaved after Detach = %v, want nil", err)
+	}
+
+	// Step 2: install a fresh active loop directly via the store (bypassing
+	// the handler on purpose so the saved slot is NOT cleared — this simulates
+	// the "ClearSaved previously failed" state the reviewer is concerned about).
+	if err := store.Loop(sid).Set(&session.LoopPrompt{
+		Prompt:    "brand new active loop",
+		Frequency: session.Frequency{Value: 2, Unit: session.FrequencyHours},
+		Enabled:   true,
+	}); err != nil {
+		t.Fatalf("Set (active) error = %v", err)
+	}
+	// Bump the counters on the active loop so we can prove they survive the
+	// rejected restore untouched.
+	if err := store.Loop(sid).RecordSent(); err != nil {
+		t.Fatalf("RecordSent error = %v", err)
+	}
+	if err := store.Loop(sid).RecordSent(); err != nil {
+		t.Fatalf("RecordSent error = %v", err)
+	}
+
+	before, err := store.Loop(sid).Get()
+	if err != nil {
+		t.Fatalf("Get (before restore) error = %v", err)
+	}
+	if before.IterationCount != 2 {
+		t.Fatalf("before.IterationCount = %d, want 2 (setup precondition)", before.IterationCount)
+	}
+	if before.FirstRunAt == nil || before.LastSentAt == nil {
+		t.Fatalf("before anchors nil, want set (setup precondition)")
+	}
+
+	// Precondition: both files must exist for this test to be meaningful.
+	if _, err := store.Loop(sid).GetSaved(); err != nil {
+		t.Fatalf("GetSaved (before restore) = %v, want nil (both files present)", err)
+	}
+
+	// Step 3: POST /loop/restore — must be rejected with 409 Conflict.
+	req := httptest.NewRequest(http.MethodPost, "/api/sessions/"+sid+"/loop/restore", nil)
+	w := httptest.NewRecorder()
+	h.HandleSessionLoop(w, req, sid, "restore")
+	if w.Code != http.StatusConflict {
+		t.Fatalf("POST restore with active loop: Status = %d, want %d. Body: %s",
+			w.Code, http.StatusConflict, w.Body.String())
+	}
+
+	// Step 4: the active loop must be UNCHANGED — prompt, counters, and
+	// anchors preserved (no silent clobber by Set()'s update path).
+	after, err := store.Loop(sid).Get()
+	if err != nil {
+		t.Fatalf("Get (after restore) error = %v", err)
+	}
+	if after.Prompt != "brand new active loop" {
+		t.Errorf("after.Prompt = %q, want %q (active loop clobbered by saved settings)",
+			after.Prompt, "brand new active loop")
+	}
+	if after.IterationCount != before.IterationCount {
+		t.Errorf("after.IterationCount = %d, want %d (counter reset by rejected restore)",
+			after.IterationCount, before.IterationCount)
+	}
+	if after.FirstRunAt == nil || !after.FirstRunAt.Equal(*before.FirstRunAt) {
+		t.Errorf("after.FirstRunAt = %v, want %v (anchor changed by rejected restore)",
+			after.FirstRunAt, before.FirstRunAt)
+	}
+	if after.LastSentAt == nil || !after.LastSentAt.Equal(*before.LastSentAt) {
+		t.Errorf("after.LastSentAt = %v, want %v (anchor changed by rejected restore)",
+			after.LastSentAt, before.LastSentAt)
+	}
+
+	// The saved slot must still be there — a rejected restore does not clear it,
+	// so the operator can resolve the conflict (DELETE + restore) without loss.
+	if _, err := store.Loop(sid).GetSaved(); err != nil {
+		t.Errorf("GetSaved (after rejected restore) = %v, want nil (saved slot cleared by rejected restore)", err)
+	}
+}
+
 // TestHandleSetLoop_PendingPlaceholderDoesNotBecomeTitle verifies that when a loop
 // prompt is set with a "(pending)" placeholder body plus a prompt_name, the generated title
 // is derived from the resolved prompt body rather than the placeholder.
