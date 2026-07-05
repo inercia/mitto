@@ -808,8 +808,9 @@ func TestSetModelAsyncBudgetMath(t *testing.T) {
 }
 
 // TestSetModelAttemptTimeoutSchedule asserts structural invariants of the per-attempt
-// deadline schedule (mitto-f7q): length tied to max-attempts, attempt-1 sized for cold
-// warm-up, total ≤ 25s (unchanged from prior 3×8s), and non-increasing order.
+// deadline schedule (mitto-f7q; attempt-1 lower bound raised for mitto-8qp): length tied
+// to max-attempts, attempt-1 sized above large-context warm-up latency, total bounded so
+// setModelAsyncCallerBudget contention math stays valid, and non-increasing order.
 func TestSetModelAttemptTimeoutSchedule(t *testing.T) {
 	schedule := setSessionModelAttemptTimeouts
 
@@ -818,18 +819,31 @@ func TestSetModelAttemptTimeoutSchedule(t *testing.T) {
 			got, setSessionModelMaxAttempts)
 	}
 
-	// Attempt-1 must be sized above the observed 8s cold-model clamp (p95 evidence).
-	if schedule[0] < 12*time.Second {
-		t.Errorf("attempt-1 timeout = %v, want >= 12s (sized for cold warm-up p95)", schedule[0])
+	// Attempt-1 must be sized above the genuine warm-up latency of large-context models
+	// (e.g. claude-sonnet-5-0-500k, observed >12s). The prior 12s bound was smaller than
+	// that latency, so attempt-1 always timed out and the shrinking retries were guaranteed
+	// to fail (mitto-8qp). 16s leaves headroom above the observed 12s+ warm-up.
+	if schedule[0] < 16*time.Second {
+		t.Errorf("attempt-1 timeout = %v, want >= 16s (sized above large-context warm-up, mitto-8qp)", schedule[0])
 	}
 
-	// Total must not exceed 25s so setModelAsyncCallerBudget contention math is valid.
+	// The schedule sum must stay within the contention bound the async budget can cover
+	// (derived exactly as in TestSetModelAsyncBudgetMath): with N=4 concurrent callers the
+	// expected contention coverage is (N-2)×(scheduleSum + maxJitteredBackoff), and that
+	// must not exceed setModelAsyncCallerBudget. Rearranged: scheduleSum must not exceed
+	// budget/(N-2) − maxJitteredBackoff. This replaces the old fixed 25s cap, which forced
+	// attempt-1 too small to cover real warm-up latency (mitto-8qp).
+	const maxConcurrentCallers = 4
+	maxJitteredBackoff := time.Duration(float64(setSessionModelRetryBaseDelay)*float64(setSessionModelMaxAttempts-1)*(1+setSessionModelRetryJitterRatio)) + setSessionModelRetryBaseDelay
+	maxScheduleSum := setModelAsyncCallerBudget/time.Duration(maxConcurrentCallers-2) - maxJitteredBackoff
+
 	var total time.Duration
 	for _, d := range schedule {
 		total += d
 	}
-	if total > 25*time.Second {
-		t.Errorf("sum(setSessionModelAttemptTimeouts) = %v, want <= 25s (total must not grow)", total)
+	if total > maxScheduleSum {
+		t.Errorf("sum(setSessionModelAttemptTimeouts) = %v, want <= %v (contention bound; setModelAsyncCallerBudget math)",
+			total, maxScheduleSum)
 	}
 
 	// Timeouts must be non-increasing (front-loaded for cold start).
@@ -839,6 +853,74 @@ func TestSetModelAttemptTimeoutSchedule(t *testing.T) {
 				i+1, schedule[i], i, schedule[i-1])
 		}
 	}
+}
+
+// simulateSetModelRetryLoop mirrors the per-attempt deadline decision of
+// SharedACPProcess.SetSessionModel: each attempt is granted setSessionModelAttemptTimeouts[i]
+// of budget, an attempt "succeeds" only when the model's real warm-up latency fits within
+// that attempt's budget, and the whole call must complete within outerBudget. It returns
+// the 1-based attempt number that succeeded, or 0 if all attempts timed out / the outer
+// budget was exhausted. Pure (no real sleeps) so the schedule's behavioural contract can
+// be unit-tested deterministically.
+func simulateSetModelRetryLoop(rpcLatency, outerBudget time.Duration) (succeededAttempt int) {
+	var elapsed time.Duration
+	for attempt := 1; attempt <= setSessionModelMaxAttempts; attempt++ {
+		perAttempt := setSessionModelAttemptTimeouts[attempt-1]
+		// The attempt is bounded by both its own per-attempt deadline and the remaining
+		// outer budget (context.WithTimeout(ctx, perAttempt) with ctx carrying outerBudget).
+		remaining := outerBudget - elapsed
+		if remaining <= 0 {
+			return 0
+		}
+		effective := perAttempt
+		if remaining < effective {
+			effective = remaining
+		}
+		if rpcLatency <= effective {
+			return attempt // RPC completed within this attempt's budget.
+		}
+		// Attempt timed out after consuming its effective budget.
+		elapsed += effective
+	}
+	return 0
+}
+
+// TestSetModelSchedule_LargeContextModelSucceedsWithinOuterBudget reproduces mitto-8qp:
+// the "Aux set_model RPC context-deadline storm". A large-context model (e.g.
+// claude-sonnet-5-0-500k) has a genuine set_model warm-up latency that exceeds attempt-1's
+// budget. Because the schedule SHRINKS (12s -> 8s -> 5s), every subsequent retry has an
+// even smaller budget than the first, so all three attempts are GUARANTEED to fail with
+// "context deadline exceeded" — even though the outer async caller budget
+// (setModelAsyncCallerBudget, ~90s) has 60-90s of unused headroom (per the bead's log
+// evidence: ctx_remaining_ms stayed 68-90s throughout).
+//
+// Expected (correct) behaviour: a model whose warm-up latency is well within the outer
+// budget must eventually succeed via retry. This test asserts that contract and therefore
+// FAILS on the current shrinking schedule (no attempt is >= the model's latency) and will
+// PASS once the fix widens/flattens the per-attempt schedule to cover realistic warm-up
+// latency within the ample outer budget.
+func TestSetModelSchedule_LargeContextModelSucceedsWithinOuterBudget(t *testing.T) {
+	// Observed warm-up latency for a 500k-context model per the bead's logs: attempt-1
+	// consistently burned its full 12s budget (rpc_ms=12000) without completing, i.e. the
+	// true latency is > 12s. 13s is a conservative representative value that is still far
+	// below the ~90s outer async budget.
+	const largeModelWarmupLatency = 13 * time.Second
+
+	if largeModelWarmupLatency >= setModelAsyncCallerBudget {
+		t.Fatalf("test premise invalid: model latency %v must be < outer budget %v",
+			largeModelWarmupLatency, setModelAsyncCallerBudget)
+	}
+
+	attempt := simulateSetModelRetryLoop(largeModelWarmupLatency, setModelAsyncCallerBudget)
+	if attempt == 0 {
+		t.Fatalf("mitto-8qp reproduced: set_model for a %v-warm-up model never succeeded across "+
+			"%d attempts (schedule %v), despite %v of outer budget — the shrinking per-attempt "+
+			"schedule guarantees failure for models whose warm-up exceeds attempt-1's budget",
+			largeModelWarmupLatency, setSessionModelMaxAttempts,
+			setSessionModelAttemptTimeouts, setModelAsyncCallerBudget)
+	}
+	t.Logf("set_model for a %v-warm-up model succeeded on attempt %d (schedule %v, outer budget %v)",
+		largeModelWarmupLatency, attempt, setSessionModelAttemptTimeouts, setModelAsyncCallerBudget)
 }
 
 // TestSetModelRetryJitter verifies that the jittered backoff delay applied in

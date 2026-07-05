@@ -856,8 +856,8 @@ func (m *ACPProcessManager) getOrCreateAuxiliarySession(ctx context.Context, wor
 					// Budget: setModelAsyncCallerBudget (90s) derived from m.ctx (NOT the caller
 					// ctx, which is short-lived and may expire before the goroutine runs).
 					// Worst-case: setModelSem queued behind ~3 other holders each taking up to
-					// 3×8s + jitter backoff (≤25s each) → ~75s wait before the semaphore is
-					// acquired. Since this is off the critical path, a generous budget has no
+					// the schedule {20s,15s,8s} + jitter backoff (~44s each) before the semaphore
+					// is acquired. Since this is off the critical path, a generous budget has no
 					// UX cost. m.ctx cancels on manager shutdown as a safety backstop.
 					capturedWorkspaceUUID := workspaceUUID
 					capturedPurpose := purpose

@@ -213,9 +213,10 @@ func TestConstraintModelSwitchBudgetMath(t *testing.T) {
 	const (
 		maxConcurrentCallers = 4 // from bead: ~4 concurrent sessions at wakeup
 		// Mirror of internal/acpproc/shared_acp_process.go set_model constants.
-		// Attempt schedule {12s,8s,5s} sums to 25s — same total as the prior 3×8s (mitto-f7q).
+		// Attempt schedule {20s,15s,8s} sums to 43s (attempt-1 widened for mitto-8qp so
+		// large-context warm-up fits, within the contention bound covered by the budget).
 		maxRetries       = 3                      // setSessionModelMaxAttempts
-		scheduleSum      = 25 * time.Second       // sum(setSessionModelAttemptTimeouts)
+		scheduleSum      = 43 * time.Second       // sum(setSessionModelAttemptTimeouts)
 		retryBaseDelay   = 300 * time.Millisecond // setSessionModelRetryBaseDelay
 		retryJitterRatio = 0.5                    // setSessionModelRetryJitterRatio
 	)

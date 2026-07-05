@@ -81,6 +81,12 @@ for attempt := 1; attempt <= maxAttempts; attempt++ {
 
 **Key principle**: Only *tighten* deadlines, never extend. `shouldFailFastCreateAttempt` bails when remaining budget < per-attempt timeout.
 
+### Cross-Package Mirrored Constants Drift
+
+When a package can't import another (e.g. `internal/conversation` can't import `internal/acpproc`), it may hardcode a **local mirror** of a schedule/budget constant, flagged with a comment like `// Mirror of shared_acp_process.go set_model constants` (see `internal/conversation/constraints_test.go`'s `scheduleSum`). Changing the source constant does **not** auto-update the mirror.
+
+**Rule**: When changing a retry schedule/timeout constant, `grep` for comments referencing it (e.g. the old sum/values) across the whole module — not just the owning package — and update every mirror + stale doc comment describing the old math in the same change.
+
 ## Explicit Lock Management in Retry Loops
 
 `defer mu.Unlock()` does **not** compose safely with manual unlock + retry. If the locked variable is reassigned during retry, defer fires on the wrong object → double-unlock panic.

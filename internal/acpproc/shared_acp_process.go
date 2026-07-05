@@ -32,8 +32,9 @@ const (
 	processStartRetryJitterRatio = 0.3
 
 	// setSessionModelMaxAttempts is the maximum number of set_model RPC attempts per call.
-	// Schedule {12s,8s,5s} totals 25s per caller + jitter (≤900ms) ≈ 25s, unchanged from
-	// the prior 3×8s budget — so setModelSem contention at wakeup is unaffected.
+	// Schedule {20s,15s,8s} totals 43s per caller + jitter (≤1.2s) ≈ 44s (attempt-1 widened
+	// for mitto-8qp so large-context warm-up fits). The total stays within the contention
+	// bound covered by setModelAsyncCallerBudget (see TestSetModelAsyncBudgetMath).
 	setSessionModelMaxAttempts = 3
 	// setSessionModelRetryBaseDelay is the base backoff between set_model retry attempts.
 	setSessionModelRetryBaseDelay = 300 * time.Millisecond
@@ -41,7 +42,7 @@ const (
 	// added to each retry backoff. Jitter in [0, base×ratio) de-correlates concurrent callers
 	// that would otherwise retry in lock-step (mitto-f7q, Option 3).
 	// With ratio=0.5: attempt-2 delay ∈ [300ms, 450ms), attempt-3 ∈ [600ms, 750ms).
-	// Total per-caller worst-case: sum(schedule) + 750ms ≈ 25s.
+	// Total per-caller worst-case: sum(schedule) + ~1.2s jitter ≈ 44s.
 	setSessionModelRetryJitterRatio = 0.5
 
 	// sessionCreateMaxAttempts is the maximum number of session/new RPC attempts per call.
@@ -68,9 +69,9 @@ const (
 	// setModelAsyncCallerBudget is the context timeout given to the background goroutine
 	// that performs the aux-session model switch asynchronously (mitto-f7q, Option 4).
 	// Budget reasoning: the capacity-1 setModelSem may be held by up to ~3 concurrent callers,
-	// each taking at most ~25s (3×8s + jitter). Semaphore wait ≤ 3×25s = 75s; adding slack
-	// for our own retries gives ~100s worst-case. 90s covers the expected contention at server
-	// wakeup (≤4 concurrent aux sessions) while avoiding an indefinite hang if the process
+	// each taking at most ~44s (schedule {20s,15s,8s} + jitter). 90s covers the EXPECTED
+	// contention at server wakeup — (N-2)×perCallerMax with N=4, i.e. 2×~44s ≈ 88s ≤ 90s
+	// (see TestSetModelAsyncBudgetMath) — while avoiding an indefinite hang if the process
 	// is unhealthy. m.ctx cancels on manager shutdown as a hard backstop.
 	setModelAsyncCallerBudget = 90 * time.Second
 
@@ -91,7 +92,8 @@ const (
 	// This mirrors the child-session de-stagger pattern (constraintModelSwitchChildStartupJitter
 	// in internal/conversation/bgsession_config.go, introduced for mitto-x4e). The jitter
 	// waits on m.ctx — not the budget context — so it does NOT consume the 90 s budget.
-	// Do NOT increase the sum of setSessionModelAttemptTimeouts — the total must stay ≈25s.
+	// Do NOT increase the sum of setSessionModelAttemptTimeouts beyond the contention bound
+	// enforced by TestSetModelAsyncBudgetMath (≈43.8s at 4 concurrent callers).
 	auxModelSwitchStartupJitter = 10 * time.Second
 
 	// processInitializeAttemptTimeout is the per-attempt deadline for the ACP Initialize
@@ -133,16 +135,19 @@ const (
 )
 
 // setSessionModelAttemptTimeouts is the per-attempt deadline schedule for set_model RPCs
-// (mitto-f7q). Attempt-1 is sized above the observed cold-model warm-up p95 (~8s) so a
-// cold claude-haiku-4-5 can complete on the first attempt; later attempts shrink to keep
-// the total (12+8+5 = 25s) ≈ constant vs the prior 3×8s, leaving setModelSem contention
-// unchanged. The array length is tied to setSessionModelMaxAttempts at compile time.
-// Do NOT increase the sum — the total must remain ≈25s so setModelAsyncCallerBudget (90s)
-// contention math stays valid.
+// (mitto-f7q; attempt-1 widened for mitto-8qp). Attempt-1 is sized above the genuine
+// warm-up latency of large-context models (e.g. claude-sonnet-5-0-500k, observed >12s):
+// the prior 12s attempt-1 was smaller than that latency, so every attempt of the
+// then-shrinking 12/8/5 schedule timed out with "context deadline exceeded" even though
+// ~60-90s of the outer setModelAsyncCallerBudget (90s) sat unused (mitto-8qp). Later
+// attempts shrink to keep the total bounded so setModelSem contention stays covered by the
+// async budget. The array length is tied to setSessionModelMaxAttempts at compile time.
+// Do NOT let the sum exceed the contention bound enforced by TestSetModelAsyncBudgetMath
+// (≈43.8s at 4 concurrent callers) or setModelAsyncCallerBudget (90s) math stops holding.
 var setSessionModelAttemptTimeouts = [setSessionModelMaxAttempts]time.Duration{
-	12 * time.Second, // attempt 1: sized for cold-model warm-up p95
-	8 * time.Second,  // attempt 2: standard
-	5 * time.Second,  // attempt 3: final, minimal budget
+	20 * time.Second, // attempt 1: sized for large-context model warm-up (mitto-8qp)
+	15 * time.Second, // attempt 2: standard retry
+	8 * time.Second,  // attempt 3: final, minimal budget
 }
 
 // auxStartupJitter returns a random duration in [0, max) to de-stagger concurrent
