@@ -138,3 +138,5 @@ API endpoint: `GET /api/workspace-mcp-tools?acp_server=NAME&dir=PATH` (handler i
 | github-copilot | BROKEN (mitto-sys.14) | wrong path: real is `~/.copilot/mcp-config.json` |
 | qwen-code | BROKEN (mitto-sys.15) | wrong path: real is `~/.qwen` |
 | junie | stub (mitto-sys.10) | always returns `{"servers": []}` |
+
+**Auggie git-root divergence** (not a script bug): `auggie mcp list` resolves `<workspace>` to the **git toplevel**, not the target `workingDir` — so when `workingDir` is a git subdirectory, `mcp-list.sh` (which reads `<workingDir>/.augment/settings.local.json` literally) can report servers (e.g. `slack`) that auggie itself never loads (it reads `<git-root>/.augment/settings.local.json` instead). Verify workspace vs. git-root config before trusting the MCP tab for auggie workspaces nested in a larger repo.

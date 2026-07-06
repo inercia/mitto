@@ -126,6 +126,8 @@ Two-tier discovery for `enabledWhen`/CEL `tools.*` gating (see `docs/devel/mcp-t
 
 Per-agent `mcp-list.sh` config paths/keys are **not** interchangeable across agents — verify against real docs before writing/trusting one (audit + known-broken scripts: `.augment/rules/42-mcpserver-development.md`).
 
+**Auggie git-root divergence**: `auggie mcp list` resolves `<workspace>` to the **git toplevel**, not the Mitto workspace's `working_dir` — so a workspace whose `working_dir` is a git subdirectory sees servers registered in `<git-root>/.augment/settings.local.json` (not its own `.augment/settings.local.json`). Mitto's `mcp-list.sh` reads `working_dir` literally, so the MCP tab can show servers (e.g. `slack`) the running agent never actually loads. Fix: move servers to the git-root config, register at user scope (`auggie mcp add`, no `--local`), or point `working_dir` at the git root.
+
 ## Loop Conversations
 
 **onCompletion trigger** (distinct from schedule-based loop):
