@@ -127,6 +127,14 @@ const (
 	// of the pre-fix flat-cooldown design.
 	sessionSaturationCooldownMax = 5 * time.Minute
 
+	// confirmedDegradedLevel is the minimum saturationLevel at which a process is
+	// considered "confirmed degraded" (mitto-1h0): it has tripped saturation, served
+	// its cooldown, run a single-attempt probe, and that probe ALSO timed out — i.e.
+	// it has demonstrably failed to self-heal. Used by IsConfirmedDegraded() to gate
+	// the GC's non-idle recycle tier (Tier 6), which recycles even a busy process
+	// once this bar is met.
+	confirmedDegradedLevel = 2
+
 	// Note: Runtime restart constants (maxProcessRestarts, processRestartWindow,
 	// processRestartBaseDelay, processRestartMaxDelay) are now defined in
 	// acp_error_classification.go as shared constants (conversation.MaxACPRestarts, conversation.ACPRestartWindow,
@@ -871,6 +879,29 @@ func (p *SharedACPProcess) IsSaturated() bool {
 		return false
 	}
 	return time.Now().Before(p.saturatedUntil)
+}
+
+// IsConfirmedDegraded reports whether the process is currently saturated AND has
+// reached confirmedDegradedLevel (mitto-1h0): it tripped saturation, served its
+// cooldown, ran a single-attempt probe, and that probe also timed out. Like
+// IsSaturated(), this is a NON-mutating read guarded by saturationMu — it never
+// flips inProbe or otherwise perturbs the saturation state machine, so the GC's
+// non-idle recycle tier (Tier 6) can poll it safely.
+func (p *SharedACPProcess) IsConfirmedDegraded() bool {
+	p.saturationMu.Lock()
+	defer p.saturationMu.Unlock()
+	if p.saturatedUntil.IsZero() {
+		return false
+	}
+	return time.Now().Before(p.saturatedUntil) && p.saturationLevel >= confirmedDegradedLevel
+}
+
+// SaturationLevel returns the current saturation escalation level (0 = healthy).
+// Non-mutating; for tests and observability.
+func (p *SharedACPProcess) SaturationLevel() int {
+	p.saturationMu.Lock()
+	defer p.saturationMu.Unlock()
+	return p.saturationLevel
 }
 
 // rpcErrorCode extracts the JSON-RPC error code from err when it (or any error it

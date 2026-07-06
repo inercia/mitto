@@ -1395,6 +1395,17 @@ func (bs *BackgroundSession) HasObservers() bool {
 	return bs.ObserverCount() > 0
 }
 
+// LastStreamActivityAt returns the time of the most recent streamed update
+// received from the agent (see lastStreamActivityAt). Returns zero time if no
+// streamed activity has been observed yet.
+func (bs *BackgroundSession) LastStreamActivityAt() time.Time {
+	nanos := bs.lastStreamActivityAt.Load()
+	if nanos == 0 {
+		return time.Time{}
+	}
+	return time.Unix(0, nanos)
+}
+
 // notifyObservers calls a function on all observers.
 func (bs *BackgroundSession) notifyObservers(fn func(SessionObserver)) {
 	bs.observersMu.RLock()

@@ -2677,6 +2677,7 @@ func (sm *SessionManager) GetSessionInfoByWorkspace() map[string][]SessionInfo {
 			LastObserverRemovedAt:  bs.LastObserverRemovedAt(),
 			LastActivityAt:         bs.LastActivityAt(),
 			LastResponseCompleteAt: bs.GetLastResponseCompleteTime(),
+			LastStreamActivityAt:   bs.LastStreamActivityAt(),
 		})
 	}
 	return result

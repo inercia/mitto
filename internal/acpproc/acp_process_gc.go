@@ -7,6 +7,13 @@ import (
 	"github.com/inercia/mitto/internal/conversation"
 )
 
+// tier6StreamedProgressQuietWindow is the minimum time since a session's last
+// streamed agent update before Tier 6 considers it eligible for recycle
+// (mitto-1h0). Mirrors conversation.agentWorkingHeartbeatQuietThreshold (10s):
+// that constant is unexported in package conversation, so it is duplicated here
+// rather than imported. Keep the two values in sync if either changes.
+const tier6StreamedProgressQuietWindow = 10 * time.Second
+
 // GCConfig configures the garbage collection loop.
 type GCConfig struct {
 	// Interval is how often the GC runs (default: 30s).
@@ -240,6 +247,14 @@ func (m *ACPProcessManager) gcLoop() {
 // sessions are GC-suspended and closed and the process is stopped so the next
 // NewSession lazily builds a fresh, healthy process — instead of the degraded one
 // continuing to starve resumes/loop-prompts.
+//
+// Tier 6 escalates Tier 5 to recycle a CONFIRMED-degraded process (saturationLevel
+// >= confirmedDegradedLevel) even while it is busy (mitto-1h0): a control-plane
+// wedge shows up as in-flight-but-timing-out RPCs, which Tier 5's idle gate reads
+// as legitimate work and refuses to recycle. Tier 6 drops the ActiveRPCs()/
+// IsPrompting gate for confirmed-degraded processes, but is guarded by a
+// no-streamed-progress check (LastStreamActivityAt) so a legitimately slow but
+// progressing prompt is never killed.
 //
 // Tier 3 cleans up auxiliary sessions that have been idle longer than AuxIdleTimeout.
 // Cleaned-up sessions are lazily re-created on next use via getOrCreateAuxiliarySession.
@@ -730,6 +745,106 @@ gcTier1:
 			// fresh one with zeroed saturation state.
 			m.StopProcess(workspaceUUID)
 			// Keep sessionless bookkeeping consistent.
+			m.gcMu.Lock()
+			delete(m.lastSessionSeen, workspaceUUID)
+			m.gcMu.Unlock()
+		}
+	}
+
+	// ----------------------------------------------------------------
+	// Tier 6: recycle CONFIRMED-degraded processes even while busy (mitto-1h0)
+	// Re-query sessions so any closed by earlier tiers are excluded.
+	// ----------------------------------------------------------------
+	{
+		sessionsByWorkspace = m.sessionQuery()
+
+		m.mu.RLock()
+		degradedUUIDs := make([]string, 0, len(m.processes))
+		for uuid := range m.processes {
+			degradedUUIDs = append(degradedUUIDs, uuid)
+		}
+		m.mu.RUnlock()
+
+		for _, workspaceUUID := range degradedUUIDs {
+			p := m.GetProcess(workspaceUUID)
+			if p == nil {
+				continue
+			}
+
+			// Only act on confirmed-degraded processes (saturationLevel >= 2):
+			// they have already tripped saturation, served a cooldown, and their
+			// post-cooldown probe ALSO timed out — demonstrably not self-healing.
+			if !p.IsConfirmedDegraded() {
+				continue
+			}
+
+			sessions := sessionsByWorkspace[workspaceUUID]
+
+			// Just-resumed grace: never recycle a session that was resumed within
+			// the last GC interval (same as Tier 1/5's grace window).
+			skip := false
+			for _, s := range sessions {
+				if !s.ResumedAt.IsZero() && now.Sub(s.ResumedAt) < m.gcConfig.Interval {
+					if m.logger != nil {
+						m.logger.Debug("GC: skipping confirmed-degraded recycle (recently resumed)",
+							"workspace_uuid", workspaceUUID,
+							"session_id", s.SessionID,
+							"resumed_ago", now.Sub(s.ResumedAt))
+					}
+					skip = true
+					break
+				}
+				if s.NextLoopAt != nil && s.NextLoopAt.Before(now.Add(2*m.gcConfig.Interval)) {
+					if m.logger != nil {
+						m.logger.Debug("GC: skipping confirmed-degraded recycle (loop prompt due soon)",
+							"workspace_uuid", workspaceUUID,
+							"session_id", s.SessionID,
+							"next_loop_at", s.NextLoopAt)
+					}
+					skip = true
+					break
+				}
+			}
+			if skip {
+				continue
+			}
+
+			// No-streamed-progress guard (mandatory anti-regression): if any session
+			// has streamed activity within the quiet window, it is legitimately
+			// progressing — do NOT kill it, regardless of in-flight RPCs or prompting
+			// state. Note: unlike Tier 5, we deliberately do NOT gate on
+			// ActiveRPCs()/IsPrompting here — the in-flight, timing-out control RPCs
+			// (session/new, set_model) ARE the wedge, not real work.
+			progressing := false
+			for _, s := range sessions {
+				if !s.LastStreamActivityAt.IsZero() && now.Sub(s.LastStreamActivityAt) < tier6StreamedProgressQuietWindow {
+					if m.logger != nil {
+						m.logger.Debug("GC: skipping confirmed-degraded recycle (session progressing)",
+							"workspace_uuid", workspaceUUID,
+							"session_id", s.SessionID,
+							"stream_idle", now.Sub(s.LastStreamActivityAt))
+					}
+					progressing = true
+					break
+				}
+			}
+			if progressing {
+				continue
+			}
+
+			// Confirmed-degraded, not progressing — recycle even though busy.
+			if m.logger != nil {
+				m.logger.Info("GC: recycling confirmed-degraded busy shared ACP process",
+					"workspace_uuid", workspaceUUID,
+					"saturation_level", p.SaturationLevel(),
+					"active_rpcs", p.ActiveRPCs(),
+					"session_count", len(sessions))
+			}
+			for _, s := range sessions {
+				m.MarkGCSuspended(s.SessionID)
+				m.sessionClose(s.SessionID)
+			}
+			m.StopProcess(workspaceUUID)
 			m.gcMu.Lock()
 			delete(m.lastSessionSeen, workspaceUUID)
 			m.gcMu.Unlock()

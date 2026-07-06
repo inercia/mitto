@@ -34,4 +34,10 @@ type SessionInfo struct {
 	// work, making it the correct signal for the loop-suspend grace window.
 	// Zero if the agent has not completed a response since the session was resumed.
 	LastResponseCompleteAt time.Time
+	// LastStreamActivityAt is when the session last received a streamed update from
+	// the agent (mirrors BackgroundSession.lastStreamActivityAt). Unlike
+	// LastActivityAt, it grows monotonically through a long silent tool call and is
+	// the correct signal to distinguish a wedged process from one making genuine,
+	// slow progress. Zero if no streamed activity has been observed.
+	LastStreamActivityAt time.Time
 }

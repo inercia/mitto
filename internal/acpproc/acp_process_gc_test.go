@@ -1558,3 +1558,178 @@ func TestGCHealthTier_RecyclesSaturatedIdleProcess(t *testing.T) {
 		}
 	}
 }
+
+// driveToConfirmedDegraded pushes proc's saturation state machine to
+// saturationLevel >= confirmedDegradedLevel (2), mirroring the real sequence:
+// trip saturation (threshold consecutive timeouts) -> cooldown elapses (probe
+// opens) -> the probe itself times out (escalates to level 2).
+func driveToConfirmedDegraded(t *testing.T, proc *SharedACPProcess) {
+	t.Helper()
+	for i := 0; i < sessionSaturationTimeoutThreshold; i++ {
+		proc.recordRPCTimeout()
+	}
+	if proc.SaturationLevel() != 1 {
+		t.Fatalf("test setup: expected saturationLevel 1 after initial trip, got %d", proc.SaturationLevel())
+	}
+	// Force the cooldown to have already elapsed so isSaturated() opens the probe.
+	proc.saturationMu.Lock()
+	proc.saturatedUntil = time.Now().Add(-time.Millisecond)
+	proc.saturationMu.Unlock()
+	if proc.isSaturated() {
+		t.Fatalf("test setup: expected isSaturated()=false once cooldown elapses (probe opens)")
+	}
+	proc.saturationMu.Lock()
+	inProbe := proc.inProbe
+	proc.saturationMu.Unlock()
+	if !inProbe {
+		t.Fatalf("test setup: expected inProbe=true after cooldown elapse")
+	}
+	// The probe itself times out -> escalates to level 2 and re-saturates.
+	proc.recordRPCTimeout()
+	if !proc.IsConfirmedDegraded() {
+		t.Fatalf("test setup: expected IsConfirmedDegraded()=true, saturationLevel=%d", proc.SaturationLevel())
+	}
+}
+
+// TestGCTier6_RecyclesBusyConfirmedDegradedProcess verifies that a confirmed-
+// degraded (saturationLevel >= 2) shared ACP process is recycled by Tier 6 even
+// while busy (in-flight RPCs / a prompting session), provided no session shows
+// recent streamed activity (mitto-1h0).
+func TestGCTier6_RecyclesBusyConfirmedDegradedProcess(t *testing.T) {
+	workspaceUUID := "ws-degraded-busy"
+	proc := newTestSharedProcess()
+	driveToConfirmedDegraded(t, proc)
+	proc.activeRPCs.Add(1) // simulate an in-flight (wedged) control RPC
+
+	sessions := map[string][]conversation.SessionInfo{
+		workspaceUUID: {
+			{
+				SessionID:            "s1",
+				WorkspaceUUID:        workspaceUUID,
+				HasObservers:         true,
+				IsPrompting:          true,
+				LastStreamActivityAt: time.Now().Add(-time.Hour), // stale
+			},
+		},
+	}
+
+	var mu sync.Mutex
+	closed := make(map[string]bool)
+
+	m := newTestGCManager(
+		func() map[string][]conversation.SessionInfo { return sessions },
+		func(id string) {
+			mu.Lock()
+			defer mu.Unlock()
+			closed[id] = true
+		},
+	)
+	m.mu.Lock()
+	m.processes[workspaceUUID] = proc
+	m.mu.Unlock()
+
+	m.RunGCOnce()
+
+	m.mu.RLock()
+	_, exists := m.processes[workspaceUUID]
+	m.mu.RUnlock()
+	if exists {
+		t.Error("confirmed-degraded busy process should have been recycled by Tier 6")
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if !closed["s1"] {
+		t.Error("expected session s1 to be closed during Tier 6 recycle")
+	}
+	if !m.IsGCSuspended("s1") {
+		t.Error("expected session s1 to be marked GC-suspended before close")
+	}
+}
+
+// TestGCTier6_SkipsProgressingDegradedProcess verifies that a confirmed-degraded
+// process is NOT recycled by Tier 6 when a session has streamed activity within
+// the quiet window — it is legitimately slow but progressing (mitto-1h0
+// anti-regression guard).
+func TestGCTier6_SkipsProgressingDegradedProcess(t *testing.T) {
+	workspaceUUID := "ws-degraded-progressing"
+	proc := newTestSharedProcess()
+	driveToConfirmedDegraded(t, proc)
+	proc.activeRPCs.Add(1)
+
+	sessions := map[string][]conversation.SessionInfo{
+		workspaceUUID: {
+			{
+				SessionID:            "s1",
+				WorkspaceUUID:        workspaceUUID,
+				HasObservers:         true,
+				IsPrompting:          true,
+				LastStreamActivityAt: time.Now(), // recent -> progressing
+			},
+		},
+	}
+
+	m := newTestGCManager(
+		func() map[string][]conversation.SessionInfo { return sessions },
+		func(id string) {},
+	)
+	m.mu.Lock()
+	m.processes[workspaceUUID] = proc
+	m.mu.Unlock()
+
+	m.RunGCOnce()
+
+	m.mu.RLock()
+	_, exists := m.processes[workspaceUUID]
+	m.mu.RUnlock()
+	if !exists {
+		t.Error("progressing confirmed-degraded process should NOT have been recycled by Tier 6")
+	}
+}
+
+// TestGCTier6_SkipsLevel1BusyProcess verifies that a level-1 (first-trip)
+// saturated busy process is NOT recycled by Tier 6 — only Tier 5's idle-gated
+// path governs level-1 saturation (mitto-1h0).
+func TestGCTier6_SkipsLevel1BusyProcess(t *testing.T) {
+	workspaceUUID := "ws-level1-busy"
+	proc := newTestSharedProcess()
+	for i := 0; i < sessionSaturationTimeoutThreshold; i++ {
+		proc.recordRPCTimeout()
+	}
+	if proc.SaturationLevel() != 1 {
+		t.Fatalf("test setup: expected saturationLevel 1, got %d", proc.SaturationLevel())
+	}
+	if proc.IsConfirmedDegraded() {
+		t.Fatalf("test setup: level-1 process should not be IsConfirmedDegraded()")
+	}
+	proc.activeRPCs.Add(1)
+
+	sessions := map[string][]conversation.SessionInfo{
+		workspaceUUID: {
+			{
+				SessionID:            "s1",
+				WorkspaceUUID:        workspaceUUID,
+				HasObservers:         true,
+				IsPrompting:          true,
+				LastStreamActivityAt: time.Now().Add(-time.Hour),
+			},
+		},
+	}
+
+	m := newTestGCManager(
+		func() map[string][]conversation.SessionInfo { return sessions },
+		func(id string) {},
+	)
+	m.mu.Lock()
+	m.processes[workspaceUUID] = proc
+	m.mu.Unlock()
+
+	m.RunGCOnce()
+
+	m.mu.RLock()
+	_, exists := m.processes[workspaceUUID]
+	m.mu.RUnlock()
+	if !exists {
+		t.Error("level-1 saturated busy process should NOT have been recycled by Tier 6")
+	}
+}
