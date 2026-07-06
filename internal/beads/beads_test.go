@@ -107,6 +107,43 @@ func TestIsNotFound(t *testing.T) {
 	}
 }
 
+func TestIsSchemaSkew(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"nil", nil, false},
+		{"real v49->v53 stderr", &CmdError{Err: errors.New("bd exited with non-zero status"),
+			Stderr: "... refusing to auto-apply 4 pending schema migrations to a remote-backed database (v49 -> v53) ...\n" +
+				"Error: failed to open routed store at /Users/alvaro/.beads-planning: schema version mismatch: database is at v49, binary expects v53 ..."}, true},
+		{"schema version mismatch only", &CmdError{Stderr: "schema version mismatch: database is at v1, binary expects v2"}, true},
+		{"not found", &CmdError{Stderr: `no issue found matching "mitto-cam"`}, false},
+		{"schema migration without remote-backed", &CmdError{Stderr: "pending schema migrations detected"}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := IsSchemaSkew(tc.err); got != tc.want {
+				t.Errorf("IsSchemaSkew = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestSchemaSkewDBPath(t *testing.T) {
+	realStderr := "... refusing to auto-apply 4 pending schema migrations to a remote-backed database (v49 -> v53) ...\n" +
+		"Error: failed to open routed store at /Users/alvaro/.beads-planning: schema version mismatch: database is at v49, binary expects v53 ..."
+	err := &CmdError{Err: errors.New("bd exited with non-zero status"), Stderr: realStderr}
+	if got, want := SchemaSkewDBPath(err), "/Users/alvaro/.beads-planning"; got != want {
+		t.Errorf("SchemaSkewDBPath = %q, want %q", got, want)
+	}
+
+	noPath := &CmdError{Stderr: "schema version mismatch: database is at v1, binary expects v2"}
+	if got := SchemaSkewDBPath(noPath); got != "" {
+		t.Errorf("SchemaSkewDBPath(no path) = %q, want empty", got)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Validators
 // ---------------------------------------------------------------------------

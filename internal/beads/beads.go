@@ -43,6 +43,45 @@ func IsNotFound(err error) bool {
 	return strings.Contains(strings.ToLower(StderrOf(err)), "no issue found matching")
 }
 
+// IsSchemaSkew reports whether err represents a bd schema-version skew
+// failure: bd deliberately refuses to auto-apply pending migrations to a
+// remote-backed database (only one designated clone may migrate it), so every
+// read against that store fails until reconciled. This is distinct from a
+// transient/startup failure and callers use it to map the failure to an
+// actionable "needs migration" response instead of a bare 500.
+func IsSchemaSkew(err error) bool {
+	if err == nil {
+		return false
+	}
+	stderr := strings.ToLower(StderrOf(err))
+	if strings.Contains(stderr, "schema version mismatch") {
+		return true
+	}
+	return strings.Contains(stderr, "schema migration") && strings.Contains(stderr, "remote-backed database")
+}
+
+// SchemaSkewDBPath best-effort parses the beads database path out of a schema
+// skew error's stderr, e.g. from:
+//
+//	failed to open routed store at /Users/alvaro/.beads-planning: schema version mismatch
+//
+// it returns "/Users/alvaro/.beads-planning". Returns "" if the path cannot be
+// parsed.
+func SchemaSkewDBPath(err error) string {
+	stderr := StderrOf(err)
+	const marker = "store at "
+	idx := strings.Index(stderr, marker)
+	if idx < 0 {
+		return ""
+	}
+	rest := stderr[idx+len(marker):]
+	end := strings.Index(rest, ":")
+	if end < 0 {
+		return ""
+	}
+	return strings.TrimSpace(rest[:end])
+}
+
 // CreateParams carries optional fields for Client.Create.
 type CreateParams struct {
 	Title       string

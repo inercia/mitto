@@ -68,6 +68,11 @@ const (
 	errCodeRateLimited      = "rate_limited"
 	errCodeServerError      = "server_error"
 	errCodeUnavailable      = "unavailable"
+
+	// errCodeBeadsSchemaSkew identifies a beads database that is behind the bd
+	// binary's schema and is remote-backed, so bd refuses to auto-migrate it.
+	// See writeBeadsError in internal/web/handlers/beads.go.
+	errCodeBeadsSchemaSkew = "beads_schema_skew"
 )
 
 // auxBackedRequestTimeout bounds aux/bd-backed handlers BELOW the 30s

@@ -102,8 +102,10 @@ async function readBeadsResponse(res) {
       if (parsed && typeof parsed.error === "object" && parsed.error !== null) {
         return {
           error: parsed.error.message || `Request failed (HTTP ${res.status})`,
+          code: parsed.error.code,
           stderr:
             (parsed.error.details && parsed.error.details.stderr) || undefined,
+          details: parsed.error.details || undefined,
         };
       }
       return parsed;
@@ -3147,6 +3149,11 @@ export function BeadsView({
   const [issues, setIssues] = useState([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
+  // Set when the list load failed with a "beads_schema_skew" error code: the
+  // beads database is behind the bd binary's schema and is remote-backed, so
+  // bd refuses to auto-migrate it. Drives a distinct actionable error card
+  // (see the render error region below) instead of the plain error text.
+  const [schemaSkew, setSchemaSkew] = useState(null);
   const [selectedIssue, setSelectedIssue] = useState(null);
   const [isCreating, setIsCreating] = useState(false);
   // When the create panel is opened via an epic's "+" button, this holds the
@@ -3331,12 +3338,23 @@ export function BeadsView({
       );
       const data = await readBeadsResponse(res);
       if (!res.ok || data.error) {
+        if (data.code === "beads_schema_skew") {
+          setSchemaSkew({
+            message: data.error,
+            dbPath: (data.details && data.details.db_path) || "",
+            hint: (data.details && data.details.hint) || "",
+          });
+        } else {
+          setSchemaSkew(null);
+        }
         setError(data.error || data.message || "Failed to load issues");
         setIssues([]);
       } else {
+        setSchemaSkew(null);
         setIssues(Array.isArray(data) ? data : []);
       }
     } catch (err) {
+      setSchemaSkew(null);
       setError(err.message || "Failed to load issues");
     } finally {
       setLoading(false);
@@ -5112,13 +5130,32 @@ export function BeadsView({
         ${
           !loading &&
           error &&
-          html`
-            <div
-              class="flex items-center justify-center h-24 text-red-400 text-sm px-4"
-            >
-              ${error}
-            </div>
-          `
+          (schemaSkew
+            ? html`
+                <div
+                  class="flex flex-col items-center justify-center gap-2 py-8 px-4 text-center"
+                >
+                  <div class="text-amber-400 text-sm font-medium">
+                    Beads schema needs migration
+                  </div>
+                  ${schemaSkew.dbPath &&
+                  html`<div
+                    class="text-mitto-text-secondary text-xs font-mono break-all"
+                  >
+                    ${schemaSkew.dbPath}
+                  </div>`}
+                  <div class="text-mitto-text-secondary text-xs max-w-md">
+                    ${schemaSkew.hint}
+                  </div>
+                </div>
+              `
+            : html`
+                <div
+                  class="flex items-center justify-center h-24 text-red-400 text-sm px-4"
+                >
+                  ${error}
+                </div>
+              `)
         }
         ${
           !loading &&

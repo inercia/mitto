@@ -52,6 +52,20 @@ func (c *showInternalErrorClient) Show(_ context.Context, _, _ string) ([]byte, 
 	return nil, &beads.CmdError{Err: errors.New("bd exited with non-zero status"), Stderr: "database is locked"}
 }
 
+// schemaSkewClient is a beads.Client whose List mimics bd's refusal to
+// auto-migrate a remote-backed database that is behind the binary's schema.
+// Used to verify that a schema-version skew maps to an actionable HTTP 409
+// "needs migration" response instead of a bare 500.
+type schemaSkewClient struct{ stubBeadsClient }
+
+func (c *schemaSkewClient) List(_ context.Context, _ string) ([]byte, error) {
+	return nil, &beads.CmdError{
+		Err: errors.New("bd exited with non-zero status"),
+		Stderr: "... refusing to auto-apply 4 pending schema migrations to a remote-backed database (v49 -> v53) ...\n" +
+			"Error: failed to open routed store at /Users/test/.beads-planning: schema version mismatch: database is at v49, binary expects v53 ...",
+	}
+}
+
 // stubBeadsClient implements beads.Client for unit tests.
 // All methods except Create are no-ops that return nil / zero values.
 type stubBeadsClient struct {
@@ -269,6 +283,35 @@ func TestHandleBeadsList_BdCommandError_ReturnsServerError(t *testing.T) {
 	}
 	if env.Error.Message == "" {
 		t.Error("error.message should be non-empty")
+	}
+}
+
+func TestHandleBeadsList_SchemaSkew(t *testing.T) {
+	// Deterministic schema-version skew via stub: List returns a schema-skew
+	// error → actionable 409 envelope with the DB path, not a bare 500.
+	s := newBeadsTestServerWithClient(&schemaSkewClient{})
+	req := localhostRequest("/api/issues?working_dir=/test/workspace")
+	w := httptest.NewRecorder()
+	s.handleBeadsList(w, req)
+
+	if w.Code != http.StatusConflict {
+		t.Errorf("status = %d, want %d", w.Code, http.StatusConflict)
+	}
+	var env struct {
+		Error struct {
+			Code    string         `json:"code"`
+			Message string         `json:"message"`
+			Details map[string]any `json:"details"`
+		} `json:"error"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&env); err != nil {
+		t.Fatalf("decode error body: %v", err)
+	}
+	if env.Error.Code != "beads_schema_skew" {
+		t.Errorf("error.code = %q, want %q", env.Error.Code, "beads_schema_skew")
+	}
+	if got, want := env.Error.Details["db_path"], "/Users/test/.beads-planning"; got != want {
+		t.Errorf("error.details.db_path = %v, want %q", got, want)
 	}
 }
 
