@@ -91,9 +91,15 @@ prompt: |-
 
   - The **last message is from the customer** and it asks something / provides info we must act on →
     `state:awaiting-us`.
+  - **`state:need-info` + the customer just replied** (they answered our outstanding clarifying
+    question, or otherwise spoke last) → `state:awaiting-us`. Treat `need-info` exactly like
+    `awaiting-customer` here: once the customer responds, the ball is back in our court. Do **not**
+    leave it stranded in `need-info`.
   - The **last message is ours** and we are waiting on the customer → `state:awaiting-customer`.
-  - Do **not** override `state:need-info` or `state:drafting` if the situation has not changed (those
-    reflect a pending action of ours). Only change the label when the thread clearly moved on.
+  - Do **not** override `state:drafting` if the situation has not changed (it reflects a pending
+    action of ours — a draft awaiting your review). Only change the label when the thread clearly
+    moved on. Likewise keep `state:need-info` **only while the customer has not yet replied**; the
+    moment they do, apply the `need-info → awaiting-us` rule above.
 
   Apply with: `bd update <id> --remove-label state:<previous> --add-label state:<new>`, and add a
   short `**[STATE · <time>]** <prev> → <new>` comment noting why.

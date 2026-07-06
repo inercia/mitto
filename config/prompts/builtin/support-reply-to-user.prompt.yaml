@@ -1,5 +1,5 @@
 name: 'Support: reply to user'
-description: 'Draft, review and post our answer to a tracked support question (bead in state:drafting). Posts to Slack only on your approval.'
+description: 'Review and post our answer to a tracked support question (bead in state:drafting). Reuses an existing draft or builds one, saves it on the bead (even on timeout), and posts to Slack only on your approval.'
 group: Support
 backgroundColor: '#B3E5FC'
 icon: chat-bubble
@@ -22,9 +22,9 @@ prompt: |-
   ## Description
 
   Post our answer to a tracked support question. Use this when the bead is **ready to be answered** —
-  we already have enough information (typically after gathering info via the project's documented
-  method or an investigation). It shows the proposed reply, lets you edit it, posts it to the Slack
-  thread **on your approval**, and records it on the bead.
+  we already have enough information (typically after gathering info via the channel knowledge file or
+  an investigation). It shows the proposed reply, lets you edit it, posts it to the Slack thread **on
+  your approval**, and records it on the bead.
 
   > **Applicable state:** `state:drafting`. If the bead is in a different state, warn and let the
   > user decide whether to continue or stop (see Step 2).
@@ -79,54 +79,97 @@ prompt: |-
     status"** first: `[{label: "Run Check status first (stop here)"}, {label: "Continue drafting"}]`.
     Respect the choice.
 
-  ## Step 4: Build the proposed reply
+  ## Step 4: Reuse or build the proposed reply
 
-  - Draw from the bead history — especially the recorded draft (the `state:drafting` proposal) and
-    any investigation / info-gathering notes — plus the refreshed thread. Do not repeat what we
-    already said.
+  A **proposed reply** lives on the bead as an `[OUTBOUND]`-style comment clearly marked
+  **"DRAFT — not yet posted"** (created here or by **"Support: investigate"** / the watch loop). It
+  is the single source of truth for the draft — never keep it only in memory.
+
+  1. **Look for an existing draft.** Scan `bd comments <id>` for the most recent DRAFT `[OUTBOUND]`
+     comment.
+     - **If one exists** → **reuse it as-is.** Do **not** regenerate or rewrite it; the user may have
+       already edited it. This is the text you will show in Step 5.
+     - **If none exists** → build one now from the bead history (investigation / info-gathering notes)
+       plus the refreshed thread, following the formatting guidelines below. Do not repeat what we
+       already said.
+  2. **Formatting guidelines (only when building a new draft):**
+     1. **No direct addressing** — do not use the user's name.
+     2. **No follow-up offers** — do not end with "let me know if you need anything else".
+     3. **Hedge** — start with "I think that…", "It seems like…"; we are never 100% sure.
+     4. **Ask if unclear** — if scope/context is missing, ask rather than guess.
+     5. **Run simple commands** — if we suggest e.g. `curl some.domain.com` and we can run it, run it
+        locally and show the command **and** the result.
+     6. **Keep it short and conversational** — lead with the single most likely solution or next step;
+        avoid walls of text.
+
+  ## Step 5: Persist the draft to the bead (before review)
+
+  Always make sure the current proposed reply is saved on the bead **before** opening the review
+  dialog, so nothing is lost if the user is away.
+
+  - **If you built a NEW draft in Step 4**, record it now as a DRAFT `[OUTBOUND]` comment (preserve
+    the markdown with `$'...'` or stdin):
+    ```
+    printf '%s' "$draft_markdown" | bd comment <id> --stdin
+    ```
+    Header: `**[OUTBOUND us · DRAFT — not yet posted · YYYY-MM-DD HH:MM UTC]**`, then the reply text.
+  - Ensure the bead is in `state:drafting` (swap in place, never `bd set-state`):
+    `bd update <id> --remove-label state:<previous> --add-label state:drafting`.
+  - **If you reused an existing draft**, it is already persisted — do not add a duplicate comment.
+
+  ## Step 6: Review in an editable textbox
+
   - Show a clickable link to the thread so the user can review context (use the stored `slack_url`):
     `📤 Replying to [this thread](<slack_url>)`.
-  - **Formatting guidelines for the Slack reply:**
-    1. **No direct addressing** — do not use the user's name.
-    2. **No follow-up offers** — do not end with "let me know if you need anything else".
-    3. **Hedge** — start with "I think that…", "It seems like…"; we are never 100% sure.
-    4. **Ask if unclear** — if scope/context is missing, ask rather than guess.
-    5. **Run simple commands** — if we suggest e.g. `curl some.domain.com` and we can run it, run it
-       locally and show the command **and** the result.
-    6. **Keep it short and conversational** — lead with the single most likely solution or next step;
-       avoid walls of text.
-
-  ## Step 5: Review in an editable textbox
-
   - Use `mitto_ui_textbox`:
     - **Title**: "📤 Review reply before posting to Slack"
-    - **Text**: the proposed reply
-    - **Result**: "full"
+    - **Text**: the proposed reply (reused or freshly built)
+    - **Result**: "text"
     - **Abort**: true
     - **Timeout**: 300
+  - The tool returns `{ result, changed, aborted, timed_out }`. Branch on these in Step 7.
 
-  ## Step 6: Post + log (on submit)
+  ## Step 7: Act on the textbox result
 
-  - The returned text (possibly edited) is the final message. Post it with the post-reply-to-thread
+  ### On submit (`aborted` and `timed_out` are both false)
+
+  - The returned `result` (possibly edited) is the final message. Post it with the post-reply-to-thread
     tool, using the stored `slack_channel` and the thread's parent `slack_thread_ts`.
   - Confirm success and show the permalink (build it from the posted ts: `<slack_url base>/archives/
     <slack_channel>/p<posted_ts_without_dot>`).
-  - **Log to the bead** — add a markdown `[OUTBOUND]` comment with the final text and the permalink.
-    Preserve the markdown layout with `$'...'` (real `\n`) or stdin:
+  - **Log to the bead** — add a markdown `[OUTBOUND]` comment (this one is the **posted** reply, not a
+    draft) with the final text and the permalink:
     ```
     printf '%s' "$comment_markdown" | bd comment <id> --stdin
     ```
-    Header: `**[OUTBOUND us · YYYY-MM-DD HH:MM UTC]**`.
-  - **Transition state** (same issue, no subtasks — never `bd set-state`):
+    Header: `**[OUTBOUND us · POSTED · YYYY-MM-DD HH:MM UTC]**`.
+  - **Transition state** (same issue, never `bd set-state`):
     `bd update <id> --remove-label state:drafting --add-label state:awaiting-customer`.
     (If Step 2 continued from a different state, remove that state label instead.)
 
-  ## On abort
+  ### On timeout (`timed_out == true`)
 
-  - Do **NOT** post anything to Slack. Leave the bead in its current state (the draft stays pending).
-  - Acknowledge and stop.
+  The user is away — **do NOT post anything to Slack**, and do **not** re-open the dialog (staged
+  draft holding pattern).
+
+  - **Persist the proposed reply so it is never lost:**
+    - If the draft was **newly built** in Step 4, it was already saved in Step 5 — nothing more to do.
+    - If the user **edited** the text before the timeout (`changed == true` and a non-empty `result`
+      is returned), update the stored draft to that edited text: add a fresh DRAFT `[OUTBOUND]` comment
+      (header `**[OUTBOUND us · DRAFT (edited, not posted) · YYYY-MM-DD HH:MM UTC]**`) so the latest
+      version is on the bead for next time.
+  - Leave the bead in `state:drafting`. `mitto_ui_notify` (info): "Review dialog timed out — assuming
+    you're away. Nothing posted; the draft is saved on the bead. Re-run **Support: reply to user** when
+    you're back." Then stop (do not re-invoke the dialog or re-fetch).
+
+  ### On abort (`aborted == true`)
+
+  - Do **NOT** post anything to Slack. Leave the bead in `state:drafting` (the saved draft stays
+    pending). Acknowledge and stop.
 
   ## Notes
 
   - Load the bead (`bd show` + `bd comments`) **before** drafting — it is the source of truth.
+  - The proposed reply always lives on the bead as a DRAFT `[OUTBOUND]` comment; reuse it rather than
+    regenerating, and keep it current even when the review dialog times out.
   - **NEVER** send a reply in the support channel without explicit review and approval.

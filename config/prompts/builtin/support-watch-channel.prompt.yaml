@@ -58,7 +58,7 @@ prompt: |-
 
   **Interactive run** (first send, or force-triggered ▶️) — a user may be present, so you MAY use the
   interactive `mitto_ui_*` tools. This is the moment to run the **Knowledge self-check** and, if
-  needed, ask the user how to gather answers and persist it to AGENTS.md.
+  needed, ask the user how to gather answers and persist it to this channel's knowledge file.
   {{- end }}
 
   ## CRITICAL: user interaction rules
@@ -110,8 +110,7 @@ prompt: |-
     | state | meaning |
     |-------|---------|
     | `triaged` | auto-created during triage, not yet worked (initial) |
-    | `engaged` | actively working it |
-    | `gathering-info` | gathering information to answer (docs/tools/investigation) |
+    | `gathering-info` | actively working it — investigating to answer (docs/tools/knowledge file) |
     | `need-info` | need more details from the customer before we can answer |
     | `drafting` | have a draft answer, pending your review |
     | `awaiting-customer` | we posted a reply, waiting on the customer |
@@ -119,30 +118,32 @@ prompt: |-
     | `resolved` | answered/accepted (also `bd close <id>`) |
     | `stale` | auto-closed after 10+ days of inactivity (also `bd close <id>`) |
 
-  ## Knowledge self-check: how to answer customer questions
+  ## Knowledge self-check: the per-channel knowledge file
 
-  Before you can help a customer you must know a **reliable way to gather answers** for this
-  project's domain. This knowledge lives in your project rules — **AGENTS.md** (or `CLAUDE.md` /
-  `.augment/rules/` / equivalent).
+  Before you can help a customer you must know a **reliable way to gather answers** for this specific
+  channel's domain. That knowledge is stored **per channel** in
+  **`.mitto/slack-support-{{ $channel }}.md`** — a file dedicated to channel `{{ $channel }}`. Each
+  channel maintains its own knowledge base (which repos to search, which docs/runbooks to consult,
+  common patterns, escalation paths, and how to use any relevant MCP tools).
 
-  1. **Self-check.** Read the rules/docs you already have and ask yourself honestly: *"Do I know a
-     reliable way to gather information to answer questions about this project?"* A reliable method
-     could be a documented MCP tool (a Q&A / knowledge / docs-search assistant), a runbook, a docs
-     site, a specific set of commands, or a knowledge base. Look for a section such as
-     **"## How to answer customer questions"** in AGENTS.md.
-  2. **If you DO know** — use that method to gather what you need, then draft (Step 4).
-  3. **If you do NOT know** — you must find out; do not silently guess:
-     - **Interactive run:** ASK the user (via `mitto_ui_form` / `mitto_ui_textbox`) exactly how to
-       gather information to answer customer questions reliably — which tools, docs, commands,
-       knowledge bases, or people to consult. **Do not be satisfied until you get a concrete, usable
-       answer** — if the reply is vague, re-ask for specifics. Once you have it, **persist it to
-       AGENTS.md** under a `## How to answer customer questions` section (append, or update in place
-       if it already exists), then confirm the write. From then on, future runs will find it in
-       step 1.
-     - **Silent scheduled run:** nobody is watching, so do **NOT** block. Send a `mitto_ui_notify`
-       (warning) explaining that you don't yet know how to gather answers and the user should
-       force-run this prompt (▶️) once to teach you. Continue triage + keeping beads in sync, but
-       **skip drafting** answers this run.
+  1. **Read it.** Check whether `.mitto/slack-support-{{ $channel }}.md` exists.
+     - **If it exists** — read it in full at the start of the run. It is the **authoritative guide**
+       for how to gather information and answer questions for this channel. Use it in Step 4.
+     - **If it does NOT exist** — you do not yet know how to answer reliably for this channel:
+       - **Interactive run:** create the `.mitto/` directory if missing, then ASK the user (via
+         `mitto_ui_form` / `mitto_ui_textbox`) for channel-specific guidance: which repos to search,
+         which docs/runbooks/knowledge bases to consult, common patterns, escalation paths, and how
+         to use any relevant MCP tools. **Do not be satisfied until you get concrete, usable
+         guidance** — if the reply is vague, re-ask for specifics. Write it to
+         `.mitto/slack-support-{{ $channel }}.md` (create the file), then confirm the write. From then
+         on, every run will find it in step 1.
+       - **Silent scheduled run:** nobody is watching, so do **NOT** block. Send a `mitto_ui_notify`
+         (warning) explaining that no knowledge file exists yet for this channel and the user should
+         force-run this prompt (▶️) once to create it. Continue triage + keeping beads in sync, but
+         **skip drafting** answers this run.
+  2. **Keep it current.** Whenever you learn a new useful pattern while working a question this run
+     (a better search, a docs link that answered it, a recurring issue + resolution, an escalation
+     contact), **append it** to `.mitto/slack-support-{{ $channel }}.md` so future runs benefit.
 
   ## Instructions
 
@@ -183,20 +184,24 @@ prompt: |-
   - Add a markdown comment for **each new** thread message not yet captured (`[INBOUND]` customer /
     `[CONTEXT]` others / `[OUTBOUND]` any of our own replies). Do not duplicate existing comments.
   - Update the `state:*` label to reflect reality: last message from the customer needing action →
-    `state:awaiting-us`; last message is ours, waiting on them → `state:awaiting-customer`. Do not
-    override `need-info` / `drafting` if our pending action still stands. Add a short `[STATE]`
-    comment noting any change.
+    `state:awaiting-us`; last message is ours, waiting on them → `state:awaiting-customer`.
+  - **If the bead is in `need-info` and the customer just replied** (answered our clarifying question,
+    or spoke last) → `state:awaiting-us`. Treat `need-info` like `awaiting-customer` once the customer
+    responds — never leave it stranded in `need-info`.
+  - Do not override `drafting` if our pending action still stands (a draft awaiting review). Add a
+    short `[STATE]` comment noting any change.
 
-  ### 4. Gather info + draft (only if the Knowledge self-check passed)
+  ### 4. Gather info + draft (only if the knowledge file exists)
 
-  - For beads where it is **our turn** (`state:triaged` / `awaiting-us` / `engaged`) and we can
-    answer: set `state:gathering-info`, use the project's documented method to gather the answer,
-    then record a **proposed reply** as an `[OUTBOUND]`-style *draft* comment (clearly marked
-    "DRAFT — not yet posted") and set `state:drafting`.
+  - For beads where it is **our turn** (`state:triaged` / `awaiting-us`) and we can
+    answer: set `state:gathering-info`, follow **`.mitto/slack-support-{{ $channel }}.md`** to gather
+    the answer, then record a **proposed reply** as an `[OUTBOUND]`-style *draft* comment (clearly
+    marked "DRAFT — not yet posted") and set `state:drafting`. If you learn a reusable pattern,
+    append it to the knowledge file (see the Knowledge self-check).
   - If you cannot answer without more detail from the customer, set `state:need-info` and note what
     is missing (the interactive **"Support: gather more information"** prompt will ask them).
   - **Never post to Slack here.** Drafts wait for review in **"Support: reply to user"**.
-  - If the Knowledge self-check did **not** pass, skip this step (see that section).
+  - If no knowledge file exists for this channel yet, skip this step (see the Knowledge self-check).
 
   ### 5. Summary
 
@@ -208,5 +213,8 @@ prompt: |-
 
   - The bead is the single source of truth — always load it (`bd show` + `bd comments`) before acting.
   - Per-bead follow-ups: **"Support: check status"** (refresh a thread onto its bead),
+    **"Support: investigate"** (dig for the answer using the channel knowledge file + record a draft),
     **"Support: gather more information"** (ask the customer), **"Support: reply to user"** (post our
     answer). All posting requires your explicit approval.
+  - Channel knowledge lives in **`.mitto/slack-support-{{ $channel }}.md`** — read it before drafting
+    and append newly-learned patterns to it.

@@ -97,7 +97,7 @@ prompt: |-
   - Use `mitto_ui_textbox`:
     - **Title**: "📤 Review clarifying question before posting to Slack"
     - **Text**: the proposed message
-    - **Result**: "full"
+    - **Result**: "text"
     - **Abort**: true
     - **Timeout**: 300
 

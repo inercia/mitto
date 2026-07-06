@@ -1,0 +1,145 @@
+name: 'Support: investigate'
+description: 'Investigate a tracked support question internally using the channel knowledge file (.mitto/slack-support-<channel-id>.md), record findings on the bead, and produce a draft reply. Never posts to Slack.'
+group: Support
+backgroundColor: '#D1C4E9'
+icon: search
+menus: beadsIssues
+enabledWhen: 'CommandExists("bd") && DirExists(".beads") && Item.Status != "closed" && "support-question" in Item.Labels'
+tags:
+- support
+parameters:
+  - name: IssueID
+    description: 'The beads issue ID to act on (auto-filled from the Beads issue menu)'
+    required: false
+    type: beadsId
+prompt: |-
+  # Support — Investigate
+
+  ## Session Context
+
+  Your session ID is `{{ .Session.ID }}` — use it as `self_id` for all `mitto_*` MCP tool calls.
+
+  ## Description
+
+  Investigate a tracked support question **on our side** — do the work needed to actually answer it.
+  Use this when we have enough of the customer's context but still need to **find the answer**: follow
+  the channel's knowledge file (`.mitto/slack-support-<channel-id>.md` — docs, runbooks, repos, a
+  Q&A/knowledge MCP tool, commands, escalation paths), correlate with what is on the bead, record what
+  you learn, and — if you reach a confident answer — leave a **draft reply** ready for review.
+
+  > **Applicable state:** any open tracked bead. Typically `state:triaged`, `awaiting-us`, or
+  > `gathering-info`. This prompt sets `state:gathering-info` while it works.
+
+  ## CRITICAL: User Interaction Rules
+
+  > ⚠️ **NEVER use text-based interaction prompts.**
+  >
+  > - ❌ NEVER ask the user to type a number, command, or keyword to make a selection
+  > - ❌ NEVER present numbered options and ask the user to respond with text
+  > - ✅ ALWAYS use `mitto_ui_options` for choices, `mitto_ui_textbox` for review/editing,
+  >   `mitto_ui_form` for structured input, and `mitto_ui_notify` for non-blocking notifications
+  >
+  > ⚠️ **This prompt NEVER posts to Slack.** It only investigates and records a draft. Posting is
+  > done — with your approval — by **"Support: reply to user"**.
+
+  ## Slack tools (names vary by MCP server)
+
+  Match Slack MCP tools **by capability, not exact name**. Here you only need to **read a thread's
+  replies** (to make sure you are investigating the latest ask). Read the target channel and parent
+  `thread_ts` from the bead metadata (`slack_channel` / `slack_thread_ts`). No posting tool is needed.
+
+  ## Step 1: Identify the target bead
+
+  {{ $target := "" -}}
+  {{ if .Session.BeadsIssue }}{{ $target = .Session.BeadsIssue }}{{ else if .Args.IssueID }}{{ $target = .Args.IssueID }}{{ end -}}
+  {{ if $target }}
+  - This prompt was launched from bead **`{{ $target }}`** — operate on it directly (skip the picker).
+  {{- else }}
+  - **No linked bead** — show a picker: list open tracked questions
+    `bd list -l support-question --status open,in_progress --all` (read each `state:*` label from
+    `bd show`). Present them with `mitto_ui_options` (first option `{label: "None - Cancel"}`, then
+    one `{label: "<id> [state] — <short summary>"}` per bead, timeout 300). If the user cancels,
+    acknowledge and stop.
+  {{- end }}
+
+  ## Step 2: Load history + refresh the thread
+
+  - Load the full history: `bd show <id>` and `bd comments <id>`. The bead is the source of truth.
+    Note the current `state:*` label and the stored `slack_thread_ts` / `slack_channel` / `slack_url`.
+  - **Guard — already `state:drafting`?** If the bead is in `state:drafting`, a draft reply already
+    exists and is waiting for your review — re-investigating would discard that work. Do **not** swap
+    the state automatically. Instead use `mitto_ui_options` (timeout 300):
+    - **Question**: "This bead already has a draft (`state:drafting`). Investigate again anyway?"
+    - **Options**: `[{label: "Open reply-to-user instead"}, {label: "Re-investigate anyway"}, {label: "Cancel"}]`.
+    - On **"Open reply-to-user instead"** or **"Cancel"** (or timeout): `mitto_ui_notify` (info)
+      suggesting **"Support: reply to user"**, and stop without changing state.
+    - Only on **"Re-investigate anyway"** proceed with the rest of this step.
+  - Re-fetch the Slack thread (read-thread-replies tool) using the stored `slack_thread_ts`, and add a
+    markdown comment for **each new** message not yet captured (`[INBOUND]` customer / `[CONTEXT]`
+    others). Do not duplicate existing comments — this keeps the investigation grounded in the latest
+    ask.
+  - Mark that we are actively working it: swap the state label in place (never `bd set-state`):
+    `bd update <id> --remove-label state:<previous> --add-label state:gathering-info`, and add a short
+    `**[STATE · <time>]** <prev> → gathering-info` comment.
+
+  ## Step 3: Know the method (the per-channel knowledge file)
+
+  You must investigate using **this channel's documented method**, not by guessing. That method is
+  stored **per channel** in **`.mitto/slack-support-<channel-id>.md`**, where `<channel-id>` is the
+  bead's stored `slack_channel` value (from Step 2). Build the exact path from that value — e.g. if
+  `slack_channel` is `C0XXXXXXX`, the file is `.mitto/slack-support-C0XXXXXXX.md`.
+
+  1. **Read it.** Check whether the channel's knowledge file exists.
+     - **If it exists** — read it in full. It is the **authoritative guide** for how to gather
+       information and answer questions for this channel (which repos to search, which
+       docs/runbooks/knowledge bases to consult, common patterns, escalation paths, and how to use
+       any relevant MCP tools). Use it in Step 4.
+     - **If it does NOT exist** — do not silently guess. Create the `.mitto/` directory if missing,
+       then use `mitto_ui_form` / `mitto_ui_textbox` to ASK the user exactly how to investigate
+       answers for this channel: which repos, docs, commands, knowledge bases, MCP tools, or people
+       to consult. Do not settle for a vague answer — re-ask for specifics. Write it to
+       `.mitto/slack-support-<channel-id>.md` (create the file) and confirm the write, so future runs
+       find it. If nobody responds (timeout), record a `[CONTEXT]` note that no knowledge file exists
+       yet and stop.
+  2. **Keep it current.** If you discover a new useful pattern during this investigation (a better
+     search, a docs link that answered it, a recurring issue + resolution, an escalation contact),
+     **append it** to `.mitto/slack-support-<channel-id>.md` so future investigations benefit.
+
+  ## Step 4: Investigate
+
+  - Follow the channel knowledge file to actually find the answer. Pull in whatever it points to: the
+    Q&A / knowledge tool, docs links, repos, related tickets, prior resolved beads on the same topic,
+    and — where safe and useful — **run simple read-only commands locally** (e.g. `curl
+    some.domain.com`) and capture the command **and** its output.
+  - Correlate findings with the question on the bead. Note confidence, caveats, and any documentation
+    links you found (they are valuable in the eventual reply).
+
+  ## Step 5: Record findings on the bead
+
+  - Add a markdown `[CONTEXT]` comment capturing what you investigated and concluded — preserve the
+    layout with `$'...'` (real `\n`) or stdin:
+    ```
+    printf '%s' "$findings_markdown" | bd comment <id> --stdin
+    ```
+    Header: `**[CONTEXT investigation · YYYY-MM-DD HH:MM UTC]**`. Include: what you checked, the key
+    finding(s), any commands + results, documentation links, and a confidence note.
+
+  ## Step 6: Decide the outcome
+
+  - **Confident answer found** → record a **proposed reply** as an `[OUTBOUND]`-style *draft* comment
+    clearly marked **"DRAFT — not yet posted"** (this is the same draft **"Support: reply to user"**
+    reuses). Then set `state:drafting`
+    (`bd update <id> --remove-label state:gathering-info --add-label state:drafting`) and
+    `mitto_ui_notify` (success) that a draft is ready to review with **"Support: reply to user"**.
+  - **Still missing customer detail** → set `state:need-info`
+    (`bd update <id> --remove-label state:gathering-info --add-label state:need-info`), note what is
+    missing, and `mitto_ui_notify` (info) to run **"Support: gather more information"**.
+  - **Inconclusive** → leave `state:gathering-info`, record what is blocking, and `mitto_ui_notify`
+    (info) with the suggested next step.
+
+  ## Notes
+
+  - Load the bead (`bd show` + `bd comments`) **before** investigating — it is the source of truth.
+  - This prompt is **investigate-and-record** — it never posts a reply to the Slack channel.
+  - Keep the bead the single source of truth: log findings as `[CONTEXT]`, the draft as a marked
+    `[OUTBOUND]` DRAFT, and every state change as `[STATE]`.

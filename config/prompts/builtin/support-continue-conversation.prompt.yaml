@@ -34,7 +34,7 @@ prompt: |-
 
   Find recent conversations in the Slack channel **`{{ $channel }}`** where the current user has been
   participating, let the user pick one, summarize it, and help craft a reply — either by gathering an
-  answer via the project's documented method or by rephrasing user-provided text.
+  answer via the channel knowledge file or by rephrasing user-provided text.
 
   ## CRITICAL: User Interaction Rules
 
@@ -115,18 +115,20 @@ prompt: |-
 
   ### Option A — "Gather an answer for me"
 
-  - Use the **project's documented method to gather answers** (see AGENTS.md → "How to answer
-    customer questions", or `.augment/rules/` / a docs-search MCP tool / runbook / knowledge base).
-    If you do **not** know a reliable method, ASK the user how to gather it (via `mitto_ui_form` /
-    `mitto_ui_textbox`) and persist their answer to AGENTS.md under a
-    `## How to answer customer questions` section before proceeding.
+  - Use this channel's knowledge file **`.mitto/slack-support-{{ $channel }}.md`** as the
+    authoritative guide for how to gather answers (which repos to search, docs/runbooks/knowledge
+    bases to consult, common patterns, escalation paths, relevant MCP tools). Read it if it exists.
+    If it does **not** exist, create the `.mitto/` directory if missing, ASK the user how to gather
+    answers for this channel (via `mitto_ui_form` / `mitto_ui_textbox`), and write their guidance to
+    `.mitto/slack-support-{{ $channel }}.md` before proceeding. If you learn a new useful pattern,
+    append it to that file.
   - Feed the full conversation context (original question, thread history, the specific unanswered
     question) and ask for a response that addresses the open point, avoids repeating what was said,
     and links docs/tickets if relevant. Proceed to Step 6.
 
   ### Option B — "I'll provide the answer"
 
-  - Use `mitto_ui_textbox` (Title "Type your reply", Text "", Result "full", Abort true, Timeout 300).
+  - Use `mitto_ui_textbox` (Title "Type your reply", Text "", Result "text", Abort true, Timeout 300).
   - If the user submits, rephrase their answer to be clearer/professional: fix grammar and typos, add
     structure if complex, keep the technical accuracy and the user's voice/intent. Proceed to Step 6.
   - If the user aborts, acknowledge and end.
@@ -140,7 +142,7 @@ prompt: |-
     2. **No follow-up offers** — do not end with "let me know if you need anything else".
     3. **Express uncertainty when appropriate** — "I think that…", "Based on my understanding…".
   - Use `mitto_ui_textbox` to present the proposed reply for review/editing (Title "📤 Review reply
-    before posting to Slack", Result "full", Abort true, Timeout 300).
+    before posting to Slack", Result "text", Abort true, Timeout 300).
   - **If the user submits:** the returned text (possibly edited) is the final message. Post it with
     the post-reply-to-thread tool using channel `{{ $channel }}` and the thread's parent `thread_ts`.
     Confirm success and show the permalink.
