@@ -3591,6 +3591,7 @@ func (s *Server) handleArchiveConversation(ctx context.Context, req *mcp.CallToo
 		} else {
 			m.ArchivedAt = time.Time{}
 			m.ArchiveReason = ""
+			m.AutoUnarchiveLastAttemptAt = time.Time{}
 		}
 	})
 	if err != nil {

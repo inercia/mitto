@@ -96,16 +96,7 @@ if callerMeta.WorkingDir != targetWS.WorkingDir {
 
 ## Optional Late-Bound Dependencies
 
-Some dependencies (e.g. `LoopRunner`) are initialized after the MCP server and wired in via setter methods rather than through `Dependencies`:
-
-```go
-// In internal/web/server.go — after s.loopRunner.Start():
-if s.mcpServer != nil {
-    s.mcpServer.SetLoopRunner(s.loopRunner)
-}
-```
-
-The `LoopRunner` interface (defined in `mcpserver/server.go`) is satisfied by `*web.LoopRunner`. Use setter methods (not `Dependencies`) when a dependency must exist before `NewServer()` completes but the dependency itself starts later.
+Some dependencies (e.g. `LoopRunner`) are wired in via setter methods (`s.mcpServer.SetLoopRunner(s.loopRunner)` in `internal/web/server.go`, after `s.loopRunner.Start()`) rather than through `Dependencies`, since they must exist before `NewServer()` completes but start later. The `LoopRunner` interface (in `mcpserver/server.go`) is satisfied by `*web.LoopRunner`.
 
 ## Processor Auxiliary Session MCP Access
 

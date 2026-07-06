@@ -3303,6 +3303,315 @@ func TestLoopRunner_TasksCooldownSettersGetters(t *testing.T) {
 	}
 }
 
+// newArchivedLoopSession creates a session archived with the given reason and
+// timestamp, optionally with a loop config, for auto-unarchive recovery tests.
+func newArchivedLoopSession(t *testing.T, store *session.Store, sessionID string, archivedAt time.Time, reason session.ArchiveReason, hasLoop bool) {
+	t.Helper()
+	if err := store.Create(session.Metadata{
+		SessionID:  sessionID,
+		ACPServer:  "test",
+		WorkingDir: "/tmp",
+	}); err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	if err := store.UpdateMetadata(sessionID, func(m *session.Metadata) {
+		m.Archived = true
+		m.ArchivedAt = archivedAt
+		m.ArchiveReason = reason
+	}); err != nil {
+		t.Fatalf("UpdateMetadata() error = %v", err)
+	}
+	if hasLoop {
+		loopStore := store.Loop(sessionID)
+		if err := loopStore.Set(&session.LoopPrompt{
+			Prompt:    "check",
+			Frequency: session.Frequency{Value: 1, Unit: session.FrequencyHours},
+			Enabled:   false,
+		}); err != nil {
+			t.Fatalf("Loop Set() error = %v", err)
+		}
+	}
+}
+
+func TestLoopRunner_AutoUnarchive_EligibleAndDuePersistsAttempt(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	archivedAt := time.Now().Add(-2 * time.Hour)
+	newArchivedLoopSession(t, store, "sess-1", archivedAt, session.ArchiveReasonACPFailures, true)
+
+	runner := NewLoopRunner(store, nil, nil)
+	runner.SetAutoUnarchiveRecovery(true, time.Hour, 10*time.Minute)
+
+	var called []string
+	var attemptPersisted bool
+	runner.SetOnAutoUnarchive(func(sessionID string) error {
+		called = append(called, sessionID)
+		if m, err := store.GetMetadata(sessionID); err == nil && !m.AutoUnarchiveLastAttemptAt.IsZero() {
+			attemptPersisted = true
+		}
+		return nil
+	})
+
+	sessions, err := store.List()
+	if err != nil {
+		t.Fatalf("List() error = %v", err)
+	}
+	runner.checkAutoUnarchiveRecovery(sessions, time.Now())
+
+	if len(called) != 1 || called[0] != "sess-1" {
+		t.Errorf("onAutoUnarchive called = %v, want [sess-1]", called)
+	}
+	if !attemptPersisted {
+		t.Error("AutoUnarchiveLastAttemptAt should be persisted before invoking the callback")
+	}
+}
+
+func TestLoopRunner_AutoUnarchive_SuccessClearsAttempt(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	archivedAt := time.Now().Add(-2 * time.Hour)
+	newArchivedLoopSession(t, store, "sess-1", archivedAt, session.ArchiveReasonACPFailures, true)
+
+	runner := NewLoopRunner(store, nil, nil)
+	runner.SetAutoUnarchiveRecovery(true, time.Hour, 10*time.Minute)
+	runner.SetOnAutoUnarchive(func(sessionID string) error { return nil })
+
+	sessions, err := store.List()
+	if err != nil {
+		t.Fatalf("List() error = %v", err)
+	}
+	runner.checkAutoUnarchiveRecovery(sessions, time.Now())
+
+	meta, err := store.GetMetadata("sess-1")
+	if err != nil {
+		t.Fatalf("GetMetadata() error = %v", err)
+	}
+	if !meta.AutoUnarchiveLastAttemptAt.IsZero() {
+		t.Error("AutoUnarchiveLastAttemptAt should be cleared after a successful auto-unarchive")
+	}
+}
+
+func TestLoopRunner_AutoUnarchive_FailureRetainsAttempt(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	archivedAt := time.Now().Add(-2 * time.Hour)
+	newArchivedLoopSession(t, store, "sess-1", archivedAt, session.ArchiveReasonACPFailures, true)
+
+	runner := NewLoopRunner(store, nil, nil)
+	runner.SetAutoUnarchiveRecovery(true, time.Hour, 10*time.Minute)
+	runner.SetOnAutoUnarchive(func(sessionID string) error { return errors.New("acp still broken") })
+
+	sessions, err := store.List()
+	if err != nil {
+		t.Fatalf("List() error = %v", err)
+	}
+	now := time.Now()
+	runner.checkAutoUnarchiveRecovery(sessions, now)
+
+	meta, err := store.GetMetadata("sess-1")
+	if err != nil {
+		t.Fatalf("GetMetadata() error = %v", err)
+	}
+	if meta.AutoUnarchiveLastAttemptAt.IsZero() {
+		t.Error("AutoUnarchiveLastAttemptAt should be retained after a failed auto-unarchive")
+	}
+}
+
+func TestLoopRunner_AutoUnarchive_SkipsManualArchive(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	archivedAt := time.Now().Add(-2 * time.Hour)
+	newArchivedLoopSession(t, store, "sess-1", archivedAt, session.ArchiveReasonManual, true)
+
+	runner := NewLoopRunner(store, nil, nil)
+	runner.SetAutoUnarchiveRecovery(true, time.Hour, 10*time.Minute)
+
+	var called bool
+	runner.SetOnAutoUnarchive(func(sessionID string) error { called = true; return nil })
+
+	sessions, err := store.List()
+	if err != nil {
+		t.Fatalf("List() error = %v", err)
+	}
+	runner.checkAutoUnarchiveRecovery(sessions, time.Now())
+
+	if called {
+		t.Error("onAutoUnarchive should not be invoked for ArchiveReasonManual")
+	}
+}
+
+func TestLoopRunner_AutoUnarchive_SkipsInactivityArchive(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	archivedAt := time.Now().Add(-2 * time.Hour)
+	newArchivedLoopSession(t, store, "sess-1", archivedAt, session.ArchiveReasonInactivity, true)
+
+	runner := NewLoopRunner(store, nil, nil)
+	runner.SetAutoUnarchiveRecovery(true, time.Hour, 10*time.Minute)
+
+	var called bool
+	runner.SetOnAutoUnarchive(func(sessionID string) error { called = true; return nil })
+
+	sessions, err := store.List()
+	if err != nil {
+		t.Fatalf("List() error = %v", err)
+	}
+	runner.checkAutoUnarchiveRecovery(sessions, time.Now())
+
+	if called {
+		t.Error("onAutoUnarchive should not be invoked for ArchiveReasonInactivity")
+	}
+}
+
+func TestLoopRunner_AutoUnarchive_SkipsNonLoopACPFailures(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	archivedAt := time.Now().Add(-2 * time.Hour)
+	newArchivedLoopSession(t, store, "sess-1", archivedAt, session.ArchiveReasonACPFailures, false)
+
+	runner := NewLoopRunner(store, nil, nil)
+	runner.SetAutoUnarchiveRecovery(true, time.Hour, 10*time.Minute)
+
+	var called bool
+	runner.SetOnAutoUnarchive(func(sessionID string) error { called = true; return nil })
+
+	sessions, err := store.List()
+	if err != nil {
+		t.Fatalf("List() error = %v", err)
+	}
+	runner.checkAutoUnarchiveRecovery(sessions, time.Now())
+
+	if called {
+		t.Error("onAutoUnarchive should not be invoked for a non-loop ACP-failures archive")
+	}
+}
+
+func TestLoopRunner_AutoUnarchive_SkipsWhenNotYetDue(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	archivedAt := time.Now().Add(-10 * time.Minute)
+	newArchivedLoopSession(t, store, "sess-1", archivedAt, session.ArchiveReasonACPFailures, true)
+
+	runner := NewLoopRunner(store, nil, nil)
+	runner.SetAutoUnarchiveRecovery(true, time.Hour, 10*time.Minute)
+
+	var called bool
+	runner.SetOnAutoUnarchive(func(sessionID string) error { called = true; return nil })
+
+	sessions, err := store.List()
+	if err != nil {
+		t.Fatalf("List() error = %v", err)
+	}
+	runner.checkAutoUnarchiveRecovery(sessions, time.Now())
+
+	if called {
+		t.Error("onAutoUnarchive should not be invoked before retryInterval has elapsed")
+	}
+}
+
+func TestLoopRunner_AutoUnarchive_StaggerLimitsToOnePerPoll(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	// sess-2 is more overdue than sess-1; both are due.
+	newArchivedLoopSession(t, store, "sess-1", time.Now().Add(-2*time.Hour), session.ArchiveReasonACPFailures, true)
+	newArchivedLoopSession(t, store, "sess-2", time.Now().Add(-3*time.Hour), session.ArchiveReasonACPFailures, true)
+
+	runner := NewLoopRunner(store, nil, nil)
+	runner.SetAutoUnarchiveRecovery(true, time.Hour, 10*time.Minute)
+
+	var called []string
+	runner.SetOnAutoUnarchive(func(sessionID string) error { called = append(called, sessionID); return nil })
+
+	sessions, err := store.List()
+	if err != nil {
+		t.Fatalf("List() error = %v", err)
+	}
+	runner.checkAutoUnarchiveRecovery(sessions, time.Now())
+
+	if len(called) != 1 {
+		t.Fatalf("onAutoUnarchive called %d times, want exactly 1", len(called))
+	}
+	if called[0] != "sess-2" {
+		t.Errorf("onAutoUnarchive called for %q, want the most-overdue session %q", called[0], "sess-2")
+	}
+}
+
+func TestLoopRunner_AutoUnarchive_RestartDurability(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	// Simulate a prior attempt persisted before a restart: ArchivedAt is old,
+	// but AutoUnarchiveLastAttemptAt is the more recent anchor.
+	oldArchivedAt := time.Now().Add(-5 * time.Hour)
+	lastAttempt := time.Now().Add(-30 * time.Minute)
+	newArchivedLoopSession(t, store, "sess-1", oldArchivedAt, session.ArchiveReasonACPFailures, true)
+	if err := store.UpdateMetadata("sess-1", func(m *session.Metadata) {
+		m.AutoUnarchiveLastAttemptAt = lastAttempt
+	}); err != nil {
+		t.Fatalf("UpdateMetadata() error = %v", err)
+	}
+
+	// Fresh LoopRunner instance, as after a process restart (in-memory stagger reset).
+	runner := NewLoopRunner(store, nil, nil)
+	runner.SetAutoUnarchiveRecovery(true, time.Hour, 10*time.Minute)
+
+	var called bool
+	runner.SetOnAutoUnarchive(func(sessionID string) error { called = true; return nil })
+
+	sessions, err := store.List()
+	if err != nil {
+		t.Fatalf("List() error = %v", err)
+	}
+	// Only 30 minutes have elapsed since AutoUnarchiveLastAttemptAt, which is less
+	// than the 1h retryInterval, so it must NOT be attempted yet even though
+	// ArchivedAt is far in the past.
+	runner.checkAutoUnarchiveRecovery(sessions, time.Now())
+	if called {
+		t.Error("cadence should be anchored on persisted AutoUnarchiveLastAttemptAt, not ArchivedAt")
+	}
+
+	// Advance past retryInterval relative to the persisted anchor.
+	runner.checkAutoUnarchiveRecovery(sessions, lastAttempt.Add(time.Hour+time.Minute))
+	if !called {
+		t.Error("session should become due once retryInterval has elapsed since the persisted attempt timestamp")
+	}
+}
+
 func TestTasksBaselineStore_GetSetRoundTrip(t *testing.T) {
 	dir := t.TempDir()
 	bs := NewTasksBaselineStore(dir)

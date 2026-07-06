@@ -71,11 +71,23 @@ The GC suspends idle loop sessions whose next prompt is far away, saving ACP res
 | `inactivity`        | `ArchiveReasonInactivity`     | Auto-archive after configured inactive period|
 | `acp_start_failures`| `ArchiveReasonACPFailures`    | `ACPStartFailureCount` ≥ threshold (3)       |
 
-Broadcast in `session_archived` WebSocket message as `archive_reason` field.
+Broadcast in `session_archived` WebSocket message as `archive_reason` field. `acp_start_failures` on a loop conversation is the only reason eligible for Auto-Unarchive Recovery (below).
 
 ## Auto-Archive
 
 Config: `session.auto_archive_inactive_after: "1w"` (in `checkAutoArchive()`). Excluded: already-archived, child sessions, sessions with loop prompts (enabled or paused).
+
+## Auto-Unarchive Recovery
+
+Loop conversations auto-archived due to broken ACP (`ArchiveReasonACPFailures`) are retried automatically by `LoopRunner.checkAutoUnarchiveRecovery()`, called from `RunOnce()` right after `checkAutoArchive()`.
+
+- **Eligibility** (no new boolean): `meta.Archived == true`, `meta.ArchiveReason == session.ArchiveReasonACPFailures`, and a loop config exists (`store.Loop(id).Get()` succeeds). Excludes `ArchiveReasonManual`/`ArchiveReasonInactivity` and non-loop ACP-failure archives.
+- **Retry cadence**: 1h per conversation (`DefaultAutoUnarchiveRetryInterval`), anchored on `Metadata.AutoUnarchiveLastAttemptAt` if set, else `ArchivedAt`. Due when `now.Sub(anchor) >= retryInterval`. Retries indefinitely (no cap) — a session usually gets re-archived by the existing resume-failure path if ACP is still down, restarting the cadence from the new `ArchivedAt`.
+- **Anti-storm stagger**: 10m global minimum gap (`DefaultAutoUnarchiveStaggerInterval`) between attempts, tracked in-memory (`LoopRunner.lastAutoUnarchiveAttempt`, guarded by `r.mu`). Each poll attempts at most the single most-overdue eligible session. **Never `time.Sleep`** in this path — it would stall loop delivery for the whole poll. The in-memory stagger resets on restart (acceptable, since cadence itself is restart-durable via persisted timestamps).
+- **On-by-default**: `LoopRunner.autoUnarchiveEnabled` defaults to `true`; configured via `SetAutoUnarchiveRecovery(enabled, retryInterval, stagger)` (server.go wires the two defaults above; a duration `<= 0` keeps the current value, letting tests override just one).
+- **Callback** (`LoopRunner.onAutoUnarchive`, wired in `server.go`) performs the same steps as manual unarchive: clear `Archived`/`ArchivedAt`/`ArchiveReason`/`AutoUnarchiveLastAttemptAt`, call `SessionManager.ResumeSession()`, broadcast `acp_started`/`acp_start_failed` + `session_archived(false)`, then reuse `handlers.Handlers.RestoreLoopOnUnarchive()` (exported for this purpose) to re-enable the loop.
+- **Cadence persistence**: `attemptAutoUnarchive()` persists `AutoUnarchiveLastAttemptAt = now` via `store.UpdateMetadata` (outside `r.mu`, mirroring `checkAutoArchive`) *before* invoking the callback, so the attempt survives a crash mid-resume. Cleared only when the callback returns `nil`; retained on error so the next poll retries after another full interval.
+- Cleared on any successful unarchive, manual or auto (`session_update.go`'s unarchive branch also resets it, so a user takeover resets the cadence).
 
 ## ACP Process Crash Recovery
 

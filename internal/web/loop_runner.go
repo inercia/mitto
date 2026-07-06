@@ -35,6 +35,15 @@ const (
 	// loopScheduleBackoffCap is the maximum backoff delay for scheduled
 	// loop delivery failures.
 	loopScheduleBackoffCap = 15 * time.Minute
+
+	// DefaultAutoUnarchiveRetryInterval is the default per-conversation retry
+	// cadence for auto-unarchiving loop conversations archived due to broken ACP.
+	DefaultAutoUnarchiveRetryInterval = 1 * time.Hour
+
+	// DefaultAutoUnarchiveStaggerInterval is the default global minimum gap
+	// between auto-unarchive attempts, preventing a retry storm when many
+	// sessions become due at once.
+	DefaultAutoUnarchiveStaggerInterval = 10 * time.Minute
 )
 
 // loopScheduleBackoff returns the delay to defer the next scheduled run after
@@ -75,6 +84,12 @@ type LoopStartedCallback func(sessionID, sessionName string)
 // AutoArchiveCallback is called when the loop runner auto-archives a session.
 // It should handle broadcasting the archive state change and stopping ACP.
 type AutoArchiveCallback func(sessionID string)
+
+// AutoUnarchiveFunc is called when the loop runner attempts to auto-unarchive
+// a loop conversation previously archived due to broken ACP communication.
+// It should perform the same steps as a manual unarchive (resume ACP, restore
+// the loop, and broadcast the state changes) and return the resume error, if any.
+type AutoUnarchiveFunc func(sessionID string) error
 
 // LoopAutoStoppedCallback is called when a loop conversation is auto-stopped after reaching max iterations.
 // It should broadcast the updated loop state to all WebSocket clients.
@@ -121,6 +136,19 @@ type LoopRunner struct {
 
 	// autoArchiveAfter, when > 0, causes sessions inactive for this long to be archived.
 	autoArchiveAfter time.Duration
+
+	// onAutoUnarchive is called when the loop runner attempts to auto-unarchive a loop
+	// conversation archived due to broken ACP communication. Guarded implicitly: set
+	// once via SetOnAutoUnarchive before Start(), read without locking elsewhere.
+	onAutoUnarchive AutoUnarchiveFunc
+
+	// autoUnarchiveEnabled, autoUnarchiveRetryInterval, autoUnarchiveStagger and
+	// lastAutoUnarchiveAttempt configure and track the auto-unarchive recovery
+	// scheduler. Guarded by mu.
+	autoUnarchiveEnabled       bool
+	autoUnarchiveRetryInterval time.Duration
+	autoUnarchiveStagger       time.Duration
+	lastAutoUnarchiveAttempt   time.Time
 
 	// archiveRetentionPeriod, when non-empty, causes archived sessions older than this
 	// to be permanently deleted during each poll cycle (not just at startup).
@@ -214,22 +242,25 @@ func NewLoopRunner(store *session.Store, sm *conversation.SessionManager, logger
 		}
 	}
 	return &LoopRunner{
-		store:                     store,
-		sessionManager:            sm,
-		logger:                    logger,
-		pollInterval:              DefaultPollInterval,
-		maxLoopIterations:         config.DefaultMaxLoopIterations,
-		minCompletionDelaySeconds: config.DefaultMinLoopCompletionDelaySeconds,
-		consecutiveFailures:       make(map[string]int),
-		promptResolveFailures:     make(map[string]int),
-		scheduleBackoffFailures:   make(map[string]int),
-		completionTimers:          make(map[string]*time.Timer),
-		tasksEvaluator:            evaluator,
-		minTasksCooldownSeconds:   DefaultMinLoopTasksCooldownSeconds,
-		tasksQuiescenceWindow:     tasksDefaultQuiescenceWindow,
-		tasksRebaseTimers:         make(map[string]*time.Timer),
-		tasksNoProgressCount:      make(map[string]int),
-		tasksLastTouchedIDs:       make(map[string]map[string]struct{}),
+		store:                      store,
+		sessionManager:             sm,
+		logger:                     logger,
+		pollInterval:               DefaultPollInterval,
+		maxLoopIterations:          config.DefaultMaxLoopIterations,
+		minCompletionDelaySeconds:  config.DefaultMinLoopCompletionDelaySeconds,
+		consecutiveFailures:        make(map[string]int),
+		promptResolveFailures:      make(map[string]int),
+		scheduleBackoffFailures:    make(map[string]int),
+		completionTimers:           make(map[string]*time.Timer),
+		tasksEvaluator:             evaluator,
+		minTasksCooldownSeconds:    DefaultMinLoopTasksCooldownSeconds,
+		tasksQuiescenceWindow:      tasksDefaultQuiescenceWindow,
+		tasksRebaseTimers:          make(map[string]*time.Timer),
+		tasksNoProgressCount:       make(map[string]int),
+		tasksLastTouchedIDs:        make(map[string]map[string]struct{}),
+		autoUnarchiveEnabled:       true,
+		autoUnarchiveRetryInterval: DefaultAutoUnarchiveRetryInterval,
+		autoUnarchiveStagger:       DefaultAutoUnarchiveStaggerInterval,
 	}
 }
 
@@ -268,6 +299,27 @@ func (r *LoopRunner) SetAutoArchiveAfter(d time.Duration) {
 // SetOnAutoArchive sets the callback for when a session is auto-archived.
 func (r *LoopRunner) SetOnAutoArchive(callback AutoArchiveCallback) {
 	r.onAutoArchive = callback
+}
+
+// SetOnAutoUnarchive sets the callback invoked when the loop runner attempts
+// to auto-unarchive a loop conversation archived due to broken ACP communication.
+func (r *LoopRunner) SetOnAutoUnarchive(callback AutoUnarchiveFunc) {
+	r.onAutoUnarchive = callback
+}
+
+// SetAutoUnarchiveRecovery configures the auto-unarchive recovery scheduler.
+// If retryInterval or stagger is <= 0, the current (or default) value is kept,
+// allowing tests to override only what they need.
+func (r *LoopRunner) SetAutoUnarchiveRecovery(enabled bool, retryInterval, stagger time.Duration) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.autoUnarchiveEnabled = enabled
+	if retryInterval > 0 {
+		r.autoUnarchiveRetryInterval = retryInterval
+	}
+	if stagger > 0 {
+		r.autoUnarchiveStagger = stagger
+	}
 }
 
 // SetOnLoopAutoStopped sets the callback for when a loop conversation is auto-stopped after reaching max iterations.
@@ -860,6 +912,9 @@ func (r *LoopRunner) RunOnce() (delivered, skipped, errored int) {
 
 	// Auto-archive inactive sessions
 	r.checkAutoArchive(sessions, now)
+
+	// Retry auto-unarchiving loop conversations archived due to broken ACP
+	r.checkAutoUnarchiveRecovery(sessions, now)
 
 	// Clean up archived sessions past retention
 	r.checkArchiveCleanup()
@@ -1592,6 +1647,118 @@ func (r *LoopRunner) checkAutoArchive(sessions []session.Metadata, now time.Time
 				"session_id", sessionID,
 				"session_name", meta.Name)
 		}
+	}
+}
+
+// autoUnarchiveEligible reports whether meta qualifies for auto-unarchive recovery
+// and, if so, returns the anchor timestamp its retry cadence is computed from.
+// A session is eligible iff it is archived with ArchiveReasonACPFailures and has a
+// loop configured (loop.json present). The anchor is AutoUnarchiveLastAttemptAt if
+// non-zero, else ArchivedAt.
+func (r *LoopRunner) autoUnarchiveEligible(meta session.Metadata) (time.Time, bool) {
+	if !meta.Archived || meta.ArchiveReason != session.ArchiveReasonACPFailures {
+		return time.Time{}, false
+	}
+
+	_, err := r.store.Loop(meta.SessionID).Get()
+	if err != nil {
+		if err != session.ErrLoopNotFound && r.logger != nil {
+			r.logger.Error("Failed to read loop config during auto-unarchive check",
+				"session_id", meta.SessionID, "error", err)
+		}
+		return time.Time{}, false
+	}
+
+	anchor := meta.ArchivedAt
+	if !meta.AutoUnarchiveLastAttemptAt.IsZero() {
+		anchor = meta.AutoUnarchiveLastAttemptAt
+	}
+	return anchor, true
+}
+
+// checkAutoUnarchiveRecovery retries auto-unarchiving loop conversations archived
+// due to broken ACP communication (session.ArchiveReasonACPFailures), on a slow,
+// staggered, restart-durable schedule. At most one session is attempted per poll.
+func (r *LoopRunner) checkAutoUnarchiveRecovery(sessions []session.Metadata, now time.Time) {
+	r.mu.Lock()
+	enabled := r.autoUnarchiveEnabled
+	retryInterval := r.autoUnarchiveRetryInterval
+	stagger := r.autoUnarchiveStagger
+	lastAttempt := r.lastAutoUnarchiveAttempt
+	r.mu.Unlock()
+
+	if !enabled || r.onAutoUnarchive == nil {
+		return
+	}
+
+	if !lastAttempt.IsZero() && now.Sub(lastAttempt) < stagger {
+		return
+	}
+
+	var mostOverdue *session.Metadata
+	var mostOverdueAnchor time.Time
+	for i := range sessions {
+		anchor, ok := r.autoUnarchiveEligible(sessions[i])
+		if !ok || now.Sub(anchor) < retryInterval {
+			continue
+		}
+		if mostOverdue == nil || anchor.Before(mostOverdueAnchor) {
+			mostOverdue = &sessions[i]
+			mostOverdueAnchor = anchor
+		}
+	}
+
+	if mostOverdue != nil {
+		r.attemptAutoUnarchive(*mostOverdue, now)
+	}
+}
+
+// attemptAutoUnarchive attempts to auto-unarchive a single loop conversation
+// archived due to broken ACP communication. It persists the attempt timestamp
+// before calling the callback (so the cadence survives a crash mid-attempt),
+// and clears it only on success (resetting the cadence for the next failure).
+func (r *LoopRunner) attemptAutoUnarchive(meta session.Metadata, now time.Time) {
+	sessionID := meta.SessionID
+
+	if err := r.store.UpdateMetadata(sessionID, func(m *session.Metadata) {
+		m.AutoUnarchiveLastAttemptAt = now
+	}); err != nil {
+		if r.logger != nil {
+			r.logger.Error("Failed to persist auto-unarchive attempt timestamp",
+				"session_id", sessionID, "error", err)
+		}
+		return
+	}
+
+	r.mu.Lock()
+	r.lastAutoUnarchiveAttempt = now
+	r.mu.Unlock()
+
+	if r.logger != nil {
+		r.logger.Info("Attempting auto-unarchive of loop conversation archived due to broken ACP",
+			"session_id", sessionID, "session_name", meta.Name)
+	}
+
+	err := r.onAutoUnarchive(sessionID)
+	if err != nil {
+		if r.logger != nil {
+			r.logger.Warn("Auto-unarchive attempt failed, will retry later",
+				"session_id", sessionID, "error", err)
+		}
+		return
+	}
+
+	if clearErr := r.store.UpdateMetadata(sessionID, func(m *session.Metadata) {
+		m.AutoUnarchiveLastAttemptAt = time.Time{}
+	}); clearErr != nil {
+		if r.logger != nil {
+			r.logger.Error("Failed to clear auto-unarchive attempt timestamp after success",
+				"session_id", sessionID, "error", clearErr)
+		}
+	}
+
+	if r.logger != nil {
+		r.logger.Info("Auto-unarchived loop conversation successfully", "session_id", sessionID)
 	}
 }
 

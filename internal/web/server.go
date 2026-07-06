@@ -948,6 +948,37 @@ func NewServer(config Config) (*Server, error) {
 		}(),
 	})
 
+	// Auto-unarchive recovery: retry unarchiving loop conversations archived due
+	// to broken ACP communication, on a slow, staggered, restart-durable schedule.
+	// Reuses the same restore-loop logic as the manual HTTP unarchive path.
+	s.loopRunner.SetOnAutoUnarchive(func(sessionID string) error {
+		meta, err := store.GetMetadata(sessionID)
+		if err != nil {
+			return err
+		}
+
+		if err := store.UpdateMetadata(sessionID, func(m *session.Metadata) {
+			m.Archived = false
+			m.ArchivedAt = time.Time{}
+			m.ArchiveReason = ""
+			m.AutoUnarchiveLastAttemptAt = time.Time{}
+		}); err != nil {
+			return err
+		}
+
+		_, resumeErr := sessionMgr.ResumeSession(sessionID, meta.Name, meta.WorkingDir)
+		if resumeErr != nil {
+			s.BroadcastACPStartFailed(sessionID, meta.Name, resumeErr, "")
+		} else {
+			s.BroadcastACPStarted(sessionID)
+		}
+		s.BroadcastSessionArchived(sessionID, false)
+		s.apiHandlers.RestoreLoopOnUnarchive(sessionID)
+
+		return resumeErr
+	})
+	s.loopRunner.SetAutoUnarchiveRecovery(true, DefaultAutoUnarchiveRetryInterval, DefaultAutoUnarchiveStaggerInterval)
+
 	// Configure auto-archive inactive sessions if enabled
 	if config.MittoConfig != nil && config.MittoConfig.Session != nil {
 		autoArchivePeriod := config.MittoConfig.Session.GetAutoArchiveInactiveAfter()

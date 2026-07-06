@@ -35,6 +35,15 @@ flowchart TB
 3. **Completion**: `Recorder.End()` marks session as completed
 4. **Playback**: `Player` loads events for review/replay
 
+### Archive / Auto-Unarchive Recovery Lifecycle
+
+Sessions can be archived manually (`ArchiveReasonManual`), for inactivity (`ArchiveReasonInactivity`), or automatically after repeated ACP process start failures (`ArchiveReasonACPFailures`). The last case is the only one considered transient: a loop conversation archived this way is automatically retried by `LoopRunner.checkAutoUnarchiveRecovery()` (see `internal/web/loop_runner.go`), polled once per minute alongside the other loop housekeeping checks.
+
+- A loop conversation qualifies when it is archived with `ArchiveReasonACPFailures` and still has a loop configuration (`store.Loop(id).Get()` succeeds).
+- Each eligible conversation is retried roughly hourly, anchored on `Metadata.AutoUnarchiveLastAttemptAt` (or `ArchivedAt` if no attempt has been made yet) so the cadence survives a Mitto restart.
+- A 10-minute global stagger ensures at most one conversation is retried per poll, even if several become due simultaneously — the most-overdue one is picked.
+- A retry performs the same steps as a manual unarchive: clear the archive fields, resume the ACP process, broadcast the state change, and re-enable the loop. Failures leave the conversation archived so the schedule retries again after another interval; if the ACP outage persists, the normal resume-failure archiving path will typically re-archive the conversation, restarting the cadence from a fresh `ArchivedAt`.
+
 ## Immediate Persistence
 
 Events are persisted **immediately** when received from ACP, preserving the sequence numbers assigned at streaming time. This ensures:

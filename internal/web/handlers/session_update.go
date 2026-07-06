@@ -93,6 +93,7 @@ func (h *Handlers) HandleUpdateSession(w http.ResponseWriter, r *http.Request, s
 				// Clear archived timestamp and reason when unarchiving
 				meta.ArchivedAt = time.Time{}
 				meta.ArchiveReason = ""
+				meta.AutoUnarchiveLastAttemptAt = time.Time{}
 			}
 		}
 	})
@@ -181,13 +182,13 @@ func (h *Handlers) HandleUpdateSession(w http.ResponseWriter, r *http.Request, s
 		// Restore/re-surface any loop configuration that was left disabled by
 		// the archive (mitto-vmp): auto-resume archive-related stops, keep
 		// other pauses paused, and always re-broadcast the current config.
-		h.restoreLoopOnUnarchive(sessionID)
+		h.RestoreLoopOnUnarchive(sessionID)
 	}
 
 	writeJSONOK(w, meta)
 }
 
-// restoreLoopOnUnarchive re-surfaces a session's loop configuration after
+// RestoreLoopOnUnarchive re-surfaces a session's loop configuration after
 // unarchive. Loop config (prompt/arguments/trigger/etc.) survives archive in
 // loop.json, but MarkStopped(StoppedReasonArchived/ResumeFailures) leaves it
 // disabled with no broadcast, so clients never learn it's still there
@@ -198,7 +199,11 @@ func (h *Handlers) HandleUpdateSession(w http.ResponseWriter, r *http.Request, s
 //     BootstrapOnCompletion for onCompletion loops.
 //  3. Leaves other pause reasons (user-paused, max iterations, etc.) alone.
 //  4. Always re-broadcasts the current loop state so the UI can re-render it.
-func (h *Handlers) restoreLoopOnUnarchive(sessionID string) {
+//
+// Exported so the web package's auto-unarchive recovery scheduler
+// (LoopRunner.onAutoUnarchive, wired in server.go) can reuse the same
+// restore logic as the manual HTTP unarchive path.
+func (h *Handlers) RestoreLoopOnUnarchive(sessionID string) {
 	store := h.deps.Store
 	if store == nil {
 		return
