@@ -255,7 +255,13 @@ func (c configManager) applyConfigOptionWithOpts(d configDeps, ctx context.Conte
 		previousModel := d.cmGetCurrentModelID()
 		if err := d.cmSetSessionModel(ctx, value); err != nil {
 			if l := d.cmLogger(); l != nil {
-				l.Error("Failed to set session model", "config_id", configID, "value", value, "error", err)
+				if IsACPConnectionError(err) {
+					// Dead/restarting process (e.g. agent heap-OOM crash, mitto-5q8): this is a
+					// transient restart-gap condition, not a genuine model-selection failure.
+					l.Warn("Skipping model change; agent process is restarting", "config_id", configID, "value", value, "error", err)
+				} else {
+					l.Error("Failed to set session model", "config_id", configID, "value", value, "error", err)
+				}
 			}
 			return fmt.Errorf("failed to set %s: %w", configID, err)
 		}

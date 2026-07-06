@@ -402,6 +402,11 @@ var stderrCrashPatterns = []string{
 	"received message with neither id nor method",
 	// From acp-go-sdk's notification queue overflow handler (triggers when process is overwhelmed)
 	"failed to queue notification; closing connection",
+	// Node/V8 fatal error when the agent subprocess exhausts its JS heap (mitto-5q8).
+	// Detecting this immediately speeds proactive recycle instead of waiting for the
+	// dead process to be discovered on the next RPC attempt.
+	"JavaScript heap out of memory",
+	"Reached heap limit",
 }
 
 // StartStderrMonitor starts a goroutine that reads from stderr and writes to the collector.
