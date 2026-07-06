@@ -468,6 +468,49 @@ within 2× the GC interval). When those gates pass, each session is marked
 `MarkGCSuspended`, closed, and the process is stopped via `StopProcess`; the next
 `NewSession` lazily builds a fresh process with zeroed saturation state.
 
+#### Saturation triggers feeding Tier 5 / Tier 6
+
+Two independent triggers can set `saturatedUntil` / `saturationLevel`; both are
+picked up by `IsSaturated()` and `IsConfirmedDegraded()` identically, so no changes
+in `acp_process_gc.go` are required beyond reading those getters.
+
+1. **Consecutive-timeout fast path** (mitto-13ck.2, unchanged): after
+   `sessionSaturationTimeoutThreshold` (3) *back-to-back* full-deadline
+   `NewSession`/`LoadSession` RPCs the process is flagged. This catches the
+   fully-wedged case where every RPC runs to its deadline.
+
+2. **Rate / rolling-window trigger** (mitto-5eq): a bucketed sliding window
+   (`saturationWindowDuration` = 5 min, `saturationWindowBucketCount` = 10 → 30 s
+   buckets) counts full-deadline timeouts, `shouldFailFastCreateAttempt`
+   budget-exhaustion bails, and successful control-plane RPCs. When the window
+   holds at least `saturationWindowMinSamples` (8) samples AND
+   `(timeouts + bails) / total ≥ saturationWindowFailRatio` (0.5), the process is
+   promoted to saturated via the same `saturationLevel++` /
+   `saturatedUntil = now + cooldown` path as the consecutive trigger.
+
+   This closes two gaps the consecutive-only design left open:
+
+   - **Interspersed success reset**: a degraded process that still serves *some*
+     traffic never accumulates 3 timeouts in a row — every interspersed success
+     zeroes `consecutiveRPCTimeouts`. The rolling window is NOT wiped by a
+     success; a success only adds a sample so the ratio drops naturally as
+     health returns. Concrete effect: an incident with 38 context-deadlines,
+     ~2000 interspersed successful ACP events, and ~10 min of aux-session
+     starvation produced zero Tier 5/6 recycles before the rate trigger.
+   - **Budget-exhaustion bails don't count**: the dominant real failure mode is
+     `session/new: insufficient remaining budget ... failing fast` via
+     `shouldFailFastCreateAttempt`. Those bails intentionally skip
+     `recordRPCTimeout` (nothing was actually attempted), so they never
+     contributed to saturation. The rate trigger's new `recordRPCBudgetBail`
+     records them into the window only — it does NOT touch
+     `consecutiveRPCTimeouts`, preserving the consecutive fast path unchanged.
+
+   Both triggers share `saturationMu` — no second lock is introduced. The window
+   is bounded (fixed-size ring buffer, no unbounded growth) and cost is O(1) per
+   record + O(bucketCount) per evaluate. Cold-start MCP-init timeouts and bails
+   are excluded from the window on the same rationale as the consecutive path
+   (`extendedBudget == true` → skipped).
+
 ### Tier 6 — Non-Idle Recycle for Confirmed-Degraded Processes (mitto-1h0)
 
 Tier 5 is **idle-gated**: it skips a process with in-flight RPCs or a prompting

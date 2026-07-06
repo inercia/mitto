@@ -135,6 +135,48 @@ const (
 	// once this bar is met.
 	confirmedDegradedLevel = 2
 
+	// Rate/rolling-window saturation trigger (mitto-5eq). The consecutive-timeout
+	// path above only trips after N *back-to-back* full RPC deadlines; any interspersed
+	// success zeroes the counter and budget-exhaustion bails in shouldFailFastCreateAttempt
+	// intentionally skip recordRPCTimeout — so a shared process that fails intermittently
+	// (e.g. 30-50% of session/new + set_model RPCs deadline over 5-10 minutes, but ~2000
+	// unrelated ACP events keep succeeding in between) never accumulates enough consecutive
+	// timeouts to trip, and the GC's Tier 5/6 recycle tiers stay inert. Observed 2026-07-06
+	// 16:34–16:42: 38 context-deadlines, 9 NewSession + 17 SetSessionModel failures, ~10 min
+	// aux-session starvation → ZERO recycles.
+	//
+	// The rate trigger complements (does not replace) the consecutive fast path by counting
+	// full-deadline timeouts AND budget-exhaustion bails against successes in a bounded
+	// sliding window. Bookkeeping is bucketed (fixed-size ring) so cost is O(1) per record
+	// and O(bucketCount) per evaluate, with no unbounded growth. All state is guarded by
+	// the existing saturationMu — no second lock is introduced.
+	//
+	// saturationWindowDuration is the sliding-window length. 5 min is chosen to match the
+	// upper end of sessionSaturationCooldownMax and the observed incident timescale: a
+	// process that fails ≥50% of its control-plane RPCs for 5 minutes is not going to
+	// self-heal in another 5 minutes, but we still recycle no more aggressively than the
+	// existing max cooldown.
+	saturationWindowDuration = 5 * time.Minute
+	// saturationWindowBucketCount is the number of ring-buffer buckets covering
+	// saturationWindowDuration. 10 → 30-second buckets, granular enough that aging is
+	// smooth on the same order as sessionSaturationCooldownBase (30s) but small enough that
+	// aggregation stays trivially cheap. Must be > 0 and divide the window duration
+	// cleanly for bucket alignment to be exact.
+	saturationWindowBucketCount = 10
+	// saturationWindowMinSamples is the minimum total sample count (timeouts + bails +
+	// successes) required inside the window before the rate trigger can fire. This is the
+	// primary false-positive guard: a healthy process that happens to see 1 timeout in an
+	// otherwise-empty window (1/1 = 100%) must NOT trip. Set to 8 so a single burst has to
+	// clearly dominate ordinary traffic before the trigger arms.
+	saturationWindowMinSamples = 8
+	// saturationWindowFailRatio is the (timeouts + bails) / (timeouts + bails + successes)
+	// threshold at which the rate trigger fires. 0.5 (50%) is well outside any plausible
+	// steady-state healthy baseline (real deployments show <5% timeouts) yet captures the
+	// intermittent-degradation regime the incident exhibited (~40-60% failed control-plane
+	// RPCs interleaved with successes). Paired with saturationWindowMinSamples this
+	// preserves the "no false positives on light traffic" acceptance criterion.
+	saturationWindowFailRatio = 0.5
+
 	// Note: Runtime restart constants (maxProcessRestarts, processRestartWindow,
 	// processRestartBaseDelay, processRestartMaxDelay) are now defined in
 	// acp_error_classification.go as shared constants (conversation.MaxACPRestarts, conversation.ACPRestartWindow,
@@ -280,6 +322,16 @@ type SharedACPProcess struct {
 	saturatedUntil         time.Time
 	saturationLevel        int
 	inProbe                bool
+	// saturationBuckets is the fixed-size ring buffer backing the rate/rolling-window
+	// saturation trigger (mitto-5eq). Each bucket covers saturationWindowDuration /
+	// saturationWindowBucketCount and records timeouts, budget-exhaustion bails, and
+	// successful control-plane RPCs falling in its time slot. Buckets age out purely by
+	// timestamp — a success does NOT wipe the window; it only adds a success sample so
+	// the failure ratio drops naturally. This deliberately avoids the "one success
+	// resets everything" bug that made the consecutive-timeout trigger inert for
+	// intermittently-degraded processes. Guarded by saturationMu; lazily allocated on
+	// first record.
+	saturationBuckets []saturationBucket
 
 	// Restart tracking
 	restartMu    sync.Mutex
@@ -858,35 +910,156 @@ func saturationCooldownForLevel(level int) time.Duration {
 	return d
 }
 
+// saturationBucket is one time-slot of the rate/rolling-window saturation
+// counter (mitto-5eq). Each bucket covers saturationWindowDuration /
+// saturationWindowBucketCount and records how many timeouts, budget-exhaustion
+// bails, and successful control-plane RPCs happened during that slot. The `start`
+// timestamp is aligned to the bucket duration so ring-buffer slot reuse can be
+// detected (a new event whose aligned slot no longer matches `start` means this
+// bucket has aged out and must be zeroed before being incremented).
+type saturationBucket struct {
+	start     time.Time
+	timeouts  int
+	bails     int
+	successes int
+}
+
+// saturationBucketDuration returns the per-bucket time slot length. Kept as a
+// function (not a const) so the arithmetic is centralised and both writers and
+// readers agree on the divisor even if the constants ever change.
+func saturationBucketDuration() time.Duration {
+	return saturationWindowDuration / saturationWindowBucketCount
+}
+
+// saturationCurrentBucketLocked returns a pointer to the ring-buffer slot for the
+// current wall-clock time, zeroing it first if it belonged to an older window
+// (implicit prune). saturationMu MUST be held by the caller.
+func (p *SharedACPProcess) saturationCurrentBucketLocked(now time.Time) *saturationBucket {
+	if p.saturationBuckets == nil {
+		p.saturationBuckets = make([]saturationBucket, saturationWindowBucketCount)
+	}
+	bucketDur := saturationBucketDuration()
+	slot := now.Truncate(bucketDur)
+	// Map the aligned slot to a ring index. Both bucketDur and UnixNano are >0 here,
+	// so the modulo is well-defined and stable across all sample times.
+	idx := int(slot.UnixNano()/int64(bucketDur)) % saturationWindowBucketCount
+	if idx < 0 {
+		idx += saturationWindowBucketCount
+	}
+	if !p.saturationBuckets[idx].start.Equal(slot) {
+		p.saturationBuckets[idx] = saturationBucket{start: slot}
+	}
+	return &p.saturationBuckets[idx]
+}
+
+// saturationWindowStatsLocked aggregates all live buckets (those whose start is
+// within the current window ending at `now`) into totals. Buckets whose start is
+// older than now-saturationWindowDuration are treated as expired and skipped.
+// saturationMu MUST be held by the caller.
+func (p *SharedACPProcess) saturationWindowStatsLocked(now time.Time) (timeouts, bails, successes int) {
+	cutoff := now.Add(-saturationWindowDuration)
+	for i := range p.saturationBuckets {
+		b := p.saturationBuckets[i]
+		if b.start.IsZero() || b.start.Before(cutoff) {
+			continue
+		}
+		timeouts += b.timeouts
+		bails += b.bails
+		successes += b.successes
+	}
+	return
+}
+
+// evaluateSaturationRateTriggerLocked checks whether the current rolling window
+// meets the rate/min-sample threshold and, if so, promotes the process into the
+// SAME saturation state that the consecutive-timeout path uses (bumping
+// saturationLevel and arming saturatedUntil). This is a no-op when the process is
+// already saturated (saturatedUntil in the future) to avoid re-arming the cooldown
+// on every subsequent failure — the consecutive-path probe/escalation logic then
+// takes over as normal once the cooldown elapses. saturationMu MUST be held.
+func (p *SharedACPProcess) evaluateSaturationRateTriggerLocked(now time.Time) {
+	if !p.saturatedUntil.IsZero() && now.Before(p.saturatedUntil) {
+		return
+	}
+	timeouts, bails, successes := p.saturationWindowStatsLocked(now)
+	total := timeouts + bails + successes
+	if total < saturationWindowMinSamples {
+		return
+	}
+	fails := timeouts + bails
+	if float64(fails)/float64(total) < saturationWindowFailRatio {
+		return
+	}
+	// Trip via the shared saturation state so IsSaturated()/IsConfirmedDegraded()
+	// (and therefore GC Tier 5/6) pick it up unchanged. We deliberately do NOT
+	// touch consecutiveRPCTimeouts here — the two triggers stay independent so
+	// the consecutive fast path for the fully-wedged case is unaffected.
+	p.saturationLevel++
+	p.saturatedUntil = now.Add(saturationCooldownForLevel(p.saturationLevel))
+}
+
 // recordRPCTimeout records a NewSession/LoadSession RPC timeout (mitto-13ck.2).
 // In normal mode the consecutive counter increments toward the threshold; once the
 // threshold is reached, saturationLevel is incremented and a fresh cooldown is set.
 // In probe mode (inProbe=true) a single timeout immediately escalates the level and
 // re-saturates, because the probe has already confirmed the process is still hung.
+// The timeout is ALSO recorded into the rate/rolling-window trigger (mitto-5eq)
+// which can promote the process to saturated independently — see
+// evaluateSaturationRateTriggerLocked for the rate-based fallback path.
 func (p *SharedACPProcess) recordRPCTimeout() {
 	p.saturationMu.Lock()
 	defer p.saturationMu.Unlock()
+	now := time.Now()
+	p.saturationCurrentBucketLocked(now).timeouts++
 	if p.inProbe {
 		// Probe timed out: immediately escalate and re-saturate.
 		p.inProbe = false
 		p.saturationLevel++
 		p.consecutiveRPCTimeouts = 0
-		p.saturatedUntil = time.Now().Add(saturationCooldownForLevel(p.saturationLevel))
+		p.saturatedUntil = now.Add(saturationCooldownForLevel(p.saturationLevel))
 		return
 	}
 	p.consecutiveRPCTimeouts++
 	if p.consecutiveRPCTimeouts >= sessionSaturationTimeoutThreshold {
 		p.saturationLevel++
-		p.saturatedUntil = time.Now().Add(saturationCooldownForLevel(p.saturationLevel))
+		p.saturatedUntil = now.Add(saturationCooldownForLevel(p.saturationLevel))
+		return
 	}
+	// Consecutive threshold not reached — the rate/rolling-window trigger may still
+	// fire for the intermittent-storm case (mitto-5eq).
+	p.evaluateSaturationRateTriggerLocked(now)
 }
 
-// recordRPCSuccess clears all saturation tracking after a successful NewSession/
-// LoadSession RPC (mitto-13ck.2). Resets the saturation level so the next event
-// starts again from the base cooldown (30s).
+// recordRPCBudgetBail records a mid-flight budget-exhaustion bail from
+// shouldFailFastCreateAttempt (mitto-5eq). These bails are NOT full RPC deadlines
+// (nothing was actually attempted) so they intentionally do NOT feed the
+// consecutive-timeout fast path (that path is reserved for the fully-wedged case
+// where the RPC itself runs to deadline). They DO feed the rate/rolling-window
+// signal — this is the "budget-exhaustion bails don't count" gap the rate trigger
+// was designed to close.
+func (p *SharedACPProcess) recordRPCBudgetBail() {
+	p.saturationMu.Lock()
+	defer p.saturationMu.Unlock()
+	now := time.Now()
+	p.saturationCurrentBucketLocked(now).bails++
+	p.evaluateSaturationRateTriggerLocked(now)
+}
+
+// recordRPCSuccess clears the consecutive-timeout saturation tracking after a
+// successful NewSession/LoadSession RPC (mitto-13ck.2). Resets the saturation
+// level so the next event starts again from the base cooldown (30s).
+//
+// A success is ALSO recorded as a sample in the rolling-window trigger
+// (mitto-5eq), but the window itself is NOT wiped: entries age out purely by
+// timestamp. If we cleared the window here we would reintroduce the exact
+// interspersed-success reset bug that made the consecutive-timeout trigger inert
+// for intermittently-degraded processes. Keeping window history intact means a
+// single fluke success right after a rate-trip clears the fast-path state but the
+// NEXT timeout/bail can immediately re-trip via the still-populated window.
 func (p *SharedACPProcess) recordRPCSuccess() {
 	p.saturationMu.Lock()
 	defer p.saturationMu.Unlock()
+	p.saturationCurrentBucketLocked(time.Now()).successes++
 	p.consecutiveRPCTimeouts = 0
 	p.saturatedUntil = time.Time{}
 	p.saturationLevel = 0
@@ -1147,6 +1320,16 @@ func (p *SharedACPProcess) NewSession(ctx context.Context, cwd string, mcpServer
 				remaining = time.Until(dl)
 			}
 			if bail, reason := shouldFailFastCreateAttempt(attempt, p.isSaturated(), hasDeadline, remaining, perAttemptBudget); bail {
+				// Feed the budget-exhaustion bail into the rate/rolling-window trigger
+				// (mitto-5eq). This is the "bails don't count" gap: nothing was actually
+				// attempted so the consecutive fast path stays untouched, but a stream of
+				// bails on the same process IS evidence of intermittent degradation and
+				// should promote saturation via the rate signal. Skip during a cold-start
+				// MCP-init window (extendedBudget) since that latency isn't saturation
+				// evidence, mirroring recordRPCTimeout's gating.
+				if !extendedBudget {
+					p.recordRPCBudgetBail()
+				}
 				return nil, fmt.Errorf("session/new: %s (after %d attempt(s)); failing fast: %w", reason, attempt-1, context.DeadlineExceeded)
 			}
 		}

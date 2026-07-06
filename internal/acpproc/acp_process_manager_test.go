@@ -1449,7 +1449,7 @@ func TestSaturationStateMachine_EscalatingCooldown(t *testing.T) {
 		t.Errorf("after level-3 trip: cooldown ≈ %v, want ≈ %v", cd3, wantCD3)
 	}
 
-	// A successful RPC resets level to 0 and clears all state.
+	// A successful RPC resets level to 0 and clears all consecutive-path state.
 	p.recordRPCSuccess()
 	p.saturationMu.Lock()
 	lvlReset := p.saturationLevel
@@ -1469,6 +1469,19 @@ func TestSaturationStateMachine_EscalatingCooldown(t *testing.T) {
 	if !untilReset.IsZero() {
 		t.Error("after recordRPCSuccess: saturatedUntil must be zero")
 	}
+
+	// Isolate the consecutive-path re-trip check from the rate/rolling-window
+	// trigger (mitto-5eq): recordRPCSuccess intentionally does NOT wipe the
+	// rolling window (that would reintroduce the interspersed-success reset bug),
+	// so the residual timeouts from earlier in this test could otherwise let the
+	// rate trigger fire before the consecutive threshold on the next 3 timeouts,
+	// promoting saturationLevel past 1. This test is specifically exercising the
+	// consecutive path in isolation, so clear the window here. Coverage for the
+	// interaction ("success clears state but window survives") lives in
+	// TestSaturationRate_SuccessDoesNotWipeWindow.
+	p.saturationMu.Lock()
+	p.saturationBuckets = nil
+	p.saturationMu.Unlock()
 
 	// After reset, next trip should again use level 1 (base cooldown).
 	for i := 0; i < sessionSaturationTimeoutThreshold; i++ {
