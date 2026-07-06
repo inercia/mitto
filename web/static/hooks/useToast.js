@@ -67,8 +67,9 @@ export function useToast({ maxToasts = 5 } = {}) {
         return next;
       });
 
-      // Auto-dismiss unless sticky
-      if (!sticky) {
+      // Auto-dismiss unless sticky. Error toasts never auto-dismiss so users
+      // cannot miss critical messages; they stay until manually closed.
+      if (!sticky && style !== "error") {
         const ms = duration ?? DURATION_BY_STYLE[style] ?? 5000;
         timersRef.current[id] = setTimeout(() => {
           delete timersRef.current[id];

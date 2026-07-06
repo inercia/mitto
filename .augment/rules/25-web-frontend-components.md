@@ -119,7 +119,7 @@ const { showToast, dismissToast, toasts } = useToast();
 showToast({ message: "Saved", style: "success" }); // auto-dismiss 5s
 ```
 
-Durations: info/success=5s, warning/error=10s. Max 5 simultaneous. Render via `<ToastContainer />`. Use `error` (red) for actual errors only.
+Durations: info/success=5s, warning=10s. `error` toasts NEVER auto-dismiss — they persist until the user closes them (dismiss button), so critical errors can't be missed. Max 5 simultaneous. Render via `<ToastContainer />`. Use `error` (red) for actual errors only.
 
 ## useResizeHandle / useSwipeNavigation
 
