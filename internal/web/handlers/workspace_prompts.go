@@ -311,8 +311,11 @@ func (h *Handlers) HandleWorkspacePromptsGET(w http.ResponseWriter, r *http.Requ
 		acpServerType = acpServerName
 	}
 
-	// Get the file's last modification time for conditional requests
-	lastModified := h.deps.SessionManager.GetWorkspaceRCLastModified(workingDir)
+	// Get the last modification time for conditional requests. This folds in the
+	// mtimes of ALL sources that contribute to the merged prompt list (not just
+	// .mittorc), so a change in any source advances Last-Modified and correctly
+	// invalidates the client's cached list instead of answering 304 (mitto-tf9).
+	lastModified := h.computeWorkspacePromptsLastModified(workingDir)
 
 	// Check If-Modified-Since header for conditional request.
 	// Skip the 304 short-circuit when we just migrated files: the client must
@@ -498,6 +501,69 @@ func (h *Handlers) HandleWorkspacePromptsGET(w http.ResponseWriter, r *http.Requ
 		resp["migrated"] = migratedNames
 	}
 	writeJSONOK(w, resp)
+}
+
+// computeWorkspacePromptsLastModified returns the most recent modification time
+// across ALL sources that contribute to the merged workspace prompt list. The
+// GET handler previously derived Last-Modified solely from the workspace
+// .mittorc mtime, so any prompt change that did not touch .mittorc (e.g. a
+// builtin deployed by `mitto prompts update-builtin`, or an edit under
+// .mitto/prompts/) was invisible to the frontend: the conditional
+// If-Modified-Since request kept getting 304 until an unrelated .mittorc mtime
+// bump. Folding every source's mtime in fixes that (mitto-tf9).
+func (h *Handlers) computeWorkspacePromptsLastModified(workingDir string) time.Time {
+	var latest time.Time
+	bump := func(t time.Time) {
+		if t.After(latest) {
+			latest = t
+		}
+	}
+
+	// 1. Workspace .mittorc (original input).
+	if h.deps.SessionManager != nil {
+		bump(h.deps.SessionManager.GetWorkspaceRCLastModified(workingDir))
+	}
+
+	// 2. Global prompts dir (MITTO_DIR/prompts), walked recursively so it also
+	//    covers builtin/ prompts deployed by `mitto prompts update-builtin` and
+	//    any ACP-server-specific *.prompt.yaml files living in the same tree.
+	if promptsDir, err := appdir.PromptsDir(); err == nil {
+		bump(configPkg.GetPromptsDirModTime(promptsDir))
+	}
+
+	// 3. Settings file (config.Prompts are parsed from settings.json).
+	if settingsPath, err := appdir.SettingsPath(); err == nil {
+		if info, statErr := os.Stat(settingsPath); statErr == nil {
+			bump(info.ModTime())
+		}
+	}
+
+	// 4. Additional global prompts_dirs from settings.
+	if h.deps.MittoConfig != nil {
+		for _, d := range h.deps.MittoConfig.PromptsDirs {
+			bump(configPkg.GetPromptsDirModTime(resolvePromptsDir(workingDir, d)))
+		}
+	}
+
+	// 5. Workspace directory prompts: default .mitto/prompts plus any prompts_dirs
+	//    configured in the workspace .mittorc.
+	bump(configPkg.GetPromptsDirModTime(appdir.WorkspacePromptsDir(workingDir)))
+	if h.deps.SessionManager != nil {
+		for _, d := range h.deps.SessionManager.GetWorkspacePromptsDirs(workingDir) {
+			bump(configPkg.GetPromptsDirModTime(resolvePromptsDir(workingDir, d)))
+		}
+	}
+
+	return latest
+}
+
+// resolvePromptsDir resolves a possibly-relative prompts directory against
+// workingDir. Absolute paths (and blanks) are returned unchanged.
+func resolvePromptsDir(workingDir, dir string) string {
+	if dir == "" || filepath.IsAbs(dir) {
+		return dir
+	}
+	return filepath.Join(workingDir, dir)
 }
 
 // splitItemLabels splits a comma-separated item_labels query param into a
