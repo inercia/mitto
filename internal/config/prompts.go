@@ -378,17 +378,33 @@ func LoadPromptFile(promptsDir, relativePath string) (*PromptFile, error) {
 	return ParsePromptFile(relativePath, data, info.ModTime())
 }
 
+// PromptLoadError describes a single prompt file that failed to load/parse/precompile.
+type PromptLoadError struct {
+	Path string // path (relative to the scanned dir) of the offending file
+	Err  error  // underlying parse/template error
+}
+
 // LoadPromptsFromDir loads all .prompt.yaml files from a directory recursively.
 // Disabled prompts (enabled: false) are included so they can suppress same-named
 // prompts from lower-priority directories during the merge phase.
 // Returns an empty slice if the directory doesn't exist.
 func LoadPromptsFromDir(dir string) ([]*PromptFile, error) {
+	prompts, _, err := LoadPromptsFromDirWithErrors(dir)
+	return prompts, err
+}
+
+// LoadPromptsFromDirWithErrors loads all .prompt.yaml files from a directory recursively,
+// returning both the successfully-loaded prompts and per-file errors for files that
+// failed to load/parse/precompile. Failed files are also logged at WARN.
+// Returns an empty slice if the directory doesn't exist.
+func LoadPromptsFromDirWithErrors(dir string) ([]*PromptFile, []PromptLoadError, error) {
 	// Check if directory exists
 	if _, err := os.Stat(dir); os.IsNotExist(err) {
-		return nil, nil
+		return nil, nil, nil
 	}
 
 	var prompts []*PromptFile
+	var loadErrors []PromptLoadError
 
 	err := filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
@@ -414,8 +430,10 @@ func LoadPromptsFromDir(dir string) ([]*PromptFile, error) {
 		// Load and parse the file
 		prompt, err := LoadPromptFile(dir, relPath)
 		if err != nil {
-			// Log warning but continue with other files
-			// In production, this would use a logger
+			loadErrors = append(loadErrors, PromptLoadError{Path: relPath, Err: err})
+			slog.Warn("failed to load prompt file",
+				"path", filepath.Join(dir, relPath),
+				"error", err)
 			return nil
 		}
 
@@ -424,10 +442,10 @@ func LoadPromptsFromDir(dir string) ([]*PromptFile, error) {
 	})
 
 	if err != nil {
-		return nil, fmt.Errorf("failed to walk prompts directory %s: %w", dir, err)
+		return nil, loadErrors, fmt.Errorf("failed to walk prompts directory %s: %w", dir, err)
 	}
 
-	return prompts, nil
+	return prompts, loadErrors, nil
 }
 
 // PromptsToWebPrompts converts a slice of PromptFile to WebPrompt.

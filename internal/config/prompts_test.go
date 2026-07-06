@@ -525,6 +525,52 @@ func TestLoadPromptsFromDir_NonExistent(t *testing.T) {
 	}
 }
 
+func TestLoadPromptsFromDirWithErrors_ReportsBadFileAndKeepsGood(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Valid prompt file.
+	goodPrompt := `name: "Good Prompt"
+prompt: |
+  Some content.
+`
+	if err := os.WriteFile(filepath.Join(tmpDir, "good.prompt.yaml"), []byte(goodPrompt), 0644); err != nil {
+		t.Fatalf("Failed to write good.prompt.yaml: %v", err)
+	}
+
+	// Invalid prompt file: malformed YAML (unclosed flow sequence).
+	badPrompt := `name: [unclosed
+prompt: |
+  Should fail to parse.
+`
+	if err := os.WriteFile(filepath.Join(tmpDir, "bad.prompt.yaml"), []byte(badPrompt), 0644); err != nil {
+		t.Fatalf("Failed to write bad.prompt.yaml: %v", err)
+	}
+
+	prompts, loadErrors, err := LoadPromptsFromDirWithErrors(tmpDir)
+	if err != nil {
+		t.Fatalf("LoadPromptsFromDirWithErrors failed: %v", err)
+	}
+
+	// Good prompt must still be returned.
+	if len(prompts) != 1 {
+		t.Fatalf("len(prompts) = %d, want 1", len(prompts))
+	}
+	if prompts[0].Name != "Good Prompt" {
+		t.Errorf("prompts[0].Name = %q, want %q", prompts[0].Name, "Good Prompt")
+	}
+
+	// Exactly one load error for the bad file.
+	if len(loadErrors) != 1 {
+		t.Fatalf("len(loadErrors) = %d, want 1 (%+v)", len(loadErrors), loadErrors)
+	}
+	if loadErrors[0].Path != "bad.prompt.yaml" {
+		t.Errorf("loadErrors[0].Path = %q, want %q", loadErrors[0].Path, "bad.prompt.yaml")
+	}
+	if loadErrors[0].Err == nil {
+		t.Error("loadErrors[0].Err = nil, want non-nil")
+	}
+}
+
 func TestPromptsToWebPrompts(t *testing.T) {
 	prompts := []*PromptFile{
 		{Name: "One", Content: "Content 1"},

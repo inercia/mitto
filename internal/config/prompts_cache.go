@@ -41,6 +41,9 @@ type PromptsCache struct {
 
 	// workspaceRoot is the workspace directory for resolving relative paths
 	workspaceRoot string
+
+	// loadErrors holds per-file load errors from the most recent reload.
+	loadErrors []PromptLoadError
 }
 
 // NewPromptsCache creates a new prompts cache.
@@ -180,13 +183,15 @@ func (c *PromptsCache) reload() ([]*PromptFile, error) {
 	// Later directories override earlier ones
 	promptsByName := make(map[string]*PromptFile)
 	newModTimes := make(map[string]time.Time)
+	var newLoadErrors []PromptLoadError
 
 	for _, dir := range dirs {
 		modTime := GetPromptsDirModTime(dir)
 		newModTimes[dir] = modTime
 
 		// Skip non-existent directories silently
-		dirPrompts, err := LoadPromptsFromDir(dir)
+		dirPrompts, dirLoadErrors, err := LoadPromptsFromDirWithErrors(dir)
+		newLoadErrors = append(newLoadErrors, dirLoadErrors...)
 		if err != nil {
 			// Log warning but continue with other directories
 			continue
@@ -212,8 +217,16 @@ func (c *PromptsCache) reload() ([]*PromptFile, error) {
 	c.webPrompts = PromptsToWebPrompts(prompts)
 	c.loadedAt = time.Now()
 	c.dirModTimes = newModTimes
+	c.loadErrors = newLoadErrors
 
 	return prompts, nil
+}
+
+// LoadErrors returns the per-file load errors from the most recent reload.
+func (c *PromptsCache) LoadErrors() []PromptLoadError {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.loadErrors
 }
 
 // GetWebPrompts returns the cached prompts as WebPrompt slice.
