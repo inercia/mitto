@@ -68,6 +68,7 @@ func (f *fakeSharedProcess) SetSessionModel(_ context.Context, _ acp.SessionId, 
 	return nil
 }
 func (f *fakeSharedProcess) Restart() error                                                      { return nil }
+func (f *fakeSharedProcess) RecommendedLoadTimeout(_ bool) time.Duration                         { return 0 }
 func (f *fakeSharedProcess) SetPromptFunc(_ func(context.Context, string, string, string) error) {}
 func (f *fakeSharedProcess) PromptProcessorAsync(_ context.Context, _, _, _ string) error {
 	return nil

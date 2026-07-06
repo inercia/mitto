@@ -95,6 +95,29 @@ func (s *MockACPServer) handleNewSession(req JSONRPCRequest) error {
 		return s.sendError(req.ID, -32603, "agent busy: request timeout", nil)
 	}
 
+	// MCP-init simulation (mitto-8ul.1). Fired based on env vars regardless of whether
+	// the caller populated McpServers, because Mitto attaches MCP globally today so
+	// session/new requests carry an empty mcpServers slice. The stderr progress line
+	// is what internal/conversation's StartStderrMonitor watches for to invoke the
+	// onMCPInitProgress callback; the timeout line triggers fail-fast.
+	nServers := len(params.McpServers)
+	if nServers == 0 {
+		nServers = 1 // synthetic count for the stderr progress message
+	}
+	if s.mcpInitTimeoutAfterMs > 0 {
+		fmt.Fprintf(os.Stderr, "Waiting for %d MCP servers to initialize\n", nServers)
+		time.Sleep(time.Duration(s.mcpInitTimeoutAfterMs) * time.Millisecond)
+		fmt.Fprintf(os.Stderr, "MCP initialization timed out after %ds\n", s.mcpInitTimeoutAfterMs/1000)
+		// Return an error so any client that ignored the stderr signal still gets
+		// a deterministic failure. Tests that rely on the stderr abort will have
+		// already cancelled their context before we reach this line.
+		return s.sendError(req.ID, -32603, "mcp initialization timed out", nil)
+	}
+	if s.mcpInitDelayMs > 0 {
+		fmt.Fprintf(os.Stderr, "Waiting for %d MCP servers to initialize\n", nServers)
+		time.Sleep(time.Duration(s.mcpInitDelayMs) * time.Millisecond)
+	}
+
 	// Use Cwd (new format) or fallback to WorkingDirectory (legacy)
 	workdir := params.Cwd
 	if workdir == "" {

@@ -421,6 +421,14 @@ func (s *Server) applyConfigChanges(req *ConfigSaveRequest, settings *configPkg.
 			} else {
 				s.acpProcessManager.UpdateMemoryRecycleThreshold(0)
 			}
+			// Update the MCP-init extended budget at runtime (mitto-8ul.1). Existing
+			// processes keep their construction-time value; new processes pick up the
+			// updated timeout on next GetOrCreateProcess.
+			if d, enabled := settings.Session.ParseMcpInitTimeout(); enabled {
+				s.acpProcessManager.UpdateMCPInitTimeout(d)
+			} else {
+				s.acpProcessManager.UpdateMCPInitTimeout(0)
+			}
 		}
 
 		// Update the prompt inactivity watchdog timeout at runtime if session config

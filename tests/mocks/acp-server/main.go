@@ -98,6 +98,18 @@ type MockACPServer struct {
 	// single O_APPEND write so concurrent mock processes sharing the file (e.g. an
 	// auxiliary title-generation session) cannot interleave within a line.
 	rpcOrderFile string
+
+	// mcpInitDelayMs: sleep before responding to session/new when the request
+	// carries at least one MCP server, and emit the "Waiting for N MCP servers to
+	// initialize" progress line on stderr just before the delay. Simulates an
+	// agent that blocks session/new until MCP init completes (mitto-8ul.1).
+	mcpInitDelayMs int
+
+	// mcpInitTimeoutAfterMs: after this many ms, emit an "MCP initialization
+	// timed out after Ns" line on stderr AND return a JSON-RPC error from the
+	// pending session/new. Used to prove the client aborts promptly rather than
+	// waiting the full RPC deadline (mitto-8ul.1). 0 disables.
+	mcpInitTimeoutAfterMs int
 }
 
 // Default modes provided by the mock server
@@ -160,6 +172,24 @@ func NewMockACPServer(scenarioDir string, defaultDelay time.Duration, verbose bo
 
 	// MOCK_RPC_ORDER_FILE: append-only log of inbound RPC arrival order.
 	server.rpcOrderFile = os.Getenv("MOCK_RPC_ORDER_FILE")
+
+	// MOCK_MCP_INIT_DELAY_MS: delay session/new by this many ms and emit an MCP-init
+	// progress line on stderr. Only applies when the request carries MCP servers.
+	// Simulates Auggie-style agents that block session/new on MCP handshake (mitto-8ul.1).
+	if v := os.Getenv("MOCK_MCP_INIT_DELAY_MS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			server.mcpInitDelayMs = n
+		}
+	}
+
+	// MOCK_MCP_INIT_TIMEOUT_MS: after this many ms, emit an MCP-init-timeout stderr
+	// line and fail the pending session/new. Used to prove fail-fast on the signal
+	// (mitto-8ul.1).
+	if v := os.Getenv("MOCK_MCP_INIT_TIMEOUT_MS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			server.mcpInitTimeoutAfterMs = n
+		}
+	}
 
 	server.loadScenarios()
 	return server

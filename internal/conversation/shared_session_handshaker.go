@@ -273,7 +273,14 @@ func (c sharedSessionHandshaker) resumeSharedACPSession(d handshakeDeps, sharedP
 		if handle == nil && supportsLoad {
 			client := d.hsGetACPClient()
 			client.SetLoadingSession(true)
-			loadCtx, loadCancel := context.WithTimeout(d.hsSessionCtx(), 30*time.Second)
+			// Outer load budget defaults to 30s; SharedACPProcess widens this for
+			// cold sessions with MCP servers so the outer timeout does not truncate
+			// the extended MCP-init budget (mitto-8ul.1).
+			loadTimeout := 30 * time.Second
+			if rec := sharedProcess.RecommendedLoadTimeout(len(mcpServers) > 0); rec > loadTimeout {
+				loadTimeout = rec
+			}
+			loadCtx, loadCancel := context.WithTimeout(d.hsSessionCtx(), loadTimeout)
 			handle, err = sharedProcess.LoadSession(loadCtx, acpSessionID, workingDir, mcpServers)
 			loadCancel()
 			client.SetLoadingSession(false)

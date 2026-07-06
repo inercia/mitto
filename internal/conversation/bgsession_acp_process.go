@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"os/exec"
+	"regexp"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -409,15 +410,40 @@ var stderrCrashPatterns = []string{
 	"Reached heap limit",
 }
 
+// mcpInitProgressPattern detects the "Waiting for N MCP server(s) to initialize"
+// line the agent writes to stderr while it is blocking on MCP handshake. It is
+// intentionally count-agnostic and case-insensitive so it survives minor phrasing
+// variations across agent versions (mitto-8ul.1).
+var mcpInitProgressPattern = regexp.MustCompile(`(?i)waiting for .* mcp server`)
+
+// mcpInitTimeoutPattern detects the agent's "MCP initialization timed out after Ns"
+// line, emitted when its internal MCP wait budget elapses without all servers being
+// ready. Matched tolerantly so we don't couple to the exact suffix (mitto-8ul.1).
+var mcpInitTimeoutPattern = regexp.MustCompile(`(?i)mcp initialization timed out`)
+
 // StartStderrMonitor starts a goroutine that reads from stderr and writes to the collector.
 // If onCrashDetected is non-nil, it is called (at most once) when crash patterns are
 // detected in the stderr output, enabling early process death signaling.
 // If onFirstActivity is non-nil, it is called (at most once) the first time any bytes
 // are observed on stderr — used by the startup watchdog to detect "live" processes.
-func StartStderrMonitor(stderr runner.ReadCloser, collector *StderrCollector, onCrashDetected func(), onFirstActivity func()) {
+// If onMCPInitProgress is non-nil, it is called (at most once) when the agent reports it
+// is blocked waiting for MCP servers to initialize. If onMCPInitTimeout is non-nil, it
+// is called (at most once) when the agent reports its MCP-init wait has timed out —
+// callers use this to abort the pending session/new promptly with an actionable error
+// (mitto-8ul.1). Neither MCP signal contributes to crash detection.
+func StartStderrMonitor(
+	stderr runner.ReadCloser,
+	collector *StderrCollector,
+	onCrashDetected func(),
+	onFirstActivity func(),
+	onMCPInitProgress func(),
+	onMCPInitTimeout func(),
+) {
 	go func() {
 		crashSignaled := false
 		activitySignaled := false
+		mcpProgressSignaled := false
+		mcpTimeoutSignaled := false
 		buf := make([]byte, 4096)
 		for {
 			n, readErr := stderr.Read(buf)
@@ -429,17 +455,36 @@ func StartStderrMonitor(stderr runner.ReadCloser, collector *StderrCollector, on
 					onFirstActivity()
 				}
 
+				chunkStr := ""
+
 				// Fix C: Check for crash patterns in stderr output.
 				// This detects inner CLI subprocess death immediately from SDK
 				// stderr messages, bypassing the 60s control request timeout.
 				if !crashSignaled && onCrashDetected != nil {
-					chunk := string(buf[:n])
+					chunkStr = string(buf[:n])
 					for _, pattern := range stderrCrashPatterns {
-						if strings.Contains(chunk, pattern) {
+						if strings.Contains(chunkStr, pattern) {
 							crashSignaled = true
 							onCrashDetected()
 							break
 						}
+					}
+				}
+
+				// MCP-init lifecycle signals (mitto-8ul.1): tolerant regex matches
+				// so the exact phrasing/count in the agent's log line is not load-bearing.
+				if (onMCPInitProgress != nil && !mcpProgressSignaled) ||
+					(onMCPInitTimeout != nil && !mcpTimeoutSignaled) {
+					if chunkStr == "" {
+						chunkStr = string(buf[:n])
+					}
+					if !mcpProgressSignaled && onMCPInitProgress != nil && mcpInitProgressPattern.MatchString(chunkStr) {
+						mcpProgressSignaled = true
+						onMCPInitProgress()
+					}
+					if !mcpTimeoutSignaled && onMCPInitTimeout != nil && mcpInitTimeoutPattern.MatchString(chunkStr) {
+						mcpTimeoutSignaled = true
+						onMCPInitTimeout()
 					}
 				}
 			}
@@ -868,8 +913,11 @@ func (bs *BackgroundSession) doStartACPProcess(acpCommand, acpCwd, workingDir, a
 
 		signalStartupActivity = StartACPStartupWatchdog(watchdogCtx, bs.logger, acpCommand, "", -1)
 
-		// Monitor stderr in background (with crash detection for Fix C and watchdog wake-up)
-		StartStderrMonitor(stderr, StderrCollector, onCrashDetected, signalStartupActivity)
+		// Monitor stderr in background (with crash detection for Fix C and watchdog wake-up).
+		// BackgroundSession's own ACP process (non-shared path) does not multiplex sessions,
+		// so the MCP-init callbacks are unused here — the extended-budget policy lives on
+		// SharedACPProcess where MCP servers are actually attached (mitto-8ul.1).
+		StartStderrMonitor(stderr, StderrCollector, onCrashDetected, signalStartupActivity, nil, nil)
 
 		// Store wait function for cleanup
 		// We'll call it in Close() method
@@ -920,8 +968,9 @@ func (bs *BackgroundSession) doStartACPProcess(acpCommand, acpCwd, workingDir, a
 		signalStartupActivity = StartACPStartupWatchdog(watchdogCtx, bs.logger, acpCommand, "", pid)
 
 		// Monitor stderr in background (same as runner case, with crash detection for Fix C
-		// and watchdog wake-up on first stderr activity)
-		StartStderrMonitor(stderrPipe, StderrCollector, onCrashDetected, signalStartupActivity)
+		// and watchdog wake-up on first stderr activity). MCP-init callbacks are unused on
+		// the non-shared BackgroundSession path (mitto-8ul.1).
+		StartStderrMonitor(stderrPipe, StderrCollector, onCrashDetected, signalStartupActivity, nil, nil)
 
 		bs.acpCmd = cmd
 

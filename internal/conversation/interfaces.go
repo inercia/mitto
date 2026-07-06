@@ -3,6 +3,7 @@ package conversation
 import (
 	"context"
 	"log/slog"
+	"time"
 
 	acp "github.com/coder/acp-go-sdk"
 	"github.com/inercia/mitto/internal/config"
@@ -42,6 +43,12 @@ type SharedProcess interface {
 	Capabilities() *acp.AgentCapabilities
 	// Restart attempts to restart the underlying OS process.
 	Restart() error
+	// RecommendedLoadTimeout returns the outer wall-clock budget the caller should
+	// apply to a session/load RPC. It widens for cold sessions with MCP servers so
+	// the outer timeout does not truncate the process's own extended MCP-init
+	// budget (mitto-8ul.1). Returns 0 to indicate the caller should use its own
+	// default.
+	RecommendedLoadTimeout(hasMCPServers bool) time.Duration
 }
 
 // PromptResolver resolves a prompt name to its full text for a given working directory.

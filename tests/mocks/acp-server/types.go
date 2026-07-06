@@ -73,8 +73,9 @@ type SessionListCapabilities struct {
 }
 
 type NewSessionParams struct {
-	Cwd              string `json:"cwd"`
-	WorkingDirectory string `json:"workingDirectory"` // Legacy field
+	Cwd              string      `json:"cwd"`
+	WorkingDirectory string      `json:"workingDirectory"` // Legacy field
+	McpServers       []McpServer `json:"mcpServers,omitempty"`
 }
 
 type NewSessionResult struct {

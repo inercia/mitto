@@ -136,6 +136,19 @@ type SessionConfig struct {
 	// This breaks the GC deadlock where a wedged shared ACP process pins a session
 	// as stuck forever. Values: "" (default, 10m), "disabled", "5m", "10m", "15m", "30m".
 	AgentInactivityTimeout string `json:"agent_inactivity_timeout,omitempty"`
+	// McpInitTimeout controls the extended per-attempt/total budget granted to the
+	// very first session/new (and session/load) on a cold shared ACP process when
+	// the request carries MCP servers. Rationale (mitto-8ul.1): agents (Auggie in
+	// particular) block servicing session/new until MCP init completes, and their
+	// internal MCP wait is ~225s — well past Mitto's normal 25s per-attempt budget.
+	// A cold cold-start with MCP servers therefore fails as "context deadline
+	// exceeded" even though the agent would eventually respond. This timeout
+	// widens the budget for that first cold call only; once the process has
+	// completed one successful session/new (or observed all-servers-ready) the
+	// normal 25s budget is used again. Values: "" (default, 240s covering
+	// Auggie's 225s + margin), "disabled" (use the normal budget), "120s"/"2m",
+	// "240s"/"4m", "300s"/"5m".
+	McpInitTimeout string `json:"mcp_init_timeout,omitempty"`
 }
 
 // ArchiveRetentionNever is the value for keeping archived conversations forever.
@@ -254,6 +267,38 @@ func (c *SessionConfig) ParseAgentInactivityTimeout() (time.Duration, bool) {
 	default:
 		// Unknown value — use default
 		return 10 * time.Minute, true
+	}
+}
+
+// ValidMcpInitTimeouts contains all valid MCP-init timeout values (mitto-8ul.1).
+var ValidMcpInitTimeouts = []string{"", "disabled", "120s", "2m", "240s", "4m", "300s", "5m"}
+
+// GetMcpInitTimeout returns the MCP-init timeout string, or "" if not set.
+func (c *SessionConfig) GetMcpInitTimeout() string {
+	if c == nil {
+		return ""
+	}
+	return c.McpInitTimeout
+}
+
+// ParseMcpInitTimeout converts the MCP-init timeout string to a time.Duration.
+// Returns (duration, true) when the extended cold-start budget is enabled and
+// (0, false) when disabled. Empty string returns the default of 240s, which
+// covers Auggie's internal 225s MCP-init wait + margin (mitto-8ul.1). Unknown
+// values fall back to the default rather than silently disabling the feature.
+func (c *SessionConfig) ParseMcpInitTimeout() (time.Duration, bool) {
+	switch c.GetMcpInitTimeout() {
+	case "disabled":
+		return 0, false
+	case "", "240s", "4m":
+		return 240 * time.Second, true
+	case "120s", "2m":
+		return 120 * time.Second, true
+	case "300s", "5m":
+		return 300 * time.Second, true
+	default:
+		// Unknown value — use default
+		return 240 * time.Second, true
 	}
 }
 

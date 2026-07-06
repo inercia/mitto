@@ -1518,6 +1518,7 @@ type rawConfig struct {
 		LoopSuspendTimeout       string `yaml:"loop_suspend_timeout"`
 		MemoryRecycleThreshold   string `yaml:"memory_recycle_threshold"`
 		AgentInactivityTimeout   string `yaml:"agent_inactivity_timeout"`
+		McpInitTimeout           string `yaml:"mcp_init_timeout"`
 	} `yaml:"session"`
 	// MCP is the MCP server configuration
 	MCP *struct {
@@ -1881,6 +1882,7 @@ func Parse(data []byte) (*Config, error) {
 			LoopSuspendTimeout:       raw.Session.LoopSuspendTimeout,
 			MemoryRecycleThreshold:   raw.Session.MemoryRecycleThreshold,
 			AgentInactivityTimeout:   raw.Session.AgentInactivityTimeout,
+			McpInitTimeout:           raw.Session.McpInitTimeout,
 		}
 	}
 

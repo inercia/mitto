@@ -197,6 +197,22 @@ type SharedACPProcessConfig struct {
 	CanRestartGlobal func() bool
 	// RecordRestart is an optional callback to record a restart in the global tracker.
 	RecordRestart func()
+	// MCPInitTimeout is the extended per-attempt/total budget granted to the very
+	// first session/new (and session/load) on a cold shared ACP process when the
+	// request carries MCP servers. Zero disables the extended budget and the normal
+	// sessionCreateAttemptTimeout/sessionCreateTotalBudget are used. See
+	// SessionConfig.ParseMcpInitTimeout for the rationale (mitto-8ul.1).
+	MCPInitTimeout time.Duration
+	// OnMCPInitProgress is called at most once, from the stderr-monitor goroutine, the
+	// first time the agent reports it is blocked waiting for MCP servers to initialize.
+	// Used by the web layer to emit an "MCP initializing" UI notification (mitto-8ul.1).
+	// Optional.
+	OnMCPInitProgress func()
+	// OnMCPInitTimeout is called at most once when the agent reports its internal
+	// MCP-init wait has timed out. The pending session/new should then be aborted with
+	// an actionable error rather than waiting for the RPC deadline to elapse
+	// (mitto-8ul.1). Optional.
+	OnMCPInitTimeout func()
 }
 
 // Compile-time assertion: *SharedACPProcess must satisfy the conversation.SharedProcess interface.
@@ -273,6 +289,21 @@ type SharedACPProcess struct {
 	// onRestart is called after a successful Restart(), allowing the process manager
 	// to invalidate caches (e.g., auxiliary sessions) that reference old session IDs.
 	onRestart func()
+
+	// MCP-init lifecycle tracking (mitto-8ul.1). Set from the stderr-monitor goroutine.
+	// mcpInitInProgress flips to 1 when the agent first reports it is waiting for MCP
+	// servers to initialize on this process. Once a session/new (or session/load) call
+	// succeeds we treat the cold-start window as closed and revert to normal budgets.
+	// mcpInitTimedOut flips to 1 when the agent reports its internal MCP-init wait
+	// budget elapsed; the currently-pending NewSession call watches this via
+	// mcpInitTimeoutCh so it can abort promptly with an actionable error rather than
+	// waiting for the RPC deadline. mcpInitTimeoutCh is (re-)created per session/new
+	// attempt so a signal from a previous attempt does not fire spuriously.
+	mcpInitInProgress atomic.Bool
+	mcpInitDone       atomic.Bool
+	mcpInitTimedOut   atomic.Bool
+	mcpInitMu         sync.Mutex
+	mcpInitTimeoutCh  chan struct{}
 
 	// Logger
 	logger *slog.Logger
@@ -438,6 +469,42 @@ func (p *SharedACPProcess) doStartProcess() (string, error) {
 		})
 	}
 
+	// MCP-init lifecycle callbacks (mitto-8ul.1). Both are fired at most once per
+	// process lifetime by the stderr monitor. The pending NewSession call watches
+	// mcpInitTimeoutCh so it can abort promptly on a hard timeout signal instead of
+	// waiting for the RPC deadline.
+	onMCPInitProgress := func() {
+		p.mcpInitInProgress.Store(true)
+		if p.logger != nil {
+			p.logger.Info("ACP agent reports MCP servers initializing",
+				"acp_server", p.config.ACPServer)
+		}
+		if cb := p.config.OnMCPInitProgress; cb != nil {
+			cb()
+		}
+	}
+	onMCPInitTimeout := func() {
+		p.mcpInitTimedOut.Store(true)
+		if p.logger != nil {
+			p.logger.Warn("ACP agent reports MCP initialization timed out",
+				"acp_server", p.config.ACPServer)
+		}
+		p.mcpInitMu.Lock()
+		ch := p.mcpInitTimeoutCh
+		p.mcpInitMu.Unlock()
+		if ch != nil {
+			select {
+			case <-ch:
+				// already closed
+			default:
+				close(ch)
+			}
+		}
+		if cb := p.config.OnMCPInitTimeout; cb != nil {
+			cb()
+		}
+	}
+
 	// Startup watchdog: warn/error if no stderr activity and no Initialize completion
 	// within the configured windows. Cancelled when doStartProcess returns.
 	watchdogCtx, watchdogCancel := context.WithCancel(p.ctx)
@@ -483,7 +550,7 @@ func (p *SharedACPProcess) doStartProcess() (string, error) {
 
 		signalStartupActivity = conversation.StartACPStartupWatchdog(watchdogCtx, p.logger, acpCommand, p.config.ACPServer, -1)
 
-		conversation.StartStderrMonitor(stderr, stderrCollector, onCrashDetected, signalStartupActivity)
+		conversation.StartStderrMonitor(stderr, stderrCollector, onCrashDetected, signalStartupActivity, onMCPInitProgress, onMCPInitTimeout)
 	} else {
 		cmd = exec.CommandContext(p.ctx, args[0], args[1:]...)
 		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
@@ -544,7 +611,7 @@ func (p *SharedACPProcess) doStartProcess() (string, error) {
 		}
 		signalStartupActivity = conversation.StartACPStartupWatchdog(watchdogCtx, p.logger, acpCommand, p.config.ACPServer, pid)
 
-		conversation.StartStderrMonitor(stderrPipe, stderrCollector, onCrashDetected, signalStartupActivity)
+		conversation.StartStderrMonitor(stderrPipe, stderrCollector, onCrashDetected, signalStartupActivity, onMCPInitProgress, onMCPInitTimeout)
 
 		wait = func() error {
 			return cmd.Wait()
@@ -832,17 +899,78 @@ func (p *SharedACPProcess) recordRPCSuccess() {
 // attempts bail if the shared process has become saturated mid-flight, or if the
 // caller's remaining deadline can no longer fund a full per-attempt budget.
 // Returns a non-empty reason when the attempt should fail fast.
-func shouldFailFastCreateAttempt(attempt int, saturated bool, hasDeadline bool, remaining time.Duration) (bail bool, reason string) {
+func shouldFailFastCreateAttempt(attempt int, saturated bool, hasDeadline bool, remaining time.Duration, perAttemptBudget time.Duration) (bail bool, reason string) {
 	if attempt <= 1 {
 		return false, ""
 	}
 	if saturated {
 		return true, "shared ACP process became saturated mid-flight"
 	}
-	if hasDeadline && remaining < sessionCreateAttemptTimeout {
+	if hasDeadline && remaining < perAttemptBudget {
 		return true, "insufficient remaining budget for another attempt"
 	}
 	return false, ""
+}
+
+// coldMCPBudget decides whether the extended MCP-init budget applies to the
+// current NewSession/LoadSession attempt (mitto-8ul.1) and returns the
+// per-attempt and total budget to use.
+//
+// The extended budget applies only when ALL of the following hold:
+//   - MCPInitTimeout > 0 (the operator has not disabled it).
+//   - The process has not yet observed a successful cold-start session RPC
+//     (mcpInitDone is false). Subsequent sessions on the same warm process use
+//     the normal budget because MCP servers are already initialized inside the
+//     agent.
+//
+// The extended budget does NOT gate on the request carrying MCP servers, because
+// Mitto attaches MCP through a globally-registered server (not per session/new
+// call), and even agents whose only MCP is configured globally block session/new
+// on the same handshake. Applying the widened budget to every cold session/new is
+// safe: it is capped by the actual RPC deadline anyway and reverts to the normal
+// 25 s once one call succeeds. When the extended budget applies both the per-
+// attempt and total budgets are widened to MCPInitTimeout, sized above the
+// agent's own MCP-init wait (e.g. Auggie's 225 s) plus margin.
+//
+// hasMCPServers is retained on the signature for observability / future gating.
+func (p *SharedACPProcess) coldMCPBudget(hasMCPServers bool) (perAttempt time.Duration, total time.Duration, extended bool) {
+	_ = hasMCPServers // reserved for future per-request gating
+	if p.config.MCPInitTimeout <= 0 {
+		return sessionCreateAttemptTimeout, sessionCreateTotalBudget, false
+	}
+	if p.mcpInitDone.Load() {
+		return sessionCreateAttemptTimeout, sessionCreateTotalBudget, false
+	}
+	return p.config.MCPInitTimeout, p.config.MCPInitTimeout, true
+}
+
+// RecommendedLoadTimeout implements conversation.SharedProcess (mitto-8ul.1).
+// For a cold process (mcpInitDone=false), returns MCPInitTimeout so the caller's
+// outer timeout does not truncate the process's own extended budget. Returns 0
+// once the process has served one successful cold-start session RPC. The
+// hasMCPServers hint is retained for future per-request gating; it is not
+// currently load-bearing because Mitto attaches MCP globally.
+func (p *SharedACPProcess) RecommendedLoadTimeout(hasMCPServers bool) time.Duration {
+	_ = hasMCPServers
+	if p.config.MCPInitTimeout <= 0 {
+		return 0
+	}
+	if p.mcpInitDone.Load() {
+		return 0
+	}
+	return p.config.MCPInitTimeout
+}
+
+// beginMCPInitWindow prepares per-RPC MCP-init lifecycle tracking (mitto-8ul.1):
+// it (re-)creates a fresh timeout channel so a signal from a previous RPC does not
+// fire on this one, and clears the mcpInitTimedOut flag if it was set. Returns the
+// channel the caller should select on.
+func (p *SharedACPProcess) beginMCPInitWindow() <-chan struct{} {
+	p.mcpInitMu.Lock()
+	defer p.mcpInitMu.Unlock()
+	p.mcpInitTimedOut.Store(false)
+	p.mcpInitTimeoutCh = make(chan struct{})
+	return p.mcpInitTimeoutCh
 }
 
 // isSaturated reports whether the shared process is currently flagged saturated.
@@ -967,6 +1095,12 @@ func (p *SharedACPProcess) NewSession(ctx context.Context, cwd string, mcpServer
 		cwd = "."
 	}
 
+	// Extended MCP-init budget (mitto-8ul.1): a cold session/new on a process with
+	// MCP servers may block up to the agent's own MCP-init wait (Auggie: ~225s).
+	// coldMCPBudget widens both budgets to MCPInitTimeout for that first call only;
+	// subsequent sessions on the same warm process use the normal budgets.
+	perAttemptBudget, totalBudget, extendedBudget := p.coldMCPBudget(len(mcpServers) > 0)
+
 	// Bounded total wall-clock budget (mitto-8d7): a deadline-less (or very generous)
 	// caller context would otherwise let the retry loop burn the full
 	// effectiveMaxAttempts × sessionCreateAttemptTimeout (~75s) on a hung transport —
@@ -974,19 +1108,25 @@ func (p *SharedACPProcess) NewSession(ctx context.Context, cwd string, mcpServer
 	// fail-fast in shouldFailFastCreateAttempt never tripped. Derive a budgetCtx that
 	// caps the whole sequence; we only ever tighten the caller's deadline, never extend
 	// it. This makes the existing remaining-budget bail active for every caller and
-	// guarantees NewSession returns within sessionCreateTotalBudget.
+	// guarantees NewSession returns within totalBudget.
 	budgetCtx := ctx
-	if dl, ok := ctx.Deadline(); !ok || time.Until(dl) > sessionCreateTotalBudget {
+	if dl, ok := ctx.Deadline(); !ok || time.Until(dl) > totalBudget {
 		var budgetCancel context.CancelFunc
-		budgetCtx, budgetCancel = context.WithTimeout(ctx, sessionCreateTotalBudget)
+		budgetCtx, budgetCancel = context.WithTimeout(ctx, totalBudget)
 		defer budgetCancel()
 	}
 
+	// Arm the MCP-init timeout watch so a hard timeout signal from the agent's
+	// stderr can abort the pending RPC promptly (mitto-8ul.1). Only meaningful for
+	// requests that carry MCP servers on a not-yet-warm process; harmless otherwise.
+	mcpTimeoutCh := p.beginMCPInitWindow()
+
 	// Bounded retry-with-jitter loop (mitto-4no7): mirrors SetSessionModel's policy so
 	// transient deadline failures on session/new are retried up to effectiveMaxAttempts.
-	// Each attempt gets a fresh sessionCreateAttemptTimeout budget, preserving the
-	// documented 25s per-attempt create deadline (mitto-63o8) without regression.
-	// In probe mode effectiveMaxAttempts=1, limiting the probe to a single attempt.
+	// Each attempt gets a fresh per-attempt budget, preserving the documented 25s
+	// per-attempt create deadline (mitto-63o8) — or the extended MCP-init budget for
+	// cold sessions with MCP servers (mitto-8ul.1) — without regression. In probe mode
+	// effectiveMaxAttempts=1, limiting the probe to a single attempt.
 	var lastErr error
 	for attempt := 1; attempt <= effectiveMaxAttempts; attempt++ {
 		// Honour caller cancellation / total budget before each attempt.
@@ -1006,7 +1146,7 @@ func (p *SharedACPProcess) NewSession(ctx context.Context, cwd string, mcpServer
 				hasDeadline = true
 				remaining = time.Until(dl)
 			}
-			if bail, reason := shouldFailFastCreateAttempt(attempt, p.isSaturated(), hasDeadline, remaining); bail {
+			if bail, reason := shouldFailFastCreateAttempt(attempt, p.isSaturated(), hasDeadline, remaining, perAttemptBudget); bail {
 				return nil, fmt.Errorf("session/new: %s (after %d attempt(s)); failing fast: %w", reason, attempt-1, context.DeadlineExceeded)
 			}
 		}
@@ -1025,23 +1165,48 @@ func (p *SharedACPProcess) NewSession(ctx context.Context, cwd string, mcpServer
 
 		// Fresh per-attempt sub-context so each attempt gets a full create budget,
 		// capped by the remaining total budget (budgetCtx).
-		attemptCtx, attemptCancel := context.WithTimeout(budgetCtx, sessionCreateAttemptTimeout)
+		attemptCtx, attemptCancel := context.WithTimeout(budgetCtx, perAttemptBudget)
 
 		ctxRemainingMs := int64(-1)
 		if dl, ok := budgetCtx.Deadline(); ok {
 			ctxRemainingMs = time.Until(dl).Milliseconds()
 		}
 
+		// Wire MCP-init hard-timeout abort (mitto-8ul.1): if the agent's stderr says
+		// its own MCP-init wait timed out we cancel the attempt context so the RPC
+		// returns immediately with context.Canceled rather than draining the full
+		// per-attempt budget on a request the agent has already given up on.
+		rpcCtx, rpcCancel := attemptCtx, attemptCancel
+		if extendedBudget {
+			var stopWatch context.CancelFunc
+			rpcCtx, stopWatch = context.WithCancel(attemptCtx)
+			done := make(chan struct{})
+			go func() {
+				select {
+				case <-mcpTimeoutCh:
+					stopWatch()
+				case <-done:
+				}
+			}()
+			// Ensure we release the watcher when the attempt completes.
+			rpcCancel = func() {
+				close(done)
+				stopWatch()
+				attemptCancel()
+			}
+		}
+
 		rpcStart := time.Now()
-		sessResp, err := conn.NewSession(attemptCtx, acp.NewSessionRequest{
+		sessResp, err := conn.NewSession(rpcCtx, acp.NewSessionRequest{
 			Cwd:        cwd,
 			McpServers: mcpServers,
 		})
 		rpcDuration := time.Since(rpcStart)
-		attemptCancel()
+		rpcCancel()
 
 		if err == nil {
 			p.recordRPCSuccess()
+			p.mcpInitDone.Store(true)
 			handle := &conversation.SessionHandle{
 				SessionID: string(sessResp.SessionId),
 				Process:   p,
@@ -1060,13 +1225,34 @@ func (p *SharedACPProcess) NewSession(ctx context.Context, cwd string, mcpServer
 					"acp_session_id", handle.SessionID,
 					"attempt", attempt,
 					"total_ms", time.Since(totalStart).Milliseconds(),
-					"rpc_new_session_ms", rpcDuration.Milliseconds())
+					"rpc_new_session_ms", rpcDuration.Milliseconds(),
+					"extended_mcp_budget", extendedBudget,
+					"per_attempt_budget_ms", perAttemptBudget.Milliseconds())
 			}
 			return handle, nil
 		}
 
+		// MCP-init hard timeout (mitto-8ul.1): the agent already reported it gave up
+		// on its own MCP-init wait. Surface an actionable, deadline-classified error
+		// so classification promotes it to a permanent (non-retryable) failure and the
+		// UI can render a meaningful message instead of "context deadline exceeded".
+		if p.mcpInitTimedOut.Load() {
+			p.recordRPCTimeout()
+			lastErr = fmt.Errorf("session/new: mcp initialization timed out (agent reported MCP-init wait exhausted): %w", context.DeadlineExceeded)
+			if p.logger != nil {
+				p.logger.Warn("SharedACPProcess.NewSession aborted by MCP-init-timeout signal",
+					"attempt", attempt, "rpc_ms", rpcDuration.Milliseconds())
+			}
+			return nil, lastErr
+		}
+
 		lastErr = err
-		if errors.Is(err, context.DeadlineExceeded) {
+		// A cold-start-with-MCP window uses the extended budget deliberately, so a
+		// deadline exceeded on that call is expected agent-side latency, not evidence
+		// the shared process is hung — do NOT count it toward saturation. Once the
+		// window is closed (first successful RPC → mcpInitDone) the normal accounting
+		// applies again (mitto-8ul.1).
+		if errors.Is(err, context.DeadlineExceeded) && !extendedBudget {
 			p.recordRPCTimeout()
 		}
 		if p.logger != nil {
@@ -1077,6 +1263,7 @@ func (p *SharedACPProcess) NewSession(ctx context.Context, cwd string, mcpServer
 				"rpc_ms", rpcDuration.Milliseconds(),
 				"ctx_remaining_ms", ctxRemainingMs,
 				"rpc_code", rpcCode,
+				"extended_mcp_budget", extendedBudget,
 				"error", err)
 		}
 
@@ -1147,8 +1334,37 @@ func (p *SharedACPProcess) LoadSession(ctx context.Context, acpSessionID, cwd st
 	}
 	ctxAlreadyExpired := ctx.Err() != nil
 
+	// Extended MCP-init budget (mitto-8ul.1): symmetric with NewSession. session/load
+	// on a cold process with MCP servers can also block on the agent's MCP-init wait,
+	// so widen the deadline for that first call only. Wraps ctx with a sub-context so
+	// the caller's own deadline is still honoured (we never extend it).
+	rpcCtx := ctx
+	perAttemptBudget, _, extendedBudget := p.coldMCPBudget(len(mcpServers) > 0)
+	var mcpTimeoutCh <-chan struct{}
+	if extendedBudget {
+		mcpTimeoutCh = p.beginMCPInitWindow()
+		if dl, ok := ctx.Deadline(); !ok || time.Until(dl) > perAttemptBudget {
+			var loadCancel context.CancelFunc
+			rpcCtx, loadCancel = context.WithTimeout(ctx, perAttemptBudget)
+			defer loadCancel()
+		}
+		// Wire hard-timeout abort so the agent's stderr signal cancels the RPC.
+		var abortCancel context.CancelFunc
+		rpcCtx, abortCancel = context.WithCancel(rpcCtx)
+		defer abortCancel()
+		done := make(chan struct{})
+		defer close(done)
+		go func() {
+			select {
+			case <-mcpTimeoutCh:
+				abortCancel()
+			case <-done:
+			}
+		}()
+	}
+
 	rpcStart := time.Now()
-	loadResp, err := conn.LoadSession(ctx, acp.LoadSessionRequest{
+	loadResp, err := conn.LoadSession(rpcCtx, acp.LoadSessionRequest{
 		SessionId:  acp.SessionId(acpSessionID),
 		Cwd:        cwd,
 		McpServers: mcpServers,
@@ -1156,7 +1372,15 @@ func (p *SharedACPProcess) LoadSession(ctx context.Context, acpSessionID, cwd st
 	rpcDuration := time.Since(rpcStart)
 
 	if err != nil {
-		if errors.Is(err, context.DeadlineExceeded) {
+		if p.mcpInitTimedOut.Load() {
+			p.recordRPCTimeout()
+			if p.logger != nil {
+				p.logger.Warn("SharedACPProcess.LoadSession aborted by MCP-init-timeout signal",
+					"acp_session_id", acpSessionID, "rpc_ms", rpcDuration.Milliseconds())
+			}
+			return nil, fmt.Errorf("session/load: mcp initialization timed out (agent reported MCP-init wait exhausted): %w", context.DeadlineExceeded)
+		}
+		if errors.Is(err, context.DeadlineExceeded) && !extendedBudget {
 			p.recordRPCTimeout()
 		}
 		if p.logger != nil {
@@ -1165,12 +1389,14 @@ func (p *SharedACPProcess) LoadSession(ctx context.Context, acpSessionID, cwd st
 				"rpc_ms", rpcDuration.Milliseconds(),
 				"ctx_remaining_ms", ctxRemainingMs,
 				"ctx_already_expired", ctxAlreadyExpired,
+				"extended_mcp_budget", extendedBudget,
 				"error", err)
 		}
 		return nil, fmt.Errorf("failed to load session: %w", err)
 	}
 
 	p.recordRPCSuccess()
+	p.mcpInitDone.Store(true)
 	handle := &conversation.SessionHandle{
 		SessionID:    acpSessionID,
 		Capabilities: *caps,
@@ -1183,7 +1409,8 @@ func (p *SharedACPProcess) LoadSession(ctx context.Context, acpSessionID, cwd st
 		p.logger.Info("Loaded ACP session on shared process",
 			"acp_session_id", acpSessionID,
 			"total_ms", time.Since(totalStart).Milliseconds(),
-			"rpc_load_session_ms", rpcDuration.Milliseconds())
+			"rpc_load_session_ms", rpcDuration.Milliseconds(),
+			"extended_mcp_budget", extendedBudget)
 	}
 
 	return handle, nil

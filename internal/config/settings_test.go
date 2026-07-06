@@ -530,6 +530,35 @@ func TestParseAgentInactivityTimeout(t *testing.T) {
 	}
 }
 
+// TestParseMcpInitTimeout guards the SessionConfig accessor added for mitto-8ul.1.
+// Empty → default 240s (enabled); "disabled" → 0/false; explicit durations parse.
+// Unknown values fall back to the enabled default rather than silently disabling.
+func TestParseMcpInitTimeout(t *testing.T) {
+	tests := []struct {
+		value       string
+		wantDur     time.Duration
+		wantEnabled bool
+	}{
+		{"", 240 * time.Second, true},
+		{"disabled", 0, false},
+		{"120s", 120 * time.Second, true},
+		{"2m", 120 * time.Second, true},
+		{"240s", 240 * time.Second, true},
+		{"4m", 240 * time.Second, true},
+		{"300s", 300 * time.Second, true},
+		{"5m", 300 * time.Second, true},
+		{"bogus", 240 * time.Second, true},
+	}
+	for _, tc := range tests {
+		c := &SessionConfig{McpInitTimeout: tc.value}
+		gotDur, gotEnabled := c.ParseMcpInitTimeout()
+		if gotDur != tc.wantDur || gotEnabled != tc.wantEnabled {
+			t.Errorf("ParseMcpInitTimeout(%q) = (%s, %t), want (%s, %t)",
+				tc.value, gotDur, gotEnabled, tc.wantDur, tc.wantEnabled)
+		}
+	}
+}
+
 func TestContextFlushCommand_RoundTrip(t *testing.T) {
 	original := &Config{
 		ACPServers: []ACPServer{

@@ -224,6 +224,22 @@ const (
 	//         "rss_bytes": uint64, "threshold_bytes": uint64, "session_count": int }
 	WSMsgTypeMemoryRecycled = "memory_recycled"
 
+	// WSMsgTypeMCPInitializing notifies that the agent for a workspace is currently
+	// blocked waiting for one or more MCP servers to initialize (mitto-8ul.1). This is
+	// an informational "session/new may take longer than usual" hint the UI can use to
+	// display a subdued toast — NOT an error. Broadcast at most once per shared process
+	// (per workspace) and only fired when the agent explicitly reports MCP-init progress
+	// via its stderr log. Data: { "workspace_uuid": string, "workspace_name": string,
+	// "working_dir": string }.
+	WSMsgTypeMCPInitializing = "mcp_initializing"
+
+	// WSMsgTypeMCPInitTimedOut notifies that the agent's internal MCP-init wait budget
+	// elapsed before all MCP servers finished handshake (mitto-8ul.1). The pending
+	// session/new (or session/load) call has been aborted with an actionable error. The
+	// UI can use this to display a persistent notification pointing at MCP configuration.
+	// Data: { "workspace_uuid": string, "workspace_name": string, "working_dir": string }.
+	WSMsgTypeMCPInitTimedOut = "mcp_init_timed_out"
+
 	// WSMsgTypeQueueUpdated notifies that the message queue state changed.
 	// Sent when messages are added, removed, or the queue is cleared.
 	// Data: { "queue_length": int, "action": string, "message_id": string }

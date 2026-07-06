@@ -1259,7 +1259,7 @@ func TestShouldFailFastCreateAttempt(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			bail, reason := shouldFailFastCreateAttempt(tc.attempt, tc.saturated, tc.hasDeadline, tc.remaining)
+			bail, reason := shouldFailFastCreateAttempt(tc.attempt, tc.saturated, tc.hasDeadline, tc.remaining, sessionCreateAttemptTimeout)
 			if bail != tc.wantBail {
 				t.Errorf("bail=%v, want %v (reason=%q)", bail, tc.wantBail, reason)
 			}
@@ -1673,7 +1673,7 @@ func TestSessionCreateTotalBudgetBound(t *testing.T) {
 	// After two full per-attempt timeouts, the remaining budget must be insufficient to
 	// fund another attempt, so shouldFailFastCreateAttempt bails before attempt 3.
 	remainingAfterTwo := sessionCreateTotalBudget - 2*sessionCreateAttemptTimeout
-	bail, reason := shouldFailFastCreateAttempt(3, false, true, remainingAfterTwo)
+	bail, reason := shouldFailFastCreateAttempt(3, false, true, remainingAfterTwo, sessionCreateAttemptTimeout)
 	if !bail {
 		t.Errorf("attempt=3 with remaining=%v must bail (budget exhausted); got bail=false", remainingAfterTwo)
 	}

@@ -22,7 +22,7 @@ func TestStartStderrMonitor_HeapOOM_TriggersCrashDetection(t *testing.T) {
 		}
 	}
 
-	StartStderrMonitor(pr, collector, onCrashDetected, nil)
+	StartStderrMonitor(pr, collector, onCrashDetected, nil, nil, nil)
 
 	chunk := "FATAL ERROR: Reached heap limit Allocation failed - JavaScript heap out of memory"
 	go func() {
@@ -35,6 +35,83 @@ func TestStartStderrMonitor_HeapOOM_TriggersCrashDetection(t *testing.T) {
 		// expected
 	case <-time.After(2 * time.Second):
 		t.Fatal("expected onCrashDetected to be invoked for heap-OOM stderr output")
+	}
+}
+
+// TestStartStderrMonitor_MCPInitProgress_TriggersCallback is a regression test for
+// mitto-8ul.1: when the agent writes a "Waiting for N MCP server(s) to initialize"
+// line the stderr monitor must invoke onMCPInitProgress at most once so the UI can
+// display an "initializing" hint and the process can widen its RPC budget.
+func TestStartStderrMonitor_MCPInitProgress_TriggersCallback(t *testing.T) {
+	pr, pw := io.Pipe()
+	collector := NewStderrCollector(8192, nil)
+
+	progressCalls := 0
+	onProgress := func() { progressCalls++ }
+	onTimeout := func() { t.Fatal("MCP timeout should not fire on progress lines") }
+
+	StartStderrMonitor(pr, collector, nil, nil, onProgress, onTimeout)
+
+	go func() {
+		// Two lines to prove the callback still fires only once.
+		_, _ = pw.Write([]byte("Waiting for 3 MCP servers to initialize\n"))
+		_, _ = pw.Write([]byte("Waiting for 3 MCP servers to initialize (still)\n"))
+		_ = pw.Close()
+	}()
+
+	// Give the goroutine a moment to consume the stream.
+	time.Sleep(200 * time.Millisecond)
+	if progressCalls != 1 {
+		t.Fatalf("expected onMCPInitProgress to be called exactly once, got %d", progressCalls)
+	}
+}
+
+// TestStartStderrMonitor_MCPInitTimeout_TriggersCallback is a regression test for
+// mitto-8ul.1: the "MCP initialization timed out" signal must invoke onMCPInitTimeout
+// (at most once) so the pending session/new can be aborted promptly.
+func TestStartStderrMonitor_MCPInitTimeout_TriggersCallback(t *testing.T) {
+	pr, pw := io.Pipe()
+	collector := NewStderrCollector(8192, nil)
+
+	timeoutCalls := 0
+	onTimeout := func() { timeoutCalls++ }
+
+	StartStderrMonitor(pr, collector, nil, nil, nil, onTimeout)
+
+	go func() {
+		_, _ = pw.Write([]byte("MCP initialization timed out after 225s\n"))
+		_, _ = pw.Write([]byte("MCP initialization timed out again\n"))
+		_ = pw.Close()
+	}()
+
+	time.Sleep(200 * time.Millisecond)
+	if timeoutCalls != 1 {
+		t.Fatalf("expected onMCPInitTimeout to be called exactly once, got %d", timeoutCalls)
+	}
+}
+
+// TestStartStderrMonitor_MCPPatternsDoNotTriggerCrash guards against future regex
+// churn accidentally overlapping MCP-init phrasing with crash detection patterns.
+func TestStartStderrMonitor_MCPPatternsDoNotTriggerCrash(t *testing.T) {
+	pr, pw := io.Pipe()
+	collector := NewStderrCollector(8192, nil)
+
+	crashDetected := make(chan struct{}, 1)
+	onCrashDetected := func() { crashDetected <- struct{}{} }
+
+	StartStderrMonitor(pr, collector, onCrashDetected, nil, nil, nil)
+
+	go func() {
+		_, _ = pw.Write([]byte("Waiting for 3 MCP servers to initialize\n"))
+		_, _ = pw.Write([]byte("MCP initialization timed out after 225s\n"))
+		_ = pw.Close()
+	}()
+
+	select {
+	case <-crashDetected:
+		t.Fatal("MCP-init lines must not trigger crash detection")
+	case <-time.After(300 * time.Millisecond):
+		// expected: no crash signal
 	}
 }
 
@@ -52,7 +129,7 @@ func TestStartStderrMonitor_NormalOutput_DoesNotTriggerCrashDetection(t *testing
 		}
 	}
 
-	StartStderrMonitor(pr, collector, onCrashDetected, nil)
+	StartStderrMonitor(pr, collector, onCrashDetected, nil, nil, nil)
 
 	go func() {
 		_, _ = pw.Write([]byte("some normal debug output\n"))

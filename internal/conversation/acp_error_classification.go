@@ -196,6 +196,15 @@ var permanentErrorPatterns = []errorPattern{
 		userMessage:  "The ACP process pipe was permanently closed",
 		userGuidance: "Archive and re-open this conversation to get a fresh ACP connection.",
 	},
+	{
+		// The agent's internal MCP-init wait budget elapsed before every configured MCP
+		// server finished handshake, so the pending session/new was aborted by the
+		// stderr-signal watch (mitto-8ul.1). Retrying with the same MCP configuration
+		// will produce the same failure until the underlying MCP server is fixed.
+		substrings:   []string{"mcp initialization timed out"},
+		userMessage:  "MCP server initialization timed out",
+		userGuidance: "Check that every configured MCP server is reachable and starts within the agent's MCP-init budget. Fix the failing MCP server or remove it from the workspace configuration.",
+	},
 }
 
 // ClassifyACPError examines an error message and stderr output to determine

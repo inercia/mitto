@@ -5001,6 +5001,7 @@ func (p *alwaysFailSharedProcess) Capabilities() *acp.AgentCapabilities { return
 func (p *alwaysFailSharedProcess) Restart() error {
 	return fmt.Errorf("alwaysFailSharedProcess: cannot restart — no real process")
 }
+func (p *alwaysFailSharedProcess) RecommendedLoadTimeout(_ bool) time.Duration { return 0 }
 
 // TestACPInitializeAttemptTimeoutBound is a math test for mitto-13ck.2.
 //

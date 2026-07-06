@@ -2989,6 +2989,30 @@ export function useWebSocket({ onActiveSessionRemovedRef } = {}) {
         }
         break;
 
+      case "mcp_initializing":
+        // Server notifies that the agent for a workspace is blocked waiting for
+        // MCP servers to initialize on this cold start (mitto-8ul.1). Informational
+        // only — the pending session/new is still expected to succeed.
+        console.log("MCP initializing:", msg.data);
+        if (msg.data) {
+          window.dispatchEvent(
+            new CustomEvent("mitto:mcp_initializing", { detail: msg.data }),
+          );
+        }
+        break;
+
+      case "mcp_init_timed_out":
+        // Server notifies that the agent's MCP-init wait budget elapsed before all
+        // MCP servers finished handshake, so the pending session/new was aborted
+        // with an actionable error (mitto-8ul.1).
+        console.warn("MCP init timed out:", msg.data);
+        if (msg.data) {
+          window.dispatchEvent(
+            new CustomEvent("mitto:mcp_init_timed_out", { detail: msg.data }),
+          );
+        }
+        break;
+
       case "acp_start_failed":
         // Server notifies that the ACP server failed to start
         console.error("ACP start failed:", msg.data);

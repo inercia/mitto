@@ -67,6 +67,60 @@ export function useBackgroundNotifications({
     };
   }, [showToast]);
 
+  // Listen for MCP-init progress events (mitto-8ul.1): agent is blocked waiting
+  // for MCP servers to initialize on cold start. Informational, low-priority toast.
+  useEffect(() => {
+    const handleMCPInitializing = (event) => {
+      const data = event.detail;
+      if (!data) return;
+      const name =
+        data.workspace_name ||
+        (data.working_dir ? data.working_dir.split("/").pop() : "") ||
+        "a workspace";
+      showToast({
+        style: "info",
+        title: `Starting MCP servers: ${name}`,
+        message:
+          "The agent is initializing its MCP servers. First response may take up to a few minutes.",
+        duration: 8000,
+      });
+    };
+    window.addEventListener("mitto:mcp_initializing", handleMCPInitializing);
+    return () => {
+      window.removeEventListener(
+        "mitto:mcp_initializing",
+        handleMCPInitializing,
+      );
+    };
+  }, [showToast]);
+
+  // Listen for MCP-init timeout events (mitto-8ul.1): the agent gave up on its
+  // MCP-init wait and aborted the pending session/new. Persistent error toast.
+  useEffect(() => {
+    const handleMCPInitTimedOut = (event) => {
+      const data = event.detail;
+      if (!data) return;
+      const name =
+        data.workspace_name ||
+        (data.working_dir ? data.working_dir.split("/").pop() : "") ||
+        "a workspace";
+      showToast({
+        style: "error",
+        title: `MCP initialization timed out: ${name}`,
+        message:
+          "The agent could not start all configured MCP servers. Check that every MCP server is reachable or remove it from the workspace configuration.",
+        duration: 30000,
+      });
+    };
+    window.addEventListener("mitto:mcp_init_timed_out", handleMCPInitTimedOut);
+    return () => {
+      window.removeEventListener(
+        "mitto:mcp_init_timed_out",
+        handleMCPInitTimedOut,
+      );
+    };
+  }, [showToast]);
+
   // Listen for ACP start failed events
   useEffect(() => {
     const handleAcpStartFailed = (event) => {

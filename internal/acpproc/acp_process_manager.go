@@ -108,6 +108,21 @@ type ACPProcessManager struct {
 	globalRestartMu     sync.Mutex
 	globalRestartTimes  []time.Time
 	globalCooldownUntil time.Time
+
+	// MCPInitTimeout is the extended per-attempt/total budget passed to every new
+	// SharedACPProcess so cold session/new calls with MCP servers do not hit the
+	// standard 25s deadline before the agent finishes its own MCP-init wait
+	// (mitto-8ul.1). Zero disables the feature. Guarded by mu.
+	mcpInitTimeoutMu sync.RWMutex
+	mcpInitTimeout   time.Duration
+
+	// onMCPInitializing, if set, is called (at most once per process) from the
+	// stderr-monitor goroutine when the agent reports it is blocked waiting for
+	// MCP servers to initialize. onMCPInitTimeout is called (at most once per
+	// process) when the agent reports its internal MCP-init wait budget elapsed.
+	// Used by the web layer to broadcast UI notifications (mitto-8ul.1).
+	onMCPInitializing func(workspaceUUID string)
+	onMCPInitTimedOut func(workspaceUUID string)
 }
 
 // MarkGCSuspended records that a session was intentionally suspended by the GC's
@@ -249,6 +264,41 @@ func (m *ACPProcessManager) SetOnMemoryRecycled(fn func(workspaceUUID string, rs
 	m.onMemoryRecycled = fn
 }
 
+// UpdateMCPInitTimeout sets the extended MCP-init budget passed to every new
+// SharedACPProcess. Zero disables the feature. Existing processes are not
+// updated (the process-level MCPInitTimeout is captured at NewSharedACPProcess
+// time). mitto-8ul.1.
+func (m *ACPProcessManager) UpdateMCPInitTimeout(d time.Duration) {
+	m.mcpInitTimeoutMu.Lock()
+	defer m.mcpInitTimeoutMu.Unlock()
+	m.mcpInitTimeout = d
+}
+
+// getMCPInitTimeout returns the current extended MCP-init budget.
+func (m *ACPProcessManager) getMCPInitTimeout() time.Duration {
+	m.mcpInitTimeoutMu.RLock()
+	defer m.mcpInitTimeoutMu.RUnlock()
+	return m.mcpInitTimeout
+}
+
+// SetOnMCPInitializing registers the callback invoked (at most once per process)
+// when the agent reports it is blocked waiting for MCP servers to initialize.
+// Used by the web layer to broadcast an "MCP initializing" UI notification
+// (mitto-8ul.1).
+func (m *ACPProcessManager) SetOnMCPInitializing(fn func(workspaceUUID string)) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.onMCPInitializing = fn
+}
+
+// SetOnMCPInitTimedOut registers the callback invoked (at most once per process)
+// when the agent reports its MCP-init wait has timed out (mitto-8ul.1).
+func (m *ACPProcessManager) SetOnMCPInitTimedOut(fn func(workspaceUUID string)) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.onMCPInitTimedOut = fn
+}
+
 // Ensure ACPProcessManager implements auxiliary.ProcessProvider
 var _ auxiliary.ProcessProvider = (*ACPProcessManager)(nil)
 
@@ -343,18 +393,37 @@ func (m *ACPProcessManager) GetOrCreateProcess(workspace *config.WorkspaceSettin
 		processLogger = processLogger.With("workspace_uuid", workspace.UUID)
 	}
 
+	// Snapshot MCP-init callbacks and timeout while holding m.mu (we release it
+	// below). The callbacks close over workspace.UUID so a stderr signal from the
+	// specific process can be routed to the correct workspace (mitto-8ul.1).
+	mcpInitTimeout := m.getMCPInitTimeout()
+	initCb := m.onMCPInitializing
+	timeoutCb := m.onMCPInitTimedOut
+	wsUUID := workspace.UUID
+	var onMCPInitProgress func()
+	if initCb != nil {
+		onMCPInitProgress = func() { initCb(wsUUID) }
+	}
+	var onMCPInitTimeout func()
+	if timeoutCb != nil {
+		onMCPInitTimeout = func() { timeoutCb(wsUUID) }
+	}
+
 	createStart := time.Now()
 	p, err := NewSharedACPProcess(m.ctx, SharedACPProcessConfig{
-		WorkspaceUUID:    workspace.UUID,
-		ACPCommand:       acpCommand,
-		ACPCwd:           acpCwd,
-		ACPServer:        workspace.ACPServer,
-		WorkingDir:       workspace.WorkingDir,
-		Env:              acpEnv,
-		Runner:           r,
-		Logger:           processLogger,
-		CanRestartGlobal: m.CanRestartGlobally,
-		RecordRestart:    m.RecordGlobalRestart,
+		WorkspaceUUID:     workspace.UUID,
+		ACPCommand:        acpCommand,
+		ACPCwd:            acpCwd,
+		ACPServer:         workspace.ACPServer,
+		WorkingDir:        workspace.WorkingDir,
+		Env:               acpEnv,
+		Runner:            r,
+		Logger:            processLogger,
+		CanRestartGlobal:  m.CanRestartGlobally,
+		RecordRestart:     m.RecordGlobalRestart,
+		MCPInitTimeout:    mcpInitTimeout,
+		OnMCPInitProgress: onMCPInitProgress,
+		OnMCPInitTimeout:  onMCPInitTimeout,
 	})
 	createDuration := time.Since(createStart)
 

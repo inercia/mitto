@@ -370,6 +370,18 @@ func NewServer(config Config) (*Server, error) {
 		}
 	}
 
+	// Apply the MCP-init extended budget from settings (mitto-8ul.1). Cold session/new
+	// calls with MCP servers use this widened deadline instead of the normal 25s, so
+	// agents like Auggie that block session/new until MCP init completes (up to ~225s)
+	// no longer fail with "context deadline exceeded" on first use.
+	if config.MittoConfig != nil && config.MittoConfig.Session != nil {
+		if d, enabled := config.MittoConfig.Session.ParseMcpInitTimeout(); enabled {
+			acpProcessMgr.UpdateMCPInitTimeout(d)
+		} else {
+			acpProcessMgr.UpdateMCPInitTimeout(0)
+		}
+	}
+
 	// Start ACP process garbage collector to clean up idle sessions and processes.
 	// The GC periodically checks for sessions with no observers, no active prompts,
 	// and no pending work, and stops shared ACP processes that have no active sessions.
@@ -691,6 +703,29 @@ func NewServer(config Config) (*Server, error) {
 			workingDir = ws.WorkingDir
 		}
 		s.BroadcastMemoryRecycled(workspaceUUID, workspaceName, workingDir, rssBytes, threshold, sessionCount)
+	})
+
+	// MCP-init lifecycle notifications (mitto-8ul.1): fired at most once per shared
+	// process. "initializing" is informational; "timed out" indicates the agent gave
+	// up on its own MCP-init wait budget and the pending session/new was aborted.
+	// Resolve a friendly workspace name here (the manager only knows the UUID).
+	acpProcessMgr.SetOnMCPInitializing(func(workspaceUUID string) {
+		workspaceName := ""
+		workingDir := ""
+		if ws := sessionMgr.GetWorkspaceByUUID(workspaceUUID); ws != nil {
+			workspaceName = ws.Name
+			workingDir = ws.WorkingDir
+		}
+		s.BroadcastMCPInitializing(workspaceUUID, workspaceName, workingDir)
+	})
+	acpProcessMgr.SetOnMCPInitTimedOut(func(workspaceUUID string) {
+		workspaceName := ""
+		workingDir := ""
+		if ws := sessionMgr.GetWorkspaceByUUID(workspaceUUID); ws != nil {
+			workspaceName = ws.Name
+			workingDir = ws.WorkingDir
+		}
+		s.BroadcastMCPInitTimedOut(workspaceUUID, workspaceName, workingDir)
 	})
 
 	// Initialize MCP server.
@@ -1625,6 +1660,39 @@ func (s *Server) BroadcastMemoryRecycled(workspaceUUID, workspaceName, workingDi
 	}
 }
 
+// BroadcastMCPInitializing notifies all connected clients that the agent for a
+// workspace is currently blocked waiting for one or more MCP servers to initialize
+// (mitto-8ul.1). Informational — the pending session/new is still expected to
+// succeed once MCP init completes. Fired at most once per shared process lifetime.
+func (s *Server) BroadcastMCPInitializing(workspaceUUID, workspaceName, workingDir string) {
+	s.eventsManager.Broadcast(WSMsgTypeMCPInitializing, map[string]interface{}{
+		"workspace_uuid": workspaceUUID,
+		"workspace_name": workspaceName,
+		"working_dir":    workingDir,
+	})
+	if s.logger != nil {
+		s.logger.Info("Broadcast MCP initializing",
+			"workspace_uuid", workspaceUUID,
+			"clients", s.eventsManager.ClientCount())
+	}
+}
+
+// BroadcastMCPInitTimedOut notifies all connected clients that the agent's MCP-init
+// wait elapsed before every MCP server finished handshake (mitto-8ul.1). The pending
+// session/new has been aborted with an actionable error.
+func (s *Server) BroadcastMCPInitTimedOut(workspaceUUID, workspaceName, workingDir string) {
+	s.eventsManager.Broadcast(WSMsgTypeMCPInitTimedOut, map[string]interface{}{
+		"workspace_uuid": workspaceUUID,
+		"workspace_name": workspaceName,
+		"working_dir":    workingDir,
+	})
+	if s.logger != nil {
+		s.logger.Warn("Broadcast MCP init timed out",
+			"workspace_uuid", workspaceUUID,
+			"clients", s.eventsManager.ClientCount())
+	}
+}
+
 // BroadcastBeadsCleanupProgress notifies all connected clients about the
 // progress of a background bulk closed-issue cleanup.
 func (s *Server) BroadcastBeadsCleanupProgress(workingDir string, deleted, total int, done bool, errMsg string) {
@@ -1846,6 +1914,19 @@ func (s *Server) OnPromptsChanged(event configPkg.PromptsChangeEvent) {
 		"changed_dirs": event.ChangedDirs,
 		"timestamp":    event.Timestamp.Format("2006-01-02T15:04:05Z07:00"),
 	})
+
+	// Surface any prompt files that failed to load so the user is not left
+	// with a silently-missing prompt (mitto-mqe). Error-style toasts persist
+	// until manually dismissed.
+	if s.config.PromptsCache != nil {
+		for _, pe := range s.config.PromptsCache.LoadErrors() {
+			s.eventsManager.Broadcast(WSMsgTypeNotification, map[string]interface{}{
+				"title":   "Prompt failed to load",
+				"message": fmt.Sprintf("%s: %v", pe.Path, pe.Err),
+				"style":   "error",
+			})
+		}
+	}
 
 	if s.logger != nil {
 		s.logger.Debug("Broadcasted prompts_changed event",
