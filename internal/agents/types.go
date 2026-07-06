@@ -98,6 +98,27 @@ type AgentDefaults struct {
 	ContextFlushCommand string `yaml:"contextFlushCommand,omitempty" json:"contextFlushCommand,omitempty"`
 }
 
+// StderrPatterns holds per-agent regex patterns applied by the stderr monitor.
+// Patterns are pure YAML strings (compiled once by internal/conversation). Kept
+// as a schema-only struct here to preserve the layering constraint that
+// internal/acpproc must not import internal/agents (mitto-k6h).
+//
+// Action classes:
+//   - Crash: match → treat as inner-CLI crash, close the process-done channel
+//     immediately (bypasses the SDK 60s control-request timeout).
+//   - Ignore: match → suppress the agent's debug-level stderr log for that
+//     write. Useful to silence known-benign noise (e.g., agent-specific
+//     lifecycle chatter) without contaminating crash detection.
+//   - Degraded: match → intended to feed the shared-process saturation signal
+//     as a "degraded but not crashed" input. Plumbed end-to-end in this
+//     increment but NOT yet consumed (mitto-k6h defers the behavioural wiring
+//     to a follow-up).
+type StderrPatterns struct {
+	Crash    []string `yaml:"crash,omitempty" json:"crash,omitempty"`
+	Ignore   []string `yaml:"ignore,omitempty" json:"ignore,omitempty"`
+	Degraded []string `yaml:"degraded,omitempty" json:"degraded,omitempty"`
+}
+
 // AgentMetadata holds the parsed content of a metadata.yaml file.
 type AgentMetadata struct {
 	Name        string         `yaml:"name" json:"name"`
@@ -113,6 +134,10 @@ type AgentMetadata struct {
 	// agent-discovery time. When absent (nil) the ACP server is created with no
 	// pre-filled defaults, preserving existing behaviour.
 	Defaults *AgentDefaults `yaml:"defaults,omitempty" json:"defaults,omitempty"`
+	// StderrPatterns holds optional per-agent stderr regex patterns applied by
+	// the ACP process's stderr monitor (mitto-k6h). Absent (nil) means only the
+	// hardcoded baseline patterns apply.
+	StderrPatterns *StderrPatterns `yaml:"stderrPatterns,omitempty" json:"stderr_patterns,omitempty"`
 }
 
 // AgentDefinition represents a fully resolved agent definition with its

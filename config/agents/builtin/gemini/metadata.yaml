@@ -12,3 +12,13 @@ install:
   args: ["--acp"]
 mcp:
   scopes: ["user", "project"]
+# Per-agent stderr patterns (mitto-k6h). Unioned with the hardcoded baseline.
+stderrPatterns:
+  ignore:
+    - "(?i)method not found"
+    # Node deprecation notices from @google/gemini-cli.
+    - "(?i)DeprecationWarning"
+  degraded:
+    # Google API quota chatter (plumbed only, mitto-k6h).
+    - "(?i)RESOURCE_EXHAUSTED"
+    - "(?i)quota exceeded"

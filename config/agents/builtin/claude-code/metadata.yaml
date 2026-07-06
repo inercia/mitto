@@ -12,3 +12,17 @@ mcp:
   scopes: ["user", "project", "local"]
 defaults:
   contextFlushCommand: "/clear"
+# Per-agent stderr patterns (mitto-k6h). Unioned with the hardcoded baseline.
+stderrPatterns:
+  crash:
+    # Rust-layer panics from claude-code-agent-sdk that don't already match
+    # baseline substrings.
+    - "^thread '.*' panicked at"
+  ignore:
+    - "(?i)method not found"
+    # OpenTelemetry startup warnings are informational.
+    - "(?i)OTEL_"
+  degraded:
+    # Anthropic quota / rate-limit chatter (plumbed only, mitto-k6h).
+    - "(?i)rate limit"
+    - "(?i)429 Too Many Requests"

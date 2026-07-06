@@ -12,3 +12,20 @@ install:
   args: ["--workspace-root=$MITTO_WORKING_DIR", "--acp"]
 mcp:
   scopes: ["user", "project", "local"]
+# Per-agent stderr patterns (mitto-k6h). Unioned with the hardcoded baseline in
+# internal/conversation. Regexes are compiled once at process start; a bad regex
+# is skipped with a warn log (never fatal).
+stderrPatterns:
+  # Node/V8 fatal-heap messages already covered by baseline; listed here as a
+  # documented example that per-agent extension is allowed.
+  crash:
+    - "FATAL ERROR: .* Allocation failed"
+  ignore:
+    # Suppress node's MaxListenersExceededWarning noise (plugin-config-changed
+    # listeners emitted by auggie's plugin subsystem during hot init).
+    - "(?i)MaxListenersExceededWarning"
+    - "(?i)Use `node --trace-warnings"
+    - "(?i)method not found"
+  degraded:
+    # Plumbed for future use (mitto-k6h defers behavioural wiring).
+    - "(?i)rate limit"

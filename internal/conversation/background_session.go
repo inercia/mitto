@@ -204,6 +204,7 @@ type BackgroundSession struct {
 	acpCommand           string                                 // Command used to start ACP process (for restart)
 	acpCwd               string                                 // Working directory for ACP process (for restart)
 	serverEnv            map[string]string                      // Server-specific env vars from settings.json (for restart)
+	stderrPatterns       *CompiledStderrPatterns                // Per-agent stderr regex patterns (mitto-k6h); nil = baseline only
 	acpServerConstraints map[string]*config.ACPServerConstraint // Auto-selection constraints from the ACP server config
 	mittoConfig          *config.Config                         // Full Mitto config; used for model-tag resolution (config.ResolveModelTags)
 	contextFlushCommand  string                                 // Agent-native context-flush command (e.g. "/clear"); empty = disabled
@@ -433,6 +434,11 @@ type BackgroundSessionConfig struct {
 	// SharedProcess is the shared ACP process for this workspace (nil = legacy per-session process).
 	SharedProcess SharedProcess
 
+	// StderrPatterns holds per-agent compiled stderr patterns (crash / ignore /
+	// degraded classes; mitto-k6h). Nil means only the hardcoded baseline
+	// applies. Compiled once by the web layer from agent metadata.yaml.
+	StderrPatterns *CompiledStderrPatterns
+
 	// PruneConfig is the pruning configuration for the session recorder.
 	// When set, the recorder automatically prunes old events after each recording
 	// to keep the session within the configured limits (max messages, max size).
@@ -590,6 +596,7 @@ func NewBackgroundSession(cfg BackgroundSessionConfig) (*BackgroundSession, erro
 		acpCommand:                     cfg.ACPCommand,               // Store for restart
 		acpCwd:                         cfg.ACPCwd,                   // Store for restart
 		serverEnv:                      cfg.Env,                      // Store for restart
+		stderrPatterns:                 cfg.StderrPatterns,           // Per-agent stderr regex patterns (mitto-k6h)
 		globalMcpServer:                cfg.GlobalMCPServer,          // Global MCP server for session registration
 		auxiliaryManager:               cfg.AuxiliaryManager,         // Workspace-scoped auxiliary manager
 		availableACPServers:            cfg.AvailableACPServers,      // Pre-computed workspace server list
@@ -808,6 +815,7 @@ func ResumeBackgroundSession(config BackgroundSessionConfig) (*BackgroundSession
 		acpCommand:                     config.ACPCommand,               // Store for restart
 		acpCwd:                         config.ACPCwd,                   // Store for restart
 		serverEnv:                      config.Env,                      // Store for restart
+		stderrPatterns:                 config.StderrPatterns,           // Per-agent stderr regex patterns (mitto-k6h)
 		globalMcpServer:                config.GlobalMCPServer,          // Global MCP server for session registration
 		auxiliaryManager:               config.AuxiliaryManager,         // Workspace-scoped auxiliary manager
 		availableACPServers:            config.AvailableACPServers,      // Pre-computed workspace server list

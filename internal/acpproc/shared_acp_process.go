@@ -255,6 +255,12 @@ type SharedACPProcessConfig struct {
 	// an actionable error rather than waiting for the RPC deadline to elapse
 	// (mitto-8ul.1). Optional.
 	OnMCPInitTimeout func()
+	// StderrPatterns holds per-agent compiled stderr regex patterns (mitto-k6h).
+	// Nil means only the hardcoded baseline crash patterns apply. Compiled once
+	// by the caller from the agent's metadata.yaml. Kept as a pointer to
+	// CompiledStderrPatterns (defined in internal/conversation) so acpproc does
+	// NOT depend on internal/agents.
+	StderrPatterns *conversation.CompiledStderrPatterns
 }
 
 // Compile-time assertion: *SharedACPProcess must satisfy the conversation.SharedProcess interface.
@@ -505,6 +511,11 @@ func (p *SharedACPProcess) doStartProcess() (string, error) {
 	var cmd *exec.Cmd
 
 	stderrCollector := conversation.NewStderrCollector(8192, p.logger)
+	// Install per-agent ignore patterns (mitto-k6h) so matching writes are
+	// suppressed from the debug-level stderr log. Nil is a safe no-op.
+	if p.config.StderrPatterns != nil {
+		stderrCollector.SetIgnorePatterns(p.config.StderrPatterns.Ignore)
+	}
 
 	// Pre-create process death detection channel so the stderr crash detector
 	// (Fix C) can signal it immediately when crash patterns are detected.
@@ -602,7 +613,7 @@ func (p *SharedACPProcess) doStartProcess() (string, error) {
 
 		signalStartupActivity = conversation.StartACPStartupWatchdog(watchdogCtx, p.logger, acpCommand, p.config.ACPServer, -1)
 
-		conversation.StartStderrMonitor(stderr, stderrCollector, onCrashDetected, signalStartupActivity, onMCPInitProgress, onMCPInitTimeout)
+		conversation.StartStderrMonitor(stderr, stderrCollector, onCrashDetected, signalStartupActivity, onMCPInitProgress, onMCPInitTimeout, p.config.StderrPatterns)
 	} else {
 		cmd = exec.CommandContext(p.ctx, args[0], args[1:]...)
 		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
@@ -663,7 +674,7 @@ func (p *SharedACPProcess) doStartProcess() (string, error) {
 		}
 		signalStartupActivity = conversation.StartACPStartupWatchdog(watchdogCtx, p.logger, acpCommand, p.config.ACPServer, pid)
 
-		conversation.StartStderrMonitor(stderrPipe, stderrCollector, onCrashDetected, signalStartupActivity, onMCPInitProgress, onMCPInitTimeout)
+		conversation.StartStderrMonitor(stderrPipe, stderrCollector, onCrashDetected, signalStartupActivity, onMCPInitProgress, onMCPInitTimeout, p.config.StderrPatterns)
 
 		wait = func() error {
 			return cmd.Wait()

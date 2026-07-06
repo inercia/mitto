@@ -331,6 +331,10 @@ type StderrCollector struct {
 	maxSize  int
 	logger   *slog.Logger
 	isClosed bool
+	// ignorePatterns, if non-nil, causes matching writes to be suppressed from
+	// the debug-level "agent stderr" log line. Crash detection is unaffected —
+	// crash matching happens in StartStderrMonitor, not here (mitto-k6h).
+	ignorePatterns []*regexp.Regexp
 }
 
 // NewStderrCollector creates a new stderr collector with the given max buffer size.
@@ -340,6 +344,15 @@ func NewStderrCollector(maxSize int, logger *slog.Logger) *StderrCollector {
 		maxSize: maxSize,
 		logger:  logger,
 	}
+}
+
+// SetIgnorePatterns replaces the collector's debug-log suppression patterns
+// (mitto-k6h). Safe to call before the monitor goroutine is started. Passing
+// nil clears the patterns.
+func (c *StderrCollector) SetIgnorePatterns(patterns []*regexp.Regexp) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.ignorePatterns = patterns
 }
 
 // Write implements io.Writer to collect stderr output.
@@ -356,9 +369,13 @@ func (c *StderrCollector) Write(p []byte) (n int, err error) {
 	// don't support; their "Method not found" rejection written to stderr is expected
 	// and can be safely ignored. The SDK-level error log for this is already suppressed
 	// in logging.go; this suppresses the agent-side stderr counterpart.
+	//
+	// Per-agent ignore patterns (mitto-k6h) additionally suppress the debug log for
+	// any write matching one of the compiled regexes. Buffer capture is unaffected —
+	// error diagnostics still see the full tail.
 	if c.logger != nil && len(p) > 0 {
 		output := string(p)
-		if !strings.Contains(output, "$/cancel_request") {
+		if !strings.Contains(output, "$/cancel_request") && !matchAnyRegex(c.ignorePatterns, output) {
 			c.logger.Debug("agent stderr", "output", output)
 		}
 	}
@@ -393,6 +410,9 @@ func (c *StderrCollector) Close() {
 //
 // Fix C: These patterns come from the claude-code-agent-sdk Rust layer which logs
 // to stderr when the CLI subprocess dies unexpectedly.
+//
+// These are the hardcoded baseline. Per-agent metadata.yaml `stderrPatterns.crash`
+// entries are unioned with this list at process-start time (mitto-k6h).
 var stderrCrashPatterns = []string{
 	"stream ended unexpectedly",
 	"EOF received from CLI stdout",
@@ -408,6 +428,91 @@ var stderrCrashPatterns = []string{
 	// dead process to be discovered on the next RPC attempt.
 	"JavaScript heap out of memory",
 	"Reached heap limit",
+}
+
+// StderrPatternsSpec is the pure-data (schema) form of per-agent stderr patterns.
+// It intentionally mirrors internal/agents.StderrPatterns as plain string slices
+// so the conversation package can compile them without importing internal/agents
+// (internal/acpproc must not depend on internal/agents; mitto-k6h).
+type StderrPatternsSpec struct {
+	Crash    []string
+	Ignore   []string
+	Degraded []string
+}
+
+// CompiledStderrPatterns holds regex patterns compiled once from a
+// StderrPatternsSpec. All three fields are separately populated so callers can
+// wire each action class independently (mitto-k6h).
+//
+// Action-class semantics:
+//   - Crash: OR'd with the hardcoded stderrCrashPatterns baseline; a match
+//     triggers onCrashDetected (SDK-timeout bypass).
+//   - Ignore: applied by StderrCollector.Write to suppress the debug-level
+//     "agent stderr" log for matching writes. Buffer capture is unaffected.
+//   - Degraded: plumbed end-to-end for schema completeness but NOT yet consumed
+//     by the saturation signal (mitto-k6h defers the behavioural wiring to a
+//     follow-up). Kept non-nil-empty-safe so tests can assert plumbing today.
+type CompiledStderrPatterns struct {
+	Crash    []*regexp.Regexp
+	Ignore   []*regexp.Regexp
+	Degraded []*regexp.Regexp
+}
+
+// CompileStderrPatterns compiles the plain-string patterns in spec into a
+// CompiledStderrPatterns. Invalid regexes are SKIPPED (logged as warnings via
+// logger when non-nil) rather than causing a fatal error — a single malformed
+// per-agent pattern must not prevent process start. Returns nil when spec is
+// empty (no patterns of any class) so hot paths can cheaply short-circuit
+// (mitto-k6h).
+func CompileStderrPatterns(spec StderrPatternsSpec, logger *slog.Logger) *CompiledStderrPatterns {
+	if len(spec.Crash) == 0 && len(spec.Ignore) == 0 && len(spec.Degraded) == 0 {
+		return nil
+	}
+	out := &CompiledStderrPatterns{}
+	out.Crash = compileRegexList(spec.Crash, "crash", logger)
+	out.Ignore = compileRegexList(spec.Ignore, "ignore", logger)
+	out.Degraded = compileRegexList(spec.Degraded, "degraded", logger)
+	return out
+}
+
+// compileRegexList compiles each pattern; invalid ones are skipped with a warn
+// log (never fatal). Empty input returns nil.
+func compileRegexList(patterns []string, class string, logger *slog.Logger) []*regexp.Regexp {
+	if len(patterns) == 0 {
+		return nil
+	}
+	compiled := make([]*regexp.Regexp, 0, len(patterns))
+	for _, raw := range patterns {
+		if raw == "" {
+			continue
+		}
+		re, err := regexp.Compile(raw)
+		if err != nil {
+			if logger != nil {
+				logger.Warn("skipping invalid stderr pattern",
+					"class", class,
+					"pattern", raw,
+					"error", err)
+			}
+			continue
+		}
+		compiled = append(compiled, re)
+	}
+	if len(compiled) == 0 {
+		return nil
+	}
+	return compiled
+}
+
+// matchAnyRegex returns true if any regex in patterns matches s. Nil/empty
+// slice always returns false.
+func matchAnyRegex(patterns []*regexp.Regexp, s string) bool {
+	for _, re := range patterns {
+		if re != nil && re.MatchString(s) {
+			return true
+		}
+	}
+	return false
 }
 
 // mcpInitProgressPattern detects the "Waiting for N MCP server(s) to initialize"
@@ -431,6 +536,15 @@ var mcpInitTimeoutPattern = regexp.MustCompile(`(?i)mcp initialization timed out
 // is called (at most once) when the agent reports its MCP-init wait has timed out —
 // callers use this to abort the pending session/new promptly with an actionable error
 // (mitto-8ul.1). Neither MCP signal contributes to crash detection.
+//
+// perAgent, when non-nil, contributes per-agent regex patterns on top of the
+// hardcoded baseline (mitto-k6h):
+//   - Crash regexes are OR'd with stderrCrashPatterns when matching for onCrashDetected.
+//   - Ignore regexes are already applied by the collector (installed by the caller
+//     via StderrCollector.SetIgnorePatterns before this monitor is started).
+//   - Degraded regexes are scanned but their behavioural wiring is deferred; this
+//     increment intentionally does not consume them (mitto-k6h). Kept in signature
+//     so the follow-up can add the saturation-signal call without changing callers.
 func StartStderrMonitor(
 	stderr runner.ReadCloser,
 	collector *StderrCollector,
@@ -438,6 +552,7 @@ func StartStderrMonitor(
 	onFirstActivity func(),
 	onMCPInitProgress func(),
 	onMCPInitTimeout func(),
+	perAgent *CompiledStderrPatterns,
 ) {
 	go func() {
 		crashSignaled := false
@@ -460,6 +575,9 @@ func StartStderrMonitor(
 				// Fix C: Check for crash patterns in stderr output.
 				// This detects inner CLI subprocess death immediately from SDK
 				// stderr messages, bypassing the 60s control request timeout.
+				//
+				// Per-agent crash regexes (mitto-k6h) are OR'd with the baseline —
+				// either source firing counts as a crash.
 				if !crashSignaled && onCrashDetected != nil {
 					chunkStr = string(buf[:n])
 					for _, pattern := range stderrCrashPatterns {
@@ -469,7 +587,18 @@ func StartStderrMonitor(
 							break
 						}
 					}
+					if !crashSignaled && perAgent != nil && matchAnyRegex(perAgent.Crash, chunkStr) {
+						crashSignaled = true
+						onCrashDetected()
+					}
 				}
+
+				// Degraded regexes: scanned for future use (mitto-k6h). This block
+				// exists so tests can assert that a Degraded pattern is compiled and
+				// reachable end-to-end, but it INTENTIONALLY does not fire any
+				// callback in this increment. Behavioural wiring (feeding the
+				// saturation signal on the shared process) is deferred to a follow-up.
+				_ = perAgent // keep referenced so linters don't flag the deferred path
 
 				// MCP-init lifecycle signals (mitto-8ul.1): tolerant regex matches
 				// so the exact phrasing/count in the agent's log line is not load-bearing.
@@ -862,6 +991,11 @@ func (bs *BackgroundSession) doStartACPProcess(acpCommand, acpCwd, workingDir, a
 	// Create stderr collector to capture output for error reporting
 	// Keep last 8KB of stderr output
 	StderrCollector := NewStderrCollector(8192, bs.logger)
+	// Install per-agent ignore patterns (mitto-k6h) so matching writes are
+	// suppressed from the debug-level stderr log. Nil is a safe no-op.
+	if bs.stderrPatterns != nil {
+		StderrCollector.SetIgnorePatterns(bs.stderrPatterns.Ignore)
+	}
 
 	// Pre-create the process death detection channel so the stderr monitor
 	// (started below) can signal crash detection immediately.
@@ -917,7 +1051,7 @@ func (bs *BackgroundSession) doStartACPProcess(acpCommand, acpCwd, workingDir, a
 		// BackgroundSession's own ACP process (non-shared path) does not multiplex sessions,
 		// so the MCP-init callbacks are unused here — the extended-budget policy lives on
 		// SharedACPProcess where MCP servers are actually attached (mitto-8ul.1).
-		StartStderrMonitor(stderr, StderrCollector, onCrashDetected, signalStartupActivity, nil, nil)
+		StartStderrMonitor(stderr, StderrCollector, onCrashDetected, signalStartupActivity, nil, nil, bs.stderrPatterns)
 
 		// Store wait function for cleanup
 		// We'll call it in Close() method
@@ -970,7 +1104,7 @@ func (bs *BackgroundSession) doStartACPProcess(acpCommand, acpCwd, workingDir, a
 		// Monitor stderr in background (same as runner case, with crash detection for Fix C
 		// and watchdog wake-up on first stderr activity). MCP-init callbacks are unused on
 		// the non-shared BackgroundSession path (mitto-8ul.1).
-		StartStderrMonitor(stderrPipe, StderrCollector, onCrashDetected, signalStartupActivity, nil, nil)
+		StartStderrMonitor(stderrPipe, StderrCollector, onCrashDetected, signalStartupActivity, nil, nil, bs.stderrPatterns)
 
 		bs.acpCmd = cmd
 

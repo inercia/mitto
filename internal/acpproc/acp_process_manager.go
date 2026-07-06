@@ -46,6 +46,13 @@ type ACPProcessManager struct {
 	// AuxiliaryModelTag is ignored.
 	ModelProfilesByTagResolver func(tag string) []config.ModelProfile
 
+	// StderrPatternsResolver returns the compiled per-agent stderr regex patterns
+	// for a given ACP server name (mitto-k6h). The web layer wires this to resolve
+	// the ACP server → agent metadata → StderrPatterns → CompileStderrPatterns.
+	// May be nil (all processes then use only the hardcoded baseline). Nil result
+	// from the resolver is also valid (agent has no per-agent patterns).
+	StderrPatternsResolver func(acpServer string) *conversation.CompiledStderrPatterns
+
 	// Auxiliary session tracking
 	auxMu       sync.Mutex
 	auxSessions map[auxSessionKey]*auxiliarySessionState
@@ -409,6 +416,13 @@ func (m *ACPProcessManager) GetOrCreateProcess(workspace *config.WorkspaceSettin
 		onMCPInitTimeout = func() { timeoutCb(wsUUID) }
 	}
 
+	// Resolve per-agent stderr patterns for this ACP server (mitto-k6h). Nil is
+	// a safe no-op — the process falls back to the hardcoded baseline.
+	var stderrPatterns *conversation.CompiledStderrPatterns
+	if m.StderrPatternsResolver != nil {
+		stderrPatterns = m.StderrPatternsResolver(workspace.ACPServer)
+	}
+
 	createStart := time.Now()
 	p, err := NewSharedACPProcess(m.ctx, SharedACPProcessConfig{
 		WorkspaceUUID:     workspace.UUID,
@@ -424,6 +438,7 @@ func (m *ACPProcessManager) GetOrCreateProcess(workspace *config.WorkspaceSettin
 		MCPInitTimeout:    mcpInitTimeout,
 		OnMCPInitProgress: onMCPInitProgress,
 		OnMCPInitTimeout:  onMCPInitTimeout,
+		StderrPatterns:    stderrPatterns,
 	})
 	createDuration := time.Since(createStart)
 

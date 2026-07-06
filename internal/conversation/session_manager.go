@@ -164,6 +164,13 @@ type SessionManager struct {
 	// Passed to BackgroundSession via BackgroundSessionConfig on creation/resume.
 	promptParametersResolver func(name, workingDir string) []config.PromptParameter
 
+	// stderrPatternsResolver returns per-agent compiled stderr regex patterns for
+	// a given ACP server name (mitto-k6h). Passed to BackgroundSession via
+	// BackgroundSessionConfig on creation/resume so legacy per-session ACP
+	// processes see the same per-agent patterns as shared processes. Nil means
+	// only the hardcoded baseline applies.
+	stderrPatternsResolver func(acpServer string) *CompiledStderrPatterns
+
 	// onConversationIdle is invoked when a session's agent stops and the session is
 	// idle. Wired to the loop runner to drive event-driven on-completion firing.
 	onConversationIdle func(sessionID string)
@@ -701,6 +708,28 @@ func (sm *SessionManager) SetPreferredModelsResolver(resolver func(name, working
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 	sm.preferredModelsResolver = resolver
+}
+
+// SetStderrPatternsResolver sets the function used to resolve per-agent compiled
+// stderr regex patterns for a given ACP server name (mitto-k6h). The resolver is
+// passed to every new and resumed BackgroundSession via BackgroundSessionConfig.
+func (sm *SessionManager) SetStderrPatternsResolver(resolver func(acpServer string) *CompiledStderrPatterns) {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	sm.stderrPatternsResolver = resolver
+}
+
+// resolveStderrPatterns looks up compiled per-agent stderr regex patterns for
+// the given ACP server name (mitto-k6h). Returns nil if no resolver is set or
+// the resolver returned nil (baseline patterns only).
+func (sm *SessionManager) resolveStderrPatterns(acpServer string) *CompiledStderrPatterns {
+	sm.mu.RLock()
+	r := sm.stderrPatternsResolver
+	sm.mu.RUnlock()
+	if r == nil {
+		return nil
+	}
+	return r(acpServer)
 }
 
 // SetPromptParametersResolver sets the function used to resolve a prompt name to its declared parameter list.
@@ -1395,6 +1424,7 @@ func (sm *SessionManager) CreateSessionWithWorkspace(ctx context.Context, name, 
 		PromptResolver:                 sm.promptResolver,           // Named prompt resolver (resolves prompt name → text)
 		PreferredModelsResolver:        sm.preferredModelsResolver,  // Named prompt resolver (resolves prompt name → preferredModels)
 		PromptParametersResolver:       sm.promptParametersResolver, // Named prompt resolver (resolves prompt name → parameters)
+		StderrPatterns:                 sm.resolveStderrPatterns(acpServer),
 		OnTurnIdle: func(sessionID string) {
 			sm.mu.RLock()
 			cb := sm.onConversationIdle
@@ -2035,6 +2065,7 @@ func (sm *SessionManager) resumeSessionWithConstraint(sessionID, sessionName, wo
 		PromptResolver:                 sm.promptResolver,           // Named prompt resolver (resolves prompt name → text)
 		PreferredModelsResolver:        sm.preferredModelsResolver,  // Named prompt resolver (resolves prompt name → preferredModels)
 		PromptParametersResolver:       sm.promptParametersResolver, // Named prompt resolver (resolves prompt name → parameters)
+		StderrPatterns:                 sm.resolveStderrPatterns(acpServer),
 		OnTurnIdle: func(sessionID string) {
 			sm.mu.RLock()
 			cb := sm.onConversationIdle

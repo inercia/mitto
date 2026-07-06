@@ -256,6 +256,53 @@ stateDiagram-v2
    correct `BackgroundSession` → observers (WebSocket clients)
 5. **Close** — Session unregisters from `MultiplexClient`, decrements reference count
 
+### Stderr Pattern Detection (mitto-k6h)
+
+Mitto watches each ACP subprocess's stderr with `StartStderrMonitor`
+(`internal/conversation/bgsession_acp_process.go`) to detect crashes and
+lifecycle signals sub-second, bypassing the SDK's 60s control-request timeout.
+Detection is split into a **hardcoded baseline** (universal, SDK-layer strings)
+and a **per-agent** extension declared in each agent's `metadata.yaml`.
+
+**Schema** (`config/agents/builtin/<agent>/metadata.yaml`):
+
+```yaml
+stderrPatterns:
+  crash: ["FATAL ERROR: .* Allocation failed"]   # OR'd with hardcoded baseline
+  ignore: ["(?i)DeprecationWarning"]              # suppress from debug log
+  degraded: ["(?i)rate limit"]                    # plumbed, behaviour deferred
+```
+
+**Action classes**:
+
+- **`crash`** — matches trigger `onCrashDetected()` → close `processDone` →
+  immediate GC recycle. The list is **unioned** with `stderrCrashPatterns` (the
+  hardcoded baseline: `stream ended unexpectedly`, `broken pipe`,
+  `JavaScript heap out of memory`, ...). Either source firing counts.
+- **`ignore`** — matches suppress the `agent stderr` debug-level log line for
+  that write. The captured stderr buffer (used for error reporting) is
+  unaffected. Complements the existing `$/cancel_request` suppression.
+- **`degraded`** — compiled and plumbed end-to-end (`CompiledStderrPatterns.Degraded`)
+  but **not consumed** in this increment. The follow-up wires these matches
+  into the shared-process saturation signal so agent-specific "warning"
+  patterns (rate limits, quota chatter) can proactively trip Tier 5/6 recycles.
+
+**Layering** (why compile lives in `internal/conversation`, not `internal/agents`):
+
+- `internal/acpproc` MUST NOT import `internal/agents` (would create a cycle
+  through `internal/conversation`).
+- `internal/conversation` MUST NOT import `internal/agents` (same reason).
+- `internal/web` is the only layer that has both `agents.Manager` and knows
+  which ACP server maps to which agent. It compiles the metadata once and
+  injects a `*conversation.CompiledStderrPatterns` into `SharedACPProcessConfig`
+  and `BackgroundSessionConfig` via a per-server-name resolver.
+
+**Compile semantics**: `regexp.Compile` runs once at process-start. Invalid
+regexes are **skipped with a warn log** (never fatal) so a single typo in one
+agent's metadata cannot block startup. `make check-stderr-patterns`
+(`TestBuiltinAgents_StderrPatternsCompile` in `internal/agents/`) catches
+those typos at CI time instead of runtime.
+
 ## Content Blocks
 
 The ACP SDK uses a discriminated union (pointer fields) for content blocks:

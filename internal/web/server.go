@@ -610,6 +610,44 @@ func NewServer(config Config) (*Server, error) {
 			}
 			return out.Servers, nil
 		}
+
+		// Wire per-agent stderr patterns resolver (mitto-k6h). Given an ACP server
+		// name it resolves the ACP server → agent metadata → StderrPatterns and
+		// compiles them once. Results are cached per ACP server name so
+		// GetOrCreateProcess does not re-parse metadata.yaml on every call. The
+		// hardcoded stderrCrashPatterns baseline in internal/conversation still
+		// applies unconditionally — this only adds per-agent extensions.
+		stderrCache := newStderrPatternsCache()
+		compileFor := func(acpServer string) *conversation.CompiledStderrPatterns {
+			if acpServer == "" {
+				return nil
+			}
+			if cached, ok := stderrCache.get(acpServer); ok {
+				return cached
+			}
+			acpType := ""
+			if config.MittoConfig != nil {
+				acpType = config.MittoConfig.GetServerType(acpServer)
+			}
+			if acpType == "" {
+				acpType = acpServer
+			}
+			agent, gerr := agentMgr.GetAgentByACPId(acpType)
+			if gerr != nil || agent == nil || agent.Metadata.StderrPatterns == nil {
+				stderrCache.put(acpServer, nil)
+				return nil
+			}
+			spec := conversation.StderrPatternsSpec{
+				Crash:    agent.Metadata.StderrPatterns.Crash,
+				Ignore:   agent.Metadata.StderrPatterns.Ignore,
+				Degraded: agent.Metadata.StderrPatterns.Degraded,
+			}
+			compiled := conversation.CompileStderrPatterns(spec, logger)
+			stderrCache.put(acpServer, compiled)
+			return compiled
+		}
+		acpProcessMgr.StderrPatternsResolver = compileFor
+		sessionMgr.SetStderrPatternsResolver(compileFor)
 	} else {
 		logger.Warn("stdio MCP discovery disabled: cannot resolve agents dir", "error", aerr)
 	}
