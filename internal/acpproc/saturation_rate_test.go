@@ -166,3 +166,29 @@ func TestSaturationRate_SuccessDoesNotWipeWindow(t *testing.T) {
 		t.Fatalf("expected re-trip on next timeout because rolling window was not wiped; level=%d", proc.SaturationLevel())
 	}
 }
+
+// TestRecordDegradedStderr_ContributesToSaturation verifies the mitto-k6h
+// increment-2 wiring: recordDegradedStderr() calls contribute fail-side samples
+// to the same rolling window used by recordRPCTimeout / recordRPCBudgetBail, so
+// enough per-agent Degraded stderr matches can trip IsSaturated() on their own
+// — no RPC deadline required. Also proves recordDegradedStderr does NOT touch
+// the consecutive fast path (stderr degradation is not a wedged-RPC signal).
+func TestRecordDegradedStderr_ContributesToSaturation(t *testing.T) {
+	proc := newTestSharedProcess()
+
+	for i := 0; i < saturationWindowMinSamples; i++ {
+		proc.recordDegradedStderr()
+	}
+
+	if !proc.IsSaturated() {
+		t.Fatalf("expected IsSaturated()=true after %d degraded-stderr samples; level=%d", saturationWindowMinSamples, proc.SaturationLevel())
+	}
+	// Consecutive-timeout fast path must be untouched — stderr degradation is
+	// a rolling-window contributor only, matching recordRPCBudgetBail semantics.
+	proc.saturationMu.Lock()
+	consec := proc.consecutiveRPCTimeouts
+	proc.saturationMu.Unlock()
+	if consec != 0 {
+		t.Fatalf("recordDegradedStderr must not touch consecutiveRPCTimeouts; got %d", consec)
+	}
+}

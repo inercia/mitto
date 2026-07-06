@@ -449,9 +449,12 @@ type StderrPatternsSpec struct {
 //     triggers onCrashDetected (SDK-timeout bypass).
 //   - Ignore: applied by StderrCollector.Write to suppress the debug-level
 //     "agent stderr" log for matching writes. Buffer capture is unaffected.
-//   - Degraded: plumbed end-to-end for schema completeness but NOT yet consumed
-//     by the saturation signal (mitto-k6h defers the behavioural wiring to a
-//     follow-up). Kept non-nil-empty-safe so tests can assert plumbing today.
+//   - Degraded: fires onDegraded when a stderr chunk matches. onDegraded on the
+//     shared process feeds a fail-side sample into the mitto-5eq rolling-window
+//     saturation counter — frequent degraded output (alone or combined with real
+//     RPC timeouts/bails) can promote the process to saturated and let GC
+//     Tier 5/6 recycle it. NOT latched: a degraded line can recur and each
+//     matching chunk fires once (mitto-k6h).
 type CompiledStderrPatterns struct {
 	Crash    []*regexp.Regexp
 	Ignore   []*regexp.Regexp
@@ -537,14 +540,20 @@ var mcpInitTimeoutPattern = regexp.MustCompile(`(?i)mcp initialization timed out
 // callers use this to abort the pending session/new promptly with an actionable error
 // (mitto-8ul.1). Neither MCP signal contributes to crash detection.
 //
+// If onDegraded is non-nil, it is called every time a stderr chunk matches a
+// per-agent Degraded regex (mitto-k6h). Unlike onCrashDetected, onDegraded is
+// NOT latched — a degraded line can recur and each matching chunk fires once.
+// Callers on the shared process feed this into the mitto-5eq rolling-window
+// saturation counter so stderr-observed degradation contributes to Tier 5/6
+// recycle decisions alongside real RPC timeouts/bails.
+//
 // perAgent, when non-nil, contributes per-agent regex patterns on top of the
 // hardcoded baseline (mitto-k6h):
 //   - Crash regexes are OR'd with stderrCrashPatterns when matching for onCrashDetected.
 //   - Ignore regexes are already applied by the collector (installed by the caller
 //     via StderrCollector.SetIgnorePatterns before this monitor is started).
-//   - Degraded regexes are scanned but their behavioural wiring is deferred; this
-//     increment intentionally does not consume them (mitto-k6h). Kept in signature
-//     so the follow-up can add the saturation-signal call without changing callers.
+//   - Degraded regexes fire onDegraded (see above) — they feed the shared-process
+//     saturation signal, not crash detection.
 func StartStderrMonitor(
 	stderr runner.ReadCloser,
 	collector *StderrCollector,
@@ -552,6 +561,7 @@ func StartStderrMonitor(
 	onFirstActivity func(),
 	onMCPInitProgress func(),
 	onMCPInitTimeout func(),
+	onDegraded func(),
 	perAgent *CompiledStderrPatterns,
 ) {
 	go func() {
@@ -593,12 +603,18 @@ func StartStderrMonitor(
 					}
 				}
 
-				// Degraded regexes: scanned for future use (mitto-k6h). This block
-				// exists so tests can assert that a Degraded pattern is compiled and
-				// reachable end-to-end, but it INTENTIONALLY does not fire any
-				// callback in this increment. Behavioural wiring (feeding the
-				// saturation signal on the shared process) is deferred to a follow-up.
-				_ = perAgent // keep referenced so linters don't flag the deferred path
+				// Degraded regexes: fire onDegraded on each matching chunk (mitto-k6h).
+				// Unlike crash detection, there is NO one-shot latch — a degraded
+				// line can recur and each match should contribute another sample
+				// to the shared-process rolling-window saturation counter.
+				if onDegraded != nil && perAgent != nil && len(perAgent.Degraded) > 0 {
+					if chunkStr == "" {
+						chunkStr = string(buf[:n])
+					}
+					if matchAnyRegex(perAgent.Degraded, chunkStr) {
+						onDegraded()
+					}
+				}
 
 				// MCP-init lifecycle signals (mitto-8ul.1): tolerant regex matches
 				// so the exact phrasing/count in the agent's log line is not load-bearing.
@@ -1051,7 +1067,11 @@ func (bs *BackgroundSession) doStartACPProcess(acpCommand, acpCwd, workingDir, a
 		// BackgroundSession's own ACP process (non-shared path) does not multiplex sessions,
 		// so the MCP-init callbacks are unused here — the extended-budget policy lives on
 		// SharedACPProcess where MCP servers are actually attached (mitto-8ul.1).
-		StartStderrMonitor(stderr, StderrCollector, onCrashDetected, signalStartupActivity, nil, nil, bs.stderrPatterns)
+		// Per-session (non-shared) path: no saturation counter on this side,
+		// so onDegraded is nil — degraded stderr chunks are captured in the buffer
+		// but do not feed a rolling-window signal (there is no shared process to
+		// promote/recycle here).
+		StartStderrMonitor(stderr, StderrCollector, onCrashDetected, signalStartupActivity, nil, nil, nil, bs.stderrPatterns)
 
 		// Store wait function for cleanup
 		// We'll call it in Close() method
@@ -1104,7 +1124,9 @@ func (bs *BackgroundSession) doStartACPProcess(acpCommand, acpCwd, workingDir, a
 		// Monitor stderr in background (same as runner case, with crash detection for Fix C
 		// and watchdog wake-up on first stderr activity). MCP-init callbacks are unused on
 		// the non-shared BackgroundSession path (mitto-8ul.1).
-		StartStderrMonitor(stderrPipe, StderrCollector, onCrashDetected, signalStartupActivity, nil, nil, bs.stderrPatterns)
+		// See rationale at the sibling StartStderrMonitor callsite in the shared
+		// process fallback above: onDegraded is nil on the non-shared path.
+		StartStderrMonitor(stderrPipe, StderrCollector, onCrashDetected, signalStartupActivity, nil, nil, nil, bs.stderrPatterns)
 
 		bs.acpCmd = cmd
 

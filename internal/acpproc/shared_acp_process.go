@@ -532,6 +532,19 @@ func (p *SharedACPProcess) doStartProcess() (string, error) {
 		})
 	}
 
+	// onDegraded is invoked on each stderr chunk matching a per-agent Degraded
+	// regex (mitto-k6h). It feeds a fail-side sample into the mitto-5eq rolling
+	// window so stderr-observed degradation can promote the process to saturated
+	// and let GC Tier 5/6 recycle it. Unlike onCrashDetected, this is NOT latched
+	// — recurring degraded output keeps contributing samples.
+	onDegraded := func() {
+		if p.logger != nil {
+			p.logger.Warn("ACP subprocess degraded via stderr pattern (feeding saturation)",
+				"acp_server", p.config.ACPServer)
+		}
+		p.recordDegradedStderr()
+	}
+
 	// MCP-init lifecycle callbacks (mitto-8ul.1). Both are fired at most once per
 	// process lifetime by the stderr monitor. The pending NewSession call watches
 	// mcpInitTimeoutCh so it can abort promptly on a hard timeout signal instead of
@@ -613,7 +626,7 @@ func (p *SharedACPProcess) doStartProcess() (string, error) {
 
 		signalStartupActivity = conversation.StartACPStartupWatchdog(watchdogCtx, p.logger, acpCommand, p.config.ACPServer, -1)
 
-		conversation.StartStderrMonitor(stderr, stderrCollector, onCrashDetected, signalStartupActivity, onMCPInitProgress, onMCPInitTimeout, p.config.StderrPatterns)
+		conversation.StartStderrMonitor(stderr, stderrCollector, onCrashDetected, signalStartupActivity, onMCPInitProgress, onMCPInitTimeout, onDegraded, p.config.StderrPatterns)
 	} else {
 		cmd = exec.CommandContext(p.ctx, args[0], args[1:]...)
 		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
@@ -674,7 +687,7 @@ func (p *SharedACPProcess) doStartProcess() (string, error) {
 		}
 		signalStartupActivity = conversation.StartACPStartupWatchdog(watchdogCtx, p.logger, acpCommand, p.config.ACPServer, pid)
 
-		conversation.StartStderrMonitor(stderrPipe, stderrCollector, onCrashDetected, signalStartupActivity, onMCPInitProgress, onMCPInitTimeout, p.config.StderrPatterns)
+		conversation.StartStderrMonitor(stderrPipe, stderrCollector, onCrashDetected, signalStartupActivity, onMCPInitProgress, onMCPInitTimeout, onDegraded, p.config.StderrPatterns)
 
 		wait = func() error {
 			return cmd.Wait()
@@ -1053,6 +1066,21 @@ func (p *SharedACPProcess) recordRPCBudgetBail() {
 	defer p.saturationMu.Unlock()
 	now := time.Now()
 	p.saturationCurrentBucketLocked(now).bails++
+	p.evaluateSaturationRateTriggerLocked(now)
+}
+
+// recordDegradedStderr records a per-agent "degraded" stderr pattern match
+// (mitto-k6h) as a fail-side sample in the mitto-5eq rolling window. A degraded
+// stderr line is real degradation evidence but is NOT an RPC deadline, so it does
+// NOT touch the consecutive-timeout fast path (reserved for the fully-wedged case).
+// It feeds the SAME rolling-window rate trigger as recordRPCBudgetBail, so frequent
+// degraded output — alone or combined with real RPC timeouts/bails — can promote the
+// process to saturated and let GC Tier 5/6 recycle it.
+func (p *SharedACPProcess) recordDegradedStderr() {
+	p.saturationMu.Lock()
+	defer p.saturationMu.Unlock()
+	now := time.Now()
+	p.saturationCurrentBucketLocked(now).timeouts++
 	p.evaluateSaturationRateTriggerLocked(now)
 }
 

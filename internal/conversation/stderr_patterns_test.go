@@ -91,7 +91,7 @@ func TestStartStderrMonitor_PerAgentCrashPatternTriggersCallback(t *testing.T) {
 		t.Fatal("expected non-nil compiled patterns")
 	}
 
-	StartStderrMonitor(pr, collector, onCrashDetected, nil, nil, nil, perAgent)
+	StartStderrMonitor(pr, collector, onCrashDetected, nil, nil, nil, nil, perAgent)
 
 	go func() {
 		_, _ = pw.Write([]byte("Per-Agent-Only Fatal encountered\n"))
@@ -126,7 +126,7 @@ func TestStartStderrMonitor_BaselineStillFiresWithPerAgent(t *testing.T) {
 		Crash: []string{`per-agent-only-never-matches-baseline-input`},
 	}, nil)
 
-	StartStderrMonitor(pr, collector, onCrashDetected, nil, nil, nil, perAgent)
+	StartStderrMonitor(pr, collector, onCrashDetected, nil, nil, nil, nil, perAgent)
 
 	go func() {
 		_, _ = pw.Write([]byte("error: broken pipe on write\n"))
@@ -173,22 +173,38 @@ func TestStderrCollector_IgnorePatternsSuppressDebugLog(t *testing.T) {
 	}
 }
 
-// TestStartStderrMonitor_DegradedPatternDoesNotFireInIncrement documents the
-// deferred behaviour: per-agent Degraded patterns are compiled and plumbed but
-// intentionally not consumed in this increment (mitto-k6h). Reaching this test
-// after the follow-up increment lands is a signal to update it.
-func TestStartStderrMonitor_DegradedPatternDoesNotFireInIncrement(t *testing.T) {
+// TestStartStderrMonitor_DegradedPatternFiresOnDegradedCallback verifies the
+// mitto-k6h increment-2 wiring: a per-agent Degraded regex fires onDegraded
+// (feeding the shared-process saturation signal) and does NOT trigger the
+// crash callback. Degraded is a saturation contributor, not a crash source.
+func TestStartStderrMonitor_DegradedPatternFiresOnDegradedCallback(t *testing.T) {
 	pr, pw := io.Pipe()
 	collector := NewStderrCollector(8192, nil)
 
 	crashDetected := make(chan struct{}, 1)
-	onCrashDetected := func() { crashDetected <- struct{}{} }
+	onCrashDetected := func() {
+		select {
+		case crashDetected <- struct{}{}:
+		default:
+		}
+	}
+
+	degradedDetected := make(chan struct{}, 1)
+	onDegraded := func() {
+		select {
+		case degradedDetected <- struct{}{}:
+		default:
+		}
+	}
 
 	perAgent := CompileStderrPatterns(StderrPatternsSpec{
 		Degraded: []string{`(?i)rate limit`},
 	}, nil)
+	if perAgent == nil {
+		t.Fatal("expected non-nil compiled patterns")
+	}
 
-	StartStderrMonitor(pr, collector, onCrashDetected, nil, nil, nil, perAgent)
+	StartStderrMonitor(pr, collector, onCrashDetected, nil, nil, nil, onDegraded, perAgent)
 
 	go func() {
 		_, _ = pw.Write([]byte("hit rate limit, backing off\n"))
@@ -196,9 +212,17 @@ func TestStartStderrMonitor_DegradedPatternDoesNotFireInIncrement(t *testing.T) 
 	}()
 
 	select {
+	case <-degradedDetected:
+		// expected
+	case <-time.After(2 * time.Second):
+		t.Fatal("expected onDegraded to be invoked for per-agent Degraded pattern")
+	}
+
+	// Crash must NOT fire for a Degraded-only match.
+	select {
 	case <-crashDetected:
-		t.Fatal("Degraded patterns must not trigger crash detection in this increment")
-	case <-time.After(300 * time.Millisecond):
-		// expected: no fire, patterns plumbed but deferred
+		t.Fatal("Degraded patterns must not trigger crash detection")
+	case <-time.After(100 * time.Millisecond):
+		// expected: crash callback stays quiet
 	}
 }

@@ -22,7 +22,7 @@ func TestStartStderrMonitor_HeapOOM_TriggersCrashDetection(t *testing.T) {
 		}
 	}
 
-	StartStderrMonitor(pr, collector, onCrashDetected, nil, nil, nil, nil)
+	StartStderrMonitor(pr, collector, onCrashDetected, nil, nil, nil, nil, nil)
 
 	chunk := "FATAL ERROR: Reached heap limit Allocation failed - JavaScript heap out of memory"
 	go func() {
@@ -50,7 +50,7 @@ func TestStartStderrMonitor_MCPInitProgress_TriggersCallback(t *testing.T) {
 	onProgress := func() { progressCalls++ }
 	onTimeout := func() { t.Fatal("MCP timeout should not fire on progress lines") }
 
-	StartStderrMonitor(pr, collector, nil, nil, onProgress, onTimeout, nil)
+	StartStderrMonitor(pr, collector, nil, nil, onProgress, onTimeout, nil, nil)
 
 	go func() {
 		// Two lines to prove the callback still fires only once.
@@ -76,7 +76,7 @@ func TestStartStderrMonitor_MCPInitTimeout_TriggersCallback(t *testing.T) {
 	timeoutCalls := 0
 	onTimeout := func() { timeoutCalls++ }
 
-	StartStderrMonitor(pr, collector, nil, nil, nil, onTimeout, nil)
+	StartStderrMonitor(pr, collector, nil, nil, nil, onTimeout, nil, nil)
 
 	go func() {
 		_, _ = pw.Write([]byte("MCP initialization timed out after 225s\n"))
@@ -99,7 +99,7 @@ func TestStartStderrMonitor_MCPPatternsDoNotTriggerCrash(t *testing.T) {
 	crashDetected := make(chan struct{}, 1)
 	onCrashDetected := func() { crashDetected <- struct{}{} }
 
-	StartStderrMonitor(pr, collector, onCrashDetected, nil, nil, nil, nil)
+	StartStderrMonitor(pr, collector, onCrashDetected, nil, nil, nil, nil, nil)
 
 	go func() {
 		_, _ = pw.Write([]byte("Waiting for 3 MCP servers to initialize\n"))
@@ -129,7 +129,7 @@ func TestStartStderrMonitor_NormalOutput_DoesNotTriggerCrashDetection(t *testing
 		}
 	}
 
-	StartStderrMonitor(pr, collector, onCrashDetected, nil, nil, nil, nil)
+	StartStderrMonitor(pr, collector, onCrashDetected, nil, nil, nil, nil, nil)
 
 	go func() {
 		_, _ = pw.Write([]byte("some normal debug output\n"))
