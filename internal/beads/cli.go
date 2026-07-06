@@ -51,10 +51,30 @@ func (r execRunner) Run(ctx context.Context, dir string, args ...string) ([]byte
 		} else if errors.As(err, &exitErr) {
 			msg = "bd exited with non-zero status"
 		}
-		return nil, stderr.String(), errors.New(msg)
+		return nil, diagnosticOutput(stderr.String(), stdout.String()), errors.New(msg)
 	}
 
 	return stdout.Bytes(), "", nil
+}
+
+// maxDiagnosticLen bounds captured bd output logged on failure so a large
+// stdout cannot flood the logs.
+const maxDiagnosticLen = 2000
+
+// diagnosticOutput returns the best available diagnostic text for a failed bd
+// invocation: stderr when bd wrote to it, otherwise stdout (bd sometimes emits
+// its error there, or exits non-zero with no stderr during dolt warm-up). The
+// result is trimmed and rune-safe length-bounded.
+func diagnosticOutput(stderr, stdout string) string {
+	diag := strings.TrimSpace(stderr)
+	if diag == "" {
+		diag = strings.TrimSpace(stdout)
+	}
+	runes := []rune(diag)
+	if len(runes) > maxDiagnosticLen {
+		diag = string(runes[:maxDiagnosticLen]) + "… (truncated)"
+	}
+	return diag
 }
 
 // envWithActor returns a copy of the current process environment with any

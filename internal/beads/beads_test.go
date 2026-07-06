@@ -776,6 +776,54 @@ func TestEnvWithActor_OverridesAndDedupes(t *testing.T) {
 	}
 }
 
+func TestDiagnosticOutput(t *testing.T) {
+	longInput := strings.Repeat("x", maxDiagnosticLen+500)
+	wantTruncatedLen := maxDiagnosticLen + len([]rune("… (truncated)"))
+
+	tests := []struct {
+		name   string
+		stderr string
+		stdout string
+		want   string
+	}{
+		{
+			name:   "stderr non-empty is returned as-is, trimmed",
+			stderr: "  boom\n",
+			stdout: "ignored",
+			want:   "boom",
+		},
+		{
+			name:   "stderr empty falls back to stdout",
+			stderr: "",
+			stdout: "  warming up\n",
+			want:   "warming up",
+		},
+		{
+			name:   "both empty",
+			stderr: "",
+			stdout: "",
+			want:   "",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := diagnosticOutput(tt.stderr, tt.stdout); got != tt.want {
+				t.Errorf("diagnosticOutput(%q, %q) = %q, want %q", tt.stderr, tt.stdout, got, tt.want)
+			}
+		})
+	}
+
+	t.Run("over-length input is truncated", func(t *testing.T) {
+		got := diagnosticOutput(longInput, "")
+		if !strings.HasSuffix(got, "… (truncated)") {
+			t.Fatalf("diagnosticOutput() = %q, want suffix %q", got, "… (truncated)")
+		}
+		if gotLen := len([]rune(got)); gotLen != wantTruncatedLen {
+			t.Errorf("len([]rune(diagnosticOutput())) = %d, want %d", gotLen, wantTruncatedLen)
+		}
+	})
+}
+
 func TestNewClient_DefaultsWebUIActor(t *testing.T) {
 	c, ok := NewClient().(*cliClient)
 	if !ok {
