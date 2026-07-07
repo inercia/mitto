@@ -26,6 +26,10 @@ Single global MCP server at `http://127.0.0.1:5757/mcp`. Two tool classes:
 - **Global tools** (no session): `mitto_conversation_list`, `mitto_get_config`, `mitto_get_runtime_info`
 - **Session-scoped tools** (require `self_id`): UI prompts, conversation control, history, prompt management (`mitto_prompt_list/get/update`), loop control (`mitto_conversation_set_loop`, `mitto_conversation_run_loop_now`)
 
+## Cold-Start Inbound `/mcp` Starvation (fixed: mitto-54k)
+
+Was confirmed across multiple cold starts: an agent's (e.g. Auggie) *inbound* HTTP `initialize`/`tools/list` to Mitto's own `/mcp` endpoint (`127.0.0.1:5757/mcp`, same process serving the UI) could be starved during the session resume storm (many sessions resuming at once on native-app cold start). Symptom: agent logs `⏳ mitto (timed out)` for 170–560s while all *external* MCP servers (github/jira/slack/etc.) succeed — only `mitto` shares the saturated process. The cold-start gate (`mitto-8tb`) only serializes Mitto's *outbound* `session/new`/`session/load`; it does not throttle or prioritize this inbound `/mcp` handshake. Fixed by two independent changes: **mitto-54k.1** bounds the interactive resume storm at the source (a per-`Server` semaphore caps concurrent interactive `ResumeSession` calls, configurable via `startup_resume_concurrency`; `ensure_resumed`/foreground bypasses it — `internal/web/resume_semaphore.go`); **mitto-54k.2** is the independent durable safety net — an audit confirmed Mitto's own inbound `initialize`/`tools/list` are already served lock-free by the go-sdk's static tool table (no `s.mu`/`s.sessionsMu`, no blocking helper on that path), backed by a regression test (`internal/mcpserver/server_fastpath_test.go`) asserting bounded latency under concurrent load.
+
 ## Adding New Tools
 
 Handler signature (3-arg form — SDK unmarshals input automatically):
