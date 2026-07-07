@@ -4632,6 +4632,15 @@ export function useWebSocket({ onActiveSessionRemovedRef } = {}) {
           }),
         );
         break;
+
+      case "prewarm_pin_alert":
+        console.warn("Prewarm pin alert:", msg.data);
+        if (msg.data) {
+          window.dispatchEvent(
+            new CustomEvent("mitto:prewarm_pin_alert", { detail: msg.data }),
+          );
+        }
+        break;
     }
   }, []);
 

@@ -121,6 +121,41 @@ export function useBackgroundNotifications({
     };
   }, [showToast]);
 
+  // Listen for prewarm pin alert events (mitto-mw0): the adaptive pre-warming
+  // controller pinned a workspace due to slow/broken MCP init, OR force-expired
+  // a stuck pin after its max-pin-duration cap elapsed. Warning toast.
+  useEffect(() => {
+    const handlePrewarmPinAlert = (event) => {
+      const data = event.detail;
+      if (!data) return;
+      const name =
+        data.workspace_name ||
+        (data.working_dir ? data.working_dir.split("/").pop() : "") ||
+        "a workspace";
+      const reasonSuffix = data.reason ? ` ${data.reason}` : "";
+      if (data.expired) {
+        showToast({
+          style: "warning",
+          title: `MCP pin released: ${name}`,
+          message: `The warm pin was released after the max-pin-duration cap because the MCP servers stayed slow or unavailable — check the workspace's MCP configuration.${reasonSuffix}`,
+        });
+      } else {
+        showToast({
+          style: "warning",
+          title: `Slow MCP workspace pinned: ${name}`,
+          message: `This workspace's MCP servers were slow to start, so a warm session was pinned to speed up the first prompt.${reasonSuffix}`,
+        });
+      }
+    };
+    window.addEventListener("mitto:prewarm_pin_alert", handlePrewarmPinAlert);
+    return () => {
+      window.removeEventListener(
+        "mitto:prewarm_pin_alert",
+        handlePrewarmPinAlert,
+      );
+    };
+  }, [showToast]);
+
   // Listen for ACP start failed events
   useEffect(() => {
     const handleAcpStartFailed = (event) => {
