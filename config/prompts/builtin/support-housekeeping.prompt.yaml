@@ -1,0 +1,155 @@
+name: 'Support: housekeeping'
+description: 'Sweep all tracked support tickets: refresh each from its Slack thread, close (or flag) stale/irrelevant ones, then re-evaluate priority/status/next-steps for the rest. Reads Slack; never posts a reply.'
+group: Support
+backgroundColor: '#D7CCC8'
+icon: broom
+menus: beadsList
+enabledWhen: '!Session.IsChild && CommandExists("bd") && DirExists(".beads")'
+tags:
+- support
+prompt: |-
+  # Support — Housekeeping
+
+  ## Session Context
+
+  Your session ID is `{{ .Session.ID }}` — use it as `self_id` for all `mitto_*` MCP tool calls.
+
+  ## Description
+
+  Periodic maintenance sweep over **all** tracked support tickets (beads labelled
+  `support-question`). For each ticket you (1) refresh it from its linked Slack thread and update
+  state/notes, (2) close or flag tickets that are stale / no longer relevant, and (3) re-evaluate the
+  priority, status, and next steps of everything that stays open. The bead is always the source of
+  truth — record what you do as comments and state-label changes.
+
+  > **Scope:** the whole `support-question` backlog (list-level). This prompt operates on many beads,
+  > not a single one.
+
+  ## CRITICAL: User Interaction Rules
+
+  > ⚠️ **NEVER use text-based interaction prompts.**
+  >
+  > - ❌ NEVER ask the user to type a number, command, or keyword to make a selection
+  > - ❌ NEVER present numbered options and ask the user to respond with text
+  > - ✅ ALWAYS use `mitto_ui_options` for choices, `mitto_ui_textbox` for review/editing,
+  >   `mitto_ui_form` for structured input, and `mitto_ui_notify` for non-blocking notifications
+  >
+  > ⚠️ **This prompt NEVER posts to Slack.** It only reads threads and updates beads. Posting a reply
+  > is done — with your approval — by **"Support: reply to user"**.
+
+  ## Slack tools (names vary by MCP server)
+
+  Match Slack MCP tools **by capability, not exact name**. You only need to **read a thread's
+  replies** (e.g. `slack_get_thread_replies*`, `conversations_replies_slack`). Read each ticket's
+  channel + parent `thread_ts` from its bead metadata (`slack_channel` / `slack_thread_ts`). No
+  posting tool is needed.
+
+  ## Step 0: Gate — is there anything to do?
+
+  - List the open tracked support tickets:
+    `bd list -l support-question --status open,in_progress --all`.
+  - **If the list is empty** (zero open support tickets), there is nothing to sweep. Send a
+    `mitto_ui_notify` (info): "No open support tickets — housekeeping has nothing to do." and **stop
+    immediately**. Do not proceed to the next steps.
+  - Otherwise, collect the ticket IDs and continue. Announce how many you will process.
+
+  ## Step 1: Confirm the plan
+
+  - Summarise the backlog you are about to sweep (count + a one-line list of `<id> [state] — <topic>`).
+  - Use `mitto_ui_options` (timeout 300):
+    - **Question**: "Sweep these <N> support tickets (refresh from Slack, close stale, re-evaluate)?"
+    - **Options**: `[{label: "Yes, run housekeeping"}, {label: "Cancel"}]`.
+    - On **"Cancel"** (or timeout): acknowledge and stop without changing anything.
+
+  ## Step 2: Refresh each ticket from Slack
+
+  For **each** ticket in the backlog, load `bd show <id>` + `bd comments <id>` (bead = source of
+  truth), then reconcile it with its Slack thread:
+
+  - Re-fetch the thread (read-thread-replies tool) using the stored `slack_thread_ts` /
+    `slack_channel`. Build the chronological message list (author + UTC time) and identify messages
+    **not yet captured** on the bead.
+  - Add one markdown comment per **new** message (never duplicate existing ones; preserve layout with
+    `printf '%s' "$c" | bd comment <id> --stdin`):
+    - Customer messages → `**[INBOUND @user · YYYY-MM-DD HH:MM UTC]**`
+    - Team / others → `**[CONTEXT @user · YYYY-MM-DD HH:MM UTC]**`
+    - Any of our own replies not yet logged → `**[OUTBOUND us · YYYY-MM-DD HH:MM UTC]**`
+  - Note any reactions on our answers (positive = helpful, negative = not helpful).
+  - Update the `state:*` label **in place** to reflect whose turn it is (same issue — never
+    `bd set-state`), following the standard rules:
+    - Customer spoke last / owes us nothing but we must act → `state:awaiting-us`.
+    - `state:need-info` **and the customer just replied** → `state:awaiting-us` (do not strand it in
+      `need-info`).
+    - We spoke last and are waiting on them → `state:awaiting-customer`.
+    - Do **not** override `state:drafting` (a draft is pending your review) unless the thread clearly
+      moved on.
+    Apply with `bd update <id> --remove-label state:<prev> --add-label state:<new>` and add a short
+    `**[STATE · <time>]** <prev> → <new>` comment explaining why.
+  - If the thread is unreachable (channel/thread gone, no metadata), record a `[CONTEXT]` note that it
+    could not be refreshed and carry it into Step 3 as a stale candidate.
+
+  ## Step 3: Identify stale / no-longer-relevant tickets
+
+  A ticket is a **stale candidate** when, based on the thread activity and bead content, it no longer
+  needs our attention. Signals (any of):
+
+  - The thread was **resolved** (positive reaction on our answer, a "thanks / that worked / got it",
+    or it concluded with no open question).
+  - **No activity for a long time** and the ball was on the customer (`state:awaiting-customer` /
+    `state:need-info` with a stale last message) — effectively abandoned.
+  - The thread is **gone / deleted / unreachable**, or the underlying question is obsolete
+    (superseded, duplicate of another bead, or overtaken by events).
+
+  Build the list of stale candidates with a one-line reason each. Present them with `mitto_ui_options`
+  (timeout 300):
+  - **Question**: "These tickets look stale/irrelevant. Close them now, or just flag for review?"
+  - **Options**: `[{label: "Close all listed"}, {label: "Flag only (no close)"}, {label: "Let me pick"}, {label: "Skip"}]`.
+    - **"Close all listed"** → for each: swap to `state:resolved` (or add `state:obsolete` if the
+      reason is obsolete/duplicate) and `bd close <id> -r "housekeeping: <reason>"`.
+    - **"Flag only"** → for each, add label `needs-review` and a `[STATE]` comment with the reason;
+      do NOT close.
+    - **"Let me pick"** → present the candidates as a second `mitto_ui_options` (or `mitto_ui_form`
+      with a checkbox per candidate) and act only on the chosen ones (close them; leave the rest).
+    - **"Skip"** (or timeout) → change nothing in this step.
+  - Never close a ticket in `state:drafting` (a reply is pending your approval) without explicit
+    confirmation — surface it separately rather than auto-closing.
+
+  ## Step 4: Re-evaluate the remaining open tickets
+
+  For every ticket still open after Step 3, reassess and update:
+
+  - **Priority** — bump or lower `P0..P3` based on impact/urgency evident from the thread (an
+    escalation, a P1 incident reference, many affected users → raise; a nice-to-have or single-user
+    question → lower). Apply with `bd update <id> --priority <n>` and note the change.
+  - **Status / state** — make sure the `state:*` label matches reality after Step 2 (whose turn,
+    drafting pending, needs info, etc.).
+  - **Next step** — add a short `**[NEXT · <time>]**` comment naming the concrete next action and the
+    prompt that performs it (**"Support: investigate"** to find an answer, **"Support: gather more
+    information"** to ask the customer, **"Support: reply to user"** to post a ready draft).
+
+  ## Step 5: Summarise (in the conversation)
+
+  Present a concise report **in this conversation** (not to Slack):
+
+  ```markdown
+  ## Support housekeeping — <YYYY-MM-DD HH:MM UTC>
+
+  **Swept:** <N> tickets
+  **Refreshed from Slack:** <n> (with new messages: <m>)
+  **Closed / flagged stale:** <list of <id> — reason>
+  **Re-prioritised / restated:** <list of <id> — change>
+
+  ### Needs your attention
+  - <id> — <what is pending (e.g. draft awaiting approval, needs a decision)>
+  ```
+
+  Finish with a `mitto_ui_notify` (success) summarising counts (swept / closed / needs-attention).
+
+  ## Notes
+
+  - The bead is the single source of truth: log every new thread message, state change, priority
+    change, and next step as comments — never keep them only in chat.
+  - **Read-only on Slack** — this prompt never posts a reply. Hand off posting to
+    **"Support: reply to user"**.
+  - Process tickets one at a time and keep going on per-ticket errors (record a `[CONTEXT]` note and
+    move on) so one bad thread does not abort the whole sweep.
