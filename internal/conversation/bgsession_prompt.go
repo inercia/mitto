@@ -802,6 +802,20 @@ func (bs *BackgroundSession) pdCompleteDeferredHandshake() error {
 	return bs.completeDeferredHandshake()
 }
 
+// pdRecommendedHandshakeDeadline reads the extended-budget hint from the shared
+// process so completeHandshakeOrAbort can bound a hung deferred session/new
+// against it (mitto-f51). Returns 0 when no shared process is configured or the
+// process signals no widening is needed.
+func (bs *BackgroundSession) pdRecommendedHandshakeDeadline() time.Duration {
+	if bs.sharedProcess == nil {
+		return 0
+	}
+	bs.pendingSharedMu.Lock()
+	hasMCP := len(bs.pendingSharedMcpServers) > 0
+	bs.pendingSharedMu.Unlock()
+	return bs.sharedProcess.RecommendedLoadTimeout(hasMCP)
+}
+
 func (bs *BackgroundSession) pdHasRecorder() bool { return bs.recorder != nil }
 
 func (bs *BackgroundSession) pdGetNextSeq() int64 { return bs.getNextSeq() }

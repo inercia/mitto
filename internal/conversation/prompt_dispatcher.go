@@ -7,6 +7,7 @@ package conversation
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -78,6 +79,12 @@ type promptDeps interface {
 	// Handshake
 	pdHasSharedProcess() bool
 	pdCompleteDeferredHandshake() error
+	// pdRecommendedHandshakeDeadline returns the outer wall-clock budget the
+	// deferred session/new handshake should be bounded by (mitto-f51). Derived
+	// from the shared process's own RecommendedLoadTimeout so we do not truncate
+	// a legitimate cold handshake. Returns 0 to indicate the caller should apply
+	// its own default.
+	pdRecommendedHandshakeDeadline() time.Duration
 
 	// Error event recording (for handshake failure)
 	pdHasRecorder() bool
@@ -608,20 +615,53 @@ func (p promptDispatcher) applyProcessorsAndBuildBlocks(
 	return finalBlocks
 }
 
+// handshakeWatchdogFallback is the outer wall-clock bound applied to each deferred
+// handshake attempt when the shared process reports no recommended timeout
+// (mitto-f51). Sized above the normal cold-start budget so a warm-path attempt is
+// never truncated, and above the normal per-attempt create budget (~25s) so the
+// abort branch only fires on a genuinely wedged session/new. Var (not const) so
+// tests can shrink it without waiting the full production duration.
+var handshakeWatchdogFallback = 90 * time.Second
+
+// handshakeWatchdogMargin is added on top of RecommendedLoadTimeout so the outer
+// wait outlasts the SharedACPProcess's own internal retry loop and never
+// prematurely aborts a handshake the process is still legitimately working on.
+// Var (not const) so tests can shrink it.
+var handshakeWatchdogMargin = 30 * time.Second
+
 // completeHandshakeOrAbort handles the deferred session/new handshake for shared-process
 // sessions at the top of the PromptWithMeta goroutine. Returns true to continue, false to
 // abort (caller must return from the goroutine). When no shared process is configured it
 // is always a no-op that returns true.
+//
+// Each handshake attempt is bounded by a deadline (mitto-f51) so a hung
+// session/new takes the abort branch instead of latching isPrompting silently
+// forever. The deadline is derived from the shared process's own recommended
+// load timeout (extended for cold MCP handshakes) plus a margin; if the process
+// signals no recommendation, handshakeWatchdogFallback is used.
 func (p promptDispatcher) completeHandshakeOrAbort(d promptDeps) bool {
 	if !d.pdHasSharedProcess() {
 		return true
 	}
 
+	watchdog := d.pdRecommendedHandshakeDeadline()
+	if watchdog > 0 {
+		watchdog += handshakeWatchdogMargin
+	} else {
+		watchdog = handshakeWatchdogFallback
+	}
+
 	const maxHandshakeAttempts = 3
 	var handshakeErr error
 	for attempt := 1; attempt <= maxHandshakeAttempts; attempt++ {
-		handshakeErr = d.pdCompleteDeferredHandshake()
+		handshakeErr = runHandshakeWithWatchdog(d, watchdog)
 		if handshakeErr == nil {
+			break
+		}
+		// A watchdog trip means the previous attempt's goroutine is still running
+		// against the shared process; retrying here would just spawn another that
+		// re-blocks the same way. Bail out and let the user re-send (mitto-f51).
+		if errors.Is(handshakeErr, errHandshakeWatchdogFired) {
 			break
 		}
 		errStr := strings.ToLower(handshakeErr.Error())
@@ -649,7 +689,12 @@ func (p promptDispatcher) completeHandshakeOrAbort(d promptDeps) bool {
 			"session_id", d.pdSessionID(),
 			"error", handshakeErr)
 	}
-	friendlyMsg := "Could not start the agent session: " + formatACPError(handshakeErr) + " Please resend your message."
+	var friendlyMsg string
+	if errors.Is(handshakeErr, errHandshakeWatchdogFired) {
+		friendlyMsg = "The agent is still starting up — please resend your message."
+	} else {
+		friendlyMsg = "Could not start the agent session: " + formatACPError(handshakeErr) + " Please resend your message."
+	}
 	if d.pdHasRecorder() {
 		seq := d.pdGetNextSeq()
 		if recErr := d.pdRecordErrorEvent(seq, friendlyMsg); recErr != nil {
@@ -663,6 +708,36 @@ func (p promptDispatcher) completeHandshakeOrAbort(d promptDeps) bool {
 	d.pdResetPromptingStateForAbort()
 	d.pdNotifyStreamingStateChanged(false)
 	return false
+}
+
+// errHandshakeWatchdogFired signals that runHandshakeWithWatchdog aborted a
+// pdCompleteDeferredHandshake attempt because the outer deadline expired
+// (mitto-f51). The orphaned goroutine may keep running; the abort branch in
+// completeHandshakeOrAbort still clears prompting state so the user is unwedged.
+var errHandshakeWatchdogFired = errors.New("deferred session/new timed out (handshake watchdog fired)")
+
+// runHandshakeWithWatchdog invokes pdCompleteDeferredHandshake in a goroutine
+// and waits for it up to deadline. On expiry it returns errHandshakeWatchdogFired
+// while the goroutine keeps running (its own RPC budget bounds it eventually).
+func runHandshakeWithWatchdog(d promptDeps, deadline time.Duration) error {
+	if deadline <= 0 {
+		return d.pdCompleteDeferredHandshake()
+	}
+	resultCh := make(chan error, 1)
+	go func() { resultCh <- d.pdCompleteDeferredHandshake() }()
+	timer := time.NewTimer(deadline)
+	defer timer.Stop()
+	select {
+	case err := <-resultCh:
+		return err
+	case <-timer.C:
+		if l := d.pdLogger(); l != nil {
+			l.Warn("Deferred session/new watchdog fired; aborting handshake attempt",
+				"session_id", d.pdSessionID(),
+				"deadline", deadline)
+		}
+		return errHandshakeWatchdogFired
+	}
 }
 
 // createFreshContextSession prepares a fresh context for a FreshContext loop run.

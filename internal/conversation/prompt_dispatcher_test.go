@@ -62,9 +62,15 @@ type fakePromptDeps struct {
 	historyPrefix                  string // prefix injected by pdBuildPromptWithHistory
 
 	// === New in 2.5-c ===
-	hasSharedProcess       bool
-	handshakeErr           error
-	handshakeCalls         int
+	hasSharedProcess bool
+	handshakeErr     error
+	handshakeCalls   int
+	// handshakeBlock, when non-nil, is closed by the test to release a blocked
+	// pdCompleteDeferredHandshake. Used to simulate a wedged handshake for the
+	// completeHandshakeOrAbort watchdog test (mitto-f51).
+	handshakeBlock chan struct{}
+	// handshakeDeadline is returned by pdRecommendedHandshakeDeadline (mitto-f51).
+	handshakeDeadline      time.Duration
 	hasRecorder            bool
 	recordedErrorEvents    []string
 	nextSeq                int64
@@ -217,9 +223,17 @@ func (f *fakePromptDeps) pdWorkspaceProcessorArgOverrides() map[string]map[strin
 func (f *fakePromptDeps) pdHasSharedProcess() bool { return f.hasSharedProcess }
 func (f *fakePromptDeps) pdCompleteDeferredHandshake() error {
 	f.mu.Lock()
-	defer f.mu.Unlock()
 	f.handshakeCalls++
-	return f.handshakeErr
+	block := f.handshakeBlock
+	err := f.handshakeErr
+	f.mu.Unlock()
+	if block != nil {
+		<-block
+	}
+	return err
+}
+func (f *fakePromptDeps) pdRecommendedHandshakeDeadline() time.Duration {
+	return f.handshakeDeadline
 }
 func (f *fakePromptDeps) pdHasRecorder() bool { return f.hasRecorder }
 func (f *fakePromptDeps) pdGetNextSeq() int64 {
@@ -1212,6 +1226,107 @@ func (t *transientFakePromptDeps) pdCompleteDeferredHandshake() error {
 	}
 	t.successes++
 	return nil
+}
+
+// TestPromptDispatcher_CompleteHandshakeOrAbort_WatchdogFiresOnWedgedHandshake
+// verifies mitto-f51: a pdCompleteDeferredHandshake that hangs past the derived
+// deadline takes the abort branch (friendly "still starting up" message, prompting
+// state reset, streaming state notified) instead of blocking forever.
+func TestPromptDispatcher_CompleteHandshakeOrAbort_WatchdogFiresOnWedgedHandshake(t *testing.T) {
+	// Shrink the margin so the test isn't blocked for 30s. Restore after.
+	origMargin := handshakeWatchdogMargin
+	handshakeWatchdogMargin = 10 * time.Millisecond
+	defer func() { handshakeWatchdogMargin = origMargin }()
+
+	p := promptDispatcher{}
+	d := newFakePromptDeps()
+	d.hasSharedProcess = true
+	d.hasRecorder = true
+	// Force pdCompleteDeferredHandshake to block indefinitely.
+	d.handshakeBlock = make(chan struct{})
+	defer close(d.handshakeBlock) // release the orphaned goroutine at test end
+	// Tight deadline so the test is fast (base + shrunken margin ~= 20ms).
+	d.handshakeDeadline = 10 * time.Millisecond
+
+	done := make(chan bool, 1)
+	go func() { done <- p.completeHandshakeOrAbort(d) }()
+
+	select {
+	case ok := <-done:
+		if ok {
+			t.Fatal("expected completeHandshakeOrAbort to return false when watchdog fires")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("completeHandshakeOrAbort did not return within 5s despite watchdog")
+	}
+
+	// Watchdog trips must not spawn retries — the orphaned goroutine still holds
+	// the shared process and another attempt would just re-hang (mitto-f51).
+	d.mu.Lock()
+	calls := d.handshakeCalls
+	d.mu.Unlock()
+	if calls != 1 {
+		t.Fatalf("expected exactly 1 handshake call (no retry on watchdog trip), got %d", calls)
+	}
+
+	// The friendly "still starting up" message must be surfaced to observers.
+	if len(d.notifiedErrors) != 1 {
+		t.Fatalf("expected 1 observer error notification, got %d", len(d.notifiedErrors))
+	}
+	if !strings.Contains(d.notifiedErrors[0], "still starting up") {
+		t.Fatalf("expected 'still starting up' message, got %q", d.notifiedErrors[0])
+	}
+	// And a recorded error event (recorder is present in this test).
+	if len(d.recordedErrorEvents) != 1 {
+		t.Fatalf("expected 1 recorded error event, got %d", len(d.recordedErrorEvents))
+	}
+	// Prompting state must be reset so the user can re-send.
+	if d.promptingResetCalls != 1 {
+		t.Fatalf("expected 1 prompting reset, got %d", d.promptingResetCalls)
+	}
+	// Streaming state must be flipped to false.
+	if len(d.streamingChanges) != 1 || d.streamingChanges[0] {
+		t.Fatalf("expected streaming=false notification, got %v", d.streamingChanges)
+	}
+}
+
+// TestPromptDispatcher_CompleteHandshakeOrAbort_FallbackDeadlineUsedWhenDepsReportsZero
+// verifies runHandshakeWithWatchdog uses handshakeWatchdogFallback when
+// pdRecommendedHandshakeDeadline returns 0 — the watchdog is always armed so a
+// hung handshake is always recoverable (mitto-f51).
+func TestPromptDispatcher_CompleteHandshakeOrAbort_FallbackDeadlineUsedWhenDepsReportsZero(t *testing.T) {
+	p := promptDispatcher{}
+	d := newFakePromptDeps()
+	d.hasSharedProcess = true
+	d.handshakeDeadline = 0 // deps has no recommendation
+	// Immediate success: the dispatcher must still complete quickly even with
+	// the (long) fallback armed.
+	d.handshakeErr = nil
+
+	start := time.Now()
+	ok := p.completeHandshakeOrAbort(d)
+	if !ok {
+		t.Fatalf("expected true on immediate success, got false; errors=%v", d.notifiedErrors)
+	}
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Fatalf("dispatcher took too long (%v) on immediate success — watchdog blocking?", elapsed)
+	}
+}
+
+// TestRunHandshakeWithWatchdog_ZeroDeadlineFallsThrough verifies that a
+// non-positive deadline bypasses the watchdog goroutine entirely — used as a
+// safety valve for tests / callers that explicitly opt out.
+func TestRunHandshakeWithWatchdog_ZeroDeadlineFallsThrough(t *testing.T) {
+	d := newFakePromptDeps()
+	d.handshakeErr = errors.New("boom")
+
+	err := runHandshakeWithWatchdog(d, 0)
+	if err == nil || err.Error() != "boom" {
+		t.Fatalf("expected 'boom' error passed through, got %v", err)
+	}
+	if d.handshakeCalls != 1 {
+		t.Fatalf("expected exactly 1 handshake call, got %d", d.handshakeCalls)
+	}
 }
 
 // --- createFreshContextSession tests ---
