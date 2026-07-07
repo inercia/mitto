@@ -211,6 +211,12 @@ type Server struct {
 	// Caches session IDs known to not exist, preventing repeated filesystem lookups.
 	negativeSessionCache *NegativeSessionCache
 
+	// interactiveResumeSem bounds concurrent interactive ResumeSession calls
+	// issued from the cold-start WebSocket fan-out (mitto-54k.1). The
+	// user-focused ensure_resumed path bypasses this bound so the session the
+	// user is actively looking at resumes first.
+	interactiveResumeSem *resumeSemaphore
+
 	// beads is the injectable Client for bd operations.
 	// When nil, beadsClient() falls back to beads.NewClient() (real bd binary).
 	beads beads.Client
@@ -719,6 +725,16 @@ func NewServer(config Config) (*Server, error) {
 		beads:                beads.NewClient(),
 		mcpAvailable:         true,
 	}
+
+	// Bound concurrent interactive ResumeSession calls issued from the
+	// cold-start WebSocket fan-out (mitto-54k.1). Config knob mirrors the
+	// existing startup_stagger_ms pattern; the user-focused ensure_resumed
+	// path bypasses this bound (see session_ws.go ensureResumed).
+	resumeConcurrency := configPkg.DefaultStartupResumeConcurrency
+	if config.MittoConfig != nil && config.MittoConfig.Session != nil {
+		resumeConcurrency = config.MittoConfig.Session.GetStartupResumeConcurrency()
+	}
+	s.interactiveResumeSem = newResumeSemaphore(resumeConcurrency)
 
 	// Wrap the beads client so every bd invocation this process makes brackets
 	// itself with the BeadsWatcher self-suppression window. Even read-only bd

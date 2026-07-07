@@ -90,6 +90,13 @@ const DefaultStartupStaggerMs = 300
 // resume first via WebSocket connections.
 const DefaultStartupLoopDelay = 15 * time.Second
 
+// DefaultStartupResumeConcurrency is the default maximum number of concurrent
+// interactive ResumeSession calls issued from the cold-start WebSocket fan-out.
+// Bounding this prevents the Mitto process from saturating itself (which can
+// starve the agent's inbound MCP handshake on :5757/mcp) when many sessions
+// reconnect at once (mitto-54k.1).
+const DefaultStartupResumeConcurrency = 3
+
 // SessionConfig represents session storage configuration.
 type SessionConfig struct {
 	// MaxMessagesPerSession is the maximum number of messages to retain per conversation.
@@ -118,6 +125,15 @@ type SessionConfig struct {
 	// first via WebSocket connections, preventing thundering herd on ACP.
 	// Default: 15 seconds. Set to 0 to disable (not recommended).
 	StartupLoopDelaySeconds int `json:"startup_loop_delay_seconds,omitempty"`
+	// StartupResumeConcurrency caps the number of concurrent interactive
+	// ResumeSession calls issued from the cold-start WebSocket fan-out. When many
+	// browsers reconnect at once (or a single browser holds many session tabs),
+	// unbounded fan-out saturates the Mitto process and starves the agent's
+	// inbound MCP handshake on :5757/mcp (see mitto-54k). The user-focused
+	// ensure_resumed path is NOT throttled.
+	// Default: 0 (use DefaultStartupResumeConcurrency = 3). Values <1 are clamped
+	// to 1 (a semaphore of size 0 would deadlock every resume).
+	StartupResumeConcurrency int `json:"startup_resume_concurrency,omitempty"`
 	// LoopSuspendTimeout controls when idle loop conversations have their ACP
 	// connection suspended to save memory. When a loop conversation's next prompt
 	// is farther away than this timeout, its ACP session is closed even if the user has
@@ -329,6 +345,20 @@ func (c *SessionConfig) GetStartupLoopDelay() time.Duration {
 		return 0
 	}
 	return time.Duration(c.StartupLoopDelaySeconds) * time.Second
+}
+
+// GetStartupResumeConcurrency returns the maximum number of concurrent
+// interactive ResumeSession calls issued from the cold-start WebSocket fan-out.
+// Returns DefaultStartupResumeConcurrency (3) if not configured (0). Values <1
+// are clamped to 1 — a bound of 0 would deadlock every resume.
+func (c *SessionConfig) GetStartupResumeConcurrency() int {
+	if c == nil || c.StartupResumeConcurrency == 0 {
+		return DefaultStartupResumeConcurrency
+	}
+	if c.StartupResumeConcurrency < 1 {
+		return 1
+	}
+	return c.StartupResumeConcurrency
 }
 
 // PrewarmConfig represents adaptive ACP/MCP pre-warming thresholds (mitto-mw0).

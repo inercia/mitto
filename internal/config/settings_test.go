@@ -1018,3 +1018,31 @@ func TestLoadSettings_NewKeyedSettingsUntouched(t *testing.T) {
 		t.Errorf("settings.json was rewritten even though it already used loop_* keys:\nbefore:\n%s\nafter:\n%s", before, after)
 	}
 }
+
+// TestSessionConfig_GetStartupResumeConcurrency covers the mitto-54k.1 config
+// accessor: nil/zero → default, negative → clamped to 1, positive → passthrough.
+func TestSessionConfig_GetStartupResumeConcurrency(t *testing.T) {
+	// nil receiver → default
+	var nilCfg *SessionConfig
+	if got := nilCfg.GetStartupResumeConcurrency(); got != DefaultStartupResumeConcurrency {
+		t.Errorf("nil.GetStartupResumeConcurrency() = %d, want %d", got, DefaultStartupResumeConcurrency)
+	}
+
+	// zero value → default
+	cfg := &SessionConfig{}
+	if got := cfg.GetStartupResumeConcurrency(); got != DefaultStartupResumeConcurrency {
+		t.Errorf("zero.GetStartupResumeConcurrency() = %d, want %d", got, DefaultStartupResumeConcurrency)
+	}
+
+	// negative → clamped to 1 (a size-0 semaphore would deadlock)
+	cfg.StartupResumeConcurrency = -5
+	if got := cfg.GetStartupResumeConcurrency(); got != 1 {
+		t.Errorf("negative.GetStartupResumeConcurrency() = %d, want 1", got)
+	}
+
+	// explicit positive → passthrough
+	cfg.StartupResumeConcurrency = 8
+	if got := cfg.GetStartupResumeConcurrency(); got != 8 {
+		t.Errorf("positive.GetStartupResumeConcurrency() = %d, want 8", got)
+	}
+}

@@ -376,6 +376,12 @@ func (s *Server) handleSessionWS(w http.ResponseWriter, r *http.Request) {
 				}
 				sessionName := meta.Name
 				go func() {
+					// Bound cold-start fan-out (mitto-54k.1): acquire INSIDE the
+					// goroutine so the WebSocket handler is never blocked, and
+					// release after ResumeSession returns (success or failure).
+					// A nil semaphore is a no-op (Acquire/Release both return).
+					s.interactiveResumeSem.Acquire()
+					defer s.interactiveResumeSem.Release()
 					resumedBS, err := s.sessionManager.ResumeSession(sessionID, sessionName, cwd)
 					if err != nil {
 						if clientLogger != nil {
@@ -1992,6 +1998,10 @@ func (c *SessionWSClient) handleEnsureResumed() {
 	}
 	sessionName := meta.Name
 	go func() {
+		// User-focused foreground resume: intentionally BYPASSES
+		// interactiveResumeSem (mitto-54k.1) so the session the user is
+		// actively looking at resumes first, even when the cold-start
+		// fan-out has already saturated the interactive-resume bound.
 		resumedBS, err := c.server.sessionManager.ResumeSession(c.sessionID, sessionName, cwd)
 		if err != nil {
 			if c.logger != nil {
