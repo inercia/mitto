@@ -805,6 +805,21 @@ func (p promptDispatcher) createFreshContextSession(d promptDeps, meta PromptMet
 	return ""
 }
 
+// modelSwitchSyncGrace bounds how long applyModelPreference blocks the interactive
+// prompt waiting for a set_model RPC to land. A warm switch completes well within
+// this window so the preferred model applies to THIS turn; a cold/slow switch
+// exceeds it, so the prompt is dispatched on the current model immediately and the
+// switch completes in the background (applying to the NEXT turn). Prevents the
+// cold-start wedge where a synchronous ~41s set_model blocked the first prompt
+// (mitto-54k.5). A var so tests can shrink it.
+var modelSwitchSyncGrace = 3 * time.Second
+
+// modelSwitchAsyncBudget is the total wall-clock budget for the background set_model
+// RPC, bounded by the session context. Mirrors the aux-session async budget so a
+// cold agent gets its full retry schedule off the critical path (mitto-54k.5).
+// A var so tests can shrink it.
+var modelSwitchAsyncBudget = 90 * time.Second
+
 // applyModelPreference ensures the correct model is active before sending the prompt.
 // Implements set-if-different (lazy): only issues a SetSessionModel RPC when the
 // desired model differs from the current active model. No-op when agentModels is nil.
@@ -839,16 +854,16 @@ func (p promptDispatcher) applyModelPreference(d promptDeps, meta PromptMeta) {
 
 	isOverride := desired != "" && desired != baseline
 	switching := desired != "" && desired != currentModel
-	switchFailed := false
-	if switching {
-		setCtx, setCancel := context.WithTimeout(d.pdSessionCtx(), 15*time.Second)
-		if setErr := d.pdSetActiveModelOnly(setCtx, desired); setErr != nil {
-			switchFailed = true
-			if l := d.pdLogger(); l != nil {
-				l.Warn("Failed to apply model preference", "model", desired, "error", setErr)
-			}
+
+	finalizeOverride := func(switchFailed bool) {
+		if isOverride && !switchFailed {
+			d.pdRecordSessionChange(
+				ConfigOptionCategoryModelOverride,
+				ModelDisplayName(models, desired),
+				ModelDisplayName(models, baseline),
+			)
 		}
-		setCancel()
+		d.pdWriteOverrideActive(isOverride)
 	}
 
 	if l := d.pdLogger(); l != nil {
@@ -873,18 +888,47 @@ func (p promptDispatcher) applyModelPreference(d promptDeps, meta PromptMeta) {
 			"decision", decision)
 	}
 
-	// Emit a timeline pill when this prompt runs on a model different from the
-	// conversation baseline, so the transient override is visible to the user.
-	// Skipped when the switch RPC failed (the model did not actually change).
-	if isOverride && !switchFailed {
-		d.pdRecordSessionChange(
-			ConfigOptionCategoryModelOverride,
-			ModelDisplayName(models, desired),
-			ModelDisplayName(models, baseline),
-		)
+	if !switching {
+		finalizeOverride(false)
+		return
 	}
 
-	d.pdWriteOverrideActive(isOverride)
+	// A model switch is required. Do NOT block the interactive prompt on a slow
+	// set_model (mitto-54k.5): run the switch in the background bounded by the
+	// session context, but wait up to modelSwitchSyncGrace for it to land so a warm
+	// switch still applies to THIS turn. On a cold/slow agent the grace elapses, the
+	// prompt is dispatched on the current model, and the switch completes in the
+	// background (applying to the NEXT turn). setModelSem serialisation and the
+	// mitto-29q re-arm are preserved because the switch still goes through
+	// pdSetActiveModelOnly -> SetSessionModel.
+	done := make(chan struct{})
+	go func() {
+		setCtx, setCancel := context.WithTimeout(d.pdSessionCtx(), modelSwitchAsyncBudget)
+		defer setCancel()
+		setErr := d.pdSetActiveModelOnly(setCtx, desired)
+		if setErr != nil {
+			if l := d.pdLogger(); l != nil {
+				l.Warn("Failed to apply model preference", "model", desired, "error", setErr)
+			}
+		}
+		// finalize BEFORE signalling done so the warm path observes the pill and
+		// override flag as soon as the select returns (happens-before via close(done)).
+		finalizeOverride(setErr != nil)
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		// Switch landed within the grace window (warm/fast): applies to this turn.
+	case <-time.After(modelSwitchSyncGrace):
+		// Cold/slow: dispatch the prompt now; the switch completes in the background.
+		if l := d.pdLogger(); l != nil {
+			l.Info("Deferring model switch to background; dispatching prompt on current model",
+				"session_id", d.pdSessionID(),
+				"desired_model", desired,
+				"current_model", currentModel)
+		}
+	}
 }
 
 // accumulateTokenUsage stores and accumulates token usage from a prompt response.

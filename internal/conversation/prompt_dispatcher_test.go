@@ -88,6 +88,7 @@ type fakePromptDeps struct {
 	overrideActive         bool
 	setActiveModelCalls    []string
 	setActiveModelErr      error
+	setActiveModelGate     chan struct{} // if non-nil, block in pdSetActiveModelOnly until closed (simulates a slow/cold set_model)
 	recordedSessionChanges []session.SessionChangeData
 
 	// === New in 2.5-d ===
@@ -279,11 +280,20 @@ func (f *fakePromptDeps) pdWriteOverrideActive(active bool) {
 	defer f.mu.Unlock()
 	f.overrideActive = active
 }
-func (f *fakePromptDeps) pdSetActiveModelOnly(_ context.Context, modelID string) error {
+func (f *fakePromptDeps) pdSetActiveModelOnly(ctx context.Context, modelID string) error {
 	f.mu.Lock()
-	defer f.mu.Unlock()
 	f.setActiveModelCalls = append(f.setActiveModelCalls, modelID)
-	return f.setActiveModelErr
+	gate := f.setActiveModelGate
+	err := f.setActiveModelErr
+	f.mu.Unlock()
+	if gate != nil {
+		select {
+		case <-gate:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	return err
 }
 func (f *fakePromptDeps) pdRecordSessionChange(kind, value, previousValue string) {
 	f.mu.Lock()
@@ -1615,6 +1625,81 @@ func TestPromptDispatcher_ApplyModelPreference_SwitchFails_NoPill(t *testing.T) 
 	if len(d.recordedSessionChanges) != 0 {
 		t.Fatalf("expected no model_override pill when switch RPC failed, got %v", d.recordedSessionChanges)
 	}
+}
+
+func TestPromptDispatcher_ApplyModelPreference_ColdSlowSwitch_DoesNotBlockPrompt(t *testing.T) {
+	// Shrink the synchronous grace so the test is fast.
+	origGrace := modelSwitchSyncGrace
+	modelSwitchSyncGrace = 30 * time.Millisecond
+	defer func() { modelSwitchSyncGrace = origGrace }()
+
+	p := promptDispatcher{}
+	d := newFakePromptDeps()
+	d.agentModels = &acp.UnstableSessionModelState{
+		CurrentModelId: "m-1",
+		AvailableModels: []acp.UnstableModelInfo{
+			{ModelId: "m-1", Name: "Model 1"},
+			{ModelId: "m-2", Name: "Model 2"},
+		},
+	}
+	d.baselineModel = "m-1"
+	d.modelProfiles = []config.ModelProfile{
+		{Name: "Pref2", Criteria: &config.ACPServerConstraint{MatchMode: "contains", Pattern: "Model 2"}},
+	}
+	gate := make(chan struct{})
+	d.setActiveModelGate = gate
+	var buf bytes.Buffer
+	d.logger = slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	start := time.Now()
+	p.applyModelPreference(d, PromptMeta{PreferredModels: []config.PromptPreferredModel{{ModelName: "Pref2"}}})
+	elapsed := time.Since(start)
+
+	// The interactive prompt must NOT block on the slow set_model.
+	if elapsed > 500*time.Millisecond {
+		t.Fatalf("applyModelPreference blocked on slow set_model (%s); expected to return near the grace window", elapsed)
+	}
+	if !strings.Contains(buf.String(), "Deferring model switch to background") {
+		t.Fatalf("expected deferral log, got: %s", buf.String())
+	}
+
+	// The background switch was attempted (poll to avoid scheduling flakiness).
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		d.mu.Lock()
+		calls := len(d.setActiveModelCalls)
+		d.mu.Unlock()
+		if calls == 1 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("expected the background switch to be attempted once")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	// The override pill/flag are NOT applied yet (switch still in flight -> next turn).
+	d.mu.Lock()
+	pills := len(d.recordedSessionChanges)
+	d.mu.Unlock()
+	if pills != 0 {
+		t.Fatalf("expected no override pill until the deferred switch lands, got %d", pills)
+	}
+
+	// Release the switch; it should now complete and apply the override.
+	close(gate)
+	deadline = time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		d.mu.Lock()
+		pills = len(d.recordedSessionChanges)
+		override := d.overrideActive
+		d.mu.Unlock()
+		if pills == 1 && override {
+			return // success: switch landed, override applied for the next turn
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatal("deferred model switch did not apply the override after the switch completed")
 }
 
 // --- accumulateTokenUsage tests ---

@@ -273,6 +273,74 @@ func TestColdStartGate_SerializesUnderConcurrency(t *testing.T) {
 	}
 }
 
+// TestWarmOnceBarrier_OnlyOneHolderThroughWarmup models the mitto-54k.3
+// warm-once barrier logic used inside NewSession/LoadSession: given N
+// concurrent COLD callers racing the barrier, only ONE holds the gate
+// through the warm-up window and the rest proceed fast once mcpInitDone
+// latches. The real ACP subprocess is not exercised here — we replay the
+// entry condition (MCPInitTimeout>0 && !mcpInitDone) + acquire +
+// post-acquire re-check exactly as the production code does.
+func TestWarmOnceBarrier_OnlyOneHolderThroughWarmup(t *testing.T) {
+	p := newTestProcessWithGate()
+	p.config.MCPInitTimeout = 240 * time.Second // cold-barrier entry enabled
+
+	const N = 8
+	var holders atomic.Int32   // callers that were still cold on acquire (kept the gate)
+	var bypassers atomic.Int32 // callers that found the process warm after acquire
+	var skipped atomic.Int32   // callers that saw warm before ever taking the gate
+
+	var wg sync.WaitGroup
+	wg.Add(N)
+	for i := 0; i < N; i++ {
+		go func() {
+			defer wg.Done()
+
+			// (a) barrier ENTRY condition (raw cold predicate).
+			if !(p.config.MCPInitTimeout > 0 && !p.mcpInitDone.Load()) {
+				skipped.Add(1)
+				return
+			}
+
+			// (b) acquire the gate.
+			release, err := p.acquireColdStartGate(context.Background())
+			if err != nil {
+				t.Errorf("acquire failed: %v", err)
+				return
+			}
+
+			// (c) post-acquire warmth re-check.
+			if p.mcpInitDone.Load() {
+				// Barrier holder warmed the process while we waited: release
+				// IMMEDIATELY and proceed as a warm caller.
+				release()
+				bypassers.Add(1)
+				return
+			}
+
+			// Holder path: hold the gate through the warm-up, then latch
+			// mcpInitDone BEFORE the deferred release fires (mirroring the
+			// production ordering where mcpInitDone.Store(true) at line ~1507
+			// / ~1732 happens before `defer release()` runs).
+			holders.Add(1)
+			time.Sleep(30 * time.Millisecond) // simulate the MCP-init handshake
+			p.mcpInitDone.Store(true)
+			release()
+		}()
+	}
+	wg.Wait()
+
+	if got := holders.Load(); got != 1 {
+		t.Fatalf("expected exactly 1 barrier holder, got %d (bypassers=%d, skipped=%d)",
+			got, bypassers.Load(), skipped.Load())
+	}
+	if got := holders.Load() + bypassers.Load() + skipped.Load(); got != N {
+		t.Fatalf("caller accounting mismatch: %d != %d", got, N)
+	}
+	if !p.mcpInitDone.Load() {
+		t.Fatal("expected mcpInitDone to be latched after the holder warmed the process")
+	}
+}
+
 func TestBeginMCPInitWindow_ResetsPerCall(t *testing.T) {
 	p := &SharedACPProcess{}
 	p.mcpInitTimedOut.Store(true)

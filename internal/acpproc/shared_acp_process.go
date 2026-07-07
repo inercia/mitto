@@ -1391,17 +1391,44 @@ func (p *SharedACPProcess) NewSession(ctx context.Context, cwd string, mcpServer
 		defer budgetCancel()
 	}
 
-	// Cold-start admission gate (mitto-8tb): serialize concurrent cold session/new
-	// callers so the agent's MCP handshake fires once and warms the process before
-	// the remaining sessions proceed, instead of N conversations stampeding the
-	// handshake in parallel. Warm callers (extendedBudget=false) bypass the gate.
-	// Honours budgetCtx so a wedged holder can't block a caller past its deadline.
-	if extendedBudget {
+	// Warm-once barrier (mitto-54k.3): at a genuinely COLD shared ACP process the
+	// first session/new triggers the agent's full MCP handshake (Auggie re-handshakes
+	// ALL its MCP servers on EVERY session/new — mitto-29q — so N stampeding cold
+	// ops = N full handshakes competing on the agent's single event loop). We admit
+	// ONE cold caller through the capacity-1 gate as the barrier holder, let it run
+	// the RPC (which latches mcpInitDone on success — see line ~1507 below), and
+	// keep the gate held via `defer release()` until it warms the process. Every
+	// other cold caller that arrives while the holder is warming waits on the gate,
+	// then on acquire finds mcpInitDone=true, releases the gate IMMEDIATELY and
+	// re-computes its own budgets via coldMCPBudget — which now returns warm
+	// (extendedBudget=false, normal 25s budget). The barrier ENTRY condition uses
+	// the raw cold predicate (MCPInitTimeout>0 && !mcpInitDone) rather than
+	// extendedBudget, so mitto-29q warm per-session re-handshakes
+	// (mcpInitDone=true, mcpInitInProgress=true → extendedBudget=true) do NOT
+	// serialize on the barrier — they still bypass it and keep their extended
+	// budget from the UNCHANGED coldMCPBudget. On holder RPC FAILURE the deferred
+	// release still fires so the next queued caller becomes the new (still-cold)
+	// holder — no caller stranded. budgetCtx bounds the wait so a wedged holder
+	// can't block past MCPInitTimeout.
+	if p.config.MCPInitTimeout > 0 && !p.mcpInitDone.Load() {
 		release, err := p.acquireColdStartGate(budgetCtx)
 		if err != nil {
 			return nil, fmt.Errorf("session/new: context cancelled while waiting for cold-start gate: %w", err)
 		}
-		defer release()
+		// Post-acquire warmth re-check: if the barrier holder warmed the process
+		// while we waited, release the gate immediately (do NOT hold it through
+		// our RPC) and recompute budgets so we run as a warm caller (normal 25s
+		// per-attempt budget, extendedBudget=false). Only a caller still cold on
+		// acquire keeps the gate via `defer release()` and holds it through its
+		// RPC — mcpInitDone latches on RPC success BEFORE deferred release runs,
+		// so the gate is inherently held "until warm."
+		if p.mcpInitDone.Load() {
+			release()
+			perAttemptBudget, totalBudget, extendedBudget = p.coldMCPBudget(len(mcpServers) > 0)
+			_ = totalBudget // budgetCtx already derived above; wider ceiling is acceptable
+		} else {
+			defer release()
+		}
 	}
 
 	// Arm the MCP-init timeout watch so a hard timeout signal from the agent's
@@ -1639,15 +1666,38 @@ func (p *SharedACPProcess) LoadSession(ctx context.Context, acpSessionID, cwd st
 	// the caller's own deadline is still honoured (we never extend it).
 	rpcCtx := ctx
 	perAttemptBudget, _, extendedBudget := p.coldMCPBudget(len(mcpServers) > 0)
-	var mcpTimeoutCh <-chan struct{}
-	if extendedBudget {
-		// Cold-start admission gate (mitto-8tb): serialize concurrent cold callers.
-		// Honours the caller ctx so a wedged holder can't block past its deadline.
+
+	// Warm-once barrier (mitto-54k.3): symmetric with NewSession. Admit ONE cold
+	// caller as the barrier holder, hold the gate via `defer release()` through
+	// its RPC (mcpInitDone latches on success at line ~1732 BEFORE the deferred
+	// release runs, so the gate is inherently held "until warm"). Other cold
+	// callers that arrive while the holder is warming wait on the gate, then on
+	// acquire find mcpInitDone=true, release the gate IMMEDIATELY and recompute
+	// their own budgets via coldMCPBudget — which now returns warm (normal 25s
+	// per-attempt budget, extendedBudget=false). The barrier ENTRY condition uses
+	// the raw cold predicate (MCPInitTimeout>0 && !mcpInitDone) rather than
+	// extendedBudget, so mitto-29q warm per-session re-handshakes
+	// (mcpInitDone=true, mcpInitInProgress=true → extendedBudget=true) do NOT
+	// serialize on the barrier — they still bypass it and keep their extended
+	// budget from the UNCHANGED coldMCPBudget. On holder RPC FAILURE the deferred
+	// release still fires so the next queued caller becomes the new (still-cold)
+	// holder — no caller stranded. ctx bounds the wait so a wedged holder can't
+	// block past MCPInitTimeout.
+	if p.config.MCPInitTimeout > 0 && !p.mcpInitDone.Load() {
 		release, gateErr := p.acquireColdStartGate(ctx)
 		if gateErr != nil {
 			return nil, fmt.Errorf("session/load: context cancelled while waiting for cold-start gate: %w", gateErr)
 		}
-		defer release()
+		if p.mcpInitDone.Load() {
+			release()
+			perAttemptBudget, _, extendedBudget = p.coldMCPBudget(len(mcpServers) > 0)
+		} else {
+			defer release()
+		}
+	}
+
+	var mcpTimeoutCh <-chan struct{}
+	if extendedBudget {
 		mcpTimeoutCh = p.beginMCPInitWindow()
 		if dl, ok := ctx.Deadline(); !ok || time.Until(dl) > perAttemptBudget {
 			var loadCancel context.CancelFunc
