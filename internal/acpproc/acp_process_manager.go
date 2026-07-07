@@ -34,6 +34,12 @@ type ACPProcessManager struct {
 	// Used to look up AuxiliaryModelSelection for new auxiliary sessions.
 	WorkspaceConfigProvider func(workspaceUUID string) *config.WorkspaceSettings
 
+	// PrewarmConfigProvider returns the effective adaptive pre-warming
+	// thresholds (mitto-mw0). May be nil, in which case the built-in defaults
+	// from config.PrewarmConfig helpers are used. The web layer wires this to
+	// the global Config.Prewarm.
+	PrewarmConfigProvider func() *config.PrewarmConfig
+
 	// ModelProfileResolver resolves a named Model profile (Config.Models) by name.
 	// Used to look up AuxiliaryModelProfile for new auxiliary sessions (mitto-hke).
 	// May be nil, in which case AuxiliaryModelProfile is ignored and
@@ -130,6 +136,25 @@ type ACPProcessManager struct {
 	// Used by the web layer to broadcast UI notifications (mitto-8ul.1).
 	onMCPInitializing func(workspaceUUID string)
 	onMCPInitTimedOut func(workspaceUUID string)
+
+	// Adaptive pre-warming pin state (mitto-mw0). One entry per pinned
+	// workspace. Guarded by pinMu. A pinned workspace exempts its
+	// PurposeKeepAlive auxiliary session from AuxIdleTimeout and its Tier 2
+	// sessionless process shutdown, keeping the agent warm for the first real
+	// prompt on a slow/broken workspace.
+	pinMu             sync.Mutex
+	pinState          map[string]*pinInfo
+	onPrewarmPinAlert func(workspaceUUID, reason string, expired bool)
+}
+
+// pinInfo tracks a workspace's pin metadata for the adaptive pre-warming
+// controller (mitto-mw0).
+type pinInfo struct {
+	Reason   string
+	PinnedAt time.Time
+	Expiry   *time.Time // nil = no cap; otherwise, when the pin auto-expires
+	Healthy  int        // consecutive healthy probes observed while pinned (hysteresis)
+	Alerted  bool       // whether an alert has been fired for this pin
 }
 
 // MarkGCSuspended records that a session was intentionally suspended by the GC's
@@ -253,6 +278,7 @@ func NewACPProcessManager(ctx context.Context, logger *slog.Logger) *ACPProcessM
 		processes:   make(map[string]*SharedACPProcess),
 		auxSessions: make(map[auxSessionKey]*auxiliarySessionState),
 		auxCreateMu: make(map[auxSessionKey]*sync.Mutex),
+		pinState:    make(map[string]*pinInfo),
 		ctx:         ctx,
 		logger:      logger,
 	}
@@ -304,6 +330,203 @@ func (m *ACPProcessManager) SetOnMCPInitTimedOut(fn func(workspaceUUID string)) 
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.onMCPInitTimedOut = fn
+}
+
+// SetOnPrewarmPinAlert registers the callback invoked by the adaptive
+// pre-warming controller (mitto-mw0) when a workspace is pinned due to a
+// slow/broken MCP init, or when a stuck pin expires because its
+// MaxPinDuration cap elapsed. expired=true distinguishes the two cases so
+// the web layer can pick the right UI toast copy.
+func (m *ACPProcessManager) SetOnPrewarmPinAlert(fn func(workspaceUUID, reason string, expired bool)) {
+	m.pinMu.Lock()
+	defer m.pinMu.Unlock()
+	m.onPrewarmPinAlert = fn
+}
+
+// PinWorkspace marks a workspace as pinned by the adaptive pre-warming
+// controller (mitto-mw0). While pinned, the workspace's PurposeKeepAlive
+// auxiliary session is exempt from AuxIdleTimeout and Tier 2 process
+// shutdown. reason describes why (e.g. "slow_session_new", "mcp_timeout").
+// maxDuration=0 disables the auto-expiry cap. maxPinned=0 disables the
+// blast-radius cap. Returns true iff the pin was applied; false when the
+// cap was reached (workspace is not pinned in that case).
+//
+// If the workspace was already pinned, the reason/expiry are refreshed and
+// the healthy-probe hysteresis counter is reset (any bad signal restarts
+// the count). This is intentional — an unhealthy probe should immediately
+// undo hysteresis progress.
+func (m *ACPProcessManager) PinWorkspace(workspaceUUID, reason string, maxDuration time.Duration, maxPinned int) bool {
+	m.pinMu.Lock()
+	defer m.pinMu.Unlock()
+
+	if _, ok := m.pinState[workspaceUUID]; !ok {
+		if maxPinned > 0 && len(m.pinState) >= maxPinned {
+			if m.logger != nil {
+				m.logger.Warn("prewarm: pin refused (max_pinned cap reached)",
+					"workspace_uuid", workspaceUUID,
+					"reason", reason,
+					"pinned_count", len(m.pinState),
+					"max_pinned", maxPinned)
+			}
+			return false
+		}
+	}
+
+	now := time.Now()
+	var expiry *time.Time
+	if maxDuration > 0 {
+		e := now.Add(maxDuration)
+		expiry = &e
+	}
+	m.pinState[workspaceUUID] = &pinInfo{
+		Reason:   reason,
+		PinnedAt: now,
+		Expiry:   expiry,
+		Healthy:  0,
+	}
+	if m.logger != nil {
+		m.logger.Info("prewarm: pinned workspace",
+			"workspace_uuid", workspaceUUID,
+			"reason", reason,
+			"expiry", expiry,
+			"pinned_count", len(m.pinState))
+	}
+	return true
+}
+
+// UnpinWorkspace clears a workspace's pin. No-op if the workspace is not
+// pinned. The PurposeKeepAlive auxiliary session is left in place; the next
+// AuxIdleTimeout sweep will reap it.
+func (m *ACPProcessManager) UnpinWorkspace(workspaceUUID string) {
+	m.pinMu.Lock()
+	defer m.pinMu.Unlock()
+	if _, ok := m.pinState[workspaceUUID]; !ok {
+		return
+	}
+	delete(m.pinState, workspaceUUID)
+	if m.logger != nil {
+		m.logger.Info("prewarm: unpinned workspace",
+			"workspace_uuid", workspaceUUID,
+			"pinned_count", len(m.pinState))
+	}
+}
+
+// IsPinned returns true if the workspace is currently pinned by the
+// adaptive pre-warming controller (mitto-mw0) and its pin has not yet
+// expired.
+func (m *ACPProcessManager) IsPinned(workspaceUUID string) bool {
+	m.pinMu.Lock()
+	defer m.pinMu.Unlock()
+	pi, ok := m.pinState[workspaceUUID]
+	if !ok {
+		return false
+	}
+	if pi.Expiry != nil && !time.Now().Before(*pi.Expiry) {
+		return false
+	}
+	return true
+}
+
+// PinnedCount returns the number of currently pinned workspaces (including
+// pins whose Expiry has passed but that have not yet been reaped by the
+// controller's re-evaluation round).
+func (m *ACPProcessManager) PinnedCount() int {
+	m.pinMu.Lock()
+	defer m.pinMu.Unlock()
+	return len(m.pinState)
+}
+
+// RecordPrewarmProbeResult feeds the outcome of a health probe into the
+// pin controller's hysteresis state machine (mitto-mw0). healthy=true
+// increments the consecutive-healthy counter for the workspace; when the
+// counter reaches probesToUnpin the workspace is unpinned and the method
+// returns true. healthy=false resets the counter to zero (any bad signal
+// undoes hysteresis progress). Returns false when the workspace is not
+// currently pinned.
+func (m *ACPProcessManager) RecordPrewarmProbeResult(workspaceUUID string, healthy bool, probesToUnpin int) (unpinned bool) {
+	m.pinMu.Lock()
+	pi, ok := m.pinState[workspaceUUID]
+	if !ok {
+		m.pinMu.Unlock()
+		return false
+	}
+	if !healthy {
+		pi.Healthy = 0
+		m.pinMu.Unlock()
+		return false
+	}
+	pi.Healthy++
+	if probesToUnpin > 0 && pi.Healthy >= probesToUnpin {
+		delete(m.pinState, workspaceUUID)
+		count := len(m.pinState)
+		m.pinMu.Unlock()
+		if m.logger != nil {
+			m.logger.Info("prewarm: unpinned workspace (hysteresis satisfied)",
+				"workspace_uuid", workspaceUUID,
+				"probes_to_unpin", probesToUnpin,
+				"pinned_count", count)
+		}
+		return true
+	}
+	m.pinMu.Unlock()
+	return false
+}
+
+// ExpirePinsAndAlert scans pinState for pins whose MaxPinDuration cap has
+// elapsed, removes them, and fires onPrewarmPinAlert(expired=true) for
+// each. Called by the pre-warming controller's re-evaluation round to
+// self-heal stuck pins (mitto-mw0). Returns the workspaces that were
+// expired.
+func (m *ACPProcessManager) ExpirePinsAndAlert() []string {
+	now := time.Now()
+	m.pinMu.Lock()
+	var expired []string
+	var alerts []struct {
+		uuid, reason string
+	}
+	for uuid, pi := range m.pinState {
+		if pi.Expiry == nil || now.Before(*pi.Expiry) {
+			continue
+		}
+		expired = append(expired, uuid)
+		alerts = append(alerts, struct{ uuid, reason string }{uuid, pi.Reason})
+		delete(m.pinState, uuid)
+	}
+	cb := m.onPrewarmPinAlert
+	m.pinMu.Unlock()
+
+	for _, a := range alerts {
+		if m.logger != nil {
+			m.logger.Warn("prewarm: pin expired (max_pin_duration cap)",
+				"workspace_uuid", a.uuid,
+				"reason", a.reason)
+		}
+		if cb != nil {
+			cb(a.uuid, a.reason, true)
+		}
+	}
+	return expired
+}
+
+// FirePrewarmPinAlert invokes the registered onPrewarmPinAlert callback for
+// a pin caused by an MCP-related failure (expired=false). At-most-once per
+// pin — subsequent calls for the same pin are no-ops. No-op when the
+// workspace is not pinned or no callback is registered (mitto-mw0).
+func (m *ACPProcessManager) FirePrewarmPinAlert(workspaceUUID string) {
+	m.pinMu.Lock()
+	pi, ok := m.pinState[workspaceUUID]
+	if !ok || pi.Alerted {
+		m.pinMu.Unlock()
+		return
+	}
+	pi.Alerted = true
+	reason := pi.Reason
+	cb := m.onPrewarmPinAlert
+	m.pinMu.Unlock()
+
+	if cb != nil {
+		cb(workspaceUUID, reason, false)
+	}
 }
 
 // Ensure ACPProcessManager implements auxiliary.ProcessProvider
@@ -1162,6 +1385,11 @@ func acquireAuxLock(ctx context.Context, auxState *auxiliarySessionState) error 
 // CleanupStaleAuxiliarySessions removes auxiliary sessions that haven't been used recently.
 // This helps recover from stuck sessions and free up resources.
 // maxIdleTime specifies how long a session can be idle before being cleaned up.
+//
+// Pinned PurposeKeepAlive sessions (mitto-mw0) are exempt while the
+// workspace's pin has not expired: keeping the aux session hot is the whole
+// point of the pin. An expired pin (Expiry non-nil and in the past) falls
+// through so the max-pin-duration cap self-heals a stuck keepalive.
 func (m *ACPProcessManager) CleanupStaleAuxiliarySessions(maxIdleTime time.Duration) int {
 	m.auxMu.Lock()
 	defer m.auxMu.Unlock()
@@ -1171,9 +1399,13 @@ func (m *ACPProcessManager) CleanupStaleAuxiliarySessions(maxIdleTime time.Durat
 
 	// Find stale sessions
 	for key, state := range m.auxSessions {
-		if now.Sub(state.lastUsed) > maxIdleTime {
-			staleKeys = append(staleKeys, key)
+		if now.Sub(state.lastUsed) <= maxIdleTime {
+			continue
 		}
+		if key.purpose == auxiliary.PurposeKeepAlive && m.IsPinned(key.workspaceUUID) {
+			continue
+		}
+		staleKeys = append(staleKeys, key)
 	}
 
 	// Remove stale sessions
@@ -1224,6 +1456,11 @@ func (m *ACPProcessManager) EnsurePrewarmed(workspaceUUID string, logger *slog.L
 // later callers (MCP tool fetch, title generation, follow-up analysis) can find an existing
 // aux session immediately without waiting for session creation.
 //
+// The adaptive pre-warming controller (mitto-mw0) additionally creates a
+// PurposeKeepAlive aux session, measures its NewSession latency, checks
+// the shared process's MCP-init signals, and pins the workspace when the
+// verdict is unhealthy.
+//
 // Run in a goroutine after releasing the ACPProcessManager lock.
 func (m *ACPProcessManager) prewarmAuxiliarySessions(workspaceUUID string, logger *slog.Logger) {
 	purposes := []string{
@@ -1263,4 +1500,111 @@ func (m *ACPProcessManager) prewarmAuxiliarySessions(workspaceUUID string, logge
 		}(purpose)
 	}
 	wg.Wait()
+
+	// Adaptive pre-warming health probe (mitto-mw0). Runs after the initial
+	// aux prewarm so the shared process has had a chance to complete MCP init
+	// and the mcp{Init,Timed}Out signals are up to date. The keepalive session
+	// creation is what actually measures session/new latency for pin decisions.
+	m.probePrewarmHealth(workspaceUUID, logger)
+}
+
+// probePrewarmHealth runs the adaptive pre-warming health probe for a
+// workspace (mitto-mw0): it creates a PurposeKeepAlive aux session,
+// measures NewSession latency, checks the shared process's MCP-init
+// signals, and pins the workspace when the verdict is unhealthy. Called at
+// the tail of prewarmAuxiliarySessions and periodically by the pin
+// controller (see ReevaluatePrewarmPin).
+func (m *ACPProcessManager) probePrewarmHealth(workspaceUUID string, logger *slog.Logger) {
+	pc := m.effectivePrewarmConfig()
+	tFast, _ := pc.ParseSessionNewFast()
+	tMcp, _ := pc.ParseMcpReady()
+	maxDur, _ := pc.ParseMaxPinDuration()
+	maxPinned := pc.GetMaxPinnedWorkspaces()
+
+	// Create the keepalive session and time the NewSession round-trip.
+	// Use a budget slightly greater than the MCP-ready threshold so a broken
+	// MCP does not artificially trip session/new latency alone.
+	probeBudget := tMcp + 20*time.Second
+	if probeBudget < 30*time.Second {
+		probeBudget = 30 * time.Second
+	}
+	ctx, cancel := context.WithTimeout(m.ctx, probeBudget)
+	defer cancel()
+
+	start := time.Now()
+	_, err := m.getOrCreateAuxiliarySession(ctx, workspaceUUID, auxiliary.PurposeKeepAlive)
+	sessionNewLatency := time.Since(start)
+
+	// Sample MCP-init signals on the shared process (may be nil if the
+	// process was torn down between prewarm start and now — treat as
+	// unhealthy so the retry loop re-evaluates).
+	var mcpTimedOut, mcpDone bool
+	if p := m.GetProcess(workspaceUUID); p != nil {
+		mcpTimedOut = p.MCPInitTimedOut()
+		mcpDone = p.MCPInitDone()
+	}
+
+	// Verdict: healthy iff session/new completed under T_fast AND MCP init
+	// did not time out AND MCP init has finished (i.e. the agent is not
+	// still blocked on MCP). A failed session/new is always unhealthy.
+	healthy := err == nil && sessionNewLatency <= tFast && !mcpTimedOut && mcpDone
+
+	reason := ""
+	switch {
+	case err != nil:
+		reason = "session_new_failed"
+	case mcpTimedOut:
+		reason = "mcp_timeout"
+	case !mcpDone:
+		reason = "mcp_not_ready"
+	case sessionNewLatency > tFast:
+		reason = "slow_session_new"
+	}
+
+	if logger != nil {
+		logger.Info("prewarm: health probe",
+			"workspace_uuid", workspaceUUID,
+			"session_new_ms", sessionNewLatency.Milliseconds(),
+			"session_new_fast_ms", tFast.Milliseconds(),
+			"mcp_ready_ms", tMcp.Milliseconds(),
+			"mcp_init_done", mcpDone,
+			"mcp_timed_out", mcpTimedOut,
+			"err", err,
+			"healthy", healthy,
+			"reason", reason)
+	}
+
+	if healthy {
+		// Feed the healthy probe into hysteresis (unpins after N consecutive
+		// healthy probes). No-op if not pinned.
+		m.RecordPrewarmProbeResult(workspaceUUID, true, pc.GetHealthyProbesToUnpin())
+		return
+	}
+
+	// Unhealthy → pin the workspace (or refresh the pin if already pinned).
+	if m.PinWorkspace(workspaceUUID, reason, maxDur, maxPinned) && reason == "mcp_timeout" {
+		// Fire the alert only for MCP-timeout pins on the initial pin event
+		// (FirePrewarmPinAlert is at-most-once per pin).
+		m.FirePrewarmPinAlert(workspaceUUID)
+	}
+}
+
+// effectivePrewarmConfig returns the caller-supplied PrewarmConfig or nil.
+// The config.PrewarmConfig accessors themselves handle nil safely (returning
+// defaults), so callers can pass the result directly to the helper methods.
+func (m *ACPProcessManager) effectivePrewarmConfig() *config.PrewarmConfig {
+	if m.PrewarmConfigProvider == nil {
+		return nil
+	}
+	return m.PrewarmConfigProvider()
+}
+
+// ReevaluatePrewarmPin runs the health probe for a currently-pinned
+// workspace and applies the pin/unpin decision (mitto-mw0). It is intended
+// to be called from the MCP backoff retry loop (EnsureMCPBackoffRetry) so
+// pin/unpin decisions ride the same schedule as MCP reachability probes.
+// Expired pins are self-healed via ExpirePinsAndAlert before the probe.
+func (m *ACPProcessManager) ReevaluatePrewarmPin(workspaceUUID string, logger *slog.Logger) {
+	m.ExpirePinsAndAlert()
+	m.probePrewarmHealth(workspaceUUID, logger)
 }

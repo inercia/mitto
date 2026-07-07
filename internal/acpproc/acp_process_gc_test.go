@@ -154,6 +154,72 @@ func TestGCTier1_ClosesSessionWithDistantLoop(t *testing.T) {
 	}
 }
 
+// TestGCTier1_SkipsPinnedSession verifies that a session marked Pinned=true is
+// exempt from Tier 1 GC as long as PinExpiry is nil or still in the future.
+func TestGCTier1_SkipsPinnedSession(t *testing.T) {
+	future := time.Now().Add(10 * time.Minute)
+
+	sessions := map[string][]conversation.SessionInfo{
+		"ws-1": {
+			{SessionID: "pinned-no-expiry", WorkspaceUUID: "ws-1", Pinned: true, PinReason: "slow session/new"},
+			{SessionID: "pinned-future-expiry", WorkspaceUUID: "ws-1", Pinned: true, PinReason: "mcp-init timeout", PinExpiry: &future},
+		},
+	}
+
+	var mu sync.Mutex
+	closed := make(map[string]bool)
+
+	m := newTestGCManager(
+		func() map[string][]conversation.SessionInfo { return sessions },
+		func(id string) {
+			mu.Lock()
+			defer mu.Unlock()
+			closed[id] = true
+		},
+	)
+
+	m.RunGCOnce()
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(closed) > 0 {
+		t.Errorf("pinned sessions should not be closed by Tier 1; got %v", closed)
+	}
+}
+
+// TestGCTier1_ClosesPinnedSessionWithExpiredExpiry verifies that a session with
+// Pinned=true but PinExpiry in the past is eligible for GC — the pin is
+// treated as expired so the max-pin-duration cap can release a stuck pin.
+func TestGCTier1_ClosesPinnedSessionWithExpiredExpiry(t *testing.T) {
+	past := time.Now().Add(-1 * time.Minute)
+
+	sessions := map[string][]conversation.SessionInfo{
+		"ws-1": {
+			{SessionID: "pinned-expired", WorkspaceUUID: "ws-1", Pinned: true, PinReason: "slow session/new", PinExpiry: &past},
+		},
+	}
+
+	var mu sync.Mutex
+	closed := make(map[string]bool)
+
+	m := newTestGCManager(
+		func() map[string][]conversation.SessionInfo { return sessions },
+		func(id string) {
+			mu.Lock()
+			defer mu.Unlock()
+			closed[id] = true
+		},
+	)
+
+	m.RunGCOnce()
+
+	mu.Lock()
+	defer mu.Unlock()
+	if !closed["pinned-expired"] {
+		t.Error("pinned session with expired PinExpiry should fall through and be closed by Tier 1")
+	}
+}
+
 // TestGCTier2_GracePeriod verifies the two-step grace period logic:
 //   - First RunGCOnce records the "sessionless" timestamp and keeps the process.
 //   - After the grace period elapses the process is stopped on the next cycle.

@@ -1317,6 +1317,8 @@ type Config struct {
 	UI UIConfig
 	// Session contains session storage limits configuration (not exposed in Settings dialog)
 	Session *SessionConfig
+	// Prewarm contains adaptive ACP/MCP pre-warming thresholds (mitto-mw0)
+	Prewarm *PrewarmConfig
 	// Conversations contains global conversation processing configuration
 	Conversations *ConversationsConfig
 	// Permissions contains global permission handling configuration
@@ -1520,6 +1522,14 @@ type rawConfig struct {
 		AgentInactivityTimeout   string `yaml:"agent_inactivity_timeout"`
 		McpInitTimeout           string `yaml:"mcp_init_timeout"`
 	} `yaml:"session"`
+	// Prewarm is the adaptive pre-warming thresholds (mitto-mw0)
+	Prewarm *struct {
+		SessionNewFast       string `yaml:"session_new_fast"`
+		McpReady             string `yaml:"mcp_ready"`
+		HealthyProbesToUnpin int    `yaml:"healthy_probes_to_unpin"`
+		MaxPinDuration       string `yaml:"max_pin_duration"`
+		MaxPinnedWorkspaces  int    `yaml:"max_pinned_workspaces"`
+	} `yaml:"prewarm"`
 	// MCP is the MCP server configuration
 	MCP *struct {
 		Host string `yaml:"host"`
@@ -1883,6 +1893,17 @@ func Parse(data []byte) (*Config, error) {
 			MemoryRecycleThreshold:   raw.Session.MemoryRecycleThreshold,
 			AgentInactivityTimeout:   raw.Session.AgentInactivityTimeout,
 			McpInitTimeout:           raw.Session.McpInitTimeout,
+		}
+	}
+
+	// Parse prewarm config (mitto-mw0)
+	if raw.Prewarm != nil {
+		cfg.Prewarm = &PrewarmConfig{
+			SessionNewFast:       raw.Prewarm.SessionNewFast,
+			McpReady:             raw.Prewarm.McpReady,
+			HealthyProbesToUnpin: raw.Prewarm.HealthyProbesToUnpin,
+			MaxPinDuration:       raw.Prewarm.MaxPinDuration,
+			MaxPinnedWorkspaces:  raw.Prewarm.MaxPinnedWorkspaces,
 		}
 	}
 

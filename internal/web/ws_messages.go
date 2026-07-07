@@ -240,6 +240,14 @@ const (
 	// Data: { "workspace_uuid": string, "workspace_name": string, "working_dir": string }.
 	WSMsgTypeMCPInitTimedOut = "mcp_init_timed_out"
 
+	// WSMsgTypePrewarmPinAlert notifies that the adaptive pre-warming controller
+	// (mitto-mw0) pinned a workspace due to a slow/broken MCP init, or that a
+	// stuck pin was force-expired because its max_pin_duration cap elapsed. The
+	// UI can surface this as a warning toast pointing at MCP configuration.
+	// Data: { "workspace_uuid": string, "workspace_name": string, "working_dir": string,
+	//         "reason": string, "expired": bool }.
+	WSMsgTypePrewarmPinAlert = "prewarm_pin_alert"
+
 	// WSMsgTypeQueueUpdated notifies that the message queue state changed.
 	// Sent when messages are added, removed, or the queue is cleared.
 	// Data: { "queue_length": int, "action": string, "message_id": string }

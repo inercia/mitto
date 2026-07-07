@@ -611,6 +611,15 @@ func NewServer(config Config) (*Server, error) {
 			return out.Servers, nil
 		}
 
+		// Adaptive pre-warming pin re-evaluation (mitto-mw0): each MCP backoff
+		// round asks the process manager to re-run its health verdict for the
+		// workspace so pin/unpin decisions ride the same schedule as MCP
+		// reachability probes (no separate timer required). The bare wrapper
+		// keeps the auxiliary package free of the acpproc dependency.
+		auxiliaryManager.PrewarmPinReevaluator = func(workspaceUUID string) {
+			acpProcessMgr.ReevaluatePrewarmPin(workspaceUUID, logger)
+		}
+
 		// Wire per-agent stderr patterns resolver (mitto-k6h). Given an ACP server
 		// name it resolves the ACP server → agent metadata → StderrPatterns and
 		// compiles them once. Results are cached per ACP server name so
@@ -764,6 +773,26 @@ func NewServer(config Config) (*Server, error) {
 			workingDir = ws.WorkingDir
 		}
 		s.BroadcastMCPInitTimedOut(workspaceUUID, workspaceName, workingDir)
+	})
+
+	// Adaptive pre-warming (mitto-mw0): expose the global PrewarmConfig to the
+	// process manager and surface pin alerts as UI toasts. The pin controller
+	// itself runs inside prewarmAuxiliarySessions and ReevaluatePrewarmPin;
+	// this only wires the callback and the config accessor.
+	acpProcessMgr.PrewarmConfigProvider = func() *configPkg.PrewarmConfig {
+		if config.MittoConfig == nil {
+			return nil
+		}
+		return config.MittoConfig.Prewarm
+	}
+	acpProcessMgr.SetOnPrewarmPinAlert(func(workspaceUUID, reason string, expired bool) {
+		workspaceName := ""
+		workingDir := ""
+		if ws := sessionMgr.GetWorkspaceByUUID(workspaceUUID); ws != nil {
+			workspaceName = ws.Name
+			workingDir = ws.WorkingDir
+		}
+		s.BroadcastPrewarmPinAlert(workspaceUUID, workspaceName, workingDir, reason, expired)
 	})
 
 	// Initialize MCP server.
@@ -1727,6 +1756,28 @@ func (s *Server) BroadcastMCPInitTimedOut(workspaceUUID, workspaceName, workingD
 	if s.logger != nil {
 		s.logger.Warn("Broadcast MCP init timed out",
 			"workspace_uuid", workspaceUUID,
+			"clients", s.eventsManager.ClientCount())
+	}
+}
+
+// BroadcastPrewarmPinAlert notifies all connected clients that the adaptive
+// pre-warming controller pinned a workspace due to a slow/broken MCP init,
+// or that a stuck pin was force-expired because its max_pin_duration cap
+// elapsed (mitto-mw0). expired=true distinguishes the two cases so the UI
+// can pick the right toast copy.
+func (s *Server) BroadcastPrewarmPinAlert(workspaceUUID, workspaceName, workingDir, reason string, expired bool) {
+	s.eventsManager.Broadcast(WSMsgTypePrewarmPinAlert, map[string]interface{}{
+		"workspace_uuid": workspaceUUID,
+		"workspace_name": workspaceName,
+		"working_dir":    workingDir,
+		"reason":         reason,
+		"expired":        expired,
+	})
+	if s.logger != nil {
+		s.logger.Warn("Broadcast prewarm pin alert",
+			"workspace_uuid", workspaceUUID,
+			"reason", reason,
+			"expired", expired,
 			"clients", s.eventsManager.ClientCount())
 	}
 }

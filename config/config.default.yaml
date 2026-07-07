@@ -298,6 +298,17 @@ conversations:
   # external_images:
   #   enabled: false  # Allow external HTTPS images (default: false)
 
+# Adaptive ACP/MCP pre-warming thresholds (mitto-mw0)
+# Pre-warming warms a workspace, probes its health (session/new latency + MCP
+# readiness), and pins a warm keepalive session only for slow/broken workspaces.
+# Healthy workspaces are left alone (GC reaps them).
+# prewarm:
+#   session_new_fast: "10s"        # T_fast: session/new latency at/under which a workspace is "fast"
+#   mcp_ready: "10s"               # T_mcp: max time for all configured MCP servers to be reachable
+#   healthy_probes_to_unpin: 3     # Hysteresis: consecutive healthy probes required before unpinning
+#   max_pin_duration: "30m"        # Cap on how long a pinned session is held (use "disabled" for no cap)
+#   max_pinned_workspaces: 5       # Blast-radius cap on simultaneously-pinned workspaces
+
 # Permission handling configuration
 # Controls how permission requests from agents are handled.
 # Permission requests occur when an agent wants to perform sensitive operations

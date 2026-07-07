@@ -1173,6 +1173,21 @@ func (p *SharedACPProcess) RecommendedLoadTimeout(hasMCPServers bool) time.Durat
 	return p.config.MCPInitTimeout
 }
 
+// MCPInitDone reports whether the shared process's MCP-init window has
+// closed (the agent's first successful RPC observed). Used by the adaptive
+// pre-warming controller (mitto-mw0) to compute the health verdict.
+func (p *SharedACPProcess) MCPInitDone() bool {
+	return p.mcpInitDone.Load()
+}
+
+// MCPInitTimedOut reports whether the shared process's stderr monitor has
+// seen the agent report its internal MCP-init wait budget elapsed (a hard
+// "MCP is broken" signal). Used by the adaptive pre-warming controller
+// (mitto-mw0) to compute the health verdict.
+func (p *SharedACPProcess) MCPInitTimedOut() bool {
+	return p.mcpInitTimedOut.Load()
+}
+
 // beginMCPInitWindow prepares per-RPC MCP-init lifecycle tracking (mitto-8ul.1):
 // it (re-)creates a fresh timeout channel so a signal from a previous RPC does not
 // fire on this one, and clears the mcpInitTimedOut flag if it was set. Returns the

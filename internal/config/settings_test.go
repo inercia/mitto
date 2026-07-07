@@ -559,6 +559,120 @@ func TestParseMcpInitTimeout(t *testing.T) {
 	}
 }
 
+// TestPrewarmConfig_Defaults guards the PrewarmConfig accessor/parse helpers
+// added for mitto-mw0. Empty struct and nil receiver must both return the
+// documented defaults; unknown string values fall back to the defaults; the
+// "disabled" MaxPinDuration returns (0, false).
+func TestPrewarmConfig_Defaults(t *testing.T) {
+	// Nil receiver → all defaults.
+	var nilCfg *PrewarmConfig
+	if d, ok := nilCfg.ParseSessionNewFast(); d != 10*time.Second || !ok {
+		t.Errorf("nil ParseSessionNewFast() = (%s, %t), want (10s, true)", d, ok)
+	}
+	if d, ok := nilCfg.ParseMcpReady(); d != 10*time.Second || !ok {
+		t.Errorf("nil ParseMcpReady() = (%s, %t), want (10s, true)", d, ok)
+	}
+	if d, ok := nilCfg.ParseMaxPinDuration(); d != 30*time.Minute || !ok {
+		t.Errorf("nil ParseMaxPinDuration() = (%s, %t), want (30m, true)", d, ok)
+	}
+	if n := nilCfg.GetHealthyProbesToUnpin(); n != 3 {
+		t.Errorf("nil GetHealthyProbesToUnpin() = %d, want 3", n)
+	}
+	if n := nilCfg.GetMaxPinnedWorkspaces(); n != 5 {
+		t.Errorf("nil GetMaxPinnedWorkspaces() = %d, want 5", n)
+	}
+
+	// Empty struct → same defaults as nil.
+	empty := &PrewarmConfig{}
+	if d, _ := empty.ParseSessionNewFast(); d != 10*time.Second {
+		t.Errorf("empty ParseSessionNewFast() = %s, want 10s", d)
+	}
+	if d, _ := empty.ParseMcpReady(); d != 10*time.Second {
+		t.Errorf("empty ParseMcpReady() = %s, want 10s", d)
+	}
+	if d, _ := empty.ParseMaxPinDuration(); d != 30*time.Minute {
+		t.Errorf("empty ParseMaxPinDuration() = %s, want 30m", d)
+	}
+	if n := empty.GetHealthyProbesToUnpin(); n != 3 {
+		t.Errorf("empty GetHealthyProbesToUnpin() = %d, want 3", n)
+	}
+	if n := empty.GetMaxPinnedWorkspaces(); n != 5 {
+		t.Errorf("empty GetMaxPinnedWorkspaces() = %d, want 5", n)
+	}
+
+	// Explicit values parse; unknown values fall back to default.
+	cases := []struct {
+		name  string
+		cfg   PrewarmConfig
+		snf   time.Duration
+		mcp   time.Duration
+		pin   time.Duration
+		pinOk bool
+	}{
+		{"explicit", PrewarmConfig{SessionNewFast: "5s", McpReady: "20s", MaxPinDuration: "1h"}, 5 * time.Second, 20 * time.Second, time.Hour, true},
+		{"disabled_pin", PrewarmConfig{MaxPinDuration: "disabled"}, 10 * time.Second, 10 * time.Second, 0, false},
+		{"unknown", PrewarmConfig{SessionNewFast: "bogus", McpReady: "bogus", MaxPinDuration: "bogus"}, 10 * time.Second, 10 * time.Second, 30 * time.Minute, true},
+	}
+	for _, tc := range cases {
+		if d, _ := tc.cfg.ParseSessionNewFast(); d != tc.snf {
+			t.Errorf("[%s] ParseSessionNewFast() = %s, want %s", tc.name, d, tc.snf)
+		}
+		if d, _ := tc.cfg.ParseMcpReady(); d != tc.mcp {
+			t.Errorf("[%s] ParseMcpReady() = %s, want %s", tc.name, d, tc.mcp)
+		}
+		d, ok := tc.cfg.ParseMaxPinDuration()
+		if d != tc.pin || ok != tc.pinOk {
+			t.Errorf("[%s] ParseMaxPinDuration() = (%s, %t), want (%s, %t)", tc.name, d, ok, tc.pin, tc.pinOk)
+		}
+	}
+}
+
+// TestPrewarmConfig_LoadFromSettings verifies the Prewarm section is wired
+// through settings.json load and reaches Config.Prewarm intact (mitto-mw0).
+func TestPrewarmConfig_LoadFromSettings(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv(appdir.MittoDirEnv, tmpDir)
+	appdir.ResetCache()
+	t.Cleanup(appdir.ResetCache)
+
+	settingsPath := filepath.Join(tmpDir, appdir.SettingsFileName)
+	customSettings := `{
+		"acp_servers": [{"name": "test", "command": "cmd"}],
+		"prewarm": {
+			"session_new_fast": "5s",
+			"mcp_ready": "20s",
+			"healthy_probes_to_unpin": 4,
+			"max_pin_duration": "1h",
+			"max_pinned_workspaces": 7
+		}
+	}`
+	if err := os.WriteFile(settingsPath, []byte(customSettings), 0644); err != nil {
+		t.Fatalf("failed to create test settings.json: %v", err)
+	}
+	cfg, err := LoadSettings()
+	if err != nil {
+		t.Fatalf("LoadSettings() failed: %v", err)
+	}
+	if cfg.Prewarm == nil {
+		t.Fatal("Prewarm config should not be nil")
+	}
+	if d, _ := cfg.Prewarm.ParseSessionNewFast(); d != 5*time.Second {
+		t.Errorf("SessionNewFast = %s, want 5s", d)
+	}
+	if d, _ := cfg.Prewarm.ParseMcpReady(); d != 20*time.Second {
+		t.Errorf("McpReady = %s, want 20s", d)
+	}
+	if n := cfg.Prewarm.GetHealthyProbesToUnpin(); n != 4 {
+		t.Errorf("HealthyProbesToUnpin = %d, want 4", n)
+	}
+	if d, ok := cfg.Prewarm.ParseMaxPinDuration(); d != time.Hour || !ok {
+		t.Errorf("MaxPinDuration = (%s, %t), want (1h, true)", d, ok)
+	}
+	if n := cfg.Prewarm.GetMaxPinnedWorkspaces(); n != 7 {
+		t.Errorf("MaxPinnedWorkspaces = %d, want 7", n)
+	}
+}
+
 func TestContextFlushCommand_RoundTrip(t *testing.T) {
 	original := &Config{
 		ACPServers: []ACPServer{

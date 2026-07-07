@@ -63,6 +63,8 @@ type Settings struct {
 	UI UIConfig `json:"ui,omitempty"`
 	// Session contains session storage limits configuration
 	Session *SessionConfig `json:"session,omitempty"`
+	// Prewarm contains adaptive ACP/MCP pre-warming thresholds (mitto-mw0)
+	Prewarm *PrewarmConfig `json:"prewarm,omitempty"`
 	// Conversations contains global conversation processing configuration
 	Conversations *ConversationsConfig `json:"conversations,omitempty"`
 	// Permissions contains global permission handling configuration
@@ -329,6 +331,149 @@ func (c *SessionConfig) GetStartupLoopDelay() time.Duration {
 	return time.Duration(c.StartupLoopDelaySeconds) * time.Second
 }
 
+// PrewarmConfig represents adaptive ACP/MCP pre-warming thresholds (mitto-mw0).
+// Pre-warming warms a workspace, probes its health (session/new latency + MCP
+// readiness), and pins a warm keepalive session only for slow/broken workspaces.
+type PrewarmConfig struct {
+	// SessionNewFast is T_fast: session/new latency at/under which a workspace is
+	// considered "fast" and does NOT need pinning. Aligned with the startup
+	// watchdog WARN threshold at 10s.
+	// Values: "" (default, 10s), "5s", "10s", "20s", "30s".
+	SessionNewFast string `json:"session_new_fast,omitempty"`
+	// McpReady is T_mcp: max time for all configured MCP servers to be reachable
+	// before the workspace is flagged as slow.
+	// Values: "" (default, 10s), "5s", "10s", "20s", "30s".
+	McpReady string `json:"mcp_ready,omitempty"`
+	// HealthyProbesToUnpin is the hysteresis N: consecutive healthy probes
+	// required before unpinning a pinned workspace. Default: 3.
+	HealthyProbesToUnpin int `json:"healthy_probes_to_unpin,omitempty"`
+	// MaxPinDuration caps how long a pinned keepalive session is held before
+	// giving up + alerting. "disabled" means no cap.
+	// Values: "" (default, 30m), "disabled", "5m", "15m", "30m", "1h", "2h".
+	MaxPinDuration string `json:"max_pin_duration,omitempty"`
+	// MaxPinnedWorkspaces is the blast-radius cap on simultaneously-pinned
+	// workspaces. Default: 5.
+	MaxPinnedWorkspaces int `json:"max_pinned_workspaces,omitempty"`
+}
+
+// Prewarm defaults (mitto-mw0).
+const (
+	DefaultPrewarmSessionNewFast       = 10 * time.Second
+	DefaultPrewarmMcpReady             = 10 * time.Second
+	DefaultPrewarmHealthyProbesToUnpin = 3
+	DefaultPrewarmMaxPinDuration       = 30 * time.Minute
+	DefaultPrewarmMaxPinnedWorkspaces  = 5
+)
+
+// ValidSessionNewFast lists accepted values for PrewarmConfig.SessionNewFast.
+var ValidSessionNewFast = []string{"", "5s", "10s", "20s", "30s"}
+
+// GetSessionNewFast returns the SessionNewFast string, or "" if not set.
+func (c *PrewarmConfig) GetSessionNewFast() string {
+	if c == nil {
+		return ""
+	}
+	return c.SessionNewFast
+}
+
+// ParseSessionNewFast converts the SessionNewFast string to a time.Duration.
+// Returns (duration, true) — this threshold is always enabled. Empty/unknown
+// values fall back to the 10s default.
+func (c *PrewarmConfig) ParseSessionNewFast() (time.Duration, bool) {
+	switch c.GetSessionNewFast() {
+	case "", "10s":
+		return DefaultPrewarmSessionNewFast, true
+	case "5s":
+		return 5 * time.Second, true
+	case "20s":
+		return 20 * time.Second, true
+	case "30s":
+		return 30 * time.Second, true
+	default:
+		return DefaultPrewarmSessionNewFast, true
+	}
+}
+
+// ValidMcpReady lists accepted values for PrewarmConfig.McpReady.
+var ValidMcpReady = []string{"", "5s", "10s", "20s", "30s"}
+
+// GetMcpReady returns the McpReady string, or "" if not set.
+func (c *PrewarmConfig) GetMcpReady() string {
+	if c == nil {
+		return ""
+	}
+	return c.McpReady
+}
+
+// ParseMcpReady converts the McpReady string to a time.Duration.
+// Returns (duration, true) — this threshold is always enabled. Empty/unknown
+// values fall back to the 10s default.
+func (c *PrewarmConfig) ParseMcpReady() (time.Duration, bool) {
+	switch c.GetMcpReady() {
+	case "", "10s":
+		return DefaultPrewarmMcpReady, true
+	case "5s":
+		return 5 * time.Second, true
+	case "20s":
+		return 20 * time.Second, true
+	case "30s":
+		return 30 * time.Second, true
+	default:
+		return DefaultPrewarmMcpReady, true
+	}
+}
+
+// GetHealthyProbesToUnpin returns the hysteresis count, or the default (3)
+// when unset or non-positive.
+func (c *PrewarmConfig) GetHealthyProbesToUnpin() int {
+	if c == nil || c.HealthyProbesToUnpin <= 0 {
+		return DefaultPrewarmHealthyProbesToUnpin
+	}
+	return c.HealthyProbesToUnpin
+}
+
+// ValidMaxPinDurations lists accepted values for PrewarmConfig.MaxPinDuration.
+var ValidMaxPinDurations = []string{"", "disabled", "5m", "15m", "30m", "1h", "2h"}
+
+// GetMaxPinDuration returns the MaxPinDuration string, or "" if not set.
+func (c *PrewarmConfig) GetMaxPinDuration() string {
+	if c == nil {
+		return ""
+	}
+	return c.MaxPinDuration
+}
+
+// ParseMaxPinDuration converts the MaxPinDuration string to a time.Duration.
+// Returns (duration, true) when a cap applies, or (0, false) when "disabled"
+// (no cap). Empty/unknown values fall back to the 30m default.
+func (c *PrewarmConfig) ParseMaxPinDuration() (time.Duration, bool) {
+	switch c.GetMaxPinDuration() {
+	case "disabled":
+		return 0, false
+	case "", "30m":
+		return DefaultPrewarmMaxPinDuration, true
+	case "5m":
+		return 5 * time.Minute, true
+	case "15m":
+		return 15 * time.Minute, true
+	case "1h":
+		return time.Hour, true
+	case "2h":
+		return 2 * time.Hour, true
+	default:
+		return DefaultPrewarmMaxPinDuration, true
+	}
+}
+
+// GetMaxPinnedWorkspaces returns the blast-radius cap, or the default (5)
+// when unset or non-positive.
+func (c *PrewarmConfig) GetMaxPinnedWorkspaces() int {
+	if c == nil || c.MaxPinnedWorkspaces <= 0 {
+		return DefaultPrewarmMaxPinnedWorkspaces
+	}
+	return c.MaxPinnedWorkspaces
+}
+
 // ScannerDefenseConfig holds configuration for the scanner defense system.
 type ScannerDefenseConfig struct {
 	// Enabled controls whether scanner defense is active.
@@ -399,6 +544,7 @@ func (s *Settings) ToConfig() *Config {
 		Web:               s.Web,
 		UI:                s.UI,
 		Session:           s.Session,
+		Prewarm:           s.Prewarm,
 		Conversations:     s.Conversations,
 		Permissions:       s.Permissions,
 		RestrictedRunners: s.RestrictedRunners,
@@ -421,6 +567,7 @@ func ConfigToSettings(cfg *Config) *Settings {
 		Web:               cfg.Web,
 		UI:                cfg.UI,
 		Session:           cfg.Session,
+		Prewarm:           cfg.Prewarm,
 		Conversations:     cfg.Conversations,
 		Permissions:       cfg.Permissions,
 		RestrictedRunners: cfg.RestrictedRunners,

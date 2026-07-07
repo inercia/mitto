@@ -294,6 +294,19 @@ gcTier1:
 				}
 				continue
 			}
+			// Skip pinned keepalive sessions: the adaptive pre-warming path pins a
+			// warm session for slow/broken workspaces so GC does not reap it before
+			// the first real prompt. An expired PinExpiry (non-nil and in the past)
+			// falls through so the max-pin-duration cap self-heals a stuck pin.
+			if s.Pinned && (s.PinExpiry == nil || now.Before(*s.PinExpiry)) {
+				if m.logger != nil {
+					m.logger.Debug("GC: skipping session (pinned)",
+						"session_id", s.SessionID,
+						"workspace_uuid", workspaceUUID,
+						"pin_reason", s.PinReason)
+				}
+				continue
+			}
 
 			// Determine if this is a loop session eligible for suspension.
 			// A loop session qualifies when:
@@ -461,6 +474,19 @@ gcTier1:
 		if sessions, ok := sessionsByWorkspace[workspaceUUID]; ok && len(sessions) > 0 {
 			// Sessions still present — reset the clock.
 			m.lastSessionSeen[workspaceUUID] = now
+			continue
+		}
+
+		// Adaptive pre-warming pin (mitto-mw0): a pinned workspace holds a warm
+		// PurposeKeepAlive auxiliary session but may have no BackgroundSessions.
+		// Skip Tier 2 shutdown so the process stays warm for the first real prompt.
+		// An expired pin falls through so the max-pin-duration cap self-heals.
+		if m.IsPinned(workspaceUUID) {
+			m.lastSessionSeen[workspaceUUID] = now
+			if m.logger != nil {
+				m.logger.Debug("GC: skipping process shutdown (pinned by prewarm)",
+					"workspace_uuid", workspaceUUID)
+			}
 			continue
 		}
 

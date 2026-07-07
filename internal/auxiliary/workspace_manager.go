@@ -29,6 +29,13 @@ const (
 	PurposeMCPCheck      = "mcp-check"
 	PurposeMCPTools      = "mcp-tools"
 
+	// PurposeKeepAlive is a warm keepalive auxiliary session held by the
+	// adaptive pre-warming controller (mitto-mw0) for slow/broken workspaces.
+	// It carries no traffic; its sole job is to hold MCP-connection warmth so
+	// the first real prompt hits an already-warm agent. Exempt from
+	// AuxIdleTimeout while the workspace is pinned.
+	PurposeKeepAlive = "keepalive"
+
 	// PurposeProcessorPrefix is the prefix for processor-scoped auxiliary sessions.
 	// Each prompt-mode processor gets its own session: "processor:<name>".
 	PurposeProcessorPrefix = "processor:"
@@ -115,6 +122,15 @@ type WorkspaceAuxiliaryManager struct {
 	// mcpToolsTTL bounds reuse of a persisted snapshot; defaults to
 	// defaultMCPToolsTTL. Overridable in tests for speed.
 	mcpToolsTTL time.Duration
+
+	// PrewarmPinReevaluator, when set, is called once per EnsureMCPBackoffRetry
+	// round (after each MCP probe) so the adaptive pre-warming controller
+	// (mitto-mw0) can re-run its health probe and apply hysteresis/expiry.
+	// The web layer wires this to (*acpproc.ACPProcessManager).ReevaluatePrewarmPin
+	// so pin/unpin decisions ride the same schedule as MCP reachability probes
+	// without introducing an import cycle (auxiliary → acpproc is forbidden).
+	// nil (tests/CLI) disables re-evaluation.
+	PrewarmPinReevaluator func(workspaceUUID string)
 }
 
 // NewWorkspaceAuxiliaryManager creates a new workspace-scoped auxiliary manager.
@@ -730,6 +746,12 @@ func (m *WorkspaceAuxiliaryManager) EnsureMCPBackoffRetry(ctx context.Context, w
 		probe := func(pctx context.Context) mcpdiscovery.ServerToolsResult {
 			results, err := m.StdioToolsDiscoverer(pctx, workspaceUUID)
 			if err != nil {
+				// Re-evaluate the adaptive pre-warming pin even on discovery
+				// error — an unhealthy probe here should keep the pin held
+				// (or refresh the hysteresis reset).
+				if m.PrewarmPinReevaluator != nil {
+					m.PrewarmPinReevaluator(workspaceUUID)
+				}
 				return mcpdiscovery.ServerToolsResult{Server: workspaceUUID, Reachable: false, Err: err}
 			}
 
@@ -753,6 +775,16 @@ func (m *WorkspaceAuxiliaryManager) EnsureMCPBackoffRetry(ctx context.Context, w
 			merged, changed := m.mergeMCPToolsAdditive(workspaceUUID, reachableTools)
 			if changed && onUpdate != nil {
 				onUpdate(merged)
+			}
+
+			// Adaptive pre-warming re-evaluation (mitto-mw0): once per probe
+			// round, ask the pin controller to re-run its health verdict.
+			// Piggybacking on the MCP backoff loop keeps the pin/unpin cadence
+			// aligned with actual MCP reachability changes and needs no extra
+			// timer. Errors and short-circuit exits are covered by the pre-
+			// return re-evaluation above and the final ExpirePinsAndAlert.
+			if m.PrewarmPinReevaluator != nil {
+				m.PrewarmPinReevaluator(workspaceUUID)
 			}
 
 			// Stop only when every configured server responded (none unreachable).
