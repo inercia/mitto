@@ -1,5 +1,5 @@
 name: 'Support: continue conversation'
-description: 'Find a Slack channel conversation you have been participating in, summarize it, and help craft a reply. Posts to Slack only on your approval.'
+description: 'Find a Slack channel conversation you have been participating in, summarize it, and help craft a reply. Proposes the reply for review, posts to Slack only on your approval, and records it on a tracked bead.'
 group: Support
 backgroundColor: '#C8E6C9'
 icon: chat-bubble
@@ -141,14 +141,43 @@ prompt: |-
     1. **No direct addressing** — do not address the user by name.
     2. **No follow-up offers** — do not end with "let me know if you need anything else".
     3. **Express uncertainty when appropriate** — "I think that…", "Based on my understanding…".
-  - Use `mitto_ui_textbox` to present the proposed reply for review/editing (Title "📤 Review reply
-    before posting to Slack", Result "text", Abort true, Timeout 300).
-  - **If the user submits:** the returned text (possibly edited) is the final message. Post it with
-    the post-reply-to-thread tool using channel `{{ $channel }}` and the thread's parent `thread_ts`.
-    Confirm success and show the permalink.
-  - **If the user aborts:** acknowledge and end. Do **NOT** post anything to Slack.
+  - **ALWAYS** propose the reply for review first — never post without it. Use `mitto_ui_textbox` to
+    present the proposed reply for review/editing (Title "📤 Review reply before posting to Slack",
+    Result "text", Abort true, Timeout 300). The tool returns `{ result, changed, aborted, timed_out }`.
+  - **If the user submits** (`aborted` and `timed_out` both false): the returned `result` (possibly
+    edited) is the final message. Post it with the post-reply-to-thread tool using channel
+    `{{ $channel }}` and the thread's parent `thread_ts`. Confirm success and show the permalink. Then
+    record it on a bead in Step 7.
+  - **If the user aborts or the dialog times out:** acknowledge and end. Do **NOT** post anything to
+    Slack. (On timeout, `mitto_ui_notify` that you assumed they were away and nothing was posted.)
+
+  ## Step 7: Save the reply on a bead (always, after posting)
+
+  Every posted reply must be recorded on a tracked bead so the conversation is never lost and future
+  support prompts can pick it up. Run `bd` from the workspace root (if `bd list` reports no database,
+  run `bd init` first).
+
+  1. **Deduplicate by thread.** Look up an existing bead for this thread:
+     `bd list --metadata-field slack_thread_ts=<thread_ts> --all`. If one exists, **reuse** it —
+     never create a second bead for the same thread.
+  2. **If none exists, create one now** (`$'...'` so `\n` become real newlines):
+     ```
+     bd create "<short thread summary>" -t task -p P2 -l support,support-question \
+       -d $'# Question\n\n<original question>\n\n# User\n\n<display name>\n\n# Links\n\n[Slack]({{ $ws }}/archives/{{ $channel }}/p<thread_ts_without_dot>)\n' \
+       --metadata '{"slack_thread_ts":"<thread_ts>","slack_channel":"{{ $channel }}","slack_url":"{{ $ws }}/archives/{{ $channel }}/p<thread_ts_without_dot>"}'
+     ```
+     Also add an `[INBOUND]` comment with the original customer question for history.
+  3. **Log the posted reply** — add a markdown `[OUTBOUND]` comment with the final text and the
+     permalink (preserve markdown with `$'...'` or `printf '%s' "$c" | bd comment <id> --stdin`):
+     Header `**[OUTBOUND us · POSTED · YYYY-MM-DD HH:MM UTC]**`.
+  4. **Set state** (single `state:*` label — never `bd set-state`): swap in place to
+     `state:awaiting-customer` (`bd update <id> --remove-label state:<previous> --add-label state:awaiting-customer`;
+     for a brand-new bead just `--add-label state:awaiting-customer`).
 
   ## Notes
 
-  - **Slack message approval**: NEVER post to Slack without explicit user approval.
+  - **Slack message approval**: NEVER post to Slack without explicit user review and approval via the
+    editable `mitto_ui_textbox`.
+  - **Every posted reply is saved on a bead** (create-or-reuse by `slack_thread_ts`), so the thread is
+    tracked exactly like threads found by **"Support: watch channel"**.
   - Thread timestamps: convert `1234567890.123456` → `p1234567890123456` for URLs.

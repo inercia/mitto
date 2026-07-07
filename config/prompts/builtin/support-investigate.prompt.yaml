@@ -129,17 +129,36 @@ prompt: |-
   - **Confident answer found** → record a **proposed reply** as an `[OUTBOUND]`-style *draft* comment
     clearly marked **"DRAFT — not yet posted"** (this is the same draft **"Support: reply to user"**
     reuses). Then set `state:drafting`
-    (`bd update <id> --remove-label state:gathering-info --add-label state:drafting`) and
-    `mitto_ui_notify` (success) that a draft is ready to review with **"Support: reply to user"**.
+    (`bd update <id> --remove-label state:gathering-info --add-label state:drafting`) and hand off per
+    Step 7.
   - **Still missing customer detail** → set `state:need-info`
     (`bd update <id> --remove-label state:gathering-info --add-label state:need-info`), note what is
-    missing, and `mitto_ui_notify` (info) to run **"Support: gather more information"**.
+    missing, and `mitto_ui_notify` (info) to run **"Support: gather more information"**. Then stop.
   - **Inconclusive** → leave `state:gathering-info`, record what is blocking, and `mitto_ui_notify`
-    (info) with the suggested next step.
+    (info) with the suggested next step. Then stop.
+
+  ## Step 7: Hand off the draft (do NOT dump it as chat text, do NOT ask for approval here)
+
+  Once a draft is saved and the bead is `state:drafting`, your job is done. **Posting — with an
+  editable review and explicit approval — is the job of "Support: reply to user", not this prompt.**
+
+  - ❌ **NEVER** paste the full draft into the chat as plain text.
+  - ❌ **NEVER** ask a free-text "approve / hold / post?" question. This prompt does not post, so it
+    must not offer to post.
+  - ✅ **Persist first** — the draft is already saved as an `[OUTBOUND]` DRAFT comment on the bead
+    (Step 6); that bead comment is the single source of truth for the reply. Do not rely on the chat
+    transcript to carry the draft.
+  - ✅ Send a short **`mitto_ui_notify`** (success): a draft is ready and **saved on the bead**, review
+    and post it with **"Support: reply to user"**. Include the bead ID. Do not include the full draft
+    body in the notification — just confirm it is saved and where to review it.
+  - ✅ End with a brief one-line chat summary (state is now `drafting`; draft saved on the bead;
+    next step is **"Support: reply to user"**). Do not reproduce the draft.
 
   ## Notes
 
   - Load the bead (`bd show` + `bd comments`) **before** investigating — it is the source of truth.
-  - This prompt is **investigate-and-record** — it never posts a reply to the Slack channel.
+  - This prompt is **investigate-and-record** — it never posts a reply to the Slack channel, and it
+    never presents the draft for approval. It saves the draft on the bead and hands off.
   - Keep the bead the single source of truth: log findings as `[CONTEXT]`, the draft as a marked
-    `[OUTBOUND]` DRAFT, and every state change as `[STATE]`.
+    `[OUTBOUND]` DRAFT, and every state change as `[STATE]`. The chat transcript is **not** a store —
+    the draft must live on the bead, never only in chat.

@@ -50,15 +50,20 @@ prompt: |-
   {{- if and .Session.IsLoop (not .Session.IsLoopForced) }}
 
   **Silent scheduled run** — nobody is watching.
-  - Use **only** `mitto_ui_notify`. Do **NOT** call `mitto_ui_options` / `mitto_ui_form` /
-    `mitto_ui_textbox` — they would block with no one to answer.
-  - Do triage + reconcile beads normally. If you do **not** yet know how to gather answers (see the
-    **Knowledge self-check** below), notify and **skip drafting** this run.
+  - Use **only** `mitto_ui_notify` for status and summaries. Do **NOT** call `mitto_ui_options` /
+    `mitto_ui_form` / `mitto_ui_textbox` for anything **except the knowledge-file gate below** —
+    they would otherwise block with no one to answer.
+  - **Exception — the knowledge-file gate.** If `.mitto/slack-support-{{ $channel }}.md` is missing
+    you cannot answer this channel, so you MAY use a blocking `mitto_ui_form` / `mitto_ui_textbox`
+    **with a short `timeout_seconds`** to ask for the instructions and save the file. If nobody
+    answers before the timeout, fall back to a `mitto_ui_notify` warning, then continue triage +
+    reconcile but **skip drafting** this run — the next iteration asks again.
+  - Otherwise do triage + reconcile beads normally.
   {{- else }}
 
-  **Interactive run** (first send, or force-triggered ▶️) — a user may be present, so you MAY use the
-  interactive `mitto_ui_*` tools. This is the moment to run the **Knowledge self-check** and, if
-  needed, ask the user how to gather answers and persist it to this channel's knowledge file.
+  **Interactive run** (first send, or force-triggered ▶️) — a user is present, so use the interactive
+  `mitto_ui_*` tools freely. Run the **knowledge-file gate first**: if the file is missing, ask the
+  user how to gather answers and persist it before doing anything else.
   {{- end }}
 
   ## CRITICAL: user interaction rules
@@ -118,7 +123,7 @@ prompt: |-
     | `resolved` | answered/accepted (also `bd close <id>`) |
     | `stale` | auto-closed after 10+ days of inactivity (also `bd close <id>`) |
 
-  ## Knowledge self-check: the per-channel knowledge file
+  ## Knowledge-file gate: check this FIRST, every iteration
 
   Before you can help a customer you must know a **reliable way to gather answers** for this specific
   channel's domain. That knowledge is stored **per channel** in
@@ -126,26 +131,35 @@ prompt: |-
   channel maintains its own knowledge base (which repos to search, which docs/runbooks to consult,
   common patterns, escalation paths, and how to use any relevant MCP tools).
 
-  1. **Read it.** Check whether `.mitto/slack-support-{{ $channel }}.md` exists.
-     - **If it exists** — read it in full at the start of the run. It is the **authoritative guide**
-       for how to gather information and answer questions for this channel. Use it in Step 4.
-     - **If it does NOT exist** — you do not yet know how to answer reliably for this channel:
-       - **Interactive run:** create the `.mitto/` directory if missing, then ASK the user (via
-         `mitto_ui_form` / `mitto_ui_textbox`) for channel-specific guidance: which repos to search,
-         which docs/runbooks/knowledge bases to consult, common patterns, escalation paths, and how
-         to use any relevant MCP tools. **Do not be satisfied until you get concrete, usable
-         guidance** — if the reply is vague, re-ask for specifics. Write it to
-         `.mitto/slack-support-{{ $channel }}.md` (create the file), then confirm the write. From then
-         on, every run will find it in step 1.
-       - **Silent scheduled run:** nobody is watching, so do **NOT** block. Send a `mitto_ui_notify`
-         (warning) explaining that no knowledge file exists yet for this channel and the user should
-         force-run this prompt (▶️) once to create it. Continue triage + keeping beads in sync, but
-         **skip drafting** answers this run.
+  **This gate runs first, before every numbered step below — on *every* iteration, not just the
+  first.** A channel that never had a knowledge file keeps getting asked until one exists.
+
+  1. **Check + create.** At the **start of every iteration**, check whether
+     `.mitto/slack-support-{{ $channel }}.md` exists.
+     - **If it exists** — read it in full now. It is the **authoritative guide** for how to gather
+       information and answer questions for this channel. Use it in Step 4.
+     - **If it does NOT exist** — you do not yet know how to answer reliably, so **ask for the
+       instructions and save them before proceeding** (this applies on every run, silent or
+       interactive):
+       - Create the `.mitto/` directory if missing, then ASK the user (via `mitto_ui_form` /
+         `mitto_ui_textbox`) for channel-specific guidance: which repos to search, which
+         docs/runbooks/knowledge bases to consult, common patterns, escalation paths, and how to use
+         any relevant MCP tools. **Do not be satisfied until you get concrete, usable guidance** — if
+         the reply is vague, re-ask for specifics. Write it to `.mitto/slack-support-{{ $channel }}.md`
+         (create the file), then confirm the write. From then on, every run finds it above.
+       - **On a silent scheduled run**, use a **short `timeout_seconds`** on the ask so an unattended
+         tick does not hang. If nobody answers before it times out, send a `mitto_ui_notify` (warning)
+         that no knowledge file exists yet, then continue triage + keeping beads in sync but **skip
+         drafting** this run. The next iteration asks again.
   2. **Keep it current.** Whenever you learn a new useful pattern while working a question this run
      (a better search, a docs link that answered it, a recurring issue + resolution, an escalation
      contact), **append it** to `.mitto/slack-support-{{ $channel }}.md` so future runs benefit.
 
   ## Instructions
+
+  > **Run the knowledge-file gate above FIRST**, at the start of every iteration — before Step 0 and
+  > everything else. If `.mitto/slack-support-{{ $channel }}.md` is missing, ask for the instructions
+  > and save the file before triaging.
 
   ### 0. Ensure beads ready + housekeeping
 
@@ -197,11 +211,11 @@ prompt: |-
     answer: set `state:gathering-info`, follow **`.mitto/slack-support-{{ $channel }}.md`** to gather
     the answer, then record a **proposed reply** as an `[OUTBOUND]`-style *draft* comment (clearly
     marked "DRAFT — not yet posted") and set `state:drafting`. If you learn a reusable pattern,
-    append it to the knowledge file (see the Knowledge self-check).
+    append it to the knowledge file (see the knowledge-file gate).
   - If you cannot answer without more detail from the customer, set `state:need-info` and note what
     is missing (the interactive **"Support: gather more information"** prompt will ask them).
   - **Never post to Slack here.** Drafts wait for review in **"Support: reply to user"**.
-  - If no knowledge file exists for this channel yet, skip this step (see the Knowledge self-check).
+  - If no knowledge file exists for this channel yet, skip this step (see the knowledge-file gate).
 
   ### 5. Summary
 

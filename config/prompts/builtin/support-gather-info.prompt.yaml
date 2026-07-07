@@ -92,40 +92,70 @@ prompt: |-
   - Show a clickable link to the thread for context (use the stored `slack_url`):
     `📤 Asking in [this thread](<slack_url>)`.
 
-  ## Step 5: Review in an editable textbox
+  ## Step 5: Persist the draft to the bead (before review)
 
-  - Use `mitto_ui_textbox`:
+  Always save the proposed clarifying message on the bead **before** opening the review dialog, so
+  nothing is lost if the user is away. Record it as a DRAFT `[OUTBOUND]` comment (preserve the markdown
+  with `$'...'` or stdin):
+  ```
+  printf '%s' "$draft_markdown" | bd comment <id> --stdin
+  ```
+  Header: `**[OUTBOUND us · DRAFT (request for info) — not yet posted · YYYY-MM-DD HH:MM UTC]**`, then
+  the message text. Leave the bead in `state:need-info` for now.
+
+  ## Step 6: Review in an editable textbox
+
+  - **ALWAYS** propose the message for review first — never post without it. Use `mitto_ui_textbox`:
     - **Title**: "📤 Review clarifying question before posting to Slack"
     - **Text**: the proposed message
     - **Result**: "text"
     - **Abort**: true
     - **Timeout**: 300
+  - The tool returns `{ result, changed, aborted, timed_out }`. Branch on these in Step 7. **Do NOT
+    post to Slack unless the user submits (Step 7 "On submit").**
 
-  ## Step 6: Post + log (on submit)
+  ## Step 7: Act on the textbox result
 
-  - The returned text (possibly edited) is the final message. Post it with the post-reply-to-thread
+  ### On submit (`aborted` and `timed_out` are both false)
+
+  - The returned `result` (possibly edited) is the final message. Post it with the post-reply-to-thread
     tool, using the stored `slack_channel` and the thread's parent `slack_thread_ts`.
   - Confirm success and show the permalink (build it from the posted ts: `<slack_url base>/archives/
     <slack_channel>/p<posted_ts_without_dot>`).
-  - **Log to the bead** — add a markdown `[OUTBOUND]` comment with the final text and the permalink.
-    Preserve the markdown layout with `$'...'` (real `\n`) or stdin:
+  - **Log to the bead** — add a markdown `[OUTBOUND]` comment (this one is the **posted** message, not
+    a draft) with the final text and the permalink. Preserve the markdown layout with `$'...'` (real
+    `\n`) or stdin:
     ```
     printf '%s' "$comment_markdown" | bd comment <id> --stdin
     ```
-    Header: `**[OUTBOUND us · YYYY-MM-DD HH:MM UTC]**` — and note in the body that this is a request
-    for more information.
+    Header: `**[OUTBOUND us · POSTED (request for info) · YYYY-MM-DD HH:MM UTC]**` — note in the body
+    that this is a request for more information.
   - **Transition state** (same issue, no subtasks — never `bd set-state`):
     `bd update <id> --remove-label state:need-info --add-label state:awaiting-customer`.
     (If Step 2 continued from a different state, remove that state label instead.)
 
-  ## On abort
+  ### On timeout (`timed_out == true`)
 
-  - Do **NOT** post anything to Slack. Leave the bead in `state:need-info`.
-  - Acknowledge and stop.
+  The user is away — **do NOT post anything to Slack**, and do **not** re-open the dialog.
+
+  - If the user **edited** the text before the timeout (`changed == true` and a non-empty `result` is
+    returned), update the stored draft to that edited text: add a fresh DRAFT `[OUTBOUND]` comment
+    (header `**[OUTBOUND us · DRAFT (request for info, edited, not posted) · YYYY-MM-DD HH:MM UTC]**`)
+    so the latest version is on the bead. If it was not edited, the Step 5 draft already covers it.
+  - Leave the bead in `state:need-info`. `mitto_ui_notify` (info): "Review dialog timed out — assuming
+    you're away. Nothing posted; the draft is saved on the bead. Re-run **Support: gather more
+    information** when you're back." Then stop.
+
+  ### On abort (`aborted == true`)
+
+  - Do **NOT** post anything to Slack. Leave the bead in `state:need-info` (the saved draft stays
+    pending). Acknowledge and stop.
 
   ## Notes
 
   - Load the bead (`bd show` + `bd comments`) **before** drafting — it is the source of truth.
+  - The proposed message is **always** saved on the bead as a DRAFT `[OUTBOUND]` comment before review
+    and re-saved (as POSTED) after approval, so it is never lost even if the review dialog times out.
   - When the customer replies, the thread moves to `state:awaiting-us`; use **"Support: check
     status"** to pull the reply onto the bead, then **"Support: reply to user"** once we can answer.
   - **NEVER** post in the support channel without explicit review and approval.
