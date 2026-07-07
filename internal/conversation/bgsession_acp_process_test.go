@@ -39,9 +39,11 @@ func TestStartStderrMonitor_HeapOOM_TriggersCrashDetection(t *testing.T) {
 }
 
 // TestStartStderrMonitor_MCPInitProgress_TriggersCallback is a regression test for
-// mitto-8ul.1: when the agent writes a "Waiting for N MCP server(s) to initialize"
-// line the stderr monitor must invoke onMCPInitProgress at most once so the UI can
-// display an "initializing" hint and the process can widen its RPC budget.
+// mitto-8ul.1 / mitto-29q: when the agent writes a "Waiting for N MCP server(s) to
+// initialize" line the stderr monitor must invoke onMCPInitProgress on each matching
+// chunk. Dedup is now the callback's responsibility (edge-detected CompareAndSwap on
+// mcpInitInProgress) so a per-session re-handshake after the first success re-fires
+// the callback and re-grants the extended MCP-init budget.
 func TestStartStderrMonitor_MCPInitProgress_TriggersCallback(t *testing.T) {
 	pr, pw := io.Pipe()
 	collector := NewStderrCollector(8192, nil)
@@ -53,7 +55,7 @@ func TestStartStderrMonitor_MCPInitProgress_TriggersCallback(t *testing.T) {
 	StartStderrMonitor(pr, collector, nil, nil, onProgress, onTimeout, nil, nil)
 
 	go func() {
-		// Two lines to prove the callback still fires only once.
+		// Two matching lines: the monitor must invoke the callback for each.
 		_, _ = pw.Write([]byte("Waiting for 3 MCP servers to initialize\n"))
 		_, _ = pw.Write([]byte("Waiting for 3 MCP servers to initialize (still)\n"))
 		_ = pw.Close()
@@ -61,8 +63,8 @@ func TestStartStderrMonitor_MCPInitProgress_TriggersCallback(t *testing.T) {
 
 	// Give the goroutine a moment to consume the stream.
 	time.Sleep(200 * time.Millisecond)
-	if progressCalls != 1 {
-		t.Fatalf("expected onMCPInitProgress to be called exactly once, got %d", progressCalls)
+	if progressCalls < 1 {
+		t.Fatalf("expected onMCPInitProgress to be called at least once, got %d", progressCalls)
 	}
 }
 

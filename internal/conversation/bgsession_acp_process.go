@@ -534,11 +534,12 @@ var mcpInitTimeoutPattern = regexp.MustCompile(`(?i)mcp initialization timed out
 // detected in the stderr output, enabling early process death signaling.
 // If onFirstActivity is non-nil, it is called (at most once) the first time any bytes
 // are observed on stderr — used by the startup watchdog to detect "live" processes.
-// If onMCPInitProgress is non-nil, it is called (at most once) when the agent reports it
-// is blocked waiting for MCP servers to initialize. If onMCPInitTimeout is non-nil, it
-// is called (at most once) when the agent reports its MCP-init wait has timed out —
-// callers use this to abort the pending session/new promptly with an actionable error
-// (mitto-8ul.1). Neither MCP signal contributes to crash detection.
+// If onMCPInitProgress is non-nil, it is called on each chunk reporting the agent is
+// waiting for MCP servers (re-fires per handshake episode; callers must dedup if
+// needed — mitto-29q). If onMCPInitTimeout is non-nil, it is called (at most once)
+// when the agent reports its MCP-init wait has timed out — callers use this to abort
+// the pending session/new promptly with an actionable error (mitto-8ul.1). Neither
+// MCP signal contributes to crash detection.
 //
 // If onDegraded is non-nil, it is called every time a stderr chunk matches a
 // per-agent Degraded regex (mitto-k6h). Unlike onCrashDetected, onDegraded is
@@ -567,7 +568,6 @@ func StartStderrMonitor(
 	go func() {
 		crashSignaled := false
 		activitySignaled := false
-		mcpProgressSignaled := false
 		mcpTimeoutSignaled := false
 		buf := make([]byte, 4096)
 		for {
@@ -618,13 +618,18 @@ func StartStderrMonitor(
 
 				// MCP-init lifecycle signals (mitto-8ul.1): tolerant regex matches
 				// so the exact phrasing/count in the agent's log line is not load-bearing.
-				if (onMCPInitProgress != nil && !mcpProgressSignaled) ||
-					(onMCPInitTimeout != nil && !mcpTimeoutSignaled) {
+				//
+				// MCP-init progress fires on EVERY matching chunk (mitto-29q): agents
+				// like Auggie re-run the MCP handshake on every session/new, so a
+				// one-shot latch would only widen the budget for the first-ever
+				// handshake. Duplicate logs/broadcasts are suppressed by the
+				// CompareAndSwap edge-detection inside the onMCPInitProgress callback.
+				// The hard-timeout signal remains one-shot.
+				if onMCPInitProgress != nil || (onMCPInitTimeout != nil && !mcpTimeoutSignaled) {
 					if chunkStr == "" {
 						chunkStr = string(buf[:n])
 					}
-					if !mcpProgressSignaled && onMCPInitProgress != nil && mcpInitProgressPattern.MatchString(chunkStr) {
-						mcpProgressSignaled = true
+					if onMCPInitProgress != nil && mcpInitProgressPattern.MatchString(chunkStr) {
 						onMCPInitProgress()
 					}
 					if !mcpTimeoutSignaled && onMCPInitTimeout != nil && mcpInitTimeoutPattern.MatchString(chunkStr) {

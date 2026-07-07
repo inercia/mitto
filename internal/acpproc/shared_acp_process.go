@@ -245,9 +245,12 @@ type SharedACPProcessConfig struct {
 	// sessionCreateAttemptTimeout/sessionCreateTotalBudget are used. See
 	// SessionConfig.ParseMcpInitTimeout for the rationale (mitto-8ul.1).
 	MCPInitTimeout time.Duration
-	// OnMCPInitProgress is called at most once, from the stderr-monitor goroutine, the
-	// first time the agent reports it is blocked waiting for MCP servers to initialize.
+	// OnMCPInitProgress is called once per MCP-init handshake episode (re-armed
+	// after each successful session RPC), from the stderr-monitor goroutine, when
+	// the agent reports it is blocked waiting for MCP servers to initialize.
 	// Used by the web layer to emit an "MCP initializing" UI notification (mitto-8ul.1).
+	// Agents like Auggie re-run the MCP handshake on every session/new, so this
+	// callback fires again on subsequent per-session re-handshakes (mitto-29q).
 	// Optional.
 	OnMCPInitProgress func()
 	// OnMCPInitTimeout is called at most once when the agent reports its internal
@@ -348,20 +351,34 @@ type SharedACPProcess struct {
 	// to invalidate caches (e.g., auxiliary sessions) that reference old session IDs.
 	onRestart func()
 
-	// MCP-init lifecycle tracking (mitto-8ul.1). Set from the stderr-monitor goroutine.
-	// mcpInitInProgress flips to 1 when the agent first reports it is waiting for MCP
-	// servers to initialize on this process. Once a session/new (or session/load) call
-	// succeeds we treat the cold-start window as closed and revert to normal budgets.
-	// mcpInitTimedOut flips to 1 when the agent reports its internal MCP-init wait
-	// budget elapsed; the currently-pending NewSession call watches this via
-	// mcpInitTimeoutCh so it can abort promptly with an actionable error rather than
-	// waiting for the RPC deadline. mcpInitTimeoutCh is (re-)created per session/new
-	// attempt so a signal from a previous attempt does not fire spuriously.
+	// MCP-init lifecycle tracking (mitto-8ul.1, mitto-29q). Set from the stderr-monitor
+	// goroutine. mcpInitInProgress flips to true (edge-detected) when the agent reports
+	// it is waiting for MCP servers to initialize, and is cleared to false on each
+	// successful session/new or session/load RPC. Agents like Auggie re-run the MCP
+	// handshake on every session/new, so this field re-arms per handshake episode and
+	// is used by coldMCPBudget / RecommendedLoadTimeout to re-grant the extended budget
+	// for per-session re-handshakes even after mcpInitDone has latched (mitto-29q).
+	// mcpInitDone latches once the first session RPC succeeds; on its own it would
+	// starve every subsequent session on agents that re-handshake, hence the additional
+	// mcpInitInProgress gate. mcpInitTimedOut flips to true when the agent reports its
+	// internal MCP-init wait budget elapsed; the currently-pending NewSession call
+	// watches this via mcpInitTimeoutCh so it can abort promptly with an actionable
+	// error rather than waiting for the RPC deadline. mcpInitTimeoutCh is (re-)created
+	// per session/new attempt so a signal from a previous attempt does not fire
+	// spuriously.
 	mcpInitInProgress atomic.Bool
 	mcpInitDone       atomic.Bool
 	mcpInitTimedOut   atomic.Bool
 	mcpInitMu         sync.Mutex
 	mcpInitTimeoutCh  chan struct{}
+
+	// coldStartGate serializes concurrent NewSession/LoadSession callers on a
+	// still-cold process (mitto-8tb). N conversations racing their deferred
+	// session/new against a fresh shared process would each make the agent re-run
+	// its MCP handshake in parallel, multiplying MCP child processes (36-78 obs.)
+	// and self-inflicting saturation. The gate is a capacity-1 semaphore held only
+	// on the cold path (extendedBudget=true); warm calls bypass it entirely.
+	coldStartGate chan struct{}
 
 	// Logger
 	logger *slog.Logger
@@ -373,12 +390,13 @@ func NewSharedACPProcess(ctx context.Context, config SharedACPProcessConfig) (*S
 	processCtx, processCancel := context.WithCancel(ctx)
 
 	p := &SharedACPProcess{
-		config:      config,
-		client:      NewMultiplexClient(),
-		ctx:         processCtx,
-		ctxCancel:   processCancel,
-		logger:      config.Logger,
-		setModelSem: make(chan struct{}, 1),
+		config:        config,
+		client:        NewMultiplexClient(),
+		ctx:           processCtx,
+		ctxCancel:     processCancel,
+		logger:        config.Logger,
+		setModelSem:   make(chan struct{}, 1),
+		coldStartGate: make(chan struct{}, 1),
 	}
 
 	if err := p.startProcess(); err != nil {
@@ -545,12 +563,20 @@ func (p *SharedACPProcess) doStartProcess() (string, error) {
 		p.recordDegradedStderr()
 	}
 
-	// MCP-init lifecycle callbacks (mitto-8ul.1). Both are fired at most once per
-	// process lifetime by the stderr monitor. The pending NewSession call watches
-	// mcpInitTimeoutCh so it can abort promptly on a hard timeout signal instead of
-	// waiting for the RPC deadline.
+	// MCP-init lifecycle callbacks (mitto-8ul.1). The progress callback re-arms per
+	// handshake episode (mitto-29q); the timeout callback stays effectively one-shot
+	// per process because it closes mcpInitTimeoutCh. The pending NewSession call
+	// watches mcpInitTimeoutCh so it can abort promptly on a hard timeout signal
+	// instead of waiting for the RPC deadline.
 	onMCPInitProgress := func() {
-		p.mcpInitInProgress.Store(true)
+		// Edge-detected (mitto-29q): only act on the false->true transition so a
+		// handshake that logs "Waiting for MCP" repeatedly does not spam the log or
+		// the mcp_initializing broadcast. The window is re-armed after each success
+		// clears mcpInitInProgress, so a subsequent per-session re-handshake fires
+		// this again.
+		if !p.mcpInitInProgress.CompareAndSwap(false, true) {
+			return
+		}
 		if p.logger != nil {
 			p.logger.Info("ACP agent reports MCP servers initializing",
 				"acp_server", p.config.ACPServer)
@@ -1128,21 +1154,25 @@ func shouldFailFastCreateAttempt(attempt int, saturated bool, hasDeadline bool, 
 // current NewSession/LoadSession attempt (mitto-8ul.1) and returns the
 // per-attempt and total budget to use.
 //
-// The extended budget applies only when ALL of the following hold:
+// The extended budget applies when ALL of the following hold:
 //   - MCPInitTimeout > 0 (the operator has not disabled it).
-//   - The process has not yet observed a successful cold-start session RPC
-//     (mcpInitDone is false). Subsequent sessions on the same warm process use
-//     the normal budget because MCP servers are already initialized inside the
-//     agent.
+//   - Either the process has not yet observed a successful cold-start session RPC
+//     (mcpInitDone is false), OR an MCP-init handshake is currently in progress
+//     (mcpInitInProgress is true). The extended budget is ALSO re-granted whenever
+//     mcpInitInProgress is true — i.e. the agent is (re-)running an MCP handshake —
+//     because agents like Auggie re-handshake MCP on every session/new, so a
+//     one-shot mcpInitDone latch would starve every session after the first
+//     (mitto-29q).
 //
 // The extended budget does NOT gate on the request carrying MCP servers, because
 // Mitto attaches MCP through a globally-registered server (not per session/new
 // call), and even agents whose only MCP is configured globally block session/new
 // on the same handshake. Applying the widened budget to every cold session/new is
 // safe: it is capped by the actual RPC deadline anyway and reverts to the normal
-// 25 s once one call succeeds. When the extended budget applies both the per-
-// attempt and total budgets are widened to MCPInitTimeout, sized above the
-// agent's own MCP-init wait (e.g. Auggie's 225 s) plus margin.
+// 25 s once one call succeeds AND no new handshake is running. When the extended
+// budget applies both the per-attempt and total budgets are widened to
+// MCPInitTimeout, sized above the agent's own MCP-init wait (e.g. Auggie's 225 s)
+// plus margin.
 //
 // hasMCPServers is retained on the signature for observability / future gating.
 func (p *SharedACPProcess) coldMCPBudget(hasMCPServers bool) (perAttempt time.Duration, total time.Duration, extended bool) {
@@ -1150,24 +1180,42 @@ func (p *SharedACPProcess) coldMCPBudget(hasMCPServers bool) (perAttempt time.Du
 	if p.config.MCPInitTimeout <= 0 {
 		return sessionCreateAttemptTimeout, sessionCreateTotalBudget, false
 	}
-	if p.mcpInitDone.Load() {
+	if p.mcpInitDone.Load() && !p.mcpInitInProgress.Load() {
 		return sessionCreateAttemptTimeout, sessionCreateTotalBudget, false
 	}
 	return p.config.MCPInitTimeout, p.config.MCPInitTimeout, true
 }
 
+// acquireColdStartGate blocks until the capacity-1 cold-start gate is acquired
+// or ctx is done (mitto-8tb). Returns a release func (nil on error). Only cold
+// callers (extendedBudget=true) invoke this; warm calls bypass it.
+func (p *SharedACPProcess) acquireColdStartGate(ctx context.Context) (release func(), err error) {
+	if p.coldStartGate == nil {
+		return func() {}, nil
+	}
+	select {
+	case p.coldStartGate <- struct{}{}:
+		return func() { <-p.coldStartGate }, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
 // RecommendedLoadTimeout implements conversation.SharedProcess (mitto-8ul.1).
 // For a cold process (mcpInitDone=false), returns MCPInitTimeout so the caller's
 // outer timeout does not truncate the process's own extended budget. Returns 0
-// once the process has served one successful cold-start session RPC. The
-// hasMCPServers hint is retained for future per-request gating; it is not
-// currently load-bearing because Mitto attaches MCP globally.
+// once the process is warm (mcpInitDone=true) AND no handshake is currently
+// running (mcpInitInProgress=false). Re-widens to MCPInitTimeout while
+// mcpInitInProgress is true so per-session re-handshakes on agents that re-run
+// the MCP init on every session/new (e.g. Auggie) still get the extended budget
+// (mitto-29q). The hasMCPServers hint is retained for future per-request gating;
+// it is not currently load-bearing because Mitto attaches MCP globally.
 func (p *SharedACPProcess) RecommendedLoadTimeout(hasMCPServers bool) time.Duration {
 	_ = hasMCPServers
 	if p.config.MCPInitTimeout <= 0 {
 		return 0
 	}
-	if p.mcpInitDone.Load() {
+	if p.mcpInitDone.Load() && !p.mcpInitInProgress.Load() {
 		return 0
 	}
 	return p.config.MCPInitTimeout
@@ -1343,6 +1391,19 @@ func (p *SharedACPProcess) NewSession(ctx context.Context, cwd string, mcpServer
 		defer budgetCancel()
 	}
 
+	// Cold-start admission gate (mitto-8tb): serialize concurrent cold session/new
+	// callers so the agent's MCP handshake fires once and warms the process before
+	// the remaining sessions proceed, instead of N conversations stampeding the
+	// handshake in parallel. Warm callers (extendedBudget=false) bypass the gate.
+	// Honours budgetCtx so a wedged holder can't block a caller past its deadline.
+	if extendedBudget {
+		release, err := p.acquireColdStartGate(budgetCtx)
+		if err != nil {
+			return nil, fmt.Errorf("session/new: context cancelled while waiting for cold-start gate: %w", err)
+		}
+		defer release()
+	}
+
 	// Arm the MCP-init timeout watch so a hard timeout signal from the agent's
 	// stderr can abort the pending RPC promptly (mitto-8ul.1). Only meaningful for
 	// requests that carry MCP servers on a not-yet-warm process; harmless otherwise.
@@ -1444,6 +1505,7 @@ func (p *SharedACPProcess) NewSession(ctx context.Context, cwd string, mcpServer
 		if err == nil {
 			p.recordRPCSuccess()
 			p.mcpInitDone.Store(true)
+			p.mcpInitInProgress.Store(false) // close the MCP-init window (mitto-29q)
 			handle := &conversation.SessionHandle{
 				SessionID: string(sessResp.SessionId),
 				Process:   p,
@@ -1579,6 +1641,13 @@ func (p *SharedACPProcess) LoadSession(ctx context.Context, acpSessionID, cwd st
 	perAttemptBudget, _, extendedBudget := p.coldMCPBudget(len(mcpServers) > 0)
 	var mcpTimeoutCh <-chan struct{}
 	if extendedBudget {
+		// Cold-start admission gate (mitto-8tb): serialize concurrent cold callers.
+		// Honours the caller ctx so a wedged holder can't block past its deadline.
+		release, gateErr := p.acquireColdStartGate(ctx)
+		if gateErr != nil {
+			return nil, fmt.Errorf("session/load: context cancelled while waiting for cold-start gate: %w", gateErr)
+		}
+		defer release()
 		mcpTimeoutCh = p.beginMCPInitWindow()
 		if dl, ok := ctx.Deadline(); !ok || time.Until(dl) > perAttemptBudget {
 			var loadCancel context.CancelFunc
@@ -1634,6 +1703,7 @@ func (p *SharedACPProcess) LoadSession(ctx context.Context, acpSessionID, cwd st
 
 	p.recordRPCSuccess()
 	p.mcpInitDone.Store(true)
+	p.mcpInitInProgress.Store(false) // close the MCP-init window (mitto-29q)
 	handle := &conversation.SessionHandle{
 		SessionID:    acpSessionID,
 		Capabilities: *caps,
