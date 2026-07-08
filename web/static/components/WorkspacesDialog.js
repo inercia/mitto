@@ -270,6 +270,7 @@ export function WorkspacesDialog({
   // Ephemeral restart state — resets when dialog closes (component state)
   const [needsRestart, setNeedsRestart] = useState(false);
   const [restarting, setRestarting] = useState(false);
+  const [hasLiveAcp, setHasLiveAcp] = useState(false);
 
   // Track whether a folder group (not a workspace) is selected
   const [selectedFolder, setSelectedFolder] = useState(null);
@@ -653,7 +654,13 @@ export function WorkspacesDialog({
         editAcpServer || selectedWorkspace.acp_server,
         selectedWorkspace.uuid,
       );
+      checkLiveAcpForWorkspace(selectedWorkspace.uuid).then(setHasLiveAcp);
+    } else {
+      setHasLiveAcp(false);
     }
+    // checkLiveAcpForWorkspace/loadMcpTools are stable useCallbacks defined
+    // later in the component; referencing them here would trigger a TDZ
+    // ReferenceError since the deps array is evaluated during render.
   }, [activeTab, selectedWorkspaceKey, editAcpServer]);
 
   // Lazily load beads config + upstream when the Beads folder tab is opened.
@@ -914,6 +921,45 @@ export function WorkspacesDialog({
       setRestarting(false);
     }
   }, [selectedWorkspace]);
+
+  // Restart ACP with a warning if any conversation in this workspace is currently
+  // prompting (its response would be interrupted by the restart).
+  const handleRestartAcpClick = useCallback(async () => {
+    const uuid = selectedWorkspace?.uuid;
+    if (!uuid) return;
+    let affected = 0;
+    try {
+      const res = await authFetch(endpoints.sessions.running());
+      if (res.ok) {
+        const data = await res.json();
+        const list = Array.isArray(data?.sessions) ? data.sessions : [];
+        affected = list.filter(
+          (s) => s.workspace_uuid === uuid && s.is_prompting,
+        ).length;
+      }
+    } catch {
+      // Best-effort detection: on error, fall through to a direct restart.
+    }
+    if (affected > 0) {
+      const plural = affected === 1 ? "" : "s";
+      const verb = affected === 1 ? "is" : "are";
+      setConfirmDialog({
+        title: "Restart ACP?",
+        message:
+          `There ${verb} ${affected} conversation${plural} with an agent actively ` +
+          `responding in this workspace. Restarting the ACP server now will ` +
+          `interrupt the response${plural} and may lose unsaved work.`,
+        confirmLabel: "Restart",
+        confirmVariant: "danger",
+        onConfirm: () => {
+          setConfirmDialog(null);
+          handleRestartAcp();
+        },
+      });
+      return;
+    }
+    handleRestartAcp();
+  }, [selectedWorkspace, handleRestartAcp]);
 
   const handleMcpInstall = useCallback(async () => {
     // Client-side JSON validation
@@ -4576,13 +4622,20 @@ export function WorkspacesDialog({
           ${error && html`<p class="text-xs text-mitto-danger">${error}</p>`}
         </div>
         <div class="flex gap-2">
-          ${needsRestart &&
+          ${activeTab === "mcp" &&
+          selectedWorkspace?.uuid &&
+          hasLiveAcp &&
           html`
             <button
-              onClick=${handleRestartAcp}
+              onClick=${handleRestartAcpClick}
               disabled=${restarting}
-              class="btn btn-warning btn-sm gap-2 tooltip tooltip-bottom"
-              data-tip="Restart ACP to apply MCP changes to active conversations"
+              class="btn btn-sm gap-2 tooltip tooltip-bottom ${needsRestart
+                ? "btn-warning"
+                : "btn-outline btn-warning"}"
+              data-tip=${needsRestart
+                ? "Restart ACP to apply MCP changes to active conversations"
+                : "Restart the ACP server for this workspace"}
+              data-testid="ws-restart-acp"
             >
               ${restarting
                 ? html`<${SpinnerIcon} className="w-4 h-4" /> Restarting...`
