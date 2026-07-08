@@ -16,7 +16,7 @@ prompt: |
   Available ACP servers: `{{ .ACP.AvailableText }}`
   Existing children: `{{ .Children.MCPText }}`
 
-  # Beads: Iterate Implementing Features (list-level orchestrator)
+  # Beads: Loop Implementing Features (list-level orchestrator)
 
   Beads is a CLI issue tracker (`bd`). Issues are called "beads" and have IDs like `bd-xyz`.
 
@@ -27,7 +27,7 @@ prompt: |
     highest-priority one, spawn ONE child conversation to implement it, wait for that
     child to finish, clean it up, then move to the next feature. Stop when the eligible
     set is empty or a per-run budget is hit.
-  - **INNER loop (already shipped: the `Iterate implementing feature` prompt,
+  - **INNER loop (already shipped: the `Loop implementing feature` prompt,
     mitto-gap.5).** Each child runs that per-feature driver as an `onCompletion`
     loop, advancing one `planned → implemented → tested → verified` label per
     re-fire, then self-terminating.
@@ -47,7 +47,7 @@ prompt: |
     `mitto_children_tasks_wait` and any child-directed sends.
 
   Also: only a **top-level** (non-child) conversation may create conversations. The
-  child driver (`Iterate implementing feature`) already runs in-place and never spawns,
+  child driver (`Loop implementing feature`) already runs in-place and never spawns,
   giving a strict 2-level nesting. This orchestrator therefore refuses to run from a
   child.
 
@@ -59,12 +59,12 @@ prompt: |
   ## Step 1 — Fetch the per-feature driver body ONCE
 
   Every child you spawn seeds and re-fires from the **same** body: the per-feature
-  driver prompt (`Iterate implementing feature`, mitto-gap.5). Fetch it once at the top
+  driver prompt (`Loop implementing feature`, mitto-gap.5). Fetch it once at the top
   of this run so the same string is reused for every child (no drift between children in
   the same run):
 
   ```
-  mitto_prompt_get(self_id: "{{ .Session.ID }}", name: "Iterate implementing feature")
+  mitto_prompt_get(self_id: "{{ .Session.ID }}", name: "Loop implementing feature")
   ```
 
   Bind the response's `.prompt` (or `body`) field to a local variable — call it
@@ -228,7 +228,7 @@ prompt: |
   ```
   mitto_ui_notify(
     self_id: "{{ .Session.ID }}",
-    title: "Iterate implementing features — done",
+    title: "Loop implementing features — done",
     message: "<N processed / <how many remain — deferred / blocked>. Reason: <empty set | budget hit | last iteration>.>",
     style: "success"
   )
@@ -247,7 +247,7 @@ prompt: |
 
   ```bash
   bd update <id> --add-label needs-human --defer +1d
-  bd comment <id> "Orchestrator: could not spawn per-feature worker. What I tried: <the create/fetch call and its error>. What I need from you: <the ONE concrete action — enable flag, raise cap, re-run>. How to resume: clear needs-human then re-run 'Iterate implementing features'."
+  bd comment <id> "Orchestrator: could not spawn per-feature worker. What I tried: <the create/fetch call and its error>. What I need from you: <the ONE concrete action — enable flag, raise cap, re-run>. How to resume: clear needs-human then re-run 'Loop implementing features'."
   ```
 
   Then post the closing notification (Step 7) explaining that iteration stopped due
