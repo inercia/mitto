@@ -51,7 +51,7 @@ func (r execRunner) Run(ctx context.Context, dir string, args ...string) ([]byte
 		} else if errors.As(err, &exitErr) {
 			msg = "bd exited with non-zero status"
 		}
-		return nil, diagnosticOutput(stderr.String(), stdout.String()), errors.New(msg)
+		return stdout.Bytes(), stderr.String(), errors.New(msg)
 	}
 
 	return stdout.Bytes(), "", nil
@@ -75,6 +75,56 @@ func diagnosticOutput(stderr, stdout string) string {
 		diag = string(runes[:maxDiagnosticLen]) + "… (truncated)"
 	}
 	return diag
+}
+
+// recoverableJSON returns the first candidate that is valid JSON and is not a
+// bd machine-readable error object, or nil if none qualifies. Candidates are
+// checked in order (stdout preferred, then stderr).
+func recoverableJSON(candidates ...[]byte) []byte {
+	for _, cand := range candidates {
+		trimmed := bytes.TrimSpace(cand)
+		if len(trimmed) == 0 || !json.Valid(trimmed) {
+			continue
+		}
+		if isJSONErrorObject(trimmed) {
+			continue
+		}
+		return trimmed
+	}
+	return nil
+}
+
+// isJSONErrorObject reports whether b is a JSON object carrying a top-level
+// "error" key, i.e. a bd machine-readable failure rather than a success
+// payload. A JSON array (list output) or an object without an "error" key is
+// treated as a success payload.
+func isJSONErrorObject(b []byte) bool {
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal(b, &obj); err != nil {
+		return false
+	}
+	for k := range obj {
+		if strings.EqualFold(k, "error") {
+			return true
+		}
+	}
+	return false
+}
+
+// isTransientLock reports whether err is a transient dolt/database lock or
+// contention failure that is safe to retry for a read-only command.
+func isTransientLock(err error) bool {
+	s := strings.ToLower(StderrOf(err))
+	if s == "" {
+		return false
+	}
+	if strings.Contains(s, "another dolt process") ||
+		strings.Contains(s, "database is locked") ||
+		strings.Contains(s, "database table is locked") ||
+		strings.Contains(s, "resource temporarily unavailable") {
+		return true
+	}
+	return strings.Contains(s, "lock") && (strings.Contains(s, "could not acquire") || strings.Contains(s, "failed to acquire"))
 }
 
 // envWithActor returns a copy of the current process environment with any
@@ -105,21 +155,51 @@ func (c *cliClient) runRaw(ctx context.Context, timeout time.Duration, dir strin
 
 	out, stderr, err := c.runner.Run(ctx, dir, args...)
 	if err != nil {
-		return nil, &CmdError{Err: err, Stderr: stderr}
+		return nil, &CmdError{Err: err, Stderr: diagnosticOutput(stderr, string(out))}
 	}
 	return out, nil
 }
 
-// runJSON executes bd with the default timeout and validates that the output is valid JSON.
-func (c *cliClient) runJSON(ctx context.Context, dir string, args ...string) ([]byte, error) {
-	out, err := c.runRaw(ctx, defaultTimeout, dir, args...)
+// runJSONOnce executes bd once (defaultTimeout) and validates JSON output. On a
+// non-zero exit it applies JSON recovery: bd can exit non-zero while still
+// emitting the intended JSON payload (observed: created-issue JSON printed to
+// stderr with a non-zero exit right after a restart). If the raw stdout or
+// stderr already contains valid, non-error JSON, the call is treated as a
+// success rather than a hard failure.
+func (c *cliClient) runJSONOnce(ctx context.Context, dir string, args ...string) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(ctx, defaultTimeout)
+	defer cancel()
+
+	out, stderr, err := c.runner.Run(ctx, dir, args...)
 	if err != nil {
-		return nil, err
+		if j := recoverableJSON(out, []byte(stderr)); j != nil {
+			return j, nil
+		}
+		return nil, &CmdError{Err: err, Stderr: diagnosticOutput(stderr, string(out))}
 	}
 	if !json.Valid(out) {
 		return nil, &CmdError{Err: errors.New("bd returned invalid JSON")}
 	}
 	return out, nil
+}
+
+// runJSON runs a JSON bd command with recovery but NO retry. Some callers
+// (Create) are non-idempotent, so a blind retry could duplicate a write; the
+// recovery in runJSONOnce already handles the observed non-zero-but-valid-JSON
+// case safely.
+func (c *cliClient) runJSON(ctx context.Context, dir string, args ...string) ([]byte, error) {
+	return c.runJSONOnce(ctx, dir, args...)
+}
+
+// runJSONRead is like runJSON but retries ONCE on a transient dolt-lock
+// failure. It is safe only for read-only commands (no risk of a duplicate
+// write).
+func (c *cliClient) runJSONRead(ctx context.Context, dir string, args ...string) ([]byte, error) {
+	out, err := c.runJSONOnce(ctx, dir, args...)
+	if err != nil && isTransientLock(err) {
+		out, err = c.runJSONOnce(ctx, dir, args...)
+	}
+	return out, err
 }
 
 func (c *cliClient) List(ctx context.Context, dir string) ([]byte, error) {
@@ -129,7 +209,7 @@ func (c *cliClient) List(ctx context.Context, dir string) ([]byte, error) {
 	if !isInitialized(dir) {
 		return []byte("[]"), nil
 	}
-	return c.runJSON(ctx, dir, "list", "--json", "--all", "-n", "0")
+	return c.runJSONRead(ctx, dir, "list", "--json", "--all", "-n", "0")
 }
 
 func (c *cliClient) Status(ctx context.Context, dir string) ([]byte, error) {
@@ -139,11 +219,11 @@ func (c *cliClient) Status(ctx context.Context, dir string) ([]byte, error) {
 	if !isInitialized(dir) {
 		return []byte(`{"summary":{}}`), nil
 	}
-	return c.runJSON(ctx, dir, "status", "--json", "--no-activity")
+	return c.runJSONRead(ctx, dir, "status", "--json", "--no-activity")
 }
 
 func (c *cliClient) Show(ctx context.Context, dir, id string) ([]byte, error) {
-	return c.runJSON(ctx, dir, "show", id, "--json", "--include-comments")
+	return c.runJSONRead(ctx, dir, "show", id, "--json", "--include-comments")
 }
 
 func (c *cliClient) Create(ctx context.Context, dir string, p CreateParams) ([]byte, error) {
@@ -203,7 +283,7 @@ func cleanupTimeout(n int) time.Duration {
 }
 
 func (c *cliClient) ListClosedIDs(ctx context.Context, dir string) ([]string, error) {
-	out, err := c.runJSON(ctx, dir, "list", "--json", "--status", "closed", "-n", "0")
+	out, err := c.runJSONRead(ctx, dir, "list", "--json", "--status", "closed", "-n", "0")
 	if err != nil {
 		return nil, err
 	}
@@ -312,5 +392,5 @@ func (c *cliClient) ListAllLabels(ctx context.Context, dir string) ([]byte, erro
 	if !isInitialized(dir) {
 		return []byte("[]"), nil
 	}
-	return c.runJSON(ctx, dir, "label", "list-all", "--json")
+	return c.runJSONRead(ctx, dir, "label", "list-all", "--json")
 }

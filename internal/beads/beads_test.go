@@ -623,6 +623,111 @@ func TestClient_RunnerError_WrappedAsCmdError(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// runJSON recovery + read retry (mitto-xl0)
+// ---------------------------------------------------------------------------
+
+// TestRunJSON_RecoversJSONFromStderr covers the bug that motivated mitto-xl0: bd
+// can exit non-zero while still emitting the intended JSON payload (observed on
+// Create: the created-issue JSON printed to stderr right after a dolt restart).
+// Create must treat that response as a success rather than logging a hard
+// "beads command failed".
+func TestRunJSON_RecoversJSONFromStderr(t *testing.T) {
+	r := &recordingRunner{responses: []runnerResp{
+		{
+			stderr: `[{"id":"mitto-54k.5"}]`,
+			err:    errors.New("bd exited with non-zero status"),
+		},
+	}}
+	c := newClient(r)
+	out, err := c.Create(context.Background(), initializedDir(t), CreateParams{Title: "T"})
+	if err != nil {
+		t.Fatalf("Create() error = %v, want nil (JSON on stderr should be recovered)", err)
+	}
+	if !strings.Contains(string(out), "mitto-54k.5") {
+		t.Errorf("recovered bytes = %q, want to contain %q", out, "mitto-54k.5")
+	}
+}
+
+// TestRunJSON_RecoversJSONFromStdout covers the symmetric case where the JSON
+// payload landed on stdout but bd still exited non-zero (e.g. a stderr advisory
+// during dolt warm-up).
+func TestRunJSON_RecoversJSONFromStdout(t *testing.T) {
+	r := &recordingRunner{responses: []runnerResp{
+		{
+			stdout: []byte(`{"id":"mitto-1"}`),
+			stderr: "warning: dolt sync advisory",
+			err:    errors.New("bd exited with non-zero status"),
+		},
+	}}
+	c := newClient(r)
+	out, err := c.Create(context.Background(), initializedDir(t), CreateParams{Title: "T"})
+	if err != nil {
+		t.Fatalf("Create() error = %v, want nil (JSON on stdout should be recovered)", err)
+	}
+	if !strings.Contains(string(out), "mitto-1") {
+		t.Errorf("recovered bytes = %q, want to contain %q", out, "mitto-1")
+	}
+}
+
+// TestRunJSON_ErrorObjectNotRecovered ensures that a bd machine-readable error
+// JSON payload (top-level "error" key) is NOT treated as a success, even
+// though it happens to be valid JSON.
+func TestRunJSON_ErrorObjectNotRecovered(t *testing.T) {
+	r := &recordingRunner{responses: []runnerResp{
+		{
+			stdout: []byte(`{"error":"boom"}`),
+			err:    errors.New("bd exited with non-zero status"),
+		},
+	}}
+	c := newClient(r)
+	_, err := c.Create(context.Background(), initializedDir(t), CreateParams{Title: "T"})
+	if err == nil {
+		t.Fatal("expected error, got nil (JSON error object must not be recovered)")
+	}
+	var ce *CmdError
+	if !errors.As(err, &ce) {
+		t.Fatalf("error type = %T, want *CmdError", err)
+	}
+}
+
+// TestRunJSONRead_RetriesOnceOnTransientLock verifies that read-only commands
+// retry once when the first invocation fails with a transient dolt lock error.
+func TestRunJSONRead_RetriesOnceOnTransientLock(t *testing.T) {
+	r := &recordingRunner{responses: []runnerResp{
+		{stderr: "another dolt process is using the database", err: errors.New("bd exited with non-zero status")},
+		{stdout: []byte("[]")},
+	}}
+	c := newClient(r)
+	out, err := c.List(context.Background(), initializedDir(t))
+	if err != nil {
+		t.Fatalf("List() error after retry = %v, want nil", err)
+	}
+	if string(out) != "[]" {
+		t.Errorf("List() = %q, want %q", out, "[]")
+	}
+	if len(r.calls) != 2 {
+		t.Errorf("runner call count = %d, want 2 (initial + one retry)", len(r.calls))
+	}
+}
+
+// TestCreate_NotRetriedOnTransientLock verifies that Create — which is
+// non-idempotent — is NOT retried even on a transient lock error, to avoid
+// duplicating a write if the first attempt actually committed.
+func TestCreate_NotRetriedOnTransientLock(t *testing.T) {
+	r := &recordingRunner{responses: []runnerResp{
+		{stderr: "another dolt process is using the database", err: errors.New("bd exited with non-zero status")},
+	}}
+	c := newClient(r)
+	_, err := c.Create(context.Background(), initializedDir(t), CreateParams{Title: "T"})
+	if err == nil {
+		t.Fatal("expected error (Create must not retry)")
+	}
+	if len(r.calls) != 1 {
+		t.Errorf("runner call count = %d, want 1 (Create must not retry)", len(r.calls))
+	}
+}
+
+// ---------------------------------------------------------------------------
 // EnsureInitialized
 // ---------------------------------------------------------------------------
 
