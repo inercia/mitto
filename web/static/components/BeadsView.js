@@ -47,7 +47,6 @@ import {
   SortIcon,
   CopyIcon,
   getPromptIconOrDefault,
-  LoopIcon,
   LinkIcon,
   ListIcon,
   LightningIcon,
@@ -60,11 +59,6 @@ import {
   HeadingIcon,
   QuoteIcon,
 } from "./Icons.js";
-import {
-  promptLoopMode,
-  promptLoopIsToggleable,
-  promptLoopDefaultOn,
-} from "../utils/prompts.js";
 import { CodeEditorField } from "./CodeEditorField.js";
 import {
   ContextMenu,
@@ -3311,18 +3305,18 @@ export function BeadsView({
   // List-level "Prompts" dropdown state (footer toolbar). These are the
   // `menus: beadsList` prompts that operate on the whole issue list rather than
   // a single issue. Loaded lazily the first time the dropdown is opened.
-  const [showListPrompts, setShowListPrompts] = useState(false);
+  // ContextMenu anchor for the list-level prompts button; null = closed. The
+  // menu now uses buildPromptGroupMenuItems + ContextMenu (like the detail-panel
+  // kebab), so grouped submenus and per-prompt loop toggles are handled by
+  // ContextMenu itself — no local open flag or loop-override state needed.
+  const [listPromptsAnchor, setListPromptsAnchor] = useState(null);
   const [listPrompts, setListPrompts] = useState([]);
   const [listPromptsLoading, setListPromptsLoading] = useState(false);
-  // Per-send loop override for beadsList prompts, keyed by prompt name.
-  // Reset whenever the list reloads (see effect below).
-  const [listLoopOn, setListLoopOn] = useState({});
 
   // Shortcut buttons configured for this folder's tasksList section.
   const [shortcuts, setShortcuts] = useState([]);
   // Map from prompt name → prompt object, built once shortcuts + prompts are loaded.
   const [shortcutPromptMap, setShortcutPromptMap] = useState(new Map());
-  const listPromptsRef = useRef(null);
   // Ref for the issues scroll container — used by usePullToRefresh.
   const scrollContainerRef = useRef(null);
 
@@ -4252,45 +4246,21 @@ export function BeadsView({
     [onRunBeadsPrompt, closeContextMenu],
   );
 
-  // Close the list-level prompts dropdown on outside click while it is open.
-  useEffect(() => {
-    if (!showListPrompts) return undefined;
-    const onDocClick = (e) => {
-      if (
-        listPromptsRef.current &&
-        !listPromptsRef.current.contains(e.target)
-      ) {
-        setShowListPrompts(false);
-      }
-    };
-    document.addEventListener("mousedown", onDocClick);
-    return () => document.removeEventListener("mousedown", onDocClick);
-  }, [showListPrompts]);
-
-  // Open/close the list-level prompts dropdown, lazily loading the
-  // `menus: beadsList` prompts for this workspace the first time it is opened.
-  // Open-driven (receives the next open state) because the Toolbar dropdown is
-  // backed by a controlled <details> whose onToggle reports the new state.
-  const handleListPromptsToggle = useCallback(
-    (open) => {
-      if (open && onFetchBeadsListPrompts && workingDir) {
+  // Open the list-level prompts ContextMenu anchored to the toolbar button,
+  // lazily loading the `menus: beadsList` prompts for this workspace each time
+  // it is opened (grouped into submenus by buildPromptGroupMenuItems below).
+  const openListPromptsMenu = useCallback(
+    (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const rect = e.currentTarget.getBoundingClientRect();
+      setListPromptsAnchor({ x: rect.left, y: rect.bottom });
+      if (onFetchBeadsListPrompts && workingDir) {
         setListPromptsLoading(true);
         onFetchBeadsListPrompts(workingDir)
-          .then((list) => {
-            const prompts = list || [];
-            setListPrompts(prompts);
-            // Seed per-item loop toggle defaults from each prompt's mode/default.
-            const seed = {};
-            for (const p of prompts) {
-              if (promptLoopIsToggleable(p)) {
-                seed[p.name] = promptLoopDefaultOn(p);
-              }
-            }
-            setListLoopOn(seed);
-          })
+          .then((list) => setListPrompts(list || []))
           .finally(() => setListPromptsLoading(false));
       }
-      setShowListPrompts(open);
     },
     [onFetchBeadsListPrompts, workingDir],
   );
@@ -4298,7 +4268,7 @@ export function BeadsView({
   // Run a list-level prompt in a new conversation (no per-issue context).
   const handleRunListPrompt = useCallback(
     (prompt, opts) => {
-      setShowListPrompts(false);
+      setListPromptsAnchor(null);
       onRunBeadsListPrompt && onRunBeadsListPrompt(prompt, undefined, opts);
     },
     [onRunBeadsListPrompt],
@@ -4744,86 +4714,21 @@ export function BeadsView({
     };
   });
 
-  // List-prompts dropdown menu (opens downward now that the toolbar is on top).
-  const listPromptsMenu = html`
-    <ul
-      class="dropdown-content menu w-64 max-h-72 overflow-y-auto flex-nowrap bg-base-200 rounded-box shadow-xl z-10 mt-1"
-    >
-      ${listPromptsLoading &&
-      html`
-        <li class="px-3 py-2 flex items-center gap-2">
-          <span class="loading loading-spinner w-4 h-4"></span>
-          Loading…
-        </li>
-      `}
-      ${!listPromptsLoading &&
-      listPrompts.length === 0 &&
-      html` <li class="px-3 py-2 opacity-60">No task prompts</li> `}
-      ${!listPromptsLoading &&
-      listPrompts.map((p) => {
-        const PromptIcon = getPromptIconOrDefault(p.icon);
-        return html`
-          <li key=${p.name}>
-            <button
-              type="button"
-              onClick=${() => {
-                const mode = promptLoopMode(p);
-                const opts =
-                  mode === "optional"
-                    ? {
-                        asLoop:
-                          listLoopOn[p.name] !== undefined
-                            ? listLoopOn[p.name]
-                            : promptLoopDefaultOn(p),
-                      }
-                    : undefined;
-                handleRunListPrompt(p, opts);
-              }}
-              title=${p.description || p.name}
-            >
-              <span class="w-4 h-4 shrink-0"
-                ><${PromptIcon} className="w-4 h-4"
-              /></span>
-              <span class="truncate flex-1">${p.name}</span>
-              ${(() => {
-                const mode = promptLoopMode(p);
-                if (mode === "none") return null;
-                if (mode === "optional") {
-                  const on =
-                    listLoopOn[p.name] !== undefined
-                      ? listLoopOn[p.name]
-                      : promptLoopDefaultOn(p);
-                  return html`<input
-                    type="checkbox"
-                    class="checkbox checkbox-sm shrink-0"
-                    style="background-color: transparent"
-                    checked=${on}
-                    title=${on
-                      ? "Loop: ON — click to disable recurring runs"
-                      : "Loop: OFF — click to run as recurring conversation"}
-                    onClick=${(e) => e.stopPropagation()}
-                    onChange=${(e) => {
-                      e.stopPropagation();
-                      setListLoopOn((m) => ({
-                        ...m,
-                        [p.name]: e.target.checked,
-                      }));
-                    }}
-                  />`;
-                }
-                // mode === "always": locked badge (unchanged look)
-                return html`<span
-                  class="shrink-0 text-success opacity-80"
-                  title="Loop prompt — always sets the conversation to recurring mode"
-                  ><${LoopIcon} className="w-3.5 h-3.5"
-                /></span>`;
-              })()}
-            </button>
-          </li>
-        `;
-      })}
-    </ul>
-  `;
+  // Group the beadsList prompts by their `group` into per-group submenus,
+  // identical to the conversation menu and the detail-panel kebab. ContextMenu
+  // renders the hover flyouts and per-prompt loop toggles from these items.
+  const listPromptGroupItems = listPromptsLoading
+    ? [{ label: "Loading…", disabled: true }]
+    : (() => {
+        const groups = buildPromptGroupMenuItems(
+          listPrompts,
+          handleRunListPrompt,
+          html`<${PlusIcon} />`,
+        );
+        return groups.length === 0
+          ? [{ label: "No task prompts", disabled: true }]
+          : groups;
+      })();
 
   const listToolbarItems = [
     {
@@ -4835,14 +4740,12 @@ export function BeadsView({
       onClick: openCreate,
     },
     {
-      kind: "dropdown",
+      kind: "button",
       testId: "beads-list-prompts-btn",
       icon: html`<${LightningIcon} className="w-4 h-4" />`,
       tip: "Run a prompt over the issue list in a new conversation",
       ariaLabel: "Run a prompt over the issue list in a new conversation",
-      open: showListPrompts,
-      onToggle: handleListPromptsToggle,
-      menu: listPromptsMenu,
+      onClick: openListPromptsMenu,
     },
     {
       kind: "button",
@@ -4888,11 +4791,10 @@ export function BeadsView({
 
       <!-- List-level actions rendered via the portable Toolbar component
            (components/Toolbar.js) as a floating "pill", vertically aligned with
-           the sidebar toolbar. The wrapper carries listPromptsRef so the
-           existing outside-click handler still closes the prompts dropdown. -->
+           the sidebar toolbar. The prompts button opens a ContextMenu, which
+           handles its own outside-click / Escape dismissal. -->
       <div
         class="px-3 pb-2 shrink-0"
-        ref=${listPromptsRef}
         data-testid="beads-actions-toolbar"
       >
         <${Toolbar}
@@ -5246,6 +5148,17 @@ export function BeadsView({
           y=${contextMenu.y}
           items=${contextMenuItems}
           onClose=${closeContextMenu}
+        />
+      `
+    }
+    ${
+      listPromptsAnchor &&
+      html`
+        <${ContextMenu}
+          x=${listPromptsAnchor.x}
+          y=${listPromptsAnchor.y}
+          items=${listPromptGroupItems}
+          onClose=${() => setListPromptsAnchor(null)}
         />
       `
     }

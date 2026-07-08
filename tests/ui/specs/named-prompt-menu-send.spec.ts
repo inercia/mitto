@@ -34,8 +34,10 @@ const WORKSPACE_ALPHA = path.join(
 );
 const AGENT_NAME = "mock-acp";
 
-// daisyUI fixed context menus share this class combination.
-const MENU = ".menu.fixed.z-50.shadow-xl";
+// daisyUI fixed context menus share this class combination. The ContextMenu
+// root uses inline `z-index: 9999` (not a `.z-50` class), so match on the
+// stable class combination only.
+const MENU = ".menu.fixed.shadow-xl";
 
 // Issue used for beadsIssues surface; id must match beads-issue-task.json pattern.
 const MOCK_ISSUES = [
@@ -321,6 +323,15 @@ testWithCleanup.describe(
           timeout: timeouts.shortAction,
         });
         await listPromptsBtn.click();
+
+        // beadsList prompts are now grouped into per-group submenus (like the
+        // conversation menu). This ungrouped fixture lands under "Other"; open
+        // that group to reveal its flyout, then click the prompt inside it.
+        const otherGroup = page
+          .locator("li.relative > button")
+          .filter({ hasText: "Other" });
+        await expect(otherGroup).toBeVisible({ timeout: timeouts.appReady });
+        await otherGroup.click();
 
         // "Beads List Review" appears once the beadsList prompts fetch resolves.
         const promptItem = page
