@@ -9,12 +9,14 @@ const KNOWN_IDS = new Set([
   "mitto-123",
   "mitto-123.4",
   "mitto-uxn",
+  "on-call-u2i",
 ]);
 const META = new Map([
   ["mitto-aaa", { title: "Test Issue", status: "open" }],
   ["mitto-123", { title: "Bug Report", status: "closed" }],
   ["mitto-123.4", { title: "Bug Report sub-task", status: "open" }],
   ["mitto-uxn", { title: "Beads Linking", status: "open" }],
+  ["on-call-u2i", { title: "Hyphenated prefix project", status: "open" }],
 ]);
 
 function makeDiv(html) {
@@ -125,5 +127,27 @@ describe("linkifyBeadsRefs", () => {
     const links = root.querySelectorAll("a.beads-link");
     expect(links).toHaveLength(1);
     expect(links[0].dataset.beadsId).toBe("mitto-123");
+  });
+
+  // mitto-rix: CANDIDATE_RE only matched a single hyphen, so hyphenated-prefix
+  // project IDs like "on-call-u2i" were truncated to "on-call" and failed the
+  // known-IDs membership check, producing no link — anywhere, including tables.
+  test("mitto-rix: wraps hyphenated-prefix ID (on-call-u2i) in plain text", () => {
+    const root = makeDiv("<p>See on-call-u2i for details.</p>");
+    linkifyBeadsRefs(root, KNOWN_IDS, META);
+    const links = root.querySelectorAll("a.beads-link");
+    expect(links).toHaveLength(1);
+    expect(links[0].dataset.beadsId).toBe("on-call-u2i");
+    expect(links[0].textContent).toBe("on-call-u2i");
+  });
+
+  test("mitto-rix: wraps hyphenated-prefix ID (on-call-u2i) inside a markdown table cell", () => {
+    const root = makeDiv(
+      "<table><tr><td>on-call-u2i</td><td>Fix the thing</td></tr></table>",
+    );
+    linkifyBeadsRefs(root, KNOWN_IDS, META);
+    const links = root.querySelectorAll("a.beads-link");
+    expect(links).toHaveLength(1);
+    expect(links[0].dataset.beadsId).toBe("on-call-u2i");
   });
 });

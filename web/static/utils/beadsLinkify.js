@@ -2,9 +2,11 @@
 // Scans DOM text nodes and wraps recognized beads issue IDs with clickable links.
 
 // Matches beads IDs including optional dot-separated sub-IDs (e.g. mitto-123.4).
+// The (?:-[a-z0-9]+)+ suffix supports hyphenated project prefixes (e.g.
+// "on-call-u2i") by allowing one-or-more hyphenated segments, not just one.
 // The (?:\.[a-z0-9]+)* suffix ensures longest-match: "mitto-123.4" is captured
 // as a single token so it is never confused with its prefix "mitto-123".
-const CANDIDATE_RE = /\b([a-z][a-z0-9]*-[a-z0-9]+(?:\.[a-z0-9]+)*)\b/gi;
+const CANDIDATE_RE = /\b([a-z][a-z0-9]*(?:-[a-z0-9]+)+(?:\.[a-z0-9]+)*)\b/gi;
 // CODE is intentionally NOT skipped: IDs written in inline markdown backticks
 // (e.g. `mitto-123`) render as <code> and should still be linkified. Fenced
 // code blocks render as <pre><code> and are still skipped via the PRE ancestor.
