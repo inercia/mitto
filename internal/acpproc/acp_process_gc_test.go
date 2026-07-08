@@ -28,6 +28,7 @@ func newTestGCManager(
 		processes:       make(map[string]*SharedACPProcess),
 		lastSessionSeen: make(map[string]time.Time),
 		auxSessions:     make(map[auxSessionKey]*auxiliarySessionState),
+		pinState:        make(map[string]*pinInfo),
 		gcConfig: GCConfig{
 			Interval:             30 * time.Second,
 			GracePeriod:          60 * time.Second,
@@ -1797,5 +1798,55 @@ func TestGCTier6_SkipsLevel1BusyProcess(t *testing.T) {
 	m.mu.RUnlock()
 	if !exists {
 		t.Error("level-1 saturated busy process should NOT have been recycled by Tier 6")
+	}
+}
+
+// TestGCTier4_SkipsPinnedWorkspace verifies that a bloated idle process is NOT
+// memory-recycled when its workspace is pinned by the adaptive pre-warming
+// controller (mitto-54k.7). Recycling a pinned workspace would defeat the
+// purpose of the pin and force a cold MCP-server spawn on the next prompt.
+func TestGCTier4_SkipsPinnedWorkspace(t *testing.T) {
+	workspaceUUID := "ws-pinned-bloat"
+	proc := newTestSharedProcess()
+
+	sessions := map[string][]conversation.SessionInfo{
+		workspaceUUID: {
+			{SessionID: "s1", WorkspaceUUID: workspaceUUID, HasObservers: true},
+		},
+	}
+
+	m := newTestGCManager(
+		func() map[string][]conversation.SessionInfo { return sessions },
+		func(id string) {},
+	)
+	m.mu.Lock()
+	m.processes[workspaceUUID] = proc
+	m.mu.Unlock()
+
+	// Pin the workspace (no expiry) — the proactive keepalive pin flavour.
+	if !m.PinWorkspace(workspaceUUID, "prewarm", 0, 0) {
+		t.Fatal("PinWorkspace returned false")
+	}
+
+	// Configure the memory-recycle tier so the process would otherwise be reaped.
+	m.gcConfig.MemoryRecycleThreshold = gcTier4Threshold
+	sampled := false
+	m.rssSampler = func(p *SharedACPProcess) (uint64, error) {
+		sampled = true
+		return gcTier4Threshold + 1, nil
+	}
+
+	m.RunGCOnce()
+
+	// The RSS sampler must NOT be invoked for a pinned workspace: the pinned
+	// check is placed before the sampler in Tier 4.
+	if sampled {
+		t.Error("RSS sampler must not be called for a pinned workspace")
+	}
+	m.mu.RLock()
+	_, exists := m.processes[workspaceUUID]
+	m.mu.RUnlock()
+	if !exists {
+		t.Error("pinned workspace should NOT be memory-recycled")
 	}
 }

@@ -308,6 +308,15 @@ conversations:
 #   healthy_probes_to_unpin: 3     # Hysteresis: consecutive healthy probes required before unpinning
 #   max_pin_duration: "30m"        # Cap on how long a pinned session is held (use "disabled" for no cap)
 #   max_pinned_workspaces: 5       # Blast-radius cap on simultaneously-pinned workspaces
+#   # Per-purpose staggered delays for the cold-start auxiliary session prewarm
+#   # (mitto-cgc). A single worker serializes creation, so only one session/new
+#   # is in flight at a time; these delays offset each purpose from the moment
+#   # prewarm starts. Empty/invalid values fall back to the defaults shown.
+#   aux_schedule:
+#     mcp_check: "0s"              # tier 0 — gates prompt/tool visibility
+#     mcp_tools: "0s"              # tier 0 — tool discovery for gating
+#     title_gen: "5s"              # tier 1 — not needed until first prompt titled
+#     follow_up: "8s"              # tier 2 — only after first agent response
 
 # Permission handling configuration
 # Controls how permission requests from agents are handled.

@@ -1530,6 +1530,14 @@ type rawConfig struct {
 		HealthyProbesToUnpin int    `yaml:"healthy_probes_to_unpin"`
 		MaxPinDuration       string `yaml:"max_pin_duration"`
 		MaxPinnedWorkspaces  int    `yaml:"max_pinned_workspaces"`
+		// AuxSchedule holds per-purpose staggered creation delays for the
+		// cold-start auxiliary session prewarm (mitto-cgc).
+		AuxSchedule *struct {
+			McpCheck string `yaml:"mcp_check"`
+			McpTools string `yaml:"mcp_tools"`
+			TitleGen string `yaml:"title_gen"`
+			FollowUp string `yaml:"follow_up"`
+		} `yaml:"aux_schedule"`
 	} `yaml:"prewarm"`
 	// MCP is the MCP server configuration
 	MCP *struct {
@@ -1906,6 +1914,16 @@ func Parse(data []byte) (*Config, error) {
 			HealthyProbesToUnpin: raw.Prewarm.HealthyProbesToUnpin,
 			MaxPinDuration:       raw.Prewarm.MaxPinDuration,
 			MaxPinnedWorkspaces:  raw.Prewarm.MaxPinnedWorkspaces,
+		}
+		// Aux prewarm schedule (mitto-cgc): only populate when present so
+		// AuxPrewarmSchedule() returns the pure per-purpose defaults otherwise.
+		if raw.Prewarm.AuxSchedule != nil {
+			cfg.Prewarm.AuxSchedule = &AuxScheduleConfig{
+				McpCheck: raw.Prewarm.AuxSchedule.McpCheck,
+				McpTools: raw.Prewarm.AuxSchedule.McpTools,
+				TitleGen: raw.Prewarm.AuxSchedule.TitleGen,
+				FollowUp: raw.Prewarm.AuxSchedule.FollowUp,
+			}
 		}
 	}
 

@@ -573,6 +573,19 @@ gcTier1:
 				continue
 			}
 
+			// Adaptive pre-warming pin (mitto-54k.7): never memory-recycle a
+			// pinned workspace. A warm shared Auggie process is the whole
+			// point of the pin — recycling it here would force a cold
+			// MCP-server spawn on the next prompt, exactly the hang we are
+			// keeping the process warm to avoid.
+			if m.IsPinned(workspaceUUID) {
+				if m.logger != nil {
+					m.logger.Debug("GC: skipping memory recycle (pinned/warm)",
+						"workspace_uuid", workspaceUUID)
+				}
+				continue
+			}
+
 			// Hard safety gates: only recycle a fully-idle process.
 			if rpcs := p.ActiveRPCs(); rpcs > 0 {
 				if m.logger != nil {
@@ -774,6 +787,9 @@ gcTier1:
 			m.gcMu.Lock()
 			delete(m.lastSessionSeen, workspaceUUID)
 			m.gcMu.Unlock()
+			// mitto-clc: proactive re-warm after recycle was inactivated — a
+			// naturally cold next NewSession is preferable to piling load onto
+			// an already-degraded workspace.
 		}
 	}
 
@@ -874,6 +890,7 @@ gcTier1:
 			m.gcMu.Lock()
 			delete(m.lastSessionSeen, workspaceUUID)
 			m.gcMu.Unlock()
+			// mitto-clc: proactive re-warm after recycle was inactivated.
 		}
 	}
 

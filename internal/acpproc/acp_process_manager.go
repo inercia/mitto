@@ -1113,6 +1113,19 @@ func (m *ACPProcessManager) getOrCreateAuxiliarySession(ctx context.Context, wor
 		return nil, fmt.Errorf("context cancelled before auxiliary NewSession: %w", err)
 	}
 
+	// Instrument auxiliary session creation so cold-start / prewarm timing is
+	// observable in mitto.log. createStart brackets the whole create path from
+	// the cache-miss decision through the NewSession RPC; newSessionStart isolates
+	// the RPC itself (the dominant cost — the agent may block it behind MCP init).
+	createStart := time.Now()
+	if m.logger != nil {
+		m.logger.Info("Creating auxiliary session",
+			"workspace_uuid", workspaceUUID,
+			"purpose", purpose,
+			"cwd", auxCwd,
+			"mcp_server_count", len(mcpServers))
+	}
+
 	// Derive a fresh budget from m.ctx (manager lifetime), NOT from the caller ctx.
 	// With the per-key createMu design (mitto-w19), different keys create concurrently
 	// so there is no global serialization to drain the caller ctx. However, same-key
@@ -1123,9 +1136,26 @@ func (m *ACPProcessManager) getOrCreateAuxiliarySession(ctx context.Context, wor
 	// m.ctx is cancelled on manager shutdown, so this never hangs indefinitely. (mitto-rlk)
 	newCtx, newCancel := context.WithTimeout(m.ctx, 30*time.Second)
 	defer newCancel()
+	newSessionStart := time.Now()
 	sessionHandle, err := process.NewSession(newCtx, auxCwd, mcpServers)
+	newSessionLatency := time.Since(newSessionStart)
 	if err != nil {
+		if m.logger != nil {
+			m.logger.Warn("Failed to create auxiliary session",
+				"workspace_uuid", workspaceUUID,
+				"purpose", purpose,
+				"new_session_ms", newSessionLatency.Milliseconds(),
+				"elapsed_ms", time.Since(createStart).Milliseconds(),
+				"error", err)
+		}
 		return nil, fmt.Errorf("failed to create auxiliary session: %w", err)
+	}
+	if m.logger != nil {
+		m.logger.Info("Auxiliary session NewSession RPC completed",
+			"workspace_uuid", workspaceUUID,
+			"purpose", purpose,
+			"session_id", sessionHandle.SessionID,
+			"new_session_ms", newSessionLatency.Milliseconds())
 	}
 
 	// Apply auxiliary model selection if configured for this workspace.
@@ -1297,7 +1327,9 @@ func (m *ACPProcessManager) getOrCreateAuxiliarySession(ctx context.Context, wor
 		m.logger.Info("Created auxiliary session",
 			"workspace_uuid", workspaceUUID,
 			"purpose", purpose,
-			"session_id", sessionHandle.SessionID)
+			"session_id", sessionHandle.SessionID,
+			"new_session_ms", newSessionLatency.Milliseconds(),
+			"total_ms", time.Since(createStart).Milliseconds())
 	}
 
 	return state, nil
@@ -1471,44 +1503,72 @@ func (m *ACPProcessManager) EnsurePrewarmed(workspaceUUID string, logger *slog.L
 // verdict is unhealthy.
 //
 // Run in a goroutine after releasing the ACPProcessManager lock.
+//
+// mitto-cgc: creation is single-worker + priority-ordered + time-staggered.
+// The scheduler comes from config.PrewarmConfig.AuxPrewarmSchedule() which
+// returns entries in nondecreasing Delay order (tier-0 mcp-check/mcp-tools
+// first, then tier-1 title-gen, then tier-2 follow-up by default). Only ONE
+// session/new is ever in flight — this replaces the earlier parallel
+// sync.WaitGroup burst that aggravated the auggie cold-init fork-burst wedge
+// (mitto-54k.7).
 func (m *ACPProcessManager) prewarmAuxiliarySessions(workspaceUUID string, logger *slog.Logger) {
-	purposes := []string{
-		auxiliary.PurposeTitleGen,
-		auxiliary.PurposeMCPCheck,
-		auxiliary.PurposeMCPTools,
-		auxiliary.PurposeFollowUp,
-	}
+	pc := m.effectivePrewarmConfig()
+	schedule := pc.AuxPrewarmSchedule()
 
-	// Fire off all prewarm requests in parallel so all sessions are created concurrently.
-	// Each goroutine gets its OWN independent timeout context so that a slow or queued
-	// NewSession for one purpose cannot drain the shared budget and starve the others.
-	// Derived from m.ctx (not context.Background()) so manager shutdown propagates.
-	var wg sync.WaitGroup
-	for _, purpose := range purposes {
-		wg.Add(1)
-		go func(p string) {
-			defer wg.Done()
-			// Independent per-goroutine timeout: avoids cross-session budget starvation.
-			// 30 seconds is generous; in practice session creation completes in < 1s.
-			ctx, cancel := context.WithTimeout(m.ctx, 30*time.Second)
-			defer cancel()
-			if _, err := m.getOrCreateAuxiliarySession(ctx, workspaceUUID, p); err != nil {
-				if logger != nil {
-					logger.Debug("auxiliary session pre-warm failed",
-						"workspace_uuid", workspaceUUID,
-						"purpose", p,
-						"error", err)
-				}
-			} else {
-				if logger != nil {
-					logger.Debug("auxiliary session pre-warmed",
-						"workspace_uuid", workspaceUUID,
-						"purpose", p)
-				}
+	// Reference the auxiliary.Purpose* constants so a rename of any of the
+	// four hardcoded purpose strings in internal/config/settings.go is caught
+	// at compile time here. Not otherwise used at runtime.
+	_ = auxiliary.PurposeMCPCheck
+	_ = auxiliary.PurposeMCPTools
+	_ = auxiliary.PurposeTitleGen
+	_ = auxiliary.PurposeFollowUp
+
+	start := time.Now()
+	for _, entry := range schedule {
+		// Sleep until this entry's target offset from the anchor. Respect
+		// manager shutdown so we exit promptly instead of holding the process
+		// up to the last scheduled delay.
+		target := start.Add(entry.Delay)
+		if remaining := time.Until(target); remaining > 0 {
+			select {
+			case <-time.After(remaining):
+			case <-m.ctx.Done():
+				return
 			}
-		}(purpose)
+		}
+
+		if logger != nil {
+			logger.Debug("scheduling auxiliary prewarm",
+				"workspace_uuid", workspaceUUID,
+				"purpose", entry.Purpose,
+				"planned_offset_ms", entry.Delay.Milliseconds())
+		}
+
+		// Synchronous creation inside the single worker guarantees at most one
+		// session/new in flight at a time. 30s is generous; in practice session
+		// creation completes in <1s. Derived from m.ctx so shutdown propagates.
+		ctx, cancel := context.WithTimeout(m.ctx, 30*time.Second)
+		_, err := m.getOrCreateAuxiliarySession(ctx, workspaceUUID, entry.Purpose)
+		cancel()
+
+		if logger != nil {
+			if err != nil {
+				logger.Debug("auxiliary session pre-warm failed",
+					"workspace_uuid", workspaceUUID,
+					"purpose", entry.Purpose,
+					"error", err)
+			} else {
+				logger.Debug("auxiliary session pre-warmed",
+					"workspace_uuid", workspaceUUID,
+					"purpose", entry.Purpose)
+			}
+		}
+
+		// Bail out early if the manager is shutting down between entries.
+		if m.ctx.Err() != nil {
+			return
+		}
 	}
-	wg.Wait()
 
 	// Adaptive pre-warming health probe (mitto-mw0). Runs after the initial
 	// aux prewarm so the shared process has had a chance to complete MCP init
@@ -1523,6 +1583,12 @@ func (m *ACPProcessManager) prewarmAuxiliarySessions(workspaceUUID string, logge
 // signals, and pins the workspace when the verdict is unhealthy. Called at
 // the tail of prewarmAuxiliarySessions and periodically by the pin
 // controller (see ReevaluatePrewarmPin).
+//
+// mitto-clc: the proactive always-on keep-warm pin (mitto-54k.7) was
+// inactivated — it did not address the auggie fork-burst spawn-timing wedge
+// and was net-negative (piled load onto already-saturated processes). Only
+// the REACTIVE unhealthy pin path (session_new_failed / mcp_timeout /
+// mcp_not_ready / slow_session_new + FirePrewarmPinAlert) remains.
 func (m *ACPProcessManager) probePrewarmHealth(workspaceUUID string, logger *slog.Logger) {
 	pc := m.effectivePrewarmConfig()
 	tFast, _ := pc.ParseSessionNewFast()
@@ -1584,13 +1650,16 @@ func (m *ACPProcessManager) probePrewarmHealth(workspaceUUID string, logger *slo
 	}
 
 	if healthy {
-		// Feed the healthy probe into hysteresis (unpins after N consecutive
-		// healthy probes). No-op if not pinned.
+		// mitto-clc: proactive pin removed. Feed the healthy probe into
+		// hysteresis (unpins after N consecutive healthy probes; no-op if
+		// not pinned) and return without pinning.
 		m.RecordPrewarmProbeResult(workspaceUUID, true, pc.GetHealthyProbesToUnpin())
 		return
 	}
 
 	// Unhealthy → pin the workspace (or refresh the pin if already pinned).
+	// Reactive pin behavior is unchanged: the reactive reason (e.g.
+	// mcp_timeout) takes precedence because it carries the alert semantics.
 	if m.PinWorkspace(workspaceUUID, reason, maxDur, maxPinned) && reason == "mcp_timeout" {
 		// Fire the alert only for MCP-timeout pins on the initial pin event
 		// (FirePrewarmPinAlert is at-most-once per pin).

@@ -627,6 +627,81 @@ func TestPrewarmConfig_Defaults(t *testing.T) {
 	}
 }
 
+// TestPrewarmConfig_AuxPrewarmSchedule guards the mitto-cgc per-purpose
+// staggered auxiliary-prewarm schedule. Verifies nil-safety, per-purpose
+// overrides, empty/invalid fallback, and nondecreasing Delay ordering.
+func TestPrewarmConfig_AuxPrewarmSchedule(t *testing.T) {
+	// Nil receiver → all 4 defaults in tier order.
+	var nilCfg *PrewarmConfig
+	got := nilCfg.AuxPrewarmSchedule()
+	want := []AuxPrewarmEntry{
+		{Purpose: "mcp-check", Delay: 0},
+		{Purpose: "mcp-tools", Delay: 0},
+		{Purpose: "title-gen", Delay: 5 * time.Second},
+		{Purpose: "follow-up", Delay: 8 * time.Second},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("nil AuxPrewarmSchedule() len = %d, want %d (got=%+v)", len(got), len(want), got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("nil AuxPrewarmSchedule()[%d] = %+v, want %+v", i, got[i], want[i])
+		}
+	}
+
+	// Empty PrewarmConfig (no AuxSchedule) → same as nil.
+	got = (&PrewarmConfig{}).AuxPrewarmSchedule()
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("empty AuxPrewarmSchedule()[%d] = %+v, want %+v", i, got[i], want[i])
+		}
+	}
+
+	// Override title-gen only → other purposes keep defaults; ordering still
+	// nondecreasing (title-gen 3s < follow-up 8s).
+	cfg := &PrewarmConfig{AuxSchedule: &AuxScheduleConfig{TitleGen: "3s"}}
+	got = cfg.AuxPrewarmSchedule()
+	wantOverride := []AuxPrewarmEntry{
+		{Purpose: "mcp-check", Delay: 0},
+		{Purpose: "mcp-tools", Delay: 0},
+		{Purpose: "title-gen", Delay: 3 * time.Second},
+		{Purpose: "follow-up", Delay: 8 * time.Second},
+	}
+	for i := range wantOverride {
+		if got[i] != wantOverride[i] {
+			t.Errorf("override AuxPrewarmSchedule()[%d] = %+v, want %+v", i, got[i], wantOverride[i])
+		}
+	}
+
+	// Empty and invalid duration strings both fall back to per-purpose defaults.
+	cfg = &PrewarmConfig{AuxSchedule: &AuxScheduleConfig{
+		McpCheck: "",
+		McpTools: "not-a-duration",
+		TitleGen: "",
+		FollowUp: "bogus",
+	}}
+	got = cfg.AuxPrewarmSchedule()
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("fallback AuxPrewarmSchedule()[%d] = %+v, want %+v", i, got[i], want[i])
+		}
+	}
+
+	// Any override still yields nondecreasing Delay order.
+	cfg = &PrewarmConfig{AuxSchedule: &AuxScheduleConfig{
+		McpCheck: "10s", // pushes tier-0 past tier-1/tier-2 defaults
+		TitleGen: "1s",
+		FollowUp: "2s",
+	}}
+	got = cfg.AuxPrewarmSchedule()
+	for i := 1; i < len(got); i++ {
+		if got[i-1].Delay > got[i].Delay {
+			t.Errorf("AuxPrewarmSchedule not nondecreasing at [%d]: %+v", i, got)
+			break
+		}
+	}
+}
+
 // TestPrewarmConfig_LoadFromSettings verifies the Prewarm section is wired
 // through settings.json load and reaches Config.Prewarm intact (mitto-mw0).
 func TestPrewarmConfig_LoadFromSettings(t *testing.T) {

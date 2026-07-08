@@ -261,3 +261,28 @@ func TestPrewarmPin_CleanupStaleAuxSkipsPinnedKeepalive(t *testing.T) {
 		t.Fatal("unpinned workspace's keepalive was NOT reaped (expected reaped)")
 	}
 }
+
+// TestPrewarmPin_UncappedPinNoExpiry verifies that a pin applied without a
+// max-duration cap does not expire on its own — it must stay pinned until
+// unpinned explicitly.
+func TestPrewarmPin_UncappedPinNoExpiry(t *testing.T) {
+	m := NewACPProcessManager(context.Background(), nil)
+	defer m.Close()
+
+	// PinWorkspace with maxDuration=0 (uncapped).
+	if !m.PinWorkspace("ws-warm", "prewarm", 0, 0) {
+		t.Fatal("PinWorkspace(prewarm) refused")
+	}
+	if !m.IsPinned("ws-warm") {
+		t.Fatal("IsPinned=false immediately after proactive pin")
+	}
+
+	// ExpirePinsAndAlert must not touch an uncapped pin, even after some time.
+	time.Sleep(20 * time.Millisecond)
+	if expired := m.ExpirePinsAndAlert(); len(expired) != 0 {
+		t.Fatalf("uncapped proactive pin unexpectedly expired: %v", expired)
+	}
+	if !m.IsPinned("ws-warm") {
+		t.Fatal("proactive pin lost between checks")
+	}
+}

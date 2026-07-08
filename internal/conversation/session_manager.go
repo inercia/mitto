@@ -2350,6 +2350,11 @@ func (sm *SessionManager) CloseSession(sessionID, reason string) {
 				"reason", reason)
 		}
 	}
+
+	// mitto-clc: the proactive re-warm-on-last-session-deleted trigger
+	// (mitto-54k.7) was inactivated. The next new conversation cold-starts
+	// through NewSession normally instead of piling a preemptive keepalive
+	// session onto a workspace we just decided to release.
 }
 
 // ApplyACPServerRenames updates persisted sessions that reference renamed/removed ACP servers.

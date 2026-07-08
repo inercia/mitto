@@ -2,12 +2,14 @@ package conversation
 
 import (
 	"context"
+	"log/slog"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/inercia/mitto/internal/config"
+	"github.com/inercia/mitto/internal/runner"
 	"github.com/inercia/mitto/internal/session"
 )
 
@@ -1979,5 +1981,141 @@ func TestProcessorArgOverrides_SeamMethods(t *testing.T) {
 	}
 	if got2["auggie-manage-rules"]["filename"] != "AGENTS.md" {
 		t.Errorf("fu seam: filename = %q, want AGENTS.md", got2["auggie-manage-rules"]["filename"])
+	}
+}
+
+// fakeProcessManager is a minimal ProcessManager stub for tests. It records the
+// workspace UUIDs passed to EnsurePrewarmed so tests can assert the re-warm
+// trigger fired (mitto-54k.7). All other interface methods are no-ops.
+type fakeProcessManager struct {
+	mu        sync.Mutex
+	prewarmed []string
+	prewarmCh chan string
+}
+
+func newFakeProcessManager() *fakeProcessManager {
+	return &fakeProcessManager{prewarmCh: make(chan string, 8)}
+}
+
+func (f *fakeProcessManager) EnsurePrewarmed(workspaceUUID string, _ *slog.Logger) {
+	f.mu.Lock()
+	f.prewarmed = append(f.prewarmed, workspaceUUID)
+	f.mu.Unlock()
+	select {
+	case f.prewarmCh <- workspaceUUID:
+	default:
+	}
+}
+
+func (f *fakeProcessManager) prewarmedUUIDs() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.prewarmed...)
+}
+
+func (f *fakeProcessManager) GetOrCreateProcess(*config.WorkspaceSettings, string, string, map[string]string, *runner.Runner, bool) (SharedProcess, error) {
+	return nil, nil
+}
+func (f *fakeProcessManager) ClearGCSuspended(string)   {}
+func (f *fakeProcessManager) IsGCSuspended(string) bool { return false }
+func (f *fakeProcessManager) StopGC()                   {}
+func (f *fakeProcessManager) Close()                    {}
+func (f *fakeProcessManager) ProcessCount() int         { return 0 }
+
+// waitForPrewarm blocks until EnsurePrewarmed is called (up to timeout) and
+// returns the workspace UUID, or "" if it was not called in time.
+func (f *fakeProcessManager) waitForPrewarm(timeout time.Duration) string {
+	select {
+	case ws := <-f.prewarmCh:
+		return ws
+	case <-time.After(timeout):
+		return ""
+	}
+}
+
+// TestSessionManager_CloseSession_NoRewarmWhenLastSessionDeleted verifies
+// that deleting the last user session for a workspace does NOT trigger
+// EnsurePrewarmed (mitto-clc: proactive re-warm-on-close was inactivated).
+func TestSessionManager_CloseSession_NoRewarmWhenLastSessionDeleted(t *testing.T) {
+	const wsUUID = "ws-rewarm-1"
+
+	sm := NewSessionManager("echo test", "test-server", true, nil)
+	pm := newFakeProcessManager()
+	sm.SetACPProcessManager(pm)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	bs := NewTestBackgroundSessionWithCtx("sess-1", ctx, cancel)
+	bs.workspaceUUID = wsUUID
+	sm.mu.Lock()
+	sm.sessions["sess-1"] = bs
+	sm.mu.Unlock()
+
+	sm.CloseSession("sess-1", "deleted")
+
+	if got := pm.waitForPrewarm(300 * time.Millisecond); got != "" {
+		t.Fatalf("EnsurePrewarmed should not fire (mitto-clc), got %q", got)
+	}
+	if uuids := pm.prewarmedUUIDs(); len(uuids) != 0 {
+		t.Fatalf("expected no prewarm calls, got %v", uuids)
+	}
+}
+
+// TestSessionManager_CloseSession_NoRewarmWhenSessionsRemain verifies that
+// closing one session while others in the same workspace remain does NOT
+// trigger a re-warm (the remaining sessions keep the process warm).
+func TestSessionManager_CloseSession_NoRewarmWhenSessionsRemain(t *testing.T) {
+	const wsUUID = "ws-rewarm-2"
+
+	sm := NewSessionManager("echo test", "test-server", true, nil)
+	pm := newFakeProcessManager()
+	sm.SetACPProcessManager(pm)
+
+	ctx1, cancel1 := context.WithCancel(context.Background())
+	bs1 := NewTestBackgroundSessionWithCtx("sess-1", ctx1, cancel1)
+	bs1.workspaceUUID = wsUUID
+	ctx2, cancel2 := context.WithCancel(context.Background())
+	bs2 := NewTestBackgroundSessionWithCtx("sess-2", ctx2, cancel2)
+	bs2.workspaceUUID = wsUUID
+
+	sm.mu.Lock()
+	sm.sessions["sess-1"] = bs1
+	sm.sessions["sess-2"] = bs2
+	sm.mu.Unlock()
+
+	sm.CloseSession("sess-1", "deleted")
+
+	if got := pm.waitForPrewarm(300 * time.Millisecond); got != "" {
+		t.Fatalf("EnsurePrewarmed should not fire while sessions remain, got %q", got)
+	}
+	if uuids := pm.prewarmedUUIDs(); len(uuids) != 0 {
+		t.Fatalf("expected no prewarm calls, got %v", uuids)
+	}
+}
+
+// TestSessionManager_CloseSession_NoRewarmOnArchive verifies that archive-family
+// close reasons do NOT trigger a re-warm even when the workspace goes
+// sessionless (archiving deliberately stops-and-reclaims).
+func TestSessionManager_CloseSession_NoRewarmOnArchive(t *testing.T) {
+	const wsUUID = "ws-rewarm-3"
+
+	for _, reason := range []string{"archived", "archived_timeout", "ancestor_archived", "parent_archived_timeout", "acp_server_reconfigured"} {
+		t.Run(reason, func(t *testing.T) {
+			sm := NewSessionManager("echo test", "test-server", true, nil)
+			pm := newFakeProcessManager()
+			sm.SetACPProcessManager(pm)
+
+			ctx, cancel := context.WithCancel(context.Background())
+			bs := NewTestBackgroundSessionWithCtx("sess-1", ctx, cancel)
+			bs.workspaceUUID = wsUUID
+			sm.mu.Lock()
+			sm.sessions["sess-1"] = bs
+			sm.mu.Unlock()
+
+			sm.CloseSession("sess-1", reason)
+
+			if got := pm.waitForPrewarm(300 * time.Millisecond); got != "" {
+				t.Fatalf("EnsurePrewarmed should not fire for reason %q, got %q", reason, got)
+			}
+		})
 	}
 }

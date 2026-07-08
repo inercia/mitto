@@ -384,6 +384,32 @@ type PrewarmConfig struct {
 	// MaxPinnedWorkspaces is the blast-radius cap on simultaneously-pinned
 	// workspaces. Default: 5.
 	MaxPinnedWorkspaces int `json:"max_pinned_workspaces,omitempty"`
+	// AuxSchedule holds per-purpose staggered creation delays for the cold-start
+	// auxiliary session prewarm (mitto-cgc). When nil, the per-purpose defaults
+	// apply. Serialized creation guarantees <=1 concurrent session/new
+	// regardless of the delay values.
+	AuxSchedule *AuxScheduleConfig `json:"aux_schedule,omitempty"`
+}
+
+// AuxScheduleConfig holds per-purpose staggered creation delays for cold-start
+// auxiliary session pre-warming (mitto-cgc). Each field is a Go duration string
+// (e.g. "0s", "5s", "8s") parsed with time.ParseDuration. Empty or invalid
+// values fall back to the per-purpose defaults. Serialized creation guarantees
+// <=1 concurrent session/new regardless of these values.
+type AuxScheduleConfig struct {
+	McpCheck string `json:"mcp_check,omitempty"`
+	McpTools string `json:"mcp_tools,omitempty"`
+	TitleGen string `json:"title_gen,omitempty"`
+	FollowUp string `json:"follow_up,omitempty"`
+}
+
+// AuxPrewarmEntry is one scheduled auxiliary prewarm creation (mitto-cgc).
+// Purpose mirrors the string constants in internal/auxiliary (PurposeMCPCheck,
+// PurposeMCPTools, PurposeTitleGen, PurposeFollowUp); Delay is measured from
+// the prewarm anchor (moment prewarmAuxiliarySessions starts).
+type AuxPrewarmEntry struct {
+	Purpose string
+	Delay   time.Duration
 }
 
 // Prewarm defaults (mitto-mw0).
@@ -393,6 +419,26 @@ const (
 	DefaultPrewarmHealthyProbesToUnpin = 3
 	DefaultPrewarmMaxPinDuration       = 30 * time.Minute
 	DefaultPrewarmMaxPinnedWorkspaces  = 5
+)
+
+// Auxiliary prewarm per-purpose delay defaults (mitto-cgc). Priority order is
+// mcp-check/mcp-tools (tier 0) → title-gen (tier 1) → follow-up (tier 2).
+const (
+	DefaultAuxDelayMcpCheck = 0 * time.Second
+	DefaultAuxDelayMcpTools = 0 * time.Second
+	DefaultAuxDelayTitleGen = 5 * time.Second
+	DefaultAuxDelayFollowUp = 8 * time.Second
+)
+
+// Purpose strings mirroring internal/auxiliary.Purpose* — hardcoded here to
+// avoid an internal/config → internal/auxiliary dependency edge (mitto-cgc).
+// The acpproc consumer references the auxiliary.Purpose* constants directly
+// so any rename there is caught at compile time.
+const (
+	auxPurposeMcpCheck = "mcp-check"
+	auxPurposeMcpTools = "mcp-tools"
+	auxPurposeTitleGen = "title-gen"
+	auxPurposeFollowUp = "follow-up"
 )
 
 // ValidSessionNewFast lists accepted values for PrewarmConfig.SessionNewFast.
@@ -502,6 +548,70 @@ func (c *PrewarmConfig) GetMaxPinnedWorkspaces() int {
 		return DefaultPrewarmMaxPinnedWorkspaces
 	}
 	return c.MaxPinnedWorkspaces
+}
+
+// parseAuxDelay parses a Go duration string. On empty or parse error it returns
+// the supplied default. Negative durations are clamped to 0 (a negative offset
+// would fire immediately, which is fine, but 0 is clearer to log).
+func parseAuxDelay(s string, def time.Duration) time.Duration {
+	if s == "" {
+		return def
+	}
+	d, err := time.ParseDuration(s)
+	if err != nil {
+		return def
+	}
+	if d < 0 {
+		return 0
+	}
+	return d
+}
+
+// AuxPrewarmSchedule returns the priority-ordered, staggered auxiliary prewarm
+// schedule with defaults applied (mitto-cgc). Nil-safe on the receiver. Entries
+// are returned in nondecreasing Delay order so a single worker can sleep-until
+// each offset. The ordering (mcp-check, mcp-tools, title-gen, follow-up) also
+// encodes tier priority: tier-0 purposes ship first so tool-gating is ready
+// before higher-tier auxiliaries compete for the shared ACP process.
+func (c *PrewarmConfig) AuxPrewarmSchedule() []AuxPrewarmEntry {
+	var sched *AuxScheduleConfig
+	if c != nil {
+		sched = c.AuxSchedule
+	}
+	var mcpCheck, mcpTools, titleGen, followUp string
+	if sched != nil {
+		mcpCheck = sched.McpCheck
+		mcpTools = sched.McpTools
+		titleGen = sched.TitleGen
+		followUp = sched.FollowUp
+	}
+	entries := []AuxPrewarmEntry{
+		{Purpose: auxPurposeMcpCheck, Delay: parseAuxDelay(mcpCheck, DefaultAuxDelayMcpCheck)},
+		{Purpose: auxPurposeMcpTools, Delay: parseAuxDelay(mcpTools, DefaultAuxDelayMcpTools)},
+		{Purpose: auxPurposeTitleGen, Delay: parseAuxDelay(titleGen, DefaultAuxDelayTitleGen)},
+		{Purpose: auxPurposeFollowUp, Delay: parseAuxDelay(followUp, DefaultAuxDelayFollowUp)},
+	}
+	// Stable sort by Delay so the single-worker consumer can sleep-until each
+	// offset. sortAuxPrewarmByDelay (a stable insertion sort) preserves the tier
+	// ordering above when two purposes share the same delay (e.g. mcp-check and
+	// mcp-tools at 0s).
+	sortAuxPrewarmByDelay(entries)
+	return entries
+}
+
+// sortAuxPrewarmByDelay stable-sorts entries in nondecreasing Delay order.
+// Extracted so it can be unit-tested independently and to keep AuxPrewarmSchedule
+// small.
+func sortAuxPrewarmByDelay(entries []AuxPrewarmEntry) {
+	// Insertion sort is fine for the tiny fixed length (4). Keeps the file
+	// free of a sort import that already exists elsewhere.
+	for i := 1; i < len(entries); i++ {
+		j := i
+		for j > 0 && entries[j-1].Delay > entries[j].Delay {
+			entries[j-1], entries[j] = entries[j], entries[j-1]
+			j--
+		}
+	}
 }
 
 // ScannerDefenseConfig holds configuration for the scanner defense system.
