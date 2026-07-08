@@ -47,6 +47,24 @@ prompt: |-
   >
   > ⚠️ **NEVER post to Slack without explicit user review and approval.**
 
+  ## Bead writing conventions (descriptions & comments)
+
+  - **Always write in GitHub-flavored Markdown.** Every bead **description** (`-d`) and every
+    **comment** you add must be valid markdown — headings, **bold**, `inline code`, fenced code blocks,
+    lists and links so it reads well in the UI. Preserve real line breaks with `$'...'` (real `\n`) or,
+    for anything multi-line, pipe via stdin (`printf '%s' "$c" | bd comment <id> --stdin`) — never
+    collapse a comment into one flat line.
+  - **The reply we would send the customer MUST be enclosed in a clearly delimited block** so a human
+    can identify *exactly* what we would send, character-for-character. Wrap **only** the reply text
+    between these two fences, on their own lines (nothing else inside them):
+    ```
+    --- BEGIN REPLY ---
+    <the exact message we would send to the user, in markdown>
+    --- END REPLY ---
+    ```
+    Everything outside the fences (the `[OUTBOUND]` header, permalink, notes) is context; everything
+    *inside* is the verbatim reply. Use this same block for every DRAFT and every POSTED reply.
+
   ## Slack tools (names vary by MCP server)
 
   Match Slack MCP tools **by capability, not exact name**. You need: (a) identify the current user,
@@ -169,7 +187,9 @@ prompt: |-
      Also add an `[INBOUND]` comment with the original customer question for history.
   3. **Log the posted reply** — add a markdown `[OUTBOUND]` comment with the final text and the
      permalink (preserve markdown with `$'...'` or `printf '%s' "$c" | bd comment <id> --stdin`):
-     Header `**[OUTBOUND us · POSTED · YYYY-MM-DD HH:MM UTC]**`.
+     Header `**[OUTBOUND us · POSTED · YYYY-MM-DD HH:MM UTC]**`, then the posted text **enclosed in the
+     `--- BEGIN REPLY ---` / `--- END REPLY ---` block** (see **Bead writing conventions**), with the
+     permalink outside the fences.
   4. **Set state** (single `state:*` label — never `bd set-state`): swap in place to
      `state:awaiting-customer` (`bd update <id> --remove-label state:<previous> --add-label state:awaiting-customer`;
      for a brand-new bead just `--add-label state:awaiting-customer`).

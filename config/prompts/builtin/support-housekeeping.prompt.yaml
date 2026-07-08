@@ -46,6 +46,18 @@ prompt: |-
   > ⚠️ **This prompt NEVER posts to Slack.** It only reads threads and updates beads. Posting a reply
   > is done — with your approval — by **"Support: reply to user"**.
 
+  ## Bead writing conventions (descriptions & comments)
+
+  - **Always write in GitHub-flavored Markdown.** Every bead **description** (`-d`) and every
+    **comment** you add must be valid markdown — headings, **bold**, `inline code`, fenced code blocks,
+    lists and links so the bead reads well in the UI. Preserve real line breaks with `$'...'` (real
+    `\n`) or, for anything multi-line, pipe via stdin (`printf '%s' "$c" | bd comment <id> --stdin`) —
+    never collapse a comment into one flat line.
+  - This sweep never authors a customer reply itself (it hands drafting off to **"Support: investigate"**
+    children and posting to **"Support: reply to user"**). Those prompts enclose the proposed reply in
+    a `--- BEGIN REPLY ---` / `--- END REPLY ---` block so the exact customer-facing text is
+    identifiable — when reading a draft, treat the text inside those fences as the reply.
+
   ## Slack tools (names vary by MCP server)
 
   Match Slack MCP tools **by capability, not exact name**. You only need to **read a thread's
@@ -107,9 +119,15 @@ prompt: |-
   - Note any reactions on our answers (positive = helpful, negative = not helpful).
   - Update the `state:*` label **in place** to reflect whose turn it is (same issue — never
     `bd set-state`), following the standard rules:
-    - Customer spoke last / owes us nothing but we must act → `state:awaiting-us`.
-    - `state:need-info` **and the customer just replied** → `state:awaiting-us` (do not strand it in
-      `need-info`).
+    - **Closure first:** the customer's last message just **acknowledges / closes** the thread
+      ("thanks", "that worked", "got it", "sorted", or a positive reaction on our answer, with **no
+      new question**) and we already replied → **resolved**: swap to `state:resolved` and `bd close
+      <id> -r "resolved: customer confirmed"`. Do **NOT** flip it to `awaiting-us` — an acknowledgment
+      is not a new question, so re-opening it for another reply is wrong. (Skip only if the ack is
+      bundled with a genuine follow-up.)
+    - Customer spoke last with a **genuine follow-up** we must act on → `state:awaiting-us`.
+    - `state:need-info` **and the customer just replied** (with a real answer, not a bare "thanks") →
+      `state:awaiting-us` (do not strand it in `need-info`).
     - We spoke last and are waiting on them → `state:awaiting-customer`.
     - Do **not** override `state:drafting` (a draft is pending your review) unless the thread clearly
       moved on.
@@ -237,7 +255,9 @@ prompt: |-
 
   ## Step 7: Summarise (in the conversation)
 
-  Present a concise report **in this conversation** (not to Slack):
+  Present a concise report **in this conversation** (not to Slack). Whenever you print a bead ID
+  anywhere in this report, use the **full ID exactly as `bd` reports it, including the project prefix**
+  (e.g. `mitto-u2i`) so Mitto recognises and links it — never the bare suffix:
 
   ```markdown
   ## Support housekeeping — <YYYY-MM-DD HH:MM UTC>
@@ -253,9 +273,11 @@ prompt: |-
   ```
 
   - **Always end with a "what's next" table** listing every ticket that is still open after the sweep,
-    one row per bead: `| <id> | <state:*> | <what's next> |`. The **what's next** cell is a short human
-    phrase derived from the bead's current `state:*` label (use this exact mapping so it reads the same
-    across runs and matches **"Support: watch channel"**):
+    one row per bead: `| <id> | <state:*> | <what's next> |`. In the **Bead** column use the **full bead
+    ID exactly as `bd` reports it, including the project prefix** (e.g. `mitto-u2i`, not the bare suffix
+    `u2i`) — Mitto only recognises and links the full ID, so a truncated ID renders as plain text. The
+    **what's next** cell is a short human phrase derived from the bead's current `state:*` label (use
+    this exact mapping so it reads the same across runs and matches **"Support: watch channel"**):
 
     | state | what's next |
     |-------|-------------|
@@ -266,12 +288,12 @@ prompt: |-
     | `awaiting-customer` | Waiting on customer reply |
     | `awaiting-us` | Our turn — needs a response |
 
-    Render it as:
+    Render it as (note the **full** IDs with the project prefix):
     ```markdown
     | Bead | State | What's next |
     |------|-------|-------------|
-    | <id> | drafting | Ready to reply to user |
-    | <id> | need-info | Needs more info from user |
+    | mitto-u2i | drafting | Ready to reply to user |
+    | mitto-9e3 | need-info | Needs more info from user |
     ```
 
   Finish with a `mitto_ui_notify` (success) summarising counts (swept / closed / investigations

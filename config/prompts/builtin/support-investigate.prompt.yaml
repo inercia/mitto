@@ -42,6 +42,25 @@ prompt: |-
   > ⚠️ **This prompt NEVER posts to Slack.** It only investigates and records a draft. Posting is
   > done — with your approval — by **"Support: reply to user"**.
 
+  ## Bead writing conventions (descriptions & comments)
+
+  - **Always write in GitHub-flavored Markdown.** Every bead **description** (`-d`) and every
+    **comment** you add must be valid markdown — use headings, **bold**, `inline code`, fenced code
+    blocks, bullet/numbered lists and links so the bead is readable in the UI. Preserve real line
+    breaks: build the text with `$'...'` (real `\n`) or, for anything multi-line, pipe via stdin
+    (`printf '%s' "$md" | bd comment <id> --stdin`) — never collapse a comment into one flat line.
+  - **The proposed reply to the user MUST be enclosed in a clearly delimited block** so a human (or a
+    downstream prompt) can identify *exactly* what we would send to the customer, character-for-character.
+    Wrap **only** the reply text between these two fences, on their own lines:
+    ```
+    --- BEGIN REPLY ---
+    <the exact message we would send to the user, in markdown>
+    --- END REPLY ---
+    ```
+    Put nothing else inside the fences (no meta-commentary, no headers) — everything outside the fences
+    (the `[OUTBOUND]` header, notes, confidence) is context, and everything *inside* is the verbatim
+    reply. Use this same block anywhere a draft or a to-be-posted reply is recorded.
+
   ## Slack tools (names vary by MCP server)
 
   Match Slack MCP tools **by capability, not exact name**. Here you only need to **read a thread's
@@ -128,7 +147,9 @@ prompt: |-
 
   - **Confident answer found** → record a **proposed reply** as an `[OUTBOUND]`-style *draft* comment
     clearly marked **"DRAFT — not yet posted"** (this is the same draft **"Support: reply to user"**
-    reuses). Then set `state:drafting`
+    reuses). Header `**[OUTBOUND us · DRAFT — not yet posted · YYYY-MM-DD HH:MM UTC]**`, then the reply
+    itself **enclosed in the `--- BEGIN REPLY ---` / `--- END REPLY ---` block** (see **Bead writing
+    conventions**) so the exact customer-facing text is unambiguous. Then set `state:drafting`
     (`bd update <id> --remove-label state:gathering-info --add-label state:drafting`) and hand off per
     Step 7.
   - **Still missing customer detail** → set `state:need-info`

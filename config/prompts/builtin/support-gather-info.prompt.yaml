@@ -40,6 +40,25 @@ prompt: |-
   >
   > ⚠️ **NEVER post to Slack without explicit user review and approval.**
 
+  ## Bead writing conventions (descriptions & comments)
+
+  - **Always write in GitHub-flavored Markdown.** Every bead **description** (`-d`) and every
+    **comment** you add must be valid markdown — headings, **bold**, `inline code`, fenced code blocks,
+    lists and links so it reads well in the UI. Preserve real line breaks with `$'...'` (real `\n`) or,
+    for anything multi-line, pipe via stdin (`printf '%s' "$md" | bd comment <id> --stdin`) — never
+    collapse a comment into one flat line.
+  - **The clarifying message we would send the customer MUST be enclosed in a clearly delimited block**
+    so a human can identify *exactly* what we would send, character-for-character. Wrap **only** the
+    message text between these two fences, on their own lines:
+    ```
+    --- BEGIN REPLY ---
+    <the exact message we would send to the user, in markdown>
+    --- END REPLY ---
+    ```
+    Put nothing else inside the fences — everything outside (the `[OUTBOUND]` header, notes) is context;
+    everything *inside* is the verbatim message. Use this same block for every DRAFT and every POSTED
+    message you record.
+
   ## Slack tools (names vary by MCP server)
 
   Match Slack MCP tools **by capability, not exact name**. You need: (a) **read a thread's replies**
@@ -101,7 +120,8 @@ prompt: |-
   printf '%s' "$draft_markdown" | bd comment <id> --stdin
   ```
   Header: `**[OUTBOUND us · DRAFT (request for info) — not yet posted · YYYY-MM-DD HH:MM UTC]**`, then
-  the message text. Leave the bead in `state:need-info` for now.
+  the message text **enclosed in the `--- BEGIN REPLY ---` / `--- END REPLY ---` block** (see **Bead
+  writing conventions**). Leave the bead in `state:need-info` for now.
 
   ## Step 6: Review in an editable textbox
 
@@ -128,8 +148,9 @@ prompt: |-
     ```
     printf '%s' "$comment_markdown" | bd comment <id> --stdin
     ```
-    Header: `**[OUTBOUND us · POSTED (request for info) · YYYY-MM-DD HH:MM UTC]**` — note in the body
-    that this is a request for more information.
+    Header: `**[OUTBOUND us · POSTED (request for info) · YYYY-MM-DD HH:MM UTC]**`, then the posted
+    text **enclosed in the `--- BEGIN REPLY ---` / `--- END REPLY ---` block**, with the permalink and
+    a note that this is a request for more information **outside** the fences.
   - **Transition state** (same issue, no subtasks — never `bd set-state`):
     `bd update <id> --remove-label state:need-info --add-label state:awaiting-customer`.
     (If Step 2 continued from a different state, remove that state label instead.)
@@ -140,8 +161,9 @@ prompt: |-
 
   - If the user **edited** the text before the timeout (`changed == true` and a non-empty `result` is
     returned), update the stored draft to that edited text: add a fresh DRAFT `[OUTBOUND]` comment
-    (header `**[OUTBOUND us · DRAFT (request for info, edited, not posted) · YYYY-MM-DD HH:MM UTC]**`)
-    so the latest version is on the bead. If it was not edited, the Step 5 draft already covers it.
+    (header `**[OUTBOUND us · DRAFT (request for info, edited, not posted) · YYYY-MM-DD HH:MM UTC]**`,
+    the edited message **enclosed in the `--- BEGIN REPLY ---` / `--- END REPLY ---` block**) so the
+    latest version is on the bead. If it was not edited, the Step 5 draft already covers it.
   - Leave the bead in `state:need-info`. `mitto_ui_notify` (info): "Review dialog timed out — assuming
     you're away. Nothing posted; the draft is saved on the bead. Re-run **Support: gather more
     information** when you're back." Then stop.

@@ -118,6 +118,20 @@ prompt: |-
     ```
     Tags: `[INBOUND @user]` customer messages · `[OUTBOUND us]` our posted replies ·
     `[CONTEXT @other]` messages from other participants · `[STATE]` a state transition + reason.
+  - **Everything is GitHub-flavored Markdown.** Both the bead **description** (`-d`) and **every
+    comment** must be valid markdown — headings, **bold**, `inline code`, fenced code blocks, lists and
+    links so the bead reads well in the UI. Preserve real line breaks with `$'...'` (real `\n`) or
+    stdin; never flatten a comment into one line.
+  - **Any proposed/draft reply to the customer MUST be enclosed in a clearly delimited block** so the
+    exact customer-facing text is unambiguous — wrap **only** the reply between these two fences, on
+    their own lines (nothing else inside them):
+    ```
+    --- BEGIN REPLY ---
+    <the exact message we would send to the user, in markdown>
+    --- END REPLY ---
+    ```
+    Everything outside the fences (the `[OUTBOUND]` header, notes, confidence) is context; everything
+    *inside* is the verbatim reply. The **"Support: investigate"** children use this same convention.
   - **State via a single `state:*` label** (never `bd set-state` — it spawns child event beads).
     Read the current label from `bd show <id>`, then swap in place:
     `bd update <id> --remove-label state:<previous> --add-label state:<new>` (for the first
@@ -223,11 +237,20 @@ prompt: |-
     `slack_thread_ts`.
   - Add a markdown comment for **each new** thread message not yet captured (`[INBOUND]` customer /
     `[CONTEXT]` others / `[OUTBOUND]` any of our own replies). Do not duplicate existing comments.
-  - Update the `state:*` label to reflect reality: last message from the customer needing action →
-    `state:awaiting-us`; last message is ours, waiting on them → `state:awaiting-customer`.
+  - **First check for closure.** If the customer's last message just **acknowledges / closes** the
+    thread — "thanks", "that worked", "got it", "sorted", or a positive reaction on our answer, with
+    **no new question** — and we already replied (`awaiting-customer`, or otherwise answered), the
+    thread is **resolved**: swap to `state:resolved` and `bd close <id> -r "resolved: customer
+    confirmed"`. Do **NOT** flip it to `awaiting-us` (an acknowledgment is not a new question — doing
+    so re-opens an answered ticket for another unneeded reply). Only skip resolving if the
+    acknowledgment is bundled with a genuine follow-up question.
+  - Otherwise update the `state:*` label to reflect reality: last message from the customer **needing
+    action** (a real follow-up, not a mere acknowledgment) → `state:awaiting-us`; last message is ours,
+    waiting on them → `state:awaiting-customer`.
   - **If the bead is in `need-info` and the customer just replied** (answered our clarifying question,
     or spoke last) → `state:awaiting-us`. Treat `need-info` like `awaiting-customer` once the customer
-    responds — never leave it stranded in `need-info`.
+    responds — never leave it stranded in `need-info`. (The closure check above still applies first: a
+    bare "thanks" while in `need-info` still resolves, it does not become `awaiting-us`.)
   - Do not override `drafting` if our pending action still stands (a draft awaiting review). Add a
     short `[STATE]` comment noting any change.
   - **After any state change, recompute priority** (see **Priority = urgency of your intervention**):
@@ -293,8 +316,10 @@ prompt: |-
     to inline investigation — but only for the **single** highest-priority investigable bead this run
     to protect the time budget: set `state:gathering-info`, follow
     **`.mitto/slack-support-{{ $channel }}.md`** to gather the answer, record a **proposed reply** as
-    an `[OUTBOUND]`-style *draft* comment (clearly marked "DRAFT — not yet posted") and set
-    `state:drafting`. Leave the rest for subsequent iterations. If you learn a reusable pattern,
+    an `[OUTBOUND]`-style *draft* comment (clearly marked "DRAFT — not yet posted", the reply text
+    **enclosed in the `--- BEGIN REPLY ---` / `--- END REPLY ---` block** — see the Beads tracking
+    model) and set `state:drafting`. Leave the rest for subsequent iterations. If you learn a reusable
+    pattern,
     append it to the knowledge file (see the knowledge-file gate).
   {{- end }}
 
@@ -309,9 +334,12 @@ prompt: |-
   ### 5. Summary
 
   - **Always end the iteration with a "what's next" table** listing every open tracked bead you
-    touched or reviewed this run, one row per bead: `| <id> | <state:*> | <what's next> |`. The
-    **what's next** cell is a short human phrase derived from the bead's current `state:*` label
-    (use this exact mapping so it reads the same across runs and prompts):
+    touched or reviewed this run, one row per bead: `| <id> | <state:*> | <what's next> |`. In the
+    **Bead** column use the **full bead ID exactly as `bd` reports it, including the project prefix**
+    (e.g. `mitto-u2i`, not the bare suffix `u2i`) — Mitto only recognises and links the full ID, so a
+    truncated ID renders as plain text. The **what's next** cell is a short human phrase derived from
+    the bead's current `state:*` label (use this exact mapping so it reads the same across runs and
+    prompts):
 
     | state | what's next |
     |-------|-------------|
@@ -324,12 +352,12 @@ prompt: |-
     | `resolved` | Resolved (closing) |
     | `stale` | Stale — auto-closing |
 
-    Render it as:
+    Render it as (note the **full** IDs with the project prefix):
     ```markdown
     | Bead | State | What's next |
     |------|-------|-------------|
-    | <id> | drafting | Ready to reply to user |
-    | <id> | need-info | Needs more info from user |
+    | mitto-u2i | drafting | Ready to reply to user |
+    | mitto-9e3 | need-info | Needs more info from user |
     ```
   - Then send a `mitto_ui_notify` summarizing the run: new questions triaged, beads updated, how many
     **investigations were spawned** (and for which beads), and how many beads are `drafting` (ready
