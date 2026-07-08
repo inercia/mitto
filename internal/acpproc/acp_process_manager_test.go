@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math/rand"
 	"reflect"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -1720,5 +1721,51 @@ func TestRPCErrorCode(t *testing.T) {
 	// Nil error reports no code.
 	if code, ok := rpcErrorCode(nil); ok || code != 0 {
 		t.Errorf("rpcErrorCode(nil) = (%d, %v), want (0, false)", code, ok)
+	}
+}
+
+// TestGetOrCreateAuxiliarySession_SaturatedBails is the mitto-z70 regression:
+// when the shared process for the workspace is already flagged saturated (via
+// repeated RPC timeouts / cold-MCP wedge), getOrCreateAuxiliarySession MUST
+// fail fast WITHOUT issuing a session/new RPC. Otherwise every background
+// aux-session request (title-gen, mcp-check, follow-up, etc.) piles more
+// cold-init pressure onto an agent that is already struggling to initialise
+// its MCP servers, amplifying the wedge.
+func TestGetOrCreateAuxiliarySession_SaturatedBails(t *testing.T) {
+	m := NewACPProcessManager(context.Background(), nil)
+	defer m.Close()
+
+	const wsUUID = "ws-saturated"
+
+	// Install a bare shared process and force it into the saturated state by
+	// setting saturatedUntil into the future. Reaching into private fields is
+	// safe here because the test lives in the same package (acpproc) — the
+	// production callers use recordRPCTimeout, but the state machine is what
+	// matters for IsSaturated(), which is a pure read of saturatedUntil.
+	proc := newTestSharedProcess()
+	proc.saturationMu.Lock()
+	proc.saturatedUntil = time.Now().Add(30 * time.Second)
+	proc.saturationLevel = 1
+	proc.saturationMu.Unlock()
+
+	if !proc.IsSaturated() {
+		t.Fatal("test setup: expected process to report IsSaturated()=true")
+	}
+
+	m.mu.Lock()
+	m.processes[wsUUID] = proc
+	m.mu.Unlock()
+
+	_, err := m.getOrCreateAuxiliarySession(context.Background(), wsUUID, "title-gen")
+	if err == nil {
+		t.Fatal("expected error from getOrCreateAuxiliarySession on a saturated process")
+	}
+	// The error must classify as a deadline-exceeded family sentinel so callers
+	// can distinguish "agent is wedged, back off" from a genuine failure.
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("expected err to wrap context.DeadlineExceeded, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "saturated") {
+		t.Errorf("expected error message to mention 'saturated', got %q", err.Error())
 	}
 }

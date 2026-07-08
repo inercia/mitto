@@ -1113,6 +1113,24 @@ func (m *ACPProcessManager) getOrCreateAuxiliarySession(ctx context.Context, wor
 		return nil, fmt.Errorf("context cancelled before auxiliary NewSession: %w", err)
 	}
 
+	// Saturation bail (mitto-z70): if the shared process is already flagged
+	// saturated (repeated RPC timeouts / cold-MCP wedge), do NOT issue an
+	// auxiliary NewSession RPC. Aux sessions are non-essential background
+	// work; issuing a session/new here would pile another cold-init request
+	// onto an agent that is already struggling to initialise its MCP servers,
+	// amplifying the wedge and starving the user's foreground session.
+	// Fail fast with a clear sentinel so callers (title-gen, mcp-check, etc.)
+	// can back off and retry once the process has recovered.
+	if process.IsSaturated() {
+		if m.logger != nil {
+			m.logger.Info("Skipping auxiliary NewSession: shared process is saturated",
+				"workspace_uuid", workspaceUUID,
+				"purpose", purpose,
+				"reason", "process_saturated")
+		}
+		return nil, fmt.Errorf("shared ACP process is saturated; skipping auxiliary session creation for purpose %q: %w", purpose, context.DeadlineExceeded)
+	}
+
 	// Instrument auxiliary session creation so cold-start / prewarm timing is
 	// observable in mitto.log. createStart brackets the whole create path from
 	// the cache-miss decision through the NewSession RPC; newSessionStart isolates

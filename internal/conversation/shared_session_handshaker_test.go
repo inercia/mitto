@@ -3,6 +3,7 @@ package conversation
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"sync"
 	"testing"
@@ -25,6 +26,9 @@ type fakeSharedProcess struct {
 	newSessionHandle   *SessionHandle
 	newSessionErr      error
 	newSessionCalls    []string // recorded workingDirs
+	loadSessionHandle  *SessionHandle
+	loadSessionErr     error
+	loadSessionCalls   []string // recorded acp_session_ids
 	registeredSessions []acp.SessionId
 }
 
@@ -44,7 +48,13 @@ func (f *fakeSharedProcess) NewSession(_ context.Context, cwd string, _ []acp.Mc
 	f.newSessionCalls = append(f.newSessionCalls, cwd)
 	return f.newSessionHandle, f.newSessionErr
 }
-func (f *fakeSharedProcess) LoadSession(_ context.Context, _, _ string, _ []acp.McpServer) (*SessionHandle, error) {
+func (f *fakeSharedProcess) LoadSession(_ context.Context, acpSessionID, _ string, _ []acp.McpServer) (*SessionHandle, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.loadSessionCalls = append(f.loadSessionCalls, acpSessionID)
+	if f.loadSessionErr != nil || f.loadSessionHandle != nil {
+		return f.loadSessionHandle, f.loadSessionErr
+	}
 	return nil, errors.New("load not supported")
 }
 func (f *fakeSharedProcess) ResumeSession(_ context.Context, _, _ string, _ []acp.McpServer) (*SessionHandle, error) {
@@ -549,5 +559,63 @@ func TestHandshaker_ResumeSharedACPSession_RPCError_Cleans(t *testing.T) {
 	}
 	if d.stopMcpCalls != 1 {
 		t.Fatalf("expected stopMcpServer called on failure, got %d", d.stopMcpCalls)
+	}
+}
+
+// TestIsSessionNotFoundErr verifies the JSON-RPC -32602 classifier used to
+// drive the LoadSession → NewSession fallback (mitto-z70).
+func TestIsSessionNotFoundErr(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"nil", nil, false},
+		{"plain", errors.New("boom"), false},
+		{"wrong_code", &acp.RequestError{Code: -32603, Message: "Internal error"}, false},
+		{"invalid_params", &acp.RequestError{Code: -32602, Message: "Invalid params"}, true},
+		{"wrapped_invalid_params", fmt.Errorf("failed to load session: %w", &acp.RequestError{Code: -32602, Message: "session not found"}), true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := isSessionNotFoundErr(tc.err); got != tc.want {
+				t.Fatalf("isSessionNotFoundErr(%v)=%v want %v", tc.err, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestHandshaker_ResumeSharedACPSession_LoadNotFound_FallsBackToNewSessionOnce
+// is the mitto-z70 regression: when LoadSession returns JSON-RPC -32602
+// ("session not found"), the handshaker must fall back to EXACTLY ONE
+// NewSession call — not retry LoadSession — and complete the handshake with
+// resumeMethod="new".
+func TestHandshaker_ResumeSharedACPSession_LoadNotFound_FallsBackToNewSessionOnce(t *testing.T) {
+	c := sharedSessionHandshaker{}
+	d := newFakeHandshakeDeps()
+	fp := newFakeSharedProcess()
+	// Enable LoadSession capability so the handshaker attempts it, and disable
+	// Resume so we exercise the load-path branch specifically.
+	fp.caps = &acp.AgentCapabilities{LoadSession: true}
+	fp.loadSessionErr = &acp.RequestError{Code: -32602, Message: "session not found"}
+
+	err := c.resumeSharedACPSession(d, fp, "cwd", "stale-acp-id")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := len(fp.loadSessionCalls); got != 1 {
+		t.Fatalf("expected exactly 1 LoadSession call, got %d (%v)", got, fp.loadSessionCalls)
+	}
+	if fp.loadSessionCalls[0] != "stale-acp-id" {
+		t.Fatalf("expected LoadSession called with stale id, got %q", fp.loadSessionCalls[0])
+	}
+	if got := len(fp.newSessionCalls); got != 1 {
+		t.Fatalf("expected exactly 1 NewSession fallback, got %d (%v)", got, fp.newSessionCalls)
+	}
+	if d.resumeMethod != "new" {
+		t.Fatalf("expected resumeMethod=%q, got %q", "new", d.resumeMethod)
+	}
+	if d.acpID != "acp-sess-1" {
+		t.Fatalf("expected acpID from NewSession, got %q", d.acpID)
 	}
 }

@@ -4,12 +4,29 @@ package conversation
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"time"
 
 	acp "github.com/coder/acp-go-sdk"
 )
+
+// isSessionNotFoundErr reports whether err from LoadSession/ResumeSession
+// indicates the requested acp_session_id is no longer known to the agent
+// (mitto-z70). Agents return JSON-RPC -32602 "Invalid params" for a stale
+// session id; falling back to session/new is the correct recovery — retrying
+// the same load would just fail again identically.
+func isSessionNotFoundErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	var re *acp.RequestError
+	if errors.As(err, &re) && re != nil && re.Code == -32602 {
+		return true
+	}
+	return false
+}
 
 // handshakeDeps is the minimal interface sharedSessionHandshaker needs from BackgroundSession.
 // All methods are prefixed with "hs" to avoid clashes with BackgroundSession's public API.
@@ -345,16 +362,31 @@ func (c sharedSessionHandshaker) resumeSharedACPSession(d handshakeDeps, sharedP
 			loadCancel()
 			client.SetLoadingSession(false)
 			if err != nil {
+				// Classify the failure so the fallback path emits an accurate cold
+				// phase and log: JSON-RPC -32602 from the agent means the persisted
+				// acp_session_id is stale/unknown, so exactly one session/new is the
+				// correct recovery (mitto-z70). Any other error (timeout, transport,
+				// internal) is still handled by the same single-shot fallback below,
+				// but tagged as a generic load failure.
+				staleSession := isSessionNotFoundErr(err)
 				logFields := []any{"acp_session_id", acpSessionID, "error", err, "method", "load"}
 				if loadCtx.Err() == context.DeadlineExceeded {
 					logFields = append(logFields, "timeout", true)
 				}
+				if staleSession {
+					logFields = append(logFields, "stale_session", true)
+				}
 				if l := d.hsLogger(); l != nil {
 					l.Info("Load failed, creating new session", logFields...)
 				}
-				d.hsColdPhase("session_load_failed",
+				coldPhase := "session_load_failed"
+				if staleSession {
+					coldPhase = "session_load_stale"
+				}
+				d.hsColdPhase(coldPhase,
 					"rpc_ms", time.Since(loadStart).Milliseconds(),
-					"error", err.Error())
+					"error", err.Error(),
+					"stale_session", staleSession)
 			} else {
 				d.hsSetResumeMethod("load")
 				if l := d.hsLogger(); l != nil {
