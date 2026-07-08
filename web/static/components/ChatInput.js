@@ -384,6 +384,9 @@ export function ChatInput({
   const [isLoopLocked, setIsLoopLocked] = useState(false);
   const [isLoopSaving, setIsLoopSaving] = useState(false);
   const [loopPromptName, setLoopPromptName] = useState("");
+  // Tracks the last named prompt sent/queued in this conversation, so turning
+  // it into a loop can pre-select that prompt in the dropdown (mitto-ujt).
+  const lastSentPromptNameRef = useRef("");
 
   // Resize handle for textarea min height (controls the visual size of the input area)
   // Hard max for auto-grow (scrollbar appears beyond this)
@@ -573,8 +576,17 @@ export function ChatInput({
         } else {
           setLoopNextScheduledAt(null);
         }
-        // Update prompt name and fresh context from config
-        setLoopPromptName(config.prompt_name || "");
+        // Update prompt name from config. When no loop prompt is configured
+        // yet, pre-select the last named prompt sent in this conversation
+        // (visual only) if it is still loop-eligible (mitto-ujt).
+        if (config.prompt_name) {
+          setLoopPromptName(config.prompt_name);
+        } else {
+          const lastSent = lastSentPromptNameRef.current;
+          const eligible =
+            lastSent && (loopPrompts || []).some((p) => p.name === lastSent);
+          setLoopPromptName(eligible ? lastSent : "");
+        }
         setLoopFreshContext(config.fresh_context === true);
         setLoopMaxIterations(config.max_iterations ?? 0);
         setLoopIterationCount(config.iteration_count ?? 0);
@@ -1348,6 +1360,7 @@ export function ChatInput({
         return;
       }
       try {
+        lastSentPromptNameRef.current = prompt.name;
         await onAddToQueue("", [], [], { promptName: prompt.name });
       } catch (err) {
         console.error("Failed to add to queue:", err);
@@ -1370,10 +1383,12 @@ export function ChatInput({
       }
       if (missing.length > 0 && onOpenPromptParamDialog) {
         onOpenPromptParamDialog(prompt, missing, async (userArgs) => {
+          lastSentPromptNameRef.current = prompt.name;
           onSend("", [], [], { promptName: prompt.name, arguments: userArgs });
         });
         return;
       }
+      lastSentPromptNameRef.current = prompt.name;
       onSend("", [], [], { promptName: prompt.name });
     }
   };
