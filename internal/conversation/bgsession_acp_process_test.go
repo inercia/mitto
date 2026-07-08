@@ -2,6 +2,7 @@ package conversation
 
 import (
 	"io"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -48,8 +49,8 @@ func TestStartStderrMonitor_MCPInitProgress_TriggersCallback(t *testing.T) {
 	pr, pw := io.Pipe()
 	collector := NewStderrCollector(8192, nil)
 
-	progressCalls := 0
-	onProgress := func() { progressCalls++ }
+	var progressCalls atomic.Int32
+	onProgress := func() { progressCalls.Add(1) }
 	onTimeout := func() { t.Fatal("MCP timeout should not fire on progress lines") }
 
 	StartStderrMonitor(pr, collector, nil, nil, onProgress, onTimeout, nil, nil)
@@ -63,8 +64,8 @@ func TestStartStderrMonitor_MCPInitProgress_TriggersCallback(t *testing.T) {
 
 	// Give the goroutine a moment to consume the stream.
 	time.Sleep(200 * time.Millisecond)
-	if progressCalls < 1 {
-		t.Fatalf("expected onMCPInitProgress to be called at least once, got %d", progressCalls)
+	if got := progressCalls.Load(); got < 1 {
+		t.Fatalf("expected onMCPInitProgress to be called at least once, got %d", got)
 	}
 }
 
@@ -75,8 +76,8 @@ func TestStartStderrMonitor_MCPInitTimeout_TriggersCallback(t *testing.T) {
 	pr, pw := io.Pipe()
 	collector := NewStderrCollector(8192, nil)
 
-	timeoutCalls := 0
-	onTimeout := func() { timeoutCalls++ }
+	var timeoutCalls atomic.Int32
+	onTimeout := func() { timeoutCalls.Add(1) }
 
 	StartStderrMonitor(pr, collector, nil, nil, nil, onTimeout, nil, nil)
 
@@ -87,8 +88,8 @@ func TestStartStderrMonitor_MCPInitTimeout_TriggersCallback(t *testing.T) {
 	}()
 
 	time.Sleep(200 * time.Millisecond)
-	if timeoutCalls != 1 {
-		t.Fatalf("expected onMCPInitTimeout to be called exactly once, got %d", timeoutCalls)
+	if got := timeoutCalls.Load(); got != 1 {
+		t.Fatalf("expected onMCPInitTimeout to be called exactly once, got %d", got)
 	}
 }
 
