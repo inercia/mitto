@@ -252,6 +252,25 @@ func formatClassifiedError(classified *ACPClassifiedError) string {
 	return classified.UserMessage
 }
 
+// IsMCPInitTimeout reports whether err (possibly wrapped in *ACPClassifiedError)
+// carries the agent's "MCP initialization timed out" signal. This is TRANSIENT
+// on a cold shared ACP process — once the process warms (mitto-54k.3 warm-once
+// barrier) a retry succeeds. It is used by auto-resume paths (mitto-54k.6) to
+// avoid counting a cold-start MCP-init timeout toward the hard ACP-start failure
+// threshold (which would otherwise auto-archive an otherwise-resumable session).
+//
+// Note: the classification in permanentErrorPatterns intentionally stays as
+// Permanent to avoid interactive retry storms on genuinely broken MCP servers;
+// this predicate is a targeted carve-out for the background auto-resume counter
+// only. Since *ACPClassifiedError.Error() forwards to the underlying original
+// error, a substring/regex match on err.Error() works through the wrapper.
+func IsMCPInitTimeout(err error) bool {
+	if err == nil {
+		return false
+	}
+	return mcpInitTimeoutPattern.MatchString(err.Error())
+}
+
 // IsACPConnectionError reports whether err is a recoverable ACP pipe/connection
 // error that can be resolved by restarting the underlying OS process.
 // Used to detect the post-sleep/resume race condition where the OS has killed

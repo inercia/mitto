@@ -992,6 +992,7 @@ func (m *mockSessionManager) GetWorkspaceRCLastModified(workingDir string) time.
 }
 func (m *mockSessionManager) GetWorkspace(workingDir string) *config.WorkspaceSettings { return nil }
 func (m *mockSessionManager) InvalidateWorkspaceRC(workingDir string)                  {}
+func (m *mockSessionManager) IsMCPInitTimeout(err error) bool                          { return false }
 
 func TestConversationStartBroadcastsEvent(t *testing.T) {
 	// Create a temporary store
@@ -3206,6 +3207,7 @@ func (m *mockSessionManagerForWorkspaces) GetWorkspace(workingDir string) *confi
 	return nil
 }
 func (m *mockSessionManagerForWorkspaces) InvalidateWorkspaceRC(workingDir string) {}
+func (m *mockSessionManagerForWorkspaces) IsMCPInitTimeout(err error) bool         { return false }
 
 func TestListWorkspaces_Empty(t *testing.T) {
 	mockSM := &mockSessionManagerForWorkspaces{
@@ -3558,6 +3560,7 @@ func (m *mockSessionManagerForWorkspaceUpdate) GetWorkspace(string) *config.Work
 func (m *mockSessionManagerForWorkspaceUpdate) InvalidateWorkspaceRC(workingDir string) {
 	m.invalidateCalled = append(m.invalidateCalled, workingDir)
 }
+func (m *mockSessionManagerForWorkspaceUpdate) IsMCPInitTimeout(err error) bool { return false }
 
 // setupWorkspaceUpdateServer creates a server + store with a registered session for workspace-update tests.
 // Returns the server, store, session ID, and workspace dir.
@@ -3902,6 +3905,7 @@ func (m *mockSessionManagerForWait) GetWorkspacePromptsDirs(string) []string    
 func (m *mockSessionManagerForWait) GetWorkspaceRCLastModified(string) time.Time         { return time.Time{} }
 func (m *mockSessionManagerForWait) GetWorkspace(string) *config.WorkspaceSettings       { return nil }
 func (m *mockSessionManagerForWait) InvalidateWorkspaceRC(string)                        {}
+func (m *mockSessionManagerForWait) IsMCPInitTimeout(error) bool                         { return false }
 
 // setupServerForWait creates a server with a SessionManager mock for wait tool tests.
 func setupServerForWait(t *testing.T, targetID string, targetBS BackgroundSession) (*Server, string) {
@@ -4813,6 +4817,7 @@ func (m *mockSessionManagerForChildren) GetWorkspaceRCLastModified(string) time.
 }
 func (m *mockSessionManagerForChildren) GetWorkspace(string) *config.WorkspaceSettings { return nil }
 func (m *mockSessionManagerForChildren) InvalidateWorkspaceRC(string)                  {}
+func (m *mockSessionManagerForChildren) IsMCPInitTimeout(error) bool                   { return false }
 
 func TestChildrenTasksWait_TimeoutWithStillProcessing(t *testing.T) {
 	// Set up parent + child, child is prompting (still processing).
@@ -5016,6 +5021,7 @@ func (m *mockSessionManagerForChildrenMutable) GetWorkspace(string) *config.Work
 	return nil
 }
 func (m *mockSessionManagerForChildrenMutable) InvalidateWorkspaceRC(string) {}
+func (m *mockSessionManagerForChildrenMutable) IsMCPInitTimeout(error) bool  { return false }
 
 func TestChildrenTasksWait_AutoCompletesIdleChild(t *testing.T) {
 	// Child is idle (not prompting) from the start and never reports.
@@ -5664,6 +5670,7 @@ func (m *mockSessionManagerForAutoResume) GetWorkspace(string) *config.Workspace
 	return nil
 }
 func (m *mockSessionManagerForAutoResume) InvalidateWorkspaceRC(string) {}
+func (m *mockSessionManagerForAutoResume) IsMCPInitTimeout(error) bool  { return false }
 
 func TestSendPrompt_AutoResumesStoredSession(t *testing.T) {
 	tmpDir := t.TempDir()
@@ -7144,6 +7151,7 @@ func (m *mockSessionManagerCrossWorkspace) GetWorkspace(string) *config.Workspac
 	return nil
 }
 func (m *mockSessionManagerCrossWorkspace) InvalidateWorkspaceRC(string) {}
+func (m *mockSessionManagerCrossWorkspace) IsMCPInitTimeout(error) bool  { return false }
 
 // setupCrossWorkspaceServer creates a server with two sessions in different workspaces.
 // Returns the server, store, source session ID, target session ID.

@@ -2219,6 +2219,22 @@ func (sm *SessionManager) resumeSessionWithConstraint(sessionID, sessionName, wo
 	}
 
 	if err != nil {
+		// mitto-54k.6: a cold-start MCP-init timeout is TRANSIENT on a shared
+		// ACP process (warm-once barrier mitto-54k.3 succeeds on a retry once
+		// the process warms). Do NOT count it toward the hard ACP-start failure
+		// threshold and do NOT auto-archive; a later resume attempt (interactive
+		// or MCP auto-resume) will succeed. Genuine permanent failures (missing
+		// binary, broken MCP server on a WARM process, etc.) still fall through
+		// to the counter/archive logic below.
+		if IsMCPInitTimeout(err) {
+			if sm.logger != nil {
+				sm.logger.Warn("Resume hit transient cold-start MCP-init timeout; not counting as hard failure (will retry when warm)",
+					"session_id", sessionID,
+					"foreground", foreground)
+			}
+			signalDone(nil, err)
+			return nil, err
+		}
 		// Persist the failure count and auto-archive if threshold is reached.
 		if store != nil {
 			var failureCount int

@@ -178,6 +178,10 @@ type SessionManager interface {
 	GetWorkspace(workingDir string) *config.WorkspaceSettings
 	// InvalidateWorkspaceRC clears the cached .mittorc for a workspace dir.
 	InvalidateWorkspaceRC(workingDir string)
+	// IsMCPInitTimeout reports whether err (possibly wrapped) is the transient
+	// cold-start "MCP initialization timed out" signal. Auto-resume paths use it
+	// to defer to a bounded retry instead of surfacing a hard failure (mitto-54k.6).
+	IsMCPInitTimeout(err error) bool
 }
 
 // LoopRunner interface for triggering immediate loop prompt delivery.
@@ -2161,9 +2165,62 @@ func (s *Server) handleSendPromptToConversation(ctx context.Context, req *mcp.Ca
 					"target_status", string(targetMeta.Status))
 				resumed, resumeErr := s.sessionManager.ResumeSession(input.ConversationID, targetMeta.Name, targetMeta.WorkingDir)
 				if resumeErr != nil {
-					s.logger.Warn("Failed to auto-resume stored session",
-						"target_session", input.ConversationID,
-						"error", resumeErr)
+					// mitto-54k.6: a cold-start MCP-init timeout is transient on a
+					// shared ACP process (warm-once barrier mitto-54k.3 will let a
+					// later resume succeed). Do not log the hard "Failed to auto-
+					// resume stored session" warning; schedule a bounded background
+					// retry so the queued prompt is delivered once the process warms.
+					if s.sessionManager.IsMCPInitTimeout(resumeErr) {
+						s.logger.Info("Auto-resume deferred: transient cold-start MCP-init timeout; scheduling bounded retry",
+							"target_session", input.ConversationID,
+							"error", resumeErr)
+						sm := s.sessionManager
+						convID := input.ConversationID
+						convName := targetMeta.Name
+						convWD := targetMeta.WorkingDir
+						go func() {
+							backoffs := []time.Duration{2 * time.Second, 5 * time.Second, 10 * time.Second}
+							for attempt, delay := range backoffs {
+								time.Sleep(delay)
+								if sm == nil {
+									return
+								}
+								// Session may already be running (a foreground resume or a
+								// prior retry attached first); if so, kick the queue and stop.
+								if existing := sm.GetSession(convID); existing != nil {
+									go existing.TryProcessQueuedMessage()
+									return
+								}
+								retriedBS, retryErr := sm.ResumeSession(convID, convName, convWD)
+								if retryErr == nil {
+									s.logger.Info("Auto-resume retry succeeded",
+										"target_session", convID,
+										"attempt", attempt+1)
+									if retriedBS != nil {
+										go retriedBS.TryProcessQueuedMessage()
+									}
+									return
+								}
+								if !sm.IsMCPInitTimeout(retryErr) {
+									s.logger.Warn("Auto-resume retry aborted: non-transient error",
+										"target_session", convID,
+										"attempt", attempt+1,
+										"error", retryErr)
+									return
+								}
+								s.logger.Debug("Auto-resume retry still hitting MCP-init timeout",
+									"target_session", convID,
+									"attempt", attempt+1)
+							}
+							s.logger.Warn("Auto-resume gave up after bounded retries; queued prompt will be delivered on next ensure_resumed/reconnect",
+								"target_session", convID,
+								"attempts", len(backoffs))
+						}()
+					} else {
+						s.logger.Warn("Failed to auto-resume stored session",
+							"target_session", input.ConversationID,
+							"error", resumeErr)
+					}
 				} else {
 					bs = resumed
 				}

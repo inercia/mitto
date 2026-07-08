@@ -16,9 +16,13 @@ package inprocess
 
 import (
 	"context"
+	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/google/uuid"
 
 	"github.com/inercia/mitto/internal/client"
 	"github.com/inercia/mitto/internal/config"
@@ -189,5 +193,97 @@ func TestMCPInitDelay_ExtendedBudgetAllowsSuccess(t *testing.T) {
 	mu.Unlock()
 	if len(errsCopy) > 0 {
 		t.Errorf("Expected no errors with extended MCP-init budget, got: %v", errsCopy)
+	}
+}
+
+// TestMCPInitTimeout_AutoResume_NoArchive verifies mitto-54k.6: a background
+// auto-resume that fails with an MCP-init timeout must NOT increment the hard
+// ACPStartFailureCount counter and must NOT auto-archive the stored session.
+// The transient cold-start timeout should be treated as retryable so that a
+// later resume attempt (once the shared ACP process warms) can succeed.
+//
+// Strategy:
+//   - Seed a session record directly into the store (no ACP spawn yet), so the
+//     failure counter starts at 0.
+//   - Set MOCK_MCP_INIT_TIMEOUT_MS so the mock agent aborts session/new with the
+//     MCP-init-timeout stderr signal.
+//   - Call ResumeSession and assert it returns an MCP-init-timeout error.
+//   - Assert the persisted metadata still has ACPStartFailureCount == 0 and
+//     Archived == false with no ArchiveReasonACPFailures.
+func TestMCPInitTimeout_AutoResume_NoArchive(t *testing.T) {
+	// Force the mock agent to time out on MCP-init for every session/new.
+	t.Setenv("MOCK_MCP_INIT_TIMEOUT_MS", "300")
+
+	ts := SetupTestServer(t, func(c *web.Config) {
+		if c.MittoConfig == nil {
+			c.MittoConfig = &config.Config{}
+		}
+		// Extended budget so the stderr signal (not the deadline) is what aborts.
+		c.MittoConfig.Session = &config.SessionConfig{McpInitTimeout: "10s"}
+	})
+
+	// Seed a session record directly into the store. This bypasses any ACP
+	// spawn during CreateSession and starts the failure counter at 0.
+	workspaceDir := filepath.Join(ts.TempDir, "workspace")
+	sessionID := uuid.NewString()
+	meta := session.Metadata{
+		SessionID:  sessionID,
+		Name:       "mcp-init-timeout-autoresume",
+		ACPServer:  "mock-acp",
+		WorkingDir: workspaceDir,
+		Status:     session.SessionStatusActive,
+	}
+	if err := ts.Store.Create(meta); err != nil {
+		t.Fatalf("Store.Create failed: %v", err)
+	}
+	t.Cleanup(func() { _ = ts.Client.DeleteSession(sessionID) })
+
+	// Sanity: fresh session must have a zero failure counter and not be archived.
+	pre, err := ts.Store.GetMetadata(sessionID)
+	if err != nil {
+		t.Fatalf("GetMetadata (pre) failed: %v", err)
+	}
+	if pre.ACPStartFailureCount != 0 {
+		t.Fatalf("Pre: ACPStartFailureCount = %d, want 0", pre.ACPStartFailureCount)
+	}
+	if pre.Archived {
+		t.Fatalf("Pre: session already archived")
+	}
+
+	// Drive the resume. The MCP-init timeout must be returned as an error.
+	sm := ts.Server.GetSessionManager()
+	bs, err := sm.ResumeSession(sessionID, meta.Name, meta.WorkingDir)
+	if err == nil {
+		if bs != nil {
+			bs.Close("test_cleanup")
+		}
+		t.Fatalf("ResumeSession unexpectedly succeeded under MCP-init timeout")
+	}
+	if !strings.Contains(strings.ToLower(err.Error()), "mcp initialization timed out") {
+		t.Fatalf("ResumeSession error = %q, want it to contain 'mcp initialization timed out'", err.Error())
+	}
+
+	// Post-condition: the failure counter must NOT have been incremented and
+	// the session must NOT have been auto-archived.
+	post, err := ts.Store.GetMetadata(sessionID)
+	if err != nil {
+		t.Fatalf("GetMetadata (post) failed: %v", err)
+	}
+	if post.ACPStartFailureCount != 0 {
+		t.Errorf("Post: ACPStartFailureCount = %d, want 0 (MCP-init timeout must not count as hard failure)",
+			post.ACPStartFailureCount)
+	}
+	if post.Archived {
+		t.Errorf("Post: session was auto-archived (reason=%q); MCP-init timeout must not trigger archive",
+			post.ArchiveReason)
+	}
+	if post.ArchiveReason == session.ArchiveReasonACPFailures {
+		t.Errorf("Post: ArchiveReason = %q, want empty (no ACP-failures archive)", post.ArchiveReason)
+	}
+
+	// Confirm the session was not registered as a running BackgroundSession.
+	if got := sm.GetSession(sessionID); got != nil {
+		t.Errorf("Session unexpectedly registered as running after failed resume")
+		got.Close("test_cleanup")
 	}
 }

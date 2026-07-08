@@ -1996,6 +1996,13 @@ func (a *sessionManagerAdapter) InvalidateWorkspaceRC(workingDir string) {
 	a.sm.InvalidateWorkspaceRC(workingDir)
 }
 
+// IsMCPInitTimeout reports whether err carries the transient cold-start
+// "MCP initialization timed out" signal. Delegates to conversation.IsMCPInitTimeout
+// so the MCP server's auto-resume path can defer to a bounded retry (mitto-54k.6).
+func (a *sessionManagerAdapter) IsMCPInitTimeout(err error) bool {
+	return conversation.IsMCPInitTimeout(err)
+}
+
 // =============================================================================
 // PromptsSubscriber implementation
 // =============================================================================

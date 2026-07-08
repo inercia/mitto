@@ -396,6 +396,18 @@ func (s *Server) handleSessionWS(w http.ResponseWriter, r *http.Request) {
 					defer s.interactiveResumeSem.Release()
 					resumedBS, err := s.sessionManager.ResumeSessionBackground(sessionID, sessionName, cwd)
 					if err != nil {
+						// mitto-54k.6: a cold-start MCP-init timeout is transient — the
+						// process warm-once barrier (mitto-54k.3) will let a later resume
+						// succeed. Skip the misleading permanent-error toast and the hard
+						// start-failed broadcast; a subsequent reconnect/ensure_resumed
+						// will retry against a warm process.
+						if conversation.IsMCPInitTimeout(err) {
+							if clientLogger != nil {
+								clientLogger.Warn("Async resume hit transient cold-start MCP-init timeout; skipping start-failed broadcast, will retry on reconnect/ensure_resumed",
+									"error", err)
+							}
+							return
+						}
 						if clientLogger != nil {
 							clientLogger.Error("Failed to resume session (async)", "error", err)
 						}
