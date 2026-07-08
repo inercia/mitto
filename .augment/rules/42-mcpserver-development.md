@@ -26,13 +26,13 @@ Single global MCP server at `http://127.0.0.1:5757/mcp`. Two tool classes:
 - **Global tools** (no session): `mitto_conversation_list`, `mitto_get_config`, `mitto_get_runtime_info`
 - **Session-scoped tools** (require `self_id`): UI prompts, conversation control, history, prompt management (`mitto_prompt_list/get/update`), loop control (`mitto_conversation_set_loop`, `mitto_conversation_run_loop_now`)
 
-## Cold-Start MCP Wedge (mitto-54k) — Definitive Diagnosis: Agent-Side, Not Fixable in Mitto
+## Cold-Start MCP Wedge (mitto-54k / mitto-6hr) — Mitto-side SSE stall, FIXED
 
-Mitto's inbound `/mcp` (`initialize`+`tools/list`) was **falsified** as the cause by direct probing (~1.5ms single, 13ms/0 errors at 12-way concurrency; regression-guarded by `internal/mcpserver/server_fastpath_test.go`). **Root cause (mitto-54k.7 v3, 2026-07-08)**: auggie (v0.32.0) **hard-gates the first prompt's first token on ALL its configured MCP servers finishing `initialize`** (stderr: `🔌 Waiting for N MCP server(s) to initialize...`), and forks **~6 duplicate copies of every MCP server in one simultaneous burst**; the differentiator is spawn **timing** (I/O thundering-herd), **not** CPU/server-count/warmth — a wedged auggie sits at ~2% CPU in state S (I/O-blocked). No flag exists to make this lazy/bounded/non-blocking; it's agent-side and unfixable in Mitto.
+Earlier diagnosis ("agent-side, unfixable in Mitto" — auggie hard-gating on MCP `initialize`) was **wrong**, corrected 2026-07-08 after the same wedge reproduced in **both** auggie and Claude Code, isolated to workspaces with **concurrent MCP sessions** (e.g. multiple workspace UUIDs + an active loop sharing one `working_dir`).
 
-`mitto-54k.3` (warm-once barrier, `internal/acpproc/shared_acp_process.go`) and `mitto-54k.4` (defer `session/new`/`LoadSession` to first-prompt time) shipped — `session/new` reports ready in ~250ms — but only **relocate** auggie's wait to first-prompt-time (fast create, then a hung first prompt for 2-5 min). Don't re-chase as a 54k.3/54k.4 regression. Child tickets: `mitto-clc` (P1) — inactivate the *proactive* always-on keep-warm pin/re-warm (it piles RPC load onto an already-wedged agent instead of letting it recover); `mitto-cgc` (P2) — stagger aux-session creation (mcp-check + mcp-tools currently bunched within ~10ms per workspace).
+**Root cause**: `startSSE()` (`server.go:347`) builds the Streamable HTTP handler with `nil` options → stateful mode, where a POST's response can ride the client's per-session **GET SSE stream** instead of the POST body. Under concurrency that stream stalls (observed: ~97s gap between GET completions, an SSE GET held open, never completes) — `initialize` times out even though Mitto's `/mcp` handler already returned 200 in 0ms (`duration_ms=0` in the access log is a red herring — check GET-stream completions, not POST latency).
 
-**Mitigations (none are Mitto code fixes)**: trim unused MCP servers from the workspace's agent config; file an upstream auggie feature request for lazy MCP init (the only real fix).
+**Fix (`mitto-6hr`, P1, epic `mitto-54k`, APPLIED)**: `startSSE()` now passes `&mcp.StreamableHTTPOptions{JSONResponse: true}` to `NewStreamableHTTPHandler` so POST responses resolve inline, independent of the SSE GET. **Not** `Stateless: true` — rejects server→client *requests*, breaking `UIPrompter` (mitto_ui_options/form). Still-valid secondary mitigations (reduce concurrency, don't fix the stall): `mitto-clc` (disable proactive keep-warm), `mitto-cgc` (stagger aux-session creation).
 
 ## Adding New Tools
 

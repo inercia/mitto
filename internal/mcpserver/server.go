@@ -343,10 +343,20 @@ func (s *Server) startSSE(ctx context.Context) error {
 	// This is the modern transport that Augment Agent and other clients use.
 	mux := http.NewServeMux()
 
-	// Create Streamable HTTP handler - this handles all MCP communication
+	// Create Streamable HTTP handler - this handles all MCP communication.
+	//
+	// JSONResponse:true makes a POST's response (e.g. an agent's initialize /
+	// tools/list on cold start) resolve inline as application/json (spec
+	// §2.1.5) on the POST itself. The go-sdk default (nil opts => stateful
+	// mode) instead lets that response ride the client's standalone SSE GET
+	// stream; under concurrent MCP sessions that GET stream can stall, wedging
+	// cold-start initialize for minutes (mitto-6hr). This does NOT affect
+	// server->client interactions: Mitto's UIPrompter bridges to the UI over
+	// WebSocket, not the MCP transport, so mitto_ui_* prompts are unaffected
+	// (unlike Stateless:true, which would reject server->client requests).
 	streamableHandler := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server {
 		return s.mcpServer
-	}, nil) // nil options uses defaults
+	}, &mcp.StreamableHTTPOptions{JSONResponse: true})
 
 	// Wrap with request logging so inbound MCP requests (e.g. an agent's
 	// initialize / tools/list during cold start) can be correlated with agent
