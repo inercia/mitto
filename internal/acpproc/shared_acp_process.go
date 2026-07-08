@@ -16,6 +16,7 @@ import (
 	"github.com/coder/acp-go-sdk"
 
 	mittoAcp "github.com/inercia/mitto/internal/acp"
+	"github.com/inercia/mitto/internal/coldstart"
 	"github.com/inercia/mitto/internal/conversation"
 	"github.com/inercia/mitto/internal/logging"
 	"github.com/inercia/mitto/internal/runner"
@@ -372,6 +373,12 @@ type SharedACPProcess struct {
 	mcpInitMu         sync.Mutex
 	mcpInitTimeoutCh  chan struct{}
 
+	// mcpInitDoneCh is closed exactly once (via mcpInitDoneOnce) when mcpInitDone
+	// first latches, so WaitForMCPInit can block until the process is warm without
+	// polling (mitto-54k.4).
+	mcpInitDoneOnce sync.Once
+	mcpInitDoneCh   chan struct{}
+
 	// coldStartGate serializes concurrent NewSession/LoadSession callers on a
 	// still-cold process (mitto-8tb). N conversations racing their deferred
 	// session/new against a fresh shared process would each make the agent re-run
@@ -397,6 +404,7 @@ func NewSharedACPProcess(ctx context.Context, config SharedACPProcessConfig) (*S
 		logger:        config.Logger,
 		setModelSem:   make(chan struct{}, 1),
 		coldStartGate: make(chan struct{}, 1),
+		mcpInitDoneCh: make(chan struct{}),
 	}
 
 	if err := p.startProcess(); err != nil {
@@ -1193,8 +1201,16 @@ func (p *SharedACPProcess) acquireColdStartGate(ctx context.Context) (release fu
 	if p.coldStartGate == nil {
 		return func() {}, nil
 	}
+	gateWaitStart := time.Now()
 	select {
 	case p.coldStartGate <- struct{}{}:
+		if p.logger != nil {
+			p.logger.Debug("cold_start_gate acquired",
+				"wait_ms", time.Since(gateWaitStart).Milliseconds(),
+				"permits_in_use", len(p.coldStartGate),
+				"capacity", cap(p.coldStartGate),
+				"cold_start_id", coldstart.FromContext(ctx).ID())
+		}
 		return func() { <-p.coldStartGate }, nil
 	case <-ctx.Done():
 		return nil, ctx.Err()
@@ -1221,11 +1237,49 @@ func (p *SharedACPProcess) RecommendedLoadTimeout(hasMCPServers bool) time.Durat
 	return p.config.MCPInitTimeout
 }
 
+// markMCPInitDone latches mcpInitDone and closes mcpInitDoneCh exactly once so
+// waiters in WaitForMCPInit unblock. Safe to call on every successful session RPC.
+func (p *SharedACPProcess) markMCPInitDone() {
+	p.mcpInitDone.Store(true)
+	p.mcpInitDoneOnce.Do(func() {
+		if p.mcpInitDoneCh != nil {
+			close(p.mcpInitDoneCh)
+		}
+	})
+}
+
 // MCPInitDone reports whether the shared process's MCP-init window has
 // closed (the agent's first successful RPC observed). Used by the adaptive
 // pre-warming controller (mitto-mw0) to compute the health verdict.
 func (p *SharedACPProcess) MCPInitDone() bool {
 	return p.mcpInitDone.Load()
+}
+
+// WaitForMCPInit blocks until the shared process's MCP-init window closes
+// (mcpInitDone latched via a successful session RPC), ctx is done, or the
+// process exits. Returns true only if the process became warm. Used by the
+// background resume path (mitto-54k.4) to defer non-foreground LoadSession
+// until the foreground session's handshake warms the agent, without stranding
+// background sessions (the caller bounds ctx).
+func (p *SharedACPProcess) WaitForMCPInit(ctx context.Context) bool {
+	if p.mcpInitDone.Load() {
+		return true
+	}
+	if p.mcpInitDoneCh == nil {
+		return p.mcpInitDone.Load()
+	}
+	processDone := p.processDone
+	if processDone == nil {
+		processDone = make(chan struct{}) // never fires; process-exit not observable
+	}
+	select {
+	case <-p.mcpInitDoneCh:
+		return true
+	case <-ctx.Done():
+		return false
+	case <-processDone:
+		return false
+	}
 }
 
 // MCPInitTimedOut reports whether the shared process's stderr monitor has
@@ -1531,7 +1585,7 @@ func (p *SharedACPProcess) NewSession(ctx context.Context, cwd string, mcpServer
 
 		if err == nil {
 			p.recordRPCSuccess()
-			p.mcpInitDone.Store(true)
+			p.markMCPInitDone()
 			p.mcpInitInProgress.Store(false) // close the MCP-init window (mitto-29q)
 			handle := &conversation.SessionHandle{
 				SessionID: string(sessResp.SessionId),
@@ -1553,7 +1607,8 @@ func (p *SharedACPProcess) NewSession(ctx context.Context, cwd string, mcpServer
 					"total_ms", time.Since(totalStart).Milliseconds(),
 					"rpc_new_session_ms", rpcDuration.Milliseconds(),
 					"extended_mcp_budget", extendedBudget,
-					"per_attempt_budget_ms", perAttemptBudget.Milliseconds())
+					"per_attempt_budget_ms", perAttemptBudget.Milliseconds(),
+					"cold_start_id", coldstart.FromContext(rpcCtx).ID())
 			}
 			return handle, nil
 		}
@@ -1590,6 +1645,7 @@ func (p *SharedACPProcess) NewSession(ctx context.Context, cwd string, mcpServer
 				"ctx_remaining_ms", ctxRemainingMs,
 				"rpc_code", rpcCode,
 				"extended_mcp_budget", extendedBudget,
+				"cold_start_id", coldstart.FromContext(rpcCtx).ID(),
 				"error", err)
 		}
 
@@ -1746,13 +1802,14 @@ func (p *SharedACPProcess) LoadSession(ctx context.Context, acpSessionID, cwd st
 				"ctx_remaining_ms", ctxRemainingMs,
 				"ctx_already_expired", ctxAlreadyExpired,
 				"extended_mcp_budget", extendedBudget,
+				"cold_start_id", coldstart.FromContext(rpcCtx).ID(),
 				"error", err)
 		}
 		return nil, fmt.Errorf("failed to load session: %w", err)
 	}
 
 	p.recordRPCSuccess()
-	p.mcpInitDone.Store(true)
+	p.markMCPInitDone()
 	p.mcpInitInProgress.Store(false) // close the MCP-init window (mitto-29q)
 	handle := &conversation.SessionHandle{
 		SessionID:    acpSessionID,
@@ -1767,7 +1824,8 @@ func (p *SharedACPProcess) LoadSession(ctx context.Context, acpSessionID, cwd st
 			"acp_session_id", acpSessionID,
 			"total_ms", time.Since(totalStart).Milliseconds(),
 			"rpc_load_session_ms", rpcDuration.Milliseconds(),
-			"extended_mcp_budget", extendedBudget)
+			"extended_mcp_budget", extendedBudget,
+			"cold_start_id", coldstart.FromContext(rpcCtx).ID())
 	}
 
 	return handle, nil
@@ -1965,8 +2023,16 @@ func (p *SharedACPProcess) SetSessionModel(ctx context.Context, sessionID acp.Se
 	// Acquire the per-process serialisation semaphore, respecting caller ctx.
 	// This ensures only one set_model RPC is in-flight at a time — concurrent
 	// callers queue here instead of racing the serially-served agent subprocess.
+	setModelWaitStart := time.Now()
 	select {
 	case p.setModelSem <- struct{}{}:
+		if p.logger != nil {
+			p.logger.Debug("set_model_sem acquired",
+				"wait_ms", time.Since(setModelWaitStart).Milliseconds(),
+				"permits_in_use", len(p.setModelSem),
+				"capacity", cap(p.setModelSem),
+				"cold_start_id", coldstart.FromContext(ctx).ID())
+		}
 		defer func() { <-p.setModelSem }()
 	case <-ctx.Done():
 		return fmt.Errorf("set_model: cancelled while waiting for serialization slot: %w", ctx.Err())

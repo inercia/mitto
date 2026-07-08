@@ -19,6 +19,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
+	"github.com/inercia/mitto/internal/coldstart"
 	"github.com/inercia/mitto/internal/config"
 	"github.com/inercia/mitto/internal/logging"
 	"github.com/inercia/mitto/internal/session"
@@ -1038,6 +1039,12 @@ func (s *Server) registerGlobalTools(mcpSrv *mcp.Server, deps Dependencies) {
 		Description: "Get runtime information including OS, architecture, log file paths, data directories, and process info",
 	}, s.createGetRuntimeInfoHandler())
 
+	// mitto_coldstart_recent tool - always available
+	mcp.AddTool(mcpSrv, &mcp.Tool{
+		Name:        "mitto_coldstart_recent",
+		Description: "Return the most recent cold-start diagnostic summaries (phase timeline + durations) captured by the cold-start tracer (mitto-3mv). Useful for post-hoc analysis of cold-start latency without grepping logs.",
+	}, s.createColdStartRecentHandler())
+
 	// mitto_workspace_list tool - always available
 	mcp.AddTool(mcpSrv, &mcp.Tool{
 		Name: "mitto_workspace_list",
@@ -1893,6 +1900,16 @@ func (s *Server) createGetRuntimeInfoHandler() mcp.ToolHandlerFor[struct{}, Runt
 	return func(ctx context.Context, req *mcp.CallToolRequest, input struct{}) (*mcp.CallToolResult, RuntimeInfo, error) {
 		info := buildRuntimeInfo()
 		return nil, *info, nil
+	}
+}
+
+// createColdStartRecentHandler creates the handler for the mitto_coldstart_recent tool.
+// It returns the most recent cold-start summaries captured by the cold-start
+// tracer (internal/coldstart), newest first. A Limit of 0 (or omitted) returns
+// all summaries currently held in the ring buffer.
+func (s *Server) createColdStartRecentHandler() mcp.ToolHandlerFor[ColdStartRecentInput, ColdStartRecent] {
+	return func(ctx context.Context, req *mcp.CallToolRequest, input ColdStartRecentInput) (*mcp.CallToolResult, ColdStartRecent, error) {
+		return nil, ColdStartRecent{ColdStarts: coldstart.RecentSummaries(input.Limit)}, nil
 	}
 }
 

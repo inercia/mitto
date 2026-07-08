@@ -9,8 +9,23 @@ import (
 	"time"
 
 	"github.com/inercia/mitto/internal/appdir"
+	"github.com/inercia/mitto/internal/coldstart"
 	"github.com/inercia/mitto/internal/config"
 )
+
+// ColdStartRecentInput is the input for the mitto_coldstart_recent tool.
+type ColdStartRecentInput struct {
+	// Limit is the maximum number of recent cold-start summaries to return.
+	// 0 or omitted returns all summaries currently held (up to the ring capacity).
+	Limit int `json:"limit,omitempty" jsonschema:"max number of recent cold starts to return; 0 or omitted = all (up to the ring capacity)"`
+}
+
+// ColdStartRecent is the output for the mitto_coldstart_recent tool.
+// It wraps the ring-buffer snapshot returned by coldstart.RecentSummaries,
+// newest first.
+type ColdStartRecent struct {
+	ColdStarts []coldstart.Summary `json:"cold_starts"`
+}
 
 // ListConversationsInput contains optional filter criteria for mitto_conversation_list.
 // All fields are optional — when omitted, no filtering is applied for that field.

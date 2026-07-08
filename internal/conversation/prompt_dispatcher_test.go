@@ -472,6 +472,9 @@ func (f *fakePromptDeps) pdFlushContextInPlace(_ context.Context) error {
 	return f.flushContextInPlaceErr
 }
 
+// mitto-3mv WI-2: cold-start trace stub — no-op in tests.
+func (f *fakePromptDeps) pdColdPhase(_ string, _ ...any) {}
+
 type pdRecorderObserver struct{ deps *fakePromptDeps }
 
 func (r *pdRecorderObserver) OnError(msg string) {

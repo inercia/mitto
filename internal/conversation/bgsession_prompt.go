@@ -1088,6 +1088,9 @@ func (bs *BackgroundSession) pdFlushContextInPlace(ctx context.Context) error {
 	return bs.flushContextInPlace(ctx)
 }
 
+// Cold-start diagnostics (mitto-3mv WI-2). Delegates to the nil-safe helper.
+func (bs *BackgroundSession) pdColdPhase(name string, kv ...any) { bs.coldPhase(name, kv...) }
+
 // peekLoopContinuation reports whether the current dispatch is an uninterrupted
 // continuation (a scheduled loop run directly following another one) WITHOUT mutating
 // the marker. The marker is advanced separately at the dispatch point of no return so that

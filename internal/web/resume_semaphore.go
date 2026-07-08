@@ -51,3 +51,13 @@ func (s *resumeSemaphore) Capacity() int {
 	}
 	return cap(s.ch)
 }
+
+// Len reports the number of currently-held permits (in-use slots).
+// Returns 0 for a nil receiver. Used by cold-start diagnostics (mitto-3mv)
+// to surface saturation alongside per-session semaphore wait times.
+func (s *resumeSemaphore) Len() int {
+	if s == nil {
+		return 0
+	}
+	return len(s.ch)
+}

@@ -13,6 +13,7 @@ import (
 
 	"github.com/inercia/mitto/internal/appdir"
 	"github.com/inercia/mitto/internal/auxiliary"
+	"github.com/inercia/mitto/internal/coldstart"
 	"github.com/inercia/mitto/internal/config"
 	"github.com/inercia/mitto/internal/mcpserver"
 	"github.com/inercia/mitto/internal/processors"
@@ -197,7 +198,7 @@ func NewSessionManager(acpCommand, acpServer string, autoApprove bool, logger *s
 	reg := newWorkspaceRegistry(logger, false, nil)
 	reg.defaultWorkspace = defaultWS
 
-	return &SessionManager{
+	sm := &SessionManager{
 		sessions:                  make(map[string]*BackgroundSession),
 		pendingResumes:            make(map[string]*pendingResumeResult),
 		logger:                    logger,
@@ -210,6 +211,13 @@ func NewSessionManager(acpCommand, acpServer string, autoApprove bool, logger *s
 		mcpToolsFetchedWorkspaces: make(map[string]bool),
 		resumeSemaphore:           make(chan struct{}, maxConcurrentSessionResumes),
 	}
+	// Cold-start diagnostics (mitto-3mv): expose concurrent prompting count as
+	// the "concurrent_prompting" contention counter. Overwrites any previously
+	// registered provider — last constructor wins, matching typical single-manager
+	// deployments; tests that construct multiple managers still see a plausible
+	// (albeit non-deterministic) counter.
+	coldstart.SetPromptingCounter(sm.ConcurrentPromptingCount)
+	return sm
 }
 
 // SessionManagerOptions contains options for creating a SessionManager.
@@ -244,7 +252,7 @@ func NewSessionManagerWithOptions(opts SessionManagerOptions) *SessionManager {
 		}
 	}
 
-	return &SessionManager{
+	sm := &SessionManager{
 		sessions:                  make(map[string]*BackgroundSession),
 		pendingResumes:            make(map[string]*pendingResumeResult),
 		logger:                    opts.Logger,
@@ -258,6 +266,9 @@ func NewSessionManagerWithOptions(opts SessionManagerOptions) *SessionManager {
 		mcpToolsFetchedWorkspaces: make(map[string]bool),
 		resumeSemaphore:           make(chan struct{}, maxConcurrentSessionResumes),
 	}
+	// Cold-start diagnostics (mitto-3mv): see NewSessionManager for rationale.
+	coldstart.SetPromptingCounter(sm.ConcurrentPromptingCount)
+	return sm
 }
 
 // SetGlobalConversations sets the global conversation processing configuration.
@@ -993,6 +1004,15 @@ func (sm *SessionManager) IsStreaming(sessionID string) bool {
 	return sm.streaming[sessionID]
 }
 
+// ConcurrentPromptingCount returns the number of sessions currently prompting
+// (their agents are actively streaming). Used by cold-start diagnostics
+// (mitto-3mv) to attribute host contention to concurrent prompt load.
+func (sm *SessionManager) ConcurrentPromptingCount() int {
+	sm.streamingMu.RLock()
+	defer sm.streamingMu.RUnlock()
+	return len(sm.streaming)
+}
+
 // childArchiveTimeout is the timeout for gracefully closing child sessions when a parent is archived.
 const childArchiveTimeout = 30 * time.Second
 
@@ -1646,7 +1666,16 @@ func (sm *SessionManager) GetOrCreateSession(sessionID, workingDir string) (*Bac
 // on the server side as well. Otherwise, we create a new ACP connection and continue
 // using the same persisted session ID for recording.
 func (sm *SessionManager) ResumeSession(sessionID, sessionName, workingDir string) (*BackgroundSession, error) {
-	return sm.resumeSessionWithConstraint(sessionID, sessionName, workingDir, nil)
+	return sm.resumeSessionWithConstraint(sessionID, sessionName, workingDir, nil, true)
+}
+
+// ResumeSessionBackground resumes a persisted session like ResumeSession but marks
+// the resume as non-foreground (background). On a COLD shared ACP process the
+// LoadSession is deferred until the process warms (mcpInitDone), so the user's
+// foreground session/new wins the agent's event loop first (mitto-54k.4). Used by
+// the WebSocket cold-start resume fan-out.
+func (sm *SessionManager) ResumeSessionBackground(sessionID, sessionName, workingDir string) (*BackgroundSession, error) {
+	return sm.resumeSessionWithConstraint(sessionID, sessionName, workingDir, nil, false)
 }
 
 // ResumeSessionWithModelConstraint resumes an existing persisted session like ResumeSession,
@@ -1654,7 +1683,7 @@ func (sm *SessionManager) ResumeSession(sessionID, sessionName, workingDir strin
 // auto-selection constraint (mitto-9x8). Used by auto-children to apply a per-child initial
 // model profile. Pass nil to preserve the default ACP-server-derived model selection.
 func (sm *SessionManager) ResumeSessionWithModelConstraint(sessionID, sessionName, workingDir string, modelConstraint *config.ACPServerConstraint) (*BackgroundSession, error) {
-	return sm.resumeSessionWithConstraint(sessionID, sessionName, workingDir, modelConstraint)
+	return sm.resumeSessionWithConstraint(sessionID, sessionName, workingDir, modelConstraint, true)
 }
 
 // resumeSessionWithConstraint resumes an existing persisted session by creating a new ACP
@@ -1662,7 +1691,7 @@ func (sm *SessionManager) ResumeSessionWithModelConstraint(sessionID, sessionNam
 // loading and we have a stored ACP session ID, we attempt to resume the ACP session
 // on the server side as well. Otherwise, we create a new ACP connection and continue
 // using the same persisted session ID for recording.
-func (sm *SessionManager) resumeSessionWithConstraint(sessionID, sessionName, workingDir string, modelConstraint *config.ACPServerConstraint) (*BackgroundSession, error) {
+func (sm *SessionManager) resumeSessionWithConstraint(sessionID, sessionName, workingDir string, modelConstraint *config.ACPServerConstraint, foreground bool) (*BackgroundSession, error) {
 	// Clear GC-suspended flag — any explicit resume (ensure_resumed, loop runner,
 	// queue processing) should allow the session to run. This must happen before the
 	// "already running" check to avoid stale flags.
@@ -2010,10 +2039,41 @@ func (sm *SessionManager) resumeSessionWithConstraint(sessionID, sessionName, wo
 			"session_id", sessionID,
 			"max_concurrent", maxConcurrentSessionResumes)
 	}
+	// Fix D (mitto-54k.4): on a COLD shared ACP process, defer a BACKGROUND
+	// (non-foreground) resume's LoadSession until the process's MCP handshake has
+	// completed, so the user's foreground session/new wins the agent's single event
+	// loop first. Do this BEFORE acquiring resumeSemaphore so a waiting background
+	// resume never blocks a foreground one. Bounded by the process's own cold-load
+	// budget so background sessions are never stranded if the process never warms;
+	// getSharedProcess is idempotent so the later call reuses the same instance.
+	if !foreground {
+		if warmGate := sm.getSharedProcess(foundWs, acpCommand, acpCwd, acpEnv, r); warmGate != nil && !warmGate.MCPInitDone() {
+			if waitBudget := warmGate.RecommendedLoadTimeout(true); waitBudget > 0 {
+				waitCtx, waitCancel := context.WithTimeout(context.Background(), waitBudget)
+				warmed := warmGate.WaitForMCPInit(waitCtx)
+				waitCancel()
+				if sm.logger != nil {
+					sm.logger.Debug("Deferred background resume until shared process warm (mitto-54k.4)",
+						"session_id", sessionID,
+						"warmed", warmed,
+						"wait_budget", waitBudget)
+				}
+			}
+		}
+	}
+	// Cold-start diagnostics (mitto-3mv): time the resume-semaphore wait so the
+	// contribution of concurrency-bound queueing is visible in logs alongside the
+	// per-session cold-start trace begun inside ResumeBackgroundSession.
+	semWaitStart := time.Now()
 	sm.resumeSemaphore <- struct{}{}
+	semWait := time.Since(semWaitStart)
 	if sm.logger != nil {
 		sm.logger.Debug("Acquired session-resume semaphore, starting ACP",
-			"session_id", sessionID)
+			"session_id", sessionID,
+			"sem_wait_ms", semWait.Milliseconds(),
+			"sem_permits", maxConcurrentSessionResumes,
+			"sem_in_use", len(sm.resumeSemaphore),
+			"foreground", foreground)
 	}
 
 	// Resolve shared ACP process for this workspace (if shared mode is enabled).
@@ -2037,6 +2097,7 @@ func (sm *SessionManager) resumeSessionWithConstraint(sessionID, sessionName, wo
 		// provides the safety net so the goroutine doesn't block indefinitely if the ACP
 		// agent is busy.
 		PersistedID:                    sessionID,
+		ColdStartSemWait:               semWait, // mitto-3mv: attribute queueing wait to trace
 		ACPCommand:                     acpCommand,
 		ACPCwd:                         acpCwd,
 		Env:                            acpEnv,

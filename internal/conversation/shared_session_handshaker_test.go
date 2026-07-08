@@ -69,6 +69,8 @@ func (f *fakeSharedProcess) SetSessionModel(_ context.Context, _ acp.SessionId, 
 }
 func (f *fakeSharedProcess) Restart() error                                                      { return nil }
 func (f *fakeSharedProcess) RecommendedLoadTimeout(_ bool) time.Duration                         { return 0 }
+func (f *fakeSharedProcess) MCPInitDone() bool                                                   { return true }
+func (f *fakeSharedProcess) WaitForMCPInit(_ context.Context) bool                               { return true }
 func (f *fakeSharedProcess) SetPromptFunc(_ func(context.Context, string, string, string) error) {}
 func (f *fakeSharedProcess) PromptProcessorAsync(_ context.Context, _, _, _ string) error {
 	return nil
@@ -205,6 +207,15 @@ func (f *fakeHandshakeDeps) hsPersistACPSessionID() {
 }
 func (f *fakeHandshakeDeps) hsNotifyObservers(fn func(SessionObserver)) {
 	fn(&handshakeRecorderObserver{deps: f})
+}
+
+// mitto-3mv WI-2: cold-start trace stubs — no-op in tests.
+func (f *fakeHandshakeDeps) hsColdPhase(_ string, _ ...any)       {}
+func (f *fakeHandshakeDeps) hsMarkMcpInitStart()                  {}
+func (f *fakeHandshakeDeps) hsMarkMcpInitEnd()                    {}
+func (f *fakeHandshakeDeps) hsFinishColdTrace(_ string, _ ...any) {}
+func (f *fakeHandshakeDeps) hsColdTraceCtx(base context.Context) context.Context {
+	return base
 }
 
 // fakeSeqProvider satisfies SeqProvider for WebClientConfig.

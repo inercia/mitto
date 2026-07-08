@@ -14,7 +14,7 @@ import (
 // BackgroundSession uses this interface (rather than *SharedACPProcess directly)
 // so that the domain layer does not depend on the web infrastructure package.
 //
-// The 13 methods below correspond exactly to the exported methods of
+// The 15 methods below correspond exactly to the exported methods of
 // *internal/web.SharedACPProcess that BackgroundSession calls.
 type SharedProcess interface {
 	// NewSession creates a new ACP session on this process.
@@ -49,6 +49,15 @@ type SharedProcess interface {
 	// budget (mitto-8ul.1). Returns 0 to indicate the caller should use its own
 	// default.
 	RecommendedLoadTimeout(hasMCPServers bool) time.Duration
+	// MCPInitDone reports whether the shared process's MCP-init window has closed
+	// (the agent's first successful session RPC observed). Used to gate background
+	// resume deferral (mitto-54k.4).
+	MCPInitDone() bool
+	// WaitForMCPInit blocks until the process's MCP-init window closes, ctx is done,
+	// or the process exits; returns true only if the process became warm. Used to
+	// defer non-foreground resume until the foreground handshake warms the agent
+	// (mitto-54k.4).
+	WaitForMCPInit(ctx context.Context) bool
 }
 
 // PromptResolver resolves a prompt name to its full text for a given working directory.

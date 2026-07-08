@@ -172,6 +172,10 @@ type promptDeps interface {
 	// pdFlushContextInPlace sends the flush command synchronously on the existing ACP session
 	// with streaming suppressed so the flush turn stays out of the transcript.
 	pdFlushContextInPlace(ctx context.Context) error
+
+	// Cold-start diagnostics (mitto-3mv WI-2). Nil-safe — no-op when the
+	// session's cold-start trace has not been begun or has been finalized.
+	pdColdPhase(name string, kv ...any)
 }
 
 // promptDispatcher is a stateless collaborator holding safe synchronous chunks of
@@ -901,6 +905,7 @@ func (p promptDispatcher) applyModelPreference(d promptDeps, meta PromptMeta) {
 	// background (applying to the NEXT turn). setModelSem serialisation and the
 	// mitto-29q re-arm are preserved because the switch still goes through
 	// pdSetActiveModelOnly -> SetSessionModel.
+	switchStart := time.Now()
 	done := make(chan struct{})
 	go func() {
 		setCtx, setCancel := context.WithTimeout(d.pdSessionCtx(), modelSwitchAsyncBudget)
@@ -920,6 +925,11 @@ func (p promptDispatcher) applyModelPreference(d promptDeps, meta PromptMeta) {
 	select {
 	case <-done:
 		// Switch landed within the grace window (warm/fast): applies to this turn.
+		d.pdColdPhase("model_switch",
+			"desired", desired,
+			"from", currentModel,
+			"landed", "warm",
+			"switch_ms", time.Since(switchStart).Milliseconds())
 	case <-time.After(modelSwitchSyncGrace):
 		// Cold/slow: dispatch the prompt now; the switch completes in the background.
 		if l := d.pdLogger(); l != nil {
@@ -928,6 +938,11 @@ func (p promptDispatcher) applyModelPreference(d promptDeps, meta PromptMeta) {
 				"desired_model", desired,
 				"current_model", currentModel)
 		}
+		d.pdColdPhase("model_switch",
+			"desired", desired,
+			"from", currentModel,
+			"landed", "deferred",
+			"grace_ms", modelSwitchSyncGrace.Milliseconds())
 	}
 }
 

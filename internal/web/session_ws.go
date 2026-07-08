@@ -380,9 +380,21 @@ func (s *Server) handleSessionWS(w http.ResponseWriter, r *http.Request) {
 					// goroutine so the WebSocket handler is never blocked, and
 					// release after ResumeSession returns (success or failure).
 					// A nil semaphore is a no-op (Acquire/Release both return).
+					// On a cold shared process this background resume additionally
+					// defers its LoadSession until the process warms so the user's
+					// foreground session/new wins the first handshake (mitto-54k.4).
+					// Cold-start diagnostics (mitto-3mv): log the semaphore wait so
+					// the fan-out queueing contribution is visible in server logs.
+					acqStart := time.Now()
 					s.interactiveResumeSem.Acquire()
+					if clientLogger != nil {
+						clientLogger.Debug("Acquired interactive resume semaphore",
+							"sem_wait_ms", time.Since(acqStart).Milliseconds(),
+							"sem_capacity", s.interactiveResumeSem.Capacity(),
+							"sem_in_use", s.interactiveResumeSem.Len())
+					}
 					defer s.interactiveResumeSem.Release()
-					resumedBS, err := s.sessionManager.ResumeSession(sessionID, sessionName, cwd)
+					resumedBS, err := s.sessionManager.ResumeSessionBackground(sessionID, sessionName, cwd)
 					if err != nil {
 						if clientLogger != nil {
 							clientLogger.Error("Failed to resume session (async)", "error", err)

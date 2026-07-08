@@ -17,6 +17,7 @@ import (
 	"github.com/coder/acp-go-sdk"
 
 	mittoAcp "github.com/inercia/mitto/internal/acp"
+	"github.com/inercia/mitto/internal/coldstart"
 	"github.com/inercia/mitto/internal/logging"
 	"github.com/inercia/mitto/internal/runner"
 	"github.com/inercia/mitto/internal/session"
@@ -738,6 +739,9 @@ func (bs *BackgroundSession) signalAgentActivity() {
 	now := time.Now().UnixNano()
 	bs.lastAgentActivityAt.Store(now)
 	bs.lastStreamActivityAt.Store(now)
+	// Cold-start diagnostics (mitto-3mv): mark the first token of the first
+	// prompt after activation. One-shot; nil-safe when no trace is active.
+	bs.coldPhaseFirstToken()
 }
 
 // trackToolCallStatus records a tool call's status transition so the prompt
@@ -881,10 +885,16 @@ func (bs *BackgroundSession) startPromptInactivityWatchdog(ctx context.Context, 
 				if warnDelay > 0 && !warned && idle >= warnDelay {
 					warned = true
 					if bs.logger != nil {
-						bs.logger.Warn("Agent slow during prompt — no streamed activity observed",
+						// Cold-start diagnostics (mitto-3mv): attach a host-contention
+						// snapshot so slowness can be correlated with concurrent load
+						// (num_goroutine, load1, concurrent_prompting, live_acp_processes).
+						attrs := []any{
 							"session_id", bs.persistedID,
 							"idle", idle.Round(time.Second).String(),
-							"warn_delay", warnDelay.String())
+							"warn_delay", warnDelay.String(),
+						}
+						attrs = append(attrs, coldstart.Contention().LogAttrs()...)
+						bs.logger.Warn("Agent slow during prompt — no streamed activity observed", attrs...)
 					}
 				}
 			}

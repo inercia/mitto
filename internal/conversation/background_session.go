@@ -13,6 +13,7 @@ import (
 	"github.com/coder/acp-go-sdk"
 
 	"github.com/inercia/mitto/internal/auxiliary"
+	"github.com/inercia/mitto/internal/coldstart"
 	"github.com/inercia/mitto/internal/config"
 	"github.com/inercia/mitto/internal/logging"
 	"github.com/inercia/mitto/internal/mcpserver"
@@ -340,6 +341,17 @@ type BackgroundSession struct {
 	// callbacks so the flush turn never reaches the recorder, observers, or the transcript.
 	streamingSuppressedMu sync.Mutex
 	streamingSuppressed   bool
+
+	// coldTrace correlates the first activation of this session (process start,
+	// deferred handshake, first prompt's first-token) into one timeline. It is
+	// created lazily by beginColdTrace on the first activation boundary and
+	// finalized once by finishColdTrace. All *coldstart.Trace methods are
+	// nil-safe, so callers may emit phases without guards. mitto-3mv (WI-2).
+	coldTraceOnce  sync.Once
+	coldTrace      *coldstart.Trace
+	coldTraceFirst atomic.Bool  // guards the first-token phase emission
+	coldTraceMcpAt atomic.Int64 // Unix nanos when the current MCP-init episode started (0 = none)
+	coldTraceDone  atomic.Bool  // guards finishColdTrace one-shot semantics
 }
 
 // activeUIPrompt holds the state for a pending UI prompt from an MCP tool.
@@ -469,6 +481,13 @@ type BackgroundSessionConfig struct {
 	// Pass r.Context() from HTTP handlers so that the 30s request-timeout middleware
 	// can cancel the RPC and free the goroutine if the agent is busy.
 	CreationCtx context.Context
+
+	// ColdStartSemWait, when non-zero, is the wall-clock duration the caller
+	// spent blocked on the resume/creation semaphore before invoking this
+	// factory. Recorded on the session's cold-start Trace as the "sem_acquired"
+	// phase's wait attribute so the queueing contribution is visible in the
+	// unified per-session timeline. mitto-3mv (WI-2).
+	ColdStartSemWait time.Duration
 }
 
 // NewBackgroundSession creates a new background session.
@@ -733,6 +752,15 @@ func NewBackgroundSession(cfg BackgroundSessionConfig) (*BackgroundSession, erro
 			"runner_restricted", isRestricted)
 	}
 
+	// Cold-start diagnostics (mitto-3mv): begin the correlated trace as early as
+	// possible so all subsequent phases (session_new, mcp_init, first_token, ready)
+	// share one timeline. sem_acquired records the queueing wait spent before
+	// this factory was invoked.
+	bs.beginColdTrace("sem_acquired",
+		"sem_wait_ms", cfg.ColdStartSemWait.Milliseconds(),
+		"is_resume", false,
+		"acp_server", cfg.ACPServer)
+
 	// Use shared process if available, otherwise start a new per-session process.
 	// For shared sessions, defer the session/new RPC to the first prompt so that
 	// creating a conversation never blocks on a busy agent process.
@@ -742,6 +770,7 @@ func NewBackgroundSession(cfg BackgroundSessionConfig) (*BackgroundSession, erro
 			if bs.recorder != nil {
 				bs.recorder.End(session.SessionEndData{Reason: "failed_to_start"})
 			}
+			bs.finishColdTrace("shared_prepare_failed", "error", err.Error())
 			return nil, err
 		}
 	} else {
@@ -751,6 +780,7 @@ func NewBackgroundSession(cfg BackgroundSessionConfig) (*BackgroundSession, erro
 			if bs.recorder != nil {
 				bs.recorder.End(session.SessionEndData{Reason: "failed_to_start"})
 			}
+			bs.finishColdTrace("acp_start_failed", "error", err.Error())
 			return nil, err
 		}
 	}
@@ -762,6 +792,17 @@ func NewBackgroundSession(cfg BackgroundSessionConfig) (*BackgroundSession, erro
 		}); err != nil && bs.logger != nil {
 			bs.logger.Warn("Failed to store ACP session ID in metadata", "error", err)
 		}
+	}
+
+	// Cold-start diagnostics (mitto-3mv): when session/new is NOT deferred
+	// (direct-connection sessions), the agent is ready to accept prompts as
+	// soon as the ACP handshake completes here. For shared/deferred sessions
+	// (bs.pendingShared == true), the trace stays open until
+	// completeDeferredHandshake finalizes it. finishColdTrace is one-shot,
+	// so a second finalize from the deferred path (if ever taken) is a no-op.
+	if !bs.pendingShared {
+		bs.coldPhase("ready", "resume_method", bs.resumeMethod, "acp_id", bs.acpID)
+		bs.finishColdTrace("ready", "resume_method", bs.resumeMethod, "acp_id", bs.acpID)
 	}
 
 	return bs, nil
@@ -919,6 +960,15 @@ func ResumeBackgroundSession(config BackgroundSessionConfig) (*BackgroundSession
 			"runner_restricted", isRestricted)
 	}
 
+	// Cold-start diagnostics (mitto-3mv): begin the correlated trace as early as
+	// possible so all subsequent phases (session_new/load, mcp_init, first_token,
+	// ready) are on a single timeline. sem_acquired records the queueing wait
+	// spent before this factory was invoked.
+	bs.beginColdTrace("sem_acquired",
+		"sem_wait_ms", config.ColdStartSemWait.Milliseconds(),
+		"is_resume", true,
+		"acp_server", config.ACPServer)
+
 	// Use shared process if available, otherwise start a new per-session process.
 	if config.SharedProcess != nil {
 		if err := bs.resumeSharedACPSession(config.SharedProcess, config.WorkingDir, config.ACPSessionID); err != nil {
@@ -950,6 +1000,7 @@ func ResumeBackgroundSession(config BackgroundSessionConfig) (*BackgroundSession
 					if bs.recorder != nil {
 						bs.recorder.Suspend()
 					}
+					bs.finishColdTrace("shared_restart_failed", "error", restartErr.Error())
 					return nil, fmt.Errorf("ACP process restart failed on resume: %w", restartErr)
 				}
 
@@ -959,6 +1010,7 @@ func ResumeBackgroundSession(config BackgroundSessionConfig) (*BackgroundSession
 					if bs.recorder != nil {
 						bs.recorder.Suspend()
 					}
+					bs.finishColdTrace("shared_resume_retry_failed", "error", err.Error())
 					return nil, err
 				}
 			} else {
@@ -966,6 +1018,7 @@ func ResumeBackgroundSession(config BackgroundSessionConfig) (*BackgroundSession
 				if bs.recorder != nil {
 					bs.recorder.Suspend()
 				}
+				bs.finishColdTrace("shared_resume_failed", "error", err.Error())
 				return nil, err
 			}
 		}
@@ -976,6 +1029,7 @@ func ResumeBackgroundSession(config BackgroundSessionConfig) (*BackgroundSession
 			if bs.recorder != nil {
 				bs.recorder.Suspend()
 			}
+			bs.finishColdTrace("acp_start_failed", "error", err.Error())
 			return nil, err
 		}
 	}
@@ -989,6 +1043,12 @@ func ResumeBackgroundSession(config BackgroundSessionConfig) (*BackgroundSession
 			bs.logger.Warn("Failed to update ACP session ID in metadata", "error", err)
 		}
 	}
+
+	// Cold-start diagnostics (mitto-3mv): resume paths always complete their
+	// session_new/load/resume synchronously (no deferred handshake), so the
+	// agent is ready as soon as this function returns.
+	bs.coldPhase("ready", "resume_method", bs.resumeMethod, "acp_id", bs.acpID)
+	bs.finishColdTrace("ready", "resume_method", bs.resumeMethod, "acp_id", bs.acpID)
 
 	return bs, nil
 }

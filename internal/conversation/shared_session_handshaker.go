@@ -80,6 +80,20 @@ type handshakeDeps interface {
 
 	// Observer fan-out
 	hsNotifyObservers(fn func(SessionObserver))
+
+	// Cold-start diagnostics (mitto-3mv WI-2) — nil-safe by construction.
+	// hsColdPhase records a phase on the session's cold-start Trace (no-op when
+	// the trace is not active). hsFinishColdTrace finalizes the trace one-shot.
+	// hsMarkMcpInitStart records the boundary of an MCP-init episode; the paired
+	// hsMarkMcpInitEnd emits an "mcp_init" phase with the elapsed duration.
+	// hsColdTraceCtx wraps base with the session's active cold-start Trace so the
+	// acpproc RPC layer can correlate its NewSession/LoadSession/ResumeSession logs
+	// via cold_start_id (WI-3). Returns base unchanged when no trace is active.
+	hsColdPhase(name string, kv ...any)
+	hsMarkMcpInitStart()
+	hsMarkMcpInitEnd()
+	hsFinishColdTrace(outcome string, kv ...any)
+	hsColdTraceCtx(base context.Context) context.Context
 }
 
 // sharedSessionHandshaker is a stateless collaborator owning the lazy/deferred shared-
@@ -95,7 +109,9 @@ func (c sharedSessionHandshaker) creationRPCCtx(d handshakeDeps) (context.Contex
 	if base == nil {
 		base = d.hsSessionCtx()
 	}
-	return context.WithCancel(base)
+	// Cold-start diagnostics (mitto-3mv): carry the active trace so the acpproc
+	// RPC layer can correlate its logs via cold_start_id (WI-3).
+	return context.WithCancel(d.hsColdTraceCtx(base))
 }
 
 // buildWebClientConfig delegates to the deps seam (builds from BackgroundSession fields).
@@ -143,10 +159,29 @@ func (c sharedSessionHandshaker) ensureSharedACPSession(d handshakeDeps) error {
 		return nil
 	}
 
-	handle, err := d.hsGetSharedProcess().NewSession(d.hsSessionCtx(), d.hsGetPendingSharedWorkingDir(), d.hsGetPendingSharedMcpServers())
+	// Cold-start diagnostics (mitto-3mv): if the shared process's MCP-init
+	// window is still open, mark the boundary so the closing MCP-init phase
+	// (emitted from completeDeferredHandshake) has a duration to report.
+	if sp := d.hsGetSharedProcess(); sp != nil && !sp.MCPInitDone() {
+		d.hsColdPhase("mcp_init_wait_begin",
+			"has_mcp_servers", len(d.hsGetPendingSharedMcpServers()) > 0,
+			"deferred", true)
+		d.hsMarkMcpInitStart()
+	}
+
+	newStart := time.Now()
+	handle, err := d.hsGetSharedProcess().NewSession(d.hsColdTraceCtx(d.hsSessionCtx()), d.hsGetPendingSharedWorkingDir(), d.hsGetPendingSharedMcpServers())
 	if err != nil {
+		d.hsColdPhase("session_new_failed",
+			"rpc_ms", time.Since(newStart).Milliseconds(),
+			"deferred", true,
+			"error", err.Error())
 		return fmt.Errorf("failed to create session on shared process: %w", err)
 	}
+	d.hsColdPhase("session_new",
+		"rpc_ms", time.Since(newStart).Milliseconds(),
+		"deferred", true,
+		"acp_session_id", handle.SessionID)
 
 	client := d.hsGetACPClient()
 	d.hsGetSharedProcess().RegisterSession(acp.SessionId(handle.SessionID), &SessionCallbacks{
@@ -208,12 +243,20 @@ func (c sharedSessionHandshaker) completeDeferredHandshake(d handshakeDeps) erro
 	}
 
 	if err := c.ensureSharedACPSession(d); err != nil {
+		d.hsFinishColdTrace("deferred_handshake_failed", "error", err.Error())
 		return err
 	}
 
 	d.hsPersistACPSessionID()
 	c.applyPendingSharedModes(d)
 	d.hsNotifyObservers(func(o SessionObserver) { o.OnACPStarted() })
+
+	// Cold-start diagnostics (mitto-3mv): the deferred handshake path leaves
+	// the trace open across NewBackgroundSession's return; close the MCP-init
+	// episode (if any) and finalize the trace here.
+	d.hsMarkMcpInitEnd()
+	d.hsColdPhase("ready", "acp_id", d.hsGetACPID(), "deferred", true)
+	d.hsFinishColdTrace("ready", "acp_id", d.hsGetACPID(), "deferred", true)
 	return nil
 }
 
@@ -242,6 +285,15 @@ func (c sharedSessionHandshaker) resumeSharedACPSession(d handshakeDeps, sharedP
 	mcpServers := d.hsStartMcpServer(caps)
 	d.hsSetACPClient(NewWebClient(c.buildWebClientConfig(d)))
 
+	// Cold-start diagnostics (mitto-3mv): if the shared process's MCP-init
+	// window is still open, this handshake will be gated on it. Mark the
+	// boundary now so the closing d.hsMarkMcpInitEnd() at the end of this
+	// function can emit an "mcp_init" phase with the elapsed duration.
+	if !sharedProcess.MCPInitDone() {
+		d.hsColdPhase("mcp_init_wait_begin", "has_mcp_servers", len(mcpServers) > 0)
+		d.hsMarkMcpInitStart()
+	}
+
 	var handle *SessionHandle
 	var err error
 
@@ -250,7 +302,8 @@ func (c sharedSessionHandshaker) resumeSharedACPSession(d handshakeDeps, sharedP
 		supportsLoad := caps.LoadSession
 
 		if supportsResume {
-			resumeCtx, resumeCancel := context.WithTimeout(d.hsSessionCtx(), 10*time.Second)
+			resumeCtx, resumeCancel := context.WithTimeout(d.hsColdTraceCtx(d.hsSessionCtx()), 10*time.Second)
+			resumeStart := time.Now()
 			handle, err = sharedProcess.ResumeSession(resumeCtx, acpSessionID, workingDir, mcpServers)
 			resumeCancel()
 			if err != nil {
@@ -261,12 +314,18 @@ func (c sharedSessionHandshaker) resumeSharedACPSession(d handshakeDeps, sharedP
 				if l := d.hsLogger(); l != nil {
 					l.Info("Resume failed, will try Load or New", logFields...)
 				}
+				d.hsColdPhase("session_resume_failed",
+					"rpc_ms", time.Since(resumeStart).Milliseconds(),
+					"error", err.Error())
 			} else {
 				d.hsSetResumeMethod("resume")
 				if l := d.hsLogger(); l != nil {
 					l.Info("Successfully resumed session using UNSTABLE resume API",
 						"acp_session_id", acpSessionID, "resume_method", "resume")
 				}
+				d.hsColdPhase("session_resume",
+					"rpc_ms", time.Since(resumeStart).Milliseconds(),
+					"acp_session_id", acpSessionID)
 			}
 		}
 
@@ -280,7 +339,8 @@ func (c sharedSessionHandshaker) resumeSharedACPSession(d handshakeDeps, sharedP
 			if rec := sharedProcess.RecommendedLoadTimeout(len(mcpServers) > 0); rec > loadTimeout {
 				loadTimeout = rec
 			}
-			loadCtx, loadCancel := context.WithTimeout(d.hsSessionCtx(), loadTimeout)
+			loadCtx, loadCancel := context.WithTimeout(d.hsColdTraceCtx(d.hsSessionCtx()), loadTimeout)
+			loadStart := time.Now()
 			handle, err = sharedProcess.LoadSession(loadCtx, acpSessionID, workingDir, mcpServers)
 			loadCancel()
 			client.SetLoadingSession(false)
@@ -292,12 +352,18 @@ func (c sharedSessionHandshaker) resumeSharedACPSession(d handshakeDeps, sharedP
 				if l := d.hsLogger(); l != nil {
 					l.Info("Load failed, creating new session", logFields...)
 				}
+				d.hsColdPhase("session_load_failed",
+					"rpc_ms", time.Since(loadStart).Milliseconds(),
+					"error", err.Error())
 			} else {
 				d.hsSetResumeMethod("load")
 				if l := d.hsLogger(); l != nil {
 					l.Info("Successfully loaded session (with history replay)",
 						"acp_session_id", acpSessionID, "resume_method", "load")
 				}
+				d.hsColdPhase("session_load",
+					"rpc_ms", time.Since(loadStart).Milliseconds(),
+					"acp_session_id", acpSessionID)
 			}
 		}
 	}
@@ -305,6 +371,7 @@ func (c sharedSessionHandshaker) resumeSharedACPSession(d handshakeDeps, sharedP
 	if handle == nil {
 		d.hsSetResumeMethod("new")
 		rpcCtx, rpcCancel := c.creationRPCCtx(d)
+		newStart := time.Now()
 		handle, err = sharedProcess.NewSession(rpcCtx, workingDir, mcpServers)
 		rpcCancel()
 		if err != nil {
@@ -312,9 +379,19 @@ func (c sharedSessionHandshaker) resumeSharedACPSession(d handshakeDeps, sharedP
 			d.hsGetACPClient().Close()
 			d.hsSetACPClient(nil)
 			d.hsSetSharedProcess(nil)
+			d.hsColdPhase("session_new_failed",
+				"rpc_ms", time.Since(newStart).Milliseconds(),
+				"error", err.Error())
 			return fmt.Errorf("failed to create session on shared process: %w", err)
 		}
+		d.hsColdPhase("session_new",
+			"rpc_ms", time.Since(newStart).Milliseconds(),
+			"acp_session_id", handle.SessionID)
 	}
+	// Cold-start diagnostics (mitto-3mv): if the agent reported "waiting for MCP
+	// server..." during this handshake episode, close the episode now — session
+	// establishment is done. Nil-safe when no episode was recorded.
+	d.hsMarkMcpInitEnd()
 	d.hsNilCreationCtx()
 
 	client := d.hsGetACPClient()

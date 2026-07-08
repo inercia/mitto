@@ -179,6 +179,19 @@ func (bs *BackgroundSession) hsNotifyObservers(fn func(SessionObserver)) {
 	bs.notifyObservers(fn)
 }
 
+// Cold-start diagnostic delegators (mitto-3mv WI-2). Delegate through the
+// nil-safe helpers on BackgroundSession so the handshake collaborator never
+// needs a nil check on bs.coldTrace.
+func (bs *BackgroundSession) hsColdPhase(name string, kv ...any) { bs.coldPhase(name, kv...) }
+func (bs *BackgroundSession) hsMarkMcpInitStart()                { bs.markMcpInitStart() }
+func (bs *BackgroundSession) hsMarkMcpInitEnd()                  { bs.markMcpInitEnd() }
+func (bs *BackgroundSession) hsFinishColdTrace(outcome string, kv ...any) {
+	bs.finishColdTrace(outcome, kv...)
+}
+func (bs *BackgroundSession) hsColdTraceCtx(base context.Context) context.Context {
+	return bs.coldTraceCtx(base)
+}
+
 // logSessionModes logs the session modes/config options at DEBUG level.
 // This helps with debugging which modes are available from the ACP server.
 func (bs *BackgroundSession) logSessionModes(modes *acp.SessionModeState) {

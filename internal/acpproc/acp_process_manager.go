@@ -13,6 +13,7 @@ import (
 	"github.com/coder/acp-go-sdk"
 
 	"github.com/inercia/mitto/internal/auxiliary"
+	"github.com/inercia/mitto/internal/coldstart"
 	"github.com/inercia/mitto/internal/config"
 	"github.com/inercia/mitto/internal/conversation"
 	"github.com/inercia/mitto/internal/runner"
@@ -274,7 +275,7 @@ func diffEnvKeys(a, b map[string]string) (added, removed, changed []string) {
 // It does NOT perform orphan cleanup — call CleanupOrphanedProcesses() explicitly
 // at server startup if orphan cleanup is desired.
 func NewACPProcessManager(ctx context.Context, logger *slog.Logger) *ACPProcessManager {
-	return &ACPProcessManager{
+	m := &ACPProcessManager{
 		processes:   make(map[string]*SharedACPProcess),
 		auxSessions: make(map[auxSessionKey]*auxiliarySessionState),
 		auxCreateMu: make(map[auxSessionKey]*sync.Mutex),
@@ -282,6 +283,14 @@ func NewACPProcessManager(ctx context.Context, logger *slog.Logger) *ACPProcessM
 		ctx:         ctx,
 		logger:      logger,
 	}
+	// Diagnostic: expose the live shared-ACP-process count to the coldstart
+	// sampler (mitto-3mv). Latest manager wins; benign in tests.
+	coldstart.SetLiveACPCounter(func() int {
+		m.mu.RLock()
+		defer m.mu.RUnlock()
+		return len(m.processes)
+	})
+	return m
 }
 
 // CleanupOrphanedProcesses kills any ACP processes left over from a previous Mitto
