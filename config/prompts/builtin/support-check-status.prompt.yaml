@@ -138,6 +138,20 @@ prompt: |-
     **"Support: reply to user"** (if we can answer) or **"Support: gather more information"** (if we
     still need details), then stop.
 
+  ## Set priority by intervention urgency (final step)
+
+  After updating the state (Step 5) — and unless you closed the bead in Step 7 — set its priority to
+  match how urgently *you* (the human) must act. In general:
+
+  - **P1 (HIGH)** — a draft (reply or clarifying question) is pending **your** approval
+    (`state:drafting`); bump to **P0** only if it answers an escalation / outage / broad-impact thread.
+  - **P2 (MEDIUM)** — in motion, not blocked on you: `triaged` / `gathering-info` / `awaiting-us`, or
+    `awaiting-customer` / `need-info` with the customer silent **< 3 days**.
+  - **P3 (LOW)** — `awaiting-customer` / `need-info` with **no customer response for 3+ days** (dormant).
+
+  Apply with `bd update <id> --priority <n>` (n is `0`–`3`, 0 = highest) and add a short
+  `**[PRIORITY · <time>]** P<old> → P<new> (<reason>)` comment when it changes.
+
   ## Notes
 
   - This prompt is **read-and-record** on Slack — it never posts a reply to the channel.

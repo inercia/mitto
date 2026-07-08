@@ -174,6 +174,21 @@ prompt: |-
      `state:awaiting-customer` (`bd update <id> --remove-label state:<previous> --add-label state:awaiting-customer`;
      for a brand-new bead just `--add-label state:awaiting-customer`).
 
+  ## Set priority by intervention urgency (final step)
+
+  After Step 7 the tracked bead sits in `state:awaiting-customer` (we just posted), so set it to
+  **P2** — dropping to **P3** on a later sweep if the customer stays silent 3+ days. In general the
+  priority reflects how urgently *you* (the human) must act:
+
+  - **P1 (HIGH)** — a draft (reply or clarifying question) is pending **your** approval
+    (`state:drafting`); bump to **P0** only if it answers an escalation / outage / broad-impact thread.
+  - **P2 (MEDIUM)** — in motion, not blocked on you: `triaged` / `gathering-info` / `awaiting-us`, or
+    `awaiting-customer` / `need-info` with the customer silent **< 3 days**.
+  - **P3 (LOW)** — `awaiting-customer` / `need-info` with **no customer response for 3+ days** (dormant).
+
+  Apply with `bd update <id> --priority <n>` (n is `0`–`3`, 0 = highest) and add a short
+  `**[PRIORITY · <time>]** P<old> → P<new> (<reason>)` comment when it changes.
+
   ## Notes
 
   - **Slack message approval**: NEVER post to Slack without explicit user review and approval via the

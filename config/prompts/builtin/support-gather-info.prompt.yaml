@@ -56,7 +56,7 @@ prompt: |-
   - **No linked bead** — show a picker: list candidates and keep only those in `state:need-info`:
     `bd list -l support-question --status open,in_progress --all` (read each `state:*` label from
     `bd show`). Present them with `mitto_ui_options` (first option `{label: "None - Cancel"}`, then
-    one `{label: "<id> — <short summary>"}` per bead, timeout 300).
+    one `{label: "<id> [state] — <short summary>"}` per bead, timeout 300).
   - If there are no `state:need-info` beads, `mitto_ui_notify` (info) that nothing needs clarification
     and stop. If the user cancels, acknowledge and stop.
   {{- end }}
@@ -150,6 +150,21 @@ prompt: |-
 
   - Do **NOT** post anything to Slack. Leave the bead in `state:need-info` (the saved draft stays
     pending). Acknowledge and stop.
+
+  ## Set priority by intervention urgency (final step)
+
+  Set the bead's priority to match how urgently *you* (the human) must act: while the clarifying draft
+  is pending **your** approval it is **P1**; once posted (`state:awaiting-customer`) it is **P2**,
+  dropping to **P3** if the customer then stays silent 3+ days. In general:
+
+  - **P1 (HIGH)** — a draft (reply or clarifying question) is pending **your** approval
+    (`state:drafting`); bump to **P0** only if it answers an escalation / outage / broad-impact thread.
+  - **P2 (MEDIUM)** — in motion, not blocked on you: `triaged` / `gathering-info` / `awaiting-us`, or
+    `awaiting-customer` / `need-info` with the customer silent **< 3 days**.
+  - **P3 (LOW)** — `awaiting-customer` / `need-info` with **no customer response for 3+ days** (dormant).
+
+  Apply with `bd update <id> --priority <n>` (n is `0`–`3`, 0 = highest) and add a short
+  `**[PRIORITY · <time>]** P<old> → P<new> (<reason>)` comment when it changes.
 
   ## Notes
 
