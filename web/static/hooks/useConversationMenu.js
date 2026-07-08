@@ -138,7 +138,7 @@ export function useConversationMenu({
       ...(!isLoopConfigured && !isSpawned && !isArchived
         ? [
             {
-              label: "Make loop",
+              label: "Loop",
               icon: html`<${ClockIcon} />`,
               onClick: () => onMakeLoop && onMakeLoop(session),
             },
