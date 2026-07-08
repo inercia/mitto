@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/inercia/mitto/internal/appdir"
 	"github.com/inercia/mitto/internal/config"
 	"github.com/inercia/mitto/internal/conversation"
 	"github.com/inercia/mitto/internal/session"
@@ -322,6 +323,14 @@ func TestHandleWorkspacePrompts_ConditionalRequest(t *testing.T) {
 }
 
 func TestHandleWorkspacePrompts_FileDeleted(t *testing.T) {
+	// Isolate MITTO_DIR to an empty temp dir so the Last-Modified computation
+	// (which folds in ALL prompt-source mtimes since mitto-tf9) does not pick up
+	// the developer's real global prompts dir / settings.json. Without this, those
+	// real files survive the .mittorc deletion and keep Last-Modified non-zero.
+	t.Setenv(appdir.MittoDirEnv, t.TempDir())
+	appdir.ResetCache()
+	t.Cleanup(appdir.ResetCache)
+
 	// Create a temp directory with a .mittorc file
 	tmpDir := t.TempDir()
 	rcPath := tmpDir + "/.mittorc"
