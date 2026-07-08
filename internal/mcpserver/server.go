@@ -5,9 +5,11 @@
 package mcpserver
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -346,11 +348,18 @@ func (s *Server) startSSE(ctx context.Context) error {
 		return s.mcpServer
 	}, nil) // nil options uses defaults
 
+	// Wrap with request logging so inbound MCP requests (e.g. an agent's
+	// initialize / tools/list during cold start) can be correlated with agent
+	// stderr and the rest of mitto.log. Without this, a request that the agent
+	// reports as "timed out" leaves no trace on the server side, making it
+	// impossible to tell whether the request ever actually reached Mitto.
+	loggedHandler := s.mcpRequestLoggingMiddleware(streamableHandler)
+
 	// Mount on /mcp (standard endpoint for Streamable HTTP)
-	mux.Handle("/mcp", streamableHandler)
+	mux.Handle("/mcp", loggedHandler)
 
 	// Also mount on root for convenience
-	mux.Handle("/", streamableHandler)
+	mux.Handle("/", loggedHandler)
 
 	s.httpSrv = &http.Server{Handler: mux}
 
@@ -361,6 +370,131 @@ func (s *Server) startSSE(ctx context.Context) error {
 	}()
 
 	return nil
+}
+
+// mcpStatusRecorder wraps http.ResponseWriter to capture the status code
+// written by the downstream handler for request logging. It defaults to 200
+// when WriteHeader is never called explicitly (net/http's implicit 200).
+type mcpStatusRecorder struct {
+	http.ResponseWriter
+	status int
+}
+
+func (r *mcpStatusRecorder) WriteHeader(code int) {
+	r.status = code
+	r.ResponseWriter.WriteHeader(code)
+}
+
+func (r *mcpStatusRecorder) Write(b []byte) (int, error) {
+	if r.status == 0 {
+		r.status = http.StatusOK
+	}
+	return r.ResponseWriter.Write(b)
+}
+
+// Flush forwards to the underlying ResponseWriter's Flusher. This is REQUIRED:
+// the streamable HTTP transport type-asserts the ResponseWriter to http.Flusher
+// to push SSE events; if the wrapper does not expose Flush, the stream never
+// flushes and MCP clients hang waiting for responses.
+func (r *mcpStatusRecorder) Flush() {
+	if f, ok := r.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
+// maxMCPBodyPeek caps how many bytes of the request body we buffer to extract
+// the JSON-RPC method/id for logging. MCP handshake requests (initialize,
+// tools/list) are tiny; this bound protects against a large tools/call payload.
+const maxMCPBodyPeek = 8 * 1024
+
+// mcpRequestLoggingMiddleware logs each inbound MCP HTTP request so that an
+// agent's requests (initialize / tools/list / tools/call) can be correlated
+// with agent stderr and the rest of mitto.log. This is critical for diagnosing
+// cold-start hangs where an agent reports "mitto (timed out)": with this log we
+// can tell whether the request ever reached Mitto at all, and if so how long it
+// took to answer.
+//
+// The JSON-RPC method and id are peeked from the request body without consuming
+// it — the body is buffered (bounded by maxMCPBodyPeek) and replaced so the
+// downstream streamable handler sees the full, unmodified stream.
+func (s *Server) mcpRequestLoggingMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		reqID := uuid.NewString()[:8]
+		mcpSessionID := r.Header.Get("Mcp-Session-Id")
+
+		// Peek the JSON-RPC method/id from the body without consuming it.
+		var rpcMethod, rpcID string
+		var bodyLen int
+		if r.Body != nil {
+			limited := io.LimitReader(r.Body, maxMCPBodyPeek+1)
+			peeked, _ := io.ReadAll(limited)
+			bodyLen = len(peeked)
+			// Reassemble the body: buffered prefix + any remaining unread bytes.
+			if bodyLen > maxMCPBodyPeek {
+				r.Body = struct {
+					io.Reader
+					io.Closer
+				}{io.MultiReader(bytes.NewReader(peeked), r.Body), r.Body}
+			} else {
+				_ = r.Body.Close()
+				r.Body = io.NopCloser(bytes.NewReader(peeked))
+			}
+			rpcMethod, rpcID = parseJSONRPCEnvelope(peeked)
+		}
+
+		s.logger.Info("MCP request received",
+			"mcp_req_id", reqID,
+			"http_method", r.Method,
+			"path", r.URL.Path,
+			"rpc_method", rpcMethod,
+			"rpc_id", rpcID,
+			"mcp_session_id", mcpSessionID,
+			"remote_addr", r.RemoteAddr,
+			"body_bytes", bodyLen,
+		)
+
+		rec := &mcpStatusRecorder{ResponseWriter: w}
+		start := time.Now()
+		next.ServeHTTP(rec, r)
+		if rec.status == 0 {
+			rec.status = http.StatusOK
+		}
+
+		s.logger.Info("MCP request completed",
+			"mcp_req_id", reqID,
+			"rpc_method", rpcMethod,
+			"rpc_id", rpcID,
+			"status", rec.status,
+			"duration_ms", time.Since(start).Milliseconds(),
+		)
+	})
+}
+
+// parseJSONRPCEnvelope extracts the "method" and "id" fields from a JSON-RPC
+// request body for logging. It tolerates a batch (array) body by inspecting the
+// first element. Returns empty strings when the body is not parseable JSON-RPC.
+func parseJSONRPCEnvelope(body []byte) (method, id string) {
+	trimmed := bytes.TrimSpace(body)
+	if len(trimmed) == 0 {
+		return "", ""
+	}
+	// Batch request: peek the first element.
+	if trimmed[0] == '[' {
+		var batch []json.RawMessage
+		if err := json.Unmarshal(trimmed, &batch); err != nil || len(batch) == 0 {
+			return "", ""
+		}
+		trimmed = batch[0]
+	}
+	var env struct {
+		Method string          `json:"method"`
+		ID     json.RawMessage `json:"id"`
+	}
+	if err := json.Unmarshal(trimmed, &env); err != nil {
+		return "", ""
+	}
+	id = strings.Trim(string(env.ID), `"`)
+	return env.Method, id
 }
 
 // startSTDIO starts the MCP server in STDIO mode.
