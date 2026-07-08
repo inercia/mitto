@@ -5,6 +5,12 @@ acpId: "claude-code"
 description: "ACP wrapper for Anthropic's Claude"
 repository: "https://github.com/agentclientprotocol/claude-agent-acp"
 license: "proprietary"
+# claude-agent-acp forks a fresh `claude` OS process per ACP session/new,
+# unlike auggie which multiplexes over one node process. The aux-prewarm
+# scheduler uses this to widen its stagger and rely on rush-on-demand so it
+# does not fork N cold `claude` processes back-to-back at cold start
+# (mitto-7yj).
+sessionSpawnsProcess: true
 install:
   method: "npx"
   package: "@agentclientprotocol/claude-agent-acp"

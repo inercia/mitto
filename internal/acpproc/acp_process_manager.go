@@ -41,6 +41,14 @@ type ACPProcessManager struct {
 	// the global Config.Prewarm.
 	PrewarmConfigProvider func() *config.PrewarmConfig
 
+	// ForkPerSessionProvider reports whether the ACP agent backing the given
+	// workspace forks a fresh OS process per ACP session (e.g. Claude Code)
+	// vs multiplexing all sessions over one long-lived process (auggie). Nil
+	// or false → standard multiplex schedule. Consumed by
+	// prewarmAuxiliarySessions to pick the widely-spread fork default set
+	// (mitto-7yj).
+	ForkPerSessionProvider func(workspaceUUID string) bool
+
 	// ModelProfileResolver resolves a named Model profile (Config.Models) by name.
 	// Used to look up AuxiliaryModelProfile for new auxiliary sessions (mitto-hke).
 	// May be nil, in which case AuxiliaryModelProfile is ignored and
@@ -1531,7 +1539,12 @@ func (m *ACPProcessManager) EnsurePrewarmed(workspaceUUID string, logger *slog.L
 // (mitto-54k.7).
 func (m *ACPProcessManager) prewarmAuxiliarySessions(workspaceUUID string, logger *slog.Logger) {
 	pc := m.effectivePrewarmConfig()
-	schedule := pc.AuxPrewarmSchedule()
+	// Pick the per-agent schedule variant (mitto-7yj): fork-per-session
+	// agents (Claude Code) get a widely spread default so real user demand
+	// preempts the schedule; multiplex agents (auggie) keep the aggressive
+	// non-simultaneous defaults.
+	forking := m.forkPerSession(workspaceUUID)
+	schedule := pc.AuxPrewarmSchedule(forking)
 
 	// Reference the auxiliary.Purpose* constants so a rename of any of the
 	// four hardcoded purpose strings in internal/config/settings.go is caught
@@ -1543,6 +1556,20 @@ func (m *ACPProcessManager) prewarmAuxiliarySessions(workspaceUUID string, logge
 
 	start := time.Now()
 	for _, entry := range schedule {
+		// Rush-on-demand skip (mitto-7yj): if a real caller already created
+		// this aux session (via getOrCreateAuxiliarySession) before the
+		// scheduler reached its slot, skip the sleep + redundant get-or-create
+		// entirely. The existing per-key createMu already makes create
+		// idempotent; this just avoids wasting the stagger delay.
+		if m.auxSessionExists(auxSessionKey{workspaceUUID: workspaceUUID, purpose: entry.Purpose}) {
+			if logger != nil {
+				logger.Debug("auxiliary prewarm rushed — already created on demand",
+					"workspace_uuid", workspaceUUID,
+					"purpose", entry.Purpose)
+			}
+			continue
+		}
+
 		// Sleep until this entry's target offset from the anchor. Respect
 		// manager shutdown so we exit promptly instead of holding the process
 		// up to the last scheduled delay.
@@ -1553,6 +1580,16 @@ func (m *ACPProcessManager) prewarmAuxiliarySessions(workspaceUUID string, logge
 			case <-m.ctx.Done():
 				return
 			}
+		}
+
+		// Re-check after sleeping — a caller may have rushed during the wait.
+		if m.auxSessionExists(auxSessionKey{workspaceUUID: workspaceUUID, purpose: entry.Purpose}) {
+			if logger != nil {
+				logger.Debug("auxiliary prewarm rushed — already created on demand",
+					"workspace_uuid", workspaceUUID,
+					"purpose", entry.Purpose)
+			}
+			continue
 		}
 
 		if logger != nil {
@@ -1693,6 +1730,28 @@ func (m *ACPProcessManager) effectivePrewarmConfig() *config.PrewarmConfig {
 		return nil
 	}
 	return m.PrewarmConfigProvider()
+}
+
+// forkPerSession reports whether the ACP agent backing the given workspace
+// forks a fresh OS process per ACP session (Claude Code) vs multiplexing over
+// one process (auggie). Nil provider or unknown workspace → false (safe
+// default = aggressive multiplex schedule). (mitto-7yj)
+func (m *ACPProcessManager) forkPerSession(workspaceUUID string) bool {
+	if m.ForkPerSessionProvider == nil {
+		return false
+	}
+	return m.ForkPerSessionProvider(workspaceUUID)
+}
+
+// auxSessionExists returns true if an auxiliary session for the given
+// (workspace, purpose) is already tracked. Used by prewarmAuxiliarySessions
+// to skip slots whose session was rushed to creation on demand (mitto-7yj).
+// Reads auxSessions under auxMu — safe to call from any goroutine.
+func (m *ACPProcessManager) auxSessionExists(key auxSessionKey) bool {
+	m.auxMu.Lock()
+	_, ok := m.auxSessions[key]
+	m.auxMu.Unlock()
+	return ok
 }
 
 // ReevaluatePrewarmPin runs the health probe for a currently-pinned

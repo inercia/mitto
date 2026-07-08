@@ -138,6 +138,13 @@ type AgentMetadata struct {
 	// the ACP process's stderr monitor (mitto-k6h). Absent (nil) means only the
 	// hardcoded baseline patterns apply.
 	StderrPatterns *StderrPatterns `yaml:"stderrPatterns,omitempty" json:"stderr_patterns,omitempty"`
+	// SessionSpawnsProcess is true if the agent forks a fresh OS process per
+	// ACP session/new (e.g. Claude Code via @zed-industries/claude-agent-acp)
+	// instead of multiplexing all ACP sessions over a single long-lived
+	// process (auggie). Consumed by the auxiliary-prewarm scheduler to widen
+	// the stagger and rely on rush-on-demand for fork-per-session agents
+	// (mitto-7yj). Defaults to false when omitted.
+	SessionSpawnsProcess bool `yaml:"sessionSpawnsProcess,omitempty" json:"session_spawns_process,omitempty"`
 }
 
 // AgentDefinition represents a fully resolved agent definition with its

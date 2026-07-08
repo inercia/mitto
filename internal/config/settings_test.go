@@ -628,75 +628,128 @@ func TestPrewarmConfig_Defaults(t *testing.T) {
 }
 
 // TestPrewarmConfig_AuxPrewarmSchedule guards the mitto-cgc per-purpose
-// staggered auxiliary-prewarm schedule. Verifies nil-safety, per-purpose
-// overrides, empty/invalid fallback, and nondecreasing Delay ordering.
+// staggered auxiliary-prewarm schedule and the mitto-7yj fork/multiplex
+// split. Verifies nil-safety, per-purpose overrides, empty/invalid fallback,
+// nondecreasing Delay ordering, and that fork-per-session picks the widely
+// spread default set.
 func TestPrewarmConfig_AuxPrewarmSchedule(t *testing.T) {
-	// Nil receiver → all 4 defaults in tier order.
+	// Nil receiver, multiplex (false) → auggie defaults in tier order
+	// (mitto-7yj: no two purposes share the 0s slot).
 	var nilCfg *PrewarmConfig
-	got := nilCfg.AuxPrewarmSchedule()
+	got := nilCfg.AuxPrewarmSchedule(false)
 	want := []AuxPrewarmEntry{
 		{Purpose: "mcp-check", Delay: 0},
-		{Purpose: "mcp-tools", Delay: 0},
-		{Purpose: "title-gen", Delay: 5 * time.Second},
-		{Purpose: "follow-up", Delay: 8 * time.Second},
+		{Purpose: "mcp-tools", Delay: 2 * time.Second},
+		{Purpose: "title-gen", Delay: 8 * time.Second},
+		{Purpose: "follow-up", Delay: 12 * time.Second},
 	}
 	if len(got) != len(want) {
-		t.Fatalf("nil AuxPrewarmSchedule() len = %d, want %d (got=%+v)", len(got), len(want), got)
+		t.Fatalf("nil AuxPrewarmSchedule(false) len = %d, want %d (got=%+v)", len(got), len(want), got)
 	}
 	for i := range want {
 		if got[i] != want[i] {
-			t.Errorf("nil AuxPrewarmSchedule()[%d] = %+v, want %+v", i, got[i], want[i])
+			t.Errorf("nil AuxPrewarmSchedule(false)[%d] = %+v, want %+v", i, got[i], want[i])
 		}
 	}
 
-	// Empty PrewarmConfig (no AuxSchedule) → same as nil.
-	got = (&PrewarmConfig{}).AuxPrewarmSchedule()
+	// Empty PrewarmConfig (no AuxSchedule), multiplex → same as nil.
+	got = (&PrewarmConfig{}).AuxPrewarmSchedule(false)
 	for i := range want {
 		if got[i] != want[i] {
-			t.Errorf("empty AuxPrewarmSchedule()[%d] = %+v, want %+v", i, got[i], want[i])
+			t.Errorf("empty AuxPrewarmSchedule(false)[%d] = %+v, want %+v", i, got[i], want[i])
 		}
 	}
 
-	// Override title-gen only → other purposes keep defaults; ordering still
-	// nondecreasing (title-gen 3s < follow-up 8s).
+	// Fork-per-session (true) → widely spread defaults (mitto-7yj).
+	wantFork := []AuxPrewarmEntry{
+		{Purpose: "mcp-check", Delay: 0},
+		{Purpose: "mcp-tools", Delay: 8 * time.Second},
+		{Purpose: "title-gen", Delay: 20 * time.Second},
+		{Purpose: "follow-up", Delay: 35 * time.Second},
+	}
+	got = nilCfg.AuxPrewarmSchedule(true)
+	if len(got) != len(wantFork) {
+		t.Fatalf("nil AuxPrewarmSchedule(true) len = %d, want %d (got=%+v)", len(got), len(wantFork), got)
+	}
+	for i := range wantFork {
+		if got[i] != wantFork[i] {
+			t.Errorf("nil AuxPrewarmSchedule(true)[%d] = %+v, want %+v", i, got[i], wantFork[i])
+		}
+	}
+	got = (&PrewarmConfig{}).AuxPrewarmSchedule(true)
+	for i := range wantFork {
+		if got[i] != wantFork[i] {
+			t.Errorf("empty AuxPrewarmSchedule(true)[%d] = %+v, want %+v", i, got[i], wantFork[i])
+		}
+	}
+
+	// Override title-gen only (multiplex) → other purposes keep defaults;
+	// ordering still nondecreasing (title-gen 3s < follow-up 12s).
 	cfg := &PrewarmConfig{AuxSchedule: &AuxScheduleConfig{TitleGen: "3s"}}
-	got = cfg.AuxPrewarmSchedule()
+	got = cfg.AuxPrewarmSchedule(false)
 	wantOverride := []AuxPrewarmEntry{
 		{Purpose: "mcp-check", Delay: 0},
-		{Purpose: "mcp-tools", Delay: 0},
+		{Purpose: "mcp-tools", Delay: 2 * time.Second},
 		{Purpose: "title-gen", Delay: 3 * time.Second},
-		{Purpose: "follow-up", Delay: 8 * time.Second},
+		{Purpose: "follow-up", Delay: 12 * time.Second},
 	}
 	for i := range wantOverride {
 		if got[i] != wantOverride[i] {
-			t.Errorf("override AuxPrewarmSchedule()[%d] = %+v, want %+v", i, got[i], wantOverride[i])
+			t.Errorf("override AuxPrewarmSchedule(false)[%d] = %+v, want %+v", i, got[i], wantOverride[i])
 		}
 	}
 
-	// Empty and invalid duration strings both fall back to per-purpose defaults.
+	// Override also wins over fork defaults (mitto-7yj: explicitly-set
+	// AuxScheduleConfig strings override both default sets). mcp-tools is
+	// NOT overridden here so it keeps the fork default (8s), which sorts
+	// after the overridden title-gen (3s).
+	cfg = &PrewarmConfig{AuxSchedule: &AuxScheduleConfig{TitleGen: "3s"}}
+	got = cfg.AuxPrewarmSchedule(true)
+	wantOverrideFork := []AuxPrewarmEntry{
+		{Purpose: "mcp-check", Delay: 0},
+		{Purpose: "title-gen", Delay: 3 * time.Second},
+		{Purpose: "mcp-tools", Delay: 8 * time.Second},
+		{Purpose: "follow-up", Delay: 35 * time.Second},
+	}
+	for i := range wantOverrideFork {
+		if got[i] != wantOverrideFork[i] {
+			t.Errorf("override AuxPrewarmSchedule(true)[%d] = %+v, want %+v", i, got[i], wantOverrideFork[i])
+		}
+	}
+
+	// Empty and invalid duration strings both fall back to per-purpose
+	// multiplex defaults.
 	cfg = &PrewarmConfig{AuxSchedule: &AuxScheduleConfig{
 		McpCheck: "",
 		McpTools: "not-a-duration",
 		TitleGen: "",
 		FollowUp: "bogus",
 	}}
-	got = cfg.AuxPrewarmSchedule()
+	got = cfg.AuxPrewarmSchedule(false)
 	for i := range want {
 		if got[i] != want[i] {
-			t.Errorf("fallback AuxPrewarmSchedule()[%d] = %+v, want %+v", i, got[i], want[i])
+			t.Errorf("fallback AuxPrewarmSchedule(false)[%d] = %+v, want %+v", i, got[i], want[i])
 		}
 	}
 
-	// Any override still yields nondecreasing Delay order.
+	// Any override still yields nondecreasing Delay order (multiplex).
 	cfg = &PrewarmConfig{AuxSchedule: &AuxScheduleConfig{
-		McpCheck: "10s", // pushes tier-0 past tier-1/tier-2 defaults
+		McpCheck: "30s", // pushes tier-0 past tier-1/tier-2 defaults
 		TitleGen: "1s",
 		FollowUp: "2s",
 	}}
-	got = cfg.AuxPrewarmSchedule()
+	got = cfg.AuxPrewarmSchedule(false)
 	for i := 1; i < len(got); i++ {
 		if got[i-1].Delay > got[i].Delay {
-			t.Errorf("AuxPrewarmSchedule not nondecreasing at [%d]: %+v", i, got)
+			t.Errorf("AuxPrewarmSchedule(false) not nondecreasing at [%d]: %+v", i, got)
+			break
+		}
+	}
+	// And fork.
+	got = cfg.AuxPrewarmSchedule(true)
+	for i := 1; i < len(got); i++ {
+		if got[i-1].Delay > got[i].Delay {
+			t.Errorf("AuxPrewarmSchedule(true) not nondecreasing at [%d]: %+v", i, got)
 			break
 		}
 	}

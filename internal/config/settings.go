@@ -421,13 +421,38 @@ const (
 	DefaultPrewarmMaxPinnedWorkspaces  = 5
 )
 
-// Auxiliary prewarm per-purpose delay defaults (mitto-cgc). Priority order is
-// mcp-check/mcp-tools (tier 0) → title-gen (tier 1) → follow-up (tier 2).
+// Auxiliary prewarm per-purpose delay defaults (mitto-cgc, widened in
+// mitto-7yj). Priority order is mcp-check/mcp-tools (tier 0) → title-gen
+// (tier 1) → follow-up (tier 2).
+//
+// Two default sets exist:
+//
+//   - Multiplex agents (e.g. auggie): a single node process handles all ACP
+//     sessions, so aux session/new is cheap. The defaults are aggressive but
+//     no two aux purposes share the 0s slot — mcp-tools is nudged to 2s so
+//     the tier-0 pair does not start simultaneously (mitto-7yj rush-friendly
+//     stagger).
+//
+//   - Fork-per-session agents (e.g. Claude Code via @zed-industries/
+//     claude-agent-acp): each ACP session/new forks a fresh `claude` OS
+//     process which pins ~memory + CPU per aux session and creates a
+//     synchronous cold-fork storm during prewarm. The defaults are widely
+//     spread so real user demand can preempt (mitto-7yj rush-on-demand).
 const (
+	// Multiplex (auggie) defaults.
 	DefaultAuxDelayMcpCheck = 0 * time.Second
-	DefaultAuxDelayMcpTools = 0 * time.Second
-	DefaultAuxDelayTitleGen = 5 * time.Second
-	DefaultAuxDelayFollowUp = 8 * time.Second
+	DefaultAuxDelayMcpTools = 2 * time.Second
+	DefaultAuxDelayTitleGen = 8 * time.Second
+	DefaultAuxDelayFollowUp = 12 * time.Second
+
+	// Fork-per-session (Claude Code) defaults (mitto-7yj). Widely spread so
+	// each cold `claude` fork does not pile onto the previous one, and so
+	// getOrCreateAuxiliarySession callers can rush the schedule for any
+	// purpose actually needed by user activity.
+	DefaultAuxDelayForkMcpCheck = 0 * time.Second
+	DefaultAuxDelayForkMcpTools = 8 * time.Second
+	DefaultAuxDelayForkTitleGen = 20 * time.Second
+	DefaultAuxDelayForkFollowUp = 35 * time.Second
 )
 
 // Purpose strings mirroring internal/auxiliary.Purpose* — hardcoded here to
@@ -573,7 +598,12 @@ func parseAuxDelay(s string, def time.Duration) time.Duration {
 // each offset. The ordering (mcp-check, mcp-tools, title-gen, follow-up) also
 // encodes tier priority: tier-0 purposes ship first so tool-gating is ready
 // before higher-tier auxiliaries compete for the shared ACP process.
-func (c *PrewarmConfig) AuxPrewarmSchedule() []AuxPrewarmEntry {
+//
+// forkPerSession selects between the multiplex (auggie) and fork-per-session
+// (Claude Code) default sets (mitto-7yj). An explicitly-set (non-empty)
+// AuxScheduleConfig entry STILL overrides the chosen default, so callers can
+// force any schedule regardless of agent kind.
+func (c *PrewarmConfig) AuxPrewarmSchedule(forkPerSession bool) []AuxPrewarmEntry {
 	var sched *AuxScheduleConfig
 	if c != nil {
 		sched = c.AuxSchedule
@@ -585,11 +615,21 @@ func (c *PrewarmConfig) AuxPrewarmSchedule() []AuxPrewarmEntry {
 		titleGen = sched.TitleGen
 		followUp = sched.FollowUp
 	}
+	defMcpCheck := DefaultAuxDelayMcpCheck
+	defMcpTools := DefaultAuxDelayMcpTools
+	defTitleGen := DefaultAuxDelayTitleGen
+	defFollowUp := DefaultAuxDelayFollowUp
+	if forkPerSession {
+		defMcpCheck = DefaultAuxDelayForkMcpCheck
+		defMcpTools = DefaultAuxDelayForkMcpTools
+		defTitleGen = DefaultAuxDelayForkTitleGen
+		defFollowUp = DefaultAuxDelayForkFollowUp
+	}
 	entries := []AuxPrewarmEntry{
-		{Purpose: auxPurposeMcpCheck, Delay: parseAuxDelay(mcpCheck, DefaultAuxDelayMcpCheck)},
-		{Purpose: auxPurposeMcpTools, Delay: parseAuxDelay(mcpTools, DefaultAuxDelayMcpTools)},
-		{Purpose: auxPurposeTitleGen, Delay: parseAuxDelay(titleGen, DefaultAuxDelayTitleGen)},
-		{Purpose: auxPurposeFollowUp, Delay: parseAuxDelay(followUp, DefaultAuxDelayFollowUp)},
+		{Purpose: auxPurposeMcpCheck, Delay: parseAuxDelay(mcpCheck, defMcpCheck)},
+		{Purpose: auxPurposeMcpTools, Delay: parseAuxDelay(mcpTools, defMcpTools)},
+		{Purpose: auxPurposeTitleGen, Delay: parseAuxDelay(titleGen, defTitleGen)},
+		{Purpose: auxPurposeFollowUp, Delay: parseAuxDelay(followUp, defFollowUp)},
 	}
 	// Stable sort by Delay so the single-worker consumer can sleep-until each
 	// offset. sortAuxPrewarmByDelay (a stable insertion sort) preserves the tier

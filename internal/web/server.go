@@ -663,6 +663,30 @@ func NewServer(config Config) (*Server, error) {
 		}
 		acpProcessMgr.StderrPatternsResolver = compileFor
 		sessionMgr.SetStderrPatternsResolver(compileFor)
+
+		// Wire per-agent fork-cost signal (mitto-7yj). Resolves a workspace to
+		// its ACP agent metadata and reports whether that agent forks a fresh
+		// OS process per ACP session (Claude Code) vs multiplexing (auggie).
+		// Consumed by prewarmAuxiliarySessions to pick a widely-spread stagger
+		// so cold `claude` forks do not pile up back-to-back at prewarm time.
+		acpProcessMgr.ForkPerSessionProvider = func(workspaceUUID string) bool {
+			ws := sessionMgr.GetWorkspaceByUUID(workspaceUUID)
+			if ws == nil {
+				return false
+			}
+			acpType := ""
+			if config.MittoConfig != nil {
+				acpType = config.MittoConfig.GetServerType(ws.ACPServer)
+			}
+			if acpType == "" {
+				acpType = ws.ACPServer
+			}
+			agent, gerr := agentMgr.GetAgentByACPId(acpType)
+			if gerr != nil || agent == nil {
+				return false
+			}
+			return agent.Metadata.SessionSpawnsProcess
+		}
 	} else {
 		logger.Warn("stdio MCP discovery disabled: cannot resolve agents dir", "error", aerr)
 	}
