@@ -26,9 +26,13 @@ Single global MCP server at `http://127.0.0.1:5757/mcp`. Two tool classes:
 - **Global tools** (no session): `mitto_conversation_list`, `mitto_get_config`, `mitto_get_runtime_info`
 - **Session-scoped tools** (require `self_id`): UI prompts, conversation control, history, prompt management (`mitto_prompt_list/get/update`), loop control (`mitto_conversation_set_loop`, `mitto_conversation_run_loop_now`)
 
-## Cold-Start MCP Wedge (mitto-54k) — Corrected Diagnosis
+## Cold-Start MCP Wedge (mitto-54k) — Definitive Diagnosis: Agent-Side, Not Fixable in Mitto
 
-The original theory (Auggie's *inbound* HTTP `initialize`/`tools/list` into Mitto's own `/mcp` endpoint starved during the session-resume storm) was **falsified** by direct probing: live `initialize` returns in ~1.5ms; a 12-way concurrent `initialize`+`tools/list` load test completes in 13ms wall, 0 errors. Mitto's inbound `/mcp` path is fast and lock-free (regression-guarded by `internal/mcpserver/server_fastpath_test.go`, owned by mitto-54k.2, repurposed from "fix" to "guard"). **Real root cause** (mitto-29q): Auggie re-handshakes **all** its configured MCP servers on every `session/new`; `stdio` servers spawn cheap parallel child processes, but the single `http`/`sse` server (`mitto`) initializes **inline on the agent's main event loop** — so workspaces with more stdio MCP servers in the agent's own config starve the inline `mitto` handshake more (severity scales with stdio server count in the *agent's* MCP config, not Mitto's own session count — e.g. a 6-server workspace with 2 Mitto sessions wedges, a 1-server workspace with 10 sessions never does). Fixed by **mitto-54k.3** (warm-once barrier in `internal/acpproc/shared_acp_process.go`: admits one cold `session/new` through, waits for `mcpInitDone`, then releases queued cold callers as warm — DONE) + **mitto-54k.4** (defer background `LoadSession` until the process is warm — OPEN P2). **Post-fix caveat**: wedges still recur intermittently and are not always MCP-init-bound — a baseline run can show MCP init completing in ~2s while the prompt still wedges on cold `set_model`/first-token latency. **Diagnostic gotcha**: before running a server-removal (or any single-variable) timing experiment, check for concurrent auggie/ACP processes (`ps`) and other active/loop conversations in the same or sibling workspaces — CPU contention from unrelated concurrent agents confounds the measurement and can masquerade as MCP-server-count effects.
+Mitto's inbound `/mcp` (`initialize`+`tools/list`) was **falsified** as the cause by direct probing (~1.5ms single, 13ms/0 errors at 12-way concurrency; regression-guarded by `internal/mcpserver/server_fastpath_test.go`). **Root cause (mitto-54k.7 v3, 2026-07-08)**: auggie (v0.32.0) **hard-gates the first prompt's first token on ALL its configured MCP servers finishing `initialize`** (stderr: `🔌 Waiting for N MCP server(s) to initialize...`), and forks **~6 duplicate copies of every MCP server in one simultaneous burst**; the differentiator is spawn **timing** (I/O thundering-herd), **not** CPU/server-count/warmth — a wedged auggie sits at ~2% CPU in state S (I/O-blocked). No flag exists to make this lazy/bounded/non-blocking; it's agent-side and unfixable in Mitto.
+
+`mitto-54k.3` (warm-once barrier, `internal/acpproc/shared_acp_process.go`) and `mitto-54k.4` (defer `session/new`/`LoadSession` to first-prompt time) shipped — `session/new` reports ready in ~250ms — but only **relocate** auggie's wait to first-prompt-time (fast create, then a hung first prompt for 2-5 min). Don't re-chase as a 54k.3/54k.4 regression. Child tickets: `mitto-clc` (P1) — inactivate the *proactive* always-on keep-warm pin/re-warm (it piles RPC load onto an already-wedged agent instead of letting it recover); `mitto-cgc` (P2) — stagger aux-session creation (mcp-check + mcp-tools currently bunched within ~10ms per workspace).
+
+**Mitigations (none are Mitto code fixes)**: trim unused MCP servers from the workspace's agent config; file an upstream auggie feature request for lazy MCP init (the only real fix).
 
 ## Adding New Tools
 
@@ -104,9 +108,7 @@ Some dependencies (e.g. `LoopRunner`) are wired in via setter methods (`s.mcpSer
 
 ## Processor Auxiliary Session MCP Access
 
-Processor auxiliary sessions (purpose prefix `"processor:"`) get a stdio MCP proxy so the agent can call Mitto tools. Configured in `internal/web/acp_process_manager.go` via `ACPProcessManager.MCPServerURL`. Non-processor auxiliary sessions (title-gen, follow-up, etc.) do NOT get MCP access.
-
-See `docs/devel/mcp.md` for detailed documentation.
+Processor auxiliary sessions (purpose prefix `"processor:"`) get a stdio MCP proxy so the agent can call Mitto tools. Configured in `internal/web/acp_process_manager.go` via `ACPProcessManager.MCPServerURL`. Non-processor auxiliary sessions (title-gen, follow-up, etc.) do NOT get MCP access. See `docs/devel/mcp.md` for detailed documentation.
 
 ## Input Validation in Tools
 
