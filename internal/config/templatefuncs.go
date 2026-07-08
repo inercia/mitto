@@ -2,10 +2,12 @@ package config
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"text/template"
 	"time"
 )
@@ -13,6 +15,35 @@ import (
 // gitCmdTimeout bounds how long a git subprocess invocation is allowed to run
 // before it is killed, so template/CEL evaluation never hangs on a stalled repo.
 const gitCmdTimeout = 5 * time.Second
+
+// bdCmdTimeout bounds how long a bd (beads) subprocess invocation is allowed to
+// run before it is killed. Mirrors gitCmdTimeout for the git helpers.
+const bdCmdTimeout = 5 * time.Second
+
+// beadsCacheTTL bounds how long a BeadsCount/HasBeads result is memoised per
+// (folder, labels, statuses) tuple, to avoid re-exec on rapid menu re-opens.
+// Kept short so a beads mutation is reflected within one TTL window.
+const beadsCacheTTL = 5 * time.Second
+
+// beadsCountFailOpen is the sentinel returned by beadsCount on ANY error (bd
+// missing, timeout, non-zero exit, unparseable JSON). It is a positive value
+// so HasBeads(...) returns true and the prompt is NEVER wrongly hidden —
+// consistent with the CEL fail-open policy. A legitimate empty result from bd
+// (`[]`) is NOT an error and returns 0.
+const beadsCountFailOpen = 1
+
+// beadsCache memoises beadsCount results for beadsCacheTTL keyed by
+// folder\x00labels\x00statuses. Simple sync.Mutex-guarded map with a
+// timestamped entry per key.
+var (
+	beadsCacheMu sync.Mutex
+	beadsCache   = map[string]beadsCacheEntry{}
+)
+
+type beadsCacheEntry struct {
+	count int
+	at    time.Time
+}
 
 // =============================================================================
 // Pure-Go condition helpers — single source of truth shared by CEL bindings
@@ -261,6 +292,77 @@ func gitFileDeleted(folder, path string) bool {
 	return false
 }
 
+// runBd runs `bd <args...>` with the working directory set to folder (when
+// non-empty), bounded by bdCmdTimeout. Returns the raw stdout bytes and true
+// when bd exits 0. Returns (nil, false) when bd is unavailable, exits non-zero,
+// or the command times out. Mirrors runGit.
+func runBd(folder string, args ...string) ([]byte, bool) {
+	if !commandExists("bd") {
+		return nil, false
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), bdCmdTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "bd", args...)
+	if folder != "" {
+		cmd.Dir = folder
+	}
+	out, err := cmd.Output()
+	if err != nil {
+		return nil, false
+	}
+	return out, true
+}
+
+// beadsCount counts beads matching ALL comma-separated labels AND ANY of the
+// comma-separated statuses, running `bd list -l <labels> --status <statuses>
+// --all --json` in folder and parsing the resulting JSON array length.
+//
+// Fail-open: on ANY error (bd missing, not a beads repo, timeout, non-zero
+// exit, unparseable JSON) returns beadsCountFailOpen (a positive sentinel) so
+// HasBeads(...) returns true and callers gating a prompt never wrongly hide
+// it — consistent with the CEL fail-open policy. A legitimate empty result
+// (`[]`, exit 0) is NOT an error and returns 0.
+//
+// Results are memoised for beadsCacheTTL per (folder, labels, statuses) tuple
+// to bound exec frequency on rapid menu re-opens. Consumers relying on
+// short-circuit ordering (e.g. `CommandExists("bd") && DirExists(".beads") &&
+// HasBeads(...)`) still get zero exec cost when the cheap gates fail.
+func beadsCount(folder, labels, statuses string) int {
+	key := folder + "\x00" + labels + "\x00" + statuses
+	beadsCacheMu.Lock()
+	if e, ok := beadsCache[key]; ok && time.Since(e.at) < beadsCacheTTL {
+		beadsCacheMu.Unlock()
+		return e.count
+	}
+	beadsCacheMu.Unlock()
+
+	out, ok := runBd(folder, "list", "-l", labels, "--status", statuses, "--all", "--json")
+	if !ok {
+		return beadsCountFailOpen
+	}
+	trimmed := strings.TrimSpace(string(out))
+	if trimmed == "" {
+		// Empty stdout is unexpected (bd emits at least `[]`); treat as error.
+		return beadsCountFailOpen
+	}
+	var arr []json.RawMessage
+	if err := json.Unmarshal([]byte(trimmed), &arr); err != nil {
+		return beadsCountFailOpen
+	}
+	count := len(arr)
+
+	beadsCacheMu.Lock()
+	beadsCache[key] = beadsCacheEntry{count: count, at: time.Now()}
+	beadsCacheMu.Unlock()
+	return count
+}
+
+// hasBeads reports whether beadsCount(folder, labels, statuses) > 0. Convenience
+// wrapper sharing the same fail-open + cache semantics as beadsCount.
+func hasBeads(folder, labels, statuses string) bool {
+	return beadsCount(folder, labels, statuses) > 0
+}
+
 // =============================================================================
 // Exported formatting helpers (single source of truth for legacy @mitto: output)
 // =============================================================================
@@ -337,6 +439,9 @@ func FormatChildren(children []ChildInfo) string {
 //     changes, including untracked files.
 //   - GitFileTracked(path) — true iff path is tracked by git (present in the index).
 //   - GitFileDeleted(path) — true iff the tracked file has been deleted (staged or unstaged).
+//   - BeadsCount(labels, statuses) — count of beads matching ALL comma-separated labels
+//     AND ANY of the comma-separated statuses. Fail-open (positive sentinel) on error.
+//   - HasBeads(labels, statuses) — BeadsCount(...) > 0. Same fail-open semantics.
 //   - hasPattern(pattern) — true iff any MCP tool name matches pattern (fail-open).
 //   - Model(tag) — true iff the current model carries the capability tag (case-insensitive).
 //   - cond(expr) / when(expr) — compile+evaluate a CEL expression via GetCELEvaluator()
@@ -414,7 +519,13 @@ func BuildTemplateFuncMap(ctx *PromptEnabledContext) template.FuncMap {
 		},
 		"GitFileTracked": func(path string) bool { return gitFileTracked(folder, path) },
 		"GitFileDeleted": func(path string) bool { return gitFileDeleted(folder, path) },
-		"HasPattern":     func(pattern string) bool { return hasPattern(toolServers, pattern) },
+		// BeadsCount / HasBeads — see beadsCount/hasBeads (templatefuncs.go) for
+		// fail-open + short-TTL cache semantics. Cheap gates (CommandExists("bd"),
+		// DirExists(".beads")) must come BEFORE these via && short-circuit so bd
+		// only runs when the workspace actually has a beads database.
+		"BeadsCount": func(labels, statuses string) int { return beadsCount(folder, labels, statuses) },
+		"HasBeads":   func(labels, statuses string) bool { return hasBeads(folder, labels, statuses) },
+		"HasPattern": func(pattern string) bool { return hasPattern(toolServers, pattern) },
 		// Model(tag) — true iff the session's current model carries the capability tag
 		// (case-insensitive), resolved from the models: profiles. False for an unknown model.
 		"Model":     func(tag string) bool { return hasModelTag(modelTags, tag) },

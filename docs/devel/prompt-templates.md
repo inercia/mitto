@@ -197,6 +197,8 @@ The shared pure-Go helpers are: `statResolved`, the glob-match logic, `matchesSe
 | `GitDirModified` | `GitDirModified(path ...string) bool` | Directory (default: whole workspace) has any pending changes, including untracked files. |
 | `GitFileTracked` | `GitFileTracked(path string) bool` | `path` is tracked by git (present in the index). |
 | `GitFileDeleted` | `GitFileDeleted(path string) bool` | Tracked file at `path` has been deleted (staged or unstaged deletion). |
+| `BeadsCount` | `BeadsCount(labels, statuses string) int` | Count of beads matching ALL comma-separated `labels` AND ANY of the comma-separated `statuses`, via `bd list -l <labels> --status <statuses> --all --json` in `Workspace.Folder`. Bounded 5s subprocess, short-TTL in-memory cache (5s), **fail-open**: returns positive sentinel on any error (missing `bd`, non-zero exit, unparseable JSON, timeout) so `HasBeads`-gated prompts are never wrongly hidden. Legitimate empty result (`[]`) returns `0`. Cheap gates (`CommandExists("bd") && DirExists(".beads")`) should short-circuit **before** this to avoid exec when there is no beads DB. |
+| `HasBeads` | `HasBeads(labels, statuses string) bool` | `BeadsCount(labels, statuses) > 0`. Same fail-open + cache semantics. |
 | `Model` | `Model(tag string) bool` | Current model carries capability `tag` (case-insensitive), resolved from `models:` profiles. `false` when the model is unknown or no profile matches. |
 
 **No `html` escaping.** Use `text/template` (not `html/template`). Prompt bodies are

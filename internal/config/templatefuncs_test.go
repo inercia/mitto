@@ -682,6 +682,7 @@ func TestBuildTemplateFuncMap_AllKeysPresent(t *testing.T) {
 		"Arg", "Default", "UserData",
 		"FileExists", "DirExists", "CommandExists", "HasPattern", "Model",
 		"GitFileModified", "GitDirModified", "GitFileTracked", "GitFileDeleted",
+		"BeadsCount", "HasBeads",
 		"Trim", "Lower", "Upper", "Contains", "HasPrefix", "HasSuffix", "Join",
 	}
 	for _, key := range expected {
@@ -1152,5 +1153,194 @@ func TestPrecompileTemplateConds_ParseError(t *testing.T) {
 	err := PrecompileTemplateConds("p", body)
 	if err == nil {
 		t.Fatal("expected parse error, got nil")
+	}
+}
+
+// installFakeBd writes a fake `bd` shell script to a fresh temp dir, prepends
+// that dir to PATH for the duration of the test, and clears the beadsCache so
+// results from other tests don't leak. The script's stdout comes from `stdout`
+// and its exit code from `exitCode` (0 = success). Returns the temp dir.
+func installFakeBd(t *testing.T, stdout string, exitCode int) string {
+	t.Helper()
+	dir := t.TempDir()
+	script := fmt.Sprintf("#!/bin/sh\ncat <<'MITTO_BD_EOF'\n%s\nMITTO_BD_EOF\nexit %d\n", stdout, exitCode)
+	bdPath := filepath.Join(dir, "bd")
+	if err := os.WriteFile(bdPath, []byte(script), 0755); err != nil {
+		t.Fatal(err)
+	}
+	oldPath := os.Getenv("PATH")
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+oldPath)
+	// Clear the cache so a previous test's result doesn't shadow this one.
+	beadsCacheMu.Lock()
+	beadsCache = map[string]beadsCacheEntry{}
+	beadsCacheMu.Unlock()
+	return dir
+}
+
+// TestBeadsCount_EmptyResult verifies that a legitimate empty result (bd exit
+// 0, `[]`) returns 0 — NOT the fail-open sentinel.
+func TestBeadsCount_EmptyResult(t *testing.T) {
+	installFakeBd(t, "[]", 0)
+	tmp := t.TempDir()
+
+	got := beadsCount(tmp, "support-question", "open,in_progress")
+	if got != 0 {
+		t.Errorf("beadsCount empty = %d, want 0", got)
+	}
+	if hasBeads(tmp, "support-question", "open,in_progress") {
+		t.Errorf("hasBeads empty = true, want false")
+	}
+}
+
+// TestBeadsCount_JSONParse verifies that a well-formed array is counted correctly.
+func TestBeadsCount_JSONParse(t *testing.T) {
+	installFakeBd(t, `[{"id":"mitto-1"},{"id":"mitto-2"},{"id":"mitto-3"}]`, 0)
+	tmp := t.TempDir()
+
+	got := beadsCount(tmp, "support-question", "open,in_progress")
+	if got != 3 {
+		t.Errorf("beadsCount = %d, want 3", got)
+	}
+	if !hasBeads(tmp, "support-question", "open,in_progress") {
+		t.Errorf("hasBeads = false, want true")
+	}
+}
+
+// TestBeadsCount_FailOpenOnNonZeroExit verifies that a non-zero exit code
+// (e.g. not a beads repo) returns the positive sentinel so HasBeads is truthy.
+func TestBeadsCount_FailOpenOnNonZeroExit(t *testing.T) {
+	installFakeBd(t, "error: not a beads repo", 1)
+	tmp := t.TempDir()
+
+	got := beadsCount(tmp, "support-question", "open,in_progress")
+	if got != beadsCountFailOpen {
+		t.Errorf("beadsCount fail-open = %d, want %d", got, beadsCountFailOpen)
+	}
+	if !hasBeads(tmp, "support-question", "open,in_progress") {
+		t.Errorf("hasBeads fail-open = false, want true")
+	}
+}
+
+// TestBeadsCount_FailOpenOnBadJSON verifies that unparseable stdout returns
+// the positive sentinel.
+func TestBeadsCount_FailOpenOnBadJSON(t *testing.T) {
+	installFakeBd(t, "not json at all {{{", 0)
+	tmp := t.TempDir()
+
+	got := beadsCount(tmp, "support-question", "open,in_progress")
+	if got != beadsCountFailOpen {
+		t.Errorf("beadsCount fail-open on bad json = %d, want %d", got, beadsCountFailOpen)
+	}
+}
+
+// TestBeadsCount_FailOpenWhenMissing verifies that bd absent from PATH returns
+// the positive sentinel (fail-open).
+func TestBeadsCount_FailOpenWhenMissing(t *testing.T) {
+	// Force an isolated PATH with no bd.
+	emptyDir := t.TempDir()
+	t.Setenv("PATH", emptyDir)
+	beadsCacheMu.Lock()
+	beadsCache = map[string]beadsCacheEntry{}
+	beadsCacheMu.Unlock()
+
+	got := beadsCount(emptyDir, "support-question", "open,in_progress")
+	if got != beadsCountFailOpen {
+		t.Errorf("beadsCount missing bd = %d, want %d", got, beadsCountFailOpen)
+	}
+	if !hasBeads(emptyDir, "support-question", "open,in_progress") {
+		t.Errorf("hasBeads missing bd = false, want true (fail-open)")
+	}
+}
+
+// TestBeadsCount_Cache verifies that repeated calls within beadsCacheTTL hit
+// the cache and don't re-exec bd. We swap the fake bd's script mid-test: the
+// second call must still return the first (cached) value.
+func TestBeadsCount_Cache(t *testing.T) {
+	dir := installFakeBd(t, `[{"id":"a"},{"id":"b"}]`, 0)
+	tmp := t.TempDir()
+
+	first := beadsCount(tmp, "support-question", "open,in_progress")
+	if first != 2 {
+		t.Fatalf("first beadsCount = %d, want 2", first)
+	}
+	// Overwrite the fake bd to return a different count; the cache must mask this.
+	bdPath := filepath.Join(dir, "bd")
+	newScript := "#!/bin/sh\necho '[{\"id\":\"a\"},{\"id\":\"b\"},{\"id\":\"c\"},{\"id\":\"d\"}]'\n"
+	if err := os.WriteFile(bdPath, []byte(newScript), 0755); err != nil {
+		t.Fatal(err)
+	}
+	second := beadsCount(tmp, "support-question", "open,in_progress")
+	if second != first {
+		t.Errorf("second beadsCount = %d, want cached %d", second, first)
+	}
+}
+
+// TestBeadsCount_CELParity verifies that HasBeads and BeadsCount evaluated
+// through CEL produce the same result as the pure-Go helpers — mirrors the
+// git-func parity tests (mitto-d01 pattern).
+func TestBeadsCount_CELParity(t *testing.T) {
+	installFakeBd(t, `[{"id":"mitto-1"},{"id":"mitto-2"}]`, 0)
+	tmp := t.TempDir()
+
+	e := newTestEvaluator(t)
+	ctx := &PromptEnabledContext{Workspace: WorkspaceContext{Folder: tmp}}
+
+	// BeadsCount(...) -> int; evaluate raw via cel.Program to compare Int values.
+	ce, err := e.Compile(`BeadsCount("support-question", "open,in_progress")`)
+	if err != nil {
+		t.Fatalf("compile BeadsCount: %v", err)
+	}
+	out, _, err := ce.prog.Eval(buildActivation(ctx))
+	if err != nil {
+		t.Fatalf("eval BeadsCount: %v", err)
+	}
+	i, ok := out.Value().(int64)
+	if !ok {
+		t.Fatalf("BeadsCount result type = %T, want int64", out.Value())
+	}
+	goCount := beadsCount(tmp, "support-question", "open,in_progress")
+	if int64(goCount) != i {
+		t.Errorf("CEL BeadsCount = %d, go beadsCount = %d", i, goCount)
+	}
+
+	// HasBeads(...) -> bool through evalCEL.
+	got := evalCEL(t, e, `HasBeads("support-question", "open,in_progress")`, ctx)
+	if got != hasBeads(tmp, "support-question", "open,in_progress") {
+		t.Errorf("CEL HasBeads = %v, go hasBeads mismatch", got)
+	}
+	if !got {
+		t.Errorf("CEL HasBeads = false, want true (2 beads returned)")
+	}
+
+	// Combined expression: mirrors the real support-housekeeping gate.
+	combined := evalCEL(t, e, `CommandExists("bd") && HasBeads("support-question", "open,in_progress")`, ctx)
+	if !combined {
+		t.Errorf("combined gate = false, want true")
+	}
+}
+
+// TestBeadsCount_TemplateFuncRender verifies BeadsCount/HasBeads render through
+// RenderPromptTemplate (mirrors TestBuildTemplateFuncMap_GitFuncsRenderSmoke).
+func TestBeadsCount_TemplateFuncRender(t *testing.T) {
+	installFakeBd(t, `[{"id":"mitto-1"}]`, 0)
+	tmp := t.TempDir()
+
+	ctx := &PromptEnabledContext{Workspace: WorkspaceContext{Folder: tmp}}
+	fm := BuildTemplateFuncMap(ctx)
+
+	got, err := RenderPromptTemplate("test", `{{ if HasBeads "support-question" "open,in_progress" }}yes{{ else }}no{{ end }}`, ctx, fm)
+	if err != nil {
+		t.Fatalf("render HasBeads: %v", err)
+	}
+	if got != "yes" {
+		t.Errorf("HasBeads render = %q, want %q", got, "yes")
+	}
+
+	got, err = RenderPromptTemplate("test", `count={{ BeadsCount "support-question" "open,in_progress" }}`, ctx, fm)
+	if err != nil {
+		t.Fatalf("render BeadsCount: %v", err)
+	}
+	if got != "count=1" {
+		t.Errorf("BeadsCount render = %q, want %q", got, "count=1")
 	}
 }
