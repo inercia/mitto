@@ -18,13 +18,16 @@ type ColdStartRecentInput struct {
 	// Limit is the maximum number of recent cold-start summaries to return.
 	// 0 or omitted returns all summaries currently held (up to the ring capacity).
 	Limit int `json:"limit,omitempty" jsonschema:"max number of recent cold starts to return; 0 or omitted = all (up to the ring capacity)"`
+	// ByWorkspace requests a per-workspace rollup in addition to the raw list.
+	ByWorkspace bool `json:"by_workspace,omitempty" jsonschema:"when true, also include a per-workspace rollup sorted by failure rate"`
 }
 
 // ColdStartRecent is the output for the mitto_coldstart_recent tool.
 // It wraps the ring-buffer snapshot returned by coldstart.RecentSummaries,
 // newest first.
 type ColdStartRecent struct {
-	ColdStarts []coldstart.Summary `json:"cold_starts"`
+	ColdStarts     []coldstart.Summary            `json:"cold_starts"`
+	WorkspaceStats []coldstart.WorkspaceColdStats `json:"workspace_stats,omitempty"`
 }
 
 // ListConversationsInput contains optional filter criteria for mitto_conversation_list.

@@ -1190,7 +1190,7 @@ func (s *Server) registerGlobalTools(mcpSrv *mcp.Server, deps Dependencies) {
 	// mitto_coldstart_recent tool - always available
 	mcp.AddTool(mcpSrv, &mcp.Tool{
 		Name:        "mitto_coldstart_recent",
-		Description: "Return the most recent cold-start diagnostic summaries (phase timeline + durations) captured by the cold-start tracer (mitto-3mv). Useful for post-hoc analysis of cold-start latency without grepping logs.",
+		Description: "Return the most recent cold-start diagnostic summaries (phase timeline + durations) captured by the cold-start tracer (mitto-3mv). Useful for post-hoc analysis of cold-start latency without grepping logs. Pass by_workspace=true to also receive a per-workspace rollup (total, failures, failure rate, p50/p95, last outcome) sorted by failure rate descending.",
 	}, s.createColdStartRecentHandler())
 
 	// mitto_workspace_list tool - always available
@@ -2057,7 +2057,12 @@ func (s *Server) createGetRuntimeInfoHandler() mcp.ToolHandlerFor[struct{}, Runt
 // all summaries currently held in the ring buffer.
 func (s *Server) createColdStartRecentHandler() mcp.ToolHandlerFor[ColdStartRecentInput, ColdStartRecent] {
 	return func(ctx context.Context, req *mcp.CallToolRequest, input ColdStartRecentInput) (*mcp.CallToolResult, ColdStartRecent, error) {
-		return nil, ColdStartRecent{ColdStarts: coldstart.RecentSummaries(input.Limit)}, nil
+		sums := coldstart.RecentSummaries(input.Limit)
+		out := ColdStartRecent{ColdStarts: sums}
+		if input.ByWorkspace {
+			out.WorkspaceStats = coldstart.AggregateByWorkspace(sums)
+		}
+		return nil, out, nil
 	}
 }
 
