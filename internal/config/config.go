@@ -947,35 +947,6 @@ type ConversationsConfig struct {
 	// MinLoopCompletionDelaySeconds is the global lower limit (floor) for the
 	// on-completion loop trigger's delay. nil = use default (DefaultMinLoopCompletionDelaySeconds).
 	MinLoopCompletionDelaySeconds *int `json:"min_loop_completion_delay_seconds,omitempty" yaml:"min_loop_completion_delay_seconds,omitempty"`
-	// InitialModelProfile is the name of a Model profile (Config.Models) applied
-	// as the baseline model of every new conversation right after the agent
-	// reports its available models. Empty means keep the agent's default model.
-	// Mutually exclusive with InitialModelTag in the UI; when both are set,
-	// InitialModelProfile wins.
-	InitialModelProfile string `json:"initial_model_profile,omitempty" yaml:"initial_model_profile,omitempty"`
-	// InitialModelTag selects the initial baseline model by capability tag
-	// (e.g. "Coding"). Resolved to the first Model profile (Config.Models, in
-	// definition order) carrying this tag whose Criteria matches an available
-	// model. Empty means keep the agent's default model.
-	InitialModelTag string `json:"initial_model_tag,omitempty" yaml:"initial_model_tag,omitempty"`
-}
-
-// GetInitialModelPreference returns the initial-model preference as an ordered
-// list of PromptPreferredModel entries suitable for SelectPreferredModel.
-// Returns nil when neither InitialModelProfile nor InitialModelTag is set.
-// InitialModelProfile takes precedence over InitialModelTag when both are set.
-// Safe to call on a nil receiver.
-func (c *ConversationsConfig) GetInitialModelPreference() []PromptPreferredModel {
-	if c == nil {
-		return nil
-	}
-	if c.InitialModelProfile != "" {
-		return []PromptPreferredModel{{ModelName: c.InitialModelProfile}}
-	}
-	if c.InitialModelTag != "" {
-		return []PromptPreferredModel{{ModelTag: c.InitialModelTag}}
-	}
-	return nil
 }
 
 // ActionButtonsConfig configures the follow-up suggestions feature.
@@ -1693,8 +1664,6 @@ type rawConfig struct {
 		MaxChildConversations         *int            `yaml:"max_child_conversations"`
 		MaxLoopIterations             *int            `yaml:"max_loop_iterations"`
 		MinLoopCompletionDelaySeconds *int            `yaml:"min_loop_completion_delay_seconds"`
-		InitialModelProfile           string          `yaml:"initial_model_profile"`
-		InitialModelTag               string          `yaml:"initial_model_tag"`
 	} `yaml:"conversations"`
 	// RestrictedRunners is the top-level per-runner-type configuration
 	RestrictedRunners map[string]*WorkspaceRunnerConfig `yaml:"restricted_runners"`
@@ -2078,16 +2047,11 @@ func Parse(data []byte) (*Config, error) {
 			cfg.Conversations.MinLoopCompletionDelaySeconds = raw.Conversations.MinLoopCompletionDelaySeconds
 		}
 
-		// Copy initial model preference (applied as baseline for new conversations)
-		cfg.Conversations.InitialModelProfile = raw.Conversations.InitialModelProfile
-		cfg.Conversations.InitialModelTag = raw.Conversations.InitialModelTag
-
 		// If no config was actually set, nil out the conversations config
 		if cfg.Conversations.Processing == nil && cfg.Conversations.Queue == nil &&
 			cfg.Conversations.ActionButtons == nil && cfg.Conversations.ExternalImages == nil &&
 			cfg.Conversations.DefaultFlags == nil && cfg.Conversations.MaxChildConversations == nil &&
-			cfg.Conversations.MaxLoopIterations == nil && cfg.Conversations.MinLoopCompletionDelaySeconds == nil &&
-			cfg.Conversations.InitialModelProfile == "" && cfg.Conversations.InitialModelTag == "" {
+			cfg.Conversations.MaxLoopIterations == nil && cfg.Conversations.MinLoopCompletionDelaySeconds == nil {
 			cfg.Conversations = nil
 		}
 	}

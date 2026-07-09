@@ -7,7 +7,6 @@ package conversation
 import (
 	"context"
 	"log/slog"
-	"time"
 
 	"github.com/coder/acp-go-sdk"
 
@@ -280,86 +279,6 @@ func (bs *BackgroundSession) cbInitBaselineModelIfEmpty(defaultModel string) {
 // goroutine for a category.
 func (bs *BackgroundSession) cbApplyConfigConstraintsAsync(category string) {
 	go bs.applyConfigConstraints(category)
-}
-
-// initialModelApplyBudget bounds the SetSessionModel RPC issued to apply the
-// global initial-model preference on fresh conversations. Kept generous so a
-// cold agent still lands the switch, but capped so the goroutine does not
-// linger indefinitely on a stuck ACP.
-var initialModelApplyBudget = 90 * time.Second
-
-// cbMaybeApplyInitialModelAsync applies the global initial-model preference
-// (Settings → Conversations → Initial Model) as the session's persistent
-// baseline for FRESH conversations only. Skipped when:
-//   - no preference is configured;
-//   - the session was resumed (persisted metadata already carries a BaselineModel);
-//   - the workspace has an ACP server constraint on the model category (it wins
-//     and would fight with our change on every resume);
-//   - the preference cannot be resolved against the agent's available models.
-//
-// Applies via SetConfigOption so the change updates the baseline, persists to
-// metadata, and emits a session_change timeline entry — identical to a manual
-// UI selection.
-func (bs *BackgroundSession) cbMaybeApplyInitialModelAsync() {
-	if bs.mittoConfig == nil {
-		return
-	}
-	prefs := bs.mittoConfig.Conversations.GetInitialModelPreference()
-	if len(prefs) == 0 {
-		return
-	}
-	// Skip resumed sessions: they already have a persisted baseline that reflects
-	// prior manual selections (or a prior application of this same preference).
-	if bs.store != nil && bs.persistedID != "" {
-		if meta, err := bs.store.GetMetadata(bs.persistedID); err == nil && meta.BaselineModel != "" {
-			return
-		}
-	}
-	// Skip when a workspace ACP server constraint already governs the model
-	// category — it wins (see applyConfigConstraints) and re-runs on every
-	// resume, so any change we make here would be immediately reverted.
-	if constraint := bs.cbACPServerConstraint(ConfigOptionCategoryModel); constraint != nil && constraint.Pattern != "" {
-		return
-	}
-
-	go func() {
-		models := bs.agentModels
-		if models == nil {
-			return
-		}
-		resolved := SelectPreferredModel(prefs, bs.mittoConfig.EffectiveModelProfiles(), models)
-		if resolved == "" {
-			if bs.logger != nil {
-				bs.logger.Debug("initial model preference: no matching available model",
-					"session_id", bs.persistedID,
-					"preference", prefs)
-			}
-			return
-		}
-		if models.CurrentModelId == resolved {
-			// Baseline is already the desired model — still record it in the persisted
-			// baseline metadata so future resumes skip the constraint check above.
-			bs.cmPersistBaselineModel(resolved)
-			return
-		}
-		ctx, cancel := context.WithTimeout(bs.ctx, initialModelApplyBudget)
-		defer cancel()
-		if err := bs.configMgr.applyConfigOption(bs, ctx, ConfigOptionCategoryModel, resolved); err != nil {
-			if bs.logger != nil {
-				bs.logger.Warn("initial model preference: failed to apply",
-					"session_id", bs.persistedID,
-					"model", resolved,
-					"error", err)
-			}
-			return
-		}
-		if bs.logger != nil {
-			bs.logger.Info("initial model preference applied",
-				"session_id", bs.persistedID,
-				"model", resolved,
-				"preference", prefs)
-		}
-	}()
 }
 
 // cbStreamingSuppressed reports whether streaming callbacks are currently suppressed

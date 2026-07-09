@@ -42,22 +42,21 @@ type fakeCallbackDeps struct {
 	streamingSuppressed bool // mitto-2tm: gates streaming callback short-circuit
 
 	// recorders
-	notifiedEvents          []string
-	recordedEvents          []session.Event
-	recordedEventKinds      []string
-	recordedPermissions     []recordedPermission
-	contextUsages           [][2]int
-	mcpRequests             []string
-	planEntries             [][]PlanEntry
-	uiPromptCalls           []UIPromptRequest
-	modeCurrentValues       []string
-	persistedConfig         [][2]string
-	configChanged           [][2]string
-	legacyModesSet          []SessionConfigOption
-	storedAgentModels       []*SessionModelState
-	modelReplacements       []SessionConfigOption
-	asyncConstraintCats     []string
-	initialModelInvocations int
+	notifiedEvents      []string
+	recordedEvents      []session.Event
+	recordedEventKinds  []string
+	recordedPermissions []recordedPermission
+	contextUsages       [][2]int
+	mcpRequests         []string
+	planEntries         [][]PlanEntry
+	uiPromptCalls       []UIPromptRequest
+	modeCurrentValues   []string
+	persistedConfig     [][2]string
+	configChanged       [][2]string
+	legacyModesSet      []SessionConfigOption
+	storedAgentModels   []*SessionModelState
+	modelReplacements   []SessionConfigOption
+	asyncConstraintCats []string
 }
 
 type recordedPermission struct{ Title, OptionID, Outcome string }
@@ -177,11 +176,6 @@ func (f *fakeCallbackDeps) cbApplyConfigConstraintsAsync(category string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.asyncConstraintCats = append(f.asyncConstraintCats, category)
-}
-func (f *fakeCallbackDeps) cbMaybeApplyInitialModelAsync() {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.initialModelInvocations++
 }
 
 func (f *fakeCallbackDeps) cbStreamingSuppressed() bool {
