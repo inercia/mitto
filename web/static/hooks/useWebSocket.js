@@ -146,33 +146,6 @@ const STAGGERED_RECONNECT_DEBOUNCE_MS = 15000;
 // window are dropped.
 const BACKGROUND_DISCONNECT_GRACE_MS = 30000;
 
-// Maximum session age for automatic WebSocket reconnection.
-// Sessions whose IDs indicate creation more than this many milliseconds ago
-// will not be automatically reconnected after a WebSocket close.
-// Session IDs encode the creation timestamp (YYYYMMDD-HHMMSS-xxxxxxxx), so
-// this check requires no server round-trip and works even offline.
-// 30 days is generous: any session untouched for a month is effectively dead.
-const SESSION_MAX_RECONNECT_AGE_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
-
-/**
- * Parse the creation age (in milliseconds) from a session ID.
- * Session IDs follow the format: YYYYMMDD-HHMMSS-xxxxxxxx (UTC).
- * Returns the number of milliseconds since creation, or null if the ID
- * format is not recognized (so the caller can treat unknown IDs as fresh).
- *
- * @param {string} sessionId - The session ID to inspect
- * @returns {number|null} Age in milliseconds, or null if unparseable
- */
-function getSessionAgeMs(sessionId) {
-  if (!sessionId) return null;
-  const m = sessionId.match(/^(\d{4})(\d{2})(\d{2})-(\d{2})(\d{2})(\d{2})-/);
-  if (!m) return null;
-  const createdAt = new Date(
-    Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +m[6]),
-  );
-  return Date.now() - createdAt.getTime();
-}
-
 /**
  * Get the appropriate keepalive interval based on the runtime environment.
  * Native macOS app uses a shorter interval for faster sync detection.
@@ -3645,66 +3618,23 @@ export function useWebSocket({ onActiveSessionRemovedRef } = {}) {
         ) {
           // --- Stale-session guard: don't reconnect permanently dead sessions ---
           //
-          // 1. Age check: session IDs encode their creation timestamp
-          //    (YYYYMMDD-HHMMSS-xxxxxxxx). Sessions older than
-          //    SESSION_MAX_RECONNECT_AGE_MS are almost certainly dead on the
-          //    server (the server only keeps sessions alive while the binary is
-          //    running; after a restart old sessions are gone). Reconnecting them
-          //    only causes the readyState: 3 CLOSED log-spam that triggered this fix.
-          //    NOTE: Loop sessions are exempt from this age check — they are
-          //    long-lived by design and must always be allowed to reconnect.
+          // Attempt cap (isReconnectLimitReached from utils/websocket.js):
+          // if we have repeatedly failed to reconnect (e.g. server is down),
+          // stop after the canonical MAX_SESSION_RECONNECT_ATTEMPTS limit so
+          // we don't loop forever. The counter resets on the next successful
+          // onopen, and is cleared when the user explicitly switches to this
+          // session (switchSession).
           //
-          // 2. Attempt cap (isReconnectLimitReached from utils/websocket.js):
-          //    even for recent sessions, if we have repeatedly failed to
-          //    reconnect (e.g. server is down), stop after the canonical
-          //    MAX_SESSION_RECONNECT_ATTEMPTS limit so we don't loop forever.
-          //    The counter resets on the next successful onopen, and is cleared
-          //    when the user explicitly switches to this session (switchSession).
-
-          // Check if this conversation has a loop config — those are long-lived by design
-          // and should always be allowed to reconnect regardless of age.
-          // Use loop_configured (config exists) not loop_enabled (runs active),
-          // so paused/draft loop conversations still count as long-lived.
-          const isLoop =
-            sessionsRef.current[sessionId]?.info?.loop_configured ||
-            storedSessionsRef.current?.find((s) => s.session_id === sessionId)
-              ?.loop_configured;
-
-          const sessionAgeMs = getSessionAgeMs(sessionId);
-          const isTooOld =
-            !isLoop &&
-            sessionAgeMs !== null &&
-            sessionAgeMs > SESSION_MAX_RECONNECT_AGE_MS;
+          // Note: we intentionally do NOT gate on session-ID age here. Sessions
+          // are persisted on disk (internal/session/store.go) and resumed on
+          // demand, so an old ID says nothing about whether the server can
+          // reconnect. A prior age heuristic gave up on live, mid-streaming
+          // sessions after the WS dropped (mitto-ale).
 
           const attempt = sessionReconnectAttemptsRef.current[sessionId] || 0;
           // isReconnectLimitReached is exported from utils/websocket.js and
           // uses the canonical MAX_SESSION_RECONNECT_ATTEMPTS = 15 constant.
           const exceededMaxAttempts = isReconnectLimitReached(attempt);
-
-          if (isTooOld) {
-            console.warn(
-              `[reconnect] Giving up on session ${sessionId}: ` +
-                `session is ~${Math.round(sessionAgeMs / 86400000)} days old ` +
-                `(max age for auto-reconnect is ${SESSION_MAX_RECONNECT_AGE_MS / 86400000} days)`,
-            );
-            setSessions((prev) => {
-              const session = prev[sessionId];
-              if (!session) return prev;
-              const messages = limitMessages([
-                ...session.messages,
-                {
-                  role: ROLE_ERROR,
-                  text: "⚠️ This session is too old to reconnect automatically. Please create a new conversation.",
-                  timestamp: Date.now(),
-                },
-              ]);
-              return {
-                ...prev,
-                [sessionId]: { ...session, messages, isStreaming: false },
-              };
-            });
-            return;
-          }
 
           if (exceededMaxAttempts) {
             console.warn(
