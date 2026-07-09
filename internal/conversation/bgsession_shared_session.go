@@ -184,6 +184,17 @@ func (bs *BackgroundSession) hsPersistACPSessionID() {
 	}
 }
 
+func (bs *BackgroundSession) hsClearPersistedACPSessionID() {
+	if bs.store == nil || bs.persistedID == "" {
+		return
+	}
+	if err := bs.store.UpdateMetadata(bs.persistedID, func(m *session.Metadata) {
+		m.ACPSessionID = ""
+	}); err != nil && bs.logger != nil {
+		bs.logger.Warn("Failed to clear stale persisted ACP session ID after load failure", "error", err)
+	}
+}
+
 func (bs *BackgroundSession) hsNotifyObservers(fn func(SessionObserver)) {
 	bs.notifyObservers(fn)
 }

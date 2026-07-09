@@ -107,6 +107,11 @@ type handshakeDeps interface {
 
 	// Store persistence (no-op when no store)
 	hsPersistACPSessionID()
+	// hsClearPersistedACPSessionID clears the persisted acp_session_id (no-op when
+	// no store). Called when session/load fails so a stale/unknown id is not
+	// re-probed on the next cold start (the doomed probe otherwise burns up to
+	// staleLoadProbeTimeout every attempt).
+	hsClearPersistedACPSessionID()
 
 	// Observer fan-out
 	hsNotifyObservers(fn func(SessionObserver))
@@ -441,6 +446,13 @@ func (c sharedSessionHandshaker) resumeSharedACPSession(d handshakeDeps, sharedP
 					"rpc_ms", time.Since(loadStart).Milliseconds(),
 					"error", err.Error(),
 					"stale_session", staleSession)
+				// Clear the persisted acp_session_id now that this probe has proven
+				// it can't be loaded. The fallback session/new below persists a
+				// fresh, loadable id on success; but if the whole handshake fails,
+				// clearing here ensures the next cold start skips the doomed load
+				// probe (which otherwise burns up to staleLoadProbeTimeout every
+				// attempt) and goes straight to session/new.
+				d.hsClearPersistedACPSessionID()
 			} else {
 				d.hsSetResumeMethod("load")
 				if l := d.hsLogger(); l != nil {

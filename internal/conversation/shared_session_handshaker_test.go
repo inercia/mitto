@@ -144,6 +144,7 @@ type fakeHandshakeDeps struct {
 
 	// recorders
 	persistedACPID  int
+	clearedACPID    int
 	notifiedEvents  []string
 	appliedModes    []*acp.SessionModeState
 	appliedModels   []*SessionModelState
@@ -257,6 +258,11 @@ func (f *fakeHandshakeDeps) hsPersistACPSessionID() {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.persistedACPID++
+}
+func (f *fakeHandshakeDeps) hsClearPersistedACPSessionID() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.clearedACPID++
 }
 func (f *fakeHandshakeDeps) hsNotifyObservers(fn func(SessionObserver)) {
 	fn(&handshakeRecorderObserver{deps: f})
@@ -660,6 +666,11 @@ func TestHandshaker_ResumeSharedACPSession_LoadNotFound_FallsBackToNewSessionOnc
 	}
 	if d.acpID != "acp-sess-1" {
 		t.Fatalf("expected acpID from NewSession, got %q", d.acpID)
+	}
+	// The stale persisted acp_session_id must be cleared on load failure so the
+	// next cold start does not re-probe a known-bad id (doomed session/load).
+	if d.clearedACPID != 1 {
+		t.Fatalf("expected 1 clear-persisted call on load failure, got %d", d.clearedACPID)
 	}
 }
 
