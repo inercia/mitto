@@ -30,6 +30,16 @@ type fakeSharedProcess struct {
 	loadSessionErr     error
 	loadSessionCalls   []string // recorded acp_session_ids
 	registeredSessions []acp.SessionId
+
+	// mitto-1ut: budget observability. recommendedLoadTimeout is returned by
+	// RecommendedLoadTimeout; the *Deadline fields capture the ctx deadline (if
+	// any) observed on the respective RPC so tests can assert the resume path
+	// caps both under ONE shared budget instead of stacking two.
+	recommendedLoadTimeout time.Duration
+	loadCtxDeadline        time.Time
+	loadCtxHasDeadline     bool
+	newCtxDeadline         time.Time
+	newCtxHasDeadline      bool
 }
 
 func newFakeSharedProcess() *fakeSharedProcess {
@@ -42,16 +52,18 @@ func newFakeSharedProcess() *fakeSharedProcess {
 
 func (f *fakeSharedProcess) Capabilities() *acp.AgentCapabilities { return f.caps }
 func (f *fakeSharedProcess) ProcessDone() <-chan struct{}         { return f.processDone }
-func (f *fakeSharedProcess) NewSession(_ context.Context, cwd string, _ []acp.McpServer) (*SessionHandle, error) {
+func (f *fakeSharedProcess) NewSession(ctx context.Context, cwd string, _ []acp.McpServer) (*SessionHandle, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.newSessionCalls = append(f.newSessionCalls, cwd)
+	f.newCtxDeadline, f.newCtxHasDeadline = ctx.Deadline()
 	return f.newSessionHandle, f.newSessionErr
 }
-func (f *fakeSharedProcess) LoadSession(_ context.Context, acpSessionID, _ string, _ []acp.McpServer) (*SessionHandle, error) {
+func (f *fakeSharedProcess) LoadSession(ctx context.Context, acpSessionID, _ string, _ []acp.McpServer) (*SessionHandle, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.loadSessionCalls = append(f.loadSessionCalls, acpSessionID)
+	f.loadCtxDeadline, f.loadCtxHasDeadline = ctx.Deadline()
 	if f.loadSessionErr != nil || f.loadSessionHandle != nil {
 		return f.loadSessionHandle, f.loadSessionErr
 	}
@@ -77,8 +89,12 @@ func (f *fakeSharedProcess) SetSessionMode(_ context.Context, _ acp.SessionId, _
 func (f *fakeSharedProcess) SetSessionModel(_ context.Context, _ acp.SessionId, _ string) error {
 	return nil
 }
-func (f *fakeSharedProcess) Restart() error                                                      { return nil }
-func (f *fakeSharedProcess) RecommendedLoadTimeout(_ bool) time.Duration                         { return 0 }
+func (f *fakeSharedProcess) Restart() error { return nil }
+func (f *fakeSharedProcess) RecommendedLoadTimeout(_ bool) time.Duration {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.recommendedLoadTimeout
+}
 func (f *fakeSharedProcess) MCPInitDone() bool                                                   { return true }
 func (f *fakeSharedProcess) WaitForMCPInit(_ context.Context) bool                               { return true }
 func (f *fakeSharedProcess) SetPromptFunc(_ func(context.Context, string, string, string) error) {}
@@ -617,5 +633,84 @@ func TestHandshaker_ResumeSharedACPSession_LoadNotFound_FallsBackToNewSessionOnc
 	}
 	if d.acpID != "acp-sess-1" {
 		t.Fatalf("expected acpID from NewSession, got %q", d.acpID)
+	}
+}
+
+// TestHandshaker_ResumeSharedACPSession_ColdBudget_DoesNotStack is the mitto-1ut
+// regression: on a cold shared process (RecommendedLoadTimeout > 0), a stale-load
+// probe followed by the session/new fallback must share ONE wall-clock budget
+// rather than stacking two. It asserts (a) the load probe is capped at ≤
+// staleLoadProbeTimeout so a doomed load fails fast, and (b) the fallback
+// NewSession's context deadline never exceeds the single handshake budget
+// (now + RecommendedLoadTimeout) — i.e. the old 240s + 240s = 480s stacking is gone.
+func TestHandshaker_ResumeSharedACPSession_ColdBudget_DoesNotStack(t *testing.T) {
+	c := sharedSessionHandshaker{}
+	d := newFakeHandshakeDeps()
+	fp := newFakeSharedProcess()
+	fp.caps = &acp.AgentCapabilities{LoadSession: true}
+	fp.loadSessionErr = &acp.RequestError{Code: -32602, Message: "session not found"}
+	// Cold process: mimics MCPInitTimeout=240s.
+	const coldBudget = 240 * time.Second
+	fp.recommendedLoadTimeout = coldBudget
+
+	start := time.Now()
+	if err := c.resumeSharedACPSession(d, fp, "cwd", "stale-acp-id"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Load probe must be capped at the short stale-probe timeout, NOT the full
+	// cold budget — otherwise a stale id burns ~240s before falling back.
+	if !fp.loadCtxHasDeadline {
+		t.Fatal("expected LoadSession to receive a deadline (capped probe)")
+	}
+	loadBudget := fp.loadCtxDeadline.Sub(start)
+	if loadBudget > staleLoadProbeTimeout+time.Second {
+		t.Fatalf("load probe budget %v exceeds staleLoadProbeTimeout %v (stale probe not capped)", loadBudget, staleLoadProbeTimeout)
+	}
+
+	// Fallback NewSession must be bounded by the SINGLE shared handshake budget
+	// (start + coldBudget), never start + loadBudget + coldBudget.
+	if !fp.newCtxHasDeadline {
+		t.Fatal("expected NewSession to receive a shared-budget deadline in the resume path")
+	}
+	newBudget := fp.newCtxDeadline.Sub(start)
+	// Generous upper bound: the shared budget plus a small scheduling slack.
+	if newBudget > coldBudget+time.Second {
+		t.Fatalf("NewSession budget %v exceeds shared handshake budget %v — budgets are stacking (mitto-1ut regression)", newBudget, coldBudget)
+	}
+	// And it must be meaningfully large (not accidentally capped to the probe).
+	if newBudget < coldBudget-staleLoadProbeTimeout-time.Second {
+		t.Fatalf("NewSession budget %v unexpectedly small vs shared budget %v", newBudget, coldBudget)
+	}
+}
+
+// TestHandshaker_ResumeSharedACPSession_WarmBudget_ProbeCappedNoNewDeadline
+// verifies the warm path (RecommendedLoadTimeout == 0): the stale-load probe is
+// still capped at staleLoadProbeTimeout so a stale id fails fast, but the
+// session/new fallback derives its OWN budget (no shared handshake deadline is
+// imposed by the resume path), matching pre-mitto-1ut warm behaviour.
+func TestHandshaker_ResumeSharedACPSession_WarmBudget_ProbeCappedNoNewDeadline(t *testing.T) {
+	c := sharedSessionHandshaker{}
+	d := newFakeHandshakeDeps()
+	fp := newFakeSharedProcess()
+	fp.caps = &acp.AgentCapabilities{LoadSession: true}
+	fp.loadSessionErr = &acp.RequestError{Code: -32602, Message: "session not found"}
+	fp.recommendedLoadTimeout = 0 // warm
+
+	start := time.Now()
+	if err := c.resumeSharedACPSession(d, fp, "cwd", "stale-acp-id"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if !fp.loadCtxHasDeadline {
+		t.Fatal("expected LoadSession to receive a capped-probe deadline even when warm")
+	}
+	loadBudget := fp.loadCtxDeadline.Sub(start)
+	if loadBudget > staleLoadProbeTimeout+time.Second {
+		t.Fatalf("warm load probe budget %v exceeds staleLoadProbeTimeout %v", loadBudget, staleLoadProbeTimeout)
+	}
+	// Warm: resume path imposes no shared deadline on the NewSession fallback.
+	if fp.newCtxHasDeadline {
+		t.Fatalf("expected no resume-imposed deadline on NewSession when warm, got deadline in %v", fp.newCtxDeadline.Sub(start))
 	}
 }

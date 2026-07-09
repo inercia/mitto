@@ -12,6 +12,16 @@ import (
 	acp "github.com/coder/acp-go-sdk"
 )
 
+// staleLoadProbeTimeout caps the wall-clock time the resume path spends on a
+// single session/load probe before giving up and falling back to session/new
+// (mitto-1ut). A persisted acp_session_id that the agent no longer recognises
+// otherwise makes LoadSession dead-wait the agent's full MCP-init budget
+// (~240s cold), and the subsequent session/new fallback then derives ANOTHER
+// full cold budget — stacking to ~480s (an ~8min wedge). Capping the probe lets
+// a doomed load fail fast so the shared handshake budget (see resumeSharedACPSession)
+// is spent overwhelmingly on the session/new that actually establishes the session.
+const staleLoadProbeTimeout = 45 * time.Second
+
 // isSessionNotFoundErr reports whether err from LoadSession/ResumeSession
 // indicates the requested acp_session_id is no longer known to the agent
 // (mitto-z70). Agents return JSON-RPC -32602 "Invalid params" for a stale
@@ -314,6 +324,21 @@ func (c sharedSessionHandshaker) resumeSharedACPSession(d handshakeDeps, sharedP
 	var handle *SessionHandle
 	var err error
 
+	// Combined resume budget (mitto-1ut): the resume path may issue a
+	// session/load PROBE followed by a session/new FALLBACK. Both are gated on
+	// the shared process's cold MCP-init window, so without a shared ceiling each
+	// derives its own full ~240s budget and they STACK to ~480s (an ~8min wedge)
+	// when the persisted acp_session_id is stale. Derive ONE wall-clock deadline
+	// for the whole resume operation from RecommendedLoadTimeout (the cold MCP-init
+	// budget; 0 when the process is already warm) and cap BOTH the load probe and
+	// the new-session fallback by it. Net worst case ≈ one budget, not two.
+	var handshakeDeadline time.Time
+	if acpSessionID != "" {
+		if rec := sharedProcess.RecommendedLoadTimeout(len(mcpServers) > 0); rec > 0 {
+			handshakeDeadline = time.Now().Add(rec)
+		}
+	}
+
 	if acpSessionID != "" {
 		supportsResume := caps.SessionCapabilities.Resume != nil
 		supportsLoad := caps.LoadSession
@@ -349,12 +374,19 @@ func (c sharedSessionHandshaker) resumeSharedACPSession(d handshakeDeps, sharedP
 		if handle == nil && supportsLoad {
 			client := d.hsGetACPClient()
 			client.SetLoadingSession(true)
-			// Outer load budget defaults to 30s; SharedACPProcess widens this for
-			// cold sessions with MCP servers so the outer timeout does not truncate
-			// the extended MCP-init budget (mitto-8ul.1).
-			loadTimeout := 30 * time.Second
-			if rec := sharedProcess.RecommendedLoadTimeout(len(mcpServers) > 0); rec > loadTimeout {
-				loadTimeout = rec
+			// Cap the load PROBE (mitto-1ut). A stale/unknown acp_session_id makes
+			// LoadSession dead-wait the agent's full cold MCP-init budget, so probe
+			// with a short timeout (staleLoadProbeTimeout, default 45s) and fail fast
+			// to the session/new fallback. Never exceed the shared handshake deadline:
+			// use whichever is sooner so the probe + fallback stay within one budget.
+			loadTimeout := staleLoadProbeTimeout
+			if !handshakeDeadline.IsZero() {
+				if remaining := time.Until(handshakeDeadline); remaining < loadTimeout {
+					loadTimeout = remaining
+				}
+			}
+			if loadTimeout <= 0 {
+				loadTimeout = time.Millisecond // degenerate: budget already spent
 			}
 			loadCtx, loadCancel := context.WithTimeout(d.hsColdTraceCtx(d.hsSessionCtx()), loadTimeout)
 			loadStart := time.Now()
@@ -403,6 +435,16 @@ func (c sharedSessionHandshaker) resumeSharedACPSession(d handshakeDeps, sharedP
 	if handle == nil {
 		d.hsSetResumeMethod("new")
 		rpcCtx, rpcCancel := c.creationRPCCtx(d)
+		// Cap the session/new FALLBACK by the shared resume deadline (mitto-1ut) so
+		// the load probe + this fallback stay within ONE cold budget instead of
+		// stacking two. handshakeDeadline is zero on the warm path and on the
+		// non-resume (acpSessionID=="") path, where NewSession derives its own
+		// budget as before.
+		if !handshakeDeadline.IsZero() {
+			var deadlineCancel context.CancelFunc
+			rpcCtx, deadlineCancel = context.WithDeadline(rpcCtx, handshakeDeadline)
+			defer deadlineCancel()
+		}
 		newStart := time.Now()
 		handle, err = sharedProcess.NewSession(rpcCtx, workingDir, mcpServers)
 		rpcCancel()
