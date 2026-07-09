@@ -4,6 +4,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"testing"
@@ -1519,6 +1520,223 @@ func TestBadgeClickActionConfig_Defaults(t *testing.T) {
 	}
 	if emptyConfig.GetCommand() != "open ${MITTO_WORKING_DIR}" {
 		t.Errorf("empty config should return default command, got %q", emptyConfig.GetCommand())
+	}
+}
+
+func TestParse_UIOpenIn(t *testing.T) {
+	yaml := `
+acp:
+  - claude:
+      command: "claude"
+ui:
+  mac:
+    open_in:
+      targets:
+        - id: finder
+          enabled: true
+          command: "code ${MITTO_WORKING_DIR}"
+        - id: my-editor
+          label: "My Editor"
+          command: "my-editor ${MITTO_WORKING_DIR}"
+`
+	cfg, err := Parse([]byte(yaml))
+	if err != nil {
+		t.Fatalf("Parse failed: %v", err)
+	}
+
+	if cfg.UI.Mac == nil {
+		t.Fatal("UI.Mac is nil")
+	}
+	if cfg.UI.Mac.OpenIn == nil {
+		t.Fatal("UI.Mac.OpenIn is nil")
+	}
+	if got := len(cfg.UI.Mac.OpenIn.Targets); got != 2 {
+		t.Fatalf("UI.Mac.OpenIn.Targets length = %d, want 2", got)
+	}
+
+	first := cfg.UI.Mac.OpenIn.Targets[0]
+	if first.ID != "finder" {
+		t.Errorf("Targets[0].ID = %q, want %q", first.ID, "finder")
+	}
+	if first.Enabled == nil || !*first.Enabled {
+		t.Errorf("Targets[0].Enabled = %v, want *true", first.Enabled)
+	}
+	if first.Command != "code ${MITTO_WORKING_DIR}" {
+		t.Errorf("Targets[0].Command = %q", first.Command)
+	}
+
+	second := cfg.UI.Mac.OpenIn.Targets[1]
+	if second.ID != "my-editor" {
+		t.Errorf("Targets[1].ID = %q, want %q", second.ID, "my-editor")
+	}
+	if second.Label != "My Editor" {
+		t.Errorf("Targets[1].Label = %q", second.Label)
+	}
+	if second.Command != "my-editor ${MITTO_WORKING_DIR}" {
+		t.Errorf("Targets[1].Command = %q", second.Command)
+	}
+}
+
+func TestOpenTarget_GetEnabled_Defaults(t *testing.T) {
+	boolPtr := func(b bool) *bool { return &b }
+
+	builtinUnset := &OpenTarget{ID: "finder", Builtin: true}
+	if !builtinUnset.GetEnabled() {
+		t.Error("builtin target with nil Enabled should default to true")
+	}
+
+	userUnset := &OpenTarget{ID: "custom", Builtin: false}
+	if userUnset.GetEnabled() {
+		t.Error("user-defined target with nil Enabled should default to false")
+	}
+
+	explicitFalse := &OpenTarget{ID: "finder", Builtin: true, Enabled: boolPtr(false)}
+	if explicitFalse.GetEnabled() {
+		t.Error("explicit Enabled=false should return false even for builtin")
+	}
+
+	explicitTrue := &OpenTarget{ID: "custom", Builtin: false, Enabled: boolPtr(true)}
+	if !explicitTrue.GetEnabled() {
+		t.Error("explicit Enabled=true should return true even for user target")
+	}
+}
+
+func TestDefaultOpenTargets_MacOS(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skipf("skipping darwin-specific defaults on %s", runtime.GOOS)
+	}
+	targets := DefaultOpenTargets()
+	if len(targets) != 7 {
+		t.Fatalf("DefaultOpenTargets length = %d, want 7", len(targets))
+	}
+	if targets[0].ID != "finder" {
+		t.Errorf("targets[0].ID = %q, want %q", targets[0].ID, "finder")
+	}
+	if targets[1].ID != "terminal" {
+		t.Errorf("targets[1].ID = %q, want %q", targets[1].ID, "terminal")
+	}
+	enabledByDefault := map[string]bool{
+		"finder":   true,
+		"terminal": true,
+		"iterm":    false,
+		"vscode":   false,
+		"cursor":   false,
+		"xcode":    false,
+		"goland":   false,
+	}
+	for _, tgt := range targets {
+		if !tgt.Builtin {
+			t.Errorf("target %q should have Builtin=true", tgt.ID)
+		}
+		want, ok := enabledByDefault[tgt.ID]
+		if !ok {
+			t.Errorf("unexpected default target id %q", tgt.ID)
+			continue
+		}
+		if got := tgt.GetEnabled(); got != want {
+			t.Errorf("target %q GetEnabled() = %v, want %v", tgt.ID, got, want)
+		}
+	}
+}
+
+func TestEffectiveOpenTargets_EmptyFallsBackToLegacy(t *testing.T) {
+	boolPtr := func(b bool) *bool { return &b }
+	c := &MacUIConfig{
+		BadgeClickAction: &BadgeClickActionConfig{
+			Command: "code ${MITTO_WORKING_DIR}",
+		},
+		TerminalAction: &TerminalActionConfig{
+			Enabled: boolPtr(false),
+		},
+	}
+	got := c.EffectiveOpenTargets()
+	if len(got) != 2 {
+		t.Fatalf("EffectiveOpenTargets length = %d, want 2", len(got))
+	}
+	if got[0].ID != "finder" {
+		t.Errorf("got[0].ID = %q, want %q", got[0].ID, "finder")
+	}
+	if got[0].Command != "code ${MITTO_WORKING_DIR}" {
+		t.Errorf("got[0].Command = %q", got[0].Command)
+	}
+	if got[1].ID != "terminal" {
+		t.Errorf("got[1].ID = %q, want %q", got[1].ID, "terminal")
+	}
+	if got[1].GetEnabled() {
+		t.Errorf("got[1].GetEnabled() = true, want false")
+	}
+}
+
+func TestEffectiveOpenTargets_UserOverridesMergeById(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skipf("skipping darwin-specific merge test on %s", runtime.GOOS)
+	}
+	boolPtr := func(b bool) *bool { return &b }
+	c := &MacUIConfig{
+		OpenIn: &OpenInConfig{
+			Targets: []OpenTarget{
+				{ID: "vscode", Enabled: boolPtr(true)},
+				{ID: "my-editor", Label: "My Editor", Command: "my-editor ${MITTO_WORKING_DIR}"},
+			},
+		},
+	}
+	got := c.EffectiveOpenTargets()
+	defaults := DefaultOpenTargets()
+	if len(got) != len(defaults)+1 {
+		t.Fatalf("EffectiveOpenTargets length = %d, want %d", len(got), len(defaults)+1)
+	}
+	// Builtin order preserved.
+	for i, d := range defaults {
+		if got[i].ID != d.ID {
+			t.Errorf("got[%d].ID = %q, want %q", i, got[i].ID, d.ID)
+		}
+	}
+	// vscode override applied.
+	var vscode *OpenTarget
+	for i := range got {
+		if got[i].ID == "vscode" {
+			vscode = &got[i]
+			break
+		}
+	}
+	if vscode == nil {
+		t.Fatal("vscode entry missing from merged result")
+	}
+	if !vscode.GetEnabled() {
+		t.Error("vscode should be enabled after user override")
+	}
+	if !vscode.Builtin {
+		t.Error("vscode should still be Builtin after override")
+	}
+	// my-editor appended last, Builtin=false.
+	last := got[len(got)-1]
+	if last.ID != "my-editor" {
+		t.Errorf("last.ID = %q, want %q", last.ID, "my-editor")
+	}
+	if last.Builtin {
+		t.Error("user-defined target must not be Builtin")
+	}
+	// No duplicates.
+	seen := make(map[string]int)
+	for _, tgt := range got {
+		seen[tgt.ID]++
+	}
+	for id, n := range seen {
+		if n > 1 {
+			t.Errorf("duplicate id %q (count=%d)", id, n)
+		}
+	}
+}
+
+func TestEffectiveOpenTargets_NilReceiver(t *testing.T) {
+	var c *MacUIConfig
+	got := c.EffectiveOpenTargets()
+	want := DefaultOpenTargets()
+	if len(got) != len(want) {
+		t.Fatalf("nil receiver length = %d, want %d", len(got), len(want))
+	}
+	if len(want) > 0 && got[0].ID != want[0].ID {
+		t.Errorf("got[0].ID = %q, want %q", got[0].ID, want[0].ID)
 	}
 }
 
