@@ -209,6 +209,17 @@ export function useBeadsIntegration({
     [activeSessionId],
   );
 
+  // Close the standalone issue overlay (BeadsIssueView) if it is open. Called
+  // after a beads prompt successfully starts a new conversation so the overlay
+  // does not remain docked on top of the newly-activated conversation. The
+  // return refs are cleared so a later normal close of a freshly-opened overlay
+  // does not switch back to a stale origin session.
+  const dismissBeadsIssueOverlay = useCallback(() => {
+    beadsReturnSessionRef.current = null;
+    beadsReturnOpenPropertiesRef.current = false;
+    setBeadsIssueOpen(false);
+  }, []);
+
   // Run a beads prompt against a specific issue: create a new conversation in
   // the beads workspace, then seed it with the prompt text and a type-driven
   // arguments map built from the prompt's declared parameters. The backend's
@@ -272,6 +283,7 @@ export function useBeadsIntegration({
               return;
             }
             setMainView("conversation");
+            dismissBeadsIssueOverlay();
             showToast({
               style: "success",
               title: `Started loop "${prompt.name}" for ${issue.id}`,
@@ -314,6 +326,7 @@ export function useBeadsIntegration({
             return;
           }
           setMainView("conversation");
+          dismissBeadsIssueOverlay();
           showToast({
             style: "success",
             title: result.reused
@@ -344,8 +357,11 @@ export function useBeadsIntegration({
       }
 
       // startConversationWithPrompt creates + activates the new conversation;
-      // switch the main view back from the beads panel so it is shown.
+      // switch the main view back from the beads panel so it is shown, and
+      // dismiss the standalone issue overlay if one was open so it doesn't
+      // linger on top of the newly-activated conversation.
       setMainView("conversation");
+      dismissBeadsIssueOverlay();
       showToast({
         style: "success",
         title: result.reused
@@ -361,6 +377,7 @@ export function useBeadsIntegration({
       showToast,
       onOpenLoopDialog,
       onOpenPromptParamDialog,
+      dismissBeadsIssueOverlay,
     ],
   );
 
@@ -401,6 +418,7 @@ export function useBeadsIntegration({
             return;
           }
           setMainView("conversation");
+          dismissBeadsIssueOverlay();
           showToast({
             style: "success",
             title: `Started loop "${prompt.name}"`,
@@ -426,8 +444,11 @@ export function useBeadsIntegration({
       }
 
       // startConversationWithPrompt creates + activates the new conversation;
-      // switch the main view back from the beads panel so it is shown.
+      // switch the main view back from the beads panel so it is shown, and
+      // dismiss the standalone issue overlay if one was open so it doesn't
+      // linger on top of the newly-activated conversation.
       setMainView("conversation");
+      dismissBeadsIssueOverlay();
       showToast({
         style: "success",
         title: result.reused
@@ -442,6 +463,7 @@ export function useBeadsIntegration({
       startConversationWithPrompt,
       showToast,
       onOpenLoopDialog,
+      dismissBeadsIssueOverlay,
     ],
   );
 
