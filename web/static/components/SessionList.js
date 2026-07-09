@@ -24,6 +24,7 @@ import {
   setLastSessionForGroup,
   getDensity,
   setDensity,
+  isNativeApp,
 } from "../utils/index.js";
 import {
   computeAllSessions,
@@ -1587,8 +1588,11 @@ export function SessionList({
                 // Collapsed "Open ▸" submenu (mitto-bbi.4): one entry per enabled
                 // OpenTarget from ui.mac.open_in.targets. Hidden entirely when the
                 // filtered list is empty — matches previous behaviour of hiding
-                // when both legacy toggles were off.
+                // when both legacy toggles were off. Native-only (mitto-k0l): in
+                // a plain browser context the commands cannot execute locally, so
+                // don't advertise them.
                 if (!groupContextMenu.workingDir) return [];
+                if (!isNativeApp()) return [];
                 const enabledTargets = (openInTargets || []).filter(
                   (t) => t && t.enabled === true,
                 );

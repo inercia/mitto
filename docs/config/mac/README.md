@@ -218,6 +218,9 @@ an **Open ▸** submenu whose entries come directly from this list; clicking an 
 runs its configured shell command with `${MITTO_WORKING_DIR}` substituted for the
 folder's absolute path.
 
+> The **Open ▸** submenu appears only when Mitto is running as the native macOS
+> app (Mitto.app), not in a regular browser session against the web server.
+
 ### Configuring via Settings Dialog
 
 1. Open the Settings dialog (gear icon in sidebar)

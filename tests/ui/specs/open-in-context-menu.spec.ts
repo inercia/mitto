@@ -94,8 +94,26 @@ async function patchOpenInTargets(request, apiUrl, targets) {
   expect(postResp.ok()).toBeTruthy();
 }
 
+// Simulate the native macOS app so isNativeApp() (utils/native.js) returns
+// true. isNativeApp() probes typeof window.mittoPickFolder === "function", so
+// defining the property before page load flips the check.
+//
+// This is applied per-test (NOT in beforeEach) because the last test in the
+// describe block verifies the non-native path and must navigate WITHOUT the
+// stub — otherwise addInitScript in beforeEach would run on every navigation
+// including the non-native case.
+async function stubNativeApp(page) {
+  await page.addInitScript(() => {
+    Object.defineProperty(window, "mittoPickFolder", {
+      configurable: true,
+      get: () => () => {},
+      set: () => {},
+    });
+  });
+}
+
 testWithCleanup.describe("Open In folder context-menu (mitto-bbi.5)", () => {
-  testWithCleanup.beforeEach(async ({ page, request, apiUrl, helpers }) => {
+  testWithCleanup.beforeEach(async ({ page, request, apiUrl }) => {
     // Ensure the project-alpha workspace exists so its folder header renders.
     await request.post(apiUrl("/api/workspaces"), {
       data: { acp_server: AGENT_NAME, working_dir: WORKSPACE_ALPHA },
@@ -111,11 +129,9 @@ testWithCleanup.describe("Open In folder context-menu (mitto-bbi.5)", () => {
     expect(createResp.ok()).toBeTruthy();
 
     // Install the Open In fixture BEFORE the initial page load so the
-    // frontend's fetchConfig() on mount reads the patched targets. Reload
-    // once more just to be safe if the app was navigated to earlier.
+    // frontend's fetchConfig() on mount reads the patched targets. Individual
+    // tests handle the native-app stub and navigation themselves.
     await patchOpenInTargets(request, apiUrl, FIXTURE_OPEN_IN_TARGETS);
-
-    await helpers.navigateAndWait(page);
   });
 
   async function openGroupMenu(page, timeouts) {
@@ -133,7 +149,10 @@ testWithCleanup.describe("Open In folder context-menu (mitto-bbi.5)", () => {
 
   testWithCleanup(
     "shows only enabled Open targets in configured order, hides disabled Cursor",
-    async ({ page, timeouts }) => {
+    async ({ page, timeouts, helpers }) => {
+      await stubNativeApp(page);
+      await helpers.navigateAndWait(page);
+
       const menu = await openGroupMenu(page, timeouts);
 
       // "Open" is the collapsed submenu entry (mitto-bbi.4). It must be
@@ -168,7 +187,10 @@ testWithCleanup.describe("Open In folder context-menu (mitto-bbi.5)", () => {
 
   testWithCleanup(
     "clicking Finder POSTs {action:'open', target_id:'finder'} to /api/badge-click",
-    async ({ page, timeouts, apiUrl }) => {
+    async ({ page, timeouts, apiUrl, helpers }) => {
+      await stubNativeApp(page);
+      await helpers.navigateAndWait(page);
+
       // apiUrl returns the prefixed path (e.g. "/mitto/api/badge-click"); the
       // browser resolves that to an absolute URL, so match by pathname suffix.
       const badgeClickPath = apiUrl("/api/badge-click");
@@ -226,6 +248,23 @@ testWithCleanup.describe("Open In folder context-menu (mitto-bbi.5)", () => {
       await expect(page.locator(MENU)).toHaveCount(0, {
         timeout: timeouts.shortAction,
       });
+    },
+  );
+
+  testWithCleanup(
+    "hides the Open submenu entirely in a non-native (browser) context (mitto-k0l)",
+    async ({ page, timeouts, helpers }) => {
+      // NO stubNativeApp() here: window.mittoPickFolder stays undefined so
+      // isNativeApp() returns false, and SessionList.js must omit the entire
+      // "Open ▸" submenu block from the folder context menu.
+      await helpers.navigateAndWait(page);
+
+      const menu = await openGroupMenu(page, timeouts);
+
+      // The rest of the folder context menu (Rename, Delete, ...) still
+      // renders, but the "Open" collapsed entry must be absent.
+      const openItem = menu.locator("button").filter({ hasText: /^Open$/ });
+      await expect(openItem).toHaveCount(0);
     },
   );
 });
