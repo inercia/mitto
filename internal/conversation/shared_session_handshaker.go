@@ -347,6 +347,12 @@ func (c sharedSessionHandshaker) resumeSharedACPSession(d handshakeDeps, sharedP
 			handshakeDeadline = time.Now().Add(rec)
 		}
 	}
+	// probeTimedOut records whether the load PROBE below failed by DEADLINE (the
+	// process is genuinely cold / mid-MCP-init) rather than by a fast JSON-RPC
+	// -32602 "session not found" (a stale id). It gates whether the shared
+	// handshake deadline is applied to the session/new FALLBACK — see the fallback
+	// block for the rationale (mitto-1ut starvation fix).
+	var probeTimedOut bool
 
 	if acpSessionID != "" {
 		supportsResume := caps.SessionCapabilities.Resume != nil
@@ -413,6 +419,13 @@ func (c sharedSessionHandshaker) resumeSharedACPSession(d handshakeDeps, sharedP
 				logFields := []any{"acp_session_id", acpSessionID, "error", err, "method", "load"}
 				if loadCtx.Err() == context.DeadlineExceeded {
 					logFields = append(logFields, "timeout", true)
+					// The probe hit its cap rather than returning -32602: the process
+					// is genuinely cold / mid-MCP-init, not the id stale. Remember this
+					// so the session/new fallback below gets a REAL budget instead of the
+					// truncated remainder of the shared handshake deadline (mitto-1ut
+					// starvation fix). A stale (-32602) probe fails in ~ms and leaves
+					// probeTimedOut false, so the shared cap still prevents stacking there.
+					probeTimedOut = true
 				}
 				if staleSession {
 					logFields = append(logFields, "stale_session", true)
@@ -449,7 +462,19 @@ func (c sharedSessionHandshaker) resumeSharedACPSession(d handshakeDeps, sharedP
 		// stacking two. handshakeDeadline is zero on the warm path and on the
 		// non-resume (acpSessionID=="") path, where NewSession derives its own
 		// budget as before.
-		if !handshakeDeadline.IsZero() {
+		//
+		// EXCEPTION (mitto-1ut starvation fix): when the load probe FAILED BY DEADLINE
+		// (probeTimedOut) rather than a fast -32602, the process is proven genuinely
+		// cold. Applying the shared cap would hand NewSession only the remainder
+		// (handshakeDeadline - ~45s probe ≈ 195s) — LESS than a single MCPInitTimeout
+		// attempt (240s) — so attempt 1 is truncated and attempt 2 is aborted with
+		// "context cancelled before attempt 2: context deadline exceeded", GUARANTEEING
+		// failure on exactly the cold/contended case we need to survive. In that case
+		// release the shared cap and let NewSession derive its OWN bounded budget
+		// (coldMCPBudget → MCPInitTimeout, itself capped internally), matching the warm
+		// path. This does not reintroduce the stale-id stacking mitto-1ut fixed: a stale
+		// probe returns -32602 in ~ms (probeTimedOut=false) and keeps the shared cap.
+		if !handshakeDeadline.IsZero() && !probeTimedOut {
 			var deadlineCancel context.CancelFunc
 			rpcCtx, deadlineCancel = context.WithDeadline(rpcCtx, handshakeDeadline)
 			defer deadlineCancel()

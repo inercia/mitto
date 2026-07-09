@@ -1500,6 +1500,18 @@ func (p *SharedACPProcess) NewSession(ctx context.Context, cwd string, mcpServer
 	for attempt := 1; attempt <= effectiveMaxAttempts; attempt++ {
 		// Honour caller cancellation / total budget before each attempt.
 		if budgetCtx.Err() != nil {
+			// Observability (mitto-1ut): distinguish the diagnosable "caller budget
+			// exhausted before we could even start / retry" outcome from a plain
+			// cancellation. When the caller passed a deadline (e.g. the resume path's
+			// shared handshake deadline) that was already spent by the time we reached
+			// this attempt boundary — the classic "context cancelled before attempt 2"
+			// wedge symptom — say so explicitly and report how much wall-clock elapsed,
+			// so logs point at the truncated budget rather than a raw deadline.
+			if attempt > 1 && errors.Is(budgetCtx.Err(), context.DeadlineExceeded) {
+				return nil, fmt.Errorf(
+					"session/new: shared handshake budget exhausted before attempt %d (%dms elapsed, per-attempt budget %dms, extended_mcp=%t); no budget left to retry: %w",
+					attempt, time.Since(totalStart).Milliseconds(), perAttemptBudget.Milliseconds(), extendedBudget, budgetCtx.Err())
+			}
 			return nil, fmt.Errorf("session/new: context cancelled before attempt %d: %w", attempt, budgetCtx.Err())
 		}
 

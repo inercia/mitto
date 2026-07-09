@@ -40,6 +40,13 @@ type fakeSharedProcess struct {
 	loadCtxHasDeadline     bool
 	newCtxDeadline         time.Time
 	newCtxHasDeadline      bool
+
+	// loadBlocksUntilCtxDone, when true, makes LoadSession block until its ctx is
+	// cancelled/expires and then return context.DeadlineExceeded — simulating a
+	// probe against a genuinely COLD process that hits its cap rather than
+	// returning a fast -32602. Used to exercise the mitto-1ut starvation fix where
+	// a timed-out probe must NOT truncate the session/new fallback's budget.
+	loadBlocksUntilCtxDone bool
 }
 
 func newFakeSharedProcess() *fakeSharedProcess {
@@ -61,9 +68,16 @@ func (f *fakeSharedProcess) NewSession(ctx context.Context, cwd string, _ []acp.
 }
 func (f *fakeSharedProcess) LoadSession(ctx context.Context, acpSessionID, _ string, _ []acp.McpServer) (*SessionHandle, error) {
 	f.mu.Lock()
-	defer f.mu.Unlock()
 	f.loadSessionCalls = append(f.loadSessionCalls, acpSessionID)
 	f.loadCtxDeadline, f.loadCtxHasDeadline = ctx.Deadline()
+	blockUntilDone := f.loadBlocksUntilCtxDone
+	f.mu.Unlock()
+	if blockUntilDone {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	if f.loadSessionErr != nil || f.loadSessionHandle != nil {
 		return f.loadSessionHandle, f.loadSessionErr
 	}
@@ -725,5 +739,50 @@ func TestHandshaker_ResumeSharedACPSession_WarmBudget_ProbeCappedNoNewDeadline(t
 	// Warm: resume path imposes no shared deadline on the NewSession fallback.
 	if fp.newCtxHasDeadline {
 		t.Fatalf("expected no resume-imposed deadline on NewSession when warm, got deadline in %v", fp.newCtxDeadline.Sub(start))
+	}
+}
+
+// TestHandshaker_ResumeSharedACPSession_ColdProbeTimeout_NoNewDeadline is the
+// mitto-1ut STARVATION fix: on a cold shared process (RecommendedLoadTimeout > 0)
+// whose load PROBE fails by DEADLINE (the process is genuinely cold / mid-MCP-init,
+// NOT a stale id returning a fast -32602), the session/new FALLBACK must NOT inherit
+// the truncated remainder of the shared handshake deadline. Otherwise NewSession gets
+// only (budget - ~probe) < one MCPInitTimeout attempt, attempt 1 is truncated and
+// attempt 2 is aborted with "context cancelled before attempt 2" — guaranteeing
+// failure on exactly the cold/contended case. The fix releases the shared cap when the
+// probe timed out, letting NewSession derive its own bounded budget (no resume-imposed
+// deadline). Contrast with ColdBudget_DoesNotStack, where the probe fails FAST (-32602)
+// and the shared cap IS retained to prevent stacking.
+func TestHandshaker_ResumeSharedACPSession_ColdProbeTimeout_NoNewDeadline(t *testing.T) {
+	c := sharedSessionHandshaker{}
+	d := newFakeHandshakeDeps()
+	fp := newFakeSharedProcess()
+	fp.caps = &acp.AgentCapabilities{LoadSession: true}
+	// Small cold budget so the capped probe expires quickly in the test; the probe
+	// blocks until its ctx deadline and returns context.DeadlineExceeded (a TIMEOUT,
+	// not a -32602), which must set probeTimedOut and release the shared cap.
+	fp.recommendedLoadTimeout = 150 * time.Millisecond
+	fp.loadBlocksUntilCtxDone = true
+
+	if err := c.resumeSharedACPSession(d, fp, "cwd", "stale-acp-id"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// The probe must have run (and timed out).
+	if len(fp.loadSessionCalls) != 1 {
+		t.Fatalf("expected exactly 1 LoadSession probe, got %d", len(fp.loadSessionCalls))
+	}
+	if !fp.loadCtxHasDeadline {
+		t.Fatal("expected LoadSession probe to receive a capped deadline")
+	}
+	// The fallback NewSession must have been called...
+	if len(fp.newSessionCalls) != 1 {
+		t.Fatalf("expected exactly 1 NewSession fallback, got %d", len(fp.newSessionCalls))
+	}
+	// ...and it must NOT carry a resume-imposed (truncated) deadline: the timed-out
+	// probe proves the process is cold, so NewSession derives its OWN budget instead
+	// of the shared handshakeDeadline remainder (mitto-1ut starvation fix).
+	if fp.newCtxHasDeadline {
+		t.Fatalf("expected NO resume-imposed deadline on NewSession after a TIMED-OUT probe (mitto-1ut starvation fix), but got one")
 	}
 }

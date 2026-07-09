@@ -81,13 +81,12 @@ Config: `session.auto_archive_inactive_after: "1w"` (in `checkAutoArchive()`). E
 
 Loop conversations auto-archived due to broken ACP (`ArchiveReasonACPFailures`) are retried automatically by `LoopRunner.checkAutoUnarchiveRecovery()`, called from `RunOnce()` right after `checkAutoArchive()`.
 
-- **Eligibility** (no new boolean): `meta.Archived == true`, `meta.ArchiveReason == session.ArchiveReasonACPFailures`, and a loop config exists (`store.Loop(id).Get()` succeeds). Excludes `ArchiveReasonManual`/`ArchiveReasonInactivity` and non-loop ACP-failure archives.
-- **Retry cadence**: 1h per conversation (`DefaultAutoUnarchiveRetryInterval`), anchored on `Metadata.AutoUnarchiveLastAttemptAt` if set, else `ArchivedAt`. Due when `now.Sub(anchor) >= retryInterval`. Retries indefinitely (no cap) — a session usually gets re-archived by the existing resume-failure path if ACP is still down, restarting the cadence from the new `ArchivedAt`.
-- **Anti-storm stagger**: 10m global minimum gap (`DefaultAutoUnarchiveStaggerInterval`) between attempts, tracked in-memory (`LoopRunner.lastAutoUnarchiveAttempt`, guarded by `r.mu`). Each poll attempts at most the single most-overdue eligible session. **Never `time.Sleep`** in this path — it would stall loop delivery for the whole poll. The in-memory stagger resets on restart (acceptable, since cadence itself is restart-durable via persisted timestamps).
-- **On-by-default**: `LoopRunner.autoUnarchiveEnabled` defaults to `true`; configured via `SetAutoUnarchiveRecovery(enabled, retryInterval, stagger)` (server.go wires the two defaults above; a duration `<= 0` keeps the current value, letting tests override just one).
-- **Callback** (`LoopRunner.onAutoUnarchive`, wired in `server.go`) performs the same steps as manual unarchive: clear `Archived`/`ArchivedAt`/`ArchiveReason`/`AutoUnarchiveLastAttemptAt`, call `SessionManager.ResumeSession()`, broadcast `acp_started`/`acp_start_failed` + `session_archived(false)`, then reuse `handlers.Handlers.RestoreLoopOnUnarchive()` (exported for this purpose) to re-enable the loop.
-- **Cadence persistence**: `attemptAutoUnarchive()` persists `AutoUnarchiveLastAttemptAt = now` via `store.UpdateMetadata` (outside `r.mu`, mirroring `checkAutoArchive`) *before* invoking the callback, so the attempt survives a crash mid-resume. Cleared only when the callback returns `nil`; retained on error so the next poll retries after another full interval.
-- Cleared on any successful unarchive, manual or auto (`session_update.go`'s unarchive branch also resets it, so a user takeover resets the cadence).
+- **Eligibility**: `meta.Archived && meta.ArchiveReason == ArchiveReasonACPFailures` + loop config exists. Excludes `Manual`/`Inactivity` and non-loop ACP-failure archives.
+- **Retry cadence**: 1h per conversation (`DefaultAutoUnarchiveRetryInterval`), anchored on `Metadata.AutoUnarchiveLastAttemptAt` else `ArchivedAt`. Retries indefinitely — the resume-failure path re-archives on continued outage, restarting cadence from the new `ArchivedAt`.
+- **Anti-storm stagger**: 10m global minimum gap (`DefaultAutoUnarchiveStaggerInterval`), tracked in-memory (`LoopRunner.lastAutoUnarchiveAttempt`, `r.mu`); each poll attempts only the most-overdue eligible session. **Never `time.Sleep`** in this path — it stalls loop delivery.
+- **On-by-default**: `autoUnarchiveEnabled=true`; `SetAutoUnarchiveRecovery(enabled, retryInterval, stagger)` — duration `<= 0` keeps current value (lets tests override one).
+- **Callback** (`onAutoUnarchive`, wired in `server.go`): mirrors manual unarchive — clear archive fields → `ResumeSession()` → broadcast → `handlers.RestoreLoopOnUnarchive()`.
+- **Cadence persistence**: `attemptAutoUnarchive()` persists `AutoUnarchiveLastAttemptAt` (outside `r.mu`) *before* the callback so it survives a crash; cleared only on `nil` return. Also cleared on any successful manual unarchive (`session_update.go`).
 
 ## ACP Process Crash Recovery
 
@@ -100,6 +99,10 @@ Death detection (three layers): OS polling (~2s), `conn.Done()` EOF (~seconds), 
 ## Deferred Handshake Retry
 
 When ACP handshake times out transiently, `BackgroundSession.InitializeWithACP()` defers retry up to 3 attempts with exponential backoff. The error event is persisted in the session event log (viewable in UI). Retries happen deferred in a separate goroutine to avoid blocking session creation or WebSocket initialization. After 3 attempts, the session enters error state with guidance.
+
+## Shared Handshake Budget: Stale vs. Cold-Timeout (anti-regression)
+
+`internal/conversation/shared_session_handshaker.go` bounds concurrent `session/load` + `session/new` handshakes with **one shared deadline** to prevent stacking (`mitto-1ut`). The budget cap MUST be **released** for the `session/new` fallback when the `session/load` probe **timed out** (process genuinely cold) — otherwise `session/new` inherits only `budget − probeTimeout` (e.g. `240s − 45s = 195s`), less than a single `MCPInitTimeout` attempt (240s), guaranteeing starvation. Only cap the fallback when the probe **fast-failed** (JSON-RPC `-32602` stale). Track this via `probeTimedOut`. Test seam: `loadBlocksUntilCtxDone` in `fakeSharedProcess` (`TestHandshaker_ResumeSharedACPSession_ColdProbeTimeout_NoNewDeadline`). Pre-attempt cancellations in `acpproc/shared_acp_process.go` emit a self-diagnosing error (elapsed vs. per-attempt budget) instead of a raw deadline.
 
 ## MCP Server Lifecycle
 
