@@ -647,6 +647,13 @@ func (sm *SessionManager) IsFromCLI() bool {
 	return sm.wsRegistry.IsFromCLI()
 }
 
+// WorkspaceRegistry returns the underlying workspace registry for read-only
+// diagnostics (e.g. startup duplication lint). Do not mutate registry state
+// through this accessor.
+func (sm *SessionManager) WorkspaceRegistry() *WorkspaceRegistry {
+	return sm.wsRegistry
+}
+
 // SetStore sets the session store for persistence.
 func (sm *SessionManager) SetStore(store *session.Store) {
 	sm.mu.Lock()
