@@ -75,6 +75,9 @@ type ProcessManager interface {
 	StopGC()
 	Close()
 	ProcessCount() int
+	// ColdProcessCount returns the number of active shared processes whose
+	// MCP-init window is still open. Used for resume-storm diagnostics (mitto-7o2).
+	ColdProcessCount() int
 }
 
 // EventsBroadcaster abstracts the global events manager (web.GlobalEventsManager)

@@ -857,6 +857,22 @@ func (m *ACPProcessManager) ProcessCount() int {
 	return len(m.processes)
 }
 
+// ColdProcessCount returns the number of active shared processes whose MCP-init
+// window has NOT yet closed (MCPInitDone() == false). Used by SessionManager to
+// enrich the resume-storm log with the count of cold processes that concurrent
+// handshakes are competing for (mitto-7o2).
+func (m *ACPProcessManager) ColdProcessCount() int {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	n := 0
+	for _, p := range m.processes {
+		if p != nil && !p.MCPInitDone() {
+			n++
+		}
+	}
+	return n
+}
+
 // ============================================================================
 // Auxiliary Session Management (implements auxiliary.ProcessProvider)
 // ============================================================================

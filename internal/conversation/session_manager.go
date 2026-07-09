@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"sort"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"path/filepath"
@@ -183,7 +184,29 @@ type SessionManager struct {
 	// startup work and releases it when done.  Secondary goroutines that coalesce onto
 	// the same session via pendingResumes never need to acquire the semaphore.
 	resumeSemaphore chan struct{}
+
+	// resumeInFlight counts callers CURRENTLY holding a resumeSemaphore permit.
+	// resumeQueued counts callers CURRENTLY blocked waiting to acquire one.
+	// Both are touched ONLY on the slow path that actually reaches the semaphore;
+	// the pendingResumes fast-coalesce return bypasses the semaphore and MUST NOT
+	// touch these counters (mitto-7o2).
+	resumeInFlight atomic.Int32
+	resumeQueued   atomic.Int32
+
+	// resumeStormLogMu guards lastResumeStormLog. Kept separate from sm.mu so the
+	// rate-limiter never contends with the manager's main lock (mitto-7o2).
+	resumeStormLogMu   sync.Mutex
+	lastResumeStormLog time.Time
 }
+
+// resumeStormLogInterval is the minimum wall-clock gap between successive
+// "resume storm" WARN logs. Set high enough that a burst of concurrent
+// handshakes still produces at most one line per event (mitto-7o2).
+const resumeStormLogInterval = 10 * time.Second
+
+// resumeStormWaitThresholdMs is the semaphore-wait threshold (in milliseconds)
+// above which a single acquire counts as a storm sample (mitto-7o2).
+const resumeStormWaitThresholdMs = 2000
 
 // NewSessionManager creates a new session manager with a single workspace configuration.
 // This is used when running from CLI with explicit --acp-command and --acp-server flags.
@@ -1667,6 +1690,51 @@ func (sm *SessionManager) GetOrCreateSession(sessionID, workingDir string) (*Bac
 	return bs, true, nil
 }
 
+// evaluateResumeStorm returns true when the current resume-semaphore state
+// looks like a storm worth logging: either a single acquire waited noticeably
+// (>= resumeStormWaitThresholdMs) or callers are backed up past the semaphore
+// capacity. Pure function — no side effects, no locks — so it is trivially
+// unit-testable (mitto-7o2).
+func evaluateResumeStorm(queued, inFlight, capacity, coldCount int, waitMS int64) bool {
+	_ = inFlight
+	_ = coldCount
+	if waitMS >= resumeStormWaitThresholdMs {
+		return true
+	}
+	if capacity > 0 && queued > capacity {
+		return true
+	}
+	return false
+}
+
+// shouldEmitResumeStormLog returns true at most once per resumeStormLogInterval.
+// Thread-safe: uses its own mutex to avoid contending with sm.mu (mitto-7o2).
+func (sm *SessionManager) shouldEmitResumeStormLog() bool {
+	sm.resumeStormLogMu.Lock()
+	defer sm.resumeStormLogMu.Unlock()
+	now := time.Now()
+	if !sm.lastResumeStormLog.IsZero() && now.Sub(sm.lastResumeStormLog) < resumeStormLogInterval {
+		return false
+	}
+	sm.lastResumeStormLog = now
+	return true
+}
+
+// resetResumeStormRateLimit clears lastResumeStormLog so a subsequent
+// shouldEmitResumeStormLog call returns true immediately. Test-only helper
+// (mitto-7o2).
+func (sm *SessionManager) resetResumeStormRateLimit(_ testingTB) {
+	sm.resumeStormLogMu.Lock()
+	sm.lastResumeStormLog = time.Time{}
+	sm.resumeStormLogMu.Unlock()
+}
+
+// testingTB is the subset of testing.TB used by the test-only helper above.
+// Declared locally to avoid importing "testing" in a non-test file.
+type testingTB interface {
+	Helper()
+}
+
 // ResumeSession resumes an existing persisted session by creating a new ACP process.
 // This is used when switching to an old conversation. If the agent supports session
 // loading and we have a stored ACP session ID, we attempt to resume the ACP session
@@ -2071,13 +2139,47 @@ func (sm *SessionManager) resumeSessionWithConstraint(sessionID, sessionName, wo
 	// Cold-start diagnostics (mitto-3mv): time the resume-semaphore wait so the
 	// contribution of concurrency-bound queueing is visible in logs alongside the
 	// per-session cold-start trace begun inside ResumeBackgroundSession.
+	// Gauge accounting (mitto-7o2): track queued/in-flight callers around the
+	// slow-path acquire. The pendingResumes fast-coalesce path above returns
+	// before reaching here and MUST NOT touch these counters.
+	sm.resumeQueued.Add(1)
 	semWaitStart := time.Now()
 	sm.resumeSemaphore <- struct{}{}
 	semWait := time.Since(semWaitStart)
+	sm.resumeQueued.Add(-1)
+	sm.resumeInFlight.Add(1)
+
+	// Storm detection (mitto-7o2): emit at most one WARN per 10s window when
+	// callers are backed up or a single acquire waited noticeably long. The
+	// existing per-acquire Debug log below stays as the fine-grained trace.
+	waitMS := semWait.Milliseconds()
+	queued := int(sm.resumeQueued.Load())
+	inFlight := int(sm.resumeInFlight.Load())
+	coldCount := 0
+	sm.mu.RLock()
+	pm := sm.acpProcessManager
+	sm.mu.RUnlock()
+	if pm != nil {
+		coldCount = pm.ColdProcessCount()
+	}
+	if evaluateResumeStorm(queued, inFlight, maxConcurrentSessionResumes, coldCount, waitMS) && sm.shouldEmitResumeStormLog() {
+		if sm.logger != nil {
+			sm.logger.Warn("resume storm",
+				"queued", queued,
+				"in_flight", inFlight,
+				"sem_capacity", maxConcurrentSessionResumes,
+				"cold_processes", coldCount,
+				"sem_wait_ms", waitMS,
+				"session_id", sessionID,
+				"foreground", foreground,
+				"working_dir", workingDir)
+		}
+	}
+
 	if sm.logger != nil {
 		sm.logger.Debug("Acquired session-resume semaphore, starting ACP",
 			"session_id", sessionID,
-			"sem_wait_ms", semWait.Milliseconds(),
+			"sem_wait_ms", waitMS,
 			"sem_permits", maxConcurrentSessionResumes,
 			"sem_in_use", len(sm.resumeSemaphore),
 			"foreground", foreground)
@@ -2219,6 +2321,7 @@ func (sm *SessionManager) resumeSessionWithConstraint(sessionID, sessionName, wo
 	// Releasing here (rather than at the end of the function) lets the next queued
 	// goroutine start its ACP session while we do fast post-startup bookkeeping.
 	<-sm.resumeSemaphore
+	sm.resumeInFlight.Add(-1) // mitto-7o2: paired with the +1 after acquire.
 	if sm.logger != nil {
 		sm.logger.Debug("Released session-resume semaphore",
 			"session_id", sessionID,

@@ -2021,6 +2021,7 @@ func (f *fakeProcessManager) IsGCSuspended(string) bool { return false }
 func (f *fakeProcessManager) StopGC()                   {}
 func (f *fakeProcessManager) Close()                    {}
 func (f *fakeProcessManager) ProcessCount() int         { return 0 }
+func (f *fakeProcessManager) ColdProcessCount() int     { return 0 }
 
 // waitForPrewarm blocks until EnsurePrewarmed is called (up to timeout) and
 // returns the workspace UUID, or "" if it was not called in time.
