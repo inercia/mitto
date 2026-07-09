@@ -1373,6 +1373,33 @@ func rpcErrorCode(err error) (int, bool) {
 	return 0, false
 }
 
+// isAgentInternalDeadlineErr reports whether err is the agent's OWN internal
+// deadline firing on a session/new (or session/load) RPC — the auggie
+// "session/new wedge" signature (mitto-y1g follow-up): the agent's handler
+// completes its own internal timeout and returns a JSON-RPC application error
+// -32603 ("Internal error") whose data carries "context deadline exceeded".
+//
+// Crucially this is NOT a Go context.DeadlineExceeded — it is delivered as an
+// *acp.RequestError, so errors.Is(err, context.DeadlineExceeded) is false and
+// the RPC returns at exactly the agent's internal budget (observed rpc_ms=30000,
+// ctx_remaining_ms=29999). Because the standard timeout accounting only counts
+// errors.Is(DeadlineExceeded), this wedge previously never fed saturation and the
+// process was never recycled — the interactive prompt stayed gated behind a dead
+// session/new handler. Treating it as a timeout lets the mitto-13ck.2 saturation
+// path (and therefore GC Tier 5/6 recycle) heal the wedged process.
+func isAgentInternalDeadlineErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	code, ok := rpcErrorCode(err)
+	if !ok || code != -32603 {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "deadline exceeded") ||
+		strings.Contains(msg, "context deadline")
+}
+
 // NewSession creates a new ACP session on this shared process.
 func (p *SharedACPProcess) NewSession(ctx context.Context, cwd string, mcpServers []acp.McpServer) (*conversation.SessionHandle, error) {
 	p.activeRPCs.Add(1)
@@ -1638,12 +1665,28 @@ func (p *SharedACPProcess) NewSession(ctx context.Context, cwd string, mcpServer
 		}
 
 		lastErr = err
-		// A cold-start-with-MCP window uses the extended budget deliberately, so a
-		// deadline exceeded on that call is expected agent-side latency, not evidence
-		// the shared process is hung — do NOT count it toward saturation. Once the
-		// window is closed (first successful RPC → mcpInitDone) the normal accounting
-		// applies again (mitto-8ul.1).
-		if errors.Is(err, context.DeadlineExceeded) && !extendedBudget {
+		// Saturation accounting. Two distinct deadline signatures feed the
+		// mitto-13ck.2 consecutive-timeout counter (which promotes the process to
+		// saturated → GC Tier 5/6 recycle):
+		//
+		//  1. Mitto's own per-attempt deadline (errors.Is(DeadlineExceeded)). A
+		//     cold-start-with-MCP window uses the extended budget deliberately, so a
+		//     deadline on THAT call is expected agent-side latency, not evidence the
+		//     shared process is hung — do NOT count it while extendedBudget is set.
+		//     Once the window closes (first successful RPC → mcpInitDone) the normal
+		//     accounting applies again (mitto-8ul.1).
+		//
+		//  2. The agent's OWN internal deadline delivered as -32603 with
+		//     "context deadline exceeded" in its data — the auggie session/new wedge.
+		//     This IS counted even under extendedBudget: it is not Mitto's extended
+		//     budget being consumed but the agent explicitly reporting its handler
+		//     timed out, which is direct evidence the process is wedged. Without this
+		//     the wedge (rpc_ms=30000, ctx_remaining_ms=29999, rpc_code=-32603) never
+		//     tripped saturation, so the wedged process was never recycled and the
+		//     interactive prompt stayed gated behind a dead session/new handler.
+		if isAgentInternalDeadlineErr(err) {
+			p.recordRPCTimeout()
+		} else if errors.Is(err, context.DeadlineExceeded) && !extendedBudget {
 			p.recordRPCTimeout()
 		}
 		if p.logger != nil {
@@ -1654,6 +1697,7 @@ func (p *SharedACPProcess) NewSession(ctx context.Context, cwd string, mcpServer
 				"rpc_ms", rpcDuration.Milliseconds(),
 				"ctx_remaining_ms", ctxRemainingMs,
 				"rpc_code", rpcCode,
+				"agent_internal_deadline", isAgentInternalDeadlineErr(err),
 				"extended_mcp_budget", extendedBudget,
 				"cold_start_id", coldstart.FromContext(rpcCtx).ID(),
 				"error", err)
@@ -2192,12 +2236,18 @@ func isRetryableSetModelError(err error) bool {
 // MAY have succeeded server-side, so a retry can orphan a session on the shared
 // process. We accept this trade-off (mitto-4no7): on a deadline we never received a
 // session ID, so the only recovery is to create again; the orphan is bounded by the
-// shared process lifetime. Only deadline/timeout failures are retried.
+// shared process lifetime. Only deadline/timeout failures are retried. The agent's
+// own internal deadline (-32603 "context deadline exceeded", the session/new wedge)
+// is treated as retryable too so the bounded loop records each attempt's timeout
+// toward saturation rather than returning permanently after a single attempt.
 func isRetryableCreateError(err error) bool {
 	if err == nil {
 		return false
 	}
 	if errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	if isAgentInternalDeadlineErr(err) {
 		return true
 	}
 	msg := strings.ToLower(err.Error())

@@ -1724,6 +1724,61 @@ func TestRPCErrorCode(t *testing.T) {
 	}
 }
 
+// TestIsAgentInternalDeadlineErr verifies detection of the auggie session/new
+// wedge signature: a JSON-RPC -32603 ("Internal error") whose data carries
+// "context deadline exceeded". This is delivered as an *acp.RequestError, NOT a
+// Go context.DeadlineExceeded, so it must be matched via the code+message check.
+func TestIsAgentInternalDeadlineErr(t *testing.T) {
+	// The real auggie wedge: -32603 with data.error="context deadline exceeded".
+	wedge := acp.NewInternalError(map[string]any{"error": "context deadline exceeded"})
+	if !isAgentInternalDeadlineErr(wedge) {
+		t.Errorf("isAgentInternalDeadlineErr(wedge) = false, want true (err=%v)", wedge)
+	}
+
+	// Wrapped in the retry loop's error must still match via errors.As.
+	wrapped := fmt.Errorf("failed to create session: %w", wedge)
+	if !isAgentInternalDeadlineErr(wrapped) {
+		t.Errorf("isAgentInternalDeadlineErr(wrapped) = false, want true")
+	}
+
+	// A -32603 without a deadline signature (some other internal error) must NOT match.
+	otherInternal := acp.NewInternalError(map[string]any{"error": "disk full"})
+	if isAgentInternalDeadlineErr(otherInternal) {
+		t.Errorf("isAgentInternalDeadlineErr(otherInternal) = true, want false")
+	}
+
+	// A different RPC code with a deadline message must NOT match (only -32603).
+	notFound := acp.NewInvalidParams(map[string]any{"error": "context deadline exceeded"})
+	if isAgentInternalDeadlineErr(notFound) {
+		t.Errorf("isAgentInternalDeadlineErr(-32602 deadline) = true, want false")
+	}
+
+	// A plain Go context.DeadlineExceeded is Mitto's own deadline, not the agent's
+	// -32603 signature — it is handled by the errors.Is branch, not this helper.
+	if isAgentInternalDeadlineErr(context.DeadlineExceeded) {
+		t.Errorf("isAgentInternalDeadlineErr(context.DeadlineExceeded) = true, want false")
+	}
+
+	// Nil error must not match.
+	if isAgentInternalDeadlineErr(nil) {
+		t.Errorf("isAgentInternalDeadlineErr(nil) = true, want false")
+	}
+}
+
+// TestAgentInternalDeadlineIsRetryable verifies the agent-internal -32603 deadline
+// is classified retryable so the bounded NewSession loop records each attempt's
+// timeout toward saturation rather than returning permanently after one attempt.
+func TestAgentInternalDeadlineIsRetryable(t *testing.T) {
+	wedge := acp.NewInternalError(map[string]any{"error": "context deadline exceeded"})
+	if !isRetryableCreateError(wedge) {
+		t.Errorf("isRetryableCreateError(agent -32603 deadline) = false, want true")
+	}
+	// A non-deadline internal error remains non-retryable.
+	if isRetryableCreateError(acp.NewInternalError(map[string]any{"error": "disk full"})) {
+		t.Errorf("isRetryableCreateError(-32603 non-deadline) = true, want false")
+	}
+}
+
 // TestGetOrCreateAuxiliarySession_SaturatedBails is the mitto-z70 regression:
 // when the shared process for the workspace is already flagged saturated (via
 // repeated RPC timeouts / cold-MCP wedge), getOrCreateAuxiliarySession MUST
