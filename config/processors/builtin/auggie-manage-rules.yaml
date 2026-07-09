@@ -80,6 +80,21 @@ prompt: |
   - Make rules actionable for coding decisions
   - Include common pitfalls and anti-pattern examples
   - Reference existing repo docs rather than duplicating
+  - **Allowed content**: facts about *this codebase* (architecture, patterns,
+    conventions, APIs, gotchas, lessons learned from code changes) and generic
+    developer procedures that apply to any contributor working on this project
+    (how to build, run tests, lint, project-wide tooling commands).
+  - **Forbidden content**: never write anything personal or user-specific.
+    Do NOT include:
+    - Absolute paths containing usernames or home directories
+      (e.g. `/Users/<name>/...`, `/home/<name>/...`, `C:\Users\<name>\...`).
+    - Locations of the current user's credentials, SSH keys, GitHub tokens,
+      API keys, or any other secrets.
+    - Machine-specific configuration (hostnames, local port numbers currently
+      in use, personal editor/IDE settings, shell aliases).
+    - Anything that could identify or leak information about the current user
+      or their local environment.
+    If in doubt, omit it — rules are shared across every contributor.
 
   ## Notification
 
