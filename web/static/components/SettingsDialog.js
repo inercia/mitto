@@ -52,7 +52,6 @@ import { AgentDiscoveryDialog } from "./AgentDiscoveryDialog.js";
 import { Modal } from "./Modal.js";
 import { ModelSelection } from "./ModelSelection.js";
 import { ModelProfileSelect } from "./ModelProfileSelect.js";
-import { ModelTagSelect } from "./ModelTagSelect.js";
 import { RichSelect } from "./RichSelect.js";
 import { Tooltip } from "./Tooltip.js";
 import { ShortcutsEditor } from "./ShortcutsEditor.js";
@@ -1349,6 +1348,13 @@ export function SettingsDialog({
     "open -a Terminal ${MITTO_WORKING_DIR}",
   );
 
+  // Open In targets (macOS): configurable list of apps for the folder "Open ▸" menu.
+  // Each entry: { id, label, icon, command, enabled, builtin }. enabled is a plain
+  // boolean in state (persisted as *bool on the backend via ui.mac.open_in.targets).
+  const [openInTargets, setOpenInTargets] = useState([]);
+  // Per-row UI expansion state, keyed by target id -> bool.
+  const [openInExpanded, setOpenInExpanded] = useState({});
+
   // Confirmation mode for destroying a conversation (all platforms).
   // One of "always" (default), "responding", or "never".
   const [deleteConfirmMode, setDeleteConfirmMode] = useState("always");
@@ -1377,11 +1383,6 @@ export function SettingsDialog({
 
   // Max loop iterations setting - default 100
   const [maxLoopIterations, setMaxLoopIterations] = useState(100);
-
-  // Initial model for new conversations (persistent baseline). Mutually
-  // exclusive: profile wins over tag when both are set (resolved server-side).
-  const [initialModelProfile, setInitialModelProfile] = useState("");
-  const [initialModelTag, setInitialModelTag] = useState("");
 
   const [loopBehaviorExpanded, setLoopBehaviorExpanded] = useState(false);
 
@@ -1753,6 +1754,34 @@ export function SettingsDialog({
           "open -a Terminal ${MITTO_WORKING_DIR}",
       );
 
+      // Load Open In targets (macOS only). If ui.mac.open_in.targets is present
+      // and non-empty use it verbatim; otherwise synthesize a UI-only fallback
+      // matching backend config.DefaultOpenTargets() (darwin) so the user sees
+      // rows before saving once. Backend still owns the real fallback at exec time.
+      const macOpenInTargets = config.ui?.mac?.open_in?.targets;
+      if (Array.isArray(macOpenInTargets) && macOpenInTargets.length > 0) {
+        setOpenInTargets(
+          macOpenInTargets.map((t) => ({
+            id: t.id || "",
+            label: t.label || "",
+            icon: t.icon || "",
+            command: t.command || "",
+            enabled: t.enabled !== false,
+            builtin: t.builtin === true,
+          })),
+        );
+      } else {
+        setOpenInTargets([
+          { id: "finder", label: "Finder", icon: "finder", command: "open ${MITTO_WORKING_DIR}", enabled: true, builtin: true },
+          { id: "terminal", label: "Terminal", icon: "terminal", command: "open -a Terminal ${MITTO_WORKING_DIR}", enabled: true, builtin: true },
+          { id: "iterm", label: "iTerm", icon: "iterm", command: "open -a iTerm ${MITTO_WORKING_DIR}", enabled: false, builtin: true },
+          { id: "vscode", label: "Visual Studio Code", icon: "vscode", command: `open -a "Visual Studio Code" \${MITTO_WORKING_DIR}`, enabled: false, builtin: true },
+          { id: "cursor", label: "Cursor", icon: "cursor", command: "open -a Cursor ${MITTO_WORKING_DIR}", enabled: false, builtin: true },
+          { id: "xcode", label: "Xcode", icon: "xcode", command: "open -a Xcode ${MITTO_WORKING_DIR}", enabled: false, builtin: true },
+          { id: "goland", label: "GoLand", icon: "goland", command: "open -a GoLand ${MITTO_WORKING_DIR}", enabled: false, builtin: true },
+        ]);
+      }
+
       // Load notification permission status (macOS only) - used to show warning if denied
       if (typeof window.mittoGetNotificationPermissionStatus === "function") {
         const status = await window.mittoGetNotificationPermissionStatus();
@@ -1817,12 +1846,6 @@ export function SettingsDialog({
 
       // Load max loop iterations setting - default to 100
       setMaxLoopIterations(config.conversations?.max_loop_iterations ?? 100);
-
-      // Load initial model preference for new conversations (baseline model).
-      setInitialModelProfile(
-        config.conversations?.initial_model_profile || "",
-      );
-      setInitialModelTag(config.conversations?.initial_model_tag || "");
 
       // Load input font family setting (web UI) - default to "system"
       setInputFontFamily(config.ui?.web?.input_font_family || "system");
@@ -2071,6 +2094,16 @@ export function SettingsDialog({
             enabled: terminalActionCommand.trim() !== "",
             command: terminalActionCommand,
           },
+          open_in: {
+            targets: openInTargets.map((t) => ({
+              id: t.id,
+              label: t.label,
+              ...(t.icon ? { icon: t.icon } : {}),
+              command: t.command,
+              enabled: t.enabled,
+              ...(t.builtin ? { builtin: true } : {}),
+            })),
+          },
         };
       }
 
@@ -2084,15 +2117,6 @@ export function SettingsDialog({
         },
         max_child_conversations: maxChildConversations,
         max_loop_iterations: maxLoopIterations,
-        // Initial model preference for new conversations (only include when set,
-        // so cleared values round-trip to omitted fields instead of empty strings).
-        ...(initialModelProfile && {
-          initial_model_profile: initialModelProfile,
-        }),
-        ...(!initialModelProfile &&
-          initialModelTag && {
-            initial_model_tag: initialModelTag,
-          }),
         // Only include default_flags if any are set
         ...(Object.keys(defaultFlags).length > 0 && {
           default_flags: defaultFlags,
@@ -3892,49 +3916,6 @@ export function SettingsDialog({
                       </div>
                     </div>
 
-                    <!-- Initial Model for New Conversations -->
-                    <div class="space-y-3">
-                      <h4 class="text-sm font-medium text-mitto-text-secondary">
-                        Initial Model
-                      </h4>
-                      <div class="p-3">
-                        <label class="block text-sm text-mitto-text-muted mb-1">
-                          Initial Model for New Conversations (optional)
-                        </label>
-                        <p class="text-xs text-mitto-text-muted mb-2">
-                          Switch each new conversation to a specific model as its
-                          baseline, replacing the ACP agent's default.
-                        </p>
-                        <div class="flex items-center gap-2">
-                          <div class="flex-1 min-w-0">
-                            <${ModelProfileSelect}
-                              value=${initialModelProfile}
-                              profiles=${modelProfiles}
-                              className="w-full"
-                              onChange=${(name) => {
-                                setInitialModelProfile(name);
-                                if (name) setInitialModelTag("");
-                              }}
-                            />
-                          </div>
-                          <span class="text-xs text-mitto-text-muted shrink-0">
-                            or by tag
-                          </span>
-                          <div class="flex-1 min-w-0">
-                            <${ModelTagSelect}
-                              value=${initialModelTag}
-                              profiles=${modelProfiles}
-                              className="w-full"
-                              onChange=${(tag) => {
-                                setInitialModelTag(tag);
-                                if (tag) setInitialModelProfile("");
-                              }}
-                            />
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-
                     <!-- Child Conversations Limit -->
                     <div class="space-y-3">
                       <h4 class="text-sm font-medium text-mitto-text-secondary">
@@ -4899,6 +4880,151 @@ export function SettingsDialog({
                               >\${MITTO_WORKING_DIR}</code
                             >${" "} as placeholder for the workspace path
                           </p>
+                        </div>
+
+                        <!-- Open In Targets -->
+                        <div class="p-4 space-y-2">
+                          <div class="font-medium text-sm">
+                            Open In targets
+                          </div>
+                          <div class="text-xs text-mitto-text-muted mb-2">
+                            Configure which apps appear in the folder "Open ▸"
+                            menu. Toggle rows to enable/disable; click Edit to
+                            change a target's command.
+                          </div>
+                          <div
+                            class="rounded border border-mitto-border divide-y divide-mitto-border"
+                          >
+                            ${openInTargets.map(
+                              (t) => html`
+                                <div key=${t.id}>
+                                  <div class="flex items-center gap-3 p-3">
+                                    <div class="flex-1 min-w-0">
+                                      <div class="font-medium text-sm truncate">
+                                        ${t.label}
+                                      </div>
+                                      <div
+                                        class="text-xs text-mitto-text-muted truncate"
+                                      >
+                                        ${t.id}${t.builtin ? "" : " (custom)"}
+                                      </div>
+                                    </div>
+                                    <button
+                                      type="button"
+                                      class="btn btn-ghost btn-xs"
+                                      onClick=${() =>
+                                        setOpenInExpanded((s) => ({
+                                          ...s,
+                                          [t.id]: !s[t.id],
+                                        }))}
+                                    >
+                                      ${openInExpanded[t.id] ? "Hide" : "Edit"}
+                                    </button>
+                                    ${!t.builtin &&
+                                    html`
+                                      <button
+                                        type="button"
+                                        class="btn btn-ghost btn-xs text-error"
+                                        onClick=${() =>
+                                          setOpenInTargets((list) =>
+                                            list.filter((x) => x.id !== t.id),
+                                          )}
+                                      >
+                                        Remove
+                                      </button>
+                                    `}
+                                    <input
+                                      type="checkbox"
+                                      class="checkbox checkbox-sm checkbox-primary"
+                                      checked=${t.enabled}
+                                      onChange=${(e) =>
+                                        setOpenInTargets((list) =>
+                                          list.map((x) =>
+                                            x.id === t.id
+                                              ? {
+                                                  ...x,
+                                                  enabled: e.target.checked,
+                                                }
+                                              : x,
+                                          ),
+                                        )}
+                                    />
+                                  </div>
+                                  ${openInExpanded[t.id] &&
+                                  html`
+                                    <div class="px-3 pb-3 space-y-2">
+                                      ${!t.builtin &&
+                                      html`
+                                        <input
+                                          type="text"
+                                          class="input input-sm w-full"
+                                          placeholder="Display label"
+                                          value=${t.label}
+                                          onInput=${(e) =>
+                                            setOpenInTargets((list) =>
+                                              list.map((x) =>
+                                                x.id === t.id
+                                                  ? { ...x, label: e.target.value }
+                                                  : x,
+                                              ),
+                                            )}
+                                        />
+                                      `}
+                                      <input
+                                        type="text"
+                                        class="input input-sm w-full font-mono"
+                                        placeholder="open -a 'App Name' \${MITTO_WORKING_DIR}"
+                                        value=${t.command}
+                                        onInput=${(e) =>
+                                          setOpenInTargets((list) =>
+                                            list.map((x) =>
+                                              x.id === t.id
+                                                ? { ...x, command: e.target.value }
+                                                : x,
+                                            ),
+                                          )}
+                                      />
+                                      <p class="text-xs text-mitto-text-muted">
+                                        Use${" "}
+                                        <code
+                                          class="bg-mitto-surface-4 px-1 rounded"
+                                          >\${MITTO_WORKING_DIR}</code
+                                        >${" "} as placeholder for the workspace
+                                        path
+                                      </p>
+                                    </div>
+                                  `}
+                                </div>
+                              `,
+                            )}
+                          </div>
+                          <div class="flex justify-end">
+                            <button
+                              type="button"
+                              class="btn btn-sm btn-ghost"
+                              onClick=${() => {
+                                const newId =
+                                  "custom-" + Date.now().toString(36);
+                                setOpenInTargets((list) => [
+                                  ...list,
+                                  {
+                                    id: newId,
+                                    label: "New target",
+                                    icon: "",
+                                    command: "open ${MITTO_WORKING_DIR}",
+                                    enabled: true,
+                                    builtin: false,
+                                  },
+                                ]);
+                                setOpenInExpanded((s) => ({
+                                  ...s,
+                                  [newId]: true,
+                                }));
+                              }}
+                            >
+                              + Add custom…
+                            </button>
+                          </div>
                         </div>
                       </div>
                     `}
