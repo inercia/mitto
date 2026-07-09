@@ -52,6 +52,7 @@ import { AgentDiscoveryDialog } from "./AgentDiscoveryDialog.js";
 import { Modal } from "./Modal.js";
 import { ModelSelection } from "./ModelSelection.js";
 import { ModelProfileSelect } from "./ModelProfileSelect.js";
+import { ModelTagSelect } from "./ModelTagSelect.js";
 import { RichSelect } from "./RichSelect.js";
 import { Tooltip } from "./Tooltip.js";
 import { ShortcutsEditor } from "./ShortcutsEditor.js";
@@ -1377,6 +1378,11 @@ export function SettingsDialog({
   // Max loop iterations setting - default 100
   const [maxLoopIterations, setMaxLoopIterations] = useState(100);
 
+  // Initial model for new conversations (persistent baseline). Mutually
+  // exclusive: profile wins over tag when both are set (resolved server-side).
+  const [initialModelProfile, setInitialModelProfile] = useState("");
+  const [initialModelTag, setInitialModelTag] = useState("");
+
   const [loopBehaviorExpanded, setLoopBehaviorExpanded] = useState(false);
 
   // Default flags for new conversations
@@ -1812,6 +1818,12 @@ export function SettingsDialog({
       // Load max loop iterations setting - default to 100
       setMaxLoopIterations(config.conversations?.max_loop_iterations ?? 100);
 
+      // Load initial model preference for new conversations (baseline model).
+      setInitialModelProfile(
+        config.conversations?.initial_model_profile || "",
+      );
+      setInitialModelTag(config.conversations?.initial_model_tag || "");
+
       // Load input font family setting (web UI) - default to "system"
       setInputFontFamily(config.ui?.web?.input_font_family || "system");
 
@@ -2072,6 +2084,15 @@ export function SettingsDialog({
         },
         max_child_conversations: maxChildConversations,
         max_loop_iterations: maxLoopIterations,
+        // Initial model preference for new conversations (only include when set,
+        // so cleared values round-trip to omitted fields instead of empty strings).
+        ...(initialModelProfile && {
+          initial_model_profile: initialModelProfile,
+        }),
+        ...(!initialModelProfile &&
+          initialModelTag && {
+            initial_model_tag: initialModelTag,
+          }),
         // Only include default_flags if any are set
         ...(Object.keys(defaultFlags).length > 0 && {
           default_flags: defaultFlags,
@@ -3867,6 +3888,49 @@ export function SettingsDialog({
                               )}
                             class="input input-sm w-24 text-center"
                           />
+                        </div>
+                      </div>
+                    </div>
+
+                    <!-- Initial Model for New Conversations -->
+                    <div class="space-y-3">
+                      <h4 class="text-sm font-medium text-mitto-text-secondary">
+                        Initial Model
+                      </h4>
+                      <div class="p-3">
+                        <label class="block text-sm text-mitto-text-muted mb-1">
+                          Initial Model for New Conversations (optional)
+                        </label>
+                        <p class="text-xs text-mitto-text-muted mb-2">
+                          Switch each new conversation to a specific model as its
+                          baseline, replacing the ACP agent's default.
+                        </p>
+                        <div class="flex items-center gap-2">
+                          <div class="flex-1 min-w-0">
+                            <${ModelProfileSelect}
+                              value=${initialModelProfile}
+                              profiles=${modelProfiles}
+                              className="w-full"
+                              onChange=${(name) => {
+                                setInitialModelProfile(name);
+                                if (name) setInitialModelTag("");
+                              }}
+                            />
+                          </div>
+                          <span class="text-xs text-mitto-text-muted shrink-0">
+                            or by tag
+                          </span>
+                          <div class="flex-1 min-w-0">
+                            <${ModelTagSelect}
+                              value=${initialModelTag}
+                              profiles=${modelProfiles}
+                              className="w-full"
+                              onChange=${(tag) => {
+                                setInitialModelTag(tag);
+                                if (tag) setInitialModelProfile("");
+                              }}
+                            />
+                          </div>
                         </div>
                       </div>
                     </div>

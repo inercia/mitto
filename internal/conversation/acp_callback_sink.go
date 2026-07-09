@@ -115,6 +115,12 @@ type acpCallbackDeps interface {
 	// cbApplyConfigConstraintsAsync kicks off the async constraint-application
 	// goroutine for a category (matches the legacy `go bs.applyConfigConstraints(...)`).
 	cbApplyConfigConstraintsAsync(category string)
+	// cbMaybeApplyInitialModelAsync kicks off an async goroutine that applies
+	// the global initial-model preference (Settings → Conversations) as the
+	// session's persistent baseline model. No-op for resumed sessions (they
+	// already have a persisted BaselineModel) and for sessions whose workspace
+	// has an ACP server constraint on the model category (which takes precedence).
+	cbMaybeApplyInitialModelAsync()
 
 	// cbStreamingSuppressed reports whether streaming callbacks are currently
 	// suppressed (e.g. during an in-place context flush). When true, each gated
@@ -637,6 +643,12 @@ func (acpCallbackSink) setAgentModels(d acpCallbackDeps, models *SessionModelSta
 	d.cbInitBaselineModelIfEmpty(models.CurrentModelId)
 
 	d.cbApplyConfigConstraintsAsync(ConfigOptionCategoryModel)
+
+	// For fresh conversations (no persisted baseline, no ACP server constraint on
+	// the model), apply the global initial-model preference from Settings →
+	// Conversations as the session's persistent baseline. See
+	// (*BackgroundSession).cbMaybeApplyInitialModelAsync.
+	d.cbMaybeApplyInitialModelAsync()
 }
 
 // recordEventWithSeqHelper is a small helper used by BackgroundSession's

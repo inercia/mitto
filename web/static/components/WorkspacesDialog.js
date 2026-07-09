@@ -4276,37 +4276,44 @@ export function WorkspacesDialog({
                             Switch auxiliary sessions (titles, suggestions) to a
                             specific model
                           </p>
-                          <${ModelProfileSelect}
-                            value=${editAuxModelProfile}
-                            profiles=${modelProfiles}
-                            legacyLabel=${auxLegacyModelLabel}
-                            onChange=${(name) => {
-                              setEditAuxModelProfile(name);
-                              if (name) {
-                                setEditAuxModelTag("");
-                              }
-                              if (!name && rawAuxModelConstraint) {
-                                setEditAuxModelConstraintCleared(true);
-                              }
-                            }}
-                          />
-                          <label
-                            class="block text-xs text-mitto-text-muted mt-2 mb-1"
-                            >Or by tag:</label
-                          >
-                          <${ModelTagSelect}
-                            value=${editAuxModelTag}
-                            profiles=${modelProfiles}
-                            onChange=${(tag) => {
-                              setEditAuxModelTag(tag);
-                              if (tag) {
-                                setEditAuxModelProfile("");
-                              }
-                              if (!tag && rawAuxModelConstraint) {
-                                setEditAuxModelConstraintCleared(true);
-                              }
-                            }}
-                          />
+                          <div class="flex items-center gap-2">
+                            <div class="flex-1 min-w-0">
+                              <${ModelProfileSelect}
+                                value=${editAuxModelProfile}
+                                profiles=${modelProfiles}
+                                legacyLabel=${auxLegacyModelLabel}
+                                className="w-full"
+                                onChange=${(name) => {
+                                  setEditAuxModelProfile(name);
+                                  if (name) {
+                                    setEditAuxModelTag("");
+                                  }
+                                  if (!name && rawAuxModelConstraint) {
+                                    setEditAuxModelConstraintCleared(true);
+                                  }
+                                }}
+                              />
+                            </div>
+                            <span class="text-xs text-mitto-text-muted shrink-0"
+                              >or by tag</span
+                            >
+                            <div class="flex-1 min-w-0">
+                              <${ModelTagSelect}
+                                value=${editAuxModelTag}
+                                profiles=${modelProfiles}
+                                className="w-full"
+                                onChange=${(tag) => {
+                                  setEditAuxModelTag(tag);
+                                  if (tag) {
+                                    setEditAuxModelProfile("");
+                                  }
+                                  if (!tag && rawAuxModelConstraint) {
+                                    setEditAuxModelConstraintCleared(true);
+                                  }
+                                }}
+                              />
+                            </div>
+                          </div>
                         </div>
                         <label class="flex items-center gap-3 cursor-pointer">
                           <input

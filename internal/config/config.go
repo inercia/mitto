@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"sort"
 	"strings"
 
@@ -481,6 +482,80 @@ func (c *TerminalActionConfig) GetCommand() string {
 	return c.Command
 }
 
+// OpenTarget represents a single "Open In..." entry for a workspace folder.
+// A target maps a stable ID to a shell command that opens the workspace directory
+// in a specific application (Finder, Terminal, editor, etc.).
+type OpenTarget struct {
+	// ID is a stable identifier for the target (e.g., "finder", "vscode").
+	// Builtin targets use well-known IDs; user targets use any non-empty string.
+	ID string `json:"id"`
+	// Label is the human-readable name shown in menus and settings.
+	Label string `json:"label"`
+	// Icon is an optional icon key used by the frontend to render an icon.
+	Icon string `json:"icon,omitempty"`
+	// Command is the shell command to execute.
+	// Supports ${MITTO_WORKING_DIR} placeholder which is replaced with the workspace directory path.
+	Command string `json:"command"`
+	// Enabled controls whether the target appears in menus.
+	// When nil, the effective value depends on Builtin: builtin targets default to true,
+	// user-defined targets default to false. Explicit non-nil values always win.
+	Enabled *bool `json:"enabled,omitempty"`
+	// Builtin is true for platform-default entries seeded by Mitto.
+	// This field is not user-settable; user-provided values are ignored on merge.
+	Builtin bool `json:"builtin,omitempty"`
+}
+
+// GetEnabled returns the effective enabled state for the target.
+// When Enabled is nil, builtin targets default to true and user-defined targets default to false.
+func (t *OpenTarget) GetEnabled() bool {
+	if t == nil {
+		return false
+	}
+	if t.Enabled != nil {
+		return *t.Enabled
+	}
+	return t.Builtin
+}
+
+// OpenInConfig represents the configurable list of "Open In..." targets for
+// workspace folders (context menu on the workspace badge / folder buttons).
+type OpenInConfig struct {
+	// Targets is the ordered list of open-in entries.
+	Targets []OpenTarget `json:"targets,omitempty"`
+}
+
+// DefaultOpenTargets returns the platform-specific default set of "Open In..."
+// targets. All returned entries are marked Builtin: true; the default-enabled
+// state is expressed via Enabled *bool so callers can distinguish "unset" from
+// "explicit false".
+func DefaultOpenTargets() []OpenTarget {
+	bp := func(b bool) *bool { return &b }
+	switch runtime.GOOS {
+	case "darwin":
+		return []OpenTarget{
+			{ID: "finder", Label: "Finder", Icon: "finder", Command: "open ${MITTO_WORKING_DIR}", Enabled: bp(true), Builtin: true},
+			{ID: "terminal", Label: "Terminal", Icon: "terminal", Command: "open -a Terminal ${MITTO_WORKING_DIR}", Enabled: bp(true), Builtin: true},
+			{ID: "iterm", Label: "iTerm", Icon: "iterm", Command: "open -a iTerm ${MITTO_WORKING_DIR}", Enabled: bp(false), Builtin: true},
+			{ID: "vscode", Label: "Visual Studio Code", Icon: "vscode", Command: `open -a "Visual Studio Code" ${MITTO_WORKING_DIR}`, Enabled: bp(false), Builtin: true},
+			{ID: "cursor", Label: "Cursor", Icon: "cursor", Command: "open -a Cursor ${MITTO_WORKING_DIR}", Enabled: bp(false), Builtin: true},
+			{ID: "xcode", Label: "Xcode", Icon: "xcode", Command: "open -a Xcode ${MITTO_WORKING_DIR}", Enabled: bp(false), Builtin: true},
+			{ID: "goland", Label: "GoLand", Icon: "goland", Command: "open -a GoLand ${MITTO_WORKING_DIR}", Enabled: bp(false), Builtin: true},
+		}
+	case "linux":
+		return []OpenTarget{
+			{ID: "finder", Label: "File Manager", Icon: "finder", Command: "xdg-open ${MITTO_WORKING_DIR}", Enabled: bp(true), Builtin: true},
+			{ID: "terminal", Label: "Terminal", Icon: "terminal", Command: "x-terminal-emulator --working-directory=${MITTO_WORKING_DIR}", Enabled: bp(true), Builtin: true},
+		}
+	case "windows":
+		return []OpenTarget{
+			{ID: "finder", Label: "Explorer", Icon: "finder", Command: "explorer %MITTO_WORKING_DIR%", Enabled: bp(true), Builtin: true},
+			{ID: "terminal", Label: "Command Prompt", Icon: "terminal", Command: `cmd /c start "" cmd /K "cd /d %MITTO_WORKING_DIR%"`, Enabled: bp(true), Builtin: true},
+		}
+	default:
+		return nil
+	}
+}
+
 // MacUIConfig represents macOS-specific UI configuration.
 type MacUIConfig struct {
 	// Hotkeys contains hotkey configuration for macOS
@@ -503,6 +578,83 @@ type MacUIConfig struct {
 	// When enabled, a terminal icon button appears in conversation list group headers,
 	// executing a shell command to open a terminal at the workspace directory.
 	TerminalAction *TerminalActionConfig `json:"terminal_action,omitempty"`
+	// OpenIn configures the list of "Open In..." targets for the workspace folder.
+	OpenIn *OpenInConfig `json:"open_in,omitempty"`
+}
+
+// EffectiveOpenTargets returns the effective ordered list of "Open In..." targets
+// for this MacUIConfig. When no OpenIn config is set, it falls back to legacy
+// BadgeClickAction/TerminalAction so pre-existing installations keep working.
+// Otherwise it starts from DefaultOpenTargets and merges user entries by ID.
+func (c *MacUIConfig) EffectiveOpenTargets() []OpenTarget {
+	if c == nil {
+		return DefaultOpenTargets()
+	}
+
+	// Legacy fallback: synthesize a Finder + Terminal pair from the older config fields.
+	if c.OpenIn == nil || len(c.OpenIn.Targets) == 0 {
+		bp := func(b bool) *bool { return &b }
+		return []OpenTarget{
+			{
+				ID:      "finder",
+				Label:   "Finder",
+				Icon:    "finder",
+				Command: c.BadgeClickAction.GetCommand(),
+				Enabled: bp(c.BadgeClickAction.GetEnabled()),
+				Builtin: true,
+			},
+			{
+				ID:      "terminal",
+				Label:   "Terminal",
+				Icon:    "terminal",
+				Command: c.TerminalAction.GetCommand(),
+				Enabled: bp(c.TerminalAction.GetEnabled()),
+				Builtin: true,
+			},
+		}
+	}
+
+	// Merge user entries into the platform defaults by ID.
+	defaults := DefaultOpenTargets()
+	userByID := make(map[string]OpenTarget, len(c.OpenIn.Targets))
+	seen := make(map[string]bool, len(c.OpenIn.Targets))
+	for _, u := range c.OpenIn.Targets {
+		if u.ID == "" || seen[u.ID] {
+			continue
+		}
+		seen[u.ID] = true
+		userByID[u.ID] = u
+	}
+
+	result := make([]OpenTarget, 0, len(defaults)+len(c.OpenIn.Targets))
+	usedIDs := make(map[string]bool, len(defaults))
+	for _, d := range defaults {
+		usedIDs[d.ID] = true
+		if u, ok := userByID[d.ID]; ok {
+			if u.Label != "" {
+				d.Label = u.Label
+			}
+			if u.Icon != "" {
+				d.Icon = u.Icon
+			}
+			if u.Command != "" {
+				d.Command = u.Command
+			}
+			if u.Enabled != nil {
+				d.Enabled = u.Enabled
+			}
+		}
+		result = append(result, d)
+	}
+	for _, u := range c.OpenIn.Targets {
+		if u.ID == "" || usedIDs[u.ID] {
+			continue
+		}
+		usedIDs[u.ID] = true
+		u.Builtin = false
+		result = append(result, u)
+	}
+	return result
 }
 
 // DeleteConversation confirmation modes for ConfirmationsConfig.DeleteConversation.
@@ -795,6 +947,35 @@ type ConversationsConfig struct {
 	// MinLoopCompletionDelaySeconds is the global lower limit (floor) for the
 	// on-completion loop trigger's delay. nil = use default (DefaultMinLoopCompletionDelaySeconds).
 	MinLoopCompletionDelaySeconds *int `json:"min_loop_completion_delay_seconds,omitempty" yaml:"min_loop_completion_delay_seconds,omitempty"`
+	// InitialModelProfile is the name of a Model profile (Config.Models) applied
+	// as the baseline model of every new conversation right after the agent
+	// reports its available models. Empty means keep the agent's default model.
+	// Mutually exclusive with InitialModelTag in the UI; when both are set,
+	// InitialModelProfile wins.
+	InitialModelProfile string `json:"initial_model_profile,omitempty" yaml:"initial_model_profile,omitempty"`
+	// InitialModelTag selects the initial baseline model by capability tag
+	// (e.g. "Coding"). Resolved to the first Model profile (Config.Models, in
+	// definition order) carrying this tag whose Criteria matches an available
+	// model. Empty means keep the agent's default model.
+	InitialModelTag string `json:"initial_model_tag,omitempty" yaml:"initial_model_tag,omitempty"`
+}
+
+// GetInitialModelPreference returns the initial-model preference as an ordered
+// list of PromptPreferredModel entries suitable for SelectPreferredModel.
+// Returns nil when neither InitialModelProfile nor InitialModelTag is set.
+// InitialModelProfile takes precedence over InitialModelTag when both are set.
+// Safe to call on a nil receiver.
+func (c *ConversationsConfig) GetInitialModelPreference() []PromptPreferredModel {
+	if c == nil {
+		return nil
+	}
+	if c.InitialModelProfile != "" {
+		return []PromptPreferredModel{{ModelName: c.InitialModelProfile}}
+	}
+	if c.InitialModelTag != "" {
+		return []PromptPreferredModel{{ModelTag: c.InitialModelTag}}
+	}
+	return nil
 }
 
 // ActionButtonsConfig configures the follow-up suggestions feature.
@@ -1475,6 +1656,16 @@ type rawConfig struct {
 				Enabled *bool  `yaml:"enabled"`
 				Command string `yaml:"command"`
 			} `yaml:"terminal_action"`
+			OpenIn *struct {
+				Targets []struct {
+					ID      string `yaml:"id"`
+					Label   string `yaml:"label"`
+					Icon    string `yaml:"icon"`
+					Command string `yaml:"command"`
+					Enabled *bool  `yaml:"enabled"`
+					Builtin bool   `yaml:"builtin"`
+				} `yaml:"targets"`
+			} `yaml:"open_in"`
 		} `yaml:"mac"`
 	} `yaml:"ui"`
 	Conversations *struct {
@@ -1502,6 +1693,8 @@ type rawConfig struct {
 		MaxChildConversations         *int            `yaml:"max_child_conversations"`
 		MaxLoopIterations             *int            `yaml:"max_loop_iterations"`
 		MinLoopCompletionDelaySeconds *int            `yaml:"min_loop_completion_delay_seconds"`
+		InitialModelProfile           string          `yaml:"initial_model_profile"`
+		InitialModelTag               string          `yaml:"initial_model_tag"`
 	} `yaml:"conversations"`
 	// RestrictedRunners is the top-level per-runner-type configuration
 	RestrictedRunners map[string]*WorkspaceRunnerConfig `yaml:"restricted_runners"`
@@ -1801,6 +1994,21 @@ func Parse(data []byte) (*Config, error) {
 					Command: raw.UI.Mac.TerminalAction.Command,
 				}
 			}
+
+			// Populate open-in targets
+			if raw.UI.Mac.OpenIn != nil {
+				cfg.UI.Mac.OpenIn = &OpenInConfig{}
+				for _, t := range raw.UI.Mac.OpenIn.Targets {
+					cfg.UI.Mac.OpenIn.Targets = append(cfg.UI.Mac.OpenIn.Targets, OpenTarget{
+						ID:      t.ID,
+						Label:   t.Label,
+						Icon:    t.Icon,
+						Command: t.Command,
+						Enabled: t.Enabled,
+						Builtin: t.Builtin,
+					})
+				}
+			}
 		}
 	}
 
@@ -1870,11 +2078,16 @@ func Parse(data []byte) (*Config, error) {
 			cfg.Conversations.MinLoopCompletionDelaySeconds = raw.Conversations.MinLoopCompletionDelaySeconds
 		}
 
+		// Copy initial model preference (applied as baseline for new conversations)
+		cfg.Conversations.InitialModelProfile = raw.Conversations.InitialModelProfile
+		cfg.Conversations.InitialModelTag = raw.Conversations.InitialModelTag
+
 		// If no config was actually set, nil out the conversations config
 		if cfg.Conversations.Processing == nil && cfg.Conversations.Queue == nil &&
 			cfg.Conversations.ActionButtons == nil && cfg.Conversations.ExternalImages == nil &&
 			cfg.Conversations.DefaultFlags == nil && cfg.Conversations.MaxChildConversations == nil &&
-			cfg.Conversations.MaxLoopIterations == nil && cfg.Conversations.MinLoopCompletionDelaySeconds == nil {
+			cfg.Conversations.MaxLoopIterations == nil && cfg.Conversations.MinLoopCompletionDelaySeconds == nil &&
+			cfg.Conversations.InitialModelProfile == "" && cfg.Conversations.InitialModelTag == "" {
 			cfg.Conversations = nil
 		}
 	}
