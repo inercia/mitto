@@ -85,6 +85,14 @@ like auggie, claude-code, and others that implement ACP.`,
 			return nil
 		}
 
+		// Skip the standard (keychain-touching) config load for the prompt
+		// command. It is a headless, single-shot ACP harness that must NEVER
+		// start the web server or read any web-auth secret; it loads its own
+		// config via config.LoadSettingsWithFallbackNoKeychain in runPrompt.
+		if cmd.Name() == "prompt" {
+			return nil
+		}
+
 		// Ensure Mitto directory exists
 		if err := appdir.EnsureDir(); err != nil {
 			return fmt.Errorf("failed to create Mitto directory: %w", err)

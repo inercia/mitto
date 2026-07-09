@@ -282,6 +282,33 @@ func (c *Connection) NewSession(ctx context.Context, cwd string) error {
 	return nil
 }
 
+// NewAuxSession creates an ADDITIONAL ACP session on the same process without
+// replacing the primary session (c.session). It returns the new session's ID so
+// callers can prompt on it directly. This mirrors how production auxiliary
+// sessions (title-gen, follow-up, mcp-check, mcp-tools) are extra sessions
+// multiplexed onto the workspace's shared ACP process.
+func (c *Connection) NewAuxSession(ctx context.Context, cwd string) (acp.SessionId, error) {
+	sess, err := c.conn.NewSession(ctx, acp.NewSessionRequest{
+		Cwd:        cwd,
+		McpServers: []acp.McpServer{},
+	})
+	if err != nil {
+		return "", fmt.Errorf("new aux session error: %w", err)
+	}
+	return sess.SessionId, nil
+}
+
+// PromptSession sends a message to a specific session ID and waits for the
+// response. Used to drive auxiliary sessions created via NewAuxSession without
+// disturbing the primary session's state.
+func (c *Connection) PromptSession(ctx context.Context, sessionID acp.SessionId, message string) error {
+	_, err := c.conn.Prompt(ctx, acp.PromptRequest{
+		SessionId: sessionID,
+		Prompt:    []acp.ContentBlock{acp.TextBlock(message)},
+	})
+	return err
+}
+
 // Prompt sends a message to the agent and waits for the response.
 func (c *Connection) Prompt(ctx context.Context, message string) error {
 	return c.PromptWithContent(ctx, []acp.ContentBlock{acp.TextBlock(message)})

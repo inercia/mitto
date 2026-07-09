@@ -1084,6 +1084,23 @@ func SaveSettings(settings *Settings) error {
 // Non-ACP settings (web, ui, etc.) come from settings.json when no RC file exists,
 // or from the RC file when one exists (for backward compatibility).
 func LoadSettingsWithFallback() (*LoadResult, error) {
+	return loadSettingsWithFallback(true)
+}
+
+// LoadSettingsWithFallbackNoKeychain is identical to LoadSettingsWithFallback
+// but never accesses secure storage (Keychain) to materialise the external
+// access password. It is intended for non-web, non-interactive commands (e.g.
+// `mitto prompt`) that only need the ACP server configuration and must never
+// touch web authentication — both because they don't serve HTTP and because
+// the Keychain unlock prompt hangs when the binary runs headless (no TTY).
+func LoadSettingsWithFallbackNoKeychain() (*LoadResult, error) {
+	return loadSettingsWithFallback(false)
+}
+
+// loadSettingsWithFallback implements LoadSettingsWithFallback. When
+// withKeychain is false, the keychain password load is skipped entirely so no
+// web-auth secret is ever read.
+func loadSettingsWithFallback(withKeychain bool) (*LoadResult, error) {
 	// Check for RC file
 	rcPath, err := appdir.RCFilePath()
 	if err != nil {
@@ -1129,9 +1146,11 @@ func LoadSettingsWithFallback() (*LoadResult, error) {
 	settingsCfg := settings.ToConfig()
 
 	// Handle keychain password loading
-	if err := loadKeychainPassword(settingsCfg); err != nil {
-		// Non-fatal, just log and continue
-		_ = err
+	if withKeychain {
+		if err := loadKeychainPassword(settingsCfg); err != nil {
+			// Non-fatal, just log and continue
+			_ = err
+		}
 	}
 
 	// If no RC file, return settings-only config
@@ -1202,9 +1221,11 @@ func LoadSettingsWithFallback() (*LoadResult, error) {
 
 	// Load keychain password for the merged config
 	// This loads the password from keychain if Auth is configured but password is empty
-	if err := loadKeychainPassword(mergedCfg); err != nil {
-		// Non-fatal, just log and continue
-		_ = err
+	if withKeychain {
+		if err := loadKeychainPassword(mergedCfg); err != nil {
+			// Non-fatal, just log and continue
+			_ = err
+		}
 	}
 
 	return &LoadResult{
