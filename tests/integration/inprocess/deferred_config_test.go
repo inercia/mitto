@@ -18,9 +18,9 @@ import (
 )
 
 // setupDeferredConfigServer creates a test server whose mock ACP process records the
-// arrival order of prompt/set_model/set_mode RPCs to a temp file (MOCK_RPC_ORDER_FILE).
-// Queue title auto-generation is disabled so the auxiliary session does not emit extra
-// prompt entries that would pollute the order file.
+// arrival order of prompt/set_config_option/set_mode RPCs to a temp file
+// (MOCK_RPC_ORDER_FILE). Queue title auto-generation is disabled so the auxiliary
+// session does not emit extra prompt entries that would pollute the order file.
 func setupDeferredConfigServer(t *testing.T) (*TestServer, string) {
 	t.Helper()
 	orderFile := filepath.Join(t.TempDir(), "rpc-order.log")
@@ -200,10 +200,11 @@ func runDeferredConfigTest(t *testing.T, configID, method, supersededValue, want
 
 // TestDeferredModelConfig_FlushesBeforeQueuedPrompt verifies that a model change made
 // while the agent is prompting is deferred (no mid-turn RPC, turn not cancelled),
-// reflected optimistically, and flushed via set_model BEFORE the next queued prompt —
-// applying only the last-write-wins value.
+// reflected optimistically, and flushed via session/set_config_option BEFORE the next
+// queued prompt — applying only the last-write-wins value. The RPC label matches the
+// v0.13.5 wire method ("set_config_option"); the mock records it that way.
 func TestDeferredModelConfig_FlushesBeforeQueuedPrompt(t *testing.T) {
-	runDeferredConfigTest(t, "model", "set_model", "claude-opus-4-6", "claude-haiku-4-5",
+	runDeferredConfigTest(t, "model", "set_config_option", "claude-opus-4-6", "claude-haiku-4-5",
 		func(t *testing.T, bs *conversation.BackgroundSession) {
 			waitFor(t, 10*time.Second, func() bool {
 				am := bs.AgentModels()

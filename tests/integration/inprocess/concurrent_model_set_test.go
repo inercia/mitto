@@ -85,8 +85,9 @@ func setupTestServerWithModelConstraintAndEnv(t *testing.T, pattern string, acpE
 
 // TestConcurrentModelSetBurst verifies that N sessions starting simultaneously on the
 // same shared ACP process all converge to the constrained model even when the mock
-// server injects "timeout" failures for the first MOCK_SET_MODEL_FAIL_FIRST set_model
-// requests (forcing the retry path in SharedACPProcess.SetSessionModel).
+// server injects "timeout" failures for the first MOCK_SET_MODEL_FAIL_FIRST
+// session/set_config_option(model) requests (forcing the retry path in
+// SharedACPProcess.SetSessionModel, which in v0.13.5 wraps SetSessionConfigOption).
 //
 // Without the fix (serialisation semaphore + retry), concurrent callers race the
 // serially-served agent subprocess and at least one call times out permanently.
@@ -95,9 +96,9 @@ func TestConcurrentModelSetBurst(t *testing.T) {
 	const (
 		numSessions     = 3
 		expectedModelID = "claude-opus-4-6"
-		// MOCK_SET_MODEL_FAIL_FIRST=1: the first set_model RPC to reach the
-		// (serially-served) agent returns a "timeout" error, forcing the retry path in
-		// SharedACPProcess.SetSessionModel. The mock's fail counter is GLOBAL and the
+		// MOCK_SET_MODEL_FAIL_FIRST=1: the first set_config_option(model) RPC to reach
+		// the (serially-served) agent returns a "timeout" error, forcing the retry path
+		// in SharedACPProcess.SetSessionModel. The mock's fail counter is GLOBAL and the
 		// serialisation semaphore makes callers run strictly one-at-a-time, so exactly
 		// one session hits the injected failure and must recover via retry; the others
 		// succeed on their first attempt. All three must still converge to Opus.
@@ -188,10 +189,11 @@ func TestConcurrentModelSetBurst(t *testing.T) {
 	//
 	// CRITICAL: assert on the AGENT-CONFIRMED model (AgentModels().CurrentModelId),
 	// NOT on GetConfigValue("model"). setAgentModels optimistically pre-applies the
-	// constrained value to the local configOption.CurrentValue BEFORE the set_model
-	// RPC runs, so GetConfigValue would return the desired model even if every RPC
-	// failed — masking a broken retry path. AgentModels().CurrentModelId is only
-	// updated by SetConfigOption AFTER a successful SetSessionModel RPC, so it is the
+	// constrained value to the local configOption.CurrentValue BEFORE the
+	// set_config_option(model) RPC runs, so GetConfigValue would return the desired
+	// model even if every RPC failed — masking a broken retry path.
+	// AgentModels().CurrentModelId is only updated by SetConfigOption AFTER a
+	// successful SetSessionModel RPC, so it is the
 	// definitive signal that the retried call actually reached and was accepted by the
 	// (serially-served) agent subprocess (mitto-3q9).
 	sm := ts.Server.GetSessionManager()
