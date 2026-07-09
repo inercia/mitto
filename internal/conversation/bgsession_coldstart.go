@@ -99,15 +99,6 @@ func (bs *BackgroundSession) finishColdTrace(outcome string, kv ...any) {
 	bs.coldTrace.Summary(outcome, kv...)
 }
 
-// coldTraceID returns the cold-start ID for correlation across log lines, or
-// "" if no trace is active. Nil-safe.
-func (bs *BackgroundSession) coldTraceID() string {
-	if bs == nil {
-		return ""
-	}
-	return bs.coldTrace.ID()
-}
-
 // coldTraceCtx wraps base with the session's active cold-start Trace so the
 // acpproc RPC layer (WI-3) can recover the cold_start_id via
 // coldstart.FromContext. Returns base unchanged when no trace is active, so it

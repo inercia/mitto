@@ -295,8 +295,9 @@ func TestWarmOnceBarrier_OnlyOneHolderThroughWarmup(t *testing.T) {
 		go func() {
 			defer wg.Done()
 
-			// (a) barrier ENTRY condition (raw cold predicate).
-			if !(p.config.MCPInitTimeout > 0 && !p.mcpInitDone.Load()) {
+			// (a) barrier ENTRY condition: skip when NOT cold (inverse of the
+			// raw cold predicate MCPInitTimeout > 0 && !mcpInitDone).
+			if p.config.MCPInitTimeout <= 0 || p.mcpInitDone.Load() {
 				skipped.Add(1)
 				return
 			}
