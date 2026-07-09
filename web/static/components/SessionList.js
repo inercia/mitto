@@ -1530,6 +1530,35 @@ export function SessionList({
                     ];
                   })()
                 : []),
+              ...(() => {
+                // Collapsed "Open ▸" submenu (mitto-bbi.4): one entry per enabled
+                // OpenTarget from ui.mac.open_in.targets. Hidden entirely when the
+                // filtered list is empty — matches previous behaviour of hiding
+                // when both legacy toggles were off. Native-only (mitto-k0l): in
+                // a plain browser context the commands cannot execute locally, so
+                // don't advertise them.
+                if (!groupContextMenu.workingDir) return [];
+                if (!isNativeApp()) return [];
+                const enabledTargets = (openInTargets || []).filter(
+                  (t) => t && t.enabled === true,
+                );
+                if (enabledTargets.length === 0) return [];
+                return [
+                  {
+                    label: "Open",
+                    icon: html`<${FolderOpenIcon} className="w-4 h-4" />`,
+                    submenu: enabledTargets.map((t) => ({
+                      label: t.label || t.id,
+                      icon: html`<${resolveOpenIcon(
+                        t.icon || t.id,
+                      )} className="w-4 h-4" />`,
+                      onClick: () =>
+                        onOpenTarget &&
+                        onOpenTarget(groupContextMenu.workingDir, t.id),
+                    })),
+                  },
+                ];
+              })(),
               ...(onMoveFolderToGroup && groupContextMenu.workingDir
                 ? // Not gated by configReadonly: a folder's group is local
                   // organizational metadata in folders.json, not host config like
@@ -1584,35 +1613,6 @@ export function SessionList({
                     },
                   ]
                 : []),
-              ...(() => {
-                // Collapsed "Open ▸" submenu (mitto-bbi.4): one entry per enabled
-                // OpenTarget from ui.mac.open_in.targets. Hidden entirely when the
-                // filtered list is empty — matches previous behaviour of hiding
-                // when both legacy toggles were off. Native-only (mitto-k0l): in
-                // a plain browser context the commands cannot execute locally, so
-                // don't advertise them.
-                if (!groupContextMenu.workingDir) return [];
-                if (!isNativeApp()) return [];
-                const enabledTargets = (openInTargets || []).filter(
-                  (t) => t && t.enabled === true,
-                );
-                if (enabledTargets.length === 0) return [];
-                return [
-                  {
-                    label: "Open",
-                    icon: html`<${FolderOpenIcon} className="w-4 h-4" />`,
-                    submenu: enabledTargets.map((t) => ({
-                      label: t.label || t.id,
-                      icon: html`<${resolveOpenIcon(
-                        t.icon || t.id,
-                      )} className="w-4 h-4" />`,
-                      onClick: () =>
-                        onOpenTarget &&
-                        onOpenTarget(groupContextMenu.workingDir, t.id),
-                    })),
-                  },
-                ];
-              })(),
               ...(!configReadonly && groupContextMenu.workingDir
                 ? [
                     {
