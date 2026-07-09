@@ -243,6 +243,11 @@ export function WorkspacesDialog({
   // constraint by picking "-- None --" (vs. never having touched the control).
   const [editAuxModelConstraintCleared, setEditAuxModelConstraintCleared] =
     useState(false);
+  // Per-workspace initial-model preference applied as the baseline model of
+  // every new conversation created in this workspace. Mutually exclusive:
+  // profile wins server-side when both are set.
+  const [editInitialModelProfile, setEditInitialModelProfile] = useState("");
+  const [editInitialModelTag, setEditInitialModelTag] = useState("");
   const [editRunner, setEditRunner] = useState("exec");
   const [editRunnerConfig, setEditRunnerConfig] = useState(null);
   const [editAutoApprove, setEditAutoApprove] = useState(false);
@@ -571,6 +576,8 @@ export function WorkspacesDialog({
     setEditAuxModelProfile(selectedWorkspace.auxiliary_model_profile || "");
     setEditAuxModelTag(selectedWorkspace.auxiliary_model_tag || "");
     setEditAuxModelConstraintCleared(false);
+    setEditInitialModelProfile(selectedWorkspace.initial_model_profile || "");
+    setEditInitialModelTag(selectedWorkspace.initial_model_tag || "");
     setEditAcpCommandOverride(selectedWorkspace.acp_command_override || "");
     setEditRunner(selectedWorkspace.restricted_runner || "exec");
     setEditRunnerConfig(selectedWorkspace.restricted_runner_config || null);
@@ -1286,6 +1293,8 @@ export function WorkspacesDialog({
       auxiliary_model_profile: editAuxModelProfile || undefined,
       auxiliary_model_tag: editAuxModelTag || undefined,
       auxiliary_model_selection: auxModelSelection,
+      initial_model_profile: editInitialModelProfile || undefined,
+      initial_model_tag: editInitialModelTag || undefined,
       restricted_runner: editRunner,
       restricted_runner_config:
         editRunner !== "exec" ? editRunnerConfig : undefined,
@@ -4266,6 +4275,47 @@ export function WorkspacesDialog({
                             Custom command line for running the ACP server.
                             Leave empty to use the default.
                           </p>
+                        </div>
+                        <div>
+                          <label
+                            class="block text-sm text-mitto-text-muted mb-1"
+                            >Initial Model (optional)</label
+                          >
+                          <p class="text-xs text-mitto-text-muted mb-2">
+                            Apply this model as the baseline for every new
+                            conversation created in this workspace
+                          </p>
+                          <div class="flex items-center gap-2">
+                            <div class="flex-1 min-w-0">
+                              <${ModelProfileSelect}
+                                value=${editInitialModelProfile}
+                                profiles=${modelProfiles}
+                                className="w-full"
+                                onChange=${(name) => {
+                                  setEditInitialModelProfile(name);
+                                  if (name) {
+                                    setEditInitialModelTag("");
+                                  }
+                                }}
+                              />
+                            </div>
+                            <span class="text-xs text-mitto-text-muted shrink-0"
+                              >or by tag</span
+                            >
+                            <div class="flex-1 min-w-0">
+                              <${ModelTagSelect}
+                                value=${editInitialModelTag}
+                                profiles=${modelProfiles}
+                                className="w-full"
+                                onChange=${(tag) => {
+                                  setEditInitialModelTag(tag);
+                                  if (tag) {
+                                    setEditInitialModelProfile("");
+                                  }
+                                }}
+                              />
+                            </div>
+                          </div>
                         </div>
                         <div>
                           <label

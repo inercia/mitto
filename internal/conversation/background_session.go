@@ -212,17 +212,22 @@ type BackgroundSession struct {
 	stderrPatterns       *CompiledStderrPatterns                // Per-agent stderr regex patterns (mitto-k6h); nil = baseline only
 	acpServerConstraints map[string]*config.ACPServerConstraint // Auto-selection constraints from the ACP server config
 	mittoConfig          *config.Config                         // Full Mitto config; used for model-tag resolution (config.ResolveModelTags)
-	contextFlushCommand  string                                 // Agent-native context-flush command (e.g. "/clear"); empty = disabled
-	procCtl              acpProcessController                   // ACP restart policy collaborator (composition)
-	titleCoord           titleCoordinator                       // Auto-title generation triggers collaborator (composition)
-	promptArgCache       *promptArgCache                        // Per-conversation prompt argument value cache (composition)
-	queueDisp            queueDispatcher                        // Queue tick / dispatch logic collaborator (composition)
-	callbackSink         acpCallbackSink                        // WebClient callback cluster collaborator (composition)
-	uiPromptCtr          uiPromptCenter                         // UI prompt + notify collaborator (composition)
-	followUpCoord        followUpCoordinator                    // Follow-up suggestions + action-button collaborator (composition)
-	configMgr            configManager                          // Session-config / model-baseline collaborator (composition)
-	handshaker           sharedSessionHandshaker                // Shared-process session handshake collaborator (composition)
-	promptDisp           promptDispatcher                       // PromptWithMeta helper-split collaborator (composition)
+	// initialModelPreference is the per-workspace initial-model preference
+	// applied to fresh top-level sessions by cbMaybeApplyInitialModelAsync.
+	// Nil for resumed sessions, auto-children, and workspaces without a
+	// preference configured.
+	initialModelPreference []config.PromptPreferredModel
+	contextFlushCommand    string                  // Agent-native context-flush command (e.g. "/clear"); empty = disabled
+	procCtl                acpProcessController    // ACP restart policy collaborator (composition)
+	titleCoord             titleCoordinator        // Auto-title generation triggers collaborator (composition)
+	promptArgCache         *promptArgCache         // Per-conversation prompt argument value cache (composition)
+	queueDisp              queueDispatcher         // Queue tick / dispatch logic collaborator (composition)
+	callbackSink           acpCallbackSink         // WebClient callback cluster collaborator (composition)
+	uiPromptCtr            uiPromptCenter          // UI prompt + notify collaborator (composition)
+	followUpCoord          followUpCoordinator     // Follow-up suggestions + action-button collaborator (composition)
+	configMgr              configManager           // Session-config / model-baseline collaborator (composition)
+	handshaker             sharedSessionHandshaker // Shared-process session handshake collaborator (composition)
+	promptDisp             promptDispatcher        // PromptWithMeta helper-split collaborator (composition)
 
 	// Session config options - configurable settings for the session
 	// This supports both legacy "modes" API and newer "configOptions" API.
@@ -400,6 +405,15 @@ type BackgroundSessionConfig struct {
 	// ACP-server-derived "model" auto-selection constraint for this session only.
 	// Used by auto-children to apply a per-child initial model profile.
 	ModelConstraintOverride *config.ACPServerConstraint
+
+	// InitialModelPreference is the per-workspace initial-model preference
+	// (WorkspaceSettings.InitialModelProfile / InitialModelTag) resolved as an
+	// ordered list ready for SelectPreferredModel. When non-empty and no
+	// ModelConstraintOverride is set, BackgroundSession applies it as the
+	// session's persistent baseline after the agent reports its available
+	// models. Only set for fresh top-level sessions by SessionManager;
+	// resumed sessions and auto-children leave this nil.
+	InitialModelPreference []config.PromptPreferredModel
 
 	// AvailableACPServers is the pre-computed list of ACP servers that have workspaces
 	// configured for the session's working directory. Populated by SessionManager using
@@ -638,6 +652,8 @@ func NewBackgroundSession(cfg BackgroundSessionConfig) (*BackgroundSession, erro
 	)
 	// Store full config for model-tag resolution (config.ResolveModelTags).
 	bs.mittoConfig = cfg.MittoConfig
+	// Per-workspace initial-model preference (applied after agent reports models).
+	bs.initialModelPreference = cfg.InitialModelPreference
 	// Look up the agent-native context-flush command from config
 	bs.contextFlushCommand = lookupContextFlushCommand(cfg.MittoConfig, cfg.ACPServer)
 
