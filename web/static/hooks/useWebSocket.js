@@ -3115,6 +3115,30 @@ export function useWebSocket({ onActiveSessionRemovedRef } = {}) {
             messageText = `Session stopped: ${reason}. Unarchive to continue.`;
           }
 
+          // Only append the stop message when the session was actually running.
+          // Multiple stop broadcasts (per-session WS + global events + coalesced
+          // resume paths) can arrive for the same underlying transition; gating
+          // on the prior isRunning state prevents duplicate messages.
+          const wasRunning = session.isRunning === true;
+          const nextInfo = {
+            ...session.info,
+            acp_ready: false,
+            // Track GC-suspended state so the UI can suppress the
+            // "Reconnecting to AI agent..." spinner for suspended sessions.
+            gc_suspended: isGCSuspended || false,
+          };
+          if (!wasRunning) {
+            return {
+              ...prev,
+              [sessionId]: {
+                ...session,
+                isRunning: false,
+                isStreaming: false,
+                activeUIPrompt: null,
+                info: nextInfo,
+              },
+            };
+          }
           return {
             ...prev,
             [sessionId]: {
@@ -3122,13 +3146,7 @@ export function useWebSocket({ onActiveSessionRemovedRef } = {}) {
               isRunning: false,
               isStreaming: false,
               activeUIPrompt: null,
-              info: {
-                ...session.info,
-                acp_ready: false,
-                // Track GC-suspended state so the UI can suppress the
-                // "Reconnecting to AI agent..." spinner for suspended sessions.
-                gc_suspended: isGCSuspended || false,
-              },
+              info: nextInfo,
               // Add a system/error message to inform the user
               messages: [
                 ...session.messages,
@@ -4513,16 +4531,34 @@ export function useWebSocket({ onActiveSessionRemovedRef } = {}) {
         setSessions((prev) => {
           const session = prev[msg.data?.session_id];
           if (!session) return prev;
+          // Only append the "Session resumed" system message when the session was
+          // actually suspended or stopped. Multiple resume paths (WS connect,
+          // ensure_resumed on focus, unarchive) can each trigger acp_started
+          // broadcasts; gating on the prior state prevents duplicate messages
+          // when the session was already running.
+          const wasSuspended =
+            session.info?.gc_suspended === true || session.isRunning === false;
+          const nextInfo = {
+            ...session.info,
+            acp_ready: true,
+            gc_suspended: false, // Clear GC-suspended state on resume
+          };
+          if (!wasSuspended) {
+            return {
+              ...prev,
+              [msg.data.session_id]: {
+                ...session,
+                isRunning: true,
+                info: nextInfo,
+              },
+            };
+          }
           return {
             ...prev,
             [msg.data.session_id]: {
               ...session,
               isRunning: true,
-              info: {
-                ...session.info,
-                acp_ready: true,
-                gc_suspended: false, // Clear GC-suspended state on resume
-              },
+              info: nextInfo,
               // Add a system message to inform the user
               messages: [
                 ...session.messages,

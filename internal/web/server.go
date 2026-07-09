@@ -240,6 +240,16 @@ type Server struct {
 	recentStartFailsMu sync.Mutex
 	recentStartFails   map[string]time.Time
 
+	// recentStarts deduplicates BroadcastACPStarted calls for the same session.
+	// Multiple goroutines that coalesce on a single resume operation each broadcast
+	// independently; only the first per session per window is emitted.
+	recentStartsMu sync.Mutex
+	recentStarts   map[string]time.Time
+
+	// recentStops deduplicates BroadcastACPStopped calls the same way.
+	recentStopsMu sync.Mutex
+	recentStops   map[string]time.Time
+
 	// promptMigrationMu serializes legacy .md → .prompt.yaml prompt migration so
 	// concurrent workspace-prompts fetches don't race writing the same files and
 	// only the first caller observes (and reports) a given migration.
@@ -1602,7 +1612,33 @@ func (s *Server) BroadcastSessionStreaming(sessionID string, isStreaming bool) {
 }
 
 // BroadcastACPStopped notifies all connected clients that an ACP connection was stopped.
+// Duplicate calls for the same session within acpLifecycleWindow are suppressed so that
+// coalesced resume/shutdown paths do not each emit a system message.
 func (s *Server) BroadcastACPStopped(sessionID, reason string) {
+	if s.eventsManager == nil {
+		return
+	}
+
+	now := time.Now()
+	s.recentStopsMu.Lock()
+	if s.recentStops == nil {
+		s.recentStops = make(map[string]time.Time)
+	}
+	if last, ok := s.recentStops[sessionID]; ok && now.Sub(last) < acpLifecycleWindow {
+		s.recentStopsMu.Unlock()
+		if s.logger != nil {
+			s.logger.Debug("Suppressed duplicate ACP stopped broadcast", "session_id", sessionID)
+		}
+		return
+	}
+	for id, t := range s.recentStops {
+		if now.Sub(t) >= acpLifecycleWindow {
+			delete(s.recentStops, id)
+		}
+	}
+	s.recentStops[sessionID] = now
+	s.recentStopsMu.Unlock()
+
 	s.eventsManager.Broadcast(WSMsgTypeACPStopped, map[string]string{
 		"session_id": sessionID,
 		"reason":     reason,
@@ -1615,7 +1651,33 @@ func (s *Server) BroadcastACPStopped(sessionID, reason string) {
 }
 
 // BroadcastACPStarted notifies all connected clients that an ACP connection was started.
+// Duplicate calls for the same session within acpLifecycleWindow are suppressed so that
+// coalesced resume waiters do not each emit a system message.
 func (s *Server) BroadcastACPStarted(sessionID string) {
+	if s.eventsManager == nil {
+		return
+	}
+
+	now := time.Now()
+	s.recentStartsMu.Lock()
+	if s.recentStarts == nil {
+		s.recentStarts = make(map[string]time.Time)
+	}
+	if last, ok := s.recentStarts[sessionID]; ok && now.Sub(last) < acpLifecycleWindow {
+		s.recentStartsMu.Unlock()
+		if s.logger != nil {
+			s.logger.Debug("Suppressed duplicate ACP started broadcast", "session_id", sessionID)
+		}
+		return
+	}
+	for id, t := range s.recentStarts {
+		if now.Sub(t) >= acpLifecycleWindow {
+			delete(s.recentStarts, id)
+		}
+	}
+	s.recentStarts[sessionID] = now
+	s.recentStartsMu.Unlock()
+
 	s.eventsManager.Broadcast(WSMsgTypeACPStarted, map[string]string{
 		"session_id": sessionID,
 	})
@@ -1625,6 +1687,11 @@ func (s *Server) BroadcastACPStarted(sessionID string) {
 			"clients", s.eventsManager.ClientCount())
 	}
 }
+
+// acpLifecycleWindow is the minimum interval between duplicate BroadcastACPStarted
+// or BroadcastACPStopped calls for the same session. See acpStartFailWindow for
+// the equivalent rationale.
+const acpLifecycleWindow = 2 * time.Second
 
 // acpStartFailWindow is the minimum interval between duplicate BroadcastACPStartFailed
 // calls for the same session. Concurrent goroutines that coalesce on the same resume
