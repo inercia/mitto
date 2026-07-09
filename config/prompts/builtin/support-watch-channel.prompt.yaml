@@ -160,8 +160,8 @@ prompt: |-
   | Priority | Intervention urgency | When |
   |----------|----------------------|------|
   | **P1** | HIGH — actionable, waiting on **your** approval | A draft (reply **or** clarifying question) is ready and pending your OK to post — typically `state:drafting`. Bump to **P0** only if that draft answers an escalation / outage / broad-impact thread (you are the bottleneck on an urgent fix). |
-  | **P2** | MEDIUM — in motion, not blocked on you | `state:triaged`, `state:gathering-info`, `state:awaiting-us` (customer replied, our turn), or `awaiting-customer` / `need-info` where the customer last spoke **less than 3 days ago**. |
-  | **P3** | LOW — dormant, nothing for you to do | `state:awaiting-customer` or `state:need-info` with **no customer response for 3+ days** — drifting toward the 10-day auto-close. |
+  | **P2** | MEDIUM — in motion, our court, not blocked on your approval | `state:triaged`, `state:gathering-info`, `state:awaiting-us` (customer replied, our turn). |
+  | **P3** | LOW — waiting on the customer, nothing for you to do now | `state:awaiting-customer` or `state:need-info` — we posted a reply or a clarifying question and are waiting on the customer (also drifting toward the 10-day auto-close as time passes). |
 
   ## Knowledge-file gate: check this FIRST, every iteration
 
@@ -254,8 +254,8 @@ prompt: |-
   - Do not override `drafting` if our pending action still stands (a draft awaiting review). Add a
     short `[STATE]` comment noting any change.
   - **After any state change, recompute priority** (see **Priority = urgency of your intervention**):
-    `drafting` → P1; `awaiting-us` / fresh `awaiting-customer` / `need-info` → P2; `awaiting-customer`
-    or `need-info` with the customer silent **3+ days** → P3.
+    `drafting` → P1; `triaged` / `gathering-info` / `awaiting-us` (our court) → P2; `awaiting-customer`
+    / `need-info` (we posted a reply or clarifying question, ball in the customer's court) → P3.
   {{- if .Permissions.CanStartConversation }}
   - **Reap finished investigation children.** A child spawned by Step 4 is **done** once its bead has
     left the in-flight states — i.e. the bead is now `drafting` / `need-info` (the two terminal

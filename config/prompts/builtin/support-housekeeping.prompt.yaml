@@ -185,8 +185,8 @@ prompt: |-
     | Priority | Intervention urgency | When |
     |----------|----------------------|------|
     | **P1** | HIGH — actionable, waiting on **your** approval | A draft (reply **or** clarifying question) is ready and pending your OK to post — typically `state:drafting`. Bump to **P0** only if that draft answers an escalation / outage / broad-impact thread (you are the bottleneck on an urgent fix). |
-    | **P2** | MEDIUM — in motion, not blocked on you | `state:triaged`, `state:gathering-info`, `state:awaiting-us` (customer replied, our turn), or `awaiting-customer` / `need-info` where the customer last spoke **less than 3 days ago**. |
-    | **P3** | LOW — dormant, nothing for you to do | `state:awaiting-customer` or `state:need-info` with **no customer response for 3+ days** — drifting toward the 10-day auto-close. |
+    | **P2** | MEDIUM — in motion, our court, not blocked on your approval | `state:triaged`, `state:gathering-info`, `state:awaiting-us` (customer replied, our turn). |
+    | **P3** | LOW — waiting on the customer, nothing for you to do now | `state:awaiting-customer` or `state:need-info` — we posted a reply or a clarifying question and are waiting on the customer (also drifting toward the 10-day auto-close as time passes). |
   - **Next step** — add a short `**[NEXT · <time>]**` comment naming the concrete next action and the
     prompt that performs it (**"Support: investigate"** to find an answer, **"Support: gather more
     information"** to ask the customer, **"Support: reply to user"** to post a ready draft).
