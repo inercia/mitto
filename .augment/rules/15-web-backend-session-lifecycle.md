@@ -104,6 +104,8 @@ When ACP handshake times out transiently, `BackgroundSession.InitializeWithACP()
 
 `internal/conversation/shared_session_handshaker.go` bounds concurrent `session/load` + `session/new` handshakes with **one shared deadline** to prevent stacking (`mitto-1ut`). The budget cap MUST be **released** for the `session/new` fallback when the `session/load` probe **timed out** (process genuinely cold) — otherwise `session/new` inherits only `budget − probeTimeout` (e.g. `240s − 45s = 195s`), less than a single `MCPInitTimeout` attempt (240s), guaranteeing starvation. Only cap the fallback when the probe **fast-failed** (JSON-RPC `-32602` stale). Track this via `probeTimedOut`. Test seam: `loadBlocksUntilCtxDone` in `fakeSharedProcess` (`TestHandshaker_ResumeSharedACPSession_ColdProbeTimeout_NoNewDeadline`). Pre-attempt cancellations in `acpproc/shared_acp_process.go` emit a self-diagnosing error (elapsed vs. per-attempt budget) instead of a raw deadline.
 
+**Clear persisted `acp_session_id` on load failure (`mitto-y1g`)**: In `resumeSharedACPSession`, both load-failure branches (`-32602 Session not found` **and** probe timeout) must call `hsClearPersistedACPSessionID()` before falling back to `session/new`. Otherwise the stale ID stays on disk and every subsequent cold-start / process recycle re-triggers the same doomed `session/load` — catastrophic when an always-active loop session is one of the offenders (each recycle burns the probe cap before the `session/new` fallback). Mirror `hsPersistACPSessionID`; assert both branches clear in the regression test.
+
 ## MCP Server Lifecycle
 
 | Event               | MCP Server Action          |
