@@ -119,6 +119,16 @@ ui:
 
 See [macOS Configuration](mac/README.md) for macOS-specific settings like hotkeys and notifications.
 
+#### "Open In" Targets (macOS)
+
+The macOS app can open a workspace folder in external applications (Finder, Terminal,
+iTerm, Visual Studio Code, Cursor, Xcode, GoLand, or user-defined commands) directly
+from the sidebar's folder context menu. The list of available targets is configured
+under `ui.mac.open_in.targets` in `settings.json` or interactively via **Settings →
+UI → Open In**. See [Open In targets](mac/README.md#open-in-targets) for the full
+list of built-ins, the `${MITTO_WORKING_DIR}` placeholder, and how to add a custom
+target.
+
 ## Complete Example
 
 Here's a complete configuration example:

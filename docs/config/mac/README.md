@@ -17,6 +17,7 @@ The Mitto macOS app is a native application that embeds the web interface in a W
 - [Installation from GitHub Releases](#installation-from-github-releases)
 - [Window Behavior](#window-behavior)
 - [Notifications](#notifications)
+- [Open In targets](#open-in-targets)
 
 ## Related Documentation
 
@@ -208,6 +209,103 @@ You can also configure these settings through the UI:
 3. Toggle **Native notifications** to use macOS Notification Center
 4. Toggle **Play sound when agent completes** for audio feedback
 5. Click **Save Changes**
+
+## Open In targets
+
+The **Open In** section configures the list of external applications that can open a
+workspace folder from the sidebar. Right-clicking a folder header in the sidebar shows
+an **Open ▸** submenu whose entries come directly from this list; clicking an entry
+runs its configured shell command with `${MITTO_WORKING_DIR}` substituted for the
+folder's absolute path.
+
+### Configuring via Settings Dialog
+
+1. Open the Settings dialog (gear icon in sidebar)
+2. Click the **UI** tab (only visible in macOS app)
+3. Scroll to the **Open In** section
+4. Toggle any built-in target on or off, or click the row to expand and edit its
+   command
+5. Click **+ Add custom…** to append a user-defined target
+6. Click **Save Changes**
+
+Only targets with **Enabled** turned on appear in the folder context-menu submenu.
+When every target is disabled the **Open ▸** entry is hidden entirely.
+
+### Built-in targets (macOS)
+
+On macOS, the following seven targets are available out of the box. They are all
+labeled as built-in in the UI and cannot be removed, only enabled/disabled or have
+their command edited:
+
+| ID         | Default label        | Default enabled | Command                                          |
+| ---------- | -------------------- | --------------- | ------------------------------------------------ |
+| `finder`   | Finder               | ✅ yes          | `open ${MITTO_WORKING_DIR}`                      |
+| `terminal` | Terminal             | ✅ yes          | `open -a Terminal ${MITTO_WORKING_DIR}`          |
+| `iterm`    | iTerm                | ❌ no           | `open -a iTerm ${MITTO_WORKING_DIR}`             |
+| `vscode`   | Visual Studio Code   | ❌ no           | `open -a "Visual Studio Code" ${MITTO_WORKING_DIR}` |
+| `cursor`   | Cursor               | ❌ no           | `open -a Cursor ${MITTO_WORKING_DIR}`            |
+| `xcode`    | Xcode                | ❌ no           | `open -a Xcode ${MITTO_WORKING_DIR}`             |
+| `goland`   | GoLand               | ❌ no           | `open -a GoLand ${MITTO_WORKING_DIR}`            |
+
+### Adding a custom target
+
+Click **+ Add custom…** in the Open In section, then fill in:
+
+- **Label** — the text shown in the context menu (e.g. `Sublime Text`).
+- **Command** — any shell command; use `${MITTO_WORKING_DIR}` where you want the
+  workspace folder path substituted (it is quoted safely at exec time).
+
+Custom targets get an auto-generated `id`; they are persisted alongside the
+built-ins under `ui.mac.open_in.targets` in `settings.json` and can be removed
+from the same row.
+
+### JSON example
+
+```json
+{
+  "ui": {
+    "mac": {
+      "open_in": {
+        "targets": [
+          {
+            "id": "finder",
+            "label": "Finder",
+            "icon": "finder",
+            "command": "open ${MITTO_WORKING_DIR}",
+            "enabled": true,
+            "builtin": true
+          },
+          {
+            "id": "sublime",
+            "label": "Sublime Text",
+            "command": "open -a \"Sublime Text\" ${MITTO_WORKING_DIR}",
+            "enabled": true
+          }
+        ]
+      }
+    }
+  }
+}
+```
+
+Merging rules:
+
+- Any built-in target you do not list keeps its default label/command and stays
+  enabled/disabled per the default table above.
+- Listing a built-in target by its `id` overrides those fields; the entry
+  remains marked `builtin: true` and cannot be deleted from the UI.
+- Entries with an unknown or empty `id` are ignored.
+
+### Legacy fallback
+
+Older installations may still have `ui.mac.badge_click_action` and
+`ui.mac.terminal_action` in `settings.json` (from before the Open In section
+existed). When `ui.mac.open_in.targets` is absent or empty, Mitto synthesizes
+a two-entry list — a Finder entry from `badge_click_action` and a Terminal
+entry from `terminal_action` — so those installations keep working unchanged.
+Once you save any Open In configuration through the Settings dialog, the new
+`ui.mac.open_in.targets` list becomes authoritative and the legacy fields are
+ignored.
 
 ## JSON Format
 
