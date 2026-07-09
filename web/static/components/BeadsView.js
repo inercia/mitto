@@ -1033,6 +1033,14 @@ export function BeadsDetailPanel({
         ariaLabel: fullscreen ? "Exit fullscreen" : "Fullscreen",
         onClick: () => setFullscreen((f) => !f),
       },
+      {
+        kind: "button",
+        testId: "beads-panel-close",
+        icon: html`<${CloseIcon} className="w-4 h-4" />`,
+        tip: "Close",
+        ariaLabel: "Close",
+        onClick: () => handleClose(),
+      },
     ];
   }, [
     data,
@@ -1045,6 +1053,7 @@ export function BeadsDetailPanel({
     onRunPrompt,
     issueShortcuts,
     issueShortcutPromptMap,
+    handleClose,
   ]);
 
   // Seed non-notes fields whenever a different issue opens (notes come from
