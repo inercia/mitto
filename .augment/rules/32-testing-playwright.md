@@ -123,6 +123,23 @@ In Docker, ACP connections take ~1.1s. After clicking new-session, **wait for `m
 await page.waitForFunction(() => !!localStorage.getItem("mitto_last_session_id"));
 ```
 
+## Testing Native-App-Gated UI
+
+For features gated on `isNativeApp()` (`web/static/utils/native.js`), stub the sentinel `window.mittoPickFolder` **before navigation** with `page.addInitScript` — Playwright runs in a plain browser, so `isNativeApp()` returns `false` by default.
+
+```typescript
+async function stubNativeApp(page) {
+  await page.addInitScript(() => {
+    Object.defineProperty(window, "mittoPickFolder",
+      { configurable: true, get: () => () => {}, set: () => {} });
+  });
+}
+```
+
+**Apply per-test, NOT in `beforeEach`** — move `helpers.navigateAndWait(page)` into each test so a negative test can navigate un-stubbed to assert the gated UI is absent. Cover both positive (stubbed → visible) and negative (un-stubbed → hidden) paths in the same spec. Reference: `tests/ui/specs/open-in-context-menu.spec.ts`.
+
+Same rule applies when patching backend config the frontend reads once via `fetchConfig()` on mount (e.g. `ui.mac.open_in` targets): PATCH it in `beforeEach` **before** the first `navigateAndWait`, otherwise the mount reads stale defaults.
+
 ## Browser-Specific Issues
 
 | Issue | Browser | Cause |

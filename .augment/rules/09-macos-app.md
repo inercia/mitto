@@ -28,8 +28,11 @@ touch Mitto.app && killall Finder && killall Dock
 
 ## Environment Detection
 
+Prefer the shared `isNativeApp()` from `web/static/utils/native.js` (re-exported by `utils/index.js`) over redefining the predicate inline. Implementation: `typeof window.mittoPickFolder === "function"` — `mittoPickFolder` is the sentinel bound only by the WKWebView host. Use it to gate any UI whose action requires a bound `window.mitto*` function (e.g. the folder-header "Open ▸" submenu in `SessionList.js`).
+
 ```javascript
-const isMacApp = typeof window.mittoPickFolder === "function";
+import { isNativeApp } from "../utils/index.js";
+if (!isNativeApp()) return []; // hide native-only UI in browser context
 ```
 
 ### Bound Native Functions
