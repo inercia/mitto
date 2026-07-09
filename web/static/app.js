@@ -113,7 +113,10 @@ import { Toolbar } from "./components/Toolbar.js";
 import { MessageList } from "./components/MessageList.js";
 import { Message } from "./components/Message.js";
 import { ChatInput } from "./components/ChatInput.js";
-import { SettingsDialog } from "./components/SettingsDialog.js";
+import {
+  SettingsDialog,
+  DEFAULT_MAC_OPEN_TARGETS,
+} from "./components/SettingsDialog.js";
 import { WorkspacesDialog } from "./components/WorkspacesDialog.js";
 import { AgentDiscoveryDialog } from "./components/AgentDiscoveryDialog.js";
 import { QueueDropdown } from "./components/QueueDropdown.js";
@@ -992,6 +995,13 @@ function App() {
   const [terminalActionCommand, setTerminalActionCommand] = useState(
     "open -a Terminal ${MITTO_WORKING_DIR}",
   );
+  // "Open In" targets (macOS only, mitto-bbi). Populated from config.ui.mac.open_in.targets;
+  // falls back to DEFAULT_MAC_OPEN_TARGETS when the block is absent — matches the fallback
+  // the backend applies at exec time via config.DefaultOpenTargets(). Passed to
+  // <SessionList /> for the folder context-menu "Open ▸" submenu.
+  const [openInTargets, setOpenInTargets] = useState(() =>
+    DEFAULT_MAC_OPEN_TARGETS.map((t) => ({ ...t })),
+  );
 
   // Derive enabled state from non-empty command
   const badgeClickEnabled =
@@ -1067,6 +1077,25 @@ function App() {
           config?.ui?.mac?.terminal_action?.command ||
             "open -a Terminal ${MITTO_WORKING_DIR}",
         );
+        // Load Open In targets (macOS only). Same shape and fallback as
+        // SettingsDialog.js — when ui.mac.open_in.targets is missing/empty we
+        // synthesize the shared DEFAULT_MAC_OPEN_TARGETS so the folder
+        // context-menu submenu still shows Finder + Terminal on fresh installs.
+        const macOpenInTargets = config?.ui?.mac?.open_in?.targets;
+        if (Array.isArray(macOpenInTargets) && macOpenInTargets.length > 0) {
+          setOpenInTargets(
+            macOpenInTargets.map((t) => ({
+              id: t.id || "",
+              label: t.label || "",
+              icon: t.icon || "",
+              command: t.command || "",
+              enabled: t.enabled !== false,
+              builtin: t.builtin === true,
+            })),
+          );
+        } else {
+          setOpenInTargets(DEFAULT_MAC_OPEN_TARGETS.map((t) => ({ ...t })));
+        }
         // Load input font family setting (web UI)
         if (config?.ui?.web?.input_font_family) {
           setInputFontFamily(config.ui.web.input_font_family);
@@ -1750,6 +1779,47 @@ function App() {
       }
     },
     [badgeClickEnabled, showToast],
+  );
+
+  // Fire a configured "Open In" target (mitto-bbi.4). Sends
+  // {action:"open", target_id} to /api/badge-click; backend resolves against
+  // EffectiveOpenTargets() and executes target.Command via sh -c. Errors surface
+  // as toasts using the same envelope as handleFolderOpen.
+  const handleOpenTarget = useCallback(
+    async (workspacePath, targetId) => {
+      if (!workspacePath || !targetId) return;
+
+      try {
+        const res = await authFetch(apiUrl("/api/badge-click"), {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            workspace_path: workspacePath,
+            action: "open",
+            target_id: targetId,
+          }),
+        });
+
+        if (!res.ok) {
+          const data = await res.json().catch(() => ({}));
+          showToast({
+            style: "error",
+            title: data.error?.message || data.error || "Failed to open target",
+          });
+        } else {
+          const data = await res.json();
+          if (!data.success && data.error) {
+            showToast({ style: "error", title: data.error });
+          }
+        }
+      } catch (err) {
+        showToast({
+          style: "error",
+          title: "Failed to open target: " + err.message,
+        });
+      }
+    },
+    [showToast],
   );
 
   // Move a folder to an organizational group (folders.json group label). An
@@ -3474,6 +3544,8 @@ function App() {
             onFolderOpen=${handleFolderOpen}
             onMoveFolderToGroup=${handleMoveFolderToGroup}
             onTerminalClick=${handleTerminalClick}
+            openInTargets=${openInTargets}
+            onOpenTarget=${handleOpenTarget}
             onBeadsOpen=${handleBeadsOpen}
             onBeadsCreate=${(wd) =>
               setQuickCreate({ open: true, workingDir: wd })}

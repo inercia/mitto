@@ -61,6 +61,22 @@ import {
   getPromptIconOrDefault,
 } from "./Icons.js";
 
+// Resolve an icon component for an OpenTarget entry keyed by its icon field
+// (falls back to the target id when icon is empty). Anything unrecognised falls
+// back to the generic folder icon. Keep this in sync with the ids in
+// SettingsDialog.DEFAULT_MAC_OPEN_TARGETS and config.DefaultOpenTargets().
+const resolveOpenIcon = (key) => {
+  switch (key) {
+    case "finder":
+      return FolderOpenIcon;
+    case "terminal":
+    case "iterm":
+      return TerminalIcon;
+    default:
+      return FolderOpenIcon;
+  }
+};
+
 // Module-level cache for git changes: keyed by workingDir.
 // Each entry: { data, ts } where ts is Date.now() of the last fetch.
 const GIT_CHANGES_CACHE = {};
@@ -204,6 +220,11 @@ export function SessionList({
   onFolderOpen,
   onMoveFolderToGroup, // Called with (workingDir, group) to reassign a folder's group
   onTerminalClick,
+  // Configurable "Open ▸" submenu targets (mitto-bbi). Each entry:
+  // {id,label,icon,command,enabled,builtin}. Only entries with enabled===true
+  // appear in the folder context-menu submenu. Callback: onOpenTarget(workingDir, id).
+  openInTargets = [],
+  onOpenTarget,
   onBeadsOpen,
   onBeadsCreate, // (workingDir) => open the new-issue side panel for a folder
   onFetchBeadsListPrompts, // async (workingDir) => menus:beadsList prompts[]
@@ -1562,28 +1583,32 @@ export function SessionList({
                     },
                   ]
                 : []),
-              ...(badgeClickEnabled && groupContextMenu.workingDir
-                ? [
-                    {
-                      label: "Open Folder",
-                      icon: html`<${FolderOpenIcon} className="w-4 h-4" />`,
+              ...(() => {
+                // Collapsed "Open ▸" submenu (mitto-bbi.4): one entry per enabled
+                // OpenTarget from ui.mac.open_in.targets. Hidden entirely when the
+                // filtered list is empty — matches previous behaviour of hiding
+                // when both legacy toggles were off.
+                if (!groupContextMenu.workingDir) return [];
+                const enabledTargets = (openInTargets || []).filter(
+                  (t) => t && t.enabled === true,
+                );
+                if (enabledTargets.length === 0) return [];
+                return [
+                  {
+                    label: "Open",
+                    icon: html`<${FolderOpenIcon} className="w-4 h-4" />`,
+                    submenu: enabledTargets.map((t) => ({
+                      label: t.label || t.id,
+                      icon: html`<${resolveOpenIcon(
+                        t.icon || t.id,
+                      )} className="w-4 h-4" />`,
                       onClick: () =>
-                        onFolderOpen &&
-                        onFolderOpen(groupContextMenu.workingDir),
-                    },
-                  ]
-                : []),
-              ...(terminalActionEnabled && groupContextMenu.workingDir
-                ? [
-                    {
-                      label: "Open Terminal",
-                      icon: html`<${TerminalIcon} className="w-4 h-4" />`,
-                      onClick: () =>
-                        onTerminalClick &&
-                        onTerminalClick(groupContextMenu.workingDir),
-                    },
-                  ]
-                : []),
+                        onOpenTarget &&
+                        onOpenTarget(groupContextMenu.workingDir, t.id),
+                    })),
+                  },
+                ];
+              })(),
               ...(!configReadonly && groupContextMenu.workingDir
                 ? [
                     {

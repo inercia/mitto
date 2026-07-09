@@ -132,6 +132,21 @@ const THEME_LABELS = {
 
 // WorkspaceBadge is now a standalone component module (not prop-drilled from app.js)
 
+// DEFAULT_MAC_OPEN_TARGETS mirrors backend config.DefaultOpenTargets() (darwin)
+// verbatim so the UI shows the same rows the backend would synthesize when
+// ui.mac.open_in.targets is absent. Consumed by SettingsDialog (Open In section)
+// and by app.js (folder context-menu submenu — see SessionList.js). Keep the
+// entries in sync with internal/config/config.go DefaultOpenTargets().
+export const DEFAULT_MAC_OPEN_TARGETS = [
+  { id: "finder", label: "Finder", icon: "finder", command: "open ${MITTO_WORKING_DIR}", enabled: true, builtin: true },
+  { id: "terminal", label: "Terminal", icon: "terminal", command: "open -a Terminal ${MITTO_WORKING_DIR}", enabled: true, builtin: true },
+  { id: "iterm", label: "iTerm", icon: "iterm", command: "open -a iTerm ${MITTO_WORKING_DIR}", enabled: false, builtin: true },
+  { id: "vscode", label: "Visual Studio Code", icon: "vscode", command: `open -a "Visual Studio Code" \${MITTO_WORKING_DIR}`, enabled: false, builtin: true },
+  { id: "cursor", label: "Cursor", icon: "cursor", command: "open -a Cursor ${MITTO_WORKING_DIR}", enabled: false, builtin: true },
+  { id: "xcode", label: "Xcode", icon: "xcode", command: "open -a Xcode ${MITTO_WORKING_DIR}", enabled: false, builtin: true },
+  { id: "goland", label: "GoLand", icon: "goland", command: "open -a GoLand ${MITTO_WORKING_DIR}", enabled: false, builtin: true },
+];
+
 /**
  * FolderListEditor — reusable folder list editing component with append/replace modes.
  *
@@ -1771,15 +1786,7 @@ export function SettingsDialog({
           })),
         );
       } else {
-        setOpenInTargets([
-          { id: "finder", label: "Finder", icon: "finder", command: "open ${MITTO_WORKING_DIR}", enabled: true, builtin: true },
-          { id: "terminal", label: "Terminal", icon: "terminal", command: "open -a Terminal ${MITTO_WORKING_DIR}", enabled: true, builtin: true },
-          { id: "iterm", label: "iTerm", icon: "iterm", command: "open -a iTerm ${MITTO_WORKING_DIR}", enabled: false, builtin: true },
-          { id: "vscode", label: "Visual Studio Code", icon: "vscode", command: `open -a "Visual Studio Code" \${MITTO_WORKING_DIR}`, enabled: false, builtin: true },
-          { id: "cursor", label: "Cursor", icon: "cursor", command: "open -a Cursor ${MITTO_WORKING_DIR}", enabled: false, builtin: true },
-          { id: "xcode", label: "Xcode", icon: "xcode", command: "open -a Xcode ${MITTO_WORKING_DIR}", enabled: false, builtin: true },
-          { id: "goland", label: "GoLand", icon: "goland", command: "open -a GoLand ${MITTO_WORKING_DIR}", enabled: false, builtin: true },
-        ]);
+        setOpenInTargets(DEFAULT_MAC_OPEN_TARGETS.map((t) => ({ ...t })));
       }
 
       // Load notification permission status (macOS only) - used to show warning if denied
