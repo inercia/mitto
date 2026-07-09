@@ -1587,19 +1587,17 @@ func (p *SharedACPProcess) NewSession(ctx context.Context, cwd string, mcpServer
 			p.recordRPCSuccess()
 			p.markMCPInitDone()
 			p.mcpInitInProgress.Store(false) // close the MCP-init window (mitto-29q)
+			models, modelCfgId := conversation.ModelStateFromConfigOptions(sessResp.ConfigOptions)
 			handle := &conversation.SessionHandle{
-				SessionID: string(sessResp.SessionId),
-				Process:   p,
-				Modes:     sessResp.Modes,
-				Models:    conversation.StableToUnstableModelState(sessResp.Models),
+				SessionID:     string(sessResp.SessionId),
+				Process:       p,
+				Modes:         sessResp.Modes,
+				Models:        models,
+				ModelConfigId: modelCfgId,
 			}
 			if caps != nil {
 				handle.Capabilities = *caps
 			}
-			// TODO: ConfigOptions support when SDK is updated
-			// if sessResp.ConfigOptions != nil {
-			// 	handle.ConfigOptions = sessResp.ConfigOptions
-			// }
 			if p.logger != nil {
 				p.logger.Info("Created new ACP session on shared process",
 					"acp_session_id", handle.SessionID,
@@ -1811,12 +1809,14 @@ func (p *SharedACPProcess) LoadSession(ctx context.Context, acpSessionID, cwd st
 	p.recordRPCSuccess()
 	p.markMCPInitDone()
 	p.mcpInitInProgress.Store(false) // close the MCP-init window (mitto-29q)
+	loadModels, loadModelCfgId := conversation.ModelStateFromConfigOptions(loadResp.ConfigOptions)
 	handle := &conversation.SessionHandle{
-		SessionID:    acpSessionID,
-		Capabilities: *caps,
-		Modes:        loadResp.Modes,
-		Models:       conversation.StableToUnstableModelState(loadResp.Models),
-		Process:      p,
+		SessionID:     acpSessionID,
+		Capabilities:  *caps,
+		Modes:         loadResp.Modes,
+		Models:        loadModels,
+		ModelConfigId: loadModelCfgId,
+		Process:       p,
 	}
 
 	if p.logger != nil {
@@ -1869,7 +1869,7 @@ func (p *SharedACPProcess) ResumeSession(ctx context.Context, acpSessionID, cwd 
 	}
 
 	rpcStart := time.Now()
-	resumeResp, err := conn.UnstableResumeSession(ctx, acp.UnstableResumeSessionRequest{
+	resumeResp, err := conn.ResumeSession(ctx, acp.ResumeSessionRequest{
 		SessionId:  acp.SessionId(acpSessionID),
 		Cwd:        cwd,
 		McpServers: mcpServers,
@@ -1878,7 +1878,7 @@ func (p *SharedACPProcess) ResumeSession(ctx context.Context, acpSessionID, cwd 
 
 	if err != nil {
 		if p.logger != nil {
-			p.logger.Info("SharedACPProcess.ResumeSession failed (UNSTABLE API)",
+			p.logger.Info("SharedACPProcess.ResumeSession failed",
 				"acp_session_id", acpSessionID,
 				"rpc_ms", rpcDuration.Milliseconds(),
 				"error", err)
@@ -1886,12 +1886,14 @@ func (p *SharedACPProcess) ResumeSession(ctx context.Context, acpSessionID, cwd 
 		return nil, fmt.Errorf("failed to resume session: %w", err)
 	}
 
+	resumeModels, resumeModelCfgId := conversation.ModelStateFromConfigOptions(resumeResp.ConfigOptions)
 	handle := &conversation.SessionHandle{
-		SessionID:    acpSessionID,
-		Capabilities: *caps,
-		Modes:        resumeResp.Modes,
-		Models:       resumeResp.Models,
-		Process:      p,
+		SessionID:     acpSessionID,
+		Capabilities:  *caps,
+		Modes:         resumeResp.Modes,
+		Models:        resumeModels,
+		ModelConfigId: resumeModelCfgId,
+		Process:       p,
 	}
 
 	if p.logger != nil {
@@ -2093,9 +2095,12 @@ func (p *SharedACPProcess) SetSessionModel(ctx context.Context, sessionID acp.Se
 		}
 
 		rpcStart := time.Now()
-		_, err := conn.UnstableSetSessionModel(attemptCtx, acp.UnstableSetSessionModelRequest{
-			SessionId: sessionID,
-			ModelId:   acp.UnstableModelId(modelID),
+		_, err := conn.SetSessionConfigOption(attemptCtx, acp.SetSessionConfigOptionRequest{
+			ValueId: &acp.SetSessionConfigOptionValueId{
+				SessionId: sessionID,
+				ConfigId:  conversation.ModelConfigId,
+				Value:     acp.SessionConfigValueId(modelID),
+			},
 		})
 		rpcDuration := time.Since(rpcStart)
 		attemptCancel()

@@ -107,20 +107,22 @@ type fakeHandshakeDeps struct {
 	mu sync.Mutex
 
 	// state knobs
-	sessionID     string
-	logger        *slog.Logger
-	sessionCtx    context.Context
-	creationCtx   context.Context
-	sharedProcess SharedProcess
-	acpClient     *WebClient
-	agentImages   bool
-	acpID         string
-	pending       bool
-	pendingDir    string
-	pendingMcpSrv []acp.McpServer
-	pendingModes  *acp.SessionModeState
-	pendingModels *acp.UnstableSessionModelState
-	resumeMethod  string
+	sessionID         string
+	logger            *slog.Logger
+	sessionCtx        context.Context
+	creationCtx       context.Context
+	sharedProcess     SharedProcess
+	acpClient         *WebClient
+	agentImages       bool
+	acpID             string
+	pending           bool
+	pendingDir        string
+	pendingMcpSrv     []acp.McpServer
+	pendingModes      *acp.SessionModeState
+	pendingModels     *SessionModelState
+	pendingModelCfgId acp.SessionConfigId
+	appliedModelCfgId acp.SessionConfigId
+	resumeMethod      string
 
 	// mutexes for pending/handshake
 	pendingMu   sync.Mutex
@@ -130,7 +132,7 @@ type fakeHandshakeDeps struct {
 	persistedACPID  int
 	notifiedEvents  []string
 	appliedModes    []*acp.SessionModeState
-	appliedModels   []*acp.UnstableSessionModelState
+	appliedModels   []*SessionModelState
 	startMcpCalls   int
 	stopMcpCalls    int
 	processDonesSet int
@@ -182,11 +184,17 @@ func (f *fakeHandshakeDeps) hsGetPendingSharedMcpServers() []acp.McpServer   { r
 func (f *fakeHandshakeDeps) hsSetPendingSharedMcpServers(s []acp.McpServer)  { f.pendingMcpSrv = s }
 func (f *fakeHandshakeDeps) hsGetPendingSharedModes() *acp.SessionModeState  { return f.pendingModes }
 func (f *fakeHandshakeDeps) hsSetPendingSharedModes(m *acp.SessionModeState) { f.pendingModes = m }
-func (f *fakeHandshakeDeps) hsGetPendingSharedModels() *acp.UnstableSessionModelState {
+func (f *fakeHandshakeDeps) hsGetPendingSharedModels() *SessionModelState {
 	return f.pendingModels
 }
-func (f *fakeHandshakeDeps) hsSetPendingSharedModels(m *acp.UnstableSessionModelState) {
+func (f *fakeHandshakeDeps) hsSetPendingSharedModels(m *SessionModelState) {
 	f.pendingModels = m
+}
+func (f *fakeHandshakeDeps) hsGetPendingSharedModelConfigId() acp.SessionConfigId {
+	return f.pendingModelCfgId
+}
+func (f *fakeHandshakeDeps) hsSetPendingSharedModelConfigId(id acp.SessionConfigId) {
+	f.pendingModelCfgId = id
 }
 
 func (f *fakeHandshakeDeps) hsHandshakeLock()   { f.handshakeMu.Lock() }
@@ -220,12 +228,17 @@ func (f *fakeHandshakeDeps) hsApplySessionModes(m *acp.SessionModeState) {
 	defer f.mu.Unlock()
 	f.appliedModes = append(f.appliedModes, m)
 }
-func (f *fakeHandshakeDeps) hsApplyAgentModels(m *acp.UnstableSessionModelState) {
+func (f *fakeHandshakeDeps) hsApplyAgentModels(m *SessionModelState) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.appliedModels = append(f.appliedModels, m)
 }
-func (f *fakeHandshakeDeps) hsLogAgentModels(_ *acp.UnstableSessionModelState) {}
+func (f *fakeHandshakeDeps) hsApplyAgentModelConfigId(id acp.SessionConfigId) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.appliedModelCfgId = id
+}
+func (f *fakeHandshakeDeps) hsLogAgentModels(_ *SessionModelState) {}
 func (f *fakeHandshakeDeps) hsPersistACPSessionID() {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -391,7 +404,7 @@ func TestHandshaker_ApplyPendingSharedModes_Applies(t *testing.T) {
 	c := sharedSessionHandshaker{}
 	d := newFakeHandshakeDeps()
 	d.pendingModes = &acp.SessionModeState{CurrentModeId: "code"}
-	d.pendingModels = &acp.UnstableSessionModelState{CurrentModelId: "m-1"}
+	d.pendingModels = &SessionModelState{CurrentModelId: "m-1"}
 
 	c.applyPendingSharedModes(d)
 

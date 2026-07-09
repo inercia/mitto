@@ -4143,9 +4143,9 @@ func TestSetAgentModels_InitializesBaseline(t *testing.T) {
 	bs.promptCond = sync.NewCond(&bs.promptMu)
 	bs.pendingConfig = make(map[string]string)
 
-	models := &acp.UnstableSessionModelState{
-		CurrentModelId: acp.UnstableModelId("claude-sonnet-4-6"),
-		AvailableModels: []acp.UnstableModelInfo{
+	models := &SessionModelState{
+		CurrentModelId: ("claude-sonnet-4-6"),
+		AvailableModels: []ModelInfo{
 			{ModelId: "claude-haiku-4-5", Name: "Haiku 4.5"},
 			{ModelId: "claude-sonnet-4-6", Name: "Sonnet 4.6"},
 		},
@@ -4172,9 +4172,9 @@ func TestSetAgentModels_DoesNotOverwriteExistingBaseline(t *testing.T) {
 	bs.baselineModel = "claude-opus-4-6" // pre-set
 	bs.modelMu.Unlock()
 
-	models := &acp.UnstableSessionModelState{
-		CurrentModelId: acp.UnstableModelId("claude-sonnet-4-6"),
-		AvailableModels: []acp.UnstableModelInfo{
+	models := &SessionModelState{
+		CurrentModelId: ("claude-sonnet-4-6"),
+		AvailableModels: []ModelInfo{
 			{ModelId: "claude-sonnet-4-6", Name: "Sonnet 4.6"},
 			{ModelId: "claude-opus-4-6", Name: "Opus 4.6"},
 		},

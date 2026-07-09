@@ -101,8 +101,8 @@ type promptDeps interface {
 	pdACPConnNewSession(ctx context.Context, cwd string) (string, error)
 
 	// Per-prompt model preference
-	pdGetAgentModels() *acp.UnstableSessionModelState // may return nil
-	pdResolveModelTags(modelName string) []string     // config.ResolveModelTags; nil when no config/match
+	pdGetAgentModels() *SessionModelState         // may return nil
+	pdResolveModelTags(modelName string) []string // config.ResolveModelTags; nil when no config/match
 	pdResolvePreferredModels(promptName string) []config.PromptPreferredModel
 	pdModelProfiles() []config.ModelProfile // global model profiles (Settings → Models)
 	pdReadBaselineModel() string            // modelMu.Lock + read + Unlock

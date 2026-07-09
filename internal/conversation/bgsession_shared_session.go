@@ -123,11 +123,17 @@ func (bs *BackgroundSession) hsGetPendingSharedModes() *acp.SessionModeState {
 func (bs *BackgroundSession) hsSetPendingSharedModes(m *acp.SessionModeState) {
 	bs.pendingSharedModes = m
 }
-func (bs *BackgroundSession) hsGetPendingSharedModels() *acp.UnstableSessionModelState {
+func (bs *BackgroundSession) hsGetPendingSharedModels() *SessionModelState {
 	return bs.pendingSharedModels
 }
-func (bs *BackgroundSession) hsSetPendingSharedModels(m *acp.UnstableSessionModelState) {
+func (bs *BackgroundSession) hsSetPendingSharedModels(m *SessionModelState) {
 	bs.pendingSharedModels = m
+}
+func (bs *BackgroundSession) hsGetPendingSharedModelConfigId() acp.SessionConfigId {
+	return bs.pendingSharedModelCfgId
+}
+func (bs *BackgroundSession) hsSetPendingSharedModelConfigId(id acp.SessionConfigId) {
+	bs.pendingSharedModelCfgId = id
 }
 
 func (bs *BackgroundSession) hsHandshakeLock()   { bs.handshakeMu.Lock() }
@@ -157,10 +163,13 @@ func (bs *BackgroundSession) hsStopMcpServer() { bs.stopSessionMcpServer() }
 func (bs *BackgroundSession) hsApplySessionModes(modes *acp.SessionModeState) {
 	bs.setSessionModes(modes)
 }
-func (bs *BackgroundSession) hsApplyAgentModels(models *acp.UnstableSessionModelState) {
+func (bs *BackgroundSession) hsApplyAgentModels(models *SessionModelState) {
 	bs.setAgentModels(models)
 }
-func (bs *BackgroundSession) hsLogAgentModels(models *acp.UnstableSessionModelState) {
+func (bs *BackgroundSession) hsApplyAgentModelConfigId(id acp.SessionConfigId) {
+	bs.modelConfigId = id
+}
+func (bs *BackgroundSession) hsLogAgentModels(models *SessionModelState) {
 	bs.logAgentModels(models)
 }
 

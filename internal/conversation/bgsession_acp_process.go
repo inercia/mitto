@@ -1354,7 +1354,7 @@ func (bs *BackgroundSession) doStartACPProcess(acpCommand, acpCwd, workingDir, a
 		// Try Resume first (fast path)
 		if supportsResume {
 			resumeCtx, resumeCancel := context.WithTimeout(initCtx, 10*time.Second)
-			resumeResp, err := bs.acpConn.UnstableResumeSession(resumeCtx, acp.UnstableResumeSessionRequest{
+			resumeResp, err := bs.acpConn.ResumeSession(resumeCtx, acp.ResumeSessionRequest{
 				SessionId:  acp.SessionId(acpSessionID),
 				Cwd:        cwd,
 				McpServers: mcpServers,
@@ -1364,13 +1364,17 @@ func (bs *BackgroundSession) doStartACPProcess(acpCommand, acpCwd, workingDir, a
 				bs.acpID = acpSessionID
 				bs.resumeMethod = "resume"
 				bs.setSessionModes(resumeResp.Modes)
-				bs.setAgentModels(resumeResp.Models)
+				models, cfgId := ModelStateFromConfigOptions(resumeResp.ConfigOptions)
+				bs.setAgentModels(models)
+				if cfgId != "" {
+					bs.modelConfigId = cfgId
+				}
 				if bs.logger != nil {
-					bs.logger.Info("Resumed ACP session using UNSTABLE resume API",
+					bs.logger.Info("Resumed ACP session",
 						"acp_session_id", acpSessionID,
 						"resume_method", "resume")
 					bs.logSessionModes(resumeResp.Modes)
-					bs.logAgentModels(resumeResp.Models)
+					bs.logAgentModels(models)
 				}
 				return "", nil
 			}
@@ -1409,7 +1413,11 @@ func (bs *BackgroundSession) doStartACPProcess(acpCommand, acpCwd, workingDir, a
 				bs.resumeMethod = "load"
 				// Store available modes from session load
 				bs.setSessionModes(loadResp.Modes)
-				bs.setAgentModels(StableToUnstableModelState(loadResp.Models))
+				models, cfgId := ModelStateFromConfigOptions(loadResp.ConfigOptions)
+				bs.setAgentModels(models)
+				if cfgId != "" {
+					bs.modelConfigId = cfgId
+				}
 				if bs.logger != nil {
 					bs.logger.Info("Resumed ACP session using load (with history replay)",
 						"acp_session_id", acpSessionID,
@@ -1469,7 +1477,11 @@ func (bs *BackgroundSession) doStartACPProcess(acpCommand, acpCwd, workingDir, a
 
 	// Store available modes from session setup
 	bs.setSessionModes(sessResp.Modes)
-	bs.setAgentModels(StableToUnstableModelState(sessResp.Models))
+	models, cfgId := ModelStateFromConfigOptions(sessResp.ConfigOptions)
+	bs.setAgentModels(models)
+	if cfgId != "" {
+		bs.modelConfigId = cfgId
+	}
 
 	if bs.logger != nil {
 		bs.logger.Info("Created new ACP session",

@@ -4,14 +4,12 @@ import (
 	"path"
 	"strings"
 
-	"github.com/coder/acp-go-sdk"
-
 	"github.com/inercia/mitto/internal/config"
 )
 
 // ModelsToConfigOptions converts an agent model state into config option values
 // (Value=ModelId, Name, Description). Returns nil for a nil/empty model state.
-func ModelsToConfigOptions(models *acp.UnstableSessionModelState) []SessionConfigOptionValue {
+func ModelsToConfigOptions(models *SessionModelState) []SessionConfigOptionValue {
 	if models == nil || len(models.AvailableModels) == 0 {
 		return nil
 	}
@@ -22,7 +20,7 @@ func ModelsToConfigOptions(models *acp.UnstableSessionModelState) []SessionConfi
 			desc = *m.Description
 		}
 		options[i] = SessionConfigOptionValue{
-			Value:       string(m.ModelId),
+			Value:       m.ModelId,
 			Name:        m.Name,
 			Description: desc,
 		}
@@ -51,7 +49,7 @@ func MatchConstraintOption(constraint *config.ACPServerConstraint, options []Ses
 // returning the matched model id ("" when the profile/criteria is nil or nothing matches).
 // It reuses MatchConstraintOption (and thus config.ConstraintMatchesName) so profile-based
 // model resolution shares the exact same match engine as ACP server constraints.
-func ResolveProfileModel(profile *config.ModelProfile, models *acp.UnstableSessionModelState) string {
+func ResolveProfileModel(profile *config.ModelProfile, models *SessionModelState) string {
 	if profile == nil || profile.Criteria == nil {
 		return ""
 	}
@@ -68,7 +66,7 @@ func ResolveProfileModel(profile *config.ModelProfile, models *acp.UnstableSessi
 // mirrors SelectPreferredModel's prompt-path behaviour and removes calls from the per-process
 // set_model serialisation queue — the main source of the 8s deadline cascade at server wakeup
 // when many auxiliary sessions resume at once (mitto-ykb).
-func ResolveAuxModelSwitch(constraint *config.ACPServerConstraint, models *acp.UnstableSessionModelState) (modelID string, shouldSet bool) {
+func ResolveAuxModelSwitch(constraint *config.ACPServerConstraint, models *SessionModelState) (modelID string, shouldSet bool) {
 	if constraint == nil || constraint.Pattern == "" {
 		return "", false
 	}
@@ -76,7 +74,7 @@ func ResolveAuxModelSwitch(constraint *config.ACPServerConstraint, models *acp.U
 	if matched == "" {
 		return "", false
 	}
-	if models != nil && string(models.CurrentModelId) == matched {
+	if models != nil && models.CurrentModelId == matched {
 		return matched, false
 	}
 	return matched, true
@@ -94,14 +92,14 @@ func ResolveAuxModelSwitch(constraint *config.ACPServerConstraint, models *acp.U
 // (deterministic first-match-wins). Unknown names/tags or entries that resolve to no
 // available model are skipped, so resolution continues with the next preference.
 // Returns "" when nothing matches, signalling the caller to fall back to the baseline.
-func SelectPreferredModel(prefs []config.PromptPreferredModel, profiles []config.ModelProfile, models *acp.UnstableSessionModelState) string {
+func SelectPreferredModel(prefs []config.PromptPreferredModel, profiles []config.ModelProfile, models *SessionModelState) string {
 	if len(prefs) == 0 || models == nil {
 		return ""
 	}
-	current := string(models.CurrentModelId)
+	current := models.CurrentModelId
 	var currentName string
 	for _, m := range models.AvailableModels {
-		if string(m.ModelId) == current {
+		if m.ModelId == current {
 			currentName = m.Name
 			break
 		}
@@ -159,12 +157,12 @@ func currentSatisfiesProfile(profile *config.ModelProfile, currentID, currentNam
 
 // ModelDisplayName returns the human-readable Name for modelID from the available
 // models, falling back to the raw modelID when no match is found (or models is nil).
-func ModelDisplayName(models *acp.UnstableSessionModelState, modelID string) string {
+func ModelDisplayName(models *SessionModelState, modelID string) string {
 	if models == nil || modelID == "" {
 		return modelID
 	}
 	for _, m := range models.AvailableModels {
-		if string(m.ModelId) == modelID {
+		if m.ModelId == modelID {
 			if m.Name != "" {
 				return m.Name
 			}

@@ -3,7 +3,7 @@ module github.com/inercia/mitto
 go 1.25.5
 
 require (
-	github.com/coder/acp-go-sdk v0.12.0
+	github.com/coder/acp-go-sdk v0.13.5
 	github.com/coreos/go-oidc/v3 v3.17.0
 	github.com/fsnotify/fsnotify v1.9.0
 	github.com/go-jose/go-jose/v4 v4.1.3
@@ -68,6 +68,6 @@ require (
 )
 
 // Use our fork with configurable notification queue size (WithMaxQueuedNotifications).
-// See https://github.com/inercia/acp-go-sdk/tree/configurable-notification-queue-v0.12
+// See https://github.com/inercia/acp-go-sdk/tree/configurable-notification-queue-v0.13
 // Once https://github.com/coder/acp-go-sdk/pull/40 is merged, remove this replace and bump the version.
-replace github.com/coder/acp-go-sdk => github.com/inercia/acp-go-sdk v0.12.1-0.20260514143514-617ff1cb3d2f
+replace github.com/coder/acp-go-sdk => github.com/inercia/acp-go-sdk v0.13.1-0.20260709073340-5f600e0bd169

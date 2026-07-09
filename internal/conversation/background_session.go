@@ -51,10 +51,14 @@ type BackgroundSession struct {
 	// ACP agent capabilities (set during initialization)
 	agentSupportsImages bool // True if agent advertises prompt_image capability
 
-	// agentModels holds the model state (UNSTABLE) from NewSession/LoadSession/ResumeSession.
-	// Uses UnstableSessionModelState to unify both stable and unstable response variants.
-	// May be nil if the agent doesn't advertise model information.
-	agentModels *acp.UnstableSessionModelState
+	// agentModels holds the model state derived from ConfigOptions (Category="model")
+	// on NewSession/LoadSession/ResumeSession (v0.13.5+). May be nil if the agent
+	// doesn't advertise model information.
+	agentModels *SessionModelState
+	// modelConfigId is the SessionConfigId the agent advertised for the model
+	// config option. Used when issuing session/set_config_option so we match the
+	// agent-declared id. Falls back to ModelConfigId when empty.
+	modelConfigId acp.SessionConfigId
 
 	// Session persistence
 	recorder *session.Recorder
@@ -279,11 +283,12 @@ type BackgroundSession struct {
 	// it is deferred to the first prompt to avoid blocking the create path
 	// when the shared agent process is busy.
 	pendingShared           bool
-	pendingSharedMu         sync.Mutex                     // Guards the lazy handshake (idempotency)
-	pendingSharedWorkingDir string                         // Stored for deferred session/new RPC
-	pendingSharedMcpServers []acp.McpServer                // Must be empty array, not nil — ACP validates this
-	pendingSharedModes      *acp.SessionModeState          // Modes from NewSession, applied by applyPendingSharedModes
-	pendingSharedModels     *acp.UnstableSessionModelState // Models from NewSession, applied by applyPendingSharedModes
+	pendingSharedMu         sync.Mutex            // Guards the lazy handshake (idempotency)
+	pendingSharedWorkingDir string                // Stored for deferred session/new RPC
+	pendingSharedMcpServers []acp.McpServer       // Must be empty array, not nil — ACP validates this
+	pendingSharedModes      *acp.SessionModeState // Modes from NewSession, applied by applyPendingSharedModes
+	pendingSharedModels     *SessionModelState    // Models from NewSession, applied by applyPendingSharedModes
+	pendingSharedModelCfgId acp.SessionConfigId   // SessionConfigId for the model option, applied alongside models
 
 	// handshakeMu serialises the full deferred-handshake completion (session/new
 	// RPC + store writes + mode/model application + acp_started notification) so the
@@ -1314,7 +1319,7 @@ func (bs *BackgroundSession) AgentSupportsImages() bool {
 
 // AgentModels returns the agent's model state (available models and current model).
 // This is from the UNSTABLE SessionModelState API and may be nil if the agent doesn't support it.
-func (bs *BackgroundSession) AgentModels() *acp.UnstableSessionModelState {
+func (bs *BackgroundSession) AgentModels() *SessionModelState {
 	return bs.agentModels
 }
 
@@ -1326,7 +1331,7 @@ func (bs *BackgroundSession) CurrentModelName() string {
 	if models == nil {
 		return ""
 	}
-	return ModelDisplayName(models, string(models.CurrentModelId))
+	return ModelDisplayName(models, models.CurrentModelId)
 }
 
 // --- Observer Management ---

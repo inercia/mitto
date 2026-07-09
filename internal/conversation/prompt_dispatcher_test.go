@@ -80,7 +80,7 @@ type fakePromptDeps struct {
 	hasACPConn             bool
 	acpNewSessionID        string
 	acpNewSessionErr       error
-	agentModels            *acp.UnstableSessionModelState
+	agentModels            *SessionModelState
 	resolvedModelTags      []string
 	resolvedPreferred      []config.PromptPreferredModel
 	modelProfiles          []config.ModelProfile
@@ -268,8 +268,8 @@ func (f *fakePromptDeps) pdHasACPConn() bool { return f.hasACPConn }
 func (f *fakePromptDeps) pdACPConnNewSession(_ context.Context, _ string) (string, error) {
 	return f.acpNewSessionID, f.acpNewSessionErr
 }
-func (f *fakePromptDeps) pdGetAgentModels() *acp.UnstableSessionModelState { return f.agentModels }
-func (f *fakePromptDeps) pdResolveModelTags(_ string) []string             { return f.resolvedModelTags }
+func (f *fakePromptDeps) pdGetAgentModels() *SessionModelState { return f.agentModels }
+func (f *fakePromptDeps) pdResolveModelTags(_ string) []string { return f.resolvedModelTags }
 func (f *fakePromptDeps) pdResolvePreferredModels(_ string) []config.PromptPreferredModel {
 	return f.resolvedPreferred
 }
@@ -1470,7 +1470,7 @@ func TestPromptDispatcher_ApplyModelPreference_NoAgentModels_NoOp(t *testing.T) 
 func TestPromptDispatcher_ApplyModelPreference_NoPreference_DesiredIsBaseline_NoSwitch(t *testing.T) {
 	p := promptDispatcher{}
 	d := newFakePromptDeps()
-	d.agentModels = &acp.UnstableSessionModelState{CurrentModelId: "m-1"}
+	d.agentModels = &SessionModelState{CurrentModelId: "m-1"}
 	d.baselineModel = "m-1" // same as current
 	var buf bytes.Buffer
 	d.logger = slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
@@ -1494,9 +1494,9 @@ func TestPromptDispatcher_ApplyModelPreference_NoPreference_DesiredIsBaseline_No
 func TestPromptDispatcher_ApplyModelPreference_MatchingPreference_SetsModelAndOverride(t *testing.T) {
 	p := promptDispatcher{}
 	d := newFakePromptDeps()
-	d.agentModels = &acp.UnstableSessionModelState{
+	d.agentModels = &SessionModelState{
 		CurrentModelId: "m-1",
-		AvailableModels: []acp.UnstableModelInfo{
+		AvailableModels: []ModelInfo{
 			{ModelId: "m-1", Name: "Model 1"},
 			{ModelId: "m-2", Name: "Model 2"},
 		},
@@ -1532,9 +1532,9 @@ func TestPromptDispatcher_ApplyModelPreference_MatchingPreference_SetsModelAndOv
 func TestPromptDispatcher_ApplyModelPreference_PreferenceAlreadyActive_NoSwitch(t *testing.T) {
 	p := promptDispatcher{}
 	d := newFakePromptDeps()
-	d.agentModels = &acp.UnstableSessionModelState{
+	d.agentModels = &SessionModelState{
 		CurrentModelId: "m-2",
-		AvailableModels: []acp.UnstableModelInfo{
+		AvailableModels: []ModelInfo{
 			{ModelId: "m-1", Name: "Model 1"},
 			{ModelId: "m-2", Name: "Model 2"},
 		},
@@ -1572,9 +1572,9 @@ func TestPromptDispatcher_ApplyModelPreference_PreferenceAlreadyActive_NoSwitch(
 func TestPromptDispatcher_ApplyModelPreference_NoMatch_UsesBaseline_ClearsOverride(t *testing.T) {
 	p := promptDispatcher{}
 	d := newFakePromptDeps()
-	d.agentModels = &acp.UnstableSessionModelState{
+	d.agentModels = &SessionModelState{
 		CurrentModelId: "m-1",
-		AvailableModels: []acp.UnstableModelInfo{
+		AvailableModels: []ModelInfo{
 			{ModelId: "m-1", Name: "Model 1"},
 		},
 	}
@@ -1605,9 +1605,9 @@ func TestPromptDispatcher_ApplyModelPreference_NoMatch_UsesBaseline_ClearsOverri
 func TestPromptDispatcher_ApplyModelPreference_SwitchFails_NoPill(t *testing.T) {
 	p := promptDispatcher{}
 	d := newFakePromptDeps()
-	d.agentModels = &acp.UnstableSessionModelState{
+	d.agentModels = &SessionModelState{
 		CurrentModelId: "m-1",
-		AvailableModels: []acp.UnstableModelInfo{
+		AvailableModels: []ModelInfo{
 			{ModelId: "m-1", Name: "Model 1"},
 			{ModelId: "m-2", Name: "Model 2"},
 		},
@@ -1638,9 +1638,9 @@ func TestPromptDispatcher_ApplyModelPreference_ColdSlowSwitch_DoesNotBlockPrompt
 
 	p := promptDispatcher{}
 	d := newFakePromptDeps()
-	d.agentModels = &acp.UnstableSessionModelState{
+	d.agentModels = &SessionModelState{
 		CurrentModelId: "m-1",
-		AvailableModels: []acp.UnstableModelInfo{
+		AvailableModels: []ModelInfo{
 			{ModelId: "m-1", Name: "Model 1"},
 			{ModelId: "m-2", Name: "Model 2"},
 		},

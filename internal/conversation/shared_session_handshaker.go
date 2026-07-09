@@ -77,10 +77,12 @@ type handshakeDeps interface {
 	hsSetPendingSharedWorkingDir(dir string)
 	hsGetPendingSharedMcpServers() []acp.McpServer
 	hsSetPendingSharedMcpServers(servers []acp.McpServer)
-	hsGetPendingSharedModes() *acp.SessionModeState            // caller manages pendingSharedMu
-	hsSetPendingSharedModes(m *acp.SessionModeState)           // caller manages pendingSharedMu
-	hsGetPendingSharedModels() *acp.UnstableSessionModelState  // caller manages pendingSharedMu
-	hsSetPendingSharedModels(m *acp.UnstableSessionModelState) // caller manages pendingSharedMu
+	hsGetPendingSharedModes() *acp.SessionModeState         // caller manages pendingSharedMu
+	hsSetPendingSharedModes(m *acp.SessionModeState)        // caller manages pendingSharedMu
+	hsGetPendingSharedModels() *SessionModelState           // caller manages pendingSharedMu
+	hsSetPendingSharedModels(m *SessionModelState)          // caller manages pendingSharedMu
+	hsGetPendingSharedModelConfigId() acp.SessionConfigId   // caller manages pendingSharedMu
+	hsSetPendingSharedModelConfigId(id acp.SessionConfigId) // caller manages pendingSharedMu
 
 	// Handshake serialization mutex
 	hsHandshakeLock()
@@ -99,8 +101,9 @@ type handshakeDeps interface {
 
 	// Session-level ACP state applied after session is established
 	hsApplySessionModes(modes *acp.SessionModeState)
-	hsApplyAgentModels(models *acp.UnstableSessionModelState)
-	hsLogAgentModels(models *acp.UnstableSessionModelState)
+	hsApplyAgentModels(models *SessionModelState)
+	hsApplyAgentModelConfigId(id acp.SessionConfigId)
+	hsLogAgentModels(models *SessionModelState)
 
 	// Store persistence (no-op when no store)
 	hsPersistACPSessionID()
@@ -226,6 +229,7 @@ func (c sharedSessionHandshaker) ensureSharedACPSession(d handshakeDeps) error {
 	d.hsSetACPID(handle.SessionID)
 	d.hsSetPendingSharedModes(handle.Modes)
 	d.hsSetPendingSharedModels(handle.Models)
+	d.hsSetPendingSharedModelConfigId(handle.ModelConfigId)
 	d.hsSetPendingShared(false)
 
 	if l := d.hsLogger(); l != nil {
@@ -244,8 +248,10 @@ func (c sharedSessionHandshaker) applyPendingSharedModes(d handshakeDeps) {
 	d.hsPendingSharedLock()
 	modes := d.hsGetPendingSharedModes()
 	models := d.hsGetPendingSharedModels()
+	modelCfgId := d.hsGetPendingSharedModelConfigId()
 	d.hsSetPendingSharedModes(nil)
 	d.hsSetPendingSharedModels(nil)
+	d.hsSetPendingSharedModelConfigId("")
 	d.hsPendingSharedUnlock()
 
 	if modes != nil {
@@ -253,6 +259,9 @@ func (c sharedSessionHandshaker) applyPendingSharedModes(d handshakeDeps) {
 	}
 	if models != nil {
 		d.hsApplyAgentModels(models)
+	}
+	if modelCfgId != "" {
+		d.hsApplyAgentModelConfigId(modelCfgId)
 	}
 }
 
@@ -485,6 +494,9 @@ func (c sharedSessionHandshaker) resumeSharedACPSession(d handshakeDeps, sharedP
 	d.hsSetAgentSupportsImages(caps.PromptCapabilities.Image)
 	d.hsApplySessionModes(handle.Modes)
 	d.hsApplyAgentModels(handle.Models)
+	if handle.ModelConfigId != "" {
+		d.hsApplyAgentModelConfigId(handle.ModelConfigId)
+	}
 	d.hsInitACPProcessDone(sharedProcess.ProcessDone())
 
 	if l := d.hsLogger(); l != nil {

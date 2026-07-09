@@ -87,9 +87,16 @@ func (bs *BackgroundSession) cmSetSessionModel(ctx context.Context, modelID stri
 		return bs.sharedProcess.SetSessionModel(ctx, acp.SessionId(bs.acpID), modelID)
 	}
 	if bs.acpConn != nil {
-		_, err := bs.acpConn.UnstableSetSessionModel(ctx, acp.UnstableSetSessionModelRequest{
-			SessionId: acp.SessionId(bs.acpID),
-			ModelId:   acp.UnstableModelId(modelID),
+		cfgId := bs.modelConfigId
+		if cfgId == "" {
+			cfgId = ModelConfigId
+		}
+		_, err := bs.acpConn.SetSessionConfigOption(ctx, acp.SetSessionConfigOptionRequest{
+			ValueId: &acp.SetSessionConfigOptionValueId{
+				SessionId: acp.SessionId(bs.acpID),
+				ConfigId:  cfgId,
+				Value:     acp.SessionConfigValueId(modelID),
+			},
 		})
 		return err
 	}
@@ -190,11 +197,11 @@ func (bs *BackgroundSession) cmGetCurrentModelID() string {
 	if bs.agentModels == nil {
 		return ""
 	}
-	return string(bs.agentModels.CurrentModelId)
+	return bs.agentModels.CurrentModelId
 }
 func (bs *BackgroundSession) cmSetCurrentModelID(id string) {
 	if bs.agentModels != nil {
-		bs.agentModels.CurrentModelId = acp.UnstableModelId(id)
+		bs.agentModels.CurrentModelId = id
 	}
 }
 

@@ -858,7 +858,7 @@ func (bs *BackgroundSession) pdACPConnNewSession(ctx context.Context, cwd string
 	return string(freshSess.SessionId), nil
 }
 
-func (bs *BackgroundSession) pdGetAgentModels() *acp.UnstableSessionModelState {
+func (bs *BackgroundSession) pdGetAgentModels() *SessionModelState {
 	return bs.agentModels
 }
 

@@ -13,9 +13,14 @@ type SessionHandle struct {
 	Capabilities acp.AgentCapabilities
 	// Modes are the session mode state (from NewSession/LoadSession).
 	Modes *acp.SessionModeState
-	// Models are the available models (UNSTABLE, from NewSession/LoadSession/ResumeSession).
-	// Uses UnstableSessionModelState to unify both stable and unstable response variants.
-	Models *acp.UnstableSessionModelState
+	// Models are the available models (derived from ConfigOptions with
+	// Category="model" on NewSession/LoadSession/ResumeSession, v0.13.5+).
+	Models *SessionModelState
+	// ModelConfigId is the SessionConfigId the agent advertised for the model
+	// selection option, captured from ConfigOptions. Callers use it when issuing
+	// session/set_config_option so they match the agent-declared id. Empty when
+	// the agent did not advertise a model config option.
+	ModelConfigId acp.SessionConfigId
 	// ConfigOptions are the session config options (from NewSession/LoadSession).
 	ConfigOptions []SessionConfigOption
 	// Process is a reference to the parent SharedProcess (interface).

@@ -4,8 +4,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/coder/acp-go-sdk"
-
 	"github.com/inercia/mitto/internal/config"
 )
 
@@ -70,8 +68,8 @@ func TestMatchConstraintOption(t *testing.T) {
 // TestResolveProfileModel verifies that a model profile's Criteria resolves to the
 // matching model id via the shared constraint match engine.
 func TestResolveProfileModel(t *testing.T) {
-	models := &acp.UnstableSessionModelState{
-		AvailableModels: []acp.UnstableModelInfo{
+	models := &SessionModelState{
+		AvailableModels: []ModelInfo{
 			{ModelId: "claude-haiku-4-5", Name: "Haiku 4.5"},
 			{ModelId: "claude-sonnet-4-6", Name: "Sonnet 4.6"},
 			{ModelId: "claude-opus-4-8", Name: "Opus 4.8"},
@@ -80,7 +78,7 @@ func TestResolveProfileModel(t *testing.T) {
 	tests := []struct {
 		name    string
 		profile *config.ModelProfile
-		models  *acp.UnstableSessionModelState
+		models  *SessionModelState
 		want    string
 	}{
 		{name: "nil profile", profile: nil, models: models, want: ""},
@@ -100,10 +98,10 @@ func TestResolveProfileModel(t *testing.T) {
 
 // TestResolveAuxModelSwitch pins down the auxiliary model-switch decision (mitto-ykb).
 func TestResolveAuxModelSwitch(t *testing.T) {
-	models := func(current string) *acp.UnstableSessionModelState {
-		return &acp.UnstableSessionModelState{
-			CurrentModelId: acp.UnstableModelId(current),
-			AvailableModels: []acp.UnstableModelInfo{
+	models := func(current string) *SessionModelState {
+		return &SessionModelState{
+			CurrentModelId: (current),
+			AvailableModels: []ModelInfo{
 				{ModelId: "claude-haiku-4-5", Name: "Haiku 4.5"},
 				{ModelId: "claude-sonnet-4-6", Name: "Sonnet 4.6"},
 				{ModelId: "claude-opus-4-8", Name: "Opus 4.8"},
@@ -113,7 +111,7 @@ func TestResolveAuxModelSwitch(t *testing.T) {
 	tests := []struct {
 		name          string
 		constraint    *config.ACPServerConstraint
-		models        *acp.UnstableSessionModelState
+		models        *SessionModelState
 		wantModelID   string
 		wantShouldSet bool
 	}{
@@ -153,10 +151,10 @@ func selectPreferredModelTestProfiles() []config.ModelProfile {
 // TestSelectPreferredModel tests the per-prompt model resolver against ModelName/ModelTag
 // preference entries resolved through a fixture of global model profiles.
 func TestSelectPreferredModel(t *testing.T) {
-	newModels := func(current string) *acp.UnstableSessionModelState {
-		return &acp.UnstableSessionModelState{
-			CurrentModelId: acp.UnstableModelId(current),
-			AvailableModels: []acp.UnstableModelInfo{
+	newModels := func(current string) *SessionModelState {
+		return &SessionModelState{
+			CurrentModelId: (current),
+			AvailableModels: []ModelInfo{
 				{ModelId: "claude-haiku-4-5", Name: "Haiku 4.5"},
 				{ModelId: "claude-sonnet-4-6", Name: "Sonnet 4.6"},
 				{ModelId: "claude-opus-4-6", Name: "Opus 4.6"},

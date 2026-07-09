@@ -103,7 +103,7 @@ type acpCallbackDeps interface {
 	// --- Model state ---
 
 	// cbStoreAgentModels stores the raw agent model state reference.
-	cbStoreAgentModels(models *acp.UnstableSessionModelState)
+	cbStoreAgentModels(models *SessionModelState)
 	// cbACPServerConstraint returns the constraint for a category (may be nil).
 	cbACPServerConstraint(category string) *config.ACPServerConstraint
 	// cbReplaceModelConfigOption removes any existing model config option
@@ -129,7 +129,7 @@ type acpCallbackSink struct{}
 // --- Telemetry helper ---
 
 // logAgentModels logs the agent's model state at DEBUG level.
-func (acpCallbackSink) logAgentModels(d acpCallbackDeps, models *acp.UnstableSessionModelState) {
+func (acpCallbackSink) logAgentModels(d acpCallbackDeps, models *SessionModelState) {
 	lg := d.cbLogger()
 	if lg == nil || models == nil {
 		return
@@ -138,8 +138,8 @@ func (acpCallbackSink) logAgentModels(d acpCallbackDeps, models *acp.UnstableSes
 	for i, m := range models.AvailableModels {
 		modelNames[i] = m.Name
 	}
-	lg.Debug("Agent model state (UNSTABLE)",
-		"current_model", string(models.CurrentModelId),
+	lg.Debug("Agent model state",
+		"current_model", models.CurrentModelId,
 		"available_models", modelNames,
 		"model_count", len(models.AvailableModels))
 }
@@ -591,7 +591,7 @@ func (acpCallbackSink) setSessionModes(d acpCallbackDeps, modes *acp.SessionMode
 
 // setAgentModels converts agent model state to a "model" config option, enabling
 // model switching to reuse the config option infrastructure.
-func (acpCallbackSink) setAgentModels(d acpCallbackDeps, models *acp.UnstableSessionModelState) {
+func (acpCallbackSink) setAgentModels(d acpCallbackDeps, models *SessionModelState) {
 	d.cbStoreAgentModels(models)
 	if models == nil || len(models.AvailableModels) == 0 {
 		return
@@ -605,7 +605,7 @@ func (acpCallbackSink) setAgentModels(d acpCallbackDeps, models *acp.UnstableSes
 	// RPC in applyConfigConstraints completes. agentModels.CurrentModelId is NOT
 	// updated here; applyConfigConstraints compares against it to know whether the
 	// agent-side change still needs to happen.
-	currentValue := string(models.CurrentModelId)
+	currentValue := models.CurrentModelId
 	if constraint := d.cbACPServerConstraint(ConfigOptionCategoryModel); constraint != nil && constraint.Pattern != "" {
 		if matched := MatchConstraintOption(constraint, options); matched != "" && matched != currentValue {
 			if lg := d.cbLogger(); lg != nil {
@@ -621,7 +621,7 @@ func (acpCallbackSink) setAgentModels(d acpCallbackDeps, models *acp.UnstableSes
 	modelOption := SessionConfigOption{
 		ID:           ConfigOptionCategoryModel,
 		Name:         "Model",
-		Description:  "AI model for this session (UNSTABLE)",
+		Description:  "AI model for this session",
 		Category:     ConfigOptionCategoryModel,
 		Type:         ConfigOptionTypeSelect,
 		CurrentValue: currentValue,
@@ -634,7 +634,7 @@ func (acpCallbackSink) setAgentModels(d acpCallbackDeps, models *acp.UnstableSes
 	// from the agent's reported current model. Only set when empty so a prior call
 	// isn't overwritten. applyConfigConstraints (called async below) will update
 	// baseline via SetConfigOption if a constraint selects a different model.
-	d.cbInitBaselineModelIfEmpty(string(models.CurrentModelId))
+	d.cbInitBaselineModelIfEmpty(models.CurrentModelId)
 
 	d.cbApplyConfigConstraintsAsync(ConfigOptionCategoryModel)
 }

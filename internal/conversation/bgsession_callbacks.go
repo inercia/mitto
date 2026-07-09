@@ -17,7 +17,7 @@ import (
 // --- Thin delegators (preserve all method signatures: WebClient wires these directly) ---
 
 // logAgentModels logs the agent's model state at DEBUG level.
-func (bs *BackgroundSession) logAgentModels(models *acp.UnstableSessionModelState) {
+func (bs *BackgroundSession) logAgentModels(models *SessionModelState) {
 	bs.callbackSink.logAgentModels(bs, models)
 }
 
@@ -93,7 +93,7 @@ func (bs *BackgroundSession) setSessionModes(modes *acp.SessionModeState) {
 
 // setAgentModels converts agent model state to a "model" config option.
 // This allows model switching to reuse the config option infrastructure.
-func (bs *BackgroundSession) setAgentModels(models *acp.UnstableSessionModelState) {
+func (bs *BackgroundSession) setAgentModels(models *SessionModelState) {
 	bs.callbackSink.setAgentModels(bs, models)
 }
 
@@ -232,7 +232,7 @@ func (bs *BackgroundSession) cbSetLegacyModes(modeOption SessionConfigOption) {
 }
 
 // cbStoreAgentModels stores the raw agent model state reference.
-func (bs *BackgroundSession) cbStoreAgentModels(models *acp.UnstableSessionModelState) {
+func (bs *BackgroundSession) cbStoreAgentModels(models *SessionModelState) {
 	bs.agentModels = models
 }
 
