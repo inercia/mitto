@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/inercia/mitto/internal/config"
 	"github.com/inercia/mitto/internal/web/middleware"
 )
 
@@ -16,8 +17,12 @@ import (
 type badgeClickRequest struct {
 	// WorkspacePath is the absolute path to the workspace directory.
 	WorkspacePath string `json:"workspace_path"`
-	// Action specifies which action to perform: "folder" (default) or "terminal".
+	// Action specifies which action to perform: "" or "folder" (default),
+	// "terminal", or "open" (requires TargetID).
 	Action string `json:"action,omitempty"`
+	// TargetID selects which OpenTarget to run when Action == "open".
+	// Ignored for other actions.
+	TargetID string `json:"target_id,omitempty"`
 }
 
 // badgeClickResponse represents the response from the badge click action.
@@ -75,7 +80,38 @@ func (h *Handlers) HandleBadgeClick(w http.ResponseWriter, r *http.Request) {
 	var command string
 
 	mittoConfig := h.deps.MittoConfig
-	if req.Action == "terminal" {
+	if req.Action == "open" {
+		if req.TargetID == "" {
+			writeErrorJSON(w, http.StatusBadRequest, "", "target_id is required when action=open")
+			return
+		}
+		var targets []config.OpenTarget
+		if mittoConfig != nil && mittoConfig.UI.Mac != nil {
+			targets = mittoConfig.UI.Mac.EffectiveOpenTargets()
+		} else {
+			targets = config.DefaultOpenTargets()
+		}
+		var found *config.OpenTarget
+		for i := range targets {
+			if targets[i].ID == req.TargetID {
+				found = &targets[i]
+				break
+			}
+		}
+		if found == nil {
+			writeErrorJSON(w, http.StatusNotFound, "", fmt.Sprintf("Unknown target_id: %s", req.TargetID))
+			return
+		}
+		if !found.GetEnabled() {
+			writeJSONOK(w, badgeClickResponse{
+				Success: false,
+				Error:   "Target is disabled",
+			})
+			return
+		}
+		enabled = true
+		command = found.Command
+	} else if req.Action == "terminal" {
 		// Use terminal action config
 		if mittoConfig != nil && mittoConfig.UI.Mac != nil && mittoConfig.UI.Mac.TerminalAction != nil {
 			enabled = mittoConfig.UI.Mac.TerminalAction.GetEnabled()
