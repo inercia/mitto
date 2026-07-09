@@ -1356,13 +1356,6 @@ export function SettingsDialog({
   const [showInAllSpaces, setShowInAllSpaces] = useState(false);
   const [startAtLogin, setStartAtLogin] = useState(false);
   const [loginItemSupported, setLoginItemSupported] = useState(false);
-  const [badgeClickCommand, setBadgeClickCommand] = useState(
-    "open ${MITTO_WORKING_DIR}",
-  );
-  const [terminalActionCommand, setTerminalActionCommand] = useState(
-    "open -a Terminal ${MITTO_WORKING_DIR}",
-  );
-
   // Open In targets (macOS): configurable list of apps for the folder "Open ▸" menu.
   // Each entry: { id, label, icon, command, enabled, builtin }. enabled is a plain
   // boolean in state (persisted as *bool on the backend via ui.mac.open_in.targets).
@@ -1757,18 +1750,6 @@ export function SettingsDialog({
       );
       setShowInAllSpaces(config.ui?.mac?.show_in_all_spaces || false);
 
-      // Load badge click action settings (macOS only)
-      setBadgeClickCommand(
-        config.ui?.mac?.badge_click_action?.command ||
-          "open ${MITTO_WORKING_DIR}",
-      );
-
-      // Load terminal action settings (macOS only)
-      setTerminalActionCommand(
-        config.ui?.mac?.terminal_action?.command ||
-          "open -a Terminal ${MITTO_WORKING_DIR}",
-      );
-
       // Load Open In targets (macOS only). If ui.mac.open_in.targets is present
       // and non-empty use it verbatim; otherwise synthesize a UI-only fallback
       // matching backend config.DefaultOpenTargets() (darwin) so the user sees
@@ -2093,14 +2074,6 @@ export function SettingsDialog({
           },
           show_in_all_spaces: showInAllSpaces,
           start_at_login: startAtLogin,
-          badge_click_action: {
-            enabled: badgeClickCommand.trim() !== "",
-            command: badgeClickCommand,
-          },
-          terminal_action: {
-            enabled: terminalActionCommand.trim() !== "",
-            command: terminalActionCommand,
-          },
           open_in: {
             targets: openInTargets.map((t) => ({
               id: t.id,
@@ -4834,60 +4807,6 @@ export function SettingsDialog({
                             </div>
                           </label>
                         `}
-
-                        <!-- Open Folder Action -->
-                        <div class="p-4 space-y-2">
-                          <div class="font-medium text-sm">
-                            Open folder command
-                          </div>
-                          <div class="text-xs text-mitto-text-muted mb-2">
-                            Command to open workspace folder from badges and
-                            group header buttons. Leave empty to disable.
-                          </div>
-                          <div class="flex items-center gap-2">
-                            <input
-                              type="text"
-                              value=${badgeClickCommand}
-                              onInput=${(e) =>
-                                setBadgeClickCommand(e.target.value)}
-                              placeholder="open \${MITTO_WORKING_DIR}"
-                              class="input input-sm flex-1 font-mono"
-                            />
-                          </div>
-                          <p class="text-xs text-mitto-text-muted">
-                            Use${" "}
-                            <code class="bg-mitto-surface-4 px-1 rounded"
-                              >\${MITTO_WORKING_DIR}</code
-                            >${" "} as placeholder for the workspace path
-                          </p>
-                        </div>
-
-                        <!-- Terminal Action -->
-                        <div class="p-4 space-y-2">
-                          <div class="font-medium text-sm">
-                            Open terminal command
-                          </div>
-                          <div class="text-xs text-mitto-text-muted mb-2">
-                            Command to open a terminal at the workspace folder
-                            from group header buttons. Leave empty to disable.
-                          </div>
-                          <div class="flex items-center gap-2">
-                            <input
-                              type="text"
-                              value=${terminalActionCommand}
-                              onInput=${(e) =>
-                                setTerminalActionCommand(e.target.value)}
-                              placeholder="open -a Terminal \${MITTO_WORKING_DIR}"
-                              class="input input-sm flex-1 font-mono"
-                            />
-                          </div>
-                          <p class="text-xs text-mitto-text-muted">
-                            Use${" "}
-                            <code class="bg-mitto-surface-4 px-1 rounded"
-                              >\${MITTO_WORKING_DIR}</code
-                            >${" "} as placeholder for the workspace path
-                          </p>
-                        </div>
 
                         <!-- Open In Targets -->
                         <div class="p-4 space-y-2">

@@ -217,10 +217,7 @@ export function SessionList({
   rcFilePath = null,
   badgeClickEnabled = false,
   onBadgeClick,
-  terminalActionEnabled = false,
-  onFolderOpen,
   onMoveFolderToGroup, // Called with (workingDir, group) to reassign a folder's group
-  onTerminalClick,
   // Configurable "Open ▸" submenu targets (mitto-bbi). Each entry:
   // {id,label,icon,command,enabled,builtin}. Only entries with enabled===true
   // appear in the folder context-menu submenu. Callback: onOpenTarget(workingDir, id).

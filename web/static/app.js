@@ -987,29 +987,20 @@ function App() {
   // delete). One of "always" (default), "responding", or "never".
   const [deleteConfirmMode, setDeleteConfirmMode] = useState("always");
 
-  // Badge/folder click command (macOS only)
-  const [badgeClickCommand, setBadgeClickCommand] = useState(
-    "open ${MITTO_WORKING_DIR}",
-  );
-  // Terminal action command (macOS only)
-  const [terminalActionCommand, setTerminalActionCommand] = useState(
-    "open -a Terminal ${MITTO_WORKING_DIR}",
-  );
   // "Open In" targets (macOS only, mitto-bbi). Populated from config.ui.mac.open_in.targets;
   // falls back to DEFAULT_MAC_OPEN_TARGETS when the block is absent — matches the fallback
   // the backend applies at exec time via config.DefaultOpenTargets(). Passed to
-  // <SessionList /> for the folder context-menu "Open ▸" submenu.
+  // <SessionList /> for the folder context-menu "Open ▸" submenu; the row workspace
+  // badge also invokes the "finder" entry via handleBadgeClick.
   const [openInTargets, setOpenInTargets] = useState(() =>
     DEFAULT_MAC_OPEN_TARGETS.map((t) => ({ ...t })),
   );
 
-  // Derive enabled state from non-empty command
-  const badgeClickEnabled =
-    typeof window.mittoPickFolder === "function" &&
-    badgeClickCommand.trim() !== "";
-  const terminalActionEnabled =
-    typeof window.mittoPickFolder === "function" &&
-    terminalActionCommand.trim() !== "";
+  // The row workspace badge is enabled iff we are in the native app AND the
+  // "finder" OpenTarget is present and enabled — clicking it routes through
+  // action=open,target_id=finder (mitto-b7d).
+  const finderTarget = openInTargets.find((t) => t && t.id === "finder");
+  const badgeClickEnabled = isNativeApp() && finderTarget?.enabled === true;
 
   // Input font family setting (web UI, default: "system")
   const [inputFontFamily, setInputFontFamily] = useState("system");
@@ -1067,16 +1058,6 @@ function App() {
           console.log("[config] Setting native notifications ENABLED");
           window.mittoNativeNotificationsEnabled = true;
         }
-        // Load badge/folder click command (macOS only)
-        setBadgeClickCommand(
-          config?.ui?.mac?.badge_click_action?.command ||
-            "open ${MITTO_WORKING_DIR}",
-        );
-        // Load terminal action command (macOS only)
-        setTerminalActionCommand(
-          config?.ui?.mac?.terminal_action?.command ||
-            "open -a Terminal ${MITTO_WORKING_DIR}",
-        );
         // Load Open In targets (macOS only). Same shape and fallback as
         // SettingsDialog.js — when ui.mac.open_in.targets is missing/empty we
         // synthesize the shared DEFAULT_MAC_OPEN_TARGETS so the folder
@@ -1710,42 +1691,11 @@ function App() {
     setMainView("conversation");
   };
 
-  // Handle badge click action - calls API to execute configured command
+  // Handle badge click action — routes through the "finder" OpenTarget
+  // (mitto-b7d). Sends {action:"open", target_id:"finder"} to /api/badge-click;
+  // backend resolves against EffectiveOpenTargets() and executes the target's
+  // Command via sh -c. Errors surface as toasts.
   const handleBadgeClick = useCallback(
-    async (workspacePath) => {
-      if (!badgeClickEnabled || !workspacePath) return;
-
-      try {
-        const res = await authFetch(apiUrl("/api/badge-click"), {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ workspace_path: workspacePath }),
-        });
-
-        if (!res.ok) {
-          const data = await res.json();
-          showToast({
-            style: "error",
-            title: data.error?.message || data.error || "Failed to open folder",
-          });
-        } else {
-          const data = await res.json();
-          if (!data.success && data.error) {
-            showToast({ style: "error", title: data.error });
-          }
-        }
-      } catch (err) {
-        showToast({
-          style: "error",
-          title: "Failed to open folder: " + err.message,
-        });
-      }
-    },
-    [badgeClickEnabled, showToast],
-  );
-
-  // Handle folder open action - calls API to open workspace folder
-  const handleFolderOpen = useCallback(
     async (workspacePath) => {
       if (!badgeClickEnabled || !workspacePath) return;
 
@@ -1755,12 +1705,13 @@ function App() {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             workspace_path: workspacePath,
-            action: "folder",
+            action: "open",
+            target_id: "finder",
           }),
         });
 
         if (!res.ok) {
-          const data = await res.json();
+          const data = await res.json().catch(() => ({}));
           showToast({
             style: "error",
             title: data.error?.message || data.error || "Failed to open folder",
@@ -1784,7 +1735,7 @@ function App() {
   // Fire a configured "Open In" target (mitto-bbi.4). Sends
   // {action:"open", target_id} to /api/badge-click; backend resolves against
   // EffectiveOpenTargets() and executes target.Command via sh -c. Errors surface
-  // as toasts using the same envelope as handleFolderOpen.
+  // as toasts using the same envelope as handleBadgeClick.
   const handleOpenTarget = useCallback(
     async (workspacePath, targetId) => {
       if (!workspacePath || !targetId) return;
@@ -1869,44 +1820,6 @@ function App() {
       }
     },
     [showToast, refreshWorkspaces, workspaces],
-  );
-
-  // Handle terminal action - calls API to open terminal at workspace path
-  const handleTerminalClick = useCallback(
-    async (workspacePath) => {
-      if (!terminalActionEnabled || !workspacePath) return;
-
-      try {
-        const res = await authFetch(apiUrl("/api/badge-click"), {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            workspace_path: workspacePath,
-            action: "terminal",
-          }),
-        });
-
-        if (!res.ok) {
-          const data = await res.json();
-          showToast({
-            style: "error",
-            title:
-              data.error?.message || data.error || "Failed to open terminal",
-          });
-        } else {
-          const data = await res.json();
-          if (!data.success && data.error) {
-            showToast({ style: "error", title: data.error });
-          }
-        }
-      } catch (err) {
-        showToast({
-          style: "error",
-          title: "Failed to open terminal: " + err.message,
-        });
-      }
-    },
-    [terminalActionEnabled, showToast],
   );
 
   // Open the properties panel for a session (used by pencil button in session list)
@@ -2938,17 +2851,6 @@ function App() {
                 setDeleteConfirmMode(
                   config?.ui?.confirmations?.delete_conversation || "always",
                 );
-                // Reload badge/folder click command (macOS only)
-                if (typeof window.mittoPickFolder === "function") {
-                  setBadgeClickCommand(
-                    config?.ui?.mac?.badge_click_action?.command ||
-                      "open ${MITTO_WORKING_DIR}",
-                  );
-                  setTerminalActionCommand(
-                    config?.ui?.mac?.terminal_action?.command ||
-                      "open -a Terminal ${MITTO_WORKING_DIR}",
-                  );
-                }
                 // Reload input font family setting
                 setInputFontFamily(
                   config?.ui?.web?.input_font_family || "system",
@@ -3540,10 +3442,7 @@ function App() {
             rcFilePath=${rcFilePath}
             badgeClickEnabled=${badgeClickEnabled}
             onBadgeClick=${handleBadgeClick}
-            terminalActionEnabled=${terminalActionEnabled}
-            onFolderOpen=${handleFolderOpen}
             onMoveFolderToGroup=${handleMoveFolderToGroup}
-            onTerminalClick=${handleTerminalClick}
             openInTargets=${openInTargets}
             onOpenTarget=${handleOpenTarget}
             onBeadsOpen=${handleBeadsOpen}

@@ -299,16 +299,12 @@ Merging rules:
   remains marked `builtin: true` and cannot be deleted from the UI.
 - Entries with an unknown or empty `id` are ignored.
 
-### Legacy fallback
+### Row workspace badge
 
-Older installations may still have `ui.mac.badge_click_action` and
-`ui.mac.terminal_action` in `settings.json` (from before the Open In section
-existed). When `ui.mac.open_in.targets` is absent or empty, Mitto synthesizes
-a two-entry list — a Finder entry from `badge_click_action` and a Terminal
-entry from `terminal_action` — so those installations keep working unchanged.
-Once you save any Open In configuration through the Settings dialog, the new
-`ui.mac.open_in.targets` list becomes authoritative and the legacy fields are
-ignored.
+Clicking the small workspace badge next to each row in the sidebar invokes the
+`finder` Open In target (i.e. it is equivalent to selecting **Open → Finder**
+from the folder context menu). Disable the `finder` entry in the Open In list
+to hide/deactivate the badge action.
 
 ## JSON Format
 

@@ -17,11 +17,10 @@ import (
 type badgeClickRequest struct {
 	// WorkspacePath is the absolute path to the workspace directory.
 	WorkspacePath string `json:"workspace_path"`
-	// Action specifies which action to perform: "" or "folder" (default),
-	// "terminal", or "open" (requires TargetID).
+	// Action specifies which action to perform. Must be "open" (only supported
+	// value); resolves TargetID against MacUIConfig.EffectiveOpenTargets().
 	Action string `json:"action,omitempty"`
-	// TargetID selects which OpenTarget to run when Action == "open".
-	// Ignored for other actions.
+	// TargetID selects which OpenTarget to run.
 	TargetID string `json:"target_id,omitempty"`
 }
 
@@ -75,70 +74,42 @@ func (h *Handlers) HandleBadgeClick(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Get the action configuration based on the requested action type
-	var enabled bool
-	var command string
-
-	mittoConfig := h.deps.MittoConfig
-	if req.Action == "open" {
-		if req.TargetID == "" {
-			writeErrorJSON(w, http.StatusBadRequest, "", "target_id is required when action=open")
-			return
-		}
-		var targets []config.OpenTarget
-		if mittoConfig != nil && mittoConfig.UI.Mac != nil {
-			targets = mittoConfig.UI.Mac.EffectiveOpenTargets()
-		} else {
-			targets = config.DefaultOpenTargets()
-		}
-		var found *config.OpenTarget
-		for i := range targets {
-			if targets[i].ID == req.TargetID {
-				found = &targets[i]
-				break
-			}
-		}
-		if found == nil {
-			writeErrorJSON(w, http.StatusNotFound, "", fmt.Sprintf("Unknown target_id: %s", req.TargetID))
-			return
-		}
-		if !found.GetEnabled() {
-			writeJSONOK(w, badgeClickResponse{
-				Success: false,
-				Error:   "Target is disabled",
-			})
-			return
-		}
-		enabled = true
-		command = found.Command
-	} else if req.Action == "terminal" {
-		// Use terminal action config
-		if mittoConfig != nil && mittoConfig.UI.Mac != nil && mittoConfig.UI.Mac.TerminalAction != nil {
-			enabled = mittoConfig.UI.Mac.TerminalAction.GetEnabled()
-			command = mittoConfig.UI.Mac.TerminalAction.GetCommand()
-		} else {
-			enabled = true
-			command = "open -a Terminal ${MITTO_WORKING_DIR}"
-		}
-	} else {
-		// Default: use badge click (folder open) action config
-		if mittoConfig != nil && mittoConfig.UI.Mac != nil && mittoConfig.UI.Mac.BadgeClickAction != nil {
-			enabled = mittoConfig.UI.Mac.BadgeClickAction.GetEnabled()
-			command = mittoConfig.UI.Mac.BadgeClickAction.GetCommand()
-		} else {
-			// Use defaults
-			enabled = true
-			command = "open ${MITTO_WORKING_DIR}"
-		}
+	// Only action="open" is supported; TargetID selects the OpenTarget to run.
+	if req.Action != "open" {
+		writeErrorJSON(w, http.StatusBadRequest, "", "action must be \"open\"")
+		return
+	}
+	if req.TargetID == "" {
+		writeErrorJSON(w, http.StatusBadRequest, "", "target_id is required when action=open")
+		return
 	}
 
-	if !enabled {
+	mittoConfig := h.deps.MittoConfig
+	var targets []config.OpenTarget
+	if mittoConfig != nil && mittoConfig.UI.Mac != nil {
+		targets = mittoConfig.UI.Mac.EffectiveOpenTargets()
+	} else {
+		targets = config.DefaultOpenTargets()
+	}
+	var found *config.OpenTarget
+	for i := range targets {
+		if targets[i].ID == req.TargetID {
+			found = &targets[i]
+			break
+		}
+	}
+	if found == nil {
+		writeErrorJSON(w, http.StatusNotFound, "", fmt.Sprintf("Unknown target_id: %s", req.TargetID))
+		return
+	}
+	if !found.GetEnabled() {
 		writeJSONOK(w, badgeClickResponse{
 			Success: false,
-			Error:   "Badge click action is disabled",
+			Error:   "Target is disabled",
 		})
 		return
 	}
+	command := found.Command
 
 	// Replace ${MITTO_WORKING_DIR} placeholder with the actual path
 	// Use quoted path to handle spaces and special characters safely

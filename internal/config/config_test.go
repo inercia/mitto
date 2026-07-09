@@ -1441,88 +1441,6 @@ ui:
 	}
 }
 
-func TestParse_UIBadgeClickAction(t *testing.T) {
-	yaml := `
-acp:
-  - claude:
-      command: "claude"
-ui:
-  mac:
-    badge_click_action:
-      enabled: true
-      command: "code ${MITTO_WORKING_DIR}"
-`
-	cfg, err := Parse([]byte(yaml))
-	if err != nil {
-		t.Fatalf("Parse failed: %v", err)
-	}
-
-	if cfg.UI.Mac == nil {
-		t.Fatal("UI.Mac is nil")
-	}
-
-	if cfg.UI.Mac.BadgeClickAction == nil {
-		t.Fatal("UI.Mac.BadgeClickAction is nil")
-	}
-
-	if !cfg.UI.Mac.BadgeClickAction.GetEnabled() {
-		t.Error("UI.Mac.BadgeClickAction.GetEnabled() = false, want true")
-	}
-
-	if cfg.UI.Mac.BadgeClickAction.GetCommand() != "code ${MITTO_WORKING_DIR}" {
-		t.Errorf("UI.Mac.BadgeClickAction.GetCommand() = %q, want %q",
-			cfg.UI.Mac.BadgeClickAction.GetCommand(), "code ${MITTO_WORKING_DIR}")
-	}
-}
-
-func TestParse_UIBadgeClickActionDisabled(t *testing.T) {
-	yaml := `
-acp:
-  - claude:
-      command: "claude"
-ui:
-  mac:
-    badge_click_action:
-      enabled: false
-`
-	cfg, err := Parse([]byte(yaml))
-	if err != nil {
-		t.Fatalf("Parse failed: %v", err)
-	}
-
-	if cfg.UI.Mac == nil {
-		t.Fatal("UI.Mac is nil")
-	}
-
-	if cfg.UI.Mac.BadgeClickAction == nil {
-		t.Fatal("UI.Mac.BadgeClickAction is nil")
-	}
-
-	if cfg.UI.Mac.BadgeClickAction.GetEnabled() {
-		t.Error("UI.Mac.BadgeClickAction.GetEnabled() = true, want false")
-	}
-}
-
-func TestBadgeClickActionConfig_Defaults(t *testing.T) {
-	// Test nil config returns defaults
-	var nilConfig *BadgeClickActionConfig
-	if !nilConfig.GetEnabled() {
-		t.Error("nil config should return enabled=true by default")
-	}
-	if nilConfig.GetCommand() != "open ${MITTO_WORKING_DIR}" {
-		t.Errorf("nil config should return default command, got %q", nilConfig.GetCommand())
-	}
-
-	// Test empty config returns defaults
-	emptyConfig := &BadgeClickActionConfig{}
-	if !emptyConfig.GetEnabled() {
-		t.Error("empty config should return enabled=true by default")
-	}
-	if emptyConfig.GetCommand() != "open ${MITTO_WORKING_DIR}" {
-		t.Errorf("empty config should return default command, got %q", emptyConfig.GetCommand())
-	}
-}
-
 func TestParse_UIOpenIn(t *testing.T) {
 	yaml := `
 acp:
@@ -1639,31 +1557,26 @@ func TestDefaultOpenTargets_MacOS(t *testing.T) {
 	}
 }
 
-func TestEffectiveOpenTargets_EmptyFallsBackToLegacy(t *testing.T) {
-	boolPtr := func(b bool) *bool { return &b }
-	c := &MacUIConfig{
-		BadgeClickAction: &BadgeClickActionConfig{
-			Command: "code ${MITTO_WORKING_DIR}",
-		},
-		TerminalAction: &TerminalActionConfig{
-			Enabled: boolPtr(false),
-		},
-	}
+func TestEffectiveOpenTargets_EmptyReturnsDefaults(t *testing.T) {
+	// With OpenIn nil or empty, EffectiveOpenTargets must return the platform
+	// defaults verbatim (no legacy synthesis).
+	want := DefaultOpenTargets()
+
+	c := &MacUIConfig{}
 	got := c.EffectiveOpenTargets()
-	if len(got) != 2 {
-		t.Fatalf("EffectiveOpenTargets length = %d, want 2", len(got))
+	if len(got) != len(want) {
+		t.Fatalf("nil OpenIn: length = %d, want %d", len(got), len(want))
 	}
-	if got[0].ID != "finder" {
-		t.Errorf("got[0].ID = %q, want %q", got[0].ID, "finder")
+	for i := range got {
+		if got[i].ID != want[i].ID {
+			t.Errorf("nil OpenIn: got[%d].ID = %q, want %q", i, got[i].ID, want[i].ID)
+		}
 	}
-	if got[0].Command != "code ${MITTO_WORKING_DIR}" {
-		t.Errorf("got[0].Command = %q", got[0].Command)
-	}
-	if got[1].ID != "terminal" {
-		t.Errorf("got[1].ID = %q, want %q", got[1].ID, "terminal")
-	}
-	if got[1].GetEnabled() {
-		t.Errorf("got[1].GetEnabled() = true, want false")
+
+	c2 := &MacUIConfig{OpenIn: &OpenInConfig{Targets: nil}}
+	got2 := c2.EffectiveOpenTargets()
+	if len(got2) != len(want) {
+		t.Fatalf("empty Targets: length = %d, want %d", len(got2), len(want))
 	}
 }
 

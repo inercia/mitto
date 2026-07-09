@@ -12,23 +12,12 @@ import (
 )
 
 // newBadgeClickHandlers builds a Handlers with a MittoConfig whose UI.Mac.OpenIn
-// contains the given targets. It also seeds BadgeClickAction and TerminalAction
-// with a harmless "true" command so the back-compat branches exercise the exec
-// path without launching real GUI apps.
+// contains the given targets.
 func newBadgeClickHandlers(t *testing.T, targets []config.OpenTarget) *Handlers {
 	t.Helper()
-	boolPtr := func(b bool) *bool { return &b }
 	cfg := &config.Config{
 		UI: config.UIConfig{
 			Mac: &config.MacUIConfig{
-				BadgeClickAction: &config.BadgeClickActionConfig{
-					Enabled: boolPtr(true),
-					Command: "true",
-				},
-				TerminalAction: &config.TerminalActionConfig{
-					Enabled: boolPtr(true),
-					Command: "true",
-				},
 				OpenIn: &config.OpenInConfig{Targets: targets},
 			},
 		},
@@ -129,32 +118,27 @@ func TestBadgeClick_ActionOpen_MissingTargetID(t *testing.T) {
 	}
 }
 
-func TestBadgeClick_ActionFolder_BackCompat(t *testing.T) {
+func TestBadgeClick_MissingAction_Rejected(t *testing.T) {
 	h := newBadgeClickHandlers(t, nil)
+	// Action == "" is no longer accepted after the legacy branches were removed.
 	w := doBadgeClick(t, h, badgeClickRequest{
 		WorkspacePath: t.TempDir(),
-		// Action == "" -> default folder branch
 	})
-	if w.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200; body=%s", w.Code, w.Body.String())
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400; body=%s", w.Code, w.Body.String())
 	}
-	resp := decodeBadgeClickResp(t, w)
-	if !resp.Success {
-		t.Errorf("Success = false, want true; error=%q", resp.Error)
+	if !strings.Contains(w.Body.String(), "open") {
+		t.Errorf("body = %q, want to mention required action=open", w.Body.String())
 	}
 }
 
-func TestBadgeClick_ActionTerminal_BackCompat(t *testing.T) {
+func TestBadgeClick_UnknownAction_Rejected(t *testing.T) {
 	h := newBadgeClickHandlers(t, nil)
 	w := doBadgeClick(t, h, badgeClickRequest{
 		WorkspacePath: t.TempDir(),
 		Action:        "terminal",
 	})
-	if w.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200; body=%s", w.Code, w.Body.String())
-	}
-	resp := decodeBadgeClickResp(t, w)
-	if !resp.Success {
-		t.Errorf("Success = false, want true; error=%q", resp.Error)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400; body=%s", w.Code, w.Body.String())
 	}
 }
