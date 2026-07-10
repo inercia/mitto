@@ -28,6 +28,9 @@ type ACPServerConstraint struct {
 // Profiles let users tag models by capability (e.g. "Smart", "Cheap") independently
 // of the raw model name, so other parts of Mitto can branch on capability tags rather
 // than brittle model-name strings.
+//
+// **List order is priority** — the first profile carrying a given tag wins in
+// ProfilesByTag / SelectPreferredModel resolution. Put your preferred variant first.
 type ModelProfile struct {
 	// Name is the display name for this profile (e.g. "Opus").
 	Name string `json:"name"`
@@ -48,6 +51,9 @@ type ModelProfile struct {
 // prompt preferredModels (e.g. `modelTag: Coding`) resolve even when the user's
 // settings.json has an empty or partial `Models` list. A fresh copy is returned on
 // each call so callers may mutate the result freely.
+//
+// List order = priority; put preferred variants first (the first profile carrying a
+// tag wins in tag-based resolution).
 func DefaultModelProfiles() []ModelProfile {
 	contains := func(pattern string) *ACPServerConstraint {
 		return &ACPServerConstraint{MatchMode: "contains", Pattern: pattern}
@@ -89,6 +95,11 @@ func CanonicalModelTags() []string {
 // is only appended when no user profile shares its name (case-insensitive). This
 // guarantees well-known tags always resolve even when settings.json omits `models:`,
 // without overriding any customisation the user has made. Safe to call on a nil Config.
+//
+// Ordering contract: user profiles come first, in user-supplied order; defaults are
+// appended after, in DefaultModelProfiles order. Resolvers (ProfilesByTag,
+// SelectPreferredModel) walk both halves top-to-bottom, so for equal-tag ties a user
+// profile always trumps a default, and within each half list order = priority.
 func (c *Config) EffectiveModelProfiles() []ModelProfile {
 	var user []ModelProfile
 	if c != nil {

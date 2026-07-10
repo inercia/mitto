@@ -39,6 +39,11 @@ acp: []
 # the first-run seed — the canonical, always-available set lives in Go
 # (config.DefaultModelProfiles); the two are kept in sync by `make check-model-tags`.
 # Edit or extend these to match the models you use.
+#
+# Priority: list order = priority. For tag-based resolution the FIRST profile carrying
+# a tag wins, so put newer/preferred variants first. Example: if you list a "Claude
+# Sonnet 5" profile before "Claude Sonnet 4" (both tagged Coding), prompts asking for
+# `modelTag: Coding` resolve to Sonnet 5; swap the two entries and Sonnet 4 wins.
 models:
   - name: Claude
     criteria:

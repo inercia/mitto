@@ -199,6 +199,41 @@ func TestSelectPreferredModel_NilModels(t *testing.T) {
 	}
 }
 
+// TestSelectPreferredModel_OrderIsPriority locks in the "list order = priority"
+// contract for tag-based resolution (mitto-ex7.1): when two ModelProfiles share a
+// tag and both resolve to an available model, the profile listed FIRST in the
+// profiles slice wins. Reversing the slice must flip which model wins.
+func TestSelectPreferredModel_OrderIsPriority(t *testing.T) {
+	models := &SessionModelState{
+		CurrentModelId: "gpt-4o", // does not match either Sonnet profile → forces resolution
+		AvailableModels: []ModelInfo{
+			{ModelId: "claude-sonnet-5-0", Name: "Claude Sonnet 5"},
+			{ModelId: "claude-sonnet-4-6", Name: "Claude Sonnet 4"},
+			{ModelId: "gpt-4o", Name: "GPT-4o"},
+		},
+	}
+	sonnet5 := config.ModelProfile{
+		Name:     "Claude Sonnet 5",
+		Criteria: &config.ACPServerConstraint{MatchMode: "contains", Pattern: "Sonnet 5"},
+		Tags:     []string{"Coding"},
+	}
+	sonnet4 := config.ModelProfile{
+		Name:     "Claude Sonnet 4",
+		Criteria: &config.ACPServerConstraint{MatchMode: "contains", Pattern: "Sonnet 4"},
+		Tags:     []string{"Coding"},
+	}
+	prefs := []config.PromptPreferredModel{{ModelTag: "Coding"}}
+
+	// Sonnet 5 first → Sonnet 5 wins.
+	if got := SelectPreferredModel(prefs, []config.ModelProfile{sonnet5, sonnet4}, models); got != "claude-sonnet-5-0" {
+		t.Errorf("with [Sonnet5, Sonnet4] profiles, modelTag=Coding resolved to %q, want %q", got, "claude-sonnet-5-0")
+	}
+	// Reverse the profile slice → Sonnet 4 now wins.
+	if got := SelectPreferredModel(prefs, []config.ModelProfile{sonnet4, sonnet5}, models); got != "claude-sonnet-4-6" {
+		t.Errorf("with [Sonnet4, Sonnet5] profiles, modelTag=Coding resolved to %q, want %q", got, "claude-sonnet-4-6")
+	}
+}
+
 // TestConstraintModelSwitchBudgetMath verifies that constraintModelSwitchCallerBudget
 // (90s) is large enough to cover worst-case setModelSem contention at server wakeup
 // (mitto-f7q). Mirrors internal/web's TestSetModelAsyncBudgetMath.

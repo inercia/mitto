@@ -131,17 +131,59 @@ preferredModels:
 - **`modelName`** — case-insensitive equality against the profile's `name`.
 - **`modelTag`** — matches any profile carrying that tag. When several profiles share
   the tag, resolution is **deterministic by profile order** in the `models:` list
-  (first profile with the tag wins). Given the shipped defaults above, the tag-based
-  entries in the builtin prompts resolve as follows:
+  (first profile with the tag wins — see [Priority](#priority-list-order--priority)
+  below). Given the shipped defaults above, the tag-based entries in the builtin
+  prompts resolve as follows:
   - `Coding` → first hit is `Claude Sonnet` (also on `GPT-5`, `GPT-4`).
   - `Cheap` → `Claude Haiku`.
   - `Smart`, `Smartest`, `Reasoning`, `Fast`, `LongContext`, `Anthropic`,
     `Expensive` are also available; see the shipped defaults table.
-- Entries are **ordered, first-match-wins**. The backend tries each entry in order
-  and stops at the first that resolves to a profile whose `criteria` match an
-  available model on the session's ACP server.
+- Entries are **ordered, first-match-wins** (see [Priority](#priority-list-order--priority)).
+  The backend tries each entry in order and stops at the first that resolves to a
+  profile whose `criteria` match an available model on the session's ACP server.
 - If the current model **already satisfies** the resolved profile, it is kept — no
   needless model switch. Otherwise the preference is applied.
+
+## Priority: list order = priority
+
+Both halves of resolution — the `preferredModels:` list on a prompt *and* the `models:`
+list in settings — use **list order = priority**: the first entry that resolves wins.
+
+For tag-based resolution (`modelTag:`), Mitto walks the effective `models:` list from
+top to bottom and picks the first profile whose `tags` include the requested tag and
+whose `criteria` match an available model on the session's ACP server. **Put your
+preferred variant first.**
+
+Example — flipping which model the `Coding` tag resolves to by reordering:
+
+```yaml
+# Sonnet 5 wins for `modelTag: Coding`
+models:
+  - name: Claude Sonnet 5
+    criteria: { matchMode: contains, pattern: Sonnet 5 }
+    tags: [Coding, Smart]
+  - name: Claude Sonnet 4
+    criteria: { matchMode: contains, pattern: Sonnet 4 }
+    tags: [Coding, Smart]
+```
+
+```yaml
+# Reorder → Sonnet 4 now wins for `modelTag: Coding`
+models:
+  - name: Claude Sonnet 4
+    criteria: { matchMode: contains, pattern: Sonnet 4 }
+    tags: [Coding, Smart]
+  - name: Claude Sonnet 5
+    criteria: { matchMode: contains, pattern: Sonnet 5 }
+    tags: [Coding, Smart]
+```
+
+The `Models` tab in Settings exposes up/down reorder buttons per profile so you can
+control this priority without hand-editing YAML/JSON.
+
+User profiles (from settings) come **first**, in your order; the canonical defaults
+(`config.DefaultModelProfiles`) are appended after, so a user profile always trumps a
+default for equal-tag ties, and within each half list order = priority.
 
 The old glob-pattern form (`- "*sonnet*"`) has been removed. See
 [.augment/rules/07-prompts.md § preferredModels Field](../../.augment/rules/07-prompts.md)
