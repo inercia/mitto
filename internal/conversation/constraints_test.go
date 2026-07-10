@@ -261,6 +261,49 @@ func TestSelectPreferredModel_PostSplitDefaultsFallthrough(t *testing.T) {
 	}
 }
 
+// TestInitialModelPreference_HonoursProfileOrder locks the "list order =
+// priority" contract at the INITIAL-model consumer site (mitto-ex7.4):
+// cbMaybeApplyInitialModelAsync in bgsession_callbacks.go routes through
+// SelectPreferredModel(initialModelPreference, EffectiveModelProfiles(),
+// agentModels). This test drives that same call with the shape a workspace's
+// Initial Model preference produces (a single ModelTag entry), and asserts
+// that reordering the two same-tag profiles in Config.Models flips which
+// model the initial-model preference resolves to. Direct SelectPreferredModel
+// call (rather than driving the async callback) is intentional: the callback
+// wraps a goroutine + SetConfigOption side-effects that are not the contract
+// under test — the priority axis is fully captured by the resolver call.
+func TestInitialModelPreference_HonoursProfileOrder(t *testing.T) {
+	models := &SessionModelState{
+		CurrentModelId: "gpt-4o", // does not satisfy either Sonnet profile → forces resolution
+		AvailableModels: []ModelInfo{
+			{ModelId: "claude-sonnet-5-0", Name: "Claude Sonnet 5"},
+			{ModelId: "claude-sonnet-4-6", Name: "Claude Sonnet 4"},
+			{ModelId: "gpt-4o", Name: "GPT-4o"},
+		},
+	}
+	sonnet5 := config.ModelProfile{
+		Name:     "Claude Sonnet 5",
+		Criteria: &config.ACPServerConstraint{MatchMode: "contains", Pattern: "Sonnet 5"},
+		Tags:     []string{"Smart", "Coding"},
+	}
+	sonnet4 := config.ModelProfile{
+		Name:     "Claude Sonnet 4",
+		Criteria: &config.ACPServerConstraint{MatchMode: "contains", Pattern: "Sonnet 4"},
+		Tags:     []string{"Smart", "Coding"},
+	}
+	// Shape mirrors WorkspaceSettings.InitialModelPreference at the consumer.
+	initialPref := []config.PromptPreferredModel{{ModelTag: "Smart"}}
+
+	// Sonnet 5 first → initial-model preference resolves to Sonnet 5.
+	if got := SelectPreferredModel(initialPref, []config.ModelProfile{sonnet5, sonnet4}, models); got != "claude-sonnet-5-0" {
+		t.Errorf("initial-model preference with [Sonnet5, Sonnet4] profiles, modelTag=Smart resolved to %q, want %q", got, "claude-sonnet-5-0")
+	}
+	// Reverse the profile slice → initial-model preference now resolves to Sonnet 4.
+	if got := SelectPreferredModel(initialPref, []config.ModelProfile{sonnet4, sonnet5}, models); got != "claude-sonnet-4-6" {
+		t.Errorf("initial-model preference with [Sonnet4, Sonnet5] profiles, modelTag=Smart resolved to %q, want %q", got, "claude-sonnet-4-6")
+	}
+}
+
 // TestConstraintModelSwitchBudgetMath verifies that constraintModelSwitchCallerBudget
 // (90s) is large enough to cover worst-case setModelSem contention at server wakeup
 // (mitto-f7q). Mirrors internal/web's TestSetModelAsyncBudgetMath.

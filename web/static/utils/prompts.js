@@ -576,6 +576,12 @@ function resolveProfileModel(profile, modelOption) {
  * entry the CURRENT model is checked first: if it already satisfies the
  * entry, the prompt keeps the current model and no override chip is shown.
  *
+ * Priority axis is profile-list order (mitto-ex7 "list order = priority"
+ * contract, mirrors backend config.ProfilesByTag): both the modelName path
+ * (via `modelProfiles.find`) and the modelTag path (via `modelProfiles.filter`
+ * + linear scan) walk `modelProfiles` in-order, so reordering the global
+ * `models:` list flips which profile wins for the same name/tag.
+ *
  * @param {Array<{modelName?: string, modelTag?: string}>} preferredModels
  *   ordered preference entries.
  * @param {Object} modelOption the "model" category config option

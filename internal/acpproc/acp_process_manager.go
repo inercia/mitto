@@ -1216,15 +1216,14 @@ func (m *ACPProcessManager) getOrCreateAuxiliarySession(ctx context.Context, wor
 					auxConstraint = profile.Criteria
 				}
 			} else if ws.AuxiliaryModelTag != "" && m.ModelProfilesByTagResolver != nil {
-				profiles := m.ModelProfilesByTagResolver(ws.AuxiliaryModelTag)
-				for i := range profiles {
-					if profiles[i].Criteria == nil {
-						continue
-					}
-					if conversation.ResolveProfileModel(&profiles[i], sessionHandle.Models) != "" {
-						auxConstraint = profiles[i].Criteria
-						break
-					}
+				// Priority axis is profile-list order: ModelProfilesByTagResolver returns
+				// tagged profiles in Config.Models order (mirrors config.ProfilesByTag),
+				// and resolveAuxTagConstraint picks the FIRST whose Criteria resolves
+				// against sessionHandle.Models. Reordering profiles in Config.Models
+				// flips which model wins for the same tag (mitto-ex7 "list order =
+				// priority" contract).
+				if c := resolveAuxTagConstraint(m.ModelProfilesByTagResolver(ws.AuxiliaryModelTag), sessionHandle.Models); c != nil {
+					auxConstraint = c
 				}
 			}
 			if auxConstraint != nil && auxConstraint.Pattern != "" {
@@ -1375,6 +1374,24 @@ func (m *ACPProcessManager) getOrCreateAuxiliarySession(ctx context.Context, wor
 	}
 
 	return state, nil
+}
+
+// resolveAuxTagConstraint walks the given tag-filtered profiles in slice order
+// and returns the Criteria of the FIRST profile whose Criteria resolves against
+// the available models. Returns nil when no profile resolves. Callers pass the
+// output of ModelProfilesByTagResolver, which preserves Config.Models order —
+// so profile-list order is the priority axis for AuxiliaryModelTag resolution
+// (mitto-ex7 "list order = priority" contract).
+func resolveAuxTagConstraint(profiles []config.ModelProfile, models *conversation.SessionModelState) *config.ACPServerConstraint {
+	for i := range profiles {
+		if profiles[i].Criteria == nil {
+			continue
+		}
+		if conversation.ResolveProfileModel(&profiles[i], models) != "" {
+			return profiles[i].Criteria
+		}
+	}
+	return nil
 }
 
 // CloseWorkspaceAuxiliary closes all auxiliary sessions for a workspace.

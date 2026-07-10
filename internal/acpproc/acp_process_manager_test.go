@@ -14,6 +14,7 @@ import (
 	acp "github.com/coder/acp-go-sdk"
 
 	"github.com/inercia/mitto/internal/config"
+	"github.com/inercia/mitto/internal/conversation"
 )
 
 func TestACPProcessManager_GetOrCreateProcess_RequiresWorkspace(t *testing.T) {
@@ -1822,5 +1823,56 @@ func TestGetOrCreateAuxiliarySession_SaturatedBails(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "saturated") {
 		t.Errorf("expected error message to mention 'saturated', got %q", err.Error())
+	}
+}
+
+// TestAuxiliaryModelTag_HonoursProfileOrder locks the "list order = priority"
+// contract at the AUXILIARY-model consumer site (mitto-ex7.4): when
+// WorkspaceSettings.AuxiliaryModelTag is set, getOrCreateAuxiliarySession
+// iterates m.ModelProfilesByTagResolver(tag) in slice order and picks the
+// FIRST profile whose Criteria resolves against the aux session's available
+// models. This test drives the extracted helper resolveAuxTagConstraint
+// directly with two same-tag profiles and asserts that reversing the
+// resolver's slice flips which Criteria wins.
+func TestAuxiliaryModelTag_HonoursProfileOrder(t *testing.T) {
+	models := &conversation.SessionModelState{
+		CurrentModelId: "gpt-4o", // does not satisfy either Sonnet profile
+		AvailableModels: []conversation.ModelInfo{
+			{ModelId: "claude-sonnet-5-0", Name: "Claude Sonnet 5"},
+			{ModelId: "claude-sonnet-4-6", Name: "Claude Sonnet 4"},
+			{ModelId: "gpt-4o", Name: "GPT-4o"},
+		},
+	}
+	sonnet5 := config.ModelProfile{
+		Name:     "Claude Sonnet 5",
+		Criteria: &config.ACPServerConstraint{MatchMode: "contains", Pattern: "Sonnet 5"},
+		Tags:     []string{"Smart", "Coding"},
+	}
+	sonnet4 := config.ModelProfile{
+		Name:     "Claude Sonnet 4",
+		Criteria: &config.ACPServerConstraint{MatchMode: "contains", Pattern: "Sonnet 4"},
+		Tags:     []string{"Smart", "Coding"},
+	}
+
+	// Sonnet 5 first (mirroring the post-split default order that
+	// ModelProfilesByTagResolver would return) → aux Criteria is Sonnet 5's.
+	got := resolveAuxTagConstraint([]config.ModelProfile{sonnet5, sonnet4}, models)
+	if got == nil || got.Pattern != "Sonnet 5" {
+		t.Errorf("with [Sonnet5, Sonnet4] resolver order, auxConstraint = %+v, want pattern %q", got, "Sonnet 5")
+	}
+	// Reverse the resolver's slice → aux Criteria now flips to Sonnet 4's.
+	got = resolveAuxTagConstraint([]config.ModelProfile{sonnet4, sonnet5}, models)
+	if got == nil || got.Pattern != "Sonnet 4" {
+		t.Errorf("with [Sonnet4, Sonnet5] resolver order, auxConstraint = %+v, want pattern %q", got, "Sonnet 4")
+	}
+	// No profile with a resolvable Criteria → nil (leaves the caller on the
+	// server default model).
+	unmatchable := config.ModelProfile{
+		Name:     "Nope",
+		Criteria: &config.ACPServerConstraint{MatchMode: "contains", Pattern: "never-matches-anything"},
+		Tags:     []string{"Smart"},
+	}
+	if got := resolveAuxTagConstraint([]config.ModelProfile{unmatchable}, models); got != nil {
+		t.Errorf("unmatchable profile: resolveAuxTagConstraint = %+v, want nil", got)
 	}
 }

@@ -300,6 +300,13 @@ var initialModelApplyBudget = 90 * time.Second
 // Applies via SetConfigOption so the change updates the baseline, persists to
 // metadata, and emits a session_change timeline entry — identical to a manual
 // UI selection.
+//
+// Priority axis is profile-list order: SelectPreferredModel walks each entry
+// in initialModelPreference in order, and for each modelTag entry it walks
+// config.ProfilesByTag(profiles, tag) — which preserves Config.Models order —
+// picking the FIRST profile whose Criteria resolves against the session's
+// available models. Reordering profiles in Config.Models flips which model
+// wins for the same tag (mitto-ex7 "list order = priority" contract).
 func (bs *BackgroundSession) cbMaybeApplyInitialModelAsync() {
 	if len(bs.initialModelPreference) == 0 {
 		return
