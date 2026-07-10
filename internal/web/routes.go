@@ -89,6 +89,9 @@ func (s *Server) apiRoutes(authMgr *middleware.AuthManager, csrfMgr *middleware.
 		apiRoute{pattern: "/api/agents/types", handler: http.HandlerFunc(s.apiHandlers.HandleAgentTypes)},
 		apiRoute{pattern: "/api/agents/scan", handler: http.HandlerFunc(s.apiHandlers.HandleScanAgents)},
 		apiRoute{pattern: "/api/agents/confirm", handler: http.HandlerFunc(s.apiHandlers.HandleConfirmAgents)},
+		// Guided ACP-server deletion (bead mitto-pgt).
+		apiRoute{method: "GET", pattern: "/api/acp-servers/{name}/prepare-delete", handler: http.HandlerFunc(s.apiHandlers.HandleACPServerPrepareDelete)},
+		apiRoute{method: "POST", pattern: "/api/acp-servers/{name}/reassign-and-delete", handler: http.HandlerFunc(s.apiHandlers.HandleACPServerReassignAndDelete)},
 		apiRoute{pattern: "/api/supported-runners", handler: http.HandlerFunc(s.apiHandlers.HandleSupportedRunners)},
 		apiRoute{pattern: "/api/runner-defaults", handler: http.HandlerFunc(s.apiHandlers.HandleRunnerDefaults)},
 		apiRoute{pattern: "/api/advanced-flags", handler: http.HandlerFunc(s.apiHandlers.HandleAdvancedFlags)},

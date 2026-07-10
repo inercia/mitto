@@ -143,6 +143,14 @@ export const endpoints = {
     types: () => apiUrl("/api/agents/types"),
   },
 
+  /** ACP server lifecycle operations (delete flow requires guided reassign). */
+  acpServers: {
+    prepareDelete: (name) =>
+      apiUrl(`/api/acp-servers/${enc(name)}/prepare-delete`),
+    reassignAndDelete: (name) =>
+      apiUrl(`/api/acp-servers/${enc(name)}/reassign-and-delete`),
+  },
+
   /** Auxiliary AI operations (improve-prompt, etc.). */
   aux: {
     improvePrompt: () => apiUrl("/api/aux/improve-prompt"),

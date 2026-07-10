@@ -52,6 +52,7 @@ import { AgentDiscoveryDialog } from "./AgentDiscoveryDialog.js";
 import { Modal } from "./Modal.js";
 import { ModelSelection } from "./ModelSelection.js";
 import { ModelProfileSelect } from "./ModelProfileSelect.js";
+import { ModelTagSelect } from "./ModelTagSelect.js";
 import { RichSelect } from "./RichSelect.js";
 import { Tooltip } from "./Tooltip.js";
 import { ShortcutsEditor } from "./ShortcutsEditor.js";
@@ -681,6 +682,9 @@ function ServerEditForm({
 
   // Model profile state — persists as the named profile (model_profile).
   const [modelProfile, setModelProfile] = useState(server.model_profile || "");
+  // Model tag state — persists as the capability tag (model_tag). Mutually
+  // exclusive with modelProfile in the UI, matching the workspace pattern.
+  const [modelTag, setModelTag] = useState(server.model_tag || "");
   // Whether the user has explicitly cleared a legacy raw constraint by
   // picking "-- None --" (as opposed to never having touched the control).
   const [modelConstraintCleared, setModelConstraintCleared] = useState(false);
@@ -716,6 +720,8 @@ function ServerEditForm({
         overrides.modelProfile !== undefined
           ? overrides.modelProfile
           : modelProfile,
+      modelTag:
+        overrides.modelTag !== undefined ? overrides.modelTag : modelTag,
       modelConstraintCleared:
         overrides.modelConstraintCleared !== undefined
           ? overrides.modelConstraintCleared
@@ -740,12 +746,13 @@ function ServerEditForm({
       .map((t) => t.trim())
       .filter((t) => t.length > 0);
 
-    // Build constraints. A selected profile always wins over any legacy raw
-    // constraint; an explicit "-- None --" clears it too. Otherwise, an
+    // Build constraints. A selected profile or tag always wins over any legacy
+    // raw constraint; an explicit "-- None --" clears it too. Otherwise, an
     // untouched legacy raw constraint is preserved as-is.
     const constraints = {};
     if (
       !currentState.modelProfile &&
+      !currentState.modelTag &&
       rawModelConstraint &&
       !currentState.modelConstraintCleared
     ) {
@@ -762,6 +769,7 @@ function ServerEditForm({
       Object.keys(constraints).length > 0 ? constraints : undefined,
       currentState.contextFlushCommand,
       currentState.modelProfile,
+      currentState.modelTag,
     );
   };
 
@@ -813,21 +821,58 @@ function ServerEditForm({
       <!-- Model Selection -->
       <div>
         <label class="label">Model Selection</label>
-        <p class="label">Switch to a model based on a named Model profile</p>
-        <${ModelProfileSelect}
-          value=${modelProfile}
-          profiles=${modelProfiles}
-          legacyLabel=${legacyModelLabel}
-          onChange=${(name) => {
-            setModelProfile(name);
-            const cleared = !name && !!rawModelConstraint;
-            if (cleared) setModelConstraintCleared(true);
-            emitChange({
-              modelProfile: name,
-              modelConstraintCleared: cleared || modelConstraintCleared,
-            });
-          }}
-        />
+        <p class="text-xs text-mitto-text-muted mb-2">
+          Auto-select a model for new sessions started with this server, by
+          named Model profile or by capability tag
+        </p>
+        <div class="flex items-center gap-2">
+          <div class="flex-1 min-w-0">
+            <${ModelProfileSelect}
+              value=${modelProfile}
+              profiles=${modelProfiles}
+              legacyLabel=${legacyModelLabel}
+              className="w-full"
+              onChange=${(name) => {
+                setModelProfile(name);
+                const cleared =
+                  !name && !modelTag && !!rawModelConstraint;
+                if (cleared) setModelConstraintCleared(true);
+                const overrides = {
+                  modelProfile: name,
+                  modelConstraintCleared: cleared || modelConstraintCleared,
+                };
+                if (name) {
+                  setModelTag("");
+                  overrides.modelTag = "";
+                }
+                emitChange(overrides);
+              }}
+            />
+          </div>
+          <span class="text-xs text-mitto-text-muted shrink-0">or by tag</span>
+          <div class="flex-1 min-w-0">
+            <${ModelTagSelect}
+              value=${modelTag}
+              profiles=${modelProfiles}
+              className="w-full"
+              onChange=${(tag) => {
+                setModelTag(tag);
+                const cleared =
+                  !tag && !modelProfile && !!rawModelConstraint;
+                if (cleared) setModelConstraintCleared(true);
+                const overrides = {
+                  modelTag: tag,
+                  modelConstraintCleared: cleared || modelConstraintCleared,
+                };
+                if (tag) {
+                  setModelProfile("");
+                  overrides.modelProfile = "";
+                }
+                emitChange(overrides);
+              }}
+            />
+          </div>
+        </div>
       </div>
       <div>
         <label class="label" for="acp-server-type"
@@ -1143,6 +1188,533 @@ function PromptEditForm({ prompt, onSave, onCancel, readOnly = false }) {
 }
 
 /**
+ * ACPServerDeleteWizard — guided flow for deleting an ACP server that is
+ * referenced by one or more workspace configs.
+ *
+ * Backend contract (see mitto-pgt, handlers/acp_server_delete.go):
+ *   GET /api/acp-servers/{name}/prepare-delete → returns the plan (no changes).
+ *     - 403                                    → RC-file server or config read-only.
+ *     - 404                                    → unknown server (treat as already-gone).
+ *     - 200 + has_active === true              → refuse (live conversations).
+ *     - 200 + has_active === false             → open wizard.
+ *     Folder plan fields: working_dir, workspace_name?, workspace_uuids[],
+ *       archived_conversations, non_archived_conversations,
+ *       replacement_candidates[] (array of server-name strings).
+ *   POST /api/acp-servers/{name}/reassign-and-delete → executes with
+ *     {folders: {"<working_dir>": "<newServer>" | ""}} (map; "" means delete).
+ *     - 409 envelope: error.details.active_session_ids[] — session IDs that
+ *       became active between prepare and execute.
+ *
+ * Props:
+ *   isOpen, onClose, serverName, plan (pre-fetched prepare-delete response),
+ *   onSuccess(result) — called after reassign-and-delete succeeds; parent should
+ *   remove the server from its local list and re-fetch workspaces.
+ */
+function ACPServerDeleteWizard({
+  isOpen,
+  onClose,
+  serverName,
+  plan,
+  onSuccess,
+}) {
+  // Wizard step: "intro" | "folder" (with folderIndex) | "confirm" | "executing"
+  //             | "success" | "error"
+  const [step, setStep] = useState("intro");
+  const [folderIndex, setFolderIndex] = useState(0);
+  // Parallel array to plan.folders: {newServer: string, acknowledged: bool}
+  const [choices, setChoices] = useState([]);
+  const [execError, setExecError] = useState("");
+  const [execResult, setExecResult] = useState(null);
+  // Active-appeared-between-steps refusal (409 response). When set, wizard
+  // switches to a refusal view listing the newly-active conversations.
+  const [activeRefusal, setActiveRefusal] = useState(null);
+
+  // Reset internal state each time the wizard opens on a fresh plan.
+  useEffect(() => {
+    if (!isOpen) return;
+    setStep("intro");
+    setFolderIndex(0);
+    setChoices(
+      (plan?.folders || []).map(() => ({ newServer: null, acknowledged: false })),
+    );
+    setExecError("");
+    setExecResult(null);
+    setActiveRefusal(null);
+  }, [isOpen, plan]);
+
+  if (!isOpen || !plan) return null;
+
+  const folders = plan.folders || [];
+  const folderTotal = (f) =>
+    (f?.non_archived_conversations || 0) + (f?.archived_conversations || 0);
+  const totalConversations = folders.reduce((acc, f) => acc + folderTotal(f), 0);
+
+  const setChoiceFor = (idx, patch) => {
+    setChoices((prev) => {
+      const next = [...prev];
+      next[idx] = { ...next[idx], ...patch };
+      return next;
+    });
+  };
+
+  const currentFolder = folders[folderIndex];
+  const currentChoice = choices[folderIndex] || {};
+  // replacement_candidates is an array of server-name strings.
+  const currentCandidates = (currentFolder?.replacement_candidates || []).filter(
+    (name) => name && name !== serverName,
+  );
+
+  // "Next" enablement for the per-folder step.
+  const canAdvanceFolder = () => {
+    if (currentCandidates.length > 0) {
+      // A choice must be made: either a candidate name, or the explicit "" (delete).
+      return currentChoice.newServer !== null;
+    }
+    // No candidates: user must acknowledge deletion.
+    return !!currentChoice.acknowledged;
+  };
+
+  const goNextFromFolder = () => {
+    if (folderIndex < folders.length - 1) {
+      setFolderIndex(folderIndex + 1);
+    } else {
+      setStep("confirm");
+    }
+  };
+
+  const goBackFromFolder = () => {
+    if (folderIndex > 0) {
+      setFolderIndex(folderIndex - 1);
+    } else {
+      setStep("intro");
+    }
+  };
+
+  const executeDelete = async () => {
+    setStep("executing");
+    setExecError("");
+    setActiveRefusal(null);
+    try {
+      // Backend accepts {folders: {"<dir>": "<newServer>" | ""}} — "" means
+      // delete all conversations in that folder.
+      const foldersPayload = {};
+      folders.forEach((f, i) => {
+        foldersPayload[f.working_dir] = choices[i]?.newServer || "";
+      });
+      const res = await secureFetch(
+        endpoints.acpServers.reassignAndDelete(serverName),
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ folders: foldersPayload }),
+        },
+      );
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        // 409 arrives as an errorEnvelope: {error: {code, message, details:
+        // {active_session_ids: [...]}}}. Surface a refusal list from that.
+        const activeIds =
+          res.status === 409 && Array.isArray(data?.error?.details?.active_session_ids)
+            ? data.error.details.active_session_ids
+            : null;
+        if (activeIds && activeIds.length > 0) {
+          setActiveRefusal(
+            activeIds.map((sid) => ({ session_id: sid })),
+          );
+          setStep("error");
+          return;
+        }
+        setExecError(
+          errorMessageFromData(data, `Failed to delete "${serverName}"`),
+        );
+        setStep("error");
+        return;
+      }
+      setExecResult(data);
+      setStep("success");
+    } catch (err) {
+      setExecError(err?.message || String(err));
+      setStep("error");
+    }
+  };
+
+  const handleFinalClose = () => {
+    // Only propagate the reassignment result on success — parent uses it to
+    // remove the server from local state and re-fetch workspaces.
+    if (step === "success" && execResult && onSuccess) {
+      onSuccess(execResult);
+    }
+    onClose?.();
+  };
+
+  // Recap lines for the confirm step.
+  const recapLines = folders.map((f, i) => {
+    const choice = choices[i] || {};
+    const label = f.workspace_name || getBasename(f.working_dir) || f.working_dir;
+    const total = folderTotal(f);
+    if (choice.newServer) {
+      return {
+        key: f.working_dir,
+        kind: "reassign",
+        text: `${label} → reassign to "${choice.newServer}": ${total} conversation(s) will keep working on the new ACP.`,
+      };
+    }
+    return {
+      key: f.working_dir,
+      kind: "delete",
+      text: `${label} → delete: ${total} conversation(s) will be permanently deleted.`,
+    };
+  });
+
+  const footer = (() => {
+    if (step === "intro") {
+      return html`
+        <button class="btn btn-ghost btn-sm" onClick=${onClose}>Cancel</button>
+        <button
+          class="btn btn-primary btn-sm"
+          onClick=${() => {
+            if (folders.length === 0) {
+              // No workspaces reference the server: skip straight to confirm
+              // (which will be a trivial "no folders" recap) then execute.
+              setStep("confirm");
+            } else {
+              setStep("folder");
+              setFolderIndex(0);
+            }
+          }}
+        >
+          Next
+        </button>
+      `;
+    }
+    if (step === "folder") {
+      const isLast = folderIndex === folders.length - 1;
+      return html`
+        <button class="btn btn-ghost btn-sm" onClick=${goBackFromFolder}>
+          Back
+        </button>
+        <button
+          class="btn btn-primary btn-sm"
+          disabled=${!canAdvanceFolder()}
+          onClick=${goNextFromFolder}
+        >
+          ${isLast ? "Review" : "Next"}
+        </button>
+      `;
+    }
+    if (step === "confirm") {
+      return html`
+        <button class="btn btn-ghost btn-sm" onClick=${onClose}>Cancel</button>
+        <button
+          class="btn btn-ghost btn-sm"
+          onClick=${() => {
+            if (folders.length === 0) {
+              setStep("intro");
+            } else {
+              setStep("folder");
+              setFolderIndex(folders.length - 1);
+            }
+          }}
+        >
+          Back
+        </button>
+        <button class="btn btn-error btn-sm" onClick=${executeDelete}>
+          Delete server
+        </button>
+      `;
+    }
+    if (step === "executing") {
+      return html`
+        <button class="btn btn-ghost btn-sm" disabled=${true}>
+          Applying changes...
+        </button>
+      `;
+    }
+    if (step === "success") {
+      return html`
+        <button class="btn btn-primary btn-sm" onClick=${handleFinalClose}>
+          Close
+        </button>
+      `;
+    }
+    // error
+    if (activeRefusal) {
+      return html`
+        <button class="btn btn-primary btn-sm" onClick=${onClose}>Close</button>
+      `;
+    }
+    return html`
+      <button class="btn btn-ghost btn-sm" onClick=${onClose}>Cancel</button>
+      <button class="btn btn-primary btn-sm" onClick=${() => setStep("confirm")}>
+        Back to review
+      </button>
+    `;
+  })();
+
+  return html`
+    <${Modal}
+      isOpen=${isOpen}
+      onClose=${step === "executing" ? undefined : onClose}
+      title=${`Delete ACP server "${serverName}"`}
+      testid="acp-delete-wizard"
+      boxClass="max-w-2xl"
+      footer=${footer}
+    >
+      ${step === "intro" &&
+      html`
+        <div class="space-y-3 text-sm">
+          <p>
+            Deleting ACP server
+            <span class="font-semibold">"${serverName}"</span> will affect the
+            following folders. You'll be asked what to do for each.
+          </p>
+          <div
+            class="rounded border border-mitto-border-2 bg-mitto-surface-2 p-3 space-y-1"
+          >
+            <div>
+              <span class="font-semibold">Folders referencing this server:</span>
+              ${" "}${folders.length}
+            </div>
+            <div>
+              <span class="font-semibold">Total conversations affected:</span>
+              ${" "}${totalConversations}
+            </div>
+          </div>
+          ${folders.length === 0 &&
+          html`
+            <p class="text-mitto-text-muted">
+              No workspaces reference this server. Click Next to remove it.
+            </p>
+          `}
+        </div>
+      `}
+
+      ${step === "folder" &&
+      currentFolder &&
+      html`
+        <div class="space-y-3 text-sm">
+          <div class="text-xs text-mitto-text-muted">
+            Folder ${folderIndex + 1} of ${folders.length}
+          </div>
+          <div>
+            <div class="font-semibold text-base">
+              "${serverName}" was being used in
+              ${" "}${currentFolder.workspace_name ||
+              getBasename(currentFolder.working_dir) ||
+              currentFolder.working_dir}
+            </div>
+            <div class="text-xs text-mitto-text-muted mt-0.5 truncate">
+              ${currentFolder.working_dir}
+            </div>
+            <div class="text-xs text-mitto-text-muted mt-1">
+              ${currentFolder.non_archived_conversations || 0} active +
+              ${" "}${currentFolder.archived_conversations || 0} archived conversation(s)
+            </div>
+          </div>
+
+          ${currentCandidates.length > 0
+            ? html`
+                <div class="form-control">
+                  <label class="label pb-1">
+                    <span class="label-text">Choose the new ACP:</span>
+                  </label>
+                  <select
+                    class="select select-bordered select-sm w-full"
+                    value=${currentChoice.newServer === null
+                      ? ""
+                      : currentChoice.newServer}
+                    onChange=${(e) => {
+                      const v = e.target.value;
+                      // "__none__" sentinel = unselected placeholder.
+                      if (v === "__none__") {
+                        setChoiceFor(folderIndex, { newServer: null });
+                      } else {
+                        setChoiceFor(folderIndex, { newServer: v });
+                      }
+                    }}
+                  >
+                    ${currentChoice.newServer === null &&
+                    html`
+                      <option value="__none__" disabled=${true}>
+                        Select an option...
+                      </option>
+                    `}
+                    ${currentCandidates.map(
+                      (name) => html`
+                        <option key=${name} value=${name}>${name}</option>
+                      `,
+                    )}
+                    <option value="">
+                      Delete all conversations in this folder
+                    </option>
+                  </select>
+                </div>
+              `
+            : html`
+                <div
+                  role="alert"
+                  class="alert alert-warning alert-soft text-sm"
+                >
+                  <div>
+                    No other ACP server is configured for this folder.
+                    Continuing will
+                    <span class="font-semibold">DELETE</span>
+                    ${" "}${folderTotal(currentFolder)}
+                    conversation(s) in
+                    <code class="text-xs">${currentFolder.working_dir}</code>.
+                  </div>
+                </div>
+                <label class="label cursor-pointer justify-start gap-2">
+                  <input
+                    type="checkbox"
+                    class="checkbox checkbox-sm"
+                    checked=${!!currentChoice.acknowledged}
+                    onChange=${(e) =>
+                      setChoiceFor(folderIndex, {
+                        acknowledged: e.target.checked,
+                        newServer: e.target.checked ? "" : null,
+                      })}
+                  />
+                  <span class="label-text">
+                    I understand these conversations will be permanently
+                    deleted.
+                  </span>
+                </label>
+              `}
+        </div>
+      `}
+
+      ${step === "confirm" &&
+      html`
+        <div class="space-y-3 text-sm">
+          <p>Review your decisions before applying:</p>
+          ${folders.length === 0
+            ? html`
+                <div
+                  class="rounded border border-mitto-border-2 bg-mitto-surface-2 p-3"
+                >
+                  No workspaces reference this server. It will be removed from
+                  configuration.
+                </div>
+              `
+            : html`
+                <ul class="space-y-2">
+                  ${recapLines.map(
+                    (line) => html`
+                      <li
+                        key=${line.key}
+                        class="rounded border border-mitto-border-2 bg-mitto-surface-2 p-2 ${line.kind ===
+                        "delete"
+                          ? "border-l-4 border-l-error"
+                          : ""}"
+                      >
+                        ${line.text}
+                      </li>
+                    `,
+                  )}
+                </ul>
+              `}
+          <p class="text-mitto-text-muted text-xs">
+            The server
+            <span class="font-semibold">"${serverName}"</span> will then be
+            removed from settings.
+          </p>
+        </div>
+      `}
+
+      ${step === "executing" &&
+      html`
+        <div class="text-center py-8">
+          <span
+            class="loading loading-spinner loading-lg mb-3 text-mitto-accent"
+          ></span>
+          <p class="text-mitto-text-secondary">Applying changes...</p>
+        </div>
+      `}
+
+      ${step === "success" &&
+      execResult &&
+      html`
+        <div class="space-y-2 text-sm">
+          <div
+            role="alert"
+            class="alert alert-success alert-soft text-sm"
+          >
+            <div>
+              Deleted ACP server
+              <span class="font-semibold">"${serverName}"</span>.
+            </div>
+          </div>
+          <ul class="text-xs text-mitto-text-muted space-y-1">
+            <li>
+              Reassigned conversations:
+              ${" "}${execResult.reassigned_conversation_count || 0}
+            </li>
+            <li>
+              Deleted conversations:
+              ${" "}${execResult.deleted_conversation_count || 0}
+            </li>
+            <li>
+              Workspaces reassigned:
+              ${" "}${execResult.reassigned_workspace_count ||
+                (Array.isArray(execResult.reassigned_workspaces)
+                  ? execResult.reassigned_workspaces.length
+                  : 0)}
+            </li>
+            <li>
+              Workspaces removed:
+              ${" "}${execResult.deleted_workspace_count ||
+                (Array.isArray(execResult.deleted_workspaces)
+                  ? execResult.deleted_workspaces.length
+                  : 0)}
+            </li>
+          </ul>
+        </div>
+      `}
+
+      ${step === "error" &&
+      html`
+        <div class="space-y-3 text-sm">
+          ${activeRefusal
+            ? html`
+                <div role="alert" class="alert alert-error alert-soft text-sm">
+                  <div>
+                    Some conversations became active while you were setting up
+                    the delete. Close or archive them, then try again.
+                  </div>
+                </div>
+                <ul class="space-y-1 text-xs">
+                  ${activeRefusal.map(
+                    (c) => html`
+                      <li
+                        key=${c.session_id}
+                        class="rounded border border-mitto-border-2 bg-mitto-surface-2 p-2"
+                      >
+                        <div class="font-medium">
+                          ${c.name || c.session_id}
+                        </div>
+                        <div class="text-mitto-text-muted truncate">
+                          ${c.working_dir || ""}
+                          ${c.is_prompting ? " · prompting" : ""}
+                          ${c.has_connected_clients ? " · connected" : ""}
+                        </div>
+                      </li>
+                    `,
+                  )}
+                </ul>
+              `
+            : html`
+                <div role="alert" class="alert alert-error alert-soft text-sm">
+                  <div>${execError || "Failed to apply changes."}</div>
+                </div>
+              `}
+        </div>
+      `}
+    <//>
+  `;
+}
+
+/**
  * Settings Dialog Component
  * Manages ACP servers, workspaces, prompts, web access, and UI settings.
  */
@@ -1160,6 +1732,15 @@ export function SettingsDialog({
   const [warning, setWarning] = useState("");
   // Agent discovery dialog (triggered from Servers tab)
   const [showDiscoverAgents, setShowDiscoverAgents] = useState(false);
+
+  // ACP server delete wizard (mitto-pgt). deleteWizardPlan holds the response
+  // from GET /api/acp-servers/{name}/prepare-delete; the wizard opens when it
+  // is non-null AND has_active === false. Refusals for active conversations or
+  // RC-file/read-only servers are surfaced via deleteBlockedInfo (rendered as
+  // its own simple modal).
+  const [deleteWizardName, setDeleteWizardName] = useState("");
+  const [deleteWizardPlan, setDeleteWizardPlan] = useState(null);
+  const [deleteBlockedInfo, setDeleteBlockedInfo] = useState(null);
 
   // ------ Global Shortcuts tab state ------------------------------------------
   // Global shortcut buttons stored in settings.json, keyed by section ID. These
@@ -2128,6 +2709,7 @@ export function SettingsDialog({
           tags: srv.tags && srv.tags.length > 0 ? srv.tags : undefined, // Include tags if present
           constraints: srv.constraints || undefined, // Include constraints if present
           model_profile: srv.model_profile || undefined, // Include model profile if present
+          model_tag: srv.model_tag || undefined, // Include model tag if present
           context_flush_command: srv.context_flush_command || undefined,
         };
         // Only include type if specified (otherwise name is used as type)
@@ -2390,6 +2972,7 @@ export function SettingsDialog({
     constraints,
     contextFlushCommand,
     modelProfile,
+    modelTag,
   ) => {
     // Update server in-memory (prompts are now read-only from files)
     setAcpServers(
@@ -2406,6 +2989,7 @@ export function SettingsDialog({
           tags: tags && tags.length > 0 ? tags : undefined, // undefined to omit if empty
           constraints: constraints || undefined, // undefined to omit if empty
           model_profile: modelProfile || undefined, // undefined to omit if none
+          model_tag: modelTag || undefined, // undefined to omit if none
           context_flush_command:
             contextFlushCommand && contextFlushCommand.trim()
               ? contextFlushCommand.trim()
@@ -2443,28 +3027,81 @@ export function SettingsDialog({
     }
   };
 
-  const removeServer = (serverName) => {
-    // Check if any workspace uses this server as its primary ACP server
-    const usedBy = workspaces.filter((ws) => ws.acp_server === serverName);
-    if (usedBy.length > 0) {
-      // Build a helpful error message listing the workspaces using this server
-      const workspacePaths = usedBy.map((ws) => ws.working_dir).slice(0, 3); // Show up to 3
-      const pathList = workspacePaths.join(", ");
-      const moreCount = usedBy.length - workspacePaths.length;
-      const moreText = moreCount > 0 ? ` and ${moreCount} more` : "";
-      setError(
-        `Cannot delete "${serverName}": used by workspace(s): ${pathList}${moreText}. Remove or reassign these workspaces first (use the Workspaces dialog).`,
-      );
-      return;
-    }
+  // Local-only removal helper: strips a server from state and clears errors.
+  // Used both by the "no workspace references it" fast path and by the wizard
+  // success callback. Does NOT call the delete endpoint by itself.
+  const removeServerFromState = (serverName) => {
+    setAcpServers(acpServers.filter((s) => s.name !== serverName));
+    setError("");
+  };
 
+  // removeServer — guided delete flow (mitto-pgt). Instead of hard-blocking
+  // when any workspace references the server, ask the backend for a plan and
+  // route to:
+  //   404 → local remove (already gone on server).
+  //   403 → RC-file / read-only server: refusal modal (verified during execute).
+  //   has_active === true → refusal modal listing live conversations.
+  //   has_active === false → wizard (even when folders is empty; the backend
+  //     is authoritative for on-disk state and still removes the server).
+  const removeServer = async (serverName) => {
     if (acpServers.length <= 1) {
       setError("At least one ACP server is required");
       return;
     }
-
-    setAcpServers(acpServers.filter((s) => s.name !== serverName));
-    setError(""); // Clear any previous errors
+    setError("");
+    try {
+      const res = await authFetch(endpoints.acpServers.prepareDelete(serverName));
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        if (res.status === 404) {
+          // Server unknown to the backend — treat as already-gone.
+          removeServerFromState(serverName);
+          return;
+        }
+        if (res.status === 403) {
+          // The prepare-delete handler does not distinguish RC-file vs
+          // config-read-only, but reassign-and-delete does (via 403 with
+          // "defined in RC file" in the message). Treat both here as a
+          // read-only refusal shown in the blocking modal.
+          const msg = errorMessageFromData(
+            data,
+            `Cannot delete "${serverName}": configuration is read-only.`,
+          );
+          const isRC = /RC file|\.mittorc/i.test(msg);
+          setDeleteBlockedInfo({
+            kind: isRC ? "rcfile" : "readonly",
+            serverName,
+            message: msg,
+          });
+          return;
+        }
+        setError(
+          errorMessageFromData(
+            data,
+            `Failed to prepare deletion of "${serverName}"`,
+          ),
+        );
+        return;
+      }
+      if (data?.has_active === true) {
+        setDeleteBlockedInfo({
+          kind: "active",
+          serverName,
+          activeConversations: Array.isArray(data.active_conversations)
+            ? data.active_conversations
+            : [],
+        });
+        return;
+      }
+      // Open the wizard even when folders is empty — the wizard handles the
+      // trivial "no workspaces reference this server" case with a single
+      // confirm step and still delegates the actual delete to the backend
+      // (which is authoritative for on-disk state).
+      setDeleteWizardName(serverName);
+      setDeleteWizardPlan(data);
+    } catch (err) {
+      setError(err?.message || String(err));
+    }
   };
 
   const duplicateServer = (serverName) => {
@@ -2954,6 +3591,7 @@ export function SettingsDialog({
                                               constraints,
                                               contextFlushCommand,
                                               modelProfile,
+                                              modelTag,
                                             ) =>
                                               updateServer(
                                                 srv.name,
@@ -2966,6 +3604,7 @@ export function SettingsDialog({
                                                 constraints,
                                                 contextFlushCommand,
                                                 modelProfile,
+                                                modelTag,
                                               )}
                                           />
                                         `}
@@ -5261,6 +5900,131 @@ export function SettingsDialog({
           setAcpServers([...acpServers, ...toAdd]);
         }
         setShowDiscoverAgents(false);
+      }}
+    />
+
+    <!-- Blocking refusal modal (mitto-pgt): shown when the backend reports
+         active conversations or an RC-file-sourced server. No wizard here —
+         the user must resolve the situation elsewhere first. -->
+    <${Modal}
+      isOpen=${!!deleteBlockedInfo}
+      onClose=${() => setDeleteBlockedInfo(null)}
+      title=${deleteBlockedInfo
+        ? deleteBlockedInfo.kind === "rcfile"
+          ? `Cannot delete "${deleteBlockedInfo.serverName}"`
+          : `Cannot delete "${deleteBlockedInfo.serverName}"`
+        : ""}
+      boxClass="max-w-xl"
+      footer=${html`
+        <button
+          class="btn btn-primary btn-sm"
+          onClick=${() => setDeleteBlockedInfo(null)}
+        >
+          Close
+        </button>
+      `}
+    >
+      ${deleteBlockedInfo &&
+      deleteBlockedInfo.kind === "rcfile" &&
+      html`
+        <div class="space-y-2 text-sm">
+          <p>${deleteBlockedInfo.message}</p>
+          <p class="text-mitto-text-muted text-xs">
+            RC-file ACP servers are managed in
+            <code class="text-xs">~/.mittorc</code> and cannot be removed from
+            the settings dialog.
+          </p>
+        </div>
+      `}
+      ${deleteBlockedInfo &&
+      deleteBlockedInfo.kind === "readonly" &&
+      html`
+        <div class="space-y-2 text-sm">
+          <p>${deleteBlockedInfo.message}</p>
+          <p class="text-mitto-text-muted text-xs">
+            The Mitto configuration is read-only. Restart with a writable
+            configuration or edit the underlying file directly.
+          </p>
+        </div>
+      `}
+      ${deleteBlockedInfo &&
+      deleteBlockedInfo.kind === "active" &&
+      html`
+        <div class="space-y-3 text-sm">
+          <p>
+            There are active conversations using
+            <span class="font-semibold"
+              >"${deleteBlockedInfo.serverName}"</span
+            >. Close or archive them first:
+          </p>
+          <ul class="space-y-1">
+            ${(deleteBlockedInfo.activeConversations || []).map(
+              (c) => html`
+                <li
+                  key=${c.session_id}
+                  class="rounded border border-mitto-border-2 bg-mitto-surface-2 p-2"
+                >
+                  <div class="font-medium">${c.name || c.session_id}</div>
+                  <div class="text-xs text-mitto-text-muted truncate">
+                    ${c.working_dir || ""}
+                    ${c.is_prompting ? " · prompting" : ""}
+                    ${c.has_connected_clients ? " · connected" : ""}
+                  </div>
+                </li>
+              `,
+            )}
+          </ul>
+        </div>
+      `}
+    <//>
+
+    <!-- Guided reassign/delete wizard (mitto-pgt). Open only after a
+         successful prepare-delete with has_active === false. -->
+    <${ACPServerDeleteWizard}
+      isOpen=${!!deleteWizardPlan}
+      serverName=${deleteWizardName}
+      plan=${deleteWizardPlan}
+      onClose=${() => {
+        setDeleteWizardPlan(null);
+        setDeleteWizardName("");
+      }}
+      onSuccess=${async (result) => {
+        // Remove the server from local state so the Servers tab reflects it.
+        removeServerFromState(deleteWizardName);
+        // Re-fetch workspaces so reassignments/removals show up in the
+        // Workspaces tab immediately (matches the backend's authoritative
+        // view of workspace configs after the reassign-and-delete call).
+        try {
+          const res = await authFetch(endpoints.workspaces.list());
+          if (res.ok) {
+            const wsData = await res.json().catch(() => ({}));
+            if (Array.isArray(wsData?.workspaces)) {
+              setWorkspaces(wsData.workspaces);
+            }
+          }
+        } catch (_err) {
+          // Best-effort refresh; the local state was updated already.
+        }
+        if (showToast && result) {
+          const parts = [];
+          if (result.reassigned_conversation_count) {
+            parts.push(
+              `${result.reassigned_conversation_count} reassigned`,
+            );
+          }
+          if (result.deleted_conversation_count) {
+            parts.push(
+              `${result.deleted_conversation_count} deleted`,
+            );
+          }
+          const detail = parts.length > 0 ? ` (${parts.join(", ")})` : "";
+          showToast(
+            `Deleted ACP server "${deleteWizardName}"${detail}`,
+            "success",
+          );
+        }
+        setDeleteWizardPlan(null);
+        setDeleteWizardName("");
       }}
     />
   `;
