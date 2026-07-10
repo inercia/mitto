@@ -162,6 +162,10 @@ describe("KNOWN_PARAM_TYPES", () => {
   test("includes boolean", () => {
     expect(KNOWN_PARAM_TYPES).toContain("boolean");
   });
+
+  test("includes prompts", () => {
+    expect(KNOWN_PARAM_TYPES).toContain("prompts");
+  });
 });
 
 // =============================================================================

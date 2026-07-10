@@ -134,6 +134,11 @@ export function promptResolveAsLoop(prompt, override) {
  *   text           — generic free-form text (catch-all)
  *   boolean        — a yes/no flag, rendered as a checkbox; supplied as the
  *                    string "true"/"false" (see PromptParameterDialog)
+ *   prompts        — the NAME of another workspace prompt, rendered as a picker
+ *                    in the parameter dialog. Interactive, dialog-collected (like
+ *                    boolean): no menu auto-supplies it and it never gates menu
+ *                    visibility. Feeds the {{ PromptText .Args.NAME }} template
+ *                    action. multiLine is not supported.
  */
 export const KNOWN_PARAM_TYPES = [
   "beadsId",
@@ -145,6 +150,7 @@ export const KNOWN_PARAM_TYPES = [
   "acpServer",
   "text",
   "boolean",
+  "prompts",
 ];
 
 /**

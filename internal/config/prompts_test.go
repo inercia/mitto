@@ -1179,6 +1179,10 @@ func TestIsKnownPromptParameterType(t *testing.T) {
 	if !IsKnownPromptParameterType("boolean") {
 		t.Error("IsKnownPromptParameterType(\"boolean\") = false, want true")
 	}
+	// prompts is a recognised type (rendered as a picker in the parameter dialog).
+	if !IsKnownPromptParameterType("prompts") {
+		t.Error("IsKnownPromptParameterType(\"prompts\") = false, want true")
+	}
 }
 
 func TestParsePromptFile_WithParameters(t *testing.T) {
@@ -1416,6 +1420,15 @@ func TestValidatePromptParameters(t *testing.T) {
 	t.Run("boolean param is OK in any menu", func(t *testing.T) {
 		for _, menus := range []string{"", "prompts", "conversation", "beadsIssues"} {
 			err := ValidatePromptParameters(menus, []PromptParameter{{Name: "Commit", Type: "boolean"}})
+			if err != nil {
+				t.Errorf("menus=%q: unexpected error: %v", menus, err)
+			}
+		}
+	})
+
+	t.Run("prompts param is OK in any menu", func(t *testing.T) {
+		for _, menus := range []string{"", "prompts", "conversation", "beadsIssues"} {
+			err := ValidatePromptParameters(menus, []PromptParameter{{Name: "Target", Type: "prompts"}})
 			if err != nil {
 				t.Errorf("menus=%q: unexpected error: %v", menus, err)
 			}

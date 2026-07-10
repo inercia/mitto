@@ -27,6 +27,12 @@ import (
 //     string "true" or "false". Boolean parameters never gate
 //     menu visibility and are always collected via the dialog
 //     (a checkbox always has a definite answer; default false).
+//   - prompts        — the NAME of another workspace prompt, rendered as a picker
+//     in the parameter dialog. Interactive, dialog-collected (like
+//     boolean): no menu auto-supplies it and it never gates menu
+//     visibility. Feeds the {{ PromptText .Args.NAME }} template
+//     action. multiLine is not supported (rejected by the existing
+//     text-only check).
 var KnownPromptParameterTypes = []string{
 	"beadsId",
 	"beadsTitle",
@@ -37,6 +43,7 @@ var KnownPromptParameterTypes = []string{
 	"acpServer",
 	"text",
 	"boolean",
+	"prompts",
 }
 
 // IsKnownPromptParameterType reports whether t is a recognised parameter type.
