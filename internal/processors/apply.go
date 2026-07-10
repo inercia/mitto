@@ -1340,6 +1340,159 @@ func (m *Manager) ApplyAfter(ctx context.Context, input AfterProcessorInput) App
 	return result
 }
 
+// ApplyOnClose runs all conversationClosed processors for a session being archived.
+// The pipeline is fire-and-forget from the caller's perspective: command-mode
+// processors are executed synchronously within the caller's goroutine (bounded by
+// each processor's timeout) and prompt-mode processors are collected and dispatched
+// via the async PromptFunc. Callers should invoke this in a background goroutine so
+// the archive HTTP request is not blocked.
+//
+// Only output:discard is allowed (enforced by the loader) — no notifications, action
+// buttons or user_data patches are collected because the session is no longer active
+// once it has been archived. Errors are logged but not propagated.
+func (m *Manager) ApplyOnClose(ctx context.Context, input CloseProcessorInput) {
+	if m == nil {
+		return
+	}
+
+	applied := 0
+	skipped := 0
+
+	var pendingPrompts []pendingPromptDispatch
+
+	m.logger.Info("close-phase processor pipeline starting",
+		"total_processors", len(m.processors),
+		"session_id", input.SessionID,
+		"archive_reason", input.ArchiveReason,
+	)
+
+	for _, proc := range m.processors {
+		// Phase filter: only conversationClosed processors fire here.
+		if proc.When.On != PhaseConversationClosed {
+			continue
+		}
+
+		if !proc.IsEnabled() {
+			skipped++
+			m.logger.Debug("close-phase processor skipped",
+				"name", proc.Name, "reason", "disabled")
+			continue
+		}
+
+		// EnabledWhen CEL gate — reuse the same context builder used elsewhere by
+		// synthesising a minimal ProcessorInput.
+		if proc.EnabledWhen != "" {
+			procInput := &ProcessorInput{
+				SessionID:     input.SessionID,
+				WorkingDir:    input.WorkingDir,
+				WorkspaceUUID: input.WorkspaceUUID,
+			}
+			if !evaluateEnabledWhen(proc, procInput, m.logger) {
+				skipped++
+				m.logger.Debug("close-phase processor skipped",
+					"name", proc.Name, "reason", "enabledWhen_false")
+				continue
+			}
+		}
+
+		applied++
+		m.logger.Info("applying close-phase processor",
+			"name", proc.Name,
+			"mode", map[bool]string{true: "prompt", false: "command"}[proc.IsPromptMode()],
+		)
+
+		if proc.IsPromptMode() {
+			if m.promptFunc == nil {
+				m.logger.Warn("close-phase prompt-mode processor skipped: no PromptFunc configured",
+					"name", proc.Name)
+				applied--
+				skipped++
+				continue
+			}
+
+			assembledPrompt := substituteCloseVariables(proc.Prompt, input)
+			resolvedArgs := ResolveProcessorArgs(proc.Parameters, input.ProcessorArgOverrides[proc.Name])
+			tctx := &config.PromptEnabledContext{}
+			tctx.Session.ID = input.SessionID
+			tctx.Workspace.Folder = input.WorkingDir
+			tctx.Args = resolvedArgs
+			funcs := config.BuildTemplateFuncMap(tctx)
+			if rendered, rerr := config.RenderPromptTemplate(proc.Name, assembledPrompt, tctx, funcs); rerr != nil {
+				m.logger.Warn("close-phase prompt-mode processor template render failed; using unrendered body",
+					"name", proc.Name, "error", rerr)
+			} else {
+				assembledPrompt = rendered
+			}
+			if strings.TrimSpace(assembledPrompt) == "" {
+				m.logger.Debug("close-phase prompt-mode processor skipped: rendered prompt is empty",
+					"name", proc.Name)
+				applied--
+				skipped++
+				continue
+			}
+			pendingPrompts = append(pendingPrompts, pendingPromptDispatch{
+				name:    proc.Name,
+				prompt:  assembledPrompt,
+				timeout: proc.GetTimeout().Duration(),
+			})
+			m.logger.Info("close-phase prompt-mode processor collected for dispatch",
+				"name", proc.Name,
+				"prompt_len", len(assembledPrompt),
+			)
+			continue
+		}
+
+		// Command mode (text mode is forbidden by the loader).
+		if err := executeCloseCommand(ctx, proc, m.processorsDir, input, m.logger); err != nil {
+			m.logger.Warn("close-phase processor execution failed",
+				"name", proc.Name, "error", err)
+		}
+	}
+
+	if len(pendingPrompts) > 0 {
+		m.dispatchPromptBatch(input.WorkspaceUUID, pendingPrompts)
+	}
+
+	m.logger.Info("close-phase processor pipeline complete",
+		"total", len(m.processors),
+		"applied", applied,
+		"skipped", skipped,
+	)
+}
+
+// evaluateEnabledWhen evaluates a processor's EnabledWhen CEL expression against the
+// given input. Returns true when the processor should apply, false when the gate
+// evaluates to false. Missing/invalid expressions or evaluator failures fail-open
+// (return true) so processors run even if CEL is unavailable, matching the ShouldApply
+// behavior in hook.go.
+func evaluateEnabledWhen(proc *Processor, input *ProcessorInput, logger *slog.Logger) bool {
+	if proc.EnabledWhen == "" {
+		return true
+	}
+	evaluator := config.GetCELEvaluator()
+	if evaluator == nil {
+		return true
+	}
+	ctx := BuildCELContext(input)
+	compiled, err := evaluator.Compile(proc.EnabledWhen)
+	if err != nil {
+		if logger != nil {
+			logger.Warn("close-phase processor invalid enabledWhen; failing open",
+				"processor", proc.Name, "expression", proc.EnabledWhen, "error", err)
+		}
+		return true
+	}
+	result, err := evaluator.Evaluate(compiled, ctx)
+	if err != nil {
+		if logger != nil {
+			logger.Warn("close-phase processor enabledWhen evaluate failed; failing open",
+				"processor", proc.Name, "expression", proc.EnabledWhen, "error", err)
+		}
+		return true
+	}
+	return result
+}
+
 // EstimateTokens estimates the number of tokens in a text string.
 // Uses a rough heuristic of ~4 characters per token, which is a reasonable
 // average for English text and code. Used as fallback when the ACP server

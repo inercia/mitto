@@ -134,6 +134,12 @@ func (h *Handlers) HandleUpdateSession(w http.ResponseWriter, r *http.Request, s
 		h.deps.BroadcastSessionArchived(sessionID, true, session.ArchiveReasonManual)
 	}
 
+	// Fire the conversationClosed processor pipeline (fire-and-forget). The call
+	// itself schedules a goroutine, so it does not block the archive request.
+	if req.Archived != nil && *req.Archived && h.deps.ApplyOnCloseProcessors != nil {
+		h.deps.ApplyOnCloseProcessors(sessionID, string(session.ArchiveReasonManual))
+	}
+
 	// Delete all child sessions when parent is archived
 	if req.Archived != nil && *req.Archived {
 		// Authoritatively stop the loop on archive so it can never schedule a

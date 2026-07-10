@@ -230,6 +230,12 @@ type Deps struct {
 	// loop when the conversation is archived. May be nil; callers must nil-guard.
 	StopLoopForArchive func(sessionID string)
 
+	// ApplyOnCloseProcessors mirrors SessionManager.ApplyOnCloseProcessors: it runs
+	// the conversationClosed processor pipeline (fire-and-forget) when a session is
+	// archived. reason is a session.ArchiveReason string value. May be nil; callers
+	// must nil-guard.
+	ApplyOnCloseProcessors func(sessionID string, reason string)
+
 	// ErrSessionBusy and ErrLoopNotEnabled mirror the web package's
 	// loop-runner sentinel errors. They are exposed here so callback handlers
 	// can map TriggerLoopNow failures to HTTP status codes without importing

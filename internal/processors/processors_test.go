@@ -1104,6 +1104,135 @@ parameters:
 			expectSkip:  true,
 			expectCount: 0,
 		},
+		// conversationClosed phase validation
+		{
+			name: "conversationClosed command-mode accepted",
+			yaml: `
+name: ok-close-cmd
+when:
+  on: conversationClosed
+  match: all
+command: /bin/echo
+`,
+			expectSkip:  false,
+			expectCount: 1,
+		},
+		{
+			name: "conversationClosed prompt-mode accepted",
+			yaml: `
+name: ok-close-prompt
+when:
+  on: conversationClosed
+  match: all
+prompt: "Persist memories for @mitto:session_id."
+`,
+			expectSkip:  false,
+			expectCount: 1,
+		},
+		{
+			name: "conversationClosed with text rejected",
+			yaml: `
+name: bad-close-text
+when:
+  on: conversationClosed
+  match: all
+text: "some text"
+`,
+			expectSkip:  true,
+			expectCount: 0,
+		},
+		{
+			name: "conversationClosed with mutate rejected",
+			yaml: `
+name: bad-close-mutate
+when:
+  on: conversationClosed
+  match: all
+mutate: prepend
+command: /bin/echo
+`,
+			expectSkip:  true,
+			expectCount: 0,
+		},
+		{
+			name: "conversationClosed with match=first rejected",
+			yaml: `
+name: bad-close-first
+when:
+  on: conversationClosed
+  match: first
+command: /bin/echo
+`,
+			expectSkip:  true,
+			expectCount: 0,
+		},
+		{
+			name: "conversationClosed with rerun rejected",
+			yaml: `
+name: bad-close-rerun
+when:
+  on: conversationClosed
+  match: all
+  rerun:
+    afterTime: 10m
+command: /bin/echo
+`,
+			expectSkip:  true,
+			expectCount: 0,
+		},
+		{
+			name: "conversationClosed with cadence rejected",
+			yaml: `
+name: bad-close-cadence
+when:
+  on: conversationClosed
+  match: all
+  cadence:
+    everyNTurns: 3
+command: /bin/echo
+`,
+			expectSkip:  true,
+			expectCount: 0,
+		},
+		{
+			name: "conversationClosed with stopReasons rejected",
+			yaml: `
+name: bad-close-stop
+when:
+  on: conversationClosed
+  match: all
+  stopReasons: ["end_turn"]
+command: /bin/echo
+`,
+			expectSkip:  true,
+			expectCount: 0,
+		},
+		{
+			name: "conversationClosed with output=transform rejected",
+			yaml: `
+name: bad-close-transform
+when:
+  on: conversationClosed
+  match: all
+command: /bin/echo
+output: transform
+`,
+			expectSkip:  true,
+			expectCount: 0,
+		},
+		{
+			name: "conversationClosed with output=notify rejected",
+			yaml: `
+name: bad-close-notify
+when:
+  on: conversationClosed
+  match: all
+command: /bin/echo
+output: notify
+`,
+			expectSkip:  true,
+			expectCount: 0,
+		},
 	}
 
 	for _, tt := range tests {
@@ -5118,5 +5247,149 @@ func TestHasModelTagArgsChecker_CatchesTypo(t *testing.T) {
 	}
 	if _, ok := canonical[strings.ToLower(badTag)]; ok {
 		t.Fatalf("test invariant broken: %q is in CanonicalModelTags(); pick a different typo", badTag)
+	}
+}
+
+// TestApplyOnClose_PromptMode_Dispatched verifies that a prompt-mode
+// conversationClosed processor is dispatched via promptFunc with @mitto:
+// substitution applied.
+func TestApplyOnClose_PromptMode_Dispatched(t *testing.T) {
+	var mu sync.Mutex
+	var dispatched []struct{ workspace, name, prompt string }
+
+	proc := &Processor{
+		Name:   "close-memoriser",
+		When:   WhenConfig{On: PhaseConversationClosed, Match: MatchAll},
+		Prompt: "Persist for session @mitto:session_id (reason @mitto:archive_reason).",
+	}
+
+	m := NewManager("", nil)
+	m.processors = []*Processor{proc}
+	m.SetPromptFunc(func(_ context.Context, workspaceUUID, processorName, prompt string) error {
+		mu.Lock()
+		defer mu.Unlock()
+		dispatched = append(dispatched, struct{ workspace, name, prompt string }{
+			workspace: workspaceUUID, name: processorName, prompt: prompt,
+		})
+		return nil
+	})
+
+	m.ApplyOnClose(context.Background(), CloseProcessorInput{
+		SessionID:     "sess-close-1",
+		WorkspaceUUID: "ws-uuid",
+		WorkingDir:    "/tmp/wd",
+		ArchiveReason: "manual",
+	})
+
+	// Prompt dispatch is fire-and-forget from ApplyOnClose's perspective — the
+	// goroutine may still be running. Poll briefly.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		mu.Lock()
+		n := len(dispatched)
+		mu.Unlock()
+		if n > 0 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(dispatched) != 1 {
+		t.Fatalf("expected 1 dispatch, got %d", len(dispatched))
+	}
+	got := dispatched[0]
+	if got.workspace != "ws-uuid" {
+		t.Errorf("workspace = %q, want %q", got.workspace, "ws-uuid")
+	}
+	if got.name != "close-memoriser" {
+		t.Errorf("name = %q, want %q", got.name, "close-memoriser")
+	}
+	if !strings.Contains(got.prompt, "sess-close-1") {
+		t.Errorf("prompt missing @mitto:session_id substitution: %q", got.prompt)
+	}
+	if !strings.Contains(got.prompt, "manual") {
+		t.Errorf("prompt missing @mitto:archive_reason substitution: %q", got.prompt)
+	}
+}
+
+// TestApplyOnClose_SkipsOtherPhases ensures processors from other phases are ignored.
+func TestApplyOnClose_SkipsOtherPhases(t *testing.T) {
+	var dispatched int
+	var mu sync.Mutex
+
+	m := NewManager("", nil)
+	m.processors = []*Processor{
+		{Name: "user", When: WhenConfig{On: PhaseUserPrompt, Match: MatchAll}, Prompt: "x"},
+		{Name: "after", When: WhenConfig{On: PhaseAgentResponded, Match: MatchAll}, Prompt: "y"},
+		{Name: "idle", When: WhenConfig{On: PhaseAgentIdle, Match: MatchAll}, Prompt: "z"},
+	}
+	m.SetPromptFunc(func(_ context.Context, _, _, _ string) error {
+		mu.Lock()
+		dispatched++
+		mu.Unlock()
+		return nil
+	})
+
+	m.ApplyOnClose(context.Background(), CloseProcessorInput{SessionID: "s"})
+
+	// Give any (erroneous) goroutine a chance to run.
+	time.Sleep(50 * time.Millisecond)
+
+	mu.Lock()
+	defer mu.Unlock()
+	if dispatched != 0 {
+		t.Errorf("expected no dispatches from non-close processors, got %d", dispatched)
+	}
+}
+
+// TestApplyOnClose_SkipsDisabled ensures disabled conversationClosed processors do
+// not fire.
+func TestApplyOnClose_SkipsDisabled(t *testing.T) {
+	disabled := false
+	proc := &Processor{
+		Name:    "off",
+		Enabled: &disabled,
+		When:    WhenConfig{On: PhaseConversationClosed, Match: MatchAll},
+		Prompt:  "should not fire",
+	}
+	var mu sync.Mutex
+	dispatched := 0
+
+	m := NewManager("", nil)
+	m.processors = []*Processor{proc}
+	m.SetPromptFunc(func(_ context.Context, _, _, _ string) error {
+		mu.Lock()
+		dispatched++
+		mu.Unlock()
+		return nil
+	})
+
+	m.ApplyOnClose(context.Background(), CloseProcessorInput{SessionID: "s"})
+	time.Sleep(50 * time.Millisecond)
+
+	mu.Lock()
+	defer mu.Unlock()
+	if dispatched != 0 {
+		t.Errorf("expected disabled processor to be skipped, got %d dispatches", dispatched)
+	}
+}
+
+// TestShouldApply_ConversationClosedSkippedInUserPromptPipeline verifies that
+// conversationClosed processors are always skipped by ShouldApply (they run only
+// via Manager.ApplyOnClose).
+func TestShouldApply_ConversationClosedSkippedInUserPromptPipeline(t *testing.T) {
+	proc := &Processor{
+		Name:    "close-only",
+		When:    WhenConfig{On: PhaseConversationClosed, Match: MatchAll},
+		Command: "/bin/echo",
+	}
+	ok, reason := proc.ShouldApply(false, &ProcessorInput{})
+	if ok {
+		t.Errorf("expected ShouldApply=false for conversationClosed processor in userPrompt pipeline")
+	}
+	if reason != SkipReasonConversationClosedPhase {
+		t.Errorf("reason = %q, want %q", reason, SkipReasonConversationClosedPhase)
 	}
 }

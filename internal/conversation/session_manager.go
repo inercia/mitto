@@ -584,6 +584,95 @@ func (sm *SessionManager) GetWorkspaceAllProcessorDirs(workingDir string) []stri
 	return sm.wsRegistry.GetWorkspaceAllProcessorDirs(workingDir)
 }
 
+// ApplyOnCloseProcessors runs the conversationClosed processor pipeline for a session
+// being archived. It resolves the session's working directory and workspace from the
+// store (the live BackgroundSession is typically already gone by the time archive
+// completes), builds the workspace-scoped processor manager, wires the async
+// PromptFunc via the auxiliary manager, and invokes Manager.ApplyOnClose in a
+// background goroutine.
+//
+// This is fire-and-forget: the call returns immediately. Individual processor
+// failures are logged but never propagated. It is a no-op when there is no store,
+// no processor manager, or when the session metadata cannot be read.
+func (sm *SessionManager) ApplyOnCloseProcessors(sessionID string, reason string) {
+	if sm == nil {
+		return
+	}
+
+	sm.mu.RLock()
+	store := sm.store
+	globalMgr := sm.processorManager
+	auxMgr := sm.auxiliaryManager
+	logger := sm.logger
+	sm.mu.RUnlock()
+
+	if store == nil || globalMgr == nil || sessionID == "" {
+		return
+	}
+
+	meta, err := store.GetMetadata(sessionID)
+	if err != nil {
+		if logger != nil {
+			logger.Warn("close-phase: failed to read session metadata; skipping",
+				"session_id", sessionID, "error", err)
+		}
+		return
+	}
+
+	workingDir := meta.WorkingDir
+	archivedAt := meta.ArchivedAt
+
+	// Metadata does not store the workspace UUID; look it up from the workspace
+	// registry via working dir + ACP server, falling back to a working-dir-only match.
+	var workspaceUUID string
+	if ws := sm.wsRegistry.GetWorkspaceByDirAndACP(workingDir, meta.ACPServer); ws != nil {
+		workspaceUUID = ws.UUID
+	} else if ws := sm.wsRegistry.GetWorkspace(workingDir); ws != nil {
+		workspaceUUID = ws.UUID
+	}
+
+	// Build the workspace-merged processor manager (global + workspace-local).
+	procMgr := sm.loadWorkspaceProcessors(globalMgr, workingDir)
+	if procMgr == nil {
+		return
+	}
+
+	// Apply workspace-level enabled overrides and collect per-processor arg overrides.
+	var procArgOverrides map[string]map[string]string
+	if overrides := sm.GetWorkspaceProcessorOverrides(workingDir); len(overrides) > 0 {
+		procMgr = procMgr.CloneWithEnabledOverrides(overrides)
+		procArgOverrides = buildProcessorArgOverrides(overrides)
+	}
+
+	// Wire the fire-and-forget prompt dispatcher for prompt-mode processors.
+	if auxMgr != nil {
+		procMgr.SetPromptFunc(func(ctx context.Context, wsUUID, processorName, prompt string) error {
+			return auxMgr.PromptProcessorAsync(ctx, wsUUID, processorName, prompt)
+		})
+	}
+
+	input := processors.CloseProcessorInput{
+		SessionID:             sessionID,
+		SessionDir:            store.SessionDir(sessionID),
+		WorkspaceUUID:         workspaceUUID,
+		WorkingDir:            workingDir,
+		ArchiveReason:         reason,
+		ArchivedAt:            archivedAt,
+		ProcessorArgOverrides: procArgOverrides,
+	}
+
+	// Run the close pipeline off the archive request goroutine so command-mode
+	// processors do not stall the HTTP response.
+	go func() {
+		// Bound the whole close pipeline to a conservative window so a stuck
+		// command-mode processor cannot leak a goroutine indefinitely. Each
+		// individual processor still enforces its own configured timeout.
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+		defer cancel()
+		procMgr.ApplyOnClose(ctx, input)
+	}()
+}
+
 // loadWorkspaceProcessors clones the processor manager with workspace-specific
 // processors loaded from .mitto/processors/ and any processors_dirs in .mittorc.
 // Returns the original manager if no workspace processors are found.

@@ -743,7 +743,7 @@ func (c *WebConfig) GetAPIPrefix() string {
 // ============================================================================
 
 // ProcessorPhase defines when in the conversation lifecycle a processor fires.
-// Valid values: "userPrompt", "agentResponded"
+// Valid values: "userPrompt", "agentResponded", "agentIdle", "conversationClosed"
 type ProcessorPhase string
 
 const (
@@ -751,6 +751,12 @@ const (
 	ProcessorPhaseUserPrompt ProcessorPhase = "userPrompt"
 	// ProcessorPhaseAgentResponded fires processors after the agent has finished responding.
 	ProcessorPhaseAgentResponded ProcessorPhase = "agentResponded"
+	// ProcessorPhaseAgentIdle fires processors after the agent has finished responding
+	// and the message queue has drained (single fire at the idle breakpoint).
+	ProcessorPhaseAgentIdle ProcessorPhase = "agentIdle"
+	// ProcessorPhaseConversationClosed fires processors once when the session is archived
+	// (fire-and-forget). Only command-mode and prompt-mode with output:discard are allowed.
+	ProcessorPhaseConversationClosed ProcessorPhase = "conversationClosed"
 )
 
 // ProcessorMatch defines which messages in the sequence a processor applies to.

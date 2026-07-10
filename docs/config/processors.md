@@ -1,15 +1,16 @@
 # Processors Configuration
 
-Mitto supports processors that can run at three points in the conversation lifecycle:
+Mitto supports processors that can run at four points in the conversation lifecycle:
 
 - **`on: userPrompt`** — Processors fire *before* the user's message is sent to the ACP agent. This is the standard phase for injecting context, prepending reminders, running scripts, or dispatching background prompts.
 - **`on: agentResponded`** — Processors fire *after* the agent finishes **each** turn — even while more queued messages are still pending. Only command-mode and prompt-mode are allowed here (text injection is not meaningful post-response).
 - **`on: agentIdle`** — Like `agentResponded`, but fires only once the agent has **drained its message queue and gone idle**. Within a burst of queued messages it fires a single time, at the idle breakpoint, so the processor sees the *complete* exchange rather than a partial mid-burst turn. Same execution rules as `agentResponded`. This is the right phase for memory/insight processors (e.g., `memorize-preferences`, `identify-user-data`, `auggie-update-rules`, `claude-update-memory`) that need full context. Cadence still applies and accumulates across the burst (see [Cadence Throttling](#cadence-throttling-cadence)).
+- **`on: conversationClosed`** — Processors fire **once** when a session is archived, either manually from the UI or automatically due to inactivity. Fire-and-forget: the archive path does not wait for these processors to complete. Only command-mode and prompt-mode are allowed, and `match` must be `all` (there is a single close event — `first`/`allExceptFirst` are meaningless). `mutate`, `rerun`, `cadence`, `stopReasons`, and `excludeOrigins` are rejected. Because the session is no longer active, only `output: discard` is supported — notifications, action buttons, and user-data patches cannot be delivered back to the closed conversation. This phase is ideal for post-mortem knowledge extraction (see the builtin `extract-memories-on-close`).
 
 Within each phase, three execution modes are available:
 
 - **Text-mode** — Inject static text (with optional variable substitution) into the message. No external commands needed. Only valid for `on: userPrompt`.
-- **Command-mode** — Execute external commands that receive message context as JSON and produce transformed output. Valid for all phases.
+- **Command-mode** — Execute external commands that receive message context as JSON and produce transformed output. Valid for `userPrompt`, `agentResponded`, `agentIdle`, and `conversationClosed`.
 - **Prompt-mode** — Send a prompt to a workspace-scoped auxiliary AI agent. Fire-and-forget: the pipeline continues immediately. Valid for all phases.
 
 ## Configuration in the UI
@@ -203,6 +204,7 @@ Mitto ships with builtin processors that are automatically deployed to `MITTO_DI
 | `claude-update-memory`| Updates Claude Code memory files from conversation insights (every 6 turns or 15k tokens) | agentResponded / all | prompt | **Yes** (Claude Code only) |
 | `identify-user-data`  | Detects user data values from conversations and sets them via MCP (every 2 turns or 6k tokens)           | agentResponded / all | prompt | **Yes** (only activates when `user_data` schema is defined in `.mittorc`) |
 | `identify-workspace-metadata` | Analyzes the project and fills in `metadata.description` and `metadata.url` in `.mittorc` when missing | userPrompt / first | prompt | **Yes** (only fires when `.mittorc` exists but lacks a description) |
+| `extract-memories-on-close` | On archive, extracts durable project knowledge from the conversation and saves it via `bd remember` | conversationClosed / all | prompt | **Yes** (requires `bd` command + `.beads` directory; skipped for loop sessions) |
 
 ### Managing Builtin Processors
 
@@ -225,8 +227,8 @@ reminders, or instructions to conversations.
 name: my-reminder
 description: "Adds a coding reminder to every message"
 when:
-  on: userPrompt   # required: "userPrompt" or "agentResponded"
-  match: all       # required: "first", "all", or "allExceptFirst"
+  on: userPrompt   # required: "userPrompt", "agentResponded", "agentIdle", or "conversationClosed"
+  match: all       # required: "first", "all", or "allExceptFirst" (must be "all" for conversationClosed)
 mutate: append     # required for text mode: "prepend" or "append"
 priority: 100
 text: |
@@ -474,6 +476,43 @@ prompt: |
   Use mitto_conversation_history to retrieve the last 20 agent messages.
 ```
 
+#### Preserve memories when a conversation is archived
+
+The built-in `extract-memories-on-close` processor (enabled by default when `bd` and
+`.beads` are present) demonstrates this pattern — see [Builtin Processors](#builtin-processors).
+
+`conversationClosed` processors fire exactly once when a session is archived (manual
+archive from the UI or automatic archive due to inactivity). The archive path is
+fire-and-forget: the pipeline runs in the background and never blocks the archive
+response. Because the session is closed, the processor cannot post notifications,
+action buttons or user-data patches back to the conversation — its work must be
+side-effects on the workspace side (files, external stores, task trackers).
+
+```yaml
+name: my-close-memoriser
+description: "Save durable lessons learned to an external store on archive"
+when:
+  on: conversationClosed
+  match: all             # required; first / allExceptFirst are rejected
+priority: 200
+timeout: 300s
+onError: skip
+
+enabledWhen: 'CommandExists("bd") && !Session.IsLoop'
+
+prompt: |
+  You review the archived conversation and preserve any durable, project-level
+  memories via `bd remember`. Session ID: @mitto:session_id (archive reason:
+  @mitto:archive_reason).
+
+  Use the mitto_conversation_history MCP tool with conversation_id "@mitto:session_id"
+  to retrieve the last 50 user_prompt and agent_message events.
+```
+
+Command-mode is also supported. Command processors receive the close event as JSON
+on stdin (`sessionId`, `workingDir`, `archiveReason`, `archivedAt`); stdout is
+discarded (only `output: discard` is allowed for this phase).
+
 ## Full Configuration Schema
 
 Each YAML document in the processors directory defines one processor. A file may contain
@@ -485,8 +524,9 @@ Use **either** `text` (text-mode), `command` (command-mode), or `prompt` (prompt
 name: my-processor   # Human-readable identifier
 when:                # Trigger condition — always a block
   on: userPrompt     # Phase: "userPrompt" (before send), "agentResponded" (after each turn),
-                     #   or "agentIdle" (after the queue drains / agent goes idle)
-  match: first       # Match: "first", "all", or "allExceptFirst"
+                     #   "agentIdle" (after the queue drains / agent goes idle), or
+                     #   "conversationClosed" (once when the session is archived)
+  match: first       # Match: "first", "all", or "allExceptFirst" (must be "all" for conversationClosed)
   rerun:             # Optional: auto re-run — only valid with on:userPrompt + match:first
     afterTime: 30m          # re-run after 30 minutes since last run
     afterSentMsgs: 20       # re-run after 20 user messages since last run
@@ -548,14 +588,14 @@ enabledWhen: 'ACP.Tags.exists(t, t == "reasoning") && Tools.HasAllPatterns(["mit
 
 The `when:` block is required for all processors. Both `on:` and `match:` are required fields.
 
-| Field               | Values                                           | Required | Notes                                              |
-| ------------------- | ------------------------------------------------ | -------- | -------------------------------------------------- |
-| `on`                | `userPrompt` \| `agentResponded`                 | ✅ Yes   | Phase when the processor fires                     |
-| `match`             | `first` \| `all` \| `allExceptFirst`             | ✅ Yes   | Which messages in the sequence to fire on          |
-| `rerun`             | sub-block (see below)                            | No       | Only valid with `on: userPrompt` + `match: first`  |
-| `cadence`           | sub-block (see below)                            | No       | Only valid with `on: agentResponded`; not with `match: first` |
-| `stopReasons`       | list of strings                                  | No       | Only valid with `on: agentResponded`. Default: `["end_turn"]` |
-| `excludeOrigins`    | list of strings                                  | No       | Only valid with `on: agentResponded`               |
+| Field               | Values                                                                | Required | Notes                                              |
+| ------------------- | --------------------------------------------------------------------- | -------- | -------------------------------------------------- |
+| `on`                | `userPrompt` \| `agentResponded` \| `agentIdle` \| `conversationClosed` | ✅ Yes   | Phase when the processor fires                     |
+| `match`             | `first` \| `all` \| `allExceptFirst`                                  | ✅ Yes   | Which messages to fire on. Must be `all` for `conversationClosed` |
+| `rerun`             | sub-block (see below)                                                 | No       | Only valid with `on: userPrompt` + `match: first`  |
+| `cadence`           | sub-block (see below)                                                 | No       | Only valid with `on: agentResponded` / `agentIdle`; not with `match: first` or `conversationClosed` |
+| `stopReasons`       | list of strings                                                       | No       | Only valid with `on: agentResponded` / `agentIdle`. Default: `["end_turn"]` |
+| `excludeOrigins`    | list of strings                                                       | No       | Only valid with `on: agentResponded` / `agentIdle` |
 
 **`match` values:**
 - `first` — fires only on the *first-ever* message in the conversation. This state **persists across session restarts** — if the processor already fired before the session was stopped and resumed, it will not fire again.
@@ -585,17 +625,20 @@ The `when:` block is required for all processors. Both `on:` and `match:` are re
 
 Which fields are allowed or forbidden depends on the `on:` phase:
 
-| Field / Setting                    | `on: userPrompt`      | `on: agentResponded`         |
-| ---------------------------------- | --------------------- | ----------------------------- |
-| `text:`                            | ✅ allowed            | ❌ forbidden                  |
-| `mutate:`                          | ✅ required (text mode) | ❌ forbidden                |
-| `command:`                         | ✅ allowed            | ✅ allowed                    |
-| `prompt:`                          | ✅ allowed            | ✅ allowed                    |
-| `when.rerun:`                      | ✅ allowed (`match: first` only) | ❌ forbidden       |
-| `when.stopReasons:`                | ❌ forbidden          | ✅ allowed (default: `[end_turn]`) |
-| `when.excludeOrigins:`             | ❌ forbidden          | ✅ allowed                    |
-| `output: transform/prepend/append` | ✅ allowed            | ❌ forbidden                  |
-| `output: discard`                  | ✅ allowed            | ✅ allowed                    |
+| Field / Setting                    | `on: userPrompt`      | `on: agentResponded` / `agentIdle` | `on: conversationClosed` |
+| ---------------------------------- | --------------------- | ---------------------------------- | ------------------------ |
+| `text:`                            | ✅ allowed            | ❌ forbidden                       | ❌ forbidden             |
+| `mutate:`                          | ✅ required (text mode) | ❌ forbidden                     | ❌ forbidden             |
+| `command:`                         | ✅ allowed            | ✅ allowed                         | ✅ allowed               |
+| `prompt:`                          | ✅ allowed            | ✅ allowed                         | ✅ allowed               |
+| `when.match: first`                | ✅ allowed            | ✅ allowed                         | ❌ forbidden (must be `all`) |
+| `when.rerun:`                      | ✅ allowed (`match: first` only) | ❌ forbidden             | ❌ forbidden             |
+| `when.cadence:`                    | ❌ forbidden          | ✅ allowed                         | ❌ forbidden             |
+| `when.stopReasons:`                | ❌ forbidden          | ✅ allowed (default: `[end_turn]`) | ❌ forbidden             |
+| `when.excludeOrigins:`             | ❌ forbidden          | ✅ allowed                         | ❌ forbidden             |
+| `output: transform/prepend/append` | ✅ allowed            | ❌ forbidden                       | ❌ forbidden             |
+| `output: notify/actionButtons/userData` | ❌ forbidden     | ✅ allowed                         | ❌ forbidden (session closed) |
+| `output: discard`                  | ✅ allowed            | ✅ allowed                         | ✅ allowed (only option) |
 
 
 

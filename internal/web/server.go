@@ -934,6 +934,13 @@ func NewServer(config Config) (*Server, error) {
 	s.loopRunner.SetOnAutoArchive(func(sessionID string) {
 		s.BroadcastACPStopped(sessionID, "auto_archived")
 		s.BroadcastSessionArchived(sessionID, true)
+		// Fire the conversationClosed processor pipeline for the auto-archived
+		// session. Fire-and-forget: SessionManager.ApplyOnCloseProcessors
+		// schedules its own background goroutine, so this does not block the
+		// LoopRunner's archive worker.
+		if sessionMgr != nil {
+			sessionMgr.ApplyOnCloseProcessors(sessionID, string(session.ArchiveReasonInactivity))
+		}
 	})
 	s.loopRunner.SetOnLoopAutoStopped(s.BroadcastLoopUpdated)
 	s.loopRunner.SetOnLoopUpdated(s.BroadcastLoopUpdated)
@@ -1022,6 +1029,7 @@ func NewServer(config Config) (*Server, error) {
 		StopLoopForArchive: func(sessionID string) {
 			s.loopRunner.StopLoopForArchive(sessionID, session.StoppedReasonArchived)
 		},
+		ApplyOnCloseProcessors:        sessionMgr.ApplyOnCloseProcessors,
 		ErrSessionBusy:                ErrSessionBusy,
 		ErrLoopNotEnabled:             ErrLoopNotEnabled,
 		LoopDelayFloor:                s.loopDelayFloor,

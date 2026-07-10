@@ -106,12 +106,15 @@ const (
 	// SkipReasonAgentRespondedPhase is applied to agentResponded processors in the
 	// userPrompt pipeline. These processors are only executed via Manager.ApplyAfter.
 	SkipReasonAgentRespondedPhase SkipReason = "agentResponded_phase"
+	// SkipReasonConversationClosedPhase is applied to conversationClosed processors in
+	// the userPrompt / after pipelines. They run exclusively via Manager.ApplyOnClose.
+	SkipReasonConversationClosedPhase SkipReason = "conversationClosed_phase"
 )
 
 // ShouldApply returns true if the processor should apply given the message context.
 // When it returns false, the SkipReason describes why.
-// Note: PhaseAgentResponded and PhaseAgentIdle processors are always skipped here —
-// they run in a separate path via Manager.ApplyAfter.
+// Note: PhaseAgentResponded, PhaseAgentIdle and PhaseConversationClosed processors are
+// always skipped here — they run in separate paths (Manager.ApplyAfter / Manager.ApplyOnClose).
 func (h *Processor) ShouldApply(isFirstMessage bool, input *ProcessorInput) (bool, SkipReason) {
 	if !h.IsEnabled() {
 		return false, SkipReasonDisabled
@@ -121,6 +124,10 @@ func (h *Processor) ShouldApply(isFirstMessage bool, input *ProcessorInput) (boo
 	// They are executed exclusively via Manager.ApplyAfter after the agent responds.
 	if h.When.On == PhaseAgentResponded || h.When.On == PhaseAgentIdle {
 		return false, SkipReasonAgentRespondedPhase
+	}
+	// conversationClosed processors are executed exclusively via Manager.ApplyOnClose.
+	if h.When.On == PhaseConversationClosed {
+		return false, SkipReasonConversationClosedPhase
 	}
 
 	// Check CEL expression (enabledWhen)
