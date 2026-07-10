@@ -1,10 +1,10 @@
 name: 'Support: investigate'
-description: 'Investigate a tracked support question internally using the channel knowledge file (.mitto/slack-support-<channel-id>.md), record findings on the bead, and produce a draft reply. Never posts to Slack.'
+description: 'Investigate a tracked support question internally using the channel playbook (.mitto/slack-support-<channel-id>.md), record findings on the bead, and produce a draft reply. Never posts to Slack.'
 group: Support
 backgroundColor: '#D1C4E9'
 icon: search
-menus: beadsIssues
-enabledWhen: 'CommandExists("bd") && DirExists(".beads") && Item.Status != "closed" && "support-question" in Item.Labels'
+menus: beadsIssues, conversation, prompts
+enabledWhen: 'CommandExists("bd") && DirExists(".beads") && ((Item.Status != "closed" && "support-question" in Item.Labels) || (Session.HasBeadsIssue && BeadIsOpen(Session.BeadsIssue) && BeadHasLabels(Session.BeadsIssue, "support-question")))'
 tags:
 - support
 parameters:
@@ -23,9 +23,10 @@ prompt: |-
 
   Investigate a tracked support question **on our side** — do the work needed to actually answer it.
   Use this when we have enough of the customer's context but still need to **find the answer**: follow
-  the channel's knowledge file (`.mitto/slack-support-<channel-id>.md` — docs, runbooks, repos, a
-  Q&A/knowledge MCP tool, commands, escalation paths), correlate with what is on the bead, record what
-  you learn, and — if you reach a confident answer — leave a **draft reply** ready for review.
+  the channel's playbook (`.mitto/slack-support-<channel-id>.md` — scope, docs, runbooks, repos, a
+  Q&A/knowledge MCP tool, commands, escalation paths, tone/reply guidelines), correlate with what is
+  on the bead, record what you learn, and — if you reach a confident answer — leave a **draft reply**
+  ready for review.
 
   > **Applicable state:** any open tracked bead. Typically `state:triaged`, `awaiting-us`, or
   > `gathering-info`. This prompt sets `state:gathering-info` while it works.
@@ -101,32 +102,47 @@ prompt: |-
     `bd update <id> --remove-label state:<previous> --add-label state:gathering-info`, and add a short
     `**[STATE · <time>]** <prev> → gathering-info` comment.
 
-  ## Step 3: Know the method (the per-channel knowledge file)
+  ## Step 3: Read the channel playbook (the per-channel knowledge file)
 
-  You must investigate using **this channel's documented method**, not by guessing. That method is
-  stored **per channel** in **`.mitto/slack-support-<channel-id>.md`**, where `<channel-id>` is the
-  bead's stored `slack_channel` value (from Step 2). Build the exact path from that value — e.g. if
+  You must work using **this channel's documented playbook**, not by guessing. The playbook is stored
+  **per channel** in **`.mitto/slack-support-<channel-id>.md`**, where `<channel-id>` is the bead's
+  stored `slack_channel` value (from Step 2). Build the exact path from that value — e.g. if
   `slack_channel` is `C0XXXXXXX`, the file is `.mitto/slack-support-C0XXXXXXX.md`.
 
-  1. **Read it.** Check whether the channel's knowledge file exists.
-     - **If it exists** — read it in full. It is the **authoritative guide** for how to gather
-       information and answer questions for this channel (which repos to search, which
-       docs/runbooks/knowledge bases to consult, common patterns, escalation paths, and how to use
-       any relevant MCP tools). Use it in Step 4.
+  This file is the **authoritative guide for everything about this channel**, not just investigation.
+  A complete playbook covers:
+  - **Areas of expertise / scope** — what this channel is (and is **not**) responsible for; the
+    topics we are experts in versus questions to redirect elsewhere.
+  - **Investigation method** — which repos to search, which docs/runbooks/knowledge bases to consult,
+    common patterns, and how to use any relevant MCP tools.
+  - **Escalation paths** — who/what to escalate to, and when.
+  - **Tone & addressing customers** — how we speak to this channel's audience.
+  - **Reply guidelines** — house style for answers (length, hedging, links, do's and don'ts).
+
+  1. **Read it.** Check whether the channel playbook exists.
+     - **If it exists** — read it in full. Follow its investigation method and scope rules in Step 4,
+       and honor its tone/reply guidelines when you draft.
      - **If it does NOT exist** — do not silently guess. Create the `.mitto/` directory if missing,
-       then use `mitto_ui_form` / `mitto_ui_textbox` to ASK the user exactly how to investigate
-       answers for this channel: which repos, docs, commands, knowledge bases, MCP tools, or people
-       to consult. Do not settle for a vague answer — re-ask for specifics. Write it to
+       then use `mitto_ui_form` / `mitto_ui_textbox` to ASK the user for this channel's playbook: its
+       areas of expertise / scope, how to investigate answers (repos, docs, commands, knowledge
+       bases, MCP tools, people), escalation paths, and how to address/reply to customers. Do not
+       settle for a vague answer — re-ask for specifics. Write it to
        `.mitto/slack-support-<channel-id>.md` (create the file) and confirm the write, so future runs
-       find it. If nobody responds (timeout), record a `[CONTEXT]` note that no knowledge file exists
-       yet and stop.
+       find it. If nobody responds (timeout), record a `[CONTEXT]` note that no playbook exists yet
+       and stop.
   2. **Keep it current.** If you discover a new useful pattern during this investigation (a better
-     search, a docs link that answered it, a recurring issue + resolution, an escalation contact),
-     **append it** to `.mitto/slack-support-<channel-id>.md` so future investigations benefit.
+     search, a docs link that answered it, a recurring issue + resolution, an escalation contact, or
+     a tone/phrasing that worked well), **append it** to `.mitto/slack-support-<channel-id>.md` so
+     future runs benefit.
 
   ## Step 4: Investigate
 
-  - Follow the channel knowledge file to actually find the answer. Pull in whatever it points to: the
+  - **Scope check first.** Using the playbook's *areas of expertise / scope*, confirm the question is
+    something this channel is responsible for. If it is clearly **out of scope**, do not fabricate a
+    generic answer — record a `[CONTEXT]` note that it is out of scope (and where it should go, if the
+    playbook says), and draft a brief redirect instead of a solution. If scope is unclear, treat it as
+    in-scope but lower your confidence.
+  - Follow the channel playbook to actually find the answer. Pull in whatever it points to: the
     Q&A / knowledge tool, docs links, repos, related tickets, prior resolved beads on the same topic,
     and — where safe and useful — **run simple read-only commands locally** (e.g. `curl
     some.domain.com`) and capture the command **and** its output.

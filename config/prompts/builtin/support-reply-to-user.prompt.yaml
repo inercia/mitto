@@ -3,8 +3,8 @@ description: 'Review and post our answer to a tracked support question (bead in 
 group: Support
 backgroundColor: '#B3E5FC'
 icon: chat-bubble
-menus: beadsIssues
-enabledWhen: 'CommandExists("bd") && DirExists(".beads") && Item.Status != "closed" && "support-question" in Item.Labels && "state:drafting" in Item.Labels'
+menus: beadsIssues, conversation, prompts
+enabledWhen: 'CommandExists("bd") && DirExists(".beads") && ((Item.Status != "closed" && "support-question" in Item.Labels && "state:drafting" in Item.Labels) || (Session.HasBeadsIssue && BeadHasLabels(Session.BeadsIssue, "support-question,state:drafting")))'
 tags:
 - support
 parameters:
@@ -22,7 +22,7 @@ prompt: |-
   ## Description
 
   Post our answer to a tracked support question. Use this when the bead is **ready to be answered** —
-  we already have enough information (typically after gathering info via the channel knowledge file or
+  we already have enough information (typically after gathering info via the channel playbook or
   an investigation). It shows the proposed reply, lets you edit it, posts it to the Slack thread **on
   your approval**, and records it on the bead.
 
@@ -85,6 +85,16 @@ prompt: |-
   - Load the full history: `bd show <id>` and `bd comments <id>`. The bead is the source of truth
     for what has already been said. Note the stored `slack_thread_ts` / `slack_channel` /
     `slack_url` metadata.
+
+  ## Step 2.5: Read the channel playbook
+
+  - Using the bead's `slack_channel` value, read this channel's playbook at
+    **`.mitto/slack-support-<channel-id>.md`** (e.g. `slack_channel` `C0XXXXXXX` →
+    `.mitto/slack-support-C0XXXXXXX.md`). It is the **authoritative guide** for this channel's tone,
+    how to address customers, and reply guidelines (as well as scope and investigation method).
+  - **If it exists**, honor its tone/reply guidance when reviewing or building the draft — it
+    **overrides** the generic defaults below. **If it does not exist**, fall back to the generic
+    defaults below (the watch/investigate prompts are responsible for creating it).
   - Confirm the `state:*` label is `drafting`. If it is **not**, use `mitto_ui_options` to warn:
     - **Question**: "This bead is in `state:<current>`, not `drafting`. Continue anyway?"
     - **Options**: `[{label: "Continue anyway"}, {label: "Cancel"}]`, timeout 300.
@@ -113,7 +123,9 @@ prompt: |-
      - **If none exists** → build one now from the bead history (investigation / info-gathering notes)
        plus the refreshed thread, following the formatting guidelines below. Do not repeat what we
        already said.
-  2. **Formatting guidelines (only when building a new draft):**
+  2. **Formatting guidelines (only when building a new draft).** Follow the channel playbook's
+     tone/reply guidelines first (Step 2.5); the rules below are the fallback default when the
+     playbook is silent:
      1. **No direct addressing** — do not use the user's name.
      2. **No follow-up offers** — do not end with "let me know if you need anything else".
      3. **Hedge** — start with "I think that…", "It seems like…"; we are never 100% sure.

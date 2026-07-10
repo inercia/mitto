@@ -75,7 +75,7 @@ prompt: |-
   | state | meaning |
   |-------|---------|
   | `triaged` | auto-created during triage, not yet worked (initial) |
-  | `gathering-info` | actively working it — investigating to answer (docs/tools/knowledge file) |
+  | `gathering-info` | actively working it — investigating to answer (docs/tools/playbook) |
   | `need-info` | need more details from the customer before we can answer |
   | `drafting` | have a draft answer, pending your review |
   | `awaiting-customer` | we posted a reply, waiting on the customer |
@@ -195,7 +195,7 @@ prompt: |-
 
   Rather than leaving "needs investigation" as a note for later, **start the work now** by delegating
   each investigable ticket to its own child conversation running the canonical **"Support: investigate"**
-  prompt. The children run **in parallel**, each digging for the answer via the channel knowledge file
+  prompt. The children run **in parallel**, each digging for the answer via the channel playbook
   and leaving a draft (`state:drafting`) on its bead — turning the sweep from purely bookkeeping into
   real progress.
 

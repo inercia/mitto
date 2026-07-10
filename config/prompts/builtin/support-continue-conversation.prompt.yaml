@@ -34,7 +34,7 @@ prompt: |-
 
   Find recent conversations in the Slack channel **`{{ $channel }}`** where the current user has been
   participating, let the user pick one, summarize it, and help craft a reply — either by gathering an
-  answer via the channel knowledge file or by rephrasing user-provided text.
+  answer via the channel playbook or by rephrasing user-provided text.
 
   ## CRITICAL: User Interaction Rules
 
@@ -71,6 +71,19 @@ prompt: |-
   (b) read recent channel history, (c) read a thread's replies, and (d) post a reply to a thread
   (e.g. `slack_get_users*`, `slack_get_channel_history*`, `slack_get_thread_replies*`,
   `slack_reply_to_thread*`, or their `*_slack` equivalents).
+
+  ## Step 0: Read the channel playbook
+
+  - This channel's playbook lives at **`.mitto/slack-support-{{ $channel }}.md`**. It is the
+    **authoritative guide** for this channel's scope, investigation method, tone, how to address
+    customers, and reply guidelines.
+  - **If it exists**, read it in full now and honor it throughout — especially its tone/reply guidance
+    when crafting any reply below.
+  - **If it does NOT exist**, create the `.mitto/` directory if missing, ASK the user (via
+    `mitto_ui_form` / `mitto_ui_textbox`) for the channel playbook (scope, how to gather answers,
+    escalation paths, and how to address/reply to customers), and write their guidance to
+    `.mitto/slack-support-{{ $channel }}.md` before crafting a reply. If you learn a new useful
+    pattern later, append it to that file.
 
   ## Step 1: Identify the current user
 
@@ -133,13 +146,11 @@ prompt: |-
 
   ### Option A — "Gather an answer for me"
 
-  - Use this channel's knowledge file **`.mitto/slack-support-{{ $channel }}.md`** as the
-    authoritative guide for how to gather answers (which repos to search, docs/runbooks/knowledge
-    bases to consult, common patterns, escalation paths, relevant MCP tools). Read it if it exists.
-    If it does **not** exist, create the `.mitto/` directory if missing, ASK the user how to gather
-    answers for this channel (via `mitto_ui_form` / `mitto_ui_textbox`), and write their guidance to
-    `.mitto/slack-support-{{ $channel }}.md` before proceeding. If you learn a new useful pattern,
-    append it to that file.
+  - Follow the channel playbook you read in **Step 0** (`.mitto/slack-support-{{ $channel }}.md`) as
+    the authoritative guide for how to gather answers (scope, which repos to search,
+    docs/runbooks/knowledge bases to consult, common patterns, escalation paths, relevant MCP tools)
+    and for tone/reply style. If you learn a new useful pattern while gathering, append it to that
+    file.
   - Feed the full conversation context (original question, thread history, the specific unanswered
     question) and ask for a response that addresses the open point, avoids repeating what was said,
     and links docs/tickets if relevant. Proceed to Step 6.

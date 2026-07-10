@@ -3,8 +3,8 @@ description: 'Ask the customer for missing details on a tracked support question
 group: Support
 backgroundColor: '#FFE0B2'
 icon: question
-menus: beadsIssues
-enabledWhen: 'CommandExists("bd") && DirExists(".beads") && Item.Status != "closed" && "support-question" in Item.Labels && "state:need-info" in Item.Labels'
+menus: beadsIssues, conversation, prompts
+enabledWhen: 'CommandExists("bd") && DirExists(".beads") && ((Item.Status != "closed" && "support-question" in Item.Labels && "state:need-info" in Item.Labels) || (Session.HasBeadsIssue && BeadIsOpen(Session.BeadsIssue) && BeadHasLabels(Session.BeadsIssue, "support-question,state:need-info")))'
 tags:
 - support
 parameters:
@@ -84,6 +84,12 @@ prompt: |-
 
   - Load the full history: `bd show <id>` and `bd comments <id>`. Note the stored `slack_thread_ts`
     / `slack_channel` / `slack_url` metadata.
+  - **Read the channel playbook.** Using the bead's `slack_channel` value, read
+    **`.mitto/slack-support-<channel-id>.md`** (e.g. `C0XXXXXXX` →
+    `.mitto/slack-support-C0XXXXXXX.md`). It is the **authoritative guide** for this channel's tone,
+    how to address customers, and reply guidelines. If it exists, honor its guidance when drafting the
+    clarifying message — it **overrides** the generic style below. If it does not exist, fall back to
+    the generic style below.
   - Confirm the `state:*` label is `need-info`. If it is **not**, use `mitto_ui_options` to warn:
     - **Question**: "This bead is in `state:<current>`, not `need-info`. Continue anyway?"
     - **Options**: `[{label: "Continue anyway"}, {label: "Cancel"}]`, timeout 300.
@@ -103,7 +109,9 @@ prompt: |-
   ## Step 4: Draft the clarifying message
 
   - Write a **short, friendly, specific** message that asks only for what we actually need — ideally
-    one or two concrete questions, not a long checklist. Follow the reply style:
+    one or two concrete questions, not a long checklist. Follow the channel playbook's tone/reply
+    guidelines first (Step 2); the reply style below is the fallback default when the playbook is
+    silent:
     1. **No direct addressing** — do not use the user's name.
     2. **Hedge** — "To help dig into this, could you share…".
     3. **Explain briefly why** the detail helps, if it is not obvious.

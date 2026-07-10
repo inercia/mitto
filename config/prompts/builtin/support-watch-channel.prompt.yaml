@@ -60,19 +60,19 @@ prompt: |-
 
   **Silent scheduled run** — nobody is watching.
   - Use **only** `mitto_ui_notify` for status and summaries. Do **NOT** call `mitto_ui_options` /
-    `mitto_ui_form` / `mitto_ui_textbox` for anything **except the knowledge-file gate below** —
+    `mitto_ui_form` / `mitto_ui_textbox` for anything **except the channel playbook gate below** —
     they would otherwise block with no one to answer.
-  - **Exception — the knowledge-file gate.** If `.mitto/slack-support-{{ $channel }}.md` is missing
+  - **Exception — the channel playbook gate.** If `.mitto/slack-support-{{ $channel }}.md` is missing
     you cannot answer this channel, so you MAY use a blocking `mitto_ui_form` / `mitto_ui_textbox`
-    **with a short `timeout_seconds`** to ask for the instructions and save the file. If nobody
+    **with a short `timeout_seconds`** to ask for the playbook and save the file. If nobody
     answers before the timeout, fall back to a `mitto_ui_notify` warning, then continue triage +
     reconcile but **skip drafting** this run — the next iteration asks again.
   - Otherwise do triage + reconcile beads normally.
   {{- else }}
 
   **Interactive run** (first send, or force-triggered ▶️) — a user is present, so use the interactive
-  `mitto_ui_*` tools freely. Run the **knowledge-file gate first**: if the file is missing, ask the
-  user how to gather answers and persist it before doing anything else.
+  `mitto_ui_*` tools freely. Run the **channel playbook gate first**: if the file is missing, ask the
+  user for the playbook and persist it before doing anything else.
   {{- end }}
 
   ## CRITICAL: user interaction rules
@@ -140,7 +140,7 @@ prompt: |-
     | state | meaning |
     |-------|---------|
     | `triaged` | auto-created during triage, not yet worked (initial) |
-    | `gathering-info` | actively working it — investigating to answer (docs/tools/knowledge file) |
+    | `gathering-info` | actively working it — investigating to answer (docs/tools/playbook) |
     | `need-info` | need more details from the customer before we can answer |
     | `drafting` | have a draft answer, pending your review |
     | `awaiting-customer` | we posted a reply, waiting on the customer |
@@ -163,42 +163,49 @@ prompt: |-
   | **P2** | MEDIUM — in motion, our court, not blocked on your approval | `state:triaged`, `state:gathering-info`, `state:awaiting-us` (customer replied, our turn). |
   | **P3** | LOW — waiting on the customer, nothing for you to do now | `state:awaiting-customer` or `state:need-info` — we posted a reply or a clarifying question and are waiting on the customer (also drifting toward the 10-day auto-close as time passes). |
 
-  ## Knowledge-file gate: check this FIRST, every iteration
+  ## Channel playbook gate: check this FIRST, every iteration
 
-  Before you can help a customer you must know a **reliable way to gather answers** for this specific
-  channel's domain. That knowledge is stored **per channel** in
-  **`.mitto/slack-support-{{ $channel }}.md`** — a file dedicated to channel `{{ $channel }}`. Each
-  channel maintains its own knowledge base (which repos to search, which docs/runbooks to consult,
-  common patterns, escalation paths, and how to use any relevant MCP tools).
+  Before you can help a customer you must know this channel's **playbook** — not only a reliable way
+  to gather answers, but also what this channel is responsible for and how to talk to its customers.
+  The playbook is stored **per channel** in **`.mitto/slack-support-{{ $channel }}.md`** — a file
+  dedicated to channel `{{ $channel }}`. A complete playbook covers:
+  - **Areas of expertise / scope** — what this channel is (and is **not**) responsible for.
+  - **Investigation method** — which repos to search, which docs/runbooks/knowledge bases to consult,
+    common patterns, and how to use any relevant MCP tools.
+  - **Escalation paths** — who/what to escalate to, and when.
+  - **Tone & addressing customers** — how we speak to this channel's audience.
+  - **Reply guidelines** — house style for answers (length, hedging, links, do's and don'ts).
 
   **This gate runs first, before every numbered step below — on *every* iteration, not just the
-  first.** A channel that never had a knowledge file keeps getting asked until one exists.
+  first.** A channel that never had a playbook keeps getting asked until one exists.
 
   1. **Check + create.** At the **start of every iteration**, check whether
      `.mitto/slack-support-{{ $channel }}.md` exists.
      - **If it exists** — read it in full now. It is the **authoritative guide** for how to gather
-       information and answer questions for this channel. Use it in Step 4.
+       information, what is in scope, and how to answer/address customers for this channel. Use it
+       throughout (Step 4 and any drafting).
      - **If it does NOT exist** — you do not yet know how to answer reliably, so **ask for the
-       instructions and save them before proceeding** (this applies on every run, silent or
-       interactive):
+       playbook and save it before proceeding** (this applies on every run, silent or interactive):
        - Create the `.mitto/` directory if missing, then ASK the user (via `mitto_ui_form` /
-         `mitto_ui_textbox`) for channel-specific guidance: which repos to search, which
-         docs/runbooks/knowledge bases to consult, common patterns, escalation paths, and how to use
-         any relevant MCP tools. **Do not be satisfied until you get concrete, usable guidance** — if
-         the reply is vague, re-ask for specifics. Write it to `.mitto/slack-support-{{ $channel }}.md`
-         (create the file), then confirm the write. From then on, every run finds it above.
+         `mitto_ui_textbox`) for the channel playbook: its areas of expertise / scope, which repos to
+         search, which docs/runbooks/knowledge bases to consult, common patterns, escalation paths,
+         and how to address and reply to customers. **Do not be satisfied until you get concrete,
+         usable guidance** — if the reply is vague, re-ask for specifics. Write it to
+         `.mitto/slack-support-{{ $channel }}.md` (create the file), then confirm the write. From then
+         on, every run finds it above.
        - **On a silent scheduled run**, use a **short `timeout_seconds`** on the ask so an unattended
          tick does not hang. If nobody answers before it times out, send a `mitto_ui_notify` (warning)
-         that no knowledge file exists yet, then continue triage + keeping beads in sync but **skip
+         that no playbook exists yet, then continue triage + keeping beads in sync but **skip
          drafting** this run. The next iteration asks again.
   2. **Keep it current.** Whenever you learn a new useful pattern while working a question this run
      (a better search, a docs link that answered it, a recurring issue + resolution, an escalation
-     contact), **append it** to `.mitto/slack-support-{{ $channel }}.md` so future runs benefit.
+     contact, or a tone/phrasing that worked well), **append it** to
+     `.mitto/slack-support-{{ $channel }}.md` so future runs benefit.
 
   ## Instructions
 
-  > **Run the knowledge-file gate above FIRST**, at the start of every iteration — before Step 0 and
-  > everything else. If `.mitto/slack-support-{{ $channel }}.md` is missing, ask for the instructions
+  > **Run the channel playbook gate above FIRST**, at the start of every iteration — before Step 0 and
+  > everything else. If `.mitto/slack-support-{{ $channel }}.md` is missing, ask for the playbook
   > and save the file before triaging.
 
   ### 0. Ensure beads ready + housekeeping
@@ -272,12 +279,12 @@ prompt: |-
     leave it running and reap it on a later iteration.
   {{- end }}
 
-  ### 4. Gather info + draft — proactively, in parallel children (only if the knowledge file exists)
+  ### 4. Gather info + draft — proactively, in parallel children (only if the playbook exists)
 
   Do **not** investigate every bead inline this run — that serialises the work and can blow the
   run's time budget. Instead, **delegate each investigable bead to its own child conversation** so
   they run **in parallel**, each executing the canonical **"Support: investigate"** prompt (which
-  follows the same knowledge file, records findings, and leaves a draft → `state:drafting`).
+  follows the same playbook, records findings, and leaves a draft → `state:drafting`).
 
   - **Which beads to investigate.** A bead is **investigable** this run when it is **our turn and not
     already in flight**: its `state:*` is `triaged` or `awaiting-us` (not `drafting` / `need-info` /
@@ -320,7 +327,7 @@ prompt: |-
     **enclosed in the `--- BEGIN REPLY ---` / `--- END REPLY ---` block** — see the Beads tracking
     model) and set `state:drafting`. Leave the rest for subsequent iterations. If you learn a reusable
     pattern,
-    append it to the knowledge file (see the knowledge-file gate).
+    append it to the playbook (see the channel playbook gate).
   {{- end }}
 
   - If a bead genuinely cannot be answered without more detail from the customer, set `state:need-info`
@@ -328,8 +335,8 @@ prompt: |-
     them) — do not spawn an investigation for it.
   - **Never post to Slack here** (nor do the children). Drafts wait for review in
     **"Support: reply to user"**.
-  - If no knowledge file exists for this channel yet, skip this step entirely (see the knowledge-file
-    gate) — never spawn investigations without a knowledge file.
+  - If no playbook exists for this channel yet, skip this step entirely (see the channel playbook
+    gate) — never spawn investigations without a playbook.
 
   ### 5. Summary
 
@@ -368,11 +375,11 @@ prompt: |-
 
   - The bead is the single source of truth — always load it (`bd show` + `bd comments`) before acting.
   - Per-bead follow-ups: **"Support: check status"** (refresh a thread onto its bead),
-    **"Support: investigate"** (dig for the answer using the channel knowledge file + record a draft),
+    **"Support: investigate"** (dig for the answer using the channel playbook + record a draft),
     **"Support: gather more information"** (ask the customer), **"Support: reply to user"** (post our
     answer). All posting requires your explicit approval.
-  - Channel knowledge lives in **`.mitto/slack-support-{{ $channel }}.md`** — read it before drafting
-    and append newly-learned patterns to it.
+  - The channel playbook lives in **`.mitto/slack-support-{{ $channel }}.md`** — read it before
+    drafting and append newly-learned patterns to it.
   - **Proactive investigation** — Step 4 delegates investigable beads (`state:triaged` /
     `awaiting-us`) to parallel one-off children running **"Support: investigate"**, capped at **3 per
     run** and deduped against existing children so a bead is never investigated twice at once. Spawned

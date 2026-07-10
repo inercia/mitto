@@ -3,8 +3,8 @@ description: 'Refresh a tracked support question from Slack, update its bead, an
 group: Support
 backgroundColor: '#E1BEE7'
 icon: sync
-menus: beadsIssues
-enabledWhen: 'CommandExists("bd") && DirExists(".beads") && Item.Status != "closed" && "support-question" in Item.Labels'
+menus: beadsIssues, conversation, prompts
+enabledWhen: 'CommandExists("bd") && DirExists(".beads") && ((Item.Status != "closed" && "support-question" in Item.Labels) || (Session.HasBeadsIssue && BeadIsOpen(Session.BeadsIssue) && BeadHasLabels(Session.BeadsIssue, "support-question")))'
 tags:
 - support
 parameters:
@@ -78,6 +78,12 @@ prompt: |-
     recorded state and message were.
   - Note the current `state:*` label, the stored `slack_thread_ts` / `slack_channel` / `slack_url`
     metadata, and the timestamp/author of the most recent comment.
+  - **Read the channel playbook.** Using the bead's `slack_channel` value, read
+    **`.mitto/slack-support-<channel-id>.md`** (e.g. `C0XXXXXXX` →
+    `.mitto/slack-support-C0XXXXXXX.md`) if it exists. It is the **authoritative guide** for this
+    channel's scope, tone, and reply guidelines — use it to keep your status summary consistent with
+    the channel's voice and to judge whether an open question is in scope. This prompt never posts to
+    Slack; the playbook is context only here.
 
   ## Step 3: Refresh the Slack thread
 
