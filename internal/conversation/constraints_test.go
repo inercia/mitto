@@ -234,6 +234,33 @@ func TestSelectPreferredModel_OrderIsPriority(t *testing.T) {
 	}
 }
 
+// TestSelectPreferredModel_PostSplitDefaultsFallthrough documents the "list order +
+// resolution fallthrough" contract for the post-split defaults (mitto-ex7.2): the
+// default Model profiles list "Claude Sonnet 5" BEFORE "Claude Sonnet 4", so a
+// modelTag=Coding preference walks Sonnet 5 first — but on ACP servers where only
+// Sonnet 4 is available, the Sonnet 5 profile's Criteria matches nothing and
+// SelectPreferredModel falls through to the next Coding-tagged profile (Sonnet 4).
+// This guards against a naive "first tagged profile wins even when it resolves to
+// nothing" regression and pins the forward-compatible Sonnet 5 seeding behaviour.
+func TestSelectPreferredModel_PostSplitDefaultsFallthrough(t *testing.T) {
+	models := &SessionModelState{
+		CurrentModelId: "gpt-4o", // does not satisfy either Sonnet profile
+		AvailableModels: []ModelInfo{
+			{ModelId: "claude-sonnet-4-6", Name: "Claude Sonnet 4.6"},
+			{ModelId: "gpt-4o", Name: "GPT-4o"},
+		},
+	}
+	// Mirror the post-split default order: Sonnet 5 profile first, Sonnet 4 second.
+	profiles := []config.ModelProfile{
+		{Name: "Claude Sonnet 5", Criteria: &config.ACPServerConstraint{MatchMode: "contains", Pattern: "Sonnet 5"}, Tags: []string{"Smart", "Coding"}},
+		{Name: "Claude Sonnet 4", Criteria: &config.ACPServerConstraint{MatchMode: "contains", Pattern: "Sonnet 4"}, Tags: []string{"Smart", "Coding"}},
+	}
+	prefs := []config.PromptPreferredModel{{ModelTag: "Coding"}}
+	if got := SelectPreferredModel(prefs, profiles, models); got != "claude-sonnet-4-6" {
+		t.Errorf("post-split defaults with only Sonnet 4 available: modelTag=Coding resolved to %q, want %q (Sonnet 5 must fall through)", got, "claude-sonnet-4-6")
+	}
+}
+
 // TestConstraintModelSwitchBudgetMath verifies that constraintModelSwitchCallerBudget
 // (90s) is large enough to cover worst-case setModelSem contention at server wakeup
 // (mitto-f7q). Mirrors internal/web's TestSetModelAsyncBudgetMath.

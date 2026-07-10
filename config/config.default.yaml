@@ -55,10 +55,15 @@ models:
       matchMode: contains
       pattern: Opus
     tags: [Smartest, Reasoning, Expensive]
-  - name: Claude Sonnet
+  - name: Claude Sonnet 5
     criteria:
       matchMode: contains
-      pattern: Sonnet
+      pattern: Sonnet 5
+    tags: [Smart, Coding]
+  - name: Claude Sonnet 4
+    criteria:
+      matchMode: contains
+      pattern: Sonnet 4
     tags: [Smart, Coding]
   - name: Claude Haiku
     criteria:

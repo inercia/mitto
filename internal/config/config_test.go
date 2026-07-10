@@ -2718,13 +2718,14 @@ func TestParse_EmbeddedDefaultModelProfiles(t *testing.T) {
 	}
 
 	wantProfiles := map[string][]string{
-		"Claude":        {"Anthropic"},
-		"Claude Opus":   {"Smartest", "Reasoning", "Expensive"},
-		"Claude Sonnet": {"Smart", "Coding"},
-		"Claude Haiku":  {"Fast", "Cheap"},
-		"GPT-5":         {"Smart", "Reasoning", "Coding"},
-		"GPT-4":         {"Smart", "Coding"},
-		"Gemini":        {"Smart", "LongContext"},
+		"Claude":          {"Anthropic"},
+		"Claude Opus":     {"Smartest", "Reasoning", "Expensive"},
+		"Claude Sonnet 5": {"Smart", "Coding"},
+		"Claude Sonnet 4": {"Smart", "Coding"},
+		"Claude Haiku":    {"Fast", "Cheap"},
+		"GPT-5":           {"Smart", "Reasoning", "Coding"},
+		"GPT-4":           {"Smart", "Coding"},
+		"Gemini":          {"Smart", "LongContext"},
 	}
 
 	if len(cfg.Models) != len(wantProfiles) {
@@ -2866,26 +2867,26 @@ func TestEffectiveModelProfiles_MergeAndPrecedence(t *testing.T) {
 	// User override on a colliding name wins; a non-colliding user profile is preserved;
 	// defaults fill the rest.
 	user := &Config{Models: []ModelProfile{
-		{Name: "Claude Sonnet", Criteria: &ACPServerConstraint{MatchMode: "exact", Pattern: "My Sonnet"}, Tags: []string{"Custom"}},
+		{Name: "Claude Sonnet 4", Criteria: &ACPServerConstraint{MatchMode: "exact", Pattern: "My Sonnet"}, Tags: []string{"Custom"}},
 		{Name: "MyLocal", Criteria: &ACPServerConstraint{MatchMode: "contains", Pattern: "local"}, Tags: []string{"Cheap"}},
 	}}
 	eff := user.EffectiveModelProfiles()
 	// User profiles come first, in order.
-	if eff[0].Name != "Claude Sonnet" || eff[0].Criteria.Pattern != "My Sonnet" || eff[0].Tags[0] != "Custom" {
+	if eff[0].Name != "Claude Sonnet 4" || eff[0].Criteria.Pattern != "My Sonnet" || eff[0].Tags[0] != "Custom" {
 		t.Errorf("user override not preserved/first: %+v", eff[0])
 	}
 	if eff[1].Name != "MyLocal" {
 		t.Errorf("non-colliding user profile not preserved at index 1: %+v", eff[1])
 	}
-	// The colliding default (Claude Sonnet) must NOT be appended again.
+	// The colliding default (Claude Sonnet 4) must NOT be appended again.
 	sonnetCount := 0
 	for _, p := range eff {
-		if p.Name == "Claude Sonnet" {
+		if p.Name == "Claude Sonnet 4" {
 			sonnetCount++
 		}
 	}
 	if sonnetCount != 1 {
-		t.Errorf("Claude Sonnet appears %d times, want 1 (default should be dropped on collision)", sonnetCount)
+		t.Errorf("Claude Sonnet 4 appears %d times, want 1 (default should be dropped on collision)", sonnetCount)
 	}
 	// A default with a unique name (e.g. Claude Opus) is still present.
 	if p, ok := user.ModelProfileByName("Claude Opus"); !ok || p == nil {

@@ -61,7 +61,8 @@ func DefaultModelProfiles() []ModelProfile {
 	return []ModelProfile{
 		{Name: "Claude", Criteria: contains("Claude"), Tags: []string{"Anthropic"}},
 		{Name: "Claude Opus", Criteria: contains("Opus"), Tags: []string{"Smartest", "Reasoning", "Expensive"}},
-		{Name: "Claude Sonnet", Criteria: contains("Sonnet"), Tags: []string{"Smart", "Coding"}},
+		{Name: "Claude Sonnet 5", Criteria: contains("Sonnet 5"), Tags: []string{"Smart", "Coding"}},
+		{Name: "Claude Sonnet 4", Criteria: contains("Sonnet 4"), Tags: []string{"Smart", "Coding"}},
 		{Name: "Claude Haiku", Criteria: contains("Haiku"), Tags: []string{"Fast", "Cheap"}},
 		{Name: "GPT-5", Criteria: contains("GPT-5"), Tags: []string{"Smart", "Reasoning", "Coding"}},
 		{Name: "GPT-4", Criteria: contains("GPT-4"), Tags: []string{"Smart", "Coding"}},
