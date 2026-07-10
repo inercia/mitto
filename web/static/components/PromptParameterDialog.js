@@ -24,6 +24,8 @@ import { Modal } from "./Modal.js";
  * @param {string} workingDir - current workspace directory (for "(current)" label)
  * @param {Array} acpServers  - loaded ACP servers (may be [])
  * @param {string} hostSessionId - host conversation id (for childSessionId filtering)
+ * @param {Array} promptsList - loaded workspace prompts (may be []); each entry has a `name`
+ * @param {boolean} loadingPrompts
  */
 function ParamField({
   param,
@@ -38,6 +40,8 @@ function ParamField({
   workingDir,
   acpServers,
   hostSessionId,
+  promptsList,
+  loadingPrompts,
 }) {
   const { name, type, description, required, multiLine } = param;
 
@@ -245,6 +249,37 @@ function ParamField({
         onChange=${(e) => onChange(name, e.target.checked)}
       />
     `;
+  } else if (type === "prompts") {
+    // Value is the NAME of another workspace prompt. Mirrors the beadsId
+    // pattern: spinner while loading, text-input fallback when the list is
+    // unavailable, otherwise a select of prompt names.
+    if (loadingPrompts) {
+      control = html`<span class="loading loading-spinner loading-xs"></span>`;
+    } else if (!promptsList || promptsList.length === 0) {
+      control = html`
+        <input
+          type="text"
+          class="input input-sm w-full"
+          value=${value}
+          onInput=${(e) => onChange(name, e.target.value)}
+          placeholder="Prompt name"
+        />
+      `;
+    } else {
+      control = html`
+        <select
+          class="select select-sm w-full"
+          value=${value}
+          onChange=${(e) => onChange(name, e.target.value)}
+        >
+          <option value="">Select a prompt…</option>
+          ${promptsList.map(
+            (p) =>
+              html`<option key=${p.name} value=${p.name}>${p.name}</option>`,
+          )}
+        </select>
+      `;
+    }
   } else if (type === "text") {
     // Default: single-line input. multiLine renders a resizable textarea for
     // naturally multi-line values (e.g. instructions).
@@ -339,6 +374,8 @@ export function PromptParameterDialog({
   const [workspaces, setWorkspaces] = useState([]);
   const [loadingWorkspaces, setLoadingWorkspaces] = useState(false);
   const [acpServers, setAcpServers] = useState([]);
+  const [promptsList, setPromptsList] = useState([]);
+  const [loadingPrompts, setLoadingPrompts] = useState(false);
 
   // Reset state each time the dialog opens; seed from initialValues when provided.
   // Seeds on the open transition only — initialValues is intentionally NOT a
@@ -352,9 +389,11 @@ export function PromptParameterDialog({
     setSessions([]);
     setWorkspaces([]);
     setAcpServers([]);
+    setPromptsList([]);
     setLoadingBeads(false);
     setLoadingSessions(false);
     setLoadingWorkspaces(false);
+    setLoadingPrompts(false);
   }, [isOpen]);
 
   // Fetch beads issues when dialog opens (only if a beadsId param is present)
@@ -426,6 +465,25 @@ export function PromptParameterDialog({
         setAcpServers([]);
       })
       .finally(() => setLoadingWorkspaces(false));
+  }, [isOpen, workingDir]);
+
+  // Fetch workspace prompts when dialog opens (only if a prompts param is present)
+  useEffect(() => {
+    if (!isOpen) return;
+    const needsPrompts = parameters.some((p) => p.type === "prompts");
+    if (!needsPrompts || !workingDir) return;
+
+    setLoadingPrompts(true);
+    authFetch(endpoints.workspacePrompts.list({ working_dir: workingDir }))
+      .then((r) => (r.ok ? r.json() : Promise.reject(r.status)))
+      .then((data) => {
+        setPromptsList(data?.prompts || []);
+      })
+      .catch((err) => {
+        console.warn("[PromptParameterDialog] prompts list error:", err);
+        setPromptsList([]);
+      })
+      .finally(() => setLoadingPrompts(false));
   }, [isOpen, workingDir]);
 
   const handleFieldChange = useCallback((fieldName, val) => {
@@ -505,6 +563,8 @@ export function PromptParameterDialog({
                 workingDir=${workingDir}
                 acpServers=${acpServers}
                 hostSessionId=${hostSessionId}
+                promptsList=${promptsList}
+                loadingPrompts=${loadingPrompts}
               />`,
           )}
         </div>

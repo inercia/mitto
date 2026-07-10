@@ -166,6 +166,22 @@ export function isBooleanParam(p) {
 }
 
 /**
+ * Returns true if the parameter is an *interactive picker* type — i.e. one that
+ * no menu can auto-supply and that must always be collected via the parameter
+ * dialog. Currently: `boolean` (checkbox) and `prompts` (workspace-prompt
+ * picker).
+ *
+ * Rationale: `prompts` parameters carry the NAME of another workspace prompt.
+ * No menu context has such a name in scope, so they behave like `boolean` for
+ * gating purposes — never gating visibility (menuSatisfies) and always
+ * included in getMissingPromptParameters regardless of `required` or the
+ * menu's auto-supplied types. The dialog offers the picker unconditionally.
+ */
+export function isInteractivePickerParam(p) {
+  return p?.type === "boolean" || p?.type === "prompts";
+}
+
+/**
  * Returns the structured parameters array for a prompt, or [] if absent/empty.
  * Each entry is { name, type, description?, required?, multiLine? }. multiLine is
  * only meaningful for type "text": when true the dialog renders a resizable
@@ -209,9 +225,11 @@ export const MENU_PARAM_TYPES = {
  * Unset (`required` absent/null) or `required: true` keeps the current gating
  * behaviour, preserving all existing prompts unchanged.
  *
- * Boolean parameters never gate: a checkbox always has a definite answer, so a
- * boolean param behaves like an optional one for visibility purposes (it is
- * collected via the dialog rather than auto-supplied by a menu).
+ * Interactive picker parameters (boolean, prompts) never gate: a checkbox
+ * always has a definite answer, and a workspace-prompt picker is always
+ * offered by the dialog, so both behave like an optional param for visibility
+ * purposes (they are collected via the dialog rather than auto-supplied by
+ * a menu). See isInteractivePickerParam.
  */
 export function menuSatisfies(prompt, menu) {
   const params = promptParameters(prompt);
@@ -219,7 +237,9 @@ export function menuSatisfies(prompt, menu) {
   const provided = MENU_PARAM_TYPES[menu] || [];
   return params.every(
     (p) =>
-      isBooleanParam(p) || p.required === false || provided.includes(p.type),
+      isInteractivePickerParam(p) ||
+      p.required === false ||
+      provided.includes(p.type),
   );
 }
 
@@ -236,8 +256,9 @@ export function menuSatisfies(prompt, menu) {
  * Rules:
  *   - An unknown or missing `menu` is treated as providing [] (all required params missing).
  *   - A prompt with no parameters always returns [].
- *   - A boolean parameter is ALWAYS included (it is rendered as a checkbox and
- *     collected via the dialog; no menu can auto-supply it).
+ *   - An interactive picker parameter (boolean, prompts) is ALWAYS included
+ *     (it is rendered as a checkbox or a workspace-prompt picker and collected
+ *     via the dialog; no menu can auto-supply it). See isInteractivePickerParam.
  *   - A parameter whose type IS in the menu's provided-types list is excluded.
  *   - A parameter with `required === false` is excluded (optional, no form shown).
  *   - Declared order is preserved.
@@ -252,7 +273,8 @@ export function getMissingPromptParameters(prompt, menu) {
   const provided = MENU_PARAM_TYPES[menu] || [];
   return params.filter(
     (p) =>
-      isBooleanParam(p) || (p.required !== false && !provided.includes(p.type)),
+      isInteractivePickerParam(p) ||
+      (p.required !== false && !provided.includes(p.type)),
   );
 }
 

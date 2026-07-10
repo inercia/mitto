@@ -843,3 +843,94 @@ describe("text render branch (multiLine)", () => {
     expect(renderTextControl({ multiLine: true }).kind).toBe("textarea");
   });
 });
+
+// =============================================================================
+// prompts render-branch logic
+// Duplicated from the `prompts` branch of ParamField in PromptParameterDialog.js —
+// keep in sync.
+// =============================================================================
+
+/**
+ * Mirrors the `prompts` branch of ParamField.
+ *   { kind: "spinner" | "textInput" | "select", options?: Array<{value,label}> }
+ */
+function renderPromptsControl({ loadingPrompts, promptsList }) {
+  if (loadingPrompts) {
+    return { kind: "spinner" };
+  }
+  if (!promptsList || promptsList.length === 0) {
+    return { kind: "textInput", placeholder: "Prompt name" };
+  }
+  const options = promptsList.map((p) => ({ value: p.name, label: p.name }));
+  return { kind: "select", options };
+}
+
+describe("prompts render branch", () => {
+  describe("loading state", () => {
+    test("shows spinner while loadingPrompts is true", () => {
+      const result = renderPromptsControl({
+        loadingPrompts: true,
+        promptsList: [],
+      });
+      expect(result.kind).toBe("spinner");
+    });
+
+    test("shows spinner even when promptsList is populated (still loading)", () => {
+      const result = renderPromptsControl({
+        loadingPrompts: true,
+        promptsList: [{ name: "foo" }],
+      });
+      expect(result.kind).toBe("spinner");
+    });
+  });
+
+  describe("empty / unavailable prompts list → text input fallback", () => {
+    test("renders text input with 'Prompt name' placeholder when promptsList is empty", () => {
+      const result = renderPromptsControl({
+        loadingPrompts: false,
+        promptsList: [],
+      });
+      expect(result.kind).toBe("textInput");
+      expect(result.placeholder).toBe("Prompt name");
+    });
+
+    test("renders text input when promptsList is null", () => {
+      const result = renderPromptsControl({
+        loadingPrompts: false,
+        promptsList: null,
+      });
+      expect(result.kind).toBe("textInput");
+    });
+
+    test("renders text input when promptsList is undefined", () => {
+      const result = renderPromptsControl({
+        loadingPrompts: false,
+        promptsList: undefined,
+      });
+      expect(result.kind).toBe("textInput");
+    });
+  });
+
+  describe("populated list → select of prompt names", () => {
+    test("renders one option per prompt, using name as both value and label", () => {
+      const result = renderPromptsControl({
+        loadingPrompts: false,
+        promptsList: [{ name: "alpha" }, { name: "beta" }, { name: "gamma" }],
+      });
+      expect(result.kind).toBe("select");
+      expect(result.options).toEqual([
+        { value: "alpha", label: "alpha" },
+        { value: "beta", label: "beta" },
+        { value: "gamma", label: "gamma" },
+      ]);
+    });
+
+    test("preserves declared order in options", () => {
+      const result = renderPromptsControl({
+        loadingPrompts: false,
+        promptsList: [{ name: "zeta" }, { name: "alpha" }],
+      });
+      expect(result.options.map((o) => o.value)).toEqual(["zeta", "alpha"]);
+    });
+  });
+});
