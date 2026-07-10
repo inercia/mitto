@@ -5,10 +5,15 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/google/cel-go/cel"
+	celast "github.com/google/cel-go/common/ast"
+	"github.com/google/cel-go/common/types"
 
 	rootconfig "github.com/inercia/mitto/config"
 	"github.com/inercia/mitto/internal/config"
@@ -4688,6 +4693,25 @@ func TestBuiltinProcessorsValidity(t *testing.T) {
 			if len(procs) == 0 {
 				t.Errorf("Load() returned 0 processors (file may have failed validation); check loader warnings")
 			}
+
+			// Eagerly compile any enabledWhen CEL expression. The runtime path
+			// (Processor.ShouldApply) fails open on compile errors and only logs a
+			// warning, so a broken expression (e.g. unbalanced parens) would ship
+			// silently and defeat the intended gate. Compiling here catches syntax
+			// and type errors at test time.
+			evaluator := config.GetCELEvaluator()
+			if evaluator == nil {
+				t.Fatal("GetCELEvaluator() returned nil; cannot validate enabledWhen expressions")
+			}
+			for _, p := range procs {
+				if p.EnabledWhen == "" {
+					continue
+				}
+				if _, err := evaluator.Compile(p.EnabledWhen); err != nil {
+					t.Errorf("processor %q: enabledWhen failed to compile: %v\n  expression: %s",
+						p.Name, err, p.EnabledWhen)
+				}
+			}
 		})
 	}
 }
@@ -4943,4 +4967,156 @@ func TestMemorizePreferences_ResolveTargetFile(t *testing.T) {
 			t.Errorf("explicit PreferencesFile should override auto-detect, but auto path present:\n%s", out)
 		}
 	})
+}
+
+// extractHasModelTagArgs walks a compiled CEL AST and returns the string-literal
+// second argument of every __mitto_hasModelTag(Session.ModelTags, "<tag>") call.
+// The parse-time macro sessionHasModelTagMacro rewrites Session.HasModelTag(t)
+// into __mitto_hasModelTag(Session.ModelTags, t); non-literal args (dynamic
+// expressions) are skipped rather than reported.
+func extractHasModelTagArgs(ast *cel.Ast) []string {
+	var out []string
+	matches := celast.MatchDescendants(
+		celast.NavigateAST(ast.NativeRep()),
+		func(e celast.NavigableExpr) bool {
+			if e.Kind() != celast.CallKind {
+				return false
+			}
+			return e.AsCall().FunctionName() == "__mitto_hasModelTag"
+		},
+	)
+	for _, m := range matches {
+		args := m.AsCall().Args()
+		if len(args) < 2 {
+			continue
+		}
+		lit := args[1]
+		if lit.Kind() != celast.LiteralKind {
+			continue
+		}
+		s, ok := lit.AsLiteral().(types.String)
+		if !ok {
+			continue
+		}
+		out = append(out, string(s))
+	}
+	return out
+}
+
+// TestBuiltinProcessors_HasModelTagArgsAreCanonical walks every embedded builtin
+// processor's enabledWhen expression and asserts that any Session.HasModelTag("<tag>")
+// literal references a tag in config.CanonicalModelTags(). Guards against typos
+// like Session.HasModelTag("Reasonig") that parse+compile fine but silently
+// evaluate to false at runtime, causing the processor to never fire.
+func TestBuiltinProcessors_HasModelTagArgsAreCanonical(t *testing.T) {
+	canonical := make(map[string]struct{})
+	for _, tag := range config.CanonicalModelTags() {
+		canonical[strings.ToLower(tag)] = struct{}{}
+	}
+
+	filenames, err := rootconfig.ListEmbeddedProcessors()
+	if err != nil {
+		t.Fatalf("ListEmbeddedProcessors() error = %v", err)
+	}
+	if len(filenames) == 0 {
+		t.Fatal("no embedded builtin processors found; check config/processors/builtin/")
+	}
+
+	evaluator := config.GetCELEvaluator()
+	if evaluator == nil {
+		t.Fatal("GetCELEvaluator() returned nil; cannot validate enabledWhen expressions")
+	}
+
+	var unknown []string
+	for _, filename := range filenames {
+		srcPath := rootconfig.BuiltinProcessorsDir + "/" + filename
+		content, err := rootconfig.BuiltinProcessorsFS.ReadFile(srcPath)
+		if err != nil {
+			t.Fatalf("ReadFile(%s) error = %v", srcPath, err)
+		}
+
+		dir := t.TempDir()
+		destPath := filepath.Join(dir, filename)
+		if err := os.WriteFile(destPath, content, 0644); err != nil {
+			t.Fatalf("WriteFile error = %v", err)
+		}
+
+		loader := NewLoader(dir, nil)
+		procs, err := loader.Load()
+		if err != nil {
+			t.Errorf("%s: Load() returned unexpected error: %v", filename, err)
+			continue
+		}
+
+		for _, p := range procs {
+			if p.EnabledWhen == "" {
+				continue
+			}
+			ast, err := evaluator.ParseAST(p.EnabledWhen)
+			if err != nil {
+				// TestBuiltinProcessorsValidity already catches compile errors;
+				// defensively skip here so this test only reports tag drift.
+				continue
+			}
+			for _, tag := range extractHasModelTagArgs(ast) {
+				if _, ok := canonical[strings.ToLower(tag)]; !ok {
+					unknown = append(unknown, filename+": "+tag)
+				}
+			}
+		}
+	}
+	if len(unknown) > 0 {
+		sort.Strings(unknown)
+		t.Fatalf("builtin processors reference unknown Session.HasModelTag() literal(s) not in CanonicalModelTags():\n  %s",
+			strings.Join(unknown, "\n  "))
+	}
+}
+
+// TestHasModelTagArgsChecker_CatchesTypo proves extractHasModelTagArgs surfaces
+// a typo'd tag literal from a synthesized processor, so the drift-guard above
+// actually fails on regressions rather than just passing on a clean tree.
+func TestHasModelTagArgsChecker_CatchesTypo(t *testing.T) {
+	const badTag = "Reasonig" // deliberate typo of "Reasoning"
+
+	dir := t.TempDir()
+	yaml := "" +
+		"name: test-typo\n" +
+		"when:\n" +
+		"  on: userPrompt\n" +
+		"  match: first\n" +
+		"mutate: append\n" +
+		"text: \"noop\"\n" +
+		"enabledWhen: 'Session.HasModelTag(\"" + badTag + "\")'\n"
+	if err := os.WriteFile(filepath.Join(dir, "test-typo.yaml"), []byte(yaml), 0644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	procs, err := NewLoader(dir, nil).Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(procs) != 1 {
+		t.Fatalf("expected 1 processor, got %d", len(procs))
+	}
+
+	evaluator := config.GetCELEvaluator()
+	if evaluator == nil {
+		t.Fatal("GetCELEvaluator() returned nil")
+	}
+	ast, err := evaluator.ParseAST(procs[0].EnabledWhen)
+	if err != nil {
+		t.Fatalf("ParseAST: %v", err)
+	}
+	got := extractHasModelTagArgs(ast)
+	if len(got) != 1 || got[0] != badTag {
+		t.Fatalf("extractHasModelTagArgs = %v, want [%q]", got, badTag)
+	}
+
+	canonical := make(map[string]struct{})
+	for _, tag := range config.CanonicalModelTags() {
+		canonical[strings.ToLower(tag)] = struct{}{}
+	}
+	if _, ok := canonical[strings.ToLower(badTag)]; ok {
+		t.Fatalf("test invariant broken: %q is in CanonicalModelTags(); pick a different typo", badTag)
+	}
 }

@@ -44,12 +44,14 @@ test-js: deps-js
 	@echo "Running JavaScript tests..."
 	$(NPM) test
 
-# Validate builtin prompt model tags against the canonical Go tag set.
+# Validate builtin model-tag references against the canonical Go tag set.
 # Fails if any builtin prompt references a modelTag not in config.CanonicalModelTags(),
+# any builtin processor's enabledWhen calls Session.HasModelTag("<tag>") with an unknown tag,
 # or if config/config.default.yaml `models:` drifts from config.DefaultModelProfiles().
 check-model-tags:
-	@echo "Validating builtin prompt model tags..."
+	@echo "Validating builtin model-tag references (prompts + processors)..."
 	$(GOTEST) -run 'TestBuiltinPrompts_ModelTagsAreCanonical|TestDefaultModelProfiles_MatchesEmbeddedYAML|TestCanonicalModelTags|TestEffectiveModelProfiles_MergeAndPrecedence' ./internal/config/
+	$(GOTEST) -run 'TestBuiltinProcessors_HasModelTagArgsAreCanonical|TestHasModelTagArgsChecker_CatchesTypo' ./internal/processors/
 
 # Validate builtin agent stderr patterns compile as valid Go regexes (mitto-k6h).
 # Fails if any pattern in config/agents/builtin/*/metadata.yaml stderrPatterns

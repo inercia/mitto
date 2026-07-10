@@ -363,6 +363,165 @@ func hasBeads(folder, labels, statuses string) bool {
 	return beadsCount(folder, labels, statuses) > 0
 }
 
+// bdBead is the minimal subset of a `bd show <id> --json` record that the
+// per-issue gate helpers inspect. bd emits the full issue with many more fields;
+// only labels + status matter here.
+type bdBead struct {
+	Labels []string `json:"labels"`
+	Status string   `json:"status"`
+}
+
+// parseBdShow parses the stdout of `bd show <id> --json`, tolerating BOTH shapes
+// bd has emitted across versions: a single-element JSON ARRAY (`[{...}]`, current
+// bd) and a bare JSON OBJECT (`{...}`, older bd). Returns the first record and
+// true on success; (zero, false) when stdout is empty or unparseable as either
+// shape.
+func parseBdShow(out []byte) (bdBead, bool) {
+	trimmed := strings.TrimSpace(string(out))
+	if trimmed == "" {
+		return bdBead{}, false
+	}
+	// Array shape first (current bd): [{...}, ...].
+	if trimmed[0] == '[' {
+		var arr []bdBead
+		if err := json.Unmarshal([]byte(trimmed), &arr); err != nil {
+			return bdBead{}, false
+		}
+		if len(arr) == 0 {
+			return bdBead{}, false
+		}
+		return arr[0], true
+	}
+	// Bare object shape (older bd): {...}.
+	var obj bdBead
+	if err := json.Unmarshal([]byte(trimmed), &obj); err != nil {
+		return bdBead{}, false
+	}
+	return obj, true
+}
+
+// showBead runs `bd show <id> --json` in folder and returns the parsed record.
+// Fail behaviour is left to callers (they treat !ok as fail-open). Results are
+// NOT cached here; callers cache their derived boolean via beadsCache to keep
+// the cache keyed by the specific question being asked (labels / open).
+func showBead(folder, id string) (bdBead, bool) {
+	out, ok := runBd(folder, "show", id, "--json")
+	if !ok {
+		return bdBead{}, false
+	}
+	return parseBdShow(out)
+}
+
+// beadHasLabels reports whether the single bead identified by id carries ALL of
+// the comma-separated labels, running `bd show <id> --json` in folder and
+// inspecting the returned `labels` array. Unlike hasBeads (which aggregates
+// across the whole workspace), this scopes to ONE specific issue — used to gate
+// a prompt on the CURRENT conversation's linked bead (Session.BeadsIssue) in
+// the conversation/prompts menus, where Item.* labels are unavailable.
+//
+// Fail-open: on ANY error (bd missing, empty id, not a beads repo, timeout,
+// non-zero exit, unparseable JSON) returns true so a gate using it never
+// wrongly hides a prompt — consistent with the CEL fail-open policy. An empty
+// labels list is treated as "no requirement" and returns true.
+//
+// Results are memoised for beadsCacheTTL per (folder, id, labels) tuple to bound
+// exec frequency on rapid menu re-opens.
+func beadHasLabels(folder, id, labels string) bool {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return true // fail-open: no id to check
+	}
+	want := splitCSV(labels)
+	if len(want) == 0 {
+		return true // no requirement
+	}
+
+	key := "beadHasLabels\x00" + folder + "\x00" + id + "\x00" + labels
+	beadsCacheMu.Lock()
+	if e, ok := beadsCache[key]; ok && time.Since(e.at) < beadsCacheTTL {
+		beadsCacheMu.Unlock()
+		return e.count > 0
+	}
+	beadsCacheMu.Unlock()
+
+	bead, ok := showBead(folder, id)
+	if !ok {
+		return true // fail-open
+	}
+
+	have := make(map[string]struct{}, len(bead.Labels))
+	for _, l := range bead.Labels {
+		have[l] = struct{}{}
+	}
+	result := true
+	for _, w := range want {
+		if _, ok := have[w]; !ok {
+			result = false
+			break
+		}
+	}
+
+	cached := 0
+	if result {
+		cached = 1
+	}
+	beadsCacheMu.Lock()
+	beadsCache[key] = beadsCacheEntry{count: cached, at: time.Now()}
+	beadsCacheMu.Unlock()
+	return result
+}
+
+// beadIsOpen reports whether the single bead identified by id is NOT closed
+// (status != "closed"), running `bd show <id> --json` in folder. Scopes to ONE
+// specific issue — used alongside beadHasLabels to gate prompts on the CURRENT
+// conversation's linked bead in the conversation/prompts menus, mirroring the
+// beadsIssues menu's `Item.Status != "closed"` guard.
+//
+// Fail-open: on ANY error (bd missing, empty id, timeout, non-zero exit,
+// unparseable JSON) returns true so a gate using it never wrongly hides a
+// prompt — consistent with the CEL fail-open policy. Results are memoised for
+// beadsCacheTTL per (folder, id) tuple.
+func beadIsOpen(folder, id string) bool {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return true // fail-open: no id to check
+	}
+
+	key := "beadIsOpen\x00" + folder + "\x00" + id
+	beadsCacheMu.Lock()
+	if e, ok := beadsCache[key]; ok && time.Since(e.at) < beadsCacheTTL {
+		beadsCacheMu.Unlock()
+		return e.count > 0
+	}
+	beadsCacheMu.Unlock()
+
+	bead, ok := showBead(folder, id)
+	if !ok {
+		return true // fail-open
+	}
+	result := bead.Status != "closed"
+
+	cached := 0
+	if result {
+		cached = 1
+	}
+	beadsCacheMu.Lock()
+	beadsCache[key] = beadsCacheEntry{count: cached, at: time.Now()}
+	beadsCacheMu.Unlock()
+	return result
+}
+
+// splitCSV splits a comma-separated string into trimmed, non-empty tokens.
+func splitCSV(s string) []string {
+	var out []string
+	for _, part := range strings.Split(s, ",") {
+		if p := strings.TrimSpace(part); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
 // =============================================================================
 // Exported formatting helpers (single source of truth for legacy @mitto: output)
 // =============================================================================
@@ -442,6 +601,11 @@ func FormatChildren(children []ChildInfo) string {
 //   - BeadsCount(labels, statuses) — count of beads matching ALL comma-separated labels
 //     AND ANY of the comma-separated statuses. Fail-open (positive sentinel) on error.
 //   - HasBeads(labels, statuses) — BeadsCount(...) > 0. Same fail-open semantics.
+//   - BeadHasLabels(id, labels) — true iff the single bead <id> carries ALL
+//     comma-separated labels (via `bd show <id> --json`). Fail-open on error.
+//     Scopes to one issue (unlike HasBeads, which aggregates across the workspace).
+//   - BeadIsOpen(id) — true iff the single bead <id> is not closed (via
+//     `bd show <id> --json`). Fail-open on error. Companion to BeadHasLabels.
 //   - hasPattern(pattern) — true iff any MCP tool name matches pattern (fail-open).
 //   - Model(tag) — true iff the current model carries the capability tag (case-insensitive).
 //   - cond(expr) / when(expr) — compile+evaluate a CEL expression via GetCELEvaluator()
@@ -532,6 +696,13 @@ func BuildTemplateFuncMap(ctx *PromptEnabledContext) template.FuncMap {
 		// only runs when the workspace actually has a beads database.
 		"BeadsCount": func(labels, statuses string) int { return beadsCount(folder, labels, statuses) },
 		"HasBeads":   func(labels, statuses string) bool { return hasBeads(folder, labels, statuses) },
+		// BeadHasLabels(id, labels) — true iff the single bead <id> carries ALL
+		// comma-separated labels (via `bd show <id> --json`). Fail-open. Scopes to
+		// one issue, unlike HasBeads which aggregates across the workspace.
+		"BeadHasLabels": func(id, labels string) bool { return beadHasLabels(folder, id, labels) },
+		// BeadIsOpen(id) — true iff the single bead <id> is not closed. Fail-open.
+		// Companion to BeadHasLabels for gating on the linked bead's status.
+		"BeadIsOpen": func(id string) bool { return beadIsOpen(folder, id) },
 		"HasPattern": func(pattern string) bool { return hasPattern(toolServers, pattern) },
 		// Model(tag) — true iff the session's current model carries the capability tag
 		// (case-insensitive), resolved from the models: profiles. False for an unknown model.

@@ -1320,6 +1320,181 @@ func TestBeadsCount_CELParity(t *testing.T) {
 	}
 }
 
+// TestBeadHasLabels_Match verifies that a bead whose labels contain ALL the
+// requested labels returns true, and that a missing label returns false.
+func TestBeadHasLabels_Match(t *testing.T) {
+	installFakeBd(t, `{"id":"mitto-1","labels":["support","support-question","state:drafting"]}`, 0)
+	tmp := t.TempDir()
+
+	if !beadHasLabels(tmp, "mitto-1", "support-question,state:drafting") {
+		t.Errorf("beadHasLabels all-present = false, want true")
+	}
+	if beadHasLabels(tmp, "mitto-1", "support-question,state:resolved") {
+		t.Errorf("beadHasLabels missing-label = true, want false")
+	}
+}
+
+// TestBeadHasLabels_EmptyIDOrLabels verifies fail-open on an empty id and
+// "no requirement" on an empty labels list (both return true).
+func TestBeadHasLabels_EmptyIDOrLabels(t *testing.T) {
+	installFakeBd(t, `{"id":"mitto-1","labels":["support-question"]}`, 0)
+	tmp := t.TempDir()
+
+	if !beadHasLabels(tmp, "", "support-question") {
+		t.Errorf("beadHasLabels empty id = false, want true (fail-open)")
+	}
+	if !beadHasLabels(tmp, "mitto-1", "") {
+		t.Errorf("beadHasLabels empty labels = false, want true (no requirement)")
+	}
+}
+
+// TestBeadHasLabels_FailOpenWhenMissing verifies that bd absent from PATH
+// returns true (fail-open), so a gate never wrongly hides a prompt.
+func TestBeadHasLabels_FailOpenWhenMissing(t *testing.T) {
+	emptyDir := t.TempDir()
+	t.Setenv("PATH", emptyDir)
+	beadsCacheMu.Lock()
+	beadsCache = map[string]beadsCacheEntry{}
+	beadsCacheMu.Unlock()
+
+	if !beadHasLabels(emptyDir, "mitto-1", "support-question,state:drafting") {
+		t.Errorf("beadHasLabels missing bd = false, want true (fail-open)")
+	}
+}
+
+// TestBeadHasLabels_FailOpenOnBadJSON verifies fail-open (true) when bd emits
+// unparseable JSON.
+func TestBeadHasLabels_FailOpenOnBadJSON(t *testing.T) {
+	installFakeBd(t, "not json at all {{{", 0)
+	tmp := t.TempDir()
+
+	if !beadHasLabels(tmp, "mitto-1", "support-question") {
+		t.Errorf("beadHasLabels bad JSON = false, want true (fail-open)")
+	}
+}
+
+// TestBeadHasLabels_CELParity verifies BeadHasLabels evaluated through CEL
+// produces the same result as the pure-Go helper, exercising the macro +
+// Session.BeadsIssue rewrite path (mirrors TestBeadsCount_CELParity).
+func TestBeadHasLabels_CELParity(t *testing.T) {
+	installFakeBd(t, `{"id":"mitto-1","labels":["support-question","state:drafting"]}`, 0)
+	tmp := t.TempDir()
+
+	e := newTestEvaluator(t)
+	ctx := &PromptEnabledContext{
+		Workspace: WorkspaceContext{Folder: tmp},
+		Session:   SessionContext{HasBeadsIssue: true, BeadsIssue: "mitto-1"},
+	}
+
+	got := evalCEL(t, e, `BeadHasLabels(Session.BeadsIssue, "support-question,state:drafting")`, ctx)
+	if got != beadHasLabels(tmp, "mitto-1", "support-question,state:drafting") {
+		t.Errorf("CEL BeadHasLabels mismatch with go beadHasLabels")
+	}
+	if !got {
+		t.Errorf("CEL BeadHasLabels = false, want true")
+	}
+
+	// Combined expression mirrors the real conversation/prompts gate branch.
+	combined := evalCEL(t, e,
+		`CommandExists("bd") && Session.HasBeadsIssue && BeadHasLabels(Session.BeadsIssue, "support-question,state:drafting")`,
+		ctx)
+	if !combined {
+		t.Errorf("combined gate = false, want true")
+	}
+}
+
+// TestBeadHasLabels_ArrayShape verifies parsing of the current `bd show --json`
+// shape, a single-element ARRAY ([{...}]), not a bare object. Regression guard:
+// an earlier version unmarshalled into a struct and would fail-open (return
+// true) on the array, defeating the gate.
+func TestBeadHasLabels_ArrayShape(t *testing.T) {
+	installFakeBd(t, `[{"id":"mitto-1","status":"open","labels":["support-question","state:drafting"]}]`, 0)
+	tmp := t.TempDir()
+
+	if !beadHasLabels(tmp, "mitto-1", "support-question,state:drafting") {
+		t.Errorf("beadHasLabels array-shape all-present = false, want true")
+	}
+	if beadHasLabels(tmp, "mitto-1", "state:resolved") {
+		t.Errorf("beadHasLabels array-shape missing-label = true, want false")
+	}
+}
+
+// TestBeadIsOpen_OpenAndClosed verifies beadIsOpen returns true for a non-closed
+// bead and false for a closed one, across both the array and bare-object shapes.
+func TestBeadIsOpen_OpenAndClosed(t *testing.T) {
+	installFakeBd(t, `[{"id":"mitto-1","status":"open"}]`, 0)
+	tmp := t.TempDir()
+	if !beadIsOpen(tmp, "mitto-1") {
+		t.Errorf("beadIsOpen open (array) = false, want true")
+	}
+
+	installFakeBd(t, `[{"id":"mitto-1","status":"closed"}]`, 0)
+	tmp2 := t.TempDir()
+	if beadIsOpen(tmp2, "mitto-1") {
+		t.Errorf("beadIsOpen closed (array) = true, want false")
+	}
+
+	installFakeBd(t, `{"id":"mitto-1","status":"in_progress"}`, 0)
+	tmp3 := t.TempDir()
+	if !beadIsOpen(tmp3, "mitto-1") {
+		t.Errorf("beadIsOpen in_progress (object) = false, want true")
+	}
+}
+
+// TestBeadIsOpen_FailOpen verifies fail-open (true) on empty id, missing bd, and
+// unparseable JSON.
+func TestBeadIsOpen_FailOpen(t *testing.T) {
+	installFakeBd(t, `[{"id":"mitto-1","status":"closed"}]`, 0)
+	tmp := t.TempDir()
+	if !beadIsOpen(tmp, "") {
+		t.Errorf("beadIsOpen empty id = false, want true (fail-open)")
+	}
+
+	emptyDir := t.TempDir()
+	t.Setenv("PATH", emptyDir)
+	beadsCacheMu.Lock()
+	beadsCache = map[string]beadsCacheEntry{}
+	beadsCacheMu.Unlock()
+	if !beadIsOpen(emptyDir, "mitto-1") {
+		t.Errorf("beadIsOpen missing bd = false, want true (fail-open)")
+	}
+
+	installFakeBd(t, "not json {{{", 0)
+	tmp2 := t.TempDir()
+	if !beadIsOpen(tmp2, "mitto-1") {
+		t.Errorf("beadIsOpen bad JSON = false, want true (fail-open)")
+	}
+}
+
+// TestBeadIsOpen_CELParity verifies BeadIsOpen evaluated through CEL matches the
+// pure-Go helper, exercising the macro + Session.BeadsIssue rewrite path.
+func TestBeadIsOpen_CELParity(t *testing.T) {
+	installFakeBd(t, `[{"id":"mitto-1","status":"closed","labels":["support-question"]}]`, 0)
+	tmp := t.TempDir()
+
+	e := newTestEvaluator(t)
+	ctx := &PromptEnabledContext{
+		Workspace: WorkspaceContext{Folder: tmp},
+		Session:   SessionContext{HasBeadsIssue: true, BeadsIssue: "mitto-1"},
+	}
+
+	got := evalCEL(t, e, `BeadIsOpen(Session.BeadsIssue)`, ctx)
+	if got != beadIsOpen(tmp, "mitto-1") {
+		t.Errorf("CEL BeadIsOpen mismatch with go beadIsOpen")
+	}
+	if got {
+		t.Errorf("CEL BeadIsOpen = true for closed bead, want false")
+	}
+
+	// Combined gate branch mirrors the check-status/investigate conversation menu.
+	combined := evalCEL(t, e,
+		`Session.HasBeadsIssue && BeadIsOpen(Session.BeadsIssue) && BeadHasLabels(Session.BeadsIssue, "support-question")`,
+		ctx)
+	if combined {
+		t.Errorf("combined open+label gate = true for closed bead, want false")
+	}
+}
+
 // TestBeadsCount_TemplateFuncRender verifies BeadsCount/HasBeads render through
 // RenderPromptTemplate (mirrors TestBuildTemplateFuncMap_GitFuncsRenderSmoke).
 func TestBeadsCount_TemplateFuncRender(t *testing.T) {

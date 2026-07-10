@@ -1,15 +1,18 @@
 ##########################################################################################
 # Builtin processor: suggests delegating coding tasks to faster models.
 #
-# This processor activates only for ACP servers tagged with "reasoning" or whose
-# name contains keywords associated with premium reasoning models. It uses a CEL
-# expression for flexible matching.
+# Activates when the session's CURRENTLY ACTIVE model carries a premium
+# reasoning capability tag ("Reasoning" or "Smartest"). Tags come from the
+# `models:` profiles (see config.DefaultModelProfiles) — e.g. Claude Opus is
+# tagged [Smartest, Reasoning, Expensive] and GPT-5 is tagged
+# [Smart, Reasoning, Coding].
 #
-# To activate this processor, tag your premium ACP servers with "reasoning" in
-# your mitto config, or rename them to include a keyword like "opus", "o3", etc.
+# The prior condition gated on ACP server tags / server-name regex, which is
+# the wrong grain: the same server (e.g. auggie, claude-code) can run any of
+# Opus / Sonnet / Haiku / GPT / Gemini, and can switch models mid-session via
+# session/set_model. Session.HasModelTag(...) tracks the live model instead.
 #
 # Uses the same CEL context as prompt enabledWhen expressions.
-# Also requires mitto_conversation_* MCP tools to be available (Tools.HasPattern CEL).
 ##########################################################################################
 name: delegate-to-coder
 description: "Suggests delegating coding tasks to a faster model when using a premium reasoning model"
@@ -24,13 +27,11 @@ when:
 mutate: append
 priority: 90
 enabledWhen: >-
-  ACP.Tags.exists(t, t == "reasoning")
-  || ACP.Tags.exists(t, t == "thinking")
-  || ACP.Name.matches("(?i)opus|o3|deep-research|codex")
+  Session.HasModelTag("Reasoning") || Session.HasModelTag("Smartest")
 text: |
   ---
   [Multi-Agent Delegation Guidance]
-  You are running on a premium reasoning model ({{ .ACP.Name }}).
+  You are running on a premium reasoning model ({{ .ACP.Name }}{{ if .Session.ModelName }}, model {{ .Session.ModelName }}{{ end }}).
   Your session ID is: {{ .Session.ID }}
 
   For tasks that involve extensive coding changes (writing code, refactoring,

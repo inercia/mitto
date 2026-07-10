@@ -1,20 +1,22 @@
 ##########################################################################################
 # Builtin processor: delegates Playwright browser automation to a faster model.
 #
-# When using a premium reasoning model (Opus, o3, etc.) and Playwright MCP tools
-# are available (browser_* tools), this processor instructs the agent to delegate
-# browser automation tasks to a cheaper/faster model via a child session.
+# When the session's CURRENTLY ACTIVE model is a premium reasoning model and
+# Playwright MCP tools are available (browser_* tools), this processor instructs
+# the agent to delegate browser automation tasks to a cheaper/faster model via
+# a child session.
 #
 # This avoids wasting expensive reasoning tokens on mechanical browser interactions
 # like clicking, typing, navigating, and taking screenshots.
 #
 # Activation conditions:
-#   1. ACP server is a "smart" model (tagged "reasoning"/"thinking" or name matches)
-#   2. Playwright MCP tools are present (browser_* pattern)
-#   3. Mitto conversation tools are available (for spawning child sessions)
+#   1. The active model carries a "Reasoning" or "Smartest" capability tag
+#      (from the `models:` profiles — e.g. Claude Opus, GPT-5).
+#   2. Playwright MCP tools are present (browser_* pattern).
+#   3. Mitto conversation tools are available (for spawning child sessions).
 #
-# To activate, tag your premium ACP servers with "reasoning" in your mitto config,
-# or use a name containing "opus", "o3", etc.
+# Model tags track the live model (session/set_model aware), unlike ACP server
+# tags/names, which are a static property of the server binary.
 ##########################################################################################
 name: delegate-playwright
 description: "Delegates Playwright browser automation to a faster model when using a premium reasoning model"
@@ -29,16 +31,14 @@ when:
 mutate: append
 priority: 91
 enabledWhen: >-
-  (ACP.Tags.exists(t, t == "reasoning")
-  || ACP.Tags.exists(t, t == "thinking")
-  || ACP.Name.matches("(?i)opus|o3|deep-research|codex"))
+  (Session.HasModelTag("Reasoning") || Session.HasModelTag("Smartest"))
   && Tools.HasAllPatterns(["browser_*", "mitto_conversation_*"])
 text: |
   ---
   [Playwright Delegation Guidance]
   You have Playwright browser automation tools available (browser_navigate,
   browser_click, browser_snapshot, etc.), but you are running on a premium
-  reasoning model ({{ .ACP.Name }}) where these tools are wastefully expensive.
+  reasoning model ({{ .ACP.Name }}{{ if .Session.ModelName }}, model {{ .Session.ModelName }}{{ end }}) where these tools are wastefully expensive.
 
   IMPORTANT: Do NOT use the browser_* tools directly. Instead, delegate ALL
   browser automation tasks to a cheaper/faster child session:
