@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"strconv"
@@ -51,10 +52,23 @@ func (r execRunner) Run(ctx context.Context, dir string, args ...string) ([]byte
 		} else if errors.As(err, &exitErr) {
 			msg = "bd exited with non-zero status"
 		}
-		return stdout.Bytes(), stderr.String(), errors.New(msg)
+		// Preserve the original error (in particular *exec.ExitError) via %w so
+		// callers using errors.As can recover the subprocess exit code.
+		return stdout.Bytes(), stderr.String(), fmt.Errorf("%s: %w", msg, err)
 	}
 
 	return stdout.Bytes(), "", nil
+}
+
+// exitCodeFromErr extracts the subprocess exit code from an error chain if it
+// wraps an *exec.ExitError, returning 0 when no exit status is available (e.g.
+// context cancellation, timeout, or a non-exec error).
+func exitCodeFromErr(err error) int {
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) {
+		return exitErr.ExitCode()
+	}
+	return 0
 }
 
 // maxDiagnosticLen bounds captured bd output logged on failure so a large
@@ -155,7 +169,7 @@ func (c *cliClient) runRaw(ctx context.Context, timeout time.Duration, dir strin
 
 	out, stderr, err := c.runner.Run(ctx, dir, args...)
 	if err != nil {
-		return nil, &CmdError{Err: err, Stderr: diagnosticOutput(stderr, string(out))}
+		return nil, &CmdError{Err: err, Stderr: diagnosticOutput(stderr, string(out)), ExitCode: exitCodeFromErr(err)}
 	}
 	return out, nil
 }
@@ -175,7 +189,7 @@ func (c *cliClient) runJSONOnce(ctx context.Context, dir string, args ...string)
 		if j := recoverableJSON(out, []byte(stderr)); j != nil {
 			return j, nil
 		}
-		return nil, &CmdError{Err: err, Stderr: diagnosticOutput(stderr, string(out))}
+		return nil, &CmdError{Err: err, Stderr: diagnosticOutput(stderr, string(out)), ExitCode: exitCodeFromErr(err)}
 	}
 	if !json.Valid(out) {
 		return nil, &CmdError{Err: errors.New("bd returned invalid JSON")}

@@ -95,7 +95,7 @@ func (h *Handlers) writeBeadsError(w http.ResponseWriter, r *http.Request, err e
 	}
 
 	if h.deps.Logger != nil {
-		h.deps.Logger.Error("beads command failed", "error", err, "stderr", beads.StderrOf(err), "path", r.URL.Path)
+		h.deps.Logger.Error("beads command failed", "error", err, "stderr", beads.StderrOf(err), "exit_code", beads.ExitCodeOf(err), "path", r.URL.Path)
 	}
 	var details map[string]any
 	if s := beads.StderrOf(err); s != "" {
@@ -264,6 +264,22 @@ func (h *Handlers) HandleBeadsShow(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if beads.IsNotFound(err) {
+			writeErrorJSON(w, http.StatusNotFound, "", "Issue not found")
+			return
+		}
+		// bd sometimes exits non-zero for a missing issue without printing any
+		// diagnostic (empty stdout AND empty stderr). Treat that as a not-found
+		// rather than surfacing an opaque 500, but log a warning so the silent
+		// failure is still discoverable during triage. ExitCodeOf > 0 confirms
+		// this was a real subprocess exit (not a timeout or context cancellation).
+		var ce *beads.CmdError
+		if errors.As(err, &ce) &&
+			strings.TrimSpace(beads.StderrOf(err)) == "" &&
+			beads.ExitCodeOf(err) != 0 {
+			if h.deps.Logger != nil {
+				h.deps.Logger.Warn("beads show exited non-zero with empty output; treating as not found",
+					"id", id, "exit_code", beads.ExitCodeOf(err), "path", r.URL.Path)
+			}
 			writeErrorJSON(w, http.StatusNotFound, "", "Issue not found")
 			return
 		}

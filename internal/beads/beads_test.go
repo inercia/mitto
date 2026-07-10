@@ -97,11 +97,39 @@ func TestIsNotFound(t *testing.T) {
 		{"other bd failure", &CmdError{Stderr: "database is locked"}, false},
 		{"empty stderr", &CmdError{Stderr: ""}, false},
 		{"plain error", errors.New("no issue found matching"), false},
+		// Newer bd versions emit a JSON error object with the plural form on
+		// stdout (captured into Stderr by diagnosticOutput when the real
+		// stderr is empty). Both plural and singular variants must be treated
+		// as not-found.
+		{"plural JSON error object", &CmdError{Stderr: `{"error":"no issues found matching the provided IDs","schema_version":1}`}, true},
+		{"singular JSON error object", &CmdError{Stderr: `{"error":"no issue found matching \"mitto-cam\""}`}, true},
+		{"unrelated JSON error object", &CmdError{Stderr: `{"error":"database is locked"}`}, false},
+		{"malformed JSON", &CmdError{Stderr: `{"error":`}, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := IsNotFound(tc.err); got != tc.want {
 				t.Errorf("IsNotFound = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestExitCodeOf(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		want int
+	}{
+		{"nil", nil, 0},
+		{"non-CmdError", errors.New("plain"), 0},
+		{"CmdError with exit code", &CmdError{Err: errors.New("bd exited with non-zero status"), ExitCode: 2}, 2},
+		{"CmdError with zero exit code (timeout)", &CmdError{Err: errors.New("bd command timed out")}, 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := ExitCodeOf(tc.err); got != tc.want {
+				t.Errorf("ExitCodeOf = %d, want %d", got, tc.want)
 			}
 		})
 	}

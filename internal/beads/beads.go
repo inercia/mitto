@@ -5,15 +5,19 @@ package beads
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 )
 
 // CmdError wraps a bd command failure. It carries both the error message and
-// the captured stderr so callers can surface both to the user.
+// the captured stderr so callers can surface both to the user. ExitCode is the
+// bd subprocess exit status when the failure was a non-zero exit (0 otherwise
+// — e.g. timeout or context cancellation, where no exit status is available).
 type CmdError struct {
-	Err    error
-	Stderr string
+	Err      error
+	Stderr   string
+	ExitCode int
 }
 
 // Error implements the error interface.
@@ -32,15 +36,58 @@ func StderrOf(err error) string {
 	return ""
 }
 
+// ExitCodeOf returns the ExitCode field of the *CmdError wrapped in err, or 0
+// if err is not (or does not wrap) a *CmdError. A returned 0 is ambiguous —
+// it means either "not a *CmdError" or "no exit status recorded" (timeout,
+// context cancellation, or exit code 0 which never surfaces as a failure).
+func ExitCodeOf(err error) int {
+	var ce *CmdError
+	if errors.As(err, &ce) {
+		return ce.ExitCode
+	}
+	return 0
+}
+
 // IsNotFound reports whether err represents a bd "issue not found" failure, as
 // opposed to a genuine internal error. bd exits non-zero and prints a message
 // like: no issue found matching "<id>" to stderr when the requested issue does
-// not exist. Callers use this to map a missing issue to HTTP 404 instead of 500.
+// not exist; newer versions emit a JSON error object on stdout of the form
+// {"error":"no issues found matching the provided IDs", ...} instead. Callers
+// use this to map a missing issue to HTTP 404 instead of 500.
 func IsNotFound(err error) bool {
 	if err == nil {
 		return false
 	}
-	return strings.Contains(strings.ToLower(StderrOf(err)), "no issue found matching")
+	diag := StderrOf(err)
+	if strings.Contains(strings.ToLower(diag), "no issue found matching") {
+		return true
+	}
+	// Also match bd's JSON error object variant, which uses the plural
+	// "no issues found matching" phrasing and may land on stdout (captured
+	// into Stderr by diagnosticOutput when the real stderr is empty).
+	trimmed := strings.TrimSpace(diag)
+	if trimmed == "" {
+		return false
+	}
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(trimmed), &obj); err != nil {
+		return false
+	}
+	for k, raw := range obj {
+		if !strings.EqualFold(k, "error") {
+			continue
+		}
+		var msg string
+		if json.Unmarshal(raw, &msg) != nil {
+			continue
+		}
+		m := strings.ToLower(msg)
+		if strings.Contains(m, "no issue found matching") ||
+			strings.Contains(m, "no issues found matching") {
+			return true
+		}
+	}
+	return false
 }
 
 // IsSchemaSkew reports whether err represents a bd schema-version skew

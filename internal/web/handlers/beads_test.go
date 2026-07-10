@@ -636,6 +636,97 @@ func TestHandleBeadsShow_InternalError(t *testing.T) {
 	}
 }
 
+// showEmptyStderrClient mimics the mitto-edk failure mode: bd exits non-zero
+// with an empty stdout AND empty stderr for a missing issue (no diagnostic
+// text at all). The handler must treat this as a 404 rather than an opaque 500.
+type showEmptyStderrClient struct{ stubBeadsClient }
+
+func (c *showEmptyStderrClient) Show(_ context.Context, _, _ string) ([]byte, error) {
+	return nil, &beads.CmdError{
+		Err:      errors.New("bd exited with non-zero status"),
+		Stderr:   "",
+		ExitCode: 1,
+	}
+}
+
+// TestHandleBeadsShow_EmptyStderrTreatedAsNotFound is the mitto-edk regression
+// test: bd exiting non-zero with empty output must produce a 404 with a WARN
+// log entry, not an opaque 500 (regression test for mitto-edk).
+func TestHandleBeadsShow_EmptyStderrTreatedAsNotFound(t *testing.T) {
+	var logBuf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logBuf, nil))
+	sm := newBeadsTestSM()
+	s := New(Deps{SessionManager: sm, BeadsClient: &showEmptyStderrClient{}, Logger: logger})
+
+	req := localhostRequest("/api/issues/mitto-bbi?working_dir=/test/workspace")
+	req.SetPathValue("id", "mitto-bbi")
+	w := httptest.NewRecorder()
+	s.handleBeadsShow(w, req)
+
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want %d; body=%s", w.Code, http.StatusNotFound, w.Body.String())
+	}
+	var resp struct {
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode error body: %v", err)
+	}
+	if resp.Error.Code != "not_found" {
+		t.Errorf("error.code = %q, want %q", resp.Error.Code, "not_found")
+	}
+	logged := logBuf.String()
+	if !strings.Contains(logged, "level=WARN") {
+		t.Errorf("log output = %q, want it to contain %q", logged, "level=WARN")
+	}
+	if !strings.Contains(logged, "treating as not found") {
+		t.Errorf("log output = %q, want it to contain %q", logged, "treating as not found")
+	}
+	if !strings.Contains(logged, "exit_code=1") {
+		t.Errorf("log output = %q, want it to contain %q", logged, "exit_code=1")
+	}
+}
+
+// showPluralJSONNotFoundClient mimics bd emitting a plural JSON error object
+// on stdout (captured into Stderr by diagnosticOutput) for a missing issue.
+type showPluralJSONNotFoundClient struct{ stubBeadsClient }
+
+func (c *showPluralJSONNotFoundClient) Show(_ context.Context, _, _ string) ([]byte, error) {
+	return nil, &beads.CmdError{
+		Err:      errors.New("bd exited with non-zero status"),
+		Stderr:   `{"error":"no issues found matching the provided IDs","schema_version":1}`,
+		ExitCode: 1,
+	}
+}
+
+// TestHandleBeadsShow_PluralJSONErrorTreatedAsNotFound is the mitto-edk
+// regression test for the JSON-error variant: bd's plural JSON error object
+// must be recognized by IsNotFound and produce a 404 rather than a 500.
+func TestHandleBeadsShow_PluralJSONErrorTreatedAsNotFound(t *testing.T) {
+	s := newBeadsTestServerWithClient(&showPluralJSONNotFoundClient{})
+	req := localhostRequest("/api/issues/mitto-bbi?working_dir=/test/workspace")
+	req.SetPathValue("id", "mitto-bbi")
+	w := httptest.NewRecorder()
+	s.handleBeadsShow(w, req)
+
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want %d; body=%s", w.Code, http.StatusNotFound, w.Body.String())
+	}
+	var resp struct {
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode error body: %v", err)
+	}
+	if resp.Error.Code != "not_found" {
+		t.Errorf("error.code = %q, want %q", resp.Error.Code, "not_found")
+	}
+}
+
 // --- handleBeadsCreate -------------------------------------------------------
 
 func TestHandleBeadsCreate_MethodNotAllowed(t *testing.T) {
