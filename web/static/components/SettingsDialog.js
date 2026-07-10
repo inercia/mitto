@@ -42,6 +42,7 @@ import {
   SlidersIcon,
   ChevronRightIcon,
   ChevronDownIcon,
+  ChevronUpIcon,
   DuplicateIcon,
   ShieldIcon,
   SearchIcon,
@@ -3182,6 +3183,35 @@ export function SettingsDialog({
       return Math.max(0, Math.min(next, Math.max(newLength - 1, 0)));
     });
   };
+  const moveProfile = (i, dir) => {
+    const target = i + dir;
+    if (target < 0 || target >= modelProfiles.length) return;
+    setModelProfiles((prev) => {
+      if (target < 0 || target >= prev.length) return prev;
+      const next = [...prev];
+      [next[i], next[target]] = [next[target], next[i]];
+      return next;
+    });
+    // Follow the moved row: if the expanded row is one of the two being
+    // swapped, its index moves with it; other indices are unaffected.
+    setExpandedProfileIndex((prev) => {
+      if (prev === i) return target;
+      if (prev === target) return i;
+      return prev;
+    });
+    // Same for tagDrafts keys — swap the two affected slot keys.
+    setTagDrafts((prev) => {
+      const a = prev[i];
+      const b = prev[target];
+      if (a === undefined && b === undefined) return prev;
+      const next = { ...prev };
+      if (a !== undefined) next[target] = a;
+      else delete next[target];
+      if (b !== undefined) next[i] = b;
+      else delete next[i];
+      return next;
+    });
+  };
   // Commit a profile's raw tag draft text into its tags array (comma-separated,
   // trimmed, empties dropped, deduped), then reset the draft to empty so the
   // input is ready for the next tag (existing tags are shown as chips).
@@ -5627,6 +5657,8 @@ export function SettingsDialog({
                       Named model profiles pair a selection criteria with
                       capability tags (e.g. "Smart", "Cheap"). Other parts of
                       Mitto can branch on tags instead of raw model names.
+                      <strong>Order is priority</strong> — the first profile
+                      carrying a given tag wins for tag-based resolution.
                     </p>
 
                     <!-- Shared suggestions for every profile's Tags input.
@@ -5678,6 +5710,32 @@ export function SettingsDialog({
                                 )}
                               </div>
                             `}
+                            <button
+                              class="btn btn-sm btn-ghost"
+                              title="Move up"
+                              aria-label="Move up"
+                              data-testid=${`model-profile-move-up-${i}`}
+                              disabled=${i === 0}
+                              onClick=${(e) => {
+                                e.stopPropagation();
+                                moveProfile(i, -1);
+                              }}
+                            >
+                              <${ChevronUpIcon} className="w-4 h-4" />
+                            </button>
+                            <button
+                              class="btn btn-sm btn-ghost"
+                              title="Move down"
+                              aria-label="Move down"
+                              data-testid=${`model-profile-move-down-${i}`}
+                              disabled=${i === modelProfiles.length - 1}
+                              onClick=${(e) => {
+                                e.stopPropagation();
+                                moveProfile(i, 1);
+                              }}
+                            >
+                              <${ChevronDownIcon} className="w-4 h-4" />
+                            </button>
                             <button
                               class="btn btn-sm btn-ghost text-error"
                               title="Remove profile"
@@ -5821,6 +5879,7 @@ export function SettingsDialog({
                     <!-- Add Model button -->
                     <button
                       class="btn btn-sm"
+                      data-testid="add-model-profile"
                       onClick=${() => {
                         setModelProfiles([
                           ...modelProfiles,
