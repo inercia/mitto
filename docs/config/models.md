@@ -19,7 +19,8 @@ version-agnostic, and their tags **union** across overlapping matches:
 |---------|---------|------|
 | Claude | `Claude` | `Anthropic` |
 | Claude Opus | `Opus` | `Smartest`, `Reasoning`, `Expensive` |
-| Claude Sonnet | `Sonnet` | `Smart`, `Coding` |
+| Claude Sonnet 5 | `Sonnet 5` | `Smart`, `Coding` |
+| Claude Sonnet 4 | `Sonnet 4` | `Smart`, `Coding` |
 | Claude Haiku | `Haiku` | `Fast`, `Cheap` |
 | GPT-5 | `GPT-5` | `Smart`, `Reasoning`, `Coding` |
 | GPT-4 | `GPT-4` | `Smart`, `Coding` |
@@ -124,7 +125,7 @@ of `modelName` / `modelTag`:
 
 ```yaml
 preferredModels:
-  - modelName: Claude Sonnet   # matches a profile by its `name` (case-insensitive)
+  - modelName: Claude Sonnet 4 # matches a profile by its `name` (case-insensitive)
   - modelTag: Coding           # selects any profile carrying this tag
 ```
 
@@ -134,7 +135,9 @@ preferredModels:
   (first profile with the tag wins — see [Priority](#priority-list-order--priority)
   below). Given the shipped defaults above, the tag-based entries in the builtin
   prompts resolve as follows:
-  - `Coding` → first hit is `Claude Sonnet` (also on `GPT-5`, `GPT-4`).
+  - `Coding` → first hit is `Claude Sonnet 5` in the shipped defaults; because
+    `Sonnet 5` currently matches no released model, resolution falls through to
+    `Claude Sonnet 4` in today's environments (also on `GPT-5`, `GPT-4`).
   - `Cheap` → `Claude Haiku`.
   - `Smart`, `Smartest`, `Reasoning`, `Fast`, `LongContext`, `Anthropic`,
     `Expensive` are also available; see the shipped defaults table.

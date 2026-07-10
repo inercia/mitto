@@ -177,7 +177,7 @@ Prompts may declare preferred model(s) for auto-selection at prompt-dispatch tim
 
 ```yaml
 preferredModels:
-  - modelName: Claude Sonnet   # matches a profile by its `name` (case-insensitive)
+  - modelName: Claude Sonnet 4 # matches a profile by its `name` (case-insensitive)
   - modelTag: Coding           # selects any profile carrying this tag (case-insensitive)
 ```
 
