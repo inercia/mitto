@@ -683,6 +683,7 @@ func TestBuildTemplateFuncMap_AllKeysPresent(t *testing.T) {
 		"FileExists", "DirExists", "CommandExists", "HasPattern", "Model",
 		"GitFileModified", "GitDirModified", "GitFileTracked", "GitFileDeleted",
 		"BeadsCount", "HasBeads",
+		"PromptText",
 		"Trim", "Lower", "Upper", "Contains", "HasPrefix", "HasSuffix", "Join",
 	}
 	for _, key := range expected {
@@ -1343,4 +1344,81 @@ func TestBeadsCount_TemplateFuncRender(t *testing.T) {
 	if got != "count=1" {
 		t.Errorf("BeadsCount render = %q, want %q", got, "count=1")
 	}
+}
+
+// TestBuildTemplateFuncMap_PromptText verifies the PromptText template function
+// (mitto-85y.3): resolves a prompt NAME to its full body via an injected
+// resolver, fails-closed on nil resolver / empty name / unknown prompt, and
+// strips trailing newlines from the returned body.
+func TestBuildTemplateFuncMap_PromptText(t *testing.T) {
+	// Fake resolver returns a fixed body for "known" and errors for anything else.
+	resolver := func(name string) (string, error) {
+		if name == "known" {
+			return "body-A", nil
+		}
+		return "", fmt.Errorf("prompt %q not found", name)
+	}
+
+	t.Run("resolves known prompt", func(t *testing.T) {
+		ctx := &PromptEnabledContext{PromptTextResolver: resolver}
+		fm := BuildTemplateFuncMap(ctx)
+		got, err := RenderPromptTemplate("test", `{{ PromptText "known" }}`, ctx, fm)
+		if err != nil {
+			t.Fatalf("render: %v", err)
+		}
+		if got != "body-A" {
+			t.Errorf("got %q, want %q", got, "body-A")
+		}
+	})
+
+	t.Run("unknown prompt fails render", func(t *testing.T) {
+		ctx := &PromptEnabledContext{PromptTextResolver: resolver}
+		fm := BuildTemplateFuncMap(ctx)
+		_, err := RenderPromptTemplate("test", `{{ PromptText "unknown" }}`, ctx, fm)
+		if err == nil {
+			t.Fatalf("expected error for unknown prompt, got nil")
+		}
+		if !strings.Contains(err.Error(), "unknown") {
+			t.Errorf("error should mention the prompt name; got %v", err)
+		}
+	})
+
+	t.Run("trailing newline is stripped", func(t *testing.T) {
+		trailingResolver := func(name string) (string, error) {
+			return "body-with-newline\n", nil
+		}
+		ctx := &PromptEnabledContext{PromptTextResolver: trailingResolver}
+		fm := BuildTemplateFuncMap(ctx)
+		got, err := RenderPromptTemplate("test", `{{ PromptText "x" }}`, ctx, fm)
+		if err != nil {
+			t.Fatalf("render: %v", err)
+		}
+		if got != "body-with-newline" {
+			t.Errorf("got %q, want %q", got, "body-with-newline")
+		}
+	})
+
+	t.Run("nil resolver fails-closed", func(t *testing.T) {
+		ctx := &PromptEnabledContext{PromptTextResolver: nil}
+		fm := BuildTemplateFuncMap(ctx)
+		_, err := RenderPromptTemplate("test", `{{ PromptText "x" }}`, ctx, fm)
+		if err == nil {
+			t.Fatalf("expected error for nil resolver, got nil")
+		}
+		if !strings.Contains(err.Error(), "no resolver") {
+			t.Errorf("error should mention 'no resolver'; got %v", err)
+		}
+	})
+
+	t.Run("empty name fails-closed", func(t *testing.T) {
+		ctx := &PromptEnabledContext{PromptTextResolver: resolver}
+		fm := BuildTemplateFuncMap(ctx)
+		_, err := RenderPromptTemplate("test", `{{ PromptText "" }}`, ctx, fm)
+		if err == nil {
+			t.Fatalf("expected error for empty name, got nil")
+		}
+		if !strings.Contains(err.Error(), "empty prompt name") {
+			t.Errorf("error should mention 'empty prompt name'; got %v", err)
+		}
+	})
 }

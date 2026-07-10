@@ -36,6 +36,12 @@ type PromptEnabledContext struct {
 	// bodies to branch on which run they are in (e.g. {{ if .Iteration.IsFirst }}).
 	// All-zero (Number=0, IsLoop=false) for non-loop prompts.
 	Iteration IterationContext
+	// PromptTextResolver resolves a prompt NAME to its full body text within the
+	// current workspace. Nil at menu/enabledWhen time — no resolver is available
+	// there — in which case PromptText fails-closed (returns an error). Wired at
+	// the dispatch/render path (see prompt_dispatcher.go). Template-only; NOT
+	// exposed to CEL.
+	PromptTextResolver func(name string) (string, error)
 }
 
 // IterationContext holds loop-iteration info for CEL/template evaluation.

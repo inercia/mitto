@@ -1039,6 +1039,7 @@ The following fields are available at send time. They are the **same fields used
 | `GitFileTracked` | `GitFileTracked "path"` | `path` is tracked by git (present in the index) |
 | `GitFileDeleted` | `GitFileDeleted "path"` | Tracked file at `path` has been deleted (staged or unstaged deletion) |
 | `Model` | `Model "tag"` | Current model carries capability `tag` (case-insensitive), from [`models:` profiles](models.md); `false` when the model is unknown or no profile matches |
+| `PromptText` | `PromptText "name"` | Inline the full body of another workspace prompt by NAME. Fails-closed at send time if the resolver is unavailable (menu/enabledWhen), the name is empty, or the prompt is unknown. Trailing newlines are stripped; interior whitespace is preserved. The fetched body is inlined verbatim — Go-template actions inside it are NOT re-rendered. Pairs with the `prompts` parameter type. |
 
 All `Git*` functions resolve relative paths against `Workspace.Folder`, run `git` as a
 subprocess (bounded to 5s), and return `false` outside a git repo or when git is unavailable.
@@ -1074,6 +1075,15 @@ prompt: |
   No JIRA ticket is set yet. Determine it from the conversation and call
   mitto_conversation_update with user_data to set "JIRA Ticket", then proceed.
   {{ end }}
+
+# Inline another workspace prompt by name (pairs with the `prompts` parameter type)
+parameters:
+  - name: TARGET
+    type: prompts
+prompt: |
+  Please execute the following instructions:
+
+  {{ PromptText (Arg "TARGET") }}
 ```
 
 The same field is available at menu time in `enabledWhen`, e.g. `enabledWhen: '"JIRA Ticket" in UserData && UserData["JIRA Ticket"] != ""'`.

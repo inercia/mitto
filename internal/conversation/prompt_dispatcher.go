@@ -273,6 +273,17 @@ func (p promptDispatcher) resolveAndSubstitute(d promptDeps, message string, met
 		}
 		input := p.buildProcessorInput(d, message, false, meta)
 		tctx := processors.BuildCELContext(input)
+		// Wire the PromptText resolver (mitto-85y.3): resolves a workspace-prompt
+		// NAME to its full body text at render time. Uses the same PromptResolver
+		// the dispatcher uses for named-prompt resolution, bound to the current
+		// working directory. Nil resolver leaves ctx.PromptTextResolver nil, so
+		// PromptText fails-closed with a clear "no resolver available" error.
+		if resolver := d.pdPromptResolver(); resolver != nil {
+			workingDir := d.pdWorkingDir()
+			tctx.PromptTextResolver = func(name string) (string, error) {
+				return resolver(name, workingDir)
+			}
+		}
 		funcs := config.BuildTemplateFuncMap(tctx)
 		name := meta.PromptName
 		if name == "" {

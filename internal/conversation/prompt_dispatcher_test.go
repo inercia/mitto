@@ -705,6 +705,60 @@ func TestResolveAndSubstitute_FreeText_InvalidTemplate_FailOpen(t *testing.T) {
 	}
 }
 
+// TestResolveAndSubstitute_Template_PromptText_Wired verifies that the
+// PromptText template function is wired to the dispatcher's PromptResolver at
+// render time (mitto-85y.3): a body invoking `{{ PromptText .Args.Prompt }}`
+// with Arguments["Prompt"]="known" resolves the named prompt body via the
+// same resolver the dispatcher uses for named-prompt resolution, and inlines
+// it verbatim in the outer render.
+func TestResolveAndSubstitute_Template_PromptText_Wired(t *testing.T) {
+	p := promptDispatcher{}
+	d := newFakePromptDeps()
+	d.workingDir = "/tmp/ws"
+	// Resolver used both for named-prompt resolution AND for PromptText.
+	d.resolver = func(name, workingDir string) (string, error) {
+		if name == "known" {
+			return "resolved-body", nil
+		}
+		return "", errors.New("prompt not found: " + name)
+	}
+
+	body := `pre {{ PromptText .Args.Prompt }} post`
+	meta := PromptMeta{Arguments: map[string]string{"Prompt": "known"}}
+	msg, _, _, err := p.resolveAndSubstitute(d, body, meta)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if msg != "pre resolved-body post" {
+		t.Fatalf("expected inlined body, got %q", msg)
+	}
+}
+
+// TestResolveAndSubstitute_Template_PromptText_UnknownFailsClosed verifies
+// that PromptText fails-closed when the referenced prompt does not exist,
+// on the NAMED-PROMPT path: the resolver error propagates as a template
+// render error and the outer send is aborted (mitto-85y.3). Free-text
+// bodies fail-open on template errors (mitto-gnxe), so this path is
+// exercised via PromptMeta.PromptName.
+func TestResolveAndSubstitute_Template_PromptText_UnknownFailsClosed(t *testing.T) {
+	p := promptDispatcher{}
+	d := newFakePromptDeps()
+	d.resolver = func(name, _ string) (string, error) {
+		if name == "outer" {
+			return `{{ PromptText "missing" }}`, nil
+		}
+		return "", errors.New("prompt not found: " + name)
+	}
+
+	msg, _, _, err := p.resolveAndSubstitute(d, "", PromptMeta{PromptName: "outer"})
+	if err == nil {
+		t.Fatalf("expected non-nil error for unknown PromptText target, got msg=%q", msg)
+	}
+	if msg != "" {
+		t.Fatalf("expected empty message on fail-closed, got %q", msg)
+	}
+}
+
 // TestResolveAndSubstitute_AutomatedDispatch_InvalidTemplate_FailClosed verifies
 // that a free-text body with unbalanced template syntax dispatched via an automated
 // path (agent-originated queue dispatch / loop-runner) fails CLOSED — it returns a

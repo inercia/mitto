@@ -1183,6 +1183,7 @@ func (m *Manager) ApplyAfter(ctx context.Context, input AfterProcessorInput) App
 			tctx.Session.ID = input.SessionID
 			tctx.Workspace.Folder = input.WorkingDir
 			tctx.Args = resolvedArgs
+			// PromptText resolver is not wired here; template fails-closed if used from processor-rendered prompts (mitto-85y.3).
 			funcs := config.BuildTemplateFuncMap(tctx)
 			if rendered, rerr := config.RenderPromptTemplate(proc.Name, assembledPrompt, tctx, funcs); rerr != nil {
 				m.logger.Warn("prompt-mode processor template render failed; using unrendered body", "name", proc.Name, "error", rerr)

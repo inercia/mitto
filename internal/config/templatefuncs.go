@@ -448,15 +448,21 @@ func FormatChildren(children []ChildInfo) string {
 //     against the SAME ctx used for enabledWhen. Fail-closed: returns (false, error) on
 //     compile or eval failure, which aborts template execution (and thus the send).
 //     The args CEL variable is populated from ctx.Args so conditions can branch on arguments.
+//   - PromptText(name) — inline another workspace prompt's full body by NAME
+//     (mitto-85y.3). Wired at dispatch time via ctx.PromptTextResolver;
+//     fail-closed on nil resolver, empty name, or unknown/failed resolution.
+//     Trailing newlines are stripped from the returned body; interior whitespace
+//     is preserved. Pairs with the `prompts` parameter type.
 //   - trim, lower, upper, contains, hasPrefix, hasSuffix — thin strings wrappers.
 //   - join(sep, elems) — strings.Join with sep first (template-natural argument order).
 func BuildTemplateFuncMap(ctx *PromptEnabledContext) template.FuncMap {
 	var (
-		folder      string
-		toolServers map[string]ServerToolInfo
-		args        map[string]string
-		userData    map[string]string
-		modelTags   []string
+		folder             string
+		toolServers        map[string]ServerToolInfo
+		args               map[string]string
+		userData           map[string]string
+		modelTags          []string
+		promptTextResolver func(name string) (string, error)
 	)
 	if ctx != nil {
 		folder = ctx.Workspace.Folder
@@ -464,6 +470,7 @@ func BuildTemplateFuncMap(ctx *PromptEnabledContext) template.FuncMap {
 		args = ctx.Args
 		userData = ctx.UserData
 		modelTags = ctx.Session.ModelTags
+		promptTextResolver = ctx.PromptTextResolver
 	}
 
 	// cond/when: compile+evaluate a CEL expression against ctx using the singleton.
@@ -528,7 +535,28 @@ func BuildTemplateFuncMap(ctx *PromptEnabledContext) template.FuncMap {
 		"HasPattern": func(pattern string) bool { return hasPattern(toolServers, pattern) },
 		// Model(tag) — true iff the session's current model carries the capability tag
 		// (case-insensitive), resolved from the models: profiles. False for an unknown model.
-		"Model":     func(tag string) bool { return hasModelTag(modelTags, tag) },
+		"Model": func(tag string) bool { return hasModelTag(modelTags, tag) },
+		// PromptText(name) inlines another workspace prompt's full body by NAME
+		// (mitto-85y.3). The fetched body is inlined VERBATIM into the outer
+		// template output; because Go text/template does not re-parse rendered
+		// results, any Go-template actions inside the fetched body appear
+		// literally in the final output. Two-pass rendering is intentionally
+		// not implemented. Fail-closed: nil resolver / empty name / resolver
+		// error all propagate as a template execution error, which aborts the
+		// send for named/loop prompts (matching RenderPromptTemplate's policy).
+		"PromptText": func(name string) (string, error) {
+			if promptTextResolver == nil {
+				return "", fmt.Errorf("PromptText: no resolver available")
+			}
+			if name == "" {
+				return "", fmt.Errorf("PromptText: empty prompt name")
+			}
+			body, err := promptTextResolver(name)
+			if err != nil {
+				return "", fmt.Errorf("PromptText(%q): %w", name, err)
+			}
+			return strings.TrimRight(body, "\n"), nil
+		},
 		"Cond":      condFn,
 		"When":      condFn, // alias for Cond
 		"Trim":      strings.TrimSpace,
