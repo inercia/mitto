@@ -1,7 +1,10 @@
 package conversation
 
 import (
+	"bytes"
+	"log/slog"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/inercia/mitto/internal/config"
@@ -101,4 +104,83 @@ func TestDuplicateWorkingDirs_SameACPWithEmptyACPServer(t *testing.T) {
 	if groups[0].SameACP {
 		t.Error("SameACP = true, want false (empty ACPServer does not count as same)")
 	}
+}
+
+// newCaptureLogger returns a *slog.Logger whose output (including per-record
+// level tokens) is captured in buf. Text handler is used so tests can assert on
+// both the level tag (level=INFO / level=WARN) and the message text.
+func newCaptureLogger(buf *bytes.Buffer) *slog.Logger {
+	return slog.New(slog.NewTextHandler(buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+}
+
+func TestLogDuplicateWorkingDirs_MixedACPLogsInfo(t *testing.T) {
+	sm := NewSessionManager("", "", false, nil)
+	sm.SetWorkspaces([]config.WorkspaceSettings{
+		{UUID: "uuid-a", WorkingDir: "/w1", ACPServer: "A"},
+		{UUID: "uuid-b", WorkingDir: "/w1", ACPServer: "B"},
+	})
+
+	var buf bytes.Buffer
+	sm.WorkspaceRegistry().LogDuplicateWorkingDirs(newCaptureLogger(&buf))
+
+	out := buf.String()
+	if !strings.Contains(out, "level=INFO") {
+		t.Errorf("expected INFO-level log for mixed ACP, got: %s", out)
+	}
+	if strings.Contains(out, "level=WARN") {
+		t.Errorf("did not expect WARN for mixed ACP, got: %s", out)
+	}
+	if !strings.Contains(out, "multiple workspaces registered for folder") {
+		t.Errorf("expected new INFO message, got: %s", out)
+	}
+	if strings.Contains(out, "workspace duplication detected") {
+		t.Errorf("mixed-ACP case should not use the WARN message, got: %s", out)
+	}
+}
+
+func TestLogDuplicateWorkingDirs_SameACPLogsWarn(t *testing.T) {
+	sm := NewSessionManager("", "", false, nil)
+	sm.SetWorkspaces([]config.WorkspaceSettings{
+		{UUID: "uuid-1", WorkingDir: "/w1", ACPServer: "A"},
+		{UUID: "uuid-2", WorkingDir: "/w1", ACPServer: "A"},
+	})
+
+	var buf bytes.Buffer
+	sm.WorkspaceRegistry().LogDuplicateWorkingDirs(newCaptureLogger(&buf))
+
+	out := buf.String()
+	if !strings.Contains(out, "level=WARN") {
+		t.Errorf("expected WARN-level log for same-ACP duplicate, got: %s", out)
+	}
+	if !strings.Contains(out, "workspace duplication detected") {
+		t.Errorf("expected legacy WARN message for same-ACP duplicate, got: %s", out)
+	}
+	if strings.Contains(out, "level=INFO") {
+		t.Errorf("did not expect INFO for same-ACP duplicate, got: %s", out)
+	}
+}
+
+func TestLogDuplicateWorkingDirs_NoDuplicatesLogsNothing(t *testing.T) {
+	sm := NewSessionManager("", "", false, nil)
+	sm.SetWorkspaces([]config.WorkspaceSettings{
+		{UUID: "uuid-1", WorkingDir: "/w1", ACPServer: "A"},
+		{UUID: "uuid-2", WorkingDir: "/w2", ACPServer: "A"},
+	})
+
+	var buf bytes.Buffer
+	sm.WorkspaceRegistry().LogDuplicateWorkingDirs(newCaptureLogger(&buf))
+
+	if buf.Len() != 0 {
+		t.Errorf("expected no log output, got: %s", buf.String())
+	}
+}
+
+func TestLogDuplicateWorkingDirs_NilLoggerNoOp(t *testing.T) {
+	sm := NewSessionManager("", "", false, nil)
+	sm.SetWorkspaces([]config.WorkspaceSettings{
+		{UUID: "uuid-1", WorkingDir: "/w1", ACPServer: "A"},
+		{UUID: "uuid-2", WorkingDir: "/w1", ACPServer: "B"},
+	})
+	// Must not panic.
+	sm.WorkspaceRegistry().LogDuplicateWorkingDirs(nil)
 }

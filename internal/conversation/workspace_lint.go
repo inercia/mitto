@@ -66,18 +66,29 @@ func (r *WorkspaceRegistry) DuplicateWorkingDirs() []DuplicateDirGroup {
 	return out
 }
 
-// LogDuplicateWorkingDirs emits one WARN per duplicate group. No-op when none.
+// LogDuplicateWorkingDirs emits one line per duplicate group. No-op when none.
+// Severity depends on whether the duplication is expected:
+//   - SameACP=false → INFO ("multiple workspaces registered for folder"): the
+//     supported multi-agent-per-folder configuration (one folder registered under
+//     several ACP servers → several UUIDs).
+//   - SameACP=true  → WARN ("workspace duplication detected"): same folder+ACP
+//     registered under different UUIDs, which is a redundant registration.
 func (r *WorkspaceRegistry) LogDuplicateWorkingDirs(logger *slog.Logger) {
 	if logger == nil {
 		return
 	}
 	for _, g := range r.DuplicateWorkingDirs() {
-		logger.Warn("workspace duplication detected",
+		attrs := []any{
 			"working_dir", g.WorkingDir,
 			"uuid_count", len(g.UUIDs),
 			"uuids", g.UUIDs,
 			"acp_servers", g.ACPServers,
 			"same_acp", g.SameACP,
-		)
+		}
+		if g.SameACP {
+			logger.Warn("workspace duplication detected", attrs...)
+		} else {
+			logger.Info("multiple workspaces registered for folder", attrs...)
+		}
 	}
 }
