@@ -166,6 +166,10 @@ type SessionManager interface {
 	GetWorkspaceByUUID(uuid string) *config.WorkspaceSettings
 	// BroadcastSessionRenamed broadcasts a session_renamed event to all connected clients.
 	BroadcastSessionRenamed(sessionID string, newName string)
+	// BroadcastSessionBeadsIssueUpdated broadcasts a session_beads_issue_updated
+	// event to all connected clients when a conversation's linked beads issue
+	// ID changes via the mitto_conversation_update MCP tool.
+	BroadcastSessionBeadsIssueUpdated(sessionID string, beadsIssue string)
 	// BroadcastLoopUpdated broadcasts a loop_updated event to all connected clients.
 	BroadcastLoopUpdated(sessionID string, loop *session.LoopPrompt)
 	// GetUserDataSchema returns the user data schema for a workspace.
@@ -4102,6 +4106,13 @@ func (s *Server) handleConversationUpdate(ctx context.Context, req *mcp.CallTool
 			}, nil
 		}
 		updated = append(updated, "beads_issue")
+
+		// Broadcast the link change so the target conversation's header
+		// linked-issue button/badge updates immediately, without waiting for
+		// a full session-list refresh.
+		if sm != nil {
+			sm.BroadcastSessionBeadsIssueUpdated(input.ConversationID, *input.BeadsIssue)
+		}
 	}
 
 	// Update user data if provided

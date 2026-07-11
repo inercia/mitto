@@ -273,6 +273,21 @@ Sent after a `force_reset` message is processed.
 }
 ```
 
+#### `session_beads_issue_updated` — Linked beads issue changed
+
+Broadcast when a session's linked beads issue is set, changed, or cleared (either
+via `PATCH /api/sessions/{id}` or the `mitto_conversation_update` MCP tool). The
+frontend updates the header linked-issue button/link and re-fetches the issue
+status indicator without a full reload. An empty `beads_issue` value indicates
+the link was cleared.
+
+```json
+{
+  "type": "session_beads_issue_updated",
+  "data": { "session_id": "...", "beads_issue": "mitto-abc" }
+}
+```
+
 #### `acp_stopped` — ACP connection stopped
 
 Sent when the ACP process is gracefully terminated (e.g., session archived).
@@ -842,6 +857,19 @@ stateDiagram-v2
 {
   "type": "session_settings_updated",
   "data": { "session_id": "...", "settings": { "can_do_introspection": true } }
+}
+```
+
+#### `session_beads_issue_updated`
+
+Mirrors the per-session event of the same name — broadcast globally so any
+connected client can update session-list badges/indicators that show the linked
+beads issue. An empty `beads_issue` value indicates the link was cleared.
+
+```json
+{
+  "type": "session_beads_issue_updated",
+  "data": { "session_id": "...", "beads_issue": "mitto-abc" }
 }
 ```
 

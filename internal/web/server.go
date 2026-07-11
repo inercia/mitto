@@ -1029,21 +1029,22 @@ func NewServer(config Config) (*Server, error) {
 		StopLoopForArchive: func(sessionID string) {
 			s.loopRunner.StopLoopForArchive(sessionID, session.StoppedReasonArchived)
 		},
-		ApplyOnCloseProcessors:        sessionMgr.ApplyOnCloseProcessors,
-		ErrSessionBusy:                ErrSessionBusy,
-		ErrLoopNotEnabled:             ErrLoopNotEnabled,
-		LoopDelayFloor:                s.loopDelayFloor,
-		BroadcastLoopUpdated:          s.BroadcastLoopUpdated,
-		BroadcastBeadsCleanupProgress: s.BroadcastBeadsCleanupProgress,
-		BootstrapOnCompletion:         s.loopRunner.BootstrapOnCompletion,
-		BroadcastSettingsUpdated:      s.BroadcastSessionSettingsUpdated,
-		BroadcastSessionDeleted:       s.BroadcastSessionDeleted,
-		BroadcastACPStartFailed:       s.BroadcastACPStartFailed,
-		BroadcastACPStopped:           s.BroadcastACPStopped,
-		BroadcastACPStarted:           s.BroadcastACPStarted,
-		BroadcastSessionRenamed:       s.BroadcastSessionRenamed,
-		BroadcastSessionPinned:        s.BroadcastSessionPinned,
-		BroadcastSessionArchived:      s.BroadcastSessionArchived,
+		ApplyOnCloseProcessors:            sessionMgr.ApplyOnCloseProcessors,
+		ErrSessionBusy:                    ErrSessionBusy,
+		ErrLoopNotEnabled:                 ErrLoopNotEnabled,
+		LoopDelayFloor:                    s.loopDelayFloor,
+		BroadcastLoopUpdated:              s.BroadcastLoopUpdated,
+		BroadcastBeadsCleanupProgress:     s.BroadcastBeadsCleanupProgress,
+		BootstrapOnCompletion:             s.loopRunner.BootstrapOnCompletion,
+		BroadcastSettingsUpdated:          s.BroadcastSessionSettingsUpdated,
+		BroadcastSessionDeleted:           s.BroadcastSessionDeleted,
+		BroadcastACPStartFailed:           s.BroadcastACPStartFailed,
+		BroadcastACPStopped:               s.BroadcastACPStopped,
+		BroadcastACPStarted:               s.BroadcastACPStarted,
+		BroadcastSessionRenamed:           s.BroadcastSessionRenamed,
+		BroadcastSessionBeadsIssueUpdated: s.BroadcastSessionBeadsIssueUpdated,
+		BroadcastSessionPinned:            s.BroadcastSessionPinned,
+		BroadcastSessionArchived:          s.BroadcastSessionArchived,
 		BroadcastSessionCreated: func(data map[string]interface{}) {
 			s.eventsManager.Broadcast(conversation.WSMsgTypeSessionCreated, data)
 		},
@@ -1578,6 +1579,21 @@ func (s *Server) BroadcastSessionSettingsUpdated(sessionID string, settings map[
 	}
 }
 
+// BroadcastSessionBeadsIssueUpdated notifies all connected clients that a
+// session's linked beads issue ID changed (via REST PATCH or MCP tools).
+func (s *Server) BroadcastSessionBeadsIssueUpdated(sessionID, beadsIssue string) {
+	s.eventsManager.Broadcast(conversation.WSMsgTypeSessionBeadsIssueUpdated, map[string]string{
+		"session_id":  sessionID,
+		"beads_issue": beadsIssue,
+	})
+
+	if s.logger != nil {
+		s.logger.Debug("Broadcast session beads_issue updated",
+			"session_id", sessionID, "beads_issue", beadsIssue,
+			"clients", s.eventsManager.ClientCount())
+	}
+}
+
 // BroadcastSessionDeleted notifies all connected clients that a session was deleted.
 func (s *Server) BroadcastSessionDeleted(sessionID string) {
 	s.eventsManager.Broadcast(conversation.WSMsgTypeSessionDeleted, map[string]string{
@@ -2060,6 +2076,13 @@ func (a *sessionManagerAdapter) GetWorkspaceByUUID(uuid string) *configPkg.Works
 // BroadcastSessionRenamed broadcasts a session_renamed event to all connected clients.
 func (a *sessionManagerAdapter) BroadcastSessionRenamed(sessionID string, newName string) {
 	a.sm.BroadcastSessionRenamed(sessionID, newName)
+}
+
+// BroadcastSessionBeadsIssueUpdated broadcasts a session_beads_issue_updated
+// event to all connected clients when a conversation's linked beads issue ID
+// changes via the mitto_conversation_update MCP tool.
+func (a *sessionManagerAdapter) BroadcastSessionBeadsIssueUpdated(sessionID string, beadsIssue string) {
+	a.sm.BroadcastSessionBeadsIssueUpdated(sessionID, beadsIssue)
 }
 
 // BroadcastLoopUpdated broadcasts a loop_updated event to all connected clients.

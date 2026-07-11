@@ -1066,6 +1066,31 @@ func (sm *SessionManager) BroadcastSessionRenamed(sessionID string, newName stri
 	}
 }
 
+// BroadcastSessionBeadsIssueUpdated broadcasts a session_beads_issue_updated
+// event to all connected clients. This is called when a session's linked
+// beads issue ID changes (via REST PATCH or MCP tools).
+func (sm *SessionManager) BroadcastSessionBeadsIssueUpdated(sessionID string, beadsIssue string) {
+	sm.mu.RLock()
+	em := sm.eventsManager
+	sm.mu.RUnlock()
+
+	if em == nil {
+		return
+	}
+
+	em.Broadcast(WSMsgTypeSessionBeadsIssueUpdated, map[string]string{
+		"session_id":  sessionID,
+		"beads_issue": beadsIssue,
+	})
+
+	if sm.logger != nil {
+		sm.logger.Debug("Broadcast session beads_issue updated",
+			"session_id", sessionID,
+			"beads_issue", beadsIssue,
+			"clients", em.ClientCount())
+	}
+}
+
 // BroadcastLoopUpdated broadcasts a loop_updated event to all connected clients.
 // This is called when a session's loop config changes (e.g., via MCP tools).
 func (sm *SessionManager) BroadcastLoopUpdated(sessionID string, loop *session.LoopPrompt) {

@@ -930,8 +930,9 @@ func findSubstring(s, substr string) bool {
 
 // mockSessionManager is a mock implementation of SessionManager for testing.
 type mockSessionManager struct {
-	broadcastCalls      []broadcastCall
-	workspacesForFolder []config.WorkspaceSettings
+	broadcastCalls       []broadcastCall
+	broadcastBeadsIssues []broadcastBeadsIssueCall
+	workspacesForFolder  []config.WorkspaceSettings
 }
 
 type broadcastCall struct {
@@ -940,6 +941,12 @@ type broadcastCall struct {
 	acpServer       string
 	workingDir      string
 	parentSessionID string
+}
+
+// broadcastBeadsIssueCall records a call to BroadcastSessionBeadsIssueUpdated.
+type broadcastBeadsIssueCall struct {
+	sessionID  string
+	beadsIssue string
 }
 
 func (m *mockSessionManager) GetSession(sessionID string) BackgroundSession {
@@ -983,10 +990,16 @@ func (m *mockSessionManager) DeleteChildSessions(parentID string)               
 func (m *mockSessionManager) GetWorkspaces() []config.WorkspaceSettings                    { return nil }
 func (m *mockSessionManager) GetWorkspaceByUUID(uuid string) *config.WorkspaceSettings     { return nil }
 func (m *mockSessionManager) BroadcastSessionRenamed(sessionID string, newName string)     {}
-func (m *mockSessionManager) BroadcastLoopUpdated(string, *session.LoopPrompt)             {}
-func (m *mockSessionManager) GetUserDataSchema(workingDir string) *config.UserDataSchema   { return nil }
-func (m *mockSessionManager) GetWorkspacePrompts(workingDir string) []config.WebPrompt     { return nil }
-func (m *mockSessionManager) GetWorkspacePromptsDirs(workingDir string) []string           { return nil }
+func (m *mockSessionManager) BroadcastSessionBeadsIssueUpdated(sessionID, beadsIssue string) {
+	m.broadcastBeadsIssues = append(m.broadcastBeadsIssues, broadcastBeadsIssueCall{
+		sessionID:  sessionID,
+		beadsIssue: beadsIssue,
+	})
+}
+func (m *mockSessionManager) BroadcastLoopUpdated(string, *session.LoopPrompt)           {}
+func (m *mockSessionManager) GetUserDataSchema(workingDir string) *config.UserDataSchema { return nil }
+func (m *mockSessionManager) GetWorkspacePrompts(workingDir string) []config.WebPrompt   { return nil }
+func (m *mockSessionManager) GetWorkspacePromptsDirs(workingDir string) []string         { return nil }
 func (m *mockSessionManager) GetWorkspaceRCLastModified(workingDir string) time.Time {
 	return time.Time{}
 }
@@ -3189,6 +3202,8 @@ func (m *mockSessionManagerForWorkspaces) GetWorkspaceByUUID(uuid string) *confi
 }
 func (m *mockSessionManagerForWorkspaces) BroadcastSessionRenamed(sessionID string, newName string) {
 }
+func (m *mockSessionManagerForWorkspaces) BroadcastSessionBeadsIssueUpdated(sessionID, beadsIssue string) {
+}
 func (m *mockSessionManagerForWorkspaces) BroadcastLoopUpdated(string, *session.LoopPrompt) {
 }
 func (m *mockSessionManagerForWorkspaces) GetUserDataSchema(workingDir string) *config.UserDataSchema {
@@ -3541,7 +3556,8 @@ func (m *mockSessionManagerForWorkspaceUpdate) GetWorkspaceByUUID(uuid string) *
 	}
 	return nil
 }
-func (m *mockSessionManagerForWorkspaceUpdate) BroadcastSessionRenamed(string, string) {}
+func (m *mockSessionManagerForWorkspaceUpdate) BroadcastSessionRenamed(string, string)           {}
+func (m *mockSessionManagerForWorkspaceUpdate) BroadcastSessionBeadsIssueUpdated(string, string) {}
 func (m *mockSessionManagerForWorkspaceUpdate) BroadcastLoopUpdated(string, *session.LoopPrompt) {
 }
 func (m *mockSessionManagerForWorkspaceUpdate) GetUserDataSchema(string) *config.UserDataSchema {
@@ -3898,6 +3914,7 @@ func (m *mockSessionManagerForWait) DeleteChildSessions(string)                 
 func (m *mockSessionManagerForWait) GetWorkspaces() []config.WorkspaceSettings           { return nil }
 func (m *mockSessionManagerForWait) GetWorkspaceByUUID(string) *config.WorkspaceSettings { return nil }
 func (m *mockSessionManagerForWait) BroadcastSessionRenamed(string, string)              {}
+func (m *mockSessionManagerForWait) BroadcastSessionBeadsIssueUpdated(string, string)    {}
 func (m *mockSessionManagerForWait) BroadcastLoopUpdated(string, *session.LoopPrompt)    {}
 func (m *mockSessionManagerForWait) GetUserDataSchema(string) *config.UserDataSchema     { return nil }
 func (m *mockSessionManagerForWait) GetWorkspacePrompts(string) []config.WebPrompt       { return nil }
@@ -4808,6 +4825,7 @@ func (m *mockSessionManagerForChildren) GetWorkspaceByUUID(string) *config.Works
 	return nil
 }
 func (m *mockSessionManagerForChildren) BroadcastSessionRenamed(string, string)           {}
+func (m *mockSessionManagerForChildren) BroadcastSessionBeadsIssueUpdated(string, string) {}
 func (m *mockSessionManagerForChildren) BroadcastLoopUpdated(string, *session.LoopPrompt) {}
 func (m *mockSessionManagerForChildren) GetUserDataSchema(string) *config.UserDataSchema  { return nil }
 func (m *mockSessionManagerForChildren) GetWorkspacePrompts(string) []config.WebPrompt    { return nil }
@@ -5002,7 +5020,8 @@ func (m *mockSessionManagerForChildrenMutable) GetWorkspaces() []config.Workspac
 func (m *mockSessionManagerForChildrenMutable) GetWorkspaceByUUID(string) *config.WorkspaceSettings {
 	return nil
 }
-func (m *mockSessionManagerForChildrenMutable) BroadcastSessionRenamed(string, string) {}
+func (m *mockSessionManagerForChildrenMutable) BroadcastSessionRenamed(string, string)           {}
+func (m *mockSessionManagerForChildrenMutable) BroadcastSessionBeadsIssueUpdated(string, string) {}
 func (m *mockSessionManagerForChildrenMutable) BroadcastLoopUpdated(string, *session.LoopPrompt) {
 }
 func (m *mockSessionManagerForChildrenMutable) GetUserDataSchema(string) *config.UserDataSchema {
@@ -5651,7 +5670,8 @@ func (m *mockSessionManagerForAutoResume) GetWorkspaces() []config.WorkspaceSett
 func (m *mockSessionManagerForAutoResume) GetWorkspaceByUUID(string) *config.WorkspaceSettings {
 	return nil
 }
-func (m *mockSessionManagerForAutoResume) BroadcastSessionRenamed(string, string) {}
+func (m *mockSessionManagerForAutoResume) BroadcastSessionRenamed(string, string)           {}
+func (m *mockSessionManagerForAutoResume) BroadcastSessionBeadsIssueUpdated(string, string) {}
 func (m *mockSessionManagerForAutoResume) BroadcastLoopUpdated(string, *session.LoopPrompt) {
 }
 func (m *mockSessionManagerForAutoResume) GetUserDataSchema(string) *config.UserDataSchema {
@@ -7132,7 +7152,8 @@ func (m *mockSessionManagerCrossWorkspace) GetWorkspaceByUUID(uuid string) *conf
 	}
 	return m.workspaces[uuid]
 }
-func (m *mockSessionManagerCrossWorkspace) BroadcastSessionRenamed(string, string) {}
+func (m *mockSessionManagerCrossWorkspace) BroadcastSessionRenamed(string, string)           {}
+func (m *mockSessionManagerCrossWorkspace) BroadcastSessionBeadsIssueUpdated(string, string) {}
 func (m *mockSessionManagerCrossWorkspace) BroadcastLoopUpdated(string, *session.LoopPrompt) {
 }
 func (m *mockSessionManagerCrossWorkspace) GetUserDataSchema(string) *config.UserDataSchema {
@@ -9563,6 +9584,92 @@ func TestConversationUpdate_OnCompletionLoop(t *testing.T) {
 	}
 	if out2.LoopMaxDurationSeconds != 3600 {
 		t.Errorf("patched maxDur = %d, want preserved 3600", out2.LoopMaxDurationSeconds)
+	}
+}
+
+// TestConversationUpdate_BeadsIssueBroadcasts verifies that updating the
+// beads_issue link via the mitto_conversation_update MCP tool persists the new
+// id AND fires a session_beads_issue_updated broadcast on the SessionManager,
+// so the frontend header linked-issue button refreshes immediately (mitto:
+// stale beads link indicator, agent-driven update scenario).
+func TestConversationUpdate_BeadsIssueBroadcasts(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := session.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	t.Cleanup(func() { store.Close() })
+
+	parentMeta := session.Metadata{
+		SessionID:  session.GenerateSessionID(),
+		Name:       "Parent",
+		ACPServer:  "test-server",
+		WorkingDir: "/test/dir",
+	}
+	if err := store.Create(parentMeta); err != nil {
+		t.Fatalf("Create parent: %v", err)
+	}
+
+	mockSM := &mockSessionManager{}
+	srv, err := NewServer(Config{Port: 0}, Dependencies{Store: store, SessionManager: mockSM})
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	if err := srv.RegisterSession(parentMeta.SessionID, nil, logger); err != nil {
+		t.Fatalf("RegisterSession: %v", err)
+	}
+
+	// Set the beads_issue to a new value.
+	newID := "mitto-abc"
+	_, out, err := srv.handleConversationUpdate(context.Background(), nil, ConversationUpdateInput{
+		SelfID:         parentMeta.SessionID,
+		ConversationID: parentMeta.SessionID,
+		BeadsIssue:     &newID,
+	})
+	if err != nil {
+		t.Fatalf("handleConversationUpdate error: %v", err)
+	}
+	if !out.Success {
+		t.Fatalf("update not successful: %s", out.Error)
+	}
+
+	// Metadata must reflect the new link.
+	stored, err := store.GetMetadata(parentMeta.SessionID)
+	if err != nil {
+		t.Fatalf("GetMetadata: %v", err)
+	}
+	if stored.BeadsIssue != newID {
+		t.Errorf("stored BeadsIssue = %q, want %q", stored.BeadsIssue, newID)
+	}
+
+	// The mock must have observed exactly one beads_issue broadcast for our session.
+	if len(mockSM.broadcastBeadsIssues) != 1 {
+		t.Fatalf("expected 1 beads_issue broadcast, got %d", len(mockSM.broadcastBeadsIssues))
+	}
+	call := mockSM.broadcastBeadsIssues[0]
+	if call.sessionID != parentMeta.SessionID {
+		t.Errorf("broadcast session_id = %q, want %q", call.sessionID, parentMeta.SessionID)
+	}
+	if call.beadsIssue != newID {
+		t.Errorf("broadcast beads_issue = %q, want %q", call.beadsIssue, newID)
+	}
+
+	// Clearing the link also broadcasts (empty string).
+	clear := ""
+	_, _, err = srv.handleConversationUpdate(context.Background(), nil, ConversationUpdateInput{
+		SelfID:         parentMeta.SessionID,
+		ConversationID: parentMeta.SessionID,
+		BeadsIssue:     &clear,
+	})
+	if err != nil {
+		t.Fatalf("handleConversationUpdate (clear) error: %v", err)
+	}
+	if len(mockSM.broadcastBeadsIssues) != 2 {
+		t.Fatalf("expected 2 beads_issue broadcasts after clear, got %d", len(mockSM.broadcastBeadsIssues))
+	}
+	if got := mockSM.broadcastBeadsIssues[1]; got.beadsIssue != "" {
+		t.Errorf("clear broadcast beads_issue = %q, want empty string", got.beadsIssue)
 	}
 }
 

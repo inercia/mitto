@@ -1280,17 +1280,13 @@ export function useWebSocket({ onActiveSessionRemovedRef } = {}) {
                   session.info?.loop_configured ??
                   false,
                 loop_enabled:
-                  msg.data.loop_enabled ??
-                  session.info?.loop_enabled ??
-                  false,
+                  msg.data.loop_enabled ?? session.info?.loop_enabled ?? false,
                 loop_stopped_reason:
                   msg.data.loop_stopped_reason ??
                   session.info?.loop_stopped_reason ??
                   null,
                 loop_trigger:
-                  msg.data.loop_trigger ??
-                  session.info?.loop_trigger ??
-                  null,
+                  msg.data.loop_trigger ?? session.info?.loop_trigger ?? null,
                 loop_delay_seconds:
                   msg.data.loop_delay_seconds ??
                   session.info?.loop_delay_seconds ??
@@ -2286,6 +2282,33 @@ export function useWebSocket({ onActiveSessionRemovedRef } = {}) {
         setStoredSessions((prev) =>
           prev.map((s) =>
             s.session_id === sessionId ? { ...s, name: msg.data.name } : s,
+          ),
+        );
+        break;
+
+      case "session_beads_issue_updated":
+        // Linked beads issue changed for this session (via REST PATCH or
+        // MCP tool). Update session info so the header's linked-issue button
+        // re-renders with the new id (or clears when empty).
+        setSessions((prev) => {
+          const session = prev[sessionId];
+          if (!session) return prev;
+          return {
+            ...prev,
+            [sessionId]: {
+              ...session,
+              info: {
+                ...session.info,
+                beads_issue: msg.data.beads_issue || "",
+              },
+            },
+          };
+        });
+        setStoredSessions((prev) =>
+          prev.map((s) =>
+            s.session_id === sessionId
+              ? { ...s, beads_issue: msg.data.beads_issue || "" }
+              : s,
           ),
         );
         break;
@@ -4084,6 +4107,34 @@ export function useWebSocket({ onActiveSessionRemovedRef } = {}) {
         });
         break;
 
+      case "session_beads_issue_updated":
+        // Update linked beads issue in stored sessions so the sidebar/list
+        // reflects the new link without a refetch.
+        setStoredSessions((prev) =>
+          prev.map((s) =>
+            s.session_id === msg.data.session_id
+              ? { ...s, beads_issue: msg.data.beads_issue || "" }
+              : s,
+          ),
+        );
+        // Also update the active session's info so the conversation header's
+        // linked-issue button re-renders with the new id (or clears when empty).
+        setSessions((prev) => {
+          const session = prev[msg.data.session_id];
+          if (!session) return prev;
+          return {
+            ...prev,
+            [msg.data.session_id]: {
+              ...session,
+              info: {
+                ...session.info,
+                beads_issue: msg.data.beads_issue || "",
+              },
+            },
+          };
+        });
+        break;
+
       case "session_archived":
         // Update session archived state in stored sessions
         setStoredSessions((prev) =>
@@ -4314,8 +4365,7 @@ export function useWebSocket({ onActiveSessionRemovedRef } = {}) {
                   loop_frequency: msg.data.frequency || null,
                   loop_iteration_count: msg.data.iteration_count ?? null,
                   loop_max_iterations: msg.data.max_iterations ?? null,
-                  loop_stopped_reason:
-                    msg.data.loop_stopped_reason || null,
+                  loop_stopped_reason: msg.data.loop_stopped_reason || null,
                   loop_trigger: msg.data.trigger ?? null,
                   loop_delay_seconds: msg.data.delay_seconds ?? null,
                   loop_max_duration_seconds:
@@ -4342,8 +4392,7 @@ export function useWebSocket({ onActiveSessionRemovedRef } = {}) {
                 loop_frequency: msg.data.frequency || null,
                 loop_iteration_count: msg.data.iteration_count ?? null,
                 loop_max_iterations: msg.data.max_iterations ?? null,
-                loop_stopped_reason:
-                  msg.data.loop_stopped_reason || null,
+                loop_stopped_reason: msg.data.loop_stopped_reason || null,
                 loop_trigger: msg.data.trigger ?? null,
                 loop_delay_seconds: msg.data.delay_seconds ?? null,
                 loop_max_duration_seconds:

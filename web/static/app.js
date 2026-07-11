@@ -609,7 +609,34 @@ function App() {
   // badge dot. Fetched asynchronously (bd show can be slow) and keyed on the
   // active conversation's linked issue; cleared when there is no linked issue.
   // Mirrors the fetch in SessionPanel.js so both surfaces stay in sync.
+  //
+  // Re-fetches on:
+  //   - link change (activeSessionId / sessionInfo.beads_issue / working_dir)
+  //     — including MCP-driven changes via session_beads_issue_updated, which
+  //     updates sessionInfo.beads_issue and re-triggers this effect.
+  //   - filesystem change to the .beads/ dir for our working_dir
+  //     (mitto:beads_changed) — captures status transitions made via `bd` CLI
+  //     or another agent, refreshed via a monotonic beadsRefreshTick counter.
   const [headerBeadsStatus, setHeaderBeadsStatus] = useState(null);
+  const [beadsRefreshTick, setBeadsRefreshTick] = useState(0);
+  useEffect(() => {
+    const workingDir = sessionInfo?.working_dir;
+    if (!workingDir) return undefined;
+    const onBeadsChanged = (e) => {
+      const dirs = e?.detail?.working_dirs;
+      if (!Array.isArray(dirs) || dirs.length === 0) {
+        // Missing/malformed payload — assume relevant and refresh.
+        setBeadsRefreshTick((t) => t + 1);
+        return;
+      }
+      if (dirs.includes(workingDir)) {
+        setBeadsRefreshTick((t) => t + 1);
+      }
+    };
+    window.addEventListener("mitto:beads_changed", onBeadsChanged);
+    return () =>
+      window.removeEventListener("mitto:beads_changed", onBeadsChanged);
+  }, [sessionInfo?.working_dir]);
   useEffect(() => {
     const issueId = sessionInfo?.beads_issue;
     const workingDir = sessionInfo?.working_dir;
@@ -642,7 +669,12 @@ function App() {
     return () => {
       cancelled = true;
     };
-  }, [activeSessionId, sessionInfo?.beads_issue, sessionInfo?.working_dir]);
+  }, [
+    activeSessionId,
+    sessionInfo?.beads_issue,
+    sessionInfo?.working_dir,
+    beadsRefreshTick,
+  ]);
 
   // Wire the active-conversation-removed callback consumed by useWebSocket. When
   // the active conversation is deleted or archived (in this window or via a

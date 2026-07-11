@@ -169,6 +169,12 @@ type Deps struct {
 	// nil-guard.
 	BroadcastSessionRenamed func(sessionID, newName string)
 
+	// BroadcastSessionBeadsIssueUpdated mirrors
+	// Server.BroadcastSessionBeadsIssueUpdated: it notifies all connected clients
+	// that a session's linked beads issue ID changed. May be nil; callers must
+	// nil-guard.
+	BroadcastSessionBeadsIssueUpdated func(sessionID, beadsIssue string)
+
 	// BroadcastSessionPinned mirrors Server.BroadcastSessionPinned: it notifies
 	// all connected clients that a session's pinned state changed. May be nil;
 	// callers must nil-guard.

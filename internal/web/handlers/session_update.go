@@ -121,6 +121,13 @@ func (h *Handlers) HandleUpdateSession(w http.ResponseWriter, r *http.Request, s
 		h.deps.BroadcastSessionRenamed(sessionID, *req.Name)
 	}
 
+	// Broadcast the beads_issue link change so the conversation header's
+	// linked-issue button/badge updates immediately (mitto: stale beads link
+	// indicator). Fires for both set-to-new-id and clear-to-empty transitions.
+	if req.BeadsIssue != nil && h.deps.BroadcastSessionBeadsIssueUpdated != nil {
+		h.deps.BroadcastSessionBeadsIssueUpdated(sessionID, *req.BeadsIssue)
+	}
+
 	// Broadcast the pinned state change to all connected WebSocket clients
 	if req.Pinned != nil && h.deps.BroadcastSessionPinned != nil {
 		h.deps.BroadcastSessionPinned(sessionID, *req.Pinned)
