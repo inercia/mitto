@@ -2918,11 +2918,14 @@ function App() {
            the ChatInput dropup) has prompt params it cannot auto-fill. The
            conversation menu sets hostSessionId to the right-clicked conversation
            so a childSessionId picker is scoped to its children; other surfaces
-           fall back to the active session. -->
+           fall back to the active session. workingDir prefers the beads view's
+           working dir (when opened from a beads context) and otherwise falls back
+           to the active conversation's working dir, so the workspace-scoped
+           "prompts" picker can populate regardless of the opening surface. -->
         <${PromptParameterDialog}
           isOpen=${promptParamDialog !== null}
           parameters=${promptParamDialog?.parameters || []}
-          workingDir=${beadsWorkingDir}
+          workingDir=${beadsWorkingDir || headerWorkingDir}
           hostSessionId=${promptParamDialog?.hostSessionId ?? activeSessionId}
           title=${promptParamDialog?.prompt?.name || "Prompt parameters"}
           initialValues=${promptParamDialog?.initialValues || {}}

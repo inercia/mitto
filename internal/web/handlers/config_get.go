@@ -167,6 +167,11 @@ func (h *Handlers) HandleGetConfig(w http.ResponseWriter, r *http.Request) {
 				acpServers[i]["model_profile"] = srv.ModelProfile
 			}
 
+			// Include model tag if specified
+			if srv.ModelTag != "" {
+				acpServers[i]["model_tag"] = srv.ModelTag
+			}
+
 			// Include context-flush command if specified
 			if srv.ContextFlushCommand != "" {
 				acpServers[i]["context_flush_command"] = srv.ContextFlushCommand

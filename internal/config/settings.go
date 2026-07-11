@@ -707,6 +707,9 @@ type ACPServerSettings struct {
 	// ModelProfile is the name of a Model profile (Config.Models) used for
 	// session-start model auto-selection; empty falls back to legacy Constraints.
 	ModelProfile string `json:"model_profile,omitempty"`
+	// ModelTag is a capability tag used to resolve a Model profile at session
+	// start when ModelProfile is empty. Mirrors WorkspaceSettings.InitialModelTag.
+	ModelTag string `json:"model_tag,omitempty"`
 	// Constraints is an optional map of config option auto-selection rules.
 	// The key is the config option category (e.g., "model", "mode").
 	Constraints map[string]*ACPServerConstraint `json:"constraints,omitempty"`

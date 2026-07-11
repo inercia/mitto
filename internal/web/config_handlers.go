@@ -135,6 +135,7 @@ func (s *Server) buildNewSettings(req *ConfigSaveRequest) (*configPkg.Settings, 
 			AutoApprove:  srv.AutoApprove,          // Auto-approve permission requests
 			Tags:         srv.Tags,                 // Categorization tags
 			ModelProfile: srv.ModelProfile,         // Model profile name (mitto-hke)
+			ModelTag:     srv.ModelTag,             // Capability tag for profile resolution
 			Constraints:  srv.Constraints,          // Config option auto-selection rules
 			// ContextFlushCommand: agent-native context-flush slash command (e.g. "/clear")
 			ContextFlushCommand: srv.ContextFlushCommand,

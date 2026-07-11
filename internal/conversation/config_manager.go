@@ -32,8 +32,10 @@ func childStartupJitter(max time.Duration) time.Duration {
 // When the server has a ModelProfile set (mitto-hke), the profile's Criteria replaces
 // the "model" entry of the constraints map (a copy — srv.Constraints is never mutated),
 // so downstream applyConfigConstraints resolves the model the same way it always has.
-// If the profile name doesn't resolve to a known profile, or has no Criteria, this falls
-// back to the server's raw Constraints (legacy matchMode/pattern behaviour).
+// When ModelProfile is empty but ModelTag is set, the first profile in
+// EffectiveModelProfiles carrying that tag (case-insensitive) supplies the Criteria.
+// If neither resolves to a usable profile Criteria, this falls back to the server's
+// raw Constraints (legacy matchMode/pattern behaviour).
 func lookupACPServerConstraints(cfg *config.Config, serverName string) map[string]*config.ACPServerConstraint {
 	if cfg == nil {
 		return nil
@@ -42,10 +44,14 @@ func lookupACPServerConstraints(cfg *config.Config, serverName string) map[strin
 		if srv.Name != serverName {
 			continue
 		}
-		if srv.ModelProfile == "" {
-			return srv.Constraints
+		var profile *config.ModelProfile
+		if srv.ModelProfile != "" {
+			profile = cfg.FindModelProfile(srv.ModelProfile)
+		} else if srv.ModelTag != "" {
+			if matches := cfg.ModelProfilesByTag(srv.ModelTag); len(matches) > 0 {
+				profile = &matches[0]
+			}
 		}
-		profile := cfg.FindModelProfile(srv.ModelProfile)
 		if profile == nil || profile.Criteria == nil {
 			return srv.Constraints
 		}
