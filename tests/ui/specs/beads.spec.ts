@@ -185,6 +185,131 @@ testWithCleanup.describe("Beads view - mobile", () => {
       ).toBeHidden();
     },
   );
+
+  // A long unbreakable token (URL / file path / hash) is exactly the kind of
+  // content that pushed the comment body off-screen before the fix — see the
+  // describe block below for the mechanism.
+  const LONG_COMMENT_TOKEN =
+    "https://example.com/very/long/path/to/some/deeply/nested/resource/that-nobody-would-ever-type-by-hand-abcdefghijklmnopqrstuvwxyz0123456789";
+  const LONG_COMMENT_TEXT = `See ${LONG_COMMENT_TOKEN} for details.`;
+
+  const ISSUE_WITH_LONG_COMMENT = {
+    ...MOCK_ISSUES[1], // mitto-bbb "Short issue"
+    dependencies: [],
+    labels: [],
+    notes: "",
+    comments: [
+      {
+        id: "cmt-1",
+        author: "alice",
+        created_at: "2026-06-01T11:00:00Z",
+        text: LONG_COMMENT_TEXT,
+      },
+    ],
+  };
+
+  // Regression guard for the comment-wrapping fix. daisyUI 5 renders
+  // `.fieldset` as `display: grid` with `grid-template-columns: 1fr`, and grid
+  // items default to `min-width: auto` (= min-content). A comment containing a
+  // long unbreakable token (URL / path / hash) forced the 1fr track to that
+  // token's intrinsic width, blowing the fieldset — and everything above it —
+  // past the mobile drawer's width and hiding the tail of the token off the
+  // right edge. Descriptions were fine because they're rendered in a plain
+  // <div>, not a fieldset. The fix has two parts:
+  //   1. `min-w-0` on the `.fieldset` itself (BeadsView.js) so it can shrink
+  //      inside its own parent.
+  //   2. `.fieldset > * { min-width: 0 }` in styles.css so the grid items
+  //      inside the fieldset can also shrink below min-content, letting
+  //      `.markdown-content { overflow-wrap: break-word }` finally wrap the
+  //      token.
+  // Together the chain shrinks from the drawer panel all the way down to the
+  // wrapping text.
+  testWithCleanup(
+    "comment bodies wrap long tokens instead of overflowing the panel on mobile",
+    async ({ page, timeouts }) => {
+      // The detail-panel fetch uses /api/issues/{id}?working_dir=... — mock it
+      // to embed a comment with a very long unbreakable token. Register the
+      // more-specific route BEFORE the earlier /api/issues list mock so
+      // Playwright picks it up first (routes match in reverse-registration
+      // order). The list mock is left in place for the initial view.
+      await page.route(/\/api\/issues\/[^/?]+/, async (route) => {
+        await route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify(ISSUE_WITH_LONG_COMMENT),
+        });
+      });
+
+      await openBeads(page, timeouts);
+      await page.setViewportSize(MOBILE_VIEWPORT);
+
+      // Open the detail panel for the short issue (mitto-bbb) — which now
+      // carries the long-token comment via the /api/issues/{id} mock above.
+      await page
+        .locator('div[data-has-context-menu]:has-text("Short issue")')
+        .first()
+        .click();
+      const panel = page.locator(DETAIL_PANEL);
+      await expect(panel).toBeVisible({ timeout: timeouts.shortAction });
+
+      // The Comments fieldset is scoped by its legend text; the count reflects
+      // the mocked single comment.
+      const commentsFieldset = panel.locator(
+        'fieldset:has(legend:has-text("Comments"))',
+      );
+      await expect(commentsFieldset).toBeVisible({
+        timeout: timeouts.shortAction,
+      });
+
+      // The comment body is rendered as markdown-content; wait for it to
+      // resolve so we're not measuring a pre-render skeleton. The long token
+      // becomes an <a> tag under marked's URL autolinking, so match by the
+      // token substring anywhere inside the markdown-content container.
+      const commentBody = commentsFieldset
+        .locator("li div.markdown-content")
+        .first();
+      await expect(commentBody).toBeVisible({ timeout: timeouts.shortAction });
+      await expect(commentBody).toContainText(LONG_COMMENT_TOKEN);
+
+      // Ground truth: the comments fieldset must not be wider than the panel
+      // that contains it, and the comment body must not overflow its own box.
+      // Before the fix the fieldset's grid track sized to the token's
+      // min-content and blew everything past the mobile drawer, hiding the
+      // tail of the token off the right edge.
+      const widths = await panel.evaluate((panelEl) => {
+        // `:has-text` is a Playwright-only pseudo (not native CSS), so match
+        // the Comments fieldset by iterating over the legends.
+        const fieldset = Array.from(
+          panelEl.querySelectorAll("fieldset"),
+        ).find((el) => {
+          const legend = el.querySelector("legend");
+          return !!legend && /Comments/.test(legend.textContent || "");
+        }) as HTMLElement | undefined;
+        const body = fieldset?.querySelector(
+          "li div.markdown-content",
+        ) as HTMLElement | null;
+        return {
+          panelClient: (panelEl as HTMLElement).clientWidth,
+          fieldsetScroll: fieldset ? fieldset.scrollWidth : -1,
+          fieldsetClient: fieldset ? fieldset.clientWidth : -1,
+          bodyScroll: body ? body.scrollWidth : -1,
+          bodyClient: body ? body.clientWidth : -1,
+        };
+      });
+
+      // The fieldset fits within the panel — before the fix (min-w-0 on the
+      // fieldset + `.fieldset > * { min-width: 0 }` in styles.css) its
+      // grid-item children sized to the token's min-content and blew the
+      // fieldset out to ~1.5x the panel width. Allow a 1px rounding tolerance.
+      expect(widths.fieldsetScroll).toBeGreaterThan(0);
+      expect(widths.fieldsetScroll).toBeLessThanOrEqual(widths.panelClient + 1);
+
+      // The comment body itself does not horizontally overflow its own box —
+      // i.e. the long token wraps rather than being pushed off-screen.
+      expect(widths.bodyScroll).toBeGreaterThan(0);
+      expect(widths.bodyScroll).toBeLessThanOrEqual(widths.bodyClient + 1);
+    },
+  );
 });
 
 /**

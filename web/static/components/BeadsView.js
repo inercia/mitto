@@ -2369,12 +2369,12 @@ ${viewDraft.description}</pre
 
               ${DescriptionField("create")}
 
-              <fieldset class="fieldset">
+              <fieldset class="fieldset min-w-0">
                 <legend class="fieldset-legend">Dependencies</legend>
                 ${DependenciesField("create")}
               </fieldset>
 
-              <fieldset class="fieldset">
+              <fieldset class="fieldset min-w-0">
                 <legend class="fieldset-legend">Notes</legend>
                 ${NotesField("create")}
               </fieldset>
@@ -2562,7 +2562,7 @@ ${viewDraft.description}</pre
                 ${TitleField("view")} ${DescriptionField("view")}
                 ${subtasks.length > 0 &&
                 html`
-                  <fieldset class="fieldset">
+                  <fieldset class="fieldset min-w-0">
                     <legend class="fieldset-legend">
                       Subtasks (${subtasks.length})
                     </legend>
@@ -2590,12 +2590,12 @@ ${viewDraft.description}</pre
                   </fieldset>
                 `}
 
-                <fieldset class="fieldset">
+                <fieldset class="fieldset min-w-0">
                   <legend class="fieldset-legend">Dependencies</legend>
                   ${DependenciesField("view")}
                 </fieldset>
 
-                <fieldset class="fieldset">
+                <fieldset class="fieldset min-w-0">
                   <legend class="fieldset-legend">
                     Comments${comments.length ? ` (${comments.length})` : ""}
                   </legend>
@@ -2690,7 +2690,7 @@ ${viewDraft.description}</pre
                 `}
                 </fieldset>
 
-                <fieldset class="fieldset">
+                <fieldset class="fieldset min-w-0">
                   <legend class="fieldset-legend">Notes</legend>
                   ${NotesField("view")}
                 </fieldset>

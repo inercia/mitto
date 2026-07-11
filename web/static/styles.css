@@ -1727,6 +1727,28 @@ a.mailto-link:hover {
   background: #94a3b8;
 }
 
+/* daisyUI 5 renders `.fieldset` as `display: grid` with `grid-template-columns:
+   1fr`. Grid items default to `min-width: auto` (= min-content), so a fieldset
+   whose content contains a long unbreakable token (URL, path, hash) sizes its
+   1fr track to that token's intrinsic width and overflows the fieldset — which
+   in turn pushes the surrounding markdown-content past the panel/viewport
+   width. This is exactly why Beads comments (rendered inside a fieldset) did
+   not wrap on iPhone while descriptions (rendered in a plain <div>) did.
+
+   Setting `min-width: 0` on the direct children forces the grid track to be
+   sizable below its content's min-content, so the child block sizes to the
+   available column width (the fieldset's own inner width) and
+   `overflow-wrap: break-word` on `.markdown-content` can finally wrap the long
+   token. The rule is scoped to daisyUI's `.fieldset` and does not affect
+   native <fieldset>s used elsewhere.
+
+   Pair with `min-w-0` on the `.fieldset` itself (in BeadsView.js) so the
+   fieldset can also shrink inside its own parent — the two together let the
+   chain shrink from the drawer panel all the way down to the wrapping text. */
+.fieldset > * {
+  min-width: 0;
+}
+
 /* Beads issue list (daisyUI .list): render each issue as a self-contained
    card — matching the ACP Servers / Runners lists — instead of daisyUI's
    faint full-width row dividers. The per-card border is applied as Tailwind
