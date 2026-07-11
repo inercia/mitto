@@ -60,11 +60,11 @@ func DefaultModelProfiles() []ModelProfile {
 	}
 	return []ModelProfile{
 		{Name: "Claude", Criteria: contains("Claude"), Tags: []string{"Anthropic"}},
-		{Name: "Claude Opus", Criteria: contains("Opus"), Tags: []string{"Smartest", "Reasoning", "Expensive"}},
+		{Name: "Claude Opus", Criteria: contains("Opus"), Tags: []string{"Smartest", "Reasoning", "Thinking", "Deep", "Slow", "Expensive"}},
 		{Name: "Claude Sonnet 5", Criteria: contains("Sonnet 5"), Tags: []string{"Smart", "Coding"}},
 		{Name: "Claude Sonnet 4", Criteria: contains("Sonnet 4"), Tags: []string{"Smart", "Coding"}},
 		{Name: "Claude Haiku", Criteria: contains("Haiku"), Tags: []string{"Fast", "Cheap"}},
-		{Name: "GPT-5", Criteria: contains("GPT-5"), Tags: []string{"Smart", "Reasoning", "Coding"}},
+		{Name: "GPT-5", Criteria: contains("GPT-5"), Tags: []string{"Smart", "Reasoning", "Thinking", "Deep", "Coding"}},
 		{Name: "GPT-4", Criteria: contains("GPT-4"), Tags: []string{"Smart", "Coding"}},
 		{Name: "Gemini", Criteria: contains("Gemini"), Tags: []string{"Smart", "LongContext"}},
 	}
@@ -192,6 +192,12 @@ type ACPServer struct {
 	// Empty means no profile is selected; legacy Constraints["model"] (if any)
 	// is used as a fallback. See FindModelProfile.
 	ModelProfile string
+	// ModelTag is a capability tag (e.g. "Smart", "Fast") used to resolve a
+	// Model profile at session start when ModelProfile is empty. The first
+	// profile in EffectiveModelProfiles carrying this tag supplies the model
+	// Criteria. Mutually exclusive with ModelProfile in the UI, but if both are
+	// set ModelProfile wins. Mirrors WorkspaceSettings.InitialModelTag.
+	ModelTag string
 	// Constraints is an optional map of config option auto-selection rules.
 	// The key is the config option category (e.g., "model", "mode").
 	// When a session starts, matching constraints auto-select the appropriate option value.

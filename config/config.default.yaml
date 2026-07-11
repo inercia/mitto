@@ -54,7 +54,7 @@ models:
     criteria:
       matchMode: contains
       pattern: Opus
-    tags: [Smartest, Reasoning, Expensive]
+    tags: [Smartest, Reasoning, Thinking, Deep, Slow, Expensive]
   - name: Claude Sonnet 5
     criteria:
       matchMode: contains
@@ -74,7 +74,7 @@ models:
     criteria:
       matchMode: contains
       pattern: GPT-5
-    tags: [Smart, Reasoning, Coding]
+    tags: [Smart, Reasoning, Thinking, Deep, Coding]
   - name: GPT-4
     criteria:
       matchMode: contains

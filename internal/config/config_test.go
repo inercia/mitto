@@ -2719,11 +2719,11 @@ func TestParse_EmbeddedDefaultModelProfiles(t *testing.T) {
 
 	wantProfiles := map[string][]string{
 		"Claude":          {"Anthropic"},
-		"Claude Opus":     {"Smartest", "Reasoning", "Expensive"},
+		"Claude Opus":     {"Smartest", "Reasoning", "Thinking", "Deep", "Slow", "Expensive"},
 		"Claude Sonnet 5": {"Smart", "Coding"},
 		"Claude Sonnet 4": {"Smart", "Coding"},
 		"Claude Haiku":    {"Fast", "Cheap"},
-		"GPT-5":           {"Smart", "Reasoning", "Coding"},
+		"GPT-5":           {"Smart", "Reasoning", "Thinking", "Deep", "Coding"},
 		"GPT-4":           {"Smart", "Coding"},
 		"Gemini":          {"Smart", "LongContext"},
 	}
@@ -2755,7 +2755,7 @@ func TestParse_EmbeddedDefaultModelProfiles(t *testing.T) {
 	// "Claude Opus 4.x" matches the vendor-level Claude (contains "Claude") and the Opus
 	// profile (contains "Opus"); the union de-dups case-insensitively.
 	opusTags := cfg.ResolveModelTags("Claude Opus 4.5")
-	wantOpus := []string{"Anthropic", "Smartest", "Reasoning", "Expensive"}
+	wantOpus := []string{"Anthropic", "Smartest", "Reasoning", "Thinking", "Deep", "Slow", "Expensive"}
 	if len(opusTags) != len(wantOpus) {
 		t.Fatalf("ResolveModelTags(Claude Opus 4.5) = %v, want %v", opusTags, wantOpus)
 	}
@@ -2840,7 +2840,7 @@ func TestDefaultModelProfiles_MatchesEmbeddedYAML(t *testing.T) {
 // TestCanonicalModelTags pins the canonical capability-tag set (sorted, de-duplicated)
 // derived from DefaultModelProfiles.
 func TestCanonicalModelTags(t *testing.T) {
-	want := []string{"Anthropic", "Cheap", "Coding", "Expensive", "Fast", "LongContext", "Reasoning", "Smart", "Smartest"}
+	want := []string{"Anthropic", "Cheap", "Coding", "Deep", "Expensive", "Fast", "LongContext", "Reasoning", "Slow", "Smart", "Smartest", "Thinking"}
 	got := CanonicalModelTags()
 	if strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Fatalf("CanonicalModelTags() = %v, want %v", got, want)
