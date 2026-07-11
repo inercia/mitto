@@ -5693,23 +5693,40 @@ export function SettingsDialog({
                               : html`<${ChevronRightIcon}
                                   className="w-4 h-4 text-mitto-text-muted shrink-0"
                                 />`}
-                            <span class="font-medium text-sm flex-1 truncate">
+                            <span
+                              class="font-medium text-sm flex-1 min-w-0 truncate whitespace-nowrap"
+                            >
                               ${trimmedName || "Untitled"}
                             </span>
                             ${tags.length > 0 &&
-                            html`
-                              <div class="flex flex-wrap gap-1 justify-end">
-                                ${tags.map(
-                                  (tag) => html`
+                            (() => {
+                              const maxVisible = 4;
+                              const visible = tags.slice(0, maxVisible);
+                              const hidden = tags.slice(maxVisible);
+                              return html`
+                                <div
+                                  class="flex flex-nowrap items-center gap-1 justify-end shrink-0 overflow-hidden"
+                                >
+                                  ${visible.map(
+                                    (tag) => html`
+                                      <span
+                                        key=${tag}
+                                        class="badge badge-sm badge-outline shrink-0"
+                                        >${tag}</span
+                                      >
+                                    `,
+                                  )}
+                                  ${hidden.length > 0 &&
+                                  html`
                                     <span
-                                      key=${tag}
-                                      class="badge badge-sm badge-outline"
-                                      >${tag}</span
+                                      class="badge badge-sm badge-outline shrink-0 tooltip tooltip-bottom"
+                                      data-tip=${hidden.join(", ")}
+                                      >+${hidden.length}</span
                                     >
-                                  `,
-                                )}
-                              </div>
-                            `}
+                                  `}
+                                </div>
+                              `;
+                            })()}
                             <button
                               class="btn btn-sm btn-ghost"
                               title="Move up"
