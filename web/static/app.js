@@ -2293,6 +2293,38 @@ function App() {
   const headerIsLoop = activeSession?.loop_configured || false;
   const headerIsSpawned =
     !!(activeSession && activeSession.parent_session_id) && !activeHasChildren;
+
+  // Cmd/Ctrl+Shift+L: toggle loop/unloop for the active conversation. Mirrors
+  // the header toolbar buttons in conversationToolbarItems (Loop / Unloop) —
+  // same guards, same handlers — so keyboard and mouse stay in lockstep.
+  // (Plain ⌘L is already claimed by the native macOS menu for "Focus Input".)
+  // Placed here (not in the main shortcut effect above) because it needs
+  // activeSession and the headerIs* flags, which are declared just above.
+  useEffect(() => {
+    const handleLoopShortcut = (e) => {
+      if (!(e.metaKey || e.ctrlKey) || !e.shiftKey || e.altKey) return;
+      if (e.key !== "l" && e.key !== "L") return;
+      if (!activeSession) return;
+      if (headerIsSpawned) return;
+      if (!headerIsLoop && headerIsArchived) return;
+      e.preventDefault();
+      if (headerIsLoop) {
+        handleMakeNonLoop(activeSession);
+      } else {
+        handleMakeLoop(activeSession);
+      }
+    };
+    window.addEventListener("keydown", handleLoopShortcut);
+    return () => window.removeEventListener("keydown", handleLoopShortcut);
+  }, [
+    activeSession,
+    headerIsLoop,
+    headerIsSpawned,
+    headerIsArchived,
+    handleMakeLoop,
+    handleMakeNonLoop,
+  ]);
+
   // Only the active conversation can have queued messages; streaming state comes
   // from the live socket. Both block archiving (matches SessionItem logic).
   const headerHasQueued = queueLength > 0;
@@ -2661,7 +2693,7 @@ function App() {
                   kind: "button",
                   testId: "header-make-loop",
                   icon: html`<${LoopIcon} className="w-4 h-4" />`,
-                  tip: "Loop",
+                  tip: "Loop (⌘⇧L)",
                   ariaLabel: "Loop",
                   onClick: () => handleMakeLoop(activeSession),
                 },
@@ -2673,7 +2705,7 @@ function App() {
                   kind: "button",
                   testId: "header-make-non-loop",
                   icon: html`<${LoopOffIcon} className="w-4 h-4" />`,
-                  tip: "Unloop",
+                  tip: "Unloop (⌘⇧L)",
                   ariaLabel: "Unloop",
                   onClick: () => handleMakeNonLoop(activeSession),
                 },
