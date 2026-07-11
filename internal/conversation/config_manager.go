@@ -36,6 +36,18 @@ func childStartupJitter(max time.Duration) time.Duration {
 // EffectiveModelProfiles carrying that tag (case-insensitive) supplies the Criteria.
 // If neither resolves to a usable profile Criteria, this falls back to the server's
 // raw Constraints (legacy matchMode/pattern behaviour).
+//
+// Priority axis for the ModelTag path is profile-list order: cfg.ModelProfilesByTag
+// (which wraps the shared config.ProfilesByTag core) walks EffectiveModelProfiles in
+// Config.Models order — user profiles first in user-supplied order, then any unshadowed
+// canonical defaults — and this helper picks matches[0]. Reordering profiles in
+// Config.Models flips which profile wins for the same tag at the ACPServerSettings.ModelTag
+// consumer site (mitto-ex7 "list order = priority" contract), mirroring the
+// InitialModelPreference and AuxiliaryModelTag consumer sites.
+//
+// Note: matches[0] is picked unconditionally here — there is no session yet at config
+// time, so per-model resolvability against agent-available models is deferred to
+// applyConfigConstraints downstream.
 func lookupACPServerConstraints(cfg *config.Config, serverName string) map[string]*config.ACPServerConstraint {
 	if cfg == nil {
 		return nil
