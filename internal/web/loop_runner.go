@@ -1465,9 +1465,17 @@ func (r *LoopRunner) deliverPrompt(bs *conversation.BackgroundSession, sessionNa
 									"session_id", sessionID,
 									"max_iterations", updated.MaxIterations,
 									"iteration_count", updated.IterationCount)
+							} else if effective == config.GlobalMaxLoopIterations {
+								// Hit the hardcoded absolute backstop — worth a WARN.
+								r.logger.Warn("Loop conversation reached hardcoded iteration safeguard, auto-stopping",
+									"session_id", sessionID,
+									"iteration_count", updated.IterationCount,
+									"effective_cap", effective,
+									"config_cap", cfgCap,
+									"backstop", config.GlobalMaxLoopIterations)
 							} else {
-								// Stopped by the global/config backstop rather than the per-prompt cap.
-								r.logger.Warn("Loop conversation reached global iteration safeguard, auto-stopping",
+								// Hit the config-level default cap — normal cap-hit, log at INFO.
+								r.logger.Info("Loop conversation reached configured iteration cap, auto-stopping",
 									"session_id", sessionID,
 									"iteration_count", updated.IterationCount,
 									"effective_cap", effective,

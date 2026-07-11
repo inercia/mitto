@@ -779,6 +779,40 @@ func TestLoopRunner_ConfigCapAutoStop(t *testing.T) {
 	}
 }
 
+// TestLoopRunner_IterationSafeguardBranchSelection verifies the discriminant
+// used by the auto-stop log branches in deliverPrompt: when the per-prompt cap
+// is unlimited (MaxIterations=0), the runner distinguishes the hardcoded
+// GlobalMaxLoopIterations backstop (WARN) from the config-level cap (INFO)
+// via `effective == config.GlobalMaxLoopIterations`.
+func TestLoopRunner_IterationSafeguardBranchSelection(t *testing.T) {
+	// Case A: both caps unlimited — effective falls through to the hardcoded backstop
+	// (WARN branch: effective == GlobalMaxLoopIterations).
+	effective := config.EffectiveMaxLoopIterations(0, 0)
+	if effective != config.GlobalMaxLoopIterations {
+		t.Errorf("case A: effective = %d, want %d (GlobalMaxLoopIterations)",
+			effective, config.GlobalMaxLoopIterations)
+	}
+
+	// Case B: config-level cap is the binding limit, per-prompt cap is unlimited.
+	const cfgCap = 100
+	effective = config.EffectiveMaxLoopIterations(0, cfgCap)
+	if effective != cfgCap {
+		t.Errorf("case B: effective = %d, want %d (config-level cap)", effective, cfgCap)
+	}
+	if effective >= config.GlobalMaxLoopIterations {
+		t.Error("case B: expected INFO (configured-cap) branch, got WARN branch")
+	}
+
+	// Case C: per-prompt cap smaller than config cap — per-prompt cap wins, but the
+	// runner's log path only reaches the safeguard branches when perPromptReached=false.
+	// This documents that a positive promptMax below configMax IS honored (no behavior
+	// change from EffectiveMaxLoopIterations).
+	effective = config.EffectiveMaxLoopIterations(5, cfgCap)
+	if effective != 5 {
+		t.Errorf("case C: effective = %d, want 5 (per-prompt cap honored)", effective)
+	}
+}
+
 // TestLoopRunner_DefaultMaxLoopIterations verifies that the runner
 // is initialized with the correct default config cap.
 func TestLoopRunner_DefaultMaxLoopIterations(t *testing.T) {

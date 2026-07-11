@@ -1128,7 +1128,16 @@ func (c *ConversationsConfig) GetMinLoopCompletionDelaySeconds() int {
 
 // EffectiveMaxLoopIterations returns the binding iteration cap for a loop
 // conversation: the smallest positive of { promptMax, configMax, GlobalMaxLoopIterations }.
-// The hardcoded backstop always applies, so the result is always positive.
+//
+// All three inputs are literal caps, not sentinels for anything other than
+// "unlimited":
+//   - promptMax and configMax: 0 means "unlimited" (that cap is ignored).
+//   - Any positive value is treated literally (e.g. configMax=1 means stop after 1).
+//   - GlobalMaxLoopIterations is the hardcoded absolute backstop and always applies.
+//
+// Per-conversation caps are honored below the global safeguard: if promptMax > 0
+// and smaller than configMax, the per-conversation cap wins. The result is always
+// positive.
 func EffectiveMaxLoopIterations(promptMax, configMax int) int {
 	effective := GlobalMaxLoopIterations
 	if promptMax > 0 && promptMax < effective {

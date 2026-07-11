@@ -34,6 +34,9 @@ const (
 	StoppedReasonMaxIterations StoppedReason = "maxIterations"
 	// StoppedReasonIterationSafeguard is set when the global/config iteration backstop is hit
 	// (MaxIterations was 0/unlimited but the effective safeguard stopped the loop).
+	// Covers both the config-level default cap and the hardcoded GlobalMaxLoopIterations
+	// backstop — the two cases are only distinguished in server logs, not in this
+	// frontend-facing reason value.
 	StoppedReasonIterationSafeguard StoppedReason = "iterationSafeguard"
 	// StoppedReasonPromptUnresolved is set when the prompt name cannot be resolved after
 	// MaxPromptResolveFailures consecutive failures.
