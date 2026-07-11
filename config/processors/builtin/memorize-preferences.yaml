@@ -1,16 +1,21 @@
 ##########################################################################################
-# Builtin processor: automatically extracts user preferences from conversations.
+# Builtin processor: extracts personal user preferences when a conversation is archived.
 #
-# This prompt-mode processor watches user messages for PERSONAL preferences about
-# how this individual user likes to work — the kind of thing that is specific to
-# them and would not necessarily be shared with other people working on the same
-# project. When it finds such a preference, it instructs an auxiliary AI agent to
-# save it in a target file. That file is auto-detected from the project's rules
-# directory (.augment/rules/, .cursor/rules/, or .codex/rules/) unless
-# PreferencesFile is set; if none is found, nothing is written.
+# Fires once when the session enters the closed (archived or deleted) state — either
+# through a manual archive from the UI, an automatic archive triggered by inactivity,
+# or a session delete. The processor asks a workspace-scoped auxiliary AI agent to
+# review the full conversation and save any PERSONAL preferences about how this
+# individual user likes to work — the kind of thing that is specific to them and
+# would not necessarily be shared with other people working on the same project.
 #
-# This is a fire-and-forget processor: the prompt is dispatched to a workspace-scoped
-# auxiliary ACP session and the pipeline continues immediately without waiting.
+# The target file is auto-detected from the project's rules directory
+# (.augment/rules/, .cursor/rules/, or .codex/rules/) unless PreferencesFile is set;
+# if none is found, nothing is written.
+#
+# Fire-and-forget: the auxiliary agent works in the background after the main
+# conversation is already archived. Running at close time (rather than every few turns)
+# means the reviewer sees the completed exchange in full instead of a mid-burst
+# snapshot, and only one auxiliary LLM invocation is spent per session.
 #
 # Enabled by default — disable in the Workspaces dialog or .mittorc if you want
 # to turn off automatic preference tracking.
@@ -42,21 +47,17 @@
 #   conservatively — when in doubt, an entry is kept.
 ##########################################################################################
 name: memorize-preferences
-description: "Extracts personal, user-specific preferences (not project/code conventions) from conversations and saves them to a target file (auto-detected from .augment/rules/, .cursor/rules/, or .codex/rules/ unless PreferencesFile is set)"
+description: "Extracts personal, user-specific preferences (not project/code conventions) from an archived conversation and saves them to a target file (auto-detected from .augment/rules/, .cursor/rules/, or .codex/rules/ unless PreferencesFile is set)"
 enabled: true
 when:
-  on: agentIdle
+  on: conversationClosed
   match: all
-  stopReasons: [end_turn]
-  cadence:
-    everyNTurns: 3
-    everyNTokens: 8000
-    afterInterval: 3m
 priority: 200
-timeout: 120s
+timeout: 300s
 onError: skip
 
-# Skip loop prompts — only process real user messages
+# Skip loop conversations (they archive/unarchive frequently and would repeatedly
+# re-scan the same history).
 enabledWhen: '!Session.IsLoop'
 
 parameters:
@@ -154,26 +155,21 @@ prompt: |
   If there are NO new preferences AND nothing needs garbage-collecting or compacting,
   do nothing — do NOT modify any files.
 
-  === User Messages ===
+  === Conversation ===
 
-  Use the `mitto_conversation_history` MCP tool to retrieve recent user messages.
-  Call it with:
+  Use the `mitto_conversation_history` MCP tool to retrieve the archived session's
+  full history. Call it with:
   - `self_id`: your session ID (from `mitto_conversation_get_current`)
   - `conversation_id`: "{{ .Session.ID }}"
   - `event_types`: ["user_prompt", "agent_message"]
-  - `last_n`: 12
+  - `last_n`: 200
 
-  Review these messages for user preferences and conventions.
+  Review these messages for personal user preferences.
 
-  ## Notification
+  ## Silent completion
 
-  After completing your work, if you changed {{ $file }} (added, removed, or compacted
-  preferences), call `mitto_ui_notify` with:
-  - `self_id`: "{{ .Session.ID }}"
-  - `title`: "📝 Preferences Updated"
-  - `message`: a brief summary, e.g. "Added 1, removed 2 stale, merged 3"
-  - `style`: "success"
-
-  If nothing changed and no files were modified, do NOT send any notification — stay
-  completely silent.
+  This is a background clean-up processor. Do NOT call `mitto_ui_notify` and do NOT
+  post any user-visible summary — the session is already archived and there is no
+  active UI to notify. If nothing changed and no files were modified, just exit
+  silently.
   {{- end -}}

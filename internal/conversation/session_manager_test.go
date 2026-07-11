@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/inercia/mitto/internal/config"
+	"github.com/inercia/mitto/internal/processors"
 	"github.com/inercia/mitto/internal/runner"
 	"github.com/inercia/mitto/internal/session"
 )
@@ -1986,11 +1987,20 @@ func TestProcessorArgOverrides_SeamMethods(t *testing.T) {
 
 // fakeProcessManager is a minimal ProcessManager stub for tests. It records the
 // workspace UUIDs passed to EnsurePrewarmed so tests can assert the re-warm
-// trigger fired (mitto-54k.7). All other interface methods are no-ops.
+// trigger fired (mitto-54k.7), and the PinWorkspace calls so tests can assert
+// the close-phase pin fired (mitto-4is). All other interface methods are no-ops.
 type fakeProcessManager struct {
 	mu        sync.Mutex
 	prewarmed []string
 	prewarmCh chan string
+	pinCalls  []fakePinCall
+}
+
+type fakePinCall struct {
+	workspaceUUID string
+	reason        string
+	maxDuration   time.Duration
+	maxPinned     int
 }
 
 func newFakeProcessManager() *fakeProcessManager {
@@ -2022,6 +2032,23 @@ func (f *fakeProcessManager) StopGC()                   {}
 func (f *fakeProcessManager) Close()                    {}
 func (f *fakeProcessManager) ProcessCount() int         { return 0 }
 func (f *fakeProcessManager) ColdProcessCount() int     { return 0 }
+func (f *fakeProcessManager) PinWorkspace(workspaceUUID, reason string, maxDuration time.Duration, maxPinned int) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.pinCalls = append(f.pinCalls, fakePinCall{
+		workspaceUUID: workspaceUUID,
+		reason:        reason,
+		maxDuration:   maxDuration,
+		maxPinned:     maxPinned,
+	})
+	return true
+}
+
+func (f *fakeProcessManager) pinCallsSnapshot() []fakePinCall {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]fakePinCall(nil), f.pinCalls...)
+}
 
 // waitForPrewarm blocks until EnsurePrewarmed is called (up to timeout) and
 // returns the workspace UUID, or "" if it was not called in time.
@@ -2118,5 +2145,98 @@ func TestSessionManager_CloseSession_NoRewarmOnArchive(t *testing.T) {
 				t.Fatalf("EnsurePrewarmed should not fire for reason %q, got %q", reason, got)
 			}
 		})
+	}
+}
+
+// TestApplyOnCloseProcessors_PinsWorkspace verifies that the close-phase
+// pipeline pins the workspace before dispatching its fire-and-forget goroutine,
+// protecting the shared ACP process from GC while in-flight processors are
+// still dispatching to auxiliary sessions (mitto-4is).
+func TestApplyOnCloseProcessors_PinsWorkspace(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	t.Cleanup(func() { store.Close() })
+
+	const (
+		sid       = "sess-pin"
+		wsUUID    = "ws-pin-close"
+		acpServer = "test-server"
+	)
+	workingDir := t.TempDir()
+
+	if err := store.Create(session.Metadata{
+		SessionID:  sid,
+		ACPServer:  acpServer,
+		WorkingDir: workingDir,
+	}); err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+
+	sm := NewSessionManager("echo test", acpServer, true, nil)
+	sm.SetStore(store)
+	sm.SetProcessorManager(processors.NewManager("", nil))
+	sm.AddWorkspace(config.WorkspaceSettings{
+		UUID:       wsUUID,
+		WorkingDir: workingDir,
+		ACPServer:  acpServer,
+	})
+	pm := newFakeProcessManager()
+	sm.SetACPProcessManager(pm)
+
+	sm.ApplyOnCloseProcessors(sid, "deleted")
+
+	calls := pm.pinCallsSnapshot()
+	if len(calls) != 1 {
+		t.Fatalf("PinWorkspace call count = %d, want 1 (calls=%+v)", len(calls), calls)
+	}
+	got := calls[0]
+	if got.workspaceUUID != wsUUID {
+		t.Errorf("PinWorkspace workspaceUUID = %q, want %q", got.workspaceUUID, wsUUID)
+	}
+	if got.reason != "conversation_closed_processors" {
+		t.Errorf("PinWorkspace reason = %q, want %q", got.reason, "conversation_closed_processors")
+	}
+	if got.maxDuration != 15*time.Minute {
+		t.Errorf("PinWorkspace maxDuration = %v, want %v", got.maxDuration, 15*time.Minute)
+	}
+	if got.maxPinned != 0 {
+		t.Errorf("PinWorkspace maxPinned = %d, want 0 (uncapped)", got.maxPinned)
+	}
+}
+
+// TestApplyOnCloseProcessors_NoPinWithoutWorkspaceUUID verifies that when the
+// session's workspace cannot be resolved from the registry, the close pipeline
+// still runs but skips the pin call (pinning without a UUID would be a no-op
+// on the wrong key and mask the misconfiguration).
+func TestApplyOnCloseProcessors_NoPinWithoutWorkspaceUUID(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	t.Cleanup(func() { store.Close() })
+
+	const sid = "sess-pin-noresolve"
+	// Note: no AddWorkspace call — resolution will return nil, so workspaceUUID
+	// stays empty.
+	if err := store.Create(session.Metadata{
+		SessionID:  sid,
+		ACPServer:  "test-server",
+		WorkingDir: t.TempDir(),
+	}); err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+
+	sm := NewSessionManager("echo test", "test-server", true, nil)
+	sm.SetStore(store)
+	sm.SetProcessorManager(processors.NewManager("", nil))
+	pm := newFakeProcessManager()
+	sm.SetACPProcessManager(pm)
+
+	sm.ApplyOnCloseProcessors(sid, "deleted")
+
+	if calls := pm.pinCallsSnapshot(); len(calls) != 0 {
+		t.Fatalf("PinWorkspace should not fire without a resolved workspace UUID, got %+v", calls)
 	}
 }

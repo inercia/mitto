@@ -78,6 +78,12 @@ type ProcessManager interface {
 	// ColdProcessCount returns the number of active shared processes whose
 	// MCP-init window is still open. Used for resume-storm diagnostics (mitto-7o2).
 	ColdProcessCount() int
+	// PinWorkspace marks a workspace as pinned so GC Tier 2/4/6 cannot tear
+	// down its shared ACP process while a fire-and-forget close-phase processor
+	// is dispatching to an auxiliary session (mitto-4is). Returns false when a
+	// maxPinned cap would be exceeded. maxDuration=0 disables auto-expiry;
+	// maxPinned=0 disables the blast-radius cap.
+	PinWorkspace(workspaceUUID, reason string, maxDuration time.Duration, maxPinned int) bool
 }
 
 // EventsBroadcaster abstracts the global events manager (web.GlobalEventsManager)

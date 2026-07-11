@@ -603,6 +603,7 @@ func (sm *SessionManager) ApplyOnCloseProcessors(sessionID string, reason string
 	store := sm.store
 	globalMgr := sm.processorManager
 	auxMgr := sm.auxiliaryManager
+	pm := sm.acpProcessManager
 	logger := sm.logger
 	sm.mu.RUnlock()
 
@@ -659,6 +660,15 @@ func (sm *SessionManager) ApplyOnCloseProcessors(sessionID string, reason string
 		ArchiveReason:         reason,
 		ArchivedAt:            archivedAt,
 		ProcessorArgOverrides: procArgOverrides,
+	}
+
+	// Pin the workspace so GC Tier 2/4/6 cannot tear down the shared ACP
+	// process while a fire-and-forget close-phase processor is still
+	// dispatching to an auxiliary session on it. The pin auto-expires after
+	// 15 minutes (bounds the close pipeline timeout below) so a wedged
+	// processor cannot leak a permanent pin (mitto-4is).
+	if pm != nil && workspaceUUID != "" {
+		pm.PinWorkspace(workspaceUUID, "conversation_closed_processors", 15*time.Minute, 0)
 	}
 
 	// Run the close pipeline off the archive request goroutine so command-mode
