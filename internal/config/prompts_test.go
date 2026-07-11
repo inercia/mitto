@@ -2101,3 +2101,45 @@ func TestBuiltinPromptsParseClean(t *testing.T) {
 		}
 	}
 }
+
+// TestBuiltinPrompts_EnabledWhenCompiles CEL-compiles every non-empty enabledWhen
+// on the shipped builtin prompts. TestBuiltinPromptsParseClean only YAML-parses
+// them, so an undeclared identifier/function in a builtin's enabledWhen would slip
+// through CI and only surface as a runtime WARN (see mitto-w7h: 3 Support prompts
+// referenced the then-unregistered BeadIsOpen macro and were silently dropped).
+func TestBuiltinPrompts_EnabledWhenCompiles(t *testing.T) {
+	builtinDir := filepath.Join("..", "..", "config", "prompts", "builtin")
+	entries, err := os.ReadDir(builtinDir)
+	if err != nil {
+		t.Skipf("builtin prompts dir not found at %s: %v", builtinDir, err)
+	}
+	e, err := NewCELEvaluator()
+	if err != nil {
+		t.Fatalf("NewCELEvaluator: %v", err)
+	}
+	n := 0
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".prompt.yaml") {
+			continue
+		}
+		path := filepath.Join(builtinDir, entry.Name())
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Errorf("ReadFile(%s): %v", entry.Name(), err)
+			continue
+		}
+		prompt, err := ParsePromptFile(entry.Name(), data, time.Now())
+		if err != nil {
+			continue // parse errors reported by TestBuiltinPromptsParseClean
+		}
+		if prompt.EnabledWhen == "" {
+			continue
+		}
+		if _, err := e.Compile(prompt.EnabledWhen); err != nil {
+			t.Errorf("%s: enabledWhen %q failed to compile: %v", entry.Name(), prompt.EnabledWhen, err)
+			continue
+		}
+		n++
+	}
+	t.Logf("compiled enabledWhen for %d builtin prompts", n)
+}
