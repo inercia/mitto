@@ -168,18 +168,24 @@ prompt: |-
 
   ### On submit (`aborted` and `timed_out` are both false)
 
-  - The returned `result` (possibly edited) is the final message. Post it with the post-reply-to-thread
-    tool, using the stored `slack_channel` and the thread's parent `slack_thread_ts`.
+  - **The returned `result` is the authoritative final message** — it may differ from the draft we
+    proposed because the user edited it in the textbox (`changed == true`). Whatever text the tool
+    returns is *exactly* what we send to Slack, and *exactly* what we must record. Never fall back to
+    the original draft text; the user's edited version wins, character-for-character.
+  - Post that `result` with the post-reply-to-thread tool, using the stored `slack_channel` and the
+    thread's parent `slack_thread_ts`.
   - Confirm success and show the permalink (build it from the posted ts: `<slack_url base>/archives/
     <slack_channel>/p<posted_ts_without_dot>`).
-  - **Log to the bead** — add a markdown `[OUTBOUND]` comment (this one is the **posted** reply, not a
-    draft) with the final text and the permalink:
+  - **Log the exact posted text to the bead** — add a markdown `[OUTBOUND]` comment (this one is the
+    **posted** reply, not a draft) recording the **verbatim `result` we just published** (i.e. with the
+    user's edits applied), plus the permalink:
     ```
     printf '%s' "$comment_markdown" | bd comment <id> --stdin
     ```
     Header: `**[OUTBOUND us · POSTED · YYYY-MM-DD HH:MM UTC]**`, then the posted text **enclosed in the
     `--- BEGIN REPLY ---` / `--- END REPLY ---` block** so it stays machine-identifiable, followed by
-    the permalink outside the fences.
+    the permalink outside the fences. This block is our permanent record of *exactly what we said to the
+    customer* — it must be the posted `result`, not the pre-edit draft.
   - **Transition state** (same issue, never `bd set-state`):
     `bd update <id> --remove-label state:drafting --add-label state:awaiting-customer`.
     (If Step 2 continued from a different state, remove that state label instead.)
@@ -227,4 +233,7 @@ prompt: |-
   - Load the bead (`bd show` + `bd comments`) **before** drafting — it is the source of truth.
   - The proposed reply always lives on the bead as a DRAFT `[OUTBOUND]` comment; reuse it rather than
     regenerating, and keep it current even when the review dialog times out.
+  - **The bead is our record of exactly what we said to the customer.** When a reply is posted, the
+    `POSTED` `[OUTBOUND]` comment must contain the **verbatim text we actually published** — the
+    textbox `result` with the user's edits applied — not the original draft we proposed.
   - **NEVER** send a reply in the support channel without explicit review and approval.
