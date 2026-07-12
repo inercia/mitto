@@ -127,6 +127,9 @@ func (s *Server) apiRoutes(authMgr *middleware.AuthManager, csrfMgr *middleware.
 		// Folder shortcut buttons (folder-native, stored in folders.json).
 		apiRoute{method: "GET", pattern: "/api/folders/shortcuts", handler: http.HandlerFunc(s.apiHandlers.HandleFolderShortcuts)},
 		apiRoute{method: "PUT", pattern: "/api/folders/shortcuts", handler: http.HandlerFunc(s.apiHandlers.HandleFolderShortcuts)},
+		// Folder pin/visibility (folder-native, stored in folders.json).
+		apiRoute{method: "GET", pattern: "/api/folders/pin", handler: http.HandlerFunc(s.apiHandlers.HandleFolderPin)},
+		apiRoute{method: "PUT", pattern: "/api/folders/pin", handler: http.HandlerFunc(s.apiHandlers.HandleFolderPin)},
 		// Global shortcut buttons (stored in settings.json, merged with folder shortcuts at render time).
 		apiRoute{method: "GET", pattern: "/api/global/shortcuts", handler: http.HandlerFunc(s.apiHandlers.HandleGlobalShortcuts)},
 		apiRoute{method: "PUT", pattern: "/api/global/shortcuts", handler: http.HandlerFunc(s.apiHandlers.HandleGlobalShortcuts)},
