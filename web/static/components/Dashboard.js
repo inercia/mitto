@@ -1,7 +1,7 @@
 // Mitto Web Interface - Global Dashboard view (mitto-aqo).
-// Stats header (mitto-aqo.4) + 4-slide carousel of lists (mitto-aqo.5) +
-// click handlers routing to conversation focus / beads issue viewer
-// (mitto-aqo.6).
+// Stats header (mitto-aqo.4) + paged grid of lists (mitto-aqo.5, paged in
+// mitto-3sb) + click handlers routing to conversation focus / beads issue
+// viewer (mitto-aqo.6).
 const { html, useState, useEffect, useMemo, useRef } = window.preact;
 
 import { authFetch } from "../utils/csrf.js";
@@ -10,6 +10,9 @@ import { getBasename } from "../lib.js";
 
 const REFRESH_INTERVAL_MS = 15_000;
 const MAX_LIST_ITEMS = 5;
+// Lists shown per page. On mobile the grid collapses to 1 column so both
+// lists on the current page stack vertically; on md+ they sit side-by-side.
+const LISTS_PER_PAGE = 2;
 
 // Mirror BeadsView priority vocabulary so pills look identical across views.
 // bd priorities: 0 = Critical, 1 = High, 2 = Medium, 3 = Low.
@@ -28,7 +31,8 @@ function priorityPill(p) {
   return html`<span class="badge badge-xs font-medium ${color}">${label}</span>`;
 }
 
-// Slides are anchor-navigated; keep the ids stable for the indicator links.
+// Ordered list definitions. `id` is kept for stable keys; pagination is now
+// index-driven rather than anchor-driven.
 const SLIDES = [
   { id: "dash-slide-prompting", label: "Prompting conversations" },
   { id: "dash-slide-in-progress", label: "In-progress tasks" },
@@ -55,6 +59,7 @@ export function Dashboard({
   onOpenTask,
 }) {
   const [data, setData] = useState(null); // null = first load in-flight
+  const [pageIndex, setPageIndex] = useState(0);
   const mountedRef = useRef(true);
 
   useEffect(() => {
@@ -202,67 +207,98 @@ export function Dashboard({
         </div>
       </div>
 
-      <!-- Carousel with 4 lists (mitto-aqo.5). Rows are inert div elements;
-           click handlers wire in mitto-aqo.6. Anchor-navigated: prev/next and
-           indicator buttons point at #dash-slide-* ids on each carousel-item.
-           Empty slides render a "No items" placeholder so the slide index and
-           navigation stay consistent regardless of data. -->
-      <div class="flex flex-col gap-2">
-        <div class="carousel w-full rounded-box">
-          ${renderSlide(
-            SLIDES[0],
-            renderConversationRows(promptingList, onFocusConversation),
-          )}
-          ${renderSlide(SLIDES[1], renderTaskRows(inProgressList, onOpenTask))}
-          ${renderSlide(SLIDES[2], renderTaskRows(readyList, onOpenTask))}
-          ${renderSlide(SLIDES[3], renderTaskRows(epicsList, onOpenTask))}
-        </div>
-        <div class="flex justify-center gap-2 py-1">
-          ${SLIDES.map(
-            (s, i) => html`
-              <a
-                href="#${s.id}"
-                class="btn btn-xs btn-ghost text-mitto-text-muted"
-                aria-label="Show ${s.label}"
-                title="${s.label}"
-                >${i + 1}</a
+      <!-- Paged grid of lists (mitto-aqo.5, paged in mitto-3sb). Shows
+           LISTS_PER_PAGE lists per page: 1 column on mobile (both stack),
+           2 columns on md+ (side-by-side). Prev/next buttons cycle through
+           pages; empty lists render a "No items" placeholder so page layout
+           stays consistent regardless of data. Click handlers wire in
+           mitto-aqo.6. -->
+      ${(() => {
+        const rendered = [
+          renderConversationRows(promptingList, onFocusConversation),
+          renderTaskRows(inProgressList, onOpenTask),
+          renderTaskRows(readyList, onOpenTask),
+          renderTaskRows(epicsList, onOpenTask),
+        ];
+        const totalPages = Math.max(
+          1,
+          Math.ceil(SLIDES.length / LISTS_PER_PAGE),
+        );
+        const safePage = Math.min(pageIndex, totalPages - 1);
+        const start = safePage * LISTS_PER_PAGE;
+        const end = start + LISTS_PER_PAGE;
+        const visible = SLIDES.slice(start, end).map((s, i) => ({
+          slide: s,
+          rows: rendered[start + i],
+        }));
+        const prevPage = () =>
+          setPageIndex((p) => (p - 1 + totalPages) % totalPages);
+        const nextPage = () => setPageIndex((p) => (p + 1) % totalPages);
+        return html`
+          <div class="flex flex-col gap-2">
+            <div class="flex items-center justify-between w-full">
+              <button
+                type="button"
+                class="btn btn-sm btn-ghost text-mitto-text-muted"
+                aria-label="Previous page"
+                title="Previous page"
+                onClick=${prevPage}
+                disabled=${totalPages <= 1}
               >
-            `,
-          )}
-        </div>
-      </div>
+                ❮
+              </button>
+              <div
+                class="text-xs text-mitto-text-muted"
+                aria-live="polite"
+              >
+                Page ${safePage + 1} / ${totalPages}
+              </div>
+              <button
+                type="button"
+                class="btn btn-sm btn-ghost text-mitto-text-muted"
+                aria-label="Next page"
+                title="Next page"
+                onClick=${nextPage}
+                disabled=${totalPages <= 1}
+              >
+                ❯
+              </button>
+            </div>
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-4 w-full">
+              ${visible.map((v) => renderListPanel(v.slide, v.rows))}
+            </div>
+            <div class="flex justify-center gap-2 py-1">
+              ${Array.from({ length: totalPages }).map(
+                (_, i) => html`
+                  <button
+                    type="button"
+                    class="btn btn-xs btn-ghost ${i === safePage
+                      ? "text-mitto-text-strong"
+                      : "text-mitto-text-muted"}"
+                    aria-label="Go to page ${i + 1}"
+                    aria-current=${i === safePage ? "page" : undefined}
+                    title="Page ${i + 1}"
+                    onClick=${() => setPageIndex(i)}
+                  >
+                    ${i + 1}
+                  </button>
+                `,
+              )}
+            </div>
+          </div>
+        `;
+      })()}
     </div>
   `;
 }
 
-// A single carousel slide: label + prev/next controls above a daisyUI list.
-// `rows` is the pre-rendered list-row markup (or a "No items" placeholder).
-function renderSlide(slide, rows) {
-  const idx = SLIDES.findIndex((s) => s.id === slide.id);
-  const prev = SLIDES[(idx - 1 + SLIDES.length) % SLIDES.length];
-  const next = SLIDES[(idx + 1) % SLIDES.length];
+// A single list panel: label above a daisyUI list. `rows` is the pre-rendered
+// list-row markup (or a "No items" placeholder).
+function renderListPanel(slide, rows) {
   return html`
-    <div id=${slide.id} class="carousel-item w-full flex-col gap-2 px-1">
-      <div class="flex items-center justify-between w-full">
-        <div class="text-sm font-semibold text-mitto-text-strong">
-          ${slide.label}
-        </div>
-        <div class="flex gap-1">
-          <a
-            href="#${prev.id}"
-            class="btn btn-xs btn-ghost text-mitto-text-muted"
-            aria-label="Previous slide"
-            title="${prev.label}"
-            >❮</a
-          >
-          <a
-            href="#${next.id}"
-            class="btn btn-xs btn-ghost text-mitto-text-muted"
-            aria-label="Next slide"
-            title="${next.label}"
-            >❯</a
-          >
-        </div>
+    <div id=${slide.id} class="flex flex-col gap-2 min-w-0">
+      <div class="text-sm font-semibold text-mitto-text-strong">
+        ${slide.label}
       </div>
       <ul class="list bg-mitto-surface-2 rounded-box shadow-md w-full">
         ${rows}

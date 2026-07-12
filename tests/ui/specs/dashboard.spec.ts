@@ -166,30 +166,36 @@ testWithCleanup.describe("Global Dashboard", () => {
         .filter({ hasText: "Issues in progress" });
       await expect(inProgressStat.locator(".stat-value")).toHaveText(/7/);
 
-      // Carousel + 4 slides.
-      const carousel = page.locator(".carousel").first();
-      await expect(carousel).toBeVisible();
-      await expect(carousel.locator(".carousel-item")).toHaveCount(4);
+      // Paged grid: 4 lists across 2 pages. Page indicator shows "Page 1 / 2".
+      await expect(page.getByText(/Page 1 \/ 2/)).toBeVisible();
+      // Page 1 shows the first two list panels (prompting + in-progress).
+      await expect(page.locator("#dash-slide-prompting")).toBeVisible();
+      await expect(page.locator("#dash-slide-in-progress")).toBeVisible();
     },
   );
 
   testWithCleanup(
-    "carousel slide labels are all present",
+    "all list panel labels are reachable via pagination",
     async ({ page, timeouts }) => {
       await openDashboard(page, timeouts);
 
-      const carousel = page.locator(".carousel").first();
+      // Page 1 shows the first two labels.
       await expect(
-        carousel.getByText("Prompting conversations", { exact: true }),
+        page.getByText("Prompting conversations", { exact: true }),
       ).toBeVisible();
       await expect(
-        carousel.getByText("In-progress tasks", { exact: true }),
+        page.getByText("In-progress tasks", { exact: true }),
+      ).toBeVisible();
+
+      // Advance to page 2 via the "Next page" button; assert the remaining
+      // two labels appear.
+      await page.getByRole("button", { name: "Next page" }).click();
+      await expect(page.getByText(/Page 2 \/ 2/)).toBeVisible();
+      await expect(
+        page.getByText("Ready tasks", { exact: true }),
       ).toBeVisible();
       await expect(
-        carousel.getByText("Ready tasks", { exact: true }),
-      ).toBeVisible();
-      await expect(
-        carousel.getByText("Epic tasks", { exact: true }),
+        page.getByText("Epic tasks", { exact: true }),
       ).toBeVisible();
     },
   );

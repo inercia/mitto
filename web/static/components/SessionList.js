@@ -52,7 +52,7 @@ import {
   TerminalIcon,
   EllipsisIcon,
   ChatBubbleIcon,
-  DashboardIcon,
+  HomeIcon,
   LayersIcon,
   CheckIcon,
   SlidersIcon,
@@ -1105,7 +1105,7 @@ export function SessionList({
               : "text-mitto-text-muted"}"
             title="Dashboard"
           >
-            <${DashboardIcon} className="w-4 h-4 shrink-0" />
+            <${HomeIcon} className="w-4 h-4 shrink-0" />
             <span class="truncate min-w-0">Dashboard</span>
           </button>
         </li>
