@@ -213,10 +213,12 @@ export function Dashboard({
 
       <!-- Paged grid of lists (mitto-aqo.5, paged in mitto-3sb). Shows
            LISTS_PER_PAGE lists per page: 1 column on mobile (both stack),
-           2 columns on md+ (side-by-side). Prev/next buttons cycle through
-           pages; empty lists render a "No items" placeholder so page layout
-           stays consistent regardless of data. Click handlers wire in
-           mitto-aqo.6. -->
+           2 columns on md+ (side-by-side). Prev/next arrow buttons are
+           overlaid on the left and right edges, vertically centered on
+           the grid; there is no page-indicator text and no numbered page
+           dots (intentionally minimal, per user feedback). Empty lists
+           render a "No items" placeholder so page layout stays consistent
+           regardless of data. Click handlers wire in mitto-aqo.6. -->
       ${(() => {
         const rendered = [
           renderConversationRows(promptingList, onFocusConversation),
@@ -239,8 +241,13 @@ export function Dashboard({
           setPageIndex((p) => (p - 1 + totalPages) % totalPages);
         const nextPage = () => setPageIndex((p) => (p + 1) % totalPages);
         return html`
-          <div class="flex flex-col gap-2">
-            <div class="flex items-center justify-between w-full">
+          <div class="relative w-full">
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-4 w-full px-8">
+              ${visible.map((v) => renderListPanel(v.slide, v.rows))}
+            </div>
+            <div
+              class="absolute top-0 left-0 h-full flex items-center"
+            >
               <button
                 type="button"
                 class="btn btn-sm btn-ghost text-mitto-text-muted"
@@ -251,12 +258,10 @@ export function Dashboard({
               >
                 ❮
               </button>
-              <div
-                class="text-xs text-mitto-text-muted"
-                aria-live="polite"
-              >
-                Page ${safePage + 1} / ${totalPages}
-              </div>
+            </div>
+            <div
+              class="absolute top-0 right-0 h-full flex items-center"
+            >
               <button
                 type="button"
                 class="btn btn-sm btn-ghost text-mitto-text-muted"
@@ -267,27 +272,6 @@ export function Dashboard({
               >
                 ❯
               </button>
-            </div>
-            <div class="grid grid-cols-1 md:grid-cols-2 gap-4 w-full">
-              ${visible.map((v) => renderListPanel(v.slide, v.rows))}
-            </div>
-            <div class="flex justify-center gap-2 py-1">
-              ${Array.from({ length: totalPages }).map(
-                (_, i) => html`
-                  <button
-                    type="button"
-                    class="btn btn-xs btn-ghost ${i === safePage
-                      ? "text-mitto-text-strong"
-                      : "text-mitto-text-muted"}"
-                    aria-label="Go to page ${i + 1}"
-                    aria-current=${i === safePage ? "page" : undefined}
-                    title="Page ${i + 1}"
-                    onClick=${() => setPageIndex(i)}
-                  >
-                    ${i + 1}
-                  </button>
-                `,
-              )}
             </div>
           </div>
         `;

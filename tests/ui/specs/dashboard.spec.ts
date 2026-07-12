@@ -166,11 +166,14 @@ testWithCleanup.describe("Global Dashboard", () => {
         .filter({ hasText: "Issues in progress" });
       await expect(inProgressStat.locator(".stat-value")).toHaveText(/7/);
 
-      // Paged grid: 4 lists across 2 pages. Page indicator shows "Page 1 / 2".
-      await expect(page.getByText(/Page 1 \/ 2/)).toBeVisible();
-      // Page 1 shows the first two list panels (prompting + in-progress).
+      // Paged grid: 4 lists across 2 pages. Page 1 shows the first two list
+      // panels (prompting + in-progress); the "Next page" arrow is present
+      // for navigation. The page indicator text was removed intentionally.
       await expect(page.locator("#dash-slide-prompting")).toBeVisible();
       await expect(page.locator("#dash-slide-in-progress")).toBeVisible();
+      await expect(
+        page.getByRole("button", { name: "Next page" }),
+      ).toBeVisible();
     },
   );
 
@@ -190,7 +193,6 @@ testWithCleanup.describe("Global Dashboard", () => {
       // Advance to page 2 via the "Next page" button; assert the remaining
       // two labels appear.
       await page.getByRole("button", { name: "Next page" }).click();
-      await expect(page.getByText(/Page 2 \/ 2/)).toBeVisible();
       await expect(
         page.getByText("Ready tasks", { exact: true }),
       ).toBeVisible();
