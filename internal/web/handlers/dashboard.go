@@ -135,9 +135,13 @@ func (h *Handlers) HandleDashboard(w http.ResponseWriter, r *http.Request) {
 
 	resp.Stats.IssuesInProgress = len(inProgress)
 
+	// In-progress keeps recency ordering: it answers "what's been touched
+	// lately?". Ready + Epics are backlog views where the user asked for
+	// priority-first sorting so the highest-priority (lowest numeric
+	// priority) items surface before the top-N cap.
 	resp.Lists.InProgress = capItems(sortByUpdatedAtDesc(inProgress), limit)
-	resp.Lists.Ready = capItems(sortByUpdatedAtDesc(ready), limit)
-	resp.Lists.Epics = capItems(sortByUpdatedAtDesc(epics), limit)
+	resp.Lists.Ready = capItems(sortByPriorityThenUpdatedAtDesc(ready), limit)
+	resp.Lists.Epics = capItems(sortByPriorityThenUpdatedAtDesc(epics), limit)
 
 	writeJSONOK(w, resp)
 }
@@ -271,11 +275,51 @@ func itemUpdatedAt(item map[string]any) string {
 	return s
 }
 
+// itemPriority returns the "priority" field of an issue map as an int
+// (0=Critical, 1=High, 2=Medium, 3=Low — lower number is higher priority).
+// bd emits integers, but json.Unmarshal into map[string]any decodes numbers
+// as float64, so both branches are handled. Missing / wrong-type priorities
+// sort last by returning a large sentinel.
+func itemPriority(item map[string]any) int {
+	switch v := item["priority"].(type) {
+	case float64:
+		return int(v)
+	case int:
+		return v
+	default:
+		// Unknown / missing priority sorts after any real value (0..3).
+		return 1 << 30
+	}
+}
+
 // sortByUpdatedAtDesc sorts items by updated_at descending in place and
 // returns the same slice for chaining. Ties break by id ascending for a
 // stable order across repeated calls.
 func sortByUpdatedAtDesc(items []map[string]any) []map[string]any {
 	sort.SliceStable(items, func(i, j int) bool {
+		ui, uj := itemUpdatedAt(items[i]), itemUpdatedAt(items[j])
+		if ui != uj {
+			return ui > uj
+		}
+		idI, _ := items[i]["id"].(string)
+		idJ, _ := items[j]["id"].(string)
+		return idI < idJ
+	})
+	return items
+}
+
+// sortByPriorityThenUpdatedAtDesc sorts items so higher-priority (lower
+// numeric priority) items come first, then falls back to updated_at desc
+// within the same priority band, and finally to id ascending for stability.
+// Sorts in place and returns the same slice for chaining. Used for the Ready
+// and Epics backlogs where the top-N cap should surface the most important
+// items rather than merely the most recently touched.
+func sortByPriorityThenUpdatedAtDesc(items []map[string]any) []map[string]any {
+	sort.SliceStable(items, func(i, j int) bool {
+		pi, pj := itemPriority(items[i]), itemPriority(items[j])
+		if pi != pj {
+			return pi < pj
+		}
 		ui, uj := itemUpdatedAt(items[i]), itemUpdatedAt(items[j])
 		if ui != uj {
 			return ui > uj

@@ -372,3 +372,103 @@ func twoDigit(n int) string {
 	}
 	return "99"
 }
+
+// --- sortByPriorityThenUpdatedAtDesc -----------------------------------------
+//
+// Ready / Epics lists must sort by priority ascending (0=Critical first) with
+// updated_at desc as the intra-priority tiebreaker, and id asc as the final
+// stable tiebreaker.
+
+// prioItem is a shorthand for building test items with just the fields the
+// priority sort inspects. priority is set as float64 to mirror what
+// json.Unmarshal into map[string]any produces from bd's integer output.
+func prioItem(id string, priority int, updatedAt string) map[string]any {
+	m := map[string]any{"id": id, "updated_at": updatedAt}
+	if priority >= 0 {
+		m["priority"] = float64(priority)
+	}
+	return m
+}
+
+func TestSortByPriorityThenUpdatedAtDesc_PriorityBeatsRecency(t *testing.T) {
+	// A Low-priority item touched today must still sit below a
+	// Critical-priority item touched last week.
+	items := []map[string]any{
+		prioItem("a", 3, "2026-07-12T00:00:00Z"), // Low, most recent
+		prioItem("b", 0, "2026-07-05T00:00:00Z"), // Critical, oldest
+		prioItem("c", 2, "2026-07-10T00:00:00Z"), // Medium
+	}
+	sortByPriorityThenUpdatedAtDesc(items)
+	got := []string{items[0]["id"].(string), items[1]["id"].(string), items[2]["id"].(string)}
+	want := []string{"b", "c", "a"}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("position %d: got %q, want %q (full=%v)", i, got[i], want[i], got)
+		}
+	}
+}
+
+func TestSortByPriorityThenUpdatedAtDesc_RecencyBreaksTiesWithinPriority(t *testing.T) {
+	items := []map[string]any{
+		prioItem("older", 1, "2026-07-01T00:00:00Z"),
+		prioItem("newest", 1, "2026-07-12T00:00:00Z"),
+		prioItem("middle", 1, "2026-07-07T00:00:00Z"),
+	}
+	sortByPriorityThenUpdatedAtDesc(items)
+	want := []string{"newest", "middle", "older"}
+	for i, w := range want {
+		if items[i]["id"].(string) != w {
+			t.Errorf("position %d: got %q, want %q", i, items[i]["id"], w)
+		}
+	}
+}
+
+func TestSortByPriorityThenUpdatedAtDesc_IDBreaksTiesWhenAllElseEqual(t *testing.T) {
+	items := []map[string]any{
+		prioItem("mitto-c", 2, "2026-07-10T00:00:00Z"),
+		prioItem("mitto-a", 2, "2026-07-10T00:00:00Z"),
+		prioItem("mitto-b", 2, "2026-07-10T00:00:00Z"),
+	}
+	sortByPriorityThenUpdatedAtDesc(items)
+	want := []string{"mitto-a", "mitto-b", "mitto-c"}
+	for i, w := range want {
+		if items[i]["id"].(string) != w {
+			t.Errorf("position %d: got %q, want %q", i, items[i]["id"], w)
+		}
+	}
+}
+
+func TestSortByPriorityThenUpdatedAtDesc_MissingPrioritySortsLast(t *testing.T) {
+	// itemPriority returns a large sentinel for missing/wrong-type priorities
+	// so any real 0..3 value beats them.
+	items := []map[string]any{
+		prioItem("no-prio", -1, "2026-07-12T00:00:00Z"), // priority key omitted
+		prioItem("low", 3, "2026-07-01T00:00:00Z"),
+		prioItem("critical", 0, "2026-07-05T00:00:00Z"),
+	}
+	sortByPriorityThenUpdatedAtDesc(items)
+	want := []string{"critical", "low", "no-prio"}
+	for i, w := range want {
+		if items[i]["id"].(string) != w {
+			t.Errorf("position %d: got %q, want %q", i, items[i]["id"], w)
+		}
+	}
+}
+
+func TestItemPriority_HandlesFloatAndInt(t *testing.T) {
+	// json.Unmarshal into map[string]any produces float64; hand-built maps in
+	// tests occasionally use int. Both branches must yield the raw integer.
+	if got := itemPriority(map[string]any{"priority": float64(2)}); got != 2 {
+		t.Errorf("float64(2) → %d, want 2", got)
+	}
+	if got := itemPriority(map[string]any{"priority": 1}); got != 1 {
+		t.Errorf("int(1) → %d, want 1", got)
+	}
+	// Missing / wrong-type must sort last, not be treated as priority 0.
+	if got := itemPriority(map[string]any{}); got <= 3 {
+		t.Errorf("missing priority → %d, want >3 (sort-last sentinel)", got)
+	}
+	if got := itemPriority(map[string]any{"priority": "high"}); got <= 3 {
+		t.Errorf("string priority → %d, want >3 (sort-last sentinel)", got)
+	}
+}
