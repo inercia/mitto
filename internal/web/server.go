@@ -1080,7 +1080,17 @@ func NewServer(config Config) (*Server, error) {
 			return url
 		},
 		SyncConfigWorkspaces: func() {
-			s.config.Workspaces = s.sessionManager.GetWorkspaces()
+			workspaces := s.sessionManager.GetWorkspaces()
+			// Re-project folder-native fields (Pinned, and any other fields
+			// that live in folders.json) onto the in-memory workspaces.
+			// Without this, folder-level mutations like SetFolderPinned would
+			// not be visible to GET /api/workspaces until server restart,
+			// because the WorkspaceRegistry map is populated once at load
+			// and never re-projected. See mitto-662.
+			if folders, err := configPkg.LoadFolders(); err == nil {
+				configPkg.ApplyFolderDefaults(workspaces, folders)
+			}
+			s.config.Workspaces = workspaces
 			// Re-subscribe beads watcher to pick up any newly added workspaces.
 			if s.beadsWatcher != nil {
 				s.beadsWatcher.Unsubscribe(s)

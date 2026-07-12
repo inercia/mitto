@@ -816,3 +816,32 @@ func TestExtractFolderSettings_StripsPinnedFromWorkspaces(t *testing.T) {
 		}
 	}
 }
+
+// TestSetFolderPinned_ReprojectsOntoFreshWorkspaces is a regression guard for
+// mitto-662: SetFolderPinned only writes folders.json; callers must reload
+// folders and re-apply ApplyFolderDefaults to see the change reflected on an
+// in-memory WorkspaceSettings slice. Verifies that composition end-to-end.
+func TestSetFolderPinned_ReprojectsOntoFreshWorkspaces(t *testing.T) {
+	setupFoldersTestDir(t)
+
+	workspaces := []WorkspaceSettings{
+		{WorkingDir: "/tmp/foo", ACPServer: "mock-acp"},
+	}
+	if workspaces[0].Pinned {
+		t.Fatalf("precondition: workspace should not be pinned yet")
+	}
+
+	if err := SetFolderPinned("/tmp/foo", true); err != nil {
+		t.Fatalf("SetFolderPinned: %v", err)
+	}
+
+	folders, err := LoadFolders()
+	if err != nil {
+		t.Fatalf("LoadFolders: %v", err)
+	}
+	ApplyFolderDefaults(workspaces, folders)
+
+	if !workspaces[0].Pinned {
+		t.Errorf("workspaces[0].Pinned = false after SetFolderPinned+ApplyFolderDefaults, want true")
+	}
+}
