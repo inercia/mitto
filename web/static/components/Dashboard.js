@@ -1,7 +1,9 @@
 // Mitto Web Interface - Global Dashboard view (mitto-aqo).
-// Stats header (mitto-aqo.4) + paged grid of lists (mitto-aqo.5, paged in
-// mitto-3sb) + click handlers routing to conversation focus / beads issue
-// viewer (mitto-aqo.6).
+// Stats header (mitto-aqo.4) + responsive grid of all four lists (mitto-aqo.5)
+// + click handlers routing to conversation focus / beads issue viewer
+// (mitto-aqo.6). No pagination — every list is always visible; column count
+// scales 1/2/3/4 with viewport width so phones stack, tablets pair, and wide
+// desktops show the whole set in one row.
 const { html, useState, useEffect, useMemo, useRef } = window.preact;
 
 import { authFetch } from "../utils/csrf.js";
@@ -11,13 +13,31 @@ import { MenuIcon } from "./Icons.js";
 
 const REFRESH_INTERVAL_MS = 15_000;
 const MAX_LIST_ITEMS = 5;
-// Lists shown per page, responsive: 2 side-by-side on md+, 1 at a time on
-// narrower viewports so the dashboard never stacks two full lists on top of
-// each other on phones — instead the user pages through them one at a time.
-// The breakpoint mirrors Tailwind's `md` (768px).
-const LISTS_PER_PAGE_DESKTOP = 2;
-const LISTS_PER_PAGE_MOBILE = 1;
-const LISTS_PER_PAGE_MEDIA_QUERY = "(min-width: 768px)";
+// Responsive column count for the lists grid. Breakpoints mirror Tailwind's
+// sm (640px) / lg (1024px) / xl (1280px) so behaviour is predictable across
+// the app. Below sm every list gets its own row (iPhone-friendly); at sm we
+// pair them 2x2; at lg it becomes 3 columns; at xl the whole set fits in one
+// row. The grid template is applied via inline style because the precompiled
+// tailwind.css does NOT include any responsive-prefixed grid-cols utilities
+// (only base .grid-cols-1/2/3) — see tailwind-precompiled-jit-class-gotcha.
+const COLUMN_BREAKPOINTS = [
+  { minWidth: 1280, columns: 4 },
+  { minWidth: 1024, columns: 3 },
+  { minWidth: 640, columns: 2 },
+];
+const DEFAULT_COLUMNS = 1;
+
+function pickColumns() {
+  if (typeof window === "undefined" || !window.matchMedia) {
+    return COLUMN_BREAKPOINTS[0].columns;
+  }
+  for (const bp of COLUMN_BREAKPOINTS) {
+    if (window.matchMedia(`(min-width: ${bp.minWidth}px)`).matches) {
+      return bp.columns;
+    }
+  }
+  return DEFAULT_COLUMNS;
+}
 
 // Mirror BeadsView priority vocabulary so pills look identical across views.
 // bd priorities: 0 = Critical, 1 = High, 2 = Medium, 3 = Low.
@@ -67,36 +87,23 @@ export function Dashboard({
   onShowSidebar,
 }) {
   const [data, setData] = useState(null); // null = first load in-flight
-  const [pageIndex, setPageIndex] = useState(0);
-  // Responsive page size (see LISTS_PER_PAGE_* constants). Initialised
-  // synchronously from matchMedia so the first render already picks the
-  // correct page size; kept in sync via a change listener below.
-  const [listsPerPage, setListsPerPage] = useState(() => {
-    if (typeof window === "undefined" || !window.matchMedia) {
-      return LISTS_PER_PAGE_DESKTOP;
-    }
-    return window.matchMedia(LISTS_PER_PAGE_MEDIA_QUERY).matches
-      ? LISTS_PER_PAGE_DESKTOP
-      : LISTS_PER_PAGE_MOBILE;
-  });
+  // Number of grid columns for the lists row, driven by viewport width.
+  // Initialised synchronously from matchMedia so the first render already
+  // uses the correct column count; kept in sync via listeners below.
+  const [columns, setColumns] = useState(pickColumns);
   const mountedRef = useRef(true);
 
   useEffect(() => {
     if (typeof window === "undefined" || !window.matchMedia) return;
-    const mq = window.matchMedia(LISTS_PER_PAGE_MEDIA_QUERY);
-    const onChange = (e) =>
-      setListsPerPage(e.matches ? LISTS_PER_PAGE_DESKTOP : LISTS_PER_PAGE_MOBILE);
-    mq.addEventListener("change", onChange);
-    return () => mq.removeEventListener("change", onChange);
+    const mqs = COLUMN_BREAKPOINTS.map((bp) =>
+      window.matchMedia(`(min-width: ${bp.minWidth}px)`),
+    );
+    const onChange = () => setColumns(pickColumns());
+    for (const mq of mqs) mq.addEventListener("change", onChange);
+    return () => {
+      for (const mq of mqs) mq.removeEventListener("change", onChange);
+    };
   }, []);
-
-  // Clamp pageIndex when the page size shrinks (e.g. desktop → mobile) so a
-  // stale index doesn't leave the grid rendering out-of-range slots and the
-  // prev/next arithmetic stays consistent with what's shown.
-  useEffect(() => {
-    const totalPages = Math.max(1, Math.ceil(SLIDES.length / listsPerPage));
-    setPageIndex((p) => Math.min(p, totalPages - 1));
-  }, [listsPerPage]);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -267,15 +274,14 @@ export function Dashboard({
         </div>
       </div>
 
-      <!-- Paged grid of lists (mitto-aqo.5, paged in mitto-3sb). Shows
-           listsPerPage lists per page: 1 at a time on mobile so the lists
-           never stack on top of each other in narrow viewports, 2 side-by-side
-           on md+. Prev/next arrow buttons are overlaid on the left and right
-           edges, vertically centered on the grid; there is no page-indicator
-           text and no numbered page dots (intentionally minimal, per user
-           feedback). Empty lists render a "No items" placeholder so page
-           layout stays consistent regardless of data. Click handlers wire in
-           mitto-aqo.6. -->
+      <!-- Responsive grid of all four lists (mitto-aqo.5). No carousel:
+           every list is always visible. Column count is driven by the
+           columns state (1/2/3/4) which reacts to viewport width via
+           matchMedia. The grid template is applied via inline style rather
+           than Tailwind's responsive prefixes because the precompiled
+           tailwind.css does not include prefixed grid-cols utilities. Each
+           panel pads up to MAX_LIST_ITEMS invisible rows so every list in
+           the same row shares the same height regardless of content. -->
       ${(() => {
         const rendered = [
           renderConversationRows(promptingList, onFocusConversation),
@@ -283,72 +289,16 @@ export function Dashboard({
           renderTaskRows(readyList, onOpenTask),
           renderTaskRows(epicsList, onOpenTask),
         ];
-        const totalPages = Math.max(
-          1,
-          Math.ceil(SLIDES.length / listsPerPage),
-        );
-        const safePage = Math.min(pageIndex, totalPages - 1);
-        const start = safePage * listsPerPage;
-        const end = start + listsPerPage;
-        // Per user rule: every list panel MUST occupy the same vertical space
-        // regardless of content, so every panel pads up to MAX_LIST_ITEMS.
-        // This is the global cap the server also uses (top-5), so a full list
-        // is a no-op and a short/empty list reserves the same footprint as a
-        // fully-populated one — desktop side-by-side stays aligned, and
-        // single-panel mobile views still get a stable, predictable height
-        // instead of collapsing to one row.
-        const padTo = MAX_LIST_ITEMS;
-        const visible = SLIDES.slice(start, end).map((s, i) => ({
-          slide: s,
-          rows: rendered[start + i] || [],
-          padTo,
+        const panels = SLIDES.map((slide, i) => ({
+          slide,
+          rows: rendered[i] || [],
         }));
-        const prevPage = () =>
-          setPageIndex((p) => (p - 1 + totalPages) % totalPages);
-        const nextPage = () => setPageIndex((p) => (p + 1) % totalPages);
-        // Grid template matches listsPerPage so a single visible list fills the
-        // available width on mobile and the pair shares it 50/50 on md+.
-        const gridColsClass =
-          listsPerPage === 1 ? "grid-cols-1" : "grid-cols-1 md:grid-cols-2";
-        // Grid keeps px-8 so list content clears the arrow buttons; the arrow
-        // wrappers add px-2 so the buttons sit inset ~0.5rem from the container
-        // edge rather than flush against it, giving visible breathing room
-        // around each arrow. Only utility classes that are actually present in
-        // the precompiled web/static/tailwind.css are used (px-12 / pl-2 / pr-2
-        // are NOT compiled; px-2 and px-8 are).
+        const gridStyle = `grid-template-columns: repeat(${columns}, minmax(0, 1fr));`;
         return html`
-          <div class="relative w-full">
-            <div class="grid ${gridColsClass} gap-4 w-full px-8">
-              ${visible.map((v) => renderListPanel(v.slide, v.rows, v.padTo))}
-            </div>
-            <div
-              class="absolute top-0 left-0 h-full flex items-center px-2"
-            >
-              <button
-                type="button"
-                class="btn btn-sm btn-ghost text-mitto-text-muted"
-                aria-label="Previous page"
-                title="Previous page"
-                onClick=${prevPage}
-                disabled=${totalPages <= 1}
-              >
-                ❮
-              </button>
-            </div>
-            <div
-              class="absolute top-0 right-0 h-full flex items-center px-2"
-            >
-              <button
-                type="button"
-                class="btn btn-sm btn-ghost text-mitto-text-muted"
-                aria-label="Next page"
-                title="Next page"
-                onClick=${nextPage}
-                disabled=${totalPages <= 1}
-              >
-                ❯
-              </button>
-            </div>
+          <div class="grid gap-4 w-full" style=${gridStyle}>
+            ${panels.map((p) =>
+              renderListPanel(p.slide, p.rows, MAX_LIST_ITEMS),
+            )}
           </div>
         `;
       })()}
@@ -358,10 +308,9 @@ export function Dashboard({
 
 // A single list panel: label above a daisyUI list. `rows` is the real rows
 // (unpadded); `padTo` is the row count to pad up to with invisible spacers so
-// siblings on the same page bottom-align. When padTo <= rows.length no spacers
-// are added and the panel hugs its own content — this avoids the "giant empty
-// box below one real row" symptom on single-panel (mobile) viewports where
-// there is no sibling to align to.
+// every list occupies the same vertical space regardless of content. Callers
+// pass MAX_LIST_ITEMS so all panels in the responsive grid share the same
+// height whether they are stacked on a phone or aligned in a wide-desktop row.
 function renderListPanel(slide, rows, padTo) {
   const realRows = Array.isArray(rows) ? rows : [];
   const target = Math.max(padTo || 0, realRows.length);
