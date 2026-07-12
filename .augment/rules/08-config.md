@@ -79,7 +79,7 @@ Per-workspace config via RC files (`{workspace}/.mittorc` or `.mitto/mittorc[.ya
 
 ## Workspace Persistence
 
-Workspaces persisted in `workspaces.json` (except CLI `--dir`). `folders.json` (crash-safe) holds folder-level settings; metadata stays in `.mittorc` (version-controllable). Folder-level settings include a `pinned` bool (defaults `false`) that, when `true`, keeps the folder visible in the sidebar even without conversations; toggled via `GET/PUT /api/folders/pin` (`internal/web/handlers/folders_pin.go`) and projected onto workspace records by `ApplyFolderDefaults`.
+Workspaces persisted in `workspaces.json` (except CLI `--dir`). `folders.json` (crash-safe) holds folder-level settings; metadata stays in `.mittorc` (version-controllable). Folder-level settings include a `pinned` bool (defaults `false`) that, when `true`, keeps the folder visible in the sidebar even without conversations; toggled via `GET/PUT /api/folders/pin` (`internal/web/handlers/folder_pin.go`) and projected onto workspace records by `ApplyFolderDefaults`.
 
 ## Global Settings REST API
 
