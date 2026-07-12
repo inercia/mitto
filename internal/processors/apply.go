@@ -1521,10 +1521,21 @@ func (m *Manager) dispatchPromptBatch(workspaceUUID string, prompts []pendingPro
 			defer cancel()
 			if err := m.promptFunc(bgCtx, workspaceUUID, p.name, p.prompt); err != nil {
 				if m.logger != nil {
-					m.logger.Error("prompt-mode processor dispatch failed",
-						"name", p.name,
-						"error", err,
-					)
+					// Belt-and-suspenders: if the shared ACP process was reaped
+					// between the caller's pre-check and this dispatch (or if a
+					// caller skipped the pre-check entirely), downgrade to WARN
+					// instead of ERROR so the log is not noisy (mitto-6bn.1).
+					if strings.Contains(err.Error(), "no shared process for workspace") {
+						m.logger.Warn("prompt-mode processor dispatch skipped: shared ACP process not available",
+							"name", p.name,
+							"error", err,
+						)
+					} else {
+						m.logger.Error("prompt-mode processor dispatch failed",
+							"name", p.name,
+							"error", err,
+						)
+					}
 				}
 			}
 		}()
@@ -1558,10 +1569,21 @@ func (m *Manager) dispatchPromptBatch(workspaceUUID string, prompts []pendingPro
 		defer cancel()
 		if err := m.promptFunc(bgCtx, workspaceUUID, combinedName, combinedPrompt); err != nil {
 			if m.logger != nil {
-				m.logger.Error("batched prompt-mode processor dispatch failed",
-					"names", combinedName,
-					"error", err,
-				)
+				// Belt-and-suspenders: same rationale as the single-processor
+				// path above — downgrade the "no shared process" sentinel to
+				// WARN so a race against GC does not surface as an ERROR
+				// (mitto-6bn.1).
+				if strings.Contains(err.Error(), "no shared process for workspace") {
+					m.logger.Warn("batched prompt-mode processor dispatch skipped: shared ACP process not available",
+						"names", combinedName,
+						"error", err,
+					)
+				} else {
+					m.logger.Error("batched prompt-mode processor dispatch failed",
+						"names", combinedName,
+						"error", err,
+					)
+				}
 			}
 		}
 	}()

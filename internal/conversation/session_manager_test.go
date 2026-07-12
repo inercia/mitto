@@ -1990,10 +1990,16 @@ func TestProcessorArgOverrides_SeamMethods(t *testing.T) {
 // trigger fired (mitto-54k.7), and the PinWorkspace calls so tests can assert
 // the close-phase pin fired (mitto-4is). All other interface methods are no-ops.
 type fakeProcessManager struct {
-	mu        sync.Mutex
-	prewarmed []string
-	prewarmCh chan string
-	pinCalls  []fakePinCall
+	mu             sync.Mutex
+	prewarmed      []string
+	prewarmCh      chan string
+	pinCalls       []fakePinCall
+	liveWorkspaces map[string]bool
+	// hasLiveDefault is returned by HasLiveProcess when the workspace UUID is
+	// not listed in liveWorkspaces. Defaults to true so pre-existing tests
+	// (which do not care about the reaped-process path) continue to see a
+	// "live" workspace.
+	hasLiveDefault bool
 }
 
 type fakePinCall struct {
@@ -2004,7 +2010,20 @@ type fakePinCall struct {
 }
 
 func newFakeProcessManager() *fakeProcessManager {
-	return &fakeProcessManager{prewarmCh: make(chan string, 8)}
+	return &fakeProcessManager{
+		prewarmCh:      make(chan string, 8),
+		liveWorkspaces: map[string]bool{},
+		hasLiveDefault: true,
+	}
+}
+
+// setLiveProcess controls what HasLiveProcess returns for a given workspace
+// UUID. Passing live=false simulates a workspace whose shared ACP process has
+// already been reaped by GC (mitto-6bn.1).
+func (f *fakeProcessManager) setLiveProcess(workspaceUUID string, live bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.liveWorkspaces[workspaceUUID] = live
 }
 
 func (f *fakeProcessManager) EnsurePrewarmed(workspaceUUID string, _ *slog.Logger) {
@@ -2048,6 +2067,15 @@ func (f *fakeProcessManager) pinCallsSnapshot() []fakePinCall {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return append([]fakePinCall(nil), f.pinCalls...)
+}
+
+func (f *fakeProcessManager) HasLiveProcess(workspaceUUID string) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if v, ok := f.liveWorkspaces[workspaceUUID]; ok {
+		return v
+	}
+	return f.hasLiveDefault
 }
 
 // waitForPrewarm blocks until EnsurePrewarmed is called (up to timeout) and
@@ -2238,5 +2266,54 @@ func TestApplyOnCloseProcessors_NoPinWithoutWorkspaceUUID(t *testing.T) {
 
 	if calls := pm.pinCallsSnapshot(); len(calls) != 0 {
 		t.Fatalf("PinWorkspace should not fire without a resolved workspace UUID, got %+v", calls)
+	}
+}
+
+// TestApplyOnCloseProcessors_SkipsWhenSharedProcessReaped verifies that when
+// the workspace's shared ACP process has already been reaped by GC (e.g.
+// Tier 2 idle-reap hours after the last session closed), the close pipeline
+// is a clean no-op: no PinWorkspace call, no goroutine spawn, no downstream
+// "no shared process for workspace ..." ERROR from getOrCreateAuxiliarySession
+// (mitto-6bn.1).
+func TestApplyOnCloseProcessors_SkipsWhenSharedProcessReaped(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	t.Cleanup(func() { store.Close() })
+
+	const (
+		sid       = "sess-reaped"
+		wsUUID    = "ws-reaped-close"
+		acpServer = "test-server"
+	)
+	workingDir := t.TempDir()
+
+	if err := store.Create(session.Metadata{
+		SessionID:  sid,
+		ACPServer:  acpServer,
+		WorkingDir: workingDir,
+	}); err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+
+	sm := NewSessionManager("echo test", acpServer, true, nil)
+	sm.SetStore(store)
+	sm.SetProcessorManager(processors.NewManager("", nil))
+	sm.AddWorkspace(config.WorkspaceSettings{
+		UUID:       wsUUID,
+		WorkingDir: workingDir,
+		ACPServer:  acpServer,
+	})
+	pm := newFakeProcessManager()
+	// Simulate the reaped-process scenario: HasLiveProcess returns false.
+	pm.setLiveProcess(wsUUID, false)
+	sm.SetACPProcessManager(pm)
+
+	sm.ApplyOnCloseProcessors(sid, "inactivity")
+
+	// The pre-check must short-circuit BEFORE PinWorkspace is called.
+	if calls := pm.pinCallsSnapshot(); len(calls) != 0 {
+		t.Fatalf("PinWorkspace should not fire when shared process is reaped, got %+v", calls)
 	}
 }

@@ -84,6 +84,11 @@ type ProcessManager interface {
 	// maxPinned cap would be exceeded. maxDuration=0 disables auto-expiry;
 	// maxPinned=0 disables the blast-radius cap.
 	PinWorkspace(workspaceUUID, reason string, maxDuration time.Duration, maxPinned int) bool
+	// HasLiveProcess reports whether a live shared ACP process exists for the
+	// workspace. Used by close-phase dispatch to skip cleanly when the process
+	// has already been reaped by GC (mitto-6bn.1) instead of failing later with
+	// an ERROR from getOrCreateAuxiliarySession.
+	HasLiveProcess(workspaceUUID string) bool
 }
 
 // EventsBroadcaster abstracts the global events manager (web.GlobalEventsManager)

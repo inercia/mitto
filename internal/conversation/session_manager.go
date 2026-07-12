@@ -632,6 +632,26 @@ func (sm *SessionManager) ApplyOnCloseProcessors(sessionID string, reason string
 		workspaceUUID = ws.UUID
 	}
 
+	// Pre-check: if the workspace's shared ACP process is already gone (typically
+	// reaped by GC Tier 2 hours after the last session went idle), skip the
+	// entire close pipeline. Prompt-mode close processors would otherwise fail
+	// downstream in getOrCreateAuxiliarySession with "no shared process for
+	// workspace ..." and log a noisy ERROR. Command-mode processors also skip
+	// here — the trade-off is intentional (mitto-6bn.1) since all current
+	// on-close processors are prompt-mode. The stable "reason" tag makes this
+	// event grep-able for occurrence measurement.
+	if pm != nil && workspaceUUID != "" && !pm.HasLiveProcess(workspaceUUID) {
+		if logger != nil {
+			logger.Info("close-phase processors skipped: workspace shared process not running",
+				"session_id", sessionID,
+				"workspace_uuid", workspaceUUID,
+				"archive_reason", reason,
+				"reason", "process_reaped_before_close",
+			)
+		}
+		return
+	}
+
 	// Build the workspace-merged processor manager (global + workspace-local).
 	procMgr := sm.loadWorkspaceProcessors(globalMgr, workingDir)
 	if procMgr == nil {
