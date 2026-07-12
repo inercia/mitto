@@ -1415,6 +1415,29 @@ export function SessionList({
                   </div>
                 </li>
               `}
+              ${folder.conversations.length === 0 &&
+              folder.archived.length === 0 &&
+              html`
+                <li class="folder-empty-state min-w-0">
+                  <div
+                    class="px-3 py-1.5 text-xs italic text-mitto-text-muted/70 truncate"
+                  >
+                    No conversations yet.
+                    <button
+                      type="button"
+                      class="link link-hover text-mitto-text-muted hover:text-mitto-text-strong not-italic"
+                      onClick=${(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        if (folder.workingDir)
+                          handleNewSessionInFolder(folder.workingDir, e);
+                      }}
+                    >
+                      Start one
+                    </button>
+                  </div>
+                </li>
+              `}
               ${renderSessionNodes(folder.conversations)}
               ${folder.archived.length > 0 &&
               html`
