@@ -290,9 +290,23 @@ export function Dashboard({
         const safePage = Math.min(pageIndex, totalPages - 1);
         const start = safePage * listsPerPage;
         const end = start + listsPerPage;
+        // Compute the max row count across the panels VISIBLE on this page so
+        // spacer padding only fills the gap needed to bottom-align siblings on
+        // screen. When only one panel is visible (mobile / narrow viewport)
+        // there is nothing to align to, so no spacers are added and the panel
+        // hugs its real content instead of showing a big empty box below a
+        // single row.
+        const visibleRows = SLIDES.slice(start, end).map(
+          (_s, i) => rendered[start + i] || [],
+        );
+        const padTo = visibleRows.reduce(
+          (max, rows) => Math.max(max, rows.length),
+          0,
+        );
         const visible = SLIDES.slice(start, end).map((s, i) => ({
           slide: s,
-          rows: rendered[start + i],
+          rows: visibleRows[i],
+          padTo,
         }));
         const prevPage = () =>
           setPageIndex((p) => (p - 1 + totalPages) % totalPages);
@@ -310,7 +324,7 @@ export function Dashboard({
         return html`
           <div class="relative w-full">
             <div class="grid ${gridColsClass} gap-4 w-full px-8">
-              ${visible.map((v) => renderListPanel(v.slide, v.rows))}
+              ${visible.map((v) => renderListPanel(v.slide, v.rows, v.padTo))}
             </div>
             <div
               class="absolute top-0 left-0 h-full flex items-center px-2"
@@ -347,25 +361,34 @@ export function Dashboard({
   `;
 }
 
-// A single list panel: label above a daisyUI list. `rows` is the pre-rendered
-// list-row markup (or a "No items" placeholder).
-function renderListPanel(slide, rows) {
+// A single list panel: label above a daisyUI list. `rows` is the real rows
+// (unpadded); `padTo` is the row count to pad up to with invisible spacers so
+// siblings on the same page bottom-align. When padTo <= rows.length no spacers
+// are added and the panel hugs its own content — this avoids the "giant empty
+// box below one real row" symptom on single-panel (mobile) viewports where
+// there is no sibling to align to.
+function renderListPanel(slide, rows, padTo) {
+  const realRows = Array.isArray(rows) ? rows : [];
+  const target = Math.max(padTo || 0, realRows.length);
+  const spacers = [];
+  for (let i = 0; i < target - realRows.length; i++) {
+    spacers.push(spacerRow(`__spacer-${slide.id}-${i}`));
+  }
   return html`
     <div id=${slide.id} class="flex flex-col gap-2 min-w-0">
       <div class="text-sm font-semibold text-mitto-text-strong">
         ${slide.label}
       </div>
       <ul class="list bg-mitto-surface-2 rounded-box shadow-md w-full">
-        ${rows}
+        ${realRows}${spacers}
       </ul>
     </div>
   `;
 }
 
-// Invisible spacer row matching the real .list-row shape so every list panel
-// occupies the same vertical space regardless of how many real items it holds.
-// `aria-hidden` + `visibility:hidden` keeps it out of the a11y tree and off
-// the tab order while still contributing height to the flow.
+// Invisible spacer row matching the real .list-row shape so panels on the same
+// page bottom-align. `aria-hidden` + `visibility:hidden` keeps it out of the
+// a11y tree and off the tab order while still contributing height to the flow.
 function spacerRow(key) {
   return html`
     <li
@@ -381,23 +404,9 @@ function spacerRow(key) {
   `;
 }
 
-// padRowsToMax appends invisible spacer rows so the returned array always has
-// exactly MAX_LIST_ITEMS entries. Called by renderConversationRows and
-// renderTaskRows so short / empty lists reserve the same vertical footprint
-// as a full 5-item list. A no-op when rows is already at (or above) the cap.
-function padRowsToMax(rows) {
-  const arr = Array.isArray(rows) ? rows.slice() : [];
-  const missing = MAX_LIST_ITEMS - arr.length;
-  for (let i = 0; i < missing; i++) {
-    arr.push(spacerRow(`__spacer-${i}`));
-  }
-  return arr;
-}
-
-// Empty-state row: keeps the same .list-row shape so it lines up with the
-// spacer rows below it (renderConversationRows / renderTaskRows pad the
-// remaining MAX_LIST_ITEMS - 1 slots so the panel's total height matches a
-// fully-populated list).
+// Empty-state row: keeps the same .list-row shape so it lines up cleanly with
+// any spacer rows the panel renderer may add below it to bottom-align with a
+// sibling on the same page.
 function emptyRow() {
   return html`
     <li class="list-row items-center gap-2" key="__empty">
@@ -446,9 +455,10 @@ function activateOnKey(fn) {
 // `onClick` is provided AND the session has a `session_id`, the row becomes
 // keyboard/mouse-activatable; otherwise it stays inert.
 function renderConversationRows(sessions, onClick) {
-  // Empty list → one visible "No items" row + spacers to MAX_LIST_ITEMS so
-  // every panel takes the same vertical space regardless of content.
-  if (!sessions || sessions.length === 0) return padRowsToMax([emptyRow()]);
+  // Empty list → one visible "No items" row. Bottom-alignment padding across
+  // sibling panels is now handled by renderListPanel(padTo) so this helper
+  // returns only the real content and never over-pads a lone panel.
+  if (!sessions || sessions.length === 0) return [emptyRow()];
   const rows = sessions.map((s) => {
     if (!s) return null;
     // Match the canonical sidebar priority (SessionItem.js): user-set `name`
@@ -478,16 +488,16 @@ function renderConversationRows(sessions, onClick) {
       </li>
     `;
   });
-  return padRowsToMax(rows);
+  return rows;
 }
 
 // Row: bd id + title (grows/truncates) + priority pill + workspace basename.
 // Interactive only when the item has both an `id` and a `working_dir` (both
 // are required to open the correct workspace's beads viewer).
 function renderTaskRows(items, onClick) {
-  // Same padding contract as renderConversationRows: guarantees every panel
-  // occupies MAX_LIST_ITEMS rows worth of vertical space.
-  if (!items || items.length === 0) return padRowsToMax([emptyRow()]);
+  // See renderConversationRows: real rows only, bottom-alignment is handled
+  // page-scoped by renderListPanel(padTo).
+  if (!items || items.length === 0) return [emptyRow()];
   const rows = items.map((it) => {
     if (!it) return null;
     const id = it.id || "";
@@ -518,5 +528,5 @@ function renderTaskRows(items, onClick) {
       </li>
     `;
   });
-  return padRowsToMax(rows);
+  return rows;
 }
