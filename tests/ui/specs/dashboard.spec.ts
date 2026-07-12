@@ -99,6 +99,11 @@ const MOCK_ISSUE_T1 = {
 const DASHBOARD_BUTTON = 'button[title="Dashboard"]';
 // Beads detail panel — shared with beads.spec.ts.
 const DETAIL_PANEL = "div.properties-panel";
+// Mobile viewport — matches the one used across the other mobile specs
+// (beads.spec.ts, side-panels-outside-click-mobile.spec.ts, etc.). Below the
+// Tailwind `md` breakpoint (768px) so the Dashboard's responsive pagination
+// switches to 1 list per page.
+const MOBILE_VIEWPORT = { width: 390, height: 844 };
 
 async function openDashboard(page, timeouts) {
   const btn = page.locator(DASHBOARD_BUTTON);
@@ -234,6 +239,64 @@ testWithCleanup.describe("Global Dashboard", () => {
       await expect(
         page.locator("#dash-slide-prompting").getByText("No items"),
       ).toBeVisible();
+    },
+  );
+
+  testWithCleanup(
+    "mobile viewport paginates lists one at a time",
+    async ({ page, timeouts }) => {
+      // Open the dashboard on the default (desktop) viewport first — the
+      // sidebar Dashboard button is always visible there, so we do not have
+      // to open the mobile drawer to reach it. Then shrink the viewport,
+      // which fires the (min-width:768px) matchMedia listener wired in
+      // Dashboard.js and flips listsPerPage from 2 to 1.
+      await openDashboard(page, timeouts);
+      await page.setViewportSize(MOBILE_VIEWPORT);
+
+      // The four slide ids come from SLIDES in Dashboard.js and are stable.
+      // In mobile mode exactly one should be mounted at a time; the others
+      // are absent from the DOM (not merely hidden), because the paged grid
+      // slices SLIDES down to `listsPerPage` before rendering.
+      const promptingSlide = page.locator("#dash-slide-prompting");
+      const inProgressSlide = page.locator("#dash-slide-in-progress");
+      const readySlide = page.locator("#dash-slide-ready");
+      const epicsSlide = page.locator("#dash-slide-epics");
+
+      // Page 0 (initial): only the prompting slide is rendered.
+      await expect(promptingSlide).toBeVisible({
+        timeout: timeouts.shortAction,
+      });
+      await expect(inProgressSlide).toHaveCount(0);
+      await expect(readySlide).toHaveCount(0);
+      await expect(epicsSlide).toHaveCount(0);
+
+      // Cycle through pages 1 → 2 → 3 with the ❯ button, asserting that at
+      // each step the previous slide is unmounted and the next one appears.
+      const nextBtn = page.locator('button[aria-label="Next page"]');
+      await expect(nextBtn).toBeEnabled();
+
+      // Page 1: in-progress tasks.
+      await nextBtn.click();
+      await expect(inProgressSlide).toBeVisible();
+      await expect(promptingSlide).toHaveCount(0);
+      await expect(readySlide).toHaveCount(0);
+      await expect(epicsSlide).toHaveCount(0);
+
+      // Page 2: ready tasks.
+      await nextBtn.click();
+      await expect(readySlide).toBeVisible();
+      await expect(inProgressSlide).toHaveCount(0);
+
+      // Page 3: epic tasks.
+      await nextBtn.click();
+      await expect(epicsSlide).toBeVisible();
+      await expect(readySlide).toHaveCount(0);
+
+      // One more click wraps back to the prompting slide (page 0), matching
+      // the existing modulo arithmetic in prevPage/nextPage.
+      await nextBtn.click();
+      await expect(promptingSlide).toBeVisible();
+      await expect(epicsSlide).toHaveCount(0);
     },
   );
 });
