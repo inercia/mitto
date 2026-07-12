@@ -59,6 +59,7 @@ import {
   RefreshIcon,
   BroomIcon,
   LightningIcon,
+  PinIcon,
   getPromptIconOrDefault,
 } from "./Icons.js";
 
@@ -218,6 +219,7 @@ export function SessionList({
   badgeClickEnabled = false,
   onBadgeClick,
   onMoveFolderToGroup, // Called with (workingDir, group) to reassign a folder's group
+  onUnpinFolder, // Called with (workingDir) to unpin a pinned empty folder from the sidebar
   // Configurable "Open ▸" submenu targets (mitto-bbi). Each entry:
   // {id,label,icon,command,enabled,builtin}. Only entries with enabled===true
   // appear in the folder context-menu submenu. Callback: onOpenTarget(workingDir, id).
@@ -1610,6 +1612,21 @@ export function SessionList({
                     },
                   ]
                 : []),
+              ...(() => {
+                const wd = groupContextMenu.workingDir;
+                if (!wd || configReadonly || !onUnpinFolder) return [];
+                const ws = (workspaces || []).find(
+                  (w) => w.working_dir === wd && w.pinned === true,
+                );
+                if (!ws) return [];
+                return [
+                  {
+                    label: "Remove from sidebar",
+                    icon: html`<${PinIcon} className="w-4 h-4" />`,
+                    onClick: () => onUnpinFolder(wd),
+                  },
+                ];
+              })(),
               ...(!configReadonly && groupContextMenu.workingDir
                 ? [
                     {

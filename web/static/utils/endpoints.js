@@ -123,6 +123,7 @@ export const endpoints = {
   /** Folder-level settings (stored in folders.json, per-user). */
   folders: {
     shortcuts: (params) => apiUrl("/api/folders/shortcuts") + qs(params),
+    pin: (params) => apiUrl("/api/folders/pin") + qs(params),
   },
 
   /** Global settings (stored in settings.json). */

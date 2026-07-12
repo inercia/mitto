@@ -1854,6 +1854,49 @@ function App() {
     [showToast, refreshWorkspaces, workspaces],
   );
 
+  // Unpin a folder from the sidebar (removes the folder-native `pinned` flag in
+  // folders.json). Used by the folder context-menu "Remove from sidebar" action
+  // for pinned empty folders. Persists via PUT /api/folders/pin, then refreshes
+  // workspaces so the sidebar drops the now-unpinned empty folder.
+  const handleUnpinFolder = useCallback(
+    async (workingDir) => {
+      if (!workingDir) return;
+      try {
+        const res = await secureFetch(
+          endpoints.folders.pin({ working_dir: workingDir }),
+          {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ pinned: false }),
+          },
+        );
+        if (!res.ok) {
+          let msg = "Failed to remove folder from sidebar";
+          try {
+            const data = await res.json();
+            msg = data.error?.message || msg;
+          } catch (_) {
+            /* keep default */
+          }
+          showToast({ style: "error", title: msg });
+          return;
+        }
+        invalidateConfigCache();
+        refreshWorkspaces();
+        showToast({
+          style: "success",
+          title: "Removed folder from sidebar",
+        });
+      } catch (err) {
+        showToast({
+          style: "error",
+          title: "Failed to remove folder from sidebar: " + err.message,
+        });
+      }
+    },
+    [showToast, refreshWorkspaces],
+  );
+
   // Open the properties panel for a session (used by pencil button in session list)
   const handleOpenSessionProperties = useCallback(
     (session) => {
@@ -3510,6 +3553,7 @@ function App() {
             badgeClickEnabled=${badgeClickEnabled}
             onBadgeClick=${handleBadgeClick}
             onMoveFolderToGroup=${handleMoveFolderToGroup}
+            onUnpinFolder=${handleUnpinFolder}
             openInTargets=${openInTargets}
             onOpenTarget=${handleOpenTarget}
             onBeadsOpen=${handleBeadsOpen}
