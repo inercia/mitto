@@ -111,6 +111,8 @@ Workspace resource endpoints are identified by `{uuid}`. The older flat `/api/wo
 | `POST /api/workspaces/{uuid}/mcp-tools/install` | POST | Install MCP servers via agent's `mcp-install.sh` |
 | `POST /api/workspaces/{uuid}/mcp-tools/remove` | POST | Remove an MCP server via agent's `mcp-remove.sh` |
 | `PUT /api/workspaces/{uuid}/folder-group` | PUT | Set the organizational group label for a workspace folder |
+| `GET /api/folders/pin` | GET | Read a folder's `pinned` flag (query: `working_dir`) |
+| `PUT /api/folders/pin` | PUT | Set a folder's `pinned` flag (query: `working_dir`; body: `{"pinned": bool}`) |
 | `/api/workspace-prompts` | GET, POST, DELETE | List (`?working_dir=`), create (POST body `working_dir`), or delete (`?working_dir=&name=`) workspace prompts |
 | `PATCH /api/workspace-prompts/{name}` | PATCH | Enable or disable a prompt (`?working_dir=`, body `{"enabled": bool}`) |
 
@@ -375,6 +377,15 @@ tree (`SessionList` → `SessionItem`), replacing the former three tabs
 - **Keyboard (⌘-[ / ⌘-]) and swipe** navigation traverse the flattened tree in
   visual order, skipping static nodes and respecting the category filter; the
   target's folder/archived/parent auto-expands and scrolls into view.
+- **Pinned folders** stay in the sidebar even when they contain no active or
+  stored conversations. The sidebar tree is seeded from both conversations and
+  workspaces whose `folders.json` entry has `pinned: true`. An empty pinned
+  folder shows a subtle "No conversations yet. Start one" hint when expanded
+  and its expand action falls through to the folder's Tasks view. Use the
+  sidebar toolbar's `+` (Add folder) button to pin an existing configured
+  workspace to the sidebar, or the folder context menu's **Remove from sidebar**
+  entry to unpin one. Both actions call `PUT /api/folders/pin` (see the
+  endpoints table above).
 
 > Conversations are categorized by `getFilterTabForSession` (regular / loop /
 > archived). Loop prompts are configured per-conversation (ChatInput /

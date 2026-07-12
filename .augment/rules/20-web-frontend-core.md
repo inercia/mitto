@@ -45,6 +45,10 @@ App
 └── Dialogs (Settings, Workspace, Rename, Delete, etc.)
 ```
 
+### Sidebar Tree Sources
+
+`SessionList` synthesizes its folder groups from **two sources**: (a) the working directories of active + stored conversations, and (b) any configured workspace whose `folders.json` entry has `pinned: true`. This lets users keep folders visible in the sidebar even when they hold no conversations — pinned via the sidebar toolbar's `AddFolderDialog`, unpinned via the folder context menu's "Remove from sidebar" entry (both call `PUT /api/folders/pin`).
+
 ## File Structure
 
 | File                           | Purpose                                       |
@@ -58,6 +62,7 @@ App
 | `components/Icons.js`          | SVG icon components                           |
 | `components/SessionPanel.js`   | Unified side panel (Properties + User Data tabs) |
 | `components/SettingsDialog.js` | Settings modal                                |
+| `components/AddFolderDialog.js` | "Add folder to sidebar" dialog: pin existing hidden workspace or delegate to WorkspacesDialog for a new one |
 | `hooks/useWebSocket.js`        | WebSocket connection management               |
 | `hooks/useResizeHandle.js`     | Drag-to-resize with mouse and touch           |
 | `hooks/useSwipeNavigation.js`  | Mobile swipe gestures                         |
