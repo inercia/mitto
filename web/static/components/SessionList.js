@@ -52,6 +52,7 @@ import {
   TerminalIcon,
   EllipsisIcon,
   ChatBubbleIcon,
+  DashboardIcon,
   LayersIcon,
   CheckIcon,
   SlidersIcon,
@@ -1088,8 +1089,26 @@ export function SessionList({
         `;
       });
 
+    // Static top-level Dashboard entry (mitto-aqo.2). Sits above the first
+    // workspace group; toggles the global Dashboard view via onShowDashboard
+    // (already wired in app.js). Not a conversation and not a folder.
+    const dashboardActive = mainView === "dashboard";
     return html`
       <ul class="menu menu-sm w-full p-0 flex-nowrap">
+        <li class="min-w-0">
+          <button
+            type="button"
+            onClick=${() => onShowDashboard && onShowDashboard()}
+            aria-current=${dashboardActive ? "page" : undefined}
+            class="flex items-center gap-2 text-sm border-0! ${dashboardActive
+              ? "bg-mitto-accent text-mitto-accent-fg"
+              : "text-mitto-text-muted"}"
+            title="Dashboard"
+          >
+            <${DashboardIcon} className="w-4 h-4 shrink-0" />
+            <span class="truncate min-w-0">Dashboard</span>
+          </button>
+        </li>
         ${(() => {
           // When any folder has a group assigned, render collapsible group
           // sections (named groups + a trailing "Other" for ungrouped folders).
