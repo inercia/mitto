@@ -159,3 +159,45 @@ func TestHandleFolderPin_MethodNotAllowed(t *testing.T) {
 		t.Fatalf("status = %d, want 405 body=%s", w.Code, w.Body.String())
 	}
 }
+
+// TestHandleGetWorkspaces_ReflectsPinAfterPut guards the read-side re-projection
+// added for mitto-662: after PUT /api/folders/pin persists Pinned=true, the very
+// next GET /api/workspaces must return that flag on every workspace in the folder
+// (WorkspaceRegistry's map is populated once and never re-projected).
+func TestHandleGetWorkspaces_ReflectsPinAfterPut(t *testing.T) {
+	h, _ := newFolderPinHandlers(t)
+
+	putReq := httptest.NewRequest(http.MethodPut, pinURL("/tmp/proj-a"),
+		bytes.NewReader([]byte(`{"pinned":true}`)))
+	putW := httptest.NewRecorder()
+	h.HandleFolderPin(putW, putReq)
+	if putW.Code != http.StatusOK {
+		t.Fatalf("PUT status = %d body = %s", putW.Code, putW.Body.String())
+	}
+
+	getReq := httptest.NewRequest(http.MethodGet, "/api/workspaces", nil)
+	getW := httptest.NewRecorder()
+	h.HandleWorkspaces(getW, getReq)
+	if getW.Code != http.StatusOK {
+		t.Fatalf("GET status = %d body = %s", getW.Code, getW.Body.String())
+	}
+	var resp struct {
+		Workspaces []config.WorkspaceSettings `json:"workspaces"`
+	}
+	if err := json.NewDecoder(getW.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	var found bool
+	for i := range resp.Workspaces {
+		if resp.Workspaces[i].WorkingDir == "/tmp/proj-a" {
+			found = true
+			if !resp.Workspaces[i].Pinned {
+				t.Fatalf("workspace /tmp/proj-a Pinned = false, want true (re-projection missing?)")
+			}
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("workspace /tmp/proj-a not found in response: %s", getW.Body.String())
+	}
+}

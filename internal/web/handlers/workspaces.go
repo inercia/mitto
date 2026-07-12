@@ -31,6 +31,17 @@ func (h *Handlers) HandleWorkspaces(w http.ResponseWriter, r *http.Request) {
 func (h *Handlers) handleGetWorkspaces(w http.ResponseWriter, r *http.Request) {
 	workspaces := h.deps.SessionManager.GetWorkspaces()
 
+	// Re-project folder-native fields (Pinned, and any other fields that live
+	// in folders.json) onto the fresh slice. WorkspaceRegistry's map is
+	// populated once at load and never re-projected, so folder-native
+	// mutations like SetFolderPinned are invisible to this endpoint without
+	// this step. Complements the same re-projection done in
+	// SyncConfigWorkspaces (see mitto-662). Errors are silently skipped — a
+	// stale field is better than a 500 on the workspaces list endpoint.
+	if folders, err := configPkg.LoadFolders(); err == nil {
+		configPkg.ApplyFolderDefaults(workspaces, folders)
+	}
+
 	// Optional folder scoping for the ACP server list.
 	workingDir := strings.TrimSpace(r.URL.Query().Get("working_dir"))
 	var folderServerSet map[string]bool

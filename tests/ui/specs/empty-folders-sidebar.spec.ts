@@ -16,13 +16,9 @@ const __dirname = path.dirname(__filename);
  *    folders and unpinning removes them (and returns them to the hidden pool).
  *  - "Remove from sidebar" is NOT offered on session-derived folders.
  *
- * NOTE: The first three tests are marked `.fixme` until mitto-662 lands —
- * writing folders.json via PUT /api/folders/pin does not re-project the
- * pinned flag onto in-memory workspaces (SyncConfigWorkspaces skips
- * ApplyFolderDefaults), so /api/workspaces still returns `pinned` absent
- * even after a successful PUT. Unit tests miss this because they reload
- * from disk. Un-fixme once mitto-662 is fixed. The fourth test (session-
- * derived folder — no pinning involved) runs today.
+ * NOTE: mitto-662 fixed the runtime staleness — PUT /api/folders/pin now
+ * re-projects folder-native fields onto the workspaces returned by
+ * GET /api/workspaces (see handleGetWorkspaces), so all four tests run.
  */
 
 const projectRoot = path.resolve(__dirname, "../../..");
@@ -62,8 +58,8 @@ testWithCleanup.describe("Empty pinned folders in sidebar", () => {
     );
   });
 
-  testWithCleanup.fixme(
-    "pinned empty workspace appears as a sidebar folder with a Tasks node and no conversations (blocked by mitto-662)",
+  testWithCleanup(
+    "pinned empty workspace appears as a sidebar folder with a Tasks node and no conversations",
     async ({ page, request, apiUrl, helpers, timeouts }) => {
       // Pin beta with no session in it.
       const pinResp = await request.put(
@@ -108,8 +104,8 @@ testWithCleanup.describe("Empty pinned folders in sidebar", () => {
     },
   );
 
-  testWithCleanup.fixme(
-    "Add folder button opens dialog listing hidden workspaces; picking one pins it (blocked by mitto-662)",
+  testWithCleanup(
+    "Add folder button opens dialog listing hidden workspaces; picking one pins it",
     async ({ page, request, apiUrl, helpers, timeouts }) => {
       // Alpha becomes a session-derived (non-hidden) folder.
       const createResp = await request.post(apiUrl("/api/sessions"), {
@@ -166,8 +162,8 @@ testWithCleanup.describe("Empty pinned folders in sidebar", () => {
     },
   );
 
-  testWithCleanup.fixme(
-    "Remove from sidebar context-menu entry unpins a folder and removes it from the sidebar (blocked by mitto-662)",
+  testWithCleanup(
+    "Remove from sidebar context-menu entry unpins a folder and removes it from the sidebar",
     async ({ page, request, apiUrl, helpers, timeouts }) => {
       // Pin beta so the folder header exists (no sessions).
       const pinResp = await request.put(
