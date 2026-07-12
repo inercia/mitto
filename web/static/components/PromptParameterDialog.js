@@ -101,7 +101,7 @@ function ParamField({
           ${sessions.map(
             (s) =>
               html`<option key=${s.session_id} value=${s.session_id}>
-                ${s.title || s.session_id}
+                ${s.name || s.description || s.session_id}
               </option>`,
           )}
         </select>
@@ -134,7 +134,7 @@ function ParamField({
           ${childSessions.map(
             (s) =>
               html`<option key=${s.session_id} value=${s.session_id}>
-                ${s.title || s.session_id}
+                ${s.name || s.description || s.session_id}
               </option>`,
           )}
         </select>

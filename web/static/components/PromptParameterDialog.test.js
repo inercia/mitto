@@ -348,7 +348,10 @@ function renderChildSessionIdControl({
   }
   const options = childSessions.map((s) => ({
     value: s.session_id,
-    label: s.title || s.session_id,
+    // Mirror the sidebar's canonical display priority (SessionItem.js): the
+    // user-set `name` first, then the auto-generated `description`, and
+    // finally the opaque session_id as a last-ditch fallback.
+    label: s.name || s.description || s.session_id,
   }));
   return { kind: "select", options };
 }
@@ -377,7 +380,7 @@ describe("childSessionId render branch", () => {
   describe("text input fallback", () => {
     test("renders text input when hostSessionId is undefined (even if sessions exist)", () => {
       const sessions = [
-        { session_id: "child-1", title: "Child", parent_session_id: "host-1" },
+        { session_id: "child-1", name: "Child", parent_session_id: "host-1" },
       ];
       const result = renderChildSessionIdControl({
         loadingSessions: false,
@@ -392,7 +395,7 @@ describe("childSessionId render branch", () => {
       const sessions = [
         {
           session_id: "child-1",
-          title: "Child",
+          name: "Child",
           parent_session_id: "other-host",
         },
       ];
@@ -416,11 +419,13 @@ describe("childSessionId render branch", () => {
 
   describe("select dropdown when matches exist", () => {
     const sessions = [
-      { session_id: "child-1", title: "Alpha", parent_session_id: "host-1" },
-      { session_id: "child-2", title: "", parent_session_id: "host-1" },
+      // `name` set → wins outright.
+      { session_id: "child-1", name: "Alpha", parent_session_id: "host-1" },
+      // No `name`, no `description` → falls all the way through to session_id.
+      { session_id: "child-2", name: "", parent_session_id: "host-1" },
       {
         session_id: "child-3",
-        title: "Other",
+        name: "Other",
         parent_session_id: "other-host",
       },
     ];
@@ -445,7 +450,7 @@ describe("childSessionId render branch", () => {
       expect(result.options[1].value).toBe("child-2");
     });
 
-    test("label uses title when present, falls back to session_id", () => {
+    test("label prefers name, then description, then session_id", () => {
       const result = renderChildSessionIdControl({
         loadingSessions: false,
         sessions,
@@ -453,6 +458,21 @@ describe("childSessionId render branch", () => {
       });
       expect(result.options[0].label).toBe("Alpha");
       expect(result.options[1].label).toBe("child-2");
+    });
+
+    test("label falls back to description when name is missing", () => {
+      const result = renderChildSessionIdControl({
+        loadingSessions: false,
+        sessions: [
+          {
+            session_id: "child-9",
+            description: "auto-generated summary",
+            parent_session_id: "host-1",
+          },
+        ],
+        hostSessionId: "host-1",
+      });
+      expect(result.options[0].label).toBe("auto-generated summary");
     });
   });
 });

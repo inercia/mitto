@@ -344,7 +344,10 @@ function renderConversationRows(sessions, onClick) {
   if (!sessions || sessions.length === 0) return emptyPlaceholder();
   return sessions.map((s) => {
     if (!s) return null;
-    const title = s.title || s.session_id || "(untitled)";
+    // Match the canonical sidebar priority (SessionItem.js): user-set `name`
+    // first, then the auto-generated `description`, then a static fallback.
+    // The raw session_id is deliberately NOT shown \u2014 it is opaque to users.
+    const title = s.name || s.description || "Untitled";
     const sid = s.session_id;
     const clickable = !!(onClick && sid);
     const activate = clickable ? () => onClick(sid) : undefined;
