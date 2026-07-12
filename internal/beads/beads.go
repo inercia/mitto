@@ -173,6 +173,7 @@ type LabelParams struct {
 // first two arguments.
 type Client interface {
 	List(ctx context.Context, dir string) ([]byte, error)
+	Ready(ctx context.Context, dir string) ([]byte, error)
 	Status(ctx context.Context, dir string) ([]byte, error)
 	Show(ctx context.Context, dir, id string) ([]byte, error)
 	Create(ctx context.Context, dir string, p CreateParams) ([]byte, error)

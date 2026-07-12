@@ -138,6 +138,11 @@ func (s *Server) apiRoutes(authMgr *middleware.AuthManager, csrfMgr *middleware.
 		apiRoute{method: "POST", pattern: "/api/issues/{id}/status", handler: http.HandlerFunc(s.apiHandlers.HandleBeadsStatus)},
 	)
 
+	// Global dashboard aggregation (epic mitto-aqo).
+	routes = append(routes,
+		apiRoute{method: "GET", pattern: "/api/dashboard", handler: http.HandlerFunc(s.apiHandlers.HandleDashboard)},
+	)
+
 	// UI preferences.
 	routes = append(routes,
 		apiRoute{pattern: "/api/ui-preferences", handler: http.HandlerFunc(s.apiHandlers.HandleUIPreferences)},

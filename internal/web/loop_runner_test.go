@@ -2580,6 +2580,9 @@ func (c *fakeTasksBeadsClient) listCallCount() int {
 	return len(c.listCalls)
 }
 
+func (c *fakeTasksBeadsClient) Ready(context.Context, string) ([]byte, error) {
+	return []byte(`[]`), nil
+}
 func (c *fakeTasksBeadsClient) Status(context.Context, string) ([]byte, error) {
 	return []byte(`{}`), nil
 }

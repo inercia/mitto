@@ -237,6 +237,16 @@ func (c *cliClient) List(ctx context.Context, dir string) ([]byte, error) {
 	return c.runJSONRead(ctx, dir, "list", "--json", "--all", "-n", "0")
 }
 
+func (c *cliClient) Ready(ctx context.Context, dir string) ([]byte, error) {
+	// An uninitialized folder has no issue database. Return an empty array
+	// rather than letting bd fail, so aggregating callers (e.g. the dashboard
+	// endpoint) can skip such folders silently instead of surfacing an error.
+	if !isInitialized(dir) {
+		return []byte("[]"), nil
+	}
+	return c.runJSONRead(ctx, dir, "ready", "--json", "-n", "0")
+}
+
 func (c *cliClient) Status(ctx context.Context, dir string) ([]byte, error) {
 	// An uninitialized folder has no issue database. Return an empty summary
 	// rather than letting bd fail, so the sidebar stats line renders nothing
