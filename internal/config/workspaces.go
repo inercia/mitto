@@ -136,6 +136,12 @@ type WorkspaceSettings struct {
 	// it distinguishes between workspaces in the same folder. At most one workspace
 	// per folder should set this; if several do, the first match wins.
 	IsDefault bool `json:"is_default,omitempty" yaml:"is_default,omitempty"`
+	// Pinned is a folder-derived, read-only projection of FolderSettings.Pinned
+	// populated by ApplyFolderDefaults on load and stripped on save (like Group,
+	// but folder-native — never hoisted from a workspace). The folder-level flag
+	// controls whether the folder is shown in the sidebar even when it has no
+	// conversations.
+	Pinned bool `json:"pinned,omitempty" yaml:"pinned,omitempty"`
 }
 
 // WorkspaceID returns a unique identifier for this workspace.

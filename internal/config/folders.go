@@ -59,6 +59,11 @@ type FolderSettings struct {
 	// ID (e.g. "tasksList") so new sections need no schema change. Folder-native:
 	// preserved across workspace-driven saves by preserveFolderNativeFields.
 	Shortcuts map[string][]ShortcutButton `json:"shortcuts,omitempty" yaml:"shortcuts,omitempty"`
+	// Pinned is a folder-level visibility flag. When true the folder is shown in
+	// the sidebar even if it has no conversations. Folder-native: no per-workspace
+	// counterpart and preserved across workspace-driven saves by
+	// preserveFolderNativeFields.
+	Pinned bool `json:"pinned,omitempty" yaml:"pinned,omitempty"`
 }
 
 // BeadsFolderSettings holds folder-native beads integration settings.
@@ -187,6 +192,7 @@ func ApplyFolderDefaults(workspaces []WorkspaceSettings, folders map[string]Fold
 		if len(fs.AutoChildren) > 0 {
 			workspaces[i].AutoChildren = append([]AutoChild(nil), fs.AutoChildren...)
 		}
+		workspaces[i].Pinned = fs.Pinned
 	}
 }
 
@@ -248,12 +254,16 @@ func extractFolderSettings(workspaces []WorkspaceSettings) ([]WorkspaceSettings,
 
 		// Folder-level fields always live in folders.json (authoritative), so
 		// strip them from every workspace in the group regardless of divergence.
+		// Pinned is folder-native (never hoisted from workspaces) but still stripped
+		// here because ApplyFolderDefaults injects it as a read-only projection on
+		// load; it is (re)injected into the folders map by preserveFolderNativeFields.
 		for _, i := range idxs {
 			cleaned[i].Name = ""
 			cleaned[i].Color = ""
 			cleaned[i].Code = ""
 			cleaned[i].Group = ""
 			cleaned[i].AutoChildren = nil
+			cleaned[i].Pinned = false
 		}
 
 		if any {
@@ -313,6 +323,9 @@ func foldersEqual(a, b map[string]FolderSettings) bool {
 		if av.Name != bv.Name || av.Color != bv.Color || av.Code != bv.Code || av.Group != bv.Group {
 			return false
 		}
+		if av.Pinned != bv.Pinned {
+			return false
+		}
 		if !autoChildrenEqual(av.AutoChildren, bv.AutoChildren) {
 			return false
 		}
@@ -353,6 +366,9 @@ func folderSettingsEmpty(fs FolderSettings) bool {
 	if fs.Beads != nil && fs.Beads.Upstream != "" {
 		return false
 	}
+	if fs.Pinned {
+		return false
+	}
 	for _, buttons := range fs.Shortcuts {
 		if len(buttons) > 0 {
 			return false
@@ -362,10 +378,10 @@ func folderSettingsEmpty(fs FolderSettings) bool {
 }
 
 // preserveFolderNativeFields merges folder-native settings (those not derived
-// from workspaces, currently only Beads) from the authoritative on-disk
+// from workspaces: Beads, Shortcuts, Pinned) from the authoritative on-disk
 // folders.json into the freshly extracted folders map. extractFolderSettings
 // only produces workspace-derived fields (name/color/code/auto_children), so
-// without this merge a workspace-driven save would wipe the folder-native beads
+// without this merge a workspace-driven save would wipe the folder-native
 // settings that live solely in folders.json. Only folders whose working_dir is
 // still referenced by a current workspace are preserved; orphaned folder entries
 // are dropped (matching the extraction pruning behaviour).
@@ -393,7 +409,8 @@ func preserveFolderNativeFields(workspaces []WorkspaceSettings, folders map[stri
 				break
 			}
 		}
-		if !hasBeads && !hasShortcuts {
+		hasPinned := ex.Pinned
+		if !hasBeads && !hasShortcuts && !hasPinned {
 			continue
 		}
 		if out == nil {
@@ -405,6 +422,9 @@ func preserveFolderNativeFields(workspaces []WorkspaceSettings, folders map[stri
 		}
 		if hasShortcuts {
 			fs.Shortcuts = ex.Shortcuts
+		}
+		if hasPinned {
+			fs.Pinned = true
 		}
 		out[wd] = fs
 	}
@@ -554,4 +574,40 @@ func SetFolderShortcuts(workingDir string, sections map[string][]ShortcutButton)
 		folders[workingDir] = fs
 	}
 	return SaveFolders(folders)
+}
+
+// SetFolderPinned sets (or clears) the folder-level visibility (pinned) flag,
+// persisting it directly to folders.json. This is a folder-native field,
+// preserved across workspace-driven saves by preserveFolderNativeFields.
+func SetFolderPinned(workingDir string, pinned bool) error {
+	folders, err := LoadFolders()
+	if err != nil {
+		return err
+	}
+	if folders == nil {
+		folders = map[string]FolderSettings{}
+	}
+	fs := folders[workingDir]
+	fs.Pinned = pinned
+	if folderSettingsEmpty(fs) {
+		delete(folders, workingDir)
+	} else {
+		folders[workingDir] = fs
+	}
+	return SaveFolders(folders)
+}
+
+// FolderPinned returns whether a folder is marked as pinned (visible in the
+// sidebar even when it has no conversations). Returns false if not set or on
+// read error.
+func FolderPinned(workingDir string) bool {
+	folders, err := LoadFolders()
+	if err != nil {
+		return false
+	}
+	fs, ok := folders[workingDir]
+	if !ok {
+		return false
+	}
+	return fs.Pinned
 }
