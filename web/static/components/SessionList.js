@@ -232,8 +232,12 @@ export function SessionList({
   onRunBeadsListPrompt, // (prompt, workingDir) => run a beadsList prompt
   onBeadsRefresh, // (workingDir) => open the beads view and refresh its list
   onBeadsCleanup, // (workingDir) => open the beads view and clean up closed issues
-  mainView = "conversation", // Current main-content view: "conversation" | "beads"
+  mainView = "conversation", // Current main-content view: "conversation" | "beads" | "dashboard"
   beadsWorkingDir = null, // Working dir whose Tasks (beads) view is open, when mainView === "beads"
+  // Switch mainView to the global Dashboard. Plumbed here so mitto-aqo.2 can
+  // wire a sidebar button click without further prop churn; no UI trigger
+  // exists yet in this increment (mitto-aqo.3).
+  onShowDashboard,
   queueLength = 0,
   onFetchConversationPrompts, // Async (session, workingDir) => prompts[] for the context menu
   onSendPromptToConversation,

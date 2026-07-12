@@ -182,6 +182,7 @@ import {
   BeadsIssueView,
   BeadsDetailPanel,
 } from "./components/BeadsView.js";
+import { Dashboard } from "./components/Dashboard.js";
 
 // Import constants
 import {
@@ -369,7 +370,8 @@ function App() {
     open: false,
     workingDir: null,
   });
-  // mainView controls what is shown in the right-side area: "conversation" or "beads"
+  // mainView controls what is shown in the right-side area:
+  // "conversation" | "beads" | "dashboard" (mitto-aqo).
   const [mainView, setMainView] = useState("conversation");
   // Ref mirror of mainView so native swipe-gesture handlers (registered in an effect
   // whose dependency set does not include mainView) always read the current view
@@ -393,6 +395,15 @@ function App() {
     },
     [switchSession],
   );
+  // Switch mainView to the global Dashboard (mitto-aqo). Leaves activeSessionId
+  // untouched so returning to a conversation resumes the last selected one.
+  // Mirrors handleSelectSession's mobile-drawer close so tapping the (future)
+  // sidebar Dashboard button on a phone hands focus to the dashboard.
+  const handleShowDashboard = useCallback(() => {
+    setMainView("dashboard");
+    setShowSidebar(false);
+    setShowSidePanel(false);
+  }, []);
   // When the beads view is opened from a linked conversation (e.g. the
   // properties panel's "Linked beads issue" link), these drive auto-selecting
   // that issue once the list loads. The nonce bumps on every open so clicking
@@ -3131,8 +3142,10 @@ function App() {
         <!-- Unified toast container -->
         <${ToastContainer} toasts=${toasts} onDismiss=${dismissToast} />
 
-        <!-- Main content area: beads view or conversation -->
-        ${mainView === "beads" && beadsWorkingDir
+        <!-- Main content area: dashboard, beads view, or conversation -->
+        ${mainView === "dashboard"
+          ? html`<${Dashboard} />`
+          : mainView === "beads" && beadsWorkingDir
           ? html`
               <div
                 class="flex-1 flex flex-col min-w-0 overflow-hidden bg-mitto-bg"
@@ -3651,6 +3664,7 @@ function App() {
             onBeadsCleanup=${handleBeadsCleanup}
             mainView=${mainView}
             beadsWorkingDir=${beadsWorkingDir}
+            onShowDashboard=${handleShowDashboard}
             queueLength=${queueLength}
             onFetchConversationPrompts=${fetchConversationPromptsForSession}
             onSendPromptToConversation=${handleSendPromptToConversation}
