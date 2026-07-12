@@ -212,6 +212,7 @@ export function SessionList({
   onToggleFontSize,
   onShowSettings,
   onShowWorkspaces,
+  onAddFolder, // Open the AddFolderDialog (pin an existing hidden workspace / delegate to WorkspacesDialog)
   onShowWorkspacesForFolder,
   onShowKeyboardShortcuts,
   configReadonly = false,
@@ -1861,6 +1862,18 @@ export function SessionList({
               disabled: configReadonly,
               onClick: () =>
                 !configReadonly && onShowWorkspaces && onShowWorkspaces(),
+            },
+            {
+              kind: "button",
+              testId: "add-folder-btn",
+              icon: html`<${PlusIcon} className="w-4 h-4" />`,
+              tip: configReadonly
+                ? "Add folder (read-only configuration)"
+                : "Add folder to sidebar",
+              ariaLabel: "Add folder to sidebar",
+              disabled: configReadonly,
+              onClick: () =>
+                !configReadonly && onAddFolder && onAddFolder(),
             },
             {
               kind: "dropdown",

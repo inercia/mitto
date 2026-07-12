@@ -118,6 +118,7 @@ import {
   DEFAULT_MAC_OPEN_TARGETS,
 } from "./components/SettingsDialog.js";
 import { WorkspacesDialog } from "./components/WorkspacesDialog.js";
+import { AddFolderDialog } from "./components/AddFolderDialog.js";
 import { AgentDiscoveryDialog } from "./components/AgentDiscoveryDialog.js";
 import { QueueDropdown } from "./components/QueueDropdown.js";
 import {
@@ -434,6 +435,7 @@ function App() {
     forceOpen: false,
   }); // Settings dialog
   const [workspacesDialog, setWorkspacesDialog] = useState({ isOpen: false }); // Workspaces management dialog
+  const [addFolderDialogOpen, setAddFolderDialogOpen] = useState(false); // "Add folder to sidebar" dialog
   const [keyboardShortcutsDialog, setKeyboardShortcutsDialog] = useState({
     isOpen: false,
   }); // Keyboard shortcuts dialog
@@ -1897,6 +1899,77 @@ function App() {
     [showToast, refreshWorkspaces],
   );
 
+  // Pin an existing (currently hidden) workspace to the sidebar. Mirrors
+  // handleUnpinFolder but sets pinned=true. Used by AddFolderDialog when the
+  // user picks a hidden workspace from the list.
+  const handlePinExistingFolder = useCallback(
+    async (workingDir) => {
+      if (!workingDir) return;
+      try {
+        const res = await secureFetch(
+          endpoints.folders.pin({ working_dir: workingDir }),
+          {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ pinned: true }),
+          },
+        );
+        if (!res.ok) {
+          let msg = "Failed to add folder to sidebar";
+          try {
+            const data = await res.json();
+            msg = data.error?.message || msg;
+          } catch (_) {
+            /* keep default */
+          }
+          showToast({ style: "error", title: msg });
+          return;
+        }
+        invalidateConfigCache();
+        refreshWorkspaces();
+        showToast({
+          style: "success",
+          title: "Folder added to sidebar",
+        });
+      } catch (err) {
+        showToast({
+          style: "error",
+          title: "Failed to add folder to sidebar: " + err.message,
+        });
+      }
+    },
+    [showToast, refreshWorkspaces],
+  );
+
+  // Hidden workspaces = configured workspaces that are (a) not currently pinned
+  // and (b) have no active/stored session pointing at their working_dir. These
+  // are the candidates surfaced in AddFolderDialog's pick-existing list.
+  const hiddenWorkspaces = useMemo(() => {
+    const visibleWorkingDirs = new Set();
+    (activeSessions || []).forEach((s) => {
+      if (s && s.working_dir) visibleWorkingDirs.add(s.working_dir);
+    });
+    (storedSessions || []).forEach((s) => {
+      if (s && s.working_dir) visibleWorkingDirs.add(s.working_dir);
+    });
+    return (workspaces || []).filter(
+      (ws) =>
+        ws &&
+        ws.working_dir &&
+        ws.pinned !== true &&
+        !visibleWorkingDirs.has(ws.working_dir),
+    );
+  }, [workspaces, activeSessions, storedSessions]);
+
+  const handleAddFolderOpen = useCallback(
+    () => setAddFolderDialogOpen(true),
+    [],
+  );
+  const handleAddFolderClose = useCallback(
+    () => setAddFolderDialogOpen(false),
+    [],
+  );
+
   // Open the properties panel for a session (used by pencil button in session list)
   const handleOpenSessionProperties = useCallback(
     (session) => {
@@ -3003,6 +3076,18 @@ function App() {
             })}
         />
 
+        <!-- Add Folder Dialog -->
+        <${AddFolderDialog}
+          isOpen=${addFolderDialogOpen}
+          onClose=${handleAddFolderClose}
+          hiddenWorkspaces=${hiddenWorkspaces}
+          onPinExisting=${handlePinExistingFolder}
+          onCreateNew=${() => {
+            setAddFolderDialogOpen(false);
+            handleShowWorkspaces();
+          }}
+        />
+
         <!-- Keyboard Shortcuts Dialog -->
         <${KeyboardShortcutsDialog}
           isOpen=${keyboardShortcutsDialog.isOpen}
@@ -3546,6 +3631,7 @@ function App() {
             onToggleFontSize=${toggleFontSize}
             onShowSettings=${handleShowSettings}
             onShowWorkspaces=${handleShowWorkspaces}
+            onAddFolder=${handleAddFolderOpen}
             onShowWorkspacesForFolder=${handleShowWorkspacesForFolder}
             onShowKeyboardShortcuts=${handleShowKeyboardShortcuts}
             configReadonly=${configReadonly}
