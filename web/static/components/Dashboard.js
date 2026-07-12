@@ -1,6 +1,7 @@
 // Mitto Web Interface - Global Dashboard view (mitto-aqo).
-// Stats header (mitto-aqo.4) + 4-slide carousel of lists (mitto-aqo.5).
-// List rows are inert in this increment; click handlers land in mitto-aqo.6.
+// Stats header (mitto-aqo.4) + 4-slide carousel of lists (mitto-aqo.5) +
+// click handlers routing to conversation focus / beads issue viewer
+// (mitto-aqo.6).
 const { html, useState, useEffect, useMemo, useRef } = window.preact;
 
 import { authFetch } from "../utils/csrf.js";
@@ -41,8 +42,18 @@ const SLIDES = [
  *   prompting / loop counts so the header updates the instant a prompt starts
  *   or a loop toggles, without waiting for the next 15s poll.
  * @param {Function} showToast - Toast dispatcher; called on fetch error.
+ * @param {Function} onFocusConversation - `(sessionId) => void`. Fired when a
+ *   prompting-conversation row is activated (click or Enter/Space).
+ * @param {Function} onOpenTask - `(issueId, workingDir) => void`. Fired when a
+ *   task row (in-progress / ready / epic) is activated. Callers bind the
+ *   originating session id themselves.
  */
-export function Dashboard({ allSessions = [], showToast }) {
+export function Dashboard({
+  allSessions = [],
+  showToast,
+  onFocusConversation,
+  onOpenTask,
+}) {
   const [data, setData] = useState(null); // null = first load in-flight
   const mountedRef = useRef(true);
 
@@ -198,10 +209,13 @@ export function Dashboard({ allSessions = [], showToast }) {
            navigation stay consistent regardless of data. -->
       <div class="flex flex-col gap-2">
         <div class="carousel w-full rounded-box">
-          ${renderSlide(SLIDES[0], renderConversationRows(promptingList))}
-          ${renderSlide(SLIDES[1], renderTaskRows(inProgressList))}
-          ${renderSlide(SLIDES[2], renderTaskRows(readyList))}
-          ${renderSlide(SLIDES[3], renderTaskRows(epicsList))}
+          ${renderSlide(
+            SLIDES[0],
+            renderConversationRows(promptingList, onFocusConversation),
+          )}
+          ${renderSlide(SLIDES[1], renderTaskRows(inProgressList, onOpenTask))}
+          ${renderSlide(SLIDES[2], renderTaskRows(readyList, onOpenTask))}
+          ${renderSlide(SLIDES[3], renderTaskRows(epicsList, onOpenTask))}
         </div>
         <div class="flex justify-center gap-2 py-1">
           ${SLIDES.map(
@@ -283,14 +297,44 @@ function workspaceBadge(workingDir) {
   >`;
 }
 
-// Row: title (grows/truncates) + agent badge + workspace basename.
-function renderConversationRows(sessions) {
+// Interactive class suffix applied to a populated row. Kept out of the row
+// builders so the empty-state placeholder and rows missing an identifier stay
+// visually inert (no hover/pointer) without diverging from the row template.
+const ROW_INTERACTIVE_CLASSES =
+  "cursor-pointer hover:bg-mitto-surface-3 focus-visible:bg-mitto-surface-3 focus-visible:outline-none";
+
+// Keyboard activation helper: Enter and Space match native button semantics.
+function activateOnKey(fn) {
+  return (e) => {
+    if (e.key === "Enter" || e.key === " ") {
+      e.preventDefault();
+      fn();
+    }
+  };
+}
+
+// Row: title (grows/truncates) + agent badge + workspace basename. When
+// `onClick` is provided AND the session has a `session_id`, the row becomes
+// keyboard/mouse-activatable; otherwise it stays inert.
+function renderConversationRows(sessions, onClick) {
   if (!sessions || sessions.length === 0) return emptyPlaceholder();
   return sessions.map((s) => {
     if (!s) return null;
     const title = s.title || s.session_id || "(untitled)";
+    const sid = s.session_id;
+    const clickable = !!(onClick && sid);
+    const activate = clickable ? () => onClick(sid) : undefined;
     return html`
-      <li class="list-row items-center gap-2" key=${s.session_id || title}>
+      <li
+        class="list-row items-center gap-2 ${clickable
+          ? ROW_INTERACTIVE_CLASSES
+          : ""}"
+        key=${sid || title}
+        role=${clickable ? "button" : undefined}
+        tabindex=${clickable ? "0" : undefined}
+        onClick=${activate}
+        onKeyDown=${clickable ? activateOnKey(activate) : undefined}
+      >
         <div class="list-col-grow min-w-0">
           <div class="truncate text-sm text-mitto-text-strong" title="${title}">
             ${title}
@@ -303,14 +347,28 @@ function renderConversationRows(sessions) {
 }
 
 // Row: bd id + title (grows/truncates) + priority pill + workspace basename.
-function renderTaskRows(items) {
+// Interactive only when the item has both an `id` and a `working_dir` (both
+// are required to open the correct workspace's beads viewer).
+function renderTaskRows(items, onClick) {
   if (!items || items.length === 0) return emptyPlaceholder();
   return items.map((it) => {
     if (!it) return null;
     const id = it.id || "";
     const title = it.title || "(untitled)";
+    const wd = it.working_dir || "";
+    const clickable = !!(onClick && id && wd);
+    const activate = clickable ? () => onClick(id, wd) : undefined;
     return html`
-      <li class="list-row items-center gap-2" key=${id || title}>
+      <li
+        class="list-row items-center gap-2 ${clickable
+          ? ROW_INTERACTIVE_CLASSES
+          : ""}"
+        key=${id || title}
+        role=${clickable ? "button" : undefined}
+        tabindex=${clickable ? "0" : undefined}
+        onClick=${activate}
+        onKeyDown=${clickable ? activateOnKey(activate) : undefined}
+      >
         <div class="text-xs font-mono text-mitto-text-muted shrink-0">
           ${id}
         </div>

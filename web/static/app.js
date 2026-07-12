@@ -3147,6 +3147,9 @@ function App() {
           ? html`<${Dashboard}
               allSessions=${allSessions}
               showToast=${showToast}
+              onFocusConversation=${focusSession}
+              onOpenTask=${(issueId, workingDir) =>
+                handleOpenBeadsIssue(issueId, workingDir, activeSessionId)}
             />`
           : mainView === "beads" && beadsWorkingDir
           ? html`
