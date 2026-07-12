@@ -17,6 +17,11 @@ const (
 	defaultTimeout = 15 * time.Second
 	initTimeout    = 60 * time.Second
 	syncTimeout    = 120 * time.Second
+	// readTimeout bounds read-only bd invocations. It is larger than
+	// defaultTimeout because read-heavy queries (list, status, label list-all)
+	// on a warm-cold dolt DB can occasionally exceed the write-path budget
+	// without indicating a real failure.
+	readTimeout = 45 * time.Second
 )
 
 // Runner executes a bd subcommand in a directory. The returned error is the
@@ -174,14 +179,14 @@ func (c *cliClient) runRaw(ctx context.Context, timeout time.Duration, dir strin
 	return out, nil
 }
 
-// runJSONOnce executes bd once (defaultTimeout) and validates JSON output. On a
-// non-zero exit it applies JSON recovery: bd can exit non-zero while still
-// emitting the intended JSON payload (observed: created-issue JSON printed to
-// stderr with a non-zero exit right after a restart). If the raw stdout or
-// stderr already contains valid, non-error JSON, the call is treated as a
-// success rather than a hard failure.
-func (c *cliClient) runJSONOnce(ctx context.Context, dir string, args ...string) ([]byte, error) {
-	ctx, cancel := context.WithTimeout(ctx, defaultTimeout)
+// runJSONOnceWithTimeout executes bd once with the given timeout and validates
+// JSON output. On a non-zero exit it applies JSON recovery: bd can exit
+// non-zero while still emitting the intended JSON payload (observed:
+// created-issue JSON printed to stderr with a non-zero exit right after a
+// restart). If the raw stdout or stderr already contains valid, non-error
+// JSON, the call is treated as a success rather than a hard failure.
+func (c *cliClient) runJSONOnceWithTimeout(ctx context.Context, dir string, timeout time.Duration, args ...string) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
 	out, stderr, err := c.runner.Run(ctx, dir, args...)
@@ -197,6 +202,11 @@ func (c *cliClient) runJSONOnce(ctx context.Context, dir string, args ...string)
 	return out, nil
 }
 
+// runJSONOnce is the write-path wrapper that uses defaultTimeout.
+func (c *cliClient) runJSONOnce(ctx context.Context, dir string, args ...string) ([]byte, error) {
+	return c.runJSONOnceWithTimeout(ctx, dir, defaultTimeout, args...)
+}
+
 // runJSON runs a JSON bd command with recovery but NO retry. Some callers
 // (Create) are non-idempotent, so a blind retry could duplicate a write; the
 // recovery in runJSONOnce already handles the observed non-zero-but-valid-JSON
@@ -207,11 +217,12 @@ func (c *cliClient) runJSON(ctx context.Context, dir string, args ...string) ([]
 
 // runJSONRead is like runJSON but retries ONCE on a transient dolt-lock
 // failure. It is safe only for read-only commands (no risk of a duplicate
-// write).
+// write). Reads use readTimeout (larger than defaultTimeout) to absorb
+// warm-cold dolt DB latency without SIGKILLing bd.
 func (c *cliClient) runJSONRead(ctx context.Context, dir string, args ...string) ([]byte, error) {
-	out, err := c.runJSONOnce(ctx, dir, args...)
+	out, err := c.runJSONOnceWithTimeout(ctx, dir, readTimeout, args...)
 	if err != nil && isTransientLock(err) {
-		out, err = c.runJSONOnce(ctx, dir, args...)
+		out, err = c.runJSONOnceWithTimeout(ctx, dir, readTimeout, args...)
 	}
 	return out, err
 }

@@ -35,4 +35,4 @@ input: none
 output: prepend
 outputFormat: raw
 priority: 92
-timeout: 10s
+timeout: 30s

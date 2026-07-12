@@ -158,8 +158,10 @@ func HideServerInfoMiddleware(next http.Handler) http.Handler {
 	})
 }
 
-// DefaultRequestTimeout is the default timeout for HTTP requests.
-const DefaultRequestTimeout = 30 * time.Second
+// DefaultRequestTimeout is the default timeout for HTTP requests. Sized to
+// sit above auxBackedRequestTimeout so bd/aux-backed handlers can emit a
+// clear, retryable 503 before http.TimeoutHandler forces an opaque one.
+const DefaultRequestTimeout = 60 * time.Second
 
 // RequestTimeoutMiddleware adds a timeout to HTTP requests.
 // WebSocket upgrade requests are excluded from the timeout.
