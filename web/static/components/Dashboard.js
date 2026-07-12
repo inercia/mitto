@@ -7,12 +7,17 @@ const { html, useState, useEffect, useMemo, useRef } = window.preact;
 import { authFetch } from "../utils/csrf.js";
 import { endpoints } from "../utils/endpoints.js";
 import { getBasename } from "../lib.js";
+import { MenuIcon } from "./Icons.js";
 
 const REFRESH_INTERVAL_MS = 15_000;
 const MAX_LIST_ITEMS = 5;
-// Lists shown per page. On mobile the grid collapses to 1 column so both
-// lists on the current page stack vertically; on md+ they sit side-by-side.
-const LISTS_PER_PAGE = 2;
+// Lists shown per page, responsive: 2 side-by-side on md+, 1 at a time on
+// narrower viewports so the dashboard never stacks two full lists on top of
+// each other on phones — instead the user pages through them one at a time.
+// The breakpoint mirrors Tailwind's `md` (768px).
+const LISTS_PER_PAGE_DESKTOP = 2;
+const LISTS_PER_PAGE_MOBILE = 1;
+const LISTS_PER_PAGE_MEDIA_QUERY = "(min-width: 768px)";
 
 // Mirror BeadsView priority vocabulary so pills look identical across views.
 // bd priorities: 0 = Critical, 1 = High, 2 = Medium, 3 = Low.
@@ -51,16 +56,47 @@ const SLIDES = [
  * @param {Function} onOpenTask - `(issueId, workingDir) => void`. Fired when a
  *   task row (in-progress / ready / epic) is activated. Callers bind the
  *   originating session id themselves.
+ * @param {Function} onShowSidebar - Opens the conversations sidebar (mobile);
+ *   used by the header hamburger button to return to the conversation list.
  */
 export function Dashboard({
   allSessions = [],
   showToast,
   onFocusConversation,
   onOpenTask,
+  onShowSidebar,
 }) {
   const [data, setData] = useState(null); // null = first load in-flight
   const [pageIndex, setPageIndex] = useState(0);
+  // Responsive page size (see LISTS_PER_PAGE_* constants). Initialised
+  // synchronously from matchMedia so the first render already picks the
+  // correct page size; kept in sync via a change listener below.
+  const [listsPerPage, setListsPerPage] = useState(() => {
+    if (typeof window === "undefined" || !window.matchMedia) {
+      return LISTS_PER_PAGE_DESKTOP;
+    }
+    return window.matchMedia(LISTS_PER_PAGE_MEDIA_QUERY).matches
+      ? LISTS_PER_PAGE_DESKTOP
+      : LISTS_PER_PAGE_MOBILE;
+  });
   const mountedRef = useRef(true);
+
+  useEffect(() => {
+    if (typeof window === "undefined" || !window.matchMedia) return;
+    const mq = window.matchMedia(LISTS_PER_PAGE_MEDIA_QUERY);
+    const onChange = (e) =>
+      setListsPerPage(e.matches ? LISTS_PER_PAGE_DESKTOP : LISTS_PER_PAGE_MOBILE);
+    mq.addEventListener("change", onChange);
+    return () => mq.removeEventListener("change", onChange);
+  }, []);
+
+  // Clamp pageIndex when the page size shrinks (e.g. desktop → mobile) so a
+  // stale index doesn't leave the grid rendering out-of-range slots and the
+  // prev/next arithmetic stays consistent with what's shown.
+  useEffect(() => {
+    const totalPages = Math.max(1, Math.ceil(SLIDES.length / listsPerPage));
+    setPageIndex((p) => Math.min(p, totalPages - 1));
+  }, [listsPerPage]);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -171,8 +207,28 @@ export function Dashboard({
     <div
       class="flex-1 flex flex-col min-w-0 overflow-y-auto bg-mitto-bg p-6 gap-6"
     >
+      <!-- Mobile header: hamburger + title. Mirrors the conversation and
+           beads-view headers so the left side panel is reachable from the
+           dashboard on phones. The hamburger is hidden on md+ where the
+           sidebar is always visible; the title stays on all breakpoints. -->
+      <div class="flex items-center gap-2 shrink-0">
+        <button
+          onClick=${() => onShowSidebar && onShowSidebar()}
+          class="btn btn-ghost btn-square btn-sm md:hidden shrink-0 inline-flex tooltip tooltip-bottom"
+          data-tip="Show conversations"
+          aria-label="Show conversations"
+        >
+          <${MenuIcon} className="w-6 h-6" />
+        </button>
+        <span class="font-semibold text-2xl flex-1">Dashboard</span>
+      </div>
+      <!-- Stats row is always horizontal, including on phones — the vertical
+           stack was pushing the lists below the fold on narrow viewports. On
+           iPhone width (390px) the three cells share the row and the titles
+           are allowed to wrap to two lines; the stat values (single digits or
+           short ratios) stay comfortably on one line. -->
       <div
-        class="stats stats-vertical sm:stats-horizontal shadow bg-mitto-surface-2 w-full"
+        class="stats stats-horizontal shadow bg-mitto-surface-2 w-full"
       >
         <div class="stat">
           <div class="stat-title text-mitto-text-muted">Issues in progress</div>
@@ -212,13 +268,14 @@ export function Dashboard({
       </div>
 
       <!-- Paged grid of lists (mitto-aqo.5, paged in mitto-3sb). Shows
-           LISTS_PER_PAGE lists per page: 1 column on mobile (both stack),
-           2 columns on md+ (side-by-side). Prev/next arrow buttons are
-           overlaid on the left and right edges, vertically centered on
-           the grid; there is no page-indicator text and no numbered page
-           dots (intentionally minimal, per user feedback). Empty lists
-           render a "No items" placeholder so page layout stays consistent
-           regardless of data. Click handlers wire in mitto-aqo.6. -->
+           listsPerPage lists per page: 1 at a time on mobile so the lists
+           never stack on top of each other in narrow viewports, 2 side-by-side
+           on md+. Prev/next arrow buttons are overlaid on the left and right
+           edges, vertically centered on the grid; there is no page-indicator
+           text and no numbered page dots (intentionally minimal, per user
+           feedback). Empty lists render a "No items" placeholder so page
+           layout stays consistent regardless of data. Click handlers wire in
+           mitto-aqo.6. -->
       ${(() => {
         const rendered = [
           renderConversationRows(promptingList, onFocusConversation),
@@ -228,11 +285,11 @@ export function Dashboard({
         ];
         const totalPages = Math.max(
           1,
-          Math.ceil(SLIDES.length / LISTS_PER_PAGE),
+          Math.ceil(SLIDES.length / listsPerPage),
         );
         const safePage = Math.min(pageIndex, totalPages - 1);
-        const start = safePage * LISTS_PER_PAGE;
-        const end = start + LISTS_PER_PAGE;
+        const start = safePage * listsPerPage;
+        const end = start + listsPerPage;
         const visible = SLIDES.slice(start, end).map((s, i) => ({
           slide: s,
           rows: rendered[start + i],
@@ -240,13 +297,23 @@ export function Dashboard({
         const prevPage = () =>
           setPageIndex((p) => (p - 1 + totalPages) % totalPages);
         const nextPage = () => setPageIndex((p) => (p + 1) % totalPages);
+        // Grid template matches listsPerPage so a single visible list fills the
+        // available width on mobile and the pair shares it 50/50 on md+.
+        const gridColsClass =
+          listsPerPage === 1 ? "grid-cols-1" : "grid-cols-1 md:grid-cols-2";
+        // Grid keeps px-8 so list content clears the arrow buttons; the arrow
+        // wrappers add px-2 so the buttons sit inset ~0.5rem from the container
+        // edge rather than flush against it, giving visible breathing room
+        // around each arrow. Only utility classes that are actually present in
+        // the precompiled web/static/tailwind.css are used (px-12 / pl-2 / pr-2
+        // are NOT compiled; px-2 and px-8 are).
         return html`
           <div class="relative w-full">
-            <div class="grid grid-cols-1 md:grid-cols-2 gap-4 w-full px-8">
+            <div class="grid ${gridColsClass} gap-4 w-full px-8">
               ${visible.map((v) => renderListPanel(v.slide, v.rows))}
             </div>
             <div
-              class="absolute top-0 left-0 h-full flex items-center"
+              class="absolute top-0 left-0 h-full flex items-center px-2"
             >
               <button
                 type="button"
@@ -260,7 +327,7 @@ export function Dashboard({
               </button>
             </div>
             <div
-              class="absolute top-0 right-0 h-full flex items-center"
+              class="absolute top-0 right-0 h-full flex items-center px-2"
             >
               <button
                 type="button"
