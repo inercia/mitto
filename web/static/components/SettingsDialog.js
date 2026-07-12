@@ -663,6 +663,7 @@ function ServerEditForm({
   server,
   agentTypes = [],
   modelProfiles = [],
+  workspaces = [],
   onChange,
 }) {
   const [name, setName] = useState(server.name);
@@ -689,6 +690,16 @@ function ServerEditForm({
   // Whether the user has explicitly cleared a legacy raw constraint by
   // picking "-- None --" (as opposed to never having touched the control).
   const [modelConstraintCleared, setModelConstraintCleared] = useState(false);
+
+  // Initial-model preference (ACP-server tier). Applied as the baseline model
+  // of every new conversation started with this server unless the workspace
+  // overrides it. Mutually exclusive: profile wins server-side when both set.
+  const [initialModelProfile, setInitialModelProfile] = useState(
+    server.initial_model_profile || "",
+  );
+  const [initialModelTag, setInitialModelTag] = useState(
+    server.initial_model_tag || "",
+  );
 
   // Legacy raw matchMode/pattern constraint (pre-profile config), if any.
   const rawModelConstraint = server.constraints?.model || null;
@@ -727,6 +738,14 @@ function ServerEditForm({
         overrides.modelConstraintCleared !== undefined
           ? overrides.modelConstraintCleared
           : modelConstraintCleared,
+      initialModelProfile:
+        overrides.initialModelProfile !== undefined
+          ? overrides.initialModelProfile
+          : initialModelProfile,
+      initialModelTag:
+        overrides.initialModelTag !== undefined
+          ? overrides.initialModelTag
+          : initialModelTag,
       contextFlushCommand:
         overrides.contextFlushCommand !== undefined
           ? overrides.contextFlushCommand
@@ -771,6 +790,8 @@ function ServerEditForm({
       currentState.contextFlushCommand,
       currentState.modelProfile,
       currentState.modelTag,
+      currentState.initialModelProfile,
+      currentState.initialModelTag,
     );
   };
 
@@ -874,6 +895,72 @@ function ServerEditForm({
             />
           </div>
         </div>
+      </div>
+      <!-- Initial Model (optional) — ACP-server-tier baseline for new
+           conversations. Overridden by any workspace-tier value. -->
+      <div>
+        <label class="label">Initial Model (optional)</label>
+        <p class="text-xs text-mitto-text-muted mb-2">
+          Apply this model as the baseline for every new conversation created
+          with this ACP server
+        </p>
+        <div class="flex items-center gap-2">
+          <div class="flex-1 min-w-0">
+            <${ModelProfileSelect}
+              value=${initialModelProfile}
+              profiles=${modelProfiles}
+              className="w-full"
+              onChange=${(name) => {
+                setInitialModelProfile(name);
+                const overrides = { initialModelProfile: name };
+                if (name) {
+                  setInitialModelTag("");
+                  overrides.initialModelTag = "";
+                }
+                emitChange(overrides);
+              }}
+            />
+          </div>
+          <span class="text-xs text-mitto-text-muted shrink-0">or by tag</span>
+          <div class="flex-1 min-w-0">
+            <${ModelTagSelect}
+              value=${initialModelTag}
+              profiles=${modelProfiles}
+              className="w-full"
+              onChange=${(tag) => {
+                setInitialModelTag(tag);
+                const overrides = { initialModelTag: tag };
+                if (tag) {
+                  setInitialModelProfile("");
+                  overrides.initialModelProfile = "";
+                }
+                emitChange(overrides);
+              }}
+            />
+          </div>
+        </div>
+        ${(() => {
+          // Precedence hint: list workspaces that already pin an initial
+          // model for this ACP server (their setting wins over this one).
+          const overriders = (workspaces || []).filter(
+            (w) =>
+              w &&
+              w.acp_server === server.name &&
+              (w.initial_model_profile || w.initial_model_tag),
+          );
+          if (overriders.length === 0) return null;
+          const names = overriders
+            .map((w) => w.name || w.working_dir || w.uuid)
+            .filter(Boolean);
+          const shown = names.slice(0, 3).join(", ");
+          const suffix = names.length > 3 ? ", …" : "";
+          const label = names.length === 1 ? "workspace" : "workspaces";
+          return html`
+            <p class="text-xs text-mitto-text-muted mt-1">
+              Overridden by ${label}: ${shown}${suffix}
+            </p>
+          `;
+        })()}
       </div>
       <div>
         <label class="label" for="acp-server-type"
@@ -2711,6 +2798,8 @@ export function SettingsDialog({
           constraints: srv.constraints || undefined, // Include constraints if present
           model_profile: srv.model_profile || undefined, // Include model profile if present
           model_tag: srv.model_tag || undefined, // Include model tag if present
+          initial_model_profile: srv.initial_model_profile || undefined, // ACP-tier initial-model preference
+          initial_model_tag: srv.initial_model_tag || undefined, // ACP-tier initial-model preference
           context_flush_command: srv.context_flush_command || undefined,
         };
         // Only include type if specified (otherwise name is used as type)
@@ -2974,6 +3063,8 @@ export function SettingsDialog({
     contextFlushCommand,
     modelProfile,
     modelTag,
+    initialModelProfile,
+    initialModelTag,
   ) => {
     // Update server in-memory (prompts are now read-only from files)
     setAcpServers(
@@ -2991,6 +3082,8 @@ export function SettingsDialog({
           constraints: constraints || undefined, // undefined to omit if empty
           model_profile: modelProfile || undefined, // undefined to omit if none
           model_tag: modelTag || undefined, // undefined to omit if none
+          initial_model_profile: initialModelProfile || undefined, // undefined to omit if none
+          initial_model_tag: initialModelTag || undefined, // undefined to omit if none
           context_flush_command:
             contextFlushCommand && contextFlushCommand.trim()
               ? contextFlushCommand.trim()
@@ -3611,6 +3704,7 @@ export function SettingsDialog({
                                             server=${srv}
                                             agentTypes=${agentTypes}
                                             modelProfiles=${modelProfiles}
+                                            workspaces=${workspaces}
                                             onChange=${(
                                               name,
                                               cmd,
@@ -3622,6 +3716,8 @@ export function SettingsDialog({
                                               contextFlushCommand,
                                               modelProfile,
                                               modelTag,
+                                              initialModelProfile,
+                                              initialModelTag,
                                             ) =>
                                               updateServer(
                                                 srv.name,
@@ -3635,6 +3731,8 @@ export function SettingsDialog({
                                                 contextFlushCommand,
                                                 modelProfile,
                                                 modelTag,
+                                                initialModelProfile,
+                                                initialModelTag,
                                               )}
                                           />
                                         `}

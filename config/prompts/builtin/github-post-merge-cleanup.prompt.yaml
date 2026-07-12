@@ -5,25 +5,25 @@ parameters:
   - name: IssuesOnly
     type: boolean
     description: Triage only — file/update beads cleanup issues and notify, but never auto-fix or open PRs (leave unchecked to auto-fix small, low-risk items)
-description: Auto-loop — after merges to the default branch, sweep for follow-up work (TODOs, deprecations, stale flags, doc gaps), track it in beads, auto-fix small low-risk items, and self-terminate when quiet
+description: After merges to the default branch, sweep for follow-up work (TODOs, deprecations, stale flags, doc gaps), track it in beads, and auto-fix small low-risk items — one-shot by default; convert to a loop from the UI for continuous sweeping
 group: GitHub
 backgroundColor: '#BBDEFB'
 tags:
-- loop
 - github
 - cleanup
 enabledWhen: '!Session.IsChild && FileExists(".git/config") && (Tools.HasPattern("github_*") || CommandExists("gh")) && CommandExists("bd") && DirExists(".beads") && Permissions.CanStartConversation'
-loop:
-  mode: always
-  trigger: onCompletion
-  delay: 21600
-  maxIterations: 20
-  maxDuration: "168h"
 prompt: |
-  The auto-loop **post-merge cleanup sweeper**. After merges land on the
-  default branch, each run sweeps for follow-up work — deprecations, `TODO`/`FIXME`,
-  `// remove after`, stale feature flags, broken doc links, and explicit follow-ups
-  named in merged PRs/issues — **without blocking or touching the merge itself**.
+  **Post-merge cleanup sweeper.** After merges land on the default branch, this run
+  sweeps for follow-up work — deprecations, `TODO`/`FIXME`, `// remove after`, stale
+  feature flags, broken doc links, and explicit follow-ups named in merged PRs/issues —
+  **without blocking or touching the merge itself**.
+
+  This is a **one-shot task by default**: run once against the current default-branch
+  head, file/fix what applies, then stop. If you want a continuous sweeper that keeps
+  waking up after new merges, convert this conversation into a loop from the UI
+  (`onCompletion` trigger + a several-hour delay) — the body below is written to work
+  in both modes, and the tracker epic's `lastSHA` marker makes each run resume where
+  the previous one stopped.
 
   Unlike the original pattern, **there is no `post-merge-state.md` file**: beads is
   the durable state store. A **tracker epic** bead holds the run state, each cleanup
@@ -234,12 +234,13 @@ prompt: |
   Open cleanup beads = the "Pending" bucket; `deferred`-labelled beads = "Deferred
   (human decision)"; closed beads = "Completed". No separate file is needed.
 
-  ## Step 6 — Stop decision / self-terminate
+  ## Step 6 — Wrap up
+  {{- if .Session.IsLoop }}
 
-  Keep iterating (end this run; the next fires after `delay`) while there is anything
-  this loop can still advance — new merges arriving, or open auto-fixable beads not yet
-  at `pr-open`. `deferred` beads waiting on a human are **not** a reason to keep
-  spinning.
+  This conversation is a **loop**. Keep iterating (end this run; the next fires after
+  `delay`) while there is anything this loop can still advance — new merges arriving,
+  or open auto-fixable beads not yet at `pr-open`. `deferred` beads waiting on a human
+  are **not** a reason to keep spinning.
 
   When a run finds **no new merges** since `lastSHA` **and** no open auto-fixable
   cleanup beads remain (only `deferred`/`pr-open`/none), the sweep is quiet —
@@ -253,6 +254,20 @@ prompt: |
   ```
 
   The user can re-run this prompt anytime to sweep a fresh batch of merges.
+  {{- else }}
+
+  This is a **one-shot** run. Finish with a short `mitto_ui_notify` summary of what
+  was filed, fixed, and deferred, then stop — do not re-fire yourself.
+
+  ```
+  mitto_ui_notify(self_id: "{{ .Session.ID }}", title: "Post-merge cleanup — done",
+    message: "<filed N, fixed M (PRs: #..), deferred K>", style: "success")
+  ```
+
+  The user can re-run this prompt anytime to sweep the next batch of merges (the
+  tracker epic's `lastSHA` marker means the next run resumes where this one stopped).
+  If you want this to run continuously, convert the conversation to a loop from the UI.
+  {{- end }}
 
   ## Guidelines
 
@@ -270,5 +285,6 @@ prompt: |
     with external API consumers, or anything attempted twice without passing tests.
   - **Caps:** at most **2 auto-fix PRs per run**; check `{{ .Children.MCPText }}` and skip
     duplicate spawns; spawned conversations are one-off and **must never be loops**.
-  - **Notify only when it matters** on scheduled runs (filed / fixed / deferred / final
-    stop); stay quiet on no-op runs. Always log to the tracker with `bd comment`.
+  - **Notify only when it matters** (filed / fixed / deferred / final stop); stay quiet
+    on no-op runs — especially on scheduled loop runs. Always log to the tracker with
+    `bd comment`.

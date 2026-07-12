@@ -4316,6 +4316,26 @@ export function WorkspacesDialog({
                               />
                             </div>
                           </div>
+                          ${(() => {
+                            // Precedence hint: when this workspace has no
+                            // initial-model preference of its own but its ACP
+                            // server does, surface which value will be used.
+                            if (editInitialModelProfile || editInitialModelTag)
+                              return null;
+                            const srv = acpServers.find(
+                              (s) => s.name === editAcpServer,
+                            );
+                            const srvValue =
+                              srv &&
+                              (srv.initial_model_profile ||
+                                srv.initial_model_tag);
+                            if (!srvValue) return null;
+                            return html`
+                              <p class="text-xs text-mitto-text-muted mt-1">
+                                Using ACP server default: ${srvValue}
+                              </p>
+                            `;
+                          })()}
                         </div>
                         <div>
                           <label

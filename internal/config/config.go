@@ -198,6 +198,21 @@ type ACPServer struct {
 	// Criteria. Mutually exclusive with ModelProfile in the UI, but if both are
 	// set ModelProfile wins. Mirrors WorkspaceSettings.InitialModelTag.
 	ModelTag string
+	// InitialModelProfile is the name of a Model profile (Config.Models) applied
+	// as the baseline model of every new conversation created against this ACP
+	// server, right after the agent reports its available models. Empty means
+	// keep the agent's default model. Mutually exclusive with InitialModelTag
+	// in the UI; when both are set, InitialModelProfile wins. Serves as a
+	// fallback when the workspace has no InitialModelProfile/InitialModelTag
+	// set (see WorkspaceSettings.InitialModelProfile). Distinct from
+	// ModelProfile above, which drives the legacy per-resume Constraints["model"]
+	// auto-selection behavior.
+	InitialModelProfile string
+	// InitialModelTag selects the initial baseline model by capability tag
+	// (e.g. "Coding"). Resolved to the first Model profile (Config.Models, in
+	// definition order) carrying this tag whose Criteria matches an available
+	// model. Empty means keep the agent's default model.
+	InitialModelTag string
 	// Constraints is an optional map of config option auto-selection rules.
 	// The key is the config option category (e.g., "model", "mode").
 	// When a session starts, matching constraints auto-select the appropriate option value.
@@ -215,6 +230,27 @@ func (s *ACPServer) GetType() string {
 		return s.Type
 	}
 	return s.Name
+}
+
+// GetInitialModelPreference returns the ACP server's initial-model preference
+// as an ordered list of PromptPreferredModel entries suitable for
+// conversation.SelectPreferredModel. Returns nil when neither
+// InitialModelProfile nor InitialModelTag is set. InitialModelProfile takes
+// precedence over InitialModelTag when both are set. Serves as a fallback for
+// fresh top-level conversations when the workspace has no initial-model
+// preference set (see WorkspaceSettings.GetInitialModelPreference). Safe to
+// call on a nil receiver.
+func (s *ACPServer) GetInitialModelPreference() []PromptPreferredModel {
+	if s == nil {
+		return nil
+	}
+	if s.InitialModelProfile != "" {
+		return []PromptPreferredModel{{ModelName: s.InitialModelProfile}}
+	}
+	if s.InitialModelTag != "" {
+		return []PromptPreferredModel{{ModelTag: s.InitialModelTag}}
+	}
+	return nil
 }
 
 // FindModelProfile returns the named Model profile (case-insensitive match on

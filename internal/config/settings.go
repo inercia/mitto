@@ -745,6 +745,18 @@ type ACPServerSettings struct {
 	// ModelTag is a capability tag used to resolve a Model profile at session
 	// start when ModelProfile is empty. Mirrors WorkspaceSettings.InitialModelTag.
 	ModelTag string `json:"model_tag,omitempty"`
+	// InitialModelProfile is the name of a Model profile (Config.Models) applied
+	// as the baseline model of every new conversation created against this ACP
+	// server, right after the agent reports its available models. Empty means
+	// keep the agent's default model. Mutually exclusive with InitialModelTag
+	// in the UI; when both are set, InitialModelProfile wins. Serves as a
+	// fallback when the workspace has no InitialModelProfile/InitialModelTag
+	// set. Distinct from ModelProfile above, which drives the legacy per-resume
+	// Constraints["model"] auto-selection behavior.
+	InitialModelProfile string `json:"initial_model_profile,omitempty"`
+	// InitialModelTag selects the initial baseline model by capability tag
+	// (e.g. "Coding"). Empty means keep the agent's default model.
+	InitialModelTag string `json:"initial_model_tag,omitempty"`
 	// Constraints is an optional map of config option auto-selection rules.
 	// The key is the config option category (e.g., "model", "mode").
 	Constraints map[string]*ACPServerConstraint `json:"constraints,omitempty"`
