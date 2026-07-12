@@ -3144,7 +3144,10 @@ function App() {
 
         <!-- Main content area: dashboard, beads view, or conversation -->
         ${mainView === "dashboard"
-          ? html`<${Dashboard} />`
+          ? html`<${Dashboard}
+              allSessions=${allSessions}
+              showToast=${showToast}
+            />`
           : mainView === "beads" && beadsWorkingDir
           ? html`
               <div
