@@ -229,11 +229,17 @@ import { Tooltip } from "./components/Tooltip.js";
 function App() {
   // Holds a callback (wired below, once useBeadsIntegration is set up) that
   // useWebSocket invokes when the ACTIVE conversation is removed from view
-  // (deleted or archived), so the UI can navigate to that conversation's folder
-  // Tasks view instead of bouncing to another conversation or an empty state
-  // (mitto-17d). A ref avoids the hook-ordering problem: useWebSocket runs
-  // before handleBeadsOpen exists.
+  // (deleted or archived), so the UI can navigate to the global Dashboard
+  // instead of bouncing to another conversation or an empty state (mitto-ce3,
+  // superseding mitto-17d's folder-Tasks route). A ref avoids the hook-ordering
+  // problem: useWebSocket runs before handleShowDashboard exists.
   const onActiveSessionRemovedRef = useRef(null);
+  // Holds a callback that useWebSocket invokes on initial connection when there
+  // is no valid last-active conversation to restore (either no persisted id, or
+  // the persisted id no longer maps to any existing session). When set, the
+  // hook does NOT auto-switch to the most-recent session, giving the UI a
+  // chance to land on the Dashboard on cold start (mitto-ce3).
+  const onNoInitialSessionRef = useRef(null);
   // Debounce tracker for macOS app-activate resync (mitto-c2p8.3)
   const appActivateDebounceRef = useRef(createReconnectDebounceTracker());
   const {
@@ -294,7 +300,7 @@ function App() {
     ensureResumed,
     isCreatingSession,
     creatingWorkingDirs,
-  } = useWebSocket({ onActiveSessionRemovedRef });
+  } = useWebSocket({ onActiveSessionRemovedRef, onNoInitialSessionRef });
 
   const { showToast, dismissToast, toasts } = useToast();
 
@@ -691,20 +697,26 @@ function App() {
 
   // Wire the active-conversation-removed callback consumed by useWebSocket. When
   // the active conversation is deleted or archived (in this window or via a
-  // cross-window session_deleted / session_archived broadcast), navigate to that
-  // conversation's folder Tasks (beads) view so the user stays in the same
-  // workspace context instead of being bounced to another conversation or an
-  // empty state (mitto-17d).
+  // cross-window session_deleted / session_archived broadcast), navigate to the
+  // global Dashboard so the user lands on a workspace-agnostic overview instead
+  // of being bounced to another conversation or an empty state (mitto-ce3,
+  // superseding mitto-17d's folder-Tasks route). The folderWorkingDir argument
+  // from the hook is unused now but the signature is preserved to keep the
+  // call-sites in useWebSocket.js unchanged.
   useEffect(() => {
-    onActiveSessionRemovedRef.current = (folderWorkingDir) => {
-      if (folderWorkingDir && folderWorkingDir !== "Unknown") {
-        handleBeadsOpen(folderWorkingDir);
-        setShowSidePanel(false);
-      } else {
-        setMainView("conversation");
-      }
+    onActiveSessionRemovedRef.current = (_folderWorkingDir) => {
+      handleShowDashboard();
     };
-  }, [handleBeadsOpen]);
+  }, [handleShowDashboard]);
+
+  // Wire the no-initial-session callback: on cold start, when there is no valid
+  // last-active conversation to restore, land on the Dashboard instead of
+  // aggressively opening the most-recent conversation (mitto-ce3).
+  useEffect(() => {
+    onNoInitialSessionRef.current = () => {
+      handleShowDashboard();
+    };
+  }, [handleShowDashboard]);
 
   // Initialize CSRF protection and UI preferences on mount
   // This pre-fetches a CSRF token so subsequent state-changing requests are protected

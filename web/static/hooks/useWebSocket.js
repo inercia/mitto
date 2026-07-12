@@ -282,11 +282,20 @@ async function checkAuthWithRetry(maxRetries = 3, retryDelay = 500) {
  * @param {Object} [options.onActiveSessionRemovedRef] - Ref whose `.current` is a
  *   callback invoked with the removed conversation's folder working dir when the
  *   ACTIVE conversation is removed from view (deleted or archived). When set, it
- *   takes over post-removal navigation (e.g. opening that folder's Tasks view)
+ *   takes over post-removal navigation (e.g. showing the global Dashboard)
  *   instead of switching to another conversation. Falls back to the previous
  *   behavior when unset.
+ * @param {Object} [options.onNoInitialSessionRef] - Ref whose `.current` is a
+ *   callback invoked on initial connection when there is no valid last-active
+ *   conversation to restore (either no persisted id, or the persisted id no
+ *   longer maps to an existing session). When set, the hook does NOT auto-switch
+ *   to the most-recent session and instead lets the callback route the UI (e.g.
+ *   to the global Dashboard). Falls back to switching to sessions[0] when unset.
  */
-export function useWebSocket({ onActiveSessionRemovedRef } = {}) {
+export function useWebSocket({
+  onActiveSessionRemovedRef,
+  onNoInitialSessionRef,
+} = {}) {
   // Initialize window.__debug for test observability.
   // Tests can read window.__debug.lastLoadEventsAfterSeq to assert the client
   // used its stored watermark (not 0) when sending load_events after reconnect.
@@ -4185,11 +4194,7 @@ export function useWebSocket({ onActiveSessionRemovedRef } = {}) {
             storedSessionsRef.current || [],
             archivedSess?.working_dir,
           );
-          if (
-            onActiveSessionRemovedRef?.current &&
-            archivedFolderWorkingDir &&
-            archivedFolderWorkingDir !== "Unknown"
-          ) {
+          if (onActiveSessionRemovedRef?.current) {
             setActiveSessionId(null);
             onActiveSessionRemovedRef.current(archivedFolderWorkingDir);
           } else {
@@ -4458,11 +4463,7 @@ export function useWebSocket({ onActiveSessionRemovedRef } = {}) {
             // Prefer navigating to the deleted conversation's folder Tasks view
             // so the user stays in the same workspace context instead of being
             // bounced to another conversation or an empty state (mitto-17d).
-            if (
-              onActiveSessionRemovedRef?.current &&
-              deletedFolderWorkingDir &&
-              deletedFolderWorkingDir !== "Unknown"
-            ) {
+            if (onActiveSessionRemovedRef?.current) {
               setActiveSessionId(null);
               onActiveSessionRemovedRef.current(deletedFolderWorkingDir);
             } else {
@@ -4711,8 +4712,15 @@ export function useWebSocket({ onActiveSessionRemovedRef } = {}) {
               );
               setLastActiveSessionId(null);
             }
-            // sessions is sorted by updated_at desc — pick the most recent overall.
-            if (sessions.length > 0) {
+            // No valid last-active conversation to restore. When app.js has
+            // wired a landing callback (mitto-ce3), let it route the UI (to the
+            // global Dashboard) instead of aggressively switching into the
+            // most-recent conversation, which would bypass the Dashboard on a
+            // cold start. Fall back to the previous behavior when unset.
+            if (onNoInitialSessionRef?.current) {
+              onNoInitialSessionRef.current();
+            } else if (sessions.length > 0) {
+              // sessions is sorted by updated_at desc — pick the most recent overall.
               switchSession(sessions[0].session_id);
             }
           }
@@ -5698,11 +5706,7 @@ export function useWebSocket({ onActiveSessionRemovedRef } = {}) {
           storedSessionsRef.current || [],
           archivedSess?.working_dir,
         );
-        if (
-          onActiveSessionRemovedRef?.current &&
-          folderWorkingDir &&
-          folderWorkingDir !== "Unknown"
-        ) {
+        if (onActiveSessionRemovedRef?.current) {
           setActiveSessionId(null);
           onActiveSessionRemovedRef.current(folderWorkingDir);
         }
@@ -5751,22 +5755,16 @@ export function useWebSocket({ onActiveSessionRemovedRef } = {}) {
 
       // If we removed the active session, decide where to navigate.
       if (wasActiveSession) {
-        // Prefer navigating to the deleted conversation's folder Tasks (beads)
-        // view so the user stays in the same workspace context instead of being
-        // bounced to another conversation or an empty state (mitto-17d). The
-        // callback is wired by app.js to handleBeadsOpen; fall back to the
-        // previous switch-to-another-conversation behavior when it isn't set or
-        // the folder can't be resolved.
+        // Prefer letting app.js's landing callback route the UI (to the global
+        // Dashboard — mitto-ce3) so the user stays out of an arbitrary
+        // remaining conversation. Fall back to switching to the most recent
+        // remaining conversation when the callback isn't wired.
         const folderWorkingDir = resolveFolderKey(
           deletedSession,
           storedSessionsRef.current || [],
           deletedWorkingDir,
         );
-        if (
-          onActiveSessionRemovedRef?.current &&
-          folderWorkingDir &&
-          folderWorkingDir !== "Unknown"
-        ) {
+        if (onActiveSessionRemovedRef?.current) {
           setActiveSessionId(null);
           onActiveSessionRemovedRef.current(folderWorkingDir);
           // Refresh the sidebar so it reflects the deletion.
