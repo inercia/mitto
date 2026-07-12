@@ -295,10 +295,48 @@ function renderListPanel(slide, rows) {
   `;
 }
 
-function emptyPlaceholder() {
+// Invisible spacer row matching the real .list-row shape so every list panel
+// occupies the same vertical space regardless of how many real items it holds.
+// `aria-hidden` + `visibility:hidden` keeps it out of the a11y tree and off
+// the tab order while still contributing height to the flow.
+function spacerRow(key) {
   return html`
-    <li>
-      <div class="text-center text-mitto-text-muted p-6">No items</div>
+    <li
+      class="list-row items-center gap-2"
+      style="visibility: hidden;"
+      aria-hidden="true"
+      key=${key}
+    >
+      <div class="list-col-grow min-w-0">
+        <div class="truncate text-sm">&nbsp;</div>
+      </div>
+    </li>
+  `;
+}
+
+// padRowsToMax appends invisible spacer rows so the returned array always has
+// exactly MAX_LIST_ITEMS entries. Called by renderConversationRows and
+// renderTaskRows so short / empty lists reserve the same vertical footprint
+// as a full 5-item list. A no-op when rows is already at (or above) the cap.
+function padRowsToMax(rows) {
+  const arr = Array.isArray(rows) ? rows.slice() : [];
+  const missing = MAX_LIST_ITEMS - arr.length;
+  for (let i = 0; i < missing; i++) {
+    arr.push(spacerRow(`__spacer-${i}`));
+  }
+  return arr;
+}
+
+// Empty-state row: keeps the same .list-row shape so it lines up with the
+// spacer rows below it (renderConversationRows / renderTaskRows pad the
+// remaining MAX_LIST_ITEMS - 1 slots so the panel's total height matches a
+// fully-populated list).
+function emptyRow() {
+  return html`
+    <li class="list-row items-center gap-2" key="__empty">
+      <div class="list-col-grow min-w-0">
+        <div class="text-center text-mitto-text-muted">No items</div>
+      </div>
     </li>
   `;
 }
@@ -341,8 +379,10 @@ function activateOnKey(fn) {
 // `onClick` is provided AND the session has a `session_id`, the row becomes
 // keyboard/mouse-activatable; otherwise it stays inert.
 function renderConversationRows(sessions, onClick) {
-  if (!sessions || sessions.length === 0) return emptyPlaceholder();
-  return sessions.map((s) => {
+  // Empty list → one visible "No items" row + spacers to MAX_LIST_ITEMS so
+  // every panel takes the same vertical space regardless of content.
+  if (!sessions || sessions.length === 0) return padRowsToMax([emptyRow()]);
+  const rows = sessions.map((s) => {
     if (!s) return null;
     // Match the canonical sidebar priority (SessionItem.js): user-set `name`
     // first, then the auto-generated `description`, then a static fallback.
@@ -371,14 +411,17 @@ function renderConversationRows(sessions, onClick) {
       </li>
     `;
   });
+  return padRowsToMax(rows);
 }
 
 // Row: bd id + title (grows/truncates) + priority pill + workspace basename.
 // Interactive only when the item has both an `id` and a `working_dir` (both
 // are required to open the correct workspace's beads viewer).
 function renderTaskRows(items, onClick) {
-  if (!items || items.length === 0) return emptyPlaceholder();
-  return items.map((it) => {
+  // Same padding contract as renderConversationRows: guarantees every panel
+  // occupies MAX_LIST_ITEMS rows worth of vertical space.
+  if (!items || items.length === 0) return padRowsToMax([emptyRow()]);
+  const rows = items.map((it) => {
     if (!it) return null;
     const id = it.id || "";
     const title = it.title || "(untitled)";
@@ -408,4 +451,5 @@ function renderTaskRows(items, onClick) {
       </li>
     `;
   });
+  return padRowsToMax(rows);
 }
