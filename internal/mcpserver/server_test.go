@@ -4590,8 +4590,8 @@ func TestChildReportCollector_IsWaiting(t *testing.T) {
 }
 
 func TestChildReportCollector_StaleTaskReport_DoesNotCompleteWait(t *testing.T) {
-	// A child that reports with a different task_id than the active wait must NOT
-	// unblock the wait; it should still appear as pending in getPendingAndReported.
+	// Stale-task report alone does not unblock — but the poll loop's
+	// markChildAutoCompleted MUST be able to override it (mitto-kn1 regression guard).
 	collector := &childReportCollector{
 		parentSessionID: "parent-1",
 		reports:         make(map[string]*childReport),
@@ -4620,6 +4620,123 @@ func TestChildReportCollector_StaleTaskReport_DoesNotCompleteWait(t *testing.T) 
 	}
 	if len(pending) != 1 || pending[0] != "child-a" {
 		t.Errorf("Expected child-a in pending, got pending=%v reported=%v", pending, reported)
+	}
+
+	// mitto-kn1: the poll loop's markChildAutoCompleted MUST overwrite the
+	// stale-task report so the wait can unblock.
+	collector.markChildAutoCompleted("child-a", "agent_idle")
+
+	select {
+	case <-waitCh:
+		// correct: closed by auto-completion overwriting the stale report
+	default:
+		t.Error("Wait channel was NOT closed after markChildAutoCompleted — mitto-kn1 regression")
+	}
+
+	pending, reported = collector.getPendingAndReported()
+	if len(reported) != 1 || reported[0] != "child-a" {
+		t.Errorf("Expected child-a in reported after auto-complete, got pending=%v reported=%v", pending, reported)
+	}
+	if len(pending) != 0 {
+		t.Errorf("Expected 0 pending after auto-complete, got %d: %v", len(pending), pending)
+	}
+}
+
+func TestChildReportCollector_MarkChildAutoCompleted_OverwritesStaleTaskReport(t *testing.T) {
+	// mitto-kn1 regression: when a child reports with a TaskID that doesn't
+	// match the active wait's task, the poll loop's markChildAutoCompleted
+	// MUST overwrite that stale report so the wait can complete. Prior to the
+	// fix, the early-return in markChildAutoCompleted made every subsequent
+	// auto-completion a no-op and parents burned the full timeout.
+	// (see internal/mcpserver/types.go markChildAutoCompleted)
+	collector := &childReportCollector{
+		parentSessionID: "parent-1",
+		reports:         make(map[string]*childReport),
+	}
+
+	waitCh, alreadyDone := collector.startWait("T1", []string{"child-a"})
+	if alreadyDone {
+		t.Fatal("Expected wait to not be done immediately")
+	}
+
+	// Child reports with a stale task id — does NOT satisfy the current wait.
+	collector.addReport("child-a", "T2", []byte(`{"status":"completed"}`))
+
+	select {
+	case <-waitCh:
+		t.Fatal("Wait channel was closed by a stale-task report — precondition broken")
+	default:
+	}
+
+	// Poll loop auto-completes the child. This MUST overwrite the stale entry.
+	collector.markChildAutoCompleted("child-a", "agent_idle")
+
+	select {
+	case <-waitCh:
+		// correct
+	default:
+		t.Error("Wait channel was NOT closed after markChildAutoCompleted — mitto-kn1 regression")
+	}
+
+	r := collector.reports["child-a"]
+	if r == nil {
+		t.Fatal("Expected report for child-a")
+	}
+	if !r.AutoCompleted {
+		t.Error("Expected report.AutoCompleted = true after markChildAutoCompleted overrode stale report")
+	}
+	if r.AutoReason != "agent_idle" {
+		t.Errorf("AutoReason = %q, want %q", r.AutoReason, "agent_idle")
+	}
+
+	pending, reported := collector.getPendingAndReported()
+	if len(reported) != 1 || reported[0] != "child-a" {
+		t.Errorf("Expected child-a in reported, got pending=%v reported=%v", pending, reported)
+	}
+	if len(pending) != 0 {
+		t.Errorf("Expected 0 pending, got %d: %v", len(pending), pending)
+	}
+}
+
+func TestChildReportCollector_MarkChildFailed_OverwritesStaleTaskReport(t *testing.T) {
+	// mitto-kn1 regression mirror: markChildFailed must also overwrite a
+	// stale-task completed report so a queued-send failure can surface.
+	collector := &childReportCollector{
+		parentSessionID: "parent-1",
+		reports:         make(map[string]*childReport),
+	}
+
+	waitCh, alreadyDone := collector.startWait("T1", []string{"child-a"})
+	if alreadyDone {
+		t.Fatal("Expected wait to not be done immediately")
+	}
+
+	collector.addReport("child-a", "T2", []byte(`{"status":"completed"}`))
+
+	select {
+	case <-waitCh:
+		t.Fatal("Wait channel was closed by a stale-task report — precondition broken")
+	default:
+	}
+
+	collector.markChildFailed("child-a", "queued send error")
+
+	select {
+	case <-waitCh:
+		// correct
+	default:
+		t.Error("Wait channel was NOT closed after markChildFailed — mitto-kn1 regression")
+	}
+
+	r := collector.reports["child-a"]
+	if r == nil {
+		t.Fatal("Expected report for child-a")
+	}
+	if !r.Failed {
+		t.Error("Expected report.Failed = true after markChildFailed overrode stale report")
+	}
+	if r.FailMessage != "queued send error" {
+		t.Errorf("FailMessage = %q, want %q", r.FailMessage, "queued send error")
 	}
 }
 

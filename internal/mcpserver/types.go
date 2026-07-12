@@ -534,9 +534,13 @@ func (c *childReportCollector) markChildAutoCompleted(childID string, reason str
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	// Don't overwrite a real report
+	// Don't overwrite a real report that already counts toward the current wait.
+	// A stale-task completed report (one whose TaskID doesn't match currentTaskID)
+	// MUST be overwritten — otherwise the wait can never unblock, since the poll
+	// loop's auto-completion becomes a no-op and reportSatisfiesCurrentTask keeps
+	// returning false. Root cause of mitto-kn1.
 	r := c.reports[childID]
-	if r != nil && r.Completed {
+	if r != nil && r.Completed && c.reportSatisfiesCurrentTask(r) {
 		return
 	}
 
@@ -564,9 +568,11 @@ func (c *childReportCollector) markChildFailed(childID string, msg string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	// Don't overwrite a real report
+	// Don't overwrite a real report that already counts toward the current wait.
+	// See markChildAutoCompleted / mitto-kn1 for rationale — a stale-task completed
+	// report must be overwritable so the queued-send failure can surface.
 	r := c.reports[childID]
-	if r != nil && r.Completed && !r.AutoCompleted && !r.Failed {
+	if r != nil && r.Completed && !r.AutoCompleted && !r.Failed && c.reportSatisfiesCurrentTask(r) {
 		return
 	}
 
