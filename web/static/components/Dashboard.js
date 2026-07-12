@@ -95,8 +95,11 @@ export function Dashboard({
     };
   }, [showToast]);
 
-  // Client-side derived counts. `loop_configured` marks any session that has a
-  // loop attached (matches the sidebar categorization); `loop_enabled` tells
+  // Client-side derived counts. Sessions in `allSessions` carry the prompting
+  // flag as `isStreaming` (set from the WebSocket `is_prompting` field —
+  // see computeAllSessions in lib.js); `is_prompting` itself is not present
+  // on the client model. `loop_configured` marks any session that has a loop
+  // attached (matches the sidebar categorization); `loop_enabled` tells
   // whether it is currently running vs paused.
   const { prompting, loopsActive, loopsStopped } = useMemo(() => {
     let p = 0,
@@ -104,7 +107,7 @@ export function Dashboard({
       ls = 0;
     for (const s of allSessions) {
       if (!s) continue;
-      if (s.is_prompting) p += 1;
+      if (s.isStreaming) p += 1;
       if (s.loop_configured || s.loop_enabled) {
         if (s.loop_enabled) la += 1;
         else ls += 1;
@@ -142,10 +145,11 @@ export function Dashboard({
 
   // Top-5 prompting conversations, most recently updated first. Session
   // `updated_at` is an ISO 8601 string; localeCompare / lexicographic ordering
-  // works for that format.
+  // works for that format. Filter by `isStreaming` — the client-side field
+  // populated from the WebSocket `is_prompting` flag; see the count block above.
   const promptingList = useMemo(() => {
     return (allSessions || [])
-      .filter((s) => s && s.is_prompting)
+      .filter((s) => s && s.isStreaming)
       .slice()
       .sort((a, b) => {
         const au = a.updated_at || "";

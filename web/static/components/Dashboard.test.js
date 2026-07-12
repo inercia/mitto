@@ -17,14 +17,17 @@ import { jest } from "@jest/globals";
 // =============================================================================
 
 // Duplicated from Dashboard.js for testing (component imports window.preact
-// globals). Keep in sync. Mirrors the useMemo body at Dashboard.js ~L96-109.
+// globals). Keep in sync. Mirrors the useMemo body at Dashboard.js ~L104-117.
+// Filters by `isStreaming` (the client field populated from the WebSocket
+// `is_prompting` flag — see computeAllSessions in lib.js), not by a raw
+// `is_prompting` property, which does not exist on the client session model.
 function deriveCounts(allSessions) {
   let p = 0,
     la = 0,
     ls = 0;
   for (const s of allSessions) {
     if (!s) continue;
-    if (s.is_prompting) p += 1;
+    if (s.isStreaming) p += 1;
     if (s.loop_configured || s.loop_enabled) {
       if (s.loop_enabled) la += 1;
       else ls += 1;
@@ -34,10 +37,11 @@ function deriveCounts(allSessions) {
 }
 
 // Duplicated from Dashboard.js for testing (component imports window.preact
-// globals). Keep in sync. Mirrors the useMemo body at Dashboard.js ~L141-152.
+// globals). Keep in sync. Mirrors the useMemo body at Dashboard.js ~L149-158.
+// Same `isStreaming`-vs-`is_prompting` note as deriveCounts above.
 function topPrompting(allSessions, max) {
   return (allSessions || [])
-    .filter((s) => s && s.is_prompting)
+    .filter((s) => s && s.isStreaming)
     .slice()
     .sort((a, b) => {
       const au = a.updated_at || "";
@@ -72,7 +76,7 @@ function activateOnKey(fn) {
 
 const S = (over = {}) => ({
   session_id: "s-x",
-  is_prompting: false,
+  isStreaming: false,
   loop_configured: false,
   loop_enabled: false,
   updated_at: "2026-07-12T10:00:00Z",
@@ -92,11 +96,11 @@ describe("deriveCounts", () => {
     });
   });
 
-  test("counts is_prompting sessions", () => {
+  test("counts isStreaming sessions", () => {
     const sessions = [
-      S({ is_prompting: true }),
-      S({ is_prompting: true }),
-      S({ is_prompting: false }),
+      S({ isStreaming: true }),
+      S({ isStreaming: true }),
+      S({ isStreaming: false }),
     ];
     expect(deriveCounts(sessions).prompting).toBe(2);
   });
@@ -124,8 +128,8 @@ describe("deriveCounts", () => {
 
   test("mixed fixture tallies correctly", () => {
     const sessions = [
-      S({ is_prompting: true, loop_configured: true, loop_enabled: true }),
-      S({ is_prompting: true }),
+      S({ isStreaming: true, loop_configured: true, loop_enabled: true }),
+      S({ isStreaming: true }),
       S({ loop_configured: true, loop_enabled: false }),
       S({ loop_configured: true, loop_enabled: false }),
       S({ loop_enabled: true }),
@@ -139,7 +143,7 @@ describe("deriveCounts", () => {
   });
 
   test("null / undefined entries are skipped", () => {
-    const sessions = [null, undefined, S({ is_prompting: true }), null];
+    const sessions = [null, undefined, S({ isStreaming: true }), null];
     expect(deriveCounts(sessions).prompting).toBe(1);
   });
 });
@@ -152,9 +156,9 @@ describe("topPrompting", () => {
 
   test("filters out non-prompting sessions", () => {
     const sessions = [
-      S({ session_id: "a", is_prompting: true }),
-      S({ session_id: "b", is_prompting: false }),
-      S({ session_id: "c", is_prompting: true }),
+      S({ session_id: "a", isStreaming: true }),
+      S({ session_id: "b", isStreaming: false }),
+      S({ session_id: "c", isStreaming: true }),
     ];
     const out = topPrompting(sessions, 5);
     expect(out.map((s) => s.session_id).sort()).toEqual(["a", "c"]);
@@ -164,7 +168,7 @@ describe("topPrompting", () => {
     const sessions = Array.from({ length: 8 }, (_, i) =>
       S({
         session_id: `s${i}`,
-        is_prompting: true,
+        isStreaming: true,
         updated_at: `2026-07-12T10:0${i}:00Z`,
       }),
     );
@@ -173,9 +177,9 @@ describe("topPrompting", () => {
 
   test("sorts by updated_at descending", () => {
     const sessions = [
-      S({ session_id: "old", is_prompting: true, updated_at: "2026-07-10T00:00:00Z" }),
-      S({ session_id: "new", is_prompting: true, updated_at: "2026-07-12T00:00:00Z" }),
-      S({ session_id: "mid", is_prompting: true, updated_at: "2026-07-11T00:00:00Z" }),
+      S({ session_id: "old", isStreaming: true, updated_at: "2026-07-10T00:00:00Z" }),
+      S({ session_id: "new", isStreaming: true, updated_at: "2026-07-12T00:00:00Z" }),
+      S({ session_id: "mid", isStreaming: true, updated_at: "2026-07-11T00:00:00Z" }),
     ];
     expect(topPrompting(sessions, 5).map((s) => s.session_id)).toEqual([
       "new",
@@ -186,8 +190,8 @@ describe("topPrompting", () => {
 
   test("equal timestamps: both present in output", () => {
     const sessions = [
-      S({ session_id: "a", is_prompting: true, updated_at: "2026-07-12T10:00:00Z" }),
-      S({ session_id: "b", is_prompting: true, updated_at: "2026-07-12T10:00:00Z" }),
+      S({ session_id: "a", isStreaming: true, updated_at: "2026-07-12T10:00:00Z" }),
+      S({ session_id: "b", isStreaming: true, updated_at: "2026-07-12T10:00:00Z" }),
     ];
     const ids = topPrompting(sessions, 5).map((s) => s.session_id).sort();
     expect(ids).toEqual(["a", "b"]);
@@ -195,8 +199,8 @@ describe("topPrompting", () => {
 
   test("missing updated_at sorts last", () => {
     const sessions = [
-      S({ session_id: "no-ts", is_prompting: true, updated_at: undefined }),
-      S({ session_id: "with-ts", is_prompting: true, updated_at: "2026-07-12T10:00:00Z" }),
+      S({ session_id: "no-ts", isStreaming: true, updated_at: undefined }),
+      S({ session_id: "with-ts", isStreaming: true, updated_at: "2026-07-12T10:00:00Z" }),
     ];
     expect(topPrompting(sessions, 5).map((s) => s.session_id)).toEqual([
       "with-ts",
@@ -205,7 +209,7 @@ describe("topPrompting", () => {
   });
 
   test("null/undefined session entries are skipped", () => {
-    const sessions = [null, S({ session_id: "a", is_prompting: true }), undefined];
+    const sessions = [null, S({ session_id: "a", isStreaming: true }), undefined];
     expect(topPrompting(sessions, 5).map((s) => s.session_id)).toEqual(["a"]);
   });
 
