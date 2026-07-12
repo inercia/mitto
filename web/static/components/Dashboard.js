@@ -13,17 +13,22 @@ import { MenuIcon } from "./Icons.js";
 
 const REFRESH_INTERVAL_MS = 15_000;
 const MAX_LIST_ITEMS = 5;
-// Responsive column count for the lists grid. Breakpoints mirror Tailwind's
-// sm (640px) / lg (1024px) / xl (1280px) so behaviour is predictable across
-// the app. Below sm every list gets its own row (iPhone-friendly); at sm we
-// pair them 2x2; at lg it becomes 3 columns; at xl the whole set fits in one
-// row. The grid template is applied via inline style because the precompiled
+// Responsive column count for the lists grid. Thresholds tuned so each column
+// stays wide enough to read task titles + priority pill without truncating on
+// common device widths — in particular iPad portrait (768px) and iPad landscape
+// (1024px) both fell into a "2 narrow columns" bucket with earlier Tailwind-sm
+// (640px) mirror, which the user reported as too narrow. New buckets:
+//   <900px  → 1 column (iPhone, iPad portrait, narrow browser windows)
+//   900-1279 → 2 columns (iPad landscape, small laptop)
+//   1280-1535 → 3 columns (typical desktop)
+//   ≥1536   → 4 columns (wide desktop)
+// The grid template is applied via inline style because the precompiled
 // tailwind.css does NOT include any responsive-prefixed grid-cols utilities
 // (only base .grid-cols-1/2/3) — see tailwind-precompiled-jit-class-gotcha.
 const COLUMN_BREAKPOINTS = [
-  { minWidth: 1280, columns: 4 },
-  { minWidth: 1024, columns: 3 },
-  { minWidth: 640, columns: 2 },
+  { minWidth: 1536, columns: 4 },
+  { minWidth: 1280, columns: 3 },
+  { minWidth: 900, columns: 2 },
 ];
 const DEFAULT_COLUMNS = 1;
 
