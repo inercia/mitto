@@ -290,22 +290,17 @@ export function Dashboard({
         const safePage = Math.min(pageIndex, totalPages - 1);
         const start = safePage * listsPerPage;
         const end = start + listsPerPage;
-        // Compute the max row count across the panels VISIBLE on this page so
-        // spacer padding only fills the gap needed to bottom-align siblings on
-        // screen. When only one panel is visible (mobile / narrow viewport)
-        // there is nothing to align to, so no spacers are added and the panel
-        // hugs its real content instead of showing a big empty box below a
-        // single row.
-        const visibleRows = SLIDES.slice(start, end).map(
-          (_s, i) => rendered[start + i] || [],
-        );
-        const padTo = visibleRows.reduce(
-          (max, rows) => Math.max(max, rows.length),
-          0,
-        );
+        // Per user rule: every list panel MUST occupy the same vertical space
+        // regardless of content, so every panel pads up to MAX_LIST_ITEMS.
+        // This is the global cap the server also uses (top-5), so a full list
+        // is a no-op and a short/empty list reserves the same footprint as a
+        // fully-populated one — desktop side-by-side stays aligned, and
+        // single-panel mobile views still get a stable, predictable height
+        // instead of collapsing to one row.
+        const padTo = MAX_LIST_ITEMS;
         const visible = SLIDES.slice(start, end).map((s, i) => ({
           slide: s,
-          rows: visibleRows[i],
+          rows: rendered[start + i] || [],
           padTo,
         }));
         const prevPage = () =>
