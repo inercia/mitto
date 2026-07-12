@@ -97,6 +97,15 @@ const DefaultStartupLoopDelay = 15 * time.Second
 // reconnect at once (mitto-54k.1).
 const DefaultStartupResumeConcurrency = 3
 
+// DefaultLoopWorkspaceConcurrency caps how many scheduled loop prompts may be
+// in flight simultaneously per WorkingDir + ACPServer pair. Because shared
+// ACP processes (e.g. Auggie 0.32.x) do not parallelize prompts across
+// sessions, dispatching multiple loop prompts to the same process at the same
+// instant wedges all of them behind the shared inbox until the 10-minute
+// watchdog. Capping at 1 stagger loops naturally without adding sleeps to the
+// poll goroutine (mitto-61z). 0 disables the cap.
+const DefaultLoopWorkspaceConcurrency = 1
+
 // SessionConfig represents session storage configuration.
 type SessionConfig struct {
 	// MaxMessagesPerSession is the maximum number of messages to retain per conversation.
@@ -134,6 +143,17 @@ type SessionConfig struct {
 	// Default: 0 (use DefaultStartupResumeConcurrency = 3). Values <1 are clamped
 	// to 1 (a semaphore of size 0 would deadlock every resume).
 	StartupResumeConcurrency int `json:"startup_resume_concurrency,omitempty"`
+	// LoopWorkspaceConcurrency caps how many scheduled loop prompts may be in
+	// flight simultaneously per WorkingDir + ACPServer pair. When more than one
+	// loop conversation in the same workspace becomes due at the same instant,
+	// dispatching them concurrently to a shared ACP process wedges all of them
+	// behind the shared inbox (mitto-61z). The scheduler skips over-capacity
+	// sessions for the current poll cycle and retries on the next tick — no
+	// schedule advance and no failure backoff for the skipped session. Manual
+	// "Run Now" (forced) deliveries always bypass this cap.
+	// Default: 0 (use DefaultLoopWorkspaceConcurrency = 1). Set to a large value
+	// (or use the getter's semantics) to effectively disable the cap.
+	LoopWorkspaceConcurrency int `json:"loop_workspace_concurrency,omitempty"`
 	// LoopSuspendTimeout controls when idle loop conversations have their ACP
 	// connection suspended to save memory. When a loop conversation's next prompt
 	// is farther away than this timeout, its ACP session is closed even if the user has
@@ -359,6 +379,21 @@ func (c *SessionConfig) GetStartupResumeConcurrency() int {
 		return 1
 	}
 	return c.StartupResumeConcurrency
+}
+
+// GetLoopWorkspaceConcurrency returns the maximum number of scheduled loop
+// prompts that may be in flight simultaneously per WorkingDir + ACPServer
+// pair. Returns DefaultLoopWorkspaceConcurrency (1) if not configured (0).
+// Negative values are treated as 0 (cap disabled). Manual "Run Now" (forced)
+// deliveries always bypass the cap (mitto-61z).
+func (c *SessionConfig) GetLoopWorkspaceConcurrency() int {
+	if c == nil || c.LoopWorkspaceConcurrency == 0 {
+		return DefaultLoopWorkspaceConcurrency
+	}
+	if c.LoopWorkspaceConcurrency < 0 {
+		return 0
+	}
+	return c.LoopWorkspaceConcurrency
 }
 
 // PrewarmConfig represents adaptive ACP/MCP pre-warming thresholds (mitto-mw0).

@@ -979,6 +979,15 @@ func NewServer(config Config) (*Server, error) {
 		s.loopRunner.SetResumeStagger(time.Duration(staggerMs) * time.Millisecond)
 	}
 
+	// Configure the per-workspace loop-dispatch concurrency cap (mitto-61z).
+	// Prevents multiple loops in the same WorkingDir + ACPServer pair from
+	// firing at the same instant and wedging the shared ACP process.
+	loopWsConcurrency := configPkg.DefaultLoopWorkspaceConcurrency
+	if config.MittoConfig != nil && config.MittoConfig.Session != nil {
+		loopWsConcurrency = config.MittoConfig.Session.GetLoopWorkspaceConcurrency()
+	}
+	s.loopRunner.SetLoopWorkspaceConcurrency(loopWsConcurrency)
+
 	// Initialize callback index and rate limiter
 	s.callbackIndex = conversation.NewCallbackIndex()
 	s.callbackRateLimiter = conversation.NewCallbackRateLimiter()

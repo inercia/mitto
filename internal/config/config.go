@@ -1614,6 +1614,7 @@ type rawConfig struct {
 		StartupStaggerMs         int    `yaml:"startup_stagger_ms"`
 		StartupLoopDelaySeconds  int    `yaml:"startup_loop_delay_seconds"`
 		StartupResumeConcurrency int    `yaml:"startup_resume_concurrency"`
+		LoopWorkspaceConcurrency int    `yaml:"loop_workspace_concurrency"`
 		LoopSuspendTimeout       string `yaml:"loop_suspend_timeout"`
 		MemoryRecycleThreshold   string `yaml:"memory_recycle_threshold"`
 		AgentInactivityTimeout   string `yaml:"agent_inactivity_timeout"`
@@ -1994,6 +1995,7 @@ func Parse(data []byte) (*Config, error) {
 			StartupStaggerMs:         raw.Session.StartupStaggerMs,
 			StartupLoopDelaySeconds:  raw.Session.StartupLoopDelaySeconds,
 			StartupResumeConcurrency: raw.Session.StartupResumeConcurrency,
+			LoopWorkspaceConcurrency: raw.Session.LoopWorkspaceConcurrency,
 			LoopSuspendTimeout:       raw.Session.LoopSuspendTimeout,
 			MemoryRecycleThreshold:   raw.Session.MemoryRecycleThreshold,
 			AgentInactivityTimeout:   raw.Session.AgentInactivityTimeout,

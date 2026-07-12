@@ -2147,7 +2147,7 @@ func TestLoopRunner_DeliverPrompt_ArgumentsForwardedAndSubstituted(t *testing.T)
 	defer cancel()
 	bs := conversation.NewTestBackgroundSessionWithCtx("arg-dispatch", ctx, cancel)
 
-	deliverErr := runner.deliverPrompt(bs, "test-session", loop, loopStore, false, false)
+	deliverErr := runner.deliverPrompt(bs, meta, loop, loopStore, false, false)
 	// The resolver must have been called even though PromptWithMeta failed.
 	if !resolverCalled {
 		t.Error("promptResolver was not called; loop.PromptName not forwarded to deliverPrompt")
@@ -3668,5 +3668,352 @@ func TestTasksBaselineStore_GetSetRoundTrip(t *testing.T) {
 	}
 	if got.CapturedAt.IsZero() {
 		t.Error("CapturedAt should be set")
+	}
+}
+
+// =============================================================================
+// Per-workspace loop-dispatch concurrency guard tests (mitto-61z)
+// =============================================================================
+
+// TestLoopRunner_WorkspaceSlot_ReserveRelease verifies the low-level slot
+// reservation helpers respect the configured cap and are independent across
+// distinct workspace keys.
+func TestLoopRunner_WorkspaceSlot_ReserveRelease(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	runner := NewLoopRunner(store, nil, nil)
+	runner.SetLoopWorkspaceConcurrency(1)
+
+	keyA := workspaceKey("/ws/a", "auggie")
+	keyB := workspaceKey("/ws/b", "auggie")
+
+	if !runner.tryReserveWorkspaceSlot(keyA) {
+		t.Fatal("first reserve for A must succeed (cap=1)")
+	}
+	if runner.workspaceInFlightCount(keyA) != 1 {
+		t.Errorf("in-flight[A] = %d, want 1", runner.workspaceInFlightCount(keyA))
+	}
+	if runner.tryReserveWorkspaceSlot(keyA) {
+		t.Error("second reserve for A must fail at cap=1")
+	}
+	// Different workspace is independent.
+	if !runner.tryReserveWorkspaceSlot(keyB) {
+		t.Error("reserve for B must succeed — different workspace")
+	}
+	runner.releaseWorkspaceSlot(keyA)
+	if runner.workspaceInFlightCount(keyA) != 0 {
+		t.Errorf("after release, in-flight[A] = %d, want 0", runner.workspaceInFlightCount(keyA))
+	}
+	// After release, we can reserve A again.
+	if !runner.tryReserveWorkspaceSlot(keyA) {
+		t.Error("reserve for A must succeed after release")
+	}
+	// Releasing more times than we reserved must not go negative.
+	runner.releaseWorkspaceSlot(keyA)
+	runner.releaseWorkspaceSlot(keyA)
+	if runner.workspaceInFlightCount(keyA) != 0 {
+		t.Errorf("in-flight[A] after over-release = %d, want 0", runner.workspaceInFlightCount(keyA))
+	}
+}
+
+// TestLoopRunner_WorkspaceSlot_CapZeroDisabled verifies that cap=0 disables
+// the guard: reserve always succeeds and the counter is not incremented.
+func TestLoopRunner_WorkspaceSlot_CapZeroDisabled(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	runner := NewLoopRunner(store, nil, nil)
+	runner.SetLoopWorkspaceConcurrency(0)
+
+	key := workspaceKey("/ws/x", "auggie")
+	for i := 0; i < 5; i++ {
+		if !runner.tryReserveWorkspaceSlot(key) {
+			t.Fatalf("reserve[%d] must succeed with cap=0", i)
+		}
+	}
+	if runner.workspaceInFlightCount(key) != 0 {
+		t.Errorf("in-flight[key] = %d, want 0 (cap=0 must not increment)", runner.workspaceInFlightCount(key))
+	}
+}
+
+// TestLoopRunner_WorkspaceSlot_CapAboveOne verifies that a cap > 1 allows
+// exactly that many concurrent reservations before rejecting further ones.
+func TestLoopRunner_WorkspaceSlot_CapAboveOne(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	runner := NewLoopRunner(store, nil, nil)
+	runner.SetLoopWorkspaceConcurrency(2)
+
+	key := workspaceKey("/ws/y", "auggie")
+	if !runner.tryReserveWorkspaceSlot(key) {
+		t.Fatal("first reserve must succeed at cap=2")
+	}
+	if !runner.tryReserveWorkspaceSlot(key) {
+		t.Fatal("second reserve must succeed at cap=2")
+	}
+	if runner.tryReserveWorkspaceSlot(key) {
+		t.Error("third reserve must fail at cap=2")
+	}
+}
+
+// TestLoopRunner_WorkspaceSlot_NegativeCapClamped verifies that
+// SetLoopWorkspaceConcurrency clamps negative values to 0 (cap disabled).
+func TestLoopRunner_WorkspaceSlot_NegativeCapClamped(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	runner := NewLoopRunner(store, nil, nil)
+	runner.SetLoopWorkspaceConcurrency(-5)
+
+	key := workspaceKey("/ws/z", "auggie")
+	// With cap effectively 0, reserves always succeed and never populate the map.
+	if !runner.tryReserveWorkspaceSlot(key) {
+		t.Error("reserve must succeed when negative cap is clamped to 0")
+	}
+	if runner.workspaceInFlightCount(key) != 0 {
+		t.Errorf("in-flight[key] = %d, want 0 (clamped cap must not increment)", runner.workspaceInFlightCount(key))
+	}
+}
+
+// setLoopDue creates a session with an overdue loop prompt. It writes the
+// loop JSON directly to disk so NextScheduledAt is preserved (LoopStore.Set
+// recomputes NextScheduledAt to a future time, which would defeat the test).
+func setLoopDue(t *testing.T, store *session.Store, sessionID, workingDir, acpServer string) *session.LoopPrompt {
+	t.Helper()
+	meta := session.Metadata{
+		SessionID:  sessionID,
+		ACPServer:  acpServer,
+		WorkingDir: workingDir,
+	}
+	if err := store.Create(meta); err != nil {
+		t.Fatalf("Create(%s) error = %v", sessionID, err)
+	}
+	past := time.Now().UTC().Add(-1 * time.Hour)
+	p := &session.LoopPrompt{
+		Prompt:          "Test loop prompt",
+		Frequency:       session.Frequency{Value: 1, Unit: session.FrequencyHours},
+		Enabled:         true,
+		CreatedAt:       past.Add(-1 * time.Hour),
+		UpdatedAt:       past.Add(-1 * time.Hour),
+		NextScheduledAt: &past,
+	}
+	loopPath := filepath.Join(store.SessionDir(sessionID), "loop.json")
+	if err := writeTestLoopFile(loopPath, p); err != nil {
+		t.Fatalf("writeTestLoopFile(%s) error = %v", sessionID, err)
+	}
+	return p
+}
+
+// TestLoopRunner_RunOnce_WorkspaceCapSkipsSibling verifies that when a
+// workspace is at its concurrency cap (a sibling loop is in flight), the
+// next due loop in that same workspace is skipped — not errored — and its
+// schedule is NOT advanced (no backoff either).
+func TestLoopRunner_RunOnce_WorkspaceCapSkipsSibling(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	// Two loops in the SAME workspace, both overdue.
+	_ = setLoopDue(t, store, "sib-1", "/ws/shared", "auggie")
+	_ = setLoopDue(t, store, "sib-2", "/ws/shared", "auggie")
+
+	sm := conversation.NewSessionManagerWithOptions(conversation.SessionManagerOptions{})
+	// Register non-prompting BackgroundSessions for both so checkSession
+	// reaches the workspace guard for each (rather than the auto-resume
+	// failure path).
+	sm.AddSessionForTest(conversation.NewMinimalBackgroundSessionPrompting("sib-1", false))
+	sm.AddSessionForTest(conversation.NewMinimalBackgroundSessionPrompting("sib-2", false))
+
+	runner := NewLoopRunner(store, sm, nil)
+	runner.SetLoopWorkspaceConcurrency(1)
+
+	// Simulate an in-flight sibling by pre-reserving the workspace slot.
+	key := workspaceKey("/ws/shared", "auggie")
+	if !runner.tryReserveWorkspaceSlot(key) {
+		t.Fatal("pre-reserve failed unexpectedly")
+	}
+
+	// Capture NextScheduledAt for sib-2 before running.
+	before, err := store.Loop("sib-2").Get()
+	if err != nil {
+		t.Fatalf("Get(sib-2) before error = %v", err)
+	}
+	if before.NextScheduledAt == nil {
+		t.Fatal("sib-2 NextScheduledAt is nil before RunOnce")
+	}
+	beforeNext := *before.NextScheduledAt
+
+	delivered, skipped, errored := runner.RunOnce()
+
+	// Both sessions share the same workspace and cap=1 was pre-consumed by
+	// our reservation. Both must be skipped — not errored — and neither
+	// schedule may advance.
+	if skipped != 2 {
+		t.Errorf("skipped = %d, want 2 (both siblings must be skipped)", skipped)
+	}
+	if delivered != 0 {
+		t.Errorf("delivered = %d, want 0", delivered)
+	}
+	if errored != 0 {
+		t.Errorf("errored = %d, want 0 (workspace-busy must NOT count as errored)", errored)
+	}
+
+	// sib-2's schedule MUST NOT have advanced.
+	after, err := store.Loop("sib-2").Get()
+	if err != nil {
+		t.Fatalf("Get(sib-2) after error = %v", err)
+	}
+	if after.NextScheduledAt == nil || !after.NextScheduledAt.Equal(beforeNext) {
+		t.Errorf("sib-2 NextScheduledAt advanced: before=%v after=%v (must not advance on ErrWorkspaceBusy)",
+			beforeNext, after.NextScheduledAt)
+	}
+	// And no scheduled-delivery backoff must have been recorded.
+	runner.scheduleBackoffFailuresMu.Lock()
+	got := runner.scheduleBackoffFailures["sib-2"]
+	runner.scheduleBackoffFailuresMu.Unlock()
+	if got != 0 {
+		t.Errorf("scheduleBackoffFailures[sib-2] = %d, want 0 (ErrWorkspaceBusy must not count as a delivery failure)", got)
+	}
+}
+
+// TestLoopRunner_RunOnce_DifferentWorkspacesIndependent verifies that a slot
+// reservation on one workspace does NOT block a due loop in a different
+// workspace.
+func TestLoopRunner_RunOnce_DifferentWorkspacesIndependent(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	_ = setLoopDue(t, store, "wsA", "/ws/a", "auggie")
+	_ = setLoopDue(t, store, "wsB", "/ws/b", "auggie")
+
+	sm := conversation.NewSessionManagerWithOptions(conversation.SessionManagerOptions{})
+	// Register non-prompting bs for both so they reach the guard.
+	sm.AddSessionForTest(conversation.NewMinimalBackgroundSessionPrompting("wsA", false))
+	sm.AddSessionForTest(conversation.NewMinimalBackgroundSessionPrompting("wsB", false))
+
+	runner := NewLoopRunner(store, sm, nil)
+	runner.SetLoopWorkspaceConcurrency(1)
+
+	// Reserve only workspace A. Workspace B must remain free.
+	if !runner.tryReserveWorkspaceSlot(workspaceKey("/ws/a", "auggie")) {
+		t.Fatal("pre-reserve A failed unexpectedly")
+	}
+
+	// Snapshot both NextScheduledAt values before running.
+	loopA, _ := store.Loop("wsA").Get()
+	loopB, _ := store.Loop("wsB").Get()
+	if loopA == nil || loopB == nil || loopA.NextScheduledAt == nil || loopB.NextScheduledAt == nil {
+		t.Fatal("initial loop state incomplete")
+	}
+	beforeA := *loopA.NextScheduledAt
+	beforeB := *loopB.NextScheduledAt
+
+	runner.RunOnce()
+
+	// Workspace A must be skipped — schedule unchanged.
+	afterA, _ := store.Loop("wsA").Get()
+	if afterA.NextScheduledAt == nil || !afterA.NextScheduledAt.Equal(beforeA) {
+		t.Errorf("wsA schedule advanced despite workspace being at cap: before=%v after=%v",
+			beforeA, afterA.NextScheduledAt)
+	}
+
+	// Workspace B was NOT at cap when checkSession reached the guard, so the
+	// guard reserved a slot for B and proceeded to PromptWithMeta, which fails
+	// with "still starting up" (no ACP). The synchronous failure releases the
+	// slot again — verify the slot count for B is back to 0.
+	if got := runner.workspaceInFlightCount(workspaceKey("/ws/b", "auggie")); got != 0 {
+		t.Errorf("in-flight[wsB] = %d, want 0 (synchronous PromptWithMeta failure must release the slot)", got)
+	}
+	// And workspace A's in-flight count must still be 1 (our pre-reserved slot
+	// was NOT touched by the checkSession/deliverPrompt paths for wsB).
+	if got := runner.workspaceInFlightCount(workspaceKey("/ws/a", "auggie")); got != 1 {
+		t.Errorf("in-flight[wsA] = %d, want 1 (pre-reserved slot must remain)", got)
+	}
+	// wsB's schedule may or may not have advanced depending on whether the
+	// PromptWithMeta stub triggered OnComplete. The critical invariant we
+	// care about — independence from workspace A — is asserted above.
+	_ = beforeB
+}
+
+// TestLoopRunner_TriggerNow_BypassesWorkspaceCap verifies that manual "Run
+// Now" (forced) deliveries bypass the workspace concurrency cap: even when
+// the workspace is at cap, TriggerNow does not return ErrWorkspaceBusy.
+func TestLoopRunner_TriggerNow_BypassesWorkspaceCap(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	_ = setLoopDue(t, store, "forced-1", "/ws/forced", "auggie")
+
+	sm := conversation.NewSessionManagerWithOptions(conversation.SessionManagerOptions{})
+	sm.AddSessionForTest(conversation.NewMinimalBackgroundSessionPrompting("forced-1", false))
+
+	runner := NewLoopRunner(store, sm, nil)
+	runner.SetLoopWorkspaceConcurrency(1)
+
+	// Pre-reserve the workspace slot to simulate an in-flight sibling.
+	key := workspaceKey("/ws/forced", "auggie")
+	if !runner.tryReserveWorkspaceSlot(key) {
+		t.Fatal("pre-reserve failed unexpectedly")
+	}
+
+	// TriggerNow (forced=true) must NOT return ErrWorkspaceBusy — the guard
+	// is bypassed. It may still fail downstream (PromptWithMeta returns
+	// "still starting up" because there is no real ACP wiring), but that
+	// failure is *not* the guard rejecting the delivery.
+	err = runner.TriggerNow("forced-1", true)
+	if errors.Is(err, ErrWorkspaceBusy) {
+		t.Errorf("TriggerNow returned ErrWorkspaceBusy — forced deliveries must bypass the workspace cap")
+	}
+
+	// And the pre-reserved slot count is unchanged (forced path does not
+	// touch the counter).
+	if got := runner.workspaceInFlightCount(key); got != 1 {
+		t.Errorf("in-flight[key] = %d, want 1 (forced must not touch the counter)", got)
+	}
+}
+
+// TestLoopRunner_WorkspaceKey verifies the workspaceKey helper produces the
+// documented format (WorkingDir + \x00 + ACPServer) and distinguishes
+// otherwise-similar values.
+func TestLoopRunner_WorkspaceKey(t *testing.T) {
+	// Same working dir, different ACP servers → different keys.
+	if workspaceKey("/w", "a") == workspaceKey("/w", "b") {
+		t.Error("keys should differ when ACPServer differs")
+	}
+	// Same ACP server, different working dirs → different keys.
+	if workspaceKey("/w1", "a") == workspaceKey("/w2", "a") {
+		t.Error("keys should differ when WorkingDir differs")
+	}
+	// Same WorkingDir + ACPServer → same key.
+	if workspaceKey("/w", "a") != workspaceKey("/w", "a") {
+		t.Error("keys should match for the same pair")
+	}
+	// NUL separator is present.
+	got := workspaceKey("dir", "srv")
+	want := "dir" + "\x00" + "srv"
+	if got != want {
+		t.Errorf("workspaceKey = %q, want %q", got, want)
 	}
 }

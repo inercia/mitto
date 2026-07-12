@@ -74,6 +74,12 @@ var (
 	ErrLoopNotEnabled             = errors.New("loop is not enabled for this session")
 	ErrSessionBusy                = errors.New("session is currently processing a prompt")
 	ErrPromptResolveFailed        = errors.New("loop prompt could not be resolved")
+	// ErrWorkspaceBusy signals that the workspace/ACP-server pair already has the
+	// configured maximum number of loop prompts in flight. The scheduled loop is
+	// skipped for this poll cycle and retried on the next tick (no schedule
+	// advance, no failure backoff). Manual "Run Now" (forced) bypasses this cap.
+	// See mitto-61z.
+	ErrWorkspaceBusy = errors.New("workspace has reached the loop concurrency cap")
 )
 
 // LoopStartedCallback is called when a loop prompt is delivered.
@@ -226,6 +232,17 @@ type LoopRunner struct {
 	tasksLastTouchedIDs  map[string]map[string]struct{}
 	tasksNoProgressMu    sync.Mutex
 
+	// loopWorkspaceConcurrency caps how many loop prompts may be in flight for a
+	// single WorkingDir + ACPServer pair. 0 disables the cap. Default is set by
+	// config (see DefaultLoopWorkspaceConcurrency). Manual "Run Now" (forced)
+	// deliveries bypass the cap unconditionally. See mitto-61z.
+	loopWorkspaceConcurrency int
+
+	// workspaceInFlight counts in-flight loop prompts per workspace key
+	// (WorkingDir + "\x00" + ACPServer). Guarded by workspaceInFlightMu.
+	workspaceInFlight   map[string]int
+	workspaceInFlightMu sync.Mutex
+
 	mu      sync.Mutex
 	running bool
 	stopCh  chan struct{}
@@ -261,6 +278,8 @@ func NewLoopRunner(store *session.Store, sm *conversation.SessionManager, logger
 		autoUnarchiveEnabled:       true,
 		autoUnarchiveRetryInterval: DefaultAutoUnarchiveRetryInterval,
 		autoUnarchiveStagger:       DefaultAutoUnarchiveStaggerInterval,
+		loopWorkspaceConcurrency:   config.DefaultLoopWorkspaceConcurrency,
+		workspaceInFlight:          make(map[string]int),
 	}
 }
 
@@ -347,6 +366,71 @@ func (r *LoopRunner) SetMaxLoopIterations(n int) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.maxLoopIterations = n
+}
+
+// SetLoopWorkspaceConcurrency sets the maximum number of scheduled loop
+// prompts that may be in flight simultaneously per WorkingDir + ACPServer
+// pair. 0 disables the cap. Negative values are clamped to 0. Manual "Run
+// Now" (forced) deliveries always bypass this cap. See mitto-61z.
+func (r *LoopRunner) SetLoopWorkspaceConcurrency(n int) {
+	if n < 0 {
+		n = 0
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.loopWorkspaceConcurrency = n
+}
+
+// workspaceKey returns the workspace concurrency key for a session's metadata.
+// The key uniquely identifies the shared ACP process boundary (WorkingDir +
+// ACPServer). NUL is used as a separator because it cannot appear in path
+// or agent-id strings.
+func workspaceKey(workingDir, acpServer string) string {
+	return workingDir + "\x00" + acpServer
+}
+
+// tryReserveWorkspaceSlot atomically reserves a loop-dispatch slot for the
+// given workspace key. Returns true if the slot was reserved (caller must
+// eventually call releaseWorkspaceSlot). Returns false if the workspace is
+// already at its concurrency cap. Returns true unconditionally when the cap
+// is 0 (disabled) — no counter increment is performed in that case.
+func (r *LoopRunner) tryReserveWorkspaceSlot(key string) bool {
+	r.mu.Lock()
+	cap := r.loopWorkspaceConcurrency
+	r.mu.Unlock()
+	if cap <= 0 {
+		return true
+	}
+	r.workspaceInFlightMu.Lock()
+	defer r.workspaceInFlightMu.Unlock()
+	if r.workspaceInFlight[key] >= cap {
+		return false
+	}
+	r.workspaceInFlight[key]++
+	return true
+}
+
+// releaseWorkspaceSlot releases a previously reserved slot for the given
+// workspace key. Safe to call when the cap is disabled (0): it is a no-op
+// if the counter is already zero. Never goes negative.
+func (r *LoopRunner) releaseWorkspaceSlot(key string) {
+	r.workspaceInFlightMu.Lock()
+	defer r.workspaceInFlightMu.Unlock()
+	if n, ok := r.workspaceInFlight[key]; ok && n > 0 {
+		if n == 1 {
+			delete(r.workspaceInFlight, key)
+		} else {
+			r.workspaceInFlight[key] = n - 1
+		}
+	}
+}
+
+// workspaceInFlightCount returns the current in-flight count for a workspace
+// key. Exported to the package for tests.
+func (r *LoopRunner) workspaceInFlightCount(key string) int {
+	r.workspaceInFlightMu.Lock()
+	defer r.workspaceInFlightMu.Unlock()
+	return r.workspaceInFlight[key]
 }
 
 // SetMinLoopCompletionDelaySeconds sets the global floor for the on-completion
@@ -507,7 +591,7 @@ func (r *LoopRunner) TriggerNow(sessionID string, resetTimer bool) error {
 	}
 
 	// Deliver the prompt
-	return r.deliverPrompt(bs, meta.Name, loop, loopStore, resetTimer, true)
+	return r.deliverPrompt(bs, meta, loop, loopStore, resetTimer, true)
 }
 
 // OnConversationIdle is invoked when a session's agent has stopped and the session
@@ -1209,7 +1293,19 @@ func (r *LoopRunner) checkSession(meta session.Metadata, now time.Time) (deliver
 	}
 
 	// Deliver the prompt — normal scheduled runs always reset the timer.
-	if err := r.deliverPrompt(bs, meta.Name, loop, loopStore, true, false); err != nil {
+	if err := r.deliverPrompt(bs, meta, loop, loopStore, true, false); err != nil {
+		if errors.Is(err, ErrWorkspaceBusy) {
+			// A sibling loop in the same workspace is in flight. Skip this
+			// session for this poll cycle — do not advance NextScheduledAt
+			// and do not apply the failure backoff. The next poll (1 min)
+			// will retry (mitto-61z).
+			if r.logger != nil {
+				r.logger.Debug("Skipping loop prompt - workspace concurrency cap reached",
+					"session_id", sessionID,
+					"session_name", meta.Name)
+			}
+			return 0, 1, 0
+		}
 		if errors.Is(err, ErrPromptResolveFailed) {
 			r.handlePromptResolveFailure(sessionID, meta.Name, loop, loopStore, err)
 		} else {
@@ -1328,16 +1424,17 @@ func (r *LoopRunner) handlePromptResolveFailure(sessionID, sessionName string, l
 // resetTimer controls whether RecordSent() is called when the prompt completes:
 //   - true  → schedule advances from now (normal behaviour)
 //   - false → schedule is left untouched (manual "run now" without resetting the timer)
-func (r *LoopRunner) deliverPrompt(bs *conversation.BackgroundSession, sessionName string, loop *session.LoopPrompt, loopStore *session.LoopStore, resetTimer bool, forced bool) error {
+//
+// sessionMeta carries the session's workspace/ACP-server pair used to enforce
+// the per-workspace loop-dispatch concurrency cap (mitto-61z). When forced is
+// true (manual "Run Now") the cap is bypassed and no slot is reserved.
+func (r *LoopRunner) deliverPrompt(bs *conversation.BackgroundSession, sessionMeta session.Metadata, loop *session.LoopPrompt, loopStore *session.LoopStore, resetTimer bool, forced bool) error {
 	sessionID := bs.GetSessionID()
+	sessionName := sessionMeta.Name
 
 	// Resolve prompt text from name if needed
 	promptText := loop.Prompt
 	if loop.PromptName != "" && r.promptResolver != nil {
-		sessionMeta, err := r.store.GetMetadata(sessionID)
-		if err != nil {
-			return fmt.Errorf("failed to get session metadata for prompt resolution: %w", err)
-		}
 		resolved, err := r.promptResolver(loop.PromptName, sessionMeta.WorkingDir)
 		if err != nil {
 			return fmt.Errorf("%w: %q: %v", ErrPromptResolveFailed, loop.PromptName, err)
@@ -1359,6 +1456,36 @@ func (r *LoopRunner) deliverPrompt(bs *conversation.BackgroundSession, sessionNa
 			"prompt_preview", truncatePrompt(promptText, 100))
 	}
 
+	// Per-workspace loop-dispatch concurrency guard (mitto-61z). Forced ("Run
+	// Now") deliveries always bypass the cap. For scheduled deliveries we
+	// reserve a slot before PromptWithMeta and release it once the prompt
+	// finishes (OnComplete) or fails to dispatch synchronously.
+	wsKey := workspaceKey(sessionMeta.WorkingDir, sessionMeta.ACPServer)
+	slotReserved := false
+	if !forced {
+		if !r.tryReserveWorkspaceSlot(wsKey) {
+			if r.logger != nil {
+				r.logger.Debug("Skipping loop prompt - workspace concurrency cap reached",
+					"session_id", sessionID,
+					"session_name", sessionName,
+					"working_dir", sessionMeta.WorkingDir,
+					"acp_server", sessionMeta.ACPServer)
+			}
+			return ErrWorkspaceBusy
+		}
+		slotReserved = true
+	}
+
+	// releaseOnce ensures the workspace slot is released at most once, whether
+	// via OnComplete or the synchronous PromptWithMeta error path below.
+	var releaseOnce sync.Once
+	releaseSlot := func() {
+		if !slotReserved {
+			return
+		}
+		releaseOnce.Do(func() { r.releaseWorkspaceSlot(wsKey) })
+	}
+
 	// Use OnComplete callback to defer RecordSent until the prompt actually finishes.
 	// PromptWithMeta is async — it returns nil immediately. Without OnComplete,
 	// RecordSent would advance the schedule even if the prompt later fails
@@ -1378,6 +1505,9 @@ func (r *LoopRunner) deliverPrompt(bs *conversation.BackgroundSession, sessionNa
 		MaxIterations:   loop.MaxIterations,
 		FreshContext:    loop.FreshContext,
 		OnComplete: func(err error) {
+			// Always release the workspace slot when the prompt terminates,
+			// regardless of success or failure (mitto-61z).
+			defer releaseSlot()
 			if err != nil {
 				// Scheduled triggers: back off NextScheduledAt so a transient transport
 				// failure (e.g. -32603) does not re-fire the same prompt on every poll
@@ -1518,6 +1648,9 @@ func (r *LoopRunner) deliverPrompt(bs *conversation.BackgroundSession, sessionNa
 	}
 
 	if err := bs.PromptWithMeta(promptText, meta); err != nil {
+		// Dispatch failed synchronously — OnComplete will not fire, so we
+		// must release the workspace slot here (mitto-61z).
+		releaseSlot()
 		return err
 	}
 
