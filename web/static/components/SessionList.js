@@ -37,9 +37,11 @@ import { Modal } from "./Modal.js";
 import { Toolbar } from "./Toolbar.js";
 import {
   FolderIcon,
+  FolderPlusIcon,
   FolderOpenIcon,
   SpinnerIcon,
   PlusIcon,
+  MittoPlusIcon,
   CloseIcon,
   ArchiveIcon,
   SunIcon,
@@ -1864,7 +1866,7 @@ export function SessionList({
               testId: "new-conversation-btn",
               icon: isCreatingSession
                 ? html`<${SpinnerIcon} className="w-4 h-4 animate-spin" />`
-                : html`<${PlusIcon} className="w-4 h-4" />`,
+                : html`<${MittoPlusIcon} className="w-4 h-4" />`,
               tip: isCreatingSession
                 ? "Creating conversation\u2026"
                 : "New Conversation",
@@ -1876,20 +1878,8 @@ export function SessionList({
             },
             {
               kind: "button",
-              testId: "workspaces-btn",
-              icon: html`<${FolderIcon} className="w-4 h-4" />`,
-              tip: configReadonly
-                ? "Workspaces (read-only configuration)"
-                : "Workspaces",
-              ariaLabel: "Workspaces",
-              disabled: configReadonly,
-              onClick: () =>
-                !configReadonly && onShowWorkspaces && onShowWorkspaces(),
-            },
-            {
-              kind: "button",
               testId: "add-folder-btn",
-              icon: html`<${PlusIcon} className="w-4 h-4" />`,
+              icon: html`<${FolderPlusIcon} className="w-4 h-4" />`,
               tip: configReadonly
                 ? "Add folder (read-only configuration)"
                 : "Add folder to sidebar",
@@ -1984,6 +1974,18 @@ export function SessionList({
               icon: html`<${SearchIcon} className="w-4 h-4" />`,
               tip: "Search",
               ariaLabel: "Search",
+            },
+            {
+              kind: "button",
+              testId: "workspaces-btn",
+              icon: html`<${FolderIcon} className="w-4 h-4" />`,
+              tip: configReadonly
+                ? "Workspaces (read-only configuration)"
+                : "Workspaces",
+              ariaLabel: "Workspaces",
+              disabled: configReadonly,
+              onClick: () =>
+                !configReadonly && onShowWorkspaces && onShowWorkspaces(),
             },
             {
               kind: "button",

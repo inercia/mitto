@@ -3162,6 +3162,7 @@ function App() {
               onFocusConversation=${focusSession}
               onOpenTask=${(issueId, workingDir) =>
                 handleOpenBeadsIssue(issueId, workingDir, activeSessionId)}
+              onShowSidebar=${() => setShowSidebar(true)}
             />`
           : mainView === "beads" && beadsWorkingDir
           ? html`
