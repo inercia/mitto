@@ -68,6 +68,7 @@ import {
   getKeepaliveInterval,
 } from "../utils/websocket.js";
 import { useWSSeqSync } from "./useWSSeqSync.js";
+import { useWSWorkspaces } from "./useWSWorkspaces.js";
 
 // =============================================================================
 // Session creation retry state (module-level, persists across re-renders)
@@ -139,10 +140,13 @@ export function useWebSocket({
   // Global MCP server bind status from the `connected` message: { available, reason, port } | null
   const [mcpStatus, setMcpStatus] = useState(null);
 
-  // Workspaces state: list of configured workspaces from server
-  const [workspaces, setWorkspaces] = useState([]);
-  // Available ACP servers from config
-  const [acpServers, setAcpServers] = useState([]);
+  const {
+    workspaces,
+    acpServers,
+    fetchWorkspaces,
+    addWorkspace,
+    removeWorkspace,
+  } = useWSWorkspaces();
   // MCP tools per workspace UUID: { [workspaceUUID]: [{name, description}] }
   const [workspaceMcpTools, setWorkspaceMcpTools] = useState({});
 
@@ -193,7 +197,6 @@ export function useWebSocket({
   const sessionWsRefs = useRef({}); // { sessionId: WebSocket }
   const sessionReconnectRefs = useRef({}); // { sessionId: timeoutId } for session reconnection
   const sessionsRef = useRef(sessions); // For accessing sessions in callbacks
-  const workspacesRef = useRef(workspaces); // For accessing workspaces in callbacks
   const retryPendingPromptsRef = useRef(null); // Ref to retry function (set later to avoid circular deps)
   const resolvePendingSendsRef = useRef(null); // Ref to resolve function (set later to avoid circular deps)
   // Always points to the latest createNewSession callback — used by the retry timer
@@ -530,99 +533,6 @@ export function useWebSocket({
     [sessionsRef, setPendingSync],
   );
 
-  // Fetch workspaces and ACP servers
-  const fetchWorkspaces = useCallback(async () => {
-    try {
-      const response = await authFetch(endpoints.workspaces.list());
-      if (response.ok) {
-        const data = await response.json();
-        setWorkspaces(data.workspaces || []);
-        setAcpServers(data.acp_servers || []);
-      }
-    } catch (err) {
-      console.error("Failed to fetch workspaces:", err);
-    }
-  }, []);
-
-  // Fetch workspaces on mount
-  useEffect(() => {
-    fetchWorkspaces();
-  }, [fetchWorkspaces]);
-
-  // Add a new workspace
-  const addWorkspace = useCallback(
-    async (workingDir, acpServer) => {
-      try {
-        const response = await secureFetch(endpoints.workspaces.create(), {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            working_dir: workingDir,
-            acp_server: acpServer,
-          }),
-        });
-
-        if (!response.ok) {
-          let msg = "Failed to add workspace";
-          try {
-            const data = await response.json();
-            msg = data.error?.message || msg;
-          } catch (_e) {
-            /* keep default */
-          }
-          return { error: msg };
-        }
-
-        const data = await response.json();
-        // Refresh workspaces list
-        await fetchWorkspaces();
-        return { workspace: data };
-      } catch (err) {
-        console.error("Failed to add workspace:", err);
-        return { error: err.message || "Failed to add workspace" };
-      }
-    },
-    [fetchWorkspaces],
-  );
-
-  // Remove a workspace
-  const removeWorkspace = useCallback(
-    async (workingDir) => {
-      try {
-        const response = await secureFetch(
-          endpoints.workspaces.list({ working_dir: workingDir }),
-          {
-            method: "DELETE",
-          },
-        );
-
-        if (!response.ok) {
-          // Try to parse as JSON for structured errors
-          const contentType = response.headers.get("content-type");
-          if (contentType && contentType.includes("application/json")) {
-            const errorData = await response.json();
-            const error = new Error(
-              errorData.error?.message || "Failed to remove workspace",
-            );
-            error.code = errorData.error?.code;
-            error.conversationCount =
-              errorData.error?.details?.conversation_count;
-            throw error;
-          }
-          const errorText = await response.text();
-          throw new Error(errorText);
-        }
-
-        // Refresh workspaces list
-        await fetchWorkspaces();
-      } catch (err) {
-        console.error("Failed to remove workspace:", err);
-        throw err;
-      }
-    },
-    [fetchWorkspaces],
-  );
-
   // Fetch queue messages for the active session
   const fetchQueueMessages = useCallback(async () => {
     if (!activeSessionId) {
@@ -772,10 +682,6 @@ export function useWebSocket({
   useEffect(() => {
     sessionsRef.current = sessions;
   }, [sessions]);
-
-  useEffect(() => {
-    workspacesRef.current = workspaces;
-  }, [workspaces]);
 
   useEffect(() => {
     storedSessionsRef.current = storedSessions;
