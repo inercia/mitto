@@ -94,15 +94,10 @@ function renderFolderEditor({
   prompts,
   promptsSetters,
   promptsHandlers,
-  // Processors tab
-  folderProcessors,
-  processorsLoading,
-  expandedProcessor,
-  setExpandedProcessor,
-  processorArgEdits,
-  setProcessorArgEdits,
-  toggleProcessorEnabled,
-  saveProcessorArguments,
+  // Processors tab (grouped state/setters/handlers from useFolderProcessorsConfig)
+  processors,
+  processorsSetters,
+  processorsHandlers,
   // Shortcuts tab
   shortcutsSections,
   sectionPrompts,
@@ -533,7 +528,7 @@ function renderFolderEditor({
                             processors can be disabled per workspace.
                           </p>
 
-                          ${processorsLoading
+                          ${processors.processorsLoading
                             ? html`<div
                                 class="flex items-center justify-center p-4"
                               >
@@ -543,330 +538,348 @@ function renderFolderEditor({
                               </div>`
                             : html`
                                 <div class="space-y-2">
-                                  ${folderProcessors.length === 0
+                                  ${processors.folderProcessors.length === 0
                                     ? html`<div
                                         class="p-4 text-center text-mitto-text-muted text-sm"
                                       >
                                         No processors found for this workspace.
                                       </div>`
-                                    : folderProcessors.map((proc) => {
-                                        const hasError = !!proc.error;
-                                        const isWorkspace =
-                                          proc.source === "workspace";
-                                        const isEnabled =
-                                          proc.enabled !== false;
-                                        const isPromptMode =
-                                          proc.mode === "prompt";
-                                        const sourceLabel = isWorkspace
-                                          ? "workspace"
-                                          : proc.source === "builtin"
-                                            ? "built-in"
-                                            : "global";
-                                        const sourceBadgeClass = isWorkspace
-                                          ? "bg-green-500/20 text-mitto-success"
-                                          : proc.source === "builtin"
-                                            ? "bg-mitto-accent-500/20 text-mitto-accent"
-                                            : "bg-orange-500/20 text-orange-400";
-                                        const borderClass = hasError
-                                          ? "border-error/40"
-                                          : isPromptMode
-                                            ? "border-purple-500/30"
-                                            : isEnabled
-                                              ? "border-mitto-border-2/50"
-                                              : "border-mitto-border-2/30 opacity-60";
-                                        const isExpanded =
-                                          expandedProcessor === proc.name;
-                                        return html`
-                                          <div
-                                            key=${proc.name}
-                                            class="collapse collapse-plus ${isExpanded
-                                              ? "collapse-open"
-                                              : "collapse-close"} bg-mitto-surface-3/20 rounded-sm border transition-all ${borderClass} ${!isEnabled &&
-                                            !isPromptMode &&
-                                            !hasError
-                                              ? "opacity-60"
-                                              : ""}"
-                                          >
+                                    : processors.folderProcessors.map(
+                                        (proc) => {
+                                          const hasError = !!proc.error;
+                                          const isWorkspace =
+                                            proc.source === "workspace";
+                                          const isEnabled =
+                                            proc.enabled !== false;
+                                          const isPromptMode =
+                                            proc.mode === "prompt";
+                                          const sourceLabel = isWorkspace
+                                            ? "workspace"
+                                            : proc.source === "builtin"
+                                              ? "built-in"
+                                              : "global";
+                                          const sourceBadgeClass = isWorkspace
+                                            ? "bg-green-500/20 text-mitto-success"
+                                            : proc.source === "builtin"
+                                              ? "bg-mitto-accent-500/20 text-mitto-accent"
+                                              : "bg-orange-500/20 text-orange-400";
+                                          const borderClass = hasError
+                                            ? "border-error/40"
+                                            : isPromptMode
+                                              ? "border-purple-500/30"
+                                              : isEnabled
+                                                ? "border-mitto-border-2/50"
+                                                : "border-mitto-border-2/30 opacity-60";
+                                          const isExpanded =
+                                            processors.expandedProcessor ===
+                                            proc.name;
+                                          return html`
                                             <div
-                                              class="collapse-title flex items-center gap-3 p-3 min-h-0 pr-12"
-                                              onClick=${() =>
-                                                setExpandedProcessor(
-                                                  isExpanded ? null : proc.name,
-                                                )}
+                                              key=${proc.name}
+                                              class="collapse collapse-plus ${isExpanded
+                                                ? "collapse-open"
+                                                : "collapse-close"} bg-mitto-surface-3/20 rounded-sm border transition-all ${borderClass} ${!isEnabled &&
+                                              !isPromptMode &&
+                                              !hasError
+                                                ? "opacity-60"
+                                                : ""}"
                                             >
-                                              <${Tooltip}
-                                                tip=${hasError
-                                                  ? "Invalid processor — cannot enable/disable"
-                                                  : isEnabled
-                                                    ? "Disable this processor"
-                                                    : "Enable this processor"}
-                                                placement="right"
-                                                className="shrink-0"
+                                              <div
+                                                class="collapse-title flex items-center gap-3 p-3 min-h-0 pr-12"
+                                                onClick=${() =>
+                                                  processorsSetters.setExpandedProcessor(
+                                                    isExpanded
+                                                      ? null
+                                                      : proc.name,
+                                                  )}
                                               >
-                                                <input
-                                                  type="checkbox"
-                                                  checked=${isEnabled}
-                                                  disabled=${hasError}
-                                                  onChange=${() => {
-                                                    if (!hasError)
-                                                      toggleProcessorEnabled(
-                                                        proc,
-                                                      );
-                                                  }}
-                                                  onClick=${(e) =>
-                                                    e.stopPropagation()}
-                                                  class="checkbox checkbox-sm"
-                                                  aria-label=${hasError
-                                                    ? "Invalid processor"
+                                                <${Tooltip}
+                                                  tip=${hasError
+                                                    ? "Invalid processor — cannot enable/disable"
                                                     : isEnabled
                                                       ? "Disable this processor"
                                                       : "Enable this processor"}
-                                                />
-                                              <//>
-                                              <div class="flex-1 min-w-0">
-                                                <div
-                                                  class="flex items-center gap-2"
+                                                  placement="right"
+                                                  className="shrink-0"
                                                 >
-                                                  ${isPromptMode &&
-                                                  html`<${RobotIcon}
-                                                    className="w-4 h-4 text-purple-400 shrink-0"
-                                                  />`}
-                                                  <span
-                                                    class="text-sm font-medium font-mono ${hasError ||
-                                                    !isEnabled
-                                                      ? "text-mitto-text-muted"
-                                                      : "text-mitto-accent"}"
-                                                    >${proc.name}</span
+                                                  <input
+                                                    type="checkbox"
+                                                    checked=${isEnabled}
+                                                    disabled=${hasError}
+                                                    onChange=${() => {
+                                                      if (!hasError)
+                                                        processorsHandlers.toggleProcessorEnabled(
+                                                          proc,
+                                                        );
+                                                    }}
+                                                    onClick=${(e) =>
+                                                      e.stopPropagation()}
+                                                    class="checkbox checkbox-sm"
+                                                    aria-label=${hasError
+                                                      ? "Invalid processor"
+                                                      : isEnabled
+                                                        ? "Disable this processor"
+                                                        : "Enable this processor"}
+                                                  />
+                                                <//>
+                                                <div class="flex-1 min-w-0">
+                                                  <div
+                                                    class="flex items-center gap-2"
                                                   >
-                                                  ${proc.source === "global"
-                                                    ? html`<${GlobeIcon}
-                                                        className="w-3.5 h-3.5 text-orange-400 shrink-0"
-                                                        title="Global processor"
-                                                      />`
-                                                    : html`<span
-                                                        class="badge badge-sm ${sourceBadgeClass}"
-                                                        >${sourceLabel}</span
-                                                      >`}
-                                                  ${hasError &&
-                                                  html`
-                                                    <${Tooltip}
-                                                      tip=${proc.error}
-                                                      placement="right"
-                                                      className="shrink-0"
+                                                    ${isPromptMode &&
+                                                    html`<${RobotIcon}
+                                                      className="w-4 h-4 text-purple-400 shrink-0"
+                                                    />`}
+                                                    <span
+                                                      class="text-sm font-medium font-mono ${hasError ||
+                                                      !isEnabled
+                                                        ? "text-mitto-text-muted"
+                                                        : "text-mitto-accent"}"
+                                                      >${proc.name}</span
                                                     >
-                                                      <span
-                                                        class="badge badge-sm badge-error gap-1"
+                                                    ${proc.source === "global"
+                                                      ? html`<${GlobeIcon}
+                                                          className="w-3.5 h-3.5 text-orange-400 shrink-0"
+                                                          title="Global processor"
+                                                        />`
+                                                      : html`<span
+                                                          class="badge badge-sm ${sourceBadgeClass}"
+                                                          >${sourceLabel}</span
+                                                        >`}
+                                                    ${hasError &&
+                                                    html`
+                                                      <${Tooltip}
+                                                        tip=${proc.error}
+                                                        placement="right"
+                                                        className="shrink-0"
                                                       >
-                                                        <${ErrorIcon}
-                                                          className="w-3 h-3"
-                                                        />
-                                                        error
-                                                      </span>
-                                                    <//>
+                                                        <span
+                                                          class="badge badge-sm badge-error gap-1"
+                                                        >
+                                                          <${ErrorIcon}
+                                                            className="w-3 h-3"
+                                                          />
+                                                          error
+                                                        </span>
+                                                      <//>
+                                                    `}
+                                                    ${proc.on &&
+                                                    html`<span
+                                                      class="text-xs text-mitto-text-muted"
+                                                      >${proc.on}${proc.match
+                                                        ? `:${proc.match}`
+                                                        : ""}</span
+                                                    >`}
+                                                  </div>
+                                                  ${proc.description &&
+                                                  html`<p
+                                                    class="text-xs text-mitto-text-muted mt-0.5 truncate"
+                                                  >
+                                                    ${proc.description}
+                                                  </p>`}
+                                                </div>
+                                              </div>
+                                              <div
+                                                class="collapse-content px-3 pb-3"
+                                              >
+                                                <div class="space-y-2 text-sm">
+                                                  ${proc.description &&
+                                                  html`
+                                                    <div>
+                                                      <span
+                                                        class="text-xs text-mitto-text-muted block mb-0.5"
+                                                        >Description</span
+                                                      >
+                                                      <p
+                                                        class="text-mitto-text"
+                                                      >
+                                                        ${proc.description}
+                                                      </p>
+                                                    </div>
                                                   `}
                                                   ${proc.on &&
-                                                  html`<span
-                                                    class="text-xs text-mitto-text-muted"
-                                                    >${proc.on}${proc.match
-                                                      ? `:${proc.match}`
-                                                      : ""}</span
-                                                  >`}
-                                                </div>
-                                                ${proc.description &&
-                                                html`<p
-                                                  class="text-xs text-mitto-text-muted mt-0.5 truncate"
-                                                >
-                                                  ${proc.description}
-                                                </p>`}
-                                              </div>
-                                            </div>
-                                            <div
-                                              class="collapse-content px-3 pb-3"
-                                            >
-                                              <div class="space-y-2 text-sm">
-                                                ${proc.description &&
-                                                html`
-                                                  <div>
-                                                    <span
-                                                      class="text-xs text-mitto-text-muted block mb-0.5"
-                                                      >Description</span
-                                                    >
-                                                    <p class="text-mitto-text">
-                                                      ${proc.description}
-                                                    </p>
-                                                  </div>
-                                                `}
-                                                ${proc.on &&
-                                                html`
-                                                  <div>
-                                                    <span
-                                                      class="text-xs text-mitto-text-muted block mb-0.5"
-                                                      >Trigger</span
-                                                    >
-                                                    <p
-                                                      class="font-mono text-xs"
-                                                    >
-                                                      ${proc.on}${proc.match
-                                                        ? `: ${proc.match}`
-                                                        : ""}
-                                                    </p>
-                                                  </div>
-                                                `}
-                                                ${proc.mode &&
-                                                html`
-                                                  <div>
-                                                    <span
-                                                      class="text-xs text-mitto-text-muted block mb-0.5"
-                                                      >Mode</span
-                                                    >
-                                                    <p
-                                                      class="font-mono text-xs"
-                                                    >
-                                                      ${proc.mode}
-                                                    </p>
-                                                  </div>
-                                                `}
-                                                ${proc.source &&
-                                                html`
-                                                  <div>
-                                                    <span
-                                                      class="text-xs text-mitto-text-muted block mb-0.5"
-                                                      >Source</span
-                                                    >
-                                                    <p
-                                                      class="font-mono text-xs"
-                                                    >
-                                                      ${proc.source}
-                                                    </p>
-                                                  </div>
-                                                `}
-                                                ${proc.parameters?.length &&
-                                                html`
-                                                  <div>
-                                                    <span
-                                                      class="text-xs text-mitto-text-muted block mb-0.5"
-                                                      >Arguments</span
-                                                    >
-                                                    <div class="space-y-2 mt-1">
-                                                      ${proc.parameters.map(
-                                                        (p) => {
-                                                          const currentValue =
-                                                            (processorArgEdits[
-                                                              proc.name
-                                                            ] || {})[p.name] !==
-                                                            undefined
-                                                              ? (processorArgEdits[
-                                                                  proc.name
-                                                                ] || {})[p.name]
-                                                              : p.value;
-                                                          return html`
-                                                            <div key=${p.name}>
-                                                              <div
-                                                                class="text-xs text-mitto-text-muted font-mono mb-0.5"
-                                                              >
-                                                                ${p.name}
-                                                                ${p.description &&
-                                                                html`<span
-                                                                  class="font-sans font-normal opacity-70"
-                                                                >
-                                                                  —
-                                                                  ${p.description}</span
-                                                                >`}
-                                                              </div>
-                                                              ${p.type ===
-                                                              "boolean"
-                                                                ? html`<input
-                                                                    type="checkbox"
-                                                                    checked=${currentValue ===
-                                                                    "true"}
-                                                                    onChange=${(
-                                                                      e,
-                                                                    ) =>
-                                                                      setProcessorArgEdits(
-                                                                        (
-                                                                          prev,
-                                                                        ) => ({
-                                                                          ...prev,
-                                                                          [proc.name]:
-                                                                            {
-                                                                              ...(prev[
-                                                                                proc
-                                                                                  .name
-                                                                              ] ||
-                                                                                {}),
-                                                                              [p.name]:
-                                                                                e
-                                                                                  .target
-                                                                                  .checked
-                                                                                  ? "true"
-                                                                                  : "false",
-                                                                            },
-                                                                        }),
-                                                                      )}
-                                                                    class="checkbox checkbox-sm"
-                                                                  />`
-                                                                : html`<input
-                                                                    type="text"
-                                                                    value=${currentValue}
-                                                                    onInput=${(
-                                                                      e,
-                                                                    ) =>
-                                                                      setProcessorArgEdits(
-                                                                        (
-                                                                          prev,
-                                                                        ) => ({
-                                                                          ...prev,
-                                                                          [proc.name]:
-                                                                            {
-                                                                              ...(prev[
-                                                                                proc
-                                                                                  .name
-                                                                              ] ||
-                                                                                {}),
-                                                                              [p.name]:
-                                                                                e
-                                                                                  .target
-                                                                                  .value,
-                                                                            },
-                                                                        }),
-                                                                      )}
-                                                                    class="input input-sm w-full"
-                                                                  />`}
-                                                            </div>
-                                                          `;
-                                                        },
-                                                      )}
-                                                    </div>
-                                                    ${(
-                                                      proc.parameters || []
-                                                    ).some((p) => {
-                                                      const edited =
-                                                        (processorArgEdits[
-                                                          proc.name
-                                                        ] || {})[p.name];
-                                                      return (
-                                                        edited !== undefined &&
-                                                        edited !== p.value
-                                                      );
-                                                    }) &&
-                                                    html`
-                                                      <button
-                                                        onClick=${() =>
-                                                          saveProcessorArguments(
-                                                            proc,
-                                                          )}
-                                                        class="btn btn-primary btn-sm mt-2"
+                                                  html`
+                                                    <div>
+                                                      <span
+                                                        class="text-xs text-mitto-text-muted block mb-0.5"
+                                                        >Trigger</span
                                                       >
-                                                        Save
-                                                      </button>
-                                                    `}
-                                                  </div>
-                                                `}
+                                                      <p
+                                                        class="font-mono text-xs"
+                                                      >
+                                                        ${proc.on}${proc.match
+                                                          ? `: ${proc.match}`
+                                                          : ""}
+                                                      </p>
+                                                    </div>
+                                                  `}
+                                                  ${proc.mode &&
+                                                  html`
+                                                    <div>
+                                                      <span
+                                                        class="text-xs text-mitto-text-muted block mb-0.5"
+                                                        >Mode</span
+                                                      >
+                                                      <p
+                                                        class="font-mono text-xs"
+                                                      >
+                                                        ${proc.mode}
+                                                      </p>
+                                                    </div>
+                                                  `}
+                                                  ${proc.source &&
+                                                  html`
+                                                    <div>
+                                                      <span
+                                                        class="text-xs text-mitto-text-muted block mb-0.5"
+                                                        >Source</span
+                                                      >
+                                                      <p
+                                                        class="font-mono text-xs"
+                                                      >
+                                                        ${proc.source}
+                                                      </p>
+                                                    </div>
+                                                  `}
+                                                  ${proc.parameters?.length &&
+                                                  html`
+                                                    <div>
+                                                      <span
+                                                        class="text-xs text-mitto-text-muted block mb-0.5"
+                                                        >Arguments</span
+                                                      >
+                                                      <div
+                                                        class="space-y-2 mt-1"
+                                                      >
+                                                        ${proc.parameters.map(
+                                                          (p) => {
+                                                            const currentValue =
+                                                              (processors
+                                                                .processorArgEdits[
+                                                                proc.name
+                                                              ] || {})[
+                                                                p.name
+                                                              ] !== undefined
+                                                                ? (processors
+                                                                    .processorArgEdits[
+                                                                    proc.name
+                                                                  ] || {})[
+                                                                    p.name
+                                                                  ]
+                                                                : p.value;
+                                                            return html`
+                                                              <div
+                                                                key=${p.name}
+                                                              >
+                                                                <div
+                                                                  class="text-xs text-mitto-text-muted font-mono mb-0.5"
+                                                                >
+                                                                  ${p.name}
+                                                                  ${p.description &&
+                                                                  html`<span
+                                                                    class="font-sans font-normal opacity-70"
+                                                                  >
+                                                                    —
+                                                                    ${p.description}</span
+                                                                  >`}
+                                                                </div>
+                                                                ${p.type ===
+                                                                "boolean"
+                                                                  ? html`<input
+                                                                      type="checkbox"
+                                                                      checked=${currentValue ===
+                                                                      "true"}
+                                                                      onChange=${(
+                                                                        e,
+                                                                      ) =>
+                                                                        processorsSetters.setProcessorArgEdits(
+                                                                          (
+                                                                            prev,
+                                                                          ) => ({
+                                                                            ...prev,
+                                                                            [proc.name]:
+                                                                              {
+                                                                                ...(prev[
+                                                                                  proc
+                                                                                    .name
+                                                                                ] ||
+                                                                                  {}),
+                                                                                [p.name]:
+                                                                                  e
+                                                                                    .target
+                                                                                    .checked
+                                                                                    ? "true"
+                                                                                    : "false",
+                                                                              },
+                                                                          }),
+                                                                        )}
+                                                                      class="checkbox checkbox-sm"
+                                                                    />`
+                                                                  : html`<input
+                                                                      type="text"
+                                                                      value=${currentValue}
+                                                                      onInput=${(
+                                                                        e,
+                                                                      ) =>
+                                                                        processorsSetters.setProcessorArgEdits(
+                                                                          (
+                                                                            prev,
+                                                                          ) => ({
+                                                                            ...prev,
+                                                                            [proc.name]:
+                                                                              {
+                                                                                ...(prev[
+                                                                                  proc
+                                                                                    .name
+                                                                                ] ||
+                                                                                  {}),
+                                                                                [p.name]:
+                                                                                  e
+                                                                                    .target
+                                                                                    .value,
+                                                                              },
+                                                                          }),
+                                                                        )}
+                                                                      class="input input-sm w-full"
+                                                                    />`}
+                                                              </div>
+                                                            `;
+                                                          },
+                                                        )}
+                                                      </div>
+                                                      ${(
+                                                        proc.parameters || []
+                                                      ).some((p) => {
+                                                        const edited =
+                                                          (processors
+                                                            .processorArgEdits[
+                                                            proc.name
+                                                          ] || {})[p.name];
+                                                        return (
+                                                          edited !==
+                                                            undefined &&
+                                                          edited !== p.value
+                                                        );
+                                                      }) &&
+                                                      html`
+                                                        <button
+                                                          onClick=${() =>
+                                                            processorsHandlers.saveProcessorArguments(
+                                                              proc,
+                                                            )}
+                                                          class="btn btn-primary btn-sm mt-2"
+                                                        >
+                                                          Save
+                                                        </button>
+                                                      `}
+                                                    </div>
+                                                  `}
+                                                </div>
                                               </div>
                                             </div>
-                                          </div>
-                                        `;
-                                      })}
+                                          `;
+                                        },
+                                      )}
                                 </div>
                               `}
                         </div>

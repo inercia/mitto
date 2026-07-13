@@ -17,6 +17,7 @@ import { getWorkspaceVisualInfo, getBasename } from "../lib.js";
 
 import { useBeadsFolderConfig } from "../hooks/useBeadsFolderConfig.js";
 import { useFolderPromptsConfig } from "../hooks/useFolderPromptsConfig.js";
+import { useFolderProcessorsConfig } from "../hooks/useFolderProcessorsConfig.js";
 
 import {
   SpinnerIcon,
@@ -185,13 +186,9 @@ export function WorkspacesDialog({
   // Folder Prompts tab state + handlers moved to useFolderPromptsConfig hook
   // (invoked below, after groupedWorkspaces is defined so its dep array is honored).
 
-  // Folder processors state (for the Processors tab)
-  const [folderProcessors, setFolderProcessors] = useState([]);
-  const [processorsLoading, setProcessorsLoading] = useState(false);
-  const [expandedProcessor, setExpandedProcessor] = useState(null);
-  // Local argument edit state: { [procName]: { [paramName]: value } }
-  // Seeded lazily on first edit; cleared after a successful Save.
-  const [processorArgEdits, setProcessorArgEdits] = useState({});
+  // Folder Processors tab state + handlers moved to useFolderProcessorsConfig
+  // hook (invoked below, after groupedWorkspaces is defined so its dep array
+  // is honored).
 
   // Folder shortcuts state (for the Shortcuts tab)
   const [shortcutsSections, setShortcutsSections] = useState({});
@@ -318,6 +315,24 @@ export function WorkspacesDialog({
     },
     setError,
   });
+
+  // Folder Processors tab state + handlers. Owns the 4 processor state pairs,
+  // the tab-open load effect, and the two CRUD handlers (toggle/save-arguments).
+  // Shell forwards the grouped {processors, processorsSetters, processorsHandlers}
+  // objects to WorkspaceFolderEditor.
+  const { processors, processorsSetters, processorsHandlers } =
+    useFolderProcessorsConfig({
+      selectedFolder,
+      activeTab,
+      groupedWorkspaces,
+      getSelectedFolderUuid: () => {
+        const folderGroup = groupedWorkspaces.find(
+          (g) => g.displayName === selectedFolder,
+        );
+        return folderGroup?.workspaces[0]?.uuid || null;
+      },
+      setError,
+    });
 
   // Initialize folder expansion state from localStorage when the dialog opens
   // or when the set of folders changes.
@@ -1539,13 +1554,6 @@ export function WorkspacesDialog({
     return folderGroup?.workspaces[0]?.working_dir || null;
   };
 
-  const getSelectedFolderUuid = () => {
-    const folderGroup = groupedWorkspaces.find(
-      (g) => g.displayName === selectedFolder,
-    );
-    return folderGroup?.workspaces[0]?.uuid || null;
-  };
-
   // ------ Shortcuts tab helpers -----------------------------------------------
 
   // Immutably update a row in the given section.
@@ -1644,100 +1652,8 @@ export function WorkspacesDialog({
 
   // ---------------------------------------------------------------------------
 
-  // Load processors when a folder is selected and the Processors tab is active
-  useEffect(() => {
-    if (!selectedFolder || activeTab !== "processors") return;
-    const folderGroup = groupedWorkspaces.find(
-      (g) => g.displayName === selectedFolder,
-    );
-    const firstWs = folderGroup?.workspaces[0];
-    if (!firstWs?.uuid) return;
-
-    setProcessorsLoading(true);
-    authFetch(endpoints.workspaces.processors(firstWs.uuid))
-      .then((r) => r.json())
-      .then((data) => {
-        setFolderProcessors(data.processors || []);
-      })
-      .catch((err) => console.error("Failed to load processors:", err))
-      .finally(() => setProcessorsLoading(false));
-  }, [selectedFolder, activeTab, groupedWorkspaces]);
-
-  // Reload processors for the selected folder
-  const reloadFolderProcessors = async (uuid) => {
-    const res = await authFetch(endpoints.workspaces.processors(uuid));
-    const data = await res.json();
-    setFolderProcessors(data.processors || []);
-  };
-
-  // Toggle enabled state for a processor via PATCH /api/workspaces/{uuid}/processors/{name}.
-  const toggleProcessorEnabled = async (processor) => {
-    const uuid = getSelectedFolderUuid();
-    if (!uuid) return;
-    try {
-      const res = await secureFetch(
-        endpoints.workspaces.processor(uuid, processor.name),
-        {
-          method: "PATCH",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ enabled: !processor.enabled }),
-        },
-      );
-      if (!res.ok) {
-        const ct = res.headers.get("content-type");
-        if (ct && ct.includes("application/json")) {
-          const data = await res.json();
-          throw new Error(errorMessageFromData(data, "request failed"));
-        }
-        throw new Error(await res.text());
-      }
-      await reloadFolderProcessors(uuid);
-    } catch (err) {
-      setError("Failed to toggle processor: " + err.message);
-    }
-  };
-
-  // Save per-workspace argument overrides for a prompt-mode processor via PUT
-  // /api/workspaces/{uuid}/processors/{name}/arguments.
-  // Sends all declared params (edited value or current effective value).
-  // Empty string clears the override for that param (reverts to declared default).
-  const saveProcessorArguments = async (proc) => {
-    const uuid = getSelectedFolderUuid();
-    if (!uuid) return;
-    const procEdits = processorArgEdits[proc.name] || {};
-    const args = {};
-    for (const p of proc.parameters || []) {
-      args[p.name] =
-        procEdits[p.name] !== undefined ? procEdits[p.name] : p.value;
-    }
-    try {
-      const res = await secureFetch(
-        endpoints.workspaces.processorArguments(uuid, proc.name),
-        {
-          method: "PUT",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ arguments: args }),
-        },
-      );
-      if (!res.ok) {
-        const ct = res.headers.get("content-type");
-        if (ct && ct.includes("application/json")) {
-          const data = await res.json();
-          throw new Error(errorMessageFromData(data, "request failed"));
-        }
-        throw new Error(await res.text());
-      }
-      await reloadFolderProcessors(uuid);
-      // Clear local edits so inputs re-seed from the freshly-loaded effective values.
-      setProcessorArgEdits((prev) => {
-        const n = { ...prev };
-        delete n[proc.name];
-        return n;
-      });
-    } catch (err) {
-      setError("Failed to save processor arguments: " + err.message);
-    }
-  };
+  // Folder Processors tab: load effect + reload/toggle/save handlers moved to
+  // useFolderProcessorsConfig (called near the top of this component).
 
   if (!isOpen) return null;
 
@@ -2059,14 +1975,9 @@ export function WorkspacesDialog({
                 prompts=${prompts}
                 promptsSetters=${promptsSetters}
                 promptsHandlers=${promptsHandlers}
-                folderProcessors=${folderProcessors}
-                processorsLoading=${processorsLoading}
-                expandedProcessor=${expandedProcessor}
-                setExpandedProcessor=${setExpandedProcessor}
-                processorArgEdits=${processorArgEdits}
-                setProcessorArgEdits=${setProcessorArgEdits}
-                toggleProcessorEnabled=${toggleProcessorEnabled}
-                saveProcessorArguments=${saveProcessorArguments}
+                processors=${processors}
+                processorsSetters=${processorsSetters}
+                processorsHandlers=${processorsHandlers}
                 shortcutsSections=${shortcutsSections}
                 sectionPrompts=${sectionPrompts}
                 shortcutsLoading=${shortcutsLoading}
