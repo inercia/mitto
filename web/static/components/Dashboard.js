@@ -4,7 +4,8 @@
 // (mitto-aqo.6). No pagination — every list is always visible; column count
 // scales 1/2/3/4 with viewport width so phones stack, tablets pair, and wide
 // desktops show the whole set in one row.
-const { html, useState, useEffect, useMemo, useRef } = window.preact;
+const { html, useState, useEffect, useMemo, useRef, useCallback } =
+  window.preact;
 
 import { authFetch } from "../utils/csrf.js";
 import { endpoints } from "../utils/endpoints.js";
@@ -110,38 +111,51 @@ export function Dashboard({
     };
   }, []);
 
-  useEffect(() => {
-    mountedRef.current = true;
-    let cancelled = false;
-
-    async function fetchOnce() {
-      try {
-        const res = await authFetch(endpoints.misc.dashboard());
-        if (cancelled || !mountedRef.current) return;
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        const json = await res.json();
-        if (cancelled || !mountedRef.current) return;
-        setData(json);
-      } catch (err) {
-        if (cancelled || !mountedRef.current) return;
-        if (showToast) {
-          showToast({
-            style: "error",
-            title: "Dashboard refresh failed",
-            message: err && err.message ? err.message : String(err),
-          });
-        }
+  // Lifted out of the interval effect so the WS-driven refresh below can reuse
+  // it. mountedRef gates late resolutions after unmount; the fetch itself has
+  // no per-call cancellation token because a stale response just no-ops via
+  // mountedRef — the state it would set is idempotent (setData(json)).
+  const fetchDashboard = useCallback(async () => {
+    try {
+      const res = await authFetch(endpoints.misc.dashboard());
+      if (!mountedRef.current) return;
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const json = await res.json();
+      if (!mountedRef.current) return;
+      setData(json);
+    } catch (err) {
+      if (!mountedRef.current) return;
+      if (showToast) {
+        showToast({
+          style: "error",
+          title: "Dashboard refresh failed",
+          message: err && err.message ? err.message : String(err),
+        });
       }
     }
+  }, [showToast]);
 
-    fetchOnce();
-    const id = setInterval(fetchOnce, REFRESH_INTERVAL_MS);
+  useEffect(() => {
+    mountedRef.current = true;
+    fetchDashboard();
+    const id = setInterval(fetchDashboard, REFRESH_INTERVAL_MS);
     return () => {
-      cancelled = true;
       mountedRef.current = false;
       clearInterval(id);
     };
-  }, [showToast]);
+  }, [fetchDashboard]);
+
+  // Push refresh: the backend fsnotify watcher broadcasts mitto:beads_changed
+  // whenever any watched .beads/ directory mutates (bd CLI, another agent, git
+  // pull, bd dolt pull). The Dashboard aggregates across ALL workspaces, so —
+  // unlike BeadsView which filters by working_dir — every event is potentially
+  // relevant and we refetch unconditionally. The 15s poll above is kept as a
+  // safety net for the WS-disconnected case. mitto-523.
+  useEffect(() => {
+    const handler = () => fetchDashboard();
+    window.addEventListener("mitto:beads_changed", handler);
+    return () => window.removeEventListener("mitto:beads_changed", handler);
+  }, [fetchDashboard]);
 
   // Client-side derived counts. Sessions in `allSessions` carry the prompting
   // flag as `isStreaming` (set from the WebSocket `is_prompting` field —
