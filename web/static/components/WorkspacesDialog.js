@@ -24,6 +24,7 @@ import { ConfirmDialog } from "./ConfirmDialog.js";
 import { Modal } from "./Modal.js";
 import { WorkspaceBadge } from "./WorkspaceBadge.js";
 
+import { McpInstallDialog } from "./McpInstallDialog.js";
 import { WorkspaceEditor } from "./WorkspaceEditor.js";
 import { WorkspaceFolderEditor } from "./WorkspaceFolderEditor.js";
 import { WorkspacesLeftPanel } from "./WorkspacesLeftPanel.js";
@@ -984,97 +985,22 @@ export function WorkspacesDialog({
     <//>
 
     <!-- MCP Install Dialog -->
-    <${ConfirmDialog}
-      isOpen=${mcpInstallOpen}
-      title="Install MCP Servers"
-      confirmLabel="Install"
-      cancelLabel="Cancel"
-      isLoading=${mcpInstallLoading}
-      onConfirm=${handleMcpInstall}
-      onCancel=${() => {
-        if (!mcpInstallLoading) {
-          setMcpInstallOpen(false);
-          setMcpInstallName("");
-          setMcpInstallError("");
-          setMcpInstallSuccess("");
-        }
-      }}
-    >
-      <div class="space-y-4 mt-3">
-        <p class="text-sm text-mitto-text-muted">
-          Paste one or more MCP server definitions as JSON.
-        </p>
-        <textarea
-          value=${mcpInstallJson}
-          onInput=${(e) => {
-            setMcpInstallJson(e.target.value);
-            setMcpInstallError("");
-            setMcpInstallSuccess("");
-          }}
-          placeholder=${'{\n  "mcpServers": {\n    "server-name": {\n      "command": "...",\n      "args": ["..."]\n    }\n  }\n}'}
-          class="textarea textarea-sm w-full h-48 font-mono resize-none"
-          disabled=${mcpInstallLoading}
-          spellcheck="false"
-        />
-        ${(() => {
-          // Detect format 3 (single server def) to show the name input
-          try {
-            const p = JSON.parse(mcpInstallJson);
-            return (
-              (typeof p.command === "string" || typeof p.url === "string") &&
-              !p.mcpServers
-            );
-          } catch {
-            return false;
-          }
-        })() &&
-        html`
-          <div>
-            <label class="block text-sm text-mitto-text-muted mb-1"
-              >Server name</label
-            >
-            <input
-              type="text"
-              value=${mcpInstallName}
-              onInput=${(e) => {
-                setMcpInstallName(e.target.value);
-                setMcpInstallError("");
-              }}
-              placeholder="my-server"
-              class="input input-sm w-full"
-              disabled=${mcpInstallLoading}
-            />
-          </div>
-        `}
-        ${mcpTools?.mcp_scopes?.length > 0 &&
-        html`
-          <div>
-            <label class="block text-sm text-mitto-text-muted mb-1"
-              >Scope</label
-            >
-            <select
-              value=${mcpInstallScope}
-              onChange=${(e) => setMcpInstallScope(e.target.value)}
-              class="select select-sm w-full"
-              disabled=${mcpInstallLoading}
-            >
-              ${mcpTools.mcp_scopes.map(
-                (scope) => html`
-                  <option key=${scope} value=${scope}>${scope}</option>
-                `,
-              )}
-            </select>
-          </div>
-        `}
-        ${mcpInstallError &&
-        html`
-          <p class="text-sm text-mitto-danger whitespace-pre-wrap">
-            ${mcpInstallError}
-          </p>
-        `}
-        ${mcpInstallSuccess &&
-        html` <p class="text-sm text-mitto-success">${mcpInstallSuccess}</p> `}
-      </div>
-    <//>
+    <${McpInstallDialog}
+      mcpInstallOpen=${mcpInstallOpen}
+      mcpInstallJson=${mcpInstallJson}
+      setMcpInstallJson=${setMcpInstallJson}
+      mcpInstallName=${mcpInstallName}
+      setMcpInstallName=${setMcpInstallName}
+      mcpInstallScope=${mcpInstallScope}
+      setMcpInstallScope=${setMcpInstallScope}
+      mcpInstallLoading=${mcpInstallLoading}
+      mcpInstallError=${mcpInstallError}
+      setMcpInstallError=${setMcpInstallError}
+      mcpInstallSuccess=${mcpInstallSuccess}
+      setMcpInstallSuccess=${setMcpInstallSuccess}
+      mcpTools=${mcpTools}
+      handleMcpInstall=${handleMcpInstall}
+      setMcpInstallOpen=${setMcpInstallOpen}
+    />
   `;
 }
