@@ -69,6 +69,7 @@ import {
 } from "../utils/websocket.js";
 import { useWSSeqSync } from "./useWSSeqSync.js";
 import { useWSWorkspaces } from "./useWSWorkspaces.js";
+import { useWSQueue } from "./useWSQueue.js";
 
 // =============================================================================
 // Session creation retry state (module-level, persists across re-renders)
@@ -168,20 +169,19 @@ export function useWebSocket({
   const [backgroundUIPromptTimeout, setBackgroundUIPromptTimeout] =
     useState(null);
 
-  // Queue length for the active session
-  const [queueLength, setQueueLength] = useState(0);
-
-  // Queue messages for the active session
-  // Array of { id, message, title, queued_at }
-  const [queueMessages, setQueueMessages] = useState([]);
-
-  // Queue configuration for the active session
-  // { enabled: bool, max_size: int, delay_seconds: int }
-  const [queueConfig, setQueueConfig] = useState({
-    enabled: true,
-    max_size: 10,
-    delay_seconds: 0,
-  });
+  // Queue state + REST callbacks (extracted to useWSQueue sub-hook, mitto-90f.5)
+  const {
+    queueLength,
+    queueMessages,
+    queueConfig,
+    setQueueLength,
+    setQueueMessages,
+    setQueueConfig,
+    fetchQueueMessages,
+    deleteQueueMessage,
+    addToQueue,
+    moveQueueMessage,
+  } = useWSQueue(activeSessionId);
 
   // Available slash commands for the active session (from ACP agent)
   // Array of { name: string, description: string, input_hint?: string }
@@ -531,139 +531,6 @@ export function useWebSocket({
       };
     },
     [sessionsRef, setPendingSync],
-  );
-
-  // Fetch queue messages for the active session
-  const fetchQueueMessages = useCallback(async () => {
-    if (!activeSessionId) {
-      setQueueMessages([]);
-      return;
-    }
-    try {
-      const response = await authFetch(
-        endpoints.sessions.queue(activeSessionId),
-      );
-      if (response.ok) {
-        const data = await response.json();
-        setQueueMessages(data.messages || []);
-        setQueueLength(data.count || 0);
-      }
-    } catch (err) {
-      console.error("Failed to fetch queue messages:", err);
-    }
-  }, [activeSessionId]);
-
-  // Fetch queue messages when active session changes
-  useEffect(() => {
-    if (activeSessionId) {
-      fetchQueueMessages();
-    } else {
-      // Clear queue state when no session is active
-      setQueueMessages([]);
-      setQueueLength(0);
-    }
-  }, [activeSessionId, fetchQueueMessages]);
-
-  // Delete a message from the queue
-  const deleteQueueMessage = useCallback(
-    async (messageId) => {
-      if (!activeSessionId || !messageId) return false;
-      try {
-        const response = await secureFetch(
-          endpoints.sessions.queueMsg(activeSessionId, messageId),
-          { method: "DELETE" },
-        );
-        if (response.ok || response.status === 204) {
-          // Refresh queue messages after deletion
-          await fetchQueueMessages();
-          return true;
-        }
-        console.error("Failed to delete queue message:", response.status);
-        return false;
-      } catch (err) {
-        console.error("Failed to delete queue message:", err);
-        return false;
-      }
-    },
-    [activeSessionId, fetchQueueMessages],
-  );
-
-  // Add a message to the queue
-  const addToQueue = useCallback(
-    async (message, imageIds = [], fileIds = [], opts = {}) => {
-      const { promptName } = opts;
-      if (!activeSessionId || (!message?.trim() && !promptName))
-        return { success: false };
-      try {
-        const body = {
-          message: message?.trim() || "",
-          image_ids: imageIds,
-          file_ids: fileIds,
-        };
-        if (promptName) body.prompt_name = promptName;
-        const response = await secureFetch(
-          endpoints.sessions.queue(activeSessionId),
-          {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(body),
-          },
-        );
-        if (response.ok || response.status === 201) {
-          // Parse response to get the message ID
-          const data = await response.json().catch(() => ({}));
-          // Refresh queue messages after addition
-          await fetchQueueMessages();
-          return { success: true, messageId: data.id };
-        }
-        // Handle queue full error
-        if (response.status === 409) {
-          const data = await response.json().catch(() => ({}));
-          return {
-            success: false,
-            error: data.error?.code || data.error || "queue_full",
-            message: data.error?.message || data.message,
-          };
-        }
-        console.error("Failed to add to queue:", response.status);
-        return { success: false, error: "request_failed" };
-      } catch (err) {
-        console.error("Failed to add to queue:", err);
-        return { success: false, error: "request_failed" };
-      }
-    },
-    [activeSessionId, fetchQueueMessages],
-  );
-
-  // Move a message up or down in the queue
-  const moveQueueMessage = useCallback(
-    async (messageId, direction) => {
-      if (!activeSessionId || !messageId) return false;
-      if (direction !== "up" && direction !== "down") return false;
-      try {
-        const response = await secureFetch(
-          endpoints.sessions.queueMove(activeSessionId, messageId),
-          {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ direction }),
-          },
-        );
-        if (response.ok) {
-          // The response contains the updated queue, update local state
-          const data = await response.json();
-          setQueueMessages(data.messages || []);
-          setQueueLength(data.count || 0);
-          return true;
-        }
-        console.error("Failed to move queue message:", response.status);
-        return false;
-      } catch (err) {
-        console.error("Failed to move queue message:", err);
-        return false;
-      }
-    },
-    [activeSessionId],
   );
 
   // Keep refs in sync with state
