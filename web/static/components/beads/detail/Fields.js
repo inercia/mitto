@@ -8,9 +8,9 @@
 // This module depends on the frontend runtime (window.preact + htm) so it
 // lives under components/, not utils/.
 
-const { html } = window.preact;
+const { html, Fragment } = window.preact;
 
-import { typeBadge, priorityBadge } from "../Badges.js";
+import { typeBadge, priorityBadge, depStatusBadge } from "../Badges.js";
 import {
   CheckIcon,
   BoldIcon,
@@ -23,10 +23,16 @@ import {
   NumberedListIcon,
   HeadingIcon,
   QuoteIcon,
+  PlusIcon,
+  CloseIcon,
 } from "../../Icons.js";
 import { CodeEditorField } from "../../CodeEditorField.js";
 import { commentBody, handleBeadsContentClick } from "../CommentBody.js";
-import { ISSUE_TYPES, PRIORITY_LABELS } from "../../../utils/beads.js";
+import {
+  ISSUE_TYPES,
+  PRIORITY_LABELS,
+  DEP_TYPES,
+} from "../../../utils/beads.js";
 
 // daisyUI's .input/.select/.textarea set their corner radius via the logical
 // longhand border-start-start-radius:var(--radius-field), which a Tailwind
@@ -576,4 +582,231 @@ ${viewDraft.description}</pre
               >`}
         </div>`}
   </div>`;
+}
+
+// DependenciesField was split into Create/View variants (mitto-90f.3 PR-7e).
+// The two modes share only `allIssues`; every other closure capture is
+// mode-exclusive. A single component would have taken 23 props (over the
+// 18-cap used for the other fields), whereas the split keeps each variant
+// at ≤14 props with the same behaviour and markup as the original in-panel
+// definition.
+
+export function DependenciesCreateField({
+  allIssues,
+  submitting,
+  createDeps,
+  setCreateDeps,
+  removeCreateDep,
+  createNewDepType,
+  setCreateNewDepType,
+  createNewDepId,
+  setCreateNewDepId,
+  addCreateDep,
+}) {
+  return html` <datalist id="beads-create-dep-options">
+      ${(allIssues || [])
+        .filter((i) => !createDeps.some((d) => d.id === i.id))
+        .map(
+          (i) => html`<option key=${i.id} value=${i.id}>${i.title}</option>`,
+        )}
+    </datalist>
+    <ul class="list mt-1">
+      ${createDeps.map(
+        (d) => html`
+          <li key=${d.id} class="list-row items-center px-2 py-1 gap-2">
+            <select
+              class="select select-xs beads-dep-type-select shrink-0"
+              value=${d.type || "blocks"}
+              disabled=${submitting}
+              onInput=${(e) =>
+                setCreateDeps((prev) =>
+                  prev.map((x) =>
+                    x.id === d.id ? { ...x, type: e.target.value } : x,
+                  ),
+                )}
+            >
+              ${DEP_TYPES.map(
+                (t) => html`<option value=${t}>${t}</option>`,
+              )}
+            </select>
+            <span class="list-col-grow font-mono text-xs min-w-0 truncate"
+              >${d.id}</span
+            >
+            <button
+              type="button"
+              onClick=${() => removeCreateDep(d.id)}
+              disabled=${submitting}
+              class="btn btn-ghost btn-square btn-xs shrink-0 inline-flex tooltip tooltip-bottom"
+              data-tip="Remove dependency"
+              aria-label="Remove dependency"
+            >
+              <${CloseIcon} className="w-3.5 h-3.5" />
+            </button>
+          </li>
+        `,
+      )}
+    </ul>
+    <div class="join w-full mt-1">
+      <select
+        class="select select-xs beads-dep-type-select join-item"
+        value=${createNewDepType}
+        disabled=${submitting}
+        onInput=${(e) => setCreateNewDepType(e.target.value)}
+      >
+        ${DEP_TYPES.map((t) => html`<option value=${t}>${t}</option>`)}
+      </select>
+      <input
+        type="text"
+        list="beads-create-dep-options"
+        placeholder="issue id…"
+        value=${createNewDepId}
+        disabled=${submitting}
+        onInput=${(e) => setCreateNewDepId(e.target.value)}
+        onKeyDown=${(e) => {
+          if (e.key === "Enter") {
+            e.preventDefault();
+            addCreateDep();
+          }
+        }}
+        class="input input-xs flex-1 min-w-0 join-item"
+      />
+      <button
+        type="button"
+        onClick=${addCreateDep}
+        aria-disabled=${!createNewDepId.trim() || submitting
+          ? "true"
+          : "false"}
+        class="btn btn-ghost btn-square btn-xs shrink-0 join-item inline-flex tooltip tooltip-bottom ${!createNewDepId.trim() ||
+        submitting
+          ? "opacity-40 pointer-events-none"
+          : ""}"
+        data-tip="Add dependency"
+        aria-label="Add dependency"
+      >
+        <${PlusIcon} className="w-3.5 h-3.5" />
+      </button>
+    </div>`;
+}
+
+export function DependenciesViewField({
+  allIssues,
+  data,
+  deps,
+  depsLoading,
+  depsBusy,
+  changeDepType,
+  mutateDep,
+  onSelectIssue,
+  newDepType,
+  setNewDepType,
+  newDepId,
+  setNewDepId,
+  handleAddDep,
+}) {
+  return html` <datalist id="beads-dep-options">
+      ${(allIssues || [])
+        .filter((i) => i.id !== data.id && !deps.some((d) => d.id === i.id))
+        .map(
+          (i) => html`<option key=${i.id} value=${i.id}>${i.title}</option>`,
+        )}
+    </datalist>
+    ${depsLoading
+      ? html`<div
+          class="flex items-center gap-2 text-xs text-mitto-text-secondary"
+        >
+          <span class="loading loading-spinner w-3 h-3"></span> Loading…
+        </div>`
+      : html`
+          <div class="beads-deps-grid">
+            ${deps.length === 0 &&
+            html`<span
+              class="beads-dep-empty text-xs text-mitto-text-secondary italic py-1"
+              >No dependencies.</span
+            >`}
+            ${deps.map(
+              (d) => html`
+            <${Fragment} key=${d.id}>
+              <span class="beads-dep-badge">${depStatusBadge(d.status)}</span>
+              <select
+                class="select select-xs beads-dep-type-select"
+                value=${d.dependency_type || "blocks"}
+                disabled=${depsBusy}
+                onInput=${(e) => {
+                  if (e.target.value !== (d.dependency_type || "blocks"))
+                    changeDepType(d.id, e.target.value);
+                }}
+              >
+                ${DEP_TYPES.map((t) => html`<option value=${t}>${t}</option>`)}
+              </select>
+              <button
+                type="button"
+                onClick=${() => onSelectIssue && onSelectIssue((allIssues || []).find((i) => i.id === d.id) || d)}
+                class="input input-xs w-full min-w-0 text-left hover:underline tooltip tooltip-bottom"
+                data-tip=${"Open " + d.id}
+              >
+                <span class="font-mono text-xs text-mitto-accent-400 shrink-0">${d.id}</span>
+                <span class="truncate text-xs text-mitto-text min-w-0">${d.title}</span>
+              </button>
+              <button
+                type="button"
+                onClick=${() => {
+                  if (depsBusy) return;
+                  mutateDep("remove", d.id);
+                }}
+                aria-disabled=${depsBusy ? "true" : "false"}
+                class="btn btn-ghost btn-square btn-xs group inline-flex tooltip tooltip-bottom ${depsBusy ? "opacity-40 pointer-events-none" : ""}"
+                data-tip="Remove dependency"
+                aria-label="Remove dependency"
+              >
+                <${CloseIcon} className="w-3.5 h-3.5 group-hover:text-red-400" />
+              </button>
+            </${Fragment}>
+          `,
+            )}
+            <span class="beads-dep-badge"></span>
+            <select
+              class="select select-xs beads-dep-type-select"
+              value=${newDepType}
+              disabled=${depsBusy}
+              onInput=${(e) => setNewDepType(e.target.value)}
+            >
+              ${DEP_TYPES.map((t) => html`<option value=${t}>${t}</option>`)}
+            </select>
+            <input
+              type="text"
+              list="beads-dep-options"
+              placeholder="issue id…"
+              value=${newDepId}
+              disabled=${depsBusy}
+              onInput=${(e) => setNewDepId(e.target.value)}
+              onKeyDown=${(e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  handleAddDep();
+                }
+              }}
+              class="input input-xs w-full min-w-0"
+            />
+            <button
+              type="button"
+              onClick=${() => {
+                if (depsBusy || !newDepId.trim()) return;
+                handleAddDep();
+              }}
+              aria-disabled=${depsBusy || !newDepId.trim() ? "true" : "false"}
+              class="btn btn-ghost btn-square btn-xs inline-flex tooltip tooltip-bottom ${depsBusy ||
+              !newDepId.trim()
+                ? "opacity-40 pointer-events-none"
+                : ""}"
+              data-tip="Add dependency"
+              aria-label="Add dependency"
+            >
+              ${depsBusy
+                ? html`<span
+                    class="loading loading-spinner w-3.5 h-3.5"
+                  ></span>`
+                : html`<${PlusIcon} className="w-3.5 h-3.5" />`}
+            </button>
+          </div>
+        `}`;
 }
