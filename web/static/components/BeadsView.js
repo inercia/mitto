@@ -26,7 +26,21 @@ import {
   cmpBySort,
   SORT_FIELD_OPTIONS,
   SORT_FIELD_LABELS,
+  CLEANUP_PROGRESS_TOAST_INTERVAL_MS,
+  UPSTREAM_LABELS,
+  DEP_TYPES,
+  PRIORITY_LABELS,
+  PRIORITY_COLORS,
+  STATUS_COLORS,
+  TYPE_COLORS,
+  ISSUE_TYPES,
+  BEADS_SUPPORTS_HOVER,
+  BEADS_TOOLTIP_DELAY_MS,
 } from "../utils/beads.js";
+// Re-export STATUS_COLORS at its original location so any external consumer
+// that had `import { STATUS_COLORS } from ".../BeadsView.js"` keeps working
+// after the move to utils/beads.js (mitto-90f.3 E-3).
+export { STATUS_COLORS } from "../utils/beads.js";
 import { getBasename, copyToClipboard } from "../lib.js";
 import {
   PlusIcon,
@@ -79,62 +93,20 @@ import { Toolbar } from "./Toolbar.js";
 import { usePullToRefresh } from "../hooks/usePullToRefresh.js";
 import { useSwipeToAction } from "../hooks/index.js";
 
-// How often (ms) to surface a progress toast during a bulk closed-issue
-// cleanup. Progress events arrive per server-side batch (25 issues each), which
-// can be more frequent than is useful as toasts, so we throttle visible updates
-// to this rate and keep a single live toast updated in place.
-const CLEANUP_PROGRESS_TOAST_INTERVAL_MS = 3000;
-
 // ---- helpers ----------------------------------------------------------------
 //
-// Pure helpers (readBeadsResponse, matchesSearch, cmpBySort, SORT_FIELD_*) live
-// in ../utils/beads.js so they can be unit-tested without the window.preact
-// bootstrap. See mitto-90f.3 E-1.
-
-// Display labels for the folder's configured upstream task system.
-const UPSTREAM_LABELS = {
-  jira: "Jira",
-  github: "GitHub",
-  gitlab: "GitLab",
-  linear: "Linear",
-};
-
-// Dependency edge kinds accepted by "bd dep add -t" (mirrors the backend
-// allow-list in beads_api.go). "blocks" is the default/most common kind, so it
-// is listed first.
-const DEP_TYPES = [
-  "blocks",
-  "related",
-  "parent-child",
-  "discovered-from",
-  "until",
-  "caused-by",
-  "validates",
-  "relates-to",
-  "supersedes",
-  "tracks",
-];
-
-const PRIORITY_LABELS = { 0: "Critical", 1: "High", 2: "Medium", 3: "Low" };
-const PRIORITY_COLORS = {
-  0: "badge-error",
-  1: "badge-warning",
-  2: "badge-info",
-  3: "badge-ghost",
-};
-
-export const STATUS_COLORS = {
-  open: "bg-green-700 text-green-100",
-  in_progress: "bg-blue-700 text-blue-100 beads-status-inprogress",
-  closed: "bg-mitto-surface-4 text-mitto-text-strong",
-  blocked: "bg-red-700 text-red-100",
-  deferred: "bg-cyan-800 text-cyan-100",
-};
+// Pure helpers (readBeadsResponse, matchesSearch, cmpBySort, SORT_FIELD_*) and
+// pure-data constants (UPSTREAM_LABELS, DEP_TYPES, PRIORITY_*, STATUS_COLORS,
+// TYPE_COLORS, ISSUE_TYPES, CLEANUP_PROGRESS_TOAST_INTERVAL_MS,
+// BEADS_SUPPORTS_HOVER, BEADS_TOOLTIP_DELAY_MS) live in ../utils/beads.js so
+// they can be unit-tested without the window.preact bootstrap. See
+// mitto-90f.3 E-1 (helpers) and E-3 (pure-data constants).
 
 // Status filter toggle buttons shown in the Beads toolbar. Each button toggles
 // the visibility of issues with the matching status. `key` is the bd status
 // value; `label` is the user-facing text (used for the tooltip/aria-label of
 // the icon-only button); `Icon` is the glyph rendered inside the button.
+// Icon-carrying; stays in this file (utils/beads.js is framework-free).
 const BEADS_STATUS_TOGGLES = [
   { key: "open", label: "open", Icon: CircleIcon },
   { key: "in_progress", label: "in-progress", Icon: HourglassIcon },
@@ -147,25 +119,6 @@ const BEADS_STATUS_TOGGLES = [
 // full reload / app restart to its default: open and in-progress shown, closed
 // hidden.
 let beadsStatusToggles = { open: true, in_progress: true, closed: false };
-
-// Hover-only tooltips are pointless on touch devices (no hover); gate the portal
-// toolbar tooltip the same way daisyUI gates its CSS tooltips so taps never
-// trigger a stuck bubble.
-const BEADS_SUPPORTS_HOVER =
-  typeof window !== "undefined" &&
-  typeof window.matchMedia === "function" &&
-  window.matchMedia("(hover: hover)").matches;
-
-// Delay before a toolbar tooltip appears on hover (ms).
-const BEADS_TOOLTIP_DELAY_MS = 250;
-
-const TYPE_COLORS = {
-  epic: "bg-purple-700 text-purple-100",
-  feature: "bg-blue-700 text-blue-100 beads-type-feature",
-  bug: "bg-red-700 text-red-100",
-  task: "bg-mitto-surface-4 text-mitto-text-strong",
-  chore: "bg-mitto-surface-4 text-mitto-text-strong",
-};
 
 function badge(text, colorClass) {
   return html`<span
@@ -267,8 +220,6 @@ ${text || ""}</pre
 }
 
 // ---- Detail side panel ------------------------------------------------------
-
-const ISSUE_TYPES = ["task", "feature", "epic", "bug", "chore"];
 
 function labelValue(label, value) {
   if (value === null || value === undefined || value === "") return null;

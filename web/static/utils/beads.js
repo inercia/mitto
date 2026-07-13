@@ -1,7 +1,83 @@
-// Pure helpers extracted from components/BeadsView.js (mitto-90f.3, E-1).
-// This module intentionally contains ONLY framework-free helpers (no Preact,
-// no html`` template tag, no window.preact access) so it can be imported
-// directly under jsdom / jest without the window.preact bootstrap dance.
+// Pure helpers extracted from components/BeadsView.js (mitto-90f.3, E-1/E-3).
+// This module intentionally contains ONLY framework-free helpers and pure-data
+// constants (no Preact, no html`` template tag, no icon components) so it can
+// be imported directly under jsdom / jest without the window.preact bootstrap
+// dance. Icon-carrying constants (e.g. BEADS_STATUS_TOGGLES) stay in
+// components/BeadsView.js because they depend on frontend runtime components.
+
+// How often (ms) to surface a progress toast during a bulk closed-issue
+// cleanup. Progress events arrive per server-side batch (25 issues each), which
+// can be more frequent than is useful as toasts, so we throttle visible updates
+// to this rate and keep a single live toast updated in place.
+export const CLEANUP_PROGRESS_TOAST_INTERVAL_MS = 3000;
+
+// Display labels for the folder's configured upstream task system.
+export const UPSTREAM_LABELS = {
+  jira: "Jira",
+  github: "GitHub",
+  gitlab: "GitLab",
+  linear: "Linear",
+};
+
+// Dependency edge kinds accepted by "bd dep add -t" (mirrors the backend
+// allow-list in beads_api.go). "blocks" is the default/most common kind, so it
+// is listed first.
+export const DEP_TYPES = [
+  "blocks",
+  "related",
+  "parent-child",
+  "discovered-from",
+  "until",
+  "caused-by",
+  "validates",
+  "relates-to",
+  "supersedes",
+  "tracks",
+];
+
+export const PRIORITY_LABELS = {
+  0: "Critical",
+  1: "High",
+  2: "Medium",
+  3: "Low",
+};
+export const PRIORITY_COLORS = {
+  0: "badge-error",
+  1: "badge-warning",
+  2: "badge-info",
+  3: "badge-ghost",
+};
+
+export const STATUS_COLORS = {
+  open: "bg-green-700 text-green-100",
+  in_progress: "bg-blue-700 text-blue-100 beads-status-inprogress",
+  closed: "bg-mitto-surface-4 text-mitto-text-strong",
+  blocked: "bg-red-700 text-red-100",
+  deferred: "bg-cyan-800 text-cyan-100",
+};
+
+export const TYPE_COLORS = {
+  epic: "bg-purple-700 text-purple-100",
+  feature: "bg-blue-700 text-blue-100 beads-type-feature",
+  bug: "bg-red-700 text-red-100",
+  task: "bg-mitto-surface-4 text-mitto-text-strong",
+  chore: "bg-mitto-surface-4 text-mitto-text-strong",
+};
+
+// Issue kinds accepted by the "New issue" form and inline type-change picker.
+// Order controls dropdown order in the UI.
+export const ISSUE_TYPES = ["task", "feature", "epic", "bug", "chore"];
+
+// Hover-only tooltips are pointless on touch devices (no hover); gate the portal
+// toolbar tooltip the same way daisyUI gates its CSS tooltips so taps never
+// trigger a stuck bubble.
+export const BEADS_SUPPORTS_HOVER =
+  typeof window !== "undefined" &&
+  typeof window.matchMedia === "function" &&
+  window.matchMedia("(hover: hover)").matches;
+
+// Delay before a toolbar tooltip appears on hover (ms).
+export const BEADS_TOOLTIP_DELAY_MS = 250;
 
 // Safely read a fetch Response body that is expected to be JSON. If the body is
 // not valid JSON (e.g. a plain-text error page from a 403/500), return an object

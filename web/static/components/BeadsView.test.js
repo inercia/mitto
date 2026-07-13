@@ -11,7 +11,11 @@
  * a local duplicate that used to drift out of sync.
  */
 
-import { readBeadsResponse, matchesSearch } from "../utils/beads.js";
+import {
+  readBeadsResponse,
+  matchesSearch,
+  CLEANUP_PROGRESS_TOAST_INTERVAL_MS,
+} from "../utils/beads.js";
 
 // =============================================================================
 // readBeadsResponse logic
@@ -421,17 +425,10 @@ describe("onLaunchPrompt call convention", () => {
 // Cleanup progress-toast throttle/replace logic
 // =============================================================================
 
-/**
- * Duplicated from BeadsView.js for testing (component imports window.preact
- * globals at module load, so the module itself cannot be imported under jsdom).
- * Keep this in sync with handleCleanup's start toast and the onProgress handler
- * in BeadsView.js. `now` is injected (rather than Date.now()) so the throttle
- * window can be exercised deterministically.
- *
- * TODO(mitto-90f.3 E-3): retarget once CLEANUP_PROGRESS_TOAST_INTERVAL_MS is
- * moved to utils/beads.js alongside the other pure-data constants.
- */
-const CLEANUP_PROGRESS_TOAST_INTERVAL_MS = 3000;
+// The throttle harness mirrors handleCleanup's start toast and the onProgress
+// handler in BeadsView.js. `now` is injected (rather than Date.now()) so the
+// throttle window can be exercised deterministically. The interval constant
+// itself is imported from utils/beads.js (mitto-90f.3 E-3).
 
 function makeCleanupHarness({ workingDir = "/w" } = {}) {
   const refs = { cleanupToastId: null, lastCleanupToastAt: 0 };
