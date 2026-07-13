@@ -1,0 +1,191 @@
+// Leaf field sub-components extracted from BeadsDetailPanel in
+// components/BeadsView.js (mitto-90f.3 PR-7b). These are prop-drilled: every
+// value the field reads or the setter it calls is passed as an explicit prop —
+// no closure capture on the parent panel's scope. Behaviour, markup and class
+// names are preserved byte-for-byte from the original in-panel definitions so
+// this move is behaviorally invisible.
+//
+// This module depends on the frontend runtime (window.preact + htm) so it
+// lives under components/, not utils/.
+
+const { html } = window.preact;
+
+import { typeBadge, priorityBadge } from "../Badges.js";
+import { CheckIcon } from "../../Icons.js";
+import { ISSUE_TYPES, PRIORITY_LABELS } from "../../../utils/beads.js";
+
+// daisyUI's .input/.select/.textarea set their corner radius via the logical
+// longhand border-start-start-radius:var(--radius-field), which a Tailwind
+// `rounded-*` shorthand utility does NOT override. Some themes set
+// --radius-field as high as 2rem, turning these edit fields into pills. Pin
+// --radius-field so edit-mode fields keep the same subtle 0.25rem corners as
+// the panel's description/notes boxes, regardless of theme.
+export const inputClass = "input input-sm w-full [--radius-field:0.25rem]";
+export const selectClass = "select select-sm w-full [--radius-field:0.25rem]";
+export const textareaClass =
+  "textarea textarea-sm w-full [--radius-field:0.25rem]";
+// Block label with a small gap so it doesn't sit flush against its field.
+export const labelClass = "label block mb-1";
+
+export function TitleField({
+  mode,
+  title,
+  setTitle,
+  submitting,
+  viewDraft,
+  setViewDraft,
+  editingTitle,
+  setEditingTitle,
+  titleRef,
+  savingView,
+  handleTitleKeyDown,
+  startEditTitle,
+}) {
+  if (mode === "create") {
+    return html` <input
+      id="new-issue-title"
+      type="text"
+      class=${inputClass}
+      placeholder="Issue title (optional — auto-generated from description)"
+      value=${title}
+      onInput=${(e) => setTitle(e.target.value)}
+      disabled=${submitting}
+    />`;
+  }
+  return editingTitle
+    ? html` <input
+        ref=${titleRef}
+        type="text"
+        class="${inputClass} font-semibold text-base"
+        value=${viewDraft.title}
+        onInput=${(e) =>
+          setViewDraft((p) => ({ ...p, title: e.target.value }))}
+        onBlur=${() => setEditingTitle(false)}
+        onKeyDown=${handleTitleKeyDown}
+        disabled=${savingView}
+      />`
+    : html` <h2
+        class="font-semibold text-base text-mitto-text wrap-break-word cursor-text rounded px-1 -mx-1 hover:bg-mitto-input-box transition-colors block tooltip tooltip-bottom"
+        onClick=${startEditTitle}
+        data-tip="Click to edit"
+      >
+        ${viewDraft.title}
+      </h2>`;
+}
+
+export function TypeField({
+  mode,
+  type,
+  setType,
+  submitting,
+  viewDraft,
+  setViewDraft,
+  editingType,
+  setEditingType,
+  typeRef,
+}) {
+  return mode === "create"
+    ? html` <select
+        id="new-issue-type"
+        class=${selectClass}
+        value=${type}
+        onInput=${(e) => setType(e.target.value)}
+        disabled=${submitting}
+      >
+        ${ISSUE_TYPES.map((t) => html`<option value=${t}>${t}</option>`)}
+      </select>`
+    : html` <div class="relative" ref=${typeRef}>
+        <button
+          type="button"
+          onClick=${() => setEditingType((o) => !o)}
+          class="btn btn-ghost btn-xs inline-flex tooltip tooltip-bottom"
+          data-tip="Click to change type"
+        >
+          ${typeBadge(viewDraft.type)}
+        </button>
+        ${editingType &&
+        html`
+          <ul
+            class="menu absolute left-0 top-full mt-1 z-10 bg-base-200 rounded-box shadow-xl min-w-[140px]"
+          >
+            ${ISSUE_TYPES.map((t) => {
+              const isCurrent = t === viewDraft.type;
+              return html`
+                <li key=${t}>
+                  <button
+                    type="button"
+                    onClick=${() => {
+                      setViewDraft((p) => ({ ...p, type: t }));
+                      setEditingType(false);
+                    }}
+                  >
+                    ${typeBadge(t)}
+                    <span class="flex-1">${t}</span>
+                    ${isCurrent &&
+                    html`<${CheckIcon} className="w-3.5 h-3.5 opacity-70" />`}
+                  </button>
+                </li>
+              `;
+            })}
+          </ul>
+        `}
+      </div>`;
+}
+
+export function PriorityField({
+  mode,
+  priority,
+  setPriority,
+  submitting,
+  viewDraft,
+  setViewDraft,
+}) {
+  return mode === "create"
+    ? html` <select
+        id="new-issue-priority"
+        class=${selectClass}
+        value=${priority}
+        onInput=${(e) => setPriority(Number(e.target.value))}
+        disabled=${submitting}
+      >
+        ${Object.entries(PRIORITY_LABELS).map(
+          ([n, label]) => html`<option value=${n}>${label}</option>`,
+        )}
+      </select>`
+    : html` <div class="dropdown">
+        <div
+          tabindex="0"
+          role="button"
+          class="btn btn-ghost btn-xs inline-flex tooltip tooltip-bottom"
+          data-tip="Click to change priority"
+        >
+          ${priorityBadge(viewDraft.priority)}
+        </div>
+        <ul
+          tabindex="0"
+          class="dropdown-content menu mt-1 z-10 bg-base-200 rounded-box shadow-xl min-w-[140px]"
+        >
+          ${Object.entries(PRIORITY_LABELS).map(([n, label]) => {
+            const num = Number(n);
+            const isCurrent = num === viewDraft.priority;
+            return html`
+              <li key=${n}>
+                <button
+                  type="button"
+                  onClick=${(ev) => {
+                    setViewDraft((p) => ({ ...p, priority: num }));
+                    ev.currentTarget.blur();
+                    if (document.activeElement) document.activeElement.blur();
+                  }}
+                >
+                  ${priorityBadge(num)}
+                  <span class="flex-1">${label}</span>
+                  ${isCurrent &&
+                  html`<${CheckIcon} className="w-3.5 h-3.5 opacity-70" />`}
+                </button>
+              </li>
+            `;
+          })}
+        </ul>
+      </div>`;
+}

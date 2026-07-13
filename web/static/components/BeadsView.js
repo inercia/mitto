@@ -46,6 +46,15 @@ import {
   commentBody,
 } from "./beads/CommentBody.js";
 import { labelValue } from "./beads/DetailPanelHelpers.js";
+import {
+  TitleField,
+  TypeField,
+  PriorityField,
+  inputClass,
+  selectClass,
+  textareaClass,
+  labelClass,
+} from "./beads/detail/Fields.js";
 // Re-export statusBadge at its original location so SessionPanel.js
 // (`import { statusBadge as beadsStatusBadge } from "./BeadsView.js"`) keeps
 // working after the move to beads/Badges.js (mitto-90f.3 E-4).
@@ -1351,18 +1360,6 @@ export function BeadsDetailPanel({
   if (!shouldRender) return null;
   if (!creating && !data) return null;
 
-  // daisyUI's .input/.select/.textarea set their corner radius via the logical
-  // longhand border-start-start-radius:var(--radius-field), which a Tailwind
-  // `rounded-*` shorthand utility does NOT override. Some themes set
-  // --radius-field as high as 2rem, turning these edit fields into pills. Pin
-  // --radius-field so edit-mode fields keep the same subtle 0.25rem corners as
-  // the panel's description/notes boxes, regardless of theme.
-  const inputClass = "input input-sm w-full [--radius-field:0.25rem]";
-  const selectClass = "select select-sm w-full [--radius-field:0.25rem]";
-  const textareaClass = "textarea textarea-sm w-full [--radius-field:0.25rem]";
-  // Block label with a small gap so it doesn't sit flush against its field.
-  const labelClass = "label block mb-1";
-
   // Toolbar row rendered directly above the description field. Currently holds
   // the magic-wand "Improve description" button (same UX as the chat input's
   // improve-prompt action); the flex row is structured to take future markdown
@@ -1524,137 +1521,6 @@ export function BeadsDetailPanel({
   `;
 
   // ---- field renderers (close over component state) -------------------------
-
-  const TitleField = (mode) => {
-    if (mode === "create") {
-      return html` <input
-        id="new-issue-title"
-        type="text"
-        class=${inputClass}
-        placeholder="Issue title (optional — auto-generated from description)"
-        value=${title}
-        onInput=${(e) => setTitle(e.target.value)}
-        disabled=${submitting}
-      />`;
-    }
-    return editingTitle
-      ? html` <input
-          ref=${titleRef}
-          type="text"
-          class="${inputClass} font-semibold text-base"
-          value=${viewDraft.title}
-          onInput=${(e) =>
-            setViewDraft((p) => ({ ...p, title: e.target.value }))}
-          onBlur=${() => setEditingTitle(false)}
-          onKeyDown=${handleTitleKeyDown}
-          disabled=${savingView}
-        />`
-      : html` <h2
-          class="font-semibold text-base text-mitto-text wrap-break-word cursor-text rounded px-1 -mx-1 hover:bg-mitto-input-box transition-colors block tooltip tooltip-bottom"
-          onClick=${startEditTitle}
-          data-tip="Click to edit"
-        >
-          ${viewDraft.title}
-        </h2>`;
-  };
-
-  const TypeField = (mode) =>
-    mode === "create"
-      ? html` <select
-          id="new-issue-type"
-          class=${selectClass}
-          value=${type}
-          onInput=${(e) => setType(e.target.value)}
-          disabled=${submitting}
-        >
-          ${ISSUE_TYPES.map((t) => html`<option value=${t}>${t}</option>`)}
-        </select>`
-      : html` <div class="relative" ref=${typeRef}>
-          <button
-            type="button"
-            onClick=${() => setEditingType((o) => !o)}
-            class="btn btn-ghost btn-xs inline-flex tooltip tooltip-bottom"
-            data-tip="Click to change type"
-          >
-            ${typeBadge(viewDraft.type)}
-          </button>
-          ${editingType &&
-          html`
-            <ul
-              class="menu absolute left-0 top-full mt-1 z-10 bg-base-200 rounded-box shadow-xl min-w-[140px]"
-            >
-              ${ISSUE_TYPES.map((t) => {
-                const isCurrent = t === viewDraft.type;
-                return html`
-                  <li key=${t}>
-                    <button
-                      type="button"
-                      onClick=${() => {
-                        setViewDraft((p) => ({ ...p, type: t }));
-                        setEditingType(false);
-                      }}
-                    >
-                      ${typeBadge(t)}
-                      <span class="flex-1">${t}</span>
-                      ${isCurrent &&
-                      html`<${CheckIcon} className="w-3.5 h-3.5 opacity-70" />`}
-                    </button>
-                  </li>
-                `;
-              })}
-            </ul>
-          `}
-        </div>`;
-
-  const PriorityField = (mode) =>
-    mode === "create"
-      ? html` <select
-          id="new-issue-priority"
-          class=${selectClass}
-          value=${priority}
-          onInput=${(e) => setPriority(Number(e.target.value))}
-          disabled=${submitting}
-        >
-          ${Object.entries(PRIORITY_LABELS).map(
-            ([n, label]) => html`<option value=${n}>${label}</option>`,
-          )}
-        </select>`
-      : html` <div class="dropdown">
-          <div
-            tabindex="0"
-            role="button"
-            class="btn btn-ghost btn-xs inline-flex tooltip tooltip-bottom"
-            data-tip="Click to change priority"
-          >
-            ${priorityBadge(viewDraft.priority)}
-          </div>
-          <ul
-            tabindex="0"
-            class="dropdown-content menu mt-1 z-10 bg-base-200 rounded-box shadow-xl min-w-[140px]"
-          >
-            ${Object.entries(PRIORITY_LABELS).map(([n, label]) => {
-              const num = Number(n);
-              const isCurrent = num === viewDraft.priority;
-              return html`
-                <li key=${n}>
-                  <button
-                    type="button"
-                    onClick=${(ev) => {
-                      setViewDraft((p) => ({ ...p, priority: num }));
-                      ev.currentTarget.blur();
-                      if (document.activeElement) document.activeElement.blur();
-                    }}
-                  >
-                    ${priorityBadge(num)}
-                    <span class="flex-1">${label}</span>
-                    ${isCurrent &&
-                    html`<${CheckIcon} className="w-3.5 h-3.5 opacity-70" />`}
-                  </button>
-                </li>
-              `;
-            })}
-          </ul>
-        </div>`;
 
   // DescriptionField is self-contained (includes label + wrapper) to avoid
   // Fragment-induced CodeMirror remount cycles.
@@ -2059,7 +1925,12 @@ ${viewDraft.description}</pre
             ${
               creating
                 ? html`<${Fragment}>
-                  ${TitleField("create")}
+                  <${TitleField}
+                    mode="create"
+                    title=${title}
+                    setTitle=${setTitle}
+                    submitting=${submitting}
+                  />
                   ${createParentId ? html`<div class="font-mono text-xs text-mitto-text-secondary">in ${createParentId}</div>` : null}
                 </${Fragment}>`
                 : html`
@@ -2113,9 +1984,19 @@ ${viewDraft.description}</pre
             <${Fragment}>
               <div class="flex flex-wrap gap-2 items-center">
                 <span class="${labelClass} shrink-0">Type</span>
-                ${TypeField("create")}
+                <${TypeField}
+                  mode="create"
+                  type=${type}
+                  setType=${setType}
+                  submitting=${submitting}
+                />
                 <span class="${labelClass} shrink-0">Priority</span>
-                ${PriorityField("create")}
+                <${PriorityField}
+                  mode="create"
+                  priority=${priority}
+                  setPriority=${setPriority}
+                  submitting=${submitting}
+                />
               </div>
 
               <div class="grid grid-cols-2 gap-3">
@@ -2161,8 +2042,19 @@ ${viewDraft.description}</pre
           `
             : html`
                 <div class="flex flex-wrap gap-2 items-center">
-                  ${TypeField("view")} ${statusBadge(data.status)}
-                  ${PriorityField("view")}
+                  <${TypeField}
+                    mode="view"
+                    viewDraft=${viewDraft}
+                    setViewDraft=${setViewDraft}
+                    editingType=${editingType}
+                    setEditingType=${setEditingType}
+                    typeRef=${typeRef}
+                  /> ${statusBadge(data.status)}
+                  <${PriorityField}
+                    mode="view"
+                    viewDraft=${viewDraft}
+                    setViewDraft=${setViewDraft}
+                  />
                 </div>
 
                 <div class="grid grid-cols-2 gap-3">
@@ -2338,7 +2230,17 @@ ${viewDraft.description}</pre
                         `}
                   </div>
                 </div>
-                ${TitleField("view")} ${DescriptionField("view")}
+                <${TitleField}
+                  mode="view"
+                  viewDraft=${viewDraft}
+                  setViewDraft=${setViewDraft}
+                  editingTitle=${editingTitle}
+                  setEditingTitle=${setEditingTitle}
+                  titleRef=${titleRef}
+                  savingView=${savingView}
+                  handleTitleKeyDown=${handleTitleKeyDown}
+                  startEditTitle=${startEditTitle}
+                /> ${DescriptionField("view")}
                 ${subtasks.length > 0 &&
                 html`
                   <fieldset class="fieldset min-w-0">
