@@ -40,12 +40,7 @@ import {
 
 import { playAgentCompletedSound } from "../utils/audio.js";
 
-import {
-  secureFetch,
-  authFetch,
-  checkAuth,
-  redirectToLogin,
-} from "../utils/csrf.js";
+import { secureFetch, authFetch, checkAuth } from "../utils/csrf.js";
 
 import { getApiPrefix } from "../utils/api.js";
 import { endpoints } from "../utils/index.js";
@@ -64,6 +59,8 @@ import {
   checkSessionExists,
   isTerminalSessionError,
   isReusedConversationResponse,
+  checkAuthOrRedirect,
+  checkAuthWithRetry,
 } from "../utils/websocket.js";
 
 // =============================================================================
@@ -155,123 +152,6 @@ function getKeepaliveInterval() {
   return isNativeApp()
     ? KEEPALIVE_INTERVAL_NATIVE_MS
     : KEEPALIVE_INTERVAL_BROWSER_MS;
-}
-
-// In-flight Promise for auth-check deduplication.
-// When several WebSocket sessions reconnect simultaneously they each call
-// checkAuthOrRedirect().  Without deduplication every session fires its own
-// raw GET /api/config, creating a mini fetching storm on every reconnect event.
-// Sharing a single in-flight Promise collapses N concurrent calls into one
-// HTTP round-trip.  The Promise resolves to { status, ok } (plain values, not
-// the Response object) so it can safely be awaited by multiple callers.
-let _authCheckInflight = null;
-
-/**
- * Quick authentication check before WebSocket reconnection.
- * If auth is invalid (401), redirects to login page and never returns.
- * For network errors or server errors, returns true to allow reconnection to proceed
- * (the WebSocket reconnect will handle retries with exponential backoff).
- *
- * Concurrent callers share a single in-flight HTTP request to avoid a fetch
- * storm when multiple sessions reconnect at the same time.
- *
- * @returns {Promise<boolean>} Always returns true. On 401, redirects and never returns.
- *                             Network/server errors also return true to allow reconnection.
- */
-async function checkAuthOrRedirect() {
-  // Deduplicate: if an auth check is already in-flight, share that Promise
-  // rather than firing a fresh HTTP request for each concurrent caller.
-  if (!_authCheckInflight) {
-    // authFetch sends credentials: "include" (cross-origin / Tailscale safe) and
-    // routes 401s through the shared handleUnauthorized → redirectToLogin().
-    _authCheckInflight = authFetch(endpoints.config.get())
-      .then((res) => ({ status: res.status, ok: res.ok }))
-      .finally(() => {
-        _authCheckInflight = null;
-      });
-  }
-  try {
-    const { status, ok } = await _authCheckInflight;
-
-    if (status === 401) {
-      // Session expired — redirect to login and stall forever.
-      console.warn("Session expired or invalid, redirecting to login...");
-      redirectToLogin();
-      return new Promise(() => {});
-    }
-    // If we got here, auth is valid (200) or there's a server error (5xx).
-    // Either way, let reconnection proceed — the WebSocket will retry with backoff.
-    if (!ok) {
-      console.warn(
-        `Auth check returned status ${status}, allowing reconnection to proceed`,
-      );
-    }
-    return true;
-  } catch (err) {
-    // Network error - let reconnection proceed.
-    // The WebSocket reconnection will naturally retry with exponential backoff.
-    console.warn(
-      "Auth check network error, allowing reconnection to proceed:",
-      err.message,
-    );
-    return true;
-  }
-}
-
-/**
- * Check authentication with retry logic for network errors.
- * After prolonged phone sleep, the network may take a moment to recover.
- * This function retries a few times before giving up.
- *
- * @param {number} maxRetries - Maximum number of retries (default: 3)
- * @param {number} retryDelay - Delay between retries in ms (default: 500)
- * @returns {Promise<{authenticated: boolean, networkError: boolean}>}
- *   - authenticated: true if the session is valid
- *   - networkError: true if all retries failed due to network errors
- */
-async function checkAuthWithRetry(maxRetries = 3, retryDelay = 500) {
-  for (let attempt = 0; attempt <= maxRetries; attempt++) {
-    try {
-      // authFetch sends credentials: "include" (cross-origin / Tailscale safe) and
-      // routes 401s through the shared handleUnauthorized → redirectToLogin().
-      const response = await authFetch(endpoints.config.get());
-
-      // Got a response - check if authenticated
-      if (response.status === 401) {
-        console.log(
-          "Auth check: session expired or invalid (401), redirecting to login",
-        );
-        redirectToLogin();
-        return { authenticated: false, networkError: false };
-      }
-
-      if (response.ok) {
-        return { authenticated: true, networkError: false };
-      }
-
-      // Other error status - treat as auth failure if persistent
-      console.warn(`Auth check returned status ${response.status}`);
-      if (attempt < maxRetries) {
-        await new Promise((r) => setTimeout(r, retryDelay));
-        continue;
-      }
-      return { authenticated: false, networkError: false };
-    } catch (err) {
-      // Network error - retry if we have attempts left
-      console.warn(
-        `Auth check network error (attempt ${attempt + 1}/${maxRetries + 1}):`,
-        err.message,
-      );
-      if (attempt < maxRetries) {
-        await new Promise((r) => setTimeout(r, retryDelay));
-        continue;
-      }
-      // All retries exhausted
-      return { authenticated: false, networkError: true };
-    }
-  }
-  // Should not reach here
-  return { authenticated: false, networkError: true };
 }
 
 /**
