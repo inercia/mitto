@@ -23,7 +23,7 @@
 
 const { useState, useEffect, useCallback, useRef } = window.preact;
 
-import { secureFetch } from "../../../utils/api.js";
+import { secureFetch } from "../../../utils/csrf.js";
 import { endpoints } from "../../../utils/endpoints.js";
 import { readBeadsResponse } from "../../../utils/beads.js";
 
