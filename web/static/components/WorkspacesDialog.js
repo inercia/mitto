@@ -18,6 +18,7 @@ import { getWorkspaceVisualInfo, getBasename } from "../lib.js";
 import { useBeadsFolderConfig } from "../hooks/useBeadsFolderConfig.js";
 import { useFolderPromptsConfig } from "../hooks/useFolderPromptsConfig.js";
 import { useFolderProcessorsConfig } from "../hooks/useFolderProcessorsConfig.js";
+import { useFolderShortcutsConfig } from "../hooks/useFolderShortcutsConfig.js";
 
 import {
   SpinnerIcon,
@@ -38,7 +39,6 @@ import { WorkspaceBadge } from "./WorkspaceBadge.js";
 
 import { WorkspaceEditor } from "./WorkspaceEditor.js";
 import { WorkspaceFolderEditor } from "./WorkspaceFolderEditor.js";
-import { promptMenuIncludes } from "../utils/prompts.js";
 
 // Section descriptors for the folder Shortcuts tab. Section IDs match those
 // persisted on the server (folders.json) and used by the render-time toolbars.
@@ -190,22 +190,8 @@ export function WorkspacesDialog({
   // hook (invoked below, after groupedWorkspaces is defined so its dep array
   // is honored).
 
-  // Folder shortcuts state (for the Shortcuts tab)
-  const [shortcutsSections, setShortcutsSections] = useState({});
-  const [shortcutsLoading, setShortcutsLoading] = useState(false);
-  const [shortcutsLoaded, setShortcutsLoaded] = useState(false);
-  const [shortcutsError, setShortcutsError] = useState("");
-  // Per-section prompt lists, filtered by the section's prompt menu tag and
-  // sorted by name. Section ids match those persisted on the server side.
-  const [sectionPrompts, setSectionPrompts] = useState({
-    tasksList: [],
-    conversations: [],
-    beadsIssue: [],
-  });
-  // Global shortcut sections (from settings.json). Used only to derive which
-  // prompts are already configured globally so they can be excluded from the
-  // folder-level dropdowns and any duplicate folder rows greyed out.
-  const [globalShortcutsSections, setGlobalShortcutsSections] = useState({});
+  // Folder Shortcuts tab state + handlers moved to useFolderShortcutsConfig
+  // hook (invoked below, alongside the other folder-tab hooks).
 
   // Confirmation dialog state: { message, title, confirmLabel, confirmVariant, onConfirm }
   const [confirmDialog, setConfirmDialog] = useState(null);
@@ -332,6 +318,25 @@ export function WorkspacesDialog({
         return folderGroup?.workspaces[0]?.uuid || null;
       },
       setError,
+    });
+
+  // Folder Shortcuts tab state + handlers. Owns the 6 shortcut state pairs,
+  // the tab-open load effect and folder-switch reset effect, the four row
+  // mutators, the persistShortcuts save action, and the memoized redundant-
+  // prompt-names map. Shell forwards the grouped {shortcuts, shortcutsHandlers}
+  // objects to WorkspaceFolderEditor; shortcutsLoaded / persistShortcuts are
+  // consumed by handleSave.
+  const { shortcuts, shortcutsHandlers, shortcutsLoaded, persistShortcuts } =
+    useFolderShortcutsConfig({
+      selectedFolder,
+      activeTab,
+      getSelectedFolderDir: () => {
+        const folderGroup = groupedWorkspaces.find(
+          (g) => g.displayName === selectedFolder,
+        );
+        return folderGroup?.workspaces[0]?.working_dir || null;
+      },
+      shortcutSections: SHORTCUT_SECTIONS,
     });
 
   // Initialize folder expansion state from localStorage when the dialog opens
@@ -573,57 +578,8 @@ export function WorkspacesDialog({
     // ReferenceError since the deps array is evaluated during render.
   }, [activeTab, selectedWorkspaceKey, editAcpServer]);
 
-  // Lazily load shortcuts when the Shortcuts folder tab is opened.
-  useEffect(() => {
-    if (activeTab !== "shortcuts" || !selectedFolder) return;
-    const workingDir = getSelectedFolderDir();
-    if (!workingDir) return;
-    setShortcutsLoading(true);
-    setShortcutsError("");
-    Promise.all([
-      authFetch(endpoints.folders.shortcuts({ working_dir: workingDir }))
-        .then((r) => r.json())
-        .then((data) => setShortcutsSections(data.sections || {})),
-      // Global shortcuts: prompts already configured here are excluded from the
-      // folder dropdowns (and any duplicate folder rows are greyed out).
-      authFetch(endpoints.global.shortcuts())
-        .then((r) => r.json())
-        .then((data) => setGlobalShortcutsSections(data.sections || {}))
-        .catch(() => setGlobalShortcutsSections({})),
-      authFetch(
-        endpoints.workspacePrompts.list({
-          working_dir: workingDir,
-          include_global: true,
-        }),
-      )
-        .then((r) => r.json())
-        .then((data) => {
-          const all = data.prompts || [];
-          const byMenu = (menu) =>
-            all
-              .filter((p) => promptMenuIncludes(p, menu))
-              .sort((a, b) => a.name.localeCompare(b.name));
-          setSectionPrompts({
-            tasksList: byMenu("beadsList"),
-            conversations: byMenu("prompts"),
-            beadsIssue: byMenu("beadsIssues"),
-          });
-        }),
-    ])
-      .then(() => setShortcutsLoaded(true))
-      .catch((err) =>
-        setShortcutsError("Failed to load shortcuts: " + err.message),
-      )
-      .finally(() => setShortcutsLoading(false));
-  }, [activeTab, selectedFolder]);
-
-  // Reset shortcuts state when switching folders.
-  useEffect(() => {
-    setShortcutsSections({});
-    setSectionPrompts({ tasksList: [], conversations: [], beadsIssue: [] });
-    setShortcutsError("");
-    setShortcutsLoaded(false);
-  }, [selectedFolder]);
+  // Folder Shortcuts tab: load effect + folder-switch reset effect moved to
+  // useFolderShortcutsConfig hook (invoked above).
 
   const loadData = async () => {
     // Reset the flush tracker so stale edit-field values from a previous dialog
@@ -1546,111 +1502,9 @@ export function WorkspacesDialog({
     return getUnusedServer(firstWs.working_dir, null) !== null;
   }, [selectedFolder, groupedWorkspaces, workspaces, acpServers]);
 
-  // Helper to get the first workspace dir for the selected folder
-  const getSelectedFolderDir = () => {
-    const folderGroup = groupedWorkspaces.find(
-      (g) => g.displayName === selectedFolder,
-    );
-    return folderGroup?.workspaces[0]?.working_dir || null;
-  };
-
-  // ------ Shortcuts tab helpers -----------------------------------------------
-
-  // Immutably update a row in the given section.
-  const updateShortcutRow = (section, idx, patch) => {
-    setShortcutsSections((prev) => {
-      const list = [...(prev[section] || [])];
-      list[idx] = { ...list[idx], ...patch };
-      return { ...prev, [section]: list };
-    });
-  };
-
-  // Remove a row from the given section.
-  const removeShortcutRow = (section, idx) => {
-    setShortcutsSections((prev) => {
-      const list = [...(prev[section] || [])];
-      list.splice(idx, 1);
-      return { ...prev, [section]: list };
-    });
-  };
-
-  // Move a row up (dir=-1) or down (dir=1) within the given section.
-  const moveShortcutRow = (section, idx, dir) => {
-    setShortcutsSections((prev) => {
-      const list = [...(prev[section] || [])];
-      const target = idx + dir;
-      if (target < 0 || target >= list.length) return prev;
-      [list[idx], list[target]] = [list[target], list[idx]];
-      return { ...prev, [section]: list };
-    });
-  };
-
-  // Append a new row to the given section, seeded with sensible defaults so it
-  // renders as a complete, usable shortcut right away.
-  const addShortcutRow = (section) => {
-    // Default the prompt to the first available prompt for this section (if any)
-    // so the row is immediately editable rather than showing an empty selector.
-    const available = sectionPrompts[section] || [];
-    const defaultPrompt = available.length > 0 ? available[0].name : "";
-    setShortcutsSections((prev) => {
-      const list = [...(prev[section] || [])];
-      if (list.length >= 10) return prev;
-      // Empty icon → fall back to the linked prompt's own icon at render time.
-      list.push({ icon: "", prompt: defaultPrompt });
-      return { ...prev, [section]: list };
-    });
-  };
-
-  // Persist the shortcuts sections via PUT /api/folders/shortcuts.
-  // Throws on failure; updates local state on success. Invoked by the
-  // dialog footer Save (handleSave).
-  const persistShortcuts = async () => {
-    const workingDir = getSelectedFolderDir();
-    if (!workingDir) return;
-    // Build all sections: drop rows with empty prompt, cap to 10 per section.
-    const sections = {};
-    for (const id of ["tasksList", "conversations", "beadsIssue"]) {
-      sections[id] = (shortcutsSections[id] || [])
-        .filter((r) => r.prompt)
-        .slice(0, 10);
-    }
-    const res = await secureFetch(
-      endpoints.folders.shortcuts({ working_dir: workingDir }),
-      {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ sections }),
-      },
-    );
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok)
-      throw new Error(errorMessageFromData(data, "Failed to save shortcuts"));
-    setShortcutsSections(data.sections || {});
-    // Notify any open Tasks list (BeadsView) so its shortcut buttons refresh
-    // immediately, without requiring a full page reload.
-    window.dispatchEvent(
-      new CustomEvent("mitto:folder_shortcuts_updated", {
-        detail: { working_dir: workingDir },
-      }),
-    );
-  };
-
-  // Per-section set of prompt names configured at the GLOBAL level. Folder rows
-  // referencing these are greyed out and the prompts are excluded from the
-  // folder-level dropdowns (they are already shown via the global shortcuts).
-  const shortcutRedundantPromptNames = useMemo(() => {
-    const out = {};
-    for (const { id } of SHORTCUT_SECTIONS) {
-      out[id] = new Set(
-        (globalShortcutsSections[id] || [])
-          .map((r) => r.prompt)
-          .filter(Boolean),
-      );
-    }
-    return out;
-  }, [globalShortcutsSections]);
-
-  // ---------------------------------------------------------------------------
+  // Folder Shortcuts tab: load/reset effects, row mutators, persistShortcuts
+  // and the redundant-prompt-names memo moved to useFolderShortcutsConfig
+  // (called near the top of this component).
 
   // Folder Processors tab: load effect + reload/toggle/save handlers moved to
   // useFolderProcessorsConfig (called near the top of this component).
@@ -1978,15 +1832,8 @@ export function WorkspacesDialog({
                 processors=${processors}
                 processorsSetters=${processorsSetters}
                 processorsHandlers=${processorsHandlers}
-                shortcutsSections=${shortcutsSections}
-                sectionPrompts=${sectionPrompts}
-                shortcutsLoading=${shortcutsLoading}
-                shortcutsError=${shortcutsError}
-                shortcutRedundantPromptNames=${shortcutRedundantPromptNames}
-                addShortcutRow=${addShortcutRow}
-                updateShortcutRow=${updateShortcutRow}
-                removeShortcutRow=${removeShortcutRow}
-                moveShortcutRow=${moveShortcutRow}
+                shortcuts=${shortcuts}
+                shortcutsHandlers=${shortcutsHandlers}
               />`
             : !selectedWorkspace
               ? html`<div

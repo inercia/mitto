@@ -98,16 +98,9 @@ function renderFolderEditor({
   processors,
   processorsSetters,
   processorsHandlers,
-  // Shortcuts tab
-  shortcutsSections,
-  sectionPrompts,
-  shortcutsLoading,
-  shortcutsError,
-  shortcutRedundantPromptNames,
-  addShortcutRow,
-  updateShortcutRow,
-  removeShortcutRow,
-  moveShortcutRow,
+  // Shortcuts tab (grouped state/handlers from useFolderShortcutsConfig)
+  shortcuts,
+  shortcutsHandlers,
 }) {
   const folderGroup = groupedWorkspaces.find(
     (g) => g.displayName === selectedFolder,
@@ -893,15 +886,15 @@ function renderFolderEditor({
                         <div class="space-y-4">
                           <${ShortcutsEditor}
                             sections=${SHORTCUT_SECTIONS}
-                            shortcutsSections=${shortcutsSections}
-                            sectionPrompts=${sectionPrompts}
-                            loading=${shortcutsLoading}
-                            error=${shortcutsError}
-                            redundantPromptNames=${shortcutRedundantPromptNames}
-                            onAdd=${addShortcutRow}
-                            onUpdate=${updateShortcutRow}
-                            onRemove=${removeShortcutRow}
-                            onMove=${moveShortcutRow}
+                            shortcutsSections=${shortcuts.shortcutsSections}
+                            sectionPrompts=${shortcuts.sectionPrompts}
+                            loading=${shortcuts.shortcutsLoading}
+                            error=${shortcuts.shortcutsError}
+                            redundantPromptNames=${shortcuts.shortcutRedundantPromptNames}
+                            onAdd=${shortcutsHandlers.addShortcutRow}
+                            onUpdate=${shortcutsHandlers.updateShortcutRow}
+                            onRemove=${shortcutsHandlers.removeShortcutRow}
+                            onMove=${shortcutsHandlers.moveShortcutRow}
                           />
                         </div>
                       `
