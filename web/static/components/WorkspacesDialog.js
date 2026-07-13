@@ -13,9 +13,10 @@ import {
   openExternalURL,
 } from "../utils/index.js";
 
-import { getWorkspaceVisualInfo, getBasename } from "../lib.js";
+import { getBasename } from "../lib.js";
 
 import { useBeadsFolderConfig } from "../hooks/useBeadsFolderConfig.js";
+import { useFolderGeneralEdits } from "../hooks/useFolderGeneralEdits.js";
 import { useFolderPromptsConfig } from "../hooks/useFolderPromptsConfig.js";
 import { useFolderProcessorsConfig } from "../hooks/useFolderProcessorsConfig.js";
 import { useFolderShortcutsConfig } from "../hooks/useFolderShortcutsConfig.js";
@@ -118,10 +119,6 @@ export function WorkspacesDialog({
   // Per-folder expansion state in the tree, keyed by folder display name. Defaults to expanded.
   const [expandedFolders, setExpandedFolders] = useState({});
 
-  const [editName, setEditName] = useState("");
-  const [editCode, setEditCode] = useState("");
-  const [editColor, setEditColor] = useState("");
-  const [editGroup, setEditGroup] = useState("");
   const [editAcpServer, setEditAcpServer] = useState("");
   const [editAuxModelProfile, setEditAuxModelProfile] = useState("");
   const [editAuxModelTag, setEditAuxModelTag] = useState("");
@@ -139,7 +136,6 @@ export function WorkspacesDialog({
   const [editAutoApprove, setEditAutoApprove] = useState(false);
   const [editIsDefault, setEditIsDefault] = useState(false);
   const [editAcpCommandOverride, setEditAcpCommandOverride] = useState("");
-  const [editAutoChildren, setEditAutoChildren] = useState([]);
   const [effectiveConfig, setEffectiveConfig] = useState(null);
 
   const [mcpTools, setMcpTools] = useState(null);
@@ -338,6 +334,14 @@ export function WorkspacesDialog({
       groupedWorkspaces,
     });
 
+  // Folder General tab state + helpers. Owns the 5 header edit fields
+  // (name/code/color/group/auto-children), the folder-selection populate
+  // effect, the group suggestions memo, and applyFolderEdits used by
+  // handleSave. Shell forwards grouped {edits, editSetters} to
+  // WorkspaceFolderEditor.
+  const { edits, editSetters, folderGroupSuggestions, applyFolderEdits } =
+    useFolderGeneralEdits({ selectedFolder, groupedWorkspaces, workspaces });
+
   // Initialize folder expansion state from localStorage when the dialog opens
   // or when the set of folders changes.
   useEffect(() => {
@@ -408,18 +412,6 @@ export function WorkspacesDialog({
       ? null
       : `Custom (legacy): ${rawAuxModelConstraint.matchMode} ${rawAuxModelConstraint.pattern}`;
   }, [editAuxModelProfile, rawAuxModelConstraint, modelProfiles]);
-
-  // Unique folder groups across all workspaces, used to suggest existing groups
-  // (so users can unify on the same label). Includes the value currently being
-  // edited so a freshly-typed group also appears in the list.
-  const folderGroupSuggestions = useMemo(() => {
-    const set = new Set();
-    workspaces.forEach((ws) => {
-      if (ws.group && ws.group.trim()) set.add(ws.group.trim());
-    });
-    if (editGroup && editGroup.trim()) set.add(editGroup.trim());
-    return Array.from(set).sort((a, b) => a.localeCompare(b));
-  }, [workspaces, editGroup]);
 
   useEffect(() => {
     if (isOpen) {
@@ -504,29 +496,16 @@ export function WorkspacesDialog({
     }
   }, [selectedWorkspaceKey]);
 
-  // When a folder is selected, populate folder-level edit fields from the first workspace in the group
+  // When a folder is selected, apply the pending initial tab (from
+  // initialWorkingDir auto-select) or default to "general". Header-field
+  // populate is owned by useFolderGeneralEdits; metadata reset + reload is
+  // owned by useFolderMetadataConfig (both fire on the same [selectedFolder]
+  // dep).
   useEffect(() => {
     if (!selectedFolder) return;
-    const folderGroup = groupedWorkspaces.find(
-      (g) => g.displayName === selectedFolder,
-    );
-    const firstWs = folderGroup?.workspaces[0];
-    if (!firstWs) return;
-    setEditName(firstWs.name || "");
-    setEditCode(firstWs.code || "");
-    setEditGroup(firstWs.group || "");
-    setEditColor(
-      firstWs.color ||
-        getWorkspaceVisualInfo(firstWs.working_dir).color.backgroundHex ||
-        "#808080",
-    );
-    setEditAutoChildren(firstWs.auto_children || []);
-    // Apply a pending initial tab (from initialWorkingDir auto-select), else default to general.
     const pendingTab = pendingInitialTabRef.current;
     pendingInitialTabRef.current = null;
     setActiveTab(pendingTab || "general");
-    // Metadata reset + reload is owned by useFolderMetadataConfig (fires on
-    // the same [selectedFolder] dep).
   }, [selectedFolder]);
 
   useEffect(() => {
@@ -624,19 +603,6 @@ export function WorkspacesDialog({
     } finally {
       setLoading(false);
     }
-  };
-
-  // Apply folder-level edits (name, code, color, children) to all workspaces in the same folder
-  const applyFolderEdits = (ws, folderWorkingDir) => {
-    if (ws.working_dir !== folderWorkingDir) return ws;
-    return {
-      ...ws,
-      name: editName || undefined,
-      code: (editCode || "").toUpperCase().slice(0, 3) || undefined,
-      color: editColor || undefined,
-      group: editGroup.trim() || undefined,
-      auto_children: editAutoChildren.length > 0 ? editAutoChildren : undefined,
-    };
   };
 
   const loadMcpTools = useCallback(async (acpServer, uuid) => {
@@ -1524,16 +1490,8 @@ export function WorkspacesDialog({
                 newFolderKey=${newFolderKey}
                 getWorkspaceKey=${getWorkspaceKey}
                 modelProfiles=${modelProfiles}
-                editName=${editName}
-                setEditName=${setEditName}
-                editCode=${editCode}
-                setEditCode=${setEditCode}
-                editColor=${editColor}
-                setEditColor=${setEditColor}
-                editGroup=${editGroup}
-                setEditGroup=${setEditGroup}
-                editAutoChildren=${editAutoChildren}
-                setEditAutoChildren=${setEditAutoChildren}
+                edits=${edits}
+                editSetters=${editSetters}
                 folderGroupSuggestions=${folderGroupSuggestions}
                 metadata=${metadata}
                 metadataSetters=${metadataSetters}

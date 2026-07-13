@@ -65,17 +65,9 @@ function renderFolderEditor({
   newFolderKey,
   getWorkspaceKey,
   modelProfiles,
-  // Folder header edit fields (owned by shell, still driven by handleSave)
-  editName,
-  setEditName,
-  editCode,
-  setEditCode,
-  editColor,
-  setEditColor,
-  editGroup,
-  setEditGroup,
-  editAutoChildren,
-  setEditAutoChildren,
+  // Folder header edit fields (grouped state/setters from useFolderGeneralEdits)
+  edits,
+  editSetters,
   folderGroupSuggestions,
   // Metadata tab (grouped state/setters from useFolderMetadataConfig)
   metadata,
@@ -96,6 +88,14 @@ function renderFolderEditor({
   shortcuts,
   shortcutsHandlers,
 }) {
+  const { editName, editCode, editColor, editGroup, editAutoChildren } = edits;
+  const {
+    setEditName,
+    setEditCode,
+    setEditColor,
+    setEditGroup,
+    setEditAutoChildren,
+  } = editSetters;
   const folderGroup = groupedWorkspaces.find(
     (g) => g.displayName === selectedFolder,
   );
