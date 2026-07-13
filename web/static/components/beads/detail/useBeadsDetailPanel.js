@@ -24,6 +24,7 @@ import { renderMarkdown } from "../CommentBody.js";
 import { buildPromptGroupMenuItems } from "../../ContextMenu.js";
 import { useIssueLabels } from "./useIssueLabels.js";
 import { useIssueComments } from "./useIssueComments.js";
+import { useCreateMode } from "./useCreateMode.js";
 import {
   PlusIcon,
   CheckIcon,
@@ -100,17 +101,20 @@ export function useBeadsDetailPanel({
   const creating = isOpen ? isCreating : lastCreatingRef.current;
   const data = issue || lastIssueRef.current;
 
-  // Create-mode form state.
-  const [title, setTitle] = useState("");
-  const [type, setType] = useState("task");
-  const [priority, setPriority] = useState(2); // 2 = Medium
-  const [description, setDescription] = useState("");
-  const [submitting, setSubmitting] = useState(false);
-  const [createDeps, setCreateDeps] = useState([]);
-  const [createNewDepType, setCreateNewDepType] = useState("blocks");
-  const [createNewDepId, setCreateNewDepId] = useState("");
-  const [createAssignee, setCreateAssignee] = useState("");
-  const [createNotes, setCreateNotes] = useState("");
+  // Create-mode form state + submit handler now live in useCreateMode
+  // (mitto-90f.7 PR-14). Sub-hook call placed at the original position of
+  // the create-state block to preserve hook-order. The composer re-exposes
+  // the sub-hook return in the `create` bundle and flattens description /
+  // submitting / createEditorApiRef / handleSave to satisfy PanelBody's
+  // existing top-level prop consumption.
+  const create = useCreateMode({
+    isCreating,
+    createParentId,
+    workingDir,
+    showToast,
+    onCreated,
+    onClose,
+  });
 
   // Magic-wand "Improve description" state. Mirrors ChatInput's improve-prompt
   // flow but targets the create-form description. `improvingDesc` gates the
@@ -130,8 +134,7 @@ export function useBeadsDetailPanel({
   const [descMinHeight, setDescMinHeight] = useState(0);
   const detailEditorApiRef = useRef(null);
   const descViewRef = useRef(null);
-  // Imperative handle for the create-form's description CodeMirror editor.
-  const createEditorApiRef = useRef(null);
+  // createEditorApiRef moved into useCreateMode (mitto-90f.7 PR-14).
 
   // View-mode inline title editing.
   const [editingTitle, setEditingTitle] = useState(false);
@@ -213,21 +216,7 @@ export function useBeadsDetailPanel({
   const notesRef = useRef(null);
   const notesViewRef = useRef(null);
 
-  // Reset the form whenever create mode is (re)entered.
-  useEffect(() => {
-    if (isCreating) {
-      setTitle("");
-      setType("task");
-      setPriority(2);
-      setDescription("");
-      setSubmitting(false);
-      setCreateDeps([]);
-      setCreateNewDepType("blocks");
-      setCreateNewDepId("");
-      setCreateAssignee("");
-      setCreateNotes("");
-    }
-  }, [isCreating]);
+  // Create-mode form reset effect moved into useCreateMode (mitto-90f.7 PR-14).
 
   // Close the type dropdown on outside click while it is open.
   useEffect(() => {
@@ -271,75 +260,9 @@ export function useBeadsDetailPanel({
     }
   }, [isOpen]);
 
-  const handleSave = useCallback(async () => {
-    if (!description.trim()) return;
-    setSubmitting(true);
-    try {
-      const body = { type, priority, description: description.trim() };
-      if (title.trim()) body.title = title.trim();
-      if (createParentId) body.parent = createParentId;
-      if (createAssignee.trim()) body.assignee = createAssignee.trim();
-      if (createNotes.trim()) body.notes = createNotes.trim();
-      if (createDeps.length)
-        body.dependencies = createDeps.map((d) => ({
-          id: d.id,
-          type: d.type || "blocks",
-        }));
-      const res = await secureFetch(
-        endpoints.issues.create({ working_dir: workingDir }),
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(body),
-        },
-      );
-      const respData = await readBeadsResponse(res);
-      if (!res.ok || respData.error) {
-        showToast &&
-          showToast({
-            style: "error",
-            title: respData.error || "Failed to create issue",
-          });
-      } else {
-        showToast && showToast({ style: "success", title: "Issue created" });
-        onCreated && onCreated();
-        onClose && onClose();
-      }
-    } catch (err) {
-      showToast &&
-        showToast({
-          style: "error",
-          title: err.message || "Failed to create issue",
-        });
-    } finally {
-      setSubmitting(false);
-    }
-  }, [
-    workingDir,
-    title,
-    type,
-    priority,
-    description,
-    createParentId,
-    createAssignee,
-    createNotes,
-    createDeps,
-    showToast,
-    onCreated,
-    onClose,
-  ]);
-
-  const addCreateDep = useCallback(() => {
-    const id = createNewDepId.trim();
-    if (!id) return;
-    if (createDeps.some((d) => d.id === id)) return;
-    setCreateDeps((prev) => [...prev, { id, type: createNewDepType }]);
-    setCreateNewDepId("");
-  }, [createNewDepId, createNewDepType, createDeps]);
-
-  const removeCreateDep = useCallback((id) => {
-    setCreateDeps((prev) => prev.filter((d) => d.id !== id));
-  }, []);
+  // handleSave (create submit), addCreateDep, and removeCreateDep now live in
+  // useCreateMode (mitto-90f.7 PR-14). Access via `create.handleSave` /
+  // `create.addCreateDep` / `create.removeCreateDep`.
 
   // AI-enhance a description text field via the same auxiliary endpoint the chat
   // input's magic wand uses (/api/aux/improve-prompt). Works on any
@@ -1097,12 +1020,12 @@ export function useBeadsDetailPanel({
     fullscreen,
     setFullscreen,
     createParentId,
-    submitting,
+    submitting: create.submitting,
     viewDirty,
     savingView,
-    description,
-    setDescription,
-    createEditorApiRef,
+    description: create.description,
+    setDescription: create.setDescription,
+    createEditorApiRef: create.createEditorApiRef,
     detailEditorApiRef,
     descMinHeight,
     descViewRef,
@@ -1115,26 +1038,7 @@ export function useBeadsDetailPanel({
     onSelectIssue,
     showToast,
     // Bundles (7)
-    create: {
-      title,
-      setTitle,
-      type,
-      setType,
-      priority,
-      setPriority,
-      createAssignee,
-      setCreateAssignee,
-      createDeps,
-      setCreateDeps,
-      removeCreateDep,
-      createNewDepType,
-      setCreateNewDepType,
-      createNewDepId,
-      setCreateNewDepId,
-      addCreateDep,
-      createNotes,
-      setCreateNotes,
-    },
+    create,
     view: {
       viewDraft,
       setViewDraft,
@@ -1171,7 +1075,7 @@ export function useBeadsDetailPanel({
     comments,
     handlers: {
       handleClose,
-      handleSave,
+      handleSave: create.handleSave,
       handleViewSave,
       handleDiscardAndClose,
       handleTitleKeyDown,
