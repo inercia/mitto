@@ -19,6 +19,7 @@ import { useBeadsFolderConfig } from "../hooks/useBeadsFolderConfig.js";
 import { useFolderPromptsConfig } from "../hooks/useFolderPromptsConfig.js";
 import { useFolderProcessorsConfig } from "../hooks/useFolderProcessorsConfig.js";
 import { useFolderShortcutsConfig } from "../hooks/useFolderShortcutsConfig.js";
+import { useFolderMetadataConfig } from "../hooks/useFolderMetadataConfig.js";
 
 import {
   SpinnerIcon,
@@ -175,13 +176,10 @@ export function WorkspacesDialog({
   // Track whether a folder group (not a workspace) is selected
   const [selectedFolder, setSelectedFolder] = useState(null);
 
-  // Workspace metadata loaded from .mittorc (description, url)
-  const [folderMetadata, setFolderMetadata] = useState(null);
-  const [metadataLoading, setMetadataLoading] = useState(false);
-  const [editMetaDescription, setEditMetaDescription] = useState("");
-  const [editMetaUrl, setEditMetaUrl] = useState("");
-  const [editMetaGroup, setEditMetaGroup] = useState("");
-  const [editUserDataFields, setEditUserDataFields] = useState([]);
+  // Folder Metadata tab state + handlers moved to useFolderMetadataConfig hook
+  // (invoked below, after groupedWorkspaces is defined). Owns the metadata
+  // fields (description/url/group) and user-data-schema, the folder-selection
+  // reload effect, and the two persist actions used by handleSave.
 
   // Folder Prompts tab state + handlers moved to useFolderPromptsConfig hook
   // (invoked below, after groupedWorkspaces is defined so its dep array is honored).
@@ -337,6 +335,17 @@ export function WorkspacesDialog({
         return folderGroup?.workspaces[0]?.working_dir || null;
       },
       shortcutSections: SHORTCUT_SECTIONS,
+    });
+
+  // Folder Metadata tab state + handlers. Owns 6 metadata state pieces
+  // (folderMetadata/metadataLoading + 4 edit fields), the folder-selection
+  // reload effect, and the two persist actions (metadata + user-data-schema)
+  // consumed by handleSave. Shell forwards the grouped
+  // {metadata, metadataSetters} objects to WorkspaceFolderEditor.
+  const { metadata, metadataSetters, persistMetadata, persistUserDataSchema } =
+    useFolderMetadataConfig({
+      selectedFolder,
+      groupedWorkspaces,
     });
 
   // Initialize folder expansion state from localStorage when the dialog opens
@@ -526,41 +535,8 @@ export function WorkspacesDialog({
     const pendingTab = pendingInitialTabRef.current;
     pendingInitialTabRef.current = null;
     setActiveTab(pendingTab || "general");
-
-    // Load workspace metadata from .mittorc
-    setFolderMetadata(null);
-    setEditMetaDescription("");
-    setEditMetaUrl("");
-    setEditMetaGroup("");
-    setEditUserDataFields([]);
-    if (firstWs.uuid) {
-      setMetadataLoading(true);
-      authFetch(endpoints.workspaces.metadata(firstWs.uuid))
-        .then((r) => r.json())
-        .then((data) => {
-          setFolderMetadata(data || null);
-          setEditMetaDescription(data?.description || "");
-          setEditMetaUrl(data?.url || "");
-          setEditMetaGroup(data?.group || "");
-          setEditUserDataFields(
-            (data?.user_data_schema?.fields || []).map((f) => ({
-              name: f.name || "",
-              type: f.type || "string",
-              description: f.description || "",
-            })),
-          );
-        })
-        .catch(() => {
-          setFolderMetadata(null);
-          setEditMetaDescription("");
-          setEditMetaUrl("");
-          setEditMetaGroup("");
-          setEditUserDataFields([]);
-        })
-        .finally(() => {
-          setMetadataLoading(false);
-        });
-    }
+    // Metadata reset + reload is owned by useFolderMetadataConfig (fires on
+    // the same [selectedFolder] dep).
   }, [selectedFolder]);
 
   useEffect(() => {
@@ -1210,85 +1186,24 @@ export function WorkspacesDialog({
       const result = await res.json();
       invalidateConfigCache();
 
-      // Save workspace metadata after config save (workspace must exist first)
-      if (
-        selectedFolder &&
-        (editMetaDescription || editMetaUrl || editMetaGroup)
-      ) {
-        const folderGroup = groupedWorkspaces.find(
-          (g) => g.displayName === selectedFolder,
-        );
-        const folderWsUuid = folderGroup?.workspaces[0]?.uuid;
-        if (folderWsUuid) {
-          try {
-            const metaRes = await secureFetch(
-              endpoints.workspaces.metadata(folderWsUuid),
-              {
-                method: "PUT",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({
-                  description: editMetaDescription,
-                  url: editMetaUrl,
-                  group: editMetaGroup,
-                }),
-              },
-            );
-            if (!metaRes.ok) {
-              const metaErr = await metaRes.json().catch(() => ({}));
-              throw new Error(
-                errorMessageFromData(
-                  metaErr,
-                  "Failed to save workspace metadata",
-                ),
-              );
-            }
-          } catch (metaErr) {
-            setError("Failed to save metadata: " + metaErr.message);
-            const elapsed = Date.now() - saveStartTime;
-            setTimeout(() => setSaving(false), Math.max(0, 1000 - elapsed));
-            return;
-          }
-        }
+      // Save workspace metadata after config save (workspace must exist first).
+      // Both persist actions live in useFolderMetadataConfig; they no-op when
+      // no folder is selected or the folder has no resolvable uuid.
+      try {
+        await persistMetadata();
+      } catch (metaErr) {
+        setError("Failed to save metadata: " + metaErr.message);
+        const elapsed = Date.now() - saveStartTime;
+        setTimeout(() => setSaving(false), Math.max(0, 1000 - elapsed));
+        return;
       }
-
-      // Save user data schema
-      if (selectedFolder) {
-        const folderGroup = groupedWorkspaces.find(
-          (g) => g.displayName === selectedFolder,
-        );
-        const folderWsUuid = folderGroup?.workspaces[0]?.uuid;
-        if (folderWsUuid) {
-          // Filter out fields with empty names
-          const validFields = editUserDataFields.filter(
-            (f) => f.name.trim() !== "",
-          );
-          try {
-            const schemaRes = await secureFetch(
-              endpoints.workspaces.userDataSchema(folderWsUuid),
-              {
-                method: "PUT",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({
-                  fields: validFields,
-                }),
-              },
-            );
-            if (!schemaRes.ok) {
-              const schemaErr = await schemaRes.json().catch(() => ({}));
-              throw new Error(
-                errorMessageFromData(
-                  schemaErr,
-                  "Failed to save user data schema",
-                ),
-              );
-            }
-          } catch (schemaErr) {
-            setError("Failed to save user data schema: " + schemaErr.message);
-            const elapsed = Date.now() - saveStartTime;
-            setTimeout(() => setSaving(false), Math.max(0, 1000 - elapsed));
-            return;
-          }
-        }
+      try {
+        await persistUserDataSchema();
+      } catch (schemaErr) {
+        setError("Failed to save user data schema: " + schemaErr.message);
+        const elapsed = Date.now() - saveStartTime;
+        setTimeout(() => setSaving(false), Math.max(0, 1000 - elapsed));
+        return;
       }
 
       // Persist folder shortcuts if the Shortcuts tab was opened/edited.
@@ -1815,14 +1730,8 @@ export function WorkspacesDialog({
                 editAutoChildren=${editAutoChildren}
                 setEditAutoChildren=${setEditAutoChildren}
                 folderGroupSuggestions=${folderGroupSuggestions}
-                editMetaDescription=${editMetaDescription}
-                setEditMetaDescription=${setEditMetaDescription}
-                editMetaUrl=${editMetaUrl}
-                setEditMetaUrl=${setEditMetaUrl}
-                editMetaGroup=${editMetaGroup}
-                setEditMetaGroup=${setEditMetaGroup}
-                editUserDataFields=${editUserDataFields}
-                setEditUserDataFields=${setEditUserDataFields}
+                metadata=${metadata}
+                metadataSetters=${metadataSetters}
                 beads=${beads}
                 beadsSetters=${beadsSetters}
                 beadsHandlers=${beadsHandlers}

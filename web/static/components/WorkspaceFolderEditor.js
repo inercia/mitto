@@ -77,15 +77,9 @@ function renderFolderEditor({
   editAutoChildren,
   setEditAutoChildren,
   folderGroupSuggestions,
-  // Metadata tab
-  editMetaDescription,
-  setEditMetaDescription,
-  editMetaUrl,
-  setEditMetaUrl,
-  editMetaGroup,
-  setEditMetaGroup,
-  editUserDataFields,
-  setEditUserDataFields,
+  // Metadata tab (grouped state/setters from useFolderMetadataConfig)
+  metadata,
+  metadataSetters,
   // Beads tab (grouped state/handlers from useBeadsFolderConfig)
   beads,
   beadsSetters,
@@ -310,9 +304,11 @@ function renderFolderEditor({
                             >
                             <textarea
                               id="ws-meta-description"
-                              value=${editMetaDescription}
+                              value=${metadata.editMetaDescription}
                               onInput=${(e) =>
-                                setEditMetaDescription(e.target.value)}
+                                metadataSetters.setEditMetaDescription(
+                                  e.target.value,
+                                )}
                               placeholder="A description of this workspace/project..."
                               rows="3"
                               class="textarea textarea-sm w-full resize-vertical"
@@ -321,8 +317,9 @@ function renderFolderEditor({
                             <input
                               id="ws-meta-url"
                               type="url"
-                              value=${editMetaUrl}
-                              onInput=${(e) => setEditMetaUrl(e.target.value)}
+                              value=${metadata.editMetaUrl}
+                              onInput=${(e) =>
+                                metadataSetters.setEditMetaUrl(e.target.value)}
                               placeholder="https://github.com/..."
                               class="input input-sm w-full"
                             />
@@ -332,8 +329,11 @@ function renderFolderEditor({
                             <input
                               id="ws-meta-group"
                               type="text"
-                              value=${editMetaGroup}
-                              onInput=${(e) => setEditMetaGroup(e.target.value)}
+                              value=${metadata.editMetaGroup}
+                              onInput=${(e) =>
+                                metadataSetters.setEditMetaGroup(
+                                  e.target.value,
+                                )}
                               placeholder="e.g., CGW, Infrastructure, Frontend..."
                               class="input input-sm w-full"
                             />
@@ -351,14 +351,16 @@ function renderFolderEditor({
                               </p>
                               <button
                                 onClick=${() =>
-                                  setEditUserDataFields((prev) => [
-                                    ...prev,
-                                    {
-                                      name: "",
-                                      type: "string",
-                                      description: "",
-                                    },
-                                  ])}
+                                  metadataSetters.setEditUserDataFields(
+                                    (prev) => [
+                                      ...prev,
+                                      {
+                                        name: "",
+                                        type: "string",
+                                        description: "",
+                                      },
+                                    ],
+                                  )}
                                 class="btn btn-ghost btn-xs gap-1 tooltip tooltip-bottom"
                                 data-tip="Add Field"
                               >
@@ -366,7 +368,7 @@ function renderFolderEditor({
                                 Add Field
                               </button>
                             </div>
-                            ${editUserDataFields.length === 0 &&
+                            ${metadata.editUserDataFields.length === 0 &&
                             html`
                               <p
                                 class="text-xs text-mitto-text-muted italic py-2"
@@ -375,10 +377,10 @@ function renderFolderEditor({
                                 one.
                               </p>
                             `}
-                            ${editUserDataFields.length > 0 &&
+                            ${metadata.editUserDataFields.length > 0 &&
                             html`
                               <ul class="list">
-                                ${editUserDataFields.map(
+                                ${metadata.editUserDataFields.map(
                                   (field, i) => html`
                                     <li
                                       key=${i}
@@ -395,15 +397,16 @@ function renderFolderEditor({
                                           type="text"
                                           value=${field.name}
                                           onInput=${(e) =>
-                                            setEditUserDataFields((prev) =>
-                                              prev.map((f, idx) =>
-                                                idx === i
-                                                  ? {
-                                                      ...f,
-                                                      name: e.target.value,
-                                                    }
-                                                  : f,
-                                              ),
+                                            metadataSetters.setEditUserDataFields(
+                                              (prev) =>
+                                                prev.map((f, idx) =>
+                                                  idx === i
+                                                    ? {
+                                                        ...f,
+                                                        name: e.target.value,
+                                                      }
+                                                    : f,
+                                                ),
                                             )}
                                           placeholder="e.g., JIRA Ticket"
                                           class="input input-sm w-full"
@@ -420,15 +423,16 @@ function renderFolderEditor({
                                           id=${"ws-udf-type-" + i}
                                           value=${field.type}
                                           onChange=${(e) =>
-                                            setEditUserDataFields((prev) =>
-                                              prev.map((f, idx) =>
-                                                idx === i
-                                                  ? {
-                                                      ...f,
-                                                      type: e.target.value,
-                                                    }
-                                                  : f,
-                                              ),
+                                            metadataSetters.setEditUserDataFields(
+                                              (prev) =>
+                                                prev.map((f, idx) =>
+                                                  idx === i
+                                                    ? {
+                                                        ...f,
+                                                        type: e.target.value,
+                                                      }
+                                                    : f,
+                                                ),
                                             )}
                                           class="select select-sm w-full"
                                           style="height: 28px; box-sizing: border-box"
@@ -448,16 +452,17 @@ function renderFolderEditor({
                                           type="text"
                                           value=${field.description}
                                           onInput=${(e) =>
-                                            setEditUserDataFields((prev) =>
-                                              prev.map((f, idx) =>
-                                                idx === i
-                                                  ? {
-                                                      ...f,
-                                                      description:
-                                                        e.target.value,
-                                                    }
-                                                  : f,
-                                              ),
+                                            metadataSetters.setEditUserDataFields(
+                                              (prev) =>
+                                                prev.map((f, idx) =>
+                                                  idx === i
+                                                    ? {
+                                                        ...f,
+                                                        description:
+                                                          e.target.value,
+                                                      }
+                                                    : f,
+                                                ),
                                             )}
                                           placeholder="Optional description..."
                                           class="input input-sm w-full"
@@ -467,10 +472,11 @@ function renderFolderEditor({
                                       <div class="shrink-0 pt-4">
                                         <button
                                           onClick=${() =>
-                                            setEditUserDataFields((prev) =>
-                                              prev.filter(
-                                                (_, idx) => idx !== i,
-                                              ),
+                                            metadataSetters.setEditUserDataFields(
+                                              (prev) =>
+                                                prev.filter(
+                                                  (_, idx) => idx !== i,
+                                                ),
                                             )}
                                           class="btn btn-ghost btn-square btn-xs tooltip tooltip-bottom"
                                           data-tip="Remove field"
