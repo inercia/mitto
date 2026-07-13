@@ -2,7 +2,7 @@
 const { useState, useEffect, useMemo, useCallback, useRef, html } =
   window.preact;
 
-import { authFetch, endpoints, fetchConfig } from "../utils/index.js";
+import { authFetch, endpoints } from "../utils/index.js";
 
 import { getBasename } from "../lib.js";
 
@@ -16,6 +16,7 @@ import { useWorkspaceEdits } from "../hooks/useWorkspaceEdits.js";
 import { useWorkspaceMcpActions } from "../hooks/useWorkspaceMcpActions.js";
 import { useWorkspaceMcpTools } from "../hooks/useWorkspaceMcpTools.js";
 import { useWorkspaceMutations } from "../hooks/useWorkspaceMutations.js";
+import { useWorkspacesData } from "../hooks/useWorkspacesData.js";
 import { useWorkspacesSaveCoordinator } from "../hooks/useWorkspacesSaveCoordinator.js";
 
 import { SpinnerIcon, CloseIcon, FolderIcon } from "./Icons.js";
@@ -86,16 +87,7 @@ export function WorkspacesDialog({
   showToast,
   onOpenPromptParamDialog,
 }) {
-  const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
-  const [error, setError] = useState("");
-
-  const [workspaces, setWorkspaces] = useState([]);
-  const [acpServers, setAcpServers] = useState([]);
-  // Named Model profiles (config.models), used for the auxiliary model dropdown
-  const [modelProfiles, setModelProfiles] = useState([]);
-  const [supportedRunners, setSupportedRunners] = useState([]);
-  const [orphanedWorkspaces, setOrphanedWorkspaces] = useState([]);
 
   const [selectedWorkspaceKey, setSelectedWorkspaceKey] = useState(null);
   const [activeTab, setActiveTab] = useState("general");
@@ -394,6 +386,30 @@ export function WorkspacesDialog({
     getWorkspaceKey,
   });
 
+  // Config-loading cluster: owns raw data useStates (workspaces/acpServers/
+  // modelProfiles/supportedRunners/orphanedWorkspaces) + loading/error flags
+  // + the async loadData function. Must be called AFTER useWorkspaceEdits
+  // (for prevSelectedWorkspaceKeyRef) and BEFORE any hook or effect that
+  // reads workspaces/acpServers/modelProfiles/loadData.
+  const {
+    loading,
+    error,
+    setError,
+    workspaces,
+    setWorkspaces,
+    acpServers,
+    modelProfiles,
+    supportedRunners,
+    orphanedWorkspaces,
+    loadData,
+  } = useWorkspacesData({
+    prevSelectedWorkspaceKeyRef,
+    selectedWorkspaceKey,
+    setSelectedWorkspaceKey,
+    setSelectedFolder,
+    getWorkspaceKey,
+  });
+
   // Legacy raw matchMode/pattern constraint for the auxiliary model, if any,
   // and whether it's shown as a disabled "Custom (legacy)" dropdown option
   // (only when no profile is selected and it doesn't match a known profile).
@@ -545,85 +561,7 @@ export function WorkspacesDialog({
   // Folder Shortcuts tab: load effect + folder-switch reset effect moved to
   // useFolderShortcutsConfig hook (invoked above).
 
-  const loadData = async () => {
-    // Reset the flush tracker so stale edit-field values from a previous dialog
-    // session are not flushed onto a workspace after a reload/reopen.
-    prevSelectedWorkspaceKeyRef.current = null;
-    setLoading(true);
-    try {
-      const [config, runnersRes] = await Promise.all([
-        fetchConfig(null, true),
-        fetch(endpoints.runners.supported(), { credentials: "same-origin" }),
-      ]);
-      const servers = config.acp_servers || [];
-      setAcpServers(servers);
-      setModelProfiles(Array.isArray(config.models) ? config.models : []);
-      const serverNames = new Set(servers.map((s) => s.name));
-      const rawWorkspaces = config.workspaces || [];
-      const orphaned = [];
-      const valid = rawWorkspaces.filter((ws) => {
-        if (!ws.working_dir || ws.working_dir.trim() === "") return false;
-        if (!ws.acp_server || !serverNames.has(ws.acp_server)) {
-          if (ws.acp_server)
-            orphaned.push({
-              working_dir: ws.working_dir,
-              missing_server: ws.acp_server,
-            });
-          return false;
-        }
-        return true;
-      });
-      setWorkspaces(valid);
-      setOrphanedWorkspaces(orphaned);
-      setSelectedFolder(null);
-      if (valid.length > 0) {
-        // Preserve the previously-selected workspace across a reload/reopen when it
-        // still exists. Otherwise the selection resets to valid[0], whose order is
-        // not stable (it reflects the backend's map-iteration order, not the sorted
-        // tree). That made a just-saved edit appear "lost": the dialog reopened on a
-        // different workspace that legitimately still showed its own value. When no
-        // prior selection matches, fall back to a deterministic first entry (sorted
-        // by display name, then ACP server) so the initial selection is predictable.
-        const prevKey = selectedWorkspaceKey;
-        const preserved =
-          prevKey && valid.some((ws) => getWorkspaceKey(ws) === prevKey);
-        if (preserved) {
-          setSelectedWorkspaceKey(prevKey);
-        } else {
-          const firstByName = [...valid].sort((a, b) => {
-            const an = a.name || getBasename(a.working_dir) || "";
-            const bn = b.name || getBasename(b.working_dir) || "";
-            return (
-              an.localeCompare(bn) ||
-              (a.acp_server || "").localeCompare(b.acp_server || "")
-            );
-          })[0];
-          setSelectedWorkspaceKey(getWorkspaceKey(firstByName));
-        }
-      } else {
-        setSelectedWorkspaceKey(null);
-      }
-      if (runnersRes.ok) {
-        setSupportedRunners((await runnersRes.json()) || []);
-      } else {
-        setSupportedRunners([
-          { type: "exec", label: "exec (no restrictions)", supported: true },
-          {
-            type: "sandbox-exec",
-            label: "sandbox-exec (macOS)",
-            supported: false,
-          },
-          { type: "firejail", label: "firejail (Linux)", supported: false },
-          { type: "docker", label: "docker (all platforms)", supported: true },
-        ]);
-      }
-    } catch (err) {
-      setError("Failed to load configuration: " + err.message);
-    } finally {
-      setLoading(false);
-    }
-  };
-
+  // loadData moved to useWorkspacesData hook (called above).
   // loadMcpTools + checkLiveAcpForWorkspace moved to useWorkspaceMcpTools hook.
   // handleRestartAcp/handleRestartAcpClick/handleMcpInstall/handleMcpRemove/
   // handleInstallMittoMcp/handleMcpRemoveConfirm moved to useWorkspaceMcpActions.
