@@ -168,9 +168,18 @@ prompt: |-
     conventions**) so the exact customer-facing text is unambiguous. Then set `state:drafting`
     (`bd update <id> --remove-label state:gathering-info --add-label state:drafting`) and hand off per
     Step 7.
-  - **Still missing customer detail** → set `state:need-info`
-    (`bd update <id> --remove-label state:gathering-info --add-label state:need-info`), note what is
-    missing, and `mitto_ui_notify` (info) to run **"Support: gather more information"**. Then stop.
+  - **Still missing customer detail** → we need to **ask the customer**, but we must not mark the bead
+    as `need-info` yet: `need-info` means *we have already posted the question and are waiting on the
+    customer*. Until we actually post, the clarifying question is **our** pending action, exactly like an
+    answer draft. So treat the clarifying **question as a draft**: record it as an `[OUTBOUND]`-style
+    *draft* comment clearly marked **"DRAFT — not yet posted"** (header
+    `**[OUTBOUND us · DRAFT (request for info) — not yet posted · YYYY-MM-DD HH:MM UTC]**`), with the
+    question itself **enclosed in the `--- BEGIN REPLY ---` / `--- END REPLY ---` block** (see **Bead
+    writing conventions**). Then set `state:drafting`
+    (`bd update <id> --remove-label state:gathering-info --add-label state:drafting`), note what is
+    missing, and hand off per Step 7 — **"Support: reply to user"** reviews and posts it (a clarifying
+    question posts through the same review/approve/post path as any answer). Do **not** set `need-info`
+    here.
   - **Inconclusive** → leave `state:gathering-info`, record what is blocking, and `mitto_ui_notify`
     (info) with the suggested next step. Then stop.
 
@@ -194,9 +203,12 @@ prompt: |-
   ## Set priority by intervention urgency (final step)
 
   Whatever outcome you reached in Step 6, finish by setting the bead's priority to match how urgently
-  *you* (the human) must act — a saved draft makes it **P1**, still-investigating (`gathering-info`)
-  makes it **P2**, and awaiting a customer detail (`need-info`, we have asked and are waiting on them)
-  makes it **P3**. In general:
+  *you* (the human) must act. This prompt produces one of two outcomes and prices them accordingly: a
+  saved draft — whether it is an **answer** or a **clarifying question** — makes it **P1**
+  (`state:drafting`, pending *your* approval to post), while still-investigating (`gathering-info`)
+  makes it **P2**. Note we never set `need-info` here: `need-info` is a *post-ask* state (we already
+  posted the clarifying question and are waiting on the customer), reached only after
+  **"Support: reply to user"** posts the draft. In general:
 
   - **P1 (HIGH)** — a draft (reply or clarifying question) is pending **your** approval
     (`state:drafting`); bump to **P0** only if it answers an escalation / outage / broad-impact thread.

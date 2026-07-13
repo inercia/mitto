@@ -1,5 +1,5 @@
 name: 'Support: reply to user'
-description: 'Review and post our answer to a tracked support question (bead in state:drafting). Reuses an existing draft or builds one, saves it on the bead (even on timeout), and posts to Slack only on your approval.'
+description: 'Review and post our draft to a tracked support question (bead in state:drafting) — an answer or a clarifying question. Reuses an existing draft or builds one, saves it on the bead (even on timeout), and posts to Slack only on your approval. Posting an answer moves it to awaiting-customer; posting a clarifying question moves it to need-info.'
 group: Support
 backgroundColor: '#B3E5FC'
 icon: chat-bubble
@@ -21,10 +21,13 @@ prompt: |-
 
   ## Description
 
-  Post our answer to a tracked support question. Use this when the bead is **ready to be answered** —
-  we already have enough information (typically after gathering info via the channel playbook or
-  an investigation). It shows the proposed reply, lets you edit it, posts it to the Slack thread **on
-  your approval**, and records it on the bead.
+  Post our draft to a tracked support question — either an **answer** (we have enough info to help) or
+  a **clarifying question** (we still need a detail from the customer, drafted by
+  **"Support: investigate"**). Both live on the bead as an `[OUTBOUND]` DRAFT in `state:drafting`; this
+  prompt shows the proposed text, lets you edit it, posts it to the Slack thread **on your approval**,
+  and records it on the bead. After posting, an **answer** moves the bead to `awaiting-customer`, while
+  a **clarifying question** moves it to `need-info` (see Step 7) — `need-info` is only ever reached
+  *after* we actually post the question.
 
   > **Applicable state:** `state:drafting`. If the bead is in a different state, warn and let the
   > user decide whether to continue or stop (see Step 2).
@@ -123,6 +126,12 @@ prompt: |-
      - **If none exists** → build one now from the bead history (investigation / info-gathering notes)
        plus the refreshed thread, following the formatting guidelines below. Do not repeat what we
        already said.
+  1a. **Note the draft *type* — answer or clarifying question.** A draft is either an **answer** we are
+     giving, or a **clarifying question / request for info** we are asking. The DRAFT header records
+     this: a request-for-info draft is marked `DRAFT (request for info)` (produced by
+     **"Support: investigate"** when a customer detail is still missing); anything else is an answer.
+     Remember this classification — it decides the post-posting state transition in Step 7 (an answer
+     → `awaiting-customer`; a clarifying question → `need-info`).
   2. **Formatting guidelines (only when building a new draft).** Follow the channel playbook's
      tone/reply guidelines first (Step 2.5); the rules below are the fallback default when the
      playbook is silent:
@@ -186,9 +195,15 @@ prompt: |-
     `--- BEGIN REPLY ---` / `--- END REPLY ---` block** so it stays machine-identifiable, followed by
     the permalink outside the fences. This block is our permanent record of *exactly what we said to the
     customer* — it must be the posted `result`, not the pre-edit draft.
-  - **Transition state** (same issue, never `bd set-state`):
-    `bd update <id> --remove-label state:drafting --add-label state:awaiting-customer`.
-    (If Step 2 continued from a different state, remove that state label instead.)
+  - **Transition state — depends on the draft *type* from Step 1a** (same issue, never `bd set-state`):
+    - If we just posted an **answer** → `awaiting-customer` (we replied, ball in their court):
+      `bd update <id> --remove-label state:drafting --add-label state:awaiting-customer`.
+    - If we just posted a **clarifying question / request for info** → `need-info` (we asked, now waiting
+      on the customer to supply the detail):
+      `bd update <id> --remove-label state:drafting --add-label state:need-info`.
+      This is the **only** correct way to reach `need-info`: it means *we posted the question*. Never set
+      `need-info` before the question is actually posted.
+    - (If Step 2 continued from a different state, remove that state label instead of `state:drafting`.)
 
   ### On timeout (`timed_out == true`)
 
@@ -215,8 +230,9 @@ prompt: |-
 
   Set the bead's priority to match how urgently *you* (the human) must act: while the draft is pending
   **your** approval (`state:drafting`, including after a timeout or abort) it stays **P1**; once posted
-  (`state:awaiting-customer`) it drops straight to **P3** — we have replied, the ball is in the
-  customer's court, and nothing needs your attention until they respond. In general:
+  it drops straight to **P3** — whether the post moved it to `awaiting-customer` (we replied) or
+  `need-info` (we asked a clarifying question), the ball is now in the customer's court and nothing
+  needs your attention until they respond. In general:
 
   - **P1 (HIGH)** — a draft (reply or clarifying question) is pending **your** approval
     (`state:drafting`); bump to **P0** only if it answers an escalation / outage / broad-impact thread.
