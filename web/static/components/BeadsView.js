@@ -45,26 +45,10 @@ import {
   handleBeadsContentClick,
   commentBody,
 } from "./beads/CommentBody.js";
-import { labelValue } from "./beads/DetailPanelHelpers.js";
-import {
-  TitleField,
-  TypeField,
-  PriorityField,
-  AssigneeField,
-  NotesField,
-  DescriptionField,
-  DependenciesCreateField,
-  DependenciesViewField,
-  inputClass,
-  selectClass,
-  textareaClass,
-  labelClass,
-} from "./beads/detail/Fields.js";
-import { CommentsSection } from "./beads/detail/CommentsSection.js";
-import {
-  SubtasksList,
-  DetailActionBar,
-} from "./beads/detail/Sections.js";
+// Detail-panel sub-components (Fields.js, CommentsSection.js, Sections.js) are
+// no longer imported here directly — they are used exclusively by
+// BeadsDetailPanelBody, which is what BeadsDetailPanel now renders.
+import { BeadsDetailPanelBody } from "./beads/detail/PanelBody.js";
 // Re-export statusBadge at its original location so SessionPanel.js
 // (`import { statusBadge as beadsStatusBadge } from "./BeadsView.js"`) keeps
 // working after the move to beads/Badges.js (mitto-90f.3 E-4).
@@ -115,7 +99,6 @@ import {
   PortalTooltip,
 } from "./ContextMenu.js";
 import { ConfirmDialog } from "./ConfirmDialog.js";
-import { Drawer } from "./Drawer.js";
 import { Tooltip } from "./Tooltip.js";
 import { Toolbar } from "./Toolbar.js";
 import { usePullToRefresh } from "../hooks/usePullToRefresh.js";
@@ -1371,520 +1354,126 @@ export function BeadsDetailPanel({
   if (!creating && !data) return null;
 
   return html`
-    <${Fragment}>
-      <!-- Dock-mode daisyUI drawer docked to the right edge of the beads view
-           area (drawer-dock; see styles.css). NO dimming backdrop: a full-area
-           composited overlay over the beads list is exactly what dropped the
-           list's GPU backing store and blanked it on pointer-move (mitto-cdf),
-           so dock mode confines the panel to its own width and leaves the list
-           to its left under no composited layer. z-60 keeps it above content.
-             Small screens (confined): full width, but capped at 85vw by the dock
-               media query so a peek of the list always remains on the left.
-             Desktop normal: 40rem wide, capped at 85% of the beads view so the
-               list always stays visible on the panel's left.
-             Expanded (fullscreen) / standalone: fills the whole area — on desktop
-               the beads view, on small screens the viewport (--dock-maxw:100%
-               lifts the media-query cap). -->
-      <${Drawer}
-        dock
-        side="end"
-        isClosing=${isClosing}
-        onClose=${handleClose}
-        zClass="z-60"
-        rootStyle=${
-          fullscreen
-            ? "--dock-w:100%;--dock-maxw:100%"
-            : isMobile
-              ? "--dock-w:100%;--dock-maxw:100%"
-              : "--dock-w:40rem;--dock-maxw:85%"
-        }
-        widthClass="w-full"
-        panelClass="bg-mitto-sidebar shrink-0 h-full flex flex-col border-l border-mitto-border-1"
-      >
-      <div class="p-4 border-b border-mitto-border shrink-0">
-        <div class="flex items-center gap-2">
-          <div class="flex-1 min-w-0">
-            ${
-              creating
-                ? html`<${Fragment}>
-                  <${TitleField}
-                    mode="create"
-                    title=${title}
-                    setTitle=${setTitle}
-                    submitting=${submitting}
-                  />
-                  ${createParentId ? html`<div class="font-mono text-xs text-mitto-text-secondary">in ${createParentId}</div>` : null}
-                </${Fragment}>`
-                : html`
-                    <h2
-                      class="font-semibold text-base text-mitto-text truncate"
-                      title=${viewDraft.title || data.title || data.id}
-                    >
-                      ${viewDraft.title || data.title || data.id}
-                    </h2>
-                  `
-            }
-          </div>
-          ${
-            creating
-              ? html`
-                  <button
-                    onClick=${() => setFullscreen((f) => !f)}
-                    class="btn btn-ghost btn-square btn-sm shrink-0 inline-flex tooltip tooltip-bottom"
-                    data-tip=${fullscreen ? "Exit fullscreen" : "Fullscreen"}
-                    aria-label=${fullscreen ? "Exit fullscreen" : "Fullscreen"}
-                  >
-                    ${fullscreen
-                      ? html`<${CollapseIcon} className="w-5 h-5" />`
-                      : html`<${ExpandIcon} className="w-5 h-5" />`}
-                  </button>
-                `
-              : null
-          }
-        </div>
-        ${
-          !creating && data
-            ? html`
-                <div class="mt-6">
-                  <${Toolbar}
-                    variant="block"
-                    surface="bg-mitto-surface-3"
-                    ariaLabel="Issue actions"
-                    testId="beads-issue-toolbar"
-                    items=${headerToolbarItems}
-                  />
-                </div>
-              `
-            : null
-        }
-      </div>
-
-      <div class="flex-1 overflow-y-auto p-4 space-y-4">
-        ${
-          creating
-            ? html`
-            <${Fragment}>
-              <div class="flex flex-wrap gap-2 items-center">
-                <span class="${labelClass} shrink-0">Type</span>
-                <${TypeField}
-                  mode="create"
-                  type=${type}
-                  setType=${setType}
-                  submitting=${submitting}
-                />
-                <span class="${labelClass} shrink-0">Priority</span>
-                <${PriorityField}
-                  mode="create"
-                  priority=${priority}
-                  setPriority=${setPriority}
-                  submitting=${submitting}
-                />
-              </div>
-
-              <div class="grid grid-cols-2 gap-3">
-                ${
-                  createParentId
-                    ? html`
-                        <div>
-                          <label class=${labelClass} for="new-issue-parent"
-                            >Parent</label
-                          >
-                          <input
-                            id="new-issue-parent"
-                            type="text"
-                            class="${inputClass} font-mono"
-                            value=${createParentId}
-                            readonly
-                            aria-readonly="true"
-                            title="This issue will be created as a child of ${createParentId}"
-                            data-testid="beads-create-parent"
-                          />
-                        </div>
-                      `
-                    : null
-                }
-                <div>
-                  <label class=${labelClass} for="new-issue-assignee">Assignee</label>
-                  <${AssigneeField}
-                    mode="create"
-                    createAssignee=${createAssignee}
-                    setCreateAssignee=${setCreateAssignee}
-                    submitting=${submitting}
-                  />
-                </div>
-              </div>
-
-              <${DescriptionField}
-                mode="create"
-                description=${description}
-                setDescription=${setDescription}
-                submitting=${submitting}
-                createEditorApiRef=${createEditorApiRef}
-                editingDesc=${editingDesc}
-                setEditingDesc=${setEditingDesc}
-                viewDraft=${viewDraft}
-                setViewDraft=${setViewDraft}
-                savingView=${savingView}
-                detailEditorApiRef=${detailEditorApiRef}
-                descMinHeight=${descMinHeight}
-                descViewRef=${descViewRef}
-                md=${md}
-                startEditDesc=${startEditDesc}
-                workingDir=${workingDir}
-                improvingDesc=${improvingDesc}
-                improveDescriptionText=${improveDescriptionText}
-              />
-
-              <fieldset class="fieldset min-w-0">
-                <legend class="fieldset-legend">Dependencies</legend>
-                <${DependenciesCreateField}
-                  allIssues=${allIssues}
-                  submitting=${submitting}
-                  createDeps=${createDeps}
-                  setCreateDeps=${setCreateDeps}
-                  removeCreateDep=${removeCreateDep}
-                  createNewDepType=${createNewDepType}
-                  setCreateNewDepType=${setCreateNewDepType}
-                  createNewDepId=${createNewDepId}
-                  setCreateNewDepId=${setCreateNewDepId}
-                  addCreateDep=${addCreateDep}
-                />
-              </fieldset>
-
-              <fieldset class="fieldset min-w-0">
-                <legend class="fieldset-legend">Notes</legend>
-                <${NotesField}
-                  mode="create"
-                  createNotes=${createNotes}
-                  setCreateNotes=${setCreateNotes}
-                  submitting=${submitting}
-                />
-              </fieldset>
-            </${Fragment}>
-          `
-            : html`
-                <div class="flex flex-wrap gap-2 items-center">
-                  <${TypeField}
-                    mode="view"
-                    viewDraft=${viewDraft}
-                    setViewDraft=${setViewDraft}
-                    editingType=${editingType}
-                    setEditingType=${setEditingType}
-                    typeRef=${typeRef}
-                  /> ${statusBadge(data.status)}
-                  <${PriorityField}
-                    mode="view"
-                    viewDraft=${viewDraft}
-                    setViewDraft=${setViewDraft}
-                  />
-                </div>
-
-                <div class="grid grid-cols-2 gap-3">
-                  <div>
-                    <label class=${labelClass}>ID</label>
-                    <div class="flex items-center gap-1">
-                      <span class="font-mono text-sm text-mitto-text"
-                        >${data.id}</span
-                      >
-                      <button
-                        type="button"
-                        onClick=${async () => {
-                          const ok = await copyToClipboard(data.id);
-                          showToast &&
-                            showToast(
-                              ok
-                                ? {
-                                    style: "success",
-                                    title: `Copied ${data.id}`,
-                                  }
-                                : {
-                                    style: "error",
-                                    title: "Failed to copy issue ID",
-                                  },
-                            );
-                        }}
-                        class="btn btn-ghost btn-xs btn-square inline-flex tooltip tooltip-bottom"
-                        data-tip="Copy issue ID ${data.id}"
-                        aria-label="Copy issue ID ${data.id}"
-                      >
-                        <${CopyIcon} className="w-3.5 h-3.5" />
-                      </button>
-                    </div>
-                  </div>
-                  <div>
-                    <label class=${labelClass}>Assignee</label>
-                    <${AssigneeField}
-                      mode="view"
-                      viewDraft=${viewDraft}
-                      setViewDraft=${setViewDraft}
-                      editingAssignee=${editingAssignee}
-                      setEditingAssignee=${setEditingAssignee}
-                      assigneeRef=${assigneeRef}
-                      savingView=${savingView}
-                      handleAssigneeKeyDown=${handleAssigneeKeyDown}
-                      startEditAssignee=${startEditAssignee}
-                    />
-                  </div>
-                  ${labelValue("Owner", data.owner)}
-                  ${labelValue(
-                    "Created",
-                    data.created_at &&
-                      new Date(data.created_at).toLocaleDateString(),
-                  )}
-                  ${labelValue(
-                    "Updated",
-                    data.updated_at &&
-                      new Date(data.updated_at).toLocaleDateString(),
-                  )}
-                  ${data.parent &&
-                  labelValue(
-                    "Parent",
-                    html`
-                      <button
-                        type="button"
-                        onClick=${() =>
-                          onSelectIssue &&
-                          onSelectIssue(
-                            (allIssues || []).find(
-                              (i) => i.id === data.parent,
-                            ) || { id: data.parent },
-                          )}
-                        class="font-mono text-mitto-accent-400 hover:text-mitto-accent-300 hover:underline text-left tooltip tooltip-bottom"
-                        data-tip=${"Open " + data.parent}
-                      >
-                        ${data.parent}
-                      </button>
-                    `,
-                  )}
-                </div>
-
-                <div>
-                  <div class="text-xs text-mitto-text-secondary mb-1">
-                    Labels
-                  </div>
-                  <datalist id="beads-label-options">
-                    ${allLabels
-                      .filter((l) => !labels.includes(l))
-                      .map((l) => html`<option key=${l} value=${l}></option>`)}
-                  </datalist>
-                  <div class="flex flex-wrap gap-2 items-center">
-                    ${labels.length === 0 &&
-                    !addingLabel &&
-                    html`<span class="text-xs text-mitto-text-secondary italic"
-                      >No labels.</span
-                    >`}
-                    ${labels.map(
-                      (l) => html`
-                        <span
-                          key=${l}
-                          class="badge badge-sm font-medium bg-mitto-surface-4 text-mitto-text-strong"
-                        >
-                          ${l}
-                          <button
-                            type="button"
-                            onClick=${() => {
-                              if (labelsBusy) return;
-                              mutateLabel("remove", l);
-                            }}
-                            aria-disabled=${labelsBusy ? "true" : "false"}
-                            class="inline-flex items-center opacity-60 hover:opacity-100 hover:text-red-400 cursor-pointer tooltip tooltip-bottom ${labelsBusy
-                              ? "opacity-40 pointer-events-none"
-                              : ""}"
-                            data-tip=${'Remove label "' + l + '"'}
-                            aria-label=${'Remove label "' + l + '"'}
-                          >
-                            <${CloseIcon} className="w-3 h-3" />
-                          </button>
-                        </span>
-                      `,
-                    )}
-                    ${addingLabel
-                      ? html`
-                          <div class="join w-52 max-w-full">
-                            <input
-                              ref=${labelInputRef}
-                              type="text"
-                              list="beads-label-options"
-                              placeholder="add label…"
-                              value=${newLabel}
-                              disabled=${labelsBusy}
-                              onInput=${(e) => setNewLabel(e.target.value)}
-                              onKeyDown=${(e) => {
-                                if (e.key === "Enter") {
-                                  e.preventDefault();
-                                  handleAddLabel();
-                                } else if (e.key === "Escape") {
-                                  e.preventDefault();
-                                  setNewLabel("");
-                                  setAddingLabel(false);
-                                }
-                              }}
-                              onBlur=${() => {
-                                if (!newLabel.trim()) setAddingLabel(false);
-                              }}
-                              class="input input-xs flex-1 min-w-0 join-item"
-                            />
-                            <button
-                              type="button"
-                              onMouseDown=${(e) => e.preventDefault()}
-                              onClick=${() => {
-                                if (labelsBusy || !newLabel.trim()) return;
-                                handleAddLabel();
-                              }}
-                              aria-disabled=${labelsBusy || !newLabel.trim()
-                                ? "true"
-                                : "false"}
-                              class="btn btn-ghost btn-square btn-xs shrink-0 join-item inline-flex tooltip tooltip-bottom ${labelsBusy ||
-                              !newLabel.trim()
-                                ? "opacity-40 pointer-events-none"
-                                : ""}"
-                              data-tip="Add label"
-                              aria-label="Add label"
-                            >
-                              ${labelsBusy
-                                ? html`<span
-                                    class="loading loading-spinner w-3 h-3"
-                                  ></span>`
-                                : html`<${PlusIcon} className="w-3 h-3" />`}
-                            </button>
-                          </div>
-                        `
-                      : html`
-                          <button
-                            type="button"
-                            onClick=${() => setAddingLabel(true)}
-                            class="btn btn-ghost btn-square btn-xs inline-flex tooltip tooltip-bottom"
-                            data-tip="Add label"
-                            aria-label="Add label"
-                          >
-                            <${PlusIcon} className="w-3 h-3" />
-                          </button>
-                        `}
-                  </div>
-                </div>
-                <${TitleField}
-                  mode="view"
-                  viewDraft=${viewDraft}
-                  setViewDraft=${setViewDraft}
-                  editingTitle=${editingTitle}
-                  setEditingTitle=${setEditingTitle}
-                  titleRef=${titleRef}
-                  savingView=${savingView}
-                  handleTitleKeyDown=${handleTitleKeyDown}
-                  startEditTitle=${startEditTitle}
-                />
-                <${DescriptionField}
-                  mode="view"
-                  description=${description}
-                  setDescription=${setDescription}
-                  submitting=${submitting}
-                  createEditorApiRef=${createEditorApiRef}
-                  editingDesc=${editingDesc}
-                  setEditingDesc=${setEditingDesc}
-                  viewDraft=${viewDraft}
-                  setViewDraft=${setViewDraft}
-                  savingView=${savingView}
-                  detailEditorApiRef=${detailEditorApiRef}
-                  descMinHeight=${descMinHeight}
-                  descViewRef=${descViewRef}
-                  md=${md}
-                  startEditDesc=${startEditDesc}
-                  workingDir=${workingDir}
-                  improvingDesc=${improvingDesc}
-                  improveDescriptionText=${improveDescriptionText}
-                />
-                <${SubtasksList}
-                  subtasks=${subtasks}
-                  onSelectIssue=${onSelectIssue}
-                />
-
-                <fieldset class="fieldset min-w-0">
-                  <legend class="fieldset-legend">Dependencies</legend>
-                  <${DependenciesViewField}
-                    allIssues=${allIssues}
-                    data=${data}
-                    deps=${deps}
-                    depsLoading=${depsLoading}
-                    depsBusy=${depsBusy}
-                    changeDepType=${changeDepType}
-                    mutateDep=${mutateDep}
-                    onSelectIssue=${onSelectIssue}
-                    newDepType=${newDepType}
-                    setNewDepType=${setNewDepType}
-                    newDepId=${newDepId}
-                    setNewDepId=${setNewDepId}
-                    handleAddDep=${handleAddDep}
-                  />
-                </fieldset>
-
-                <${CommentsSection}
-                  comments=${comments}
-                  depsLoading=${depsLoading}
-                  addingComment=${addingComment}
-                  commentDraft=${commentDraft}
-                  setCommentDraft=${setCommentDraft}
-                  savingComment=${savingComment}
-                  commentRef=${commentRef}
-                  handleCommentBlur=${handleCommentBlur}
-                  startAddComment=${startAddComment}
-                  workingDir=${workingDir}
-                />
-
-                <fieldset class="fieldset min-w-0">
-                  <legend class="fieldset-legend">Notes</legend>
-                  <${NotesField}
-                    mode="view"
-                    depsLoading=${depsLoading}
-                    viewDraft=${viewDraft}
-                    setViewDraft=${setViewDraft}
-                    editingNotes=${editingNotes}
-                    setEditingNotes=${setEditingNotes}
-                    notesRef=${notesRef}
-                    notesViewRef=${notesViewRef}
-                    notesMinHeight=${notesMinHeight}
-                    savingView=${savingView}
-                    startEditNotes=${startEditNotes}
-                    workingDir=${workingDir}
-                  />
-                </fieldset>
-              `
-        }
-      </div>
-
-      <${DetailActionBar}
-        creating=${creating}
-        data=${data}
-        handleClose=${handleClose}
-        submitting=${submitting}
-        handleSave=${handleSave}
-        handleViewSave=${handleViewSave}
-        description=${description}
-        viewDirty=${viewDirty}
-        savingView=${savingView}
-      />
-      <//>
-      ${
-        panelMenu &&
-        html`
-          <${ContextMenu}
-            x=${panelMenu.x}
-            y=${panelMenu.y}
-            items=${panelMenuItems}
-            onClose=${() => setPanelMenu(null)}
-          />
-        `
-      }
-      <${ConfirmDialog}
-        isOpen=${confirmDiscard}
-        title="Discard changes?"
-        message="You have unsaved changes. Discard them and close?"
-        confirmLabel="Discard"
-        cancelLabel="Keep editing"
-        confirmVariant="danger"
-        onConfirm=${handleDiscardAndClose}
-        onCancel=${() => setConfirmDiscard(false)}
-      />
-    </${Fragment}>
+    <${BeadsDetailPanelBody}
+      isClosing=${isClosing}
+      isMobile=${isMobile}
+      fullscreen=${fullscreen}
+      setFullscreen=${setFullscreen}
+      creating=${creating}
+      data=${data}
+      createParentId=${createParentId}
+      submitting=${submitting}
+      viewDirty=${viewDirty}
+      savingView=${savingView}
+      description=${description}
+      setDescription=${setDescription}
+      createEditorApiRef=${createEditorApiRef}
+      detailEditorApiRef=${detailEditorApiRef}
+      descMinHeight=${descMinHeight}
+      descViewRef=${descViewRef}
+      md=${md}
+      workingDir=${workingDir}
+      improvingDesc=${improvingDesc}
+      improveDescriptionText=${improveDescriptionText}
+      allIssues=${allIssues}
+      subtasks=${subtasks}
+      onSelectIssue=${onSelectIssue}
+      showToast=${showToast}
+      create=${{
+        title,
+        setTitle,
+        type,
+        setType,
+        priority,
+        setPriority,
+        createAssignee,
+        setCreateAssignee,
+        createDeps,
+        setCreateDeps,
+        removeCreateDep,
+        createNewDepType,
+        setCreateNewDepType,
+        createNewDepId,
+        setCreateNewDepId,
+        addCreateDep,
+        createNotes,
+        setCreateNotes,
+      }}
+      view=${{
+        viewDraft,
+        setViewDraft,
+        editingType,
+        setEditingType,
+        typeRef,
+        editingAssignee,
+        setEditingAssignee,
+        assigneeRef,
+        editingTitle,
+        setEditingTitle,
+        titleRef,
+        editingDesc,
+        setEditingDesc,
+        editingNotes,
+        setEditingNotes,
+        notesRef,
+        notesViewRef,
+        notesMinHeight,
+      }}
+      deps=${{
+        deps,
+        depsLoading,
+        depsBusy,
+        changeDepType,
+        mutateDep,
+        newDepType,
+        setNewDepType,
+        newDepId,
+        setNewDepId,
+        handleAddDep,
+      }}
+      labels=${{
+        labels,
+        allLabels,
+        addingLabel,
+        setAddingLabel,
+        newLabel,
+        setNewLabel,
+        labelsBusy,
+        labelInputRef,
+        mutateLabel,
+        handleAddLabel,
+      }}
+      comments=${{
+        comments,
+        addingComment,
+        commentDraft,
+        setCommentDraft,
+        savingComment,
+        commentRef,
+        handleCommentBlur,
+        startAddComment,
+      }}
+      handlers=${{
+        handleClose,
+        handleSave,
+        handleViewSave,
+        handleDiscardAndClose,
+        handleTitleKeyDown,
+        handleAssigneeKeyDown,
+        startEditTitle,
+        startEditAssignee,
+        startEditDesc,
+        startEditNotes,
+      }}
+      chrome=${{
+        headerToolbarItems,
+        panelMenu,
+        setPanelMenu,
+        panelMenuItems,
+        confirmDiscard,
+        setConfirmDiscard,
+      }}
+    />
   `;
 }
 
