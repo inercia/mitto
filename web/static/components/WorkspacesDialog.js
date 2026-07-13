@@ -5,12 +5,9 @@ const { useState, useEffect, useMemo, useCallback, useRef, html } =
 import {
   secureFetch,
   authFetch,
-  apiUrl,
   endpoints,
   errorMessageFromData,
   fetchConfig,
-  invalidateConfigCache,
-  openExternalURL,
 } from "../utils/index.js";
 
 import { getBasename } from "../lib.js";
@@ -21,6 +18,7 @@ import { useFolderPromptsConfig } from "../hooks/useFolderPromptsConfig.js";
 import { useFolderProcessorsConfig } from "../hooks/useFolderProcessorsConfig.js";
 import { useFolderShortcutsConfig } from "../hooks/useFolderShortcutsConfig.js";
 import { useFolderMetadataConfig } from "../hooks/useFolderMetadataConfig.js";
+import { useWorkspacesSaveCoordinator } from "../hooks/useWorkspacesSaveCoordinator.js";
 
 import { SpinnerIcon, CloseIcon, FolderIcon } from "./Icons.js";
 
@@ -1065,132 +1063,6 @@ export function WorkspacesDialog({
   const applyWorkspaceEdits = (ws) =>
     buildWorkspaceEditsFor(ws, selectedWorkspaceKey);
 
-  const handleSave = async () => {
-    // Block save if there's an incomplete new folder
-    if (isNewFolderIncomplete) {
-      setError("Please select a folder for the new workspace before saving");
-      return;
-    }
-    setSaving(true);
-    const saveStartTime = Date.now();
-    setError("");
-    try {
-      // Filter out any workspaces with empty working_dir (safety net)
-      let updated = workspaces.filter(
-        (ws) => ws.working_dir && ws.working_dir.trim() !== "",
-      );
-
-      // Apply folder-level edits if a folder is selected
-      if (selectedFolder) {
-        const folderGroup = groupedWorkspaces.find(
-          (g) => g.displayName === selectedFolder,
-        );
-        const folderWorkingDir = folderGroup?.workspaces[0]?.working_dir;
-        if (folderWorkingDir) {
-          updated = updated.map((ws) => applyFolderEdits(ws, folderWorkingDir));
-        }
-      }
-
-      // Apply workspace-level edits if a workspace is selected
-      if (selectedWorkspaceKey) {
-        updated = updated.map(applyWorkspaceEdits);
-
-        // Enforce a single default workspace per folder: if the selected workspace
-        // was marked default, clear is_default on the other workspaces in the same folder.
-        if (editIsDefault && selectedWorkspace?.working_dir) {
-          updated = updated.map((ws) =>
-            ws.working_dir === selectedWorkspace.working_dir &&
-            getWorkspaceKey(ws) !== selectedWorkspaceKey
-              ? { ...ws, is_default: undefined }
-              : ws,
-          );
-        }
-      }
-
-      if (updated.length === 0) {
-        setError("At least one workspace is required");
-        const elapsed = Date.now() - saveStartTime;
-        setTimeout(() => setSaving(false), Math.max(0, 1000 - elapsed));
-        return;
-      }
-
-      const config = await fetchConfig(null, true);
-      // The Workspaces dialog must never touch external-access auth/host/port — those
-      // belong to the Settings dialog. Omit the `web` section entirely so the backend
-      // preserves the existing auth config and never validates a password here.
-      const { web: _omitWeb, ...configWithoutWeb } = config;
-      const res = await secureFetch(endpoints.config.update(), {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          ...configWithoutWeb,
-          workspaces: updated,
-          prompts: [],
-        }),
-      });
-      if (!res.ok) {
-        let errData = null;
-        try {
-          errData = await res.json();
-        } catch (_e) {
-          /* non-JSON error body */
-        }
-        throw new Error(
-          errorMessageFromData(errData, "Failed to save configuration"),
-        );
-      }
-      const result = await res.json();
-      invalidateConfigCache();
-
-      // Save workspace metadata after config save (workspace must exist first).
-      // Both persist actions live in useFolderMetadataConfig; they no-op when
-      // no folder is selected or the folder has no resolvable uuid.
-      try {
-        await persistMetadata();
-      } catch (metaErr) {
-        setError("Failed to save metadata: " + metaErr.message);
-        const elapsed = Date.now() - saveStartTime;
-        setTimeout(() => setSaving(false), Math.max(0, 1000 - elapsed));
-        return;
-      }
-      try {
-        await persistUserDataSchema();
-      } catch (schemaErr) {
-        setError("Failed to save user data schema: " + schemaErr.message);
-        const elapsed = Date.now() - saveStartTime;
-        setTimeout(() => setSaving(false), Math.max(0, 1000 - elapsed));
-        return;
-      }
-
-      // Persist folder shortcuts if the Shortcuts tab was opened/edited.
-      if (selectedFolder && shortcutsLoaded) {
-        try {
-          await persistShortcuts();
-        } catch (scErr) {
-          setError("Failed to save shortcuts: " + scErr.message);
-          const elapsed = Date.now() - saveStartTime;
-          setTimeout(() => setSaving(false), Math.max(0, 1000 - elapsed));
-          return;
-        }
-      }
-
-      setWorkspaces(updated);
-      setNewFolderKey(null);
-      onSave?.();
-      showToast?.({
-        style: "success",
-        title: "Workspaces saved",
-        duration: 2000,
-      });
-    } catch (err) {
-      setError(err.message);
-    } finally {
-      const elapsed = Date.now() - saveStartTime;
-      const remaining = Math.max(0, 1000 - elapsed);
-      setTimeout(() => setSaving(false), remaining);
-    }
-  };
-
   const getUnusedServer = (workingDir, currentName) => {
     const used = new Set(
       workspaces
@@ -1235,6 +1107,33 @@ export function WorkspacesDialog({
     },
     [isNewFolderIncomplete, newFolderKey],
   );
+
+  // handleSave orchestration lives in useWorkspacesSaveCoordinator: composes
+  // folder/workspace edits, POSTs /config, then runs the metadata/schema/
+  // shortcuts persist chain and fires onSave/showToast. Must be called AFTER
+  // applyWorkspaceEdits/applyFolderEdits/isNewFolderIncomplete are defined.
+  const { handleSave } = useWorkspacesSaveCoordinator({
+    selectedFolder,
+    selectedWorkspaceKey,
+    selectedWorkspace,
+    groupedWorkspaces,
+    workspaces,
+    editIsDefault,
+    applyWorkspaceEdits,
+    getWorkspaceKey,
+    applyFolderEdits,
+    persistMetadata,
+    persistUserDataSchema,
+    shortcutsLoaded,
+    persistShortcuts,
+    isNewFolderIncomplete,
+    setWorkspaces,
+    setNewFolderKey,
+    setSaving,
+    setError,
+    onSave,
+    showToast,
+  });
 
   const addWorkspace = () => {
     if (acpServers.length === 0) return;
