@@ -41,6 +41,17 @@ func (s *Server) registerGlobalTools(mcpSrv *mcp.Server, deps Dependencies) {
 		Description: "Return the most recent cold-start diagnostic summaries (phase timeline + durations) captured by the cold-start tracer (mitto-3mv). Useful for post-hoc analysis of cold-start latency without grepping logs. Pass by_workspace=true to also receive a per-workspace rollup (total, failures, failure rate, p50/p95, last outcome) sorted by failure rate descending.",
 	}, s.createColdStartRecentHandler())
 
+	// mitto_beads_cache_metrics tool - registered only when the beads read
+	// cache is enabled (--beads-cache flag). Nil callback means the cache is
+	// off in this process, so we skip registration to avoid a tool that would
+	// always report zeroes.
+	if deps.BeadsCacheMetrics != nil {
+		mcp.AddTool(mcpSrv, &mcp.Tool{
+			Name:        "mitto_beads_cache_metrics",
+			Description: "Return a point-in-time snapshot of the beads read-cache counters (hits/misses/invalidations by reason/singleflight-shared/entries-current). Only registered when --beads-cache is enabled (mitto-is2).",
+		}, s.createBeadsCacheMetricsHandler())
+	}
+
 	// mitto_workspace_list tool - always available
 	mcp.AddTool(mcpSrv, &mcp.Tool{
 		Name: "mitto_workspace_list",

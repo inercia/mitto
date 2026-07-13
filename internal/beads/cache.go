@@ -3,6 +3,7 @@ package beads
 import (
 	"context"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"golang.org/x/sync/singleflight"
@@ -36,6 +37,32 @@ type CachingClient struct {
 	entries map[string]map[string]cacheEntry // dir -> methodTag -> entry
 
 	sf singleflight.Group
+
+	// Metrics counters (mitto-is2.5). Cumulative since construction, read via
+	// Metrics(). Reason-tagged so the invalidation counters add up (each drop
+	// bumps exactly one of writer/watcher/workspaceRemoved/ttl).
+	hits                    atomic.Int64
+	misses                  atomic.Int64
+	invalidWriter           atomic.Int64
+	invalidWatcher          atomic.Int64
+	invalidWorkspaceRemoved atomic.Int64
+	invalidTTL              atomic.Int64
+	singleflightShared      atomic.Int64
+}
+
+// CacheMetrics is a point-in-time snapshot of *CachingClient counters.
+// Fields are cumulative since process start (except EntriesCurrent, a gauge).
+type CacheMetrics struct {
+	Hits                          int64   `json:"hits"`
+	Misses                        int64   `json:"misses"`
+	BdInvocationsAvoided          int64   `json:"bd_invocations_avoided"` // == Hits
+	InvalidationsWriter           int64   `json:"invalidations_writer"`
+	InvalidationsWatcher          int64   `json:"invalidations_watcher"`
+	InvalidationsWorkspaceRemoved int64   `json:"invalidations_workspace_removed"`
+	InvalidationsTTL              int64   `json:"invalidations_ttl"`
+	SingleflightShared            int64   `json:"singleflight_shared"`
+	EntriesCurrent                int64   `json:"entries_current"`
+	HitRate                       float64 `json:"hit_rate"`
 }
 
 // NewCachingClient wraps inner with an in-memory read cache. Callers get back
@@ -49,22 +76,45 @@ func NewCachingClient(inner Client) *CachingClient {
 	}
 }
 
-// Invalidate drops every cached entry for the given workspace directory.
-// Safe to call for a dir that has no cached entries (no-op).
-func (c *CachingClient) Invalidate(dir string) {
+// evictDir drops every cached entry for dir under the write lock. Shared by all
+// per-dir invalidation entry points; each caller then bumps its own reason
+// counter so we never double-count.
+func (c *CachingClient) evictDir(dir string) {
 	c.mu.Lock()
 	delete(c.entries, dir)
 	c.mu.Unlock()
 }
 
-// InvalidateAll drops every cached entry across all workspaces.
+// Invalidate drops every cached entry for the given workspace directory
+// (writer-side invalidation semantics; counted under InvalidationsWriter).
+// Safe to call for a dir that has no cached entries (no-op).
+func (c *CachingClient) Invalidate(dir string) {
+	c.evictDir(dir)
+	c.invalidWriter.Add(1)
+}
+
+// InvalidateFromWatcher drops every cached entry for dir with watcher semantics
+// (counted under InvalidationsWatcher). Called by external-change subscribers
+// (e.g. BeadsWatcher fsnotify events) when an out-of-process mutation is
+// detected. Kept as a distinct method so metrics can distinguish in-process
+// writer invalidations from external ones.
+func (c *CachingClient) InvalidateFromWatcher(dir string) {
+	c.evictDir(dir)
+	c.invalidWatcher.Add(1)
+}
+
+// InvalidateAll drops every cached entry across all workspaces (counted once
+// under InvalidationsWorkspaceRemoved per call, regardless of how many dirs
+// were held).
 func (c *CachingClient) InvalidateAll() {
 	c.mu.Lock()
 	c.entries = make(map[string]map[string]cacheEntry)
 	c.mu.Unlock()
+	c.invalidWorkspaceRemoved.Add(1)
 }
 
 // lookup returns a cached entry for (dir, tag) if present and not expired.
+// A TTL-driven eviction is counted under InvalidationsTTL.
 func (c *CachingClient) lookup(dir, tag string) (cacheEntry, bool) {
 	c.mu.RLock()
 	entry, ok := c.entries[dir][tag]
@@ -74,16 +124,51 @@ func (c *CachingClient) lookup(dir, tag string) (cacheEntry, bool) {
 	}
 	if time.Since(entry.capturedAt) > c.ttl {
 		c.mu.Lock()
+		evicted := false
 		if cur, ok := c.entries[dir][tag]; ok && cur.capturedAt.Equal(entry.capturedAt) {
 			delete(c.entries[dir], tag)
 			if len(c.entries[dir]) == 0 {
 				delete(c.entries, dir)
 			}
+			evicted = true
 		}
 		c.mu.Unlock()
+		if evicted {
+			c.invalidTTL.Add(1)
+		}
 		return cacheEntry{}, false
 	}
 	return entry, true
+}
+
+// Metrics returns a point-in-time snapshot of the cache counters.
+func (c *CachingClient) Metrics() CacheMetrics {
+	hits := c.hits.Load()
+	misses := c.misses.Load()
+	var hitRate float64
+	if total := hits + misses; total > 0 {
+		hitRate = float64(hits) / float64(total)
+	}
+
+	c.mu.RLock()
+	var entries int64
+	for _, slot := range c.entries {
+		entries += int64(len(slot))
+	}
+	c.mu.RUnlock()
+
+	return CacheMetrics{
+		Hits:                          hits,
+		Misses:                        misses,
+		BdInvocationsAvoided:          hits,
+		InvalidationsWriter:           c.invalidWriter.Load(),
+		InvalidationsWatcher:          c.invalidWatcher.Load(),
+		InvalidationsWorkspaceRemoved: c.invalidWorkspaceRemoved.Load(),
+		InvalidationsTTL:              c.invalidTTL.Load(),
+		SingleflightShared:            c.singleflightShared.Load(),
+		EntriesCurrent:                entries,
+		HitRate:                       hitRate,
+	}
 }
 
 // store records a cache entry for (dir, tag).
@@ -106,13 +191,16 @@ func (c *CachingClient) doJSON(ctx context.Context, dir, tag string, fetch func(
 		return fetch(ctx)
 	}
 	if entry, ok := c.lookup(dir, tag); ok {
+		c.hits.Add(1)
 		return entry.payload, nil
 	}
 	key := dir + "\x00" + tag
-	v, err, _ := c.sf.Do(key, func() (any, error) {
+	v, err, shared := c.sf.Do(key, func() (any, error) {
 		if entry, ok := c.lookup(dir, tag); ok {
+			c.hits.Add(1)
 			return entry.payload, nil
 		}
+		c.misses.Add(1)
 		out, err := fetch(ctx)
 		if err != nil {
 			return nil, err
@@ -120,6 +208,9 @@ func (c *CachingClient) doJSON(ctx context.Context, dir, tag string, fetch func(
 		c.store(dir, tag, cacheEntry{payload: out, capturedAt: time.Now()})
 		return out, nil
 	})
+	if shared {
+		c.singleflightShared.Add(1)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -168,13 +259,16 @@ func (c *CachingClient) ConfigShow(ctx context.Context, dir string) (map[string]
 		return c.inner.ConfigShow(ctx, dir)
 	}
 	if entry, ok := c.lookup(dir, tag); ok && entry.configMap != nil {
+		c.hits.Add(1)
 		return entry.configMap, nil
 	}
 	key := dir + "\x00" + tag
-	v, err, _ := c.sf.Do(key, func() (any, error) {
+	v, err, shared := c.sf.Do(key, func() (any, error) {
 		if entry, ok := c.lookup(dir, tag); ok && entry.configMap != nil {
+			c.hits.Add(1)
 			return entry.configMap, nil
 		}
+		c.misses.Add(1)
 		out, err := c.inner.ConfigShow(ctx, dir)
 		if err != nil {
 			return nil, err
@@ -182,6 +276,9 @@ func (c *CachingClient) ConfigShow(ctx context.Context, dir string) (map[string]
 		c.store(dir, tag, cacheEntry{configMap: out, capturedAt: time.Now()})
 		return out, nil
 	})
+	if shared {
+		c.singleflightShared.Add(1)
+	}
 	if err != nil {
 		return nil, err
 	}

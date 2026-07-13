@@ -884,10 +884,11 @@ func NewServer(config Config) (*Server, error) {
 		mcpSrv, err := mcpserver.NewServer(
 			mcpserver.Config{Host: mcpHost, Port: mcpPort},
 			mcpserver.Dependencies{
-				Store:          store,
-				Config:         config.MittoConfig,
-				SessionManager: &sessionManagerAdapter{sm: sessionMgr},
-				PromptsCache:   config.PromptsCache,
+				Store:             store,
+				Config:            config.MittoConfig,
+				SessionManager:    &sessionManagerAdapter{sm: sessionMgr},
+				PromptsCache:      config.PromptsCache,
+				BeadsCacheMetrics: s.beadsCacheMetricsCallback(),
 			},
 		)
 		if err != nil {
@@ -2294,8 +2295,18 @@ func (b *beadsCacheWatcherSubscriber) OnBeadsChanged(event configPkg.BeadsChange
 		return
 	}
 	for _, dir := range event.WorkingDirs {
-		b.cache.Invalidate(dir)
+		b.cache.InvalidateFromWatcher(dir)
 	}
+}
+
+// beadsCacheMetricsCallback returns a nil-safe snapshot callback for the
+// mitto_beads_cache_metrics MCP tool. It returns nil when the read cache is
+// disabled (s.beadsCache == nil), so the tool is not registered in that mode.
+func (s *Server) beadsCacheMetricsCallback() func() beads.CacheMetrics {
+	if s.beadsCache == nil {
+		return nil
+	}
+	return func() beads.CacheMetrics { return s.beadsCache.Metrics() }
 }
 
 // OnBeadsChanged is called by the BeadsWatcher when .beads/ directories change.

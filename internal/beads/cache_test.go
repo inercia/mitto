@@ -424,3 +424,168 @@ type erroringWriterClient struct {
 	fakeClient
 	writeErr error
 }
+
+// ---------------------------------------------------------------------------
+// Metrics tests (mitto-is2.5)
+// ---------------------------------------------------------------------------
+
+func TestCachingClient_MetricsHitMiss(t *testing.T) {
+	dir := initializedDir(t)
+	fake := &fakeClient{}
+	c := NewCachingClient(fake)
+
+	if _, err := c.List(context.Background(), dir); err != nil {
+		t.Fatalf("List #1: %v", err)
+	}
+	if _, err := c.List(context.Background(), dir); err != nil {
+		t.Fatalf("List #2: %v", err)
+	}
+
+	m := c.Metrics()
+	if m.Hits != 1 {
+		t.Errorf("Hits = %d, want 1", m.Hits)
+	}
+	if m.Misses != 1 {
+		t.Errorf("Misses = %d, want 1", m.Misses)
+	}
+	if m.BdInvocationsAvoided != 1 {
+		t.Errorf("BdInvocationsAvoided = %d, want 1 (== Hits)", m.BdInvocationsAvoided)
+	}
+	if m.EntriesCurrent != 1 {
+		t.Errorf("EntriesCurrent = %d, want 1", m.EntriesCurrent)
+	}
+	if m.HitRate != 0.5 {
+		t.Errorf("HitRate = %v, want 0.5", m.HitRate)
+	}
+}
+
+func TestCachingClient_MetricsWriterInvalidation(t *testing.T) {
+	dir := initializedDir(t)
+	fake := &fakeClient{}
+	c := NewCachingClient(fake)
+
+	if _, err := c.List(context.Background(), dir); err != nil {
+		t.Fatalf("List #1: %v", err)
+	}
+	if err := c.SetStatus(context.Background(), dir, "x-1", "close"); err != nil {
+		t.Fatalf("SetStatus: %v", err)
+	}
+	if _, err := c.List(context.Background(), dir); err != nil {
+		t.Fatalf("List #2: %v", err)
+	}
+
+	m := c.Metrics()
+	if m.InvalidationsWriter != 1 {
+		t.Errorf("InvalidationsWriter = %d, want 1", m.InvalidationsWriter)
+	}
+	if m.InvalidationsWatcher != 0 {
+		t.Errorf("InvalidationsWatcher = %d, want 0", m.InvalidationsWatcher)
+	}
+	if m.Misses != 2 {
+		t.Errorf("Misses = %d, want 2 (both Lists were misses)", m.Misses)
+	}
+}
+
+func TestCachingClient_MetricsWatcherInvalidation(t *testing.T) {
+	dir := initializedDir(t)
+	fake := &fakeClient{}
+	c := NewCachingClient(fake)
+
+	if _, err := c.List(context.Background(), dir); err != nil {
+		t.Fatalf("List #1: %v", err)
+	}
+	c.InvalidateFromWatcher(dir)
+	if _, err := c.List(context.Background(), dir); err != nil {
+		t.Fatalf("List #2: %v", err)
+	}
+
+	m := c.Metrics()
+	if m.InvalidationsWatcher != 1 {
+		t.Errorf("InvalidationsWatcher = %d, want 1", m.InvalidationsWatcher)
+	}
+	if m.InvalidationsWriter != 0 {
+		t.Errorf("InvalidationsWriter = %d, want 0", m.InvalidationsWriter)
+	}
+	if fake.listCalls != 2 {
+		t.Errorf("listCalls = %d, want 2 (watcher invalidation should force re-fetch)", fake.listCalls)
+	}
+}
+
+func TestCachingClient_MetricsTTLInvalidation(t *testing.T) {
+	dir := initializedDir(t)
+	fake := &fakeClient{}
+	c := NewCachingClient(fake)
+	c.ttl = 20 * time.Millisecond
+
+	if _, err := c.List(context.Background(), dir); err != nil {
+		t.Fatalf("List #1: %v", err)
+	}
+	time.Sleep(30 * time.Millisecond)
+	if _, err := c.List(context.Background(), dir); err != nil {
+		t.Fatalf("List #2: %v", err)
+	}
+
+	m := c.Metrics()
+	if m.InvalidationsTTL != 1 {
+		t.Errorf("InvalidationsTTL = %d, want 1", m.InvalidationsTTL)
+	}
+	if m.Misses != 2 {
+		t.Errorf("Misses = %d, want 2 (initial + TTL-expired refetch)", m.Misses)
+	}
+	if m.InvalidationsWriter != 0 || m.InvalidationsWatcher != 0 {
+		t.Errorf("non-TTL invalidations unexpectedly counted: writer=%d watcher=%d",
+			m.InvalidationsWriter, m.InvalidationsWatcher)
+	}
+}
+
+func TestCachingClient_MetricsSingleflightShared(t *testing.T) {
+	dir := initializedDir(t)
+	fake := &fakeClient{blockList: make(chan struct{})}
+	c := NewCachingClient(fake)
+
+	const N = 10
+	var wg sync.WaitGroup
+	for i := 0; i < N; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, _ = c.List(context.Background(), dir)
+		}()
+	}
+	// Give goroutines a moment to enter singleflight.Do.
+	time.Sleep(20 * time.Millisecond)
+	close(fake.blockList)
+	wg.Wait()
+
+	m := c.Metrics()
+	if m.SingleflightShared < 1 {
+		t.Errorf("SingleflightShared = %d, want >= 1", m.SingleflightShared)
+	}
+	if m.Misses != 1 {
+		t.Errorf("Misses = %d, want 1 (singleflight should collapse to a single fetch)", m.Misses)
+	}
+}
+
+func TestCachingClient_MetricsInvalidateAllCounts(t *testing.T) {
+	dirA := initializedDir(t)
+	dirB := initializedDir(t)
+	fake := &fakeClient{}
+	c := NewCachingClient(fake)
+
+	if _, err := c.List(context.Background(), dirA); err != nil {
+		t.Fatalf("List dirA: %v", err)
+	}
+	if _, err := c.List(context.Background(), dirB); err != nil {
+		t.Fatalf("List dirB: %v", err)
+	}
+	c.InvalidateAll()
+
+	m := c.Metrics()
+	if m.InvalidationsWorkspaceRemoved != 1 {
+		t.Errorf("InvalidationsWorkspaceRemoved = %d, want 1 (per-call, not per-entry)",
+			m.InvalidationsWorkspaceRemoved)
+	}
+	if m.EntriesCurrent != 0 {
+		t.Errorf("EntriesCurrent = %d, want 0 after InvalidateAll", m.EntriesCurrent)
+	}
+}

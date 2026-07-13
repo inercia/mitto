@@ -9,6 +9,7 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
+	"github.com/inercia/mitto/internal/beads"
 	"github.com/inercia/mitto/internal/coldstart"
 	"github.com/inercia/mitto/internal/config"
 	"github.com/inercia/mitto/internal/session"
@@ -575,5 +576,23 @@ func (s *Server) createColdStartRecentHandler() mcp.ToolHandlerFor[ColdStartRece
 			out.WorkspaceStats = coldstart.AggregateByWorkspace(sums)
 		}
 		return nil, out, nil
+	}
+}
+
+// BeadsCacheMetricsInput is the (empty) input for mitto_beads_cache_metrics.
+type BeadsCacheMetricsInput struct{}
+
+// createBeadsCacheMetricsHandler creates the handler for the
+// mitto_beads_cache_metrics tool. The tool is registered only when the beads
+// read cache is enabled (--beads-cache); the handler defensively guards
+// against a nil callback and returns a zero-value snapshot if the cache was
+// torn down between registration and invocation.
+func (s *Server) createBeadsCacheMetricsHandler() mcp.ToolHandlerFor[BeadsCacheMetricsInput, beads.CacheMetrics] {
+	return func(ctx context.Context, req *mcp.CallToolRequest, input BeadsCacheMetricsInput) (*mcp.CallToolResult, beads.CacheMetrics, error) {
+		fn := s.beadsCacheMetricsFn
+		if fn == nil {
+			return nil, beads.CacheMetrics{}, nil
+		}
+		return nil, fn(), nil
 	}
 }

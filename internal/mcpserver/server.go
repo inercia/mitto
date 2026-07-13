@@ -21,6 +21,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
+	"github.com/inercia/mitto/internal/beads"
 	"github.com/inercia/mitto/internal/config"
 	"github.com/inercia/mitto/internal/logging"
 	"github.com/inercia/mitto/internal/session"
@@ -72,6 +73,11 @@ type Server struct {
 	loopRunner     LoopRunner // Optional — for triggering loop runs via MCP
 	running        bool
 	shutdown       bool
+
+	// beadsCacheMetricsFn returns a snapshot of the beads read-cache counters.
+	// Non-nil only when the --beads-cache flag is on; the mitto_beads_cache_metrics
+	// tool is registered only when this is non-nil (mitto-is2.5).
+	beadsCacheMetricsFn func() beads.CacheMetrics
 
 	// Session registry for session-scoped tools.
 	// Maps session_id -> registeredSession for routing UI prompts and checking permissions.
@@ -132,6 +138,10 @@ type Dependencies struct {
 	// PromptsCache provides cached access to global prompts from MITTO_DIR/prompts/.
 	// If nil, global file prompts are not loaded.
 	PromptsCache *config.PromptsCache
+	// BeadsCacheMetrics, when non-nil, returns a snapshot of the beads read-cache
+	// counters. Wired only when the --beads-cache flag is on. Nil means the
+	// mitto_beads_cache_metrics tool is not registered (mitto-is2.5).
+	BeadsCacheMetrics func() beads.CacheMetrics
 }
 
 // SessionManager interface for checking session status and managing sessions.
@@ -276,6 +286,7 @@ func NewServer(cfg Config, deps Dependencies) (*Server, error) {
 		config:                deps.Config,
 		promptsCache:          deps.PromptsCache,
 		sessionManager:        deps.SessionManager,
+		beadsCacheMetricsFn:   deps.BeadsCacheMetrics,
 		sessions:              make(map[string]*registeredSession),
 		pendingRequests:       make(map[string][]*pendingRequest),
 		mcpSessionMap:         make(map[string]string),
