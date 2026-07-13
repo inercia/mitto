@@ -152,12 +152,11 @@ export function useWebSocket({
   // MCP tools per workspace UUID: { [workspaceUUID]: [{name, description}] }
   const [workspaceMcpTools, setWorkspaceMcpTools] = useState({});
 
-  // Track background session completions for toast notifications
-  // { sessionId, sessionName, timestamp }
-  const [backgroundCompletion, setBackgroundCompletion] = useState(null);
-
-  // Background notification state (loop started, background UI prompts) — extracted to useWSNotifications sub-hook, mitto-90f.5
+  // Background notification state (completions, loop started, background UI prompts) — extracted to useWSNotifications sub-hook, mitto-90f.5
   const {
+    backgroundCompletion,
+    setBackgroundCompletion,
+    clearBackgroundCompletion,
     loopStarted,
     setLoopStarted,
     clearLoopStarted,
@@ -5775,11 +5774,6 @@ export function useWebSocket({
       document.removeEventListener("visibilitychange", handleVisibilityChange);
     };
   }, [fetchStoredSessions, reconnectAllSessionsStaggered, switchSession]);
-
-  // Clear background completion notification
-  const clearBackgroundCompletion = useCallback(() => {
-    setBackgroundCompletion(null);
-  }, []);
 
   // Send UI prompt answer (yes/no or select response)
   const sendUIPromptAnswer = useCallback(

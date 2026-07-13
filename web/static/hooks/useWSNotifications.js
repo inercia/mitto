@@ -9,6 +9,10 @@
 const { useState, useCallback } = window.preact;
 
 export function useWSNotifications() {
+  // Track background session completions for toast notifications
+  // { sessionId, sessionName, timestamp }
+  const [backgroundCompletion, setBackgroundCompletion] = useState(null);
+
   // Track loop session starts for toast notifications
   // { sessionId, sessionName, timestamp }
   const [loopStarted, setLoopStarted] = useState(null);
@@ -22,6 +26,11 @@ export function useWSNotifications() {
   // { sessionId, sessionName, question, timestamp }
   const [backgroundUIPromptTimeout, setBackgroundUIPromptTimeout] =
     useState(null);
+
+  // Clear background completion notification
+  const clearBackgroundCompletion = useCallback(() => {
+    setBackgroundCompletion(null);
+  }, []);
 
   // Clear loop started notification
   const clearLoopStarted = useCallback(() => {
@@ -39,6 +48,9 @@ export function useWSNotifications() {
   }, []);
 
   return {
+    backgroundCompletion,
+    setBackgroundCompletion,
+    clearBackgroundCompletion,
     loopStarted,
     setLoopStarted,
     clearLoopStarted,
