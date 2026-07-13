@@ -21,6 +21,30 @@ import (
 	"github.com/inercia/mitto/internal/session"
 )
 
+// UIOptionsItem represents a single option in the unified options menu.
+type UIOptionsItem struct {
+	Label       string `json:"label"`
+	Description string `json:"description,omitempty"`
+}
+
+// UIOptionsInput is the input for the mitto_ui_options tool.
+type UIOptionsInput struct {
+	SelfID              string          `json:"self_id"` // YOUR session ID (the caller)
+	Question            string          `json:"question"`
+	Options             []UIOptionsItem `json:"options"`
+	AllowFreeText       bool            `json:"allow_free_text,omitempty"`
+	FreeTextPlaceholder string          `json:"free_text_placeholder,omitempty"`
+	TimeoutSeconds      int             `json:"timeout_seconds,omitempty"`
+}
+
+// UIOptionsOutput is the output for the mitto_ui_options tool.
+type UIOptionsOutput struct {
+	Selected string `json:"selected,omitempty"`
+	Index    int    `json:"index"`
+	FreeText string `json:"free_text,omitempty"`
+	TimedOut bool   `json:"timed_out,omitempty"`
+}
+
 func (s *Server) handleUIOptions(ctx context.Context, req *mcp.CallToolRequest, input UIOptionsInput) (*mcp.CallToolResult, UIOptionsOutput, error) {
 	// Validate self_id
 	if input.SelfID == "" {
