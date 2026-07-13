@@ -22,6 +22,7 @@ import { authFetch, secureFetch, endpoints } from "../../../utils/index.js";
 import { readBeadsResponse } from "../../../utils/beads.js";
 import { renderMarkdown } from "../CommentBody.js";
 import { buildPromptGroupMenuItems } from "../../ContextMenu.js";
+import { useIssueLabels } from "./useIssueLabels.js";
 import {
   PlusIcon,
   CheckIcon,
@@ -175,18 +176,22 @@ export function useBeadsDetailPanel({
   const [depsBusy, setDepsBusy] = useState(false);
   const [newDepType, setNewDepType] = useState("blocks");
   const [newDepId, setNewDepId] = useState("");
-  // Labels shown in view mode. `labels` mirrors the issue's current labels
-  // (refreshed via fetchDeps); `labelsBusy` gates add/remove requests;
-  // `newLabel` backs the add-label input; `allLabels` holds the workspace-wide
-  // label suggestions rendered in the add-label datalist.
-  const [labels, setLabels] = useState([]);
-  const [labelsBusy, setLabelsBusy] = useState(false);
-  const [newLabel, setNewLabel] = useState("");
-  const [allLabels, setAllLabels] = useState([]);
-  // `addingLabel` toggles the inline add-label input (revealed by the "+"
-  // button); `labelInputRef` lets us focus it as soon as it opens.
-  const [addingLabel, setAddingLabel] = useState(false);
-  const labelInputRef = useRef(null);
+  // Labels editing state + handlers now live in useIssueLabels (mitto-90f.7
+  // PR-12). fetchDepsRef bridges the labels->deps callback tangle: fetchDeps
+  // is defined later in this hook, so we hand the sub-hook a ref that we
+  // populate below (see `fetchDepsRef.current = fetchDeps`). The composer
+  // continues to read labels state via `labels.*` (see fetchDeps refresh and
+  // the issue-switch reset effect below).
+  const fetchDepsRef = useRef(null);
+  const labels = useIssueLabels({
+    data,
+    workingDir,
+    showToast,
+    fetchDepsRef,
+    onUpdated,
+    isOpen,
+    creating,
+  });
   const [comments, setComments] = useState([]);
   const [notes, setNotes] = useState("");
 
@@ -907,14 +912,14 @@ export function useBeadsDetailPanel({
         const respData = await readBeadsResponse(res);
         if (!res.ok || respData.error) {
           setDeps([]);
-          setLabels([]);
+          labels.setLabels([]);
           setComments([]);
           setNotes("");
           if (seedDraftNotes) setViewDraft((prev) => ({ ...prev, notes: "" }));
         } else {
           const issueObj = Array.isArray(respData) ? respData[0] : respData;
           setDeps((issueObj && issueObj.dependencies) || []);
-          setLabels((issueObj && issueObj.labels) || []);
+          labels.setLabels((issueObj && issueObj.labels) || []);
           setComments((issueObj && issueObj.comments) || []);
           const fetchedNotes = (issueObj && issueObj.notes) || "";
           setNotes(fetchedNotes);
@@ -923,7 +928,7 @@ export function useBeadsDetailPanel({
         }
       } catch (_err) {
         setDeps([]);
-        setLabels([]);
+        labels.setLabels([]);
         setComments([]);
         setNotes("");
         if (seedDraftNotes) setViewDraft((prev) => ({ ...prev, notes: "" }));
@@ -931,8 +936,11 @@ export function useBeadsDetailPanel({
         setDepsLoading(false);
       }
     },
-    [workingDir, data && data.id],
+    [workingDir, data && data.id, labels.setLabels],
   );
+  // Wire the fetchDepsRef forward-reference bridge used by useIssueLabels so
+  // mutateLabel can trigger a full issue refresh after add/remove.
+  fetchDepsRef.current = fetchDeps;
 
   // Open the new-comment editor with an empty draft.
   const startAddComment = useCallback(() => {
@@ -996,13 +1004,13 @@ export function useBeadsDetailPanel({
   // seedDraftNotes=true so the initial open seeds viewDraft.notes from the response.
   useEffect(() => {
     setDeps([]);
-    setLabels([]);
+    labels.setLabels([]);
     setComments([]);
     setNotes("");
     setNewDepId("");
     setNewDepType("blocks");
-    setNewLabel("");
-    setAddingLabel(false);
+    labels.setNewLabel("");
+    labels.setAddingLabel(false);
     if (isOpen && !creating && data && data.id) {
       fetchDeps(true);
     }
@@ -1065,102 +1073,6 @@ export function useBeadsDetailPanel({
     const ok = await mutateDep("add", target, newDepType);
     if (ok) setNewDepId("");
   }, [newDepId, newDepType, depsBusy, mutateDep]);
-
-  // Fetch the workspace's unique labels to suggest when adding a label. bd
-  // returns [{label,count}, ...]; we keep only the names. Refreshed when the
-  // panel opens and after a label is added. Non-fatal on failure.
-  const fetchAllLabels = useCallback(async () => {
-    if (!workingDir) return;
-    try {
-      const res = await authFetch(
-        endpoints.issues.labelsAll({ working_dir: workingDir }),
-      );
-      const respData = await readBeadsResponse(res);
-      if (res.ok && Array.isArray(respData)) {
-        setAllLabels(
-          respData
-            .map((l) => (typeof l === "string" ? l : l && l.label))
-            .filter(Boolean),
-        );
-      }
-    } catch (_err) {
-      // Non-fatal: label suggestions just won't populate.
-    }
-  }, [workingDir]);
-
-  useEffect(() => {
-    if (isOpen && !creating) fetchAllLabels();
-  }, [isOpen, creating, fetchAllLabels]);
-
-  // Add or remove a label on the current issue, then refresh the issue (so the
-  // labels list stays current) and notify the parent list. Mirrors mutateDep.
-  const mutateLabel = useCallback(
-    async (action, label) => {
-      const value = (label || "").trim();
-      if (!data || !data.id || !value) return false;
-      setLabelsBusy(true);
-      try {
-        const res = await secureFetch(
-          endpoints.issues.labels(data.id, { working_dir: workingDir }),
-          {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ label: value, action }),
-          },
-        );
-        const respData = await readBeadsResponse(res);
-        if (!res.ok || respData.error) {
-          showToast &&
-            showToast({
-              style: "error",
-              title: respData.error || `Failed to ${action} label`,
-            });
-          return false;
-        }
-        showToast &&
-          showToast({
-            style: "success",
-            title:
-              action === "add"
-                ? `Added label "${value}"`
-                : `Removed label "${value}"`,
-          });
-        await fetchDeps(false);
-        if (action === "add") fetchAllLabels();
-        onUpdated && onUpdated();
-        return true;
-      } catch (err) {
-        showToast &&
-          showToast({
-            style: "error",
-            title: err.message || `Failed to ${action} label`,
-          });
-        return false;
-      } finally {
-        setLabelsBusy(false);
-      }
-    },
-    [
-      data && data.id,
-      workingDir,
-      showToast,
-      fetchDeps,
-      fetchAllLabels,
-      onUpdated,
-    ],
-  );
-
-  const handleAddLabel = useCallback(async () => {
-    const value = newLabel.trim();
-    if (!value || labelsBusy) return;
-    const ok = await mutateLabel("add", value);
-    if (ok) setNewLabel("");
-  }, [newLabel, labelsBusy, mutateLabel]);
-
-  // Focus the add-label input as soon as the "+" reveals it.
-  useEffect(() => {
-    if (addingLabel && labelInputRef.current) labelInputRef.current.focus();
-  }, [addingLabel]);
 
   // Change the kind of an existing edge. bd has no in-place type update, so this
   // removes the edge and re-adds it with the new type. A single combined toast
@@ -1311,18 +1223,7 @@ export function useBeadsDetailPanel({
       setNewDepId,
       handleAddDep,
     },
-    labels: {
-      labels,
-      allLabels,
-      addingLabel,
-      setAddingLabel,
-      newLabel,
-      setNewLabel,
-      labelsBusy,
-      labelInputRef,
-      mutateLabel,
-      handleAddLabel,
-    },
+    labels,
     comments: {
       comments,
       addingComment,
