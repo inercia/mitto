@@ -15,10 +15,6 @@ import {
   setBeadsGrouping,
   getBeadsSort,
   setBeadsSort,
-  openExternalURL,
-  openFileURL,
-  buildWorkspaceViewerURL,
-  openViewerUrl,
 } from "../utils/index.js";
 import {
   readBeadsResponse,
@@ -44,6 +40,11 @@ import {
   depStatusBadge,
   typeBadge,
 } from "./beads/Badges.js";
+import {
+  renderMarkdown,
+  handleBeadsContentClick,
+  commentBody,
+} from "./beads/CommentBody.js";
 // Re-export statusBadge at its original location so SessionPanel.js
 // (`import { statusBadge as beadsStatusBadge } from "./BeadsView.js"`) keeps
 // working after the move to beads/Badges.js (mitto-90f.3 E-4).
@@ -131,60 +132,9 @@ let beadsStatusToggles = { open: true, in_progress: true, closed: false };
 // typeBadge) live in ./beads/Badges.js so they can be reused independently of
 // this file's large surface. See mitto-90f.3 E-4.
 
-function renderMarkdown(text) {
-  if (!text) return null;
-  if (typeof window !== "undefined" && window.marked && window.DOMPurify) {
-    const raw = window.marked.parse(text);
-    return window.DOMPurify.sanitize(raw, { USE_PROFILES: { html: true } });
-  }
-  return null;
-}
-
-// Intercept clicks on links inside rendered beads markdown (description,
-// comments, notes). Relative links reference files in the workspace and must
-// open in the internal viewer — otherwise the SPA router follows the bare href
-// and renders a blank "Not Found" page. External URLs open in the system
-// browser. Returns true when a link was handled so callers can skip any
-// edit-mode toggle on the surrounding container.
-function handleBeadsContentClick(e, workspacePath) {
-  const target = e.target;
-  const link = target && target.closest ? target.closest("a") : null;
-  if (!link) return false;
-  const href = link.getAttribute("href");
-  if (!href || href.startsWith("#")) return false;
-
-  // A link was clicked: prevent SPA navigation and edit-mode toggles.
-  e.preventDefault();
-  e.stopPropagation();
-
-  if (/^(https?:|mailto:|tel:)/i.test(href)) {
-    openExternalURL(href);
-    return true;
-  }
-  if (/^file:/i.test(href)) {
-    openFileURL(href);
-    return true;
-  }
-  // Everything else is treated as a workspace-relative file → internal viewer.
-  const viewerUrl = buildWorkspaceViewerURL(href, workspacePath);
-  if (viewerUrl) openViewerUrl(viewerUrl);
-  return true;
-}
-
-function commentBody(text, workspacePath) {
-  const m = renderMarkdown(text);
-  if (m)
-    return html`<div
-      class="markdown-content text-mitto-text text-sm max-w-none"
-      onClick=${(e) => handleBeadsContentClick(e, workspacePath)}
-      dangerouslySetInnerHTML=${{ __html: m }}
-    />`;
-  return html`<pre
-    class="whitespace-pre-wrap wrap-break-word text-sm text-mitto-text"
-  >
-${text || ""}</pre
-  >`;
-}
+// Markdown rendering (renderMarkdown), link-click interception
+// (handleBeadsContentClick) and the shared markdown/pre wrapper (commentBody)
+// live in ./beads/CommentBody.js. See mitto-90f.3 E-5.
 
 // ---- Detail side panel ------------------------------------------------------
 
