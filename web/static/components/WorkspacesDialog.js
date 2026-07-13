@@ -18,6 +18,7 @@ import { useFolderPromptsConfig } from "../hooks/useFolderPromptsConfig.js";
 import { useFolderProcessorsConfig } from "../hooks/useFolderProcessorsConfig.js";
 import { useFolderShortcutsConfig } from "../hooks/useFolderShortcutsConfig.js";
 import { useFolderMetadataConfig } from "../hooks/useFolderMetadataConfig.js";
+import { useWorkspaceEdits } from "../hooks/useWorkspaceEdits.js";
 import { useWorkspaceMcpTools } from "../hooks/useWorkspaceMcpTools.js";
 import { useWorkspacesSaveCoordinator } from "../hooks/useWorkspacesSaveCoordinator.js";
 
@@ -106,11 +107,11 @@ export function WorkspacesDialog({
   // so we hand the desired tab off here and consume it there.
   const pendingInitialTabRef = useRef(null);
 
-  // Tracks the workspace whose transient edit fields are currently loaded, so we
-  // can flush those edits back into the `workspaces` array before switching to a
-  // different workspace. Without this, edits to multiple workspaces in a single
-  // dialog session would be lost (only the last-selected workspace would save).
-  const prevSelectedWorkspaceKeyRef = useRef(null);
+  // prevSelectedWorkspaceKeyRef + workspace-level edit state (editAcpServer,
+  // editAuxModel*, editInitialModel*, editRunner*, editAutoApprove, editIsDefault,
+  // editAcpCommandOverride) + buildWorkspaceEditsFor/applyWorkspaceEdits helpers
+  // + populate-and-flush effect are owned by useWorkspaceEdits (invoked below,
+  // after selectedWorkspace + getWorkspaceKey are defined).
 
   // Key of a newly created workspace that doesn't have a valid working_dir yet
   const [newFolderKey, setNewFolderKey] = useState(null);
@@ -118,23 +119,7 @@ export function WorkspacesDialog({
   // Per-folder expansion state in the tree, keyed by folder display name. Defaults to expanded.
   const [expandedFolders, setExpandedFolders] = useState({});
 
-  const [editAcpServer, setEditAcpServer] = useState("");
-  const [editAuxModelProfile, setEditAuxModelProfile] = useState("");
-  const [editAuxModelTag, setEditAuxModelTag] = useState("");
-  // Whether the user has explicitly cleared a legacy raw auxiliary model
-  // constraint by picking "-- None --" (vs. never having touched the control).
-  const [editAuxModelConstraintCleared, setEditAuxModelConstraintCleared] =
-    useState(false);
-  // Per-workspace initial-model preference applied as the baseline model of
-  // every new conversation created in this workspace. Mutually exclusive:
-  // profile wins server-side when both are set.
-  const [editInitialModelProfile, setEditInitialModelProfile] = useState("");
-  const [editInitialModelTag, setEditInitialModelTag] = useState("");
-  const [editRunner, setEditRunner] = useState("exec");
-  const [editRunnerConfig, setEditRunnerConfig] = useState(null);
-  const [editAutoApprove, setEditAutoApprove] = useState(false);
-  const [editIsDefault, setEditIsDefault] = useState(false);
-  const [editAcpCommandOverride, setEditAcpCommandOverride] = useState("");
+  // edit* workspace-level state owned by useWorkspaceEdits (see below).
   const [effectiveConfig, setEffectiveConfig] = useState(null);
 
   // mcpTools / mcpToolsLoading / mcpToolsError state owned by useWorkspaceMcpTools
@@ -390,6 +375,42 @@ export function WorkspacesDialog({
     [workspaces, selectedWorkspaceKey],
   );
 
+  // Workspace-level edit fields (transient scalar state) + populate/flush
+  // effect + buildWorkspaceEditsFor/applyWorkspaceEdits helpers +
+  // prevSelectedWorkspaceKeyRef. Invoked here so downstream useMemos and hooks
+  // (auxLegacyModelLabel, useWorkspaceMcpTools, useWorkspacesSaveCoordinator)
+  // can consume the returned edit* values and helpers.
+  const {
+    editAcpServer,
+    editAuxModelProfile,
+    editAuxModelTag,
+    editInitialModelProfile,
+    editInitialModelTag,
+    editRunner,
+    editRunnerConfig,
+    editAutoApprove,
+    editIsDefault,
+    editAcpCommandOverride,
+    setEditAcpServer,
+    setEditAuxModelProfile,
+    setEditAuxModelTag,
+    setEditAuxModelConstraintCleared,
+    setEditInitialModelProfile,
+    setEditInitialModelTag,
+    setEditRunner,
+    setEditRunnerConfig,
+    setEditAutoApprove,
+    setEditIsDefault,
+    setEditAcpCommandOverride,
+    applyWorkspaceEdits,
+    prevSelectedWorkspaceKeyRef,
+  } = useWorkspaceEdits({
+    selectedWorkspace,
+    selectedWorkspaceKey,
+    setWorkspaces,
+    getWorkspaceKey,
+  });
+
   // Legacy raw matchMode/pattern constraint for the auxiliary model, if any,
   // and whether it's shown as a disabled "Custom (legacy)" dropdown option
   // (only when no profile is selected and it doesn't match a known profile).
@@ -470,36 +491,12 @@ export function WorkspacesDialog({
     });
   }, [isOpen, selectedFolder, loading]);
 
-  // When a workspace child is selected, populate workspace-level edit fields
+  // When a workspace child is selected, reset effectiveConfig and (re)fetch it.
+  // The workspace-level edit-field populate and previous-workspace flush are
+  // owned by useWorkspaceEdits; the mcp state reset by useWorkspaceMcpTools.
   useEffect(() => {
-    // Flush the previously-selected workspace's transient edits into the
-    // workspaces array before repopulating the fields for the new selection.
-    // The scalar edit state (editAcpServer, editAuxModelProfile, etc.) still
-    // holds the previous workspace's values at this point, so applying them
-    // against prevKey commits those edits. This also runs when navigating to a
-    // folder (selectedWorkspaceKey becomes null) so edits are not lost there.
-    const prevKey = prevSelectedWorkspaceKeyRef.current;
-    if (prevKey && prevKey !== selectedWorkspaceKey) {
-      setWorkspaces((prev) =>
-        prev.map((ws) => buildWorkspaceEditsFor(ws, prevKey)),
-      );
-    }
-    prevSelectedWorkspaceKeyRef.current = selectedWorkspaceKey;
-
     if (!selectedWorkspace) return;
-    setEditAcpServer(selectedWorkspace.acp_server || "");
-    setEditAuxModelProfile(selectedWorkspace.auxiliary_model_profile || "");
-    setEditAuxModelTag(selectedWorkspace.auxiliary_model_tag || "");
-    setEditAuxModelConstraintCleared(false);
-    setEditInitialModelProfile(selectedWorkspace.initial_model_profile || "");
-    setEditInitialModelTag(selectedWorkspace.initial_model_tag || "");
-    setEditAcpCommandOverride(selectedWorkspace.acp_command_override || "");
-    setEditRunner(selectedWorkspace.restricted_runner || "exec");
-    setEditRunnerConfig(selectedWorkspace.restricted_runner_config || null);
-    setEditAutoApprove(selectedWorkspace.auto_approve === true);
-    setEditIsDefault(selectedWorkspace.is_default === true);
     setEffectiveConfig(null);
-    // mcp state reset owned by useWorkspaceMcpTools
     setActiveTab("general");
     if (selectedWorkspace.uuid) {
       authFetch(
@@ -980,42 +977,7 @@ export function WorkspacesDialog({
     }
   };
 
-  // Build a workspace object with the current transient edit fields applied,
-  // but only for the workspace matching targetKey; all others pass through
-  // unchanged. This is used both to flush edits on selection change and to
-  // commit the currently-selected workspace at save time.
-  const buildWorkspaceEditsFor = (ws, targetKey) => {
-    if (getWorkspaceKey(ws) !== targetKey) return ws;
-    // A selected profile (or an explicit "-- None --") always wins over any
-    // legacy raw matchMode/pattern constraint. Otherwise, an untouched
-    // legacy raw constraint is preserved as-is.
-    const rawAuxModelConstraint = ws.auxiliary_model_selection || null;
-    const auxModelSelection =
-      !editAuxModelProfile &&
-      rawAuxModelConstraint &&
-      !editAuxModelConstraintCleared
-        ? rawAuxModelConstraint
-        : undefined;
-    return {
-      ...ws,
-      acp_server: editAcpServer,
-      auxiliary_model_profile: editAuxModelProfile || undefined,
-      auxiliary_model_tag: editAuxModelTag || undefined,
-      auxiliary_model_selection: auxModelSelection,
-      initial_model_profile: editInitialModelProfile || undefined,
-      initial_model_tag: editInitialModelTag || undefined,
-      restricted_runner: editRunner,
-      restricted_runner_config:
-        editRunner !== "exec" ? editRunnerConfig : undefined,
-      auto_approve: editAutoApprove || undefined,
-      is_default: editIsDefault || undefined,
-      acp_command_override: editAcpCommandOverride || undefined,
-    };
-  };
-
-  // Apply workspace-level edits (acp_server, runner, auto_approve) to the selected workspace
-  const applyWorkspaceEdits = (ws) =>
-    buildWorkspaceEditsFor(ws, selectedWorkspaceKey);
+  // buildWorkspaceEditsFor + applyWorkspaceEdits moved to useWorkspaceEdits hook.
 
   const getUnusedServer = (workingDir, currentName) => {
     const used = new Set(
