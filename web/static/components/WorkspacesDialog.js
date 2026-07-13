@@ -18,6 +18,7 @@ import { useFolderPromptsConfig } from "../hooks/useFolderPromptsConfig.js";
 import { useFolderProcessorsConfig } from "../hooks/useFolderProcessorsConfig.js";
 import { useFolderShortcutsConfig } from "../hooks/useFolderShortcutsConfig.js";
 import { useFolderMetadataConfig } from "../hooks/useFolderMetadataConfig.js";
+import { useWorkspaceMcpTools } from "../hooks/useWorkspaceMcpTools.js";
 import { useWorkspacesSaveCoordinator } from "../hooks/useWorkspacesSaveCoordinator.js";
 
 import { SpinnerIcon, CloseIcon, FolderIcon } from "./Icons.js";
@@ -136,9 +137,7 @@ export function WorkspacesDialog({
   const [editAcpCommandOverride, setEditAcpCommandOverride] = useState("");
   const [effectiveConfig, setEffectiveConfig] = useState(null);
 
-  const [mcpTools, setMcpTools] = useState(null);
-  const [mcpToolsLoading, setMcpToolsLoading] = useState(false);
-  const [mcpToolsError, setMcpToolsError] = useState("");
+  // mcpTools / mcpToolsLoading / mcpToolsError state owned by useWorkspaceMcpTools
 
   const [mcpInstallOpen, setMcpInstallOpen] = useState(false);
   const [mcpInstallJson, setMcpInstallJson] = useState("");
@@ -155,7 +154,7 @@ export function WorkspacesDialog({
   // Ephemeral restart state — resets when dialog closes (component state)
   const [needsRestart, setNeedsRestart] = useState(false);
   const [restarting, setRestarting] = useState(false);
-  const [hasLiveAcp, setHasLiveAcp] = useState(false);
+  // hasLiveAcp state owned by useWorkspaceMcpTools
 
   // Track whether a folder group (not a workspace) is selected
   const [selectedFolder, setSelectedFolder] = useState(null);
@@ -411,6 +410,25 @@ export function WorkspacesDialog({
       : `Custom (legacy): ${rawAuxModelConstraint.matchMode} ${rawAuxModelConstraint.pattern}`;
   }, [editAuxModelProfile, rawAuxModelConstraint, modelProfiles]);
 
+  // MCP-tools + live-ACP data-loading cluster: owns mcpTools/mcpToolsLoading/
+  // mcpToolsError/hasLiveAcp state, loadMcpTools + checkLiveAcpForWorkspace
+  // callbacks, the mcp-tab load effect, and the workspace-change reset effect.
+  const {
+    mcpTools,
+    mcpToolsLoading,
+    mcpToolsError,
+    setMcpToolsError,
+    hasLiveAcp,
+    loadMcpTools,
+    checkLiveAcpForWorkspace,
+  } = useWorkspaceMcpTools({
+    activeTab,
+    selectedWorkspace,
+    selectedWorkspaceKey,
+    selectedFolder,
+    editAcpServer,
+  });
+
   useEffect(() => {
     if (isOpen) {
       setError("");
@@ -481,8 +499,7 @@ export function WorkspacesDialog({
     setEditAutoApprove(selectedWorkspace.auto_approve === true);
     setEditIsDefault(selectedWorkspace.is_default === true);
     setEffectiveConfig(null);
-    setMcpTools(null);
-    setMcpToolsError("");
+    // mcp state reset owned by useWorkspaceMcpTools
     setActiveTab("general");
     if (selectedWorkspace.uuid) {
       authFetch(
@@ -506,20 +523,7 @@ export function WorkspacesDialog({
     setActiveTab(pendingTab || "general");
   }, [selectedFolder]);
 
-  useEffect(() => {
-    if (activeTab === "mcp" && selectedWorkspace && !selectedFolder) {
-      loadMcpTools(
-        editAcpServer || selectedWorkspace.acp_server,
-        selectedWorkspace.uuid,
-      );
-      checkLiveAcpForWorkspace(selectedWorkspace.uuid).then(setHasLiveAcp);
-    } else {
-      setHasLiveAcp(false);
-    }
-    // checkLiveAcpForWorkspace/loadMcpTools are stable useCallbacks defined
-    // later in the component; referencing them here would trigger a TDZ
-    // ReferenceError since the deps array is evaluated during render.
-  }, [activeTab, selectedWorkspaceKey, editAcpServer]);
+  // MCP tab load effect + mcp state reset moved to useWorkspaceMcpTools hook.
 
   // Folder Shortcuts tab: load effect + folder-switch reset effect moved to
   // useFolderShortcutsConfig hook (invoked above).
@@ -603,57 +607,7 @@ export function WorkspacesDialog({
     }
   };
 
-  const loadMcpTools = useCallback(async (acpServer, uuid) => {
-    setMcpToolsLoading(true);
-    setMcpToolsError("");
-    setMcpTools(null);
-    if (!uuid) {
-      setMcpToolsError("No workspace selected");
-      setMcpTools({ servers: [], agent_name: "" });
-      setMcpToolsLoading(false);
-      return;
-    }
-    try {
-      const res = await authFetch(
-        endpoints.workspaces.mcpTools(uuid, { acp_server: acpServer }),
-      );
-      if (!res.ok) {
-        const ct = res.headers.get("content-type");
-        if (ct && ct.includes("application/json")) {
-          const ed = await res.json();
-          throw new Error(errorMessageFromData(ed, "request failed"));
-        }
-        throw new Error(await res.text());
-      }
-      const data = await res.json();
-      if (data.error) {
-        setMcpToolsError(data.error);
-      }
-      setMcpTools(data);
-    } catch (err) {
-      setMcpToolsError("Failed to load MCP tools: " + err.message);
-      setMcpTools({ servers: [], agent_name: "" });
-    } finally {
-      setMcpToolsLoading(false);
-    }
-  }, []);
-
-  // Check if the given workspace UUID has a live shared ACP process. The Restart
-  // ACP button must be offered whenever this is true (even with 0 conversations),
-  // because the live process loaded the old MCP config at startup.
-  const checkLiveAcpForWorkspace = useCallback(async (workspaceUUID) => {
-    if (!workspaceUUID) return false;
-    try {
-      const res = await authFetch(
-        endpoints.workspaces.acpStatus(workspaceUUID),
-      );
-      if (!res.ok) return false;
-      const data = await res.json();
-      return !!data.alive;
-    } catch {
-      return false;
-    }
-  }, []);
+  // loadMcpTools + checkLiveAcpForWorkspace moved to useWorkspaceMcpTools hook.
 
   // Restart the ACP process for the selected workspace so MCP changes take effect.
   const handleRestartAcp = useCallback(async () => {
