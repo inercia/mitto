@@ -157,7 +157,9 @@ func TestHandleDashboard_AggregatesTwoWorkspaces_AttachesWorkingDir(t *testing.T
 	}
 	d := decodeDashboardBody(t, w)
 
-	// in_progress: a-1 and b-1, sorted by updated_at desc → a-1 first (2026-01-02) then b-1 (2026-01-01).
+	// in_progress: a-1 and b-1. Neither has a "priority" field, so both fall
+	// into the missing-priority sentinel and sort tie-breaks on updated_at
+	// desc → a-1 first (2026-01-02) then b-1 (2026-01-01).
 	if got, want := len(d.Lists.InProgress), 2; got != want {
 		t.Fatalf("in_progress length = %d, want %d", got, want)
 	}
@@ -208,6 +210,45 @@ func TestHandleDashboard_AggregatesTwoWorkspaces_AttachesWorkingDir(t *testing.T
 	// stats: issues_in_progress counts the aggregated in-progress items (2).
 	if got, want := d.Stats.IssuesInProgress, 2; got != want {
 		t.Errorf("stats.issues_in_progress = %d, want %d", got, want)
+	}
+}
+
+// TestHandleDashboard_InProgressSortedByPriorityFirst verifies that the
+// in_progress list follows the same priority-first ordering as ready/epics:
+// a Critical (p=0) but older item must beat a Medium (p=2) more-recently-
+// touched one. This locks in the fix for "dashboard lists are not showing
+// the highest-priority tasks" — previously in_progress was recency-only,
+// which could bury a Critical item behind lower-priority recent activity.
+func TestHandleDashboard_InProgressSortedByPriorityFirst(t *testing.T) {
+	client := &dashboardFakeClient{
+		listByDir: map[string][]byte{
+			"/ws/x": []byte(`[
+				{"id":"x-medium-newer","status":"in_progress","issue_type":"task","priority":2,"updated_at":"2026-06-10T00:00:00Z"},
+				{"id":"x-crit-older","status":"in_progress","issue_type":"task","priority":0,"updated_at":"2026-06-01T00:00:00Z"},
+				{"id":"x-high-mid","status":"in_progress","issue_type":"task","priority":1,"updated_at":"2026-06-05T00:00:00Z"}
+			]`),
+		},
+	}
+	wss := []config.WorkspaceSettings{{WorkingDir: "/ws/x", ACPServer: "acp-x"}}
+	s := newDashboardTestServer(t, client, wss)
+
+	req := localhostRequest("/api/dashboard")
+	w := httptest.NewRecorder()
+	s.HandleDashboard(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body=%s", w.Code, http.StatusOK, w.Body.String())
+	}
+	d := decodeDashboardBody(t, w)
+
+	if got, want := len(d.Lists.InProgress), 3; got != want {
+		t.Fatalf("in_progress length = %d, want %d", got, want)
+	}
+	wantOrder := []string{"x-crit-older", "x-high-mid", "x-medium-newer"}
+	for i, want := range wantOrder {
+		if got := d.Lists.InProgress[i]["id"]; got != want {
+			t.Errorf("in_progress[%d].id = %v, want %q (priority-first sort broken?)", i, got, want)
+		}
 	}
 }
 

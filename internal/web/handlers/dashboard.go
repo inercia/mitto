@@ -135,11 +135,13 @@ func (h *Handlers) HandleDashboard(w http.ResponseWriter, r *http.Request) {
 
 	resp.Stats.IssuesInProgress = len(inProgress)
 
-	// In-progress keeps recency ordering: it answers "what's been touched
-	// lately?". Ready + Epics are backlog views where the user asked for
-	// priority-first sorting so the highest-priority (lowest numeric
-	// priority) items surface before the top-N cap.
-	resp.Lists.InProgress = capItems(sortByUpdatedAtDesc(inProgress), limit)
+	// All three lists sort by priority-first (Critical -> Low), then
+	// updated_at DESC within a priority band, so the top-N cap always
+	// surfaces the most important items rather than merely the most
+	// recently touched. Prior behaviour sorted In-progress by recency
+	// only, which sometimes hid Critical/High items behind lower-priority
+	// but more-recently-touched ones.
+	resp.Lists.InProgress = capItems(sortByPriorityThenUpdatedAtDesc(inProgress), limit)
 	resp.Lists.Ready = capItems(sortByPriorityThenUpdatedAtDesc(ready), limit)
 	resp.Lists.Epics = capItems(sortByPriorityThenUpdatedAtDesc(epics), limit)
 
