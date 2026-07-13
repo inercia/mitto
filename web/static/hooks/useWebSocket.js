@@ -72,6 +72,7 @@ import { useWSQueue } from "./useWSQueue.js";
 import { useWSNotifications } from "./useWSNotifications.js";
 import { useWSConfigOptions } from "./useWSConfigOptions.js";
 import { useWSSessionSelectors } from "./useWSSessionSelectors.js";
+import { useWSActionButtons } from "./useWSActionButtons.js";
 
 // =============================================================================
 // Session creation retry state (module-level, persists across re-renders)
@@ -584,30 +585,8 @@ export function useWebSocket({
     hasReachedLimit,
   } = useWSSessionSelectors(activeSession);
 
-  // Extract action buttons reference — stable across streaming updates.
-  // During streaming, setSessions() spreads the session object which copies
-  // actionButtons by reference, so this stays the same array instance until
-  // buttons are actually set or cleared.
-  const sessionActionButtons = sessions[activeSessionId]?.actionButtons;
-
-  // Get action buttons for active session
-  const actionButtons = useMemo(() => {
-    if (!activeSessionId || !sessionActionButtons) {
-      return [];
-    }
-    return sessionActionButtons;
-  }, [sessionActionButtons, activeSessionId]);
-
-  // Log when action buttons actually change (not inside useMemo)
-  useEffect(() => {
-    if (actionButtons.length > 0) {
-      console.log("[ActionButtons] Buttons updated:", {
-        sessionId: activeSessionId,
-        buttonCount: actionButtons.length,
-        buttons: actionButtons.map((b) => b.label),
-      });
-    }
-  }, [actionButtons, activeSessionId]);
+  // Action buttons for active session (extracted to useWSActionButtons sub-hook, mitto-90f.5)
+  const { actionButtons } = useWSActionButtons(sessions, activeSessionId);
 
   // Get all active sessions as array for sidebar
   // Memoized with structural fingerprint to prevent unnecessary re-renders
