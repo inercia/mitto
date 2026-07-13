@@ -45,8 +45,6 @@ import { secureFetch, authFetch, checkAuth } from "../utils/csrf.js";
 import { getApiPrefix } from "../utils/api.js";
 import { endpoints } from "../utils/index.js";
 
-import { isNativeApp } from "../utils/native.js";
-
 // Import WebSocket utilities (M1, M2 implementations)
 import {
   createSeqTracker,
@@ -61,6 +59,16 @@ import {
   isReusedConversationResponse,
   checkAuthOrRedirect,
   checkAuthWithRetry,
+  STALE_THRESHOLD_MS,
+  STALE_RECOVERY_COOLDOWN_MS,
+  KEEPALIVE_MAX_MISSED_DEFAULT,
+  KEEPALIVE_MAX_MISSED_LARGE_SESSION,
+  LARGE_SESSION_SEQ_THRESHOLD,
+  KEEPALIVE_SYNC_TOLERANCE,
+  STARTUP_STAGGER_MS,
+  STAGGERED_RECONNECT_DEBOUNCE_MS,
+  BACKGROUND_DISCONNECT_GRACE_MS,
+  getKeepaliveInterval,
 } from "../utils/websocket.js";
 
 // =============================================================================
@@ -84,75 +92,6 @@ let _sessionCreationRetryTimer = null;
 
 // Options snapshot for the pending auto-retry
 let _sessionCreationPendingOpts = null;
-
-// Time threshold (in ms) for considering the session potentially stale
-// If the page has been hidden for longer than this, we do an explicit auth check
-// before trying to reconnect. The server session expires after 24 hours.
-const STALE_THRESHOLD_MS = 60 * 60 * 1000; // 1 hour
-
-// Keepalive configuration for detecting zombie WebSocket connections and sequence sync
-// On mobile, connections can appear open but be dead (zombie connections)
-// Keepalive also piggybacks sequence numbers to detect out-of-sync situations
-// Native macOS app uses shorter interval (5s) since it's local with no network latency
-// Browser uses longer interval (10s) to reduce network overhead
-const KEEPALIVE_INTERVAL_NATIVE_MS = 5000; // Send keepalive every 5 seconds in native app
-const KEEPALIVE_INTERVAL_BROWSER_MS = 10000; // Send keepalive every 10 seconds in browser
-const KEEPALIVE_TIMEOUT_MS = 10000; // Consider connection unhealthy if no response in 10 seconds
-// Cooldown period after stale client recovery. During this window, keepalive
-// will not re-trigger stale detection for the session, giving React state
-// and the auto-load prepend time to settle.
-const STALE_RECOVERY_COOLDOWN_MS = 30000; // 30 seconds
-const KEEPALIVE_MAX_MISSED_DEFAULT = 2; // Force reconnect after 2 missed keepalives
-const KEEPALIVE_MAX_MISSED_LARGE_SESSION = 4; // For sessions with 500+ events
-const LARGE_SESSION_SEQ_THRESHOLD = 500;
-
-// Sync tolerance: only request sync if client is more than N sequences behind server.
-// This avoids excessive sync requests during normal streaming where the markdown buffer
-// may hold content briefly before flushing to the UI. A tolerance of 2 prevents
-// sync requests when client is just 1-2 behind due to normal buffering delays.
-// NOTE: This tolerance is only applied during active streaming. For non-streaming sessions,
-// tolerance is 0 to ensure immediate sync of final events like session_end.
-const KEEPALIVE_SYNC_TOLERANCE = 2;
-
-// Startup stagger: delay between each background session's WebSocket connection at startup/wake.
-// Prevents thundering herd where all sessions send load_events simultaneously,
-// overwhelming the server with concurrent large event replays.
-// Active session always connects first with no delay; background sessions stagger by this amount.
-const STARTUP_STAGGER_MS = 300;
-
-// Debounce window for reconnectAllSessionsStaggered (ms).
-// Multiple macOS activation sources (NSWorkspaceDidWakeNotification,
-// NSWorkspaceScreensDidWakeNotification, applicationDidBecomeActive) can fire
-// 4–10 seconds apart for the same wake/focus event.  In addition, the native
-// "App became active" callback and the WKWebView visibilitychange "App became
-// visible" event are distinct triggers that both funnel here ~6 s apart for a
-// single wake.  Collapsing these into a single staggered reconnect prevents a
-// redundant active-session force-reconnect (which tears down a freshly opened
-// WebSocket) and avoids duplicate background-session timers accumulating
-// observers on BackgroundSession.  Matches APP_ACTIVATE_RESYNC_DEBOUNCE_MS
-// (one resync per wake) so the active+visible pair coalesces into one reconnect.
-const STAGGERED_RECONNECT_DEBOUNCE_MS = 15000;
-
-// Grace period (ms) before a background session's per-session WebSocket is
-// disconnected after it stops being the active session. Lazy-connect keeps only
-// the active session connected; releasing a background WebSocket removes its
-// server-side observer so the backend GC can reclaim the idle ACP process.
-// The grace window keeps rapid back-and-forth switching cheap (the connection is
-// reused if the user returns within the window). The disconnect timer resets on
-// every active-session change, so only sessions left untouched for the full
-// window are dropped.
-const BACKGROUND_DISCONNECT_GRACE_MS = 30000;
-
-/**
- * Get the appropriate keepalive interval based on the runtime environment.
- * Native macOS app uses a shorter interval for faster sync detection.
- * @returns {number} Keepalive interval in milliseconds
- */
-function getKeepaliveInterval() {
-  return isNativeApp()
-    ? KEEPALIVE_INTERVAL_NATIVE_MS
-    : KEEPALIVE_INTERVAL_BROWSER_MS;
-}
 
 /**
  * WebSocket Hook with Per-Session WebSocket Support
