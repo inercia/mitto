@@ -19,10 +19,10 @@ const { useState, useEffect, useCallback, useMemo, useRef } = window.preact;
 
 import { authFetch, secureFetch, endpoints } from "../../../utils/index.js";
 import { readBeadsResponse } from "../../../utils/beads.js";
-import { renderMarkdown } from "../CommentBody.js";
 import { useIssueLabels } from "./useIssueLabels.js";
 import { useIssueComments } from "./useIssueComments.js";
 import { useCreateMode } from "./useCreateMode.js";
+import { useViewEdit } from "./useViewEdit.js";
 import { usePanelChrome } from "./usePanelChrome.js";
 
 export function useBeadsDetailPanel({
@@ -71,51 +71,26 @@ export function useBeadsDetailPanel({
 
   // Magic-wand "Improve description" state. Mirrors ChatInput's improve-prompt
   // flow but targets the create-form description. `improvingDesc` gates the
-  // in-flight request and drives the spinner.
+  // in-flight request and drives the spinner. Kept in the composer because
+  // improveDescriptionText is shared by view-mode inline edits and create-mode
+  // (mitto-90f.7 PR-14 view/create-shared caveat, retained through PR-16).
   const [improvingDesc, setImprovingDesc] = useState(false);
 
-  // View-mode inline description editing. editingDesc switches the rendered
-  // description to a CodeMirror editor. Edits accumulate in viewDraft and are
-  // persisted by the unified Save button. descMinHeight keeps the editor at
-  // least as tall as the content it replaces.
-  const [editingDesc, setEditingDesc] = useState(false);
-  const [descMinHeight, setDescMinHeight] = useState(0);
-  const detailEditorApiRef = useRef(null);
-  const descViewRef = useRef(null);
-  // createEditorApiRef moved into useCreateMode (mitto-90f.7 PR-14).
-
-  // View-mode inline title editing.
-  const [editingTitle, setEditingTitle] = useState(false);
-  const titleRef = useRef(null);
-  // Snapshot of viewDraft.title captured on startEditTitle so Escape can revert.
-  const titleEditStartRef = useRef("");
-
-  // View-mode inline type editing.
-  const [editingType, setEditingType] = useState(false);
-  const typeRef = useRef(null);
-
-  // View-mode inline assignee editing.
-  const [editingAssignee, setEditingAssignee] = useState(false);
-  const assigneeRef = useRef(null);
-  // Snapshot of viewDraft.assignee captured on startEditAssignee so Escape can revert.
-  const assigneeEditStartRef = useRef("");
-
-  // Draft / dirty / save state for view mode. All six editable fields
-  // accumulate into viewDraft; a single Save posts them together.
-  const [viewDraft, setViewDraft] = useState({
-    title: "",
-    type: "task",
-    priority: 2,
-    description: "",
-    assignee: "",
-    notes: "",
+  // View-mode edit cluster (mitto-90f.7 PR-16): per-field edit state + refs
+  // (title/type/assignee/description/notes), viewDraft/savingView/savedBaseline,
+  // notes, the derived md/viewOriginal/viewDirty memos, the save/discard
+  // handlers, and the associated seed/focus/edit-mode-reset effects. Called
+  // BEFORE usePanelChrome so viewDirty/savingView are available for the close
+  // gate. The composer re-exposes viewEdit fields in the `view` bundle and
+  // as flat props (md, descMinHeight, descViewRef, detailEditorApiRef,
+  // viewDirty, savingView) so PanelBody's prop shape is preserved.
+  const viewEdit = useViewEdit({
+    data,
+    creating,
+    workingDir,
+    showToast,
+    onUpdated,
   });
-  const [savingView, setSavingView] = useState(false);
-  // After a successful Save, holds the just-persisted field values so the dirty
-  // check clears immediately — without waiting for the async onUpdated() refresh
-  // to flow updated `data` back down. Reset to null when a different issue opens
-  // (the seed effect below). When set, it takes precedence over viewOriginal.
-  const [savedBaseline, setSavedBaseline] = useState(null);
 
   // View-mode dependencies. The list rows only carry a dependency_count, so the
   // full edges (id + title + status + dependency_type) are fetched from
@@ -154,27 +129,6 @@ export function useBeadsDetailPanel({
     fetchDepsRef,
     onUpdated,
   });
-  const [notes, setNotes] = useState("");
-
-  // View-mode inline notes editing.
-  const [editingNotes, setEditingNotes] = useState(false);
-  const [notesMinHeight, setNotesMinHeight] = useState(0);
-  const notesRef = useRef(null);
-  const notesViewRef = useRef(null);
-
-  // Create-mode form reset effect moved into useCreateMode (mitto-90f.7 PR-14).
-
-  // Close the type dropdown on outside click while it is open.
-  useEffect(() => {
-    if (!editingType) return undefined;
-    const onDocClick = (e) => {
-      if (typeRef.current && !typeRef.current.contains(e.target)) {
-        setEditingType(false);
-      }
-    };
-    document.addEventListener("mousedown", onDocClick);
-    return () => document.removeEventListener("mousedown", onDocClick);
-  }, [editingType]);
 
   // handleSave (create submit), addCreateDep, and removeCreateDep now live in
   // useCreateMode (mitto-90f.7 PR-14). Access via `create.handleSave` /
@@ -233,62 +187,19 @@ export function useBeadsDetailPanel({
     [improvingDesc, showToast],
   );
 
-  // md renders the draft description so the read-only view reflects in-progress edits.
-  const md = useMemo(
-    () => renderMarkdown(!creating && viewDraft && viewDraft.description),
-    [creating, viewDraft && viewDraft.description],
-  );
   const subtasks = useMemo(
     () =>
       !creating && data ? allIssues.filter((i) => i.parent === data.id) : [],
     [creating, allIssues, data && data.id],
   );
 
-  // The "original" values used to compute dirtiness. Notes come from async
-  // fetchDeps, so they are sourced from the `notes` state rather than data.
-  const viewOriginal = useMemo(
-    () => ({
-      title: (data && data.title) || "",
-      type: (data && data.issue_type) || "task",
-      priority: data && typeof data.priority === "number" ? data.priority : 2,
-      description: (data && data.description) || "",
-      assignee: (data && data.assignee) || "",
-      notes: notes || "",
-    }),
-    [
-      data && data.id,
-      data && data.title,
-      data && data.issue_type,
-      data && data.priority,
-      data && data.description,
-      data && data.assignee,
-      notes,
-    ],
-  );
-
-  const viewDirty = useMemo(() => {
-    if (creating) return false;
-    // A successful save records its persisted values in savedBaseline; compare
-    // against those so the panel is no longer "dirty" the instant Save resolves.
-    const base = savedBaseline || viewOriginal;
-    const t = viewDraft.title.trim();
-    return (
-      (t !== "" && t !== base.title) ||
-      viewDraft.type !== base.type ||
-      viewDraft.priority !== base.priority ||
-      viewDraft.description !== base.description ||
-      viewDraft.assignee.trim() !== base.assignee ||
-      viewDraft.notes !== base.notes
-    );
-  }, [creating, viewDraft, viewOriginal, savedBaseline]);
-
   // Panel chrome/shell cluster (mitto-90f.7 PR-15): open/close fade, outside-
   // click detection, confirm-close dialog, kebab context menu + panelMenuItems,
   // headerToolbarItems, per-folder shortcut buttons, isMobile / fullscreen /
-  // shouldRender / isClosing. Called here (after viewDirty is computed) so
-  // handleClose and the deferred-close effect can gate the dirty check and the
-  // save-in-flight defer. lastIssueRef / lastCreatingRef stay in the composer
-  // so `data` and `creating` remain sticky during the fade-out.
+  // shouldRender / isClosing. Called here (after viewEdit.viewDirty is
+  // computed) so handleClose and the deferred-close effect can gate the dirty
+  // check and the save-in-flight defer. lastIssueRef / lastCreatingRef stay
+  // in the composer so `data` and `creating` remain sticky during the fade-out.
   const {
     shouldRender,
     isClosing,
@@ -307,8 +218,8 @@ export function useBeadsDetailPanel({
     isOpen,
     data,
     creating,
-    viewDirty,
-    savingView,
+    viewDirty: viewEdit.viewDirty,
+    savingView: viewEdit.savingView,
     initialFullscreen,
     workingDir,
     statusBusy,
@@ -320,180 +231,15 @@ export function useBeadsDetailPanel({
     onFetchPrompts,
   });
 
-  // Seed non-notes fields whenever a different issue opens (notes come from
-  // fetchDeps below, which calls setViewDraft when seedDraftNotes is true).
+  // Sibling comment-edit cleanup on issue switch. The view-edit reset that
+  // used to share this effect body now lives inside useViewEdit; this small
+  // effect handles the three comment-editor setters on the same data.id
+  // dependency so both fire on the same transition.
   useEffect(() => {
-    if (creating || !data || !data.id) return;
-    setSavedBaseline(null);
-    setViewDraft({
-      title: data.title || "",
-      type: data.issue_type || "task",
-      priority: typeof data.priority === "number" ? data.priority : 2,
-      description: data.description || "",
-      assignee: data.assignee || "",
-      notes: "",
-    });
-  }, [creating, data && data.id]);
-
-  // Leave all edit modes whenever the viewed issue changes.
-  useEffect(() => {
-    setEditingDesc(false);
-    setEditingTitle(false);
-    setEditingType(false);
-    setEditingAssignee(false);
-    setEditingNotes(false);
     comments.setAddingComment(false);
     comments.setSavingComment(false);
     comments.setCommentDraft("");
   }, [data && data.id]);
-
-  // The description CodeMirror editor auto-focuses on mount (autoFocus prop)
-  // so no separate useEffect is needed here.
-
-  // Focus the notes textarea (cursor at end) when entering notes-edit mode.
-  useEffect(() => {
-    if (editingNotes && notesRef.current) {
-      const el = notesRef.current;
-      el.focus();
-      el.setSelectionRange(el.value.length, el.value.length);
-    }
-  }, [editingNotes]);
-
-  // Comment-focus effect now lives in useIssueComments (mitto-90f.7 PR-13).
-
-  // Focus the title input (cursor at end) when entering edit mode.
-  useEffect(() => {
-    if (editingTitle && titleRef.current) {
-      const el = titleRef.current;
-      el.focus();
-      el.setSelectionRange(el.value.length, el.value.length);
-    }
-  }, [editingTitle]);
-
-  // Focus the assignee input (cursor at end) when entering edit mode.
-  useEffect(() => {
-    if (editingAssignee && assigneeRef.current) {
-      const el = assigneeRef.current;
-      el.focus();
-      el.setSelectionRange(el.value.length, el.value.length);
-    }
-  }, [editingAssignee]);
-
-  const startEditDesc = useCallback(() => {
-    if (descViewRef.current) setDescMinHeight(descViewRef.current.offsetHeight);
-    setEditingDesc(true);
-  }, []);
-
-  const startEditNotes = useCallback(() => {
-    if (notesViewRef.current)
-      setNotesMinHeight(notesViewRef.current.offsetHeight);
-    setEditingNotes(true);
-  }, []);
-
-  const startEditTitle = useCallback(() => {
-    titleEditStartRef.current = viewDraft.title;
-    setEditingTitle(true);
-  }, [viewDraft.title]);
-
-  const startEditAssignee = useCallback(() => {
-    assigneeEditStartRef.current = viewDraft.assignee;
-    setEditingAssignee(true);
-  }, [viewDraft.assignee]);
-
-  // Enter saves (via blur); Escape reverts to snapshot and blurs.
-  const handleTitleKeyDown = useCallback((e) => {
-    if (e.key === "Enter") {
-      e.preventDefault();
-      e.target.blur();
-    } else if (e.key === "Escape") {
-      e.preventDefault();
-      setViewDraft((p) => ({ ...p, title: titleEditStartRef.current }));
-      e.target.blur();
-    }
-  }, []);
-
-  const handleAssigneeKeyDown = useCallback((e) => {
-    if (e.key === "Enter") {
-      e.preventDefault();
-      e.target.blur();
-    } else if (e.key === "Escape") {
-      e.preventDefault();
-      setViewDraft((p) => ({ ...p, assignee: assigneeEditStartRef.current }));
-      e.target.blur();
-    }
-  }, []);
-
-  // Unified Save: patches all dirty fields in one PATCH /api/issues/{id} call.
-  const handleViewSave = useCallback(async () => {
-    if (!data || !data.id || savingView) return;
-    const body = {};
-    const t = viewDraft.title.trim();
-    if (t !== "" && t !== viewOriginal.title) body.title = t;
-    if (viewDraft.type !== viewOriginal.type) body.type = viewDraft.type;
-    if (viewDraft.priority !== viewOriginal.priority)
-      body.priority = viewDraft.priority;
-    if (viewDraft.description !== viewOriginal.description)
-      body.description = viewDraft.description;
-    if (viewDraft.assignee.trim() !== viewOriginal.assignee)
-      body.assignee = viewDraft.assignee.trim();
-    if (viewDraft.notes !== viewOriginal.notes) body.notes = viewDraft.notes;
-    if (Object.keys(body).length === 0) return;
-    setSavingView(true);
-    try {
-      const res = await secureFetch(
-        endpoints.issues.update(data.id, { working_dir: workingDir }),
-        {
-          method: "PATCH",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(body),
-        },
-      );
-      const respData = await readBeadsResponse(res);
-      if (!res.ok || respData.error) {
-        showToast &&
-          showToast({
-            style: "error",
-            title: respData.error || "Failed to save changes",
-          });
-      } else {
-        if ("notes" in body) setNotes(viewDraft.notes);
-        // Record what we just persisted so viewDirty clears immediately (the
-        // normalized values mirror how the dirty check reads the draft), instead
-        // of staying dirty until the async onUpdated() refresh re-seeds `data`.
-        setSavedBaseline({
-          title: viewDraft.title.trim(),
-          type: viewDraft.type,
-          priority: viewDraft.priority,
-          description: viewDraft.description,
-          assignee: viewDraft.assignee.trim(),
-          notes: viewDraft.notes,
-        });
-        setEditingTitle(false);
-        setEditingType(false);
-        setEditingDesc(false);
-        setEditingNotes(false);
-        setEditingAssignee(false);
-        showToast && showToast({ style: "success", title: "Changes saved" });
-        onUpdated && onUpdated();
-      }
-    } catch (err) {
-      showToast &&
-        showToast({
-          style: "error",
-          title: err.message || "Failed to save changes",
-        });
-    } finally {
-      setSavingView(false);
-    }
-  }, [
-    viewDraft,
-    viewOriginal,
-    data && data.id,
-    workingDir,
-    savingView,
-    showToast,
-    onUpdated,
-  ]);
 
   // Load the issue's full dependency edges, notes, and comments. The list row
   // only carries counts, so the actual data comes from /api/issues/{id}.
@@ -514,29 +260,41 @@ export function useBeadsDetailPanel({
           setDeps([]);
           labels.setLabels([]);
           comments.setComments([]);
-          setNotes("");
-          if (seedDraftNotes) setViewDraft((prev) => ({ ...prev, notes: "" }));
+          viewEdit.setNotes("");
+          if (seedDraftNotes)
+            viewEdit.setViewDraft((prev) => ({ ...prev, notes: "" }));
         } else {
           const issueObj = Array.isArray(respData) ? respData[0] : respData;
           setDeps((issueObj && issueObj.dependencies) || []);
           labels.setLabels((issueObj && issueObj.labels) || []);
           comments.setComments((issueObj && issueObj.comments) || []);
           const fetchedNotes = (issueObj && issueObj.notes) || "";
-          setNotes(fetchedNotes);
+          viewEdit.setNotes(fetchedNotes);
           if (seedDraftNotes)
-            setViewDraft((prev) => ({ ...prev, notes: fetchedNotes }));
+            viewEdit.setViewDraft((prev) => ({
+              ...prev,
+              notes: fetchedNotes,
+            }));
         }
       } catch (_err) {
         setDeps([]);
         labels.setLabels([]);
         comments.setComments([]);
-        setNotes("");
-        if (seedDraftNotes) setViewDraft((prev) => ({ ...prev, notes: "" }));
+        viewEdit.setNotes("");
+        if (seedDraftNotes)
+          viewEdit.setViewDraft((prev) => ({ ...prev, notes: "" }));
       } finally {
         setDepsLoading(false);
       }
     },
-    [workingDir, data && data.id, labels.setLabels, comments.setComments],
+    [
+      workingDir,
+      data && data.id,
+      labels.setLabels,
+      comments.setComments,
+      viewEdit.setNotes,
+      viewEdit.setViewDraft,
+    ],
   );
   // Wire the fetchDepsRef forward-reference bridge used by useIssueLabels so
   // mutateLabel can trigger a full issue refresh after add/remove.
@@ -552,7 +310,7 @@ export function useBeadsDetailPanel({
     setDeps([]);
     labels.setLabels([]);
     comments.setComments([]);
-    setNotes("");
+    viewEdit.setNotes("");
     setNewDepId("");
     setNewDepType("blocks");
     labels.setNewLabel("");
@@ -700,15 +458,15 @@ export function useBeadsDetailPanel({
     setFullscreen,
     createParentId,
     submitting: create.submitting,
-    viewDirty,
-    savingView,
+    viewDirty: viewEdit.viewDirty,
+    savingView: viewEdit.savingView,
     description: create.description,
     setDescription: create.setDescription,
     createEditorApiRef: create.createEditorApiRef,
-    detailEditorApiRef,
-    descMinHeight,
-    descViewRef,
-    md,
+    detailEditorApiRef: viewEdit.detailEditorApiRef,
+    descMinHeight: viewEdit.descMinHeight,
+    descViewRef: viewEdit.descViewRef,
+    md: viewEdit.md,
     workingDir,
     improvingDesc,
     improveDescriptionText,
@@ -719,24 +477,24 @@ export function useBeadsDetailPanel({
     // Bundles (7)
     create,
     view: {
-      viewDraft,
-      setViewDraft,
-      editingType,
-      setEditingType,
-      typeRef,
-      editingAssignee,
-      setEditingAssignee,
-      assigneeRef,
-      editingTitle,
-      setEditingTitle,
-      titleRef,
-      editingDesc,
-      setEditingDesc,
-      editingNotes,
-      setEditingNotes,
-      notesRef,
-      notesViewRef,
-      notesMinHeight,
+      viewDraft: viewEdit.viewDraft,
+      setViewDraft: viewEdit.setViewDraft,
+      editingType: viewEdit.editingType,
+      setEditingType: viewEdit.setEditingType,
+      typeRef: viewEdit.typeRef,
+      editingAssignee: viewEdit.editingAssignee,
+      setEditingAssignee: viewEdit.setEditingAssignee,
+      assigneeRef: viewEdit.assigneeRef,
+      editingTitle: viewEdit.editingTitle,
+      setEditingTitle: viewEdit.setEditingTitle,
+      titleRef: viewEdit.titleRef,
+      editingDesc: viewEdit.editingDesc,
+      setEditingDesc: viewEdit.setEditingDesc,
+      editingNotes: viewEdit.editingNotes,
+      setEditingNotes: viewEdit.setEditingNotes,
+      notesRef: viewEdit.notesRef,
+      notesViewRef: viewEdit.notesViewRef,
+      notesMinHeight: viewEdit.notesMinHeight,
     },
     deps: {
       deps,
@@ -755,14 +513,14 @@ export function useBeadsDetailPanel({
     handlers: {
       handleClose,
       handleSave: create.handleSave,
-      handleViewSave,
+      handleViewSave: viewEdit.handleViewSave,
       handleDiscardAndClose,
-      handleTitleKeyDown,
-      handleAssigneeKeyDown,
-      startEditTitle,
-      startEditAssignee,
-      startEditDesc,
-      startEditNotes,
+      handleTitleKeyDown: viewEdit.handleTitleKeyDown,
+      handleAssigneeKeyDown: viewEdit.handleAssigneeKeyDown,
+      startEditTitle: viewEdit.startEditTitle,
+      startEditAssignee: viewEdit.startEditAssignee,
+      startEditDesc: viewEdit.startEditDesc,
+      startEditNotes: viewEdit.startEditNotes,
     },
     chrome: {
       headerToolbarItems,
