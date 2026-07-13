@@ -47,9 +47,6 @@ import { endpoints } from "../utils/index.js";
 
 // Import WebSocket utilities (M1, M2 implementations)
 import {
-  createSeqTracker,
-  isSeqDuplicate as isSeqDuplicateUtil,
-  markSeqSeen as markSeqSeenUtil,
   calculateReconnectDelay,
   createReconnectDebounceTracker,
   shouldDebounceReconnect,
@@ -70,6 +67,7 @@ import {
   BACKGROUND_DISCONNECT_GRACE_MS,
   getKeepaliveInterval,
 } from "../utils/websocket.js";
+import { useWSSeqSync } from "./useWSSeqSync.js";
 
 // =============================================================================
 // Session creation retry state (module-level, persists across re-renders)
@@ -215,59 +213,7 @@ export function useWebSocket({
   // Attempt count for global events WebSocket
   const eventsReconnectAttemptRef = useRef(0);
 
-  // M1 fix: Track seen sequence numbers per session for client-side deduplication
-  // { sessionId: { highestSeq: number, recentSeqs: Set<number> } }
-  // Uses utility functions from utils/websocket.js for testability
-  const seenSeqsRef = useRef({});
-
-  /**
-   * Get or create a seq tracker for a session.
-   * @param {string} sessionId - The session ID
-   * @returns {{highestSeq: number, recentSeqs: Set<number>}}
-   */
-  const getSeqTracker = useCallback((sessionId) => {
-    if (!seenSeqsRef.current[sessionId]) {
-      seenSeqsRef.current[sessionId] = createSeqTracker();
-    }
-    return seenSeqsRef.current[sessionId];
-  }, []);
-
-  /**
-   * Check if a sequence number has already been seen for a session.
-   * Wrapper around utility function that manages per-session state.
-   */
-  const isSeqDuplicate = useCallback(
-    (sessionId, seq, lastMessageSeq) => {
-      const tracker = getSeqTracker(sessionId);
-      const isDuplicate = isSeqDuplicateUtil(tracker, seq, lastMessageSeq);
-      if (isDuplicate) {
-        console.log(
-          `M1 dedup: Skipping duplicate seq ${seq} for session ${sessionId}`,
-        );
-      }
-      return isDuplicate;
-    },
-    [getSeqTracker],
-  );
-
-  /**
-   * Mark a sequence number as seen for a session.
-   * Wrapper around utility function that manages per-session state.
-   */
-  const markSeqSeen = useCallback(
-    (sessionId, seq) => {
-      const tracker = getSeqTracker(sessionId);
-      markSeqSeenUtil(tracker, seq);
-    },
-    [getSeqTracker],
-  );
-
-  /**
-   * Clear seen sequences for a session (e.g., when session is deleted or reset).
-   */
-  const clearSeenSeqs = useCallback((sessionId) => {
-    delete seenSeqsRef.current[sessionId];
-  }, []);
+  const { isSeqDuplicate, markSeqSeen, clearSeenSeqs } = useWSSeqSync();
 
   // Track pending gap fill requests to avoid duplicate requests
   // { sessionId: { afterSeq: number, requestTime: number } }
