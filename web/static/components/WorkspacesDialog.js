@@ -15,6 +15,8 @@ import {
 
 import { getWorkspaceVisualInfo, getBasename } from "../lib.js";
 
+import { useBeadsFolderConfig } from "../hooks/useBeadsFolderConfig.js";
+
 import {
   SpinnerIcon,
   CloseIcon,
@@ -55,17 +57,6 @@ const SHORTCUT_SECTIONS = [
     desc: "Buttons shown in the beads issue detail toolbar; start a new conversation for the issue.",
   },
 ];
-
-// Flatten the canonical nested error envelope {error:{code,message,details}} to a
-// flat message string. Returns "" when there is no error. Also accepts the legacy
-// flat {error:"..."} shape (the HTTP-200 bd-failure path) unchanged.
-function beadsErrorMessage(data) {
-  if (!data || !data.error) return "";
-  if (typeof data.error === "object") {
-    return (data.error && data.error.message) || "Request failed";
-  }
-  return data.error;
-}
 
 // When the tree has more folders than this, they start collapsed by default.
 // Users can still expand individual folders; that explicit choice is persisted
@@ -230,32 +221,6 @@ export function WorkspacesDialog({
   // folder-level dropdowns and any duplicate folder rows greyed out.
   const [globalShortcutsSections, setGlobalShortcutsSections] = useState({});
 
-  // Folder beads config state (for the Beads Config tab) — UI wrapper over `bd config`.
-  // beadsConfig holds the raw {key: value} map last loaded from the server.
-  // beadsConfigEntries is the editable list of {key, value} rows for namespaced keys.
-  const [beadsConfig, setBeadsConfig] = useState(null);
-  const [beadsConfigLoading, setBeadsConfigLoading] = useState(false);
-  const [beadsConfigError, setBeadsConfigError] = useState("");
-  const [beadsConfigSaving, setBeadsConfigSaving] = useState(false);
-  const [newBeadsKey, setNewBeadsKey] = useState("");
-  const [newBeadsValue, setNewBeadsValue] = useState("");
-  // Folder beads upstream task system ("none"|"jira"|"github"|"gitlab"|"linear"|"prompts"),
-  // persisted in folders.json via /api/issues/upstream.
-  const [beadsUpstream, setBeadsUpstream] = useState("none");
-  const [beadsUpstreamSaving, setBeadsUpstreamSaving] = useState(false);
-  // "prompts" upstream: names of the three configured prompt actions.
-  const [beadsPullPrompt, setBeadsPullPrompt] = useState("");
-  const [beadsPushPrompt, setBeadsPushPrompt] = useState("");
-  const [beadsSyncPrompt, setBeadsSyncPrompt] = useState("");
-  // Saved argument maps (name→string) for each prompt action.
-  const [beadsPullPromptArgs, setBeadsPullPromptArgs] = useState({});
-  const [beadsPushPromptArgs, setBeadsPushPromptArgs] = useState({});
-  const [beadsSyncPromptArgs, setBeadsSyncPromptArgs] = useState({});
-  // Available enabled folder prompts (populated when upstream === "prompts").
-  const [beadsUpstreamPrompts, setBeadsUpstreamPrompts] = useState([]);
-  const [beadsUpstreamPromptsLoading, setBeadsUpstreamPromptsLoading] =
-    useState(false);
-
   // Confirmation dialog state: { message, title, confirmLabel, confirmVariant, onConfirm }
   const [confirmDialog, setConfirmDialog] = useState(null);
 
@@ -332,6 +297,21 @@ export function WorkspacesDialog({
       .sort(([a], [b]) => a.localeCompare(b))
       .map(([displayName, wsList]) => ({ displayName, workspaces: wsList }));
   }, [workspaces]);
+
+  // Folder Beads tab state + handlers. Owns beads config/upstream state, the
+  // three tab-scoped effects (load/reset), and all API mutators. Kept out of
+  // the shell so the shell only forwards the grouped {beads, beadsSetters,
+  // beadsHandlers} objects to WorkspaceFolderEditor.
+  const { beads, beadsSetters, beadsHandlers } = useBeadsFolderConfig({
+    selectedFolder,
+    activeTab,
+    getSelectedFolderDir: () => {
+      const folderGroup = groupedWorkspaces.find(
+        (g) => g.displayName === selectedFolder,
+      );
+      return folderGroup?.workspaces[0]?.working_dir || null;
+    },
+  });
 
   // Initialize folder expansion state from localStorage when the dialog opens
   // or when the set of folders changes.
@@ -571,40 +551,6 @@ export function WorkspacesDialog({
     // later in the component; referencing them here would trigger a TDZ
     // ReferenceError since the deps array is evaluated during render.
   }, [activeTab, selectedWorkspaceKey, editAcpServer]);
-
-  // Lazily load beads config + upstream when the Beads folder tab is opened.
-  useEffect(() => {
-    if (activeTab !== "beads" || !selectedFolder) return;
-    const workingDir = getSelectedFolderDir();
-    if (workingDir) {
-      reloadBeadsConfig(workingDir);
-      reloadBeadsUpstream(workingDir);
-    }
-  }, [activeTab, selectedFolder]);
-
-  // Load argument-free folder prompts when the Beads tab is active and upstream is "prompts".
-  useEffect(() => {
-    if (activeTab !== "beads" || !selectedFolder || beadsUpstream !== "prompts")
-      return;
-    const workingDir = getSelectedFolderDir();
-    if (workingDir) loadBeadsUpstreamPrompts(workingDir);
-  }, [activeTab, selectedFolder, beadsUpstream]);
-
-  // Reset beads config state when switching folders.
-  useEffect(() => {
-    setBeadsConfig(null);
-    setBeadsConfigError("");
-    setNewBeadsKey("");
-    setNewBeadsValue("");
-    setBeadsUpstream("none");
-    setBeadsPullPrompt("");
-    setBeadsPushPrompt("");
-    setBeadsSyncPrompt("");
-    setBeadsPullPromptArgs({});
-    setBeadsPushPromptArgs({});
-    setBeadsSyncPromptArgs({});
-    setBeadsUpstreamPrompts([]);
-  }, [selectedFolder]);
 
   // Lazily load shortcuts when the Shortcuts folder tab is opened.
   useEffect(() => {
@@ -1618,270 +1564,6 @@ export function WorkspacesDialog({
     return folderGroup?.workspaces[0]?.uuid || null;
   };
 
-  // Load (reload) beads config for the selected folder via GET /api/issues/config.
-  const reloadBeadsConfig = async (workingDir) => {
-    setBeadsConfigLoading(true);
-    setBeadsConfigError("");
-    try {
-      const res = await authFetch(
-        endpoints.issues.config({ working_dir: workingDir }),
-      );
-      const data = await res.json();
-      const errMsg = beadsErrorMessage(data);
-      if (errMsg) {
-        // bd missing or not initialized in this folder, or a validation error.
-        setBeadsConfig(null);
-        setBeadsConfigError(errMsg);
-      } else {
-        setBeadsConfig(data || {});
-      }
-    } catch (err) {
-      setBeadsConfig(null);
-      setBeadsConfigError(err.message || "Failed to load beads config");
-    } finally {
-      setBeadsConfigLoading(false);
-    }
-  };
-
-  // Set a single beads config key via PUT /api/issues/config, then reload.
-  const setBeadsConfigKey = async (key, value) => {
-    const workingDir = getSelectedFolderDir();
-    if (!workingDir || !key) return;
-    setBeadsConfigSaving(true);
-    setBeadsConfigError("");
-    try {
-      const res = await secureFetch(
-        endpoints.issues.config({ working_dir: workingDir }),
-        {
-          method: "PUT",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ key, value }),
-        },
-      );
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok)
-        throw new Error(beadsErrorMessage(data) || "Failed to set config");
-      if (data && data.error)
-        throw new Error(data.stderr || beadsErrorMessage(data));
-      await reloadBeadsConfig(workingDir);
-    } catch (err) {
-      setBeadsConfigError(err.message || "Failed to set config");
-    } finally {
-      setBeadsConfigSaving(false);
-    }
-  };
-
-  // Delete a single beads config key via DELETE /api/issues/config, then reload.
-  const unsetBeadsConfigKey = async (key) => {
-    const workingDir = getSelectedFolderDir();
-    if (!workingDir || !key) return;
-    setBeadsConfigSaving(true);
-    setBeadsConfigError("");
-    try {
-      const res = await secureFetch(
-        endpoints.issues.config({ working_dir: workingDir, key }),
-        { method: "DELETE" },
-      );
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok)
-        throw new Error(beadsErrorMessage(data) || "Failed to delete config");
-      if (data && data.error)
-        throw new Error(data.stderr || beadsErrorMessage(data));
-      await reloadBeadsConfig(workingDir);
-    } catch (err) {
-      setBeadsConfigError(err.message || "Failed to delete config");
-    } finally {
-      setBeadsConfigSaving(false);
-    }
-  };
-
-  // Load the folder's upstream task system via GET /api/issues/upstream.
-  const reloadBeadsUpstream = async (workingDir) => {
-    try {
-      const res = await authFetch(
-        endpoints.issues.upstream({ working_dir: workingDir }),
-      );
-      const data = await res.json().catch(() => ({}));
-      setBeadsUpstream((data && data.upstream) || "none");
-      setBeadsPullPrompt((data && data.pull_prompt) || "");
-      setBeadsPushPrompt((data && data.push_prompt) || "");
-      setBeadsSyncPrompt((data && data.sync_prompt) || "");
-      setBeadsPullPromptArgs((data && data.pull_prompt_args) || {});
-      setBeadsPushPromptArgs((data && data.push_prompt_args) || {});
-      setBeadsSyncPromptArgs((data && data.sync_prompt_args) || {});
-    } catch (_err) {
-      setBeadsUpstream("none");
-    }
-  };
-
-  // Load available enabled folder prompts for the "prompts" upstream pickers.
-  // Parametrized prompts are included; per-prompt arguments are configured via
-  // the sliders button next to each row.
-  const loadBeadsUpstreamPrompts = async (workingDir) => {
-    if (!workingDir) return;
-    setBeadsUpstreamPromptsLoading(true);
-    try {
-      const res = await authFetch(
-        endpoints.workspacePrompts.list({
-          working_dir: workingDir,
-          include_global: true,
-        }),
-      );
-      const data = await res.json().catch(() => ({}));
-      const all = (data && data.prompts) || [];
-      setBeadsUpstreamPrompts(all.filter((p) => p.enabled !== false));
-    } catch (_err) {
-      setBeadsUpstreamPrompts([]);
-    } finally {
-      setBeadsUpstreamPromptsLoading(false);
-    }
-  };
-
-  // Persist the folder's upstream task system via PUT /api/issues/upstream.
-  const saveBeadsUpstream = async (upstream) => {
-    const workingDir = getSelectedFolderDir();
-    if (!workingDir) return;
-    const prev = beadsUpstream;
-    setBeadsUpstream(upstream); // optimistic
-    setBeadsUpstreamSaving(true);
-    try {
-      const body = { upstream };
-      if (upstream === "prompts") {
-        body.pull_prompt = beadsPullPrompt;
-        body.push_prompt = beadsPushPrompt;
-        body.sync_prompt = beadsSyncPrompt;
-        body.pull_prompt_args = beadsPullPromptArgs;
-        body.push_prompt_args = beadsPushPromptArgs;
-        body.sync_prompt_args = beadsSyncPromptArgs;
-      }
-      const res = await secureFetch(
-        endpoints.issues.upstream({ working_dir: workingDir }),
-        {
-          method: "PUT",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(body),
-        },
-      );
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok)
-        throw new Error(beadsErrorMessage(data) || "Failed to set upstream");
-      if (data && data.error) throw new Error(beadsErrorMessage(data));
-      setBeadsUpstream((data && data.upstream) || upstream);
-      setBeadsPullPrompt((data && data.pull_prompt) || "");
-      setBeadsPushPrompt((data && data.push_prompt) || "");
-      setBeadsSyncPrompt((data && data.sync_prompt) || "");
-      setBeadsPullPromptArgs((data && data.pull_prompt_args) || {});
-      setBeadsPushPromptArgs((data && data.push_prompt_args) || {});
-      setBeadsSyncPromptArgs((data && data.sync_prompt_args) || {});
-    } catch (err) {
-      setBeadsUpstream(prev); // revert on failure
-      setBeadsConfigError(err.message || "Failed to set upstream");
-    } finally {
-      setBeadsUpstreamSaving(false);
-    }
-  };
-
-  // Persist a single pull/push/sync prompt selection for the "prompts" upstream.
-  const saveBeadsPromptName = async (field, value) => {
-    const workingDir = getSelectedFolderDir();
-    if (!workingDir) return;
-    const setterMap = {
-      pull_prompt: setBeadsPullPrompt,
-      push_prompt: setBeadsPushPrompt,
-      sync_prompt: setBeadsSyncPrompt,
-    };
-    const prevMap = {
-      pull_prompt: beadsPullPrompt,
-      push_prompt: beadsPushPrompt,
-      sync_prompt: beadsSyncPrompt,
-    };
-    const setter = setterMap[field];
-    const prev = prevMap[field];
-    if (!setter) return;
-    setter(value); // optimistic
-    setBeadsUpstreamSaving(true);
-    try {
-      const res = await secureFetch(
-        endpoints.issues.upstream({ working_dir: workingDir }),
-        {
-          method: "PUT",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            upstream: "prompts",
-            pull_prompt: field === "pull_prompt" ? value : beadsPullPrompt,
-            push_prompt: field === "push_prompt" ? value : beadsPushPrompt,
-            sync_prompt: field === "sync_prompt" ? value : beadsSyncPrompt,
-            pull_prompt_args: beadsPullPromptArgs,
-            push_prompt_args: beadsPushPromptArgs,
-            sync_prompt_args: beadsSyncPromptArgs,
-          }),
-        },
-      );
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok)
-        throw new Error(beadsErrorMessage(data) || "Failed to save prompt");
-      if (data && data.error) throw new Error(beadsErrorMessage(data));
-    } catch (err) {
-      setter(prev); // revert on failure
-      setBeadsConfigError(err.message || "Failed to save prompt");
-    } finally {
-      setBeadsUpstreamSaving(false);
-    }
-  };
-
-  // Persist the saved argument map for a single pull/push/sync prompt.
-  // Sends the FULL upstream body (all three names + all three arg maps) so the
-  // backend can round-trip; reverts on failure.
-  const saveBeadsPromptArgs = async (field, args) => {
-    const workingDir = getSelectedFolderDir();
-    if (!workingDir) return;
-    const setterMap = {
-      pull_prompt: setBeadsPullPromptArgs,
-      push_prompt: setBeadsPushPromptArgs,
-      sync_prompt: setBeadsSyncPromptArgs,
-    };
-    const prevMap = {
-      pull_prompt: beadsPullPromptArgs,
-      push_prompt: beadsPushPromptArgs,
-      sync_prompt: beadsSyncPromptArgs,
-    };
-    const setter = setterMap[field];
-    const prev = prevMap[field];
-    if (!setter) return;
-    setter(args); // optimistic
-    setBeadsUpstreamSaving(true);
-    try {
-      const res = await secureFetch(
-        endpoints.issues.upstream({ working_dir: workingDir }),
-        {
-          method: "PUT",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            upstream: "prompts",
-            pull_prompt: beadsPullPrompt,
-            push_prompt: beadsPushPrompt,
-            sync_prompt: beadsSyncPrompt,
-            pull_prompt_args:
-              field === "pull_prompt" ? args : beadsPullPromptArgs,
-            push_prompt_args:
-              field === "push_prompt" ? args : beadsPushPromptArgs,
-            sync_prompt_args:
-              field === "sync_prompt" ? args : beadsSyncPromptArgs,
-          }),
-        },
-      );
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok)
-        throw new Error(beadsErrorMessage(data) || "Failed to save arguments");
-      if (data && data.error) throw new Error(beadsErrorMessage(data));
-    } catch (err) {
-      setter(prev); // revert on failure
-      setBeadsConfigError(err.message || "Failed to save arguments");
-    } finally {
-      setBeadsUpstreamSaving(false);
-    }
-  };
-
   // Load (reload) prompts for the selected folder
   const reloadFolderPrompts = async (workingDir) => {
     const res = await authFetch(
@@ -2486,29 +2168,9 @@ export function WorkspacesDialog({
                 setEditMetaGroup=${setEditMetaGroup}
                 editUserDataFields=${editUserDataFields}
                 setEditUserDataFields=${setEditUserDataFields}
-                beadsConfig=${beadsConfig}
-                beadsConfigLoading=${beadsConfigLoading}
-                beadsConfigError=${beadsConfigError}
-                beadsConfigSaving=${beadsConfigSaving}
-                newBeadsKey=${newBeadsKey}
-                setNewBeadsKey=${setNewBeadsKey}
-                newBeadsValue=${newBeadsValue}
-                setNewBeadsValue=${setNewBeadsValue}
-                beadsUpstream=${beadsUpstream}
-                beadsUpstreamSaving=${beadsUpstreamSaving}
-                beadsUpstreamPrompts=${beadsUpstreamPrompts}
-                beadsUpstreamPromptsLoading=${beadsUpstreamPromptsLoading}
-                beadsPullPrompt=${beadsPullPrompt}
-                beadsPushPrompt=${beadsPushPrompt}
-                beadsSyncPrompt=${beadsSyncPrompt}
-                beadsPullPromptArgs=${beadsPullPromptArgs}
-                beadsPushPromptArgs=${beadsPushPromptArgs}
-                beadsSyncPromptArgs=${beadsSyncPromptArgs}
-                saveBeadsUpstream=${saveBeadsUpstream}
-                saveBeadsPromptName=${saveBeadsPromptName}
-                saveBeadsPromptArgs=${saveBeadsPromptArgs}
-                setBeadsConfigKey=${setBeadsConfigKey}
-                unsetBeadsConfigKey=${unsetBeadsConfigKey}
+                beads=${beads}
+                beadsSetters=${beadsSetters}
+                beadsHandlers=${beadsHandlers}
                 folderPrompts=${folderPrompts}
                 promptsLoading=${promptsLoading}
                 showAddPrompt=${showAddPrompt}

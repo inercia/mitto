@@ -61,31 +61,37 @@ const BEADS_UPSTREAM_HELP = {
 };
 
 export function WorkspaceFolderBeadsTab({
-  beadsConfig,
-  beadsConfigLoading,
-  beadsConfigError,
-  beadsConfigSaving,
-  newBeadsKey,
-  setNewBeadsKey,
-  newBeadsValue,
-  setNewBeadsValue,
-  beadsUpstream,
-  beadsUpstreamSaving,
-  beadsUpstreamPrompts,
-  beadsUpstreamPromptsLoading,
-  beadsPullPrompt,
-  beadsPushPrompt,
-  beadsSyncPrompt,
-  beadsPullPromptArgs,
-  beadsPushPromptArgs,
-  beadsSyncPromptArgs,
-  saveBeadsUpstream,
-  saveBeadsPromptName,
-  saveBeadsPromptArgs,
-  setBeadsConfigKey,
-  unsetBeadsConfigKey,
+  beads,
+  beadsSetters,
+  beadsHandlers,
   onOpenPromptParamDialog,
 }) {
+  const {
+    beadsConfig,
+    beadsConfigLoading,
+    beadsConfigError,
+    beadsConfigSaving,
+    newBeadsKey,
+    newBeadsValue,
+    beadsUpstream,
+    beadsUpstreamSaving,
+    beadsUpstreamPrompts,
+    beadsUpstreamPromptsLoading,
+    beadsPullPrompt,
+    beadsPushPrompt,
+    beadsSyncPrompt,
+    beadsPullPromptArgs,
+    beadsPushPromptArgs,
+    beadsSyncPromptArgs,
+  } = beads;
+  const { setNewBeadsKey, setNewBeadsValue } = beadsSetters;
+  const {
+    setBeadsConfigKey,
+    unsetBeadsConfigKey,
+    saveBeadsUpstream,
+    saveBeadsPromptName,
+    saveBeadsPromptArgs,
+  } = beadsHandlers;
   return html`
     <div class="space-y-4">
       <p class="text-sm text-mitto-text-muted">

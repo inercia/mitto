@@ -86,30 +86,10 @@ function renderFolderEditor({
   setEditMetaGroup,
   editUserDataFields,
   setEditUserDataFields,
-  // Beads tab
-  beadsConfig,
-  beadsConfigLoading,
-  beadsConfigError,
-  beadsConfigSaving,
-  newBeadsKey,
-  setNewBeadsKey,
-  newBeadsValue,
-  setNewBeadsValue,
-  beadsUpstream,
-  beadsUpstreamSaving,
-  beadsUpstreamPrompts,
-  beadsUpstreamPromptsLoading,
-  beadsPullPrompt,
-  beadsPushPrompt,
-  beadsSyncPrompt,
-  beadsPullPromptArgs,
-  beadsPushPromptArgs,
-  beadsSyncPromptArgs,
-  saveBeadsUpstream,
-  saveBeadsPromptName,
-  saveBeadsPromptArgs,
-  setBeadsConfigKey,
-  unsetBeadsConfigKey,
+  // Beads tab (grouped state/handlers from useBeadsFolderConfig)
+  beads,
+  beadsSetters,
+  beadsHandlers,
   // Prompts tab
   folderPrompts,
   promptsLoading,
@@ -550,29 +530,9 @@ function renderFolderEditor({
                     ${
                       activeTab === "beads" &&
                       html`<${WorkspaceFolderBeadsTab}
-                        beadsConfig=${beadsConfig}
-                        beadsConfigLoading=${beadsConfigLoading}
-                        beadsConfigError=${beadsConfigError}
-                        beadsConfigSaving=${beadsConfigSaving}
-                        newBeadsKey=${newBeadsKey}
-                        setNewBeadsKey=${setNewBeadsKey}
-                        newBeadsValue=${newBeadsValue}
-                        setNewBeadsValue=${setNewBeadsValue}
-                        beadsUpstream=${beadsUpstream}
-                        beadsUpstreamSaving=${beadsUpstreamSaving}
-                        beadsUpstreamPrompts=${beadsUpstreamPrompts}
-                        beadsUpstreamPromptsLoading=${beadsUpstreamPromptsLoading}
-                        beadsPullPrompt=${beadsPullPrompt}
-                        beadsPushPrompt=${beadsPushPrompt}
-                        beadsSyncPrompt=${beadsSyncPrompt}
-                        beadsPullPromptArgs=${beadsPullPromptArgs}
-                        beadsPushPromptArgs=${beadsPushPromptArgs}
-                        beadsSyncPromptArgs=${beadsSyncPromptArgs}
-                        saveBeadsUpstream=${saveBeadsUpstream}
-                        saveBeadsPromptName=${saveBeadsPromptName}
-                        saveBeadsPromptArgs=${saveBeadsPromptArgs}
-                        setBeadsConfigKey=${setBeadsConfigKey}
-                        unsetBeadsConfigKey=${unsetBeadsConfigKey}
+                        beads=${beads}
+                        beadsSetters=${beadsSetters}
+                        beadsHandlers=${beadsHandlers}
                       />`
                     }
 
