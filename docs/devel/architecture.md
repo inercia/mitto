@@ -434,6 +434,20 @@ flowchart LR
 | HTM          | esm.sh              | JSX-like syntax without build step  |
 | Tailwind CSS | cdn.tailwindcss.com | Utility-first CSS framework         |
 
+### Beads read-cache (experimental)
+
+The `web` subcommand accepts `--beads-cache` (default off) to wrap the injected
+`beads.Client` with `beads.NewCachingClient`, memoising the payloads of
+read-only bd invocations (`List`, `Ready`, `Status`, `ListAllLabels`,
+`ConfigShow`) per-workspace with a 60s TTL floor and per-instance
+`singleflight` coalescing. Cache hits skip both the bd subprocess and the
+`BeadsWatcher` self-suppression window. Writes and uninitialised workspaces
+bypass the cache. The flag is OFF by default; still-missing pieces —
+`BeadsWatcher` subscription for external-change invalidation (mitto-is2.3),
+end-to-end writer-side invalidation coverage (mitto-is2.4), and metrics plus a
+default-on flip (mitto-is2.5) — are tracked as sibling beads under the
+`mitto-is2` epic.
+
 ## Future Considerations
 
 1. **Session Search**: Index sessions for quick searching by content

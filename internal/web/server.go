@@ -47,6 +47,9 @@ type Config struct {
 
 	AutoApprove bool
 	Debug       bool
+	// BeadsCache, when true, wraps the beads.Client with beads.NewCachingClient
+	// to memoise read-only bd invocations. Default false; experimental (mitto-is2).
+	BeadsCache bool
 	// MittoConfig is the full Mitto configuration (used for /api/config endpoint)
 	MittoConfig *configPkg.Config
 	// StaticDir is an optional filesystem directory to serve static files from.
@@ -220,6 +223,11 @@ type Server struct {
 	// beads is the injectable Client for bd operations.
 	// When nil, beadsClient() falls back to beads.NewClient() (real bd binary).
 	beads beads.Client
+
+	// beadsCache is non-nil only when Config.BeadsCache is true; points to the
+	// same instance held by s.beads (which is typed as the interface). Later
+	// wired to BeadsWatcher (mitto-is2.3) and writer paths (mitto-is2.4).
+	beadsCache *beads.CachingClient
 
 	// Health monitor for external address reachability checking
 	healthMonitor          *hooks.HealthMonitor
@@ -781,6 +789,14 @@ func NewServer(config Config) (*Server, error) {
 		inner:    beads.NewExecRunner(),
 		suppress: s.suppressBeads,
 	})
+
+	// mitto-is2.2: optional in-memory read cache above the suppression seam.
+	// Order (outermost → inner): CachingClient → cliClient → suppressingBeadsRunner → execRunner.
+	// Cache hits skip both the exec and the suppression window.
+	if config.BeadsCache {
+		s.beadsCache = beads.NewCachingClient(s.beads)
+		s.beads = s.beadsCache
+	}
 
 	// The REST handlers sub-package facade is constructed later in NewServer,
 	// after callbackIndex, callbackRateLimiter and loopRunner are
