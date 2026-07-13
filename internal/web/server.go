@@ -229,6 +229,12 @@ type Server struct {
 	// wired to BeadsWatcher (mitto-is2.3) and writer paths (mitto-is2.4).
 	beadsCache *beads.CachingClient
 
+	// beadsCacheSubscriber is the identity-stable BeadsWatcher subscriber that
+	// forwards external-change events to s.beadsCache.Invalidate. Non-nil iff
+	// s.beadsCache is non-nil; the pointer is reused across Subscribe/Unsubscribe
+	// so the watcher can look it up by identity. mitto-is2.3.
+	beadsCacheSubscriber *beadsCacheWatcherSubscriber
+
 	// Health monitor for external address reachability checking
 	healthMonitor          *hooks.HealthMonitor
 	healthMonitorMu        sync.Mutex
@@ -1115,6 +1121,11 @@ func NewServer(config Config) (*Server, error) {
 					s.beadsWatcher.Unsubscribe(s.loopRunner)
 					s.beadsWatcher.Subscribe(s.loopRunner, s.getBeadsWatchDirs())
 				}
+				// mitto-is2.3: same rebind for the cache-invalidation adapter.
+				if s.beadsCacheSubscriber != nil {
+					s.beadsWatcher.Unsubscribe(s.beadsCacheSubscriber)
+					s.beadsWatcher.Subscribe(s.beadsCacheSubscriber, s.getBeadsWatchDirs())
+				}
 			}
 		},
 		RestartWorkspaceACP: func() func(string) error {
@@ -1246,6 +1257,16 @@ func NewServer(config Config) (*Server, error) {
 		// Also subscribe the loop runner so onTasks loop conversations
 		// can fire (or rebase their diff baseline) when beads change.
 		s.beadsWatcher.Subscribe(s.loopRunner, s.getBeadsWatchDirs())
+		// mitto-is2.3: when the read cache is enabled, wire it to BeadsWatcher
+		// so external mutations (bd invocations from other processes, direct
+		// .beads/ writes, git pulls) invalidate the corresponding workspace's
+		// cache slot. Self-writes from THIS process are handled separately by
+		// CachingClient's writer-defer-Invalidate (mitto-is2.1) and by the
+		// watcher's own SuppressSelfActivity gating (applied before fan-out).
+		if s.beadsCache != nil {
+			s.beadsCacheSubscriber = &beadsCacheWatcherSubscriber{cache: s.beadsCache}
+			s.beadsWatcher.Subscribe(s.beadsCacheSubscriber, s.getBeadsWatchDirs())
+		}
 		s.beadsWatcher.Start()
 		logger.Info("Beads watcher started", "dirs", s.getBeadsWatchDirs())
 	}
@@ -2253,6 +2274,28 @@ func (s *Server) suppressBeads(workingDir string) func() {
 		return func() {}
 	}
 	return s.beadsWatcher.SuppressSelfActivity(workingDir)
+}
+
+// beadsCacheWatcherSubscriber adapts *beads.CachingClient to
+// configPkg.BeadsSubscriber so BeadsWatcher events invalidate the corresponding
+// workspace's cache slot. Kept in the web package to preserve the internal/beads
+// leaf-package invariant (cache.go must not import internal/config). The pointer
+// receiver + Server-held pointer field give the adapter a stable identity so
+// BeadsWatcher.Unsubscribe/Subscribe can pair up on workspace resubscribe.
+// Self-induced bd writes are already filtered upstream by
+// BeadsWatcher.SuppressSelfActivity before fan-out, so this only fires for
+// external mutations (bd from other processes, direct .beads/ writes, git
+// pulls). In-process writer invalidation is handled by CachingClient's
+// defer c.Invalidate(dir) on each write method (mitto-is2.1). mitto-is2.3.
+type beadsCacheWatcherSubscriber struct{ cache *beads.CachingClient }
+
+func (b *beadsCacheWatcherSubscriber) OnBeadsChanged(event configPkg.BeadsChangeEvent) {
+	if b == nil || b.cache == nil {
+		return
+	}
+	for _, dir := range event.WorkingDirs {
+		b.cache.Invalidate(dir)
+	}
 }
 
 // OnBeadsChanged is called by the BeadsWatcher when .beads/ directories change.
