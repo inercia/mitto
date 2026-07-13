@@ -10,13 +10,14 @@
 //   - applyWorkspaceEdits(ws) — buildWorkspaceEditsFor bound to the current
 //     selectedWorkspaceKey
 //   - populate + flush effect keyed on [selectedWorkspaceKey]
-const { useState, useEffect, useRef, useCallback } = window.preact;
+const { useState, useEffect, useCallback } = window.preact;
 
 export function useWorkspaceEdits({
   selectedWorkspace,
   selectedWorkspaceKey,
   setWorkspaces,
   getWorkspaceKey,
+  prevSelectedWorkspaceKeyRef,
 }) {
   const [editAcpServer, setEditAcpServer] = useState("");
   const [editAuxModelProfile, setEditAuxModelProfile] = useState("");
@@ -35,8 +36,6 @@ export function useWorkspaceEdits({
   const [editAutoApprove, setEditAutoApprove] = useState(false);
   const [editIsDefault, setEditIsDefault] = useState(false);
   const [editAcpCommandOverride, setEditAcpCommandOverride] = useState("");
-
-  const prevSelectedWorkspaceKeyRef = useRef(null);
 
   // Build a workspace object with the current transient edit fields applied,
   // but only for the workspace matching targetKey; all others pass through

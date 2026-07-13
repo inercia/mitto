@@ -96,6 +96,13 @@ export function WorkspacesDialog({
   // so we hand the desired tab off here and consume it there.
   const pendingInitialTabRef = useRef(null);
 
+  // Tracks previously-selected workspace key so useWorkspaceEdits can flush
+  // transient edit fields back into the workspaces array on selection change.
+  // Owned by the shell (not useWorkspaceEdits) to break the circular dep
+  // between useWorkspacesData (which reads it inside loadData) and
+  // useWorkspaceEdits (which needs setWorkspaces from useWorkspacesData).
+  const prevSelectedWorkspaceKeyRef = useRef(null);
+
   // prevSelectedWorkspaceKeyRef + workspace-level edit state (editAcpServer,
   // editAuxModel*, editInitialModel*, editRunner*, editAutoApprove, editIsDefault,
   // editAcpCommandOverride) + buildWorkspaceEditsFor/applyWorkspaceEdits helpers
@@ -181,13 +188,36 @@ export function WorkspacesDialog({
     [leftPanelWidth],
   );
 
+  const getWorkspaceKey = (ws) =>
+    ws.uuid || `${ws.working_dir}|${ws.acp_server}`;
+
+  // Config-loading cluster: owns raw data useStates (workspaces/acpServers/
+  // modelProfiles/supportedRunners/orphanedWorkspaces) + loading/error flags
+  // + the async loadData function. Called BEFORE any hook, memo, or effect
+  // that reads workspaces/acpServers/modelProfiles/loadData.
+  const {
+    loading,
+    error,
+    setError,
+    workspaces,
+    setWorkspaces,
+    acpServers,
+    modelProfiles,
+    supportedRunners,
+    orphanedWorkspaces,
+    loadData,
+  } = useWorkspacesData({
+    prevSelectedWorkspaceKeyRef,
+    selectedWorkspaceKey,
+    setSelectedWorkspaceKey,
+    setSelectedFolder,
+    getWorkspaceKey,
+  });
+
   const sortedAcpServers = useMemo(
     () => [...acpServers].sort((a, b) => a.name.localeCompare(b.name)),
     [acpServers],
   );
-
-  const getWorkspaceKey = (ws) =>
-    ws.uuid || `${ws.working_dir}|${ws.acp_server}`;
 
   // Group workspaces by display name, sorted alphabetically, with ACP servers sorted within
   const groupedWorkspaces = useMemo(() => {
@@ -351,10 +381,11 @@ export function WorkspacesDialog({
   );
 
   // Workspace-level edit fields (transient scalar state) + populate/flush
-  // effect + buildWorkspaceEditsFor/applyWorkspaceEdits helpers +
-  // prevSelectedWorkspaceKeyRef. Invoked here so downstream useMemos and hooks
-  // (auxLegacyModelLabel, useWorkspaceMcpTools, useWorkspacesSaveCoordinator)
-  // can consume the returned edit* values and helpers.
+  // effect + buildWorkspaceEditsFor/applyWorkspaceEdits helpers. Invoked here
+  // so downstream useMemos and hooks (auxLegacyModelLabel,
+  // useWorkspaceMcpTools, useWorkspacesSaveCoordinator) can consume the
+  // returned edit* values and helpers. prevSelectedWorkspaceKeyRef is owned
+  // by the shell and passed in (see top of component).
   const {
     editAcpServer,
     editAuxModelProfile,
@@ -378,36 +409,12 @@ export function WorkspacesDialog({
     setEditIsDefault,
     setEditAcpCommandOverride,
     applyWorkspaceEdits,
-    prevSelectedWorkspaceKeyRef,
   } = useWorkspaceEdits({
     selectedWorkspace,
     selectedWorkspaceKey,
     setWorkspaces,
     getWorkspaceKey,
-  });
-
-  // Config-loading cluster: owns raw data useStates (workspaces/acpServers/
-  // modelProfiles/supportedRunners/orphanedWorkspaces) + loading/error flags
-  // + the async loadData function. Must be called AFTER useWorkspaceEdits
-  // (for prevSelectedWorkspaceKeyRef) and BEFORE any hook or effect that
-  // reads workspaces/acpServers/modelProfiles/loadData.
-  const {
-    loading,
-    error,
-    setError,
-    workspaces,
-    setWorkspaces,
-    acpServers,
-    modelProfiles,
-    supportedRunners,
-    orphanedWorkspaces,
-    loadData,
-  } = useWorkspacesData({
     prevSelectedWorkspaceKeyRef,
-    selectedWorkspaceKey,
-    setSelectedWorkspaceKey,
-    setSelectedFolder,
-    getWorkspaceKey,
   });
 
   // Legacy raw matchMode/pattern constraint for the auxiliary model, if any,
