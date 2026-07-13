@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"os"
 	"sort"
 	"strings"
 	"sync"
@@ -1111,9 +1110,14 @@ func (m *ACPProcessManager) getOrCreateAuxiliarySession(ctx context.Context, wor
 
 	// Build MCP servers list. Processor auxiliary sessions get a stdio MCP proxy
 	// so the agent can call Mitto tools (e.g., mitto_ui_notify for notifications).
+	// The command MUST be the mitto CLI binary, not mitto-app: on the macOS app
+	// os.Executable() points at Mitto.app/Contents/MacOS/mitto-app, which is not
+	// a cobra CLI and would spawn a whole second Mitto app (webview + up-hook /
+	// cloudflared) instead of the intended stdio proxy. resolveMittoCLIBinary
+	// rewrites to the sibling `mitto` binary in that case.
 	mcpServers := []acp.McpServer{} // Must be empty array, not nil — ACP validates this
 	if strings.HasPrefix(purpose, auxiliary.PurposeProcessorPrefix) && m.MCPServerURL != "" {
-		if exe, err := os.Executable(); err == nil {
+		if exe, err := resolveMittoCLIBinary(); err == nil {
 			mcpServers = []acp.McpServer{{
 				Stdio: &acp.McpServerStdio{
 					Name:    "mitto",
@@ -1125,7 +1129,8 @@ func (m *ACPProcessManager) getOrCreateAuxiliarySession(ctx context.Context, wor
 			if m.logger != nil {
 				m.logger.Debug("Auxiliary processor session will use MCP proxy",
 					"purpose", purpose,
-					"mcp_url", m.MCPServerURL)
+					"mcp_url", m.MCPServerURL,
+					"proxy_command", exe)
 			}
 		}
 	}
