@@ -16,6 +16,7 @@ import {
 import { getWorkspaceVisualInfo, getBasename } from "../lib.js";
 
 import { useBeadsFolderConfig } from "../hooks/useBeadsFolderConfig.js";
+import { useFolderPromptsConfig } from "../hooks/useFolderPromptsConfig.js";
 
 import {
   SpinnerIcon,
@@ -181,20 +182,8 @@ export function WorkspacesDialog({
   const [editMetaGroup, setEditMetaGroup] = useState("");
   const [editUserDataFields, setEditUserDataFields] = useState([]);
 
-  // Folder prompts state (for the Prompts tab)
-  const [folderPrompts, setFolderPrompts] = useState([]);
-  const [promptsLoading, setPromptsLoading] = useState(false);
-  const [showAddPrompt, setShowAddPrompt] = useState(false);
-  const [editingPromptIndex, setEditingPromptIndex] = useState(null);
-  const [editPromptName, setEditPromptName] = useState("");
-  const [editPromptText, setEditPromptText] = useState("");
-  const [editPromptColor, setEditPromptColor] = useState("");
-  const [editPromptGroup, setEditPromptGroup] = useState("");
-  const [newPromptName, setNewPromptName] = useState("");
-  const [newPromptText, setNewPromptText] = useState("");
-  const [newPromptColor, setNewPromptColor] = useState("");
-  const [newPromptGroup, setNewPromptGroup] = useState("");
-  const [promptSaving, setPromptSaving] = useState(false);
+  // Folder Prompts tab state + handlers moved to useFolderPromptsConfig hook
+  // (invoked below, after groupedWorkspaces is defined so its dep array is honored).
 
   // Folder processors state (for the Processors tab)
   const [folderProcessors, setFolderProcessors] = useState([]);
@@ -311,6 +300,23 @@ export function WorkspacesDialog({
       );
       return folderGroup?.workspaces[0]?.working_dir || null;
     },
+  });
+
+  // Folder Prompts tab state + handlers. Owns the 13 prompt state pairs, the
+  // tab-open load effect, and the four CRUD handlers (reload/save/delete/toggle).
+  // Shell forwards the grouped {prompts, promptsSetters, promptsHandlers} objects
+  // to WorkspaceFolderEditor.
+  const { prompts, promptsSetters, promptsHandlers } = useFolderPromptsConfig({
+    selectedFolder,
+    activeTab,
+    groupedWorkspaces,
+    getSelectedFolderDir: () => {
+      const folderGroup = groupedWorkspaces.find(
+        (g) => g.displayName === selectedFolder,
+      );
+      return folderGroup?.workspaces[0]?.working_dir || null;
+    },
+    setError,
   });
 
   // Initialize folder expansion state from localStorage when the dialog opens
@@ -1525,30 +1531,6 @@ export function WorkspacesDialog({
     return getUnusedServer(firstWs.working_dir, null) !== null;
   }, [selectedFolder, groupedWorkspaces, workspaces, acpServers]);
 
-  // Load prompts when a folder is selected and the Prompts tab is active
-  useEffect(() => {
-    if (!selectedFolder || activeTab !== "prompts") return;
-    const folderGroup = groupedWorkspaces.find(
-      (g) => g.displayName === selectedFolder,
-    );
-    const firstWs = folderGroup?.workspaces[0];
-    if (!firstWs?.working_dir) return;
-
-    setPromptsLoading(true);
-    authFetch(
-      endpoints.workspacePrompts.list({
-        working_dir: firstWs.working_dir,
-        include_global: true,
-      }),
-    )
-      .then((r) => r.json())
-      .then((data) => {
-        setFolderPrompts(data.prompts || []);
-      })
-      .catch((err) => console.error("Failed to load prompts:", err))
-      .finally(() => setPromptsLoading(false));
-  }, [selectedFolder, activeTab, groupedWorkspaces]);
-
   // Helper to get the first workspace dir for the selected folder
   const getSelectedFolderDir = () => {
     const folderGroup = groupedWorkspaces.find(
@@ -1562,71 +1544,6 @@ export function WorkspacesDialog({
       (g) => g.displayName === selectedFolder,
     );
     return folderGroup?.workspaces[0]?.uuid || null;
-  };
-
-  // Load (reload) prompts for the selected folder
-  const reloadFolderPrompts = async (workingDir) => {
-    const res = await authFetch(
-      endpoints.workspacePrompts.list({
-        working_dir: workingDir,
-        include_global: true,
-      }),
-    );
-    const data = await res.json();
-    setFolderPrompts(data.prompts || []);
-  };
-
-  // Create or update a workspace prompt file
-  const saveWorkspacePrompt = async (promptData) => {
-    const workingDir = getSelectedFolderDir();
-    if (!workingDir) return;
-    setPromptSaving(true);
-    try {
-      const res = await secureFetch(endpoints.workspacePrompts.create(), {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ working_dir: workingDir, ...promptData }),
-      });
-      if (!res.ok) {
-        const ct = res.headers.get("content-type");
-        if (ct && ct.includes("application/json")) {
-          const data = await res.json();
-          throw new Error(errorMessageFromData(data, "request failed"));
-        }
-        throw new Error(await res.text());
-      }
-      await reloadFolderPrompts(workingDir);
-    } catch (err) {
-      setError("Failed to save prompt: " + err.message);
-    } finally {
-      setPromptSaving(false);
-    }
-  };
-
-  // Delete a workspace prompt file by name
-  const deleteWorkspacePrompt = async (promptName) => {
-    const workingDir = getSelectedFolderDir();
-    if (!workingDir) return;
-    try {
-      const res = await secureFetch(
-        endpoints.workspacePrompts.list({
-          working_dir: workingDir,
-          name: promptName,
-        }),
-        { method: "DELETE" },
-      );
-      if (!res.ok) {
-        const ct = res.headers.get("content-type");
-        if (ct && ct.includes("application/json")) {
-          const data = await res.json();
-          throw new Error(errorMessageFromData(data, "request failed"));
-        }
-        throw new Error(await res.text());
-      }
-      await reloadFolderPrompts(workingDir);
-    } catch (err) {
-      setError("Failed to delete prompt: " + err.message);
-    }
   };
 
   // ------ Shortcuts tab helpers -----------------------------------------------
@@ -1819,38 +1736,6 @@ export function WorkspacesDialog({
       });
     } catch (err) {
       setError("Failed to save processor arguments: " + err.message);
-    }
-  };
-
-  // Toggle enabled state for a prompt via PATCH /api/workspace-prompts/{name}?working_dir=.
-  // If a .prompt.yaml file exists in .mitto/prompts/, its enabled field is updated in-place.
-  // If not, the state is recorded in the workspace .mittorc file.
-  const togglePromptEnabled = async (prompt) => {
-    const workingDir = getSelectedFolderDir();
-    if (!workingDir) return;
-    const isCurrentlyEnabled = prompt.enabled !== false;
-    try {
-      const res = await secureFetch(
-        endpoints.workspacePrompts.update(prompt.name, {
-          working_dir: workingDir,
-        }),
-        {
-          method: "PATCH",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ enabled: !isCurrentlyEnabled }),
-        },
-      );
-      if (!res.ok) {
-        const ct = res.headers.get("content-type");
-        if (ct && ct.includes("application/json")) {
-          const data = await res.json();
-          throw new Error(errorMessageFromData(data, "request failed"));
-        }
-        throw new Error(await res.text());
-      }
-      await reloadFolderPrompts(workingDir);
-    } catch (err) {
-      setError("Failed to toggle prompt: " + err.message);
     }
   };
 
@@ -2171,32 +2056,9 @@ export function WorkspacesDialog({
                 beads=${beads}
                 beadsSetters=${beadsSetters}
                 beadsHandlers=${beadsHandlers}
-                folderPrompts=${folderPrompts}
-                promptsLoading=${promptsLoading}
-                showAddPrompt=${showAddPrompt}
-                setShowAddPrompt=${setShowAddPrompt}
-                editingPromptIndex=${editingPromptIndex}
-                setEditingPromptIndex=${setEditingPromptIndex}
-                editPromptName=${editPromptName}
-                setEditPromptName=${setEditPromptName}
-                editPromptText=${editPromptText}
-                setEditPromptText=${setEditPromptText}
-                editPromptColor=${editPromptColor}
-                setEditPromptColor=${setEditPromptColor}
-                editPromptGroup=${editPromptGroup}
-                setEditPromptGroup=${setEditPromptGroup}
-                newPromptName=${newPromptName}
-                setNewPromptName=${setNewPromptName}
-                newPromptText=${newPromptText}
-                setNewPromptText=${setNewPromptText}
-                newPromptColor=${newPromptColor}
-                setNewPromptColor=${setNewPromptColor}
-                newPromptGroup=${newPromptGroup}
-                setNewPromptGroup=${setNewPromptGroup}
-                promptSaving=${promptSaving}
-                saveWorkspacePrompt=${saveWorkspacePrompt}
-                deleteWorkspacePrompt=${deleteWorkspacePrompt}
-                togglePromptEnabled=${togglePromptEnabled}
+                prompts=${prompts}
+                promptsSetters=${promptsSetters}
+                promptsHandlers=${promptsHandlers}
                 folderProcessors=${folderProcessors}
                 processorsLoading=${processorsLoading}
                 expandedProcessor=${expandedProcessor}

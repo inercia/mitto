@@ -90,33 +90,10 @@ function renderFolderEditor({
   beads,
   beadsSetters,
   beadsHandlers,
-  // Prompts tab
-  folderPrompts,
-  promptsLoading,
-  showAddPrompt,
-  setShowAddPrompt,
-  editingPromptIndex,
-  setEditingPromptIndex,
-  editPromptName,
-  setEditPromptName,
-  editPromptText,
-  setEditPromptText,
-  editPromptColor,
-  setEditPromptColor,
-  editPromptGroup,
-  setEditPromptGroup,
-  newPromptName,
-  setNewPromptName,
-  newPromptText,
-  setNewPromptText,
-  newPromptColor,
-  setNewPromptColor,
-  newPromptGroup,
-  setNewPromptGroup,
-  promptSaving,
-  saveWorkspacePrompt,
-  deleteWorkspacePrompt,
-  togglePromptEnabled,
+  // Prompts tab (grouped state/setters/handlers from useFolderPromptsConfig)
+  prompts,
+  promptsSetters,
+  promptsHandlers,
   // Processors tab
   folderProcessors,
   processorsLoading,
@@ -540,32 +517,9 @@ function renderFolderEditor({
                     ${
                       activeTab === "prompts" &&
                       html`<${WorkspaceFolderPromptsTab}
-                        folderPrompts=${folderPrompts}
-                        promptsLoading=${promptsLoading}
-                        showAddPrompt=${showAddPrompt}
-                        setShowAddPrompt=${setShowAddPrompt}
-                        editingPromptIndex=${editingPromptIndex}
-                        setEditingPromptIndex=${setEditingPromptIndex}
-                        editPromptName=${editPromptName}
-                        setEditPromptName=${setEditPromptName}
-                        editPromptText=${editPromptText}
-                        setEditPromptText=${setEditPromptText}
-                        editPromptColor=${editPromptColor}
-                        setEditPromptColor=${setEditPromptColor}
-                        editPromptGroup=${editPromptGroup}
-                        setEditPromptGroup=${setEditPromptGroup}
-                        newPromptName=${newPromptName}
-                        setNewPromptName=${setNewPromptName}
-                        newPromptText=${newPromptText}
-                        setNewPromptText=${setNewPromptText}
-                        newPromptColor=${newPromptColor}
-                        setNewPromptColor=${setNewPromptColor}
-                        newPromptGroup=${newPromptGroup}
-                        setNewPromptGroup=${setNewPromptGroup}
-                        promptSaving=${promptSaving}
-                        saveWorkspacePrompt=${saveWorkspacePrompt}
-                        deleteWorkspacePrompt=${deleteWorkspacePrompt}
-                        togglePromptEnabled=${togglePromptEnabled}
+                        prompts=${prompts}
+                        promptsSetters=${promptsSetters}
+                        promptsHandlers=${promptsHandlers}
                       />`
                     }
 

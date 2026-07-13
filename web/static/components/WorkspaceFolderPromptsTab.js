@@ -11,33 +11,39 @@ import { SpinnerIcon, PlusIcon, EditIcon, TrashIcon } from "./Icons.js";
 import { Tooltip } from "./Tooltip.js";
 
 export function WorkspaceFolderPromptsTab({
-  folderPrompts,
-  promptsLoading,
-  showAddPrompt,
-  setShowAddPrompt,
-  editingPromptIndex,
-  setEditingPromptIndex,
-  editPromptName,
-  setEditPromptName,
-  editPromptText,
-  setEditPromptText,
-  editPromptColor,
-  setEditPromptColor,
-  editPromptGroup,
-  setEditPromptGroup,
-  newPromptName,
-  setNewPromptName,
-  newPromptText,
-  setNewPromptText,
-  newPromptColor,
-  setNewPromptColor,
-  newPromptGroup,
-  setNewPromptGroup,
-  promptSaving,
-  saveWorkspacePrompt,
-  deleteWorkspacePrompt,
-  togglePromptEnabled,
+  prompts,
+  promptsSetters,
+  promptsHandlers,
 }) {
+  const {
+    folderPrompts,
+    promptsLoading,
+    showAddPrompt,
+    editingPromptIndex,
+    editPromptName,
+    editPromptText,
+    editPromptColor,
+    editPromptGroup,
+    newPromptName,
+    newPromptText,
+    newPromptColor,
+    newPromptGroup,
+    promptSaving,
+  } = prompts;
+  const {
+    setShowAddPrompt,
+    setEditingPromptIndex,
+    setEditPromptName,
+    setEditPromptText,
+    setEditPromptColor,
+    setEditPromptGroup,
+    setNewPromptName,
+    setNewPromptText,
+    setNewPromptColor,
+    setNewPromptGroup,
+  } = promptsSetters;
+  const { saveWorkspacePrompt, deleteWorkspacePrompt, togglePromptEnabled } =
+    promptsHandlers;
   return html`
     <div class="space-y-4">
       <div class="flex items-center justify-between">
