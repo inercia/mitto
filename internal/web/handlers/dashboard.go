@@ -36,9 +36,9 @@ type dashboardStats struct {
 // carries the working directory that produced the item, so the frontend can
 // route the click back to the right workspace's task viewer.
 type dashboardLists struct {
-	InProgress []map[string]any `json:"in_progress"`
-	Ready      []map[string]any `json:"ready"`
-	Epics      []map[string]any `json:"epics"`
+	InProgress       []map[string]any `json:"in_progress"`
+	Ready            []map[string]any `json:"ready"`
+	RecentlyModified []map[string]any `json:"recently_modified"`
 }
 
 // dashboardResponse is the JSON payload of GET /api/dashboard.
@@ -77,9 +77,9 @@ func (h *Handlers) HandleDashboard(w http.ResponseWriter, r *http.Request) {
 
 	resp := dashboardResponse{
 		Lists: dashboardLists{
-			InProgress: make([]map[string]any, 0),
-			Ready:      make([]map[string]any, 0),
-			Epics:      make([]map[string]any, 0),
+			InProgress:       make([]map[string]any, 0),
+			Ready:            make([]map[string]any, 0),
+			RecentlyModified: make([]map[string]any, 0),
 		},
 	}
 
@@ -120,11 +120,9 @@ func (h *Handlers) HandleDashboard(w http.ResponseWriter, r *http.Request) {
 	ready := h.dashboardCollect(ctx, dirs, "ready", func(ctx context.Context, dir string) ([]byte, error) {
 		return h.beadsClient().Ready(ctx, dir)
 	}, nil)
-	epics := h.dashboardCollect(ctx, dirs, "epics", func(ctx context.Context, dir string) ([]byte, error) {
+	recentlyModified := h.dashboardCollect(ctx, dirs, "recently_modified", func(ctx context.Context, dir string) ([]byte, error) {
 		return h.beadsClient().List(ctx, dir)
-	}, func(item map[string]any) bool {
-		return itemType(item) == "epic"
-	})
+	}, nil)
 
 	// Global timeout: if the shared context expired before the collectors
 	// finished, surface a retryable 503 rather than a truncated result.
@@ -135,15 +133,15 @@ func (h *Handlers) HandleDashboard(w http.ResponseWriter, r *http.Request) {
 
 	resp.Stats.IssuesInProgress = len(inProgress)
 
-	// All three lists sort by priority-first (Critical -> Low), then
-	// updated_at DESC within a priority band, so the top-N cap always
-	// surfaces the most important items rather than merely the most
-	// recently touched. Prior behaviour sorted In-progress by recency
-	// only, which sometimes hid Critical/High items behind lower-priority
-	// but more-recently-touched ones.
+	// InProgress and Ready sort priority-first (Critical -> Low) then
+	// updated_at DESC within a priority band, so the top-N cap surfaces the
+	// most important items rather than merely the most recently touched.
+	// RecentlyModified sorts by updated_at DESC only — recency IS the panel's
+	// whole point, and a priority-first sort would defeat it by burying a
+	// Low-priority item the user just touched behind stale Critical work.
 	resp.Lists.InProgress = capItems(sortByPriorityThenUpdatedAtDesc(inProgress), limit)
 	resp.Lists.Ready = capItems(sortByPriorityThenUpdatedAtDesc(ready), limit)
-	resp.Lists.Epics = capItems(sortByPriorityThenUpdatedAtDesc(epics), limit)
+	resp.Lists.RecentlyModified = capItems(sortByUpdatedAtDesc(recentlyModified), limit)
 
 	writeJSONOK(w, resp)
 }
@@ -313,9 +311,9 @@ func sortByUpdatedAtDesc(items []map[string]any) []map[string]any {
 // sortByPriorityThenUpdatedAtDesc sorts items so higher-priority (lower
 // numeric priority) items come first, then falls back to updated_at desc
 // within the same priority band, and finally to id ascending for stability.
-// Sorts in place and returns the same slice for chaining. Used for the Ready
-// and Epics backlogs where the top-N cap should surface the most important
-// items rather than merely the most recently touched.
+// Sorts in place and returns the same slice for chaining. Used for the
+// In-progress and Ready backlogs where the top-N cap should surface the
+// most important items rather than merely the most recently touched.
 func sortByPriorityThenUpdatedAtDesc(items []map[string]any) []map[string]any {
 	sort.SliceStable(items, func(i, j int) bool {
 		pi, pj := itemPriority(items[i]), itemPriority(items[j])

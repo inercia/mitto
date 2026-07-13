@@ -61,10 +61,10 @@ const MOCK_DASHBOARD = {
         updated_at: "2026-07-12T08:00:00Z",
       },
     ],
-    epics: [
+    recently_modified: [
       {
         id: "mitto-e1",
-        title: "Epic task 1",
+        title: "Recently modified item 1",
         priority: 3,
         working_dir: WORKSPACE_ALPHA,
         issue_type: "epic",
@@ -202,7 +202,7 @@ testWithCleanup.describe("Global Dashboard", () => {
         page.getByText("Ready tasks", { exact: true }),
       ).toBeVisible();
       await expect(
-        page.getByText("Epic tasks", { exact: true }),
+        page.getByText("Recently modified", { exact: true }),
       ).toBeVisible();
     },
   );
@@ -260,7 +260,7 @@ testWithCleanup.describe("Global Dashboard", () => {
       const promptingSlide = page.locator("#dash-slide-prompting");
       const inProgressSlide = page.locator("#dash-slide-in-progress");
       const readySlide = page.locator("#dash-slide-ready");
-      const epicsSlide = page.locator("#dash-slide-epics");
+      const recentSlide = page.locator("#dash-slide-recent");
 
       // Page 0 (initial): only the prompting slide is rendered.
       await expect(promptingSlide).toBeVisible({
@@ -268,7 +268,7 @@ testWithCleanup.describe("Global Dashboard", () => {
       });
       await expect(inProgressSlide).toHaveCount(0);
       await expect(readySlide).toHaveCount(0);
-      await expect(epicsSlide).toHaveCount(0);
+      await expect(recentSlide).toHaveCount(0);
 
       // Cycle through pages 1 → 2 → 3 with the ❯ button, asserting that at
       // each step the previous slide is unmounted and the next one appears.
@@ -280,23 +280,23 @@ testWithCleanup.describe("Global Dashboard", () => {
       await expect(inProgressSlide).toBeVisible();
       await expect(promptingSlide).toHaveCount(0);
       await expect(readySlide).toHaveCount(0);
-      await expect(epicsSlide).toHaveCount(0);
+      await expect(recentSlide).toHaveCount(0);
 
       // Page 2: ready tasks.
       await nextBtn.click();
       await expect(readySlide).toBeVisible();
       await expect(inProgressSlide).toHaveCount(0);
 
-      // Page 3: epic tasks.
+      // Page 3: recently-modified items.
       await nextBtn.click();
-      await expect(epicsSlide).toBeVisible();
+      await expect(recentSlide).toBeVisible();
       await expect(readySlide).toHaveCount(0);
 
       // One more click wraps back to the prompting slide (page 0), matching
       // the existing modulo arithmetic in prevPage/nextPage.
       await nextBtn.click();
       await expect(promptingSlide).toBeVisible();
-      await expect(epicsSlide).toHaveCount(0);
+      await expect(recentSlide).toHaveCount(0);
     },
   );
 });

@@ -67,7 +67,7 @@ const SLIDES = [
   { id: "dash-slide-prompting", label: "Prompting conversations" },
   { id: "dash-slide-in-progress", label: "In-progress tasks" },
   { id: "dash-slide-ready", label: "Ready tasks" },
-  { id: "dash-slide-epics", label: "Epic tasks" },
+  { id: "dash-slide-recent", label: "Recently modified" },
 ];
 
 /**
@@ -213,7 +213,7 @@ export function Dashboard({
   const lists = (data && data.lists) || {};
   const inProgressList = (lists.in_progress || []).slice(0, MAX_LIST_ITEMS);
   const readyList = (lists.ready || []).slice(0, MAX_LIST_ITEMS);
-  const epicsList = (lists.epics || []).slice(0, MAX_LIST_ITEMS);
+  const recentList = (lists.recently_modified || []).slice(0, MAX_LIST_ITEMS);
 
   return html`
     <div
@@ -296,7 +296,7 @@ export function Dashboard({
           renderConversationRows(promptingList, onFocusConversation),
           renderTaskRows(inProgressList, onOpenTask),
           renderTaskRows(readyList, onOpenTask),
-          renderTaskRows(epicsList, onOpenTask),
+          renderTaskRows(recentList, onOpenTask),
         ];
         const panels = SLIDES.map((slide, i) => ({
           slide,

@@ -74,9 +74,9 @@ type decodedDashboard struct {
 		LoopsStopped           int `json:"loops_stopped"`
 	} `json:"stats"`
 	Lists struct {
-		InProgress []map[string]any `json:"in_progress"`
-		Ready      []map[string]any `json:"ready"`
-		Epics      []map[string]any `json:"epics"`
+		InProgress       []map[string]any `json:"in_progress"`
+		Ready            []map[string]any `json:"ready"`
+		RecentlyModified []map[string]any `json:"recently_modified"`
 	} `json:"lists"`
 }
 
@@ -113,7 +113,7 @@ func TestHandleDashboard_EmptyWorkspaces_EmptyListsNotNull(t *testing.T) {
 		t.Fatalf("status = %d, want %d; body=%s", w.Code, http.StatusOK, w.Body.String())
 	}
 	body := w.Body.String()
-	for _, key := range []string{`"in_progress":[]`, `"ready":[]`, `"epics":[]`} {
+	for _, key := range []string{`"in_progress":[]`, `"ready":[]`, `"recently_modified":[]`} {
 		if !strings.Contains(body, key) {
 			t.Errorf("body missing %q; got=%s", key, body)
 		}
@@ -182,15 +182,26 @@ func TestHandleDashboard_AggregatesTwoWorkspaces_AttachesWorkingDir(t *testing.T
 		t.Errorf("in_progress[1].working_dir = %v, want %q", got, want)
 	}
 
-	// epics: only a-2. Comes from List filtered by issue_type=="epic".
-	if got, want := len(d.Lists.Epics), 1; got != want {
-		t.Fatalf("epics length = %d, want %d", got, want)
+	// recently_modified: every item from List across every workspace,
+	// sorted by updated_at DESC only (no filter, no priority sort). The
+	// fixture has a-2 (2026-01-03), a-1 (2026-01-02) and b-1 (2026-01-01).
+	if got, want := len(d.Lists.RecentlyModified), 3; got != want {
+		t.Fatalf("recently_modified length = %d, want %d", got, want)
 	}
-	if got := d.Lists.Epics[0]["id"]; got != "a-2" {
-		t.Errorf("epics[0].id = %v, want a-2", got)
+	wantOrder := []struct {
+		id, workingDir string
+	}{
+		{"a-2", "/ws/a"},
+		{"a-1", "/ws/a"},
+		{"b-1", "/ws/b"},
 	}
-	if got, want := d.Lists.Epics[0]["working_dir"], "/ws/a"; got != want {
-		t.Errorf("epics[0].working_dir = %v, want %q", got, want)
+	for i, want := range wantOrder {
+		if got := d.Lists.RecentlyModified[i]["id"]; got != want.id {
+			t.Errorf("recently_modified[%d].id = %v, want %q", i, got, want.id)
+		}
+		if got := d.Lists.RecentlyModified[i]["working_dir"]; got != want.workingDir {
+			t.Errorf("recently_modified[%d].working_dir = %v, want %q", i, got, want.workingDir)
+		}
 	}
 
 	// ready: b-r1 first (2026-01-05), then a-r1 (2026-01-04).
@@ -214,7 +225,7 @@ func TestHandleDashboard_AggregatesTwoWorkspaces_AttachesWorkingDir(t *testing.T
 }
 
 // TestHandleDashboard_InProgressSortedByPriorityFirst verifies that the
-// in_progress list follows the same priority-first ordering as ready/epics:
+// in_progress list follows the same priority-first ordering as ready:
 // a Critical (p=0) but older item must beat a Medium (p=2) more-recently-
 // touched one. This locks in the fix for "dashboard lists are not showing
 // the highest-priority tasks" — previously in_progress was recency-only,
@@ -286,7 +297,8 @@ func TestHandleDashboard_DuplicateWorkingDir_VisitedOnce(t *testing.T) {
 	if got, want := len(d.Lists.Ready), 1; got != want {
 		t.Errorf("ready length = %d, want %d (dedup by working_dir)", got, want)
 	}
-	// List is called twice per unique dir (once for in_progress, once for epics filter),
+	// List is called twice per unique dir (once for in_progress, once for
+	// recently_modified — same List call, different filter/sort applied),
 	// Ready is called once per unique dir.
 	if got := atomic.LoadInt32(&client.listCalls); got != 2 {
 		t.Errorf("List call count = %d, want 2 (2 filters x 1 unique dir)", got)
@@ -416,9 +428,9 @@ func twoDigit(n int) string {
 
 // --- sortByPriorityThenUpdatedAtDesc -----------------------------------------
 //
-// Ready / Epics lists must sort by priority ascending (0=Critical first) with
-// updated_at desc as the intra-priority tiebreaker, and id asc as the final
-// stable tiebreaker.
+// In-progress / Ready lists must sort by priority ascending (0=Critical first)
+// with updated_at desc as the intra-priority tiebreaker, and id asc as the
+// final stable tiebreaker.
 
 // prioItem is a shorthand for building test items with just the fields the
 // priority sort inspects. priority is set as float64 to mirror what
