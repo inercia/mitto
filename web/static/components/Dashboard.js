@@ -234,46 +234,50 @@ export function Dashboard({
         </button>
         <span class="font-semibold text-2xl flex-1">Dashboard</span>
       </div>
-      <!-- Stats row is always horizontal, including on phones — the vertical
-           stack was pushing the lists below the fold on narrow viewports. On
-           iPhone width (390px) the three cells share the row and the titles
-           are allowed to wrap to two lines; the stat values (single digits or
-           short ratios) stay comfortably on one line. -->
+      <!-- Stats row uses a plain 3-column CSS grid (not daisyUI's .stats
+           component) because .stats-horizontal is absent from the precompiled
+           tailwind.css and the default .stats layout renders empty on narrow
+           viewports — see tailwind-precompiled-jit-class-gotcha. The inline
+           grid-template-columns mirrors the lists grid below (which uses the
+           same technique for the same reason). -->
       <div
-        class="stats stats-horizontal shadow bg-mitto-surface-2 w-full"
+        class="grid gap-2 w-full rounded-lg shadow bg-mitto-surface-2 p-4"
+        style="grid-template-columns: repeat(3, minmax(0, 1fr));"
       >
-        <div class="stat">
-          <div class="stat-title text-mitto-text-muted">Issues in progress</div>
-          <div class="stat-value text-mitto-text-strong">
+        <div class="flex flex-col gap-1 min-w-0">
+          <div class="text-xs text-mitto-text-muted truncate">
+            Issues in progress
+          </div>
+          <div class="text-2xl font-bold text-mitto-text-strong">
             ${isFirstLoad ? spinner : issuesInProgress ?? "—"}
           </div>
-          <div class="stat-desc text-mitto-text-muted">
+          <div class="text-xs text-mitto-text-muted truncate">
             across all workspaces
           </div>
         </div>
-        <div class="stat">
-          <div class="stat-title text-mitto-text-muted">
+        <div class="flex flex-col gap-1 min-w-0">
+          <div class="text-xs text-mitto-text-muted truncate">
             Conversations prompting
           </div>
-          <div class="stat-value text-mitto-text-strong">
+          <div class="text-2xl font-bold text-mitto-text-strong">
             ${promptingCount ?? (isFirstLoad ? spinner : "—")}
           </div>
-          <div class="stat-desc text-mitto-text-muted">
+          <div class="text-xs text-mitto-text-muted truncate">
             agents currently replying
           </div>
         </div>
-        <div class="stat">
-          <div class="stat-title text-mitto-text-muted">
+        <div class="flex flex-col gap-1 min-w-0">
+          <div class="text-xs text-mitto-text-muted truncate">
             Loops active / stopped
           </div>
-          <div class="stat-value text-mitto-text-strong">
+          <div class="text-2xl font-bold text-mitto-text-strong">
             ${isFirstLoad && allSessions.length === 0
               ? spinner
               : html`${loopsActiveCount ?? 0}
                   <span class="text-mitto-text-muted">/</span>
                   ${loopsStoppedCount ?? 0}`}
           </div>
-          <div class="stat-desc text-mitto-text-muted">
+          <div class="text-xs text-mitto-text-muted truncate">
             loop-enabled sessions
           </div>
         </div>
