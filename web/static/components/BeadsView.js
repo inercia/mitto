@@ -30,9 +30,6 @@ import {
   UPSTREAM_LABELS,
   DEP_TYPES,
   PRIORITY_LABELS,
-  PRIORITY_COLORS,
-  STATUS_COLORS,
-  TYPE_COLORS,
   ISSUE_TYPES,
   BEADS_SUPPORTS_HOVER,
   BEADS_TOOLTIP_DELAY_MS,
@@ -41,6 +38,16 @@ import {
 // that had `import { STATUS_COLORS } from ".../BeadsView.js"` keeps working
 // after the move to utils/beads.js (mitto-90f.3 E-3).
 export { STATUS_COLORS } from "../utils/beads.js";
+import {
+  priorityBadge,
+  statusBadge,
+  depStatusBadge,
+  typeBadge,
+} from "./beads/Badges.js";
+// Re-export statusBadge at its original location so SessionPanel.js
+// (`import { statusBadge as beadsStatusBadge } from "./BeadsView.js"`) keeps
+// working after the move to beads/Badges.js (mitto-90f.3 E-4).
+export { statusBadge } from "./beads/Badges.js";
 import { getBasename, copyToClipboard } from "../lib.js";
 import {
   PlusIcon,
@@ -120,49 +127,9 @@ const BEADS_STATUS_TOGGLES = [
 // hidden.
 let beadsStatusToggles = { open: true, in_progress: true, closed: false };
 
-function badge(text, colorClass) {
-  return html`<span
-    class="badge badge-sm font-medium px-2.5 py-0.5 ${colorClass}"
-    >${text}</span
-  >`;
-}
-
-function priorityBadge(p) {
-  const n = typeof p === "number" ? p : 3;
-  return badge(
-    PRIORITY_LABELS[n] ?? String(p),
-    PRIORITY_COLORS[n] ?? PRIORITY_COLORS[3],
-  );
-}
-
-export function statusBadge(s) {
-  const label = (s || "open").replace(/_/g, " ");
-  return badge(
-    label,
-    STATUS_COLORS[s] ?? "bg-mitto-surface-4 text-mitto-text-strong",
-  );
-}
-
-// Status badge for the (narrow) dependencies list: shows the full status label
-// on normal screens and collapses to a single-letter abbreviation on small
-// screens (see .beads-badge-abbr / .beads-badge-full in styles.css). The full
-// label is kept in `title` for hover/accessibility.
-function depStatusBadge(s) {
-  const label = (s || "open").replace(/_/g, " ");
-  const colorClass =
-    STATUS_COLORS[s] ?? "bg-mitto-surface-4 text-mitto-text-strong";
-  return html`<span
-    class="badge badge-sm font-medium px-2.5 py-0.5 ${colorClass}"
-    title=${label}
-  >
-    <span class="beads-badge-abbr">${label.charAt(0)}</span
-    ><span class="beads-badge-full">${label}</span>
-  </span>`;
-}
-
-function typeBadge(t) {
-  return badge(t || "task", TYPE_COLORS[t] ?? TYPE_COLORS.task);
-}
+// Badge sub-components (badge, priorityBadge, statusBadge, depStatusBadge,
+// typeBadge) live in ./beads/Badges.js so they can be reused independently of
+// this file's large surface. See mitto-90f.3 E-4.
 
 function renderMarkdown(text) {
   if (!text) return null;
