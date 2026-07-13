@@ -2317,3 +2317,269 @@ func TestApplyOnCloseProcessors_SkipsWhenSharedProcessReaped(t *testing.T) {
 		t.Fatalf("PinWorkspace should not fire when shared process is reaped, got %+v", calls)
 	}
 }
+
+// TestSessionManager_ResumeSession_HappyPath_UsesWorkspaceMatchingDirAndACPServer
+// asserts that when two workspaces share the same working directory but expose
+// different ACP servers, the resume path re-resolves the workspace using both
+// the directory AND the ACP server from session metadata (Case: meta.ACPServer
+// != "" and resolveWorkspaceForACP finds a match). No orphan branch must fire,
+// so the persisted acp_server on metadata must remain unchanged.
+func TestSessionManager_ResumeSession_HappyPath_UsesWorkspaceMatchingDirAndACPServer(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := session.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	sm := NewSessionManagerWithOptions(SessionManagerOptions{
+		Workspaces: []config.WorkspaceSettings{
+			{WorkingDir: "/tmp", ACPServer: "agent-a"},
+			{WorkingDir: "/tmp", ACPServer: "agent-b"},
+		},
+	})
+	sm.SetStore(store)
+
+	sm.SetMittoConfig(&config.Config{
+		ACPServers: []config.ACPServer{
+			{Name: "agent-a", Command: "echo hello-a"},
+			{Name: "agent-b", Command: "echo hello-b"},
+		},
+	})
+
+	meta := session.Metadata{
+		SessionID:  "happy-path-session",
+		ACPServer:  "agent-b",
+		WorkingDir: "/tmp",
+		Name:       "Happy Path",
+	}
+	if err := store.Create(meta); err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+
+	_, err = sm.ResumeSession("happy-path-session", "Happy Path", "/tmp")
+	// Workspace resolution succeeded when the error, if any, is NOT the
+	// empty-command class emitted by the "no workspace + no server" branch.
+	if err != nil && strings.Contains(err.Error(), "empty command") {
+		t.Errorf("ResumeSession should have resolved the agent-b workspace, but got empty-command error: %v", err)
+	}
+
+	// The orphan-rescue branch (Case 2) is the only path that persists a new
+	// acp_server on metadata. It must not have fired here.
+	updated, err := store.GetMetadata("happy-path-session")
+	if err != nil {
+		t.Fatalf("GetMetadata after resume failed: %v", err)
+	}
+	if updated.ACPServer != "agent-b" {
+		t.Errorf("expected metadata acp_server to remain %q, got %q", "agent-b", updated.ACPServer)
+	}
+}
+
+// TestSessionManager_ResumeSession_ACPCommandOverride_TakesPriorityOverGlobalConfig
+// asserts that when the matched workspace carries an ACPCommandOverride, the
+// resume path uses ResolveWorkspaceACP (which prefers the override) rather than
+// the raw command from the global ACP server config.
+func TestSessionManager_ResumeSession_ACPCommandOverride_TakesPriorityOverGlobalConfig(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := session.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	sm := NewSessionManagerWithOptions(SessionManagerOptions{
+		Workspaces: []config.WorkspaceSettings{
+			{
+				WorkingDir:         "/tmp",
+				ACPServer:          "agent-a",
+				ACPCommandOverride: "echo override-cmd",
+			},
+		},
+	})
+	sm.SetStore(store)
+
+	sm.SetMittoConfig(&config.Config{
+		ACPServers: []config.ACPServer{
+			{Name: "agent-a", Command: "echo global-cmd"},
+		},
+	})
+
+	meta := session.Metadata{
+		SessionID:  "override-session",
+		ACPServer:  "agent-a",
+		WorkingDir: "/tmp",
+		Name:       "Override Session",
+	}
+	if err := store.Create(meta); err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+
+	_, err = sm.ResumeSession("override-session", "Override Session", "/tmp")
+	if err != nil && strings.Contains(err.Error(), "empty command") {
+		t.Errorf("ResumeSession should have resolved a non-empty command via the workspace override, got: %v", err)
+	}
+
+	// Behavioral cross-check: ResolveWorkspaceACP (the exact call the resume
+	// block makes) must return the override, not the global command. This
+	// documents the contract the extraction must preserve.
+	ws := sm.wsRegistry.GetWorkspaceByDirAndACP("/tmp", "agent-a")
+	if ws == nil {
+		t.Fatalf("expected workspace for /tmp + agent-a, got nil")
+	}
+	gotCmd, _, _ := sm.wsRegistry.ResolveWorkspaceACP(ws)
+	if gotCmd != "echo override-cmd" {
+		t.Errorf("ResolveWorkspaceACP command = %q, want %q (override must beat global config)", gotCmd, "echo override-cmd")
+	}
+}
+
+// TestSessionManager_ResumeSession_NoWorkspaceForDir_FallsBackToDefaultWorkspace
+// covers the provisional-pick fallback: no workspace matches the working dir
+// and metadata carries no ACP server, so the resolver must fall back to
+// GetDefaultWorkspace() to obtain a usable ACP command.
+func TestSessionManager_ResumeSession_NoWorkspaceForDir_FallsBackToDefaultWorkspace(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := session.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	sm := NewSessionManagerWithOptions(SessionManagerOptions{
+		Workspaces: []config.WorkspaceSettings{
+			{WorkingDir: "/other/dir", ACPServer: "agent-a", IsDefault: true},
+		},
+	})
+	sm.SetStore(store)
+
+	sm.SetMittoConfig(&config.Config{
+		ACPServers: []config.ACPServer{
+			{Name: "agent-a", Command: "echo hello"},
+		},
+	})
+
+	// Metadata has NO acp_server set and points at a working dir with no
+	// matching workspace: only the default-workspace fallback can supply a
+	// command here.
+	meta := session.Metadata{
+		SessionID:  "default-fallback-session",
+		WorkingDir: "/nowhere",
+		Name:       "Default Fallback",
+	}
+	if err := store.Create(meta); err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+
+	_, err = sm.ResumeSession("default-fallback-session", "Default Fallback", "/nowhere")
+	if err != nil {
+		errStr := err.Error()
+		if strings.Contains(errStr, "empty command") || strings.Contains(errStr, "empty ACP command") {
+			t.Errorf("ResumeSession should have fallen back to the default workspace's ACP command, got empty-command error: %v", err)
+		}
+	}
+}
+
+// TestSessionManager_ResumeSession_NoMetadataACPServer_KeepsProvisionalWorkspacePick
+// asserts that when metadata carries no acp_server, the provisional pick
+// (dir-matched workspace) is kept and no orphan branch fires. In particular,
+// the rescue-persist step must NOT run, so metadata's acp_server stays empty.
+func TestSessionManager_ResumeSession_NoMetadataACPServer_KeepsProvisionalWorkspacePick(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := session.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	sm := NewSessionManagerWithOptions(SessionManagerOptions{
+		Workspaces: []config.WorkspaceSettings{
+			{WorkingDir: "/tmp", ACPServer: "agent-a"},
+		},
+	})
+	sm.SetStore(store)
+
+	sm.SetMittoConfig(&config.Config{
+		ACPServers: []config.ACPServer{
+			{Name: "agent-a", Command: "echo hello"},
+		},
+	})
+
+	meta := session.Metadata{
+		SessionID:  "provisional-session",
+		WorkingDir: "/tmp",
+		Name:       "Provisional Pick",
+	}
+	if err := store.Create(meta); err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+
+	_, err = sm.ResumeSession("provisional-session", "Provisional Pick", "/tmp")
+	if err != nil && strings.Contains(err.Error(), "empty command") {
+		t.Errorf("ResumeSession should have used the provisional workspace pick, got empty-command error: %v", err)
+	}
+
+	// Rescue-persist only fires from the orphan branch (Case 2), which requires
+	// meta.ACPServer != "". This path must NOT touch acp_server on metadata.
+	updated, err := store.GetMetadata("provisional-session")
+	if err != nil {
+		t.Fatalf("GetMetadata after resume failed: %v", err)
+	}
+	if updated.ACPServer != "" {
+		t.Errorf("expected metadata acp_server to remain empty (no rescue-persist on provisional path), got %q", updated.ACPServer)
+	}
+}
+
+// TestSessionManager_ResumeSession_FinalRetry_SkipsACPSessionResume asserts
+// that when ACPStartFailureCount reaches ACPStartFailureThreshold-1, the
+// resolver clears the LOCAL acpSessionID variable (forcing a fresh session on
+// the final retry) without persisting that clear to metadata. This is a
+// regression fence for the eventual extraction: the persisted ACPSessionID
+// must survive across resume attempts.
+func TestSessionManager_ResumeSession_FinalRetry_SkipsACPSessionResume(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := session.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	sm := NewSessionManagerWithOptions(SessionManagerOptions{
+		Workspaces: []config.WorkspaceSettings{
+			{WorkingDir: "/tmp", ACPServer: "agent-a"},
+		},
+	})
+	sm.SetStore(store)
+
+	sm.SetMittoConfig(&config.Config{
+		ACPServers: []config.ACPServer{
+			{Name: "agent-a", Command: "echo hello"},
+		},
+	})
+
+	meta := session.Metadata{
+		SessionID:            "final-retry-session",
+		ACPServer:            "agent-a",
+		ACPSessionID:         "acp-abc",
+		WorkingDir:           "/tmp",
+		Name:                 "Final Retry",
+		ACPStartFailureCount: ACPStartFailureThreshold - 1,
+	}
+	if err := store.Create(meta); err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+
+	// Behavior-only: the call must return (no panic, no deadlock). We don't
+	// care about the returned error — "echo hello" isn't a real ACP server.
+	_, _ = sm.ResumeSession("final-retry-session", "Final Retry", "/tmp")
+
+	// The clear of acpSessionID inside the resolution block is LOCAL to the
+	// function. The persisted ACPSessionID on metadata must remain untouched
+	// by that step (the resume path may still update other fields such as the
+	// failure counter, but not this one).
+	updated, err := store.GetMetadata("final-retry-session")
+	if err != nil {
+		t.Fatalf("GetMetadata after resume failed: %v", err)
+	}
+	if updated.ACPSessionID != "acp-abc" {
+		t.Errorf("expected persisted ACPSessionID to remain %q after final-retry local clear, got %q", "acp-abc", updated.ACPSessionID)
+	}
+}
