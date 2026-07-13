@@ -50,6 +50,8 @@ import {
   TitleField,
   TypeField,
   PriorityField,
+  AssigneeField,
+  NotesField,
   inputClass,
   selectClass,
   textareaClass,
@@ -1610,89 +1612,6 @@ ${viewDraft.description}</pre
     </div>`;
   };
 
-  const AssigneeField = (mode) => {
-    if (mode === "create") {
-      return html` <input
-        id="new-issue-assignee"
-        type="text"
-        class=${inputClass}
-        placeholder="Assignee"
-        value=${createAssignee}
-        disabled=${submitting}
-        onInput=${(e) => setCreateAssignee(e.target.value)}
-      />`;
-    }
-    return editingAssignee
-      ? html` <input
-          ref=${assigneeRef}
-          type="text"
-          class=${inputClass}
-          placeholder="Assignee (empty to clear)"
-          value=${viewDraft.assignee}
-          onInput=${(e) =>
-            setViewDraft((p) => ({ ...p, assignee: e.target.value }))}
-          onBlur=${() => setEditingAssignee(false)}
-          onKeyDown=${handleAssigneeKeyDown}
-          disabled=${savingView}
-        />`
-      : html` <div
-          class="text-sm text-mitto-text wrap-break-word cursor-text hover:text-mitto-text-300 transition-colors flex items-center gap-2 tooltip tooltip-bottom"
-          onClick=${startEditAssignee}
-          data-tip="Click to edit"
-        >
-          ${viewDraft.assignee
-            ? html`<span>${viewDraft.assignee}</span>`
-            : html`<span class="text-mitto-text-secondary italic"
-                >Unassigned. Click to set.</span
-              >`}
-        </div>`;
-  };
-
-  const NotesField = (mode) => {
-    if (mode === "create") {
-      return html` <textarea
-        id="new-issue-notes"
-        class="${textareaClass} resize-y min-h-[80px]"
-        placeholder="Optional notes"
-        disabled=${submitting}
-        onInput=${(e) => setCreateNotes(e.target.value)}
-        value=${createNotes}
-      ></textarea>`;
-    }
-    if (depsLoading) {
-      return html`<div
-        class="flex items-center gap-2 text-xs text-mitto-text-secondary"
-      >
-        <span class="loading loading-spinner w-3 h-3"></span> Loading…
-      </div>`;
-    }
-    return editingNotes
-      ? html` <textarea
-          ref=${notesRef}
-          class="${textareaClass} resize-y"
-          rows="4"
-          style=${notesMinHeight ? `min-height:${notesMinHeight}px` : null}
-          placeholder="Add notes…"
-          value=${viewDraft.notes}
-          onInput=${(e) =>
-            setViewDraft((p) => ({ ...p, notes: e.target.value }))}
-          onBlur=${() => setEditingNotes(false)}
-          disabled=${savingView}
-        ></textarea>`
-      : html` <div
-          ref=${notesViewRef}
-          class="card border-l-2 border-l-amber-500/70 bg-amber-500/10 rounded-r p-2 pl-3 cursor-text hover:border-l-amber-500 transition-colors relative block tooltip tooltip-bottom"
-          onClick=${startEditNotes}
-          data-tip="Click to edit"
-        >
-          ${viewDraft.notes && viewDraft.notes.trim()
-            ? commentBody(viewDraft.notes, workingDir)
-            : html`<span class="text-sm text-mitto-text-secondary italic"
-                >No notes. Click to add.</span
-              >`}
-        </div>`;
-  };
-
   const DependenciesField = (mode) => {
     if (mode === "create") {
       return html` <datalist id="beads-create-dep-options">
@@ -2023,7 +1942,12 @@ ${viewDraft.description}</pre
                 }
                 <div>
                   <label class=${labelClass} for="new-issue-assignee">Assignee</label>
-                  ${AssigneeField("create")}
+                  <${AssigneeField}
+                    mode="create"
+                    createAssignee=${createAssignee}
+                    setCreateAssignee=${setCreateAssignee}
+                    submitting=${submitting}
+                  />
                 </div>
               </div>
 
@@ -2036,7 +1960,12 @@ ${viewDraft.description}</pre
 
               <fieldset class="fieldset min-w-0">
                 <legend class="fieldset-legend">Notes</legend>
-                ${NotesField("create")}
+                <${NotesField}
+                  mode="create"
+                  createNotes=${createNotes}
+                  setCreateNotes=${setCreateNotes}
+                  submitting=${submitting}
+                />
               </fieldset>
             </${Fragment}>
           `
@@ -2091,7 +2020,17 @@ ${viewDraft.description}</pre
                   </div>
                   <div>
                     <label class=${labelClass}>Assignee</label>
-                    ${AssigneeField("view")}
+                    <${AssigneeField}
+                      mode="view"
+                      viewDraft=${viewDraft}
+                      setViewDraft=${setViewDraft}
+                      editingAssignee=${editingAssignee}
+                      setEditingAssignee=${setEditingAssignee}
+                      assigneeRef=${assigneeRef}
+                      savingView=${savingView}
+                      handleAssigneeKeyDown=${handleAssigneeKeyDown}
+                      startEditAssignee=${startEditAssignee}
+                    />
                   </div>
                   ${labelValue("Owner", data.owner)}
                   ${labelValue(
@@ -2373,7 +2312,20 @@ ${viewDraft.description}</pre
 
                 <fieldset class="fieldset min-w-0">
                   <legend class="fieldset-legend">Notes</legend>
-                  ${NotesField("view")}
+                  <${NotesField}
+                    mode="view"
+                    depsLoading=${depsLoading}
+                    viewDraft=${viewDraft}
+                    setViewDraft=${setViewDraft}
+                    editingNotes=${editingNotes}
+                    setEditingNotes=${setEditingNotes}
+                    notesRef=${notesRef}
+                    notesViewRef=${notesViewRef}
+                    notesMinHeight=${notesMinHeight}
+                    savingView=${savingView}
+                    startEditNotes=${startEditNotes}
+                    workingDir=${workingDir}
+                  />
                 </fieldset>
               `
         }
