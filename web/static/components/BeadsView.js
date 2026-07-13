@@ -61,6 +61,10 @@ import {
   labelClass,
 } from "./beads/detail/Fields.js";
 import { CommentsSection } from "./beads/detail/CommentsSection.js";
+import {
+  SubtasksList,
+  DetailActionBar,
+} from "./beads/detail/Sections.js";
 // Re-export statusBadge at its original location so SessionPanel.js
 // (`import { statusBadge as beadsStatusBadge } from "./BeadsView.js"`) keeps
 // working after the move to beads/Badges.js (mitto-90f.3 E-4).
@@ -1789,35 +1793,10 @@ export function BeadsDetailPanel({
                   improvingDesc=${improvingDesc}
                   improveDescriptionText=${improveDescriptionText}
                 />
-                ${subtasks.length > 0 &&
-                html`
-                  <fieldset class="fieldset min-w-0">
-                    <legend class="fieldset-legend">
-                      Subtasks (${subtasks.length})
-                    </legend>
-                    <ul class="space-y-1">
-                      ${subtasks.map(
-                        (c) => html`
-                          <li key=${c.id}>
-                            <button
-                              type="button"
-                              onClick=${() => onSelectIssue && onSelectIssue(c)}
-                              class="btn btn-ghost btn-xs w-full justify-start inline-flex tooltip tooltip-bottom"
-                              data-tip="Open ${c.id}"
-                            >
-                              ${statusBadge(c.status)}
-                              <span
-                                class="font-mono text-mitto-text-secondary text-xs"
-                                >${c.id}</span
-                              >
-                              <span class="truncate">${c.title}</span>
-                            </button>
-                          </li>
-                        `,
-                      )}
-                    </ul>
-                  </fieldset>
-                `}
+                <${SubtasksList}
+                  subtasks=${subtasks}
+                  onSelectIssue=${onSelectIssue}
+                />
 
                 <fieldset class="fieldset min-w-0">
                   <legend class="fieldset-legend">Dependencies</legend>
@@ -1872,38 +1851,17 @@ export function BeadsDetailPanel({
         }
       </div>
 
-      ${
-        (creating || data) &&
-        html`
-          <div
-            class="flex justify-end gap-3 p-3 border-t border-mitto-border shrink-0"
-          >
-            <button
-              type="button"
-              onClick=${handleClose}
-              disabled=${creating ? submitting : false}
-              class="btn btn-ghost btn-sm inline-flex tooltip tooltip-top"
-              data-tip="Close"
-            >
-              Close
-            </button>
-            <button
-              type="button"
-              onClick=${creating ? handleSave : handleViewSave}
-              disabled=${creating
-                ? !description.trim() || submitting
-                : !viewDirty || savingView}
-              class="btn btn-primary btn-sm inline-flex tooltip tooltip-top"
-              data-tip="Save changes"
-            >
-              ${(creating ? submitting : savingView)
-                ? html`<span class="loading loading-spinner w-4 h-4"></span>`
-                : null}
-              Save
-            </button>
-          </div>
-        `
-      }
+      <${DetailActionBar}
+        creating=${creating}
+        data=${data}
+        handleClose=${handleClose}
+        submitting=${submitting}
+        handleSave=${handleSave}
+        handleViewSave=${handleViewSave}
+        description=${description}
+        viewDirty=${viewDirty}
+        savingView=${savingView}
+      />
       <//>
       ${
         panelMenu &&
