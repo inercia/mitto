@@ -70,6 +70,7 @@ import {
 import { useWSSeqSync } from "./useWSSeqSync.js";
 import { useWSWorkspaces } from "./useWSWorkspaces.js";
 import { useWSQueue } from "./useWSQueue.js";
+import { useWSNotifications } from "./useWSNotifications.js";
 
 // =============================================================================
 // Session creation retry state (module-level, persists across re-renders)
@@ -155,19 +156,18 @@ export function useWebSocket({
   // { sessionId, sessionName, timestamp }
   const [backgroundCompletion, setBackgroundCompletion] = useState(null);
 
-  // Track loop session starts for toast notifications
-  // { sessionId, sessionName, timestamp }
-  const [loopStarted, setLoopStarted] = useState(null);
-
-  // Track background UI prompts for toast notifications
-  // { sessionId, sessionName, question, timestamp }
-  const [backgroundUIPrompt, setBackgroundUIPrompt] = useState(null);
-
-  // Track background UI prompt timeouts for native OS notifications
-  // Fired when a blocking prompt in a background session times out with no active viewer.
-  // { sessionId, sessionName, question, timestamp }
-  const [backgroundUIPromptTimeout, setBackgroundUIPromptTimeout] =
-    useState(null);
+  // Background notification state (loop started, background UI prompts) — extracted to useWSNotifications sub-hook, mitto-90f.5
+  const {
+    loopStarted,
+    setLoopStarted,
+    clearLoopStarted,
+    backgroundUIPrompt,
+    setBackgroundUIPrompt,
+    clearBackgroundUIPrompt,
+    backgroundUIPromptTimeout,
+    setBackgroundUIPromptTimeout,
+    clearBackgroundUIPromptTimeout,
+  } = useWSNotifications();
 
   // Queue state + REST callbacks (extracted to useWSQueue sub-hook, mitto-90f.5)
   const {
@@ -5779,21 +5779,6 @@ export function useWebSocket({
   // Clear background completion notification
   const clearBackgroundCompletion = useCallback(() => {
     setBackgroundCompletion(null);
-  }, []);
-
-  // Clear loop started notification
-  const clearLoopStarted = useCallback(() => {
-    setLoopStarted(null);
-  }, []);
-
-  // Clear background UI prompt notification
-  const clearBackgroundUIPrompt = useCallback(() => {
-    setBackgroundUIPrompt(null);
-  }, []);
-
-  // Clear background UI prompt timeout notification
-  const clearBackgroundUIPromptTimeout = useCallback(() => {
-    setBackgroundUIPromptTimeout(null);
   }, []);
 
   // Send UI prompt answer (yes/no or select response)
