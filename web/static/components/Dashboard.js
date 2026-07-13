@@ -9,7 +9,7 @@ const { html, useState, useEffect, useMemo, useRef } = window.preact;
 import { authFetch } from "../utils/csrf.js";
 import { endpoints } from "../utils/endpoints.js";
 import { getBasename } from "../lib.js";
-import { MenuIcon } from "./Icons.js";
+import { FolderIcon, MenuIcon } from "./Icons.js";
 
 const REFRESH_INTERVAL_MS = 15_000;
 const MAX_LIST_ITEMS = 5;
@@ -339,32 +339,45 @@ function renderListPanel(slide, rows, padTo) {
   `;
 }
 
-// Invisible spacer row matching the real .list-row shape so panels on the same
-// page bottom-align. `aria-hidden` + `visibility:hidden` keeps it out of the
-// a11y tree and off the tab order while still contributing height to the flow.
+// daisyUI's `.list .list-row` ships with `gap:1rem; padding:1rem`, which is
+// too airy for the dashboard's dense side-by-side panels. Override to a
+// compact rhythm; applied inline (rather than via a Tailwind class) because
+// the precompiled tailwind.css does not include arbitrary padding utilities
+// like `p-[.5rem]`. Kept as a shared const so every row helper (task,
+// conversation, empty, spacer) tightens together.
+const COMPACT_ROW_STYLE = "gap: 0.5rem; padding: 0.5rem 0.75rem;";
+
+// Invisible spacer row matching the real two-line row shape (badge line +
+// title line) so panels on the same page share height exactly. Every real
+// row in the dashboard (task or conversation) is two lines tall; a one-line
+// spacer would make padded panels visibly shorter than fully-populated ones.
+// `aria-hidden` + `visibility:hidden` keeps it out of the a11y tree and off
+// the tab order while still contributing height to the flow.
 function spacerRow(key) {
   return html`
     <li
-      class="list-row items-center gap-2"
-      style="visibility: hidden;"
+      class="list-row"
+      style="visibility: hidden; ${COMPACT_ROW_STYLE}"
       aria-hidden="true"
       key=${key}
     >
-      <div class="list-col-grow min-w-0">
+      <div class="list-col-grow min-w-0 flex flex-col gap-1">
+        <div class="text-xs">&nbsp;</div>
         <div class="truncate text-sm">&nbsp;</div>
       </div>
     </li>
   `;
 }
 
-// Empty-state row: keeps the same .list-row shape so it lines up cleanly with
-// any spacer rows the panel renderer may add below it to bottom-align with a
-// sibling on the same page.
+// Empty-state row: keeps the same two-line shape as spacer/real rows so it
+// lines up cleanly with any spacer rows the panel renderer may add below it
+// to bottom-align with a sibling on the same page.
 function emptyRow() {
   return html`
-    <li class="list-row items-center gap-2" key="__empty">
-      <div class="list-col-grow min-w-0">
-        <div class="text-center text-mitto-text-muted">No items</div>
+    <li class="list-row" style="${COMPACT_ROW_STYLE}" key="__empty">
+      <div class="list-col-grow min-w-0 flex flex-col gap-1">
+        <div class="text-xs">&nbsp;</div>
+        <div class="text-center text-sm text-mitto-text-muted">No items</div>
       </div>
     </li>
   `;
@@ -381,11 +394,18 @@ function agentBadge(acp) {
 function workspaceBadge(workingDir) {
   if (!workingDir) return null;
   const base = getBasename(workingDir) || workingDir;
+  // Folder-icon-prefixed chip on a distinct surface with accent-colored text
+  // so the workspace/folder reads as the row's contextual anchor and is easy
+  // to scan-separate from the muted bd id next to it. Uses only precompiled
+  // utilities — `bg-mitto-accent-*/text-mitto-accent-100/700` tints are not
+  // in the shipped tailwind.css bundle (JIT trap).
   return html`<span
-    class="text-xs text-mitto-text-muted truncate"
+    class="inline-flex items-center gap-1 badge badge-xs bg-mitto-surface-4 text-mitto-accent border-0 min-w-0"
     title="${workingDir}"
-    >${base}</span
-  >`;
+  >
+    <${FolderIcon} className="w-3 h-3 shrink-0" />
+    <span class="truncate">${base}</span>
+  </span>`;
 }
 
 // Interactive class suffix applied to a populated row. Kept out of the row
@@ -404,9 +424,10 @@ function activateOnKey(fn) {
   };
 }
 
-// Row: title (grows/truncates) + agent badge + workspace basename. When
-// `onClick` is provided AND the session has a `session_id`, the row becomes
-// keyboard/mouse-activatable; otherwise it stays inert.
+// Two-line row (mirrors renderTaskRows shape for visual parity):
+//   Line 1: workspace basename + agent badge
+//   Line 2: title (grows/truncates full width)
+// Interactive when `onClick` is provided AND the session has a `session_id`.
 function renderConversationRows(sessions, onClick) {
   // Empty list → one visible "No items" row. Bottom-alignment padding across
   // sibling panels is now handled by renderListPanel(padTo) so this helper
@@ -423,28 +444,34 @@ function renderConversationRows(sessions, onClick) {
     const activate = clickable ? () => onClick(sid) : undefined;
     return html`
       <li
-        class="list-row items-center gap-2 ${clickable
-          ? ROW_INTERACTIVE_CLASSES
-          : ""}"
+        class="list-row ${clickable ? ROW_INTERACTIVE_CLASSES : ""}"
+        style="${COMPACT_ROW_STYLE}"
         key=${sid || title}
         role=${clickable ? "button" : undefined}
         tabindex=${clickable ? "0" : undefined}
         onClick=${activate}
         onKeyDown=${clickable ? activateOnKey(activate) : undefined}
       >
-        <div class="list-col-grow min-w-0">
+        <div class="list-col-grow min-w-0 flex flex-col gap-1">
+          <div class="flex items-center gap-2 min-w-0">
+            <span class="min-w-0 truncate">
+              ${workspaceBadge(s.working_dir)}
+            </span>
+            ${agentBadge(s.acp_server)}
+          </div>
           <div class="truncate text-sm text-mitto-text-strong" title="${title}">
             ${title}
           </div>
         </div>
-        ${agentBadge(s.acp_server)} ${workspaceBadge(s.working_dir)}
       </li>
     `;
   });
   return rows;
 }
 
-// Row: bd id + title (grows/truncates) + priority pill + workspace basename.
+// Two-line row:
+//   Line 1: workspace basename + bd id (monospace) + priority pill
+//   Line 2: title (grows/truncates full width)
 // Interactive only when the item has both an `id` and a `working_dir` (both
 // are required to open the correct workspace's beads viewer).
 function renderTaskRows(items, onClick) {
@@ -460,24 +487,28 @@ function renderTaskRows(items, onClick) {
     const activate = clickable ? () => onClick(id, wd) : undefined;
     return html`
       <li
-        class="list-row items-center gap-2 ${clickable
-          ? ROW_INTERACTIVE_CLASSES
-          : ""}"
+        class="list-row ${clickable ? ROW_INTERACTIVE_CLASSES : ""}"
+        style="${COMPACT_ROW_STYLE}"
         key=${id || title}
         role=${clickable ? "button" : undefined}
         tabindex=${clickable ? "0" : undefined}
         onClick=${activate}
         onKeyDown=${clickable ? activateOnKey(activate) : undefined}
       >
-        <div class="text-xs font-mono text-mitto-text-muted shrink-0">
-          ${id}
-        </div>
-        <div class="list-col-grow min-w-0">
+        <div class="list-col-grow min-w-0 flex flex-col gap-1">
+          <div class="flex items-center gap-2 min-w-0">
+            <span class="min-w-0 truncate">
+              ${workspaceBadge(it.working_dir)}
+            </span>
+            <span class="text-xs font-mono text-mitto-text-muted shrink-0">
+              ${id}
+            </span>
+            ${priorityPill(it.priority)}
+          </div>
           <div class="truncate text-sm text-mitto-text-strong" title="${title}">
             ${title}
           </div>
         </div>
-        ${priorityPill(it.priority)} ${workspaceBadge(it.working_dir)}
       </li>
     `;
   });

@@ -1097,7 +1097,7 @@ export function SessionList({
     const dashboardActive = mainView === "dashboard";
     return html`
       <ul class="menu menu-sm w-full p-0 flex-nowrap">
-        <li class="min-w-0">
+        <li class="min-w-0 px-2 py-1">
           <button
             type="button"
             onClick=${() => onShowDashboard && onShowDashboard()}
