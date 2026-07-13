@@ -45,6 +45,7 @@ import {
   handleBeadsContentClick,
   commentBody,
 } from "./beads/CommentBody.js";
+import { labelValue } from "./beads/DetailPanelHelpers.js";
 // Re-export statusBadge at its original location so SessionPanel.js
 // (`import { statusBadge as beadsStatusBadge } from "./BeadsView.js"`) keeps
 // working after the move to beads/Badges.js (mitto-90f.3 E-4).
@@ -137,16 +138,9 @@ let beadsStatusToggles = { open: true, in_progress: true, closed: false };
 // live in ./beads/CommentBody.js. See mitto-90f.3 E-5.
 
 // ---- Detail side panel ------------------------------------------------------
-
-function labelValue(label, value) {
-  if (value === null || value === undefined || value === "") return null;
-  return html`
-    <div>
-      <div class="text-xs text-mitto-text-secondary mb-0.5">${label}</div>
-      <div class="text-sm text-mitto-text wrap-break-word">${value}</div>
-    </div>
-  `;
-}
+//
+// Small helpers used by the detail panel (labelValue) live in
+// ./beads/DetailPanelHelpers.js. See mitto-90f.3 E-6.
 
 /**
  * BeadsDetailPanel is a fixed right-side overlay that serves two modes:
