@@ -11,8 +11,21 @@
 const { html } = window.preact;
 
 import { typeBadge, priorityBadge } from "../Badges.js";
-import { CheckIcon } from "../../Icons.js";
-import { commentBody } from "../CommentBody.js";
+import {
+  CheckIcon,
+  BoldIcon,
+  ItalicIcon,
+  StrikethroughIcon,
+  InlineCodeIcon,
+  CodeBlockIcon,
+  LinkIcon,
+  ListIcon,
+  NumberedListIcon,
+  HeadingIcon,
+  QuoteIcon,
+} from "../../Icons.js";
+import { CodeEditorField } from "../../CodeEditorField.js";
+import { commentBody, handleBeadsContentClick } from "../CommentBody.js";
 import { ISSUE_TYPES, PRIORITY_LABELS } from "../../../utils/beads.js";
 
 // daisyUI's .input/.select/.textarea set their corner radius via the logical
@@ -301,4 +314,266 @@ export function NotesField({
               >No notes. Click to add.</span
             >`}
       </div>`;
+}
+
+// DescriptionField is self-contained (includes label + wrapper) to avoid
+// Fragment-induced CodeMirror remount cycles. The markdown toolbar
+// (formerly `renderDescToolbar` in the parent) is inlined here since it has
+// no other caller.
+export function DescriptionField({
+  mode,
+  description,
+  setDescription,
+  submitting,
+  createEditorApiRef,
+  editingDesc,
+  setEditingDesc,
+  viewDraft,
+  setViewDraft,
+  savingView,
+  detailEditorApiRef,
+  descMinHeight,
+  descViewRef,
+  md,
+  startEditDesc,
+  workingDir,
+  improvingDesc,
+  improveDescriptionText,
+}) {
+  const renderToolbar = ({ text, setText, disabled, editorApiRef }) => html`
+    <div class="flex flex-wrap items-center gap-1 mb-1">
+      <button
+        type="button"
+        class="chat-input-action tooltip tooltip-bottom"
+        disabled=${disabled}
+        data-tip="Bold"
+        aria-label="Bold"
+        onMouseDown=${(e) => e.preventDefault()}
+        onClick=${() =>
+          editorApiRef?.current?.wrapSelection("**", "**", "bold text")}
+      >
+        <${BoldIcon} />
+      </button>
+      <button
+        type="button"
+        class="chat-input-action tooltip tooltip-bottom"
+        disabled=${disabled}
+        data-tip="Italic"
+        aria-label="Italic"
+        onMouseDown=${(e) => e.preventDefault()}
+        onClick=${() =>
+          editorApiRef?.current?.wrapSelection("*", "*", "italic")}
+      >
+        <${ItalicIcon} />
+      </button>
+      <button
+        type="button"
+        class="chat-input-action tooltip tooltip-bottom"
+        disabled=${disabled}
+        data-tip="Strikethrough"
+        aria-label="Strikethrough"
+        onMouseDown=${(e) => e.preventDefault()}
+        onClick=${() =>
+          editorApiRef?.current?.wrapSelection("~~", "~~", "strikethrough")}
+      >
+        <${StrikethroughIcon} />
+      </button>
+      <button
+        type="button"
+        class="chat-input-action tooltip tooltip-bottom"
+        disabled=${disabled}
+        data-tip="Inline code"
+        aria-label="Inline code"
+        onMouseDown=${(e) => e.preventDefault()}
+        onClick=${() =>
+          editorApiRef?.current?.wrapSelection("\`", "\`", "code")}
+      >
+        <${InlineCodeIcon} />
+      </button>
+      <button
+        type="button"
+        class="chat-input-action tooltip tooltip-bottom"
+        disabled=${disabled}
+        data-tip="Code block"
+        aria-label="Code block"
+        onMouseDown=${(e) => e.preventDefault()}
+        onClick=${() =>
+          editorApiRef?.current?.wrapSelection(
+            "\n\`\`\`\n",
+            "\n\`\`\`\n",
+            "code",
+          )}
+      >
+        <${CodeBlockIcon} />
+      </button>
+      <button
+        type="button"
+        class="chat-input-action tooltip tooltip-bottom"
+        disabled=${disabled}
+        data-tip="Link"
+        aria-label="Link"
+        onMouseDown=${(e) => e.preventDefault()}
+        onClick=${() => editorApiRef?.current?.insertLink("text", "url")}
+      >
+        <${LinkIcon} />
+      </button>
+      <button
+        type="button"
+        class="chat-input-action tooltip tooltip-bottom"
+        disabled=${disabled}
+        data-tip="Bulleted list"
+        aria-label="Bulleted list"
+        onMouseDown=${(e) => e.preventDefault()}
+        onClick=${() => editorApiRef?.current?.prefixLines("- ")}
+      >
+        <${ListIcon} className="w-4 h-4" />
+      </button>
+      <button
+        type="button"
+        class="chat-input-action tooltip tooltip-bottom"
+        disabled=${disabled}
+        data-tip="Numbered list"
+        aria-label="Numbered list"
+        onMouseDown=${(e) => e.preventDefault()}
+        onClick=${() => editorApiRef?.current?.prefixLines((i) => `${i + 1}. `)}
+      >
+        <${NumberedListIcon} />
+      </button>
+      <button
+        type="button"
+        class="chat-input-action tooltip tooltip-bottom"
+        disabled=${disabled}
+        data-tip="Heading"
+        aria-label="Heading"
+        onMouseDown=${(e) => e.preventDefault()}
+        onClick=${() => editorApiRef?.current?.prefixLines("## ")}
+      >
+        <${HeadingIcon} />
+      </button>
+      <button
+        type="button"
+        class="chat-input-action tooltip tooltip-bottom"
+        disabled=${disabled}
+        data-tip="Quote"
+        aria-label="Quote"
+        onMouseDown=${(e) => e.preventDefault()}
+        onClick=${() => editorApiRef?.current?.prefixLines("> ")}
+      >
+        <${QuoteIcon} />
+      </button>
+      <button
+        type="button"
+        class="chat-input-action ${improvingDesc
+          ? "improving"
+          : ""} ml-auto tooltip tooltip-bottom"
+        onClick=${() => improveDescriptionText(text, setText)}
+        onMouseDown=${(e) => e.preventDefault()}
+        disabled=${disabled || improvingDesc || !text || !text.trim()}
+        data-tip="Improve description with AI"
+        aria-label="Improve description with AI"
+      >
+        ${improvingDesc
+          ? html`<span class="loading loading-spinner w-4 h-4"></span>`
+          : html`
+              <svg
+                class="w-4 h-4"
+                fill="none"
+                stroke="currentColor"
+                viewBox="0 0 24 24"
+              >
+                <path
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  stroke-width="2"
+                  d="M5 3v4M3 5h4M6 17v4m-2-2h4m5-16l2.286 6.857L21 12l-5.714 2.143L13 21l-2.286-6.857L5 12l5.714-2.143L13 3z"
+                />
+              </svg>
+            `}
+      </button>
+    </div>
+  `;
+
+  if (mode === "create") {
+    return html` <div>
+      <label class=${labelClass} for="new-issue-desc"
+        >Description <span class="text-red-400">*</span></label
+      >
+      ${renderToolbar({
+        text: description,
+        setText: (v) => {
+          setDescription(v);
+          createEditorApiRef.current?.setValue(v);
+        },
+        disabled: submitting,
+        editorApiRef: createEditorApiRef,
+      })}
+      <${CodeEditorField}
+        value=${description}
+        onChange=${(v) => setDescription(v)}
+        onBlur=${(v) => setDescription(v)}
+        disabled=${submitting}
+        darkMode=${false}
+        lineNumbers=${false}
+        lineWrapping=${true}
+        highlightActiveLine=${false}
+        className="input-font-target"
+        minHeight=${160}
+        editorApiRef=${createEditorApiRef}
+        autoFocus=${true}
+      />
+    </div>`;
+  }
+  return html` <div>
+    <label class=${labelClass}>Description</label>
+    ${renderToolbar(
+      editingDesc
+        ? {
+            text: viewDraft.description,
+            setText: (v) => {
+              setViewDraft((p) => ({ ...p, description: v }));
+              detailEditorApiRef.current?.setValue(v);
+            },
+            disabled: savingView,
+            editorApiRef: detailEditorApiRef,
+          }
+        : { text: "", setText: () => {}, disabled: true },
+    )}
+    ${editingDesc
+      ? html` <${CodeEditorField}
+          value=${viewDraft.description}
+          onChange=${(v) => setViewDraft((p) => ({ ...p, description: v }))}
+          onBlur=${() => setEditingDesc(false)}
+          disabled=${savingView}
+          darkMode=${false}
+          lineNumbers=${false}
+          lineWrapping=${true}
+          highlightActiveLine=${false}
+          className="input-font-target"
+          minHeight=${descMinHeight || 0}
+          autoFocus=${true}
+          editorApiRef=${detailEditorApiRef}
+        />`
+      : html` <div
+          ref=${descViewRef}
+          class="card border border-mitto-border rounded p-3 bg-mitto-input-box cursor-text hover:border-mitto-text-secondary transition-colors relative block tooltip tooltip-bottom"
+          onClick=${startEditDesc}
+          data-tip="Click to edit"
+        >
+          ${viewDraft.description
+            ? md
+              ? html`<div
+                  class="markdown-content text-mitto-text text-sm max-w-none"
+                  onClick=${(e) => handleBeadsContentClick(e, workingDir)}
+                  dangerouslySetInnerHTML=${{ __html: md }}
+                />`
+              : html`<pre
+                  class="whitespace-pre-wrap wrap-break-word text-sm text-mitto-text"
+                >
+${viewDraft.description}</pre
+                >`
+            : html`<span class="text-sm text-mitto-text-secondary italic"
+                >No description. Click to add one.</span
+              >`}
+        </div>`}
+  </div>`;
 }

@@ -52,6 +52,7 @@ import {
   PriorityField,
   AssigneeField,
   NotesField,
+  DescriptionField,
   inputClass,
   selectClass,
   textareaClass,
@@ -1362,256 +1363,6 @@ export function BeadsDetailPanel({
   if (!shouldRender) return null;
   if (!creating && !data) return null;
 
-  // Toolbar row rendered directly above the description field. Currently holds
-  // the magic-wand "Improve description" button (same UX as the chat input's
-  // improve-prompt action); the flex row is structured to take future markdown
-  // formatting buttons (bold, italics, …). Always rendered — even in read-only
-  // (view) mode — but the controls are disabled/greyed unless an editable target
-  // is supplied: { text, setText } back the active field (create form or inline
-  // edit draft) and `disabled` force-greys the row regardless (read-only view).
-  const renderDescToolbar = ({ text, setText, disabled, editorApiRef }) => html`
-    <div class="flex flex-wrap items-center gap-1 mb-1">
-      <button
-        type="button"
-        class="chat-input-action tooltip tooltip-bottom"
-        disabled=${disabled}
-        data-tip="Bold"
-        aria-label="Bold"
-        onMouseDown=${(e) => e.preventDefault()}
-        onClick=${() =>
-          editorApiRef?.current?.wrapSelection("**", "**", "bold text")}
-      >
-        <${BoldIcon} />
-      </button>
-      <button
-        type="button"
-        class="chat-input-action tooltip tooltip-bottom"
-        disabled=${disabled}
-        data-tip="Italic"
-        aria-label="Italic"
-        onMouseDown=${(e) => e.preventDefault()}
-        onClick=${() =>
-          editorApiRef?.current?.wrapSelection("*", "*", "italic")}
-      >
-        <${ItalicIcon} />
-      </button>
-      <button
-        type="button"
-        class="chat-input-action tooltip tooltip-bottom"
-        disabled=${disabled}
-        data-tip="Strikethrough"
-        aria-label="Strikethrough"
-        onMouseDown=${(e) => e.preventDefault()}
-        onClick=${() =>
-          editorApiRef?.current?.wrapSelection("~~", "~~", "strikethrough")}
-      >
-        <${StrikethroughIcon} />
-      </button>
-      <button
-        type="button"
-        class="chat-input-action tooltip tooltip-bottom"
-        disabled=${disabled}
-        data-tip="Inline code"
-        aria-label="Inline code"
-        onMouseDown=${(e) => e.preventDefault()}
-        onClick=${() =>
-          editorApiRef?.current?.wrapSelection("\`", "\`", "code")}
-      >
-        <${InlineCodeIcon} />
-      </button>
-      <button
-        type="button"
-        class="chat-input-action tooltip tooltip-bottom"
-        disabled=${disabled}
-        data-tip="Code block"
-        aria-label="Code block"
-        onMouseDown=${(e) => e.preventDefault()}
-        onClick=${() =>
-          editorApiRef?.current?.wrapSelection(
-            "\n\`\`\`\n",
-            "\n\`\`\`\n",
-            "code",
-          )}
-      >
-        <${CodeBlockIcon} />
-      </button>
-      <button
-        type="button"
-        class="chat-input-action tooltip tooltip-bottom"
-        disabled=${disabled}
-        data-tip="Link"
-        aria-label="Link"
-        onMouseDown=${(e) => e.preventDefault()}
-        onClick=${() => editorApiRef?.current?.insertLink("text", "url")}
-      >
-        <${LinkIcon} />
-      </button>
-      <button
-        type="button"
-        class="chat-input-action tooltip tooltip-bottom"
-        disabled=${disabled}
-        data-tip="Bulleted list"
-        aria-label="Bulleted list"
-        onMouseDown=${(e) => e.preventDefault()}
-        onClick=${() => editorApiRef?.current?.prefixLines("- ")}
-      >
-        <${ListIcon} className="w-4 h-4" />
-      </button>
-      <button
-        type="button"
-        class="chat-input-action tooltip tooltip-bottom"
-        disabled=${disabled}
-        data-tip="Numbered list"
-        aria-label="Numbered list"
-        onMouseDown=${(e) => e.preventDefault()}
-        onClick=${() => editorApiRef?.current?.prefixLines((i) => `${i + 1}. `)}
-      >
-        <${NumberedListIcon} />
-      </button>
-      <button
-        type="button"
-        class="chat-input-action tooltip tooltip-bottom"
-        disabled=${disabled}
-        data-tip="Heading"
-        aria-label="Heading"
-        onMouseDown=${(e) => e.preventDefault()}
-        onClick=${() => editorApiRef?.current?.prefixLines("## ")}
-      >
-        <${HeadingIcon} />
-      </button>
-      <button
-        type="button"
-        class="chat-input-action tooltip tooltip-bottom"
-        disabled=${disabled}
-        data-tip="Quote"
-        aria-label="Quote"
-        onMouseDown=${(e) => e.preventDefault()}
-        onClick=${() => editorApiRef?.current?.prefixLines("> ")}
-      >
-        <${QuoteIcon} />
-      </button>
-      <button
-        type="button"
-        class="chat-input-action ${improvingDesc
-          ? "improving"
-          : ""} ml-auto tooltip tooltip-bottom"
-        onClick=${() => improveDescriptionText(text, setText)}
-        onMouseDown=${(e) => e.preventDefault()}
-        disabled=${disabled || improvingDesc || !text || !text.trim()}
-        data-tip="Improve description with AI"
-        aria-label="Improve description with AI"
-      >
-        ${improvingDesc
-          ? html`<span class="loading loading-spinner w-4 h-4"></span>`
-          : html`
-              <svg
-                class="w-4 h-4"
-                fill="none"
-                stroke="currentColor"
-                viewBox="0 0 24 24"
-              >
-                <path
-                  stroke-linecap="round"
-                  stroke-linejoin="round"
-                  stroke-width="2"
-                  d="M5 3v4M3 5h4M6 17v4m-2-2h4m5-16l2.286 6.857L21 12l-5.714 2.143L13 21l-2.286-6.857L5 12l5.714-2.143L13 3z"
-                />
-              </svg>
-            `}
-      </button>
-    </div>
-  `;
-
-  // ---- field renderers (close over component state) -------------------------
-
-  // DescriptionField is self-contained (includes label + wrapper) to avoid
-  // Fragment-induced CodeMirror remount cycles.
-  const DescriptionField = (mode) => {
-    if (mode === "create") {
-      return html` <div>
-        <label class=${labelClass} for="new-issue-desc"
-          >Description <span class="text-red-400">*</span></label
-        >
-        ${renderDescToolbar({
-          text: description,
-          setText: (v) => {
-            setDescription(v);
-            createEditorApiRef.current?.setValue(v);
-          },
-          disabled: submitting,
-          editorApiRef: createEditorApiRef,
-        })}
-        <${CodeEditorField}
-          value=${description}
-          onChange=${(v) => setDescription(v)}
-          onBlur=${(v) => setDescription(v)}
-          disabled=${submitting}
-          darkMode=${false}
-          lineNumbers=${false}
-          lineWrapping=${true}
-          highlightActiveLine=${false}
-          className="input-font-target"
-          minHeight=${160}
-          editorApiRef=${createEditorApiRef}
-          autoFocus=${true}
-        />
-      </div>`;
-    }
-    return html` <div>
-      <label class=${labelClass}>Description</label>
-      ${renderDescToolbar(
-        editingDesc
-          ? {
-              text: viewDraft.description,
-              setText: (v) => {
-                setViewDraft((p) => ({ ...p, description: v }));
-                detailEditorApiRef.current?.setValue(v);
-              },
-              disabled: savingView,
-              editorApiRef: detailEditorApiRef,
-            }
-          : { text: "", setText: () => {}, disabled: true },
-      )}
-      ${editingDesc
-        ? html` <${CodeEditorField}
-            value=${viewDraft.description}
-            onChange=${(v) => setViewDraft((p) => ({ ...p, description: v }))}
-            onBlur=${() => setEditingDesc(false)}
-            disabled=${savingView}
-            darkMode=${false}
-            lineNumbers=${false}
-            lineWrapping=${true}
-            highlightActiveLine=${false}
-            className="input-font-target"
-            minHeight=${descMinHeight || 0}
-            autoFocus=${true}
-            editorApiRef=${detailEditorApiRef}
-          />`
-        : html` <div
-            ref=${descViewRef}
-            class="card border border-mitto-border rounded p-3 bg-mitto-input-box cursor-text hover:border-mitto-text-secondary transition-colors relative block tooltip tooltip-bottom"
-            onClick=${startEditDesc}
-            data-tip="Click to edit"
-          >
-            ${viewDraft.description
-              ? md
-                ? html`<div
-                    class="markdown-content text-mitto-text text-sm max-w-none"
-                    onClick=${(e) => handleBeadsContentClick(e, workingDir)}
-                    dangerouslySetInnerHTML=${{ __html: md }}
-                  />`
-                : html`<pre
-                    class="whitespace-pre-wrap wrap-break-word text-sm text-mitto-text"
-                  >
-${viewDraft.description}</pre
-                  >`
-              : html`<span class="text-sm text-mitto-text-secondary italic"
-                  >No description. Click to add one.</span
-                >`}
-          </div>`}
-    </div>`;
-  };
-
   const DependenciesField = (mode) => {
     if (mode === "create") {
       return html` <datalist id="beads-create-dep-options">
@@ -1951,7 +1702,26 @@ ${viewDraft.description}</pre
                 </div>
               </div>
 
-              ${DescriptionField("create")}
+              <${DescriptionField}
+                mode="create"
+                description=${description}
+                setDescription=${setDescription}
+                submitting=${submitting}
+                createEditorApiRef=${createEditorApiRef}
+                editingDesc=${editingDesc}
+                setEditingDesc=${setEditingDesc}
+                viewDraft=${viewDraft}
+                setViewDraft=${setViewDraft}
+                savingView=${savingView}
+                detailEditorApiRef=${detailEditorApiRef}
+                descMinHeight=${descMinHeight}
+                descViewRef=${descViewRef}
+                md=${md}
+                startEditDesc=${startEditDesc}
+                workingDir=${workingDir}
+                improvingDesc=${improvingDesc}
+                improveDescriptionText=${improveDescriptionText}
+              />
 
               <fieldset class="fieldset min-w-0">
                 <legend class="fieldset-legend">Dependencies</legend>
@@ -2179,7 +1949,27 @@ ${viewDraft.description}</pre
                   savingView=${savingView}
                   handleTitleKeyDown=${handleTitleKeyDown}
                   startEditTitle=${startEditTitle}
-                /> ${DescriptionField("view")}
+                />
+                <${DescriptionField}
+                  mode="view"
+                  description=${description}
+                  setDescription=${setDescription}
+                  submitting=${submitting}
+                  createEditorApiRef=${createEditorApiRef}
+                  editingDesc=${editingDesc}
+                  setEditingDesc=${setEditingDesc}
+                  viewDraft=${viewDraft}
+                  setViewDraft=${setViewDraft}
+                  savingView=${savingView}
+                  detailEditorApiRef=${detailEditorApiRef}
+                  descMinHeight=${descMinHeight}
+                  descViewRef=${descViewRef}
+                  md=${md}
+                  startEditDesc=${startEditDesc}
+                  workingDir=${workingDir}
+                  improvingDesc=${improvingDesc}
+                  improveDescriptionText=${improveDescriptionText}
+                />
                 ${subtasks.length > 0 &&
                 html`
                   <fieldset class="fieldset min-w-0">
