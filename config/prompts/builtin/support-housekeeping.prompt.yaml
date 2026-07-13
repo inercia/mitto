@@ -112,8 +112,15 @@ prompt: |-
 
   ## Step 3: Refresh each ticket from Slack
 
-  For **each** ticket in the backlog, load `bd show <id>` + `bd comments <id>` (bead = source of
-  truth), then reconcile it with its Slack thread:
+  Let **N** = the number of tickets in the backlog. **Process them one ticket at a time, start to
+  finish**, in a loop — do **not** read all tickets first and then fetch all threads in a second pass.
+
+  > 🔁 **Iterate per ticket — do NOT batch.** For **each** ticket, complete the full cycle before
+  > moving to the next one: (1) `bd show <id>` + `bd comments <id>` (bead = source of truth), (2)
+  > **immediately** fetch *that ticket's* Slack thread with one read-thread-replies call, (3)
+  > reconcile it (add new comments, apply the state change / closure), (4) **then** move on to the
+  > next ticket. Interleave read-then-reconcile per ticket so you hold only one thread's context at a
+  > time and reason about it while it is fresh, rather than juggling all N threads at once.
 
   > ⚠️ **Re-read the Slack thread for EVERY open ticket — no exceptions.** In particular, the tickets
   > parked in the customer's court (`state:awaiting-customer` and `state:need-info`) are the whole
@@ -122,14 +129,16 @@ prompt: |-
   > back with us — flip it to `state:awaiting-us`. Never skip a ticket just because it was "waiting on
   > them" last time; that is exactly the case where a new customer reply is waiting to be noticed.
 
-  > 🔒 **Auditable read gate — this is not satisfiable in prose.** Let **N** be the number of open
-  > tickets in the backlog. You **MUST** emit **exactly one read-thread-replies (`slack_get_thread_
-  > replies*`) call per open ticket** — i.e. **N** thread-fetch tool calls — using each ticket's
-  > stored `slack_thread_ts` / `slack_channel`, **before** you write any state change or summary.
-  > Reading channel history is **not** a substitute: a customer reply posted *inside* a thread does
-  > **not** appear in channel history. If you have made fewer than **N** thread-fetch calls, you have
-  > **not** reconciled — go back and fetch the remaining threads now. Do not assert "no customer
-  > reply" for any ticket whose thread you have not actually fetched this run.
+  > 🔒 **Auditable read gate — this is not satisfiable in prose.** Because you fetch exactly one
+  > thread per ticket, a correct sweep emits **exactly N read-thread-replies (`slack_get_thread_
+  > replies*`) calls** — one per open ticket, each using that ticket's stored `slack_thread_ts` /
+  > `slack_channel`. Reading channel history is **not** a substitute: a customer reply posted *inside*
+  > a thread does **not** appear in channel history. If by the end of the loop you have made fewer
+  > than **N** thread-fetch calls, you have **not** reconciled every ticket — go back and process the
+  > remaining tickets now. Do not assert "no customer reply" for any ticket whose thread you have not
+  > actually fetched this run.
+
+  For each ticket, in the loop above:
 
   - Re-fetch the thread (read-thread-replies tool) using the stored `slack_thread_ts` /
     `slack_channel`. Build the chronological message list (author + UTC time) and identify messages
