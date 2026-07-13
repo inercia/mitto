@@ -82,6 +82,13 @@ prompt: |-
   | `awaiting-us` | customer responded, our turn to act |
   | `resolved` | answered/accepted (also `bd close <id>`) |
   | `stale` | auto-closed after 10+ days of inactivity (also `bd close <id>`) |
+  | `out-of-scope` | not our area / not something we will pursue (also `bd close <id>`) |
+
+  > 🚫 **A closed bead is terminal — respect it.** Any ticket that has been `bd close`d (states
+  > `resolved`, `stale`, `out-of-scope`) is intentionally done: we are **not** going to keep working
+  > it. **Never reopen a closed bead and never flip it to an active state** (`awaiting-us`, etc.), even
+  > if a new Slack message later lands on its thread. The `--status open,in_progress` filter on every
+  > `bd list` in this prompt already excludes closed beads from the sweep — do not work around that.
 
   ## Step 1: List the backlog
 
@@ -108,6 +115,22 @@ prompt: |-
   For **each** ticket in the backlog, load `bd show <id>` + `bd comments <id>` (bead = source of
   truth), then reconcile it with its Slack thread:
 
+  > ⚠️ **Re-read the Slack thread for EVERY open ticket — no exceptions.** In particular, the tickets
+  > parked in the customer's court (`state:awaiting-customer` and `state:need-info`) are the whole
+  > point of this sweep: for each one you must re-fetch its thread and check **whether the customer
+  > has since replied**. If they have (a real answer or follow-up, not a bare "thanks"), the ball is
+  > back with us — flip it to `state:awaiting-us`. Never skip a ticket just because it was "waiting on
+  > them" last time; that is exactly the case where a new customer reply is waiting to be noticed.
+
+  > 🔒 **Auditable read gate — this is not satisfiable in prose.** Let **N** be the number of open
+  > tickets in the backlog. You **MUST** emit **exactly one read-thread-replies (`slack_get_thread_
+  > replies*`) call per open ticket** — i.e. **N** thread-fetch tool calls — using each ticket's
+  > stored `slack_thread_ts` / `slack_channel`, **before** you write any state change or summary.
+  > Reading channel history is **not** a substitute: a customer reply posted *inside* a thread does
+  > **not** appear in channel history. If you have made fewer than **N** thread-fetch calls, you have
+  > **not** reconciled — go back and fetch the remaining threads now. Do not assert "no customer
+  > reply" for any ticket whose thread you have not actually fetched this run.
+
   - Re-fetch the thread (read-thread-replies tool) using the stored `slack_thread_ts` /
     `slack_channel`. Build the chronological message list (author + UTC time) and identify messages
     **not yet captured** on the bead.
@@ -126,9 +149,14 @@ prompt: |-
       is not a new question, so re-opening it for another reply is wrong. (Skip only if the ack is
       bundled with a genuine follow-up.)
     - Customer spoke last with a **genuine follow-up** we must act on → `state:awaiting-us`.
-    - `state:need-info` **and the customer just replied** (with a real answer, not a bare "thanks") →
-      `state:awaiting-us` (do not strand it in `need-info`).
-    - We spoke last and are waiting on them → `state:awaiting-customer`.
+    - `state:awaiting-customer` **and the customer just replied** (posted anything after our last
+      message that is a real answer/follow-up, not a bare "thanks") → `state:awaiting-us`. This is the
+      core "did the customer give feedback yet?" check — a ticket must never sit in
+      `awaiting-customer` once the customer has actually responded.
+    - `state:need-info` **and the customer just replied** (provided the info we asked for, or a real
+      answer, not a bare "thanks") → `state:awaiting-us` (do not strand it in `need-info`).
+    - We spoke last and they have **not** replied yet → stays `state:awaiting-customer` (or
+      `state:need-info` if we asked a clarifying question); nothing to change this run.
     - Do **not** override `state:drafting` (a draft is pending your review) unless the thread clearly
       moved on.
     Apply with `bd update <id> --remove-label state:<prev> --add-label state:<new>` and add a short
@@ -152,16 +180,22 @@ prompt: |-
     `state:need-info` with a stale last message) — effectively abandoned. These close to `state:stale`.
   - The thread is **gone / deleted / unreachable**, or the underlying question is obsolete
     (superseded, duplicate of another bead, or overtaken by events). These close to `state:stale`.
+  - **Out of scope — not our area / we will not pursue it.** The question is not something this
+    support function owns or will action (wrong team, out of our area of expertise, explicitly
+    declined). These close to `state:out-of-scope` with `bd close <id> -r "out-of-scope: <reason>"`.
+    Where a customer is waiting, post a brief, polite hand-off first (point them to the right
+    team/channel) via **"Support: reply to user"** before closing — do not silently drop them.
 
   Build the list of stale candidates with a one-line reason **and its target close state** each.
   Present them with `mitto_ui_options` (timeout 300):
   - **Question**: "These tickets look stale/irrelevant. Close them now, or just flag for review?"
   - **Options**: `[{label: "Close all listed"}, {label: "Flag only (no close)"}, {label: "Let me pick"}, {label: "Skip"}]`.
     - **"Close all listed"** → for each, swap its `state:*` label to the target close state
-      (`state:resolved` for a genuinely-answered thread, otherwise `state:stale` for aged-out /
-      abandoned / obsolete / gone) with `bd update <id> --remove-label state:<prev> --add-label
-      state:<resolved|stale>`, then `bd close <id> -r "housekeeping: <reason>"` (use
-      `"auto-closed: no activity for 10+ days"` for the aged-out rule).
+      (`state:resolved` for a genuinely-answered thread, `state:out-of-scope` for a not-our-area /
+      won't-pursue ticket, otherwise `state:stale` for aged-out / abandoned / obsolete / gone) with
+      `bd update <id> --remove-label state:<prev> --add-label state:<resolved|stale|out-of-scope>`,
+      then `bd close <id> -r "housekeeping: <reason>"` (use `"auto-closed: no activity for 10+ days"`
+      for the aged-out rule, `"out-of-scope: <reason>"` for the out-of-scope rule).
     - **"Flag only"** → for each, add label `needs-review` and a `[STATE]` comment with the reason;
       do NOT close.
     - **"Let me pick"** → present the candidates as a second `mitto_ui_options` (or `mitto_ui_form`

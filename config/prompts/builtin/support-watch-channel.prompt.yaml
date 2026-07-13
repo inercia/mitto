@@ -147,6 +147,13 @@ prompt: |-
     | `awaiting-us` | customer responded, our turn to act |
     | `resolved` | answered/accepted (also `bd close <id>`) |
     | `stale` | auto-closed after 10+ days of inactivity (also `bd close <id>`) |
+    | `out-of-scope` | not our area / not something we will pursue (also `bd close <id>`) |
+
+    > 🚫 **A closed bead is terminal — respect it.** Any ticket already `bd close`d (states `resolved`,
+    > `stale`, `out-of-scope`) is intentionally done: we will **not** keep working it. **Never reopen a
+    > closed bead and never flip it to an active state** (`awaiting-us`, etc.), even if a new Slack
+    > message later lands on its thread. Every reconcile `bd list` here is scoped to
+    > `--status open,in_progress`, which already excludes closed beads — do not work around that.
 
     Whenever you change a bead's `state:*` label, **recompute its priority** per the rubric below.
 
@@ -218,6 +225,11 @@ prompt: |-
     open blockers, no unanswered customer message), then
     `bd update <id> --remove-label state:<prev> --add-label state:stale` and
     `bd close <id> -r "auto-closed: no activity for 10+ days"`.
+  - **Out-of-scope close:** if a tracked ticket is **not our area / not something we will pursue**
+    (wrong team, out of our expertise, explicitly declined), close it to
+    `state:out-of-scope`: `bd update <id> --remove-label state:<prev> --add-label state:out-of-scope`
+    then `bd close <id> -r "out-of-scope: <reason>"`. If a customer is waiting, post a brief, polite
+    hand-off (point them to the right team/channel) before closing — do not silently drop them.
 
   ### 1. Fetch recent questions
 
@@ -228,7 +240,13 @@ prompt: |-
 
   ### 2. Triage — create a bead per NEW open question
 
-  - For each candidate, dedup by thread ts. If a bead exists, it is ongoing → handle in Step 3.
+  - For each candidate, dedup by thread ts. If a bead exists **and is still open**
+    (`open`/`in_progress`), it is ongoing → handle in Step 3. **If the matching bead is already
+    `bd close`d** (`resolved` / `stale` / `out-of-scope`), it is intentionally done: **skip it** —
+    do **not** reopen it, do **not** route it to reconcile, and do **not** create a duplicate bead
+    for the same thread. (Optionally add a one-line `[CONTEXT]` note on the closed bead recording the
+    new message, but leave it closed.) Only treat a thread as genuinely new when it has **no** bead at
+    all, open or closed.
   - If none exists, **create** one now (see **Beads tracking model**): priority `-p`, labels
     `support,support-question`, the fixed `# Question / # User / # Links` description via `-d`,
     metadata with `slack_thread_ts` / `slack_channel` / `slack_url`, an `[INBOUND]` comment with the
@@ -239,6 +257,22 @@ prompt: |-
   ### 3. Reconcile ongoing threads with their beads
 
   For each tracked, still-open bead (`bd list -l support-question --status open,in_progress --all`):
+
+  > ⚠️ **Re-read the Slack thread for EVERY open bead — no exceptions.** The beads parked in the
+  > customer's court (`state:awaiting-customer` and `state:need-info`) are exactly the ones to check
+  > hardest: re-fetch each thread and see **whether the customer has since replied**. If they have (a
+  > real answer/follow-up, not a bare "thanks"), the ball is back with us → flip to `state:awaiting-us`.
+  > Never skip a bead just because it was "waiting on them" last run — that is precisely where a new
+  > customer reply is waiting to be noticed.
+
+  > 🔒 **Auditable read gate — this is not satisfiable in prose.** Let **N** be the number of open
+  > tracked beads listed above. You **MUST** emit **exactly one `slack_get_thread_replies*` (read-
+  > thread-replies) call per open bead** — i.e. **N** thread-fetch tool calls — using each bead's
+  > stored `slack_thread_ts` / `slack_channel`, **before** you write any state change or the final
+  > summary. Reading channel history is **not** a substitute: a customer reply posted *inside* a
+  > thread does **not** appear in channel history. If you have made fewer than **N** thread-fetch
+  > calls, you have **not** reconciled — go back and fetch the remaining threads now. Do not assert
+  > "no customer replies" for any bead whose thread you have not actually fetched this run.
 
   - Load `bd show <id>` + `bd comments <id>`, then re-fetch its Slack thread using the stored
     `slack_thread_ts`.
@@ -252,12 +286,17 @@ prompt: |-
     so re-opens an answered ticket for another unneeded reply). Only skip resolving if the
     acknowledgment is bundled with a genuine follow-up question.
   - Otherwise update the `state:*` label to reflect reality: last message from the customer **needing
-    action** (a real follow-up, not a mere acknowledgment) → `state:awaiting-us`; last message is ours,
-    waiting on them → `state:awaiting-customer`.
-  - **If the bead is in `need-info` and the customer just replied** (answered our clarifying question,
-    or spoke last) → `state:awaiting-us`. Treat `need-info` like `awaiting-customer` once the customer
-    responds — never leave it stranded in `need-info`. (The closure check above still applies first: a
-    bare "thanks" while in `need-info` still resolves, it does not become `awaiting-us`.)
+    action** (a real follow-up, not a mere acknowledgment) → `state:awaiting-us`; last message is ours
+    and they have **not** replied yet → stays `state:awaiting-customer`.
+  - **If the bead is in `awaiting-customer` and the customer just replied** (posted anything after our
+    last message that is a real answer/follow-up, not a bare "thanks") → `state:awaiting-us`. This is
+    the core "did the customer give feedback yet?" check — a bead must never sit in `awaiting-customer`
+    once the customer has actually responded.
+  - **If the bead is in `need-info` and the customer just replied** (provided the info we asked for,
+    answered our clarifying question, or spoke last) → `state:awaiting-us`. Treat `need-info` like
+    `awaiting-customer` once the customer responds — never leave it stranded in `need-info`. (The
+    closure check above still applies first: a bare "thanks" while in `need-info` still resolves, it
+    does not become `awaiting-us`.)
   - Do not override `drafting` if our pending action still stands (a draft awaiting review). Add a
     short `[STATE]` comment noting any change.
   - **After any state change, recompute priority** (see **Priority = urgency of your intervention**):
