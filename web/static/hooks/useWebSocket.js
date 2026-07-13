@@ -71,6 +71,7 @@ import { useWSSeqSync } from "./useWSSeqSync.js";
 import { useWSWorkspaces } from "./useWSWorkspaces.js";
 import { useWSQueue } from "./useWSQueue.js";
 import { useWSNotifications } from "./useWSNotifications.js";
+import { useWSConfigOptions } from "./useWSConfigOptions.js";
 
 // =============================================================================
 // Session creation retry state (module-level, persists across re-renders)
@@ -729,12 +730,6 @@ export function useWebSocket({
     prevActiveSessionsResult.current = result;
     return result;
   }, [sessions, storedSessions, workingDirMap]);
-
-  // Derive configOptions from the active session's info (per-session, not global)
-  const configOptions = useMemo(() => {
-    if (!activeSessionId) return [];
-    return activeSession?.info?.config_options || [];
-  }, [activeSession, activeSessionId]);
 
   // Handle messages from per-session WebSocket
   const handleSessionMessage = useCallback((sessionId, msg) => {
@@ -3391,6 +3386,14 @@ export function useWebSocket({
     return false;
   }, []);
 
+  // Config options (per-session, extracted to useWSConfigOptions sub-hook, mitto-90f.5)
+  // Placed after sendToSession because the sub-hook depends on it.
+  const { configOptions, setConfigOption } = useWSConfigOptions(
+    activeSession,
+    activeSessionId,
+    sendToSession,
+  );
+
   // Send ensure_resumed to the active session's WebSocket.
   // Called when the user focuses on a conversation so the server can resume
   // the ACP connection immediately, bypassing any startup stagger delay.
@@ -5000,21 +5003,6 @@ export function useWebSocket({
     console.log("Force resetting session:", activeSessionId);
     sendToSession(activeSessionId, { type: "force_reset" });
   }, [activeSessionId, sendToSession]);
-
-  // Change a session config option value
-  // For mode changes, use configId "mode" with the desired mode value
-  const setConfigOption = useCallback(
-    (configId, value) => {
-      // Use value == null to allow falsy values like empty strings
-      if (!activeSessionId || !configId || value == null) return;
-      console.log(`Setting config option: ${configId} = ${value}`);
-      sendToSession(activeSessionId, {
-        type: "set_config_option",
-        data: { config_id: configId, value: value },
-      });
-    },
-    [activeSessionId, sendToSession],
-  );
 
   // Retry pending prompts for a session (called on reconnect or visibility change)
   const retryPendingPrompts = useCallback(
