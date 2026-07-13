@@ -23,6 +23,7 @@ import { readBeadsResponse } from "../../../utils/beads.js";
 import { renderMarkdown } from "../CommentBody.js";
 import { buildPromptGroupMenuItems } from "../../ContextMenu.js";
 import { useIssueLabels } from "./useIssueLabels.js";
+import { useIssueComments } from "./useIssueComments.js";
 import {
   PlusIcon,
   CheckIcon,
@@ -192,7 +193,18 @@ export function useBeadsDetailPanel({
     isOpen,
     creating,
   });
-  const [comments, setComments] = useState([]);
+  // Comments cluster (list state + add-comment editor + handlers) now lives
+  // in useIssueComments (mitto-90f.7 PR-13). Reuses the fetchDepsRef bridge
+  // from PR-12: handleCommentBlur calls fetchDepsRef.current(false) after a
+  // successful POST. The composer continues to write comments.setComments in
+  // fetchDeps and the issue-switch reset effects below.
+  const comments = useIssueComments({
+    data,
+    workingDir,
+    showToast,
+    fetchDepsRef,
+    onUpdated,
+  });
   const [notes, setNotes] = useState("");
 
   // View-mode inline notes editing.
@@ -200,15 +212,6 @@ export function useBeadsDetailPanel({
   const [notesMinHeight, setNotesMinHeight] = useState(0);
   const notesRef = useRef(null);
   const notesViewRef = useRef(null);
-
-  // View-mode "add comment": a "+" button at the bottom of the comments list
-  // reveals a textarea with the same save-on-blur behaviour as notes. An empty
-  // draft on blur just closes the editor without a request; otherwise the
-  // comment is posted via /api/issues/{id}/comments and the list is refreshed.
-  const [addingComment, setAddingComment] = useState(false);
-  const [commentDraft, setCommentDraft] = useState("");
-  const [savingComment, setSavingComment] = useState(false);
-  const commentRef = useRef(null);
 
   // Reset the form whenever create mode is (re)entered.
   useEffect(() => {
@@ -737,9 +740,9 @@ export function useBeadsDetailPanel({
     setEditingType(false);
     setEditingAssignee(false);
     setEditingNotes(false);
-    setAddingComment(false);
-    setSavingComment(false);
-    setCommentDraft("");
+    comments.setAddingComment(false);
+    comments.setSavingComment(false);
+    comments.setCommentDraft("");
   }, [data && data.id]);
 
   // The description CodeMirror editor auto-focuses on mount (autoFocus prop)
@@ -754,12 +757,7 @@ export function useBeadsDetailPanel({
     }
   }, [editingNotes]);
 
-  // Focus the new-comment textarea when the "add comment" editor opens.
-  useEffect(() => {
-    if (addingComment && commentRef.current) {
-      commentRef.current.focus();
-    }
-  }, [addingComment]);
+  // Comment-focus effect now lives in useIssueComments (mitto-90f.7 PR-13).
 
   // Focus the title input (cursor at end) when entering edit mode.
   useEffect(() => {
@@ -913,14 +911,14 @@ export function useBeadsDetailPanel({
         if (!res.ok || respData.error) {
           setDeps([]);
           labels.setLabels([]);
-          setComments([]);
+          comments.setComments([]);
           setNotes("");
           if (seedDraftNotes) setViewDraft((prev) => ({ ...prev, notes: "" }));
         } else {
           const issueObj = Array.isArray(respData) ? respData[0] : respData;
           setDeps((issueObj && issueObj.dependencies) || []);
           labels.setLabels((issueObj && issueObj.labels) || []);
-          setComments((issueObj && issueObj.comments) || []);
+          comments.setComments((issueObj && issueObj.comments) || []);
           const fetchedNotes = (issueObj && issueObj.notes) || "";
           setNotes(fetchedNotes);
           if (seedDraftNotes)
@@ -929,83 +927,29 @@ export function useBeadsDetailPanel({
       } catch (_err) {
         setDeps([]);
         labels.setLabels([]);
-        setComments([]);
+        comments.setComments([]);
         setNotes("");
         if (seedDraftNotes) setViewDraft((prev) => ({ ...prev, notes: "" }));
       } finally {
         setDepsLoading(false);
       }
     },
-    [workingDir, data && data.id, labels.setLabels],
+    [workingDir, data && data.id, labels.setLabels, comments.setComments],
   );
   // Wire the fetchDepsRef forward-reference bridge used by useIssueLabels so
   // mutateLabel can trigger a full issue refresh after add/remove.
   fetchDepsRef.current = fetchDeps;
 
-  // Open the new-comment editor with an empty draft.
-  const startAddComment = useCallback(() => {
-    if (savingComment) return;
-    setCommentDraft("");
-    setAddingComment(true);
-  }, [savingComment]);
-
-  // Persist a new comment on blur. An empty (whitespace-only) draft just closes
-  // the editor without a request. On success the comment list is refreshed via
-  // fetchDeps and the parent list is notified via onUpdated.
-  const handleCommentBlur = useCallback(async () => {
-    const text = commentDraft.trim();
-    if (!text) {
-      setAddingComment(false);
-      return;
-    }
-    setSavingComment(true);
-    try {
-      const res = await secureFetch(
-        endpoints.issues.comments(data.id, { working_dir: workingDir }),
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ text }),
-        },
-      );
-      const respData = await readBeadsResponse(res);
-      if (!res.ok || respData.error) {
-        showToast &&
-          showToast({
-            style: "error",
-            title: respData.error || "Failed to add comment",
-          });
-      } else {
-        setCommentDraft("");
-        showToast && showToast({ style: "success", title: "Comment added" });
-        await fetchDeps(false);
-        onUpdated && onUpdated();
-      }
-    } catch (err) {
-      showToast &&
-        showToast({
-          style: "error",
-          title: err.message || "Failed to add comment",
-        });
-    } finally {
-      setSavingComment(false);
-      setAddingComment(false);
-    }
-  }, [
-    commentDraft,
-    data && data.id,
-    workingDir,
-    showToast,
-    fetchDeps,
-    onUpdated,
-  ]);
+  // startAddComment + handleCommentBlur now live in useIssueComments
+  // (mitto-90f.7 PR-13); handleCommentBlur uses fetchDepsRef.current to reach
+  // fetchDeps defined above.
 
   // Fetch dependencies, notes, and comments whenever a (non-create) issue is opened or switched.
   // seedDraftNotes=true so the initial open seeds viewDraft.notes from the response.
   useEffect(() => {
     setDeps([]);
     labels.setLabels([]);
-    setComments([]);
+    comments.setComments([]);
     setNotes("");
     setNewDepId("");
     setNewDepType("blocks");
@@ -1224,16 +1168,7 @@ export function useBeadsDetailPanel({
       handleAddDep,
     },
     labels,
-    comments: {
-      comments,
-      addingComment,
-      commentDraft,
-      setCommentDraft,
-      savingComment,
-      commentRef,
-      handleCommentBlur,
-      startAddComment,
-    },
+    comments,
     handlers: {
       handleClose,
       handleSave,
