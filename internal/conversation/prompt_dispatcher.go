@@ -1213,7 +1213,7 @@ func (p promptDispatcher) handlePromptError(
 	//   conversation — stop the queue.
 	// Rate-limit: the API will reject the next message too — stop the queue;
 	//   the keepalive-driven TryProcessQueuedMessage will retry once the session is idle.
-	if !isContextTooLargeError(err) && !isRateLimitError(err) {
+	if !IsContextTooLargeError(err) && !isRateLimitError(err) {
 		// Apply any config changes deferred during this turn before
 		// dispatching the next queued message.
 		d.pdFlushPendingConfig()

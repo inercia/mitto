@@ -2241,7 +2241,7 @@ type fakeRateLimitError struct{}
 
 func (e *fakeRateLimitError) Error() string { return "rate_limit_error: too many requests" }
 
-// fakeContextTooLargeError mimics the shape isContextTooLargeError checks.
+// fakeContextTooLargeError mimics the shape IsContextTooLargeError checks.
 type fakeContextTooLargeError struct{}
 
 func (e *fakeContextTooLargeError) Error() string { return "context_length_exceeded: 413" }

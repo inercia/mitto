@@ -44,6 +44,13 @@ const (
 	// StoppedReasonResumeFailures is set when ACP resume fails MaxLoopResumeFailures
 	// consecutive times and the session is auto-archived.
 	StoppedReasonResumeFailures StoppedReason = "resumeFailures"
+	// StoppedReasonContextWindowExceeded is set when the loop's prompt is rejected
+	// MaxLoopContextWindowFailures consecutive times because the conversation
+	// context exceeds the model's window (Augment API `augmentTooLarge` / HTTP 413).
+	// The loop is auto-paused so it stops re-firing every backoff tick against a
+	// context that will only grow. The user must archive the session or trim MCP
+	// servers before re-enabling. Not resumable by simply toggling Enabled.
+	StoppedReasonContextWindowExceeded StoppedReason = "contextWindowExceeded"
 
 	// StoppedReasonPausedByUser is a resumable (paused) reason set when the user manually
 	// disables the loop (e.g. via the pause button). Re-enabling clears it.

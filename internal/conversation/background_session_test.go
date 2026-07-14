@@ -3139,9 +3139,9 @@ func TestIsContextTooLargeError(t *testing.T) {
 			if tt.errMsg != "" {
 				err = &testError{msg: tt.errMsg}
 			}
-			got := isContextTooLargeError(err)
+			got := IsContextTooLargeError(err)
 			if got != tt.wantTrue {
-				t.Errorf("isContextTooLargeError(%q) = %v, want %v", tt.errMsg, got, tt.wantTrue)
+				t.Errorf("IsContextTooLargeError(%q) = %v, want %v", tt.errMsg, got, tt.wantTrue)
 			}
 		})
 	}

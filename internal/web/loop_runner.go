@@ -26,6 +26,13 @@ const (
 	// failures after which the loop config is auto-paused (disabled).
 	MaxPromptResolveFailures = 3
 
+	// MaxLoopContextWindowFailures is the number of consecutive `augmentTooLarge`
+	// (HTTP 413 / context window exceeded) failures after which the loop is
+	// auto-paused with StoppedReasonContextWindowExceeded. The loop is retried
+	// with exponential backoff for hits 1..N-1, then stopped so it no longer
+	// re-fires against a wedged context (mitto-7jn).
+	MaxLoopContextWindowFailures = 3
+
 	// loopScheduleBackoffBase is the initial delay applied to NextScheduledAt
 	// after the first scheduled loop delivery failure. It doubles with each
 	// consecutive failure, capped at loopScheduleBackoffCap. This prevents a
@@ -191,6 +198,14 @@ type LoopRunner struct {
 	scheduleBackoffFailures   map[string]int
 	scheduleBackoffFailuresMu sync.Mutex
 
+	// contextWindowFailures tracks consecutive `augmentTooLarge` (HTTP 413 /
+	// context window exceeded) delivery failures. After MaxLoopContextWindowFailures
+	// consecutive hits the loop is auto-paused with
+	// StoppedReasonContextWindowExceeded (mitto-7jn). Reset on the next successful
+	// delivery.
+	contextWindowFailures   map[string]int
+	contextWindowFailuresMu sync.Mutex
+
 	// completionTimers holds the armed one-shot timers for onCompletion loop
 	// conversations, keyed by session ID. Arming a new timer replaces (stops) any
 	// existing one, so at most one firing is pending per session.
@@ -268,6 +283,7 @@ func NewLoopRunner(store *session.Store, sm *conversation.SessionManager, logger
 		consecutiveFailures:        make(map[string]int),
 		promptResolveFailures:      make(map[string]int),
 		scheduleBackoffFailures:    make(map[string]int),
+		contextWindowFailures:      make(map[string]int),
 		completionTimers:           make(map[string]*time.Timer),
 		tasksEvaluator:             evaluator,
 		minTasksCooldownSeconds:    DefaultMinLoopTasksCooldownSeconds,
@@ -1420,6 +1436,60 @@ func (r *LoopRunner) handlePromptResolveFailure(sessionID, sessionName string, l
 	r.promptResolveFailuresMu.Unlock()
 }
 
+// handleContextWindowFailure processes a context-window (HTTP 413 / augmentTooLarge)
+// delivery failure for a scheduled loop. It bumps the per-session counter; when the
+// counter reaches MaxLoopContextWindowFailures the loop is auto-paused with
+// StoppedReasonContextWindowExceeded and the counter is cleared. Returns true when
+// the loop was auto-paused (caller must skip normal backoff); returns false when the
+// failure was recorded but the counter is still below threshold (caller should
+// proceed with the regular schedule backoff and log the specific cause).
+// The onLoopAutoStopped callback is invoked when the auto-pause succeeds so clients
+// receive a broadcast update, mirroring the max-iterations auto-stop.
+func (r *LoopRunner) handleContextWindowFailure(sessionID, sessionName string, loopStore *session.LoopStore) bool {
+	r.contextWindowFailuresMu.Lock()
+	r.contextWindowFailures[sessionID]++
+	failures := r.contextWindowFailures[sessionID]
+	r.contextWindowFailuresMu.Unlock()
+
+	if failures < MaxLoopContextWindowFailures {
+		if r.logger != nil {
+			r.logger.Warn("Loop prompt failed with context-window exceeded; will auto-pause after repeated failures",
+				"session_id", sessionID,
+				"session_name", sessionName,
+				"consecutive_failures", failures,
+				"max_failures", MaxLoopContextWindowFailures)
+		}
+		return false
+	}
+
+	if stopErr := loopStore.MarkStopped(session.StoppedReasonContextWindowExceeded); stopErr != nil {
+		if r.logger != nil {
+			r.logger.Warn("Failed to auto-pause loop after repeated context-window failures",
+				"session_id", sessionID,
+				"session_name", sessionName,
+				"error", stopErr)
+		}
+		// Do not clear the counter so a subsequent retry can try again.
+		return false
+	}
+	if r.logger != nil {
+		r.logger.Warn("Auto-paused loop conversation after repeated context-window failures",
+			"session_id", sessionID,
+			"session_name", sessionName,
+			"consecutive_failures", failures,
+			"max_failures", MaxLoopContextWindowFailures)
+	}
+	if r.onLoopAutoStopped != nil {
+		if final, gErr := loopStore.Get(); gErr == nil {
+			r.onLoopAutoStopped(sessionID, final)
+		}
+	}
+	r.contextWindowFailuresMu.Lock()
+	delete(r.contextWindowFailures, sessionID)
+	r.contextWindowFailuresMu.Unlock()
+	return true
+}
+
 // deliverPrompt sends the loop prompt to the session.
 // resetTimer controls whether RecordSent() is called when the prompt completes:
 //   - true  → schedule advances from now (normal behaviour)
@@ -1515,6 +1585,25 @@ func (r *LoopRunner) deliverPrompt(bs *conversation.BackgroundSession, sessionMe
 				// NextScheduledAt is nil) and manual "keep schedule" runs (resetTimer=false)
 				// or forced one-shots must not push out the regular schedule.
 				if resetTimer && !forced && !loop.IsOnCompletion() {
+					// Context-window (HTTP 413 / augmentTooLarge) auto-pause (mitto-7jn):
+					// repeatedly re-firing the loop against a context that has outgrown the
+					// model window is pure noise. After MaxLoopContextWindowFailures consecutive
+					// hits we auto-pause the loop with StoppedReasonContextWindowExceeded so
+					// the user is told to trim/archive rather than watching endless backoff.
+					if conversation.IsContextTooLargeError(err) {
+						if r.handleContextWindowFailure(sessionID, sessionName, loopStore) {
+							// Loop was auto-paused — broadcast the stopped state.
+							if r.onLoopUpdated != nil {
+								if updated, gErr := loopStore.Get(); gErr == nil && updated != nil {
+									r.onLoopUpdated(sessionID, updated)
+								}
+							}
+							return
+						}
+						// Under threshold — fall through to the normal schedule backoff so the
+						// loop keeps ticking (with backoff) until the auto-pause threshold is hit.
+					}
+
 					r.scheduleBackoffFailuresMu.Lock()
 					r.scheduleBackoffFailures[sessionID]++
 					failures := r.scheduleBackoffFailures[sessionID]
@@ -1561,6 +1650,11 @@ func (r *LoopRunner) deliverPrompt(bs *conversation.BackgroundSession, sessionMe
 			r.scheduleBackoffFailuresMu.Lock()
 			delete(r.scheduleBackoffFailures, sessionID)
 			r.scheduleBackoffFailuresMu.Unlock()
+
+			// Also clear context-window failure counter on any successful delivery (mitto-7jn).
+			r.contextWindowFailuresMu.Lock()
+			delete(r.contextWindowFailures, sessionID)
+			r.contextWindowFailuresMu.Unlock()
 
 			if !resetTimer {
 				// Manual run with "keep schedule" — leave NextScheduledAt unchanged.

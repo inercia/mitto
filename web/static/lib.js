@@ -369,6 +369,7 @@ export const LOOP_STOPPED_LABELS = {
   iterationSafeguard: { label: "Stopped: max iters", kind: "stopped" },
   promptUnresolved: { label: "Stopped: prompt missing", kind: "stopped" },
   resumeFailures: { label: "Stopped: resume errors", kind: "stopped" },
+  contextWindowExceeded: { label: "Stopped: context too large", kind: "stopped" },
   pausedByUser: { label: "Paused by you", kind: "paused" },
   disabledByAgent: { label: "Paused by the agent", kind: "paused" },
 };

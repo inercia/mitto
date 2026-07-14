@@ -1189,6 +1189,7 @@ func TestLoopStore_MarkStopped_AllReasons(t *testing.T) {
 		StoppedReasonIterationSafeguard,
 		StoppedReasonPromptUnresolved,
 		StoppedReasonResumeFailures,
+		StoppedReasonContextWindowExceeded,
 	}
 
 	for _, reason := range reasons {

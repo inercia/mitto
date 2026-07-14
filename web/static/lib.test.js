@@ -5677,7 +5677,7 @@ describe("conversationToMarkdown", () => {
 // =============================================================================
 
 describe("LOOP_STOPPED_LABELS", () => {
-  test("maps all seven known reason codes to {label, kind} objects", () => {
+  test("maps all eight known reason codes to {label, kind} objects", () => {
     expect(LOOP_STOPPED_LABELS.maxDuration).toEqual({
       label: "Stopped: max time",
       kind: "stopped",
@@ -5696,6 +5696,10 @@ describe("LOOP_STOPPED_LABELS", () => {
     });
     expect(LOOP_STOPPED_LABELS.resumeFailures).toEqual({
       label: "Stopped: resume errors",
+      kind: "stopped",
+    });
+    expect(LOOP_STOPPED_LABELS.contextWindowExceeded).toEqual({
+      label: "Stopped: context too large",
       kind: "stopped",
     });
     expect(LOOP_STOPPED_LABELS.pausedByUser).toEqual({
@@ -5725,6 +5729,7 @@ describe("LOOP_STOPPED_LABELS", () => {
       "iterationSafeguard",
       "promptUnresolved",
       "resumeFailures",
+      "contextWindowExceeded",
     ];
     for (const reason of stoppedReasons) {
       expect(LOOP_STOPPED_LABELS[reason].kind).toBe("stopped");

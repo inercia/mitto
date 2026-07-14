@@ -317,16 +317,17 @@ func BackoffDelay(attempt int, baseDelay, maxDelay time.Duration, jitterRatio fl
 // It looks for patterns like "HTTP error: NNN", `"httpStatus":NNN`, or "HTTP/1.1 NNN".
 var httpStatusRegex = regexp.MustCompile(`(?:HTTP error:\s*|"httpStatus"\s*:\s*|HTTP/[12](?:\.[01])?\s+)(\d{3})`)
 
-// isContextTooLargeError returns true if the error indicates the AI model
+// IsContextTooLargeError returns true if the error indicates the AI model
 // rejected the prompt because the conversation context is too large (HTTP 413
 // or an equivalent model-specific error phrase).
 //
 // The ACP server forwards HTTP 413 responses as JSON-RPC -32603 "Internal error"
 // messages, so the numeric status code or the model-specific phrase may appear
 // anywhere in the error string.  We keep the list of patterns here (rather than
-// inlining them in formatACPError) so that the queue-advancement logic can reuse
-// the same predicate without duplicating strings.
-func isContextTooLargeError(err error) bool {
+// inlining them in formatACPError) so that the prompt dispatcher's queue-advancement
+// logic and the loop runner's auto-pause guard (via internal/web) can reuse the
+// same predicate without duplicating strings.
+func IsContextTooLargeError(err error) bool {
 	if err == nil {
 		return false
 	}
@@ -382,7 +383,7 @@ func formatACPError(err error) string {
 
 	// HTTP 413 / context-too-large errors from the AI model.
 	// Checked before the generic -32603 catch-all so users get an actionable message.
-	if isContextTooLargeError(err) {
+	if IsContextTooLargeError(err) {
 		return "⚠️ The conversation context is too large for the model. " +
 			"Please start a new conversation. You can ask the agent to summarize the key points first if needed."
 	}

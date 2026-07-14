@@ -4020,3 +4020,169 @@ func TestLoopRunner_WorkspaceKey(t *testing.T) {
 		t.Errorf("workspaceKey = %q, want %q", got, want)
 	}
 }
+
+// TestLoopRunner_ContextWindowFailure_AutoPausesAfterThreshold verifies mitto-7jn:
+// after MaxLoopContextWindowFailures consecutive context-window (HTTP 413) failures
+// the loop is auto-paused with StoppedReasonContextWindowExceeded and the
+// onLoopAutoStopped callback is invoked exactly once.
+func TestLoopRunner_ContextWindowFailure_AutoPausesAfterThreshold(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	const sessionID = "cw-1"
+	meta := session.Metadata{SessionID: sessionID, ACPServer: "auggie", WorkingDir: "/tmp"}
+	if err := store.Create(meta); err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	loopStore := store.Loop(sessionID)
+	if err := loopStore.Set(&session.LoopPrompt{
+		Prompt:    "Test",
+		Frequency: session.Frequency{Value: 1, Unit: session.FrequencyHours},
+		Enabled:   true,
+	}); err != nil {
+		t.Fatalf("loopStore.Set() error = %v", err)
+	}
+
+	runner := NewLoopRunner(store, nil, nil)
+
+	var autoStopCalls int
+	var lastAutoStopSession string
+	runner.SetOnLoopAutoStopped(func(sid string, p *session.LoopPrompt) {
+		autoStopCalls++
+		lastAutoStopSession = sid
+		if p == nil || p.Enabled {
+			t.Errorf("onLoopAutoStopped called with enabled/nil loop: %+v", p)
+		}
+		if p != nil && p.StoppedReason != session.StoppedReasonContextWindowExceeded {
+			t.Errorf("StoppedReason = %q, want %q", p.StoppedReason, session.StoppedReasonContextWindowExceeded)
+		}
+	})
+
+	// Hits 1 and 2 must return false (under threshold, loop stays enabled).
+	for i := 1; i < MaxLoopContextWindowFailures; i++ {
+		stopped := runner.handleContextWindowFailure(sessionID, "test", loopStore)
+		if stopped {
+			t.Fatalf("handleContextWindowFailure hit %d returned true; want false (under threshold)", i)
+		}
+		got, gErr := loopStore.Get()
+		if gErr != nil {
+			t.Fatalf("loopStore.Get() after hit %d error = %v", i, gErr)
+		}
+		if !got.Enabled {
+			t.Errorf("loop disabled after hit %d; want still enabled until threshold", i)
+		}
+	}
+
+	// Final hit must trip the auto-pause.
+	if stopped := runner.handleContextWindowFailure(sessionID, "test", loopStore); !stopped {
+		t.Fatal("handleContextWindowFailure final hit returned false; want true (threshold reached)")
+	}
+	final, err := loopStore.Get()
+	if err != nil {
+		t.Fatalf("loopStore.Get() after auto-pause error = %v", err)
+	}
+	if final.Enabled {
+		t.Error("loop.Enabled = true after auto-pause; want false")
+	}
+	if final.StoppedReason != session.StoppedReasonContextWindowExceeded {
+		t.Errorf("StoppedReason = %q, want %q", final.StoppedReason, session.StoppedReasonContextWindowExceeded)
+	}
+	if final.StoppedAt == nil {
+		t.Error("StoppedAt is nil after auto-pause")
+	}
+	if autoStopCalls != 1 {
+		t.Errorf("onLoopAutoStopped invocation count = %d, want 1", autoStopCalls)
+	}
+	if lastAutoStopSession != sessionID {
+		t.Errorf("onLoopAutoStopped sessionID = %q, want %q", lastAutoStopSession, sessionID)
+	}
+	// Counter must be cleared after the auto-pause.
+	runner.contextWindowFailuresMu.Lock()
+	remaining := runner.contextWindowFailures[sessionID]
+	runner.contextWindowFailuresMu.Unlock()
+	if remaining != 0 {
+		t.Errorf("contextWindowFailures[%s] = %d after auto-pause, want 0", sessionID, remaining)
+	}
+}
+
+// TestLoopRunner_ContextWindowFailure_SuccessBetweenHitsResetsCounter verifies
+// that a successful delivery between context-window hits clears the counter, so
+// the loop is NOT auto-paused after a 2 + success + 2 pattern.
+func TestLoopRunner_ContextWindowFailure_SuccessBetweenHitsResetsCounter(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	const sessionID = "cw-2"
+	meta := session.Metadata{SessionID: sessionID, ACPServer: "auggie", WorkingDir: "/tmp"}
+	if err := store.Create(meta); err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	loopStore := store.Loop(sessionID)
+	if err := loopStore.Set(&session.LoopPrompt{
+		Prompt:    "Test",
+		Frequency: session.Frequency{Value: 1, Unit: session.FrequencyHours},
+		Enabled:   true,
+	}); err != nil {
+		t.Fatalf("loopStore.Set() error = %v", err)
+	}
+
+	runner := NewLoopRunner(store, nil, nil)
+	var autoStopCalls int
+	runner.SetOnLoopAutoStopped(func(sid string, p *session.LoopPrompt) {
+		autoStopCalls++
+	})
+
+	// 2 hits — still under threshold.
+	for i := 0; i < 2; i++ {
+		if stopped := runner.handleContextWindowFailure(sessionID, "test", loopStore); stopped {
+			t.Fatalf("hit %d unexpectedly triggered auto-pause", i+1)
+		}
+	}
+	// Simulate a successful delivery — OnComplete clears the counter.
+	runner.contextWindowFailuresMu.Lock()
+	delete(runner.contextWindowFailures, sessionID)
+	runner.contextWindowFailuresMu.Unlock()
+
+	// 2 more hits — must NOT trip auto-pause because the counter was reset.
+	for i := 0; i < 2; i++ {
+		if stopped := runner.handleContextWindowFailure(sessionID, "test", loopStore); stopped {
+			t.Fatalf("hit %d after reset unexpectedly triggered auto-pause", i+1)
+		}
+	}
+
+	final, err := loopStore.Get()
+	if err != nil {
+		t.Fatalf("loopStore.Get() error = %v", err)
+	}
+	if !final.Enabled {
+		t.Error("loop.Enabled = false after 2+reset+2 hits; want true (reset must prevent auto-pause)")
+	}
+	if final.StoppedReason != "" {
+		t.Errorf("StoppedReason = %q, want empty", final.StoppedReason)
+	}
+	if autoStopCalls != 0 {
+		t.Errorf("onLoopAutoStopped calls = %d, want 0", autoStopCalls)
+	}
+}
+
+// TestLoopRunner_IsContextTooLargeError_413String verifies mitto-7jn's classifier
+// matches the exact error string surfaced by the Augment ACP for HTTP 413.
+func TestLoopRunner_IsContextTooLargeError_413String(t *testing.T) {
+	// Matches the error observed in the bead's log excerpt.
+	err413 := errors.New("HTTP error: 413 Request Entity Too Large")
+	if !conversation.IsContextTooLargeError(err413) {
+		t.Errorf("IsContextTooLargeError(%q) = false, want true", err413)
+	}
+	if conversation.IsContextTooLargeError(errors.New("some unrelated error")) {
+		t.Errorf("IsContextTooLargeError(unrelated) = true, want false")
+	}
+	if conversation.IsContextTooLargeError(nil) {
+		t.Error("IsContextTooLargeError(nil) = true, want false")
+	}
+}
