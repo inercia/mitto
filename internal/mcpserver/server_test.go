@@ -815,6 +815,43 @@ func TestConversationStart_PromptName_NotFound(t *testing.T) {
 	}
 }
 
+// TestConversationStart_PlaceholderLoopSeed_Rejected reproduces mitto-dj9:
+// when an orchestrator LLM composes multiple mitto_conversation_new calls in
+// one turn, it can short-circuit the repeated initial_prompt to a self-reference
+// like "[Same driver body]". The MCP server currently accepts that verbatim as
+// the loop child's seed, creating a zombie conversation whose seq=1 body is
+// unactionable. The fix is a boundary guard in handleConversationStart that
+// rejects a suspiciously short, placeholder-shaped free-text initial_prompt
+// when the conversation is being created as a loop (loop_prompt or
+// loop_trigger set) and no prompt_name was supplied. This test asserts the
+// desired post-fix behavior; it fails on HEAD (no guard exists yet).
+func TestConversationStart_PlaceholderLoopSeed_Rejected(t *testing.T) {
+	_, srv, parentID := setupConversationStartServer(t)
+
+	ctx := context.Background()
+	_, _, err := srv.handleConversationStart(ctx, nil, ConversationStartInput{
+		SelfID:                     parentID,
+		InitialPrompt:              "[Same driver body]",
+		LoopPrompt:                 "anything",
+		LoopTrigger:                "onCompletion",
+		LoopCompletionDelaySeconds: intPtr(30),
+		LoopMaxIterations:          intPtr(2),
+	})
+	if err == nil {
+		t.Fatal("Expected error rejecting placeholder-shaped loop-driver seed, got nil")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "placeholder") &&
+		!strings.Contains(msg, "self-reference") &&
+		!strings.Contains(msg, "prompt_name") {
+		t.Errorf("Expected placeholder-guard error mentioning placeholder/self-reference/prompt_name, got: %v", err)
+	}
+}
+
+// intPtr is a small helper for pointer-typed optional int fields on
+// ConversationStartInput.
+func intPtr(v int) *int { return &v }
+
 // TestConversationStart_Singleton_RoutesToExisting verifies that a second
 // mitto_conversation_new for the same singleton prompt in the same working dir
 // routes to the existing conversation (reused=true) instead of creating a

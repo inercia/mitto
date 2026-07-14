@@ -5,6 +5,8 @@ package mcpserver
 import (
 	"context"
 	"fmt"
+	"regexp"
+	"strings"
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -164,6 +166,27 @@ func (s *Server) handleConversationStart(ctx context.Context, req *mcp.CallToolR
 		initialPromptText = p.Prompt
 		originPromptName = input.PromptName
 		promptIsSingleton = p.Singleton
+	}
+
+	// Reject a suspiciously short, placeholder-shaped free-text initial_prompt
+	// when the conversation is being created as a loop (mitto-dj9). When an
+	// orchestrator LLM composes multiple mitto_conversation_new calls in one
+	// turn, it can short-circuit the repeated initial_prompt to a self-reference
+	// like "[Same driver body]"; without this guard the server enqueues that
+	// literal string as the loop child's seed and the loop re-fires an
+	// unactionable prompt on every tick. Named prompts are server-expanded and
+	// cannot be truncated this way, so the guard applies only to the free-text
+	// path (PromptName == "").
+	if input.PromptName == "" && (input.LoopPrompt != "" || input.LoopTrigger != "") {
+		if reason, ok := looksLikePlaceholderLoopSeed(initialPromptText); ok {
+			s.logger.Warn("Rejecting suspected placeholder loop-driver seed",
+				"session_id", realSessionID,
+				"initial_prompt", initialPromptText,
+				"reason", reason)
+			return nil, ConversationStartOutput{}, fmt.Errorf(
+				"suspected placeholder loop-driver seed %q: pass the full initial_prompt body or use prompt_name for server-side expansion (%s)",
+				initialPromptText, reason)
+		}
 	}
 
 	// Check max child conversations limit
@@ -586,4 +609,38 @@ func (s *Server) reuseSingletonConversation(store *session.Store, existingID, in
 		go bs.TryProcessQueuedMessage()
 	}
 	return output, nil
+}
+
+// placeholderLoopSeedPattern matches a bracketed self-reference body like
+// "[Same driver body]" or "[see above]" — the shape LLMs collapse repeated
+// prompt arguments to when generating multiple tool calls in one turn.
+// The trigger words cover the common phrasings observed in mitto-dj9.
+var placeholderLoopSeedPattern = regexp.MustCompile(`(?is)^\s*\[[^\]]*(same|see|above|prior|driver|body|prompt)[^\]]*\]\s*$`)
+
+// placeholderLoopSeedMaxLen is the upper bound on total length (bytes, trimmed)
+// below which a free-text loop-driver initial_prompt is considered
+// suspicious. A real driver body is many KB; anything under this ceiling that
+// also matches the bracketed self-reference shape is treated as a shortcut,
+// not a real seed.
+const placeholderLoopSeedMaxLen = 512
+
+// looksLikePlaceholderLoopSeed reports whether text is a suspiciously short,
+// bracketed self-reference string of the form "[Same driver body]" — the
+// shape observed in mitto-dj9 when an orchestrator LLM truncated a repeated
+// initial_prompt argument. Returns a short human-readable reason for the
+// error message when it matches, empty string otherwise. Intended to gate
+// mitto_conversation_new calls that create a loop child with a free-text
+// initial_prompt.
+func looksLikePlaceholderLoopSeed(text string) (string, bool) {
+	trimmed := strings.TrimSpace(text)
+	if trimmed == "" {
+		return "", false
+	}
+	if len(trimmed) >= placeholderLoopSeedMaxLen {
+		return "", false
+	}
+	if !placeholderLoopSeedPattern.MatchString(trimmed) {
+		return "", false
+	}
+	return fmt.Sprintf("length=%d, matches bracketed self-reference pattern", len(trimmed)), true
 }
