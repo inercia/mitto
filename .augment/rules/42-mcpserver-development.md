@@ -26,6 +26,14 @@ Single global MCP server at `http://127.0.0.1:5757/mcp`. Two tool classes:
 - **Global tools** (no session): `mitto_conversation_list`, `mitto_get_config`, `mitto_get_runtime_info`
 - **Session-scoped tools** (require `self_id`): UI prompts, conversation control, history, prompt management (`mitto_prompt_list/get/update`), loop control (`mitto_conversation_set_loop`, `mitto_conversation_run_loop_now`)
 
+## Cold-Start MCP Wedge (mitto-54k / mitto-6hr) — Mitto-side SSE stall, FIXED
+
+Earlier diagnosis ("agent-side, unfixable in Mitto" — auggie hard-gating on MCP `initialize`) was **wrong**, corrected 2026-07-08 after the same wedge reproduced in **both** auggie and Claude Code, isolated to workspaces with **concurrent MCP sessions** (e.g. multiple workspace UUIDs + an active loop sharing one `working_dir`).
+
+**Root cause**: `startSSE()` (`server.go:347`) builds the Streamable HTTP handler with `nil` options → stateful mode, where a POST's response can ride the client's per-session **GET SSE stream** instead of the POST body. Under concurrency that stream stalls (observed: ~97s gap between GET completions, an SSE GET held open, never completes) — `initialize` times out even though Mitto's `/mcp` handler already returned 200 in 0ms (`duration_ms=0` in the access log is a red herring — check GET-stream completions, not POST latency).
+
+**Fix (`mitto-6hr`, P1, epic `mitto-54k`, APPLIED)**: `startSSE()` now passes `&mcp.StreamableHTTPOptions{JSONResponse: true}` to `NewStreamableHTTPHandler` so POST responses resolve inline, independent of the SSE GET. **Not** `Stateless: true` — rejects server→client *requests*, breaking `UIPrompter` (mitto_ui_options/form). Still-valid secondary mitigations (reduce concurrency, don't fix the stall): `mitto-clc` (disable proactive keep-warm), `mitto-cgc` (stagger aux-session creation).
+
 ## Adding New Tools
 
 Handler signature (3-arg form — SDK unmarshals input automatically):
@@ -96,22 +104,11 @@ if callerMeta.WorkingDir != targetWS.WorkingDir {
 
 ## Optional Late-Bound Dependencies
 
-Some dependencies (e.g. `LoopRunner`) are initialized after the MCP server and wired in via setter methods rather than through `Dependencies`:
-
-```go
-// In internal/web/server.go — after s.loopRunner.Start():
-if s.mcpServer != nil {
-    s.mcpServer.SetLoopRunner(s.loopRunner)
-}
-```
-
-The `LoopRunner` interface (defined in `mcpserver/server.go`) is satisfied by `*web.LoopRunner`. Use setter methods (not `Dependencies`) when a dependency must exist before `NewServer()` completes but the dependency itself starts later.
+Some dependencies (e.g. `LoopRunner`) are wired in via setter methods (`s.mcpServer.SetLoopRunner(s.loopRunner)` in `internal/web/server.go`, after `s.loopRunner.Start()`) rather than through `Dependencies`, since they must exist before `NewServer()` completes but start later. The `LoopRunner` interface (in `mcpserver/server.go`) is satisfied by `*web.LoopRunner`.
 
 ## Processor Auxiliary Session MCP Access
 
-Processor auxiliary sessions (purpose prefix `"processor:"`) get a stdio MCP proxy so the agent can call Mitto tools. Configured in `internal/web/acp_process_manager.go` via `ACPProcessManager.MCPServerURL`. Non-processor auxiliary sessions (title-gen, follow-up, etc.) do NOT get MCP access.
-
-See `docs/devel/mcp.md` for detailed documentation.
+Processor auxiliary sessions (purpose prefix `"processor:"`) get a stdio MCP proxy so the agent can call Mitto tools. Configured in `internal/web/acp_process_manager.go` via `ACPProcessManager.MCPServerURL`. Non-processor auxiliary sessions (title-gen, follow-up, etc.) do NOT get MCP access. See `docs/devel/mcp.md` for detailed documentation.
 
 ## Input Validation in Tools
 
@@ -147,3 +144,5 @@ API endpoint: `GET /api/workspace-mcp-tools?acp_server=NAME&dir=PATH` (handler i
 | github-copilot | BROKEN (mitto-sys.14) | wrong path: real is `~/.copilot/mcp-config.json` |
 | qwen-code | BROKEN (mitto-sys.15) | wrong path: real is `~/.qwen` |
 | junie | stub (mitto-sys.10) | always returns `{"servers": []}` |
+
+**Auggie git-root divergence** (not a script bug): `auggie mcp list` resolves `<workspace>` to the **git toplevel**, not the target `workingDir` — so when `workingDir` is a git subdirectory, `mcp-list.sh` (which reads `<workingDir>/.augment/settings.local.json` literally) can report servers (e.g. `slack`) that auggie itself never loads (it reads `<git-root>/.augment/settings.local.json` instead). Verify workspace vs. git-root config before trusting the MCP tab for auggie workspaces nested in a larger repo.

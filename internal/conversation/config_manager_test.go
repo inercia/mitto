@@ -367,6 +367,79 @@ func TestConfigManager_ApplyConfigOption_ModeRPCError(t *testing.T) {
 	}
 }
 
+// recordingHandler is a minimal slog.Handler that captures emitted records for
+// assertions in tests (mitto-5q8).
+type recordingHandler struct {
+	mu      sync.Mutex
+	records []slog.Record
+}
+
+func (h *recordingHandler) Enabled(context.Context, slog.Level) bool { return true }
+func (h *recordingHandler) Handle(_ context.Context, r slog.Record) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.records = append(h.records, r)
+	return nil
+}
+func (h *recordingHandler) WithAttrs(_ []slog.Attr) slog.Handler { return h }
+func (h *recordingHandler) WithGroup(_ string) slog.Handler      { return h }
+
+func (h *recordingHandler) hasRecord(level slog.Level, message string) bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for _, r := range h.records {
+		if r.Level == level && r.Message == message {
+			return true
+		}
+	}
+	return false
+}
+
+// TestConfigManager_ApplyConfigOption_ModelRPCError_ConnectionError verifies that when
+// cmSetSessionModel fails with a dead/restarting-process error (e.g. after an agent
+// heap-OOM crash, mitto-5q8), applyConfigOption logs a WARN "Skipping model change..."
+// instead of the misleading ERROR "Failed to set session model", while still returning
+// the wrapped error.
+func TestConfigManager_ApplyConfigOption_ModelRPCError_ConnectionError(t *testing.T) {
+	c := configManager{}
+	d := newFakeConfigDeps()
+	d.setModelErr = errors.New("shared ACP process has exited")
+	handler := &recordingHandler{}
+	d.logger = slog.New(handler)
+
+	err := c.applyConfigOption(d, context.Background(), ConfigOptionCategoryModel, "m-2")
+	if err == nil {
+		t.Fatal("expected error when model RPC fails")
+	}
+	if handler.hasRecord(slog.LevelError, "Failed to set session model") {
+		t.Fatal("did not expect misleading ERROR log for a connection/restart error")
+	}
+	if !handler.hasRecord(slog.LevelWarn, "Skipping model change; agent process is restarting") {
+		t.Fatal("expected WARN log about skipping model change during restart")
+	}
+}
+
+// TestConfigManager_ApplyConfigOption_ModelRPCError_GenuineFailure verifies that a
+// non-connection error (a genuine failure on a live process) still logs at ERROR.
+func TestConfigManager_ApplyConfigOption_ModelRPCError_GenuineFailure(t *testing.T) {
+	c := configManager{}
+	d := newFakeConfigDeps()
+	d.setModelErr = errors.New("boom")
+	handler := &recordingHandler{}
+	d.logger = slog.New(handler)
+
+	err := c.applyConfigOption(d, context.Background(), ConfigOptionCategoryModel, "m-2")
+	if err == nil {
+		t.Fatal("expected error when model RPC fails")
+	}
+	if !handler.hasRecord(slog.LevelError, "Failed to set session model") {
+		t.Fatal("expected ERROR log for a genuine (non-connection) failure")
+	}
+	if handler.hasRecord(slog.LevelWarn, "Skipping model change; agent process is restarting") {
+		t.Fatal("did not expect the restart WARN log for a genuine failure")
+	}
+}
+
 func TestConfigManager_FlushPendingConfig_Empty(t *testing.T) {
 	c := configManager{}
 	d := newFakeConfigDeps()

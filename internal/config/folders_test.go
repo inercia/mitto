@@ -732,3 +732,116 @@ func TestPreserveFolderNativeFields_PreservesShortcuts(t *testing.T) {
 		t.Errorf("Name = %q, want Proj", fs.Name)
 	}
 }
+
+// --- Pinned (folder-native visibility flag) ------------------------------------
+
+func TestSetAndGetFolderPinned(t *testing.T) {
+	setupFoldersTestDir(t)
+	if FolderPinned("/proj") {
+		t.Errorf("FolderPinned() before set = true, want false")
+	}
+	if err := SetFolderPinned("/proj", true); err != nil {
+		t.Fatalf("SetFolderPinned(true) returned error: %v", err)
+	}
+	if !FolderPinned("/proj") {
+		t.Errorf("FolderPinned() after set true = false, want true")
+	}
+	if err := SetFolderPinned("/proj", false); err != nil {
+		t.Fatalf("SetFolderPinned(false) returned error: %v", err)
+	}
+	if FolderPinned("/proj") {
+		t.Errorf("FolderPinned() after clear = true, want false")
+	}
+}
+
+// SaveWorkspaces must not wipe the folder-native pinned flag, since
+// extractFolderSettings never hoists it out of workspaces. The preservation
+// branch in SaveWorkspaces (folders.go ~L412-427) is responsible.
+func TestSaveWorkspaces_PreservesPinned(t *testing.T) {
+	setupFoldersTestDir(t)
+	if err := SetFolderPinned("/proj", true); err != nil {
+		t.Fatalf("SetFolderPinned() returned error: %v", err)
+	}
+
+	ws := []WorkspaceSettings{
+		{UUID: "u1", ACPServer: "auggie", WorkingDir: "/proj", Name: "P", Code: "PRJ", Color: "#abc"},
+		{UUID: "u2", ACPServer: "claude", WorkingDir: "/proj", Name: "P", Code: "PRJ", Color: "#abc"},
+	}
+	if err := SaveWorkspaces(ws); err != nil {
+		t.Fatalf("SaveWorkspaces() returned error: %v", err)
+	}
+
+	if !FolderPinned("/proj") {
+		t.Errorf("FolderPinned() after SaveWorkspaces = false, want true")
+	}
+}
+
+func TestApplyFolderDefaults_ProjectsPinned(t *testing.T) {
+	folders := map[string]FolderSettings{
+		"/proj":  {Pinned: true},
+		"/other": {Pinned: false},
+	}
+	ws := []WorkspaceSettings{
+		{UUID: "u1", WorkingDir: "/proj"},
+		{UUID: "u2", WorkingDir: "/proj"},
+		{UUID: "u3", WorkingDir: "/other"},
+	}
+	ApplyFolderDefaults(ws, folders)
+	if !ws[0].Pinned || !ws[1].Pinned {
+		t.Errorf("workspaces in /proj should have Pinned=true, got %+v / %+v", ws[0], ws[1])
+	}
+	if ws[2].Pinned {
+		t.Errorf("workspace in unpinned folder should have Pinned=false, got %+v", ws[2])
+	}
+}
+
+// extractFolderSettings must never hoist Pinned out of workspaces (it is
+// folder-native and only lives in folders.json). Every returned workspace
+// must have Pinned cleared regardless of the inline input value.
+func TestExtractFolderSettings_StripsPinnedFromWorkspaces(t *testing.T) {
+	ws := []WorkspaceSettings{
+		{UUID: "u1", ACPServer: "auggie", WorkingDir: "/proj", Name: "P", Pinned: true},
+		{UUID: "u2", ACPServer: "claude", WorkingDir: "/proj", Name: "P", Pinned: true},
+	}
+	cleaned, folders := extractFolderSettings(ws)
+
+	if fs, ok := folders["/proj"]; !ok {
+		t.Fatalf("folders map missing /proj entry")
+	} else if fs.Pinned {
+		t.Errorf("folders[/proj].Pinned = true, want false (never hoisted from workspaces)")
+	}
+	for i, w := range cleaned {
+		if w.Pinned {
+			t.Errorf("cleaned[%d].Pinned = true, want false (stripped)", i)
+		}
+	}
+}
+
+// TestSetFolderPinned_ReprojectsOntoFreshWorkspaces is a regression guard for
+// mitto-662: SetFolderPinned only writes folders.json; callers must reload
+// folders and re-apply ApplyFolderDefaults to see the change reflected on an
+// in-memory WorkspaceSettings slice. Verifies that composition end-to-end.
+func TestSetFolderPinned_ReprojectsOntoFreshWorkspaces(t *testing.T) {
+	setupFoldersTestDir(t)
+
+	workspaces := []WorkspaceSettings{
+		{WorkingDir: "/tmp/foo", ACPServer: "mock-acp"},
+	}
+	if workspaces[0].Pinned {
+		t.Fatalf("precondition: workspace should not be pinned yet")
+	}
+
+	if err := SetFolderPinned("/tmp/foo", true); err != nil {
+		t.Fatalf("SetFolderPinned: %v", err)
+	}
+
+	folders, err := LoadFolders()
+	if err != nil {
+		t.Fatalf("LoadFolders: %v", err)
+	}
+	ApplyFolderDefaults(workspaces, folders)
+
+	if !workspaces[0].Pinned {
+		t.Errorf("workspaces[0].Pinned = false after SetFolderPinned+ApplyFolderDefaults, want true")
+	}
+}

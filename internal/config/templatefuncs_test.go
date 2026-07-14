@@ -682,6 +682,8 @@ func TestBuildTemplateFuncMap_AllKeysPresent(t *testing.T) {
 		"Arg", "Default", "UserData",
 		"FileExists", "DirExists", "CommandExists", "HasPattern", "Model",
 		"GitFileModified", "GitDirModified", "GitFileTracked", "GitFileDeleted",
+		"BeadsCount", "HasBeads",
+		"PromptText",
 		"Trim", "Lower", "Upper", "Contains", "HasPrefix", "HasSuffix", "Join",
 	}
 	for _, key := range expected {
@@ -1153,4 +1155,445 @@ func TestPrecompileTemplateConds_ParseError(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected parse error, got nil")
 	}
+}
+
+// installFakeBd writes a fake `bd` shell script to a fresh temp dir, prepends
+// that dir to PATH for the duration of the test, and clears the beadsCache so
+// results from other tests don't leak. The script's stdout comes from `stdout`
+// and its exit code from `exitCode` (0 = success). Returns the temp dir.
+func installFakeBd(t *testing.T, stdout string, exitCode int) string {
+	t.Helper()
+	dir := t.TempDir()
+	script := fmt.Sprintf("#!/bin/sh\ncat <<'MITTO_BD_EOF'\n%s\nMITTO_BD_EOF\nexit %d\n", stdout, exitCode)
+	bdPath := filepath.Join(dir, "bd")
+	if err := os.WriteFile(bdPath, []byte(script), 0755); err != nil {
+		t.Fatal(err)
+	}
+	oldPath := os.Getenv("PATH")
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+oldPath)
+	// Clear the cache so a previous test's result doesn't shadow this one.
+	beadsCacheMu.Lock()
+	beadsCache = map[string]beadsCacheEntry{}
+	beadsCacheMu.Unlock()
+	return dir
+}
+
+// TestBeadsCount_EmptyResult verifies that a legitimate empty result (bd exit
+// 0, `[]`) returns 0 — NOT the fail-open sentinel.
+func TestBeadsCount_EmptyResult(t *testing.T) {
+	installFakeBd(t, "[]", 0)
+	tmp := t.TempDir()
+
+	got := beadsCount(tmp, "support-question", "open,in_progress")
+	if got != 0 {
+		t.Errorf("beadsCount empty = %d, want 0", got)
+	}
+	if hasBeads(tmp, "support-question", "open,in_progress") {
+		t.Errorf("hasBeads empty = true, want false")
+	}
+}
+
+// TestBeadsCount_JSONParse verifies that a well-formed array is counted correctly.
+func TestBeadsCount_JSONParse(t *testing.T) {
+	installFakeBd(t, `[{"id":"mitto-1"},{"id":"mitto-2"},{"id":"mitto-3"}]`, 0)
+	tmp := t.TempDir()
+
+	got := beadsCount(tmp, "support-question", "open,in_progress")
+	if got != 3 {
+		t.Errorf("beadsCount = %d, want 3", got)
+	}
+	if !hasBeads(tmp, "support-question", "open,in_progress") {
+		t.Errorf("hasBeads = false, want true")
+	}
+}
+
+// TestBeadsCount_FailOpenOnNonZeroExit verifies that a non-zero exit code
+// (e.g. not a beads repo) returns the positive sentinel so HasBeads is truthy.
+func TestBeadsCount_FailOpenOnNonZeroExit(t *testing.T) {
+	installFakeBd(t, "error: not a beads repo", 1)
+	tmp := t.TempDir()
+
+	got := beadsCount(tmp, "support-question", "open,in_progress")
+	if got != beadsCountFailOpen {
+		t.Errorf("beadsCount fail-open = %d, want %d", got, beadsCountFailOpen)
+	}
+	if !hasBeads(tmp, "support-question", "open,in_progress") {
+		t.Errorf("hasBeads fail-open = false, want true")
+	}
+}
+
+// TestBeadsCount_FailOpenOnBadJSON verifies that unparseable stdout returns
+// the positive sentinel.
+func TestBeadsCount_FailOpenOnBadJSON(t *testing.T) {
+	installFakeBd(t, "not json at all {{{", 0)
+	tmp := t.TempDir()
+
+	got := beadsCount(tmp, "support-question", "open,in_progress")
+	if got != beadsCountFailOpen {
+		t.Errorf("beadsCount fail-open on bad json = %d, want %d", got, beadsCountFailOpen)
+	}
+}
+
+// TestBeadsCount_FailOpenWhenMissing verifies that bd absent from PATH returns
+// the positive sentinel (fail-open).
+func TestBeadsCount_FailOpenWhenMissing(t *testing.T) {
+	// Force an isolated PATH with no bd.
+	emptyDir := t.TempDir()
+	t.Setenv("PATH", emptyDir)
+	beadsCacheMu.Lock()
+	beadsCache = map[string]beadsCacheEntry{}
+	beadsCacheMu.Unlock()
+
+	got := beadsCount(emptyDir, "support-question", "open,in_progress")
+	if got != beadsCountFailOpen {
+		t.Errorf("beadsCount missing bd = %d, want %d", got, beadsCountFailOpen)
+	}
+	if !hasBeads(emptyDir, "support-question", "open,in_progress") {
+		t.Errorf("hasBeads missing bd = false, want true (fail-open)")
+	}
+}
+
+// TestBeadsCount_Cache verifies that repeated calls within beadsCacheTTL hit
+// the cache and don't re-exec bd. We swap the fake bd's script mid-test: the
+// second call must still return the first (cached) value.
+func TestBeadsCount_Cache(t *testing.T) {
+	dir := installFakeBd(t, `[{"id":"a"},{"id":"b"}]`, 0)
+	tmp := t.TempDir()
+
+	first := beadsCount(tmp, "support-question", "open,in_progress")
+	if first != 2 {
+		t.Fatalf("first beadsCount = %d, want 2", first)
+	}
+	// Overwrite the fake bd to return a different count; the cache must mask this.
+	bdPath := filepath.Join(dir, "bd")
+	newScript := "#!/bin/sh\necho '[{\"id\":\"a\"},{\"id\":\"b\"},{\"id\":\"c\"},{\"id\":\"d\"}]'\n"
+	if err := os.WriteFile(bdPath, []byte(newScript), 0755); err != nil {
+		t.Fatal(err)
+	}
+	second := beadsCount(tmp, "support-question", "open,in_progress")
+	if second != first {
+		t.Errorf("second beadsCount = %d, want cached %d", second, first)
+	}
+}
+
+// TestBeadsCount_CELParity verifies that HasBeads and BeadsCount evaluated
+// through CEL produce the same result as the pure-Go helpers — mirrors the
+// git-func parity tests (mitto-d01 pattern).
+func TestBeadsCount_CELParity(t *testing.T) {
+	installFakeBd(t, `[{"id":"mitto-1"},{"id":"mitto-2"}]`, 0)
+	tmp := t.TempDir()
+
+	e := newTestEvaluator(t)
+	ctx := &PromptEnabledContext{Workspace: WorkspaceContext{Folder: tmp}}
+
+	// BeadsCount(...) -> int; evaluate raw via cel.Program to compare Int values.
+	ce, err := e.Compile(`BeadsCount("support-question", "open,in_progress")`)
+	if err != nil {
+		t.Fatalf("compile BeadsCount: %v", err)
+	}
+	out, _, err := ce.prog.Eval(buildActivation(ctx))
+	if err != nil {
+		t.Fatalf("eval BeadsCount: %v", err)
+	}
+	i, ok := out.Value().(int64)
+	if !ok {
+		t.Fatalf("BeadsCount result type = %T, want int64", out.Value())
+	}
+	goCount := beadsCount(tmp, "support-question", "open,in_progress")
+	if int64(goCount) != i {
+		t.Errorf("CEL BeadsCount = %d, go beadsCount = %d", i, goCount)
+	}
+
+	// HasBeads(...) -> bool through evalCEL.
+	got := evalCEL(t, e, `HasBeads("support-question", "open,in_progress")`, ctx)
+	if got != hasBeads(tmp, "support-question", "open,in_progress") {
+		t.Errorf("CEL HasBeads = %v, go hasBeads mismatch", got)
+	}
+	if !got {
+		t.Errorf("CEL HasBeads = false, want true (2 beads returned)")
+	}
+
+	// Combined expression: mirrors the real support-housekeeping gate.
+	combined := evalCEL(t, e, `CommandExists("bd") && HasBeads("support-question", "open,in_progress")`, ctx)
+	if !combined {
+		t.Errorf("combined gate = false, want true")
+	}
+}
+
+// TestBeadHasLabels_Match verifies that a bead whose labels contain ALL the
+// requested labels returns true, and that a missing label returns false.
+func TestBeadHasLabels_Match(t *testing.T) {
+	installFakeBd(t, `{"id":"mitto-1","labels":["support","support-question","state:drafting"]}`, 0)
+	tmp := t.TempDir()
+
+	if !beadHasLabels(tmp, "mitto-1", "support-question,state:drafting") {
+		t.Errorf("beadHasLabels all-present = false, want true")
+	}
+	if beadHasLabels(tmp, "mitto-1", "support-question,state:resolved") {
+		t.Errorf("beadHasLabels missing-label = true, want false")
+	}
+}
+
+// TestBeadHasLabels_EmptyIDOrLabels verifies fail-open on an empty id and
+// "no requirement" on an empty labels list (both return true).
+func TestBeadHasLabels_EmptyIDOrLabels(t *testing.T) {
+	installFakeBd(t, `{"id":"mitto-1","labels":["support-question"]}`, 0)
+	tmp := t.TempDir()
+
+	if !beadHasLabels(tmp, "", "support-question") {
+		t.Errorf("beadHasLabels empty id = false, want true (fail-open)")
+	}
+	if !beadHasLabels(tmp, "mitto-1", "") {
+		t.Errorf("beadHasLabels empty labels = false, want true (no requirement)")
+	}
+}
+
+// TestBeadHasLabels_FailOpenWhenMissing verifies that bd absent from PATH
+// returns true (fail-open), so a gate never wrongly hides a prompt.
+func TestBeadHasLabels_FailOpenWhenMissing(t *testing.T) {
+	emptyDir := t.TempDir()
+	t.Setenv("PATH", emptyDir)
+	beadsCacheMu.Lock()
+	beadsCache = map[string]beadsCacheEntry{}
+	beadsCacheMu.Unlock()
+
+	if !beadHasLabels(emptyDir, "mitto-1", "support-question,state:drafting") {
+		t.Errorf("beadHasLabels missing bd = false, want true (fail-open)")
+	}
+}
+
+// TestBeadHasLabels_FailOpenOnBadJSON verifies fail-open (true) when bd emits
+// unparseable JSON.
+func TestBeadHasLabels_FailOpenOnBadJSON(t *testing.T) {
+	installFakeBd(t, "not json at all {{{", 0)
+	tmp := t.TempDir()
+
+	if !beadHasLabels(tmp, "mitto-1", "support-question") {
+		t.Errorf("beadHasLabels bad JSON = false, want true (fail-open)")
+	}
+}
+
+// TestBeadHasLabels_CELParity verifies BeadHasLabels evaluated through CEL
+// produces the same result as the pure-Go helper, exercising the macro +
+// Session.BeadsIssue rewrite path (mirrors TestBeadsCount_CELParity).
+func TestBeadHasLabels_CELParity(t *testing.T) {
+	installFakeBd(t, `{"id":"mitto-1","labels":["support-question","state:drafting"]}`, 0)
+	tmp := t.TempDir()
+
+	e := newTestEvaluator(t)
+	ctx := &PromptEnabledContext{
+		Workspace: WorkspaceContext{Folder: tmp},
+		Session:   SessionContext{HasBeadsIssue: true, BeadsIssue: "mitto-1"},
+	}
+
+	got := evalCEL(t, e, `BeadHasLabels(Session.BeadsIssue, "support-question,state:drafting")`, ctx)
+	if got != beadHasLabels(tmp, "mitto-1", "support-question,state:drafting") {
+		t.Errorf("CEL BeadHasLabels mismatch with go beadHasLabels")
+	}
+	if !got {
+		t.Errorf("CEL BeadHasLabels = false, want true")
+	}
+
+	// Combined expression mirrors the real conversation/prompts gate branch.
+	combined := evalCEL(t, e,
+		`CommandExists("bd") && Session.HasBeadsIssue && BeadHasLabels(Session.BeadsIssue, "support-question,state:drafting")`,
+		ctx)
+	if !combined {
+		t.Errorf("combined gate = false, want true")
+	}
+}
+
+// TestBeadHasLabels_ArrayShape verifies parsing of the current `bd show --json`
+// shape, a single-element ARRAY ([{...}]), not a bare object. Regression guard:
+// an earlier version unmarshalled into a struct and would fail-open (return
+// true) on the array, defeating the gate.
+func TestBeadHasLabels_ArrayShape(t *testing.T) {
+	installFakeBd(t, `[{"id":"mitto-1","status":"open","labels":["support-question","state:drafting"]}]`, 0)
+	tmp := t.TempDir()
+
+	if !beadHasLabels(tmp, "mitto-1", "support-question,state:drafting") {
+		t.Errorf("beadHasLabels array-shape all-present = false, want true")
+	}
+	if beadHasLabels(tmp, "mitto-1", "state:resolved") {
+		t.Errorf("beadHasLabels array-shape missing-label = true, want false")
+	}
+}
+
+// TestBeadIsOpen_OpenAndClosed verifies beadIsOpen returns true for a non-closed
+// bead and false for a closed one, across both the array and bare-object shapes.
+func TestBeadIsOpen_OpenAndClosed(t *testing.T) {
+	installFakeBd(t, `[{"id":"mitto-1","status":"open"}]`, 0)
+	tmp := t.TempDir()
+	if !beadIsOpen(tmp, "mitto-1") {
+		t.Errorf("beadIsOpen open (array) = false, want true")
+	}
+
+	installFakeBd(t, `[{"id":"mitto-1","status":"closed"}]`, 0)
+	tmp2 := t.TempDir()
+	if beadIsOpen(tmp2, "mitto-1") {
+		t.Errorf("beadIsOpen closed (array) = true, want false")
+	}
+
+	installFakeBd(t, `{"id":"mitto-1","status":"in_progress"}`, 0)
+	tmp3 := t.TempDir()
+	if !beadIsOpen(tmp3, "mitto-1") {
+		t.Errorf("beadIsOpen in_progress (object) = false, want true")
+	}
+}
+
+// TestBeadIsOpen_FailOpen verifies fail-open (true) on empty id, missing bd, and
+// unparseable JSON.
+func TestBeadIsOpen_FailOpen(t *testing.T) {
+	installFakeBd(t, `[{"id":"mitto-1","status":"closed"}]`, 0)
+	tmp := t.TempDir()
+	if !beadIsOpen(tmp, "") {
+		t.Errorf("beadIsOpen empty id = false, want true (fail-open)")
+	}
+
+	emptyDir := t.TempDir()
+	t.Setenv("PATH", emptyDir)
+	beadsCacheMu.Lock()
+	beadsCache = map[string]beadsCacheEntry{}
+	beadsCacheMu.Unlock()
+	if !beadIsOpen(emptyDir, "mitto-1") {
+		t.Errorf("beadIsOpen missing bd = false, want true (fail-open)")
+	}
+
+	installFakeBd(t, "not json {{{", 0)
+	tmp2 := t.TempDir()
+	if !beadIsOpen(tmp2, "mitto-1") {
+		t.Errorf("beadIsOpen bad JSON = false, want true (fail-open)")
+	}
+}
+
+// TestBeadIsOpen_CELParity verifies BeadIsOpen evaluated through CEL matches the
+// pure-Go helper, exercising the macro + Session.BeadsIssue rewrite path.
+func TestBeadIsOpen_CELParity(t *testing.T) {
+	installFakeBd(t, `[{"id":"mitto-1","status":"closed","labels":["support-question"]}]`, 0)
+	tmp := t.TempDir()
+
+	e := newTestEvaluator(t)
+	ctx := &PromptEnabledContext{
+		Workspace: WorkspaceContext{Folder: tmp},
+		Session:   SessionContext{HasBeadsIssue: true, BeadsIssue: "mitto-1"},
+	}
+
+	got := evalCEL(t, e, `BeadIsOpen(Session.BeadsIssue)`, ctx)
+	if got != beadIsOpen(tmp, "mitto-1") {
+		t.Errorf("CEL BeadIsOpen mismatch with go beadIsOpen")
+	}
+	if got {
+		t.Errorf("CEL BeadIsOpen = true for closed bead, want false")
+	}
+
+	// Combined gate branch mirrors the check-status/investigate conversation menu.
+	combined := evalCEL(t, e,
+		`Session.HasBeadsIssue && BeadIsOpen(Session.BeadsIssue) && BeadHasLabels(Session.BeadsIssue, "support-question")`,
+		ctx)
+	if combined {
+		t.Errorf("combined open+label gate = true for closed bead, want false")
+	}
+}
+
+// TestBeadsCount_TemplateFuncRender verifies BeadsCount/HasBeads render through
+// RenderPromptTemplate (mirrors TestBuildTemplateFuncMap_GitFuncsRenderSmoke).
+func TestBeadsCount_TemplateFuncRender(t *testing.T) {
+	installFakeBd(t, `[{"id":"mitto-1"}]`, 0)
+	tmp := t.TempDir()
+
+	ctx := &PromptEnabledContext{Workspace: WorkspaceContext{Folder: tmp}}
+	fm := BuildTemplateFuncMap(ctx)
+
+	got, err := RenderPromptTemplate("test", `{{ if HasBeads "support-question" "open,in_progress" }}yes{{ else }}no{{ end }}`, ctx, fm)
+	if err != nil {
+		t.Fatalf("render HasBeads: %v", err)
+	}
+	if got != "yes" {
+		t.Errorf("HasBeads render = %q, want %q", got, "yes")
+	}
+
+	got, err = RenderPromptTemplate("test", `count={{ BeadsCount "support-question" "open,in_progress" }}`, ctx, fm)
+	if err != nil {
+		t.Fatalf("render BeadsCount: %v", err)
+	}
+	if got != "count=1" {
+		t.Errorf("BeadsCount render = %q, want %q", got, "count=1")
+	}
+}
+
+// TestBuildTemplateFuncMap_PromptText verifies the PromptText template function
+// (mitto-85y.3): resolves a prompt NAME to its full body via an injected
+// resolver, fails-closed on nil resolver / empty name / unknown prompt, and
+// strips trailing newlines from the returned body.
+func TestBuildTemplateFuncMap_PromptText(t *testing.T) {
+	// Fake resolver returns a fixed body for "known" and errors for anything else.
+	resolver := func(name string) (string, error) {
+		if name == "known" {
+			return "body-A", nil
+		}
+		return "", fmt.Errorf("prompt %q not found", name)
+	}
+
+	t.Run("resolves known prompt", func(t *testing.T) {
+		ctx := &PromptEnabledContext{PromptTextResolver: resolver}
+		fm := BuildTemplateFuncMap(ctx)
+		got, err := RenderPromptTemplate("test", `{{ PromptText "known" }}`, ctx, fm)
+		if err != nil {
+			t.Fatalf("render: %v", err)
+		}
+		if got != "body-A" {
+			t.Errorf("got %q, want %q", got, "body-A")
+		}
+	})
+
+	t.Run("unknown prompt fails render", func(t *testing.T) {
+		ctx := &PromptEnabledContext{PromptTextResolver: resolver}
+		fm := BuildTemplateFuncMap(ctx)
+		_, err := RenderPromptTemplate("test", `{{ PromptText "unknown" }}`, ctx, fm)
+		if err == nil {
+			t.Fatalf("expected error for unknown prompt, got nil")
+		}
+		if !strings.Contains(err.Error(), "unknown") {
+			t.Errorf("error should mention the prompt name; got %v", err)
+		}
+	})
+
+	t.Run("trailing newline is stripped", func(t *testing.T) {
+		trailingResolver := func(name string) (string, error) {
+			return "body-with-newline\n", nil
+		}
+		ctx := &PromptEnabledContext{PromptTextResolver: trailingResolver}
+		fm := BuildTemplateFuncMap(ctx)
+		got, err := RenderPromptTemplate("test", `{{ PromptText "x" }}`, ctx, fm)
+		if err != nil {
+			t.Fatalf("render: %v", err)
+		}
+		if got != "body-with-newline" {
+			t.Errorf("got %q, want %q", got, "body-with-newline")
+		}
+	})
+
+	t.Run("nil resolver fails-closed", func(t *testing.T) {
+		ctx := &PromptEnabledContext{PromptTextResolver: nil}
+		fm := BuildTemplateFuncMap(ctx)
+		_, err := RenderPromptTemplate("test", `{{ PromptText "x" }}`, ctx, fm)
+		if err == nil {
+			t.Fatalf("expected error for nil resolver, got nil")
+		}
+		if !strings.Contains(err.Error(), "no resolver") {
+			t.Errorf("error should mention 'no resolver'; got %v", err)
+		}
+	})
+
+	t.Run("empty name fails-closed", func(t *testing.T) {
+		ctx := &PromptEnabledContext{PromptTextResolver: resolver}
+		fm := BuildTemplateFuncMap(ctx)
+		_, err := RenderPromptTemplate("test", `{{ PromptText "" }}`, ctx, fm)
+		if err == nil {
+			t.Fatalf("expected error for empty name, got nil")
+		}
+		if !strings.Contains(err.Error(), "empty prompt name") {
+			t.Errorf("error should mention 'empty prompt name'; got %v", err)
+		}
+	})
 }

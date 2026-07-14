@@ -7,12 +7,14 @@ import (
 	"log/slog"
 	"sort"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"path/filepath"
 
 	"github.com/inercia/mitto/internal/appdir"
 	"github.com/inercia/mitto/internal/auxiliary"
+	"github.com/inercia/mitto/internal/coldstart"
 	"github.com/inercia/mitto/internal/config"
 	"github.com/inercia/mitto/internal/mcpserver"
 	"github.com/inercia/mitto/internal/processors"
@@ -164,6 +166,13 @@ type SessionManager struct {
 	// Passed to BackgroundSession via BackgroundSessionConfig on creation/resume.
 	promptParametersResolver func(name, workingDir string) []config.PromptParameter
 
+	// stderrPatternsResolver returns per-agent compiled stderr regex patterns for
+	// a given ACP server name (mitto-k6h). Passed to BackgroundSession via
+	// BackgroundSessionConfig on creation/resume so legacy per-session ACP
+	// processes see the same per-agent patterns as shared processes. Nil means
+	// only the hardcoded baseline applies.
+	stderrPatternsResolver func(acpServer string) *CompiledStderrPatterns
+
 	// onConversationIdle is invoked when a session's agent stops and the session is
 	// idle. Wired to the loop runner to drive event-driven on-completion firing.
 	onConversationIdle func(sessionID string)
@@ -175,7 +184,29 @@ type SessionManager struct {
 	// startup work and releases it when done.  Secondary goroutines that coalesce onto
 	// the same session via pendingResumes never need to acquire the semaphore.
 	resumeSemaphore chan struct{}
+
+	// resumeInFlight counts callers CURRENTLY holding a resumeSemaphore permit.
+	// resumeQueued counts callers CURRENTLY blocked waiting to acquire one.
+	// Both are touched ONLY on the slow path that actually reaches the semaphore;
+	// the pendingResumes fast-coalesce return bypasses the semaphore and MUST NOT
+	// touch these counters (mitto-7o2).
+	resumeInFlight atomic.Int32
+	resumeQueued   atomic.Int32
+
+	// resumeStormLogMu guards lastResumeStormLog. Kept separate from sm.mu so the
+	// rate-limiter never contends with the manager's main lock (mitto-7o2).
+	resumeStormLogMu   sync.Mutex
+	lastResumeStormLog time.Time
 }
+
+// resumeStormLogInterval is the minimum wall-clock gap between successive
+// "resume storm" WARN logs. Set high enough that a burst of concurrent
+// handshakes still produces at most one line per event (mitto-7o2).
+const resumeStormLogInterval = 10 * time.Second
+
+// resumeStormWaitThresholdMs is the semaphore-wait threshold (in milliseconds)
+// above which a single acquire counts as a storm sample (mitto-7o2).
+const resumeStormWaitThresholdMs = 2000
 
 // NewSessionManager creates a new session manager with a single workspace configuration.
 // This is used when running from CLI with explicit --acp-command and --acp-server flags.
@@ -190,7 +221,7 @@ func NewSessionManager(acpCommand, acpServer string, autoApprove bool, logger *s
 	reg := newWorkspaceRegistry(logger, false, nil)
 	reg.defaultWorkspace = defaultWS
 
-	return &SessionManager{
+	sm := &SessionManager{
 		sessions:                  make(map[string]*BackgroundSession),
 		pendingResumes:            make(map[string]*pendingResumeResult),
 		logger:                    logger,
@@ -203,6 +234,13 @@ func NewSessionManager(acpCommand, acpServer string, autoApprove bool, logger *s
 		mcpToolsFetchedWorkspaces: make(map[string]bool),
 		resumeSemaphore:           make(chan struct{}, maxConcurrentSessionResumes),
 	}
+	// Cold-start diagnostics (mitto-3mv): expose concurrent prompting count as
+	// the "concurrent_prompting" contention counter. Overwrites any previously
+	// registered provider — last constructor wins, matching typical single-manager
+	// deployments; tests that construct multiple managers still see a plausible
+	// (albeit non-deterministic) counter.
+	coldstart.SetPromptingCounter(sm.ConcurrentPromptingCount)
+	return sm
 }
 
 // SessionManagerOptions contains options for creating a SessionManager.
@@ -237,7 +275,7 @@ func NewSessionManagerWithOptions(opts SessionManagerOptions) *SessionManager {
 		}
 	}
 
-	return &SessionManager{
+	sm := &SessionManager{
 		sessions:                  make(map[string]*BackgroundSession),
 		pendingResumes:            make(map[string]*pendingResumeResult),
 		logger:                    opts.Logger,
@@ -251,6 +289,9 @@ func NewSessionManagerWithOptions(opts SessionManagerOptions) *SessionManager {
 		mcpToolsFetchedWorkspaces: make(map[string]bool),
 		resumeSemaphore:           make(chan struct{}, maxConcurrentSessionResumes),
 	}
+	// Cold-start diagnostics (mitto-3mv): see NewSessionManager for rationale.
+	coldstart.SetPromptingCounter(sm.ConcurrentPromptingCount)
+	return sm
 }
 
 // SetGlobalConversations sets the global conversation processing configuration.
@@ -543,6 +584,125 @@ func (sm *SessionManager) GetWorkspaceAllProcessorDirs(workingDir string) []stri
 	return sm.wsRegistry.GetWorkspaceAllProcessorDirs(workingDir)
 }
 
+// ApplyOnCloseProcessors runs the conversationClosed processor pipeline for a session
+// being archived. It resolves the session's working directory and workspace from the
+// store (the live BackgroundSession is typically already gone by the time archive
+// completes), builds the workspace-scoped processor manager, wires the async
+// PromptFunc via the auxiliary manager, and invokes Manager.ApplyOnClose in a
+// background goroutine.
+//
+// This is fire-and-forget: the call returns immediately. Individual processor
+// failures are logged but never propagated. It is a no-op when there is no store,
+// no processor manager, or when the session metadata cannot be read.
+func (sm *SessionManager) ApplyOnCloseProcessors(sessionID string, reason string) {
+	if sm == nil {
+		return
+	}
+
+	sm.mu.RLock()
+	store := sm.store
+	globalMgr := sm.processorManager
+	auxMgr := sm.auxiliaryManager
+	pm := sm.acpProcessManager
+	logger := sm.logger
+	sm.mu.RUnlock()
+
+	if store == nil || globalMgr == nil || sessionID == "" {
+		return
+	}
+
+	meta, err := store.GetMetadata(sessionID)
+	if err != nil {
+		if logger != nil {
+			logger.Warn("close-phase: failed to read session metadata; skipping",
+				"session_id", sessionID, "error", err)
+		}
+		return
+	}
+
+	workingDir := meta.WorkingDir
+	archivedAt := meta.ArchivedAt
+
+	// Metadata does not store the workspace UUID; look it up from the workspace
+	// registry via working dir + ACP server, falling back to a working-dir-only match.
+	var workspaceUUID string
+	if ws := sm.wsRegistry.GetWorkspaceByDirAndACP(workingDir, meta.ACPServer); ws != nil {
+		workspaceUUID = ws.UUID
+	} else if ws := sm.wsRegistry.GetWorkspace(workingDir); ws != nil {
+		workspaceUUID = ws.UUID
+	}
+
+	// Pre-check: if the workspace's shared ACP process is already gone (typically
+	// reaped by GC Tier 2 hours after the last session went idle), skip the
+	// entire close pipeline. Prompt-mode close processors would otherwise fail
+	// downstream in getOrCreateAuxiliarySession with "no shared process for
+	// workspace ..." and log a noisy ERROR. Command-mode processors also skip
+	// here — the trade-off is intentional (mitto-6bn.1) since all current
+	// on-close processors are prompt-mode. The stable "reason" tag makes this
+	// event grep-able for occurrence measurement.
+	if pm != nil && workspaceUUID != "" && !pm.HasLiveProcess(workspaceUUID) {
+		if logger != nil {
+			logger.Info("close-phase processors skipped: workspace shared process not running",
+				"session_id", sessionID,
+				"workspace_uuid", workspaceUUID,
+				"archive_reason", reason,
+				"reason", "process_reaped_before_close",
+			)
+		}
+		return
+	}
+
+	// Build the workspace-merged processor manager (global + workspace-local).
+	procMgr := sm.loadWorkspaceProcessors(globalMgr, workingDir)
+	if procMgr == nil {
+		return
+	}
+
+	// Apply workspace-level enabled overrides and collect per-processor arg overrides.
+	var procArgOverrides map[string]map[string]string
+	if overrides := sm.GetWorkspaceProcessorOverrides(workingDir); len(overrides) > 0 {
+		procMgr = procMgr.CloneWithEnabledOverrides(overrides)
+		procArgOverrides = buildProcessorArgOverrides(overrides)
+	}
+
+	// Wire the fire-and-forget prompt dispatcher for prompt-mode processors.
+	if auxMgr != nil {
+		procMgr.SetPromptFunc(func(ctx context.Context, wsUUID, processorName, prompt string) error {
+			return auxMgr.PromptProcessorAsync(ctx, wsUUID, processorName, prompt)
+		})
+	}
+
+	input := processors.CloseProcessorInput{
+		SessionID:             sessionID,
+		SessionDir:            store.SessionDir(sessionID),
+		WorkspaceUUID:         workspaceUUID,
+		WorkingDir:            workingDir,
+		ArchiveReason:         reason,
+		ArchivedAt:            archivedAt,
+		ProcessorArgOverrides: procArgOverrides,
+	}
+
+	// Pin the workspace so GC Tier 2/4/6 cannot tear down the shared ACP
+	// process while a fire-and-forget close-phase processor is still
+	// dispatching to an auxiliary session on it. The pin auto-expires after
+	// 15 minutes (bounds the close pipeline timeout below) so a wedged
+	// processor cannot leak a permanent pin (mitto-4is).
+	if pm != nil && workspaceUUID != "" {
+		pm.PinWorkspace(workspaceUUID, "conversation_closed_processors", 15*time.Minute, 0)
+	}
+
+	// Run the close pipeline off the archive request goroutine so command-mode
+	// processors do not stall the HTTP response.
+	go func() {
+		// Bound the whole close pipeline to a conservative window so a stuck
+		// command-mode processor cannot leak a goroutine indefinitely. Each
+		// individual processor still enforces its own configured timeout.
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+		defer cancel()
+		procMgr.ApplyOnClose(ctx, input)
+	}()
+}
+
 // loadWorkspaceProcessors clones the processor manager with workspace-specific
 // processors loaded from .mitto/processors/ and any processors_dirs in .mittorc.
 // Returns the original manager if no workspace processors are found.
@@ -629,6 +789,13 @@ func (sm *SessionManager) IsFromCLI() bool {
 	return sm.wsRegistry.IsFromCLI()
 }
 
+// WorkspaceRegistry returns the underlying workspace registry for read-only
+// diagnostics (e.g. startup duplication lint). Do not mutate registry state
+// through this accessor.
+func (sm *SessionManager) WorkspaceRegistry() *WorkspaceRegistry {
+	return sm.wsRegistry
+}
+
 // SetStore sets the session store for persistence.
 func (sm *SessionManager) SetStore(store *session.Store) {
 	sm.mu.Lock()
@@ -701,6 +868,28 @@ func (sm *SessionManager) SetPreferredModelsResolver(resolver func(name, working
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 	sm.preferredModelsResolver = resolver
+}
+
+// SetStderrPatternsResolver sets the function used to resolve per-agent compiled
+// stderr regex patterns for a given ACP server name (mitto-k6h). The resolver is
+// passed to every new and resumed BackgroundSession via BackgroundSessionConfig.
+func (sm *SessionManager) SetStderrPatternsResolver(resolver func(acpServer string) *CompiledStderrPatterns) {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	sm.stderrPatternsResolver = resolver
+}
+
+// resolveStderrPatterns looks up compiled per-agent stderr regex patterns for
+// the given ACP server name (mitto-k6h). Returns nil if no resolver is set or
+// the resolver returned nil (baseline patterns only).
+func (sm *SessionManager) resolveStderrPatterns(acpServer string) *CompiledStderrPatterns {
+	sm.mu.RLock()
+	r := sm.stderrPatternsResolver
+	sm.mu.RUnlock()
+	if r == nil {
+		return nil
+	}
+	return r(acpServer)
 }
 
 // SetPromptParametersResolver sets the function used to resolve a prompt name to its declared parameter list.
@@ -897,6 +1086,31 @@ func (sm *SessionManager) BroadcastSessionRenamed(sessionID string, newName stri
 	}
 }
 
+// BroadcastSessionBeadsIssueUpdated broadcasts a session_beads_issue_updated
+// event to all connected clients. This is called when a session's linked
+// beads issue ID changes (via REST PATCH or MCP tools).
+func (sm *SessionManager) BroadcastSessionBeadsIssueUpdated(sessionID string, beadsIssue string) {
+	sm.mu.RLock()
+	em := sm.eventsManager
+	sm.mu.RUnlock()
+
+	if em == nil {
+		return
+	}
+
+	em.Broadcast(WSMsgTypeSessionBeadsIssueUpdated, map[string]string{
+		"session_id":  sessionID,
+		"beads_issue": beadsIssue,
+	})
+
+	if sm.logger != nil {
+		sm.logger.Debug("Broadcast session beads_issue updated",
+			"session_id", sessionID,
+			"beads_issue", beadsIssue,
+			"clients", em.ClientCount())
+	}
+}
+
 // BroadcastLoopUpdated broadcasts a loop_updated event to all connected clients.
 // This is called when a session's loop config changes (e.g., via MCP tools).
 func (sm *SessionManager) BroadcastLoopUpdated(sessionID string, loop *session.LoopPrompt) {
@@ -962,6 +1176,15 @@ func (sm *SessionManager) IsStreaming(sessionID string) bool {
 	sm.streamingMu.RLock()
 	defer sm.streamingMu.RUnlock()
 	return sm.streaming[sessionID]
+}
+
+// ConcurrentPromptingCount returns the number of sessions currently prompting
+// (their agents are actively streaming). Used by cold-start diagnostics
+// (mitto-3mv) to attribute host contention to concurrent prompt load.
+func (sm *SessionManager) ConcurrentPromptingCount() int {
+	sm.streamingMu.RLock()
+	defer sm.streamingMu.RUnlock()
+	return len(sm.streaming)
 }
 
 // childArchiveTimeout is the timeout for gracefully closing child sessions when a parent is archived.
@@ -1365,6 +1588,14 @@ func (sm *SessionManager) CreateSessionWithWorkspace(ctx context.Context, name, 
 	// Build available ACP servers list for this workspace folder (used in @mitto:variable substitution).
 	availableServers := sm.buildAvailableACPServers(workingDir, acpServer)
 
+	// Resolve the per-workspace initial-model preference (InitialModelProfile /
+	// InitialModelTag) as an ordered PromptPreferredModel list. Only applied to
+	// fresh top-level sessions (this create path); auto-children go through
+	// ResumeSessionWithModelConstraint which leaves this nil. BackgroundSession
+	// no-ops when the session is resumed with a persisted BaselineModel or when
+	// the workspace has an ACP-server constraint on the model category.
+	initialModelPref := effectiveWs.GetInitialModelPreference()
+
 	newBsStart := time.Now()
 	bs, err := NewBackgroundSession(BackgroundSessionConfig{
 		PersistedID:                    "",  // Empty = generate fresh
@@ -1387,6 +1618,7 @@ func (sm *SessionManager) CreateSessionWithWorkspace(ctx context.Context, name, 
 		APIPrefix:                      sm.apiPrefix,
 		WorkspaceUUID:                  workspaceUUID,
 		MittoConfig:                    sm.mittoConfig,   // Pass config for default flags
+		InitialModelPreference:         initialModelPref, // Per-workspace initial-model preference (applied on fresh sessions)
 		AvailableACPServers:            availableServers, // Pre-computed workspace server list
 		GlobalMCPServer:                sm.mcpServer,
 		AuxiliaryManager:               sm.auxiliaryManager,
@@ -1395,6 +1627,7 @@ func (sm *SessionManager) CreateSessionWithWorkspace(ctx context.Context, name, 
 		PromptResolver:                 sm.promptResolver,           // Named prompt resolver (resolves prompt name → text)
 		PreferredModelsResolver:        sm.preferredModelsResolver,  // Named prompt resolver (resolves prompt name → preferredModels)
 		PromptParametersResolver:       sm.promptParametersResolver, // Named prompt resolver (resolves prompt name → parameters)
+		StderrPatterns:                 sm.resolveStderrPatterns(acpServer),
 		OnTurnIdle: func(sessionID string) {
 			sm.mu.RLock()
 			cb := sm.onConversationIdle
@@ -1610,13 +1843,67 @@ func (sm *SessionManager) GetOrCreateSession(sessionID, workingDir string) (*Bac
 	return bs, true, nil
 }
 
+// evaluateResumeStorm returns true when the current resume-semaphore state
+// looks like a storm worth logging: either a single acquire waited noticeably
+// (>= resumeStormWaitThresholdMs) or callers are backed up past the semaphore
+// capacity. Pure function — no side effects, no locks — so it is trivially
+// unit-testable (mitto-7o2).
+func evaluateResumeStorm(queued, inFlight, capacity, coldCount int, waitMS int64) bool {
+	_ = inFlight
+	_ = coldCount
+	if waitMS >= resumeStormWaitThresholdMs {
+		return true
+	}
+	if capacity > 0 && queued > capacity {
+		return true
+	}
+	return false
+}
+
+// shouldEmitResumeStormLog returns true at most once per resumeStormLogInterval.
+// Thread-safe: uses its own mutex to avoid contending with sm.mu (mitto-7o2).
+func (sm *SessionManager) shouldEmitResumeStormLog() bool {
+	sm.resumeStormLogMu.Lock()
+	defer sm.resumeStormLogMu.Unlock()
+	now := time.Now()
+	if !sm.lastResumeStormLog.IsZero() && now.Sub(sm.lastResumeStormLog) < resumeStormLogInterval {
+		return false
+	}
+	sm.lastResumeStormLog = now
+	return true
+}
+
+// resetResumeStormRateLimit clears lastResumeStormLog so a subsequent
+// shouldEmitResumeStormLog call returns true immediately. Test-only helper
+// (mitto-7o2).
+func (sm *SessionManager) resetResumeStormRateLimit(_ testingTB) {
+	sm.resumeStormLogMu.Lock()
+	sm.lastResumeStormLog = time.Time{}
+	sm.resumeStormLogMu.Unlock()
+}
+
+// testingTB is the subset of testing.TB used by the test-only helper above.
+// Declared locally to avoid importing "testing" in a non-test file.
+type testingTB interface {
+	Helper()
+}
+
 // ResumeSession resumes an existing persisted session by creating a new ACP process.
 // This is used when switching to an old conversation. If the agent supports session
 // loading and we have a stored ACP session ID, we attempt to resume the ACP session
 // on the server side as well. Otherwise, we create a new ACP connection and continue
 // using the same persisted session ID for recording.
 func (sm *SessionManager) ResumeSession(sessionID, sessionName, workingDir string) (*BackgroundSession, error) {
-	return sm.resumeSessionWithConstraint(sessionID, sessionName, workingDir, nil)
+	return sm.resumeSessionWithConstraint(sessionID, sessionName, workingDir, nil, true)
+}
+
+// ResumeSessionBackground resumes a persisted session like ResumeSession but marks
+// the resume as non-foreground (background). On a COLD shared ACP process the
+// LoadSession is deferred until the process warms (mcpInitDone), so the user's
+// foreground session/new wins the agent's event loop first (mitto-54k.4). Used by
+// the WebSocket cold-start resume fan-out.
+func (sm *SessionManager) ResumeSessionBackground(sessionID, sessionName, workingDir string) (*BackgroundSession, error) {
+	return sm.resumeSessionWithConstraint(sessionID, sessionName, workingDir, nil, false)
 }
 
 // ResumeSessionWithModelConstraint resumes an existing persisted session like ResumeSession,
@@ -1624,7 +1911,7 @@ func (sm *SessionManager) ResumeSession(sessionID, sessionName, workingDir strin
 // auto-selection constraint (mitto-9x8). Used by auto-children to apply a per-child initial
 // model profile. Pass nil to preserve the default ACP-server-derived model selection.
 func (sm *SessionManager) ResumeSessionWithModelConstraint(sessionID, sessionName, workingDir string, modelConstraint *config.ACPServerConstraint) (*BackgroundSession, error) {
-	return sm.resumeSessionWithConstraint(sessionID, sessionName, workingDir, modelConstraint)
+	return sm.resumeSessionWithConstraint(sessionID, sessionName, workingDir, modelConstraint, true)
 }
 
 // resumeSessionWithConstraint resumes an existing persisted session by creating a new ACP
@@ -1632,7 +1919,7 @@ func (sm *SessionManager) ResumeSessionWithModelConstraint(sessionID, sessionNam
 // loading and we have a stored ACP session ID, we attempt to resume the ACP session
 // on the server side as well. Otherwise, we create a new ACP connection and continue
 // using the same persisted session ID for recording.
-func (sm *SessionManager) resumeSessionWithConstraint(sessionID, sessionName, workingDir string, modelConstraint *config.ACPServerConstraint) (*BackgroundSession, error) {
+func (sm *SessionManager) resumeSessionWithConstraint(sessionID, sessionName, workingDir string, modelConstraint *config.ACPServerConstraint, foreground bool) (*BackgroundSession, error) {
 	// Clear GC-suspended flag — any explicit resume (ensure_resumed, loop runner,
 	// queue processing) should allow the session to run. This must happen before the
 	// "already running" check to avoid stale flags.
@@ -1686,166 +1973,7 @@ func (sm *SessionManager) resumeSessionWithConstraint(sessionID, sessionName, wo
 	globalConv := sm.globalConversations
 	procMgr := sm.processorManager
 
-	// Determine ACP command, cwd, server, and workspace UUID from workspace configuration.
-	// Command/cwd/env are always resolved from global ACP server config at runtime via
-	// resolveWorkspaceACPLocked; ACPCommandOverride (per-workspace) takes priority.
-	var acpCommand, acpCwd, acpServer, workspaceUUID string
-	var acpEnv map[string]string
-	// Try to find a workspace by working directory. If the session metadata later
-	// identifies a specific ACP server, this provisional choice will be replaced
-	// with the exact workspace for that server.
-	var foundWs *config.WorkspaceSettings
-	foundWs = sm.wsRegistry.GetWorkspaceByDirAndACP(workingDir, "")
-	if foundWs != nil {
-		acpCommand, acpCwd, acpEnv = sm.wsRegistry.ResolveWorkspaceACP(foundWs)
-		acpServer = foundWs.ACPServer
-		workspaceUUID = foundWs.UUID
-	} else {
-		defWs := sm.wsRegistry.GetDefaultWorkspace()
-		if defWs != nil {
-			acpCommand, acpCwd, acpEnv = sm.wsRegistry.ResolveWorkspaceACP(defWs)
-			acpServer = defWs.ACPServer
-			workspaceUUID = defWs.UUID
-		}
-	}
-
-	// Get session metadata for ACP session ID and server name
-	var acpSessionID string
-	if store != nil {
-		if meta, err := store.GetMetadata(sessionID); err == nil {
-			// Get ACP session ID for potential resumption
-			acpSessionID = meta.ACPSessionID
-
-			// On the final retry attempt before archiving, skip ACP session resume
-			// and try a fresh session instead. The resume itself may be causing the failure.
-			if meta.ACPStartFailureCount >= ACPStartFailureThreshold-1 && acpSessionID != "" {
-				if sm.logger != nil {
-					sm.logger.Info("Final retry: skipping ACP resume, trying fresh session",
-						"session_id", sessionID,
-						"failure_count", meta.ACPStartFailureCount,
-						"threshold", ACPStartFailureThreshold)
-				}
-				acpSessionID = ""
-			}
-
-			// IMPORTANT: Use ACP server from session metadata, not workspace config.
-			// The session was created with a specific ACP server, and resuming it
-			// should use the same server regardless of current workspace defaults.
-			// Only fall back to workspace config if metadata doesn't have the server.
-			if meta.ACPServer != "" {
-				acpServer = meta.ACPServer
-
-				// IMPORTANT: Re-resolve the workspace using BOTH working directory and
-				// ACP server. The provisional workspace chosen above may point to the
-				// same directory but a different ACP server, which would incorrectly
-				// reuse the wrong shared ACP process.
-				foundWs = sm.wsRegistry.resolveWorkspaceForACP(workingDir, acpServer)
-				if foundWs != nil {
-					workspaceUUID = foundWs.UUID
-					// Resolve command/cwd/env from the re-resolved workspace.
-					// ResolveWorkspaceACP applies ACPCommandOverride if set,
-					// otherwise looks up from global config.
-					acpCommand, acpCwd, acpEnv = sm.wsRegistry.ResolveWorkspaceACP(foundWs)
-					if sm.logger != nil && foundWs.ACPCommandOverride != "" {
-						sm.logger.Debug("Using workspace command override",
-							"session_id", sessionID,
-							"acp_server", acpServer,
-							"acp_command", acpCommand,
-							"acp_command_override", foundWs.ACPCommandOverride)
-					} else if sm.logger != nil {
-						sm.logger.Debug("Using ACP command from session metadata server",
-							"session_id", sessionID,
-							"acp_server", acpServer,
-							"acp_command", acpCommand)
-					}
-				} else {
-					// No workspace matches the session's stored ACP server. Two cases:
-					//   1. The server still exists in global config but no workspace
-					//      references it — resolve the command directly from config and
-					//      keep the stored agent (but disable shared workspace resolution,
-					//      since no workspace owns it).
-					//   2. The server was renamed or removed (orphaned conversation) —
-					//      rescue it by adopting a workspace configured for the same
-					//      working directory, so the conversation remains resumable
-					//      instead of failing with "empty command".
-					workspaceUUID = ""
-
-					var serverExists bool
-					if sm.mittoConfig != nil {
-						if server, err := sm.mittoConfig.GetServer(acpServer); err == nil {
-							acpCommand = server.Command
-							acpCwd = server.Cwd
-							acpEnv = server.Env
-							serverExists = true
-						}
-					}
-
-					if serverExists {
-						// Case 1: stored server still configured, just no workspace owns
-						// it. Do NOT keep a mismatched workspace from the same directory,
-						// otherwise shared ACP process lookup can mix different agents.
-						if sm.logger != nil {
-							sm.logger.Warn("No matching workspace for resumed session ACP server; disabling shared workspace resolution",
-								"session_id", sessionID,
-								"working_dir", workingDir,
-								"acp_server", acpServer)
-						}
-					} else {
-						// Case 2: orphaned conversation — the stored ACP server no longer
-						// exists in config. Rescue it by adopting any workspace configured
-						// for the same working directory. We fully adopt the rescue
-						// workspace's identity (server name + command), so shared ACP
-						// process lookup stays consistent and does not mix agents.
-						rescueWs := sm.wsRegistry.resolveWorkspaceForACP(workingDir, "")
-						var rescueCmd, rescueCwd string
-						var rescueEnv map[string]string
-						if rescueWs != nil {
-							rescueCmd, rescueCwd, rescueEnv = sm.wsRegistry.ResolveWorkspaceACP(rescueWs)
-						}
-						if rescueWs != nil && rescueCmd != "" {
-							foundWs = rescueWs
-							workspaceUUID = rescueWs.UUID
-							acpCommand, acpCwd, acpEnv = rescueCmd, rescueCwd, rescueEnv
-							if sm.logger != nil {
-								sm.logger.Warn("Orphaned conversation: stored ACP server not found in config; rescuing with a workspace for the same folder",
-									"session_id", sessionID,
-									"working_dir", workingDir,
-									"missing_acp_server", acpServer,
-									"rescued_acp_server", rescueWs.ACPServer)
-							}
-							acpServer = rescueWs.ACPServer
-							// Persist the rescued ACP server name so the next resume resolves
-							// directly instead of re-rescuing (and re-emitting the orphaned WARN)
-							// on every loop/queue sweep. Best-effort: a failure here does not
-							// block the resume itself.
-							if store != nil {
-								if err := store.UpdateMetadata(sessionID, func(m *session.Metadata) {
-									m.ACPServer = rescueWs.ACPServer
-								}); err != nil && sm.logger != nil {
-									sm.logger.Warn("Failed to persist rescued ACP server name to metadata",
-										"session_id", sessionID,
-										"rescued_acp_server", rescueWs.ACPServer,
-										"error", err)
-								}
-							}
-						} else {
-							// Nothing to rescue with — no workspace for this folder.
-							// Leave the command empty; resume will fail with a clear error.
-							acpCommand = ""
-							acpCwd = ""
-							acpEnv = nil
-							if sm.logger != nil {
-								sm.logger.Warn("Orphaned conversation: stored ACP server not found and no workspace for folder; cannot resume",
-									"session_id", sessionID,
-									"working_dir", workingDir,
-									"acp_server", acpServer)
-							}
-						}
-					}
-				}
-			}
-		}
-	}
+	acpServer, acpCommand, acpCwd, acpEnv, workspaceUUID, foundWs, acpSessionID, _ := sm.resolveResumeTargetLocked(sessionID, workingDir, store)
 	sm.mu.Unlock()
 
 	// signalDone stores the resume result in pr and unblocks any goroutines that are
@@ -1980,10 +2108,75 @@ func (sm *SessionManager) resumeSessionWithConstraint(sessionID, sessionName, wo
 			"session_id", sessionID,
 			"max_concurrent", maxConcurrentSessionResumes)
 	}
+	// Fix D (mitto-54k.4): on a COLD shared ACP process, defer a BACKGROUND
+	// (non-foreground) resume's LoadSession until the process's MCP handshake has
+	// completed, so the user's foreground session/new wins the agent's single event
+	// loop first. Do this BEFORE acquiring resumeSemaphore so a waiting background
+	// resume never blocks a foreground one. Bounded by the process's own cold-load
+	// budget so background sessions are never stranded if the process never warms;
+	// getSharedProcess is idempotent so the later call reuses the same instance.
+	if !foreground {
+		if warmGate := sm.getSharedProcess(foundWs, acpCommand, acpCwd, acpEnv, r); warmGate != nil && !warmGate.MCPInitDone() {
+			if waitBudget := warmGate.RecommendedLoadTimeout(true); waitBudget > 0 {
+				waitCtx, waitCancel := context.WithTimeout(context.Background(), waitBudget)
+				warmed := warmGate.WaitForMCPInit(waitCtx)
+				waitCancel()
+				if sm.logger != nil {
+					sm.logger.Debug("Deferred background resume until shared process warm (mitto-54k.4)",
+						"session_id", sessionID,
+						"warmed", warmed,
+						"wait_budget", waitBudget)
+				}
+			}
+		}
+	}
+	// Cold-start diagnostics (mitto-3mv): time the resume-semaphore wait so the
+	// contribution of concurrency-bound queueing is visible in logs alongside the
+	// per-session cold-start trace begun inside ResumeBackgroundSession.
+	// Gauge accounting (mitto-7o2): track queued/in-flight callers around the
+	// slow-path acquire. The pendingResumes fast-coalesce path above returns
+	// before reaching here and MUST NOT touch these counters.
+	sm.resumeQueued.Add(1)
+	semWaitStart := time.Now()
 	sm.resumeSemaphore <- struct{}{}
+	semWait := time.Since(semWaitStart)
+	sm.resumeQueued.Add(-1)
+	sm.resumeInFlight.Add(1)
+
+	// Storm detection (mitto-7o2): emit at most one WARN per 10s window when
+	// callers are backed up or a single acquire waited noticeably long. The
+	// existing per-acquire Debug log below stays as the fine-grained trace.
+	waitMS := semWait.Milliseconds()
+	queued := int(sm.resumeQueued.Load())
+	inFlight := int(sm.resumeInFlight.Load())
+	coldCount := 0
+	sm.mu.RLock()
+	pm := sm.acpProcessManager
+	sm.mu.RUnlock()
+	if pm != nil {
+		coldCount = pm.ColdProcessCount()
+	}
+	if evaluateResumeStorm(queued, inFlight, maxConcurrentSessionResumes, coldCount, waitMS) && sm.shouldEmitResumeStormLog() {
+		if sm.logger != nil {
+			sm.logger.Warn("resume storm",
+				"queued", queued,
+				"in_flight", inFlight,
+				"sem_capacity", maxConcurrentSessionResumes,
+				"cold_processes", coldCount,
+				"sem_wait_ms", waitMS,
+				"session_id", sessionID,
+				"foreground", foreground,
+				"working_dir", workingDir)
+		}
+	}
+
 	if sm.logger != nil {
 		sm.logger.Debug("Acquired session-resume semaphore, starting ACP",
-			"session_id", sessionID)
+			"session_id", sessionID,
+			"sem_wait_ms", waitMS,
+			"sem_permits", maxConcurrentSessionResumes,
+			"sem_in_use", len(sm.resumeSemaphore),
+			"foreground", foreground)
 	}
 
 	// Resolve shared ACP process for this workspace (if shared mode is enabled).
@@ -2007,6 +2200,7 @@ func (sm *SessionManager) resumeSessionWithConstraint(sessionID, sessionName, wo
 		// provides the safety net so the goroutine doesn't block indefinitely if the ACP
 		// agent is busy.
 		PersistedID:                    sessionID,
+		ColdStartSemWait:               semWait, // mitto-3mv: attribute queueing wait to trace
 		ACPCommand:                     acpCommand,
 		ACPCwd:                         acpCwd,
 		Env:                            acpEnv,
@@ -2035,6 +2229,7 @@ func (sm *SessionManager) resumeSessionWithConstraint(sessionID, sessionName, wo
 		PromptResolver:                 sm.promptResolver,           // Named prompt resolver (resolves prompt name → text)
 		PreferredModelsResolver:        sm.preferredModelsResolver,  // Named prompt resolver (resolves prompt name → preferredModels)
 		PromptParametersResolver:       sm.promptParametersResolver, // Named prompt resolver (resolves prompt name → parameters)
+		StderrPatterns:                 sm.resolveStderrPatterns(acpServer),
 		OnTurnIdle: func(sessionID string) {
 			sm.mu.RLock()
 			cb := sm.onConversationIdle
@@ -2120,6 +2315,7 @@ func (sm *SessionManager) resumeSessionWithConstraint(sessionID, sessionName, wo
 	// Releasing here (rather than at the end of the function) lets the next queued
 	// goroutine start its ACP session while we do fast post-startup bookkeeping.
 	<-sm.resumeSemaphore
+	sm.resumeInFlight.Add(-1) // mitto-7o2: paired with the +1 after acquire.
 	if sm.logger != nil {
 		sm.logger.Debug("Released session-resume semaphore",
 			"session_id", sessionID,
@@ -2127,6 +2323,22 @@ func (sm *SessionManager) resumeSessionWithConstraint(sessionID, sessionName, wo
 	}
 
 	if err != nil {
+		// mitto-54k.6: a cold-start MCP-init timeout is TRANSIENT on a shared
+		// ACP process (warm-once barrier mitto-54k.3 succeeds on a retry once
+		// the process warms). Do NOT count it toward the hard ACP-start failure
+		// threshold and do NOT auto-archive; a later resume attempt (interactive
+		// or MCP auto-resume) will succeed. Genuine permanent failures (missing
+		// binary, broken MCP server on a WARM process, etc.) still fall through
+		// to the counter/archive logic below.
+		if IsMCPInitTimeout(err) {
+			if sm.logger != nil {
+				sm.logger.Warn("Resume hit transient cold-start MCP-init timeout; not counting as hard failure (will retry when warm)",
+					"session_id", sessionID,
+					"foreground", foreground)
+			}
+			signalDone(nil, err)
+			return nil, err
+		}
 		// Persist the failure count and auto-archive if threshold is reached.
 		if store != nil {
 			var failureCount int
@@ -2242,6 +2454,11 @@ func (sm *SessionManager) CloseSession(sessionID, reason string) {
 				"reason", reason)
 		}
 	}
+
+	// mitto-clc: the proactive re-warm-on-last-session-deleted trigger
+	// (mitto-54k.7) was inactivated. The next new conversation cold-starts
+	// through NewSession normally instead of piling a preemptive keepalive
+	// session onto a workspace we just decided to release.
 }
 
 // ApplyACPServerRenames updates persisted sessions that reference renamed/removed ACP servers.
@@ -2677,6 +2894,7 @@ func (sm *SessionManager) GetSessionInfoByWorkspace() map[string][]SessionInfo {
 			LastObserverRemovedAt:  bs.LastObserverRemovedAt(),
 			LastActivityAt:         bs.LastActivityAt(),
 			LastResponseCompleteAt: bs.GetLastResponseCompleteTime(),
+			LastStreamActivityAt:   bs.LastStreamActivityAt(),
 		})
 	}
 	return result

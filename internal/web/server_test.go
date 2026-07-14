@@ -1,8 +1,11 @@
 package web
 
 import (
+	"bytes"
 	"log/slog"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/inercia/mitto/internal/config"
 	"github.com/inercia/mitto/internal/conversation"
@@ -348,4 +351,157 @@ func TestBuildLoopUpdatedData_StoppedReasonPresent(t *testing.T) {
 	if data["trigger"] != "schedule" {
 		t.Errorf("trigger = %v, want %q when stopped", data["trigger"], "schedule")
 	}
+}
+
+// =============================================================================
+// BroadcastACPStarted / BroadcastACPStopped dedupe tests
+// =============================================================================
+
+// newBroadcastTestServer builds a minimal Server with a real (empty)
+// GlobalEventsManager and a slog logger writing to buf at Debug level so
+// tests can observe emitted vs suppressed broadcasts by counting log lines.
+func newBroadcastTestServer(t *testing.T) (*Server, *bytes.Buffer) {
+	t.Helper()
+	buf := &bytes.Buffer{}
+	logger := slog.New(slog.NewTextHandler(buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	return &Server{
+		eventsManager: NewGlobalEventsManager(),
+		logger:        logger,
+	}, buf
+}
+
+func countLines(s, substr string) int {
+	n := 0
+	for _, line := range strings.Split(s, "\n") {
+		if strings.Contains(line, substr) {
+			n++
+		}
+	}
+	return n
+}
+
+func TestBroadcastACPStarted_DedupesWithinWindow(t *testing.T) {
+	s, buf := newBroadcastTestServer(t)
+
+	s.BroadcastACPStarted("sess-1")
+	s.BroadcastACPStarted("sess-1")
+	s.BroadcastACPStarted("sess-1")
+
+	out := buf.String()
+	if got := countLines(out, "Broadcast ACP started"); got != 1 {
+		t.Errorf("emitted broadcasts = %d, want 1\nlogs:\n%s", got, out)
+	}
+	if got := countLines(out, "Suppressed duplicate ACP started broadcast"); got != 2 {
+		t.Errorf("suppressed broadcasts = %d, want 2\nlogs:\n%s", got, out)
+	}
+
+	// Different session must not be affected by the recent entry for sess-1.
+	buf.Reset()
+	s.BroadcastACPStarted("sess-2")
+	if got := countLines(buf.String(), "Broadcast ACP started"); got != 1 {
+		t.Errorf("distinct-session broadcast = %d, want 1\nlogs:\n%s", got, buf.String())
+	}
+}
+
+func TestBroadcastACPStopped_DedupesWithinWindow(t *testing.T) {
+	s, buf := newBroadcastTestServer(t)
+
+	s.BroadcastACPStopped("sess-1", "gc_suspended")
+	s.BroadcastACPStopped("sess-1", "gc_suspended")
+	s.BroadcastACPStopped("sess-1", "gc_suspended")
+
+	out := buf.String()
+	if got := countLines(out, "Broadcast ACP stopped"); got != 1 {
+		t.Errorf("emitted broadcasts = %d, want 1\nlogs:\n%s", got, out)
+	}
+	if got := countLines(out, "Suppressed duplicate ACP stopped broadcast"); got != 2 {
+		t.Errorf("suppressed broadcasts = %d, want 2\nlogs:\n%s", got, out)
+	}
+}
+
+func TestBroadcastACPStarted_WindowExpires(t *testing.T) {
+	s, buf := newBroadcastTestServer(t)
+
+	// Seed the map with a stale entry to simulate the window having elapsed
+	// without actually sleeping acpLifecycleWindow.
+	s.recentStartsMu.Lock()
+	s.recentStarts = map[string]time.Time{
+		"sess-1": time.Now().Add(-(acpLifecycleWindow + 100*time.Millisecond)),
+	}
+	s.recentStartsMu.Unlock()
+
+	s.BroadcastACPStarted("sess-1")
+
+	if got := countLines(buf.String(), "Broadcast ACP started"); got != 1 {
+		t.Errorf("post-window broadcast = %d, want 1\nlogs:\n%s", got, buf.String())
+	}
+	if got := countLines(buf.String(), "Suppressed duplicate ACP started broadcast"); got != 0 {
+		t.Errorf("unexpected suppression = %d, want 0\nlogs:\n%s", got, buf.String())
+	}
+}
+
+func TestBroadcastACPStopped_WindowExpires(t *testing.T) {
+	s, buf := newBroadcastTestServer(t)
+
+	s.recentStopsMu.Lock()
+	s.recentStops = map[string]time.Time{
+		"sess-1": time.Now().Add(-(acpLifecycleWindow + 100*time.Millisecond)),
+	}
+	s.recentStopsMu.Unlock()
+
+	s.BroadcastACPStopped("sess-1", "archived")
+
+	if got := countLines(buf.String(), "Broadcast ACP stopped"); got != 1 {
+		t.Errorf("post-window broadcast = %d, want 1\nlogs:\n%s", got, buf.String())
+	}
+}
+
+func TestBroadcastACPStarted_EvictsStaleEntries(t *testing.T) {
+	s, _ := newBroadcastTestServer(t)
+
+	// Seed several stale entries for other sessions plus a fresh one that
+	// should be left alone. A broadcast on a new session should evict all
+	// stale entries but keep the fresh one.
+	stale := time.Now().Add(-(acpLifecycleWindow + time.Second))
+	fresh := time.Now()
+	s.recentStartsMu.Lock()
+	s.recentStarts = map[string]time.Time{
+		"old-a": stale,
+		"old-b": stale,
+		"old-c": stale,
+		"fresh": fresh,
+	}
+	s.recentStartsMu.Unlock()
+
+	s.BroadcastACPStarted("new")
+
+	s.recentStartsMu.Lock()
+	defer s.recentStartsMu.Unlock()
+	if _, ok := s.recentStarts["old-a"]; ok {
+		t.Error("stale entry old-a should have been evicted")
+	}
+	if _, ok := s.recentStarts["old-b"]; ok {
+		t.Error("stale entry old-b should have been evicted")
+	}
+	if _, ok := s.recentStarts["old-c"]; ok {
+		t.Error("stale entry old-c should have been evicted")
+	}
+	if _, ok := s.recentStarts["fresh"]; !ok {
+		t.Error("fresh entry should have been retained")
+	}
+	if _, ok := s.recentStarts["new"]; !ok {
+		t.Error("new entry should have been recorded")
+	}
+}
+
+func TestBroadcastACPStarted_NilEventsManager(t *testing.T) {
+	// Must not panic when eventsManager is nil (mirrors the guard in
+	// BroadcastACPStartFailed).
+	s := &Server{}
+	s.BroadcastACPStarted("sess-1")
+}
+
+func TestBroadcastACPStopped_NilEventsManager(t *testing.T) {
+	s := &Server{}
+	s.BroadcastACPStopped("sess-1", "test")
 }

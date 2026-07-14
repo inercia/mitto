@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math/rand"
 	"reflect"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -13,6 +14,7 @@ import (
 	acp "github.com/coder/acp-go-sdk"
 
 	"github.com/inercia/mitto/internal/config"
+	"github.com/inercia/mitto/internal/conversation"
 )
 
 func TestACPProcessManager_GetOrCreateProcess_RequiresWorkspace(t *testing.T) {
@@ -808,8 +810,9 @@ func TestSetModelAsyncBudgetMath(t *testing.T) {
 }
 
 // TestSetModelAttemptTimeoutSchedule asserts structural invariants of the per-attempt
-// deadline schedule (mitto-f7q): length tied to max-attempts, attempt-1 sized for cold
-// warm-up, total ≤ 25s (unchanged from prior 3×8s), and non-increasing order.
+// deadline schedule (mitto-f7q; attempt-1 lower bound raised for mitto-8qp): length tied
+// to max-attempts, attempt-1 sized above large-context warm-up latency, total bounded so
+// setModelAsyncCallerBudget contention math stays valid, and non-increasing order.
 func TestSetModelAttemptTimeoutSchedule(t *testing.T) {
 	schedule := setSessionModelAttemptTimeouts
 
@@ -818,18 +821,31 @@ func TestSetModelAttemptTimeoutSchedule(t *testing.T) {
 			got, setSessionModelMaxAttempts)
 	}
 
-	// Attempt-1 must be sized above the observed 8s cold-model clamp (p95 evidence).
-	if schedule[0] < 12*time.Second {
-		t.Errorf("attempt-1 timeout = %v, want >= 12s (sized for cold warm-up p95)", schedule[0])
+	// Attempt-1 must be sized above the genuine warm-up latency of large-context models
+	// (e.g. claude-sonnet-5-0-500k, observed >12s). The prior 12s bound was smaller than
+	// that latency, so attempt-1 always timed out and the shrinking retries were guaranteed
+	// to fail (mitto-8qp). 16s leaves headroom above the observed 12s+ warm-up.
+	if schedule[0] < 16*time.Second {
+		t.Errorf("attempt-1 timeout = %v, want >= 16s (sized above large-context warm-up, mitto-8qp)", schedule[0])
 	}
 
-	// Total must not exceed 25s so setModelAsyncCallerBudget contention math is valid.
+	// The schedule sum must stay within the contention bound the async budget can cover
+	// (derived exactly as in TestSetModelAsyncBudgetMath): with N=4 concurrent callers the
+	// expected contention coverage is (N-2)×(scheduleSum + maxJitteredBackoff), and that
+	// must not exceed setModelAsyncCallerBudget. Rearranged: scheduleSum must not exceed
+	// budget/(N-2) − maxJitteredBackoff. This replaces the old fixed 25s cap, which forced
+	// attempt-1 too small to cover real warm-up latency (mitto-8qp).
+	const maxConcurrentCallers = 4
+	maxJitteredBackoff := time.Duration(float64(setSessionModelRetryBaseDelay)*float64(setSessionModelMaxAttempts-1)*(1+setSessionModelRetryJitterRatio)) + setSessionModelRetryBaseDelay
+	maxScheduleSum := setModelAsyncCallerBudget/time.Duration(maxConcurrentCallers-2) - maxJitteredBackoff
+
 	var total time.Duration
 	for _, d := range schedule {
 		total += d
 	}
-	if total > 25*time.Second {
-		t.Errorf("sum(setSessionModelAttemptTimeouts) = %v, want <= 25s (total must not grow)", total)
+	if total > maxScheduleSum {
+		t.Errorf("sum(setSessionModelAttemptTimeouts) = %v, want <= %v (contention bound; setModelAsyncCallerBudget math)",
+			total, maxScheduleSum)
 	}
 
 	// Timeouts must be non-increasing (front-loaded for cold start).
@@ -839,6 +855,74 @@ func TestSetModelAttemptTimeoutSchedule(t *testing.T) {
 				i+1, schedule[i], i, schedule[i-1])
 		}
 	}
+}
+
+// simulateSetModelRetryLoop mirrors the per-attempt deadline decision of
+// SharedACPProcess.SetSessionModel: each attempt is granted setSessionModelAttemptTimeouts[i]
+// of budget, an attempt "succeeds" only when the model's real warm-up latency fits within
+// that attempt's budget, and the whole call must complete within outerBudget. It returns
+// the 1-based attempt number that succeeded, or 0 if all attempts timed out / the outer
+// budget was exhausted. Pure (no real sleeps) so the schedule's behavioural contract can
+// be unit-tested deterministically.
+func simulateSetModelRetryLoop(rpcLatency, outerBudget time.Duration) (succeededAttempt int) {
+	var elapsed time.Duration
+	for attempt := 1; attempt <= setSessionModelMaxAttempts; attempt++ {
+		perAttempt := setSessionModelAttemptTimeouts[attempt-1]
+		// The attempt is bounded by both its own per-attempt deadline and the remaining
+		// outer budget (context.WithTimeout(ctx, perAttempt) with ctx carrying outerBudget).
+		remaining := outerBudget - elapsed
+		if remaining <= 0 {
+			return 0
+		}
+		effective := perAttempt
+		if remaining < effective {
+			effective = remaining
+		}
+		if rpcLatency <= effective {
+			return attempt // RPC completed within this attempt's budget.
+		}
+		// Attempt timed out after consuming its effective budget.
+		elapsed += effective
+	}
+	return 0
+}
+
+// TestSetModelSchedule_LargeContextModelSucceedsWithinOuterBudget reproduces mitto-8qp:
+// the "Aux set_model RPC context-deadline storm". A large-context model (e.g.
+// claude-sonnet-5-0-500k) has a genuine set_model warm-up latency that exceeds attempt-1's
+// budget. Because the schedule SHRINKS (12s -> 8s -> 5s), every subsequent retry has an
+// even smaller budget than the first, so all three attempts are GUARANTEED to fail with
+// "context deadline exceeded" — even though the outer async caller budget
+// (setModelAsyncCallerBudget, ~90s) has 60-90s of unused headroom (per the bead's log
+// evidence: ctx_remaining_ms stayed 68-90s throughout).
+//
+// Expected (correct) behaviour: a model whose warm-up latency is well within the outer
+// budget must eventually succeed via retry. This test asserts that contract and therefore
+// FAILS on the current shrinking schedule (no attempt is >= the model's latency) and will
+// PASS once the fix widens/flattens the per-attempt schedule to cover realistic warm-up
+// latency within the ample outer budget.
+func TestSetModelSchedule_LargeContextModelSucceedsWithinOuterBudget(t *testing.T) {
+	// Observed warm-up latency for a 500k-context model per the bead's logs: attempt-1
+	// consistently burned its full 12s budget (rpc_ms=12000) without completing, i.e. the
+	// true latency is > 12s. 13s is a conservative representative value that is still far
+	// below the ~90s outer async budget.
+	const largeModelWarmupLatency = 13 * time.Second
+
+	if largeModelWarmupLatency >= setModelAsyncCallerBudget {
+		t.Fatalf("test premise invalid: model latency %v must be < outer budget %v",
+			largeModelWarmupLatency, setModelAsyncCallerBudget)
+	}
+
+	attempt := simulateSetModelRetryLoop(largeModelWarmupLatency, setModelAsyncCallerBudget)
+	if attempt == 0 {
+		t.Fatalf("mitto-8qp reproduced: set_model for a %v-warm-up model never succeeded across "+
+			"%d attempts (schedule %v), despite %v of outer budget — the shrinking per-attempt "+
+			"schedule guarantees failure for models whose warm-up exceeds attempt-1's budget",
+			largeModelWarmupLatency, setSessionModelMaxAttempts,
+			setSessionModelAttemptTimeouts, setModelAsyncCallerBudget)
+	}
+	t.Logf("set_model for a %v-warm-up model succeeded on attempt %d (schedule %v, outer budget %v)",
+		largeModelWarmupLatency, attempt, setSessionModelAttemptTimeouts, setModelAsyncCallerBudget)
 }
 
 // TestSetModelRetryJitter verifies that the jittered backoff delay applied in
@@ -1177,7 +1261,7 @@ func TestShouldFailFastCreateAttempt(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			bail, reason := shouldFailFastCreateAttempt(tc.attempt, tc.saturated, tc.hasDeadline, tc.remaining)
+			bail, reason := shouldFailFastCreateAttempt(tc.attempt, tc.saturated, tc.hasDeadline, tc.remaining, sessionCreateAttemptTimeout)
 			if bail != tc.wantBail {
 				t.Errorf("bail=%v, want %v (reason=%q)", bail, tc.wantBail, reason)
 			}
@@ -1367,7 +1451,7 @@ func TestSaturationStateMachine_EscalatingCooldown(t *testing.T) {
 		t.Errorf("after level-3 trip: cooldown ≈ %v, want ≈ %v", cd3, wantCD3)
 	}
 
-	// A successful RPC resets level to 0 and clears all state.
+	// A successful RPC resets level to 0 and clears all consecutive-path state.
 	p.recordRPCSuccess()
 	p.saturationMu.Lock()
 	lvlReset := p.saturationLevel
@@ -1387,6 +1471,19 @@ func TestSaturationStateMachine_EscalatingCooldown(t *testing.T) {
 	if !untilReset.IsZero() {
 		t.Error("after recordRPCSuccess: saturatedUntil must be zero")
 	}
+
+	// Isolate the consecutive-path re-trip check from the rate/rolling-window
+	// trigger (mitto-5eq): recordRPCSuccess intentionally does NOT wipe the
+	// rolling window (that would reintroduce the interspersed-success reset bug),
+	// so the residual timeouts from earlier in this test could otherwise let the
+	// rate trigger fire before the consecutive threshold on the next 3 timeouts,
+	// promoting saturationLevel past 1. This test is specifically exercising the
+	// consecutive path in isolation, so clear the window here. Coverage for the
+	// interaction ("success clears state but window survives") lives in
+	// TestSaturationRate_SuccessDoesNotWipeWindow.
+	p.saturationMu.Lock()
+	p.saturationBuckets = nil
+	p.saturationMu.Unlock()
 
 	// After reset, next trip should again use level 1 (base cooldown).
 	for i := 0; i < sessionSaturationTimeoutThreshold; i++ {
@@ -1591,7 +1688,7 @@ func TestSessionCreateTotalBudgetBound(t *testing.T) {
 	// After two full per-attempt timeouts, the remaining budget must be insufficient to
 	// fund another attempt, so shouldFailFastCreateAttempt bails before attempt 3.
 	remainingAfterTwo := sessionCreateTotalBudget - 2*sessionCreateAttemptTimeout
-	bail, reason := shouldFailFastCreateAttempt(3, false, true, remainingAfterTwo)
+	bail, reason := shouldFailFastCreateAttempt(3, false, true, remainingAfterTwo, sessionCreateAttemptTimeout)
 	if !bail {
 		t.Errorf("attempt=3 with remaining=%v must bail (budget exhausted); got bail=false", remainingAfterTwo)
 	}
@@ -1600,6 +1697,67 @@ func TestSessionCreateTotalBudgetBound(t *testing.T) {
 	}
 	t.Logf("sessionCreateTotalBudget=%v, per-attempt=%v, maxAttempts=%d → pre-fix tail=%v, remaining-after-2=%v",
 		sessionCreateTotalBudget, sessionCreateAttemptTimeout, sessionCreateMaxAttempts, preFixTail, remainingAfterTwo)
+}
+
+// TestAuxSessionCreateBudgetFundsRetry is the mitto-54k.11 reproduction.
+//
+// The bug: getOrCreateAuxiliarySession wraps SharedACPProcess.NewSession in a fresh
+// context with budget auxSessionCreateBudget (was hardcoded 30s). NewSession itself
+// runs a bounded-retry loop where each attempt has sessionCreateAttemptTimeout=25s
+// and the total sequence is capped by sessionCreateTotalBudget=60s. When attempt 1
+// hits the agent's own internal ~25s deadline (a full per-attempt drain — evidence:
+// aux-session logs showing `rpc_ms≈25000, error="context deadline exceeded"`), the
+// remaining wall-clock in the wrapper ctx is ~5s; shouldFailFastCreateAttempt then
+// bails at the attempt-2 boundary because remaining (5s) < perAttemptBudget (25s),
+// so the retry loop never gets a second shot even though sessionCreateTotalBudget
+// (60s) would allow it. The aux caller ultimately sees deadline_exceeded and every
+// title-gen / mcp-check / follow-up dispatch that lands during the wedge fails.
+//
+// This is a pure math invariant test — no ACP process is required. It asserts that
+// auxSessionCreateBudget funds at least TWO full per-attempt session/new RPCs, and
+// simulates the "attempt 1 drains 25s" scenario against shouldFailFastCreateAttempt
+// to prove that the pre-fix 30s budget makes the fail-fast bail trip before
+// attempt 2. With the pre-fix value of 30s the test FAILS (that is the reproduction);
+// widening auxSessionCreateBudget to >= 2×sessionCreateAttemptTimeout (50s) — the
+// Fix phase will bump it to sessionCreateTotalBudget (60s) for parity with the
+// underlying NewSession retry sequence — makes it PASS.
+func TestAuxSessionCreateBudgetFundsRetry(t *testing.T) {
+	// Invariant 1: the wrapper budget must fund at least two full per-attempt
+	// session/new RPCs. Otherwise a first attempt that legitimately consumes its
+	// full per-attempt budget leaves no room for a retry.
+	if auxSessionCreateBudget < 2*sessionCreateAttemptTimeout {
+		t.Errorf("auxSessionCreateBudget (%v) must fund >=2 attempts (2×%v = %v) so that a "+
+			"first attempt hitting the agent's internal 25s deadline still leaves budget "+
+			"for a retry (mitto-54k.11); currently only %v remains after one full attempt",
+			auxSessionCreateBudget, sessionCreateAttemptTimeout,
+			2*sessionCreateAttemptTimeout, auxSessionCreateBudget-sessionCreateAttemptTimeout)
+	}
+
+	// Invariant 2: after attempt 1 drains a full per-attempt budget,
+	// shouldFailFastCreateAttempt MUST NOT bail at the attempt-2 boundary. If it
+	// does, the retry loop is regressed to a single attempt on this path, which is
+	// the observed mitto-54k.11 failure mode. Simulate the wrapper by taking the
+	// aux budget, subtracting one full per-attempt drain, and asking the fail-fast
+	// predicate whether attempt 2 can proceed.
+	remainingAfterAttempt1 := auxSessionCreateBudget - sessionCreateAttemptTimeout
+	bail, reason := shouldFailFastCreateAttempt(
+		2,                           // attempt
+		false,                       // not saturated (isolate the budget path)
+		true,                        // ctx has deadline
+		remainingAfterAttempt1,      // remaining wall-clock in wrapper ctx
+		sessionCreateAttemptTimeout, // per-attempt budget the loop wants to fund
+	)
+	if bail {
+		t.Errorf("aux wrapper budget %v drained by one full per-attempt (%v) leaves only %v — "+
+			"shouldFailFastCreateAttempt bails at attempt 2 (reason=%q). This regresses the "+
+			"NewSession retry loop to a single attempt on the aux path even though "+
+			"sessionCreateTotalBudget (%v) would fund a retry. This is the mitto-54k.11 wedge.",
+			auxSessionCreateBudget, sessionCreateAttemptTimeout, remainingAfterAttempt1,
+			reason, sessionCreateTotalBudget)
+	}
+
+	t.Logf("auxSessionCreateBudget=%v, per-attempt=%v, remaining-after-attempt1=%v, bail=%v",
+		auxSessionCreateBudget, sessionCreateAttemptTimeout, remainingAfterAttempt1, bail)
 }
 
 // TestRPCErrorCode verifies that rpcErrorCode (mitto-8d7) extracts the JSON-RPC error
@@ -1625,5 +1783,157 @@ func TestRPCErrorCode(t *testing.T) {
 	// Nil error reports no code.
 	if code, ok := rpcErrorCode(nil); ok || code != 0 {
 		t.Errorf("rpcErrorCode(nil) = (%d, %v), want (0, false)", code, ok)
+	}
+}
+
+// TestIsAgentInternalDeadlineErr verifies detection of the auggie session/new
+// wedge signature: a JSON-RPC -32603 ("Internal error") whose data carries
+// "context deadline exceeded". This is delivered as an *acp.RequestError, NOT a
+// Go context.DeadlineExceeded, so it must be matched via the code+message check.
+func TestIsAgentInternalDeadlineErr(t *testing.T) {
+	// The real auggie wedge: -32603 with data.error="context deadline exceeded".
+	wedge := acp.NewInternalError(map[string]any{"error": "context deadline exceeded"})
+	if !isAgentInternalDeadlineErr(wedge) {
+		t.Errorf("isAgentInternalDeadlineErr(wedge) = false, want true (err=%v)", wedge)
+	}
+
+	// Wrapped in the retry loop's error must still match via errors.As.
+	wrapped := fmt.Errorf("failed to create session: %w", wedge)
+	if !isAgentInternalDeadlineErr(wrapped) {
+		t.Errorf("isAgentInternalDeadlineErr(wrapped) = false, want true")
+	}
+
+	// A -32603 without a deadline signature (some other internal error) must NOT match.
+	otherInternal := acp.NewInternalError(map[string]any{"error": "disk full"})
+	if isAgentInternalDeadlineErr(otherInternal) {
+		t.Errorf("isAgentInternalDeadlineErr(otherInternal) = true, want false")
+	}
+
+	// A different RPC code with a deadline message must NOT match (only -32603).
+	notFound := acp.NewInvalidParams(map[string]any{"error": "context deadline exceeded"})
+	if isAgentInternalDeadlineErr(notFound) {
+		t.Errorf("isAgentInternalDeadlineErr(-32602 deadline) = true, want false")
+	}
+
+	// A plain Go context.DeadlineExceeded is Mitto's own deadline, not the agent's
+	// -32603 signature — it is handled by the errors.Is branch, not this helper.
+	if isAgentInternalDeadlineErr(context.DeadlineExceeded) {
+		t.Errorf("isAgentInternalDeadlineErr(context.DeadlineExceeded) = true, want false")
+	}
+
+	// Nil error must not match.
+	if isAgentInternalDeadlineErr(nil) {
+		t.Errorf("isAgentInternalDeadlineErr(nil) = true, want false")
+	}
+}
+
+// TestAgentInternalDeadlineIsRetryable verifies the agent-internal -32603 deadline
+// is classified retryable so the bounded NewSession loop records each attempt's
+// timeout toward saturation rather than returning permanently after one attempt.
+func TestAgentInternalDeadlineIsRetryable(t *testing.T) {
+	wedge := acp.NewInternalError(map[string]any{"error": "context deadline exceeded"})
+	if !isRetryableCreateError(wedge) {
+		t.Errorf("isRetryableCreateError(agent -32603 deadline) = false, want true")
+	}
+	// A non-deadline internal error remains non-retryable.
+	if isRetryableCreateError(acp.NewInternalError(map[string]any{"error": "disk full"})) {
+		t.Errorf("isRetryableCreateError(-32603 non-deadline) = true, want false")
+	}
+}
+
+// TestGetOrCreateAuxiliarySession_SaturatedBails is the mitto-z70 regression:
+// when the shared process for the workspace is already flagged saturated (via
+// repeated RPC timeouts / cold-MCP wedge), getOrCreateAuxiliarySession MUST
+// fail fast WITHOUT issuing a session/new RPC. Otherwise every background
+// aux-session request (title-gen, mcp-check, follow-up, etc.) piles more
+// cold-init pressure onto an agent that is already struggling to initialise
+// its MCP servers, amplifying the wedge.
+func TestGetOrCreateAuxiliarySession_SaturatedBails(t *testing.T) {
+	m := NewACPProcessManager(context.Background(), nil)
+	defer m.Close()
+
+	const wsUUID = "ws-saturated"
+
+	// Install a bare shared process and force it into the saturated state by
+	// setting saturatedUntil into the future. Reaching into private fields is
+	// safe here because the test lives in the same package (acpproc) — the
+	// production callers use recordRPCTimeout, but the state machine is what
+	// matters for IsSaturated(), which is a pure read of saturatedUntil.
+	proc := newTestSharedProcess()
+	proc.saturationMu.Lock()
+	proc.saturatedUntil = time.Now().Add(30 * time.Second)
+	proc.saturationLevel = 1
+	proc.saturationMu.Unlock()
+
+	if !proc.IsSaturated() {
+		t.Fatal("test setup: expected process to report IsSaturated()=true")
+	}
+
+	m.mu.Lock()
+	m.processes[wsUUID] = proc
+	m.mu.Unlock()
+
+	_, err := m.getOrCreateAuxiliarySession(context.Background(), wsUUID, "title-gen")
+	if err == nil {
+		t.Fatal("expected error from getOrCreateAuxiliarySession on a saturated process")
+	}
+	// The error must classify as a deadline-exceeded family sentinel so callers
+	// can distinguish "agent is wedged, back off" from a genuine failure.
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("expected err to wrap context.DeadlineExceeded, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "saturated") {
+		t.Errorf("expected error message to mention 'saturated', got %q", err.Error())
+	}
+}
+
+// TestAuxiliaryModelTag_HonoursProfileOrder locks the "list order = priority"
+// contract at the AUXILIARY-model consumer site (mitto-ex7.4): when
+// WorkspaceSettings.AuxiliaryModelTag is set, getOrCreateAuxiliarySession
+// iterates m.ModelProfilesByTagResolver(tag) in slice order and picks the
+// FIRST profile whose Criteria resolves against the aux session's available
+// models. This test drives the extracted helper resolveAuxTagConstraint
+// directly with two same-tag profiles and asserts that reversing the
+// resolver's slice flips which Criteria wins.
+func TestAuxiliaryModelTag_HonoursProfileOrder(t *testing.T) {
+	models := &conversation.SessionModelState{
+		CurrentModelId: "gpt-4o", // does not satisfy either Sonnet profile
+		AvailableModels: []conversation.ModelInfo{
+			{ModelId: "claude-sonnet-5-0", Name: "Claude Sonnet 5"},
+			{ModelId: "claude-sonnet-4-6", Name: "Claude Sonnet 4"},
+			{ModelId: "gpt-4o", Name: "GPT-4o"},
+		},
+	}
+	sonnet5 := config.ModelProfile{
+		Name:     "Claude Sonnet 5",
+		Criteria: &config.ACPServerConstraint{MatchMode: "contains", Pattern: "Sonnet 5"},
+		Tags:     []string{"Smart", "Coding"},
+	}
+	sonnet4 := config.ModelProfile{
+		Name:     "Claude Sonnet 4",
+		Criteria: &config.ACPServerConstraint{MatchMode: "contains", Pattern: "Sonnet 4"},
+		Tags:     []string{"Smart", "Coding"},
+	}
+
+	// Sonnet 5 first (mirroring the post-split default order that
+	// ModelProfilesByTagResolver would return) → aux Criteria is Sonnet 5's.
+	got := resolveAuxTagConstraint([]config.ModelProfile{sonnet5, sonnet4}, models)
+	if got == nil || got.Pattern != "Sonnet 5" {
+		t.Errorf("with [Sonnet5, Sonnet4] resolver order, auxConstraint = %+v, want pattern %q", got, "Sonnet 5")
+	}
+	// Reverse the resolver's slice → aux Criteria now flips to Sonnet 4's.
+	got = resolveAuxTagConstraint([]config.ModelProfile{sonnet4, sonnet5}, models)
+	if got == nil || got.Pattern != "Sonnet 4" {
+		t.Errorf("with [Sonnet4, Sonnet5] resolver order, auxConstraint = %+v, want pattern %q", got, "Sonnet 4")
+	}
+	// No profile with a resolvable Criteria → nil (leaves the caller on the
+	// server default model).
+	unmatchable := config.ModelProfile{
+		Name:     "Nope",
+		Criteria: &config.ACPServerConstraint{MatchMode: "contains", Pattern: "never-matches-anything"},
+		Tags:     []string{"Smart"},
+	}
+	if got := resolveAuxTagConstraint([]config.ModelProfile{unmatchable}, models); got != nil {
+		t.Errorf("unmatchable profile: resolveAuxTagConstraint = %+v, want nil", got)
 	}
 }

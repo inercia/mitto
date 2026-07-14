@@ -1,4 +1,4 @@
-.PHONY: build install test test-go test-js test-integration test-integration-go test-integration-cli test-integration-api test-integration-client test-ui test-ui-headed test-ui-debug test-ui-report test-all test-ci test-setup test-clean clean run fmt fmt-check fmt-docs fmt-docs-check lint lint-go lint-frontend deps-go deps-js deps tailwind vendor-codemirror build-mac-app clean-mac-app test-webviewlog build-mock-acp ci install-hooks homebrew-generate homebrew-test homebrew-test-style homebrew-test-install homebrew-test-cask homebrew-tap-setup homebrew-clean smoke-build smoke-test-cli smoke-test smoke-clean
+.PHONY: build install test test-go test-js check-model-tags check-stderr-patterns test-integration test-integration-go test-integration-cli test-integration-api test-integration-client test-ui test-ui-headed test-ui-debug test-ui-report test-all test-ci test-setup test-clean clean run fmt fmt-check fmt-docs fmt-docs-check lint lint-go lint-frontend deps-go deps-js deps tailwind vendor-codemirror build-mac-app clean-mac-app test-webviewlog build-mock-acp ci install-hooks homebrew-generate homebrew-test homebrew-test-style homebrew-test-install homebrew-test-cask homebrew-tap-setup homebrew-clean smoke-build smoke-test-cli smoke-test smoke-clean
 
 # Binary name
 BINARY_NAME=mitto
@@ -43,6 +43,22 @@ test-go:
 test-js: deps-js
 	@echo "Running JavaScript tests..."
 	$(NPM) test
+
+# Validate builtin model-tag references against the canonical Go tag set.
+# Fails if any builtin prompt references a modelTag not in config.CanonicalModelTags(),
+# any builtin processor's enabledWhen calls Session.HasModelTag("<tag>") with an unknown tag,
+# or if config/config.default.yaml `models:` drifts from config.DefaultModelProfiles().
+check-model-tags:
+	@echo "Validating builtin model-tag references (prompts + processors)..."
+	$(GOTEST) -run 'TestBuiltinPrompts_ModelTagsAreCanonical|TestDefaultModelProfiles_MatchesEmbeddedYAML|TestCanonicalModelTags|TestEffectiveModelProfiles_MergeAndPrecedence' ./internal/config/
+	$(GOTEST) -run 'TestBuiltinProcessors_HasModelTagArgsAreCanonical|TestHasModelTagArgsChecker_CatchesTypo' ./internal/processors/
+
+# Validate builtin agent stderr patterns compile as valid Go regexes (mitto-k6h).
+# Fails if any pattern in config/agents/builtin/*/metadata.yaml stderrPatterns
+# (crash / ignore / degraded) fails regexp.Compile.
+check-stderr-patterns:
+	@echo "Validating builtin agent stderr patterns..."
+	$(GOTEST) -run 'TestBuiltinAgents_StderrPatternsCompile' ./internal/agents/
 
 # =============================================================================
 # Integration & UI Tests

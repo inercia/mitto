@@ -14,6 +14,12 @@ const (
 	// WSMsgTypeSessionRenamed notifies that a session was renamed.
 	WSMsgTypeSessionRenamed = "session_renamed"
 
+	// WSMsgTypeSessionBeadsIssueUpdated notifies that a session's linked beads
+	// issue ID changed (via REST PATCH or the mitto_conversation_update MCP tool).
+	// Distinct from WSMsgTypeBeadsChanged (which fires on filesystem-level .beads/
+	// changes and does not carry per-session metadata).
+	WSMsgTypeSessionBeadsIssueUpdated = "session_beads_issue_updated"
+
 	// WSMsgTypeLoopUpdated notifies that a session's loop prompt state changed.
 	WSMsgTypeLoopUpdated = "loop_updated"
 

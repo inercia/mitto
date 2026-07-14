@@ -802,6 +802,20 @@ func (bs *BackgroundSession) pdCompleteDeferredHandshake() error {
 	return bs.completeDeferredHandshake()
 }
 
+// pdRecommendedHandshakeDeadline reads the extended-budget hint from the shared
+// process so completeHandshakeOrAbort can bound a hung deferred session/new
+// against it (mitto-f51). Returns 0 when no shared process is configured or the
+// process signals no widening is needed.
+func (bs *BackgroundSession) pdRecommendedHandshakeDeadline() time.Duration {
+	if bs.sharedProcess == nil {
+		return 0
+	}
+	bs.pendingSharedMu.Lock()
+	hasMCP := len(bs.pendingSharedMcpServers) > 0
+	bs.pendingSharedMu.Unlock()
+	return bs.sharedProcess.RecommendedLoadTimeout(hasMCP)
+}
+
 func (bs *BackgroundSession) pdHasRecorder() bool { return bs.recorder != nil }
 
 func (bs *BackgroundSession) pdGetNextSeq() int64 { return bs.getNextSeq() }
@@ -844,7 +858,7 @@ func (bs *BackgroundSession) pdACPConnNewSession(ctx context.Context, cwd string
 	return string(freshSess.SessionId), nil
 }
 
-func (bs *BackgroundSession) pdGetAgentModels() *acp.UnstableSessionModelState {
+func (bs *BackgroundSession) pdGetAgentModels() *SessionModelState {
 	return bs.agentModels
 }
 
@@ -862,13 +876,12 @@ func (bs *BackgroundSession) pdResolvePreferredModels(promptName string) []confi
 	return bs.preferredModelsResolver(promptName, bs.workingDir)
 }
 
-// pdModelProfiles exposes the global model profiles (Settings → Models) so
-// SelectPreferredModel can resolve PromptPreferredModel entries by name/tag.
+// pdModelProfiles exposes the model profiles used to resolve PromptPreferredModel
+// entries by name/tag. It returns the user-configured profiles (Settings → Models)
+// unioned with the canonical DefaultModelProfiles as a fallback, so well-known tags
+// (e.g. "Coding", "Cheap") always resolve even when settings.json omits `models:`.
 func (bs *BackgroundSession) pdModelProfiles() []config.ModelProfile {
-	if bs.mittoConfig == nil {
-		return nil
-	}
-	return bs.mittoConfig.Models
+	return bs.mittoConfig.EffectiveModelProfiles()
 }
 
 func (bs *BackgroundSession) pdResolvePromptParameters(promptName string) []config.PromptParameter {
@@ -1074,6 +1087,9 @@ func (bs *BackgroundSession) pdContextFlushCommand() string { return bs.contextF
 func (bs *BackgroundSession) pdFlushContextInPlace(ctx context.Context) error {
 	return bs.flushContextInPlace(ctx)
 }
+
+// Cold-start diagnostics (mitto-3mv WI-2). Delegates to the nil-safe helper.
+func (bs *BackgroundSession) pdColdPhase(name string, kv ...any) { bs.coldPhase(name, kv...) }
 
 // peekLoopContinuation reports whether the current dispatch is an uninterrupted
 // continuation (a scheduled loop run directly following another one) WITHOUT mutating

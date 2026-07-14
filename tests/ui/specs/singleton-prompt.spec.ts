@@ -127,6 +127,15 @@ testWithCleanup.describe("Singleton Prompts — beads list menu", () => {
       });
       await listPromptsBtn.click();
 
+      // beadsList prompts are now grouped into per-group submenus; this
+      // ungrouped fixture lands under "Other". Open the group, then click the
+      // prompt inside its flyout.
+      const otherGroup = page
+        .locator("li.relative > button")
+        .filter({ hasText: "Other" });
+      await expect(otherGroup).toBeVisible({ timeout: timeouts.appReady });
+      await otherGroup.click();
+
       const promptItem = page
         .locator("button")
         .filter({ hasText: "Singleton List Review" });
@@ -159,6 +168,13 @@ testWithCleanup.describe("Singleton Prompts — beads list menu", () => {
         timeout: timeouts.shortAction,
       });
       await listPromptsBtn2.click();
+
+      // Same grouped-submenu flow on the second (reuse) run.
+      const otherGroup2 = page
+        .locator("li.relative > button")
+        .filter({ hasText: "Other" });
+      await expect(otherGroup2).toBeVisible({ timeout: timeouts.appReady });
+      await otherGroup2.click();
 
       const promptItem2 = page
         .locator("button")

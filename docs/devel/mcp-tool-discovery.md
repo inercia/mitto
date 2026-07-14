@@ -39,6 +39,29 @@ asks the agent's own LLM to introspect itself:
   **second**, per-pattern LLM query to the same auxiliary session — also
   non-deterministic.
 
+## Warm-up fast-path: Mitto's own inbound `/mcp` (mitto-54k.2)
+
+Mitto's own MCP endpoint (`internal/mcpserver/server.go` `startSSE` →
+`mcp.NewStreamableHTTPHandler`) exposes `initialize` and `tools/list` on a
+**lock-free, no-per-Mitto-session-state** path: the SDK's streamable HTTP
+handler dispatches these two methods entirely from the `*mcp.Server`'s
+statically-registered tool table (built once at `NewServer` time via
+`registerGlobalTools` + `registerSessionScopedTools`, both `mcp.AddTool` calls
+against a pre-built list). Neither `s.mu` nor `s.sessionsMu` nor any blocking
+Mitto helper (`WaitForPendingRequest`, correlation waits, store lookups) is
+touched during handshake; there are also no receiving/sending middlewares
+registered on the server.
+
+Consequence: the cold-start resume storm cannot starve an agent's inbound
+`initialize`/`tools/list` to Mitto — the two work on independent goroutines and
+share no locks. The primary fix is **Fix A (mitto-54k.1)**, which caps the
+resume storm at the source via a bounded `resumeSemaphore` in the web layer;
+this fast-path property is the independent safety net. It is guarded by the
+regression test `TestFastPath_InboundInitAndToolsListStayBoundedUnderLoad`
+(`internal/mcpserver/server_fastpath_test.go`), which applies 32-way concurrent
+initialize+tools/list round-trips and asserts each completes well under a 2 s
+budget with a stable, non-empty tool set.
+
 ## Findings
 
 ### Q1 — Can we get a real tool list deterministically?

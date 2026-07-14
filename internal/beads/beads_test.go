@@ -97,6 +97,14 @@ func TestIsNotFound(t *testing.T) {
 		{"other bd failure", &CmdError{Stderr: "database is locked"}, false},
 		{"empty stderr", &CmdError{Stderr: ""}, false},
 		{"plain error", errors.New("no issue found matching"), false},
+		// Newer bd versions emit a JSON error object with the plural form on
+		// stdout (captured into Stderr by diagnosticOutput when the real
+		// stderr is empty). Both plural and singular variants must be treated
+		// as not-found.
+		{"plural JSON error object", &CmdError{Stderr: `{"error":"no issues found matching the provided IDs","schema_version":1}`}, true},
+		{"singular JSON error object", &CmdError{Stderr: `{"error":"no issue found matching \"mitto-cam\""}`}, true},
+		{"unrelated JSON error object", &CmdError{Stderr: `{"error":"database is locked"}`}, false},
+		{"malformed JSON", &CmdError{Stderr: `{"error":`}, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -104,6 +112,63 @@ func TestIsNotFound(t *testing.T) {
 				t.Errorf("IsNotFound = %v, want %v", got, tc.want)
 			}
 		})
+	}
+}
+
+func TestExitCodeOf(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		want int
+	}{
+		{"nil", nil, 0},
+		{"non-CmdError", errors.New("plain"), 0},
+		{"CmdError with exit code", &CmdError{Err: errors.New("bd exited with non-zero status"), ExitCode: 2}, 2},
+		{"CmdError with zero exit code (timeout)", &CmdError{Err: errors.New("bd command timed out")}, 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := ExitCodeOf(tc.err); got != tc.want {
+				t.Errorf("ExitCodeOf = %d, want %d", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestIsSchemaSkew(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"nil", nil, false},
+		{"real v49->v53 stderr", &CmdError{Err: errors.New("bd exited with non-zero status"),
+			Stderr: "... refusing to auto-apply 4 pending schema migrations to a remote-backed database (v49 -> v53) ...\n" +
+				"Error: failed to open routed store at /Users/alvaro/.beads-planning: schema version mismatch: database is at v49, binary expects v53 ..."}, true},
+		{"schema version mismatch only", &CmdError{Stderr: "schema version mismatch: database is at v1, binary expects v2"}, true},
+		{"not found", &CmdError{Stderr: `no issue found matching "mitto-cam"`}, false},
+		{"schema migration without remote-backed", &CmdError{Stderr: "pending schema migrations detected"}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := IsSchemaSkew(tc.err); got != tc.want {
+				t.Errorf("IsSchemaSkew = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestSchemaSkewDBPath(t *testing.T) {
+	realStderr := "... refusing to auto-apply 4 pending schema migrations to a remote-backed database (v49 -> v53) ...\n" +
+		"Error: failed to open routed store at /Users/alvaro/.beads-planning: schema version mismatch: database is at v49, binary expects v53 ..."
+	err := &CmdError{Err: errors.New("bd exited with non-zero status"), Stderr: realStderr}
+	if got, want := SchemaSkewDBPath(err), "/Users/alvaro/.beads-planning"; got != want {
+		t.Errorf("SchemaSkewDBPath = %q, want %q", got, want)
+	}
+
+	noPath := &CmdError{Stderr: "schema version mismatch: database is at v1, binary expects v2"}
+	if got := SchemaSkewDBPath(noPath); got != "" {
+		t.Errorf("SchemaSkewDBPath(no path) = %q, want empty", got)
 	}
 }
 
@@ -586,6 +651,111 @@ func TestClient_RunnerError_WrappedAsCmdError(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// runJSON recovery + read retry (mitto-xl0)
+// ---------------------------------------------------------------------------
+
+// TestRunJSON_RecoversJSONFromStderr covers the bug that motivated mitto-xl0: bd
+// can exit non-zero while still emitting the intended JSON payload (observed on
+// Create: the created-issue JSON printed to stderr right after a dolt restart).
+// Create must treat that response as a success rather than logging a hard
+// "beads command failed".
+func TestRunJSON_RecoversJSONFromStderr(t *testing.T) {
+	r := &recordingRunner{responses: []runnerResp{
+		{
+			stderr: `[{"id":"mitto-54k.5"}]`,
+			err:    errors.New("bd exited with non-zero status"),
+		},
+	}}
+	c := newClient(r)
+	out, err := c.Create(context.Background(), initializedDir(t), CreateParams{Title: "T"})
+	if err != nil {
+		t.Fatalf("Create() error = %v, want nil (JSON on stderr should be recovered)", err)
+	}
+	if !strings.Contains(string(out), "mitto-54k.5") {
+		t.Errorf("recovered bytes = %q, want to contain %q", out, "mitto-54k.5")
+	}
+}
+
+// TestRunJSON_RecoversJSONFromStdout covers the symmetric case where the JSON
+// payload landed on stdout but bd still exited non-zero (e.g. a stderr advisory
+// during dolt warm-up).
+func TestRunJSON_RecoversJSONFromStdout(t *testing.T) {
+	r := &recordingRunner{responses: []runnerResp{
+		{
+			stdout: []byte(`{"id":"mitto-1"}`),
+			stderr: "warning: dolt sync advisory",
+			err:    errors.New("bd exited with non-zero status"),
+		},
+	}}
+	c := newClient(r)
+	out, err := c.Create(context.Background(), initializedDir(t), CreateParams{Title: "T"})
+	if err != nil {
+		t.Fatalf("Create() error = %v, want nil (JSON on stdout should be recovered)", err)
+	}
+	if !strings.Contains(string(out), "mitto-1") {
+		t.Errorf("recovered bytes = %q, want to contain %q", out, "mitto-1")
+	}
+}
+
+// TestRunJSON_ErrorObjectNotRecovered ensures that a bd machine-readable error
+// JSON payload (top-level "error" key) is NOT treated as a success, even
+// though it happens to be valid JSON.
+func TestRunJSON_ErrorObjectNotRecovered(t *testing.T) {
+	r := &recordingRunner{responses: []runnerResp{
+		{
+			stdout: []byte(`{"error":"boom"}`),
+			err:    errors.New("bd exited with non-zero status"),
+		},
+	}}
+	c := newClient(r)
+	_, err := c.Create(context.Background(), initializedDir(t), CreateParams{Title: "T"})
+	if err == nil {
+		t.Fatal("expected error, got nil (JSON error object must not be recovered)")
+	}
+	var ce *CmdError
+	if !errors.As(err, &ce) {
+		t.Fatalf("error type = %T, want *CmdError", err)
+	}
+}
+
+// TestRunJSONRead_RetriesOnceOnTransientLock verifies that read-only commands
+// retry once when the first invocation fails with a transient dolt lock error.
+func TestRunJSONRead_RetriesOnceOnTransientLock(t *testing.T) {
+	r := &recordingRunner{responses: []runnerResp{
+		{stderr: "another dolt process is using the database", err: errors.New("bd exited with non-zero status")},
+		{stdout: []byte("[]")},
+	}}
+	c := newClient(r)
+	out, err := c.List(context.Background(), initializedDir(t))
+	if err != nil {
+		t.Fatalf("List() error after retry = %v, want nil", err)
+	}
+	if string(out) != "[]" {
+		t.Errorf("List() = %q, want %q", out, "[]")
+	}
+	if len(r.calls) != 2 {
+		t.Errorf("runner call count = %d, want 2 (initial + one retry)", len(r.calls))
+	}
+}
+
+// TestCreate_NotRetriedOnTransientLock verifies that Create — which is
+// non-idempotent — is NOT retried even on a transient lock error, to avoid
+// duplicating a write if the first attempt actually committed.
+func TestCreate_NotRetriedOnTransientLock(t *testing.T) {
+	r := &recordingRunner{responses: []runnerResp{
+		{stderr: "another dolt process is using the database", err: errors.New("bd exited with non-zero status")},
+	}}
+	c := newClient(r)
+	_, err := c.Create(context.Background(), initializedDir(t), CreateParams{Title: "T"})
+	if err == nil {
+		t.Fatal("expected error (Create must not retry)")
+	}
+	if len(r.calls) != 1 {
+		t.Errorf("runner call count = %d, want 1 (Create must not retry)", len(r.calls))
+	}
+}
+
+// ---------------------------------------------------------------------------
 // EnsureInitialized
 // ---------------------------------------------------------------------------
 
@@ -774,6 +944,54 @@ func TestEnvWithActor_OverridesAndDedupes(t *testing.T) {
 	if actors[0] != "mitto:webui" {
 		t.Errorf("BEADS_ACTOR = %q, want %q", actors[0], "mitto:webui")
 	}
+}
+
+func TestDiagnosticOutput(t *testing.T) {
+	longInput := strings.Repeat("x", maxDiagnosticLen+500)
+	wantTruncatedLen := maxDiagnosticLen + len([]rune("… (truncated)"))
+
+	tests := []struct {
+		name   string
+		stderr string
+		stdout string
+		want   string
+	}{
+		{
+			name:   "stderr non-empty is returned as-is, trimmed",
+			stderr: "  boom\n",
+			stdout: "ignored",
+			want:   "boom",
+		},
+		{
+			name:   "stderr empty falls back to stdout",
+			stderr: "",
+			stdout: "  warming up\n",
+			want:   "warming up",
+		},
+		{
+			name:   "both empty",
+			stderr: "",
+			stdout: "",
+			want:   "",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := diagnosticOutput(tt.stderr, tt.stdout); got != tt.want {
+				t.Errorf("diagnosticOutput(%q, %q) = %q, want %q", tt.stderr, tt.stdout, got, tt.want)
+			}
+		})
+	}
+
+	t.Run("over-length input is truncated", func(t *testing.T) {
+		got := diagnosticOutput(longInput, "")
+		if !strings.HasSuffix(got, "… (truncated)") {
+			t.Fatalf("diagnosticOutput() = %q, want suffix %q", got, "… (truncated)")
+		}
+		if gotLen := len([]rune(got)); gotLen != wantTruncatedLen {
+			t.Errorf("len([]rune(diagnosticOutput())) = %d, want %d", gotLen, wantTruncatedLen)
+		}
+	})
 }
 
 func TestNewClient_DefaultsWebUIActor(t *testing.T) {

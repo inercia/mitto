@@ -815,6 +815,43 @@ func TestConversationStart_PromptName_NotFound(t *testing.T) {
 	}
 }
 
+// TestConversationStart_PlaceholderLoopSeed_Rejected reproduces mitto-dj9:
+// when an orchestrator LLM composes multiple mitto_conversation_new calls in
+// one turn, it can short-circuit the repeated initial_prompt to a self-reference
+// like "[Same driver body]". The MCP server currently accepts that verbatim as
+// the loop child's seed, creating a zombie conversation whose seq=1 body is
+// unactionable. The fix is a boundary guard in handleConversationStart that
+// rejects a suspiciously short, placeholder-shaped free-text initial_prompt
+// when the conversation is being created as a loop (loop_prompt or
+// loop_trigger set) and no prompt_name was supplied. This test asserts the
+// desired post-fix behavior; it fails on HEAD (no guard exists yet).
+func TestConversationStart_PlaceholderLoopSeed_Rejected(t *testing.T) {
+	_, srv, parentID := setupConversationStartServer(t)
+
+	ctx := context.Background()
+	_, _, err := srv.handleConversationStart(ctx, nil, ConversationStartInput{
+		SelfID:                     parentID,
+		InitialPrompt:              "[Same driver body]",
+		LoopPrompt:                 "anything",
+		LoopTrigger:                "onCompletion",
+		LoopCompletionDelaySeconds: intPtr(30),
+		LoopMaxIterations:          intPtr(2),
+	})
+	if err == nil {
+		t.Fatal("Expected error rejecting placeholder-shaped loop-driver seed, got nil")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "placeholder") &&
+		!strings.Contains(msg, "self-reference") &&
+		!strings.Contains(msg, "prompt_name") {
+		t.Errorf("Expected placeholder-guard error mentioning placeholder/self-reference/prompt_name, got: %v", err)
+	}
+}
+
+// intPtr is a small helper for pointer-typed optional int fields on
+// ConversationStartInput.
+func intPtr(v int) *int { return &v }
+
 // TestConversationStart_Singleton_RoutesToExisting verifies that a second
 // mitto_conversation_new for the same singleton prompt in the same working dir
 // routes to the existing conversation (reused=true) instead of creating a
@@ -930,8 +967,9 @@ func findSubstring(s, substr string) bool {
 
 // mockSessionManager is a mock implementation of SessionManager for testing.
 type mockSessionManager struct {
-	broadcastCalls      []broadcastCall
-	workspacesForFolder []config.WorkspaceSettings
+	broadcastCalls       []broadcastCall
+	broadcastBeadsIssues []broadcastBeadsIssueCall
+	workspacesForFolder  []config.WorkspaceSettings
 }
 
 type broadcastCall struct {
@@ -940,6 +978,12 @@ type broadcastCall struct {
 	acpServer       string
 	workingDir      string
 	parentSessionID string
+}
+
+// broadcastBeadsIssueCall records a call to BroadcastSessionBeadsIssueUpdated.
+type broadcastBeadsIssueCall struct {
+	sessionID  string
+	beadsIssue string
 }
 
 func (m *mockSessionManager) GetSession(sessionID string) BackgroundSession {
@@ -983,15 +1027,22 @@ func (m *mockSessionManager) DeleteChildSessions(parentID string)               
 func (m *mockSessionManager) GetWorkspaces() []config.WorkspaceSettings                    { return nil }
 func (m *mockSessionManager) GetWorkspaceByUUID(uuid string) *config.WorkspaceSettings     { return nil }
 func (m *mockSessionManager) BroadcastSessionRenamed(sessionID string, newName string)     {}
-func (m *mockSessionManager) BroadcastLoopUpdated(string, *session.LoopPrompt)             {}
-func (m *mockSessionManager) GetUserDataSchema(workingDir string) *config.UserDataSchema   { return nil }
-func (m *mockSessionManager) GetWorkspacePrompts(workingDir string) []config.WebPrompt     { return nil }
-func (m *mockSessionManager) GetWorkspacePromptsDirs(workingDir string) []string           { return nil }
+func (m *mockSessionManager) BroadcastSessionBeadsIssueUpdated(sessionID, beadsIssue string) {
+	m.broadcastBeadsIssues = append(m.broadcastBeadsIssues, broadcastBeadsIssueCall{
+		sessionID:  sessionID,
+		beadsIssue: beadsIssue,
+	})
+}
+func (m *mockSessionManager) BroadcastLoopUpdated(string, *session.LoopPrompt)           {}
+func (m *mockSessionManager) GetUserDataSchema(workingDir string) *config.UserDataSchema { return nil }
+func (m *mockSessionManager) GetWorkspacePrompts(workingDir string) []config.WebPrompt   { return nil }
+func (m *mockSessionManager) GetWorkspacePromptsDirs(workingDir string) []string         { return nil }
 func (m *mockSessionManager) GetWorkspaceRCLastModified(workingDir string) time.Time {
 	return time.Time{}
 }
 func (m *mockSessionManager) GetWorkspace(workingDir string) *config.WorkspaceSettings { return nil }
 func (m *mockSessionManager) InvalidateWorkspaceRC(workingDir string)                  {}
+func (m *mockSessionManager) IsMCPInitTimeout(err error) bool                          { return false }
 
 func TestConversationStartBroadcastsEvent(t *testing.T) {
 	// Create a temporary store
@@ -3188,6 +3239,8 @@ func (m *mockSessionManagerForWorkspaces) GetWorkspaceByUUID(uuid string) *confi
 }
 func (m *mockSessionManagerForWorkspaces) BroadcastSessionRenamed(sessionID string, newName string) {
 }
+func (m *mockSessionManagerForWorkspaces) BroadcastSessionBeadsIssueUpdated(sessionID, beadsIssue string) {
+}
 func (m *mockSessionManagerForWorkspaces) BroadcastLoopUpdated(string, *session.LoopPrompt) {
 }
 func (m *mockSessionManagerForWorkspaces) GetUserDataSchema(workingDir string) *config.UserDataSchema {
@@ -3206,6 +3259,7 @@ func (m *mockSessionManagerForWorkspaces) GetWorkspace(workingDir string) *confi
 	return nil
 }
 func (m *mockSessionManagerForWorkspaces) InvalidateWorkspaceRC(workingDir string) {}
+func (m *mockSessionManagerForWorkspaces) IsMCPInitTimeout(err error) bool         { return false }
 
 func TestListWorkspaces_Empty(t *testing.T) {
 	mockSM := &mockSessionManagerForWorkspaces{
@@ -3539,7 +3593,8 @@ func (m *mockSessionManagerForWorkspaceUpdate) GetWorkspaceByUUID(uuid string) *
 	}
 	return nil
 }
-func (m *mockSessionManagerForWorkspaceUpdate) BroadcastSessionRenamed(string, string) {}
+func (m *mockSessionManagerForWorkspaceUpdate) BroadcastSessionRenamed(string, string)           {}
+func (m *mockSessionManagerForWorkspaceUpdate) BroadcastSessionBeadsIssueUpdated(string, string) {}
 func (m *mockSessionManagerForWorkspaceUpdate) BroadcastLoopUpdated(string, *session.LoopPrompt) {
 }
 func (m *mockSessionManagerForWorkspaceUpdate) GetUserDataSchema(string) *config.UserDataSchema {
@@ -3558,6 +3613,7 @@ func (m *mockSessionManagerForWorkspaceUpdate) GetWorkspace(string) *config.Work
 func (m *mockSessionManagerForWorkspaceUpdate) InvalidateWorkspaceRC(workingDir string) {
 	m.invalidateCalled = append(m.invalidateCalled, workingDir)
 }
+func (m *mockSessionManagerForWorkspaceUpdate) IsMCPInitTimeout(err error) bool { return false }
 
 // setupWorkspaceUpdateServer creates a server + store with a registered session for workspace-update tests.
 // Returns the server, store, session ID, and workspace dir.
@@ -3895,6 +3951,7 @@ func (m *mockSessionManagerForWait) DeleteChildSessions(string)                 
 func (m *mockSessionManagerForWait) GetWorkspaces() []config.WorkspaceSettings           { return nil }
 func (m *mockSessionManagerForWait) GetWorkspaceByUUID(string) *config.WorkspaceSettings { return nil }
 func (m *mockSessionManagerForWait) BroadcastSessionRenamed(string, string)              {}
+func (m *mockSessionManagerForWait) BroadcastSessionBeadsIssueUpdated(string, string)    {}
 func (m *mockSessionManagerForWait) BroadcastLoopUpdated(string, *session.LoopPrompt)    {}
 func (m *mockSessionManagerForWait) GetUserDataSchema(string) *config.UserDataSchema     { return nil }
 func (m *mockSessionManagerForWait) GetWorkspacePrompts(string) []config.WebPrompt       { return nil }
@@ -3902,6 +3959,7 @@ func (m *mockSessionManagerForWait) GetWorkspacePromptsDirs(string) []string    
 func (m *mockSessionManagerForWait) GetWorkspaceRCLastModified(string) time.Time         { return time.Time{} }
 func (m *mockSessionManagerForWait) GetWorkspace(string) *config.WorkspaceSettings       { return nil }
 func (m *mockSessionManagerForWait) InvalidateWorkspaceRC(string)                        {}
+func (m *mockSessionManagerForWait) IsMCPInitTimeout(error) bool                         { return false }
 
 // setupServerForWait creates a server with a SessionManager mock for wait tool tests.
 func setupServerForWait(t *testing.T, targetID string, targetBS BackgroundSession) (*Server, string) {
@@ -4569,8 +4627,8 @@ func TestChildReportCollector_IsWaiting(t *testing.T) {
 }
 
 func TestChildReportCollector_StaleTaskReport_DoesNotCompleteWait(t *testing.T) {
-	// A child that reports with a different task_id than the active wait must NOT
-	// unblock the wait; it should still appear as pending in getPendingAndReported.
+	// Stale-task report alone does not unblock — but the poll loop's
+	// markChildAutoCompleted MUST be able to override it (mitto-kn1 regression guard).
 	collector := &childReportCollector{
 		parentSessionID: "parent-1",
 		reports:         make(map[string]*childReport),
@@ -4599,6 +4657,123 @@ func TestChildReportCollector_StaleTaskReport_DoesNotCompleteWait(t *testing.T) 
 	}
 	if len(pending) != 1 || pending[0] != "child-a" {
 		t.Errorf("Expected child-a in pending, got pending=%v reported=%v", pending, reported)
+	}
+
+	// mitto-kn1: the poll loop's markChildAutoCompleted MUST overwrite the
+	// stale-task report so the wait can unblock.
+	collector.markChildAutoCompleted("child-a", "agent_idle")
+
+	select {
+	case <-waitCh:
+		// correct: closed by auto-completion overwriting the stale report
+	default:
+		t.Error("Wait channel was NOT closed after markChildAutoCompleted — mitto-kn1 regression")
+	}
+
+	pending, reported = collector.getPendingAndReported()
+	if len(reported) != 1 || reported[0] != "child-a" {
+		t.Errorf("Expected child-a in reported after auto-complete, got pending=%v reported=%v", pending, reported)
+	}
+	if len(pending) != 0 {
+		t.Errorf("Expected 0 pending after auto-complete, got %d: %v", len(pending), pending)
+	}
+}
+
+func TestChildReportCollector_MarkChildAutoCompleted_OverwritesStaleTaskReport(t *testing.T) {
+	// mitto-kn1 regression: when a child reports with a TaskID that doesn't
+	// match the active wait's task, the poll loop's markChildAutoCompleted
+	// MUST overwrite that stale report so the wait can complete. Prior to the
+	// fix, the early-return in markChildAutoCompleted made every subsequent
+	// auto-completion a no-op and parents burned the full timeout.
+	// (see internal/mcpserver/types.go markChildAutoCompleted)
+	collector := &childReportCollector{
+		parentSessionID: "parent-1",
+		reports:         make(map[string]*childReport),
+	}
+
+	waitCh, alreadyDone := collector.startWait("T1", []string{"child-a"})
+	if alreadyDone {
+		t.Fatal("Expected wait to not be done immediately")
+	}
+
+	// Child reports with a stale task id — does NOT satisfy the current wait.
+	collector.addReport("child-a", "T2", []byte(`{"status":"completed"}`))
+
+	select {
+	case <-waitCh:
+		t.Fatal("Wait channel was closed by a stale-task report — precondition broken")
+	default:
+	}
+
+	// Poll loop auto-completes the child. This MUST overwrite the stale entry.
+	collector.markChildAutoCompleted("child-a", "agent_idle")
+
+	select {
+	case <-waitCh:
+		// correct
+	default:
+		t.Error("Wait channel was NOT closed after markChildAutoCompleted — mitto-kn1 regression")
+	}
+
+	r := collector.reports["child-a"]
+	if r == nil {
+		t.Fatal("Expected report for child-a")
+	}
+	if !r.AutoCompleted {
+		t.Error("Expected report.AutoCompleted = true after markChildAutoCompleted overrode stale report")
+	}
+	if r.AutoReason != "agent_idle" {
+		t.Errorf("AutoReason = %q, want %q", r.AutoReason, "agent_idle")
+	}
+
+	pending, reported := collector.getPendingAndReported()
+	if len(reported) != 1 || reported[0] != "child-a" {
+		t.Errorf("Expected child-a in reported, got pending=%v reported=%v", pending, reported)
+	}
+	if len(pending) != 0 {
+		t.Errorf("Expected 0 pending, got %d: %v", len(pending), pending)
+	}
+}
+
+func TestChildReportCollector_MarkChildFailed_OverwritesStaleTaskReport(t *testing.T) {
+	// mitto-kn1 regression mirror: markChildFailed must also overwrite a
+	// stale-task completed report so a queued-send failure can surface.
+	collector := &childReportCollector{
+		parentSessionID: "parent-1",
+		reports:         make(map[string]*childReport),
+	}
+
+	waitCh, alreadyDone := collector.startWait("T1", []string{"child-a"})
+	if alreadyDone {
+		t.Fatal("Expected wait to not be done immediately")
+	}
+
+	collector.addReport("child-a", "T2", []byte(`{"status":"completed"}`))
+
+	select {
+	case <-waitCh:
+		t.Fatal("Wait channel was closed by a stale-task report — precondition broken")
+	default:
+	}
+
+	collector.markChildFailed("child-a", "queued send error")
+
+	select {
+	case <-waitCh:
+		// correct
+	default:
+		t.Error("Wait channel was NOT closed after markChildFailed — mitto-kn1 regression")
+	}
+
+	r := collector.reports["child-a"]
+	if r == nil {
+		t.Fatal("Expected report for child-a")
+	}
+	if !r.Failed {
+		t.Error("Expected report.Failed = true after markChildFailed overrode stale report")
+	}
+	if r.FailMessage != "queued send error" {
+		t.Errorf("FailMessage = %q, want %q", r.FailMessage, "queued send error")
 	}
 }
 
@@ -4804,6 +4979,7 @@ func (m *mockSessionManagerForChildren) GetWorkspaceByUUID(string) *config.Works
 	return nil
 }
 func (m *mockSessionManagerForChildren) BroadcastSessionRenamed(string, string)           {}
+func (m *mockSessionManagerForChildren) BroadcastSessionBeadsIssueUpdated(string, string) {}
 func (m *mockSessionManagerForChildren) BroadcastLoopUpdated(string, *session.LoopPrompt) {}
 func (m *mockSessionManagerForChildren) GetUserDataSchema(string) *config.UserDataSchema  { return nil }
 func (m *mockSessionManagerForChildren) GetWorkspacePrompts(string) []config.WebPrompt    { return nil }
@@ -4813,6 +4989,7 @@ func (m *mockSessionManagerForChildren) GetWorkspaceRCLastModified(string) time.
 }
 func (m *mockSessionManagerForChildren) GetWorkspace(string) *config.WorkspaceSettings { return nil }
 func (m *mockSessionManagerForChildren) InvalidateWorkspaceRC(string)                  {}
+func (m *mockSessionManagerForChildren) IsMCPInitTimeout(error) bool                   { return false }
 
 func TestChildrenTasksWait_TimeoutWithStillProcessing(t *testing.T) {
 	// Set up parent + child, child is prompting (still processing).
@@ -4997,7 +5174,8 @@ func (m *mockSessionManagerForChildrenMutable) GetWorkspaces() []config.Workspac
 func (m *mockSessionManagerForChildrenMutable) GetWorkspaceByUUID(string) *config.WorkspaceSettings {
 	return nil
 }
-func (m *mockSessionManagerForChildrenMutable) BroadcastSessionRenamed(string, string) {}
+func (m *mockSessionManagerForChildrenMutable) BroadcastSessionRenamed(string, string)           {}
+func (m *mockSessionManagerForChildrenMutable) BroadcastSessionBeadsIssueUpdated(string, string) {}
 func (m *mockSessionManagerForChildrenMutable) BroadcastLoopUpdated(string, *session.LoopPrompt) {
 }
 func (m *mockSessionManagerForChildrenMutable) GetUserDataSchema(string) *config.UserDataSchema {
@@ -5016,6 +5194,7 @@ func (m *mockSessionManagerForChildrenMutable) GetWorkspace(string) *config.Work
 	return nil
 }
 func (m *mockSessionManagerForChildrenMutable) InvalidateWorkspaceRC(string) {}
+func (m *mockSessionManagerForChildrenMutable) IsMCPInitTimeout(error) bool  { return false }
 
 func TestChildrenTasksWait_AutoCompletesIdleChild(t *testing.T) {
 	// Child is idle (not prompting) from the start and never reports.
@@ -5645,7 +5824,8 @@ func (m *mockSessionManagerForAutoResume) GetWorkspaces() []config.WorkspaceSett
 func (m *mockSessionManagerForAutoResume) GetWorkspaceByUUID(string) *config.WorkspaceSettings {
 	return nil
 }
-func (m *mockSessionManagerForAutoResume) BroadcastSessionRenamed(string, string) {}
+func (m *mockSessionManagerForAutoResume) BroadcastSessionRenamed(string, string)           {}
+func (m *mockSessionManagerForAutoResume) BroadcastSessionBeadsIssueUpdated(string, string) {}
 func (m *mockSessionManagerForAutoResume) BroadcastLoopUpdated(string, *session.LoopPrompt) {
 }
 func (m *mockSessionManagerForAutoResume) GetUserDataSchema(string) *config.UserDataSchema {
@@ -5664,6 +5844,7 @@ func (m *mockSessionManagerForAutoResume) GetWorkspace(string) *config.Workspace
 	return nil
 }
 func (m *mockSessionManagerForAutoResume) InvalidateWorkspaceRC(string) {}
+func (m *mockSessionManagerForAutoResume) IsMCPInitTimeout(error) bool  { return false }
 
 func TestSendPrompt_AutoResumesStoredSession(t *testing.T) {
 	tmpDir := t.TempDir()
@@ -7125,7 +7306,8 @@ func (m *mockSessionManagerCrossWorkspace) GetWorkspaceByUUID(uuid string) *conf
 	}
 	return m.workspaces[uuid]
 }
-func (m *mockSessionManagerCrossWorkspace) BroadcastSessionRenamed(string, string) {}
+func (m *mockSessionManagerCrossWorkspace) BroadcastSessionRenamed(string, string)           {}
+func (m *mockSessionManagerCrossWorkspace) BroadcastSessionBeadsIssueUpdated(string, string) {}
 func (m *mockSessionManagerCrossWorkspace) BroadcastLoopUpdated(string, *session.LoopPrompt) {
 }
 func (m *mockSessionManagerCrossWorkspace) GetUserDataSchema(string) *config.UserDataSchema {
@@ -7144,6 +7326,7 @@ func (m *mockSessionManagerCrossWorkspace) GetWorkspace(string) *config.Workspac
 	return nil
 }
 func (m *mockSessionManagerCrossWorkspace) InvalidateWorkspaceRC(string) {}
+func (m *mockSessionManagerCrossWorkspace) IsMCPInitTimeout(error) bool  { return false }
 
 // setupCrossWorkspaceServer creates a server with two sessions in different workspaces.
 // Returns the server, store, source session ID, target session ID.
@@ -9555,6 +9738,92 @@ func TestConversationUpdate_OnCompletionLoop(t *testing.T) {
 	}
 	if out2.LoopMaxDurationSeconds != 3600 {
 		t.Errorf("patched maxDur = %d, want preserved 3600", out2.LoopMaxDurationSeconds)
+	}
+}
+
+// TestConversationUpdate_BeadsIssueBroadcasts verifies that updating the
+// beads_issue link via the mitto_conversation_update MCP tool persists the new
+// id AND fires a session_beads_issue_updated broadcast on the SessionManager,
+// so the frontend header linked-issue button refreshes immediately (mitto:
+// stale beads link indicator, agent-driven update scenario).
+func TestConversationUpdate_BeadsIssueBroadcasts(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := session.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	t.Cleanup(func() { store.Close() })
+
+	parentMeta := session.Metadata{
+		SessionID:  session.GenerateSessionID(),
+		Name:       "Parent",
+		ACPServer:  "test-server",
+		WorkingDir: "/test/dir",
+	}
+	if err := store.Create(parentMeta); err != nil {
+		t.Fatalf("Create parent: %v", err)
+	}
+
+	mockSM := &mockSessionManager{}
+	srv, err := NewServer(Config{Port: 0}, Dependencies{Store: store, SessionManager: mockSM})
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	if err := srv.RegisterSession(parentMeta.SessionID, nil, logger); err != nil {
+		t.Fatalf("RegisterSession: %v", err)
+	}
+
+	// Set the beads_issue to a new value.
+	newID := "mitto-abc"
+	_, out, err := srv.handleConversationUpdate(context.Background(), nil, ConversationUpdateInput{
+		SelfID:         parentMeta.SessionID,
+		ConversationID: parentMeta.SessionID,
+		BeadsIssue:     &newID,
+	})
+	if err != nil {
+		t.Fatalf("handleConversationUpdate error: %v", err)
+	}
+	if !out.Success {
+		t.Fatalf("update not successful: %s", out.Error)
+	}
+
+	// Metadata must reflect the new link.
+	stored, err := store.GetMetadata(parentMeta.SessionID)
+	if err != nil {
+		t.Fatalf("GetMetadata: %v", err)
+	}
+	if stored.BeadsIssue != newID {
+		t.Errorf("stored BeadsIssue = %q, want %q", stored.BeadsIssue, newID)
+	}
+
+	// The mock must have observed exactly one beads_issue broadcast for our session.
+	if len(mockSM.broadcastBeadsIssues) != 1 {
+		t.Fatalf("expected 1 beads_issue broadcast, got %d", len(mockSM.broadcastBeadsIssues))
+	}
+	call := mockSM.broadcastBeadsIssues[0]
+	if call.sessionID != parentMeta.SessionID {
+		t.Errorf("broadcast session_id = %q, want %q", call.sessionID, parentMeta.SessionID)
+	}
+	if call.beadsIssue != newID {
+		t.Errorf("broadcast beads_issue = %q, want %q", call.beadsIssue, newID)
+	}
+
+	// Clearing the link also broadcasts (empty string).
+	clear := ""
+	_, _, err = srv.handleConversationUpdate(context.Background(), nil, ConversationUpdateInput{
+		SelfID:         parentMeta.SessionID,
+		ConversationID: parentMeta.SessionID,
+		BeadsIssue:     &clear,
+	})
+	if err != nil {
+		t.Fatalf("handleConversationUpdate (clear) error: %v", err)
+	}
+	if len(mockSM.broadcastBeadsIssues) != 2 {
+		t.Fatalf("expected 2 beads_issue broadcasts after clear, got %d", len(mockSM.broadcastBeadsIssues))
+	}
+	if got := mockSM.broadcastBeadsIssues[1]; got.beadsIssue != "" {
+		t.Errorf("clear broadcast beads_issue = %q, want empty string", got.beadsIssue)
 	}
 }
 

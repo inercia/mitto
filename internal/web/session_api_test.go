@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/inercia/mitto/internal/appdir"
 	"github.com/inercia/mitto/internal/config"
 	"github.com/inercia/mitto/internal/conversation"
 	"github.com/inercia/mitto/internal/session"
@@ -44,17 +45,18 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 // call sites.
 func (s *Server) handleUpdateSession(w http.ResponseWriter, r *http.Request, sessionID string) {
 	handlers.New(handlers.Deps{
-		Logger:                   s.logger,
-		Store:                    s.Store(),
-		SessionManager:           s.sessionManager,
-		CallbackIndex:            s.callbackIndex,
-		BroadcastSessionDeleted:  s.BroadcastSessionDeleted,
-		BroadcastACPStopped:      s.BroadcastACPStopped,
-		BroadcastACPStarted:      s.BroadcastACPStarted,
-		BroadcastACPStartFailed:  s.BroadcastACPStartFailed,
-		BroadcastSessionRenamed:  s.BroadcastSessionRenamed,
-		BroadcastSessionPinned:   s.BroadcastSessionPinned,
-		BroadcastSessionArchived: s.BroadcastSessionArchived,
+		Logger:                            s.logger,
+		Store:                             s.Store(),
+		SessionManager:                    s.sessionManager,
+		CallbackIndex:                     s.callbackIndex,
+		BroadcastSessionDeleted:           s.BroadcastSessionDeleted,
+		BroadcastACPStopped:               s.BroadcastACPStopped,
+		BroadcastACPStarted:               s.BroadcastACPStarted,
+		BroadcastACPStartFailed:           s.BroadcastACPStartFailed,
+		BroadcastSessionRenamed:           s.BroadcastSessionRenamed,
+		BroadcastSessionBeadsIssueUpdated: s.BroadcastSessionBeadsIssueUpdated,
+		BroadcastSessionPinned:            s.BroadcastSessionPinned,
+		BroadcastSessionArchived:          s.BroadcastSessionArchived,
 	}).HandleUpdateSession(w, r, sessionID)
 }
 
@@ -322,6 +324,14 @@ func TestHandleWorkspacePrompts_ConditionalRequest(t *testing.T) {
 }
 
 func TestHandleWorkspacePrompts_FileDeleted(t *testing.T) {
+	// Isolate MITTO_DIR to an empty temp dir so the Last-Modified computation
+	// (which folds in ALL prompt-source mtimes since mitto-tf9) does not pick up
+	// the developer's real global prompts dir / settings.json. Without this, those
+	// real files survive the .mittorc deletion and keep Last-Modified non-zero.
+	t.Setenv(appdir.MittoDirEnv, t.TempDir())
+	appdir.ResetCache()
+	t.Cleanup(appdir.ResetCache)
+
 	// Create a temp directory with a .mittorc file
 	tmpDir := t.TempDir()
 	rcPath := tmpDir + "/.mittorc"
@@ -699,6 +709,192 @@ func TestHandleUpdateSession_Success(t *testing.T) {
 	}
 }
 
+// TestHandleUpdateSession_BeadsIssueBroadcasts verifies that a PATCH which
+// updates only the beads_issue field persists the new id in the metadata AND
+// fires a session_beads_issue_updated broadcast on the global events channel.
+// This drives the frontend's header linked-issue button refresh (mitto: stale
+// beads link indicator).
+func TestHandleUpdateSession_BeadsIssueBroadcasts(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := session.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	sessionID := "20260131-120000-bi123456"
+	if err := store.Create(session.Metadata{
+		SessionID:  sessionID,
+		ACPServer:  "test-server",
+		WorkingDir: "/tmp",
+	}); err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+
+	eventsManager := NewGlobalEventsManager()
+	captureSend := make(chan []byte, 8)
+	eventsClient := &GlobalEventsClient{
+		wsConn: &WSConn{send: captureSend},
+		done:   make(chan struct{}),
+	}
+	eventsManager.Register(eventsClient)
+	defer eventsManager.Unregister(eventsClient)
+
+	server := &Server{
+		sessionManager: conversation.NewSessionManager("", "", false, nil),
+		store:          store,
+		eventsManager:  eventsManager,
+	}
+
+	body := strings.NewReader(`{"beads_issue": "mitto-abc"}`)
+	req := httptest.NewRequest(http.MethodPatch, "/api/sessions/"+sessionID, body)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	server.handleUpdateSession(w, req, sessionID)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("Status = %d, want %d, body=%s", w.Code, http.StatusOK, w.Body.String())
+	}
+
+	updated, err := store.GetMetadata(sessionID)
+	if err != nil {
+		t.Fatalf("GetMetadata failed: %v", err)
+	}
+	if updated.BeadsIssue != "mitto-abc" {
+		t.Errorf("BeadsIssue = %q, want %q", updated.BeadsIssue, "mitto-abc")
+	}
+
+	// Drain the broadcast channel — the handler dispatches asynchronously to
+	// per-client send queues via eventsManager.Broadcast, which the test
+	// GlobalEventsClient captures on captureSend.
+	deadline := time.After(500 * time.Millisecond)
+	var (
+		gotType, gotSessionID, gotBeadsIssue string
+		found                                bool
+	)
+drain:
+	for {
+		select {
+		case raw := <-captureSend:
+			var msg struct {
+				Type string `json:"type"`
+				Data struct {
+					SessionID  string `json:"session_id"`
+					BeadsIssue string `json:"beads_issue"`
+				} `json:"data"`
+			}
+			if err := json.Unmarshal(raw, &msg); err != nil {
+				t.Fatalf("Unmarshal broadcast: %v (raw=%s)", err, string(raw))
+			}
+			if msg.Type == "session_beads_issue_updated" {
+				gotType = msg.Type
+				gotSessionID = msg.Data.SessionID
+				gotBeadsIssue = msg.Data.BeadsIssue
+				found = true
+				break drain
+			}
+		case <-deadline:
+			break drain
+		}
+	}
+
+	if !found {
+		t.Fatal("expected a session_beads_issue_updated broadcast, got none")
+	}
+	if gotType != "session_beads_issue_updated" {
+		t.Errorf("broadcast type = %q, want %q", gotType, "session_beads_issue_updated")
+	}
+	if gotSessionID != sessionID {
+		t.Errorf("broadcast session_id = %q, want %q", gotSessionID, sessionID)
+	}
+	if gotBeadsIssue != "mitto-abc" {
+		t.Errorf("broadcast beads_issue = %q, want %q", gotBeadsIssue, "mitto-abc")
+	}
+}
+
+// TestHandleUpdateSession_BeadsIssueClearBroadcastsEmpty verifies that
+// clearing the link (empty string) also broadcasts, so the header button
+// hides immediately on the frontend.
+func TestHandleUpdateSession_BeadsIssueClearBroadcastsEmpty(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := session.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	sessionID := "20260131-120000-bi999999"
+	if err := store.Create(session.Metadata{
+		SessionID:  sessionID,
+		ACPServer:  "test-server",
+		WorkingDir: "/tmp",
+		BeadsIssue: "mitto-xyz",
+	}); err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+
+	eventsManager := NewGlobalEventsManager()
+	captureSend := make(chan []byte, 8)
+	eventsClient := &GlobalEventsClient{
+		wsConn: &WSConn{send: captureSend},
+		done:   make(chan struct{}),
+	}
+	eventsManager.Register(eventsClient)
+	defer eventsManager.Unregister(eventsClient)
+
+	server := &Server{
+		sessionManager: conversation.NewSessionManager("", "", false, nil),
+		store:          store,
+		eventsManager:  eventsManager,
+	}
+
+	body := strings.NewReader(`{"beads_issue": ""}`)
+	req := httptest.NewRequest(http.MethodPatch, "/api/sessions/"+sessionID, body)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	server.handleUpdateSession(w, req, sessionID)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("Status = %d, want %d, body=%s", w.Code, http.StatusOK, w.Body.String())
+	}
+
+	deadline := time.After(500 * time.Millisecond)
+	var found bool
+drain:
+	for {
+		select {
+		case raw := <-captureSend:
+			var msg struct {
+				Type string `json:"type"`
+				Data struct {
+					SessionID  string `json:"session_id"`
+					BeadsIssue string `json:"beads_issue"`
+				} `json:"data"`
+			}
+			if err := json.Unmarshal(raw, &msg); err != nil {
+				t.Fatalf("Unmarshal broadcast: %v", err)
+			}
+			if msg.Type == "session_beads_issue_updated" {
+				if msg.Data.SessionID != sessionID {
+					t.Errorf("broadcast session_id = %q, want %q", msg.Data.SessionID, sessionID)
+				}
+				if msg.Data.BeadsIssue != "" {
+					t.Errorf("broadcast beads_issue = %q, want empty (clear)", msg.Data.BeadsIssue)
+				}
+				found = true
+				break drain
+			}
+		case <-deadline:
+			break drain
+		}
+	}
+	if !found {
+		t.Fatal("expected a session_beads_issue_updated broadcast with empty beads_issue, got none")
+	}
+}
+
 func TestHandleListSessions_Pagination(t *testing.T) {
 	tmpDir := t.TempDir()
 	store, err := session.NewStore(tmpDir)
@@ -952,15 +1148,16 @@ func TestHandleSessionDetail_PATCH(t *testing.T) {
 		eventsManager:  NewGlobalEventsManager(),
 	}
 	server.apiHandlers = handlers.New(handlers.Deps{
-		Store:                    store,
-		SessionManager:           server.sessionManager,
-		BroadcastSessionRenamed:  server.BroadcastSessionRenamed,
-		BroadcastSessionPinned:   server.BroadcastSessionPinned,
-		BroadcastSessionArchived: server.BroadcastSessionArchived,
-		BroadcastACPStopped:      server.BroadcastACPStopped,
-		BroadcastACPStarted:      server.BroadcastACPStarted,
-		BroadcastACPStartFailed:  server.BroadcastACPStartFailed,
-		BroadcastSessionDeleted:  server.BroadcastSessionDeleted,
+		Store:                             store,
+		SessionManager:                    server.sessionManager,
+		BroadcastSessionRenamed:           server.BroadcastSessionRenamed,
+		BroadcastSessionBeadsIssueUpdated: server.BroadcastSessionBeadsIssueUpdated,
+		BroadcastSessionPinned:            server.BroadcastSessionPinned,
+		BroadcastSessionArchived:          server.BroadcastSessionArchived,
+		BroadcastACPStopped:               server.BroadcastACPStopped,
+		BroadcastACPStarted:               server.BroadcastACPStarted,
+		BroadcastACPStartFailed:           server.BroadcastACPStartFailed,
+		BroadcastSessionDeleted:           server.BroadcastSessionDeleted,
 	})
 
 	body := strings.NewReader(`{"name": "Updated Name"}`)

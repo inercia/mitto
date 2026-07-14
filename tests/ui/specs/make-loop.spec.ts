@@ -2,10 +2,10 @@ import { testWithCleanup as test, expect } from "../fixtures/test-fixtures";
 import { apiUrl } from "../utils/selectors";
 
 /**
- * "Make loop" context menu action tests.
+ * "Loop" context menu action tests.
  *
  * Verifies that right-clicking a regular (non-loop, non-child) conversation
- * and selecting "Make loop" from the context menu:
+ * and selecting "Loop" from the context menu:
  *   1. Sends PUT /api/sessions/{id}/loop with the draft body.
  *   2. The loop_updated broadcast triggers the frontend to flip
  *      session.loop_enabled=true.
@@ -18,7 +18,7 @@ import { apiUrl } from "../utils/selectors";
 // daisyUI context menus render as fixed-position <ul class="menu fixed z-50 …">
 const MENU = ".menu.fixed.z-50.shadow-xl";
 
-test.describe("Make loop — context menu action", () => {
+test.describe("Loop — context menu action", () => {
   let sessionId: string;
 
   test.beforeEach(async ({ page, request, helpers }) => {
@@ -35,7 +35,7 @@ test.describe("Make loop — context menu action", () => {
     await helpers.navigateToSession(page, sessionId);
   });
 
-  test("shows 'Make loop' in the context menu for a regular session", async ({
+  test("shows 'Loop' in the context menu for a regular session", async ({
     page,
     timeouts,
   }) => {
@@ -47,16 +47,16 @@ test.describe("Make loop — context menu action", () => {
     const menu = page.locator(MENU).first();
     await expect(menu).toBeVisible({ timeout: timeouts.shortAction });
 
-    // "Make loop" must be present.
-    const makeLoopBtn = menu.locator("button").filter({ hasText: "Make loop" });
+    // "Loop" must be present.
+    const makeLoopBtn = menu.locator("button").filter({ hasText: /^Loop$/ });
     await expect(makeLoopBtn).toBeVisible({ timeout: timeouts.shortAction });
   });
 
-  test("clicking 'Make loop' converts the conversation and opens the loop editor", async ({
+  test("clicking 'Loop' converts the conversation and opens the loop editor", async ({
     page,
     timeouts,
   }) => {
-    // Open context menu and click "Make loop".
+    // Open context menu and click "Loop".
     const sessionItem = page.locator(`[data-session-id="${sessionId}"]`).first();
     await expect(sessionItem).toBeVisible({ timeout: timeouts.appReady });
     await sessionItem.click({ button: "right" });
@@ -64,7 +64,7 @@ test.describe("Make loop — context menu action", () => {
     const menu = page.locator(MENU).first();
     await expect(menu).toBeVisible({ timeout: timeouts.shortAction });
 
-    const makeLoopBtn = menu.locator("button").filter({ hasText: "Make loop" });
+    const makeLoopBtn = menu.locator("button").filter({ hasText: /^Loop$/ });
     await expect(makeLoopBtn).toBeVisible({ timeout: timeouts.shortAction });
     await makeLoopBtn.click();
 
@@ -81,7 +81,7 @@ test.describe("Make loop — context menu action", () => {
     page,
     timeouts,
   }) => {
-    // Step 1: Convert to loop via "Make loop" (reuse existing flow).
+    // Step 1: Convert to loop via "Loop" (reuse existing flow).
     const sessionItem = page.locator(`[data-session-id="${sessionId}"]`).first();
     await expect(sessionItem).toBeVisible({ timeout: timeouts.appReady });
     await sessionItem.click({ button: "right" });
@@ -89,7 +89,7 @@ test.describe("Make loop — context menu action", () => {
     let menu = page.locator(MENU).first();
     await expect(menu).toBeVisible({ timeout: timeouts.shortAction });
 
-    const makeLoopBtn = menu.locator("button").filter({ hasText: "Make loop" });
+    const makeLoopBtn = menu.locator("button").filter({ hasText: /^Loop$/ });
     await expect(makeLoopBtn).toBeVisible({ timeout: timeouts.shortAction });
     await makeLoopBtn.click();
 
@@ -100,7 +100,7 @@ test.describe("Make loop — context menu action", () => {
     await expect(loopPanel).toBeVisible({ timeout: timeouts.appReady });
 
     // Step 2: Right-click again — now "Make non-loop" should be visible
-    // and "Make loop" should be gone (they are mutually exclusive).
+    // and "Loop" should be gone (they are mutually exclusive).
     await sessionItem.click({ button: "right" });
     menu = page.locator(MENU).first();
     await expect(menu).toBeVisible({ timeout: timeouts.shortAction });
@@ -108,8 +108,8 @@ test.describe("Make loop — context menu action", () => {
     const makeNonLoopBtn = menu.locator("button").filter({ hasText: "Make non-loop" });
     await expect(makeNonLoopBtn).toBeVisible({ timeout: timeouts.shortAction });
 
-    // "Make loop" must NOT appear for an already-loop session.
-    await expect(menu.locator("button").filter({ hasText: "Make loop" })).toHaveCount(0);
+    // "Loop" must NOT appear for an already-loop session.
+    await expect(menu.locator("button").filter({ hasText: /^Loop$/ })).toHaveCount(0);
 
     // Step 3: Click "Make non-loop" and confirm the editor disappears.
     await makeNonLoopBtn.click();

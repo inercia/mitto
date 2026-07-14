@@ -779,6 +779,40 @@ func TestLoopRunner_ConfigCapAutoStop(t *testing.T) {
 	}
 }
 
+// TestLoopRunner_IterationSafeguardBranchSelection verifies the discriminant
+// used by the auto-stop log branches in deliverPrompt: when the per-prompt cap
+// is unlimited (MaxIterations=0), the runner distinguishes the hardcoded
+// GlobalMaxLoopIterations backstop (WARN) from the config-level cap (INFO)
+// via `effective == config.GlobalMaxLoopIterations`.
+func TestLoopRunner_IterationSafeguardBranchSelection(t *testing.T) {
+	// Case A: both caps unlimited — effective falls through to the hardcoded backstop
+	// (WARN branch: effective == GlobalMaxLoopIterations).
+	effective := config.EffectiveMaxLoopIterations(0, 0)
+	if effective != config.GlobalMaxLoopIterations {
+		t.Errorf("case A: effective = %d, want %d (GlobalMaxLoopIterations)",
+			effective, config.GlobalMaxLoopIterations)
+	}
+
+	// Case B: config-level cap is the binding limit, per-prompt cap is unlimited.
+	const cfgCap = 100
+	effective = config.EffectiveMaxLoopIterations(0, cfgCap)
+	if effective != cfgCap {
+		t.Errorf("case B: effective = %d, want %d (config-level cap)", effective, cfgCap)
+	}
+	if effective >= config.GlobalMaxLoopIterations {
+		t.Error("case B: expected INFO (configured-cap) branch, got WARN branch")
+	}
+
+	// Case C: per-prompt cap smaller than config cap — per-prompt cap wins, but the
+	// runner's log path only reaches the safeguard branches when perPromptReached=false.
+	// This documents that a positive promptMax below configMax IS honored (no behavior
+	// change from EffectiveMaxLoopIterations).
+	effective = config.EffectiveMaxLoopIterations(5, cfgCap)
+	if effective != 5 {
+		t.Errorf("case C: effective = %d, want 5 (per-prompt cap honored)", effective)
+	}
+}
+
 // TestLoopRunner_DefaultMaxLoopIterations verifies that the runner
 // is initialized with the correct default config cap.
 func TestLoopRunner_DefaultMaxLoopIterations(t *testing.T) {
@@ -2113,7 +2147,7 @@ func TestLoopRunner_DeliverPrompt_ArgumentsForwardedAndSubstituted(t *testing.T)
 	defer cancel()
 	bs := conversation.NewTestBackgroundSessionWithCtx("arg-dispatch", ctx, cancel)
 
-	deliverErr := runner.deliverPrompt(bs, "test-session", loop, loopStore, false, false)
+	deliverErr := runner.deliverPrompt(bs, meta, loop, loopStore, false, false)
 	// The resolver must have been called even though PromptWithMeta failed.
 	if !resolverCalled {
 		t.Error("promptResolver was not called; loop.PromptName not forwarded to deliverPrompt")
@@ -2546,6 +2580,9 @@ func (c *fakeTasksBeadsClient) listCallCount() int {
 	return len(c.listCalls)
 }
 
+func (c *fakeTasksBeadsClient) Ready(context.Context, string) ([]byte, error) {
+	return []byte(`[]`), nil
+}
 func (c *fakeTasksBeadsClient) Status(context.Context, string) ([]byte, error) {
 	return []byte(`{}`), nil
 }
@@ -3303,6 +3340,315 @@ func TestLoopRunner_TasksCooldownSettersGetters(t *testing.T) {
 	}
 }
 
+// newArchivedLoopSession creates a session archived with the given reason and
+// timestamp, optionally with a loop config, for auto-unarchive recovery tests.
+func newArchivedLoopSession(t *testing.T, store *session.Store, sessionID string, archivedAt time.Time, reason session.ArchiveReason, hasLoop bool) {
+	t.Helper()
+	if err := store.Create(session.Metadata{
+		SessionID:  sessionID,
+		ACPServer:  "test",
+		WorkingDir: "/tmp",
+	}); err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	if err := store.UpdateMetadata(sessionID, func(m *session.Metadata) {
+		m.Archived = true
+		m.ArchivedAt = archivedAt
+		m.ArchiveReason = reason
+	}); err != nil {
+		t.Fatalf("UpdateMetadata() error = %v", err)
+	}
+	if hasLoop {
+		loopStore := store.Loop(sessionID)
+		if err := loopStore.Set(&session.LoopPrompt{
+			Prompt:    "check",
+			Frequency: session.Frequency{Value: 1, Unit: session.FrequencyHours},
+			Enabled:   false,
+		}); err != nil {
+			t.Fatalf("Loop Set() error = %v", err)
+		}
+	}
+}
+
+func TestLoopRunner_AutoUnarchive_EligibleAndDuePersistsAttempt(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	archivedAt := time.Now().Add(-2 * time.Hour)
+	newArchivedLoopSession(t, store, "sess-1", archivedAt, session.ArchiveReasonACPFailures, true)
+
+	runner := NewLoopRunner(store, nil, nil)
+	runner.SetAutoUnarchiveRecovery(true, time.Hour, 10*time.Minute)
+
+	var called []string
+	var attemptPersisted bool
+	runner.SetOnAutoUnarchive(func(sessionID string) error {
+		called = append(called, sessionID)
+		if m, err := store.GetMetadata(sessionID); err == nil && !m.AutoUnarchiveLastAttemptAt.IsZero() {
+			attemptPersisted = true
+		}
+		return nil
+	})
+
+	sessions, err := store.List()
+	if err != nil {
+		t.Fatalf("List() error = %v", err)
+	}
+	runner.checkAutoUnarchiveRecovery(sessions, time.Now())
+
+	if len(called) != 1 || called[0] != "sess-1" {
+		t.Errorf("onAutoUnarchive called = %v, want [sess-1]", called)
+	}
+	if !attemptPersisted {
+		t.Error("AutoUnarchiveLastAttemptAt should be persisted before invoking the callback")
+	}
+}
+
+func TestLoopRunner_AutoUnarchive_SuccessClearsAttempt(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	archivedAt := time.Now().Add(-2 * time.Hour)
+	newArchivedLoopSession(t, store, "sess-1", archivedAt, session.ArchiveReasonACPFailures, true)
+
+	runner := NewLoopRunner(store, nil, nil)
+	runner.SetAutoUnarchiveRecovery(true, time.Hour, 10*time.Minute)
+	runner.SetOnAutoUnarchive(func(sessionID string) error { return nil })
+
+	sessions, err := store.List()
+	if err != nil {
+		t.Fatalf("List() error = %v", err)
+	}
+	runner.checkAutoUnarchiveRecovery(sessions, time.Now())
+
+	meta, err := store.GetMetadata("sess-1")
+	if err != nil {
+		t.Fatalf("GetMetadata() error = %v", err)
+	}
+	if !meta.AutoUnarchiveLastAttemptAt.IsZero() {
+		t.Error("AutoUnarchiveLastAttemptAt should be cleared after a successful auto-unarchive")
+	}
+}
+
+func TestLoopRunner_AutoUnarchive_FailureRetainsAttempt(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	archivedAt := time.Now().Add(-2 * time.Hour)
+	newArchivedLoopSession(t, store, "sess-1", archivedAt, session.ArchiveReasonACPFailures, true)
+
+	runner := NewLoopRunner(store, nil, nil)
+	runner.SetAutoUnarchiveRecovery(true, time.Hour, 10*time.Minute)
+	runner.SetOnAutoUnarchive(func(sessionID string) error { return errors.New("acp still broken") })
+
+	sessions, err := store.List()
+	if err != nil {
+		t.Fatalf("List() error = %v", err)
+	}
+	now := time.Now()
+	runner.checkAutoUnarchiveRecovery(sessions, now)
+
+	meta, err := store.GetMetadata("sess-1")
+	if err != nil {
+		t.Fatalf("GetMetadata() error = %v", err)
+	}
+	if meta.AutoUnarchiveLastAttemptAt.IsZero() {
+		t.Error("AutoUnarchiveLastAttemptAt should be retained after a failed auto-unarchive")
+	}
+}
+
+func TestLoopRunner_AutoUnarchive_SkipsManualArchive(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	archivedAt := time.Now().Add(-2 * time.Hour)
+	newArchivedLoopSession(t, store, "sess-1", archivedAt, session.ArchiveReasonManual, true)
+
+	runner := NewLoopRunner(store, nil, nil)
+	runner.SetAutoUnarchiveRecovery(true, time.Hour, 10*time.Minute)
+
+	var called bool
+	runner.SetOnAutoUnarchive(func(sessionID string) error { called = true; return nil })
+
+	sessions, err := store.List()
+	if err != nil {
+		t.Fatalf("List() error = %v", err)
+	}
+	runner.checkAutoUnarchiveRecovery(sessions, time.Now())
+
+	if called {
+		t.Error("onAutoUnarchive should not be invoked for ArchiveReasonManual")
+	}
+}
+
+func TestLoopRunner_AutoUnarchive_SkipsInactivityArchive(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	archivedAt := time.Now().Add(-2 * time.Hour)
+	newArchivedLoopSession(t, store, "sess-1", archivedAt, session.ArchiveReasonInactivity, true)
+
+	runner := NewLoopRunner(store, nil, nil)
+	runner.SetAutoUnarchiveRecovery(true, time.Hour, 10*time.Minute)
+
+	var called bool
+	runner.SetOnAutoUnarchive(func(sessionID string) error { called = true; return nil })
+
+	sessions, err := store.List()
+	if err != nil {
+		t.Fatalf("List() error = %v", err)
+	}
+	runner.checkAutoUnarchiveRecovery(sessions, time.Now())
+
+	if called {
+		t.Error("onAutoUnarchive should not be invoked for ArchiveReasonInactivity")
+	}
+}
+
+func TestLoopRunner_AutoUnarchive_SkipsNonLoopACPFailures(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	archivedAt := time.Now().Add(-2 * time.Hour)
+	newArchivedLoopSession(t, store, "sess-1", archivedAt, session.ArchiveReasonACPFailures, false)
+
+	runner := NewLoopRunner(store, nil, nil)
+	runner.SetAutoUnarchiveRecovery(true, time.Hour, 10*time.Minute)
+
+	var called bool
+	runner.SetOnAutoUnarchive(func(sessionID string) error { called = true; return nil })
+
+	sessions, err := store.List()
+	if err != nil {
+		t.Fatalf("List() error = %v", err)
+	}
+	runner.checkAutoUnarchiveRecovery(sessions, time.Now())
+
+	if called {
+		t.Error("onAutoUnarchive should not be invoked for a non-loop ACP-failures archive")
+	}
+}
+
+func TestLoopRunner_AutoUnarchive_SkipsWhenNotYetDue(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	archivedAt := time.Now().Add(-10 * time.Minute)
+	newArchivedLoopSession(t, store, "sess-1", archivedAt, session.ArchiveReasonACPFailures, true)
+
+	runner := NewLoopRunner(store, nil, nil)
+	runner.SetAutoUnarchiveRecovery(true, time.Hour, 10*time.Minute)
+
+	var called bool
+	runner.SetOnAutoUnarchive(func(sessionID string) error { called = true; return nil })
+
+	sessions, err := store.List()
+	if err != nil {
+		t.Fatalf("List() error = %v", err)
+	}
+	runner.checkAutoUnarchiveRecovery(sessions, time.Now())
+
+	if called {
+		t.Error("onAutoUnarchive should not be invoked before retryInterval has elapsed")
+	}
+}
+
+func TestLoopRunner_AutoUnarchive_StaggerLimitsToOnePerPoll(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	// sess-2 is more overdue than sess-1; both are due.
+	newArchivedLoopSession(t, store, "sess-1", time.Now().Add(-2*time.Hour), session.ArchiveReasonACPFailures, true)
+	newArchivedLoopSession(t, store, "sess-2", time.Now().Add(-3*time.Hour), session.ArchiveReasonACPFailures, true)
+
+	runner := NewLoopRunner(store, nil, nil)
+	runner.SetAutoUnarchiveRecovery(true, time.Hour, 10*time.Minute)
+
+	var called []string
+	runner.SetOnAutoUnarchive(func(sessionID string) error { called = append(called, sessionID); return nil })
+
+	sessions, err := store.List()
+	if err != nil {
+		t.Fatalf("List() error = %v", err)
+	}
+	runner.checkAutoUnarchiveRecovery(sessions, time.Now())
+
+	if len(called) != 1 {
+		t.Fatalf("onAutoUnarchive called %d times, want exactly 1", len(called))
+	}
+	if called[0] != "sess-2" {
+		t.Errorf("onAutoUnarchive called for %q, want the most-overdue session %q", called[0], "sess-2")
+	}
+}
+
+func TestLoopRunner_AutoUnarchive_RestartDurability(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	// Simulate a prior attempt persisted before a restart: ArchivedAt is old,
+	// but AutoUnarchiveLastAttemptAt is the more recent anchor.
+	oldArchivedAt := time.Now().Add(-5 * time.Hour)
+	lastAttempt := time.Now().Add(-30 * time.Minute)
+	newArchivedLoopSession(t, store, "sess-1", oldArchivedAt, session.ArchiveReasonACPFailures, true)
+	if err := store.UpdateMetadata("sess-1", func(m *session.Metadata) {
+		m.AutoUnarchiveLastAttemptAt = lastAttempt
+	}); err != nil {
+		t.Fatalf("UpdateMetadata() error = %v", err)
+	}
+
+	// Fresh LoopRunner instance, as after a process restart (in-memory stagger reset).
+	runner := NewLoopRunner(store, nil, nil)
+	runner.SetAutoUnarchiveRecovery(true, time.Hour, 10*time.Minute)
+
+	var called bool
+	runner.SetOnAutoUnarchive(func(sessionID string) error { called = true; return nil })
+
+	sessions, err := store.List()
+	if err != nil {
+		t.Fatalf("List() error = %v", err)
+	}
+	// Only 30 minutes have elapsed since AutoUnarchiveLastAttemptAt, which is less
+	// than the 1h retryInterval, so it must NOT be attempted yet even though
+	// ArchivedAt is far in the past.
+	runner.checkAutoUnarchiveRecovery(sessions, time.Now())
+	if called {
+		t.Error("cadence should be anchored on persisted AutoUnarchiveLastAttemptAt, not ArchivedAt")
+	}
+
+	// Advance past retryInterval relative to the persisted anchor.
+	runner.checkAutoUnarchiveRecovery(sessions, lastAttempt.Add(time.Hour+time.Minute))
+	if !called {
+		t.Error("session should become due once retryInterval has elapsed since the persisted attempt timestamp")
+	}
+}
+
 func TestTasksBaselineStore_GetSetRoundTrip(t *testing.T) {
 	dir := t.TempDir()
 	bs := NewTasksBaselineStore(dir)
@@ -3325,5 +3671,518 @@ func TestTasksBaselineStore_GetSetRoundTrip(t *testing.T) {
 	}
 	if got.CapturedAt.IsZero() {
 		t.Error("CapturedAt should be set")
+	}
+}
+
+// =============================================================================
+// Per-workspace loop-dispatch concurrency guard tests (mitto-61z)
+// =============================================================================
+
+// TestLoopRunner_WorkspaceSlot_ReserveRelease verifies the low-level slot
+// reservation helpers respect the configured cap and are independent across
+// distinct workspace keys.
+func TestLoopRunner_WorkspaceSlot_ReserveRelease(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	runner := NewLoopRunner(store, nil, nil)
+	runner.SetLoopWorkspaceConcurrency(1)
+
+	keyA := workspaceKey("/ws/a", "auggie")
+	keyB := workspaceKey("/ws/b", "auggie")
+
+	if !runner.tryReserveWorkspaceSlot(keyA) {
+		t.Fatal("first reserve for A must succeed (cap=1)")
+	}
+	if runner.workspaceInFlightCount(keyA) != 1 {
+		t.Errorf("in-flight[A] = %d, want 1", runner.workspaceInFlightCount(keyA))
+	}
+	if runner.tryReserveWorkspaceSlot(keyA) {
+		t.Error("second reserve for A must fail at cap=1")
+	}
+	// Different workspace is independent.
+	if !runner.tryReserveWorkspaceSlot(keyB) {
+		t.Error("reserve for B must succeed — different workspace")
+	}
+	runner.releaseWorkspaceSlot(keyA)
+	if runner.workspaceInFlightCount(keyA) != 0 {
+		t.Errorf("after release, in-flight[A] = %d, want 0", runner.workspaceInFlightCount(keyA))
+	}
+	// After release, we can reserve A again.
+	if !runner.tryReserveWorkspaceSlot(keyA) {
+		t.Error("reserve for A must succeed after release")
+	}
+	// Releasing more times than we reserved must not go negative.
+	runner.releaseWorkspaceSlot(keyA)
+	runner.releaseWorkspaceSlot(keyA)
+	if runner.workspaceInFlightCount(keyA) != 0 {
+		t.Errorf("in-flight[A] after over-release = %d, want 0", runner.workspaceInFlightCount(keyA))
+	}
+}
+
+// TestLoopRunner_WorkspaceSlot_CapZeroDisabled verifies that cap=0 disables
+// the guard: reserve always succeeds and the counter is not incremented.
+func TestLoopRunner_WorkspaceSlot_CapZeroDisabled(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	runner := NewLoopRunner(store, nil, nil)
+	runner.SetLoopWorkspaceConcurrency(0)
+
+	key := workspaceKey("/ws/x", "auggie")
+	for i := 0; i < 5; i++ {
+		if !runner.tryReserveWorkspaceSlot(key) {
+			t.Fatalf("reserve[%d] must succeed with cap=0", i)
+		}
+	}
+	if runner.workspaceInFlightCount(key) != 0 {
+		t.Errorf("in-flight[key] = %d, want 0 (cap=0 must not increment)", runner.workspaceInFlightCount(key))
+	}
+}
+
+// TestLoopRunner_WorkspaceSlot_CapAboveOne verifies that a cap > 1 allows
+// exactly that many concurrent reservations before rejecting further ones.
+func TestLoopRunner_WorkspaceSlot_CapAboveOne(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	runner := NewLoopRunner(store, nil, nil)
+	runner.SetLoopWorkspaceConcurrency(2)
+
+	key := workspaceKey("/ws/y", "auggie")
+	if !runner.tryReserveWorkspaceSlot(key) {
+		t.Fatal("first reserve must succeed at cap=2")
+	}
+	if !runner.tryReserveWorkspaceSlot(key) {
+		t.Fatal("second reserve must succeed at cap=2")
+	}
+	if runner.tryReserveWorkspaceSlot(key) {
+		t.Error("third reserve must fail at cap=2")
+	}
+}
+
+// TestLoopRunner_WorkspaceSlot_NegativeCapClamped verifies that
+// SetLoopWorkspaceConcurrency clamps negative values to 0 (cap disabled).
+func TestLoopRunner_WorkspaceSlot_NegativeCapClamped(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	runner := NewLoopRunner(store, nil, nil)
+	runner.SetLoopWorkspaceConcurrency(-5)
+
+	key := workspaceKey("/ws/z", "auggie")
+	// With cap effectively 0, reserves always succeed and never populate the map.
+	if !runner.tryReserveWorkspaceSlot(key) {
+		t.Error("reserve must succeed when negative cap is clamped to 0")
+	}
+	if runner.workspaceInFlightCount(key) != 0 {
+		t.Errorf("in-flight[key] = %d, want 0 (clamped cap must not increment)", runner.workspaceInFlightCount(key))
+	}
+}
+
+// setLoopDue creates a session with an overdue loop prompt. It writes the
+// loop JSON directly to disk so NextScheduledAt is preserved (LoopStore.Set
+// recomputes NextScheduledAt to a future time, which would defeat the test).
+func setLoopDue(t *testing.T, store *session.Store, sessionID, workingDir, acpServer string) *session.LoopPrompt {
+	t.Helper()
+	meta := session.Metadata{
+		SessionID:  sessionID,
+		ACPServer:  acpServer,
+		WorkingDir: workingDir,
+	}
+	if err := store.Create(meta); err != nil {
+		t.Fatalf("Create(%s) error = %v", sessionID, err)
+	}
+	past := time.Now().UTC().Add(-1 * time.Hour)
+	p := &session.LoopPrompt{
+		Prompt:          "Test loop prompt",
+		Frequency:       session.Frequency{Value: 1, Unit: session.FrequencyHours},
+		Enabled:         true,
+		CreatedAt:       past.Add(-1 * time.Hour),
+		UpdatedAt:       past.Add(-1 * time.Hour),
+		NextScheduledAt: &past,
+	}
+	loopPath := filepath.Join(store.SessionDir(sessionID), "loop.json")
+	if err := writeTestLoopFile(loopPath, p); err != nil {
+		t.Fatalf("writeTestLoopFile(%s) error = %v", sessionID, err)
+	}
+	return p
+}
+
+// TestLoopRunner_RunOnce_WorkspaceCapSkipsSibling verifies that when a
+// workspace is at its concurrency cap (a sibling loop is in flight), the
+// next due loop in that same workspace is skipped — not errored — and its
+// schedule is NOT advanced (no backoff either).
+func TestLoopRunner_RunOnce_WorkspaceCapSkipsSibling(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	// Two loops in the SAME workspace, both overdue.
+	_ = setLoopDue(t, store, "sib-1", "/ws/shared", "auggie")
+	_ = setLoopDue(t, store, "sib-2", "/ws/shared", "auggie")
+
+	sm := conversation.NewSessionManagerWithOptions(conversation.SessionManagerOptions{})
+	// Register non-prompting BackgroundSessions for both so checkSession
+	// reaches the workspace guard for each (rather than the auto-resume
+	// failure path).
+	sm.AddSessionForTest(conversation.NewMinimalBackgroundSessionPrompting("sib-1", false))
+	sm.AddSessionForTest(conversation.NewMinimalBackgroundSessionPrompting("sib-2", false))
+
+	runner := NewLoopRunner(store, sm, nil)
+	runner.SetLoopWorkspaceConcurrency(1)
+
+	// Simulate an in-flight sibling by pre-reserving the workspace slot.
+	key := workspaceKey("/ws/shared", "auggie")
+	if !runner.tryReserveWorkspaceSlot(key) {
+		t.Fatal("pre-reserve failed unexpectedly")
+	}
+
+	// Capture NextScheduledAt for sib-2 before running.
+	before, err := store.Loop("sib-2").Get()
+	if err != nil {
+		t.Fatalf("Get(sib-2) before error = %v", err)
+	}
+	if before.NextScheduledAt == nil {
+		t.Fatal("sib-2 NextScheduledAt is nil before RunOnce")
+	}
+	beforeNext := *before.NextScheduledAt
+
+	delivered, skipped, errored := runner.RunOnce()
+
+	// Both sessions share the same workspace and cap=1 was pre-consumed by
+	// our reservation. Both must be skipped — not errored — and neither
+	// schedule may advance.
+	if skipped != 2 {
+		t.Errorf("skipped = %d, want 2 (both siblings must be skipped)", skipped)
+	}
+	if delivered != 0 {
+		t.Errorf("delivered = %d, want 0", delivered)
+	}
+	if errored != 0 {
+		t.Errorf("errored = %d, want 0 (workspace-busy must NOT count as errored)", errored)
+	}
+
+	// sib-2's schedule MUST NOT have advanced.
+	after, err := store.Loop("sib-2").Get()
+	if err != nil {
+		t.Fatalf("Get(sib-2) after error = %v", err)
+	}
+	if after.NextScheduledAt == nil || !after.NextScheduledAt.Equal(beforeNext) {
+		t.Errorf("sib-2 NextScheduledAt advanced: before=%v after=%v (must not advance on ErrWorkspaceBusy)",
+			beforeNext, after.NextScheduledAt)
+	}
+	// And no scheduled-delivery backoff must have been recorded.
+	runner.scheduleBackoffFailuresMu.Lock()
+	got := runner.scheduleBackoffFailures["sib-2"]
+	runner.scheduleBackoffFailuresMu.Unlock()
+	if got != 0 {
+		t.Errorf("scheduleBackoffFailures[sib-2] = %d, want 0 (ErrWorkspaceBusy must not count as a delivery failure)", got)
+	}
+}
+
+// TestLoopRunner_RunOnce_DifferentWorkspacesIndependent verifies that a slot
+// reservation on one workspace does NOT block a due loop in a different
+// workspace.
+func TestLoopRunner_RunOnce_DifferentWorkspacesIndependent(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	_ = setLoopDue(t, store, "wsA", "/ws/a", "auggie")
+	_ = setLoopDue(t, store, "wsB", "/ws/b", "auggie")
+
+	sm := conversation.NewSessionManagerWithOptions(conversation.SessionManagerOptions{})
+	// Register non-prompting bs for both so they reach the guard.
+	sm.AddSessionForTest(conversation.NewMinimalBackgroundSessionPrompting("wsA", false))
+	sm.AddSessionForTest(conversation.NewMinimalBackgroundSessionPrompting("wsB", false))
+
+	runner := NewLoopRunner(store, sm, nil)
+	runner.SetLoopWorkspaceConcurrency(1)
+
+	// Reserve only workspace A. Workspace B must remain free.
+	if !runner.tryReserveWorkspaceSlot(workspaceKey("/ws/a", "auggie")) {
+		t.Fatal("pre-reserve A failed unexpectedly")
+	}
+
+	// Snapshot both NextScheduledAt values before running.
+	loopA, _ := store.Loop("wsA").Get()
+	loopB, _ := store.Loop("wsB").Get()
+	if loopA == nil || loopB == nil || loopA.NextScheduledAt == nil || loopB.NextScheduledAt == nil {
+		t.Fatal("initial loop state incomplete")
+	}
+	beforeA := *loopA.NextScheduledAt
+	beforeB := *loopB.NextScheduledAt
+
+	runner.RunOnce()
+
+	// Workspace A must be skipped — schedule unchanged.
+	afterA, _ := store.Loop("wsA").Get()
+	if afterA.NextScheduledAt == nil || !afterA.NextScheduledAt.Equal(beforeA) {
+		t.Errorf("wsA schedule advanced despite workspace being at cap: before=%v after=%v",
+			beforeA, afterA.NextScheduledAt)
+	}
+
+	// Workspace B was NOT at cap when checkSession reached the guard, so the
+	// guard reserved a slot for B and proceeded to PromptWithMeta, which fails
+	// with "still starting up" (no ACP). The synchronous failure releases the
+	// slot again — verify the slot count for B is back to 0.
+	if got := runner.workspaceInFlightCount(workspaceKey("/ws/b", "auggie")); got != 0 {
+		t.Errorf("in-flight[wsB] = %d, want 0 (synchronous PromptWithMeta failure must release the slot)", got)
+	}
+	// And workspace A's in-flight count must still be 1 (our pre-reserved slot
+	// was NOT touched by the checkSession/deliverPrompt paths for wsB).
+	if got := runner.workspaceInFlightCount(workspaceKey("/ws/a", "auggie")); got != 1 {
+		t.Errorf("in-flight[wsA] = %d, want 1 (pre-reserved slot must remain)", got)
+	}
+	// wsB's schedule may or may not have advanced depending on whether the
+	// PromptWithMeta stub triggered OnComplete. The critical invariant we
+	// care about — independence from workspace A — is asserted above.
+	_ = beforeB
+}
+
+// TestLoopRunner_TriggerNow_BypassesWorkspaceCap verifies that manual "Run
+// Now" (forced) deliveries bypass the workspace concurrency cap: even when
+// the workspace is at cap, TriggerNow does not return ErrWorkspaceBusy.
+func TestLoopRunner_TriggerNow_BypassesWorkspaceCap(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	_ = setLoopDue(t, store, "forced-1", "/ws/forced", "auggie")
+
+	sm := conversation.NewSessionManagerWithOptions(conversation.SessionManagerOptions{})
+	sm.AddSessionForTest(conversation.NewMinimalBackgroundSessionPrompting("forced-1", false))
+
+	runner := NewLoopRunner(store, sm, nil)
+	runner.SetLoopWorkspaceConcurrency(1)
+
+	// Pre-reserve the workspace slot to simulate an in-flight sibling.
+	key := workspaceKey("/ws/forced", "auggie")
+	if !runner.tryReserveWorkspaceSlot(key) {
+		t.Fatal("pre-reserve failed unexpectedly")
+	}
+
+	// TriggerNow (forced=true) must NOT return ErrWorkspaceBusy — the guard
+	// is bypassed. It may still fail downstream (PromptWithMeta returns
+	// "still starting up" because there is no real ACP wiring), but that
+	// failure is *not* the guard rejecting the delivery.
+	err = runner.TriggerNow("forced-1", true)
+	if errors.Is(err, ErrWorkspaceBusy) {
+		t.Errorf("TriggerNow returned ErrWorkspaceBusy — forced deliveries must bypass the workspace cap")
+	}
+
+	// And the pre-reserved slot count is unchanged (forced path does not
+	// touch the counter).
+	if got := runner.workspaceInFlightCount(key); got != 1 {
+		t.Errorf("in-flight[key] = %d, want 1 (forced must not touch the counter)", got)
+	}
+}
+
+// TestLoopRunner_WorkspaceKey verifies the workspaceKey helper produces the
+// documented format (WorkingDir + \x00 + ACPServer) and distinguishes
+// otherwise-similar values.
+func TestLoopRunner_WorkspaceKey(t *testing.T) {
+	// Same working dir, different ACP servers → different keys.
+	if workspaceKey("/w", "a") == workspaceKey("/w", "b") {
+		t.Error("keys should differ when ACPServer differs")
+	}
+	// Same ACP server, different working dirs → different keys.
+	if workspaceKey("/w1", "a") == workspaceKey("/w2", "a") {
+		t.Error("keys should differ when WorkingDir differs")
+	}
+	// Same WorkingDir + ACPServer → same key.
+	if workspaceKey("/w", "a") != workspaceKey("/w", "a") {
+		t.Error("keys should match for the same pair")
+	}
+	// NUL separator is present.
+	got := workspaceKey("dir", "srv")
+	want := "dir" + "\x00" + "srv"
+	if got != want {
+		t.Errorf("workspaceKey = %q, want %q", got, want)
+	}
+}
+
+// TestLoopRunner_ContextWindowFailure_AutoPausesAfterThreshold verifies mitto-7jn:
+// after MaxLoopContextWindowFailures consecutive context-window (HTTP 413) failures
+// the loop is auto-paused with StoppedReasonContextWindowExceeded and the
+// onLoopAutoStopped callback is invoked exactly once.
+func TestLoopRunner_ContextWindowFailure_AutoPausesAfterThreshold(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	const sessionID = "cw-1"
+	meta := session.Metadata{SessionID: sessionID, ACPServer: "auggie", WorkingDir: "/tmp"}
+	if err := store.Create(meta); err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	loopStore := store.Loop(sessionID)
+	if err := loopStore.Set(&session.LoopPrompt{
+		Prompt:    "Test",
+		Frequency: session.Frequency{Value: 1, Unit: session.FrequencyHours},
+		Enabled:   true,
+	}); err != nil {
+		t.Fatalf("loopStore.Set() error = %v", err)
+	}
+
+	runner := NewLoopRunner(store, nil, nil)
+
+	var autoStopCalls int
+	var lastAutoStopSession string
+	runner.SetOnLoopAutoStopped(func(sid string, p *session.LoopPrompt) {
+		autoStopCalls++
+		lastAutoStopSession = sid
+		if p == nil || p.Enabled {
+			t.Errorf("onLoopAutoStopped called with enabled/nil loop: %+v", p)
+		}
+		if p != nil && p.StoppedReason != session.StoppedReasonContextWindowExceeded {
+			t.Errorf("StoppedReason = %q, want %q", p.StoppedReason, session.StoppedReasonContextWindowExceeded)
+		}
+	})
+
+	// Hits 1 and 2 must return false (under threshold, loop stays enabled).
+	for i := 1; i < MaxLoopContextWindowFailures; i++ {
+		stopped := runner.handleContextWindowFailure(sessionID, "test", loopStore)
+		if stopped {
+			t.Fatalf("handleContextWindowFailure hit %d returned true; want false (under threshold)", i)
+		}
+		got, gErr := loopStore.Get()
+		if gErr != nil {
+			t.Fatalf("loopStore.Get() after hit %d error = %v", i, gErr)
+		}
+		if !got.Enabled {
+			t.Errorf("loop disabled after hit %d; want still enabled until threshold", i)
+		}
+	}
+
+	// Final hit must trip the auto-pause.
+	if stopped := runner.handleContextWindowFailure(sessionID, "test", loopStore); !stopped {
+		t.Fatal("handleContextWindowFailure final hit returned false; want true (threshold reached)")
+	}
+	final, err := loopStore.Get()
+	if err != nil {
+		t.Fatalf("loopStore.Get() after auto-pause error = %v", err)
+	}
+	if final.Enabled {
+		t.Error("loop.Enabled = true after auto-pause; want false")
+	}
+	if final.StoppedReason != session.StoppedReasonContextWindowExceeded {
+		t.Errorf("StoppedReason = %q, want %q", final.StoppedReason, session.StoppedReasonContextWindowExceeded)
+	}
+	if final.StoppedAt == nil {
+		t.Error("StoppedAt is nil after auto-pause")
+	}
+	if autoStopCalls != 1 {
+		t.Errorf("onLoopAutoStopped invocation count = %d, want 1", autoStopCalls)
+	}
+	if lastAutoStopSession != sessionID {
+		t.Errorf("onLoopAutoStopped sessionID = %q, want %q", lastAutoStopSession, sessionID)
+	}
+	// Counter must be cleared after the auto-pause.
+	runner.contextWindowFailuresMu.Lock()
+	remaining := runner.contextWindowFailures[sessionID]
+	runner.contextWindowFailuresMu.Unlock()
+	if remaining != 0 {
+		t.Errorf("contextWindowFailures[%s] = %d after auto-pause, want 0", sessionID, remaining)
+	}
+}
+
+// TestLoopRunner_ContextWindowFailure_SuccessBetweenHitsResetsCounter verifies
+// that a successful delivery between context-window hits clears the counter, so
+// the loop is NOT auto-paused after a 2 + success + 2 pattern.
+func TestLoopRunner_ContextWindowFailure_SuccessBetweenHitsResetsCounter(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	const sessionID = "cw-2"
+	meta := session.Metadata{SessionID: sessionID, ACPServer: "auggie", WorkingDir: "/tmp"}
+	if err := store.Create(meta); err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	loopStore := store.Loop(sessionID)
+	if err := loopStore.Set(&session.LoopPrompt{
+		Prompt:    "Test",
+		Frequency: session.Frequency{Value: 1, Unit: session.FrequencyHours},
+		Enabled:   true,
+	}); err != nil {
+		t.Fatalf("loopStore.Set() error = %v", err)
+	}
+
+	runner := NewLoopRunner(store, nil, nil)
+	var autoStopCalls int
+	runner.SetOnLoopAutoStopped(func(sid string, p *session.LoopPrompt) {
+		autoStopCalls++
+	})
+
+	// 2 hits — still under threshold.
+	for i := 0; i < 2; i++ {
+		if stopped := runner.handleContextWindowFailure(sessionID, "test", loopStore); stopped {
+			t.Fatalf("hit %d unexpectedly triggered auto-pause", i+1)
+		}
+	}
+	// Simulate a successful delivery — OnComplete clears the counter.
+	runner.contextWindowFailuresMu.Lock()
+	delete(runner.contextWindowFailures, sessionID)
+	runner.contextWindowFailuresMu.Unlock()
+
+	// 2 more hits — must NOT trip auto-pause because the counter was reset.
+	for i := 0; i < 2; i++ {
+		if stopped := runner.handleContextWindowFailure(sessionID, "test", loopStore); stopped {
+			t.Fatalf("hit %d after reset unexpectedly triggered auto-pause", i+1)
+		}
+	}
+
+	final, err := loopStore.Get()
+	if err != nil {
+		t.Fatalf("loopStore.Get() error = %v", err)
+	}
+	if !final.Enabled {
+		t.Error("loop.Enabled = false after 2+reset+2 hits; want true (reset must prevent auto-pause)")
+	}
+	if final.StoppedReason != "" {
+		t.Errorf("StoppedReason = %q, want empty", final.StoppedReason)
+	}
+	if autoStopCalls != 0 {
+		t.Errorf("onLoopAutoStopped calls = %d, want 0", autoStopCalls)
+	}
+}
+
+// TestLoopRunner_IsContextTooLargeError_413String verifies mitto-7jn's classifier
+// matches the exact error string surfaced by the Augment ACP for HTTP 413.
+func TestLoopRunner_IsContextTooLargeError_413String(t *testing.T) {
+	// Matches the error observed in the bead's log excerpt.
+	err413 := errors.New("HTTP error: 413 Request Entity Too Large")
+	if !conversation.IsContextTooLargeError(err413) {
+		t.Errorf("IsContextTooLargeError(%q) = false, want true", err413)
+	}
+	if conversation.IsContextTooLargeError(errors.New("some unrelated error")) {
+		t.Errorf("IsContextTooLargeError(unrelated) = true, want false")
+	}
+	if conversation.IsContextTooLargeError(nil) {
+		t.Error("IsContextTooLargeError(nil) = true, want false")
 	}
 }

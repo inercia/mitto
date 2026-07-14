@@ -289,6 +289,11 @@ type Metadata struct {
 	// Reset to 0 on successful start. When it reaches ACPStartFailureThreshold,
 	// the session is auto-archived to prevent infinite retry loops.
 	ACPStartFailureCount int `json:"acp_start_failure_count,omitempty"`
+	// AutoUnarchiveLastAttemptAt records the last time the auto-unarchive
+	// recovery scheduler attempted to unarchive this loop conversation.
+	// Persisted so the retry cadence survives restarts. Cleared on any
+	// successful (manual or auto) unarchive.
+	AutoUnarchiveLastAttemptAt time.Time `json:"auto_unarchive_last_attempt_at,omitempty"`
 }
 
 // ChildOrigin represents how a child conversation was created.

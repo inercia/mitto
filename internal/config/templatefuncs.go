@@ -2,10 +2,12 @@ package config
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"text/template"
 	"time"
 )
@@ -13,6 +15,35 @@ import (
 // gitCmdTimeout bounds how long a git subprocess invocation is allowed to run
 // before it is killed, so template/CEL evaluation never hangs on a stalled repo.
 const gitCmdTimeout = 5 * time.Second
+
+// bdCmdTimeout bounds how long a bd (beads) subprocess invocation is allowed to
+// run before it is killed. Mirrors gitCmdTimeout for the git helpers.
+const bdCmdTimeout = 5 * time.Second
+
+// beadsCacheTTL bounds how long a BeadsCount/HasBeads result is memoised per
+// (folder, labels, statuses) tuple, to avoid re-exec on rapid menu re-opens.
+// Kept short so a beads mutation is reflected within one TTL window.
+const beadsCacheTTL = 5 * time.Second
+
+// beadsCountFailOpen is the sentinel returned by beadsCount on ANY error (bd
+// missing, timeout, non-zero exit, unparseable JSON). It is a positive value
+// so HasBeads(...) returns true and the prompt is NEVER wrongly hidden —
+// consistent with the CEL fail-open policy. A legitimate empty result from bd
+// (`[]`) is NOT an error and returns 0.
+const beadsCountFailOpen = 1
+
+// beadsCache memoises beadsCount results for beadsCacheTTL keyed by
+// folder\x00labels\x00statuses. Simple sync.Mutex-guarded map with a
+// timestamped entry per key.
+var (
+	beadsCacheMu sync.Mutex
+	beadsCache   = map[string]beadsCacheEntry{}
+)
+
+type beadsCacheEntry struct {
+	count int
+	at    time.Time
+}
 
 // =============================================================================
 // Pure-Go condition helpers — single source of truth shared by CEL bindings
@@ -261,6 +292,236 @@ func gitFileDeleted(folder, path string) bool {
 	return false
 }
 
+// runBd runs `bd <args...>` with the working directory set to folder (when
+// non-empty), bounded by bdCmdTimeout. Returns the raw stdout bytes and true
+// when bd exits 0. Returns (nil, false) when bd is unavailable, exits non-zero,
+// or the command times out. Mirrors runGit.
+func runBd(folder string, args ...string) ([]byte, bool) {
+	if !commandExists("bd") {
+		return nil, false
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), bdCmdTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "bd", args...)
+	if folder != "" {
+		cmd.Dir = folder
+	}
+	out, err := cmd.Output()
+	if err != nil {
+		return nil, false
+	}
+	return out, true
+}
+
+// beadsCount counts beads matching ALL comma-separated labels AND ANY of the
+// comma-separated statuses, running `bd list -l <labels> --status <statuses>
+// --all --json` in folder and parsing the resulting JSON array length.
+//
+// Fail-open: on ANY error (bd missing, not a beads repo, timeout, non-zero
+// exit, unparseable JSON) returns beadsCountFailOpen (a positive sentinel) so
+// HasBeads(...) returns true and callers gating a prompt never wrongly hide
+// it — consistent with the CEL fail-open policy. A legitimate empty result
+// (`[]`, exit 0) is NOT an error and returns 0.
+//
+// Results are memoised for beadsCacheTTL per (folder, labels, statuses) tuple
+// to bound exec frequency on rapid menu re-opens. Consumers relying on
+// short-circuit ordering (e.g. `CommandExists("bd") && DirExists(".beads") &&
+// HasBeads(...)`) still get zero exec cost when the cheap gates fail.
+func beadsCount(folder, labels, statuses string) int {
+	key := folder + "\x00" + labels + "\x00" + statuses
+	beadsCacheMu.Lock()
+	if e, ok := beadsCache[key]; ok && time.Since(e.at) < beadsCacheTTL {
+		beadsCacheMu.Unlock()
+		return e.count
+	}
+	beadsCacheMu.Unlock()
+
+	out, ok := runBd(folder, "list", "-l", labels, "--status", statuses, "--all", "--json")
+	if !ok {
+		return beadsCountFailOpen
+	}
+	trimmed := strings.TrimSpace(string(out))
+	if trimmed == "" {
+		// Empty stdout is unexpected (bd emits at least `[]`); treat as error.
+		return beadsCountFailOpen
+	}
+	var arr []json.RawMessage
+	if err := json.Unmarshal([]byte(trimmed), &arr); err != nil {
+		return beadsCountFailOpen
+	}
+	count := len(arr)
+
+	beadsCacheMu.Lock()
+	beadsCache[key] = beadsCacheEntry{count: count, at: time.Now()}
+	beadsCacheMu.Unlock()
+	return count
+}
+
+// hasBeads reports whether beadsCount(folder, labels, statuses) > 0. Convenience
+// wrapper sharing the same fail-open + cache semantics as beadsCount.
+func hasBeads(folder, labels, statuses string) bool {
+	return beadsCount(folder, labels, statuses) > 0
+}
+
+// bdBead is the minimal subset of a `bd show <id> --json` record that the
+// per-issue gate helpers inspect. bd emits the full issue with many more fields;
+// only labels + status matter here.
+type bdBead struct {
+	Labels []string `json:"labels"`
+	Status string   `json:"status"`
+}
+
+// parseBdShow parses the stdout of `bd show <id> --json`, tolerating BOTH shapes
+// bd has emitted across versions: a single-element JSON ARRAY (`[{...}]`, current
+// bd) and a bare JSON OBJECT (`{...}`, older bd). Returns the first record and
+// true on success; (zero, false) when stdout is empty or unparseable as either
+// shape.
+func parseBdShow(out []byte) (bdBead, bool) {
+	trimmed := strings.TrimSpace(string(out))
+	if trimmed == "" {
+		return bdBead{}, false
+	}
+	// Array shape first (current bd): [{...}, ...].
+	if trimmed[0] == '[' {
+		var arr []bdBead
+		if err := json.Unmarshal([]byte(trimmed), &arr); err != nil {
+			return bdBead{}, false
+		}
+		if len(arr) == 0 {
+			return bdBead{}, false
+		}
+		return arr[0], true
+	}
+	// Bare object shape (older bd): {...}.
+	var obj bdBead
+	if err := json.Unmarshal([]byte(trimmed), &obj); err != nil {
+		return bdBead{}, false
+	}
+	return obj, true
+}
+
+// showBead runs `bd show <id> --json` in folder and returns the parsed record.
+// Fail behaviour is left to callers (they treat !ok as fail-open). Results are
+// NOT cached here; callers cache their derived boolean via beadsCache to keep
+// the cache keyed by the specific question being asked (labels / open).
+func showBead(folder, id string) (bdBead, bool) {
+	out, ok := runBd(folder, "show", id, "--json")
+	if !ok {
+		return bdBead{}, false
+	}
+	return parseBdShow(out)
+}
+
+// beadHasLabels reports whether the single bead identified by id carries ALL of
+// the comma-separated labels, running `bd show <id> --json` in folder and
+// inspecting the returned `labels` array. Unlike hasBeads (which aggregates
+// across the whole workspace), this scopes to ONE specific issue — used to gate
+// a prompt on the CURRENT conversation's linked bead (Session.BeadsIssue) in
+// the conversation/prompts menus, where Item.* labels are unavailable.
+//
+// Fail-open: on ANY error (bd missing, empty id, not a beads repo, timeout,
+// non-zero exit, unparseable JSON) returns true so a gate using it never
+// wrongly hides a prompt — consistent with the CEL fail-open policy. An empty
+// labels list is treated as "no requirement" and returns true.
+//
+// Results are memoised for beadsCacheTTL per (folder, id, labels) tuple to bound
+// exec frequency on rapid menu re-opens.
+func beadHasLabels(folder, id, labels string) bool {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return true // fail-open: no id to check
+	}
+	want := splitCSV(labels)
+	if len(want) == 0 {
+		return true // no requirement
+	}
+
+	key := "beadHasLabels\x00" + folder + "\x00" + id + "\x00" + labels
+	beadsCacheMu.Lock()
+	if e, ok := beadsCache[key]; ok && time.Since(e.at) < beadsCacheTTL {
+		beadsCacheMu.Unlock()
+		return e.count > 0
+	}
+	beadsCacheMu.Unlock()
+
+	bead, ok := showBead(folder, id)
+	if !ok {
+		return true // fail-open
+	}
+
+	have := make(map[string]struct{}, len(bead.Labels))
+	for _, l := range bead.Labels {
+		have[l] = struct{}{}
+	}
+	result := true
+	for _, w := range want {
+		if _, ok := have[w]; !ok {
+			result = false
+			break
+		}
+	}
+
+	cached := 0
+	if result {
+		cached = 1
+	}
+	beadsCacheMu.Lock()
+	beadsCache[key] = beadsCacheEntry{count: cached, at: time.Now()}
+	beadsCacheMu.Unlock()
+	return result
+}
+
+// beadIsOpen reports whether the single bead identified by id is NOT closed
+// (status != "closed"), running `bd show <id> --json` in folder. Scopes to ONE
+// specific issue — used alongside beadHasLabels to gate prompts on the CURRENT
+// conversation's linked bead in the conversation/prompts menus, mirroring the
+// beadsIssues menu's `Item.Status != "closed"` guard.
+//
+// Fail-open: on ANY error (bd missing, empty id, timeout, non-zero exit,
+// unparseable JSON) returns true so a gate using it never wrongly hides a
+// prompt — consistent with the CEL fail-open policy. Results are memoised for
+// beadsCacheTTL per (folder, id) tuple.
+func beadIsOpen(folder, id string) bool {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return true // fail-open: no id to check
+	}
+
+	key := "beadIsOpen\x00" + folder + "\x00" + id
+	beadsCacheMu.Lock()
+	if e, ok := beadsCache[key]; ok && time.Since(e.at) < beadsCacheTTL {
+		beadsCacheMu.Unlock()
+		return e.count > 0
+	}
+	beadsCacheMu.Unlock()
+
+	bead, ok := showBead(folder, id)
+	if !ok {
+		return true // fail-open
+	}
+	result := bead.Status != "closed"
+
+	cached := 0
+	if result {
+		cached = 1
+	}
+	beadsCacheMu.Lock()
+	beadsCache[key] = beadsCacheEntry{count: cached, at: time.Now()}
+	beadsCacheMu.Unlock()
+	return result
+}
+
+// splitCSV splits a comma-separated string into trimmed, non-empty tokens.
+func splitCSV(s string) []string {
+	var out []string
+	for _, part := range strings.Split(s, ",") {
+		if p := strings.TrimSpace(part); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
 // =============================================================================
 // Exported formatting helpers (single source of truth for legacy @mitto: output)
 // =============================================================================
@@ -337,21 +598,35 @@ func FormatChildren(children []ChildInfo) string {
 //     changes, including untracked files.
 //   - GitFileTracked(path) — true iff path is tracked by git (present in the index).
 //   - GitFileDeleted(path) — true iff the tracked file has been deleted (staged or unstaged).
+//   - BeadsCount(labels, statuses) — count of beads matching ALL comma-separated labels
+//     AND ANY of the comma-separated statuses. Fail-open (positive sentinel) on error.
+//   - HasBeads(labels, statuses) — BeadsCount(...) > 0. Same fail-open semantics.
+//   - BeadHasLabels(id, labels) — true iff the single bead <id> carries ALL
+//     comma-separated labels (via `bd show <id> --json`). Fail-open on error.
+//     Scopes to one issue (unlike HasBeads, which aggregates across the workspace).
+//   - BeadIsOpen(id) — true iff the single bead <id> is not closed (via
+//     `bd show <id> --json`). Fail-open on error. Companion to BeadHasLabels.
 //   - hasPattern(pattern) — true iff any MCP tool name matches pattern (fail-open).
 //   - Model(tag) — true iff the current model carries the capability tag (case-insensitive).
 //   - cond(expr) / when(expr) — compile+evaluate a CEL expression via GetCELEvaluator()
 //     against the SAME ctx used for enabledWhen. Fail-closed: returns (false, error) on
 //     compile or eval failure, which aborts template execution (and thus the send).
 //     The args CEL variable is populated from ctx.Args so conditions can branch on arguments.
+//   - PromptText(name) — inline another workspace prompt's full body by NAME
+//     (mitto-85y.3). Wired at dispatch time via ctx.PromptTextResolver;
+//     fail-closed on nil resolver, empty name, or unknown/failed resolution.
+//     Trailing newlines are stripped from the returned body; interior whitespace
+//     is preserved. Pairs with the `prompts` parameter type.
 //   - trim, lower, upper, contains, hasPrefix, hasSuffix — thin strings wrappers.
 //   - join(sep, elems) — strings.Join with sep first (template-natural argument order).
 func BuildTemplateFuncMap(ctx *PromptEnabledContext) template.FuncMap {
 	var (
-		folder      string
-		toolServers map[string]ServerToolInfo
-		args        map[string]string
-		userData    map[string]string
-		modelTags   []string
+		folder             string
+		toolServers        map[string]ServerToolInfo
+		args               map[string]string
+		userData           map[string]string
+		modelTags          []string
+		promptTextResolver func(name string) (string, error)
 	)
 	if ctx != nil {
 		folder = ctx.Workspace.Folder
@@ -359,6 +634,7 @@ func BuildTemplateFuncMap(ctx *PromptEnabledContext) template.FuncMap {
 		args = ctx.Args
 		userData = ctx.UserData
 		modelTags = ctx.Session.ModelTags
+		promptTextResolver = ctx.PromptTextResolver
 	}
 
 	// cond/when: compile+evaluate a CEL expression against ctx using the singleton.
@@ -414,10 +690,44 @@ func BuildTemplateFuncMap(ctx *PromptEnabledContext) template.FuncMap {
 		},
 		"GitFileTracked": func(path string) bool { return gitFileTracked(folder, path) },
 		"GitFileDeleted": func(path string) bool { return gitFileDeleted(folder, path) },
-		"HasPattern":     func(pattern string) bool { return hasPattern(toolServers, pattern) },
+		// BeadsCount / HasBeads — see beadsCount/hasBeads (templatefuncs.go) for
+		// fail-open + short-TTL cache semantics. Cheap gates (CommandExists("bd"),
+		// DirExists(".beads")) must come BEFORE these via && short-circuit so bd
+		// only runs when the workspace actually has a beads database.
+		"BeadsCount": func(labels, statuses string) int { return beadsCount(folder, labels, statuses) },
+		"HasBeads":   func(labels, statuses string) bool { return hasBeads(folder, labels, statuses) },
+		// BeadHasLabels(id, labels) — true iff the single bead <id> carries ALL
+		// comma-separated labels (via `bd show <id> --json`). Fail-open. Scopes to
+		// one issue, unlike HasBeads which aggregates across the workspace.
+		"BeadHasLabels": func(id, labels string) bool { return beadHasLabels(folder, id, labels) },
+		// BeadIsOpen(id) — true iff the single bead <id> is not closed. Fail-open.
+		// Companion to BeadHasLabels for gating on the linked bead's status.
+		"BeadIsOpen": func(id string) bool { return beadIsOpen(folder, id) },
+		"HasPattern": func(pattern string) bool { return hasPattern(toolServers, pattern) },
 		// Model(tag) — true iff the session's current model carries the capability tag
 		// (case-insensitive), resolved from the models: profiles. False for an unknown model.
-		"Model":     func(tag string) bool { return hasModelTag(modelTags, tag) },
+		"Model": func(tag string) bool { return hasModelTag(modelTags, tag) },
+		// PromptText(name) inlines another workspace prompt's full body by NAME
+		// (mitto-85y.3). The fetched body is inlined VERBATIM into the outer
+		// template output; because Go text/template does not re-parse rendered
+		// results, any Go-template actions inside the fetched body appear
+		// literally in the final output. Two-pass rendering is intentionally
+		// not implemented. Fail-closed: nil resolver / empty name / resolver
+		// error all propagate as a template execution error, which aborts the
+		// send for named/loop prompts (matching RenderPromptTemplate's policy).
+		"PromptText": func(name string) (string, error) {
+			if promptTextResolver == nil {
+				return "", fmt.Errorf("PromptText: no resolver available")
+			}
+			if name == "" {
+				return "", fmt.Errorf("PromptText: empty prompt name")
+			}
+			body, err := promptTextResolver(name)
+			if err != nil {
+				return "", fmt.Errorf("PromptText(%q): %w", name, err)
+			}
+			return strings.TrimRight(body, "\n"), nil
+		},
 		"Cond":      condFn,
 		"When":      condFn, // alias for Cond
 		"Trim":      strings.TrimSpace,

@@ -196,6 +196,15 @@ var permanentErrorPatterns = []errorPattern{
 		userMessage:  "The ACP process pipe was permanently closed",
 		userGuidance: "Archive and re-open this conversation to get a fresh ACP connection.",
 	},
+	{
+		// The agent's internal MCP-init wait budget elapsed before every configured MCP
+		// server finished handshake, so the pending session/new was aborted by the
+		// stderr-signal watch (mitto-8ul.1). Retrying with the same MCP configuration
+		// will produce the same failure until the underlying MCP server is fixed.
+		substrings:   []string{"mcp initialization timed out"},
+		userMessage:  "MCP server initialization timed out",
+		userGuidance: "Check that every configured MCP server is reachable and starts within the agent's MCP-init budget. Fix the failing MCP server or remove it from the workspace configuration.",
+	},
 }
 
 // ClassifyACPError examines an error message and stderr output to determine
@@ -241,6 +250,25 @@ func formatClassifiedError(classified *ACPClassifiedError) string {
 		return fmt.Sprintf("%s. %s", classified.UserMessage, classified.UserGuidance)
 	}
 	return classified.UserMessage
+}
+
+// IsMCPInitTimeout reports whether err (possibly wrapped in *ACPClassifiedError)
+// carries the agent's "MCP initialization timed out" signal. This is TRANSIENT
+// on a cold shared ACP process — once the process warms (mitto-54k.3 warm-once
+// barrier) a retry succeeds. It is used by auto-resume paths (mitto-54k.6) to
+// avoid counting a cold-start MCP-init timeout toward the hard ACP-start failure
+// threshold (which would otherwise auto-archive an otherwise-resumable session).
+//
+// Note: the classification in permanentErrorPatterns intentionally stays as
+// Permanent to avoid interactive retry storms on genuinely broken MCP servers;
+// this predicate is a targeted carve-out for the background auto-resume counter
+// only. Since *ACPClassifiedError.Error() forwards to the underlying original
+// error, a substring/regex match on err.Error() works through the wrapper.
+func IsMCPInitTimeout(err error) bool {
+	if err == nil {
+		return false
+	}
+	return mcpInitTimeoutPattern.MatchString(err.Error())
 }
 
 // IsACPConnectionError reports whether err is a recoverable ACP pipe/connection
@@ -289,16 +317,17 @@ func BackoffDelay(attempt int, baseDelay, maxDelay time.Duration, jitterRatio fl
 // It looks for patterns like "HTTP error: NNN", `"httpStatus":NNN`, or "HTTP/1.1 NNN".
 var httpStatusRegex = regexp.MustCompile(`(?:HTTP error:\s*|"httpStatus"\s*:\s*|HTTP/[12](?:\.[01])?\s+)(\d{3})`)
 
-// isContextTooLargeError returns true if the error indicates the AI model
+// IsContextTooLargeError returns true if the error indicates the AI model
 // rejected the prompt because the conversation context is too large (HTTP 413
 // or an equivalent model-specific error phrase).
 //
 // The ACP server forwards HTTP 413 responses as JSON-RPC -32603 "Internal error"
 // messages, so the numeric status code or the model-specific phrase may appear
 // anywhere in the error string.  We keep the list of patterns here (rather than
-// inlining them in formatACPError) so that the queue-advancement logic can reuse
-// the same predicate without duplicating strings.
-func isContextTooLargeError(err error) bool {
+// inlining them in formatACPError) so that the prompt dispatcher's queue-advancement
+// logic and the loop runner's auto-pause guard (via internal/web) can reuse the
+// same predicate without duplicating strings.
+func IsContextTooLargeError(err error) bool {
 	if err == nil {
 		return false
 	}
@@ -354,7 +383,7 @@ func formatACPError(err error) string {
 
 	// HTTP 413 / context-too-large errors from the AI model.
 	// Checked before the generic -32603 catch-all so users get an actionable message.
-	if isContextTooLargeError(err) {
+	if IsContextTooLargeError(err) {
 		return "⚠️ The conversation context is too large for the model. " +
 			"Please start a new conversation. You can ask the agent to summarize the key points first if needed."
 	}

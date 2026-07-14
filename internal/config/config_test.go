@@ -1,9 +1,14 @@
 package config
 
 import (
+	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
+	"sort"
+	"strings"
 	"testing"
+	"time"
 
 	defaultConfig "github.com/inercia/mitto/config"
 )
@@ -1436,16 +1441,21 @@ ui:
 	}
 }
 
-func TestParse_UIBadgeClickAction(t *testing.T) {
+func TestParse_UIOpenIn(t *testing.T) {
 	yaml := `
 acp:
   - claude:
       command: "claude"
 ui:
   mac:
-    badge_click_action:
-      enabled: true
-      command: "code ${MITTO_WORKING_DIR}"
+    open_in:
+      targets:
+        - id: finder
+          enabled: true
+          command: "code ${MITTO_WORKING_DIR}"
+        - id: my-editor
+          label: "My Editor"
+          command: "my-editor ${MITTO_WORKING_DIR}"
 `
 	cfg, err := Parse([]byte(yaml))
 	if err != nil {
@@ -1455,66 +1465,191 @@ ui:
 	if cfg.UI.Mac == nil {
 		t.Fatal("UI.Mac is nil")
 	}
-
-	if cfg.UI.Mac.BadgeClickAction == nil {
-		t.Fatal("UI.Mac.BadgeClickAction is nil")
+	if cfg.UI.Mac.OpenIn == nil {
+		t.Fatal("UI.Mac.OpenIn is nil")
+	}
+	if got := len(cfg.UI.Mac.OpenIn.Targets); got != 2 {
+		t.Fatalf("UI.Mac.OpenIn.Targets length = %d, want 2", got)
 	}
 
-	if !cfg.UI.Mac.BadgeClickAction.GetEnabled() {
-		t.Error("UI.Mac.BadgeClickAction.GetEnabled() = false, want true")
+	first := cfg.UI.Mac.OpenIn.Targets[0]
+	if first.ID != "finder" {
+		t.Errorf("Targets[0].ID = %q, want %q", first.ID, "finder")
+	}
+	if first.Enabled == nil || !*first.Enabled {
+		t.Errorf("Targets[0].Enabled = %v, want *true", first.Enabled)
+	}
+	if first.Command != "code ${MITTO_WORKING_DIR}" {
+		t.Errorf("Targets[0].Command = %q", first.Command)
 	}
 
-	if cfg.UI.Mac.BadgeClickAction.GetCommand() != "code ${MITTO_WORKING_DIR}" {
-		t.Errorf("UI.Mac.BadgeClickAction.GetCommand() = %q, want %q",
-			cfg.UI.Mac.BadgeClickAction.GetCommand(), "code ${MITTO_WORKING_DIR}")
+	second := cfg.UI.Mac.OpenIn.Targets[1]
+	if second.ID != "my-editor" {
+		t.Errorf("Targets[1].ID = %q, want %q", second.ID, "my-editor")
+	}
+	if second.Label != "My Editor" {
+		t.Errorf("Targets[1].Label = %q", second.Label)
+	}
+	if second.Command != "my-editor ${MITTO_WORKING_DIR}" {
+		t.Errorf("Targets[1].Command = %q", second.Command)
 	}
 }
 
-func TestParse_UIBadgeClickActionDisabled(t *testing.T) {
-	yaml := `
-acp:
-  - claude:
-      command: "claude"
-ui:
-  mac:
-    badge_click_action:
-      enabled: false
-`
-	cfg, err := Parse([]byte(yaml))
-	if err != nil {
-		t.Fatalf("Parse failed: %v", err)
+func TestOpenTarget_GetEnabled_Defaults(t *testing.T) {
+	boolPtr := func(b bool) *bool { return &b }
+
+	builtinUnset := &OpenTarget{ID: "finder", Builtin: true}
+	if !builtinUnset.GetEnabled() {
+		t.Error("builtin target with nil Enabled should default to true")
 	}
 
-	if cfg.UI.Mac == nil {
-		t.Fatal("UI.Mac is nil")
+	userUnset := &OpenTarget{ID: "custom", Builtin: false}
+	if userUnset.GetEnabled() {
+		t.Error("user-defined target with nil Enabled should default to false")
 	}
 
-	if cfg.UI.Mac.BadgeClickAction == nil {
-		t.Fatal("UI.Mac.BadgeClickAction is nil")
+	explicitFalse := &OpenTarget{ID: "finder", Builtin: true, Enabled: boolPtr(false)}
+	if explicitFalse.GetEnabled() {
+		t.Error("explicit Enabled=false should return false even for builtin")
 	}
 
-	if cfg.UI.Mac.BadgeClickAction.GetEnabled() {
-		t.Error("UI.Mac.BadgeClickAction.GetEnabled() = true, want false")
+	explicitTrue := &OpenTarget{ID: "custom", Builtin: false, Enabled: boolPtr(true)}
+	if !explicitTrue.GetEnabled() {
+		t.Error("explicit Enabled=true should return true even for user target")
 	}
 }
 
-func TestBadgeClickActionConfig_Defaults(t *testing.T) {
-	// Test nil config returns defaults
-	var nilConfig *BadgeClickActionConfig
-	if !nilConfig.GetEnabled() {
-		t.Error("nil config should return enabled=true by default")
+func TestDefaultOpenTargets_MacOS(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skipf("skipping darwin-specific defaults on %s", runtime.GOOS)
 	}
-	if nilConfig.GetCommand() != "open ${MITTO_WORKING_DIR}" {
-		t.Errorf("nil config should return default command, got %q", nilConfig.GetCommand())
+	targets := DefaultOpenTargets()
+	if len(targets) != 7 {
+		t.Fatalf("DefaultOpenTargets length = %d, want 7", len(targets))
+	}
+	if targets[0].ID != "finder" {
+		t.Errorf("targets[0].ID = %q, want %q", targets[0].ID, "finder")
+	}
+	if targets[1].ID != "terminal" {
+		t.Errorf("targets[1].ID = %q, want %q", targets[1].ID, "terminal")
+	}
+	enabledByDefault := map[string]bool{
+		"finder":   true,
+		"terminal": true,
+		"iterm":    false,
+		"vscode":   false,
+		"cursor":   false,
+		"xcode":    false,
+		"goland":   false,
+	}
+	for _, tgt := range targets {
+		if !tgt.Builtin {
+			t.Errorf("target %q should have Builtin=true", tgt.ID)
+		}
+		want, ok := enabledByDefault[tgt.ID]
+		if !ok {
+			t.Errorf("unexpected default target id %q", tgt.ID)
+			continue
+		}
+		if got := tgt.GetEnabled(); got != want {
+			t.Errorf("target %q GetEnabled() = %v, want %v", tgt.ID, got, want)
+		}
+	}
+}
+
+func TestEffectiveOpenTargets_EmptyReturnsDefaults(t *testing.T) {
+	// With OpenIn nil or empty, EffectiveOpenTargets must return the platform
+	// defaults verbatim (no legacy synthesis).
+	want := DefaultOpenTargets()
+
+	c := &MacUIConfig{}
+	got := c.EffectiveOpenTargets()
+	if len(got) != len(want) {
+		t.Fatalf("nil OpenIn: length = %d, want %d", len(got), len(want))
+	}
+	for i := range got {
+		if got[i].ID != want[i].ID {
+			t.Errorf("nil OpenIn: got[%d].ID = %q, want %q", i, got[i].ID, want[i].ID)
+		}
 	}
 
-	// Test empty config returns defaults
-	emptyConfig := &BadgeClickActionConfig{}
-	if !emptyConfig.GetEnabled() {
-		t.Error("empty config should return enabled=true by default")
+	c2 := &MacUIConfig{OpenIn: &OpenInConfig{Targets: nil}}
+	got2 := c2.EffectiveOpenTargets()
+	if len(got2) != len(want) {
+		t.Fatalf("empty Targets: length = %d, want %d", len(got2), len(want))
 	}
-	if emptyConfig.GetCommand() != "open ${MITTO_WORKING_DIR}" {
-		t.Errorf("empty config should return default command, got %q", emptyConfig.GetCommand())
+}
+
+func TestEffectiveOpenTargets_UserOverridesMergeById(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skipf("skipping darwin-specific merge test on %s", runtime.GOOS)
+	}
+	boolPtr := func(b bool) *bool { return &b }
+	c := &MacUIConfig{
+		OpenIn: &OpenInConfig{
+			Targets: []OpenTarget{
+				{ID: "vscode", Enabled: boolPtr(true)},
+				{ID: "my-editor", Label: "My Editor", Command: "my-editor ${MITTO_WORKING_DIR}"},
+			},
+		},
+	}
+	got := c.EffectiveOpenTargets()
+	defaults := DefaultOpenTargets()
+	if len(got) != len(defaults)+1 {
+		t.Fatalf("EffectiveOpenTargets length = %d, want %d", len(got), len(defaults)+1)
+	}
+	// Builtin order preserved.
+	for i, d := range defaults {
+		if got[i].ID != d.ID {
+			t.Errorf("got[%d].ID = %q, want %q", i, got[i].ID, d.ID)
+		}
+	}
+	// vscode override applied.
+	var vscode *OpenTarget
+	for i := range got {
+		if got[i].ID == "vscode" {
+			vscode = &got[i]
+			break
+		}
+	}
+	if vscode == nil {
+		t.Fatal("vscode entry missing from merged result")
+	}
+	if !vscode.GetEnabled() {
+		t.Error("vscode should be enabled after user override")
+	}
+	if !vscode.Builtin {
+		t.Error("vscode should still be Builtin after override")
+	}
+	// my-editor appended last, Builtin=false.
+	last := got[len(got)-1]
+	if last.ID != "my-editor" {
+		t.Errorf("last.ID = %q, want %q", last.ID, "my-editor")
+	}
+	if last.Builtin {
+		t.Error("user-defined target must not be Builtin")
+	}
+	// No duplicates.
+	seen := make(map[string]int)
+	for _, tgt := range got {
+		seen[tgt.ID]++
+	}
+	for id, n := range seen {
+		if n > 1 {
+			t.Errorf("duplicate id %q (count=%d)", id, n)
+		}
+	}
+}
+
+func TestEffectiveOpenTargets_NilReceiver(t *testing.T) {
+	var c *MacUIConfig
+	got := c.EffectiveOpenTargets()
+	want := DefaultOpenTargets()
+	if len(got) != len(want) {
+		t.Fatalf("nil receiver length = %d, want %d", len(got), len(want))
+	}
+	if len(want) > 0 && got[0].ID != want[0].ID {
+		t.Errorf("got[0].ID = %q, want %q", got[0].ID, want[0].ID)
 	}
 }
 
@@ -2500,39 +2635,43 @@ func TestModelProfileByName(t *testing.T) {
 }
 
 // TestModelProfilesByTag covers case-insensitive tag filtering, including a tag shared
-// by multiple profiles.
+// by multiple profiles. It exercises the pure slice-based engine (ProfilesByTag) so it
+// stays free of the canonical-default merge that (*Config).ModelProfilesByTag applies;
+// the merge itself is covered by TestEffectiveModelProfiles_MergeAndPrecedence.
 func TestModelProfilesByTag(t *testing.T) {
-	cfg := &Config{Models: []ModelProfile{
+	profiles := []ModelProfile{
 		{Name: "Opus", Tags: []string{"Smartest", "Expensive"}},
 		{Name: "Sonnet", Tags: []string{"Smart", "Cheap"}},
 		{Name: "Haiku", Tags: []string{"Fast", "Cheap"}},
-	}}
+	}
 
-	cheap := cfg.ModelProfilesByTag("cheap")
+	cheap := ProfilesByTag(profiles, "cheap")
 	if len(cheap) != 2 {
-		t.Fatalf("ModelProfilesByTag(cheap) count = %d, want 2", len(cheap))
+		t.Fatalf("ProfilesByTag(cheap) count = %d, want 2", len(cheap))
 	}
 	if cheap[0].Name != "Sonnet" || cheap[1].Name != "Haiku" {
-		t.Errorf("ModelProfilesByTag(cheap) = [%s %s], want [Sonnet Haiku]", cheap[0].Name, cheap[1].Name)
+		t.Errorf("ProfilesByTag(cheap) = [%s %s], want [Sonnet Haiku]", cheap[0].Name, cheap[1].Name)
 	}
 
-	if got := cfg.ModelProfilesByTag("missing"); len(got) != 0 {
-		t.Errorf("ModelProfilesByTag(missing) count = %d, want 0", len(got))
+	if got := ProfilesByTag(profiles, "missing"); len(got) != 0 {
+		t.Errorf("ProfilesByTag(missing) count = %d, want 0", len(got))
 	}
 }
 
 // TestResolveModelTags covers tag resolution across every match mode, the union (with
 // case-insensitive de-dup) across multiple matching profiles, the no-match / empty cases,
-// and that criteria-less profiles never contribute tags.
+// and that criteria-less profiles never contribute tags. It exercises the pure slice-based
+// core (resolveModelTags) so it stays free of the canonical-default merge that
+// (*Config).ResolveModelTags applies; the merge is covered elsewhere.
 func TestResolveModelTags(t *testing.T) {
-	cfg := &Config{Models: []ModelProfile{
+	profiles := []ModelProfile{
 		{Name: "Opus", Criteria: &ACPServerConstraint{MatchMode: "contains", Pattern: "Opus"}, Tags: []string{"Smart", "Expensive"}},
 		{Name: "Claude", Criteria: &ACPServerConstraint{MatchMode: "regex", Pattern: "opus|sonnet"}, Tags: []string{"Anthropic", "smart"}},
 		{Name: "Sonnet", Criteria: &ACPServerConstraint{MatchMode: "exact", Pattern: "Sonnet 4.6"}, Tags: []string{"Cheap"}},
 		{Name: "Pro", Criteria: &ACPServerConstraint{MatchMode: "startsWith", Pattern: "opus"}, Tags: []string{"Pro"}},
 		{Name: "Look", Criteria: &ACPServerConstraint{MatchMode: "lookAlike", Pattern: "Opus 4.8"}, Tags: []string{"Latest"}},
 		{Name: "TagsOnly", Tags: []string{"NeverApplied"}}, // nil criteria → never matches
-	}}
+	}
 
 	tests := []struct {
 		name      string
@@ -2549,7 +2688,13 @@ func TestResolveModelTags(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := cfg.ResolveModelTags(tt.modelName)
+			if tt.modelName == "" {
+				if got := (&Config{Models: profiles}).ResolveModelTags(""); got != nil {
+					t.Fatalf("ResolveModelTags(\"\") = %v, want nil", got)
+				}
+				return
+			}
+			got := resolveModelTags(profiles, tt.modelName)
 			if len(got) != len(tt.want) {
 				t.Fatalf("ResolveModelTags(%q) = %v, want %v", tt.modelName, got, tt.want)
 			}
@@ -2573,13 +2718,14 @@ func TestParse_EmbeddedDefaultModelProfiles(t *testing.T) {
 	}
 
 	wantProfiles := map[string][]string{
-		"Claude":        {"Anthropic"},
-		"Claude Opus":   {"Smartest", "Reasoning", "Expensive"},
-		"Claude Sonnet": {"Smart", "Coding"},
-		"Claude Haiku":  {"Fast", "Cheap"},
-		"GPT-5":         {"Smart", "Reasoning", "Coding"},
-		"GPT-4":         {"Smart", "Coding"},
-		"Gemini":        {"Smart", "LongContext"},
+		"Claude":          {"Anthropic"},
+		"Claude Opus":     {"Smartest", "Reasoning", "Thinking", "Deep", "Slow", "Expensive"},
+		"Claude Sonnet 5": {"Smart", "Coding"},
+		"Claude Sonnet 4": {"Smart", "Coding"},
+		"Claude Haiku":    {"Fast", "Cheap"},
+		"GPT-5":           {"Smart", "Reasoning", "Thinking", "Deep", "Coding"},
+		"GPT-4":           {"Smart", "Coding"},
+		"Gemini":          {"Smart", "LongContext"},
 	}
 
 	if len(cfg.Models) != len(wantProfiles) {
@@ -2609,7 +2755,7 @@ func TestParse_EmbeddedDefaultModelProfiles(t *testing.T) {
 	// "Claude Opus 4.x" matches the vendor-level Claude (contains "Claude") and the Opus
 	// profile (contains "Opus"); the union de-dups case-insensitively.
 	opusTags := cfg.ResolveModelTags("Claude Opus 4.5")
-	wantOpus := []string{"Anthropic", "Smartest", "Reasoning", "Expensive"}
+	wantOpus := []string{"Anthropic", "Smartest", "Reasoning", "Thinking", "Deep", "Slow", "Expensive"}
 	if len(opusTags) != len(wantOpus) {
 		t.Fatalf("ResolveModelTags(Claude Opus 4.5) = %v, want %v", opusTags, wantOpus)
 	}
@@ -2657,5 +2803,139 @@ func TestParse_EmbeddedDefaultShortcuts(t *testing.T) {
 		if buttons[0].Prompt != wantPrompt {
 			t.Errorf("section %q prompt = %q, want %q", section, buttons[0].Prompt, wantPrompt)
 		}
+	}
+}
+
+// TestDefaultModelProfiles_MatchesEmbeddedYAML asserts the hardcoded Go source of
+// truth (DefaultModelProfiles) stays in sync with the shipped config.default.yaml
+// `models:` block — same profile names, criteria, and tags in the same order. This is
+// the drift guard invoked by `make check-model-tags`.
+func TestDefaultModelProfiles_MatchesEmbeddedYAML(t *testing.T) {
+	cfg, err := Parse(defaultConfig.DefaultConfigYAML)
+	if err != nil {
+		t.Fatalf("Parse(embedded default) failed: %v", err)
+	}
+	got := DefaultModelProfiles()
+	if len(got) != len(cfg.Models) {
+		t.Fatalf("DefaultModelProfiles() count = %d, config.default.yaml models = %d", len(got), len(cfg.Models))
+	}
+	for i := range got {
+		g, y := got[i], cfg.Models[i]
+		if g.Name != y.Name {
+			t.Errorf("profile[%d] name = %q (Go) vs %q (YAML)", i, g.Name, y.Name)
+		}
+		if g.Criteria == nil || y.Criteria == nil {
+			t.Errorf("profile[%d] %q missing criteria (Go=%v YAML=%v)", i, g.Name, g.Criteria, y.Criteria)
+			continue
+		}
+		if g.Criteria.MatchMode != y.Criteria.MatchMode || g.Criteria.Pattern != y.Criteria.Pattern {
+			t.Errorf("profile[%d] %q criteria = %+v (Go) vs %+v (YAML)", i, g.Name, g.Criteria, y.Criteria)
+		}
+		if strings.Join(g.Tags, ",") != strings.Join(y.Tags, ",") {
+			t.Errorf("profile[%d] %q tags = %v (Go) vs %v (YAML)", i, g.Name, g.Tags, y.Tags)
+		}
+	}
+}
+
+// TestCanonicalModelTags pins the canonical capability-tag set (sorted, de-duplicated)
+// derived from DefaultModelProfiles.
+func TestCanonicalModelTags(t *testing.T) {
+	want := []string{"Anthropic", "Cheap", "Coding", "Deep", "Expensive", "Fast", "LongContext", "Reasoning", "Slow", "Smart", "Smartest", "Thinking"}
+	got := CanonicalModelTags()
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("CanonicalModelTags() = %v, want %v", got, want)
+	}
+}
+
+// TestEffectiveModelProfiles_MergeAndPrecedence verifies that user-configured profiles
+// win on name collision and canonical defaults fill the gaps, including the empty and
+// nil-Config cases (the exact scenario behind tag routing silently no-oping when
+// settings.json omits `models:`).
+func TestEffectiveModelProfiles_MergeAndPrecedence(t *testing.T) {
+	// Nil Config → all canonical defaults.
+	var nilCfg *Config
+	if got := nilCfg.EffectiveModelProfiles(); len(got) != len(DefaultModelProfiles()) {
+		t.Fatalf("nil Config EffectiveModelProfiles() = %d, want %d", len(got), len(DefaultModelProfiles()))
+	}
+
+	// Empty Models → all canonical defaults, and a tag resolves.
+	empty := &Config{}
+	if got := empty.ModelProfilesByTag("Coding"); len(got) == 0 {
+		t.Errorf("empty Config: modelTag Coding resolved to no profile (regression: routing no-ops)")
+	}
+
+	// User override on a colliding name wins; a non-colliding user profile is preserved;
+	// defaults fill the rest.
+	user := &Config{Models: []ModelProfile{
+		{Name: "Claude Sonnet 4", Criteria: &ACPServerConstraint{MatchMode: "exact", Pattern: "My Sonnet"}, Tags: []string{"Custom"}},
+		{Name: "MyLocal", Criteria: &ACPServerConstraint{MatchMode: "contains", Pattern: "local"}, Tags: []string{"Cheap"}},
+	}}
+	eff := user.EffectiveModelProfiles()
+	// User profiles come first, in order.
+	if eff[0].Name != "Claude Sonnet 4" || eff[0].Criteria.Pattern != "My Sonnet" || eff[0].Tags[0] != "Custom" {
+		t.Errorf("user override not preserved/first: %+v", eff[0])
+	}
+	if eff[1].Name != "MyLocal" {
+		t.Errorf("non-colliding user profile not preserved at index 1: %+v", eff[1])
+	}
+	// The colliding default (Claude Sonnet 4) must NOT be appended again.
+	sonnetCount := 0
+	for _, p := range eff {
+		if p.Name == "Claude Sonnet 4" {
+			sonnetCount++
+		}
+	}
+	if sonnetCount != 1 {
+		t.Errorf("Claude Sonnet 4 appears %d times, want 1 (default should be dropped on collision)", sonnetCount)
+	}
+	// A default with a unique name (e.g. Claude Opus) is still present.
+	if p, ok := user.ModelProfileByName("Claude Opus"); !ok || p == nil {
+		t.Errorf("canonical default 'Claude Opus' missing after merge")
+	}
+}
+
+// TestBuiltinPrompts_ModelTagsAreCanonical is the validator behind `make check-model-tags`:
+// every `modelTag:` used by any embedded builtin prompt must be a known canonical tag.
+// This fails CI if a prompt references a tag that no model profile can carry.
+func TestBuiltinPrompts_ModelTagsAreCanonical(t *testing.T) {
+	canonical := make(map[string]struct{})
+	for _, tag := range CanonicalModelTags() {
+		canonical[strings.ToLower(tag)] = struct{}{}
+	}
+
+	entries, err := fs.ReadDir(defaultConfig.BuiltinPromptsFS, defaultConfig.BuiltinPromptsDir)
+	if err != nil {
+		t.Fatalf("read embedded builtin prompts: %v", err)
+	}
+	if len(entries) == 0 {
+		t.Fatal("no embedded builtin prompts found")
+	}
+
+	var unknown []string
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		data, err := fs.ReadFile(defaultConfig.BuiltinPromptsFS, defaultConfig.BuiltinPromptsDir+"/"+e.Name())
+		if err != nil {
+			t.Fatalf("read %s: %v", e.Name(), err)
+		}
+		pf, err := ParsePromptFile(e.Name(), data, time.Time{})
+		if err != nil {
+			t.Fatalf("parse %s: %v", e.Name(), err)
+		}
+		for _, pm := range pf.PreferredModels {
+			if pm.ModelTag == "" {
+				continue
+			}
+			if _, ok := canonical[strings.ToLower(pm.ModelTag)]; !ok {
+				unknown = append(unknown, e.Name()+": "+pm.ModelTag)
+			}
+		}
+	}
+	if len(unknown) > 0 {
+		sort.Strings(unknown)
+		t.Fatalf("builtin prompts reference unknown modelTag(s) not in CanonicalModelTags():\n  %s",
+			strings.Join(unknown, "\n  "))
 	}
 }

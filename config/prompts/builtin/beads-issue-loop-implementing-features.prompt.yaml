@@ -16,7 +16,7 @@ prompt: |
   Available ACP servers: `{{ .ACP.AvailableText }}`
   Existing children: `{{ .Children.MCPText }}`
 
-  # Beads: Iterate Implementing Features (list-level orchestrator)
+  # Beads: Loop Implementing Features (list-level orchestrator)
 
   Beads is a CLI issue tracker (`bd`). Issues are called "beads" and have IDs like `bd-xyz`.
 
@@ -27,7 +27,7 @@ prompt: |
     highest-priority one, spawn ONE child conversation to implement it, wait for that
     child to finish, clean it up, then move to the next feature. Stop when the eligible
     set is empty or a per-run budget is hit.
-  - **INNER loop (already shipped: the `Iterate implementing feature` prompt,
+  - **INNER loop (already shipped: the `Loop implementing feature` prompt,
     mitto-gap.5).** Each child runs that per-feature driver as an `onCompletion`
     loop, advancing one `planned → implemented → tested → verified` label per
     re-fire, then self-terminating.
@@ -47,7 +47,7 @@ prompt: |
     `mitto_children_tasks_wait` and any child-directed sends.
 
   Also: only a **top-level** (non-child) conversation may create conversations. The
-  child driver (`Iterate implementing feature`) already runs in-place and never spawns,
+  child driver (`Loop implementing feature`) already runs in-place and never spawns,
   giving a strict 2-level nesting. This orchestrator therefore refuses to run from a
   child.
 
@@ -56,21 +56,21 @@ prompt: |
   single `mitto_ui_notify` explaining which flag / role is missing and what to enable,
   and STOP. Do **not** touch `bd`, do **not** spawn anything, do **not** loop.
 
-  ## Step 1 — Fetch the per-feature driver body ONCE
+  ## Step 1 — Validate the per-feature driver prompt is available ONCE
 
-  Every child you spawn seeds and re-fires from the **same** body: the per-feature
-  driver prompt (`Iterate implementing feature`, mitto-gap.5). Fetch it once at the top
-  of this run so the same string is reused for every child (no drift between children in
-  the same run):
+  Every child you spawn is seeded and re-fired by **name** from the per-feature driver
+  prompt (`Loop implementing feature`, mitto-gap.5). Confirm it resolves before
+  spawning any child so we fail cleanly rather than mid-loop:
 
   ```
-  mitto_prompt_get(self_id: "{{ .Session.ID }}", name: "Iterate implementing feature")
+  mitto_prompt_get(self_id: "{{ .Session.ID }}", name: "Loop implementing feature")
   ```
 
-  Bind the response's `.prompt` (or `body`) field to a local variable — call it
-  **`<driverBody>`** below. It is a Go-template string with `.Args.IssueID`,
-  `.Args.Commit`, and `.Session.BeadsIssue` placeholders; the runtime renders them
-  at each child dispatch (seed run and every `onCompletion` re-fire).
+  You do **not** need to bind or reuse the body — Step 4 passes `prompt_name:` and the
+  runtime expands the named prompt server-side on every seed and every `onCompletion`
+  re-fire. Fetching here is purely a preflight ("does the name resolve, is it
+  enabled?"); server-side expansion cannot be truncated to a placeholder by the LLM
+  composing multiple spawn calls in the same turn (mitto-dj9).
 
   If this fetch fails (name not found, prompt disabled), STOP with a
   `mitto_ui_notify` explaining that the per-feature driver is unavailable and no
@@ -102,7 +102,15 @@ prompt: |
     leave it for the human), OR
   - matches any *existing* child conversation's `beads_issue` in
     `{{ .Children.MCPText }}` (a spawn already exists from an earlier run of this
-    orchestrator; do not spawn a duplicate).
+    orchestrator; do not spawn a duplicate), OR
+  - has any `dependency_type: parent-child` dependency whose parent bead was **closed
+    within this outer run** (a *recently-closed* parent — mitto-fko). Rationale: when a
+    parent feature closes, `bd ready` promotes its sub-features to first-class
+    candidates immediately, but their premise may no longer hold (the parent's design
+    changed, the sub-feature is now redundant, etc.). Track the set of bead IDs this
+    outer run has closed so far (starting empty at Step 1) and consult each
+    candidate's `dependencies` array via `bd show <id> --json`; drop any candidate
+    whose parent-child parent appears in that recently-closed set.
 
   Order the surviving set deterministically: by declared priority
   (`critical` → `high` → `medium` → `low`), then by bead ID ascending for stability.
@@ -126,19 +134,19 @@ prompt: |
   ## Step 4 — Spawn ONE child for the highest-priority eligible feature
 
   Take the first entry from Step 2's ordered set — call it **`<id>`**. Spawn exactly
-  ONE child conversation whose seed AND loop re-fire are both `<driverBody>`. Link
-  it to `<id>` via `beads_issue` so the per-feature driver resolves its target durably
-  from `.Session.BeadsIssue` on every re-fire (this is why the child does not need to
-  know its own `IssueID` after the seed run):
+  ONE child conversation whose seed AND loop re-fire are both the named per-feature
+  driver prompt (`Loop implementing feature`). Link it to `<id>` via `beads_issue` so
+  the driver resolves its target durably from `.Session.BeadsIssue` on every re-fire
+  (this is why the child does not need to know its own `IssueID` after the seed run):
 
   ```
   mitto_conversation_new(
     self_id: "{{ .Session.ID }}",
     title: "Implement <id>: <slug>",
     beads_issue: "<id>",
-    initial_prompt: <driverBody>,
+    prompt_name: "Loop implementing feature",
     arguments: { "IssueID": "<id>", "Commit": "{{ if eq .Args.Commit "false" }}false{{ else }}true{{ end }}" },
-    loop_prompt: <driverBody>,
+    loop_prompt_name: "Loop implementing feature",
     loop_trigger: "onCompletion",
     loop_completion_delay_seconds: 30,
     loop_max_iterations: 30,
@@ -148,16 +156,18 @@ prompt: |
 
   Notes on why each argument is what it is:
 
-  - **`initial_prompt: <driverBody>` + `arguments`** — `mitto_conversation_new` does
-    NOT auto-apply a fetched prompt's own `loop:` block. To make the child
-    self-drive its state machine, the same body must be provided as both the seed AND
-    the loop re-fire. The `arguments` map fills the driver's template
-    placeholders on the seed run.
-  - **`loop_prompt: <driverBody>`** — every `onCompletion` re-fire uses this text
-    verbatim. It resolves its target from `.Session.BeadsIssue` (set here via
-    `beads_issue`), so it does not need `IssueID`/`Commit` in the arguments map on
-    re-fires. The initial `Commit` argument only affects whichever run dispatches the
-    review phase; earlier phases don't consume it.
+  - **`prompt_name: "Loop implementing feature"` + `arguments`** — the runtime expands
+    the named prompt server-side on the seed run, filling the driver's template
+    placeholders from `arguments`. Passing the name (not the body) closes the
+    mitto-dj9 short-circuit where the LLM composing multiple `mitto_conversation_new`
+    calls in one turn collapses subsequent `initial_prompt` values to
+    `[Same driver body]`.
+  - **`loop_prompt_name: "Loop implementing feature"`** — every `onCompletion` re-fire
+    re-expands the same named prompt server-side. It resolves its target from
+    `.Session.BeadsIssue` (set here via `beads_issue`), so it does not need
+    `IssueID`/`Commit` in the arguments map on re-fires. The initial `Commit` argument
+    only affects whichever run dispatches the review phase; earlier phases don't
+    consume it.
   - **30 / 30 / 28800** — mirror the per-feature driver's own advertised budget
     (`delay: 30`, `maxIterations: 30`, `maxDuration: "8h" = 28800s`). Passing them
     explicitly makes the child's schedule identical whether the runtime applies the
@@ -228,7 +238,7 @@ prompt: |
   ```
   mitto_ui_notify(
     self_id: "{{ .Session.ID }}",
-    title: "Iterate implementing features — done",
+    title: "Loop implementing features — done",
     message: "<N processed / <how many remain — deferred / blocked>. Reason: <empty set | budget hit | last iteration>.>",
     style: "success"
   )
@@ -247,7 +257,7 @@ prompt: |
 
   ```bash
   bd update <id> --add-label needs-human --defer +1d
-  bd comment <id> "Orchestrator: could not spawn per-feature worker. What I tried: <the create/fetch call and its error>. What I need from you: <the ONE concrete action — enable flag, raise cap, re-run>. How to resume: clear needs-human then re-run 'Iterate implementing features'."
+  bd comment <id> "Orchestrator: could not spawn per-feature worker. What I tried: <the create/fetch call and its error>. What I need from you: <the ONE concrete action — enable flag, raise cap, re-run>. How to resume: clear needs-human then re-run 'Loop implementing features'."
   ```
 
   Then post the closing notification (Step 7) explaining that iteration stopped due

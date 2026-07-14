@@ -4,8 +4,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/coder/acp-go-sdk"
-
 	"github.com/inercia/mitto/internal/config"
 )
 
@@ -70,8 +68,8 @@ func TestMatchConstraintOption(t *testing.T) {
 // TestResolveProfileModel verifies that a model profile's Criteria resolves to the
 // matching model id via the shared constraint match engine.
 func TestResolveProfileModel(t *testing.T) {
-	models := &acp.UnstableSessionModelState{
-		AvailableModels: []acp.UnstableModelInfo{
+	models := &SessionModelState{
+		AvailableModels: []ModelInfo{
 			{ModelId: "claude-haiku-4-5", Name: "Haiku 4.5"},
 			{ModelId: "claude-sonnet-4-6", Name: "Sonnet 4.6"},
 			{ModelId: "claude-opus-4-8", Name: "Opus 4.8"},
@@ -80,7 +78,7 @@ func TestResolveProfileModel(t *testing.T) {
 	tests := []struct {
 		name    string
 		profile *config.ModelProfile
-		models  *acp.UnstableSessionModelState
+		models  *SessionModelState
 		want    string
 	}{
 		{name: "nil profile", profile: nil, models: models, want: ""},
@@ -100,10 +98,10 @@ func TestResolveProfileModel(t *testing.T) {
 
 // TestResolveAuxModelSwitch pins down the auxiliary model-switch decision (mitto-ykb).
 func TestResolveAuxModelSwitch(t *testing.T) {
-	models := func(current string) *acp.UnstableSessionModelState {
-		return &acp.UnstableSessionModelState{
-			CurrentModelId: acp.UnstableModelId(current),
-			AvailableModels: []acp.UnstableModelInfo{
+	models := func(current string) *SessionModelState {
+		return &SessionModelState{
+			CurrentModelId: (current),
+			AvailableModels: []ModelInfo{
 				{ModelId: "claude-haiku-4-5", Name: "Haiku 4.5"},
 				{ModelId: "claude-sonnet-4-6", Name: "Sonnet 4.6"},
 				{ModelId: "claude-opus-4-8", Name: "Opus 4.8"},
@@ -113,7 +111,7 @@ func TestResolveAuxModelSwitch(t *testing.T) {
 	tests := []struct {
 		name          string
 		constraint    *config.ACPServerConstraint
-		models        *acp.UnstableSessionModelState
+		models        *SessionModelState
 		wantModelID   string
 		wantShouldSet bool
 	}{
@@ -153,10 +151,10 @@ func selectPreferredModelTestProfiles() []config.ModelProfile {
 // TestSelectPreferredModel tests the per-prompt model resolver against ModelName/ModelTag
 // preference entries resolved through a fixture of global model profiles.
 func TestSelectPreferredModel(t *testing.T) {
-	newModels := func(current string) *acp.UnstableSessionModelState {
-		return &acp.UnstableSessionModelState{
-			CurrentModelId: acp.UnstableModelId(current),
-			AvailableModels: []acp.UnstableModelInfo{
+	newModels := func(current string) *SessionModelState {
+		return &SessionModelState{
+			CurrentModelId: (current),
+			AvailableModels: []ModelInfo{
 				{ModelId: "claude-haiku-4-5", Name: "Haiku 4.5"},
 				{ModelId: "claude-sonnet-4-6", Name: "Sonnet 4.6"},
 				{ModelId: "claude-opus-4-6", Name: "Opus 4.6"},
@@ -201,6 +199,111 @@ func TestSelectPreferredModel_NilModels(t *testing.T) {
 	}
 }
 
+// TestSelectPreferredModel_OrderIsPriority locks in the "list order = priority"
+// contract for tag-based resolution (mitto-ex7.1): when two ModelProfiles share a
+// tag and both resolve to an available model, the profile listed FIRST in the
+// profiles slice wins. Reversing the slice must flip which model wins.
+func TestSelectPreferredModel_OrderIsPriority(t *testing.T) {
+	models := &SessionModelState{
+		CurrentModelId: "gpt-4o", // does not match either Sonnet profile → forces resolution
+		AvailableModels: []ModelInfo{
+			{ModelId: "claude-sonnet-5-0", Name: "Claude Sonnet 5"},
+			{ModelId: "claude-sonnet-4-6", Name: "Claude Sonnet 4"},
+			{ModelId: "gpt-4o", Name: "GPT-4o"},
+		},
+	}
+	sonnet5 := config.ModelProfile{
+		Name:     "Claude Sonnet 5",
+		Criteria: &config.ACPServerConstraint{MatchMode: "contains", Pattern: "Sonnet 5"},
+		Tags:     []string{"Coding"},
+	}
+	sonnet4 := config.ModelProfile{
+		Name:     "Claude Sonnet 4",
+		Criteria: &config.ACPServerConstraint{MatchMode: "contains", Pattern: "Sonnet 4"},
+		Tags:     []string{"Coding"},
+	}
+	prefs := []config.PromptPreferredModel{{ModelTag: "Coding"}}
+
+	// Sonnet 5 first → Sonnet 5 wins.
+	if got := SelectPreferredModel(prefs, []config.ModelProfile{sonnet5, sonnet4}, models); got != "claude-sonnet-5-0" {
+		t.Errorf("with [Sonnet5, Sonnet4] profiles, modelTag=Coding resolved to %q, want %q", got, "claude-sonnet-5-0")
+	}
+	// Reverse the profile slice → Sonnet 4 now wins.
+	if got := SelectPreferredModel(prefs, []config.ModelProfile{sonnet4, sonnet5}, models); got != "claude-sonnet-4-6" {
+		t.Errorf("with [Sonnet4, Sonnet5] profiles, modelTag=Coding resolved to %q, want %q", got, "claude-sonnet-4-6")
+	}
+}
+
+// TestSelectPreferredModel_PostSplitDefaultsFallthrough documents the "list order +
+// resolution fallthrough" contract for the post-split defaults (mitto-ex7.2): the
+// default Model profiles list "Claude Sonnet 5" BEFORE "Claude Sonnet 4", so a
+// modelTag=Coding preference walks Sonnet 5 first — but on ACP servers where only
+// Sonnet 4 is available, the Sonnet 5 profile's Criteria matches nothing and
+// SelectPreferredModel falls through to the next Coding-tagged profile (Sonnet 4).
+// This guards against a naive "first tagged profile wins even when it resolves to
+// nothing" regression and pins the forward-compatible Sonnet 5 seeding behaviour.
+func TestSelectPreferredModel_PostSplitDefaultsFallthrough(t *testing.T) {
+	models := &SessionModelState{
+		CurrentModelId: "gpt-4o", // does not satisfy either Sonnet profile
+		AvailableModels: []ModelInfo{
+			{ModelId: "claude-sonnet-4-6", Name: "Claude Sonnet 4.6"},
+			{ModelId: "gpt-4o", Name: "GPT-4o"},
+		},
+	}
+	// Mirror the post-split default order: Sonnet 5 profile first, Sonnet 4 second.
+	profiles := []config.ModelProfile{
+		{Name: "Claude Sonnet 5", Criteria: &config.ACPServerConstraint{MatchMode: "contains", Pattern: "Sonnet 5"}, Tags: []string{"Smart", "Coding"}},
+		{Name: "Claude Sonnet 4", Criteria: &config.ACPServerConstraint{MatchMode: "contains", Pattern: "Sonnet 4"}, Tags: []string{"Smart", "Coding"}},
+	}
+	prefs := []config.PromptPreferredModel{{ModelTag: "Coding"}}
+	if got := SelectPreferredModel(prefs, profiles, models); got != "claude-sonnet-4-6" {
+		t.Errorf("post-split defaults with only Sonnet 4 available: modelTag=Coding resolved to %q, want %q (Sonnet 5 must fall through)", got, "claude-sonnet-4-6")
+	}
+}
+
+// TestInitialModelPreference_HonoursProfileOrder locks the "list order =
+// priority" contract at the INITIAL-model consumer site (mitto-ex7.4):
+// cbMaybeApplyInitialModelAsync in bgsession_callbacks.go routes through
+// SelectPreferredModel(initialModelPreference, EffectiveModelProfiles(),
+// agentModels). This test drives that same call with the shape a workspace's
+// Initial Model preference produces (a single ModelTag entry), and asserts
+// that reordering the two same-tag profiles in Config.Models flips which
+// model the initial-model preference resolves to. Direct SelectPreferredModel
+// call (rather than driving the async callback) is intentional: the callback
+// wraps a goroutine + SetConfigOption side-effects that are not the contract
+// under test — the priority axis is fully captured by the resolver call.
+func TestInitialModelPreference_HonoursProfileOrder(t *testing.T) {
+	models := &SessionModelState{
+		CurrentModelId: "gpt-4o", // does not satisfy either Sonnet profile → forces resolution
+		AvailableModels: []ModelInfo{
+			{ModelId: "claude-sonnet-5-0", Name: "Claude Sonnet 5"},
+			{ModelId: "claude-sonnet-4-6", Name: "Claude Sonnet 4"},
+			{ModelId: "gpt-4o", Name: "GPT-4o"},
+		},
+	}
+	sonnet5 := config.ModelProfile{
+		Name:     "Claude Sonnet 5",
+		Criteria: &config.ACPServerConstraint{MatchMode: "contains", Pattern: "Sonnet 5"},
+		Tags:     []string{"Smart", "Coding"},
+	}
+	sonnet4 := config.ModelProfile{
+		Name:     "Claude Sonnet 4",
+		Criteria: &config.ACPServerConstraint{MatchMode: "contains", Pattern: "Sonnet 4"},
+		Tags:     []string{"Smart", "Coding"},
+	}
+	// Shape mirrors WorkspaceSettings.InitialModelPreference at the consumer.
+	initialPref := []config.PromptPreferredModel{{ModelTag: "Smart"}}
+
+	// Sonnet 5 first → initial-model preference resolves to Sonnet 5.
+	if got := SelectPreferredModel(initialPref, []config.ModelProfile{sonnet5, sonnet4}, models); got != "claude-sonnet-5-0" {
+		t.Errorf("initial-model preference with [Sonnet5, Sonnet4] profiles, modelTag=Smart resolved to %q, want %q", got, "claude-sonnet-5-0")
+	}
+	// Reverse the profile slice → initial-model preference now resolves to Sonnet 4.
+	if got := SelectPreferredModel(initialPref, []config.ModelProfile{sonnet4, sonnet5}, models); got != "claude-sonnet-4-6" {
+		t.Errorf("initial-model preference with [Sonnet4, Sonnet5] profiles, modelTag=Smart resolved to %q, want %q", got, "claude-sonnet-4-6")
+	}
+}
+
 // TestConstraintModelSwitchBudgetMath verifies that constraintModelSwitchCallerBudget
 // (90s) is large enough to cover worst-case setModelSem contention at server wakeup
 // (mitto-f7q). Mirrors internal/web's TestSetModelAsyncBudgetMath.
@@ -213,9 +316,10 @@ func TestConstraintModelSwitchBudgetMath(t *testing.T) {
 	const (
 		maxConcurrentCallers = 4 // from bead: ~4 concurrent sessions at wakeup
 		// Mirror of internal/acpproc/shared_acp_process.go set_model constants.
-		// Attempt schedule {12s,8s,5s} sums to 25s — same total as the prior 3×8s (mitto-f7q).
+		// Attempt schedule {20s,15s,8s} sums to 43s (attempt-1 widened for mitto-8qp so
+		// large-context warm-up fits, within the contention bound covered by the budget).
 		maxRetries       = 3                      // setSessionModelMaxAttempts
-		scheduleSum      = 25 * time.Second       // sum(setSessionModelAttemptTimeouts)
+		scheduleSum      = 43 * time.Second       // sum(setSessionModelAttemptTimeouts)
 		retryBaseDelay   = 300 * time.Millisecond // setSessionModelRetryBaseDelay
 		retryJitterRatio = 0.5                    // setSessionModelRetryJitterRatio
 	)

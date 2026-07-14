@@ -254,3 +254,91 @@ func TestRestoreLoopOnUnarchive_NoLoopSessionIsNoop(t *testing.T) {
 		t.Errorf("BroadcastLoopUpdated call count = %d, want 0 for a non-loop session", broadcastCount)
 	}
 }
+
+// archiveViaHandler issues a PATCH {"archived": true} against the given
+// session and returns the recorded response.
+func archiveViaHandler(t *testing.T, h *Handlers, sid string) *httptest.ResponseRecorder {
+	t.Helper()
+	archived := true
+	body, _ := json.Marshal(SessionUpdateRequest{Archived: &archived})
+	req := httptest.NewRequest(http.MethodPatch, "/api/sessions/"+sid, bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	h.HandleUpdateSession(w, req, sid)
+	return w
+}
+
+// TestArchive_FiresApplyOnCloseProcessors verifies that a manual archive PATCH
+// invokes the ApplyOnCloseProcessors dep with the manual archive reason.
+func TestArchive_FiresApplyOnCloseProcessors(t *testing.T) {
+	sid := "test-close-fires"
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	t.Cleanup(func() { store.Close() })
+	if err := store.Create(session.Metadata{
+		SessionID:  sid,
+		ACPServer:  "test-server",
+		WorkingDir: t.TempDir(),
+	}); err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+
+	var mu sync.Mutex
+	var calls []struct{ id, reason string }
+	h := New(Deps{
+		Store: store,
+		ApplyOnCloseProcessors: func(sessionID, reason string) {
+			mu.Lock()
+			defer mu.Unlock()
+			calls = append(calls, struct{ id, reason string }{sessionID, reason})
+		},
+	})
+
+	w := archiveViaHandler(t, h, sid)
+	if w.Code != http.StatusOK {
+		t.Fatalf("Status = %d, want %d. Body: %s", w.Code, http.StatusOK, w.Body.String())
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(calls) != 1 {
+		t.Fatalf("ApplyOnCloseProcessors call count = %d, want 1", len(calls))
+	}
+	if calls[0].id != sid {
+		t.Errorf("sessionID = %q, want %q", calls[0].id, sid)
+	}
+	if calls[0].reason != string(session.ArchiveReasonManual) {
+		t.Errorf("reason = %q, want %q", calls[0].reason, session.ArchiveReasonManual)
+	}
+}
+
+// TestUnarchive_DoesNotFireApplyOnCloseProcessors verifies that a PATCH
+// archived=false does NOT invoke the close-phase trigger.
+func TestUnarchive_DoesNotFireApplyOnCloseProcessors(t *testing.T) {
+	sid := "test-close-not-fires-on-unarchive"
+	store, _ := seedArchivedLoopSession(t, sid, session.StoppedReasonArchived)
+
+	var mu sync.Mutex
+	var callCount int
+	h := New(Deps{
+		Store: store,
+		ApplyOnCloseProcessors: func(_, _ string) {
+			mu.Lock()
+			defer mu.Unlock()
+			callCount++
+		},
+	})
+
+	w := unarchiveViaHandler(t, h, sid)
+	if w.Code != http.StatusOK {
+		t.Fatalf("Status = %d, want %d", w.Code, http.StatusOK)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if callCount != 0 {
+		t.Errorf("ApplyOnCloseProcessors call count = %d, want 0 on unarchive", callCount)
+	}
+}

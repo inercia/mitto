@@ -7,6 +7,7 @@ package conversation
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -78,6 +79,12 @@ type promptDeps interface {
 	// Handshake
 	pdHasSharedProcess() bool
 	pdCompleteDeferredHandshake() error
+	// pdRecommendedHandshakeDeadline returns the outer wall-clock budget the
+	// deferred session/new handshake should be bounded by (mitto-f51). Derived
+	// from the shared process's own RecommendedLoadTimeout so we do not truncate
+	// a legitimate cold handshake. Returns 0 to indicate the caller should apply
+	// its own default.
+	pdRecommendedHandshakeDeadline() time.Duration
 
 	// Error event recording (for handshake failure)
 	pdHasRecorder() bool
@@ -94,8 +101,8 @@ type promptDeps interface {
 	pdACPConnNewSession(ctx context.Context, cwd string) (string, error)
 
 	// Per-prompt model preference
-	pdGetAgentModels() *acp.UnstableSessionModelState // may return nil
-	pdResolveModelTags(modelName string) []string     // config.ResolveModelTags; nil when no config/match
+	pdGetAgentModels() *SessionModelState         // may return nil
+	pdResolveModelTags(modelName string) []string // config.ResolveModelTags; nil when no config/match
 	pdResolvePreferredModels(promptName string) []config.PromptPreferredModel
 	pdModelProfiles() []config.ModelProfile // global model profiles (Settings → Models)
 	pdReadBaselineModel() string            // modelMu.Lock + read + Unlock
@@ -165,6 +172,10 @@ type promptDeps interface {
 	// pdFlushContextInPlace sends the flush command synchronously on the existing ACP session
 	// with streaming suppressed so the flush turn stays out of the transcript.
 	pdFlushContextInPlace(ctx context.Context) error
+
+	// Cold-start diagnostics (mitto-3mv WI-2). Nil-safe — no-op when the
+	// session's cold-start trace has not been begun or has been finalized.
+	pdColdPhase(name string, kv ...any)
 }
 
 // promptDispatcher is a stateless collaborator holding safe synchronous chunks of
@@ -262,6 +273,17 @@ func (p promptDispatcher) resolveAndSubstitute(d promptDeps, message string, met
 		}
 		input := p.buildProcessorInput(d, message, false, meta)
 		tctx := processors.BuildCELContext(input)
+		// Wire the PromptText resolver (mitto-85y.3): resolves a workspace-prompt
+		// NAME to its full body text at render time. Uses the same PromptResolver
+		// the dispatcher uses for named-prompt resolution, bound to the current
+		// working directory. Nil resolver leaves ctx.PromptTextResolver nil, so
+		// PromptText fails-closed with a clear "no resolver available" error.
+		if resolver := d.pdPromptResolver(); resolver != nil {
+			workingDir := d.pdWorkingDir()
+			tctx.PromptTextResolver = func(name string) (string, error) {
+				return resolver(name, workingDir)
+			}
+		}
 		funcs := config.BuildTemplateFuncMap(tctx)
 		name := meta.PromptName
 		if name == "" {
@@ -608,20 +630,53 @@ func (p promptDispatcher) applyProcessorsAndBuildBlocks(
 	return finalBlocks
 }
 
+// handshakeWatchdogFallback is the outer wall-clock bound applied to each deferred
+// handshake attempt when the shared process reports no recommended timeout
+// (mitto-f51). Sized above the normal cold-start budget so a warm-path attempt is
+// never truncated, and above the normal per-attempt create budget (~25s) so the
+// abort branch only fires on a genuinely wedged session/new. Var (not const) so
+// tests can shrink it without waiting the full production duration.
+var handshakeWatchdogFallback = 90 * time.Second
+
+// handshakeWatchdogMargin is added on top of RecommendedLoadTimeout so the outer
+// wait outlasts the SharedACPProcess's own internal retry loop and never
+// prematurely aborts a handshake the process is still legitimately working on.
+// Var (not const) so tests can shrink it.
+var handshakeWatchdogMargin = 30 * time.Second
+
 // completeHandshakeOrAbort handles the deferred session/new handshake for shared-process
 // sessions at the top of the PromptWithMeta goroutine. Returns true to continue, false to
 // abort (caller must return from the goroutine). When no shared process is configured it
 // is always a no-op that returns true.
+//
+// Each handshake attempt is bounded by a deadline (mitto-f51) so a hung
+// session/new takes the abort branch instead of latching isPrompting silently
+// forever. The deadline is derived from the shared process's own recommended
+// load timeout (extended for cold MCP handshakes) plus a margin; if the process
+// signals no recommendation, handshakeWatchdogFallback is used.
 func (p promptDispatcher) completeHandshakeOrAbort(d promptDeps) bool {
 	if !d.pdHasSharedProcess() {
 		return true
 	}
 
+	watchdog := d.pdRecommendedHandshakeDeadline()
+	if watchdog > 0 {
+		watchdog += handshakeWatchdogMargin
+	} else {
+		watchdog = handshakeWatchdogFallback
+	}
+
 	const maxHandshakeAttempts = 3
 	var handshakeErr error
 	for attempt := 1; attempt <= maxHandshakeAttempts; attempt++ {
-		handshakeErr = d.pdCompleteDeferredHandshake()
+		handshakeErr = runHandshakeWithWatchdog(d, watchdog)
 		if handshakeErr == nil {
+			break
+		}
+		// A watchdog trip means the previous attempt's goroutine is still running
+		// against the shared process; retrying here would just spawn another that
+		// re-blocks the same way. Bail out and let the user re-send (mitto-f51).
+		if errors.Is(handshakeErr, errHandshakeWatchdogFired) {
 			break
 		}
 		errStr := strings.ToLower(handshakeErr.Error())
@@ -649,7 +704,12 @@ func (p promptDispatcher) completeHandshakeOrAbort(d promptDeps) bool {
 			"session_id", d.pdSessionID(),
 			"error", handshakeErr)
 	}
-	friendlyMsg := "Could not start the agent session: " + formatACPError(handshakeErr) + " Please resend your message."
+	var friendlyMsg string
+	if errors.Is(handshakeErr, errHandshakeWatchdogFired) {
+		friendlyMsg = "The agent is still starting up — please resend your message."
+	} else {
+		friendlyMsg = "Could not start the agent session: " + formatACPError(handshakeErr) + " Please resend your message."
+	}
 	if d.pdHasRecorder() {
 		seq := d.pdGetNextSeq()
 		if recErr := d.pdRecordErrorEvent(seq, friendlyMsg); recErr != nil {
@@ -663,6 +723,36 @@ func (p promptDispatcher) completeHandshakeOrAbort(d promptDeps) bool {
 	d.pdResetPromptingStateForAbort()
 	d.pdNotifyStreamingStateChanged(false)
 	return false
+}
+
+// errHandshakeWatchdogFired signals that runHandshakeWithWatchdog aborted a
+// pdCompleteDeferredHandshake attempt because the outer deadline expired
+// (mitto-f51). The orphaned goroutine may keep running; the abort branch in
+// completeHandshakeOrAbort still clears prompting state so the user is unwedged.
+var errHandshakeWatchdogFired = errors.New("deferred session/new timed out (handshake watchdog fired)")
+
+// runHandshakeWithWatchdog invokes pdCompleteDeferredHandshake in a goroutine
+// and waits for it up to deadline. On expiry it returns errHandshakeWatchdogFired
+// while the goroutine keeps running (its own RPC budget bounds it eventually).
+func runHandshakeWithWatchdog(d promptDeps, deadline time.Duration) error {
+	if deadline <= 0 {
+		return d.pdCompleteDeferredHandshake()
+	}
+	resultCh := make(chan error, 1)
+	go func() { resultCh <- d.pdCompleteDeferredHandshake() }()
+	timer := time.NewTimer(deadline)
+	defer timer.Stop()
+	select {
+	case err := <-resultCh:
+		return err
+	case <-timer.C:
+		if l := d.pdLogger(); l != nil {
+			l.Warn("Deferred session/new watchdog fired; aborting handshake attempt",
+				"session_id", d.pdSessionID(),
+				"deadline", deadline)
+		}
+		return errHandshakeWatchdogFired
+	}
 }
 
 // createFreshContextSession prepares a fresh context for a FreshContext loop run.
@@ -730,6 +820,21 @@ func (p promptDispatcher) createFreshContextSession(d promptDeps, meta PromptMet
 	return ""
 }
 
+// modelSwitchSyncGrace bounds how long applyModelPreference blocks the interactive
+// prompt waiting for a set_model RPC to land. A warm switch completes well within
+// this window so the preferred model applies to THIS turn; a cold/slow switch
+// exceeds it, so the prompt is dispatched on the current model immediately and the
+// switch completes in the background (applying to the NEXT turn). Prevents the
+// cold-start wedge where a synchronous ~41s set_model blocked the first prompt
+// (mitto-54k.5). A var so tests can shrink it.
+var modelSwitchSyncGrace = 3 * time.Second
+
+// modelSwitchAsyncBudget is the total wall-clock budget for the background set_model
+// RPC, bounded by the session context. Mirrors the aux-session async budget so a
+// cold agent gets its full retry schedule off the critical path (mitto-54k.5).
+// A var so tests can shrink it.
+var modelSwitchAsyncBudget = 90 * time.Second
+
 // applyModelPreference ensures the correct model is active before sending the prompt.
 // Implements set-if-different (lazy): only issues a SetSessionModel RPC when the
 // desired model differs from the current active model. No-op when agentModels is nil.
@@ -764,16 +869,16 @@ func (p promptDispatcher) applyModelPreference(d promptDeps, meta PromptMeta) {
 
 	isOverride := desired != "" && desired != baseline
 	switching := desired != "" && desired != currentModel
-	switchFailed := false
-	if switching {
-		setCtx, setCancel := context.WithTimeout(d.pdSessionCtx(), 15*time.Second)
-		if setErr := d.pdSetActiveModelOnly(setCtx, desired); setErr != nil {
-			switchFailed = true
-			if l := d.pdLogger(); l != nil {
-				l.Warn("Failed to apply model preference", "model", desired, "error", setErr)
-			}
+
+	finalizeOverride := func(switchFailed bool) {
+		if isOverride && !switchFailed {
+			d.pdRecordSessionChange(
+				ConfigOptionCategoryModelOverride,
+				ModelDisplayName(models, desired),
+				ModelDisplayName(models, baseline),
+			)
 		}
-		setCancel()
+		d.pdWriteOverrideActive(isOverride)
 	}
 
 	if l := d.pdLogger(); l != nil {
@@ -798,18 +903,58 @@ func (p promptDispatcher) applyModelPreference(d promptDeps, meta PromptMeta) {
 			"decision", decision)
 	}
 
-	// Emit a timeline pill when this prompt runs on a model different from the
-	// conversation baseline, so the transient override is visible to the user.
-	// Skipped when the switch RPC failed (the model did not actually change).
-	if isOverride && !switchFailed {
-		d.pdRecordSessionChange(
-			ConfigOptionCategoryModelOverride,
-			ModelDisplayName(models, desired),
-			ModelDisplayName(models, baseline),
-		)
+	if !switching {
+		finalizeOverride(false)
+		return
 	}
 
-	d.pdWriteOverrideActive(isOverride)
+	// A model switch is required. Do NOT block the interactive prompt on a slow
+	// set_model (mitto-54k.5): run the switch in the background bounded by the
+	// session context, but wait up to modelSwitchSyncGrace for it to land so a warm
+	// switch still applies to THIS turn. On a cold/slow agent the grace elapses, the
+	// prompt is dispatched on the current model, and the switch completes in the
+	// background (applying to the NEXT turn). setModelSem serialisation and the
+	// mitto-29q re-arm are preserved because the switch still goes through
+	// pdSetActiveModelOnly -> SetSessionModel.
+	switchStart := time.Now()
+	done := make(chan struct{})
+	go func() {
+		setCtx, setCancel := context.WithTimeout(d.pdSessionCtx(), modelSwitchAsyncBudget)
+		defer setCancel()
+		setErr := d.pdSetActiveModelOnly(setCtx, desired)
+		if setErr != nil {
+			if l := d.pdLogger(); l != nil {
+				l.Warn("Failed to apply model preference", "model", desired, "error", setErr)
+			}
+		}
+		// finalize BEFORE signalling done so the warm path observes the pill and
+		// override flag as soon as the select returns (happens-before via close(done)).
+		finalizeOverride(setErr != nil)
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		// Switch landed within the grace window (warm/fast): applies to this turn.
+		d.pdColdPhase("model_switch",
+			"desired", desired,
+			"from", currentModel,
+			"landed", "warm",
+			"switch_ms", time.Since(switchStart).Milliseconds())
+	case <-time.After(modelSwitchSyncGrace):
+		// Cold/slow: dispatch the prompt now; the switch completes in the background.
+		if l := d.pdLogger(); l != nil {
+			l.Info("Deferring model switch to background; dispatching prompt on current model",
+				"session_id", d.pdSessionID(),
+				"desired_model", desired,
+				"current_model", currentModel)
+		}
+		d.pdColdPhase("model_switch",
+			"desired", desired,
+			"from", currentModel,
+			"landed", "deferred",
+			"grace_ms", modelSwitchSyncGrace.Milliseconds())
+	}
 }
 
 // accumulateTokenUsage stores and accumulates token usage from a prompt response.
@@ -1068,7 +1213,7 @@ func (p promptDispatcher) handlePromptError(
 	//   conversation — stop the queue.
 	// Rate-limit: the API will reject the next message too — stop the queue;
 	//   the keepalive-driven TryProcessQueuedMessage will retry once the session is idle.
-	if !isContextTooLargeError(err) && !isRateLimitError(err) {
+	if !IsContextTooLargeError(err) && !isRateLimitError(err) {
 		// Apply any config changes deferred during this turn before
 		// dispatching the next queued message.
 		d.pdFlushPendingConfig()

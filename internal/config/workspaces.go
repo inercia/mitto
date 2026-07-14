@@ -117,6 +117,17 @@ type WorkspaceSettings struct {
 	// model. Mutually exclusive with AuxiliaryModelProfile in the UI; when both
 	// are set, AuxiliaryModelProfile wins. Falls back to AuxiliaryModelSelection.
 	AuxiliaryModelTag string `json:"auxiliary_model_tag,omitempty" yaml:"auxiliary_model_tag,omitempty"`
+	// InitialModelProfile is the name of a Model profile (Config.Models) applied
+	// as the baseline model of every new conversation created in this workspace,
+	// right after the agent reports its available models. Empty means keep the
+	// agent's default model. Mutually exclusive with InitialModelTag in the UI;
+	// when both are set, InitialModelProfile wins.
+	InitialModelProfile string `json:"initial_model_profile,omitempty" yaml:"initial_model_profile,omitempty"`
+	// InitialModelTag selects the initial baseline model by capability tag
+	// (e.g. "Coding"). Resolved to the first Model profile (Config.Models, in
+	// definition order) carrying this tag whose Criteria matches an available
+	// model. Empty means keep the agent's default model.
+	InitialModelTag string `json:"initial_model_tag,omitempty" yaml:"initial_model_tag,omitempty"`
 	// IsDefault marks this workspace as the default for its working directory.
 	// When multiple workspaces share the same folder (e.g. different ACP servers
 	// or model variants), the one with IsDefault set is preferred when a workspace
@@ -125,6 +136,12 @@ type WorkspaceSettings struct {
 	// it distinguishes between workspaces in the same folder. At most one workspace
 	// per folder should set this; if several do, the first match wins.
 	IsDefault bool `json:"is_default,omitempty" yaml:"is_default,omitempty"`
+	// Pinned is a folder-derived, read-only projection of FolderSettings.Pinned
+	// populated by ApplyFolderDefaults on load and stripped on save (like Group,
+	// but folder-native — never hoisted from a workspace). The folder-level flag
+	// controls whether the folder is shown in the sidebar even when it has no
+	// conversations.
+	Pinned bool `json:"pinned,omitempty" yaml:"pinned,omitempty"`
 }
 
 // WorkspaceID returns a unique identifier for this workspace.
@@ -161,6 +178,25 @@ func (w *WorkspaceSettings) GetRestrictedRunner() string {
 // or false if explicitly disabled.
 func (w *WorkspaceSettings) GetAutoApprove() *bool {
 	return w.AutoApprove
+}
+
+// GetInitialModelPreference returns the workspace's initial-model preference as
+// an ordered list of PromptPreferredModel entries suitable for
+// conversation.SelectPreferredModel. Returns nil when neither
+// InitialModelProfile nor InitialModelTag is set. InitialModelProfile takes
+// precedence over InitialModelTag when both are set. Safe to call on a nil
+// receiver.
+func (w *WorkspaceSettings) GetInitialModelPreference() []PromptPreferredModel {
+	if w == nil {
+		return nil
+	}
+	if w.InitialModelProfile != "" {
+		return []PromptPreferredModel{{ModelName: w.InitialModelProfile}}
+	}
+	if w.InitialModelTag != "" {
+		return []PromptPreferredModel{{ModelTag: w.InitialModelTag}}
+	}
+	return nil
 }
 
 // NormalizeDefaultWorkspaces enforces the invariant that at most one workspace

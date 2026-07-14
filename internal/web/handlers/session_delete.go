@@ -32,6 +32,18 @@ func (h *Handlers) HandleDeleteSession(w http.ResponseWriter, sessionID string) 
 		}
 	}
 
+	// Fire the conversationClosed processor pipeline for the parent and every
+	// cascaded child BEFORE the store deletion, so processors can still read
+	// session metadata via the store. Fire-and-forget: ApplyOnCloseProcessors
+	// dispatches its own background goroutine, so this does not block the
+	// delete request (mitto-4is).
+	if h.deps.ApplyOnCloseProcessors != nil {
+		h.deps.ApplyOnCloseProcessors(sessionID, "deleted")
+		for _, childID := range allChildIDs {
+			h.deps.ApplyOnCloseProcessors(childID, "parent_deleted")
+		}
+	}
+
 	// Close ACP processes for parent and all children
 	if h.deps.SessionManager != nil {
 		h.deps.SessionManager.CloseSession(sessionID, "deleted")

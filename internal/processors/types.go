@@ -141,6 +141,15 @@ const (
 	// exchange instead of a partial mid-burst turn. Same execution rules as
 	// agentResponded (only command-mode and prompt-mode processors are allowed).
 	PhaseAgentIdle Phase = "agentIdle"
+	// PhaseConversationClosed fires processors once when the conversation is archived
+	// (manual archive or auto-archive due to inactivity). Fire-and-forget: the archive
+	// path does not wait for these processors to complete. Only command-mode and
+	// prompt-mode are allowed (text injection has no meaning at close time), match must
+	// be "all", and no mutate/rerun/cadence/stopReasons/excludeOrigins/output-transform
+	// features are permitted. Output is limited to "discard" — post-close side effects
+	// (notifications, action buttons, user_data) are not delivered because the session
+	// is no longer active.
+	PhaseConversationClosed Phase = "conversationClosed"
 )
 
 // Match defines which messages in the sequence a processor applies to.
@@ -416,6 +425,30 @@ type AfterProcessorInput struct {
 	// workspace .mittorc file. Keyed by processor name; values are arg name→value maps.
 	// Populated by the caller from config.GetWorkspaceProcessorOverrides. Used in the
 	// after-phase prompt-mode dispatch to overlay declared parameter defaults.
+	// Excluded from JSON — never sent to external command processors.
+	ProcessorArgOverrides map[string]map[string]string `json:"-"`
+}
+
+// CloseProcessorInput captures the archive event for conversationClosed processors.
+// Fields are serialized to JSON (camelCase) for the processor's stdin payload.
+// SessionDir and WorkspaceUUID are excluded from JSON serialization — they are used internally.
+type CloseProcessorInput struct {
+	// SessionID is the archived session identifier.
+	SessionID string `json:"sessionId"`
+	// SessionDir is the on-disk directory for this session. NOT serialized to JSON.
+	SessionDir string `json:"-"`
+	// WorkspaceUUID is the workspace identifier used to route prompt-mode dispatches.
+	// NOT serialized to JSON.
+	WorkspaceUUID string `json:"-"`
+	// WorkingDir is the session's working directory.
+	WorkingDir string `json:"workingDir,omitempty"`
+	// ArchiveReason is one of "manual", "inactivity", "acp_start_failures", etc.
+	// Mirrors session.ArchiveReason values.
+	ArchiveReason string `json:"archiveReason,omitempty"`
+	// ArchivedAt is when the session was archived.
+	ArchivedAt time.Time `json:"archivedAt"`
+	// ProcessorArgOverrides holds per-processor argument value overrides from the
+	// workspace .mittorc file. Keyed by processor name; values are arg name→value maps.
 	// Excluded from JSON — never sent to external command processors.
 	ProcessorArgOverrides map[string]map[string]string `json:"-"`
 }

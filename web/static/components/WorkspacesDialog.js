@@ -2,63 +2,33 @@
 const { useState, useEffect, useMemo, useCallback, useRef, html } =
   window.preact;
 
-import {
-  secureFetch,
-  authFetch,
-  apiUrl,
-  endpoints,
-  errorMessageFromData,
-  hasNativeFolderPicker,
-  pickFolder,
-  fetchConfig,
-  invalidateConfigCache,
-  openExternalURL,
-} from "../utils/index.js";
+import { authFetch, endpoints } from "../utils/index.js";
 
-import {
-  getWorkspaceVisualInfo,
-  getBasename,
-  copyToClipboard,
-} from "../lib.js";
+import { getBasename } from "../lib.js";
 
-import {
-  SpinnerIcon,
-  CloseIcon,
-  FolderIcon,
-  TrashIcon,
-  DuplicateIcon,
-  ChevronRightIcon,
-  ChevronDownIcon,
-  ExpandIcon,
-  CollapseIcon,
-  ServerIcon,
-  EditIcon,
-  PlusIcon,
-  RefreshIcon,
-  RobotIcon,
-  GlobeIcon,
-  MittoIcon,
-  CopyIcon,
-  ErrorIcon,
-  SlidersIcon,
-} from "./Icons.js";
+import { useBeadsFolderConfig } from "../hooks/useBeadsFolderConfig.js";
+import { useFolderGeneralEdits } from "../hooks/useFolderGeneralEdits.js";
+import { useFolderPromptsConfig } from "../hooks/useFolderPromptsConfig.js";
+import { useFolderProcessorsConfig } from "../hooks/useFolderProcessorsConfig.js";
+import { useFolderShortcutsConfig } from "../hooks/useFolderShortcutsConfig.js";
+import { useFolderMetadataConfig } from "../hooks/useFolderMetadataConfig.js";
+import { useWorkspaceEdits } from "../hooks/useWorkspaceEdits.js";
+import { useWorkspaceMcpActions } from "../hooks/useWorkspaceMcpActions.js";
+import { useWorkspaceMcpTools } from "../hooks/useWorkspaceMcpTools.js";
+import { useWorkspaceMutations } from "../hooks/useWorkspaceMutations.js";
+import { useWorkspacesData } from "../hooks/useWorkspacesData.js";
+import { useWorkspacesSaveCoordinator } from "../hooks/useWorkspacesSaveCoordinator.js";
 
-import { promptParameters } from "../utils/prompts.js";
+import { SpinnerIcon, CloseIcon, FolderIcon } from "./Icons.js";
 
 import { ConfirmDialog } from "./ConfirmDialog.js";
 import { Modal } from "./Modal.js";
 import { WorkspaceBadge } from "./WorkspaceBadge.js";
 
-import {
-  AutoChildrenEditor,
-  RunnerRestrictionsEditor,
-} from "./SettingsDialog.js";
-
-import { ModelProfileSelect } from "./ModelProfileSelect.js";
-import { ModelTagSelect } from "./ModelTagSelect.js";
-import { Tooltip } from "./Tooltip.js";
-import { ShortcutsEditor } from "./ShortcutsEditor.js";
-import { promptMenuIncludes } from "../utils/prompts.js";
+import { McpInstallDialog } from "./McpInstallDialog.js";
+import { WorkspaceEditor } from "./WorkspaceEditor.js";
+import { WorkspaceFolderEditor } from "./WorkspaceFolderEditor.js";
+import { WorkspacesLeftPanel } from "./WorkspacesLeftPanel.js";
 
 // Section descriptors for the folder Shortcuts tab. Section IDs match those
 // persisted on the server (folders.json) and used by the render-time toolbars.
@@ -79,91 +49,6 @@ const SHORTCUT_SECTIONS = [
     desc: "Buttons shown in the beads issue detail toolbar; start a new conversation for the issue.",
   },
 ];
-
-// Flatten the canonical nested error envelope {error:{code,message,details}} to a
-// flat message string. Returns "" when there is no error. Also accepts the legacy
-// flat {error:"..."} shape (the HTTP-200 bd-failure path) unchanged.
-function beadsErrorMessage(data) {
-  if (!data || !data.error) return "";
-  if (typeof data.error === "object") {
-    return (data.error && data.error.message) || "Request failed";
-  }
-  return data.error;
-}
-
-// Recommended beads config keys per upstream task system. Shown as context-sensitive
-// help under the upstream selector in the Beads tab.
-const BEADS_UPSTREAM_HELP = {
-  github: {
-    label: "GitHub",
-    rows: [
-      { key: "github.token", desc: "Personal access token" },
-      { key: "github.owner", desc: "Repository owner" },
-      { key: "github.repo", desc: "Repository name" },
-      { key: "github.repository", desc: 'Combined "owner/repo" format' },
-      { key: "github.url", desc: "Custom API URL (GitHub Enterprise)" },
-    ],
-  },
-  jira: {
-    label: "Jira",
-    rows: [
-      {
-        key: "jira.url",
-        desc: 'Base URL, e.g. "https://company.atlassian.net"',
-      },
-      { key: "jira.project", desc: 'Project key, e.g. "PROJ"' },
-      {
-        key: "jira.projects",
-        desc: 'Multiple projects, comma-separated, e.g. "PROJ1,PROJ2"',
-      },
-      { key: "jira.api_token", desc: "API token" },
-      { key: "jira.username", desc: "Account email (Jira Cloud)" },
-      {
-        key: "jira.push_prefix",
-        desc: 'Only push matching issues, e.g. "hippo" or "proj1,proj2"',
-      },
-    ],
-  },
-  gitlab: {
-    label: "GitLab",
-    rows: [
-      { key: "gitlab.url", desc: "GitLab instance URL" },
-      { key: "gitlab.token", desc: "Personal access token" },
-      { key: "gitlab.project_id", desc: "Project ID or path" },
-      { key: "gitlab.group_id", desc: "Group ID for group-level sync" },
-      {
-        key: "gitlab.default_project_id",
-        desc: "Project for creating issues in group mode",
-      },
-    ],
-  },
-  linear: {
-    label: "Linear",
-    rows: [
-      { key: "linear.api_key", desc: "API key (for individual developers)" },
-      { key: "linear.team_id", desc: "Team ID (UUID)" },
-      {
-        key: "linear.team_ids",
-        desc: "Multiple team IDs, comma-separated UUIDs",
-      },
-      { key: "linear.project_id", desc: "Optional: sync only this project" },
-      { key: "linear.id_mode", desc: 'ID generation: "hash" (default)' },
-      { key: "linear.hash_length", desc: "Hash length 3-8 (default: 6)" },
-    ],
-  },
-};
-
-// Build the JSON payload copied to the clipboard for an MCP server row, in the
-// same `{ mcpServers: { <name>: {...} } }` wrapper accepted by the Add dialog.
-// Only non-empty fields are included; `env` is included only when it has keys.
-const buildMcpServerJson = (srv) => {
-  const cfg = {};
-  if (srv.command) cfg.command = srv.command;
-  if (Array.isArray(srv.args) && srv.args.length > 0) cfg.args = srv.args;
-  if (srv.url) cfg.url = srv.url;
-  if (srv.env && Object.keys(srv.env).length > 0) cfg.env = srv.env;
-  return JSON.stringify({ mcpServers: { [srv.name]: cfg } }, null, 2);
-};
 
 // When the tree has more folders than this, they start collapsed by default.
 // Users can still expand individual folders; that explicit choice is persisted
@@ -202,16 +87,7 @@ export function WorkspacesDialog({
   showToast,
   onOpenPromptParamDialog,
 }) {
-  const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
-  const [error, setError] = useState("");
-
-  const [workspaces, setWorkspaces] = useState([]);
-  const [acpServers, setAcpServers] = useState([]);
-  // Named Model profiles (config.models), used for the auxiliary model dropdown
-  const [modelProfiles, setModelProfiles] = useState([]);
-  const [supportedRunners, setSupportedRunners] = useState([]);
-  const [orphanedWorkspaces, setOrphanedWorkspaces] = useState([]);
 
   const [selectedWorkspaceKey, setSelectedWorkspaceKey] = useState(null);
   const [activeTab, setActiveTab] = useState("general");
@@ -220,11 +96,18 @@ export function WorkspacesDialog({
   // so we hand the desired tab off here and consume it there.
   const pendingInitialTabRef = useRef(null);
 
-  // Tracks the workspace whose transient edit fields are currently loaded, so we
-  // can flush those edits back into the `workspaces` array before switching to a
-  // different workspace. Without this, edits to multiple workspaces in a single
-  // dialog session would be lost (only the last-selected workspace would save).
+  // Tracks previously-selected workspace key so useWorkspaceEdits can flush
+  // transient edit fields back into the workspaces array on selection change.
+  // Owned by the shell (not useWorkspaceEdits) to break the circular dep
+  // between useWorkspacesData (which reads it inside loadData) and
+  // useWorkspaceEdits (which needs setWorkspaces from useWorkspacesData).
   const prevSelectedWorkspaceKeyRef = useRef(null);
+
+  // prevSelectedWorkspaceKeyRef + workspace-level edit state (editAcpServer,
+  // editAuxModel*, editInitialModel*, editRunner*, editAutoApprove, editIsDefault,
+  // editAcpCommandOverride) + buildWorkspaceEditsFor/applyWorkspaceEdits helpers
+  // + populate-and-flush effect are owned by useWorkspaceEdits (invoked below,
+  // after selectedWorkspace + getWorkspaceKey are defined).
 
   // Key of a newly created workspace that doesn't have a valid working_dir yet
   const [newFolderKey, setNewFolderKey] = useState(null);
@@ -232,121 +115,31 @@ export function WorkspacesDialog({
   // Per-folder expansion state in the tree, keyed by folder display name. Defaults to expanded.
   const [expandedFolders, setExpandedFolders] = useState({});
 
-  const [editName, setEditName] = useState("");
-  const [editCode, setEditCode] = useState("");
-  const [editColor, setEditColor] = useState("");
-  const [editGroup, setEditGroup] = useState("");
-  const [editAcpServer, setEditAcpServer] = useState("");
-  const [editAuxModelProfile, setEditAuxModelProfile] = useState("");
-  const [editAuxModelTag, setEditAuxModelTag] = useState("");
-  // Whether the user has explicitly cleared a legacy raw auxiliary model
-  // constraint by picking "-- None --" (vs. never having touched the control).
-  const [editAuxModelConstraintCleared, setEditAuxModelConstraintCleared] =
-    useState(false);
-  const [editRunner, setEditRunner] = useState("exec");
-  const [editRunnerConfig, setEditRunnerConfig] = useState(null);
-  const [editAutoApprove, setEditAutoApprove] = useState(false);
-  const [editIsDefault, setEditIsDefault] = useState(false);
-  const [editAcpCommandOverride, setEditAcpCommandOverride] = useState("");
-  const [editAutoChildren, setEditAutoChildren] = useState([]);
+  // edit* workspace-level state owned by useWorkspaceEdits (see below).
   const [effectiveConfig, setEffectiveConfig] = useState(null);
 
-  const [mcpTools, setMcpTools] = useState(null);
-  const [mcpToolsLoading, setMcpToolsLoading] = useState(false);
-  const [mcpToolsError, setMcpToolsError] = useState("");
-
-  const [mcpInstallOpen, setMcpInstallOpen] = useState(false);
-  const [mcpInstallJson, setMcpInstallJson] = useState("");
-  const [mcpInstallName, setMcpInstallName] = useState("");
-  const [mcpInstallScope, setMcpInstallScope] = useState("");
-  const [mcpInstallLoading, setMcpInstallLoading] = useState(false);
-  const [mcpInstallError, setMcpInstallError] = useState("");
-  const [mcpInstallSuccess, setMcpInstallSuccess] = useState("");
-
-  const [mcpRemoveLoading, setMcpRemoveLoading] = useState(false);
-  const mcpRemoveScopeRef = useRef("");
+  // mcpTools / mcpToolsLoading / mcpToolsError state owned by useWorkspaceMcpTools
+  // mcp install/remove state + needsRestart/restarting owned by useWorkspaceMcpActions
   const scrollContainerRef = useRef(null);
-
-  // Ephemeral restart state — resets when dialog closes (component state)
-  const [needsRestart, setNeedsRestart] = useState(false);
-  const [restarting, setRestarting] = useState(false);
+  // hasLiveAcp state owned by useWorkspaceMcpTools
 
   // Track whether a folder group (not a workspace) is selected
   const [selectedFolder, setSelectedFolder] = useState(null);
 
-  // Workspace metadata loaded from .mittorc (description, url)
-  const [folderMetadata, setFolderMetadata] = useState(null);
-  const [metadataLoading, setMetadataLoading] = useState(false);
-  const [editMetaDescription, setEditMetaDescription] = useState("");
-  const [editMetaUrl, setEditMetaUrl] = useState("");
-  const [editMetaGroup, setEditMetaGroup] = useState("");
-  const [editUserDataFields, setEditUserDataFields] = useState([]);
+  // Folder Metadata tab state + handlers moved to useFolderMetadataConfig hook
+  // (invoked below, after groupedWorkspaces is defined). Owns the metadata
+  // fields (description/url/group) and user-data-schema, the folder-selection
+  // reload effect, and the two persist actions used by handleSave.
 
-  // Folder prompts state (for the Prompts tab)
-  const [folderPrompts, setFolderPrompts] = useState([]);
-  const [promptsLoading, setPromptsLoading] = useState(false);
-  const [showAddPrompt, setShowAddPrompt] = useState(false);
-  const [editingPromptIndex, setEditingPromptIndex] = useState(null);
-  const [editPromptName, setEditPromptName] = useState("");
-  const [editPromptText, setEditPromptText] = useState("");
-  const [editPromptColor, setEditPromptColor] = useState("");
-  const [editPromptGroup, setEditPromptGroup] = useState("");
-  const [newPromptName, setNewPromptName] = useState("");
-  const [newPromptText, setNewPromptText] = useState("");
-  const [newPromptColor, setNewPromptColor] = useState("");
-  const [newPromptGroup, setNewPromptGroup] = useState("");
-  const [promptSaving, setPromptSaving] = useState(false);
+  // Folder Prompts tab state + handlers moved to useFolderPromptsConfig hook
+  // (invoked below, after groupedWorkspaces is defined so its dep array is honored).
 
-  // Folder processors state (for the Processors tab)
-  const [folderProcessors, setFolderProcessors] = useState([]);
-  const [processorsLoading, setProcessorsLoading] = useState(false);
-  const [expandedProcessor, setExpandedProcessor] = useState(null);
-  // Local argument edit state: { [procName]: { [paramName]: value } }
-  // Seeded lazily on first edit; cleared after a successful Save.
-  const [processorArgEdits, setProcessorArgEdits] = useState({});
+  // Folder Processors tab state + handlers moved to useFolderProcessorsConfig
+  // hook (invoked below, after groupedWorkspaces is defined so its dep array
+  // is honored).
 
-  // Folder shortcuts state (for the Shortcuts tab)
-  const [shortcutsSections, setShortcutsSections] = useState({});
-  const [shortcutsLoading, setShortcutsLoading] = useState(false);
-  const [shortcutsLoaded, setShortcutsLoaded] = useState(false);
-  const [shortcutsError, setShortcutsError] = useState("");
-  // Per-section prompt lists, filtered by the section's prompt menu tag and
-  // sorted by name. Section ids match those persisted on the server side.
-  const [sectionPrompts, setSectionPrompts] = useState({
-    tasksList: [],
-    conversations: [],
-    beadsIssue: [],
-  });
-  // Global shortcut sections (from settings.json). Used only to derive which
-  // prompts are already configured globally so they can be excluded from the
-  // folder-level dropdowns and any duplicate folder rows greyed out.
-  const [globalShortcutsSections, setGlobalShortcutsSections] = useState({});
-
-  // Folder beads config state (for the Beads Config tab) — UI wrapper over `bd config`.
-  // beadsConfig holds the raw {key: value} map last loaded from the server.
-  // beadsConfigEntries is the editable list of {key, value} rows for namespaced keys.
-  const [beadsConfig, setBeadsConfig] = useState(null);
-  const [beadsConfigLoading, setBeadsConfigLoading] = useState(false);
-  const [beadsConfigError, setBeadsConfigError] = useState("");
-  const [beadsConfigSaving, setBeadsConfigSaving] = useState(false);
-  const [newBeadsKey, setNewBeadsKey] = useState("");
-  const [newBeadsValue, setNewBeadsValue] = useState("");
-  // Folder beads upstream task system ("none"|"jira"|"github"|"gitlab"|"linear"|"prompts"),
-  // persisted in folders.json via /api/issues/upstream.
-  const [beadsUpstream, setBeadsUpstream] = useState("none");
-  const [beadsUpstreamSaving, setBeadsUpstreamSaving] = useState(false);
-  // "prompts" upstream: names of the three configured prompt actions.
-  const [beadsPullPrompt, setBeadsPullPrompt] = useState("");
-  const [beadsPushPrompt, setBeadsPushPrompt] = useState("");
-  const [beadsSyncPrompt, setBeadsSyncPrompt] = useState("");
-  // Saved argument maps (name→string) for each prompt action.
-  const [beadsPullPromptArgs, setBeadsPullPromptArgs] = useState({});
-  const [beadsPushPromptArgs, setBeadsPushPromptArgs] = useState({});
-  const [beadsSyncPromptArgs, setBeadsSyncPromptArgs] = useState({});
-  // Available enabled folder prompts (populated when upstream === "prompts").
-  const [beadsUpstreamPrompts, setBeadsUpstreamPrompts] = useState([]);
-  const [beadsUpstreamPromptsLoading, setBeadsUpstreamPromptsLoading] =
-    useState(false);
+  // Folder Shortcuts tab state + handlers moved to useFolderShortcutsConfig
+  // hook (invoked below, alongside the other folder-tab hooks).
 
   // Confirmation dialog state: { message, title, confirmLabel, confirmVariant, onConfirm }
   const [confirmDialog, setConfirmDialog] = useState(null);
@@ -395,13 +188,36 @@ export function WorkspacesDialog({
     [leftPanelWidth],
   );
 
+  const getWorkspaceKey = (ws) =>
+    ws.uuid || `${ws.working_dir}|${ws.acp_server}`;
+
+  // Config-loading cluster: owns raw data useStates (workspaces/acpServers/
+  // modelProfiles/supportedRunners/orphanedWorkspaces) + loading/error flags
+  // + the async loadData function. Called BEFORE any hook, memo, or effect
+  // that reads workspaces/acpServers/modelProfiles/loadData.
+  const {
+    loading,
+    error,
+    setError,
+    workspaces,
+    setWorkspaces,
+    acpServers,
+    modelProfiles,
+    supportedRunners,
+    orphanedWorkspaces,
+    loadData,
+  } = useWorkspacesData({
+    prevSelectedWorkspaceKeyRef,
+    selectedWorkspaceKey,
+    setSelectedWorkspaceKey,
+    setSelectedFolder,
+    getWorkspaceKey,
+  });
+
   const sortedAcpServers = useMemo(
     () => [...acpServers].sort((a, b) => a.name.localeCompare(b.name)),
     [acpServers],
   );
-
-  const getWorkspaceKey = (ws) =>
-    ws.uuid || `${ws.working_dir}|${ws.acp_server}`;
 
   // Group workspaces by display name, sorted alphabetically, with ACP servers sorted within
   const groupedWorkspaces = useMemo(() => {
@@ -424,6 +240,94 @@ export function WorkspacesDialog({
       .sort(([a], [b]) => a.localeCompare(b))
       .map(([displayName, wsList]) => ({ displayName, workspaces: wsList }));
   }, [workspaces]);
+
+  // Folder Beads tab state + handlers. Owns beads config/upstream state, the
+  // three tab-scoped effects (load/reset), and all API mutators. Kept out of
+  // the shell so the shell only forwards the grouped {beads, beadsSetters,
+  // beadsHandlers} objects to WorkspaceFolderEditor.
+  const { beads, beadsSetters, beadsHandlers } = useBeadsFolderConfig({
+    selectedFolder,
+    activeTab,
+    getSelectedFolderDir: () => {
+      const folderGroup = groupedWorkspaces.find(
+        (g) => g.displayName === selectedFolder,
+      );
+      return folderGroup?.workspaces[0]?.working_dir || null;
+    },
+  });
+
+  // Folder Prompts tab state + handlers. Owns the 13 prompt state pairs, the
+  // tab-open load effect, and the four CRUD handlers (reload/save/delete/toggle).
+  // Shell forwards the grouped {prompts, promptsSetters, promptsHandlers} objects
+  // to WorkspaceFolderEditor.
+  const { prompts, promptsSetters, promptsHandlers } = useFolderPromptsConfig({
+    selectedFolder,
+    activeTab,
+    groupedWorkspaces,
+    getSelectedFolderDir: () => {
+      const folderGroup = groupedWorkspaces.find(
+        (g) => g.displayName === selectedFolder,
+      );
+      return folderGroup?.workspaces[0]?.working_dir || null;
+    },
+    setError,
+  });
+
+  // Folder Processors tab state + handlers. Owns the 4 processor state pairs,
+  // the tab-open load effect, and the two CRUD handlers (toggle/save-arguments).
+  // Shell forwards the grouped {processors, processorsSetters, processorsHandlers}
+  // objects to WorkspaceFolderEditor.
+  const { processors, processorsSetters, processorsHandlers } =
+    useFolderProcessorsConfig({
+      selectedFolder,
+      activeTab,
+      groupedWorkspaces,
+      getSelectedFolderUuid: () => {
+        const folderGroup = groupedWorkspaces.find(
+          (g) => g.displayName === selectedFolder,
+        );
+        return folderGroup?.workspaces[0]?.uuid || null;
+      },
+      setError,
+    });
+
+  // Folder Shortcuts tab state + handlers. Owns the 6 shortcut state pairs,
+  // the tab-open load effect and folder-switch reset effect, the four row
+  // mutators, the persistShortcuts save action, and the memoized redundant-
+  // prompt-names map. Shell forwards the grouped {shortcuts, shortcutsHandlers}
+  // objects to WorkspaceFolderEditor; shortcutsLoaded / persistShortcuts are
+  // consumed by handleSave.
+  const { shortcuts, shortcutsHandlers, shortcutsLoaded, persistShortcuts } =
+    useFolderShortcutsConfig({
+      selectedFolder,
+      activeTab,
+      getSelectedFolderDir: () => {
+        const folderGroup = groupedWorkspaces.find(
+          (g) => g.displayName === selectedFolder,
+        );
+        return folderGroup?.workspaces[0]?.working_dir || null;
+      },
+      shortcutSections: SHORTCUT_SECTIONS,
+    });
+
+  // Folder Metadata tab state + handlers. Owns 6 metadata state pieces
+  // (folderMetadata/metadataLoading + 4 edit fields), the folder-selection
+  // reload effect, and the two persist actions (metadata + user-data-schema)
+  // consumed by handleSave. Shell forwards the grouped
+  // {metadata, metadataSetters} objects to WorkspaceFolderEditor.
+  const { metadata, metadataSetters, persistMetadata, persistUserDataSchema } =
+    useFolderMetadataConfig({
+      selectedFolder,
+      groupedWorkspaces,
+    });
+
+  // Folder General tab state + helpers. Owns the 5 header edit fields
+  // (name/code/color/group/auto-children), the folder-selection populate
+  // effect, the group suggestions memo, and applyFolderEdits used by
+  // handleSave. Shell forwards grouped {edits, editSetters} to
+  // WorkspaceFolderEditor.
+  const { edits, editSetters, folderGroupSuggestions, applyFolderEdits } =
+    useFolderGeneralEdits({ selectedFolder, groupedWorkspaces, workspaces });
 
   // Initialize folder expansion state from localStorage when the dialog opens
   // or when the set of folders changes.
@@ -476,6 +380,43 @@ export function WorkspacesDialog({
     [workspaces, selectedWorkspaceKey],
   );
 
+  // Workspace-level edit fields (transient scalar state) + populate/flush
+  // effect + buildWorkspaceEditsFor/applyWorkspaceEdits helpers. Invoked here
+  // so downstream useMemos and hooks (auxLegacyModelLabel,
+  // useWorkspaceMcpTools, useWorkspacesSaveCoordinator) can consume the
+  // returned edit* values and helpers. prevSelectedWorkspaceKeyRef is owned
+  // by the shell and passed in (see top of component).
+  const {
+    editAcpServer,
+    editAuxModelProfile,
+    editAuxModelTag,
+    editInitialModelProfile,
+    editInitialModelTag,
+    editRunner,
+    editRunnerConfig,
+    editAutoApprove,
+    editIsDefault,
+    editAcpCommandOverride,
+    setEditAcpServer,
+    setEditAuxModelProfile,
+    setEditAuxModelTag,
+    setEditAuxModelConstraintCleared,
+    setEditInitialModelProfile,
+    setEditInitialModelTag,
+    setEditRunner,
+    setEditRunnerConfig,
+    setEditAutoApprove,
+    setEditIsDefault,
+    setEditAcpCommandOverride,
+    applyWorkspaceEdits,
+  } = useWorkspaceEdits({
+    selectedWorkspace,
+    selectedWorkspaceKey,
+    setWorkspaces,
+    getWorkspaceKey,
+    prevSelectedWorkspaceKeyRef,
+  });
+
   // Legacy raw matchMode/pattern constraint for the auxiliary model, if any,
   // and whether it's shown as a disabled "Custom (legacy)" dropdown option
   // (only when no profile is selected and it doesn't match a known profile).
@@ -496,17 +437,61 @@ export function WorkspacesDialog({
       : `Custom (legacy): ${rawAuxModelConstraint.matchMode} ${rawAuxModelConstraint.pattern}`;
   }, [editAuxModelProfile, rawAuxModelConstraint, modelProfiles]);
 
-  // Unique folder groups across all workspaces, used to suggest existing groups
-  // (so users can unify on the same label). Includes the value currently being
-  // edited so a freshly-typed group also appears in the list.
-  const folderGroupSuggestions = useMemo(() => {
-    const set = new Set();
-    workspaces.forEach((ws) => {
-      if (ws.group && ws.group.trim()) set.add(ws.group.trim());
-    });
-    if (editGroup && editGroup.trim()) set.add(editGroup.trim());
-    return Array.from(set).sort((a, b) => a.localeCompare(b));
-  }, [workspaces, editGroup]);
+  // MCP-tools + live-ACP data-loading cluster: owns mcpTools/mcpToolsLoading/
+  // mcpToolsError/hasLiveAcp state, loadMcpTools + checkLiveAcpForWorkspace
+  // callbacks, the mcp-tab load effect, and the workspace-change reset effect.
+  const {
+    mcpTools,
+    mcpToolsLoading,
+    mcpToolsError,
+    setMcpToolsError,
+    hasLiveAcp,
+    loadMcpTools,
+    checkLiveAcpForWorkspace,
+  } = useWorkspaceMcpTools({
+    activeTab,
+    selectedWorkspace,
+    selectedWorkspaceKey,
+    selectedFolder,
+    editAcpServer,
+  });
+
+  // MCP install/remove + ACP restart cluster: owns install form state (open,
+  // json, name, scope, loading, error, success), remove state + scope ref,
+  // ephemeral restart state (needsRestart/restarting), and 6 handler callbacks
+  // (handleRestartAcp, handleRestartAcpClick, handleMcpInstall, handleMcpRemove,
+  // handleInstallMittoMcp, handleMcpRemoveConfirm).
+  const {
+    mcpInstallOpen,
+    setMcpInstallOpen,
+    mcpInstallJson,
+    setMcpInstallJson,
+    mcpInstallName,
+    setMcpInstallName,
+    mcpInstallScope,
+    setMcpInstallScope,
+    mcpInstallLoading,
+    mcpInstallError,
+    setMcpInstallError,
+    mcpInstallSuccess,
+    setMcpInstallSuccess,
+    mcpRemoveLoading,
+    needsRestart,
+    restarting,
+    handleRestartAcpClick,
+    handleMcpInstall,
+    handleInstallMittoMcp,
+    handleMcpRemoveConfirm,
+  } = useWorkspaceMcpActions({
+    selectedWorkspace,
+    editAcpServer,
+    mcpTools,
+    loadMcpTools,
+    checkLiveAcpForWorkspace,
+    setMcpToolsError,
+    setConfirmDialog,
+    setError,
+  });
 
   useEffect(() => {
     if (isOpen) {
@@ -549,35 +534,12 @@ export function WorkspacesDialog({
     });
   }, [isOpen, selectedFolder, loading]);
 
-  // When a workspace child is selected, populate workspace-level edit fields
+  // When a workspace child is selected, reset effectiveConfig and (re)fetch it.
+  // The workspace-level edit-field populate and previous-workspace flush are
+  // owned by useWorkspaceEdits; the mcp state reset by useWorkspaceMcpTools.
   useEffect(() => {
-    // Flush the previously-selected workspace's transient edits into the
-    // workspaces array before repopulating the fields for the new selection.
-    // The scalar edit state (editAcpServer, editAuxModelProfile, etc.) still
-    // holds the previous workspace's values at this point, so applying them
-    // against prevKey commits those edits. This also runs when navigating to a
-    // folder (selectedWorkspaceKey becomes null) so edits are not lost there.
-    const prevKey = prevSelectedWorkspaceKeyRef.current;
-    if (prevKey && prevKey !== selectedWorkspaceKey) {
-      setWorkspaces((prev) =>
-        prev.map((ws) => buildWorkspaceEditsFor(ws, prevKey)),
-      );
-    }
-    prevSelectedWorkspaceKeyRef.current = selectedWorkspaceKey;
-
     if (!selectedWorkspace) return;
-    setEditAcpServer(selectedWorkspace.acp_server || "");
-    setEditAuxModelProfile(selectedWorkspace.auxiliary_model_profile || "");
-    setEditAuxModelTag(selectedWorkspace.auxiliary_model_tag || "");
-    setEditAuxModelConstraintCleared(false);
-    setEditAcpCommandOverride(selectedWorkspace.acp_command_override || "");
-    setEditRunner(selectedWorkspace.restricted_runner || "exec");
-    setEditRunnerConfig(selectedWorkspace.restricted_runner_config || null);
-    setEditAutoApprove(selectedWorkspace.auto_approve === true);
-    setEditIsDefault(selectedWorkspace.is_default === true);
     setEffectiveConfig(null);
-    setMcpTools(null);
-    setMcpToolsError("");
     setActiveTab("general");
     if (selectedWorkspace.uuid) {
       authFetch(
@@ -589,988 +551,89 @@ export function WorkspacesDialog({
     }
   }, [selectedWorkspaceKey]);
 
-  // When a folder is selected, populate folder-level edit fields from the first workspace in the group
+  // When a folder is selected, apply the pending initial tab (from
+  // initialWorkingDir auto-select) or default to "general". Header-field
+  // populate is owned by useFolderGeneralEdits; metadata reset + reload is
+  // owned by useFolderMetadataConfig (both fire on the same [selectedFolder]
+  // dep).
   useEffect(() => {
     if (!selectedFolder) return;
-    const folderGroup = groupedWorkspaces.find(
-      (g) => g.displayName === selectedFolder,
-    );
-    const firstWs = folderGroup?.workspaces[0];
-    if (!firstWs) return;
-    setEditName(firstWs.name || "");
-    setEditCode(firstWs.code || "");
-    setEditGroup(firstWs.group || "");
-    setEditColor(
-      firstWs.color ||
-        getWorkspaceVisualInfo(firstWs.working_dir).color.backgroundHex ||
-        "#808080",
-    );
-    setEditAutoChildren(firstWs.auto_children || []);
-    // Apply a pending initial tab (from initialWorkingDir auto-select), else default to general.
     const pendingTab = pendingInitialTabRef.current;
     pendingInitialTabRef.current = null;
     setActiveTab(pendingTab || "general");
-
-    // Load workspace metadata from .mittorc
-    setFolderMetadata(null);
-    setEditMetaDescription("");
-    setEditMetaUrl("");
-    setEditMetaGroup("");
-    setEditUserDataFields([]);
-    if (firstWs.uuid) {
-      setMetadataLoading(true);
-      authFetch(endpoints.workspaces.metadata(firstWs.uuid))
-        .then((r) => r.json())
-        .then((data) => {
-          setFolderMetadata(data || null);
-          setEditMetaDescription(data?.description || "");
-          setEditMetaUrl(data?.url || "");
-          setEditMetaGroup(data?.group || "");
-          setEditUserDataFields(
-            (data?.user_data_schema?.fields || []).map((f) => ({
-              name: f.name || "",
-              type: f.type || "string",
-              description: f.description || "",
-            })),
-          );
-        })
-        .catch(() => {
-          setFolderMetadata(null);
-          setEditMetaDescription("");
-          setEditMetaUrl("");
-          setEditMetaGroup("");
-          setEditUserDataFields([]);
-        })
-        .finally(() => {
-          setMetadataLoading(false);
-        });
-    }
   }, [selectedFolder]);
 
-  useEffect(() => {
-    if (activeTab === "mcp" && selectedWorkspace && !selectedFolder) {
-      loadMcpTools(
-        editAcpServer || selectedWorkspace.acp_server,
-        selectedWorkspace.uuid,
-      );
-    }
-  }, [activeTab, selectedWorkspaceKey, editAcpServer]);
+  // MCP tab load effect + mcp state reset moved to useWorkspaceMcpTools hook.
 
-  // Lazily load beads config + upstream when the Beads folder tab is opened.
-  useEffect(() => {
-    if (activeTab !== "beads" || !selectedFolder) return;
-    const workingDir = getSelectedFolderDir();
-    if (workingDir) {
-      reloadBeadsConfig(workingDir);
-      reloadBeadsUpstream(workingDir);
-    }
-  }, [activeTab, selectedFolder]);
+  // Folder Shortcuts tab: load effect + folder-switch reset effect moved to
+  // useFolderShortcutsConfig hook (invoked above).
 
-  // Load argument-free folder prompts when the Beads tab is active and upstream is "prompts".
-  useEffect(() => {
-    if (activeTab !== "beads" || !selectedFolder || beadsUpstream !== "prompts")
-      return;
-    const workingDir = getSelectedFolderDir();
-    if (workingDir) loadBeadsUpstreamPrompts(workingDir);
-  }, [activeTab, selectedFolder, beadsUpstream]);
+  // loadData moved to useWorkspacesData hook (called above).
+  // loadMcpTools + checkLiveAcpForWorkspace moved to useWorkspaceMcpTools hook.
+  // handleRestartAcp/handleRestartAcpClick/handleMcpInstall/handleMcpRemove/
+  // handleInstallMittoMcp/handleMcpRemoveConfirm moved to useWorkspaceMcpActions.
 
-  // Reset beads config state when switching folders.
-  useEffect(() => {
-    setBeadsConfig(null);
-    setBeadsConfigError("");
-    setNewBeadsKey("");
-    setNewBeadsValue("");
-    setBeadsUpstream("none");
-    setBeadsPullPrompt("");
-    setBeadsPushPrompt("");
-    setBeadsSyncPrompt("");
-    setBeadsPullPromptArgs({});
-    setBeadsPushPromptArgs({});
-    setBeadsSyncPromptArgs({});
-    setBeadsUpstreamPrompts([]);
-  }, [selectedFolder]);
-
-  // Lazily load shortcuts when the Shortcuts folder tab is opened.
-  useEffect(() => {
-    if (activeTab !== "shortcuts" || !selectedFolder) return;
-    const workingDir = getSelectedFolderDir();
-    if (!workingDir) return;
-    setShortcutsLoading(true);
-    setShortcutsError("");
-    Promise.all([
-      authFetch(endpoints.folders.shortcuts({ working_dir: workingDir }))
-        .then((r) => r.json())
-        .then((data) => setShortcutsSections(data.sections || {})),
-      // Global shortcuts: prompts already configured here are excluded from the
-      // folder dropdowns (and any duplicate folder rows are greyed out).
-      authFetch(endpoints.global.shortcuts())
-        .then((r) => r.json())
-        .then((data) => setGlobalShortcutsSections(data.sections || {}))
-        .catch(() => setGlobalShortcutsSections({})),
-      authFetch(
-        endpoints.workspacePrompts.list({
-          working_dir: workingDir,
-          include_global: true,
-        }),
-      )
-        .then((r) => r.json())
-        .then((data) => {
-          const all = data.prompts || [];
-          const byMenu = (menu) =>
-            all
-              .filter((p) => promptMenuIncludes(p, menu))
-              .sort((a, b) => a.name.localeCompare(b.name));
-          setSectionPrompts({
-            tasksList: byMenu("beadsList"),
-            conversations: byMenu("prompts"),
-            beadsIssue: byMenu("beadsIssues"),
-          });
-        }),
-    ])
-      .then(() => setShortcutsLoaded(true))
-      .catch((err) =>
-        setShortcutsError("Failed to load shortcuts: " + err.message),
-      )
-      .finally(() => setShortcutsLoading(false));
-  }, [activeTab, selectedFolder]);
-
-  // Reset shortcuts state when switching folders.
-  useEffect(() => {
-    setShortcutsSections({});
-    setSectionPrompts({ tasksList: [], conversations: [], beadsIssue: [] });
-    setShortcutsError("");
-    setShortcutsLoaded(false);
-  }, [selectedFolder]);
-
-  const loadData = async () => {
-    // Reset the flush tracker so stale edit-field values from a previous dialog
-    // session are not flushed onto a workspace after a reload/reopen.
-    prevSelectedWorkspaceKeyRef.current = null;
-    setLoading(true);
-    try {
-      const [config, runnersRes] = await Promise.all([
-        fetchConfig(null, true),
-        fetch(endpoints.runners.supported(), { credentials: "same-origin" }),
-      ]);
-      const servers = config.acp_servers || [];
-      setAcpServers(servers);
-      setModelProfiles(Array.isArray(config.models) ? config.models : []);
-      const serverNames = new Set(servers.map((s) => s.name));
-      const rawWorkspaces = config.workspaces || [];
-      const orphaned = [];
-      const valid = rawWorkspaces.filter((ws) => {
-        if (!ws.working_dir || ws.working_dir.trim() === "") return false;
-        if (!ws.acp_server || !serverNames.has(ws.acp_server)) {
-          if (ws.acp_server)
-            orphaned.push({
-              working_dir: ws.working_dir,
-              missing_server: ws.acp_server,
-            });
-          return false;
-        }
-        return true;
-      });
-      setWorkspaces(valid);
-      setOrphanedWorkspaces(orphaned);
-      setSelectedFolder(null);
-      if (valid.length > 0) {
-        // Preserve the previously-selected workspace across a reload/reopen when it
-        // still exists. Otherwise the selection resets to valid[0], whose order is
-        // not stable (it reflects the backend's map-iteration order, not the sorted
-        // tree). That made a just-saved edit appear "lost": the dialog reopened on a
-        // different workspace that legitimately still showed its own value. When no
-        // prior selection matches, fall back to a deterministic first entry (sorted
-        // by display name, then ACP server) so the initial selection is predictable.
-        const prevKey = selectedWorkspaceKey;
-        const preserved =
-          prevKey && valid.some((ws) => getWorkspaceKey(ws) === prevKey);
-        if (preserved) {
-          setSelectedWorkspaceKey(prevKey);
-        } else {
-          const firstByName = [...valid].sort((a, b) => {
-            const an = a.name || getBasename(a.working_dir) || "";
-            const bn = b.name || getBasename(b.working_dir) || "";
-            return (
-              an.localeCompare(bn) ||
-              (a.acp_server || "").localeCompare(b.acp_server || "")
-            );
-          })[0];
-          setSelectedWorkspaceKey(getWorkspaceKey(firstByName));
-        }
-      } else {
-        setSelectedWorkspaceKey(null);
-      }
-      if (runnersRes.ok) {
-        setSupportedRunners((await runnersRes.json()) || []);
-      } else {
-        setSupportedRunners([
-          { type: "exec", label: "exec (no restrictions)", supported: true },
-          {
-            type: "sandbox-exec",
-            label: "sandbox-exec (macOS)",
-            supported: false,
-          },
-          { type: "firejail", label: "firejail (Linux)", supported: false },
-          { type: "docker", label: "docker (all platforms)", supported: true },
-        ]);
-      }
-    } catch (err) {
-      setError("Failed to load configuration: " + err.message);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  // Apply folder-level edits (name, code, color, children) to all workspaces in the same folder
-  const applyFolderEdits = (ws, folderWorkingDir) => {
-    if (ws.working_dir !== folderWorkingDir) return ws;
-    return {
-      ...ws,
-      name: editName || undefined,
-      code: (editCode || "").toUpperCase().slice(0, 3) || undefined,
-      color: editColor || undefined,
-      group: editGroup.trim() || undefined,
-      auto_children: editAutoChildren.length > 0 ? editAutoChildren : undefined,
-    };
-  };
-
-  const loadMcpTools = useCallback(async (acpServer, uuid) => {
-    setMcpToolsLoading(true);
-    setMcpToolsError("");
-    setMcpTools(null);
-    if (!uuid) {
-      setMcpToolsError("No workspace selected");
-      setMcpTools({ servers: [], agent_name: "" });
-      setMcpToolsLoading(false);
-      return;
-    }
-    try {
-      const res = await authFetch(
-        endpoints.workspaces.mcpTools(uuid, { acp_server: acpServer }),
-      );
-      if (!res.ok) {
-        const ct = res.headers.get("content-type");
-        if (ct && ct.includes("application/json")) {
-          const ed = await res.json();
-          throw new Error(errorMessageFromData(ed, "request failed"));
-        }
-        throw new Error(await res.text());
-      }
-      const data = await res.json();
-      if (data.error) {
-        setMcpToolsError(data.error);
-      }
-      setMcpTools(data);
-    } catch (err) {
-      setMcpToolsError("Failed to load MCP tools: " + err.message);
-      setMcpTools({ servers: [], agent_name: "" });
-    } finally {
-      setMcpToolsLoading(false);
-    }
-  }, []);
-
-  // Check if the given workspace UUID has a live shared ACP process. The Restart
-  // ACP button must be offered whenever this is true (even with 0 conversations),
-  // because the live process loaded the old MCP config at startup.
-  const checkLiveAcpForWorkspace = useCallback(async (workspaceUUID) => {
-    if (!workspaceUUID) return false;
-    try {
-      const res = await authFetch(
-        endpoints.workspaces.acpStatus(workspaceUUID),
-      );
-      if (!res.ok) return false;
-      const data = await res.json();
-      return !!data.alive;
-    } catch {
-      return false;
-    }
-  }, []);
-
-  // Restart the ACP process for the selected workspace so MCP changes take effect.
-  const handleRestartAcp = useCallback(async () => {
-    if (!selectedWorkspace?.uuid) return;
-    setRestarting(true);
-    try {
-      const res = await secureFetch(
-        endpoints.workspaces.restartAcp(selectedWorkspace.uuid),
-        {
-          method: "POST",
-        },
-      );
-      if (!res.ok) {
-        let msg = "Failed to restart ACP";
-        try {
-          const data = await res.json();
-          msg = errorMessageFromData(data, msg);
-        } catch (_) {
-          /* keep default */
-        }
-        throw new Error(msg);
-      }
-      setNeedsRestart(false);
-    } catch (err) {
-      setError("Failed to restart ACP: " + err.message);
-    } finally {
-      setRestarting(false);
-    }
-  }, [selectedWorkspace]);
-
-  const handleMcpInstall = useCallback(async () => {
-    // Client-side JSON validation
-    let parsed;
-    try {
-      parsed = JSON.parse(mcpInstallJson);
-    } catch (e) {
-      setMcpInstallError("Invalid JSON: " + e.message);
-      return;
-    }
-
-    // Normalize to { mcpServers: { ... } } — detect format automatically
-    if (
-      parsed.mcpServers &&
-      typeof parsed.mcpServers === "object" &&
-      Object.keys(parsed.mcpServers).length > 0
-    ) {
-      // Format 1: already has mcpServers wrapper — use as-is
-    } else if (
-      typeof parsed.command === "string" ||
-      typeof parsed.url === "string"
-    ) {
-      // Format 3: single server definition without a name
-      if (!mcpInstallName.trim()) {
-        setMcpInstallError(
-          "Please enter a server name for the single server definition.",
-        );
-        return;
-      }
-      parsed = { mcpServers: { [mcpInstallName.trim()]: parsed } };
-    } else {
-      // Format 2: bare map of named servers — check all values look like server entries
-      const vals = Object.values(parsed);
-      if (
-        vals.length > 0 &&
-        vals.every(
-          (v) =>
-            v &&
-            typeof v === "object" &&
-            (typeof v.command === "string" || typeof v.url === "string"),
-        )
-      ) {
-        parsed = { mcpServers: parsed };
-      } else {
-        setMcpInstallError(
-          'Unrecognized JSON format. Paste a "mcpServers" object, a map of named servers, or a single server definition with "command" or "url".',
-        );
-        return;
-      }
-    }
-
-    if (!selectedWorkspace?.uuid) {
-      setMcpInstallError("No workspace selected");
-      return;
-    }
-    setMcpInstallLoading(true);
-    setMcpInstallError("");
-    setMcpInstallSuccess("");
-
-    try {
-      const acpServer = editAcpServer || selectedWorkspace?.acp_server;
-      const res = await secureFetch(
-        endpoints.workspaces.mcpToolsInstall(selectedWorkspace.uuid),
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            acp_server: acpServer,
-            scope: mcpInstallScope,
-            definition: parsed,
-          }),
-        },
-      );
-
-      if (!res.ok) {
-        const ct = res.headers.get("content-type");
-        if (ct && ct.includes("application/json")) {
-          const ed = await res.json();
-          throw new Error(errorMessageFromData(ed, "request failed"));
-        }
-        throw new Error(await res.text());
-      }
-
-      const data = await res.json();
-      const results = data.results || [];
-      const failed = results.filter((r) => !r.success);
-
-      if (failed.length > 0) {
-        setMcpInstallError(
-          failed.map((r) => `${r.name}: ${r.message}`).join("\n"),
-        );
-      } else {
-        const names = results.map((r) => r.name).join(", ");
-        setMcpInstallSuccess(`Successfully installed: ${names}`);
-        // Check if a live ACP process needs restarting to pick up the new MCP server
-        if (selectedWorkspace?.uuid) {
-          checkLiveAcpForWorkspace(selectedWorkspace.uuid).then((hasActive) => {
-            if (hasActive) setNeedsRestart(true);
-          });
-        }
-        // Reload MCP tools list after successful install
-        setTimeout(() => {
-          loadMcpTools(acpServer, selectedWorkspace?.uuid);
-          setMcpInstallOpen(false);
-          setMcpInstallJson("");
-          setMcpInstallName("");
-          setMcpInstallSuccess("");
-          setMcpInstallError("");
-        }, 1500);
-      }
-    } catch (err) {
-      setMcpInstallError("Installation failed: " + err.message);
-    } finally {
-      setMcpInstallLoading(false);
-    }
-  }, [
-    mcpInstallJson,
-    mcpInstallName,
-    mcpInstallScope,
-    editAcpServer,
+  // buildWorkspaceEditsFor + applyWorkspaceEdits moved to useWorkspaceEdits hook.
+  // Workspace mutation cluster (handleToggleIsDefault, getUnusedServer,
+  // isNewFolderIncomplete/folderCanAddServer memos, guardNewFolder,
+  // addWorkspace/removeWorkspace/duplicateWorkspace, addServerToFolder) lives
+  // in useWorkspaceMutations. Must be called BEFORE useWorkspacesSaveCoordinator
+  // (which consumes isNewFolderIncomplete) AND AFTER the memos it depends on
+  // (sortedAcpServers/groupedWorkspaces/selectedWorkspace/useWorkspaceEdits).
+  const {
+    isNewFolderIncomplete,
+    folderCanAddServer,
+    handleToggleIsDefault,
+    guardNewFolder,
+    addWorkspace,
+    removeWorkspace,
+    duplicateWorkspace,
+    addServerToFolder,
+  } = useWorkspaceMutations({
+    workspaces,
+    setWorkspaces,
+    acpServers,
+    sortedAcpServers,
+    groupedWorkspaces,
+    selectedFolder,
+    setSelectedFolder,
     selectedWorkspace,
-    loadMcpTools,
-    checkLiveAcpForWorkspace,
-  ]);
+    selectedWorkspaceKey,
+    setSelectedWorkspaceKey,
+    setEditIsDefault,
+    newFolderKey,
+    setNewFolderKey,
+    setConfirmDialog,
+    setError,
+    getWorkspaceKey,
+  });
 
-  const handleMcpRemove = useCallback(
-    async (serverName, scope) => {
-      setMcpRemoveLoading(true);
-      try {
-        const acpServer = editAcpServer || selectedWorkspace?.acp_server;
-        const res = await secureFetch(
-          endpoints.workspaces.mcpToolsRemove(selectedWorkspace.uuid),
-          {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              acp_server: acpServer,
-              scope: scope || mcpTools?.mcp_scopes?.[0] || "",
-              name: serverName,
-            }),
-          },
-        );
-        if (!res.ok) {
-          const ct = res.headers.get("content-type");
-          if (ct && ct.includes("application/json")) {
-            const ed = await res.json();
-            throw new Error(errorMessageFromData(ed, "request failed"));
-          }
-          throw new Error(await res.text());
-        }
-        const data = await res.json();
-        if (!data.success) {
-          setMcpToolsError(data.message || "Failed to remove MCP server");
-        } else {
-          // Check if a live ACP process needs restarting to drop the removed MCP server
-          if (selectedWorkspace?.uuid) {
-            const hasActive = await checkLiveAcpForWorkspace(
-              selectedWorkspace.uuid,
-            );
-            if (hasActive) setNeedsRestart(true);
-          }
-        }
-        // Refresh the MCP tools list
-        await loadMcpTools(acpServer, selectedWorkspace?.uuid);
-      } catch (err) {
-        setMcpToolsError("Failed to remove MCP server: " + err.message);
-      } finally {
-        setMcpRemoveLoading(false);
-      }
-    },
-    [
-      editAcpServer,
-      selectedWorkspace,
-      mcpTools,
-      loadMcpTools,
-      checkLiveAcpForWorkspace,
-    ],
-  );
-
-  // One-click install of Mitto's own MCP server. Reuses the manual install
-  // endpoint/handling but skips the JSON dialog, building the definition from the
-  // live MCP URL reported by the backend (falling back to the default port).
-  const handleInstallMittoMcp = useCallback(async () => {
-    const mcpUrl = mcpTools?.mcp_url || "http://127.0.0.1:5757/mcp";
-    const scope = mcpTools?.mcp_scopes?.[0] || "";
-    setMcpInstallLoading(true);
-    setMcpInstallError("");
-    setMcpInstallSuccess("");
-    if (!selectedWorkspace?.uuid) {
-      setMcpInstallError("No workspace selected");
-      return;
-    }
-    try {
-      const acpServer = editAcpServer || selectedWorkspace?.acp_server;
-      const res = await secureFetch(
-        endpoints.workspaces.mcpToolsInstall(selectedWorkspace.uuid),
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            acp_server: acpServer,
-            scope,
-            definition: { mcpServers: { mitto: { url: mcpUrl } } },
-          }),
-        },
-      );
-      if (!res.ok) {
-        const ct = res.headers.get("content-type");
-        if (ct && ct.includes("application/json")) {
-          const ed = await res.json();
-          throw new Error(errorMessageFromData(ed, "request failed"));
-        }
-        throw new Error(await res.text());
-      }
-      const data = await res.json();
-      const results = data.results || [];
-      const failed = results.filter((r) => !r.success);
-      if (failed.length > 0) {
-        setMcpInstallError(
-          failed.map((r) => `${r.name}: ${r.message}`).join("\n"),
-        );
-      } else {
-        setMcpInstallSuccess("Installed Mitto MCP server.");
-        if (selectedWorkspace?.uuid) {
-          checkLiveAcpForWorkspace(selectedWorkspace.uuid).then((hasActive) => {
-            if (hasActive) setNeedsRestart(true);
-          });
-        }
-        await loadMcpTools(acpServer, selectedWorkspace?.uuid);
-      }
-    } catch (err) {
-      setMcpInstallError("Installation failed: " + err.message);
-    } finally {
-      setMcpInstallLoading(false);
-    }
-  }, [
-    mcpTools,
-    editAcpServer,
+  // handleSave orchestration lives in useWorkspacesSaveCoordinator: composes
+  // folder/workspace edits, POSTs /config, then runs the metadata/schema/
+  // shortcuts persist chain and fires onSave/showToast. Must be called AFTER
+  // applyWorkspaceEdits/applyFolderEdits/isNewFolderIncomplete are defined.
+  const { handleSave } = useWorkspacesSaveCoordinator({
+    selectedFolder,
+    selectedWorkspaceKey,
     selectedWorkspace,
-    loadMcpTools,
-    checkLiveAcpForWorkspace,
-  ]);
-
-  const handleMcpRemoveConfirm = useCallback(
-    (serverName) => {
-      const defaultScope = mcpTools?.mcp_scopes?.[0] || "";
-      mcpRemoveScopeRef.current = defaultScope;
-      setConfirmDialog({
-        title: "Remove MCP Server",
-        message: `Remove MCP server "${serverName}"?`,
-        confirmLabel: "Remove",
-        confirmVariant: "danger",
-        children:
-          mcpTools?.mcp_scopes?.length > 0
-            ? html`
-                <div class="mt-3">
-                  <label class="block text-sm text-mitto-text-muted mb-1"
-                    >Scope</label
-                  >
-                  <select
-                    value=${defaultScope}
-                    onInput=${(e) => {
-                      mcpRemoveScopeRef.current = e.target.value;
-                    }}
-                    class="select select-sm w-full"
-                  >
-                    ${mcpTools.mcp_scopes.map(
-                      (scope) => html`
-                        <option key=${scope} value=${scope}>${scope}</option>
-                      `,
-                    )}
-                  </select>
-                </div>
-              `
-            : null,
-        onConfirm: async () => {
-          setConfirmDialog(null);
-          await handleMcpRemove(
-            serverName,
-            mcpRemoveScopeRef.current || defaultScope,
-          );
-        },
-      });
-    },
-    [mcpTools, handleMcpRemove],
-  );
-
-  // Toggle the "default workspace for this folder" flag. Enforce a single default
-  // per folder live: when enabling it, immediately clear is_default on every other
-  // workspace that shares this folder so the UI reflects the change before saving.
-  const handleToggleIsDefault = (checked) => {
-    setEditIsDefault(checked);
-    if (checked && selectedWorkspace?.working_dir) {
-      setWorkspaces((prev) =>
-        prev.map((ws) =>
-          ws.working_dir === selectedWorkspace.working_dir &&
-          getWorkspaceKey(ws) !== selectedWorkspaceKey
-            ? { ...ws, is_default: undefined }
-            : ws,
-        ),
-      );
-    }
-  };
-
-  // Build a workspace object with the current transient edit fields applied,
-  // but only for the workspace matching targetKey; all others pass through
-  // unchanged. This is used both to flush edits on selection change and to
-  // commit the currently-selected workspace at save time.
-  const buildWorkspaceEditsFor = (ws, targetKey) => {
-    if (getWorkspaceKey(ws) !== targetKey) return ws;
-    // A selected profile (or an explicit "-- None --") always wins over any
-    // legacy raw matchMode/pattern constraint. Otherwise, an untouched
-    // legacy raw constraint is preserved as-is.
-    const rawAuxModelConstraint = ws.auxiliary_model_selection || null;
-    const auxModelSelection =
-      !editAuxModelProfile &&
-      rawAuxModelConstraint &&
-      !editAuxModelConstraintCleared
-        ? rawAuxModelConstraint
-        : undefined;
-    return {
-      ...ws,
-      acp_server: editAcpServer,
-      auxiliary_model_profile: editAuxModelProfile || undefined,
-      auxiliary_model_tag: editAuxModelTag || undefined,
-      auxiliary_model_selection: auxModelSelection,
-      restricted_runner: editRunner,
-      restricted_runner_config:
-        editRunner !== "exec" ? editRunnerConfig : undefined,
-      auto_approve: editAutoApprove || undefined,
-      is_default: editIsDefault || undefined,
-      acp_command_override: editAcpCommandOverride || undefined,
-    };
-  };
-
-  // Apply workspace-level edits (acp_server, runner, auto_approve) to the selected workspace
-  const applyWorkspaceEdits = (ws) =>
-    buildWorkspaceEditsFor(ws, selectedWorkspaceKey);
-
-  const handleSave = async () => {
-    // Block save if there's an incomplete new folder
-    if (isNewFolderIncomplete) {
-      setError("Please select a folder for the new workspace before saving");
-      return;
-    }
-    setSaving(true);
-    const saveStartTime = Date.now();
-    setError("");
-    try {
-      // Filter out any workspaces with empty working_dir (safety net)
-      let updated = workspaces.filter(
-        (ws) => ws.working_dir && ws.working_dir.trim() !== "",
-      );
-
-      // Apply folder-level edits if a folder is selected
-      if (selectedFolder) {
-        const folderGroup = groupedWorkspaces.find(
-          (g) => g.displayName === selectedFolder,
-        );
-        const folderWorkingDir = folderGroup?.workspaces[0]?.working_dir;
-        if (folderWorkingDir) {
-          updated = updated.map((ws) => applyFolderEdits(ws, folderWorkingDir));
-        }
-      }
-
-      // Apply workspace-level edits if a workspace is selected
-      if (selectedWorkspaceKey) {
-        updated = updated.map(applyWorkspaceEdits);
-
-        // Enforce a single default workspace per folder: if the selected workspace
-        // was marked default, clear is_default on the other workspaces in the same folder.
-        if (editIsDefault && selectedWorkspace?.working_dir) {
-          updated = updated.map((ws) =>
-            ws.working_dir === selectedWorkspace.working_dir &&
-            getWorkspaceKey(ws) !== selectedWorkspaceKey
-              ? { ...ws, is_default: undefined }
-              : ws,
-          );
-        }
-      }
-
-      if (updated.length === 0) {
-        setError("At least one workspace is required");
-        const elapsed = Date.now() - saveStartTime;
-        setTimeout(() => setSaving(false), Math.max(0, 1000 - elapsed));
-        return;
-      }
-
-      const config = await fetchConfig(null, true);
-      // The Workspaces dialog must never touch external-access auth/host/port — those
-      // belong to the Settings dialog. Omit the `web` section entirely so the backend
-      // preserves the existing auth config and never validates a password here.
-      const { web: _omitWeb, ...configWithoutWeb } = config;
-      const res = await secureFetch(endpoints.config.update(), {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          ...configWithoutWeb,
-          workspaces: updated,
-          prompts: [],
-        }),
-      });
-      if (!res.ok) {
-        let errData = null;
-        try {
-          errData = await res.json();
-        } catch (_e) {
-          /* non-JSON error body */
-        }
-        throw new Error(
-          errorMessageFromData(errData, "Failed to save configuration"),
-        );
-      }
-      const result = await res.json();
-      invalidateConfigCache();
-
-      // Save workspace metadata after config save (workspace must exist first)
-      if (
-        selectedFolder &&
-        (editMetaDescription || editMetaUrl || editMetaGroup)
-      ) {
-        const folderGroup = groupedWorkspaces.find(
-          (g) => g.displayName === selectedFolder,
-        );
-        const folderWsUuid = folderGroup?.workspaces[0]?.uuid;
-        if (folderWsUuid) {
-          try {
-            const metaRes = await secureFetch(
-              endpoints.workspaces.metadata(folderWsUuid),
-              {
-                method: "PUT",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({
-                  description: editMetaDescription,
-                  url: editMetaUrl,
-                  group: editMetaGroup,
-                }),
-              },
-            );
-            if (!metaRes.ok) {
-              const metaErr = await metaRes.json().catch(() => ({}));
-              throw new Error(
-                errorMessageFromData(
-                  metaErr,
-                  "Failed to save workspace metadata",
-                ),
-              );
-            }
-          } catch (metaErr) {
-            setError("Failed to save metadata: " + metaErr.message);
-            const elapsed = Date.now() - saveStartTime;
-            setTimeout(() => setSaving(false), Math.max(0, 1000 - elapsed));
-            return;
-          }
-        }
-      }
-
-      // Save user data schema
-      if (selectedFolder) {
-        const folderGroup = groupedWorkspaces.find(
-          (g) => g.displayName === selectedFolder,
-        );
-        const folderWsUuid = folderGroup?.workspaces[0]?.uuid;
-        if (folderWsUuid) {
-          // Filter out fields with empty names
-          const validFields = editUserDataFields.filter(
-            (f) => f.name.trim() !== "",
-          );
-          try {
-            const schemaRes = await secureFetch(
-              endpoints.workspaces.userDataSchema(folderWsUuid),
-              {
-                method: "PUT",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({
-                  fields: validFields,
-                }),
-              },
-            );
-            if (!schemaRes.ok) {
-              const schemaErr = await schemaRes.json().catch(() => ({}));
-              throw new Error(
-                errorMessageFromData(
-                  schemaErr,
-                  "Failed to save user data schema",
-                ),
-              );
-            }
-          } catch (schemaErr) {
-            setError("Failed to save user data schema: " + schemaErr.message);
-            const elapsed = Date.now() - saveStartTime;
-            setTimeout(() => setSaving(false), Math.max(0, 1000 - elapsed));
-            return;
-          }
-        }
-      }
-
-      // Persist folder shortcuts if the Shortcuts tab was opened/edited.
-      if (selectedFolder && shortcutsLoaded) {
-        try {
-          await persistShortcuts();
-        } catch (scErr) {
-          setError("Failed to save shortcuts: " + scErr.message);
-          const elapsed = Date.now() - saveStartTime;
-          setTimeout(() => setSaving(false), Math.max(0, 1000 - elapsed));
-          return;
-        }
-      }
-
-      setWorkspaces(updated);
-      setNewFolderKey(null);
-      onSave?.();
-      showToast?.({
-        style: "success",
-        title: "Workspaces saved",
-        duration: 2000,
-      });
-    } catch (err) {
-      setError(err.message);
-    } finally {
-      const elapsed = Date.now() - saveStartTime;
-      const remaining = Math.max(0, 1000 - elapsed);
-      setTimeout(() => setSaving(false), remaining);
-    }
-  };
-
-  const getUnusedServer = (workingDir, currentName) => {
-    const used = new Set(
-      workspaces
-        .filter((ws) => ws.working_dir === workingDir)
-        .map((ws) => ws.acp_server),
-    );
-    return (
-      acpServers.find((s) => s.name !== currentName && !used.has(s.name))
-        ?.name ||
-      acpServers.find((s) => !used.has(s.name))?.name ||
-      null
-    );
-  };
-
-  // Check if the new (incomplete) folder workspace has a valid working_dir
-  const isNewFolderIncomplete = useMemo(() => {
-    if (!newFolderKey) return false;
-    const ws = workspaces.find((w) => getWorkspaceKey(w) === newFolderKey);
-    return ws && (!ws.working_dir || ws.working_dir.trim() === "");
-  }, [newFolderKey, workspaces]);
-
-  // Attempt to switch away from an incomplete new folder — warn via dialog and proceed on confirm
-  const guardNewFolder = useCallback(
-    (onProceed) => {
-      if (isNewFolderIncomplete) {
-        setConfirmDialog({
-          message: "The new workspace has no folder selected. Discard it?",
-          confirmLabel: "Discard",
-          confirmVariant: "danger",
-          onConfirm: () => {
-            setWorkspaces((prev) =>
-              prev.filter((w) => getWorkspaceKey(w) !== newFolderKey),
-            );
-            setNewFolderKey(null);
-            setConfirmDialog(null);
-            onProceed();
-          },
-        });
-        return;
-      }
-      onProceed();
-    },
-    [isNewFolderIncomplete, newFolderKey],
-  );
-
-  const addWorkspace = () => {
-    if (acpServers.length === 0) return;
-    // Don't allow creating another while one is incomplete
-    if (isNewFolderIncomplete) {
-      setError("Please select a folder for the current new workspace first");
-      return;
-    }
-    const server = sortedAcpServers[0];
-    const newWs = {
-      uuid: crypto.randomUUID(),
-      working_dir: "",
-      acp_server: server.name,
-      restricted_runner: "exec",
-    };
-    const key = getWorkspaceKey(newWs);
-    setWorkspaces([...workspaces, newWs]);
-    setNewFolderKey(key);
-    setSelectedFolder("New Workspace");
-    setSelectedWorkspaceKey(null);
-    setError("");
-  };
-
-  const removeWorkspace = (key) => {
-    if (workspaces.length <= 1) {
-      setError("At least one workspace is required");
-      return;
-    }
-    const ws = workspaces.find((w) => getWorkspaceKey(w) === key);
-    if (!ws) return;
-    const folderName = ws.name || getBasename(ws.working_dir);
-    setConfirmDialog({
-      message: `Do you want to delete ${ws.acp_server} in workspace ${folderName}?`,
-      title: "Delete Workspace",
-      confirmLabel: "Delete",
-      confirmVariant: "danger",
-      onConfirm: () => {
-        setConfirmDialog(null);
-        const remaining = workspaces.filter((w) => getWorkspaceKey(w) !== key);
-        setWorkspaces(remaining);
-        const siblings = remaining.filter(
-          (w) => w.working_dir === ws.working_dir,
-        );
-        if (siblings.length > 0) {
-          setSelectedFolder(folderName);
-          setSelectedWorkspaceKey(null);
-        } else if (remaining.length > 0) {
-          setSelectedWorkspaceKey(getWorkspaceKey(remaining[0]));
-          setSelectedFolder(null);
-        } else {
-          setSelectedWorkspaceKey(null);
-          setSelectedFolder(null);
-        }
-      },
-    });
-  };
-
-  const duplicateWorkspace = (key) => {
-    const ws = workspaces.find((w) => getWorkspaceKey(w) === key);
-    if (!ws) return;
-    const altName = getUnusedServer(ws.working_dir, ws.acp_server);
-    if (!altName) {
-      setError(
-        "Cannot duplicate: all ACP servers already used for this folder",
-      );
-      return;
-    }
-    const altSrv = acpServers.find((s) => s.name === altName);
-    if (!altSrv) {
-      setError("Cannot duplicate: alternative server not found");
-      return;
-    }
-    const dup = {
-      uuid: crypto.randomUUID(),
-      working_dir: ws.working_dir,
-      acp_server: altName,
-      restricted_runner: ws.restricted_runner || "exec",
-      ...(ws.name && { name: ws.name }),
-      ...(ws.code && { code: ws.code }),
-      ...(ws.color && { color: ws.color }),
-    };
-    const idx = workspaces.findIndex((w) => getWorkspaceKey(w) === key);
-    const next = [...workspaces];
-    next.splice(idx + 1, 0, dup);
-    setWorkspaces(next);
-    setSelectedWorkspaceKey(getWorkspaceKey(dup));
-  };
+    groupedWorkspaces,
+    workspaces,
+    editIsDefault,
+    applyWorkspaceEdits,
+    getWorkspaceKey,
+    applyFolderEdits,
+    persistMetadata,
+    persistUserDataSchema,
+    shortcutsLoaded,
+    persistShortcuts,
+    isNewFolderIncomplete,
+    setWorkspaces,
+    setNewFolderKey,
+    setSaving,
+    setError,
+    onSave,
+    showToast,
+  });
 
   const handleRunnerChange = (r) => {
     setEditRunner(r);
@@ -1581,639 +644,12 @@ export function WorkspacesDialog({
       });
   };
 
-  // Add a new ACP server entry to the selected folder
-  const addServerToFolder = () => {
-    if (!selectedFolder) return;
-    const folderGroup = groupedWorkspaces.find(
-      (g) => g.displayName === selectedFolder,
-    );
-    const firstWs = folderGroup?.workspaces[0];
-    if (!firstWs) return;
-    const unusedServer = getUnusedServer(firstWs.working_dir, null);
-    if (!unusedServer) {
-      setError("All ACP servers are already assigned to this folder");
-      return;
-    }
-    const server = acpServers.find((s) => s.name === unusedServer);
-    if (!server) return;
-    const newWs = {
-      uuid: crypto.randomUUID(),
-      working_dir: firstWs.working_dir,
-      acp_server: unusedServer,
-      restricted_runner: "exec",
-      ...(firstWs.name && { name: firstWs.name }),
-      ...(firstWs.code && { code: firstWs.code }),
-      ...(firstWs.color && { color: firstWs.color }),
-      ...(firstWs.group && { group: firstWs.group }),
-    };
-    setWorkspaces([...workspaces, newWs]);
-    setSelectedWorkspaceKey(getWorkspaceKey(newWs));
-    setSelectedFolder(null);
-  };
+  // Folder Shortcuts tab: load/reset effects, row mutators, persistShortcuts
+  // and the redundant-prompt-names memo moved to useFolderShortcutsConfig
+  // (called near the top of this component).
 
-  // Check if folder has unused ACP servers available
-  const folderCanAddServer = useMemo(() => {
-    if (!selectedFolder) return false;
-    const folderGroup = groupedWorkspaces.find(
-      (g) => g.displayName === selectedFolder,
-    );
-    const firstWs = folderGroup?.workspaces[0];
-    if (!firstWs) return false;
-    return getUnusedServer(firstWs.working_dir, null) !== null;
-  }, [selectedFolder, groupedWorkspaces, workspaces, acpServers]);
-
-  // Load prompts when a folder is selected and the Prompts tab is active
-  useEffect(() => {
-    if (!selectedFolder || activeTab !== "prompts") return;
-    const folderGroup = groupedWorkspaces.find(
-      (g) => g.displayName === selectedFolder,
-    );
-    const firstWs = folderGroup?.workspaces[0];
-    if (!firstWs?.working_dir) return;
-
-    setPromptsLoading(true);
-    authFetch(
-      endpoints.workspacePrompts.list({
-        working_dir: firstWs.working_dir,
-        include_global: true,
-      }),
-    )
-      .then((r) => r.json())
-      .then((data) => {
-        setFolderPrompts(data.prompts || []);
-      })
-      .catch((err) => console.error("Failed to load prompts:", err))
-      .finally(() => setPromptsLoading(false));
-  }, [selectedFolder, activeTab, groupedWorkspaces]);
-
-  // Helper to get the first workspace dir for the selected folder
-  const getSelectedFolderDir = () => {
-    const folderGroup = groupedWorkspaces.find(
-      (g) => g.displayName === selectedFolder,
-    );
-    return folderGroup?.workspaces[0]?.working_dir || null;
-  };
-
-  const getSelectedFolderUuid = () => {
-    const folderGroup = groupedWorkspaces.find(
-      (g) => g.displayName === selectedFolder,
-    );
-    return folderGroup?.workspaces[0]?.uuid || null;
-  };
-
-  // Load (reload) beads config for the selected folder via GET /api/issues/config.
-  const reloadBeadsConfig = async (workingDir) => {
-    setBeadsConfigLoading(true);
-    setBeadsConfigError("");
-    try {
-      const res = await authFetch(
-        endpoints.issues.config({ working_dir: workingDir }),
-      );
-      const data = await res.json();
-      const errMsg = beadsErrorMessage(data);
-      if (errMsg) {
-        // bd missing or not initialized in this folder, or a validation error.
-        setBeadsConfig(null);
-        setBeadsConfigError(errMsg);
-      } else {
-        setBeadsConfig(data || {});
-      }
-    } catch (err) {
-      setBeadsConfig(null);
-      setBeadsConfigError(err.message || "Failed to load beads config");
-    } finally {
-      setBeadsConfigLoading(false);
-    }
-  };
-
-  // Set a single beads config key via PUT /api/issues/config, then reload.
-  const setBeadsConfigKey = async (key, value) => {
-    const workingDir = getSelectedFolderDir();
-    if (!workingDir || !key) return;
-    setBeadsConfigSaving(true);
-    setBeadsConfigError("");
-    try {
-      const res = await secureFetch(
-        endpoints.issues.config({ working_dir: workingDir }),
-        {
-          method: "PUT",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ key, value }),
-        },
-      );
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok)
-        throw new Error(beadsErrorMessage(data) || "Failed to set config");
-      if (data && data.error)
-        throw new Error(data.stderr || beadsErrorMessage(data));
-      await reloadBeadsConfig(workingDir);
-    } catch (err) {
-      setBeadsConfigError(err.message || "Failed to set config");
-    } finally {
-      setBeadsConfigSaving(false);
-    }
-  };
-
-  // Delete a single beads config key via DELETE /api/issues/config, then reload.
-  const unsetBeadsConfigKey = async (key) => {
-    const workingDir = getSelectedFolderDir();
-    if (!workingDir || !key) return;
-    setBeadsConfigSaving(true);
-    setBeadsConfigError("");
-    try {
-      const res = await secureFetch(
-        endpoints.issues.config({ working_dir: workingDir, key }),
-        { method: "DELETE" },
-      );
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok)
-        throw new Error(beadsErrorMessage(data) || "Failed to delete config");
-      if (data && data.error)
-        throw new Error(data.stderr || beadsErrorMessage(data));
-      await reloadBeadsConfig(workingDir);
-    } catch (err) {
-      setBeadsConfigError(err.message || "Failed to delete config");
-    } finally {
-      setBeadsConfigSaving(false);
-    }
-  };
-
-  // Load the folder's upstream task system via GET /api/issues/upstream.
-  const reloadBeadsUpstream = async (workingDir) => {
-    try {
-      const res = await authFetch(
-        endpoints.issues.upstream({ working_dir: workingDir }),
-      );
-      const data = await res.json().catch(() => ({}));
-      setBeadsUpstream((data && data.upstream) || "none");
-      setBeadsPullPrompt((data && data.pull_prompt) || "");
-      setBeadsPushPrompt((data && data.push_prompt) || "");
-      setBeadsSyncPrompt((data && data.sync_prompt) || "");
-      setBeadsPullPromptArgs((data && data.pull_prompt_args) || {});
-      setBeadsPushPromptArgs((data && data.push_prompt_args) || {});
-      setBeadsSyncPromptArgs((data && data.sync_prompt_args) || {});
-    } catch (_err) {
-      setBeadsUpstream("none");
-    }
-  };
-
-  // Load available enabled folder prompts for the "prompts" upstream pickers.
-  // Parametrized prompts are included; per-prompt arguments are configured via
-  // the sliders button next to each row.
-  const loadBeadsUpstreamPrompts = async (workingDir) => {
-    if (!workingDir) return;
-    setBeadsUpstreamPromptsLoading(true);
-    try {
-      const res = await authFetch(
-        endpoints.workspacePrompts.list({
-          working_dir: workingDir,
-          include_global: true,
-        }),
-      );
-      const data = await res.json().catch(() => ({}));
-      const all = (data && data.prompts) || [];
-      setBeadsUpstreamPrompts(all.filter((p) => p.enabled !== false));
-    } catch (_err) {
-      setBeadsUpstreamPrompts([]);
-    } finally {
-      setBeadsUpstreamPromptsLoading(false);
-    }
-  };
-
-  // Persist the folder's upstream task system via PUT /api/issues/upstream.
-  const saveBeadsUpstream = async (upstream) => {
-    const workingDir = getSelectedFolderDir();
-    if (!workingDir) return;
-    const prev = beadsUpstream;
-    setBeadsUpstream(upstream); // optimistic
-    setBeadsUpstreamSaving(true);
-    try {
-      const body = { upstream };
-      if (upstream === "prompts") {
-        body.pull_prompt = beadsPullPrompt;
-        body.push_prompt = beadsPushPrompt;
-        body.sync_prompt = beadsSyncPrompt;
-        body.pull_prompt_args = beadsPullPromptArgs;
-        body.push_prompt_args = beadsPushPromptArgs;
-        body.sync_prompt_args = beadsSyncPromptArgs;
-      }
-      const res = await secureFetch(
-        endpoints.issues.upstream({ working_dir: workingDir }),
-        {
-          method: "PUT",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(body),
-        },
-      );
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok)
-        throw new Error(beadsErrorMessage(data) || "Failed to set upstream");
-      if (data && data.error) throw new Error(beadsErrorMessage(data));
-      setBeadsUpstream((data && data.upstream) || upstream);
-      setBeadsPullPrompt((data && data.pull_prompt) || "");
-      setBeadsPushPrompt((data && data.push_prompt) || "");
-      setBeadsSyncPrompt((data && data.sync_prompt) || "");
-      setBeadsPullPromptArgs((data && data.pull_prompt_args) || {});
-      setBeadsPushPromptArgs((data && data.push_prompt_args) || {});
-      setBeadsSyncPromptArgs((data && data.sync_prompt_args) || {});
-    } catch (err) {
-      setBeadsUpstream(prev); // revert on failure
-      setBeadsConfigError(err.message || "Failed to set upstream");
-    } finally {
-      setBeadsUpstreamSaving(false);
-    }
-  };
-
-  // Persist a single pull/push/sync prompt selection for the "prompts" upstream.
-  const saveBeadsPromptName = async (field, value) => {
-    const workingDir = getSelectedFolderDir();
-    if (!workingDir) return;
-    const setterMap = {
-      pull_prompt: setBeadsPullPrompt,
-      push_prompt: setBeadsPushPrompt,
-      sync_prompt: setBeadsSyncPrompt,
-    };
-    const prevMap = {
-      pull_prompt: beadsPullPrompt,
-      push_prompt: beadsPushPrompt,
-      sync_prompt: beadsSyncPrompt,
-    };
-    const setter = setterMap[field];
-    const prev = prevMap[field];
-    if (!setter) return;
-    setter(value); // optimistic
-    setBeadsUpstreamSaving(true);
-    try {
-      const res = await secureFetch(
-        endpoints.issues.upstream({ working_dir: workingDir }),
-        {
-          method: "PUT",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            upstream: "prompts",
-            pull_prompt: field === "pull_prompt" ? value : beadsPullPrompt,
-            push_prompt: field === "push_prompt" ? value : beadsPushPrompt,
-            sync_prompt: field === "sync_prompt" ? value : beadsSyncPrompt,
-            pull_prompt_args: beadsPullPromptArgs,
-            push_prompt_args: beadsPushPromptArgs,
-            sync_prompt_args: beadsSyncPromptArgs,
-          }),
-        },
-      );
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok)
-        throw new Error(beadsErrorMessage(data) || "Failed to save prompt");
-      if (data && data.error) throw new Error(beadsErrorMessage(data));
-    } catch (err) {
-      setter(prev); // revert on failure
-      setBeadsConfigError(err.message || "Failed to save prompt");
-    } finally {
-      setBeadsUpstreamSaving(false);
-    }
-  };
-
-  // Persist the saved argument map for a single pull/push/sync prompt.
-  // Sends the FULL upstream body (all three names + all three arg maps) so the
-  // backend can round-trip; reverts on failure.
-  const saveBeadsPromptArgs = async (field, args) => {
-    const workingDir = getSelectedFolderDir();
-    if (!workingDir) return;
-    const setterMap = {
-      pull_prompt: setBeadsPullPromptArgs,
-      push_prompt: setBeadsPushPromptArgs,
-      sync_prompt: setBeadsSyncPromptArgs,
-    };
-    const prevMap = {
-      pull_prompt: beadsPullPromptArgs,
-      push_prompt: beadsPushPromptArgs,
-      sync_prompt: beadsSyncPromptArgs,
-    };
-    const setter = setterMap[field];
-    const prev = prevMap[field];
-    if (!setter) return;
-    setter(args); // optimistic
-    setBeadsUpstreamSaving(true);
-    try {
-      const res = await secureFetch(
-        endpoints.issues.upstream({ working_dir: workingDir }),
-        {
-          method: "PUT",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            upstream: "prompts",
-            pull_prompt: beadsPullPrompt,
-            push_prompt: beadsPushPrompt,
-            sync_prompt: beadsSyncPrompt,
-            pull_prompt_args:
-              field === "pull_prompt" ? args : beadsPullPromptArgs,
-            push_prompt_args:
-              field === "push_prompt" ? args : beadsPushPromptArgs,
-            sync_prompt_args:
-              field === "sync_prompt" ? args : beadsSyncPromptArgs,
-          }),
-        },
-      );
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok)
-        throw new Error(beadsErrorMessage(data) || "Failed to save arguments");
-      if (data && data.error) throw new Error(beadsErrorMessage(data));
-    } catch (err) {
-      setter(prev); // revert on failure
-      setBeadsConfigError(err.message || "Failed to save arguments");
-    } finally {
-      setBeadsUpstreamSaving(false);
-    }
-  };
-
-  // Load (reload) prompts for the selected folder
-  const reloadFolderPrompts = async (workingDir) => {
-    const res = await authFetch(
-      endpoints.workspacePrompts.list({
-        working_dir: workingDir,
-        include_global: true,
-      }),
-    );
-    const data = await res.json();
-    setFolderPrompts(data.prompts || []);
-  };
-
-  // Create or update a workspace prompt file
-  const saveWorkspacePrompt = async (promptData) => {
-    const workingDir = getSelectedFolderDir();
-    if (!workingDir) return;
-    setPromptSaving(true);
-    try {
-      const res = await secureFetch(endpoints.workspacePrompts.create(), {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ working_dir: workingDir, ...promptData }),
-      });
-      if (!res.ok) {
-        const ct = res.headers.get("content-type");
-        if (ct && ct.includes("application/json")) {
-          const data = await res.json();
-          throw new Error(errorMessageFromData(data, "request failed"));
-        }
-        throw new Error(await res.text());
-      }
-      await reloadFolderPrompts(workingDir);
-    } catch (err) {
-      setError("Failed to save prompt: " + err.message);
-    } finally {
-      setPromptSaving(false);
-    }
-  };
-
-  // Delete a workspace prompt file by name
-  const deleteWorkspacePrompt = async (promptName) => {
-    const workingDir = getSelectedFolderDir();
-    if (!workingDir) return;
-    try {
-      const res = await secureFetch(
-        endpoints.workspacePrompts.list({
-          working_dir: workingDir,
-          name: promptName,
-        }),
-        { method: "DELETE" },
-      );
-      if (!res.ok) {
-        const ct = res.headers.get("content-type");
-        if (ct && ct.includes("application/json")) {
-          const data = await res.json();
-          throw new Error(errorMessageFromData(data, "request failed"));
-        }
-        throw new Error(await res.text());
-      }
-      await reloadFolderPrompts(workingDir);
-    } catch (err) {
-      setError("Failed to delete prompt: " + err.message);
-    }
-  };
-
-  // ------ Shortcuts tab helpers -----------------------------------------------
-
-  // Immutably update a row in the given section.
-  const updateShortcutRow = (section, idx, patch) => {
-    setShortcutsSections((prev) => {
-      const list = [...(prev[section] || [])];
-      list[idx] = { ...list[idx], ...patch };
-      return { ...prev, [section]: list };
-    });
-  };
-
-  // Remove a row from the given section.
-  const removeShortcutRow = (section, idx) => {
-    setShortcutsSections((prev) => {
-      const list = [...(prev[section] || [])];
-      list.splice(idx, 1);
-      return { ...prev, [section]: list };
-    });
-  };
-
-  // Move a row up (dir=-1) or down (dir=1) within the given section.
-  const moveShortcutRow = (section, idx, dir) => {
-    setShortcutsSections((prev) => {
-      const list = [...(prev[section] || [])];
-      const target = idx + dir;
-      if (target < 0 || target >= list.length) return prev;
-      [list[idx], list[target]] = [list[target], list[idx]];
-      return { ...prev, [section]: list };
-    });
-  };
-
-  // Append a new row to the given section, seeded with sensible defaults so it
-  // renders as a complete, usable shortcut right away.
-  const addShortcutRow = (section) => {
-    // Default the prompt to the first available prompt for this section (if any)
-    // so the row is immediately editable rather than showing an empty selector.
-    const available = sectionPrompts[section] || [];
-    const defaultPrompt = available.length > 0 ? available[0].name : "";
-    setShortcutsSections((prev) => {
-      const list = [...(prev[section] || [])];
-      if (list.length >= 10) return prev;
-      // Empty icon → fall back to the linked prompt's own icon at render time.
-      list.push({ icon: "", prompt: defaultPrompt });
-      return { ...prev, [section]: list };
-    });
-  };
-
-  // Persist the shortcuts sections via PUT /api/folders/shortcuts.
-  // Throws on failure; updates local state on success. Invoked by the
-  // dialog footer Save (handleSave).
-  const persistShortcuts = async () => {
-    const workingDir = getSelectedFolderDir();
-    if (!workingDir) return;
-    // Build all sections: drop rows with empty prompt, cap to 10 per section.
-    const sections = {};
-    for (const id of ["tasksList", "conversations", "beadsIssue"]) {
-      sections[id] = (shortcutsSections[id] || [])
-        .filter((r) => r.prompt)
-        .slice(0, 10);
-    }
-    const res = await secureFetch(
-      endpoints.folders.shortcuts({ working_dir: workingDir }),
-      {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ sections }),
-      },
-    );
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok)
-      throw new Error(errorMessageFromData(data, "Failed to save shortcuts"));
-    setShortcutsSections(data.sections || {});
-    // Notify any open Tasks list (BeadsView) so its shortcut buttons refresh
-    // immediately, without requiring a full page reload.
-    window.dispatchEvent(
-      new CustomEvent("mitto:folder_shortcuts_updated", {
-        detail: { working_dir: workingDir },
-      }),
-    );
-  };
-
-  // Per-section set of prompt names configured at the GLOBAL level. Folder rows
-  // referencing these are greyed out and the prompts are excluded from the
-  // folder-level dropdowns (they are already shown via the global shortcuts).
-  const shortcutRedundantPromptNames = useMemo(() => {
-    const out = {};
-    for (const { id } of SHORTCUT_SECTIONS) {
-      out[id] = new Set(
-        (globalShortcutsSections[id] || [])
-          .map((r) => r.prompt)
-          .filter(Boolean),
-      );
-    }
-    return out;
-  }, [globalShortcutsSections]);
-
-  // ---------------------------------------------------------------------------
-
-  // Load processors when a folder is selected and the Processors tab is active
-  useEffect(() => {
-    if (!selectedFolder || activeTab !== "processors") return;
-    const folderGroup = groupedWorkspaces.find(
-      (g) => g.displayName === selectedFolder,
-    );
-    const firstWs = folderGroup?.workspaces[0];
-    if (!firstWs?.uuid) return;
-
-    setProcessorsLoading(true);
-    authFetch(endpoints.workspaces.processors(firstWs.uuid))
-      .then((r) => r.json())
-      .then((data) => {
-        setFolderProcessors(data.processors || []);
-      })
-      .catch((err) => console.error("Failed to load processors:", err))
-      .finally(() => setProcessorsLoading(false));
-  }, [selectedFolder, activeTab, groupedWorkspaces]);
-
-  // Reload processors for the selected folder
-  const reloadFolderProcessors = async (uuid) => {
-    const res = await authFetch(endpoints.workspaces.processors(uuid));
-    const data = await res.json();
-    setFolderProcessors(data.processors || []);
-  };
-
-  // Toggle enabled state for a processor via PATCH /api/workspaces/{uuid}/processors/{name}.
-  const toggleProcessorEnabled = async (processor) => {
-    const uuid = getSelectedFolderUuid();
-    if (!uuid) return;
-    try {
-      const res = await secureFetch(
-        endpoints.workspaces.processor(uuid, processor.name),
-        {
-          method: "PATCH",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ enabled: !processor.enabled }),
-        },
-      );
-      if (!res.ok) {
-        const ct = res.headers.get("content-type");
-        if (ct && ct.includes("application/json")) {
-          const data = await res.json();
-          throw new Error(errorMessageFromData(data, "request failed"));
-        }
-        throw new Error(await res.text());
-      }
-      await reloadFolderProcessors(uuid);
-    } catch (err) {
-      setError("Failed to toggle processor: " + err.message);
-    }
-  };
-
-  // Save per-workspace argument overrides for a prompt-mode processor via PUT
-  // /api/workspaces/{uuid}/processors/{name}/arguments.
-  // Sends all declared params (edited value or current effective value).
-  // Empty string clears the override for that param (reverts to declared default).
-  const saveProcessorArguments = async (proc) => {
-    const uuid = getSelectedFolderUuid();
-    if (!uuid) return;
-    const procEdits = processorArgEdits[proc.name] || {};
-    const args = {};
-    for (const p of proc.parameters || []) {
-      args[p.name] =
-        procEdits[p.name] !== undefined ? procEdits[p.name] : p.value;
-    }
-    try {
-      const res = await secureFetch(
-        endpoints.workspaces.processorArguments(uuid, proc.name),
-        {
-          method: "PUT",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ arguments: args }),
-        },
-      );
-      if (!res.ok) {
-        const ct = res.headers.get("content-type");
-        if (ct && ct.includes("application/json")) {
-          const data = await res.json();
-          throw new Error(errorMessageFromData(data, "request failed"));
-        }
-        throw new Error(await res.text());
-      }
-      await reloadFolderProcessors(uuid);
-      // Clear local edits so inputs re-seed from the freshly-loaded effective values.
-      setProcessorArgEdits((prev) => {
-        const n = { ...prev };
-        delete n[proc.name];
-        return n;
-      });
-    } catch (err) {
-      setError("Failed to save processor arguments: " + err.message);
-    }
-  };
-
-  // Toggle enabled state for a prompt via PATCH /api/workspace-prompts/{name}?working_dir=.
-  // If a .prompt.yaml file exists in .mitto/prompts/, its enabled field is updated in-place.
-  // If not, the state is recorded in the workspace .mittorc file.
-  const togglePromptEnabled = async (prompt) => {
-    const workingDir = getSelectedFolderDir();
-    if (!workingDir) return;
-    const isCurrentlyEnabled = prompt.enabled !== false;
-    try {
-      const res = await secureFetch(
-        endpoints.workspacePrompts.update(prompt.name, {
-          working_dir: workingDir,
-        }),
-        {
-          method: "PATCH",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ enabled: !isCurrentlyEnabled }),
-        },
-      );
-      if (!res.ok) {
-        const ct = res.headers.get("content-type");
-        if (ct && ct.includes("application/json")) {
-          const data = await res.json();
-          throw new Error(errorMessageFromData(data, "request failed"));
-        }
-        throw new Error(await res.text());
-      }
-      await reloadFolderPrompts(workingDir);
-    } catch (err) {
-      setError("Failed to toggle prompt: " + err.message);
-    }
-  };
+  // Folder Processors tab: load effect + reload/toggle/save handlers moved to
+  // useFolderProcessorsConfig (called near the top of this component).
 
   if (!isOpen) return null;
 
@@ -2279,215 +715,30 @@ export function WorkspacesDialog({
       <!-- Body -->
       <div ref=${containerRef} class="flex flex-1 min-h-0 overflow-hidden">
         <!-- Left panel: workspace list -->
-        <div class="shrink-0 flex flex-col" style="width: ${leftPanelWidth}px">
-          <div
-            ref=${scrollContainerRef}
-            class="flex-1 overflow-y-auto p-3 space-y-0.5"
-          >
-            ${loading
-              ? html`<div class="flex items-center justify-center py-8">
-                  <${SpinnerIcon} className="w-6 h-6 text-mitto-accent" />
-                </div>`
-              : workspaces.length === 0
-                ? html`<div
-                    class="text-center py-8 text-mitto-text-muted text-sm px-2"
-                  >
-                    <${FolderIcon}
-                      className="w-8 h-8 mx-auto mb-2 opacity-40"
-                    />
-                    <p>No workspaces.</p>
-                    <p class="text-xs mt-1">
-                      Click the folder icon below to add one.
-                    </p>
-                  </div>`
-                : groupedWorkspaces.map(
-                    ({ displayName, workspaces: wsGroup }) => {
-                      const isFolderSelected =
-                        selectedFolder === displayName && !selectedWorkspaceKey;
-                      const isExpanded = expandedFolders[displayName] !== false;
-                      return html`
-                        <div key=${displayName} class="mb-0.5">
-                          <!-- Folder header -->
-                          <div
-                            data-folder-name=${displayName}
-                            class="group flex items-center gap-2 px-3 py-1 rounded-sm cursor-pointer transition-colors ${isFolderSelected
-                              ? "bg-mitto-accent-500/10"
-                              : "hover:bg-base-200/40"}"
-                            onClick=${() =>
-                              guardNewFolder(() => {
-                                setSelectedFolder(displayName);
-                                setSelectedWorkspaceKey(null);
-                              })}
-                          >
-                            <span
-                              class="shrink-0 flex items-center cursor-pointer"
-                              role="button"
-                              aria-label=${isExpanded
-                                ? "Collapse folder"
-                                : "Expand folder"}
-                              onClick=${(e) => {
-                                e.stopPropagation();
-                                toggleFolder(displayName);
-                              }}
-                            >
-                              ${isExpanded
-                                ? html`<${ChevronDownIcon}
-                                    className="w-3.5 h-3.5 text-mitto-text-muted"
-                                  />`
-                                : html`<${ChevronRightIcon}
-                                    className="w-3.5 h-3.5 text-mitto-text-muted"
-                                  />`}
-                            </span>
-                            <${FolderIcon}
-                              className="w-4 h-4 text-mitto-text-muted shrink-0"
-                            />
-                            <span
-                              class="text-sm font-medium truncate flex-1"
-                              title=${wsGroup[0]?.working_dir ||
-                              "No folder selected"}
-                              >${displayName}</span
-                            >
-                            <span class="text-xs text-mitto-text-muted"
-                              >${wsGroup.length}</span
-                            >
-                          </div>
-                          <!-- Workspace children -->
-                          ${isExpanded
-                            ? html`
-                                <div
-                                  class="ml-4 pl-3 border-l border-mitto-border mt-0.5"
-                                >
-                                  ${wsGroup.map((ws) => {
-                                    const key = getWorkspaceKey(ws);
-                                    const isSelected =
-                                      key === selectedWorkspaceKey;
-                                    return html`
-                                      <div
-                                        key=${key}
-                                        class="group flex items-center gap-2 px-3 py-1 cursor-pointer transition-colors ${isSelected
-                                          ? "bg-mitto-accent-500/20"
-                                          : "hover:bg-base-200/40"}"
-                                        onClick=${() =>
-                                          guardNewFolder(() => {
-                                            setSelectedWorkspaceKey(key);
-                                            setSelectedFolder(null);
-                                          })}
-                                      >
-                                        <${WorkspaceBadge}
-                                          path=${ws.working_dir}
-                                          customColor=${ws.color}
-                                          customCode=${ws.code}
-                                          customName=${ws.name}
-                                          size="sm"
-                                        />
-                                        <span class="text-sm truncate flex-1"
-                                          >${ws.acp_server}</span
-                                        >
-                                      </div>
-                                    `;
-                                  })}
-                                </div>
-                              `
-                            : ""}
-                        </div>
-                      `;
-                    },
-                  )}
-          </div>
-
-          <!-- Toolbar: Add Folder / Delete / Duplicate / Add Server -->
-          <div
-            class="flex items-center justify-end gap-1 px-3 py-2 border-t border-mitto-border"
-          >
-            <button
-              onClick=${addWorkspace}
-              aria-disabled=${acpServers.length === 0 || isNewFolderIncomplete
-                ? "true"
-                : "false"}
-              class="btn btn-ghost btn-square btn-sm tooltip tooltip-bottom ${acpServers.length ===
-                0 || isNewFolderIncomplete
-                ? "opacity-40 pointer-events-none"
-                : ""}"
-              data-tip="Add folder"
-              aria-label="Add folder"
-            >
-              <${FolderIcon} className="w-4 h-4" />
-            </button>
-            <button
-              onClick=${() =>
-                selectedWorkspaceKey && removeWorkspace(selectedWorkspaceKey)}
-              aria-disabled=${!selectedWorkspaceKey ||
-              selectedFolder ||
-              workspaces.length <= 1
-                ? "true"
-                : "false"}
-              class="btn btn-ghost btn-square btn-sm tooltip tooltip-bottom ${!selectedWorkspaceKey ||
-              selectedFolder ||
-              workspaces.length <= 1
-                ? "opacity-40 pointer-events-none"
-                : ""}"
-              data-tip="Delete selected ACP server"
-              aria-label="Delete selected ACP server"
-            >
-              <${TrashIcon} className="w-4 h-4" />
-            </button>
-            <button
-              onClick=${() =>
-                selectedWorkspaceKey &&
-                duplicateWorkspace(selectedWorkspaceKey)}
-              aria-disabled=${!selectedWorkspaceKey ? "true" : "false"}
-              class="btn btn-ghost btn-square btn-sm tooltip tooltip-bottom ${!selectedWorkspaceKey
-                ? "opacity-40 pointer-events-none"
-                : ""}"
-              data-tip="Duplicate selected workspace"
-              aria-label="Duplicate selected workspace"
-            >
-              <${DuplicateIcon} className="w-4 h-4" />
-            </button>
-            <button
-              onClick=${addServerToFolder}
-              aria-disabled=${!selectedFolder || !folderCanAddServer
-                ? "true"
-                : "false"}
-              class="btn btn-ghost btn-square btn-sm tooltip tooltip-bottom ${!selectedFolder ||
-              !folderCanAddServer
-                ? "opacity-40 pointer-events-none"
-                : ""}"
-              data-tip="Add ACP server to folder"
-              aria-label="Add ACP server to folder"
-            >
-              <${ServerIcon} className="w-4 h-4" />
-            </button>
-            <div
-              class="h-5 border-l border-mitto-border mx-1"
-              aria-hidden="true"
-            ></div>
-            <button
-              onClick=${collapseAllFolders}
-              aria-disabled=${groupedWorkspaces.length === 0 ? "true" : "false"}
-              class="btn btn-ghost btn-square btn-sm tooltip tooltip-bottom ${groupedWorkspaces.length ===
-              0
-                ? "opacity-40 pointer-events-none"
-                : ""}"
-              data-tip="Collapse all"
-              aria-label="Collapse all folders"
-            >
-              <${CollapseIcon} className="w-4 h-4" />
-            </button>
-            <button
-              onClick=${expandAllFolders}
-              aria-disabled=${groupedWorkspaces.length === 0 ? "true" : "false"}
-              class="btn btn-ghost btn-square btn-sm tooltip tooltip-bottom ${groupedWorkspaces.length ===
-              0
-                ? "opacity-40 pointer-events-none"
-                : ""}"
-              data-tip="Expand all"
-              aria-label="Expand all folders"
-            >
-              <${ExpandIcon} className="w-4 h-4" />
-            </button>
-          </div>
-        </div>
+        <${WorkspacesLeftPanel}
+          scrollContainerRef=${scrollContainerRef}
+          loading=${loading}
+          workspaces=${workspaces}
+          groupedWorkspaces=${groupedWorkspaces}
+          expandedFolders=${expandedFolders}
+          selectedFolder=${selectedFolder}
+          selectedWorkspaceKey=${selectedWorkspaceKey}
+          acpServers=${acpServers}
+          leftPanelWidth=${leftPanelWidth}
+          isNewFolderIncomplete=${isNewFolderIncomplete}
+          folderCanAddServer=${folderCanAddServer}
+          setSelectedFolder=${setSelectedFolder}
+          setSelectedWorkspaceKey=${setSelectedWorkspaceKey}
+          guardNewFolder=${guardNewFolder}
+          toggleFolder=${toggleFolder}
+          getWorkspaceKey=${getWorkspaceKey}
+          addWorkspace=${addWorkspace}
+          removeWorkspace=${removeWorkspace}
+          duplicateWorkspace=${duplicateWorkspace}
+          addServerToFolder=${addServerToFolder}
+          collapseAllFolders=${collapseAllFolders}
+          expandAllFolders=${expandAllFolders}
+        />
 
         <!-- Resize handle -->
         <div
@@ -2498,1629 +749,35 @@ export function WorkspacesDialog({
         <!-- Right panel: editor -->
         <div class="flex-1 flex flex-col min-w-0 overflow-hidden">
           ${selectedFolder && !selectedWorkspace
-            ? (() => {
-                const folderGroup = groupedWorkspaces.find(
-                  (g) => g.displayName === selectedFolder,
-                );
-                const firstWs = folderGroup?.workspaces[0];
-                if (!firstWs)
-                  return html`<div
-                    class="flex items-center justify-center h-full text-mitto-text-muted text-sm"
-                  >
-                    No workspaces in this folder
-                  </div>`;
-                const isNewFolder =
-                  newFolderKey && getWorkspaceKey(firstWs) === newFolderKey;
-                const isIncomplete =
-                  isNewFolder &&
-                  (!firstWs.working_dir || firstWs.working_dir.trim() === "");
-                const updateNewFolderPath = (path) => {
-                  setWorkspaces((prev) => {
-                    // If no other workspace already lives in this folder, this is the
-                    // folder's first workspace — mark it as the default for the folder.
-                    const isFirstForFolder = !prev.some(
-                      (ws) =>
-                        getWorkspaceKey(ws) !== newFolderKey &&
-                        ws.working_dir === path,
-                    );
-                    return prev.map((ws) =>
-                      getWorkspaceKey(ws) === newFolderKey
-                        ? {
-                            ...ws,
-                            working_dir: path,
-                            is_default: isFirstForFolder ? true : undefined,
-                          }
-                        : ws,
-                    );
-                  });
-                  // Update the selected folder name to reflect new path
-                  const newDisplayName =
-                    editName || getBasename(path) || "New Workspace";
-                  setSelectedFolder(newDisplayName);
-                };
-                return html`
-                  <!-- Folder tab bar (daisyUI radio tabs-border) -->
-                  <div role="tablist" class="tabs tabs-border px-4 shrink-0">
-                    ${folderTabs.map(
-                      (tab) => html`
-                        <input
-                          key=${tab.id}
-                          type="radio"
-                          name="ws-folder-tabs"
-                          role="tab"
-                          title=${tab.label}
-                          aria-label=${tab.short}
-                          data-testid=${`ws-tab-${tab.id}`}
-                          checked=${activeTab === tab.id}
-                          onChange=${() => setActiveTab(tab.id)}
-                          class="tab ${activeTab === tab.id
-                            ? "tab-active text-mitto-accent"
-                            : ""}"
-                        />
-                      `,
-                    )}
-                  </div>
-
-                  <!-- Folder tab content -->
-                  <div
-                    class="flex-1 overflow-y-auto p-6"
-                    data-testid="ws-tab-content"
-                  >
-                    <!-- Folder General tab -->
-                    ${activeTab === "general" &&
-                    html`
-                      <div class="space-y-4">
-                        <fieldset class="fieldset pt-2">
-                          <legend class="fieldset-legend">Location</legend>
-                          <label class="label" for="ws-working-dir"
-                            >Working Directory</label
-                          >
-                          ${isNewFolder
-                            ? html`
-                                <div class="flex gap-2">
-                                  <input
-                                    id="ws-working-dir"
-                                    type="text"
-                                    value=${firstWs.working_dir}
-                                    onInput=${(e) =>
-                                      updateNewFolderPath(e.target.value)}
-                                    placeholder="/path/to/project"
-                                    class="input input-sm flex-1 ${isIncomplete
-                                      ? "border-error"
-                                      : ""}"
-                                  />
-                                  ${hasNativeFolderPicker() &&
-                                  html`
-                                    <button
-                                      onClick=${async () => {
-                                        const p = await pickFolder();
-                                        if (p) updateNewFolderPath(p);
-                                      }}
-                                      class="btn btn-ghost btn-square btn-sm tooltip tooltip-bottom"
-                                      data-tip="Browse"
-                                      aria-label="Browse"
-                                    >
-                                      <${FolderIcon} className="w-4 h-4" />
-                                    </button>
-                                  `}
-                                </div>
-                                ${isIncomplete &&
-                                html`<p class="label text-error">
-                                  Please select a folder for this workspace.
-                                </p>`}
-                              `
-                            : html`
-                                <input
-                                  id="ws-working-dir"
-                                  type="text"
-                                  value=${firstWs.working_dir}
-                                  readonly
-                                  class="input input-sm w-full cursor-default"
-                                />
-                              `}
-                          <label class="label" for="ws-display-name"
-                            >Display Name</label
-                          >
-                          <input
-                            id="ws-display-name"
-                            type="text"
-                            value=${editName}
-                            onInput=${(e) => setEditName(e.target.value)}
-                            placeholder=${getBasename(firstWs.working_dir)}
-                            class="input input-sm w-full"
-                          />
-                        </fieldset>
-                        <fieldset class="fieldset pt-2">
-                          <legend class="fieldset-legend">Appearance</legend>
-                          <div class="flex gap-4 items-start">
-                            <div class="flex-1 min-w-0">
-                              <label class="label" for="ws-folder-group"
-                                >Group</label
-                              >
-                              <input
-                                id="ws-folder-group"
-                                type="text"
-                                list="ws-folder-group-options"
-                                value=${editGroup}
-                                onInput=${(e) => setEditGroup(e.target.value)}
-                                placeholder="e.g., development, personal..."
-                                class="input input-sm w-full"
-                              />
-                              <datalist id="ws-folder-group-options">
-                                ${folderGroupSuggestions.map(
-                                  (g) => html`<option value=${g}></option>`,
-                                )}
-                              </datalist>
-                              <p class="text-xs text-mitto-text-muted mt-1">
-                                Organize folders into groups. Existing groups
-                                are suggested as you type.
-                              </p>
-                            </div>
-                            <div class="flex-1 min-w-0">
-                              <label class="label" for="ws-badge-code"
-                                >Badge Code</label
-                              >
-                              <input
-                                id="ws-badge-code"
-                                type="text"
-                                value=${editCode}
-                                onInput=${(e) =>
-                                  setEditCode(
-                                    e.target.value.toUpperCase().slice(0, 3),
-                                  )}
-                                placeholder="Auto (3 max)"
-                                maxlength="3"
-                                class="input input-sm w-full font-mono uppercase"
-                              />
-                            </div>
-                            <div class="shrink-0">
-                              <label class="label" for="ws-badge-color"
-                                >Badge Color</label
-                              >
-                              <div class="flex items-center gap-2">
-                                <input
-                                  id="ws-badge-color"
-                                  type="color"
-                                  value=${editColor}
-                                  onInput=${(e) => setEditColor(e.target.value)}
-                                  class="rounded cursor-pointer border border-mitto-border"
-                                  style="width: 38px; height: 38px"
-                                />
-                                <span
-                                  class="text-xs text-mitto-text-muted font-mono"
-                                  >${editColor}</span
-                                >
-                              </div>
-                            </div>
-                          </div>
-                        </fieldset>
-                      </div>
-                    `}
-
-                    <!-- Folder Metadata tab -->
-                    ${activeTab === "metadata" &&
-                    html`
-                      <div class="space-y-4">
-                        <fieldset class="fieldset pt-2">
-                          <legend class="fieldset-legend">Metadata</legend>
-                          <label class="label" for="ws-meta-description"
-                            >Description</label
-                          >
-                          <textarea
-                            id="ws-meta-description"
-                            value=${editMetaDescription}
-                            onInput=${(e) =>
-                              setEditMetaDescription(e.target.value)}
-                            placeholder="A description of this workspace/project..."
-                            rows="3"
-                            class="textarea textarea-sm w-full resize-vertical"
-                          />
-                          <label class="label" for="ws-meta-url">URL</label>
-                          <input
-                            id="ws-meta-url"
-                            type="url"
-                            value=${editMetaUrl}
-                            onInput=${(e) => setEditMetaUrl(e.target.value)}
-                            placeholder="https://github.com/..."
-                            class="input input-sm w-full"
-                          />
-                          <label class="label" for="ws-meta-group">Group</label>
-                          <input
-                            id="ws-meta-group"
-                            type="text"
-                            value=${editMetaGroup}
-                            onInput=${(e) => setEditMetaGroup(e.target.value)}
-                            placeholder="e.g., CGW, Infrastructure, Frontend..."
-                            class="input input-sm w-full"
-                          />
-                        </fieldset>
-
-                        <!-- User Data Schema Editor -->
-                        <fieldset class="fieldset pt-2">
-                          <legend class="fieldset-legend">
-                            User Data Schema
-                          </legend>
-                          <div class="flex items-center justify-between mb-2">
-                            <p class="label">
-                              Define custom data attributes for conversations in
-                              this workspace.
-                            </p>
-                            <button
-                              onClick=${() =>
-                                setEditUserDataFields((prev) => [
-                                  ...prev,
-                                  { name: "", type: "string", description: "" },
-                                ])}
-                              class="btn btn-ghost btn-xs gap-1 tooltip tooltip-bottom"
-                              data-tip="Add Field"
-                            >
-                              <${PlusIcon} className="w-3.5 h-3.5" />
-                              Add Field
-                            </button>
-                          </div>
-                          ${editUserDataFields.length === 0 &&
-                          html`
-                            <p
-                              class="text-xs text-mitto-text-muted italic py-2"
-                            >
-                              No fields defined. Click "Add Field" to create
-                              one.
-                            </p>
-                          `}
-                          ${editUserDataFields.length > 0 &&
-                          html`
-                            <ul class="list">
-                              ${editUserDataFields.map(
-                                (field, i) => html`
-                                  <li
-                                    key=${i}
-                                    class="list-row items-start gap-2"
-                                  >
-                                    <div class="flex-1 min-w-0">
-                                      <label
-                                        class="label"
-                                        for=${"ws-udf-name-" + i}
-                                        >Name</label
-                                      >
-                                      <input
-                                        id=${"ws-udf-name-" + i}
-                                        type="text"
-                                        value=${field.name}
-                                        onInput=${(e) =>
-                                          setEditUserDataFields((prev) =>
-                                            prev.map((f, idx) =>
-                                              idx === i
-                                                ? { ...f, name: e.target.value }
-                                                : f,
-                                            ),
-                                          )}
-                                        placeholder="e.g., JIRA Ticket"
-                                        class="input input-sm w-full"
-                                        style="height: 28px; box-sizing: border-box"
-                                      />
-                                    </div>
-                                    <div class="w-24 shrink-0">
-                                      <label
-                                        class="label"
-                                        for=${"ws-udf-type-" + i}
-                                        >Type</label
-                                      >
-                                      <select
-                                        id=${"ws-udf-type-" + i}
-                                        value=${field.type}
-                                        onChange=${(e) =>
-                                          setEditUserDataFields((prev) =>
-                                            prev.map((f, idx) =>
-                                              idx === i
-                                                ? { ...f, type: e.target.value }
-                                                : f,
-                                            ),
-                                          )}
-                                        class="select select-sm w-full"
-                                        style="height: 28px; box-sizing: border-box"
-                                      >
-                                        <option value="string">string</option>
-                                        <option value="url">url</option>
-                                      </select>
-                                    </div>
-                                    <div class="flex-1 min-w-0">
-                                      <label
-                                        class="label"
-                                        for=${"ws-udf-desc-" + i}
-                                        >Description</label
-                                      >
-                                      <input
-                                        id=${"ws-udf-desc-" + i}
-                                        type="text"
-                                        value=${field.description}
-                                        onInput=${(e) =>
-                                          setEditUserDataFields((prev) =>
-                                            prev.map((f, idx) =>
-                                              idx === i
-                                                ? {
-                                                    ...f,
-                                                    description: e.target.value,
-                                                  }
-                                                : f,
-                                            ),
-                                          )}
-                                        placeholder="Optional description..."
-                                        class="input input-sm w-full"
-                                        style="height: 28px; box-sizing: border-box"
-                                      />
-                                    </div>
-                                    <div class="shrink-0 pt-4">
-                                      <button
-                                        onClick=${() =>
-                                          setEditUserDataFields((prev) =>
-                                            prev.filter((_, idx) => idx !== i),
-                                          )}
-                                        class="btn btn-ghost btn-square btn-xs tooltip tooltip-bottom"
-                                        data-tip="Remove field"
-                                        aria-label="Remove field"
-                                      >
-                                        <${TrashIcon} className="w-3.5 h-3.5" />
-                                      </button>
-                                    </div>
-                                  </li>
-                                `,
-                              )}
-                            </ul>
-                          `}
-                        </fieldset>
-                      </div>
-                    `}
-
-                    <!-- Folder Beads tab -->
-                    ${activeTab === "beads" &&
-                    html`
-                      <div class="space-y-4">
-                        <p class="text-sm text-mitto-text-muted">
-                          Mitto uses${" "}
-                          <a
-                            href="https://github.com/steveyegge/beads"
-                            onClick=${(e) => {
-                              e.preventDefault();
-                              openExternalURL(
-                                "https://github.com/steveyegge/beads",
-                              );
-                            }}
-                            class="text-mitto-accent hover:text-mitto-accent-300 underline cursor-pointer"
-                            >beads</a
-                          >${" "}(the <code>bd</code> tool) for managing tasks.
-                        </p>
-                        <!-- Upstream task system selector (persisted in folders.json) -->
-                        <fieldset class="fieldset pt-2">
-                          <legend class="fieldset-legend">
-                            Upstream Tasks
-                          </legend>
-                          <p class="text-xs text-mitto-text-muted">
-                            Select the external task system beads syncs with.
-                            When set, Pull/Push/Sync actions appear in the Tasks
-                            view for this folder.
-                          </p>
-                          <select
-                            value=${beadsUpstream}
-                            onInput=${(e) => saveBeadsUpstream(e.target.value)}
-                            disabled=${beadsUpstreamSaving}
-                            class="select select-sm w-full max-w-md disabled:opacity-50"
-                          >
-                            <option value="none">None</option>
-                            <option value="jira">Jira</option>
-                            <option value="github">GitHub</option>
-                            <option value="gitlab">GitLab</option>
-                            <option value="linear">Linear</option>
-                            <option value="prompts">Prompts</option>
-                          </select>
-                        </fieldset>
-
-                        ${beadsUpstream !== "none" &&
-                        BEADS_UPSTREAM_HELP[beadsUpstream] &&
-                        html`
-                          <div
-                            class="p-3 bg-mitto-input-box border border-mitto-border rounded-md"
-                          >
-                            <p class="text-xs text-mitto-text-muted mb-2">
-                              Recommended
-                              ${BEADS_UPSTREAM_HELP[beadsUpstream].label}
-                              keys${" "} (click a key to fill the add-key field
-                              below):
-                            </p>
-                            <div class="space-y-1">
-                              ${BEADS_UPSTREAM_HELP[beadsUpstream].rows.map(
-                                (row) => html`
-                                  <div
-                                    key=${row.key}
-                                    class="flex items-baseline gap-2 text-xs"
-                                  >
-                                    <button
-                                      type="button"
-                                      onClick=${() => setNewBeadsKey(row.key)}
-                                      class="font-mono text-mitto-accent hover:text-mitto-accent-300 hover:underline whitespace-nowrap tooltip tooltip-bottom"
-                                      data-tip="Use this key in the add-key field below"
-                                    >
-                                      ${row.key}
-                                    </button>
-                                    <span class="text-mitto-text-muted"
-                                      >— ${row.desc}</span
-                                    >
-                                  </div>
-                                `,
-                              )}
-                            </div>
-                          </div>
-                        `}
-                        ${beadsUpstream === "prompts" &&
-                        html`
-                          <fieldset class="fieldset pt-2">
-                            <legend class="fieldset-legend">
-                              Prompt Actions
-                            </legend>
-                            <p class="label">
-                              Choose an enabled prompt for each button. Use the
-                              sliders button to configure arguments for
-                              parametrized prompts.
-                            </p>
-                            ${beadsUpstreamPromptsLoading
-                              ? html`<div
-                                  class="flex items-center gap-2 text-sm text-mitto-text-muted"
-                                >
-                                  <${SpinnerIcon}
-                                    className="w-4 h-4 animate-spin"
-                                  />
-                                  Loading prompts…
-                                </div>`
-                              : html`
-                                  <div class="space-y-2 pt-1">
-                                    ${[
-                                      {
-                                        label: "Pull",
-                                        field: "pull_prompt",
-                                        value: beadsPullPrompt,
-                                        args: beadsPullPromptArgs,
-                                      },
-                                      {
-                                        label: "Push",
-                                        field: "push_prompt",
-                                        value: beadsPushPrompt,
-                                        args: beadsPushPromptArgs,
-                                      },
-                                      {
-                                        label: "Sync",
-                                        field: "sync_prompt",
-                                        value: beadsSyncPrompt,
-                                        args: beadsSyncPromptArgs,
-                                      },
-                                    ].map(({ label, field, value, args }) => {
-                                      const selectedPrompt = value
-                                        ? beadsUpstreamPrompts.find(
-                                            (p) => p.name === value,
-                                          )
-                                        : null;
-                                      const params = selectedPrompt
-                                        ? promptParameters(selectedPrompt)
-                                        : [];
-                                      const canEditArgs =
-                                        !!value && params.length > 0;
-                                      const argsDisabled =
-                                        !canEditArgs || beadsUpstreamSaving;
-                                      return html`
-                                        <div
-                                          key=${field}
-                                          class="flex items-center gap-2 max-w-md"
-                                        >
-                                          <span
-                                            class="text-xs text-mitto-text-secondary"
-                                            style="min-width: 2.5rem"
-                                            >${label}</span
-                                          >
-                                          <select
-                                            value=${beadsUpstreamPrompts.some(
-                                              (p) => p.name === value,
-                                            )
-                                              ? value
-                                              : ""}
-                                            onInput=${(e) =>
-                                              saveBeadsPromptName(
-                                                field,
-                                                e.target.value,
-                                              )}
-                                            disabled=${beadsUpstreamSaving}
-                                            class="select select-sm flex-1 disabled:opacity-50"
-                                          >
-                                            <option value="">— none —</option>
-                                            ${beadsUpstreamPrompts.map(
-                                              (p) => html`
-                                                <option
-                                                  key=${p.name}
-                                                  value=${p.name}
-                                                >
-                                                  ${p.name}
-                                                </option>
-                                              `,
-                                            )}
-                                          </select>
-                                          <button
-                                            type="button"
-                                            onClick=${() => {
-                                              if (
-                                                !canEditArgs ||
-                                                !onOpenPromptParamDialog ||
-                                                !selectedPrompt
-                                              )
-                                                return;
-                                              onOpenPromptParamDialog(
-                                                selectedPrompt,
-                                                params,
-                                                async (userArgs) => {
-                                                  await saveBeadsPromptArgs(
-                                                    field,
-                                                    userArgs,
-                                                  );
-                                                },
-                                                { initialValues: args || {} },
-                                              );
-                                            }}
-                                            disabled=${argsDisabled}
-                                            class="shrink-0 p-1.5 rounded border border-mitto-border dark:border-mitto-border-2 bg-white dark:bg-mitto-surface-2 transition-colors ${argsDisabled
-                                              ? "opacity-50 cursor-not-allowed"
-                                              : "cursor-pointer hover:bg-mitto-surface-hover dark:hover:bg-mitto-surface-3"}"
-                                            aria-label=${`Set ${label.toLowerCase()} prompt arguments`}
-                                            data-testid=${`beads-${field}-args-btn`}
-                                          >
-                                            <${SlidersIcon}
-                                              className="w-4 h-4 text-mitto-text-secondary"
-                                            />
-                                          </button>
-                                        </div>
-                                      `;
-                                    })}
-                                  </div>
-                                `}
-                          </fieldset>
-                        `}
-
-                        <div class="pt-2 border-t border-mitto-border"></div>
-
-                        <p class="text-xs text-mitto-text-muted">
-                          Integration settings stored in this folder's beads
-                          database via${" "}
-                          <span class="font-mono text-mitto-text-muted"
-                            >bd config</span
-                          >. Use namespaced keys such as${" "}
-                          <span class="font-mono text-mitto-text-muted"
-                            >jira.url</span
-                          >,${" "}
-                          <span class="font-mono text-mitto-text-muted"
-                            >github.repo</span
-                          >, or${" "}
-                          <span class="font-mono text-mitto-text-muted"
-                            >${"custom.<key>"}</span
-                          >.
-                        </p>
-
-                        ${beadsConfigError &&
-                        html`
-                          <div
-                            role="alert"
-                            class="alert alert-warning alert-soft text-xs"
-                          >
-                            ${beadsConfigError}
-                          </div>
-                        `}
-                        ${beadsConfigLoading
-                          ? html`<div
-                              class="flex items-center gap-2 text-sm text-mitto-text-muted"
-                            >
-                              <${SpinnerIcon}
-                                className="w-4 h-4 animate-spin"
-                              />
-                              Loading…
-                            </div>`
-                          : beadsConfig &&
-                            html`
-                              ${(() => {
-                                const editable = Object.entries(
-                                  beadsConfig,
-                                ).filter(([k]) => k.includes("."));
-                                const system = Object.entries(
-                                  beadsConfig,
-                                ).filter(([k]) => !k.includes("."));
-                                return html`
-                                  <div class="space-y-2">
-                                    ${editable.length === 0
-                                      ? html`<p
-                                          class="text-xs text-mitto-text-muted italic"
-                                        >
-                                          No integration keys set yet.
-                                        </p>`
-                                      : editable.map(
-                                          ([k, v]) => html`
-                                            <div
-                                              key=${k}
-                                              class="flex gap-2 items-center"
-                                            >
-                                              <input
-                                                type="text"
-                                                value=${k}
-                                                readonly
-                                                class="input input-sm font-mono cursor-default"
-                                                style="width: 38%; height: 38px; box-sizing: border-box"
-                                              />
-                                              <input
-                                                key=${k + ":" + v}
-                                                type="text"
-                                                defaultValue=${v}
-                                                disabled=${beadsConfigSaving}
-                                                onBlur=${(e) => {
-                                                  if (e.target.value !== v)
-                                                    setBeadsConfigKey(
-                                                      k,
-                                                      e.target.value,
-                                                    );
-                                                }}
-                                                class="input input-sm flex-1 font-mono"
-                                                style="height: 38px; box-sizing: border-box"
-                                              />
-                                              <button
-                                                onClick=${() => {
-                                                  if (beadsConfigSaving) return;
-                                                  unsetBeadsConfigKey(k);
-                                                }}
-                                                aria-disabled=${beadsConfigSaving
-                                                  ? "true"
-                                                  : "false"}
-                                                class="btn btn-ghost btn-square btn-sm tooltip tooltip-bottom ${beadsConfigSaving
-                                                  ? "opacity-40 pointer-events-none"
-                                                  : ""}"
-                                                data-tip="Delete this key"
-                                                aria-label="Delete this key"
-                                                style="height: 38px; box-sizing: border-box"
-                                              >
-                                                <${TrashIcon}
-                                                  className="w-4 h-4"
-                                                />
-                                              </button>
-                                            </div>
-                                          `,
-                                        )}
-
-                                    <!-- Add a new key -->
-                                    <div class="flex gap-2 items-center">
-                                      <input
-                                        type="text"
-                                        value=${newBeadsKey}
-                                        onInput=${(e) =>
-                                          setNewBeadsKey(e.target.value)}
-                                        placeholder="jira.url"
-                                        class="input input-sm font-mono"
-                                        style="width: 38%; height: 38px; box-sizing: border-box"
-                                      />
-                                      <input
-                                        type="text"
-                                        value=${newBeadsValue}
-                                        onInput=${(e) =>
-                                          setNewBeadsValue(e.target.value)}
-                                        placeholder="value"
-                                        class="input input-sm flex-1 font-mono"
-                                        style="height: 38px; box-sizing: border-box"
-                                      />
-                                      <button
-                                        onClick=${async () => {
-                                          const key = newBeadsKey.trim();
-                                          if (!key) return;
-                                          if (beadsConfigSaving) return;
-                                          await setBeadsConfigKey(
-                                            key,
-                                            newBeadsValue,
-                                          );
-                                          setNewBeadsKey("");
-                                          setNewBeadsValue("");
-                                        }}
-                                        aria-disabled=${beadsConfigSaving ||
-                                        !newBeadsKey.trim()
-                                          ? "true"
-                                          : "false"}
-                                        class="btn btn-ghost btn-square btn-sm tooltip tooltip-bottom ${beadsConfigSaving ||
-                                        !newBeadsKey.trim()
-                                          ? "opacity-40 pointer-events-none"
-                                          : ""}"
-                                        data-tip="Add key"
-                                        aria-label="Add key"
-                                        style="height: 38px; box-sizing: border-box"
-                                      >
-                                        <${PlusIcon} className="w-4 h-4" />
-                                      </button>
-                                    </div>
-                                  </div>
-
-                                  ${system.length > 0 &&
-                                  html`
-                                    <fieldset class="fieldset pt-2 mt-4">
-                                      <legend class="fieldset-legend">
-                                        System
-                                      </legend>
-                                      <p class="label">
-                                        Operational beads settings (read-only
-                                        here; edit via the bd CLI).
-                                      </p>
-                                      <div class="space-y-1">
-                                        ${system.map(
-                                          ([k, v]) => html`
-                                            <div
-                                              key=${k}
-                                              class="flex gap-2 text-xs font-mono text-mitto-text-muted"
-                                            >
-                                              <span
-                                                class="truncate"
-                                                style="width: 38%"
-                                                >${k}</span
-                                              >
-                                              <span class="flex-1 truncate"
-                                                >${String(v)}</span
-                                              >
-                                            </div>
-                                          `,
-                                        )}
-                                      </div>
-                                    </fieldset>
-                                  `}
-                                `;
-                              })()}
-                            `}
-                      </div>
-                    `}
-
-                    <!-- Folder Prompts tab -->
-                    ${activeTab === "prompts" &&
-                    html`
-                      <div class="space-y-4">
-                        <div class="flex items-center justify-between">
-                          <p class="text-sm text-mitto-text-muted">
-                            Manage prompts for this workspace. Built-in prompts
-                            are read-only but can be disabled.
-                          </p>
-                          <button
-                            onClick=${() => setShowAddPrompt(!showAddPrompt)}
-                            class="btn btn-ghost btn-square btn-sm tooltip tooltip-bottom ${showAddPrompt
-                              ? "btn-active"
-                              : ""}"
-                            data-tip="Add Prompt"
-                            aria-label="Add Prompt"
-                          >
-                            <${PlusIcon} className="w-5 h-5" />
-                          </button>
-                        </div>
-
-                        ${showAddPrompt &&
-                        html`
-                          <fieldset class="fieldset pt-2">
-                            <legend class="fieldset-legend">New Prompt</legend>
-                            <label class="label" for="new-prompt-name"
-                              >Button Label</label
-                            >
-                            <input
-                              id="new-prompt-name"
-                              type="text"
-                              value=${newPromptName}
-                              onInput=${(e) => setNewPromptName(e.target.value)}
-                              placeholder="e.g., Continue"
-                              class="input input-sm w-full"
-                            />
-                            <label class="label" for="new-prompt-text"
-                              >Prompt Text</label
-                            >
-                            <textarea
-                              id="new-prompt-text"
-                              value=${newPromptText}
-                              onInput=${(e) => setNewPromptText(e.target.value)}
-                              placeholder="e.g., Please continue with the current task."
-                              rows="8"
-                              class="textarea textarea-sm w-full resize-y"
-                            />
-                            <label class="label" for="new-prompt-group"
-                              >Group (optional)</label
-                            >
-                            <input
-                              id="new-prompt-group"
-                              type="text"
-                              value=${newPromptGroup}
-                              onInput=${(e) =>
-                                setNewPromptGroup(e.target.value)}
-                              placeholder="e.g., Tasks, Code Quality"
-                              class="input input-sm w-full"
-                            />
-                            <label class="label"
-                              >Background Color (optional)</label
-                            >
-                            <div class="flex items-center gap-2">
-                              <input
-                                type="color"
-                                value=${newPromptColor || "#334155"}
-                                onInput=${(e) =>
-                                  setNewPromptColor(e.target.value)}
-                                class="w-10 h-10 rounded cursor-pointer border border-mitto-border-2"
-                              />
-                              <input
-                                type="text"
-                                value=${newPromptColor}
-                                onInput=${(e) =>
-                                  setNewPromptColor(e.target.value)}
-                                placeholder="#E8F5E9"
-                                class="input input-sm flex-1 font-mono"
-                              />
-                            </div>
-                            <div class="flex justify-end gap-2 mt-2">
-                              <button
-                                onClick=${() => {
-                                  setShowAddPrompt(false);
-                                  setNewPromptName("");
-                                  setNewPromptText("");
-                                  setNewPromptColor("");
-                                  setNewPromptGroup("");
-                                }}
-                                class="btn btn-ghost btn-sm"
-                              >
-                                Cancel
-                              </button>
-                              <button
-                                onClick=${async () => {
-                                  await saveWorkspacePrompt({
-                                    name: newPromptName.trim(),
-                                    prompt: newPromptText.trim(),
-                                    backgroundColor:
-                                      newPromptColor || undefined,
-                                    group: newPromptGroup.trim() || undefined,
-                                    enabled: true,
-                                  });
-                                  setShowAddPrompt(false);
-                                  setNewPromptName("");
-                                  setNewPromptText("");
-                                  setNewPromptColor("");
-                                  setNewPromptGroup("");
-                                }}
-                                disabled=${!newPromptName.trim() ||
-                                !newPromptText.trim() ||
-                                promptSaving}
-                                class="btn btn-primary btn-sm"
-                              >
-                                ${promptSaving ? "Saving..." : "Add Prompt"}
-                              </button>
-                            </div>
-                          </fieldset>
-                        `}
-                        ${promptsLoading
-                          ? html`<div
-                              class="flex items-center justify-center p-4"
-                            >
-                              <${SpinnerIcon}
-                                className="w-5 h-5 animate-spin"
-                              />
-                            </div>`
-                          : html`
-                              <ul class="list">
-                                ${folderPrompts.length === 0
-                                  ? html`<li class="list-row">
-                                      <div
-                                        class="p-4 text-center text-mitto-text-muted text-sm"
-                                      >
-                                        No prompts found. Click + to add a
-                                        workspace prompt.
-                                      </div>
-                                    </li>`
-                                  : [...folderPrompts]
-                                      .sort((a, b) =>
-                                        (a.name || "").localeCompare(
-                                          b.name || "",
-                                        ),
-                                      )
-                                      .map((prompt, idx) => {
-                                        const isBuiltin =
-                                          prompt.source === "builtin" ||
-                                          prompt.source === "file";
-                                        const isEnabled =
-                                          prompt.enabled !== false;
-                                        return html`
-                                          <li
-                                            key=${prompt.name}
-                                            class="list-row p-0"
-                                          >
-                                            <div
-                                              class="list-col-grow collapse ${editingPromptIndex ===
-                                              idx
-                                                ? "collapse-open"
-                                                : "collapse-close"} bg-mitto-surface-3/20 rounded-sm border transition-all ${isEnabled
-                                                ? "border-mitto-border-2/50"
-                                                : "border-mitto-border-2/30 opacity-60"} w-full"
-                                            >
-                                              <div
-                                                class="collapse-title flex items-center gap-3 p-3 min-h-0"
-                                              >
-                                                <${Tooltip}
-                                                  tip=${isEnabled
-                                                    ? "Disable this prompt"
-                                                    : "Enable this prompt"}
-                                                  placement="right"
-                                                  className="shrink-0"
-                                                >
-                                                  <input
-                                                    type="checkbox"
-                                                    checked=${isEnabled}
-                                                    onChange=${() =>
-                                                      togglePromptEnabled(
-                                                        prompt,
-                                                      )}
-                                                    onClick=${(e) =>
-                                                      e.stopPropagation()}
-                                                    class="checkbox checkbox-sm"
-                                                    aria-label=${isEnabled
-                                                      ? "Disable this prompt"
-                                                      : "Enable this prompt"}
-                                                  />
-                                                <//>
-                                                ${prompt.backgroundColor &&
-                                                html`
-                                                  <div
-                                                    class="w-5 h-5 rounded-sm shrink-0 border border-mitto-border-2"
-                                                    style="background-color: ${prompt.backgroundColor}"
-                                                  />
-                                                `}
-                                                <div class="flex-1 min-w-0">
-                                                  <div
-                                                    class="flex items-center gap-2"
-                                                  >
-                                                    <span
-                                                      class="text-sm font-medium ${isEnabled
-                                                        ? "text-mitto-accent"
-                                                        : "text-mitto-text-muted"}"
-                                                      >${prompt.name}</span
-                                                    >
-                                                    <span
-                                                      class="badge badge-sm ${isBuiltin
-                                                        ? "bg-mitto-accent-500/20 text-mitto-accent"
-                                                        : "bg-green-500/20 text-mitto-success"}"
-                                                    >
-                                                      ${isBuiltin
-                                                        ? "built-in"
-                                                        : "workspace"}
-                                                    </span>
-                                                  </div>
-                                                  ${prompt.description &&
-                                                  html`<p
-                                                    class="text-xs text-mitto-text-muted mt-0.5 truncate"
-                                                  >
-                                                    ${prompt.description}
-                                                  </p>`}
-                                                  ${!prompt.description &&
-                                                  prompt.prompt &&
-                                                  html`<p
-                                                    class="text-xs text-mitto-text-muted mt-0.5 truncate"
-                                                  >
-                                                    ${prompt.prompt.slice(
-                                                      0,
-                                                      80,
-                                                    )}${prompt.prompt.length >
-                                                    80
-                                                      ? "..."
-                                                      : ""}
-                                                  </p>`}
-                                                </div>
-                                                <div
-                                                  class="flex items-center gap-1 shrink-0"
-                                                  onClick=${(e) =>
-                                                    e.stopPropagation()}
-                                                >
-                                                  <button
-                                                    onClick=${() => {
-                                                      if (
-                                                        editingPromptIndex ===
-                                                        idx
-                                                      ) {
-                                                        setEditingPromptIndex(
-                                                          null,
-                                                        );
-                                                      } else {
-                                                        setEditPromptName(
-                                                          prompt.name || "",
-                                                        );
-                                                        setEditPromptText(
-                                                          prompt.prompt || "",
-                                                        );
-                                                        setEditPromptColor(
-                                                          prompt.backgroundColor ||
-                                                            "",
-                                                        );
-                                                        setEditPromptGroup(
-                                                          prompt.group || "",
-                                                        );
-                                                        setEditingPromptIndex(
-                                                          idx,
-                                                        );
-                                                      }
-                                                    }}
-                                                    class="btn btn-ghost btn-square btn-xs tooltip tooltip-bottom"
-                                                    data-tip=${isBuiltin
-                                                      ? "View"
-                                                      : "Edit"}
-                                                    aria-label=${isBuiltin
-                                                      ? "View"
-                                                      : "Edit"}
-                                                  >
-                                                    <${EditIcon}
-                                                      className="w-4 h-4 text-mitto-text-muted"
-                                                    />
-                                                  </button>
-                                                  ${!isBuiltin &&
-                                                  html`
-                                                    <button
-                                                      onClick=${() =>
-                                                        deleteWorkspacePrompt(
-                                                          prompt.name,
-                                                        )}
-                                                      class="btn btn-ghost btn-square btn-xs tooltip tooltip-bottom"
-                                                      data-tip="Delete"
-                                                      aria-label="Delete"
-                                                    >
-                                                      <${TrashIcon}
-                                                        className="w-4 h-4 text-mitto-text-muted hover:text-mitto-danger"
-                                                      />
-                                                    </button>
-                                                  `}
-                                                </div>
-                                              </div>
-                                              <div
-                                                class="collapse-content px-3 pb-3"
-                                              >
-                                                <fieldset class="fieldset pt-2">
-                                                  <legend
-                                                    class="fieldset-legend"
-                                                  >
-                                                    ${isBuiltin
-                                                      ? "View Prompt"
-                                                      : "Edit Prompt"}
-                                                  </legend>
-                                                  <label
-                                                    class="label"
-                                                    for=${"edit-prompt-name-" +
-                                                    idx}
-                                                    >Button Label</label
-                                                  >
-                                                  <input
-                                                    id=${"edit-prompt-name-" +
-                                                    idx}
-                                                    type="text"
-                                                    value=${isBuiltin
-                                                      ? prompt.name
-                                                      : editPromptName}
-                                                    onInput=${(e) =>
-                                                      !isBuiltin &&
-                                                      setEditPromptName(
-                                                        e.target.value,
-                                                      )}
-                                                    disabled=${isBuiltin}
-                                                    class="input input-sm w-full ${isBuiltin
-                                                      ? "opacity-60 cursor-not-allowed"
-                                                      : ""}"
-                                                  />
-                                                  <label
-                                                    class="label"
-                                                    for=${"edit-prompt-text-" +
-                                                    idx}
-                                                    >Prompt Text</label
-                                                  >
-                                                  <textarea
-                                                    id=${"edit-prompt-text-" +
-                                                    idx}
-                                                    rows="8"
-                                                    value=${isBuiltin
-                                                      ? prompt.prompt
-                                                      : editPromptText}
-                                                    onInput=${(e) =>
-                                                      !isBuiltin &&
-                                                      setEditPromptText(
-                                                        e.target.value,
-                                                      )}
-                                                    disabled=${isBuiltin}
-                                                    class="textarea textarea-sm w-full resize-y ${isBuiltin
-                                                      ? "opacity-60 cursor-not-allowed"
-                                                      : ""}"
-                                                  />
-                                                  <label
-                                                    class="label"
-                                                    for=${"edit-prompt-group-" +
-                                                    idx}
-                                                    >Group (optional)</label
-                                                  >
-                                                  <input
-                                                    id=${"edit-prompt-group-" +
-                                                    idx}
-                                                    type="text"
-                                                    value=${isBuiltin
-                                                      ? prompt.group || ""
-                                                      : editPromptGroup}
-                                                    onInput=${(e) =>
-                                                      !isBuiltin &&
-                                                      setEditPromptGroup(
-                                                        e.target.value,
-                                                      )}
-                                                    disabled=${isBuiltin}
-                                                    placeholder="e.g., Tasks, Code Quality"
-                                                    class="input input-sm w-full ${isBuiltin
-                                                      ? "opacity-60 cursor-not-allowed"
-                                                      : ""}"
-                                                  />
-                                                  ${!isBuiltin &&
-                                                  html`
-                                                    <label class="label"
-                                                      >Background Color
-                                                      (optional)</label
-                                                    >
-                                                    <div
-                                                      class="flex items-center gap-2"
-                                                    >
-                                                      <input
-                                                        type="color"
-                                                        value=${editPromptColor ||
-                                                        "#334155"}
-                                                        onInput=${(e) =>
-                                                          setEditPromptColor(
-                                                            e.target.value,
-                                                          )}
-                                                        class="w-8 h-8 rounded cursor-pointer border border-mitto-border-2"
-                                                      />
-                                                      <input
-                                                        type="text"
-                                                        value=${editPromptColor}
-                                                        onInput=${(e) =>
-                                                          setEditPromptColor(
-                                                            e.target.value,
-                                                          )}
-                                                        placeholder="#E8F5E9"
-                                                        class="input input-sm flex-1 font-mono"
-                                                      />
-                                                    </div>
-                                                  `}
-                                                  <div
-                                                    class="flex justify-end gap-2 mt-2"
-                                                  >
-                                                    <button
-                                                      onClick=${() =>
-                                                        setEditingPromptIndex(
-                                                          null,
-                                                        )}
-                                                      class="btn btn-ghost btn-sm"
-                                                    >
-                                                      ${isBuiltin
-                                                        ? "Close"
-                                                        : "Cancel"}
-                                                    </button>
-                                                    ${!isBuiltin &&
-                                                    html`
-                                                      <button
-                                                        onClick=${async () => {
-                                                          await saveWorkspacePrompt(
-                                                            {
-                                                              name: editPromptName.trim(),
-                                                              prompt:
-                                                                editPromptText.trim(),
-                                                              backgroundColor:
-                                                                editPromptColor ||
-                                                                undefined,
-                                                              group:
-                                                                editPromptGroup.trim() ||
-                                                                undefined,
-                                                              enabled:
-                                                                prompt.enabled !==
-                                                                false,
-                                                            },
-                                                          );
-                                                          setEditingPromptIndex(
-                                                            null,
-                                                          );
-                                                        }}
-                                                        disabled=${!editPromptName.trim() ||
-                                                        !editPromptText.trim() ||
-                                                        promptSaving}
-                                                        class="btn btn-primary btn-sm"
-                                                      >
-                                                        ${promptSaving
-                                                          ? "Saving..."
-                                                          : "Save"}
-                                                      </button>
-                                                    `}
-                                                  </div>
-                                                </fieldset>
-                                              </div>
-                                            </div>
-                                          </li>
-                                        `;
-                                      })}
-                              </ul>
-                            `}
-                      </div>
-                    `}
-
-                    <!-- Folder Processors tab -->
-                    ${activeTab === "processors" &&
-                    html`
-                      <div class="space-y-4">
-                        <p class="text-sm text-mitto-text-muted">
-                          Manage processors for this workspace. Global
-                          processors can be disabled per workspace.
-                        </p>
-
-                        ${processorsLoading
-                          ? html`<div
-                              class="flex items-center justify-center p-4"
-                            >
-                              <${SpinnerIcon}
-                                className="w-5 h-5 animate-spin"
-                              />
-                            </div>`
-                          : html`
-                              <div class="space-y-2">
-                                ${folderProcessors.length === 0
-                                  ? html`<div
-                                      class="p-4 text-center text-mitto-text-muted text-sm"
-                                    >
-                                      No processors found for this workspace.
-                                    </div>`
-                                  : folderProcessors.map((proc) => {
-                                      const hasError = !!proc.error;
-                                      const isWorkspace =
-                                        proc.source === "workspace";
-                                      const isEnabled = proc.enabled !== false;
-                                      const isPromptMode =
-                                        proc.mode === "prompt";
-                                      const sourceLabel = isWorkspace
-                                        ? "workspace"
-                                        : proc.source === "builtin"
-                                          ? "built-in"
-                                          : "global";
-                                      const sourceBadgeClass = isWorkspace
-                                        ? "bg-green-500/20 text-mitto-success"
-                                        : proc.source === "builtin"
-                                          ? "bg-mitto-accent-500/20 text-mitto-accent"
-                                          : "bg-orange-500/20 text-orange-400";
-                                      const borderClass = hasError
-                                        ? "border-error/40"
-                                        : isPromptMode
-                                          ? "border-purple-500/30"
-                                          : isEnabled
-                                            ? "border-mitto-border-2/50"
-                                            : "border-mitto-border-2/30 opacity-60";
-                                      const isExpanded =
-                                        expandedProcessor === proc.name;
-                                      return html`
-                                        <div
-                                          key=${proc.name}
-                                          class="collapse collapse-plus ${isExpanded
-                                            ? "collapse-open"
-                                            : "collapse-close"} bg-mitto-surface-3/20 rounded-sm border transition-all ${borderClass} ${!isEnabled &&
-                                          !isPromptMode &&
-                                          !hasError
-                                            ? "opacity-60"
-                                            : ""}"
-                                        >
-                                          <div
-                                            class="collapse-title flex items-center gap-3 p-3 min-h-0 pr-12"
-                                            onClick=${() =>
-                                              setExpandedProcessor(
-                                                isExpanded ? null : proc.name,
-                                              )}
-                                          >
-                                            <${Tooltip}
-                                              tip=${hasError
-                                                ? "Invalid processor — cannot enable/disable"
-                                                : isEnabled
-                                                  ? "Disable this processor"
-                                                  : "Enable this processor"}
-                                              placement="right"
-                                              className="shrink-0"
-                                            >
-                                              <input
-                                                type="checkbox"
-                                                checked=${isEnabled}
-                                                disabled=${hasError}
-                                                onChange=${() => {
-                                                  if (!hasError)
-                                                    toggleProcessorEnabled(
-                                                      proc,
-                                                    );
-                                                }}
-                                                onClick=${(e) =>
-                                                  e.stopPropagation()}
-                                                class="checkbox checkbox-sm"
-                                                aria-label=${hasError
-                                                  ? "Invalid processor"
-                                                  : isEnabled
-                                                    ? "Disable this processor"
-                                                    : "Enable this processor"}
-                                              />
-                                            <//>
-                                            <div class="flex-1 min-w-0">
-                                              <div
-                                                class="flex items-center gap-2"
-                                              >
-                                                ${isPromptMode &&
-                                                html`<${RobotIcon}
-                                                  className="w-4 h-4 text-purple-400 shrink-0"
-                                                />`}
-                                                <span
-                                                  class="text-sm font-medium font-mono ${hasError ||
-                                                  !isEnabled
-                                                    ? "text-mitto-text-muted"
-                                                    : "text-mitto-accent"}"
-                                                  >${proc.name}</span
-                                                >
-                                                ${proc.source === "global"
-                                                  ? html`<${GlobeIcon}
-                                                      className="w-3.5 h-3.5 text-orange-400 shrink-0"
-                                                      title="Global processor"
-                                                    />`
-                                                  : html`<span
-                                                      class="badge badge-sm ${sourceBadgeClass}"
-                                                      >${sourceLabel}</span
-                                                    >`}
-                                                ${hasError &&
-                                                html`
-                                                  <${Tooltip}
-                                                    tip=${proc.error}
-                                                    placement="right"
-                                                    className="shrink-0"
-                                                  >
-                                                    <span
-                                                      class="badge badge-sm badge-error gap-1"
-                                                    >
-                                                      <${ErrorIcon}
-                                                        className="w-3 h-3"
-                                                      />
-                                                      error
-                                                    </span>
-                                                  <//>
-                                                `}
-                                                ${proc.on &&
-                                                html`<span
-                                                  class="text-xs text-mitto-text-muted"
-                                                  >${proc.on}${proc.match
-                                                    ? `:${proc.match}`
-                                                    : ""}</span
-                                                >`}
-                                              </div>
-                                              ${proc.description &&
-                                              html`<p
-                                                class="text-xs text-mitto-text-muted mt-0.5 truncate"
-                                              >
-                                                ${proc.description}
-                                              </p>`}
-                                            </div>
-                                          </div>
-                                          <div
-                                            class="collapse-content px-3 pb-3"
-                                          >
-                                            <div class="space-y-2 text-sm">
-                                              ${proc.description &&
-                                              html`
-                                                <div>
-                                                  <span
-                                                    class="text-xs text-mitto-text-muted block mb-0.5"
-                                                    >Description</span
-                                                  >
-                                                  <p class="text-mitto-text">
-                                                    ${proc.description}
-                                                  </p>
-                                                </div>
-                                              `}
-                                              ${proc.on &&
-                                              html`
-                                                <div>
-                                                  <span
-                                                    class="text-xs text-mitto-text-muted block mb-0.5"
-                                                    >Trigger</span
-                                                  >
-                                                  <p class="font-mono text-xs">
-                                                    ${proc.on}${proc.match
-                                                      ? `: ${proc.match}`
-                                                      : ""}
-                                                  </p>
-                                                </div>
-                                              `}
-                                              ${proc.mode &&
-                                              html`
-                                                <div>
-                                                  <span
-                                                    class="text-xs text-mitto-text-muted block mb-0.5"
-                                                    >Mode</span
-                                                  >
-                                                  <p class="font-mono text-xs">
-                                                    ${proc.mode}
-                                                  </p>
-                                                </div>
-                                              `}
-                                              ${proc.source &&
-                                              html`
-                                                <div>
-                                                  <span
-                                                    class="text-xs text-mitto-text-muted block mb-0.5"
-                                                    >Source</span
-                                                  >
-                                                  <p class="font-mono text-xs">
-                                                    ${proc.source}
-                                                  </p>
-                                                </div>
-                                              `}
-                                              ${proc.parameters?.length &&
-                                              html`
-                                                <div>
-                                                  <span
-                                                    class="text-xs text-mitto-text-muted block mb-0.5"
-                                                    >Arguments</span
-                                                  >
-                                                  <div class="space-y-2 mt-1">
-                                                    ${proc.parameters.map(
-                                                      (p) => {
-                                                        const currentValue =
-                                                          (processorArgEdits[
-                                                            proc.name
-                                                          ] || {})[p.name] !==
-                                                          undefined
-                                                            ? (processorArgEdits[
-                                                                proc.name
-                                                              ] || {})[p.name]
-                                                            : p.value;
-                                                        return html`
-                                                          <div key=${p.name}>
-                                                            <div
-                                                              class="text-xs text-mitto-text-muted font-mono mb-0.5"
-                                                            >
-                                                              ${p.name}
-                                                              ${p.description &&
-                                                              html`<span
-                                                                class="font-sans font-normal opacity-70"
-                                                              >
-                                                                —
-                                                                ${p.description}</span
-                                                              >`}
-                                                            </div>
-                                                            ${p.type ===
-                                                            "boolean"
-                                                              ? html`<input
-                                                                  type="checkbox"
-                                                                  checked=${currentValue ===
-                                                                  "true"}
-                                                                  onChange=${(
-                                                                    e,
-                                                                  ) =>
-                                                                    setProcessorArgEdits(
-                                                                      (
-                                                                        prev,
-                                                                      ) => ({
-                                                                        ...prev,
-                                                                        [proc.name]:
-                                                                          {
-                                                                            ...(prev[
-                                                                              proc
-                                                                                .name
-                                                                            ] ||
-                                                                              {}),
-                                                                            [p.name]:
-                                                                              e
-                                                                                .target
-                                                                                .checked
-                                                                                ? "true"
-                                                                                : "false",
-                                                                          },
-                                                                      }),
-                                                                    )}
-                                                                  class="checkbox checkbox-sm"
-                                                                />`
-                                                              : html`<input
-                                                                  type="text"
-                                                                  value=${currentValue}
-                                                                  onInput=${(
-                                                                    e,
-                                                                  ) =>
-                                                                    setProcessorArgEdits(
-                                                                      (
-                                                                        prev,
-                                                                      ) => ({
-                                                                        ...prev,
-                                                                        [proc.name]:
-                                                                          {
-                                                                            ...(prev[
-                                                                              proc
-                                                                                .name
-                                                                            ] ||
-                                                                              {}),
-                                                                            [p.name]:
-                                                                              e
-                                                                                .target
-                                                                                .value,
-                                                                          },
-                                                                      }),
-                                                                    )}
-                                                                  class="input input-sm w-full"
-                                                                />`}
-                                                          </div>
-                                                        `;
-                                                      },
-                                                    )}
-                                                  </div>
-                                                  ${(
-                                                    proc.parameters || []
-                                                  ).some((p) => {
-                                                    const edited =
-                                                      (processorArgEdits[
-                                                        proc.name
-                                                      ] || {})[p.name];
-                                                    return (
-                                                      edited !== undefined &&
-                                                      edited !== p.value
-                                                    );
-                                                  }) &&
-                                                  html`
-                                                    <button
-                                                      onClick=${() =>
-                                                        saveProcessorArguments(
-                                                          proc,
-                                                        )}
-                                                      class="btn btn-primary btn-sm mt-2"
-                                                    >
-                                                      Save
-                                                    </button>
-                                                  `}
-                                                </div>
-                                              `}
-                                            </div>
-                                          </div>
-                                        </div>
-                                      `;
-                                    })}
-                              </div>
-                            `}
-                      </div>
-                    `}
-
-                    <!-- Folder Shortcuts tab -->
-                    ${activeTab === "shortcuts" &&
-                    html`
-                      <div class="space-y-4">
-                        <${ShortcutsEditor}
-                          sections=${SHORTCUT_SECTIONS}
-                          shortcutsSections=${shortcutsSections}
-                          sectionPrompts=${sectionPrompts}
-                          loading=${shortcutsLoading}
-                          error=${shortcutsError}
-                          redundantPromptNames=${shortcutRedundantPromptNames}
-                          onAdd=${addShortcutRow}
-                          onUpdate=${updateShortcutRow}
-                          onRemove=${removeShortcutRow}
-                          onMove=${moveShortcutRow}
-                        />
-                      </div>
-                    `}
-
-                    <!-- Folder Children tab -->
-                    ${activeTab === "children" &&
-                    html`
-                      <div class="space-y-5">
-                        <p class="text-sm text-mitto-text-muted">
-                          Configure automatic child conversations for this
-                          folder.
-                        </p>
-                        <${AutoChildrenEditor}
-                          children=${editAutoChildren}
-                          workspaces=${workspaces}
-                          currentWorkspaceUUID=${firstWs?.uuid}
-                          onChange=${setEditAutoChildren}
-                          getBasename=${getBasename}
-                          modelProfiles=${modelProfiles}
-                        />
-                      </div>
-                    `}
-                  </div>
-                `;
-              })()
+            ? html`<${WorkspaceFolderEditor}
+                activeTab=${activeTab}
+                setActiveTab=${setActiveTab}
+                folderTabs=${folderTabs}
+                selectedFolder=${selectedFolder}
+                setSelectedFolder=${setSelectedFolder}
+                groupedWorkspaces=${groupedWorkspaces}
+                workspaces=${workspaces}
+                setWorkspaces=${setWorkspaces}
+                newFolderKey=${newFolderKey}
+                getWorkspaceKey=${getWorkspaceKey}
+                modelProfiles=${modelProfiles}
+                edits=${edits}
+                editSetters=${editSetters}
+                folderGroupSuggestions=${folderGroupSuggestions}
+                metadata=${metadata}
+                metadataSetters=${metadataSetters}
+                beads=${beads}
+                beadsSetters=${beadsSetters}
+                beadsHandlers=${beadsHandlers}
+                prompts=${prompts}
+                promptsSetters=${promptsSetters}
+                promptsHandlers=${promptsHandlers}
+                processors=${processors}
+                processorsSetters=${processorsSetters}
+                processorsHandlers=${processorsHandlers}
+                shortcuts=${shortcuts}
+                shortcutsHandlers=${shortcutsHandlers}
+              />`
             : !selectedWorkspace
               ? html`<div
                   class="flex flex-col items-center justify-center h-full text-mitto-text-muted text-sm gap-3 px-8 text-center"
@@ -4147,417 +804,59 @@ export function WorkspacesDialog({
                       `
                     : html`<p>Select a workspace to edit</p>`}
                 </div>`
-              : html`
-                  <!-- Workspace tab bar (daisyUI radio tabs-border) -->
-                  <div role="tablist" class="tabs tabs-border px-4 shrink-0">
-                    ${workspaceTabs.map(
-                      (tab) => html`
-                        <input
-                          key=${tab.id}
-                          type="radio"
-                          name="ws-workspace-tabs"
-                          role="tab"
-                          aria-label=${tab.label}
-                          data-testid=${`ws-tab-${tab.id}`}
-                          checked=${activeTab === tab.id}
-                          onChange=${() => setActiveTab(tab.id)}
-                          class="tab ${activeTab === tab.id
-                            ? "tab-active text-mitto-accent"
-                            : ""}"
-                        />
-                      `,
-                    )}
-                  </div>
-
-                  <!-- Workspace tab content -->
-                  <div
-                    class="flex-1 overflow-y-auto p-6"
-                    data-testid="ws-tab-content"
-                  >
-                    <!-- Workspace General tab -->
-                    ${activeTab === "general" &&
-                    html`
-                      <div class="space-y-4">
-                        <div>
-                          <label
-                            class="block text-sm text-mitto-text-muted mb-1"
-                            >ACP Server</label
-                          >
-                          <select
-                            value=${editAcpServer}
-                            onChange=${(e) => setEditAcpServer(e.target.value)}
-                            class="select select-sm w-full"
-                            style="height: 38px; box-sizing: border-box"
-                          >
-                            ${sortedAcpServers.map(
-                              (s) =>
-                                html`<option key=${s.name} value=${s.name}>
-                                  ${s.name}
-                                </option>`,
-                            )}
-                          </select>
-                        </div>
-                        <div>
-                          <label
-                            class="block text-sm text-mitto-text-muted mb-1"
-                            >ACP Command Override (optional)</label
-                          >
-                          <input
-                            type="text"
-                            value=${editAcpCommandOverride}
-                            onInput=${(e) =>
-                              setEditAcpCommandOverride(e.target.value)}
-                            placeholder=${(() => {
-                              const s = acpServers.find(
-                                (s) => s.name === editAcpServer,
-                              );
-                              return s ? s.command : "";
-                            })()}
-                            class="input input-sm w-full placeholder:text-mitto-text-muted"
-                            style="height: 38px; box-sizing: border-box"
-                          />
-                          <p class="text-xs text-mitto-text-muted mt-1">
-                            Custom command line for running the ACP server.
-                            Leave empty to use the default.
-                          </p>
-                        </div>
-                        <div>
-                          <label
-                            class="block text-sm text-mitto-text-muted mb-1"
-                            >Auxiliary Model Selection (optional)</label
-                          >
-                          <p class="text-xs text-mitto-text-muted mb-2">
-                            Switch auxiliary sessions (titles, suggestions) to a
-                            specific model
-                          </p>
-                          <${ModelProfileSelect}
-                            value=${editAuxModelProfile}
-                            profiles=${modelProfiles}
-                            legacyLabel=${auxLegacyModelLabel}
-                            onChange=${(name) => {
-                              setEditAuxModelProfile(name);
-                              if (name) {
-                                setEditAuxModelTag("");
-                              }
-                              if (!name && rawAuxModelConstraint) {
-                                setEditAuxModelConstraintCleared(true);
-                              }
-                            }}
-                          />
-                          <label
-                            class="block text-xs text-mitto-text-muted mt-2 mb-1"
-                            >Or by tag:</label
-                          >
-                          <${ModelTagSelect}
-                            value=${editAuxModelTag}
-                            profiles=${modelProfiles}
-                            onChange=${(tag) => {
-                              setEditAuxModelTag(tag);
-                              if (tag) {
-                                setEditAuxModelProfile("");
-                              }
-                              if (!tag && rawAuxModelConstraint) {
-                                setEditAuxModelConstraintCleared(true);
-                              }
-                            }}
-                          />
-                        </div>
-                        <label class="flex items-center gap-3 cursor-pointer">
-                          <input
-                            type="checkbox"
-                            checked=${editAutoApprove}
-                            onChange=${(e) =>
-                              setEditAutoApprove(e.target.checked)}
-                            class="checkbox checkbox-sm"
-                          />
-                          <span class="text-sm">Auto-approve tool calls</span>
-                        </label>
-                        <label class="flex items-center gap-3 cursor-pointer">
-                          <input
-                            type="checkbox"
-                            checked=${editIsDefault}
-                            onChange=${(e) =>
-                              handleToggleIsDefault(e.target.checked)}
-                            class="checkbox checkbox-sm"
-                          />
-                          <span class="text-sm"
-                            >Default workspace for this folder</span
-                          >
-                        </label>
-                        <p class="text-xs text-mitto-text-muted -mt-2 ml-7">
-                          Preferred when this folder has several workspaces and
-                          one is launched without a specific agent.
-                        </p>
-                      </div>
-                    `}
-
-                    <!-- Workspace Runner tab -->
-                    ${activeTab === "runner" &&
-                    html`
-                      <div class="space-y-5">
-                        <div>
-                          <label
-                            class="block text-sm text-mitto-text-muted mb-3"
-                            >Runner Type</label
-                          >
-                          <div class="space-y-2">
-                            ${supportedRunners.map(
-                              (r) => html`
-                                <label
-                                  key=${r.type}
-                                  class="flex items-center gap-3 cursor-pointer ${!r.supported
-                                    ? "opacity-50"
-                                    : ""}"
-                                >
-                                  <input
-                                    type="radio"
-                                    name="runner-${getWorkspaceKey(
-                                      selectedWorkspace,
-                                    )}"
-                                    value=${r.type}
-                                    checked=${editRunner === r.type}
-                                    disabled=${!r.supported}
-                                    onChange=${() => handleRunnerChange(r.type)}
-                                    class="radio radio-sm"
-                                  />
-                                  <span class="text-sm">${r.label}</span>
-                                </label>
-                              `,
-                            )}
-                          </div>
-                        </div>
-                        ${editRunner !== "exec" &&
-                        html`
-                          <${RunnerRestrictionsEditor}
-                            runnerType=${editRunner}
-                            config=${editRunnerConfig}
-                            effectiveConfig=${effectiveConfig}
-                            onChange=${setEditRunnerConfig}
-                          />
-                        `}
-                      </div>
-                    `}
-
-                    <!-- Workspace MCP tab -->
-                    ${activeTab === "mcp" &&
-                    html`
-                      <div class="space-y-4">
-                        <div class="flex items-center justify-between">
-                          <p class="text-sm text-mitto-text-muted">
-                            MCP servers configured for this workspace's ACP
-                            agent${mcpTools?.agent_name
-                              ? ` (${mcpTools.agent_name})`
-                              : ""}.
-                          </p>
-                          <div class="flex items-center gap-0.5">
-                            <button
-                              onClick=${() => {
-                                if (mcpToolsLoading) return;
-                                loadMcpTools(
-                                  editAcpServer ||
-                                    selectedWorkspace?.acp_server,
-                                  selectedWorkspace?.uuid,
-                                );
-                              }}
-                              aria-disabled=${mcpToolsLoading
-                                ? "true"
-                                : "false"}
-                              class="btn btn-ghost btn-square btn-sm tooltip tooltip-bottom ${mcpToolsLoading
-                                ? "opacity-40 pointer-events-none"
-                                : ""}"
-                              data-tip="Refresh MCP server list"
-                              aria-label="Refresh MCP server list"
-                            >
-                              <${RefreshIcon}
-                                className=${`w-4 h-4 ${mcpToolsLoading ? "animate-spin" : ""}`}
-                              />
-                            </button>
-                            ${mcpTools?.has_mcp_install &&
-                            html`
-                              <button
-                                onClick=${() => {
-                                  if (mcpInstallLoading) return;
-                                  handleInstallMittoMcp();
-                                }}
-                                aria-disabled=${mcpInstallLoading
-                                  ? "true"
-                                  : "false"}
-                                class="btn btn-ghost btn-square btn-sm tooltip tooltip-bottom ${mcpInstallLoading
-                                  ? "opacity-40 pointer-events-none"
-                                  : ""}"
-                                data-tip="Install Mitto's MCP server"
-                                aria-label="Install Mitto's MCP server"
-                              >
-                                <${MittoIcon} className="w-4 h-4" />
-                              </button>
-                              <button
-                                onClick=${() => {
-                                  setMcpInstallOpen(true);
-                                  setMcpInstallJson("");
-                                  setMcpInstallName("");
-                                  setMcpInstallScope(
-                                    mcpTools?.mcp_scopes?.[0] || "",
-                                  );
-                                  setMcpInstallError("");
-                                  setMcpInstallSuccess("");
-                                }}
-                                class="btn btn-ghost btn-square btn-sm tooltip tooltip-bottom"
-                                data-tip="Install MCP servers"
-                                aria-label="Install MCP servers"
-                              >
-                                <${PlusIcon} className="w-4 h-4" />
-                              </button>
-                            `}
-                          </div>
-                        </div>
-                        ${!mcpInstallOpen &&
-                        mcpInstallError &&
-                        html`
-                          <p
-                            class="text-sm text-mitto-danger whitespace-pre-wrap"
-                          >
-                            ${mcpInstallError}
-                          </p>
-                        `}
-                        ${!mcpInstallOpen &&
-                        mcpInstallSuccess &&
-                        html`
-                          <p class="text-sm text-mitto-success">
-                            ${mcpInstallSuccess}
-                          </p>
-                        `}
-                        ${mcpToolsLoading
-                          ? html`<div
-                              class="flex items-center justify-center p-8"
-                            >
-                              <${SpinnerIcon}
-                                className="w-5 h-5 animate-spin"
-                              />
-                            </div>`
-                          : mcpToolsError
-                            ? html`<div
-                                class="p-4 text-center text-mitto-warning text-sm"
-                              >
-                                ${mcpToolsError}
-                              </div>`
-                            : mcpTools?.servers?.length === 0
-                              ? html`<div
-                                  class="p-4 text-center text-mitto-text-muted text-sm"
-                                >
-                                  ${mcpTools?.message ||
-                                  "No MCP servers found for this agent."}
-                                </div>`
-                              : html`
-                                  <div
-                                    class="overflow-x-auto border border-mitto-border rounded-md"
-                                  >
-                                    <table
-                                      class="table table-sm"
-                                      style="table-layout: fixed;"
-                                    >
-                                      <colgroup>
-                                        <col style="width: 140px;" />
-                                        <col />
-                                        ${mcpTools?.has_mcp_remove &&
-                                        html`<col style="width: 72px;" />`}
-                                      </colgroup>
-                                      <thead>
-                                        <tr>
-                                          <th>Name</th>
-                                          <th>Command / URL</th>
-                                          ${mcpTools?.has_mcp_remove &&
-                                          html`<th></th>`}
-                                        </tr>
-                                      </thead>
-                                      <tbody>
-                                        ${mcpTools?.servers?.map(
-                                          (srv, i) => html`
-                                            <tr key=${srv.name || i}>
-                                              <td
-                                                class="font-medium truncate"
-                                                title=${srv.name}
-                                              >
-                                                ${srv.name}
-                                              </td>
-                                              <td
-                                                class="text-mitto-text-muted font-mono text-xs truncate"
-                                                title=${srv.url ||
-                                                [
-                                                  srv.command,
-                                                  ...(srv.args || []),
-                                                ].join(" ")}
-                                              >
-                                                ${srv.url ||
-                                                [
-                                                  srv.command,
-                                                  ...(srv.args || []),
-                                                ].join(" ")}
-                                              </td>
-                                              ${mcpTools?.has_mcp_remove &&
-                                              html`
-                                                <td
-                                                  class="flex items-center justify-center gap-1"
-                                                >
-                                                  <button
-                                                    onClick=${async () => {
-                                                      const ok =
-                                                        await copyToClipboard(
-                                                          buildMcpServerJson(
-                                                            srv,
-                                                          ),
-                                                        );
-                                                      showToast?.({
-                                                        style: ok
-                                                          ? "success"
-                                                          : "error",
-                                                        title: ok
-                                                          ? `Copied ${srv.name}`
-                                                          : "Copy failed",
-                                                        duration: 2000,
-                                                      });
-                                                    }}
-                                                    class="btn btn-ghost btn-square btn-xs tooltip tooltip-bottom"
-                                                    data-tip="Copy server config as JSON"
-                                                    aria-label="Copy MCP server config"
-                                                  >
-                                                    <${CopyIcon}
-                                                      className="w-4 h-4 text-mitto-text-muted"
-                                                    />
-                                                  </button>
-                                                  <button
-                                                    onClick=${() => {
-                                                      if (mcpRemoveLoading)
-                                                        return;
-                                                      handleMcpRemoveConfirm(
-                                                        srv.name,
-                                                      );
-                                                    }}
-                                                    aria-disabled=${mcpRemoveLoading
-                                                      ? "true"
-                                                      : "false"}
-                                                    class="btn btn-ghost btn-square btn-xs tooltip tooltip-bottom ${mcpRemoveLoading
-                                                      ? "opacity-40 pointer-events-none"
-                                                      : ""}"
-                                                    data-tip="Remove MCP server"
-                                                    aria-label="Remove MCP server"
-                                                  >
-                                                    <${TrashIcon}
-                                                      className="w-4 h-4 text-mitto-text-muted hover:text-mitto-danger"
-                                                    />
-                                                  </button>
-                                                </td>
-                                              `}
-                                            </tr>
-                                          `,
-                                        )}
-                                      </tbody>
-                                    </table>
-                                  </div>
-                                `}
-                      </div>
-                    `}
-                  </div>
-                `}
+              : html`<${WorkspaceEditor}
+                  activeTab=${activeTab}
+                  setActiveTab=${setActiveTab}
+                  workspaceTabs=${workspaceTabs}
+                  selectedWorkspace=${selectedWorkspace}
+                  getWorkspaceKey=${getWorkspaceKey}
+                  sortedAcpServers=${sortedAcpServers}
+                  acpServers=${acpServers}
+                  supportedRunners=${supportedRunners}
+                  modelProfiles=${modelProfiles}
+                  effectiveConfig=${effectiveConfig}
+                  editAcpServer=${editAcpServer}
+                  setEditAcpServer=${setEditAcpServer}
+                  editAcpCommandOverride=${editAcpCommandOverride}
+                  setEditAcpCommandOverride=${setEditAcpCommandOverride}
+                  editInitialModelProfile=${editInitialModelProfile}
+                  setEditInitialModelProfile=${setEditInitialModelProfile}
+                  editInitialModelTag=${editInitialModelTag}
+                  setEditInitialModelTag=${setEditInitialModelTag}
+                  editAuxModelProfile=${editAuxModelProfile}
+                  setEditAuxModelProfile=${setEditAuxModelProfile}
+                  editAuxModelTag=${editAuxModelTag}
+                  setEditAuxModelTag=${setEditAuxModelTag}
+                  setEditAuxModelConstraintCleared=${setEditAuxModelConstraintCleared}
+                  auxLegacyModelLabel=${auxLegacyModelLabel}
+                  rawAuxModelConstraint=${rawAuxModelConstraint}
+                  editAutoApprove=${editAutoApprove}
+                  setEditAutoApprove=${setEditAutoApprove}
+                  editIsDefault=${editIsDefault}
+                  handleToggleIsDefault=${handleToggleIsDefault}
+                  editRunner=${editRunner}
+                  handleRunnerChange=${handleRunnerChange}
+                  editRunnerConfig=${editRunnerConfig}
+                  setEditRunnerConfig=${setEditRunnerConfig}
+                  mcpTools=${mcpTools}
+                  mcpToolsLoading=${mcpToolsLoading}
+                  mcpToolsError=${mcpToolsError}
+                  loadMcpTools=${loadMcpTools}
+                  mcpInstallOpen=${mcpInstallOpen}
+                  setMcpInstallOpen=${setMcpInstallOpen}
+                  setMcpInstallJson=${setMcpInstallJson}
+                  setMcpInstallName=${setMcpInstallName}
+                  setMcpInstallScope=${setMcpInstallScope}
+                  mcpInstallLoading=${mcpInstallLoading}
+                  mcpInstallError=${mcpInstallError}
+                  setMcpInstallError=${setMcpInstallError}
+                  mcpInstallSuccess=${mcpInstallSuccess}
+                  setMcpInstallSuccess=${setMcpInstallSuccess}
+                  handleInstallMittoMcp=${handleInstallMittoMcp}
+                  handleMcpRemoveConfirm=${handleMcpRemoveConfirm}
+                  mcpRemoveLoading=${mcpRemoveLoading}
+                  showToast=${showToast}
+                />`}
         </div>
       </div>
 
@@ -4576,13 +875,20 @@ export function WorkspacesDialog({
           ${error && html`<p class="text-xs text-mitto-danger">${error}</p>`}
         </div>
         <div class="flex gap-2">
-          ${needsRestart &&
+          ${activeTab === "mcp" &&
+          selectedWorkspace?.uuid &&
+          hasLiveAcp &&
           html`
             <button
-              onClick=${handleRestartAcp}
+              onClick=${handleRestartAcpClick}
               disabled=${restarting}
-              class="btn btn-warning btn-sm gap-2 tooltip tooltip-bottom"
-              data-tip="Restart ACP to apply MCP changes to active conversations"
+              class="btn btn-sm gap-2 tooltip tooltip-bottom ${needsRestart
+                ? "btn-warning"
+                : "btn-outline btn-warning"}"
+              data-tip=${needsRestart
+                ? "Restart ACP to apply MCP changes to active conversations"
+                : "Restart the ACP server for this workspace"}
+              data-testid="ws-restart-acp"
             >
               ${restarting
                 ? html`<${SpinnerIcon} className="w-4 h-4" /> Restarting...`
@@ -4624,97 +930,22 @@ export function WorkspacesDialog({
     <//>
 
     <!-- MCP Install Dialog -->
-    <${ConfirmDialog}
-      isOpen=${mcpInstallOpen}
-      title="Install MCP Servers"
-      confirmLabel="Install"
-      cancelLabel="Cancel"
-      isLoading=${mcpInstallLoading}
-      onConfirm=${handleMcpInstall}
-      onCancel=${() => {
-        if (!mcpInstallLoading) {
-          setMcpInstallOpen(false);
-          setMcpInstallName("");
-          setMcpInstallError("");
-          setMcpInstallSuccess("");
-        }
-      }}
-    >
-      <div class="space-y-4 mt-3">
-        <p class="text-sm text-mitto-text-muted">
-          Paste one or more MCP server definitions as JSON.
-        </p>
-        <textarea
-          value=${mcpInstallJson}
-          onInput=${(e) => {
-            setMcpInstallJson(e.target.value);
-            setMcpInstallError("");
-            setMcpInstallSuccess("");
-          }}
-          placeholder=${'{\n  "mcpServers": {\n    "server-name": {\n      "command": "...",\n      "args": ["..."]\n    }\n  }\n}'}
-          class="textarea textarea-sm w-full h-48 font-mono resize-none"
-          disabled=${mcpInstallLoading}
-          spellcheck="false"
-        />
-        ${(() => {
-          // Detect format 3 (single server def) to show the name input
-          try {
-            const p = JSON.parse(mcpInstallJson);
-            return (
-              (typeof p.command === "string" || typeof p.url === "string") &&
-              !p.mcpServers
-            );
-          } catch {
-            return false;
-          }
-        })() &&
-        html`
-          <div>
-            <label class="block text-sm text-mitto-text-muted mb-1"
-              >Server name</label
-            >
-            <input
-              type="text"
-              value=${mcpInstallName}
-              onInput=${(e) => {
-                setMcpInstallName(e.target.value);
-                setMcpInstallError("");
-              }}
-              placeholder="my-server"
-              class="input input-sm w-full"
-              disabled=${mcpInstallLoading}
-            />
-          </div>
-        `}
-        ${mcpTools?.mcp_scopes?.length > 0 &&
-        html`
-          <div>
-            <label class="block text-sm text-mitto-text-muted mb-1"
-              >Scope</label
-            >
-            <select
-              value=${mcpInstallScope}
-              onChange=${(e) => setMcpInstallScope(e.target.value)}
-              class="select select-sm w-full"
-              disabled=${mcpInstallLoading}
-            >
-              ${mcpTools.mcp_scopes.map(
-                (scope) => html`
-                  <option key=${scope} value=${scope}>${scope}</option>
-                `,
-              )}
-            </select>
-          </div>
-        `}
-        ${mcpInstallError &&
-        html`
-          <p class="text-sm text-mitto-danger whitespace-pre-wrap">
-            ${mcpInstallError}
-          </p>
-        `}
-        ${mcpInstallSuccess &&
-        html` <p class="text-sm text-mitto-success">${mcpInstallSuccess}</p> `}
-      </div>
-    <//>
+    <${McpInstallDialog}
+      mcpInstallOpen=${mcpInstallOpen}
+      mcpInstallJson=${mcpInstallJson}
+      setMcpInstallJson=${setMcpInstallJson}
+      mcpInstallName=${mcpInstallName}
+      setMcpInstallName=${setMcpInstallName}
+      mcpInstallScope=${mcpInstallScope}
+      setMcpInstallScope=${setMcpInstallScope}
+      mcpInstallLoading=${mcpInstallLoading}
+      mcpInstallError=${mcpInstallError}
+      setMcpInstallError=${setMcpInstallError}
+      mcpInstallSuccess=${mcpInstallSuccess}
+      setMcpInstallSuccess=${setMcpInstallSuccess}
+      mcpTools=${mcpTools}
+      handleMcpInstall=${handleMcpInstall}
+      setMcpInstallOpen=${setMcpInstallOpen}
+    />
   `;
 }

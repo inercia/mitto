@@ -83,6 +83,9 @@ func TestValidateConfigRequest_NoWorkspaces(t *testing.T) {
 			AutoApprove         bool                                   `json:"auto_approve,omitempty"`
 			Tags                []string                               `json:"tags,omitempty"`
 			ModelProfile        string                                 `json:"model_profile,omitempty"`
+			ModelTag            string                                 `json:"model_tag,omitempty"`
+			InitialModelProfile string                                 `json:"initial_model_profile,omitempty"`
+			InitialModelTag     string                                 `json:"initial_model_tag,omitempty"`
 			Constraints         map[string]*config.ACPServerConstraint `json:"constraints,omitempty"`
 			ContextFlushCommand string                                 `json:"context_flush_command,omitempty"`
 		}{{Name: "test", Command: "cmd"}},
@@ -113,6 +116,9 @@ func TestValidateConfigRequest_NoACPServers(t *testing.T) {
 			AutoApprove         bool                                   `json:"auto_approve,omitempty"`
 			Tags                []string                               `json:"tags,omitempty"`
 			ModelProfile        string                                 `json:"model_profile,omitempty"`
+			ModelTag            string                                 `json:"model_tag,omitempty"`
+			InitialModelProfile string                                 `json:"initial_model_profile,omitempty"`
+			InitialModelTag     string                                 `json:"initial_model_tag,omitempty"`
 			Constraints         map[string]*config.ACPServerConstraint `json:"constraints,omitempty"`
 			ContextFlushCommand string                                 `json:"context_flush_command,omitempty"`
 		}{},
@@ -139,6 +145,9 @@ func TestValidateConfigRequest_EmptyServerName(t *testing.T) {
 			AutoApprove         bool                                   `json:"auto_approve,omitempty"`
 			Tags                []string                               `json:"tags,omitempty"`
 			ModelProfile        string                                 `json:"model_profile,omitempty"`
+			ModelTag            string                                 `json:"model_tag,omitempty"`
+			InitialModelProfile string                                 `json:"initial_model_profile,omitempty"`
+			InitialModelTag     string                                 `json:"initial_model_tag,omitempty"`
 			Constraints         map[string]*config.ACPServerConstraint `json:"constraints,omitempty"`
 			ContextFlushCommand string                                 `json:"context_flush_command,omitempty"`
 		}{{Name: "", Command: "cmd"}},
@@ -165,6 +174,9 @@ func TestValidateConfigRequest_EmptyServerCommand(t *testing.T) {
 			AutoApprove         bool                                   `json:"auto_approve,omitempty"`
 			Tags                []string                               `json:"tags,omitempty"`
 			ModelProfile        string                                 `json:"model_profile,omitempty"`
+			ModelTag            string                                 `json:"model_tag,omitempty"`
+			InitialModelProfile string                                 `json:"initial_model_profile,omitempty"`
+			InitialModelTag     string                                 `json:"initial_model_tag,omitempty"`
 			Constraints         map[string]*config.ACPServerConstraint `json:"constraints,omitempty"`
 			ContextFlushCommand string                                 `json:"context_flush_command,omitempty"`
 		}{{Name: "test", Command: ""}},
@@ -191,6 +203,9 @@ func TestValidateConfigRequest_DuplicateServerName(t *testing.T) {
 			AutoApprove         bool                                   `json:"auto_approve,omitempty"`
 			Tags                []string                               `json:"tags,omitempty"`
 			ModelProfile        string                                 `json:"model_profile,omitempty"`
+			ModelTag            string                                 `json:"model_tag,omitempty"`
+			InitialModelProfile string                                 `json:"initial_model_profile,omitempty"`
+			InitialModelTag     string                                 `json:"initial_model_tag,omitempty"`
 			Constraints         map[string]*config.ACPServerConstraint `json:"constraints,omitempty"`
 			ContextFlushCommand string                                 `json:"context_flush_command,omitempty"`
 		}{
@@ -220,6 +235,9 @@ func TestValidateConfigRequest_Valid(t *testing.T) {
 			AutoApprove         bool                                   `json:"auto_approve,omitempty"`
 			Tags                []string                               `json:"tags,omitempty"`
 			ModelProfile        string                                 `json:"model_profile,omitempty"`
+			ModelTag            string                                 `json:"model_tag,omitempty"`
+			InitialModelProfile string                                 `json:"initial_model_profile,omitempty"`
+			InitialModelTag     string                                 `json:"initial_model_tag,omitempty"`
 			Constraints         map[string]*config.ACPServerConstraint `json:"constraints,omitempty"`
 			ContextFlushCommand string                                 `json:"context_flush_command,omitempty"`
 		}{{Name: "test", Command: "cmd"}},

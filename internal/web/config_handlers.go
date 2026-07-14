@@ -127,15 +127,18 @@ func (s *Server) buildNewSettings(req *ConfigSaveRequest) (*configPkg.Settings, 
 		}
 
 		newServer := configPkg.ACPServerSettings{
-			Name:         srv.Name,
-			Command:      srv.Command,
-			Type:         srv.Type,                 // Optional type for prompt matching
-			Env:          srv.Env,                  // Environment variables
-			Source:       configPkg.SourceSettings, // Mark as settings-sourced
-			AutoApprove:  srv.AutoApprove,          // Auto-approve permission requests
-			Tags:         srv.Tags,                 // Categorization tags
-			ModelProfile: srv.ModelProfile,         // Model profile name (mitto-hke)
-			Constraints:  srv.Constraints,          // Config option auto-selection rules
+			Name:                srv.Name,
+			Command:             srv.Command,
+			Type:                srv.Type,                 // Optional type for prompt matching
+			Env:                 srv.Env,                  // Environment variables
+			Source:              configPkg.SourceSettings, // Mark as settings-sourced
+			AutoApprove:         srv.AutoApprove,          // Auto-approve permission requests
+			Tags:                srv.Tags,                 // Categorization tags
+			ModelProfile:        srv.ModelProfile,         // Model profile name (mitto-hke)
+			ModelTag:            srv.ModelTag,             // Capability tag for profile resolution
+			InitialModelProfile: srv.InitialModelProfile,  // Initial baseline model profile (mitto-fqj)
+			InitialModelTag:     srv.InitialModelTag,      // Initial baseline model capability tag
+			Constraints:         srv.Constraints,          // Config option auto-selection rules
 			// ContextFlushCommand: agent-native context-flush slash command (e.g. "/clear")
 			ContextFlushCommand: srv.ContextFlushCommand,
 			// Per-server prompts are no longer saved to settings.json
@@ -420,6 +423,14 @@ func (s *Server) applyConfigChanges(req *ConfigSaveRequest, settings *configPkg.
 				s.acpProcessManager.UpdateMemoryRecycleThreshold(bytes)
 			} else {
 				s.acpProcessManager.UpdateMemoryRecycleThreshold(0)
+			}
+			// Update the MCP-init extended budget at runtime (mitto-8ul.1). Existing
+			// processes keep their construction-time value; new processes pick up the
+			// updated timeout on next GetOrCreateProcess.
+			if d, enabled := settings.Session.ParseMcpInitTimeout(); enabled {
+				s.acpProcessManager.UpdateMCPInitTimeout(d)
+			} else {
+				s.acpProcessManager.UpdateMCPInitTimeout(0)
 			}
 		}
 

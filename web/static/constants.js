@@ -139,6 +139,11 @@ export const KEYBOARD_SHORTCUTS = [
     description: "Archive conversation",
     section: "Conversations",
   },
+  {
+    keys: "⌘⇧L",
+    description: "Loop / unloop conversation",
+    section: "Conversations",
+  },
   // Web shortcuts (work in both macOS app and browser)
   {
     keys: "⌘1-9",

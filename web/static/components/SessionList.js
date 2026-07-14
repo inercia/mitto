@@ -24,6 +24,7 @@ import {
   setLastSessionForGroup,
   getDensity,
   setDensity,
+  isNativeApp,
 } from "../utils/index.js";
 import {
   computeAllSessions,
@@ -36,9 +37,11 @@ import { Modal } from "./Modal.js";
 import { Toolbar } from "./Toolbar.js";
 import {
   FolderIcon,
+  FolderPlusIcon,
   FolderOpenIcon,
   SpinnerIcon,
   PlusIcon,
+  MittoPlusIcon,
   CloseIcon,
   ArchiveIcon,
   SunIcon,
@@ -51,6 +54,7 @@ import {
   TerminalIcon,
   EllipsisIcon,
   ChatBubbleIcon,
+  HomeIcon,
   LayersIcon,
   CheckIcon,
   SlidersIcon,
@@ -58,8 +62,25 @@ import {
   RefreshIcon,
   BroomIcon,
   LightningIcon,
+  PinIcon,
   getPromptIconOrDefault,
 } from "./Icons.js";
+
+// Resolve an icon component for an OpenTarget entry keyed by its icon field
+// (falls back to the target id when icon is empty). Anything unrecognised falls
+// back to the generic folder icon. Keep this in sync with the ids in
+// SettingsDialog.DEFAULT_MAC_OPEN_TARGETS and config.DefaultOpenTargets().
+const resolveOpenIcon = (key) => {
+  switch (key) {
+    case "finder":
+      return FolderOpenIcon;
+    case "terminal":
+    case "iterm":
+      return TerminalIcon;
+    default:
+      return FolderOpenIcon;
+  }
+};
 
 // Module-level cache for git changes: keyed by workingDir.
 // Each entry: { data, ts } where ts is Date.now() of the last fetch.
@@ -194,24 +215,32 @@ export function SessionList({
   onToggleFontSize,
   onShowSettings,
   onShowWorkspaces,
+  onAddFolder, // Open the AddFolderDialog (pin an existing hidden workspace / delegate to WorkspacesDialog)
   onShowWorkspacesForFolder,
   onShowKeyboardShortcuts,
   configReadonly = false,
   rcFilePath = null,
   badgeClickEnabled = false,
   onBadgeClick,
-  terminalActionEnabled = false,
-  onFolderOpen,
   onMoveFolderToGroup, // Called with (workingDir, group) to reassign a folder's group
-  onTerminalClick,
+  onUnpinFolder, // Called with (workingDir) to unpin a pinned empty folder from the sidebar
+  // Configurable "Open ▸" submenu targets (mitto-bbi). Each entry:
+  // {id,label,icon,command,enabled,builtin}. Only entries with enabled===true
+  // appear in the folder context-menu submenu. Callback: onOpenTarget(workingDir, id).
+  openInTargets = [],
+  onOpenTarget,
   onBeadsOpen,
   onBeadsCreate, // (workingDir) => open the new-issue side panel for a folder
   onFetchBeadsListPrompts, // async (workingDir) => menus:beadsList prompts[]
   onRunBeadsListPrompt, // (prompt, workingDir) => run a beadsList prompt
   onBeadsRefresh, // (workingDir) => open the beads view and refresh its list
   onBeadsCleanup, // (workingDir) => open the beads view and clean up closed issues
-  mainView = "conversation", // Current main-content view: "conversation" | "beads"
+  mainView = "conversation", // Current main-content view: "conversation" | "beads" | "dashboard"
   beadsWorkingDir = null, // Working dir whose Tasks (beads) view is open, when mainView === "beads"
+  // Switch mainView to the global Dashboard. Plumbed here so mitto-aqo.2 can
+  // wire a sidebar button click without further prop churn; no UI trigger
+  // exists yet in this increment (mitto-aqo.3).
+  onShowDashboard,
   queueLength = 0,
   onFetchConversationPrompts, // Async (session, workingDir) => prompts[] for the context menu
   onSendPromptToConversation,
@@ -1062,8 +1091,26 @@ export function SessionList({
         `;
       });
 
+    // Static top-level Dashboard entry (mitto-aqo.2). Sits above the first
+    // workspace group; toggles the global Dashboard view via onShowDashboard
+    // (already wired in app.js). Not a conversation and not a folder.
+    const dashboardActive = mainView === "dashboard";
     return html`
       <ul class="menu menu-sm w-full p-0 flex-nowrap">
+        <li class="min-w-0 px-2 py-1">
+          <button
+            type="button"
+            onClick=${() => onShowDashboard && onShowDashboard()}
+            aria-current=${dashboardActive ? "page" : undefined}
+            class="flex items-center gap-2 text-sm border-0! ${dashboardActive
+              ? "bg-mitto-accent text-mitto-accent-fg"
+              : "text-mitto-text-muted"}"
+            title="Dashboard"
+          >
+            <${HomeIcon} className="w-4 h-4 shrink-0" />
+            <span class="truncate min-w-0">Dashboard</span>
+          </button>
+        </li>
         ${(() => {
           // When any folder has a group assigned, render collapsible group
           // sections (named groups + a trailing "Other" for ungrouped folders).
@@ -1394,6 +1441,29 @@ export function SessionList({
                   </div>
                 </li>
               `}
+              ${folder.conversations.length === 0 &&
+              folder.archived.length === 0 &&
+              html`
+                <li class="folder-empty-state min-w-0">
+                  <div
+                    class="px-3 py-1.5 text-xs italic text-mitto-text-muted/70 truncate"
+                  >
+                    No conversations yet.
+                    <button
+                      type="button"
+                      class="link link-hover text-mitto-text-muted hover:text-mitto-text-strong not-italic"
+                      onClick=${(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        if (folder.workingDir)
+                          handleNewSessionInFolder(folder.workingDir, e);
+                      }}
+                    >
+                      Start one
+                    </button>
+                  </div>
+                </li>
+              `}
               ${renderSessionNodes(folder.conversations)}
               ${folder.archived.length > 0 &&
               html`
@@ -1508,6 +1578,35 @@ export function SessionList({
                     ];
                   })()
                 : []),
+              ...(() => {
+                // Collapsed "Open ▸" submenu (mitto-bbi.4): one entry per enabled
+                // OpenTarget from ui.mac.open_in.targets. Hidden entirely when the
+                // filtered list is empty — matches previous behaviour of hiding
+                // when both legacy toggles were off. Native-only (mitto-k0l): in
+                // a plain browser context the commands cannot execute locally, so
+                // don't advertise them.
+                if (!groupContextMenu.workingDir) return [];
+                if (!isNativeApp()) return [];
+                const enabledTargets = (openInTargets || []).filter(
+                  (t) => t && t.enabled === true,
+                );
+                if (enabledTargets.length === 0) return [];
+                return [
+                  {
+                    label: "Open",
+                    icon: html`<${FolderOpenIcon} className="w-4 h-4" />`,
+                    submenu: enabledTargets.map((t) => ({
+                      label: t.label || t.id,
+                      icon: html`<${resolveOpenIcon(
+                        t.icon || t.id,
+                      )} className="w-4 h-4" />`,
+                      onClick: () =>
+                        onOpenTarget &&
+                        onOpenTarget(groupContextMenu.workingDir, t.id),
+                    })),
+                  },
+                ];
+              })(),
               ...(onMoveFolderToGroup && groupContextMenu.workingDir
                 ? // Not gated by configReadonly: a folder's group is local
                   // organizational metadata in folders.json, not host config like
@@ -1562,28 +1661,21 @@ export function SessionList({
                     },
                   ]
                 : []),
-              ...(badgeClickEnabled && groupContextMenu.workingDir
-                ? [
-                    {
-                      label: "Open Folder",
-                      icon: html`<${FolderOpenIcon} className="w-4 h-4" />`,
-                      onClick: () =>
-                        onFolderOpen &&
-                        onFolderOpen(groupContextMenu.workingDir),
-                    },
-                  ]
-                : []),
-              ...(terminalActionEnabled && groupContextMenu.workingDir
-                ? [
-                    {
-                      label: "Open Terminal",
-                      icon: html`<${TerminalIcon} className="w-4 h-4" />`,
-                      onClick: () =>
-                        onTerminalClick &&
-                        onTerminalClick(groupContextMenu.workingDir),
-                    },
-                  ]
-                : []),
+              ...(() => {
+                const wd = groupContextMenu.workingDir;
+                if (!wd || configReadonly || !onUnpinFolder) return [];
+                const ws = (workspaces || []).find(
+                  (w) => w.working_dir === wd && w.pinned === true,
+                );
+                if (!ws) return [];
+                return [
+                  {
+                    label: "Remove from sidebar",
+                    icon: html`<${PinIcon} className="w-4 h-4" />`,
+                    onClick: () => onUnpinFolder(wd),
+                  },
+                ];
+              })(),
               ...(!configReadonly && groupContextMenu.workingDir
                 ? [
                     {
@@ -1774,7 +1866,7 @@ export function SessionList({
               testId: "new-conversation-btn",
               icon: isCreatingSession
                 ? html`<${SpinnerIcon} className="w-4 h-4 animate-spin" />`
-                : html`<${PlusIcon} className="w-4 h-4" />`,
+                : html`<${MittoPlusIcon} className="w-4 h-4" />`,
               tip: isCreatingSession
                 ? "Creating conversation\u2026"
                 : "New Conversation",
@@ -1786,15 +1878,15 @@ export function SessionList({
             },
             {
               kind: "button",
-              testId: "workspaces-btn",
-              icon: html`<${FolderIcon} className="w-4 h-4" />`,
+              testId: "add-folder-btn",
+              icon: html`<${FolderPlusIcon} className="w-4 h-4" />`,
               tip: configReadonly
-                ? "Workspaces (read-only configuration)"
-                : "Workspaces",
-              ariaLabel: "Workspaces",
+                ? "Add folder (read-only configuration)"
+                : "Add folder to sidebar",
+              ariaLabel: "Add folder to sidebar",
               disabled: configReadonly,
               onClick: () =>
-                !configReadonly && onShowWorkspaces && onShowWorkspaces(),
+                !configReadonly && onAddFolder && onAddFolder(),
             },
             {
               kind: "dropdown",
@@ -1882,6 +1974,18 @@ export function SessionList({
               icon: html`<${SearchIcon} className="w-4 h-4" />`,
               tip: "Search",
               ariaLabel: "Search",
+            },
+            {
+              kind: "button",
+              testId: "workspaces-btn",
+              icon: html`<${FolderIcon} className="w-4 h-4" />`,
+              tip: configReadonly
+                ? "Workspaces (read-only configuration)"
+                : "Workspaces",
+              ariaLabel: "Workspaces",
+              disabled: configReadonly,
+              onClick: () =>
+                !configReadonly && onShowWorkspaces && onShowWorkspaces(),
             },
             {
               kind: "button",

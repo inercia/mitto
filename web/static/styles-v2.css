@@ -740,6 +740,16 @@ a:hover {
   background: #334155;
 }
 
+/* Shortcut buttons overflow on narrow screens. A toolbar may carry several
+   per-folder/global shortcut buttons; on phone-width viewports only the first
+   shortcut is kept and the rest are hidden so they don't overflow the toolbar.
+   Applied via the item className on shortcut buttons at index > 0. */
+@media (max-width: 640px) {
+  .mitto-toolbar > button.mitto-shortcut-extra {
+    display: none;
+  }
+}
+
 /* daisyUI menu items are <button>/<a> elements. They must NOT inherit the
    generic per-button border above, which would draw a box around each menu
    entry (context menus, dropdowns, sidebar menus, etc.). */

@@ -188,4 +188,10 @@ playwright-report/
 .beads/config.yaml
 .augment/settings.local.json
 tests/ui/test-results-auth/
+
+# Frontend bundler spike artifacts (mitto-qcm — scripts kept, output ignored)
+scripts/spike-bundler/dist/
+scripts/spike-bundler/vite-chatinput/node_modules/
+scripts/spike-bundler/vite-chatinput/dist/
+scripts/spike-bundler/vite-chatinput/package-lock.json
 .tokensave

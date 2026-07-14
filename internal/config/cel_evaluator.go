@@ -250,6 +250,34 @@ func NewCELEvaluator() (*CELEvaluator, error) {
 				cel.BinaryBinding(mittoGitFileDeleted),
 			),
 		),
+		cel.Function("__mitto_beadsCount",
+			cel.Overload("__mitto_beadsCount_string_string_string",
+				[]*cel.Type{cel.StringType, cel.StringType, cel.StringType},
+				cel.IntType,
+				cel.FunctionBinding(mittoBeadsCount),
+			),
+		),
+		cel.Function("__mitto_hasBeads",
+			cel.Overload("__mitto_hasBeads_string_string_string",
+				[]*cel.Type{cel.StringType, cel.StringType, cel.StringType},
+				cel.BoolType,
+				cel.FunctionBinding(mittoHasBeads),
+			),
+		),
+		cel.Function("__mitto_beadHasLabels",
+			cel.Overload("__mitto_beadHasLabels_string_string_string",
+				[]*cel.Type{cel.StringType, cel.StringType, cel.StringType},
+				cel.BoolType,
+				cel.FunctionBinding(mittoBeadHasLabels),
+			),
+		),
+		cel.Function("__mitto_beadIsOpen",
+			cel.Overload("__mitto_beadIsOpen_string_string",
+				[]*cel.Type{cel.StringType, cel.StringType},
+				cel.BoolType,
+				cel.BinaryBinding(mittoBeadIsOpen),
+			),
+		),
 
 		// Macros rewrite user-facing convenience calls into the internal
 		// context-free functions above, injecting activation-sourced arguments.
@@ -270,6 +298,10 @@ func NewCELEvaluator() (*CELEvaluator, error) {
 			cel.GlobalMacro("GitDirModified", 1, gitDirModifiedMacro1),
 			cel.GlobalMacro("GitFileTracked", 1, gitFileTrackedMacro),
 			cel.GlobalMacro("GitFileDeleted", 1, gitFileDeletedMacro),
+			cel.GlobalMacro("BeadsCount", 2, beadsCountMacro),
+			cel.GlobalMacro("HasBeads", 2, hasBeadsMacro),
+			cel.GlobalMacro("BeadHasLabels", 2, beadHasLabelsMacro),
+			cel.GlobalMacro("BeadIsOpen", 1, beadIsOpenMacro),
 		),
 	)
 	if err != nil {
@@ -316,6 +348,18 @@ func (e *CELEvaluator) Compile(expression string) (*CompiledExpression, error) {
 	e.mu.Unlock()
 
 	return ce, nil
+}
+
+// ParseAST compiles the expression and returns the raw *cel.Ast so callers
+// (tests, drift-guards) can walk the tree. Errors match Compile()'s behaviour.
+// The AST is NOT cached — this path is intended for offline validation, not
+// hot-path evaluation.
+func (e *CELEvaluator) ParseAST(expression string) (*cel.Ast, error) {
+	ast, issues := e.env.Compile(expression)
+	if issues != nil && issues.Err() != nil {
+		return nil, fmt.Errorf("cel: compile error in %q: %w", expression, issues.Err())
+	}
+	return ast, nil
 }
 
 // referencesItemNamespace reports whether the AST references the Item namespace
@@ -578,6 +622,30 @@ func gitFileDeletedMacro(eh cel.MacroExprFactory, _ celast.Expr, args []celast.E
 	return eh.NewCall("__mitto_gitFileDeleted", eh.NewIdent("Workspace.Folder"), args[0]), nil
 }
 
+// beadsCountMacro rewrites BeadsCount(labels, statuses) ->
+// __mitto_beadsCount(Workspace.Folder, labels, statuses).
+func beadsCountMacro(eh cel.MacroExprFactory, _ celast.Expr, args []celast.Expr) (celast.Expr, *celcommon.Error) {
+	return eh.NewCall("__mitto_beadsCount", eh.NewIdent("Workspace.Folder"), args[0], args[1]), nil
+}
+
+// hasBeadsMacro rewrites HasBeads(labels, statuses) ->
+// __mitto_hasBeads(Workspace.Folder, labels, statuses).
+func hasBeadsMacro(eh cel.MacroExprFactory, _ celast.Expr, args []celast.Expr) (celast.Expr, *celcommon.Error) {
+	return eh.NewCall("__mitto_hasBeads", eh.NewIdent("Workspace.Folder"), args[0], args[1]), nil
+}
+
+// beadHasLabelsMacro rewrites BeadHasLabels(id, labels) ->
+// __mitto_beadHasLabels(Workspace.Folder, id, labels).
+func beadHasLabelsMacro(eh cel.MacroExprFactory, _ celast.Expr, args []celast.Expr) (celast.Expr, *celcommon.Error) {
+	return eh.NewCall("__mitto_beadHasLabels", eh.NewIdent("Workspace.Folder"), args[0], args[1]), nil
+}
+
+// beadIsOpenMacro rewrites BeadIsOpen(id) ->
+// __mitto_beadIsOpen(Workspace.Folder, id).
+func beadIsOpenMacro(eh cel.MacroExprFactory, _ celast.Expr, args []celast.Expr) (celast.Expr, *celcommon.Error) {
+	return eh.NewCall("__mitto_beadIsOpen", eh.NewIdent("Workspace.Folder"), args[0]), nil
+}
+
 // valToString returns the Go string for a CEL string value, or "" otherwise.
 func valToString(v ref.Val) string {
 	if s, ok := v.(types.String); ok {
@@ -808,6 +876,59 @@ func mittoGitFileTracked(folderVal, pathVal ref.Val) ref.Val {
 // to gitFileDeleted.
 func mittoGitFileDeleted(folderVal, pathVal ref.Val) ref.Val {
 	return types.Bool(gitFileDeleted(valToString(folderVal), valToString(pathVal)))
+}
+
+// mittoBeadsCount returns the count of beads matching ALL comma-separated
+// labels (args[1]) AND ANY of the comma-separated statuses (args[2]) in the
+// workspace folder (args[0]). Fail-open: returns a positive sentinel on any
+// error so gates using HasBeads never wrongly hide a prompt. Delegates to
+// beadsCount (templatefuncs.go) — single source of truth shared with the
+// template FuncMap.
+func mittoBeadsCount(args ...ref.Val) ref.Val {
+	if len(args) != 3 {
+		return types.Int(beadsCountFailOpen)
+	}
+	folder := valToString(args[0])
+	labels := valToString(args[1])
+	statuses := valToString(args[2])
+	return types.Int(beadsCount(folder, labels, statuses))
+}
+
+// mittoHasBeads reports whether beadsCount(folder, labels, statuses) > 0.
+// Same fail-open + cache semantics as beadsCount. Delegates to hasBeads.
+func mittoHasBeads(args ...ref.Val) ref.Val {
+	if len(args) != 3 {
+		return types.Bool(true) // fail-open on arg-count mismatch
+	}
+	folder := valToString(args[0])
+	labels := valToString(args[1])
+	statuses := valToString(args[2])
+	return types.Bool(hasBeads(folder, labels, statuses))
+}
+
+// mittoBeadHasLabels reports whether the single bead <id> (args[1]) in the
+// workspace folder (args[0]) carries ALL comma-separated labels (args[2]).
+// Fail-open: returns true on any error or arg-count mismatch so a gate using
+// BeadHasLabels never wrongly hides a prompt. Delegates to beadHasLabels
+// (templatefuncs.go) — single source of truth shared with the template FuncMap.
+func mittoBeadHasLabels(args ...ref.Val) ref.Val {
+	if len(args) != 3 {
+		return types.Bool(true) // fail-open on arg-count mismatch
+	}
+	folder := valToString(args[0])
+	id := valToString(args[1])
+	labels := valToString(args[2])
+	return types.Bool(beadHasLabels(folder, id, labels))
+}
+
+// mittoBeadIsOpen reports whether the single bead <id> (rhs) in the workspace
+// folder (lhs) is not closed. Fail-open: returns true on any error so a gate
+// using BeadIsOpen never wrongly hides a prompt. Delegates to beadIsOpen
+// (templatefuncs.go) — single source of truth shared with the template FuncMap.
+func mittoBeadIsOpen(lhs, rhs ref.Val) ref.Val {
+	folder := valToString(lhs)
+	id := valToString(rhs)
+	return types.Bool(beadIsOpen(folder, id))
 }
 
 // extractStringArgs extracts string values from CEL function arguments.

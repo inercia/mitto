@@ -64,7 +64,8 @@ go test -v -tags integration ./tests/integration/inprocess/
 - **Log authoritative source**: Check `events.jsonl` (session dir) when debugging; server logs rotate and have gaps.
 - **daisyUI drawer GPU bug**: `.drawer-side` + fixed-position overlay compete for pointer events → blank artifacts. Fix: See `web/static/styles.css` for verified pattern. Do NOT use `translateZ(0)`.
 - **Zombie WebSocket recovery**: When phone sleeps or app backgrounded, WS may enter "zombie" state (appearing open but dead). On visibility change or app activate, force-close and reconnect. This is expected behavior — not a bug. See `.augment/rules/23-web-frontend-mobile.md` for resilience patterns.
-- **Verify prior edits actually persisted**: Don't trust that a previous turn's file edits are still on disk (session gaps, restarts, or reverted stashes can silently drop them). Before continuing/relying on earlier work, re-check with `git status`/`git diff` or re-view the file rather than assuming.
+- **Verify prior edits actually persisted**: Don't trust that a previous turn's file edits are still on disk — session gaps, restarts, or a **concurrent loop conversation** (e.g. a PR-babysitting/cleanup loop sharing the same repo) stashing/resetting the working directory mid-task can silently drop them. Re-check with `git status`/`git diff`/re-view before relying on earlier work; if files vanish unexpectedly, check `git stash list` first — work is often auto-stashed, not lost.
+- **Cold-start MCP wedge (mitto-54k) — corrected 2026-07-08: it's a Mitto-side SSE stall, not agent-side**: symptom `⏳ mitto (timed out)`/hung first prompt for minutes. The earlier "agent-side, unfixable in Mitto" diagnosis was **wrong** — it was overturned after the same wedge reproduced in **both** auggie and Claude Code, isolated to workspaces with **concurrent MCP sessions** (e.g. multiple workspace UUIDs + an active loop sharing one `working_dir`). Root cause: `internal/mcpserver/server.go:347` builds the Streamable HTTP handler with `nil` options → stateful mode, where a POST's response can ride the client's per-session **GET SSE stream** instead of the POST body; under concurrency that stream stalls (~97s gap observed, SSE GET held open, never completes) so `initialize` times out even though Mitto's handler already returned 200 in 0ms (`duration_ms=0` in logs is a red herring). Fixed by `mitto-6hr` (P1, APPLIED): `startSSE()` passes `&mcp.StreamableHTTPOptions{JSONResponse: true}` so POST responses resolve inline, independent of the SSE GET — **not** `Stateless: true` (breaks `UIPrompter`/`mitto_ui_options`). See `.augment/rules/42-mcpserver-development.md`. Secondary mitigations (reduce concurrency, don't fix the stall): `mitto-clc` (disable proactive keep-warm pin), `mitto-cgc` (stagger aux-session creation).
 
 ## New Agent Capability Checklist
 
@@ -101,15 +102,11 @@ Used in `BeadsView.js` (list actions + issue-detail header).
 
 ## Model Selection & Preferred Models
 
-Prompts can declare `preferredModels:` to route to specific ACP models. `selectPreferredModel()` in `constraints.go` picks the best match using configurable match modes (`"contains"`, `"exact"`, `"startsWith"`, `"regex"`, `"lookAlike"`). **Key insight**: If the active model already satisfies the preference, it's kept; otherwise the preference is applied. This avoids unnecessary model switches in multi-model sessions.
+Prompts can declare `preferredModels:` to route to specific ACP models. `selectPreferredModel()` in `constraints.go` picks the best match using configurable match modes (`"contains"`, `"exact"`, `"startsWith"`, `"regex"`, `"lookAlike"`). If the active model already satisfies the preference, it's kept; otherwise applied — avoids unnecessary switches in multi-model sessions.
 
-**Per-prompt transient overrides**: When a prompt declares `preferredModels`, `setActiveModelOnly()` temporarily switches models for that prompt's execution **without** recording a `session_change` event. This is **intentional**:
-- Baseline model (conversation-level setting) remains unchanged
-- No "Model changed to X" message in timeline (silent override)
-- After prompt completes, `restoreBaselineIfOverride()` flips model back to baseline
-- Result: Heavy-lift work runs on cheaper models (e.g., Sonnet) while conversation stays on your chosen baseline (e.g., Opus)
+**Per-prompt transient overrides**: `setActiveModelOnly()` switches models for a prompt's execution **without** recording a `session_change` event (silent; conversation-level baseline is untouched). `restoreBaselineIfOverride()` flips back after the prompt completes. **Contrast**: manual UI selection → `applyConfigOption()` → `cmRecordSessionChange()` → persistent event, updates baseline.
 
-**Contrast**: Manual model selection (via UI dropdown) → `applyConfigOption()` → `cmRecordSessionChange()` → records persistent `session_change` event and updates baseline.
+**Config-level tag resolution**: `(*Config).EffectiveModelProfiles()` unions `settings.json`'s `Models` with hardcoded `config.DefaultModelProfiles()` (7 canonical profiles), user wins by name — so `modelTag:` always resolves even when `settings.json` predates/omits `models:`. `make check-model-tags` keeps `config.default.yaml` and the Go defaults in sync and rejects unknown tags in builtin prompts. See `.augment/rules/08-config.md`.
 
 ## CEL Tool Evaluation (Fail-Open Behavior)
 
@@ -130,6 +127,8 @@ Two-tier discovery for `enabledWhen`/CEL `tools.*` gating (see `docs/devel/mcp-t
 
 Per-agent `mcp-list.sh` config paths/keys are **not** interchangeable across agents — verify against real docs before writing/trusting one (audit + known-broken scripts: `.augment/rules/42-mcpserver-development.md`).
 
+**Auggie git-root divergence**: `auggie mcp list` resolves `<workspace>` to the **git toplevel**, not the Mitto workspace's `working_dir` — so a workspace whose `working_dir` is a git subdirectory sees servers registered in `<git-root>/.augment/settings.local.json` (not its own `.augment/settings.local.json`). Mitto's `mcp-list.sh` reads `working_dir` literally, so the MCP tab can show servers (e.g. `slack`) the running agent never actually loads. Fix: move servers to the git-root config, register at user scope (`auggie mcp add`, no `--local`), or point `working_dir` at the git root.
+
 ## Loop Conversations
 
 **onCompletion trigger** (distinct from schedule-based loop):
@@ -139,6 +138,8 @@ Per-agent `mcp-list.sh` config paths/keys are **not** interchangeable across age
 - Free-text loop prompts NOT sent to frontend → selector can't display them (UI gap)
 - `app.js` line ~1928: `headerLoopState()` returns `{ state, label, badgeClass }` pill object
 - Issue `mitto-36nm` tracks UI clarity improvement (prompt visibility + pill disambiguation)
+
+**Persistence symmetry (LoopStore, `internal/session/loop.go`)**: un-loop calls `Detach()` (saves settings to a slot, clears active config); re-loop/restore reads it back via `GetSaved()`. A **fresh** loop create must call `ClearSaved()` right after `Set()` so a stale saved slot doesn't leak into a later un-loop — done identically in REST (`session_loop_write.go` `handleSetLoop`) and MCP (`mcpserver/server.go` create-loop path) to keep both interfaces symmetric.
 
 ## Tokensave Rule (Mandatory)
 

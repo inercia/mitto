@@ -131,6 +131,23 @@ func TestClassifyACPError(t *testing.T) {
 			wantRetryable: false,
 			wantContains:  "No ACP command",
 		},
+		// --- Permanent: MCP init timeout (mitto-8ul.1) ---
+		{
+			name:          "MCP initialization timed out in wrapped error",
+			err:           fmt.Errorf("session/new: mcp initialization timed out (agent reported MCP-init wait exhausted): context deadline exceeded"),
+			stderr:        "",
+			wantClass:     ACPErrorPermanent,
+			wantRetryable: false,
+			wantContains:  "MCP server initialization timed out",
+		},
+		{
+			name:          "MCP initialization timed out in stderr",
+			err:           fmt.Errorf("failed to create session"),
+			stderr:        "auggie: MCP initialization timed out after 225s",
+			wantClass:     ACPErrorPermanent,
+			wantRetryable: false,
+			wantContains:  "MCP server initialization timed out",
+		},
 		// --- Transient: unrecognized errors ---
 		{
 			name:          "network timeout is transient",
@@ -324,4 +341,60 @@ func TestBackoffDelay(t *testing.T) {
 			t.Errorf("zero jitter should be deterministic: %v != %v", d1, d2)
 		}
 	})
+}
+
+// TestIsMCPInitTimeout verifies the predicate used by the auto-resume paths to
+// carve out the transient cold-start MCP-init timeout from the hard failure
+// counter (mitto-54k.6).
+func TestIsMCPInitTimeout(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{
+			name: "nil error",
+			err:  nil,
+			want: false,
+		},
+		{
+			name: "plain error with substring",
+			err:  fmt.Errorf("mcp initialization timed out after 30s"),
+			want: true,
+		},
+		{
+			name: "plain error case-insensitive",
+			err:  fmt.Errorf("MCP INITIALIZATION TIMED OUT after 30s"),
+			want: true,
+		},
+		{
+			name: "wrapped in ACPClassifiedError",
+			err: &ACPClassifiedError{
+				Class:         ACPErrorPermanent,
+				OriginalError: fmt.Errorf("mcp initialization timed out after 30s"),
+			},
+			want: true,
+		},
+		{
+			name: "unrelated error",
+			err:  fmt.Errorf("some other failure"),
+			want: false,
+		},
+		{
+			name: "wrapped unrelated error",
+			err: &ACPClassifiedError{
+				Class:         ACPErrorPermanent,
+				OriginalError: fmt.Errorf("Cannot find module '@anthropic-ai/claude-code'"),
+			},
+			want: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := IsMCPInitTimeout(tt.err); got != tt.want {
+				t.Errorf("IsMCPInitTimeout(%v) = %v, want %v", tt.err, got, tt.want)
+			}
+		})
+	}
 }

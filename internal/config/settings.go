@@ -63,6 +63,8 @@ type Settings struct {
 	UI UIConfig `json:"ui,omitempty"`
 	// Session contains session storage limits configuration
 	Session *SessionConfig `json:"session,omitempty"`
+	// Prewarm contains adaptive ACP/MCP pre-warming thresholds (mitto-mw0)
+	Prewarm *PrewarmConfig `json:"prewarm,omitempty"`
 	// Conversations contains global conversation processing configuration
 	Conversations *ConversationsConfig `json:"conversations,omitempty"`
 	// Permissions contains global permission handling configuration
@@ -87,6 +89,22 @@ const DefaultStartupStaggerMs = 300
 // starts its first poll on startup. This gives interactive sessions time to
 // resume first via WebSocket connections.
 const DefaultStartupLoopDelay = 15 * time.Second
+
+// DefaultStartupResumeConcurrency is the default maximum number of concurrent
+// interactive ResumeSession calls issued from the cold-start WebSocket fan-out.
+// Bounding this prevents the Mitto process from saturating itself (which can
+// starve the agent's inbound MCP handshake on :5757/mcp) when many sessions
+// reconnect at once (mitto-54k.1).
+const DefaultStartupResumeConcurrency = 3
+
+// DefaultLoopWorkspaceConcurrency caps how many scheduled loop prompts may be
+// in flight simultaneously per WorkingDir + ACPServer pair. Because shared
+// ACP processes (e.g. Auggie 0.32.x) do not parallelize prompts across
+// sessions, dispatching multiple loop prompts to the same process at the same
+// instant wedges all of them behind the shared inbox until the 10-minute
+// watchdog. Capping at 1 stagger loops naturally without adding sleeps to the
+// poll goroutine (mitto-61z). 0 disables the cap.
+const DefaultLoopWorkspaceConcurrency = 1
 
 // SessionConfig represents session storage configuration.
 type SessionConfig struct {
@@ -116,6 +134,26 @@ type SessionConfig struct {
 	// first via WebSocket connections, preventing thundering herd on ACP.
 	// Default: 15 seconds. Set to 0 to disable (not recommended).
 	StartupLoopDelaySeconds int `json:"startup_loop_delay_seconds,omitempty"`
+	// StartupResumeConcurrency caps the number of concurrent interactive
+	// ResumeSession calls issued from the cold-start WebSocket fan-out. When many
+	// browsers reconnect at once (or a single browser holds many session tabs),
+	// unbounded fan-out saturates the Mitto process and starves the agent's
+	// inbound MCP handshake on :5757/mcp (see mitto-54k). The user-focused
+	// ensure_resumed path is NOT throttled.
+	// Default: 0 (use DefaultStartupResumeConcurrency = 3). Values <1 are clamped
+	// to 1 (a semaphore of size 0 would deadlock every resume).
+	StartupResumeConcurrency int `json:"startup_resume_concurrency,omitempty"`
+	// LoopWorkspaceConcurrency caps how many scheduled loop prompts may be in
+	// flight simultaneously per WorkingDir + ACPServer pair. When more than one
+	// loop conversation in the same workspace becomes due at the same instant,
+	// dispatching them concurrently to a shared ACP process wedges all of them
+	// behind the shared inbox (mitto-61z). The scheduler skips over-capacity
+	// sessions for the current poll cycle and retries on the next tick — no
+	// schedule advance and no failure backoff for the skipped session. Manual
+	// "Run Now" (forced) deliveries always bypass this cap.
+	// Default: 0 (use DefaultLoopWorkspaceConcurrency = 1). Set to a large value
+	// (or use the getter's semantics) to effectively disable the cap.
+	LoopWorkspaceConcurrency int `json:"loop_workspace_concurrency,omitempty"`
 	// LoopSuspendTimeout controls when idle loop conversations have their ACP
 	// connection suspended to save memory. When a loop conversation's next prompt
 	// is farther away than this timeout, its ACP session is closed even if the user has
@@ -136,6 +174,19 @@ type SessionConfig struct {
 	// This breaks the GC deadlock where a wedged shared ACP process pins a session
 	// as stuck forever. Values: "" (default, 10m), "disabled", "5m", "10m", "15m", "30m".
 	AgentInactivityTimeout string `json:"agent_inactivity_timeout,omitempty"`
+	// McpInitTimeout controls the extended per-attempt/total budget granted to the
+	// very first session/new (and session/load) on a cold shared ACP process when
+	// the request carries MCP servers. Rationale (mitto-8ul.1): agents (Auggie in
+	// particular) block servicing session/new until MCP init completes, and their
+	// internal MCP wait is ~225s — well past Mitto's normal 25s per-attempt budget.
+	// A cold cold-start with MCP servers therefore fails as "context deadline
+	// exceeded" even though the agent would eventually respond. This timeout
+	// widens the budget for that first cold call only; once the process has
+	// completed one successful session/new (or observed all-servers-ready) the
+	// normal 25s budget is used again. Values: "" (default, 240s covering
+	// Auggie's 225s + margin), "disabled" (use the normal budget), "120s"/"2m",
+	// "240s"/"4m", "300s"/"5m".
+	McpInitTimeout string `json:"mcp_init_timeout,omitempty"`
 }
 
 // ArchiveRetentionNever is the value for keeping archived conversations forever.
@@ -257,6 +308,38 @@ func (c *SessionConfig) ParseAgentInactivityTimeout() (time.Duration, bool) {
 	}
 }
 
+// ValidMcpInitTimeouts contains all valid MCP-init timeout values (mitto-8ul.1).
+var ValidMcpInitTimeouts = []string{"", "disabled", "120s", "2m", "240s", "4m", "300s", "5m"}
+
+// GetMcpInitTimeout returns the MCP-init timeout string, or "" if not set.
+func (c *SessionConfig) GetMcpInitTimeout() string {
+	if c == nil {
+		return ""
+	}
+	return c.McpInitTimeout
+}
+
+// ParseMcpInitTimeout converts the MCP-init timeout string to a time.Duration.
+// Returns (duration, true) when the extended cold-start budget is enabled and
+// (0, false) when disabled. Empty string returns the default of 240s, which
+// covers Auggie's internal 225s MCP-init wait + margin (mitto-8ul.1). Unknown
+// values fall back to the default rather than silently disabling the feature.
+func (c *SessionConfig) ParseMcpInitTimeout() (time.Duration, bool) {
+	switch c.GetMcpInitTimeout() {
+	case "disabled":
+		return 0, false
+	case "", "240s", "4m":
+		return 240 * time.Second, true
+	case "120s", "2m":
+		return 120 * time.Second, true
+	case "300s", "5m":
+		return 300 * time.Second, true
+	default:
+		// Unknown value — use default
+		return 240 * time.Second, true
+	}
+}
+
 // GetStartupStaggerMs returns the stagger delay in milliseconds between consecutive session
 // resumes on startup for sessions sharing the same ACP process.
 // Returns DefaultStartupStaggerMs (300 ms) if not configured (0).
@@ -282,6 +365,328 @@ func (c *SessionConfig) GetStartupLoopDelay() time.Duration {
 		return 0
 	}
 	return time.Duration(c.StartupLoopDelaySeconds) * time.Second
+}
+
+// GetStartupResumeConcurrency returns the maximum number of concurrent
+// interactive ResumeSession calls issued from the cold-start WebSocket fan-out.
+// Returns DefaultStartupResumeConcurrency (3) if not configured (0). Values <1
+// are clamped to 1 — a bound of 0 would deadlock every resume.
+func (c *SessionConfig) GetStartupResumeConcurrency() int {
+	if c == nil || c.StartupResumeConcurrency == 0 {
+		return DefaultStartupResumeConcurrency
+	}
+	if c.StartupResumeConcurrency < 1 {
+		return 1
+	}
+	return c.StartupResumeConcurrency
+}
+
+// GetLoopWorkspaceConcurrency returns the maximum number of scheduled loop
+// prompts that may be in flight simultaneously per WorkingDir + ACPServer
+// pair. Returns DefaultLoopWorkspaceConcurrency (1) if not configured (0).
+// Negative values are treated as 0 (cap disabled). Manual "Run Now" (forced)
+// deliveries always bypass the cap (mitto-61z).
+func (c *SessionConfig) GetLoopWorkspaceConcurrency() int {
+	if c == nil || c.LoopWorkspaceConcurrency == 0 {
+		return DefaultLoopWorkspaceConcurrency
+	}
+	if c.LoopWorkspaceConcurrency < 0 {
+		return 0
+	}
+	return c.LoopWorkspaceConcurrency
+}
+
+// PrewarmConfig represents adaptive ACP/MCP pre-warming thresholds (mitto-mw0).
+// Pre-warming warms a workspace, probes its health (session/new latency + MCP
+// readiness), and pins a warm keepalive session only for slow/broken workspaces.
+type PrewarmConfig struct {
+	// SessionNewFast is T_fast: session/new latency at/under which a workspace is
+	// considered "fast" and does NOT need pinning. Aligned with the startup
+	// watchdog WARN threshold at 10s.
+	// Values: "" (default, 10s), "5s", "10s", "20s", "30s".
+	SessionNewFast string `json:"session_new_fast,omitempty"`
+	// McpReady is T_mcp: max time for all configured MCP servers to be reachable
+	// before the workspace is flagged as slow.
+	// Values: "" (default, 10s), "5s", "10s", "20s", "30s".
+	McpReady string `json:"mcp_ready,omitempty"`
+	// HealthyProbesToUnpin is the hysteresis N: consecutive healthy probes
+	// required before unpinning a pinned workspace. Default: 3.
+	HealthyProbesToUnpin int `json:"healthy_probes_to_unpin,omitempty"`
+	// MaxPinDuration caps how long a pinned keepalive session is held before
+	// giving up + alerting. "disabled" means no cap.
+	// Values: "" (default, 30m), "disabled", "5m", "15m", "30m", "1h", "2h".
+	MaxPinDuration string `json:"max_pin_duration,omitempty"`
+	// MaxPinnedWorkspaces is the blast-radius cap on simultaneously-pinned
+	// workspaces. Default: 5.
+	MaxPinnedWorkspaces int `json:"max_pinned_workspaces,omitempty"`
+	// AuxSchedule holds per-purpose staggered creation delays for the cold-start
+	// auxiliary session prewarm (mitto-cgc). When nil, the per-purpose defaults
+	// apply. Serialized creation guarantees <=1 concurrent session/new
+	// regardless of the delay values.
+	AuxSchedule *AuxScheduleConfig `json:"aux_schedule,omitempty"`
+}
+
+// AuxScheduleConfig holds per-purpose staggered creation delays for cold-start
+// auxiliary session pre-warming (mitto-cgc). Each field is a Go duration string
+// (e.g. "0s", "5s", "8s") parsed with time.ParseDuration. Empty or invalid
+// values fall back to the per-purpose defaults. Serialized creation guarantees
+// <=1 concurrent session/new regardless of these values.
+type AuxScheduleConfig struct {
+	McpCheck string `json:"mcp_check,omitempty"`
+	McpTools string `json:"mcp_tools,omitempty"`
+	TitleGen string `json:"title_gen,omitempty"`
+	FollowUp string `json:"follow_up,omitempty"`
+}
+
+// AuxPrewarmEntry is one scheduled auxiliary prewarm creation (mitto-cgc).
+// Purpose mirrors the string constants in internal/auxiliary (PurposeMCPCheck,
+// PurposeMCPTools, PurposeTitleGen, PurposeFollowUp); Delay is measured from
+// the prewarm anchor (moment prewarmAuxiliarySessions starts).
+type AuxPrewarmEntry struct {
+	Purpose string
+	Delay   time.Duration
+}
+
+// Prewarm defaults (mitto-mw0).
+const (
+	DefaultPrewarmSessionNewFast       = 10 * time.Second
+	DefaultPrewarmMcpReady             = 10 * time.Second
+	DefaultPrewarmHealthyProbesToUnpin = 3
+	DefaultPrewarmMaxPinDuration       = 30 * time.Minute
+	DefaultPrewarmMaxPinnedWorkspaces  = 5
+)
+
+// Auxiliary prewarm per-purpose delay defaults (mitto-cgc, widened in
+// mitto-7yj). Priority order is mcp-check/mcp-tools (tier 0) → title-gen
+// (tier 1) → follow-up (tier 2).
+//
+// Two default sets exist:
+//
+//   - Multiplex agents (e.g. auggie): a single node process handles all ACP
+//     sessions, so aux session/new is cheap. The defaults are aggressive but
+//     no two aux purposes share the 0s slot — mcp-tools is nudged to 2s so
+//     the tier-0 pair does not start simultaneously (mitto-7yj rush-friendly
+//     stagger).
+//
+//   - Fork-per-session agents (e.g. Claude Code via @zed-industries/
+//     claude-agent-acp): each ACP session/new forks a fresh `claude` OS
+//     process which pins ~memory + CPU per aux session and creates a
+//     synchronous cold-fork storm during prewarm. The defaults are widely
+//     spread so real user demand can preempt (mitto-7yj rush-on-demand).
+const (
+	// Multiplex (auggie) defaults.
+	DefaultAuxDelayMcpCheck = 0 * time.Second
+	DefaultAuxDelayMcpTools = 2 * time.Second
+	DefaultAuxDelayTitleGen = 8 * time.Second
+	DefaultAuxDelayFollowUp = 12 * time.Second
+
+	// Fork-per-session (Claude Code) defaults (mitto-7yj). Widely spread so
+	// each cold `claude` fork does not pile onto the previous one, and so
+	// getOrCreateAuxiliarySession callers can rush the schedule for any
+	// purpose actually needed by user activity.
+	DefaultAuxDelayForkMcpCheck = 0 * time.Second
+	DefaultAuxDelayForkMcpTools = 8 * time.Second
+	DefaultAuxDelayForkTitleGen = 20 * time.Second
+	DefaultAuxDelayForkFollowUp = 35 * time.Second
+)
+
+// Purpose strings mirroring internal/auxiliary.Purpose* — hardcoded here to
+// avoid an internal/config → internal/auxiliary dependency edge (mitto-cgc).
+// The acpproc consumer references the auxiliary.Purpose* constants directly
+// so any rename there is caught at compile time.
+const (
+	auxPurposeMcpCheck = "mcp-check"
+	auxPurposeMcpTools = "mcp-tools"
+	auxPurposeTitleGen = "title-gen"
+	auxPurposeFollowUp = "follow-up"
+)
+
+// ValidSessionNewFast lists accepted values for PrewarmConfig.SessionNewFast.
+var ValidSessionNewFast = []string{"", "5s", "10s", "20s", "30s"}
+
+// GetSessionNewFast returns the SessionNewFast string, or "" if not set.
+func (c *PrewarmConfig) GetSessionNewFast() string {
+	if c == nil {
+		return ""
+	}
+	return c.SessionNewFast
+}
+
+// ParseSessionNewFast converts the SessionNewFast string to a time.Duration.
+// Returns (duration, true) — this threshold is always enabled. Empty/unknown
+// values fall back to the 10s default.
+func (c *PrewarmConfig) ParseSessionNewFast() (time.Duration, bool) {
+	switch c.GetSessionNewFast() {
+	case "", "10s":
+		return DefaultPrewarmSessionNewFast, true
+	case "5s":
+		return 5 * time.Second, true
+	case "20s":
+		return 20 * time.Second, true
+	case "30s":
+		return 30 * time.Second, true
+	default:
+		return DefaultPrewarmSessionNewFast, true
+	}
+}
+
+// ValidMcpReady lists accepted values for PrewarmConfig.McpReady.
+var ValidMcpReady = []string{"", "5s", "10s", "20s", "30s"}
+
+// GetMcpReady returns the McpReady string, or "" if not set.
+func (c *PrewarmConfig) GetMcpReady() string {
+	if c == nil {
+		return ""
+	}
+	return c.McpReady
+}
+
+// ParseMcpReady converts the McpReady string to a time.Duration.
+// Returns (duration, true) — this threshold is always enabled. Empty/unknown
+// values fall back to the 10s default.
+func (c *PrewarmConfig) ParseMcpReady() (time.Duration, bool) {
+	switch c.GetMcpReady() {
+	case "", "10s":
+		return DefaultPrewarmMcpReady, true
+	case "5s":
+		return 5 * time.Second, true
+	case "20s":
+		return 20 * time.Second, true
+	case "30s":
+		return 30 * time.Second, true
+	default:
+		return DefaultPrewarmMcpReady, true
+	}
+}
+
+// GetHealthyProbesToUnpin returns the hysteresis count, or the default (3)
+// when unset or non-positive.
+func (c *PrewarmConfig) GetHealthyProbesToUnpin() int {
+	if c == nil || c.HealthyProbesToUnpin <= 0 {
+		return DefaultPrewarmHealthyProbesToUnpin
+	}
+	return c.HealthyProbesToUnpin
+}
+
+// ValidMaxPinDurations lists accepted values for PrewarmConfig.MaxPinDuration.
+var ValidMaxPinDurations = []string{"", "disabled", "5m", "15m", "30m", "1h", "2h"}
+
+// GetMaxPinDuration returns the MaxPinDuration string, or "" if not set.
+func (c *PrewarmConfig) GetMaxPinDuration() string {
+	if c == nil {
+		return ""
+	}
+	return c.MaxPinDuration
+}
+
+// ParseMaxPinDuration converts the MaxPinDuration string to a time.Duration.
+// Returns (duration, true) when a cap applies, or (0, false) when "disabled"
+// (no cap). Empty/unknown values fall back to the 30m default.
+func (c *PrewarmConfig) ParseMaxPinDuration() (time.Duration, bool) {
+	switch c.GetMaxPinDuration() {
+	case "disabled":
+		return 0, false
+	case "", "30m":
+		return DefaultPrewarmMaxPinDuration, true
+	case "5m":
+		return 5 * time.Minute, true
+	case "15m":
+		return 15 * time.Minute, true
+	case "1h":
+		return time.Hour, true
+	case "2h":
+		return 2 * time.Hour, true
+	default:
+		return DefaultPrewarmMaxPinDuration, true
+	}
+}
+
+// GetMaxPinnedWorkspaces returns the blast-radius cap, or the default (5)
+// when unset or non-positive.
+func (c *PrewarmConfig) GetMaxPinnedWorkspaces() int {
+	if c == nil || c.MaxPinnedWorkspaces <= 0 {
+		return DefaultPrewarmMaxPinnedWorkspaces
+	}
+	return c.MaxPinnedWorkspaces
+}
+
+// parseAuxDelay parses a Go duration string. On empty or parse error it returns
+// the supplied default. Negative durations are clamped to 0 (a negative offset
+// would fire immediately, which is fine, but 0 is clearer to log).
+func parseAuxDelay(s string, def time.Duration) time.Duration {
+	if s == "" {
+		return def
+	}
+	d, err := time.ParseDuration(s)
+	if err != nil {
+		return def
+	}
+	if d < 0 {
+		return 0
+	}
+	return d
+}
+
+// AuxPrewarmSchedule returns the priority-ordered, staggered auxiliary prewarm
+// schedule with defaults applied (mitto-cgc). Nil-safe on the receiver. Entries
+// are returned in nondecreasing Delay order so a single worker can sleep-until
+// each offset. The ordering (mcp-check, mcp-tools, title-gen, follow-up) also
+// encodes tier priority: tier-0 purposes ship first so tool-gating is ready
+// before higher-tier auxiliaries compete for the shared ACP process.
+//
+// forkPerSession selects between the multiplex (auggie) and fork-per-session
+// (Claude Code) default sets (mitto-7yj). An explicitly-set (non-empty)
+// AuxScheduleConfig entry STILL overrides the chosen default, so callers can
+// force any schedule regardless of agent kind.
+func (c *PrewarmConfig) AuxPrewarmSchedule(forkPerSession bool) []AuxPrewarmEntry {
+	var sched *AuxScheduleConfig
+	if c != nil {
+		sched = c.AuxSchedule
+	}
+	var mcpCheck, mcpTools, titleGen, followUp string
+	if sched != nil {
+		mcpCheck = sched.McpCheck
+		mcpTools = sched.McpTools
+		titleGen = sched.TitleGen
+		followUp = sched.FollowUp
+	}
+	defMcpCheck := DefaultAuxDelayMcpCheck
+	defMcpTools := DefaultAuxDelayMcpTools
+	defTitleGen := DefaultAuxDelayTitleGen
+	defFollowUp := DefaultAuxDelayFollowUp
+	if forkPerSession {
+		defMcpCheck = DefaultAuxDelayForkMcpCheck
+		defMcpTools = DefaultAuxDelayForkMcpTools
+		defTitleGen = DefaultAuxDelayForkTitleGen
+		defFollowUp = DefaultAuxDelayForkFollowUp
+	}
+	entries := []AuxPrewarmEntry{
+		{Purpose: auxPurposeMcpCheck, Delay: parseAuxDelay(mcpCheck, defMcpCheck)},
+		{Purpose: auxPurposeMcpTools, Delay: parseAuxDelay(mcpTools, defMcpTools)},
+		{Purpose: auxPurposeTitleGen, Delay: parseAuxDelay(titleGen, defTitleGen)},
+		{Purpose: auxPurposeFollowUp, Delay: parseAuxDelay(followUp, defFollowUp)},
+	}
+	// Stable sort by Delay so the single-worker consumer can sleep-until each
+	// offset. sortAuxPrewarmByDelay (a stable insertion sort) preserves the tier
+	// ordering above when two purposes share the same delay (e.g. mcp-check and
+	// mcp-tools at 0s).
+	sortAuxPrewarmByDelay(entries)
+	return entries
+}
+
+// sortAuxPrewarmByDelay stable-sorts entries in nondecreasing Delay order.
+// Extracted so it can be unit-tested independently and to keep AuxPrewarmSchedule
+// small.
+func sortAuxPrewarmByDelay(entries []AuxPrewarmEntry) {
+	// Insertion sort is fine for the tiny fixed length (4). Keeps the file
+	// free of a sort import that already exists elsewhere.
+	for i := 1; i < len(entries); i++ {
+		j := i
+		for j > 0 && entries[j-1].Delay > entries[j].Delay {
+			entries[j-1], entries[j] = entries[j], entries[j-1]
+			j--
+		}
+	}
 }
 
 // ScannerDefenseConfig holds configuration for the scanner defense system.
@@ -337,6 +742,21 @@ type ACPServerSettings struct {
 	// ModelProfile is the name of a Model profile (Config.Models) used for
 	// session-start model auto-selection; empty falls back to legacy Constraints.
 	ModelProfile string `json:"model_profile,omitempty"`
+	// ModelTag is a capability tag used to resolve a Model profile at session
+	// start when ModelProfile is empty. Mirrors WorkspaceSettings.InitialModelTag.
+	ModelTag string `json:"model_tag,omitempty"`
+	// InitialModelProfile is the name of a Model profile (Config.Models) applied
+	// as the baseline model of every new conversation created against this ACP
+	// server, right after the agent reports its available models. Empty means
+	// keep the agent's default model. Mutually exclusive with InitialModelTag
+	// in the UI; when both are set, InitialModelProfile wins. Serves as a
+	// fallback when the workspace has no InitialModelProfile/InitialModelTag
+	// set. Distinct from ModelProfile above, which drives the legacy per-resume
+	// Constraints["model"] auto-selection behavior.
+	InitialModelProfile string `json:"initial_model_profile,omitempty"`
+	// InitialModelTag selects the initial baseline model by capability tag
+	// (e.g. "Coding"). Empty means keep the agent's default model.
+	InitialModelTag string `json:"initial_model_tag,omitempty"`
 	// Constraints is an optional map of config option auto-selection rules.
 	// The key is the config option category (e.g., "model", "mode").
 	Constraints map[string]*ACPServerConstraint `json:"constraints,omitempty"`
@@ -354,6 +774,7 @@ func (s *Settings) ToConfig() *Config {
 		Web:               s.Web,
 		UI:                s.UI,
 		Session:           s.Session,
+		Prewarm:           s.Prewarm,
 		Conversations:     s.Conversations,
 		Permissions:       s.Permissions,
 		RestrictedRunners: s.RestrictedRunners,
@@ -376,6 +797,7 @@ func ConfigToSettings(cfg *Config) *Settings {
 		Web:               cfg.Web,
 		UI:                cfg.UI,
 		Session:           cfg.Session,
+		Prewarm:           cfg.Prewarm,
 		Conversations:     cfg.Conversations,
 		Permissions:       cfg.Permissions,
 		RestrictedRunners: cfg.RestrictedRunners,
@@ -712,6 +1134,23 @@ func SaveSettings(settings *Settings) error {
 // Non-ACP settings (web, ui, etc.) come from settings.json when no RC file exists,
 // or from the RC file when one exists (for backward compatibility).
 func LoadSettingsWithFallback() (*LoadResult, error) {
+	return loadSettingsWithFallback(true)
+}
+
+// LoadSettingsWithFallbackNoKeychain is identical to LoadSettingsWithFallback
+// but never accesses secure storage (Keychain) to materialise the external
+// access password. It is intended for non-web, non-interactive commands (e.g.
+// `mitto prompt`) that only need the ACP server configuration and must never
+// touch web authentication — both because they don't serve HTTP and because
+// the Keychain unlock prompt hangs when the binary runs headless (no TTY).
+func LoadSettingsWithFallbackNoKeychain() (*LoadResult, error) {
+	return loadSettingsWithFallback(false)
+}
+
+// loadSettingsWithFallback implements LoadSettingsWithFallback. When
+// withKeychain is false, the keychain password load is skipped entirely so no
+// web-auth secret is ever read.
+func loadSettingsWithFallback(withKeychain bool) (*LoadResult, error) {
 	// Check for RC file
 	rcPath, err := appdir.RCFilePath()
 	if err != nil {
@@ -757,9 +1196,11 @@ func LoadSettingsWithFallback() (*LoadResult, error) {
 	settingsCfg := settings.ToConfig()
 
 	// Handle keychain password loading
-	if err := loadKeychainPassword(settingsCfg); err != nil {
-		// Non-fatal, just log and continue
-		_ = err
+	if withKeychain {
+		if err := loadKeychainPassword(settingsCfg); err != nil {
+			// Non-fatal, just log and continue
+			_ = err
+		}
 	}
 
 	// If no RC file, return settings-only config
@@ -830,9 +1271,11 @@ func LoadSettingsWithFallback() (*LoadResult, error) {
 
 	// Load keychain password for the merged config
 	// This loads the password from keychain if Auth is configured but password is empty
-	if err := loadKeychainPassword(mergedCfg); err != nil {
-		// Non-fatal, just log and continue
-		_ = err
+	if withKeychain {
+		if err := loadKeychainPassword(mergedCfg); err != nil {
+			// Non-fatal, just log and continue
+			_ = err
+		}
 	}
 
 	return &LoadResult{

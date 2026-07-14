@@ -12,3 +12,28 @@ install:
   args: ["--workspace-root=$MITTO_WORKING_DIR", "--acp"]
 mcp:
   scopes: ["user", "project", "local"]
+defaults:
+  # Raise Node/V8 old-space heap cap for the ACP subprocess. Default (~4-6 GB)
+  # is exhausted by large agent turns on big workspaces, aborting the process
+  # with FATAL ERROR: Ineffective mark-compacts near heap limit and tearing
+  # down every session sharing it (mitto-54k.10). Users can override in
+  # settings.json acp_servers[].env if 12 GB is inappropriate for their host.
+  env:
+    NODE_OPTIONS: "--max-old-space-size=12288"
+# Per-agent stderr patterns (mitto-k6h). Unioned with the hardcoded baseline in
+# internal/conversation. Regexes are compiled once at process start; a bad regex
+# is skipped with a warn log (never fatal).
+stderrPatterns:
+  # Node/V8 fatal-heap messages already covered by baseline; listed here as a
+  # documented example that per-agent extension is allowed.
+  crash:
+    - "FATAL ERROR: .* Allocation failed"
+  ignore:
+    # Suppress node's MaxListenersExceededWarning noise (plugin-config-changed
+    # listeners emitted by auggie's plugin subsystem during hot init).
+    - "(?i)MaxListenersExceededWarning"
+    - "(?i)Use `node --trace-warnings"
+    - "(?i)method not found"
+  degraded:
+    # Plumbed for future use (mitto-k6h defers behavioural wiring).
+    - "(?i)rate limit"

@@ -123,6 +123,7 @@ export const endpoints = {
   /** Folder-level settings (stored in folders.json, per-user). */
   folders: {
     shortcuts: (params) => apiUrl("/api/folders/shortcuts") + qs(params),
+    pin: (params) => apiUrl("/api/folders/pin") + qs(params),
   },
 
   /** Global settings (stored in settings.json). */
@@ -141,6 +142,14 @@ export const endpoints = {
     scan: () => apiUrl("/api/agents/scan"),
     confirm: () => apiUrl("/api/agents/confirm"),
     types: () => apiUrl("/api/agents/types"),
+  },
+
+  /** ACP server lifecycle operations (delete flow requires guided reassign). */
+  acpServers: {
+    prepareDelete: (name) =>
+      apiUrl(`/api/acp-servers/${enc(name)}/prepare-delete`),
+    reassignAndDelete: (name) =>
+      apiUrl(`/api/acp-servers/${enc(name)}/reassign-and-delete`),
   },
 
   /** Auxiliary AI operations (improve-prompt, etc.). */
@@ -167,5 +176,6 @@ export const endpoints = {
     csrfToken: () => apiUrl("/api/csrf-token"),
     checkFileExists: (params) => apiUrl("/api/check-file-exists") + qs(params),
     saveFileToPath: () => apiUrl("/api/save-file-to-path"),
+    dashboard: (params) => apiUrl("/api/dashboard") + qs(params),
   },
 };

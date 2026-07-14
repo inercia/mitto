@@ -123,6 +123,7 @@ graph TB
 | `session_gone`                    | Terminal: session no longer exists          |
 | `session_reset`                   | Session was forcefully reset                |
 | `session_renamed`                 | Session name changed                        |
+| `session_beads_issue_updated`     | Linked beads issue changed or cleared       |
 | `acp_stopped` / `acp_started`     | ACP process lifecycle                       |
 | `acp_start_failed`                | ACP process failed to start                 |
 | `acp_error_permanent`             | Permanent ACP error with user guidance      |
@@ -136,23 +137,24 @@ graph TB
 
 ### Backend → Frontend Messages (Global Events WS)
 
-| Type                       | Purpose                              |
-| -------------------------- | ------------------------------------ |
-| `connected`                | Global events connection established |
-| `session_created`          | New session created                  |
-| `session_deleted`          | Session deleted                      |
-| `session_renamed`          | Session renamed                      |
-| `session_pinned`           | Session pin state changed            |
-| `session_archived`         | Session archive state changed        |
-| `session_archive_pending`  | Session archiving initiated          |
-| `session_streaming`        | Session streaming state changed      |
-| `session_settings_updated` | Session advanced settings changed    |
-| `loop_updated`         | Loop prompt config changed       |
-| `loop_started`         | Loop prompt was delivered        |
-| `acp_started`              | ACP process started for session      |
-| `acp_start_failed`         | ACP process failed to start          |
-| `hook_failed`              | Lifecycle hook failed                |
-| `prompts_changed`          | Prompt files changed on disk         |
+| Type                          | Purpose                               |
+| ----------------------------- | ------------------------------------- |
+| `connected`                   | Global events connection established  |
+| `session_created`             | New session created                   |
+| `session_deleted`             | Session deleted                       |
+| `session_renamed`             | Session renamed                       |
+| `session_pinned`              | Session pin state changed             |
+| `session_archived`            | Session archive state changed         |
+| `session_archive_pending`     | Session archiving initiated           |
+| `session_streaming`           | Session streaming state changed       |
+| `session_settings_updated`    | Session advanced settings changed     |
+| `session_beads_issue_updated` | Linked beads issue changed or cleared |
+| `loop_updated`                | Loop prompt config changed            |
+| `loop_started`                | Loop prompt was delivered             |
+| `acp_started`                 | ACP process started for session       |
+| `acp_start_failed`            | ACP process failed to start           |
+| `hook_failed`                 | Lifecycle hook failed                 |
+| `prompts_changed`             | Prompt files changed on disk          |
 
 ### Key Concepts
 

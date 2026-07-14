@@ -3,7 +3,7 @@ module github.com/inercia/mitto
 go 1.25.5
 
 require (
-	github.com/coder/acp-go-sdk v0.12.0
+	github.com/coder/acp-go-sdk v0.13.5
 	github.com/coreos/go-oidc/v3 v3.17.0
 	github.com/fsnotify/fsnotify v1.9.0
 	github.com/go-jose/go-jose/v4 v4.1.3
@@ -22,6 +22,8 @@ require (
 	github.com/yuin/goldmark v1.7.16
 	github.com/yuin/goldmark-highlighting/v2 v2.0.0-20230729083705-37449abec8cc
 	go.abhg.dev/goldmark/mermaid v0.6.0
+	golang.org/x/sync v0.16.0
+	golang.org/x/sys v0.41.0
 	golang.org/x/time v0.14.0
 	gopkg.in/natefinch/lumberjack.v2 v2.2.1
 	gopkg.in/yaml.v3 v3.0.1
@@ -61,13 +63,12 @@ require (
 	golang.org/x/exp v0.0.0-20240823005443-9b4947da3948 // indirect
 	golang.org/x/net v0.51.0 // indirect
 	golang.org/x/oauth2 v0.35.0 // indirect
-	golang.org/x/sys v0.41.0 // indirect
 	google.golang.org/genproto/googleapis/api v0.0.0-20240826202546-f6391c0de4c7 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20240826202546-f6391c0de4c7 // indirect
 	google.golang.org/protobuf v1.36.10 // indirect
 )
 
 // Use our fork with configurable notification queue size (WithMaxQueuedNotifications).
-// See https://github.com/inercia/acp-go-sdk/tree/configurable-notification-queue-v0.12
+// See https://github.com/inercia/acp-go-sdk/tree/configurable-notification-queue-v0.13
 // Once https://github.com/coder/acp-go-sdk/pull/40 is merged, remove this replace and bump the version.
-replace github.com/coder/acp-go-sdk => github.com/inercia/acp-go-sdk v0.12.1-0.20260514143514-617ff1cb3d2f
+replace github.com/coder/acp-go-sdk => github.com/inercia/acp-go-sdk v0.13.1-0.20260709073340-5f600e0bd169

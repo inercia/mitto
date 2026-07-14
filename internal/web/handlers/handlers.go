@@ -169,6 +169,12 @@ type Deps struct {
 	// nil-guard.
 	BroadcastSessionRenamed func(sessionID, newName string)
 
+	// BroadcastSessionBeadsIssueUpdated mirrors
+	// Server.BroadcastSessionBeadsIssueUpdated: it notifies all connected clients
+	// that a session's linked beads issue ID changed. May be nil; callers must
+	// nil-guard.
+	BroadcastSessionBeadsIssueUpdated func(sessionID, beadsIssue string)
+
 	// BroadcastSessionPinned mirrors Server.BroadcastSessionPinned: it notifies
 	// all connected clients that a session's pinned state changed. May be nil;
 	// callers must nil-guard.
@@ -229,6 +235,12 @@ type Deps struct {
 	// to the "archived" stopped reason: it authoritatively stops a conversation's
 	// loop when the conversation is archived. May be nil; callers must nil-guard.
 	StopLoopForArchive func(sessionID string)
+
+	// ApplyOnCloseProcessors mirrors SessionManager.ApplyOnCloseProcessors: it runs
+	// the conversationClosed processor pipeline (fire-and-forget) when a session is
+	// archived. reason is a session.ArchiveReason string value. May be nil; callers
+	// must nil-guard.
+	ApplyOnCloseProcessors func(sessionID string, reason string)
 
 	// ErrSessionBusy and ErrLoopNotEnabled mirror the web package's
 	// loop-runner sentinel errors. They are exposed here so callback handlers

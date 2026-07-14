@@ -177,6 +177,10 @@ server-level and belong to the **folder**, not to any individual workspace:
 - `code` — three-letter badge code
 - `group` — Mitto-local organizational label (e.g. "development", "personal", "operations"); distinct from the `.mittorc` metadata `group` below
 - `auto_children` — child conversations to auto-create
+- `pinned` — when `true`, the folder is shown in the sidebar even if it has no
+  active or stored conversations. Folder-native; defaults to `false`; preserved
+  across `LoadWorkspaces()`/`SaveWorkspaces()` via `ApplyFolderDefaults` /
+  `extractFolderSettings`.
 - `beads` — folder-native beads integration settings (e.g. upstream task system)
 
 `folders.json` (in `$MITTO_DIR`, keyed by working directory) is the
@@ -223,6 +227,7 @@ via `ApplyFolderDefaults` after the three-way workspace loading step.
       "code": "MYP",
       "color": "#ff5500",
       "group": "development",
+      "pinned": true,
       "beads": { "upstream": "github" }
     }
   }

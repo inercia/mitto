@@ -5,36 +5,21 @@
  * Response as text and only then attempts JSON.parse, so a non-JSON body
  * (e.g. a plain-text 403 from the old localhost gate) never triggers Safari's
  * cryptic "The string did not match the expected pattern." error.
+ *
+ * Helpers are imported from ../utils/beads.js (framework-free module extracted
+ * in mitto-90f.3 E-1) so the tests exercise the real implementation instead of
+ * a local duplicate that used to drift out of sync.
  */
 
 import {
-  promptLoopMode,
-  promptLoopIsToggleable,
-  promptLoopDefaultOn,
-} from "../utils/prompts.js";
+  readBeadsResponse,
+  matchesSearch,
+  CLEANUP_PROGRESS_TOAST_INTERVAL_MS,
+} from "../utils/beads.js";
 
 // =============================================================================
 // readBeadsResponse logic
 // =============================================================================
-
-/**
- * Duplicated from BeadsView.js for testing (component imports window.preact
- * globals at module load, so the module itself cannot be imported under jsdom).
- * Keep this in sync with the implementation in BeadsView.js.
- */
-async function readBeadsResponse(res) {
-  const text = await res.text();
-  if (text) {
-    try {
-      return JSON.parse(text);
-    } catch (_e) {
-      // fall through to error object below
-    }
-  }
-  return {
-    error: (text && text.trim()) || `Request failed (HTTP ${res.status})`,
-  };
-}
 
 /**
  * Build a minimal mock fetch Response whose text() resolves to `body`.
@@ -111,39 +96,65 @@ describe("readBeadsResponse", () => {
       expect(data.error).toBe("Request failed (HTTP 504)");
     });
   });
+
+  // Coverage for the canonical nested error envelope produced by the Go web
+  // handlers (see rule 11-web-backend-errors.md): {error:{code,message,details}}.
+  // readBeadsResponse must flatten it to the {error:"<message>", code, stderr,
+  // details} shape the beads UI consumers already expect. The previous local
+  // duplicate of readBeadsResponse in this test file did NOT implement this
+  // branch, so this coverage was silently missing (mitto-90f.3 E-2).
+  describe("canonical nested error envelope is flattened", () => {
+    test("bd-failure envelope with stderr is flattened to flat shape", async () => {
+      const body = JSON.stringify({
+        error: {
+          code: "bd_failed",
+          message: "bd exited 1",
+          details: { stderr: "issue not found: mitto-xyz\n" },
+        },
+      });
+      const res = mockResponse(body, 500);
+      const data = await readBeadsResponse(res);
+      expect(data.error).toBe("bd exited 1");
+      expect(data.code).toBe("bd_failed");
+      expect(data.stderr).toBe("issue not found: mitto-xyz\n");
+      expect(data.details).toEqual({ stderr: "issue not found: mitto-xyz\n" });
+    });
+
+    test("validation-error envelope without stderr yields undefined stderr", async () => {
+      const body = JSON.stringify({
+        error: { code: "invalid_request", message: "title is required" },
+      });
+      const res = mockResponse(body, 400);
+      const data = await readBeadsResponse(res);
+      expect(data.error).toBe("title is required");
+      expect(data.code).toBe("invalid_request");
+      expect(data.stderr).toBeUndefined();
+      expect(data.details).toBeUndefined();
+    });
+
+    test("envelope with no message falls back to HTTP status text", async () => {
+      const body = JSON.stringify({ error: { code: "unknown" } });
+      const res = mockResponse(body, 503);
+      const data = await readBeadsResponse(res);
+      expect(data.error).toBe("Request failed (HTTP 503)");
+      expect(data.code).toBe("unknown");
+    });
+
+    test("flat {error:'<string>'} envelope is NOT rewritten (passthrough)", async () => {
+      // Regression guard: only object-valued .error triggers normalization;
+      // legacy string-valued .error must be returned untouched so existing
+      // consumers keep working.
+      const res = mockResponse('{"error":"bd not found"}', 200);
+      const data = await readBeadsResponse(res);
+      expect(data).toEqual({ error: "bd not found" });
+      expect(data.code).toBeUndefined();
+    });
+  });
 });
 
 // =============================================================================
 // matchesSearch logic — beads list search filtering
 // =============================================================================
-
-/**
- * Duplicated from BeadsView.js for testing (component imports window.preact
- * globals at module load, so the module itself cannot be imported under jsdom).
- * Keep this in sync with the implementation in BeadsView.js.
- */
-function matchesSearch(issue, search) {
-  if (!search) return true;
-  const tokens = search.toLowerCase().split(/\s+/).filter(Boolean);
-  if (tokens.length === 0) return true;
-  const id = (issue.id || "").toLowerCase();
-  const title = (issue.title || "").toLowerCase();
-  const owner = (issue.owner || "").toLowerCase();
-  const description = (issue.description || "").toLowerCase();
-  for (const t of tokens) {
-    if (
-      !(
-        id.includes(t) ||
-        title.includes(t) ||
-        owner.includes(t) ||
-        description.includes(t)
-      )
-    ) {
-      return false;
-    }
-  }
-  return true;
-}
 
 describe("matchesSearch", () => {
   const issue = {
@@ -414,14 +425,10 @@ describe("onLaunchPrompt call convention", () => {
 // Cleanup progress-toast throttle/replace logic
 // =============================================================================
 
-/**
- * Duplicated from BeadsView.js for testing (component imports window.preact
- * globals at module load, so the module itself cannot be imported under jsdom).
- * Keep this in sync with handleCleanup's start toast and the onProgress handler
- * in BeadsView.js. `now` is injected (rather than Date.now()) so the throttle
- * window can be exercised deterministically.
- */
-const CLEANUP_PROGRESS_TOAST_INTERVAL_MS = 3000;
+// The throttle harness mirrors handleCleanup's start toast and the onProgress
+// handler in BeadsView.js. `now` is injected (rather than Date.now()) so the
+// throttle window can be exercised deterministically. The interval constant
+// itself is imported from utils/beads.js (mitto-90f.3 E-3).
 
 function makeCleanupHarness({ workingDir = "/w" } = {}) {
   const refs = { cleanupToastId: null, lastCleanupToastAt: 0 };
@@ -658,79 +665,5 @@ describe("cleanup progress toast — terminal outcomes reset state", () => {
     expect(h.showToast.last().title).toBe("bd exploded");
     expect(h.refs.cleanupToastId).toBeNull();
     expect(h.fetchList.count).toBe(1);
-  });
-});
-
-// =============================================================================
-// beadsList per-item loop control — toggle vs locked badge vs nothing
-// (mitto-92x.4)
-// =============================================================================
-
-/**
- * Mirrors the IIFE used in BeadsView's beadsList dropdown item rendering: decides
- * whether to render an interactive toggle ("toggle"), a locked badge ("badge"), or
- * nothing ("none") for a given prompt + per-item toggle-state map. Uses the real
- * promptLoopMode/promptLoopDefaultOn helpers (not a duplicate).
- */
-function decideListPromptLoopControl(p, listLoopOn) {
-  const mode = promptLoopMode(p);
-  if (mode === "none") return { kind: "none" };
-  if (mode === "optional") {
-    const on =
-      listLoopOn[p.name] !== undefined
-        ? listLoopOn[p.name]
-        : promptLoopDefaultOn(p);
-    return { kind: "toggle", checked: on };
-  }
-  return { kind: "badge" };
-}
-
-describe("beadsList per-item loop control", () => {
-  test("mode: optional, default:false renders an unchecked toggle", () => {
-    const p = { name: "maybe", loop: { mode: "optional", default: false } };
-    expect(promptLoopIsToggleable(p)).toBe(true);
-    expect(decideListPromptLoopControl(p, {})).toEqual({
-      kind: "toggle",
-      checked: false,
-    });
-  });
-
-  test("mode: optional, default:true renders a checked toggle", () => {
-    const p = { name: "maybe", loop: { mode: "optional", default: true } };
-    expect(decideListPromptLoopControl(p, {})).toEqual({
-      kind: "toggle",
-      checked: true,
-    });
-  });
-
-  test("mode: optional, no default renders a checked toggle (default => true)", () => {
-    const p = { name: "maybe", loop: { mode: "optional" } };
-    expect(decideListPromptLoopControl(p, {})).toEqual({
-      kind: "toggle",
-      checked: true,
-    });
-  });
-
-  test("mode: optional honors the per-item listLoopOn override over the default", () => {
-    const p = { name: "maybe", loop: { mode: "optional", default: true } };
-    expect(
-      decideListPromptLoopControl(p, { maybe: false }),
-    ).toEqual({ kind: "toggle", checked: false });
-  });
-
-  test("mode: always renders the locked badge (no checkbox toggle)", () => {
-    const p = { name: "always-on", loop: { mode: "always" } };
-    expect(promptLoopIsToggleable(p)).toBe(false);
-    expect(decideListPromptLoopControl(p, {})).toEqual({ kind: "badge" });
-  });
-
-  test("loop block with no mode renders the locked badge (absent => always)", () => {
-    const p = { name: "legacy-loop", loop: { value: 1, unit: "hours" } };
-    expect(decideListPromptLoopControl(p, {})).toEqual({ kind: "badge" });
-  });
-
-  test("non-loop prompt renders neither toggle nor badge", () => {
-    const p = { name: "plain" };
-    expect(decideListPromptLoopControl(p, {})).toEqual({ kind: "none" });
   });
 });

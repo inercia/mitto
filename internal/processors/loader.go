@@ -280,10 +280,10 @@ func validateProcessor(proc *Processor, path string, docIndex int) error {
 
 	// Validate when.on
 	if proc.When.On == "" {
-		return errorf("processor 'when.on' is required (must be 'userPrompt', 'agentResponded', or 'agentIdle')")
+		return errorf("processor 'when.on' is required (must be 'userPrompt', 'agentResponded', 'agentIdle', or 'conversationClosed')")
 	}
-	if proc.When.On != PhaseUserPrompt && proc.When.On != PhaseAgentResponded && proc.When.On != PhaseAgentIdle {
-		return errorf("processor 'when.on' has invalid value %q; must be 'userPrompt', 'agentResponded', or 'agentIdle'", proc.When.On)
+	if proc.When.On != PhaseUserPrompt && proc.When.On != PhaseAgentResponded && proc.When.On != PhaseAgentIdle && proc.When.On != PhaseConversationClosed {
+		return errorf("processor 'when.on' has invalid value %q; must be 'userPrompt', 'agentResponded', 'agentIdle', or 'conversationClosed'", proc.When.On)
 	}
 
 	// Validate when.match
@@ -348,6 +348,38 @@ func validateProcessor(proc *Processor, path string, docIndex int) error {
 			if c.AfterInterval != "" && c.GetAfterIntervalDuration() == 0 {
 				return errorf("processor 'when.cadence.afterInterval' has invalid duration %q (use Go duration syntax, e.g. '5m', '1h')", c.AfterInterval)
 			}
+		}
+
+	case PhaseConversationClosed:
+		// Text mode is meaningless once the session is closed.
+		if proc.Text != "" {
+			return errorf("processor 'text' is not allowed for 'when.on: conversationClosed' (use command or prompt mode)")
+		}
+		// mutate/rerun/cadence/stopReasons/excludeOrigins have no meaning at close time.
+		if proc.Mutate != "" {
+			return errorf("processor 'mutate' is not allowed for 'when.on: conversationClosed'")
+		}
+		if proc.When.Rerun != nil {
+			return errorf("processor 'when.rerun' is not allowed for 'when.on: conversationClosed'")
+		}
+		if proc.When.Cadence != nil {
+			return errorf("processor 'when.cadence' is not allowed for 'when.on: conversationClosed'")
+		}
+		if len(proc.When.StopReasons) > 0 {
+			return errorf("processor 'when.stopReasons' is not allowed for 'when.on: conversationClosed'")
+		}
+		if len(proc.When.ExcludeOrigins) > 0 {
+			return errorf("processor 'when.excludeOrigins' is not allowed for 'when.on: conversationClosed'")
+		}
+		// match must be "all" — first/allExceptFirst have no meaning for a single close event.
+		if proc.When.Match != MatchAll {
+			return errorf("processor 'when.match' must be 'all' for 'when.on: conversationClosed', got %q", proc.When.Match)
+		}
+		// Post-close side effects (notify/actionButtons/userData) cannot be delivered
+		// because the session is no longer active. Transform/prepend/append have no
+		// message to modify. Only 'discard' is allowed (default when omitted).
+		if proc.Output != "" && proc.Output != OutputDiscard {
+			return errorf("processor 'output: %s' is not allowed for 'when.on: conversationClosed'; only 'discard' (or omit) is supported", proc.Output)
 		}
 
 	case PhaseUserPrompt:

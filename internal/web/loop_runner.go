@@ -26,6 +26,13 @@ const (
 	// failures after which the loop config is auto-paused (disabled).
 	MaxPromptResolveFailures = 3
 
+	// MaxLoopContextWindowFailures is the number of consecutive `augmentTooLarge`
+	// (HTTP 413 / context window exceeded) failures after which the loop is
+	// auto-paused with StoppedReasonContextWindowExceeded. The loop is retried
+	// with exponential backoff for hits 1..N-1, then stopped so it no longer
+	// re-fires against a wedged context (mitto-7jn).
+	MaxLoopContextWindowFailures = 3
+
 	// loopScheduleBackoffBase is the initial delay applied to NextScheduledAt
 	// after the first scheduled loop delivery failure. It doubles with each
 	// consecutive failure, capped at loopScheduleBackoffCap. This prevents a
@@ -35,6 +42,15 @@ const (
 	// loopScheduleBackoffCap is the maximum backoff delay for scheduled
 	// loop delivery failures.
 	loopScheduleBackoffCap = 15 * time.Minute
+
+	// DefaultAutoUnarchiveRetryInterval is the default per-conversation retry
+	// cadence for auto-unarchiving loop conversations archived due to broken ACP.
+	DefaultAutoUnarchiveRetryInterval = 1 * time.Hour
+
+	// DefaultAutoUnarchiveStaggerInterval is the default global minimum gap
+	// between auto-unarchive attempts, preventing a retry storm when many
+	// sessions become due at once.
+	DefaultAutoUnarchiveStaggerInterval = 10 * time.Minute
 )
 
 // loopScheduleBackoff returns the delay to defer the next scheduled run after
@@ -65,6 +81,12 @@ var (
 	ErrLoopNotEnabled             = errors.New("loop is not enabled for this session")
 	ErrSessionBusy                = errors.New("session is currently processing a prompt")
 	ErrPromptResolveFailed        = errors.New("loop prompt could not be resolved")
+	// ErrWorkspaceBusy signals that the workspace/ACP-server pair already has the
+	// configured maximum number of loop prompts in flight. The scheduled loop is
+	// skipped for this poll cycle and retried on the next tick (no schedule
+	// advance, no failure backoff). Manual "Run Now" (forced) bypasses this cap.
+	// See mitto-61z.
+	ErrWorkspaceBusy = errors.New("workspace has reached the loop concurrency cap")
 )
 
 // LoopStartedCallback is called when a loop prompt is delivered.
@@ -75,6 +97,12 @@ type LoopStartedCallback func(sessionID, sessionName string)
 // AutoArchiveCallback is called when the loop runner auto-archives a session.
 // It should handle broadcasting the archive state change and stopping ACP.
 type AutoArchiveCallback func(sessionID string)
+
+// AutoUnarchiveFunc is called when the loop runner attempts to auto-unarchive
+// a loop conversation previously archived due to broken ACP communication.
+// It should perform the same steps as a manual unarchive (resume ACP, restore
+// the loop, and broadcast the state changes) and return the resume error, if any.
+type AutoUnarchiveFunc func(sessionID string) error
 
 // LoopAutoStoppedCallback is called when a loop conversation is auto-stopped after reaching max iterations.
 // It should broadcast the updated loop state to all WebSocket clients.
@@ -122,6 +150,19 @@ type LoopRunner struct {
 	// autoArchiveAfter, when > 0, causes sessions inactive for this long to be archived.
 	autoArchiveAfter time.Duration
 
+	// onAutoUnarchive is called when the loop runner attempts to auto-unarchive a loop
+	// conversation archived due to broken ACP communication. Guarded implicitly: set
+	// once via SetOnAutoUnarchive before Start(), read without locking elsewhere.
+	onAutoUnarchive AutoUnarchiveFunc
+
+	// autoUnarchiveEnabled, autoUnarchiveRetryInterval, autoUnarchiveStagger and
+	// lastAutoUnarchiveAttempt configure and track the auto-unarchive recovery
+	// scheduler. Guarded by mu.
+	autoUnarchiveEnabled       bool
+	autoUnarchiveRetryInterval time.Duration
+	autoUnarchiveStagger       time.Duration
+	lastAutoUnarchiveAttempt   time.Time
+
 	// archiveRetentionPeriod, when non-empty, causes archived sessions older than this
 	// to be permanently deleted during each poll cycle (not just at startup).
 	archiveRetentionPeriod string
@@ -156,6 +197,14 @@ type LoopRunner struct {
 	// consecutiveFailures, which tracks resume failures and triggers auto-archive.
 	scheduleBackoffFailures   map[string]int
 	scheduleBackoffFailuresMu sync.Mutex
+
+	// contextWindowFailures tracks consecutive `augmentTooLarge` (HTTP 413 /
+	// context window exceeded) delivery failures. After MaxLoopContextWindowFailures
+	// consecutive hits the loop is auto-paused with
+	// StoppedReasonContextWindowExceeded (mitto-7jn). Reset on the next successful
+	// delivery.
+	contextWindowFailures   map[string]int
+	contextWindowFailuresMu sync.Mutex
 
 	// completionTimers holds the armed one-shot timers for onCompletion loop
 	// conversations, keyed by session ID. Arming a new timer replaces (stops) any
@@ -198,6 +247,17 @@ type LoopRunner struct {
 	tasksLastTouchedIDs  map[string]map[string]struct{}
 	tasksNoProgressMu    sync.Mutex
 
+	// loopWorkspaceConcurrency caps how many loop prompts may be in flight for a
+	// single WorkingDir + ACPServer pair. 0 disables the cap. Default is set by
+	// config (see DefaultLoopWorkspaceConcurrency). Manual "Run Now" (forced)
+	// deliveries bypass the cap unconditionally. See mitto-61z.
+	loopWorkspaceConcurrency int
+
+	// workspaceInFlight counts in-flight loop prompts per workspace key
+	// (WorkingDir + "\x00" + ACPServer). Guarded by workspaceInFlightMu.
+	workspaceInFlight   map[string]int
+	workspaceInFlightMu sync.Mutex
+
 	mu      sync.Mutex
 	running bool
 	stopCh  chan struct{}
@@ -214,22 +274,28 @@ func NewLoopRunner(store *session.Store, sm *conversation.SessionManager, logger
 		}
 	}
 	return &LoopRunner{
-		store:                     store,
-		sessionManager:            sm,
-		logger:                    logger,
-		pollInterval:              DefaultPollInterval,
-		maxLoopIterations:         config.DefaultMaxLoopIterations,
-		minCompletionDelaySeconds: config.DefaultMinLoopCompletionDelaySeconds,
-		consecutiveFailures:       make(map[string]int),
-		promptResolveFailures:     make(map[string]int),
-		scheduleBackoffFailures:   make(map[string]int),
-		completionTimers:          make(map[string]*time.Timer),
-		tasksEvaluator:            evaluator,
-		minTasksCooldownSeconds:   DefaultMinLoopTasksCooldownSeconds,
-		tasksQuiescenceWindow:     tasksDefaultQuiescenceWindow,
-		tasksRebaseTimers:         make(map[string]*time.Timer),
-		tasksNoProgressCount:      make(map[string]int),
-		tasksLastTouchedIDs:       make(map[string]map[string]struct{}),
+		store:                      store,
+		sessionManager:             sm,
+		logger:                     logger,
+		pollInterval:               DefaultPollInterval,
+		maxLoopIterations:          config.DefaultMaxLoopIterations,
+		minCompletionDelaySeconds:  config.DefaultMinLoopCompletionDelaySeconds,
+		consecutiveFailures:        make(map[string]int),
+		promptResolveFailures:      make(map[string]int),
+		scheduleBackoffFailures:    make(map[string]int),
+		contextWindowFailures:      make(map[string]int),
+		completionTimers:           make(map[string]*time.Timer),
+		tasksEvaluator:             evaluator,
+		minTasksCooldownSeconds:    DefaultMinLoopTasksCooldownSeconds,
+		tasksQuiescenceWindow:      tasksDefaultQuiescenceWindow,
+		tasksRebaseTimers:          make(map[string]*time.Timer),
+		tasksNoProgressCount:       make(map[string]int),
+		tasksLastTouchedIDs:        make(map[string]map[string]struct{}),
+		autoUnarchiveEnabled:       true,
+		autoUnarchiveRetryInterval: DefaultAutoUnarchiveRetryInterval,
+		autoUnarchiveStagger:       DefaultAutoUnarchiveStaggerInterval,
+		loopWorkspaceConcurrency:   config.DefaultLoopWorkspaceConcurrency,
+		workspaceInFlight:          make(map[string]int),
 	}
 }
 
@@ -270,6 +336,27 @@ func (r *LoopRunner) SetOnAutoArchive(callback AutoArchiveCallback) {
 	r.onAutoArchive = callback
 }
 
+// SetOnAutoUnarchive sets the callback invoked when the loop runner attempts
+// to auto-unarchive a loop conversation archived due to broken ACP communication.
+func (r *LoopRunner) SetOnAutoUnarchive(callback AutoUnarchiveFunc) {
+	r.onAutoUnarchive = callback
+}
+
+// SetAutoUnarchiveRecovery configures the auto-unarchive recovery scheduler.
+// If retryInterval or stagger is <= 0, the current (or default) value is kept,
+// allowing tests to override only what they need.
+func (r *LoopRunner) SetAutoUnarchiveRecovery(enabled bool, retryInterval, stagger time.Duration) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.autoUnarchiveEnabled = enabled
+	if retryInterval > 0 {
+		r.autoUnarchiveRetryInterval = retryInterval
+	}
+	if stagger > 0 {
+		r.autoUnarchiveStagger = stagger
+	}
+}
+
 // SetOnLoopAutoStopped sets the callback for when a loop conversation is auto-stopped after reaching max iterations.
 func (r *LoopRunner) SetOnLoopAutoStopped(callback LoopAutoStoppedCallback) {
 	r.onLoopAutoStopped = callback
@@ -295,6 +382,71 @@ func (r *LoopRunner) SetMaxLoopIterations(n int) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.maxLoopIterations = n
+}
+
+// SetLoopWorkspaceConcurrency sets the maximum number of scheduled loop
+// prompts that may be in flight simultaneously per WorkingDir + ACPServer
+// pair. 0 disables the cap. Negative values are clamped to 0. Manual "Run
+// Now" (forced) deliveries always bypass this cap. See mitto-61z.
+func (r *LoopRunner) SetLoopWorkspaceConcurrency(n int) {
+	if n < 0 {
+		n = 0
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.loopWorkspaceConcurrency = n
+}
+
+// workspaceKey returns the workspace concurrency key for a session's metadata.
+// The key uniquely identifies the shared ACP process boundary (WorkingDir +
+// ACPServer). NUL is used as a separator because it cannot appear in path
+// or agent-id strings.
+func workspaceKey(workingDir, acpServer string) string {
+	return workingDir + "\x00" + acpServer
+}
+
+// tryReserveWorkspaceSlot atomically reserves a loop-dispatch slot for the
+// given workspace key. Returns true if the slot was reserved (caller must
+// eventually call releaseWorkspaceSlot). Returns false if the workspace is
+// already at its concurrency cap. Returns true unconditionally when the cap
+// is 0 (disabled) — no counter increment is performed in that case.
+func (r *LoopRunner) tryReserveWorkspaceSlot(key string) bool {
+	r.mu.Lock()
+	cap := r.loopWorkspaceConcurrency
+	r.mu.Unlock()
+	if cap <= 0 {
+		return true
+	}
+	r.workspaceInFlightMu.Lock()
+	defer r.workspaceInFlightMu.Unlock()
+	if r.workspaceInFlight[key] >= cap {
+		return false
+	}
+	r.workspaceInFlight[key]++
+	return true
+}
+
+// releaseWorkspaceSlot releases a previously reserved slot for the given
+// workspace key. Safe to call when the cap is disabled (0): it is a no-op
+// if the counter is already zero. Never goes negative.
+func (r *LoopRunner) releaseWorkspaceSlot(key string) {
+	r.workspaceInFlightMu.Lock()
+	defer r.workspaceInFlightMu.Unlock()
+	if n, ok := r.workspaceInFlight[key]; ok && n > 0 {
+		if n == 1 {
+			delete(r.workspaceInFlight, key)
+		} else {
+			r.workspaceInFlight[key] = n - 1
+		}
+	}
+}
+
+// workspaceInFlightCount returns the current in-flight count for a workspace
+// key. Exported to the package for tests.
+func (r *LoopRunner) workspaceInFlightCount(key string) int {
+	r.workspaceInFlightMu.Lock()
+	defer r.workspaceInFlightMu.Unlock()
+	return r.workspaceInFlight[key]
 }
 
 // SetMinLoopCompletionDelaySeconds sets the global floor for the on-completion
@@ -455,7 +607,7 @@ func (r *LoopRunner) TriggerNow(sessionID string, resetTimer bool) error {
 	}
 
 	// Deliver the prompt
-	return r.deliverPrompt(bs, meta.Name, loop, loopStore, resetTimer, true)
+	return r.deliverPrompt(bs, meta, loop, loopStore, resetTimer, true)
 }
 
 // OnConversationIdle is invoked when a session's agent has stopped and the session
@@ -861,6 +1013,9 @@ func (r *LoopRunner) RunOnce() (delivered, skipped, errored int) {
 	// Auto-archive inactive sessions
 	r.checkAutoArchive(sessions, now)
 
+	// Retry auto-unarchiving loop conversations archived due to broken ACP
+	r.checkAutoUnarchiveRecovery(sessions, now)
+
 	// Clean up archived sessions past retention
 	r.checkArchiveCleanup()
 
@@ -1154,7 +1309,19 @@ func (r *LoopRunner) checkSession(meta session.Metadata, now time.Time) (deliver
 	}
 
 	// Deliver the prompt — normal scheduled runs always reset the timer.
-	if err := r.deliverPrompt(bs, meta.Name, loop, loopStore, true, false); err != nil {
+	if err := r.deliverPrompt(bs, meta, loop, loopStore, true, false); err != nil {
+		if errors.Is(err, ErrWorkspaceBusy) {
+			// A sibling loop in the same workspace is in flight. Skip this
+			// session for this poll cycle — do not advance NextScheduledAt
+			// and do not apply the failure backoff. The next poll (1 min)
+			// will retry (mitto-61z).
+			if r.logger != nil {
+				r.logger.Debug("Skipping loop prompt - workspace concurrency cap reached",
+					"session_id", sessionID,
+					"session_name", meta.Name)
+			}
+			return 0, 1, 0
+		}
 		if errors.Is(err, ErrPromptResolveFailed) {
 			r.handlePromptResolveFailure(sessionID, meta.Name, loop, loopStore, err)
 		} else {
@@ -1269,20 +1436,75 @@ func (r *LoopRunner) handlePromptResolveFailure(sessionID, sessionName string, l
 	r.promptResolveFailuresMu.Unlock()
 }
 
+// handleContextWindowFailure processes a context-window (HTTP 413 / augmentTooLarge)
+// delivery failure for a scheduled loop. It bumps the per-session counter; when the
+// counter reaches MaxLoopContextWindowFailures the loop is auto-paused with
+// StoppedReasonContextWindowExceeded and the counter is cleared. Returns true when
+// the loop was auto-paused (caller must skip normal backoff); returns false when the
+// failure was recorded but the counter is still below threshold (caller should
+// proceed with the regular schedule backoff and log the specific cause).
+// The onLoopAutoStopped callback is invoked when the auto-pause succeeds so clients
+// receive a broadcast update, mirroring the max-iterations auto-stop.
+func (r *LoopRunner) handleContextWindowFailure(sessionID, sessionName string, loopStore *session.LoopStore) bool {
+	r.contextWindowFailuresMu.Lock()
+	r.contextWindowFailures[sessionID]++
+	failures := r.contextWindowFailures[sessionID]
+	r.contextWindowFailuresMu.Unlock()
+
+	if failures < MaxLoopContextWindowFailures {
+		if r.logger != nil {
+			r.logger.Warn("Loop prompt failed with context-window exceeded; will auto-pause after repeated failures",
+				"session_id", sessionID,
+				"session_name", sessionName,
+				"consecutive_failures", failures,
+				"max_failures", MaxLoopContextWindowFailures)
+		}
+		return false
+	}
+
+	if stopErr := loopStore.MarkStopped(session.StoppedReasonContextWindowExceeded); stopErr != nil {
+		if r.logger != nil {
+			r.logger.Warn("Failed to auto-pause loop after repeated context-window failures",
+				"session_id", sessionID,
+				"session_name", sessionName,
+				"error", stopErr)
+		}
+		// Do not clear the counter so a subsequent retry can try again.
+		return false
+	}
+	if r.logger != nil {
+		r.logger.Warn("Auto-paused loop conversation after repeated context-window failures",
+			"session_id", sessionID,
+			"session_name", sessionName,
+			"consecutive_failures", failures,
+			"max_failures", MaxLoopContextWindowFailures)
+	}
+	if r.onLoopAutoStopped != nil {
+		if final, gErr := loopStore.Get(); gErr == nil {
+			r.onLoopAutoStopped(sessionID, final)
+		}
+	}
+	r.contextWindowFailuresMu.Lock()
+	delete(r.contextWindowFailures, sessionID)
+	r.contextWindowFailuresMu.Unlock()
+	return true
+}
+
 // deliverPrompt sends the loop prompt to the session.
 // resetTimer controls whether RecordSent() is called when the prompt completes:
 //   - true  → schedule advances from now (normal behaviour)
 //   - false → schedule is left untouched (manual "run now" without resetting the timer)
-func (r *LoopRunner) deliverPrompt(bs *conversation.BackgroundSession, sessionName string, loop *session.LoopPrompt, loopStore *session.LoopStore, resetTimer bool, forced bool) error {
+//
+// sessionMeta carries the session's workspace/ACP-server pair used to enforce
+// the per-workspace loop-dispatch concurrency cap (mitto-61z). When forced is
+// true (manual "Run Now") the cap is bypassed and no slot is reserved.
+func (r *LoopRunner) deliverPrompt(bs *conversation.BackgroundSession, sessionMeta session.Metadata, loop *session.LoopPrompt, loopStore *session.LoopStore, resetTimer bool, forced bool) error {
 	sessionID := bs.GetSessionID()
+	sessionName := sessionMeta.Name
 
 	// Resolve prompt text from name if needed
 	promptText := loop.Prompt
 	if loop.PromptName != "" && r.promptResolver != nil {
-		sessionMeta, err := r.store.GetMetadata(sessionID)
-		if err != nil {
-			return fmt.Errorf("failed to get session metadata for prompt resolution: %w", err)
-		}
 		resolved, err := r.promptResolver(loop.PromptName, sessionMeta.WorkingDir)
 		if err != nil {
 			return fmt.Errorf("%w: %q: %v", ErrPromptResolveFailed, loop.PromptName, err)
@@ -1304,6 +1526,36 @@ func (r *LoopRunner) deliverPrompt(bs *conversation.BackgroundSession, sessionNa
 			"prompt_preview", truncatePrompt(promptText, 100))
 	}
 
+	// Per-workspace loop-dispatch concurrency guard (mitto-61z). Forced ("Run
+	// Now") deliveries always bypass the cap. For scheduled deliveries we
+	// reserve a slot before PromptWithMeta and release it once the prompt
+	// finishes (OnComplete) or fails to dispatch synchronously.
+	wsKey := workspaceKey(sessionMeta.WorkingDir, sessionMeta.ACPServer)
+	slotReserved := false
+	if !forced {
+		if !r.tryReserveWorkspaceSlot(wsKey) {
+			if r.logger != nil {
+				r.logger.Debug("Skipping loop prompt - workspace concurrency cap reached",
+					"session_id", sessionID,
+					"session_name", sessionName,
+					"working_dir", sessionMeta.WorkingDir,
+					"acp_server", sessionMeta.ACPServer)
+			}
+			return ErrWorkspaceBusy
+		}
+		slotReserved = true
+	}
+
+	// releaseOnce ensures the workspace slot is released at most once, whether
+	// via OnComplete or the synchronous PromptWithMeta error path below.
+	var releaseOnce sync.Once
+	releaseSlot := func() {
+		if !slotReserved {
+			return
+		}
+		releaseOnce.Do(func() { r.releaseWorkspaceSlot(wsKey) })
+	}
+
 	// Use OnComplete callback to defer RecordSent until the prompt actually finishes.
 	// PromptWithMeta is async — it returns nil immediately. Without OnComplete,
 	// RecordSent would advance the schedule even if the prompt later fails
@@ -1323,6 +1575,9 @@ func (r *LoopRunner) deliverPrompt(bs *conversation.BackgroundSession, sessionNa
 		MaxIterations:   loop.MaxIterations,
 		FreshContext:    loop.FreshContext,
 		OnComplete: func(err error) {
+			// Always release the workspace slot when the prompt terminates,
+			// regardless of success or failure (mitto-61z).
+			defer releaseSlot()
 			if err != nil {
 				// Scheduled triggers: back off NextScheduledAt so a transient transport
 				// failure (e.g. -32603) does not re-fire the same prompt on every poll
@@ -1330,6 +1585,25 @@ func (r *LoopRunner) deliverPrompt(bs *conversation.BackgroundSession, sessionNa
 				// NextScheduledAt is nil) and manual "keep schedule" runs (resetTimer=false)
 				// or forced one-shots must not push out the regular schedule.
 				if resetTimer && !forced && !loop.IsOnCompletion() {
+					// Context-window (HTTP 413 / augmentTooLarge) auto-pause (mitto-7jn):
+					// repeatedly re-firing the loop against a context that has outgrown the
+					// model window is pure noise. After MaxLoopContextWindowFailures consecutive
+					// hits we auto-pause the loop with StoppedReasonContextWindowExceeded so
+					// the user is told to trim/archive rather than watching endless backoff.
+					if conversation.IsContextTooLargeError(err) {
+						if r.handleContextWindowFailure(sessionID, sessionName, loopStore) {
+							// Loop was auto-paused — broadcast the stopped state.
+							if r.onLoopUpdated != nil {
+								if updated, gErr := loopStore.Get(); gErr == nil && updated != nil {
+									r.onLoopUpdated(sessionID, updated)
+								}
+							}
+							return
+						}
+						// Under threshold — fall through to the normal schedule backoff so the
+						// loop keeps ticking (with backoff) until the auto-pause threshold is hit.
+					}
+
 					r.scheduleBackoffFailuresMu.Lock()
 					r.scheduleBackoffFailures[sessionID]++
 					failures := r.scheduleBackoffFailures[sessionID]
@@ -1377,6 +1651,11 @@ func (r *LoopRunner) deliverPrompt(bs *conversation.BackgroundSession, sessionNa
 			delete(r.scheduleBackoffFailures, sessionID)
 			r.scheduleBackoffFailuresMu.Unlock()
 
+			// Also clear context-window failure counter on any successful delivery (mitto-7jn).
+			r.contextWindowFailuresMu.Lock()
+			delete(r.contextWindowFailures, sessionID)
+			r.contextWindowFailuresMu.Unlock()
+
 			if !resetTimer {
 				// Manual run with "keep schedule" — leave NextScheduledAt unchanged.
 				if r.logger != nil {
@@ -1410,9 +1689,17 @@ func (r *LoopRunner) deliverPrompt(bs *conversation.BackgroundSession, sessionNa
 									"session_id", sessionID,
 									"max_iterations", updated.MaxIterations,
 									"iteration_count", updated.IterationCount)
+							} else if effective == config.GlobalMaxLoopIterations {
+								// Hit the hardcoded absolute backstop — worth a WARN.
+								r.logger.Warn("Loop conversation reached hardcoded iteration safeguard, auto-stopping",
+									"session_id", sessionID,
+									"iteration_count", updated.IterationCount,
+									"effective_cap", effective,
+									"config_cap", cfgCap,
+									"backstop", config.GlobalMaxLoopIterations)
 							} else {
-								// Stopped by the global/config backstop rather than the per-prompt cap.
-								r.logger.Warn("Loop conversation reached global iteration safeguard, auto-stopping",
+								// Hit the config-level default cap — normal cap-hit, log at INFO.
+								r.logger.Info("Loop conversation reached configured iteration cap, auto-stopping",
 									"session_id", sessionID,
 									"iteration_count", updated.IterationCount,
 									"effective_cap", effective,
@@ -1455,6 +1742,9 @@ func (r *LoopRunner) deliverPrompt(bs *conversation.BackgroundSession, sessionNa
 	}
 
 	if err := bs.PromptWithMeta(promptText, meta); err != nil {
+		// Dispatch failed synchronously — OnComplete will not fire, so we
+		// must release the workspace slot here (mitto-61z).
+		releaseSlot()
 		return err
 	}
 
@@ -1592,6 +1882,118 @@ func (r *LoopRunner) checkAutoArchive(sessions []session.Metadata, now time.Time
 				"session_id", sessionID,
 				"session_name", meta.Name)
 		}
+	}
+}
+
+// autoUnarchiveEligible reports whether meta qualifies for auto-unarchive recovery
+// and, if so, returns the anchor timestamp its retry cadence is computed from.
+// A session is eligible iff it is archived with ArchiveReasonACPFailures and has a
+// loop configured (loop.json present). The anchor is AutoUnarchiveLastAttemptAt if
+// non-zero, else ArchivedAt.
+func (r *LoopRunner) autoUnarchiveEligible(meta session.Metadata) (time.Time, bool) {
+	if !meta.Archived || meta.ArchiveReason != session.ArchiveReasonACPFailures {
+		return time.Time{}, false
+	}
+
+	_, err := r.store.Loop(meta.SessionID).Get()
+	if err != nil {
+		if err != session.ErrLoopNotFound && r.logger != nil {
+			r.logger.Error("Failed to read loop config during auto-unarchive check",
+				"session_id", meta.SessionID, "error", err)
+		}
+		return time.Time{}, false
+	}
+
+	anchor := meta.ArchivedAt
+	if !meta.AutoUnarchiveLastAttemptAt.IsZero() {
+		anchor = meta.AutoUnarchiveLastAttemptAt
+	}
+	return anchor, true
+}
+
+// checkAutoUnarchiveRecovery retries auto-unarchiving loop conversations archived
+// due to broken ACP communication (session.ArchiveReasonACPFailures), on a slow,
+// staggered, restart-durable schedule. At most one session is attempted per poll.
+func (r *LoopRunner) checkAutoUnarchiveRecovery(sessions []session.Metadata, now time.Time) {
+	r.mu.Lock()
+	enabled := r.autoUnarchiveEnabled
+	retryInterval := r.autoUnarchiveRetryInterval
+	stagger := r.autoUnarchiveStagger
+	lastAttempt := r.lastAutoUnarchiveAttempt
+	r.mu.Unlock()
+
+	if !enabled || r.onAutoUnarchive == nil {
+		return
+	}
+
+	if !lastAttempt.IsZero() && now.Sub(lastAttempt) < stagger {
+		return
+	}
+
+	var mostOverdue *session.Metadata
+	var mostOverdueAnchor time.Time
+	for i := range sessions {
+		anchor, ok := r.autoUnarchiveEligible(sessions[i])
+		if !ok || now.Sub(anchor) < retryInterval {
+			continue
+		}
+		if mostOverdue == nil || anchor.Before(mostOverdueAnchor) {
+			mostOverdue = &sessions[i]
+			mostOverdueAnchor = anchor
+		}
+	}
+
+	if mostOverdue != nil {
+		r.attemptAutoUnarchive(*mostOverdue, now)
+	}
+}
+
+// attemptAutoUnarchive attempts to auto-unarchive a single loop conversation
+// archived due to broken ACP communication. It persists the attempt timestamp
+// before calling the callback (so the cadence survives a crash mid-attempt),
+// and clears it only on success (resetting the cadence for the next failure).
+func (r *LoopRunner) attemptAutoUnarchive(meta session.Metadata, now time.Time) {
+	sessionID := meta.SessionID
+
+	if err := r.store.UpdateMetadata(sessionID, func(m *session.Metadata) {
+		m.AutoUnarchiveLastAttemptAt = now
+	}); err != nil {
+		if r.logger != nil {
+			r.logger.Error("Failed to persist auto-unarchive attempt timestamp",
+				"session_id", sessionID, "error", err)
+		}
+		return
+	}
+
+	r.mu.Lock()
+	r.lastAutoUnarchiveAttempt = now
+	r.mu.Unlock()
+
+	if r.logger != nil {
+		r.logger.Info("Attempting auto-unarchive of loop conversation archived due to broken ACP",
+			"session_id", sessionID, "session_name", meta.Name)
+	}
+
+	err := r.onAutoUnarchive(sessionID)
+	if err != nil {
+		if r.logger != nil {
+			r.logger.Warn("Auto-unarchive attempt failed, will retry later",
+				"session_id", sessionID, "error", err)
+		}
+		return
+	}
+
+	if clearErr := r.store.UpdateMetadata(sessionID, func(m *session.Metadata) {
+		m.AutoUnarchiveLastAttemptAt = time.Time{}
+	}); clearErr != nil {
+		if r.logger != nil {
+			r.logger.Error("Failed to clear auto-unarchive attempt timestamp after success",
+				"session_id", sessionID, "error", clearErr)
+		}
+	}
+
+	if r.logger != nil {
+		r.logger.Info("Auto-unarchived loop conversation successfully", "session_id", sessionID)
 	}
 }
 

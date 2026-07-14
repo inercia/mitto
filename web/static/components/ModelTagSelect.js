@@ -18,7 +18,12 @@ const HINT_VALUE = "__hint__";
  *   profiles {Array}    — model profiles from config.models: {name, criteria, tags}
  *   onChange {function} — called with the newly selected tag ("" = none)
  */
-export function ModelTagSelect({ value, profiles = [], onChange }) {
+export function ModelTagSelect({
+  value,
+  profiles = [],
+  onChange,
+  className = "",
+}) {
   const handleChange = (e) => {
     const v = e.target.value;
     if (v === HINT_VALUE) return;
@@ -46,7 +51,7 @@ export function ModelTagSelect({ value, profiles = [], onChange }) {
     <select
       value=${value || ""}
       onInput=${handleChange}
-      class="select select-sm"
+      class=${`select select-sm${className ? ` ${className}` : ""}`}
     >
       <option value="">-- None --</option>
       ${tags.length === 0 &&

@@ -47,6 +47,9 @@ type Config struct {
 
 	AutoApprove bool
 	Debug       bool
+	// BeadsCache, when true, wraps the beads.Client with beads.NewCachingClient
+	// to memoise read-only bd invocations. Default false; experimental (mitto-is2).
+	BeadsCache bool
 	// MittoConfig is the full Mitto configuration (used for /api/config endpoint)
 	MittoConfig *configPkg.Config
 	// StaticDir is an optional filesystem directory to serve static files from.
@@ -211,9 +214,26 @@ type Server struct {
 	// Caches session IDs known to not exist, preventing repeated filesystem lookups.
 	negativeSessionCache *NegativeSessionCache
 
+	// interactiveResumeSem bounds concurrent interactive ResumeSession calls
+	// issued from the cold-start WebSocket fan-out (mitto-54k.1). The
+	// user-focused ensure_resumed path bypasses this bound so the session the
+	// user is actively looking at resumes first.
+	interactiveResumeSem *resumeSemaphore
+
 	// beads is the injectable Client for bd operations.
 	// When nil, beadsClient() falls back to beads.NewClient() (real bd binary).
 	beads beads.Client
+
+	// beadsCache is non-nil only when Config.BeadsCache is true; points to the
+	// same instance held by s.beads (which is typed as the interface). Later
+	// wired to BeadsWatcher (mitto-is2.3) and writer paths (mitto-is2.4).
+	beadsCache *beads.CachingClient
+
+	// beadsCacheSubscriber is the identity-stable BeadsWatcher subscriber that
+	// forwards external-change events to s.beadsCache.Invalidate. Non-nil iff
+	// s.beadsCache is non-nil; the pointer is reused across Subscribe/Unsubscribe
+	// so the watcher can look it up by identity. mitto-is2.3.
+	beadsCacheSubscriber *beadsCacheWatcherSubscriber
 
 	// Health monitor for external address reachability checking
 	healthMonitor          *hooks.HealthMonitor
@@ -233,6 +253,16 @@ type Server struct {
 	// is emitted, followers are suppressed.
 	recentStartFailsMu sync.Mutex
 	recentStartFails   map[string]time.Time
+
+	// recentStarts deduplicates BroadcastACPStarted calls for the same session.
+	// Multiple goroutines that coalesce on a single resume operation each broadcast
+	// independently; only the first per session per window is emitted.
+	recentStartsMu sync.Mutex
+	recentStarts   map[string]time.Time
+
+	// recentStops deduplicates BroadcastACPStopped calls the same way.
+	recentStopsMu sync.Mutex
+	recentStops   map[string]time.Time
 
 	// promptMigrationMu serializes legacy .md → .prompt.yaml prompt migration so
 	// concurrent workspace-prompts fetches don't race writing the same files and
@@ -264,7 +294,7 @@ func NewServer(config Config) (*Server, error) {
 	}
 
 	// Run data migrations before any other operations
-	migrationCtx := buildMigrationContext(config.MittoConfig)
+	migrationCtx := session.MigrationContextFromConfig(config.MittoConfig)
 	if err := store.RunMigrations(migrationCtx); err != nil {
 		logger.Warn("Failed to run migrations", "error", err)
 		// Continue anyway - migrations are best-effort
@@ -367,6 +397,18 @@ func NewServer(config Config) (*Server, error) {
 			conversation.SetPromptInactivityTimeout(d)
 		} else {
 			conversation.SetPromptInactivityTimeout(0)
+		}
+	}
+
+	// Apply the MCP-init extended budget from settings (mitto-8ul.1). Cold session/new
+	// calls with MCP servers use this widened deadline instead of the normal 25s, so
+	// agents like Auggie that block session/new until MCP init completes (up to ~225s)
+	// no longer fail with "context deadline exceeded" on first use.
+	if config.MittoConfig != nil && config.MittoConfig.Session != nil {
+		if d, enabled := config.MittoConfig.Session.ParseMcpInitTimeout(); enabled {
+			acpProcessMgr.UpdateMCPInitTimeout(d)
+		} else {
+			acpProcessMgr.UpdateMCPInitTimeout(0)
 		}
 	}
 
@@ -598,6 +640,77 @@ func NewServer(config Config) (*Server, error) {
 			}
 			return out.Servers, nil
 		}
+
+		// Adaptive pre-warming pin re-evaluation (mitto-mw0): each MCP backoff
+		// round asks the process manager to re-run its health verdict for the
+		// workspace so pin/unpin decisions ride the same schedule as MCP
+		// reachability probes (no separate timer required). The bare wrapper
+		// keeps the auxiliary package free of the acpproc dependency.
+		auxiliaryManager.PrewarmPinReevaluator = func(workspaceUUID string) {
+			acpProcessMgr.ReevaluatePrewarmPin(workspaceUUID, logger)
+		}
+
+		// Wire per-agent stderr patterns resolver (mitto-k6h). Given an ACP server
+		// name it resolves the ACP server → agent metadata → StderrPatterns and
+		// compiles them once. Results are cached per ACP server name so
+		// GetOrCreateProcess does not re-parse metadata.yaml on every call. The
+		// hardcoded stderrCrashPatterns baseline in internal/conversation still
+		// applies unconditionally — this only adds per-agent extensions.
+		stderrCache := newStderrPatternsCache()
+		compileFor := func(acpServer string) *conversation.CompiledStderrPatterns {
+			if acpServer == "" {
+				return nil
+			}
+			if cached, ok := stderrCache.get(acpServer); ok {
+				return cached
+			}
+			acpType := ""
+			if config.MittoConfig != nil {
+				acpType = config.MittoConfig.GetServerType(acpServer)
+			}
+			if acpType == "" {
+				acpType = acpServer
+			}
+			agent, gerr := agentMgr.GetAgentByACPId(acpType)
+			if gerr != nil || agent == nil || agent.Metadata.StderrPatterns == nil {
+				stderrCache.put(acpServer, nil)
+				return nil
+			}
+			spec := conversation.StderrPatternsSpec{
+				Crash:    agent.Metadata.StderrPatterns.Crash,
+				Ignore:   agent.Metadata.StderrPatterns.Ignore,
+				Degraded: agent.Metadata.StderrPatterns.Degraded,
+			}
+			compiled := conversation.CompileStderrPatterns(spec, logger)
+			stderrCache.put(acpServer, compiled)
+			return compiled
+		}
+		acpProcessMgr.StderrPatternsResolver = compileFor
+		sessionMgr.SetStderrPatternsResolver(compileFor)
+
+		// Wire per-agent fork-cost signal (mitto-7yj). Resolves a workspace to
+		// its ACP agent metadata and reports whether that agent forks a fresh
+		// OS process per ACP session (Claude Code) vs multiplexing (auggie).
+		// Consumed by prewarmAuxiliarySessions to pick a widely-spread stagger
+		// so cold `claude` forks do not pile up back-to-back at prewarm time.
+		acpProcessMgr.ForkPerSessionProvider = func(workspaceUUID string) bool {
+			ws := sessionMgr.GetWorkspaceByUUID(workspaceUUID)
+			if ws == nil {
+				return false
+			}
+			acpType := ""
+			if config.MittoConfig != nil {
+				acpType = config.MittoConfig.GetServerType(ws.ACPServer)
+			}
+			if acpType == "" {
+				acpType = ws.ACPServer
+			}
+			agent, gerr := agentMgr.GetAgentByACPId(acpType)
+			if gerr != nil || agent == nil {
+				return false
+			}
+			return agent.Metadata.SessionSpawnsProcess
+		}
 	} else {
 		logger.Warn("stdio MCP discovery disabled: cannot resolve agents dir", "error", aerr)
 	}
@@ -661,6 +774,16 @@ func NewServer(config Config) (*Server, error) {
 		mcpAvailable:         true,
 	}
 
+	// Bound concurrent interactive ResumeSession calls issued from the
+	// cold-start WebSocket fan-out (mitto-54k.1). Config knob mirrors the
+	// existing startup_stagger_ms pattern; the user-focused ensure_resumed
+	// path bypasses this bound (see session_ws.go ensureResumed).
+	resumeConcurrency := configPkg.DefaultStartupResumeConcurrency
+	if config.MittoConfig != nil && config.MittoConfig.Session != nil {
+		resumeConcurrency = config.MittoConfig.Session.GetStartupResumeConcurrency()
+	}
+	s.interactiveResumeSem = newResumeSemaphore(resumeConcurrency)
+
 	// Wrap the beads client so every bd invocation this process makes brackets
 	// itself with the BeadsWatcher self-suppression window. Even read-only bd
 	// reads (list/show) rewrite the embedded Dolt noms journal/manifest and
@@ -672,6 +795,14 @@ func NewServer(config Config) (*Server, error) {
 		inner:    beads.NewExecRunner(),
 		suppress: s.suppressBeads,
 	})
+
+	// mitto-is2.2: optional in-memory read cache above the suppression seam.
+	// Order (outermost → inner): CachingClient → cliClient → suppressingBeadsRunner → execRunner.
+	// Cache hits skip both the exec and the suppression window.
+	if config.BeadsCache {
+		s.beadsCache = beads.NewCachingClient(s.beads)
+		s.beads = s.beadsCache
+	}
 
 	// The REST handlers sub-package facade is constructed later in NewServer,
 	// after callbackIndex, callbackRateLimiter and loopRunner are
@@ -693,6 +824,49 @@ func NewServer(config Config) (*Server, error) {
 		s.BroadcastMemoryRecycled(workspaceUUID, workspaceName, workingDir, rssBytes, threshold, sessionCount)
 	})
 
+	// MCP-init lifecycle notifications (mitto-8ul.1): fired at most once per shared
+	// process. "initializing" is informational; "timed out" indicates the agent gave
+	// up on its own MCP-init wait budget and the pending session/new was aborted.
+	// Resolve a friendly workspace name here (the manager only knows the UUID).
+	acpProcessMgr.SetOnMCPInitializing(func(workspaceUUID string) {
+		workspaceName := ""
+		workingDir := ""
+		if ws := sessionMgr.GetWorkspaceByUUID(workspaceUUID); ws != nil {
+			workspaceName = ws.Name
+			workingDir = ws.WorkingDir
+		}
+		s.BroadcastMCPInitializing(workspaceUUID, workspaceName, workingDir)
+	})
+	acpProcessMgr.SetOnMCPInitTimedOut(func(workspaceUUID string) {
+		workspaceName := ""
+		workingDir := ""
+		if ws := sessionMgr.GetWorkspaceByUUID(workspaceUUID); ws != nil {
+			workspaceName = ws.Name
+			workingDir = ws.WorkingDir
+		}
+		s.BroadcastMCPInitTimedOut(workspaceUUID, workspaceName, workingDir)
+	})
+
+	// Adaptive pre-warming (mitto-mw0): expose the global PrewarmConfig to the
+	// process manager and surface pin alerts as UI toasts. The pin controller
+	// itself runs inside prewarmAuxiliarySessions and ReevaluatePrewarmPin;
+	// this only wires the callback and the config accessor.
+	acpProcessMgr.PrewarmConfigProvider = func() *configPkg.PrewarmConfig {
+		if config.MittoConfig == nil {
+			return nil
+		}
+		return config.MittoConfig.Prewarm
+	}
+	acpProcessMgr.SetOnPrewarmPinAlert(func(workspaceUUID, reason string, expired bool) {
+		workspaceName := ""
+		workingDir := ""
+		if ws := sessionMgr.GetWorkspaceByUUID(workspaceUUID); ws != nil {
+			workspaceName = ws.Name
+			workingDir = ws.WorkingDir
+		}
+		s.BroadcastPrewarmPinAlert(workspaceUUID, workspaceName, workingDir, reason, expired)
+	})
+
 	// Initialize MCP server.
 	// This serves both global tools and session-scoped tools.
 	// The MCP server is always started; only its bind host/port are configurable.
@@ -710,10 +884,11 @@ func NewServer(config Config) (*Server, error) {
 		mcpSrv, err := mcpserver.NewServer(
 			mcpserver.Config{Host: mcpHost, Port: mcpPort},
 			mcpserver.Dependencies{
-				Store:          store,
-				Config:         config.MittoConfig,
-				SessionManager: &sessionManagerAdapter{sm: sessionMgr},
-				PromptsCache:   config.PromptsCache,
+				Store:             store,
+				Config:            config.MittoConfig,
+				SessionManager:    &sessionManagerAdapter{sm: sessionMgr},
+				PromptsCache:      config.PromptsCache,
+				BeadsCacheMetrics: s.beadsCacheMetricsCallback(),
 			},
 		)
 		if err != nil {
@@ -782,6 +957,13 @@ func NewServer(config Config) (*Server, error) {
 	s.loopRunner.SetOnAutoArchive(func(sessionID string) {
 		s.BroadcastACPStopped(sessionID, "auto_archived")
 		s.BroadcastSessionArchived(sessionID, true)
+		// Fire the conversationClosed processor pipeline for the auto-archived
+		// session. Fire-and-forget: SessionManager.ApplyOnCloseProcessors
+		// schedules its own background goroutine, so this does not block the
+		// LoopRunner's archive worker.
+		if sessionMgr != nil {
+			sessionMgr.ApplyOnCloseProcessors(sessionID, string(session.ArchiveReasonInactivity))
+		}
 	})
 	s.loopRunner.SetOnLoopAutoStopped(s.BroadcastLoopUpdated)
 	s.loopRunner.SetOnLoopUpdated(s.BroadcastLoopUpdated)
@@ -819,6 +1001,15 @@ func NewServer(config Config) (*Server, error) {
 	if staggerMs > 0 {
 		s.loopRunner.SetResumeStagger(time.Duration(staggerMs) * time.Millisecond)
 	}
+
+	// Configure the per-workspace loop-dispatch concurrency cap (mitto-61z).
+	// Prevents multiple loops in the same WorkingDir + ACPServer pair from
+	// firing at the same instant and wedging the shared ACP process.
+	loopWsConcurrency := configPkg.DefaultLoopWorkspaceConcurrency
+	if config.MittoConfig != nil && config.MittoConfig.Session != nil {
+		loopWsConcurrency = config.MittoConfig.Session.GetLoopWorkspaceConcurrency()
+	}
+	s.loopRunner.SetLoopWorkspaceConcurrency(loopWsConcurrency)
 
 	// Initialize callback index and rate limiter
 	s.callbackIndex = conversation.NewCallbackIndex()
@@ -870,20 +1061,22 @@ func NewServer(config Config) (*Server, error) {
 		StopLoopForArchive: func(sessionID string) {
 			s.loopRunner.StopLoopForArchive(sessionID, session.StoppedReasonArchived)
 		},
-		ErrSessionBusy:                ErrSessionBusy,
-		ErrLoopNotEnabled:             ErrLoopNotEnabled,
-		LoopDelayFloor:                s.loopDelayFloor,
-		BroadcastLoopUpdated:          s.BroadcastLoopUpdated,
-		BroadcastBeadsCleanupProgress: s.BroadcastBeadsCleanupProgress,
-		BootstrapOnCompletion:         s.loopRunner.BootstrapOnCompletion,
-		BroadcastSettingsUpdated:      s.BroadcastSessionSettingsUpdated,
-		BroadcastSessionDeleted:       s.BroadcastSessionDeleted,
-		BroadcastACPStartFailed:       s.BroadcastACPStartFailed,
-		BroadcastACPStopped:           s.BroadcastACPStopped,
-		BroadcastACPStarted:           s.BroadcastACPStarted,
-		BroadcastSessionRenamed:       s.BroadcastSessionRenamed,
-		BroadcastSessionPinned:        s.BroadcastSessionPinned,
-		BroadcastSessionArchived:      s.BroadcastSessionArchived,
+		ApplyOnCloseProcessors:            sessionMgr.ApplyOnCloseProcessors,
+		ErrSessionBusy:                    ErrSessionBusy,
+		ErrLoopNotEnabled:                 ErrLoopNotEnabled,
+		LoopDelayFloor:                    s.loopDelayFloor,
+		BroadcastLoopUpdated:              s.BroadcastLoopUpdated,
+		BroadcastBeadsCleanupProgress:     s.BroadcastBeadsCleanupProgress,
+		BootstrapOnCompletion:             s.loopRunner.BootstrapOnCompletion,
+		BroadcastSettingsUpdated:          s.BroadcastSessionSettingsUpdated,
+		BroadcastSessionDeleted:           s.BroadcastSessionDeleted,
+		BroadcastACPStartFailed:           s.BroadcastACPStartFailed,
+		BroadcastACPStopped:               s.BroadcastACPStopped,
+		BroadcastACPStarted:               s.BroadcastACPStarted,
+		BroadcastSessionRenamed:           s.BroadcastSessionRenamed,
+		BroadcastSessionBeadsIssueUpdated: s.BroadcastSessionBeadsIssueUpdated,
+		BroadcastSessionPinned:            s.BroadcastSessionPinned,
+		BroadcastSessionArchived:          s.BroadcastSessionArchived,
 		BroadcastSessionCreated: func(data map[string]interface{}) {
 			s.eventsManager.Broadcast(conversation.WSMsgTypeSessionCreated, data)
 		},
@@ -910,7 +1103,17 @@ func NewServer(config Config) (*Server, error) {
 			return url
 		},
 		SyncConfigWorkspaces: func() {
-			s.config.Workspaces = s.sessionManager.GetWorkspaces()
+			workspaces := s.sessionManager.GetWorkspaces()
+			// Re-project folder-native fields (Pinned, and any other fields
+			// that live in folders.json) onto the in-memory workspaces.
+			// Without this, folder-level mutations like SetFolderPinned would
+			// not be visible to GET /api/workspaces until server restart,
+			// because the WorkspaceRegistry map is populated once at load
+			// and never re-projected. See mitto-662.
+			if folders, err := configPkg.LoadFolders(); err == nil {
+				configPkg.ApplyFolderDefaults(workspaces, folders)
+			}
+			s.config.Workspaces = workspaces
 			// Re-subscribe beads watcher to pick up any newly added workspaces.
 			if s.beadsWatcher != nil {
 				s.beadsWatcher.Unsubscribe(s)
@@ -918,6 +1121,11 @@ func NewServer(config Config) (*Server, error) {
 				if s.loopRunner != nil {
 					s.beadsWatcher.Unsubscribe(s.loopRunner)
 					s.beadsWatcher.Subscribe(s.loopRunner, s.getBeadsWatchDirs())
+				}
+				// mitto-is2.3: same rebind for the cache-invalidation adapter.
+				if s.beadsCacheSubscriber != nil {
+					s.beadsWatcher.Unsubscribe(s.beadsCacheSubscriber)
+					s.beadsWatcher.Subscribe(s.beadsCacheSubscriber, s.getBeadsWatchDirs())
 				}
 			}
 		},
@@ -947,6 +1155,37 @@ func NewServer(config Config) (*Server, error) {
 			return s.auxiliaryManager.ImprovePrompt
 		}(),
 	})
+
+	// Auto-unarchive recovery: retry unarchiving loop conversations archived due
+	// to broken ACP communication, on a slow, staggered, restart-durable schedule.
+	// Reuses the same restore-loop logic as the manual HTTP unarchive path.
+	s.loopRunner.SetOnAutoUnarchive(func(sessionID string) error {
+		meta, err := store.GetMetadata(sessionID)
+		if err != nil {
+			return err
+		}
+
+		if err := store.UpdateMetadata(sessionID, func(m *session.Metadata) {
+			m.Archived = false
+			m.ArchivedAt = time.Time{}
+			m.ArchiveReason = ""
+			m.AutoUnarchiveLastAttemptAt = time.Time{}
+		}); err != nil {
+			return err
+		}
+
+		_, resumeErr := sessionMgr.ResumeSession(sessionID, meta.Name, meta.WorkingDir)
+		if resumeErr != nil {
+			s.BroadcastACPStartFailed(sessionID, meta.Name, resumeErr, "")
+		} else {
+			s.BroadcastACPStarted(sessionID)
+		}
+		s.BroadcastSessionArchived(sessionID, false)
+		s.apiHandlers.RestoreLoopOnUnarchive(sessionID)
+
+		return resumeErr
+	})
+	s.loopRunner.SetAutoUnarchiveRecovery(true, DefaultAutoUnarchiveRetryInterval, DefaultAutoUnarchiveStaggerInterval)
 
 	// Configure auto-archive inactive sessions if enabled
 	if config.MittoConfig != nil && config.MittoConfig.Session != nil {
@@ -1019,6 +1258,16 @@ func NewServer(config Config) (*Server, error) {
 		// Also subscribe the loop runner so onTasks loop conversations
 		// can fire (or rebase their diff baseline) when beads change.
 		s.beadsWatcher.Subscribe(s.loopRunner, s.getBeadsWatchDirs())
+		// mitto-is2.3: when the read cache is enabled, wire it to BeadsWatcher
+		// so external mutations (bd invocations from other processes, direct
+		// .beads/ writes, git pulls) invalidate the corresponding workspace's
+		// cache slot. Self-writes from THIS process are handled separately by
+		// CachingClient's writer-defer-Invalidate (mitto-is2.1) and by the
+		// watcher's own SuppressSelfActivity gating (applied before fan-out).
+		if s.beadsCache != nil {
+			s.beadsCacheSubscriber = &beadsCacheWatcherSubscriber{cache: s.beadsCache}
+			s.beadsWatcher.Subscribe(s.beadsCacheSubscriber, s.getBeadsWatchDirs())
+		}
 		s.beadsWatcher.Start()
 		logger.Info("Beads watcher started", "dirs", s.getBeadsWatchDirs())
 	}
@@ -1135,6 +1384,8 @@ func NewServer(config Config) (*Server, error) {
 	}
 
 	s.httpServer = &http.Server{Handler: handler}
+
+	s.sessionManager.WorkspaceRegistry().LogDuplicateWorkingDirs(logger)
 
 	logger.Info("Web server initialized", "acp_server", config.ACPServer, "api_prefix", apiPrefix)
 
@@ -1385,6 +1636,21 @@ func (s *Server) BroadcastSessionSettingsUpdated(sessionID string, settings map[
 	}
 }
 
+// BroadcastSessionBeadsIssueUpdated notifies all connected clients that a
+// session's linked beads issue ID changed (via REST PATCH or MCP tools).
+func (s *Server) BroadcastSessionBeadsIssueUpdated(sessionID, beadsIssue string) {
+	s.eventsManager.Broadcast(conversation.WSMsgTypeSessionBeadsIssueUpdated, map[string]string{
+		"session_id":  sessionID,
+		"beads_issue": beadsIssue,
+	})
+
+	if s.logger != nil {
+		s.logger.Debug("Broadcast session beads_issue updated",
+			"session_id", sessionID, "beads_issue", beadsIssue,
+			"clients", s.eventsManager.ClientCount())
+	}
+}
+
 // BroadcastSessionDeleted notifies all connected clients that a session was deleted.
 func (s *Server) BroadcastSessionDeleted(sessionID string) {
 	s.eventsManager.Broadcast(conversation.WSMsgTypeSessionDeleted, map[string]string{
@@ -1427,7 +1693,33 @@ func (s *Server) BroadcastSessionStreaming(sessionID string, isStreaming bool) {
 }
 
 // BroadcastACPStopped notifies all connected clients that an ACP connection was stopped.
+// Duplicate calls for the same session within acpLifecycleWindow are suppressed so that
+// coalesced resume/shutdown paths do not each emit a system message.
 func (s *Server) BroadcastACPStopped(sessionID, reason string) {
+	if s.eventsManager == nil {
+		return
+	}
+
+	now := time.Now()
+	s.recentStopsMu.Lock()
+	if s.recentStops == nil {
+		s.recentStops = make(map[string]time.Time)
+	}
+	if last, ok := s.recentStops[sessionID]; ok && now.Sub(last) < acpLifecycleWindow {
+		s.recentStopsMu.Unlock()
+		if s.logger != nil {
+			s.logger.Debug("Suppressed duplicate ACP stopped broadcast", "session_id", sessionID)
+		}
+		return
+	}
+	for id, t := range s.recentStops {
+		if now.Sub(t) >= acpLifecycleWindow {
+			delete(s.recentStops, id)
+		}
+	}
+	s.recentStops[sessionID] = now
+	s.recentStopsMu.Unlock()
+
 	s.eventsManager.Broadcast(WSMsgTypeACPStopped, map[string]string{
 		"session_id": sessionID,
 		"reason":     reason,
@@ -1440,7 +1732,33 @@ func (s *Server) BroadcastACPStopped(sessionID, reason string) {
 }
 
 // BroadcastACPStarted notifies all connected clients that an ACP connection was started.
+// Duplicate calls for the same session within acpLifecycleWindow are suppressed so that
+// coalesced resume waiters do not each emit a system message.
 func (s *Server) BroadcastACPStarted(sessionID string) {
+	if s.eventsManager == nil {
+		return
+	}
+
+	now := time.Now()
+	s.recentStartsMu.Lock()
+	if s.recentStarts == nil {
+		s.recentStarts = make(map[string]time.Time)
+	}
+	if last, ok := s.recentStarts[sessionID]; ok && now.Sub(last) < acpLifecycleWindow {
+		s.recentStartsMu.Unlock()
+		if s.logger != nil {
+			s.logger.Debug("Suppressed duplicate ACP started broadcast", "session_id", sessionID)
+		}
+		return
+	}
+	for id, t := range s.recentStarts {
+		if now.Sub(t) >= acpLifecycleWindow {
+			delete(s.recentStarts, id)
+		}
+	}
+	s.recentStarts[sessionID] = now
+	s.recentStartsMu.Unlock()
+
 	s.eventsManager.Broadcast(WSMsgTypeACPStarted, map[string]string{
 		"session_id": sessionID,
 	})
@@ -1450,6 +1768,11 @@ func (s *Server) BroadcastACPStarted(sessionID string) {
 			"clients", s.eventsManager.ClientCount())
 	}
 }
+
+// acpLifecycleWindow is the minimum interval between duplicate BroadcastACPStarted
+// or BroadcastACPStopped calls for the same session. See acpStartFailWindow for
+// the equivalent rationale.
+const acpLifecycleWindow = 2 * time.Second
 
 // acpStartFailWindow is the minimum interval between duplicate BroadcastACPStartFailed
 // calls for the same session. Concurrent goroutines that coalesce on the same resume
@@ -1590,6 +1913,61 @@ func (s *Server) BroadcastMemoryRecycled(workspaceUUID, workspaceName, workingDi
 			"rss_bytes", rssBytes,
 			"threshold_bytes", threshold,
 			"session_count", sessionCount,
+			"clients", s.eventsManager.ClientCount())
+	}
+}
+
+// BroadcastMCPInitializing notifies all connected clients that the agent for a
+// workspace is currently blocked waiting for one or more MCP servers to initialize
+// (mitto-8ul.1). Informational — the pending session/new is still expected to
+// succeed once MCP init completes. Fired at most once per shared process lifetime.
+func (s *Server) BroadcastMCPInitializing(workspaceUUID, workspaceName, workingDir string) {
+	s.eventsManager.Broadcast(WSMsgTypeMCPInitializing, map[string]interface{}{
+		"workspace_uuid": workspaceUUID,
+		"workspace_name": workspaceName,
+		"working_dir":    workingDir,
+	})
+	if s.logger != nil {
+		s.logger.Info("Broadcast MCP initializing",
+			"workspace_uuid", workspaceUUID,
+			"clients", s.eventsManager.ClientCount())
+	}
+}
+
+// BroadcastMCPInitTimedOut notifies all connected clients that the agent's MCP-init
+// wait elapsed before every MCP server finished handshake (mitto-8ul.1). The pending
+// session/new has been aborted with an actionable error.
+func (s *Server) BroadcastMCPInitTimedOut(workspaceUUID, workspaceName, workingDir string) {
+	s.eventsManager.Broadcast(WSMsgTypeMCPInitTimedOut, map[string]interface{}{
+		"workspace_uuid": workspaceUUID,
+		"workspace_name": workspaceName,
+		"working_dir":    workingDir,
+	})
+	if s.logger != nil {
+		s.logger.Warn("Broadcast MCP init timed out",
+			"workspace_uuid", workspaceUUID,
+			"clients", s.eventsManager.ClientCount())
+	}
+}
+
+// BroadcastPrewarmPinAlert notifies all connected clients that the adaptive
+// pre-warming controller pinned a workspace due to a slow/broken MCP init,
+// or that a stuck pin was force-expired because its max_pin_duration cap
+// elapsed (mitto-mw0). expired=true distinguishes the two cases so the UI
+// can pick the right toast copy.
+func (s *Server) BroadcastPrewarmPinAlert(workspaceUUID, workspaceName, workingDir, reason string, expired bool) {
+	s.eventsManager.Broadcast(WSMsgTypePrewarmPinAlert, map[string]interface{}{
+		"workspace_uuid": workspaceUUID,
+		"workspace_name": workspaceName,
+		"working_dir":    workingDir,
+		"reason":         reason,
+		"expired":        expired,
+	})
+	if s.logger != nil {
+		s.logger.Warn("Broadcast prewarm pin alert",
+			"workspace_uuid", workspaceUUID,
+			"reason", reason,
+			"expired", expired,
 			"clients", s.eventsManager.ClientCount())
 	}
 }
@@ -1757,6 +2135,13 @@ func (a *sessionManagerAdapter) BroadcastSessionRenamed(sessionID string, newNam
 	a.sm.BroadcastSessionRenamed(sessionID, newName)
 }
 
+// BroadcastSessionBeadsIssueUpdated broadcasts a session_beads_issue_updated
+// event to all connected clients when a conversation's linked beads issue ID
+// changes via the mitto_conversation_update MCP tool.
+func (a *sessionManagerAdapter) BroadcastSessionBeadsIssueUpdated(sessionID string, beadsIssue string) {
+	a.sm.BroadcastSessionBeadsIssueUpdated(sessionID, beadsIssue)
+}
+
 // BroadcastLoopUpdated broadcasts a loop_updated event to all connected clients.
 func (a *sessionManagerAdapter) BroadcastLoopUpdated(sessionID string, loop *session.LoopPrompt) {
 	a.sm.BroadcastLoopUpdated(sessionID, loop)
@@ -1792,6 +2177,13 @@ func (a *sessionManagerAdapter) InvalidateWorkspaceRC(workingDir string) {
 	a.sm.InvalidateWorkspaceRC(workingDir)
 }
 
+// IsMCPInitTimeout reports whether err carries the transient cold-start
+// "MCP initialization timed out" signal. Delegates to conversation.IsMCPInitTimeout
+// so the MCP server's auto-resume path can defer to a bounded retry (mitto-54k.6).
+func (a *sessionManagerAdapter) IsMCPInitTimeout(err error) bool {
+	return conversation.IsMCPInitTimeout(err)
+}
+
 // =============================================================================
 // PromptsSubscriber implementation
 // =============================================================================
@@ -1815,6 +2207,19 @@ func (s *Server) OnPromptsChanged(event configPkg.PromptsChangeEvent) {
 		"changed_dirs": event.ChangedDirs,
 		"timestamp":    event.Timestamp.Format("2006-01-02T15:04:05Z07:00"),
 	})
+
+	// Surface any prompt files that failed to load so the user is not left
+	// with a silently-missing prompt (mitto-mqe). Error-style toasts persist
+	// until manually dismissed.
+	if s.config.PromptsCache != nil {
+		for _, pe := range s.config.PromptsCache.LoadErrors() {
+			s.eventsManager.Broadcast(WSMsgTypeNotification, map[string]interface{}{
+				"title":   "Prompt failed to load",
+				"message": fmt.Sprintf("%s: %v", pe.Path, pe.Err),
+				"style":   "error",
+			})
+		}
+	}
 
 	if s.logger != nil {
 		s.logger.Debug("Broadcasted prompts_changed event",
@@ -1870,6 +2275,38 @@ func (s *Server) suppressBeads(workingDir string) func() {
 		return func() {}
 	}
 	return s.beadsWatcher.SuppressSelfActivity(workingDir)
+}
+
+// beadsCacheWatcherSubscriber adapts *beads.CachingClient to
+// configPkg.BeadsSubscriber so BeadsWatcher events invalidate the corresponding
+// workspace's cache slot. Kept in the web package to preserve the internal/beads
+// leaf-package invariant (cache.go must not import internal/config). The pointer
+// receiver + Server-held pointer field give the adapter a stable identity so
+// BeadsWatcher.Unsubscribe/Subscribe can pair up on workspace resubscribe.
+// Self-induced bd writes are already filtered upstream by
+// BeadsWatcher.SuppressSelfActivity before fan-out, so this only fires for
+// external mutations (bd from other processes, direct .beads/ writes, git
+// pulls). In-process writer invalidation is handled by CachingClient's
+// defer c.Invalidate(dir) on each write method (mitto-is2.1). mitto-is2.3.
+type beadsCacheWatcherSubscriber struct{ cache *beads.CachingClient }
+
+func (b *beadsCacheWatcherSubscriber) OnBeadsChanged(event configPkg.BeadsChangeEvent) {
+	if b == nil || b.cache == nil {
+		return
+	}
+	for _, dir := range event.WorkingDirs {
+		b.cache.InvalidateFromWatcher(dir)
+	}
+}
+
+// beadsCacheMetricsCallback returns a nil-safe snapshot callback for the
+// mitto_beads_cache_metrics MCP tool. It returns nil when the read cache is
+// disabled (s.beadsCache == nil), so the tool is not registered in that mode.
+func (s *Server) beadsCacheMetricsCallback() func() beads.CacheMetrics {
+	if s.beadsCache == nil {
+		return nil
+	}
+	return func() beads.CacheMetrics { return s.beadsCache.Metrics() }
 }
 
 // OnBeadsChanged is called by the BeadsWatcher when .beads/ directories change.
@@ -2267,19 +2704,4 @@ func parseAutoArchivePeriod(period string) (time.Duration, error) {
 	default:
 		return 0, fmt.Errorf("invalid auto-archive period: %s", period)
 	}
-}
-
-// buildMigrationContext creates a MigrationContext from the current configuration.
-// This provides information needed by migrations to normalize data.
-func buildMigrationContext(cfg *configPkg.Config) *session.MigrationContext {
-	if cfg == nil || len(cfg.ACPServers) == 0 {
-		return nil
-	}
-
-	// Extract server names and use the shared helper
-	names := make([]string, len(cfg.ACPServers))
-	for i, srv := range cfg.ACPServers {
-		names[i] = srv.Name
-	}
-	return session.NewMigrationContext(names)
 }

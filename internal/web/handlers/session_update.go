@@ -93,6 +93,7 @@ func (h *Handlers) HandleUpdateSession(w http.ResponseWriter, r *http.Request, s
 				// Clear archived timestamp and reason when unarchiving
 				meta.ArchivedAt = time.Time{}
 				meta.ArchiveReason = ""
+				meta.AutoUnarchiveLastAttemptAt = time.Time{}
 			}
 		}
 	})
@@ -120,6 +121,13 @@ func (h *Handlers) HandleUpdateSession(w http.ResponseWriter, r *http.Request, s
 		h.deps.BroadcastSessionRenamed(sessionID, *req.Name)
 	}
 
+	// Broadcast the beads_issue link change so the conversation header's
+	// linked-issue button/badge updates immediately (mitto: stale beads link
+	// indicator). Fires for both set-to-new-id and clear-to-empty transitions.
+	if req.BeadsIssue != nil && h.deps.BroadcastSessionBeadsIssueUpdated != nil {
+		h.deps.BroadcastSessionBeadsIssueUpdated(sessionID, *req.BeadsIssue)
+	}
+
 	// Broadcast the pinned state change to all connected WebSocket clients
 	if req.Pinned != nil && h.deps.BroadcastSessionPinned != nil {
 		h.deps.BroadcastSessionPinned(sessionID, *req.Pinned)
@@ -131,6 +139,12 @@ func (h *Handlers) HandleUpdateSession(w http.ResponseWriter, r *http.Request, s
 	// sm.sessions when clients reconnect (prevents pendingResumes race).
 	if req.Archived != nil && *req.Archived && h.deps.BroadcastSessionArchived != nil {
 		h.deps.BroadcastSessionArchived(sessionID, true, session.ArchiveReasonManual)
+	}
+
+	// Fire the conversationClosed processor pipeline (fire-and-forget). The call
+	// itself schedules a goroutine, so it does not block the archive request.
+	if req.Archived != nil && *req.Archived && h.deps.ApplyOnCloseProcessors != nil {
+		h.deps.ApplyOnCloseProcessors(sessionID, string(session.ArchiveReasonManual))
 	}
 
 	// Delete all child sessions when parent is archived
@@ -181,13 +195,13 @@ func (h *Handlers) HandleUpdateSession(w http.ResponseWriter, r *http.Request, s
 		// Restore/re-surface any loop configuration that was left disabled by
 		// the archive (mitto-vmp): auto-resume archive-related stops, keep
 		// other pauses paused, and always re-broadcast the current config.
-		h.restoreLoopOnUnarchive(sessionID)
+		h.RestoreLoopOnUnarchive(sessionID)
 	}
 
 	writeJSONOK(w, meta)
 }
 
-// restoreLoopOnUnarchive re-surfaces a session's loop configuration after
+// RestoreLoopOnUnarchive re-surfaces a session's loop configuration after
 // unarchive. Loop config (prompt/arguments/trigger/etc.) survives archive in
 // loop.json, but MarkStopped(StoppedReasonArchived/ResumeFailures) leaves it
 // disabled with no broadcast, so clients never learn it's still there
@@ -198,7 +212,11 @@ func (h *Handlers) HandleUpdateSession(w http.ResponseWriter, r *http.Request, s
 //     BootstrapOnCompletion for onCompletion loops.
 //  3. Leaves other pause reasons (user-paused, max iterations, etc.) alone.
 //  4. Always re-broadcasts the current loop state so the UI can re-render it.
-func (h *Handlers) restoreLoopOnUnarchive(sessionID string) {
+//
+// Exported so the web package's auto-unarchive recovery scheduler
+// (LoopRunner.onAutoUnarchive, wired in server.go) can reuse the same
+// restore logic as the manual HTTP unarchive path.
+func (h *Handlers) RestoreLoopOnUnarchive(sessionID string) {
 	store := h.deps.Store
 	if store == nil {
 		return

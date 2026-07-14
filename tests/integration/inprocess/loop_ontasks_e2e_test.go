@@ -48,6 +48,9 @@ func (c *fakeOnTasksBeadsClient) List(_ context.Context, dir string) ([]byte, er
 	return []byte(`[]`), nil
 }
 
+func (c *fakeOnTasksBeadsClient) Ready(context.Context, string) ([]byte, error) {
+	return []byte(`[]`), nil
+}
 func (c *fakeOnTasksBeadsClient) Status(context.Context, string) ([]byte, error) {
 	return []byte(`{}`), nil
 }

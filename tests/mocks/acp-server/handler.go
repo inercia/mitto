@@ -42,16 +42,21 @@ func (s *MockACPServer) handleMessage(line string) error {
 		return s.handleInitialize(req)
 	case "session/new", "acp/newSession":
 		return s.handleNewSession(req)
-	case "session/unstableResumeSession":
-		return s.handleUnstableResumeSession(req)
+	// v0.13.5 renamed session/unstableResumeSession -> session/resume; the legacy
+	// method name is kept as an alias so pre-0.13.5 shell fixtures (test_resume.py,
+	// test_resume.sh) still exercise the same code path.
+	case "session/resume", "session/unstableResumeSession":
+		return s.handleResumeSession(req)
 	case "session/prompt", "acp/prompt":
 		return s.handlePrompt(req)
 	case "session/cancel", "acp/cancelPrompt":
 		return s.handleCancelPrompt(req)
 	case "session/set_mode", "session/setMode", "acp/setSessionMode":
 		return s.handleSetSessionMode(req)
-	case "session/unstableSetSessionModel", "session/set_model":
-		return s.handleSetSessionModel(req)
+	// v0.13.5: session/set_model was removed in favour of the stable config-option
+	// framework. Mitto now issues session/set_config_option with configId=model.
+	case "session/set_config_option":
+		return s.handleSetSessionConfigOption(req)
 	case "shutdown":
 		return s.handleShutdown(req)
 	default:
@@ -95,6 +100,29 @@ func (s *MockACPServer) handleNewSession(req JSONRPCRequest) error {
 		return s.sendError(req.ID, -32603, "agent busy: request timeout", nil)
 	}
 
+	// MCP-init simulation (mitto-8ul.1). Fired based on env vars regardless of whether
+	// the caller populated McpServers, because Mitto attaches MCP globally today so
+	// session/new requests carry an empty mcpServers slice. The stderr progress line
+	// is what internal/conversation's StartStderrMonitor watches for to invoke the
+	// onMCPInitProgress callback; the timeout line triggers fail-fast.
+	nServers := len(params.McpServers)
+	if nServers == 0 {
+		nServers = 1 // synthetic count for the stderr progress message
+	}
+	if s.mcpInitTimeoutAfterMs > 0 {
+		fmt.Fprintf(os.Stderr, "Waiting for %d MCP servers to initialize\n", nServers)
+		time.Sleep(time.Duration(s.mcpInitTimeoutAfterMs) * time.Millisecond)
+		fmt.Fprintf(os.Stderr, "MCP initialization timed out after %ds\n", s.mcpInitTimeoutAfterMs/1000)
+		// Return an error so any client that ignored the stderr signal still gets
+		// a deterministic failure. Tests that rely on the stderr abort will have
+		// already cancelled their context before we reach this line.
+		return s.sendError(req.ID, -32603, "mcp initialization timed out", nil)
+	}
+	if s.mcpInitDelayMs > 0 {
+		fmt.Fprintf(os.Stderr, "Waiting for %d MCP servers to initialize\n", nServers)
+		time.Sleep(time.Duration(s.mcpInitDelayMs) * time.Millisecond)
+	}
+
 	// Use Cwd (new format) or fallback to WorkingDirectory (legacy)
 	workdir := params.Cwd
 	if workdir == "" {
@@ -102,42 +130,40 @@ func (s *MockACPServer) handleNewSession(req JSONRPCRequest) error {
 	}
 
 	s.sessionID = fmt.Sprintf("mock-session-%d", time.Now().UnixNano())
-	s.currentMode = defaultModes.CurrentModeID    // Reset to default mode
-	s.currentModel = defaultModels.CurrentModelId // Reset to default model
+	s.currentMode = defaultModes.CurrentModeID // Reset to default mode
+	s.currentModel = defaultModelId            // Reset to default model
 	s.log("Created session: %s (workdir: %s, mode: %s, model: %s)", s.sessionID, workdir, s.currentMode, s.currentModel)
 
-	// Create session state with modes and models
+	// Create session state with modes and the v0.13.5 model config option.
 	modes := &SessionModeState{
 		CurrentModeID:  s.currentMode,
 		AvailableModes: defaultModes.AvailableModes,
 	}
-	models := &SessionModelState{
-		CurrentModelId:  s.currentModel,
-		AvailableModels: defaultModels.AvailableModels,
-	}
+	configOptions := []SessionConfigOption{buildModelConfigOption(s.currentModel)}
 
 	// Store session state for resume support
 	s.mu.Lock()
 	s.sessions[s.sessionID] = &SessionState{
 		SessionID:     s.sessionID,
 		Modes:         modes,
-		ConfigOptions: []SessionConfigOption{}, // Empty for now
+		ConfigOptions: configOptions,
 	}
 	s.mu.Unlock()
 
-	// Return session with modes and models
+	// Return session with modes + configOptions (model advertised via configOptions).
 	result := NewSessionResult{
-		SessionID: s.sessionID,
-		Modes:     modes,
-		Models:    models,
+		SessionID:     s.sessionID,
+		Modes:         modes,
+		ConfigOptions: configOptions,
 	}
 
 	return s.sendResponse(req.ID, result)
 }
 
-// handleUnstableResumeSession handles session resume requests.
-func (s *MockACPServer) handleUnstableResumeSession(req JSONRPCRequest) error {
-	var params UnstableResumeSessionRequest
+// handleResumeSession handles v0.13.5 `session/resume` requests (and the legacy
+// `session/unstableResumeSession` alias).
+func (s *MockACPServer) handleResumeSession(req JSONRPCRequest) error {
+	var params ResumeSessionRequest
 	if err := json.Unmarshal(req.Params, &params); err != nil {
 		return s.sendError(req.ID, -32602, "Invalid params", nil)
 	}
@@ -159,22 +185,39 @@ func (s *MockACPServer) handleUnstableResumeSession(req JSONRPCRequest) error {
 	if sess.Modes != nil {
 		s.currentMode = sess.Modes.CurrentModeID
 	}
+
+	// Refresh the model config option with the currently-selected model id so
+	// clients see the up-to-date state after a set_config_option round-trip.
+	configOptions := freshConfigOptionsWithModel(sess.ConfigOptions, s.currentModel)
 	s.log("Resumed session: %s (mode: %s, model: %s)", s.sessionID, s.currentMode, s.currentModel)
 
-	// Build models state for resume
-	models := &SessionModelState{
-		CurrentModelId:  s.currentModel,
-		AvailableModels: defaultModels.AvailableModels,
-	}
-
-	// Return session state without replaying history
-	result := UnstableResumeSessionResponse{
+	// Return session state without replaying history. `models` (legacy field) is
+	// gone; model state travels via configOptions.
+	result := ResumeSessionResponse{
 		Modes:         sess.Modes,
-		Models:        models,
-		ConfigOptions: sess.ConfigOptions,
+		ConfigOptions: configOptions,
 	}
 
 	return s.sendResponse(req.ID, result)
+}
+
+// freshConfigOptionsWithModel returns a copy of opts with the model entry's
+// currentValue replaced by the given model id (or the entry appended if
+// missing). It never mutates the input slice.
+func freshConfigOptionsWithModel(opts []SessionConfigOption, modelId string) []SessionConfigOption {
+	out := make([]SessionConfigOption, 0, len(opts)+1)
+	foundModel := false
+	for _, opt := range opts {
+		if opt.Category == "model" || opt.ID == "model" {
+			opt.CurrentValue = modelId
+			foundModel = true
+		}
+		out = append(out, opt)
+	}
+	if !foundModel {
+		out = append(out, buildModelConfigOption(modelId))
+	}
+	return out
 }
 
 // handleSetSessionMode handles session mode change requests.
@@ -228,63 +271,86 @@ func (s *MockACPServer) sendCurrentModeUpdate(modeID string) error {
 	return s.sendNotification(notification)
 }
 
-// handleSetSessionModel handles session model change requests (UNSTABLE).
-func (s *MockACPServer) handleSetSessionModel(req JSONRPCRequest) error {
-	var params SetSessionModelParams
+// handleSetSessionConfigOption handles v0.13.5 `session/set_config_option`
+// requests. Only the ValueId (Select) variant is supported; the boolean variant
+// is rejected. For the "model" category the mock retains the pre-0.13.5
+// failure-injection / delay knobs (MOCK_SET_MODEL_FAIL_FIRST /
+// MOCK_SET_MODEL_DELAY_MS) so TestConcurrentModelSetBurst still exercises the
+// retry path. Other categories (e.g. custom config options) fall through with
+// no side effects beyond echoing the value back.
+func (s *MockACPServer) handleSetSessionConfigOption(req JSONRPCRequest) error {
+	var params SetSessionConfigOptionParams
 	if err := json.Unmarshal(req.Params, &params); err != nil {
 		return s.sendError(req.ID, -32602, "Invalid params", nil)
 	}
+	if params.Type == "boolean" {
+		return s.sendError(req.ID, -32602, "Boolean config-option variant is not supported by the mock", nil)
+	}
 
-	// Optional delay to simulate a slow agent (MOCK_SET_MODEL_DELAY_MS).
-	if s.setModelDelayMs > 0 {
+	isModel := params.ConfigID == "model"
+
+	// Optional delay to simulate a slow agent (MOCK_SET_MODEL_DELAY_MS) — only
+	// for the model category so unrelated config options don't drag.
+	if isModel && s.setModelDelayMs > 0 {
 		time.Sleep(time.Duration(s.setModelDelayMs) * time.Millisecond)
 	}
 
-	// Failure injection: the first N set_model calls return a JSON-RPC error whose
-	// message contains "timeout" so isRetryableSetModelError matches it (mitto-3q9).
-	// currentModel is NOT updated and no notification is sent — the retry must redo it.
-	s.setModelCallCount++
-	if s.setModelCallCount <= s.setModelFailFirst {
-		s.log("Injecting set_model failure %d/%d for model %s", s.setModelCallCount, s.setModelFailFirst, params.ModelId)
-		return s.sendError(req.ID, -32603, "agent busy: request timeout", nil)
-	}
-
-	// Validate the model exists
-	validModel := false
-	for _, model := range defaultModels.AvailableModels {
-		if model.ModelId == params.ModelId {
-			validModel = true
-			break
+	// Failure injection for the model category: the first N calls return a
+	// JSON-RPC error whose message contains "timeout" so
+	// isRetryableSetModelError matches it (mitto-3q9). currentModel is NOT
+	// updated and no notification is sent — the retry must redo it. Env var
+	// name is preserved (MOCK_SET_MODEL_FAIL_FIRST) for test back-compat.
+	if isModel {
+		s.setModelCallCount++
+		if s.setModelCallCount <= s.setModelFailFirst {
+			s.log("Injecting set_config_option(model) failure %d/%d for value %s",
+				s.setModelCallCount, s.setModelFailFirst, params.Value)
+			return s.sendError(req.ID, -32603, "agent busy: request timeout", nil)
 		}
 	}
 
-	if !validModel {
-		return s.sendError(req.ID, -32602, fmt.Sprintf("Invalid model: %s", params.ModelId), nil)
+	// Validate the value for the model category against the advertised options.
+	if isModel {
+		validModel := false
+		for _, opt := range defaultModelOptions {
+			if opt.Value == params.Value {
+				validModel = true
+				break
+			}
+		}
+		if !validModel {
+			return s.sendError(req.ID, -32602, fmt.Sprintf("Invalid model: %s", params.Value), nil)
+		}
+		s.currentModel = params.Value
 	}
 
-	// Update the current model
-	s.currentModel = params.ModelId
-	s.recordRPCOrder("set_model", params.ModelId)
-	s.log("Session model changed: %s -> %s", s.sessionID, s.currentModel)
+	// Record the RPC arrival order under the new label so ordering tests
+	// (deferred_config_test) can key off "set_config_option".
+	s.recordRPCOrder("set_config_option", params.Value)
+	s.log("Session config option changed: %s (%s -> %s)", s.sessionID, params.ConfigID, params.Value)
 
-	// Send success response
-	if err := s.sendResponse(req.ID, SetSessionModelResult{}); err != nil {
+	// Build the updated ConfigOptions snapshot to include in both the response
+	// and the config_option_update notification.
+	updated := freshConfigOptionsWithModel(nil, s.currentModel)
+
+	// Send success response (SDK's SetSessionConfigOptionResponse carries the
+	// full configOptions snapshot).
+	if err := s.sendResponse(req.ID, SetSessionConfigOptionResult{ConfigOptions: updated}); err != nil {
 		return err
 	}
 
-	// Send notification about model change
+	// Send the config_option_update notification (v0.13.5 SessionUpdate variant).
 	notification := SessionNotification{
 		JSONRPC: "2.0",
 		Method:  "session/update",
 	}
 	notification.Params.SessionID = s.sessionID
 	notification.Params.Update = SessionUpdate{
-		CurrentModelUpdate: &SessionCurrentModelUpdate{
-			SessionUpdate:  "current_model_update",
-			CurrentModelId: params.ModelId,
+		ConfigOptionUpdate: &SessionConfigOptionUpdate{
+			SessionUpdate: "config_option_update",
+			ConfigOptions: updated,
 		},
 	}
-
 	return s.sendNotification(notification)
 }
 

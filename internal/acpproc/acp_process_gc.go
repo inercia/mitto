@@ -7,6 +7,13 @@ import (
 	"github.com/inercia/mitto/internal/conversation"
 )
 
+// tier6StreamedProgressQuietWindow is the minimum time since a session's last
+// streamed agent update before Tier 6 considers it eligible for recycle
+// (mitto-1h0). Mirrors conversation.agentWorkingHeartbeatQuietThreshold (10s):
+// that constant is unexported in package conversation, so it is duplicated here
+// rather than imported. Keep the two values in sync if either changes.
+const tier6StreamedProgressQuietWindow = 10 * time.Second
+
 // GCConfig configures the garbage collection loop.
 type GCConfig struct {
 	// Interval is how often the GC runs (default: 30s).
@@ -234,6 +241,21 @@ func (m *ACPProcessManager) gcLoop() {
 // loop prompt due soon), its sessions are GC-suspended and closed and the
 // process is stopped to reclaim memory. Disabled when MemoryRecycleThreshold is 0.
 //
+// Tier 5 proactively recycles degraded (saturated) idle processes (mitto-tfb): when
+// a shared process has been flagged saturated by the mitto-13ck.2 infra (repeated
+// NewSession/LoadSession deadlines) and is fully idle (same gates as Tier 4), its
+// sessions are GC-suspended and closed and the process is stopped so the next
+// NewSession lazily builds a fresh, healthy process — instead of the degraded one
+// continuing to starve resumes/loop-prompts.
+//
+// Tier 6 escalates Tier 5 to recycle a CONFIRMED-degraded process (saturationLevel
+// >= confirmedDegradedLevel) even while it is busy (mitto-1h0): a control-plane
+// wedge shows up as in-flight-but-timing-out RPCs, which Tier 5's idle gate reads
+// as legitimate work and refuses to recycle. Tier 6 drops the ActiveRPCs()/
+// IsPrompting gate for confirmed-degraded processes, but is guarded by a
+// no-streamed-progress check (LastStreamActivityAt) so a legitimately slow but
+// progressing prompt is never killed.
+//
 // Tier 3 cleans up auxiliary sessions that have been idle longer than AuxIdleTimeout.
 // Cleaned-up sessions are lazily re-created on next use via getOrCreateAuxiliarySession.
 func (m *ACPProcessManager) RunGCOnce() {
@@ -269,6 +291,19 @@ gcTier1:
 						"session_id", s.SessionID,
 						"workspace_uuid", workspaceUUID,
 						"resumed_ago", now.Sub(s.ResumedAt))
+				}
+				continue
+			}
+			// Skip pinned keepalive sessions: the adaptive pre-warming path pins a
+			// warm session for slow/broken workspaces so GC does not reap it before
+			// the first real prompt. An expired PinExpiry (non-nil and in the past)
+			// falls through so the max-pin-duration cap self-heals a stuck pin.
+			if s.Pinned && (s.PinExpiry == nil || now.Before(*s.PinExpiry)) {
+				if m.logger != nil {
+					m.logger.Debug("GC: skipping session (pinned)",
+						"session_id", s.SessionID,
+						"workspace_uuid", workspaceUUID,
+						"pin_reason", s.PinReason)
 				}
 				continue
 			}
@@ -442,6 +477,19 @@ gcTier1:
 			continue
 		}
 
+		// Adaptive pre-warming pin (mitto-mw0): a pinned workspace holds a warm
+		// PurposeKeepAlive auxiliary session but may have no BackgroundSessions.
+		// Skip Tier 2 shutdown so the process stays warm for the first real prompt.
+		// An expired pin falls through so the max-pin-duration cap self-heals.
+		if m.IsPinned(workspaceUUID) {
+			m.lastSessionSeen[workspaceUUID] = now
+			if m.logger != nil {
+				m.logger.Debug("GC: skipping process shutdown (pinned by prewarm)",
+					"workspace_uuid", workspaceUUID)
+			}
+			continue
+		}
+
 		// No active sessions for this workspace.
 		last, seen := m.lastSessionSeen[workspaceUUID]
 		if !seen {
@@ -509,6 +557,12 @@ gcTier1:
 		if sampler == nil {
 			sampler = func(p *SharedACPProcess) (uint64, error) { return p.RSSBytes() }
 		}
+		breakdownSampler := m.rssBreakdownSampler
+		if breakdownSampler == nil {
+			breakdownSampler = func(p *SharedACPProcess) (uint64, uint64, int, error) {
+				return p.RSSBytesDetailed()
+			}
+		}
 
 		sessionsByWorkspace = m.sessionQuery()
 
@@ -522,6 +576,19 @@ gcTier1:
 		for _, workspaceUUID := range recycleUUIDs {
 			p := m.GetProcess(workspaceUUID)
 			if p == nil {
+				continue
+			}
+
+			// Adaptive pre-warming pin (mitto-54k.7): never memory-recycle a
+			// pinned workspace. A warm shared Auggie process is the whole
+			// point of the pin — recycling it here would force a cold
+			// MCP-server spawn on the next prompt, exactly the hang we are
+			// keeping the process warm to avoid.
+			if m.IsPinned(workspaceUUID) {
+				if m.logger != nil {
+					m.logger.Debug("GC: skipping memory recycle (pinned/warm)",
+						"workspace_uuid", workspaceUUID)
+				}
 				continue
 			}
 
@@ -585,12 +652,23 @@ gcTier1:
 				}
 				continue
 			}
+			// Sample the breakdown so both log lines can distinguish agent-side
+			// (parent) growth from MCP-child (descendant) growth (mitto-3gu). A
+			// breakdown-sampler error is non-fatal: log with zero fields so the
+			// recycle decision still uses the tree total from `sampler`.
+			parentRSS, descendantRSS, descendantCount, breakdownErr := breakdownSampler(p)
+			if breakdownErr != nil {
+				parentRSS, descendantRSS, descendantCount = 0, 0, 0
+			}
 			if rss <= m.gcConfig.MemoryRecycleThreshold {
 				if m.logger != nil {
 					m.logger.Debug("GC: memory recycle below threshold",
 						"workspace_uuid", workspaceUUID,
 						"rss_bytes", rss,
-						"threshold_bytes", m.gcConfig.MemoryRecycleThreshold)
+						"threshold_bytes", m.gcConfig.MemoryRecycleThreshold,
+						"parent_rss_bytes", parentRSS,
+						"descendant_rss_bytes", descendantRSS,
+						"descendant_count", descendantCount)
 				}
 				continue
 			}
@@ -601,7 +679,10 @@ gcTier1:
 					"workspace_uuid", workspaceUUID,
 					"rss_bytes", rss,
 					"threshold_bytes", m.gcConfig.MemoryRecycleThreshold,
-					"session_count", len(sessions))
+					"session_count", len(sessions),
+					"parent_rss_bytes", parentRSS,
+					"descendant_rss_bytes", descendantRSS,
+					"descendant_count", descendantCount)
 			}
 			// Mark each session GC-suspended BEFORE closing so the WebSocket
 			// auto-resume handler skips resume and avoids a thrash loop — same
@@ -622,6 +703,214 @@ gcTier1:
 			if m.onMemoryRecycled != nil {
 				m.onMemoryRecycled(workspaceUUID, rss, m.gcConfig.MemoryRecycleThreshold, recycledCount)
 			}
+		}
+	}
+
+	// ----------------------------------------------------------------
+	// Tier 5: proactively recycle degraded (saturated) idle processes (mitto-tfb)
+	// The saturation infra (mitto-13ck.2) only fails fast on new requests; it never
+	// recycles the degraded process, so a shared process that has starved one resume
+	// keeps starving the next resume/loop-prompt. Convert repeated NewSession/
+	// LoadSession deadlines into a fresh process: when a process is flagged saturated
+	// AND fully idle (same hard safety gates as Tier 4), close its sessions and stop
+	// it so the next NewSession lazily builds a healthy replacement. Re-query sessions
+	// so any closed by earlier tiers are excluded.
+	// ----------------------------------------------------------------
+	{
+		sessionsByWorkspace = m.sessionQuery()
+
+		m.mu.RLock()
+		healthUUIDs := make([]string, 0, len(m.processes))
+		for uuid := range m.processes {
+			healthUUIDs = append(healthUUIDs, uuid)
+		}
+		m.mu.RUnlock()
+
+		for _, workspaceUUID := range healthUUIDs {
+			p := m.GetProcess(workspaceUUID)
+			if p == nil {
+				continue
+			}
+
+			// Only act on degraded processes.
+			if !p.IsSaturated() {
+				continue
+			}
+
+			// Hard safety gates: only recycle a fully-idle process (same as Tier 4).
+			if rpcs := p.ActiveRPCs(); rpcs > 0 {
+				if m.logger != nil {
+					m.logger.Debug("GC: skipping health recycle (busy)",
+						"workspace_uuid", workspaceUUID,
+						"reason", "in-flight RPCs",
+						"active_rpcs", rpcs)
+				}
+				continue
+			}
+			sessions := sessionsByWorkspace[workspaceUUID]
+			busy := false
+			for _, s := range sessions {
+				if s.IsPrompting {
+					if m.logger != nil {
+						m.logger.Debug("GC: skipping health recycle (busy)",
+							"workspace_uuid", workspaceUUID,
+							"reason", "session prompting",
+							"session_id", s.SessionID)
+					}
+					busy = true
+					break
+				}
+				if s.QueueLength > 0 {
+					if m.logger != nil {
+						m.logger.Debug("GC: skipping health recycle (busy)",
+							"workspace_uuid", workspaceUUID,
+							"reason", "non-empty queue",
+							"session_id", s.SessionID,
+							"queue_length", s.QueueLength)
+					}
+					busy = true
+					break
+				}
+				if s.NextLoopAt != nil && s.NextLoopAt.Before(now.Add(2*m.gcConfig.Interval)) {
+					if m.logger != nil {
+						m.logger.Debug("GC: skipping health recycle (busy)",
+							"workspace_uuid", workspaceUUID,
+							"reason", "loop prompt due soon",
+							"session_id", s.SessionID,
+							"next_loop_at", s.NextLoopAt)
+					}
+					busy = true
+					break
+				}
+			}
+			if busy {
+				continue
+			}
+
+			// Saturated and idle — recycle to reclaim a healthy process.
+			if m.logger != nil {
+				m.logger.Info("GC: recycling saturated idle shared ACP process",
+					"workspace_uuid", workspaceUUID,
+					"session_count", len(sessions))
+			}
+			// Mark each session GC-suspended BEFORE closing so the WebSocket
+			// auto-resume handler skips resume and avoids a thrash loop — same
+			// ordering as Tier 1's loop-suspend and Tier 4's memory-recycle paths.
+			for _, s := range sessions {
+				m.MarkGCSuspended(s.SessionID)
+				m.sessionClose(s.SessionID)
+			}
+			// Stop the now-sessionless process; the next NewSession lazily builds a
+			// fresh one with zeroed saturation state.
+			m.StopProcess(workspaceUUID)
+			// Keep sessionless bookkeeping consistent.
+			m.gcMu.Lock()
+			delete(m.lastSessionSeen, workspaceUUID)
+			m.gcMu.Unlock()
+			// mitto-clc: proactive re-warm after recycle was inactivated — a
+			// naturally cold next NewSession is preferable to piling load onto
+			// an already-degraded workspace.
+		}
+	}
+
+	// ----------------------------------------------------------------
+	// Tier 6: recycle CONFIRMED-degraded processes even while busy (mitto-1h0)
+	// Re-query sessions so any closed by earlier tiers are excluded.
+	// ----------------------------------------------------------------
+	{
+		sessionsByWorkspace = m.sessionQuery()
+
+		m.mu.RLock()
+		degradedUUIDs := make([]string, 0, len(m.processes))
+		for uuid := range m.processes {
+			degradedUUIDs = append(degradedUUIDs, uuid)
+		}
+		m.mu.RUnlock()
+
+		for _, workspaceUUID := range degradedUUIDs {
+			p := m.GetProcess(workspaceUUID)
+			if p == nil {
+				continue
+			}
+
+			// Only act on confirmed-degraded processes (saturationLevel >= 2):
+			// they have already tripped saturation, served a cooldown, and their
+			// post-cooldown probe ALSO timed out — demonstrably not self-healing.
+			if !p.IsConfirmedDegraded() {
+				continue
+			}
+
+			sessions := sessionsByWorkspace[workspaceUUID]
+
+			// Just-resumed grace: never recycle a session that was resumed within
+			// the last GC interval (same as Tier 1/5's grace window).
+			skip := false
+			for _, s := range sessions {
+				if !s.ResumedAt.IsZero() && now.Sub(s.ResumedAt) < m.gcConfig.Interval {
+					if m.logger != nil {
+						m.logger.Debug("GC: skipping confirmed-degraded recycle (recently resumed)",
+							"workspace_uuid", workspaceUUID,
+							"session_id", s.SessionID,
+							"resumed_ago", now.Sub(s.ResumedAt))
+					}
+					skip = true
+					break
+				}
+				if s.NextLoopAt != nil && s.NextLoopAt.Before(now.Add(2*m.gcConfig.Interval)) {
+					if m.logger != nil {
+						m.logger.Debug("GC: skipping confirmed-degraded recycle (loop prompt due soon)",
+							"workspace_uuid", workspaceUUID,
+							"session_id", s.SessionID,
+							"next_loop_at", s.NextLoopAt)
+					}
+					skip = true
+					break
+				}
+			}
+			if skip {
+				continue
+			}
+
+			// No-streamed-progress guard (mandatory anti-regression): if any session
+			// has streamed activity within the quiet window, it is legitimately
+			// progressing — do NOT kill it, regardless of in-flight RPCs or prompting
+			// state. Note: unlike Tier 5, we deliberately do NOT gate on
+			// ActiveRPCs()/IsPrompting here — the in-flight, timing-out control RPCs
+			// (session/new, set_model) ARE the wedge, not real work.
+			progressing := false
+			for _, s := range sessions {
+				if !s.LastStreamActivityAt.IsZero() && now.Sub(s.LastStreamActivityAt) < tier6StreamedProgressQuietWindow {
+					if m.logger != nil {
+						m.logger.Debug("GC: skipping confirmed-degraded recycle (session progressing)",
+							"workspace_uuid", workspaceUUID,
+							"session_id", s.SessionID,
+							"stream_idle", now.Sub(s.LastStreamActivityAt))
+					}
+					progressing = true
+					break
+				}
+			}
+			if progressing {
+				continue
+			}
+
+			// Confirmed-degraded, not progressing — recycle even though busy.
+			if m.logger != nil {
+				m.logger.Info("GC: recycling confirmed-degraded busy shared ACP process",
+					"workspace_uuid", workspaceUUID,
+					"saturation_level", p.SaturationLevel(),
+					"active_rpcs", p.ActiveRPCs(),
+					"session_count", len(sessions))
+			}
+			for _, s := range sessions {
+				m.MarkGCSuspended(s.SessionID)
+				m.sessionClose(s.SessionID)
+			}
+			m.StopProcess(workspaceUUID)
+			m.gcMu.Lock()
+			delete(m.lastSessionSeen, workspaceUUID)
+			m.gcMu.Unlock()
+			// mitto-clc: proactive re-warm after recycle was inactivated.
 		}
 	}
 

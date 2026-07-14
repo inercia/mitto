@@ -5,10 +5,15 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/google/cel-go/cel"
+	celast "github.com/google/cel-go/common/ast"
+	"github.com/google/cel-go/common/types"
 
 	rootconfig "github.com/inercia/mitto/config"
 	"github.com/inercia/mitto/internal/config"
@@ -1095,6 +1100,135 @@ parameters:
   - name: filename
     type: text
     default: AGENTS.md
+`,
+			expectSkip:  true,
+			expectCount: 0,
+		},
+		// conversationClosed phase validation
+		{
+			name: "conversationClosed command-mode accepted",
+			yaml: `
+name: ok-close-cmd
+when:
+  on: conversationClosed
+  match: all
+command: /bin/echo
+`,
+			expectSkip:  false,
+			expectCount: 1,
+		},
+		{
+			name: "conversationClosed prompt-mode accepted",
+			yaml: `
+name: ok-close-prompt
+when:
+  on: conversationClosed
+  match: all
+prompt: "Persist memories for @mitto:session_id."
+`,
+			expectSkip:  false,
+			expectCount: 1,
+		},
+		{
+			name: "conversationClosed with text rejected",
+			yaml: `
+name: bad-close-text
+when:
+  on: conversationClosed
+  match: all
+text: "some text"
+`,
+			expectSkip:  true,
+			expectCount: 0,
+		},
+		{
+			name: "conversationClosed with mutate rejected",
+			yaml: `
+name: bad-close-mutate
+when:
+  on: conversationClosed
+  match: all
+mutate: prepend
+command: /bin/echo
+`,
+			expectSkip:  true,
+			expectCount: 0,
+		},
+		{
+			name: "conversationClosed with match=first rejected",
+			yaml: `
+name: bad-close-first
+when:
+  on: conversationClosed
+  match: first
+command: /bin/echo
+`,
+			expectSkip:  true,
+			expectCount: 0,
+		},
+		{
+			name: "conversationClosed with rerun rejected",
+			yaml: `
+name: bad-close-rerun
+when:
+  on: conversationClosed
+  match: all
+  rerun:
+    afterTime: 10m
+command: /bin/echo
+`,
+			expectSkip:  true,
+			expectCount: 0,
+		},
+		{
+			name: "conversationClosed with cadence rejected",
+			yaml: `
+name: bad-close-cadence
+when:
+  on: conversationClosed
+  match: all
+  cadence:
+    everyNTurns: 3
+command: /bin/echo
+`,
+			expectSkip:  true,
+			expectCount: 0,
+		},
+		{
+			name: "conversationClosed with stopReasons rejected",
+			yaml: `
+name: bad-close-stop
+when:
+  on: conversationClosed
+  match: all
+  stopReasons: ["end_turn"]
+command: /bin/echo
+`,
+			expectSkip:  true,
+			expectCount: 0,
+		},
+		{
+			name: "conversationClosed with output=transform rejected",
+			yaml: `
+name: bad-close-transform
+when:
+  on: conversationClosed
+  match: all
+command: /bin/echo
+output: transform
+`,
+			expectSkip:  true,
+			expectCount: 0,
+		},
+		{
+			name: "conversationClosed with output=notify rejected",
+			yaml: `
+name: bad-close-notify
+when:
+  on: conversationClosed
+  match: all
+command: /bin/echo
+output: notify
 `,
 			expectSkip:  true,
 			expectCount: 0,
@@ -4688,6 +4822,25 @@ func TestBuiltinProcessorsValidity(t *testing.T) {
 			if len(procs) == 0 {
 				t.Errorf("Load() returned 0 processors (file may have failed validation); check loader warnings")
 			}
+
+			// Eagerly compile any enabledWhen CEL expression. The runtime path
+			// (Processor.ShouldApply) fails open on compile errors and only logs a
+			// warning, so a broken expression (e.g. unbalanced parens) would ship
+			// silently and defeat the intended gate. Compiling here catches syntax
+			// and type errors at test time.
+			evaluator := config.GetCELEvaluator()
+			if evaluator == nil {
+				t.Fatal("GetCELEvaluator() returned nil; cannot validate enabledWhen expressions")
+			}
+			for _, p := range procs {
+				if p.EnabledWhen == "" {
+					continue
+				}
+				if _, err := evaluator.Compile(p.EnabledWhen); err != nil {
+					t.Errorf("processor %q: enabledWhen failed to compile: %v\n  expression: %s",
+						p.Name, err, p.EnabledWhen)
+				}
+			}
 		})
 	}
 }
@@ -4943,4 +5096,300 @@ func TestMemorizePreferences_ResolveTargetFile(t *testing.T) {
 			t.Errorf("explicit PreferencesFile should override auto-detect, but auto path present:\n%s", out)
 		}
 	})
+}
+
+// extractHasModelTagArgs walks a compiled CEL AST and returns the string-literal
+// second argument of every __mitto_hasModelTag(Session.ModelTags, "<tag>") call.
+// The parse-time macro sessionHasModelTagMacro rewrites Session.HasModelTag(t)
+// into __mitto_hasModelTag(Session.ModelTags, t); non-literal args (dynamic
+// expressions) are skipped rather than reported.
+func extractHasModelTagArgs(ast *cel.Ast) []string {
+	var out []string
+	matches := celast.MatchDescendants(
+		celast.NavigateAST(ast.NativeRep()),
+		func(e celast.NavigableExpr) bool {
+			if e.Kind() != celast.CallKind {
+				return false
+			}
+			return e.AsCall().FunctionName() == "__mitto_hasModelTag"
+		},
+	)
+	for _, m := range matches {
+		args := m.AsCall().Args()
+		if len(args) < 2 {
+			continue
+		}
+		lit := args[1]
+		if lit.Kind() != celast.LiteralKind {
+			continue
+		}
+		s, ok := lit.AsLiteral().(types.String)
+		if !ok {
+			continue
+		}
+		out = append(out, string(s))
+	}
+	return out
+}
+
+// TestBuiltinProcessors_HasModelTagArgsAreCanonical walks every embedded builtin
+// processor's enabledWhen expression and asserts that any Session.HasModelTag("<tag>")
+// literal references a tag in config.CanonicalModelTags(). Guards against typos
+// like Session.HasModelTag("Reasonig") that parse+compile fine but silently
+// evaluate to false at runtime, causing the processor to never fire.
+func TestBuiltinProcessors_HasModelTagArgsAreCanonical(t *testing.T) {
+	canonical := make(map[string]struct{})
+	for _, tag := range config.CanonicalModelTags() {
+		canonical[strings.ToLower(tag)] = struct{}{}
+	}
+
+	filenames, err := rootconfig.ListEmbeddedProcessors()
+	if err != nil {
+		t.Fatalf("ListEmbeddedProcessors() error = %v", err)
+	}
+	if len(filenames) == 0 {
+		t.Fatal("no embedded builtin processors found; check config/processors/builtin/")
+	}
+
+	evaluator := config.GetCELEvaluator()
+	if evaluator == nil {
+		t.Fatal("GetCELEvaluator() returned nil; cannot validate enabledWhen expressions")
+	}
+
+	var unknown []string
+	for _, filename := range filenames {
+		srcPath := rootconfig.BuiltinProcessorsDir + "/" + filename
+		content, err := rootconfig.BuiltinProcessorsFS.ReadFile(srcPath)
+		if err != nil {
+			t.Fatalf("ReadFile(%s) error = %v", srcPath, err)
+		}
+
+		dir := t.TempDir()
+		destPath := filepath.Join(dir, filename)
+		if err := os.WriteFile(destPath, content, 0644); err != nil {
+			t.Fatalf("WriteFile error = %v", err)
+		}
+
+		loader := NewLoader(dir, nil)
+		procs, err := loader.Load()
+		if err != nil {
+			t.Errorf("%s: Load() returned unexpected error: %v", filename, err)
+			continue
+		}
+
+		for _, p := range procs {
+			if p.EnabledWhen == "" {
+				continue
+			}
+			ast, err := evaluator.ParseAST(p.EnabledWhen)
+			if err != nil {
+				// TestBuiltinProcessorsValidity already catches compile errors;
+				// defensively skip here so this test only reports tag drift.
+				continue
+			}
+			for _, tag := range extractHasModelTagArgs(ast) {
+				if _, ok := canonical[strings.ToLower(tag)]; !ok {
+					unknown = append(unknown, filename+": "+tag)
+				}
+			}
+		}
+	}
+	if len(unknown) > 0 {
+		sort.Strings(unknown)
+		t.Fatalf("builtin processors reference unknown Session.HasModelTag() literal(s) not in CanonicalModelTags():\n  %s",
+			strings.Join(unknown, "\n  "))
+	}
+}
+
+// TestHasModelTagArgsChecker_CatchesTypo proves extractHasModelTagArgs surfaces
+// a typo'd tag literal from a synthesized processor, so the drift-guard above
+// actually fails on regressions rather than just passing on a clean tree.
+func TestHasModelTagArgsChecker_CatchesTypo(t *testing.T) {
+	const badTag = "Reasonig" // deliberate typo of "Reasoning"
+
+	dir := t.TempDir()
+	yaml := "" +
+		"name: test-typo\n" +
+		"when:\n" +
+		"  on: userPrompt\n" +
+		"  match: first\n" +
+		"mutate: append\n" +
+		"text: \"noop\"\n" +
+		"enabledWhen: 'Session.HasModelTag(\"" + badTag + "\")'\n"
+	if err := os.WriteFile(filepath.Join(dir, "test-typo.yaml"), []byte(yaml), 0644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	procs, err := NewLoader(dir, nil).Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(procs) != 1 {
+		t.Fatalf("expected 1 processor, got %d", len(procs))
+	}
+
+	evaluator := config.GetCELEvaluator()
+	if evaluator == nil {
+		t.Fatal("GetCELEvaluator() returned nil")
+	}
+	ast, err := evaluator.ParseAST(procs[0].EnabledWhen)
+	if err != nil {
+		t.Fatalf("ParseAST: %v", err)
+	}
+	got := extractHasModelTagArgs(ast)
+	if len(got) != 1 || got[0] != badTag {
+		t.Fatalf("extractHasModelTagArgs = %v, want [%q]", got, badTag)
+	}
+
+	canonical := make(map[string]struct{})
+	for _, tag := range config.CanonicalModelTags() {
+		canonical[strings.ToLower(tag)] = struct{}{}
+	}
+	if _, ok := canonical[strings.ToLower(badTag)]; ok {
+		t.Fatalf("test invariant broken: %q is in CanonicalModelTags(); pick a different typo", badTag)
+	}
+}
+
+// TestApplyOnClose_PromptMode_Dispatched verifies that a prompt-mode
+// conversationClosed processor is dispatched via promptFunc with @mitto:
+// substitution applied.
+func TestApplyOnClose_PromptMode_Dispatched(t *testing.T) {
+	var mu sync.Mutex
+	var dispatched []struct{ workspace, name, prompt string }
+
+	proc := &Processor{
+		Name:   "close-memoriser",
+		When:   WhenConfig{On: PhaseConversationClosed, Match: MatchAll},
+		Prompt: "Persist for session @mitto:session_id (reason @mitto:archive_reason).",
+	}
+
+	m := NewManager("", nil)
+	m.processors = []*Processor{proc}
+	m.SetPromptFunc(func(_ context.Context, workspaceUUID, processorName, prompt string) error {
+		mu.Lock()
+		defer mu.Unlock()
+		dispatched = append(dispatched, struct{ workspace, name, prompt string }{
+			workspace: workspaceUUID, name: processorName, prompt: prompt,
+		})
+		return nil
+	})
+
+	m.ApplyOnClose(context.Background(), CloseProcessorInput{
+		SessionID:     "sess-close-1",
+		WorkspaceUUID: "ws-uuid",
+		WorkingDir:    "/tmp/wd",
+		ArchiveReason: "manual",
+	})
+
+	// Prompt dispatch is fire-and-forget from ApplyOnClose's perspective — the
+	// goroutine may still be running. Poll briefly.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		mu.Lock()
+		n := len(dispatched)
+		mu.Unlock()
+		if n > 0 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(dispatched) != 1 {
+		t.Fatalf("expected 1 dispatch, got %d", len(dispatched))
+	}
+	got := dispatched[0]
+	if got.workspace != "ws-uuid" {
+		t.Errorf("workspace = %q, want %q", got.workspace, "ws-uuid")
+	}
+	if got.name != "close-memoriser" {
+		t.Errorf("name = %q, want %q", got.name, "close-memoriser")
+	}
+	if !strings.Contains(got.prompt, "sess-close-1") {
+		t.Errorf("prompt missing @mitto:session_id substitution: %q", got.prompt)
+	}
+	if !strings.Contains(got.prompt, "manual") {
+		t.Errorf("prompt missing @mitto:archive_reason substitution: %q", got.prompt)
+	}
+}
+
+// TestApplyOnClose_SkipsOtherPhases ensures processors from other phases are ignored.
+func TestApplyOnClose_SkipsOtherPhases(t *testing.T) {
+	var dispatched int
+	var mu sync.Mutex
+
+	m := NewManager("", nil)
+	m.processors = []*Processor{
+		{Name: "user", When: WhenConfig{On: PhaseUserPrompt, Match: MatchAll}, Prompt: "x"},
+		{Name: "after", When: WhenConfig{On: PhaseAgentResponded, Match: MatchAll}, Prompt: "y"},
+		{Name: "idle", When: WhenConfig{On: PhaseAgentIdle, Match: MatchAll}, Prompt: "z"},
+	}
+	m.SetPromptFunc(func(_ context.Context, _, _, _ string) error {
+		mu.Lock()
+		dispatched++
+		mu.Unlock()
+		return nil
+	})
+
+	m.ApplyOnClose(context.Background(), CloseProcessorInput{SessionID: "s"})
+
+	// Give any (erroneous) goroutine a chance to run.
+	time.Sleep(50 * time.Millisecond)
+
+	mu.Lock()
+	defer mu.Unlock()
+	if dispatched != 0 {
+		t.Errorf("expected no dispatches from non-close processors, got %d", dispatched)
+	}
+}
+
+// TestApplyOnClose_SkipsDisabled ensures disabled conversationClosed processors do
+// not fire.
+func TestApplyOnClose_SkipsDisabled(t *testing.T) {
+	disabled := false
+	proc := &Processor{
+		Name:    "off",
+		Enabled: &disabled,
+		When:    WhenConfig{On: PhaseConversationClosed, Match: MatchAll},
+		Prompt:  "should not fire",
+	}
+	var mu sync.Mutex
+	dispatched := 0
+
+	m := NewManager("", nil)
+	m.processors = []*Processor{proc}
+	m.SetPromptFunc(func(_ context.Context, _, _, _ string) error {
+		mu.Lock()
+		dispatched++
+		mu.Unlock()
+		return nil
+	})
+
+	m.ApplyOnClose(context.Background(), CloseProcessorInput{SessionID: "s"})
+	time.Sleep(50 * time.Millisecond)
+
+	mu.Lock()
+	defer mu.Unlock()
+	if dispatched != 0 {
+		t.Errorf("expected disabled processor to be skipped, got %d dispatches", dispatched)
+	}
+}
+
+// TestShouldApply_ConversationClosedSkippedInUserPromptPipeline verifies that
+// conversationClosed processors are always skipped by ShouldApply (they run only
+// via Manager.ApplyOnClose).
+func TestShouldApply_ConversationClosedSkippedInUserPromptPipeline(t *testing.T) {
+	proc := &Processor{
+		Name:    "close-only",
+		When:    WhenConfig{On: PhaseConversationClosed, Match: MatchAll},
+		Command: "/bin/echo",
+	}
+	ok, reason := proc.ShouldApply(false, &ProcessorInput{})
+	if ok {
+		t.Errorf("expected ShouldApply=false for conversationClosed processor in userPrompt pipeline")
+	}
+	if reason != SkipReasonConversationClosedPhase {
+		t.Errorf("reason = %q, want %q", reason, SkipReasonConversationClosedPhase)
+	}
 }

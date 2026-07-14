@@ -2,12 +2,15 @@ package conversation
 
 import (
 	"context"
+	"log/slog"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/inercia/mitto/internal/config"
+	"github.com/inercia/mitto/internal/processors"
+	"github.com/inercia/mitto/internal/runner"
 	"github.com/inercia/mitto/internal/session"
 )
 
@@ -1979,5 +1982,604 @@ func TestProcessorArgOverrides_SeamMethods(t *testing.T) {
 	}
 	if got2["auggie-manage-rules"]["filename"] != "AGENTS.md" {
 		t.Errorf("fu seam: filename = %q, want AGENTS.md", got2["auggie-manage-rules"]["filename"])
+	}
+}
+
+// fakeProcessManager is a minimal ProcessManager stub for tests. It records the
+// workspace UUIDs passed to EnsurePrewarmed so tests can assert the re-warm
+// trigger fired (mitto-54k.7), and the PinWorkspace calls so tests can assert
+// the close-phase pin fired (mitto-4is). All other interface methods are no-ops.
+type fakeProcessManager struct {
+	mu             sync.Mutex
+	prewarmed      []string
+	prewarmCh      chan string
+	pinCalls       []fakePinCall
+	liveWorkspaces map[string]bool
+	// hasLiveDefault is returned by HasLiveProcess when the workspace UUID is
+	// not listed in liveWorkspaces. Defaults to true so pre-existing tests
+	// (which do not care about the reaped-process path) continue to see a
+	// "live" workspace.
+	hasLiveDefault bool
+}
+
+type fakePinCall struct {
+	workspaceUUID string
+	reason        string
+	maxDuration   time.Duration
+	maxPinned     int
+}
+
+func newFakeProcessManager() *fakeProcessManager {
+	return &fakeProcessManager{
+		prewarmCh:      make(chan string, 8),
+		liveWorkspaces: map[string]bool{},
+		hasLiveDefault: true,
+	}
+}
+
+// setLiveProcess controls what HasLiveProcess returns for a given workspace
+// UUID. Passing live=false simulates a workspace whose shared ACP process has
+// already been reaped by GC (mitto-6bn.1).
+func (f *fakeProcessManager) setLiveProcess(workspaceUUID string, live bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.liveWorkspaces[workspaceUUID] = live
+}
+
+func (f *fakeProcessManager) EnsurePrewarmed(workspaceUUID string, _ *slog.Logger) {
+	f.mu.Lock()
+	f.prewarmed = append(f.prewarmed, workspaceUUID)
+	f.mu.Unlock()
+	select {
+	case f.prewarmCh <- workspaceUUID:
+	default:
+	}
+}
+
+func (f *fakeProcessManager) prewarmedUUIDs() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.prewarmed...)
+}
+
+func (f *fakeProcessManager) GetOrCreateProcess(*config.WorkspaceSettings, string, string, map[string]string, *runner.Runner, bool) (SharedProcess, error) {
+	return nil, nil
+}
+func (f *fakeProcessManager) ClearGCSuspended(string)   {}
+func (f *fakeProcessManager) IsGCSuspended(string) bool { return false }
+func (f *fakeProcessManager) StopGC()                   {}
+func (f *fakeProcessManager) Close()                    {}
+func (f *fakeProcessManager) ProcessCount() int         { return 0 }
+func (f *fakeProcessManager) ColdProcessCount() int     { return 0 }
+func (f *fakeProcessManager) PinWorkspace(workspaceUUID, reason string, maxDuration time.Duration, maxPinned int) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.pinCalls = append(f.pinCalls, fakePinCall{
+		workspaceUUID: workspaceUUID,
+		reason:        reason,
+		maxDuration:   maxDuration,
+		maxPinned:     maxPinned,
+	})
+	return true
+}
+
+func (f *fakeProcessManager) pinCallsSnapshot() []fakePinCall {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]fakePinCall(nil), f.pinCalls...)
+}
+
+func (f *fakeProcessManager) HasLiveProcess(workspaceUUID string) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if v, ok := f.liveWorkspaces[workspaceUUID]; ok {
+		return v
+	}
+	return f.hasLiveDefault
+}
+
+// waitForPrewarm blocks until EnsurePrewarmed is called (up to timeout) and
+// returns the workspace UUID, or "" if it was not called in time.
+func (f *fakeProcessManager) waitForPrewarm(timeout time.Duration) string {
+	select {
+	case ws := <-f.prewarmCh:
+		return ws
+	case <-time.After(timeout):
+		return ""
+	}
+}
+
+// TestSessionManager_CloseSession_NoRewarmWhenLastSessionDeleted verifies
+// that deleting the last user session for a workspace does NOT trigger
+// EnsurePrewarmed (mitto-clc: proactive re-warm-on-close was inactivated).
+func TestSessionManager_CloseSession_NoRewarmWhenLastSessionDeleted(t *testing.T) {
+	const wsUUID = "ws-rewarm-1"
+
+	sm := NewSessionManager("echo test", "test-server", true, nil)
+	pm := newFakeProcessManager()
+	sm.SetACPProcessManager(pm)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	bs := NewTestBackgroundSessionWithCtx("sess-1", ctx, cancel)
+	bs.workspaceUUID = wsUUID
+	sm.mu.Lock()
+	sm.sessions["sess-1"] = bs
+	sm.mu.Unlock()
+
+	sm.CloseSession("sess-1", "deleted")
+
+	if got := pm.waitForPrewarm(300 * time.Millisecond); got != "" {
+		t.Fatalf("EnsurePrewarmed should not fire (mitto-clc), got %q", got)
+	}
+	if uuids := pm.prewarmedUUIDs(); len(uuids) != 0 {
+		t.Fatalf("expected no prewarm calls, got %v", uuids)
+	}
+}
+
+// TestSessionManager_CloseSession_NoRewarmWhenSessionsRemain verifies that
+// closing one session while others in the same workspace remain does NOT
+// trigger a re-warm (the remaining sessions keep the process warm).
+func TestSessionManager_CloseSession_NoRewarmWhenSessionsRemain(t *testing.T) {
+	const wsUUID = "ws-rewarm-2"
+
+	sm := NewSessionManager("echo test", "test-server", true, nil)
+	pm := newFakeProcessManager()
+	sm.SetACPProcessManager(pm)
+
+	ctx1, cancel1 := context.WithCancel(context.Background())
+	bs1 := NewTestBackgroundSessionWithCtx("sess-1", ctx1, cancel1)
+	bs1.workspaceUUID = wsUUID
+	ctx2, cancel2 := context.WithCancel(context.Background())
+	bs2 := NewTestBackgroundSessionWithCtx("sess-2", ctx2, cancel2)
+	bs2.workspaceUUID = wsUUID
+
+	sm.mu.Lock()
+	sm.sessions["sess-1"] = bs1
+	sm.sessions["sess-2"] = bs2
+	sm.mu.Unlock()
+
+	sm.CloseSession("sess-1", "deleted")
+
+	if got := pm.waitForPrewarm(300 * time.Millisecond); got != "" {
+		t.Fatalf("EnsurePrewarmed should not fire while sessions remain, got %q", got)
+	}
+	if uuids := pm.prewarmedUUIDs(); len(uuids) != 0 {
+		t.Fatalf("expected no prewarm calls, got %v", uuids)
+	}
+}
+
+// TestSessionManager_CloseSession_NoRewarmOnArchive verifies that archive-family
+// close reasons do NOT trigger a re-warm even when the workspace goes
+// sessionless (archiving deliberately stops-and-reclaims).
+func TestSessionManager_CloseSession_NoRewarmOnArchive(t *testing.T) {
+	const wsUUID = "ws-rewarm-3"
+
+	for _, reason := range []string{"archived", "archived_timeout", "ancestor_archived", "parent_archived_timeout", "acp_server_reconfigured"} {
+		t.Run(reason, func(t *testing.T) {
+			sm := NewSessionManager("echo test", "test-server", true, nil)
+			pm := newFakeProcessManager()
+			sm.SetACPProcessManager(pm)
+
+			ctx, cancel := context.WithCancel(context.Background())
+			bs := NewTestBackgroundSessionWithCtx("sess-1", ctx, cancel)
+			bs.workspaceUUID = wsUUID
+			sm.mu.Lock()
+			sm.sessions["sess-1"] = bs
+			sm.mu.Unlock()
+
+			sm.CloseSession("sess-1", reason)
+
+			if got := pm.waitForPrewarm(300 * time.Millisecond); got != "" {
+				t.Fatalf("EnsurePrewarmed should not fire for reason %q, got %q", reason, got)
+			}
+		})
+	}
+}
+
+// TestApplyOnCloseProcessors_PinsWorkspace verifies that the close-phase
+// pipeline pins the workspace before dispatching its fire-and-forget goroutine,
+// protecting the shared ACP process from GC while in-flight processors are
+// still dispatching to auxiliary sessions (mitto-4is).
+func TestApplyOnCloseProcessors_PinsWorkspace(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	t.Cleanup(func() { store.Close() })
+
+	const (
+		sid       = "sess-pin"
+		wsUUID    = "ws-pin-close"
+		acpServer = "test-server"
+	)
+	workingDir := t.TempDir()
+
+	if err := store.Create(session.Metadata{
+		SessionID:  sid,
+		ACPServer:  acpServer,
+		WorkingDir: workingDir,
+	}); err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+
+	sm := NewSessionManager("echo test", acpServer, true, nil)
+	sm.SetStore(store)
+	sm.SetProcessorManager(processors.NewManager("", nil))
+	sm.AddWorkspace(config.WorkspaceSettings{
+		UUID:       wsUUID,
+		WorkingDir: workingDir,
+		ACPServer:  acpServer,
+	})
+	pm := newFakeProcessManager()
+	sm.SetACPProcessManager(pm)
+
+	sm.ApplyOnCloseProcessors(sid, "deleted")
+
+	calls := pm.pinCallsSnapshot()
+	if len(calls) != 1 {
+		t.Fatalf("PinWorkspace call count = %d, want 1 (calls=%+v)", len(calls), calls)
+	}
+	got := calls[0]
+	if got.workspaceUUID != wsUUID {
+		t.Errorf("PinWorkspace workspaceUUID = %q, want %q", got.workspaceUUID, wsUUID)
+	}
+	if got.reason != "conversation_closed_processors" {
+		t.Errorf("PinWorkspace reason = %q, want %q", got.reason, "conversation_closed_processors")
+	}
+	if got.maxDuration != 15*time.Minute {
+		t.Errorf("PinWorkspace maxDuration = %v, want %v", got.maxDuration, 15*time.Minute)
+	}
+	if got.maxPinned != 0 {
+		t.Errorf("PinWorkspace maxPinned = %d, want 0 (uncapped)", got.maxPinned)
+	}
+}
+
+// TestApplyOnCloseProcessors_NoPinWithoutWorkspaceUUID verifies that when the
+// session's workspace cannot be resolved from the registry, the close pipeline
+// still runs but skips the pin call (pinning without a UUID would be a no-op
+// on the wrong key and mask the misconfiguration).
+func TestApplyOnCloseProcessors_NoPinWithoutWorkspaceUUID(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	t.Cleanup(func() { store.Close() })
+
+	const sid = "sess-pin-noresolve"
+	// Note: no AddWorkspace call — resolution will return nil, so workspaceUUID
+	// stays empty.
+	if err := store.Create(session.Metadata{
+		SessionID:  sid,
+		ACPServer:  "test-server",
+		WorkingDir: t.TempDir(),
+	}); err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+
+	sm := NewSessionManager("echo test", "test-server", true, nil)
+	sm.SetStore(store)
+	sm.SetProcessorManager(processors.NewManager("", nil))
+	pm := newFakeProcessManager()
+	sm.SetACPProcessManager(pm)
+
+	sm.ApplyOnCloseProcessors(sid, "deleted")
+
+	if calls := pm.pinCallsSnapshot(); len(calls) != 0 {
+		t.Fatalf("PinWorkspace should not fire without a resolved workspace UUID, got %+v", calls)
+	}
+}
+
+// TestApplyOnCloseProcessors_SkipsWhenSharedProcessReaped verifies that when
+// the workspace's shared ACP process has already been reaped by GC (e.g.
+// Tier 2 idle-reap hours after the last session closed), the close pipeline
+// is a clean no-op: no PinWorkspace call, no goroutine spawn, no downstream
+// "no shared process for workspace ..." ERROR from getOrCreateAuxiliarySession
+// (mitto-6bn.1).
+func TestApplyOnCloseProcessors_SkipsWhenSharedProcessReaped(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	t.Cleanup(func() { store.Close() })
+
+	const (
+		sid       = "sess-reaped"
+		wsUUID    = "ws-reaped-close"
+		acpServer = "test-server"
+	)
+	workingDir := t.TempDir()
+
+	if err := store.Create(session.Metadata{
+		SessionID:  sid,
+		ACPServer:  acpServer,
+		WorkingDir: workingDir,
+	}); err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+
+	sm := NewSessionManager("echo test", acpServer, true, nil)
+	sm.SetStore(store)
+	sm.SetProcessorManager(processors.NewManager("", nil))
+	sm.AddWorkspace(config.WorkspaceSettings{
+		UUID:       wsUUID,
+		WorkingDir: workingDir,
+		ACPServer:  acpServer,
+	})
+	pm := newFakeProcessManager()
+	// Simulate the reaped-process scenario: HasLiveProcess returns false.
+	pm.setLiveProcess(wsUUID, false)
+	sm.SetACPProcessManager(pm)
+
+	sm.ApplyOnCloseProcessors(sid, "inactivity")
+
+	// The pre-check must short-circuit BEFORE PinWorkspace is called.
+	if calls := pm.pinCallsSnapshot(); len(calls) != 0 {
+		t.Fatalf("PinWorkspace should not fire when shared process is reaped, got %+v", calls)
+	}
+}
+
+// TestSessionManager_ResumeSession_HappyPath_UsesWorkspaceMatchingDirAndACPServer
+// asserts that when two workspaces share the same working directory but expose
+// different ACP servers, the resume path re-resolves the workspace using both
+// the directory AND the ACP server from session metadata (Case: meta.ACPServer
+// != "" and resolveWorkspaceForACP finds a match). No orphan branch must fire,
+// so the persisted acp_server on metadata must remain unchanged.
+func TestSessionManager_ResumeSession_HappyPath_UsesWorkspaceMatchingDirAndACPServer(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := session.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	sm := NewSessionManagerWithOptions(SessionManagerOptions{
+		Workspaces: []config.WorkspaceSettings{
+			{WorkingDir: "/tmp", ACPServer: "agent-a"},
+			{WorkingDir: "/tmp", ACPServer: "agent-b"},
+		},
+	})
+	sm.SetStore(store)
+
+	sm.SetMittoConfig(&config.Config{
+		ACPServers: []config.ACPServer{
+			{Name: "agent-a", Command: "echo hello-a"},
+			{Name: "agent-b", Command: "echo hello-b"},
+		},
+	})
+
+	meta := session.Metadata{
+		SessionID:  "happy-path-session",
+		ACPServer:  "agent-b",
+		WorkingDir: "/tmp",
+		Name:       "Happy Path",
+	}
+	if err := store.Create(meta); err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+
+	_, err = sm.ResumeSession("happy-path-session", "Happy Path", "/tmp")
+	// Workspace resolution succeeded when the error, if any, is NOT the
+	// empty-command class emitted by the "no workspace + no server" branch.
+	if err != nil && strings.Contains(err.Error(), "empty command") {
+		t.Errorf("ResumeSession should have resolved the agent-b workspace, but got empty-command error: %v", err)
+	}
+
+	// The orphan-rescue branch (Case 2) is the only path that persists a new
+	// acp_server on metadata. It must not have fired here.
+	updated, err := store.GetMetadata("happy-path-session")
+	if err != nil {
+		t.Fatalf("GetMetadata after resume failed: %v", err)
+	}
+	if updated.ACPServer != "agent-b" {
+		t.Errorf("expected metadata acp_server to remain %q, got %q", "agent-b", updated.ACPServer)
+	}
+}
+
+// TestSessionManager_ResumeSession_ACPCommandOverride_TakesPriorityOverGlobalConfig
+// asserts that when the matched workspace carries an ACPCommandOverride, the
+// resume path uses ResolveWorkspaceACP (which prefers the override) rather than
+// the raw command from the global ACP server config.
+func TestSessionManager_ResumeSession_ACPCommandOverride_TakesPriorityOverGlobalConfig(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := session.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	sm := NewSessionManagerWithOptions(SessionManagerOptions{
+		Workspaces: []config.WorkspaceSettings{
+			{
+				WorkingDir:         "/tmp",
+				ACPServer:          "agent-a",
+				ACPCommandOverride: "echo override-cmd",
+			},
+		},
+	})
+	sm.SetStore(store)
+
+	sm.SetMittoConfig(&config.Config{
+		ACPServers: []config.ACPServer{
+			{Name: "agent-a", Command: "echo global-cmd"},
+		},
+	})
+
+	meta := session.Metadata{
+		SessionID:  "override-session",
+		ACPServer:  "agent-a",
+		WorkingDir: "/tmp",
+		Name:       "Override Session",
+	}
+	if err := store.Create(meta); err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+
+	_, err = sm.ResumeSession("override-session", "Override Session", "/tmp")
+	if err != nil && strings.Contains(err.Error(), "empty command") {
+		t.Errorf("ResumeSession should have resolved a non-empty command via the workspace override, got: %v", err)
+	}
+
+	// Behavioral cross-check: ResolveWorkspaceACP (the exact call the resume
+	// block makes) must return the override, not the global command. This
+	// documents the contract the extraction must preserve.
+	ws := sm.wsRegistry.GetWorkspaceByDirAndACP("/tmp", "agent-a")
+	if ws == nil {
+		t.Fatalf("expected workspace for /tmp + agent-a, got nil")
+	}
+	gotCmd, _, _ := sm.wsRegistry.ResolveWorkspaceACP(ws)
+	if gotCmd != "echo override-cmd" {
+		t.Errorf("ResolveWorkspaceACP command = %q, want %q (override must beat global config)", gotCmd, "echo override-cmd")
+	}
+}
+
+// TestSessionManager_ResumeSession_NoWorkspaceForDir_FallsBackToDefaultWorkspace
+// covers the provisional-pick fallback: no workspace matches the working dir
+// and metadata carries no ACP server, so the resolver must fall back to
+// GetDefaultWorkspace() to obtain a usable ACP command.
+func TestSessionManager_ResumeSession_NoWorkspaceForDir_FallsBackToDefaultWorkspace(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := session.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	sm := NewSessionManagerWithOptions(SessionManagerOptions{
+		Workspaces: []config.WorkspaceSettings{
+			{WorkingDir: "/other/dir", ACPServer: "agent-a", IsDefault: true},
+		},
+	})
+	sm.SetStore(store)
+
+	sm.SetMittoConfig(&config.Config{
+		ACPServers: []config.ACPServer{
+			{Name: "agent-a", Command: "echo hello"},
+		},
+	})
+
+	// Metadata has NO acp_server set and points at a working dir with no
+	// matching workspace: only the default-workspace fallback can supply a
+	// command here.
+	meta := session.Metadata{
+		SessionID:  "default-fallback-session",
+		WorkingDir: "/nowhere",
+		Name:       "Default Fallback",
+	}
+	if err := store.Create(meta); err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+
+	_, err = sm.ResumeSession("default-fallback-session", "Default Fallback", "/nowhere")
+	if err != nil {
+		errStr := err.Error()
+		if strings.Contains(errStr, "empty command") || strings.Contains(errStr, "empty ACP command") {
+			t.Errorf("ResumeSession should have fallen back to the default workspace's ACP command, got empty-command error: %v", err)
+		}
+	}
+}
+
+// TestSessionManager_ResumeSession_NoMetadataACPServer_KeepsProvisionalWorkspacePick
+// asserts that when metadata carries no acp_server, the provisional pick
+// (dir-matched workspace) is kept and no orphan branch fires. In particular,
+// the rescue-persist step must NOT run, so metadata's acp_server stays empty.
+func TestSessionManager_ResumeSession_NoMetadataACPServer_KeepsProvisionalWorkspacePick(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := session.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	sm := NewSessionManagerWithOptions(SessionManagerOptions{
+		Workspaces: []config.WorkspaceSettings{
+			{WorkingDir: "/tmp", ACPServer: "agent-a"},
+		},
+	})
+	sm.SetStore(store)
+
+	sm.SetMittoConfig(&config.Config{
+		ACPServers: []config.ACPServer{
+			{Name: "agent-a", Command: "echo hello"},
+		},
+	})
+
+	meta := session.Metadata{
+		SessionID:  "provisional-session",
+		WorkingDir: "/tmp",
+		Name:       "Provisional Pick",
+	}
+	if err := store.Create(meta); err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+
+	_, err = sm.ResumeSession("provisional-session", "Provisional Pick", "/tmp")
+	if err != nil && strings.Contains(err.Error(), "empty command") {
+		t.Errorf("ResumeSession should have used the provisional workspace pick, got empty-command error: %v", err)
+	}
+
+	// Rescue-persist only fires from the orphan branch (Case 2), which requires
+	// meta.ACPServer != "". This path must NOT touch acp_server on metadata.
+	updated, err := store.GetMetadata("provisional-session")
+	if err != nil {
+		t.Fatalf("GetMetadata after resume failed: %v", err)
+	}
+	if updated.ACPServer != "" {
+		t.Errorf("expected metadata acp_server to remain empty (no rescue-persist on provisional path), got %q", updated.ACPServer)
+	}
+}
+
+// TestSessionManager_ResumeSession_FinalRetry_SkipsACPSessionResume asserts
+// that when ACPStartFailureCount reaches ACPStartFailureThreshold-1, the
+// resolver clears the LOCAL acpSessionID variable (forcing a fresh session on
+// the final retry) without persisting that clear to metadata. This is a
+// regression fence for the eventual extraction: the persisted ACPSessionID
+// must survive across resume attempts.
+func TestSessionManager_ResumeSession_FinalRetry_SkipsACPSessionResume(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := session.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer store.Close()
+
+	sm := NewSessionManagerWithOptions(SessionManagerOptions{
+		Workspaces: []config.WorkspaceSettings{
+			{WorkingDir: "/tmp", ACPServer: "agent-a"},
+		},
+	})
+	sm.SetStore(store)
+
+	sm.SetMittoConfig(&config.Config{
+		ACPServers: []config.ACPServer{
+			{Name: "agent-a", Command: "echo hello"},
+		},
+	})
+
+	meta := session.Metadata{
+		SessionID:            "final-retry-session",
+		ACPServer:            "agent-a",
+		ACPSessionID:         "acp-abc",
+		WorkingDir:           "/tmp",
+		Name:                 "Final Retry",
+		ACPStartFailureCount: ACPStartFailureThreshold - 1,
+	}
+	if err := store.Create(meta); err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+
+	// Behavior-only: the call must return (no panic, no deadlock). We don't
+	// care about the returned error — "echo hello" isn't a real ACP server.
+	_, _ = sm.ResumeSession("final-retry-session", "Final Retry", "/tmp")
+
+	// The clear of acpSessionID inside the resolution block is LOCAL to the
+	// function. The persisted ACPSessionID on metadata must remain untouched
+	// by that step (the resume path may still update other fields such as the
+	// failure counter, but not this one).
+	updated, err := store.GetMetadata("final-retry-session")
+	if err != nil {
+		t.Fatalf("GetMetadata after resume failed: %v", err)
+	}
+	if updated.ACPSessionID != "acp-abc" {
+		t.Errorf("expected persisted ACPSessionID to remain %q after final-retry local clear, got %q", "acp-abc", updated.ACPSessionID)
 	}
 }

@@ -90,7 +90,39 @@ prompt: |
 
   Per commit: `git add <files>` → `git commit -m "<message>"`. Report results.
 
+  {{ if .Session.BeadsIssue -}}
+  ### 6. Close Linked Beads Issue
+
+  This conversation is linked to beads issue `{{ .Session.BeadsIssue }}`. Now that the commits are made, check whether the issue is fully resolved.
+
+  - Load the issue and its acceptance criteria:
+
+    ```bash
+    bd show {{ .Session.BeadsIssue }} --long --json
+    ```
+
+  - Compare the acceptance criteria against the committed changes.
+  - **If nothing else is left to do** for this issue:
+    1. Confirm with the user via
+       `mitto_ui_options(self_id: "{{ .Session.ID }}", question: "All work for {{ .Session.BeadsIssue }} appears complete. Close it now?", options: [{label: "Yes, close it"}, {label: "No, keep it open"}])`.
+    2. If approved, close with a specific reason that references the commits:
+
+       ```bash
+       bd close {{ .Session.BeadsIssue }} --reason "<what shipped and where — e.g. 'Implemented in <sha>; tests pass'>"
+       ```
+
+  - **If work remains**, leave the issue open and append a short progress note so the finding is not lost:
+
+    ```bash
+    bd update {{ .Session.BeadsIssue }} --append-notes "<what shipped in these commits and what still remains>"
+    ```
+
+  Be conservative: when it is unclear whether every acceptance criterion is met, keep the issue open.
+
+  ### 7. Update Agent Rules (Optional)
+  {{- else }}
   ### 6. Update Agent Rules (Optional)
+  {{- end }}
 
   If you discovered project conventions or the user corrected assumptions, update Agent rules/memories (with user approval).
 

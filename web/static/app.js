@@ -113,8 +113,12 @@ import { Toolbar } from "./components/Toolbar.js";
 import { MessageList } from "./components/MessageList.js";
 import { Message } from "./components/Message.js";
 import { ChatInput } from "./components/ChatInput.js";
-import { SettingsDialog } from "./components/SettingsDialog.js";
+import {
+  SettingsDialog,
+  DEFAULT_MAC_OPEN_TARGETS,
+} from "./components/SettingsDialog.js";
 import { WorkspacesDialog } from "./components/WorkspacesDialog.js";
+import { AddFolderDialog } from "./components/AddFolderDialog.js";
 import { AgentDiscoveryDialog } from "./components/AgentDiscoveryDialog.js";
 import { QueueDropdown } from "./components/QueueDropdown.js";
 import {
@@ -178,6 +182,7 @@ import {
   BeadsIssueView,
   BeadsDetailPanel,
 } from "./components/BeadsView.js";
+import { Dashboard } from "./components/Dashboard.js";
 
 // Import constants
 import {
@@ -224,11 +229,17 @@ import { Tooltip } from "./components/Tooltip.js";
 function App() {
   // Holds a callback (wired below, once useBeadsIntegration is set up) that
   // useWebSocket invokes when the ACTIVE conversation is removed from view
-  // (deleted or archived), so the UI can navigate to that conversation's folder
-  // Tasks view instead of bouncing to another conversation or an empty state
-  // (mitto-17d). A ref avoids the hook-ordering problem: useWebSocket runs
-  // before handleBeadsOpen exists.
+  // (deleted or archived), so the UI can navigate to the global Dashboard
+  // instead of bouncing to another conversation or an empty state (mitto-ce3,
+  // superseding mitto-17d's folder-Tasks route). A ref avoids the hook-ordering
+  // problem: useWebSocket runs before handleShowDashboard exists.
   const onActiveSessionRemovedRef = useRef(null);
+  // Holds a callback that useWebSocket invokes on initial connection when there
+  // is no valid last-active conversation to restore (either no persisted id, or
+  // the persisted id no longer maps to any existing session). When set, the
+  // hook does NOT auto-switch to the most-recent session, giving the UI a
+  // chance to land on the Dashboard on cold start (mitto-ce3).
+  const onNoInitialSessionRef = useRef(null);
   // Debounce tracker for macOS app-activate resync (mitto-c2p8.3)
   const appActivateDebounceRef = useRef(createReconnectDebounceTracker());
   const {
@@ -289,7 +300,7 @@ function App() {
     ensureResumed,
     isCreatingSession,
     creatingWorkingDirs,
-  } = useWebSocket({ onActiveSessionRemovedRef });
+  } = useWebSocket({ onActiveSessionRemovedRef, onNoInitialSessionRef });
 
   const { showToast, dismissToast, toasts } = useToast();
 
@@ -365,7 +376,8 @@ function App() {
     open: false,
     workingDir: null,
   });
-  // mainView controls what is shown in the right-side area: "conversation" or "beads"
+  // mainView controls what is shown in the right-side area:
+  // "conversation" | "beads" | "dashboard" (mitto-aqo).
   const [mainView, setMainView] = useState("conversation");
   // Ref mirror of mainView so native swipe-gesture handlers (registered in an effect
   // whose dependency set does not include mainView) always read the current view
@@ -389,6 +401,15 @@ function App() {
     },
     [switchSession],
   );
+  // Switch mainView to the global Dashboard (mitto-aqo). Leaves activeSessionId
+  // untouched so returning to a conversation resumes the last selected one.
+  // Mirrors handleSelectSession's mobile-drawer close so tapping the (future)
+  // sidebar Dashboard button on a phone hands focus to the dashboard.
+  const handleShowDashboard = useCallback(() => {
+    setMainView("dashboard");
+    setShowSidebar(false);
+    setShowSidePanel(false);
+  }, []);
   // When the beads view is opened from a linked conversation (e.g. the
   // properties panel's "Linked beads issue" link), these drive auto-selecting
   // that issue once the list loads. The nonce bumps on every open so clicking
@@ -431,6 +452,7 @@ function App() {
     forceOpen: false,
   }); // Settings dialog
   const [workspacesDialog, setWorkspacesDialog] = useState({ isOpen: false }); // Workspaces management dialog
+  const [addFolderDialogOpen, setAddFolderDialogOpen] = useState(false); // "Add folder to sidebar" dialog
   const [keyboardShortcutsDialog, setKeyboardShortcutsDialog] = useState({
     isOpen: false,
   }); // Keyboard shortcuts dialog
@@ -606,7 +628,34 @@ function App() {
   // badge dot. Fetched asynchronously (bd show can be slow) and keyed on the
   // active conversation's linked issue; cleared when there is no linked issue.
   // Mirrors the fetch in SessionPanel.js so both surfaces stay in sync.
+  //
+  // Re-fetches on:
+  //   - link change (activeSessionId / sessionInfo.beads_issue / working_dir)
+  //     — including MCP-driven changes via session_beads_issue_updated, which
+  //     updates sessionInfo.beads_issue and re-triggers this effect.
+  //   - filesystem change to the .beads/ dir for our working_dir
+  //     (mitto:beads_changed) — captures status transitions made via `bd` CLI
+  //     or another agent, refreshed via a monotonic beadsRefreshTick counter.
   const [headerBeadsStatus, setHeaderBeadsStatus] = useState(null);
+  const [beadsRefreshTick, setBeadsRefreshTick] = useState(0);
+  useEffect(() => {
+    const workingDir = sessionInfo?.working_dir;
+    if (!workingDir) return undefined;
+    const onBeadsChanged = (e) => {
+      const dirs = e?.detail?.working_dirs;
+      if (!Array.isArray(dirs) || dirs.length === 0) {
+        // Missing/malformed payload — assume relevant and refresh.
+        setBeadsRefreshTick((t) => t + 1);
+        return;
+      }
+      if (dirs.includes(workingDir)) {
+        setBeadsRefreshTick((t) => t + 1);
+      }
+    };
+    window.addEventListener("mitto:beads_changed", onBeadsChanged);
+    return () =>
+      window.removeEventListener("mitto:beads_changed", onBeadsChanged);
+  }, [sessionInfo?.working_dir]);
   useEffect(() => {
     const issueId = sessionInfo?.beads_issue;
     const workingDir = sessionInfo?.working_dir;
@@ -639,24 +688,35 @@ function App() {
     return () => {
       cancelled = true;
     };
-  }, [activeSessionId, sessionInfo?.beads_issue, sessionInfo?.working_dir]);
+  }, [
+    activeSessionId,
+    sessionInfo?.beads_issue,
+    sessionInfo?.working_dir,
+    beadsRefreshTick,
+  ]);
 
   // Wire the active-conversation-removed callback consumed by useWebSocket. When
   // the active conversation is deleted or archived (in this window or via a
-  // cross-window session_deleted / session_archived broadcast), navigate to that
-  // conversation's folder Tasks (beads) view so the user stays in the same
-  // workspace context instead of being bounced to another conversation or an
-  // empty state (mitto-17d).
+  // cross-window session_deleted / session_archived broadcast), navigate to the
+  // global Dashboard so the user lands on a workspace-agnostic overview instead
+  // of being bounced to another conversation or an empty state (mitto-ce3,
+  // superseding mitto-17d's folder-Tasks route). The folderWorkingDir argument
+  // from the hook is unused now but the signature is preserved to keep the
+  // call-sites in useWebSocket.js unchanged.
   useEffect(() => {
-    onActiveSessionRemovedRef.current = (folderWorkingDir) => {
-      if (folderWorkingDir && folderWorkingDir !== "Unknown") {
-        handleBeadsOpen(folderWorkingDir);
-        setShowSidePanel(false);
-      } else {
-        setMainView("conversation");
-      }
+    onActiveSessionRemovedRef.current = (_folderWorkingDir) => {
+      handleShowDashboard();
     };
-  }, [handleBeadsOpen]);
+  }, [handleShowDashboard]);
+
+  // Wire the no-initial-session callback: on cold start, when there is no valid
+  // last-active conversation to restore, land on the Dashboard instead of
+  // aggressively opening the most-recent conversation (mitto-ce3).
+  useEffect(() => {
+    onNoInitialSessionRef.current = () => {
+      handleShowDashboard();
+    };
+  }, [handleShowDashboard]);
 
   // Initialize CSRF protection and UI preferences on mount
   // This pre-fetches a CSRF token so subsequent state-changing requests are protected
@@ -984,22 +1044,20 @@ function App() {
   // delete). One of "always" (default), "responding", or "never".
   const [deleteConfirmMode, setDeleteConfirmMode] = useState("always");
 
-  // Badge/folder click command (macOS only)
-  const [badgeClickCommand, setBadgeClickCommand] = useState(
-    "open ${MITTO_WORKING_DIR}",
-  );
-  // Terminal action command (macOS only)
-  const [terminalActionCommand, setTerminalActionCommand] = useState(
-    "open -a Terminal ${MITTO_WORKING_DIR}",
+  // "Open In" targets (macOS only, mitto-bbi). Populated from config.ui.mac.open_in.targets;
+  // falls back to DEFAULT_MAC_OPEN_TARGETS when the block is absent — matches the fallback
+  // the backend applies at exec time via config.DefaultOpenTargets(). Passed to
+  // <SessionList /> for the folder context-menu "Open ▸" submenu; the row workspace
+  // badge also invokes the "finder" entry via handleBadgeClick.
+  const [openInTargets, setOpenInTargets] = useState(() =>
+    DEFAULT_MAC_OPEN_TARGETS.map((t) => ({ ...t })),
   );
 
-  // Derive enabled state from non-empty command
-  const badgeClickEnabled =
-    typeof window.mittoPickFolder === "function" &&
-    badgeClickCommand.trim() !== "";
-  const terminalActionEnabled =
-    typeof window.mittoPickFolder === "function" &&
-    terminalActionCommand.trim() !== "";
+  // The row workspace badge is enabled iff we are in the native app AND the
+  // "finder" OpenTarget is present and enabled — clicking it routes through
+  // action=open,target_id=finder (mitto-b7d).
+  const finderTarget = openInTargets.find((t) => t && t.id === "finder");
+  const badgeClickEnabled = isNativeApp() && finderTarget?.enabled === true;
 
   // Input font family setting (web UI, default: "system")
   const [inputFontFamily, setInputFontFamily] = useState("system");
@@ -1057,16 +1115,25 @@ function App() {
           console.log("[config] Setting native notifications ENABLED");
           window.mittoNativeNotificationsEnabled = true;
         }
-        // Load badge/folder click command (macOS only)
-        setBadgeClickCommand(
-          config?.ui?.mac?.badge_click_action?.command ||
-            "open ${MITTO_WORKING_DIR}",
-        );
-        // Load terminal action command (macOS only)
-        setTerminalActionCommand(
-          config?.ui?.mac?.terminal_action?.command ||
-            "open -a Terminal ${MITTO_WORKING_DIR}",
-        );
+        // Load Open In targets (macOS only). Same shape and fallback as
+        // SettingsDialog.js — when ui.mac.open_in.targets is missing/empty we
+        // synthesize the shared DEFAULT_MAC_OPEN_TARGETS so the folder
+        // context-menu submenu still shows Finder + Terminal on fresh installs.
+        const macOpenInTargets = config?.ui?.mac?.open_in?.targets;
+        if (Array.isArray(macOpenInTargets) && macOpenInTargets.length > 0) {
+          setOpenInTargets(
+            macOpenInTargets.map((t) => ({
+              id: t.id || "",
+              label: t.label || "",
+              icon: t.icon || "",
+              command: t.command || "",
+              enabled: t.enabled !== false,
+              builtin: t.builtin === true,
+            })),
+          );
+        } else {
+          setOpenInTargets(DEFAULT_MAC_OPEN_TARGETS.map((t) => ({ ...t })));
+        }
         // Load input font family setting (web UI)
         if (config?.ui?.web?.input_font_family) {
           setInputFontFamily(config.ui.web.input_font_family);
@@ -1681,7 +1748,10 @@ function App() {
     setMainView("conversation");
   };
 
-  // Handle badge click action - calls API to execute configured command
+  // Handle badge click action — routes through the "finder" OpenTarget
+  // (mitto-b7d). Sends {action:"open", target_id:"finder"} to /api/badge-click;
+  // backend resolves against EffectiveOpenTargets() and executes the target's
+  // Command via sh -c. Errors surface as toasts.
   const handleBadgeClick = useCallback(
     async (workspacePath) => {
       if (!badgeClickEnabled || !workspacePath) return;
@@ -1690,11 +1760,15 @@ function App() {
         const res = await authFetch(apiUrl("/api/badge-click"), {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ workspace_path: workspacePath }),
+          body: JSON.stringify({
+            workspace_path: workspacePath,
+            action: "open",
+            target_id: "finder",
+          }),
         });
 
         if (!res.ok) {
-          const data = await res.json();
+          const data = await res.json().catch(() => ({}));
           showToast({
             style: "error",
             title: data.error?.message || data.error || "Failed to open folder",
@@ -1715,10 +1789,13 @@ function App() {
     [badgeClickEnabled, showToast],
   );
 
-  // Handle folder open action - calls API to open workspace folder
-  const handleFolderOpen = useCallback(
-    async (workspacePath) => {
-      if (!badgeClickEnabled || !workspacePath) return;
+  // Fire a configured "Open In" target (mitto-bbi.4). Sends
+  // {action:"open", target_id} to /api/badge-click; backend resolves against
+  // EffectiveOpenTargets() and executes target.Command via sh -c. Errors surface
+  // as toasts using the same envelope as handleBadgeClick.
+  const handleOpenTarget = useCallback(
+    async (workspacePath, targetId) => {
+      if (!workspacePath || !targetId) return;
 
       try {
         const res = await authFetch(apiUrl("/api/badge-click"), {
@@ -1726,15 +1803,16 @@ function App() {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             workspace_path: workspacePath,
-            action: "folder",
+            action: "open",
+            target_id: targetId,
           }),
         });
 
         if (!res.ok) {
-          const data = await res.json();
+          const data = await res.json().catch(() => ({}));
           showToast({
             style: "error",
-            title: data.error?.message || data.error || "Failed to open folder",
+            title: data.error?.message || data.error || "Failed to open target",
           });
         } else {
           const data = await res.json();
@@ -1745,11 +1823,11 @@ function App() {
       } catch (err) {
         showToast({
           style: "error",
-          title: "Failed to open folder: " + err.message,
+          title: "Failed to open target: " + err.message,
         });
       }
     },
-    [badgeClickEnabled, showToast],
+    [showToast],
   );
 
   // Move a folder to an organizational group (folders.json group label). An
@@ -1801,42 +1879,118 @@ function App() {
     [showToast, refreshWorkspaces, workspaces],
   );
 
-  // Handle terminal action - calls API to open terminal at workspace path
-  const handleTerminalClick = useCallback(
-    async (workspacePath) => {
-      if (!terminalActionEnabled || !workspacePath) return;
-
+  // Unpin a folder from the sidebar (removes the folder-native `pinned` flag in
+  // folders.json). Used by the folder context-menu "Remove from sidebar" action
+  // for pinned empty folders. Persists via PUT /api/folders/pin, then refreshes
+  // workspaces so the sidebar drops the now-unpinned empty folder.
+  const handleUnpinFolder = useCallback(
+    async (workingDir) => {
+      if (!workingDir) return;
       try {
-        const res = await authFetch(apiUrl("/api/badge-click"), {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            workspace_path: workspacePath,
-            action: "terminal",
-          }),
-        });
-
+        const res = await secureFetch(
+          endpoints.folders.pin({ working_dir: workingDir }),
+          {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ pinned: false }),
+          },
+        );
         if (!res.ok) {
-          const data = await res.json();
-          showToast({
-            style: "error",
-            title:
-              data.error?.message || data.error || "Failed to open terminal",
-          });
-        } else {
-          const data = await res.json();
-          if (!data.success && data.error) {
-            showToast({ style: "error", title: data.error });
+          let msg = "Failed to remove folder from sidebar";
+          try {
+            const data = await res.json();
+            msg = data.error?.message || msg;
+          } catch (_) {
+            /* keep default */
           }
+          showToast({ style: "error", title: msg });
+          return;
         }
+        invalidateConfigCache();
+        refreshWorkspaces();
+        showToast({
+          style: "success",
+          title: "Removed folder from sidebar",
+        });
       } catch (err) {
         showToast({
           style: "error",
-          title: "Failed to open terminal: " + err.message,
+          title: "Failed to remove folder from sidebar: " + err.message,
         });
       }
     },
-    [terminalActionEnabled, showToast],
+    [showToast, refreshWorkspaces],
+  );
+
+  // Pin an existing (currently hidden) workspace to the sidebar. Mirrors
+  // handleUnpinFolder but sets pinned=true. Used by AddFolderDialog when the
+  // user picks a hidden workspace from the list.
+  const handlePinExistingFolder = useCallback(
+    async (workingDir) => {
+      if (!workingDir) return;
+      try {
+        const res = await secureFetch(
+          endpoints.folders.pin({ working_dir: workingDir }),
+          {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ pinned: true }),
+          },
+        );
+        if (!res.ok) {
+          let msg = "Failed to add folder to sidebar";
+          try {
+            const data = await res.json();
+            msg = data.error?.message || msg;
+          } catch (_) {
+            /* keep default */
+          }
+          showToast({ style: "error", title: msg });
+          return;
+        }
+        invalidateConfigCache();
+        refreshWorkspaces();
+        showToast({
+          style: "success",
+          title: "Folder added to sidebar",
+        });
+      } catch (err) {
+        showToast({
+          style: "error",
+          title: "Failed to add folder to sidebar: " + err.message,
+        });
+      }
+    },
+    [showToast, refreshWorkspaces],
+  );
+
+  // Hidden workspaces = configured workspaces that are (a) not currently pinned
+  // and (b) have no active/stored session pointing at their working_dir. These
+  // are the candidates surfaced in AddFolderDialog's pick-existing list.
+  const hiddenWorkspaces = useMemo(() => {
+    const visibleWorkingDirs = new Set();
+    (activeSessions || []).forEach((s) => {
+      if (s && s.working_dir) visibleWorkingDirs.add(s.working_dir);
+    });
+    (storedSessions || []).forEach((s) => {
+      if (s && s.working_dir) visibleWorkingDirs.add(s.working_dir);
+    });
+    return (workspaces || []).filter(
+      (ws) =>
+        ws &&
+        ws.working_dir &&
+        ws.pinned !== true &&
+        !visibleWorkingDirs.has(ws.working_dir),
+    );
+  }, [workspaces, activeSessions, storedSessions]);
+
+  const handleAddFolderOpen = useCallback(
+    () => setAddFolderDialogOpen(true),
+    [],
+  );
+  const handleAddFolderClose = useCallback(
+    () => setAddFolderDialogOpen(false),
+    [],
   );
 
   // Open the properties panel for a session (used by pencil button in session list)
@@ -2278,6 +2432,38 @@ function App() {
   const headerIsLoop = activeSession?.loop_configured || false;
   const headerIsSpawned =
     !!(activeSession && activeSession.parent_session_id) && !activeHasChildren;
+
+  // Cmd/Ctrl+Shift+L: toggle loop/unloop for the active conversation. Mirrors
+  // the header toolbar buttons in conversationToolbarItems (Loop / Unloop) —
+  // same guards, same handlers — so keyboard and mouse stay in lockstep.
+  // (Plain ⌘L is already claimed by the native macOS menu for "Focus Input".)
+  // Placed here (not in the main shortcut effect above) because it needs
+  // activeSession and the headerIs* flags, which are declared just above.
+  useEffect(() => {
+    const handleLoopShortcut = (e) => {
+      if (!(e.metaKey || e.ctrlKey) || !e.shiftKey || e.altKey) return;
+      if (e.key !== "l" && e.key !== "L") return;
+      if (!activeSession) return;
+      if (headerIsSpawned) return;
+      if (!headerIsLoop && headerIsArchived) return;
+      e.preventDefault();
+      if (headerIsLoop) {
+        handleMakeNonLoop(activeSession);
+      } else {
+        handleMakeLoop(activeSession);
+      }
+    };
+    window.addEventListener("keydown", handleLoopShortcut);
+    return () => window.removeEventListener("keydown", handleLoopShortcut);
+  }, [
+    activeSession,
+    headerIsLoop,
+    headerIsSpawned,
+    headerIsArchived,
+    handleMakeLoop,
+    handleMakeNonLoop,
+  ]);
+
   // Only the active conversation can have queued messages; streaming state comes
   // from the live socket. Both block archiving (matches SessionItem logic).
   const headerHasQueued = queueLength > 0;
@@ -2594,6 +2780,9 @@ function App() {
     return {
       kind: "button",
       testId: `conversation-shortcut-btn-${i}`,
+      // On phone-width screens only the first shortcut is shown; the rest are
+      // hidden (see .mitto-shortcut-extra in styles-v2.css) to avoid overflow.
+      className: i > 0 ? "mitto-shortcut-extra" : undefined,
       icon: html`<${Icon} className="w-4 h-4" />`,
       tip: found ? sc.prompt : `Prompt "${sc.prompt}" not found`,
       ariaLabel: found
@@ -2643,7 +2832,7 @@ function App() {
                   kind: "button",
                   testId: "header-make-loop",
                   icon: html`<${LoopIcon} className="w-4 h-4" />`,
-                  tip: "Loop",
+                  tip: "Loop (⌘⇧L)",
                   ariaLabel: "Loop",
                   onClick: () => handleMakeLoop(activeSession),
                 },
@@ -2655,7 +2844,7 @@ function App() {
                   kind: "button",
                   testId: "header-make-non-loop",
                   icon: html`<${LoopOffIcon} className="w-4 h-4" />`,
-                  tip: "Unloop",
+                  tip: "Unloop (⌘⇧L)",
                   ariaLabel: "Unloop",
                   onClick: () => handleMakeNonLoop(activeSession),
                 },
@@ -2865,17 +3054,6 @@ function App() {
                 setDeleteConfirmMode(
                   config?.ui?.confirmations?.delete_conversation || "always",
                 );
-                // Reload badge/folder click command (macOS only)
-                if (typeof window.mittoPickFolder === "function") {
-                  setBadgeClickCommand(
-                    config?.ui?.mac?.badge_click_action?.command ||
-                      "open ${MITTO_WORKING_DIR}",
-                  );
-                  setTerminalActionCommand(
-                    config?.ui?.mac?.terminal_action?.command ||
-                      "open -a Terminal ${MITTO_WORKING_DIR}",
-                  );
-                }
                 // Reload input font family setting
                 setInputFontFamily(
                   config?.ui?.web?.input_font_family || "system",
@@ -2921,6 +3099,18 @@ function App() {
             })}
         />
 
+        <!-- Add Folder Dialog -->
+        <${AddFolderDialog}
+          isOpen=${addFolderDialogOpen}
+          onClose=${handleAddFolderClose}
+          hiddenWorkspaces=${hiddenWorkspaces}
+          onPinExisting=${handlePinExistingFolder}
+          onCreateNew=${() => {
+            setAddFolderDialogOpen(false);
+            handleShowWorkspaces();
+          }}
+        />
+
         <!-- Keyboard Shortcuts Dialog -->
         <${KeyboardShortcutsDialog}
           isOpen=${keyboardShortcutsDialog.isOpen}
@@ -2943,11 +3133,14 @@ function App() {
            the ChatInput dropup) has prompt params it cannot auto-fill. The
            conversation menu sets hostSessionId to the right-clicked conversation
            so a childSessionId picker is scoped to its children; other surfaces
-           fall back to the active session. -->
+           fall back to the active session. workingDir prefers the beads view's
+           working dir (when opened from a beads context) and otherwise falls back
+           to the active conversation's working dir, so the workspace-scoped
+           "prompts" picker can populate regardless of the opening surface. -->
         <${PromptParameterDialog}
           isOpen=${promptParamDialog !== null}
           parameters=${promptParamDialog?.parameters || []}
-          workingDir=${beadsWorkingDir}
+          workingDir=${beadsWorkingDir || headerWorkingDir}
           hostSessionId=${promptParamDialog?.hostSessionId ?? activeSessionId}
           title=${promptParamDialog?.prompt?.name || "Prompt parameters"}
           initialValues=${promptParamDialog?.initialValues || {}}
@@ -2961,8 +3154,17 @@ function App() {
         <!-- Unified toast container -->
         <${ToastContainer} toasts=${toasts} onDismiss=${dismissToast} />
 
-        <!-- Main content area: beads view or conversation -->
-        ${mainView === "beads" && beadsWorkingDir
+        <!-- Main content area: dashboard, beads view, or conversation -->
+        ${mainView === "dashboard"
+          ? html`<${Dashboard}
+              allSessions=${allSessions}
+              showToast=${showToast}
+              onFocusConversation=${focusSession}
+              onOpenTask=${(issueId, workingDir) =>
+                handleOpenBeadsIssue(issueId, workingDir, activeSessionId)}
+              onShowSidebar=${() => setShowSidebar(true)}
+            />`
+          : mainView === "beads" && beadsWorkingDir
           ? html`
               <div
                 class="flex-1 flex flex-col min-w-0 overflow-hidden bg-mitto-bg"
@@ -3461,16 +3663,17 @@ function App() {
             onToggleFontSize=${toggleFontSize}
             onShowSettings=${handleShowSettings}
             onShowWorkspaces=${handleShowWorkspaces}
+            onAddFolder=${handleAddFolderOpen}
             onShowWorkspacesForFolder=${handleShowWorkspacesForFolder}
             onShowKeyboardShortcuts=${handleShowKeyboardShortcuts}
             configReadonly=${configReadonly}
             rcFilePath=${rcFilePath}
             badgeClickEnabled=${badgeClickEnabled}
             onBadgeClick=${handleBadgeClick}
-            terminalActionEnabled=${terminalActionEnabled}
-            onFolderOpen=${handleFolderOpen}
             onMoveFolderToGroup=${handleMoveFolderToGroup}
-            onTerminalClick=${handleTerminalClick}
+            onUnpinFolder=${handleUnpinFolder}
+            openInTargets=${openInTargets}
+            onOpenTarget=${handleOpenTarget}
             onBeadsOpen=${handleBeadsOpen}
             onBeadsCreate=${(wd) =>
               setQuickCreate({ open: true, workingDir: wd })}
@@ -3480,6 +3683,7 @@ function App() {
             onBeadsCleanup=${handleBeadsCleanup}
             mainView=${mainView}
             beadsWorkingDir=${beadsWorkingDir}
+            onShowDashboard=${handleShowDashboard}
             queueLength=${queueLength}
             onFetchConversationPrompts=${fetchConversationPromptsForSession}
             onSendPromptToConversation=${handleSendPromptToConversation}

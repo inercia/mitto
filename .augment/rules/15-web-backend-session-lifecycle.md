@@ -71,11 +71,22 @@ The GC suspends idle loop sessions whose next prompt is far away, saving ACP res
 | `inactivity`        | `ArchiveReasonInactivity`     | Auto-archive after configured inactive period|
 | `acp_start_failures`| `ArchiveReasonACPFailures`    | `ACPStartFailureCount` ≥ threshold (3)       |
 
-Broadcast in `session_archived` WebSocket message as `archive_reason` field.
+Broadcast in `session_archived` WebSocket message as `archive_reason` field. `acp_start_failures` on a loop conversation is the only reason eligible for Auto-Unarchive Recovery (below).
 
 ## Auto-Archive
 
 Config: `session.auto_archive_inactive_after: "1w"` (in `checkAutoArchive()`). Excluded: already-archived, child sessions, sessions with loop prompts (enabled or paused).
+
+## Auto-Unarchive Recovery
+
+Loop conversations auto-archived due to broken ACP (`ArchiveReasonACPFailures`) are retried automatically by `LoopRunner.checkAutoUnarchiveRecovery()`, called from `RunOnce()` right after `checkAutoArchive()`.
+
+- **Eligibility**: `meta.Archived && meta.ArchiveReason == ArchiveReasonACPFailures` + loop config exists. Excludes `Manual`/`Inactivity` and non-loop ACP-failure archives.
+- **Retry cadence**: 1h per conversation (`DefaultAutoUnarchiveRetryInterval`), anchored on `Metadata.AutoUnarchiveLastAttemptAt` else `ArchivedAt`. Retries indefinitely — the resume-failure path re-archives on continued outage, restarting cadence from the new `ArchivedAt`.
+- **Anti-storm stagger**: 10m global minimum gap (`DefaultAutoUnarchiveStaggerInterval`), tracked in-memory (`LoopRunner.lastAutoUnarchiveAttempt`, `r.mu`); each poll attempts only the most-overdue eligible session. **Never `time.Sleep`** in this path — it stalls loop delivery.
+- **On-by-default**: `autoUnarchiveEnabled=true`; `SetAutoUnarchiveRecovery(enabled, retryInterval, stagger)` — duration `<= 0` keeps current value (lets tests override one).
+- **Callback** (`onAutoUnarchive`, wired in `server.go`): mirrors manual unarchive — clear archive fields → `ResumeSession()` → broadcast → `handlers.RestoreLoopOnUnarchive()`.
+- **Cadence persistence**: `attemptAutoUnarchive()` persists `AutoUnarchiveLastAttemptAt` (outside `r.mu`) *before* the callback so it survives a crash; cleared only on `nil` return. Also cleared on any successful manual unarchive (`session_update.go`).
 
 ## ACP Process Crash Recovery
 
@@ -88,6 +99,12 @@ Death detection (three layers): OS polling (~2s), `conn.Done()` EOF (~seconds), 
 ## Deferred Handshake Retry
 
 When ACP handshake times out transiently, `BackgroundSession.InitializeWithACP()` defers retry up to 3 attempts with exponential backoff. The error event is persisted in the session event log (viewable in UI). Retries happen deferred in a separate goroutine to avoid blocking session creation or WebSocket initialization. After 3 attempts, the session enters error state with guidance.
+
+## Shared Handshake Budget: Stale vs. Cold-Timeout (anti-regression)
+
+`internal/conversation/shared_session_handshaker.go` bounds concurrent `session/load` + `session/new` handshakes with **one shared deadline** to prevent stacking (`mitto-1ut`). The budget cap MUST be **released** for the `session/new` fallback when the `session/load` probe **timed out** (process genuinely cold) — otherwise `session/new` inherits only `budget − probeTimeout` (e.g. `240s − 45s = 195s`), less than a single `MCPInitTimeout` attempt (240s), guaranteeing starvation. Only cap the fallback when the probe **fast-failed** (JSON-RPC `-32602` stale). Track this via `probeTimedOut`. Test seam: `loadBlocksUntilCtxDone` in `fakeSharedProcess` (`TestHandshaker_ResumeSharedACPSession_ColdProbeTimeout_NoNewDeadline`). Pre-attempt cancellations in `acpproc/shared_acp_process.go` emit a self-diagnosing error (elapsed vs. per-attempt budget) instead of a raw deadline.
+
+**Clear persisted `acp_session_id` on load failure (`mitto-y1g`)**: In `resumeSharedACPSession`, both load-failure branches (`-32602 Session not found` **and** probe timeout) must call `hsClearPersistedACPSessionID()` before falling back to `session/new`. Otherwise the stale ID stays on disk and every subsequent cold-start / process recycle re-triggers the same doomed `session/load` — catastrophic when an always-active loop session is one of the offenders (each recycle burns the probe cap before the `session/new` fallback). Mirror `hsPersistACPSessionID`; assert both branches clear in the regression test.
 
 ## MCP Server Lifecycle
 

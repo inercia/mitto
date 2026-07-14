@@ -1,0 +1,9 @@
+{
+  "name": "mitto-vite-spike",
+  "private": true,
+  "type": "module",
+  "description": "Throwaway Vite POC for mitto-qcm — do NOT publish. See docs/devel/frontend-bundler-spike.md.",
+  "devDependencies": {
+    "vite": "^8.1.4"
+  }
+}

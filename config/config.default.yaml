@@ -33,8 +33,17 @@ acp: []
 # first run); existing settings.json files are left untouched. Tags overlap by design:
 # a model name is matched against every profile and the union of matching tags applies
 # (e.g. "Claude Opus 4.x" resolves to Anthropic + Smartest + Reasoning + Expensive).
-# Tags are interface-only today (parsed and exposed via the Go API, not yet consumed
-# at runtime). Edit or extend these to match the models you use.
+#
+# Tags ARE consumed at runtime: a prompt's `preferredModels` (modelTag/modelName)
+# resolves against these profiles to pick the model a prompt runs on. This YAML is only
+# the first-run seed — the canonical, always-available set lives in Go
+# (config.DefaultModelProfiles); the two are kept in sync by `make check-model-tags`.
+# Edit or extend these to match the models you use.
+#
+# Priority: list order = priority. For tag-based resolution the FIRST profile carrying
+# a tag wins, so put newer/preferred variants first. Example: if you list a "Claude
+# Sonnet 5" profile before "Claude Sonnet 4" (both tagged Coding), prompts asking for
+# `modelTag: Coding` resolve to Sonnet 5; swap the two entries and Sonnet 4 wins.
 models:
   - name: Claude
     criteria:
@@ -45,11 +54,16 @@ models:
     criteria:
       matchMode: contains
       pattern: Opus
-    tags: [Smartest, Reasoning, Expensive]
-  - name: Claude Sonnet
+    tags: [Smartest, Reasoning, Thinking, Deep, Slow, Expensive]
+  - name: Claude Sonnet 5
     criteria:
       matchMode: contains
-      pattern: Sonnet
+      pattern: Sonnet 5
+    tags: [Smart, Coding]
+  - name: Claude Sonnet 4
+    criteria:
+      matchMode: contains
+      pattern: Sonnet 4
     tags: [Smart, Coding]
   - name: Claude Haiku
     criteria:
@@ -60,7 +74,7 @@ models:
     criteria:
       matchMode: contains
       pattern: GPT-5
-    tags: [Smart, Reasoning, Coding]
+    tags: [Smart, Reasoning, Thinking, Deep, Coding]
   - name: GPT-4
     criteria:
       matchMode: contains
@@ -293,6 +307,26 @@ conversations:
     enabled: true  # Enable follow-up suggestions by default
   # external_images:
   #   enabled: false  # Allow external HTTPS images (default: false)
+
+# Adaptive ACP/MCP pre-warming thresholds (mitto-mw0)
+# Pre-warming warms a workspace, probes its health (session/new latency + MCP
+# readiness), and pins a warm keepalive session only for slow/broken workspaces.
+# Healthy workspaces are left alone (GC reaps them).
+# prewarm:
+#   session_new_fast: "10s"        # T_fast: session/new latency at/under which a workspace is "fast"
+#   mcp_ready: "10s"               # T_mcp: max time for all configured MCP servers to be reachable
+#   healthy_probes_to_unpin: 3     # Hysteresis: consecutive healthy probes required before unpinning
+#   max_pin_duration: "30m"        # Cap on how long a pinned session is held (use "disabled" for no cap)
+#   max_pinned_workspaces: 5       # Blast-radius cap on simultaneously-pinned workspaces
+#   # Per-purpose staggered delays for the cold-start auxiliary session prewarm
+#   # (mitto-cgc). A single worker serializes creation, so only one session/new
+#   # is in flight at a time; these delays offset each purpose from the moment
+#   # prewarm starts. Empty/invalid values fall back to the defaults shown.
+#   aux_schedule:
+#     mcp_check: "0s"              # tier 0 — gates prompt/tool visibility
+#     mcp_tools: "0s"              # tier 0 — tool discovery for gating
+#     title_gen: "5s"              # tier 1 — not needed until first prompt titled
+#     follow_up: "8s"              # tier 2 — only after first agent response
 
 # Permission handling configuration
 # Controls how permission requests from agents are handled.

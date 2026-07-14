@@ -73,27 +73,18 @@ type SessionListCapabilities struct {
 }
 
 type NewSessionParams struct {
-	Cwd              string `json:"cwd"`
-	WorkingDirectory string `json:"workingDirectory"` // Legacy field
+	Cwd              string      `json:"cwd"`
+	WorkingDirectory string      `json:"workingDirectory"` // Legacy field
+	McpServers       []McpServer `json:"mcpServers,omitempty"`
 }
 
+// NewSessionResult mirrors the v0.13.5 NewSessionResponse. The legacy `models`
+// field has been removed from the SDK — model state is advertised via
+// configOptions (category=model) and parsed by Mitto's ModelStateFromConfigOptions.
 type NewSessionResult struct {
-	SessionID string             `json:"sessionId"`
-	Modes     *SessionModeState  `json:"modes,omitempty"`
-	Models    *SessionModelState `json:"models,omitempty"`
-}
-
-// SessionModelState represents available models and the current model (UNSTABLE).
-type SessionModelState struct {
-	AvailableModels []ModelInfo `json:"availableModels"`
-	CurrentModelId  string      `json:"currentModelId"`
-}
-
-// ModelInfo represents a single model option.
-type ModelInfo struct {
-	ModelId     string  `json:"modelId"`
-	Name        string  `json:"name"`
-	Description *string `json:"description,omitempty"`
+	SessionID     string                `json:"sessionId"`
+	Modes         *SessionModeState     `json:"modes,omitempty"`
+	ConfigOptions []SessionConfigOption `json:"configOptions,omitempty"`
 }
 
 // SessionID is a type alias for session identifiers.
@@ -106,29 +97,64 @@ type McpServer struct {
 	Env     []string `json:"env,omitempty"`
 }
 
-// SessionConfigOption represents a configuration option for the session.
+// SessionConfigOption represents a configuration option for the session on the
+// v0.13.5 wire (the Select variant of the SDK's SessionConfigOption union).
+// The `type` field is the union discriminator ("select"); Mitto's
+// ModelStateFromConfigOptions matches on Category == "model" and reads the
+// currentValue + options list.
 type SessionConfigOption struct {
-	ID          string `json:"id"`
-	Name        string `json:"name"`
-	Description string `json:"description,omitempty"`
-	Type        string `json:"type"`
-	Value       any    `json:"value,omitempty"`
+	Type         string                      `json:"type"` // "select"
+	ID           string                      `json:"id"`
+	Name         string                      `json:"name"`
+	Description  string                      `json:"description,omitempty"`
+	Category     string                      `json:"category,omitempty"` // "model" | "mode" | ...
+	CurrentValue string                      `json:"currentValue"`
+	Options      []SessionConfigSelectOption `json:"options"`
 }
 
-// UnstableResumeSessionRequest is the request to resume an existing session.
-type UnstableResumeSessionRequest struct {
-	Meta       map[string]any `json:"_meta,omitempty"`
-	SessionID  SessionID      `json:"sessionId"`
-	Cwd        string         `json:"cwd"`
-	McpServers []McpServer    `json:"mcpServers,omitempty"`
+// SessionConfigSelectOption is one selectable value in a Select ConfigOption.
+type SessionConfigSelectOption struct {
+	Value       string  `json:"value"`
+	Name        string  `json:"name"`
+	Description *string `json:"description,omitempty"`
 }
 
-// UnstableResumeSessionResponse is the response from resuming a session.
-type UnstableResumeSessionResponse struct {
+// ResumeSessionRequest is the request to resume an existing session (v0.13.5
+// `session/resume`; renamed from the pre-0.13.5 `session/unstableResumeSession`).
+type ResumeSessionRequest struct {
+	Meta                  map[string]any `json:"_meta,omitempty"`
+	SessionID             SessionID      `json:"sessionId"`
+	Cwd                   string         `json:"cwd"`
+	McpServers            []McpServer    `json:"mcpServers,omitempty"`
+	AdditionalDirectories []string       `json:"additionalDirectories,omitempty"`
+}
+
+// ResumeSessionResponse is the response from resuming a session (v0.13.5). The
+// legacy `models` field is gone — model state is advertised via configOptions
+// (category=model) and parsed by Mitto's ModelStateFromConfigOptions.
+type ResumeSessionResponse struct {
 	Meta          map[string]any        `json:"_meta,omitempty"`
 	ConfigOptions []SessionConfigOption `json:"configOptions,omitempty"`
-	Models        *SessionModelState    `json:"models,omitempty"`
 	Modes         *SessionModeState     `json:"modes,omitempty"`
+}
+
+// SetSessionConfigOptionParams is the request to change a session config option
+// via v0.13.5 `session/set_config_option`. The mock only handles the ValueId
+// variant (single-value selector) which is what Mitto emits for model changes.
+type SetSessionConfigOptionParams struct {
+	Meta      map[string]any `json:"_meta,omitempty"`
+	SessionID string         `json:"sessionId"`
+	ConfigID  string         `json:"configId"`
+	Value     string         `json:"value"`
+	// The SDK's Boolean variant carries `type: "boolean"`; ValueId requests
+	// omit `type`. The mock reads this so it can reject non-selector variants.
+	Type string `json:"type,omitempty"`
+}
+
+// SetSessionConfigOptionResult mirrors the SDK's SetSessionConfigOptionResponse:
+// the full set of config options and their (updated) current values.
+type SetSessionConfigOptionResult struct {
+	ConfigOptions []SessionConfigOption `json:"configOptions"`
 }
 
 // SessionModeState represents the set of modes and the one currently active.
@@ -155,27 +181,18 @@ type SetSessionModeResult struct {
 	// Empty response on success
 }
 
-// SetSessionModelParams is the request to change the session model (UNSTABLE).
-type SetSessionModelParams struct {
-	SessionID string `json:"sessionId"`
-	ModelId   string `json:"modelId"`
-}
-
-// SetSessionModelResult is the response after changing the session model.
-type SetSessionModelResult struct {
-	// Empty response on success
-}
-
 // SessionCurrentModeUpdate is sent when the current mode changes.
 type SessionCurrentModeUpdate struct {
 	SessionUpdate string `json:"sessionUpdate"`
 	CurrentModeID string `json:"currentModeId"`
 }
 
-// SessionCurrentModelUpdate is sent when the current model changes.
-type SessionCurrentModelUpdate struct {
-	SessionUpdate  string `json:"sessionUpdate"`
-	CurrentModelId string `json:"currentModelId"`
+// SessionConfigOptionUpdate is the v0.13.5 session/update variant emitted when a
+// config option (model, mode, etc) changes. It carries the FULL updated set of
+// options so the client can refresh its view atomically.
+type SessionConfigOptionUpdate struct {
+	SessionUpdate string                `json:"sessionUpdate"` // "config_option_update"
+	ConfigOptions []SessionConfigOption `json:"configOptions"`
 }
 
 type PromptParams struct {
@@ -211,7 +228,7 @@ type SessionUpdate struct {
 	ToolCallUpdate     *ToolCallUpdate            `json:"-"` // Tagged union - use custom marshal
 	Plan               *Plan                      `json:"-"` // Tagged union - use custom marshal
 	CurrentModeUpdate  *SessionCurrentModeUpdate  `json:"-"` // Tagged union - use custom marshal
-	CurrentModelUpdate *SessionCurrentModelUpdate `json:"-"` // Tagged union - use custom marshal
+	ConfigOptionUpdate *SessionConfigOptionUpdate `json:"-"` // Tagged union - use custom marshal (v0.13.5)
 }
 
 // MarshalJSON implements the ACP SDK's tagged union format.
@@ -279,13 +296,13 @@ func (u SessionUpdate) MarshalJSON() ([]byte, error) {
 			CurrentModeID: u.CurrentModeUpdate.CurrentModeID,
 		})
 	}
-	if u.CurrentModelUpdate != nil {
+	if u.ConfigOptionUpdate != nil {
 		return json.Marshal(struct {
-			SessionUpdate  string `json:"sessionUpdate"`
-			CurrentModelId string `json:"currentModelId"`
+			SessionUpdate string                `json:"sessionUpdate"`
+			ConfigOptions []SessionConfigOption `json:"configOptions"`
 		}{
-			SessionUpdate:  "current_model_update",
-			CurrentModelId: u.CurrentModelUpdate.CurrentModelId,
+			SessionUpdate: "config_option_update",
+			ConfigOptions: u.ConfigOptionUpdate.ConfigOptions,
 		})
 	}
 	return []byte("{}"), nil

@@ -62,6 +62,109 @@ func TestWorkspaceSettings_AuxiliaryModelSelection_JSONOmitempty(t *testing.T) {
 	}
 }
 
+// ---- WorkspaceSettings InitialModel tests ----
+
+func TestWorkspaceSettings_InitialModel_JSONRoundTrip(t *testing.T) {
+	w := WorkspaceSettings{
+		ACPServer:           "claude-code",
+		WorkingDir:          "/proj",
+		InitialModelProfile: "Claude Opus",
+		InitialModelTag:     "Coding",
+	}
+	data, err := json.Marshal(w)
+	if err != nil {
+		t.Fatalf("json.Marshal: %v", err)
+	}
+	var got WorkspaceSettings
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("json.Unmarshal: %v", err)
+	}
+	if got.InitialModelProfile != "Claude Opus" {
+		t.Errorf("InitialModelProfile = %q, want %q", got.InitialModelProfile, "Claude Opus")
+	}
+	if got.InitialModelTag != "Coding" {
+		t.Errorf("InitialModelTag = %q, want %q", got.InitialModelTag, "Coding")
+	}
+}
+
+func TestWorkspaceSettings_InitialModel_JSONOmitempty(t *testing.T) {
+	w := WorkspaceSettings{
+		ACPServer:  "claude-code",
+		WorkingDir: "/proj",
+	}
+	data, err := json.Marshal(w)
+	if err != nil {
+		t.Fatalf("json.Marshal: %v", err)
+	}
+	var raw map[string]interface{}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		t.Fatalf("json.Unmarshal: %v", err)
+	}
+	if _, ok := raw["initial_model_profile"]; ok {
+		t.Error("initial_model_profile should be omitted from JSON when empty")
+	}
+	if _, ok := raw["initial_model_tag"]; ok {
+		t.Error("initial_model_tag should be omitted from JSON when empty")
+	}
+}
+
+func TestWorkspaceSettings_GetInitialModelPreference(t *testing.T) {
+	tests := []struct {
+		name    string
+		ws      *WorkspaceSettings
+		want    []PromptPreferredModel
+		wantNil bool
+	}{
+		{
+			name:    "nil receiver",
+			ws:      nil,
+			wantNil: true,
+		},
+		{
+			name:    "no preference configured",
+			ws:      &WorkspaceSettings{ACPServer: "auggie"},
+			wantNil: true,
+		},
+		{
+			name: "profile only",
+			ws:   &WorkspaceSettings{InitialModelProfile: "Claude Opus"},
+			want: []PromptPreferredModel{{ModelName: "Claude Opus"}},
+		},
+		{
+			name: "tag only",
+			ws:   &WorkspaceSettings{InitialModelTag: "Coding"},
+			want: []PromptPreferredModel{{ModelTag: "Coding"}},
+		},
+		{
+			name: "profile wins over tag when both set",
+			ws: &WorkspaceSettings{
+				InitialModelProfile: "Claude Opus",
+				InitialModelTag:     "Cheap",
+			},
+			want: []PromptPreferredModel{{ModelName: "Claude Opus"}},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := tt.ws.GetInitialModelPreference()
+			if tt.wantNil {
+				if got != nil {
+					t.Errorf("got %v, want nil", got)
+				}
+				return
+			}
+			if len(got) != len(tt.want) {
+				t.Fatalf("got %d entries, want %d: %v", len(got), len(tt.want), got)
+			}
+			for i := range got {
+				if got[i] != tt.want[i] {
+					t.Errorf("entry %d: got %+v, want %+v", i, got[i], tt.want[i])
+				}
+			}
+		})
+	}
+}
+
 // ---- LoadWorkspacesFromFile tests ----
 
 func TestLoadWorkspacesFromFile_JSON(t *testing.T) {

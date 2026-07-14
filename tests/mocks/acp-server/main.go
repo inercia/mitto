@@ -74,15 +74,18 @@ type MockACPServer struct {
 	reader          *bufio.Reader
 	writer          io.Writer
 
-	// setModelFailFirst: the first N set_model requests return a JSON-RPC error whose
-	// message contains "timeout" to exercise the retry path in SetSessionModel (mitto-3q9).
-	// Controlled by env var MOCK_SET_MODEL_FAIL_FIRST (default 0 = no failures injected).
+	// setModelFailFirst: the first N set_config_option(model) requests return a
+	// JSON-RPC error whose message contains "timeout" to exercise the retry
+	// path in SetSessionModel (mitto-3q9). Controlled by env var
+	// MOCK_SET_MODEL_FAIL_FIRST (default 0 = no failures injected). The env var
+	// name is preserved from the pre-0.13.5 set_model wire for test back-compat.
 	// The server's read loop is single-threaded so this counter needs no mutex.
 	setModelFailFirst int
 	setModelCallCount int
 
-	// setModelDelayMs: time.Sleep before responding to set_model, simulating slowness.
-	// Controlled by env var MOCK_SET_MODEL_DELAY_MS (default 0 = no delay).
+	// setModelDelayMs: time.Sleep before responding to set_config_option(model),
+	// simulating slowness. Controlled by env var MOCK_SET_MODEL_DELAY_MS
+	// (default 0 = no delay); name preserved for test back-compat.
 	setModelDelayMs int
 
 	// newSessionFailFirst: the first N session/new requests return a JSON-RPC error whose
@@ -92,12 +95,25 @@ type MockACPServer struct {
 	newSessionCallCount int
 
 	// rpcOrderFile: when set (env var MOCK_RPC_ORDER_FILE), the server appends one
-	// line per relevant inbound RPC ("prompt", "set_model", "set_mode") in arrival
-	// order, as "<method>\t<detail>". Used by deferred-config tests to assert the
-	// relative ordering of prompts and config RPCs. Each line is written with a
-	// single O_APPEND write so concurrent mock processes sharing the file (e.g. an
-	// auxiliary title-generation session) cannot interleave within a line.
+	// line per relevant inbound RPC ("prompt", "set_config_option", "set_mode")
+	// in arrival order, as "<method>\t<detail>". Used by deferred-config tests to
+	// assert the relative ordering of prompts and config RPCs. Each line is
+	// written with a single O_APPEND write so concurrent mock processes sharing
+	// the file (e.g. an auxiliary title-generation session) cannot interleave
+	// within a line.
 	rpcOrderFile string
+
+	// mcpInitDelayMs: sleep before responding to session/new when the request
+	// carries at least one MCP server, and emit the "Waiting for N MCP servers to
+	// initialize" progress line on stderr just before the delay. Simulates an
+	// agent that blocks session/new until MCP init completes (mitto-8ul.1).
+	mcpInitDelayMs int
+
+	// mcpInitTimeoutAfterMs: after this many ms, emit an "MCP initialization
+	// timed out after Ns" line on stderr AND return a JSON-RPC error from the
+	// pending session/new. Used to prove the client aborts promptly rather than
+	// waiting the full RPC deadline (mitto-8ul.1). 0 disables.
+	mcpInitTimeoutAfterMs int
 }
 
 // Default modes provided by the mock server
@@ -110,13 +126,31 @@ var defaultModes = &SessionModeState{
 	},
 }
 
-var defaultModels = &SessionModelState{
-	CurrentModelId: "claude-sonnet-4-6",
-	AvailableModels: []ModelInfo{
-		{ModelId: "claude-haiku-4-5", Name: "Haiku 4.5", Description: strPtr("Fast and efficient")},
-		{ModelId: "claude-sonnet-4-6", Name: "Sonnet 4.6", Description: strPtr("Balanced performance")},
-		{ModelId: "claude-opus-4-6", Name: "Opus 4.6", Description: strPtr("Most capable model")},
-	},
+// defaultModelOptions is the ungrouped set of models the mock advertises via
+// configOptions (category=model). Mitto's ModelStateFromConfigOptions parses
+// this on session/new, session/load and session/resume responses.
+var defaultModelOptions = []SessionConfigSelectOption{
+	{Value: "claude-haiku-4-5", Name: "Haiku 4.5", Description: strPtr("Fast and efficient")},
+	{Value: "claude-sonnet-4-6", Name: "Sonnet 4.6", Description: strPtr("Balanced performance")},
+	{Value: "claude-opus-4-6", Name: "Opus 4.6", Description: strPtr("Most capable model")},
+}
+
+// defaultModelId is the initially-selected model id (matches the pre-0.13.5
+// CurrentModelId in the removed SessionModelState).
+const defaultModelId = "claude-sonnet-4-6"
+
+// buildModelConfigOption returns the Select-variant ConfigOption representing
+// the current model selection, using currentValue as the currentValue field.
+func buildModelConfigOption(currentValue string) SessionConfigOption {
+	return SessionConfigOption{
+		Type:         "select",
+		ID:           "model",
+		Name:         "Model",
+		Description:  "AI model for this session",
+		Category:     "model",
+		CurrentValue: currentValue,
+		Options:      defaultModelOptions,
+	}
 }
 
 func strPtr(s string) *string { return &s }
@@ -129,21 +163,24 @@ func NewMockACPServer(scenarioDir string, defaultDelay time.Duration, verbose bo
 		scenarioDir:  scenarioDir,
 		defaultDelay: defaultDelay,
 		verbose:      verbose,
-		currentMode:  defaultModes.CurrentModeID,   // Initialize with default mode
-		currentModel: defaultModels.CurrentModelId, // Initialize with default model
+		currentMode:  defaultModes.CurrentModeID, // Initialize with default mode
+		currentModel: defaultModelId,             // Initialize with default model
 		reader:       bufio.NewReader(os.Stdin),
 		writer:       os.Stdout,
 	}
 
-	// MOCK_SET_MODEL_FAIL_FIRST: inject failures for the first N set_model requests.
-	// Used by TestConcurrentModelSetBurst to deterministically exercise the retry path.
+	// MOCK_SET_MODEL_FAIL_FIRST: inject failures for the first N
+	// set_config_option(model) requests. Used by TestConcurrentModelSetBurst to
+	// deterministically exercise the retry path. Env var name kept from the
+	// pre-0.13.5 set_model wire for test back-compat.
 	if v := os.Getenv("MOCK_SET_MODEL_FAIL_FIRST"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
 			server.setModelFailFirst = n
 		}
 	}
 
-	// MOCK_SET_MODEL_DELAY_MS: sleep before responding to set_model, simulating slowness.
+	// MOCK_SET_MODEL_DELAY_MS: sleep before responding to set_config_option(model),
+	// simulating slowness. Name preserved for test back-compat.
 	if v := os.Getenv("MOCK_SET_MODEL_DELAY_MS"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
 			server.setModelDelayMs = n
@@ -160,6 +197,24 @@ func NewMockACPServer(scenarioDir string, defaultDelay time.Duration, verbose bo
 
 	// MOCK_RPC_ORDER_FILE: append-only log of inbound RPC arrival order.
 	server.rpcOrderFile = os.Getenv("MOCK_RPC_ORDER_FILE")
+
+	// MOCK_MCP_INIT_DELAY_MS: delay session/new by this many ms and emit an MCP-init
+	// progress line on stderr. Only applies when the request carries MCP servers.
+	// Simulates Auggie-style agents that block session/new on MCP handshake (mitto-8ul.1).
+	if v := os.Getenv("MOCK_MCP_INIT_DELAY_MS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			server.mcpInitDelayMs = n
+		}
+	}
+
+	// MOCK_MCP_INIT_TIMEOUT_MS: after this many ms, emit an MCP-init-timeout stderr
+	// line and fail the pending session/new. Used to prove fail-fast on the signal
+	// (mitto-8ul.1).
+	if v := os.Getenv("MOCK_MCP_INIT_TIMEOUT_MS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			server.mcpInitTimeoutAfterMs = n
+		}
+	}
 
 	server.loadScenarios()
 	return server

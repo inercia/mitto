@@ -68,13 +68,18 @@ const (
 	errCodeRateLimited      = "rate_limited"
 	errCodeServerError      = "server_error"
 	errCodeUnavailable      = "unavailable"
+
+	// errCodeBeadsSchemaSkew identifies a beads database that is behind the bd
+	// binary's schema and is remote-backed, so bd refuses to auto-migrate it.
+	// See writeBeadsError in internal/web/handlers/beads.go.
+	errCodeBeadsSchemaSkew = "beads_schema_skew"
 )
 
-// auxBackedRequestTimeout bounds aux/bd-backed handlers BELOW the 30s
+// auxBackedRequestTimeout bounds aux/bd-backed handlers BELOW the 60s
 // middleware cap (middleware.DefaultRequestTimeout) so they can write a
 // clear, retryable 503 before http.TimeoutHandler emits its opaque one.
 // It is a var only so tests can shorten it; treat it as constant in prod.
-var auxBackedRequestTimeout = 25 * time.Second
+var auxBackedRequestTimeout = 55 * time.Second
 
 // defaultCodeForStatus returns the canonical error code string for an HTTP
 // status code, per the policy table in rest-api-conventions.md §4. Unmapped

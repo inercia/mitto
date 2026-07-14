@@ -1,43 +1,37 @@
 ##########################################################################################
-# Builtin processor: updates Augment rules files from ongoing conversation insights.
+# Builtin processor: updates Augment rules files when a conversation is archived.
 #
 # Companion to auggie-manage-rules.yaml (which handles initial generation).
-# This processor fires once the agent goes idle (its message queue is drained), throttled
-# by cadence (every 6 turns or 15K tokens or 5 minutes), to review recent conversation
-# history and update the .augment/rules/ files with new patterns, conventions, and lessons
-# learned. Firing on idle ensures the auxiliary agent sees the full exchange rather than a
-# partial mid-burst turn.
+# Fires once when the session enters the closed (archived or deleted) state — either
+# through a manual archive from the UI, an automatic archive triggered by inactivity,
+# or a session delete. The processor asks a workspace-scoped auxiliary AI agent to
+# review the full archived conversation and update the .augment/rules/ files with new
+# patterns, conventions, and lessons learned.
+#
+# Running at close time (rather than every few turns) means the reviewer sees the
+# completed exchange in full instead of a mid-burst snapshot, and only one auxiliary
+# LLM invocation is spent per session.
 #
 # Only activates when .augment/rules/ already exist (initial generation already done).
 #
-# Fire-and-forget: the auxiliary agent works in the background while the main
-# conversation continues normally.
+# Fire-and-forget: the auxiliary agent works in the background after the main
+# conversation is already archived.
 #
 # Enabled by default — disable per workspace in the Workspaces dialog or .mittorc.
 # Only activates when the ACP server is Auggie.
 ##########################################################################################
 name: auggie-update-rules
-description: "Update .augment/rules/ files based on conversation insights and lessons learned"
+description: "Update .augment/rules/ files based on insights from an archived conversation"
 enabled: true
 when:
-  on: agentIdle
+  on: conversationClosed
   match: all
-  stopReasons: [end_turn]
-  cadence:
-    everyNTurns: 6
-    everyNTokens: 15000
-    afterInterval: 5m
 priority: 200
 timeout: 300s
 onError: skip
 
-parameters:
-  - name: HistoryLimit
-    type: text
-    description: "How many recent user/agent messages the auxiliary agent reviews"
-    default: "10"
-
-# Only for Auggie sessions, skip loop prompts, and only when rules already exist
+# Only for Auggie sessions, skip loop conversations, and only when rules already exist
+# (initial generation already done).
 enabledWhen: 'ACP.MatchesServerType("augment") && !Session.IsLoop && DirExists(".augment/rules")'
 
 prompt: |
@@ -83,25 +77,38 @@ prompt: |
   - Make rules actionable for coding decisions
   - Include common pitfalls and anti-pattern examples
   - Reference existing repo docs rather than duplicating
+  - **Allowed content**: facts about *this codebase* (architecture, patterns,
+    conventions, APIs, gotchas, lessons learned from code changes) and generic
+    developer procedures that apply to any contributor working on this project
+    (how to build, run tests, lint, project-wide tooling commands).
+  - **Forbidden content**: never write anything personal or user-specific.
+    Do NOT include:
+    - Absolute paths containing usernames or home directories
+      (e.g. `/Users/<name>/...`, `/home/<name>/...`, `C:\Users\<name>\...`).
+    - Locations of the current user's credentials, SSH keys, GitHub tokens,
+      API keys, or any other secrets.
+    - Machine-specific configuration (hostnames, local port numbers currently
+      in use, personal editor/IDE settings, shell aliases).
+    - Anything that could identify or leak information about the current user
+      or their local environment.
+    If in doubt, omit it — rules are shared across every contributor.
+    If the recent conversation includes such personal/user-specific material,
+    do NOT copy it into any rules file — either omit it or generalize it into
+    a project-wide fact.
 
-  === Recent Conversation ===
+  === Conversation ===
 
-  Use the `mitto_conversation_history` MCP tool to retrieve the recent conversation.
-  Call it with:
+  Use the `mitto_conversation_history` MCP tool to retrieve the archived session's
+  full history. Call it with:
   - `self_id`: your session ID (from `mitto_conversation_get_current`)
   - `conversation_id`: "{{ .Session.ID }}"
   - `event_types`: ["user_prompt", "agent_message"]
-  - `last_n`: ${HistoryLimit:-10}
+  - `last_n`: 200
 
   Review these messages for patterns, conventions, and lessons learned.
 
-  ## Notification
+  ## Silent completion
 
-  After completing your work, if you updated any rules files, call
-  `mitto_ui_notify` with:
-  - `self_id`: "{{ .Session.ID }}"
-  - `title`: "✏️ Rules Updated"
-  - `message`: a brief summary, e.g. "Updated 3 rules files with new patterns"
-  - `style`: "success"
-
-  If no changes were needed, do NOT send any notification — stay completely silent.
+  This is a background clean-up processor. Do NOT call `mitto_ui_notify` and do NOT
+  post any user-visible summary — the session is already archived and there is no
+  active UI to notify. If no changes were needed, just exit silently.

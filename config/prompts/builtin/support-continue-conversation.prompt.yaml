@@ -1,5 +1,5 @@
 name: 'Support: continue conversation'
-description: 'Find a Slack channel conversation you have been participating in, summarize it, and help craft a reply. Posts to Slack only on your approval.'
+description: 'Find a Slack channel conversation you have been participating in, summarize it, and help craft a reply. Proposes the reply for review, posts to Slack only on your approval, and records it on a tracked bead.'
 group: Support
 backgroundColor: '#C8E6C9'
 icon: chat-bubble
@@ -34,7 +34,7 @@ prompt: |-
 
   Find recent conversations in the Slack channel **`{{ $channel }}`** where the current user has been
   participating, let the user pick one, summarize it, and help craft a reply — either by gathering an
-  answer via the project's documented method or by rephrasing user-provided text.
+  answer via the channel playbook or by rephrasing user-provided text.
 
   ## CRITICAL: User Interaction Rules
 
@@ -47,12 +47,43 @@ prompt: |-
   >
   > ⚠️ **NEVER post to Slack without explicit user review and approval.**
 
+  ## Bead writing conventions (descriptions & comments)
+
+  - **Always write in GitHub-flavored Markdown.** Every bead **description** (`-d`) and every
+    **comment** you add must be valid markdown — headings, **bold**, `inline code`, fenced code blocks,
+    lists and links so it reads well in the UI. Preserve real line breaks with `$'...'` (real `\n`) or,
+    for anything multi-line, pipe via stdin (`printf '%s' "$c" | bd comment <id> --stdin`) — never
+    collapse a comment into one flat line.
+  - **The reply we would send the customer MUST be enclosed in a clearly delimited block** so a human
+    can identify *exactly* what we would send, character-for-character. Wrap **only** the reply text
+    between these two fences, on their own lines (nothing else inside them):
+    ```
+    --- BEGIN REPLY ---
+    <the exact message we would send to the user, in markdown>
+    --- END REPLY ---
+    ```
+    Everything outside the fences (the `[OUTBOUND]` header, permalink, notes) is context; everything
+    *inside* is the verbatim reply. Use this same block for every DRAFT and every POSTED reply.
+
   ## Slack tools (names vary by MCP server)
 
   Match Slack MCP tools **by capability, not exact name**. You need: (a) identify the current user,
   (b) read recent channel history, (c) read a thread's replies, and (d) post a reply to a thread
   (e.g. `slack_get_users*`, `slack_get_channel_history*`, `slack_get_thread_replies*`,
   `slack_reply_to_thread*`, or their `*_slack` equivalents).
+
+  ## Step 0: Read the channel playbook
+
+  - This channel's playbook lives at **`.mitto/slack-support-{{ $channel }}.md`**. It is the
+    **authoritative guide** for this channel's scope, investigation method, tone, how to address
+    customers, and reply guidelines.
+  - **If it exists**, read it in full now and honor it throughout — especially its tone/reply guidance
+    when crafting any reply below.
+  - **If it does NOT exist**, create the `.mitto/` directory if missing, ASK the user (via
+    `mitto_ui_form` / `mitto_ui_textbox`) for the channel playbook (scope, how to gather answers,
+    escalation paths, and how to address/reply to customers), and write their guidance to
+    `.mitto/slack-support-{{ $channel }}.md` before crafting a reply. If you learn a new useful
+    pattern later, append it to that file.
 
   ## Step 1: Identify the current user
 
@@ -115,18 +146,18 @@ prompt: |-
 
   ### Option A — "Gather an answer for me"
 
-  - Use the **project's documented method to gather answers** (see AGENTS.md → "How to answer
-    customer questions", or `.augment/rules/` / a docs-search MCP tool / runbook / knowledge base).
-    If you do **not** know a reliable method, ASK the user how to gather it (via `mitto_ui_form` /
-    `mitto_ui_textbox`) and persist their answer to AGENTS.md under a
-    `## How to answer customer questions` section before proceeding.
+  - Follow the channel playbook you read in **Step 0** (`.mitto/slack-support-{{ $channel }}.md`) as
+    the authoritative guide for how to gather answers (scope, which repos to search,
+    docs/runbooks/knowledge bases to consult, common patterns, escalation paths, relevant MCP tools)
+    and for tone/reply style. If you learn a new useful pattern while gathering, append it to that
+    file.
   - Feed the full conversation context (original question, thread history, the specific unanswered
     question) and ask for a response that addresses the open point, avoids repeating what was said,
     and links docs/tickets if relevant. Proceed to Step 6.
 
   ### Option B — "I'll provide the answer"
 
-  - Use `mitto_ui_textbox` (Title "Type your reply", Text "", Result "full", Abort true, Timeout 300).
+  - Use `mitto_ui_textbox` (Title "Type your reply", Text "", Result "text", Abort true, Timeout 300).
   - If the user submits, rephrase their answer to be clearer/professional: fix grammar and typos, add
     structure if complex, keep the technical accuracy and the user's voice/intent. Proceed to Step 6.
   - If the user aborts, acknowledge and end.
@@ -139,14 +170,61 @@ prompt: |-
     1. **No direct addressing** — do not address the user by name.
     2. **No follow-up offers** — do not end with "let me know if you need anything else".
     3. **Express uncertainty when appropriate** — "I think that…", "Based on my understanding…".
-  - Use `mitto_ui_textbox` to present the proposed reply for review/editing (Title "📤 Review reply
-    before posting to Slack", Result "full", Abort true, Timeout 300).
-  - **If the user submits:** the returned text (possibly edited) is the final message. Post it with
-    the post-reply-to-thread tool using channel `{{ $channel }}` and the thread's parent `thread_ts`.
-    Confirm success and show the permalink.
-  - **If the user aborts:** acknowledge and end. Do **NOT** post anything to Slack.
+  - **ALWAYS** propose the reply for review first — never post without it. Use `mitto_ui_textbox` to
+    present the proposed reply for review/editing (Title "📤 Review reply before posting to Slack",
+    Result "text", Abort true, Timeout 300). The tool returns `{ result, changed, aborted, timed_out }`.
+  - **If the user submits** (`aborted` and `timed_out` both false): the returned `result` (possibly
+    edited) is the final message. Post it with the post-reply-to-thread tool using channel
+    `{{ $channel }}` and the thread's parent `thread_ts`. Confirm success and show the permalink. Then
+    record it on a bead in Step 7.
+  - **If the user aborts or the dialog times out:** acknowledge and end. Do **NOT** post anything to
+    Slack. (On timeout, `mitto_ui_notify` that you assumed they were away and nothing was posted.)
+
+  ## Step 7: Save the reply on a bead (always, after posting)
+
+  Every posted reply must be recorded on a tracked bead so the conversation is never lost and future
+  support prompts can pick it up. Run `bd` from the workspace root (if `bd list` reports no database,
+  run `bd init` first).
+
+  1. **Deduplicate by thread.** Look up an existing bead for this thread:
+     `bd list --metadata-field slack_thread_ts=<thread_ts> --all`. If one exists, **reuse** it —
+     never create a second bead for the same thread.
+  2. **If none exists, create one now** (`$'...'` so `\n` become real newlines):
+     ```
+     bd create "<short thread summary>" -t task -p P2 -l support,support-question \
+       -d $'# Question\n\n<original question>\n\n# User\n\n<display name>\n\n# Links\n\n[Slack]({{ $ws }}/archives/{{ $channel }}/p<thread_ts_without_dot>)\n' \
+       --metadata '{"slack_thread_ts":"<thread_ts>","slack_channel":"{{ $channel }}","slack_url":"{{ $ws }}/archives/{{ $channel }}/p<thread_ts_without_dot>"}'
+     ```
+     Also add an `[INBOUND]` comment with the original customer question for history.
+  3. **Log the posted reply** — add a markdown `[OUTBOUND]` comment with the final text and the
+     permalink (preserve markdown with `$'...'` or `printf '%s' "$c" | bd comment <id> --stdin`):
+     Header `**[OUTBOUND us · POSTED · YYYY-MM-DD HH:MM UTC]**`, then the posted text **enclosed in the
+     `--- BEGIN REPLY ---` / `--- END REPLY ---` block** (see **Bead writing conventions**), with the
+     permalink outside the fences.
+  4. **Set state** (single `state:*` label — never `bd set-state`): swap in place to
+     `state:awaiting-customer` (`bd update <id> --remove-label state:<previous> --add-label state:awaiting-customer`;
+     for a brand-new bead just `--add-label state:awaiting-customer`).
+
+  ## Set priority by intervention urgency (final step)
+
+  After Step 7 the tracked bead sits in `state:awaiting-customer` (we just posted), so set it to
+  **P3** — we have replied, the ball is in the customer's court, and nothing needs your attention until
+  they respond. In general the priority reflects how urgently *you* (the human) must act:
+
+  - **P1 (HIGH)** — a draft (reply or clarifying question) is pending **your** approval
+    (`state:drafting`); bump to **P0** only if it answers an escalation / outage / broad-impact thread.
+  - **P2 (MEDIUM)** — in motion, our court, not blocked on your approval: `triaged` / `gathering-info`
+    / `awaiting-us`.
+  - **P3 (LOW)** — waiting on the customer, nothing for you to do now: `awaiting-customer` / `need-info`
+    (we just posted a reply or a clarifying question; the ball is in their court).
+
+  Apply with `bd update <id> --priority <n>` (n is `0`–`3`, 0 = highest) and add a short
+  `**[PRIORITY · <time>]** P<old> → P<new> (<reason>)` comment when it changes.
 
   ## Notes
 
-  - **Slack message approval**: NEVER post to Slack without explicit user approval.
+  - **Slack message approval**: NEVER post to Slack without explicit user review and approval via the
+    editable `mitto_ui_textbox`.
+  - **Every posted reply is saved on a bead** (create-or-reuse by `slack_thread_ts`), so the thread is
+    tracked exactly like threads found by **"Support: watch channel"**.
   - Thread timestamps: convert `1234567890.123456` → `p1234567890123456` for URLs.

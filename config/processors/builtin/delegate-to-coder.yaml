@@ -1,15 +1,29 @@
 ##########################################################################################
 # Builtin processor: suggests delegating coding tasks to faster models.
 #
-# This processor activates only for ACP servers tagged with "reasoning" or whose
-# name contains keywords associated with premium reasoning models. It uses a CEL
-# expression for flexible matching.
+# Activates when the session is running a premium reasoning/thinking model.
+# Two signals are checked (either fires the gate):
 #
-# To activate this processor, tag your premium ACP servers with "reasoning" in
-# your mitto config, or rename them to include a keyword like "opus", "o3", etc.
+#   1) Session.HasModelTag(...) — matches the CURRENTLY ACTIVE model's canonical
+#      capability tags from the `models:` profiles (config.DefaultModelProfiles).
+#      Claude Opus is tagged [Smartest, Reasoning, Thinking, Deep, Slow, Expensive];
+#      GPT-5 is tagged [Smart, Reasoning, Thinking, Deep, Coding]. This is the
+#      preferred signal but requires the agent to advertise its model via ACP
+#      session config options (category=model). Claude Code does; Auggie doesn't.
+#
+#   2) ACP.Tags.exists(...) — matches the workspace-configured tags on the
+#      current ACP server (settings.json acp[i].tags). Provides the fallback for
+#      agents that don't advertise a model (notably Auggie). The tag literals
+#      here are the same canonical vocabulary as (1) so users configuring their
+#      ACP server tags can reuse the same names (case-insensitive match).
+#
+# The prior condition gated on ACP server tags / server-name regex, which is
+# the wrong grain: the same server (e.g. auggie, claude-code) can run any of
+# Opus / Sonnet / Haiku / GPT / Gemini, and can switch models mid-session via
+# session/set_model. Session.HasModelTag(...) tracks the live model instead;
+# ACP.Tags is the fallback for agents that don't expose the live model.
 #
 # Uses the same CEL context as prompt enabledWhen expressions.
-# Also requires mitto_conversation_* MCP tools to be available (Tools.HasPattern CEL).
 ##########################################################################################
 name: delegate-to-coder
 description: "Suggests delegating coding tasks to a faster model when using a premium reasoning model"
@@ -24,13 +38,16 @@ when:
 mutate: append
 priority: 90
 enabledWhen: >-
-  ACP.Tags.exists(t, t == "reasoning")
-  || ACP.Tags.exists(t, t == "thinking")
-  || ACP.Name.matches("(?i)opus|o3|deep-research|codex")
+  Session.HasModelTag("Reasoning") || Session.HasModelTag("Smartest") ||
+  Session.HasModelTag("Thinking") || Session.HasModelTag("Deep") ||
+  ACP.Tags.exists(t, t in [
+    "Reasoning", "Smartest", "Thinking", "Deep", "Slow", "Expensive",
+    "reasoning", "smartest", "thinking", "deep", "slow", "expensive"
+  ])
 text: |
   ---
   [Multi-Agent Delegation Guidance]
-  You are running on a premium reasoning model ({{ .ACP.Name }}).
+  You are running on a premium reasoning model ({{ .ACP.Name }}{{ if .Session.ModelName }}, model {{ .Session.ModelName }}{{ end }}).
   Your session ID is: {{ .Session.ID }}
 
   For tasks that involve extensive coding changes (writing code, refactoring,

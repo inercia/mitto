@@ -64,11 +64,38 @@ func isValidBeadsIssueRef(s string) bool {
 }
 
 // writeBeadsError reports a bd-command failure using the canonical error
-// envelope (HTTP 500), carrying any captured stderr under error.details.stderr.
-// It also logs the failure (nil-guarded) so 500s are never silent in mitto.log.
+// envelope, carrying any captured stderr under error.details.stderr. It also
+// logs the failure (nil-guarded) so failures are never silent in mitto.log.
+//
+// A schema-version skew (bd refusing to auto-migrate a remote-backed database)
+// is distinguished from a genuine internal error: it surfaces as an
+// actionable HTTP 409 "needs migration" response with the DB path and a
+// remediation hint, rather than a bare 500. Every other failure keeps the
+// existing HTTP 500 behavior.
 func (h *Handlers) writeBeadsError(w http.ResponseWriter, r *http.Request, err error) {
+	if beads.IsSchemaSkew(err) {
+		dbPath := beads.SchemaSkewDBPath(err)
+		if h.deps.Logger != nil {
+			h.deps.Logger.Warn("beads schema needs migration", "db_path", dbPath, "stderr", beads.StderrOf(err), "path", r.URL.Path)
+		}
+		hint := "This beads database is behind the bd binary's schema and is remote-backed, so bd will not auto-migrate it. Reconcile it once (e.g. `BD_ALLOW_REMOTE_MIGRATE=1 bd migrate && bd dolt push` on the designated migrator clone, or `bd bootstrap` if another clone already migrated), then reload."
+		details := map[string]any{"hint": hint}
+		if dbPath != "" {
+			details["db_path"] = dbPath
+		}
+		if s := beads.StderrOf(err); s != "" {
+			details["stderr"] = s
+		}
+		msg := "The beads database schema needs migration"
+		if dbPath != "" {
+			msg = "The beads database at " + dbPath + " needs migration"
+		}
+		writeJSON(w, http.StatusConflict, errorEnvelope{Error: errorBody{Code: errCodeBeadsSchemaSkew, Message: msg, Details: details}})
+		return
+	}
+
 	if h.deps.Logger != nil {
-		h.deps.Logger.Error("beads command failed", "error", err, "stderr", beads.StderrOf(err), "path", r.URL.Path)
+		h.deps.Logger.Error("beads command failed", "error", err, "stderr", beads.StderrOf(err), "exit_code", beads.ExitCodeOf(err), "path", r.URL.Path)
 	}
 	var details map[string]any
 	if s := beads.StderrOf(err); s != "" {
@@ -237,6 +264,22 @@ func (h *Handlers) HandleBeadsShow(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if beads.IsNotFound(err) {
+			writeErrorJSON(w, http.StatusNotFound, "", "Issue not found")
+			return
+		}
+		// bd sometimes exits non-zero for a missing issue without printing any
+		// diagnostic (empty stdout AND empty stderr). Treat that as a not-found
+		// rather than surfacing an opaque 500, but log a warning so the silent
+		// failure is still discoverable during triage. ExitCodeOf > 0 confirms
+		// this was a real subprocess exit (not a timeout or context cancellation).
+		var ce *beads.CmdError
+		if errors.As(err, &ce) &&
+			strings.TrimSpace(beads.StderrOf(err)) == "" &&
+			beads.ExitCodeOf(err) != 0 {
+			if h.deps.Logger != nil {
+				h.deps.Logger.Warn("beads show exited non-zero with empty output; treating as not found",
+					"id", id, "exit_code", beads.ExitCodeOf(err), "path", r.URL.Path)
+			}
 			writeErrorJSON(w, http.StatusNotFound, "", "Issue not found")
 			return
 		}

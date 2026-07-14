@@ -3,13 +3,14 @@ import type { Page } from "@playwright/test";
 
 /**
  * Structural regression net for the sidebar toolbar button row (New
- * Conversation / Workspaces / Filter / Density / Search / Settings).
+ * Conversation / Add Folder / Filter / Density / Search / Workspaces /
+ * Settings).
  *
  * The toolbar is now rendered by the portable Toolbar component
  * (web/static/components/Toolbar.js) as a segmented "pill": a single bordered,
  * rounded container (`.mitto-toolbar`) holding borderless ghost icon buttons.
  * This spec locks the invariants of that shape:
- *   1. PRESENCE: all six items are present and visible (anchored on stable
+ *   1. PRESENCE: all items are present and visible (anchored on stable
  *      data-testids so selectors survive restyles).
  *   2. HEIGHT: every item shares the same height (all btn-sm) so the row reads
  *      as one continuous surface. Widths intentionally differ now — the
@@ -23,10 +24,11 @@ import type { Page } from "@playwright/test";
 
 const ITEM_IDS = [
   "new-conversation-btn",
-  "workspaces-btn",
+  "add-folder-btn",
   "category-filter-btn",
   "density-btn",
   "search-btn",
+  "workspaces-btn",
   "settings-btn",
 ] as const;
 

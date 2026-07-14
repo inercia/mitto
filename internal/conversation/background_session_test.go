@@ -187,6 +187,132 @@ func TestLookupACPServerConstraints(t *testing.T) {
 	})
 }
 
+// TestLookupACPServerConstraints_ModelTag_HonoursProfileOrder pins down the
+// "list order = priority" contract at the ACPServerSettings.ModelTag consumer
+// site (mitto-ex7.4 §2 test 3): when an ACPServer has ModelTag set (and no
+// ModelProfile), lookupACPServerConstraints resolves the "model" Criteria via
+// cfg.ModelProfilesByTag (which wraps the shared config.ProfilesByTag core) and
+// picks matches[0]. Because ProfilesByTag walks EffectiveModelProfiles in
+// Config.Models order, reordering the two same-tag profiles flips which
+// profile's Criteria replaces the "model" entry of the returned constraints
+// map. Mirrors the sibling regressions
+// TestInitialModelPreference_HonoursProfileOrder (constraints_test.go) and
+// TestAuxiliaryModelTag_HonoursProfileOrder (acpproc_process_manager_test.go).
+//
+// This consumer runs at config time — no SessionModelState / AvailableModels
+// exist yet — so the assertion is on the returned Criteria's Pattern, not on
+// per-model resolvability (that happens later via applyConfigConstraints).
+func TestLookupACPServerConstraints_ModelTag_HonoursProfileOrder(t *testing.T) {
+	// Canonical default names so EffectiveModelProfiles shadows the
+	// same-named DefaultModelProfiles entries cleanly (user profiles first,
+	// defaults appended only when unshadowed).
+	sonnet5 := config.ModelProfile{
+		Name:     "Claude Sonnet 5",
+		Criteria: &config.ACPServerConstraint{MatchMode: "contains", Pattern: "Sonnet 5"},
+		Tags:     []string{"Smart", "Coding"},
+	}
+	sonnet4 := config.ModelProfile{
+		Name:     "Claude Sonnet 4",
+		Criteria: &config.ACPServerConstraint{MatchMode: "contains", Pattern: "Sonnet 4"},
+		Tags:     []string{"Smart", "Coding"},
+	}
+
+	newCfg := func(models []config.ModelProfile, srv config.ACPServer) *config.Config {
+		return &config.Config{
+			Models:     models,
+			ACPServers: []config.ACPServer{srv},
+		}
+	}
+
+	t.Run("Sonnet 5 first → tag Smart resolves to Sonnet 5", func(t *testing.T) {
+		cfg := newCfg(
+			[]config.ModelProfile{sonnet5, sonnet4},
+			config.ACPServer{Name: "claude-code", ModelTag: "Smart"},
+		)
+		got := lookupACPServerConstraints(cfg, "claude-code")
+		if got == nil {
+			t.Fatal("expected non-nil constraints map")
+		}
+		c, ok := got["model"]
+		if !ok || c == nil {
+			t.Fatalf("expected 'model' constraint, got keys: %v", got)
+		}
+		if c.Pattern != "Sonnet 5" {
+			t.Errorf("with [Sonnet5, Sonnet4] Models order, resolved model.Pattern = %q, want %q", c.Pattern, "Sonnet 5")
+		}
+	})
+
+	t.Run("reverse order → tag Smart flips to Sonnet 4", func(t *testing.T) {
+		cfg := newCfg(
+			[]config.ModelProfile{sonnet4, sonnet5},
+			config.ACPServer{Name: "claude-code", ModelTag: "Smart"},
+		)
+		got := lookupACPServerConstraints(cfg, "claude-code")
+		if got == nil {
+			t.Fatal("expected non-nil constraints map")
+		}
+		c, ok := got["model"]
+		if !ok || c == nil {
+			t.Fatalf("expected 'model' constraint, got keys: %v", got)
+		}
+		if c.Pattern != "Sonnet 4" {
+			t.Errorf("with [Sonnet4, Sonnet5] Models order, resolved model.Pattern = %q, want %q", c.Pattern, "Sonnet 4")
+		}
+	})
+
+	t.Run("ModelProfile takes precedence over ModelTag regardless of Models order", func(t *testing.T) {
+		// Sonnet 5 first in Models — a bare ModelTag=Smart lookup would pick Sonnet 5,
+		// but ModelProfile="Claude Sonnet 4" must win and pin Sonnet 4.
+		cfg := newCfg(
+			[]config.ModelProfile{sonnet5, sonnet4},
+			config.ACPServer{
+				Name:         "claude-code",
+				ModelProfile: "Claude Sonnet 4",
+				ModelTag:     "Smart",
+			},
+		)
+		got := lookupACPServerConstraints(cfg, "claude-code")
+		if got == nil {
+			t.Fatal("expected non-nil constraints map")
+		}
+		c, ok := got["model"]
+		if !ok || c == nil {
+			t.Fatalf("expected 'model' constraint, got keys: %v", got)
+		}
+		if c.Pattern != "Sonnet 4" {
+			t.Errorf("ModelProfile=Claude Sonnet 4 alongside ModelTag=Smart (Sonnet5-first Models) resolved model.Pattern = %q, want %q", c.Pattern, "Sonnet 4")
+		}
+	})
+
+	t.Run("tag no-match falls back to raw Constraints", func(t *testing.T) {
+		// No profile carries "NoSuchTag" (defaults don't either), so the lookup
+		// must fall through to srv.Constraints — pointer equality confirms the
+		// legacy constraint is passed through untouched (no merge/copy).
+		legacyModel := &config.ACPServerConstraint{MatchMode: "lookAlike", Pattern: "Opus 4.8"}
+		cfg := newCfg(
+			[]config.ModelProfile{sonnet5, sonnet4},
+			config.ACPServer{
+				Name:     "claude-code",
+				ModelTag: "NoSuchTag",
+				Constraints: map[string]*config.ACPServerConstraint{
+					"model": legacyModel,
+				},
+			},
+		)
+		got := lookupACPServerConstraints(cfg, "claude-code")
+		if got == nil {
+			t.Fatal("expected non-nil constraints (legacy fallback)")
+		}
+		c, ok := got["model"]
+		if !ok {
+			t.Fatalf("expected 'model' constraint in fallback map, got keys: %v", got)
+		}
+		if c != legacyModel {
+			t.Errorf("expected fallback 'model' to be the input legacy constraint pointer, got different pointer (%+v)", c)
+		}
+	})
+}
+
 // TestLookupContextFlushCommand pins down the per-ACP-server resolution of the
 // agent-native context-flush command used by BackgroundSession.FlushContext and
 // the /flush API/UI gating.
@@ -3013,9 +3139,9 @@ func TestIsContextTooLargeError(t *testing.T) {
 			if tt.errMsg != "" {
 				err = &testError{msg: tt.errMsg}
 			}
-			got := isContextTooLargeError(err)
+			got := IsContextTooLargeError(err)
 			if got != tt.wantTrue {
-				t.Errorf("isContextTooLargeError(%q) = %v, want %v", tt.errMsg, got, tt.wantTrue)
+				t.Errorf("IsContextTooLargeError(%q) = %v, want %v", tt.errMsg, got, tt.wantTrue)
 			}
 		})
 	}
@@ -4143,9 +4269,9 @@ func TestSetAgentModels_InitializesBaseline(t *testing.T) {
 	bs.promptCond = sync.NewCond(&bs.promptMu)
 	bs.pendingConfig = make(map[string]string)
 
-	models := &acp.UnstableSessionModelState{
-		CurrentModelId: acp.UnstableModelId("claude-sonnet-4-6"),
-		AvailableModels: []acp.UnstableModelInfo{
+	models := &SessionModelState{
+		CurrentModelId: ("claude-sonnet-4-6"),
+		AvailableModels: []ModelInfo{
 			{ModelId: "claude-haiku-4-5", Name: "Haiku 4.5"},
 			{ModelId: "claude-sonnet-4-6", Name: "Sonnet 4.6"},
 		},
@@ -4172,9 +4298,9 @@ func TestSetAgentModels_DoesNotOverwriteExistingBaseline(t *testing.T) {
 	bs.baselineModel = "claude-opus-4-6" // pre-set
 	bs.modelMu.Unlock()
 
-	models := &acp.UnstableSessionModelState{
-		CurrentModelId: acp.UnstableModelId("claude-sonnet-4-6"),
-		AvailableModels: []acp.UnstableModelInfo{
+	models := &SessionModelState{
+		CurrentModelId: ("claude-sonnet-4-6"),
+		AvailableModels: []ModelInfo{
 			{ModelId: "claude-sonnet-4-6", Name: "Sonnet 4.6"},
 			{ModelId: "claude-opus-4-6", Name: "Opus 4.6"},
 		},
@@ -5001,6 +5127,9 @@ func (p *alwaysFailSharedProcess) Capabilities() *acp.AgentCapabilities { return
 func (p *alwaysFailSharedProcess) Restart() error {
 	return fmt.Errorf("alwaysFailSharedProcess: cannot restart — no real process")
 }
+func (p *alwaysFailSharedProcess) RecommendedLoadTimeout(_ bool) time.Duration { return 0 }
+func (p *alwaysFailSharedProcess) MCPInitDone() bool                           { return true }
+func (p *alwaysFailSharedProcess) WaitForMCPInit(_ context.Context) bool       { return true }
 
 // TestACPInitializeAttemptTimeoutBound is a math test for mitto-13ck.2.
 //

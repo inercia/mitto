@@ -6,6 +6,9 @@
  */
 
 import { getLastSeenSeq, setLastSeenSeq } from "./storage.js";
+import { authFetch, redirectToLogin } from "./csrf.js";
+import { endpoints } from "./index.js";
+import { isNativeApp } from "./native.js";
 
 // =============================================================================
 // H1: Sequence Number Tracking
@@ -380,3 +383,197 @@ export const WEBSOCKET_CONSTANTS = {
   SESSION_CREATION_JITTER_FACTOR,
   APP_ACTIVATE_RESYNC_DEBOUNCE_MS,
 };
+
+// =============================================================================
+// Auth Check Helpers
+// =============================================================================
+
+// In-flight Promise for auth-check deduplication.
+// When several WebSocket sessions reconnect simultaneously they each call
+// checkAuthOrRedirect().  Without deduplication every session fires its own
+// raw GET /api/config, creating a mini fetching storm on every reconnect event.
+// Sharing a single in-flight Promise collapses N concurrent calls into one
+// HTTP round-trip.  The Promise resolves to { status, ok } (plain values, not
+// the Response object) so it can safely be awaited by multiple callers.
+let _authCheckInflight = null;
+
+/**
+ * Quick authentication check before WebSocket reconnection.
+ * If auth is invalid (401), redirects to login page and never returns.
+ * For network errors or server errors, returns true to allow reconnection to proceed
+ * (the WebSocket reconnect will handle retries with exponential backoff).
+ *
+ * Concurrent callers share a single in-flight HTTP request to avoid a fetch
+ * storm when multiple sessions reconnect at the same time.
+ *
+ * @returns {Promise<boolean>} Always returns true. On 401, redirects and never returns.
+ *                             Network/server errors also return true to allow reconnection.
+ */
+export async function checkAuthOrRedirect() {
+  // Deduplicate: if an auth check is already in-flight, share that Promise
+  // rather than firing a fresh HTTP request for each concurrent caller.
+  if (!_authCheckInflight) {
+    // authFetch sends credentials: "include" (cross-origin / Tailscale safe) and
+    // routes 401s through the shared handleUnauthorized → redirectToLogin().
+    _authCheckInflight = authFetch(endpoints.config.get())
+      .then((res) => ({ status: res.status, ok: res.ok }))
+      .finally(() => {
+        _authCheckInflight = null;
+      });
+  }
+  try {
+    const { status, ok } = await _authCheckInflight;
+
+    if (status === 401) {
+      // Session expired — redirect to login and stall forever.
+      console.warn("Session expired or invalid, redirecting to login...");
+      redirectToLogin();
+      return new Promise(() => {});
+    }
+    // If we got here, auth is valid (200) or there's a server error (5xx).
+    // Either way, let reconnection proceed — the WebSocket will retry with backoff.
+    if (!ok) {
+      console.warn(
+        `Auth check returned status ${status}, allowing reconnection to proceed`,
+      );
+    }
+    return true;
+  } catch (err) {
+    // Network error - let reconnection proceed.
+    // The WebSocket reconnection will naturally retry with exponential backoff.
+    console.warn(
+      "Auth check network error, allowing reconnection to proceed:",
+      err.message,
+    );
+    return true;
+  }
+}
+
+/**
+ * Check authentication with retry logic for network errors.
+ * After prolonged phone sleep, the network may take a moment to recover.
+ * This function retries a few times before giving up.
+ *
+ * @param {number} maxRetries - Maximum number of retries (default: 3)
+ * @param {number} retryDelay - Delay between retries in ms (default: 500)
+ * @returns {Promise<{authenticated: boolean, networkError: boolean}>}
+ *   - authenticated: true if the session is valid
+ *   - networkError: true if all retries failed due to network errors
+ */
+export async function checkAuthWithRetry(maxRetries = 3, retryDelay = 500) {
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      // authFetch sends credentials: "include" (cross-origin / Tailscale safe) and
+      // routes 401s through the shared handleUnauthorized → redirectToLogin().
+      const response = await authFetch(endpoints.config.get());
+
+      // Got a response - check if authenticated
+      if (response.status === 401) {
+        console.log(
+          "Auth check: session expired or invalid (401), redirecting to login",
+        );
+        redirectToLogin();
+        return { authenticated: false, networkError: false };
+      }
+
+      if (response.ok) {
+        return { authenticated: true, networkError: false };
+      }
+
+      // Other error status - treat as auth failure if persistent
+      console.warn(`Auth check returned status ${response.status}`);
+      if (attempt < maxRetries) {
+        await new Promise((r) => setTimeout(r, retryDelay));
+        continue;
+      }
+      return { authenticated: false, networkError: false };
+    } catch (err) {
+      // Network error - retry if we have attempts left
+      console.warn(
+        `Auth check network error (attempt ${attempt + 1}/${maxRetries + 1}):`,
+        err.message,
+      );
+      if (attempt < maxRetries) {
+        await new Promise((r) => setTimeout(r, retryDelay));
+        continue;
+      }
+      // All retries exhausted
+      return { authenticated: false, networkError: true };
+    }
+  }
+  // Should not reach here
+  return { authenticated: false, networkError: true };
+}
+
+// =============================================================================
+// Keepalive / Reconnect / Stagger Constants
+// =============================================================================
+
+// Time threshold (in ms) for considering the session potentially stale
+// If the page has been hidden for longer than this, we do an explicit auth check
+// before trying to reconnect. The server session expires after 24 hours.
+export const STALE_THRESHOLD_MS = 60 * 60 * 1000; // 1 hour
+
+// Keepalive configuration for detecting zombie WebSocket connections and sequence sync
+// On mobile, connections can appear open but be dead (zombie connections)
+// Keepalive also piggybacks sequence numbers to detect out-of-sync situations
+// Native macOS app uses shorter interval (5s) since it's local with no network latency
+// Browser uses longer interval (10s) to reduce network overhead
+export const KEEPALIVE_INTERVAL_NATIVE_MS = 5000; // Send keepalive every 5 seconds in native app
+export const KEEPALIVE_INTERVAL_BROWSER_MS = 10000; // Send keepalive every 10 seconds in browser
+export const KEEPALIVE_TIMEOUT_MS = 10000; // Consider connection unhealthy if no response in 10 seconds
+// Cooldown period after stale client recovery. During this window, keepalive
+// will not re-trigger stale detection for the session, giving React state
+// and the auto-load prepend time to settle.
+export const STALE_RECOVERY_COOLDOWN_MS = 30000; // 30 seconds
+export const KEEPALIVE_MAX_MISSED_DEFAULT = 2; // Force reconnect after 2 missed keepalives
+export const KEEPALIVE_MAX_MISSED_LARGE_SESSION = 4; // For sessions with 500+ events
+export const LARGE_SESSION_SEQ_THRESHOLD = 500;
+
+// Sync tolerance: only request sync if client is more than N sequences behind server.
+// This avoids excessive sync requests during normal streaming where the markdown buffer
+// may hold content briefly before flushing to the UI. A tolerance of 2 prevents
+// sync requests when client is just 1-2 behind due to normal buffering delays.
+// NOTE: This tolerance is only applied during active streaming. For non-streaming sessions,
+// tolerance is 0 to ensure immediate sync of final events like session_end.
+export const KEEPALIVE_SYNC_TOLERANCE = 2;
+
+// Startup stagger: delay between each background session's WebSocket connection at startup/wake.
+// Prevents thundering herd where all sessions send load_events simultaneously,
+// overwhelming the server with concurrent large event replays.
+// Active session always connects first with no delay; background sessions stagger by this amount.
+export const STARTUP_STAGGER_MS = 300;
+
+// Debounce window for reconnectAllSessionsStaggered (ms).
+// Multiple macOS activation sources (NSWorkspaceDidWakeNotification,
+// NSWorkspaceScreensDidWakeNotification, applicationDidBecomeActive) can fire
+// 4–10 seconds apart for the same wake/focus event.  In addition, the native
+// "App became active" callback and the WKWebView visibilitychange "App became
+// visible" event are distinct triggers that both funnel here ~6 s apart for a
+// single wake.  Collapsing these into a single staggered reconnect prevents a
+// redundant active-session force-reconnect (which tears down a freshly opened
+// WebSocket) and avoids duplicate background-session timers accumulating
+// observers on BackgroundSession.  Matches APP_ACTIVATE_RESYNC_DEBOUNCE_MS
+// (one resync per wake) so the active+visible pair coalesces into one reconnect.
+export const STAGGERED_RECONNECT_DEBOUNCE_MS = 15000;
+
+// Grace period (ms) before a background session's per-session WebSocket is
+// disconnected after it stops being the active session. Lazy-connect keeps only
+// the active session connected; releasing a background WebSocket removes its
+// server-side observer so the backend GC can reclaim the idle ACP process.
+// The grace window keeps rapid back-and-forth switching cheap (the connection is
+// reused if the user returns within the window). The disconnect timer resets on
+// every active-session change, so only sessions left untouched for the full
+// window are dropped.
+export const BACKGROUND_DISCONNECT_GRACE_MS = 30000;
+
+/**
+ * Get the appropriate keepalive interval based on the runtime environment.
+ * Native macOS app uses a shorter interval for faster sync detection.
+ * @returns {number} Keepalive interval in milliseconds
+ */
+export function getKeepaliveInterval() {
+  return isNativeApp()
+    ? KEEPALIVE_INTERVAL_NATIVE_MS
+    : KEEPALIVE_INTERVAL_BROWSER_MS;
+}

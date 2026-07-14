@@ -376,8 +376,38 @@ func (s *Server) handleSessionWS(w http.ResponseWriter, r *http.Request) {
 				}
 				sessionName := meta.Name
 				go func() {
-					resumedBS, err := s.sessionManager.ResumeSession(sessionID, sessionName, cwd)
+					// Bound cold-start fan-out (mitto-54k.1): acquire INSIDE the
+					// goroutine so the WebSocket handler is never blocked, and
+					// release after ResumeSession returns (success or failure).
+					// A nil semaphore is a no-op (Acquire/Release both return).
+					// On a cold shared process this background resume additionally
+					// defers its LoadSession until the process warms so the user's
+					// foreground session/new wins the first handshake (mitto-54k.4).
+					// Cold-start diagnostics (mitto-3mv): log the semaphore wait so
+					// the fan-out queueing contribution is visible in server logs.
+					acqStart := time.Now()
+					s.interactiveResumeSem.Acquire()
+					if clientLogger != nil {
+						clientLogger.Debug("Acquired interactive resume semaphore",
+							"sem_wait_ms", time.Since(acqStart).Milliseconds(),
+							"sem_capacity", s.interactiveResumeSem.Capacity(),
+							"sem_in_use", s.interactiveResumeSem.Len())
+					}
+					defer s.interactiveResumeSem.Release()
+					resumedBS, err := s.sessionManager.ResumeSessionBackground(sessionID, sessionName, cwd)
 					if err != nil {
+						// mitto-54k.6: a cold-start MCP-init timeout is transient — the
+						// process warm-once barrier (mitto-54k.3) will let a later resume
+						// succeed. Skip the misleading permanent-error toast and the hard
+						// start-failed broadcast; a subsequent reconnect/ensure_resumed
+						// will retry against a warm process.
+						if conversation.IsMCPInitTimeout(err) {
+							if clientLogger != nil {
+								clientLogger.Warn("Async resume hit transient cold-start MCP-init timeout; skipping start-failed broadcast, will retry on reconnect/ensure_resumed",
+									"error", err)
+							}
+							return
+						}
 						if clientLogger != nil {
 							clientLogger.Error("Failed to resume session (async)", "error", err)
 						}
@@ -1992,6 +2022,10 @@ func (c *SessionWSClient) handleEnsureResumed() {
 	}
 	sessionName := meta.Name
 	go func() {
+		// User-focused foreground resume: intentionally BYPASSES
+		// interactiveResumeSem (mitto-54k.1) so the session the user is
+		// actively looking at resumes first, even when the cold-start
+		// fan-out has already saturated the interactive-resume bound.
 		resumedBS, err := c.server.sessionManager.ResumeSession(c.sessionID, sessionName, cwd)
 		if err != nil {
 			if c.logger != nil {

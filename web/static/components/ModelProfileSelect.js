@@ -30,6 +30,7 @@ export function ModelProfileSelect({
   profiles = [],
   legacyLabel,
   onChange,
+  className = "",
 }) {
   const hasLegacy = !!legacyLabel;
   const selectValue = value ? value : hasLegacy ? LEGACY_VALUE : "";
@@ -44,7 +45,7 @@ export function ModelProfileSelect({
     <select
       value=${selectValue}
       onInput=${handleChange}
-      class="select select-sm"
+      class=${`select select-sm${className ? ` ${className}` : ""}`}
     >
       <option value="">-- None --</option>
       ${hasLegacy &&

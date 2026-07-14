@@ -32,8 +32,22 @@ func childStartupJitter(max time.Duration) time.Duration {
 // When the server has a ModelProfile set (mitto-hke), the profile's Criteria replaces
 // the "model" entry of the constraints map (a copy — srv.Constraints is never mutated),
 // so downstream applyConfigConstraints resolves the model the same way it always has.
-// If the profile name doesn't resolve to a known profile, or has no Criteria, this falls
-// back to the server's raw Constraints (legacy matchMode/pattern behaviour).
+// When ModelProfile is empty but ModelTag is set, the first profile in
+// EffectiveModelProfiles carrying that tag (case-insensitive) supplies the Criteria.
+// If neither resolves to a usable profile Criteria, this falls back to the server's
+// raw Constraints (legacy matchMode/pattern behaviour).
+//
+// Priority axis for the ModelTag path is profile-list order: cfg.ModelProfilesByTag
+// (which wraps the shared config.ProfilesByTag core) walks EffectiveModelProfiles in
+// Config.Models order — user profiles first in user-supplied order, then any unshadowed
+// canonical defaults — and this helper picks matches[0]. Reordering profiles in
+// Config.Models flips which profile wins for the same tag at the ACPServerSettings.ModelTag
+// consumer site (mitto-ex7 "list order = priority" contract), mirroring the
+// InitialModelPreference and AuxiliaryModelTag consumer sites.
+//
+// Note: matches[0] is picked unconditionally here — there is no session yet at config
+// time, so per-model resolvability against agent-available models is deferred to
+// applyConfigConstraints downstream.
 func lookupACPServerConstraints(cfg *config.Config, serverName string) map[string]*config.ACPServerConstraint {
 	if cfg == nil {
 		return nil
@@ -42,10 +56,14 @@ func lookupACPServerConstraints(cfg *config.Config, serverName string) map[strin
 		if srv.Name != serverName {
 			continue
 		}
-		if srv.ModelProfile == "" {
-			return srv.Constraints
+		var profile *config.ModelProfile
+		if srv.ModelProfile != "" {
+			profile = cfg.FindModelProfile(srv.ModelProfile)
+		} else if srv.ModelTag != "" {
+			if matches := cfg.ModelProfilesByTag(srv.ModelTag); len(matches) > 0 {
+				profile = &matches[0]
+			}
 		}
-		profile := cfg.FindModelProfile(srv.ModelProfile)
 		if profile == nil || profile.Criteria == nil {
 			return srv.Constraints
 		}
@@ -255,7 +273,13 @@ func (c configManager) applyConfigOptionWithOpts(d configDeps, ctx context.Conte
 		previousModel := d.cmGetCurrentModelID()
 		if err := d.cmSetSessionModel(ctx, value); err != nil {
 			if l := d.cmLogger(); l != nil {
-				l.Error("Failed to set session model", "config_id", configID, "value", value, "error", err)
+				if IsACPConnectionError(err) {
+					// Dead/restarting process (e.g. agent heap-OOM crash, mitto-5q8): this is a
+					// transient restart-gap condition, not a genuine model-selection failure.
+					l.Warn("Skipping model change; agent process is restarting", "config_id", configID, "value", value, "error", err)
+				} else {
+					l.Error("Failed to set session model", "config_id", configID, "value", value, "error", err)
+				}
 			}
 			return fmt.Errorf("failed to set %s: %w", configID, err)
 		}

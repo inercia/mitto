@@ -19,6 +19,8 @@ import {
   collectPromptArguments,
   getMissingPromptParameters,
   autofillConversationMenuArgs,
+  isBooleanParam,
+  isInteractivePickerParam,
   isCacheableParam,
   fetchCachedParamNames,
   effectiveMissingParams,
@@ -161,6 +163,10 @@ describe("KNOWN_PARAM_TYPES", () => {
 
   test("includes boolean", () => {
     expect(KNOWN_PARAM_TYPES).toContain("boolean");
+  });
+
+  test("includes prompts", () => {
+    expect(KNOWN_PARAM_TYPES).toContain("prompts");
   });
 });
 
@@ -320,6 +326,44 @@ describe("menuSatisfies", () => {
     // boolean is satisfied everywhere, but beadsId still gates conversation
     expect(menuSatisfies(prompt, "beadsIssues")).toBe(true);
     expect(menuSatisfies(prompt, "conversation")).toBe(false);
+  });
+
+  test("prompts param never gates — satisfied by any menu even when required", () => {
+    const prompt = {
+      parameters: [{ name: "P", type: "prompts", required: true }],
+    };
+    expect(menuSatisfies(prompt, "prompts")).toBe(true);
+    expect(menuSatisfies(prompt, "conversation")).toBe(true);
+    expect(menuSatisfies(prompt, "beadsIssues")).toBe(true);
+    expect(menuSatisfies(prompt, "unknownMenu")).toBe(true);
+  });
+});
+
+// =============================================================================
+// isInteractivePickerParam Tests
+// =============================================================================
+
+describe("isInteractivePickerParam", () => {
+  test("returns true for boolean", () => {
+    expect(isInteractivePickerParam({ type: "boolean" })).toBe(true);
+  });
+
+  test("returns true for prompts", () => {
+    expect(isInteractivePickerParam({ type: "prompts" })).toBe(true);
+  });
+
+  test("returns false for text", () => {
+    expect(isInteractivePickerParam({ type: "text" })).toBe(false);
+  });
+
+  test("returns false for beadsId", () => {
+    expect(isInteractivePickerParam({ type: "beadsId" })).toBe(false);
+  });
+
+  test("returns false for undefined/null/no type", () => {
+    expect(isInteractivePickerParam(undefined)).toBe(false);
+    expect(isInteractivePickerParam(null)).toBe(false);
+    expect(isInteractivePickerParam({})).toBe(false);
   });
 });
 
@@ -618,6 +662,21 @@ describe("getMissingPromptParameters", () => {
     expect(getMissingPromptParameters(prompt, "beadsIssues")).toEqual([
       boolParam,
     ]);
+  });
+
+  test("prompts param is ALWAYS missing (collected via picker) in every menu", () => {
+    const param = { name: "P", type: "prompts", required: true };
+    const prompt = { parameters: [param] };
+    expect(getMissingPromptParameters(prompt, "prompts")).toEqual([param]);
+    expect(getMissingPromptParameters(prompt, "conversation")).toEqual([param]);
+    expect(getMissingPromptParameters(prompt, "beadsIssues")).toEqual([param]);
+  });
+
+  test("prompts param is collected even when marked required:false", () => {
+    const param = { name: "P", type: "prompts", required: false };
+    const prompt = { parameters: [param] };
+    // required:false would normally suppress it, but prompts overrides that
+    expect(getMissingPromptParameters(prompt, "conversation")).toEqual([param]);
   });
 });
 

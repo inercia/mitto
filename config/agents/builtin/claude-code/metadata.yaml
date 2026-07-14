@@ -5,6 +5,12 @@ acpId: "claude-code"
 description: "ACP wrapper for Anthropic's Claude"
 repository: "https://github.com/agentclientprotocol/claude-agent-acp"
 license: "proprietary"
+# claude-agent-acp forks a fresh `claude` OS process per ACP session/new,
+# unlike auggie which multiplexes over one node process. The aux-prewarm
+# scheduler uses this to widen its stagger and rely on rush-on-demand so it
+# does not fork N cold `claude` processes back-to-back at cold start
+# (mitto-7yj).
+sessionSpawnsProcess: true
 install:
   method: "npx"
   package: "@agentclientprotocol/claude-agent-acp"
@@ -12,3 +18,21 @@ mcp:
   scopes: ["user", "project", "local"]
 defaults:
   contextFlushCommand: "/clear"
+  # Raise Node/V8 old-space heap cap for the ACP subprocess (mitto-54k.10).
+  # See augment/metadata.yaml for rationale.
+  env:
+    NODE_OPTIONS: "--max-old-space-size=12288"
+# Per-agent stderr patterns (mitto-k6h). Unioned with the hardcoded baseline.
+stderrPatterns:
+  crash:
+    # Rust-layer panics from claude-code-agent-sdk that don't already match
+    # baseline substrings.
+    - "^thread '.*' panicked at"
+  ignore:
+    - "(?i)method not found"
+    # OpenTelemetry startup warnings are informational.
+    - "(?i)OTEL_"
+  degraded:
+    # Anthropic quota / rate-limit chatter (plumbed only, mitto-k6h).
+    - "(?i)rate limit"
+    - "(?i)429 Too Many Requests"

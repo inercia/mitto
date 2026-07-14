@@ -1,10 +1,10 @@
 name: 'Support: gather more information'
-description: 'Ask the customer for missing details on a tracked support question (bead in state:need-info). Posts to Slack only on your approval.'
+description: 'Nudge / re-ask the customer for details we already requested but have not received (bead in state:need-info — we posted a clarifying question and the customer has gone quiet). Drafts a gentle follow-up, posts to Slack only on your approval, and keeps the bead in need-info. The FIRST clarifying question is drafted by "Support: investigate" and posted by "Support: reply to user"; this prompt is for the follow-up when they do not respond.'
 group: Support
 backgroundColor: '#FFE0B2'
 icon: question
-menus: beadsIssues
-enabledWhen: 'CommandExists("bd") && DirExists(".beads") && Item.Status != "closed" && "support-question" in Item.Labels && "state:need-info" in Item.Labels'
+menus: beadsIssues, conversation, prompts
+enabledWhen: 'CommandExists("bd") && DirExists(".beads") && ((Item.Status != "closed" && "support-question" in Item.Labels && "state:need-info" in Item.Labels) || (Session.HasBeadsIssue && BeadIsOpen(Session.BeadsIssue) && BeadHasLabels(Session.BeadsIssue, "support-question,state:need-info")))'
 tags:
 - support
 parameters:
@@ -21,10 +21,17 @@ prompt: |-
 
   ## Description
 
-  Ask the customer for the details we are missing before we can help. Use this when we **cannot
-  answer yet** because the question is unclear or we need more context (environment, identifiers,
-  error codes, timing, a reproduction, etc.). It drafts a short, targeted clarifying message, lets
-  you edit it, posts it to the Slack thread **on your approval**, and records it on the bead.
+  **Nudge the customer for details we already asked for.** Use this when the bead is in
+  `state:need-info` — meaning **we already posted a clarifying question** (drafted by
+  **"Support: investigate"** and posted by **"Support: reply to user"**) — but the customer has gone
+  quiet and has not supplied the detail. It drafts a short, friendly **follow-up**, lets you edit it,
+  posts it to the Slack thread **on your approval**, records it on the bead, and **keeps the bead in
+  `state:need-info`** (we are still waiting on the same detail).
+
+  > **This is not the first ask.** The *first* clarifying question is handled by the normal
+  > investigate → reply-to-user flow (a clarifying question is drafted as `state:drafting` and posted
+  > by **"Support: reply to user"**, which moves the bead to `need-info`). This prompt only sends a
+  > **follow-up nudge** once the bead is already sitting in `need-info` with no customer response.
 
   > **Applicable state:** `state:need-info`. If the bead is in a different state, warn and let the
   > user decide whether to continue or stop (see Step 2).
@@ -40,6 +47,25 @@ prompt: |-
   >
   > ⚠️ **NEVER post to Slack without explicit user review and approval.**
 
+  ## Bead writing conventions (descriptions & comments)
+
+  - **Always write in GitHub-flavored Markdown.** Every bead **description** (`-d`) and every
+    **comment** you add must be valid markdown — headings, **bold**, `inline code`, fenced code blocks,
+    lists and links so it reads well in the UI. Preserve real line breaks with `$'...'` (real `\n`) or,
+    for anything multi-line, pipe via stdin (`printf '%s' "$md" | bd comment <id> --stdin`) — never
+    collapse a comment into one flat line.
+  - **The clarifying message we would send the customer MUST be enclosed in a clearly delimited block**
+    so a human can identify *exactly* what we would send, character-for-character. Wrap **only** the
+    message text between these two fences, on their own lines:
+    ```
+    --- BEGIN REPLY ---
+    <the exact message we would send to the user, in markdown>
+    --- END REPLY ---
+    ```
+    Put nothing else inside the fences — everything outside (the `[OUTBOUND]` header, notes) is context;
+    everything *inside* is the verbatim message. Use this same block for every DRAFT and every POSTED
+    message you record.
+
   ## Slack tools (names vary by MCP server)
 
   Match Slack MCP tools **by capability, not exact name**. You need: (a) **read a thread's replies**
@@ -53,79 +79,147 @@ prompt: |-
   {{ if $target }}
   - This prompt was launched from bead **`{{ $target }}`** — operate on it directly (skip the picker).
   {{- else }}
-  - **No linked bead** — show a picker: list candidates and keep only those in `state:need-info`:
+  - **No linked bead** — show a picker: list candidates and keep only those in `state:need-info`
+    (beads where we already posted a clarifying question and are waiting on the customer):
     `bd list -l support-question --status open,in_progress --all` (read each `state:*` label from
     `bd show`). Present them with `mitto_ui_options` (first option `{label: "None - Cancel"}`, then
-    one `{label: "<id> — <short summary>"}` per bead, timeout 300).
-  - If there are no `state:need-info` beads, `mitto_ui_notify` (info) that nothing needs clarification
-    and stop. If the user cancels, acknowledge and stop.
+    one `{label: "<id> [state] — <short summary>"}` per bead, timeout 300).
+  - If there are no `state:need-info` beads, `mitto_ui_notify` (info) that nothing is awaiting a
+    customer detail (nothing to follow up on) and stop. If the user cancels, acknowledge and stop.
   {{- end }}
 
   ## Step 2: Load history + verify state (self-check)
 
   - Load the full history: `bd show <id>` and `bd comments <id>`. Note the stored `slack_thread_ts`
     / `slack_channel` / `slack_url` metadata.
+  - **Read the channel playbook.** Using the bead's `slack_channel` value, read
+    **`.mitto/slack-support-<channel-id>.md`** (e.g. `C0XXXXXXX` →
+    `.mitto/slack-support-C0XXXXXXX.md`). It is the **authoritative guide** for this channel's tone,
+    how to address customers, and reply guidelines. If it exists, honor its guidance when drafting the
+    clarifying message — it **overrides** the generic style below. If it does not exist, fall back to
+    the generic style below.
   - Confirm the `state:*` label is `need-info`. If it is **not**, use `mitto_ui_options` to warn:
     - **Question**: "This bead is in `state:<current>`, not `need-info`. Continue anyway?"
     - **Options**: `[{label: "Continue anyway"}, {label: "Cancel"}]`, timeout 300.
     - On "Cancel", stop. On "Continue anyway", proceed.
 
-  ## Step 3: Refresh the thread + identify the gap
+  ## Step 3: Refresh the thread + confirm they still owe us the detail
 
-  - Re-fetch the Slack thread (read-thread-replies tool) using the stored `slack_thread_ts` so the
-    ask reflects the latest state (the customer may have already provided some of it).
-  - From the bead history + thread, determine **exactly what is missing**. Be specific — list the
-    concrete facts we need, for example:
+  - Re-fetch the Slack thread (read-thread-replies tool) using the stored `slack_thread_ts`.
+  - **First, check whether the customer already answered.** Compare the latest thread messages against
+    the clarifying question we already posted (the prior `POSTED (request for info)` `[OUTBOUND]`
+    comment on the bead).
+    - **If the customer has replied with the detail (or any real answer)** → do **not** nudge. This bead
+      should move to `state:awaiting-us` (our turn now); `mitto_ui_notify` (info) recommending
+      **"Support: check status"** / **"Support: investigate"** to act on their answer, and stop without
+      posting a follow-up.
+    - **If they are still silent** (no reply, or only noise/acknowledgment) → proceed with the nudge.
+  - Re-read the bead history + thread to restate **exactly what is still missing** so the follow-up is
+    specific. Be concrete — the same facts we originally asked for, e.g.:
     - Affected **environment** / host / namespace or service
     - Exact **error code(s)** and a sample request/response identifier or body
     - **When** it started and whether it is continuous or intermittent
     - A **reproduction** (a `curl`/Postman example) if relevant
 
-  ## Step 4: Draft the clarifying message
+  ## Step 4: Draft the follow-up nudge
 
-  - Write a **short, friendly, specific** message that asks only for what we actually need — ideally
-    one or two concrete questions, not a long checklist. Follow the reply style:
+  - Write a **short, friendly, low-pressure follow-up** that gently re-asks for the same detail — do not
+    restate the whole thread; acknowledge we are still waiting and make it easy to answer. Follow the
+    channel playbook's tone/reply guidelines first (Step 2); the style below is the fallback default
+    when the playbook is silent:
     1. **No direct addressing** — do not use the user's name.
-    2. **Hedge** — "To help dig into this, could you share…".
+    2. **Hedge / soft nudge** — "Just following up — to dig into this, could you share…".
     3. **Explain briefly why** the detail helps, if it is not obvious.
     4. **Keep it short** — avoid walls of text; make it easy to answer.
   - Show a clickable link to the thread for context (use the stored `slack_url`):
-    `📤 Asking in [this thread](<slack_url>)`.
+    `📤 Following up in [this thread](<slack_url>)`.
 
-  ## Step 5: Review in an editable textbox
+  ## Step 5: Persist the draft to the bead (before review)
 
-  - Use `mitto_ui_textbox`:
-    - **Title**: "📤 Review clarifying question before posting to Slack"
+  Always save the proposed follow-up on the bead **before** opening the review dialog, so nothing is
+  lost if the user is away. Record it as a DRAFT `[OUTBOUND]` comment (preserve the markdown with
+  `$'...'` or stdin):
+  ```
+  printf '%s' "$draft_markdown" | bd comment <id> --stdin
+  ```
+  Header: `**[OUTBOUND us · DRAFT (follow-up request for info) — not yet posted · YYYY-MM-DD HH:MM UTC]**`,
+  then the message text **enclosed in the `--- BEGIN REPLY ---` / `--- END REPLY ---` block** (see
+  **Bead writing conventions**). Leave the bead in `state:need-info` for now.
+
+  ## Step 6: Review in an editable textbox
+
+  - **ALWAYS** propose the message for review first — never post without it. Use `mitto_ui_textbox`:
+    - **Title**: "📤 Review follow-up nudge before posting to Slack"
     - **Text**: the proposed message
-    - **Result**: "full"
+    - **Result**: "text"
     - **Abort**: true
     - **Timeout**: 300
+  - The tool returns `{ result, changed, aborted, timed_out }`. Branch on these in Step 7. **Do NOT
+    post to Slack unless the user submits (Step 7 "On submit").**
 
-  ## Step 6: Post + log (on submit)
+  ## Step 7: Act on the textbox result
 
-  - The returned text (possibly edited) is the final message. Post it with the post-reply-to-thread
+  ### On submit (`aborted` and `timed_out` are both false)
+
+  - The returned `result` (possibly edited) is the final message. Post it with the post-reply-to-thread
     tool, using the stored `slack_channel` and the thread's parent `slack_thread_ts`.
   - Confirm success and show the permalink (build it from the posted ts: `<slack_url base>/archives/
     <slack_channel>/p<posted_ts_without_dot>`).
-  - **Log to the bead** — add a markdown `[OUTBOUND]` comment with the final text and the permalink.
-    Preserve the markdown layout with `$'...'` (real `\n`) or stdin:
+  - **Log to the bead** — add a markdown `[OUTBOUND]` comment (this one is the **posted** message, not
+    a draft) with the final text and the permalink. Preserve the markdown layout with `$'...'` (real
+    `\n`) or stdin:
     ```
     printf '%s' "$comment_markdown" | bd comment <id> --stdin
     ```
-    Header: `**[OUTBOUND us · YYYY-MM-DD HH:MM UTC]**` — and note in the body that this is a request
-    for more information.
-  - **Transition state** (same issue, no subtasks — never `bd set-state`):
-    `bd update <id> --remove-label state:need-info --add-label state:awaiting-customer`.
-    (If Step 2 continued from a different state, remove that state label instead.)
+    Header: `**[OUTBOUND us · POSTED (follow-up request for info) · YYYY-MM-DD HH:MM UTC]**`, then the
+    posted text **enclosed in the `--- BEGIN REPLY ---` / `--- END REPLY ---` block**, with the permalink
+    and a note that this is a follow-up request for more information **outside** the fences.
+  - **State stays `need-info`.** A follow-up nudge does not change whose court the ball is in — we asked
+    again and are **still** waiting on the same detail, so leave the bead in `state:need-info` (do not
+    move it to `awaiting-customer`; that state is for a posted *answer*). Add a `**[STATE · <time>]**`
+    note only if you need to record the nudge; the `state:*` label itself does not change.
 
-  ## On abort
+  ### On timeout (`timed_out == true`)
 
-  - Do **NOT** post anything to Slack. Leave the bead in `state:need-info`.
-  - Acknowledge and stop.
+  The user is away — **do NOT post anything to Slack**, and do **not** re-open the dialog.
+
+  - If the user **edited** the text before the timeout (`changed == true` and a non-empty `result` is
+    returned), update the stored draft to that edited text: add a fresh DRAFT `[OUTBOUND]` comment
+    (header `**[OUTBOUND us · DRAFT (follow-up request for info, edited, not posted) · YYYY-MM-DD HH:MM UTC]**`,
+    the edited message **enclosed in the `--- BEGIN REPLY ---` / `--- END REPLY ---` block**) so the
+    latest version is on the bead. If it was not edited, the Step 5 draft already covers it.
+  - Leave the bead in `state:need-info`. `mitto_ui_notify` (info): "Review dialog timed out — assuming
+    you're away. Nothing posted; the draft is saved on the bead. Re-run **Support: gather more
+    information** when you're back." Then stop.
+
+  ### On abort (`aborted == true`)
+
+  - Do **NOT** post anything to Slack. Leave the bead in `state:need-info` (the saved draft stays
+    pending). Acknowledge and stop.
+
+  ## Set priority by intervention urgency (final step)
+
+  Set the bead's priority to match how urgently *you* (the human) must act. This prompt operates
+  entirely within `state:need-info` — we already asked and are waiting on the customer, so the bead
+  stays **P3** throughout: a follow-up nudge is optional and does not put the ball back in our court.
+  (Contrast: the *first* clarifying question is a `state:drafting` draft, which is **P1** while pending
+  your approval — but that is handled by **"Support: reply to user"**, not here.) In general:
+
+  - **P1 (HIGH)** — a draft (reply or clarifying question) is pending **your** approval
+    (`state:drafting`); bump to **P0** only if it answers an escalation / outage / broad-impact thread.
+  - **P2 (MEDIUM)** — in motion, our court, not blocked on your approval: `triaged` / `gathering-info`
+    / `awaiting-us`.
+  - **P3 (LOW)** — waiting on the customer, nothing for you to do now: `awaiting-customer` / `need-info`
+    (we just posted a reply or a clarifying question; the ball is in their court).
+
+  Apply with `bd update <id> --priority <n>` (n is `0`–`3`, 0 = highest) and add a short
+  `**[PRIORITY · <time>]** P<old> → P<new> (<reason>)` comment when it changes.
 
   ## Notes
 
   - Load the bead (`bd show` + `bd comments`) **before** drafting — it is the source of truth.
+  - The proposed message is **always** saved on the bead as a DRAFT `[OUTBOUND]` comment before review
+    and re-saved (as POSTED) after approval, so it is never lost even if the review dialog times out.
   - When the customer replies, the thread moves to `state:awaiting-us`; use **"Support: check
     status"** to pull the reply onto the bead, then **"Support: reply to user"** once we can answer.
   - **NEVER** post in the support channel without explicit review and approval.

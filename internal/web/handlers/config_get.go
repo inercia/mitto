@@ -71,6 +71,9 @@ func (h *Handlers) HandleGetConfig(w http.ResponseWriter, r *http.Request) {
 		"config_readonly": h.deps.ConfigReadOnly,
 		"api_prefix":      h.deps.APIPrefix, // Include API prefix for frontend to use
 		"models":          []configPkg.ModelProfile{},
+		// Canonical capability tags (single Go source of truth) so the frontend can
+		// suggest them when editing model-profile tags, without duplicating the list.
+		"model_tags": configPkg.CanonicalModelTags(),
 	}
 
 	// Include RC file path if config is from an RC file
@@ -162,6 +165,11 @@ func (h *Handlers) HandleGetConfig(w http.ResponseWriter, r *http.Request) {
 			// Include model profile name if specified (mitto-hke)
 			if srv.ModelProfile != "" {
 				acpServers[i]["model_profile"] = srv.ModelProfile
+			}
+
+			// Include model tag if specified
+			if srv.ModelTag != "" {
+				acpServers[i]["model_tag"] = srv.ModelTag
 			}
 
 			// Include context-flush command if specified

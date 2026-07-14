@@ -15,11 +15,45 @@ import {
   setBeadsGrouping,
   getBeadsSort,
   setBeadsSort,
-  openExternalURL,
-  openFileURL,
-  buildWorkspaceViewerURL,
-  openViewerUrl,
 } from "../utils/index.js";
+import {
+  readBeadsResponse,
+  matchesSearch,
+  cmpBySort,
+  SORT_FIELD_OPTIONS,
+  SORT_FIELD_LABELS,
+  CLEANUP_PROGRESS_TOAST_INTERVAL_MS,
+  UPSTREAM_LABELS,
+  DEP_TYPES,
+  PRIORITY_LABELS,
+  ISSUE_TYPES,
+  BEADS_SUPPORTS_HOVER,
+  BEADS_TOOLTIP_DELAY_MS,
+} from "../utils/beads.js";
+// Re-export STATUS_COLORS at its original location so any external consumer
+// that had `import { STATUS_COLORS } from ".../BeadsView.js"` keeps working
+// after the move to utils/beads.js (mitto-90f.3 E-3).
+export { STATUS_COLORS } from "../utils/beads.js";
+import {
+  priorityBadge,
+  statusBadge,
+  depStatusBadge,
+  typeBadge,
+} from "./beads/Badges.js";
+import {
+  renderMarkdown,
+  handleBeadsContentClick,
+  commentBody,
+} from "./beads/CommentBody.js";
+// Detail-panel sub-components (Fields.js, CommentsSection.js, Sections.js) are
+// no longer imported here directly — they are used exclusively by
+// BeadsDetailPanelBody, which is what BeadsDetailPanel now renders.
+import { BeadsDetailPanelBody } from "./beads/detail/PanelBody.js";
+import { useBeadsDetailPanel } from "./beads/detail/useBeadsDetailPanel.js";
+// Re-export statusBadge at its original location so SessionPanel.js
+// (`import { statusBadge as beadsStatusBadge } from "./BeadsView.js"`) keeps
+// working after the move to beads/Badges.js (mitto-90f.3 E-4).
+export { statusBadge } from "./beads/Badges.js";
 import { getBasename, copyToClipboard } from "../lib.js";
 import {
   PlusIcon,
@@ -47,7 +81,6 @@ import {
   SortIcon,
   CopyIcon,
   getPromptIconOrDefault,
-  LoopIcon,
   LinkIcon,
   ListIcon,
   LightningIcon,
@@ -60,11 +93,6 @@ import {
   HeadingIcon,
   QuoteIcon,
 } from "./Icons.js";
-import {
-  promptLoopMode,
-  promptLoopIsToggleable,
-  promptLoopDefaultOn,
-} from "../utils/prompts.js";
 import { CodeEditorField } from "./CodeEditorField.js";
 import {
   ContextMenu,
@@ -72,123 +100,25 @@ import {
   PortalTooltip,
 } from "./ContextMenu.js";
 import { ConfirmDialog } from "./ConfirmDialog.js";
-import { Drawer } from "./Drawer.js";
 import { Tooltip } from "./Tooltip.js";
 import { Toolbar } from "./Toolbar.js";
 import { usePullToRefresh } from "../hooks/usePullToRefresh.js";
 import { useSwipeToAction } from "../hooks/index.js";
 
-// How often (ms) to surface a progress toast during a bulk closed-issue
-// cleanup. Progress events arrive per server-side batch (25 issues each), which
-// can be more frequent than is useful as toasts, so we throttle visible updates
-// to this rate and keep a single live toast updated in place.
-const CLEANUP_PROGRESS_TOAST_INTERVAL_MS = 3000;
-
 // ---- helpers ----------------------------------------------------------------
-
-// Safely read a fetch Response body that is expected to be JSON. If the body is
-// not valid JSON (e.g. a plain-text error page from a 403/500), return an object
-// with an `error` field instead of throwing. This prevents WebKit/Safari from
-// surfacing the cryptic "The string did not match the expected pattern." error
-// when res.json() is called on a non-JSON body.
-async function readBeadsResponse(res) {
-  const text = await res.text();
-  if (text) {
-    try {
-      const parsed = JSON.parse(text);
-      // Normalize the canonical nested error envelope {error:{code,message,details}}
-      // down to the flat {error:"<message>", stderr} shape the beads consumers expect.
-      // This covers both validation errors (4xx) and bd-failure errors (500, canonical envelope).
-      if (parsed && typeof parsed.error === "object" && parsed.error !== null) {
-        return {
-          error: parsed.error.message || `Request failed (HTTP ${res.status})`,
-          stderr:
-            (parsed.error.details && parsed.error.details.stderr) || undefined,
-        };
-      }
-      return parsed;
-    } catch (_e) {
-      // fall through to error object below
-    }
-  }
-  return {
-    error: (text && text.trim()) || `Request failed (HTTP ${res.status})`,
-  };
-}
-
-// matchesSearch returns true when `issue` matches the user's search query.
-// The query is whitespace-tokenized (case-insensitive) and every token must
-// appear as a substring of one of the searchable fields: id, title, owner,
-// or description (body). An empty / whitespace-only query matches everything.
-// The exact-ID case (e.g. "mitto-3bx") is naturally covered because the full
-// id substring-matches itself.
-function matchesSearch(issue, search) {
-  if (!search) return true;
-  const tokens = search.toLowerCase().split(/\s+/).filter(Boolean);
-  if (tokens.length === 0) return true;
-  const id = (issue.id || "").toLowerCase();
-  const title = (issue.title || "").toLowerCase();
-  const owner = (issue.owner || "").toLowerCase();
-  const description = (issue.description || "").toLowerCase();
-  for (const t of tokens) {
-    if (
-      !(
-        id.includes(t) ||
-        title.includes(t) ||
-        owner.includes(t) ||
-        description.includes(t)
-      )
-    ) {
-      return false;
-    }
-  }
-  return true;
-}
-
-// Display labels for the folder's configured upstream task system.
-const UPSTREAM_LABELS = {
-  jira: "Jira",
-  github: "GitHub",
-  gitlab: "GitLab",
-  linear: "Linear",
-};
-
-// Dependency edge kinds accepted by "bd dep add -t" (mirrors the backend
-// allow-list in beads_api.go). "blocks" is the default/most common kind, so it
-// is listed first.
-const DEP_TYPES = [
-  "blocks",
-  "related",
-  "parent-child",
-  "discovered-from",
-  "until",
-  "caused-by",
-  "validates",
-  "relates-to",
-  "supersedes",
-  "tracks",
-];
-
-const PRIORITY_LABELS = { 0: "Critical", 1: "High", 2: "Medium", 3: "Low" };
-const PRIORITY_COLORS = {
-  0: "badge-error",
-  1: "badge-warning",
-  2: "badge-info",
-  3: "badge-ghost",
-};
-
-export const STATUS_COLORS = {
-  open: "bg-green-700 text-green-100",
-  in_progress: "bg-blue-700 text-blue-100 beads-status-inprogress",
-  closed: "bg-mitto-surface-4 text-mitto-text-strong",
-  blocked: "bg-red-700 text-red-100",
-  deferred: "bg-cyan-800 text-cyan-100",
-};
+//
+// Pure helpers (readBeadsResponse, matchesSearch, cmpBySort, SORT_FIELD_*) and
+// pure-data constants (UPSTREAM_LABELS, DEP_TYPES, PRIORITY_*, STATUS_COLORS,
+// TYPE_COLORS, ISSUE_TYPES, CLEANUP_PROGRESS_TOAST_INTERVAL_MS,
+// BEADS_SUPPORTS_HOVER, BEADS_TOOLTIP_DELAY_MS) live in ../utils/beads.js so
+// they can be unit-tested without the window.preact bootstrap. See
+// mitto-90f.3 E-1 (helpers) and E-3 (pure-data constants).
 
 // Status filter toggle buttons shown in the Beads toolbar. Each button toggles
 // the visibility of issues with the matching status. `key` is the bd status
 // value; `label` is the user-facing text (used for the tooltip/aria-label of
 // the icon-only button); `Icon` is the glyph rendered inside the button.
+// Icon-carrying; stays in this file (utils/beads.js is framework-free).
 const BEADS_STATUS_TOGGLES = [
   { key: "open", label: "open", Icon: CircleIcon },
   { key: "in_progress", label: "in-progress", Icon: HourglassIcon },
@@ -202,170 +132,18 @@ const BEADS_STATUS_TOGGLES = [
 // hidden.
 let beadsStatusToggles = { open: true, in_progress: true, closed: false };
 
-// Hover-only tooltips are pointless on touch devices (no hover); gate the portal
-// toolbar tooltip the same way daisyUI gates its CSS tooltips so taps never
-// trigger a stuck bubble.
-const BEADS_SUPPORTS_HOVER =
-  typeof window !== "undefined" &&
-  typeof window.matchMedia === "function" &&
-  window.matchMedia("(hover: hover)").matches;
+// Badge sub-components (badge, priorityBadge, statusBadge, depStatusBadge,
+// typeBadge) live in ./beads/Badges.js so they can be reused independently of
+// this file's large surface. See mitto-90f.3 E-4.
 
-// Delay before a toolbar tooltip appears on hover (ms).
-const BEADS_TOOLTIP_DELAY_MS = 250;
-
-const TYPE_COLORS = {
-  epic: "bg-purple-700 text-purple-100",
-  feature: "bg-blue-700 text-blue-100 beads-type-feature",
-  bug: "bg-red-700 text-red-100",
-  task: "bg-mitto-surface-4 text-mitto-text-strong",
-  chore: "bg-mitto-surface-4 text-mitto-text-strong",
-};
-
-function badge(text, colorClass) {
-  return html`<span
-    class="badge badge-sm font-medium px-2.5 py-0.5 ${colorClass}"
-    >${text}</span
-  >`;
-}
-
-function priorityBadge(p) {
-  const n = typeof p === "number" ? p : 3;
-  return badge(
-    PRIORITY_LABELS[n] ?? String(p),
-    PRIORITY_COLORS[n] ?? PRIORITY_COLORS[3],
-  );
-}
-
-export function statusBadge(s) {
-  const label = (s || "open").replace(/_/g, " ");
-  return badge(
-    label,
-    STATUS_COLORS[s] ?? "bg-mitto-surface-4 text-mitto-text-strong",
-  );
-}
-
-// Status badge for the (narrow) dependencies list: shows the full status label
-// on normal screens and collapses to a single-letter abbreviation on small
-// screens (see .beads-badge-abbr / .beads-badge-full in styles.css). The full
-// label is kept in `title` for hover/accessibility.
-function depStatusBadge(s) {
-  const label = (s || "open").replace(/_/g, " ");
-  const colorClass =
-    STATUS_COLORS[s] ?? "bg-mitto-surface-4 text-mitto-text-strong";
-  return html`<span
-    class="badge badge-sm font-medium px-2.5 py-0.5 ${colorClass}"
-    title=${label}
-  >
-    <span class="beads-badge-abbr">${label.charAt(0)}</span
-    ><span class="beads-badge-full">${label}</span>
-  </span>`;
-}
-
-function typeBadge(t) {
-  return badge(t || "task", TYPE_COLORS[t] ?? TYPE_COLORS.task);
-}
-
-// Sort menu options. `field` is the persisted key; `key` is the issue property
-// holding the value to compare on (priority is numeric, the dates are RFC3339
-// strings).
-const SORT_FIELD_OPTIONS = [
-  { field: "created", label: "Creation date", key: "created_at" },
-  { field: "updated", label: "Modification date", key: "updated_at" },
-  { field: "priority", label: "Priority", key: "priority" },
-];
-
-const SORT_FIELD_LABELS = Object.fromEntries(
-  SORT_FIELD_OPTIONS.map((o) => [o.field, o.label]),
-);
-
-// Compare two issues for the chosen sort field and direction. Priority is a
-// number (0 = highest) so ascending = most important first; the dates compare
-// by parsed timestamp. A stable id tiebreaker keeps ordering deterministic and
-// is intentionally independent of direction.
-function cmpBySort(a, b, sort) {
-  const dir = sort.direction === "asc" ? 1 : -1;
-  let primary = 0;
-  if (sort.field === "priority") {
-    const pa = typeof a.priority === "number" ? a.priority : 3;
-    const pb = typeof b.priority === "number" ? b.priority : 3;
-    primary = pa - pb;
-  } else {
-    const key = sort.field === "updated" ? "updated_at" : "created_at";
-    primary =
-      (Date.parse(a?.[key] || "") || 0) - (Date.parse(b?.[key] || "") || 0);
-  }
-  if (primary !== 0) return primary * dir;
-  return (a.id || "").localeCompare(b.id || "");
-}
-
-function renderMarkdown(text) {
-  if (!text) return null;
-  if (typeof window !== "undefined" && window.marked && window.DOMPurify) {
-    const raw = window.marked.parse(text);
-    return window.DOMPurify.sanitize(raw, { USE_PROFILES: { html: true } });
-  }
-  return null;
-}
-
-// Intercept clicks on links inside rendered beads markdown (description,
-// comments, notes). Relative links reference files in the workspace and must
-// open in the internal viewer — otherwise the SPA router follows the bare href
-// and renders a blank "Not Found" page. External URLs open in the system
-// browser. Returns true when a link was handled so callers can skip any
-// edit-mode toggle on the surrounding container.
-function handleBeadsContentClick(e, workspacePath) {
-  const target = e.target;
-  const link = target && target.closest ? target.closest("a") : null;
-  if (!link) return false;
-  const href = link.getAttribute("href");
-  if (!href || href.startsWith("#")) return false;
-
-  // A link was clicked: prevent SPA navigation and edit-mode toggles.
-  e.preventDefault();
-  e.stopPropagation();
-
-  if (/^(https?:|mailto:|tel:)/i.test(href)) {
-    openExternalURL(href);
-    return true;
-  }
-  if (/^file:/i.test(href)) {
-    openFileURL(href);
-    return true;
-  }
-  // Everything else is treated as a workspace-relative file → internal viewer.
-  const viewerUrl = buildWorkspaceViewerURL(href, workspacePath);
-  if (viewerUrl) openViewerUrl(viewerUrl);
-  return true;
-}
-
-function commentBody(text, workspacePath) {
-  const m = renderMarkdown(text);
-  if (m)
-    return html`<div
-      class="markdown-content text-mitto-text text-sm max-w-none"
-      onClick=${(e) => handleBeadsContentClick(e, workspacePath)}
-      dangerouslySetInnerHTML=${{ __html: m }}
-    />`;
-  return html`<pre
-    class="whitespace-pre-wrap wrap-break-word text-sm text-mitto-text"
-  >
-${text || ""}</pre
-  >`;
-}
+// Markdown rendering (renderMarkdown), link-click interception
+// (handleBeadsContentClick) and the shared markdown/pre wrapper (commentBody)
+// live in ./beads/CommentBody.js. See mitto-90f.3 E-5.
 
 // ---- Detail side panel ------------------------------------------------------
-
-const ISSUE_TYPES = ["task", "feature", "epic", "bug", "chore"];
-
-function labelValue(label, value) {
-  if (value === null || value === undefined || value === "") return null;
-  return html`
-    <div>
-      <div class="text-xs text-mitto-text-secondary mb-0.5">${label}</div>
-      <div class="text-sm text-mitto-text wrap-break-word">${value}</div>
-    </div>
-  `;
-}
+//
+// Small helpers used by the detail panel (labelValue) live in
+// ./beads/DetailPanelHelpers.js. See mitto-90f.3 E-6.
 
 /**
  * BeadsDetailPanel is a fixed right-side overlay that serves two modes:
@@ -405,2346 +183,63 @@ export function BeadsDetailPanel({
   onSelectIssue,
   createParentId,
 }) {
-  const isOpen = isCreating || !!issue;
-  const [isClosing, setIsClosing] = useState(false);
-  const [shouldRender, setShouldRender] = useState(isOpen);
-  // When true the panel expands to fill the available area (hiding the issue
-  // list behind it) so a single issue's details are easier to read. On desktop
-  // that is the beads view area; on small screens — where the panel is otherwise
-  // confined to a strip with a list peek beside it (mitto-cdf) — it fills the
-  // viewport (the dock's 85vw cap is lifted via --dock-maxw:100% when fullscreen).
-  // The expand toggle is shown on every screen size now that the small-screen
-  // panel is confined rather than always full-width. The single-issue overlay
-  // (BeadsIssueView) passes initialFullscreen=false so it opens as the docked
-  // ~40rem side panel over the conversation; the toggle still lets the user
-  // expand it to fill the area.
-  const [fullscreen, setFullscreen] = useState(!!initialFullscreen);
-  // Shortcut buttons configured for this folder's beadsIssue section (mirrors
-  // the list toolbar's tasksList shortcuts, but keyed to the open issue).
-  const [issueShortcuts, setIssueShortcuts] = useState([]);
-  // Map from prompt name → prompt object, resolved from the beadsIssues menu.
-  const [issueShortcutPromptMap, setIssueShortcutPromptMap] = useState(
-    new Map(),
-  );
-  // Phone detection drives the panel width. We deliberately use the user agent
-  // (not a viewport-width breakpoint like Tailwind's `md:`): the native macOS
-  // app runs in a WKWebView that reports a Macintosh UA but can have a narrow
-  // window, and must still get the desktop layout (a doubled fixed-width panel
-  // with a dimming backdrop), not the full-width phone layout. A viewport-based
-  // rule would misclassify that narrow window as mobile and drop the backdrop.
-  const isMobile = useMemo(() => {
-    if (typeof navigator === "undefined") return false;
-    const ua = navigator.userAgent || "";
-    return /iPhone|iPad|iPod|Android|webOS|BlackBerry|IEMobile|Opera Mini/i.test(
-      ua,
-    );
-  }, []);
-  const lastIssueRef = useRef(issue);
-  const lastCreatingRef = useRef(isCreating);
-  if (issue) lastIssueRef.current = issue;
-  if (isOpen) lastCreatingRef.current = isCreating;
-
-  // While closing, keep rendering whichever mode was last open.
-  const creating = isOpen ? isCreating : lastCreatingRef.current;
-  const data = issue || lastIssueRef.current;
-
-  // Create-mode form state.
-  const [title, setTitle] = useState("");
-  const [type, setType] = useState("task");
-  const [priority, setPriority] = useState(2); // 2 = Medium
-  const [description, setDescription] = useState("");
-  const [submitting, setSubmitting] = useState(false);
-  const [createDeps, setCreateDeps] = useState([]);
-  const [createNewDepType, setCreateNewDepType] = useState("blocks");
-  const [createNewDepId, setCreateNewDepId] = useState("");
-  const [createAssignee, setCreateAssignee] = useState("");
-  const [createNotes, setCreateNotes] = useState("");
-
-  // Magic-wand "Improve description" state. Mirrors ChatInput's improve-prompt
-  // flow but targets the create-form description. `improvingDesc` gates the
-  // in-flight request and drives the spinner.
-  const [improvingDesc, setImprovingDesc] = useState(false);
-
-  // Prompts loaded for the detail-panel kebab menu.
-  const [prompts, setPrompts] = useState([]);
-  // ContextMenu anchor for the detail-panel kebab; null = closed.
-  const [panelMenu, setPanelMenu] = useState(null);
-
-  // View-mode inline description editing. editingDesc switches the rendered
-  // description to a CodeMirror editor. Edits accumulate in viewDraft and are
-  // persisted by the unified Save button. descMinHeight keeps the editor at
-  // least as tall as the content it replaces.
-  const [editingDesc, setEditingDesc] = useState(false);
-  const [descMinHeight, setDescMinHeight] = useState(0);
-  const detailEditorApiRef = useRef(null);
-  const descViewRef = useRef(null);
-  // Imperative handle for the create-form's description CodeMirror editor.
-  const createEditorApiRef = useRef(null);
-
-  // View-mode inline title editing.
-  const [editingTitle, setEditingTitle] = useState(false);
-  const titleRef = useRef(null);
-  // Snapshot of viewDraft.title captured on startEditTitle so Escape can revert.
-  const titleEditStartRef = useRef("");
-
-  // View-mode inline type editing.
-  const [editingType, setEditingType] = useState(false);
-  const typeRef = useRef(null);
-
-  // View-mode inline assignee editing.
-  const [editingAssignee, setEditingAssignee] = useState(false);
-  const assigneeRef = useRef(null);
-  // Snapshot of viewDraft.assignee captured on startEditAssignee so Escape can revert.
-  const assigneeEditStartRef = useRef("");
-
-  // Draft / dirty / save state for view mode. All six editable fields
-  // accumulate into viewDraft; a single Save posts them together.
-  const [viewDraft, setViewDraft] = useState({
-    title: "",
-    type: "task",
-    priority: 2,
-    description: "",
-    assignee: "",
-    notes: "",
-  });
-  const [savingView, setSavingView] = useState(false);
-  // When true, show the "Discard changes?" confirm dialog before closing.
-  const [confirmDiscard, setConfirmDiscard] = useState(false);
-  // After a successful Save, holds the just-persisted field values so the dirty
-  // check clears immediately — without waiting for the async onUpdated() refresh
-  // to flow updated `data` back down. Reset to null when a different issue opens
-  // (the seed effect below). When set, it takes precedence over viewOriginal.
-  const [savedBaseline, setSavedBaseline] = useState(null);
-
-  // View-mode dependencies. The list rows only carry a dependency_count, so the
-  // full edges (id + title + status + dependency_type) are fetched from
-  // /api/issues/{id} when an issue is opened. `depsBusy` gates add/remove
-  // requests; `newDepType`/`newDepId` back the "add dependency" row.
-  const [deps, setDeps] = useState([]);
-  const [depsLoading, setDepsLoading] = useState(false);
-  const [depsBusy, setDepsBusy] = useState(false);
-  const [newDepType, setNewDepType] = useState("blocks");
-  const [newDepId, setNewDepId] = useState("");
-  // Labels shown in view mode. `labels` mirrors the issue's current labels
-  // (refreshed via fetchDeps); `labelsBusy` gates add/remove requests;
-  // `newLabel` backs the add-label input; `allLabels` holds the workspace-wide
-  // label suggestions rendered in the add-label datalist.
-  const [labels, setLabels] = useState([]);
-  const [labelsBusy, setLabelsBusy] = useState(false);
-  const [newLabel, setNewLabel] = useState("");
-  const [allLabels, setAllLabels] = useState([]);
-  // `addingLabel` toggles the inline add-label input (revealed by the "+"
-  // button); `labelInputRef` lets us focus it as soon as it opens.
-  const [addingLabel, setAddingLabel] = useState(false);
-  const labelInputRef = useRef(null);
-  const [comments, setComments] = useState([]);
-  const [notes, setNotes] = useState("");
-
-  // View-mode inline notes editing.
-  const [editingNotes, setEditingNotes] = useState(false);
-  const [notesMinHeight, setNotesMinHeight] = useState(0);
-  const notesRef = useRef(null);
-  const notesViewRef = useRef(null);
-
-  // View-mode "add comment": a "+" button at the bottom of the comments list
-  // reveals a textarea with the same save-on-blur behaviour as notes. An empty
-  // draft on blur just closes the editor without a request; otherwise the
-  // comment is posted via /api/issues/{id}/comments and the list is refreshed.
-  const [addingComment, setAddingComment] = useState(false);
-  const [commentDraft, setCommentDraft] = useState("");
-  const [savingComment, setSavingComment] = useState(false);
-  const commentRef = useRef(null);
-
-  // Reset the form whenever create mode is (re)entered.
-  useEffect(() => {
-    if (isCreating) {
-      setTitle("");
-      setType("task");
-      setPriority(2);
-      setDescription("");
-      setSubmitting(false);
-      setCreateDeps([]);
-      setCreateNewDepType("blocks");
-      setCreateNewDepId("");
-      setCreateAssignee("");
-      setCreateNotes("");
-    }
-  }, [isCreating]);
-
-  // Close the type dropdown on outside click while it is open.
-  useEffect(() => {
-    if (!editingType) return undefined;
-    const onDocClick = (e) => {
-      if (typeRef.current && !typeRef.current.contains(e.target)) {
-        setEditingType(false);
-      }
-    };
-    document.addEventListener("mousedown", onDocClick);
-    return () => document.removeEventListener("mousedown", onDocClick);
-  }, [editingType]);
-
-  const openPanelMenu = useCallback(
-    (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      const rect = e.currentTarget.getBoundingClientRect();
-      setPanelMenu({ x: rect.left, y: rect.bottom });
-      if (onFetchPrompts && workingDir) {
-        // Pass the issue so item.*-gated prompts (e.g. Start work hidden for
-        // closed issues) evaluate against this issue's status (mitto-gns).
-        onFetchPrompts(workingDir, data).then((list) => setPrompts(list || []));
-      }
-    },
-    [onFetchPrompts, workingDir, data],
-  );
-
-  useEffect(() => {
-    if (isOpen) {
-      setShouldRender(true);
-      setIsClosing(false);
-    } else if (shouldRender) {
-      setIsClosing(true);
-      const timer = setTimeout(() => {
-        setShouldRender(false);
-        setIsClosing(false);
-        setFullscreen(false);
-      }, 150);
-      return () => clearTimeout(timer);
-    }
-  }, [isOpen]);
-
-  const handleSave = useCallback(async () => {
-    if (!description.trim()) return;
-    setSubmitting(true);
-    try {
-      const body = { type, priority, description: description.trim() };
-      if (title.trim()) body.title = title.trim();
-      if (createParentId) body.parent = createParentId;
-      if (createAssignee.trim()) body.assignee = createAssignee.trim();
-      if (createNotes.trim()) body.notes = createNotes.trim();
-      if (createDeps.length)
-        body.dependencies = createDeps.map((d) => ({
-          id: d.id,
-          type: d.type || "blocks",
-        }));
-      const res = await secureFetch(
-        endpoints.issues.create({ working_dir: workingDir }),
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(body),
-        },
-      );
-      const respData = await readBeadsResponse(res);
-      if (!res.ok || respData.error) {
-        showToast &&
-          showToast({
-            style: "error",
-            title: respData.error || "Failed to create issue",
-          });
-      } else {
-        showToast && showToast({ style: "success", title: "Issue created" });
-        onCreated && onCreated();
-        onClose && onClose();
-      }
-    } catch (err) {
-      showToast &&
-        showToast({
-          style: "error",
-          title: err.message || "Failed to create issue",
-        });
-    } finally {
-      setSubmitting(false);
-    }
-  }, [
+  const h = useBeadsDetailPanel({
+    issue,
+    allIssues,
+    isCreating,
     workingDir,
-    title,
-    type,
-    priority,
-    description,
-    createParentId,
-    createAssignee,
-    createNotes,
-    createDeps,
-    showToast,
-    onCreated,
+    initialFullscreen,
     onClose,
-  ]);
-
-  const addCreateDep = useCallback(() => {
-    const id = createNewDepId.trim();
-    if (!id) return;
-    if (createDeps.some((d) => d.id === id)) return;
-    setCreateDeps((prev) => [...prev, { id, type: createNewDepType }]);
-    setCreateNewDepId("");
-  }, [createNewDepId, createNewDepType, createDeps]);
-
-  const removeCreateDep = useCallback((id) => {
-    setCreateDeps((prev) => prev.filter((d) => d.id !== id));
-  }, []);
-
-  // AI-enhance a description text field via the same auxiliary endpoint the chat
-  // input's magic wand uses (/api/aux/improve-prompt). Works on any
-  // text/setText pair so it serves both the create-form description and the
-  // view-mode inline edit draft. Replaces the text with the improved version on
-  // success; surfaces errors as a toast. No-op when empty or already running.
-  const improveDescriptionText = useCallback(
-    async (text, setText) => {
-      if (improvingDesc || !text || !text.trim()) return;
-      setImprovingDesc(true);
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 65000); // 65s timeout
-      try {
-        const response = await secureFetch(endpoints.aux.improvePrompt(), {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            prompt: text,
-            workspace_uuid:
-              (typeof window !== "undefined" &&
-                window.mittoCurrentWorkspaceUUID) ||
-              (typeof sessionStorage !== "undefined" &&
-                sessionStorage.getItem("mittoCurrentWorkspaceUUID")) ||
-              "",
-          }),
-          signal: controller.signal,
-        });
-        clearTimeout(timeoutId);
-        if (!response.ok) {
-          const errData = await response.json().catch(() => ({}));
-          throw new Error(
-            errData?.error?.message ||
-              errData?.message ||
-              "Failed to improve description",
-          );
-        }
-        const respData = await response.json();
-        if (respData.improved_prompt) {
-          setText(respData.improved_prompt);
-        }
-      } catch (err) {
-        clearTimeout(timeoutId);
-        const msg =
-          err.name === "AbortError"
-            ? "Request timed out. Please try again."
-            : err.message || "Failed to improve description";
-        showToast && showToast({ style: "error", title: msg });
-      } finally {
-        setImprovingDesc(false);
-      }
-    },
-    [improvingDesc, showToast],
-  );
-
-  // md renders the draft description so the read-only view reflects in-progress edits.
-  const md = useMemo(
-    () => renderMarkdown(!creating && viewDraft && viewDraft.description),
-    [creating, viewDraft && viewDraft.description],
-  );
-  const subtasks = useMemo(
-    () =>
-      !creating && data ? allIssues.filter((i) => i.parent === data.id) : [],
-    [creating, allIssues, data && data.id],
-  );
-
-  // The "original" values used to compute dirtiness. Notes come from async
-  // fetchDeps, so they are sourced from the `notes` state rather than data.
-  const viewOriginal = useMemo(
-    () => ({
-      title: (data && data.title) || "",
-      type: (data && data.issue_type) || "task",
-      priority: data && typeof data.priority === "number" ? data.priority : 2,
-      description: (data && data.description) || "",
-      assignee: (data && data.assignee) || "",
-      notes: notes || "",
-    }),
-    [
-      data && data.id,
-      data && data.title,
-      data && data.issue_type,
-      data && data.priority,
-      data && data.description,
-      data && data.assignee,
-      notes,
-    ],
-  );
-
-  const viewDirty = useMemo(() => {
-    if (creating) return false;
-    // A successful save records its persisted values in savedBaseline; compare
-    // against those so the panel is no longer "dirty" the instant Save resolves.
-    const base = savedBaseline || viewOriginal;
-    const t = viewDraft.title.trim();
-    return (
-      (t !== "" && t !== base.title) ||
-      viewDraft.type !== base.type ||
-      viewDraft.priority !== base.priority ||
-      viewDraft.description !== base.description ||
-      viewDraft.assignee.trim() !== base.assignee ||
-      viewDraft.notes !== base.notes
-    );
-  }, [creating, viewDraft, viewOriginal, savedBaseline]);
-
-  // handleClose and handleDiscardAndClose are defined here (after creating and
-  // viewDirty) because their dep arrays reference both computed values.
-  const doClose = useCallback(() => {
-    setIsClosing(true);
-    setTimeout(() => onClose(), 150);
-  }, [onClose]);
-
-  // Set when a close is requested while a save is still in flight. The close is
-  // deferred until the save settles (resolved by the effect below) so a
-  // Save→Close race no longer surfaces a spurious "Discard changes?" prompt.
-  const pendingCloseRef = useRef(false);
-
-  const handleClose = useCallback(() => {
-    // A save is still running: remember that the user wants to close and let the
-    // in-flight save finish first. The deferred close resolves in the effect
-    // below once savingView clears.
-    if (!creating && savingView) {
-      pendingCloseRef.current = true;
-      return;
-    }
-    if (!creating && viewDirty) {
-      setConfirmDiscard(true);
-      return;
-    }
-    doClose();
-  }, [creating, viewDirty, savingView, doClose]);
-
-  // Resolve a close that was deferred while a save was in flight. A successful
-  // save clears viewDirty (savedBaseline now matches the draft) so the panel
-  // closes silently; a failed save leaves the draft dirty, so we fall through to
-  // the discard guard rather than silently losing the user's edits.
-  useEffect(() => {
-    if (savingView || !pendingCloseRef.current) return;
-    pendingCloseRef.current = false;
-    if (!creating && viewDirty) {
-      setConfirmDiscard(true);
-      return;
-    }
-    doClose();
-  }, [savingView, creating, viewDirty, doClose]);
-
-  const handleDiscardAndClose = useCallback(() => {
-    setConfirmDiscard(false);
-    doClose();
-  }, [doClose]);
-
-  // Close the panel when the user clicks outside of it (e.g. on the issue list
-  // or conversation to its left). Dock mode (mitto-cdf) deliberately has no
-  // dimming backdrop — a composited full-area overlay over the list dropped its
-  // GPU backing store on pointer-move — so outside clicks are detected with a
-  // document listener (no DOM overlay) instead. Clicks inside the docked panel,
-  // inside any modal dialog (the confirm/discard dialog renders as a
-  // viewport-covering .modal sibling), or while the kebab context menu is open
-  // are ignored so those surfaces keep working; the context menu dismisses
-  // itself via its own outside-click handler. handleClose routes through the
-  // unsaved-changes guard, so an outside click with a dirty draft prompts to
-  // discard rather than closing immediately.
-  useEffect(() => {
-    if (!isOpen) return undefined;
-    const onDocMouseDown = (e) => {
-      const t = e.target;
-      if (!t || !t.closest) return;
-      if (t.closest(".drawer-dock") || t.closest(".modal")) return;
-      if (panelMenu) return;
-      handleClose();
-    };
-    document.addEventListener("mousedown", onDocMouseDown);
-    return () => document.removeEventListener("mousedown", onDocMouseDown);
-  }, [isOpen, panelMenu, handleClose]);
-
-  // Load per-folder beadsIssue-section shortcut buttons for the detail toolbar.
-  // Mirrors BeadsView's tasksList loader: fetch section entries, then resolve
-  // each entry's prompt name against the beadsIssues menu via onFetchPrompts.
-  // `isStale` lets the mount effect below cancel a stale in-flight fetch when
-  // the folder changes mid-request.
-  const loadIssueShortcuts = useCallback(
-    async (isStale) => {
-      if (!workingDir) {
-        setIssueShortcuts([]);
-        setIssueShortcutPromptMap(new Map());
-        return;
-      }
-      try {
-        // Merge global + folder shortcuts for the beadsIssue section. Global
-        // buttons come first; folder buttons duplicating a global prompt drop out.
-        const [folderRes, globalRes] = await Promise.all([
-          authFetch(endpoints.folders.shortcuts({ working_dir: workingDir })),
-          authFetch(endpoints.global.shortcuts()).catch(() => null),
-        ]);
-        const cfg = await folderRes.json().catch(() => ({}));
-        const globalData = globalRes
-          ? await globalRes.json().catch(() => ({}))
-          : {};
-        const globalList = globalData?.sections?.beadsIssue || [];
-        const folderList = cfg?.sections?.beadsIssue || [];
-        const globalNames = new Set(globalList.map((s) => s.prompt));
-        const list = [
-          ...globalList,
-          ...folderList.filter((s) => !globalNames.has(s.prompt)),
-        ];
-        if (isStale && isStale()) return;
-        setIssueShortcuts(list);
-        if (list.length > 0 && onFetchPrompts) {
-          const prompts = await onFetchPrompts(workingDir);
-          if (isStale && isStale()) return;
-          const map = new Map((prompts || []).map((p) => [p.name, p]));
-          setIssueShortcutPromptMap(map);
-        } else {
-          setIssueShortcutPromptMap(new Map());
-        }
-      } catch (_err) {
-        if (isStale && isStale()) return;
-        setIssueShortcuts([]);
-        setIssueShortcutPromptMap(new Map());
-      }
-    },
-    [workingDir, onFetchPrompts],
-  );
-
-  // Initial load (and reload on folder switch), with stale-fetch cancellation.
-  useEffect(() => {
-    let cancelled = false;
-    loadIssueShortcuts(() => cancelled);
-    return () => {
-      cancelled = true;
-    };
-  }, [loadIssueShortcuts]);
-
-  // Refresh shortcut buttons immediately when the Workspaces dialog saves new
-  // shortcuts for this folder, so no page reload is needed.
-  useEffect(() => {
-    const handler = (e) => {
-      const dir = e?.detail?.working_dir;
-      if (!dir || dir === workingDir) loadIssueShortcuts();
-    };
-    // Global shortcuts changes affect every folder, so always refresh.
-    const globalHandler = () => loadIssueShortcuts();
-    window.addEventListener("mitto:folder_shortcuts_updated", handler);
-    window.addEventListener("mitto:global_shortcuts_updated", globalHandler);
-    return () => {
-      window.removeEventListener("mitto:folder_shortcuts_updated", handler);
-      window.removeEventListener(
-        "mitto:global_shortcuts_updated",
-        globalHandler,
-      );
-    };
-  }, [loadIssueShortcuts, workingDir]);
-
-  // The panel context menu is now prompts-only: the former Close/Defer/Delete
-  // menu items are surfaced as direct buttons in the header Toolbar
-  // (headerToolbarItems below). The toolbar's "Run a prompt" button opens it.
-  const panelMenuItems = useMemo(() => {
-    if (!data) return [];
-    const promptGroupItems = buildPromptGroupMenuItems(
-      prompts,
-      (p, opts) => {
-        setPanelMenu(null);
-        onRunPrompt && onRunPrompt(p, data, opts);
-      },
-      html`<${PlusIcon} />`,
-    );
-    if (promptGroupItems.length === 0) {
-      return [{ label: "No prompts available", disabled: true }];
-    }
-    return promptGroupItems;
-  }, [data, prompts, onRunPrompt]);
-
-  // Header action toolbar (view mode). Replaces the former "…" overflow menu and
-  // standalone fullscreen button: a prompts trigger, Close/Reopen, Defer/Undefer,
-  // a destructive Delete set apart by a separator, then the per-folder shortcut
-  // buttons (separated), a spacer, then fullscreen at the right edge.
-  const headerToolbarItems = useMemo(() => {
-    if (!data) return [];
-    // Per-folder shortcut buttons (beadsIssue section). A missing linked prompt
-    // is shown greyed/disabled, mirroring the list toolbar's tasksList shortcuts.
-    const issueShortcutItems = issueShortcuts.map((sc, i) => {
-      const prompt = issueShortcutPromptMap.get(sc.prompt);
-      const found = !!prompt;
-      const Icon = getPromptIconOrDefault(sc.icon || (prompt && prompt.icon));
-      return {
-        kind: "button",
-        testId: `beads-issue-shortcut-btn-${i}`,
-        icon: html`<${Icon} className="w-4 h-4" />`,
-        tip: found ? sc.prompt : `Prompt "${sc.prompt}" not found`,
-        ariaLabel: found
-          ? `Run "${sc.prompt}"`
-          : `Prompt "${sc.prompt}" not found`,
-        disabled: !found,
-        onClick: () => found && onRunPrompt && onRunPrompt(prompt, data),
-      };
-    });
-    return [
-      {
-        kind: "button",
-        testId: "beads-panel-prompts",
-        icon: html`<${LightningIcon} className="w-4 h-4" />`,
-        tip: "Run a prompt",
-        ariaLabel: "Run a prompt",
-        onClick: openPanelMenu,
-      },
-      { kind: "separator" },
-      {
-        kind: "button",
-        testId: "beads-panel-status",
-        icon:
-          data.status === "closed"
-            ? html`<${RefreshIcon} className="w-4 h-4" />`
-            : html`<${CheckIcon} className="w-4 h-4" />`,
-        tip: data.status === "closed" ? "Reopen" : "Close",
-        ariaLabel: data.status === "closed" ? "Reopen" : "Close",
-        disabled: statusBusy,
-        onClick: () => onToggleStatus && onToggleStatus(data),
-      },
-      {
-        kind: "button",
-        testId: "beads-panel-defer",
-        icon:
-          data.status === "deferred"
-            ? html`<${SunIcon} className="w-4 h-4" />`
-            : html`<${MoonIcon} className="w-4 h-4" />`,
-        tip: data.status === "deferred" ? "Undefer" : "Defer",
-        ariaLabel: data.status === "deferred" ? "Undefer" : "Defer",
-        disabled: statusBusy,
-        onClick: () => onToggleDefer && onToggleDefer(data),
-      },
-      { kind: "separator" },
-      {
-        kind: "button",
-        testId: "beads-panel-delete",
-        icon: html`<${TrashIcon} className="w-4 h-4" />`,
-        tip: "Delete",
-        ariaLabel: "Delete",
-        danger: true,
-        onClick: () => onDelete && onDelete(data),
-      },
-      ...(issueShortcuts.length > 0
-        ? [{ kind: "separator" }, ...issueShortcutItems]
-        : []),
-      { kind: "spacer" },
-      {
-        kind: "button",
-        testId: "beads-panel-fullscreen",
-        icon: fullscreen
-          ? html`<${CollapseIcon} className="w-4 h-4" />`
-          : html`<${ExpandIcon} className="w-4 h-4" />`,
-        tip: fullscreen ? "Exit fullscreen" : "Fullscreen",
-        ariaLabel: fullscreen ? "Exit fullscreen" : "Fullscreen",
-        onClick: () => setFullscreen((f) => !f),
-      },
-    ];
-  }, [
-    data,
-    statusBusy,
-    fullscreen,
-    openPanelMenu,
+    onCreated,
+    onUpdated,
+    showToast,
+    onFetchPrompts,
+    onRunPrompt,
+    onDelete,
     onToggleStatus,
     onToggleDefer,
-    onDelete,
-    onRunPrompt,
-    issueShortcuts,
-    issueShortcutPromptMap,
-  ]);
+    statusBusy,
+    onSelectIssue,
+    createParentId,
+  });
 
-  // Seed non-notes fields whenever a different issue opens (notes come from
-  // fetchDeps below, which calls setViewDraft when seedDraftNotes is true).
-  useEffect(() => {
-    if (creating || !data || !data.id) return;
-    setSavedBaseline(null);
-    setViewDraft({
-      title: data.title || "",
-      type: data.issue_type || "task",
-      priority: typeof data.priority === "number" ? data.priority : 2,
-      description: data.description || "",
-      assignee: data.assignee || "",
-      notes: "",
-    });
-  }, [creating, data && data.id]);
-
-  // Leave all edit modes whenever the viewed issue changes.
-  useEffect(() => {
-    setEditingDesc(false);
-    setEditingTitle(false);
-    setEditingType(false);
-    setEditingAssignee(false);
-    setEditingNotes(false);
-    setAddingComment(false);
-    setSavingComment(false);
-    setCommentDraft("");
-  }, [data && data.id]);
-
-  // The description CodeMirror editor auto-focuses on mount (autoFocus prop)
-  // so no separate useEffect is needed here.
-
-  // Focus the notes textarea (cursor at end) when entering notes-edit mode.
-  useEffect(() => {
-    if (editingNotes && notesRef.current) {
-      const el = notesRef.current;
-      el.focus();
-      el.setSelectionRange(el.value.length, el.value.length);
-    }
-  }, [editingNotes]);
-
-  // Focus the new-comment textarea when the "add comment" editor opens.
-  useEffect(() => {
-    if (addingComment && commentRef.current) {
-      commentRef.current.focus();
-    }
-  }, [addingComment]);
-
-  // Focus the title input (cursor at end) when entering edit mode.
-  useEffect(() => {
-    if (editingTitle && titleRef.current) {
-      const el = titleRef.current;
-      el.focus();
-      el.setSelectionRange(el.value.length, el.value.length);
-    }
-  }, [editingTitle]);
-
-  // Focus the assignee input (cursor at end) when entering edit mode.
-  useEffect(() => {
-    if (editingAssignee && assigneeRef.current) {
-      const el = assigneeRef.current;
-      el.focus();
-      el.setSelectionRange(el.value.length, el.value.length);
-    }
-  }, [editingAssignee]);
-
-  const startEditDesc = useCallback(() => {
-    if (descViewRef.current) setDescMinHeight(descViewRef.current.offsetHeight);
-    setEditingDesc(true);
-  }, []);
-
-  const startEditNotes = useCallback(() => {
-    if (notesViewRef.current)
-      setNotesMinHeight(notesViewRef.current.offsetHeight);
-    setEditingNotes(true);
-  }, []);
-
-  const startEditTitle = useCallback(() => {
-    titleEditStartRef.current = viewDraft.title;
-    setEditingTitle(true);
-  }, [viewDraft.title]);
-
-  const startEditAssignee = useCallback(() => {
-    assigneeEditStartRef.current = viewDraft.assignee;
-    setEditingAssignee(true);
-  }, [viewDraft.assignee]);
-
-  // Enter saves (via blur); Escape reverts to snapshot and blurs.
-  const handleTitleKeyDown = useCallback((e) => {
-    if (e.key === "Enter") {
-      e.preventDefault();
-      e.target.blur();
-    } else if (e.key === "Escape") {
-      e.preventDefault();
-      setViewDraft((p) => ({ ...p, title: titleEditStartRef.current }));
-      e.target.blur();
-    }
-  }, []);
-
-  const handleAssigneeKeyDown = useCallback((e) => {
-    if (e.key === "Enter") {
-      e.preventDefault();
-      e.target.blur();
-    } else if (e.key === "Escape") {
-      e.preventDefault();
-      setViewDraft((p) => ({ ...p, assignee: assigneeEditStartRef.current }));
-      e.target.blur();
-    }
-  }, []);
-
-  // Unified Save: patches all dirty fields in one PATCH /api/issues/{id} call.
-  const handleViewSave = useCallback(async () => {
-    if (!data || !data.id || savingView) return;
-    const body = {};
-    const t = viewDraft.title.trim();
-    if (t !== "" && t !== viewOriginal.title) body.title = t;
-    if (viewDraft.type !== viewOriginal.type) body.type = viewDraft.type;
-    if (viewDraft.priority !== viewOriginal.priority)
-      body.priority = viewDraft.priority;
-    if (viewDraft.description !== viewOriginal.description)
-      body.description = viewDraft.description;
-    if (viewDraft.assignee.trim() !== viewOriginal.assignee)
-      body.assignee = viewDraft.assignee.trim();
-    if (viewDraft.notes !== viewOriginal.notes) body.notes = viewDraft.notes;
-    if (Object.keys(body).length === 0) return;
-    setSavingView(true);
-    try {
-      const res = await secureFetch(
-        endpoints.issues.update(data.id, { working_dir: workingDir }),
-        {
-          method: "PATCH",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(body),
-        },
-      );
-      const respData = await readBeadsResponse(res);
-      if (!res.ok || respData.error) {
-        showToast &&
-          showToast({
-            style: "error",
-            title: respData.error || "Failed to save changes",
-          });
-      } else {
-        if ("notes" in body) setNotes(viewDraft.notes);
-        // Record what we just persisted so viewDirty clears immediately (the
-        // normalized values mirror how the dirty check reads the draft), instead
-        // of staying dirty until the async onUpdated() refresh re-seeds `data`.
-        setSavedBaseline({
-          title: viewDraft.title.trim(),
-          type: viewDraft.type,
-          priority: viewDraft.priority,
-          description: viewDraft.description,
-          assignee: viewDraft.assignee.trim(),
-          notes: viewDraft.notes,
-        });
-        setEditingTitle(false);
-        setEditingType(false);
-        setEditingDesc(false);
-        setEditingNotes(false);
-        setEditingAssignee(false);
-        showToast && showToast({ style: "success", title: "Changes saved" });
-        onUpdated && onUpdated();
-      }
-    } catch (err) {
-      showToast &&
-        showToast({
-          style: "error",
-          title: err.message || "Failed to save changes",
-        });
-    } finally {
-      setSavingView(false);
-    }
-  }, [
-    viewDraft,
-    viewOriginal,
-    data && data.id,
-    workingDir,
-    savingView,
-    showToast,
-    onUpdated,
-  ]);
-
-  // Load the issue's full dependency edges, notes, and comments. The list row
-  // only carries counts, so the actual data comes from /api/issues/{id}.
-  // seedDraftNotes: when true, also seeds viewDraft.notes from the response so
-  // the initial open has a correct draft baseline. Callers that refresh deps
-  // after a dep add/remove or comment post must pass false to avoid clobbering
-  // an in-progress notes edit.
-  const fetchDeps = useCallback(
-    async (seedDraftNotes = false) => {
-      if (!workingDir || !data || !data.id) return;
-      setDepsLoading(true);
-      try {
-        const res = await authFetch(
-          endpoints.issues.show(data.id, { working_dir: workingDir }),
-        );
-        const respData = await readBeadsResponse(res);
-        if (!res.ok || respData.error) {
-          setDeps([]);
-          setLabels([]);
-          setComments([]);
-          setNotes("");
-          if (seedDraftNotes) setViewDraft((prev) => ({ ...prev, notes: "" }));
-        } else {
-          const issueObj = Array.isArray(respData) ? respData[0] : respData;
-          setDeps((issueObj && issueObj.dependencies) || []);
-          setLabels((issueObj && issueObj.labels) || []);
-          setComments((issueObj && issueObj.comments) || []);
-          const fetchedNotes = (issueObj && issueObj.notes) || "";
-          setNotes(fetchedNotes);
-          if (seedDraftNotes)
-            setViewDraft((prev) => ({ ...prev, notes: fetchedNotes }));
-        }
-      } catch (_err) {
-        setDeps([]);
-        setLabels([]);
-        setComments([]);
-        setNotes("");
-        if (seedDraftNotes) setViewDraft((prev) => ({ ...prev, notes: "" }));
-      } finally {
-        setDepsLoading(false);
-      }
-    },
-    [workingDir, data && data.id],
-  );
-
-  // Open the new-comment editor with an empty draft.
-  const startAddComment = useCallback(() => {
-    if (savingComment) return;
-    setCommentDraft("");
-    setAddingComment(true);
-  }, [savingComment]);
-
-  // Persist a new comment on blur. An empty (whitespace-only) draft just closes
-  // the editor without a request. On success the comment list is refreshed via
-  // fetchDeps and the parent list is notified via onUpdated.
-  const handleCommentBlur = useCallback(async () => {
-    const text = commentDraft.trim();
-    if (!text) {
-      setAddingComment(false);
-      return;
-    }
-    setSavingComment(true);
-    try {
-      const res = await secureFetch(
-        endpoints.issues.comments(data.id, { working_dir: workingDir }),
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ text }),
-        },
-      );
-      const respData = await readBeadsResponse(res);
-      if (!res.ok || respData.error) {
-        showToast &&
-          showToast({
-            style: "error",
-            title: respData.error || "Failed to add comment",
-          });
-      } else {
-        setCommentDraft("");
-        showToast && showToast({ style: "success", title: "Comment added" });
-        await fetchDeps(false);
-        onUpdated && onUpdated();
-      }
-    } catch (err) {
-      showToast &&
-        showToast({
-          style: "error",
-          title: err.message || "Failed to add comment",
-        });
-    } finally {
-      setSavingComment(false);
-      setAddingComment(false);
-    }
-  }, [
-    commentDraft,
-    data && data.id,
-    workingDir,
-    showToast,
-    fetchDeps,
-    onUpdated,
-  ]);
-
-  // Fetch dependencies, notes, and comments whenever a (non-create) issue is opened or switched.
-  // seedDraftNotes=true so the initial open seeds viewDraft.notes from the response.
-  useEffect(() => {
-    setDeps([]);
-    setLabels([]);
-    setComments([]);
-    setNotes("");
-    setNewDepId("");
-    setNewDepType("blocks");
-    setNewLabel("");
-    setAddingLabel(false);
-    if (isOpen && !creating && data && data.id) {
-      fetchDeps(true);
-    }
-  }, [isOpen, creating, data && data.id]);
-
-  // Add or remove a dependency edge via /api/issues/{id}/dependencies, then refresh both the
-  // dependency list and the parent issue list (so counts stay current).
-  const mutateDep = useCallback(
-    async (action, dependsOn, depType) => {
-      if (!data || !data.id || !dependsOn) return;
-      setDepsBusy(true);
-      try {
-        const body = { depends_on: dependsOn, action };
-        if (action === "add") body.type = depType || "blocks";
-        const res = await secureFetch(
-          endpoints.issues.dependencies(data.id, { working_dir: workingDir }),
-          {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(body),
-          },
-        );
-        const respData = await readBeadsResponse(res);
-        if (!res.ok || respData.error) {
-          showToast &&
-            showToast({
-              style: "error",
-              title: respData.error || `Failed to ${action} dependency`,
-            });
-          return false;
-        }
-        showToast &&
-          showToast({
-            style: "success",
-            title:
-              action === "add"
-                ? `Added dependency on ${dependsOn}`
-                : `Removed dependency on ${dependsOn}`,
-          });
-        await fetchDeps(false);
-        onUpdated && onUpdated();
-        return true;
-      } catch (err) {
-        showToast &&
-          showToast({
-            style: "error",
-            title: err.message || `Failed to ${action} dependency`,
-          });
-        return false;
-      } finally {
-        setDepsBusy(false);
-      }
-    },
-    [data && data.id, workingDir, showToast, fetchDeps, onUpdated],
-  );
-
-  const handleAddDep = useCallback(async () => {
-    const target = newDepId.trim();
-    if (!target || depsBusy) return;
-    const ok = await mutateDep("add", target, newDepType);
-    if (ok) setNewDepId("");
-  }, [newDepId, newDepType, depsBusy, mutateDep]);
-
-  // Fetch the workspace's unique labels to suggest when adding a label. bd
-  // returns [{label,count}, ...]; we keep only the names. Refreshed when the
-  // panel opens and after a label is added. Non-fatal on failure.
-  const fetchAllLabels = useCallback(async () => {
-    if (!workingDir) return;
-    try {
-      const res = await authFetch(
-        endpoints.issues.labelsAll({ working_dir: workingDir }),
-      );
-      const respData = await readBeadsResponse(res);
-      if (res.ok && Array.isArray(respData)) {
-        setAllLabels(
-          respData
-            .map((l) => (typeof l === "string" ? l : l && l.label))
-            .filter(Boolean),
-        );
-      }
-    } catch (_err) {
-      // Non-fatal: label suggestions just won't populate.
-    }
-  }, [workingDir]);
-
-  useEffect(() => {
-    if (isOpen && !creating) fetchAllLabels();
-  }, [isOpen, creating, fetchAllLabels]);
-
-  // Add or remove a label on the current issue, then refresh the issue (so the
-  // labels list stays current) and notify the parent list. Mirrors mutateDep.
-  const mutateLabel = useCallback(
-    async (action, label) => {
-      const value = (label || "").trim();
-      if (!data || !data.id || !value) return false;
-      setLabelsBusy(true);
-      try {
-        const res = await secureFetch(
-          endpoints.issues.labels(data.id, { working_dir: workingDir }),
-          {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ label: value, action }),
-          },
-        );
-        const respData = await readBeadsResponse(res);
-        if (!res.ok || respData.error) {
-          showToast &&
-            showToast({
-              style: "error",
-              title: respData.error || `Failed to ${action} label`,
-            });
-          return false;
-        }
-        showToast &&
-          showToast({
-            style: "success",
-            title:
-              action === "add"
-                ? `Added label "${value}"`
-                : `Removed label "${value}"`,
-          });
-        await fetchDeps(false);
-        if (action === "add") fetchAllLabels();
-        onUpdated && onUpdated();
-        return true;
-      } catch (err) {
-        showToast &&
-          showToast({
-            style: "error",
-            title: err.message || `Failed to ${action} label`,
-          });
-        return false;
-      } finally {
-        setLabelsBusy(false);
-      }
-    },
-    [
-      data && data.id,
-      workingDir,
-      showToast,
-      fetchDeps,
-      fetchAllLabels,
-      onUpdated,
-    ],
-  );
-
-  const handleAddLabel = useCallback(async () => {
-    const value = newLabel.trim();
-    if (!value || labelsBusy) return;
-    const ok = await mutateLabel("add", value);
-    if (ok) setNewLabel("");
-  }, [newLabel, labelsBusy, mutateLabel]);
-
-  // Focus the add-label input as soon as the "+" reveals it.
-  useEffect(() => {
-    if (addingLabel && labelInputRef.current) labelInputRef.current.focus();
-  }, [addingLabel]);
-
-  // Change the kind of an existing edge. bd has no in-place type update, so this
-  // removes the edge and re-adds it with the new type. A single combined toast
-  // and refresh is issued at the end.
-  const changeDepType = useCallback(
-    async (dependsOn, nextType) => {
-      if (!data || !data.id || !dependsOn || depsBusy) return;
-      setDepsBusy(true);
-      try {
-        const post = (body) =>
-          secureFetch(
-            endpoints.issues.dependencies(data.id, { working_dir: workingDir }),
-            {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify(body),
-            },
-          );
-        let res = await post({ depends_on: dependsOn, action: "remove" });
-        let respData = await readBeadsResponse(res);
-        if (!res.ok || respData.error) {
-          showToast &&
-            showToast({
-              style: "error",
-              title: respData.error || "Failed to change dependency type",
-            });
-          return;
-        }
-        res = await post({
-          depends_on: dependsOn,
-          type: nextType,
-          action: "add",
-        });
-        respData = await readBeadsResponse(res);
-        if (!res.ok || respData.error) {
-          showToast &&
-            showToast({
-              style: "error",
-              title: respData.error || "Failed to change dependency type",
-            });
-        } else {
-          showToast &&
-            showToast({
-              style: "success",
-              title: `Changed ${dependsOn} to ${nextType}`,
-            });
-        }
-        await fetchDeps(false);
-        onUpdated && onUpdated();
-      } catch (err) {
-        showToast &&
-          showToast({
-            style: "error",
-            title: err.message || "Failed to change dependency type",
-          });
-      } finally {
-        setDepsBusy(false);
-      }
-    },
-    [data && data.id, workingDir, depsBusy, showToast, fetchDeps, onUpdated],
-  );
-
-  if (!shouldRender) return null;
-  if (!creating && !data) return null;
-
-  // daisyUI's .input/.select/.textarea set their corner radius via the logical
-  // longhand border-start-start-radius:var(--radius-field), which a Tailwind
-  // `rounded-*` shorthand utility does NOT override. Some themes set
-  // --radius-field as high as 2rem, turning these edit fields into pills. Pin
-  // --radius-field so edit-mode fields keep the same subtle 0.25rem corners as
-  // the panel's description/notes boxes, regardless of theme.
-  const inputClass = "input input-sm w-full [--radius-field:0.25rem]";
-  const selectClass = "select select-sm w-full [--radius-field:0.25rem]";
-  const textareaClass = "textarea textarea-sm w-full [--radius-field:0.25rem]";
-  // Block label with a small gap so it doesn't sit flush against its field.
-  const labelClass = "label block mb-1";
-
-  // Toolbar row rendered directly above the description field. Currently holds
-  // the magic-wand "Improve description" button (same UX as the chat input's
-  // improve-prompt action); the flex row is structured to take future markdown
-  // formatting buttons (bold, italics, …). Always rendered — even in read-only
-  // (view) mode — but the controls are disabled/greyed unless an editable target
-  // is supplied: { text, setText } back the active field (create form or inline
-  // edit draft) and `disabled` force-greys the row regardless (read-only view).
-  const renderDescToolbar = ({ text, setText, disabled, editorApiRef }) => html`
-    <div class="flex flex-wrap items-center gap-1 mb-1">
-      <button
-        type="button"
-        class="chat-input-action tooltip tooltip-bottom"
-        disabled=${disabled}
-        data-tip="Bold"
-        aria-label="Bold"
-        onMouseDown=${(e) => e.preventDefault()}
-        onClick=${() =>
-          editorApiRef?.current?.wrapSelection("**", "**", "bold text")}
-      >
-        <${BoldIcon} />
-      </button>
-      <button
-        type="button"
-        class="chat-input-action tooltip tooltip-bottom"
-        disabled=${disabled}
-        data-tip="Italic"
-        aria-label="Italic"
-        onMouseDown=${(e) => e.preventDefault()}
-        onClick=${() =>
-          editorApiRef?.current?.wrapSelection("*", "*", "italic")}
-      >
-        <${ItalicIcon} />
-      </button>
-      <button
-        type="button"
-        class="chat-input-action tooltip tooltip-bottom"
-        disabled=${disabled}
-        data-tip="Strikethrough"
-        aria-label="Strikethrough"
-        onMouseDown=${(e) => e.preventDefault()}
-        onClick=${() =>
-          editorApiRef?.current?.wrapSelection("~~", "~~", "strikethrough")}
-      >
-        <${StrikethroughIcon} />
-      </button>
-      <button
-        type="button"
-        class="chat-input-action tooltip tooltip-bottom"
-        disabled=${disabled}
-        data-tip="Inline code"
-        aria-label="Inline code"
-        onMouseDown=${(e) => e.preventDefault()}
-        onClick=${() =>
-          editorApiRef?.current?.wrapSelection("\`", "\`", "code")}
-      >
-        <${InlineCodeIcon} />
-      </button>
-      <button
-        type="button"
-        class="chat-input-action tooltip tooltip-bottom"
-        disabled=${disabled}
-        data-tip="Code block"
-        aria-label="Code block"
-        onMouseDown=${(e) => e.preventDefault()}
-        onClick=${() =>
-          editorApiRef?.current?.wrapSelection(
-            "\n\`\`\`\n",
-            "\n\`\`\`\n",
-            "code",
-          )}
-      >
-        <${CodeBlockIcon} />
-      </button>
-      <button
-        type="button"
-        class="chat-input-action tooltip tooltip-bottom"
-        disabled=${disabled}
-        data-tip="Link"
-        aria-label="Link"
-        onMouseDown=${(e) => e.preventDefault()}
-        onClick=${() => editorApiRef?.current?.insertLink("text", "url")}
-      >
-        <${LinkIcon} />
-      </button>
-      <button
-        type="button"
-        class="chat-input-action tooltip tooltip-bottom"
-        disabled=${disabled}
-        data-tip="Bulleted list"
-        aria-label="Bulleted list"
-        onMouseDown=${(e) => e.preventDefault()}
-        onClick=${() => editorApiRef?.current?.prefixLines("- ")}
-      >
-        <${ListIcon} className="w-4 h-4" />
-      </button>
-      <button
-        type="button"
-        class="chat-input-action tooltip tooltip-bottom"
-        disabled=${disabled}
-        data-tip="Numbered list"
-        aria-label="Numbered list"
-        onMouseDown=${(e) => e.preventDefault()}
-        onClick=${() => editorApiRef?.current?.prefixLines((i) => `${i + 1}. `)}
-      >
-        <${NumberedListIcon} />
-      </button>
-      <button
-        type="button"
-        class="chat-input-action tooltip tooltip-bottom"
-        disabled=${disabled}
-        data-tip="Heading"
-        aria-label="Heading"
-        onMouseDown=${(e) => e.preventDefault()}
-        onClick=${() => editorApiRef?.current?.prefixLines("## ")}
-      >
-        <${HeadingIcon} />
-      </button>
-      <button
-        type="button"
-        class="chat-input-action tooltip tooltip-bottom"
-        disabled=${disabled}
-        data-tip="Quote"
-        aria-label="Quote"
-        onMouseDown=${(e) => e.preventDefault()}
-        onClick=${() => editorApiRef?.current?.prefixLines("> ")}
-      >
-        <${QuoteIcon} />
-      </button>
-      <button
-        type="button"
-        class="chat-input-action ${improvingDesc
-          ? "improving"
-          : ""} ml-auto tooltip tooltip-bottom"
-        onClick=${() => improveDescriptionText(text, setText)}
-        onMouseDown=${(e) => e.preventDefault()}
-        disabled=${disabled || improvingDesc || !text || !text.trim()}
-        data-tip="Improve description with AI"
-        aria-label="Improve description with AI"
-      >
-        ${improvingDesc
-          ? html`<span class="loading loading-spinner w-4 h-4"></span>`
-          : html`
-              <svg
-                class="w-4 h-4"
-                fill="none"
-                stroke="currentColor"
-                viewBox="0 0 24 24"
-              >
-                <path
-                  stroke-linecap="round"
-                  stroke-linejoin="round"
-                  stroke-width="2"
-                  d="M5 3v4M3 5h4M6 17v4m-2-2h4m5-16l2.286 6.857L21 12l-5.714 2.143L13 21l-2.286-6.857L5 12l5.714-2.143L13 3z"
-                />
-              </svg>
-            `}
-      </button>
-    </div>
-  `;
-
-  // ---- field renderers (close over component state) -------------------------
-
-  const TitleField = (mode) => {
-    if (mode === "create") {
-      return html` <input
-        id="new-issue-title"
-        type="text"
-        class=${inputClass}
-        placeholder="Issue title (optional — auto-generated from description)"
-        value=${title}
-        onInput=${(e) => setTitle(e.target.value)}
-        disabled=${submitting}
-      />`;
-    }
-    return editingTitle
-      ? html` <input
-          ref=${titleRef}
-          type="text"
-          class="${inputClass} font-semibold text-base"
-          value=${viewDraft.title}
-          onInput=${(e) =>
-            setViewDraft((p) => ({ ...p, title: e.target.value }))}
-          onBlur=${() => setEditingTitle(false)}
-          onKeyDown=${handleTitleKeyDown}
-          disabled=${savingView}
-        />`
-      : html` <h2
-          class="font-semibold text-base text-mitto-text wrap-break-word cursor-text rounded px-1 -mx-1 hover:bg-mitto-input-box transition-colors block tooltip tooltip-bottom"
-          onClick=${startEditTitle}
-          data-tip="Click to edit"
-        >
-          ${viewDraft.title}
-        </h2>`;
-  };
-
-  const TypeField = (mode) =>
-    mode === "create"
-      ? html` <select
-          id="new-issue-type"
-          class=${selectClass}
-          value=${type}
-          onInput=${(e) => setType(e.target.value)}
-          disabled=${submitting}
-        >
-          ${ISSUE_TYPES.map((t) => html`<option value=${t}>${t}</option>`)}
-        </select>`
-      : html` <div class="relative" ref=${typeRef}>
-          <button
-            type="button"
-            onClick=${() => setEditingType((o) => !o)}
-            class="btn btn-ghost btn-xs inline-flex tooltip tooltip-bottom"
-            data-tip="Click to change type"
-          >
-            ${typeBadge(viewDraft.type)}
-          </button>
-          ${editingType &&
-          html`
-            <ul
-              class="menu absolute left-0 top-full mt-1 z-10 bg-base-200 rounded-box shadow-xl min-w-[140px]"
-            >
-              ${ISSUE_TYPES.map((t) => {
-                const isCurrent = t === viewDraft.type;
-                return html`
-                  <li key=${t}>
-                    <button
-                      type="button"
-                      onClick=${() => {
-                        setViewDraft((p) => ({ ...p, type: t }));
-                        setEditingType(false);
-                      }}
-                    >
-                      ${typeBadge(t)}
-                      <span class="flex-1">${t}</span>
-                      ${isCurrent &&
-                      html`<${CheckIcon} className="w-3.5 h-3.5 opacity-70" />`}
-                    </button>
-                  </li>
-                `;
-              })}
-            </ul>
-          `}
-        </div>`;
-
-  const PriorityField = (mode) =>
-    mode === "create"
-      ? html` <select
-          id="new-issue-priority"
-          class=${selectClass}
-          value=${priority}
-          onInput=${(e) => setPriority(Number(e.target.value))}
-          disabled=${submitting}
-        >
-          ${Object.entries(PRIORITY_LABELS).map(
-            ([n, label]) => html`<option value=${n}>${label}</option>`,
-          )}
-        </select>`
-      : html` <div class="dropdown">
-          <div
-            tabindex="0"
-            role="button"
-            class="btn btn-ghost btn-xs inline-flex tooltip tooltip-bottom"
-            data-tip="Click to change priority"
-          >
-            ${priorityBadge(viewDraft.priority)}
-          </div>
-          <ul
-            tabindex="0"
-            class="dropdown-content menu mt-1 z-10 bg-base-200 rounded-box shadow-xl min-w-[140px]"
-          >
-            ${Object.entries(PRIORITY_LABELS).map(([n, label]) => {
-              const num = Number(n);
-              const isCurrent = num === viewDraft.priority;
-              return html`
-                <li key=${n}>
-                  <button
-                    type="button"
-                    onClick=${(ev) => {
-                      setViewDraft((p) => ({ ...p, priority: num }));
-                      ev.currentTarget.blur();
-                      if (document.activeElement) document.activeElement.blur();
-                    }}
-                  >
-                    ${priorityBadge(num)}
-                    <span class="flex-1">${label}</span>
-                    ${isCurrent &&
-                    html`<${CheckIcon} className="w-3.5 h-3.5 opacity-70" />`}
-                  </button>
-                </li>
-              `;
-            })}
-          </ul>
-        </div>`;
-
-  // DescriptionField is self-contained (includes label + wrapper) to avoid
-  // Fragment-induced CodeMirror remount cycles.
-  const DescriptionField = (mode) => {
-    if (mode === "create") {
-      return html` <div>
-        <label class=${labelClass} for="new-issue-desc"
-          >Description <span class="text-red-400">*</span></label
-        >
-        ${renderDescToolbar({
-          text: description,
-          setText: (v) => {
-            setDescription(v);
-            createEditorApiRef.current?.setValue(v);
-          },
-          disabled: submitting,
-          editorApiRef: createEditorApiRef,
-        })}
-        <${CodeEditorField}
-          value=${description}
-          onChange=${(v) => setDescription(v)}
-          onBlur=${(v) => setDescription(v)}
-          disabled=${submitting}
-          darkMode=${false}
-          lineNumbers=${false}
-          lineWrapping=${true}
-          highlightActiveLine=${false}
-          className="input-font-target"
-          minHeight=${160}
-          editorApiRef=${createEditorApiRef}
-          autoFocus=${true}
-        />
-      </div>`;
-    }
-    return html` <div>
-      <label class=${labelClass}>Description</label>
-      ${renderDescToolbar(
-        editingDesc
-          ? {
-              text: viewDraft.description,
-              setText: (v) => {
-                setViewDraft((p) => ({ ...p, description: v }));
-                detailEditorApiRef.current?.setValue(v);
-              },
-              disabled: savingView,
-              editorApiRef: detailEditorApiRef,
-            }
-          : { text: "", setText: () => {}, disabled: true },
-      )}
-      ${editingDesc
-        ? html` <${CodeEditorField}
-            value=${viewDraft.description}
-            onChange=${(v) => setViewDraft((p) => ({ ...p, description: v }))}
-            onBlur=${() => setEditingDesc(false)}
-            disabled=${savingView}
-            darkMode=${false}
-            lineNumbers=${false}
-            lineWrapping=${true}
-            highlightActiveLine=${false}
-            className="input-font-target"
-            minHeight=${descMinHeight || 0}
-            autoFocus=${true}
-            editorApiRef=${detailEditorApiRef}
-          />`
-        : html` <div
-            ref=${descViewRef}
-            class="card border border-mitto-border rounded p-3 bg-mitto-input-box cursor-text hover:border-mitto-text-secondary transition-colors relative block tooltip tooltip-bottom"
-            onClick=${startEditDesc}
-            data-tip="Click to edit"
-          >
-            ${viewDraft.description
-              ? md
-                ? html`<div
-                    class="markdown-content text-mitto-text text-sm max-w-none"
-                    onClick=${(e) => handleBeadsContentClick(e, workingDir)}
-                    dangerouslySetInnerHTML=${{ __html: md }}
-                  />`
-                : html`<pre
-                    class="whitespace-pre-wrap wrap-break-word text-sm text-mitto-text"
-                  >
-${viewDraft.description}</pre
-                  >`
-              : html`<span class="text-sm text-mitto-text-secondary italic"
-                  >No description. Click to add one.</span
-                >`}
-          </div>`}
-    </div>`;
-  };
-
-  const AssigneeField = (mode) => {
-    if (mode === "create") {
-      return html` <input
-        id="new-issue-assignee"
-        type="text"
-        class=${inputClass}
-        placeholder="Assignee"
-        value=${createAssignee}
-        disabled=${submitting}
-        onInput=${(e) => setCreateAssignee(e.target.value)}
-      />`;
-    }
-    return editingAssignee
-      ? html` <input
-          ref=${assigneeRef}
-          type="text"
-          class=${inputClass}
-          placeholder="Assignee (empty to clear)"
-          value=${viewDraft.assignee}
-          onInput=${(e) =>
-            setViewDraft((p) => ({ ...p, assignee: e.target.value }))}
-          onBlur=${() => setEditingAssignee(false)}
-          onKeyDown=${handleAssigneeKeyDown}
-          disabled=${savingView}
-        />`
-      : html` <div
-          class="text-sm text-mitto-text wrap-break-word cursor-text hover:text-mitto-text-300 transition-colors flex items-center gap-2 tooltip tooltip-bottom"
-          onClick=${startEditAssignee}
-          data-tip="Click to edit"
-        >
-          ${viewDraft.assignee
-            ? html`<span>${viewDraft.assignee}</span>`
-            : html`<span class="text-mitto-text-secondary italic"
-                >Unassigned. Click to set.</span
-              >`}
-        </div>`;
-  };
-
-  const NotesField = (mode) => {
-    if (mode === "create") {
-      return html` <textarea
-        id="new-issue-notes"
-        class="${textareaClass} resize-y min-h-[80px]"
-        placeholder="Optional notes"
-        disabled=${submitting}
-        onInput=${(e) => setCreateNotes(e.target.value)}
-        value=${createNotes}
-      ></textarea>`;
-    }
-    if (depsLoading) {
-      return html`<div
-        class="flex items-center gap-2 text-xs text-mitto-text-secondary"
-      >
-        <span class="loading loading-spinner w-3 h-3"></span> Loading…
-      </div>`;
-    }
-    return editingNotes
-      ? html` <textarea
-          ref=${notesRef}
-          class="${textareaClass} resize-y"
-          rows="4"
-          style=${notesMinHeight ? `min-height:${notesMinHeight}px` : null}
-          placeholder="Add notes…"
-          value=${viewDraft.notes}
-          onInput=${(e) =>
-            setViewDraft((p) => ({ ...p, notes: e.target.value }))}
-          onBlur=${() => setEditingNotes(false)}
-          disabled=${savingView}
-        ></textarea>`
-      : html` <div
-          ref=${notesViewRef}
-          class="card border-l-2 border-l-amber-500/70 bg-amber-500/10 rounded-r p-2 pl-3 cursor-text hover:border-l-amber-500 transition-colors relative block tooltip tooltip-bottom"
-          onClick=${startEditNotes}
-          data-tip="Click to edit"
-        >
-          ${viewDraft.notes && viewDraft.notes.trim()
-            ? commentBody(viewDraft.notes, workingDir)
-            : html`<span class="text-sm text-mitto-text-secondary italic"
-                >No notes. Click to add.</span
-              >`}
-        </div>`;
-  };
-
-  const DependenciesField = (mode) => {
-    if (mode === "create") {
-      return html` <datalist id="beads-create-dep-options">
-          ${(allIssues || [])
-            .filter((i) => !createDeps.some((d) => d.id === i.id))
-            .map(
-              (i) =>
-                html`<option key=${i.id} value=${i.id}>${i.title}</option>`,
-            )}
-        </datalist>
-        <ul class="list mt-1">
-          ${createDeps.map(
-            (d) => html`
-              <li key=${d.id} class="list-row items-center px-2 py-1 gap-2">
-                <select
-                  class="select select-xs beads-dep-type-select shrink-0"
-                  value=${d.type || "blocks"}
-                  disabled=${submitting}
-                  onInput=${(e) =>
-                    setCreateDeps((prev) =>
-                      prev.map((x) =>
-                        x.id === d.id ? { ...x, type: e.target.value } : x,
-                      ),
-                    )}
-                >
-                  ${DEP_TYPES.map(
-                    (t) => html`<option value=${t}>${t}</option>`,
-                  )}
-                </select>
-                <span class="list-col-grow font-mono text-xs min-w-0 truncate"
-                  >${d.id}</span
-                >
-                <button
-                  type="button"
-                  onClick=${() => removeCreateDep(d.id)}
-                  disabled=${submitting}
-                  class="btn btn-ghost btn-square btn-xs shrink-0 inline-flex tooltip tooltip-bottom"
-                  data-tip="Remove dependency"
-                  aria-label="Remove dependency"
-                >
-                  <${CloseIcon} className="w-3.5 h-3.5" />
-                </button>
-              </li>
-            `,
-          )}
-        </ul>
-        <div class="join w-full mt-1">
-          <select
-            class="select select-xs beads-dep-type-select join-item"
-            value=${createNewDepType}
-            disabled=${submitting}
-            onInput=${(e) => setCreateNewDepType(e.target.value)}
-          >
-            ${DEP_TYPES.map((t) => html`<option value=${t}>${t}</option>`)}
-          </select>
-          <input
-            type="text"
-            list="beads-create-dep-options"
-            placeholder="issue id…"
-            value=${createNewDepId}
-            disabled=${submitting}
-            onInput=${(e) => setCreateNewDepId(e.target.value)}
-            onKeyDown=${(e) => {
-              if (e.key === "Enter") {
-                e.preventDefault();
-                addCreateDep();
-              }
-            }}
-            class="input input-xs flex-1 min-w-0 join-item"
-          />
-          <button
-            type="button"
-            onClick=${addCreateDep}
-            aria-disabled=${!createNewDepId.trim() || submitting
-              ? "true"
-              : "false"}
-            class="btn btn-ghost btn-square btn-xs shrink-0 join-item inline-flex tooltip tooltip-bottom ${!createNewDepId.trim() ||
-            submitting
-              ? "opacity-40 pointer-events-none"
-              : ""}"
-            data-tip="Add dependency"
-            aria-label="Add dependency"
-          >
-            <${PlusIcon} className="w-3.5 h-3.5" />
-          </button>
-        </div>`;
-    }
-    return html` <datalist id="beads-dep-options">
-        ${(allIssues || [])
-          .filter((i) => i.id !== data.id && !deps.some((d) => d.id === i.id))
-          .map(
-            (i) => html`<option key=${i.id} value=${i.id}>${i.title}</option>`,
-          )}
-      </datalist>
-      ${depsLoading
-        ? html`<div
-            class="flex items-center gap-2 text-xs text-mitto-text-secondary"
-          >
-            <span class="loading loading-spinner w-3 h-3"></span> Loading…
-          </div>`
-        : html`
-            <div class="beads-deps-grid">
-              ${deps.length === 0 &&
-              html`<span
-                class="beads-dep-empty text-xs text-mitto-text-secondary italic py-1"
-                >No dependencies.</span
-              >`}
-              ${deps.map(
-                (d) => html`
-              <${Fragment} key=${d.id}>
-                <span class="beads-dep-badge">${depStatusBadge(d.status)}</span>
-                <select
-                  class="select select-xs beads-dep-type-select"
-                  value=${d.dependency_type || "blocks"}
-                  disabled=${depsBusy}
-                  onInput=${(e) => {
-                    if (e.target.value !== (d.dependency_type || "blocks"))
-                      changeDepType(d.id, e.target.value);
-                  }}
-                >
-                  ${DEP_TYPES.map((t) => html`<option value=${t}>${t}</option>`)}
-                </select>
-                <button
-                  type="button"
-                  onClick=${() => onSelectIssue && onSelectIssue((allIssues || []).find((i) => i.id === d.id) || d)}
-                  class="input input-xs w-full min-w-0 text-left hover:underline tooltip tooltip-bottom"
-                  data-tip=${"Open " + d.id}
-                >
-                  <span class="font-mono text-xs text-mitto-accent-400 shrink-0">${d.id}</span>
-                  <span class="truncate text-xs text-mitto-text min-w-0">${d.title}</span>
-                </button>
-                <button
-                  type="button"
-                  onClick=${() => {
-                    if (depsBusy) return;
-                    mutateDep("remove", d.id);
-                  }}
-                  aria-disabled=${depsBusy ? "true" : "false"}
-                  class="btn btn-ghost btn-square btn-xs group inline-flex tooltip tooltip-bottom ${depsBusy ? "opacity-40 pointer-events-none" : ""}"
-                  data-tip="Remove dependency"
-                  aria-label="Remove dependency"
-                >
-                  <${CloseIcon} className="w-3.5 h-3.5 group-hover:text-red-400" />
-                </button>
-              </${Fragment}>
-            `,
-              )}
-              <span class="beads-dep-badge"></span>
-              <select
-                class="select select-xs beads-dep-type-select"
-                value=${newDepType}
-                disabled=${depsBusy}
-                onInput=${(e) => setNewDepType(e.target.value)}
-              >
-                ${DEP_TYPES.map((t) => html`<option value=${t}>${t}</option>`)}
-              </select>
-              <input
-                type="text"
-                list="beads-dep-options"
-                placeholder="issue id…"
-                value=${newDepId}
-                disabled=${depsBusy}
-                onInput=${(e) => setNewDepId(e.target.value)}
-                onKeyDown=${(e) => {
-                  if (e.key === "Enter") {
-                    e.preventDefault();
-                    handleAddDep();
-                  }
-                }}
-                class="input input-xs w-full min-w-0"
-              />
-              <button
-                type="button"
-                onClick=${() => {
-                  if (depsBusy || !newDepId.trim()) return;
-                  handleAddDep();
-                }}
-                aria-disabled=${depsBusy || !newDepId.trim() ? "true" : "false"}
-                class="btn btn-ghost btn-square btn-xs inline-flex tooltip tooltip-bottom ${depsBusy ||
-                !newDepId.trim()
-                  ? "opacity-40 pointer-events-none"
-                  : ""}"
-                data-tip="Add dependency"
-                aria-label="Add dependency"
-              >
-                ${depsBusy
-                  ? html`<span
-                      class="loading loading-spinner w-3.5 h-3.5"
-                    ></span>`
-                  : html`<${PlusIcon} className="w-3.5 h-3.5" />`}
-              </button>
-            </div>
-          `}`;
-  };
+  if (!h.shouldRender) return null;
+  if (!h.creating && !h.data) return null;
 
   return html`
-    <${Fragment}>
-      <!-- Dock-mode daisyUI drawer docked to the right edge of the beads view
-           area (drawer-dock; see styles.css). NO dimming backdrop: a full-area
-           composited overlay over the beads list is exactly what dropped the
-           list's GPU backing store and blanked it on pointer-move (mitto-cdf),
-           so dock mode confines the panel to its own width and leaves the list
-           to its left under no composited layer. z-60 keeps it above content.
-             Small screens (confined): full width, but capped at 85vw by the dock
-               media query so a peek of the list always remains on the left.
-             Desktop normal: 40rem wide, capped at 85% of the beads view so the
-               list always stays visible on the panel's left.
-             Expanded (fullscreen) / standalone: fills the whole area — on desktop
-               the beads view, on small screens the viewport (--dock-maxw:100%
-               lifts the media-query cap). -->
-      <${Drawer}
-        dock
-        side="end"
-        isClosing=${isClosing}
-        onClose=${handleClose}
-        zClass="z-60"
-        rootStyle=${
-          fullscreen
-            ? "--dock-w:100%;--dock-maxw:100%"
-            : isMobile
-              ? "--dock-w:100%;--dock-maxw:100%"
-              : "--dock-w:40rem;--dock-maxw:85%"
-        }
-        widthClass="w-full"
-        panelClass="bg-mitto-sidebar shrink-0 h-full flex flex-col border-l border-mitto-border-1"
-      >
-      <div class="p-4 border-b border-mitto-border shrink-0">
-        <div class="flex items-center gap-2">
-          <div class="flex-1 min-w-0">
-            ${
-              creating
-                ? html`<${Fragment}>
-                  ${TitleField("create")}
-                  ${createParentId ? html`<div class="font-mono text-xs text-mitto-text-secondary">in ${createParentId}</div>` : null}
-                </${Fragment}>`
-                : html`
-                    <h2
-                      class="font-semibold text-base text-mitto-text truncate"
-                      title=${viewDraft.title || data.title || data.id}
-                    >
-                      ${viewDraft.title || data.title || data.id}
-                    </h2>
-                  `
-            }
-          </div>
-          ${
-            creating
-              ? html`
-                  <button
-                    onClick=${() => setFullscreen((f) => !f)}
-                    class="btn btn-ghost btn-square btn-sm shrink-0 inline-flex tooltip tooltip-bottom"
-                    data-tip=${fullscreen ? "Exit fullscreen" : "Fullscreen"}
-                    aria-label=${fullscreen ? "Exit fullscreen" : "Fullscreen"}
-                  >
-                    ${fullscreen
-                      ? html`<${CollapseIcon} className="w-5 h-5" />`
-                      : html`<${ExpandIcon} className="w-5 h-5" />`}
-                  </button>
-                `
-              : null
-          }
-        </div>
-        ${
-          !creating && data
-            ? html`
-                <div class="mt-6">
-                  <${Toolbar}
-                    variant="block"
-                    surface="bg-mitto-surface-3"
-                    ariaLabel="Issue actions"
-                    testId="beads-issue-toolbar"
-                    items=${headerToolbarItems}
-                  />
-                </div>
-              `
-            : null
-        }
-      </div>
-
-      <div class="flex-1 overflow-y-auto p-4 space-y-4">
-        ${
-          creating
-            ? html`
-            <${Fragment}>
-              <div class="flex flex-wrap gap-2 items-center">
-                <span class="${labelClass} shrink-0">Type</span>
-                ${TypeField("create")}
-                <span class="${labelClass} shrink-0">Priority</span>
-                ${PriorityField("create")}
-              </div>
-
-              <div class="grid grid-cols-2 gap-3">
-                ${
-                  createParentId
-                    ? html`
-                        <div>
-                          <label class=${labelClass} for="new-issue-parent"
-                            >Parent</label
-                          >
-                          <input
-                            id="new-issue-parent"
-                            type="text"
-                            class="${inputClass} font-mono"
-                            value=${createParentId}
-                            readonly
-                            aria-readonly="true"
-                            title="This issue will be created as a child of ${createParentId}"
-                            data-testid="beads-create-parent"
-                          />
-                        </div>
-                      `
-                    : null
-                }
-                <div>
-                  <label class=${labelClass} for="new-issue-assignee">Assignee</label>
-                  ${AssigneeField("create")}
-                </div>
-              </div>
-
-              ${DescriptionField("create")}
-
-              <fieldset class="fieldset">
-                <legend class="fieldset-legend">Dependencies</legend>
-                ${DependenciesField("create")}
-              </fieldset>
-
-              <fieldset class="fieldset">
-                <legend class="fieldset-legend">Notes</legend>
-                ${NotesField("create")}
-              </fieldset>
-            </${Fragment}>
-          `
-            : html`
-                <div class="flex flex-wrap gap-2 items-center">
-                  ${TypeField("view")} ${statusBadge(data.status)}
-                  ${PriorityField("view")}
-                </div>
-
-                <div class="grid grid-cols-2 gap-3">
-                  <div>
-                    <label class=${labelClass}>ID</label>
-                    <div class="flex items-center gap-1">
-                      <span class="font-mono text-sm text-mitto-text"
-                        >${data.id}</span
-                      >
-                      <button
-                        type="button"
-                        onClick=${async () => {
-                          const ok = await copyToClipboard(data.id);
-                          showToast &&
-                            showToast(
-                              ok
-                                ? {
-                                    style: "success",
-                                    title: `Copied ${data.id}`,
-                                  }
-                                : {
-                                    style: "error",
-                                    title: "Failed to copy issue ID",
-                                  },
-                            );
-                        }}
-                        class="btn btn-ghost btn-xs btn-square inline-flex tooltip tooltip-bottom"
-                        data-tip="Copy issue ID ${data.id}"
-                        aria-label="Copy issue ID ${data.id}"
-                      >
-                        <${CopyIcon} className="w-3.5 h-3.5" />
-                      </button>
-                    </div>
-                  </div>
-                  <div>
-                    <label class=${labelClass}>Assignee</label>
-                    ${AssigneeField("view")}
-                  </div>
-                  ${labelValue("Owner", data.owner)}
-                  ${labelValue(
-                    "Created",
-                    data.created_at &&
-                      new Date(data.created_at).toLocaleDateString(),
-                  )}
-                  ${labelValue(
-                    "Updated",
-                    data.updated_at &&
-                      new Date(data.updated_at).toLocaleDateString(),
-                  )}
-                  ${data.parent &&
-                  labelValue(
-                    "Parent",
-                    html`
-                      <button
-                        type="button"
-                        onClick=${() =>
-                          onSelectIssue &&
-                          onSelectIssue(
-                            (allIssues || []).find(
-                              (i) => i.id === data.parent,
-                            ) || { id: data.parent },
-                          )}
-                        class="font-mono text-mitto-accent-400 hover:text-mitto-accent-300 hover:underline text-left tooltip tooltip-bottom"
-                        data-tip=${"Open " + data.parent}
-                      >
-                        ${data.parent}
-                      </button>
-                    `,
-                  )}
-                </div>
-
-                <div>
-                  <div class="text-xs text-mitto-text-secondary mb-1">
-                    Labels
-                  </div>
-                  <datalist id="beads-label-options">
-                    ${allLabels
-                      .filter((l) => !labels.includes(l))
-                      .map((l) => html`<option key=${l} value=${l}></option>`)}
-                  </datalist>
-                  <div class="flex flex-wrap gap-2 items-center">
-                    ${labels.length === 0 &&
-                    !addingLabel &&
-                    html`<span class="text-xs text-mitto-text-secondary italic"
-                      >No labels.</span
-                    >`}
-                    ${labels.map(
-                      (l) => html`
-                        <span
-                          key=${l}
-                          class="badge badge-sm font-medium bg-mitto-surface-4 text-mitto-text-strong"
-                        >
-                          ${l}
-                          <button
-                            type="button"
-                            onClick=${() => {
-                              if (labelsBusy) return;
-                              mutateLabel("remove", l);
-                            }}
-                            aria-disabled=${labelsBusy ? "true" : "false"}
-                            class="inline-flex items-center opacity-60 hover:opacity-100 hover:text-red-400 cursor-pointer tooltip tooltip-bottom ${labelsBusy
-                              ? "opacity-40 pointer-events-none"
-                              : ""}"
-                            data-tip=${'Remove label "' + l + '"'}
-                            aria-label=${'Remove label "' + l + '"'}
-                          >
-                            <${CloseIcon} className="w-3 h-3" />
-                          </button>
-                        </span>
-                      `,
-                    )}
-                    ${addingLabel
-                      ? html`
-                          <div class="join w-52 max-w-full">
-                            <input
-                              ref=${labelInputRef}
-                              type="text"
-                              list="beads-label-options"
-                              placeholder="add label…"
-                              value=${newLabel}
-                              disabled=${labelsBusy}
-                              onInput=${(e) => setNewLabel(e.target.value)}
-                              onKeyDown=${(e) => {
-                                if (e.key === "Enter") {
-                                  e.preventDefault();
-                                  handleAddLabel();
-                                } else if (e.key === "Escape") {
-                                  e.preventDefault();
-                                  setNewLabel("");
-                                  setAddingLabel(false);
-                                }
-                              }}
-                              onBlur=${() => {
-                                if (!newLabel.trim()) setAddingLabel(false);
-                              }}
-                              class="input input-xs flex-1 min-w-0 join-item"
-                            />
-                            <button
-                              type="button"
-                              onMouseDown=${(e) => e.preventDefault()}
-                              onClick=${() => {
-                                if (labelsBusy || !newLabel.trim()) return;
-                                handleAddLabel();
-                              }}
-                              aria-disabled=${labelsBusy || !newLabel.trim()
-                                ? "true"
-                                : "false"}
-                              class="btn btn-ghost btn-square btn-xs shrink-0 join-item inline-flex tooltip tooltip-bottom ${labelsBusy ||
-                              !newLabel.trim()
-                                ? "opacity-40 pointer-events-none"
-                                : ""}"
-                              data-tip="Add label"
-                              aria-label="Add label"
-                            >
-                              ${labelsBusy
-                                ? html`<span
-                                    class="loading loading-spinner w-3 h-3"
-                                  ></span>`
-                                : html`<${PlusIcon} className="w-3 h-3" />`}
-                            </button>
-                          </div>
-                        `
-                      : html`
-                          <button
-                            type="button"
-                            onClick=${() => setAddingLabel(true)}
-                            class="btn btn-ghost btn-square btn-xs inline-flex tooltip tooltip-bottom"
-                            data-tip="Add label"
-                            aria-label="Add label"
-                          >
-                            <${PlusIcon} className="w-3 h-3" />
-                          </button>
-                        `}
-                  </div>
-                </div>
-                ${TitleField("view")} ${DescriptionField("view")}
-                ${subtasks.length > 0 &&
-                html`
-                  <fieldset class="fieldset">
-                    <legend class="fieldset-legend">
-                      Subtasks (${subtasks.length})
-                    </legend>
-                    <ul class="space-y-1">
-                      ${subtasks.map(
-                        (c) => html`
-                          <li key=${c.id}>
-                            <button
-                              type="button"
-                              onClick=${() => onSelectIssue && onSelectIssue(c)}
-                              class="btn btn-ghost btn-xs w-full justify-start inline-flex tooltip tooltip-bottom"
-                              data-tip="Open ${c.id}"
-                            >
-                              ${statusBadge(c.status)}
-                              <span
-                                class="font-mono text-mitto-text-secondary text-xs"
-                                >${c.id}</span
-                              >
-                              <span class="truncate">${c.title}</span>
-                            </button>
-                          </li>
-                        `,
-                      )}
-                    </ul>
-                  </fieldset>
-                `}
-
-                <fieldset class="fieldset">
-                  <legend class="fieldset-legend">Dependencies</legend>
-                  ${DependenciesField("view")}
-                </fieldset>
-
-                <fieldset class="fieldset">
-                  <legend class="fieldset-legend">
-                    Comments${comments.length ? ` (${comments.length})` : ""}
-                  </legend>
-                  ${depsLoading
-                    ? html`
-                        <div
-                          class="flex items-center gap-2 text-xs text-mitto-text-secondary"
-                        >
-                          <span class="loading loading-spinner w-3 h-3"></span>
-                          Loading…
-                        </div>
-                      `
-                    : html`
-                  <${Fragment}>
-                    ${
-                      comments.length === 0
-                        ? html`<div
-                            class="text-xs text-mitto-text-secondary italic"
-                          >
-                            No comments.
-                          </div>`
-                        : html`
-                            <ul class="space-y-2">
-                              ${[...comments]
-                                .sort(
-                                  (a, b) =>
-                                    new Date(a.created_at) -
-                                    new Date(b.created_at),
-                                )
-                                .map(
-                                  (cm) => html`
-                                    <li
-                                      key=${cm.id}
-                                      class="border-l-2 border-l-mitto-accent-500/70 bg-mitto-accent-500/10 rounded-r p-2 pl-3"
-                                    >
-                                      <div
-                                        class="flex items-center justify-between gap-2 mb-1"
-                                      >
-                                        <span
-                                          class="text-xs font-medium text-mitto-text"
-                                          >${cm.author || "Unknown"}</span
-                                        >
-                                        <span
-                                          class="text-xs text-mitto-text-secondary"
-                                          title=${cm.created_at}
-                                          >${cm.created_at
-                                            ? new Date(
-                                                cm.created_at,
-                                              ).toLocaleString()
-                                            : ""}</span
-                                        >
-                                      </div>
-                                      ${commentBody(cm.text, workingDir)}
-                                    </li>
-                                  `,
-                                )}
-                            </ul>
-                          `
-                    }
-                    ${
-                      addingComment
-                        ? html`
-                            <textarea
-                              ref=${commentRef}
-                              class="${textareaClass} resize-y mt-2"
-                              rows="3"
-                              placeholder="Add a comment…"
-                              value=${commentDraft}
-                              onInput=${(e) => setCommentDraft(e.target.value)}
-                              onBlur=${handleCommentBlur}
-                              disabled=${savingComment}
-                            ></textarea>
-                          `
-                        : html`
-                            <button
-                              type="button"
-                              onClick=${startAddComment}
-                              disabled=${savingComment}
-                              class="btn btn-ghost btn-xs mt-2 inline-flex tooltip tooltip-bottom"
-                              data-tip="Add comment"
-                            >
-                              ${savingComment
-                                ? html`<span
-                                    class="loading loading-spinner w-3.5 h-3.5"
-                                  ></span>`
-                                : html`<${PlusIcon} className="w-3.5 h-3.5" />`}
-                              <span>Add comment</span>
-                            </button>
-                          `
-                    }
-                  </${Fragment}>
-                `}
-                </fieldset>
-
-                <fieldset class="fieldset">
-                  <legend class="fieldset-legend">Notes</legend>
-                  ${NotesField("view")}
-                </fieldset>
-              `
-        }
-      </div>
-
-      ${
-        (creating || data) &&
-        html`
-          <div
-            class="flex justify-end gap-3 p-3 border-t border-mitto-border shrink-0"
-          >
-            <button
-              type="button"
-              onClick=${handleClose}
-              disabled=${creating ? submitting : false}
-              class="btn btn-ghost btn-sm inline-flex tooltip tooltip-top"
-              data-tip="Close"
-            >
-              Close
-            </button>
-            <button
-              type="button"
-              onClick=${creating ? handleSave : handleViewSave}
-              disabled=${creating
-                ? !description.trim() || submitting
-                : !viewDirty || savingView}
-              class="btn btn-primary btn-sm inline-flex tooltip tooltip-top"
-              data-tip="Save changes"
-            >
-              ${(creating ? submitting : savingView)
-                ? html`<span class="loading loading-spinner w-4 h-4"></span>`
-                : null}
-              Save
-            </button>
-          </div>
-        `
-      }
-      <//>
-      ${
-        panelMenu &&
-        html`
-          <${ContextMenu}
-            x=${panelMenu.x}
-            y=${panelMenu.y}
-            items=${panelMenuItems}
-            onClose=${() => setPanelMenu(null)}
-          />
-        `
-      }
-      <${ConfirmDialog}
-        isOpen=${confirmDiscard}
-        title="Discard changes?"
-        message="You have unsaved changes. Discard them and close?"
-        confirmLabel="Discard"
-        cancelLabel="Keep editing"
-        confirmVariant="danger"
-        onConfirm=${handleDiscardAndClose}
-        onCancel=${() => setConfirmDiscard(false)}
-      />
-    </${Fragment}>
+    <${BeadsDetailPanelBody}
+      isClosing=${h.isClosing}
+      isMobile=${h.isMobile}
+      fullscreen=${h.fullscreen}
+      setFullscreen=${h.setFullscreen}
+      creating=${h.creating}
+      data=${h.data}
+      createParentId=${h.createParentId}
+      submitting=${h.submitting}
+      viewDirty=${h.viewDirty}
+      savingView=${h.savingView}
+      description=${h.description}
+      setDescription=${h.setDescription}
+      createEditorApiRef=${h.createEditorApiRef}
+      detailEditorApiRef=${h.detailEditorApiRef}
+      descMinHeight=${h.descMinHeight}
+      descViewRef=${h.descViewRef}
+      md=${h.md}
+      workingDir=${h.workingDir}
+      improvingDesc=${h.improvingDesc}
+      improveDescriptionText=${h.improveDescriptionText}
+      allIssues=${h.allIssues}
+      subtasks=${h.subtasks}
+      onSelectIssue=${h.onSelectIssue}
+      showToast=${h.showToast}
+      create=${h.create}
+      view=${h.view}
+      deps=${h.deps}
+      labels=${h.labels}
+      comments=${h.comments}
+      handlers=${h.handlers}
+      chrome=${h.chrome}
+    />
   `;
 }
 
@@ -3144,6 +639,11 @@ export function BeadsView({
   const [issues, setIssues] = useState([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
+  // Set when the list load failed with a "beads_schema_skew" error code: the
+  // beads database is behind the bd binary's schema and is remote-backed, so
+  // bd refuses to auto-migrate it. Drives a distinct actionable error card
+  // (see the render error region below) instead of the plain error text.
+  const [schemaSkew, setSchemaSkew] = useState(null);
   const [selectedIssue, setSelectedIssue] = useState(null);
   const [isCreating, setIsCreating] = useState(false);
   // When the create panel is opened via an epic's "+" button, this holds the
@@ -3301,18 +801,18 @@ export function BeadsView({
   // List-level "Prompts" dropdown state (footer toolbar). These are the
   // `menus: beadsList` prompts that operate on the whole issue list rather than
   // a single issue. Loaded lazily the first time the dropdown is opened.
-  const [showListPrompts, setShowListPrompts] = useState(false);
+  // ContextMenu anchor for the list-level prompts button; null = closed. The
+  // menu now uses buildPromptGroupMenuItems + ContextMenu (like the detail-panel
+  // kebab), so grouped submenus and per-prompt loop toggles are handled by
+  // ContextMenu itself — no local open flag or loop-override state needed.
+  const [listPromptsAnchor, setListPromptsAnchor] = useState(null);
   const [listPrompts, setListPrompts] = useState([]);
   const [listPromptsLoading, setListPromptsLoading] = useState(false);
-  // Per-send loop override for beadsList prompts, keyed by prompt name.
-  // Reset whenever the list reloads (see effect below).
-  const [listLoopOn, setListLoopOn] = useState({});
 
   // Shortcut buttons configured for this folder's tasksList section.
   const [shortcuts, setShortcuts] = useState([]);
   // Map from prompt name → prompt object, built once shortcuts + prompts are loaded.
   const [shortcutPromptMap, setShortcutPromptMap] = useState(new Map());
-  const listPromptsRef = useRef(null);
   // Ref for the issues scroll container — used by usePullToRefresh.
   const scrollContainerRef = useRef(null);
 
@@ -3328,12 +828,23 @@ export function BeadsView({
       );
       const data = await readBeadsResponse(res);
       if (!res.ok || data.error) {
+        if (data.code === "beads_schema_skew") {
+          setSchemaSkew({
+            message: data.error,
+            dbPath: (data.details && data.details.db_path) || "",
+            hint: (data.details && data.details.hint) || "",
+          });
+        } else {
+          setSchemaSkew(null);
+        }
         setError(data.error || data.message || "Failed to load issues");
         setIssues([]);
       } else {
+        setSchemaSkew(null);
         setIssues(Array.isArray(data) ? data : []);
       }
     } catch (err) {
+      setSchemaSkew(null);
       setError(err.message || "Failed to load issues");
     } finally {
       setLoading(false);
@@ -4231,45 +1742,21 @@ export function BeadsView({
     [onRunBeadsPrompt, closeContextMenu],
   );
 
-  // Close the list-level prompts dropdown on outside click while it is open.
-  useEffect(() => {
-    if (!showListPrompts) return undefined;
-    const onDocClick = (e) => {
-      if (
-        listPromptsRef.current &&
-        !listPromptsRef.current.contains(e.target)
-      ) {
-        setShowListPrompts(false);
-      }
-    };
-    document.addEventListener("mousedown", onDocClick);
-    return () => document.removeEventListener("mousedown", onDocClick);
-  }, [showListPrompts]);
-
-  // Open/close the list-level prompts dropdown, lazily loading the
-  // `menus: beadsList` prompts for this workspace the first time it is opened.
-  // Open-driven (receives the next open state) because the Toolbar dropdown is
-  // backed by a controlled <details> whose onToggle reports the new state.
-  const handleListPromptsToggle = useCallback(
-    (open) => {
-      if (open && onFetchBeadsListPrompts && workingDir) {
+  // Open the list-level prompts ContextMenu anchored to the toolbar button,
+  // lazily loading the `menus: beadsList` prompts for this workspace each time
+  // it is opened (grouped into submenus by buildPromptGroupMenuItems below).
+  const openListPromptsMenu = useCallback(
+    (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const rect = e.currentTarget.getBoundingClientRect();
+      setListPromptsAnchor({ x: rect.left, y: rect.bottom });
+      if (onFetchBeadsListPrompts && workingDir) {
         setListPromptsLoading(true);
         onFetchBeadsListPrompts(workingDir)
-          .then((list) => {
-            const prompts = list || [];
-            setListPrompts(prompts);
-            // Seed per-item loop toggle defaults from each prompt's mode/default.
-            const seed = {};
-            for (const p of prompts) {
-              if (promptLoopIsToggleable(p)) {
-                seed[p.name] = promptLoopDefaultOn(p);
-              }
-            }
-            setListLoopOn(seed);
-          })
+          .then((list) => setListPrompts(list || []))
           .finally(() => setListPromptsLoading(false));
       }
-      setShowListPrompts(open);
     },
     [onFetchBeadsListPrompts, workingDir],
   );
@@ -4277,7 +1764,7 @@ export function BeadsView({
   // Run a list-level prompt in a new conversation (no per-issue context).
   const handleRunListPrompt = useCallback(
     (prompt, opts) => {
-      setShowListPrompts(false);
+      setListPromptsAnchor(null);
       onRunBeadsListPrompt && onRunBeadsListPrompt(prompt, undefined, opts);
     },
     [onRunBeadsListPrompt],
@@ -4710,6 +2197,9 @@ export function BeadsView({
     return {
       kind: "button",
       testId: `beads-shortcut-btn-${i}`,
+      // On phone-width screens only the first shortcut is shown; the rest are
+      // hidden (see .mitto-shortcut-extra in styles-v2.css) to avoid overflow.
+      className: i > 0 ? "mitto-shortcut-extra" : undefined,
       icon: html`<${Icon} className="w-4 h-4" />`,
       tip: found ? sc.prompt : `Prompt "${sc.prompt}" not found`,
       ariaLabel: found
@@ -4720,86 +2210,21 @@ export function BeadsView({
     };
   });
 
-  // List-prompts dropdown menu (opens downward now that the toolbar is on top).
-  const listPromptsMenu = html`
-    <ul
-      class="dropdown-content menu w-64 max-h-72 overflow-y-auto flex-nowrap bg-base-200 rounded-box shadow-xl z-10 mt-1"
-    >
-      ${listPromptsLoading &&
-      html`
-        <li class="px-3 py-2 flex items-center gap-2">
-          <span class="loading loading-spinner w-4 h-4"></span>
-          Loading…
-        </li>
-      `}
-      ${!listPromptsLoading &&
-      listPrompts.length === 0 &&
-      html` <li class="px-3 py-2 opacity-60">No task prompts</li> `}
-      ${!listPromptsLoading &&
-      listPrompts.map((p) => {
-        const PromptIcon = getPromptIconOrDefault(p.icon);
-        return html`
-          <li key=${p.name}>
-            <button
-              type="button"
-              onClick=${() => {
-                const mode = promptLoopMode(p);
-                const opts =
-                  mode === "optional"
-                    ? {
-                        asLoop:
-                          listLoopOn[p.name] !== undefined
-                            ? listLoopOn[p.name]
-                            : promptLoopDefaultOn(p),
-                      }
-                    : undefined;
-                handleRunListPrompt(p, opts);
-              }}
-              title=${p.description || p.name}
-            >
-              <span class="w-4 h-4 shrink-0"
-                ><${PromptIcon} className="w-4 h-4"
-              /></span>
-              <span class="truncate flex-1">${p.name}</span>
-              ${(() => {
-                const mode = promptLoopMode(p);
-                if (mode === "none") return null;
-                if (mode === "optional") {
-                  const on =
-                    listLoopOn[p.name] !== undefined
-                      ? listLoopOn[p.name]
-                      : promptLoopDefaultOn(p);
-                  return html`<input
-                    type="checkbox"
-                    class="checkbox checkbox-sm shrink-0"
-                    style="background-color: transparent"
-                    checked=${on}
-                    title=${on
-                      ? "Loop: ON — click to disable recurring runs"
-                      : "Loop: OFF — click to run as recurring conversation"}
-                    onClick=${(e) => e.stopPropagation()}
-                    onChange=${(e) => {
-                      e.stopPropagation();
-                      setListLoopOn((m) => ({
-                        ...m,
-                        [p.name]: e.target.checked,
-                      }));
-                    }}
-                  />`;
-                }
-                // mode === "always": locked badge (unchanged look)
-                return html`<span
-                  class="shrink-0 text-success opacity-80"
-                  title="Loop prompt — always sets the conversation to recurring mode"
-                  ><${LoopIcon} className="w-3.5 h-3.5"
-                /></span>`;
-              })()}
-            </button>
-          </li>
-        `;
-      })}
-    </ul>
-  `;
+  // Group the beadsList prompts by their `group` into per-group submenus,
+  // identical to the conversation menu and the detail-panel kebab. ContextMenu
+  // renders the hover flyouts and per-prompt loop toggles from these items.
+  const listPromptGroupItems = listPromptsLoading
+    ? [{ label: "Loading…", disabled: true }]
+    : (() => {
+        const groups = buildPromptGroupMenuItems(
+          listPrompts,
+          handleRunListPrompt,
+          html`<${PlusIcon} />`,
+        );
+        return groups.length === 0
+          ? [{ label: "No task prompts", disabled: true }]
+          : groups;
+      })();
 
   const listToolbarItems = [
     {
@@ -4811,14 +2236,12 @@ export function BeadsView({
       onClick: openCreate,
     },
     {
-      kind: "dropdown",
+      kind: "button",
       testId: "beads-list-prompts-btn",
       icon: html`<${LightningIcon} className="w-4 h-4" />`,
       tip: "Run a prompt over the issue list in a new conversation",
       ariaLabel: "Run a prompt over the issue list in a new conversation",
-      open: showListPrompts,
-      onToggle: handleListPromptsToggle,
-      menu: listPromptsMenu,
+      onClick: openListPromptsMenu,
     },
     {
       kind: "button",
@@ -4864,11 +2287,10 @@ export function BeadsView({
 
       <!-- List-level actions rendered via the portable Toolbar component
            (components/Toolbar.js) as a floating "pill", vertically aligned with
-           the sidebar toolbar. The wrapper carries listPromptsRef so the
-           existing outside-click handler still closes the prompts dropdown. -->
+           the sidebar toolbar. The prompts button opens a ContextMenu, which
+           handles its own outside-click / Escape dismissal. -->
       <div
         class="px-3 pb-2 shrink-0"
-        ref=${listPromptsRef}
         data-testid="beads-actions-toolbar"
       >
         <${Toolbar}
@@ -5106,13 +2528,32 @@ export function BeadsView({
         ${
           !loading &&
           error &&
-          html`
-            <div
-              class="flex items-center justify-center h-24 text-red-400 text-sm px-4"
-            >
-              ${error}
-            </div>
-          `
+          (schemaSkew
+            ? html`
+                <div
+                  class="flex flex-col items-center justify-center gap-2 py-8 px-4 text-center"
+                >
+                  <div class="text-amber-400 text-sm font-medium">
+                    Beads schema needs migration
+                  </div>
+                  ${schemaSkew.dbPath &&
+                  html`<div
+                    class="text-mitto-text-secondary text-xs font-mono break-all"
+                  >
+                    ${schemaSkew.dbPath}
+                  </div>`}
+                  <div class="text-mitto-text-secondary text-xs max-w-md">
+                    ${schemaSkew.hint}
+                  </div>
+                </div>
+              `
+            : html`
+                <div
+                  class="flex items-center justify-center h-24 text-red-400 text-sm px-4"
+                >
+                  ${error}
+                </div>
+              `)
         }
         ${
           !loading &&
@@ -5203,6 +2644,17 @@ export function BeadsView({
           y=${contextMenu.y}
           items=${contextMenuItems}
           onClose=${closeContextMenu}
+        />
+      `
+    }
+    ${
+      listPromptsAnchor &&
+      html`
+        <${ContextMenu}
+          x=${listPromptsAnchor.x}
+          y=${listPromptsAnchor.y}
+          items=${listPromptGroupItems}
+          onClose=${() => setListPromptsAnchor(null)}
         />
       `
     }

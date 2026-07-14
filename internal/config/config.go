@@ -7,6 +7,8 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
+	"sort"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -26,6 +28,9 @@ type ACPServerConstraint struct {
 // Profiles let users tag models by capability (e.g. "Smart", "Cheap") independently
 // of the raw model name, so other parts of Mitto can branch on capability tags rather
 // than brittle model-name strings.
+//
+// **List order is priority** — the first profile carrying a given tag wins in
+// ProfilesByTag / SelectPreferredModel resolution. Put your preferred variant first.
 type ModelProfile struct {
 	// Name is the display name for this profile (e.g. "Opus").
 	Name string `json:"name"`
@@ -34,6 +39,86 @@ type ModelProfile struct {
 	Criteria *ACPServerConstraint `json:"criteria,omitempty"`
 	// Tags is the list of capability tags carried by matching models (e.g. "Smart", "Cheap").
 	Tags []string `json:"tags,omitempty"`
+}
+
+// DefaultModelProfiles returns the canonical, hardcoded set of model profiles.
+// This is the single Go source of truth for well-known model-capability tags and
+// mirrors the `models:` block in config/config.default.yaml (kept in sync by the
+// `make check-model-tags` target).
+//
+// Unlike config.default.yaml — which only seeds settings.json on first run — these
+// profiles are always available at runtime via EffectiveModelProfiles, so tag-based
+// prompt preferredModels (e.g. `modelTag: Coding`) resolve even when the user's
+// settings.json has an empty or partial `Models` list. A fresh copy is returned on
+// each call so callers may mutate the result freely.
+//
+// List order = priority; put preferred variants first (the first profile carrying a
+// tag wins in tag-based resolution).
+func DefaultModelProfiles() []ModelProfile {
+	contains := func(pattern string) *ACPServerConstraint {
+		return &ACPServerConstraint{MatchMode: "contains", Pattern: pattern}
+	}
+	return []ModelProfile{
+		{Name: "Claude", Criteria: contains("Claude"), Tags: []string{"Anthropic"}},
+		{Name: "Claude Opus", Criteria: contains("Opus"), Tags: []string{"Smartest", "Reasoning", "Thinking", "Deep", "Slow", "Expensive"}},
+		{Name: "Claude Sonnet 5", Criteria: contains("Sonnet 5"), Tags: []string{"Smart", "Coding"}},
+		{Name: "Claude Sonnet 4", Criteria: contains("Sonnet 4"), Tags: []string{"Smart", "Coding"}},
+		{Name: "Claude Haiku", Criteria: contains("Haiku"), Tags: []string{"Fast", "Cheap"}},
+		{Name: "GPT-5", Criteria: contains("GPT-5"), Tags: []string{"Smart", "Reasoning", "Thinking", "Deep", "Coding"}},
+		{Name: "GPT-4", Criteria: contains("GPT-4"), Tags: []string{"Smart", "Coding"}},
+		{Name: "Gemini", Criteria: contains("Gemini"), Tags: []string{"Smart", "LongContext"}},
+	}
+}
+
+// CanonicalModelTags returns the sorted, de-duplicated set of capability tags carried
+// by DefaultModelProfiles. It is the authoritative list of tags that a prompt's
+// preferredModels `modelTag:` may reference and is used by the `make check-model-tags`
+// validator to reject unknown tags in builtin prompts.
+func CanonicalModelTags() []string {
+	seen := make(map[string]struct{})
+	var tags []string
+	for _, p := range DefaultModelProfiles() {
+		for _, t := range p.Tags {
+			if _, dup := seen[t]; dup {
+				continue
+			}
+			seen[t] = struct{}{}
+			tags = append(tags, t)
+		}
+	}
+	sort.Strings(tags)
+	return tags
+}
+
+// EffectiveModelProfiles returns the model profiles that should be used for tag/name
+// resolution: the user-configured profiles (Config.Models) unioned with the canonical
+// DefaultModelProfiles as a fallback. User profiles take precedence — a default profile
+// is only appended when no user profile shares its name (case-insensitive). This
+// guarantees well-known tags always resolve even when settings.json omits `models:`,
+// without overriding any customisation the user has made. Safe to call on a nil Config.
+//
+// Ordering contract: user profiles come first, in user-supplied order; defaults are
+// appended after, in DefaultModelProfiles order. Resolvers (ProfilesByTag,
+// SelectPreferredModel) walk both halves top-to-bottom, so for equal-tag ties a user
+// profile always trumps a default, and within each half list order = priority.
+func (c *Config) EffectiveModelProfiles() []ModelProfile {
+	var user []ModelProfile
+	if c != nil {
+		user = c.Models
+	}
+	out := make([]ModelProfile, len(user))
+	copy(out, user)
+	haveName := make(map[string]struct{}, len(user))
+	for _, p := range user {
+		haveName[strings.ToLower(p.Name)] = struct{}{}
+	}
+	for _, d := range DefaultModelProfiles() {
+		if _, ok := haveName[strings.ToLower(d.Name)]; ok {
+			continue
+		}
+		out = append(out, d)
+	}
+	return out
 }
 
 // ConstraintMatchesName reports whether name matches the constraint's Pattern under
@@ -107,6 +192,27 @@ type ACPServer struct {
 	// Empty means no profile is selected; legacy Constraints["model"] (if any)
 	// is used as a fallback. See FindModelProfile.
 	ModelProfile string
+	// ModelTag is a capability tag (e.g. "Smart", "Fast") used to resolve a
+	// Model profile at session start when ModelProfile is empty. The first
+	// profile in EffectiveModelProfiles carrying this tag supplies the model
+	// Criteria. Mutually exclusive with ModelProfile in the UI, but if both are
+	// set ModelProfile wins. Mirrors WorkspaceSettings.InitialModelTag.
+	ModelTag string
+	// InitialModelProfile is the name of a Model profile (Config.Models) applied
+	// as the baseline model of every new conversation created against this ACP
+	// server, right after the agent reports its available models. Empty means
+	// keep the agent's default model. Mutually exclusive with InitialModelTag
+	// in the UI; when both are set, InitialModelProfile wins. Serves as a
+	// fallback when the workspace has no InitialModelProfile/InitialModelTag
+	// set (see WorkspaceSettings.InitialModelProfile). Distinct from
+	// ModelProfile above, which drives the legacy per-resume Constraints["model"]
+	// auto-selection behavior.
+	InitialModelProfile string
+	// InitialModelTag selects the initial baseline model by capability tag
+	// (e.g. "Coding"). Resolved to the first Model profile (Config.Models, in
+	// definition order) carrying this tag whose Criteria matches an available
+	// model. Empty means keep the agent's default model.
+	InitialModelTag string
 	// Constraints is an optional map of config option auto-selection rules.
 	// The key is the config option category (e.g., "model", "mode").
 	// When a session starts, matching constraints auto-select the appropriate option value.
@@ -124,6 +230,27 @@ func (s *ACPServer) GetType() string {
 		return s.Type
 	}
 	return s.Name
+}
+
+// GetInitialModelPreference returns the ACP server's initial-model preference
+// as an ordered list of PromptPreferredModel entries suitable for
+// conversation.SelectPreferredModel. Returns nil when neither
+// InitialModelProfile nor InitialModelTag is set. InitialModelProfile takes
+// precedence over InitialModelTag when both are set. Serves as a fallback for
+// fresh top-level conversations when the workspace has no initial-model
+// preference set (see WorkspaceSettings.GetInitialModelPreference). Safe to
+// call on a nil receiver.
+func (s *ACPServer) GetInitialModelPreference() []PromptPreferredModel {
+	if s == nil {
+		return nil
+	}
+	if s.InitialModelProfile != "" {
+		return []PromptPreferredModel{{ModelName: s.InitialModelProfile}}
+	}
+	if s.InitialModelTag != "" {
+		return []PromptPreferredModel{{ModelTag: s.InitialModelTag}}
+	}
+	return nil
 }
 
 // FindModelProfile returns the named Model profile (case-insensitive match on
@@ -349,64 +476,78 @@ type NotificationsConfig struct {
 	NativeEnabled bool `json:"native_enabled,omitempty"`
 }
 
-// BadgeClickActionConfig configures the workspace badge click behavior in the conversation list.
-// When enabled, clicking a workspace badge executes a shell command.
-type BadgeClickActionConfig struct {
-	// Enabled controls whether clicking the workspace badge executes a command.
-	// Default: true (enabled by default)
-	Enabled *bool `json:"enabled,omitempty"`
-	// Command is the shell command to execute when the badge is clicked.
+// OpenTarget represents a single "Open In..." entry for a workspace folder.
+// A target maps a stable ID to a shell command that opens the workspace directory
+// in a specific application (Finder, Terminal, editor, etc.).
+type OpenTarget struct {
+	// ID is a stable identifier for the target (e.g., "finder", "vscode").
+	// Builtin targets use well-known IDs; user targets use any non-empty string.
+	ID string `json:"id"`
+	// Label is the human-readable name shown in menus and settings.
+	Label string `json:"label"`
+	// Icon is an optional icon key used by the frontend to render an icon.
+	Icon string `json:"icon,omitempty"`
+	// Command is the shell command to execute.
 	// Supports ${MITTO_WORKING_DIR} placeholder which is replaced with the workspace directory path.
-	// Default: "open ${MITTO_WORKING_DIR}" (opens the folder in Finder on macOS)
-	Command string `json:"command,omitempty"`
-}
-
-// GetEnabled returns whether badge click action is enabled.
-// Defaults to true if not explicitly set.
-func (c *BadgeClickActionConfig) GetEnabled() bool {
-	if c == nil || c.Enabled == nil {
-		return true // Enabled by default
-	}
-	return *c.Enabled
-}
-
-// GetCommand returns the command to execute.
-// Defaults to "open ${MITTO_WORKING_DIR}" if not set.
-func (c *BadgeClickActionConfig) GetCommand() string {
-	if c == nil || c.Command == "" {
-		return "open ${MITTO_WORKING_DIR}"
-	}
-	return c.Command
-}
-
-// TerminalActionConfig configures the terminal open behavior in the conversation list.
-// When enabled, the terminal button in group headers executes a shell command to open a terminal.
-type TerminalActionConfig struct {
-	// Enabled controls whether the terminal button appears in group headers.
-	// Default: true (enabled by default)
+	Command string `json:"command"`
+	// Enabled controls whether the target appears in menus.
+	// When nil, the effective value depends on Builtin: builtin targets default to true,
+	// user-defined targets default to false. Explicit non-nil values always win.
 	Enabled *bool `json:"enabled,omitempty"`
-	// Command is the shell command to execute to open a terminal.
-	// Supports ${MITTO_WORKING_DIR} placeholder which is replaced with the workspace directory path.
-	// Default: "open -a Terminal ${MITTO_WORKING_DIR}" (opens Terminal.app on macOS)
-	Command string `json:"command,omitempty"`
+	// Builtin is true for platform-default entries seeded by Mitto.
+	// This field is not user-settable; user-provided values are ignored on merge.
+	Builtin bool `json:"builtin,omitempty"`
 }
 
-// GetEnabled returns whether terminal action is enabled.
-// Defaults to true if not explicitly set.
-func (c *TerminalActionConfig) GetEnabled() bool {
-	if c == nil || c.Enabled == nil {
-		return true
+// GetEnabled returns the effective enabled state for the target.
+// When Enabled is nil, builtin targets default to true and user-defined targets default to false.
+func (t *OpenTarget) GetEnabled() bool {
+	if t == nil {
+		return false
 	}
-	return *c.Enabled
+	if t.Enabled != nil {
+		return *t.Enabled
+	}
+	return t.Builtin
 }
 
-// GetCommand returns the command to execute.
-// Defaults to "open -a Terminal ${MITTO_WORKING_DIR}" if not set.
-func (c *TerminalActionConfig) GetCommand() string {
-	if c == nil || c.Command == "" {
-		return "open -a Terminal ${MITTO_WORKING_DIR}"
+// OpenInConfig represents the configurable list of "Open In..." targets for
+// workspace folders (context menu on the workspace badge / folder buttons).
+type OpenInConfig struct {
+	// Targets is the ordered list of open-in entries.
+	Targets []OpenTarget `json:"targets,omitempty"`
+}
+
+// DefaultOpenTargets returns the platform-specific default set of "Open In..."
+// targets. All returned entries are marked Builtin: true; the default-enabled
+// state is expressed via Enabled *bool so callers can distinguish "unset" from
+// "explicit false".
+func DefaultOpenTargets() []OpenTarget {
+	bp := func(b bool) *bool { return &b }
+	switch runtime.GOOS {
+	case "darwin":
+		return []OpenTarget{
+			{ID: "finder", Label: "Finder", Icon: "finder", Command: "open ${MITTO_WORKING_DIR}", Enabled: bp(true), Builtin: true},
+			{ID: "terminal", Label: "Terminal", Icon: "terminal", Command: "open -a Terminal ${MITTO_WORKING_DIR}", Enabled: bp(true), Builtin: true},
+			{ID: "iterm", Label: "iTerm", Icon: "iterm", Command: "open -a iTerm ${MITTO_WORKING_DIR}", Enabled: bp(false), Builtin: true},
+			{ID: "vscode", Label: "Visual Studio Code", Icon: "vscode", Command: `open -a "Visual Studio Code" ${MITTO_WORKING_DIR}`, Enabled: bp(false), Builtin: true},
+			{ID: "cursor", Label: "Cursor", Icon: "cursor", Command: "open -a Cursor ${MITTO_WORKING_DIR}", Enabled: bp(false), Builtin: true},
+			{ID: "xcode", Label: "Xcode", Icon: "xcode", Command: "open -a Xcode ${MITTO_WORKING_DIR}", Enabled: bp(false), Builtin: true},
+			{ID: "goland", Label: "GoLand", Icon: "goland", Command: "open -a GoLand ${MITTO_WORKING_DIR}", Enabled: bp(false), Builtin: true},
+		}
+	case "linux":
+		return []OpenTarget{
+			{ID: "finder", Label: "File Manager", Icon: "finder", Command: "xdg-open ${MITTO_WORKING_DIR}", Enabled: bp(true), Builtin: true},
+			{ID: "terminal", Label: "Terminal", Icon: "terminal", Command: "x-terminal-emulator --working-directory=${MITTO_WORKING_DIR}", Enabled: bp(true), Builtin: true},
+		}
+	case "windows":
+		return []OpenTarget{
+			{ID: "finder", Label: "Explorer", Icon: "finder", Command: "explorer %MITTO_WORKING_DIR%", Enabled: bp(true), Builtin: true},
+			{ID: "terminal", Label: "Command Prompt", Icon: "terminal", Command: `cmd /c start "" cmd /K "cd /d %MITTO_WORKING_DIR%"`, Enabled: bp(true), Builtin: true},
+		}
+	default:
+		return nil
 	}
-	return c.Command
 }
 
 // MacUIConfig represents macOS-specific UI configuration.
@@ -423,14 +564,60 @@ type MacUIConfig struct {
 	// This uses macOS SMAppService API (requires macOS 13+).
 	// (default: false)
 	StartAtLogin bool `json:"start_at_login,omitempty"`
-	// BadgeClickAction configures the "open folder" action for workspace badges and folder buttons.
-	// When enabled, clicking a workspace badge or the folder icon button in group headers
-	// executes a shell command to open the workspace folder (e.g., in Finder or a file manager).
-	BadgeClickAction *BadgeClickActionConfig `json:"badge_click_action,omitempty"`
-	// TerminalAction configures the terminal open button behavior in group headers.
-	// When enabled, a terminal icon button appears in conversation list group headers,
-	// executing a shell command to open a terminal at the workspace directory.
-	TerminalAction *TerminalActionConfig `json:"terminal_action,omitempty"`
+	// OpenIn configures the list of "Open In..." targets for the workspace folder.
+	OpenIn *OpenInConfig `json:"open_in,omitempty"`
+}
+
+// EffectiveOpenTargets returns the effective ordered list of "Open In..." targets
+// for this MacUIConfig. When no OpenIn config is set, it returns the platform
+// defaults. Otherwise it starts from DefaultOpenTargets and merges user entries
+// by ID.
+func (c *MacUIConfig) EffectiveOpenTargets() []OpenTarget {
+	if c == nil || c.OpenIn == nil || len(c.OpenIn.Targets) == 0 {
+		return DefaultOpenTargets()
+	}
+
+	// Merge user entries into the platform defaults by ID.
+	defaults := DefaultOpenTargets()
+	userByID := make(map[string]OpenTarget, len(c.OpenIn.Targets))
+	seen := make(map[string]bool, len(c.OpenIn.Targets))
+	for _, u := range c.OpenIn.Targets {
+		if u.ID == "" || seen[u.ID] {
+			continue
+		}
+		seen[u.ID] = true
+		userByID[u.ID] = u
+	}
+
+	result := make([]OpenTarget, 0, len(defaults)+len(c.OpenIn.Targets))
+	usedIDs := make(map[string]bool, len(defaults))
+	for _, d := range defaults {
+		usedIDs[d.ID] = true
+		if u, ok := userByID[d.ID]; ok {
+			if u.Label != "" {
+				d.Label = u.Label
+			}
+			if u.Icon != "" {
+				d.Icon = u.Icon
+			}
+			if u.Command != "" {
+				d.Command = u.Command
+			}
+			if u.Enabled != nil {
+				d.Enabled = u.Enabled
+			}
+		}
+		result = append(result, d)
+	}
+	for _, u := range c.OpenIn.Targets {
+		if u.ID == "" || usedIDs[u.ID] {
+			continue
+		}
+		usedIDs[u.ID] = true
+		u.Builtin = false
+		result = append(result, u)
+	}
+	return result
 }
 
 // DeleteConversation confirmation modes for ConfirmationsConfig.DeleteConversation.
@@ -598,7 +785,7 @@ func (c *WebConfig) GetAPIPrefix() string {
 // ============================================================================
 
 // ProcessorPhase defines when in the conversation lifecycle a processor fires.
-// Valid values: "userPrompt", "agentResponded"
+// Valid values: "userPrompt", "agentResponded", "agentIdle", "conversationClosed"
 type ProcessorPhase string
 
 const (
@@ -606,6 +793,12 @@ const (
 	ProcessorPhaseUserPrompt ProcessorPhase = "userPrompt"
 	// ProcessorPhaseAgentResponded fires processors after the agent has finished responding.
 	ProcessorPhaseAgentResponded ProcessorPhase = "agentResponded"
+	// ProcessorPhaseAgentIdle fires processors after the agent has finished responding
+	// and the message queue has drained (single fire at the idle breakpoint).
+	ProcessorPhaseAgentIdle ProcessorPhase = "agentIdle"
+	// ProcessorPhaseConversationClosed fires processors once when the session is archived
+	// (fire-and-forget). Only command-mode and prompt-mode with output:discard are allowed.
+	ProcessorPhaseConversationClosed ProcessorPhase = "conversationClosed"
 )
 
 // ProcessorMatch defines which messages in the sequence a processor applies to.
@@ -971,7 +1164,16 @@ func (c *ConversationsConfig) GetMinLoopCompletionDelaySeconds() int {
 
 // EffectiveMaxLoopIterations returns the binding iteration cap for a loop
 // conversation: the smallest positive of { promptMax, configMax, GlobalMaxLoopIterations }.
-// The hardcoded backstop always applies, so the result is always positive.
+//
+// All three inputs are literal caps, not sentinels for anything other than
+// "unlimited":
+//   - promptMax and configMax: 0 means "unlimited" (that cap is ignored).
+//   - Any positive value is treated literally (e.g. configMax=1 means stop after 1).
+//   - GlobalMaxLoopIterations is the hardcoded absolute backstop and always applies.
+//
+// Per-conversation caps are honored below the global safeguard: if promptMax > 0
+// and smaller than configMax, the per-conversation cap wins. The result is always
+// positive.
 func EffectiveMaxLoopIterations(promptMax, configMax int) int {
 	effective := GlobalMaxLoopIterations
 	if promptMax > 0 && promptMax < effective {
@@ -1245,6 +1447,8 @@ type Config struct {
 	UI UIConfig
 	// Session contains session storage limits configuration (not exposed in Settings dialog)
 	Session *SessionConfig
+	// Prewarm contains adaptive ACP/MCP pre-warming thresholds (mitto-mw0)
+	Prewarm *PrewarmConfig
 	// Conversations contains global conversation processing configuration
 	Conversations *ConversationsConfig
 	// Permissions contains global permission handling configuration
@@ -1391,16 +1595,18 @@ type rawConfig struct {
 				} `yaml:"sounds"`
 				NativeEnabled bool `yaml:"native_enabled"`
 			} `yaml:"notifications"`
-			ShowInAllSpaces  bool `yaml:"show_in_all_spaces"`
-			StartAtLogin     bool `yaml:"start_at_login"`
-			BadgeClickAction *struct {
-				Enabled *bool  `yaml:"enabled"`
-				Command string `yaml:"command"`
-			} `yaml:"badge_click_action"`
-			TerminalAction *struct {
-				Enabled *bool  `yaml:"enabled"`
-				Command string `yaml:"command"`
-			} `yaml:"terminal_action"`
+			ShowInAllSpaces bool `yaml:"show_in_all_spaces"`
+			StartAtLogin    bool `yaml:"start_at_login"`
+			OpenIn          *struct {
+				Targets []struct {
+					ID      string `yaml:"id"`
+					Label   string `yaml:"label"`
+					Icon    string `yaml:"icon"`
+					Command string `yaml:"command"`
+					Enabled *bool  `yaml:"enabled"`
+					Builtin bool   `yaml:"builtin"`
+				} `yaml:"targets"`
+			} `yaml:"open_in"`
 		} `yaml:"mac"`
 	} `yaml:"ui"`
 	Conversations *struct {
@@ -1443,10 +1649,29 @@ type rawConfig struct {
 		AutoArchiveInactiveAfter string `yaml:"auto_archive_inactive_after"`
 		StartupStaggerMs         int    `yaml:"startup_stagger_ms"`
 		StartupLoopDelaySeconds  int    `yaml:"startup_loop_delay_seconds"`
+		StartupResumeConcurrency int    `yaml:"startup_resume_concurrency"`
+		LoopWorkspaceConcurrency int    `yaml:"loop_workspace_concurrency"`
 		LoopSuspendTimeout       string `yaml:"loop_suspend_timeout"`
 		MemoryRecycleThreshold   string `yaml:"memory_recycle_threshold"`
 		AgentInactivityTimeout   string `yaml:"agent_inactivity_timeout"`
+		McpInitTimeout           string `yaml:"mcp_init_timeout"`
 	} `yaml:"session"`
+	// Prewarm is the adaptive pre-warming thresholds (mitto-mw0)
+	Prewarm *struct {
+		SessionNewFast       string `yaml:"session_new_fast"`
+		McpReady             string `yaml:"mcp_ready"`
+		HealthyProbesToUnpin int    `yaml:"healthy_probes_to_unpin"`
+		MaxPinDuration       string `yaml:"max_pin_duration"`
+		MaxPinnedWorkspaces  int    `yaml:"max_pinned_workspaces"`
+		// AuxSchedule holds per-purpose staggered creation delays for the
+		// cold-start auxiliary session prewarm (mitto-cgc).
+		AuxSchedule *struct {
+			McpCheck string `yaml:"mcp_check"`
+			McpTools string `yaml:"mcp_tools"`
+			TitleGen string `yaml:"title_gen"`
+			FollowUp string `yaml:"follow_up"`
+		} `yaml:"aux_schedule"`
+	} `yaml:"prewarm"`
 	// MCP is the MCP server configuration
 	MCP *struct {
 		Host string `yaml:"host"`
@@ -1694,19 +1919,18 @@ func Parse(data []byte) (*Config, error) {
 			// Populate start at login setting
 			cfg.UI.Mac.StartAtLogin = raw.UI.Mac.StartAtLogin
 
-			// Populate badge click action setting
-			if raw.UI.Mac.BadgeClickAction != nil {
-				cfg.UI.Mac.BadgeClickAction = &BadgeClickActionConfig{
-					Enabled: raw.UI.Mac.BadgeClickAction.Enabled,
-					Command: raw.UI.Mac.BadgeClickAction.Command,
-				}
-			}
-
-			// Populate terminal action setting
-			if raw.UI.Mac.TerminalAction != nil {
-				cfg.UI.Mac.TerminalAction = &TerminalActionConfig{
-					Enabled: raw.UI.Mac.TerminalAction.Enabled,
-					Command: raw.UI.Mac.TerminalAction.Command,
+			// Populate open-in targets
+			if raw.UI.Mac.OpenIn != nil {
+				cfg.UI.Mac.OpenIn = &OpenInConfig{}
+				for _, t := range raw.UI.Mac.OpenIn.Targets {
+					cfg.UI.Mac.OpenIn.Targets = append(cfg.UI.Mac.OpenIn.Targets, OpenTarget{
+						ID:      t.ID,
+						Label:   t.Label,
+						Icon:    t.Icon,
+						Command: t.Command,
+						Enabled: t.Enabled,
+						Builtin: t.Builtin,
+					})
 				}
 			}
 		}
@@ -1806,9 +2030,33 @@ func Parse(data []byte) (*Config, error) {
 			AutoArchiveInactiveAfter: raw.Session.AutoArchiveInactiveAfter,
 			StartupStaggerMs:         raw.Session.StartupStaggerMs,
 			StartupLoopDelaySeconds:  raw.Session.StartupLoopDelaySeconds,
+			StartupResumeConcurrency: raw.Session.StartupResumeConcurrency,
+			LoopWorkspaceConcurrency: raw.Session.LoopWorkspaceConcurrency,
 			LoopSuspendTimeout:       raw.Session.LoopSuspendTimeout,
 			MemoryRecycleThreshold:   raw.Session.MemoryRecycleThreshold,
 			AgentInactivityTimeout:   raw.Session.AgentInactivityTimeout,
+			McpInitTimeout:           raw.Session.McpInitTimeout,
+		}
+	}
+
+	// Parse prewarm config (mitto-mw0)
+	if raw.Prewarm != nil {
+		cfg.Prewarm = &PrewarmConfig{
+			SessionNewFast:       raw.Prewarm.SessionNewFast,
+			McpReady:             raw.Prewarm.McpReady,
+			HealthyProbesToUnpin: raw.Prewarm.HealthyProbesToUnpin,
+			MaxPinDuration:       raw.Prewarm.MaxPinDuration,
+			MaxPinnedWorkspaces:  raw.Prewarm.MaxPinnedWorkspaces,
+		}
+		// Aux prewarm schedule (mitto-cgc): only populate when present so
+		// AuxPrewarmSchedule() returns the pure per-purpose defaults otherwise.
+		if raw.Prewarm.AuxSchedule != nil {
+			cfg.Prewarm.AuxSchedule = &AuxScheduleConfig{
+				McpCheck: raw.Prewarm.AuxSchedule.McpCheck,
+				McpTools: raw.Prewarm.AuxSchedule.McpTools,
+				TitleGen: raw.Prewarm.AuxSchedule.TitleGen,
+				FollowUp: raw.Prewarm.AuxSchedule.FollowUp,
+			}
 		}
 	}
 
@@ -1883,31 +2131,43 @@ func ProfilesByTag(profiles []ModelProfile, tag string) []ModelProfile {
 
 // ModelProfileByName returns the model profile with the given name (case-insensitive).
 // The bool is false when no profile matches. Intended for consumers that need to look up
-// a profile's tags or criteria by its display name.
+// a profile's tags or criteria by its display name. Resolution uses EffectiveModelProfiles
+// so well-known profiles resolve even when settings.json omits `models:`.
 func (c *Config) ModelProfileByName(name string) (*ModelProfile, bool) {
-	p := ProfileByName(c.Models, name)
+	profiles := c.EffectiveModelProfiles()
+	p := ProfileByName(profiles, name)
 	return p, p != nil
 }
 
 // ModelProfilesByTag returns all model profiles carrying the given tag (case-insensitive),
 // mirroring how ACP server tags are compared elsewhere. Returns an empty slice when none match.
+// Resolution uses EffectiveModelProfiles so well-known tags resolve even when settings.json
+// omits `models:`.
 func (c *Config) ModelProfilesByTag(tag string) []ModelProfile {
-	return ProfilesByTag(c.Models, tag)
+	return ProfilesByTag(c.EffectiveModelProfiles(), tag)
 }
 
 // ResolveModelTags returns the UNION of capability tags from every model profile whose
 // Criteria matches modelName (using the shared ConstraintMatchesName engine). Tags are
-// de-duplicated case-insensitively, preserving first-seen order. It is a pure function of
-// (profiles, name) so config never needs to import conversation. Returns nil when modelName
-// is empty, no profile has criteria, or nothing matches (a nil slice is safe to range/index).
+// de-duplicated case-insensitively, preserving first-seen order. Resolution uses
+// EffectiveModelProfiles so well-known tags resolve even when settings.json omits `models:`.
+// Returns nil when modelName is empty or nothing matches (a nil slice is safe to range/index).
 func (c *Config) ResolveModelTags(modelName string) []string {
 	if modelName == "" {
 		return nil
 	}
+	return resolveModelTags(c.EffectiveModelProfiles(), modelName)
+}
+
+// resolveModelTags is the pure, slice-based core shared by (*Config).ResolveModelTags.
+// It returns the union (case-insensitive de-dup, first-seen order) of tags from every
+// profile whose Criteria matches modelName. Kept separate so callers with a plain
+// []ModelProfile (and tests) can resolve without the canonical-default merge.
+func resolveModelTags(profiles []ModelProfile, modelName string) []string {
 	var tags []string
 	seen := make(map[string]struct{})
-	for i := range c.Models {
-		p := &c.Models[i]
+	for i := range profiles {
+		p := &profiles[i]
 		if !ConstraintMatchesName(p.Criteria, modelName) {
 			continue
 		}

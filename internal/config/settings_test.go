@@ -530,6 +530,277 @@ func TestParseAgentInactivityTimeout(t *testing.T) {
 	}
 }
 
+// TestParseMcpInitTimeout guards the SessionConfig accessor added for mitto-8ul.1.
+// Empty → default 240s (enabled); "disabled" → 0/false; explicit durations parse.
+// Unknown values fall back to the enabled default rather than silently disabling.
+func TestParseMcpInitTimeout(t *testing.T) {
+	tests := []struct {
+		value       string
+		wantDur     time.Duration
+		wantEnabled bool
+	}{
+		{"", 240 * time.Second, true},
+		{"disabled", 0, false},
+		{"120s", 120 * time.Second, true},
+		{"2m", 120 * time.Second, true},
+		{"240s", 240 * time.Second, true},
+		{"4m", 240 * time.Second, true},
+		{"300s", 300 * time.Second, true},
+		{"5m", 300 * time.Second, true},
+		{"bogus", 240 * time.Second, true},
+	}
+	for _, tc := range tests {
+		c := &SessionConfig{McpInitTimeout: tc.value}
+		gotDur, gotEnabled := c.ParseMcpInitTimeout()
+		if gotDur != tc.wantDur || gotEnabled != tc.wantEnabled {
+			t.Errorf("ParseMcpInitTimeout(%q) = (%s, %t), want (%s, %t)",
+				tc.value, gotDur, gotEnabled, tc.wantDur, tc.wantEnabled)
+		}
+	}
+}
+
+// TestPrewarmConfig_Defaults guards the PrewarmConfig accessor/parse helpers
+// added for mitto-mw0. Empty struct and nil receiver must both return the
+// documented defaults; unknown string values fall back to the defaults; the
+// "disabled" MaxPinDuration returns (0, false).
+func TestPrewarmConfig_Defaults(t *testing.T) {
+	// Nil receiver → all defaults.
+	var nilCfg *PrewarmConfig
+	if d, ok := nilCfg.ParseSessionNewFast(); d != 10*time.Second || !ok {
+		t.Errorf("nil ParseSessionNewFast() = (%s, %t), want (10s, true)", d, ok)
+	}
+	if d, ok := nilCfg.ParseMcpReady(); d != 10*time.Second || !ok {
+		t.Errorf("nil ParseMcpReady() = (%s, %t), want (10s, true)", d, ok)
+	}
+	if d, ok := nilCfg.ParseMaxPinDuration(); d != 30*time.Minute || !ok {
+		t.Errorf("nil ParseMaxPinDuration() = (%s, %t), want (30m, true)", d, ok)
+	}
+	if n := nilCfg.GetHealthyProbesToUnpin(); n != 3 {
+		t.Errorf("nil GetHealthyProbesToUnpin() = %d, want 3", n)
+	}
+	if n := nilCfg.GetMaxPinnedWorkspaces(); n != 5 {
+		t.Errorf("nil GetMaxPinnedWorkspaces() = %d, want 5", n)
+	}
+
+	// Empty struct → same defaults as nil.
+	empty := &PrewarmConfig{}
+	if d, _ := empty.ParseSessionNewFast(); d != 10*time.Second {
+		t.Errorf("empty ParseSessionNewFast() = %s, want 10s", d)
+	}
+	if d, _ := empty.ParseMcpReady(); d != 10*time.Second {
+		t.Errorf("empty ParseMcpReady() = %s, want 10s", d)
+	}
+	if d, _ := empty.ParseMaxPinDuration(); d != 30*time.Minute {
+		t.Errorf("empty ParseMaxPinDuration() = %s, want 30m", d)
+	}
+	if n := empty.GetHealthyProbesToUnpin(); n != 3 {
+		t.Errorf("empty GetHealthyProbesToUnpin() = %d, want 3", n)
+	}
+	if n := empty.GetMaxPinnedWorkspaces(); n != 5 {
+		t.Errorf("empty GetMaxPinnedWorkspaces() = %d, want 5", n)
+	}
+
+	// Explicit values parse; unknown values fall back to default.
+	cases := []struct {
+		name  string
+		cfg   PrewarmConfig
+		snf   time.Duration
+		mcp   time.Duration
+		pin   time.Duration
+		pinOk bool
+	}{
+		{"explicit", PrewarmConfig{SessionNewFast: "5s", McpReady: "20s", MaxPinDuration: "1h"}, 5 * time.Second, 20 * time.Second, time.Hour, true},
+		{"disabled_pin", PrewarmConfig{MaxPinDuration: "disabled"}, 10 * time.Second, 10 * time.Second, 0, false},
+		{"unknown", PrewarmConfig{SessionNewFast: "bogus", McpReady: "bogus", MaxPinDuration: "bogus"}, 10 * time.Second, 10 * time.Second, 30 * time.Minute, true},
+	}
+	for _, tc := range cases {
+		if d, _ := tc.cfg.ParseSessionNewFast(); d != tc.snf {
+			t.Errorf("[%s] ParseSessionNewFast() = %s, want %s", tc.name, d, tc.snf)
+		}
+		if d, _ := tc.cfg.ParseMcpReady(); d != tc.mcp {
+			t.Errorf("[%s] ParseMcpReady() = %s, want %s", tc.name, d, tc.mcp)
+		}
+		d, ok := tc.cfg.ParseMaxPinDuration()
+		if d != tc.pin || ok != tc.pinOk {
+			t.Errorf("[%s] ParseMaxPinDuration() = (%s, %t), want (%s, %t)", tc.name, d, ok, tc.pin, tc.pinOk)
+		}
+	}
+}
+
+// TestPrewarmConfig_AuxPrewarmSchedule guards the mitto-cgc per-purpose
+// staggered auxiliary-prewarm schedule and the mitto-7yj fork/multiplex
+// split. Verifies nil-safety, per-purpose overrides, empty/invalid fallback,
+// nondecreasing Delay ordering, and that fork-per-session picks the widely
+// spread default set.
+func TestPrewarmConfig_AuxPrewarmSchedule(t *testing.T) {
+	// Nil receiver, multiplex (false) → auggie defaults in tier order
+	// (mitto-7yj: no two purposes share the 0s slot).
+	var nilCfg *PrewarmConfig
+	got := nilCfg.AuxPrewarmSchedule(false)
+	want := []AuxPrewarmEntry{
+		{Purpose: "mcp-check", Delay: 0},
+		{Purpose: "mcp-tools", Delay: 2 * time.Second},
+		{Purpose: "title-gen", Delay: 8 * time.Second},
+		{Purpose: "follow-up", Delay: 12 * time.Second},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("nil AuxPrewarmSchedule(false) len = %d, want %d (got=%+v)", len(got), len(want), got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("nil AuxPrewarmSchedule(false)[%d] = %+v, want %+v", i, got[i], want[i])
+		}
+	}
+
+	// Empty PrewarmConfig (no AuxSchedule), multiplex → same as nil.
+	got = (&PrewarmConfig{}).AuxPrewarmSchedule(false)
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("empty AuxPrewarmSchedule(false)[%d] = %+v, want %+v", i, got[i], want[i])
+		}
+	}
+
+	// Fork-per-session (true) → widely spread defaults (mitto-7yj).
+	wantFork := []AuxPrewarmEntry{
+		{Purpose: "mcp-check", Delay: 0},
+		{Purpose: "mcp-tools", Delay: 8 * time.Second},
+		{Purpose: "title-gen", Delay: 20 * time.Second},
+		{Purpose: "follow-up", Delay: 35 * time.Second},
+	}
+	got = nilCfg.AuxPrewarmSchedule(true)
+	if len(got) != len(wantFork) {
+		t.Fatalf("nil AuxPrewarmSchedule(true) len = %d, want %d (got=%+v)", len(got), len(wantFork), got)
+	}
+	for i := range wantFork {
+		if got[i] != wantFork[i] {
+			t.Errorf("nil AuxPrewarmSchedule(true)[%d] = %+v, want %+v", i, got[i], wantFork[i])
+		}
+	}
+	got = (&PrewarmConfig{}).AuxPrewarmSchedule(true)
+	for i := range wantFork {
+		if got[i] != wantFork[i] {
+			t.Errorf("empty AuxPrewarmSchedule(true)[%d] = %+v, want %+v", i, got[i], wantFork[i])
+		}
+	}
+
+	// Override title-gen only (multiplex) → other purposes keep defaults;
+	// ordering still nondecreasing (title-gen 3s < follow-up 12s).
+	cfg := &PrewarmConfig{AuxSchedule: &AuxScheduleConfig{TitleGen: "3s"}}
+	got = cfg.AuxPrewarmSchedule(false)
+	wantOverride := []AuxPrewarmEntry{
+		{Purpose: "mcp-check", Delay: 0},
+		{Purpose: "mcp-tools", Delay: 2 * time.Second},
+		{Purpose: "title-gen", Delay: 3 * time.Second},
+		{Purpose: "follow-up", Delay: 12 * time.Second},
+	}
+	for i := range wantOverride {
+		if got[i] != wantOverride[i] {
+			t.Errorf("override AuxPrewarmSchedule(false)[%d] = %+v, want %+v", i, got[i], wantOverride[i])
+		}
+	}
+
+	// Override also wins over fork defaults (mitto-7yj: explicitly-set
+	// AuxScheduleConfig strings override both default sets). mcp-tools is
+	// NOT overridden here so it keeps the fork default (8s), which sorts
+	// after the overridden title-gen (3s).
+	cfg = &PrewarmConfig{AuxSchedule: &AuxScheduleConfig{TitleGen: "3s"}}
+	got = cfg.AuxPrewarmSchedule(true)
+	wantOverrideFork := []AuxPrewarmEntry{
+		{Purpose: "mcp-check", Delay: 0},
+		{Purpose: "title-gen", Delay: 3 * time.Second},
+		{Purpose: "mcp-tools", Delay: 8 * time.Second},
+		{Purpose: "follow-up", Delay: 35 * time.Second},
+	}
+	for i := range wantOverrideFork {
+		if got[i] != wantOverrideFork[i] {
+			t.Errorf("override AuxPrewarmSchedule(true)[%d] = %+v, want %+v", i, got[i], wantOverrideFork[i])
+		}
+	}
+
+	// Empty and invalid duration strings both fall back to per-purpose
+	// multiplex defaults.
+	cfg = &PrewarmConfig{AuxSchedule: &AuxScheduleConfig{
+		McpCheck: "",
+		McpTools: "not-a-duration",
+		TitleGen: "",
+		FollowUp: "bogus",
+	}}
+	got = cfg.AuxPrewarmSchedule(false)
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("fallback AuxPrewarmSchedule(false)[%d] = %+v, want %+v", i, got[i], want[i])
+		}
+	}
+
+	// Any override still yields nondecreasing Delay order (multiplex).
+	cfg = &PrewarmConfig{AuxSchedule: &AuxScheduleConfig{
+		McpCheck: "30s", // pushes tier-0 past tier-1/tier-2 defaults
+		TitleGen: "1s",
+		FollowUp: "2s",
+	}}
+	got = cfg.AuxPrewarmSchedule(false)
+	for i := 1; i < len(got); i++ {
+		if got[i-1].Delay > got[i].Delay {
+			t.Errorf("AuxPrewarmSchedule(false) not nondecreasing at [%d]: %+v", i, got)
+			break
+		}
+	}
+	// And fork.
+	got = cfg.AuxPrewarmSchedule(true)
+	for i := 1; i < len(got); i++ {
+		if got[i-1].Delay > got[i].Delay {
+			t.Errorf("AuxPrewarmSchedule(true) not nondecreasing at [%d]: %+v", i, got)
+			break
+		}
+	}
+}
+
+// TestPrewarmConfig_LoadFromSettings verifies the Prewarm section is wired
+// through settings.json load and reaches Config.Prewarm intact (mitto-mw0).
+func TestPrewarmConfig_LoadFromSettings(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv(appdir.MittoDirEnv, tmpDir)
+	appdir.ResetCache()
+	t.Cleanup(appdir.ResetCache)
+
+	settingsPath := filepath.Join(tmpDir, appdir.SettingsFileName)
+	customSettings := `{
+		"acp_servers": [{"name": "test", "command": "cmd"}],
+		"prewarm": {
+			"session_new_fast": "5s",
+			"mcp_ready": "20s",
+			"healthy_probes_to_unpin": 4,
+			"max_pin_duration": "1h",
+			"max_pinned_workspaces": 7
+		}
+	}`
+	if err := os.WriteFile(settingsPath, []byte(customSettings), 0644); err != nil {
+		t.Fatalf("failed to create test settings.json: %v", err)
+	}
+	cfg, err := LoadSettings()
+	if err != nil {
+		t.Fatalf("LoadSettings() failed: %v", err)
+	}
+	if cfg.Prewarm == nil {
+		t.Fatal("Prewarm config should not be nil")
+	}
+	if d, _ := cfg.Prewarm.ParseSessionNewFast(); d != 5*time.Second {
+		t.Errorf("SessionNewFast = %s, want 5s", d)
+	}
+	if d, _ := cfg.Prewarm.ParseMcpReady(); d != 20*time.Second {
+		t.Errorf("McpReady = %s, want 20s", d)
+	}
+	if n := cfg.Prewarm.GetHealthyProbesToUnpin(); n != 4 {
+		t.Errorf("HealthyProbesToUnpin = %d, want 4", n)
+	}
+	if d, ok := cfg.Prewarm.ParseMaxPinDuration(); d != time.Hour || !ok {
+		t.Errorf("MaxPinDuration = (%s, %t), want (1h, true)", d, ok)
+	}
+	if n := cfg.Prewarm.GetMaxPinnedWorkspaces(); n != 7 {
+		t.Errorf("MaxPinnedWorkspaces = %d, want 7", n)
+	}
+}
+
 func TestContextFlushCommand_RoundTrip(t *testing.T) {
 	original := &Config{
 		ACPServers: []ACPServer{
@@ -873,5 +1144,33 @@ func TestLoadSettings_NewKeyedSettingsUntouched(t *testing.T) {
 	}
 	if string(before) != string(after) {
 		t.Errorf("settings.json was rewritten even though it already used loop_* keys:\nbefore:\n%s\nafter:\n%s", before, after)
+	}
+}
+
+// TestSessionConfig_GetStartupResumeConcurrency covers the mitto-54k.1 config
+// accessor: nil/zero → default, negative → clamped to 1, positive → passthrough.
+func TestSessionConfig_GetStartupResumeConcurrency(t *testing.T) {
+	// nil receiver → default
+	var nilCfg *SessionConfig
+	if got := nilCfg.GetStartupResumeConcurrency(); got != DefaultStartupResumeConcurrency {
+		t.Errorf("nil.GetStartupResumeConcurrency() = %d, want %d", got, DefaultStartupResumeConcurrency)
+	}
+
+	// zero value → default
+	cfg := &SessionConfig{}
+	if got := cfg.GetStartupResumeConcurrency(); got != DefaultStartupResumeConcurrency {
+		t.Errorf("zero.GetStartupResumeConcurrency() = %d, want %d", got, DefaultStartupResumeConcurrency)
+	}
+
+	// negative → clamped to 1 (a size-0 semaphore would deadlock)
+	cfg.StartupResumeConcurrency = -5
+	if got := cfg.GetStartupResumeConcurrency(); got != 1 {
+		t.Errorf("negative.GetStartupResumeConcurrency() = %d, want 1", got)
+	}
+
+	// explicit positive → passthrough
+	cfg.StartupResumeConcurrency = 8
+	if got := cfg.GetStartupResumeConcurrency(); got != 8 {
+		t.Errorf("positive.GetStartupResumeConcurrency() = %d, want 8", got)
 	}
 }

@@ -1,0 +1,114 @@
+##########################################################################################
+# Builtin processor: prunes obsolete entries from the beads memory store on close.
+#
+# Complements `extract-memories-on-close` (which ADDS memories via `bd remember`) by
+# REMOVING durable-memory entries that have become obsolete or superseded. Runs at
+# conversation close as a fire-and-forget auxiliary agent; the session is already
+# archived and there is no UI to notify.
+#
+# Approach B — auto-forget only on STRONG signal:
+#   - `obsolete`   : the memory body self-declares SUPERSEDED / FALSIFIED / RETRACTED /
+#                    CORRECTED / WITHDRAWN → auto `bd forget <key>`.
+#   - `superseded` : another memory in the store clearly supersedes this one AND that
+#                    survivor has been verified via `bd recall <survivor>` to inline
+#                    the essential facts → auto `bd forget <key>` (subject to guardrails).
+#   - `uncertain`  : refers to files, PRs, issue IDs, or branches that may no longer
+#                    apply → file a `bd create --type task --priority p3` for human
+#                    triage instead of auto-forgetting.
+#   - `keep`       : everything else (default when unsure).
+#
+# Activation gates (all must hold):
+#   1. `bd` command exists on PATH (CommandExists CEL gate)
+#   2. The workspace contains a `.beads` directory (DirExists CEL gate)
+#   3. The session is NOT a loop conversation (loops routinely open/close and would
+#      otherwise thrash the memories store on every iteration)
+#
+# Priority 210 — runs AFTER extract-memories-on-close (200) so the curator can also
+# consider any memories that processor may have just added in this session.
+#
+# Enabled by default — disable per workspace in the Workspaces dialog or .mittorc.
+##########################################################################################
+name: curate-memories-on-close
+description: "Prunes obsolete/superseded entries from the bd memory store on close (auto-forget on strong signal; uncertain cases become bd tasks)"
+enabled: true
+when:
+  on: conversationClosed
+  match: all
+priority: 210
+timeout: 300s
+onError: skip
+
+# Only fire when beads is initialised in this workspace, and never for loop sessions
+# (they archive/unarchive frequently and would repeatedly re-scan the same store).
+enabledWhen: 'CommandExists("bd") && DirExists(".beads") && !Session.IsLoop'
+
+prompt: |
+  You curate the beads memory store for {{ .Workspace.Folder }} after a conversation
+  has closed. Your ONLY job is to remove entries that are DEMONSTRABLY obsolete —
+  nothing else. When in doubt, KEEP the memory.
+
+  ## 1. Load the current memories
+
+  Run `bd memories --json` to get the full store. If it is empty or has fewer than
+  3 memories, exit silently.
+
+  ## 2. Classify each memory
+
+  For each key, decide exactly one of:
+
+  - `obsolete`   — the memory body self-declares SUPERSEDED, FALSIFIED, RETRACTED,
+                   CORRECTED, or WITHDRAWN (typically near the start of the body).
+  - `superseded` — another, NEWER memory in the store clearly covers the same topic
+                   and either names this key as superseded/downgraded or plainly
+                   subsumes its essential facts.
+  - `uncertain`  — the memory refers to concrete files, PRs, issue IDs, branches, or
+                   ticket numbers that may no longer exist / be current, but you
+                   cannot confidently confirm it is stale.
+  - `keep`       — anything else. This is the default.
+
+  ## 3. Enforce guardrails BEFORE acting
+
+  Apply ALL of these; violating any single one means the memory stays:
+
+  - **KEEP is the default.** When in any doubt, keep the memory.
+  - **Cap forgets at 3 this run.** If more strong-signal candidates exist, downgrade
+    the excess to `uncertain` and file review tasks instead of forgetting them.
+  - **Never forget the newest memory of a topical cluster.** If two or more memories
+    overlap and it is not clear which is later / authoritative, keep them all.
+  - **Verify the survivor before forgetting a `superseded` candidate.** Run
+    `bd recall <survivor-key>` and confirm the survivor's body inlines the essential
+    facts of the candidate. If it does not, keep both.
+  - **Do not forget any memory you consulted this run** to make a classification
+    decision — that memory is by definition still influencing the store's behaviour.
+  - **Do not forget memories younger than 7 days.** Recent entries may still be
+    evolving; too fresh to be confidently "superseded". Use the memory's created /
+    updated timestamp from `bd memories --json`.
+  - **No secrets in `bd create` titles or descriptions.** When filing an `uncertain`
+    review task, copy the memory KEY only — never paste the memory body verbatim
+    into the beads issue.
+
+  ## 4. Act
+
+  Resolve every candidate to exactly one of the actions below.
+
+  - For each `obsolete` and `superseded` candidate that PASSES every guardrail above
+    (up to the cap of 3 total this run):
+
+        bd forget <key>
+
+  - For each `uncertain` candidate:
+
+        bd create --type task --priority p3 \
+          --title "Review possibly-stale memory: <key>" \
+          --description "Memory key <key> may no longer apply. Run \
+        'bd recall <key>' and either 'bd forget <key>' or keep it. \
+        Reasoning: <one-sentence why the classifier flagged it>."
+
+  - For `keep`: do nothing.
+
+  ## 5. Silent completion
+
+  This is a background clean-up processor. Do NOT call `mitto_ui_notify` and do NOT
+  post any user-visible summary — the session is already archived and there is no
+  active UI to notify. If nothing needed doing (no obsolete/superseded/uncertain
+  candidates, or every candidate failed a guardrail), just exit silently.

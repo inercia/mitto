@@ -251,12 +251,12 @@ function annotateWithCategory(nodes) {
  */
 export function computeUnifiedTree(allSessions, workspaces = []) {
   const sessions = allSessions || [];
+  const wsList = workspaces || [];
 
-  if (sessions.length === 0) {
-    return { folders: [] };
-  }
-
-  const folderGroups = computeFolderGroups(sessions, sessions, workspaces);
+  const folderGroups =
+    sessions.length === 0
+      ? []
+      : computeFolderGroups(sessions, sessions, wsList);
 
   const folders = folderGroups.map((folder) => {
     const annotated = annotateWithCategory(folder.sessions);
@@ -285,6 +285,37 @@ export function computeUnifiedTree(allSessions, workspaces = []) {
       archived,
     };
   });
+
+  // Merge in pinned workspaces that have no session-derived folder yet, so
+  // empty folders remain visible in the sidebar. Session-derived folders are
+  // authoritative — pinned duplicates (same working_dir) are skipped. Multiple
+  // pinned workspaces sharing a working_dir collapse to a single entry (first
+  // encountered wins).
+  const existingKeys = new Set(folders.map((f) => f.key));
+  wsList.forEach((ws) => {
+    if (!ws || ws.pinned !== true) return;
+    const workingDir = ws.working_dir;
+    if (!workingDir) return;
+    if (existingKeys.has(workingDir)) return;
+    existingKeys.add(workingDir);
+    folders.push({
+      key: workingDir,
+      label: ws.name || getBasename(workingDir),
+      workingDir,
+      group: ws.group || "",
+      tasksNode: {
+        type: "tasks",
+        id: `tasks:${workingDir}`,
+        label: "Tasks",
+        workingDir,
+        folderKey: workingDir,
+      },
+      conversations: [],
+      archived: [],
+    });
+  });
+
+  folders.sort(compareFoldersByGroupThenLabel);
 
   return { folders };
 }

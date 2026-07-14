@@ -13,6 +13,7 @@ import (
 	"github.com/coder/acp-go-sdk"
 
 	"github.com/inercia/mitto/internal/auxiliary"
+	"github.com/inercia/mitto/internal/coldstart"
 	"github.com/inercia/mitto/internal/config"
 	"github.com/inercia/mitto/internal/logging"
 	"github.com/inercia/mitto/internal/mcpserver"
@@ -50,10 +51,14 @@ type BackgroundSession struct {
 	// ACP agent capabilities (set during initialization)
 	agentSupportsImages bool // True if agent advertises prompt_image capability
 
-	// agentModels holds the model state (UNSTABLE) from NewSession/LoadSession/ResumeSession.
-	// Uses UnstableSessionModelState to unify both stable and unstable response variants.
-	// May be nil if the agent doesn't advertise model information.
-	agentModels *acp.UnstableSessionModelState
+	// agentModels holds the model state derived from ConfigOptions (Category="model")
+	// on NewSession/LoadSession/ResumeSession (v0.13.5+). May be nil if the agent
+	// doesn't advertise model information.
+	agentModels *SessionModelState
+	// modelConfigId is the SessionConfigId the agent advertised for the model
+	// config option. Used when issuing session/set_config_option so we match the
+	// agent-declared id. Falls back to ModelConfigId when empty.
+	modelConfigId acp.SessionConfigId
 
 	// Session persistence
 	recorder *session.Recorder
@@ -204,19 +209,25 @@ type BackgroundSession struct {
 	acpCommand           string                                 // Command used to start ACP process (for restart)
 	acpCwd               string                                 // Working directory for ACP process (for restart)
 	serverEnv            map[string]string                      // Server-specific env vars from settings.json (for restart)
+	stderrPatterns       *CompiledStderrPatterns                // Per-agent stderr regex patterns (mitto-k6h); nil = baseline only
 	acpServerConstraints map[string]*config.ACPServerConstraint // Auto-selection constraints from the ACP server config
 	mittoConfig          *config.Config                         // Full Mitto config; used for model-tag resolution (config.ResolveModelTags)
-	contextFlushCommand  string                                 // Agent-native context-flush command (e.g. "/clear"); empty = disabled
-	procCtl              acpProcessController                   // ACP restart policy collaborator (composition)
-	titleCoord           titleCoordinator                       // Auto-title generation triggers collaborator (composition)
-	promptArgCache       *promptArgCache                        // Per-conversation prompt argument value cache (composition)
-	queueDisp            queueDispatcher                        // Queue tick / dispatch logic collaborator (composition)
-	callbackSink         acpCallbackSink                        // WebClient callback cluster collaborator (composition)
-	uiPromptCtr          uiPromptCenter                         // UI prompt + notify collaborator (composition)
-	followUpCoord        followUpCoordinator                    // Follow-up suggestions + action-button collaborator (composition)
-	configMgr            configManager                          // Session-config / model-baseline collaborator (composition)
-	handshaker           sharedSessionHandshaker                // Shared-process session handshake collaborator (composition)
-	promptDisp           promptDispatcher                       // PromptWithMeta helper-split collaborator (composition)
+	// initialModelPreference is the per-workspace initial-model preference
+	// applied to fresh top-level sessions by cbMaybeApplyInitialModelAsync.
+	// Nil for resumed sessions, auto-children, and workspaces without a
+	// preference configured.
+	initialModelPreference []config.PromptPreferredModel
+	contextFlushCommand    string                  // Agent-native context-flush command (e.g. "/clear"); empty = disabled
+	procCtl                acpProcessController    // ACP restart policy collaborator (composition)
+	titleCoord             titleCoordinator        // Auto-title generation triggers collaborator (composition)
+	promptArgCache         *promptArgCache         // Per-conversation prompt argument value cache (composition)
+	queueDisp              queueDispatcher         // Queue tick / dispatch logic collaborator (composition)
+	callbackSink           acpCallbackSink         // WebClient callback cluster collaborator (composition)
+	uiPromptCtr            uiPromptCenter          // UI prompt + notify collaborator (composition)
+	followUpCoord          followUpCoordinator     // Follow-up suggestions + action-button collaborator (composition)
+	configMgr              configManager           // Session-config / model-baseline collaborator (composition)
+	handshaker             sharedSessionHandshaker // Shared-process session handshake collaborator (composition)
+	promptDisp             promptDispatcher        // PromptWithMeta helper-split collaborator (composition)
 
 	// Session config options - configurable settings for the session
 	// This supports both legacy "modes" API and newer "configOptions" API.
@@ -277,11 +288,12 @@ type BackgroundSession struct {
 	// it is deferred to the first prompt to avoid blocking the create path
 	// when the shared agent process is busy.
 	pendingShared           bool
-	pendingSharedMu         sync.Mutex                     // Guards the lazy handshake (idempotency)
-	pendingSharedWorkingDir string                         // Stored for deferred session/new RPC
-	pendingSharedMcpServers []acp.McpServer                // Must be empty array, not nil — ACP validates this
-	pendingSharedModes      *acp.SessionModeState          // Modes from NewSession, applied by applyPendingSharedModes
-	pendingSharedModels     *acp.UnstableSessionModelState // Models from NewSession, applied by applyPendingSharedModes
+	pendingSharedMu         sync.Mutex            // Guards the lazy handshake (idempotency)
+	pendingSharedWorkingDir string                // Stored for deferred session/new RPC
+	pendingSharedMcpServers []acp.McpServer       // Must be empty array, not nil — ACP validates this
+	pendingSharedModes      *acp.SessionModeState // Modes from NewSession, applied by applyPendingSharedModes
+	pendingSharedModels     *SessionModelState    // Models from NewSession, applied by applyPendingSharedModes
+	pendingSharedModelCfgId acp.SessionConfigId   // SessionConfigId for the model option, applied alongside models
 
 	// handshakeMu serialises the full deferred-handshake completion (session/new
 	// RPC + store writes + mode/model application + acp_started notification) so the
@@ -339,6 +351,17 @@ type BackgroundSession struct {
 	// callbacks so the flush turn never reaches the recorder, observers, or the transcript.
 	streamingSuppressedMu sync.Mutex
 	streamingSuppressed   bool
+
+	// coldTrace correlates the first activation of this session (process start,
+	// deferred handshake, first prompt's first-token) into one timeline. It is
+	// created lazily by beginColdTrace on the first activation boundary and
+	// finalized once by finishColdTrace. All *coldstart.Trace methods are
+	// nil-safe, so callers may emit phases without guards. mitto-3mv (WI-2).
+	coldTraceOnce  sync.Once
+	coldTrace      *coldstart.Trace
+	coldTraceFirst atomic.Bool  // guards the first-token phase emission
+	coldTraceMcpAt atomic.Int64 // Unix nanos when the current MCP-init episode started (0 = none)
+	coldTraceDone  atomic.Bool  // guards finishColdTrace one-shot semantics
 }
 
 // activeUIPrompt holds the state for a pending UI prompt from an MCP tool.
@@ -382,6 +405,15 @@ type BackgroundSessionConfig struct {
 	// ACP-server-derived "model" auto-selection constraint for this session only.
 	// Used by auto-children to apply a per-child initial model profile.
 	ModelConstraintOverride *config.ACPServerConstraint
+
+	// InitialModelPreference is the per-workspace initial-model preference
+	// (WorkspaceSettings.InitialModelProfile / InitialModelTag) resolved as an
+	// ordered list ready for SelectPreferredModel. When non-empty and no
+	// ModelConstraintOverride is set, BackgroundSession applies it as the
+	// session's persistent baseline after the agent reports its available
+	// models. Only set for fresh top-level sessions by SessionManager;
+	// resumed sessions and auto-children leave this nil.
+	InitialModelPreference []config.PromptPreferredModel
 
 	// AvailableACPServers is the pre-computed list of ACP servers that have workspaces
 	// configured for the session's working directory. Populated by SessionManager using
@@ -433,6 +465,11 @@ type BackgroundSessionConfig struct {
 	// SharedProcess is the shared ACP process for this workspace (nil = legacy per-session process).
 	SharedProcess SharedProcess
 
+	// StderrPatterns holds per-agent compiled stderr patterns (crash / ignore /
+	// degraded classes; mitto-k6h). Nil means only the hardcoded baseline
+	// applies. Compiled once by the web layer from agent metadata.yaml.
+	StderrPatterns *CompiledStderrPatterns
+
 	// PruneConfig is the pruning configuration for the session recorder.
 	// When set, the recorder automatically prunes old events after each recording
 	// to keep the session within the configured limits (max messages, max size).
@@ -463,6 +500,13 @@ type BackgroundSessionConfig struct {
 	// Pass r.Context() from HTTP handlers so that the 30s request-timeout middleware
 	// can cancel the RPC and free the goroutine if the agent is busy.
 	CreationCtx context.Context
+
+	// ColdStartSemWait, when non-zero, is the wall-clock duration the caller
+	// spent blocked on the resume/creation semaphore before invoking this
+	// factory. Recorded on the session's cold-start Trace as the "sem_acquired"
+	// phase's wait attribute so the queueing contribution is visible in the
+	// unified per-session timeline. mitto-3mv (WI-2).
+	ColdStartSemWait time.Duration
 }
 
 // NewBackgroundSession creates a new background session.
@@ -590,6 +634,7 @@ func NewBackgroundSession(cfg BackgroundSessionConfig) (*BackgroundSession, erro
 		acpCommand:                     cfg.ACPCommand,               // Store for restart
 		acpCwd:                         cfg.ACPCwd,                   // Store for restart
 		serverEnv:                      cfg.Env,                      // Store for restart
+		stderrPatterns:                 cfg.StderrPatterns,           // Per-agent stderr regex patterns (mitto-k6h)
 		globalMcpServer:                cfg.GlobalMCPServer,          // Global MCP server for session registration
 		auxiliaryManager:               cfg.AuxiliaryManager,         // Workspace-scoped auxiliary manager
 		availableACPServers:            cfg.AvailableACPServers,      // Pre-computed workspace server list
@@ -607,6 +652,8 @@ func NewBackgroundSession(cfg BackgroundSessionConfig) (*BackgroundSession, erro
 	)
 	// Store full config for model-tag resolution (config.ResolveModelTags).
 	bs.mittoConfig = cfg.MittoConfig
+	// Per-workspace initial-model preference (applied after agent reports models).
+	bs.initialModelPreference = cfg.InitialModelPreference
 	// Look up the agent-native context-flush command from config
 	bs.contextFlushCommand = lookupContextFlushCommand(cfg.MittoConfig, cfg.ACPServer)
 
@@ -726,6 +773,15 @@ func NewBackgroundSession(cfg BackgroundSessionConfig) (*BackgroundSession, erro
 			"runner_restricted", isRestricted)
 	}
 
+	// Cold-start diagnostics (mitto-3mv): begin the correlated trace as early as
+	// possible so all subsequent phases (session_new, mcp_init, first_token, ready)
+	// share one timeline. sem_acquired records the queueing wait spent before
+	// this factory was invoked.
+	bs.beginColdTrace("sem_acquired",
+		"sem_wait_ms", cfg.ColdStartSemWait.Milliseconds(),
+		"is_resume", false,
+		"acp_server", cfg.ACPServer)
+
 	// Use shared process if available, otherwise start a new per-session process.
 	// For shared sessions, defer the session/new RPC to the first prompt so that
 	// creating a conversation never blocks on a busy agent process.
@@ -735,6 +791,7 @@ func NewBackgroundSession(cfg BackgroundSessionConfig) (*BackgroundSession, erro
 			if bs.recorder != nil {
 				bs.recorder.End(session.SessionEndData{Reason: "failed_to_start"})
 			}
+			bs.finishColdTrace("shared_prepare_failed", "error", err.Error())
 			return nil, err
 		}
 	} else {
@@ -744,6 +801,7 @@ func NewBackgroundSession(cfg BackgroundSessionConfig) (*BackgroundSession, erro
 			if bs.recorder != nil {
 				bs.recorder.End(session.SessionEndData{Reason: "failed_to_start"})
 			}
+			bs.finishColdTrace("acp_start_failed", "error", err.Error())
 			return nil, err
 		}
 	}
@@ -755,6 +813,17 @@ func NewBackgroundSession(cfg BackgroundSessionConfig) (*BackgroundSession, erro
 		}); err != nil && bs.logger != nil {
 			bs.logger.Warn("Failed to store ACP session ID in metadata", "error", err)
 		}
+	}
+
+	// Cold-start diagnostics (mitto-3mv): when session/new is NOT deferred
+	// (direct-connection sessions), the agent is ready to accept prompts as
+	// soon as the ACP handshake completes here. For shared/deferred sessions
+	// (bs.pendingShared == true), the trace stays open until
+	// completeDeferredHandshake finalizes it. finishColdTrace is one-shot,
+	// so a second finalize from the deferred path (if ever taken) is a no-op.
+	if !bs.pendingShared {
+		bs.coldPhase("ready", "resume_method", bs.resumeMethod, "acp_id", bs.acpID)
+		bs.finishColdTrace("ready", "resume_method", bs.resumeMethod, "acp_id", bs.acpID)
 	}
 
 	return bs, nil
@@ -808,6 +877,7 @@ func ResumeBackgroundSession(config BackgroundSessionConfig) (*BackgroundSession
 		acpCommand:                     config.ACPCommand,               // Store for restart
 		acpCwd:                         config.ACPCwd,                   // Store for restart
 		serverEnv:                      config.Env,                      // Store for restart
+		stderrPatterns:                 config.StderrPatterns,           // Per-agent stderr regex patterns (mitto-k6h)
 		globalMcpServer:                config.GlobalMCPServer,          // Global MCP server for session registration
 		auxiliaryManager:               config.AuxiliaryManager,         // Workspace-scoped auxiliary manager
 		availableACPServers:            config.AvailableACPServers,      // Pre-computed workspace server list
@@ -911,6 +981,15 @@ func ResumeBackgroundSession(config BackgroundSessionConfig) (*BackgroundSession
 			"runner_restricted", isRestricted)
 	}
 
+	// Cold-start diagnostics (mitto-3mv): begin the correlated trace as early as
+	// possible so all subsequent phases (session_new/load, mcp_init, first_token,
+	// ready) are on a single timeline. sem_acquired records the queueing wait
+	// spent before this factory was invoked.
+	bs.beginColdTrace("sem_acquired",
+		"sem_wait_ms", config.ColdStartSemWait.Milliseconds(),
+		"is_resume", true,
+		"acp_server", config.ACPServer)
+
 	// Use shared process if available, otherwise start a new per-session process.
 	if config.SharedProcess != nil {
 		if err := bs.resumeSharedACPSession(config.SharedProcess, config.WorkingDir, config.ACPSessionID); err != nil {
@@ -942,6 +1021,7 @@ func ResumeBackgroundSession(config BackgroundSessionConfig) (*BackgroundSession
 					if bs.recorder != nil {
 						bs.recorder.Suspend()
 					}
+					bs.finishColdTrace("shared_restart_failed", "error", restartErr.Error())
 					return nil, fmt.Errorf("ACP process restart failed on resume: %w", restartErr)
 				}
 
@@ -951,6 +1031,7 @@ func ResumeBackgroundSession(config BackgroundSessionConfig) (*BackgroundSession
 					if bs.recorder != nil {
 						bs.recorder.Suspend()
 					}
+					bs.finishColdTrace("shared_resume_retry_failed", "error", err.Error())
 					return nil, err
 				}
 			} else {
@@ -958,6 +1039,7 @@ func ResumeBackgroundSession(config BackgroundSessionConfig) (*BackgroundSession
 				if bs.recorder != nil {
 					bs.recorder.Suspend()
 				}
+				bs.finishColdTrace("shared_resume_failed", "error", err.Error())
 				return nil, err
 			}
 		}
@@ -968,6 +1050,7 @@ func ResumeBackgroundSession(config BackgroundSessionConfig) (*BackgroundSession
 			if bs.recorder != nil {
 				bs.recorder.Suspend()
 			}
+			bs.finishColdTrace("acp_start_failed", "error", err.Error())
 			return nil, err
 		}
 	}
@@ -981,6 +1064,12 @@ func ResumeBackgroundSession(config BackgroundSessionConfig) (*BackgroundSession
 			bs.logger.Warn("Failed to update ACP session ID in metadata", "error", err)
 		}
 	}
+
+	// Cold-start diagnostics (mitto-3mv): resume paths always complete their
+	// session_new/load/resume synchronously (no deferred handshake), so the
+	// agent is ready as soon as this function returns.
+	bs.coldPhase("ready", "resume_method", bs.resumeMethod, "acp_id", bs.acpID)
+	bs.finishColdTrace("ready", "resume_method", bs.resumeMethod, "acp_id", bs.acpID)
 
 	return bs, nil
 }
@@ -1246,7 +1335,7 @@ func (bs *BackgroundSession) AgentSupportsImages() bool {
 
 // AgentModels returns the agent's model state (available models and current model).
 // This is from the UNSTABLE SessionModelState API and may be nil if the agent doesn't support it.
-func (bs *BackgroundSession) AgentModels() *acp.UnstableSessionModelState {
+func (bs *BackgroundSession) AgentModels() *SessionModelState {
 	return bs.agentModels
 }
 
@@ -1258,7 +1347,7 @@ func (bs *BackgroundSession) CurrentModelName() string {
 	if models == nil {
 		return ""
 	}
-	return ModelDisplayName(models, string(models.CurrentModelId))
+	return ModelDisplayName(models, models.CurrentModelId)
 }
 
 // --- Observer Management ---
@@ -1393,6 +1482,17 @@ func (bs *BackgroundSession) LastActivityAt() time.Time {
 // HasObservers returns true if any observers are attached.
 func (bs *BackgroundSession) HasObservers() bool {
 	return bs.ObserverCount() > 0
+}
+
+// LastStreamActivityAt returns the time of the most recent streamed update
+// received from the agent (see lastStreamActivityAt). Returns zero time if no
+// streamed activity has been observed yet.
+func (bs *BackgroundSession) LastStreamActivityAt() time.Time {
+	nanos := bs.lastStreamActivityAt.Load()
+	if nanos == 0 {
+		return time.Time{}
+	}
+	return time.Unix(0, nanos)
 }
 
 // notifyObservers calls a function on all observers.

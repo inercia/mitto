@@ -3,6 +3,7 @@ package conversation
 import (
 	"context"
 	"log/slog"
+	"time"
 
 	acp "github.com/coder/acp-go-sdk"
 	"github.com/inercia/mitto/internal/config"
@@ -13,7 +14,7 @@ import (
 // BackgroundSession uses this interface (rather than *SharedACPProcess directly)
 // so that the domain layer does not depend on the web infrastructure package.
 //
-// The 13 methods below correspond exactly to the exported methods of
+// The 15 methods below correspond exactly to the exported methods of
 // *internal/web.SharedACPProcess that BackgroundSession calls.
 type SharedProcess interface {
 	// NewSession creates a new ACP session on this process.
@@ -42,6 +43,21 @@ type SharedProcess interface {
 	Capabilities() *acp.AgentCapabilities
 	// Restart attempts to restart the underlying OS process.
 	Restart() error
+	// RecommendedLoadTimeout returns the outer wall-clock budget the caller should
+	// apply to a session/load RPC. It widens for cold sessions with MCP servers so
+	// the outer timeout does not truncate the process's own extended MCP-init
+	// budget (mitto-8ul.1). Returns 0 to indicate the caller should use its own
+	// default.
+	RecommendedLoadTimeout(hasMCPServers bool) time.Duration
+	// MCPInitDone reports whether the shared process's MCP-init window has closed
+	// (the agent's first successful session RPC observed). Used to gate background
+	// resume deferral (mitto-54k.4).
+	MCPInitDone() bool
+	// WaitForMCPInit blocks until the process's MCP-init window closes, ctx is done,
+	// or the process exits; returns true only if the process became warm. Used to
+	// defer non-foreground resume until the foreground handshake warms the agent
+	// (mitto-54k.4).
+	WaitForMCPInit(ctx context.Context) bool
 }
 
 // PromptResolver resolves a prompt name to its full text for a given working directory.
@@ -59,6 +75,20 @@ type ProcessManager interface {
 	StopGC()
 	Close()
 	ProcessCount() int
+	// ColdProcessCount returns the number of active shared processes whose
+	// MCP-init window is still open. Used for resume-storm diagnostics (mitto-7o2).
+	ColdProcessCount() int
+	// PinWorkspace marks a workspace as pinned so GC Tier 2/4/6 cannot tear
+	// down its shared ACP process while a fire-and-forget close-phase processor
+	// is dispatching to an auxiliary session (mitto-4is). Returns false when a
+	// maxPinned cap would be exceeded. maxDuration=0 disables auto-expiry;
+	// maxPinned=0 disables the blast-radius cap.
+	PinWorkspace(workspaceUUID, reason string, maxDuration time.Duration, maxPinned int) bool
+	// HasLiveProcess reports whether a live shared ACP process exists for the
+	// workspace. Used by close-phase dispatch to skip cleanly when the process
+	// has already been reaped by GC (mitto-6bn.1) instead of failing later with
+	// an ERROR from getOrCreateAuxiliarySession.
+	HasLiveProcess(workspaceUUID string) bool
 }
 
 // EventsBroadcaster abstracts the global events manager (web.GlobalEventsManager)

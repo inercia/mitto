@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/inercia/mitto/internal/config"
 	"github.com/inercia/mitto/internal/fileutil"
 	"github.com/inercia/mitto/internal/logging"
 )
@@ -59,6 +60,20 @@ func NewMigrationContext(serverNames []string) *MigrationContext {
 	return &MigrationContext{
 		ACPServerNames: nameMap,
 	}
+}
+
+// MigrationContextFromConfig builds a MigrationContext by extracting ACP server
+// names from the given Mitto config. Returns nil when cfg is nil or has no
+// ACP servers configured.
+func MigrationContextFromConfig(cfg *config.Config) *MigrationContext {
+	if cfg == nil || len(cfg.ACPServers) == 0 {
+		return nil
+	}
+	names := make([]string, len(cfg.ACPServers))
+	for i, srv := range cfg.ACPServers {
+		names[i] = srv.Name
+	}
+	return NewMigrationContext(names)
 }
 
 // Migration represents a single data migration.

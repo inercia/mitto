@@ -198,16 +198,20 @@ prompt: |
   and stops. The next scheduled run of this driver will observe `fixed` and take the
   Done branch (Step 3d).
 
-  ### Step 3d — Done (`fixed` present) — handled inline
+  ### Step 3d — Done (`fixed` present) — handled inline, EVALUATE FIRST
 
-  All three phases are complete. Close the bead and self-terminate — **no phase
-  dispatch on this branch**, since there is no further phase work to do:
+  **This branch is checked before every other Step 3 branch**, against the fresh
+  `bd show --json` from Step 1. All three phases are complete: **unconditionally close
+  the bead** and **unconditionally disable this conversation's loop flag** — no
+  phase dispatch on this branch, since there is no further phase work to do
+  (mitto-i5k: never treat close or `loop_enabled: false` as optional here — a
+  soft-gated Done branch lets the loop re-fire past the terminal label).
 
   ```bash
-  bd close {{ $target }} --reason "<short summary of the fix>"   # optional but recommended
+  bd close {{ $target }} --reason "<short summary of the fix>"
   ```
 
-  Then stop this conversation from re-running:
+  Then, unconditionally, stop this conversation from re-running:
 
   ```
   mitto_conversation_update(self_id: "{{ .Session.ID }}", conversation_id: "self", loop_enabled: false)

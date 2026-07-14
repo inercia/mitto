@@ -256,6 +256,53 @@ stateDiagram-v2
    correct `BackgroundSession` → observers (WebSocket clients)
 5. **Close** — Session unregisters from `MultiplexClient`, decrements reference count
 
+### Stderr Pattern Detection (mitto-k6h)
+
+Mitto watches each ACP subprocess's stderr with `StartStderrMonitor`
+(`internal/conversation/bgsession_acp_process.go`) to detect crashes and
+lifecycle signals sub-second, bypassing the SDK's 60s control-request timeout.
+Detection is split into a **hardcoded baseline** (universal, SDK-layer strings)
+and a **per-agent** extension declared in each agent's `metadata.yaml`.
+
+**Schema** (`config/agents/builtin/<agent>/metadata.yaml`):
+
+```yaml
+stderrPatterns:
+  crash: ["FATAL ERROR: .* Allocation failed"]   # OR'd with hardcoded baseline
+  ignore: ["(?i)DeprecationWarning"]              # suppress from debug log
+  degraded: ["(?i)rate limit"]                    # plumbed, behaviour deferred
+```
+
+**Action classes**:
+
+- **`crash`** — matches trigger `onCrashDetected()` → close `processDone` →
+  immediate GC recycle. The list is **unioned** with `stderrCrashPatterns` (the
+  hardcoded baseline: `stream ended unexpectedly`, `broken pipe`,
+  `JavaScript heap out of memory`, ...). Either source firing counts.
+- **`ignore`** — matches suppress the `agent stderr` debug-level log line for
+  that write. The captured stderr buffer (used for error reporting) is
+  unaffected. Complements the existing `$/cancel_request` suppression.
+- **`degraded`** — compiled and plumbed end-to-end (`CompiledStderrPatterns.Degraded`)
+  but **not consumed** in this increment. The follow-up wires these matches
+  into the shared-process saturation signal so agent-specific "warning"
+  patterns (rate limits, quota chatter) can proactively trip Tier 5/6 recycles.
+
+**Layering** (why compile lives in `internal/conversation`, not `internal/agents`):
+
+- `internal/acpproc` MUST NOT import `internal/agents` (would create a cycle
+  through `internal/conversation`).
+- `internal/conversation` MUST NOT import `internal/agents` (same reason).
+- `internal/web` is the only layer that has both `agents.Manager` and knows
+  which ACP server maps to which agent. It compiles the metadata once and
+  injects a `*conversation.CompiledStderrPatterns` into `SharedACPProcessConfig`
+  and `BackgroundSessionConfig` via a per-server-name resolver.
+
+**Compile semantics**: `regexp.Compile` runs once at process-start. Invalid
+regexes are **skipped with a warn log** (never fatal) so a single typo in one
+agent's metadata cannot block startup. `make check-stderr-patterns`
+(`TestBuiltinAgents_StderrPatternsCompile` in `internal/agents/`) catches
+those typos at CI time instead of runtime.
+
 ## Content Blocks
 
 The ACP SDK uses a discriminated union (pointer fields) for content blocks:
@@ -361,7 +408,7 @@ use a loop GC loop that is self-healing: even if something goes wrong, the next
 cycle cleans up. `RunGCOnce()` executes the tiers below in order each cycle.
 
 > The tier numbers reflect the order they were added, not their execution order. The
-> actual run order in `RunGCOnce()` is: **Tier 1 → Tier 2 → Tier 4 → Tier 3**.
+> actual run order in `RunGCOnce()` is: **Tier 1 → Tier 2 → Tier 4 → Tier 5 → Tier 6 → Tier 3**.
 
 ### Tier 1 — Idle Session Cleanup
 
@@ -451,6 +498,99 @@ that will resume automatically. The payload carries `workspace_uuid`, `workspace
 This reuses the exact idle-safety and anti-thrash machinery already proven in Tier 1's
 loop-suspend path. The threshold is configurable per the
 [Configuration](#configuration) section below.
+
+### Tier 5 — Degraded-Idle Process Recycling (mitto-tfb)
+
+Runs after Tier 4 (re-querying sessions). The saturation infrastructure in
+`internal/acpproc/shared_acp_process.go` (`sessionSaturationTimeoutThreshold`,
+`saturatedUntil`, `saturationLevel`) only fails new requests fast once a shared
+process is flagged saturated — it never *heals* the degraded process. Left alone, a
+saturated-but-idle process keeps failing every subsequent `NewSession`/`LoadSession`
+until its cooldown finally elapses.
+
+Tier 5 proactively recycles a process once `SharedACPProcess.IsSaturated()` is true
+**and** the process is fully idle — the exact same hard safety gates as Tier 4
+(`ActiveRPCs() == 0`, no session `IsPrompting`, all queues empty, no loop prompt due
+within 2× the GC interval). When those gates pass, each session is marked
+`MarkGCSuspended`, closed, and the process is stopped via `StopProcess`; the next
+`NewSession` lazily builds a fresh process with zeroed saturation state.
+
+#### Saturation triggers feeding Tier 5 / Tier 6
+
+Two independent triggers can set `saturatedUntil` / `saturationLevel`; both are
+picked up by `IsSaturated()` and `IsConfirmedDegraded()` identically, so no changes
+in `acp_process_gc.go` are required beyond reading those getters.
+
+1. **Consecutive-timeout fast path** (mitto-13ck.2, unchanged): after
+   `sessionSaturationTimeoutThreshold` (3) *back-to-back* full-deadline
+   `NewSession`/`LoadSession` RPCs the process is flagged. This catches the
+   fully-wedged case where every RPC runs to its deadline.
+
+2. **Rate / rolling-window trigger** (mitto-5eq): a bucketed sliding window
+   (`saturationWindowDuration` = 5 min, `saturationWindowBucketCount` = 10 → 30 s
+   buckets) counts full-deadline timeouts, `shouldFailFastCreateAttempt`
+   budget-exhaustion bails, and successful control-plane RPCs. When the window
+   holds at least `saturationWindowMinSamples` (8) samples AND
+   `(timeouts + bails) / total ≥ saturationWindowFailRatio` (0.5), the process is
+   promoted to saturated via the same `saturationLevel++` /
+   `saturatedUntil = now + cooldown` path as the consecutive trigger.
+
+   This closes two gaps the consecutive-only design left open:
+
+   - **Interspersed success reset**: a degraded process that still serves *some*
+     traffic never accumulates 3 timeouts in a row — every interspersed success
+     zeroes `consecutiveRPCTimeouts`. The rolling window is NOT wiped by a
+     success; a success only adds a sample so the ratio drops naturally as
+     health returns. Concrete effect: an incident with 38 context-deadlines,
+     ~2000 interspersed successful ACP events, and ~10 min of aux-session
+     starvation produced zero Tier 5/6 recycles before the rate trigger.
+   - **Budget-exhaustion bails don't count**: the dominant real failure mode is
+     `session/new: insufficient remaining budget ... failing fast` via
+     `shouldFailFastCreateAttempt`. Those bails intentionally skip
+     `recordRPCTimeout` (nothing was actually attempted), so they never
+     contributed to saturation. The rate trigger's new `recordRPCBudgetBail`
+     records them into the window only — it does NOT touch
+     `consecutiveRPCTimeouts`, preserving the consecutive fast path unchanged.
+
+   Both triggers share `saturationMu` — no second lock is introduced. The window
+   is bounded (fixed-size ring buffer, no unbounded growth) and cost is O(1) per
+   record + O(bucketCount) per evaluate. Cold-start MCP-init timeouts and bails
+   are excluded from the window on the same rationale as the consecutive path
+   (`extendedBudget == true` → skipped).
+
+### Tier 6 — Non-Idle Recycle for Confirmed-Degraded Processes (mitto-1h0)
+
+Tier 5 is **idle-gated**: it skips a process with in-flight RPCs or a prompting
+session. That is exactly backwards for a **wedged** process, where a
+timing-out `NewSession`/`SetSessionModel` RPC itself is the in-flight "activity"
+Tier 5 reads as busy — the process can stay wedged for minutes, starving both the
+user session and auxiliary sessions (title-gen, follow-up, MCP-check).
+
+Tier 6 escalates for a **confirmed-degraded** process — one where
+`SharedACPProcess.IsConfirmedDegraded()` is true, i.e. `saturationLevel >=
+confirmedDegradedLevel` (2). Reaching level 2 means the process tripped saturation,
+served its cooldown, ran a single-attempt probe (`inProbe`), and that probe **also**
+timed out — demonstrable proof it is not self-healing.
+
+For a confirmed-degraded process, Tier 6:
+
+- **Drops the `ActiveRPCs() > 0` / `IsPrompting` gate** — those in-flight, timing-out
+  control RPCs are the wedge itself, not legitimate work.
+- **Keeps a mandatory no-streamed-progress guard**: if any session has streamed
+  agent activity (`SessionInfo.LastStreamActivityAt`, mirroring
+  `BackgroundSession.lastStreamActivityAt`) within a short quiet window
+  (`tier6StreamedProgressQuietWindow`, 10s — mirrors the `conversation` package's
+  `agentWorkingHeartbeatQuietThreshold`), the process is skipped: that session is
+  legitimately slow but **progressing**, not wedged. This is the hard constraint from
+  the parent epic (mitto-8ul) — never kill a healthy but slow tool call.
+- Keeps the just-resumed grace skip (`ResumedAt` within the GC interval) and the
+  loop-due-soon skip, matching Tier 5's conservative semantics for those cases.
+
+When a process passes all gates, its sessions are `MarkGCSuspended` + closed and the
+process is stopped exactly as in Tier 5, logged at `Info` as "GC: recycling
+confirmed-degraded busy shared ACP process". A level-1 (first-trip, non-probed)
+saturated busy process is **not** recycled by Tier 6 — only Tier 5's idle path
+governs it until it escalates to level 2.
 
 ### Tier 3 — Auxiliary Session Cleanup
 

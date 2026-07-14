@@ -42,6 +42,7 @@ import {
   SlidersIcon,
   ChevronRightIcon,
   ChevronDownIcon,
+  ChevronUpIcon,
   DuplicateIcon,
   ShieldIcon,
   SearchIcon,
@@ -52,6 +53,7 @@ import { AgentDiscoveryDialog } from "./AgentDiscoveryDialog.js";
 import { Modal } from "./Modal.js";
 import { ModelSelection } from "./ModelSelection.js";
 import { ModelProfileSelect } from "./ModelProfileSelect.js";
+import { ModelTagSelect } from "./ModelTagSelect.js";
 import { RichSelect } from "./RichSelect.js";
 import { Tooltip } from "./Tooltip.js";
 import { ShortcutsEditor } from "./ShortcutsEditor.js";
@@ -131,6 +133,21 @@ const THEME_LABELS = {
 };
 
 // WorkspaceBadge is now a standalone component module (not prop-drilled from app.js)
+
+// DEFAULT_MAC_OPEN_TARGETS mirrors backend config.DefaultOpenTargets() (darwin)
+// verbatim so the UI shows the same rows the backend would synthesize when
+// ui.mac.open_in.targets is absent. Consumed by SettingsDialog (Open In section)
+// and by app.js (folder context-menu submenu — see SessionList.js). Keep the
+// entries in sync with internal/config/config.go DefaultOpenTargets().
+export const DEFAULT_MAC_OPEN_TARGETS = [
+  { id: "finder", label: "Finder", icon: "finder", command: "open ${MITTO_WORKING_DIR}", enabled: true, builtin: true },
+  { id: "terminal", label: "Terminal", icon: "terminal", command: "open -a Terminal ${MITTO_WORKING_DIR}", enabled: true, builtin: true },
+  { id: "iterm", label: "iTerm", icon: "iterm", command: "open -a iTerm ${MITTO_WORKING_DIR}", enabled: false, builtin: true },
+  { id: "vscode", label: "Visual Studio Code", icon: "vscode", command: `open -a "Visual Studio Code" \${MITTO_WORKING_DIR}`, enabled: false, builtin: true },
+  { id: "cursor", label: "Cursor", icon: "cursor", command: "open -a Cursor ${MITTO_WORKING_DIR}", enabled: false, builtin: true },
+  { id: "xcode", label: "Xcode", icon: "xcode", command: "open -a Xcode ${MITTO_WORKING_DIR}", enabled: false, builtin: true },
+  { id: "goland", label: "GoLand", icon: "goland", command: "open -a GoLand ${MITTO_WORKING_DIR}", enabled: false, builtin: true },
+];
 
 /**
  * FolderListEditor — reusable folder list editing component with append/replace modes.
@@ -646,6 +663,7 @@ function ServerEditForm({
   server,
   agentTypes = [],
   modelProfiles = [],
+  workspaces = [],
   onChange,
 }) {
   const [name, setName] = useState(server.name);
@@ -666,9 +684,22 @@ function ServerEditForm({
 
   // Model profile state — persists as the named profile (model_profile).
   const [modelProfile, setModelProfile] = useState(server.model_profile || "");
+  // Model tag state — persists as the capability tag (model_tag). Mutually
+  // exclusive with modelProfile in the UI, matching the workspace pattern.
+  const [modelTag, setModelTag] = useState(server.model_tag || "");
   // Whether the user has explicitly cleared a legacy raw constraint by
   // picking "-- None --" (as opposed to never having touched the control).
   const [modelConstraintCleared, setModelConstraintCleared] = useState(false);
+
+  // Initial-model preference (ACP-server tier). Applied as the baseline model
+  // of every new conversation started with this server unless the workspace
+  // overrides it. Mutually exclusive: profile wins server-side when both set.
+  const [initialModelProfile, setInitialModelProfile] = useState(
+    server.initial_model_profile || "",
+  );
+  const [initialModelTag, setInitialModelTag] = useState(
+    server.initial_model_tag || "",
+  );
 
   // Legacy raw matchMode/pattern constraint (pre-profile config), if any.
   const rawModelConstraint = server.constraints?.model || null;
@@ -701,10 +732,20 @@ function ServerEditForm({
         overrides.modelProfile !== undefined
           ? overrides.modelProfile
           : modelProfile,
+      modelTag:
+        overrides.modelTag !== undefined ? overrides.modelTag : modelTag,
       modelConstraintCleared:
         overrides.modelConstraintCleared !== undefined
           ? overrides.modelConstraintCleared
           : modelConstraintCleared,
+      initialModelProfile:
+        overrides.initialModelProfile !== undefined
+          ? overrides.initialModelProfile
+          : initialModelProfile,
+      initialModelTag:
+        overrides.initialModelTag !== undefined
+          ? overrides.initialModelTag
+          : initialModelTag,
       contextFlushCommand:
         overrides.contextFlushCommand !== undefined
           ? overrides.contextFlushCommand
@@ -725,12 +766,13 @@ function ServerEditForm({
       .map((t) => t.trim())
       .filter((t) => t.length > 0);
 
-    // Build constraints. A selected profile always wins over any legacy raw
-    // constraint; an explicit "-- None --" clears it too. Otherwise, an
+    // Build constraints. A selected profile or tag always wins over any legacy
+    // raw constraint; an explicit "-- None --" clears it too. Otherwise, an
     // untouched legacy raw constraint is preserved as-is.
     const constraints = {};
     if (
       !currentState.modelProfile &&
+      !currentState.modelTag &&
       rawModelConstraint &&
       !currentState.modelConstraintCleared
     ) {
@@ -747,6 +789,9 @@ function ServerEditForm({
       Object.keys(constraints).length > 0 ? constraints : undefined,
       currentState.contextFlushCommand,
       currentState.modelProfile,
+      currentState.modelTag,
+      currentState.initialModelProfile,
+      currentState.initialModelTag,
     );
   };
 
@@ -798,21 +843,124 @@ function ServerEditForm({
       <!-- Model Selection -->
       <div>
         <label class="label">Model Selection</label>
-        <p class="label">Switch to a model based on a named Model profile</p>
-        <${ModelProfileSelect}
-          value=${modelProfile}
-          profiles=${modelProfiles}
-          legacyLabel=${legacyModelLabel}
-          onChange=${(name) => {
-            setModelProfile(name);
-            const cleared = !name && !!rawModelConstraint;
-            if (cleared) setModelConstraintCleared(true);
-            emitChange({
-              modelProfile: name,
-              modelConstraintCleared: cleared || modelConstraintCleared,
-            });
-          }}
-        />
+        <p class="text-xs text-mitto-text-muted mb-2">
+          Auto-select a model for new sessions started with this server, by
+          named Model profile or by capability tag
+        </p>
+        <div class="flex items-center gap-2">
+          <div class="flex-1 min-w-0">
+            <${ModelProfileSelect}
+              value=${modelProfile}
+              profiles=${modelProfiles}
+              legacyLabel=${legacyModelLabel}
+              className="w-full"
+              onChange=${(name) => {
+                setModelProfile(name);
+                const cleared =
+                  !name && !modelTag && !!rawModelConstraint;
+                if (cleared) setModelConstraintCleared(true);
+                const overrides = {
+                  modelProfile: name,
+                  modelConstraintCleared: cleared || modelConstraintCleared,
+                };
+                if (name) {
+                  setModelTag("");
+                  overrides.modelTag = "";
+                }
+                emitChange(overrides);
+              }}
+            />
+          </div>
+          <span class="text-xs text-mitto-text-muted shrink-0">or by tag</span>
+          <div class="flex-1 min-w-0">
+            <${ModelTagSelect}
+              value=${modelTag}
+              profiles=${modelProfiles}
+              className="w-full"
+              onChange=${(tag) => {
+                setModelTag(tag);
+                const cleared =
+                  !tag && !modelProfile && !!rawModelConstraint;
+                if (cleared) setModelConstraintCleared(true);
+                const overrides = {
+                  modelTag: tag,
+                  modelConstraintCleared: cleared || modelConstraintCleared,
+                };
+                if (tag) {
+                  setModelProfile("");
+                  overrides.modelProfile = "";
+                }
+                emitChange(overrides);
+              }}
+            />
+          </div>
+        </div>
+      </div>
+      <!-- Initial Model (optional) — ACP-server-tier baseline for new
+           conversations. Overridden by any workspace-tier value. -->
+      <div>
+        <label class="label">Initial Model (optional)</label>
+        <p class="text-xs text-mitto-text-muted mb-2">
+          Apply this model as the baseline for every new conversation created
+          with this ACP server
+        </p>
+        <div class="flex items-center gap-2">
+          <div class="flex-1 min-w-0">
+            <${ModelProfileSelect}
+              value=${initialModelProfile}
+              profiles=${modelProfiles}
+              className="w-full"
+              onChange=${(name) => {
+                setInitialModelProfile(name);
+                const overrides = { initialModelProfile: name };
+                if (name) {
+                  setInitialModelTag("");
+                  overrides.initialModelTag = "";
+                }
+                emitChange(overrides);
+              }}
+            />
+          </div>
+          <span class="text-xs text-mitto-text-muted shrink-0">or by tag</span>
+          <div class="flex-1 min-w-0">
+            <${ModelTagSelect}
+              value=${initialModelTag}
+              profiles=${modelProfiles}
+              className="w-full"
+              onChange=${(tag) => {
+                setInitialModelTag(tag);
+                const overrides = { initialModelTag: tag };
+                if (tag) {
+                  setInitialModelProfile("");
+                  overrides.initialModelProfile = "";
+                }
+                emitChange(overrides);
+              }}
+            />
+          </div>
+        </div>
+        ${(() => {
+          // Precedence hint: list workspaces that already pin an initial
+          // model for this ACP server (their setting wins over this one).
+          const overriders = (workspaces || []).filter(
+            (w) =>
+              w &&
+              w.acp_server === server.name &&
+              (w.initial_model_profile || w.initial_model_tag),
+          );
+          if (overriders.length === 0) return null;
+          const names = overriders
+            .map((w) => w.name || w.working_dir || w.uuid)
+            .filter(Boolean);
+          const shown = names.slice(0, 3).join(", ");
+          const suffix = names.length > 3 ? ", …" : "";
+          const label = names.length === 1 ? "workspace" : "workspaces";
+          return html`
+            <p class="text-xs text-mitto-text-muted mt-1">
+              Overridden by ${label}: ${shown}${suffix}
+            </p>
+          `;
+        })()}
       </div>
       <div>
         <label class="label" for="acp-server-type"
@@ -1128,6 +1276,533 @@ function PromptEditForm({ prompt, onSave, onCancel, readOnly = false }) {
 }
 
 /**
+ * ACPServerDeleteWizard — guided flow for deleting an ACP server that is
+ * referenced by one or more workspace configs.
+ *
+ * Backend contract (see mitto-pgt, handlers/acp_server_delete.go):
+ *   GET /api/acp-servers/{name}/prepare-delete → returns the plan (no changes).
+ *     - 403                                    → RC-file server or config read-only.
+ *     - 404                                    → unknown server (treat as already-gone).
+ *     - 200 + has_active === true              → refuse (live conversations).
+ *     - 200 + has_active === false             → open wizard.
+ *     Folder plan fields: working_dir, workspace_name?, workspace_uuids[],
+ *       archived_conversations, non_archived_conversations,
+ *       replacement_candidates[] (array of server-name strings).
+ *   POST /api/acp-servers/{name}/reassign-and-delete → executes with
+ *     {folders: {"<working_dir>": "<newServer>" | ""}} (map; "" means delete).
+ *     - 409 envelope: error.details.active_session_ids[] — session IDs that
+ *       became active between prepare and execute.
+ *
+ * Props:
+ *   isOpen, onClose, serverName, plan (pre-fetched prepare-delete response),
+ *   onSuccess(result) — called after reassign-and-delete succeeds; parent should
+ *   remove the server from its local list and re-fetch workspaces.
+ */
+function ACPServerDeleteWizard({
+  isOpen,
+  onClose,
+  serverName,
+  plan,
+  onSuccess,
+}) {
+  // Wizard step: "intro" | "folder" (with folderIndex) | "confirm" | "executing"
+  //             | "success" | "error"
+  const [step, setStep] = useState("intro");
+  const [folderIndex, setFolderIndex] = useState(0);
+  // Parallel array to plan.folders: {newServer: string, acknowledged: bool}
+  const [choices, setChoices] = useState([]);
+  const [execError, setExecError] = useState("");
+  const [execResult, setExecResult] = useState(null);
+  // Active-appeared-between-steps refusal (409 response). When set, wizard
+  // switches to a refusal view listing the newly-active conversations.
+  const [activeRefusal, setActiveRefusal] = useState(null);
+
+  // Reset internal state each time the wizard opens on a fresh plan.
+  useEffect(() => {
+    if (!isOpen) return;
+    setStep("intro");
+    setFolderIndex(0);
+    setChoices(
+      (plan?.folders || []).map(() => ({ newServer: null, acknowledged: false })),
+    );
+    setExecError("");
+    setExecResult(null);
+    setActiveRefusal(null);
+  }, [isOpen, plan]);
+
+  if (!isOpen || !plan) return null;
+
+  const folders = plan.folders || [];
+  const folderTotal = (f) =>
+    (f?.non_archived_conversations || 0) + (f?.archived_conversations || 0);
+  const totalConversations = folders.reduce((acc, f) => acc + folderTotal(f), 0);
+
+  const setChoiceFor = (idx, patch) => {
+    setChoices((prev) => {
+      const next = [...prev];
+      next[idx] = { ...next[idx], ...patch };
+      return next;
+    });
+  };
+
+  const currentFolder = folders[folderIndex];
+  const currentChoice = choices[folderIndex] || {};
+  // replacement_candidates is an array of server-name strings.
+  const currentCandidates = (currentFolder?.replacement_candidates || []).filter(
+    (name) => name && name !== serverName,
+  );
+
+  // "Next" enablement for the per-folder step.
+  const canAdvanceFolder = () => {
+    if (currentCandidates.length > 0) {
+      // A choice must be made: either a candidate name, or the explicit "" (delete).
+      return currentChoice.newServer !== null;
+    }
+    // No candidates: user must acknowledge deletion.
+    return !!currentChoice.acknowledged;
+  };
+
+  const goNextFromFolder = () => {
+    if (folderIndex < folders.length - 1) {
+      setFolderIndex(folderIndex + 1);
+    } else {
+      setStep("confirm");
+    }
+  };
+
+  const goBackFromFolder = () => {
+    if (folderIndex > 0) {
+      setFolderIndex(folderIndex - 1);
+    } else {
+      setStep("intro");
+    }
+  };
+
+  const executeDelete = async () => {
+    setStep("executing");
+    setExecError("");
+    setActiveRefusal(null);
+    try {
+      // Backend accepts {folders: {"<dir>": "<newServer>" | ""}} — "" means
+      // delete all conversations in that folder.
+      const foldersPayload = {};
+      folders.forEach((f, i) => {
+        foldersPayload[f.working_dir] = choices[i]?.newServer || "";
+      });
+      const res = await secureFetch(
+        endpoints.acpServers.reassignAndDelete(serverName),
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ folders: foldersPayload }),
+        },
+      );
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        // 409 arrives as an errorEnvelope: {error: {code, message, details:
+        // {active_session_ids: [...]}}}. Surface a refusal list from that.
+        const activeIds =
+          res.status === 409 && Array.isArray(data?.error?.details?.active_session_ids)
+            ? data.error.details.active_session_ids
+            : null;
+        if (activeIds && activeIds.length > 0) {
+          setActiveRefusal(
+            activeIds.map((sid) => ({ session_id: sid })),
+          );
+          setStep("error");
+          return;
+        }
+        setExecError(
+          errorMessageFromData(data, `Failed to delete "${serverName}"`),
+        );
+        setStep("error");
+        return;
+      }
+      setExecResult(data);
+      setStep("success");
+    } catch (err) {
+      setExecError(err?.message || String(err));
+      setStep("error");
+    }
+  };
+
+  const handleFinalClose = () => {
+    // Only propagate the reassignment result on success — parent uses it to
+    // remove the server from local state and re-fetch workspaces.
+    if (step === "success" && execResult && onSuccess) {
+      onSuccess(execResult);
+    }
+    onClose?.();
+  };
+
+  // Recap lines for the confirm step.
+  const recapLines = folders.map((f, i) => {
+    const choice = choices[i] || {};
+    const label = f.workspace_name || getBasename(f.working_dir) || f.working_dir;
+    const total = folderTotal(f);
+    if (choice.newServer) {
+      return {
+        key: f.working_dir,
+        kind: "reassign",
+        text: `${label} → reassign to "${choice.newServer}": ${total} conversation(s) will keep working on the new ACP.`,
+      };
+    }
+    return {
+      key: f.working_dir,
+      kind: "delete",
+      text: `${label} → delete: ${total} conversation(s) will be permanently deleted.`,
+    };
+  });
+
+  const footer = (() => {
+    if (step === "intro") {
+      return html`
+        <button class="btn btn-ghost btn-sm" onClick=${onClose}>Cancel</button>
+        <button
+          class="btn btn-primary btn-sm"
+          onClick=${() => {
+            if (folders.length === 0) {
+              // No workspaces reference the server: skip straight to confirm
+              // (which will be a trivial "no folders" recap) then execute.
+              setStep("confirm");
+            } else {
+              setStep("folder");
+              setFolderIndex(0);
+            }
+          }}
+        >
+          Next
+        </button>
+      `;
+    }
+    if (step === "folder") {
+      const isLast = folderIndex === folders.length - 1;
+      return html`
+        <button class="btn btn-ghost btn-sm" onClick=${goBackFromFolder}>
+          Back
+        </button>
+        <button
+          class="btn btn-primary btn-sm"
+          disabled=${!canAdvanceFolder()}
+          onClick=${goNextFromFolder}
+        >
+          ${isLast ? "Review" : "Next"}
+        </button>
+      `;
+    }
+    if (step === "confirm") {
+      return html`
+        <button class="btn btn-ghost btn-sm" onClick=${onClose}>Cancel</button>
+        <button
+          class="btn btn-ghost btn-sm"
+          onClick=${() => {
+            if (folders.length === 0) {
+              setStep("intro");
+            } else {
+              setStep("folder");
+              setFolderIndex(folders.length - 1);
+            }
+          }}
+        >
+          Back
+        </button>
+        <button class="btn btn-error btn-sm" onClick=${executeDelete}>
+          Delete server
+        </button>
+      `;
+    }
+    if (step === "executing") {
+      return html`
+        <button class="btn btn-ghost btn-sm" disabled=${true}>
+          Applying changes...
+        </button>
+      `;
+    }
+    if (step === "success") {
+      return html`
+        <button class="btn btn-primary btn-sm" onClick=${handleFinalClose}>
+          Close
+        </button>
+      `;
+    }
+    // error
+    if (activeRefusal) {
+      return html`
+        <button class="btn btn-primary btn-sm" onClick=${onClose}>Close</button>
+      `;
+    }
+    return html`
+      <button class="btn btn-ghost btn-sm" onClick=${onClose}>Cancel</button>
+      <button class="btn btn-primary btn-sm" onClick=${() => setStep("confirm")}>
+        Back to review
+      </button>
+    `;
+  })();
+
+  return html`
+    <${Modal}
+      isOpen=${isOpen}
+      onClose=${step === "executing" ? undefined : onClose}
+      title=${`Delete ACP server "${serverName}"`}
+      testid="acp-delete-wizard"
+      boxClass="max-w-2xl"
+      footer=${footer}
+    >
+      ${step === "intro" &&
+      html`
+        <div class="space-y-3 text-sm">
+          <p>
+            Deleting ACP server
+            <span class="font-semibold">"${serverName}"</span> will affect the
+            following folders. You'll be asked what to do for each.
+          </p>
+          <div
+            class="rounded border border-mitto-border-2 bg-mitto-surface-2 p-3 space-y-1"
+          >
+            <div>
+              <span class="font-semibold">Folders referencing this server:</span>
+              ${" "}${folders.length}
+            </div>
+            <div>
+              <span class="font-semibold">Total conversations affected:</span>
+              ${" "}${totalConversations}
+            </div>
+          </div>
+          ${folders.length === 0 &&
+          html`
+            <p class="text-mitto-text-muted">
+              No workspaces reference this server. Click Next to remove it.
+            </p>
+          `}
+        </div>
+      `}
+
+      ${step === "folder" &&
+      currentFolder &&
+      html`
+        <div class="space-y-3 text-sm">
+          <div class="text-xs text-mitto-text-muted">
+            Folder ${folderIndex + 1} of ${folders.length}
+          </div>
+          <div>
+            <div class="font-semibold text-base">
+              "${serverName}" was being used in
+              ${" "}${currentFolder.workspace_name ||
+              getBasename(currentFolder.working_dir) ||
+              currentFolder.working_dir}
+            </div>
+            <div class="text-xs text-mitto-text-muted mt-0.5 truncate">
+              ${currentFolder.working_dir}
+            </div>
+            <div class="text-xs text-mitto-text-muted mt-1">
+              ${currentFolder.non_archived_conversations || 0} active +
+              ${" "}${currentFolder.archived_conversations || 0} archived conversation(s)
+            </div>
+          </div>
+
+          ${currentCandidates.length > 0
+            ? html`
+                <div class="form-control">
+                  <label class="label pb-1">
+                    <span class="label-text">Choose the new ACP:</span>
+                  </label>
+                  <select
+                    class="select select-bordered select-sm w-full"
+                    value=${currentChoice.newServer === null
+                      ? ""
+                      : currentChoice.newServer}
+                    onChange=${(e) => {
+                      const v = e.target.value;
+                      // "__none__" sentinel = unselected placeholder.
+                      if (v === "__none__") {
+                        setChoiceFor(folderIndex, { newServer: null });
+                      } else {
+                        setChoiceFor(folderIndex, { newServer: v });
+                      }
+                    }}
+                  >
+                    ${currentChoice.newServer === null &&
+                    html`
+                      <option value="__none__" disabled=${true}>
+                        Select an option...
+                      </option>
+                    `}
+                    ${currentCandidates.map(
+                      (name) => html`
+                        <option key=${name} value=${name}>${name}</option>
+                      `,
+                    )}
+                    <option value="">
+                      Delete all conversations in this folder
+                    </option>
+                  </select>
+                </div>
+              `
+            : html`
+                <div
+                  role="alert"
+                  class="alert alert-warning alert-soft text-sm"
+                >
+                  <div>
+                    No other ACP server is configured for this folder.
+                    Continuing will
+                    <span class="font-semibold">DELETE</span>
+                    ${" "}${folderTotal(currentFolder)}
+                    conversation(s) in
+                    <code class="text-xs">${currentFolder.working_dir}</code>.
+                  </div>
+                </div>
+                <label class="label cursor-pointer justify-start gap-2">
+                  <input
+                    type="checkbox"
+                    class="checkbox checkbox-sm"
+                    checked=${!!currentChoice.acknowledged}
+                    onChange=${(e) =>
+                      setChoiceFor(folderIndex, {
+                        acknowledged: e.target.checked,
+                        newServer: e.target.checked ? "" : null,
+                      })}
+                  />
+                  <span class="label-text">
+                    I understand these conversations will be permanently
+                    deleted.
+                  </span>
+                </label>
+              `}
+        </div>
+      `}
+
+      ${step === "confirm" &&
+      html`
+        <div class="space-y-3 text-sm">
+          <p>Review your decisions before applying:</p>
+          ${folders.length === 0
+            ? html`
+                <div
+                  class="rounded border border-mitto-border-2 bg-mitto-surface-2 p-3"
+                >
+                  No workspaces reference this server. It will be removed from
+                  configuration.
+                </div>
+              `
+            : html`
+                <ul class="space-y-2">
+                  ${recapLines.map(
+                    (line) => html`
+                      <li
+                        key=${line.key}
+                        class="rounded border border-mitto-border-2 bg-mitto-surface-2 p-2 ${line.kind ===
+                        "delete"
+                          ? "border-l-4 border-l-error"
+                          : ""}"
+                      >
+                        ${line.text}
+                      </li>
+                    `,
+                  )}
+                </ul>
+              `}
+          <p class="text-mitto-text-muted text-xs">
+            The server
+            <span class="font-semibold">"${serverName}"</span> will then be
+            removed from settings.
+          </p>
+        </div>
+      `}
+
+      ${step === "executing" &&
+      html`
+        <div class="text-center py-8">
+          <span
+            class="loading loading-spinner loading-lg mb-3 text-mitto-accent"
+          ></span>
+          <p class="text-mitto-text-secondary">Applying changes...</p>
+        </div>
+      `}
+
+      ${step === "success" &&
+      execResult &&
+      html`
+        <div class="space-y-2 text-sm">
+          <div
+            role="alert"
+            class="alert alert-success alert-soft text-sm"
+          >
+            <div>
+              Deleted ACP server
+              <span class="font-semibold">"${serverName}"</span>.
+            </div>
+          </div>
+          <ul class="text-xs text-mitto-text-muted space-y-1">
+            <li>
+              Reassigned conversations:
+              ${" "}${execResult.reassigned_conversation_count || 0}
+            </li>
+            <li>
+              Deleted conversations:
+              ${" "}${execResult.deleted_conversation_count || 0}
+            </li>
+            <li>
+              Workspaces reassigned:
+              ${" "}${execResult.reassigned_workspace_count ||
+                (Array.isArray(execResult.reassigned_workspaces)
+                  ? execResult.reassigned_workspaces.length
+                  : 0)}
+            </li>
+            <li>
+              Workspaces removed:
+              ${" "}${execResult.deleted_workspace_count ||
+                (Array.isArray(execResult.deleted_workspaces)
+                  ? execResult.deleted_workspaces.length
+                  : 0)}
+            </li>
+          </ul>
+        </div>
+      `}
+
+      ${step === "error" &&
+      html`
+        <div class="space-y-3 text-sm">
+          ${activeRefusal
+            ? html`
+                <div role="alert" class="alert alert-error alert-soft text-sm">
+                  <div>
+                    Some conversations became active while you were setting up
+                    the delete. Close or archive them, then try again.
+                  </div>
+                </div>
+                <ul class="space-y-1 text-xs">
+                  ${activeRefusal.map(
+                    (c) => html`
+                      <li
+                        key=${c.session_id}
+                        class="rounded border border-mitto-border-2 bg-mitto-surface-2 p-2"
+                      >
+                        <div class="font-medium">
+                          ${c.name || c.session_id}
+                        </div>
+                        <div class="text-mitto-text-muted truncate">
+                          ${c.working_dir || ""}
+                          ${c.is_prompting ? " · prompting" : ""}
+                          ${c.has_connected_clients ? " · connected" : ""}
+                        </div>
+                      </li>
+                    `,
+                  )}
+                </ul>
+              `
+            : html`
+                <div role="alert" class="alert alert-error alert-soft text-sm">
+                  <div>${execError || "Failed to apply changes."}</div>
+                </div>
+              `}
+        </div>
+      `}
+    <//>
+  `;
+}
+
+/**
  * Settings Dialog Component
  * Manages ACP servers, workspaces, prompts, web access, and UI settings.
  */
@@ -1145,6 +1820,15 @@ export function SettingsDialog({
   const [warning, setWarning] = useState("");
   // Agent discovery dialog (triggered from Servers tab)
   const [showDiscoverAgents, setShowDiscoverAgents] = useState(false);
+
+  // ACP server delete wizard (mitto-pgt). deleteWizardPlan holds the response
+  // from GET /api/acp-servers/{name}/prepare-delete; the wizard opens when it
+  // is non-null AND has_active === false. Refusals for active conversations or
+  // RC-file/read-only servers are surfaced via deleteBlockedInfo (rendered as
+  // its own simple modal).
+  const [deleteWizardName, setDeleteWizardName] = useState("");
+  const [deleteWizardPlan, setDeleteWizardPlan] = useState(null);
+  const [deleteBlockedInfo, setDeleteBlockedInfo] = useState(null);
 
   // ------ Global Shortcuts tab state ------------------------------------------
   // Global shortcut buttons stored in settings.json, keyed by section ID. These
@@ -1260,6 +1944,11 @@ export function SettingsDialog({
   const [acpServers, setAcpServers] = useState([]);
   // Model profiles (named profiles pairing criteria with capability tags)
   const [modelProfiles, setModelProfiles] = useState([]);
+  // Canonical capability tags suggested when editing a profile's tags. Sourced
+  // from the backend (config.model_tags → config.CanonicalModelTags), so the
+  // suggestion list stays in sync with Go and is always present. Free-text entry
+  // of other tags remains allowed (these are only <datalist> hints).
+  const [modelTags, setModelTags] = useState([]);
   // Accordion: index of the single expanded model profile (-1 = all collapsed)
   const [expandedProfileIndex, setExpandedProfileIndex] = useState(-1);
   // Raw text drafts for the tags input, keyed by profile index — lets the
@@ -1336,12 +2025,12 @@ export function SettingsDialog({
   const [showInAllSpaces, setShowInAllSpaces] = useState(false);
   const [startAtLogin, setStartAtLogin] = useState(false);
   const [loginItemSupported, setLoginItemSupported] = useState(false);
-  const [badgeClickCommand, setBadgeClickCommand] = useState(
-    "open ${MITTO_WORKING_DIR}",
-  );
-  const [terminalActionCommand, setTerminalActionCommand] = useState(
-    "open -a Terminal ${MITTO_WORKING_DIR}",
-  );
+  // Open In targets (macOS): configurable list of apps for the folder "Open ▸" menu.
+  // Each entry: { id, label, icon, command, enabled, builtin }. enabled is a plain
+  // boolean in state (persisted as *bool on the backend via ui.mac.open_in.targets).
+  const [openInTargets, setOpenInTargets] = useState([]);
+  // Per-row UI expansion state, keyed by target id -> bool.
+  const [openInExpanded, setOpenInExpanded] = useState({});
 
   // Confirmation mode for destroying a conversation (all platforms).
   // One of "always" (default), "responding", or "never".
@@ -1644,6 +2333,7 @@ export function SettingsDialog({
       servers.forEach(assignStableKey);
       setAcpServers(servers);
       setModelProfiles(Array.isArray(config.models) ? config.models : []);
+      setModelTags(Array.isArray(config.model_tags) ? config.model_tags : []);
       setExpandedProfileIndex(-1);
       setTagDrafts({});
 
@@ -1729,17 +2419,25 @@ export function SettingsDialog({
       );
       setShowInAllSpaces(config.ui?.mac?.show_in_all_spaces || false);
 
-      // Load badge click action settings (macOS only)
-      setBadgeClickCommand(
-        config.ui?.mac?.badge_click_action?.command ||
-          "open ${MITTO_WORKING_DIR}",
-      );
-
-      // Load terminal action settings (macOS only)
-      setTerminalActionCommand(
-        config.ui?.mac?.terminal_action?.command ||
-          "open -a Terminal ${MITTO_WORKING_DIR}",
-      );
+      // Load Open In targets (macOS only). If ui.mac.open_in.targets is present
+      // and non-empty use it verbatim; otherwise synthesize a UI-only fallback
+      // matching backend config.DefaultOpenTargets() (darwin) so the user sees
+      // rows before saving once. Backend still owns the real fallback at exec time.
+      const macOpenInTargets = config.ui?.mac?.open_in?.targets;
+      if (Array.isArray(macOpenInTargets) && macOpenInTargets.length > 0) {
+        setOpenInTargets(
+          macOpenInTargets.map((t) => ({
+            id: t.id || "",
+            label: t.label || "",
+            icon: t.icon || "",
+            command: t.command || "",
+            enabled: t.enabled !== false,
+            builtin: t.builtin === true,
+          })),
+        );
+      } else {
+        setOpenInTargets(DEFAULT_MAC_OPEN_TARGETS.map((t) => ({ ...t })));
+      }
 
       // Load notification permission status (macOS only) - used to show warning if denied
       if (typeof window.mittoGetNotificationPermissionStatus === "function") {
@@ -2045,13 +2743,15 @@ export function SettingsDialog({
           },
           show_in_all_spaces: showInAllSpaces,
           start_at_login: startAtLogin,
-          badge_click_action: {
-            enabled: badgeClickCommand.trim() !== "",
-            command: badgeClickCommand,
-          },
-          terminal_action: {
-            enabled: terminalActionCommand.trim() !== "",
-            command: terminalActionCommand,
+          open_in: {
+            targets: openInTargets.map((t) => ({
+              id: t.id,
+              label: t.label,
+              ...(t.icon ? { icon: t.icon } : {}),
+              command: t.command,
+              enabled: t.enabled,
+              ...(t.builtin ? { builtin: true } : {}),
+            })),
           },
         };
       }
@@ -2097,6 +2797,9 @@ export function SettingsDialog({
           tags: srv.tags && srv.tags.length > 0 ? srv.tags : undefined, // Include tags if present
           constraints: srv.constraints || undefined, // Include constraints if present
           model_profile: srv.model_profile || undefined, // Include model profile if present
+          model_tag: srv.model_tag || undefined, // Include model tag if present
+          initial_model_profile: srv.initial_model_profile || undefined, // ACP-tier initial-model preference
+          initial_model_tag: srv.initial_model_tag || undefined, // ACP-tier initial-model preference
           context_flush_command: srv.context_flush_command || undefined,
         };
         // Only include type if specified (otherwise name is used as type)
@@ -2359,6 +3062,9 @@ export function SettingsDialog({
     constraints,
     contextFlushCommand,
     modelProfile,
+    modelTag,
+    initialModelProfile,
+    initialModelTag,
   ) => {
     // Update server in-memory (prompts are now read-only from files)
     setAcpServers(
@@ -2375,6 +3081,9 @@ export function SettingsDialog({
           tags: tags && tags.length > 0 ? tags : undefined, // undefined to omit if empty
           constraints: constraints || undefined, // undefined to omit if empty
           model_profile: modelProfile || undefined, // undefined to omit if none
+          model_tag: modelTag || undefined, // undefined to omit if none
+          initial_model_profile: initialModelProfile || undefined, // undefined to omit if none
+          initial_model_tag: initialModelTag || undefined, // undefined to omit if none
           context_flush_command:
             contextFlushCommand && contextFlushCommand.trim()
               ? contextFlushCommand.trim()
@@ -2412,28 +3121,81 @@ export function SettingsDialog({
     }
   };
 
-  const removeServer = (serverName) => {
-    // Check if any workspace uses this server as its primary ACP server
-    const usedBy = workspaces.filter((ws) => ws.acp_server === serverName);
-    if (usedBy.length > 0) {
-      // Build a helpful error message listing the workspaces using this server
-      const workspacePaths = usedBy.map((ws) => ws.working_dir).slice(0, 3); // Show up to 3
-      const pathList = workspacePaths.join(", ");
-      const moreCount = usedBy.length - workspacePaths.length;
-      const moreText = moreCount > 0 ? ` and ${moreCount} more` : "";
-      setError(
-        `Cannot delete "${serverName}": used by workspace(s): ${pathList}${moreText}. Remove or reassign these workspaces first (use the Workspaces dialog).`,
-      );
-      return;
-    }
+  // Local-only removal helper: strips a server from state and clears errors.
+  // Used both by the "no workspace references it" fast path and by the wizard
+  // success callback. Does NOT call the delete endpoint by itself.
+  const removeServerFromState = (serverName) => {
+    setAcpServers(acpServers.filter((s) => s.name !== serverName));
+    setError("");
+  };
 
+  // removeServer — guided delete flow (mitto-pgt). Instead of hard-blocking
+  // when any workspace references the server, ask the backend for a plan and
+  // route to:
+  //   404 → local remove (already gone on server).
+  //   403 → RC-file / read-only server: refusal modal (verified during execute).
+  //   has_active === true → refusal modal listing live conversations.
+  //   has_active === false → wizard (even when folders is empty; the backend
+  //     is authoritative for on-disk state and still removes the server).
+  const removeServer = async (serverName) => {
     if (acpServers.length <= 1) {
       setError("At least one ACP server is required");
       return;
     }
-
-    setAcpServers(acpServers.filter((s) => s.name !== serverName));
-    setError(""); // Clear any previous errors
+    setError("");
+    try {
+      const res = await authFetch(endpoints.acpServers.prepareDelete(serverName));
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        if (res.status === 404) {
+          // Server unknown to the backend — treat as already-gone.
+          removeServerFromState(serverName);
+          return;
+        }
+        if (res.status === 403) {
+          // The prepare-delete handler does not distinguish RC-file vs
+          // config-read-only, but reassign-and-delete does (via 403 with
+          // "defined in RC file" in the message). Treat both here as a
+          // read-only refusal shown in the blocking modal.
+          const msg = errorMessageFromData(
+            data,
+            `Cannot delete "${serverName}": configuration is read-only.`,
+          );
+          const isRC = /RC file|\.mittorc/i.test(msg);
+          setDeleteBlockedInfo({
+            kind: isRC ? "rcfile" : "readonly",
+            serverName,
+            message: msg,
+          });
+          return;
+        }
+        setError(
+          errorMessageFromData(
+            data,
+            `Failed to prepare deletion of "${serverName}"`,
+          ),
+        );
+        return;
+      }
+      if (data?.has_active === true) {
+        setDeleteBlockedInfo({
+          kind: "active",
+          serverName,
+          activeConversations: Array.isArray(data.active_conversations)
+            ? data.active_conversations
+            : [],
+        });
+        return;
+      }
+      // Open the wizard even when folders is empty — the wizard handles the
+      // trivial "no workspaces reference this server" case with a single
+      // confirm step and still delegates the actual delete to the backend
+      // (which is authoritative for on-disk state).
+      setDeleteWizardName(serverName);
+      setDeleteWizardPlan(data);
+    } catch (err) {
+      setError(err?.message || String(err));
+    }
   };
 
   const duplicateServer = (serverName) => {
@@ -2512,6 +3274,35 @@ export function SettingsDialog({
     setExpandedProfileIndex((prev) => {
       const next = prev === i ? 0 : prev > i ? prev - 1 : prev;
       return Math.max(0, Math.min(next, Math.max(newLength - 1, 0)));
+    });
+  };
+  const moveProfile = (i, dir) => {
+    const target = i + dir;
+    if (target < 0 || target >= modelProfiles.length) return;
+    setModelProfiles((prev) => {
+      if (target < 0 || target >= prev.length) return prev;
+      const next = [...prev];
+      [next[i], next[target]] = [next[target], next[i]];
+      return next;
+    });
+    // Follow the moved row: if the expanded row is one of the two being
+    // swapped, its index moves with it; other indices are unaffected.
+    setExpandedProfileIndex((prev) => {
+      if (prev === i) return target;
+      if (prev === target) return i;
+      return prev;
+    });
+    // Same for tagDrafts keys — swap the two affected slot keys.
+    setTagDrafts((prev) => {
+      const a = prev[i];
+      const b = prev[target];
+      if (a === undefined && b === undefined) return prev;
+      const next = { ...prev };
+      if (a !== undefined) next[target] = a;
+      else delete next[target];
+      if (b !== undefined) next[i] = b;
+      else delete next[i];
+      return next;
     });
   };
   // Commit a profile's raw tag draft text into its tags array (comma-separated,
@@ -2913,6 +3704,7 @@ export function SettingsDialog({
                                             server=${srv}
                                             agentTypes=${agentTypes}
                                             modelProfiles=${modelProfiles}
+                                            workspaces=${workspaces}
                                             onChange=${(
                                               name,
                                               cmd,
@@ -2923,6 +3715,9 @@ export function SettingsDialog({
                                               constraints,
                                               contextFlushCommand,
                                               modelProfile,
+                                              modelTag,
+                                              initialModelProfile,
+                                              initialModelTag,
                                             ) =>
                                               updateServer(
                                                 srv.name,
@@ -2935,6 +3730,9 @@ export function SettingsDialog({
                                                 constraints,
                                                 contextFlushCommand,
                                                 modelProfile,
+                                                modelTag,
+                                                initialModelProfile,
+                                                initialModelTag,
                                               )}
                                           />
                                         `}
@@ -4777,58 +5575,149 @@ export function SettingsDialog({
                           </label>
                         `}
 
-                        <!-- Open Folder Action -->
+                        <!-- Open In Targets -->
                         <div class="p-4 space-y-2">
                           <div class="font-medium text-sm">
-                            Open folder command
+                            Open In targets
                           </div>
                           <div class="text-xs text-mitto-text-muted mb-2">
-                            Command to open workspace folder from badges and
-                            group header buttons. Leave empty to disable.
+                            Configure which apps appear in the folder "Open ▸"
+                            menu. Toggle rows to enable/disable; click Edit to
+                            change a target's command.
                           </div>
-                          <div class="flex items-center gap-2">
-                            <input
-                              type="text"
-                              value=${badgeClickCommand}
-                              onInput=${(e) =>
-                                setBadgeClickCommand(e.target.value)}
-                              placeholder="open \${MITTO_WORKING_DIR}"
-                              class="input input-sm flex-1 font-mono"
-                            />
+                          <div
+                            class="rounded border border-mitto-border divide-y divide-mitto-border"
+                          >
+                            ${openInTargets.map(
+                              (t) => html`
+                                <div key=${t.id}>
+                                  <div class="flex items-center gap-3 p-3">
+                                    <div class="flex-1 min-w-0">
+                                      <div class="font-medium text-sm truncate">
+                                        ${t.label}
+                                      </div>
+                                      <div
+                                        class="text-xs text-mitto-text-muted truncate"
+                                      >
+                                        ${t.id}${t.builtin ? "" : " (custom)"}
+                                      </div>
+                                    </div>
+                                    <button
+                                      type="button"
+                                      class="btn btn-ghost btn-xs"
+                                      onClick=${() =>
+                                        setOpenInExpanded((s) => ({
+                                          ...s,
+                                          [t.id]: !s[t.id],
+                                        }))}
+                                    >
+                                      ${openInExpanded[t.id] ? "Hide" : "Edit"}
+                                    </button>
+                                    ${!t.builtin &&
+                                    html`
+                                      <button
+                                        type="button"
+                                        class="btn btn-ghost btn-xs text-error"
+                                        onClick=${() =>
+                                          setOpenInTargets((list) =>
+                                            list.filter((x) => x.id !== t.id),
+                                          )}
+                                      >
+                                        Remove
+                                      </button>
+                                    `}
+                                    <input
+                                      type="checkbox"
+                                      class="checkbox checkbox-sm checkbox-primary"
+                                      checked=${t.enabled}
+                                      onChange=${(e) =>
+                                        setOpenInTargets((list) =>
+                                          list.map((x) =>
+                                            x.id === t.id
+                                              ? {
+                                                  ...x,
+                                                  enabled: e.target.checked,
+                                                }
+                                              : x,
+                                          ),
+                                        )}
+                                    />
+                                  </div>
+                                  ${openInExpanded[t.id] &&
+                                  html`
+                                    <div class="px-3 pb-3 space-y-2">
+                                      ${!t.builtin &&
+                                      html`
+                                        <input
+                                          type="text"
+                                          class="input input-sm w-full"
+                                          placeholder="Display label"
+                                          value=${t.label}
+                                          onInput=${(e) =>
+                                            setOpenInTargets((list) =>
+                                              list.map((x) =>
+                                                x.id === t.id
+                                                  ? { ...x, label: e.target.value }
+                                                  : x,
+                                              ),
+                                            )}
+                                        />
+                                      `}
+                                      <input
+                                        type="text"
+                                        class="input input-sm w-full font-mono"
+                                        placeholder="open -a 'App Name' \${MITTO_WORKING_DIR}"
+                                        value=${t.command}
+                                        onInput=${(e) =>
+                                          setOpenInTargets((list) =>
+                                            list.map((x) =>
+                                              x.id === t.id
+                                                ? { ...x, command: e.target.value }
+                                                : x,
+                                            ),
+                                          )}
+                                      />
+                                      <p class="text-xs text-mitto-text-muted">
+                                        Use${" "}
+                                        <code
+                                          class="bg-mitto-surface-4 px-1 rounded"
+                                          >\${MITTO_WORKING_DIR}</code
+                                        >${" "} as placeholder for the workspace
+                                        path
+                                      </p>
+                                    </div>
+                                  `}
+                                </div>
+                              `,
+                            )}
                           </div>
-                          <p class="text-xs text-mitto-text-muted">
-                            Use${" "}
-                            <code class="bg-mitto-surface-4 px-1 rounded"
-                              >\${MITTO_WORKING_DIR}</code
-                            >${" "} as placeholder for the workspace path
-                          </p>
-                        </div>
-
-                        <!-- Terminal Action -->
-                        <div class="p-4 space-y-2">
-                          <div class="font-medium text-sm">
-                            Open terminal command
+                          <div class="flex justify-end">
+                            <button
+                              type="button"
+                              class="btn btn-sm btn-ghost"
+                              onClick=${() => {
+                                const newId =
+                                  "custom-" + Date.now().toString(36);
+                                setOpenInTargets((list) => [
+                                  ...list,
+                                  {
+                                    id: newId,
+                                    label: "New target",
+                                    icon: "",
+                                    command: "open ${MITTO_WORKING_DIR}",
+                                    enabled: true,
+                                    builtin: false,
+                                  },
+                                ]);
+                                setOpenInExpanded((s) => ({
+                                  ...s,
+                                  [newId]: true,
+                                }));
+                              }}
+                            >
+                              + Add custom…
+                            </button>
                           </div>
-                          <div class="text-xs text-mitto-text-muted mb-2">
-                            Command to open a terminal at the workspace folder
-                            from group header buttons. Leave empty to disable.
-                          </div>
-                          <div class="flex items-center gap-2">
-                            <input
-                              type="text"
-                              value=${terminalActionCommand}
-                              onInput=${(e) =>
-                                setTerminalActionCommand(e.target.value)}
-                              placeholder="open -a Terminal \${MITTO_WORKING_DIR}"
-                              class="input input-sm flex-1 font-mono"
-                            />
-                          </div>
-                          <p class="text-xs text-mitto-text-muted">
-                            Use${" "}
-                            <code class="bg-mitto-surface-4 px-1 rounded"
-                              >\${MITTO_WORKING_DIR}</code
-                            >${" "} as placeholder for the workspace path
-                          </p>
                         </div>
                       </div>
                     `}
@@ -4866,7 +5755,17 @@ export function SettingsDialog({
                       Named model profiles pair a selection criteria with
                       capability tags (e.g. "Smart", "Cheap"). Other parts of
                       Mitto can branch on tags instead of raw model names.
+                      <strong>Order is priority</strong> — the first profile
+                      carrying a given tag wins for tag-based resolution.
                     </p>
+
+                    <!-- Shared suggestions for every profile's Tags input.
+                         Canonical tags from the backend; free text still allowed. -->
+                    <datalist id="model-tag-suggestions">
+                      ${modelTags.map(
+                        (t) => html`<option key=${t} value=${t}></option>`,
+                      )}
+                    </datalist>
 
                     ${modelProfiles.map((p, i) => {
                       const isExpanded = expandedProfileIndex === i;
@@ -4892,23 +5791,66 @@ export function SettingsDialog({
                               : html`<${ChevronRightIcon}
                                   className="w-4 h-4 text-mitto-text-muted shrink-0"
                                 />`}
-                            <span class="font-medium text-sm flex-1 truncate">
+                            <span
+                              class="font-medium text-sm flex-1 min-w-0 truncate whitespace-nowrap"
+                            >
                               ${trimmedName || "Untitled"}
                             </span>
                             ${tags.length > 0 &&
-                            html`
-                              <div class="flex flex-wrap gap-1 justify-end">
-                                ${tags.map(
-                                  (tag) => html`
+                            (() => {
+                              const maxVisible = 4;
+                              const visible = tags.slice(0, maxVisible);
+                              const hidden = tags.slice(maxVisible);
+                              return html`
+                                <div
+                                  class="flex flex-nowrap items-center gap-1 justify-end shrink-0 overflow-hidden"
+                                >
+                                  ${visible.map(
+                                    (tag) => html`
+                                      <span
+                                        key=${tag}
+                                        class="badge badge-sm badge-outline shrink-0"
+                                        >${tag}</span
+                                      >
+                                    `,
+                                  )}
+                                  ${hidden.length > 0 &&
+                                  html`
                                     <span
-                                      key=${tag}
-                                      class="badge badge-sm badge-outline"
-                                      >${tag}</span
+                                      class="badge badge-sm badge-outline shrink-0 tooltip tooltip-bottom"
+                                      data-tip=${hidden.join(", ")}
+                                      >+${hidden.length}</span
                                     >
-                                  `,
-                                )}
-                              </div>
-                            `}
+                                  `}
+                                </div>
+                              `;
+                            })()}
+                            <button
+                              class="btn btn-sm btn-ghost"
+                              title="Move up"
+                              aria-label="Move up"
+                              data-testid=${`model-profile-move-up-${i}`}
+                              disabled=${i === 0}
+                              onClick=${(e) => {
+                                e.stopPropagation();
+                                moveProfile(i, -1);
+                              }}
+                            >
+                              <${ChevronUpIcon} className="w-4 h-4" />
+                            </button>
+                            <button
+                              class="btn btn-sm btn-ghost"
+                              title="Move down"
+                              aria-label="Move down"
+                              data-testid=${`model-profile-move-down-${i}`}
+                              disabled=${i === modelProfiles.length - 1}
+                              onClick=${(e) => {
+                                e.stopPropagation();
+                                moveProfile(i, 1);
+                              }}
+                            >
+                              <${ChevronDownIcon} className="w-4 h-4" />
+                            </button>
                             <button
                               class="btn btn-sm btn-ghost text-error"
                               title="Remove profile"
@@ -4972,6 +5914,7 @@ export function SettingsDialog({
                                   type="text"
                                   class="input input-sm w-full"
                                   placeholder="e.g., Smart, Cheap"
+                                  list="model-tag-suggestions"
                                   value=${tagDrafts[i] !== undefined
                                     ? tagDrafts[i]
                                     : tags.join(", ")}
@@ -5051,6 +5994,7 @@ export function SettingsDialog({
                     <!-- Add Model button -->
                     <button
                       class="btn btn-sm"
+                      data-testid="add-model-profile"
                       onClick=${() => {
                         setModelProfiles([
                           ...modelProfiles,
@@ -5130,6 +6074,131 @@ export function SettingsDialog({
           setAcpServers([...acpServers, ...toAdd]);
         }
         setShowDiscoverAgents(false);
+      }}
+    />
+
+    <!-- Blocking refusal modal (mitto-pgt): shown when the backend reports
+         active conversations or an RC-file-sourced server. No wizard here —
+         the user must resolve the situation elsewhere first. -->
+    <${Modal}
+      isOpen=${!!deleteBlockedInfo}
+      onClose=${() => setDeleteBlockedInfo(null)}
+      title=${deleteBlockedInfo
+        ? deleteBlockedInfo.kind === "rcfile"
+          ? `Cannot delete "${deleteBlockedInfo.serverName}"`
+          : `Cannot delete "${deleteBlockedInfo.serverName}"`
+        : ""}
+      boxClass="max-w-xl"
+      footer=${html`
+        <button
+          class="btn btn-primary btn-sm"
+          onClick=${() => setDeleteBlockedInfo(null)}
+        >
+          Close
+        </button>
+      `}
+    >
+      ${deleteBlockedInfo &&
+      deleteBlockedInfo.kind === "rcfile" &&
+      html`
+        <div class="space-y-2 text-sm">
+          <p>${deleteBlockedInfo.message}</p>
+          <p class="text-mitto-text-muted text-xs">
+            RC-file ACP servers are managed in
+            <code class="text-xs">~/.mittorc</code> and cannot be removed from
+            the settings dialog.
+          </p>
+        </div>
+      `}
+      ${deleteBlockedInfo &&
+      deleteBlockedInfo.kind === "readonly" &&
+      html`
+        <div class="space-y-2 text-sm">
+          <p>${deleteBlockedInfo.message}</p>
+          <p class="text-mitto-text-muted text-xs">
+            The Mitto configuration is read-only. Restart with a writable
+            configuration or edit the underlying file directly.
+          </p>
+        </div>
+      `}
+      ${deleteBlockedInfo &&
+      deleteBlockedInfo.kind === "active" &&
+      html`
+        <div class="space-y-3 text-sm">
+          <p>
+            There are active conversations using
+            <span class="font-semibold"
+              >"${deleteBlockedInfo.serverName}"</span
+            >. Close or archive them first:
+          </p>
+          <ul class="space-y-1">
+            ${(deleteBlockedInfo.activeConversations || []).map(
+              (c) => html`
+                <li
+                  key=${c.session_id}
+                  class="rounded border border-mitto-border-2 bg-mitto-surface-2 p-2"
+                >
+                  <div class="font-medium">${c.name || c.session_id}</div>
+                  <div class="text-xs text-mitto-text-muted truncate">
+                    ${c.working_dir || ""}
+                    ${c.is_prompting ? " · prompting" : ""}
+                    ${c.has_connected_clients ? " · connected" : ""}
+                  </div>
+                </li>
+              `,
+            )}
+          </ul>
+        </div>
+      `}
+    <//>
+
+    <!-- Guided reassign/delete wizard (mitto-pgt). Open only after a
+         successful prepare-delete with has_active === false. -->
+    <${ACPServerDeleteWizard}
+      isOpen=${!!deleteWizardPlan}
+      serverName=${deleteWizardName}
+      plan=${deleteWizardPlan}
+      onClose=${() => {
+        setDeleteWizardPlan(null);
+        setDeleteWizardName("");
+      }}
+      onSuccess=${async (result) => {
+        // Remove the server from local state so the Servers tab reflects it.
+        removeServerFromState(deleteWizardName);
+        // Re-fetch workspaces so reassignments/removals show up in the
+        // Workspaces tab immediately (matches the backend's authoritative
+        // view of workspace configs after the reassign-and-delete call).
+        try {
+          const res = await authFetch(endpoints.workspaces.list());
+          if (res.ok) {
+            const wsData = await res.json().catch(() => ({}));
+            if (Array.isArray(wsData?.workspaces)) {
+              setWorkspaces(wsData.workspaces);
+            }
+          }
+        } catch (_err) {
+          // Best-effort refresh; the local state was updated already.
+        }
+        if (showToast && result) {
+          const parts = [];
+          if (result.reassigned_conversation_count) {
+            parts.push(
+              `${result.reassigned_conversation_count} reassigned`,
+            );
+          }
+          if (result.deleted_conversation_count) {
+            parts.push(
+              `${result.deleted_conversation_count} deleted`,
+            );
+          }
+          const detail = parts.length > 0 ? ` (${parts.join(", ")})` : "";
+          showToast(
+            `Deleted ACP server "${deleteWizardName}"${detail}`,
+            "success",
+          );
+        }
+        setDeleteWizardPlan(null);
+        setDeleteWizardName("");
       }}
     />
   `;

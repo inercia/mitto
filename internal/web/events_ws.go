@@ -3,6 +3,7 @@ package web
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"sync"
 
@@ -110,6 +111,20 @@ func (s *Server) handleGlobalEventsWS(w http.ResponseWriter, r *http.Request) {
 	client.wsConn.SendMessage(WSMsgTypeConnected, map[string]string{
 		"acp_server": s.config.ACPServer,
 	})
+
+	// Surface any prompt files that failed to load so the user is not left
+	// with a silently-missing prompt (mitto-mqe). Error-style toasts persist
+	// until manually dismissed.
+	if s.config.PromptsCache != nil {
+		_, _ = s.config.PromptsCache.Get() // ensure cache loaded so LoadErrors() is populated
+		for _, pe := range s.config.PromptsCache.LoadErrors() {
+			client.wsConn.SendMessage(WSMsgTypeNotification, map[string]interface{}{
+				"title":   "Prompt failed to load",
+				"message": fmt.Sprintf("%s: %v", pe.Path, pe.Err),
+				"style":   "error",
+			})
+		}
+	}
 }
 
 func (c *GlobalEventsClient) readPump() {

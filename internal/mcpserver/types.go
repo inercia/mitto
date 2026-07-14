@@ -9,8 +9,26 @@ import (
 	"time"
 
 	"github.com/inercia/mitto/internal/appdir"
+	"github.com/inercia/mitto/internal/coldstart"
 	"github.com/inercia/mitto/internal/config"
 )
+
+// ColdStartRecentInput is the input for the mitto_coldstart_recent tool.
+type ColdStartRecentInput struct {
+	// Limit is the maximum number of recent cold-start summaries to return.
+	// 0 or omitted returns all summaries currently held (up to the ring capacity).
+	Limit int `json:"limit,omitempty" jsonschema:"max number of recent cold starts to return; 0 or omitted = all (up to the ring capacity)"`
+	// ByWorkspace requests a per-workspace rollup in addition to the raw list.
+	ByWorkspace bool `json:"by_workspace,omitempty" jsonschema:"when true, also include a per-workspace rollup sorted by failure rate"`
+}
+
+// ColdStartRecent is the output for the mitto_coldstart_recent tool.
+// It wraps the ring-buffer snapshot returned by coldstart.RecentSummaries,
+// newest first.
+type ColdStartRecent struct {
+	ColdStarts     []coldstart.Summary            `json:"cold_starts"`
+	WorkspaceStats []coldstart.WorkspaceColdStats `json:"workspace_stats,omitempty"`
+}
 
 // ListConversationsInput contains optional filter criteria for mitto_conversation_list.
 // All fields are optional — when omitted, no filtering is applied for that field.
@@ -516,9 +534,13 @@ func (c *childReportCollector) markChildAutoCompleted(childID string, reason str
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	// Don't overwrite a real report
+	// Don't overwrite a real report that already counts toward the current wait.
+	// A stale-task completed report (one whose TaskID doesn't match currentTaskID)
+	// MUST be overwritten — otherwise the wait can never unblock, since the poll
+	// loop's auto-completion becomes a no-op and reportSatisfiesCurrentTask keeps
+	// returning false. Root cause of mitto-kn1.
 	r := c.reports[childID]
-	if r != nil && r.Completed {
+	if r != nil && r.Completed && c.reportSatisfiesCurrentTask(r) {
 		return
 	}
 
@@ -546,9 +568,11 @@ func (c *childReportCollector) markChildFailed(childID string, msg string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	// Don't overwrite a real report
+	// Don't overwrite a real report that already counts toward the current wait.
+	// See markChildAutoCompleted / mitto-kn1 for rationale — a stale-task completed
+	// report must be overwritable so the queued-send failure can surface.
 	r := c.reports[childID]
-	if r != nil && r.Completed && !r.AutoCompleted && !r.Failed {
+	if r != nil && r.Completed && !r.AutoCompleted && !r.Failed && c.reportSatisfiesCurrentTask(r) {
 		return
 	}
 

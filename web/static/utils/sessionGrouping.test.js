@@ -979,3 +979,129 @@ describe("computeFolderGroupSections", () => {
     expect(computeFolderGroupSections(undefined).grouped).toBe(false);
   });
 });
+
+// ---------------------------------------------------------------------------
+// computeUnifiedTree – pinned empty folders (mitto-8nv)
+// ---------------------------------------------------------------------------
+
+describe("computeUnifiedTree – pinned empty folders", () => {
+  test("zero sessions + one pinned workspace → one empty folder with Tasks node", () => {
+    const workspaces = [
+      { working_dir: "/dirs/pinned", name: "Pinned One", pinned: true },
+    ];
+    const result = computeUnifiedTree([], workspaces);
+    expect(result.folders).toHaveLength(1);
+    const folder = result.folders[0];
+    expect(folder.label).toBe("Pinned One");
+    expect(folder.workingDir).toBe("/dirs/pinned");
+    expect(folder.conversations).toEqual([]);
+    expect(folder.archived).toEqual([]);
+    expect(folder.group).toBe("");
+    expect(folder.tasksNode).toEqual({
+      type: "tasks",
+      id: "tasks:/dirs/pinned",
+      label: "Tasks",
+      workingDir: "/dirs/pinned",
+      folderKey: "/dirs/pinned",
+    });
+  });
+
+  test("pinned workspace label falls back to basename when name is empty", () => {
+    const result = computeUnifiedTree(
+      [],
+      [{ working_dir: "/dirs/no-name", pinned: true }],
+    );
+    expect(result.folders[0].label).toBe("no-name");
+  });
+
+  test("a pinned workspace that also has conversations produces exactly one folder (no duplicate)", () => {
+    const s = makeSession({ session_id: "s1", working_dir: "/proj" });
+    const result = computeUnifiedTree(
+      [s],
+      [{ working_dir: "/proj", name: "Proj", pinned: true }],
+    );
+    expect(result.folders).toHaveLength(1);
+    expect(result.folders[0].workingDir).toBe("/proj");
+    expect(result.folders[0].conversations).toHaveLength(1);
+  });
+
+  test("workspace with pinned=false is NOT seeded as an empty folder", () => {
+    const result = computeUnifiedTree(
+      [],
+      [
+        { working_dir: "/dirs/hidden", pinned: false },
+        { working_dir: "/dirs/also-hidden" /* pinned undefined */ },
+      ],
+    );
+    expect(result.folders).toHaveLength(0);
+  });
+
+  test("multiple pinned workspaces sharing a working_dir collapse to a single entry", () => {
+    const result = computeUnifiedTree(
+      [],
+      [
+        {
+          working_dir: "/proj",
+          name: "First",
+          pinned: true,
+          acp_server: "auggie",
+        },
+        {
+          working_dir: "/proj",
+          name: "Second",
+          pinned: true,
+          acp_server: "claude",
+        },
+      ],
+    );
+    expect(result.folders).toHaveLength(1);
+    expect(result.folders[0].label).toBe("First");
+  });
+
+  test("pinned workspace preserves its group attribute for section placement", () => {
+    const result = computeUnifiedTree(
+      [],
+      [
+        {
+          working_dir: "/dirs/pin",
+          pinned: true,
+          group: "personal",
+          name: "Pin",
+        },
+      ],
+    );
+    expect(result.folders[0].group).toBe("personal");
+  });
+
+  test("pinned empty folders participate in computeFolderGroupSections group placement", () => {
+    const s = makeSession({ session_id: "s1", working_dir: "/dirs/dev" });
+    const workspaces = [
+      { working_dir: "/dirs/dev", group: "development" },
+      {
+        working_dir: "/dirs/pinned",
+        group: "personal",
+        pinned: true,
+        name: "Personal",
+      },
+    ];
+    const tree = computeUnifiedTree([s], workspaces);
+    const { grouped, sections } = computeFolderGroupSections(tree.folders);
+    expect(grouped).toBe(true);
+    const names = sections.map((sec) => sec.name);
+    expect(names).toContain("development");
+    expect(names).toContain("personal");
+    const personal = sections.find((sec) => sec.name === "personal");
+    expect(
+      personal.folders.some((f) => f.workingDir === "/dirs/pinned"),
+    ).toBe(true);
+  });
+
+  test("group-then-label sort applies to pinned empty folders", () => {
+    const workspaces = [
+      { working_dir: "/dirs/zebra", pinned: true, group: "development" },
+      { working_dir: "/dirs/alpha", pinned: true }, // no group → sorts after grouped
+    ];
+    const tree = computeUnifiedTree([], workspaces);
+    expect(tree.folders.map((f) => f.label)).toEqual(["zebra", "alpha"]);
+  });
+});

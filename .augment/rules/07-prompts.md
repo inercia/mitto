@@ -163,7 +163,9 @@ Updates replicate the 5-layer REST API merge. Name slugification via `config.Slu
 
 ## enabledWhen Filtering & Preferred Models
 
-Server-side via `filterPromptsByEnabled()` / `buildPromptEnabledContext()`. Use `enabledWhen` (CEL) exclusively. Full CEL context: see `05-msghooks.md`. Useful functions: `FileExists(".git/config")`, `CommandExists("gh")`, `Tools.HasPattern("github_*")`.
+Server-side via `filterPromptsByEnabled()` / `buildPromptEnabledContext()`. Use `enabledWhen` (CEL) exclusively. Full CEL context: see `05-msghooks.md`. Useful functions: `FileExists(".git/config")`, `CommandExists("gh")`, `Tools.HasPattern("github_*")`, `BeadsCount("label", "open,in_progress")` / `HasBeads("label", "open,in_progress")`.
+
+**Beads gating (`BeadsCount` / `HasBeads`)**: query the workspace's `bd` (beads) DB from CEL AND Go templates. Both accept two comma-separated string args — `labels` (ALL match) and `statuses` (ANY match) — and run `bd list -l <labels> --status <statuses> --all --json` in `Workspace.Folder` (5s timeout, 5s in-memory cache). **Fail-open**: missing `bd`, non-zero exit, unparseable JSON, or timeout returns a positive sentinel (count=1 / true) so gated prompts are never wrongly hidden; a legitimate `[]` returns 0/false. Always short-circuit with cheap gates first so `bd` isn't exec'd when there's no DB: `CommandExists("bd") && DirExists(".beads") && HasBeads("support-question", "open,in_progress")`. Shared pure-Go helper (`beadsCount` in `internal/config/templatefuncs.go`) is the single source of truth for both surfaces — the CEL macros (`beadsCountMacro`, `hasBeadsMacro`) auto-inject `Workspace.Folder`.
 
 **Per-conversation user data (`UserData`)**: exposed as a `map[string]string` in both the template context (`{{ UserData "NAME" }}` / `{{ index .UserData "NAME" }}`) and CEL (`UserData["NAME"]` / `"NAME" in UserData`), built from the same conversation attributes that back `Session.UserDataJSON`. Wired exactly like `Args` (struct field + `cel.Variable` + `buildActivation` normalization + template func), but populated at **both** menu time (`buildPromptEnabledContext`) and send time (`buildProcessorInput`) — the parity invariant — so menu gating and body rendering agree. Use it for set-if-unset, else-do-Y flows; the opaque `UserDataJSON` blob cannot drive a per-field conditional.
 
@@ -175,7 +177,7 @@ Prompts may declare preferred model(s) for auto-selection at prompt-dispatch tim
 
 ```yaml
 preferredModels:
-  - modelName: Claude Sonnet   # matches a profile by its `name` (case-insensitive)
+  - modelName: Claude Sonnet 4 # matches a profile by its `name` (case-insensitive)
   - modelTag: Coding           # selects any profile carrying this tag (case-insensitive)
 ```
 

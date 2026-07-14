@@ -89,6 +89,9 @@ func (s *Server) apiRoutes(authMgr *middleware.AuthManager, csrfMgr *middleware.
 		apiRoute{pattern: "/api/agents/types", handler: http.HandlerFunc(s.apiHandlers.HandleAgentTypes)},
 		apiRoute{pattern: "/api/agents/scan", handler: http.HandlerFunc(s.apiHandlers.HandleScanAgents)},
 		apiRoute{pattern: "/api/agents/confirm", handler: http.HandlerFunc(s.apiHandlers.HandleConfirmAgents)},
+		// Guided ACP-server deletion (bead mitto-pgt).
+		apiRoute{method: "GET", pattern: "/api/acp-servers/{name}/prepare-delete", handler: http.HandlerFunc(s.apiHandlers.HandleACPServerPrepareDelete)},
+		apiRoute{method: "POST", pattern: "/api/acp-servers/{name}/reassign-and-delete", handler: http.HandlerFunc(s.apiHandlers.HandleACPServerReassignAndDelete)},
 		apiRoute{pattern: "/api/supported-runners", handler: http.HandlerFunc(s.apiHandlers.HandleSupportedRunners)},
 		apiRoute{pattern: "/api/runner-defaults", handler: http.HandlerFunc(s.apiHandlers.HandleRunnerDefaults)},
 		apiRoute{pattern: "/api/advanced-flags", handler: http.HandlerFunc(s.apiHandlers.HandleAdvancedFlags)},
@@ -124,12 +127,20 @@ func (s *Server) apiRoutes(authMgr *middleware.AuthManager, csrfMgr *middleware.
 		// Folder shortcut buttons (folder-native, stored in folders.json).
 		apiRoute{method: "GET", pattern: "/api/folders/shortcuts", handler: http.HandlerFunc(s.apiHandlers.HandleFolderShortcuts)},
 		apiRoute{method: "PUT", pattern: "/api/folders/shortcuts", handler: http.HandlerFunc(s.apiHandlers.HandleFolderShortcuts)},
+		// Folder pin/visibility (folder-native, stored in folders.json).
+		apiRoute{method: "GET", pattern: "/api/folders/pin", handler: http.HandlerFunc(s.apiHandlers.HandleFolderPin)},
+		apiRoute{method: "PUT", pattern: "/api/folders/pin", handler: http.HandlerFunc(s.apiHandlers.HandleFolderPin)},
 		// Global shortcut buttons (stored in settings.json, merged with folder shortcuts at render time).
 		apiRoute{method: "GET", pattern: "/api/global/shortcuts", handler: http.HandlerFunc(s.apiHandlers.HandleGlobalShortcuts)},
 		apiRoute{method: "PUT", pattern: "/api/global/shortcuts", handler: http.HandlerFunc(s.apiHandlers.HandleGlobalShortcuts)},
 		apiRoute{method: "POST", pattern: "/api/issues/cleanup", handler: http.HandlerFunc(s.apiHandlers.HandleBeadsCleanup)},
 		apiRoute{method: "POST", pattern: "/api/issues/sync", handler: http.HandlerFunc(s.apiHandlers.HandleBeadsSync)},
 		apiRoute{method: "POST", pattern: "/api/issues/{id}/status", handler: http.HandlerFunc(s.apiHandlers.HandleBeadsStatus)},
+	)
+
+	// Global dashboard aggregation (epic mitto-aqo).
+	routes = append(routes,
+		apiRoute{method: "GET", pattern: "/api/dashboard", handler: http.HandlerFunc(s.apiHandlers.HandleDashboard)},
 	)
 
 	// UI preferences.

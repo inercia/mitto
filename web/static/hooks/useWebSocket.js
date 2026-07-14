@@ -11,7 +11,6 @@ import {
   ROLE_ERROR,
   ROLE_SYSTEM,
   INITIAL_EVENTS_LIMIT,
-  MAX_MESSAGES,
   convertEventsToMessages,
   limitMessages,
   mergeMessagesWithSync,
@@ -21,7 +20,6 @@ import {
   savePendingPrompt,
   removePendingPrompt,
   getPendingPromptsForSession,
-  cleanupExpiredPrompts,
   getMaxSeq,
   isStaleClientState,
   resolveHasMoreAfterEventsLoaded,
@@ -40,23 +38,13 @@ import {
 
 import { playAgentCompletedSound } from "../utils/audio.js";
 
-import {
-  secureFetch,
-  authFetch,
-  checkAuth,
-  redirectToLogin,
-} from "../utils/csrf.js";
+import { secureFetch, authFetch, checkAuth } from "../utils/csrf.js";
 
 import { getApiPrefix } from "../utils/api.js";
 import { endpoints } from "../utils/index.js";
 
-import { isNativeApp } from "../utils/native.js";
-
 // Import WebSocket utilities (M1, M2 implementations)
 import {
-  createSeqTracker,
-  isSeqDuplicate as isSeqDuplicateUtil,
-  markSeqSeen as markSeqSeenUtil,
   calculateReconnectDelay,
   createReconnectDebounceTracker,
   shouldDebounceReconnect,
@@ -64,7 +52,27 @@ import {
   checkSessionExists,
   isTerminalSessionError,
   isReusedConversationResponse,
+  checkAuthOrRedirect,
+  STALE_RECOVERY_COOLDOWN_MS,
+  KEEPALIVE_MAX_MISSED_DEFAULT,
+  KEEPALIVE_MAX_MISSED_LARGE_SESSION,
+  LARGE_SESSION_SEQ_THRESHOLD,
+  KEEPALIVE_SYNC_TOLERANCE,
+  STARTUP_STAGGER_MS,
+  STAGGERED_RECONNECT_DEBOUNCE_MS,
+  BACKGROUND_DISCONNECT_GRACE_MS,
+  getKeepaliveInterval,
 } from "../utils/websocket.js";
+import { useWSSeqSync } from "./useWSSeqSync.js";
+import { useWSWorkspaces } from "./useWSWorkspaces.js";
+import { useWSQueue } from "./useWSQueue.js";
+import { useWSNotifications } from "./useWSNotifications.js";
+import { useWSConfigOptions } from "./useWSConfigOptions.js";
+import { useWSSessionSelectors } from "./useWSSessionSelectors.js";
+import { useWSActionButtons } from "./useWSActionButtons.js";
+import { useWSMobileResilience } from "./useWSMobileResilience.js";
+import { useWSConnection } from "./useWSConnection.js";
+import { useWSDeliveryVerification } from "./useWSDeliveryVerification.js";
 
 // =============================================================================
 // Session creation retry state (module-level, persists across re-renders)
@@ -88,219 +96,6 @@ let _sessionCreationRetryTimer = null;
 // Options snapshot for the pending auto-retry
 let _sessionCreationPendingOpts = null;
 
-// Time threshold (in ms) for considering the session potentially stale
-// If the page has been hidden for longer than this, we do an explicit auth check
-// before trying to reconnect. The server session expires after 24 hours.
-const STALE_THRESHOLD_MS = 60 * 60 * 1000; // 1 hour
-
-// Keepalive configuration for detecting zombie WebSocket connections and sequence sync
-// On mobile, connections can appear open but be dead (zombie connections)
-// Keepalive also piggybacks sequence numbers to detect out-of-sync situations
-// Native macOS app uses shorter interval (5s) since it's local with no network latency
-// Browser uses longer interval (10s) to reduce network overhead
-const KEEPALIVE_INTERVAL_NATIVE_MS = 5000; // Send keepalive every 5 seconds in native app
-const KEEPALIVE_INTERVAL_BROWSER_MS = 10000; // Send keepalive every 10 seconds in browser
-const KEEPALIVE_TIMEOUT_MS = 10000; // Consider connection unhealthy if no response in 10 seconds
-// Cooldown period after stale client recovery. During this window, keepalive
-// will not re-trigger stale detection for the session, giving React state
-// and the auto-load prepend time to settle.
-const STALE_RECOVERY_COOLDOWN_MS = 30000; // 30 seconds
-const KEEPALIVE_MAX_MISSED_DEFAULT = 2; // Force reconnect after 2 missed keepalives
-const KEEPALIVE_MAX_MISSED_LARGE_SESSION = 4; // For sessions with 500+ events
-const LARGE_SESSION_SEQ_THRESHOLD = 500;
-
-// Sync tolerance: only request sync if client is more than N sequences behind server.
-// This avoids excessive sync requests during normal streaming where the markdown buffer
-// may hold content briefly before flushing to the UI. A tolerance of 2 prevents
-// sync requests when client is just 1-2 behind due to normal buffering delays.
-// NOTE: This tolerance is only applied during active streaming. For non-streaming sessions,
-// tolerance is 0 to ensure immediate sync of final events like session_end.
-const KEEPALIVE_SYNC_TOLERANCE = 2;
-
-// Startup stagger: delay between each background session's WebSocket connection at startup/wake.
-// Prevents thundering herd where all sessions send load_events simultaneously,
-// overwhelming the server with concurrent large event replays.
-// Active session always connects first with no delay; background sessions stagger by this amount.
-const STARTUP_STAGGER_MS = 300;
-
-// Debounce window for reconnectAllSessionsStaggered (ms).
-// Multiple macOS activation sources (NSWorkspaceDidWakeNotification,
-// NSWorkspaceScreensDidWakeNotification, applicationDidBecomeActive) can fire
-// 4–10 seconds apart for the same wake/focus event.  In addition, the native
-// "App became active" callback and the WKWebView visibilitychange "App became
-// visible" event are distinct triggers that both funnel here ~6 s apart for a
-// single wake.  Collapsing these into a single staggered reconnect prevents a
-// redundant active-session force-reconnect (which tears down a freshly opened
-// WebSocket) and avoids duplicate background-session timers accumulating
-// observers on BackgroundSession.  Matches APP_ACTIVATE_RESYNC_DEBOUNCE_MS
-// (one resync per wake) so the active+visible pair coalesces into one reconnect.
-const STAGGERED_RECONNECT_DEBOUNCE_MS = 15000;
-
-// Grace period (ms) before a background session's per-session WebSocket is
-// disconnected after it stops being the active session. Lazy-connect keeps only
-// the active session connected; releasing a background WebSocket removes its
-// server-side observer so the backend GC can reclaim the idle ACP process.
-// The grace window keeps rapid back-and-forth switching cheap (the connection is
-// reused if the user returns within the window). The disconnect timer resets on
-// every active-session change, so only sessions left untouched for the full
-// window are dropped.
-const BACKGROUND_DISCONNECT_GRACE_MS = 30000;
-
-// Maximum session age for automatic WebSocket reconnection.
-// Sessions whose IDs indicate creation more than this many milliseconds ago
-// will not be automatically reconnected after a WebSocket close.
-// Session IDs encode the creation timestamp (YYYYMMDD-HHMMSS-xxxxxxxx), so
-// this check requires no server round-trip and works even offline.
-// 30 days is generous: any session untouched for a month is effectively dead.
-const SESSION_MAX_RECONNECT_AGE_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
-
-/**
- * Parse the creation age (in milliseconds) from a session ID.
- * Session IDs follow the format: YYYYMMDD-HHMMSS-xxxxxxxx (UTC).
- * Returns the number of milliseconds since creation, or null if the ID
- * format is not recognized (so the caller can treat unknown IDs as fresh).
- *
- * @param {string} sessionId - The session ID to inspect
- * @returns {number|null} Age in milliseconds, or null if unparseable
- */
-function getSessionAgeMs(sessionId) {
-  if (!sessionId) return null;
-  const m = sessionId.match(/^(\d{4})(\d{2})(\d{2})-(\d{2})(\d{2})(\d{2})-/);
-  if (!m) return null;
-  const createdAt = new Date(
-    Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +m[6]),
-  );
-  return Date.now() - createdAt.getTime();
-}
-
-/**
- * Get the appropriate keepalive interval based on the runtime environment.
- * Native macOS app uses a shorter interval for faster sync detection.
- * @returns {number} Keepalive interval in milliseconds
- */
-function getKeepaliveInterval() {
-  return isNativeApp()
-    ? KEEPALIVE_INTERVAL_NATIVE_MS
-    : KEEPALIVE_INTERVAL_BROWSER_MS;
-}
-
-// In-flight Promise for auth-check deduplication.
-// When several WebSocket sessions reconnect simultaneously they each call
-// checkAuthOrRedirect().  Without deduplication every session fires its own
-// raw GET /api/config, creating a mini fetching storm on every reconnect event.
-// Sharing a single in-flight Promise collapses N concurrent calls into one
-// HTTP round-trip.  The Promise resolves to { status, ok } (plain values, not
-// the Response object) so it can safely be awaited by multiple callers.
-let _authCheckInflight = null;
-
-/**
- * Quick authentication check before WebSocket reconnection.
- * If auth is invalid (401), redirects to login page and never returns.
- * For network errors or server errors, returns true to allow reconnection to proceed
- * (the WebSocket reconnect will handle retries with exponential backoff).
- *
- * Concurrent callers share a single in-flight HTTP request to avoid a fetch
- * storm when multiple sessions reconnect at the same time.
- *
- * @returns {Promise<boolean>} Always returns true. On 401, redirects and never returns.
- *                             Network/server errors also return true to allow reconnection.
- */
-async function checkAuthOrRedirect() {
-  // Deduplicate: if an auth check is already in-flight, share that Promise
-  // rather than firing a fresh HTTP request for each concurrent caller.
-  if (!_authCheckInflight) {
-    // authFetch sends credentials: "include" (cross-origin / Tailscale safe) and
-    // routes 401s through the shared handleUnauthorized → redirectToLogin().
-    _authCheckInflight = authFetch(endpoints.config.get())
-      .then((res) => ({ status: res.status, ok: res.ok }))
-      .finally(() => {
-        _authCheckInflight = null;
-      });
-  }
-  try {
-    const { status, ok } = await _authCheckInflight;
-
-    if (status === 401) {
-      // Session expired — redirect to login and stall forever.
-      console.warn("Session expired or invalid, redirecting to login...");
-      redirectToLogin();
-      return new Promise(() => {});
-    }
-    // If we got here, auth is valid (200) or there's a server error (5xx).
-    // Either way, let reconnection proceed — the WebSocket will retry with backoff.
-    if (!ok) {
-      console.warn(
-        `Auth check returned status ${status}, allowing reconnection to proceed`,
-      );
-    }
-    return true;
-  } catch (err) {
-    // Network error - let reconnection proceed.
-    // The WebSocket reconnection will naturally retry with exponential backoff.
-    console.warn(
-      "Auth check network error, allowing reconnection to proceed:",
-      err.message,
-    );
-    return true;
-  }
-}
-
-/**
- * Check authentication with retry logic for network errors.
- * After prolonged phone sleep, the network may take a moment to recover.
- * This function retries a few times before giving up.
- *
- * @param {number} maxRetries - Maximum number of retries (default: 3)
- * @param {number} retryDelay - Delay between retries in ms (default: 500)
- * @returns {Promise<{authenticated: boolean, networkError: boolean}>}
- *   - authenticated: true if the session is valid
- *   - networkError: true if all retries failed due to network errors
- */
-async function checkAuthWithRetry(maxRetries = 3, retryDelay = 500) {
-  for (let attempt = 0; attempt <= maxRetries; attempt++) {
-    try {
-      // authFetch sends credentials: "include" (cross-origin / Tailscale safe) and
-      // routes 401s through the shared handleUnauthorized → redirectToLogin().
-      const response = await authFetch(endpoints.config.get());
-
-      // Got a response - check if authenticated
-      if (response.status === 401) {
-        console.log(
-          "Auth check: session expired or invalid (401), redirecting to login",
-        );
-        redirectToLogin();
-        return { authenticated: false, networkError: false };
-      }
-
-      if (response.ok) {
-        return { authenticated: true, networkError: false };
-      }
-
-      // Other error status - treat as auth failure if persistent
-      console.warn(`Auth check returned status ${response.status}`);
-      if (attempt < maxRetries) {
-        await new Promise((r) => setTimeout(r, retryDelay));
-        continue;
-      }
-      return { authenticated: false, networkError: false };
-    } catch (err) {
-      // Network error - retry if we have attempts left
-      console.warn(
-        `Auth check network error (attempt ${attempt + 1}/${maxRetries + 1}):`,
-        err.message,
-      );
-      if (attempt < maxRetries) {
-        await new Promise((r) => setTimeout(r, retryDelay));
-        continue;
-      }
-      // All retries exhausted
-      return { authenticated: false, networkError: true };
-    }
-  }
-  // Should not reach here
-  return { authenticated: false, networkError: true };
-}
-
 /**
  * WebSocket Hook with Per-Session WebSocket Support
  * Manages both global events WebSocket and per-session WebSockets
@@ -309,19 +104,26 @@ async function checkAuthWithRetry(maxRetries = 3, retryDelay = 500) {
  * @param {Object} [options.onActiveSessionRemovedRef] - Ref whose `.current` is a
  *   callback invoked with the removed conversation's folder working dir when the
  *   ACTIVE conversation is removed from view (deleted or archived). When set, it
- *   takes over post-removal navigation (e.g. opening that folder's Tasks view)
+ *   takes over post-removal navigation (e.g. showing the global Dashboard)
  *   instead of switching to another conversation. Falls back to the previous
  *   behavior when unset.
+ * @param {Object} [options.onNoInitialSessionRef] - Ref whose `.current` is a
+ *   callback invoked on initial connection when there is no valid last-active
+ *   conversation to restore (either no persisted id, or the persisted id no
+ *   longer maps to an existing session). When set, the hook does NOT auto-switch
+ *   to the most-recent session and instead lets the callback route the UI (e.g.
+ *   to the global Dashboard). Falls back to switching to sessions[0] when unset.
  */
-export function useWebSocket({ onActiveSessionRemovedRef } = {}) {
+export function useWebSocket({
+  onActiveSessionRemovedRef,
+  onNoInitialSessionRef,
+} = {}) {
   // Initialize window.__debug for test observability.
   // Tests can read window.__debug.lastLoadEventsAfterSeq to assert the client
   // used its stored watermark (not 0) when sending load_events after reconnect.
   if (typeof window !== "undefined" && !window.__debug) {
     window.__debug = {};
   }
-
-  const [eventsConnected, setEventsConnected] = useState(false);
 
   // Set of workingDir strings with an in-flight session-creation request or pending auto-retry.
   // Used to show a per-folder spinner on the "+" button and prevent duplicate clicks.
@@ -340,45 +142,45 @@ export function useWebSocket({ onActiveSessionRemovedRef } = {}) {
   // Global MCP server bind status from the `connected` message: { available, reason, port } | null
   const [mcpStatus, setMcpStatus] = useState(null);
 
-  // Workspaces state: list of configured workspaces from server
-  const [workspaces, setWorkspaces] = useState([]);
-  // Available ACP servers from config
-  const [acpServers, setAcpServers] = useState([]);
+  const {
+    workspaces,
+    acpServers,
+    fetchWorkspaces,
+    addWorkspace,
+    removeWorkspace,
+  } = useWSWorkspaces();
   // MCP tools per workspace UUID: { [workspaceUUID]: [{name, description}] }
   const [workspaceMcpTools, setWorkspaceMcpTools] = useState({});
 
-  // Track background session completions for toast notifications
-  // { sessionId, sessionName, timestamp }
-  const [backgroundCompletion, setBackgroundCompletion] = useState(null);
+  // Background notification state (completions, loop started, background UI prompts) — extracted to useWSNotifications sub-hook, mitto-90f.5
+  const {
+    backgroundCompletion,
+    setBackgroundCompletion,
+    clearBackgroundCompletion,
+    loopStarted,
+    setLoopStarted,
+    clearLoopStarted,
+    backgroundUIPrompt,
+    setBackgroundUIPrompt,
+    clearBackgroundUIPrompt,
+    backgroundUIPromptTimeout,
+    setBackgroundUIPromptTimeout,
+    clearBackgroundUIPromptTimeout,
+  } = useWSNotifications();
 
-  // Track loop session starts for toast notifications
-  // { sessionId, sessionName, timestamp }
-  const [loopStarted, setLoopStarted] = useState(null);
-
-  // Track background UI prompts for toast notifications
-  // { sessionId, sessionName, question, timestamp }
-  const [backgroundUIPrompt, setBackgroundUIPrompt] = useState(null);
-
-  // Track background UI prompt timeouts for native OS notifications
-  // Fired when a blocking prompt in a background session times out with no active viewer.
-  // { sessionId, sessionName, question, timestamp }
-  const [backgroundUIPromptTimeout, setBackgroundUIPromptTimeout] =
-    useState(null);
-
-  // Queue length for the active session
-  const [queueLength, setQueueLength] = useState(0);
-
-  // Queue messages for the active session
-  // Array of { id, message, title, queued_at }
-  const [queueMessages, setQueueMessages] = useState([]);
-
-  // Queue configuration for the active session
-  // { enabled: bool, max_size: int, delay_seconds: int }
-  const [queueConfig, setQueueConfig] = useState({
-    enabled: true,
-    max_size: 10,
-    delay_seconds: 0,
-  });
+  // Queue state + REST callbacks (extracted to useWSQueue sub-hook, mitto-90f.5)
+  const {
+    queueLength,
+    queueMessages,
+    queueConfig,
+    setQueueLength,
+    setQueueMessages,
+    setQueueConfig,
+    fetchQueueMessages,
+    deleteQueueMessage,
+    addToQueue,
+    moveQueueMessage,
+  } = useWSQueue(activeSessionId);
 
   // Available slash commands for the active session (from ACP agent)
   // Array of { name: string, description: string, input_hint?: string }
@@ -388,13 +190,8 @@ export function useWebSocket({ onActiveSessionRemovedRef } = {}) {
   // Array of { id: string, name: string, description?: string, category?: string, type: string, current_value: string, options: [] }
   // See https://agentclientprotocol.com/protocol/session-config-options
 
-  const eventsWsRef = useRef(null);
-  const reconnectRef = useRef(null);
   const activeSessionIdRef = useRef(activeSessionId);
-  const sessionWsRefs = useRef({}); // { sessionId: WebSocket }
-  const sessionReconnectRefs = useRef({}); // { sessionId: timeoutId } for session reconnection
   const sessionsRef = useRef(sessions); // For accessing sessions in callbacks
-  const workspacesRef = useRef(workspaces); // For accessing workspaces in callbacks
   const retryPendingPromptsRef = useRef(null); // Ref to retry function (set later to avoid circular deps)
   const resolvePendingSendsRef = useRef(null); // Ref to resolve function (set later to avoid circular deps)
   // Always points to the latest createNewSession callback — used by the retry timer
@@ -408,65 +205,41 @@ export function useWebSocket({ onActiveSessionRemovedRef } = {}) {
   // { sessionId: { promptId: string, seq: number } }
   const lastConfirmedPromptRef = useRef({});
 
-  // M2: Track reconnection attempts for exponential backoff
-  // { sessionId: attemptCount } for session WebSockets
-  const sessionReconnectAttemptsRef = useRef({});
-  // Attempt count for global events WebSocket
-  const eventsReconnectAttemptRef = useRef(0);
+  const { isSeqDuplicate, markSeqSeen, clearSeenSeqs } = useWSSeqSync();
 
-  // M1 fix: Track seen sequence numbers per session for client-side deduplication
-  // { sessionId: { highestSeq: number, recentSeqs: Set<number> } }
-  // Uses utility functions from utils/websocket.js for testability
-  const seenSeqsRef = useRef({});
+  // ============================================================================
+  // Forward-refs for C1 (useWSConnection) transport functions (mitto-90f.6.2)
+  // ============================================================================
+  // useWSConnection is called BELOW useWSMobileResilience (which owns
+  // staleRecoveryCooldownRef) so its returned functions are not available at
+  // the declaration site of composer callbacks that use them (switchSession,
+  // createNewSession, sendPrompt, cancelPrompt, forceReset, retryPendingPrompts,
+  // ensureResumed, sendUIPromptAnswer, the init useEffect, the auto-recovery
+  // useEffect). Each such callback closes over one of these refs via .current(...)
+  // and omits the C1 function from its dep array. Populated right after
+  // useWSConnection returns.
+  const connectToSessionRef = useRef(null);
+  const sendToSessionRef = useRef(null);
+  const waitForSessionConnectionRef = useRef(null);
+  const isConnectionHealthyRef = useRef(null);
+  const connectToEventsRef = useRef(null);
+  const forceReconnectActiveSessionRef = useRef(null);
+  const reconnectAllSessionsStaggeredRef = useRef(null);
 
-  /**
-   * Get or create a seq tracker for a session.
-   * @param {string} sessionId - The session ID
-   * @returns {{highestSeq: number, recentSeqs: Set<number>}}
-   */
-  const getSeqTracker = useCallback((sessionId) => {
-    if (!seenSeqsRef.current[sessionId]) {
-      seenSeqsRef.current[sessionId] = createSeqTracker();
-    }
-    return seenSeqsRef.current[sessionId];
-  }, []);
+  // handleSessionMessage lives in the composer but is threaded through this ref
+  // into useWSConnection so its identity stays stable across reconnects
+  // (rule 21-web-frontend-state). Populated unconditionally after the useCallback
+  // declaration below.
+  const handleSessionMessageRef = useRef(null);
 
-  /**
-   * Check if a sequence number has already been seen for a session.
-   * Wrapper around utility function that manages per-session state.
-   */
-  const isSeqDuplicate = useCallback(
-    (sessionId, seq, lastMessageSeq) => {
-      const tracker = getSeqTracker(sessionId);
-      const isDuplicate = isSeqDuplicateUtil(tracker, seq, lastMessageSeq);
-      if (isDuplicate) {
-        console.log(
-          `M1 dedup: Skipping duplicate seq ${seq} for session ${sessionId}`,
-        );
-      }
-      return isDuplicate;
-    },
-    [getSeqTracker],
+  // Stable wrapper: useWSConfigOptions (called mid-composer) needs a sendToSession
+  // but the real C1 implementation is not returned until below useWSMobileResilience.
+  // The wrapper ref-indirects to the current C1 function; the ref is populated
+  // after useWSConnection returns.
+  const sendToSessionStable = useCallback(
+    (sessionId, msg) => sendToSessionRef.current?.(sessionId, msg) ?? false,
+    [],
   );
-
-  /**
-   * Mark a sequence number as seen for a session.
-   * Wrapper around utility function that manages per-session state.
-   */
-  const markSeqSeen = useCallback(
-    (sessionId, seq) => {
-      const tracker = getSeqTracker(sessionId);
-      markSeqSeenUtil(tracker, seq);
-    },
-    [getSeqTracker],
-  );
-
-  /**
-   * Clear seen sequences for a session (e.g., when session is deleted or reset).
-   */
-  const clearSeenSeqs = useCallback((sessionId) => {
-    delete seenSeqsRef.current[sessionId];
-  }, []);
 
   // Track pending gap fill requests to avoid duplicate requests
   // { sessionId: { afterSeq: number, requestTime: number } }
@@ -476,48 +249,11 @@ export function useWebSocket({ onActiveSessionRemovedRef } = {}) {
   // We wait a bit before requesting to allow for out-of-order delivery
   const GAP_FILL_DEBOUNCE_MS = 500;
 
-  // Track if this is a reconnection (vs initial connection)
-  const wasConnectedRef = useRef(false);
-
-  // Track when the page was last hidden (for staleness detection on mobile)
-  const lastHiddenTimeRef = useRef(null);
-
-  // Track last force-reconnect time per session to debounce duplicate reconnects
-  const reconnectDebounceRef = useRef(createReconnectDebounceTracker());
-
-  // Track whether the server is in the process of shutting down.
-  // Set to true when an acp_stopped message with reason "server_shutdown" is received.
-  // Prevents reconnection attempts after intentional server shutdown.
-  const serverShuttingDownRef = useRef(false);
-
-  // Track pending staggered background-session reconnect timers.
-  // Cancelled and replaced whenever reconnectAllSessionsStaggered fires again,
-  // preventing a second call from scheduling a duplicate set of timers on top
-  // of timers from the first call (which causes observer accumulation).
-  const staggeredBackgroundTimersRef = useRef({});
-
-  // Timestamp (ms) of the last accepted reconnectAllSessionsStaggered call.
-  // Zero means the function has never been called.
-  const lastStaggeredReconnectRef = useRef(0);
-
-  // Timer for the lazy-connect background-session disconnect sweep. Reset on every
-  // active-session change so only sessions idle for the full grace window are dropped.
-  const backgroundDisconnectTimerRef = useRef(null);
-
-  // Keepalive tracking for detecting zombie connections
-  // { sessionId: { intervalId, lastAckTime, missedCount, pendingKeepalive } }
-  const keepaliveRef = useRef({});
-
   // Track in-flight sync (load_events) requests per session.
   // When a sync is pending, keepalive misses are suppressed to prevent
   // reconnection storms during large event syncs (e.g., 790 events).
   // { sessionId: boolean }
   const pendingSyncRef = useRef({});
-
-  // Cooldown after stale recovery to prevent feedback loops.
-  // Maps sessionId → timestamp of last stale recovery.
-  // When set, keepalive skips stale detection for this session for STALE_RECOVERY_COOLDOWN_MS.
-  const staleRecoveryCooldownRef = useRef({});
 
   // Auto-clear timeout for pendingSyncRef to prevent indefinite suppression.
   // If events_loaded never arrives (e.g., server error, WebSocket drop),
@@ -783,232 +519,6 @@ export function useWebSocket({ onActiveSessionRemovedRef } = {}) {
     [sessionsRef, setPendingSync],
   );
 
-  // Fetch workspaces and ACP servers
-  const fetchWorkspaces = useCallback(async () => {
-    try {
-      const response = await authFetch(endpoints.workspaces.list());
-      if (response.ok) {
-        const data = await response.json();
-        setWorkspaces(data.workspaces || []);
-        setAcpServers(data.acp_servers || []);
-      }
-    } catch (err) {
-      console.error("Failed to fetch workspaces:", err);
-    }
-  }, []);
-
-  // Fetch workspaces on mount
-  useEffect(() => {
-    fetchWorkspaces();
-  }, [fetchWorkspaces]);
-
-  // Add a new workspace
-  const addWorkspace = useCallback(
-    async (workingDir, acpServer) => {
-      try {
-        const response = await secureFetch(endpoints.workspaces.create(), {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            working_dir: workingDir,
-            acp_server: acpServer,
-          }),
-        });
-
-        if (!response.ok) {
-          let msg = "Failed to add workspace";
-          try {
-            const data = await response.json();
-            msg = data.error?.message || msg;
-          } catch (_e) {
-            /* keep default */
-          }
-          return { error: msg };
-        }
-
-        const data = await response.json();
-        // Refresh workspaces list
-        await fetchWorkspaces();
-        return { workspace: data };
-      } catch (err) {
-        console.error("Failed to add workspace:", err);
-        return { error: err.message || "Failed to add workspace" };
-      }
-    },
-    [fetchWorkspaces],
-  );
-
-  // Remove a workspace
-  const removeWorkspace = useCallback(
-    async (workingDir) => {
-      try {
-        const response = await secureFetch(
-          endpoints.workspaces.list({ working_dir: workingDir }),
-          {
-            method: "DELETE",
-          },
-        );
-
-        if (!response.ok) {
-          // Try to parse as JSON for structured errors
-          const contentType = response.headers.get("content-type");
-          if (contentType && contentType.includes("application/json")) {
-            const errorData = await response.json();
-            const error = new Error(
-              errorData.error?.message || "Failed to remove workspace",
-            );
-            error.code = errorData.error?.code;
-            error.conversationCount =
-              errorData.error?.details?.conversation_count;
-            throw error;
-          }
-          const errorText = await response.text();
-          throw new Error(errorText);
-        }
-
-        // Refresh workspaces list
-        await fetchWorkspaces();
-      } catch (err) {
-        console.error("Failed to remove workspace:", err);
-        throw err;
-      }
-    },
-    [fetchWorkspaces],
-  );
-
-  // Fetch queue messages for the active session
-  const fetchQueueMessages = useCallback(async () => {
-    if (!activeSessionId) {
-      setQueueMessages([]);
-      return;
-    }
-    try {
-      const response = await authFetch(
-        endpoints.sessions.queue(activeSessionId),
-      );
-      if (response.ok) {
-        const data = await response.json();
-        setQueueMessages(data.messages || []);
-        setQueueLength(data.count || 0);
-      }
-    } catch (err) {
-      console.error("Failed to fetch queue messages:", err);
-    }
-  }, [activeSessionId]);
-
-  // Fetch queue messages when active session changes
-  useEffect(() => {
-    if (activeSessionId) {
-      fetchQueueMessages();
-    } else {
-      // Clear queue state when no session is active
-      setQueueMessages([]);
-      setQueueLength(0);
-    }
-  }, [activeSessionId, fetchQueueMessages]);
-
-  // Delete a message from the queue
-  const deleteQueueMessage = useCallback(
-    async (messageId) => {
-      if (!activeSessionId || !messageId) return false;
-      try {
-        const response = await secureFetch(
-          endpoints.sessions.queueMsg(activeSessionId, messageId),
-          { method: "DELETE" },
-        );
-        if (response.ok || response.status === 204) {
-          // Refresh queue messages after deletion
-          await fetchQueueMessages();
-          return true;
-        }
-        console.error("Failed to delete queue message:", response.status);
-        return false;
-      } catch (err) {
-        console.error("Failed to delete queue message:", err);
-        return false;
-      }
-    },
-    [activeSessionId, fetchQueueMessages],
-  );
-
-  // Add a message to the queue
-  const addToQueue = useCallback(
-    async (message, imageIds = [], fileIds = [], opts = {}) => {
-      const { promptName } = opts;
-      if (!activeSessionId || (!message?.trim() && !promptName))
-        return { success: false };
-      try {
-        const body = {
-          message: message?.trim() || "",
-          image_ids: imageIds,
-          file_ids: fileIds,
-        };
-        if (promptName) body.prompt_name = promptName;
-        const response = await secureFetch(
-          endpoints.sessions.queue(activeSessionId),
-          {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(body),
-          },
-        );
-        if (response.ok || response.status === 201) {
-          // Parse response to get the message ID
-          const data = await response.json().catch(() => ({}));
-          // Refresh queue messages after addition
-          await fetchQueueMessages();
-          return { success: true, messageId: data.id };
-        }
-        // Handle queue full error
-        if (response.status === 409) {
-          const data = await response.json().catch(() => ({}));
-          return {
-            success: false,
-            error: data.error?.code || data.error || "queue_full",
-            message: data.error?.message || data.message,
-          };
-        }
-        console.error("Failed to add to queue:", response.status);
-        return { success: false, error: "request_failed" };
-      } catch (err) {
-        console.error("Failed to add to queue:", err);
-        return { success: false, error: "request_failed" };
-      }
-    },
-    [activeSessionId, fetchQueueMessages],
-  );
-
-  // Move a message up or down in the queue
-  const moveQueueMessage = useCallback(
-    async (messageId, direction) => {
-      if (!activeSessionId || !messageId) return false;
-      if (direction !== "up" && direction !== "down") return false;
-      try {
-        const response = await secureFetch(
-          endpoints.sessions.queueMove(activeSessionId, messageId),
-          {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ direction }),
-          },
-        );
-        if (response.ok) {
-          // The response contains the updated queue, update local state
-          const data = await response.json();
-          setQueueMessages(data.messages || []);
-          setQueueLength(data.count || 0);
-          return true;
-        }
-        console.error("Failed to move queue message:", response.status);
-        return false;
-      } catch (err) {
-        console.error("Failed to move queue message:", err);
-        return false;
-      }
-    },
-    [activeSessionId],
-  );
-
   // Keep refs in sync with state
   const storedSessionsRef = useRef(null);
   // Store working_dir values from API/WebSocket to ensure they're always available
@@ -1025,10 +535,6 @@ export function useWebSocket({ onActiveSessionRemovedRef } = {}) {
   useEffect(() => {
     sessionsRef.current = sessions;
   }, [sessions]);
-
-  useEffect(() => {
-    workspacesRef.current = workspaces;
-  }, [workspaces]);
 
   useEffect(() => {
     storedSessionsRef.current = storedSessions;
@@ -1052,81 +558,20 @@ export function useWebSocket({ onActiveSessionRemovedRef } = {}) {
   // map) keeps their references stable across background streaming updates.
   const activeSession = activeSessionId ? sessions[activeSessionId] : null;
 
-  // Get current session's messages
-  const messages = useMemo(() => {
-    return activeSession?.messages || [];
-  }, [activeSession]);
+  // Active-session-derived selectors (extracted to useWSSessionSelectors sub-hook, mitto-90f.5)
+  const {
+    messages,
+    sessionInfo,
+    isStreaming,
+    agentWorking,
+    isRunning,
+    hasMoreMessages,
+    isLoadingMore,
+    hasReachedLimit,
+  } = useWSSessionSelectors(activeSession);
 
-  // Get current session info (enhanced with message count)
-  const sessionInfo = useMemo(() => {
-    if (!activeSession) return null;
-    const info = activeSession.info || {};
-    // Include message count from the messages array
-    return {
-      ...info,
-      messageCount: activeSession.messages?.length || 0,
-    };
-  }, [activeSession]);
-
-  // Get streaming state for active session
-  const isStreaming = useMemo(() => {
-    return activeSession?.isStreaming || false;
-  }, [activeSession]);
-
-  // Get "agent is still working" heartbeat state for active session (transient,
-  // set by the agent_working WS message, cleared on prompt_complete).
-  const agentWorking = useMemo(() => {
-    return activeSession?.agentWorking || null;
-  }, [activeSession]);
-
-  // Check if the ACP agent is running for the active session.
-  // When false, the session exists but the agent process hasn't started yet
-  // (e.g., during resume). Prompts should be blocked until acp_started arrives.
-  const isRunning = useMemo(() => {
-    return activeSession?.isRunning ?? false;
-  }, [activeSession]);
-
-  // Check if active session has more messages to load
-  const hasMoreMessages = useMemo(() => {
-    return activeSession?.hasMoreMessages || false;
-  }, [activeSession]);
-
-  // Check if active session is currently loading more messages
-  const isLoadingMore = useMemo(() => {
-    return activeSession?.isLoadingMore || false;
-  }, [activeSession]);
-
-  // Check if active session has reached the message limit
-  // When true, we've loaded MAX_MESSAGES and can't load more to protect memory
-  const hasReachedLimit = useMemo(() => {
-    const messageCount = activeSession?.messages?.length || 0;
-    return messageCount >= MAX_MESSAGES;
-  }, [activeSession]);
-
-  // Extract action buttons reference — stable across streaming updates.
-  // During streaming, setSessions() spreads the session object which copies
-  // actionButtons by reference, so this stays the same array instance until
-  // buttons are actually set or cleared.
-  const sessionActionButtons = sessions[activeSessionId]?.actionButtons;
-
-  // Get action buttons for active session
-  const actionButtons = useMemo(() => {
-    if (!activeSessionId || !sessionActionButtons) {
-      return [];
-    }
-    return sessionActionButtons;
-  }, [sessionActionButtons, activeSessionId]);
-
-  // Log when action buttons actually change (not inside useMemo)
-  useEffect(() => {
-    if (actionButtons.length > 0) {
-      console.log("[ActionButtons] Buttons updated:", {
-        sessionId: activeSessionId,
-        buttonCount: actionButtons.length,
-        buttons: actionButtons.map((b) => b.label),
-      });
-    }
-  }, [actionButtons, activeSessionId]);
+  // Action buttons for active session (extracted to useWSActionButtons sub-hook, mitto-90f.5)
+  const { actionButtons } = useWSActionButtons(sessions, activeSessionId);
 
   // Get all active sessions as array for sidebar
   // Memoized with structural fingerprint to prevent unnecessary re-renders
@@ -1210,12 +655,6 @@ export function useWebSocket({ onActiveSessionRemovedRef } = {}) {
     prevActiveSessionsResult.current = result;
     return result;
   }, [sessions, storedSessions, workingDirMap]);
-
-  // Derive configOptions from the active session's info (per-session, not global)
-  const configOptions = useMemo(() => {
-    if (!activeSessionId) return [];
-    return activeSession?.info?.config_options || [];
-  }, [activeSession, activeSessionId]);
 
   // Handle messages from per-session WebSocket
   const handleSessionMessage = useCallback((sessionId, msg) => {
@@ -1307,17 +746,13 @@ export function useWebSocket({ onActiveSessionRemovedRef } = {}) {
                   session.info?.loop_configured ??
                   false,
                 loop_enabled:
-                  msg.data.loop_enabled ??
-                  session.info?.loop_enabled ??
-                  false,
+                  msg.data.loop_enabled ?? session.info?.loop_enabled ?? false,
                 loop_stopped_reason:
                   msg.data.loop_stopped_reason ??
                   session.info?.loop_stopped_reason ??
                   null,
                 loop_trigger:
-                  msg.data.loop_trigger ??
-                  session.info?.loop_trigger ??
-                  null,
+                  msg.data.loop_trigger ?? session.info?.loop_trigger ?? null,
                 loop_delay_seconds:
                   msg.data.loop_delay_seconds ??
                   session.info?.loop_delay_seconds ??
@@ -2317,6 +1752,33 @@ export function useWebSocket({ onActiveSessionRemovedRef } = {}) {
         );
         break;
 
+      case "session_beads_issue_updated":
+        // Linked beads issue changed for this session (via REST PATCH or
+        // MCP tool). Update session info so the header's linked-issue button
+        // re-renders with the new id (or clears when empty).
+        setSessions((prev) => {
+          const session = prev[sessionId];
+          if (!session) return prev;
+          return {
+            ...prev,
+            [sessionId]: {
+              ...session,
+              info: {
+                ...session.info,
+                beads_issue: msg.data.beads_issue || "",
+              },
+            },
+          };
+        });
+        setStoredSessions((prev) =>
+          prev.map((s) =>
+            s.session_id === sessionId
+              ? { ...s, beads_issue: msg.data.beads_issue || "" }
+              : s,
+          ),
+        );
+        break;
+
       case "session_reset":
         // Session was forcefully reset due to unresponsive agent
         console.log("Session forcefully reset:", sessionId);
@@ -2989,6 +2451,30 @@ export function useWebSocket({ onActiveSessionRemovedRef } = {}) {
         }
         break;
 
+      case "mcp_initializing":
+        // Server notifies that the agent for a workspace is blocked waiting for
+        // MCP servers to initialize on this cold start (mitto-8ul.1). Informational
+        // only — the pending session/new is still expected to succeed.
+        console.log("MCP initializing:", msg.data);
+        if (msg.data) {
+          window.dispatchEvent(
+            new CustomEvent("mitto:mcp_initializing", { detail: msg.data }),
+          );
+        }
+        break;
+
+      case "mcp_init_timed_out":
+        // Server notifies that the agent's MCP-init wait budget elapsed before all
+        // MCP servers finished handshake, so the pending session/new was aborted
+        // with an actionable error (mitto-8ul.1).
+        console.warn("MCP init timed out:", msg.data);
+        if (msg.data) {
+          window.dispatchEvent(
+            new CustomEvent("mitto:mcp_init_timed_out", { detail: msg.data }),
+          );
+        }
+        break;
+
       case "acp_start_failed":
         // Server notifies that the ACP server failed to start
         console.error("ACP start failed:", msg.data);
@@ -3091,6 +2577,30 @@ export function useWebSocket({ onActiveSessionRemovedRef } = {}) {
             messageText = `Session stopped: ${reason}. Unarchive to continue.`;
           }
 
+          // Only append the stop message when the session was actually running.
+          // Multiple stop broadcasts (per-session WS + global events + coalesced
+          // resume paths) can arrive for the same underlying transition; gating
+          // on the prior isRunning state prevents duplicate messages.
+          const wasRunning = session.isRunning === true;
+          const nextInfo = {
+            ...session.info,
+            acp_ready: false,
+            // Track GC-suspended state so the UI can suppress the
+            // "Reconnecting to AI agent..." spinner for suspended sessions.
+            gc_suspended: isGCSuspended || false,
+          };
+          if (!wasRunning) {
+            return {
+              ...prev,
+              [sessionId]: {
+                ...session,
+                isRunning: false,
+                isStreaming: false,
+                activeUIPrompt: null,
+                info: nextInfo,
+              },
+            };
+          }
           return {
             ...prev,
             [sessionId]: {
@@ -3098,13 +2608,7 @@ export function useWebSocket({ onActiveSessionRemovedRef } = {}) {
               isRunning: false,
               isStreaming: false,
               activeUIPrompt: null,
-              info: {
-                ...session.info,
-                acp_ready: false,
-                // Track GC-suspended state so the UI can suppress the
-                // "Reconnecting to AI agent..." spinner for suspended sessions.
-                gc_suspended: isGCSuspended || false,
-              },
+              info: nextInfo,
               // Add a system/error message to inform the user
               messages: [
                 ...session.messages,
@@ -3330,408 +2834,12 @@ export function useWebSocket({ onActiveSessionRemovedRef } = {}) {
     }
   }, []);
 
-  // Connect to per-session WebSocket
-  const connectToSession = useCallback(
-    (sessionId) => {
-      // Clear any pending reconnect timer for this session
-      if (sessionReconnectRefs.current[sessionId]) {
-        clearTimeout(sessionReconnectRefs.current[sessionId]);
-        delete sessionReconnectRefs.current[sessionId];
-      }
+  // Route handleSessionMessage through a ref so useWSConnection's onmessage
+  // closures see the latest identity across reconnects (rule 21).
+  handleSessionMessageRef.current = handleSessionMessage;
 
-      // Don't connect if already connected
-      if (sessionWsRefs.current[sessionId]) {
-        return sessionWsRefs.current[sessionId];
-      }
-
-      const ws = new WebSocket(endpoints.sessions.ws(sessionId));
-      const wsId = Math.random().toString(36).substring(2, 8); // Debug ID for this connection
-      ws._debugId = wsId;
-
-      ws.onopen = () => {
-        console.log(`Session WebSocket connected: ${sessionId} (ws: ${wsId})`);
-
-        // M2: Reset reconnection attempt counter on successful connection
-        delete sessionReconnectAttemptsRef.current[sessionId];
-
-        // Determine the highest sequence number we have confirmed for this session.
-        // Priority (highest wins):
-        //   1. lastKnownSeqRef  – updated on every received event, survives WS reconnects
-        //   2. localStorage     – written by updateLastKnownSeq, survives app restarts /
-        //                         WKWebView page reloads (safe: reads are try/catch-guarded)
-        //   3. React state      – messages / lastLoadedSeq
-        const session = sessionsRef.current[sessionId];
-        const sessionMessages = session?.messages || [];
-        const refSeq = lastKnownSeqRef.current[sessionId] || 0;
-        // Restore watermark from localStorage on app restart (refSeq is 0 only then).
-        const persistedSeq = refSeq === 0 ? getLastSeenSeq(sessionId) : 0;
-        if (persistedSeq > 0) {
-          // Populate the in-memory ref so all later code sees the restored value.
-          lastKnownSeqRef.current[sessionId] = persistedSeq;
-        }
-        const stateSeq = Math.max(
-          getMaxSeq(sessionMessages),
-          session?.lastLoadedSeq || 0,
-        );
-        const lastSeq = Math.max(refSeq, persistedSeq, stateSeq);
-        // Add a small random jitter (0–300 ms) before sending the initial load_events.
-        // When the app opens several sessions at once (e.g., 5 tabs at startup), they
-        // all call onopen within the same JS tick and hammer the server storage layer
-        // simultaneously. Spreading them out prevents the burst without any visible
-        // latency impact (300 ms is imperceptible to the user).
-        const startupJitterMs = Math.floor(Math.random() * 300);
-        setTimeout(() => {
-          // Guard: if this WebSocket was replaced by a newer one during the jitter
-          // window (e.g., a force-reconnect fired), discard this stale send.
-          if (sessionWsRefs.current[sessionId] !== ws) return;
-
-          if (lastSeq > 0) {
-            console.log(
-              `Syncing session ${sessionId} from seq ${lastSeq} (refSeq=${refSeq}, persistedSeq=${persistedSeq}, messages=${sessionMessages.length}, jitter=${startupJitterMs}ms)`,
-            );
-            // When we have a stored watermark but no messages in memory (app restart /
-            // WKWebView reload), flag this session so events_loaded can trigger a
-            // context load if the after_seq check returns zero new events.
-            if (sessionMessages.length === 0) {
-              needsContextLoadRef.current[sessionId] = true;
-            }
-            setPendingSync(sessionId);
-            ws.send(
-              JSON.stringify({
-                type: "load_events",
-                data: { after_seq: lastSeq },
-              }),
-            );
-            // Export to window.__debug for Playwright test observability.
-            // Tests assert this is > 0 to verify the localStorage watermark was used.
-            if (typeof window !== "undefined" && window.__debug) {
-              window.__debug.lastLoadEventsAfterSeq = lastSeq;
-              // lastInitialLoadEventsAfterSeq is ONLY set here (watermark restore path)
-              // and is NOT overwritten by the fallback context load. This allows tests
-              // to reliably assert the watermark was used, even when the fallback fires
-              // immediately after and resets lastLoadEventsAfterSeq to 0.
-              window.__debug.lastInitialLoadEventsAfterSeq = lastSeq;
-              window.__debug.lastLoadEventsSessionId = sessionId;
-              window.__debug.lastLoadEventsTimestamp = Date.now();
-            }
-          } else {
-            // No watermark at all — true initial load, fetch the last N events.
-            console.log(
-              `Loading session ${sessionId} events (initial load, jitter=${startupJitterMs}ms)`,
-            );
-            setPendingSync(sessionId);
-            ws.send(
-              JSON.stringify({
-                type: "load_events",
-                data: { limit: INITIAL_EVENTS_LIMIT },
-              }),
-            );
-          }
-        }, startupJitterMs);
-
-        // Retry any pending prompts after a short delay to ensure connection is stable
-        setTimeout(() => {
-          if (retryPendingPromptsRef.current) {
-            retryPendingPromptsRef.current(sessionId);
-          }
-        }, 500);
-
-        // Start keepalive interval to detect zombie connections
-        // Clear any existing keepalive for this session first
-        if (keepaliveRef.current[sessionId]?.intervalId) {
-          clearInterval(keepaliveRef.current[sessionId].intervalId);
-        }
-
-        const intervalId = setInterval(() => {
-          const currentWs = sessionWsRefs.current[sessionId];
-          if (!currentWs || currentWs.readyState !== WebSocket.OPEN) {
-            // WebSocket is not open, clear the interval
-            clearInterval(intervalId);
-            delete keepaliveRef.current[sessionId];
-            return;
-          }
-
-          const keepalive = keepaliveRef.current[sessionId];
-          if (keepalive?.pendingKeepalive) {
-            // If a sync (load_events) is in progress, suppress the miss count.
-            // Large syncs (hundreds of events) can block the server's readPump,
-            // delaying keepalive_ack responses. This prevents false reconnects.
-            if (pendingSyncRef.current[sessionId]) {
-              console.log(
-                `Keepalive miss suppressed for session ${sessionId} (sync in progress)`,
-              );
-            } else {
-              // Previous keepalive didn't get a response
-              keepalive.missedCount = (keepalive.missedCount || 0) + 1;
-              console.log(
-                `Keepalive missed for session ${sessionId}, count: ${keepalive.missedCount}`,
-              );
-
-              const lastSeq = lastKnownSeqRef.current[sessionId] || 0;
-              const maxMissed =
-                lastSeq > LARGE_SESSION_SEQ_THRESHOLD
-                  ? KEEPALIVE_MAX_MISSED_LARGE_SESSION
-                  : KEEPALIVE_MAX_MISSED_DEFAULT;
-              if (keepalive.missedCount >= maxMissed) {
-                // Connection is likely dead, force close to trigger reconnect
-                console.log(
-                  `Too many missed keepalives for session ${sessionId}, forcing reconnect`,
-                );
-                clearInterval(intervalId);
-                delete keepaliveRef.current[sessionId];
-                currentWs.close();
-                return;
-              }
-            }
-          }
-
-          // Send keepalive with last_seen_seq
-          // This allows the server to tell us if we're behind
-          const session = sessionsRef.current[sessionId];
-          const sessionMessages = session?.messages || [];
-          // Get our last known seq (primary: ref, fallback: React state)
-          const refSeq = lastKnownSeqRef.current[sessionId] || 0;
-          const stateSeq = Math.max(
-            getMaxSeq(sessionMessages),
-            session?.lastLoadedSeq || 0,
-          );
-          const lastSeenSeq = Math.max(refSeq, stateSeq);
-
-          keepaliveRef.current[sessionId] = {
-            ...keepaliveRef.current[sessionId],
-            intervalId,
-            pendingKeepalive: true,
-            lastSentTime: Date.now(),
-          };
-
-          currentWs.send(
-            JSON.stringify({
-              type: "keepalive",
-              data: { client_time: Date.now(), last_seen_seq: lastSeenSeq },
-            }),
-          );
-        }, getKeepaliveInterval());
-
-        keepaliveRef.current[sessionId] = {
-          intervalId,
-          lastAckTime: Date.now(),
-          missedCount: 0,
-          pendingKeepalive: false,
-        };
-      };
-
-      ws.onmessage = (event) => {
-        try {
-          const msg = JSON.parse(event.data);
-          if (msg.type !== "keepalive_ack") {
-            console.log(
-              `[WS ${wsId}] Received:`,
-              msg.type,
-              msg.data?.html?.substring(0, 50) ||
-                msg.data?.message?.substring(0, 50) ||
-                "",
-            );
-          }
-          handleSessionMessage(sessionId, msg);
-        } catch (err) {
-          console.error(
-            "Failed to parse session WebSocket message:",
-            err,
-            event.data,
-          );
-        }
-      };
-
-      ws.onclose = async (event) => {
-        console.log(`Session WebSocket closed: ${sessionId} (ws: ${wsId})`, {
-          code: event.code,
-          reason: event.reason,
-          wasClean: event.wasClean,
-        });
-
-        // Clean up keepalive interval for this session
-        if (keepaliveRef.current[sessionId]?.intervalId) {
-          clearInterval(keepaliveRef.current[sessionId].intervalId);
-          delete keepaliveRef.current[sessionId];
-        }
-
-        // Clear any pending sync flag and its auto-clear timeout.
-        // If a load_events request was in flight when the connection dropped,
-        // events_loaded will never arrive — without this, pendingSyncRef stays true
-        // indefinitely, suppressing keepalive miss-counting after reconnection.
-        clearPendingSync(sessionId);
-        // Clear the stale recovery cooldown so the fresh connection gets a clean
-        // stale detection check (the cooldown is only meaningful within a session).
-        delete staleRecoveryCooldownRef.current[sessionId];
-
-        // Only delete the ref if it still points to this WebSocket (not a newer one)
-        if (sessionWsRefs.current[sessionId] === ws) {
-          delete sessionWsRefs.current[sessionId];
-        } else {
-          console.log(
-            `WebSocket ${wsId} closed but ref points to different WebSocket - not deleting`,
-          );
-        }
-        // Note: We intentionally do NOT clear isStreaming here.
-        // The server may still be processing a prompt even if the WebSocket dropped.
-        // On reconnection, the 'connected' message will sync the correct is_prompting state.
-        // Setting isStreaming: false here would cause a desync where the user sees
-        // the Send button (instead of Stop) but the server rejects with "prompt already in progress".
-
-        // Before reconnecting, check if the close was due to auth failure
-        // WebSocket doesn't provide HTTP status codes, so we make a quick auth check
-        const isAuthenticated = await checkAuthOrRedirect();
-        if (!isAuthenticated) {
-          // checkAuthOrRedirect already redirected to login if 401
-          return;
-        }
-
-        // Don't reconnect if the server is shutting down
-        if (serverShuttingDownRef.current) {
-          console.log(
-            `Server shutdown in progress, not reconnecting session ${sessionId}`,
-          );
-          return;
-        }
-
-        // Reconnect if this session is still active (user hasn't switched away)
-        // and no newer WebSocket has been created
-        // This handles cases like mobile browser suspension when phone is locked
-        if (
-          activeSessionIdRef.current === sessionId &&
-          !sessionWsRefs.current[sessionId]
-        ) {
-          // --- Stale-session guard: don't reconnect permanently dead sessions ---
-          //
-          // 1. Age check: session IDs encode their creation timestamp
-          //    (YYYYMMDD-HHMMSS-xxxxxxxx). Sessions older than
-          //    SESSION_MAX_RECONNECT_AGE_MS are almost certainly dead on the
-          //    server (the server only keeps sessions alive while the binary is
-          //    running; after a restart old sessions are gone). Reconnecting them
-          //    only causes the readyState: 3 CLOSED log-spam that triggered this fix.
-          //    NOTE: Loop sessions are exempt from this age check — they are
-          //    long-lived by design and must always be allowed to reconnect.
-          //
-          // 2. Attempt cap (isReconnectLimitReached from utils/websocket.js):
-          //    even for recent sessions, if we have repeatedly failed to
-          //    reconnect (e.g. server is down), stop after the canonical
-          //    MAX_SESSION_RECONNECT_ATTEMPTS limit so we don't loop forever.
-          //    The counter resets on the next successful onopen, and is cleared
-          //    when the user explicitly switches to this session (switchSession).
-
-          // Check if this conversation has a loop config — those are long-lived by design
-          // and should always be allowed to reconnect regardless of age.
-          // Use loop_configured (config exists) not loop_enabled (runs active),
-          // so paused/draft loop conversations still count as long-lived.
-          const isLoop =
-            sessionsRef.current[sessionId]?.info?.loop_configured ||
-            storedSessionsRef.current?.find((s) => s.session_id === sessionId)
-              ?.loop_configured;
-
-          const sessionAgeMs = getSessionAgeMs(sessionId);
-          const isTooOld =
-            !isLoop &&
-            sessionAgeMs !== null &&
-            sessionAgeMs > SESSION_MAX_RECONNECT_AGE_MS;
-
-          const attempt = sessionReconnectAttemptsRef.current[sessionId] || 0;
-          // isReconnectLimitReached is exported from utils/websocket.js and
-          // uses the canonical MAX_SESSION_RECONNECT_ATTEMPTS = 15 constant.
-          const exceededMaxAttempts = isReconnectLimitReached(attempt);
-
-          if (isTooOld) {
-            console.warn(
-              `[reconnect] Giving up on session ${sessionId}: ` +
-                `session is ~${Math.round(sessionAgeMs / 86400000)} days old ` +
-                `(max age for auto-reconnect is ${SESSION_MAX_RECONNECT_AGE_MS / 86400000} days)`,
-            );
-            setSessions((prev) => {
-              const session = prev[sessionId];
-              if (!session) return prev;
-              const messages = limitMessages([
-                ...session.messages,
-                {
-                  role: ROLE_ERROR,
-                  text: "⚠️ This session is too old to reconnect automatically. Please create a new conversation.",
-                  timestamp: Date.now(),
-                },
-              ]);
-              return {
-                ...prev,
-                [sessionId]: { ...session, messages, isStreaming: false },
-              };
-            });
-            return;
-          }
-
-          if (exceededMaxAttempts) {
-            console.warn(
-              `[reconnect] Giving up on session ${sessionId}: ` +
-                `exceeded ${attempt} consecutive reconnect attempts (limit: isReconnectLimitReached)`,
-            );
-            setSessions((prev) => {
-              const session = prev[sessionId];
-              if (!session) return prev;
-              const messages = limitMessages([
-                ...session.messages,
-                {
-                  role: ROLE_ERROR,
-                  text: "⚠️ Could not reconnect to this session after multiple attempts. Refresh the page to try again.",
-                  timestamp: Date.now(),
-                },
-              ]);
-              return {
-                ...prev,
-                [sessionId]: { ...session, messages, isStreaming: false },
-              };
-            });
-            return;
-          }
-
-          // Guard: if forceReconnectActiveSession (or a prior onclose) already scheduled
-          // a reconnect timer, don't add a second one. The existing timer will fire with
-          // the correct backoff delay.
-          if (sessionReconnectRefs.current[sessionId]) {
-            console.debug(
-              `Reconnect already scheduled for session ${sessionId}, skipping onclose reschedule`,
-            );
-          } else {
-            // M2: Use exponential backoff for reconnection
-            const delay = calculateReconnectDelay(attempt);
-            console.log(
-              `Scheduling reconnect for session ${sessionId} (attempt ${attempt + 1}, delay ${delay}ms)`,
-            );
-
-            sessionReconnectRefs.current[sessionId] = setTimeout(() => {
-              delete sessionReconnectRefs.current[sessionId];
-              // Double-check the session is still active before reconnecting
-              if (activeSessionIdRef.current === sessionId) {
-                // Increment attempt counter before reconnecting
-                sessionReconnectAttemptsRef.current[sessionId] = attempt + 1;
-                console.log(`Reconnecting to session: ${sessionId}`);
-                connectToSession(sessionId);
-              }
-            }, delay);
-          }
-        }
-      };
-
-      ws.onerror = (err) => {
-        console.error(`Session WebSocket error: ${sessionId}`, {
-          type: err.type,
-          readyState: ws.readyState,
-          url: ws.url,
-          bufferedAmount: ws.bufferedAmount,
-          timestamp: new Date().toISOString(),
-        });
-        ws.close();
-      };
-
-      sessionWsRefs.current[sessionId] = ws;
-      return ws;
-    },
-    [handleSessionMessage],
-  );
+  // connectToSession lives in useWSConnection (C1) — mitto-90f.6.2.
+  // Composer callbacks use connectToSessionRef.current(...) instead.
 
   // Fetch stored sessions
   const fetchStoredSessions = useCallback(async () => {
@@ -3840,27 +2948,24 @@ export function useWebSocket({ onActiveSessionRemovedRef } = {}) {
     [],
   );
 
-  // Send message to the current session's WebSocket
-  const sendToSession = useCallback((sessionId, msg) => {
-    const ws = sessionWsRefs.current[sessionId];
-    if (ws && ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify(msg));
-      return true;
-    }
-    return false;
-  }, []);
+  // sendToSession lives in useWSConnection (C1) — mitto-90f.6.2.
+  // Composer callbacks use sendToSessionRef.current(...) via sendToSessionStable.
+
+  // Config options (per-session, extracted to useWSConfigOptions sub-hook, mitto-90f.5)
+  const { configOptions, setConfigOption } = useWSConfigOptions(
+    activeSession,
+    activeSessionId,
+    sendToSessionStable,
+  );
 
   // Send ensure_resumed to the active session's WebSocket.
   // Called when the user focuses on a conversation so the server can resume
   // the ACP connection immediately, bypassing any startup stagger delay.
-  const ensureResumed = useCallback(
-    (sessionId) => {
-      const targetId = sessionId || activeSessionIdRef.current;
-      if (!targetId) return;
-      sendToSession(targetId, { type: "ensure_resumed", data: {} });
-    },
-    [sendToSession],
-  );
+  const ensureResumed = useCallback((sessionId) => {
+    const targetId = sessionId || activeSessionIdRef.current;
+    if (!targetId) return;
+    sendToSessionRef.current?.(targetId, { type: "ensure_resumed", data: {} });
+  }, []);
 
   // Switch to an existing session
   // Uses reverse-order loading for better UX: newest messages load first,
@@ -3913,7 +3018,7 @@ export function useWebSocket({ onActiveSessionRemovedRef } = {}) {
             delete sessionWsRefs.current[sessionId];
             existingWs.close();
           }
-          connectToSession(sessionId);
+          connectToSessionRef.current?.(sessionId);
         } else {
           // WebSocket is already open — hint the server to resume ACP if not running.
           // This bypasses any startup stagger and allows the session to become
@@ -4010,13 +3115,13 @@ export function useWebSocket({ onActiveSessionRemovedRef } = {}) {
 
         // Connect to the session WebSocket - this will trigger load_events on open
         // The events_loaded handler will populate the messages
-        connectToSession(sessionId);
+        connectToSessionRef.current?.(sessionId);
         setActiveSessionId(sessionId);
       } catch (err) {
         console.error("Failed to switch session:", err);
       }
     },
-    [connectToSession, expandGroupForSession, ensureResumed],
+    [expandGroupForSession, ensureResumed],
   );
 
   // Handle global events (session lifecycle)
@@ -4112,6 +3217,34 @@ export function useWebSocket({ onActiveSessionRemovedRef } = {}) {
         });
         break;
 
+      case "session_beads_issue_updated":
+        // Update linked beads issue in stored sessions so the sidebar/list
+        // reflects the new link without a refetch.
+        setStoredSessions((prev) =>
+          prev.map((s) =>
+            s.session_id === msg.data.session_id
+              ? { ...s, beads_issue: msg.data.beads_issue || "" }
+              : s,
+          ),
+        );
+        // Also update the active session's info so the conversation header's
+        // linked-issue button re-renders with the new id (or clears when empty).
+        setSessions((prev) => {
+          const session = prev[msg.data.session_id];
+          if (!session) return prev;
+          return {
+            ...prev,
+            [msg.data.session_id]: {
+              ...session,
+              info: {
+                ...session.info,
+                beads_issue: msg.data.beads_issue || "",
+              },
+            },
+          };
+        });
+        break;
+
       case "session_archived":
         // Update session archived state in stored sessions
         setStoredSessions((prev) =>
@@ -4162,11 +3295,7 @@ export function useWebSocket({ onActiveSessionRemovedRef } = {}) {
             storedSessionsRef.current || [],
             archivedSess?.working_dir,
           );
-          if (
-            onActiveSessionRemovedRef?.current &&
-            archivedFolderWorkingDir &&
-            archivedFolderWorkingDir !== "Unknown"
-          ) {
+          if (onActiveSessionRemovedRef?.current) {
             setActiveSessionId(null);
             onActiveSessionRemovedRef.current(archivedFolderWorkingDir);
           } else {
@@ -4342,8 +3471,7 @@ export function useWebSocket({ onActiveSessionRemovedRef } = {}) {
                   loop_frequency: msg.data.frequency || null,
                   loop_iteration_count: msg.data.iteration_count ?? null,
                   loop_max_iterations: msg.data.max_iterations ?? null,
-                  loop_stopped_reason:
-                    msg.data.loop_stopped_reason || null,
+                  loop_stopped_reason: msg.data.loop_stopped_reason || null,
                   loop_trigger: msg.data.trigger ?? null,
                   loop_delay_seconds: msg.data.delay_seconds ?? null,
                   loop_max_duration_seconds:
@@ -4370,8 +3498,7 @@ export function useWebSocket({ onActiveSessionRemovedRef } = {}) {
                 loop_frequency: msg.data.frequency || null,
                 loop_iteration_count: msg.data.iteration_count ?? null,
                 loop_max_iterations: msg.data.max_iterations ?? null,
-                loop_stopped_reason:
-                  msg.data.loop_stopped_reason || null,
+                loop_stopped_reason: msg.data.loop_stopped_reason || null,
                 loop_trigger: msg.data.trigger ?? null,
                 loop_delay_seconds: msg.data.delay_seconds ?? null,
                 loop_max_duration_seconds:
@@ -4437,11 +3564,7 @@ export function useWebSocket({ onActiveSessionRemovedRef } = {}) {
             // Prefer navigating to the deleted conversation's folder Tasks view
             // so the user stays in the same workspace context instead of being
             // bounced to another conversation or an empty state (mitto-17d).
-            if (
-              onActiveSessionRemovedRef?.current &&
-              deletedFolderWorkingDir &&
-              deletedFolderWorkingDir !== "Unknown"
-            ) {
+            if (onActiveSessionRemovedRef?.current) {
               setActiveSessionId(null);
               onActiveSessionRemovedRef.current(deletedFolderWorkingDir);
             } else {
@@ -4489,16 +3612,34 @@ export function useWebSocket({ onActiveSessionRemovedRef } = {}) {
         setSessions((prev) => {
           const session = prev[msg.data?.session_id];
           if (!session) return prev;
+          // Only append the "Session resumed" system message when the session was
+          // actually suspended or stopped. Multiple resume paths (WS connect,
+          // ensure_resumed on focus, unarchive) can each trigger acp_started
+          // broadcasts; gating on the prior state prevents duplicate messages
+          // when the session was already running.
+          const wasSuspended =
+            session.info?.gc_suspended === true || session.isRunning === false;
+          const nextInfo = {
+            ...session.info,
+            acp_ready: true,
+            gc_suspended: false, // Clear GC-suspended state on resume
+          };
+          if (!wasSuspended) {
+            return {
+              ...prev,
+              [msg.data.session_id]: {
+                ...session,
+                isRunning: true,
+                info: nextInfo,
+              },
+            };
+          }
           return {
             ...prev,
             [msg.data.session_id]: {
               ...session,
               isRunning: true,
-              info: {
-                ...session.info,
-                acp_ready: true,
-                gc_suspended: false, // Clear GC-suspended state on resume
-              },
+              info: nextInfo,
               // Add a system message to inform the user
               messages: [
                 ...session.messages,
@@ -4608,134 +3749,20 @@ export function useWebSocket({ onActiveSessionRemovedRef } = {}) {
           }),
         );
         break;
+
+      case "prewarm_pin_alert":
+        console.warn("Prewarm pin alert:", msg.data);
+        if (msg.data) {
+          window.dispatchEvent(
+            new CustomEvent("mitto:prewarm_pin_alert", { detail: msg.data }),
+          );
+        }
+        break;
     }
   }, []);
 
-  // Connect to global events WebSocket
-  const connectToEvents = useCallback(() => {
-    const socket = new WebSocket(endpoints.events.ws());
-
-    socket.onopen = () => {
-      setEventsConnected(true);
-      // M2: Reset reconnection attempt counter on successful connection
-      eventsReconnectAttemptRef.current = 0;
-
-      const isReconnect = wasConnectedRef.current;
-      console.log(
-        "Global events WebSocket connected",
-        isReconnect ? "(reconnect)" : "(initial)",
-      );
-
-      if (isReconnect) {
-        // On reconnect: refresh the session list to catch any changes
-        // that occurred while disconnected (e.g., mobile phone locked)
-        // but don't switch sessions - keep the user's current session
-        console.log("Refreshing session list after reconnect");
-        fetchStoredSessions();
-      } else {
-        // Initial connection: fetch stored sessions and resume the
-        // conversation last viewed *in the persisted filter tab*. The active
-        // filter tab is persisted per-device (localStorage); restoring a
-        // session from a different tab would cause the effect in app.js to
-        // flip the tab away from the user's persisted choice. So the restore
-        // is tab-aware: prefer the persisted tab's last session, then fall
-        // back to the most recent session within that same tab.
-        fetchStoredSessions().then((storedSessionsList) => {
-          const sessions = storedSessionsList || [];
-
-          const lastSessionId = getLastActiveSessionId();
-          const lastSession =
-            lastSessionId &&
-            sessions.find((s) => s.session_id === lastSessionId);
-
-          // Lazy-connect: only the active session opens a per-session WebSocket
-          // at startup. Background sessions are NOT pre-connected — they connect
-          // on demand when the user switches to them (via switchSession). This
-          // prevents the "startup storm" where every non-archived session resumes
-          // its ACP process simultaneously, spiking CPU and memory. Sidebar status
-          // for background sessions stays live via the global events WebSocket.
-          if (lastSession) {
-            switchSession(lastSession.session_id);
-          } else {
-            if (lastSessionId) {
-              console.log(
-                `Last active session ${lastSessionId} no longer exists, clearing`,
-              );
-              setLastActiveSessionId(null);
-            }
-            // sessions is sorted by updated_at desc — pick the most recent overall.
-            if (sessions.length > 0) {
-              switchSession(sessions[0].session_id);
-            }
-          }
-        });
-      }
-    };
-
-    socket.onmessage = (event) => {
-      try {
-        const msg = JSON.parse(event.data);
-        handleGlobalEvent(msg);
-      } catch (err) {
-        console.error(
-          "Failed to parse global events message:",
-          err,
-          event.data,
-        );
-      }
-    };
-
-    socket.onclose = async (event) => {
-      console.log("Global events WebSocket closed", {
-        code: event.code,
-        reason: event.reason,
-        wasClean: event.wasClean,
-      });
-      if (eventsWsRef.current) {
-        wasConnectedRef.current = true;
-      }
-      setEventsConnected(false);
-      eventsWsRef.current = null;
-
-      // Before reconnecting, check if the close was due to auth failure
-      // WebSocket doesn't provide HTTP status codes, so we make a quick auth check
-      const isAuthenticated = await checkAuthOrRedirect();
-      if (!isAuthenticated) {
-        // checkAuthOrRedirect already redirected to login if 401
-        return;
-      }
-
-      // Don't reconnect if the server is shutting down
-      if (serverShuttingDownRef.current) {
-        console.log(
-          "Server is shutting down, not reconnecting global events WebSocket",
-        );
-        return;
-      }
-
-      // M2: Use exponential backoff for reconnection
-      const attempt = eventsReconnectAttemptRef.current;
-      const delay = calculateReconnectDelay(attempt);
-      console.log(
-        `Scheduling global events reconnect (attempt ${attempt + 1}, delay ${delay}ms)`,
-      );
-      eventsReconnectAttemptRef.current = attempt + 1;
-      reconnectRef.current = setTimeout(connectToEvents, delay);
-    };
-
-    socket.onerror = (err) => {
-      console.error("Global events WebSocket error:", {
-        type: err.type,
-        readyState: socket.readyState,
-        url: socket.url,
-        bufferedAmount: socket.bufferedAmount,
-        timestamp: new Date().toISOString(),
-      });
-      socket.close();
-    };
-
-    eventsWsRef.current = socket;
-  }, [connectToSession, fetchStoredSessions, handleGlobalEvent, switchSession]);
+  // connectToEvents lives in useWSConnection (C1) — mitto-90f.6.2.
+  // Composer callbacks use connectToEventsRef.current(...) instead.
 
   // Create a new session via REST API
   // Options: { name?: string, workingDir?: string, acpServer?: string }
@@ -4862,7 +3889,7 @@ export function useWebSocket({ onActiveSessionRemovedRef } = {}) {
           const acpForGroup =
             existing?.info?.acp_server || opts.acpServer || "";
           expandGroupForSession(sessionId, wdForGroup, acpForGroup);
-          connectToSession(sessionId);
+          connectToSessionRef.current?.(sessionId);
           setActiveSessionId(sessionId);
           return { sessionId, reused: true };
         }
@@ -4901,7 +3928,7 @@ export function useWebSocket({ onActiveSessionRemovedRef } = {}) {
         expandGroupForSession(sessionId, data.working_dir, data.acp_server);
 
         // Connect to the session WebSocket
-        connectToSession(sessionId);
+        connectToSessionRef.current?.(sessionId);
         setActiveSessionId(sessionId);
 
         return { sessionId, reused: data.reused === true };
@@ -4918,7 +3945,7 @@ export function useWebSocket({ onActiveSessionRemovedRef } = {}) {
         return { error: err.message || "Network error" };
       }
     },
-    [connectToSession],
+    [],
   );
 
   // Keep ref current so the retry timer always calls the latest createNewSession
@@ -4954,508 +3981,14 @@ export function useWebSocket({ onActiveSessionRemovedRef } = {}) {
     });
   }, []);
 
-  // Timeout configuration for message delivery with automatic retry
-  // Total budget: 10 seconds - user can wait this long for message delivery
-  const TOTAL_DELIVERY_BUDGET_MS = 10000;
-  // Initial ACK timeout: short to quickly detect zombie connections
-  // Mobile gets slightly longer due to network variability
-  const isMobileDevice = useMemo(() => {
-    if (typeof navigator === "undefined") return false;
-    const ua = navigator.userAgent || "";
-    return /iPhone|iPad|iPod|Android|webOS|BlackBerry|IEMobile|Opera Mini/i.test(
-      ua,
-    );
-  }, []);
-  const INITIAL_ACK_TIMEOUT_MS = isMobileDevice ? 4000 : 3000;
-  // Timeout for reconnection during retry
-  const RECONNECT_TIMEOUT_MS = 4000;
+  // sendPrompt, cancelPrompt, forceReset, retryPendingPrompts, and
+  // resolvePendingSendsForSession live in useWSDeliveryVerification (C2) —
+  // mitto-90f.6.3. The sub-hook is called AFTER useWSConnection returns so
+  // it can consume the transport primitives (see below). The composer keeps
+  // pendingSendsRef and lastConfirmedPromptRef ownership because
+  // handleSessionMessage reads/writes them at ~10 sites; both are passed
+  // in as props to C2.
 
-  // Timeout for waiting for WebSocket to connect (in milliseconds)
-  const WS_CONNECT_TIMEOUT = 5000;
-
-  /**
-   * Resolve all pending sends for a session as successful.
-   * Called when we receive agent response, which proves the prompt was received.
-   * @param {string} sessionId - The session ID
-   */
-  const resolvePendingSendsForSession = useCallback((sessionId) => {
-    // Find all pending sends for this session and resolve them
-    for (const [promptId, pending] of Object.entries(pendingSendsRef.current)) {
-      // We don't track sessionId in pendingSendsRef, but we can check localStorage
-      // For simplicity, resolve all pending sends when agent responds
-      // (there should typically only be one pending send at a time)
-      if (pending) {
-        console.log(
-          `Resolving pending send ${promptId} - agent response received`,
-        );
-        clearTimeout(pending.timeoutId);
-        pending.resolve({ success: true, promptId });
-        delete pendingSendsRef.current[promptId];
-        removePendingPrompt(promptId);
-      }
-    }
-  }, []);
-
-  // Keep the ref in sync with the callback
-  useEffect(() => {
-    resolvePendingSendsRef.current = resolvePendingSendsForSession;
-  }, [resolvePendingSendsForSession]);
-
-  /**
-   * Wait for the session WebSocket to be connected.
-   * If not connected, triggers a reconnection and waits.
-   * @param {string} sessionId - The session ID
-   * @param {number} timeout - Timeout in milliseconds
-   * @returns {Promise<WebSocket>} The connected WebSocket
-   */
-  const waitForSessionConnection = useCallback(
-    (sessionId, timeout = WS_CONNECT_TIMEOUT) => {
-      return new Promise((resolve, reject) => {
-        // Check if already connected
-        const existingWs = sessionWsRefs.current[sessionId];
-        if (existingWs && existingWs.readyState === WebSocket.OPEN) {
-          resolve(existingWs);
-          return;
-        }
-
-        console.log(
-          `WebSocket not connected for session ${sessionId}, triggering reconnect`,
-        );
-
-        // Clear any pending reconnect timer
-        if (sessionReconnectRefs.current[sessionId]) {
-          clearTimeout(sessionReconnectRefs.current[sessionId]);
-          delete sessionReconnectRefs.current[sessionId];
-        }
-
-        // Close existing zombie WebSocket if any
-        if (existingWs) {
-          delete sessionWsRefs.current[sessionId];
-          existingWs.close();
-        }
-
-        // Set up timeout
-        const timeoutId = setTimeout(() => {
-          reject(
-            new Error(
-              "Connection timed out. Please check your network and try again.",
-            ),
-          );
-        }, timeout);
-
-        // Create new WebSocket connection
-        const ws = new WebSocket(endpoints.sessions.ws(sessionId));
-        const wsId = Math.random().toString(36).substring(2, 8);
-        ws._debugId = wsId;
-
-        ws.onopen = () => {
-          clearTimeout(timeoutId);
-          console.log(
-            `Session WebSocket connected (reconnect): ${sessionId} (ws: ${wsId})`,
-          );
-
-          // Store the WebSocket reference
-          sessionWsRefs.current[sessionId] = ws;
-
-          // Sync events we may have missed while disconnected
-          // Calculate lastSeenSeq dynamically (not localStorage)
-          // Use load_events instead of deprecated sync_session
-          const session = sessionsRef.current[sessionId];
-          const sessionMessages = session?.messages || [];
-          // Get our last known seq (primary: ref, fallback: React state)
-          const refSeq = lastKnownSeqRef.current[sessionId] || 0;
-          const stateSeq = Math.max(
-            getMaxSeq(sessionMessages),
-            session?.lastLoadedSeq || 0,
-          );
-          const lastSeq = Math.max(refSeq, stateSeq);
-          if (lastSeq > 0) {
-            console.log(
-              `Syncing session ${sessionId} from seq ${lastSeq} (lastLoadedSeq=${session?.lastLoadedSeq}, messages=${sessionMessages.length})`,
-            );
-            ws.send(
-              JSON.stringify({
-                type: "load_events",
-                data: { after_seq: lastSeq },
-              }),
-            );
-            // Export to window.__debug for Playwright test observability (reconnect path)
-            if (typeof window !== "undefined" && window.__debug) {
-              window.__debug.lastLoadEventsAfterSeq = lastSeq;
-              window.__debug.lastLoadEventsSessionId = sessionId;
-              window.__debug.lastLoadEventsTimestamp = Date.now();
-            }
-          }
-
-          resolve(ws);
-        };
-
-        ws.onerror = (err) => {
-          clearTimeout(timeoutId);
-          console.error(`Session WebSocket error during reconnect:`, {
-            type: err.type,
-            readyState: ws.readyState,
-            url: ws.url,
-            bufferedAmount: ws.bufferedAmount,
-            timestamp: new Date().toISOString(),
-          });
-          reject(new Error("Failed to connect. Please try again."));
-        };
-
-        ws.onclose = (event) => {
-          console.log(
-            `Session WebSocket closed during reconnect: ${sessionId}`,
-            {
-              code: event.code,
-              reason: event.reason,
-              wasClean: event.wasClean,
-            },
-          );
-          // If we haven't resolved yet, this is an early close
-          clearTimeout(timeoutId);
-          if (sessionWsRefs.current[sessionId] === ws) {
-            delete sessionWsRefs.current[sessionId];
-          }
-        };
-
-        // Set up message handler (reuse existing logic)
-        ws.onmessage = (event) => {
-          try {
-            const msg = JSON.parse(event.data);
-            handleSessionMessage(sessionId, msg);
-          } catch (err) {
-            console.error("Failed to parse session message:", err);
-          }
-        };
-      });
-    },
-    [handleSessionMessage],
-  );
-
-  /**
-   * Check if the WebSocket connection for a session is healthy.
-   * A connection is considered healthy if we've received a keepalive_ack recently.
-   * @param {string} sessionId - The session ID
-   * @returns {boolean} True if connection is healthy
-   */
-  const isConnectionHealthy = useCallback((sessionId) => {
-    const keepalive = keepaliveRef.current[sessionId];
-    if (!keepalive) return true; // No keepalive tracking yet, assume healthy
-
-    const timeSinceLastAck = Date.now() - (keepalive.lastAckTime || 0);
-    // Consider unhealthy if we haven't received an ACK in 2x the keepalive interval
-    // or if we have missed keepalives
-    const isHealthy =
-      timeSinceLastAck < getKeepaliveInterval() * 2 &&
-      (keepalive.missedCount || 0) === 0;
-
-    if (!isHealthy) {
-      console.log(
-        `Connection unhealthy for session ${sessionId}: timeSinceLastAck=${timeSinceLastAck}ms, missedCount=${keepalive.missedCount}`,
-      );
-    }
-    return isHealthy;
-  }, []);
-
-  /**
-   * Send a prompt to the active session.
-   * Returns a Promise that resolves on ACK or rejects on timeout/failure.
-   * If WebSocket is not connected or unhealthy, automatically triggers reconnection and waits.
-   * @param {string} message - The message text
-   * @param {Array} images - Optional array of images
-   * @param {Array} files - Optional array of files
-   * @param {Object} options - Optional settings: { timeout: number, skipMessageAdd: boolean }
-   * @returns {Promise<{success: boolean, promptId: string}>}
-   */
-  const sendPrompt = useCallback(
-    async (message, images = [], files = [], options = {}) => {
-      const startTime = Date.now();
-
-      if (!activeSessionId) {
-        throw new Error("No active session");
-      }
-
-      // Check if WebSocket is connected and healthy
-      let ws = sessionWsRefs.current[activeSessionId];
-      const needsReconnect =
-        !ws ||
-        ws.readyState !== WebSocket.OPEN ||
-        !isConnectionHealthy(activeSessionId);
-
-      if (needsReconnect) {
-        console.log(
-          `Connection needs reconnect before sending (ws=${!!ws}, readyState=${ws?.readyState}, healthy=${isConnectionHealthy(activeSessionId)})`,
-        );
-        // Force close any existing zombie connection
-        if (ws) {
-          delete sessionWsRefs.current[activeSessionId];
-          ws.close();
-        }
-        // Wait for fresh connection
-        ws = await waitForSessionConnection(activeSessionId);
-      }
-
-      // Clear any existing action buttons when sending a new prompt
-      clearActionButtons(activeSessionId);
-
-      // Add user message with optional images and files (unless skipped for retry)
-      if (!options.skipMessageAdd) {
-        const userMessage = {
-          role: ROLE_USER,
-          text: message,
-          timestamp: Date.now(),
-          promptName: options.promptName || undefined,
-        };
-        if (images.length > 0) {
-          userMessage.images = images; // Array of { id, url, name, mimeType }
-        }
-        if (files.length > 0) {
-          userMessage.files = files; // Array of { id, name, mimeType, size, category }
-        }
-        addMessageToSession(activeSessionId, userMessage);
-        // Mark any previous streaming message as complete
-        updateLastMessage(activeSessionId, (m) =>
-          !m.complete && (m.role === ROLE_AGENT || m.role === ROLE_THOUGHT)
-            ? { ...m, complete: true }
-            : m,
-        );
-      }
-
-      // Generate a unique prompt ID for delivery tracking
-      const promptId = generatePromptId();
-      const imageIds = images.map((img) => img.id);
-      const fileIds = files.map((f) => f.id);
-
-      // Save to pending queue BEFORE sending (for mobile reliability)
-      savePendingPrompt(activeSessionId, promptId, message, imageIds, fileIds);
-
-      /**
-       * Helper to attempt sending and wait for ACK with timeout.
-       * Returns: { success: true, promptId } on ACK, or throws on timeout/failure.
-       */
-      const attemptSend = (ackTimeout) => {
-        return new Promise((resolve, reject) => {
-          const timeoutId = setTimeout(() => {
-            const pending = pendingSendsRef.current[promptId];
-            if (!pending) return; // Already resolved
-            delete pendingSendsRef.current[promptId];
-            reject(new Error("ACK_TIMEOUT"));
-          }, ackTimeout);
-
-          // Track the pending send
-          pendingSendsRef.current[promptId] = { resolve, reject, timeoutId };
-
-          // Send prompt with prompt_id for acknowledgment
-          const sent = sendToSession(activeSessionId, {
-            type: "prompt",
-            data: {
-              message,
-              prompt_name: options.promptName || undefined,
-              image_ids: imageIds,
-              file_ids: fileIds,
-              prompt_id: promptId,
-            },
-          });
-
-          if (!sent) {
-            // WebSocket send failed immediately
-            clearTimeout(timeoutId);
-            delete pendingSendsRef.current[promptId];
-            reject(new Error("Failed to send message"));
-          }
-        });
-      };
-
-      /**
-       * Helper to force reconnect and verify if the prompt was delivered.
-       * Returns: true if delivered, false if not delivered.
-       * Throws on reconnection failure.
-       */
-      const verifyDeliveryAfterReconnect = async (reconnectTimeout) => {
-        console.log(
-          `Forcing reconnect to verify delivery of prompt ${promptId}`,
-        );
-
-        // Force close the potentially zombie connection
-        const currentWs = sessionWsRefs.current[activeSessionId];
-        if (currentWs) {
-          delete sessionWsRefs.current[activeSessionId];
-          currentWs.close();
-        }
-
-        // Wait for fresh connection - this will receive the connected message
-        // which includes last_user_prompt_id for delivery verification
-        await waitForSessionConnection(activeSessionId, reconnectTimeout);
-
-        // Small delay to ensure the connected message handler has run
-        await new Promise((r) => setTimeout(r, 100));
-
-        // Check if our prompt was the last one delivered
-        const confirmed = lastConfirmedPromptRef.current[activeSessionId];
-        if (confirmed && confirmed.promptId === promptId) {
-          console.log(
-            `Prompt ${promptId} was confirmed delivered after reconnect`,
-          );
-          return true;
-        }
-
-        console.log(
-          `Prompt ${promptId} was NOT delivered (last confirmed: ${confirmed?.promptId})`,
-        );
-        return false;
-      };
-
-      // Main delivery logic with retry
-      try {
-        // First attempt with short ACK timeout
-        const result = await attemptSend(INITIAL_ACK_TIMEOUT_MS);
-        removePendingPrompt(promptId);
-        return result;
-      } catch (err) {
-        if (err.message !== "ACK_TIMEOUT") {
-          // Non-timeout error (e.g., send failed) - don't retry
-          throw err;
-        }
-
-        // ACK timeout - reconnect and verify/retry
-        const elapsed = Date.now() - startTime;
-        const remainingBudget = TOTAL_DELIVERY_BUDGET_MS - elapsed;
-
-        if (remainingBudget <= 0) {
-          throw new Error(
-            "Message delivery timed out. Please check your connection and try again.",
-          );
-        }
-
-        console.log(
-          `ACK timeout after ${elapsed}ms, ${remainingBudget}ms budget remaining`,
-        );
-
-        try {
-          // Reconnect and check if message was delivered
-          const reconnectTimeout = Math.min(
-            remainingBudget,
-            RECONNECT_TIMEOUT_MS,
-          );
-          const wasDelivered =
-            await verifyDeliveryAfterReconnect(reconnectTimeout);
-
-          if (wasDelivered) {
-            removePendingPrompt(promptId);
-            return { success: true, promptId, verifiedOnReconnect: true };
-          }
-
-          // Message was NOT delivered - retry on fresh connection
-          const elapsedAfterReconnect = Date.now() - startTime;
-          const retryBudget = TOTAL_DELIVERY_BUDGET_MS - elapsedAfterReconnect;
-
-          if (retryBudget <= 500) {
-            // Not enough time for a meaningful retry
-            throw new Error(
-              "Message delivery could not be confirmed. Please try again.",
-            );
-          }
-
-          console.log(`Retrying send with ${retryBudget}ms budget`);
-
-          // Retry the send on the fresh connection
-          const result = await attemptSend(retryBudget);
-          removePendingPrompt(promptId);
-          return { ...result, retriedOnReconnect: true };
-        } catch (reconnectErr) {
-          if (reconnectErr.message === "ACK_TIMEOUT") {
-            throw new Error(
-              "Message delivery could not be confirmed after retry. Please check your connection.",
-            );
-          }
-          // Reconnection or retry failed
-          console.error("Delivery retry failed:", reconnectErr);
-          throw new Error(
-            "Connection lost and could not reconnect. Please check your network and try again.",
-          );
-        }
-      }
-    },
-    [
-      activeSessionId,
-      addMessageToSession,
-      updateLastMessage,
-      sendToSession,
-      waitForSessionConnection,
-      clearActionButtons,
-      isConnectionHealthy,
-    ],
-  );
-
-  const cancelPrompt = useCallback(() => {
-    if (!activeSessionId) return;
-    sendToSession(activeSessionId, { type: "cancel" });
-    // Clear any active UI prompt when user cancels
-    setSessions((prev) => {
-      const session = prev[activeSessionId];
-      if (!session || !session.activeUIPrompt) return prev;
-      return {
-        ...prev,
-        [activeSessionId]: { ...session, activeUIPrompt: null },
-      };
-    });
-  }, [activeSessionId, sendToSession]);
-
-  // Force reset a stuck session (when agent is unresponsive)
-  const forceReset = useCallback(() => {
-    if (!activeSessionId) return;
-    console.log("Force resetting session:", activeSessionId);
-    sendToSession(activeSessionId, { type: "force_reset" });
-  }, [activeSessionId, sendToSession]);
-
-  // Change a session config option value
-  // For mode changes, use configId "mode" with the desired mode value
-  const setConfigOption = useCallback(
-    (configId, value) => {
-      // Use value == null to allow falsy values like empty strings
-      if (!activeSessionId || !configId || value == null) return;
-      console.log(`Setting config option: ${configId} = ${value}`);
-      sendToSession(activeSessionId, {
-        type: "set_config_option",
-        data: { config_id: configId, value: value },
-      });
-    },
-    [activeSessionId, sendToSession],
-  );
-
-  // Retry pending prompts for a session (called on reconnect or visibility change)
-  const retryPendingPrompts = useCallback(
-    (sessionId) => {
-      const pending = getPendingPromptsForSession(sessionId);
-      if (pending.length === 0) return;
-
-      console.log(
-        `Retrying ${pending.length} pending prompt(s) for session ${sessionId}`,
-      );
-
-      for (const { promptId, message, imageIds } of pending) {
-        const sent = sendToSession(sessionId, {
-          type: "prompt",
-          data: { message, image_ids: imageIds || [], prompt_id: promptId },
-        });
-        if (sent) {
-          console.log(`Retried pending prompt: ${promptId}`);
-        } else {
-          console.warn(
-            `Failed to retry pending prompt (WebSocket not ready): ${promptId}`,
-          );
-          // Stop retrying if WebSocket is not ready - will retry on next reconnect
-          break;
-        }
-      }
-    },
-    [sendToSession],
-  );
-
-  // Keep the ref in sync with the callback
-  useEffect(() => {
-    retryPendingPromptsRef.current = retryPendingPrompts;
-  }, [retryPendingPrompts]);
 
   const newSession = useCallback(
     async (options) => {
@@ -5650,11 +4183,7 @@ export function useWebSocket({ onActiveSessionRemovedRef } = {}) {
           storedSessionsRef.current || [],
           archivedSess?.working_dir,
         );
-        if (
-          onActiveSessionRemovedRef?.current &&
-          folderWorkingDir &&
-          folderWorkingDir !== "Unknown"
-        ) {
+        if (onActiveSessionRemovedRef?.current) {
           setActiveSessionId(null);
           onActiveSessionRemovedRef.current(folderWorkingDir);
         }
@@ -5703,22 +4232,16 @@ export function useWebSocket({ onActiveSessionRemovedRef } = {}) {
 
       // If we removed the active session, decide where to navigate.
       if (wasActiveSession) {
-        // Prefer navigating to the deleted conversation's folder Tasks (beads)
-        // view so the user stays in the same workspace context instead of being
-        // bounced to another conversation or an empty state (mitto-17d). The
-        // callback is wired by app.js to handleBeadsOpen; fall back to the
-        // previous switch-to-another-conversation behavior when it isn't set or
-        // the folder can't be resolved.
+        // Prefer letting app.js's landing callback route the UI (to the global
+        // Dashboard — mitto-ce3) so the user stays out of an arbitrary
+        // remaining conversation. Fall back to switching to the most recent
+        // remaining conversation when the callback isn't wired.
         const folderWorkingDir = resolveFolderKey(
           deletedSession,
           storedSessionsRef.current || [],
           deletedWorkingDir,
         );
-        if (
-          onActiveSessionRemovedRef?.current &&
-          folderWorkingDir &&
-          folderWorkingDir !== "Unknown"
-        ) {
+        if (onActiveSessionRemovedRef?.current) {
           setActiveSessionId(null);
           onActiveSessionRemovedRef.current(folderWorkingDir);
           // Refresh the sidebar so it reflects the deletion.
@@ -5766,7 +4289,7 @@ export function useWebSocket({ onActiveSessionRemovedRef } = {}) {
 
   // Initialize on mount
   useEffect(() => {
-    connectToEvents();
+    connectToEventsRef.current?.();
     return () => {
       if (reconnectRef.current) clearTimeout(reconnectRef.current);
       if (eventsWsRef.current) eventsWsRef.current.close();
@@ -5792,231 +4315,24 @@ export function useWebSocket({ onActiveSessionRemovedRef } = {}) {
       }
       staggeredBackgroundTimersRef.current = {};
     };
-  }, [connectToEvents]);
+    // eslint-disable-next-line preact/hooks/exhaustive-deps
+  }, []);
 
-  // Force reconnect active session WebSocket - closes existing connection and schedules a new one
-  // Uses the shared exponential backoff counter so repeated failures accumulate delay,
-  // and debouncing collapses bursts of concurrent triggers (keepalive miss, visibility
-  // change, native app activate) that can fire seconds apart into a single reconnect.
+  // forceReconnectActiveSession lives in useWSConnection (C1) — mitto-90f.6.2.
+  // A stable wrapper is returned from this hook so callers get a consistent
+  // identity across renders even if C1's internal callback is re-memoised.
   const forceReconnectActiveSession = useCallback(() => {
-    const currentSessionId = activeSessionIdRef.current;
-    if (!currentSessionId) return;
+    forceReconnectActiveSessionRef.current?.();
+  }, []);
 
-    // Debounce: skip if a reconnect was already triggered for this session within the window
-    const { debounced, elapsed } = shouldDebounceReconnect(
-      reconnectDebounceRef.current,
-      currentSessionId,
-    );
-    if (debounced) {
-      console.debug(
-        `Skipping duplicate force-reconnect for session ${currentSessionId} (${elapsed}ms since last)`,
-      );
-      return;
-    }
-
-    console.log(`Force reconnecting session ${currentSessionId}`);
-
-    // Clear any pending reconnect timer so we don't double-schedule
-    if (sessionReconnectRefs.current[currentSessionId]) {
-      clearTimeout(sessionReconnectRefs.current[currentSessionId]);
-      delete sessionReconnectRefs.current[currentSessionId];
-    }
-
-    // Close existing WebSocket if any.
-    // Pre-delete the ref so that the ws.onclose handler sees no active WS ref
-    // and skips its own scheduling (it checks sessionReconnectRefs too).
-    const existingWs = sessionWsRefs.current[currentSessionId];
-    if (existingWs) {
-      delete sessionWsRefs.current[currentSessionId];
-      existingWs.close();
-    }
-
-    // Use the shared exponential backoff counter — the same one used by onclose.
-    // This means repeated failures across all paths accumulate delay correctly.
-    // On successful connect, onopen resets the counter (via delete), so the
-    // next disconnect starts fresh from attempt 0.
-    const attempt = sessionReconnectAttemptsRef.current[currentSessionId] || 0;
-    const delay = calculateReconnectDelay(attempt);
-    console.log(
-      `Scheduling force-reconnect for session ${currentSessionId} (attempt ${attempt + 1}, delay ${delay}ms)`,
-    );
-
-    sessionReconnectRefs.current[currentSessionId] = setTimeout(() => {
-      delete sessionReconnectRefs.current[currentSessionId];
-      // Double-check the session is still active before reconnecting
-      if (activeSessionIdRef.current === currentSessionId) {
-        // Increment shared attempt counter before connecting
-        sessionReconnectAttemptsRef.current[currentSessionId] = attempt + 1;
-        connectToSession(currentSessionId);
-      }
-    }, delay);
-  }, [connectToSession]);
-
-  // Reconnect all currently-connected sessions with staggering to prevent thundering herd.
-  // The active session reconnects immediately via forceReconnectActiveSession (with its existing
-  // debounce/backoff logic). Background sessions (those with open WebSockets but not active) are
-  // force-closed and reconnected with increasing delays so their load_events requests are spread
-  // over time rather than hitting the server simultaneously.
-  //
-  // Under lazy-connect this operates only on sessions that already have an open
-  // WebSocket — typically just the active session plus any background sessions
-  // still within their disconnect grace window. It never opens connections for
-  // sessions that were not already connected, so it does not re-create a startup
-  // storm on wake/visibility events.
-  //
-  // Debounce: multiple macOS activation events (NSWorkspaceDidWakeNotification,
-  // NSWorkspaceScreensDidWakeNotification, applicationDidBecomeActive) can fire
-  // 4–10 s apart for the same wake/focus event.  Without a debounce each call
-  // schedules a new set of background-session timers; when two sets fire they
-  // both close-then-reconnect the same WebSocket, and because server-side teardown
-  // is async the old observer is still registered when the new one is added —
-  // causing the observer count to climb to 3+ per session.
-  //
-  // Two-layer protection:
-  //   1. Leading-edge debounce: suppress calls within STAGGERED_RECONNECT_DEBOUNCE_MS
-  //      (15 s) of the last accepted call.  This coalesces the macOS native
-  //      "App became active" and WKWebView "App became visible" pair (which fire
-  //      ~6–10 s apart for a single wake) into one reconnect, preventing a
-  //      redundant active-session force-reconnect.
-  //   2. Timer cancellation: cancel any still-pending background-session timers from
-  //      a previous call before scheduling new ones (defense-in-depth for any pair
-  //      that still slips past the debounce window before its timers have fired).
+  // reconnectAllSessionsStaggered lives in useWSConnection (C1) — mitto-90f.6.2.
+  // Stable wrapper — same rationale as forceReconnectActiveSession above.
   const reconnectAllSessionsStaggered = useCallback(() => {
-    // Layer 1: leading-edge debounce.
-    const now = Date.now();
-    const elapsed = now - lastStaggeredReconnectRef.current;
-    if (
-      lastStaggeredReconnectRef.current > 0 &&
-      elapsed < STAGGERED_RECONNECT_DEBOUNCE_MS
-    ) {
-      console.debug(
-        `[stagger] Skipping duplicate staggered reconnect (${elapsed}ms since last, debounce=${STAGGERED_RECONNECT_DEBOUNCE_MS}ms)`,
-      );
-      return;
-    }
-    lastStaggeredReconnectRef.current = now;
+    reconnectAllSessionsStaggeredRef.current?.();
+  }, []);
 
-    const currentSessionId = activeSessionIdRef.current;
-
-    // Reconnect active session immediately using existing debounce logic
-    forceReconnectActiveSession();
-
-    // Layer 2: cancel any still-pending background-session timers from a prior call
-    // before scheduling a new batch.  This prevents two sets of timers from both
-    // firing and reconnecting the same background session concurrently.
-    const pendingCount = Object.keys(
-      staggeredBackgroundTimersRef.current,
-    ).length;
-    if (pendingCount > 0) {
-      console.debug(
-        `[stagger] Cancelling ${pendingCount} pending background timer(s) from previous call`,
-      );
-      for (const timerId of Object.values(
-        staggeredBackgroundTimersRef.current,
-      )) {
-        clearTimeout(timerId);
-      }
-      staggeredBackgroundTimersRef.current = {};
-    }
-
-    // Stagger reconnections for background sessions to spread load_events requests
-    const backgroundIds = Object.keys(sessionWsRefs.current).filter(
-      (id) => id !== currentSessionId,
-    );
-
-    if (backgroundIds.length > 0) {
-      console.log(
-        `[stagger] Scheduling staggered reconnects for ${backgroundIds.length} background session(s)`,
-      );
-    }
-
-    backgroundIds.forEach((sessionId, index) => {
-      const timerId = setTimeout(
-        () => {
-          // Remove our own entry now that we're executing
-          delete staggeredBackgroundTimersRef.current[sessionId];
-
-          const existingWs = sessionWsRefs.current[sessionId];
-          if (existingWs) {
-            console.log(
-              `[stagger] Reconnecting background session ${sessionId} (delay ${(index + 1) * STARTUP_STAGGER_MS}ms)`,
-            );
-            delete sessionWsRefs.current[sessionId];
-            existingWs.close();
-            // onclose won't reconnect non-active sessions, so reconnect manually
-            connectToSession(sessionId);
-          }
-        },
-        (index + 1) * STARTUP_STAGGER_MS,
-      );
-
-      // Track timer so it can be cancelled if another call arrives before it fires
-      staggeredBackgroundTimersRef.current[sessionId] = timerId;
-    });
-  }, [forceReconnectActiveSession, connectToSession]);
-
-  // Lazy-connect hygiene: when the active session changes, schedule a sweep that
-  // disconnects per-session WebSockets for sessions that are no longer active.
-  // Releasing the WebSocket removes the server-side observer, allowing the backend
-  // GC to reclaim idle ACP processes. The timer resets on every active-session
-  // change, so only sessions left untouched for the full grace window are dropped.
-  // Sessions that are actively streaming, awaiting a user prompt, or waiting on
-  // child conversations are kept connected so in-flight work is not interrupted;
-  // they are swept on a later switch once they go idle. Disconnected sessions
-  // resync from server authority via load_events when the user switches back.
-  useEffect(() => {
-    if (backgroundDisconnectTimerRef.current) {
-      clearTimeout(backgroundDisconnectTimerRef.current);
-      backgroundDisconnectTimerRef.current = null;
-    }
-
-    backgroundDisconnectTimerRef.current = setTimeout(() => {
-      backgroundDisconnectTimerRef.current = null;
-      const currentActive = activeSessionIdRef.current;
-
-      // Sessions doing active work are kept connected (driven by global events).
-      const keepConnected = new Set(
-        (storedSessionsRef.current || [])
-          .filter(
-            (s) =>
-              s.isStreaming ||
-              s.isWaitingForUserInput ||
-              s.isWaitingForChildren,
-          )
-          .map((s) => s.session_id),
-      );
-
-      for (const sessionId of Object.keys(sessionWsRefs.current)) {
-        if (sessionId === currentActive) continue; // never disconnect active
-        if (keepConnected.has(sessionId)) continue; // keep busy sessions live
-
-        // Cancel any pending reconnect timer for this background session so it
-        // does not get revived after we intentionally disconnect it.
-        if (sessionReconnectRefs.current[sessionId]) {
-          clearTimeout(sessionReconnectRefs.current[sessionId]);
-          delete sessionReconnectRefs.current[sessionId];
-        }
-
-        const ws = sessionWsRefs.current[sessionId];
-        if (ws) {
-          console.log(
-            `[lazy] Disconnecting idle background session ${sessionId} (grace elapsed)`,
-          );
-          // Delete the ref BEFORE closing so onclose treats this as intentional.
-          // (The onclose reconnect guard only fires for the active session anyway.)
-          delete sessionWsRefs.current[sessionId];
-          ws.close();
-        }
-      }
-    }, BACKGROUND_DISCONNECT_GRACE_MS);
-
-    return () => {
-      if (backgroundDisconnectTimerRef.current) {
-        clearTimeout(backgroundDisconnectTimerRef.current);
-        backgroundDisconnectTimerRef.current = null;
-      }
-    };
-  }, [activeSessionId]);
+  // Lazy-connect background-session disconnect sweep lives in useWSConnection (C1)
+  // — mitto-90f.6.2. (moved from composer)
 
   // Ref to track which sessions we've already attempted to recover from inconsistent state
   // This prevents infinite loops where recovery triggers state change which triggers recovery
@@ -6062,155 +4378,140 @@ export function useWebSocket({ onActiveSessionRemovedRef } = {}) {
         );
       } else {
         // WebSocket not connected, reconnect
-        forceReconnectActiveSession();
+        forceReconnectActiveSessionRef.current?.();
       }
     }
-  }, [activeSessionId, sessions, forceReconnectActiveSession]);
+  }, [activeSessionId, sessions]);
 
-  // Refresh session list, force reconnect session WebSocket, and retry pending prompts when app becomes visible
-  // On mobile, when the phone sleeps, WebSocket connections can become "zombie" connections
-  // that appear open but are actually dead. The safest approach is to force a fresh reconnection.
-  // Also detect if the session might be stale (phone locked overnight) and verify auth first.
-  useEffect(() => {
-    const handleVisibilityChange = async () => {
-      if (document.visibilityState === "hidden") {
-        // Track when the page was hidden so we can detect staleness on wake
-        lastHiddenTimeRef.current = Date.now();
-        console.log("App hidden, tracking time");
-        return;
-      }
+  // Mobile resilience sub-hook (mitto-90f.6.1): owns lastHiddenTimeRef,
+  // staleRecoveryCooldownRef, isMobileDevice, and the visibilitychange effect
+  // that reconnects sessions after wake from sleep. Destructured at composer
+  // scope so pre-existing bare references (in handleSessionMessage's closure
+  // and INITIAL_ACK_TIMEOUT_MS above) resolve to the sub-hook's bindings.
+  // Placement rationale: must be after reconnectAllSessionsStaggered /
+  // fetchStoredSessions / switchSession are defined (they are passed as
+  // props). Closure captures the lexical binding, which is initialised before
+  // any effect body or event handler ever runs (post-render), so the earlier
+  // callbacks that reference the ref names still work.
+  const mobileResilience = useWSMobileResilience({
+    reconnectAllSessionsStaggered,
+    fetchStoredSessions,
+    switchSession,
+    setActiveSessionId,
+    activeSessionIdRef,
+  });
+  const { isMobileDevice, staleRecoveryCooldownRef, lastHiddenTimeRef } =
+    mobileResilience;
+  // Silence unused-var warnings from static analyzers: these are consumed by
+  // closures declared earlier in this file (handleSessionMessage) and by
+  // INITIAL_ACK_TIMEOUT_MS via lexical scope.
+  void staleRecoveryCooldownRef;
+  void lastHiddenTimeRef;
+  void isMobileDevice;
 
-      if (document.visibilityState === "visible") {
-        const now = Date.now();
-        const hiddenDuration = lastHiddenTimeRef.current
-          ? now - lastHiddenTimeRef.current
-          : 0;
-        const wasHiddenLong = hiddenDuration > STALE_THRESHOLD_MS;
+  // ============================================================================
+  // WebSocket transport sub-hook (C1, mitto-90f.6.2)
+  // ============================================================================
+  // Owns per-session and global-events WebSocket lifecycles, keepalive/zombie
+  // detection, exponential-backoff reconnect, staggered wake reconnects, and
+  // the lazy-connect background-disconnect sweep. Called after useWSMobileResilience
+  // because it consumes staleRecoveryCooldownRef. Its returned callbacks are
+  // routed back to composer callbacks declared earlier via seven forward-refs
+  // populated on the next line (see the top of this composer for declarations).
+  const connection = useWSConnection({
+    activeSessionId,
+    activeSessionIdRef,
+    sessionsRef,
+    storedSessionsRef,
+    setSessions,
+    handleSessionMessageRef,
+    handleGlobalEvent,
+    fetchStoredSessions,
+    switchSession,
+    onNoInitialSessionRef,
+    retryPendingPromptsRef,
+    lastKnownSeqRef,
+    staleRecoveryCooldownRef,
+    pendingSyncRef,
+    needsContextLoadRef,
+    setPendingSync,
+    clearPendingSync,
+  });
+  const {
+    connected,
+    forceReconnectActiveSession: c1ForceReconnectActiveSession,
+    reconnectAllSessionsStaggered: c1ReconnectAllSessionsStaggered,
+    connectToSession,
+    connectToEvents,
+    isConnectionHealthy,
+    waitForSessionConnection,
+    sendToSession,
+    sessionWsRefs,
+    sessionReconnectRefs,
+    sessionReconnectAttemptsRef,
+    keepaliveRef,
+    serverShuttingDownRef,
+    eventsWsRef,
+    reconnectRef,
+    staggeredBackgroundTimersRef,
+  } = connection;
+  // Populate forward-refs so the composer callbacks declared earlier (which
+  // ref-indirect via xxxRef.current) reach the sub-hook's implementations.
+  connectToSessionRef.current = connectToSession;
+  sendToSessionRef.current = sendToSession;
+  waitForSessionConnectionRef.current = waitForSessionConnection;
+  isConnectionHealthyRef.current = isConnectionHealthy;
+  connectToEventsRef.current = connectToEvents;
+  forceReconnectActiveSessionRef.current = c1ForceReconnectActiveSession;
+  reconnectAllSessionsStaggeredRef.current = c1ReconnectAllSessionsStaggered;
 
-        console.log(
-          `App became visible after ${Math.round(hiddenDuration / 1000)}s` +
-            (wasHiddenLong ? " (checking auth first)" : ""),
-        );
-
-        // Clean up expired prompts first
-        cleanupExpiredPrompts();
-
-        // If the page was hidden for a long time (e.g., phone locked overnight),
-        // do an explicit auth check before trying to reconnect.
-        // This prevents the user from seeing a stuck/stale state.
-        if (wasHiddenLong) {
-          console.log("Session may be stale, verifying authentication...");
-          const { authenticated, networkError } = await checkAuthWithRetry();
-
-          if (!authenticated) {
-            if (networkError) {
-              // Network is not available yet - this is common right after phone unlock
-              // Wait a bit longer and try again
-              console.log(
-                "Network not available, will retry auth check in 2s...",
-              );
-              setTimeout(async () => {
-                const retry = await checkAuthWithRetry();
-                if (!retry.authenticated && !retry.networkError) {
-                  // 401 - session expired
-                  return;
-                }
-                // Either authenticated or still network error - proceed with normal reconnect
-                // If still network error, the WebSocket reconnect will handle retries
-                const retrySessions = await fetchStoredSessions();
-
-                // Check if the active session still exists
-                const retryCurrentSessionId = activeSessionIdRef.current;
-                const retrySessionExists =
-                  retryCurrentSessionId &&
-                  retrySessions.some(
-                    (s) => s.session_id === retryCurrentSessionId,
-                  );
-
-                if (retryCurrentSessionId && !retrySessionExists) {
-                  // Active session was deleted
-                  console.log(
-                    `Active session ${retryCurrentSessionId} no longer exists, switching...`,
-                  );
-                  if (retrySessions.length > 0) {
-                    switchSession(retrySessions[0].session_id);
-                  } else {
-                    setActiveSessionId(null);
-                  }
-                } else {
-                  setTimeout(() => {
-                    reconnectAllSessionsStaggered();
-                  }, 300);
-                }
-              }, 2000);
-              return;
-            }
-            // Auth check returned 401 - redirectToLogin was already called
-            return;
-          }
-          console.log("Authentication verified, proceeding with reconnect");
-        }
-
-        // Fetch stored sessions (updates the session list in sidebar)
-        // We await this to ensure we have the latest session list before reconnecting
-        const sessions = await fetchStoredSessions();
-
-        // Check if the active session still exists (it may have been deleted while phone was sleeping)
-        const currentSessionId = activeSessionIdRef.current;
-        const activeSessionExists =
-          currentSessionId &&
-          sessions.some((s) => s.session_id === currentSessionId);
-
-        if (currentSessionId && !activeSessionExists) {
-          // Active session was deleted while phone was sleeping
-          console.log(
-            `Active session ${currentSessionId} no longer exists, switching...`,
-          );
-          if (sessions.length > 0) {
-            // Switch to the most recent session
-            switchSession(sessions[0].session_id);
-          } else {
-            // No sessions left
-            setActiveSessionId(null);
-          }
-        } else {
-          // Reconnect all sessions with staggering to prevent thundering herd.
-          // Active session reconnects immediately; background sessions reconnect
-          // with increasing delays so their load_events requests don't all hit
-          // the server at the same time.
-          // Use a small delay to allow the network stack to stabilize after wake.
-          setTimeout(() => {
-            reconnectAllSessionsStaggered();
-          }, 300);
-        }
-      }
-    };
-
-    document.addEventListener("visibilitychange", handleVisibilityChange);
-    return () => {
-      document.removeEventListener("visibilitychange", handleVisibilityChange);
-    };
-  }, [fetchStoredSessions, reconnectAllSessionsStaggered, switchSession]);
-
-  // Clear background completion notification
-  const clearBackgroundCompletion = useCallback(() => {
-    setBackgroundCompletion(null);
-  }, []);
-
-  // Clear loop started notification
-  const clearLoopStarted = useCallback(() => {
-    setLoopStarted(null);
-  }, []);
-
-  // Clear background UI prompt notification
-  const clearBackgroundUIPrompt = useCallback(() => {
-    setBackgroundUIPrompt(null);
-  }, []);
-
-  // Clear background UI prompt timeout notification
-  const clearBackgroundUIPromptTimeout = useCallback(() => {
-    setBackgroundUIPromptTimeout(null);
-  }, []);
+  // ==========================================================================
+  // Delivery verification sub-hook (mitto-90f.6.3, cluster C2): owns sendPrompt
+  // with its nested attemptSend/verifyDeliveryAfterReconnect budget loop,
+  // cancelPrompt, forceReset, retryPendingPrompts, and
+  // resolvePendingSendsForSession. Composer keeps pendingSendsRef and
+  // lastConfirmedPromptRef because handleSessionMessage reads/writes them at
+  // ~10 sites; both are passed in as props (sub-hook never allocates its own).
+  // C1 transport primitives (isConnectionHealthy / waitForSessionConnection)
+  // are consumed via stable ref-indirect wrappers so their identities stay
+  // stable across renders (rule 21). sendToSession is consumed via the
+  // pre-existing sendToSessionStable wrapper.
+  // ==========================================================================
+  const isConnectionHealthyStable = useCallback(
+    (sessionId) => isConnectionHealthyRef.current?.(sessionId),
+    [],
+  );
+  const waitForSessionConnectionStable = useCallback(
+    (sessionId, timeout) =>
+      waitForSessionConnectionRef.current?.(sessionId, timeout),
+    [],
+  );
+  const {
+    sendPrompt,
+    cancelPrompt,
+    forceReset,
+    retryPendingPrompts,
+    resolvePendingSendsForSession,
+  } = useWSDeliveryVerification({
+    activeSessionId,
+    addMessageToSession,
+    updateLastMessage,
+    clearActionButtons,
+    setSessions,
+    sendToSession: sendToSessionStable,
+    waitForSessionConnection: waitForSessionConnectionStable,
+    isConnectionHealthy: isConnectionHealthyStable,
+    sessionWsRefs,
+    isMobileDevice,
+    pendingSendsRef,
+    lastConfirmedPromptRef,
+  });
+  // Wire the composer-owned ref-bridges to C2's callbacks so C1's onopen /
+  // onmessage handlers (which invoke retryPendingPromptsRef.current(sid) and
+  // resolvePendingSendsRef.current(sid)) reach C2's implementations.
+  // Unconditional per-render assignment is safe for mutable refs.
+  retryPendingPromptsRef.current = retryPendingPrompts;
+  resolvePendingSendsRef.current = resolvePendingSendsForSession;
 
   // Send UI prompt answer (yes/no or select response)
   const sendUIPromptAnswer = useCallback(
@@ -6223,7 +4524,7 @@ export function useWebSocket({ onActiveSessionRemovedRef } = {}) {
         freeText,
       });
 
-      const sent = sendToSession(sessionId, {
+      const sent = sendToSessionRef.current?.(sessionId, {
         type: "ui_prompt_answer",
         data: {
           request_id: requestId,
@@ -6252,7 +4553,7 @@ export function useWebSocket({ onActiveSessionRemovedRef } = {}) {
 
       return sent;
     },
-    [sendToSession],
+    [],
   );
 
   // Get active UI prompt for the current session
@@ -6268,7 +4569,7 @@ export function useWebSocket({ onActiveSessionRemovedRef } = {}) {
   }, [sessionInfo, workspaceMcpTools]);
 
   return {
-    connected: eventsConnected,
+    connected,
     messages,
     sendPrompt,
     cancelPrompt,

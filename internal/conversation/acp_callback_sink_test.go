@@ -42,21 +42,22 @@ type fakeCallbackDeps struct {
 	streamingSuppressed bool // mitto-2tm: gates streaming callback short-circuit
 
 	// recorders
-	notifiedEvents      []string
-	recordedEvents      []session.Event
-	recordedEventKinds  []string
-	recordedPermissions []recordedPermission
-	contextUsages       [][2]int
-	mcpRequests         []string
-	planEntries         [][]PlanEntry
-	uiPromptCalls       []UIPromptRequest
-	modeCurrentValues   []string
-	persistedConfig     [][2]string
-	configChanged       [][2]string
-	legacyModesSet      []SessionConfigOption
-	storedAgentModels   []*acp.UnstableSessionModelState
-	modelReplacements   []SessionConfigOption
-	asyncConstraintCats []string
+	notifiedEvents        []string
+	recordedEvents        []session.Event
+	recordedEventKinds    []string
+	recordedPermissions   []recordedPermission
+	contextUsages         [][2]int
+	mcpRequests           []string
+	planEntries           [][]PlanEntry
+	uiPromptCalls         []UIPromptRequest
+	modeCurrentValues     []string
+	persistedConfig       [][2]string
+	configChanged         [][2]string
+	legacyModesSet        []SessionConfigOption
+	storedAgentModels     []*SessionModelState
+	modelReplacements     []SessionConfigOption
+	asyncConstraintCats   []string
+	maybeApplyInitialCall int
 }
 
 type recordedPermission struct{ Title, OptionID, Outcome string }
@@ -151,7 +152,7 @@ func (f *fakeCallbackDeps) cbSetLegacyModes(opt SessionConfigOption) {
 	f.legacyModesSet = append(f.legacyModesSet, opt)
 }
 
-func (f *fakeCallbackDeps) cbStoreAgentModels(m *acp.UnstableSessionModelState) {
+func (f *fakeCallbackDeps) cbStoreAgentModels(m *SessionModelState) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.storedAgentModels = append(f.storedAgentModels, m)
@@ -176,6 +177,11 @@ func (f *fakeCallbackDeps) cbApplyConfigConstraintsAsync(category string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.asyncConstraintCats = append(f.asyncConstraintCats, category)
+}
+func (f *fakeCallbackDeps) cbMaybeApplyInitialModelAsync() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.maybeApplyInitialCall++
 }
 
 func (f *fakeCallbackDeps) cbStreamingSuppressed() bool {
@@ -497,7 +503,7 @@ func TestCallbackSink_SetAgentModels_NilOrEmpty(t *testing.T) {
 
 	t.Run("empty available", func(t *testing.T) {
 		d := &fakeCallbackDeps{}
-		s.setAgentModels(d, &acp.UnstableSessionModelState{CurrentModelId: "x"})
+		s.setAgentModels(d, &SessionModelState{CurrentModelId: "x"})
 		if len(d.modelReplacements) != 0 || len(d.asyncConstraintCats) != 0 {
 			t.Fatalf("empty AvailableModels must not trigger downstream work")
 		}
@@ -507,9 +513,9 @@ func TestCallbackSink_SetAgentModels_NilOrEmpty(t *testing.T) {
 func TestCallbackSink_SetAgentModels_FullFlow_NoConstraint(t *testing.T) {
 	s := acpCallbackSink{}
 	d := &fakeCallbackDeps{}
-	models := &acp.UnstableSessionModelState{
+	models := &SessionModelState{
 		CurrentModelId: "m-1",
-		AvailableModels: []acp.UnstableModelInfo{
+		AvailableModels: []ModelInfo{
 			{ModelId: "m-1", Name: "Model 1"},
 			{ModelId: "m-2", Name: "Model 2"},
 		},
@@ -538,9 +544,9 @@ func TestCallbackSink_SetAgentModels_PreAppliesConstraint(t *testing.T) {
 			ConfigOptionCategoryModel: {Pattern: "Model 2", MatchMode: "exact"},
 		},
 	}
-	models := &acp.UnstableSessionModelState{
+	models := &SessionModelState{
 		CurrentModelId: "m-1",
-		AvailableModels: []acp.UnstableModelInfo{
+		AvailableModels: []ModelInfo{
 			{ModelId: "m-1", Name: "Model 1"},
 			{ModelId: "m-2", Name: "Model 2"},
 		},
@@ -563,7 +569,7 @@ func TestCallbackSink_LogAgentModels_NilSafe(t *testing.T) {
 	s := acpCallbackSink{}
 	d := &fakeCallbackDeps{} // nil logger
 	s.logAgentModels(d, nil)
-	s.logAgentModels(d, &acp.UnstableSessionModelState{})
+	s.logAgentModels(d, &SessionModelState{})
 	// no panic, no recorded state
 	if len(d.notifiedEvents) != 0 {
 		t.Fatalf("logAgentModels must not produce side effects, got %v", d.notifiedEvents)

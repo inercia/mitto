@@ -134,6 +134,11 @@ export function promptResolveAsLoop(prompt, override) {
  *   text           — generic free-form text (catch-all)
  *   boolean        — a yes/no flag, rendered as a checkbox; supplied as the
  *                    string "true"/"false" (see PromptParameterDialog)
+ *   prompts        — the NAME of another workspace prompt, rendered as a picker
+ *                    in the parameter dialog. Interactive, dialog-collected (like
+ *                    boolean): no menu auto-supplies it and it never gates menu
+ *                    visibility. Feeds the {{ PromptText .Args.NAME }} template
+ *                    action. multiLine is not supported.
  */
 export const KNOWN_PARAM_TYPES = [
   "beadsId",
@@ -145,6 +150,7 @@ export const KNOWN_PARAM_TYPES = [
   "acpServer",
   "text",
   "boolean",
+  "prompts",
 ];
 
 /**
@@ -157,6 +163,22 @@ export const KNOWN_PARAM_TYPES = [
  */
 export function isBooleanParam(p) {
   return p?.type === "boolean";
+}
+
+/**
+ * Returns true if the parameter is an *interactive picker* type — i.e. one that
+ * no menu can auto-supply and that must always be collected via the parameter
+ * dialog. Currently: `boolean` (checkbox) and `prompts` (workspace-prompt
+ * picker).
+ *
+ * Rationale: `prompts` parameters carry the NAME of another workspace prompt.
+ * No menu context has such a name in scope, so they behave like `boolean` for
+ * gating purposes — never gating visibility (menuSatisfies) and always
+ * included in getMissingPromptParameters regardless of `required` or the
+ * menu's auto-supplied types. The dialog offers the picker unconditionally.
+ */
+export function isInteractivePickerParam(p) {
+  return p?.type === "boolean" || p?.type === "prompts";
 }
 
 /**
@@ -203,9 +225,11 @@ export const MENU_PARAM_TYPES = {
  * Unset (`required` absent/null) or `required: true` keeps the current gating
  * behaviour, preserving all existing prompts unchanged.
  *
- * Boolean parameters never gate: a checkbox always has a definite answer, so a
- * boolean param behaves like an optional one for visibility purposes (it is
- * collected via the dialog rather than auto-supplied by a menu).
+ * Interactive picker parameters (boolean, prompts) never gate: a checkbox
+ * always has a definite answer, and a workspace-prompt picker is always
+ * offered by the dialog, so both behave like an optional param for visibility
+ * purposes (they are collected via the dialog rather than auto-supplied by
+ * a menu). See isInteractivePickerParam.
  */
 export function menuSatisfies(prompt, menu) {
   const params = promptParameters(prompt);
@@ -213,7 +237,9 @@ export function menuSatisfies(prompt, menu) {
   const provided = MENU_PARAM_TYPES[menu] || [];
   return params.every(
     (p) =>
-      isBooleanParam(p) || p.required === false || provided.includes(p.type),
+      isInteractivePickerParam(p) ||
+      p.required === false ||
+      provided.includes(p.type),
   );
 }
 
@@ -230,8 +256,9 @@ export function menuSatisfies(prompt, menu) {
  * Rules:
  *   - An unknown or missing `menu` is treated as providing [] (all required params missing).
  *   - A prompt with no parameters always returns [].
- *   - A boolean parameter is ALWAYS included (it is rendered as a checkbox and
- *     collected via the dialog; no menu can auto-supply it).
+ *   - An interactive picker parameter (boolean, prompts) is ALWAYS included
+ *     (it is rendered as a checkbox or a workspace-prompt picker and collected
+ *     via the dialog; no menu can auto-supply it). See isInteractivePickerParam.
  *   - A parameter whose type IS in the menu's provided-types list is excluded.
  *   - A parameter with `required === false` is excluded (optional, no form shown).
  *   - Declared order is preserved.
@@ -246,7 +273,8 @@ export function getMissingPromptParameters(prompt, menu) {
   const provided = MENU_PARAM_TYPES[menu] || [];
   return params.filter(
     (p) =>
-      isBooleanParam(p) || (p.required !== false && !provided.includes(p.type)),
+      isInteractivePickerParam(p) ||
+      (p.required !== false && !provided.includes(p.type)),
   );
 }
 
@@ -547,6 +575,12 @@ function resolveProfileModel(profile, modelOption) {
  * profile carrying that tag, first-yielding wins by profile order). For each
  * entry the CURRENT model is checked first: if it already satisfies the
  * entry, the prompt keeps the current model and no override chip is shown.
+ *
+ * Priority axis is profile-list order (mitto-ex7 "list order = priority"
+ * contract, mirrors backend config.ProfilesByTag): both the modelName path
+ * (via `modelProfiles.find`) and the modelTag path (via `modelProfiles.filter`
+ * + linear scan) walk `modelProfiles` in-order, so reordering the global
+ * `models:` list flips which profile wins for the same name/tag.
  *
  * @param {Array<{modelName?: string, modelTag?: string}>} preferredModels
  *   ordered preference entries.

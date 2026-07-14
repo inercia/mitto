@@ -1,0 +1,104 @@
+##########################################################################################
+# Builtin processor: extracts durable project memories when a conversation is archived.
+#
+# Fires once when the session enters the closed (archived) state — either through a
+# manual archive from the UI or an automatic archive triggered by inactivity. The
+# processor asks a workspace-scoped auxiliary AI agent to review the conversation and
+# save any durable, project-level knowledge (architectural decisions, gotchas, non-
+# obvious behaviours) as beads memories via `bd remember`.
+#
+# Fire-and-forget: the auxiliary agent works in the background after the main
+# conversation is already archived. Nothing is written to the closed session; the
+# extracted knowledge lives on the workspace side (beads database) so it survives
+# and is available to future sessions.
+#
+# Activation gates (all must hold):
+#   1. `bd` command exists on PATH (CommandExists CEL gate)
+#   2. The workspace contains a `.beads` directory (DirExists CEL gate)
+#   3. The session is NOT a loop conversation (loops routinely open/close and would
+#      otherwise thrash the memories store on every iteration)
+#
+# Enabled by default — disable per workspace in the Workspaces dialog or .mittorc.
+##########################################################################################
+name: extract-memories-on-close
+description: "Extracts durable project memories via bd remember when a conversation is archived"
+enabled: true
+when:
+  on: conversationClosed
+  match: all
+priority: 200
+timeout: 300s
+onError: skip
+
+# Only fire when beads is initialised in this workspace, and never for loop sessions
+# (they archive/unarchive frequently and would repeatedly re-scan the same history).
+enabledWhen: 'CommandExists("bd") && DirExists(".beads") && !Session.IsLoop'
+
+prompt: |
+  You review a Mitto conversation that has just been archived and preserve any durable,
+  project-level knowledge as beads memories so future sessions can benefit from it.
+
+  Working directory: {{ .Workspace.Folder }}
+  Archived session ID: {{ .Session.ID }}
+
+  ## 1. Read the conversation
+
+  Use the `mitto_conversation_history` MCP tool to retrieve the archived session's
+  history. Call it with:
+  - `self_id`: your session ID (from `mitto_conversation_get_current`)
+  - `conversation_id`: "{{ .Session.ID }}"
+  - `event_types`: ["user_prompt", "agent_message"]
+  - `last_n`: 50
+
+  If the history is empty or trivially short (fewer than ~4 real exchanges), do nothing
+  and exit silently.
+
+  ## 2. Extract durable, project-level memories
+
+  Look for knowledge that would help a *future* agent working in this same project.
+  Good candidates:
+  - **Architectural decisions**: why a component is structured a particular way, why
+    an alternative was rejected.
+  - **Non-obvious behaviours or gotchas**: subtle bugs discovered, order-of-operations
+    requirements, race conditions, quirks in third-party libraries.
+  - **Conventions confirmed during this conversation**: naming, layering, testing style,
+    that the project follows (as evidenced by the exchange, not merely stated).
+  - **Discovered facts about the codebase**: where important logic lives, how
+    subsystems fit together, invariants that must hold.
+
+  Do NOT record:
+  - Personal user preferences (those belong in the user-preferences file, not memories).
+  - One-off task descriptions ("fix bug X", "implement feature Y").
+  - Ephemeral debugging notes that don't outlive the immediate task.
+  - Anything that's already obvious from the code itself.
+  - Anything you already remembered in a previous session (check first — see below).
+
+  Be conservative. It is better to remember nothing than to pollute the store with
+  noise. When in doubt, skip.
+
+  ## 3. Deduplicate against existing memories
+
+  Before adding anything, run `bd memory list` (or equivalent) to see what has already
+  been recorded. Skip any memory that is already captured, and prefer refining an
+  existing entry over adding a near-duplicate.
+
+  ## 4. Persist via `bd remember`
+
+  For each genuinely new memory, call:
+
+  ```
+  bd remember "<concise, self-contained sentence or short paragraph>"
+  ```
+
+  Keep each memory:
+  - **Self-contained** — future readers won't have the conversation context.
+  - **Specific** — reference concrete files, functions, or subsystems where useful.
+  - **Durable** — phrase it as a lasting fact about the project, not a task narrative.
+  - **Short** — one to three sentences per memory, never more.
+
+  ## 5. Silent success
+
+  This is a background clean-up processor. Do NOT call `mitto_ui_notify` and do NOT
+  post any user-visible summary — the session is already archived and there is no
+  active UI to notify. If you added no memories (nothing worth preserving, or all
+  candidates were already recorded), just exit silently.

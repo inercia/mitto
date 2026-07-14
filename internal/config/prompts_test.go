@@ -525,6 +525,52 @@ func TestLoadPromptsFromDir_NonExistent(t *testing.T) {
 	}
 }
 
+func TestLoadPromptsFromDirWithErrors_ReportsBadFileAndKeepsGood(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Valid prompt file.
+	goodPrompt := `name: "Good Prompt"
+prompt: |
+  Some content.
+`
+	if err := os.WriteFile(filepath.Join(tmpDir, "good.prompt.yaml"), []byte(goodPrompt), 0644); err != nil {
+		t.Fatalf("Failed to write good.prompt.yaml: %v", err)
+	}
+
+	// Invalid prompt file: malformed YAML (unclosed flow sequence).
+	badPrompt := `name: [unclosed
+prompt: |
+  Should fail to parse.
+`
+	if err := os.WriteFile(filepath.Join(tmpDir, "bad.prompt.yaml"), []byte(badPrompt), 0644); err != nil {
+		t.Fatalf("Failed to write bad.prompt.yaml: %v", err)
+	}
+
+	prompts, loadErrors, err := LoadPromptsFromDirWithErrors(tmpDir)
+	if err != nil {
+		t.Fatalf("LoadPromptsFromDirWithErrors failed: %v", err)
+	}
+
+	// Good prompt must still be returned.
+	if len(prompts) != 1 {
+		t.Fatalf("len(prompts) = %d, want 1", len(prompts))
+	}
+	if prompts[0].Name != "Good Prompt" {
+		t.Errorf("prompts[0].Name = %q, want %q", prompts[0].Name, "Good Prompt")
+	}
+
+	// Exactly one load error for the bad file.
+	if len(loadErrors) != 1 {
+		t.Fatalf("len(loadErrors) = %d, want 1 (%+v)", len(loadErrors), loadErrors)
+	}
+	if loadErrors[0].Path != "bad.prompt.yaml" {
+		t.Errorf("loadErrors[0].Path = %q, want %q", loadErrors[0].Path, "bad.prompt.yaml")
+	}
+	if loadErrors[0].Err == nil {
+		t.Error("loadErrors[0].Err = nil, want non-nil")
+	}
+}
+
 func TestPromptsToWebPrompts(t *testing.T) {
 	prompts := []*PromptFile{
 		{Name: "One", Content: "Content 1"},
@@ -1133,6 +1179,10 @@ func TestIsKnownPromptParameterType(t *testing.T) {
 	if !IsKnownPromptParameterType("boolean") {
 		t.Error("IsKnownPromptParameterType(\"boolean\") = false, want true")
 	}
+	// prompts is a recognised type (rendered as a picker in the parameter dialog).
+	if !IsKnownPromptParameterType("prompts") {
+		t.Error("IsKnownPromptParameterType(\"prompts\") = false, want true")
+	}
 }
 
 func TestParsePromptFile_WithParameters(t *testing.T) {
@@ -1370,6 +1420,15 @@ func TestValidatePromptParameters(t *testing.T) {
 	t.Run("boolean param is OK in any menu", func(t *testing.T) {
 		for _, menus := range []string{"", "prompts", "conversation", "beadsIssues"} {
 			err := ValidatePromptParameters(menus, []PromptParameter{{Name: "Commit", Type: "boolean"}})
+			if err != nil {
+				t.Errorf("menus=%q: unexpected error: %v", menus, err)
+			}
+		}
+	})
+
+	t.Run("prompts param is OK in any menu", func(t *testing.T) {
+		for _, menus := range []string{"", "prompts", "conversation", "beadsIssues"} {
+			err := ValidatePromptParameters(menus, []PromptParameter{{Name: "Target", Type: "prompts"}})
 			if err != nil {
 				t.Errorf("menus=%q: unexpected error: %v", menus, err)
 			}
@@ -2041,4 +2100,46 @@ func TestBuiltinPromptsParseClean(t *testing.T) {
 			}
 		}
 	}
+}
+
+// TestBuiltinPrompts_EnabledWhenCompiles CEL-compiles every non-empty enabledWhen
+// on the shipped builtin prompts. TestBuiltinPromptsParseClean only YAML-parses
+// them, so an undeclared identifier/function in a builtin's enabledWhen would slip
+// through CI and only surface as a runtime WARN (see mitto-w7h: 3 Support prompts
+// referenced the then-unregistered BeadIsOpen macro and were silently dropped).
+func TestBuiltinPrompts_EnabledWhenCompiles(t *testing.T) {
+	builtinDir := filepath.Join("..", "..", "config", "prompts", "builtin")
+	entries, err := os.ReadDir(builtinDir)
+	if err != nil {
+		t.Skipf("builtin prompts dir not found at %s: %v", builtinDir, err)
+	}
+	e, err := NewCELEvaluator()
+	if err != nil {
+		t.Fatalf("NewCELEvaluator: %v", err)
+	}
+	n := 0
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".prompt.yaml") {
+			continue
+		}
+		path := filepath.Join(builtinDir, entry.Name())
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Errorf("ReadFile(%s): %v", entry.Name(), err)
+			continue
+		}
+		prompt, err := ParsePromptFile(entry.Name(), data, time.Now())
+		if err != nil {
+			continue // parse errors reported by TestBuiltinPromptsParseClean
+		}
+		if prompt.EnabledWhen == "" {
+			continue
+		}
+		if _, err := e.Compile(prompt.EnabledWhen); err != nil {
+			t.Errorf("%s: enabledWhen %q failed to compile: %v", entry.Name(), prompt.EnabledWhen, err)
+			continue
+		}
+		n++
+	}
+	t.Logf("compiled enabledWhen for %d builtin prompts", n)
 }

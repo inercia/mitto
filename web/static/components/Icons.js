@@ -653,6 +653,36 @@ export function FolderIcon({ className = "w-5 h-5" }) {
 }
 
 /**
+ * Folder icon with a "+" inside — used for the "Add folder" toolbar action.
+ * Shares the same folder outline as FolderIcon, with a plus glyph centered on
+ * the folder body so the affordance reads as "add a folder" at a glance.
+ * @param {string} className - CSS classes (default: 'w-5 h-5')
+ */
+export function FolderPlusIcon({ className = "w-5 h-5" }) {
+  return html`
+    <svg
+      class="${className}"
+      fill="none"
+      stroke="currentColor"
+      viewBox="0 0 24 24"
+    >
+      <path
+        stroke-linecap="round"
+        stroke-linejoin="round"
+        stroke-width="2"
+        d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"
+      />
+      <path
+        stroke-linecap="round"
+        stroke-linejoin="round"
+        stroke-width="2"
+        d="M12 11v6M9 14h6"
+      />
+    </svg>
+  `;
+}
+
+/**
  * Keyboard icon
  * @param {string} className - CSS classes (default: 'w-4 h-4')
  */
@@ -1474,6 +1504,37 @@ export function MittoIcon({ className = "w-4 h-4" }) {
         stroke-linecap="round"
         stroke-linejoin="round"
         d="M8 10h.01M12 10h.01M16 10h.01"
+      />
+    </svg>
+  `;
+}
+
+/**
+ * Mitto bubble with a "+" inside — used for the "New Conversation" toolbar
+ * action. Speech-bubble outline sized to match the FolderPlusIcon bounds so
+ * the two "+" toolbar buttons read at the same visual weight and vertically
+ * align (bubble bounds x=3..21, y=5..19; plus glyph centered on the bubble
+ * body, mirroring the folder+ layout).
+ * @param {string} className - CSS classes (default: 'w-4 h-4')
+ */
+export function MittoPlusIcon({ className = "w-4 h-4" }) {
+  return html`
+    <svg
+      class="${className}"
+      fill="none"
+      stroke="currentColor"
+      viewBox="0 0 24 24"
+      stroke-width="2"
+    >
+      <path
+        stroke-linecap="round"
+        stroke-linejoin="round"
+        d="M3 6a1 1 0 0 1 1-1h16a1 1 0 0 1 1 1v9a1 1 0 0 1-1 1H11l-4 3v-3H4a1 1 0 0 1-1-1z"
+      />
+      <path
+        stroke-linecap="round"
+        stroke-linejoin="round"
+        d="M12 8v6M9 11h6"
       />
     </svg>
   `;

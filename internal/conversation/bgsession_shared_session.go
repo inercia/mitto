@@ -123,11 +123,17 @@ func (bs *BackgroundSession) hsGetPendingSharedModes() *acp.SessionModeState {
 func (bs *BackgroundSession) hsSetPendingSharedModes(m *acp.SessionModeState) {
 	bs.pendingSharedModes = m
 }
-func (bs *BackgroundSession) hsGetPendingSharedModels() *acp.UnstableSessionModelState {
+func (bs *BackgroundSession) hsGetPendingSharedModels() *SessionModelState {
 	return bs.pendingSharedModels
 }
-func (bs *BackgroundSession) hsSetPendingSharedModels(m *acp.UnstableSessionModelState) {
+func (bs *BackgroundSession) hsSetPendingSharedModels(m *SessionModelState) {
 	bs.pendingSharedModels = m
+}
+func (bs *BackgroundSession) hsGetPendingSharedModelConfigId() acp.SessionConfigId {
+	return bs.pendingSharedModelCfgId
+}
+func (bs *BackgroundSession) hsSetPendingSharedModelConfigId(id acp.SessionConfigId) {
+	bs.pendingSharedModelCfgId = id
 }
 
 func (bs *BackgroundSession) hsHandshakeLock()   { bs.handshakeMu.Lock() }
@@ -157,10 +163,13 @@ func (bs *BackgroundSession) hsStopMcpServer() { bs.stopSessionMcpServer() }
 func (bs *BackgroundSession) hsApplySessionModes(modes *acp.SessionModeState) {
 	bs.setSessionModes(modes)
 }
-func (bs *BackgroundSession) hsApplyAgentModels(models *acp.UnstableSessionModelState) {
+func (bs *BackgroundSession) hsApplyAgentModels(models *SessionModelState) {
 	bs.setAgentModels(models)
 }
-func (bs *BackgroundSession) hsLogAgentModels(models *acp.UnstableSessionModelState) {
+func (bs *BackgroundSession) hsApplyAgentModelConfigId(id acp.SessionConfigId) {
+	bs.modelConfigId = id
+}
+func (bs *BackgroundSession) hsLogAgentModels(models *SessionModelState) {
 	bs.logAgentModels(models)
 }
 
@@ -175,8 +184,32 @@ func (bs *BackgroundSession) hsPersistACPSessionID() {
 	}
 }
 
+func (bs *BackgroundSession) hsClearPersistedACPSessionID() {
+	if bs.store == nil || bs.persistedID == "" {
+		return
+	}
+	if err := bs.store.UpdateMetadata(bs.persistedID, func(m *session.Metadata) {
+		m.ACPSessionID = ""
+	}); err != nil && bs.logger != nil {
+		bs.logger.Warn("Failed to clear stale persisted ACP session ID after load failure", "error", err)
+	}
+}
+
 func (bs *BackgroundSession) hsNotifyObservers(fn func(SessionObserver)) {
 	bs.notifyObservers(fn)
+}
+
+// Cold-start diagnostic delegators (mitto-3mv WI-2). Delegate through the
+// nil-safe helpers on BackgroundSession so the handshake collaborator never
+// needs a nil check on bs.coldTrace.
+func (bs *BackgroundSession) hsColdPhase(name string, kv ...any) { bs.coldPhase(name, kv...) }
+func (bs *BackgroundSession) hsMarkMcpInitStart()                { bs.markMcpInitStart() }
+func (bs *BackgroundSession) hsMarkMcpInitEnd()                  { bs.markMcpInitEnd() }
+func (bs *BackgroundSession) hsFinishColdTrace(outcome string, kv ...any) {
+	bs.finishColdTrace(outcome, kv...)
+}
+func (bs *BackgroundSession) hsColdTraceCtx(base context.Context) context.Context {
+	return bs.coldTraceCtx(base)
 }
 
 // logSessionModes logs the session modes/config options at DEBUG level.

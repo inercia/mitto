@@ -34,4 +34,21 @@ type SessionInfo struct {
 	// work, making it the correct signal for the loop-suspend grace window.
 	// Zero if the agent has not completed a response since the session was resumed.
 	LastResponseCompleteAt time.Time
+	// LastStreamActivityAt is when the session last received a streamed update from
+	// the agent (mirrors BackgroundSession.lastStreamActivityAt). Unlike
+	// LastActivityAt, it grows monotonically through a long silent tool call and is
+	// the correct signal to distinguish a wedged process from one making genuine,
+	// slow progress. Zero if no streamed activity has been observed.
+	LastStreamActivityAt time.Time
+	// Pinned marks this session as a pinned keepalive that must survive GC. Used
+	// by the adaptive pre-warming path to keep a warm session alive for slow or
+	// broken workspaces so the first real prompt does not pay the cold-start cost.
+	Pinned bool
+	// PinReason is a human-readable reason for the pin (e.g. "slow session/new",
+	// "mcp-init timeout"). Empty when Pinned is false.
+	PinReason string
+	// PinExpiry optionally caps how long the pin is honoured. When non-nil and in
+	// the past, the pin is EXPIRED and must NOT be honoured — the session then
+	// falls through to the normal GC checks. nil means no expiry.
+	PinExpiry *time.Time
 }

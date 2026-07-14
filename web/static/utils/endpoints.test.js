@@ -352,6 +352,14 @@ describe("endpoints registry", () => {
       expect(endpoints.agents.types()).toBe("/api/agents/types"));
     test("agents.scan", () =>
       expect(endpoints.agents.scan()).toBe("/api/agents/scan"));
+    test("acpServers.prepareDelete encodes name", () =>
+      expect(endpoints.acpServers.prepareDelete("Auggie (Gemini Pro)")).toBe(
+        "/api/acp-servers/Auggie%20(Gemini%20Pro)/prepare-delete",
+      ));
+    test("acpServers.reassignAndDelete encodes name", () =>
+      expect(
+        endpoints.acpServers.reassignAndDelete("Auggie (Gemini Pro)"),
+      ).toBe("/api/acp-servers/Auggie%20(Gemini%20Pro)/reassign-and-delete"));
     test("aux.improvePrompt", () =>
       expect(endpoints.aux.improvePrompt()).toBe("/api/aux/improve-prompt"));
     test("runners.supported", () =>

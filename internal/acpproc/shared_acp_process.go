@@ -16,6 +16,7 @@ import (
 	"github.com/coder/acp-go-sdk"
 
 	mittoAcp "github.com/inercia/mitto/internal/acp"
+	"github.com/inercia/mitto/internal/coldstart"
 	"github.com/inercia/mitto/internal/conversation"
 	"github.com/inercia/mitto/internal/logging"
 	"github.com/inercia/mitto/internal/runner"
@@ -32,8 +33,9 @@ const (
 	processStartRetryJitterRatio = 0.3
 
 	// setSessionModelMaxAttempts is the maximum number of set_model RPC attempts per call.
-	// Schedule {12s,8s,5s} totals 25s per caller + jitter (≤900ms) ≈ 25s, unchanged from
-	// the prior 3×8s budget — so setModelSem contention at wakeup is unaffected.
+	// Schedule {20s,15s,8s} totals 43s per caller + jitter (≤1.2s) ≈ 44s (attempt-1 widened
+	// for mitto-8qp so large-context warm-up fits). The total stays within the contention
+	// bound covered by setModelAsyncCallerBudget (see TestSetModelAsyncBudgetMath).
 	setSessionModelMaxAttempts = 3
 	// setSessionModelRetryBaseDelay is the base backoff between set_model retry attempts.
 	setSessionModelRetryBaseDelay = 300 * time.Millisecond
@@ -41,7 +43,7 @@ const (
 	// added to each retry backoff. Jitter in [0, base×ratio) de-correlates concurrent callers
 	// that would otherwise retry in lock-step (mitto-f7q, Option 3).
 	// With ratio=0.5: attempt-2 delay ∈ [300ms, 450ms), attempt-3 ∈ [600ms, 750ms).
-	// Total per-caller worst-case: sum(schedule) + 750ms ≈ 25s.
+	// Total per-caller worst-case: sum(schedule) + ~1.2s jitter ≈ 44s.
 	setSessionModelRetryJitterRatio = 0.5
 
 	// sessionCreateMaxAttempts is the maximum number of session/new RPC attempts per call.
@@ -64,13 +66,25 @@ const (
 	// attempt 3 once the remaining budget can no longer fund a full per-attempt timeout —
 	// bounding the worst case to ~50s while never extending a caller's own deadline.
 	sessionCreateTotalBudget = 60 * time.Second
+	// auxSessionCreateBudget is the wall-clock budget the ACPProcessManager gives to a
+	// single call to SharedACPProcess.NewSession when creating an auxiliary session
+	// (title-gen, mcp-check, follow-up, etc.). The context is derived from m.ctx —
+	// NOT the caller's ctx — so a slow prior same-key create cannot drain it
+	// (mitto-rlk). This budget MUST be large enough to fund at least two full
+	// per-attempt session/new RPCs (2 × sessionCreateAttemptTimeout), otherwise a
+	// first attempt that hits the agent's own internal 25 s deadline leaves
+	// insufficient headroom for a retry and shouldFailFastCreateAttempt bails before
+	// attempt 2 — the mitto-54k.11 wedge. TestAuxSessionCreateBudgetFundsRetry pins
+	// this invariant. Set to sessionCreateTotalBudget for parity with the underlying
+	// NewSession retry sequence.
+	auxSessionCreateBudget = sessionCreateTotalBudget
 
 	// setModelAsyncCallerBudget is the context timeout given to the background goroutine
 	// that performs the aux-session model switch asynchronously (mitto-f7q, Option 4).
 	// Budget reasoning: the capacity-1 setModelSem may be held by up to ~3 concurrent callers,
-	// each taking at most ~25s (3×8s + jitter). Semaphore wait ≤ 3×25s = 75s; adding slack
-	// for our own retries gives ~100s worst-case. 90s covers the expected contention at server
-	// wakeup (≤4 concurrent aux sessions) while avoiding an indefinite hang if the process
+	// each taking at most ~44s (schedule {20s,15s,8s} + jitter). 90s covers the EXPECTED
+	// contention at server wakeup — (N-2)×perCallerMax with N=4, i.e. 2×~44s ≈ 88s ≤ 90s
+	// (see TestSetModelAsyncBudgetMath) — while avoiding an indefinite hang if the process
 	// is unhealthy. m.ctx cancels on manager shutdown as a hard backstop.
 	setModelAsyncCallerBudget = 90 * time.Second
 
@@ -91,7 +105,8 @@ const (
 	// This mirrors the child-session de-stagger pattern (constraintModelSwitchChildStartupJitter
 	// in internal/conversation/bgsession_config.go, introduced for mitto-x4e). The jitter
 	// waits on m.ctx — not the budget context — so it does NOT consume the 90 s budget.
-	// Do NOT increase the sum of setSessionModelAttemptTimeouts — the total must stay ≈25s.
+	// Do NOT increase the sum of setSessionModelAttemptTimeouts beyond the contention bound
+	// enforced by TestSetModelAsyncBudgetMath (≈43.8s at 4 concurrent callers).
 	auxModelSwitchStartupJitter = 10 * time.Second
 
 	// processInitializeAttemptTimeout is the per-attempt deadline for the ACP Initialize
@@ -125,6 +140,56 @@ const (
 	// of the pre-fix flat-cooldown design.
 	sessionSaturationCooldownMax = 5 * time.Minute
 
+	// confirmedDegradedLevel is the minimum saturationLevel at which a process is
+	// considered "confirmed degraded" (mitto-1h0): it has tripped saturation, served
+	// its cooldown, run a single-attempt probe, and that probe ALSO timed out — i.e.
+	// it has demonstrably failed to self-heal. Used by IsConfirmedDegraded() to gate
+	// the GC's non-idle recycle tier (Tier 6), which recycles even a busy process
+	// once this bar is met.
+	confirmedDegradedLevel = 2
+
+	// Rate/rolling-window saturation trigger (mitto-5eq). The consecutive-timeout
+	// path above only trips after N *back-to-back* full RPC deadlines; any interspersed
+	// success zeroes the counter and budget-exhaustion bails in shouldFailFastCreateAttempt
+	// intentionally skip recordRPCTimeout — so a shared process that fails intermittently
+	// (e.g. 30-50% of session/new + set_model RPCs deadline over 5-10 minutes, but ~2000
+	// unrelated ACP events keep succeeding in between) never accumulates enough consecutive
+	// timeouts to trip, and the GC's Tier 5/6 recycle tiers stay inert. Observed 2026-07-06
+	// 16:34–16:42: 38 context-deadlines, 9 NewSession + 17 SetSessionModel failures, ~10 min
+	// aux-session starvation → ZERO recycles.
+	//
+	// The rate trigger complements (does not replace) the consecutive fast path by counting
+	// full-deadline timeouts AND budget-exhaustion bails against successes in a bounded
+	// sliding window. Bookkeeping is bucketed (fixed-size ring) so cost is O(1) per record
+	// and O(bucketCount) per evaluate, with no unbounded growth. All state is guarded by
+	// the existing saturationMu — no second lock is introduced.
+	//
+	// saturationWindowDuration is the sliding-window length. 5 min is chosen to match the
+	// upper end of sessionSaturationCooldownMax and the observed incident timescale: a
+	// process that fails ≥50% of its control-plane RPCs for 5 minutes is not going to
+	// self-heal in another 5 minutes, but we still recycle no more aggressively than the
+	// existing max cooldown.
+	saturationWindowDuration = 5 * time.Minute
+	// saturationWindowBucketCount is the number of ring-buffer buckets covering
+	// saturationWindowDuration. 10 → 30-second buckets, granular enough that aging is
+	// smooth on the same order as sessionSaturationCooldownBase (30s) but small enough that
+	// aggregation stays trivially cheap. Must be > 0 and divide the window duration
+	// cleanly for bucket alignment to be exact.
+	saturationWindowBucketCount = 10
+	// saturationWindowMinSamples is the minimum total sample count (timeouts + bails +
+	// successes) required inside the window before the rate trigger can fire. This is the
+	// primary false-positive guard: a healthy process that happens to see 1 timeout in an
+	// otherwise-empty window (1/1 = 100%) must NOT trip. Set to 8 so a single burst has to
+	// clearly dominate ordinary traffic before the trigger arms.
+	saturationWindowMinSamples = 8
+	// saturationWindowFailRatio is the (timeouts + bails) / (timeouts + bails + successes)
+	// threshold at which the rate trigger fires. 0.5 (50%) is well outside any plausible
+	// steady-state healthy baseline (real deployments show <5% timeouts) yet captures the
+	// intermittent-degradation regime the incident exhibited (~40-60% failed control-plane
+	// RPCs interleaved with successes). Paired with saturationWindowMinSamples this
+	// preserves the "no false positives on light traffic" acceptance criterion.
+	saturationWindowFailRatio = 0.5
+
 	// Note: Runtime restart constants (maxProcessRestarts, processRestartWindow,
 	// processRestartBaseDelay, processRestartMaxDelay) are now defined in
 	// acp_error_classification.go as shared constants (conversation.MaxACPRestarts, conversation.ACPRestartWindow,
@@ -133,16 +198,19 @@ const (
 )
 
 // setSessionModelAttemptTimeouts is the per-attempt deadline schedule for set_model RPCs
-// (mitto-f7q). Attempt-1 is sized above the observed cold-model warm-up p95 (~8s) so a
-// cold claude-haiku-4-5 can complete on the first attempt; later attempts shrink to keep
-// the total (12+8+5 = 25s) ≈ constant vs the prior 3×8s, leaving setModelSem contention
-// unchanged. The array length is tied to setSessionModelMaxAttempts at compile time.
-// Do NOT increase the sum — the total must remain ≈25s so setModelAsyncCallerBudget (90s)
-// contention math stays valid.
+// (mitto-f7q; attempt-1 widened for mitto-8qp). Attempt-1 is sized above the genuine
+// warm-up latency of large-context models (e.g. claude-sonnet-5-0-500k, observed >12s):
+// the prior 12s attempt-1 was smaller than that latency, so every attempt of the
+// then-shrinking 12/8/5 schedule timed out with "context deadline exceeded" even though
+// ~60-90s of the outer setModelAsyncCallerBudget (90s) sat unused (mitto-8qp). Later
+// attempts shrink to keep the total bounded so setModelSem contention stays covered by the
+// async budget. The array length is tied to setSessionModelMaxAttempts at compile time.
+// Do NOT let the sum exceed the contention bound enforced by TestSetModelAsyncBudgetMath
+// (≈43.8s at 4 concurrent callers) or setModelAsyncCallerBudget (90s) math stops holding.
 var setSessionModelAttemptTimeouts = [setSessionModelMaxAttempts]time.Duration{
-	12 * time.Second, // attempt 1: sized for cold-model warm-up p95
-	8 * time.Second,  // attempt 2: standard
-	5 * time.Second,  // attempt 3: final, minimal budget
+	20 * time.Second, // attempt 1: sized for large-context model warm-up (mitto-8qp)
+	15 * time.Second, // attempt 2: standard retry
+	8 * time.Second,  // attempt 3: final, minimal budget
 }
 
 // auxStartupJitter returns a random duration in [0, max) to de-stagger concurrent
@@ -184,6 +252,31 @@ type SharedACPProcessConfig struct {
 	CanRestartGlobal func() bool
 	// RecordRestart is an optional callback to record a restart in the global tracker.
 	RecordRestart func()
+	// MCPInitTimeout is the extended per-attempt/total budget granted to the very
+	// first session/new (and session/load) on a cold shared ACP process when the
+	// request carries MCP servers. Zero disables the extended budget and the normal
+	// sessionCreateAttemptTimeout/sessionCreateTotalBudget are used. See
+	// SessionConfig.ParseMcpInitTimeout for the rationale (mitto-8ul.1).
+	MCPInitTimeout time.Duration
+	// OnMCPInitProgress is called once per MCP-init handshake episode (re-armed
+	// after each successful session RPC), from the stderr-monitor goroutine, when
+	// the agent reports it is blocked waiting for MCP servers to initialize.
+	// Used by the web layer to emit an "MCP initializing" UI notification (mitto-8ul.1).
+	// Agents like Auggie re-run the MCP handshake on every session/new, so this
+	// callback fires again on subsequent per-session re-handshakes (mitto-29q).
+	// Optional.
+	OnMCPInitProgress func()
+	// OnMCPInitTimeout is called at most once when the agent reports its internal
+	// MCP-init wait has timed out. The pending session/new should then be aborted with
+	// an actionable error rather than waiting for the RPC deadline to elapse
+	// (mitto-8ul.1). Optional.
+	OnMCPInitTimeout func()
+	// StderrPatterns holds per-agent compiled stderr regex patterns (mitto-k6h).
+	// Nil means only the hardcoded baseline crash patterns apply. Compiled once
+	// by the caller from the agent's metadata.yaml. Kept as a pointer to
+	// CompiledStderrPatterns (defined in internal/conversation) so acpproc does
+	// NOT depend on internal/agents.
+	StderrPatterns *conversation.CompiledStderrPatterns
 }
 
 // Compile-time assertion: *SharedACPProcess must satisfy the conversation.SharedProcess interface.
@@ -251,6 +344,16 @@ type SharedACPProcess struct {
 	saturatedUntil         time.Time
 	saturationLevel        int
 	inProbe                bool
+	// saturationBuckets is the fixed-size ring buffer backing the rate/rolling-window
+	// saturation trigger (mitto-5eq). Each bucket covers saturationWindowDuration /
+	// saturationWindowBucketCount and records timeouts, budget-exhaustion bails, and
+	// successful control-plane RPCs falling in its time slot. Buckets age out purely by
+	// timestamp — a success does NOT wipe the window; it only adds a success sample so
+	// the failure ratio drops naturally. This deliberately avoids the "one success
+	// resets everything" bug that made the consecutive-timeout trigger inert for
+	// intermittently-degraded processes. Guarded by saturationMu; lazily allocated on
+	// first record.
+	saturationBuckets []saturationBucket
 
 	// Restart tracking
 	restartMu    sync.Mutex
@@ -260,6 +363,41 @@ type SharedACPProcess struct {
 	// onRestart is called after a successful Restart(), allowing the process manager
 	// to invalidate caches (e.g., auxiliary sessions) that reference old session IDs.
 	onRestart func()
+
+	// MCP-init lifecycle tracking (mitto-8ul.1, mitto-29q). Set from the stderr-monitor
+	// goroutine. mcpInitInProgress flips to true (edge-detected) when the agent reports
+	// it is waiting for MCP servers to initialize, and is cleared to false on each
+	// successful session/new or session/load RPC. Agents like Auggie re-run the MCP
+	// handshake on every session/new, so this field re-arms per handshake episode and
+	// is used by coldMCPBudget / RecommendedLoadTimeout to re-grant the extended budget
+	// for per-session re-handshakes even after mcpInitDone has latched (mitto-29q).
+	// mcpInitDone latches once the first session RPC succeeds; on its own it would
+	// starve every subsequent session on agents that re-handshake, hence the additional
+	// mcpInitInProgress gate. mcpInitTimedOut flips to true when the agent reports its
+	// internal MCP-init wait budget elapsed; the currently-pending NewSession call
+	// watches this via mcpInitTimeoutCh so it can abort promptly with an actionable
+	// error rather than waiting for the RPC deadline. mcpInitTimeoutCh is (re-)created
+	// per session/new attempt so a signal from a previous attempt does not fire
+	// spuriously.
+	mcpInitInProgress atomic.Bool
+	mcpInitDone       atomic.Bool
+	mcpInitTimedOut   atomic.Bool
+	mcpInitMu         sync.Mutex
+	mcpInitTimeoutCh  chan struct{}
+
+	// mcpInitDoneCh is closed exactly once (via mcpInitDoneOnce) when mcpInitDone
+	// first latches, so WaitForMCPInit can block until the process is warm without
+	// polling (mitto-54k.4).
+	mcpInitDoneOnce sync.Once
+	mcpInitDoneCh   chan struct{}
+
+	// coldStartGate serializes concurrent NewSession/LoadSession callers on a
+	// still-cold process (mitto-8tb). N conversations racing their deferred
+	// session/new against a fresh shared process would each make the agent re-run
+	// its MCP handshake in parallel, multiplying MCP child processes (36-78 obs.)
+	// and self-inflicting saturation. The gate is a capacity-1 semaphore held only
+	// on the cold path (extendedBudget=true); warm calls bypass it entirely.
+	coldStartGate chan struct{}
 
 	// Logger
 	logger *slog.Logger
@@ -271,12 +409,14 @@ func NewSharedACPProcess(ctx context.Context, config SharedACPProcessConfig) (*S
 	processCtx, processCancel := context.WithCancel(ctx)
 
 	p := &SharedACPProcess{
-		config:      config,
-		client:      NewMultiplexClient(),
-		ctx:         processCtx,
-		ctxCancel:   processCancel,
-		logger:      config.Logger,
-		setModelSem: make(chan struct{}, 1),
+		config:        config,
+		client:        NewMultiplexClient(),
+		ctx:           processCtx,
+		ctxCancel:     processCancel,
+		logger:        config.Logger,
+		setModelSem:   make(chan struct{}, 1),
+		coldStartGate: make(chan struct{}, 1),
+		mcpInitDoneCh: make(chan struct{}),
 	}
 
 	if err := p.startProcess(); err != nil {
@@ -409,6 +549,11 @@ func (p *SharedACPProcess) doStartProcess() (string, error) {
 	var cmd *exec.Cmd
 
 	stderrCollector := conversation.NewStderrCollector(8192, p.logger)
+	// Install per-agent ignore patterns (mitto-k6h) so matching writes are
+	// suppressed from the debug-level stderr log. Nil is a safe no-op.
+	if p.config.StderrPatterns != nil {
+		stderrCollector.SetIgnorePatterns(p.config.StderrPatterns.Ignore)
+	}
 
 	// Pre-create process death detection channel so the stderr crash detector
 	// (Fix C) can signal it immediately when crash patterns are detected.
@@ -423,6 +568,63 @@ func (p *SharedACPProcess) doStartProcess() (string, error) {
 		p.processDoneOnce.Do(func() {
 			close(p.processDone)
 		})
+	}
+
+	// onDegraded is invoked on each stderr chunk matching a per-agent Degraded
+	// regex (mitto-k6h). It feeds a fail-side sample into the mitto-5eq rolling
+	// window so stderr-observed degradation can promote the process to saturated
+	// and let GC Tier 5/6 recycle it. Unlike onCrashDetected, this is NOT latched
+	// — recurring degraded output keeps contributing samples.
+	onDegraded := func() {
+		if p.logger != nil {
+			p.logger.Warn("ACP subprocess degraded via stderr pattern (feeding saturation)",
+				"acp_server", p.config.ACPServer)
+		}
+		p.recordDegradedStderr()
+	}
+
+	// MCP-init lifecycle callbacks (mitto-8ul.1). The progress callback re-arms per
+	// handshake episode (mitto-29q); the timeout callback stays effectively one-shot
+	// per process because it closes mcpInitTimeoutCh. The pending NewSession call
+	// watches mcpInitTimeoutCh so it can abort promptly on a hard timeout signal
+	// instead of waiting for the RPC deadline.
+	onMCPInitProgress := func() {
+		// Edge-detected (mitto-29q): only act on the false->true transition so a
+		// handshake that logs "Waiting for MCP" repeatedly does not spam the log or
+		// the mcp_initializing broadcast. The window is re-armed after each success
+		// clears mcpInitInProgress, so a subsequent per-session re-handshake fires
+		// this again.
+		if !p.mcpInitInProgress.CompareAndSwap(false, true) {
+			return
+		}
+		if p.logger != nil {
+			p.logger.Info("ACP agent reports MCP servers initializing",
+				"acp_server", p.config.ACPServer)
+		}
+		if cb := p.config.OnMCPInitProgress; cb != nil {
+			cb()
+		}
+	}
+	onMCPInitTimeout := func() {
+		p.mcpInitTimedOut.Store(true)
+		if p.logger != nil {
+			p.logger.Warn("ACP agent reports MCP initialization timed out",
+				"acp_server", p.config.ACPServer)
+		}
+		p.mcpInitMu.Lock()
+		ch := p.mcpInitTimeoutCh
+		p.mcpInitMu.Unlock()
+		if ch != nil {
+			select {
+			case <-ch:
+				// already closed
+			default:
+				close(ch)
+			}
+		}
+		if cb := p.config.OnMCPInitTimeout; cb != nil {
+			cb()
+		}
 	}
 
 	// Startup watchdog: warn/error if no stderr activity and no Initialize completion
@@ -470,7 +672,7 @@ func (p *SharedACPProcess) doStartProcess() (string, error) {
 
 		signalStartupActivity = conversation.StartACPStartupWatchdog(watchdogCtx, p.logger, acpCommand, p.config.ACPServer, -1)
 
-		conversation.StartStderrMonitor(stderr, stderrCollector, onCrashDetected, signalStartupActivity)
+		conversation.StartStderrMonitor(stderr, stderrCollector, onCrashDetected, signalStartupActivity, onMCPInitProgress, onMCPInitTimeout, onDegraded, p.config.StderrPatterns)
 	} else {
 		cmd = exec.CommandContext(p.ctx, args[0], args[1:]...)
 		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
@@ -531,7 +733,7 @@ func (p *SharedACPProcess) doStartProcess() (string, error) {
 		}
 		signalStartupActivity = conversation.StartACPStartupWatchdog(watchdogCtx, p.logger, acpCommand, p.config.ACPServer, pid)
 
-		conversation.StartStderrMonitor(stderrPipe, stderrCollector, onCrashDetected, signalStartupActivity)
+		conversation.StartStderrMonitor(stderrPipe, stderrCollector, onCrashDetected, signalStartupActivity, onMCPInitProgress, onMCPInitTimeout, onDegraded, p.config.StderrPatterns)
 
 		wait = func() error {
 			return cmd.Wait()
@@ -778,35 +980,171 @@ func saturationCooldownForLevel(level int) time.Duration {
 	return d
 }
 
+// saturationBucket is one time-slot of the rate/rolling-window saturation
+// counter (mitto-5eq). Each bucket covers saturationWindowDuration /
+// saturationWindowBucketCount and records how many timeouts, budget-exhaustion
+// bails, and successful control-plane RPCs happened during that slot. The `start`
+// timestamp is aligned to the bucket duration so ring-buffer slot reuse can be
+// detected (a new event whose aligned slot no longer matches `start` means this
+// bucket has aged out and must be zeroed before being incremented).
+type saturationBucket struct {
+	start     time.Time
+	timeouts  int
+	bails     int
+	successes int
+}
+
+// saturationBucketDuration returns the per-bucket time slot length. Kept as a
+// function (not a const) so the arithmetic is centralised and both writers and
+// readers agree on the divisor even if the constants ever change.
+func saturationBucketDuration() time.Duration {
+	return saturationWindowDuration / saturationWindowBucketCount
+}
+
+// saturationCurrentBucketLocked returns a pointer to the ring-buffer slot for the
+// current wall-clock time, zeroing it first if it belonged to an older window
+// (implicit prune). saturationMu MUST be held by the caller.
+func (p *SharedACPProcess) saturationCurrentBucketLocked(now time.Time) *saturationBucket {
+	if p.saturationBuckets == nil {
+		p.saturationBuckets = make([]saturationBucket, saturationWindowBucketCount)
+	}
+	bucketDur := saturationBucketDuration()
+	slot := now.Truncate(bucketDur)
+	// Map the aligned slot to a ring index. Both bucketDur and UnixNano are >0 here,
+	// so the modulo is well-defined and stable across all sample times.
+	idx := int(slot.UnixNano()/int64(bucketDur)) % saturationWindowBucketCount
+	if idx < 0 {
+		idx += saturationWindowBucketCount
+	}
+	if !p.saturationBuckets[idx].start.Equal(slot) {
+		p.saturationBuckets[idx] = saturationBucket{start: slot}
+	}
+	return &p.saturationBuckets[idx]
+}
+
+// saturationWindowStatsLocked aggregates all live buckets (those whose start is
+// within the current window ending at `now`) into totals. Buckets whose start is
+// older than now-saturationWindowDuration are treated as expired and skipped.
+// saturationMu MUST be held by the caller.
+func (p *SharedACPProcess) saturationWindowStatsLocked(now time.Time) (timeouts, bails, successes int) {
+	cutoff := now.Add(-saturationWindowDuration)
+	for i := range p.saturationBuckets {
+		b := p.saturationBuckets[i]
+		if b.start.IsZero() || b.start.Before(cutoff) {
+			continue
+		}
+		timeouts += b.timeouts
+		bails += b.bails
+		successes += b.successes
+	}
+	return
+}
+
+// evaluateSaturationRateTriggerLocked checks whether the current rolling window
+// meets the rate/min-sample threshold and, if so, promotes the process into the
+// SAME saturation state that the consecutive-timeout path uses (bumping
+// saturationLevel and arming saturatedUntil). This is a no-op when the process is
+// already saturated (saturatedUntil in the future) to avoid re-arming the cooldown
+// on every subsequent failure — the consecutive-path probe/escalation logic then
+// takes over as normal once the cooldown elapses. saturationMu MUST be held.
+func (p *SharedACPProcess) evaluateSaturationRateTriggerLocked(now time.Time) {
+	if !p.saturatedUntil.IsZero() && now.Before(p.saturatedUntil) {
+		return
+	}
+	timeouts, bails, successes := p.saturationWindowStatsLocked(now)
+	total := timeouts + bails + successes
+	if total < saturationWindowMinSamples {
+		return
+	}
+	fails := timeouts + bails
+	if float64(fails)/float64(total) < saturationWindowFailRatio {
+		return
+	}
+	// Trip via the shared saturation state so IsSaturated()/IsConfirmedDegraded()
+	// (and therefore GC Tier 5/6) pick it up unchanged. We deliberately do NOT
+	// touch consecutiveRPCTimeouts here — the two triggers stay independent so
+	// the consecutive fast path for the fully-wedged case is unaffected.
+	p.saturationLevel++
+	p.saturatedUntil = now.Add(saturationCooldownForLevel(p.saturationLevel))
+}
+
 // recordRPCTimeout records a NewSession/LoadSession RPC timeout (mitto-13ck.2).
 // In normal mode the consecutive counter increments toward the threshold; once the
 // threshold is reached, saturationLevel is incremented and a fresh cooldown is set.
 // In probe mode (inProbe=true) a single timeout immediately escalates the level and
 // re-saturates, because the probe has already confirmed the process is still hung.
+// The timeout is ALSO recorded into the rate/rolling-window trigger (mitto-5eq)
+// which can promote the process to saturated independently — see
+// evaluateSaturationRateTriggerLocked for the rate-based fallback path.
 func (p *SharedACPProcess) recordRPCTimeout() {
 	p.saturationMu.Lock()
 	defer p.saturationMu.Unlock()
+	now := time.Now()
+	p.saturationCurrentBucketLocked(now).timeouts++
 	if p.inProbe {
 		// Probe timed out: immediately escalate and re-saturate.
 		p.inProbe = false
 		p.saturationLevel++
 		p.consecutiveRPCTimeouts = 0
-		p.saturatedUntil = time.Now().Add(saturationCooldownForLevel(p.saturationLevel))
+		p.saturatedUntil = now.Add(saturationCooldownForLevel(p.saturationLevel))
 		return
 	}
 	p.consecutiveRPCTimeouts++
 	if p.consecutiveRPCTimeouts >= sessionSaturationTimeoutThreshold {
 		p.saturationLevel++
-		p.saturatedUntil = time.Now().Add(saturationCooldownForLevel(p.saturationLevel))
+		p.saturatedUntil = now.Add(saturationCooldownForLevel(p.saturationLevel))
+		return
 	}
+	// Consecutive threshold not reached — the rate/rolling-window trigger may still
+	// fire for the intermittent-storm case (mitto-5eq).
+	p.evaluateSaturationRateTriggerLocked(now)
 }
 
-// recordRPCSuccess clears all saturation tracking after a successful NewSession/
-// LoadSession RPC (mitto-13ck.2). Resets the saturation level so the next event
-// starts again from the base cooldown (30s).
+// recordRPCBudgetBail records a mid-flight budget-exhaustion bail from
+// shouldFailFastCreateAttempt (mitto-5eq). These bails are NOT full RPC deadlines
+// (nothing was actually attempted) so they intentionally do NOT feed the
+// consecutive-timeout fast path (that path is reserved for the fully-wedged case
+// where the RPC itself runs to deadline). They DO feed the rate/rolling-window
+// signal — this is the "budget-exhaustion bails don't count" gap the rate trigger
+// was designed to close.
+func (p *SharedACPProcess) recordRPCBudgetBail() {
+	p.saturationMu.Lock()
+	defer p.saturationMu.Unlock()
+	now := time.Now()
+	p.saturationCurrentBucketLocked(now).bails++
+	p.evaluateSaturationRateTriggerLocked(now)
+}
+
+// recordDegradedStderr records a per-agent "degraded" stderr pattern match
+// (mitto-k6h) as a fail-side sample in the mitto-5eq rolling window. A degraded
+// stderr line is real degradation evidence but is NOT an RPC deadline, so it does
+// NOT touch the consecutive-timeout fast path (reserved for the fully-wedged case).
+// It feeds the SAME rolling-window rate trigger as recordRPCBudgetBail, so frequent
+// degraded output — alone or combined with real RPC timeouts/bails — can promote the
+// process to saturated and let GC Tier 5/6 recycle it.
+func (p *SharedACPProcess) recordDegradedStderr() {
+	p.saturationMu.Lock()
+	defer p.saturationMu.Unlock()
+	now := time.Now()
+	p.saturationCurrentBucketLocked(now).timeouts++
+	p.evaluateSaturationRateTriggerLocked(now)
+}
+
+// recordRPCSuccess clears the consecutive-timeout saturation tracking after a
+// successful NewSession/LoadSession RPC (mitto-13ck.2). Resets the saturation
+// level so the next event starts again from the base cooldown (30s).
+//
+// A success is ALSO recorded as a sample in the rolling-window trigger
+// (mitto-5eq), but the window itself is NOT wiped: entries age out purely by
+// timestamp. If we cleared the window here we would reintroduce the exact
+// interspersed-success reset bug that made the consecutive-timeout trigger inert
+// for intermittently-degraded processes. Keeping window history intact means a
+// single fluke success right after a rate-trip clears the fast-path state but the
+// NEXT timeout/bail can immediately re-trip via the still-populated window.
 func (p *SharedACPProcess) recordRPCSuccess() {
 	p.saturationMu.Lock()
 	defer p.saturationMu.Unlock()
+	p.saturationCurrentBucketLocked(time.Now()).successes++
 	p.consecutiveRPCTimeouts = 0
 	p.saturatedUntil = time.Time{}
 	p.saturationLevel = 0
@@ -819,17 +1157,161 @@ func (p *SharedACPProcess) recordRPCSuccess() {
 // attempts bail if the shared process has become saturated mid-flight, or if the
 // caller's remaining deadline can no longer fund a full per-attempt budget.
 // Returns a non-empty reason when the attempt should fail fast.
-func shouldFailFastCreateAttempt(attempt int, saturated bool, hasDeadline bool, remaining time.Duration) (bail bool, reason string) {
+func shouldFailFastCreateAttempt(attempt int, saturated bool, hasDeadline bool, remaining time.Duration, perAttemptBudget time.Duration) (bail bool, reason string) {
 	if attempt <= 1 {
 		return false, ""
 	}
 	if saturated {
 		return true, "shared ACP process became saturated mid-flight"
 	}
-	if hasDeadline && remaining < sessionCreateAttemptTimeout {
+	if hasDeadline && remaining < perAttemptBudget {
 		return true, "insufficient remaining budget for another attempt"
 	}
 	return false, ""
+}
+
+// coldMCPBudget decides whether the extended MCP-init budget applies to the
+// current NewSession/LoadSession attempt (mitto-8ul.1) and returns the
+// per-attempt and total budget to use.
+//
+// The extended budget applies when ALL of the following hold:
+//   - MCPInitTimeout > 0 (the operator has not disabled it).
+//   - Either the process has not yet observed a successful cold-start session RPC
+//     (mcpInitDone is false), OR an MCP-init handshake is currently in progress
+//     (mcpInitInProgress is true). The extended budget is ALSO re-granted whenever
+//     mcpInitInProgress is true — i.e. the agent is (re-)running an MCP handshake —
+//     because agents like Auggie re-handshake MCP on every session/new, so a
+//     one-shot mcpInitDone latch would starve every session after the first
+//     (mitto-29q).
+//
+// The extended budget does NOT gate on the request carrying MCP servers, because
+// Mitto attaches MCP through a globally-registered server (not per session/new
+// call), and even agents whose only MCP is configured globally block session/new
+// on the same handshake. Applying the widened budget to every cold session/new is
+// safe: it is capped by the actual RPC deadline anyway and reverts to the normal
+// 25 s once one call succeeds AND no new handshake is running. When the extended
+// budget applies both the per-attempt and total budgets are widened to
+// MCPInitTimeout, sized above the agent's own MCP-init wait (e.g. Auggie's 225 s)
+// plus margin.
+//
+// hasMCPServers is retained on the signature for observability / future gating.
+func (p *SharedACPProcess) coldMCPBudget(hasMCPServers bool) (perAttempt time.Duration, total time.Duration, extended bool) {
+	_ = hasMCPServers // reserved for future per-request gating
+	if p.config.MCPInitTimeout <= 0 {
+		return sessionCreateAttemptTimeout, sessionCreateTotalBudget, false
+	}
+	if p.mcpInitDone.Load() && !p.mcpInitInProgress.Load() {
+		return sessionCreateAttemptTimeout, sessionCreateTotalBudget, false
+	}
+	return p.config.MCPInitTimeout, p.config.MCPInitTimeout, true
+}
+
+// acquireColdStartGate blocks until the capacity-1 cold-start gate is acquired
+// or ctx is done (mitto-8tb). Returns a release func (nil on error). Only cold
+// callers (extendedBudget=true) invoke this; warm calls bypass it.
+func (p *SharedACPProcess) acquireColdStartGate(ctx context.Context) (release func(), err error) {
+	if p.coldStartGate == nil {
+		return func() {}, nil
+	}
+	gateWaitStart := time.Now()
+	select {
+	case p.coldStartGate <- struct{}{}:
+		if p.logger != nil {
+			p.logger.Debug("cold_start_gate acquired",
+				"wait_ms", time.Since(gateWaitStart).Milliseconds(),
+				"permits_in_use", len(p.coldStartGate),
+				"capacity", cap(p.coldStartGate),
+				"cold_start_id", coldstart.FromContext(ctx).ID())
+		}
+		return func() { <-p.coldStartGate }, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
+// RecommendedLoadTimeout implements conversation.SharedProcess (mitto-8ul.1).
+// For a cold process (mcpInitDone=false), returns MCPInitTimeout so the caller's
+// outer timeout does not truncate the process's own extended budget. Returns 0
+// once the process is warm (mcpInitDone=true) AND no handshake is currently
+// running (mcpInitInProgress=false). Re-widens to MCPInitTimeout while
+// mcpInitInProgress is true so per-session re-handshakes on agents that re-run
+// the MCP init on every session/new (e.g. Auggie) still get the extended budget
+// (mitto-29q). The hasMCPServers hint is retained for future per-request gating;
+// it is not currently load-bearing because Mitto attaches MCP globally.
+func (p *SharedACPProcess) RecommendedLoadTimeout(hasMCPServers bool) time.Duration {
+	_ = hasMCPServers
+	if p.config.MCPInitTimeout <= 0 {
+		return 0
+	}
+	if p.mcpInitDone.Load() && !p.mcpInitInProgress.Load() {
+		return 0
+	}
+	return p.config.MCPInitTimeout
+}
+
+// markMCPInitDone latches mcpInitDone and closes mcpInitDoneCh exactly once so
+// waiters in WaitForMCPInit unblock. Safe to call on every successful session RPC.
+func (p *SharedACPProcess) markMCPInitDone() {
+	p.mcpInitDone.Store(true)
+	p.mcpInitDoneOnce.Do(func() {
+		if p.mcpInitDoneCh != nil {
+			close(p.mcpInitDoneCh)
+		}
+	})
+}
+
+// MCPInitDone reports whether the shared process's MCP-init window has
+// closed (the agent's first successful RPC observed). Used by the adaptive
+// pre-warming controller (mitto-mw0) to compute the health verdict.
+func (p *SharedACPProcess) MCPInitDone() bool {
+	return p.mcpInitDone.Load()
+}
+
+// WaitForMCPInit blocks until the shared process's MCP-init window closes
+// (mcpInitDone latched via a successful session RPC), ctx is done, or the
+// process exits. Returns true only if the process became warm. Used by the
+// background resume path (mitto-54k.4) to defer non-foreground LoadSession
+// until the foreground session's handshake warms the agent, without stranding
+// background sessions (the caller bounds ctx).
+func (p *SharedACPProcess) WaitForMCPInit(ctx context.Context) bool {
+	if p.mcpInitDone.Load() {
+		return true
+	}
+	if p.mcpInitDoneCh == nil {
+		return p.mcpInitDone.Load()
+	}
+	processDone := p.processDone
+	if processDone == nil {
+		processDone = make(chan struct{}) // never fires; process-exit not observable
+	}
+	select {
+	case <-p.mcpInitDoneCh:
+		return true
+	case <-ctx.Done():
+		return false
+	case <-processDone:
+		return false
+	}
+}
+
+// MCPInitTimedOut reports whether the shared process's stderr monitor has
+// seen the agent report its internal MCP-init wait budget elapsed (a hard
+// "MCP is broken" signal). Used by the adaptive pre-warming controller
+// (mitto-mw0) to compute the health verdict.
+func (p *SharedACPProcess) MCPInitTimedOut() bool {
+	return p.mcpInitTimedOut.Load()
+}
+
+// beginMCPInitWindow prepares per-RPC MCP-init lifecycle tracking (mitto-8ul.1):
+// it (re-)creates a fresh timeout channel so a signal from a previous RPC does not
+// fire on this one, and clears the mcpInitTimedOut flag if it was set. Returns the
+// channel the caller should select on.
+func (p *SharedACPProcess) beginMCPInitWindow() <-chan struct{} {
+	p.mcpInitMu.Lock()
+	defer p.mcpInitMu.Unlock()
+	p.mcpInitTimedOut.Store(false)
+	p.mcpInitTimeoutCh = make(chan struct{})
+	return p.mcpInitTimeoutCh
 }
 
 // isSaturated reports whether the shared process is currently flagged saturated.
@@ -854,6 +1336,43 @@ func (p *SharedACPProcess) isSaturated() bool {
 	return true
 }
 
+// IsSaturated reports whether the shared process is currently flagged saturated
+// (mitto-tfb Phase 2). Unlike the private isSaturated(), this is a NON-mutating read:
+// it never self-clears to probe mode, so the GC's proactive health-recycle tier can
+// poll it without perturbing the saturation state machine. It returns true while the
+// cooldown window (saturatedUntil) is set and has not yet elapsed.
+func (p *SharedACPProcess) IsSaturated() bool {
+	p.saturationMu.Lock()
+	defer p.saturationMu.Unlock()
+	if p.saturatedUntil.IsZero() {
+		return false
+	}
+	return time.Now().Before(p.saturatedUntil)
+}
+
+// IsConfirmedDegraded reports whether the process is currently saturated AND has
+// reached confirmedDegradedLevel (mitto-1h0): it tripped saturation, served its
+// cooldown, ran a single-attempt probe, and that probe also timed out. Like
+// IsSaturated(), this is a NON-mutating read guarded by saturationMu — it never
+// flips inProbe or otherwise perturbs the saturation state machine, so the GC's
+// non-idle recycle tier (Tier 6) can poll it safely.
+func (p *SharedACPProcess) IsConfirmedDegraded() bool {
+	p.saturationMu.Lock()
+	defer p.saturationMu.Unlock()
+	if p.saturatedUntil.IsZero() {
+		return false
+	}
+	return time.Now().Before(p.saturatedUntil) && p.saturationLevel >= confirmedDegradedLevel
+}
+
+// SaturationLevel returns the current saturation escalation level (0 = healthy).
+// Non-mutating; for tests and observability.
+func (p *SharedACPProcess) SaturationLevel() int {
+	p.saturationMu.Lock()
+	defer p.saturationMu.Unlock()
+	return p.saturationLevel
+}
+
 // rpcErrorCode extracts the JSON-RPC error code from err when it (or any error it
 // wraps) is an *acp.RequestError. The second return reports whether a code was
 // found. Used to surface a structured, queryable rpc_code on NewSession failures
@@ -864,6 +1383,33 @@ func rpcErrorCode(err error) (int, bool) {
 		return re.Code, true
 	}
 	return 0, false
+}
+
+// isAgentInternalDeadlineErr reports whether err is the agent's OWN internal
+// deadline firing on a session/new (or session/load) RPC — the auggie
+// "session/new wedge" signature (mitto-y1g follow-up): the agent's handler
+// completes its own internal timeout and returns a JSON-RPC application error
+// -32603 ("Internal error") whose data carries "context deadline exceeded".
+//
+// Crucially this is NOT a Go context.DeadlineExceeded — it is delivered as an
+// *acp.RequestError, so errors.Is(err, context.DeadlineExceeded) is false and
+// the RPC returns at exactly the agent's internal budget (observed rpc_ms=30000,
+// ctx_remaining_ms=29999). Because the standard timeout accounting only counts
+// errors.Is(DeadlineExceeded), this wedge previously never fed saturation and the
+// process was never recycled — the interactive prompt stayed gated behind a dead
+// session/new handler. Treating it as a timeout lets the mitto-13ck.2 saturation
+// path (and therefore GC Tier 5/6 recycle) heal the wedged process.
+func isAgentInternalDeadlineErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	code, ok := rpcErrorCode(err)
+	if !ok || code != -32603 {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "deadline exceeded") ||
+		strings.Contains(msg, "context deadline")
 }
 
 // NewSession creates a new ACP session on this shared process.
@@ -917,6 +1463,12 @@ func (p *SharedACPProcess) NewSession(ctx context.Context, cwd string, mcpServer
 		cwd = "."
 	}
 
+	// Extended MCP-init budget (mitto-8ul.1): a cold session/new on a process with
+	// MCP servers may block up to the agent's own MCP-init wait (Auggie: ~225s).
+	// coldMCPBudget widens both budgets to MCPInitTimeout for that first call only;
+	// subsequent sessions on the same warm process use the normal budgets.
+	perAttemptBudget, totalBudget, extendedBudget := p.coldMCPBudget(len(mcpServers) > 0)
+
 	// Bounded total wall-clock budget (mitto-8d7): a deadline-less (or very generous)
 	// caller context would otherwise let the retry loop burn the full
 	// effectiveMaxAttempts × sessionCreateAttemptTimeout (~75s) on a hung transport —
@@ -924,23 +1476,81 @@ func (p *SharedACPProcess) NewSession(ctx context.Context, cwd string, mcpServer
 	// fail-fast in shouldFailFastCreateAttempt never tripped. Derive a budgetCtx that
 	// caps the whole sequence; we only ever tighten the caller's deadline, never extend
 	// it. This makes the existing remaining-budget bail active for every caller and
-	// guarantees NewSession returns within sessionCreateTotalBudget.
+	// guarantees NewSession returns within totalBudget.
 	budgetCtx := ctx
-	if dl, ok := ctx.Deadline(); !ok || time.Until(dl) > sessionCreateTotalBudget {
+	if dl, ok := ctx.Deadline(); !ok || time.Until(dl) > totalBudget {
 		var budgetCancel context.CancelFunc
-		budgetCtx, budgetCancel = context.WithTimeout(ctx, sessionCreateTotalBudget)
+		budgetCtx, budgetCancel = context.WithTimeout(ctx, totalBudget)
 		defer budgetCancel()
 	}
 
+	// Warm-once barrier (mitto-54k.3): at a genuinely COLD shared ACP process the
+	// first session/new triggers the agent's full MCP handshake (Auggie re-handshakes
+	// ALL its MCP servers on EVERY session/new — mitto-29q — so N stampeding cold
+	// ops = N full handshakes competing on the agent's single event loop). We admit
+	// ONE cold caller through the capacity-1 gate as the barrier holder, let it run
+	// the RPC (which latches mcpInitDone on success — see line ~1507 below), and
+	// keep the gate held via `defer release()` until it warms the process. Every
+	// other cold caller that arrives while the holder is warming waits on the gate,
+	// then on acquire finds mcpInitDone=true, releases the gate IMMEDIATELY and
+	// re-computes its own budgets via coldMCPBudget — which now returns warm
+	// (extendedBudget=false, normal 25s budget). The barrier ENTRY condition uses
+	// the raw cold predicate (MCPInitTimeout>0 && !mcpInitDone) rather than
+	// extendedBudget, so mitto-29q warm per-session re-handshakes
+	// (mcpInitDone=true, mcpInitInProgress=true → extendedBudget=true) do NOT
+	// serialize on the barrier — they still bypass it and keep their extended
+	// budget from the UNCHANGED coldMCPBudget. On holder RPC FAILURE the deferred
+	// release still fires so the next queued caller becomes the new (still-cold)
+	// holder — no caller stranded. budgetCtx bounds the wait so a wedged holder
+	// can't block past MCPInitTimeout.
+	if p.config.MCPInitTimeout > 0 && !p.mcpInitDone.Load() {
+		release, err := p.acquireColdStartGate(budgetCtx)
+		if err != nil {
+			return nil, fmt.Errorf("session/new: context cancelled while waiting for cold-start gate: %w", err)
+		}
+		// Post-acquire warmth re-check: if the barrier holder warmed the process
+		// while we waited, release the gate immediately (do NOT hold it through
+		// our RPC) and recompute budgets so we run as a warm caller (normal 25s
+		// per-attempt budget, extendedBudget=false). Only a caller still cold on
+		// acquire keeps the gate via `defer release()` and holds it through its
+		// RPC — mcpInitDone latches on RPC success BEFORE deferred release runs,
+		// so the gate is inherently held "until warm."
+		if p.mcpInitDone.Load() {
+			release()
+			perAttemptBudget, totalBudget, extendedBudget = p.coldMCPBudget(len(mcpServers) > 0)
+			_ = totalBudget // budgetCtx already derived above; wider ceiling is acceptable
+		} else {
+			defer release()
+		}
+	}
+
+	// Arm the MCP-init timeout watch so a hard timeout signal from the agent's
+	// stderr can abort the pending RPC promptly (mitto-8ul.1). Only meaningful for
+	// requests that carry MCP servers on a not-yet-warm process; harmless otherwise.
+	mcpTimeoutCh := p.beginMCPInitWindow()
+
 	// Bounded retry-with-jitter loop (mitto-4no7): mirrors SetSessionModel's policy so
 	// transient deadline failures on session/new are retried up to effectiveMaxAttempts.
-	// Each attempt gets a fresh sessionCreateAttemptTimeout budget, preserving the
-	// documented 25s per-attempt create deadline (mitto-63o8) without regression.
-	// In probe mode effectiveMaxAttempts=1, limiting the probe to a single attempt.
+	// Each attempt gets a fresh per-attempt budget, preserving the documented 25s
+	// per-attempt create deadline (mitto-63o8) — or the extended MCP-init budget for
+	// cold sessions with MCP servers (mitto-8ul.1) — without regression. In probe mode
+	// effectiveMaxAttempts=1, limiting the probe to a single attempt.
 	var lastErr error
 	for attempt := 1; attempt <= effectiveMaxAttempts; attempt++ {
 		// Honour caller cancellation / total budget before each attempt.
 		if budgetCtx.Err() != nil {
+			// Observability (mitto-1ut): distinguish the diagnosable "caller budget
+			// exhausted before we could even start / retry" outcome from a plain
+			// cancellation. When the caller passed a deadline (e.g. the resume path's
+			// shared handshake deadline) that was already spent by the time we reached
+			// this attempt boundary — the classic "context cancelled before attempt 2"
+			// wedge symptom — say so explicitly and report how much wall-clock elapsed,
+			// so logs point at the truncated budget rather than a raw deadline.
+			if attempt > 1 && errors.Is(budgetCtx.Err(), context.DeadlineExceeded) {
+				return nil, fmt.Errorf(
+					"session/new: shared handshake budget exhausted before attempt %d (%dms elapsed, per-attempt budget %dms, extended_mcp=%t); no budget left to retry: %w",
+					attempt, time.Since(totalStart).Milliseconds(), perAttemptBudget.Milliseconds(), extendedBudget, budgetCtx.Err())
+			}
 			return nil, fmt.Errorf("session/new: context cancelled before attempt %d: %w", attempt, budgetCtx.Err())
 		}
 
@@ -956,7 +1566,17 @@ func (p *SharedACPProcess) NewSession(ctx context.Context, cwd string, mcpServer
 				hasDeadline = true
 				remaining = time.Until(dl)
 			}
-			if bail, reason := shouldFailFastCreateAttempt(attempt, p.isSaturated(), hasDeadline, remaining); bail {
+			if bail, reason := shouldFailFastCreateAttempt(attempt, p.isSaturated(), hasDeadline, remaining, perAttemptBudget); bail {
+				// Feed the budget-exhaustion bail into the rate/rolling-window trigger
+				// (mitto-5eq). This is the "bails don't count" gap: nothing was actually
+				// attempted so the consecutive fast path stays untouched, but a stream of
+				// bails on the same process IS evidence of intermittent degradation and
+				// should promote saturation via the rate signal. Skip during a cold-start
+				// MCP-init window (extendedBudget) since that latency isn't saturation
+				// evidence, mirroring recordRPCTimeout's gating.
+				if !extendedBudget {
+					p.recordRPCBudgetBail()
+				}
 				return nil, fmt.Errorf("session/new: %s (after %d attempt(s)); failing fast: %w", reason, attempt-1, context.DeadlineExceeded)
 			}
 		}
@@ -975,48 +1595,110 @@ func (p *SharedACPProcess) NewSession(ctx context.Context, cwd string, mcpServer
 
 		// Fresh per-attempt sub-context so each attempt gets a full create budget,
 		// capped by the remaining total budget (budgetCtx).
-		attemptCtx, attemptCancel := context.WithTimeout(budgetCtx, sessionCreateAttemptTimeout)
+		attemptCtx, attemptCancel := context.WithTimeout(budgetCtx, perAttemptBudget)
 
 		ctxRemainingMs := int64(-1)
 		if dl, ok := budgetCtx.Deadline(); ok {
 			ctxRemainingMs = time.Until(dl).Milliseconds()
 		}
 
+		// Wire MCP-init hard-timeout abort (mitto-8ul.1): if the agent's stderr says
+		// its own MCP-init wait timed out we cancel the attempt context so the RPC
+		// returns immediately with context.Canceled rather than draining the full
+		// per-attempt budget on a request the agent has already given up on.
+		rpcCtx, rpcCancel := attemptCtx, attemptCancel
+		if extendedBudget {
+			var stopWatch context.CancelFunc
+			rpcCtx, stopWatch = context.WithCancel(attemptCtx)
+			done := make(chan struct{})
+			go func() {
+				select {
+				case <-mcpTimeoutCh:
+					stopWatch()
+				case <-done:
+				}
+			}()
+			// Ensure we release the watcher when the attempt completes.
+			rpcCancel = func() {
+				close(done)
+				stopWatch()
+				attemptCancel()
+			}
+		}
+
 		rpcStart := time.Now()
-		sessResp, err := conn.NewSession(attemptCtx, acp.NewSessionRequest{
+		sessResp, err := conn.NewSession(rpcCtx, acp.NewSessionRequest{
 			Cwd:        cwd,
 			McpServers: mcpServers,
 		})
 		rpcDuration := time.Since(rpcStart)
-		attemptCancel()
+		rpcCancel()
 
 		if err == nil {
 			p.recordRPCSuccess()
+			p.markMCPInitDone()
+			p.mcpInitInProgress.Store(false) // close the MCP-init window (mitto-29q)
+			models, modelCfgId := conversation.ModelStateFromConfigOptions(sessResp.ConfigOptions)
 			handle := &conversation.SessionHandle{
-				SessionID: string(sessResp.SessionId),
-				Process:   p,
-				Modes:     sessResp.Modes,
-				Models:    conversation.StableToUnstableModelState(sessResp.Models),
+				SessionID:     string(sessResp.SessionId),
+				Process:       p,
+				Modes:         sessResp.Modes,
+				Models:        models,
+				ModelConfigId: modelCfgId,
 			}
 			if caps != nil {
 				handle.Capabilities = *caps
 			}
-			// TODO: ConfigOptions support when SDK is updated
-			// if sessResp.ConfigOptions != nil {
-			// 	handle.ConfigOptions = sessResp.ConfigOptions
-			// }
 			if p.logger != nil {
 				p.logger.Info("Created new ACP session on shared process",
 					"acp_session_id", handle.SessionID,
 					"attempt", attempt,
 					"total_ms", time.Since(totalStart).Milliseconds(),
-					"rpc_new_session_ms", rpcDuration.Milliseconds())
+					"rpc_new_session_ms", rpcDuration.Milliseconds(),
+					"extended_mcp_budget", extendedBudget,
+					"per_attempt_budget_ms", perAttemptBudget.Milliseconds(),
+					"cold_start_id", coldstart.FromContext(rpcCtx).ID())
 			}
 			return handle, nil
 		}
 
+		// MCP-init hard timeout (mitto-8ul.1): the agent already reported it gave up
+		// on its own MCP-init wait. Surface an actionable, deadline-classified error
+		// so classification promotes it to a permanent (non-retryable) failure and the
+		// UI can render a meaningful message instead of "context deadline exceeded".
+		if p.mcpInitTimedOut.Load() {
+			p.recordRPCTimeout()
+			lastErr = fmt.Errorf("session/new: mcp initialization timed out (agent reported MCP-init wait exhausted): %w", context.DeadlineExceeded)
+			if p.logger != nil {
+				p.logger.Warn("SharedACPProcess.NewSession aborted by MCP-init-timeout signal",
+					"attempt", attempt, "rpc_ms", rpcDuration.Milliseconds())
+			}
+			return nil, lastErr
+		}
+
 		lastErr = err
-		if errors.Is(err, context.DeadlineExceeded) {
+		// Saturation accounting. Two distinct deadline signatures feed the
+		// mitto-13ck.2 consecutive-timeout counter (which promotes the process to
+		// saturated → GC Tier 5/6 recycle):
+		//
+		//  1. Mitto's own per-attempt deadline (errors.Is(DeadlineExceeded)). A
+		//     cold-start-with-MCP window uses the extended budget deliberately, so a
+		//     deadline on THAT call is expected agent-side latency, not evidence the
+		//     shared process is hung — do NOT count it while extendedBudget is set.
+		//     Once the window closes (first successful RPC → mcpInitDone) the normal
+		//     accounting applies again (mitto-8ul.1).
+		//
+		//  2. The agent's OWN internal deadline delivered as -32603 with
+		//     "context deadline exceeded" in its data — the auggie session/new wedge.
+		//     This IS counted even under extendedBudget: it is not Mitto's extended
+		//     budget being consumed but the agent explicitly reporting its handler
+		//     timed out, which is direct evidence the process is wedged. Without this
+		//     the wedge (rpc_ms=30000, ctx_remaining_ms=29999, rpc_code=-32603) never
+		//     tripped saturation, so the wedged process was never recycled and the
+		//     interactive prompt stayed gated behind a dead session/new handler.
+		if isAgentInternalDeadlineErr(err) {
+			p.recordRPCTimeout()
+		} else if errors.Is(err, context.DeadlineExceeded) && !extendedBudget {
 			p.recordRPCTimeout()
 		}
 		if p.logger != nil {
@@ -1027,6 +1709,9 @@ func (p *SharedACPProcess) NewSession(ctx context.Context, cwd string, mcpServer
 				"rpc_ms", rpcDuration.Milliseconds(),
 				"ctx_remaining_ms", ctxRemainingMs,
 				"rpc_code", rpcCode,
+				"agent_internal_deadline", isAgentInternalDeadlineErr(err),
+				"extended_mcp_budget", extendedBudget,
+				"cold_start_id", coldstart.FromContext(rpcCtx).ID(),
 				"error", err)
 		}
 
@@ -1097,8 +1782,67 @@ func (p *SharedACPProcess) LoadSession(ctx context.Context, acpSessionID, cwd st
 	}
 	ctxAlreadyExpired := ctx.Err() != nil
 
+	// Extended MCP-init budget (mitto-8ul.1): symmetric with NewSession. session/load
+	// on a cold process with MCP servers can also block on the agent's MCP-init wait,
+	// so widen the deadline for that first call only. Wraps ctx with a sub-context so
+	// the caller's own deadline is still honoured (we never extend it).
+	rpcCtx := ctx
+	perAttemptBudget, _, extendedBudget := p.coldMCPBudget(len(mcpServers) > 0)
+
+	// Warm-once barrier (mitto-54k.3): symmetric with NewSession. Admit ONE cold
+	// caller as the barrier holder, hold the gate via `defer release()` through
+	// its RPC (mcpInitDone latches on success at line ~1732 BEFORE the deferred
+	// release runs, so the gate is inherently held "until warm"). Other cold
+	// callers that arrive while the holder is warming wait on the gate, then on
+	// acquire find mcpInitDone=true, release the gate IMMEDIATELY and recompute
+	// their own budgets via coldMCPBudget — which now returns warm (normal 25s
+	// per-attempt budget, extendedBudget=false). The barrier ENTRY condition uses
+	// the raw cold predicate (MCPInitTimeout>0 && !mcpInitDone) rather than
+	// extendedBudget, so mitto-29q warm per-session re-handshakes
+	// (mcpInitDone=true, mcpInitInProgress=true → extendedBudget=true) do NOT
+	// serialize on the barrier — they still bypass it and keep their extended
+	// budget from the UNCHANGED coldMCPBudget. On holder RPC FAILURE the deferred
+	// release still fires so the next queued caller becomes the new (still-cold)
+	// holder — no caller stranded. ctx bounds the wait so a wedged holder can't
+	// block past MCPInitTimeout.
+	if p.config.MCPInitTimeout > 0 && !p.mcpInitDone.Load() {
+		release, gateErr := p.acquireColdStartGate(ctx)
+		if gateErr != nil {
+			return nil, fmt.Errorf("session/load: context cancelled while waiting for cold-start gate: %w", gateErr)
+		}
+		if p.mcpInitDone.Load() {
+			release()
+			perAttemptBudget, _, extendedBudget = p.coldMCPBudget(len(mcpServers) > 0)
+		} else {
+			defer release()
+		}
+	}
+
+	var mcpTimeoutCh <-chan struct{}
+	if extendedBudget {
+		mcpTimeoutCh = p.beginMCPInitWindow()
+		if dl, ok := ctx.Deadline(); !ok || time.Until(dl) > perAttemptBudget {
+			var loadCancel context.CancelFunc
+			rpcCtx, loadCancel = context.WithTimeout(ctx, perAttemptBudget)
+			defer loadCancel()
+		}
+		// Wire hard-timeout abort so the agent's stderr signal cancels the RPC.
+		var abortCancel context.CancelFunc
+		rpcCtx, abortCancel = context.WithCancel(rpcCtx)
+		defer abortCancel()
+		done := make(chan struct{})
+		defer close(done)
+		go func() {
+			select {
+			case <-mcpTimeoutCh:
+				abortCancel()
+			case <-done:
+			}
+		}()
+	}
+
 	rpcStart := time.Now()
-	loadResp, err := conn.LoadSession(ctx, acp.LoadSessionRequest{
+	loadResp, err := conn.LoadSession(rpcCtx, acp.LoadSessionRequest{
 		SessionId:  acp.SessionId(acpSessionID),
 		Cwd:        cwd,
 		McpServers: mcpServers,
@@ -1106,7 +1850,15 @@ func (p *SharedACPProcess) LoadSession(ctx context.Context, acpSessionID, cwd st
 	rpcDuration := time.Since(rpcStart)
 
 	if err != nil {
-		if errors.Is(err, context.DeadlineExceeded) {
+		if p.mcpInitTimedOut.Load() {
+			p.recordRPCTimeout()
+			if p.logger != nil {
+				p.logger.Warn("SharedACPProcess.LoadSession aborted by MCP-init-timeout signal",
+					"acp_session_id", acpSessionID, "rpc_ms", rpcDuration.Milliseconds())
+			}
+			return nil, fmt.Errorf("session/load: mcp initialization timed out (agent reported MCP-init wait exhausted): %w", context.DeadlineExceeded)
+		}
+		if errors.Is(err, context.DeadlineExceeded) && !extendedBudget {
 			p.recordRPCTimeout()
 		}
 		if p.logger != nil {
@@ -1115,25 +1867,33 @@ func (p *SharedACPProcess) LoadSession(ctx context.Context, acpSessionID, cwd st
 				"rpc_ms", rpcDuration.Milliseconds(),
 				"ctx_remaining_ms", ctxRemainingMs,
 				"ctx_already_expired", ctxAlreadyExpired,
+				"extended_mcp_budget", extendedBudget,
+				"cold_start_id", coldstart.FromContext(rpcCtx).ID(),
 				"error", err)
 		}
 		return nil, fmt.Errorf("failed to load session: %w", err)
 	}
 
 	p.recordRPCSuccess()
+	p.markMCPInitDone()
+	p.mcpInitInProgress.Store(false) // close the MCP-init window (mitto-29q)
+	loadModels, loadModelCfgId := conversation.ModelStateFromConfigOptions(loadResp.ConfigOptions)
 	handle := &conversation.SessionHandle{
-		SessionID:    acpSessionID,
-		Capabilities: *caps,
-		Modes:        loadResp.Modes,
-		Models:       conversation.StableToUnstableModelState(loadResp.Models),
-		Process:      p,
+		SessionID:     acpSessionID,
+		Capabilities:  *caps,
+		Modes:         loadResp.Modes,
+		Models:        loadModels,
+		ModelConfigId: loadModelCfgId,
+		Process:       p,
 	}
 
 	if p.logger != nil {
 		p.logger.Info("Loaded ACP session on shared process",
 			"acp_session_id", acpSessionID,
 			"total_ms", time.Since(totalStart).Milliseconds(),
-			"rpc_load_session_ms", rpcDuration.Milliseconds())
+			"rpc_load_session_ms", rpcDuration.Milliseconds(),
+			"extended_mcp_budget", extendedBudget,
+			"cold_start_id", coldstart.FromContext(rpcCtx).ID())
 	}
 
 	return handle, nil
@@ -1177,7 +1937,7 @@ func (p *SharedACPProcess) ResumeSession(ctx context.Context, acpSessionID, cwd 
 	}
 
 	rpcStart := time.Now()
-	resumeResp, err := conn.UnstableResumeSession(ctx, acp.UnstableResumeSessionRequest{
+	resumeResp, err := conn.ResumeSession(ctx, acp.ResumeSessionRequest{
 		SessionId:  acp.SessionId(acpSessionID),
 		Cwd:        cwd,
 		McpServers: mcpServers,
@@ -1186,7 +1946,7 @@ func (p *SharedACPProcess) ResumeSession(ctx context.Context, acpSessionID, cwd 
 
 	if err != nil {
 		if p.logger != nil {
-			p.logger.Info("SharedACPProcess.ResumeSession failed (UNSTABLE API)",
+			p.logger.Info("SharedACPProcess.ResumeSession failed",
 				"acp_session_id", acpSessionID,
 				"rpc_ms", rpcDuration.Milliseconds(),
 				"error", err)
@@ -1194,12 +1954,14 @@ func (p *SharedACPProcess) ResumeSession(ctx context.Context, acpSessionID, cwd 
 		return nil, fmt.Errorf("failed to resume session: %w", err)
 	}
 
+	resumeModels, resumeModelCfgId := conversation.ModelStateFromConfigOptions(resumeResp.ConfigOptions)
 	handle := &conversation.SessionHandle{
-		SessionID:    acpSessionID,
-		Capabilities: *caps,
-		Modes:        resumeResp.Modes,
-		Models:       resumeResp.Models,
-		Process:      p,
+		SessionID:     acpSessionID,
+		Capabilities:  *caps,
+		Modes:         resumeResp.Modes,
+		Models:        resumeModels,
+		ModelConfigId: resumeModelCfgId,
+		Process:       p,
 	}
 
 	if p.logger != nil {
@@ -1273,6 +2035,23 @@ func (p *SharedACPProcess) RSSBytes() (uint64, error) {
 	return processTreeRSS(pid)
 }
 
+// RSSBytesDetailed returns the RSS breakdown of this process's tree: the RSS of
+// the ACP agent process itself, the RSS summed over all descendants (typically
+// MCP children), and the number of descendant processes counted. Used by the
+// GC's memory-recycle log lines so operators can distinguish agent-side growth
+// from MCP-child growth without a live ps probe (mitto-3gu).
+func (p *SharedACPProcess) RSSBytesDetailed() (parent uint64, descendants uint64, descendantCount int, err error) {
+	p.mu.RLock()
+	if p.cmd == nil || p.cmd.Process == nil {
+		p.mu.RUnlock()
+		return 0, 0, 0, fmt.Errorf("shared ACP process is not running")
+	}
+	pid := p.cmd.Process.Pid
+	p.mu.RUnlock()
+
+	return processTreeRSSDetailed(pid)
+}
+
 // Cancel cancels the current operation for a specific session.
 func (p *SharedACPProcess) Cancel(ctx context.Context, sessionID acp.SessionId) error {
 	p.mu.RLock()
@@ -1331,8 +2110,16 @@ func (p *SharedACPProcess) SetSessionModel(ctx context.Context, sessionID acp.Se
 	// Acquire the per-process serialisation semaphore, respecting caller ctx.
 	// This ensures only one set_model RPC is in-flight at a time — concurrent
 	// callers queue here instead of racing the serially-served agent subprocess.
+	setModelWaitStart := time.Now()
 	select {
 	case p.setModelSem <- struct{}{}:
+		if p.logger != nil {
+			p.logger.Debug("set_model_sem acquired",
+				"wait_ms", time.Since(setModelWaitStart).Milliseconds(),
+				"permits_in_use", len(p.setModelSem),
+				"capacity", cap(p.setModelSem),
+				"cold_start_id", coldstart.FromContext(ctx).ID())
+		}
 		defer func() { <-p.setModelSem }()
 	case <-ctx.Done():
 		return fmt.Errorf("set_model: cancelled while waiting for serialization slot: %w", ctx.Err())
@@ -1393,9 +2180,12 @@ func (p *SharedACPProcess) SetSessionModel(ctx context.Context, sessionID acp.Se
 		}
 
 		rpcStart := time.Now()
-		_, err := conn.UnstableSetSessionModel(attemptCtx, acp.UnstableSetSessionModelRequest{
-			SessionId: sessionID,
-			ModelId:   acp.UnstableModelId(modelID),
+		_, err := conn.SetSessionConfigOption(attemptCtx, acp.SetSessionConfigOptionRequest{
+			ValueId: &acp.SetSessionConfigOptionValueId{
+				SessionId: sessionID,
+				ConfigId:  conversation.ModelConfigId,
+				Value:     acp.SessionConfigValueId(modelID),
+			},
 		})
 		rpcDuration := time.Since(rpcStart)
 		attemptCancel()
@@ -1475,12 +2265,18 @@ func isRetryableSetModelError(err error) bool {
 // MAY have succeeded server-side, so a retry can orphan a session on the shared
 // process. We accept this trade-off (mitto-4no7): on a deadline we never received a
 // session ID, so the only recovery is to create again; the orphan is bounded by the
-// shared process lifetime. Only deadline/timeout failures are retried.
+// shared process lifetime. Only deadline/timeout failures are retried. The agent's
+// own internal deadline (-32603 "context deadline exceeded", the session/new wedge)
+// is treated as retryable too so the bounded loop records each attempt's timeout
+// toward saturation rather than returning permanently after a single attempt.
 func isRetryableCreateError(err error) bool {
 	if err == nil {
 		return false
 	}
 	if errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	if isAgentInternalDeadlineErr(err) {
 		return true
 	}
 	msg := strings.ToLower(err.Error())

@@ -10,8 +10,11 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/inercia/mitto/internal/client"
+	"github.com/inercia/mitto/internal/config"
+	"github.com/inercia/mitto/internal/web"
 )
 
 // TestWorkspacePrompts_BeadsDirGatesUseDirParamNotSession is an end-to-end
@@ -152,5 +155,143 @@ func TestWorkspacePrompts_BeadsDirGatesUseDirParamNotSession(t *testing.T) {
 	}
 	if !has(nb, "Show status") {
 		t.Errorf("ungated prompt missing for no-beads dir; got %v", nb)
+	}
+}
+
+// TestWorkspacePrompts_BuiltinDeployAdvancesLastModified is a regression test
+// for mitto-tf9: GET /api/workspace-prompts derived its Last-Modified header
+// (and the If-Modified-Since 304 short-circuit) solely from the workspace
+// .mittorc mtime. A prompt deployed to another source — here a builtin under
+// MITTO_DIR/prompts/builtin, exactly as `mitto prompts update-builtin` does —
+// left .mittorc untouched, so the browser's conditional revalidation kept
+// getting 304 and never saw the new prompt until a hard reload or a `.mittorc`
+// touch.
+//
+// Post-fix the endpoint folds every prompt source's mtime into Last-Modified,
+// so deploying a builtin advances it: a stale conditional request (cached
+// before the deploy) returns 200 with the new prompt, while the conditional
+// logic itself still 304s for a client that is genuinely up to date.
+func TestWorkspacePrompts_BuiltinDeployAdvancesLastModified(t *testing.T) {
+	// Wire a global PromptsCache so the endpoint actually serves prompts from
+	// MITTO_DIR/prompts/ (the default test server leaves it nil). The cache
+	// resolves its default dir lazily to appdir.PromptsDir(), which is under the
+	// MITTO_DIR that SetupTestServer has already pointed at the temp dir.
+	ts := SetupTestServer(t, func(c *web.Config) {
+		c.PromptsCache = config.NewPromptsCache()
+	})
+
+	// The configured test workspace lives at <MITTO_DIR>/workspace; NOTE we never
+	// touch its .mittorc below — the point is that a non-.mittorc source changes.
+	workspaceDir := filepath.Join(ts.TempDir, "workspace")
+
+	// Deploy an initial builtin prompt so the global prompts dir exists and the
+	// endpoint emits a non-zero Last-Modified baseline to revalidate against.
+	builtinDir := filepath.Join(ts.TempDir, "prompts", "builtin")
+	if err := os.MkdirAll(builtinDir, 0755); err != nil {
+		t.Fatalf("mkdir builtin: %v", err)
+	}
+	alpha := "name: \"Builtin alpha\"\ngroup: \"Support\"\nprompt: \"a\"\n"
+	if err := os.WriteFile(filepath.Join(builtinDir, "alpha.prompt.yaml"), []byte(alpha), 0644); err != nil {
+		t.Fatalf("write alpha builtin: %v", err)
+	}
+
+	promptsURL := ts.HTTPServer.URL + "/mitto/api/workspace-prompts?" +
+		url.Values{"working_dir": {workspaceDir}}.Encode()
+
+	// fetch issues the GET with an optional If-Modified-Since header and returns
+	// the status, the Last-Modified response header, and the prompt names.
+	fetch := func(t *testing.T, ifModifiedSince string) (int, string, []string) {
+		t.Helper()
+		req, err := http.NewRequest(http.MethodGet, promptsURL, nil)
+		if err != nil {
+			t.Fatalf("new request: %v", err)
+		}
+		if ifModifiedSince != "" {
+			req.Header.Set("If-Modified-Since", ifModifiedSince)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("GET workspace-prompts: %v", err)
+		}
+		defer resp.Body.Close()
+		lastMod := resp.Header.Get("Last-Modified")
+		if resp.StatusCode == http.StatusNotModified {
+			return resp.StatusCode, lastMod, nil
+		}
+		if resp.StatusCode != http.StatusOK {
+			body, _ := io.ReadAll(resp.Body)
+			t.Fatalf("unexpected status %d: %s", resp.StatusCode, string(body))
+		}
+		var decoded struct {
+			Prompts []struct{ Name string } `json:"prompts"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&decoded); err != nil {
+			t.Fatalf("decode response: %v", err)
+		}
+		names := make([]string, 0, len(decoded.Prompts))
+		for _, p := range decoded.Prompts {
+			names = append(names, p.Name)
+		}
+		return resp.StatusCode, lastMod, names
+	}
+
+	has := func(names []string, want string) bool {
+		for _, n := range names {
+			if n == want {
+				return true
+			}
+		}
+		return false
+	}
+
+	// Baseline: 200 with a non-zero Last-Modified and the initial builtin present.
+	status, baseline, names := fetch(t, "")
+	if status != http.StatusOK {
+		t.Fatalf("baseline: status %d, want 200", status)
+	}
+	if baseline == "" {
+		t.Fatalf("baseline: missing Last-Modified header (folded mtime was zero)")
+	}
+	if !has(names, "Builtin alpha") {
+		t.Fatalf("baseline: initial builtin prompt not returned; got %v", names)
+	}
+	baseTime, err := time.Parse(http.TimeFormat, baseline)
+	if err != nil {
+		t.Fatalf("parse baseline Last-Modified %q: %v", baseline, err)
+	}
+
+	// Deploy a NEW builtin prompt WITHOUT touching .mittorc. Stamp it strictly
+	// after the baseline so the folded Last-Modified advances deterministically
+	// (HTTP time has second precision, so a +2s bump is unambiguous).
+	betaPath := filepath.Join(builtinDir, "beta.prompt.yaml")
+	beta := "name: \"Builtin beta\"\ngroup: \"Support\"\nprompt: \"b\"\n"
+	if err := os.WriteFile(betaPath, []byte(beta), 0644); err != nil {
+		t.Fatalf("write beta builtin: %v", err)
+	}
+	newer := baseTime.Add(2 * time.Second)
+	if err := os.Chtimes(betaPath, newer, newer); err != nil {
+		t.Fatalf("chtimes beta builtin: %v", err)
+	}
+
+	// The stale conditional request (If-Modified-Since = pre-deploy baseline)
+	// must now return 200 with the newly deployed prompt — the mitto-tf9 fix.
+	status, newLastMod, names := fetch(t, baseline)
+	if status != http.StatusOK {
+		t.Fatalf("post-deploy revalidation: status %d, want 200 (stale-304 bug not fixed)", status)
+	}
+	if !has(names, "Builtin beta") {
+		t.Errorf("post-deploy: newly deployed builtin prompt missing; got %v", names)
+	}
+	if newLastMod == "" {
+		t.Errorf("post-deploy: missing Last-Modified header")
+	} else if nt, perr := time.Parse(http.TimeFormat, newLastMod); perr == nil && !nt.After(baseTime) {
+		t.Errorf("post-deploy: Last-Modified %q did not advance past baseline %q", newLastMod, baseline)
+	}
+
+	// The conditional logic still works with the folded mtime: a client that is
+	// genuinely up to date (If-Modified-Since well past every source) gets 304.
+	future := newer.Add(time.Hour).UTC().Format(http.TimeFormat)
+	if status, _, _ := fetch(t, future); status != http.StatusNotModified {
+		t.Errorf("up-to-date revalidation: status %d, want 304", status)
 	}
 }

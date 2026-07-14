@@ -539,3 +539,51 @@ func TestPromptsCache_GetDirectories(t *testing.T) {
 		t.Errorf("dirs[3] = %q, want %q", dirs[3], "/absolute/path")
 	}
 }
+
+func TestPromptsCache_LoadErrors_ReportsBadFile(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv(appdir.MittoDirEnv, tmpDir)
+	appdir.ResetCache()
+	t.Cleanup(appdir.ResetCache)
+
+	promptsDir := filepath.Join(tmpDir, appdir.PromptsDirName)
+	if err := os.MkdirAll(promptsDir, 0755); err != nil {
+		t.Fatalf("Failed to create prompts dir: %v", err)
+	}
+
+	// One valid, one malformed.
+	goodPrompt := `name: "Good"
+prompt: |
+  ok.
+`
+	if err := os.WriteFile(filepath.Join(promptsDir, "good.prompt.yaml"), []byte(goodPrompt), 0644); err != nil {
+		t.Fatalf("Failed to write good.prompt.yaml: %v", err)
+	}
+	badPrompt := `name: [unclosed
+prompt: |
+  broken.
+`
+	if err := os.WriteFile(filepath.Join(promptsDir, "bad.prompt.yaml"), []byte(badPrompt), 0644); err != nil {
+		t.Fatalf("Failed to write bad.prompt.yaml: %v", err)
+	}
+
+	cache := NewPromptsCache()
+	prompts, err := cache.Get()
+	if err != nil {
+		t.Fatalf("Get() failed: %v", err)
+	}
+	if len(prompts) != 1 {
+		t.Errorf("len(prompts) = %d, want 1", len(prompts))
+	}
+
+	loadErrors := cache.LoadErrors()
+	if len(loadErrors) != 1 {
+		t.Fatalf("len(LoadErrors()) = %d, want 1 (%+v)", len(loadErrors), loadErrors)
+	}
+	if loadErrors[0].Path != "bad.prompt.yaml" {
+		t.Errorf("LoadErrors()[0].Path = %q, want %q", loadErrors[0].Path, "bad.prompt.yaml")
+	}
+	if loadErrors[0].Err == nil {
+		t.Error("LoadErrors()[0].Err = nil, want non-nil")
+	}
+}

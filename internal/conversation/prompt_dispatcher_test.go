@@ -62,9 +62,15 @@ type fakePromptDeps struct {
 	historyPrefix                  string // prefix injected by pdBuildPromptWithHistory
 
 	// === New in 2.5-c ===
-	hasSharedProcess       bool
-	handshakeErr           error
-	handshakeCalls         int
+	hasSharedProcess bool
+	handshakeErr     error
+	handshakeCalls   int
+	// handshakeBlock, when non-nil, is closed by the test to release a blocked
+	// pdCompleteDeferredHandshake. Used to simulate a wedged handshake for the
+	// completeHandshakeOrAbort watchdog test (mitto-f51).
+	handshakeBlock chan struct{}
+	// handshakeDeadline is returned by pdRecommendedHandshakeDeadline (mitto-f51).
+	handshakeDeadline      time.Duration
 	hasRecorder            bool
 	recordedErrorEvents    []string
 	nextSeq                int64
@@ -74,7 +80,7 @@ type fakePromptDeps struct {
 	hasACPConn             bool
 	acpNewSessionID        string
 	acpNewSessionErr       error
-	agentModels            *acp.UnstableSessionModelState
+	agentModels            *SessionModelState
 	resolvedModelTags      []string
 	resolvedPreferred      []config.PromptPreferredModel
 	modelProfiles          []config.ModelProfile
@@ -82,6 +88,7 @@ type fakePromptDeps struct {
 	overrideActive         bool
 	setActiveModelCalls    []string
 	setActiveModelErr      error
+	setActiveModelGate     chan struct{} // if non-nil, block in pdSetActiveModelOnly until closed (simulates a slow/cold set_model)
 	recordedSessionChanges []session.SessionChangeData
 
 	// === New in 2.5-d ===
@@ -217,9 +224,17 @@ func (f *fakePromptDeps) pdWorkspaceProcessorArgOverrides() map[string]map[strin
 func (f *fakePromptDeps) pdHasSharedProcess() bool { return f.hasSharedProcess }
 func (f *fakePromptDeps) pdCompleteDeferredHandshake() error {
 	f.mu.Lock()
-	defer f.mu.Unlock()
 	f.handshakeCalls++
-	return f.handshakeErr
+	block := f.handshakeBlock
+	err := f.handshakeErr
+	f.mu.Unlock()
+	if block != nil {
+		<-block
+	}
+	return err
+}
+func (f *fakePromptDeps) pdRecommendedHandshakeDeadline() time.Duration {
+	return f.handshakeDeadline
 }
 func (f *fakePromptDeps) pdHasRecorder() bool { return f.hasRecorder }
 func (f *fakePromptDeps) pdGetNextSeq() int64 {
@@ -253,8 +268,8 @@ func (f *fakePromptDeps) pdHasACPConn() bool { return f.hasACPConn }
 func (f *fakePromptDeps) pdACPConnNewSession(_ context.Context, _ string) (string, error) {
 	return f.acpNewSessionID, f.acpNewSessionErr
 }
-func (f *fakePromptDeps) pdGetAgentModels() *acp.UnstableSessionModelState { return f.agentModels }
-func (f *fakePromptDeps) pdResolveModelTags(_ string) []string             { return f.resolvedModelTags }
+func (f *fakePromptDeps) pdGetAgentModels() *SessionModelState { return f.agentModels }
+func (f *fakePromptDeps) pdResolveModelTags(_ string) []string { return f.resolvedModelTags }
 func (f *fakePromptDeps) pdResolvePreferredModels(_ string) []config.PromptPreferredModel {
 	return f.resolvedPreferred
 }
@@ -265,11 +280,20 @@ func (f *fakePromptDeps) pdWriteOverrideActive(active bool) {
 	defer f.mu.Unlock()
 	f.overrideActive = active
 }
-func (f *fakePromptDeps) pdSetActiveModelOnly(_ context.Context, modelID string) error {
+func (f *fakePromptDeps) pdSetActiveModelOnly(ctx context.Context, modelID string) error {
 	f.mu.Lock()
-	defer f.mu.Unlock()
 	f.setActiveModelCalls = append(f.setActiveModelCalls, modelID)
-	return f.setActiveModelErr
+	gate := f.setActiveModelGate
+	err := f.setActiveModelErr
+	f.mu.Unlock()
+	if gate != nil {
+		select {
+		case <-gate:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	return err
 }
 func (f *fakePromptDeps) pdRecordSessionChange(kind, value, previousValue string) {
 	f.mu.Lock()
@@ -447,6 +471,9 @@ func (f *fakePromptDeps) pdFlushContextInPlace(_ context.Context) error {
 	f.flushContextCalled = true
 	return f.flushContextInPlaceErr
 }
+
+// mitto-3mv WI-2: cold-start trace stub — no-op in tests.
+func (f *fakePromptDeps) pdColdPhase(_ string, _ ...any) {}
 
 type pdRecorderObserver struct{ deps *fakePromptDeps }
 
@@ -675,6 +702,60 @@ func TestResolveAndSubstitute_FreeText_InvalidTemplate_FailOpen(t *testing.T) {
 	}
 	if msg != body {
 		t.Fatalf("expected raw body byte-for-byte, got %q", msg)
+	}
+}
+
+// TestResolveAndSubstitute_Template_PromptText_Wired verifies that the
+// PromptText template function is wired to the dispatcher's PromptResolver at
+// render time (mitto-85y.3): a body invoking `{{ PromptText .Args.Prompt }}`
+// with Arguments["Prompt"]="known" resolves the named prompt body via the
+// same resolver the dispatcher uses for named-prompt resolution, and inlines
+// it verbatim in the outer render.
+func TestResolveAndSubstitute_Template_PromptText_Wired(t *testing.T) {
+	p := promptDispatcher{}
+	d := newFakePromptDeps()
+	d.workingDir = "/tmp/ws"
+	// Resolver used both for named-prompt resolution AND for PromptText.
+	d.resolver = func(name, workingDir string) (string, error) {
+		if name == "known" {
+			return "resolved-body", nil
+		}
+		return "", errors.New("prompt not found: " + name)
+	}
+
+	body := `pre {{ PromptText .Args.Prompt }} post`
+	meta := PromptMeta{Arguments: map[string]string{"Prompt": "known"}}
+	msg, _, _, err := p.resolveAndSubstitute(d, body, meta)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if msg != "pre resolved-body post" {
+		t.Fatalf("expected inlined body, got %q", msg)
+	}
+}
+
+// TestResolveAndSubstitute_Template_PromptText_UnknownFailsClosed verifies
+// that PromptText fails-closed when the referenced prompt does not exist,
+// on the NAMED-PROMPT path: the resolver error propagates as a template
+// render error and the outer send is aborted (mitto-85y.3). Free-text
+// bodies fail-open on template errors (mitto-gnxe), so this path is
+// exercised via PromptMeta.PromptName.
+func TestResolveAndSubstitute_Template_PromptText_UnknownFailsClosed(t *testing.T) {
+	p := promptDispatcher{}
+	d := newFakePromptDeps()
+	d.resolver = func(name, _ string) (string, error) {
+		if name == "outer" {
+			return `{{ PromptText "missing" }}`, nil
+		}
+		return "", errors.New("prompt not found: " + name)
+	}
+
+	msg, _, _, err := p.resolveAndSubstitute(d, "", PromptMeta{PromptName: "outer"})
+	if err == nil {
+		t.Fatalf("expected non-nil error for unknown PromptText target, got msg=%q", msg)
+	}
+	if msg != "" {
+		t.Fatalf("expected empty message on fail-closed, got %q", msg)
 	}
 }
 
@@ -1214,6 +1295,107 @@ func (t *transientFakePromptDeps) pdCompleteDeferredHandshake() error {
 	return nil
 }
 
+// TestPromptDispatcher_CompleteHandshakeOrAbort_WatchdogFiresOnWedgedHandshake
+// verifies mitto-f51: a pdCompleteDeferredHandshake that hangs past the derived
+// deadline takes the abort branch (friendly "still starting up" message, prompting
+// state reset, streaming state notified) instead of blocking forever.
+func TestPromptDispatcher_CompleteHandshakeOrAbort_WatchdogFiresOnWedgedHandshake(t *testing.T) {
+	// Shrink the margin so the test isn't blocked for 30s. Restore after.
+	origMargin := handshakeWatchdogMargin
+	handshakeWatchdogMargin = 10 * time.Millisecond
+	defer func() { handshakeWatchdogMargin = origMargin }()
+
+	p := promptDispatcher{}
+	d := newFakePromptDeps()
+	d.hasSharedProcess = true
+	d.hasRecorder = true
+	// Force pdCompleteDeferredHandshake to block indefinitely.
+	d.handshakeBlock = make(chan struct{})
+	defer close(d.handshakeBlock) // release the orphaned goroutine at test end
+	// Tight deadline so the test is fast (base + shrunken margin ~= 20ms).
+	d.handshakeDeadline = 10 * time.Millisecond
+
+	done := make(chan bool, 1)
+	go func() { done <- p.completeHandshakeOrAbort(d) }()
+
+	select {
+	case ok := <-done:
+		if ok {
+			t.Fatal("expected completeHandshakeOrAbort to return false when watchdog fires")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("completeHandshakeOrAbort did not return within 5s despite watchdog")
+	}
+
+	// Watchdog trips must not spawn retries — the orphaned goroutine still holds
+	// the shared process and another attempt would just re-hang (mitto-f51).
+	d.mu.Lock()
+	calls := d.handshakeCalls
+	d.mu.Unlock()
+	if calls != 1 {
+		t.Fatalf("expected exactly 1 handshake call (no retry on watchdog trip), got %d", calls)
+	}
+
+	// The friendly "still starting up" message must be surfaced to observers.
+	if len(d.notifiedErrors) != 1 {
+		t.Fatalf("expected 1 observer error notification, got %d", len(d.notifiedErrors))
+	}
+	if !strings.Contains(d.notifiedErrors[0], "still starting up") {
+		t.Fatalf("expected 'still starting up' message, got %q", d.notifiedErrors[0])
+	}
+	// And a recorded error event (recorder is present in this test).
+	if len(d.recordedErrorEvents) != 1 {
+		t.Fatalf("expected 1 recorded error event, got %d", len(d.recordedErrorEvents))
+	}
+	// Prompting state must be reset so the user can re-send.
+	if d.promptingResetCalls != 1 {
+		t.Fatalf("expected 1 prompting reset, got %d", d.promptingResetCalls)
+	}
+	// Streaming state must be flipped to false.
+	if len(d.streamingChanges) != 1 || d.streamingChanges[0] {
+		t.Fatalf("expected streaming=false notification, got %v", d.streamingChanges)
+	}
+}
+
+// TestPromptDispatcher_CompleteHandshakeOrAbort_FallbackDeadlineUsedWhenDepsReportsZero
+// verifies runHandshakeWithWatchdog uses handshakeWatchdogFallback when
+// pdRecommendedHandshakeDeadline returns 0 — the watchdog is always armed so a
+// hung handshake is always recoverable (mitto-f51).
+func TestPromptDispatcher_CompleteHandshakeOrAbort_FallbackDeadlineUsedWhenDepsReportsZero(t *testing.T) {
+	p := promptDispatcher{}
+	d := newFakePromptDeps()
+	d.hasSharedProcess = true
+	d.handshakeDeadline = 0 // deps has no recommendation
+	// Immediate success: the dispatcher must still complete quickly even with
+	// the (long) fallback armed.
+	d.handshakeErr = nil
+
+	start := time.Now()
+	ok := p.completeHandshakeOrAbort(d)
+	if !ok {
+		t.Fatalf("expected true on immediate success, got false; errors=%v", d.notifiedErrors)
+	}
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Fatalf("dispatcher took too long (%v) on immediate success — watchdog blocking?", elapsed)
+	}
+}
+
+// TestRunHandshakeWithWatchdog_ZeroDeadlineFallsThrough verifies that a
+// non-positive deadline bypasses the watchdog goroutine entirely — used as a
+// safety valve for tests / callers that explicitly opt out.
+func TestRunHandshakeWithWatchdog_ZeroDeadlineFallsThrough(t *testing.T) {
+	d := newFakePromptDeps()
+	d.handshakeErr = errors.New("boom")
+
+	err := runHandshakeWithWatchdog(d, 0)
+	if err == nil || err.Error() != "boom" {
+		t.Fatalf("expected 'boom' error passed through, got %v", err)
+	}
+	if d.handshakeCalls != 1 {
+		t.Fatalf("expected exactly 1 handshake call, got %d", d.handshakeCalls)
+	}
+}
+
 // --- createFreshContextSession tests ---
 
 func TestPromptDispatcher_CreateFreshContextSession_FreshContextFalse_ReturnsEmpty(t *testing.T) {
@@ -1342,7 +1524,7 @@ func TestPromptDispatcher_ApplyModelPreference_NoAgentModels_NoOp(t *testing.T) 
 func TestPromptDispatcher_ApplyModelPreference_NoPreference_DesiredIsBaseline_NoSwitch(t *testing.T) {
 	p := promptDispatcher{}
 	d := newFakePromptDeps()
-	d.agentModels = &acp.UnstableSessionModelState{CurrentModelId: "m-1"}
+	d.agentModels = &SessionModelState{CurrentModelId: "m-1"}
 	d.baselineModel = "m-1" // same as current
 	var buf bytes.Buffer
 	d.logger = slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
@@ -1366,9 +1548,9 @@ func TestPromptDispatcher_ApplyModelPreference_NoPreference_DesiredIsBaseline_No
 func TestPromptDispatcher_ApplyModelPreference_MatchingPreference_SetsModelAndOverride(t *testing.T) {
 	p := promptDispatcher{}
 	d := newFakePromptDeps()
-	d.agentModels = &acp.UnstableSessionModelState{
+	d.agentModels = &SessionModelState{
 		CurrentModelId: "m-1",
-		AvailableModels: []acp.UnstableModelInfo{
+		AvailableModels: []ModelInfo{
 			{ModelId: "m-1", Name: "Model 1"},
 			{ModelId: "m-2", Name: "Model 2"},
 		},
@@ -1404,9 +1586,9 @@ func TestPromptDispatcher_ApplyModelPreference_MatchingPreference_SetsModelAndOv
 func TestPromptDispatcher_ApplyModelPreference_PreferenceAlreadyActive_NoSwitch(t *testing.T) {
 	p := promptDispatcher{}
 	d := newFakePromptDeps()
-	d.agentModels = &acp.UnstableSessionModelState{
+	d.agentModels = &SessionModelState{
 		CurrentModelId: "m-2",
-		AvailableModels: []acp.UnstableModelInfo{
+		AvailableModels: []ModelInfo{
 			{ModelId: "m-1", Name: "Model 1"},
 			{ModelId: "m-2", Name: "Model 2"},
 		},
@@ -1444,9 +1626,9 @@ func TestPromptDispatcher_ApplyModelPreference_PreferenceAlreadyActive_NoSwitch(
 func TestPromptDispatcher_ApplyModelPreference_NoMatch_UsesBaseline_ClearsOverride(t *testing.T) {
 	p := promptDispatcher{}
 	d := newFakePromptDeps()
-	d.agentModels = &acp.UnstableSessionModelState{
+	d.agentModels = &SessionModelState{
 		CurrentModelId: "m-1",
-		AvailableModels: []acp.UnstableModelInfo{
+		AvailableModels: []ModelInfo{
 			{ModelId: "m-1", Name: "Model 1"},
 		},
 	}
@@ -1477,9 +1659,9 @@ func TestPromptDispatcher_ApplyModelPreference_NoMatch_UsesBaseline_ClearsOverri
 func TestPromptDispatcher_ApplyModelPreference_SwitchFails_NoPill(t *testing.T) {
 	p := promptDispatcher{}
 	d := newFakePromptDeps()
-	d.agentModels = &acp.UnstableSessionModelState{
+	d.agentModels = &SessionModelState{
 		CurrentModelId: "m-1",
-		AvailableModels: []acp.UnstableModelInfo{
+		AvailableModels: []ModelInfo{
 			{ModelId: "m-1", Name: "Model 1"},
 			{ModelId: "m-2", Name: "Model 2"},
 		},
@@ -1500,6 +1682,81 @@ func TestPromptDispatcher_ApplyModelPreference_SwitchFails_NoPill(t *testing.T) 
 	if len(d.recordedSessionChanges) != 0 {
 		t.Fatalf("expected no model_override pill when switch RPC failed, got %v", d.recordedSessionChanges)
 	}
+}
+
+func TestPromptDispatcher_ApplyModelPreference_ColdSlowSwitch_DoesNotBlockPrompt(t *testing.T) {
+	// Shrink the synchronous grace so the test is fast.
+	origGrace := modelSwitchSyncGrace
+	modelSwitchSyncGrace = 30 * time.Millisecond
+	defer func() { modelSwitchSyncGrace = origGrace }()
+
+	p := promptDispatcher{}
+	d := newFakePromptDeps()
+	d.agentModels = &SessionModelState{
+		CurrentModelId: "m-1",
+		AvailableModels: []ModelInfo{
+			{ModelId: "m-1", Name: "Model 1"},
+			{ModelId: "m-2", Name: "Model 2"},
+		},
+	}
+	d.baselineModel = "m-1"
+	d.modelProfiles = []config.ModelProfile{
+		{Name: "Pref2", Criteria: &config.ACPServerConstraint{MatchMode: "contains", Pattern: "Model 2"}},
+	}
+	gate := make(chan struct{})
+	d.setActiveModelGate = gate
+	var buf bytes.Buffer
+	d.logger = slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	start := time.Now()
+	p.applyModelPreference(d, PromptMeta{PreferredModels: []config.PromptPreferredModel{{ModelName: "Pref2"}}})
+	elapsed := time.Since(start)
+
+	// The interactive prompt must NOT block on the slow set_model.
+	if elapsed > 500*time.Millisecond {
+		t.Fatalf("applyModelPreference blocked on slow set_model (%s); expected to return near the grace window", elapsed)
+	}
+	if !strings.Contains(buf.String(), "Deferring model switch to background") {
+		t.Fatalf("expected deferral log, got: %s", buf.String())
+	}
+
+	// The background switch was attempted (poll to avoid scheduling flakiness).
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		d.mu.Lock()
+		calls := len(d.setActiveModelCalls)
+		d.mu.Unlock()
+		if calls == 1 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("expected the background switch to be attempted once")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	// The override pill/flag are NOT applied yet (switch still in flight -> next turn).
+	d.mu.Lock()
+	pills := len(d.recordedSessionChanges)
+	d.mu.Unlock()
+	if pills != 0 {
+		t.Fatalf("expected no override pill until the deferred switch lands, got %d", pills)
+	}
+
+	// Release the switch; it should now complete and apply the override.
+	close(gate)
+	deadline = time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		d.mu.Lock()
+		pills = len(d.recordedSessionChanges)
+		override := d.overrideActive
+		d.mu.Unlock()
+		if pills == 1 && override {
+			return // success: switch landed, override applied for the next turn
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatal("deferred model switch did not apply the override after the switch completed")
 }
 
 // --- accumulateTokenUsage tests ---
@@ -1984,7 +2241,7 @@ type fakeRateLimitError struct{}
 
 func (e *fakeRateLimitError) Error() string { return "rate_limit_error: too many requests" }
 
-// fakeContextTooLargeError mimics the shape isContextTooLargeError checks.
+// fakeContextTooLargeError mimics the shape IsContextTooLargeError checks.
 type fakeContextTooLargeError struct{}
 
 func (e *fakeContextTooLargeError) Error() string { return "context_length_exceeded: 413" }
