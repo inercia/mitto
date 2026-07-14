@@ -2023,6 +2023,23 @@ func (p *SharedACPProcess) RSSBytes() (uint64, error) {
 	return processTreeRSS(pid)
 }
 
+// RSSBytesDetailed returns the RSS breakdown of this process's tree: the RSS of
+// the ACP agent process itself, the RSS summed over all descendants (typically
+// MCP children), and the number of descendant processes counted. Used by the
+// GC's memory-recycle log lines so operators can distinguish agent-side growth
+// from MCP-child growth without a live ps probe (mitto-3gu).
+func (p *SharedACPProcess) RSSBytesDetailed() (parent uint64, descendants uint64, descendantCount int, err error) {
+	p.mu.RLock()
+	if p.cmd == nil || p.cmd.Process == nil {
+		p.mu.RUnlock()
+		return 0, 0, 0, fmt.Errorf("shared ACP process is not running")
+	}
+	pid := p.cmd.Process.Pid
+	p.mu.RUnlock()
+
+	return processTreeRSSDetailed(pid)
+}
+
 // Cancel cancels the current operation for a specific session.
 func (p *SharedACPProcess) Cancel(ctx context.Context, sessionID acp.SessionId) error {
 	p.mu.RLock()

@@ -1850,3 +1850,216 @@ func TestGCTier4_SkipsPinnedWorkspace(t *testing.T) {
 		t.Error("pinned workspace should NOT be memory-recycled")
 	}
 }
+
+// captureHandler is a minimal slog.Handler that records every log Record so
+// tests can assert on the attribute keys/values emitted by production code.
+// It is safe for concurrent use across GC goroutines and RunGCOnce paths.
+type captureHandler struct {
+	mu      sync.Mutex
+	records []slog.Record
+}
+
+func (h *captureHandler) Enabled(_ context.Context, _ slog.Level) bool { return true }
+func (h *captureHandler) Handle(_ context.Context, r slog.Record) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.records = append(h.records, r.Clone())
+	return nil
+}
+func (h *captureHandler) WithAttrs(_ []slog.Attr) slog.Handler { return h }
+func (h *captureHandler) WithGroup(_ string) slog.Handler      { return h }
+
+// findRecord returns the first captured record whose Message equals msg, or
+// nil if none was captured. Caller must hold no external lock.
+func (h *captureHandler) findRecord(msg string) *slog.Record {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for i := range h.records {
+		if h.records[i].Message == msg {
+			return &h.records[i]
+		}
+	}
+	return nil
+}
+
+// attrInt64 extracts an int-kind attribute from a slog.Record as int64. slog
+// normalizes all Go signed-int values to Int64 internally, so `int`, `int32`,
+// and `int64` all round-trip as int64. Returns (0, false) if the key is absent
+// or the attribute is not int-kind.
+func attrInt64(r *slog.Record, key string) (int64, bool) {
+	var out int64
+	var ok bool
+	r.Attrs(func(a slog.Attr) bool {
+		if a.Key == key && a.Value.Kind() == slog.KindInt64 {
+			out = a.Value.Int64()
+			ok = true
+			return false
+		}
+		return true
+	})
+	return out, ok
+}
+
+// attrValue extracts the value of the top-level attribute with the given key
+// from a slog.Record, or returns nil if the key is absent.
+func attrValue(r *slog.Record, key string) any {
+	var out any
+	r.Attrs(func(a slog.Attr) bool {
+		if a.Key == key {
+			out = a.Value.Any()
+			return false
+		}
+		return true
+	})
+	return out
+}
+
+// TestGCTier4_LogsRSSBreakdown_MITTO3GU is the failing reproduction for mitto-3gu.
+//
+// The bead's acceptance criterion — "Root of the 7.5 GB growth identified (agent
+// process vs. MCP children)" — cannot be met from log evidence alone today,
+// because the two Tier 4 log lines emit only the process-tree total `rss_bytes`,
+// with no split between the parent (auggie/node) process and its descendants
+// (MCP children). Every future occurrence therefore remains ambiguous.
+//
+// The fix must extend both Tier 4 recycler log lines
+// ("GC: recycling memory-bloated idle shared ACP process" and
+// "GC: memory recycle below threshold") to also carry
+//   - parent_rss_bytes      (RSS of the ACP agent process itself)
+//   - descendant_rss_bytes  (RSS summed over all descendants)
+//   - descendant_count      (number of descendant processes counted)
+//
+// This test asserts BOTH log lines carry those three fields. Before the fix it
+// FAILS (the current code does not emit any of the three keys); after the fix
+// it passes.
+func TestGCTier4_LogsRSSBreakdown_MITTO3GU(t *testing.T) {
+	// ---- Sub-scenario A: over threshold -> "recycling memory-bloated" log ----
+	t.Run("recycling_memory_bloated_carries_breakdown", func(t *testing.T) {
+		workspaceUUID := "ws-bloat-breakdown"
+		proc := newTestSharedProcess()
+
+		sessions := map[string][]conversation.SessionInfo{
+			workspaceUUID: {
+				{SessionID: "s1", WorkspaceUUID: workspaceUUID, HasObservers: true},
+			},
+		}
+
+		m := newTestGCManager(
+			func() map[string][]conversation.SessionInfo { return sessions },
+			func(id string) {},
+		)
+		cap := &captureHandler{}
+		m.logger = slog.New(cap)
+		m.mu.Lock()
+		m.processes[workspaceUUID] = proc
+		m.mu.Unlock()
+
+		// Synthetic split: parent 500 MB, descendants 7 GB across 9 children —
+		// matches the on-call workspace's shape (auggie + 8-9 stdio MCPs).
+		const (
+			parentRSS       uint64 = 500 * 1024 * 1024
+			descendantRSS   uint64 = 7 * 1024 * 1024 * 1024
+			descendantCount int    = 9
+		)
+		total := parentRSS + descendantRSS
+
+		m.gcConfig.MemoryRecycleThreshold = gcTier4Threshold
+		if total <= gcTier4Threshold {
+			t.Fatalf("test setup: synthetic total %d must exceed threshold %d", total, gcTier4Threshold)
+		}
+		// Sampler returns the tree total, exactly as today. The breakdown must
+		// flow through some other seam that the fix introduces (e.g. a
+		// detailed-sampler field on ACPProcessManager, or an extended return
+		// from rssSampler). We do NOT prescribe which seam here — we only
+		// assert on the observable log payload.
+		m.rssSampler = func(p *SharedACPProcess) (uint64, error) { return total, nil }
+		installBreakdownSampler(m, parentRSS, descendantRSS, descendantCount)
+
+		m.RunGCOnce()
+
+		rec := cap.findRecord("GC: recycling memory-bloated idle shared ACP process")
+		if rec == nil {
+			t.Fatalf("expected log record for memory-bloated recycle, got none; captured=%d", len(cap.records))
+		}
+		// Existing fields must still be present (regression guard).
+		if got := attrValue(rec, "rss_bytes"); got != total {
+			t.Errorf("rss_bytes: want %d, got %v", total, got)
+		}
+		if got := attrValue(rec, "threshold_bytes"); got != gcTier4Threshold {
+			t.Errorf("threshold_bytes: want %d, got %v", gcTier4Threshold, got)
+		}
+		// New breakdown fields the fix must add.
+		if got := attrValue(rec, "parent_rss_bytes"); got != parentRSS {
+			t.Errorf("parent_rss_bytes: want %d, got %v (fix must add this field)", parentRSS, got)
+		}
+		if got := attrValue(rec, "descendant_rss_bytes"); got != descendantRSS {
+			t.Errorf("descendant_rss_bytes: want %d, got %v (fix must add this field)", descendantRSS, got)
+		}
+		if got, ok := attrInt64(rec, "descendant_count"); !ok || got != int64(descendantCount) {
+			t.Errorf("descendant_count: want %d, got %d (ok=%v) (fix must add this field)", descendantCount, got, ok)
+		}
+	})
+
+	// ---- Sub-scenario B: below threshold -> "memory recycle below threshold" log ----
+	t.Run("below_threshold_carries_breakdown", func(t *testing.T) {
+		workspaceUUID := "ws-below-breakdown"
+		proc := newTestSharedProcess()
+
+		sessions := map[string][]conversation.SessionInfo{
+			workspaceUUID: {
+				{SessionID: "s1", WorkspaceUUID: workspaceUUID, HasObservers: true},
+			},
+		}
+
+		m := newTestGCManager(
+			func() map[string][]conversation.SessionInfo { return sessions },
+			func(id string) {},
+		)
+		cap := &captureHandler{}
+		m.logger = slog.New(cap)
+		m.mu.Lock()
+		m.processes[workspaceUUID] = proc
+		m.mu.Unlock()
+
+		const (
+			parentRSS       uint64 = 200 * 1024 * 1024
+			descendantRSS   uint64 = 300 * 1024 * 1024
+			descendantCount int    = 3
+		)
+		total := parentRSS + descendantRSS
+
+		m.gcConfig.MemoryRecycleThreshold = gcTier4Threshold
+		if total >= gcTier4Threshold {
+			t.Fatalf("test setup: synthetic total %d must be below threshold %d", total, gcTier4Threshold)
+		}
+		m.rssSampler = func(p *SharedACPProcess) (uint64, error) { return total, nil }
+		installBreakdownSampler(m, parentRSS, descendantRSS, descendantCount)
+
+		m.RunGCOnce()
+
+		rec := cap.findRecord("GC: memory recycle below threshold")
+		if rec == nil {
+			t.Fatalf("expected log record for below-threshold sample, got none; captured=%d", len(cap.records))
+		}
+		if got := attrValue(rec, "rss_bytes"); got != total {
+			t.Errorf("rss_bytes: want %d, got %v", total, got)
+		}
+		if got := attrValue(rec, "parent_rss_bytes"); got != parentRSS {
+			t.Errorf("parent_rss_bytes: want %d, got %v (fix must add this field)", parentRSS, got)
+		}
+		if got := attrValue(rec, "descendant_rss_bytes"); got != descendantRSS {
+			t.Errorf("descendant_rss_bytes: want %d, got %v (fix must add this field)", descendantRSS, got)
+		}
+		if got, ok := attrInt64(rec, "descendant_count"); !ok || got != int64(descendantCount) {
+			t.Errorf("descendant_count: want %d, got %d (ok=%v) (fix must add this field)", descendantCount, got, ok)
+		}
+	})
+}
+
+// installBreakdownSampler wires the detailed-RSS seam so tests can inject a
+// synthetic parent/descendant split for Tier 4's log lines (mitto-3gu).
+func installBreakdownSampler(m *ACPProcessManager, parentRSS, descendantRSS uint64, descendantCount int) {
+	m.rssBreakdownSampler = func(p *SharedACPProcess) (uint64, uint64, int, error) {
+		return parentRSS, descendantRSS, descendantCount, nil
+	}
+}
