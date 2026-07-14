@@ -331,12 +331,17 @@ prompt: |-
     | `awaiting-customer` | Waiting on customer reply |
     | `awaiting-us` | Our turn — needs a response |
 
-    Render it as (note the **full** IDs with the project prefix):
+    **The "What's next" cell must be a markdown link to the Slack thread**, using the phrase above as
+    the link text and the bead's stored `slack_url` metadata as the target:
+    `[<what's next phrase>](<slack_url>)`. Read `slack_url` from the bead you already loaded this run
+    (`bd show <id>` metadata). Only fall back to plain text if a bead has no `slack_url`.
+
+    Render it as (note the **full** IDs with the project prefix and the linked what's-next cell):
     ```markdown
     | Bead | State | What's next |
     |------|-------|-------------|
-    | mitto-u2i | drafting | Ready to reply to user |
-    | mitto-9e3 | need-info | Needs more info from user |
+    | mitto-u2i | drafting | [Ready to reply to user](https://acme.slack.com/archives/C02JYLD3FFU/p1770802214391359) |
+    | mitto-9e3 | need-info | [Needs more info from user](https://acme.slack.com/archives/C02JYLD3FFU/p1770891133552019) |
     ```
 
   Finish with a `mitto_ui_notify` (success) summarising counts (swept / closed / investigations
