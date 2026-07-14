@@ -20,7 +20,17 @@ import (
 // full cold budget — stacking to ~480s (an ~8min wedge). Capping the probe lets
 // a doomed load fail fast so the shared handshake budget (see resumeSharedACPSession)
 // is spent overwhelmingly on the session/new that actually establishes the session.
-const staleLoadProbeTimeout = 45 * time.Second
+//
+// mitto-54k.9: tightened from 45s → 25s. The mitto-1ut starvation exception
+// releases the shared cap when the probe times out (probeTimedOut=true), which
+// gives the session/new fallback a fresh MCPInitTimeout budget (up to ~240s).
+// Field logs (2026-07-14) showed the probe cap hitting at 45001ms stacking with
+// a 240001ms session/new for a ~285s worst-case wedge on cold/contended processes
+// where the agent's stderr MCP-init abort signal never fired. The signal, when it
+// does fire, empirically arrives at 11-25s, so 25s aligns with observed abort
+// behaviour and shaves ~20s off worst case (~285s → ~265s) without regressing
+// warm loads (which resolve well under 25s).
+const staleLoadProbeTimeout = 25 * time.Second
 
 // isSessionNotFoundErr reports whether err from LoadSession/ResumeSession
 // indicates the requested acp_session_id is no longer known to the agent
@@ -396,8 +406,8 @@ func (c sharedSessionHandshaker) resumeSharedACPSession(d handshakeDeps, sharedP
 			client.SetLoadingSession(true)
 			// Cap the load PROBE (mitto-1ut). A stale/unknown acp_session_id makes
 			// LoadSession dead-wait the agent's full cold MCP-init budget, so probe
-			// with a short timeout (staleLoadProbeTimeout, default 45s) and fail fast
-			// to the session/new fallback. Never exceed the shared handshake deadline:
+			// with a short timeout (staleLoadProbeTimeout) and fail fast to the
+			// session/new fallback. Never exceed the shared handshake deadline:
 			// use whichever is sooner so the probe + fallback stay within one budget.
 			loadTimeout := staleLoadProbeTimeout
 			if !handshakeDeadline.IsZero() {

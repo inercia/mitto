@@ -797,3 +797,34 @@ func TestHandshaker_ResumeSharedACPSession_ColdProbeTimeout_NoNewDeadline(t *tes
 		t.Fatalf("expected NO resume-imposed deadline on NewSession after a TIMED-OUT probe (mitto-1ut starvation fix), but got one")
 	}
 }
+
+// TestHandshaker_StaleLoadProbeTimeout_CeilingCap is the mitto-54k.9 regression:
+// even after mitto-1ut capped the doomed LoadSession probe, field evidence
+// (2026-07-14 logs) shows the cap at 45s stacks with the mitto-1ut starvation
+// exception's fresh NewSession budget (up to MCPInitTimeout=240s) for a
+// worst-case wall-clock wedge of ~285s (rpc_ms=45001 probe + rpc_ms=240001
+// session/new on cgw-managed-tools).
+//
+// The MCP-init abort signal from agent stderr empirically fires between 11-25s
+// when it fires at all; when it doesn't (silent-stall cold processes), only
+// the cap catches the probe. A 45s cap is therefore ~2x the observed abort
+// window and admits ~20s of avoidable stacking. Tightening the ceiling to
+// ≤25s aligns with observed abort behaviour and reduces the worst-case wedge
+// from ~285s to ~265s without regressing legit warm loads (which resolve in
+// well under 25s).
+//
+// This test fails on the current 45s constant and passes once the cap is
+// tightened to ≤25s. Do NOT relax this ceiling without re-checking field logs
+// for the actual MCP-init abort-signal window.
+func TestHandshaker_StaleLoadProbeTimeout_CeilingCap(t *testing.T) {
+	const ceiling = 25 * time.Second
+	if staleLoadProbeTimeout > ceiling {
+		t.Fatalf("staleLoadProbeTimeout=%v exceeds mitto-54k.9 ceiling of %v — "+
+			"a doomed cold load probe stacks with the session/new fallback's fresh "+
+			"MCPInitTimeout budget (mitto-1ut starvation exception releases the shared "+
+			"cap on probe DeadlineExceeded), producing a ~%v worst-case wedge. "+
+			"Tighten the constant to align with the observed 11-25s MCP-init abort-signal "+
+			"window.",
+			staleLoadProbeTimeout, ceiling, staleLoadProbeTimeout+240*time.Second)
+	}
+}
