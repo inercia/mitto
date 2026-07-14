@@ -1189,7 +1189,7 @@ func (m *ACPProcessManager) getOrCreateAuxiliarySession(ctx context.Context, wor
 	// for a prior same-key caller, the next same-key caller's ctx may arrive near
 	// expiry. Using m.ctx gives every NewSession call its full 30-second window.
 	// m.ctx is cancelled on manager shutdown, so this never hangs indefinitely. (mitto-rlk)
-	newCtx, newCancel := context.WithTimeout(m.ctx, 30*time.Second)
+	newCtx, newCancel := context.WithTimeout(m.ctx, auxSessionCreateBudget)
 	defer newCancel()
 	newSessionStart := time.Now()
 	sessionHandle, err := process.NewSession(newCtx, auxCwd, mcpServers)

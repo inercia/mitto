@@ -66,6 +66,18 @@ const (
 	// attempt 3 once the remaining budget can no longer fund a full per-attempt timeout —
 	// bounding the worst case to ~50s while never extending a caller's own deadline.
 	sessionCreateTotalBudget = 60 * time.Second
+	// auxSessionCreateBudget is the wall-clock budget the ACPProcessManager gives to a
+	// single call to SharedACPProcess.NewSession when creating an auxiliary session
+	// (title-gen, mcp-check, follow-up, etc.). The context is derived from m.ctx —
+	// NOT the caller's ctx — so a slow prior same-key create cannot drain it
+	// (mitto-rlk). This budget MUST be large enough to fund at least two full
+	// per-attempt session/new RPCs (2 × sessionCreateAttemptTimeout), otherwise a
+	// first attempt that hits the agent's own internal 25 s deadline leaves
+	// insufficient headroom for a retry and shouldFailFastCreateAttempt bails before
+	// attempt 2 — the mitto-54k.11 wedge. TestAuxSessionCreateBudgetFundsRetry pins
+	// this invariant. Set to sessionCreateTotalBudget for parity with the underlying
+	// NewSession retry sequence.
+	auxSessionCreateBudget = sessionCreateTotalBudget
 
 	// setModelAsyncCallerBudget is the context timeout given to the background goroutine
 	// that performs the aux-session model switch asynchronously (mitto-f7q, Option 4).

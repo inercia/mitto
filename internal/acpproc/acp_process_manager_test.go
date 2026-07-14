@@ -1699,6 +1699,67 @@ func TestSessionCreateTotalBudgetBound(t *testing.T) {
 		sessionCreateTotalBudget, sessionCreateAttemptTimeout, sessionCreateMaxAttempts, preFixTail, remainingAfterTwo)
 }
 
+// TestAuxSessionCreateBudgetFundsRetry is the mitto-54k.11 reproduction.
+//
+// The bug: getOrCreateAuxiliarySession wraps SharedACPProcess.NewSession in a fresh
+// context with budget auxSessionCreateBudget (was hardcoded 30s). NewSession itself
+// runs a bounded-retry loop where each attempt has sessionCreateAttemptTimeout=25s
+// and the total sequence is capped by sessionCreateTotalBudget=60s. When attempt 1
+// hits the agent's own internal ~25s deadline (a full per-attempt drain — evidence:
+// aux-session logs showing `rpc_ms≈25000, error="context deadline exceeded"`), the
+// remaining wall-clock in the wrapper ctx is ~5s; shouldFailFastCreateAttempt then
+// bails at the attempt-2 boundary because remaining (5s) < perAttemptBudget (25s),
+// so the retry loop never gets a second shot even though sessionCreateTotalBudget
+// (60s) would allow it. The aux caller ultimately sees deadline_exceeded and every
+// title-gen / mcp-check / follow-up dispatch that lands during the wedge fails.
+//
+// This is a pure math invariant test — no ACP process is required. It asserts that
+// auxSessionCreateBudget funds at least TWO full per-attempt session/new RPCs, and
+// simulates the "attempt 1 drains 25s" scenario against shouldFailFastCreateAttempt
+// to prove that the pre-fix 30s budget makes the fail-fast bail trip before
+// attempt 2. With the pre-fix value of 30s the test FAILS (that is the reproduction);
+// widening auxSessionCreateBudget to >= 2×sessionCreateAttemptTimeout (50s) — the
+// Fix phase will bump it to sessionCreateTotalBudget (60s) for parity with the
+// underlying NewSession retry sequence — makes it PASS.
+func TestAuxSessionCreateBudgetFundsRetry(t *testing.T) {
+	// Invariant 1: the wrapper budget must fund at least two full per-attempt
+	// session/new RPCs. Otherwise a first attempt that legitimately consumes its
+	// full per-attempt budget leaves no room for a retry.
+	if auxSessionCreateBudget < 2*sessionCreateAttemptTimeout {
+		t.Errorf("auxSessionCreateBudget (%v) must fund >=2 attempts (2×%v = %v) so that a "+
+			"first attempt hitting the agent's internal 25s deadline still leaves budget "+
+			"for a retry (mitto-54k.11); currently only %v remains after one full attempt",
+			auxSessionCreateBudget, sessionCreateAttemptTimeout,
+			2*sessionCreateAttemptTimeout, auxSessionCreateBudget-sessionCreateAttemptTimeout)
+	}
+
+	// Invariant 2: after attempt 1 drains a full per-attempt budget,
+	// shouldFailFastCreateAttempt MUST NOT bail at the attempt-2 boundary. If it
+	// does, the retry loop is regressed to a single attempt on this path, which is
+	// the observed mitto-54k.11 failure mode. Simulate the wrapper by taking the
+	// aux budget, subtracting one full per-attempt drain, and asking the fail-fast
+	// predicate whether attempt 2 can proceed.
+	remainingAfterAttempt1 := auxSessionCreateBudget - sessionCreateAttemptTimeout
+	bail, reason := shouldFailFastCreateAttempt(
+		2,                           // attempt
+		false,                       // not saturated (isolate the budget path)
+		true,                        // ctx has deadline
+		remainingAfterAttempt1,      // remaining wall-clock in wrapper ctx
+		sessionCreateAttemptTimeout, // per-attempt budget the loop wants to fund
+	)
+	if bail {
+		t.Errorf("aux wrapper budget %v drained by one full per-attempt (%v) leaves only %v — "+
+			"shouldFailFastCreateAttempt bails at attempt 2 (reason=%q). This regresses the "+
+			"NewSession retry loop to a single attempt on the aux path even though "+
+			"sessionCreateTotalBudget (%v) would fund a retry. This is the mitto-54k.11 wedge.",
+			auxSessionCreateBudget, sessionCreateAttemptTimeout, remainingAfterAttempt1,
+			reason, sessionCreateTotalBudget)
+	}
+
+	t.Logf("auxSessionCreateBudget=%v, per-attempt=%v, remaining-after-attempt1=%v, bail=%v",
+		auxSessionCreateBudget, sessionCreateAttemptTimeout, remainingAfterAttempt1, bail)
+}
+
 // TestRPCErrorCode verifies that rpcErrorCode (mitto-8d7) extracts the JSON-RPC error
 // code from a bare or wrapped *acp.RequestError and reports absence for other errors.
 func TestRPCErrorCode(t *testing.T) {
