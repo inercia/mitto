@@ -1234,6 +1234,7 @@ func run() error {
 		HasRCFileServers: hasRCFileServers,
 		PromptsCache:     promptsCache,
 		AccessLog:        accessLogConfig,
+		BeadsCache:       true, // mitto-is2.5: read-cache on by default in the macOS app
 	}
 
 	// Set legacy fields as fallback (for auxiliary sessions, etc.)
