@@ -220,17 +220,21 @@ prompt: |
   closes the bead, and stops. The next scheduled run of this driver will observe
   `verified` and take the Done branch (Step 3e).
 
-  ### Step 3e — Done (`verified` present) — handled inline
+  ### Step 3e — Done (`verified` present) — handled inline, EVALUATE FIRST
 
-  All four phases are complete. Close the bead (if the review phase has not already)
-  and self-terminate — **no phase dispatch on this branch**, since there is no further
-  phase work to do:
+  **This branch is checked before every other Step 3 branch**, against the fresh
+  `bd show --json` from Step 1. All four phases are complete: **unconditionally close
+  the bead** (if the review phase has not already) and **unconditionally disable this
+  conversation's loop flag** — no phase dispatch on this branch, since there is no
+  further phase work to do (mitto-i5k: never treat close or `loop_enabled: false` as
+  optional here — a soft-gated Done branch lets the loop re-fire past the terminal
+  label).
 
   ```bash
-  bd close {{ $target }} --reason "<short summary of what was delivered>"   # optional but recommended
+  bd close {{ $target }} --reason "<short summary of what was delivered>"
   ```
 
-  Then self-terminate so this conversation stops re-running:
+  Then, unconditionally, self-terminate so this conversation stops re-running:
 
   ```
   mitto_conversation_update(self_id: "{{ .Session.ID }}", conversation_id: "self", loop_enabled: false)
@@ -247,26 +251,53 @@ prompt: |
   shared files, or work with interdependencies — those go through the normal single
   self-send phase. Cap at **3–4** parallel children.
 
-  1. Define each part completely and self-contained: the exact sub-scope (ideally a
-     sub-issue ID), the **disjoint** set of files/modules it owns (confirm the sets do not
-     overlap), acceptance criteria, and a definition of done.
+  1. Define each part completely: the exact sub-scope (ideally a sub-issue ID), the
+     **disjoint** set of files/modules it owns (confirm the sets do not overlap),
+     acceptance criteria, and a definition of done. Record each part's IssueID/scope so
+     they can be passed to a **named** worker prompt below (mitto-6am: never inline-
+     compose a full free-text worker body from inside a driver — spawning
+     grand-children from an already-scheduled loop is structurally more exposed to the
+     mitto-dj9 short-circuit than the outer serial spawn).
   2. For each part, reuse a suitable **idle** child from `{{ .Children.MCPText }}` when
      possible, otherwise create one with `mitto_conversation_new` (prefer a
-     faster/cheaper Coding-tier agent), seeding a fully self-contained worker prompt that
-     ends by reporting via `mitto_children_tasks_report`.
+     faster/cheaper Coding-tier agent) using a **named** worker prompt registered in
+     the workspace — for example `Feature — implement subpart` — so the body is
+     expanded server-side and cannot short-circuit to a placeholder:
+
+     ```
+     mitto_conversation_new(
+       self_id: "{{ .Session.ID }}",
+       title: "Implement subpart <part-id> of {{ $target }}",
+       beads_issue: "<part-id>",
+       prompt_name: "Feature — implement subpart",
+       arguments: { "IssueID": "<part-id>", "ParentIssueID": "{{ $target }}", "Scope": "<sub-scope>", "OwnedPaths": "<comma-separated>" }
+     )
+     ```
+
+     The worker prompt must end by reporting via `mitto_children_tasks_report`. If the
+     named worker prompt is not yet registered in this workspace, do **not** improvise
+     an inline free-text body — abandon the split and fall back to the single
+     Implement phase (Step 3b) so the work still lands, and record a bead comment
+     naming the missing worker prompt so an operator can register it.
   3. Block on all of them:
      `mitto_children_tasks_wait(self_id: "{{ .Session.ID }}", children_list: [<child ids>], task_id: "impl-{{ $target }}", timeout_seconds: 3600)`.
      On timeout, retry the pending children with the **same** `task_id` (omit the prompt);
      after a second timeout treat those parts as failed and finish the remainder via a
      single Implement phase on the next run.
-  4. **Synthesize** the reports and verify the combined increment (build/lint clean, the
-     parts integrate). If verified, record an `Implementation:` comment summarising the
-     distributed work, add the `implemented` label{{ if eq .Args.Commit "true" }} and
-     commit only the changed files (staged by path){{ end }}, archive the finished
-     children, and end the turn. The next scheduled run will observe `implemented` and
-     dispatch Test. If any part reports a conflict, abandon the split and finish via the
-     single Implement phase on the next run. If a spawn call errors because **Can start
-     conversation** is off, fall back to the single Implement phase (Step 3b).
+  4. **Synthesize** the reports and verify the combined increment. **Fail closed** on
+     empty or non-matching reports: every child's report must have non-empty findings
+     AND a file-diff touching the paths that child was assigned. If any child reports
+     vacuously or without matching files, abandon the split and finish via the single
+     Implement phase on the next run (this is the mitto-6am post-condition check that
+     catches placeholder short-circuits before advancing the feature's state). If all
+     reports verify and the combined increment is build/lint clean, record an
+     `Implementation:` comment summarising the distributed work, add the `implemented`
+     label{{ if eq .Args.Commit "true" }} and commit only the changed files (staged by
+     path){{ end }}, archive the finished children, and end the turn. The next
+     scheduled run will observe `implemented` and dispatch Test. If any part reports a
+     conflict, abandon the split and finish via the single Implement phase on the next
+     run. If a spawn call errors because **Can start conversation** is off, fall back
+     to the single Implement phase (Step 3b).
   {{- else }}
   ## Step 1 — No target feature to work on
 
