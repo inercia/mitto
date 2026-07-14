@@ -285,15 +285,22 @@ func (c *CachingClient) ConfigShow(ctx context.Context, dir string) (map[string]
 	return v.(map[string]string), nil
 }
 
+// Show returns the cached payload for `bd show <id>` in dir, populating on
+// miss. Entries are keyed under tag "show:"+id in the same per-dir slot as the
+// other cached reads, so any writer/watcher invalidation (evictDir) drops all
+// per-id entries alongside the list/ready/status/labels payloads — no per-id
+// invalidation bookkeeping needed. Rationale (mitto-y21): the beads viewer's
+// per-ticket load path is the dominant miss for the viewer UX; a bare
+// pass-through here forced a fresh `bd show` on every ticket re-open.
+func (c *CachingClient) Show(ctx context.Context, dir, id string) ([]byte, error) {
+	return c.doJSON(ctx, dir, "show:"+id, func(ctx context.Context) ([]byte, error) {
+		return c.inner.Show(ctx, dir, id)
+	})
+}
+
 // ---------------------------------------------------------------------------
 // Pass-through reads (not cached)
 // ---------------------------------------------------------------------------
-
-// Show is a per-id read; per-id invalidation is not worth the complexity, so
-// it always calls inner directly.
-func (c *CachingClient) Show(ctx context.Context, dir, id string) ([]byte, error) {
-	return c.inner.Show(ctx, dir, id)
-}
 
 // ListClosedIDs is only called during cleanup preflight and is not worth
 // caching.

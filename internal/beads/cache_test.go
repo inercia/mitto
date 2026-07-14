@@ -64,11 +64,11 @@ func (f *fakeClient) Status(_ context.Context, _ string) ([]byte, error) {
 	return []byte(`{"summary":{}}`), nil
 }
 
-func (f *fakeClient) Show(_ context.Context, _, _ string) ([]byte, error) {
+func (f *fakeClient) Show(_ context.Context, _, id string) ([]byte, error) {
 	f.mu.Lock()
 	f.showCalls++
 	f.mu.Unlock()
-	return []byte(`{"id":"x-1"}`), nil
+	return []byte(`{"id":"` + id + `"}`), nil
 }
 
 func (f *fakeClient) ListAllLabels(_ context.Context, _ string) ([]byte, error) {
@@ -587,5 +587,94 @@ func TestCachingClient_MetricsInvalidateAllCounts(t *testing.T) {
 	}
 	if m.EntriesCurrent != 0 {
 		t.Errorf("EntriesCurrent = %d, want 0 after InvalidateAll", m.EntriesCurrent)
+	}
+}
+
+// TestCachingClient_ShowCachedSameID verifies that two consecutive Show(dir,id)
+// calls result in a single inner invocation — the second is served from the
+// cache (mitto-y21).
+func TestCachingClient_ShowCachedSameID(t *testing.T) {
+	dir := initializedDir(t)
+	fake := &fakeClient{}
+	c := NewCachingClient(fake)
+
+	if _, err := c.Show(context.Background(), dir, "mitto-1"); err != nil {
+		t.Fatalf("Show #1: %v", err)
+	}
+	if _, err := c.Show(context.Background(), dir, "mitto-1"); err != nil {
+		t.Fatalf("Show #2: %v", err)
+	}
+	if fake.showCalls != 1 {
+		t.Errorf("showCalls = %d, want 1 (second Show should hit cache)", fake.showCalls)
+	}
+	m := c.Metrics()
+	if m.Hits != 1 || m.Misses != 1 {
+		t.Errorf("hits=%d misses=%d, want 1/1", m.Hits, m.Misses)
+	}
+}
+
+// TestCachingClient_ShowInvalidatedByWrite verifies that a mutating write (any
+// method routed through evictDir) invalidates cached Show entries for the same
+// dir. Uses SetStatus as a representative writer path (mitto-y21).
+func TestCachingClient_ShowInvalidatedByWrite(t *testing.T) {
+	dir := initializedDir(t)
+	fake := &fakeClient{}
+	c := NewCachingClient(fake)
+
+	if _, err := c.Show(context.Background(), dir, "mitto-1"); err != nil {
+		t.Fatalf("Show #1: %v", err)
+	}
+	if err := c.SetStatus(context.Background(), dir, "mitto-1", "closed"); err != nil {
+		t.Fatalf("SetStatus: %v", err)
+	}
+	if _, err := c.Show(context.Background(), dir, "mitto-1"); err != nil {
+		t.Fatalf("Show #2: %v", err)
+	}
+	if fake.showCalls != 2 {
+		t.Errorf("showCalls = %d, want 2 (writer must invalidate)", fake.showCalls)
+	}
+	m := c.Metrics()
+	if m.InvalidationsWriter < 1 {
+		t.Errorf("InvalidationsWriter = %d, want >= 1", m.InvalidationsWriter)
+	}
+}
+
+// TestCachingClient_ShowKeyedPerID verifies that Show(dir, "A") and
+// Show(dir, "B") are cached independently — each id gets its own inner call,
+// then subsequent repeats of either id are served from the cache and return
+// the id-specific payload unchanged (mitto-y21).
+func TestCachingClient_ShowKeyedPerID(t *testing.T) {
+	dir := initializedDir(t)
+	fake := &fakeClient{}
+	c := NewCachingClient(fake)
+
+	outA1, err := c.Show(context.Background(), dir, "mitto-A")
+	if err != nil {
+		t.Fatalf("Show A #1: %v", err)
+	}
+	outB1, err := c.Show(context.Background(), dir, "mitto-B")
+	if err != nil {
+		t.Fatalf("Show B #1: %v", err)
+	}
+	if fake.showCalls != 2 {
+		t.Errorf("showCalls = %d, want 2 (two distinct ids)", fake.showCalls)
+	}
+
+	outA2, err := c.Show(context.Background(), dir, "mitto-A")
+	if err != nil {
+		t.Fatalf("Show A #2: %v", err)
+	}
+	outB2, err := c.Show(context.Background(), dir, "mitto-B")
+	if err != nil {
+		t.Fatalf("Show B #2: %v", err)
+	}
+	if fake.showCalls != 2 {
+		t.Errorf("showCalls after repeats = %d, want still 2 (both ids cached)", fake.showCalls)
+	}
+	if string(outA1) != string(outA2) || string(outA1) != `{"id":"mitto-A"}` {
+		t.Errorf("A payloads mismatched: %q vs %q", outA1, outA2)
+	}
+	if string(outB1) != string(outB2) || string(outB1) != `{"id":"mitto-B"}` {
+		t.Errorf("B payloads mismatched: %q vs %q", outB1, outB2)
 	}
 }
