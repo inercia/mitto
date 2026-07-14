@@ -59,7 +59,7 @@ func init() {
 	webCmd.Flags().StringVar(&webAccessLog, "access-log", "", "Path to security access log file (logs auth events, unauthorized access, etc.)")
 	webCmd.Flags().StringVar(&workspacesFile, "workspaces", "", "Path to workspaces file (JSON or YAML)")
 	webCmd.Flags().StringVar(&foldersFile, "folders", "", "Path to folders file (JSON or YAML); overlays folder-level settings onto loaded workspaces (changes not persisted)")
-	webCmd.Flags().BoolVar(&webBeadsCache, "beads-cache", false, "Experimental: enable in-memory cache for read-only bd invocations (mitto-is2)")
+	webCmd.Flags().BoolVar(&webBeadsCache, "beads-cache", true, "Enable in-memory cache for read-only bd invocations (mitto-is2). Pass --beads-cache=false to disable.")
 }
 
 func runWeb(cmd *cobra.Command, args []string) error {
