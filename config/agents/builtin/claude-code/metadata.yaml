@@ -18,6 +18,10 @@ mcp:
   scopes: ["user", "project", "local"]
 defaults:
   contextFlushCommand: "/clear"
+  # Raise Node/V8 old-space heap cap for the ACP subprocess (mitto-54k.10).
+  # See augment/metadata.yaml for rationale.
+  env:
+    NODE_OPTIONS: "--max-old-space-size=12288"
 # Per-agent stderr patterns (mitto-k6h). Unioned with the hardcoded baseline.
 stderrPatterns:
   crash:

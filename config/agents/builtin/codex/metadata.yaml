@@ -10,3 +10,8 @@ install:
   package: "@zed-industries/codex-acp"
 mcp:
   scopes: ["user"]
+defaults:
+  # Raise Node/V8 old-space heap cap for the ACP subprocess (mitto-54k.10).
+  # See augment/metadata.yaml for rationale.
+  env:
+    NODE_OPTIONS: "--max-old-space-size=12288"

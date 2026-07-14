@@ -12,6 +12,14 @@ install:
   args: ["--workspace-root=$MITTO_WORKING_DIR", "--acp"]
 mcp:
   scopes: ["user", "project", "local"]
+defaults:
+  # Raise Node/V8 old-space heap cap for the ACP subprocess. Default (~4-6 GB)
+  # is exhausted by large agent turns on big workspaces, aborting the process
+  # with FATAL ERROR: Ineffective mark-compacts near heap limit and tearing
+  # down every session sharing it (mitto-54k.10). Users can override in
+  # settings.json acp_servers[].env if 12 GB is inappropriate for their host.
+  env:
+    NODE_OPTIONS: "--max-old-space-size=12288"
 # Per-agent stderr patterns (mitto-k6h). Unioned with the hardcoded baseline in
 # internal/conversation. Regexes are compiled once at process start; a bad regex
 # is skipped with a warn log (never fatal).
