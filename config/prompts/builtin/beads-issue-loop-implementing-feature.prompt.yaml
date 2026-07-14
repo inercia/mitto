@@ -129,11 +129,15 @@ prompt: |
   its label, and stops; the driver's `onCompletion` schedule re-fires this prompt to
   advance to the next phase.
 
-  - None of `planned`, `implemented`, `tested`, `verified` present → **Step 3a: dispatch Plan/Design.**
-  - `planned` present, `implemented` absent → **Step 3b: dispatch Implement.**
-  - `implemented` present, `tested` absent → **Step 3c: dispatch Test.**
+  **Evaluate these branches in order and stop at the first match** — the terminal
+  Done branch is listed FIRST so a fully-verified bead is never re-dispatched into
+  a phase (mitto-i5k):
+
+  - `verified` present → **Step 3e: Done (handled inline).** ← early-exit; check first.
   - `tested` present, `verified` absent → **Step 3d: dispatch Review/Verify.**
-  - `verified` present → **Step 3e: Done (handled inline).**
+  - `implemented` present, `tested` absent → **Step 3c: dispatch Test.**
+  - `planned` present, `implemented` absent → **Step 3b: dispatch Implement.**
+  - None of `planned`, `implemented`, `tested`, `verified` present → **Step 3a: dispatch Plan/Design.**
 
   If the driver itself is unable to load state or resolve the target autonomously, go
   to **Step 4 (Blocked → Defer + Handoff)** instead of dispatching. The phase prompts

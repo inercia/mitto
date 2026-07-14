@@ -2363,10 +2363,9 @@ func TestBuiltinPromptLoopModes(t *testing.T) {
 	}
 
 	cases := map[string]want{
-		// Group A — always (6).
+		// Group A — always (5).
 		"beads-issue-iterate-until-complete.prompt.yaml": {mode: "always", def: nil},
 		"github-iterate-babysit-new-prs.prompt.yaml":     {mode: "always", def: nil},
-		"github-post-merge-cleanup.prompt.yaml":          {mode: "always", def: nil},
 		"iterate-until.prompt.yaml":                      {mode: "always", def: nil},
 		"iterate-fixing.prompt.yaml":                     {mode: "always", def: nil},
 		"iterate-implementing.prompt.yaml":               {mode: "always", def: nil},
@@ -2377,8 +2376,9 @@ func TestBuiltinPromptLoopModes(t *testing.T) {
 		"github-sync-tasks.prompt.yaml":            {mode: "optional", def: boolPtr(true)},
 		"jira-sync-tasks.prompt.yaml":              {mode: "optional", def: boolPtr(true)},
 
-		// Group C — optional / default:false (10).
+		// Group C — optional / default:false (11).
 		"check-ci.prompt.yaml":                   {mode: "optional", def: boolPtr(false)},
+		"continue.prompt.yaml":                   {mode: "optional", def: boolPtr(false)},
 		"fix-ci.prompt.yaml":                     {mode: "optional", def: boolPtr(false)},
 		"run-tests.prompt.yaml":                  {mode: "optional", def: boolPtr(false)},
 		"analyze-logs.prompt.yaml":               {mode: "optional", def: boolPtr(false)},
@@ -2429,7 +2429,7 @@ func TestBuiltinPromptLoopModes(t *testing.T) {
 		"add-tests.prompt.yaml",
 		"whats-next.prompt.yaml",
 		"child-create-minions.prompt.yaml",
-		"continue.prompt.yaml",
+		"github-post-merge-cleanup.prompt.yaml",
 		"beads-issue-decompose.prompt.yaml",
 		// Tasks prompts that are one-shot reports, context-bound, or
 		// confirmation-gated — loop re-firing makes no sense for them.

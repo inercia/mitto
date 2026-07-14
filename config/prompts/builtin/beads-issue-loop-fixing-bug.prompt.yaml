@@ -129,10 +129,14 @@ prompt: |
   its label, and stops; the driver's `onCompletion` schedule re-fires this prompt to
   advance to the next phase.
 
-  - None of `researched`, `reproduced`, `fixed` present → **Step 3a: dispatch Investigate.**
-  - `researched` present, `reproduced` absent → **Step 3b: dispatch Reproduce.**
+  **Evaluate these branches in order and stop at the first match** — the terminal
+  Done branch is listed FIRST so a fully-fixed bead is never re-dispatched into a
+  phase (mitto-i5k):
+
+  - `fixed` present → **Step 3d: Done (handled inline).** ← early-exit; check first.
   - `reproduced` present, `fixed` absent → **Step 3c: dispatch Fix.**
-  - `fixed` present → **Step 3d: Done (handled inline).**
+  - `researched` present, `reproduced` absent → **Step 3b: dispatch Reproduce.**
+  - None of `researched`, `reproduced`, `fixed` present → **Step 3a: dispatch Investigate.**
 
   If the driver itself is unable to load state or resolve the target autonomously, go
   to **Step 4 (Blocked → Defer + Handoff)** instead of dispatching. The phase prompts

@@ -97,3 +97,66 @@ func TestBeadsLoopPrompts_Defects_mitto6am(t *testing.T) {
 		_ = body
 	}
 }
+
+// TestBeadsLoopPrompts_Defects_mitto_i5k_BranchOrder is the failing reproduction
+// test for the residual mitto-i5k defect that commit 24cfbf0f did not close.
+//
+// Commit 24cfbf0f removed the "# optional but recommended" soft-gating on
+// `bd close` in the per-issue driver Done branch (Defect 2 above). But the
+// upstream branch table in Step 3 still enumerates the terminal Done bullet
+// LAST — after all the intermediate-phase dispatch bullets. The Step 3d/3e
+// heading is tagged "EVALUATE FIRST", but that hint lives only on the section
+// heading (which itself appears physically last in the prompt body), not in
+// the top-level enumeration the LLM parses to pick a branch. With labels
+// `[researched, reproduced, fixed]` (or `[planned, implemented, tested,
+// verified]` for the feature driver), an LLM enumerating a bullet list is
+// prone to (i) match a middle bullet on partial precondition and skip the
+// Done bullet, or (ii) decide "nothing new to do" and end the turn without
+// invoking `mitto_conversation_update(loop_enabled: false)`; the loop's
+// onCompletion trigger then re-fires the driver 30s later, giving the
+// observed "loop keeps re-firing on a fully-fixed bead" symptom.
+//
+// The structural fix is to enumerate the terminal Done bullet FIRST in the
+// Step 3 branch table so it is evaluated as an early-exit before any
+// dispatch branch. This test asserts that ordering: the Done bullet must
+// appear BEFORE the first-stage bullet in the Step 3 enumeration of each
+// per-issue driver. It fails on the current YAMLs; the fix will flip it
+// green.
+func TestBeadsLoopPrompts_Defects_mitto_i5k_BranchOrder(t *testing.T) {
+	const (
+		bugDriver  = "beads-issue-loop-fixing-bug.prompt.yaml"
+		featDriver = "beads-issue-loop-implementing-feature.prompt.yaml"
+	)
+
+	load := func(name string) string {
+		b, err := fs.ReadFile(BuiltinPromptsFS, BuiltinPromptsDir+"/"+name)
+		if err != nil {
+			t.Fatalf("read embedded prompt %s: %v", name, err)
+		}
+		return string(b)
+	}
+
+	cases := []struct {
+		file         string
+		firstStage   string // marker for the Step 3a "no state label yet" bullet
+		terminalDone string // marker for the terminal "Done (handled inline)" bullet
+	}{
+		{bugDriver, "Step 3a: dispatch Investigate", "Step 3d: Done (handled inline)"},
+		{featDriver, "Step 3a: dispatch Plan", "Step 3e: Done (handled inline)"},
+	}
+
+	for _, c := range cases {
+		body := load(c.file)
+		idxFirst := strings.Index(body, c.firstStage)
+		idxDone := strings.Index(body, c.terminalDone)
+		if idxFirst < 0 {
+			t.Fatalf("%s: first-stage marker %q not found — test needs its markers updated to match the current prompt body", c.file, c.firstStage)
+		}
+		if idxDone < 0 {
+			t.Fatalf("%s: terminal Done marker %q not found — test needs its markers updated to match the current prompt body", c.file, c.terminalDone)
+		}
+		if idxDone > idxFirst {
+			t.Errorf("[mitto-i5k residual branch-order] %s Step 3 branch enumeration still lists the terminal Done bullet AFTER the first-stage bullet; expected the Done bullet to be enumerated FIRST so an LLM parsing the branch table evaluates the `fixed`/`verified`-present early-exit before any dispatch branch (got %q at byte %d, which is AFTER %q at byte %d)", c.file, c.terminalDone, idxDone, c.firstStage, idxFirst)
+		}
+	}
+}
