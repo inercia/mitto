@@ -294,7 +294,7 @@ func NewServer(config Config) (*Server, error) {
 	}
 
 	// Run data migrations before any other operations
-	migrationCtx := buildMigrationContext(config.MittoConfig)
+	migrationCtx := session.MigrationContextFromConfig(config.MittoConfig)
 	if err := store.RunMigrations(migrationCtx); err != nil {
 		logger.Warn("Failed to run migrations", "error", err)
 		// Continue anyway - migrations are best-effort
@@ -2704,19 +2704,4 @@ func parseAutoArchivePeriod(period string) (time.Duration, error) {
 	default:
 		return 0, fmt.Errorf("invalid auto-archive period: %s", period)
 	}
-}
-
-// buildMigrationContext creates a MigrationContext from the current configuration.
-// This provides information needed by migrations to normalize data.
-func buildMigrationContext(cfg *configPkg.Config) *session.MigrationContext {
-	if cfg == nil || len(cfg.ACPServers) == 0 {
-		return nil
-	}
-
-	// Extract server names and use the shared helper
-	names := make([]string, len(cfg.ACPServers))
-	for i, srv := range cfg.ACPServers {
-		names[i] = srv.Name
-	}
-	return session.NewMigrationContext(names)
 }

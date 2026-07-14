@@ -90,7 +90,7 @@ func runStandaloneMCPServer(ctx context.Context) error {
 	defer store.Close()
 
 	// Run data migrations
-	migrationCtx := buildMigrationContextFromConfig(cfg)
+	migrationCtx := session.MigrationContextFromConfig(cfg)
 	if err := store.RunMigrations(migrationCtx); err != nil {
 		// Log warning but continue - migrations are best-effort
 		slog.Warn("Failed to run migrations", "error", err)
@@ -341,18 +341,4 @@ func writeJSONRPCError(w io.Writer, id interface{}, code int, message string) {
 	data, _ := json.Marshal(errResp)
 	w.Write(data)
 	w.Write([]byte("\n"))
-}
-
-// buildMigrationContextFromConfig creates a MigrationContext from the Mitto configuration.
-func buildMigrationContextFromConfig(cfg *config.Config) *session.MigrationContext {
-	if cfg == nil || len(cfg.ACPServers) == 0 {
-		return nil
-	}
-
-	// Extract server names and use the shared helper
-	names := make([]string, len(cfg.ACPServers))
-	for i, srv := range cfg.ACPServers {
-		names[i] = srv.Name
-	}
-	return session.NewMigrationContext(names)
 }
