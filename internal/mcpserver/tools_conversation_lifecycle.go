@@ -612,10 +612,44 @@ func (s *Server) handleConversationUpdate(ctx context.Context, req *mcp.CallTool
 	}
 
 	// Update loop configuration if any loop fields provided
-	if input.LoopPrompt != nil || input.LoopFrequencyValue != nil || input.LoopFrequencyUnit != nil || input.LoopEnabled != nil || input.LoopFreshContext != nil || input.LoopMaxIterations != nil ||
+	if input.LoopPrompt != nil || input.LoopPromptName != nil || input.LoopArguments != nil ||
+		input.LoopFrequencyValue != nil || input.LoopFrequencyUnit != nil || input.LoopEnabled != nil || input.LoopFreshContext != nil || input.LoopMaxIterations != nil ||
 		input.LoopTrigger != nil || input.LoopCompletionDelaySeconds != nil || input.LoopMaxDurationSeconds != nil ||
 		input.LoopCondition != nil || input.LoopConditionPreset != nil {
 		loopStore := store.Loop(input.ConversationID)
+
+		// Mutual exclusion + name resolution for a named loop prompt. Callers may set
+		// either loop_prompt (free-text) or loop_prompt_name (workspace-prompt lookup),
+		// but not both non-empty in the same request. When loop_prompt_name is set to a
+		// non-empty value, resolve it now so isNew can require a non-empty body and the
+		// partial-update path can persist both the name and the resolved text.
+		if input.LoopPrompt != nil && input.LoopPromptName != nil &&
+			*input.LoopPrompt != "" && *input.LoopPromptName != "" {
+			return nil, ConversationUpdateOutput{
+				Success: false,
+				Error:   "cannot specify both 'loop_prompt' and 'loop_prompt_name' — use one or the other",
+			}, nil
+		}
+		var resolvedLoopText, resolvedLoopName string
+		if input.LoopPromptName != nil && *input.LoopPromptName != "" {
+			loopWorkingDir, err := s.resolvePromptWorkingDir(realSessionID, "")
+			if err != nil {
+				return nil, ConversationUpdateOutput{
+					Success: false,
+					Error:   err.Error(),
+				}, nil
+			}
+			p, found := s.findPromptByName(loopWorkingDir, *input.LoopPromptName)
+			if !found {
+				return nil, ConversationUpdateOutput{
+					Success: false,
+					Error:   fmt.Sprintf("loop prompt not found: no prompt named %q is available in this workspace", *input.LoopPromptName),
+				}, nil
+			}
+			resolvedLoopText = p.Prompt
+			// Canonical name from the merged prompt list; ignores caller casing.
+			resolvedLoopName = p.Name
+		}
 
 		// Check if this is an update to existing loop config or a new setup
 		existing, existErr := loopStore.Get()
@@ -639,11 +673,14 @@ func (s *Server) handleConversationUpdate(ctx context.Context, req *mcp.CallTool
 			}
 			skipFrequency := trigger == session.TriggerOnCompletion || trigger == session.TriggerOnTasks
 
-			// Creating new loop config — require the prompt always.
-			if input.LoopPrompt == nil || *input.LoopPrompt == "" {
+			// Creating new loop config — require a body via either a non-empty
+			// loop_prompt or a resolved loop_prompt_name.
+			hasFreeText := input.LoopPrompt != nil && *input.LoopPrompt != ""
+			hasNamed := input.LoopPromptName != nil && *input.LoopPromptName != ""
+			if !hasFreeText && !hasNamed {
 				return nil, ConversationUpdateOutput{
 					Success: false,
-					Error:   "loop_prompt is required when creating new loop configuration",
+					Error:   "loop_prompt or loop_prompt_name is required when creating new loop configuration",
 				}, nil
 			}
 
@@ -718,8 +755,22 @@ func (s *Server) handleConversationUpdate(ctx context.Context, req *mcp.CallTool
 				maxDurationSeconds = *input.LoopMaxDurationSeconds
 			}
 
+			// Resolve the effective body: prefer the resolved named-prompt text when
+			// loop_prompt_name was provided; otherwise fall back to the inline free text.
+			effectiveBody := ""
+			if hasNamed {
+				effectiveBody = resolvedLoopText
+			} else if hasFreeText {
+				effectiveBody = *input.LoopPrompt
+			}
+			effectiveName := ""
+			if hasNamed {
+				effectiveName = resolvedLoopName
+			}
 			loop := &session.LoopPrompt{
-				Prompt:             *input.LoopPrompt,
+				Prompt:             effectiveBody,
+				PromptName:         effectiveName,
+				Arguments:          input.LoopArguments,
 				Frequency:          freq,
 				Enabled:            enabled,
 				FreshContext:       freshContext,
@@ -753,10 +804,27 @@ func (s *Server) handleConversationUpdate(ctx context.Context, req *mcp.CallTool
 		} else {
 			// Updating existing loop config — use partial update
 			var prompt *string
+			var promptName *string
 			var freq *session.Frequency
 			var enabled *bool
 
-			if input.LoopPrompt != nil {
+			// Prompt/name switching in a partial update:
+			//   - loop_prompt_name non-empty → store resolved text as Prompt and set PromptName.
+			//   - loop_prompt_name empty ("") → explicit clear of the stored name (caller likely
+			//     switching to free-text); Prompt takes whatever loop_prompt provides.
+			//   - loop_prompt only → free-text override, leave PromptName untouched.
+			if input.LoopPromptName != nil && *input.LoopPromptName != "" {
+				text := resolvedLoopText
+				prompt = &text
+				name := resolvedLoopName
+				promptName = &name
+			} else if input.LoopPromptName != nil {
+				empty := ""
+				promptName = &empty
+				if input.LoopPrompt != nil {
+					prompt = input.LoopPrompt
+				}
+			} else if input.LoopPrompt != nil {
 				prompt = input.LoopPrompt
 			}
 
@@ -815,7 +883,15 @@ func (s *Server) handleConversationUpdate(ctx context.Context, req *mcp.CallTool
 				}
 			}
 
-			if err := loopStore.Update(prompt, nil, freq, enabled, input.LoopFreshContext, input.LoopMaxIterations, trigger, delaySeconds, input.LoopMaxDurationSeconds, nil, input.LoopCondition, input.LoopConditionPreset, nil); err != nil {
+			// LoopArguments in the input is non-nil (map) when the caller explicitly
+			// sends loop_arguments; forward it as a *map[string]string so LoopStore.Update
+			// distinguishes "no change" (nil) from "replace with this map" (non-nil).
+			var argsPtr *map[string]string
+			if input.LoopArguments != nil {
+				a := input.LoopArguments
+				argsPtr = &a
+			}
+			if err := loopStore.Update(prompt, promptName, freq, enabled, input.LoopFreshContext, input.LoopMaxIterations, trigger, delaySeconds, input.LoopMaxDurationSeconds, argsPtr, input.LoopCondition, input.LoopConditionPreset, nil); err != nil {
 				return nil, ConversationUpdateOutput{
 					Success: false,
 					Error:   fmt.Sprintf("failed to update loop: %v", err),
@@ -849,20 +925,31 @@ func (s *Server) handleConversationUpdate(ctx context.Context, req *mcp.CallTool
 		}
 
 		// If the session has no title and a loop prompt was set, trigger title generation.
+		// Prefer the caller-supplied loop_prompt_name (empty string means clear); otherwise
+		// fall back to the stored value so the resolver can still name a loop that only has a
+		// PromptName in storage.
 		if input.Name == nil && meta.Name == "" && sm != nil {
 			if bs := sm.GetSession(input.ConversationID); bs != nil {
 				var pPrompt, pName string
 				if input.LoopPrompt != nil {
 					pPrompt = *input.LoopPrompt
 				}
-				// ConversationUpdateInput has no LoopPromptName field; read prompt name
-				// from the stored loop config so the resolver can be used when inline
-				// prompt is empty or the UI placeholder "(pending)".
+				if input.LoopPromptName != nil {
+					// Use canonical name when resolution succeeded; otherwise the raw
+					// input value (which is "" for an explicit clear).
+					if resolvedLoopName != "" {
+						pName = resolvedLoopName
+					} else {
+						pName = *input.LoopPromptName
+					}
+				}
 				if p, getErr := loopStore.Get(); getErr == nil && p != nil {
 					if pPrompt == "" {
 						pPrompt = p.Prompt
 					}
-					pName = p.PromptName
+					if input.LoopPromptName == nil {
+						pName = p.PromptName
+					}
 				}
 				bs.TriggerTitleGenerationFromLoop(pPrompt, pName)
 			}
@@ -871,7 +958,13 @@ func (s *Server) handleConversationUpdate(ctx context.Context, req *mcp.CallTool
 		s.logger.Info("Loop configuration updated via MCP",
 			"source_session", realSessionID,
 			"target_conversation", input.ConversationID,
-			"is_new", isNew)
+			"is_new", isNew,
+			"loop_prompt_name", func() string {
+				if input.LoopPromptName != nil {
+					return *input.LoopPromptName
+				}
+				return ""
+			}())
 	}
 
 	// Check if anything was actually updated
@@ -905,6 +998,8 @@ func (s *Server) handleConversationUpdate(ctx context.Context, req *mcp.CallTool
 	// Read back current loop config
 	if p, err := store.Loop(input.ConversationID).Get(); err == nil && p != nil {
 		output.LoopPrompt = p.Prompt
+		output.LoopPromptName = p.PromptName
+		output.LoopArguments = p.Arguments
 		output.LoopFrequencyValue = p.Frequency.Value
 		output.LoopFrequencyUnit = string(p.Frequency.Unit)
 		output.LoopFrequencyAt = p.Frequency.At

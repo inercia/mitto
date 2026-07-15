@@ -10081,6 +10081,264 @@ func TestConversationUpdate_CreateLoopClearsSavedSlot(t *testing.T) {
 	}
 }
 
+// strPtr is a small helper for pointer-typed optional string fields on
+// ConversationUpdateInput (mirrors intPtr defined earlier in this file).
+func strPtr(v string) *string { return &v }
+
+// TestConversationStart_LoopPromptName_ResolvesAndStores verifies that
+// mitto_conversation_new resolves loop_prompt_name against the merged prompt list
+// and persists both the resolved body (as Prompt) and the raw name (as PromptName)
+// along with loop_arguments so the runner can re-resolve on every tick.
+func TestConversationStart_LoopPromptName_ResolvesAndStores(t *testing.T) {
+	store, srv, parentID := setupConversationStartServerWithPrompts(t, []config.WebPrompt{
+		{Name: "Loop body", Prompt: "iterate on ${ISSUE_ID}"},
+	})
+
+	ctx := context.Background()
+	_, out, err := srv.handleConversationStart(ctx, nil, ConversationStartInput{
+		SelfID:             parentID,
+		InitialPrompt:      "seed message",
+		LoopPromptName:     "loop BODY", // case-insensitive
+		LoopArguments:      map[string]string{"ISSUE_ID": "mitto-42"},
+		LoopFrequencyValue: 5,
+		LoopFrequencyUnit:  "minutes",
+	})
+	if err != nil {
+		t.Fatalf("Expected no error, got: %v", err)
+	}
+	if out.SessionID == "" {
+		t.Fatal("Expected non-empty session ID in output")
+	}
+	if !out.LoopConfigured {
+		t.Fatal("Expected LoopConfigured=true")
+	}
+
+	stored, err := store.Loop(out.SessionID).Get()
+	if err != nil {
+		t.Fatalf("Loop.Get error: %v", err)
+	}
+	if stored.PromptName != "Loop body" {
+		t.Errorf("stored PromptName = %q, want %q", stored.PromptName, "Loop body")
+	}
+	if stored.Prompt != "iterate on ${ISSUE_ID}" {
+		t.Errorf("stored Prompt = %q, want the resolved body", stored.Prompt)
+	}
+	if got := stored.Arguments["ISSUE_ID"]; got != "mitto-42" {
+		t.Errorf("stored Arguments[ISSUE_ID] = %q, want %q", got, "mitto-42")
+	}
+}
+
+// TestConversationStart_LoopPromptAndLoopPromptName_Error verifies mutual exclusion.
+func TestConversationStart_LoopPromptAndLoopPromptName_Error(t *testing.T) {
+	_, srv, parentID := setupConversationStartServerWithPrompts(t, []config.WebPrompt{
+		{Name: "Loop body", Prompt: "iterate"},
+	})
+
+	ctx := context.Background()
+	_, _, err := srv.handleConversationStart(ctx, nil, ConversationStartInput{
+		SelfID:             parentID,
+		InitialPrompt:      "seed",
+		LoopPrompt:         "inline loop text",
+		LoopPromptName:     "Loop body",
+		LoopFrequencyValue: 5,
+		LoopFrequencyUnit:  "minutes",
+	})
+	if err == nil {
+		t.Fatal("Expected error when both loop_prompt and loop_prompt_name are set")
+	}
+	if !strings.Contains(err.Error(), "mutually exclusive") &&
+		!strings.Contains(err.Error(), "both") {
+		t.Errorf("Expected mutual-exclusivity error, got: %v", err)
+	}
+}
+
+// TestConversationStart_LoopPromptName_NotFound verifies the boundary rejection
+// when loop_prompt_name is not present in the merged workspace prompt list.
+func TestConversationStart_LoopPromptName_NotFound(t *testing.T) {
+	_, srv, parentID := setupConversationStartServerWithPrompts(t, []config.WebPrompt{
+		{Name: "Loop body", Prompt: "iterate"},
+	})
+
+	ctx := context.Background()
+	_, _, err := srv.handleConversationStart(ctx, nil, ConversationStartInput{
+		SelfID:             parentID,
+		InitialPrompt:      "seed",
+		LoopPromptName:     "Nonexistent prompt",
+		LoopFrequencyValue: 5,
+		LoopFrequencyUnit:  "minutes",
+	})
+	if err == nil {
+		t.Fatal("Expected error for nonexistent loop_prompt_name")
+	}
+	if !strings.Contains(err.Error(), "not found") {
+		t.Errorf("Expected 'not found' error, got: %v", err)
+	}
+}
+
+// TestConversationStart_LoopPromptName_WithOnCompletion verifies that a named loop
+// prompt works with the onCompletion trigger (no frequency required) and that the
+// completion delay is clamped to the floor as with free-text loops.
+func TestConversationStart_LoopPromptName_WithOnCompletion(t *testing.T) {
+	store, srv, parentID := setupConversationStartServerWithPrompts(t, []config.WebPrompt{
+		{Name: "Loop body", Prompt: "iterate"},
+	})
+
+	ctx := context.Background()
+	delay := 1 // below floor → should be clamped
+	_, out, err := srv.handleConversationStart(ctx, nil, ConversationStartInput{
+		SelfID:                     parentID,
+		InitialPrompt:              "seed",
+		LoopPromptName:             "Loop body",
+		LoopTrigger:                string(session.TriggerOnCompletion),
+		LoopCompletionDelaySeconds: &delay,
+	})
+	if err != nil {
+		t.Fatalf("Expected no error, got: %v", err)
+	}
+	if !out.LoopConfigured {
+		t.Fatal("Expected LoopConfigured=true")
+	}
+	stored, err := store.Loop(out.SessionID).Get()
+	if err != nil {
+		t.Fatalf("Loop.Get error: %v", err)
+	}
+	if !stored.IsOnCompletion() {
+		t.Errorf("stored trigger = %q, want onCompletion", stored.Trigger)
+	}
+	if stored.PromptName != "Loop body" {
+		t.Errorf("stored PromptName = %q, want %q", stored.PromptName, "Loop body")
+	}
+	if stored.DelaySeconds != srv.loopDelayFloor() {
+		t.Errorf("stored DelaySeconds = %d, want floor %d", stored.DelaySeconds, srv.loopDelayFloor())
+	}
+}
+
+// TestConversationUpdate_SetLoopPromptName_OnFreshLoop verifies that creating a
+// brand-new loop via mitto_conversation_update using loop_prompt_name resolves the
+// body and stores both fields plus loop_arguments.
+func TestConversationUpdate_SetLoopPromptName_OnFreshLoop(t *testing.T) {
+	store, srv, parentID := setupConversationStartServerWithPrompts(t, []config.WebPrompt{
+		{Name: "Loop body", Prompt: "iterate on ${ISSUE_ID}"},
+	})
+	ctx := context.Background()
+
+	freqValue := 5
+	freqUnit := "minutes"
+	_, out, err := srv.handleConversationUpdate(ctx, nil, ConversationUpdateInput{
+		SelfID:             parentID,
+		ConversationID:     parentID,
+		LoopPromptName:     strPtr("Loop body"),
+		LoopArguments:      map[string]string{"ISSUE_ID": "mitto-42"},
+		LoopFrequencyValue: &freqValue,
+		LoopFrequencyUnit:  &freqUnit,
+	})
+	if err != nil {
+		t.Fatalf("handleConversationUpdate error: %v", err)
+	}
+	if !out.Success {
+		t.Fatalf("update not successful: %s", out.Error)
+	}
+	if out.LoopPromptName != "Loop body" {
+		t.Errorf("output LoopPromptName = %q, want %q", out.LoopPromptName, "Loop body")
+	}
+	if got := out.LoopArguments["ISSUE_ID"]; got != "mitto-42" {
+		t.Errorf("output LoopArguments[ISSUE_ID] = %q, want %q", got, "mitto-42")
+	}
+
+	stored, err := store.Loop(parentID).Get()
+	if err != nil {
+		t.Fatalf("Loop.Get error: %v", err)
+	}
+	if stored.PromptName != "Loop body" {
+		t.Errorf("stored PromptName = %q, want %q", stored.PromptName, "Loop body")
+	}
+	if stored.Prompt != "iterate on ${ISSUE_ID}" {
+		t.Errorf("stored Prompt = %q, want resolved body", stored.Prompt)
+	}
+	if got := stored.Arguments["ISSUE_ID"]; got != "mitto-42" {
+		t.Errorf("stored Arguments[ISSUE_ID] = %q, want %q", got, "mitto-42")
+	}
+}
+
+// TestConversationUpdate_SwitchLoopFromFreeTextToNamed verifies that patching an
+// existing free-text loop with a loop_prompt_name resolves the body and sets
+// PromptName without needing to also send loop_prompt.
+func TestConversationUpdate_SwitchLoopFromFreeTextToNamed(t *testing.T) {
+	store, srv, parentID := setupConversationStartServerWithPrompts(t, []config.WebPrompt{
+		{Name: "Loop body", Prompt: "resolved body"},
+	})
+	ctx := context.Background()
+
+	// Seed a free-text loop first.
+	freeText := "old free-text body"
+	freqValue := 5
+	freqUnit := "minutes"
+	if _, out, err := srv.handleConversationUpdate(ctx, nil, ConversationUpdateInput{
+		SelfID:             parentID,
+		ConversationID:     parentID,
+		LoopPrompt:         &freeText,
+		LoopFrequencyValue: &freqValue,
+		LoopFrequencyUnit:  &freqUnit,
+	}); err != nil || !out.Success {
+		t.Fatalf("seed update failed: err=%v out=%+v", err, out)
+	}
+
+	// Now patch with a named prompt only.
+	_, out2, err := srv.handleConversationUpdate(ctx, nil, ConversationUpdateInput{
+		SelfID:         parentID,
+		ConversationID: parentID,
+		LoopPromptName: strPtr("Loop body"),
+	})
+	if err != nil {
+		t.Fatalf("switch update error: %v", err)
+	}
+	if !out2.Success {
+		t.Fatalf("switch update not successful: %s", out2.Error)
+	}
+	if out2.LoopPromptName != "Loop body" {
+		t.Errorf("output LoopPromptName = %q, want %q", out2.LoopPromptName, "Loop body")
+	}
+	if out2.LoopPrompt != "resolved body" {
+		t.Errorf("output LoopPrompt = %q, want resolved body replacing old free-text", out2.LoopPrompt)
+	}
+
+	stored, err := store.Loop(parentID).Get()
+	if err != nil {
+		t.Fatalf("Loop.Get error: %v", err)
+	}
+	if stored.PromptName != "Loop body" {
+		t.Errorf("stored PromptName = %q, want %q", stored.PromptName, "Loop body")
+	}
+	if stored.Prompt != "resolved body" {
+		t.Errorf("stored Prompt = %q, want resolved body", stored.Prompt)
+	}
+}
+
+// TestConversationUpdate_LoopPromptAndLoopPromptName_Error verifies mutual
+// exclusion on the update handler when both non-empty values are provided.
+func TestConversationUpdate_LoopPromptAndLoopPromptName_Error(t *testing.T) {
+	_, srv, parentID := setupConversationStartServerWithPrompts(t, []config.WebPrompt{
+		{Name: "Loop body", Prompt: "resolved body"},
+	})
+	ctx := context.Background()
+
+	_, out, err := srv.handleConversationUpdate(ctx, nil, ConversationUpdateInput{
+		SelfID:         parentID,
+		ConversationID: parentID,
+		LoopPrompt:     strPtr("inline"),
+		LoopPromptName: strPtr("Loop body"),
+	})
+	if err != nil {
+		t.Fatalf("handleConversationUpdate unexpected transport error: %v", err)
+	}
+	if out.Success {
+		t.Fatal("Expected failure when both loop_prompt and loop_prompt_name are set")
+	}
+	if !strings.Contains(out.Error, "mutually exclusive") && !strings.Contains(out.Error, "both") {
+		t.Errorf("Expected mutual-exclusivity error, got: %q", out.Error)
+	}
+}
+
 // TestStartProgressHeartbeat verifies that startProgressHeartbeat returns a stop
 // function that terminates the background goroutine promptly without panicking.
 // The goroutine must exit via hbCtx.Done() before the 15-second ticker fires,

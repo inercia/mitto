@@ -196,6 +196,8 @@ func (s *Server) registerSessionScopedTools(mcpSrv *mcp.Server) {
 			"Optionally specify a 'workspace' UUID to create the conversation in a different workspace (requires user confirmation). " +
 			"Optionally provide 'beads_issue' to link the new conversation to a beads issue ID (e.g. 'mitto-123'). " +
 			"Optionally configure the conversation as a loop by providing 'loop_prompt', 'loop_frequency_value', and 'loop_frequency_unit'. " +
+			"Instead of an inline 'loop_prompt', you may provide 'loop_prompt_name' to drive the loop from a predefined workspace prompt (resolved the same way as 'prompt_name', case-insensitive) — 'loop_prompt' and 'loop_prompt_name' are mutually exclusive. " +
+			"Optionally provide 'loop_arguments' (map of string keys to string values) to fill Go-template '.Args' placeholders in the resolved loop prompt at each execution. " +
 			"This is equivalent to configuring the loop via 'mitto_conversation_update' after creation, but done in one step. " +
 			"For a daily loop, optionally specify 'loop_frequency_at' (HH:MM in UTC). " +
 			"Set 'loop_enabled' to false to create the loop configuration in a paused state. " +
@@ -271,6 +273,8 @@ func (s *Server) registerSessionScopedTools(mcpSrv *mcp.Server) {
 			"Set 'user_data_merge' to true (default) to merge with existing attributes, or false to replace all. " +
 			"Loop configuration: provide 'loop_prompt', 'loop_frequency_value', and 'loop_frequency_unit' " +
 			"to configure or update loop prompts. Use 'loop_frequency_at' (HH:MM UTC) for daily schedules. " +
+			"Instead of an inline 'loop_prompt', you may provide 'loop_prompt_name' to drive the loop from a predefined workspace prompt (resolved the same way as 'prompt_name', case-insensitive) — 'loop_prompt' and 'loop_prompt_name' are mutually exclusive; sending an empty 'loop_prompt_name' clears the previously-set named prompt. " +
+			"Optionally provide 'loop_arguments' (map of string keys to string values) to fill Go-template '.Args' placeholders in the resolved loop prompt at each execution. " +
 			"Set 'loop_enabled' to false to pause loop execution without deleting the configuration. " +
 			"To disable loop entirely, set 'loop_enabled' to false. " +
 			"Set 'loop_fresh_context' to true to start each run with a clean agent context (no history injection, new ACP session). " +

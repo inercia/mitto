@@ -371,13 +371,20 @@ type ConversationUpdateInput struct {
 	UserDataMerge *bool                     `json:"user_data_merge,omitempty"` // If true (default), merge with existing; if false, replace all
 
 	// Loop configuration — optional, only applied if any loop field is non-nil
-	LoopPrompt         *string `json:"loop_prompt,omitempty"`          // The prompt to send in the loop
-	LoopFrequencyValue *int    `json:"loop_frequency_value,omitempty"` // Number of units between sends
-	LoopFrequencyUnit  *string `json:"loop_frequency_unit,omitempty"`  // Time unit: "minutes", "hours", or "days"
-	LoopFrequencyAt    *string `json:"loop_frequency_at,omitempty"`    // Time of day HH:MM (UTC), only for "days"
-	LoopEnabled        *bool   `json:"loop_enabled,omitempty"`         // Whether the loop is active (defaults to true)
-	LoopFreshContext   *bool   `json:"loop_fresh_context,omitempty"`   // Start each run with a fresh agent context (default false)
-	LoopMaxIterations  *int    `json:"loop_max_iterations,omitempty"`  // Maximum number of scheduled runs (0 = unlimited)
+	LoopPrompt *string `json:"loop_prompt,omitempty"` // The prompt to send in the loop
+	// LoopPromptName is the name of a predefined workspace prompt to use as the loop body
+	// (mutually exclusive with loop_prompt). Resolved case-insensitively against the merged
+	// prompt list. Pointer so that "" (empty) can explicitly clear a previously-set name.
+	LoopPromptName *string `json:"loop_prompt_name,omitempty"`
+	// LoopArguments fills Go-template .Args placeholders in the resolved loop prompt at
+	// execution time. Non-nil (even empty) replaces the stored arguments map.
+	LoopArguments      map[string]string `json:"loop_arguments,omitempty"`
+	LoopFrequencyValue *int              `json:"loop_frequency_value,omitempty"` // Number of units between sends
+	LoopFrequencyUnit  *string           `json:"loop_frequency_unit,omitempty"`  // Time unit: "minutes", "hours", or "days"
+	LoopFrequencyAt    *string           `json:"loop_frequency_at,omitempty"`    // Time of day HH:MM (UTC), only for "days"
+	LoopEnabled        *bool             `json:"loop_enabled,omitempty"`         // Whether the loop is active (defaults to true)
+	LoopFreshContext   *bool             `json:"loop_fresh_context,omitempty"`   // Start each run with a fresh agent context (default false)
+	LoopMaxIterations  *int              `json:"loop_max_iterations,omitempty"`  // Maximum number of scheduled runs (0 = unlimited)
 	// LoopTrigger selects how the prompt fires: "schedule" (frequency-based, default),
 	// "onCompletion" (event-driven: fire after the agent stops responding + the completion delay),
 	// or "onTasks" (event-driven: fire when beads/tasks in the workspace change, optionally
@@ -410,15 +417,20 @@ type ConversationUpdateOutput struct {
 	BeadsIssue     string                    `json:"beads_issue,omitempty"` // Current linked beads issue ID after update
 	UserData       []UserDataAttributeUpdate `json:"user_data,omitempty"`   // Current user data after update
 	// Loop configuration (returned when the loop is configured)
-	LoopPrompt         string `json:"loop_prompt,omitempty"`
-	LoopFrequencyValue int    `json:"loop_frequency_value,omitempty"`
-	LoopFrequencyUnit  string `json:"loop_frequency_unit,omitempty"`
-	LoopFrequencyAt    string `json:"loop_frequency_at,omitempty"`
-	LoopEnabled        bool   `json:"loop_enabled"`
-	LoopFreshContext   bool   `json:"loop_fresh_context,omitempty"`
-	LoopMaxIterations  int    `json:"loop_max_iterations,omitempty"`
-	LoopIterationCount int    `json:"loop_iteration_count,omitempty"`
-	LoopNextRun        string `json:"loop_next_run,omitempty"` // RFC3339 format
+	LoopPrompt string `json:"loop_prompt,omitempty"`
+	// LoopPromptName is the stored name of the workspace prompt driving the loop
+	// (empty when the loop uses free-text loop_prompt).
+	LoopPromptName string `json:"loop_prompt_name,omitempty"`
+	// LoopArguments are the stored .Args values applied to the resolved loop prompt at execution time.
+	LoopArguments      map[string]string `json:"loop_arguments,omitempty"`
+	LoopFrequencyValue int               `json:"loop_frequency_value,omitempty"`
+	LoopFrequencyUnit  string            `json:"loop_frequency_unit,omitempty"`
+	LoopFrequencyAt    string            `json:"loop_frequency_at,omitempty"`
+	LoopEnabled        bool              `json:"loop_enabled"`
+	LoopFreshContext   bool              `json:"loop_fresh_context,omitempty"`
+	LoopMaxIterations  int               `json:"loop_max_iterations,omitempty"`
+	LoopIterationCount int               `json:"loop_iteration_count,omitempty"`
+	LoopNextRun        string            `json:"loop_next_run,omitempty"` // RFC3339 format
 	// On-completion trigger fields (returned when configured)
 	LoopTrigger                string `json:"loop_trigger,omitempty"`
 	LoopCompletionDelaySeconds int    `json:"loop_completion_delay_seconds,omitempty"`

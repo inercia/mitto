@@ -27,13 +27,21 @@ type ConversationStartInput struct {
 	BeadsIssue         string            `json:"beads_issue,omitempty"`          // Optional: link the new conversation to a beads issue ID (e.g. "mitto-123")
 	Workspace          string            `json:"workspace,omitempty"`            // Optional workspace UUID for cross-workspace operations
 	// Loop configuration (optional) - creates the conversation as a loop
-	LoopPrompt         string `json:"loop_prompt,omitempty"`          // The prompt to send in the loop
-	LoopFrequencyValue int    `json:"loop_frequency_value,omitempty"` // Number of units between sends
-	LoopFrequencyUnit  string `json:"loop_frequency_unit,omitempty"`  // Time unit: "minutes", "hours", or "days"
-	LoopFrequencyAt    string `json:"loop_frequency_at,omitempty"`    // Time of day HH:MM (UTC), only for "days"
-	LoopEnabled        *bool  `json:"loop_enabled,omitempty"`         // Whether loop is active (defaults to true)
-	LoopFreshContext   *bool  `json:"loop_fresh_context,omitempty"`   // Start each run with a fresh agent context (default false)
-	LoopMaxIterations  *int   `json:"loop_max_iterations,omitempty"`  // Maximum number of scheduled runs (0 = unlimited)
+	LoopPrompt string `json:"loop_prompt,omitempty"` // The prompt to send in the loop
+	// LoopPromptName is the name of a predefined workspace prompt to use as the loop body
+	// (mutually exclusive with loop_prompt). Resolved the same way as prompt_name for the
+	// initial prompt: case-insensitive lookup against the merged prompt list.
+	LoopPromptName string `json:"loop_prompt_name,omitempty"`
+	// LoopArguments fills Go-template .Args placeholders in the resolved loop prompt
+	// at execution time. Pairs with loop_prompt_name (or with an inline loop_prompt
+	// containing placeholders).
+	LoopArguments      map[string]string `json:"loop_arguments,omitempty"`
+	LoopFrequencyValue int               `json:"loop_frequency_value,omitempty"` // Number of units between sends
+	LoopFrequencyUnit  string            `json:"loop_frequency_unit,omitempty"`  // Time unit: "minutes", "hours", or "days"
+	LoopFrequencyAt    string            `json:"loop_frequency_at,omitempty"`    // Time of day HH:MM (UTC), only for "days"
+	LoopEnabled        *bool             `json:"loop_enabled,omitempty"`         // Whether loop is active (defaults to true)
+	LoopFreshContext   *bool             `json:"loop_fresh_context,omitempty"`   // Start each run with a fresh agent context (default false)
+	LoopMaxIterations  *int              `json:"loop_max_iterations,omitempty"`  // Maximum number of scheduled runs (0 = unlimited)
 	// On-completion / on-tasks trigger configuration (optional)
 	LoopTrigger                string `json:"loop_trigger,omitempty"`                  // "schedule" (default), "onCompletion", or "onTasks"
 	LoopCompletionDelaySeconds *int   `json:"loop_completion_delay_seconds,omitempty"` // Wait (s) after agent stops, onCompletion only; clamped to floor
@@ -168,6 +176,35 @@ func (s *Server) handleConversationStart(ctx context.Context, req *mcp.CallToolR
 		promptIsSingleton = p.Singleton
 	}
 
+	// Resolve the loop body. Like the initial prompt, a named loop prompt
+	// (loop_prompt_name) is mutually exclusive with a free-text loop_prompt: when
+	// loop_prompt_name is set, its full text is looked up from the merged prompt list
+	// and stored as the loop body via LoopPrompt.PromptName so it re-resolves on every
+	// run. Optional loop_arguments fills Go-template .Args placeholders at execution time.
+	// Errors here (unknown prompt, both set) are boundary rejections raised before the
+	// session is created, so no stub conversation is left behind.
+	loopPromptText := input.LoopPrompt
+	loopPromptName := ""
+	if input.LoopPromptName != "" {
+		if input.LoopPrompt != "" {
+			return nil, ConversationStartOutput{}, fmt.Errorf(
+				"cannot specify both 'loop_prompt' and 'loop_prompt_name' — use one or the other")
+		}
+		loopWorkingDir, err := s.resolvePromptWorkingDir(realSessionID, input.Workspace)
+		if err != nil {
+			return nil, ConversationStartOutput{}, err
+		}
+		p, found := s.findPromptByName(loopWorkingDir, input.LoopPromptName)
+		if !found {
+			return nil, ConversationStartOutput{}, fmt.Errorf(
+				"loop prompt not found: no prompt named %q is available in this workspace", input.LoopPromptName)
+		}
+		loopPromptText = p.Prompt
+		// Store the canonical name from the merged prompt so downstream consumers see
+		// a stable identifier regardless of the caller's case.
+		loopPromptName = p.Name
+	}
+
 	// Reject a suspiciously short, placeholder-shaped free-text initial_prompt
 	// when the conversation is being created as a loop (mitto-dj9). When an
 	// orchestrator LLM composes multiple mitto_conversation_new calls in one
@@ -177,7 +214,7 @@ func (s *Server) handleConversationStart(ctx context.Context, req *mcp.CallToolR
 	// unactionable prompt on every tick. Named prompts are server-expanded and
 	// cannot be truncated this way, so the guard applies only to the free-text
 	// path (PromptName == "").
-	if input.PromptName == "" && (input.LoopPrompt != "" || input.LoopTrigger != "") {
+	if input.PromptName == "" && (input.LoopPrompt != "" || input.LoopPromptName != "" || input.LoopTrigger != "") {
 		if reason, ok := looksLikePlaceholderLoopSeed(initialPromptText); ok {
 			s.logger.Warn("Rejecting suspected placeholder loop-driver seed",
 				"session_id", realSessionID,
@@ -385,10 +422,11 @@ func (s *Server) handleConversationStart(ctx context.Context, req *mcp.CallToolR
 		)
 	}
 
-	// If loop configuration provided, set it up
+	// If loop configuration provided, set it up. Either an inline loop_prompt or a
+	// resolved loop_prompt_name (loopPromptText populated above) triggers loop setup.
 	var loopConfigured bool
 	var loopNextRun string
-	if input.LoopPrompt != "" {
+	if loopPromptText != "" {
 		// Resolve the trigger (default schedule). onCompletion and onTasks are
 		// event-driven and do not require a frequency.
 		trigger := session.LoopTrigger(input.LoopTrigger)
@@ -404,7 +442,7 @@ func (s *Server) handleConversationStart(ctx context.Context, req *mcp.CallToolR
 		if !skipFrequency {
 			// Schedule trigger: frequency is required.
 			if input.LoopFrequencyValue < 1 {
-				return nil, ConversationStartOutput{}, fmt.Errorf("loop_frequency_value must be >= 1 when loop_prompt is provided")
+				return nil, ConversationStartOutput{}, fmt.Errorf("loop_frequency_value must be >= 1 when loop_prompt or loop_prompt_name is provided")
 			}
 
 			var freqUnit session.FrequencyUnit
@@ -454,8 +492,13 @@ func (s *Server) handleConversationStart(ctx context.Context, req *mcp.CallToolR
 			maxDurationSeconds = *input.LoopMaxDurationSeconds
 		}
 
+		// Store the raw name (and free-text body when present) so the runner can
+		// re-resolve the workspace prompt on every tick and apply loop_arguments to
+		// its .Args placeholders.
 		loop := &session.LoopPrompt{
-			Prompt:             input.LoopPrompt,
+			Prompt:             loopPromptText,
+			PromptName:         loopPromptName,
+			Arguments:          input.LoopArguments,
 			Frequency:          freq,
 			Enabled:            enabled,
 			FreshContext:       freshContext,
@@ -484,6 +527,7 @@ func (s *Server) handleConversationStart(ctx context.Context, req *mcp.CallToolR
 			s.logger.Info("Loop prompt configured on new conversation",
 				"session_id", newSessionID,
 				"loop_prompt", input.LoopPrompt,
+				"loop_prompt_name", loopPromptName,
 				"frequency_value", input.LoopFrequencyValue,
 				"frequency_unit", input.LoopFrequencyUnit,
 				"enabled", enabled)
@@ -499,10 +543,10 @@ func (s *Server) handleConversationStart(ctx context.Context, req *mcp.CallToolR
 	}
 
 	// If no explicit title was provided and loop was configured, trigger title
-	// generation from the loop prompt text so the conversation has a name right away.
-	// ConversationStartInput has no LoopPromptName field, so prompt name is passed as "".
+	// generation from the loop prompt (free-text body and/or workspace prompt name)
+	// so the conversation has a name right away.
 	if input.Title == "" && loopConfigured && bs != nil {
-		bs.TriggerTitleGenerationFromLoop(input.LoopPrompt, "")
+		bs.TriggerTitleGenerationFromLoop(loopPromptText, loopPromptName)
 	}
 
 	// Build unified conversation details
