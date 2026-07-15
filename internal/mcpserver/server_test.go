@@ -10339,6 +10339,313 @@ func TestConversationUpdate_LoopPromptAndLoopPromptName_Error(t *testing.T) {
 	}
 }
 
+// TestConversationStart_PromptName_AutoAppliesLoopFrontmatter (mitto-r7y)
+// verifies that when prompt_name resolves to a prompt carrying a loop:
+// frontmatter block, mitto_conversation_new spawns a loop child whose stored
+// config matches the frontmatter — trigger, delay, maxIterations,
+// maxDuration, and (via self-reference) the seed prompt itself as the loop body.
+func TestConversationStart_PromptName_AutoAppliesLoopFrontmatter(t *testing.T) {
+	store, srv, parentID := setupConversationStartServerWithPrompts(t, []config.WebPrompt{
+		{
+			Name:   "Loop fixing bug",
+			Prompt: "drive the bug through phases",
+			Loop: &config.PromptLoop{
+				Trigger:       string(session.TriggerOnCompletion),
+				Delay:         30,
+				MaxIterations: 20,
+				MaxDuration:   "4h",
+			},
+		},
+	})
+
+	ctx := context.Background()
+	_, out, err := srv.handleConversationStart(ctx, nil, ConversationStartInput{
+		SelfID:     parentID,
+		PromptName: "Loop fixing bug",
+	})
+	if err != nil {
+		t.Fatalf("handleConversationStart error: %v", err)
+	}
+	if !out.LoopConfigured {
+		t.Fatalf("expected LoopConfigured=true (loop must be auto-applied from frontmatter): %s", out.Error)
+	}
+
+	stored, err := store.Loop(out.SessionID).Get()
+	if err != nil {
+		t.Fatalf("Loop.Get error: %v", err)
+	}
+	if !stored.IsOnCompletion() {
+		t.Errorf("stored trigger = %q, want onCompletion", stored.Trigger)
+	}
+	if stored.DelaySeconds != 30 {
+		t.Errorf("stored DelaySeconds = %d, want 30 (from frontmatter)", stored.DelaySeconds)
+	}
+	if stored.MaxIterations != 20 {
+		t.Errorf("stored MaxIterations = %d, want 20 (from frontmatter)", stored.MaxIterations)
+	}
+	if stored.MaxDurationSeconds != 4*3600 {
+		t.Errorf("stored MaxDurationSeconds = %d, want %d (4h from frontmatter)", stored.MaxDurationSeconds, 4*3600)
+	}
+	// Self-referential: the seed prompt drives its own loop.
+	if stored.PromptName != "Loop fixing bug" {
+		t.Errorf("stored PromptName = %q, want %q (self-referential loop body)", stored.PromptName, "Loop fixing bug")
+	}
+	if stored.Prompt != "drive the bug through phases" {
+		t.Errorf("stored Prompt = %q, want resolved body", stored.Prompt)
+	}
+}
+
+// TestConversationStart_PromptName_LoopDefaults_ExplicitOverridesWin (mitto-r7y)
+// verifies precedence rule 1: explicit tool arguments win over the seeded
+// prompt's loop: frontmatter defaults.
+func TestConversationStart_PromptName_LoopDefaults_ExplicitOverridesWin(t *testing.T) {
+	store, srv, parentID := setupConversationStartServerWithPrompts(t, []config.WebPrompt{
+		{
+			Name:   "Loop fixing bug",
+			Prompt: "body",
+			Loop: &config.PromptLoop{
+				Trigger:       string(session.TriggerOnCompletion),
+				Delay:         30,
+				MaxIterations: 20,
+				MaxDuration:   "4h",
+			},
+		},
+	})
+
+	ctx := context.Background()
+	// Override delay and maxIterations; leave maxDuration to inherit.
+	delayOverride := 90
+	maxItersOverride := 5
+	_, out, err := srv.handleConversationStart(ctx, nil, ConversationStartInput{
+		SelfID:                     parentID,
+		PromptName:                 "Loop fixing bug",
+		LoopCompletionDelaySeconds: &delayOverride,
+		LoopMaxIterations:          &maxItersOverride,
+	})
+	if err != nil {
+		t.Fatalf("handleConversationStart error: %v", err)
+	}
+	if !out.LoopConfigured {
+		t.Fatalf("expected LoopConfigured=true: %s", out.Error)
+	}
+
+	stored, err := store.Loop(out.SessionID).Get()
+	if err != nil {
+		t.Fatalf("Loop.Get error: %v", err)
+	}
+	if stored.DelaySeconds != 90 {
+		t.Errorf("stored DelaySeconds = %d, want 90 (explicit override)", stored.DelaySeconds)
+	}
+	if stored.MaxIterations != 5 {
+		t.Errorf("stored MaxIterations = %d, want 5 (explicit override)", stored.MaxIterations)
+	}
+	// Un-overridden field should still come from frontmatter.
+	if stored.MaxDurationSeconds != 4*3600 {
+		t.Errorf("stored MaxDurationSeconds = %d, want %d (frontmatter fallback)", stored.MaxDurationSeconds, 4*3600)
+	}
+}
+
+// TestConversationStart_PromptName_NoLoopBlock_UnchangedBehavior (mitto-r7y)
+// verifies that a seed prompt with no loop: frontmatter never spawns a loop,
+// even when the seed prompt is resolved via prompt_name.
+func TestConversationStart_PromptName_NoLoopBlock_UnchangedBehavior(t *testing.T) {
+	_, srv, parentID := setupConversationStartServerWithPrompts(t, []config.WebPrompt{
+		{Name: "Plain seed", Prompt: "hello"},
+	})
+
+	ctx := context.Background()
+	_, out, err := srv.handleConversationStart(ctx, nil, ConversationStartInput{
+		SelfID:     parentID,
+		PromptName: "Plain seed",
+	})
+	if err != nil {
+		t.Fatalf("handleConversationStart error: %v", err)
+	}
+	if out.LoopConfigured {
+		t.Errorf("expected LoopConfigured=false when seeded prompt has no loop: block")
+	}
+}
+
+// TestConversationStart_PromptName_LoopApplyPromptDefaults_False (mitto-r7y)
+// verifies the per-call opt-out: even when the seeded prompt has a loop:
+// block, passing loop_apply_prompt_defaults=false suppresses the auto-apply
+// so no loop child is created.
+func TestConversationStart_PromptName_LoopApplyPromptDefaults_False(t *testing.T) {
+	_, srv, parentID := setupConversationStartServerWithPrompts(t, []config.WebPrompt{
+		{
+			Name:   "Loop fixing bug",
+			Prompt: "body",
+			Loop: &config.PromptLoop{
+				Trigger:       string(session.TriggerOnCompletion),
+				Delay:         30,
+				MaxIterations: 20,
+			},
+		},
+	})
+
+	ctx := context.Background()
+	optOut := false
+	_, out, err := srv.handleConversationStart(ctx, nil, ConversationStartInput{
+		SelfID:                  parentID,
+		PromptName:              "Loop fixing bug",
+		LoopApplyPromptDefaults: &optOut,
+	})
+	if err != nil {
+		t.Fatalf("handleConversationStart error: %v", err)
+	}
+	if out.LoopConfigured {
+		t.Errorf("expected LoopConfigured=false when loop_apply_prompt_defaults=false")
+	}
+}
+
+// TestConversationStart_FreeTextSeed_NoAutoApply (mitto-r7y) verifies that a
+// free-text initial_prompt (no prompt_name resolution) never triggers the
+// auto-apply, matching the pre-existing behavior.
+func TestConversationStart_FreeTextSeed_NoAutoApply(t *testing.T) {
+	_, srv, parentID := setupConversationStartServer(t)
+
+	ctx := context.Background()
+	_, out, err := srv.handleConversationStart(ctx, nil, ConversationStartInput{
+		SelfID:        parentID,
+		InitialPrompt: "just a free-text seed",
+	})
+	if err != nil {
+		t.Fatalf("handleConversationStart error: %v", err)
+	}
+	if out.LoopConfigured {
+		t.Errorf("expected LoopConfigured=false for free-text seed")
+	}
+}
+
+// TestConversationStart_PromptName_LoopFrequencyAutoApply (mitto-r7y) verifies
+// that a schedule-trigger frontmatter (value/unit) is auto-applied so the
+// caller does not need to pass loop_frequency_value/unit.
+func TestConversationStart_PromptName_LoopFrequencyAutoApply(t *testing.T) {
+	store, srv, parentID := setupConversationStartServerWithPrompts(t, []config.WebPrompt{
+		{
+			Name:   "Hourly loop",
+			Prompt: "check things",
+			Loop: &config.PromptLoop{
+				Value: 1,
+				Unit:  "hours",
+			},
+		},
+	})
+
+	ctx := context.Background()
+	_, out, err := srv.handleConversationStart(ctx, nil, ConversationStartInput{
+		SelfID:     parentID,
+		PromptName: "Hourly loop",
+	})
+	if err != nil {
+		t.Fatalf("handleConversationStart error: %v", err)
+	}
+	if !out.LoopConfigured {
+		t.Fatalf("expected LoopConfigured=true: %s", out.Error)
+	}
+
+	stored, err := store.Loop(out.SessionID).Get()
+	if err != nil {
+		t.Fatalf("Loop.Get error: %v", err)
+	}
+	if stored.Frequency.Value != 1 || stored.Frequency.Unit != session.FrequencyHours {
+		t.Errorf("stored Frequency = %+v, want {Value:1, Unit:hours}", stored.Frequency)
+	}
+}
+
+// TestConversationUpdate_LoopPromptName_AutoAppliesLoopFrontmatter (mitto-r7y)
+// verifies the same auto-apply behavior on the update path: when a
+// loop_prompt_name resolves to a prompt with a loop: block, its fields fill
+// any loop_* fields the caller did not set explicitly.
+func TestConversationUpdate_LoopPromptName_AutoAppliesLoopFrontmatter(t *testing.T) {
+	store, srv, parentID := setupConversationStartServerWithPrompts(t, []config.WebPrompt{
+		{
+			Name:   "Loop fixing bug",
+			Prompt: "drive the bug",
+			Loop: &config.PromptLoop{
+				Trigger:       string(session.TriggerOnCompletion),
+				Delay:         30,
+				MaxIterations: 20,
+				MaxDuration:   "4h",
+			},
+		},
+	})
+
+	ctx := context.Background()
+	_, out, err := srv.handleConversationUpdate(ctx, nil, ConversationUpdateInput{
+		SelfID:         parentID,
+		ConversationID: parentID,
+		LoopPromptName: strPtr("Loop fixing bug"),
+	})
+	if err != nil {
+		t.Fatalf("handleConversationUpdate error: %v", err)
+	}
+	if !out.Success {
+		t.Fatalf("update not successful: %s", out.Error)
+	}
+	if out.LoopTrigger != string(session.TriggerOnCompletion) {
+		t.Errorf("output LoopTrigger = %q, want onCompletion (from frontmatter)", out.LoopTrigger)
+	}
+
+	stored, err := store.Loop(parentID).Get()
+	if err != nil {
+		t.Fatalf("Loop.Get error: %v", err)
+	}
+	if !stored.IsOnCompletion() {
+		t.Errorf("stored trigger = %q, want onCompletion", stored.Trigger)
+	}
+	if stored.DelaySeconds != 30 {
+		t.Errorf("stored DelaySeconds = %d, want 30 (from frontmatter)", stored.DelaySeconds)
+	}
+	if stored.MaxIterations != 20 {
+		t.Errorf("stored MaxIterations = %d, want 20 (from frontmatter)", stored.MaxIterations)
+	}
+	if stored.MaxDurationSeconds != 4*3600 {
+		t.Errorf("stored MaxDurationSeconds = %d, want %d (from frontmatter)", stored.MaxDurationSeconds, 4*3600)
+	}
+	if stored.PromptName != "Loop fixing bug" {
+		t.Errorf("stored PromptName = %q, want %q", stored.PromptName, "Loop fixing bug")
+	}
+}
+
+// TestConversationUpdate_LoopPromptName_LoopApplyPromptDefaults_False (mitto-r7y)
+// verifies the opt-out on the update path. Without the auto-apply the fresh-loop
+// path requires an explicit frequency for the default (schedule) trigger, so
+// the update should fail with the pre-existing "loop_frequency_value required"
+// boundary rejection.
+func TestConversationUpdate_LoopPromptName_LoopApplyPromptDefaults_False(t *testing.T) {
+	_, srv, parentID := setupConversationStartServerWithPrompts(t, []config.WebPrompt{
+		{
+			Name:   "Loop fixing bug",
+			Prompt: "body",
+			Loop: &config.PromptLoop{
+				Trigger: string(session.TriggerOnCompletion),
+				Delay:   30,
+			},
+		},
+	})
+
+	ctx := context.Background()
+	optOut := false
+	_, out, err := srv.handleConversationUpdate(ctx, nil, ConversationUpdateInput{
+		SelfID:                  parentID,
+		ConversationID:          parentID,
+		LoopPromptName:          strPtr("Loop fixing bug"),
+		LoopApplyPromptDefaults: &optOut,
+	})
+	if err != nil {
+		t.Fatalf("handleConversationUpdate unexpected transport error: %v", err)
+	}
+	// Without auto-apply the trigger stays "schedule" (default) and no
+	// frequency is provided → fresh-loop validation should reject.
+	if out.Success {
+		t.Fatalf("expected update failure when opt-out prevents auto-apply of onCompletion trigger, got success")
+	}
+	if !strings.Contains(out.Error, "loop_frequency_value") {
+		t.Errorf("expected error about missing frequency, got: %q", out.Error)
+	}
+}
+
 // TestStartProgressHeartbeat verifies that startProgressHeartbeat returns a stop
 // function that terminates the background goroutine promptly without panicking.
 // The goroutine must exit via hbCtx.Done() before the 15-second ticker fires,

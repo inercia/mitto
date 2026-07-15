@@ -400,6 +400,12 @@ type ConversationUpdateInput struct {
 	LoopCondition *string `json:"loop_condition,omitempty"`
 	// LoopConditionPreset is an optional UI preset id that was compiled into loop_condition.
 	LoopConditionPreset *string `json:"loop_condition_preset,omitempty"`
+	// LoopApplyPromptDefaults controls the mitto-r7y auto-apply of a seeded
+	// prompt's loop: frontmatter block. When loop_prompt_name resolves to a
+	// prompt carrying a loop: block, its fields fill any loop_* fields the
+	// caller did not set explicitly. Set to false to skip this merge entirely.
+	// Default (nil) is "apply when a loop: block is present".
+	LoopApplyPromptDefaults *bool `json:"loop_apply_prompt_defaults,omitempty"`
 }
 
 // UserDataAttributeUpdate represents a single user data attribute to set.

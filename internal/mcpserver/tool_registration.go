@@ -199,6 +199,7 @@ func (s *Server) registerSessionScopedTools(mcpSrv *mcp.Server) {
 			"Instead of an inline 'loop_prompt', you may provide 'loop_prompt_name' to drive the loop from a predefined workspace prompt (resolved the same way as 'prompt_name', case-insensitive) — 'loop_prompt' and 'loop_prompt_name' are mutually exclusive. " +
 			"Optionally provide 'loop_arguments' (map of string keys to string values) to fill Go-template '.Args' placeholders in the resolved loop prompt at each execution. " +
 			"This is equivalent to configuring the loop via 'mitto_conversation_update' after creation, but done in one step. " +
+			"When 'prompt_name' resolves to a prompt that carries a 'loop:' frontmatter block, its fields (trigger, delay, frequency, maxIterations, maxDuration, condition) fill any loop_* arguments the caller did not pass explicitly, and — if the caller passed no 'loop_prompt' / 'loop_prompt_name' — the seed prompt itself becomes the loop body (self-referential loop). Pass 'loop_apply_prompt_defaults': false to disable this merge. " +
 			"For a daily loop, optionally specify 'loop_frequency_at' (HH:MM in UTC). " +
 			"Set 'loop_enabled' to false to create the loop configuration in a paused state. " +
 			"Set 'loop_fresh_context' to true to start each run with a clean agent context (no history injection, new ACP session). " +
@@ -275,6 +276,7 @@ func (s *Server) registerSessionScopedTools(mcpSrv *mcp.Server) {
 			"to configure or update loop prompts. Use 'loop_frequency_at' (HH:MM UTC) for daily schedules. " +
 			"Instead of an inline 'loop_prompt', you may provide 'loop_prompt_name' to drive the loop from a predefined workspace prompt (resolved the same way as 'prompt_name', case-insensitive) — 'loop_prompt' and 'loop_prompt_name' are mutually exclusive; sending an empty 'loop_prompt_name' clears the previously-set named prompt. " +
 			"Optionally provide 'loop_arguments' (map of string keys to string values) to fill Go-template '.Args' placeholders in the resolved loop prompt at each execution. " +
+			"When 'loop_prompt_name' resolves to a prompt that carries a 'loop:' frontmatter block, its fields (trigger, delay, frequency, maxIterations, maxDuration, condition) fill any loop_* arguments the caller did not pass explicitly. Pass 'loop_apply_prompt_defaults': false to disable this merge. " +
 			"Set 'loop_enabled' to false to pause loop execution without deleting the configuration. " +
 			"To disable loop entirely, set 'loop_enabled' to false. " +
 			"Set 'loop_fresh_context' to true to start each run with a clean agent context (no history injection, new ACP session). " +

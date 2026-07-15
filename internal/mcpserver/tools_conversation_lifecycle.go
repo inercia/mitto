@@ -649,6 +649,14 @@ func (s *Server) handleConversationUpdate(ctx context.Context, req *mcp.CallTool
 			resolvedLoopText = p.Prompt
 			// Canonical name from the merged prompt list; ignores caller casing.
 			resolvedLoopName = p.Name
+
+			// Auto-apply the resolved loop prompt's loop: frontmatter block
+			// (mitto-r7y): its fields fill any loop_* fields the caller did
+			// not set explicitly. Callers can opt out with
+			// loop_apply_prompt_defaults=false.
+			if p.Loop != nil {
+				applyPromptLoopDefaultsToUpdateInput(&input, p.Loop)
+			}
 		}
 
 		// Check if this is an update to existing loop config or a new setup

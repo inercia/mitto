@@ -99,6 +99,20 @@ var knownPromptLoopModes = map[string]bool{
 	PromptLoopModeOptional: true,
 }
 
+// MaxDurationSeconds returns MaxDuration parsed to seconds. Returns 0 with a
+// nil error when the field is absent/empty (meaning "unlimited"). Returns a
+// non-nil error when the string cannot be parsed as a Go duration.
+func (p *PromptLoop) MaxDurationSeconds() (int, error) {
+	if p == nil || p.MaxDuration == "" {
+		return 0, nil
+	}
+	d, err := time.ParseDuration(p.MaxDuration)
+	if err != nil {
+		return 0, fmt.Errorf("invalid maxDuration %q: %w", p.MaxDuration, err)
+	}
+	return int(d.Seconds()), nil
+}
+
 // ValidatePromptLoop validates the loop block's mode/default combination.
 // Returns an error for unknown mode values. Emits a non-fatal warning when default
 // is set together with mode: always (or mode absent), since the value is ignored.

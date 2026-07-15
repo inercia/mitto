@@ -51,6 +51,14 @@ type ConversationStartInput struct {
 	LoopCondition string `json:"loop_condition,omitempty"`
 	// LoopConditionPreset is an optional UI preset id that was compiled into loop_condition.
 	LoopConditionPreset string `json:"loop_condition_preset,omitempty"`
+	// LoopApplyPromptDefaults controls the mitto-r7y auto-apply of a seeded
+	// prompt's loop: frontmatter block. When prompt_name resolves to a prompt
+	// carrying a loop: block, its fields fill any loop_* fields the caller did
+	// not set explicitly, and — if the caller passed no loop_prompt /
+	// loop_prompt_name — the seed prompt itself becomes the loop body
+	// (self-referential loop). Set to false to skip this merge entirely.
+	// Default (nil) is "apply when a loop: block is present".
+	LoopApplyPromptDefaults *bool `json:"loop_apply_prompt_defaults,omitempty"`
 }
 
 // ConversationStartOutput is the output for mitto_conversation_new tool.
@@ -174,6 +182,16 @@ func (s *Server) handleConversationStart(ctx context.Context, req *mcp.CallToolR
 		initialPromptText = p.Prompt
 		originPromptName = input.PromptName
 		promptIsSingleton = p.Singleton
+
+		// Auto-apply the seeded prompt's loop: frontmatter block (mitto-r7y):
+		// when the resolved prompt carries a loop: block, its fields fill any
+		// loop_* fields the caller did not set explicitly, and the seed prompt
+		// itself becomes the loop body (self-referential loop) unless the
+		// caller passed loop_prompt or loop_prompt_name. Callers can opt out
+		// with loop_apply_prompt_defaults=false.
+		if p.Loop != nil {
+			applyPromptLoopDefaultsToStartInput(&input, p.Loop, p.Name)
+		}
 	}
 
 	// Resolve the loop body. Like the initial prompt, a named loop prompt
