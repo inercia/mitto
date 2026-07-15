@@ -120,11 +120,44 @@ export function usePanelChrome({
       if (onFetchPrompts && workingDir) {
         // Pass the issue so item.*-gated prompts (e.g. Start work hidden for
         // closed issues) evaluate against this issue's status (mitto-gns).
+        // The pre-fetch effect below usually populates `prompts` before this
+        // runs (mitto-85i); the on-click call remains as an idempotent fallback
+        // for the pre-fetch-in-flight or pre-fetch-failed cases.
         onFetchPrompts(workingDir, data).then((list) => setPrompts(list || []));
       }
     },
     [onFetchPrompts, workingDir, data],
   );
+
+  // Pre-fetch the per-issue prompts list as soon as the panel opens for an
+  // issue, so clicking the "Prompts" lightning button in the header toolbar
+  // renders the menu instantly instead of paying a network round-trip on click
+  // (mitto-85i). The GET is per-issue (item.* params gate enabledWhen CEL), so
+  // we also re-run whenever the open issue's identity or gated fields change —
+  // leaking a previous issue's prompts across a switch would surface stale
+  // entries whose enabledWhen depends on status/type/priority/labels. A
+  // cancelled flag drops late responses on unmount / issue switch, mirroring
+  // loadIssueShortcuts below.
+  const issueKey = data
+    ? `${data.id}|${data.status}|${data.issue_type}|${data.priority}|${(data.labels || []).join(",")}`
+    : "";
+  useEffect(() => {
+    if (!isOpen || !data || !data.id) return undefined;
+    if (!onFetchPrompts || !workingDir) return undefined;
+    let cancelled = false;
+    onFetchPrompts(workingDir, data).then((list) => {
+      if (cancelled) return;
+      setPrompts(list || []);
+    });
+    return () => {
+      cancelled = true;
+    };
+    // `data` is intentionally omitted from deps in favour of `issueKey`, a
+    // stable primitive over the item.*-gated fields, so the effect only
+    // re-fires when a field that actually affects the server's enabledWhen
+    // evaluation changes — not on every parent re-render that recreates the
+    // object identity.
+  }, [isOpen, workingDir, issueKey, onFetchPrompts]);
 
   useEffect(() => {
     if (isOpen) {
