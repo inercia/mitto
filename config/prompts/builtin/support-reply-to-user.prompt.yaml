@@ -181,6 +181,24 @@ prompt: |-
     proposed because the user edited it in the textbox (`changed == true`). Whatever text the tool
     returns is *exactly* what we send to Slack, and *exactly* what we must record. Never fall back to
     the original draft text; the user's edited version wins, character-for-character.
+  - **⚠️ Re-check the thread immediately before posting (stale-reply guard).** The review dialog may
+    have been open for a while (up to 300s), and Step 3's refresh is now old — a new customer message
+    or someone else's reply may have landed in the meantime, which could make our reply stale,
+    redundant, or wrong. **Re-fetch the Slack thread one last time** (read-thread-replies tool, using
+    the stored `slack_thread_ts` / `slack_channel`) and compare against what the bead already captured:
+    - **If nothing new** appeared since our last recorded message → proceed to post below.
+    - **If a new message DID appear** (a customer reply/follow-up, or a reply from someone else that
+      already addresses the question) → **do NOT post yet.** The approved `result` may now be stale.
+      Log the new message(s) on the bead as `[INBOUND]` / `[CONTEXT]` comments, then use
+      `mitto_ui_options` (timeout 300):
+      - **Question**: "A new message arrived in the thread while you were reviewing — your reply may be
+        stale. Post it anyway, or stop to reassess?"
+      - **Options**: `[{label: "Post my reply anyway"}, {label: "Stop — re-check status first (do not post)"}]`.
+      - On **"Post my reply anyway"** → proceed to post the `result` below unchanged.
+      - On **"Stop"** (or timeout) → do **NOT** post. Leave the bead in `state:drafting` (the approved
+        text stays saved as the current draft — persist it as a fresh DRAFT `[OUTBOUND]` comment if the
+        user had edited it), `mitto_ui_notify` (warning) that a new message arrived and posting was held
+        so the reply can be re-checked, then stop.
   - Post that `result` with the post-reply-to-thread tool, using the stored `slack_channel` and the
     thread's parent `slack_thread_ts`.
   - Confirm success and show the permalink (build it from the posted ts: `<slack_url base>/archives/
