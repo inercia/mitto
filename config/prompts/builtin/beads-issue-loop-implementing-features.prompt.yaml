@@ -9,6 +9,9 @@ description: One-shot list orchestrator — implement eligible open features one
 backgroundColor: '#C8E6C9'
 group: Tasks
 enabledWhen: '!Session.IsChild && CommandExists("bd") && DirExists(".beads") && Permissions.CanStartConversation'
+loop:
+  trigger: onTasks
+  condition: ""            # Step 2 (bd ready + label exclusions) does the real filtering
 prompt: |
   ## Session Context
 
@@ -32,9 +35,12 @@ prompt: |
     loop, advancing one `planned → implemented → tested → verified` label per
     re-fire, then self-terminating.
 
-  This prompt itself is a **single, non-loop run that loops internally**. It has no
-  `loop:` block — one send, one whole outer pass, one stop. The children are the
-  loop ones.
+  This prompt is itself an **`onTasks`-triggered standing supervisor**. It wakes up
+  whenever the workspace's `.beads/` changes, runs one whole outer pass over the
+  currently-eligible set, then yields until the next beads change wakes it again —
+  no timer, no re-fire schedule of its own. The children spawned in Step 4 are
+  their own `onCompletion` loops (nested by design), and drive per-feature progress
+  independently of this outer supervisor.
 
   ## Preflight — required flags, top-level only, degrade gracefully
 
@@ -230,22 +236,27 @@ prompt: |
   `in_progress` elsewhere; a feature in the previous set may now carry `verified` or
   `needs-human`).
 
-  ## Step 7 — Final notification and STOP
+  ## Step 7 — End-of-pass notification and yield
 
   When Step 2's eligible set becomes empty, or Step 3's budget is exhausted, or
-  `.Iteration.IsLast` fired, post a single closing notification and end the run.
+  `.Iteration.IsLast` fired, post a single end-of-pass notification and end the
+  turn.
 
   ```
   mitto_ui_notify(
     self_id: "{{ .Session.ID }}",
-    title: "Loop implementing features — done",
-    message: "<N processed / <how many remain — deferred / blocked>. Reason: <empty set | budget hit | last iteration>.>",
+    title: "Loop implementing features — pass complete",
+    message: "<N processed / <how many remain — deferred / blocked>. Current pass complete; will re-fire when beads change. Reason: <empty set | budget hit | last iteration>.>",
     style: "success"
   )
   ```
 
-  This prompt has no `loop:` block, so there is no re-fire to disable — a single
-  natural end-of-turn stops the outer loop.
+  The natural end-of-turn is the correct yield for this `onTasks` supervisor: the
+  next `.beads/` change will wake it and start a fresh pass. Do **NOT** call
+  `mitto_conversation_update` with `loop_enabled: false` just because the eligible
+  set is empty — that would prevent future `onTasks` fires on genuinely new
+  features. Termination on real no-forward-progress is handled by the runner's
+  no-progress circuit breaker; leave the loop enabled and let it decide.
 
   ## Step 8 — Blocked → Defer + Handoff (spawn / preflight failures)
 

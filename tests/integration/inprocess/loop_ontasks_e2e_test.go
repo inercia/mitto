@@ -17,6 +17,8 @@ import (
 	"github.com/inercia/mitto/internal/beads"
 	"github.com/inercia/mitto/internal/client"
 	"github.com/inercia/mitto/internal/config"
+	"github.com/inercia/mitto/internal/conversation"
+	"github.com/inercia/mitto/internal/session"
 	"github.com/inercia/mitto/internal/web"
 )
 
@@ -85,6 +87,12 @@ func (c *fakeOnTasksBeadsClient) ConfigUnset(context.Context, string, string) er
 func (c *fakeOnTasksBeadsClient) EnsureInitialized(context.Context, string) error         { return nil }
 func (c *fakeOnTasksBeadsClient) Sync(context.Context, string, string, string) (string, error) {
 	return "", nil
+}
+func (c *fakeOnTasksBeadsClient) Bootstrap(context.Context, string) ([]byte, error) {
+	return nil, nil
+}
+func (c *fakeOnTasksBeadsClient) MigrateRemote(context.Context, string) ([]byte, error) {
+	return nil, nil
 }
 
 // onTasksIssue builds a single raw beads-list row understood by
@@ -351,6 +359,89 @@ func TestLoopOnTasksE2E(t *testing.T) {
 			onTasksIssue("mitto-bg-1", "task", "open", 1, nil, "2026-07-01T00:00:00Z"),
 			onTasksIssue("mitto-bg-2", "task", "open", 1, nil, "2026-07-01T00:00:01Z"),
 			onTasksIssue("mitto-bg-3", "task", "open", 1, nil, "2026-07-01T00:00:02Z"))
+		fake.setRaw(dir, v3)
+		runner.OnBeadsChanged(onTasksChangeEvent(dir))
+		waitOnTasksIterationCount(t, ts, sess.SessionID, 2)
+	})
+
+	// -------------------------------------------------------------------------
+	// Subtest 4b: the busy-guard extends to the whole subtree — an event
+	// arriving while a DELEGATED CHILD is busy (but the outer itself is idle)
+	// must still defer, and the baseline must still rebase once the child
+	// (and therefore the whole subtree) goes idle.
+	// -------------------------------------------------------------------------
+	t.Run("busy_guard_defers_when_child_in_subtree_is_busy", func(t *testing.T) {
+		dir := filepath.Join(ts.TempDir, "workspace", "ontasks-subtree")
+		sess := createOnTasksSession(t, ts, dir, "ontasks-subtree", "")
+		defer ts.Client.DeleteSession(sess.SessionID)
+
+		fake.setRaw(dir, marshalOnTasksIssues(t))
+		runner.OnBeadsChanged(onTasksChangeEvent(dir))
+		assertOnTasksIterationCount(t, ts, sess.SessionID, 0)
+
+		// Fire once with v1 and let the outer go fully idle again.
+		v1 := marshalOnTasksIssues(t,
+			onTasksIssue("mitto-st-1", "task", "open", 1, nil, "2026-07-01T00:00:00Z"))
+		fake.setRaw(dir, v1)
+		runner.OnBeadsChanged(onTasksChangeEvent(dir))
+		waitOnTasksIterationCount(t, ts, sess.SessionID, 1)
+		waitOnTasksSessionIdle(t, ts, sess.SessionID)
+
+		// Register a delegated child of the outer directly in the store so
+		// FindAllChildrenRecursive picks it up, and inject a fake prompting
+		// BackgroundSession under the same ID so isTasksSubtreeBusy reads it
+		// as busy without spinning up a real ACP child.
+		childID := session.GenerateSessionID()
+		if err := ts.Store.Create(session.Metadata{
+			SessionID:       childID,
+			ACPServer:       "test-server",
+			WorkingDir:      dir,
+			Name:            "Busy Subtree Child",
+			ParentSessionID: sess.SessionID,
+		}); err != nil {
+			t.Fatalf("Create child metadata failed: %v", err)
+		}
+		sm := ts.Server.GetSessionManager()
+		sm.AddSessionForTest(conversation.NewMinimalBackgroundSessionPrompting(childID, true))
+		// The fake child bypasses normal lifecycle, so remove it from the
+		// SessionManager BEFORE the outer DeleteSession defer runs the
+		// cascade-delete path (defers execute LIFO).
+		defer sm.RemoveSession(childID)
+
+		// v2 arrives while the CHILD is busy (outer itself is idle). Because
+		// the subtree is busy, the runner must defer and arm a rebase timer
+		// instead of firing a second iteration.
+		v2 := marshalOnTasksIssues(t,
+			onTasksIssue("mitto-st-1", "task", "open", 1, nil, "2026-07-01T00:00:00Z"),
+			onTasksIssue("mitto-st-2", "task", "open", 1, nil, "2026-07-01T00:00:01Z"))
+		fake.setRaw(dir, v2)
+		runner.OnBeadsChanged(onTasksChangeEvent(dir))
+		time.Sleep(300 * time.Millisecond)
+		assertOnTasksIterationCount(t, ts, sess.SessionID, 1)
+
+		// Clear the child's busy flag by reinjecting a not-prompting fake
+		// under the same session ID (AddSessionForTest keys by session ID and
+		// overwrites in place).
+		sm.AddSessionForTest(conversation.NewMinimalBackgroundSessionPrompting(childID, false))
+
+		// Once the subtree is fully idle, the armed timer rebases the
+		// baseline to v2 — the child-side "self-edit" is absorbed without
+		// ever having fired for it.
+		waitFor(t, 5*time.Second, func() bool {
+			bl, err := web.NewTasksBaselineStore(ts.Store.SessionDir(sess.SessionID)).Get()
+			return err == nil && onTasksIssuesJSONEqual(t, []byte(bl.RawSnapshot), v2)
+		}, "baseline to rebase to v2 after subtree idle+quiescence")
+
+		// Re-delivering v2 (matches the rebased baseline) must NOT fire.
+		runner.OnBeadsChanged(onTasksChangeEvent(dir))
+		time.Sleep(300 * time.Millisecond)
+		assertOnTasksIterationCount(t, ts, sess.SessionID, 1)
+
+		// A genuinely new change on top of the rebased baseline fires again.
+		v3 := marshalOnTasksIssues(t,
+			onTasksIssue("mitto-st-1", "task", "open", 1, nil, "2026-07-01T00:00:00Z"),
+			onTasksIssue("mitto-st-2", "task", "open", 1, nil, "2026-07-01T00:00:01Z"),
+			onTasksIssue("mitto-st-3", "task", "open", 1, nil, "2026-07-01T00:00:02Z"))
 		fake.setRaw(dir, v3)
 		runner.OnBeadsChanged(onTasksChangeEvent(dir))
 		waitOnTasksIterationCount(t, ts, sess.SessionID, 2)
