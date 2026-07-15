@@ -22,6 +22,7 @@ import { CollapseIcon, ExpandIcon, CopyIcon, PlusIcon, CloseIcon } from "../../I
 import { copyToClipboard } from "../../../lib.js";
 import { statusBadge } from "../Badges.js";
 import { labelValue } from "../DetailPanelHelpers.js";
+import { PhaseTimeline } from "./PhaseTimeline.js";
 import {
   TitleField,
   TypeField,
@@ -269,6 +270,11 @@ export function BeadsDetailPanelBody({
                     setViewDraft=${view.setViewDraft}
                   />
                 </div>
+
+                <${PhaseTimeline}
+                  issueType=${data.issue_type}
+                  labels=${labels.labels}
+                />
 
                 <div class="grid grid-cols-2 gap-3">
                   <div>

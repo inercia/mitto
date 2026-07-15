@@ -3,7 +3,11 @@ const { html, Fragment, useState, useRef, useEffect, useMemo, useCallback } =
   window.preact;
 
 import { FILTER_TAB } from "../utils/index.js";
-import { useSwipeToAction, useConversationMenu } from "../hooks/index.js";
+import {
+  useSwipeToAction,
+  useConversationMenu,
+  useLinkedBeadPhase,
+} from "../hooks/index.js";
 import { getArchiveReasonText, getGlobalWorkingDir } from "../lib.js";
 import {
   LOOP_PROGRESS_STYLE,
@@ -193,6 +197,13 @@ export function SessionItem({
     session.working_dir || getGlobalWorkingDir(session.session_id) || "";
   // Get acp_server from session
   const acpServer = session.acp_server || "";
+
+  // mitto-66r: resolve the plan→implement→test→review phase of the linked
+  // bead (only for issue_type in {feature, bug}) so we can render a compact
+  // "Feature · implement" pill next to the workspace pill. Fetch is shared
+  // module-wide via useLinkedBeadPhase; a workspace-wide beads_changed
+  // broadcast refreshes it.
+  const beadPhase = useLinkedBeadPhase(session.beads_issue, workingDir);
 
   // Build tooltip with session metadata
   const buildTooltip = () => {
@@ -644,6 +655,23 @@ export function SessionItem({
                       ></span>
                     `
                   : null}
+              ${beadPhase &&
+              html`
+                <span
+                  class="badge badge-xs shrink-0 whitespace-nowrap border ${beadPhase
+                    .isTerminal
+                    ? "bg-mitto-success/20 border-mitto-success/40 text-mitto-success"
+                    : beadPhase.currentTier === "reasoning"
+                      ? "bg-purple-500/20 border-purple-500/40 text-purple-300"
+                      : "bg-mitto-accent/20 border-mitto-accent/40 text-mitto-accent"}"
+                  data-tip=${`${beadPhase.kindLabel} phase: ${beadPhase.currentDisplayName}`}
+                  aria-label=${`${beadPhase.kindLabel} phase: ${beadPhase.currentDisplayName}`}
+                  ...${tipHandlers(
+                    `${beadPhase.kindLabel} phase: ${beadPhase.currentDisplayName}`,
+                  )}
+                  >${beadPhase.kindLabel} · ${beadPhase.currentDisplayName}</span
+                >
+              `}
               ${workingDir &&
               !hideBadge &&
               html`
