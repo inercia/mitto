@@ -136,6 +136,8 @@ func (s *Server) apiRoutes(authMgr *middleware.AuthManager, csrfMgr *middleware.
 		apiRoute{method: "POST", pattern: "/api/issues/cleanup", handler: http.HandlerFunc(s.apiHandlers.HandleBeadsCleanup)},
 		apiRoute{method: "POST", pattern: "/api/issues/sync", handler: http.HandlerFunc(s.apiHandlers.HandleBeadsSync)},
 		apiRoute{method: "POST", pattern: "/api/issues/{id}/status", handler: http.HandlerFunc(s.apiHandlers.HandleBeadsStatus)},
+		// Schema migration (guarded by web.beads.allow_migrate_from_ui). See mitto-ukl.
+		apiRoute{method: "POST", pattern: "/api/beads/migrate", handler: http.HandlerFunc(s.apiHandlers.HandleBeadsMigrate)},
 	)
 
 	// Global dashboard aggregation (epic mitto-aqo).

@@ -2618,6 +2618,12 @@ func (c *fakeTasksBeadsClient) EnsureInitialized(context.Context, string) error 
 func (c *fakeTasksBeadsClient) Sync(context.Context, string, string, string) (string, error) {
 	return "", nil
 }
+func (c *fakeTasksBeadsClient) MigrateRemote(context.Context, string) ([]byte, error) {
+	return []byte(`{}`), nil
+}
+func (c *fakeTasksBeadsClient) Bootstrap(context.Context, string) ([]byte, error) {
+	return []byte(`{}`), nil
+}
 
 // newOnTasksSession creates a session with an enabled onTasks loop prompt
 // configured with the given working dir and CEL condition (empty = fire on any change).

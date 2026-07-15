@@ -74,21 +74,33 @@ func isValidBeadsIssueRef(s string) bool {
 // existing HTTP 500 behavior.
 func (h *Handlers) writeBeadsError(w http.ResponseWriter, r *http.Request, err error) {
 	if beads.IsSchemaSkew(err) {
-		dbPath := beads.SchemaSkewDBPath(err)
+		info := beads.SchemaSkewInfo(err)
 		if h.deps.Logger != nil {
-			h.deps.Logger.Warn("beads schema needs migration", "db_path", dbPath, "stderr", beads.StderrOf(err), "path", r.URL.Path)
+			h.deps.Logger.Warn("beads schema needs migration", "db_path", info.DBPath, "db_version", info.DBVersion, "binary_version", info.BinaryVersion, "stderr", beads.StderrOf(err), "path", r.URL.Path)
 		}
 		hint := "This beads database is behind the bd binary's schema and is remote-backed, so bd will not auto-migrate it. Reconcile it once (e.g. `BD_ALLOW_REMOTE_MIGRATE=1 bd migrate && bd dolt push` on the designated migrator clone, or `bd bootstrap` if another clone already migrated), then reload."
-		details := map[string]any{"hint": hint}
-		if dbPath != "" {
-			details["db_path"] = dbPath
+		details := map[string]any{
+			"hint":                  hint,
+			"allow_migrate_from_ui": h.beadsMigrationAllowed(),
+		}
+		if info.DBPath != "" {
+			details["db_path"] = info.DBPath
+		}
+		if info.DBVersion != 0 {
+			details["db_version"] = info.DBVersion
+		}
+		if info.BinaryVersion != 0 {
+			details["binary_version"] = info.BinaryVersion
+		}
+		if len(info.Options) > 0 {
+			details["options"] = info.Options
 		}
 		if s := beads.StderrOf(err); s != "" {
 			details["stderr"] = s
 		}
 		msg := "The beads database schema needs migration"
-		if dbPath != "" {
-			msg = "The beads database at " + dbPath + " needs migration"
+		if info.DBPath != "" {
+			msg = "The beads database at " + info.DBPath + " needs migration"
 		}
 		writeJSON(w, http.StatusConflict, errorEnvelope{Error: errorBody{Code: errCodeBeadsSchemaSkew, Message: msg, Details: details}})
 		return

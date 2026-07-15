@@ -15,6 +15,8 @@ import { Modal } from "./Modal.js";
  * @param {string} props.cancelLabel - Label for the cancel button (optional, defaults to "Cancel")
  * @param {string} props.confirmVariant - Variant for confirm button: "primary" (blue) or "danger" (red)
  * @param {boolean} props.isLoading - Whether the confirm action is in progress
+ * @param {boolean} props.confirmDisabled - When true, the confirm button is disabled
+ *   even if not loading (e.g. required-ack checkbox not yet checked in the dialog body).
  * @param {Function} props.onConfirm - Callback when user confirms
  * @param {Function} props.onCancel - Callback when user cancels or closes
  * @param {any} props.children - Optional additional content rendered below the message
@@ -27,6 +29,7 @@ export function ConfirmDialog({
   cancelLabel = "Cancel",
   confirmVariant = "primary",
   isLoading = false,
+  confirmDisabled = false,
   onConfirm,
   onCancel,
   children,
@@ -36,7 +39,7 @@ export function ConfirmDialog({
   };
 
   const handleConfirm = () => {
-    if (!isLoading) onConfirm?.();
+    if (!isLoading && !confirmDisabled) onConfirm?.();
   };
 
   // daisyUI button variant: danger → btn-error, default/primary → btn-primary
@@ -56,7 +59,7 @@ export function ConfirmDialog({
     </button>
     <button
       onClick=${handleConfirm}
-      disabled=${isLoading}
+      disabled=${isLoading || confirmDisabled}
       class=${confirmBtnClass}
       data-testid="confirm-dialog-confirm"
     >

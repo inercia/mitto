@@ -28,6 +28,12 @@ const (
 // raw exec error; the caller is responsible for mapping it to a *CmdError.
 type Runner interface {
 	Run(ctx context.Context, dir string, args ...string) (stdout []byte, stderr string, err error)
+	// RunWithEnv is like Run but also injects the given "KEY=VALUE" entries
+	// into the subprocess environment (on top of the runner's default env).
+	// Duplicate keys let the extra entries win. Used by the schema-migration
+	// path to set BD_ALLOW_REMOTE_MIGRATE=1 for a single invocation without
+	// affecting the parent process or other bd calls.
+	RunWithEnv(ctx context.Context, dir string, extraEnv []string, args ...string) (stdout []byte, stderr string, err error)
 }
 
 // execRunner is the default Runner that invokes the real bd binary. When actor
@@ -39,10 +45,17 @@ type execRunner struct {
 }
 
 func (r execRunner) Run(ctx context.Context, dir string, args ...string) ([]byte, string, error) {
+	return r.RunWithEnv(ctx, dir, nil, args...)
+}
+
+func (r execRunner) RunWithEnv(ctx context.Context, dir string, extraEnv []string, args ...string) ([]byte, string, error) {
 	cmd := exec.CommandContext(ctx, "bd", args...)
 	cmd.Dir = dir
-	if r.actor != "" {
+	if r.actor != "" || len(extraEnv) > 0 {
 		cmd.Env = envWithActor(r.actor)
+		if len(extraEnv) > 0 {
+			cmd.Env = append(cmd.Env, extraEnv...)
+		}
 	}
 
 	var stdout, stderr bytes.Buffer

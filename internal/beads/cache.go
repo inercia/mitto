@@ -388,5 +388,20 @@ func (c *CachingClient) EnsureInitialized(ctx context.Context, dir string) error
 	return c.inner.EnsureInitialized(ctx, dir)
 }
 
+// MigrateRemote invalidates dir then delegates to inner. A schema migration
+// rewrites the underlying store, so every cached read for dir is stale.
+func (c *CachingClient) MigrateRemote(ctx context.Context, dir string) ([]byte, error) {
+	defer c.Invalidate(dir)
+	return c.inner.MigrateRemote(ctx, dir)
+}
+
+// Bootstrap invalidates dir then delegates to inner. Bootstrap can replace
+// the entire local database with a remote clone, so every cached read for
+// dir is stale.
+func (c *CachingClient) Bootstrap(ctx context.Context, dir string) ([]byte, error) {
+	defer c.Invalidate(dir)
+	return c.inner.Bootstrap(ctx, dir)
+}
+
 // Compile-time assertion that *CachingClient satisfies the full Client API.
 var _ Client = (*CachingClient)(nil)

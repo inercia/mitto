@@ -2267,6 +2267,15 @@ func (r suppressingBeadsRunner) Run(ctx context.Context, dir string, args ...str
 	return r.inner.Run(ctx, dir, args...)
 }
 
+// RunWithEnv brackets the underlying bd invocation with the suppression
+// window and forwards extraEnv to the wrapped runner. Kept in sync with Run
+// so all Runner methods honour the self-suppression contract.
+func (r suppressingBeadsRunner) RunWithEnv(ctx context.Context, dir string, extraEnv []string, args ...string) ([]byte, string, error) {
+	release := r.suppress(dir)
+	defer release()
+	return r.inner.RunWithEnv(ctx, dir, extraEnv, args...)
+}
+
 // suppressBeads opens a self-activity suppression window for workingDir on the
 // beads watcher and returns its release func. It is nil-safe: before the watcher
 // is created (or in tests without one) it is a no-op, so bd still runs normally.

@@ -66,6 +66,23 @@ func (c *schemaSkewClient) List(_ context.Context, _ string) ([]byte, error) {
 	}
 }
 
+// schemaSkewJSONClient carries the modern JSON-blob stderr shape so tests
+// can exercise the structured details path (options, versions) on the
+// schema-skew envelope.
+type schemaSkewJSONClient struct{ stubBeadsClient }
+
+func (c *schemaSkewJSONClient) List(_ context.Context, _ string) ([]byte, error) {
+	return nil, &beads.CmdError{
+		Err: errors.New("bd exited with non-zero status"),
+		Stderr: "Error: bd cannot open remote-backed store: " +
+			`{"db_path":"/opt/beads","db_version":49,"binary_version":53,` +
+			`"remote_migrate_gate":{"options":[` +
+			`{"mode":"migrate","description":"Apply pending migrations on this clone","command":"BD_ALLOW_REMOTE_MIGRATE=1 bd migrate schema"},` +
+			`{"mode":"adopt","description":"Adopt an already-migrated schema","command":"bd bootstrap"}` +
+			`]}}`,
+	}
+}
+
 // stubBeadsClient implements beads.Client for unit tests.
 // All methods except Create are no-ops that return nil / zero values.
 type stubBeadsClient struct {
@@ -121,6 +138,12 @@ func (c *stubBeadsClient) ConfigUnset(_ context.Context, _, _ string) error    {
 func (c *stubBeadsClient) EnsureInitialized(_ context.Context, _ string) error { return nil }
 func (c *stubBeadsClient) Sync(_ context.Context, _, _, _ string) (string, error) {
 	return "", nil
+}
+func (c *stubBeadsClient) MigrateRemote(_ context.Context, _ string) ([]byte, error) {
+	return []byte(`{}`), nil
+}
+func (c *stubBeadsClient) Bootstrap(_ context.Context, _ string) ([]byte, error) {
+	return []byte(`{}`), nil
 }
 
 // setupMittoDir points MITTO_DIR at a fresh temp dir and resets the appdir
@@ -315,6 +338,64 @@ func TestHandleBeadsList_SchemaSkew(t *testing.T) {
 	}
 	if got, want := env.Error.Details["db_path"], "/Users/test/.beads-planning"; got != want {
 		t.Errorf("error.details.db_path = %v, want %q", got, want)
+	}
+	// allow_migrate_from_ui is false by default (no MittoConfig set on the
+	// vanilla test server), so the frontend should render the informational
+	// banner without offering the confirm-and-run migration button.
+	if got, ok := env.Error.Details["allow_migrate_from_ui"].(bool); !ok || got {
+		t.Errorf("details.allow_migrate_from_ui = %v (ok=%v), want false", got, ok)
+	}
+}
+
+// TestHandleBeadsList_SchemaSkew_JSONBlob covers the modern remote_migrate_gate
+// JSON stderr shape: the details payload should surface versions and the
+// options array so the frontend can offer confirm-and-run buttons.
+func TestHandleBeadsList_SchemaSkew_JSONBlob(t *testing.T) {
+	deps := Deps{SessionManager: newBeadsTestSM(), BeadsClient: &schemaSkewJSONClient{}}
+	deps.MittoConfig = &config.Config{}
+	deps.MittoConfig.Web.Beads = &config.WebBeadsConfig{AllowMigrateFromUI: true}
+	s := New(deps)
+
+	req := localhostRequest("/api/issues?working_dir=/test/workspace")
+	w := httptest.NewRecorder()
+	s.handleBeadsList(w, req)
+
+	if w.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want %d", w.Code, http.StatusConflict)
+	}
+	var env struct {
+		Error struct {
+			Code    string         `json:"code"`
+			Message string         `json:"message"`
+			Details map[string]any `json:"details"`
+		} `json:"error"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&env); err != nil {
+		t.Fatalf("decode error body: %v", err)
+	}
+	if env.Error.Code != "beads_schema_skew" {
+		t.Errorf("error.code = %q, want beads_schema_skew", env.Error.Code)
+	}
+	if got, want := env.Error.Details["db_path"], "/opt/beads"; got != want {
+		t.Errorf("details.db_path = %v, want %q", got, want)
+	}
+	// JSON numbers unmarshal as float64 in map[string]any.
+	if v, ok := env.Error.Details["db_version"].(float64); !ok || v != 49 {
+		t.Errorf("details.db_version = %v, want 49", env.Error.Details["db_version"])
+	}
+	if v, ok := env.Error.Details["binary_version"].(float64); !ok || v != 53 {
+		t.Errorf("details.binary_version = %v, want 53", env.Error.Details["binary_version"])
+	}
+	if allow, ok := env.Error.Details["allow_migrate_from_ui"].(bool); !ok || !allow {
+		t.Errorf("details.allow_migrate_from_ui = %v (ok=%v), want true when opt-in flag is set", allow, ok)
+	}
+	opts, ok := env.Error.Details["options"].([]any)
+	if !ok || len(opts) != 2 {
+		t.Fatalf("details.options = %v (ok=%v), want two entries", env.Error.Details["options"], ok)
+	}
+	first, _ := opts[0].(map[string]any)
+	if first["mode"] != "migrate" {
+		t.Errorf("options[0].mode = %v, want migrate", first["mode"])
 	}
 }
 

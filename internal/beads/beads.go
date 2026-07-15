@@ -104,18 +104,75 @@ func IsSchemaSkew(err error) bool {
 	if strings.Contains(stderr, "schema version mismatch") {
 		return true
 	}
+	if strings.Contains(stderr, "remote_migrate_gate") {
+		return true
+	}
 	return strings.Contains(stderr, "schema migration") && strings.Contains(stderr, "remote-backed database")
 }
 
-// SchemaSkewDBPath best-effort parses the beads database path out of a schema
-// skew error's stderr, e.g. from:
-//
-//	failed to open routed store at /Users/alvaro/.beads-planning: schema version mismatch
-//
-// it returns "/Users/alvaro/.beads-planning". Returns "" if the path cannot be
-// parsed.
-func SchemaSkewDBPath(err error) string {
+// SchemaSkewOption is one remediation path advertised by bd's structured
+// remote_migrate_gate error blob (e.g. "migrate" or "adopt"). It carries a
+// mode identifier plus a human-readable description and optional command
+// hint so the UI can render actionable buttons instead of asking the user to
+// hand-parse the diagnostic.
+type SchemaSkewOption struct {
+	Mode        string `json:"mode"`
+	Description string `json:"description,omitempty"`
+	Command     string `json:"command,omitempty"`
+}
+
+// SchemaSkewDetails is the structured view of a bd schema-skew failure.
+// Fields are populated best-effort: DBPath falls back to legacy "store at ..."
+// regex parsing when the modern JSON gate blob is absent; DBVersion /
+// BinaryVersion / Options come from the JSON blob when bd emits one. Any
+// field may be empty/zero when it cannot be parsed.
+type SchemaSkewDetails struct {
+	DBPath        string             `json:"db_path,omitempty"`
+	DBVersion     int                `json:"db_version,omitempty"`
+	BinaryVersion int                `json:"binary_version,omitempty"`
+	Options       []SchemaSkewOption `json:"options,omitempty"`
+}
+
+// SchemaSkewInfo extracts the structured details of a schema-skew failure.
+// It first tries to locate and decode bd's remote_migrate_gate JSON blob in
+// stderr, then falls back to legacy regex parsing for the "failed to open
+// routed store at ..." message. Returns a zero-value struct when nothing can
+// be parsed; callers should still guard on IsSchemaSkew before calling.
+func SchemaSkewInfo(err error) SchemaSkewDetails {
+	var out SchemaSkewDetails
 	stderr := StderrOf(err)
+	if stderr == "" {
+		return out
+	}
+	if blob, ok := findJSONBlob(stderr, "remote_migrate_gate"); ok {
+		parseGateJSON(blob, &out)
+	}
+	if out.DBPath == "" {
+		out.DBPath = legacySchemaSkewDBPath(stderr)
+	}
+	if out.DBVersion == 0 || out.BinaryVersion == 0 {
+		if db, bin, ok := parseVersionsFromText(stderr); ok {
+			if out.DBVersion == 0 {
+				out.DBVersion = db
+			}
+			if out.BinaryVersion == 0 {
+				out.BinaryVersion = bin
+			}
+		}
+	}
+	return out
+}
+
+// SchemaSkewDBPath is a compatibility wrapper around SchemaSkewInfo that
+// returns only the parsed database path. Kept for existing callers.
+func SchemaSkewDBPath(err error) string {
+	return SchemaSkewInfo(err).DBPath
+}
+
+// legacySchemaSkewDBPath parses the DB path from the legacy stderr shape
+// (e.g. "failed to open routed store at /path: schema version mismatch").
+// Returns "" when the marker is absent.
+func legacySchemaSkewDBPath(stderr string) string {
 	const marker = "store at "
 	idx := strings.Index(stderr, marker)
 	if idx < 0 {
@@ -127,6 +184,132 @@ func SchemaSkewDBPath(err error) string {
 		return ""
 	}
 	return strings.TrimSpace(rest[:end])
+}
+
+// findJSONBlob locates a JSON object in text that contains the given key,
+// returning the raw bytes of the outermost object surrounding it. Brace
+// tracking is intentionally naïve: bd's gate blobs are single-line JSON with
+// no embedded string braces, so a stack-free depth counter is sufficient.
+func findJSONBlob(text, key string) ([]byte, bool) {
+	kidx := strings.Index(text, key)
+	if kidx < 0 {
+		return nil, false
+	}
+	start := strings.LastIndex(text[:kidx], "{")
+	if start < 0 {
+		return nil, false
+	}
+	depth := 0
+	for i := start; i < len(text); i++ {
+		switch text[i] {
+		case '{':
+			depth++
+		case '}':
+			depth--
+			if depth == 0 {
+				return []byte(text[start : i+1]), true
+			}
+		}
+	}
+	return nil, false
+}
+
+// parseGateJSON decodes bd's remote_migrate_gate blob into the details
+// struct. The blob's exact shape is not tightly specified by bd, so parsing
+// is defensive: unknown/missing fields silently leave the corresponding
+// details entries empty. Recognised shapes (all optional):
+//
+//	{"db_path":"...","db_version":49,"binary_version":53,
+//	 "remote_migrate_gate":{"options":[{"mode":"migrate","description":"...","command":"..."}]}}
+//
+// Some emitters put the fields at the top level; others nest them under
+// remote_migrate_gate. Both are accepted.
+func parseGateJSON(blob []byte, out *SchemaSkewDetails) {
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(blob, &raw); err != nil {
+		return
+	}
+	applyGateFields(raw, out)
+	if gate, ok := raw["remote_migrate_gate"]; ok {
+		var nested map[string]json.RawMessage
+		if json.Unmarshal(gate, &nested) == nil {
+			applyGateFields(nested, out)
+		}
+	}
+}
+
+// applyGateFields folds a decoded JSON object's known keys into out. It is
+// called for both the outer envelope and the inner remote_migrate_gate slot
+// so either layout populates the same details struct.
+func applyGateFields(obj map[string]json.RawMessage, out *SchemaSkewDetails) {
+	for k, raw := range obj {
+		switch strings.ToLower(k) {
+		case "db_path", "database_path", "path":
+			if out.DBPath == "" {
+				var s string
+				if json.Unmarshal(raw, &s) == nil {
+					out.DBPath = strings.TrimSpace(s)
+				}
+			}
+		case "db_version", "database_version", "from_version":
+			if out.DBVersion == 0 {
+				var n int
+				if json.Unmarshal(raw, &n) == nil {
+					out.DBVersion = n
+				}
+			}
+		case "binary_version", "to_version", "expected_version":
+			if out.BinaryVersion == 0 {
+				var n int
+				if json.Unmarshal(raw, &n) == nil {
+					out.BinaryVersion = n
+				}
+			}
+		case "options":
+			if len(out.Options) == 0 {
+				var opts []SchemaSkewOption
+				if json.Unmarshal(raw, &opts) == nil {
+					out.Options = opts
+				}
+			}
+		}
+	}
+}
+
+// parseVersionsFromText extracts "database is at vN, binary expects vM" from
+// legacy stderr text, returning (db, binary, true) on match.
+func parseVersionsFromText(stderr string) (int, int, bool) {
+	const dbMarker = "database is at v"
+	const binMarker = "binary expects v"
+	dbIdx := strings.Index(stderr, dbMarker)
+	binIdx := strings.Index(stderr, binMarker)
+	if dbIdx < 0 || binIdx < 0 {
+		return 0, 0, false
+	}
+	db := parseTrailingInt(stderr[dbIdx+len(dbMarker):])
+	bin := parseTrailingInt(stderr[binIdx+len(binMarker):])
+	if db == 0 || bin == 0 {
+		return 0, 0, false
+	}
+	return db, bin, true
+}
+
+// parseTrailingInt reads a leading run of ASCII digits from s and returns
+// the integer, or 0 when the input does not start with a digit.
+func parseTrailingInt(s string) int {
+	n := 0
+	found := false
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			break
+		}
+		n = n*10 + int(r-'0')
+		found = true
+	}
+	if !found {
+		return 0
+	}
+	return n
 }
 
 // CreateParams carries optional fields for Client.Create.
@@ -191,6 +374,17 @@ type Client interface {
 	ConfigUnset(ctx context.Context, dir, key string) error
 	EnsureInitialized(ctx context.Context, dir string) error
 	Sync(ctx context.Context, dir, integration, action string) (string, error)
+	// MigrateRemote applies pending schema migrations to a remote-backed
+	// database, bypassing bd's remote-migrate safety gate for this invocation
+	// (BD_ALLOW_REMOTE_MIGRATE=1). It runs "bd migrate schema" and then
+	// "bd dolt push" to publish the reconciled schema. The returned bytes are
+	// bd's stdout (bd migrate --json), included in the API response so the
+	// caller can surface concrete migration details.
+	MigrateRemote(ctx context.Context, dir string) ([]byte, error)
+	// Bootstrap runs "bd bootstrap --non-interactive" on this clone, adopting
+	// a schema that another clone has already migrated. Used when this clone
+	// is NOT the designated migrator and must catch up without forking.
+	Bootstrap(ctx context.Context, dir string) ([]byte, error)
 }
 
 // webUIActor is the default BEADS_ACTOR for Tasks-view CRUD initiated through the

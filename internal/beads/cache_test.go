@@ -164,6 +164,12 @@ func (f *fakeClient) EnsureInitialized(_ context.Context, _ string) error {
 	f.mu.Unlock()
 	return nil
 }
+func (f *fakeClient) MigrateRemote(_ context.Context, _ string) ([]byte, error) {
+	return []byte(`{}`), nil
+}
+func (f *fakeClient) Bootstrap(_ context.Context, _ string) ([]byte, error) {
+	return []byte(`{}`), nil
+}
 
 var _ Client = (*fakeClient)(nil)
 

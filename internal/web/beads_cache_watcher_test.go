@@ -59,6 +59,12 @@ func (s *stubBeadsClient) EnsureInitialized(context.Context, string) error      
 func (s *stubBeadsClient) Sync(context.Context, string, string, string) (string, error) {
 	return "", nil
 }
+func (s *stubBeadsClient) MigrateRemote(context.Context, string) ([]byte, error) {
+	return []byte(`{}`), nil
+}
+func (s *stubBeadsClient) Bootstrap(context.Context, string) ([]byte, error) {
+	return []byte(`{}`), nil
+}
 
 // TestBeadsCacheWatcherSubscriber_InvalidatesOnEvent verifies that
 // beadsCacheWatcherSubscriber.OnBeadsChanged drops the cache slot for every

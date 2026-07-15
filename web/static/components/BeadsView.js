@@ -618,6 +618,193 @@ function BeadsIssueRow({
   `;
 }
 
+/**
+ * SchemaSkewDialog — confirm-and-run modal that offers to execute the beads
+ * schema migration on the user's behalf when a list load returns HTTP 409
+ * `beads_schema_skew`. Reuses ConfirmDialog for chrome/spinner/footer, and
+ * renders the extra body (options radios, warning, ack checkbox, inline error)
+ * via the children slot.
+ *
+ * @param {Object} props
+ * @param {boolean} props.isOpen
+ * @param {string} props.dbPath          - DB path from error.details.db_path.
+ * @param {string} props.hint            - Human hint from error.details.hint.
+ * @param {Array}  props.options         - Parsed options[] from the gate JSON
+ *   (each `{ mode, command, description }`). May be empty; when empty the
+ *   dialog defaults to `mode=migrate`.
+ * @param {string} props.workingDir      - Sent to the backend as working_dir.
+ * @param {Function} props.onSuccess     - Called on HTTP 200 (parent refreshes).
+ * @param {Function} props.onCancel      - Called when the user dismisses.
+ * @param {Function} [props.showToast]   - Optional toast(text, style) helper.
+ */
+function SchemaSkewDialog({
+  isOpen,
+  dbPath,
+  hint,
+  options,
+  workingDir,
+  onSuccess,
+  onCancel,
+  showToast,
+}) {
+  const hasOptions = Array.isArray(options) && options.length > 0;
+  const defaultMode = hasOptions ? options[0].mode || "migrate" : "migrate";
+  const [mode, setMode] = useState(defaultMode);
+  const [ackChecked, setAckChecked] = useState(false);
+  const [isRunning, setIsRunning] = useState(false);
+  const [errorMsg, setErrorMsg] = useState("");
+
+  // Reset transient state whenever the dialog is (re)opened so a previous
+  // inline error / stale mode / checkbox does not leak across invocations.
+  useEffect(() => {
+    if (isOpen) {
+      setMode(defaultMode);
+      setAckChecked(false);
+      setIsRunning(false);
+      setErrorMsg("");
+    }
+    // defaultMode is derived from options; safe to depend on isOpen only —
+    // options is stable for the lifetime of a single skew event.
+  }, [isOpen]);
+
+  // Enable the confirm button only when the "designated migrator" ack is
+  // checked for `migrate` mode. `adopt` mode is not destructive-ish and does
+  // not require the ack.
+  const canConfirm = mode === "adopt" || ackChecked;
+
+  const handleConfirm = async () => {
+    if (isRunning) return;
+    setIsRunning(true);
+    setErrorMsg("");
+    try {
+      const res = await authFetch(endpoints.beads.migrate(), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ working_dir: workingDir, mode }),
+      });
+      const data = await readBeadsResponse(res);
+      if (!res.ok || data.error) {
+        if (data.code === "migrate_from_ui_disabled") {
+          setErrorMsg(
+            "Running migrations from the UI is disabled in this instance's settings. Ask an administrator to enable `web.beads.allow_migrate_from_ui`, or run the migration from a terminal on the designated clone.",
+          );
+        } else {
+          setErrorMsg(
+            data.error || data.message || `Migration failed (HTTP ${res.status})`,
+          );
+        }
+        setIsRunning(false);
+        return;
+      }
+      // Success: parent handles toast + refresh + close.
+      onSuccess?.();
+    } catch (err) {
+      setErrorMsg(err?.message || "Migration request failed");
+      setIsRunning(false);
+    }
+  };
+
+  const message = dbPath
+    ? `Run the beads schema migration on this clone for the database at ${dbPath}?`
+    : "Run the beads schema migration on this clone?";
+
+  return html`
+    <${ConfirmDialog}
+      isOpen=${isOpen}
+      title="Run beads migration"
+      message=${message}
+      confirmLabel="Yes, run migration"
+      cancelLabel="No"
+      confirmVariant="primary"
+      isLoading=${isRunning}
+      confirmDisabled=${!canConfirm}
+      onConfirm=${handleConfirm}
+      onCancel=${onCancel}
+    >
+      <div class="mt-3 space-y-3" data-testid="schema-skew-dialog-body">
+        ${dbPath &&
+        html`<div
+          class="text-xs font-mono break-all text-mitto-text-secondary"
+        >
+          ${dbPath}
+        </div>`}
+        ${hint &&
+        html`<div class="text-xs text-mitto-text-secondary">${hint}</div>`}
+        ${hasOptions &&
+        html`
+          <div class="space-y-2">
+            ${options.map(
+              (opt) => html`
+                <label
+                  class="flex items-start gap-3 cursor-pointer select-none"
+                >
+                  <input
+                    type="radio"
+                    name="schema-skew-mode"
+                    value=${opt.mode}
+                    checked=${mode === opt.mode}
+                    disabled=${isRunning}
+                    onChange=${() => setMode(opt.mode)}
+                    class="radio radio-sm mt-0.5"
+                  />
+                  <span class="text-sm text-mitto-text-secondary">
+                    <span class="font-medium">${opt.mode}</span>
+                    ${opt.description
+                      ? html` — ${opt.description}`
+                      : opt.command
+                        ? html` — <code class="text-xs">${opt.command}</code>`
+                        : null}
+                  </span>
+                </label>
+              `,
+            )}
+          </div>
+        `}
+        <div
+          class="text-xs text-amber-400 border border-amber-500 bg-amber-500/10 rounded p-2"
+        >
+          For remote-backed databases the migration must be run on exactly one
+          designated clone. Independent migrations on separate clones fork the
+          schema (upstream bug #4259).
+        </div>
+        ${mode === "migrate" &&
+        html`
+          <label class="flex items-start gap-3 cursor-pointer select-none">
+            <input
+              type="checkbox"
+              checked=${ackChecked}
+              disabled=${isRunning}
+              onChange=${(e) => setAckChecked(e.target.checked)}
+              class="checkbox checkbox-sm mt-0.5"
+              data-testid="schema-skew-ack-checkbox"
+            />
+            <span class="text-sm text-mitto-text-secondary">
+              I understand this is the designated migrator clone.
+            </span>
+          </label>
+        `}
+        ${errorMsg &&
+        html`
+          <div
+            class="text-xs text-red-400 break-all"
+            data-testid="schema-skew-dialog-error"
+          >
+            ${errorMsg}
+          </div>
+        `}
+        ${!canConfirm &&
+        !errorMsg &&
+        html`
+          <div class="text-xs text-mitto-text-muted">
+            Check the acknowledgement above to enable
+            <span class="italic">Yes, run migration</span>.
+          </div>
+        `}
+      </div>
+    </${ConfirmDialog}>
+  `;
+}
+
 export function BeadsView({
   workingDir,
   showToast,
@@ -764,6 +951,13 @@ export function BeadsView({
   const [contextMenu, setContextMenu] = useState(null);
   const [menuPrompts, setMenuPrompts] = useState([]);
 
+  // Schema-skew migration confirm-and-run dialog visibility. The dialog itself
+  // is a small component (SchemaSkewDialog) that reuses ConfirmDialog and drives
+  // POST /api/beads/migrate on confirm; the underlying schemaSkew state (dbPath,
+  // hint, options, message) is populated by fetchList when the backend returns
+  // HTTP 409 code=beads_schema_skew.
+  const [showMigrateDialog, setShowMigrateDialog] = useState(false);
+
   // "Clean up closed issues" confirmation + in-flight state.
   const [showCleanupConfirm, setShowCleanupConfirm] = useState(false);
   const [cleaningUp, setCleaningUp] = useState(false);
@@ -833,6 +1027,10 @@ export function BeadsView({
             message: data.error,
             dbPath: (data.details && data.details.db_path) || "",
             hint: (data.details && data.details.hint) || "",
+            options:
+              (data.details && Array.isArray(data.details.options)
+                ? data.details.options
+                : []) || [],
           });
         } else {
           setSchemaSkew(null);
@@ -2534,7 +2732,13 @@ export function BeadsView({
                   class="flex flex-col items-center justify-center gap-2 py-8 px-4 text-center"
                 >
                   <div class="text-amber-400 text-sm font-medium">
-                    Beads schema needs migration
+                    ${schemaSkew.message &&
+                    schemaSkew.dbPath &&
+                    schemaSkew.message.includes(schemaSkew.dbPath)
+                      ? schemaSkew.message
+                      : schemaSkew.dbPath
+                        ? `The beads database at ${schemaSkew.dbPath} needs migration`
+                        : "Beads schema needs migration"}
                   </div>
                   ${schemaSkew.dbPath &&
                   html`<div
@@ -2545,6 +2749,13 @@ export function BeadsView({
                   <div class="text-mitto-text-secondary text-xs max-w-md">
                     ${schemaSkew.hint}
                   </div>
+                  <button
+                    onClick=${() => setShowMigrateDialog(true)}
+                    class="btn btn-primary btn-sm mt-2"
+                    data-testid="beads-run-migration-btn"
+                  >
+                    Run migration…
+                  </button>
                 </div>
               `
             : html`
@@ -2658,6 +2869,22 @@ export function BeadsView({
         />
       `
     }
+
+    <${SchemaSkewDialog}
+      isOpen=${showMigrateDialog && !!schemaSkew}
+      dbPath=${schemaSkew ? schemaSkew.dbPath : ""}
+      hint=${schemaSkew ? schemaSkew.hint : ""}
+      options=${schemaSkew ? schemaSkew.options : []}
+      workingDir=${workingDir}
+      showToast=${showToast}
+      onSuccess=${() => {
+        showToast && showToast("Migration completed", "success");
+        setShowMigrateDialog(false);
+        setSchemaSkew(null);
+        fetchList();
+      }}
+      onCancel=${() => setShowMigrateDialog(false)}
+    />
 
     <${ConfirmDialog}
       isOpen=${showCleanupConfirm}

@@ -49,6 +49,11 @@ export const endpoints = {
     sync: (params) => apiUrl("/api/issues/sync") + qs(params),
   },
 
+  /** Beads database operations (schema migration, adopt, etc.). */
+  beads: {
+    migrate: () => apiUrl("/api/beads/migrate"),
+  },
+
   /** Session lifecycle and sub-resources. */
   sessions: {
     list: () => apiUrl("/api/sessions"),

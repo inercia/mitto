@@ -30,10 +30,21 @@ type runnerResp struct {
 type runnerCall struct {
 	dir  string
 	args []string
+	env  []string
 }
 
 func (r *recordingRunner) Run(_ context.Context, dir string, args ...string) ([]byte, string, error) {
 	r.calls = append(r.calls, runnerCall{dir: dir, args: args})
+	if len(r.responses) == 0 {
+		return nil, "", nil
+	}
+	resp := r.responses[0]
+	r.responses = r.responses[1:]
+	return resp.stdout, resp.stderr, resp.err
+}
+
+func (r *recordingRunner) RunWithEnv(_ context.Context, dir string, extraEnv []string, args ...string) ([]byte, string, error) {
+	r.calls = append(r.calls, runnerCall{dir: dir, args: args, env: extraEnv})
 	if len(r.responses) == 0 {
 		return nil, "", nil
 	}
@@ -169,6 +180,100 @@ func TestSchemaSkewDBPath(t *testing.T) {
 	noPath := &CmdError{Stderr: "schema version mismatch: database is at v1, binary expects v2"}
 	if got := SchemaSkewDBPath(noPath); got != "" {
 		t.Errorf("SchemaSkewDBPath(no path) = %q, want empty", got)
+	}
+}
+
+// TestSchemaSkewInfo_LegacyStderr verifies that the details struct is
+// populated from the legacy "failed to open routed store at ..." stderr shape:
+// DBPath from the marker, DBVersion / BinaryVersion from the version phrase,
+// and no options (that data lives only in the JSON blob variant).
+func TestSchemaSkewInfo_LegacyStderr(t *testing.T) {
+	realStderr := "... refusing to auto-apply 4 pending schema migrations to a remote-backed database (v49 -> v53) ...\n" +
+		"Error: failed to open routed store at /Users/alvaro/.beads-planning: schema version mismatch: database is at v49, binary expects v53 ..."
+	info := SchemaSkewInfo(&CmdError{Err: errors.New("bd exited with non-zero status"), Stderr: realStderr})
+	if info.DBPath != "/Users/alvaro/.beads-planning" {
+		t.Errorf("DBPath = %q, want /Users/alvaro/.beads-planning", info.DBPath)
+	}
+	if info.DBVersion != 49 {
+		t.Errorf("DBVersion = %d, want 49", info.DBVersion)
+	}
+	if info.BinaryVersion != 53 {
+		t.Errorf("BinaryVersion = %d, want 53", info.BinaryVersion)
+	}
+	if len(info.Options) != 0 {
+		t.Errorf("Options = %+v, want none for legacy stderr", info.Options)
+	}
+}
+
+// TestSchemaSkewInfo_JSONBlob verifies that a modern bd emitter carrying a
+// remote_migrate_gate JSON blob populates DBPath, versions, AND options.
+// The blob is embedded in surrounding stderr noise to match real-world
+// behaviour where bd prefixes the JSON with human-readable log lines.
+func TestSchemaSkewInfo_JSONBlob(t *testing.T) {
+	stderr := "Error: bd cannot open remote-backed store: " +
+		`{"db_path":"/opt/beads","db_version":49,"binary_version":53,` +
+		`"remote_migrate_gate":{"options":[` +
+		`{"mode":"migrate","description":"Apply pending migrations on this clone","command":"BD_ALLOW_REMOTE_MIGRATE=1 bd migrate schema"},` +
+		`{"mode":"adopt","description":"Adopt an already-migrated schema from another clone","command":"bd bootstrap"}` +
+		`]}}` +
+		"\nsee docs for details"
+	info := SchemaSkewInfo(&CmdError{Err: errors.New("bd exited with non-zero status"), Stderr: stderr})
+	if info.DBPath != "/opt/beads" {
+		t.Errorf("DBPath = %q, want /opt/beads", info.DBPath)
+	}
+	if info.DBVersion != 49 || info.BinaryVersion != 53 {
+		t.Errorf("versions = (%d, %d), want (49, 53)", info.DBVersion, info.BinaryVersion)
+	}
+	if len(info.Options) != 2 {
+		t.Fatalf("Options len = %d, want 2 (%+v)", len(info.Options), info.Options)
+	}
+	if info.Options[0].Mode != "migrate" || info.Options[0].Command == "" {
+		t.Errorf("Options[0] = %+v, want mode=migrate with non-empty command", info.Options[0])
+	}
+	if info.Options[1].Mode != "adopt" {
+		t.Errorf("Options[1] = %+v, want mode=adopt", info.Options[1])
+	}
+}
+
+// TestSchemaSkewInfo_JSONBlobLegacyFallback verifies that when the JSON blob
+// omits db_path but a legacy "failed to open routed store at ..." line is
+// present alongside it, the parser falls back to legacy regex parsing for
+// DBPath while still using JSON for versions/options.
+func TestSchemaSkewInfo_JSONBlobLegacyFallback(t *testing.T) {
+	stderr := "Error: failed to open routed store at /var/beads-x: schema version mismatch\n" +
+		`{"remote_migrate_gate":{"options":[{"mode":"migrate"}]}}`
+	info := SchemaSkewInfo(&CmdError{Err: errors.New("bd exited with non-zero status"), Stderr: stderr})
+	if info.DBPath != "/var/beads-x" {
+		t.Errorf("DBPath = %q, want /var/beads-x", info.DBPath)
+	}
+	if len(info.Options) != 1 || info.Options[0].Mode != "migrate" {
+		t.Errorf("Options = %+v, want single migrate option", info.Options)
+	}
+}
+
+// TestSchemaSkewInfo_Empty verifies that a nil error and a *CmdError with
+// empty stderr both yield a zero-value SchemaSkewDetails.
+func TestSchemaSkewInfo_Empty(t *testing.T) {
+	isZero := func(d SchemaSkewDetails) bool {
+		return d.DBPath == "" && d.DBVersion == 0 && d.BinaryVersion == 0 && len(d.Options) == 0
+	}
+	if got := SchemaSkewInfo(nil); !isZero(got) {
+		t.Errorf("SchemaSkewInfo(nil) = %+v, want zero", got)
+	}
+	if got := SchemaSkewInfo(&CmdError{Stderr: ""}); !isZero(got) {
+		t.Errorf("SchemaSkewInfo(empty stderr) = %+v, want zero", got)
+	}
+}
+
+// TestIsSchemaSkew_JSONGate verifies that the modern JSON-blob variant is
+// detected even when the legacy "schema version mismatch" phrase is absent.
+func TestIsSchemaSkew_JSONGate(t *testing.T) {
+	err := &CmdError{
+		Err:    errors.New("bd exited with non-zero status"),
+		Stderr: `Error: {"remote_migrate_gate":{"options":[{"mode":"migrate"}]}}`,
+	}
+	if !IsSchemaSkew(err) {
+		t.Errorf("IsSchemaSkew(JSON gate blob) = false, want true")
 	}
 }
 

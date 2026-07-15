@@ -180,6 +180,16 @@ web:
   #   # Maximum WebSocket message size in bytes
   #   max_ws_message_size: 65536     # Default: 64KB
 
+  # Beads (issue tracker) endpoint configuration
+  # beads:
+  #   # Opt in to the POST /api/beads/migrate endpoint that runs
+  #   # `BD_ALLOW_REMOTE_MIGRATE=1 bd migrate schema && bd dolt push` (or
+  #   # `bd bootstrap`) from the Beads panel when a schema-skew is detected.
+  #   # Default: false. Enable only on the designated migrator clone of a
+  #   # remote-backed beads database — running migrate on a non-designated
+  #   # clone forks the schema. See mitto-ukl.
+  #   allow_migrate_from_ui: false
+
   # Scanner Defense (only applies to external listener)
   # Automatically blocks IPs that exhibit scanner-like behavior:
   # - Requesting paths that don't exist on the server

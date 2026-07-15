@@ -719,6 +719,22 @@ type WebConfig struct {
 	Security *WebSecurity `json:"security,omitempty"`
 	// AccessLog contains access log configuration
 	AccessLog *AccessLogConfig `json:"access_log,omitempty"`
+	// Beads contains configuration specific to the /api/issues (beads) endpoints
+	Beads *WebBeadsConfig `json:"beads,omitempty" yaml:"beads,omitempty"`
+}
+
+// WebBeadsConfig gates optional behaviour on the beads (issues) endpoints.
+// Kept as a nested pointer so unset config leaves every flag at its safe
+// default (false) without ambiguity between "not configured" and "explicitly
+// disabled".
+type WebBeadsConfig struct {
+	// AllowMigrateFromUI opts in to the POST /api/beads/migrate endpoint
+	// that can trigger `bd migrate schema` + `bd dolt push` (or `bd bootstrap`)
+	// from the Beads panel when a schema-skew error is detected. Defaults to
+	// false because running migrate on the wrong clone of a remote-backed
+	// database forks the schema — the safe default is to require the user
+	// to opt in explicitly in settings.
+	AllowMigrateFromUI bool `json:"allow_migrate_from_ui,omitempty" yaml:"allow_migrate_from_ui,omitempty"`
 }
 
 // AccessLogConfig represents access log configuration.
@@ -1571,6 +1587,9 @@ type rawConfig struct {
 			RateLimitBurst   int      `yaml:"rate_limit_burst"`
 			MaxWSMessageSize int64    `yaml:"max_ws_message_size"`
 		} `yaml:"security"`
+		Beads *struct {
+			AllowMigrateFromUI bool `yaml:"allow_migrate_from_ui"`
+		} `yaml:"beads"`
 	} `yaml:"web"`
 	UI *struct {
 		Confirmations *struct {
@@ -1864,6 +1883,11 @@ func Parse(data []byte) (*Config, error) {
 			RateLimitRPS:     raw.Web.Security.RateLimitRPS,
 			RateLimitBurst:   raw.Web.Security.RateLimitBurst,
 			MaxWSMessageSize: raw.Web.Security.MaxWSMessageSize,
+		}
+	}
+	if raw.Web.Beads != nil {
+		cfg.Web.Beads = &WebBeadsConfig{
+			AllowMigrateFromUI: raw.Web.Beads.AllowMigrateFromUI,
 		}
 	}
 
