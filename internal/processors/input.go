@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/inercia/mitto/internal/config"
 )
 
 // ProcessorInput provides context for processor execution.
@@ -64,6 +66,14 @@ type ProcessorInput struct {
 	// interjection, no forced run, no FreshContext, same process lifetime). Excluded from
 	// JSON (json:"-") — never sent to external command processors.
 	IterationUninterrupted bool `json:"-"`
+	// TriggerOnTasksChanges carries the beads change delta computed by the
+	// onTasks loop runner (internal/web/loop_runner_tasks.go processTasksChange).
+	// Nil for all non-onTasks dispatches (scheduled, onCompletion, manual "Run
+	// Now", non-loop). Feeds the {{ .Trigger.OnTasks.Changes.* }} template
+	// namespace via BuildCELContext. Excluded from JSON (json:"-") — never sent
+	// to external command processors, same sensitivity rule as the iteration
+	// fields above.
+	TriggerOnTasksChanges *config.TasksDelta `json:"-"`
 	// AdvancedSettings contains the per-session feature flags (flag name → enabled).
 	// Used for permissions.* CEL context in enabledWhen expressions.
 	AdvancedSettings map[string]bool `json:"-"`

@@ -1075,6 +1075,56 @@ func TestPromptDispatcher_BuildProcessorInput_UserDataJSON(t *testing.T) {
 	}
 }
 
+// TestPromptDispatcher_BuildProcessorInput_TriggerOnTasksChanges verifies that
+// buildProcessorInput threads meta.Trigger.OnTasks.Changes (populated by the
+// onTasks loop runner) into ProcessorInput.TriggerOnTasksChanges by reference,
+// and leaves the field nil for non-onTasks dispatches (mitto-xkn).
+func TestPromptDispatcher_BuildProcessorInput_TriggerOnTasksChanges(t *testing.T) {
+	p := promptDispatcher{}
+
+	// (1) meta.Trigger == nil → input.TriggerOnTasksChanges must be nil.
+	d1 := newFakePromptDeps()
+	d1.hasStore = false
+	input := p.buildProcessorInput(d1, "msg", false, PromptMeta{})
+	if input.TriggerOnTasksChanges != nil {
+		t.Errorf("expected TriggerOnTasksChanges=nil when meta.Trigger is nil, got %#v", input.TriggerOnTasksChanges)
+	}
+
+	// (2) meta.Trigger set but OnTasks nil → still nil (defensive guard).
+	d2 := newFakePromptDeps()
+	d2.hasStore = false
+	input = p.buildProcessorInput(d2, "msg", false, PromptMeta{Trigger: &PromptTriggerContext{}})
+	if input.TriggerOnTasksChanges != nil {
+		t.Errorf("expected TriggerOnTasksChanges=nil when meta.Trigger.OnTasks is nil, got %#v", input.TriggerOnTasksChanges)
+	}
+
+	// (3) meta.Trigger.OnTasks.Changes set → input.TriggerOnTasksChanges must
+	// alias the same *config.TasksDelta (no defensive copy in the hot path).
+	delta := &config.TasksDelta{
+		Added:   []map[string]any{{"id": "mitto-a", "status": "open"}},
+		Updated: []map[string]any{{"id": "mitto-u", "status": "in_progress"}},
+		Touched: []map[string]any{{"id": "mitto-a"}, {"id": "mitto-u"}},
+	}
+	d3 := newFakePromptDeps()
+	d3.hasStore = false
+	meta := PromptMeta{
+		SenderID: "loop-runner",
+		Trigger: &PromptTriggerContext{
+			OnTasks: &PromptOnTasksContext{Changes: delta},
+		},
+	}
+	input = p.buildProcessorInput(d3, "msg", false, meta)
+	if input.TriggerOnTasksChanges == nil {
+		t.Fatal("expected TriggerOnTasksChanges non-nil when meta.Trigger.OnTasks.Changes is set")
+	}
+	if input.TriggerOnTasksChanges != delta {
+		t.Errorf("expected TriggerOnTasksChanges to alias meta.Trigger.OnTasks.Changes (pointer equality), got different pointer")
+	}
+	if len(input.TriggerOnTasksChanges.Added) != 1 || input.TriggerOnTasksChanges.Added[0]["id"] != "mitto-a" {
+		t.Errorf("Added: got %#v, want single mitto-a entry", input.TriggerOnTasksChanges.Added)
+	}
+}
+
 // --- applyProcessorsAndBuildBlocks tests ---
 
 func TestPromptDispatcher_ApplyProcessorsAndBuildBlocks_NoProcessor_TextOnly(t *testing.T) {

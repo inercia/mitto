@@ -1257,6 +1257,9 @@ func NewServer(config Config) (*Server, error) {
 		s.beadsWatcher.Subscribe(s, s.getBeadsWatchDirs())
 		// Also subscribe the loop runner so onTasks loop conversations
 		// can fire (or rebase their diff baseline) when beads change.
+		// Record the watcher on the runner so Stop() can Unsubscribe(r)
+		// and avoid the shutdown-race ERROR (mitto-cbx).
+		s.loopRunner.SetBeadsWatcher(s.beadsWatcher)
 		s.beadsWatcher.Subscribe(s.loopRunner, s.getBeadsWatchDirs())
 		// mitto-is2.3: when the read cache is enabled, wire it to BeadsWatcher
 		// so external mutations (bd invocations from other processes, direct

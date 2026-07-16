@@ -519,6 +519,13 @@ func (p promptDispatcher) buildProcessorInput(d promptDeps, message string, isFi
 		modelTags = d.pdResolveModelTags(modelName)
 	}
 
+	// Thread the onTasks trigger delta (if any) through so the {{ .Trigger.OnTasks.* }}
+	// template namespace can render — nil for all non-onTasks dispatches (mitto-xkn).
+	var triggerOnTasksChanges *config.TasksDelta
+	if meta.Trigger != nil && meta.Trigger.OnTasks != nil {
+		triggerOnTasksChanges = meta.Trigger.OnTasks.Changes
+	}
+
 	return &processors.ProcessorInput{
 		Message:                message,
 		IsFirstMessage:         isFirst,
@@ -538,6 +545,7 @@ func (p promptDispatcher) buildProcessorInput(d promptDeps, message string, isFi
 		IterationNumber:        meta.IterationNumber,
 		MaxIterations:          meta.MaxIterations,
 		IterationUninterrupted: meta.IterationUninterrupted,
+		TriggerOnTasksChanges:  triggerOnTasksChanges,
 		Arguments:              meta.Arguments,
 		AdvancedSettings:       advancedSettings,
 		HasUserDataSchema:      hasUserDataSchema,

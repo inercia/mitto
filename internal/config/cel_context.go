@@ -36,6 +36,16 @@ type PromptEnabledContext struct {
 	// bodies to branch on which run they are in (e.g. {{ if .Iteration.IsFirst }}).
 	// All-zero (Number=0, IsLoop=false) for non-loop prompts.
 	Iteration IterationContext
+	// Trigger carries per-fire trigger context. Populated only when the current
+	// run was fired by a trigger that has structured data to expose to the
+	// prompt body (currently: onTasks — see TriggerOnTasksContext). Nil for
+	// scheduled, onCompletion, manual "Run Now", and non-loop dispatches, so
+	// templates must guard both levels — nested `with` short-circuits on the
+	// outer nil pointer:
+	//     {{ with .Trigger }}{{ with .OnTasks }}...{{ end }}{{ end }}
+	// Template-only: not declared on the CEL env (enabled-when evaluation runs
+	// pre-dispatch when no trigger data exists yet).
+	Trigger *TriggerContext
 	// PromptTextResolver resolves a prompt NAME to its full body text within the
 	// current workspace. Nil at menu/enabledWhen time — no resolver is available
 	// there — in which case PromptText fails-closed (returns an error). Wired at
@@ -66,6 +76,46 @@ type IterationContext struct {
 	// and loop config changes. Prompt bodies branch on it to render a compact "continue"
 	// form on uninterrupted continuation runs and the verbose form otherwise.
 	IsUninterrupted bool
+}
+
+// TriggerContext holds trigger-source data for the current run. Only populated
+// for triggers that expose structured data to the prompt body (currently only
+// onTasks). Non-nil sub-fields mean the corresponding trigger fired; nil
+// sub-fields mean it did not. Template-only — not exposed to CEL.
+type TriggerContext struct {
+	// OnTasks is populated only when the current fire was driven by a beads
+	// change (onTasks trigger). Nil for scheduled/onCompletion/manual "Run Now"
+	// dispatches. Templates should guard both levels — the enclosing .Trigger
+	// pointer must be non-nil first:
+	//     {{ with .Trigger }}{{ with .OnTasks }}...{{ end }}{{ end }}
+	OnTasks *TriggerOnTasksContext
+}
+
+// TriggerOnTasksContext exposes the beads change delta already computed by the
+// onTasks loop runner (see internal/web/loop_runner_tasks.go processTasksChange)
+// to the loop prompt body, so prompts can act on which specific issues changed
+// without re-scanning the world at agent-side startup.
+type TriggerOnTasksContext struct {
+	// Changes carries the diff between the previous baseline snapshot and the
+	// current one. Shape mirrors what the CEL condition (Changes.*) already sees
+	// so template and CEL views stay consistent — see internal/config/tasks_condition.go
+	// TasksDelta and canonicalizeIssue for the per-issue canonical key set.
+	Changes TasksChangesView
+}
+
+// TasksChangesView is the template-facing view of TasksDelta. Each slice holds
+// per-issue map[string]any values with canonical keys id, type, status,
+// priority, labels, title, assignee, updated_at (same as the CEL activation
+// produced by canonicalizeIssue). All slices are non-nil (possibly empty) so
+// {{ range }} always behaves.
+type TasksChangesView struct {
+	Added      []map[string]any
+	Updated    []map[string]any
+	Removed    []map[string]any
+	Closed     []map[string]any
+	Reopened   []map[string]any
+	LabelAdded []map[string]any
+	Touched    []map[string]any // = Added ∪ Updated
 }
 
 // ACPServerInfo describes a single ACP server available in the workspace.

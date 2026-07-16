@@ -198,6 +198,28 @@ func BuildCELContext(input *ProcessorInput) *config.PromptEnabledContext {
 	ctx.Iteration.IsUninterrupted = input.IterationUninterrupted
 	ctx.Session.HasBeadsIssue = input.BeadsIssue != ""
 
+	// Trigger context for the {{ .Trigger.* }} template namespace. Populated only
+	// when this dispatch carries structured trigger data — currently only the
+	// onTasks trigger. Template guards must nest — the outer .Trigger pointer
+	// may itself be nil:
+	//     {{ with .Trigger }}{{ with .OnTasks }}...{{ end }}{{ end }}
+	// (nil when scheduled, onCompletion, manual "Run Now", or non-loop).
+	if input.TriggerOnTasksChanges != nil {
+		ctx.Trigger = &config.TriggerContext{
+			OnTasks: &config.TriggerOnTasksContext{
+				Changes: config.TasksChangesView{
+					Added:      input.TriggerOnTasksChanges.Added,
+					Updated:    input.TriggerOnTasksChanges.Updated,
+					Removed:    input.TriggerOnTasksChanges.Removed,
+					Closed:     input.TriggerOnTasksChanges.Closed,
+					Reopened:   input.TriggerOnTasksChanges.Reopened,
+					LabelAdded: input.TriggerOnTasksChanges.LabelAdded,
+					Touched:    input.TriggerOnTasksChanges.Touched,
+				},
+			},
+		}
+	}
+
 	// Args (send-time arguments) for Go-template field interpolation in prompt bodies.
 	// nil at menu time (no prompt dispatched yet); a nil map is safe to index.
 	ctx.Args = input.Arguments
