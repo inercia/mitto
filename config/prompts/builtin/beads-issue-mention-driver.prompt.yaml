@@ -1,0 +1,335 @@
+icon: loop
+name: Mention — driver
+menus: internal
+parameters:
+  - name: IssueID
+    type: beadsId
+    required: false
+    description: The beads issue ID whose @mitto mention is being addressed
+  - name: MentionTS
+    type: text
+    required: false
+    description: RFC3339 timestamp of the @mitto mention being addressed (dedup key for the back-reference)
+  - name: MentionBody
+    type: text
+    required: false
+    description: Verbatim body of the @mitto mention
+  - name: Commit
+    type: text
+    required: false
+    description: If "true", commit any file changes after the implement phase; otherwise leave changes uncommitted for human review
+description: Internal router driver for a single @mitto mention. Classifies the mention (question / fix / feature / directive), dispatches per-phase prompts on their tier, and finally writes the `[addressed-comment]` back-reference (and optional commit + close). Invoked by name from the beadsList orchestrator; no preferredModels (per-phase tiering).
+group: Tasks
+backgroundColor: '#E1BEE7'
+loop:
+  trigger: onCompletion
+  delay: 30
+  maxIterations: 8
+  maxDuration: "1h"
+prompt: |
+  ## Session Context
+
+  Your session ID is `{{ .Session.ID }}` — use this as `self_id` for all `mitto_*` MCP tool calls.
+
+  # Mention — Router / Driver
+
+  This is a **per-mention router** spawned by the list-level orchestrator's §A branch,
+  one per unaddressed `@mitto` mention. It advances the mention through a small
+  label-encoded state machine — one phase per turn, then a final router turn that
+  writes the mandatory `[addressed-comment: <ts>]` back-reference, optionally commits,
+  and (when all four gate conditions hold) closes the bead.
+
+  Two routes exist depending on the classification the router makes on its first turn:
+
+  - **fix/feature route** (mention asks for a code change or a bug fix): none →
+    `mention-investigated` → `mention-planned` → `mention-implemented` → **finalize**
+    (back-ref + optional commit + close-check).
+  - **question / directive route** (mention is a question, "how do I", or a pure
+    directive like `@mitto close this`): none → `mention-answered` → **finalize**.
+
+  Each phase runs on its own model tier via `preferredModels` on the phase prompt —
+  Reasoning for investigate / plan / answer, Coding for implement — without touching
+  this conversation's baseline model.
+
+  {{ $target := "" -}}
+  {{ if .Session.BeadsIssue }}{{ $target = .Session.BeadsIssue }}{{ else if .Args.IssueID }}{{ $target = .Args.IssueID }}{{ end -}}
+  {{ $ts := .Args.MentionTS -}}
+  {{ $commit := eq .Args.Commit "true" -}}
+  {{ if $target -}}
+  The **target bead** for this run is `{{ $target }}`{{ if .Session.BeadsIssue }} (from this conversation's linked beads issue — durable across loop runs){{ else }} (supplied as the `IssueID` argument){{ end }}.
+  {{ if $ts -}}Mention timestamp (dedup key): `{{ $ts }}`.{{- end }}
+  Commit-after-implement is **{{ if $commit }}enabled{{ else }}disabled{{ end }}** (`Commit` argument).
+  {{- else -}}
+  No target bead is resolvable (neither `.Session.BeadsIssue` nor an `IssueID` argument
+  was supplied). Do not guess. Post a `mitto_ui_notify` explaining the missing target,
+  report failure to the parent via `mitto_children_tasks_report`, disable this
+  conversation's loop, and stop.
+  {{- end }}
+
+  ## Step 0 — Silent mode
+
+  This router almost always runs unattended on its `onCompletion` schedule. Use
+  **only** `mitto_ui_notify` for surfacing progress; never call `mitto_ui_options`,
+  `mitto_ui_form`, or `mitto_ui_textbox`. If a run cannot make progress autonomously,
+  use **Step 4 (Blocked → Defer + Handoff)** rather than guessing or asking.
+
+  {{ if $target -}}
+  ## Step 1 — Load LIVE state
+
+  Labels drift between runs. Load the bead's **current** state fresh, every run:
+
+  ```bash
+  bd show {{ $target }} --json --include-comments
+  ```
+
+  Read its `labels` array. Also locate the mention itself in `.comments` using the
+  timestamp `{{ $ts }}` (or, if absent, the freshest un-back-referenced `@mitto`
+  comment) so you have the mention body for classification and phase dispatch.
+
+  ## Step 2 — Check for already-addressed / no-op
+
+  If a comment already exists whose FIRST line is exactly `[addressed-comment: {{ $ts }}]`,
+  the mention was already processed on a prior turn — report success to the parent,
+  disable this conversation's loop, and stop:
+
+  ```
+  mitto_children_tasks_report(self_id: "{{ .Session.ID }}", status: "completed", summary: "Mention at {{ $ts }} on {{ $target }} was already addressed; no-op this run.")
+  mitto_conversation_update(self_id: "{{ .Session.ID }}", conversation_id: "self", loop_enabled: false)
+  ```
+
+  If the bead is `closed` or carries `needs-human` and is still deferred, log a
+  `mitto_ui_notify`, report to the parent, disable the loop, and stop without
+  advancing any label.
+
+  ## Step 3 — Branch on the live labels; dispatch exactly ONE phase this run
+
+  Do **not** do the phase's work inline. Dispatch the matching phase prompt by name
+  via `mitto_conversation_send_prompt` (a self-send using `prompt_name` only —
+  **never** pass a free-text `prompt` alongside `prompt_name`, or the server will
+  short-circuit to the free text and the named body will not resolve). End the turn
+  after the dispatch; the phase runs on the next turn under its own preferred model
+  tier, adds its label, and stops; the router's `onCompletion` schedule re-fires
+  this prompt to advance to the next phase.
+
+  **Evaluate these branches in order and stop at the first match** — the terminal
+  Finalize branch is listed FIRST so a completed mention is never re-dispatched into
+  a phase:
+
+  - `mention-implemented` present (fix/feature route complete) OR `mention-answered`
+    present (question route complete) → **Step 3f: Finalize (handled inline).** ←
+    early-exit; check first.
+  - `mention-planned` present, `mention-implemented` absent → **Step 3d: dispatch
+    Implement.**
+  - `mention-investigated` present, `mention-planned` absent → **Step 3c: dispatch
+    Plan.**
+  - No `mention-*` state label yet → **Step 3a (classify) → Step 3b (dispatch
+    Investigate) OR Step 3e (dispatch Answer)**.
+
+  ### Step 3a — Classify the mention (only on the very first turn, before any label)
+
+  Read the mention body scoped by `{{ $ts }}`. Classify as one of:
+
+  - **question** — the mention asks a question, a "how do I" / "what is / where is /
+    why" ask, or requests an explanation with no code change requested. → route to
+    Step 3e (Answer).
+  - **directive** — the mention is a pure imperative that maps directly to a `bd`
+    command (`@mitto close this`, `@mitto reopen this`, `@mitto add label X`, etc.)
+    with no code work. → route to Step 3e (Answer); the answer phase takes the `bd`
+    action AND records what it did.
+  - **fix / feature** — the mention asks for a code change (a bug fix, a small
+    feature, a refactor). → route to Step 3b (Investigate).
+
+  When in doubt between fix and answer, prefer **Answer** — it is cheaper, and if the
+  answer turns out to require code the user can post a follow-up `@mitto` mention.
+  Record the classification decision in a short bead comment
+  (`bd comment {{ $target }} "Router classified mention at {{ $ts }} as <question|directive|fix|feature>."`)
+  before dispatching so the choice is auditable.
+
+  ### Step 3b — Dispatch Investigate (fix/feature route, no state label yet)
+
+  ```
+  mitto_conversation_send_prompt(
+    self_id: "{{ .Session.ID }}",
+    conversation_id: "self",
+    prompt_name: "Mention — investigate phase",
+    arguments: { "IssueID": "{{ $target }}", "MentionTS": "{{ $ts }}", "MentionBody": "<verbatim mention body>" }
+  )
+  ```
+
+  Then end this turn. The Investigate phase runs on the **Reasoning** tier, records
+  an `Investigation [tier: Reasoning]:` comment, adds `mention-investigated`, and
+  stops. The router's next scheduled run observes `mention-investigated` and
+  dispatches Plan.
+
+  ### Step 3c — Dispatch Plan (`mention-investigated` present)
+
+  ```
+  mitto_conversation_send_prompt(
+    self_id: "{{ .Session.ID }}",
+    conversation_id: "self",
+    prompt_name: "Mention — plan phase",
+    arguments: { "IssueID": "{{ $target }}", "MentionTS": "{{ $ts }}", "MentionBody": "<verbatim mention body>" }
+  )
+  ```
+
+  Then end this turn. Plan phase runs on **Reasoning**, records `Plan [tier: Reasoning]:`,
+  adds `mention-planned`, and stops. Next run observes `mention-planned` and dispatches
+  Implement.
+
+  ### Step 3d — Dispatch Implement (`mention-planned` present)
+
+  ```
+  mitto_conversation_send_prompt(
+    self_id: "{{ .Session.ID }}",
+    conversation_id: "self",
+    prompt_name: "Mention — implement phase",
+    arguments: { "IssueID": "{{ $target }}", "MentionTS": "{{ $ts }}", "MentionBody": "<verbatim mention body>" }
+  )
+  ```
+
+  Then end this turn. Implement phase runs on **Coding**, writes the code changes,
+  records `Implementation [tier: Coding]:`, adds `mention-implemented`, and stops.
+  Next run observes `mention-implemented` and takes the Finalize branch (Step 3f).
+
+  ### Step 3e — Dispatch Answer (question / directive route, no state label yet)
+
+  ```
+  mitto_conversation_send_prompt(
+    self_id: "{{ .Session.ID }}",
+    conversation_id: "self",
+    prompt_name: "Mention — answer phase",
+    arguments: { "IssueID": "{{ $target }}", "MentionTS": "{{ $ts }}", "MentionBody": "<verbatim mention body>" }
+  )
+  ```
+
+  Then end this turn. Answer phase runs on **Reasoning**, records
+  `Answer [tier: Reasoning]:`, adds `mention-answered`, and stops. Next run observes
+  `mention-answered` and takes the Finalize branch (Step 3f).
+
+  ### Step 3f — Finalize (`mention-implemented` OR `mention-answered` present) — handled inline, EVALUATE FIRST
+
+  **This branch is checked before every other Step 3 branch**, against the fresh
+  `bd show --json` from Step 1. All phase work is done. Do the following IN ORDER,
+  inline — no phase dispatch on this branch (mitto-i5k lesson: never treat the
+  terminal step as optional):
+
+  1. **Commit (fix/feature route only, and only if `Commit=true` and files changed).**
+     {{ if $commit }}Commit ONLY the files changed by this mention by explicit path
+     (`git add <file> ...`, never `-A` / `.` / `-a`) using a conventional message
+     that references the bead:
+
+     ```bash
+     git add <file> ...
+     git commit -m "<type>(<scope>): <one-line summary> (refs {{ $target }})" -m "<body>"
+     ```
+
+     Skip if nothing changed. {{ else }}`Commit=false` — do NOT commit. Leave any
+     file changes on disk for the human to review; note this in the back-reference
+     below so the human knows there is uncommitted work.{{ end }}
+
+  2. **Write the mandatory back-reference.** The FIRST line MUST be exactly
+     `[addressed-comment: {{ $ts }}]` — this is the orchestrator's dedup key and its
+     ONLY signal that the mention was processed:
+
+     ```bash
+     bd comment {{ $target }} "[addressed-comment: {{ $ts }}]
+     <what you did and why> — or, if deferred earlier: Deferred to human — see the [deferred: ...] comment above.{{ if not $commit }} Files modified but NOT committed (Commit=false); review and commit manually.{{ end }}"
+     ```
+
+  3. **Four-condition close check.** Close the bead ONLY when ALL four hold —
+     otherwise leave it open (the back-reference above is sufficient bookkeeping):
+
+     - The mention itself asked for closure (`@mitto close this`, `@mitto done`,
+       `@mitto mark fixed`) OR the work performed fully satisfies the stated intent
+       AND leaves no known follow-up on this bead.
+     - You did NOT defer earlier (Step 4).
+     - {{ if $commit }}Any file changes are committed.{{ else }}NO file changes were
+       made (with `Commit=false` you are not permitted to commit, so any file change
+       means the bead is NOT yet resolvable — leave it open for the human).{{ end }}
+     - The bead currently has no open child dependency
+       (`bd show {{ $target }} --json | jq '.dependencies'` — bail on any
+       `dependency_type: parent-child` whose child is still `status: open`).
+
+     If all four hold:
+
+     ```bash
+     bd close {{ $target }} --reason "@mitto mention at {{ $ts }}: <one-line summary>"
+     ```
+
+  4. **Report and self-terminate.** Report success to the parent orchestrator, then
+     disable this conversation's loop so it does not re-fire:
+
+     ```
+     mitto_children_tasks_report(
+       self_id: "{{ .Session.ID }}",
+       status: "completed",
+       summary: "Mention at {{ $ts }} on {{ $target }} addressed (action=<addressed|answered|deferred|closed>, committed=<yes|no|n/a>, tiers=<Reasoning,Coding|Reasoning>)."
+     )
+     mitto_conversation_update(self_id: "{{ .Session.ID }}", conversation_id: "self", loop_enabled: false)
+     ```
+
+     Do nothing further this run.
+  {{- else }}
+  ## Step 1 — No target bead to work on
+
+  Report failure to the parent via `mitto_children_tasks_report`, post a
+  `mitto_ui_notify`, disable this conversation's loop, and stop.
+  {{- end }}
+
+  ## Step 4 — Blocked → Defer + Handoff (applies at EVERY stage above)
+
+  Use this whenever the router itself cannot make progress autonomously (spawning /
+  self-send errored, mention body cannot be located, target is missing). The phase
+  prompts handle their own in-phase blockers via their Step 4. **Do not** advance any
+  state label. Instead:
+
+  1. Defer and flag the bead:
+
+     ```bash
+     bd update {{ if $target }}{{ $target }}{{ else }}<target-bead>{{ end }} --add-label needs-human --defer +1d
+     ```
+
+  2. Write a structured handoff comment (FIRST line MUST be the `[deferred: <ts>]`
+     marker so the orchestrator's Step 2Z can undefer on human reply). Do NOT write
+     the `[addressed-comment: <ts>]` back-reference — the mention was NOT addressed
+     and must remain pending so the orchestrator re-sees it on the next pass:
+
+     ```bash
+     bd comment {{ if $target }}{{ $target }}{{ else }}<target-bead>{{ end }} "[deferred: <now-RFC3339>]
+     Why: Blocked at mention-router — <root cause>.
+     What human intervention is required: <the ONE concrete action>.
+     How to resume: reply to this bead; the orchestrator will detect the reply on its next pass, clear needs-human, and re-queue."
+     ```
+
+  3. Report failure to the parent and self-terminate:
+
+     ```
+     mitto_children_tasks_report(self_id: "{{ .Session.ID }}", status: "failed", summary: "Deferred at mention-router: <root cause>.")
+     mitto_conversation_update(self_id: "{{ .Session.ID }}", conversation_id: "self", loop_enabled: false)
+     ```
+
+  The user resumes the loop after clearing `needs-human` and posting a fresh
+  `@mitto` comment (which the orchestrator will pick up on its next `onTasks` pass).
+
+  ## Guidelines
+
+  - **One phase per run.** Dispatch a single phase prompt via
+    `mitto_conversation_send_prompt` using `prompt_name` (never with a competing free-text
+    `prompt` field), then end the turn.
+  - **Never do the phase work inline.** The whole point of this router is per-phase
+    model tiering. If you catch yourself running `bd update ... --add-label
+    mention-investigated|mention-planned|mention-implemented|mention-answered` inside
+    *this* prompt, stop — that is the phase prompt's job. The router only owns
+    `needs-human` (Step 4), the `[addressed-comment: <ts>]` back-reference, the
+    optional commit, and the four-condition close (Step 3f).
+  - **Live state only.** Always re-read labels via `bd show --json` at the start of
+    every turn; never assume labels from a prior run or from `Item.*`.
+  - **Stay scoped to `{{ $target }}` and the mention at `{{ $ts }}`.** Never edit or
+    remove the original `@mitto` comment. Never fabricate a back-reference for a
+    mention you did not actually address.
+  - **Silent unless it matters.** `mitto_ui_notify` only for meaningful milestones
+    (deferred/blocked, final completion). Every phase dispatch and every `bd`
+    mutation logs itself.
+  - **Report to the parent on exit.** Every terminal exit (success, deferral,
+    no-op) MUST call `mitto_children_tasks_report` so the orchestrator's §A
+    wait/verify/archive step can proceed.

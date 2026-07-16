@@ -61,8 +61,10 @@ prompt: |
   change, processes **one increment** from one class, then yields. Three classes, strict
   priority **A → B → C**:
 
-  - **§A — Address `@mitto` comments.** One-shot ephemeral child per unaddressed
-    mention; child writes `[addressed-comment: <ts>]` back-reference and ends.
+  - **§A — Address `@mitto` comments.** One per-mention driver child that walks a
+    small phase state machine (investigate → plan → implement, or answer, on the
+    appropriate model tier), writes `[addressed-comment: <ts>]` back-reference, and
+    self-terminates.
   - **§B — Fix eligible open bugs.** Spawn `Loop fixing bug` as an `onCompletion` child
     (one `researched → reproduced → fixed` step per re-fire).
   - **§C — Implement eligible open features.** Spawn `Loop implementing feature` as an
@@ -80,7 +82,8 @@ prompt: |
   can race each other's edits. Hard rules:
 
   - **Global active-driver cap: 1** persistent `onCompletion` child (§B + §C
-    combined). §A one-shot workers (short-lived, self-terminating) are NOT counted.
+    combined). §A mention drivers (short-lived, self-terminating: `maxIterations: 8`
+    and `loop_enabled: false` on every terminal branch) are NOT counted.
     Serial execution prevents concurrent edits on overlapping files.
   - Before spawning in §B/§C, count children in `{{ .Children.MCPText }}` whose title
     starts with `Fix ` or `Implement ` AND whose status is `running` / `iterating` /
@@ -167,8 +170,8 @@ prompt: |
   for terminal/orphaned/idle-2h; use archive only if the child is still doing useful
   work you want to inspect later.
 
-  Do NOT reap `§A` one-shot workers here — they self-terminate quickly and are handled
-  by §A's own wait/archive path (Step 3).
+  Do NOT reap `§A` mention drivers here — they self-terminate on every terminal
+  phase branch and are handled by §A's own wait/archive path (Step 3).
 
   {{ if or (ne .Args.FixBugs "false") (ne .Args.WorkOnFeatures "false") -}}
   ### Close terminal-label beads
@@ -338,123 +341,34 @@ prompt: |
 
   Take the first tuple from 2A — call it **`(<id>, <ts>, <body>)`**. If any existing
   child in `{{ .Children.MCPText }}` has `beads_issue: <id>` AND its title mentions
-  `<ts>`, this mention was already dispatched — drop it and re-run Step 3. Otherwise
-  spawn ONE one-shot child (no `loop_*` fields; workers post their back-reference and
-  end):
+  `[<ts>]`, this mention was already dispatched — drop it and re-run Step 3. Otherwise
+  spawn ONE per-mention router driver whose seed AND `onCompletion` re-fire are both
+  the named mention driver (which itself dispatches phase-tiered prompts —
+  Reasoning for investigate/plan/answer, Coding for implement — one per turn):
 
   ```
   mitto_conversation_new(
     self_id: "{{ .Session.ID }}",
     title: "Address @mitto on <id> [<ts>]",
     beads_issue: "<id>",
-    acp_server: "<prefer a faster/cheaper agent; escalate only if the instruction is complex>",
-    initial_prompt: "<fully self-contained worker seed — see template below>"
+    prompt_name: "Mention — driver",
+    arguments: { "IssueID": "<id>", "MentionTS": "<ts>", "MentionBody": "<body>", "Commit": "{{ if eq .Args.Commit "false" }}false{{ else }}true{{ end }}" },
+    loop_prompt_name: "Mention — driver",
+    loop_trigger: "onCompletion",
+    loop_completion_delay_seconds: 30,
+    loop_max_iterations: 8,
+    loop_max_duration_seconds: 3600
   )
   ```
 
-  `beads_issue` links the worker to the bead (`.Session.BeadsIssue` resolves; UI
+  `beads_issue` links the driver to the bead (`.Session.BeadsIssue` resolves; UI
   surfaces on the right row). `title` includes `[<ts>]` as the dedup key —
-  cross-referencing prevents double-spawn while the worker is alive but has not yet
-  posted its back-reference.
-
-  ### §A worker seed template (inline `initial_prompt`)
-
-  Fill `<id>`, `<ts>`, `<body>` verbatim:
-
-  ```
-  You are addressing a single `@mitto` mention on beads issue `<id>`.
-
-  Original comment (posted at `<ts>`):
-  ```
-  <body>
-  ```
-
-  ## Your job
-
-  Your target bead is **`<id>`**. Every `bd` write (comment, label, commit, close)
-  MUST target that ID — never a different one. `bd show <id>` / `bd comments <id>`
-  are your source of truth; do not act on state you cannot see there.
-
-  1. Carry out the instruction. Read state with `bd show <id> --long --json` and
-     `bd comments <id> --json`. Interpret charitably but do NOT invent scope.
-  2. Take the smallest `bd` action that satisfies it (close / update / comment /
-     re-label / etc).
-  3. If the instruction is ambiguous, requires a decision you cannot make, needs
-     credentials/external access, or requires manual verification, **defer** — do
-     NOT guess:
-
-     ```bash
-     bd update <id> --add-label needs-human --defer +1d
-     bd comment <id> "[deferred: <now-RFC3339>]
-     Why: <root cause — what you tried, what blocked you, or why the mention is under-specified>.
-     What human intervention is required: <the ONE concrete action>.
-     How to resume: reply to this bead; the orchestrator will detect the reply on its next pass, clear `needs-human`, and re-queue."
-     ```
-
-     Then proceed to step 4 — the deferral IS the outcome (mention has been routed
-     to a human).
-  4. **Write the mandatory back-reference.** FIRST line must be exactly
-     `[addressed-comment: <ts>]`, followed by a plain-English summary:
-
-     ```
-     [addressed-comment: <ts>]
-     <what you did and why> — or, if deferred: Deferred to human — see the [deferred: ...] comment above.
-     ```
-
-     Use `bd comment <id> "<the full body above>"`.
-  5. {{ if eq .Args.Commit "false" -}}
-     **Do NOT commit.** The orchestrator was invoked with `Commit=false`; leave any
-     file changes uncommitted (working tree only). Note in the back-reference (step 4)
-     that files were modified but not committed, so the human can review and commit.
-     {{- else -}}
-     If you changed files, commit ONLY those files by explicit path
-     (`git add <file> ...`, never `-A` / `.` / `-a`) with a concise conventional
-     message that references the bead — the trailing `(refs <id>)` or `Refs: <id>`
-     footer is the audit link back to the tracker:
-
-     ```
-     <type>(<scope>): <one-line summary> (refs <id>)
-     ```
-
-     Skip if nothing changed.
-     {{- end }}
-  6. **Close the bead if the mention is completed.** Close ONLY when ALL of the
-     following hold — otherwise leave the bead open (the back-reference in step 4
-     is sufficient bookkeeping):
-
-     - the mention itself asked for closure (e.g. "@mitto close this", "@mitto
-       done", "@mitto mark fixed"), OR the work performed fully satisfies the
-       stated intent AND leaves no known follow-up on this bead;
-     - you did NOT defer in step 3;
-     - {{ if eq .Args.Commit "false" -}}
-       any file changes from step 5 are committed
-       (with `Commit=false` you are not permitted to commit, so any file change
-       means the bead is NOT yet resolvable — leave it open for the human);
-       {{- else -}}
-       any file changes from step 5 are committed;
-       {{- end }}
-     - the bead currently has no open child dependency (`bd show <id> --json |
-       jq '.dependencies'` — bail on any `dependency_type: parent-child` whose
-       child is still `status: open`).
-
-     If all four hold:
-
-     ```bash
-     bd close <id> --reason "@mitto mention at <ts>: <one-line summary>"
-     ```
-  7. Report to the parent via `mitto_children_tasks_report` with a one-line summary
-     including `<action>` (addressed | deferred | closed), `<committed>` (yes | no |
-     n/a), and target `<id>`.
-
-  ## Constraints
-
-  - Stay in scope: only bead `<id>` and directly-relevant files.
-  - Never edit or remove the original `@mitto` comment.
-  - Never fabricate a back-reference for a mention you did not address —
-    `[addressed-comment: <ts>]` is a receipt, not a shortcut.
-  - Never close a bead you deferred, and never close a bead that still has
-    uncommitted work on disk (see step 6 conditions).
-  ```
+  cross-referencing prevents double-spawn while the driver is alive but has not yet
+  posted its back-reference. Using `prompt_name` (not `initial_prompt`) closes
+  mitto-dj9: server expands the named prompt on every seed and every re-fire,
+  resolving `.Session.BeadsIssue` from `beads_issue` and the mention args from
+  `arguments`. Budget mirrors the driver's own `loop:` frontmatter
+  (`delay: 30`, `maxIterations: 8`, `maxDuration: "1h"`).
 
   Record the returned `conversation_id` as **`<child-id>`**. On create failure, jump
   to Step 7 for `(<id>, <ts>)`.
@@ -469,18 +383,23 @@ prompt: |
   )
   ```
 
-  - **Worker done** — re-read `bd comments <id> --json`. If `[addressed-comment: <ts>]`
-    is present, archive the worker. If missing (worker crashed / forgot), write a
-    fallback back-reference yourself so the mention is not re-dispatched forever,
-    then archive:
+  - **Driver done** — re-read `bd comments <id> --json`. If `[addressed-comment: <ts>]`
+    is present, archive the driver (the mention driver has already logged its own
+    per-phase `Investigation:` / `Plan:` / `Implementation:` / `Answer:` comments
+    tagged with their tier). If missing (driver crashed / forgot), write a fallback
+    back-reference yourself so the mention is not re-dispatched forever, then
+    archive:
 
     ```bash
     bd comment <id> "[addressed-comment: <ts>]
-    Orchestrator fallback: worker <child-id> did not post a back-reference. Marking processed to prevent re-dispatch; re-open by adding a fresh @mitto comment if not actually carried out."
+    Orchestrator fallback: mention driver <child-id> did not post a back-reference. Marking processed to prevent re-dispatch; re-open by adding a fresh @mitto comment if not actually carried out."
+    ```
+    ```
+    mitto_conversation_archive(self_id: "{{ .Session.ID }}", conversation_id: "<child-id>")
     ```
 
-  - **Timeout** — log on the bead, do NOT kill/archive (worker may still finish):
-    `bd comment <id> "Orchestrator: 30-minute wait for @mitto worker (mention at <ts>) timed out; leaving worker running."`
+  - **Timeout** — log on the bead, do NOT kill/archive (driver may still be walking
+    its phases): `bd comment <id> "Orchestrator: 30-minute wait for @mitto driver (mention at <ts>) timed out; leaving driver running."`
   - **Wait errored** (flag missing at runtime) → notify and STOP; do not archive.
 
   Then Step 6.
@@ -620,8 +539,9 @@ prompt: |
   How to resume: reply to this bead; the orchestrator will detect it, clear \`needs-human\`, and re-queue."
   ```
 
-  **§A — spawn failure** (worker itself defers workable-but-ambiguous mentions inline
-  via step 3 of its seed; this branch is only for the create failing):
+  **§A — spawn failure** (the mention driver defers workable-but-ambiguous mentions
+  itself via each phase's Step 4 and the router's Step 4; this branch is only for
+  the `mitto_conversation_new` create failing):
 
   Use the SAME `[deferred: ...]` template on the bead, but do NOT write
   `[addressed-comment: <mention-ts>]` — the mention was never dispatched and must
@@ -647,7 +567,8 @@ prompt: |
     budget{{ else }}{{ if ne .Args.FixBugs "false" }}§B has a concurrency budget{{ else }}§C has a concurrency budget{{ end }}{{ end }} of 1 persistent `onCompletion` child — serial execution prevents two
     workers from racing on overlapping files. If the cap is hit, skip the spawn
     for this pass — the bead will be re-enumerated once Step 2P frees the slot.
-    §A one-shot workers are NOT counted (they self-terminate).
+    §A mention drivers are NOT counted (they self-terminate on every terminal
+    phase branch via `loop_enabled: false`).
   {{- end }}
   - **Reap aggressively.** Step 2P deletes terminal, orphaned, idle-2h, and duplicate
     children every pass via `mitto_conversation_delete` (not archive — delete frees

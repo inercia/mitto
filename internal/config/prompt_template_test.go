@@ -2543,3 +2543,157 @@ func TestBuiltinPromptLoopModes(t *testing.T) {
 		})
 	}
 }
+
+// TestMentionDriver_RendersForRepresentativeContexts renders
+// beads-issue-mention-driver.prompt.yaml (mitto-91wk) for representative
+// contexts and asserts it renders without error and picks the right branch:
+//
+//	(a) linked-issue context — .Session.BeadsIssue set, args carry a mention
+//	    timestamp + body, Commit=true → the target bead ID renders, the
+//	    mention timestamp/body flow into every phase dispatch, all four phase
+//	    prompt NAMES appear (router dispatches via `prompt_name`, per
+//	    mitto-dj9), the "handled inline" Finalize branch is present, and the
+//	    Commit=true branch of the finalize step surfaces the git-add-by-path
+//	    guidance (not the "do NOT commit" copy).
+//	(b) arg-only context, Commit=false — .Args.IssueID set, no .Session.BeadsIssue,
+//	    Commit=false → bead ID still resolves via Args.IssueID; the Commit=false
+//	    copy renders ("do NOT commit" / "review and commit manually"); the
+//	    Commit=true copy is absent.
+//	(c) no target resolvable — neither BeadsIssue nor Args.IssueID set →
+//	    the "No target bead is resolvable" fallback renders; Step 1..3 phase
+//	    dispatch scaffolding is skipped (no `bd show ` broken command),
+//	    Step 4 still renders using the "<target-bead>" placeholder.
+//
+// The test loads the file from the real builtin directory so it always
+// exercises the current on-disk content; the render itself also proves the
+// YAML/template parses.
+func TestMentionDriver_RendersForRepresentativeContexts(t *testing.T) {
+	builtinDir := "../../config/prompts/builtin"
+	path := filepath.Join(builtinDir, "beads-issue-mention-driver.prompt.yaml")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Skipf("prompt file not found at %s: %v", path, err)
+	}
+	prompt, err := ParsePromptFile("beads-issue-mention-driver.prompt.yaml", data, time.Now())
+	if err != nil {
+		t.Fatalf("ParsePromptFile: %v", err)
+	}
+	body := prompt.Content
+
+	render := func(ctx *PromptEnabledContext) string {
+		funcs := BuildTemplateFuncMap(ctx)
+		out, rerr := RenderPromptTemplate("beads-issue-mention-driver", body, ctx, funcs)
+		if rerr != nil {
+			t.Fatalf("RenderPromptTemplate: %v", rerr)
+		}
+		return out
+	}
+
+	// (a) Linked-issue context with Commit=true.
+	ctxA := &PromptEnabledContext{
+		Session: SessionContext{
+			BeadsIssue:    "mitto-abc",
+			HasBeadsIssue: true,
+		},
+		Args: map[string]string{
+			"IssueID":     "mitto-abc",
+			"MentionTS":   "2026-07-16T10:00:00Z",
+			"MentionBody": "please fix the crash",
+			"Commit":      "true",
+		},
+		Iteration: IterationContext{IsFirst: true},
+	}
+	outA := render(ctxA)
+	if !strings.Contains(outA, "mitto-abc") {
+		t.Errorf("branch (a): expected bead ID 'mitto-abc' in output; got:\n%s", outA)
+	}
+	if !strings.Contains(outA, "2026-07-16T10:00:00Z") {
+		t.Errorf("branch (a): expected mention timestamp in output; got:\n%s", outA)
+	}
+	// Per-phase model tiering: the router must dispatch phase prompts by
+	// name via `mitto_conversation_send_prompt` (self-send), NOT do the
+	// phase work inline. All four phase names must appear in the rendered
+	// body (mitto-91wk acceptance criterion).
+	for _, phaseName := range []string{
+		"Mention — investigate phase",
+		"Mention — plan phase",
+		"Mention — implement phase",
+		"Mention — answer phase",
+	} {
+		if !strings.Contains(outA, phaseName) {
+			t.Errorf("branch (a): expected phase dispatch to %q in output; got:\n%s", phaseName, outA)
+		}
+	}
+	if !strings.Contains(outA, "mitto_conversation_send_prompt") {
+		t.Errorf("branch (a): expected 'mitto_conversation_send_prompt' self-send calls in output")
+	}
+	if !strings.Contains(outA, `"IssueID": "mitto-abc"`) {
+		t.Errorf("branch (a): expected resolved target 'mitto-abc' passed as IssueID argument; got:\n%s", outA)
+	}
+	// Finalize branch must render inline (never dispatched as a phase).
+	if !strings.Contains(outA, "Finalize") {
+		t.Errorf("branch (a): expected 'Finalize' branch text in output")
+	}
+	if !strings.Contains(outA, "[addressed-comment:") {
+		t.Errorf("branch (a): expected back-reference marker '[addressed-comment:' in output")
+	}
+	// Commit=true branch: git-add-by-path guidance must render, "do NOT commit" must not.
+	if !strings.Contains(outA, "git add <file>") {
+		t.Errorf("branch (a): expected Commit=true git-add guidance in output; got:\n%s", outA)
+	}
+	if strings.Contains(outA, "do NOT commit") {
+		t.Errorf("branch (a): Commit=true rendered the Commit=false 'do NOT commit' copy")
+	}
+	// The router must NOT do the phase work inline — it must never contain
+	// `bd update ... --add-label mention-{investigated|planned|implemented|answered}`.
+	for _, forbidden := range []string{
+		"--add-label mention-investigated",
+		"--add-label mention-planned",
+		"--add-label mention-implemented",
+		"--add-label mention-answered",
+	} {
+		if strings.Contains(outA, forbidden) {
+			t.Errorf("branch (a): router leaked inline phase-label write %q — must be delegated to the phase prompt; got:\n%s", forbidden, outA)
+		}
+	}
+
+	// (b) Arg-only context, Commit=false.
+	ctxB := &PromptEnabledContext{
+		Args: map[string]string{
+			"IssueID":     "mitto-xyz",
+			"MentionTS":   "2026-07-16T11:00:00Z",
+			"MentionBody": "how do I run tests?",
+			"Commit":      "false",
+		},
+		Iteration: IterationContext{IsLoop: true},
+	}
+	outB := render(ctxB)
+	if !strings.Contains(outB, "mitto-xyz") {
+		t.Errorf("branch (b): expected bead ID 'mitto-xyz' in output; got:\n%s", outB)
+	}
+	if !strings.Contains(outB, "do NOT commit") {
+		t.Errorf("branch (b): expected Commit=false 'do NOT commit' copy in output; got:\n%s", outB)
+	}
+	if strings.Contains(outB, "git add <file>") {
+		t.Errorf("branch (b): Commit=false rendered the Commit=true git-add guidance")
+	}
+	if !strings.Contains(outB, `"IssueID": "mitto-xyz"`) {
+		t.Errorf("branch (b): expected resolved target 'mitto-xyz' passed as IssueID; got:\n%s", outB)
+	}
+
+	// (c) No target resolvable — neither BeadsIssue nor Args.IssueID set.
+	ctxC := &PromptEnabledContext{}
+	outC := render(ctxC)
+	if !strings.Contains(outC, "No target bead is resolvable") {
+		t.Errorf("branch (c): expected 'No target bead is resolvable' guidance; got:\n%s", outC)
+	}
+	if !strings.Contains(outC, "No target bead to work on") {
+		t.Errorf("branch (c): expected 'No target bead to work on' Step 1 fallback; got:\n%s", outC)
+	}
+	if strings.Contains(outC, "bd show  ") || strings.Contains(outC, "bd show \n") {
+		t.Errorf("branch (c): found broken empty 'bd show ' command in output")
+	}
+	if !strings.Contains(outC, "<target-bead>") {
+		t.Errorf("branch (c): expected the '<target-bead>' placeholder in the Step 4 handoff commands; got:\n%s", outC)
+	}
+}
