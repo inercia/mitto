@@ -176,7 +176,7 @@ type Server struct {
 	queueTitleWorker *conversation.QueueTitleWorker
 
 	// Loop runner for scheduled prompt delivery
-	loopRunner *LoopRunner
+	loopRunner *conversation.LoopRunner
 
 	// Callback index for mapping callback tokens to session IDs
 	callbackIndex       *conversation.CallbackIndex
@@ -948,7 +948,7 @@ func NewServer(config Config) (*Server, error) {
 	session.ConditionValidator = configPkg.ValidateCondition
 
 	// Initialize loop runner for scheduled prompt delivery and session housekeeping
-	s.loopRunner = NewLoopRunner(store, sessionMgr, logger)
+	s.loopRunner = conversation.NewLoopRunner(store, sessionMgr, logger)
 	// Share the self-suppressing beads client so the loop runner's own
 	// onTasks list reads do not bounce back through the watcher as external
 	// changes (which would spuriously re-fire onTasks loop conversations).
@@ -1062,8 +1062,8 @@ func NewServer(config Config) (*Server, error) {
 			s.loopRunner.StopLoopForArchive(sessionID, session.StoppedReasonArchived)
 		},
 		ApplyOnCloseProcessors:            sessionMgr.ApplyOnCloseProcessors,
-		ErrSessionBusy:                    ErrSessionBusy,
-		ErrLoopNotEnabled:                 ErrLoopNotEnabled,
+		ErrSessionBusy:                    conversation.ErrSessionBusy,
+		ErrLoopNotEnabled:                 conversation.ErrLoopNotEnabled,
 		LoopDelayFloor:                    s.loopDelayFloor,
 		BroadcastLoopUpdated:              s.BroadcastLoopUpdated,
 		BroadcastBeadsCleanupProgress:     s.BroadcastBeadsCleanupProgress,
@@ -1185,7 +1185,7 @@ func NewServer(config Config) (*Server, error) {
 
 		return resumeErr
 	})
-	s.loopRunner.SetAutoUnarchiveRecovery(true, DefaultAutoUnarchiveRetryInterval, DefaultAutoUnarchiveStaggerInterval)
+	s.loopRunner.SetAutoUnarchiveRecovery(true, conversation.DefaultAutoUnarchiveRetryInterval, conversation.DefaultAutoUnarchiveStaggerInterval)
 
 	// Configure auto-archive inactive sessions if enabled
 	if config.MittoConfig != nil && config.MittoConfig.Session != nil {
@@ -1536,7 +1536,7 @@ func (s *Server) GetSessionManager() *conversation.SessionManager {
 // LoopRunner returns the server's loop runner.
 // This is primarily used by integration tests to drive OnBeadsChanged directly
 // and to inject a fake beads.Client via SetBeadsClient.
-func (s *Server) LoopRunner() *LoopRunner {
+func (s *Server) LoopRunner() *conversation.LoopRunner {
 	return s.loopRunner
 }
 
