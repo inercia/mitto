@@ -371,6 +371,10 @@ prompt: |
 
   ## Your job
 
+  Your target bead is **`<id>`**. Every `bd` write (comment, label, commit, close)
+  MUST target that ID — never a different one. `bd show <id>` / `bd comments <id>`
+  are your source of truth; do not act on state you cannot see there.
+
   1. Carry out the instruction. Read state with `bd show <id> --long --json` and
      `bd comments <id> --json`. Interpret charitably but do NOT invent scope.
   2. Take the smallest `bd` action that satisfies it (close / update / comment /
@@ -405,9 +409,42 @@ prompt: |
      {{- else -}}
      If you changed files, commit ONLY those files by explicit path
      (`git add <file> ...`, never `-A` / `.` / `-a`) with a concise conventional
-     message. Skip if nothing changed.
+     message that references the bead — the trailing `(refs <id>)` or `Refs: <id>`
+     footer is the audit link back to the tracker:
+
+     ```
+     <type>(<scope>): <one-line summary> (refs <id>)
+     ```
+
+     Skip if nothing changed.
      {{- end }}
-  6. Report to the parent via `mitto_children_tasks_report` with a one-line summary.
+  6. **Close the bead if the mention is completed.** Close ONLY when ALL of the
+     following hold — otherwise leave the bead open (the back-reference in step 4
+     is sufficient bookkeeping):
+
+     - the mention itself asked for closure (e.g. "@mitto close this", "@mitto
+       done", "@mitto mark fixed"), OR the work performed fully satisfies the
+       stated intent AND leaves no known follow-up on this bead;
+     - you did NOT defer in step 3;
+     - {{ if eq .Args.Commit "false" -}}
+       any file changes from step 5 are committed
+       (with `Commit=false` you are not permitted to commit, so any file change
+       means the bead is NOT yet resolvable — leave it open for the human);
+       {{- else -}}
+       any file changes from step 5 are committed;
+       {{- end }}
+     - the bead currently has no open child dependency (`bd show <id> --json |
+       jq '.dependencies'` — bail on any `dependency_type: parent-child` whose
+       child is still `status: open`).
+
+     If all four hold:
+
+     ```bash
+     bd close <id> --reason "@mitto mention at <ts>: <one-line summary>"
+     ```
+  7. Report to the parent via `mitto_children_tasks_report` with a one-line summary
+     including `<action>` (addressed | deferred | closed), `<committed>` (yes | no |
+     n/a), and target `<id>`.
 
   ## Constraints
 
@@ -415,6 +452,8 @@ prompt: |
   - Never edit or remove the original `@mitto` comment.
   - Never fabricate a back-reference for a mention you did not address —
     `[addressed-comment: <ts>]` is a receipt, not a shortcut.
+  - Never close a bead you deferred, and never close a bead that still has
+    uncommitted work on disk (see step 6 conditions).
   ```
 
   Record the returned `conversation_id` as **`<child-id>`**. On create failure, jump
@@ -616,6 +655,20 @@ prompt: |
     surfaces new work faster. Never let the child list grow unbounded.
   - **Never duplicate a spawn.** Cross-check `beads_issue` (and, for §A, mention
     `<ts>` in the child title) on `{{ .Children.MCPText }}` before every create.
+  - **Never reuse a child for a different task.** Each child conversation is bound
+    for life to the bead / mention it was spawned for — that binding is the child's
+    entire context, prompt, and history. Do NOT call `mitto_conversation_send_prompt`
+    to hand an existing child a different bead, a different `@mitto` mention, or any
+    unrelated instruction: the child's accumulated context would poison the new task
+    (stale investigation notes, wrong bead ID in commits, wrong `bd close` target,
+    wrong scope). One child ↔ one bead / one mention, always. If a bead needs work
+    and every eligible child is busy on a different bead, the correct action is
+    "wait" (Step 6, at-cap yield) — NOT "repurpose an idle child". The ONLY legitimate
+    uses of `mitto_conversation_send_prompt` on an existing child are (a) nudging the
+    SAME child about the SAME bead (e.g. answering a `needs-human` clarification the
+    child asked for), or (b) instructing it to stop. For any new bead / new mention,
+    always spawn a FRESH child with `mitto_conversation_new` so its context starts
+    clean and stays scoped to that single target.
   - **Skip beads with active conversations.** Any bead whose `beads_issue` matches
     a non-archived child in `{{ .Children.MCPText }}` (regardless of whether that
     child was spawned by us or opened by a user) is excluded from all three sets —
