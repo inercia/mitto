@@ -1,4 +1,6 @@
-package config
+// Package watcher observes .beads/ directories for change events and dispatches
+// them to registered subscribers.
+package watcher
 
 import (
 	"log/slog"

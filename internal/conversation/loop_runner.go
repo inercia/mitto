@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/inercia/mitto/internal/beads"
+	"github.com/inercia/mitto/internal/beads/watcher"
 	"github.com/inercia/mitto/internal/config"
 	"github.com/inercia/mitto/internal/session"
 )
@@ -222,7 +223,7 @@ type LoopRunner struct {
 	// Stop() can Unsubscribe(r) and drop out of the watcher's fan-out list
 	// before shutdown continues (mitto-cbx). Nil in tests that don't wire
 	// a watcher — Stop() handles the nil case.
-	beadsWatcher *config.BeadsWatcher
+	beadsWatcher *watcher.BeadsWatcher
 
 	// tasksEvaluator compiles and evaluates onTasks CEL conditions. Built once at
 	// construction; nil if the CEL environment failed to initialize, in which case

@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/inercia/mitto/internal/beads"
-	configPkg "github.com/inercia/mitto/internal/config"
+	"github.com/inercia/mitto/internal/beads/watcher"
 )
 
 // stubBeadsClient is a minimal beads.Client for the adapter test. Only List is
@@ -103,7 +103,7 @@ func TestBeadsCacheWatcherSubscriber_InvalidatesOnEvent(t *testing.T) {
 
 	// Fire the adapter with an event whose WorkingDirs contains dir.
 	adapter := &beadsCacheWatcherSubscriber{cache: cache}
-	adapter.OnBeadsChanged(configPkg.BeadsChangeEvent{
+	adapter.OnBeadsChanged(watcher.BeadsChangeEvent{
 		WorkingDirs: []string{dir},
 		ChangedDirs: []string{filepath.Join(dir, ".beads")},
 		Timestamp:   time.Now(),
@@ -123,8 +123,8 @@ func TestBeadsCacheWatcherSubscriber_InvalidatesOnEvent(t *testing.T) {
 // watcher fires an event.
 func TestBeadsCacheWatcherSubscriber_NilSafe(t *testing.T) {
 	var nilAdapter *beadsCacheWatcherSubscriber
-	nilAdapter.OnBeadsChanged(configPkg.BeadsChangeEvent{WorkingDirs: []string{"/x"}})
+	nilAdapter.OnBeadsChanged(watcher.BeadsChangeEvent{WorkingDirs: []string{"/x"}})
 
 	empty := &beadsCacheWatcherSubscriber{}
-	empty.OnBeadsChanged(configPkg.BeadsChangeEvent{WorkingDirs: []string{"/x"}})
+	empty.OnBeadsChanged(watcher.BeadsChangeEvent{WorkingDirs: []string{"/x"}})
 }

@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/inercia/mitto/internal/beads"
+	"github.com/inercia/mitto/internal/beads/watcher"
 	"github.com/inercia/mitto/internal/config"
 	"github.com/inercia/mitto/internal/session"
 )
@@ -28,8 +29,8 @@ const tasksListTimeout = 30 * time.Second
 // breaker (Layer 3) auto-pauses the trigger.
 const tasksNoProgressLimit = 3
 
-// Compile-time assertion: *LoopRunner implements config.BeadsSubscriber.
-var _ config.BeadsSubscriber = (*LoopRunner)(nil)
+// Compile-time assertion: *LoopRunner implements watcher.BeadsSubscriber.
+var _ watcher.BeadsSubscriber = (*LoopRunner)(nil)
 
 // SetBeadsClient injects the beads.Client used to list issues for onTasks
 // condition evaluation. Intended for tests; production code may leave this
@@ -44,7 +45,7 @@ func (r *LoopRunner) SetBeadsClient(c beads.Client) {
 // BeadsSubscriber. Stop() calls Unsubscribe(r) on it so that in-flight
 // debounced fan-outs during shutdown no longer route to a stopped runner
 // (mitto-cbx). Safe to leave nil in tests that don't wire a watcher.
-func (r *LoopRunner) SetBeadsWatcher(w *config.BeadsWatcher) {
+func (r *LoopRunner) SetBeadsWatcher(w *watcher.BeadsWatcher) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.beadsWatcher = w
@@ -90,7 +91,7 @@ func (r *LoopRunner) SetTasksQuiescenceWindow(d time.Duration) {
 	r.tasksQuiescenceWindow = d
 }
 
-// OnBeadsChanged implements config.BeadsSubscriber. It is called by the
+// OnBeadsChanged implements watcher.BeadsSubscriber. It is called by the
 // BeadsWatcher whenever a watched .beads/ directory changes. For every
 // enabled onTasks conversation whose working directory matches one of the
 // changed directories, it diffs the latest beads snapshot against that
@@ -99,7 +100,7 @@ func (r *LoopRunner) SetTasksQuiescenceWindow(d time.Duration) {
 //
 // The beads snapshot for each distinct working directory is listed at most
 // once per call, regardless of how many onTasks conversations share it.
-func (r *LoopRunner) OnBeadsChanged(event config.BeadsChangeEvent) {
+func (r *LoopRunner) OnBeadsChanged(event watcher.BeadsChangeEvent) {
 	if r.store == nil || r.tasksEvaluator == nil {
 		return
 	}

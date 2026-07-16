@@ -15,8 +15,8 @@ import (
 	"time"
 
 	"github.com/inercia/mitto/internal/beads"
+	"github.com/inercia/mitto/internal/beads/watcher"
 	"github.com/inercia/mitto/internal/client"
-	"github.com/inercia/mitto/internal/config"
 	"github.com/inercia/mitto/internal/conversation"
 	"github.com/inercia/mitto/internal/session"
 )
@@ -112,8 +112,8 @@ func marshalOnTasksIssues(t *testing.T, rows ...map[string]any) []byte {
 	return raw
 }
 
-func onTasksChangeEvent(dir string) config.BeadsChangeEvent {
-	return config.BeadsChangeEvent{WorkingDirs: []string{dir}}
+func onTasksChangeEvent(dir string) watcher.BeadsChangeEvent {
+	return watcher.BeadsChangeEvent{WorkingDirs: []string{dir}}
 }
 
 // onTasksIssuesJSONEqual reports whether a and b decode to the same list of
