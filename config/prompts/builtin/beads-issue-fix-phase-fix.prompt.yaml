@@ -79,38 +79,83 @@ prompt: |
   with red tests. If after reasonable effort you cannot make them pass, defer via
   Step 4.
 
-  ## Step 3 — Record, advance the label{{ if $commit }}, and commit{{ end }}
+  ## Step 3 — Record, advance the label{{ if $commit }}, and commit{{ end }} — MANDATORY CLOSURE
 
-  When the reproduction test passes and adjacent tests are still green, record the
-  fix and advance the state:
+  When the reproduction test passes and adjacent tests are still green, execute
+  the following checklist **in order**. This is not optional prose: every item
+  must complete before the turn ends, and Step 3.V verifies each item actually
+  landed. Historically this closure has been the single most common execution
+  miss (agent writes the Fix comment, then stops without labeling / committing),
+  which leaves the bead lying about the state of the tree — the verification
+  step exists specifically to catch that class of miss.
+
+  ### Step 3.1 — Record the fix on the bead
 
   ```bash
   bd comment {{ $target }} "Fix: <one-line description of the change>. Reproduction test now passes: <command>. Adjacent tests green: <command>."
+  ```
+
+  ### Step 3.2 — Advance the state machine
+
+  Only after Step 3.1 has posted{{ if not $commit }} and the diff is clean{{ end }}:
+
+  ```bash
   bd update {{ $target }} --add-label fixed
   ```
 
-  Only add the label after the comment is posted{{ if not $commit }} and the diff is
-  clean{{ end }}.
-
   {{ if $commit -}}
-  Then commit the fix as a **single, focused commit** using the project's commit
-  conventions and reference the bead ID in the message:
+  ### Step 3.3 — Format, then commit (explicit paths only)
+
+  Before staging, run `make fmt` (or the language-appropriate formatter). The
+  project's pre-commit hook rejects gofmt-dirty commits — running the formatter
+  up front avoids a blocked commit and re-stage cycle.
 
   ```bash
-  git add -A
-  git commit -m "fix({{ $target }}): <one-line summary>" -m "<body: what changed and why, reference {{ $target }}>"
+  make fmt
   ```
 
-  Do **not** push automatically — the driver / user decides when to push. If the
-  working tree has unrelated staged changes, do not include them in this commit;
-  reset them and commit only the fix hunks.
+  Then commit the fix as a **single, focused commit** with **explicit paths** —
+  never `git add -A` / `git add .`. Concurrent conversations frequently leave
+  unrelated dirty files in the working tree (per the concurrent-loop stash-reset
+  gotcha), and a wildcard stage sweeps them into the fix commit.
+
+  ```bash
+  git add <path1> <path2> ...      # only the files YOU touched for this fix
+  git status --porcelain           # confirm only fix files are staged
+  git commit -m "fix({{ $target }}): <one-line summary>" -m "<body: what changed and why. Refs: {{ $target }}>"
+  ```
+
+  Do **not** push automatically — the driver / user decides when to push.
   {{- else -}}
-  Do **not** commit. Leave the fix changes staged/unstaged for the user to review;
-  the bead comment already records what changed.
+  ### Step 3.3 — Do NOT commit
+
+  Leave the fix changes staged/unstaged for the user to review; the bead comment
+  already records what changed.
   {{- end }}
 
-  Then stop — the driver's next scheduled run will observe `fixed` and close the
-  bug via its inline "Done" branch.
+  ### Step 3.V — Self-verification (MANDATORY before ending the turn)
+
+  Run each of these commands and confirm the expected result. If any check
+  fails, the corresponding step above was NOT completed — go back and finish
+  it, then re-run the failing check. Do **not** end the turn with a red check.
+
+  ```bash
+  # V.1: bead carries the `fixed` label
+  bd show {{ $target }} --json | python3 -c "import json,sys; d=json.load(sys.stdin); d=d[0] if isinstance(d,list) else d; assert 'fixed' in d.get('labels',[]), 'MISSING fixed label'; print('OK: fixed label present')"
+
+  # V.2: `Fix:` comment is on the bead
+  bd show {{ $target }} --include-comments | grep -F "Fix:" >/dev/null && echo "OK: Fix comment present" || echo "MISSING Fix: comment"
+  {{ if $commit }}
+  # V.3: commit exists on HEAD referencing this bead
+  git log -1 --format=%B | grep -F "{{ $target }}" >/dev/null && echo "OK: commit references {{ $target }}" || echo "MISSING commit for {{ $target }}"
+
+  # V.4: working tree has no leftover changes for the files you touched
+  git status --porcelain
+  {{- end }}
+  ```
+
+  Only after all checks print `OK`, stop — the driver's next scheduled run will
+  observe `fixed` and close the bug via its inline "Done" branch.
   {{- end }}
 
   ## Step 4 — Blocked → Defer + Handoff
