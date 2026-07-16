@@ -553,6 +553,33 @@ func TestPromptDispatcher_ResolveAndSubstitute_ResolverSuccess(t *testing.T) {
 	}
 }
 
+// TestResolveAndSubstitute_PromptNameAlwaysResolvedWhenSet verifies the mitto-kt6
+// resolver-layer defense: whenever meta.PromptName is set, the named prompt is
+// resolved and its body replaces any incoming free-text message — even a
+// non-empty placeholder like "__placeholder__". This closes the class for any
+// entry point (e.g. a queued row) that might carry both fields.
+func TestResolveAndSubstitute_PromptNameAlwaysResolvedWhenSet(t *testing.T) {
+	p := promptDispatcher{}
+	d := newFakePromptDeps()
+	d.resolver = func(name, _ string) (string, error) {
+		if name != "X" {
+			t.Fatalf("unexpected prompt name: %q", name)
+		}
+		return "resolved body of X", nil
+	}
+
+	msg, _, _, err := p.resolveAndSubstitute(d, "__placeholder__", PromptMeta{PromptName: "X"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if msg != "resolved body of X" {
+		t.Fatalf("expected resolved body to replace placeholder, got %q", msg)
+	}
+	if strings.Contains(msg, "__placeholder__") {
+		t.Fatalf("placeholder leaked into resolved message: %q", msg)
+	}
+}
+
 func TestPromptDispatcher_ResolveAndSubstitute_NoPromptName_PassthroughMessage(t *testing.T) {
 	p := promptDispatcher{}
 	d := newFakePromptDeps()

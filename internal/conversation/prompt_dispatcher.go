@@ -190,8 +190,11 @@ const (
 )
 
 // resolveAndSubstitute covers the top of PromptWithMeta:
-//  1. Name-resolution: if meta.PromptName != "" && message == "", resolve via promptResolver
-//     (error if no resolver, or if resolution fails).
+//  1. Name-resolution: if meta.PromptName != "", resolve via promptResolver
+//     (error if no resolver, or if resolution fails). The resolved body replaces
+//     any incoming message — the name always wins (mitto-kt6). This closes the
+//     class where a queued row or a non-MCP entry point carries both a
+//     placeholder message and a PromptName.
 //  2. Cache read/merge: for a named prompt, inject cached argument values into
 //     meta.Arguments before template render so .Args includes them at render time.
 //  3. Go template rendering (mitto-m7sb.5): fast-path guarded; fail-closed for
@@ -201,7 +204,7 @@ const (
 // Returns (resolvedMessage, argCount, updatedMeta, error). On non-nil error the
 // caller should return the error immediately (the two early-return paths are preserved).
 func (p promptDispatcher) resolveAndSubstitute(d promptDeps, message string, meta PromptMeta) (string, int, PromptMeta, error) {
-	if meta.PromptName != "" && message == "" {
+	if meta.PromptName != "" {
 		resolver := d.pdPromptResolver()
 		if resolver == nil {
 			return "", 0, meta, &promptResolverError{name: meta.PromptName}
