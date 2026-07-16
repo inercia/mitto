@@ -1572,3 +1572,151 @@ testWithCleanup.describe("Beads view - create form fields", () => {
     },
   );
 });
+
+/**
+ * Beads view — tasksList shortcut buttons must not be gated by the active
+ * sidebar conversation (mitto-kvot).
+ *
+ * `useBeadsIntegration.fetchBeadsListPromptsForWorkspace` previously appended
+ * `session_id=<activeSessionId>` to `/api/workspace-prompts?enabled_context=workspace`.
+ * Because the backend evaluates `enabledWhen` against that session's context,
+ * prompts gated on `!Session.IsChild` would silently drop out whenever the
+ * incidentally-active sidebar conversation was a child — leaving the
+ * `beads-shortcut-btn-*` buttons in the Tasks header flickering
+ * greyed-out/"not found". Since these menus always spawn NEW root conversations,
+ * per-session gating is semantically wrong.
+ *
+ * This spec mocks `/api/workspace-prompts` to fail (return no prompts) if the
+ * request URL still carries `session_id=`, and to return the shortcut prompt
+ * otherwise. It also mocks `/api/folders/shortcuts` to register a tasksList
+ * button targeting that prompt. After the fix, opening the Tasks view resolves
+ * the shortcut prompt and the button renders enabled; before the fix (or if
+ * the query param leaks back in), the mock returns nothing and the button
+ * would render disabled with an "not found" aria-label.
+ */
+testWithCleanup.describe(
+  "Beads view - tasksList shortcuts not gated by active conversation",
+  () => {
+    const SHORTCUT_PROMPT_NAME = "Start work on ready tasks";
+
+    // A single tasksList prompt with an enabledWhen gate that includes
+    // !Session.IsChild. The frontend only cares about `name` + `menus` here;
+    // the mocked backend does the gating by inspecting the request URL.
+    const SHORTCUT_PROMPT = {
+      name: SHORTCUT_PROMPT_NAME,
+      description: "Kick off work on the next ready task.",
+      menus: "beadsList",
+      enabled: true,
+    };
+
+    testWithCleanup.beforeEach(async ({ page, request, apiUrl, helpers }) => {
+      // Mock the beads list so the table renders without the external `bd` binary.
+      await page.route(/\/api\/issues(\?|$)/, async (route) => {
+        await route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify(MOCK_ISSUES),
+        });
+      });
+
+      // Register a folder-level tasksList shortcut pointing at the mocked
+      // prompt. This is what makes the shortcut button render in the Tasks
+      // toolbar; the button's enabled state then depends on whether the
+      // workspace-prompts fetch resolves the prompt object.
+      await page.route(/\/api\/folders\/shortcuts(\?|$)/, async (route) => {
+        if (route.request().method() !== "GET") return route.fallback();
+        await route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify({
+            sections: {
+              tasksList: [{ prompt: SHORTCUT_PROMPT_NAME, icon: "" }],
+            },
+          }),
+        });
+      });
+      // Global shortcuts endpoint: return an empty section list. The frontend
+      // merges global + folder shortcuts; keeping global empty leaves only
+      // the folder entry above so the assertions target a known-index button.
+      await page.route(/\/api\/global\/shortcuts(\?|$)/, async (route) => {
+        if (route.request().method() !== "GET") return route.fallback();
+        await route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify({ sections: { tasksList: [] } }),
+        });
+      });
+
+      // Capture every workspace-prompts URL the frontend requests so the test
+      // body can assert the fix: session_id must not leak into the query.
+      const workspacePromptURLs: string[] = [];
+      (page as any).__workspacePromptURLs = workspacePromptURLs;
+      await page.route(/\/api\/workspace-prompts(\?|$)/, async (route) => {
+        if (route.request().method() !== "GET") return route.fallback();
+        const url = route.request().url();
+        workspacePromptURLs.push(url);
+        // Simulate the backend's session-scoped enabledWhen gate: if a
+        // session_id is passed, pretend the incidentally-active conversation
+        // is a child and drop the !Session.IsChild-gated prompt. Otherwise
+        // return the prompt (session-less workspace defaults treat
+        // Session.IsChild=false).
+        const hasSessionId = /[?&]session_id=/.test(url);
+        await route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify({
+            prompts: hasSessionId ? [] : [SHORTCUT_PROMPT],
+          }),
+        });
+      });
+
+      await request.post(apiUrl("/api/workspaces"), {
+        data: { acp_server: AGENT_NAME, working_dir: WORKSPACE_ALPHA },
+      });
+      const createResp = await request.post(apiUrl("/api/sessions"), {
+        data: {
+          name: `Beads Seed ${Date.now()}`,
+          working_dir: WORKSPACE_ALPHA,
+        },
+      });
+      expect(createResp.ok()).toBeTruthy();
+
+      await helpers.navigateAndWait(page);
+    });
+
+    testWithCleanup(
+      "tasksList shortcut button is enabled regardless of active conversation",
+      async ({ page, timeouts }) => {
+        await openBeads(page, timeouts);
+
+        // The tasksList shortcut renders inside the beads header toolbar.
+        // testId is `beads-shortcut-btn-0` for the first configured shortcut.
+        const shortcutBtn = page
+          .locator('[data-testid="beads-shortcut-btn-0"]')
+          .first();
+        await expect(shortcutBtn).toBeVisible({
+          timeout: timeouts.shortAction,
+        });
+
+        // Ground truth: the button resolves its linked prompt and is
+        // therefore enabled. Before the fix, session_id=<active> in the
+        // workspace-prompts query caused the backend to drop the prompt
+        // (via !Session.IsChild), so the button rendered disabled with an
+        // aria-label containing "not found".
+        await expect(shortcutBtn).not.toBeDisabled();
+        const aria = await shortcutBtn.getAttribute("aria-label");
+        expect(aria || "").not.toContain("not found");
+        expect(aria || "").toContain(SHORTCUT_PROMPT_NAME);
+
+        // Direct assertion of the fix: no workspace-prompts request from
+        // this Tasks view carried a session_id query parameter. If the hook
+        // ever re-adds session_id, this line pinpoints the regression.
+        const urls: string[] = (page as any).__workspacePromptURLs || [];
+        expect(urls.length).toBeGreaterThan(0);
+        for (const url of urls) {
+          expect(url).not.toMatch(/[?&]session_id=/);
+        }
+      },
+    );
+  },
+);

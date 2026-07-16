@@ -552,7 +552,6 @@ function App() {
       setLoopScheduleDialog({ prompt, onSchedule }),
     onOpenPromptParamDialog: (prompt, parameters, onSubmit) =>
       setPromptParamDialog({ prompt, parameters, onSubmit }),
-    activeSessionId,
   });
 
   // Ref mirror of beadsIssueOpen: the native swipe-gesture handlers are

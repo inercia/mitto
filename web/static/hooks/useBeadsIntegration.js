@@ -49,7 +49,6 @@ export function useBeadsIntegration({
   setSidePanelTab,
   onOpenLoopDialog,
   onOpenPromptParamDialog,
-  activeSessionId,
 }) {
   const { startConversationWithPrompt } = useConversationSeeding({
     newSession,
@@ -128,11 +127,12 @@ export function useBeadsIntegration({
   // Per-row params sent: item_kind, item_id, item_status, item_type,
   // item_priority (when numeric), item_labels (comma-separated, when non-empty).
   //
-  // enabled_context=workspace tells the server to evaluate the full enabledWhen
-  // gates even without a session (mitto-gns). We also pass the current active
-  // session_id when one exists so real per-session permission flags +
-  // session.isChild apply (approach B); the server falls back to session-less
-  // workspace defaults only when no session is active.
+  // session_id is intentionally NOT passed — these menus always spawn NEW root
+  // conversations via newSession, so gating by the incidentally-open
+  // conversation's Session.IsChild / Permissions / Tools would be semantically
+  // wrong (mitto-kvot). enabled_context=workspace tells the server to evaluate
+  // the full enabledWhen gates against session-less workspace defaults
+  // (Session.IsChild=false, Permissions.CanStartConversation=true).
   const fetchBeadsPromptsForWorkspace = useCallback(
     async (workingDir, issue) => {
       if (!workingDir) return [];
@@ -140,7 +140,6 @@ export function useBeadsIntegration({
         const params = {
           working_dir: workingDir,
           enabled_context: "workspace",
-          session_id: activeSessionId,
         };
         if (issue) {
           params.item_kind = "beadsIssue";
@@ -166,7 +165,7 @@ export function useBeadsIntegration({
         return [];
       }
     },
-    [activeSessionId],
+    [],
   );
 
   // Fetch the prompts whose `menus` list includes `beadsList` for a workspace
@@ -174,11 +173,12 @@ export function useBeadsIntegration({
   // These prompts operate on the whole issue list (e.g. cleanup, triage) rather
   // than a single issue, so they take no item parameters.
   //
-  // enabled_context=workspace asks the server to evaluate the full enabledWhen
-  // gates (commandExists/dirExists/!session.isChild/tools/permissions) for these
-  // prompts (mitto-gns); we pass the current active session_id when one exists so
-  // real per-session flags + session.isChild apply (approach B), falling back to
-  // session-less workspace defaults only when no session is active.
+  // session_id is intentionally NOT passed — these menus always spawn NEW root
+  // conversations via newSession, so gating by the incidentally-open
+  // conversation's Session.IsChild / Permissions / Tools would be semantically
+  // wrong (mitto-kvot). enabled_context=workspace tells the server to evaluate
+  // the full enabledWhen gates against session-less workspace defaults
+  // (Session.IsChild=false, Permissions.CanStartConversation=true).
   const fetchBeadsListPromptsForWorkspace = useCallback(
     async (workingDir) => {
       if (!workingDir) return [];
@@ -187,7 +187,6 @@ export function useBeadsIntegration({
           endpoints.workspacePrompts.list({
             working_dir: workingDir,
             enabled_context: "workspace",
-            session_id: activeSessionId,
           }),
         );
         if (!res.ok) return [];
@@ -206,7 +205,7 @@ export function useBeadsIntegration({
         return [];
       }
     },
-    [activeSessionId],
+    [],
   );
 
   // Close the standalone issue overlay (BeadsIssueView) if it is open. Called
