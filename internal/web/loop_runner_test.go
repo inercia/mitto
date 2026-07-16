@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -4514,5 +4515,121 @@ func TestLoopRunner_ContextWindowFailure_OnCompletionLoop_AutoPauses(t *testing.
 		t.Errorf("onLoopAutoStopped invocation count = %d, want 1 "+
 			"(onCompletion loops must broadcast the auto-pause — mitto-4he)",
 			autoStopCalls)
+	}
+}
+
+// TestLoopRunner_OnTasks_PromptResolveFailure_AutoPauses is the reproduction
+// test for mitto-uhnc: an onTasks-triggered loop whose loop_prompt_name no
+// longer resolves (e.g. the builtin prompt was renamed) must auto-pause after
+// MaxPromptResolveFailures consecutive fires, exactly like the scheduled-loop
+// path in checkSession (loop_runner.go:1363). Today processTasksChange's
+// tasksActionFire branch only WARNs on any error from triggerNowWithTasksDelta
+// (loop_runner_tasks.go:295-304) and never routes ErrPromptResolveFailed
+// through handlePromptResolveFailure, so the failure counter never bumps, the
+// loop stays enabled, and onLoopAutoStopped never fires — the conversation is
+// orphaned and silently retries forever.
+//
+// This test drives processTasksChange three times with a resolver that always
+// fails and asserts the expected (post-fix) behaviour. It fails today because
+// of the parity gap; the fix in loop_runner_tasks.go will make it pass.
+func TestLoopRunner_OnTasks_PromptResolveFailure_AutoPauses(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	// Create an onTasks session but replace the free-text Prompt with a
+	// PromptName that will not resolve, mirroring the mitto-uhnc scenario
+	// where a builtin prompt was renamed out from under the loop config.
+	const sessionID = "ontasks-resolve-fail"
+	meta := session.Metadata{SessionID: sessionID, ACPServer: "test", WorkingDir: "/proj"}
+	if err := store.Create(meta); err != nil {
+		t.Fatalf("store.Create() error = %v", err)
+	}
+	loopStore := store.Loop(sessionID)
+	if err := loopStore.Set(&session.LoopPrompt{
+		PromptName: "renamed-prompt",
+		Enabled:    true,
+		Trigger:    session.TriggerOnTasks,
+	}); err != nil {
+		t.Fatalf("loopStore.Set() error = %v", err)
+	}
+
+	// Seed a baseline so evaluateTasksChange takes the tasksActionFire branch
+	// (skipping tasksActionInitBaseline).
+	rawBefore := mustMarshalRows(t, beadsRow("mitto-1", "open", "2026-01-01T00:00:00Z"))
+	if err := NewTasksBaselineStore(store.SessionDir(sessionID)).Set(rawBefore); err != nil {
+		t.Fatalf("baseline Set() error = %v", err)
+	}
+
+	// A SessionManager with a pre-registered BackgroundSession so
+	// triggerNowWithTasksDelta finds the session (bypassing ResumeSession) and
+	// reaches deliverPrompt, where the promptResolver returns
+	// ErrPromptResolveFailed.
+	sm := conversation.NewSessionManagerWithOptions(conversation.SessionManagerOptions{})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	sm.AddSessionForTest(conversation.NewTestBackgroundSessionWithCtx(sessionID, ctx, cancel))
+
+	runner := NewLoopRunner(store, sm, nil)
+	resolveErr := errors.New("prompt not found")
+	runner.SetPromptResolver(func(name, dir string) (string, error) {
+		return "", resolveErr
+	})
+
+	var autoStopCalls int
+	runner.SetOnLoopAutoStopped(func(id string, _ *session.LoopPrompt) {
+		autoStopCalls++
+		if id != sessionID {
+			t.Errorf("onLoopAutoStopped: id = %q, want %q", id, sessionID)
+		}
+	})
+
+	// Deliver material tasks changes to force tasksActionFire on every call.
+	// Each iteration must observe a delta relative to the current baseline, so
+	// we re-seed the baseline back to rawBefore between iterations (a
+	// successful tasksActionFire persists the new snapshot; here the fire is
+	// expected to fail, but we rewind explicitly to isolate the resolve-failure
+	// path from any baseline-persistence side effect).
+	loop, _ := loopStore.Get()
+	for i := 1; i <= MaxPromptResolveFailures; i++ {
+		if err := NewTasksBaselineStore(store.SessionDir(sessionID)).Set(rawBefore); err != nil {
+			t.Fatalf("iteration %d: baseline reset error = %v", i, err)
+		}
+		rawAfter := mustMarshalRows(t,
+			beadsRow("mitto-1", "open", "2026-01-01T00:00:00Z"),
+			beadsRow(fmt.Sprintf("mitto-new-%d", i), "open", "2026-01-01T00:00:00Z"),
+		)
+
+		// Sanity check: this must be a tasksActionFire decision, otherwise the
+		// test would exercise the wrong branch.
+		if got := runner.evaluateTasksChange(meta, loop, rawAfter).action; got != tasksActionFire {
+			t.Fatalf("iteration %d: evaluateTasksChange action = %v, want tasksActionFire", i, got)
+		}
+
+		runner.processTasksChange(meta, loop, loopStore, rawAfter)
+	}
+
+	// After MaxPromptResolveFailures consecutive resolve failures the loop
+	// MUST be auto-paused, matching the scheduled-loop parity contract in
+	// checkSession/handlePromptResolveFailure.
+	final, err := loopStore.Get()
+	if err != nil {
+		t.Fatalf("loopStore.Get() error = %v", err)
+	}
+	if final.Enabled {
+		t.Errorf("onTasks loop.Enabled = true after %d resolve failures; want false "+
+			"(scheduled-path parity: handlePromptResolveFailure must run — mitto-uhnc)",
+			MaxPromptResolveFailures)
+	}
+	if final.StoppedReason != session.StoppedReasonPromptUnresolved {
+		t.Errorf("onTasks loop.StoppedReason = %q, want %q "+
+			"(must record promptUnresolved like scheduled path — mitto-uhnc)",
+			final.StoppedReason, session.StoppedReasonPromptUnresolved)
+	}
+	if autoStopCalls != 1 {
+		t.Errorf("onLoopAutoStopped invocation count = %d, want 1 "+
+			"(onTasks auto-pause must broadcast — mitto-uhnc)", autoStopCalls)
 	}
 }
