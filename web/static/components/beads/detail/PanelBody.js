@@ -46,6 +46,14 @@ export function BeadsDetailPanelBody({
   setFullscreen,
   creating,
   data,
+  // mitto-zbfq: loading-mode props. When isLoading is true (and creating/data
+  // are absent), a minimal loading/error body is rendered inside the SAME
+  // Drawer used for the loaded state so the drawer element itself is not
+  // unmounted/remounted across the null→loaded transition.
+  isLoading,
+  loadingIssueId,
+  loadError,
+  onRetry,
   createParentId,
   submitting,
   viewDirty,
@@ -75,6 +83,87 @@ export function BeadsDetailPanelBody({
   handlers,
   chrome,
 }) {
+  // Loading skeleton path (mitto-zbfq): render the same Drawer shell as the
+  // loaded body so opening a beads issue from a conversation link shows a
+  // single stable slide-in; only the inner content swaps in-place when the
+  // fetch resolves. Kept minimal — no toolbar, no header actions, no
+  // action bar — because they all depend on `data`.
+  if (isLoading) {
+    return html`
+      <${Drawer}
+        dock
+        side="end"
+        isClosing=${isClosing}
+        onClose=${handlers.handleClose}
+        zClass="z-60"
+        rootStyle=${
+          fullscreen
+            ? "--dock-w:100%;--dock-maxw:100%"
+            : isMobile
+              ? "--dock-w:100%;--dock-maxw:100%"
+              : "--dock-w:40rem;--dock-maxw:85%"
+        }
+        widthClass="w-full"
+        panelClass="bg-mitto-sidebar shrink-0 h-full flex flex-col border-l border-mitto-border-1"
+      >
+        <div class="p-4 border-b border-mitto-border shrink-0">
+          <div class="flex items-center gap-2">
+            <div class="flex-1 min-w-0">
+              <h2
+                class="font-mono text-sm text-mitto-text truncate"
+                title=${loadingIssueId}
+              >
+                ${loadingIssueId}
+              </h2>
+            </div>
+            <button
+              onClick=${handlers.handleClose}
+              class="btn btn-ghost btn-square btn-sm shrink-0 inline-flex tooltip tooltip-bottom"
+              data-tip="Close"
+              aria-label="Close"
+            >
+              <${CloseIcon} className="w-5 h-5" />
+            </button>
+          </div>
+        </div>
+        <div class="flex-1 overflow-y-auto p-4">
+          ${
+            loadError
+              ? html`
+                  <div
+                    role="alert"
+                    class="alert alert-error alert-soft text-sm"
+                  >
+                    <span>${loadError}</span>
+                    ${
+                      onRetry
+                        ? html`<button
+                            class="btn btn-ghost btn-xs"
+                            onClick=${onRetry}
+                          >
+                            Retry
+                          </button>`
+                        : null
+                    }
+                  </div>
+                `
+              : html`
+                  <div
+                    class="p-4 text-center text-mitto-text-500"
+                    data-testid="beads-issue-loading"
+                  >
+                    <span
+                      class="loading loading-spinner w-5 h-5 mb-2 text-mitto-border-3"
+                    ></span>
+                    <p class="text-sm">Loading issue…</p>
+                  </div>
+                `
+          }
+        </div>
+      <//>
+    `;
+  }
+
   return html`
     <${Fragment}>
       <${Drawer}

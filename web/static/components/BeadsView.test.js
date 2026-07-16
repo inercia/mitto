@@ -16,6 +16,9 @@ import {
   matchesSearch,
   CLEANUP_PROGRESS_TOAST_INTERVAL_MS,
 } from "../utils/beads.js";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { dirname, resolve } from "node:path";
 
 // =============================================================================
 // readBeadsResponse logic
@@ -939,5 +942,86 @@ describe("BeadsIssueView history stack — external prop reset", () => {
     s = makeInitialHistory("mitto-aaa");
     expect(s.history).toEqual(["mitto-aaa"]);
     expect(s.pos).toBe(0);
+  });
+});
+
+
+// =============================================================================
+// mitto-zbfq — BeadsIssueView single-Drawer mount across loading → loaded
+// =============================================================================
+//
+// BeadsIssueView renders TWO different top-level components depending on
+// whether /api/issues/{id} has resolved: a raw <${Drawer}> placeholder while
+// loading, then <${BeadsDetailPanel}> (which itself renders a separate Drawer
+// via BeadsDetailPanelBody) once the issue arrives. Because the two branches
+// mount two DIFFERENT top-level components, Preact's diff unmounts the
+// placeholder Drawer and mounts a fresh Drawer for the loaded state — the
+// fresh Drawer replays its slide-in transition, which the user perceives as
+// a second panel opening on top of the first (the reported flicker /
+// double-animation on opening a beads issue from a conversation link).
+//
+// A pure DOM/render test of BeadsView is impractical here (BeadsView.js
+// imports window.preact globals at module load time — see the "Duplicated
+// helpers" convention in Dashboard.test.js / Message.test.js), so this
+// reproduction is a structural source-code assertion against BeadsView.js.
+// It fails today and will pass once BeadsIssueView is refactored to render
+// a single stable <Drawer> across both loading and loaded states (option 1
+// in the mitto-zbfq investigation: teach BeadsDetailPanel(Body) to render
+// its Drawer for data === null too, then drop the placeholder branch here).
+
+const __filename_bv = fileURLToPath(import.meta.url);
+const __dirname_bv = dirname(__filename_bv);
+const BEADS_VIEW_PATH = resolve(__dirname_bv, "BeadsView.js");
+
+describe("mitto-zbfq: BeadsIssueView single Drawer mount across load", () => {
+  const source = readFileSync(BEADS_VIEW_PATH, "utf8");
+
+  // Isolate the BeadsIssueView function body. The function is declared with
+  // `function BeadsIssueView(` and the return block we care about starts at
+  // `return html\``. We slice from the declaration to the next top-level
+  // `function ` declaration to keep the search scoped.
+  function extractBeadsIssueViewSource() {
+    const startMarker = "function BeadsIssueView(";
+    const startIdx = source.indexOf(startMarker);
+    expect(startIdx).toBeGreaterThan(-1);
+    // Find the next top-level function declaration after this one.
+    const afterStart = source.indexOf("\nfunction ", startIdx + startMarker.length);
+    const endIdx = afterStart === -1 ? source.length : afterStart;
+    return source.slice(startIdx, endIdx);
+  }
+
+  test("emits exactly one top-level Drawer site (placeholder + loaded share one mount)", () => {
+    const body = extractBeadsIssueViewSource();
+
+    // Count JSX Drawer opens: both `<${Drawer}` and `<${BeadsDetailPanel}`
+    // count as "mounts a Drawer" from Preact's perspective, because
+    // BeadsDetailPanel → BeadsDetailPanelBody → <${Drawer}> at the top of
+    // its body (see beads/detail/PanelBody.js). A stable-mount refactor
+    // must fold the placeholder into BeadsDetailPanel(Body) so there is
+    // exactly ONE Drawer site in BeadsIssueView.
+    const drawerSites = (body.match(/<\$\{Drawer\}/g) || []).length;
+    const panelSites = (body.match(/<\$\{BeadsDetailPanel\}/g) || []).length;
+    const totalDrawerSites = drawerSites + panelSites;
+
+    expect(totalDrawerSites).toBe(1);
+  });
+
+  test("has no `!h.data` early-return-null gate in BeadsDetailPanel", () => {
+    // The other half of the bug: BeadsDetailPanel returns null when
+    // h.data is falsy (BeadsView.js line ~208: `if (!h.creating && !h.data)
+    // return null;`), which forces callers to render a separate placeholder.
+    // The fix removes that gate so BeadsDetailPanel(Body) can render its
+    // own loading skeleton inside a single, stable Drawer.
+    const startMarker = "function BeadsDetailPanel(";
+    const startIdx = source.indexOf(startMarker);
+    expect(startIdx).toBeGreaterThan(-1);
+    const afterStart = source.indexOf("\nfunction ", startIdx + startMarker.length);
+    const endIdx = afterStart === -1 ? source.length : afterStart;
+    const body = source.slice(startIdx, endIdx);
+
+    // The buggy gate — collapse whitespace so line breaks / formatting do not
+    // hide it from the assertion.
+    const collapsed = body.replace(/\s+/g, " ");
+    expect(collapsed).not.toMatch(/if\s*\(\s*!\s*h\.creating\s*&&\s*!\s*h\.data\s*\)\s*return\s+null/);
   });
 });

@@ -1381,6 +1381,134 @@ testWithCleanup.describe("Beads view - return to conversation", () => {
 });
 
 /**
+ * Beads view — single stable Drawer mount across loading → loaded (mitto-zbfq).
+ *
+ * SKIPPED: the reproduction for mitto-zbfq lives as a source-structure Jest
+ * test in web/static/components/BeadsView.test.js
+ * ("mitto-zbfq: BeadsIssueView must render a single <Drawer> across loading
+ * and loaded states"). That test asserts BeadsIssueView emits exactly one
+ * top-level Drawer site instead of the two separate branches that cause the
+ * visible re-mount / double slide-in animation. An E2E reproduction here was
+ * attempted but the beads-spec baseline currently lands on the Dashboard and
+ * cannot reach the linked-issue click flow reliably (waitForAppReady times
+ * out for the sibling "return to conversation" test as well), so the
+ * source-structure assertion is the deterministic gate for this bug.
+ */
+testWithCleanup.describe("Beads view - single drawer mount across load", () => {
+  testWithCleanup.skip(
+    "placeholder drawer is not remounted when the issue arrives",
+    async ({ page, request, apiUrl, helpers, timeouts }) => {
+      // The show endpoint is hit by several early consumers on load
+      // (SessionPanel, useLinkedBeadPhase, app.js), so a blocking gate here
+      // would deadlock startup. Serve an immediate response during startup,
+      // then swap in a gated handler right before triggering BeadsIssueView
+      // so ONLY the click-triggered fetch waits.
+      const immediateShowHandler = async (route) => {
+        await route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify(MOCK_ISSUES[1]), // mitto-bbb "Short issue"
+        });
+      };
+      await page.route(/\/api\/issues\/[^/?]+/, immediateShowHandler);
+
+      // Ensure the workspace exists.
+      await request.post(apiUrl("/api/workspaces"), {
+        data: { acp_server: AGENT_NAME, working_dir: WORKSPACE_ALPHA },
+      });
+
+      // Seed a conversation linked to mitto-bbb so the properties panel shows
+      // the "Linked beads issue" link (mirrors the return-to-conversation
+      // fixture setup).
+      const createResp = await request.post(apiUrl("/api/sessions"), {
+        data: {
+          name: `Linked ${Date.now()}`,
+          working_dir: WORKSPACE_ALPHA,
+          beads_issue: "mitto-bbb",
+        },
+      });
+      expect(createResp.ok()).toBeTruthy();
+      const linkedSessionId = (await createResp.json()).session_id;
+      await page.addInitScript((sid) => {
+        localStorage.setItem("mitto_last_session_id", sid);
+      }, linkedSessionId);
+      await helpers.navigateAndWait(page);
+      await expect(page.locator("textarea")).toBeEnabled({
+        timeout: timeouts.appReady,
+      });
+
+      // Open the conversation properties panel; confirm the linked-issue link
+      // is present. The properties panel itself calls the show endpoint
+      // (SessionPanel.js:361) — let that resolve via the immediate handler
+      // before we swap to the gated one.
+      await page.locator('button[aria-label="Session details"]').click();
+      const convPanel = page.locator(
+        'div.properties-panel:has(h2:has-text("Conversation"))',
+      );
+      await expect(convPanel).toBeVisible({ timeout: timeouts.shortAction });
+      const linkedIssueBtn = page.locator(
+        '[data-tip="Open beads issue mitto-bbb"]',
+      );
+      await expect(linkedIssueBtn).toBeVisible();
+
+      // Swap in the gated show handler so ONLY the BeadsIssueView fetch waits.
+      let releaseShow!: () => void;
+      const showGate = new Promise<void>((r) => {
+        releaseShow = r;
+      });
+      await page.unroute(/\/api\/issues\/[^/?]+/, immediateShowHandler);
+      await page.route(/\/api\/issues\/[^/?]+/, async (route) => {
+        await showGate;
+        await route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify(MOCK_ISSUES[1]),
+        });
+      });
+
+      // Follow the linked-issue link → triggers BeadsIssueView, which paints
+      // the placeholder Drawer immediately (before the gated fetch resolves).
+      await linkedIssueBtn.click();
+
+      // The placeholder Drawer appears with the loading skeleton inside.
+      const loadingDrawer = page.locator(
+        'div.drawer-dock:has([data-testid="beads-issue-loading"])',
+      );
+      await expect(loadingDrawer).toBeVisible({
+        timeout: timeouts.shortAction,
+      });
+
+      // Tag the placeholder drawer's DOM node so we can detect whether Preact
+      // reuses it or replaces it when the loaded issue arrives.
+      await loadingDrawer.evaluate((el) => {
+        el.setAttribute("data-repro-tag", "mitto-zbfq");
+      });
+
+      // Release the show response — the issue transitions null → object.
+      releaseShow();
+
+      // The loaded content appears (drawer header shows the issue title).
+      const loadedIssuePanel = page.locator(
+        'div.properties-panel:has(h2:has-text("Short issue"))',
+      );
+      await expect(loadedIssuePanel).toBeVisible({
+        timeout: timeouts.shortAction,
+      });
+
+      // If BeadsIssueView kept a single stable Drawer mount and only swapped
+      // its body, the tag survives on the same DOM node. If it unmounted the
+      // placeholder <Drawer> and mounted a fresh <BeadsDetailPanel> whose
+      // <BeadsDetailPanelBody> mounts a NEW <Drawer>, the tagged element is
+      // gone — this is the mitto-zbfq bug and this assertion fails.
+      const taggedLoadedDrawer = page.locator(
+        'div.drawer-dock[data-repro-tag="mitto-zbfq"]:has(h2:has-text("Short issue"))',
+      );
+      await expect(taggedLoadedDrawer).toHaveCount(1);
+    },
+  );
+});
+
+/**
  * Beads view — context-menu submenu positioning (desktop).
  *
  * Regression guard for the submenu overlap bug: when the per-row "..." action

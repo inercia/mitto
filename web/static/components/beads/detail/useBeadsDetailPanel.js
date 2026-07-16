@@ -43,8 +43,18 @@ export function useBeadsDetailPanel({
   statusBusy,
   onSelectIssue,
   createParentId,
+  // Loading-mode props (mitto-zbfq): let a caller keep a single stable
+  // BeadsDetailPanel mount across the null→loaded transition instead of
+  // swapping in a separate placeholder Drawer. When isLoading is true and
+  // issue/isCreating are absent, isOpen still resolves true so the panel
+  // shell renders; BeadsDetailPanelBody renders a small loading/error
+  // skeleton inside its Drawer while `data` is null.
+  isLoading,
+  loadingIssueId,
+  loadError,
+  onRetry,
 }) {
-  const isOpen = isCreating || !!issue;
+  const isOpen = isCreating || !!issue || !!isLoading;
   const lastIssueRef = useRef(issue);
   const lastCreatingRef = useRef(isCreating);
   if (issue) lastIssueRef.current = issue;
@@ -284,6 +294,12 @@ export function useBeadsDetailPanel({
     shouldRender,
     creating,
     data,
+    // Loading-mode surface (mitto-zbfq): forwarded to PanelBody so the
+    // shared Drawer can show a spinner / error alert while `data` is null.
+    isLoading: !!isLoading && !creating && !data,
+    loadingIssueId,
+    loadError,
+    onRetry,
     // Flat props (24)
     isClosing,
     isMobile,
