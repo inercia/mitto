@@ -143,6 +143,7 @@ function PromptStopButton({ onStop }) {
  * @param {boolean} props.isArchivePending - Whether archive is pending (waiting for agent to finish)
  * @param {Array} props.predefinedPrompts - Array of predefined prompts (ChatInput dropup)
  * @param {Array} props.loopPrompts - Array of prompts for the loop prompt selector
+ * @param {Array} props.allPrompts - Full workspace prompts list (for arg-edit lookup on menu-scoped loop prompts)
  * @param {Object} props.inputRef - Ref for external focus control
  * @param {boolean} props.noSession - Whether there's no active session
  * @param {string} props.sessionId - Current session ID
@@ -174,6 +175,7 @@ export function ChatInput({
   isArchivePending = false,
   predefinedPrompts = [],
   loopPrompts = [],
+  allPrompts = [],
   inputRef,
   noSession = false,
   sessionId,
@@ -1128,11 +1130,14 @@ export function ChatInput({
     [sessionId, isLoopSaving, loopPrompts, onOpenPromptParamDialog],
   );
 
-  // Open the PromptParameterDialog pre-filled with current loop arguments
+  // Open the PromptParameterDialog pre-filled with current loop arguments.
+  // Prefer allPrompts (full workspace list) so menu-scoped loop prompts
+  // (e.g. `menus: beadsList`) — which are filtered out of loopPrompts by
+  // useWorkspacePrompts — still resolve for arg editing.
   const handleEditLoopArguments = useCallback(() => {
-    const prompt = (loopPrompts || []).find(
-      (p) => p.name === loopPromptName,
-    );
+    const prompt =
+      (allPrompts || []).find((p) => p.name === loopPromptName) ||
+      (loopPrompts || []).find((p) => p.name === loopPromptName);
     if (!prompt) return;
     const params = promptParameters(prompt);
     if (params.length === 0) return;
@@ -1159,6 +1164,7 @@ export function ChatInput({
       { initialValues: loopArguments, hostSessionId: sessionId },
     );
   }, [
+    allPrompts,
     loopPrompts,
     loopPromptName,
     loopArguments,
@@ -2496,6 +2502,7 @@ ${activeUIPrompt.text || ""}</textarea
           onMaxIterationsChange=${handleLoopMaxIterationsChange}
           onLoopEnabledChange=${handleLoopEnabledChange}
           prompts=${loopPrompts}
+          allPrompts=${allPrompts}
           selectedPromptName=${loopPromptName}
           selectedPromptBody=${loopPrompt}
           onPromptSelect=${handleLoopPromptSelect}

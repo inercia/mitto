@@ -1455,3 +1455,92 @@ describe("buildPromptGroupMenuItems", () => {
     expect(calledOpts).toEqual({ asLoop: false });
   });
 });
+
+// =============================================================================
+// Loop-prompt name resolution (allPrompts fallback for menu-scoped loop prompts)
+//
+// Regression test for mitto-uo8e. When a loop conversation runs a prompt whose
+// `menus` front-matter targets a non-loop scope (e.g. `menus: beadsList` — the
+// builtin "Loop processing tasks"), useWorkspacePrompts filters that prompt out
+// of `loopPrompts`. LoopFrequencyPanel and ChatInput.handleEditLoopArguments
+// must fall back to the full workspace prompt list (`allPrompts`) so the
+// sliders/edit-args button stays enabled for the active loop body.
+//
+// The production lookup expression (duplicated in both components) is:
+//   (allPrompts || []).find((p) => p.name === name) ||
+//   (prompts    || []).find((p) => p.name === name)
+// This test mirrors that logic — keep in sync with LoopFrequencyPanel.js
+// (~L876) and ChatInput.js handleEditLoopArguments (~L1138).
+// =============================================================================
+
+function resolveLoopPromptByName(name, allPrompts, prompts) {
+  return (
+    (allPrompts || []).find((p) => p.name === name) ||
+    (prompts || []).find((p) => p.name === name)
+  );
+}
+
+describe("loop-prompt name resolution (allPrompts fallback)", () => {
+  const beadsListPrompt = {
+    name: "Loop processing tasks",
+    menus: "beadsList",
+    parameters: [{ name: "Commit" }, { name: "FixBugs" }],
+  };
+  const loopScopedPrompt = {
+    name: "Some loop prompt",
+    menus: "promptsLoop",
+    parameters: [{ name: "Foo" }],
+  };
+
+  test("resolves a menu-scoped prompt from allPrompts when absent from loopPrompts", () => {
+    const allPrompts = [beadsListPrompt, loopScopedPrompt];
+    const loopPrompts = [loopScopedPrompt]; // beadsList filtered out
+    const found = resolveLoopPromptByName(
+      "Loop processing tasks",
+      allPrompts,
+      loopPrompts,
+    );
+    expect(found).toBe(beadsListPrompt);
+    expect(promptParameters(found).length).toBe(2);
+  });
+
+  test("resolves a loop-scoped prompt from loopPrompts when allPrompts is empty", () => {
+    const found = resolveLoopPromptByName(
+      "Some loop prompt",
+      [],
+      [loopScopedPrompt],
+    );
+    expect(found).toBe(loopScopedPrompt);
+  });
+
+  test("prefers allPrompts when the same name exists in both", () => {
+    const dupInAll = { name: "Dup", parameters: [{ name: "A" }] };
+    const dupInLoop = { name: "Dup", parameters: [{ name: "B" }] };
+    const found = resolveLoopPromptByName("Dup", [dupInAll], [dupInLoop]);
+    expect(found).toBe(dupInAll);
+  });
+
+  test("returns undefined when name is in neither list", () => {
+    expect(
+      resolveLoopPromptByName("missing", [loopScopedPrompt], []),
+    ).toBeUndefined();
+  });
+
+  test("handles null/undefined lists without throwing", () => {
+    expect(resolveLoopPromptByName("x", null, null)).toBeUndefined();
+    expect(resolveLoopPromptByName("x", undefined, undefined)).toBeUndefined();
+  });
+
+  test("baseline: promptParameters returns declared parameters for a beadsList prompt", () => {
+    const p = {
+      name: "Loop processing tasks",
+      menus: "beadsList",
+      parameters: [
+        { name: "Commit" },
+        { name: "FixBugs" },
+        { name: "WorkOnFeatures" },
+      ],
+    };
+    expect(promptParameters(p).length).toBe(3);
+  });
+});
