@@ -100,6 +100,7 @@ import {
   PortalTooltip,
 } from "./ContextMenu.js";
 import { ConfirmDialog } from "./ConfirmDialog.js";
+import { Drawer } from "./Drawer.js";
 import { Tooltip } from "./Tooltip.js";
 import { Toolbar } from "./Toolbar.js";
 import { usePullToRefresh } from "../hooks/usePullToRefresh.js";
@@ -267,6 +268,10 @@ export function BeadsIssueView({
   // currentIssueId tracks in-viewer navigation (e.g. clicking a dep id).
   const [currentIssueId, setCurrentIssueId] = useState(issueId);
   const [issue, setIssue] = useState(null);
+  // Non-null while the last /api/issues/{id} fetch failed; drives the error
+  // skeleton (and a Retry button) so the drawer stays open instead of the
+  // toast being the only failure surface.
+  const [loadError, setLoadError] = useState(null);
   const [statusBusy, setStatusBusy] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState(null);
   const [deletingIssue, setDeletingIssue] = useState(false);
@@ -286,6 +291,10 @@ export function BeadsIssueView({
   // Fetch the current issue from /api/issues/{id}.
   useEffect(() => {
     if (!workingDir || !currentIssueId) return;
+    // Reset visible state so re-opening a different issue (or a retry) shows
+    // the loading skeleton instead of flashing the previous issue's content.
+    setIssue(null);
+    setLoadError(null);
     let cancelled = false;
     (async () => {
       try {
@@ -295,19 +304,19 @@ export function BeadsIssueView({
         const data = await readBeadsResponse(res);
         if (cancelled) return;
         if (!res.ok || data.error) {
-          showToast &&
-            showToast({
-              style: "error",
-              title: data.error || "Failed to load issue",
-            });
+          const msg = data.error || "Failed to load issue";
+          setLoadError(msg);
+          showToast && showToast({ style: "error", title: msg });
         } else {
           const issueObj = Array.isArray(data) ? data[0] : data;
           setIssue(issueObj || null);
         }
       } catch (_err) {
-        if (!cancelled)
-          showToast &&
-            showToast({ style: "error", title: "Failed to load issue" });
+        if (!cancelled) {
+          const msg = "Failed to load issue";
+          setLoadError(msg);
+          showToast && showToast({ style: "error", title: msg });
+        }
       }
     })();
     return () => {
@@ -471,25 +480,98 @@ export function BeadsIssueView({
     }
   }, [deleteTarget, workingDir, showToast, onReturnToConversation]);
 
+  // While the initial /api/issues/{id} fetch is in flight (or after it failed)
+  // render a placeholder Drawer with the same dock/side/width/z-index/panel
+  // classes that BeadsDetailPanelBody uses, so the panel opens instantly on
+  // click and only its body content swaps once the real issue arrives. We
+  // cannot pass a partial `data` to BeadsDetailPanel — it and its sub-hooks
+  // assume a real issue object — so this path renders Drawer directly.
   return html`
     <${Fragment}>
-      <${BeadsDetailPanel}
-        issue=${issue}
-        allIssues=${listIssues}
-        isCreating=${false}
-        workingDir=${workingDir}
-        initialFullscreen=${false}
-        onClose=${onReturnToConversation}
-        onUpdated=${refresh}
-        showToast=${showToast}
-        onFetchPrompts=${onFetchBeadsPrompts}
-        onRunPrompt=${onRunBeadsPrompt}
-        onDelete=${(iss) => setDeleteTarget(iss)}
-        onToggleStatus=${handleToggleStatus}
-        onToggleDefer=${handleToggleDefer}
-        statusBusy=${statusBusy}
-        onSelectIssue=${handleSelectIssue}
-      />
+      ${
+        issue
+          ? html`
+              <${BeadsDetailPanel}
+                issue=${issue}
+                allIssues=${listIssues}
+                isCreating=${false}
+                workingDir=${workingDir}
+                initialFullscreen=${false}
+                onClose=${onReturnToConversation}
+                onUpdated=${refresh}
+                showToast=${showToast}
+                onFetchPrompts=${onFetchBeadsPrompts}
+                onRunPrompt=${onRunBeadsPrompt}
+                onDelete=${(iss) => setDeleteTarget(iss)}
+                onToggleStatus=${handleToggleStatus}
+                onToggleDefer=${handleToggleDefer}
+                statusBusy=${statusBusy}
+                onSelectIssue=${handleSelectIssue}
+              />
+            `
+          : html`
+              <${Drawer}
+                dock
+                side="end"
+                onClose=${onReturnToConversation}
+                zClass="z-60"
+                rootStyle="--dock-w:40rem;--dock-maxw:85%"
+                widthClass="w-full"
+                panelClass="bg-mitto-sidebar shrink-0 h-full flex flex-col border-l border-mitto-border-1"
+              >
+                <div class="p-4 border-b border-mitto-border shrink-0">
+                  <div class="flex items-center gap-2">
+                    <div class="flex-1 min-w-0">
+                      <h2
+                        class="font-mono text-sm text-mitto-text truncate"
+                        title=${currentIssueId}
+                      >
+                        ${currentIssueId}
+                      </h2>
+                    </div>
+                    <button
+                      onClick=${onReturnToConversation}
+                      class="btn btn-ghost btn-square btn-sm shrink-0 inline-flex tooltip tooltip-bottom"
+                      data-tip="Close"
+                      aria-label="Close"
+                    >
+                      <${CloseIcon} className="w-5 h-5" />
+                    </button>
+                  </div>
+                </div>
+                <div class="flex-1 overflow-y-auto p-4">
+                  ${
+                    loadError
+                      ? html`
+                          <div
+                            role="alert"
+                            class="alert alert-error alert-soft text-sm"
+                          >
+                            <span>${loadError}</span>
+                            <button
+                              class="btn btn-ghost btn-xs"
+                              onClick=${refresh}
+                            >
+                              Retry
+                            </button>
+                          </div>
+                        `
+                      : html`
+                          <div
+                            class="p-4 text-center text-mitto-text-500"
+                            data-testid="beads-issue-loading"
+                          >
+                            <span
+                              class="loading loading-spinner w-5 h-5 mb-2 text-mitto-border-3"
+                            ></span>
+                            <p class="text-sm">Loading issue…</p>
+                          </div>
+                        `
+                  }
+                </div>
+              <//>
+            `
+      }
       <${ConfirmDialog}
         isOpen=${!!deleteTarget}
         title="Delete issue"
