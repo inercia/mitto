@@ -17,6 +17,13 @@ import (
 	"github.com/inercia/mitto/internal/web/middleware"
 )
 
+// handleConfig is a test-only shim delegating to the migrated
+// handlers.HandleConfigRoute, so existing fixtures continue to compile after
+// the *Server wrapper was moved to the handlers package (mitto-b8k.2).
+func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
+	s.apiHandlers.HandleConfigRoute(w, r)
+}
+
 // handleGetConfig is a test-only shim delegating to the migrated
 // handlers.HandleGetConfig. It lets the existing web-package config tests keep
 // calling server.handleGetConfig directly, wiring the Deps from the server's
@@ -63,6 +70,7 @@ func TestHandleConfig_MethodNotAllowed(t *testing.T) {
 	server := &Server{
 		config: Config{},
 	}
+	server.apiHandlers = handlers.New(handlers.Deps{})
 
 	// Test DELETE method (not allowed)
 	req := httptest.NewRequest(http.MethodDelete, "/api/config", nil)

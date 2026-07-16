@@ -25,18 +25,6 @@ type ConfigSaveRequest = handlers.ConfigSaveRequest
 // applyConfigChanges) can return it without a package qualifier.
 type ExternalAccessWarning = handlers.ExternalAccessWarning
 
-// handleConfig handles GET and POST /api/config.
-func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
-	switch r.Method {
-	case http.MethodGet:
-		s.apiHandlers.HandleGetConfig(w, r)
-	case http.MethodPost:
-		s.apiHandlers.HandleSaveConfig(w, r)
-	default:
-		methodNotAllowed(w)
-	}
-}
-
 // validateAndPrepareSaveConfig runs the pre-save validation pipeline for a
 // config save request: structural validation, workspace-removal conflict
 // checks, default-workspace normalization, and per-workspace restricted-runner
