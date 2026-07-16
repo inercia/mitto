@@ -18,17 +18,63 @@
 // `tier` groups phases by preferredModel family used in the per-phase prompts
 // (reasoning vs. coding) so the UI can color-tier them consistently.
 const FEATURE_PHASES = [
-  { label: "planned", nextName: "plan", displayName: "Plan", tier: "reasoning" },
-  { label: "implemented", nextName: "implement", displayName: "Implement", tier: "coding" },
-  { label: "tested", nextName: "test", displayName: "Test", tier: "coding" },
-  { label: "verified", nextName: "review", displayName: "Review", tier: "reasoning" },
+  {
+    label: "planned",
+    nextName: "plan",
+    displayName: "Plan",
+    tier: "reasoning",
+    iconName: "list",
+  },
+  {
+    label: "implemented",
+    nextName: "implement",
+    displayName: "Implement",
+    tier: "coding",
+    iconName: "code-block",
+  },
+  {
+    label: "tested",
+    nextName: "test",
+    displayName: "Test",
+    tier: "coding",
+    iconName: "beaker",
+  },
+  {
+    label: "verified",
+    nextName: "review",
+    displayName: "Review",
+    tier: "reasoning",
+    iconName: "eye",
+  },
 ];
 
 const BUG_PHASES = [
-  { label: "researched", nextName: "investigate", displayName: "Investigate", tier: "reasoning" },
-  { label: "reproduced", nextName: "reproduce", displayName: "Reproduce", tier: "coding" },
-  { label: "fixed", nextName: "fix", displayName: "Fix", tier: "coding" },
+  {
+    label: "researched",
+    nextName: "investigate",
+    displayName: "Investigate",
+    tier: "reasoning",
+    iconName: "search",
+  },
+  {
+    label: "reproduced",
+    nextName: "reproduce",
+    displayName: "Reproduce",
+    tier: "coding",
+    iconName: "refresh",
+  },
+  {
+    label: "fixed",
+    nextName: "fix",
+    displayName: "Fix",
+    tier: "coding",
+    iconName: "wrench",
+  },
 ];
+
+// Icon name used for the terminal "done" state — surfaced as `currentIconName`
+// on the derived phase object when `isTerminal === true`.
+export const TERMINAL_ICON_NAME = "check";
 
 // Tailwind class hints for each tier. Consumers may map these or ignore them
 // and derive their own palette; the strings here are the canonical Mitto
@@ -66,14 +112,19 @@ function phasesForType(issueType) {
  * so callers can trivially null-check to hide the UI. For feature/bug issues
  * the shape is:
  *   {
- *     phases: [{ name, displayName, status, tier, tierClasses }],
+ *     phases: [{ name, displayName, status, tier, tierClasses, iconName }],
  *     currentIndex: number,     // index into phases; equals phases.length when terminal
  *     currentLabel: string,     // "plan" | "implement" | ... | "done"
  *     currentDisplayName: string, // "Plan" | "Implement" | ... | "Done"
  *     currentTier: "reasoning" | "coding" | "terminal",
+ *     currentIconName: string,  // per-phase iconName, or TERMINAL_ICON_NAME when terminal
  *     isTerminal: boolean,
  *     kindLabel: string,        // "Feature" | "Bug"
  *   }
+ *
+ * Per-phase `iconName` and the top-level `currentIconName` are stable
+ * kebab-case identifiers consumed by SessionItem.js's PHASE_ICON_COMPONENTS
+ * map (see components/Icons.js for the concrete icon components).
  *
  * Semantics:
  * - "done" phases are those whose completion label is present in labels[].
@@ -120,6 +171,7 @@ export function derivePhaseState(issueType, labels) {
       status,
       tier,
       tierClasses: PHASE_TIER_CLASSES[tier],
+      iconName: p.iconName,
     };
   });
 
@@ -130,6 +182,7 @@ export function derivePhaseState(issueType, labels) {
       currentLabel: "done",
       currentDisplayName: "Done",
       currentTier: "terminal",
+      currentIconName: TERMINAL_ICON_NAME,
       isTerminal: true,
       kindLabel,
     };
@@ -142,6 +195,7 @@ export function derivePhaseState(issueType, labels) {
     currentLabel: cur.nextName,
     currentDisplayName: cur.displayName,
     currentTier: cur.tier,
+    currentIconName: cur.iconName,
     isTerminal: false,
     kindLabel,
   };
