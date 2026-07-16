@@ -44,6 +44,10 @@ func (h *Handlers) handleSetLoop(w http.ResponseWriter, r *http.Request, session
 	if req.CooldownSeconds != nil {
 		p.CooldownSeconds = *req.CooldownSeconds
 	}
+	if req.CoalesceDuringBusy != nil {
+		v := *req.CoalesceDuringBusy
+		p.CoalesceDuringBusy = &v
+	}
 	// Clamp the on-completion delay to the global floor on write (no-op for schedule trigger).
 	p.ClampDelay(h.loopDelayFloor())
 
@@ -114,7 +118,7 @@ func (h *Handlers) handlePatchLoop(w http.ResponseWriter, r *http.Request, sessi
 		}
 	}
 
-	if err := ps.Update(req.Prompt, req.PromptName, req.Frequency, req.Enabled, req.FreshContext, req.MaxIterations, req.Trigger, req.DelaySeconds, req.MaxDurationSeconds, req.Arguments, req.Condition, req.ConditionPreset, req.CooldownSeconds); err != nil {
+	if err := ps.Update(req.Prompt, req.PromptName, req.Frequency, req.Enabled, req.FreshContext, req.MaxIterations, req.Trigger, req.DelaySeconds, req.MaxDurationSeconds, req.Arguments, req.Condition, req.ConditionPreset, req.CooldownSeconds, req.CoalesceDuringBusy); err != nil {
 		if err == session.ErrLoopNotFound {
 			writeErrorJSON(w, http.StatusNotFound, "", "No loop prompt configured")
 			return

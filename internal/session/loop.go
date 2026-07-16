@@ -231,6 +231,24 @@ type LoopPrompt struct {
 	// CooldownSeconds is the per-conversation cooldown floor honoured by the runner
 	// between onTasks firings. 0 means use the global floor.
 	CooldownSeconds int `json:"cooldown_seconds,omitempty"`
+	// CoalesceDuringBusy controls how the onTasks trigger handles beads changes
+	// that arrive while the loop's subtree is busy. When nil or *true (default),
+	// such changes are silently absorbed by the Layer 2 quiescence rebase. When
+	// *false, the quiescence rebase fires exactly once more with the accumulated
+	// delta (pre-run baseline → current snapshot) before rebasing, so external
+	// changes that landed during the busy window are not lost. Only meaningful
+	// when Trigger is onTasks.
+	CoalesceDuringBusy *bool `json:"coalesce_during_busy,omitempty"`
+}
+
+// ShouldCoalesceDuringBusy reports whether the onTasks trigger should silently
+// absorb changes that arrive during a busy window. Defaults to true (current
+// behaviour) when the field is unset.
+func (p *LoopPrompt) ShouldCoalesceDuringBusy() bool {
+	if p.CoalesceDuringBusy == nil {
+		return true
+	}
+	return *p.CoalesceDuringBusy
 }
 
 // ReachedMaxIterations returns true if the prompt has been delivered the maximum number of scheduled times.
@@ -416,7 +434,7 @@ func (ps *LoopStore) Set(p *LoopPrompt) error {
 // Update applies a partial update to the loop prompt.
 // Only non-nil fields in the update are applied.
 // IterationCount is never modified by Update — it is managed exclusively by RecordSent.
-func (ps *LoopStore) Update(prompt *string, promptName *string, frequency *Frequency, enabled *bool, freshContext *bool, maxIterations *int, trigger *LoopTrigger, delaySeconds *int, maxDurationSeconds *int, arguments *map[string]string, condition *string, conditionPreset *string, cooldownSeconds *int) error {
+func (ps *LoopStore) Update(prompt *string, promptName *string, frequency *Frequency, enabled *bool, freshContext *bool, maxIterations *int, trigger *LoopTrigger, delaySeconds *int, maxDurationSeconds *int, arguments *map[string]string, condition *string, conditionPreset *string, cooldownSeconds *int, coalesceDuringBusy *bool) error {
 	ps.mu.Lock()
 	defer ps.mu.Unlock()
 
@@ -468,6 +486,10 @@ func (ps *LoopStore) Update(prompt *string, promptName *string, frequency *Frequ
 	}
 	if cooldownSeconds != nil {
 		existing.CooldownSeconds = *cooldownSeconds
+	}
+	if coalesceDuringBusy != nil {
+		v := *coalesceDuringBusy
+		existing.CoalesceDuringBusy = &v
 	}
 
 	if err := existing.Validate(); err != nil {

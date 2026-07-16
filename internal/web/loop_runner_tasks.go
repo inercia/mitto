@@ -401,6 +401,12 @@ func (r *LoopRunner) armTasksRebase(sessionID string, loopStore *session.LoopSto
 // rebases the onTasks baseline to the current beads snapshot — absorbing any
 // edits the conversation (or a delegated child) made to beads during its run.
 // If still busy, it re-arms itself for another quiescence window.
+//
+// When loop.ShouldCoalesceDuringBusy() is false (mitto-dmb), a material delta
+// between the pre-run baseline and the current snapshot causes exactly one
+// follow-up fire (subject to Layer 0 cooldown/maxDuration and the CEL
+// condition) before the baseline is rebased. The default (true) preserves the
+// original silent-absorption behaviour.
 func (r *LoopRunner) fireTasksRebase(sessionID string, loopStore *session.LoopStore) {
 	r.tasksRebaseTimersMu.Lock()
 	delete(r.tasksRebaseTimers, sessionID)
@@ -437,6 +443,17 @@ func (r *LoopRunner) fireTasksRebase(sessionID string, loopStore *session.LoopSt
 	}
 
 	baselineStore := NewTasksBaselineStore(r.store.SessionDir(sessionID))
+
+	// Opt-in re-fire path (mitto-dmb): when the loop is configured NOT to
+	// coalesce during busy, evaluate the accumulated delta between the pre-run
+	// baseline and the current snapshot and fire once more if the guards allow.
+	if !loop.ShouldCoalesceDuringBusy() {
+		if r.maybeFireAccumulatedDelta(sessionID, loop, loopStore, baselineStore, raw) {
+			// Fire path persisted its own baseline; nothing more to do.
+			return
+		}
+	}
+
 	if err := baselineStore.Set(raw); err != nil {
 		if r.logger != nil {
 			r.logger.Warn("onTasks: failed to rebase baseline", "session_id", sessionID, "error", err)
@@ -446,6 +463,108 @@ func (r *LoopRunner) fireTasksRebase(sessionID string, loopStore *session.LoopSt
 	if r.logger != nil {
 		r.logger.Debug("onTasks: baseline rebased after idle+quiescence", "session_id", sessionID)
 	}
+}
+
+// evaluateAccumulatedDelta computes the delta between the pre-run baseline and
+// the current beads snapshot for an onTasks loop opted out of the during-busy
+// coalesce (CoalesceDuringBusy=false), applies the Layer 0 guards
+// (maxDuration, cooldown) and the CEL condition, and returns the delta plus
+// whether the caller should fire. It performs no side effects other than the
+// maxDuration auto-stop (which is itself a Layer 0 guard shared with every
+// other trigger path). Kept side-effect-free (besides that guard) so the
+// decision is directly unit-testable without a session manager.
+//
+// shouldFire=false with a non-nil delta means "material change but a guard
+// blocked" (cooldown, condition false, etc.); shouldFire=false with nil delta
+// means "nothing to do" (no baseline, no material change, parse error).
+func (r *LoopRunner) evaluateAccumulatedDelta(sessionID string, loop *session.LoopPrompt, loopStore *session.LoopStore, baselineStore *TasksBaselineStore, raw []byte) (delta *config.TasksDelta, shouldFire bool) {
+	baseline, err := baselineStore.Get()
+	if err != nil {
+		return nil, false
+	}
+
+	prevSnap, perr := config.ParseTasksSnapshot(baseline.RawSnapshot)
+	if perr != nil {
+		if r.logger != nil {
+			r.logger.Warn("onTasks: failed to parse persisted baseline for re-fire",
+				"session_id", sessionID, "error", perr)
+		}
+		return nil, false
+	}
+	currSnap, perr := config.ParseTasksSnapshot(raw)
+	if perr != nil {
+		if r.logger != nil {
+			r.logger.Warn("onTasks: failed to parse beads snapshot for re-fire",
+				"session_id", sessionID, "error", perr)
+		}
+		return nil, false
+	}
+
+	d := config.DiffTasks(prevSnap, currSnap)
+	if !tasksDeltaIsMaterial(d) {
+		return nil, false
+	}
+
+	// Layer 0: honour maxDuration and cooldown exactly like a normal fire.
+	if r.autoStopIfMaxDurationReached(sessionID, loop, loopStore, time.Now()) {
+		return d, false
+	}
+	if r.tasksCooldownActive(loop) {
+		return d, false
+	}
+
+	// CEL condition (fail-closed on error) — the same rule used by
+	// evaluateTasksChange for the normal event-driven fire.
+	if r.tasksEvaluator != nil {
+		changeCtx := &config.TasksChangeContext{Tasks: currSnap, Prev: prevSnap, Changes: d}
+		ok, evalErr := r.tasksEvaluator.Evaluate(loop.Condition, changeCtx)
+		if evalErr != nil {
+			if r.logger != nil {
+				r.logger.Warn("onTasks: re-fire condition evaluation failed (fail-closed, not firing)",
+					"session_id", sessionID, "condition", loop.Condition, "error", evalErr)
+			}
+			return d, false
+		}
+		if !ok {
+			return d, false
+		}
+	}
+
+	return d, true
+}
+
+// maybeFireAccumulatedDelta wires evaluateAccumulatedDelta to the firing side
+// effects: on a positive decision it fires via triggerNowWithTasksDelta,
+// persists the new baseline, and records the outcome for the Layer 3 circuit
+// breaker. Returns true only when the fire was dispatched (so the caller can
+// skip the fallback plain rebase); every "no fire" outcome — including
+// TriggerNow failing — returns false so the caller falls back to a plain
+// rebase.
+func (r *LoopRunner) maybeFireAccumulatedDelta(sessionID string, loop *session.LoopPrompt, loopStore *session.LoopStore, baselineStore *TasksBaselineStore, raw []byte) bool {
+	delta, shouldFire := r.evaluateAccumulatedDelta(sessionID, loop, loopStore, baselineStore, raw)
+	if !shouldFire {
+		return false
+	}
+
+	if err := r.triggerNowWithTasksDelta(sessionID, true, delta); err != nil {
+		if r.logger != nil && !errors.Is(err, ErrSessionBusy) {
+			r.logger.Warn("onTasks: re-fire failed", "session_id", sessionID, "error", err)
+		}
+		return false
+	}
+	if err := baselineStore.Set(raw); err != nil && r.logger != nil {
+		r.logger.Warn("onTasks: failed to persist baseline after re-fire",
+			"session_id", sessionID, "error", err)
+	}
+	r.recordTasksFireOutcome(sessionID, loopStore, delta)
+	if r.logger != nil {
+		r.logger.Debug("onTasks: re-fired after idle+quiescence with accumulated delta",
+			"session_id", sessionID,
+			"added", len(delta.Added),
+			"updated", len(delta.Updated),
+			"removed", len(delta.Removed))
+	}
+	return true
 }
 
 // BootstrapTasksBaseline initializes the onTasks baseline for a session if one

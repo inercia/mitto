@@ -51,6 +51,10 @@ type ConversationStartInput struct {
 	LoopCondition string `json:"loop_condition,omitempty"`
 	// LoopConditionPreset is an optional UI preset id that was compiled into loop_condition.
 	LoopConditionPreset string `json:"loop_condition_preset,omitempty"`
+	// LoopCoalesceDuringBusy controls how the onTasks trigger handles beads changes
+	// that arrive while the loop's subtree is busy. Nil or true = silently absorb
+	// (default). False = fire once more with the accumulated delta after quiescence.
+	LoopCoalesceDuringBusy *bool `json:"loop_coalesce_during_busy,omitempty"`
 	// LoopApplyPromptDefaults controls the mitto-r7y auto-apply of a seeded
 	// prompt's loop: frontmatter block. When prompt_name resolves to a prompt
 	// carrying a loop: block, its fields fill any loop_* fields the caller did
@@ -166,9 +170,16 @@ func (s *Server) handleConversationStart(ctx context.Context, req *mcp.CallToolR
 	originPromptName := ""
 	promptIsSingleton := false
 	if input.PromptName != "" {
-		if input.InitialPrompt != "" {
-			return nil, ConversationStartOutput{}, fmt.Errorf(
-				"cannot specify both 'prompt_name' and 'initial_prompt' — use one or the other")
+		// mitto-kt6: prompt_name wins when both are supplied. Agents forced by
+		// strict JSON schemas often fill 'initial_prompt' with a placeholder to
+		// satisfy the field even when they only intend a named dispatch;
+		// delivering that placeholder would silently override the resolved
+		// prompt body.
+		if strings.TrimSpace(input.InitialPrompt) != "" {
+			s.logger.Info("Both 'initial_prompt' and 'prompt_name' provided; prompt_name wins, ignoring 'initial_prompt'",
+				"source_session", realSessionID,
+				"prompt_name", input.PromptName)
+			input.InitialPrompt = ""
 		}
 		promptWorkingDir, err := s.resolvePromptWorkingDir(realSessionID, input.Workspace)
 		if err != nil {
@@ -526,6 +537,10 @@ func (s *Server) handleConversationStart(ctx context.Context, req *mcp.CallToolR
 			MaxDurationSeconds: maxDurationSeconds,
 			Condition:          input.LoopCondition,
 			ConditionPreset:    input.LoopConditionPreset,
+		}
+		if input.LoopCoalesceDuringBusy != nil {
+			v := *input.LoopCoalesceDuringBusy
+			loop.CoalesceDuringBusy = &v
 		}
 		// Clamp the on-completion delay to the global floor (no-op for schedule).
 		loop.ClampDelay(s.loopDelayFloor())
