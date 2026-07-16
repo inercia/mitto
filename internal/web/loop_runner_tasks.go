@@ -297,7 +297,14 @@ func (r *LoopRunner) processTasksChange(meta session.Metadata, loop *session.Loo
 		// {{ .Trigger.OnTasks.Changes.* }} (mitto-xkn). All other TriggerNow
 		// call sites pass nil via the public TriggerNow shim.
 		if err := r.triggerNowWithTasksDelta(sessionID, true, decision.delta); err != nil {
-			if r.logger != nil && !errors.Is(err, ErrSessionBusy) {
+			// Route ErrPromptResolveFailed through the shared 3-strike auto-pause
+			// logic so onTasks loops behave the same as the scheduled path when a
+			// loop_prompt_name no longer resolves (mitto-uhnc); without this
+			// parity the failure counter never bumps and the loop retries silently
+			// forever.
+			if errors.Is(err, ErrPromptResolveFailed) {
+				r.handlePromptResolveFailure(sessionID, meta.Name, loop, loopStore, err)
+			} else if r.logger != nil && !errors.Is(err, ErrSessionBusy) {
 				r.logger.Warn("onTasks: firing failed", "session_id", sessionID, "error", err)
 			}
 			return
