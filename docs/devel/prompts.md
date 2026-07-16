@@ -91,14 +91,18 @@ The **evaluation context differs by caller** — this is the subtle part:
   `Session.IsChild`, `Children.*`, `Permissions.*`, `Parent.*`, `Tools.*`.
 - **Beads menus** (`fetchBeadsPromptsForWorkspace` /
   `fetchBeadsListPromptsForWorkspace` in
-  `web/static/hooks/useBeadsIntegration.js`) pass
-  `?dir=...&enabled_context=workspace`, optionally the active `session_id`, and
-  for per-issue rows the `item_*` params (`item_kind`, `item_id`,
-  `item_status`, `item_type`, `item_priority`, `item_labels`). When no session is active the
-  backend builds a session-less context via `buildWorkspacePromptEnabledContext`
-  so gates like `CommandExists("bd")`, `DirExists(".beads")`, and
-  `Item.Status != "closed"` still evaluate. The `Item.*` namespace lets each row
-  gate itself (e.g. hide **Start work** on closed issues).
+  `web/static/hooks/useBeadsIntegration.js`) pass only
+  `?dir=...&enabled_context=workspace` (and for per-issue rows the `item_*`
+  params: `item_kind`, `item_id`, `item_status`, `item_type`, `item_priority`,
+  `item_labels`). `session_id` is intentionally **not** sent (mitto-kvot):
+  these menus always spawn NEW root conversations via `newSession`, so gating
+  by the incidentally-open sidebar conversation's `Session.IsChild` /
+  `Permissions.*` / `Tools.*` would be semantically wrong. The backend builds
+  a session-less context via `buildWorkspacePromptEnabledContext` with
+  `Session.IsChild=false` and `Permissions.CanStartConversation=true`, so
+  gates like `CommandExists("bd")`, `DirExists(".beads")`, and
+  `Item.Status != "closed"` still evaluate. The `Item.*` namespace lets each
+  row gate itself (e.g. hide **Start work** on closed issues).
 
 After fetching, the client filters once more by
 `promptMenus(p).includes(<menu>) && menuSatisfies(p, <menu>)`.
