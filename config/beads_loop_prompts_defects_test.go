@@ -18,9 +18,10 @@ import (
 // still checked for defects 2 and 4.
 func TestBeadsLoopPrompts_Defects_mitto6am(t *testing.T) {
 	const (
-		mergedOrch = "beads-issue-loop-processing.prompt.yaml"
-		bugDriver  = "beads-issue-loop-fixing-bug.prompt.yaml"
-		featDriver = "beads-issue-loop-implementing-feature.prompt.yaml"
+		mergedOrch    = "beads-issue-loop-processing.prompt.yaml"
+		bugDriver     = "beads-issue-loop-fixing-bug.prompt.yaml"
+		featDriver    = "beads-issue-loop-implementing-feature.prompt.yaml"
+		mentionDriver = "beads-issue-mention-driver.prompt.yaml"
 	)
 
 	load := func(name string) string {
@@ -78,6 +79,57 @@ func TestBeadsLoopPrompts_Defects_mitto6am(t *testing.T) {
 		t.Errorf("[defect-4 step3f-inline-worker, mitto-6am-unique] %s Step 3f still tells the driver LLM to seed a `self-contained worker prompt` inline; expected `mitto_conversation_new(..., prompt_name: \"<worker>\", arguments: {...})` so the grand-child body is expanded server-side and cannot short-circuit to a placeholder", featDriver)
 		_ = body
 	}
+
+	// Defect 5 (mitto-91wk) — mention driver must also honor all three
+	// structural anti-patterns. §A in the merged orchestrator spawns the
+	// mention router; the router itself is a phase-based driver just like
+	// the bug/feature drivers, so it inherits the same guards.
+	{
+		// dj9: mention-driver's phase dispatches must use `prompt_name:`
+		// (server-expanded named body) and must NOT ship a free-text
+		// `prompt:` alongside — the free text short-circuits the name.
+		mentionBody := load(mentionDriver)
+		// Assert that dispatches do reference the four phase prompt names —
+		// if they don't, the driver is broken.
+		for _, phaseName := range []string{
+			"Mention — investigate phase",
+			"Mention — plan phase",
+			"Mention — implement phase",
+			"Mention — answer phase",
+		} {
+			if !strings.Contains(mentionBody, phaseName) {
+				t.Errorf("[defect-5 mention-driver-missing-phase, mitto-91wk] %s does not reference phase prompt %q — driver cannot dispatch its state machine", mentionDriver, phaseName)
+			}
+		}
+		// Assert §A spawn uses prompt_name (not initial_prompt) for the
+		// mention driver seed, matching the §B/§C pattern.
+		orchBody := load(mergedOrch)
+		if !strings.Contains(orchBody, `prompt_name: "Mention — driver"`) {
+			t.Errorf("[defect-5 §A placeholder-vector, mitto-91wk] %s §A does not spawn via `prompt_name: \"Mention — driver\"`; expected server-expanded named body", mergedOrch)
+		}
+		if !strings.Contains(orchBody, `loop_prompt_name: "Mention — driver"`) {
+			t.Errorf("[defect-5 §A placeholder-vector, mitto-91wk] %s §A does not set `loop_prompt_name: \"Mention — driver\"`; expected the router to re-fire via named prompt", mergedOrch)
+		}
+	}
+
+	// Defect 6 (mitto-91wk) — mention driver must not synthesize inline
+	// free-text worker prompts (mitto-6am vector applied to the mention
+	// router). All phase dispatches must go through named prompts.
+	{
+		mentionBody := load(mentionDriver)
+		if strings.Contains(mentionBody, "self-contained worker prompt") {
+			t.Errorf("[defect-6 mention-inline-worker, mitto-91wk/mitto-6am] %s tells the driver LLM to seed a `self-contained worker prompt` inline; expected `mitto_conversation_send_prompt(..., prompt_name: \"<phase>\", ...)` so the phase body is server-expanded", mentionDriver)
+		}
+		// The router must never do phase-label writes inline — those are the
+		// phase prompts' job. It is allowed to *describe* the labels in
+		// branching prose, but must not contain a literal `bd update ...
+		// --add-label mention-{investigated,planned,implemented,answered}`
+		// command line inside a shell block.
+		forbiddenLabelWrites := regexp.MustCompile(`bd update[^\n]*--add-label mention-(investigated|planned|implemented|answered)`)
+		if forbiddenLabelWrites.MatchString(mentionBody) {
+			t.Errorf("[defect-6 mention-inline-label-write, mitto-91wk] %s writes a phase-scoped `--add-label mention-*` command inline; expected the phase prompts to own their own label writes", mentionDriver)
+		}
+	}
 }
 
 // TestBeadsLoopPrompts_Defects_mitto_i5k_BranchOrder is the failing reproduction
@@ -106,8 +158,9 @@ func TestBeadsLoopPrompts_Defects_mitto6am(t *testing.T) {
 // green.
 func TestBeadsLoopPrompts_Defects_mitto_i5k_BranchOrder(t *testing.T) {
 	const (
-		bugDriver  = "beads-issue-loop-fixing-bug.prompt.yaml"
-		featDriver = "beads-issue-loop-implementing-feature.prompt.yaml"
+		bugDriver     = "beads-issue-loop-fixing-bug.prompt.yaml"
+		featDriver    = "beads-issue-loop-implementing-feature.prompt.yaml"
+		mentionDriver = "beads-issue-mention-driver.prompt.yaml"
 	)
 
 	load := func(name string) string {
@@ -125,6 +178,14 @@ func TestBeadsLoopPrompts_Defects_mitto_i5k_BranchOrder(t *testing.T) {
 	}{
 		{bugDriver, "Step 3a: dispatch Investigate", "Step 3d: Done (handled inline)"},
 		{featDriver, "Step 3a: dispatch Plan", "Step 3e: Done (handled inline)"},
+		// mitto-91wk: mention driver applies the same branch-order rule.
+		// Its terminal branch is "Step 3f: Finalize (handled inline)" and
+		// must be enumerated BEFORE the first-stage "dispatch Investigate"
+		// / "dispatch Answer" branches. Both markers are text that appears
+		// only inside the Step 3 branch enumeration (not the later section
+		// headings), so the first-occurrence semantics of strings.Index
+		// pin the assertion to the enumeration ordering.
+		{mentionDriver, "Step 3a (classify)", "Step 3f: Finalize (handled inline)"},
 	}
 
 	for _, c := range cases {
