@@ -77,6 +77,13 @@ type PromptLoop struct {
 	// the run; empty = fire on any change. Only meaningful for trigger: onTasks.
 	// Validated at parse time in ParsePromptFile.
 	Condition string `yaml:"condition,omitempty" json:"condition,omitempty"`
+	// CoalesceDuringBusy controls how the onTasks trigger handles beads changes
+	// that arrive while the loop's subtree is busy. Nil/absent or true = silently
+	// absorb into the quiescence rebase (default). False = at quiescence, fire
+	// once more with the accumulated pre-run→current delta available as
+	// .Trigger.OnTasks.*, gated by Layer 0 and the CEL condition (mitto-dmb).
+	// Only meaningful for trigger: onTasks.
+	CoalesceDuringBusy *bool `yaml:"coalesceDuringBusy,omitempty" json:"coalesceDuringBusy,omitempty"`
 	// Mode selects whether loop is mandatory or user-toggleable: "always"
 	// (default when empty/absent) or "optional". Validated by ValidatePromptLoop.
 	Mode string `yaml:"mode,omitempty" json:"mode,omitempty"`

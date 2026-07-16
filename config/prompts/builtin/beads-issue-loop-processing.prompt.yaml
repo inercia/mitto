@@ -21,12 +21,38 @@ enabledWhen: '!Session.IsChild && CommandExists("bd") && DirExists(".beads") && 
 loop:
   trigger: onTasks
   condition: ""            # Any beads change wakes us; Step 2 filters to what is actually actionable
+  # Opt in to per-event re-fire (mitto-dmb): if beads change during a pass
+  # (either from our own worker's writes or from the human editing beads
+  # alongside us), fire once more at quiescence with the accumulated delta
+  # exposed as .Trigger.OnTasks.* so priority-A comments and freshly-arrived
+  # bugs/features get picked up promptly instead of waiting for another
+  # external change. Layer 0 (cooldown), the condition, and the busy-guard
+  # still bound the re-fire rate.
+  coalesceDuringBusy: false
 prompt: |
   ## Session Context
 
   Your session ID is `{{ .Session.ID }}` — use this as `self_id` for all `mitto_*` MCP tool calls.
   Available ACP servers: `{{ .ACP.AvailableText }}`
   Existing children: `{{ .Children.MCPText }}`
+
+  {{- with .Trigger }}{{ with .OnTasks }}
+
+  ## Triggered by these beads changes
+
+  This pass was fired by the changes below (deltas since the previous baseline). Use these as **hints
+  for triage priority** — a bead in this list is more likely to have new `@mitto` comments (§A), a
+  fresh reproduction (§B), or a design update (§C) than a random bead — but do NOT skip the normal
+  Step-2 filtering: a change here does not by itself make a bead eligible for a §A/§B/§C worker.
+
+  {{- if .Changes.Touched }}
+  {{ range .Changes.Touched -}}
+  - `{{ .id }}` ({{ .status }}, P{{ .priority }}): {{ .title }}
+  {{ end -}}
+  {{- else }}
+  _(no touched beads reported — likely a rebase-driven re-fire; proceed with the normal scan)_
+  {{- end }}
+  {{ end }}{{ end }}
 
   # Beads: Loop Processing Beads (unified list-level orchestrator)
 

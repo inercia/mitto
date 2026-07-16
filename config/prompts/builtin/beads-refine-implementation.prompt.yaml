@@ -12,6 +12,11 @@ loop:
   mode: always
   trigger: onTasks
   condition: 'Changes.Touched.exists(i, i.status == "open" && !("implementation-refined" in i.labels))'
+  # Opt in to per-event re-fire (mitto-dmb): when beads change during a run,
+  # the accumulated delta is exposed as .Trigger.OnTasks.* on the follow-up fire
+  # so newly-arrived candidates are picked up promptly instead of waiting for
+  # the next external change.
+  coalesceDuringBusy: false
   maxIterations: 20
   maxDuration: "4h"
 prompt: |
@@ -40,6 +45,23 @@ prompt: |
   **Interactive mode** (forced run or first/normal send): you may summarize your findings and use
   interactive tools where helpful, but the refinement itself should still be applied autonomously.
   {{- end }}
+
+  {{- with .Trigger }}{{ with .OnTasks }}
+
+  ## Triggered by these beads changes
+
+  This run was fired by the following beads changes since the previous baseline. Prefer these when
+  they still match the candidate filter (open, not deferred, not yet `implementation-refined`); fall
+  back to the broader candidate list from Step 1 when they don't:
+
+  {{- if .Changes.Touched }}
+  {{ range .Changes.Touched -}}
+  - `{{ .id }}` ({{ .status }}, P{{ .priority }}): {{ .title }}
+  {{ end -}}
+  {{- else }}
+  _(no touched beads reported)_
+  {{- end }}
+  {{ end }}{{ end }}
 
   ## Step 1 — Select the beads to refine
 
