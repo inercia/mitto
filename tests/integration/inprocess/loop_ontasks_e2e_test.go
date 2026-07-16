@@ -19,7 +19,6 @@ import (
 	"github.com/inercia/mitto/internal/config"
 	"github.com/inercia/mitto/internal/conversation"
 	"github.com/inercia/mitto/internal/session"
-	"github.com/inercia/mitto/internal/web"
 )
 
 // fakeOnTasksBeadsClient is a minimal beads.Client fake that lets the test
@@ -344,7 +343,7 @@ func TestLoopOnTasksE2E(t *testing.T) {
 		// semantically (decoded), not byte-for-byte: the persisted baseline is
 		// pretty-printed by fileutil.WriteJSONAtomic, unlike the compact v2.
 		waitFor(t, 5*time.Second, func() bool {
-			bl, err := web.NewTasksBaselineStore(ts.Store.SessionDir(sess.SessionID)).Get()
+			bl, err := conversation.NewTasksBaselineStore(ts.Store.SessionDir(sess.SessionID)).Get()
 			return err == nil && onTasksIssuesJSONEqual(t, []byte(bl.RawSnapshot), v2)
 		}, "baseline to rebase to v2 after idle+quiescence")
 
@@ -428,7 +427,7 @@ func TestLoopOnTasksE2E(t *testing.T) {
 		// baseline to v2 — the child-side "self-edit" is absorbed without
 		// ever having fired for it.
 		waitFor(t, 5*time.Second, func() bool {
-			bl, err := web.NewTasksBaselineStore(ts.Store.SessionDir(sess.SessionID)).Get()
+			bl, err := conversation.NewTasksBaselineStore(ts.Store.SessionDir(sess.SessionID)).Get()
 			return err == nil && onTasksIssuesJSONEqual(t, []byte(bl.RawSnapshot), v2)
 		}, "baseline to rebase to v2 after subtree idle+quiescence")
 
