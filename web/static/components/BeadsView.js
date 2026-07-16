@@ -265,8 +265,18 @@ export function BeadsIssueView({
   onRunBeadsPrompt,
   onReturnToConversation,
 }) {
-  // currentIssueId tracks in-viewer navigation (e.g. clicking a dep id).
-  const [currentIssueId, setCurrentIssueId] = useState(issueId);
+  // In-viewer navigation history stack (mitto-qluh.1). `history` is a list of
+  // issue IDs the user has visited via related-issue clicks; `pos` is the index
+  // of the currently-shown entry. Derived `currentIssueId = history[pos]`.
+  // Clicking a related id truncates any forward entries and pushes the new id
+  // (browser-style history) so goBack/goForward can retrace the sequence. The
+  // stack is reset to `[issueId]/pos=0` whenever the external issueId /
+  // selectNonce prop changes (see reset effect below).
+  const [history, setHistory] = useState([issueId]);
+  const [pos, setPos] = useState(0);
+  const currentIssueId = history[pos];
+  const canGoBack = pos > 0;
+  const canGoForward = pos < history.length - 1;
   const [issue, setIssue] = useState(null);
   // Non-null while the last /api/issues/{id} fetch failed; drives the error
   // skeleton (and a Retry button) so the drawer stays open instead of the
@@ -283,9 +293,12 @@ export function BeadsIssueView({
   // in the Tasks list view (which passes its already-loaded list as allIssues).
   const [listIssues, setListIssues] = useState([]);
 
-  // Reset to the externally-requested issue when the prop changes.
+  // Reset the in-viewer history when the externally-requested issue changes:
+  // re-opening the overlay from a new link starts fresh with a single-entry
+  // stack rather than continuing the previous session's back/forward chain.
   useEffect(() => {
-    setCurrentIssueId(issueId);
+    setHistory([issueId]);
+    setPos(0);
   }, [issueId, selectNonce]);
 
   // Fetch the current issue from /api/issues/{id}.
@@ -352,11 +365,28 @@ export function BeadsIssueView({
 
   const refresh = useCallback(() => setRefreshNonce((n) => n + 1), []);
 
-  // In-viewer navigation: clicking a dep id re-fetches that issue.
-  const handleSelectIssue = useCallback((depObj) => {
-    const id = depObj?.id;
-    if (id) setCurrentIssueId(id);
+  // In-viewer navigation: clicking a related id truncates any forward entries
+  // (browser-style — pending forward history is discarded when a new branch is
+  // taken), pushes the new id, and advances `pos`. A click on the same id as
+  // the current entry is a no-op so it does not add a duplicate step.
+  const handleSelectIssue = useCallback(
+    (depObj) => {
+      const id = depObj?.id;
+      if (!id) return;
+      if (id === history[pos]) return;
+      setHistory((h) => [...h.slice(0, pos + 1), id]);
+      setPos((p) => p + 1);
+    },
+    [history, pos],
+  );
+
+  const goBack = useCallback(() => {
+    setPos((p) => (p > 0 ? p - 1 : p));
   }, []);
+
+  const goForward = useCallback(() => {
+    setPos((p) => (p < history.length - 1 ? p + 1 : p));
+  }, [history.length]);
 
   const handleToggleStatus = useCallback(
     async (iss) => {
