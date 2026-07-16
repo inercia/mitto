@@ -58,7 +58,18 @@ func (h *Handlers) handleGlobalShortcutsGet(w http.ResponseWriter, r *http.Reque
 	if data == nil {
 		data = map[string][]config.ShortcutButton{}
 	}
-	writeJSONOK(w, globalShortcutsBody{Sections: data, Prompts: h.globalPrompts()})
+	// Only the shortcuts editor (SettingsDialog) needs the merged global prompts
+	// list (~750 KB). The 4 read-only callers that just render existing sections
+	// (conversation toolbar, tasks-list toolbar, beads panel chrome, folder
+	// shortcuts tab) don't need it, and shipping it to them was starving the
+	// WebView main thread with parallel JSON parses (mitto-r4t0). Gate the
+	// heavy field behind ?include_prompts=true so those hot paths drop from
+	// ~750 KB → ~1 KB per fetch.
+	body := globalShortcutsBody{Sections: data}
+	if r.URL.Query().Get("include_prompts") == "true" {
+		body.Prompts = h.globalPrompts()
+	}
+	writeJSONOK(w, body)
 }
 
 func (h *Handlers) handleGlobalShortcutsSet(w http.ResponseWriter, r *http.Request) {

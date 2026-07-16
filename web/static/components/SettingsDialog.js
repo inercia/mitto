@@ -1847,7 +1847,7 @@ export function SettingsDialog({
     if (!isOpen || activeTab !== "shortcuts" || shortcutsLoaded) return;
     setShortcutsLoading(true);
     setShortcutsError("");
-    authFetch(endpoints.global.shortcuts())
+    authFetch(endpoints.global.shortcuts({ include_prompts: true }))
       .then((r) => r.json())
       .then((data) => {
         setShortcutsSections(data.sections || {});
