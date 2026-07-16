@@ -66,6 +66,14 @@ func applyPromptLoopDefaultsToStartInput(input *ConversationStartInput, pl *conf
 	if input.LoopCondition == "" && pl.Condition != "" {
 		input.LoopCondition = pl.Condition
 	}
+
+	// onTasks opt-in re-fire (mitto-dmb). Fill only when the caller did not
+	// explicitly set it. Both nil and *false are meaningful frontmatter values,
+	// so we check the pointer for presence rather than dereferencing.
+	if input.LoopCoalesceDuringBusy == nil && pl.CoalesceDuringBusy != nil {
+		v := *pl.CoalesceDuringBusy
+		input.LoopCoalesceDuringBusy = &v
+	}
 }
 
 // applyPromptLoopDefaultsToUpdateInput is the update-tool equivalent. Because
@@ -118,5 +126,11 @@ func applyPromptLoopDefaultsToUpdateInput(input *ConversationUpdateInput, pl *co
 	if input.LoopCondition == nil && pl.Condition != "" {
 		c := pl.Condition
 		input.LoopCondition = &c
+	}
+
+	// onTasks opt-in re-fire (mitto-dmb). Same rules as the start-input helper.
+	if input.LoopCoalesceDuringBusy == nil && pl.CoalesceDuringBusy != nil {
+		v := *pl.CoalesceDuringBusy
+		input.LoopCoalesceDuringBusy = &v
 	}
 }

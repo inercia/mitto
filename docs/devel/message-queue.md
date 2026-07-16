@@ -324,6 +324,23 @@ Each entry exposes the same canonical keys the CEL condition sees: `id`, `type`,
 | `CoalesceDuringBusy` | `coalesce_during_busy` | Opt-in re-fire (mitto-dmb). Nil/`true` (default) = silent absorption during busy. `false` = fire once more at quiescence with the accumulated pre-run→current delta, gated by Layer 0 and the CEL `condition`. |
 | `StoppedReason`   | `stopped_reason`   | `"noProgress"` when Layer 3 auto-paused the loop (also `maxIterations`/`maxDuration`, shared with other triggers) |
 
+### Opting in from a prompt file (`loop:` frontmatter)
+
+`config.PromptLoop` mirrors the runtime field as `coalesceDuringBusy` (camelCase, matching the other frontmatter keys such as `maxIterations` and `maxDuration`). When the prompt is instantiated as a loop via `mitto_conversation_new` / `mitto_conversation_update`, `applyPromptLoopDefaultsToStartInput` (`internal/mcpserver/prompt_loop_defaults.go`) fills `loop_coalesce_during_busy` from this field **only** when the caller did not set it explicitly — the same "explicit caller wins" rule the other frontmatter defaults follow, and honouring `loop_apply_prompt_defaults: false` to disable the whole merge. Example:
+
+```yaml
+loop:
+  trigger: onTasks
+  condition: 'Changes.Touched.exists(i, i.status == "open")'
+  # Opt in to per-event re-fire: at quiescence, fire once more with the
+  # accumulated delta so newly-arrived issues get picked up promptly.
+  coalesceDuringBusy: false
+  maxIterations: 20
+  maxDuration: "4h"
+```
+
+Two builtin prompts adopt this (mitto-f9q): `beads-refine-implementation.prompt.yaml` and `beads-issue-loop-processing.prompt.yaml`. Both also render a `## Triggered by these beads changes` preamble in the prompt body using `{{ with .Trigger }}{{ with .OnTasks }}...{{ end }}{{ end }}` so the agent sees which specific beads drove the fire without re-invoking `bd`.
+
 ### Testing
 
 `internal/config/tasks_condition_test.go` unit-tests snapshot parsing, diffing, and CEL evaluation (including the fail-closed cases). `internal/web/loop_runner_test.go` unit-tests the guard/decision logic (`evaluateTasksChange`) and each loop-prevention layer in isolation. `tests/integration/inprocess/loop_ontasks_e2e_test.go` drives the full stack end-to-end against the mock ACP server — CEL-gated firing, the busy-guard + quiescence-rebase interaction, the cooldown floor, the no-progress circuit breaker, and `MaxIterations`/`MaxDurationSeconds` auto-stop — by calling `LoopRunner.OnBeadsChanged` directly with a fake `beads.Client` standing in for `bd list` (the `BeadsWatcher` itself is out of scope for that test and is unit-tested separately).
