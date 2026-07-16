@@ -27,7 +27,29 @@ import {
   MittoIcon,
   ClockIcon,
   EllipsisIcon,
+  SearchIcon,
+  RefreshIcon,
+  WrenchIcon,
+  ListIcon,
+  CodeBlockIcon,
+  BeakerIcon,
+  EyeIcon,
+  CheckIcon,
 } from "./Icons.js";
+
+// Maps the `currentIconName` field from derivePhaseState() to the concrete
+// icon component rendered inside the per-bead phase pill. Keep in sync with
+// FEATURE_PHASES / BUG_PHASES `iconName` values in utils/phaseState.js.
+const PHASE_ICON_COMPONENTS = {
+  search: SearchIcon,
+  refresh: RefreshIcon,
+  wrench: WrenchIcon,
+  list: ListIcon,
+  "code-block": CodeBlockIcon,
+  beaker: BeakerIcon,
+  eye: EyeIcon,
+  check: CheckIcon,
+};
 
 // Hover-only metadata tooltips are pointless on touch devices (no hover) and
 // daisyUI suppresses CSS tooltips there too; gate the row metadata tooltip the
@@ -656,22 +678,27 @@ export function SessionItem({
                     `
                   : null}
               ${beadPhase &&
-              html`
-                <span
-                  class="badge badge-xs shrink-0 whitespace-nowrap border ${beadPhase
-                    .isTerminal
-                    ? "bg-mitto-success/20 border-mitto-success/40 text-mitto-success"
-                    : beadPhase.currentTier === "reasoning"
-                      ? "bg-purple-500/20 border-purple-500/40 text-purple-300"
-                      : "bg-mitto-accent/20 border-mitto-accent/40 text-mitto-accent"}"
-                  data-tip=${`${beadPhase.kindLabel} phase: ${beadPhase.currentDisplayName}`}
-                  aria-label=${`${beadPhase.kindLabel} phase: ${beadPhase.currentDisplayName}`}
-                  ...${tipHandlers(
-                    `${beadPhase.kindLabel} phase: ${beadPhase.currentDisplayName}`,
-                  )}
-                  >${beadPhase.kindLabel} · ${beadPhase.currentDisplayName}</span
-                >
-              `}
+              (() => {
+                const PhaseIcon =
+                  PHASE_ICON_COMPONENTS[beadPhase.currentIconName];
+                const tip = `${beadPhase.kindLabel} phase: ${beadPhase.currentDisplayName}`;
+                return html`
+                  <span
+                    class="badge badge-xs shrink-0 inline-flex items-center justify-center border ${beadPhase.isTerminal
+                      ? "bg-mitto-success/20 border-mitto-success/40 text-mitto-success"
+                      : beadPhase.currentTier === "reasoning"
+                        ? "bg-purple-500/20 border-purple-500/40 text-purple-300"
+                        : "bg-mitto-accent/20 border-mitto-accent/40 text-mitto-accent"}"
+                    data-tip=${tip}
+                    aria-label=${tip}
+                    ...${tipHandlers(tip)}
+                  >
+                    ${PhaseIcon
+                      ? html`<${PhaseIcon} className="w-3 h-3" />`
+                      : null}
+                  </span>
+                `;
+              })()}
               ${workingDir &&
               !hideBadge &&
               html`

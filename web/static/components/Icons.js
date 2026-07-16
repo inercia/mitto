@@ -290,6 +290,77 @@ export function CheckIcon({ className = "w-4 h-4" }) {
 }
 
 /**
+ * Wrench icon (Heroicons outline) — used for the bug "fix" phase
+ * @param {string} className - CSS classes (default: 'w-4 h-4')
+ */
+export function WrenchIcon({ className = "w-4 h-4" }) {
+  return html`
+    <svg
+      class="${className}"
+      fill="none"
+      stroke="currentColor"
+      viewBox="0 0 24 24"
+      stroke-width="2"
+    >
+      <path
+        stroke-linecap="round"
+        stroke-linejoin="round"
+        d="M11.42 15.17 17.25 21A2.652 2.652 0 0 0 21 17.25l-5.877-5.877M11.42 15.17l2.496-3.03c.317-.384.74-.626 1.208-.766M11.42 15.17l-4.655 5.653a2.548 2.548 0 1 1-3.586-3.586l6.837-5.63m5.108-.233c.55-.164 1.163-.188 1.743-.14a4.5 4.5 0 0 0 4.486-6.336l-3.276 3.277a3.004 3.004 0 0 1-2.25-2.25l3.276-3.276a4.5 4.5 0 0 0-6.336 4.486c.091 1.076-.071 2.264-.904 2.95l-.42.35-1.19-1.19a.75.75 0 0 0-1.06 0l-1.06 1.06a.75.75 0 0 0 0 1.06l1.19 1.19-.35.42c-.686.833-1.874.995-2.95.904"
+      />
+    </svg>
+  `;
+}
+
+/**
+ * Beaker icon (Heroicons outline) — used for the feature "test" phase
+ * @param {string} className - CSS classes (default: 'w-4 h-4')
+ */
+export function BeakerIcon({ className = "w-4 h-4" }) {
+  return html`
+    <svg
+      class="${className}"
+      fill="none"
+      stroke="currentColor"
+      viewBox="0 0 24 24"
+      stroke-width="2"
+    >
+      <path
+        stroke-linecap="round"
+        stroke-linejoin="round"
+        d="M9.75 3.104v5.714a2.25 2.25 0 0 1-.659 1.591L5 14.5M9.75 3.104c-.251.023-.501.05-.75.082m.75-.082a24.301 24.301 0 0 1 4.5 0m0 0v5.714c0 .597.237 1.17.659 1.591L19.8 15.3M14.25 3.104c.251.023.501.05.75.082M19.8 15.3l-1.57.393A9.065 9.065 0 0 1 12 15a9.065 9.065 0 0 0-6.23-.693L5 14.5m14.8.8 1.402 1.402c1.232 1.232.65 3.318-1.067 3.611A48.309 48.309 0 0 1 12 21c-2.773 0-5.491-.235-8.135-.687-1.718-.293-2.3-2.379-1.067-3.61L5 14.5"
+      />
+    </svg>
+  `;
+}
+
+/**
+ * Eye icon (Heroicons outline) — used for the feature "review" phase
+ * @param {string} className - CSS classes (default: 'w-4 h-4')
+ */
+export function EyeIcon({ className = "w-4 h-4" }) {
+  return html`
+    <svg
+      class="${className}"
+      fill="none"
+      stroke="currentColor"
+      viewBox="0 0 24 24"
+      stroke-width="2"
+    >
+      <path
+        stroke-linecap="round"
+        stroke-linejoin="round"
+        d="M2.036 12.322a1.012 1.012 0 0 1 0-.639C3.423 7.51 7.36 4.5 12 4.5c4.638 0 8.573 3.007 9.963 7.178.07.207.07.431 0 .639C20.577 16.49 16.64 19.5 12 19.5c-4.638 0-8.573-3.007-9.963-7.178Z"
+      />
+      <path
+        stroke-linecap="round"
+        stroke-linejoin="round"
+        d="M15 12a3 3 0 1 1-6 0 3 3 0 0 1 6 0Z"
+      />
+    </svg>
+  `;
+}
+
+/**
  * Hollow circle icon (used for the "open" status filter)
  * @param {string} className - CSS classes (default: 'w-4 h-4')
  */
@@ -1531,11 +1602,7 @@ export function MittoPlusIcon({ className = "w-4 h-4" }) {
         stroke-linejoin="round"
         d="M3 6a1 1 0 0 1 1-1h16a1 1 0 0 1 1 1v9a1 1 0 0 1-1 1H11l-4 3v-3H4a1 1 0 0 1-1-1z"
       />
-      <path
-        stroke-linecap="round"
-        stroke-linejoin="round"
-        d="M12 8v6M9 11h6"
-      />
+      <path stroke-linecap="round" stroke-linejoin="round" d="M12 8v6M9 11h6" />
     </svg>
   `;
 }

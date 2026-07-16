@@ -57,11 +57,7 @@ describe("derivePhaseState — feature", () => {
   });
 
   test("planned+implemented+tested: current=review (reasoning)", () => {
-    const s = derivePhaseState("feature", [
-      "planned",
-      "implemented",
-      "tested",
-    ]);
+    const s = derivePhaseState("feature", ["planned", "implemented", "tested"]);
     expect(s.currentIndex).toBe(3);
     expect(s.currentLabel).toBe("review");
     expect(s.currentTier).toBe("reasoning");
@@ -98,11 +94,7 @@ describe("derivePhaseState — feature", () => {
   });
 
   test("unknown labels are ignored", () => {
-    const s = derivePhaseState("feature", [
-      "planned",
-      "wip",
-      "needs-review",
-    ]);
+    const s = derivePhaseState("feature", ["planned", "wip", "needs-review"]);
     expect(s.currentLabel).toBe("implement");
     expect(s.phases[0].status).toBe("done");
   });
@@ -134,11 +126,7 @@ describe("derivePhaseState — bug", () => {
   });
 
   test("all three labels: terminal / done", () => {
-    const s = derivePhaseState("bug", [
-      "researched",
-      "reproduced",
-      "fixed",
-    ]);
+    const s = derivePhaseState("bug", ["researched", "reproduced", "fixed"]);
     expect(s.isTerminal).toBe(true);
     expect(s.currentLabel).toBe("done");
     expect(s.currentTier).toBe("terminal");
@@ -152,5 +140,62 @@ describe("derivePhaseState — tier class hints", () => {
     expect(s.phases[0].tierClasses).toBe(PHASE_TIER_CLASSES.terminal);
     expect(s.phases[1].tierClasses).toBe(PHASE_TIER_CLASSES.coding);
     expect(s.phases[3].tierClasses).toBe(PHASE_TIER_CLASSES.reasoning);
+  });
+});
+
+describe("derivePhaseState — iconName metadata (mitto-3soh)", () => {
+  test("feature: currentIconName tracks the current phase and terminal state", () => {
+    expect(derivePhaseState("feature", []).currentIconName).toBe("list");
+    expect(derivePhaseState("feature", ["planned"]).currentIconName).toBe(
+      "code-block",
+    );
+    expect(
+      derivePhaseState("feature", ["planned", "implemented"]).currentIconName,
+    ).toBe("beaker");
+    expect(
+      derivePhaseState("feature", ["planned", "implemented", "tested"])
+        .currentIconName,
+    ).toBe("eye");
+    expect(
+      derivePhaseState("feature", [
+        "planned",
+        "implemented",
+        "tested",
+        "verified",
+      ]).currentIconName,
+    ).toBe("check");
+  });
+
+  test("bug: currentIconName tracks the current phase and terminal state", () => {
+    expect(derivePhaseState("bug", []).currentIconName).toBe("search");
+    expect(derivePhaseState("bug", ["researched"]).currentIconName).toBe(
+      "refresh",
+    );
+    expect(
+      derivePhaseState("bug", ["researched", "reproduced"]).currentIconName,
+    ).toBe("wrench");
+    expect(
+      derivePhaseState("bug", ["researched", "reproduced", "fixed"])
+        .currentIconName,
+    ).toBe("check");
+  });
+
+  test("per-phase iconName matches the FEATURE_PHASES mapping", () => {
+    const s = derivePhaseState("feature", []);
+    expect(s.phases.map((p) => p.iconName)).toEqual([
+      "list",
+      "code-block",
+      "beaker",
+      "eye",
+    ]);
+  });
+
+  test("per-phase iconName matches the BUG_PHASES mapping", () => {
+    const s = derivePhaseState("bug", []);
+    expect(s.phases.map((p) => p.iconName)).toEqual([
+      "search",
+      "refresh",
+      "wrench",
+    ]);
   });
 });
