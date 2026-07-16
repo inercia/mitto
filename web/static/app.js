@@ -3500,6 +3500,7 @@ function App() {
                     isArchived=${sessionInfo?.archived || false}
                     predefinedPrompts=${predefinedPrompts}
                     loopPrompts=${loopPrompts}
+                    allPrompts=${workspacePrompts}
                     hasBeadsWorkspace=${hasBeadsWorkspace}
                     inputRef=${chatInputRef}
                     noSession=${!activeSessionId}

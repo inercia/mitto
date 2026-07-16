@@ -149,6 +149,7 @@ function localToUtcTime(localTime) {
  * @param {Function} props.onMaxIterationsChange - Callback when max iterations is updated
  * @param {Function} props.onLoopEnabledChange - Callback when loop is paused/resumed
  * @param {Array} props.prompts - Available workspace prompts for the inline selector
+ * @param {Array} props.allPrompts - Full workspace prompts list; used for arg-edit lookup so menu-scoped loop prompts (e.g. beadsList) can still have their arguments edited.
  * @param {string} props.selectedPromptName - Currently selected loop prompt name
  * @param {string} props.selectedPromptBody - Free-text loop prompt body (used when no named prompt is set)
  * @param {Function} props.onPromptSelect - Callback when a prompt is selected: (promptName) => void
@@ -170,6 +171,7 @@ export function LoopFrequencyPanel({
   onMaxIterationsChange,
   onLoopEnabledChange,
   prompts = [],
+  allPrompts = [],
   selectedPromptName = "",
   selectedPromptBody = "",
   onPromptSelect,
@@ -865,9 +867,14 @@ export function LoopFrequencyPanel({
     ? `This conversation stopped because it reached its ${stoppedReasonText}. Restore it to keep iterating.`
     : "Do you want to restore the loop schedule for this conversation?";
 
-  // Compute whether the edit-arguments button should be enabled
+  // Compute whether the edit-arguments button should be enabled. Prefer
+  // allPrompts (full workspace list) so menu-scoped loop prompts (e.g.
+  // `menus: beadsList`) — which are filtered out of `prompts` by
+  // useWorkspacePrompts and correctly greyed in the LoopPromptSelector picker —
+  // still resolve here for the sliders/edit-args button.
   const selectedPrompt = selectedPromptName
-    ? (prompts || []).find((p) => p.name === selectedPromptName)
+    ? (allPrompts || []).find((p) => p.name === selectedPromptName) ||
+      (prompts || []).find((p) => p.name === selectedPromptName)
     : null;
   const selectedPromptParams = selectedPrompt
     ? promptParameters(selectedPrompt)
