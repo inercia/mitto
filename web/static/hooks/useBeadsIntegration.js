@@ -276,8 +276,7 @@ export function useBeadsIntegration({
             if (!result?.sessionId) {
               showToast({
                 style: "error",
-                title:
-                  result?.error || "Failed to create loop conversation",
+                title: result?.error || "Failed to create loop conversation",
                 duration: 4000,
               });
               return;
@@ -398,21 +397,70 @@ export function useBeadsIntegration({
       const beadsMatches = workspaces.filter((w) => w.working_dir === wd);
       const ws = beadsMatches.find((w) => w.is_default) || beadsMatches[0];
 
+      // The beadsList menu cannot auto-supply any parameter types, so any
+      // declared (required, non-optional) params must be collected via the
+      // parameter dialog before the prompt is dispatched. Mirrors the gating
+      // in handleRunBeadsPrompt so tasksList shortcut buttons don't skip the
+      // dialog and dispatch with empty ${VAR} substitutions.
+      const missing = getMissingPromptParameters(prompt, "beadsList");
+
       // Loop prompts create a recurring conversation instead of a one-time seed.
       const asLoop = promptResolveAsLoop(prompt, opts?.asLoop);
       if (asLoop && onOpenLoopDialog) {
-        onOpenLoopDialog(prompt, async (schedule) => {
+        const launchLoop = (args) => {
+          onOpenLoopDialog(prompt, async (schedule) => {
+            const result = await startConversationWithPrompt({
+              workingDir: wd,
+              acpServer: ws?.acp_server,
+              name: prompt.name,
+              prompt,
+              arguments: args,
+              loop: schedule,
+            });
+            if (!result?.sessionId) {
+              showToast({
+                style: "error",
+                title: result?.error || "Failed to create loop conversation",
+                duration: 4000,
+              });
+              return;
+            }
+            setMainView("conversation");
+            dismissBeadsIssueOverlay();
+            showToast({
+              style: "success",
+              title: `Started loop "${prompt.name}"`,
+              duration: 3000,
+            });
+          });
+        };
+
+        if (missing.length > 0 && onOpenPromptParamDialog) {
+          onOpenPromptParamDialog(prompt, missing, async (userArgs) => {
+            launchLoop(userArgs);
+          });
+          return;
+        }
+
+        launchLoop(undefined);
+        return;
+      }
+
+      // When there are parameters the menu cannot auto-fill, open the dialog so
+      // the user can supply them. The dispatch happens inside the onSubmit callback.
+      if (missing.length > 0 && onOpenPromptParamDialog) {
+        onOpenPromptParamDialog(prompt, missing, async (userArgs) => {
           const result = await startConversationWithPrompt({
             workingDir: wd,
             acpServer: ws?.acp_server,
             name: prompt.name,
             prompt,
-            loop: schedule,
+            arguments: userArgs,
           });
           if (!result?.sessionId) {
             showToast({
               style: "error",
-              title: result?.error || "Failed to create loop conversation",
+              title: result?.error || "Failed to create conversation",
               duration: 4000,
             });
             return;
@@ -421,7 +469,9 @@ export function useBeadsIntegration({
           dismissBeadsIssueOverlay();
           showToast({
             style: "success",
-            title: `Started loop "${prompt.name}"`,
+            title: result.reused
+              ? `Reusing existing "${prompt.name}" conversation`
+              : `Started "${prompt.name}"`,
             duration: 3000,
           });
         });
@@ -463,6 +513,7 @@ export function useBeadsIntegration({
       startConversationWithPrompt,
       showToast,
       onOpenLoopDialog,
+      onOpenPromptParamDialog,
       dismissBeadsIssueOverlay,
     ],
   );
