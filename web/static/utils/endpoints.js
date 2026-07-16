@@ -133,7 +133,10 @@ export const endpoints = {
 
   /** Global settings (stored in settings.json). */
   global: {
-    shortcuts: () => apiUrl("/api/global/shortcuts"),
+    // Pass { include_prompts: true } to also receive the merged global prompts
+    // list (~750 KB) needed by the shortcuts editor. Read-only callers that
+    // only render existing sections must omit it — see mitto-r4t0.
+    shortcuts: (params) => apiUrl("/api/global/shortcuts") + qs(params),
   },
 
   /** Global server configuration. */
