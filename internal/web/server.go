@@ -20,6 +20,7 @@ import (
 	"github.com/inercia/mitto/internal/appdir"
 	"github.com/inercia/mitto/internal/auxiliary"
 	"github.com/inercia/mitto/internal/beads"
+	"github.com/inercia/mitto/internal/beads/watcher"
 	configPkg "github.com/inercia/mitto/internal/config"
 	"github.com/inercia/mitto/internal/conversation"
 	"github.com/inercia/mitto/internal/defense"
@@ -202,7 +203,7 @@ type Server struct {
 	promptsWatcher *configPkg.PromptsWatcher
 
 	// Beads watcher for monitoring .beads/ directory changes
-	beadsWatcher *configPkg.BeadsWatcher
+	beadsWatcher *watcher.BeadsWatcher
 
 	// ACP process manager for workspace-scoped shared processes
 	acpProcessManager *acpproc.ACPProcessManager
@@ -1250,7 +1251,7 @@ func NewServer(config Config) (*Server, error) {
 	}
 
 	// Initialize beads watcher for monitoring .beads/ directory changes
-	if beadsWatcher, err := configPkg.NewBeadsWatcher(logger); err != nil {
+	if beadsWatcher, err := watcher.NewBeadsWatcher(logger); err != nil {
 		logger.Warn("Failed to create beads watcher", "error", err)
 	} else {
 		s.beadsWatcher = beadsWatcher
@@ -2297,7 +2298,7 @@ func (s *Server) suppressBeads(workingDir string) func() {
 }
 
 // beadsCacheWatcherSubscriber adapts *beads.CachingClient to
-// configPkg.BeadsSubscriber so BeadsWatcher events invalidate the corresponding
+// watcher.BeadsSubscriber so BeadsWatcher events invalidate the corresponding
 // workspace's cache slot. Kept in the web package to preserve the internal/beads
 // leaf-package invariant (cache.go must not import internal/config). The pointer
 // receiver + Server-held pointer field give the adapter a stable identity so
@@ -2309,7 +2310,7 @@ func (s *Server) suppressBeads(workingDir string) func() {
 // defer c.Invalidate(dir) on each write method (mitto-is2.1). mitto-is2.3.
 type beadsCacheWatcherSubscriber struct{ cache *beads.CachingClient }
 
-func (b *beadsCacheWatcherSubscriber) OnBeadsChanged(event configPkg.BeadsChangeEvent) {
+func (b *beadsCacheWatcherSubscriber) OnBeadsChanged(event watcher.BeadsChangeEvent) {
 	if b == nil || b.cache == nil {
 		return
 	}
@@ -2330,7 +2331,7 @@ func (s *Server) beadsCacheMetricsCallback() func() beads.CacheMetrics {
 
 // OnBeadsChanged is called by the BeadsWatcher when .beads/ directories change.
 // It broadcasts the change to all connected clients via the global events WebSocket.
-func (s *Server) OnBeadsChanged(event configPkg.BeadsChangeEvent) {
+func (s *Server) OnBeadsChanged(event watcher.BeadsChangeEvent) {
 	if s.eventsManager == nil {
 		return
 	}

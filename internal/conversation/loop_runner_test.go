@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/inercia/mitto/internal/beads"
+	"github.com/inercia/mitto/internal/beads/watcher"
 	"github.com/inercia/mitto/internal/config"
 	"github.com/inercia/mitto/internal/fileutil"
 	"github.com/inercia/mitto/internal/session"
@@ -3424,7 +3425,7 @@ func TestLoopRunner_OnBeadsChanged_RoutingAndCaching(t *testing.T) {
 	runner := NewLoopRunner(store, nil, nil)
 	runner.SetBeadsClient(fake)
 
-	runner.OnBeadsChanged(config.BeadsChangeEvent{WorkingDirs: []string{"/proj-a"}})
+	runner.OnBeadsChanged(watcher.BeadsChangeEvent{WorkingDirs: []string{"/proj-a"}})
 
 	// s1 and s2 (same dir, enabled, onTasks) get a baseline initialized.
 	for _, sid := range []string{"s1", "s2"} {
@@ -3489,7 +3490,7 @@ func TestLoopRunner_OnBeadsChanged_AfterStopDoesNotTouchClosedStore(t *testing.T
 	}
 	runner.Stop()
 
-	runner.OnBeadsChanged(config.BeadsChangeEvent{
+	runner.OnBeadsChanged(watcher.BeadsChangeEvent{
 		WorkingDirs: []string{"/proj-a"},
 		Timestamp:   time.Now(),
 	})
