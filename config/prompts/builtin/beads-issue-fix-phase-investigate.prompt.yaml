@@ -34,6 +34,21 @@ prompt: |
   {{- end }}
 
   {{ if $target -}}
+  ## Tier check
+
+  This phase is declared to run on the **Reasoning** tier (`preferredModels: [{modelTag: Reasoning}]`).
+  Active model: `{{ if .Session.ModelName }}{{ .Session.ModelName }}{{ else }}<unknown>{{ end }}` (tags: {{ if .Session.ModelTags }}{{ Join ", " .Session.ModelTags }}{{ else }}none{{ end }}).
+
+  {{ if Model "Reasoning" -}}
+  ✓ Reasoning tier confirmed — proceed.
+  {{- else -}}
+  ⚠ **Tier-degraded run.** The active model does not carry the `Reasoning` tag, so the transient `preferredModels` switch did not land (either the tag is not installed on any workspace profile, or the current model is unknown). Before doing any phase work, record the degradation on the bead so it is visible in the audit trail, then continue on best effort:
+
+  ```bash
+  bd comment {{ $target }} "⚠ tier-degraded [phase: investigate]: declared Reasoning but running on '{{ if .Session.ModelName }}{{ .Session.ModelName }}{{ else }}<unknown>{{ end }}' (tags: {{ if .Session.ModelTags }}{{ Join ", " .Session.ModelTags }}{{ else }}none{{ end }})."
+  ```
+  {{- end }}
+
   ## Step 1 — Load LIVE state
 
   Labels drift between runs. Load the bead's **current** state fresh:
@@ -59,18 +74,46 @@ prompt: |
   Gather the concrete evidence you need: root-cause hypothesis, code locations, logs,
   reproduction preconditions.
 
-  ## Step 3 — Record findings and advance the label
+  ## Step 3 — Record findings and advance the label — MANDATORY CLOSURE
 
-  When you understand the bug well enough for the next phase to reproduce it, record
-  your findings on the bead and advance the state:
+  When you understand the bug well enough for the next phase to reproduce it, execute
+  the following checklist **in order**. This is not optional prose: every item must
+  complete before the turn ends, and Step 3.V verifies each item actually landed.
+  Historically this closure has been the single most common execution miss (agent
+  writes the Investigation comment, then stops without labeling), which leaves the
+  bead lying about the state of the tree — the verification step exists specifically
+  to catch that class of miss.
+
+  ### Step 3.1 — Record the investigation on the bead
 
   ```bash
-  bd comment {{ $target }} "Investigation: <root cause hypothesis, code locations, evidence>."
+  bd comment {{ $target }} "Investigation [tier: Reasoning]: <root cause hypothesis, code locations, evidence>."
+  ```
+
+  ### Step 3.2 — Advance the state machine
+
+  Only after Step 3.1 has posted:
+
+  ```bash
   bd update {{ $target }} --add-label researched
   ```
 
-  Only add the label after the comment is posted. Then stop — the driver's next
-  scheduled run will pick up the `researched` state and dispatch the reproduce phase.
+  ### Step 3.V — Self-verification (MANDATORY before ending the turn)
+
+  Run each of these commands and confirm the expected result. If any check
+  fails, the corresponding step above was NOT completed — go back and finish
+  it, then re-run the failing check. Do **not** end the turn with a red check.
+
+  ```bash
+  # V.1: bead carries the `researched` label
+  bd show {{ $target }} --json | python3 -c "import json,sys; d=json.load(sys.stdin); d=d[0] if isinstance(d,list) else d; assert 'researched' in d.get('labels',[]), 'MISSING researched label'; print('OK: researched label present')"
+
+  # V.2: `Investigation [tier: Reasoning]:` comment is on the bead
+  bd show {{ $target }} --include-comments | grep -F "Investigation [tier: Reasoning]:" >/dev/null && echo "OK: Investigation comment present" || echo "MISSING Investigation [tier: Reasoning]: comment"
+  ```
+
+  Only after all checks print `OK`, stop — the driver's next scheduled run will
+  observe `researched` and dispatch the reproduce phase.
   {{- end }}
 
   ## Step 4 — Blocked → Defer + Handoff
@@ -106,3 +149,5 @@ prompt: |
   - **Live state only.** Always re-read labels via `bd show --json` at the start of
     the phase; never assume labels from a prior run or from `Item.*`.
   - **Always log to the tracker** with `bd comment` so progress is auditable.
+  - **Tier tag every comment.** Prefix the findings with `Investigation [tier: Reasoning]:`
+    so the tier split is observable in the bead history (mitto-mpu5 acceptance criteria).

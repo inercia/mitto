@@ -147,6 +147,12 @@ prompt: |
 
   ### 4c. Apply — gated on interaction mode
 
+  Applying each bug's triage is MANDATORY per-bug closure — this closure has
+  historically been silently skipped (agent composes the triage comment, then stops
+  without labeling), which leaves the bead lying about the state of the tree. The
+  per-bug **Step 4c.V** verification below exists specifically to catch that class
+  of miss.
+
   {{- if .Iteration.IsUninterrupted }}
   **Silent uninterrupted run — auto-apply.** For each bug, run:
 
@@ -156,12 +162,42 @@ prompt: |
   # then, per bug, additional --add-label calls for area/* and needs-info as decided in 4b
   ```
 
+  #### Step 4c.V — Per-bug self-verification (MANDATORY before moving on)
+
+  Immediately after the `bd update` above, for **this** bug id, run:
+
+  ```bash
+  # V.1: bead carries `triaged` AND at least one `severity/*` label
+  bd show <id> --json | python3 -c "import json,sys; d=json.load(sys.stdin); d=d[0] if isinstance(d,list) else d; labels=d.get('labels',[]); assert 'triaged' in labels, 'MISSING triaged label'; assert any(l.startswith('severity/') for l in labels), 'MISSING severity/* label'; print('OK: triaged + severity/* labels present')"
+
+  # V.2: `Triage:` comment is on the bead
+  bd show <id> --include-comments | grep -F "Triage:" >/dev/null && echo "OK: Triage comment present" || echo "MISSING Triage: comment"
+  ```
+
+  If either check fails for this bug, log the failure, **continue with the remaining
+  bugs**, and fold the failure into the closing summary's "skipped" tally.
+
   Log a running tally as you go so the closing summary in Step 6 is accurate.
   {{- else if and .Session.IsLoop (not .Session.IsLoopForced) }}
   **Silent scheduled run — auto-apply.** Same as the uninterrupted case above: for
   each bug run `bd comment` then `bd update --add-label triaged --add-label severity/<lvl>`
   plus the `area/*` and `needs-info` labels decided in 4b. Log a running tally for
   Step 6.
+
+  #### Step 4c.V — Per-bug self-verification (MANDATORY before moving on)
+
+  Immediately after the `bd update` above, for **this** bug id, run:
+
+  ```bash
+  # V.1: bead carries `triaged` AND at least one `severity/*` label
+  bd show <id> --json | python3 -c "import json,sys; d=json.load(sys.stdin); d=d[0] if isinstance(d,list) else d; labels=d.get('labels',[]); assert 'triaged' in labels, 'MISSING triaged label'; assert any(l.startswith('severity/') for l in labels), 'MISSING severity/* label'; print('OK: triaged + severity/* labels present')"
+
+  # V.2: `Triage:` comment is on the bead
+  bd show <id> --include-comments | grep -F "Triage:" >/dev/null && echo "OK: Triage comment present" || echo "MISSING Triage: comment"
+  ```
+
+  If either check fails for this bug, log the failure, **continue with the remaining
+  bugs**, and fold the failure into the closing summary's "skipped" tally.
   {{- else }}
   **Interactive run — confirm ONCE, then apply.** Do **not** write anything to the
   tracker yet. Build a consolidated proposal table listing every bug you plan to
@@ -187,6 +223,21 @@ prompt: |
   bd update <id> --add-label triaged --add-label severity/<lvl>
   # plus additional --add-label calls for area/* and needs-info per 4b
   ```
+
+  #### Step 4c.V — Per-bug self-verification (MANDATORY before moving on)
+
+  Immediately after the `bd update` above, for **this** bug id, run:
+
+  ```bash
+  # V.1: bead carries `triaged` AND at least one `severity/*` label
+  bd show <id> --json | python3 -c "import json,sys; d=json.load(sys.stdin); d=d[0] if isinstance(d,list) else d; labels=d.get('labels',[]); assert 'triaged' in labels, 'MISSING triaged label'; assert any(l.startswith('severity/') for l in labels), 'MISSING severity/* label'; print('OK: triaged + severity/* labels present')"
+
+  # V.2: `Triage:` comment is on the bead
+  bd show <id> --include-comments | grep -F "Triage:" >/dev/null && echo "OK: Triage comment present" || echo "MISSING Triage: comment"
+  ```
+
+  If either check fails for this bug, log the failure, **continue with the remaining
+  bugs**, and fold the failure into the closing summary's "skipped" tally.
   {{- end }}
 
   ## Step 5 — Blocked → Defer + Handoff (per bug, not per pass)
