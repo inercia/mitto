@@ -851,19 +851,34 @@ var modelSwitchAsyncBudget = 90 * time.Second
 // desired model differs from the current active model. No-op when agentModels is nil.
 func (p promptDispatcher) applyModelPreference(d promptDeps, meta PromptMeta) {
 	models := d.pdGetAgentModels()
-	if models == nil {
-		if l := d.pdLogger(); l != nil {
-			l.Debug("apply_model_preference",
-				"session_id", d.pdSessionID(),
-				"prompt_name", meta.PromptName,
-				"decision", "skip_no_agent_models")
-		}
-		return
-	}
 
 	preferredModels := meta.PreferredModels
 	if len(preferredModels) == 0 && meta.PromptName != "" {
 		preferredModels = d.pdResolvePreferredModels(meta.PromptName)
+	}
+
+	if models == nil {
+		if l := d.pdLogger(); l != nil {
+			// mitto-ishl: when the agent never advertises a model catalog (e.g.
+			// every Auggie session today) a declared preferredModels is silently
+			// dropped. Split the two cases so tier-switching failures are loud:
+			// a genuine no-preference no-op stays at DEBUG; a dropped tier switch
+			// escalates to WARN with a distinct decision code that operators can
+			// grep for.
+			if len(preferredModels) > 0 {
+				l.Warn("apply_model_preference",
+					"session_id", d.pdSessionID(),
+					"prompt_name", meta.PromptName,
+					"preferred_models", preferredModels,
+					"decision", "skip_agent_advertises_no_models")
+			} else {
+				l.Debug("apply_model_preference",
+					"session_id", d.pdSessionID(),
+					"prompt_name", meta.PromptName,
+					"decision", "skip_no_agent_models")
+			}
+		}
+		return
 	}
 
 	baseline := d.pdReadBaselineModel()

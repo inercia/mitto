@@ -1598,6 +1598,59 @@ func TestPromptDispatcher_ApplyModelPreference_NoAgentModels_NoOp(t *testing.T) 
 	}
 }
 
+// TestPromptDispatcher_ApplyModelPreference_PreferenceButNoAgentModels_ObservableFailure
+// reproduces mitto-ishl. When a prompt DECLARES preferredModels but agentModels
+// is nil (e.g. every Auggie session today, which never advertises a model
+// catalog via ACP ConfigOptions), the failure must be observable in the log
+// stream at WARN level with a distinct decision code so tier-splitting
+// failures are never silent.
+//
+// Pre-fix behavior (buggy): the check at prompt_dispatcher.go:854 short-circuits
+// at DEBUG level with decision=skip_no_agent_models, regardless of whether a
+// preference was declared. There is no way to tell from the log whether we
+// silently dropped a real tier switch or whether the prompt genuinely had no
+// preference; both look identical.
+//
+// Post-fix contract: when preferredModels is non-empty AND agentModels is nil,
+// applyModelPreference must emit a WARN-level log with a distinct decision code
+// (skip_agent_advertises_no_models) that includes the declared preference so an
+// operator can grep for silently-dropped tier switches.
+func TestPromptDispatcher_ApplyModelPreference_PreferenceButNoAgentModels_ObservableFailure(t *testing.T) {
+	p := promptDispatcher{}
+	d := newFakePromptDeps()
+	d.agentModels = nil // simulate an Auggie-shaped agent that never advertises models
+	var buf bytes.Buffer
+	// Capture WARN+ only so a DEBUG-level short-circuit fails the assertion:
+	// the whole point of the fix is that this specific combination is loud,
+	// not hidden in a firehose of debug lines that ship disabled in production.
+	d.logger = slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn}))
+
+	p.applyModelPreference(d, PromptMeta{
+		PromptName:      "Bug fix investigate phase",
+		PreferredModels: []config.PromptPreferredModel{{ModelTag: "Reasoning"}},
+	})
+
+	if len(d.setActiveModelCalls) != 0 {
+		t.Fatalf("expected no setActiveModel call when agentModels=nil, got %v", d.setActiveModelCalls)
+	}
+	if d.overrideActive {
+		t.Fatal("expected overrideActive=false when the switch cannot be applied")
+	}
+	logOut := buf.String()
+	if !strings.Contains(logOut, "level=WARN") {
+		t.Fatalf("expected a WARN-level log when preferredModels is declared but agentModels is nil, got: %q", logOut)
+	}
+	if !strings.Contains(logOut, "decision=skip_agent_advertises_no_models") {
+		t.Fatalf("expected decision=skip_agent_advertises_no_models in log to distinguish this failure from a no-preference no-op, got: %q", logOut)
+	}
+	if !strings.Contains(logOut, "Reasoning") {
+		t.Fatalf("expected the declared preference (Reasoning) to appear in the log so operators can grep for dropped tier switches, got: %q", logOut)
+	}
+	if !strings.Contains(logOut, "Bug fix investigate phase") {
+		t.Fatalf("expected the prompt_name to appear in the log for auditability, got: %q", logOut)
+	}
+}
+
 func TestPromptDispatcher_ApplyModelPreference_NoPreference_DesiredIsBaseline_NoSwitch(t *testing.T) {
 	p := promptDispatcher{}
 	d := newFakePromptDeps()
