@@ -667,3 +667,277 @@ describe("cleanup progress toast — terminal outcomes reset state", () => {
     expect(h.fetchList.count).toBe(1);
   });
 });
+
+
+// =============================================================================
+// BeadsIssueView in-viewer navigation history stack (mitto-qluh.1)
+// =============================================================================
+//
+// The stack lives in BeadsIssueView (BeadsView.js:275-389) as two useState
+// values — `history` (array of issue IDs) and `pos` (index) — mutated by
+// three callbacks: `handleSelectIssue`, `goBack`, `goForward`, plus a reset
+// effect that runs when the external `issueId`/`selectNonce` prop changes.
+//
+// Because BeadsView.js reads `window.preact` at module load, the component
+// itself cannot be imported under jsdom (see the header comment on
+// PromptParameterDialog.test.js for the project-wide precedent). We therefore
+// mirror the pure state transitions here as small reducer helpers and exercise
+// them directly — the same pattern the rest of this file uses. If the stack
+// logic in BeadsView.js changes, these helpers must be updated to match.
+// =============================================================================
+
+/**
+ * Mirrors the initial state seeded in BeadsIssueView when the component mounts
+ * or the external issueId/selectNonce prop changes:
+ *   const [history, setHistory] = useState([issueId]);
+ *   const [pos,     setPos]     = useState(0);
+ */
+function makeInitialHistory(issueId) {
+  return { history: [issueId], pos: 0 };
+}
+
+/**
+ * Mirrors handleSelectIssue in BeadsView.js:372-381: clicking a related id
+ * truncates any forward entries, pushes the new id, and advances `pos`. A
+ * click on the id already showing is a no-op (does not add a duplicate step).
+ * `depObj` mimics the shape passed in from BeadsDetailPanelBody call sites
+ * (dependencies / parent / subtasks): `{id: string}` — missing/empty id is
+ * a no-op.
+ */
+function selectIssue(state, depObj) {
+  const id = depObj && depObj.id;
+  if (!id) return state;
+  if (id === state.history[state.pos]) return state;
+  return {
+    history: [...state.history.slice(0, state.pos + 1), id],
+    pos: state.pos + 1,
+  };
+}
+
+/** Mirrors goBack in BeadsView.js:383-385 (clamped at 0). */
+function goBack(state) {
+  return { ...state, pos: state.pos > 0 ? state.pos - 1 : state.pos };
+}
+
+/** Mirrors goForward in BeadsView.js:387-389 (clamped at history.length-1). */
+function goForward(state) {
+  return {
+    ...state,
+    pos:
+      state.pos < state.history.length - 1 ? state.pos + 1 : state.pos,
+  };
+}
+
+/** Derived flags exposed to the panel (BeadsView.js:278-279). */
+function canGoBack(state) {
+  return state.pos > 0;
+}
+function canGoForward(state) {
+  return state.pos < state.history.length - 1;
+}
+
+/** The `currentIssueId` derived value (BeadsView.js:277). */
+function currentId(state) {
+  return state.history[state.pos];
+}
+
+describe("BeadsIssueView history stack — initial state", () => {
+  test("seeds a single-entry stack with pos=0", () => {
+    const s = makeInitialHistory("mitto-aaa");
+    expect(s.history).toEqual(["mitto-aaa"]);
+    expect(s.pos).toBe(0);
+    expect(currentId(s)).toBe("mitto-aaa");
+  });
+
+  test("canGoBack and canGoForward are both false at the root", () => {
+    const s = makeInitialHistory("mitto-aaa");
+    expect(canGoBack(s)).toBe(false);
+    expect(canGoForward(s)).toBe(false);
+  });
+});
+
+describe("BeadsIssueView history stack — handleSelectIssue push", () => {
+  test("a single navigation pushes the id and advances pos", () => {
+    let s = makeInitialHistory("mitto-aaa");
+    s = selectIssue(s, { id: "mitto-bbb" });
+    expect(s.history).toEqual(["mitto-aaa", "mitto-bbb"]);
+    expect(s.pos).toBe(1);
+    expect(currentId(s)).toBe("mitto-bbb");
+  });
+
+  test("several sequential navigations extend the stack in order", () => {
+    let s = makeInitialHistory("mitto-aaa");
+    s = selectIssue(s, { id: "mitto-bbb" });
+    s = selectIssue(s, { id: "mitto-ccc" });
+    s = selectIssue(s, { id: "mitto-ddd" });
+    expect(s.history).toEqual([
+      "mitto-aaa",
+      "mitto-bbb",
+      "mitto-ccc",
+      "mitto-ddd",
+    ]);
+    expect(s.pos).toBe(3);
+    expect(currentId(s)).toBe("mitto-ddd");
+    expect(canGoBack(s)).toBe(true);
+    expect(canGoForward(s)).toBe(false);
+  });
+
+  test("clicking the same id as the current entry is a no-op", () => {
+    const s0 = makeInitialHistory("mitto-aaa");
+    const s1 = selectIssue(s0, { id: "mitto-aaa" });
+    expect(s1).toBe(s0); // identity preserved (no state change)
+  });
+
+  test("clicking the current id after navigation is still a no-op", () => {
+    let s = makeInitialHistory("mitto-aaa");
+    s = selectIssue(s, { id: "mitto-bbb" });
+    const before = s;
+    s = selectIssue(s, { id: "mitto-bbb" });
+    expect(s).toBe(before);
+    expect(s.history).toEqual(["mitto-aaa", "mitto-bbb"]);
+    expect(s.pos).toBe(1);
+  });
+
+  test("a depObj without an id is ignored (missing / empty / falsy)", () => {
+    const s = makeInitialHistory("mitto-aaa");
+    expect(selectIssue(s, {})).toBe(s);
+    expect(selectIssue(s, { id: "" })).toBe(s);
+    expect(selectIssue(s, { id: null })).toBe(s);
+    expect(selectIssue(s, null)).toBe(s);
+    expect(selectIssue(s, undefined)).toBe(s);
+  });
+});
+
+describe("BeadsIssueView history stack — goBack / goForward", () => {
+  test("goBack retraces the previous entry and updates canGo* flags", () => {
+    let s = makeInitialHistory("mitto-aaa");
+    s = selectIssue(s, { id: "mitto-bbb" });
+    s = selectIssue(s, { id: "mitto-ccc" });
+    // At mitto-ccc, pos=2.
+    s = goBack(s);
+    expect(currentId(s)).toBe("mitto-bbb");
+    expect(s.pos).toBe(1);
+    expect(canGoBack(s)).toBe(true);
+    expect(canGoForward(s)).toBe(true);
+  });
+
+  test("goBack all the way to the root disables further Back", () => {
+    let s = makeInitialHistory("mitto-aaa");
+    s = selectIssue(s, { id: "mitto-bbb" });
+    s = selectIssue(s, { id: "mitto-ccc" });
+    s = goBack(s);
+    s = goBack(s);
+    expect(currentId(s)).toBe("mitto-aaa");
+    expect(s.pos).toBe(0);
+    expect(canGoBack(s)).toBe(false);
+    expect(canGoForward(s)).toBe(true);
+  });
+
+  test("goBack at pos=0 is a no-op (clamped, does not go negative)", () => {
+    const s0 = makeInitialHistory("mitto-aaa");
+    const s1 = goBack(s0);
+    expect(s1.pos).toBe(0);
+    expect(currentId(s1)).toBe("mitto-aaa");
+  });
+
+  test("goForward retraces the discarded direction after a goBack", () => {
+    let s = makeInitialHistory("mitto-aaa");
+    s = selectIssue(s, { id: "mitto-bbb" });
+    s = selectIssue(s, { id: "mitto-ccc" });
+    s = goBack(s); // now at mitto-bbb
+    s = goForward(s);
+    expect(currentId(s)).toBe("mitto-ccc");
+    expect(s.pos).toBe(2);
+    expect(canGoBack(s)).toBe(true);
+    expect(canGoForward(s)).toBe(false);
+  });
+
+  test("goForward at the end of history is a no-op (clamped)", () => {
+    let s = makeInitialHistory("mitto-aaa");
+    s = selectIssue(s, { id: "mitto-bbb" });
+    // pos=1, length=2 → canGoForward is false.
+    const before = s;
+    s = goForward(s);
+    expect(s.pos).toBe(before.pos);
+    expect(currentId(s)).toBe("mitto-bbb");
+    expect(canGoForward(s)).toBe(false);
+  });
+});
+
+describe("BeadsIssueView history stack — forward-branch truncation", () => {
+  test("selecting a new id after a goBack truncates the forward chain", () => {
+    let s = makeInitialHistory("mitto-aaa");
+    s = selectIssue(s, { id: "mitto-bbb" });
+    s = selectIssue(s, { id: "mitto-ccc" });
+    s = selectIssue(s, { id: "mitto-ddd" });
+    // history: [aaa, bbb, ccc, ddd], pos=3
+    s = goBack(s); // pos=2 (ccc)
+    s = goBack(s); // pos=1 (bbb)
+    // Selecting a new branch here should discard [ccc, ddd] and push eee.
+    s = selectIssue(s, { id: "mitto-eee" });
+    expect(s.history).toEqual(["mitto-aaa", "mitto-bbb", "mitto-eee"]);
+    expect(s.pos).toBe(2);
+    expect(currentId(s)).toBe("mitto-eee");
+    // Forward is no longer available: ccc/ddd were discarded on the branch.
+    expect(canGoForward(s)).toBe(false);
+    expect(canGoBack(s)).toBe(true);
+  });
+
+  test("goBack-then-select at pos=0 replaces the tail entirely", () => {
+    let s = makeInitialHistory("mitto-aaa");
+    s = selectIssue(s, { id: "mitto-bbb" });
+    s = selectIssue(s, { id: "mitto-ccc" });
+    s = goBack(s); // pos=1
+    s = goBack(s); // pos=0 (root)
+    // A fresh branch at the root: history becomes [aaa, zzz].
+    s = selectIssue(s, { id: "mitto-zzz" });
+    expect(s.history).toEqual(["mitto-aaa", "mitto-zzz"]);
+    expect(s.pos).toBe(1);
+    expect(canGoForward(s)).toBe(false);
+  });
+
+  test("selecting the current id after a goBack still no-ops (no truncation)", () => {
+    let s = makeInitialHistory("mitto-aaa");
+    s = selectIssue(s, { id: "mitto-bbb" });
+    s = selectIssue(s, { id: "mitto-ccc" });
+    // history: [aaa, bbb, ccc], pos=2
+    s = goBack(s); // now at bbb, pos=1, forward=[ccc] preserved
+    const before = s;
+    // Re-clicking bbb (the current entry) must NOT truncate the forward chain.
+    s = selectIssue(s, { id: "mitto-bbb" });
+    expect(s).toBe(before);
+    expect(s.history).toEqual(["mitto-aaa", "mitto-bbb", "mitto-ccc"]);
+    expect(canGoForward(s)).toBe(true);
+  });
+});
+
+describe("BeadsIssueView history stack — external prop reset", () => {
+  test("re-opening from a new external issueId starts a single-entry stack", () => {
+    // Mirrors the reset effect at BeadsView.js:299-302, which fires whenever
+    // the external issueId or selectNonce changes: setHistory([issueId]);
+    // setPos(0). We express it here by rebuilding the initial state.
+    let s = makeInitialHistory("mitto-aaa");
+    s = selectIssue(s, { id: "mitto-bbb" });
+    s = selectIssue(s, { id: "mitto-ccc" });
+    // External navigation event: user follows a beads link to mitto-zzz.
+    s = makeInitialHistory("mitto-zzz");
+    expect(s.history).toEqual(["mitto-zzz"]);
+    expect(s.pos).toBe(0);
+    expect(currentId(s)).toBe("mitto-zzz");
+    expect(canGoBack(s)).toBe(false);
+    expect(canGoForward(s)).toBe(false);
+  });
+
+  test("selectNonce-triggered reset with the SAME issueId still clears history", () => {
+    // selectNonce is used to force a reset even when the id is unchanged
+    // (BeadsView.js line 302 deps: [issueId, selectNonce]). Simulate by
+    // rebuilding initial state with the same id.
+    let s = makeInitialHistory("mitto-aaa");
+    s = selectIssue(s, { id: "mitto-bbb" });
+    s = selectIssue(s, { id: "mitto-ccc" });
+    expect(s.history).toHaveLength(3);
+    s = makeInitialHistory("mitto-aaa");
+    expect(s.history).toEqual(["mitto-aaa"]);
+    expect(s.pos).toBe(0);
+  });
+});
