@@ -2,6 +2,47 @@
 // Functions for interacting with the native macOS app (when running in WebView)
 
 // =============================================================================
+// Non-viewable File Extensions
+// =============================================================================
+
+/**
+ * File extensions the internal viewer cannot render meaningfully.
+ * Clicking a link to one of these should open the file in the OS's
+ * default application via `openFileURL()` instead of the viewer.
+ *
+ * Grouped for readability; extend as needed.
+ */
+export const NON_VIEWABLE_EXTENSIONS = new Set([
+  // Office documents
+  "xlsx", "xls", "xlsm", "xlsb",
+  "docx", "doc",
+  "pptx", "ppt",
+  "odt", "ods", "odp",
+  "rtf", "pages", "numbers", "key",
+  // Archives
+  "zip", "tar", "gz", "tgz", "bz2", "7z", "rar", "xz",
+  // Installers & binaries
+  "dmg", "exe", "msi", "pkg", "deb", "rpm", "iso", "app",
+  "dll", "so", "dylib",
+]);
+
+/**
+ * Returns true when `path` ends in an extension the internal viewer
+ * cannot render (see NON_VIEWABLE_EXTENSIONS).
+ * @param {string} path
+ * @returns {boolean}
+ */
+export function isNonViewableExtension(path) {
+  if (!path || typeof path !== "string") return false;
+  const dot = path.lastIndexOf(".");
+  if (dot < 0 || dot === path.length - 1) return false;
+  const ext = path.slice(dot + 1).toLowerCase();
+  // Strip any query/fragment that leaked into the extension
+  const clean = ext.split(/[?#]/, 1)[0];
+  return NON_VIEWABLE_EXTENSIONS.has(clean);
+}
+
+// =============================================================================
 // External URL Helper
 // =============================================================================
 

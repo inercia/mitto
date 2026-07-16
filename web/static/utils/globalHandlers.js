@@ -9,6 +9,8 @@ import {
   convertHTTPFileURLToViewer,
   isNativeApp,
   fixViewerURLIfNeeded,
+  isNonViewableExtension,
+  getAPIPrefix,
 } from "./index.js";
 
 // =============================================================================
@@ -44,6 +46,44 @@ document.addEventListener("click", (e) => {
     console.log("[Mitto] Handling as viewer URL");
     e.preventDefault();
     e.stopPropagation();
+
+    // Non-viewable binary files (Office, archives, installers, …) can't be
+    // rendered by the viewer — route them to the OS's default application
+    // via the same plumbing as the viewer's "Open in System App" button.
+    // When ws_path is missing (older recordings, processor-crafted URLs, or
+    // manual edits) we cannot build a file:// URL, but the viewer URL still
+    // carries ws=<UUID> and path=<relative> — enough to degrade gracefully
+    // to a plain /api/files download instead of falling through to the
+    // broken viewer (mitto-tac5).
+    try {
+      const parsed = new URL(href, window.location.origin);
+      const filePath = parsed.searchParams.get("path") || "";
+      const wsPath = parsed.searchParams.get("ws_path") || "";
+      const workspaceUUID = parsed.searchParams.get("ws") || "";
+      if (isNonViewableExtension(filePath)) {
+        if (wsPath) {
+          const absolute =
+            wsPath.replace(/\/$/, "") + "/" + filePath.replace(/^\//, "");
+          console.log("[Mitto] Non-viewable file — opening in system app:", absolute);
+          openFileURL("file://" + absolute);
+          return;
+        }
+        if (workspaceUUID && filePath) {
+          const downloadUrl =
+            `${getAPIPrefix()}/api/files?ws=${encodeURIComponent(workspaceUUID)}` +
+            `&path=${encodeURIComponent(filePath)}`;
+          console.warn(
+            "[Mitto] Non-viewable viewer link missing ws_path — falling back to /api/files download:",
+            downloadUrl,
+          );
+          window.open(downloadUrl, "_blank", "noopener,noreferrer");
+          return;
+        }
+      }
+    } catch (err) {
+      console.warn("[Mitto] Failed to inspect viewer URL for non-viewable check:", err);
+    }
+
     if (isNativeApp() && typeof window.mittoOpenViewer === "function") {
       // macOS native app — open in native viewer window
       const fullUrl = new URL(href, window.location.origin).href;

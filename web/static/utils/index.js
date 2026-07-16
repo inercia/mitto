@@ -18,6 +18,8 @@ export {
   isNativeApp,
   fixViewerURLIfNeeded,
   getAPIPrefix,
+  NON_VIEWABLE_EXTENSIONS,
+  isNonViewableExtension,
 } from "./native.js";
 
 export {
