@@ -2881,3 +2881,98 @@ func TestMentionDriver_RendersForRepresentativeContexts(t *testing.T) {
 		t.Errorf("branch (c): expected the '<target-bead>' placeholder in the Step 4 handoff commands; got:\n%s", outC)
 	}
 }
+
+// TestLoopProcessingSpawns_MirrorArgumentsIntoLoopArguments reproduces mitto-rtdr.
+//
+// beads-issue-loop-processing.prompt.yaml spawns per-mention (§A), per-bug (§B) and
+// per-feature (§C) child conversations, all with loop_prompt_name and
+// loop_trigger: onCompletion — i.e. their onCompletion re-fires must render the
+// loop body with the same .Args as the initial run. In internal/mcpserver the
+// initial-prompt path reads input.Arguments (tools_conversation_new.go:651)
+// while the loop-body path reads a separate input.LoopArguments field
+// (:538 → session.LoopPrompt.Arguments). If the spawn block passes only
+// arguments: and not loop_arguments:, every re-fire renders the loop body with
+// .Args = nil (missingkey=zero → .Args.Commit == ""), which in the loop-body
+// phase-dispatch template's positive-match gate
+// (`{{ if eq .Args.Commit "true" }}true{{ else }}false{{ end }}`) resolves to
+// "false" — silently disabling commits.
+//
+// The reproduction: render the orchestrator body with .Args.Commit = "true" and
+// assert each of the §A, §B, §C spawn blocks includes BOTH `arguments:` AND
+// `loop_arguments:` fields — with the resolved Commit value. The current
+// template only sets `arguments:`, so this test fails and pins the bug in place
+// until fix layer 1 lands.
+func TestLoopProcessingSpawns_MirrorArgumentsIntoLoopArguments(t *testing.T) {
+	builtinDir := "../../config/prompts/builtin"
+	path := filepath.Join(builtinDir, "beads-issue-loop-processing.prompt.yaml")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Skipf("prompt file not found at %s: %v", path, err)
+	}
+	prompt, err := ParsePromptFile("beads-issue-loop-processing.prompt.yaml", data, time.Now())
+	if err != nil {
+		t.Fatalf("ParsePromptFile: %v", err)
+	}
+	body := prompt.Content
+
+	ctx := &PromptEnabledContext{
+		Session: SessionContext{
+			ID:            "orch-1",
+			BeadsIssue:    "",
+			HasBeadsIssue: false,
+		},
+		Args: map[string]string{"Commit": "true"},
+	}
+	funcs := BuildTemplateFuncMap(ctx)
+	out, rerr := RenderPromptTemplate("beads-issue-loop-processing", body, ctx, funcs)
+	if rerr != nil {
+		t.Fatalf("RenderPromptTemplate: %v", rerr)
+	}
+
+	// The three named-prompt spawn blocks — one per section. Each maps to a
+	// loop_prompt_name whose loop body renders on onCompletion re-fires.
+	sections := []struct {
+		section    string // §A / §B / §C label for error messages
+		promptName string // prompt_name string that anchors the spawn block
+	}{
+		{"§A", `prompt_name: "Mention — driver",`},
+		{"§B", `prompt_name: "Loop fixing bug",`},
+		{"§C", `prompt_name: "Loop implementing feature",`},
+	}
+
+	for _, sec := range sections {
+		anchor := strings.Index(out, sec.promptName)
+		if anchor < 0 {
+			t.Errorf("%s: spawn block anchor %q not found in rendered orchestrator; got:\n%s",
+				sec.section, sec.promptName, out)
+			continue
+		}
+		// The spawn block is a compact mitto_conversation_new(...) call — bound
+		// the window generously to the next closing paren.
+		end := strings.Index(out[anchor:], "\n  )\n")
+		if end < 0 {
+			end = len(out) - anchor
+			if end > 2000 {
+				end = 2000
+			}
+		}
+		block := out[anchor : anchor+end]
+
+		if !strings.Contains(block, "arguments:") {
+			t.Errorf("%s: spawn block is missing an `arguments:` field entirely; block:\n%s",
+				sec.section, block)
+		}
+		if !strings.Contains(block, "loop_arguments:") {
+			t.Errorf("%s: spawn block sets loop_prompt_name + onCompletion but is missing `loop_arguments:` — every re-fire will render the loop body with an empty .Args. Mirror `arguments:` into `loop_arguments:`. Block:\n%s",
+				sec.section, block)
+		}
+		// loop_arguments must carry the resolved Commit value so the
+		// positive-match gate in the loop body resolves correctly on every
+		// re-fire, not just the initial prompt.
+		if strings.Contains(block, "loop_arguments:") &&
+			!strings.Contains(block, `"Commit": "true"`) {
+			t.Errorf("%s: rendered .Args.Commit=\"true\" but no `\"Commit\": \"true\"` in the spawn block; block:\n%s",
+				sec.section, block)
+		}
+	}
+}
