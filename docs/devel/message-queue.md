@@ -273,10 +273,45 @@ sequenceDiagram
 
 - **Layer 0 — hard backstops.** A per-conversation `CooldownSeconds` (clamped up to the global floor `SetMinLoopTasksCooldownSeconds`, default 30s) rate-limits fires regardless of the condition. `MaxIterations` and `MaxDurationSeconds` are the same caps used by every trigger; `MaxDurationSeconds` is checked (and auto-stops, mirroring `onCompletion`) before the cooldown check.
 - **Layer 1 — busy guard (temporal).** While the conversation's turn is active — **or any delegated child conversation is still running or blocked on `mitto_children_tasks_wait`** (`isTasksSubtreeBusy`) — incoming events are deferred (`armTasksRebase`), not evaluated. This is the guard against the run's OWN in-flight edits.
-- **Layer 2 — quiescence rebase (the real fix).** Once the conversation's entire delegated-child subtree goes idle, a short quiescence timer (`SetTasksQuiescenceWindow`, default 30s) fires and **rebases the baseline to the current beads snapshot**, absorbing the run's own edits into the new "current" state before the next real event is evaluated. Trade-off: an external change that lands _during_ the busy window is also absorbed and won't trigger a follow-up fire — the fired conversation can re-check state at its own startup if that matters.
+- **Layer 2 — quiescence rebase (the real fix).** Once the conversation's entire delegated-child subtree goes idle, a short quiescence timer (`SetTasksQuiescenceWindow`, default 30s) fires and **rebases the baseline to the current beads snapshot**, absorbing the run's own edits into the new "current" state before the next real event is evaluated. Trade-off: an external change that lands _during_ the busy window is also absorbed and won't trigger a follow-up fire — the fired conversation can re-check state at its own startup if that matters. **Opt-in re-fire (`CoalesceDuringBusy=false`, mitto-dmb):** loops that need event-driven fidelity (e.g. "every time an issue is filed with label X, spawn a triage child") can set `coalesce_during_busy: false` on the loop config. When set, the quiescence rebase first diffs the pre-run baseline against the current snapshot and — if a material delta remains, Layer 0 (cooldown, `MaxDuration`, `MaxIterations`) allows, and the CEL `condition` evaluates true — fires **once more** via the normal firing path with the accumulated delta available as `.Trigger.OnTasks.Changes.*`, then rebases. Only one pending accumulated-delta slot is kept per session (bounded by construction). Default (`true` / unset) preserves the silent-absorb behaviour.
 - **Layer 3 — no-progress circuit breaker.** `recordTasksFireOutcome` tracks, per conversation, the set of issue IDs touched (`Changes.Touched`) by consecutive fires. When `tasksNoProgressLimit` (3) consecutive fires touch **no issue beyond** what the previous fire already touched, the trigger auto-pauses (`loopStore.MarkStopped(session.StoppedReasonNoProgress)`) — this catches a condition that is steady-state-true (e.g. a threshold that baseline-rebase alone cannot silence) before it can hot-loop.
 
 **Out of scope:** actor-based delta filtering (skipping only _other actors'_ edits) was investigated and explicitly deferred — `internal/beads/cli.go` does not stamp a per-change actor, and `bd list --json` exposes only `created_by`/`owner`, not a last-touched actor. The baseline-rebase approach (Layer 2) makes this unnecessary for correctness today.
+
+### Exposing the change delta to the prompt body (`.Trigger.OnTasks.*`)
+
+The same `TasksDelta` the CEL `condition` sees is threaded through to the loop prompt body via a Go-template namespace so the prompt can act on **which specific issues changed** without re-invoking `bd` at agent-side startup (mitto-xkn):
+
+```
+{{ with .Trigger }}{{ with .OnTasks }}
+Beads that just changed in this working directory:
+{{ range .Changes.Touched -}}
+- {{ .id }} ({{ .status }}): {{ .title }}
+{{ end }}
+{{ end }}{{ end }}
+```
+
+| Namespace                          | Shape                                                                                                                                                                                                                        |
+| ---------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `.Trigger.OnTasks.Changes.Added`    | `[]map[string]any` — issues present in the current snapshot but not the previous baseline                                                                                                                                        |
+| `.Trigger.OnTasks.Changes.Updated`  | `[]map[string]any` — issues present in both snapshots whose canonical fields differ                                                                                                                                              |
+| `.Trigger.OnTasks.Changes.Removed`  | `[]map[string]any` — issues present in the previous baseline but no longer in the current snapshot                                                                                                                               |
+| `.Trigger.OnTasks.Changes.Closed`   | `[]map[string]any` — issues whose status transitioned to `closed`                                                                                                                                                                |
+| `.Trigger.OnTasks.Changes.Reopened` | `[]map[string]any` — issues whose status transitioned from `closed` back to open                                                                                                                                                |
+| `.Trigger.OnTasks.Changes.LabelAdded` | `[]map[string]any` — issues that gained at least one label between baseline and current                                                                                                                                        |
+| `.Trigger.OnTasks.Changes.Touched`  | `[]map[string]any` — `Added ∪ Updated` (the convenient superset for prompts that don't care about the distinction)                                                                                                              |
+
+Each entry exposes the same canonical keys the CEL condition sees: `id`, `type`, `status`, `priority`, `labels`, `title`, `assignee`, `updated_at`.
+
+**Nil-guarding.** `.Trigger.OnTasks` is populated **only** when a fire was driven by a real beads change delta (i.e. the `tasksActionFire` path in `processTasksChange`). All other dispatch paths — scheduled/timer fires, `onCompletion` fires, manual **Run Now**, non-loop prompts — leave both `.Trigger` and `.Trigger.OnTasks` **nil**. Templates that reference `.Trigger.OnTasks.*` MUST nest their guards so both levels are checked; a single `{{ with .Trigger.OnTasks }}` panics when `.Trigger` itself is nil:
+
+```
+{{ with .Trigger }}{{ with .OnTasks }}
+  ...references to .Changes.* here...
+{{ end }}{{ end }}
+```
+
+**No behavioural change to `loop.Arguments`.** The static `map[string]string` filled at loop-config time is still exposed as `.Args` and is unchanged; the `.Trigger.*` namespace is additive and per-fire.
 
 ### Configuration fields (`session.LoopPrompt`)
 
@@ -286,6 +321,7 @@ sequenceDiagram
 | `Condition`       | `condition`        | CEL expression; empty = fire on any material beads change                                                         |
 | `ConditionPreset` | `condition_preset` | Optional UI preset id that was compiled into `Condition`                                                          |
 | `CooldownSeconds` | `cooldown_seconds` | Per-conversation cooldown floor; `0` = use the global floor                                                       |
+| `CoalesceDuringBusy` | `coalesce_during_busy` | Opt-in re-fire (mitto-dmb). Nil/`true` (default) = silent absorption during busy. `false` = fire once more at quiescence with the accumulated pre-run→current delta, gated by Layer 0 and the CEL `condition`. |
 | `StoppedReason`   | `stopped_reason`   | `"noProgress"` when Layer 3 auto-paused the loop (also `maxIterations`/`maxDuration`, shared with other triggers) |
 
 ### Testing

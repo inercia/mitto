@@ -317,7 +317,7 @@ func TestLoopStore_Update(t *testing.T) {
 
 	// Update on non-existent should fail
 	enabled := true
-	err := ps.Update(nil, nil, nil, &enabled, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	err := ps.Update(nil, nil, nil, &enabled, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 	if err != ErrLoopNotFound {
 		t.Errorf("Update() on empty store error = %v, want ErrLoopNotFound", err)
 	}
@@ -334,7 +334,7 @@ func TestLoopStore_Update(t *testing.T) {
 
 	// Update only enabled field
 	disabled := false
-	if err := ps.Update(nil, nil, nil, &disabled, nil, nil, nil, nil, nil, nil, nil, nil, nil); err != nil {
+	if err := ps.Update(nil, nil, nil, &disabled, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil); err != nil {
 		t.Fatalf("Update() error = %v", err)
 	}
 
@@ -348,7 +348,7 @@ func TestLoopStore_Update(t *testing.T) {
 
 	// Update only prompt field
 	newPrompt := "New prompt text"
-	if err := ps.Update(&newPrompt, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil); err != nil {
+	if err := ps.Update(&newPrompt, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil); err != nil {
 		t.Fatalf("Update() error = %v", err)
 	}
 
@@ -359,7 +359,7 @@ func TestLoopStore_Update(t *testing.T) {
 
 	// Update frequency
 	newFreq := Frequency{Value: 30, Unit: FrequencyMinutes}
-	if err := ps.Update(nil, nil, &newFreq, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil); err != nil {
+	if err := ps.Update(nil, nil, &newFreq, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil); err != nil {
 		t.Fatalf("Update() error = %v", err)
 	}
 
@@ -383,7 +383,7 @@ func TestLoopStore_UpdateValidation(t *testing.T) {
 
 	// Update with invalid frequency should fail (value must be >= 1)
 	invalidFreq := Frequency{Value: 0, Unit: FrequencyMinutes} // Zero not allowed
-	err := ps.Update(nil, nil, &invalidFreq, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	err := ps.Update(nil, nil, &invalidFreq, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 	if err == nil {
 		t.Error("Update() with invalid frequency should return error")
 	}
@@ -551,7 +551,7 @@ func TestLoopStore_NextScheduledAtWhenDisabled(t *testing.T) {
 
 	// Enable it
 	enabled := true
-	ps.Update(nil, nil, nil, &enabled, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	ps.Update(nil, nil, nil, &enabled, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 
 	got, _ = ps.Get()
 	if got.NextScheduledAt == nil {
@@ -560,7 +560,7 @@ func TestLoopStore_NextScheduledAtWhenDisabled(t *testing.T) {
 
 	// Disable again
 	disabled := false
-	ps.Update(nil, nil, nil, &disabled, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	ps.Update(nil, nil, nil, &disabled, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 
 	got, _ = ps.Get()
 	if got.NextScheduledAt != nil {
@@ -775,7 +775,7 @@ func TestLoopStore_UpdateDoesNotTouchIterationCount(t *testing.T) {
 
 	// Update via partial update — should not touch IterationCount
 	newPrompt := "Updated"
-	if err := ps.Update(&newPrompt, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil); err != nil {
+	if err := ps.Update(&newPrompt, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil); err != nil {
 		t.Fatalf("Update() error = %v", err)
 	}
 
@@ -1040,7 +1040,7 @@ func TestLoopStore_Update_NewFields(t *testing.T) {
 	trig := TriggerOnCompletion
 	delay := 15
 	maxDur := 3600
-	if err := ps.Update(nil, nil, nil, nil, nil, nil, &trig, &delay, &maxDur, nil, nil, nil, nil); err != nil {
+	if err := ps.Update(nil, nil, nil, nil, nil, nil, &trig, &delay, &maxDur, nil, nil, nil, nil, nil); err != nil {
 		t.Fatalf("Update() error = %v", err)
 	}
 
@@ -1060,7 +1060,7 @@ func TestLoopStore_Update_NewFields(t *testing.T) {
 	}
 
 	// Passing nil for new fields should leave them unchanged.
-	if err := ps.Update(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil); err != nil {
+	if err := ps.Update(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil); err != nil {
 		t.Fatalf("Update() with all-nil error = %v", err)
 	}
 	got2, _ := ps.Get()
@@ -1091,7 +1091,7 @@ func TestLoopStore_Update_OnTasksFields(t *testing.T) {
 	cond := "tasks.changed()"
 	preset := "any-change"
 	cooldown := 120
-	if err := ps.Update(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, &cond, &preset, &cooldown); err != nil {
+	if err := ps.Update(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, &cond, &preset, &cooldown, nil); err != nil {
 		t.Fatalf("Update() error = %v", err)
 	}
 
@@ -1107,7 +1107,7 @@ func TestLoopStore_Update_OnTasksFields(t *testing.T) {
 	}
 
 	// Passing nil for these fields should leave them unchanged.
-	if err := ps.Update(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil); err != nil {
+	if err := ps.Update(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil); err != nil {
 		t.Fatalf("Update() with all-nil error = %v", err)
 	}
 	got2, _ := ps.Get()
@@ -1273,7 +1273,7 @@ func TestLoopStore_Update_EnableTrue_ClearsStoppedState(t *testing.T) {
 
 	// Re-enable via Update — stopped state must be cleared.
 	enabled := true
-	if err := ps.Update(nil, nil, nil, &enabled, nil, nil, nil, nil, nil, nil, nil, nil, nil); err != nil {
+	if err := ps.Update(nil, nil, nil, &enabled, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil); err != nil {
 		t.Fatalf("Update(enabled=true) error = %v", err)
 	}
 
@@ -1309,7 +1309,7 @@ func TestLoopStore_Update_EnableFalse_DoesNotClearStoppedState(t *testing.T) {
 
 	// Update with enabled=false should not clear the stopped state.
 	enabled := false
-	if err := ps.Update(nil, nil, nil, &enabled, nil, nil, nil, nil, nil, nil, nil, nil, nil); err != nil {
+	if err := ps.Update(nil, nil, nil, &enabled, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil); err != nil {
 		t.Fatalf("Update(enabled=false) error = %v", err)
 	}
 
@@ -1365,7 +1365,7 @@ func TestLoopStore_Update_ArgumentsPersisted(t *testing.T) {
 	}
 
 	// nil arguments → no change
-	if err := ps.Update(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil); err != nil {
+	if err := ps.Update(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil); err != nil {
 		t.Fatalf("Update(nil args) error = %v", err)
 	}
 	got, _ := ps.Get()
@@ -1375,7 +1375,7 @@ func TestLoopStore_Update_ArgumentsPersisted(t *testing.T) {
 
 	// non-nil arguments → replace
 	newArgs := map[string]string{"KEY": "updated", "NEW": "value"}
-	if err := ps.Update(nil, nil, nil, nil, nil, nil, nil, nil, nil, &newArgs, nil, nil, nil); err != nil {
+	if err := ps.Update(nil, nil, nil, nil, nil, nil, nil, nil, nil, &newArgs, nil, nil, nil, nil); err != nil {
 		t.Fatalf("Update(newArgs) error = %v", err)
 	}
 	got, _ = ps.Get()
@@ -1669,5 +1669,82 @@ func TestLoopStore_Detach_OverwritesPreviousSaved(t *testing.T) {
 	}
 	if saved.Prompt != "second" {
 		t.Errorf("saved.Prompt = %q, want %q (latest Detach wins)", saved.Prompt, "second")
+	}
+}
+
+// TestLoopPrompt_ShouldCoalesceDuringBusy_Default verifies that an unset
+// CoalesceDuringBusy defaults to true (silently absorb changes during busy,
+// preserving the pre-mitto-dmb behaviour).
+func TestLoopPrompt_ShouldCoalesceDuringBusy_Default(t *testing.T) {
+	p := &LoopPrompt{Trigger: TriggerOnTasks}
+	if !p.ShouldCoalesceDuringBusy() {
+		t.Error("unset CoalesceDuringBusy should default to true")
+	}
+	tr := true
+	p.CoalesceDuringBusy = &tr
+	if !p.ShouldCoalesceDuringBusy() {
+		t.Error("explicit *true should report true")
+	}
+	fa := false
+	p.CoalesceDuringBusy = &fa
+	if p.ShouldCoalesceDuringBusy() {
+		t.Error("explicit *false should report false")
+	}
+}
+
+// TestLoopStore_Update_CoalesceDuringBusy verifies that CoalesceDuringBusy
+// round-trips through Update/Get, and that a nil update leaves it unchanged.
+func TestLoopStore_Update_CoalesceDuringBusy(t *testing.T) {
+	dir := t.TempDir()
+	ps := NewLoopStore(dir)
+
+	p := &LoopPrompt{
+		Prompt:  "Test",
+		Trigger: TriggerOnTasks,
+		Enabled: true,
+	}
+	if err := ps.Set(p); err != nil {
+		t.Fatalf("Set() error = %v", err)
+	}
+
+	// Default (unset) should round-trip as nil.
+	got0, _ := ps.Get()
+	if got0.CoalesceDuringBusy != nil {
+		t.Errorf("CoalesceDuringBusy = %v, want nil (default)", *got0.CoalesceDuringBusy)
+	}
+	if !got0.ShouldCoalesceDuringBusy() {
+		t.Error("default ShouldCoalesceDuringBusy() should be true")
+	}
+
+	// Set to false via Update.
+	fa := false
+	if err := ps.Update(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, &fa); err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+	got1, _ := ps.Get()
+	if got1.CoalesceDuringBusy == nil || *got1.CoalesceDuringBusy != false {
+		t.Errorf("CoalesceDuringBusy = %v, want *false", got1.CoalesceDuringBusy)
+	}
+	if got1.ShouldCoalesceDuringBusy() {
+		t.Error("ShouldCoalesceDuringBusy() should be false after opt-out")
+	}
+
+	// A nil update must leave it unchanged.
+	if err := ps.Update(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil); err != nil {
+		t.Fatalf("Update() with all-nil error = %v", err)
+	}
+	got2, _ := ps.Get()
+	if got2.CoalesceDuringBusy == nil || *got2.CoalesceDuringBusy != false {
+		t.Errorf("CoalesceDuringBusy changed on nil update: got %v", got2.CoalesceDuringBusy)
+	}
+
+	// Flipping back to true.
+	tr := true
+	if err := ps.Update(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, &tr); err != nil {
+		t.Fatalf("Update() re-enable error = %v", err)
+	}
+	got3, _ := ps.Get()
+	if got3.CoalesceDuringBusy == nil || *got3.CoalesceDuringBusy != true {
+		t.Errorf("CoalesceDuringBusy = %v, want *true", got3.CoalesceDuringBusy)
 	}
 }

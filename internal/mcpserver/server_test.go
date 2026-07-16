@@ -777,23 +777,41 @@ func TestConversationStart_PromptName_ResolvesWithArguments(t *testing.T) {
 	}
 }
 
-func TestConversationStart_PromptName_AndInitialPrompt_Error(t *testing.T) {
-	_, srv, parentID := setupConversationStartServerWithPrompts(t, []config.WebPrompt{
+// TestConversationNew_InitialPromptAndPromptName_NameWins verifies the mitto-kt6
+// boundary fix: when a caller supplies BOTH initial_prompt (typically a
+// schema-forced placeholder) and prompt_name, prompt_name wins — the resolved
+// named prompt body is queued as the initial prompt and the placeholder is
+// discarded. Replaces the earlier hard-mutex error behavior.
+func TestConversationNew_InitialPromptAndPromptName_NameWins(t *testing.T) {
+	store, srv, parentID := setupConversationStartServerWithPrompts(t, []config.WebPrompt{
 		{Name: "Start work", Prompt: "Work on ${ISSUE_ID}"},
 	})
 
 	ctx := context.Background()
-	_, _, err := srv.handleConversationStart(ctx, nil, ConversationStartInput{
+	_, output, err := srv.handleConversationStart(ctx, nil, ConversationStartInput{
 		SelfID:        parentID,
 		PromptName:    "Start work",
-		InitialPrompt: "inline text",
+		InitialPrompt: "__placeholder__",
 	})
-	if err == nil {
-		t.Fatal("Expected error when both prompt_name and initial_prompt are set")
+	if err != nil {
+		t.Fatalf("Expected no error (prompt_name should win), got: %v", err)
 	}
-	if !strings.Contains(err.Error(), "mutually exclusive") &&
-		!strings.Contains(err.Error(), "both") {
-		t.Errorf("Expected mutual-exclusivity error, got: %v", err)
+	if output.SessionID == "" {
+		t.Fatal("Expected non-empty session ID in output")
+	}
+
+	msgs, err := store.Queue(output.SessionID).List()
+	if err != nil {
+		t.Fatalf("queue.List() error: %v", err)
+	}
+	if len(msgs) != 1 {
+		t.Fatalf("Expected 1 queued message, got %d", len(msgs))
+	}
+	if msgs[0].Message != "Work on ${ISSUE_ID}" {
+		t.Errorf("Expected queued message to be the resolved named prompt body, got %q", msgs[0].Message)
+	}
+	if strings.Contains(msgs[0].Message, "__placeholder__") {
+		t.Errorf("Placeholder leaked into queued message: %q", msgs[0].Message)
 	}
 }
 
@@ -9650,6 +9668,45 @@ func TestSendPrompt_BothEmpty_Error(t *testing.T) {
 	}
 	if !strings.Contains(output.Error, "prompt_name") {
 		t.Errorf("Expected error mentioning 'prompt_name', got: %s", output.Error)
+	}
+}
+
+// TestSendPromptToConversation_PromptAndPromptName_NameWins verifies the
+// mitto-kt6 boundary fix: when a caller supplies BOTH prompt (typically a
+// schema-forced placeholder) and prompt_name, prompt_name wins — the queued
+// row's free-text Message is cleared and PromptName is preserved for late
+// resolution in the target conversation's context.
+func TestSendPromptToConversation_PromptAndPromptName_NameWins(t *testing.T) {
+	store, srv, senderID, targetID := setupSendPromptServerWithPrompts(t, []config.WebPrompt{
+		{Name: "some-prompt", Prompt: "resolved body"},
+	})
+
+	ctx := context.Background()
+	_, output, err := srv.handleSendPromptToConversation(ctx, nil, SendPromptToConversationInput{
+		SelfID:         senderID,
+		ConversationID: targetID,
+		Prompt:         "__placeholder__",
+		PromptName:     "some-prompt",
+	})
+	if err != nil {
+		t.Fatalf("handleSendPromptToConversation returned error: %v", err)
+	}
+	if !output.Success {
+		t.Fatalf("Expected success, got error: %s", output.Error)
+	}
+
+	msgs, err := store.Queue(targetID).List()
+	if err != nil {
+		t.Fatalf("queue.List() error: %v", err)
+	}
+	if len(msgs) != 1 {
+		t.Fatalf("Expected 1 queued message, got %d", len(msgs))
+	}
+	if msgs[0].Message != "" {
+		t.Errorf("Expected queued Message to be cleared (prompt_name wins), got %q", msgs[0].Message)
+	}
+	if msgs[0].PromptName != "some-prompt" {
+		t.Errorf("Expected PromptName 'some-prompt' preserved, got %q", msgs[0].PromptName)
 	}
 }
 

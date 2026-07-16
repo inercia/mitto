@@ -758,7 +758,7 @@ func TestLoopRunner_ConfigCapAutoStop(t *testing.T) {
 	})
 
 	disabled := false
-	if err := loopStore.Update(nil, nil, nil, &disabled, nil, nil, nil, nil, nil, nil, nil, nil, nil); err != nil {
+	if err := loopStore.Update(nil, nil, nil, &disabled, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil); err != nil {
 		t.Fatalf("loopStore.Update(disable) error = %v", err)
 	}
 
@@ -3158,6 +3158,196 @@ func TestLoopRunner_FireTasksRebase_StillBusy_ReArms(t *testing.T) {
 	runner.cancelTasksRebaseTimerForTest("s1")
 }
 
+// mitto-dmb: TestLoopRunner_EvaluateAccumulatedDelta_* tests exercise the
+// pure decision helper that decides whether an onTasks loop opted out of the
+// during-busy coalesce (CoalesceDuringBusy=false) should re-fire.
+
+// TestLoopRunner_EvaluateAccumulatedDelta_MaterialChange_Fires verifies that
+// when a material delta exists between the pre-run baseline and the current
+// snapshot, and no guards block, the decision helper says fire.
+func TestLoopRunner_EvaluateAccumulatedDelta_MaterialChange_Fires(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	ps := newOnTasksSession(t, store, "s1", "/proj", "")
+	// Opt out of during-busy coalesce.
+	fa := false
+	if err := ps.Update(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, &fa); err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+	loop, _ := ps.Get()
+	baselineStore := NewTasksBaselineStore(store.SessionDir("s1"))
+	rawBefore := mustMarshalRows(t, beadsRow("mitto-1", "open", "2026-01-01T00:00:00Z"))
+	if err := baselineStore.Set(rawBefore); err != nil {
+		t.Fatalf("Set() baseline error = %v", err)
+	}
+
+	runner := NewLoopRunner(store, nil, nil)
+
+	rawNow := mustMarshalRows(t,
+		beadsRow("mitto-1", "open", "2026-01-01T00:00:00Z"),
+		beadsRow("mitto-2", "open", "2026-01-02T00:00:00Z"),
+	)
+	delta, shouldFire := runner.evaluateAccumulatedDelta("s1", loop, ps, baselineStore, rawNow)
+	if !shouldFire {
+		t.Errorf("shouldFire = false, want true (material delta, no guards blocking)")
+	}
+	if delta == nil || len(delta.Added) != 1 {
+		t.Errorf("delta.Added = %v, want 1 added issue", delta)
+	}
+}
+
+// TestLoopRunner_EvaluateAccumulatedDelta_NoMaterialChange_NoFire verifies
+// that when the current snapshot matches the pre-run baseline, no fire is
+// requested (this is the coalesce=true equivalent path — nothing to re-fire on).
+func TestLoopRunner_EvaluateAccumulatedDelta_NoMaterialChange_NoFire(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	ps := newOnTasksSession(t, store, "s1", "/proj", "")
+	loop, _ := ps.Get()
+	baselineStore := NewTasksBaselineStore(store.SessionDir("s1"))
+	raw := mustMarshalRows(t, beadsRow("mitto-1", "open", "2026-01-01T00:00:00Z"))
+	if err := baselineStore.Set(raw); err != nil {
+		t.Fatalf("Set() baseline error = %v", err)
+	}
+
+	runner := NewLoopRunner(store, nil, nil)
+	delta, shouldFire := runner.evaluateAccumulatedDelta("s1", loop, ps, baselineStore, raw)
+	if shouldFire {
+		t.Errorf("shouldFire = true, want false (identical snapshot has no material delta)")
+	}
+	if delta != nil {
+		t.Errorf("delta = %v, want nil for a no-op change", delta)
+	}
+}
+
+// TestLoopRunner_EvaluateAccumulatedDelta_ConditionFalse_NoFire verifies that
+// a CEL condition evaluating false on the accumulated delta blocks the re-fire
+// (returns a non-nil delta with shouldFire=false, matching the guard semantics).
+func TestLoopRunner_EvaluateAccumulatedDelta_ConditionFalse_NoFire(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	// Condition that never matches — Changes.Added is empty here (we test with a
+	// snapshot whose only change is an update, not an add).
+	ps := newOnTasksSession(t, store, "s1", "/proj", "size(Changes.Added) > 0")
+	loop, _ := ps.Get()
+	baselineStore := NewTasksBaselineStore(store.SessionDir("s1"))
+	rawBefore := mustMarshalRows(t, beadsRow("mitto-1", "open", "2026-01-01T00:00:00Z"))
+	if err := baselineStore.Set(rawBefore); err != nil {
+		t.Fatalf("Set() baseline error = %v", err)
+	}
+
+	runner := NewLoopRunner(store, nil, nil)
+	// Only an update (status change), no add — condition should evaluate false.
+	rawNow := mustMarshalRows(t, beadsRow("mitto-1", "closed", "2026-01-02T00:00:00Z"))
+	delta, shouldFire := runner.evaluateAccumulatedDelta("s1", loop, ps, baselineStore, rawNow)
+	if shouldFire {
+		t.Errorf("shouldFire = true, want false (condition evaluates to false)")
+	}
+	// Delta should still be non-nil (material change exists, just gated).
+	if delta == nil {
+		t.Errorf("delta = nil, want non-nil (change is material but gated by condition)")
+	}
+}
+
+// TestLoopRunner_EvaluateAccumulatedDelta_CooldownActive_NoFire verifies that
+// the Layer 0 per-conversation cooldown blocks the re-fire when it would land
+// within the cooldown window since the previous delivery.
+func TestLoopRunner_EvaluateAccumulatedDelta_CooldownActive_NoFire(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	ps := newOnTasksSession(t, store, "s1", "/proj", "")
+	// The persisted loop's LastSentAt is deliberately preserved by Set() (see
+	// LoopStore.Set), so we build the in-memory loop directly and pass it to
+	// evaluateAccumulatedDelta — it does not re-read from disk.
+	stored, _ := ps.Get()
+	recent := time.Now().Add(-1 * time.Second)
+	stored.LastSentAt = &recent
+	stored.CooldownSeconds = 300
+	loop := stored
+
+	baselineStore := NewTasksBaselineStore(store.SessionDir("s1"))
+	rawBefore := mustMarshalRows(t, beadsRow("mitto-1", "open", "2026-01-01T00:00:00Z"))
+	if err := baselineStore.Set(rawBefore); err != nil {
+		t.Fatalf("Set() baseline error = %v", err)
+	}
+
+	runner := NewLoopRunner(store, nil, nil)
+	runner.SetMinLoopTasksCooldownSeconds(30)
+
+	rawNow := mustMarshalRows(t,
+		beadsRow("mitto-1", "open", "2026-01-01T00:00:00Z"),
+		beadsRow("mitto-2", "open", "2026-01-02T00:00:00Z"),
+	)
+	delta, shouldFire := runner.evaluateAccumulatedDelta("s1", loop, ps, baselineStore, rawNow)
+	if shouldFire {
+		t.Errorf("shouldFire = true, want false (per-conversation cooldown active)")
+	}
+	if delta == nil {
+		t.Errorf("delta = nil, want non-nil (material change exists, gated by cooldown)")
+	}
+}
+
+// TestLoopRunner_FireTasksRebase_CoalesceTrue_AbsorbsSilently verifies the
+// default (CoalesceDuringBusy unset → true) behaviour: an external change
+// landing during the busy window is silently absorbed by the plain rebase,
+// with no re-fire attempted.
+func TestLoopRunner_FireTasksRebase_CoalesceTrue_AbsorbsSilently(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	ps := newOnTasksSession(t, store, "s1", "/proj", "")
+	// Default = coalesce (nil).
+	rawBefore := mustMarshalRows(t, beadsRow("mitto-1", "open", "2026-01-01T00:00:00Z"))
+	if err := NewTasksBaselineStore(store.SessionDir("s1")).Set(rawBefore); err != nil {
+		t.Fatalf("Set() baseline error = %v", err)
+	}
+
+	sm := conversation.NewSessionManagerWithOptions(conversation.SessionManagerOptions{})
+	runner := NewLoopRunner(store, sm, nil)
+	rawNow := mustMarshalRows(t,
+		beadsRow("mitto-1", "open", "2026-01-01T00:00:00Z"),
+		beadsRow("mitto-2", "open", "2026-01-02T00:00:00Z"),
+	)
+	fake := &fakeTasksBeadsClient{listFn: func(string) ([]byte, error) { return rawNow, nil }}
+	runner.SetBeadsClient(fake)
+
+	runner.fireTasksRebase("s1", ps)
+
+	baseline, err := NewTasksBaselineStore(store.SessionDir("s1")).Get()
+	if err != nil {
+		t.Fatalf("Get() baseline error = %v", err)
+	}
+	if !jsonBytesEqual(t, baseline.RawSnapshot, rawNow) {
+		t.Errorf("baseline.RawSnapshot = %s, want %s (silent absorption)", baseline.RawSnapshot, rawNow)
+	}
+	// The default silent-absorb path must never record a fire outcome.
+	runner.tasksNoProgressMu.Lock()
+	_, seenTouched := runner.tasksLastTouchedIDs["s1"]
+	runner.tasksNoProgressMu.Unlock()
+	if seenTouched {
+		t.Error("tasksLastTouchedIDs['s1'] should be empty — no re-fire should have been dispatched under coalesce=true")
+	}
+}
+
 func TestLoopRunner_BootstrapTasksBaseline_CreatesWhenMissing(t *testing.T) {
 	store, err := session.NewStore(t.TempDir())
 	if err != nil {
@@ -3224,7 +3414,7 @@ func TestLoopRunner_OnBeadsChanged_RoutingAndCaching(t *testing.T) {
 	newOnTasksSession(t, store, "s2", "/proj-a", "")
 	newOnTasksSession(t, store, "s3", "/proj-b", "")
 	newOnTasksSession(t, store, "s4", "/proj-a", "")
-	if err := store.Loop("s4").Update(nil, nil, nil, boolPtr(false), nil, nil, nil, nil, nil, nil, nil, nil, nil); err != nil {
+	if err := store.Loop("s4").Update(nil, nil, nil, boolPtr(false), nil, nil, nil, nil, nil, nil, nil, nil, nil, nil); err != nil {
 		t.Fatalf("Update(disable s4) error = %v", err)
 	}
 

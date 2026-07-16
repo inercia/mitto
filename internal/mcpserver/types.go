@@ -400,6 +400,10 @@ type ConversationUpdateInput struct {
 	LoopCondition *string `json:"loop_condition,omitempty"`
 	// LoopConditionPreset is an optional UI preset id that was compiled into loop_condition.
 	LoopConditionPreset *string `json:"loop_condition_preset,omitempty"`
+	// LoopCoalesceDuringBusy controls how the onTasks trigger handles beads changes
+	// that arrive while the loop's subtree is busy. Nil or true = silently absorb
+	// (default). False = fire once more with the accumulated delta after quiescence.
+	LoopCoalesceDuringBusy *bool `json:"loop_coalesce_during_busy,omitempty"`
 	// LoopApplyPromptDefaults controls the mitto-r7y auto-apply of a seeded
 	// prompt's loop: frontmatter block. When loop_prompt_name resolves to a
 	// prompt carrying a loop: block, its fields fill any loop_* fields the
@@ -444,7 +448,11 @@ type ConversationUpdateOutput struct {
 	// onTasks trigger fields (returned when configured)
 	LoopCondition       string `json:"loop_condition,omitempty"`
 	LoopConditionPreset string `json:"loop_condition_preset,omitempty"`
-	Error               string `json:"error,omitempty"`
+	// LoopCoalesceDuringBusy reflects the stored opt-in flag. Nil when unset
+	// (default coalesce behaviour); non-nil when the caller explicitly opted in
+	// or out.
+	LoopCoalesceDuringBusy *bool  `json:"loop_coalesce_during_busy,omitempty"`
+	Error                  string `json:"error,omitempty"`
 }
 
 // UITextboxInput is the input for the mitto_ui_textbox tool.
