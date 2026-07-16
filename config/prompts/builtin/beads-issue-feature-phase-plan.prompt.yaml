@@ -35,6 +35,21 @@ prompt: |
   {{- end }}
 
   {{ if $target -}}
+  ## Tier check
+
+  This phase is declared to run on the **Reasoning** tier (`preferredModels: [{modelTag: Reasoning}]`).
+  Active model: `{{ if .Session.ModelName }}{{ .Session.ModelName }}{{ else }}<unknown>{{ end }}` (tags: {{ if .Session.ModelTags }}{{ Join ", " .Session.ModelTags }}{{ else }}none{{ end }}).
+
+  {{ if Model "Reasoning" -}}
+  ✓ Reasoning tier confirmed — proceed.
+  {{- else -}}
+  ⚠ **Tier-degraded run.** The active model does not carry the `Reasoning` tag, so the transient `preferredModels` switch did not land (either the tag is not installed on any workspace profile, or the current model is unknown). Before doing any phase work, record the degradation on the bead so it is visible in the audit trail, then continue on best effort:
+
+  ```bash
+  bd comment {{ $target }} "⚠ tier-degraded [phase: plan]: declared Reasoning but running on '{{ if .Session.ModelName }}{{ .Session.ModelName }}{{ else }}<unknown>{{ end }}' (tags: {{ if .Session.ModelTags }}{{ Join ", " .Session.ModelTags }}{{ else }}none{{ end }})."
+  ```
+  {{- end }}
+
   ## Step 1 — Load LIVE state
 
   Labels drift between runs. Load the bead's **current** state fresh:
@@ -73,7 +88,7 @@ prompt: |
   bead and advance the state:
 
   ```bash
-  bd comment {{ $target }} "Plan: <approach, key design decisions, files/areas touched, any sub-issues created>."
+  bd comment {{ $target }} "Plan [tier: Reasoning]: <approach, key design decisions, files/areas touched, any sub-issues created>."
   bd update {{ $target }} --add-label planned
   ```
 
@@ -114,3 +129,5 @@ prompt: |
   - **Live state only.** Always re-read labels via `bd show --json` at the start of
     the phase; never assume labels from a prior run or from `Item.*`.
   - **Always log to the tracker** with `bd comment` so progress is auditable.
+  - **Tier tag every comment.** Prefix the plan with `Plan [tier: Reasoning]:` so the
+    tier split is observable in the bead history (mitto-mpu5 acceptance criteria).

@@ -93,11 +93,20 @@ prompt: |
   and can verify a future fix.
 
   {{ if $target -}}
-  ## Step 5 — Record the conclusions on the bead
+  ## Step 5 — Record the conclusions on the bead — MANDATORY CLOSURE
 
   Post your findings back to `{{ $target }}` so the reproduction is durable and a future
-  fix run can build on it. Write the details to a temp Markdown file and pass it via
-  `--file` to preserve formatting:
+  fix run can build on it. This is not optional prose: every item must complete before
+  the turn ends, and Step 5.V verifies each item actually landed. Historically this
+  closure has been the single most common execution miss (agent describes the repro in
+  chat, then stops without writing it back to the bead), which leaves the bead lying
+  about the state of the tree — the verification step exists specifically to catch
+  that class of miss.
+
+  ### Step 5.1 — Post the findings comment
+
+  Write the details to a temp Markdown file and pass it via `--file` to preserve
+  formatting:
 
   ```bash
   bd comment {{ $target }} --file /tmp/repro-findings.md
@@ -105,11 +114,26 @@ prompt: |
 
   The comment should contain: the minimal reproduction steps / inputs, the failing test
   (file + name + command to run it), the failing output as evidence, and any suspected
-  cause (marked unverified). Then append a short audit note; if the bead lacked testable
-  acceptance criteria, this reproduction is a good basis for them:
+  cause (marked unverified).
+
+  ### Step 5.2 — Append the audit note
+
+  Then append a short audit note; if the bead lacked testable acceptance criteria,
+  this reproduction is a good basis for them:
 
   ```bash
   bd update {{ $target }} --append-notes "Reproduced the bug; added failing test <path>::<name>. See latest comment for steps and evidence."
+  ```
+
+  ### Step 5.V — Self-verification (MANDATORY before ending the turn)
+
+  Run this command and confirm the expected result. If it fails, the corresponding
+  step above was NOT completed — go back and finish it, then re-run the check. Do
+  **not** end the turn with a red check.
+
+  ```bash
+  # V.1: the "Reproduced the bug" audit note is on the bead
+  bd show {{ $target }} --include-comments | grep -F "Reproduced the bug" >/dev/null && echo "OK: repro comment present" || echo "MISSING repro comment"
   ```
 
   Do **not** close the bead — it is reproduced, not fixed.

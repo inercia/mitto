@@ -2429,6 +2429,190 @@ func TestFeaturePhasePrompts_RenderForRepresentativeContexts(t *testing.T) {
 	}
 }
 
+// TestPhasePrompts_TierCheckRendersForModelTags is the mitto-mpu5 acceptance
+// test: every §B (bug-fix) and §C (feature) phase prompt must render a
+// tier-check block that
+//
+//  1. always displays the active model name + tags at dispatch time, so a
+//     tier-degraded run is observable in the transcript, and
+//  2. branches on Model(<declared tier>) — "✓ <tier> tier confirmed" when the
+//     session's ModelTags include the tier, and a "⚠ Tier-degraded run." block
+//     with an inline `bd comment` recording the degradation when they do not.
+//
+// Test guards against future regressions in ANY of the 7 phase prompts
+// (drop-out of the tier-check block, wrong tier name, or wrong comment prefix).
+func TestPhasePrompts_TierCheckRendersForModelTags(t *testing.T) {
+	builtinDir := "../../config/prompts/builtin"
+
+	cases := []struct {
+		file string
+		tier string // declared tier per the phase's preferredModels
+	}{
+		{"beads-issue-fix-phase-investigate.prompt.yaml", "Reasoning"},
+		{"beads-issue-fix-phase-reproduce.prompt.yaml", "Coding"},
+		{"beads-issue-fix-phase-fix.prompt.yaml", "Coding"},
+		{"beads-issue-feature-phase-plan.prompt.yaml", "Reasoning"},
+		{"beads-issue-feature-phase-implement.prompt.yaml", "Coding"},
+		{"beads-issue-feature-phase-test.prompt.yaml", "Coding"},
+		{"beads-issue-feature-phase-review.prompt.yaml", "Reasoning"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.file, func(t *testing.T) {
+			path := filepath.Join(builtinDir, tc.file)
+			data, err := os.ReadFile(path)
+			if err != nil {
+				t.Skipf("prompt file not found at %s: %v", path, err)
+			}
+			p, err := ParsePromptFile(tc.file, data, time.Now())
+			if err != nil {
+				t.Fatalf("ParsePromptFile(%s): %v", tc.file, err)
+			}
+			body := p.Content
+
+			render := func(ctx *PromptEnabledContext) string {
+				funcs := BuildTemplateFuncMap(ctx)
+				out, rerr := RenderPromptTemplate(p.Name, body, ctx, funcs)
+				if rerr != nil {
+					t.Fatalf("%s: RenderPromptTemplate: %v", tc.file, rerr)
+				}
+				return out
+			}
+
+			// Common context: arg-only IssueID so the tier-check block renders
+			// (the block is gated by target-resolved).
+			args := map[string]string{"IssueID": "mitto-xyz"}
+			if tc.file == "beads-issue-fix-phase-fix.prompt.yaml" ||
+				tc.file == "beads-issue-feature-phase-implement.prompt.yaml" ||
+				tc.file == "beads-issue-feature-phase-test.prompt.yaml" ||
+				tc.file == "beads-issue-feature-phase-review.prompt.yaml" {
+				args["Commit"] = "false"
+			}
+
+			// (1) Confirmed tier: session model carries the declared tier tag.
+			outOK := render(&PromptEnabledContext{
+				Args: args,
+				Session: SessionContext{
+					ModelName: "TestModel",
+					ModelTags: []string{tc.tier},
+				},
+			})
+			if !strings.Contains(outOK, "## Tier check") {
+				t.Errorf("%s: expected '## Tier check' section in rendered output", tc.file)
+			}
+			if !strings.Contains(outOK, "TestModel") {
+				t.Errorf("%s: expected active model name 'TestModel' in tier-check block", tc.file)
+			}
+			wantOK := "✓ " + tc.tier + " tier confirmed"
+			if !strings.Contains(outOK, wantOK) {
+				t.Errorf("%s: expected confirmed-tier marker %q; got:\n%s", tc.file, wantOK, outOK)
+			}
+			if strings.Contains(outOK, "⚠ **Tier-degraded run.**") {
+				t.Errorf("%s: unexpected tier-degraded warning on confirmed-tier run", tc.file)
+			}
+
+			// (2) Degraded tier: session model carries a DIFFERENT tier tag.
+			otherTier := "Coding"
+			if tc.tier == "Coding" {
+				otherTier = "Reasoning"
+			}
+			outDeg := render(&PromptEnabledContext{
+				Args: args,
+				Session: SessionContext{
+					ModelName: "WrongTierModel",
+					ModelTags: []string{otherTier},
+				},
+			})
+			if !strings.Contains(outDeg, "⚠ **Tier-degraded run.**") {
+				t.Errorf("%s: expected tier-degraded warning when active tags do not include %q; got:\n%s", tc.file, tc.tier, outDeg)
+			}
+			if !strings.Contains(outDeg, "WrongTierModel") {
+				t.Errorf("%s: expected mismatched model name 'WrongTierModel' in degraded block", tc.file)
+			}
+			if !strings.Contains(outDeg, "tier-degraded [phase:") {
+				t.Errorf("%s: expected 'tier-degraded [phase: …]' marker in bd comment fallback; got:\n%s", tc.file, outDeg)
+			}
+			if !strings.Contains(outDeg, "declared "+tc.tier) {
+				t.Errorf("%s: expected 'declared %s' in bd comment fallback", tc.file, tc.tier)
+			}
+			// The bd comment must reference the resolved target ID.
+			if !strings.Contains(outDeg, "bd comment mitto-xyz") {
+				t.Errorf("%s: expected 'bd comment mitto-xyz' in degraded fallback", tc.file)
+			}
+
+			// (3) Unknown model (cold start / no profiles match): ModelName empty,
+			// ModelTags nil. Must render the degraded branch with "<unknown>" +
+			// "none" tags — no template errors, no crash.
+			outUnknown := render(&PromptEnabledContext{
+				Args:    args,
+				Session: SessionContext{},
+			})
+			if !strings.Contains(outUnknown, "⚠ **Tier-degraded run.**") {
+				t.Errorf("%s: expected tier-degraded warning when model unknown; got:\n%s", tc.file, outUnknown)
+			}
+			if !strings.Contains(outUnknown, "<unknown>") {
+				t.Errorf("%s: expected '<unknown>' placeholder when ModelName empty", tc.file)
+			}
+			if !strings.Contains(outUnknown, "tags: none") {
+				t.Errorf("%s: expected 'tags: none' when ModelTags empty", tc.file)
+			}
+		})
+	}
+}
+
+// TestPhasePrompts_TierTaggedCommentPrefix verifies the mitto-mpu5 §B/§C
+// observability requirement: each phase's Step 3 `bd comment` starts with a
+// tier-tagged prefix (e.g. "Plan [tier: Reasoning]:", "Fix [tier: Coding]:")
+// so a bead's audit trail makes the tier split visible without needing to
+// cross-reference the run's active model.
+func TestPhasePrompts_TierTaggedCommentPrefix(t *testing.T) {
+	builtinDir := "../../config/prompts/builtin"
+
+	cases := []struct {
+		file   string
+		prefix string // exact "<Noun> [tier: <Tier>]:" fragment expected in the rendered body
+	}{
+		{"beads-issue-fix-phase-investigate.prompt.yaml", "Investigation [tier: Reasoning]:"},
+		{"beads-issue-fix-phase-reproduce.prompt.yaml", "Reproduction [tier: Coding]:"},
+		{"beads-issue-fix-phase-fix.prompt.yaml", "Fix [tier: Coding]:"},
+		{"beads-issue-feature-phase-plan.prompt.yaml", "Plan [tier: Reasoning]:"},
+		{"beads-issue-feature-phase-implement.prompt.yaml", "Implementation [tier: Coding]:"},
+		{"beads-issue-feature-phase-test.prompt.yaml", "Testing [tier: Coding]:"},
+		{"beads-issue-feature-phase-review.prompt.yaml", "Review [tier: Reasoning]:"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.file, func(t *testing.T) {
+			path := filepath.Join(builtinDir, tc.file)
+			data, err := os.ReadFile(path)
+			if err != nil {
+				t.Skipf("prompt file not found at %s: %v", path, err)
+			}
+			p, err := ParsePromptFile(tc.file, data, time.Now())
+			if err != nil {
+				t.Fatalf("ParsePromptFile(%s): %v", tc.file, err)
+			}
+
+			args := map[string]string{"IssueID": "mitto-xyz"}
+			if tc.file == "beads-issue-fix-phase-fix.prompt.yaml" ||
+				tc.file == "beads-issue-feature-phase-implement.prompt.yaml" ||
+				tc.file == "beads-issue-feature-phase-test.prompt.yaml" ||
+				tc.file == "beads-issue-feature-phase-review.prompt.yaml" {
+				args["Commit"] = "false"
+			}
+			ctx := &PromptEnabledContext{Args: args}
+			funcs := BuildTemplateFuncMap(ctx)
+			out, err := RenderPromptTemplate(p.Name, p.Content, ctx, funcs)
+			if err != nil {
+				t.Fatalf("RenderPromptTemplate: %v", err)
+			}
+			if !strings.Contains(out, tc.prefix) {
+				t.Errorf("%s: expected tier-tagged Step 3 comment prefix %q in rendered body; got:\n%s", tc.file, tc.prefix, out)
+			}
+		})
+	}
+}
+
 // TestBuiltinPromptLoopModes verifies the mitto-92x.6 mechanical flagging
 // pass: every builtin prompt assigned a mode/default in the epic's
 // classification table parses with the expected PromptLoop.Mode/Default,

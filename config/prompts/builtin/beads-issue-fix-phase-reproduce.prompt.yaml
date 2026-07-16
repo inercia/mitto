@@ -34,6 +34,21 @@ prompt: |
   {{- end }}
 
   {{ if $target -}}
+  ## Tier check
+
+  This phase is declared to run on the **Coding** tier (`preferredModels: [{modelTag: Coding}]`).
+  Active model: `{{ if .Session.ModelName }}{{ .Session.ModelName }}{{ else }}<unknown>{{ end }}` (tags: {{ if .Session.ModelTags }}{{ Join ", " .Session.ModelTags }}{{ else }}none{{ end }}).
+
+  {{ if Model "Coding" -}}
+  ✓ Coding tier confirmed — proceed.
+  {{- else -}}
+  ⚠ **Tier-degraded run.** The active model does not carry the `Coding` tag, so the transient `preferredModels` switch did not land (either the tag is not installed on any workspace profile, or the current model is unknown). Before doing any phase work, record the degradation on the bead so it is visible in the audit trail, then continue on best effort:
+
+  ```bash
+  bd comment {{ $target }} "⚠ tier-degraded [phase: reproduce]: declared Coding but running on '{{ if .Session.ModelName }}{{ .Session.ModelName }}{{ else }}<unknown>{{ end }}' (tags: {{ if .Session.ModelTags }}{{ Join ", " .Session.ModelTags }}{{ else }}none{{ end }})."
+  ```
+  {{- end }}
+
   ## Step 1 — Load LIVE state
 
   Labels drift between runs. Load the bead's **current** state fresh:
@@ -70,18 +85,50 @@ prompt: |
   bug. **Leave the failing test in place** (do not delete or skip it) so it will
   verify the future fix.
 
-  ## Step 3 — Record and advance the label
+  ## Step 3 — Record and advance the label — MANDATORY CLOSURE
 
-  When the failing test reliably reproduces the bug, record the reproduction and
-  advance the state:
+  When the failing test reliably reproduces the bug, execute the following checklist
+  **in order**. This is not optional prose: every item must complete before the turn
+  ends, and Step 3.V verifies each item actually landed. Historically this closure
+  has been the single most common execution miss (agent writes the Reproduction
+  comment, then stops without labeling), which leaves the bead lying about the
+  state of the tree — the verification step exists specifically to catch that class
+  of miss.
+
+  ### Step 3.1 — Record the reproduction on the bead
 
   ```bash
-  bd comment {{ $target }} "Reproduction: <failing test file::name, command to run it, failing output>."
+  bd comment {{ $target }} "Reproduction [tier: Coding]: <failing test file::name, command to run it, failing output>."
+  ```
+
+  ### Step 3.2 — Advance the state machine
+
+  Only after Step 3.1 has posted:
+
+  ```bash
   bd update {{ $target }} --add-label reproduced
   ```
 
-  Only add the label after the comment is posted. Then stop — the driver's next
-  scheduled run will pick up the `reproduced` state and dispatch the fix phase.
+  ### Step 3.V — Self-verification (MANDATORY before ending the turn)
+
+  Run each of these commands and confirm the expected result. If any check
+  fails, the corresponding step above was NOT completed — go back and finish
+  it, then re-run the failing check. Do **not** end the turn with a red check.
+
+  ```bash
+  # V.1: bead carries the `reproduced` label
+  bd show {{ $target }} --json | python3 -c "import json,sys; d=json.load(sys.stdin); d=d[0] if isinstance(d,list) else d; assert 'reproduced' in d.get('labels',[]), 'MISSING reproduced label'; print('OK: reproduced label present')"
+
+  # V.2: `Reproduction [tier: Coding]:` comment is on the bead
+  bd show {{ $target }} --include-comments | grep -F "Reproduction [tier: Coding]:" >/dev/null && echo "OK: Reproduction comment present" || echo "MISSING Reproduction [tier: Coding]: comment"
+
+  # V.3: the failing reproduction test file actually exists on disk
+  REPRO_TEST_PATH="<path to the failing test file you just added>"
+  test -f "$REPRO_TEST_PATH" && echo "OK: reproduction test file present at $REPRO_TEST_PATH" || echo "MISSING repro test file at $REPRO_TEST_PATH"
+  ```
+
+  Only after all checks print `OK`, stop — the driver's next scheduled run will
+  observe `reproduced` and dispatch the fix phase.
   {{- end }}
 
   ## Step 4 — Blocked → Defer + Handoff
@@ -118,3 +165,5 @@ prompt: |
   - **Live state only.** Always re-read labels via `bd show --json` at the start of
     the phase; never assume labels from a prior run.
   - **Always log to the tracker** with `bd comment` so progress is auditable.
+  - **Tier tag every comment.** Prefix the summary with `Reproduction [tier: Coding]:`
+    so the tier split is observable in the bead history (mitto-mpu5 acceptance criteria).
