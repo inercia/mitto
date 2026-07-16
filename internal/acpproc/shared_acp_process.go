@@ -1206,6 +1206,19 @@ func (p *SharedACPProcess) coldMCPBudget(hasMCPServers bool) (perAttempt time.Du
 	return p.config.MCPInitTimeout, p.config.MCPInitTimeout, true
 }
 
+// effectiveMaxAttemptsForBudget returns the retry cap NewSession should honour
+// for a given budget mode (mitto-54k.12). In extendedBudget mode the total
+// budget equals the per-attempt budget by design, so a retry on the same wall-
+// clock window cannot succeed against the agent's own internal MCP-init
+// deadline — cap to a single honest attempt. Warm/normal callers keep the
+// documented sessionCreateMaxAttempts retry-with-jitter policy.
+func effectiveMaxAttemptsForBudget(extendedBudget bool) int {
+	if extendedBudget {
+		return 1
+	}
+	return sessionCreateMaxAttempts
+}
+
 // acquireColdStartGate blocks until the capacity-1 cold-start gate is acquired
 // or ctx is done (mitto-8tb). Returns a release func (nil on error). Only cold
 // callers (extendedBudget=true) invoke this; warm calls bypass it.
@@ -1468,6 +1481,20 @@ func (p *SharedACPProcess) NewSession(ctx context.Context, cwd string, mcpServer
 	// coldMCPBudget widens both budgets to MCPInitTimeout for that first call only;
 	// subsequent sessions on the same warm process use the normal budgets.
 	perAttemptBudget, totalBudget, extendedBudget := p.coldMCPBudget(len(mcpServers) > 0)
+
+	// Extended-budget single-shot cap (mitto-54k.12): in extendedBudget mode
+	// coldMCPBudget returns totalBudget == perAttemptBudget, so attempt 1 that
+	// legally consumes its full per-attempt budget hitting the agent's own
+	// MCP-init deadline (~240s on Auggie) leaves 0s for a retry. The generic
+	// retry loop would then trip the "shared handshake budget exhausted before
+	// attempt 2" guard at :1549 and emit a misleading log even though a retry
+	// on the same wall-clock cannot possibly succeed against the same agent-
+	// internal gate. Cap to a single honest attempt in extended mode; a real
+	// retry on a genuinely-cold process needs a fresh wall-clock window, not a
+	// second lap inside the same one.
+	if extendedBudget && effectiveMaxAttempts > effectiveMaxAttemptsForBudget(true) {
+		effectiveMaxAttempts = effectiveMaxAttemptsForBudget(true)
+	}
 
 	// Bounded total wall-clock budget (mitto-8d7): a deadline-less (or very generous)
 	// caller context would otherwise let the retry loop burn the full
