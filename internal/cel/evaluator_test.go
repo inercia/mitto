@@ -1,4 +1,4 @@
-package config
+package cel
 
 import (
 	"fmt"
