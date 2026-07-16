@@ -28,6 +28,26 @@ func (s *Server) handleListSessions(w http.ResponseWriter, r *http.Request) {
 	handlers.New(handlers.Deps{Store: s.Store(), SessionManager: s.sessionManager}).HandleListSessions(w, r)
 }
 
+// handleSessions is a test-only shim delegating to the migrated
+// handlers.HandleSessionsRoute. It preserves the pre-mitto-b8k.2 call sites in
+// this test file after the *Server wrappers were moved into the handlers
+// package.
+func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
+	s.apiHandlers.HandleSessionsRoute(w, r)
+}
+
+// handleSessionQueue is a test-only shim delegating to the migrated
+// handlers.HandleSessionQueueRoute.
+func (s *Server) handleSessionQueue(w http.ResponseWriter, r *http.Request) {
+	s.apiHandlers.HandleSessionQueueRoute(w, r)
+}
+
+// handleWorkspacePrompts is a test-only shim delegating to the migrated
+// handlers.HandleWorkspacePromptsRoute.
+func (s *Server) handleWorkspacePrompts(w http.ResponseWriter, r *http.Request) {
+	s.apiHandlers.HandleWorkspacePromptsRoute(w, r)
+}
+
 // handleCreateSession is a test-only shim delegating to the migrated
 // handlers.HandleCreateSession, mirroring the handleListSessions shim above so
 // the existing web-package create-session tests keep their call sites.
@@ -141,6 +161,7 @@ func TestHandleSessions_MethodNotAllowed(t *testing.T) {
 	server := &Server{
 		sessionManager: conversation.NewSessionManager("", "", false, nil),
 	}
+	server.apiHandlers = handlers.New(handlers.Deps{})
 
 	// Test PUT method (not allowed)
 	req := httptest.NewRequest(http.MethodPut, "/api/sessions", nil)
@@ -157,10 +178,10 @@ func TestHandleSessions_MethodNotAllowed(t *testing.T) {
 // ServeMux so tests exercise real Go 1.22 method+pattern routing (incl. 405).
 func newSessionDetailMux(s *Server) *http.ServeMux {
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /api/sessions/{id}", s.handleSessionGet)
-	mux.HandleFunc("PATCH /api/sessions/{id}", s.handleSessionUpdate)
-	mux.HandleFunc("DELETE /api/sessions/{id}", s.handleSessionDelete)
-	mux.HandleFunc("GET /api/sessions/{id}/events", s.handleSessionEvents)
+	mux.HandleFunc("GET /api/sessions/{id}", s.apiHandlers.HandleSessionGetRoute)
+	mux.HandleFunc("PATCH /api/sessions/{id}", s.apiHandlers.HandleSessionUpdateRoute)
+	mux.HandleFunc("DELETE /api/sessions/{id}", s.apiHandlers.HandleSessionDeleteRoute)
+	mux.HandleFunc("GET /api/sessions/{id}/events", s.apiHandlers.HandleSessionEventsRoute)
 	return mux
 }
 

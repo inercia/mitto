@@ -2,7 +2,6 @@ package web
 
 import (
 	"encoding/json"
-	"net/http"
 	"path/filepath"
 
 	"github.com/inercia/mitto/internal/appdir"
@@ -10,18 +9,6 @@ import (
 	"github.com/inercia/mitto/internal/session"
 	"github.com/inercia/mitto/internal/web/handlers"
 )
-
-// handleSessions handles GET and POST /api/sessions
-func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
-	switch r.Method {
-	case http.MethodGet:
-		s.apiHandlers.HandleListSessions(w, r)
-	case http.MethodPost:
-		s.apiHandlers.HandleCreateSession(w, r)
-	default:
-		methodNotAllowed(w)
-	}
-}
 
 // resolveOwningWorkspace is retained as an alias to the migrated
 // handlers.ResolveOwningWorkspace so the existing web-package unit test keeps
@@ -34,143 +21,10 @@ var resolveOwningWorkspace = handlers.ResolveOwningWorkspace
 // references in the web package (e.g. tests) compiling.
 type SessionListResponse = handlers.SessionListResponse
 
-// sessionIDFromPath extracts the {id} path wildcard and validates it. On an
-// invalid ID it writes a 400 and returns ok=false.
-func (s *Server) sessionIDFromPath(w http.ResponseWriter, r *http.Request) (string, bool) {
-	sessionID := r.PathValue("id")
-	if !IsValidSessionID(sessionID) {
-		writeErrorJSON(w, http.StatusBadRequest, "", "Invalid session ID format")
-		return "", false
-	}
-	return sessionID, true
-}
-
-// Thin *Server wrappers for session sub-resources.
-// Each reads the {id} wildcard via sessionIDFromPath and delegates to the handler package.
-
-func (s *Server) handleSessionUserData(w http.ResponseWriter, r *http.Request) {
-	if id, ok := s.sessionIDFromPath(w, r); ok {
-		s.apiHandlers.HandleSessionUserData(w, r, id)
-	}
-}
-
-func (s *Server) handleSessionCallbackRoute(w http.ResponseWriter, r *http.Request) {
-	if id, ok := s.sessionIDFromPath(w, r); ok {
-		s.apiHandlers.HandleSessionCallback(w, r, id)
-	}
-}
-
-func (s *Server) handleSessionSettings(w http.ResponseWriter, r *http.Request) {
-	if id, ok := s.sessionIDFromPath(w, r); ok {
-		s.apiHandlers.HandleSessionSettings(w, r, id)
-	}
-}
-
-func (s *Server) handleSessionPrune(w http.ResponseWriter, r *http.Request) {
-	if id, ok := s.sessionIDFromPath(w, r); ok {
-		s.apiHandlers.HandleSessionPrune(w, r, id)
-	}
-}
-
-func (s *Server) handleSessionChanges(w http.ResponseWriter, r *http.Request) {
-	if id, ok := s.sessionIDFromPath(w, r); ok {
-		s.apiHandlers.HandleSessionChanges(w, r, id)
-	}
-}
-
-func (s *Server) handleSessionImages(w http.ResponseWriter, r *http.Request) {
-	if id, ok := s.sessionIDFromPath(w, r); ok {
-		s.apiHandlers.HandleSessionImages(w, r, id, r.PathValue("imageId"))
-	}
-}
-
-func (s *Server) handleSessionFiles(w http.ResponseWriter, r *http.Request) {
-	if id, ok := s.sessionIDFromPath(w, r); ok {
-		s.apiHandlers.HandleSessionFiles(w, r, id, r.PathValue("fileId"))
-	}
-}
-
-func (s *Server) handleSessionQueue(w http.ResponseWriter, r *http.Request) {
-	if id, ok := s.sessionIDFromPath(w, r); ok {
-		queuePath := ""
-		if msgID := r.PathValue("msgId"); msgID != "" {
-			queuePath = "/" + msgID
-			if sub := r.PathValue("subAction"); sub != "" {
-				queuePath += "/" + sub
-			}
-		}
-		s.apiHandlers.HandleSessionQueue(w, r, id, queuePath)
-	}
-}
-
-func (s *Server) handleSessionLoop(w http.ResponseWriter, r *http.Request) {
-	if id, ok := s.sessionIDFromPath(w, r); ok {
-		s.apiHandlers.HandleSessionLoop(w, r, id, r.PathValue("subPath"))
-	}
-}
-
-func (s *Server) handleSessionFlush(w http.ResponseWriter, r *http.Request) {
-	if id, ok := s.sessionIDFromPath(w, r); ok {
-		s.apiHandlers.HandleSessionFlush(w, r, id)
-	}
-}
-
-func (s *Server) handleSessionGet(w http.ResponseWriter, r *http.Request) {
-	if id, ok := s.sessionIDFromPath(w, r); ok {
-		s.apiHandlers.HandleGetSession(w, r, id, false)
-	}
-}
-
-func (s *Server) handleSessionEvents(w http.ResponseWriter, r *http.Request) {
-	if id, ok := s.sessionIDFromPath(w, r); ok {
-		s.apiHandlers.HandleGetSession(w, r, id, true)
-	}
-}
-
-func (s *Server) handleSessionUpdate(w http.ResponseWriter, r *http.Request) {
-	if id, ok := s.sessionIDFromPath(w, r); ok {
-		s.apiHandlers.HandleUpdateSession(w, r, id)
-	}
-}
-
-func (s *Server) handleSessionDelete(w http.ResponseWriter, r *http.Request) {
-	if id, ok := s.sessionIDFromPath(w, r); ok {
-		s.apiHandlers.HandleDeleteSession(w, id)
-	}
-}
-
-func (s *Server) handleSessionPromptArgCache(w http.ResponseWriter, r *http.Request) {
-	if id, ok := s.sessionIDFromPath(w, r); ok {
-		s.apiHandlers.HandlePromptArgCache(w, r, id)
-	}
-}
-
 // SessionUpdateRequest is an alias for the handlers-package type. The update
 // handler was migrated to internal/web/handlers; the alias keeps existing
 // references in the web package (e.g. tests) compiling.
 type SessionUpdateRequest = handlers.SessionUpdateRequest
-
-// handleWorkspaces handles /api/workspaces
-// GET: List all workspaces
-// POST: Add a new workspace
-// handleWorkspacePrompts handles GET/POST/DELETE /api/workspace-prompts
-//
-//   - GET ?working_dir=...                      Returns workspace prompts
-//   - GET ?working_dir=...&include_global=true  Returns builtin + workspace prompts merged, all sources
-//   - POST                                      Create or update a workspace prompt file
-//   - DELETE ?working_dir=...&name=...          Delete a workspace prompt file by name
-func (s *Server) handleWorkspacePrompts(w http.ResponseWriter, r *http.Request) {
-	switch r.Method {
-	case http.MethodGet:
-		s.apiHandlers.HandleWorkspacePromptsGET(w, r)
-	case http.MethodPost:
-		s.apiHandlers.HandleWorkspacePromptsPOST(w, r)
-	case http.MethodDelete:
-		s.apiHandlers.HandleWorkspacePromptsDELETE(w, r)
-	default:
-		methodNotAllowed(w)
-	}
-}
 
 // migrateWorkspacePrompts migrates legacy .md prompt files to .prompt.yaml for
 // the workspace's default prompts directory (.mitto/prompts) and any extra

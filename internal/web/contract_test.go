@@ -43,11 +43,11 @@ func newContractServer(t *testing.T) *Server {
 func newContractMux(s *Server) *http.ServeMux {
 	mux := http.NewServeMux()
 	// All-method dispatcher: handler-level 405 for unsupported methods.
-	mux.HandleFunc("/api/sessions", s.handleSessions)
+	mux.HandleFunc("/api/sessions", s.apiHandlers.HandleSessionsRoute)
 	// Method-qualified session resource routes (central/mux 405).
-	mux.HandleFunc("GET /api/sessions/{id}", s.handleSessionGet)
-	mux.HandleFunc("PATCH /api/sessions/{id}", s.handleSessionUpdate)
-	mux.HandleFunc("DELETE /api/sessions/{id}", s.handleSessionDelete)
+	mux.HandleFunc("GET /api/sessions/{id}", s.apiHandlers.HandleSessionGetRoute)
+	mux.HandleFunc("PATCH /api/sessions/{id}", s.apiHandlers.HandleSessionUpdateRoute)
+	mux.HandleFunc("DELETE /api/sessions/{id}", s.apiHandlers.HandleSessionDeleteRoute)
 	return mux
 }
 
