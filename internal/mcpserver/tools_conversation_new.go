@@ -26,6 +26,14 @@ type ConversationStartInput struct {
 	ACPServer          string            `json:"acp_server,omitempty"`           // Optional ACP server name (defaults to parent's server)
 	BeadsIssue         string            `json:"beads_issue,omitempty"`          // Optional: link the new conversation to a beads issue ID (e.g. "mitto-123")
 	Workspace          string            `json:"workspace,omitempty"`            // Optional workspace UUID for cross-workspace operations
+	// ModelTag, when non-empty, pins the new conversation's active model from the
+	// first turn to the first available model whose profile carries this tag (see
+	// config.ProfilesByTag + SelectPreferredModel). Applied through the same
+	// SetConfigOption path as the user's manual model-dropdown click, so the
+	// change persists as the new baseline. Requires the started agent to have
+	// advertised a model catalog; if no available model matches, spawn fails
+	// loudly so callers can retry or spawn without pinning.
+	ModelTag string `json:"model_tag,omitempty"`
 	// Loop configuration (optional) - creates the conversation as a loop
 	LoopPrompt string `json:"loop_prompt,omitempty"` // The prompt to send in the loop
 	// LoopPromptName is the name of a predefined workspace prompt to use as the loop body
@@ -573,6 +581,26 @@ func (s *Server) handleConversationStart(ctx context.Context, req *mcp.CallToolR
 				runner.BootstrapOnCompletion(newSessionID)
 			}
 		}
+	}
+
+	// Implementation [tier: Coding]: model_tag pin (mitto-41o1).
+	// After loop configuration (so any loop-driven initial-model preference does
+	// not race with the explicit spawn-time pin) apply the caller-requested
+	// model_tag via the same SetConfigOption path used by the user's manual
+	// model-dropdown click. Failures here are loud: the conversation is still
+	// created and persisted, but the tool call returns an error so orchestrators
+	// see that pinning failed and can decide to retry or spawn without pinning.
+	if input.ModelTag != "" && bs != nil {
+		resolved, applyErr := bs.ApplyModelTag(ctx, input.ModelTag)
+		if applyErr != nil {
+			return nil, ConversationStartOutput{}, fmt.Errorf(
+				"model_tag %q on new session %s: %w",
+				input.ModelTag, newSessionID, applyErr)
+		}
+		s.logger.Info("Model tag applied to new conversation via MCP",
+			"session_id", newSessionID,
+			"model_tag", input.ModelTag,
+			"resolved_model_id", resolved)
 	}
 
 	// If no explicit title was provided and loop was configured, trigger title

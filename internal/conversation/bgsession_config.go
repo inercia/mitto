@@ -54,6 +54,43 @@ func (bs *BackgroundSession) restoreBaselineIfOverride() {
 	bs.configMgr.restoreBaselineIfOverride(bs)
 }
 
+// ApplyModelTag resolves the given preferred-model tag against the agent's
+// advertised model catalog (using the same SelectPreferredModel semantics as
+// prompt-level preferredModels) and switches the session's active model via the
+// same SetConfigOption path used by the user's manual model-dropdown click, so
+// the change persists as the new baseline. An empty tag clears any transient
+// prompt-level model override. Returns the resolved model id on success, "" when
+// the tag was cleared, or an error when the agent has not advertised a model
+// catalog, the tag does not resolve to any available model, or the underlying
+// SetConfigOption call fails. Used by mcp tool handlers that would otherwise
+// need to import conversation-package internals (avoids the mcpserver→conversation
+// import cycle).
+func (bs *BackgroundSession) ApplyModelTag(ctx context.Context, tag string) (string, error) {
+	if tag == "" {
+		bs.restoreBaselineIfOverride()
+		return "", nil
+	}
+	models := bs.agentModels
+	if models == nil {
+		return "", fmt.Errorf("agent has not advertised a model catalog")
+	}
+	profiles := bs.mittoConfig.EffectiveModelProfiles()
+	resolved := SelectPreferredModel(
+		[]config.PromptPreferredModel{{ModelTag: tag}},
+		profiles, models,
+	)
+	if resolved == "" {
+		return "", fmt.Errorf("model_tag %q did not resolve to any available model", tag)
+	}
+	if resolved == models.CurrentModelId {
+		return resolved, nil
+	}
+	if err := bs.SetConfigOption(ctx, string(ModelConfigId), resolved); err != nil {
+		return "", fmt.Errorf("failed to apply model_tag %q: %w", tag, err)
+	}
+	return resolved, nil
+}
+
 // =============================================================================
 // configDeps concrete implementation on *BackgroundSession
 // =============================================================================

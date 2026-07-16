@@ -3940,6 +3940,9 @@ func (m *mockBackgroundSessionForWait) WaitForResponseComplete(timeout time.Dura
 		return false
 	}
 }
+func (m *mockBackgroundSessionForWait) ApplyModelTag(context.Context, string) (string, error) {
+	return "", nil
+}
 
 // mockSessionManagerForWait implements SessionManager for testing the wait tool.
 type mockSessionManagerForWait struct {
@@ -5782,6 +5785,9 @@ func (m *mockBackgroundSessionForAutoResume) RecordChildWait(time.Duration) {}
 func (m *mockBackgroundSessionForAutoResume) TryProcessQueuedMessage() bool {
 	m.tryProcessCalled.Store(true)
 	return false
+}
+func (m *mockBackgroundSessionForAutoResume) ApplyModelTag(context.Context, string) (string, error) {
+	return "", nil
 }
 
 // mockSessionManagerForAutoResume implements SessionManager where GetSession returns nil

@@ -4403,6 +4403,83 @@ func TestProcessNextQueuedMessage_RestoresBaselineOnDrain(t *testing.T) {
 	}
 }
 
+// TestApplyModelTag_EmptyTag_RestoresBaselineIfOverride verifies that passing
+// an empty tag routes to restoreBaselineIfOverride (baseline-restore path) and
+// returns ("", nil). This is the MCP-side "clear the transient override" contract.
+func TestApplyModelTag_EmptyTag_RestoresBaselineIfOverride(t *testing.T) {
+	bs := &BackgroundSession{}
+	bs.modelMu.Lock()
+	bs.overrideActive = true
+	bs.baselineModel = "claude-sonnet-4-6"
+	bs.modelMu.Unlock()
+	// agentModels stays nil → restoreBaselineIfOverride clears the flag without
+	// attempting an ACP call (see TestRestoreBaselineIfOverride_ClearsOverrideFlag).
+
+	resolved, err := bs.ApplyModelTag(context.Background(), "")
+	if err != nil {
+		t.Fatalf("ApplyModelTag(\"\") returned error: %v", err)
+	}
+	if resolved != "" {
+		t.Errorf("resolved id = %q, want empty on tag-clear", resolved)
+	}
+	bs.modelMu.Lock()
+	override := bs.overrideActive
+	bs.modelMu.Unlock()
+	if override {
+		t.Error("overrideActive should be cleared after ApplyModelTag(\"\")")
+	}
+}
+
+// TestApplyModelTag_NoAgentCatalog_ReturnsError verifies that a non-empty tag
+// against a session whose agent has not advertised any model catalog (agentModels
+// nil) returns a clear error and does NOT touch overrideActive.
+func TestApplyModelTag_NoAgentCatalog_ReturnsError(t *testing.T) {
+	bs := &BackgroundSession{}
+	// agentModels stays nil.
+
+	resolved, err := bs.ApplyModelTag(context.Background(), "Reasoning")
+	if err == nil {
+		t.Fatal("expected error when agentModels is nil, got nil")
+	}
+	if resolved != "" {
+		t.Errorf("resolved id = %q, want empty on error", resolved)
+	}
+	if !strings.Contains(err.Error(), "model catalog") {
+		t.Errorf("error = %v, want to mention 'model catalog'", err)
+	}
+}
+
+// TestApplyModelTag_NoMatchingProfile_ReturnsError verifies that a non-empty tag
+// which does not resolve to any profile in the effective model catalog returns
+// an error naming the offending tag.
+func TestApplyModelTag_NoMatchingProfile_ReturnsError(t *testing.T) {
+	bs := &BackgroundSession{}
+	bs.agentModels = &SessionModelState{
+		CurrentModelId: "some-agent-model",
+		AvailableModels: []ModelInfo{
+			{ModelId: "some-agent-model", Name: "Some Agent Model"},
+		},
+	}
+	// Empty mittoConfig → EffectiveModelProfiles falls back to DefaultModelProfiles,
+	// none of which will carry a "TotallyMadeUpTierName" tag.
+	bs.mittoConfig = &config.Config{}
+
+	tag := "TotallyMadeUpTierName"
+	resolved, err := bs.ApplyModelTag(context.Background(), tag)
+	if err == nil {
+		t.Fatal("expected error when tag does not resolve to any model, got nil")
+	}
+	if resolved != "" {
+		t.Errorf("resolved id = %q, want empty on error", resolved)
+	}
+	if !strings.Contains(err.Error(), tag) {
+		t.Errorf("error = %v, want to contain tag %q", err, tag)
+	}
+	if !strings.Contains(err.Error(), "did not resolve") {
+		t.Errorf("error = %v, want to contain 'did not resolve'", err)
+	}
+}
+
 // TestBuildACPProcessEnv verifies env-layering for ACP subprocess startup.
 // Layering: os.Environ() < server-specific Env < MITTO_* vars.
 func TestBuildACPProcessEnv(t *testing.T) {

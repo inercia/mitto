@@ -539,6 +539,41 @@ func (s *Server) handleConversationUpdate(ctx context.Context, req *mcp.CallTool
 		}
 	}
 
+	// Implementation [tier: Coding]: model_tag support (mitto-41o1).
+	// Switches the target conversation's active model tier via the same
+	// SetConfigOption path used by the user's manual model-dropdown click, so
+	// the change persists as the new baseline, records a `session_change`
+	// timeline event, and broadcasts `configChanged` to observers. An empty
+	// string clears any transient prompt-level model override.
+	if input.ModelTag != nil {
+		if sm == nil {
+			return nil, ConversationUpdateOutput{
+				Success: false,
+				Error:   "session manager not available for model_tag",
+			}, nil
+		}
+		targetBS := sm.GetSession(input.ConversationID)
+		if targetBS == nil {
+			return nil, ConversationUpdateOutput{
+				Success: false,
+				Error:   fmt.Sprintf("model_tag requires a running target conversation: %s", input.ConversationID),
+			}, nil
+		}
+		resolved, applyErr := targetBS.ApplyModelTag(ctx, *input.ModelTag)
+		if applyErr != nil {
+			return nil, ConversationUpdateOutput{
+				Success: false,
+				Error:   fmt.Sprintf("model_tag %q on conversation %s: %v", *input.ModelTag, input.ConversationID, applyErr),
+			}, nil
+		}
+		updated = append(updated, "model_tag")
+		s.logger.Info("Model tag applied via MCP",
+			"source_session", realSessionID,
+			"target_conversation", input.ConversationID,
+			"model_tag", *input.ModelTag,
+			"resolved_model_id", resolved)
+	}
+
 	// Update user data if provided
 	if len(input.UserData) > 0 {
 		// Determine merge mode (default: true)
@@ -983,7 +1018,7 @@ func (s *Server) handleConversationUpdate(ctx context.Context, req *mcp.CallTool
 	if len(updated) == 0 {
 		return nil, ConversationUpdateOutput{
 			Success: false,
-			Error:   "no properties to update: specify at least one of 'name', 'beads_issue', 'user_data', or loop fields",
+			Error:   "no properties to update: specify at least one of 'name', 'beads_issue', 'model_tag', 'user_data', or loop fields",
 		}, nil
 	}
 

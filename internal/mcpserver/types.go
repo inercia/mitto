@@ -366,6 +366,16 @@ type ConversationUpdateInput struct {
 	Name       *string `json:"name,omitempty"`        // Update conversation title
 	BeadsIssue *string `json:"beads_issue,omitempty"` // Update linked beads issue ID (empty string clears)
 
+	// ModelTag, when non-nil, switches the target conversation's active model to
+	// the first available model whose profile carries this tag (see
+	// config.ProfilesByTag + SelectPreferredModel semantics). Empty string clears
+	// any prior transient model override and restores the caller-selected baseline.
+	// The target must be a currently running conversation whose agent has
+	// advertised a model catalog. Applied through the same path as the user's
+	// manual model-dropdown click, so the change persists as the new baseline,
+	// emits a `session_change` timeline event, and broadcasts `configChanged`.
+	ModelTag *string `json:"model_tag,omitempty"`
+
 	// User data — optional, only applied if non-nil
 	UserData      []UserDataAttributeUpdate `json:"user_data,omitempty"`       // User data attributes to set
 	UserDataMerge *bool                     `json:"user_data_merge,omitempty"` // If true (default), merge with existing; if false, replace all
