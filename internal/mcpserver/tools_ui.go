@@ -501,6 +501,110 @@ func (s *Server) handleUINotify(_ context.Context, req *mcp.CallToolRequest, inp
 	return nil, UINotifyOutput{Success: true}, nil
 }
 
+// handleWorkspaceUINotify handles the mitto_workspace_ui_notify MCP tool.
+// Unlike handleUINotify (which is scoped to a live registered session and its
+// UIPrompter), this tool targets a workspace UUID directly and delivers the
+// notification via the global events broadcaster. It exists so callers
+// running in contexts without a registered MCP session — notably auxiliary
+// sessions executing close-phase (conversationClosed) processors — can still
+// surface toasts to the user (mitto-6bn).
+//
+// Delivery path: BroadcastWorkspaceUINotify emits WSMsgTypeNotification with
+// a workspace_uuid field; the frontend filters by workspace so only clients
+// currently viewing the matching workspace see the toast.
+func (s *Server) handleWorkspaceUINotify(_ context.Context, req *mcp.CallToolRequest, input WorkspaceUINotifyInput) (*mcp.CallToolResult, WorkspaceUINotifyOutput, error) {
+	// Validate self_id (used for audit/logging; not required to resolve to
+	// a live registered session — auxiliary sessions have none).
+	if input.SelfID == "" {
+		return nil, WorkspaceUINotifyOutput{}, fmt.Errorf("self_id is required")
+	}
+
+	// Validate workspace_uuid and resolve workspace metadata.
+	if input.WorkspaceUUID == "" {
+		return nil, WorkspaceUINotifyOutput{}, fmt.Errorf("workspace_uuid is required")
+	}
+	if s.sessionManager == nil {
+		return nil, WorkspaceUINotifyOutput{}, fmt.Errorf("session manager unavailable")
+	}
+	ws := s.sessionManager.GetWorkspaceByUUID(input.WorkspaceUUID)
+	if ws == nil {
+		return nil, WorkspaceUINotifyOutput{}, fmt.Errorf("unknown workspace UUID: %s", input.WorkspaceUUID)
+	}
+
+	// Permission check: keyed on the caller's session flags when resolvable.
+	// If the caller has no registered session (aux session case — the
+	// mitto-6bn motivating case), permission is granted — the workspace_uuid
+	// requirement is the safety boundary (a caller cannot broadcast into a
+	// workspace it was not spawned into).
+	//
+	// Deliberately avoid resolveSelfIDWithMCP's Phase-3 correlation wait
+	// (up to pendingRequestTimeout, currently 5s): aux sessions are the
+	// expected caller and never register a pending request, so paying that
+	// stall on every close-phase notify would be a functional regression.
+	// Use direct lookup + MCP-session cache only.
+	realSessionID := ""
+	if reg := s.getSession(input.SelfID); reg != nil {
+		realSessionID = input.SelfID
+	} else if req != nil && req.Session != nil {
+		if cached := s.lookupMCPSession(req.Session.ID()); cached != "" {
+			realSessionID = cached
+		}
+	}
+	if realSessionID != "" {
+		if !s.checkSessionFlag(realSessionID, session.FlagCanPromptUser) {
+			return nil, WorkspaceUINotifyOutput{}, permissionError("mitto_workspace_ui_notify", session.FlagCanPromptUser, "Can prompt user")
+		}
+	}
+
+	// Validate title.
+	if input.Title == "" {
+		return nil, WorkspaceUINotifyOutput{}, fmt.Errorf("title is required")
+	}
+
+	// Validate and default style.
+	style := input.Style
+	switch style {
+	case "info", "success", "warning", "error":
+		// valid
+	case "":
+		style = "info"
+	default:
+		return nil, WorkspaceUINotifyOutput{}, fmt.Errorf("style must be one of: 'info', 'success', 'warning', 'error' (got '%s')", style)
+	}
+
+	// Truncate fields to reasonable limits (mirrors handleUINotify).
+	const maxTitleLen = 200
+	const maxMessageLen = 1000
+	title := []rune(input.Title)
+	if len(title) > maxTitleLen {
+		title = append(title[:maxTitleLen-1], '…')
+	}
+	message := []rune(input.Message)
+	if len(message) > maxMessageLen {
+		message = append(message[:maxMessageLen-1], '…')
+	}
+
+	notifyReq := UINotifyRequest{
+		Title:   string(title),
+		Message: string(message),
+		Style:   style,
+		Sound:   input.Sound,
+		Native:  input.Native,
+		Sticky:  input.Sticky,
+	}
+
+	s.logger.Debug("Workspace UI notify dispatched",
+		"caller_session_id", realSessionID,
+		"workspace_uuid", input.WorkspaceUUID,
+		"workspace_name", ws.Name,
+		"title", notifyReq.Title,
+		"style", style)
+
+	s.sessionManager.BroadcastWorkspaceUINotify(input.WorkspaceUUID, ws.Name, ws.WorkingDir, notifyReq)
+
+	return nil, WorkspaceUINotifyOutput{Success: true}, nil
+}
+
 // computeUnifiedDiff generates a simple unified diff between two texts.
 func computeUnifiedDiff(original, edited, originalName, editedName string) string {
 	originalLines := strings.Split(original, "\n")

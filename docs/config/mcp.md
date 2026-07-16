@@ -53,6 +53,7 @@ These tools require the **"Can prompt user"** flag to be enabled:
 | `mitto_ui_textbox`         | Present a text editing dialog to the user and wait for their changes. Returns the edited text or a diff. |
 | `mitto_ui_form`            | Present a sanitized HTML form to the user. Returns submitted field values as key-value pairs. |
 | `mitto_ui_notify`          | Send a non-blocking notification to the user. Supports styles: 'info', 'success', 'warning', 'error'. Can optionally play a sound or trigger a native OS notification. |
+| `mitto_workspace_ui_notify` | Workspace-scoped variant of `mitto_ui_notify`: targets a `workspace_uuid` rather than a live registered session, so callers without a live MCP session — notably auxiliary sessions running close-phase (`conversationClosed`) processors — can still surface toasts. Frontend filters by workspace so only clients viewing the target workspace see the toast. |
 
 ### Cross-Conversation Tools
 

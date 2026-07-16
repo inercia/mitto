@@ -175,6 +175,29 @@ func (s *Server) registerSessionScopedTools(mcpSrv *mcp.Server) {
 			selfIDNote,
 	}, s.handleUINotify)
 
+	// mitto_workspace_ui_notify - Workspace-scoped fire-and-forget notification.
+	// Targets a workspace UUID rather than a registered session, so callers
+	// running in contexts without a live MCP session — notably auxiliary
+	// sessions executing close-phase (conversationClosed) processors — can
+	// still surface toasts to the user (mitto-6bn).
+	mcp.AddTool(mcpSrv, &mcp.Tool{
+		Name: "mitto_workspace_ui_notify",
+		Description: "Send a workspace-scoped notification to the user. Like mitto_ui_notify, this is non-blocking " +
+			"— it sends the notification and returns immediately without waiting for user interaction. " +
+			"Unlike mitto_ui_notify (which requires a live registered session), this tool targets a workspace by UUID " +
+			"and broadcasts to all connected clients; the frontend filters by workspace so only users currently viewing " +
+			"the matching workspace see the toast. Intended for callers that lack a live registered session — notably " +
+			"auxiliary sessions running close-phase (conversationClosed) processors. " +
+			"'workspace_uuid' is required (obtain it from mitto_workspace_list). " +
+			"style can be: 'info' (default, blue), 'success' (green), 'warning' (amber), 'error' (red). " +
+			"native=true shows a native OS notification (macOS only) in addition to the in-app toast. " +
+			"sound=true plays a notification sound. " +
+			"sticky=true keeps the native notification in Notification Center until the user dismisses it (default: false, auto-removes after 5s). " +
+			"Requires 'Can prompt user' flag to be enabled on the caller session when the caller has a registered session; " +
+			"unregistered callers (auxiliary sessions) are allowed as long as they supply a valid workspace_uuid. " +
+			selfIDNote,
+	}, s.handleWorkspaceUINotify)
+
 	// mitto_conversation_new - Start a new conversation
 	mcp.AddTool(mcpSrv, &mcp.Tool{
 		Name: "mitto_conversation_new",

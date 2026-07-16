@@ -1129,6 +1129,43 @@ func (sm *SessionManager) BroadcastLoopUpdated(sessionID string, loop *session.L
 	}
 }
 
+// BroadcastWorkspaceUINotify broadcasts a workspace-scoped fire-and-forget
+// notification to all connected clients. Used by the mitto_workspace_ui_notify
+// MCP tool (mitto-6bn) so callers without a live registered session — notably
+// auxiliary sessions running close-phase (conversationClosed) processors —
+// can still surface toasts. The frontend filters incoming messages by
+// workspace_uuid so users only see toasts for the workspace they are
+// currently viewing.
+func (sm *SessionManager) BroadcastWorkspaceUINotify(workspaceUUID, workspaceName, workingDir string, req UINotifyRequest) {
+	sm.mu.RLock()
+	em := sm.eventsManager
+	sm.mu.RUnlock()
+
+	if em == nil {
+		return
+	}
+
+	em.Broadcast(WSMsgTypeNotification, map[string]interface{}{
+		"workspace_uuid": workspaceUUID,
+		"workspace_name": workspaceName,
+		"working_dir":    workingDir,
+		"title":          req.Title,
+		"message":        req.Message,
+		"style":          req.Style,
+		"sound":          req.Sound,
+		"native":         req.Native,
+		"sticky":         req.Sticky,
+	})
+
+	if sm.logger != nil {
+		sm.logger.Debug("Broadcast workspace UI notify",
+			"workspace_uuid", workspaceUUID,
+			"title", req.Title,
+			"style", req.Style,
+			"clients", em.ClientCount())
+	}
+}
+
 // BroadcastWaitingForChildren broadcasts a session_waiting event to all connected clients.
 // This is called when a parent session starts or stops blocking on mitto_children_tasks_wait.
 func (sm *SessionManager) BroadcastWaitingForChildren(sessionID string, isWaiting bool) {

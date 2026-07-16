@@ -15,11 +15,17 @@ import { playAgentCompletedSound } from "../utils/index.js";
  * @param {Function} deps.showToast - Toast dispatcher from useToast.
  * @param {Function} deps.focusSession - Brings a conversation into focus by id.
  * @param {string|null} deps.activeSessionId - Currently focused conversation id.
+ * @param {string|null} deps.activeWorkspaceUUID - Currently viewed workspace UUID; when a
+ *   notification carries a workspace_uuid that does not match, the toast is skipped
+ *   so workspace-scoped notifications from mitto_workspace_ui_notify (mitto-6bn)
+ *   only appear for users viewing the target workspace. Notifications without a
+ *   workspace_uuid always show (backward compatible).
  */
 export function useBackgroundNotifications({
   showToast,
   focusSession,
   activeSessionId,
+  activeWorkspaceUUID,
 }) {
   // Listen for runner fallback events
   useEffect(() => {
@@ -238,6 +244,18 @@ export function useBackgroundNotifications({
       const data = event.detail;
       if (!data) return;
 
+      // Filter workspace-scoped notifications (mitto-6bn): a notification
+      // carrying workspace_uuid is only shown in clients currently viewing
+      // that workspace. Notifications without workspace_uuid always show
+      // (backward compatible with pre-mitto-6bn callers).
+      if (
+        data.workspace_uuid &&
+        activeWorkspaceUUID &&
+        data.workspace_uuid !== activeWorkspaceUUID
+      ) {
+        return;
+      }
+
       // Play sound if requested (reuse the agent-completed sound)
       if (data.sound && window.mittoAgentCompletedSoundEnabled) {
         playAgentCompletedSound();
@@ -271,7 +289,7 @@ export function useBackgroundNotifications({
     return () => {
       window.removeEventListener("mitto:notification", handleNotification);
     };
-  }, [showToast, focusSession]);
+  }, [showToast, focusSession, activeWorkspaceUUID]);
 
   // Remove native notifications for the active session when switching to it
   // This prevents stale notifications from lingering in Notification Center

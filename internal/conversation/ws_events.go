@@ -47,4 +47,9 @@ const (
 
 	// WSMsgTypeMCPToolsAvailable notifies that MCP tools are now available.
 	WSMsgTypeMCPToolsAvailable = "mcp_tools_available"
+
+	// WSMsgTypeNotification is the fire-and-forget notification event.
+	// Mirrors web.WSMsgTypeNotification; kept locally so the conversation
+	// package can emit workspace-scoped notifications without importing web.
+	WSMsgTypeNotification = "notification"
 )
