@@ -167,6 +167,31 @@ type PromptMeta struct {
 	// EventMetaObserver.OnEventMeta so it can flow through to the WebSocket payload
 	// without per-field wiring.
 	Meta map[string]any
+	// Trigger carries structured trigger-source data for this dispatch. Non-nil
+	// only when the loop runner fires an onTasks trigger and wants the change
+	// delta exposed to the prompt body via {{ .Trigger.OnTasks.* }}. Nil for
+	// scheduled, onCompletion, manual "Run Now", and non-loop dispatches — no
+	// allocations in the hot path. See prompt_dispatcher.go for the copy into
+	// ProcessorInput.TriggerOnTasksChanges (mitto-xkn).
+	Trigger *PromptTriggerContext
+}
+
+// PromptTriggerContext holds trigger-source data threaded from the LoopRunner
+// through the prompt dispatch pipeline into the template evaluation context.
+// Only non-nil sub-fields represent triggers that actually fired for this
+// dispatch (currently: OnTasks).
+type PromptTriggerContext struct {
+	// OnTasks is populated only when a beads change fired an onTasks loop.
+	OnTasks *PromptOnTasksContext
+}
+
+// PromptOnTasksContext carries the beads change delta already computed by
+// the onTasks loop runner (see internal/web/loop_runner_tasks.go
+// processTasksChange). The pointer is copied by reference into
+// ProcessorInput.TriggerOnTasksChanges by the prompt dispatcher; from there
+// BuildCELContext lifts the slices onto the template PromptEnabledContext.
+type PromptOnTasksContext struct {
+	Changes *config.TasksDelta
 }
 
 // Prompt sends a message to the agent. This runs asynchronously.

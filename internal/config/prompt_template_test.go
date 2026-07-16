@@ -199,6 +199,88 @@ func TestRenderPromptTemplate(t *testing.T) {
 	}
 }
 
+// TestRenderPromptTemplate_TriggerOnTasksChanges verifies that the new
+// {{ .Trigger.OnTasks.Changes.* }} template namespace (mitto-xkn) renders
+// against a populated PromptEnabledContext and that the {{ with .Trigger.OnTasks }}
+// guard correctly suppresses the block when the trigger context is nil
+// (scheduled / onCompletion / manual "Run Now" / non-loop dispatches).
+func TestRenderPromptTemplate_TriggerOnTasksChanges(t *testing.T) {
+	populated := PromptEnabledContext{
+		Trigger: &TriggerContext{
+			OnTasks: &TriggerOnTasksContext{
+				Changes: TasksChangesView{
+					Added: []map[string]any{
+						{"id": "mitto-a", "title": "New A"},
+					},
+					Updated: []map[string]any{
+						{"id": "mitto-u", "title": "Upd U"},
+					},
+					Touched: []map[string]any{
+						{"id": "mitto-a", "title": "New A"},
+						{"id": "mitto-u", "title": "Upd U"},
+					},
+					Removed:    []map[string]any{},
+					Closed:     []map[string]any{},
+					Reopened:   []map[string]any{},
+					LabelAdded: []map[string]any{},
+				},
+			},
+		},
+	}
+	empty := PromptEnabledContext{} // Trigger nil → guard must skip block
+
+	tests := []struct {
+		name string
+		body string
+		data any
+		want string
+	}{
+		// (1) Range over Touched, printing per-issue id and title.
+		{
+			name: "range-touched-populated",
+			body: `{{ range .Trigger.OnTasks.Changes.Touched }}- {{ index . "id" }}: {{ index . "title" }};{{ end }}`,
+			data: populated,
+			want: `- mitto-a: New A;- mitto-u: Upd U;`,
+		},
+		// (2) `with .Trigger` guard suppresses entire block when Trigger is nil.
+		// Note: templates must guard on .Trigger first (nil pointer to a struct
+		// short-circuits `with`); {{ with .Trigger.OnTasks }} alone would panic
+		// on the nil *TriggerContext.
+		{
+			name: "with-guard-suppresses-when-nil",
+			body: `head{{ with .Trigger }}{{ with .OnTasks }}[{{ len .Changes.Touched }}]{{ end }}{{ end }}tail`,
+			data: empty,
+			want: "headtail",
+		},
+		// (3) `with` guard populates when Trigger is set.
+		{
+			name: "with-guard-populates-when-set",
+			body: `head{{ with .Trigger }}{{ with .OnTasks }}[{{ len .Changes.Touched }}]{{ end }}{{ end }}tail`,
+			data: populated,
+			want: "head[2]tail",
+		},
+		// (4) Empty slice iteration is a no-op.
+		{
+			name: "range-removed-empty",
+			body: `{{ range .Trigger.OnTasks.Changes.Removed }}X{{ end }}done`,
+			data: populated,
+			want: "done",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := RenderPromptTemplate("trigger-ontasks-test", tc.body, tc.data, nil)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got != tc.want {
+				t.Errorf("got %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 // TestValidatePromptTemplateSyntax verifies parse-only validation: plain bodies
 // and bodies with valid template syntax (including FuncMap calls) pass, while
 // structurally broken bodies (e.g. unbalanced actions) return an error (mitto-e7u).

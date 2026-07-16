@@ -1,11 +1,14 @@
 package web
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -2147,7 +2150,7 @@ func TestLoopRunner_DeliverPrompt_ArgumentsForwardedAndSubstituted(t *testing.T)
 	defer cancel()
 	bs := conversation.NewTestBackgroundSessionWithCtx("arg-dispatch", ctx, cancel)
 
-	deliverErr := runner.deliverPrompt(bs, meta, loop, loopStore, false, false)
+	deliverErr := runner.deliverPrompt(bs, meta, loop, loopStore, false, false, nil)
 	// The resolver must have been called even though PromptWithMeta failed.
 	if !resolverCalled {
 		t.Error("promptResolver was not called; loop.PromptName not forwarded to deliverPrompt")
@@ -3251,6 +3254,61 @@ func TestLoopRunner_OnBeadsChanged_RoutingAndCaching(t *testing.T) {
 	}
 }
 
+// TestLoopRunner_OnBeadsChanged_AfterStopDoesNotTouchClosedStore is a
+// regression test for mitto-cbx (shutdown race): during app quit the
+// BeadsWatcher's debounced fan-out can deliver an event to LoopRunner
+// AFTER session.Store.Close() and LoopRunner.Stop() have already run,
+// because LoopRunner.Stop() never unsubscribes from the watcher. The
+// current OnBeadsChanged calls r.store.List() unconditionally, which
+// returns session.ErrStoreClosed and logs the ERROR line
+//
+//	onTasks: failed to list sessions error="store is closed"
+//
+// This test simulates that exact ordering (store.Close -> runner.Stop ->
+// event delivery) and asserts the ERROR is not logged. It fails on the
+// current code and will pass once the fix lands (unsubscribe on Stop and/or
+// early-return guard in OnBeadsChanged).
+func TestLoopRunner_OnBeadsChanged_AfterStopDoesNotTouchClosedStore(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	// Note: no `defer store.Close()` — the test closes it explicitly below
+	// to reproduce the shutdown ordering from internal/web/server.go
+	// (store.Close at L1452, loopRunner.Stop at L1462, beadsWatcher.Close
+	// at L1495).
+
+	// A single enabled onTasks session in /proj-a so OnBeadsChanged's
+	// routing code has something to iterate over — proving the failing
+	// path at loop_runner_tasks.go:105 (r.store.List) is really reached.
+	newOnTasksSession(t, store, "s1", "/proj-a", "")
+
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	runner := NewLoopRunner(store, nil, logger)
+	runner.Start()
+
+	// Simulate the real shutdown ordering that produces the bug in
+	// production: store closes first, LoopRunner.Stop() runs next, and
+	// only then does a debounced BeadsWatcher fan-out deliver a
+	// previously-queued event to a runner that has neither unsubscribed
+	// nor learned to short-circuit on !running/ErrStoreClosed.
+	if err := store.Close(); err != nil {
+		t.Fatalf("store.Close() error = %v", err)
+	}
+	runner.Stop()
+
+	runner.OnBeadsChanged(config.BeadsChangeEvent{
+		WorkingDirs: []string{"/proj-a"},
+		Timestamp:   time.Now(),
+	})
+
+	if got := buf.String(); strings.Contains(got, "onTasks: failed to list sessions") {
+		t.Fatalf("OnBeadsChanged after Stop() touched the closed store and logged the failing symptom (mitto-cbx). Log output:\n%s", got)
+	}
+}
+
 func TestLoopRunner_RecordTasksFireOutcome_CircuitBreakerPausesNoProgress(t *testing.T) {
 	store, err := session.NewStore(t.TempDir())
 	if err != nil {
@@ -4192,5 +4250,79 @@ func TestLoopRunner_IsContextTooLargeError_413String(t *testing.T) {
 	}
 	if conversation.IsContextTooLargeError(nil) {
 		t.Error("IsContextTooLargeError(nil) = true, want false")
+	}
+}
+
+// TestLoopRunner_ContextWindowFailure_OnCompletionLoop_AutoPauses reproduces
+// mitto-4he: the OnComplete failure gate in deliverPrompt excludes onCompletion
+// loops from the context-window auto-pause (mitto-7jn) safety net. An
+// onCompletion loop that repeatedly hits HTTP 413 must still auto-pause after
+// MaxLoopContextWindowFailures hits, exactly like a scheduled loop does —
+// otherwise it silently re-fires indefinitely on every turn-complete re-arm.
+//
+// This test drives handleDeliveryFailure — the extracted OnComplete error
+// handler — with an onCompletion loop and asserts the observable end-state.
+// Current code: the gate at handleDeliveryFailure excludes onCompletion →
+// handleContextWindowFailure is never called → the counter stays at 0 → the
+// loop remains Enabled forever. After the fix: the classifier and counter
+// must run regardless of trigger type; only DeferNextSchedule stays gated to
+// scheduled loops.
+func TestLoopRunner_ContextWindowFailure_OnCompletionLoop_AutoPauses(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	defer store.Close()
+
+	const sessionID = "cw-oncompletion"
+	meta := session.Metadata{SessionID: sessionID, ACPServer: "auggie", WorkingDir: "/tmp"}
+	if err := store.Create(meta); err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	loopStore := store.Loop(sessionID)
+	loop := &session.LoopPrompt{
+		Prompt:       "Test",
+		Trigger:      session.TriggerOnCompletion,
+		DelaySeconds: 30,
+		Enabled:      true,
+	}
+	if err := loopStore.Set(loop); err != nil {
+		t.Fatalf("loopStore.Set() error = %v", err)
+	}
+
+	runner := NewLoopRunner(store, nil, nil)
+	var autoStopCalls int
+	runner.SetOnLoopAutoStopped(func(sid string, p *session.LoopPrompt) {
+		autoStopCalls++
+	})
+
+	// Drive the real OnComplete error path MaxLoopContextWindowFailures times
+	// with a real HTTP 413 error and the parameter values that the normal
+	// onCompletion delivery uses (resetTimer=true, forced=false).
+	err413 := errors.New("HTTP error: 413 Request Entity Too Large")
+	for i := 1; i <= MaxLoopContextWindowFailures; i++ {
+		runner.handleDeliveryFailure(sessionID, "cgw-support", loop, loopStore, err413, true, false)
+	}
+
+	// After MaxLoopContextWindowFailures consecutive 413 hits an onCompletion
+	// loop MUST be auto-paused, exactly like a scheduled loop.
+	final, err := loopStore.Get()
+	if err != nil {
+		t.Fatalf("loopStore.Get() error = %v", err)
+	}
+	if final.Enabled {
+		t.Errorf("onCompletion loop.Enabled = true after %d context-window failures; "+
+			"want false (auto-pause must fire regardless of trigger type — mitto-4he)",
+			MaxLoopContextWindowFailures)
+	}
+	if final.StoppedReason != session.StoppedReasonContextWindowExceeded {
+		t.Errorf("onCompletion loop.StoppedReason = %q, want %q "+
+			"(auto-pause must record the same reason as scheduled loops — mitto-4he)",
+			final.StoppedReason, session.StoppedReasonContextWindowExceeded)
+	}
+	if autoStopCalls != 1 {
+		t.Errorf("onLoopAutoStopped invocation count = %d, want 1 "+
+			"(onCompletion loops must broadcast the auto-pause — mitto-4he)",
+			autoStopCalls)
 	}
 }

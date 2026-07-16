@@ -40,6 +40,16 @@ func (r *LoopRunner) SetBeadsClient(c beads.Client) {
 	r.beadsClient = c
 }
 
+// SetBeadsWatcher records the BeadsWatcher the runner is subscribed to as a
+// BeadsSubscriber. Stop() calls Unsubscribe(r) on it so that in-flight
+// debounced fan-outs during shutdown no longer route to a stopped runner
+// (mitto-cbx). Safe to leave nil in tests that don't wire a watcher.
+func (r *LoopRunner) SetBeadsWatcher(w *config.BeadsWatcher) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.beadsWatcher = w
+}
+
 // beadsClientOrDefault returns the configured beads.Client, lazily defaulting
 // to beads.NewClient() on first use.
 func (r *LoopRunner) beadsClientOrDefault() beads.Client {
@@ -91,6 +101,20 @@ func (r *LoopRunner) SetTasksQuiescenceWindow(d time.Duration) {
 // once per call, regardless of how many onTasks conversations share it.
 func (r *LoopRunner) OnBeadsChanged(event config.BeadsChangeEvent) {
 	if r.store == nil || r.tasksEvaluator == nil {
+		return
+	}
+
+	// Belt-and-suspenders shutdown guard (mitto-cbx): the BeadsWatcher
+	// fan-out snapshots subscribers under its RLock and invokes them
+	// outside the lock, so a Stop()+Unsubscribe that races with an
+	// in-flight fan-out can still land here. Drop the event silently if
+	// Stop() has already run — the store is likely closed too. We check
+	// `stopped` (set once in Stop()) rather than `!running`, because
+	// tests routinely invoke OnBeadsChanged without ever calling Start().
+	r.mu.Lock()
+	stopped := r.stopped
+	r.mu.Unlock()
+	if stopped {
 		return
 	}
 
@@ -269,7 +293,10 @@ func (r *LoopRunner) processTasksChange(meta session.Metadata, loop *session.Loo
 		}
 
 	case tasksActionFire:
-		if err := r.TriggerNow(sessionID, true); err != nil {
+		// Thread the computed delta through so the loop prompt body can render
+		// {{ .Trigger.OnTasks.Changes.* }} (mitto-xkn). All other TriggerNow
+		// call sites pass nil via the public TriggerNow shim.
+		if err := r.triggerNowWithTasksDelta(sessionID, true, decision.delta); err != nil {
 			if r.logger != nil && !errors.Is(err, ErrSessionBusy) {
 				r.logger.Warn("onTasks: firing failed", "session_id", sessionID, "error", err)
 			}

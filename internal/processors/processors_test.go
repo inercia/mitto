@@ -5393,3 +5393,80 @@ func TestShouldApply_ConversationClosedSkippedInUserPromptPipeline(t *testing.T)
 		t.Errorf("reason = %q, want %q", reason, SkipReasonConversationClosedPhase)
 	}
 }
+
+// TestBuildCELContext_TriggerOnTasks verifies that BuildCELContext populates
+// ctx.Trigger.OnTasks.Changes.* from input.TriggerOnTasksChanges when the
+// dispatch was fired by an onTasks trigger, and leaves ctx.Trigger nil when it
+// was not (mitto-xkn).
+func TestBuildCELContext_TriggerOnTasks(t *testing.T) {
+	// (1) nil input.TriggerOnTasksChanges → ctx.Trigger stays nil so templates
+	// can guard with {{ with .Trigger.OnTasks }}...{{ end }} without panicking.
+	nilCtx := BuildCELContext(&ProcessorInput{SessionID: "sess-nil"})
+	if nilCtx.Trigger != nil {
+		t.Errorf("expected ctx.Trigger=nil when input.TriggerOnTasksChanges is nil, got %#v", nilCtx.Trigger)
+	}
+
+	// (2) populated delta → ctx.Trigger.OnTasks.Changes.* mirrors the input
+	// slices by reference (no reshaping — canonical per-issue map shape).
+	added := []map[string]any{{"id": "mitto-a", "status": "open", "title": "New A"}}
+	updated := []map[string]any{{"id": "mitto-u", "status": "in_progress", "title": "Upd U"}}
+	closed := []map[string]any{{"id": "mitto-c", "status": "closed", "title": "Done C"}}
+	touched := append(append([]map[string]any{}, added...), updated...)
+
+	delta := &config.TasksDelta{
+		Added:      added,
+		Updated:    updated,
+		Removed:    []map[string]any{},
+		Closed:     closed,
+		Reopened:   []map[string]any{},
+		LabelAdded: []map[string]any{},
+		Touched:    touched,
+	}
+	input := &ProcessorInput{
+		SessionID:             "sess-onTasks",
+		IsLoop:                true,
+		TriggerOnTasksChanges: delta,
+	}
+	ctx := BuildCELContext(input)
+	if ctx.Trigger == nil {
+		t.Fatal("expected ctx.Trigger non-nil when input.TriggerOnTasksChanges is set")
+	}
+	if ctx.Trigger.OnTasks == nil {
+		t.Fatal("expected ctx.Trigger.OnTasks non-nil for onTasks fires")
+	}
+	changes := ctx.Trigger.OnTasks.Changes
+
+	if len(changes.Added) != 1 || changes.Added[0]["id"] != "mitto-a" {
+		t.Errorf("Added: got %#v, want single mitto-a entry", changes.Added)
+	}
+	if len(changes.Updated) != 1 || changes.Updated[0]["id"] != "mitto-u" {
+		t.Errorf("Updated: got %#v, want single mitto-u entry", changes.Updated)
+	}
+	if len(changes.Closed) != 1 || changes.Closed[0]["id"] != "mitto-c" {
+		t.Errorf("Closed: got %#v, want single mitto-c entry", changes.Closed)
+	}
+	if len(changes.Touched) != 2 {
+		t.Errorf("Touched: got %d entries, want 2 (Added ∪ Updated)", len(changes.Touched))
+	}
+	// Removed/Reopened/LabelAdded were empty (not nil) in the input and must
+	// stay non-nil/empty so {{ range }} always behaves.
+	if changes.Removed == nil || len(changes.Removed) != 0 {
+		t.Errorf("Removed: expected empty non-nil slice, got %#v", changes.Removed)
+	}
+	if changes.Reopened == nil || len(changes.Reopened) != 0 {
+		t.Errorf("Reopened: expected empty non-nil slice, got %#v", changes.Reopened)
+	}
+	if changes.LabelAdded == nil || len(changes.LabelAdded) != 0 {
+		t.Errorf("LabelAdded: expected empty non-nil slice, got %#v", changes.LabelAdded)
+	}
+
+	// (3) Slices are shared by reference with the source TasksDelta — mutating
+	// through the ctx view is visible on the source (documents the contract:
+	// no defensive copy in the hot path).
+	if len(changes.Added) > 0 {
+		changes.Added[0]["title"] = "Mutated"
+		if delta.Added[0]["title"] != "Mutated" {
+			t.Errorf("expected ctx.Trigger.OnTasks.Changes.Added to alias input.TriggerOnTasksChanges.Added (no defensive copy)")
+		}
+	}
+}

@@ -218,6 +218,13 @@ type LoopRunner struct {
 	beadsClient   beads.Client
 	beadsClientMu sync.Mutex
 
+	// beadsWatcher is the (optional) BeadsWatcher instance the runner is
+	// subscribed to as a BeadsSubscriber. Stashed by SetBeadsWatcher so
+	// Stop() can Unsubscribe(r) and drop out of the watcher's fan-out list
+	// before shutdown continues (mitto-cbx). Nil in tests that don't wire
+	// a watcher — Stop() handles the nil case.
+	beadsWatcher *config.BeadsWatcher
+
 	// tasksEvaluator compiles and evaluates onTasks CEL conditions. Built once at
 	// construction; nil if the CEL environment failed to initialize, in which case
 	// OnBeadsChanged is a no-op (fail-closed).
@@ -260,6 +267,12 @@ type LoopRunner struct {
 
 	mu      sync.Mutex
 	running bool
+	// stopped flips to true exactly once, inside Stop(), and stays true
+	// forever after. Used by OnBeadsChanged as a fan-out shutdown guard
+	// (mitto-cbx). Distinct from !running, which is also true for a
+	// never-started runner (tests routinely call OnBeadsChanged without
+	// Start()).
+	stopped bool
 	stopCh  chan struct{}
 	doneCh  chan struct{}
 }
@@ -498,13 +511,26 @@ func (r *LoopRunner) Start() {
 func (r *LoopRunner) Stop() {
 	r.mu.Lock()
 	if !r.running {
+		// Even if the runner was never started (or has already been
+		// stopped), flag `stopped` so any late fan-out from a subscribed
+		// BeadsWatcher is dropped by OnBeadsChanged's guard (mitto-cbx).
+		r.stopped = true
 		r.mu.Unlock()
 		return
 	}
 	r.running = false
+	r.stopped = true
 	close(r.stopCh)
 	doneCh := r.doneCh
 	r.mu.Unlock()
+
+	// Unsubscribe from the beads watcher BEFORE cancelling timers so any
+	// in-flight debounced fan-out no longer sees this runner in its
+	// subscriber snapshot (mitto-cbx). The belt-and-suspenders guard in
+	// OnBeadsChanged handles events already snapshotted before this call.
+	if r.beadsWatcher != nil {
+		r.beadsWatcher.Unsubscribe(r)
+	}
 
 	// Cancel any pending on-completion timers so they don't fire after shutdown.
 	r.completionTimersMu.Lock()
@@ -545,6 +571,16 @@ func (r *LoopRunner) IsRunning() bool {
 //
 // Returns an error if the delivery fails or the session is not configured for loop prompts.
 func (r *LoopRunner) TriggerNow(sessionID string, resetTimer bool) error {
+	return r.triggerNowWithTasksDelta(sessionID, resetTimer, nil)
+}
+
+// triggerNowWithTasksDelta is the internal variant of TriggerNow that
+// additionally threads a beads change delta into the delivered PromptMeta so
+// the loop prompt body can render {{ .Trigger.OnTasks.Changes.* }} (mitto-xkn).
+// Currently used only by processTasksChange in loop_runner_tasks.go for
+// onTasks fires; all other paths (manual "Run Now", onCompletion, delayed
+// retries) pass a nil delta via the public TriggerNow.
+func (r *LoopRunner) triggerNowWithTasksDelta(sessionID string, resetTimer bool, tasksDelta *config.TasksDelta) error {
 	if r.store == nil {
 		return ErrSessionStoreNotAvailable
 	}
@@ -607,7 +643,7 @@ func (r *LoopRunner) TriggerNow(sessionID string, resetTimer bool) error {
 	}
 
 	// Deliver the prompt
-	return r.deliverPrompt(bs, meta, loop, loopStore, resetTimer, true)
+	return r.deliverPrompt(bs, meta, loop, loopStore, resetTimer, true, tasksDelta)
 }
 
 // OnConversationIdle is invoked when a session's agent has stopped and the session
@@ -1308,8 +1344,10 @@ func (r *LoopRunner) checkSession(meta session.Metadata, now time.Time) (deliver
 		return 0, 1, 0
 	}
 
-	// Deliver the prompt — normal scheduled runs always reset the timer.
-	if err := r.deliverPrompt(bs, meta, loop, loopStore, true, false); err != nil {
+	// Deliver the prompt — normal scheduled runs always reset the timer. No
+	// onTasks delta on the scheduled path (that path only fires on time; onTasks
+	// fires go through triggerNowWithTasksDelta — mitto-xkn).
+	if err := r.deliverPrompt(bs, meta, loop, loopStore, true, false, nil); err != nil {
 		if errors.Is(err, ErrWorkspaceBusy) {
 			// A sibling loop in the same workspace is in flight. Skip this
 			// session for this poll cycle — do not advance NextScheduledAt
@@ -1490,6 +1528,75 @@ func (r *LoopRunner) handleContextWindowFailure(sessionID, sessionName string, l
 	return true
 }
 
+// handleDeliveryFailure processes a failed loop-prompt delivery. Called from the
+// OnComplete callback set by deliverPrompt when PromptWithMeta returned an error.
+// The logic is:
+//   - An HTTP 413 / augmentTooLarge failure bumps the per-session context-window
+//     counter and auto-pauses the loop after MaxLoopContextWindowFailures
+//     consecutive hits (mitto-7jn). This runs regardless of trigger type —
+//     onCompletion loops need the same safety net (mitto-4he), and the counter
+//     is trigger-agnostic. Only the schedule-backoff block below is schedule-only.
+//   - Scheduled triggers with resetTimer=true and forced=false then back off
+//     NextScheduledAt so a transient transport failure (e.g. -32603) does not
+//     re-fire the same prompt on every poll tick (mitto-qal.2). onCompletion
+//     triggers are event-driven (their NextScheduledAt is nil) and manual "keep
+//     schedule" runs (resetTimer=false) or forced one-shots must not push out
+//     the regular schedule.
+func (r *LoopRunner) handleDeliveryFailure(sessionID, sessionName string, loop *session.LoopPrompt, loopStore *session.LoopStore, err error, resetTimer, forced bool) {
+	if conversation.IsContextTooLargeError(err) {
+		if r.handleContextWindowFailure(sessionID, sessionName, loopStore) {
+			if r.onLoopUpdated != nil {
+				if updated, gErr := loopStore.Get(); gErr == nil && updated != nil {
+					r.onLoopUpdated(sessionID, updated)
+				}
+			}
+			return
+		}
+		// Under threshold — fall through to the normal schedule backoff so the
+		// loop keeps ticking (with backoff) until the auto-pause threshold is hit.
+	}
+
+	if resetTimer && !forced && !loop.IsOnCompletion() {
+		r.scheduleBackoffFailuresMu.Lock()
+		r.scheduleBackoffFailures[sessionID]++
+		failures := r.scheduleBackoffFailures[sessionID]
+		r.scheduleBackoffFailuresMu.Unlock()
+
+		delay := loopScheduleBackoff(failures)
+		if deferErr := loopStore.DeferNextSchedule(delay); deferErr != nil {
+			if r.logger != nil {
+				r.logger.Warn("Loop prompt failed, backoff could not be applied",
+					"session_id", sessionID,
+					"session_name", sessionName,
+					"consecutive_failures", failures,
+					"error", deferErr)
+			}
+		} else {
+			if r.logger != nil {
+				r.logger.Warn("Loop prompt failed, backing off next run",
+					"session_id", sessionID,
+					"session_name", sessionName,
+					"consecutive_failures", failures,
+					"backoff", delay,
+					"error", err)
+			}
+			if r.onLoopUpdated != nil {
+				if updated, gErr := loopStore.Get(); gErr == nil && updated != nil {
+					r.onLoopUpdated(sessionID, updated)
+				}
+			}
+		}
+		return
+	}
+
+	if r.logger != nil {
+		r.logger.Warn("Loop prompt failed, schedule not advanced",
+			"session_id", sessionID,
+			"session_name", sessionName,
+			"error", err)
+	}
+}
+
 // deliverPrompt sends the loop prompt to the session.
 // resetTimer controls whether RecordSent() is called when the prompt completes:
 //   - true  → schedule advances from now (normal behaviour)
@@ -1498,7 +1605,12 @@ func (r *LoopRunner) handleContextWindowFailure(sessionID, sessionName string, l
 // sessionMeta carries the session's workspace/ACP-server pair used to enforce
 // the per-workspace loop-dispatch concurrency cap (mitto-61z). When forced is
 // true (manual "Run Now") the cap is bypassed and no slot is reserved.
-func (r *LoopRunner) deliverPrompt(bs *conversation.BackgroundSession, sessionMeta session.Metadata, loop *session.LoopPrompt, loopStore *session.LoopStore, resetTimer bool, forced bool) error {
+//
+// tasksDelta is non-nil only for onTasks fires (via triggerNowWithTasksDelta);
+// it is threaded into PromptMeta.Trigger so the loop prompt body can render
+// {{ .Trigger.OnTasks.Changes.* }} (mitto-xkn). Nil for scheduled, onCompletion,
+// manual "Run Now", and any other dispatch path.
+func (r *LoopRunner) deliverPrompt(bs *conversation.BackgroundSession, sessionMeta session.Metadata, loop *session.LoopPrompt, loopStore *session.LoopStore, resetTimer bool, forced bool, tasksDelta *config.TasksDelta) error {
 	sessionID := bs.GetSessionID()
 	sessionName := sessionMeta.Name
 
@@ -1564,6 +1676,14 @@ func (r *LoopRunner) deliverPrompt(bs *conversation.BackgroundSession, sessionMe
 	if forced {
 		loopKind = conversation.LoopKindForced
 	}
+	// onTasks trigger context (mitto-xkn) — non-nil only when this dispatch was
+	// fired by a beads change with a computed delta. All other paths pass nil.
+	var triggerCtx *conversation.PromptTriggerContext
+	if tasksDelta != nil {
+		triggerCtx = &conversation.PromptTriggerContext{
+			OnTasks: &conversation.PromptOnTasksContext{Changes: tasksDelta},
+		}
+	}
 	meta := conversation.PromptMeta{
 		SenderID:        "loop-runner",
 		PromptID:        "",              // No client to confirm delivery to
@@ -1574,75 +1694,13 @@ func (r *LoopRunner) deliverPrompt(bs *conversation.BackgroundSession, sessionMe
 		IterationNumber: loop.IterationCount,
 		MaxIterations:   loop.MaxIterations,
 		FreshContext:    loop.FreshContext,
+		Trigger:         triggerCtx,
 		OnComplete: func(err error) {
 			// Always release the workspace slot when the prompt terminates,
 			// regardless of success or failure (mitto-61z).
 			defer releaseSlot()
 			if err != nil {
-				// Scheduled triggers: back off NextScheduledAt so a transient transport
-				// failure (e.g. -32603) does not re-fire the same prompt on every poll
-				// tick (mitto-qal.2). onCompletion triggers are event-driven (their
-				// NextScheduledAt is nil) and manual "keep schedule" runs (resetTimer=false)
-				// or forced one-shots must not push out the regular schedule.
-				if resetTimer && !forced && !loop.IsOnCompletion() {
-					// Context-window (HTTP 413 / augmentTooLarge) auto-pause (mitto-7jn):
-					// repeatedly re-firing the loop against a context that has outgrown the
-					// model window is pure noise. After MaxLoopContextWindowFailures consecutive
-					// hits we auto-pause the loop with StoppedReasonContextWindowExceeded so
-					// the user is told to trim/archive rather than watching endless backoff.
-					if conversation.IsContextTooLargeError(err) {
-						if r.handleContextWindowFailure(sessionID, sessionName, loopStore) {
-							// Loop was auto-paused — broadcast the stopped state.
-							if r.onLoopUpdated != nil {
-								if updated, gErr := loopStore.Get(); gErr == nil && updated != nil {
-									r.onLoopUpdated(sessionID, updated)
-								}
-							}
-							return
-						}
-						// Under threshold — fall through to the normal schedule backoff so the
-						// loop keeps ticking (with backoff) until the auto-pause threshold is hit.
-					}
-
-					r.scheduleBackoffFailuresMu.Lock()
-					r.scheduleBackoffFailures[sessionID]++
-					failures := r.scheduleBackoffFailures[sessionID]
-					r.scheduleBackoffFailuresMu.Unlock()
-
-					delay := loopScheduleBackoff(failures)
-					if deferErr := loopStore.DeferNextSchedule(delay); deferErr != nil {
-						if r.logger != nil {
-							r.logger.Warn("Loop prompt failed, backoff could not be applied",
-								"session_id", sessionID,
-								"session_name", sessionName,
-								"consecutive_failures", failures,
-								"error", deferErr)
-						}
-					} else {
-						if r.logger != nil {
-							r.logger.Warn("Loop prompt failed, backing off next run",
-								"session_id", sessionID,
-								"session_name", sessionName,
-								"consecutive_failures", failures,
-								"backoff", delay,
-								"error", err)
-						}
-						// Broadcast the new next-run time so the countdown reflects the backoff.
-						if r.onLoopUpdated != nil {
-							if updated, gErr := loopStore.Get(); gErr == nil && updated != nil {
-								r.onLoopUpdated(sessionID, updated)
-							}
-						}
-					}
-					return
-				}
-
-				if r.logger != nil {
-					r.logger.Warn("Loop prompt failed, schedule not advanced",
-						"session_id", sessionID,
-						"session_name", sessionName,
-						"error", err)
-				}
+				r.handleDeliveryFailure(sessionID, sessionName, loop, loopStore, err, resetTimer, forced)
 				return
 			}
 
