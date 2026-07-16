@@ -18,7 +18,7 @@ import (
 type SendPromptToConversationInput struct {
 	SelfID         string            `json:"self_id"`         // YOUR session ID (the caller), not the target
 	ConversationID string            `json:"conversation_id"` // Target conversation ID to send prompt to
-	Prompt         string            `json:"prompt"`
+	Prompt         string            `json:"prompt,omitempty"`
 	Workspace      string            `json:"workspace,omitempty"`     // Optional workspace UUID for cross-workspace operations
 	ScheduleTime   string            `json:"schedule_time,omitempty"` // Optional: RFC 3339 timestamp or relative duration (e.g., "5m", "1h")
 	Arguments      map[string]string `json:"arguments,omitempty"`     // Optional: values for Go-template .Args placeholders in the prompt text when sent
@@ -69,6 +69,18 @@ func (s *Server) handleSendPromptToConversation(ctx context.Context, req *mcp.Ca
 	}
 	if strings.TrimSpace(input.Prompt) == "" && strings.TrimSpace(input.PromptName) == "" {
 		return nil, SendPromptOutput{Success: false, Error: "either 'prompt' or 'prompt_name' is required"}, nil
+	}
+
+	// mitto-kt6: prompt_name wins when both are supplied. Agents forced by strict
+	// JSON schemas often fill 'prompt' with a placeholder to satisfy the field
+	// even when they only intend a named dispatch; delivering that placeholder
+	// would silently override the resolved prompt body.
+	if strings.TrimSpace(input.PromptName) != "" && strings.TrimSpace(input.Prompt) != "" {
+		s.logger.Info("Both 'prompt' and 'prompt_name' provided; prompt_name wins, ignoring 'prompt'",
+			"source_session", realSessionID,
+			"target_session", input.ConversationID,
+			"prompt_name", input.PromptName)
+		input.Prompt = ""
 	}
 
 	// Check if target conversation exists
