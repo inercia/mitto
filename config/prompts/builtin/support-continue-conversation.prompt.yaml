@@ -195,6 +195,10 @@ prompt: |-
        -d $'# Question\n\n<original question>\n\n# User\n\n<display name>\n\n# Links\n\n[Slack]({{ $ws }}/archives/{{ $channel }}/p<thread_ts_without_dot>)\n' \
        --metadata '{"slack_thread_ts":"<thread_ts>","slack_channel":"{{ $channel }}","slack_url":"{{ $ws }}/archives/{{ $channel }}/p<thread_ts_without_dot>"}'
      ```
+     **Never pass a file path to `-d`.** `bd`'s `-d`/`--description` takes the text **literally** — it
+     has **no `@file` expansion** (unlike `gh`), so `-d @/tmp/....txt` stores the raw path as the
+     description. For a long body, write it to a file and read it with **`--body-file <path>`** (or
+     `--stdin`) instead.
      Also add an `[INBOUND]` comment with the original customer question for history.
   3. **Log the posted reply** — add a markdown `[OUTBOUND]` comment with the final text and the
      permalink (preserve markdown with `$'...'` or `printf '%s' "$c" | bd comment <id> --stdin`):
