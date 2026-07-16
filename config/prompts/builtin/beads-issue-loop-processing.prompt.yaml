@@ -111,13 +111,17 @@ prompt: |
   `Session.IsChild` is true), **degrade gracefully**: post a single `mitto_ui_notify`
   naming the missing flag/role and STOP — no `bd` writes, no spawns, no loop.
 
-  ## Step 1 — Validate the two nested driver prompts
+  ## Step 1 — Validate the nested driver prompts
 
-  §B/§C spawn children by name; confirm both names resolve up front:
+  §B/§C spawn children by name; confirm each enabled driver name resolves up front:
 
   ```
+  {{ if ne .Args.FixBugs "false" -}}
   mitto_prompt_get(self_id: "{{ .Session.ID }}", name: "Loop fixing bug")
+  {{ end -}}
+  {{ if ne .Args.WorkOnFeatures "false" -}}
   mitto_prompt_get(self_id: "{{ .Session.ID }}", name: "Loop implementing feature")
+  {{ end -}}
   ```
 
   Bodies are expanded server-side on every seed and re-fire — this is a resolve-only
@@ -131,8 +135,8 @@ prompt: |
   child matches the FIRST that applies):
 
   1. **Terminal.** Child's status is `done` / `completed` / `stopped` / `failed`, OR
-     its `beads_issue` bead now carries the terminal label for its class (`fixed` for
-     `Fix …` titles, `verified` for `Implement …` titles). The driver's `onCompletion`
+     its `beads_issue` bead now carries the terminal label for its class ({{ if ne .Args.FixBugs "false" }}`fixed` for
+     `Fix …` titles{{ if ne .Args.WorkOnFeatures "false" }}, {{ end }}{{ end }}{{ if ne .Args.WorkOnFeatures "false" }}`verified` for `Implement …` titles{{ end }}). The driver's `onCompletion`
      loop has nothing left to do; keeping it wastes a slot. **Also close the bead in
      this same reap step** (see "Close terminal-label beads" below) — the driver has
      completed its class-terminal stage and the orchestrator owns closure.
@@ -166,6 +170,7 @@ prompt: |
   Do NOT reap `§A` one-shot workers here — they self-terminate quickly and are handled
   by §A's own wait/archive path (Step 3).
 
+  {{ if or (ne .Args.FixBugs "false") (ne .Args.WorkOnFeatures "false") -}}
   ### Close terminal-label beads
 
   In the SAME pass (right after the reap loop above), close any open bead that carries
@@ -174,23 +179,27 @@ prompt: |
   already deleted / lost / never existed.
 
   ```bash
+  {{ if ne .Args.FixBugs "false" -}}
   # bugs: driver posted `fixed` — work is complete
   for id in $(bd list --type bug --status open --label fixed --json | jq -r '.[].id'); do
     bd comment "$id" "Orchestrator: bead reached terminal state (label=fixed); closing after loop completion."
     bd close "$id"
   done
-
+  {{ end }}
+  {{- if ne .Args.WorkOnFeatures "false" }}
   # features: driver posted `verified` — work is complete
   for id in $(bd list --type feature --status open --label verified --json | jq -r '.[].id'); do
     bd comment "$id" "Orchestrator: bead reached terminal state (label=verified); closing after loop completion."
     bd close "$id"
   done
+  {{- end }}
   ```
 
   Track the set of bead IDs closed in this pass and add them to the "recently-closed
   parent" set (see 2B / 2C exclusions) so any parent-child dependents are skipped this
   pass and picked up cleanly on the next fire. Log a one-line summary count for Step 6:
   `Closed: <n>`.
+  {{- end }}
 
   Log a one-line summary count for Step 6's notify: `Reaped: <n>`.
 
@@ -305,15 +314,19 @@ prompt: |
 
   ## Step 3 — Pick the class for this pass
 
-  Strict priority **A → B → C**:
+  Strict priority{{ if or (ne .Args.FixBugs "false") (ne .Args.WorkOnFeatures "false") }} **A{{ if ne .Args.FixBugs "false" }} → B{{ end }}{{ if ne .Args.WorkOnFeatures "false" }} → C{{ end }}**{{ else }} (only §A enabled — bugs and features are both disabled){{ end }}:
 
   1. 2A non-empty → §A on the oldest unaddressed mention.
-  2. Else 2B non-empty AND `FixBugs != "false"` AND Step 1 "Loop fixing bug" preflight
-     succeeded → §B on the highest-priority bug.
-  3. Else 2C non-empty AND `WorkOnFeatures != "false"` AND Step 1 "Loop implementing
-     feature" preflight succeeded → §C on the highest-priority feature.
-  4. Otherwise → Step 6 with reason "nothing eligible" (include `scope: bugs=<on|off>
-     features=<on|off>` so the operator can see whether the empty result is real or
+  {{ if ne .Args.FixBugs "false" -}}
+  2. Else 2B non-empty AND Step 1 "Loop fixing bug" preflight succeeded → §B on the
+     highest-priority bug.
+  {{ end -}}
+  {{ if ne .Args.WorkOnFeatures "false" -}}
+  {{ if ne .Args.FixBugs "false" }}3{{ else }}2{{ end }}. Else 2C non-empty AND Step 1 "Loop implementing feature" preflight
+     succeeded → §C on the highest-priority feature.
+  {{ end -}}
+  {{ if ne .Args.FixBugs "false" }}{{ if ne .Args.WorkOnFeatures "false" }}4{{ else }}3{{ end }}{{ else }}{{ if ne .Args.WorkOnFeatures "false" }}3{{ else }}2{{ end }}{{ end }}. Otherwise → Step 6 with reason "nothing eligible" (include `scope: bugs={{ if ne .Args.FixBugs "false" }}on{{ else }}off{{ end }}
+     features={{ if ne .Args.WorkOnFeatures "false" }}on{{ else }}off{{ end }}` so the operator can see whether the empty result is real or
      just a disabled-scope pass).
 
   One class per pass only — the `onTasks` fire that lands after the chosen worker's
@@ -435,6 +448,7 @@ prompt: |
 
   ---
 
+  {{ if ne .Args.FixBugs "false" -}}
   ## §B — Fix ONE bug
 
   Take the first entry from 2B as **`<id>`**. **Concurrency gate:** count active
@@ -496,7 +510,9 @@ prompt: |
   Then Step 6.
 
   ---
+  {{- end }}
 
+  {{ if ne .Args.WorkOnFeatures "false" -}}
   ## §C — Implement ONE feature
 
   Take the first entry from 2C as **`<id>`**. **Concurrency gate:** apply the same
@@ -529,6 +545,7 @@ prompt: |
   semantics). Then Step 6.
 
   ---
+  {{- end }}
 
   ## Step 6 — End-of-pass notification and yield
 
@@ -578,7 +595,7 @@ prompt: |
 
   - **One increment per pass.** Exactly one worker, one class. The `onTasks` re-fire
     drives cross-pass progress — do NOT batch mentions or beads in one turn.
-  - **Strict priority A → B → C.** Never demote a higher-priority class because it
+  - **Strict priority A{{ if ne .Args.FixBugs "false" }} → B{{ end }}{{ if ne .Args.WorkOnFeatures "false" }} → C{{ end }}.** Never demote a higher-priority class because it
     "looks small" or a lower-priority target "looks urgent".
   - **Top-level only.** Non-child conversations only spawn. If `Session.IsChild`, stop
     with a notify — no `bd` writes, no spawns.
@@ -586,11 +603,13 @@ prompt: |
     (wait errors, Step 7), and on wait-timeout milestones. Never per-target.
   - **Live state every pass.** Always re-run 2P/2Z/2A/2B/2C fresh; never cache across
     passes. The sets go stale by design.
-  - **Cap the fleet at 1 active driver.** §B and §C share a global concurrency
-    budget of 1 persistent `onCompletion` child — serial execution prevents two
+  {{ if or (ne .Args.FixBugs "false") (ne .Args.WorkOnFeatures "false") -}}
+  - **Cap the fleet at 1 active driver.** {{ if and (ne .Args.FixBugs "false") (ne .Args.WorkOnFeatures "false") }}§B and §C share a global concurrency
+    budget{{ else }}{{ if ne .Args.FixBugs "false" }}§B has a concurrency budget{{ else }}§C has a concurrency budget{{ end }}{{ end }} of 1 persistent `onCompletion` child — serial execution prevents two
     workers from racing on overlapping files. If the cap is hit, skip the spawn
     for this pass — the bead will be re-enumerated once Step 2P frees the slot.
     §A one-shot workers are NOT counted (they self-terminate).
+  {{- end }}
   - **Reap aggressively.** Step 2P deletes terminal, orphaned, idle-2h, and duplicate
     children every pass via `mitto_conversation_delete` (not archive — delete frees
     the ACP slot). A small resident fleet keeps CPU / ACP-process load bounded and
@@ -609,15 +628,17 @@ prompt: |
     no comment, no dispatch. §A (unaddressed `@mitto` mentions) is ALWAYS on and
     is not gated by either flag, so the operator can still reach the loop via
     comments even when both `FixBugs=false` and `WorkOnFeatures=false`.
+  {{ if or (ne .Args.FixBugs "false") (ne .Args.WorkOnFeatures "false") -}}
   - **Close terminal-label beads.** When Step 2P's reap loop finds an open bead with
-    the class-terminal label (`fixed` for bugs, `verified` for features), the
+    the class-terminal label ({{ if ne .Args.FixBugs "false" }}`fixed` for bugs{{ if ne .Args.WorkOnFeatures "false" }}, {{ end }}{{ end }}{{ if ne .Args.WorkOnFeatures "false" }}`verified` for features{{ end }}), the
     orchestrator posts a closure comment and runs `bd close <id>` in the same pass.
     Closure belongs to the orchestrator (not the human) because the driver has
-    already satisfied its class-terminal contract (`fixed` = investigated + reproduced
-    + fixed; `verified` = planned + implemented + tested + verified). The human still
+    already satisfied its class-terminal contract ({{ if ne .Args.FixBugs "false" }}`fixed` = investigated + reproduced
+    + fixed{{ if ne .Args.WorkOnFeatures "false" }}; {{ end }}{{ end }}{{ if ne .Args.WorkOnFeatures "false" }}`verified` = planned + implemented + tested + verified{{ end }}). The human still
     owns intervention on `needs-human` (defer) beads — those are excluded from the
-    close sweep by the `--status open --label fixed|verified` filter, since deferred
+    close sweep by the `--status open --label {{ if ne .Args.FixBugs "false" }}fixed{{ end }}{{ if and (ne .Args.FixBugs "false") (ne .Args.WorkOnFeatures "false") }}|{{ end }}{{ if ne .Args.WorkOnFeatures "false" }}verified{{ end }}` filter, since deferred
     beads carry `needs-human` and NOT the terminal label.
+  {{- end }}
   - **Back-reference is the §A dedup key.** `[addressed-comment: <ts>]` is the ONLY
     signal that a mention was processed. Never delete or rewrite these; re-processing
     means the operator posts a fresh `@mitto` with a new timestamp.
