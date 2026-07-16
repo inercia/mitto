@@ -1,4 +1,8 @@
-package config
+// Package cel provides the CEL expression evaluator, prompt/task evaluation
+// contexts, task-change condition evaluator, and template funcs used to gate
+// prompts, action buttons, processors and loops. Split out of internal/config
+// to avoid rebuilding the whole config package on unrelated changes.
+package cel
 
 import (
 	"fmt"

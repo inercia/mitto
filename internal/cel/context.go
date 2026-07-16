@@ -1,5 +1,4 @@
-// Package config handles configuration loading and management for Mitto.
-package config
+package cel
 
 // PromptEnabledContext holds all data available to CEL expressions
 // for evaluating prompt enabled conditions.
