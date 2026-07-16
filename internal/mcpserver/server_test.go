@@ -1033,7 +1033,9 @@ func (m *mockSessionManager) BroadcastSessionBeadsIssueUpdated(sessionID, beadsI
 		beadsIssue: beadsIssue,
 	})
 }
-func (m *mockSessionManager) BroadcastLoopUpdated(string, *session.LoopPrompt)           {}
+func (m *mockSessionManager) BroadcastLoopUpdated(string, *session.LoopPrompt) {}
+func (m *mockSessionManager) BroadcastWorkspaceUINotify(string, string, string, UINotifyRequest) {
+}
 func (m *mockSessionManager) GetUserDataSchema(workingDir string) *config.UserDataSchema { return nil }
 func (m *mockSessionManager) GetWorkspacePrompts(workingDir string) []config.WebPrompt   { return nil }
 func (m *mockSessionManager) GetWorkspacePromptsDirs(workingDir string) []string         { return nil }
@@ -3243,6 +3245,8 @@ func (m *mockSessionManagerForWorkspaces) BroadcastSessionBeadsIssueUpdated(sess
 }
 func (m *mockSessionManagerForWorkspaces) BroadcastLoopUpdated(string, *session.LoopPrompt) {
 }
+func (m *mockSessionManagerForWorkspaces) BroadcastWorkspaceUINotify(string, string, string, UINotifyRequest) {
+}
 func (m *mockSessionManagerForWorkspaces) GetUserDataSchema(workingDir string) *config.UserDataSchema {
 	return nil
 }
@@ -3596,6 +3600,8 @@ func (m *mockSessionManagerForWorkspaceUpdate) GetWorkspaceByUUID(uuid string) *
 func (m *mockSessionManagerForWorkspaceUpdate) BroadcastSessionRenamed(string, string)           {}
 func (m *mockSessionManagerForWorkspaceUpdate) BroadcastSessionBeadsIssueUpdated(string, string) {}
 func (m *mockSessionManagerForWorkspaceUpdate) BroadcastLoopUpdated(string, *session.LoopPrompt) {
+}
+func (m *mockSessionManagerForWorkspaceUpdate) BroadcastWorkspaceUINotify(string, string, string, UINotifyRequest) {
 }
 func (m *mockSessionManagerForWorkspaceUpdate) GetUserDataSchema(string) *config.UserDataSchema {
 	return nil
@@ -3953,13 +3959,15 @@ func (m *mockSessionManagerForWait) GetWorkspaceByUUID(string) *config.Workspace
 func (m *mockSessionManagerForWait) BroadcastSessionRenamed(string, string)              {}
 func (m *mockSessionManagerForWait) BroadcastSessionBeadsIssueUpdated(string, string)    {}
 func (m *mockSessionManagerForWait) BroadcastLoopUpdated(string, *session.LoopPrompt)    {}
-func (m *mockSessionManagerForWait) GetUserDataSchema(string) *config.UserDataSchema     { return nil }
-func (m *mockSessionManagerForWait) GetWorkspacePrompts(string) []config.WebPrompt       { return nil }
-func (m *mockSessionManagerForWait) GetWorkspacePromptsDirs(string) []string             { return nil }
-func (m *mockSessionManagerForWait) GetWorkspaceRCLastModified(string) time.Time         { return time.Time{} }
-func (m *mockSessionManagerForWait) GetWorkspace(string) *config.WorkspaceSettings       { return nil }
-func (m *mockSessionManagerForWait) InvalidateWorkspaceRC(string)                        {}
-func (m *mockSessionManagerForWait) IsMCPInitTimeout(error) bool                         { return false }
+func (m *mockSessionManagerForWait) BroadcastWorkspaceUINotify(string, string, string, UINotifyRequest) {
+}
+func (m *mockSessionManagerForWait) GetUserDataSchema(string) *config.UserDataSchema { return nil }
+func (m *mockSessionManagerForWait) GetWorkspacePrompts(string) []config.WebPrompt   { return nil }
+func (m *mockSessionManagerForWait) GetWorkspacePromptsDirs(string) []string         { return nil }
+func (m *mockSessionManagerForWait) GetWorkspaceRCLastModified(string) time.Time     { return time.Time{} }
+func (m *mockSessionManagerForWait) GetWorkspace(string) *config.WorkspaceSettings   { return nil }
+func (m *mockSessionManagerForWait) InvalidateWorkspaceRC(string)                    {}
+func (m *mockSessionManagerForWait) IsMCPInitTimeout(error) bool                     { return false }
 
 // setupServerForWait creates a server with a SessionManager mock for wait tool tests.
 func setupServerForWait(t *testing.T, targetID string, targetBS BackgroundSession) (*Server, string) {
@@ -4981,9 +4989,11 @@ func (m *mockSessionManagerForChildren) GetWorkspaceByUUID(string) *config.Works
 func (m *mockSessionManagerForChildren) BroadcastSessionRenamed(string, string)           {}
 func (m *mockSessionManagerForChildren) BroadcastSessionBeadsIssueUpdated(string, string) {}
 func (m *mockSessionManagerForChildren) BroadcastLoopUpdated(string, *session.LoopPrompt) {}
-func (m *mockSessionManagerForChildren) GetUserDataSchema(string) *config.UserDataSchema  { return nil }
-func (m *mockSessionManagerForChildren) GetWorkspacePrompts(string) []config.WebPrompt    { return nil }
-func (m *mockSessionManagerForChildren) GetWorkspacePromptsDirs(string) []string          { return nil }
+func (m *mockSessionManagerForChildren) BroadcastWorkspaceUINotify(string, string, string, UINotifyRequest) {
+}
+func (m *mockSessionManagerForChildren) GetUserDataSchema(string) *config.UserDataSchema { return nil }
+func (m *mockSessionManagerForChildren) GetWorkspacePrompts(string) []config.WebPrompt   { return nil }
+func (m *mockSessionManagerForChildren) GetWorkspacePromptsDirs(string) []string         { return nil }
 func (m *mockSessionManagerForChildren) GetWorkspaceRCLastModified(string) time.Time {
 	return time.Time{}
 }
@@ -5177,6 +5187,8 @@ func (m *mockSessionManagerForChildrenMutable) GetWorkspaceByUUID(string) *confi
 func (m *mockSessionManagerForChildrenMutable) BroadcastSessionRenamed(string, string)           {}
 func (m *mockSessionManagerForChildrenMutable) BroadcastSessionBeadsIssueUpdated(string, string) {}
 func (m *mockSessionManagerForChildrenMutable) BroadcastLoopUpdated(string, *session.LoopPrompt) {
+}
+func (m *mockSessionManagerForChildrenMutable) BroadcastWorkspaceUINotify(string, string, string, UINotifyRequest) {
 }
 func (m *mockSessionManagerForChildrenMutable) GetUserDataSchema(string) *config.UserDataSchema {
 	return nil
@@ -5827,6 +5839,8 @@ func (m *mockSessionManagerForAutoResume) GetWorkspaceByUUID(string) *config.Wor
 func (m *mockSessionManagerForAutoResume) BroadcastSessionRenamed(string, string)           {}
 func (m *mockSessionManagerForAutoResume) BroadcastSessionBeadsIssueUpdated(string, string) {}
 func (m *mockSessionManagerForAutoResume) BroadcastLoopUpdated(string, *session.LoopPrompt) {
+}
+func (m *mockSessionManagerForAutoResume) BroadcastWorkspaceUINotify(string, string, string, UINotifyRequest) {
 }
 func (m *mockSessionManagerForAutoResume) GetUserDataSchema(string) *config.UserDataSchema {
 	return nil
@@ -7309,6 +7323,8 @@ func (m *mockSessionManagerCrossWorkspace) GetWorkspaceByUUID(uuid string) *conf
 func (m *mockSessionManagerCrossWorkspace) BroadcastSessionRenamed(string, string)           {}
 func (m *mockSessionManagerCrossWorkspace) BroadcastSessionBeadsIssueUpdated(string, string) {}
 func (m *mockSessionManagerCrossWorkspace) BroadcastLoopUpdated(string, *session.LoopPrompt) {
+}
+func (m *mockSessionManagerCrossWorkspace) BroadcastWorkspaceUINotify(string, string, string, UINotifyRequest) {
 }
 func (m *mockSessionManagerCrossWorkspace) GetUserDataSchema(string) *config.UserDataSchema {
 	return nil

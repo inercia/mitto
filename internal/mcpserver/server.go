@@ -181,6 +181,13 @@ type SessionManager interface {
 	BroadcastSessionBeadsIssueUpdated(sessionID string, beadsIssue string)
 	// BroadcastLoopUpdated broadcasts a loop_updated event to all connected clients.
 	BroadcastLoopUpdated(sessionID string, loop *session.LoopPrompt)
+	// BroadcastWorkspaceUINotify broadcasts a workspace-scoped notification to
+	// all connected clients. Used by the mitto_workspace_ui_notify MCP tool
+	// (mitto-6bn) so callers without a registered session — notably auxiliary
+	// sessions running close-phase processors — can still surface toasts.
+	// The frontend filters incoming notifications by workspace_uuid so users
+	// only see toasts for the workspace they are currently viewing.
+	BroadcastWorkspaceUINotify(workspaceUUID, workspaceName, workingDir string, req UINotifyRequest)
 	// GetUserDataSchema returns the user data schema for a workspace.
 	GetUserDataSchema(workingDir string) *config.UserDataSchema
 	// GetWorkspacePrompts returns prompts defined in the workspace's .mittorc file.

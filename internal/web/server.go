@@ -2150,6 +2150,13 @@ func (a *sessionManagerAdapter) BroadcastLoopUpdated(sessionID string, loop *ses
 	a.sm.BroadcastLoopUpdated(sessionID, loop)
 }
 
+// BroadcastWorkspaceUINotify broadcasts a workspace-scoped notification to
+// all connected clients. Delegates to conversation.SessionManager which owns
+// the events broadcaster (mitto-6bn).
+func (a *sessionManagerAdapter) BroadcastWorkspaceUINotify(workspaceUUID, workspaceName, workingDir string, req mcpserver.UINotifyRequest) {
+	a.sm.BroadcastWorkspaceUINotify(workspaceUUID, workspaceName, workingDir, req)
+}
+
 // GetUserDataSchema returns the user data schema for a workspace.
 func (a *sessionManagerAdapter) GetUserDataSchema(workingDir string) *configPkg.UserDataSchema {
 	return a.sm.GetUserDataSchema(workingDir)

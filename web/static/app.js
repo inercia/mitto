@@ -856,8 +856,15 @@ function App() {
   // Background notification event listeners (extracted to
   // hooks/useBackgroundNotifications.js): runner fallback, memory recycle,
   // ACP start/permanent errors, hook failures, generic notifications, and
-  // active-session native-notification cleanup.
-  useBackgroundNotifications({ showToast, focusSession, activeSessionId });
+  // active-session native-notification cleanup. activeWorkspaceUUID drives
+  // workspace-scoped notification filtering for mitto_workspace_ui_notify
+  // (mitto-6bn) so only clients viewing the target workspace see the toast.
+  useBackgroundNotifications({
+    showToast,
+    focusSession,
+    activeSessionId,
+    activeWorkspaceUUID: sessionInfo?.workspace_uuid ?? null,
+  });
 
   // Get the current draft for the active session (null key = no session)
   const currentDraft = sessionDrafts[activeSessionId ?? "__no_session__"] || "";
