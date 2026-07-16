@@ -249,6 +249,17 @@ type BackgroundSession interface {
 	// RecordChildWait accumulates a completed blocking wait duration for
 	// mitto_children_tasks_wait calls made from this session. In-memory only.
 	RecordChildWait(d time.Duration)
+	// ApplyModelTag resolves a preferred-model tag (same tag-resolution semantics
+	// as prompt-level preferredModels) against the agent's advertised model
+	// catalog and switches the session's active model via the same SetConfigOption
+	// path used by the user's manual model-dropdown click, so the change persists
+	// as the new baseline. An empty tag clears any transient prompt-level model
+	// override, restoring the caller-selected baseline. Returns the resolved
+	// model id on success, "" when the tag was cleared, or an error when the
+	// agent has not advertised a model catalog, the tag does not resolve to any
+	// available model, or the underlying SetConfigOption call fails. Used by the
+	// mitto_conversation_new / _update model_tag path.
+	ApplyModelTag(ctx context.Context, tag string) (string, error)
 }
 
 // Config holds the configuration for the MCP server.

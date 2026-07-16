@@ -218,6 +218,7 @@ func (s *Server) registerSessionScopedTools(mcpSrv *mcp.Server) {
 			"Requires 'initial_prompt' or 'prompt_name' to be set. " +
 			"Optionally specify a 'workspace' UUID to create the conversation in a different workspace (requires user confirmation). " +
 			"Optionally provide 'beads_issue' to link the new conversation to a beads issue ID (e.g. 'mitto-123'). " +
+			"Set 'model_tag' to pin the new conversation's active model from the first turn to the first available profile carrying this tag (same tag-resolution semantics as prompt-level preferredModels). Requires the started agent to have advertised a model catalog; if no available model matches, spawn fails loudly so callers can retry or spawn without pinning. " +
 			"Optionally configure the conversation as a loop by providing 'loop_prompt', 'loop_frequency_value', and 'loop_frequency_unit'. " +
 			"Instead of an inline 'loop_prompt', you may provide 'loop_prompt_name' to drive the loop from a predefined workspace prompt (resolved the same way as 'prompt_name', case-insensitive) — 'loop_prompt' and 'loop_prompt_name' are mutually exclusive. " +
 			"Optionally provide 'loop_arguments' (map of string keys to string values) to fill Go-template '.Args' placeholders in the resolved loop prompt at each execution. " +
@@ -292,6 +293,7 @@ func (s *Server) registerSessionScopedTools(mcpSrv *mcp.Server) {
 			"pass \"self\" (or your own conversation ID) as conversation_id. " +
 			"Updatable properties: 'name' (conversation title), 'user_data' (workspace-defined metadata attributes), " +
 			"'beads_issue' (linked beads issue ID, e.g. \"mitto-123\"; empty string clears it), " +
+			"'model_tag' (switch the target conversation's active model to the first available model whose profile carries this tag; empty string restores the baseline; requires the target conversation to be running and its agent to have advertised a model catalog), " +
 			"'loop' (loop prompt configuration). " +
 			"User data is validated against the workspace's schema defined in .mittorc. " +
 			"Set 'user_data_merge' to true (default) to merge with existing attributes, or false to replace all. " +
