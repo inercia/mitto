@@ -1,4 +1,4 @@
-package web
+package conversation
 
 import (
 	"errors"
@@ -10,7 +10,6 @@ import (
 
 	"github.com/inercia/mitto/internal/beads"
 	"github.com/inercia/mitto/internal/config"
-	"github.com/inercia/mitto/internal/conversation"
 	"github.com/inercia/mitto/internal/session"
 )
 
@@ -120,7 +119,7 @@ type LoopUpdatedCallback func(sessionID string, loop *session.LoopPrompt)
 // - Cleans up archived sessions past their retention period
 type LoopRunner struct {
 	store          *session.Store
-	sessionManager *conversation.SessionManager
+	sessionManager *SessionManager
 	logger         *slog.Logger
 
 	pollInterval time.Duration
@@ -168,7 +167,7 @@ type LoopRunner struct {
 	archiveRetentionPeriod string
 
 	// promptResolver resolves a prompt name to its text at execution time.
-	promptResolver conversation.PromptResolver
+	promptResolver PromptResolver
 
 	// maxLoopIterations is the user-configured default cap on scheduled
 	// loop runs. 0 means unlimited; the hardcoded backstop still applies.
@@ -278,7 +277,7 @@ type LoopRunner struct {
 }
 
 // NewLoopRunner creates a new loop runner.
-func NewLoopRunner(store *session.Store, sm *conversation.SessionManager, logger *slog.Logger) *LoopRunner {
+func NewLoopRunner(store *session.Store, sm *SessionManager, logger *slog.Logger) *LoopRunner {
 	evaluator, err := config.NewTasksConditionEvaluator()
 	if err != nil {
 		evaluator = nil
@@ -482,7 +481,7 @@ func (r *LoopRunner) MinLoopCompletionDelaySeconds() int {
 }
 
 // SetPromptResolver sets the function used to resolve prompt names to their text at execution time.
-func (r *LoopRunner) SetPromptResolver(resolver conversation.PromptResolver) {
+func (r *LoopRunner) SetPromptResolver(resolver PromptResolver) {
 	r.promptResolver = resolver
 }
 
@@ -1543,7 +1542,7 @@ func (r *LoopRunner) handleContextWindowFailure(sessionID, sessionName string, l
 //     schedule" runs (resetTimer=false) or forced one-shots must not push out
 //     the regular schedule.
 func (r *LoopRunner) handleDeliveryFailure(sessionID, sessionName string, loop *session.LoopPrompt, loopStore *session.LoopStore, err error, resetTimer, forced bool) {
-	if conversation.IsContextTooLargeError(err) {
+	if IsContextTooLargeError(err) {
 		if r.handleContextWindowFailure(sessionID, sessionName, loopStore) {
 			if r.onLoopUpdated != nil {
 				if updated, gErr := loopStore.Get(); gErr == nil && updated != nil {
@@ -1610,7 +1609,7 @@ func (r *LoopRunner) handleDeliveryFailure(sessionID, sessionName string, loop *
 // it is threaded into PromptMeta.Trigger so the loop prompt body can render
 // {{ .Trigger.OnTasks.Changes.* }} (mitto-xkn). Nil for scheduled, onCompletion,
 // manual "Run Now", and any other dispatch path.
-func (r *LoopRunner) deliverPrompt(bs *conversation.BackgroundSession, sessionMeta session.Metadata, loop *session.LoopPrompt, loopStore *session.LoopStore, resetTimer bool, forced bool, tasksDelta *config.TasksDelta) error {
+func (r *LoopRunner) deliverPrompt(bs *BackgroundSession, sessionMeta session.Metadata, loop *session.LoopPrompt, loopStore *session.LoopStore, resetTimer bool, forced bool, tasksDelta *config.TasksDelta) error {
 	sessionID := bs.GetSessionID()
 	sessionName := sessionMeta.Name
 
@@ -1672,19 +1671,19 @@ func (r *LoopRunner) deliverPrompt(bs *conversation.BackgroundSession, sessionMe
 	// PromptWithMeta is async — it returns nil immediately. Without OnComplete,
 	// RecordSent would advance the schedule even if the prompt later fails
 	// (e.g., ACP process crash).
-	loopKind := conversation.LoopKindScheduled
+	loopKind := LoopKindScheduled
 	if forced {
-		loopKind = conversation.LoopKindForced
+		loopKind = LoopKindForced
 	}
 	// onTasks trigger context (mitto-xkn) — non-nil only when this dispatch was
 	// fired by a beads change with a computed delta. All other paths pass nil.
-	var triggerCtx *conversation.PromptTriggerContext
+	var triggerCtx *PromptTriggerContext
 	if tasksDelta != nil {
-		triggerCtx = &conversation.PromptTriggerContext{
-			OnTasks: &conversation.PromptOnTasksContext{Changes: tasksDelta},
+		triggerCtx = &PromptTriggerContext{
+			OnTasks: &PromptOnTasksContext{Changes: tasksDelta},
 		}
 	}
-	meta := conversation.PromptMeta{
+	meta := PromptMeta{
 		SenderID:        "loop-runner",
 		PromptID:        "",              // No client to confirm delivery to
 		PromptName:      loop.PromptName, // Pass prompt name so UI can render a badge instead of full text

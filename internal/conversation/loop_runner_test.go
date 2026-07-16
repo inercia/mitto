@@ -1,4 +1,4 @@
-package web
+package conversation
 
 import (
 	"bytes"
@@ -16,7 +16,6 @@ import (
 
 	"github.com/inercia/mitto/internal/beads"
 	"github.com/inercia/mitto/internal/config"
-	"github.com/inercia/mitto/internal/conversation"
 	"github.com/inercia/mitto/internal/fileutil"
 	"github.com/inercia/mitto/internal/session"
 )
@@ -287,7 +286,7 @@ func TestLoopRunner_RunOnceAutoResumesInactiveSession(t *testing.T) {
 
 	// Create a session manager with no active sessions and no ACP configured
 	// When ResumeSession is called, it will fail because no ACP command is configured
-	sm := conversation.NewSessionManagerWithOptions(conversation.SessionManagerOptions{})
+	sm := NewSessionManagerWithOptions(SessionManagerOptions{})
 
 	runner := NewLoopRunner(store, sm, nil)
 
@@ -552,7 +551,7 @@ func TestLoopRunner_AutoArchiveSkipsLoopSessions(t *testing.T) {
 	}
 
 	// Create runner with auto-archive threshold of 24 hours
-	sm := conversation.NewSessionManagerWithOptions(conversation.SessionManagerOptions{})
+	sm := NewSessionManagerWithOptions(SessionManagerOptions{})
 	runner := NewLoopRunner(store, sm, nil)
 	runner.SetAutoArchiveAfter(24 * time.Hour)
 
@@ -602,7 +601,7 @@ func TestLoopRunner_AutoArchiveSkipsPausedLoopSessions(t *testing.T) {
 	}
 
 	// Create session manager that can handle CloseSessionGracefully
-	sm := conversation.NewSessionManagerWithOptions(conversation.SessionManagerOptions{})
+	sm := NewSessionManagerWithOptions(SessionManagerOptions{})
 
 	// Create runner with auto-archive threshold of 24 hours
 	runner := NewLoopRunner(store, sm, nil)
@@ -643,7 +642,7 @@ func TestLoopRunner_AutoArchiveNoLoopConfig(t *testing.T) {
 	setSessionUpdatedAt(t, store, "no-loop-session", oldTime)
 
 	// Create session manager
-	sm := conversation.NewSessionManagerWithOptions(conversation.SessionManagerOptions{})
+	sm := NewSessionManagerWithOptions(SessionManagerOptions{})
 
 	// Create runner with auto-archive threshold of 24 hours
 	runner := NewLoopRunner(store, sm, nil)
@@ -1414,7 +1413,7 @@ func TestLoopRunner_RunOnce_MaxDurationAutoStops(t *testing.T) {
 
 	// Empty session manager: GetSession returns nil safely. The duration check in
 	// checkSession fires before any resume attempt, so nothing is delivered.
-	sm := conversation.NewSessionManagerWithOptions(conversation.SessionManagerOptions{})
+	sm := NewSessionManagerWithOptions(SessionManagerOptions{})
 	runner := NewLoopRunner(store, sm, nil)
 	called := false
 	runner.SetOnLoopAutoStopped(func(id string, p *session.LoopPrompt) { called = true })
@@ -1842,7 +1841,7 @@ func TestLoopRunner_AutoStopMaxDuration_SetsStoppedReason(t *testing.T) {
 		t.Fatalf("writeTestLoopFile() error = %v", err)
 	}
 
-	sm := conversation.NewSessionManagerWithOptions(conversation.SessionManagerOptions{})
+	sm := NewSessionManagerWithOptions(SessionManagerOptions{})
 	runner := NewLoopRunner(store, sm, nil)
 	runner.RunOnce()
 
@@ -2072,9 +2071,9 @@ func TestLoopRunner_RecoverStalledOnCompletion_SessionPrompting_Noop(t *testing.
 
 	ps := newOnCompletionSessionWithRan(t, store, "s1", 0)
 
-	// Build a minimal session manager with a mock conversation.BackgroundSession that is prompting.
-	sm := conversation.NewSessionManagerWithOptions(conversation.SessionManagerOptions{})
-	mockBS := conversation.NewMinimalBackgroundSessionPrompting("s1", true)
+	// Build a minimal session manager with a mock BackgroundSession that is prompting.
+	sm := NewSessionManagerWithOptions(SessionManagerOptions{})
+	mockBS := NewMinimalBackgroundSessionPrompting("s1", true)
 	sm.AddSessionForTest(mockBS)
 
 	runner := NewLoopRunner(store, sm, nil)
@@ -2149,7 +2148,7 @@ func TestLoopRunner_DeliverPrompt_ArgumentsForwardedAndSubstituted(t *testing.T)
 	// We verify that step 1 (resolver) ran before the ACP failure.
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	bs := conversation.NewTestBackgroundSessionWithCtx("arg-dispatch", ctx, cancel)
+	bs := NewTestBackgroundSessionWithCtx("arg-dispatch", ctx, cancel)
 
 	deliverErr := runner.deliverPrompt(bs, meta, loop, loopStore, false, false, nil)
 	// The resolver must have been called even though PromptWithMeta failed.
@@ -2402,7 +2401,7 @@ func TestStopLoopForArchive_NoFurtherDelivery(t *testing.T) {
 		t.Fatalf("ps.Set() error = %v", err)
 	}
 
-	sm := conversation.NewSessionManagerWithOptions(conversation.SessionManagerOptions{})
+	sm := NewSessionManagerWithOptions(SessionManagerOptions{})
 	runner := NewLoopRunner(store, sm, nil)
 
 	// Archive the session: stop loop and mark metadata archived.
@@ -2489,11 +2488,11 @@ func TestDeliverPrompt_LoopKind(t *testing.T) {
 	// Scheduled (forced=false)
 	{
 		forced := false
-		kind := conversation.LoopKindScheduled
+		kind := LoopKindScheduled
 		if forced {
-			kind = conversation.LoopKindForced
+			kind = LoopKindForced
 		}
-		if kind != conversation.LoopKindScheduled {
+		if kind != LoopKindScheduled {
 			t.Errorf("forced=false: got LoopKind=%v, want LoopKindScheduled", kind)
 		}
 	}
@@ -2501,18 +2500,18 @@ func TestDeliverPrompt_LoopKind(t *testing.T) {
 	// Forced (forced=true)
 	{
 		forced := true
-		kind := conversation.LoopKindScheduled
+		kind := LoopKindScheduled
 		if forced {
-			kind = conversation.LoopKindForced
+			kind = LoopKindForced
 		}
-		if kind != conversation.LoopKindForced {
+		if kind != LoopKindForced {
 			t.Errorf("forced=true: got LoopKind=%v, want LoopKindForced", kind)
 		}
 	}
 
 	// Enum zero value must be LoopKindNone (not a loop run).
-	if conversation.LoopKindNone != 0 {
-		t.Errorf("LoopKindNone must be 0 (zero value), got %d", conversation.LoopKindNone)
+	if LoopKindNone != 0 {
+		t.Errorf("LoopKindNone must be 0 (zero value), got %d", LoopKindNone)
 	}
 }
 
@@ -2745,7 +2744,7 @@ func TestLoopRunner_IsTasksSubtreeBusy(t *testing.T) {
 		t.Fatalf("Create(child) error = %v", err)
 	}
 
-	sm := conversation.NewSessionManagerWithOptions(conversation.SessionManagerOptions{})
+	sm := NewSessionManagerWithOptions(SessionManagerOptions{})
 	runner := NewLoopRunner(store, sm, nil)
 
 	// No sessions registered, nothing waiting => idle.
@@ -2754,20 +2753,20 @@ func TestLoopRunner_IsTasksSubtreeBusy(t *testing.T) {
 	}
 
 	// Parent itself prompting => busy.
-	sm.AddSessionForTest(conversation.NewMinimalBackgroundSessionPrompting("parent", true))
+	sm.AddSessionForTest(NewMinimalBackgroundSessionPrompting("parent", true))
 	if !runner.isTasksSubtreeBusy("parent") {
 		t.Error("subtree should be busy when the parent itself is prompting")
 	}
 
 	// Parent idle again, but child is prompting => still busy (delegated child).
-	sm.AddSessionForTest(conversation.NewMinimalBackgroundSessionPrompting("parent", false))
-	sm.AddSessionForTest(conversation.NewMinimalBackgroundSessionPrompting("child", true))
+	sm.AddSessionForTest(NewMinimalBackgroundSessionPrompting("parent", false))
+	sm.AddSessionForTest(NewMinimalBackgroundSessionPrompting("child", true))
 	if !runner.isTasksSubtreeBusy("parent") {
 		t.Error("subtree should be busy when a delegated child is prompting")
 	}
 
 	// Both idle, but parent waiting for children => busy.
-	sm.AddSessionForTest(conversation.NewMinimalBackgroundSessionPrompting("child", false))
+	sm.AddSessionForTest(NewMinimalBackgroundSessionPrompting("child", false))
 	sm.BroadcastWaitingForChildren("parent", true)
 	if !runner.isTasksSubtreeBusy("parent") {
 		t.Error("subtree should be busy while waiting for children")
@@ -3000,8 +2999,8 @@ func TestLoopRunner_EvaluateTasksChange_BusySubtree_DefersRebase(t *testing.T) {
 
 	newOnTasksSession(t, store, "s1", "/proj", "")
 
-	sm := conversation.NewSessionManagerWithOptions(conversation.SessionManagerOptions{})
-	sm.AddSessionForTest(conversation.NewMinimalBackgroundSessionPrompting("s1", true))
+	sm := NewSessionManagerWithOptions(SessionManagerOptions{})
+	sm.AddSessionForTest(NewMinimalBackgroundSessionPrompting("s1", true))
 	runner := NewLoopRunner(store, sm, nil)
 
 	rawBefore := mustMarshalRows(t, beadsRow("mitto-1", "open", "2026-01-01T00:00:00Z"))
@@ -3115,7 +3114,7 @@ func TestLoopRunner_FireTasksRebase_RebasesWhenIdle(t *testing.T) {
 		t.Fatalf("Set() baseline error = %v", err)
 	}
 
-	sm := conversation.NewSessionManagerWithOptions(conversation.SessionManagerOptions{})
+	sm := NewSessionManagerWithOptions(SessionManagerOptions{})
 	runner := NewLoopRunner(store, sm, nil)
 	rawNow := mustMarshalRows(t, beadsRow("mitto-1", "closed", "2026-01-02T00:00:00Z"))
 	fake := &fakeTasksBeadsClient{listFn: func(string) ([]byte, error) { return rawNow, nil }}
@@ -3146,8 +3145,8 @@ func TestLoopRunner_FireTasksRebase_StillBusy_ReArms(t *testing.T) {
 
 	ps := newOnTasksSession(t, store, "s1", "/proj", "")
 
-	sm := conversation.NewSessionManagerWithOptions(conversation.SessionManagerOptions{})
-	sm.AddSessionForTest(conversation.NewMinimalBackgroundSessionPrompting("s1", true))
+	sm := NewSessionManagerWithOptions(SessionManagerOptions{})
+	sm.AddSessionForTest(NewMinimalBackgroundSessionPrompting("s1", true))
 	runner := NewLoopRunner(store, sm, nil)
 	runner.SetTasksQuiescenceWindow(time.Hour) // long enough we can assert before it fires again
 
@@ -3322,7 +3321,7 @@ func TestLoopRunner_FireTasksRebase_CoalesceTrue_AbsorbsSilently(t *testing.T) {
 		t.Fatalf("Set() baseline error = %v", err)
 	}
 
-	sm := conversation.NewSessionManagerWithOptions(conversation.SessionManagerOptions{})
+	sm := NewSessionManagerWithOptions(SessionManagerOptions{})
 	runner := NewLoopRunner(store, sm, nil)
 	rawNow := mustMarshalRows(t,
 		beadsRow("mitto-1", "open", "2026-01-01T00:00:00Z"),
@@ -4091,12 +4090,12 @@ func TestLoopRunner_RunOnce_WorkspaceCapSkipsSibling(t *testing.T) {
 	_ = setLoopDue(t, store, "sib-1", "/ws/shared", "auggie")
 	_ = setLoopDue(t, store, "sib-2", "/ws/shared", "auggie")
 
-	sm := conversation.NewSessionManagerWithOptions(conversation.SessionManagerOptions{})
+	sm := NewSessionManagerWithOptions(SessionManagerOptions{})
 	// Register non-prompting BackgroundSessions for both so checkSession
 	// reaches the workspace guard for each (rather than the auto-resume
 	// failure path).
-	sm.AddSessionForTest(conversation.NewMinimalBackgroundSessionPrompting("sib-1", false))
-	sm.AddSessionForTest(conversation.NewMinimalBackgroundSessionPrompting("sib-2", false))
+	sm.AddSessionForTest(NewMinimalBackgroundSessionPrompting("sib-1", false))
+	sm.AddSessionForTest(NewMinimalBackgroundSessionPrompting("sib-2", false))
 
 	runner := NewLoopRunner(store, sm, nil)
 	runner.SetLoopWorkspaceConcurrency(1)
@@ -4163,10 +4162,10 @@ func TestLoopRunner_RunOnce_DifferentWorkspacesIndependent(t *testing.T) {
 	_ = setLoopDue(t, store, "wsA", "/ws/a", "auggie")
 	_ = setLoopDue(t, store, "wsB", "/ws/b", "auggie")
 
-	sm := conversation.NewSessionManagerWithOptions(conversation.SessionManagerOptions{})
+	sm := NewSessionManagerWithOptions(SessionManagerOptions{})
 	// Register non-prompting bs for both so they reach the guard.
-	sm.AddSessionForTest(conversation.NewMinimalBackgroundSessionPrompting("wsA", false))
-	sm.AddSessionForTest(conversation.NewMinimalBackgroundSessionPrompting("wsB", false))
+	sm.AddSessionForTest(NewMinimalBackgroundSessionPrompting("wsA", false))
+	sm.AddSessionForTest(NewMinimalBackgroundSessionPrompting("wsB", false))
 
 	runner := NewLoopRunner(store, sm, nil)
 	runner.SetLoopWorkspaceConcurrency(1)
@@ -4224,8 +4223,8 @@ func TestLoopRunner_TriggerNow_BypassesWorkspaceCap(t *testing.T) {
 
 	_ = setLoopDue(t, store, "forced-1", "/ws/forced", "auggie")
 
-	sm := conversation.NewSessionManagerWithOptions(conversation.SessionManagerOptions{})
-	sm.AddSessionForTest(conversation.NewMinimalBackgroundSessionPrompting("forced-1", false))
+	sm := NewSessionManagerWithOptions(SessionManagerOptions{})
+	sm.AddSessionForTest(NewMinimalBackgroundSessionPrompting("forced-1", false))
 
 	runner := NewLoopRunner(store, sm, nil)
 	runner.SetLoopWorkspaceConcurrency(1)
@@ -4433,13 +4432,13 @@ func TestLoopRunner_ContextWindowFailure_SuccessBetweenHitsResetsCounter(t *test
 func TestLoopRunner_IsContextTooLargeError_413String(t *testing.T) {
 	// Matches the error observed in the bead's log excerpt.
 	err413 := errors.New("HTTP error: 413 Request Entity Too Large")
-	if !conversation.IsContextTooLargeError(err413) {
+	if !IsContextTooLargeError(err413) {
 		t.Errorf("IsContextTooLargeError(%q) = false, want true", err413)
 	}
-	if conversation.IsContextTooLargeError(errors.New("some unrelated error")) {
+	if IsContextTooLargeError(errors.New("some unrelated error")) {
 		t.Errorf("IsContextTooLargeError(unrelated) = true, want false")
 	}
-	if conversation.IsContextTooLargeError(nil) {
+	if IsContextTooLargeError(nil) {
 		t.Error("IsContextTooLargeError(nil) = true, want false")
 	}
 }
@@ -4567,10 +4566,10 @@ func TestLoopRunner_OnTasks_PromptResolveFailure_AutoPauses(t *testing.T) {
 	// triggerNowWithTasksDelta finds the session (bypassing ResumeSession) and
 	// reaches deliverPrompt, where the promptResolver returns
 	// ErrPromptResolveFailed.
-	sm := conversation.NewSessionManagerWithOptions(conversation.SessionManagerOptions{})
+	sm := NewSessionManagerWithOptions(SessionManagerOptions{})
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	sm.AddSessionForTest(conversation.NewTestBackgroundSessionWithCtx(sessionID, ctx, cancel))
+	sm.AddSessionForTest(NewTestBackgroundSessionWithCtx(sessionID, ctx, cancel))
 
 	runner := NewLoopRunner(store, sm, nil)
 	resolveErr := errors.New("prompt not found")
