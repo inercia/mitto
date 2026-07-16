@@ -57,7 +57,6 @@ export { statusBadge } from "./beads/Badges.js";
 import { getBasename, copyToClipboard } from "../lib.js";
 import {
   PlusIcon,
-  CloseIcon,
   TrashIcon,
   RefreshIcon,
   BroomIcon,
@@ -100,7 +99,6 @@ import {
   PortalTooltip,
 } from "./ContextMenu.js";
 import { ConfirmDialog } from "./ConfirmDialog.js";
-import { Drawer } from "./Drawer.js";
 import { Tooltip } from "./Tooltip.js";
 import { Toolbar } from "./Toolbar.js";
 import { usePullToRefresh } from "../hooks/usePullToRefresh.js";
@@ -183,6 +181,13 @@ export function BeadsDetailPanel({
   statusBusy,
   onSelectIssue,
   createParentId,
+  // mitto-zbfq: opt-in loading mode used by BeadsIssueView so the drawer
+  // opens instantly on click and only its body swaps in-place once the
+  // real issue arrives (no second slide-in from a swapped-out placeholder).
+  isLoading,
+  loadingIssueId,
+  loadError,
+  onRetry,
 }) {
   const h = useBeadsDetailPanel({
     issue,
@@ -202,10 +207,13 @@ export function BeadsDetailPanel({
     statusBusy,
     onSelectIssue,
     createParentId,
+    isLoading,
+    loadingIssueId,
+    loadError,
+    onRetry,
   });
 
   if (!h.shouldRender) return null;
-  if (!h.creating && !h.data) return null;
 
   return html`
     <${BeadsDetailPanelBody}
@@ -215,6 +223,10 @@ export function BeadsDetailPanel({
       setFullscreen=${h.setFullscreen}
       creating=${h.creating}
       data=${h.data}
+      isLoading=${h.isLoading}
+      loadingIssueId=${h.loadingIssueId}
+      loadError=${h.loadError}
+      onRetry=${h.onRetry}
       createParentId=${h.createParentId}
       submitting=${h.submitting}
       viewDirty=${h.viewDirty}
@@ -510,98 +522,34 @@ export function BeadsIssueView({
     }
   }, [deleteTarget, workingDir, showToast, onReturnToConversation]);
 
-  // While the initial /api/issues/{id} fetch is in flight (or after it failed)
-  // render a placeholder Drawer with the same dock/side/width/z-index/panel
-  // classes that BeadsDetailPanelBody uses, so the panel opens instantly on
-  // click and only its body content swaps once the real issue arrives. We
-  // cannot pass a partial `data` to BeadsDetailPanel — it and its sub-hooks
-  // assume a real issue object — so this path renders Drawer directly.
+  // mitto-zbfq: a single stable BeadsDetailPanel spans the whole load
+  // lifecycle. While `issue` is null, the panel renders its own loading /
+  // error skeleton inside the same Drawer it uses for the loaded state, so
+  // there is one slide-in transition instead of the placeholder Drawer being
+  // unmounted and a fresh Drawer mounted for the loaded state.
   return html`
     <${Fragment}>
-      ${
-        issue
-          ? html`
-              <${BeadsDetailPanel}
-                issue=${issue}
-                allIssues=${listIssues}
-                isCreating=${false}
-                workingDir=${workingDir}
-                initialFullscreen=${false}
-                onClose=${onReturnToConversation}
-                onUpdated=${refresh}
-                showToast=${showToast}
-                onFetchPrompts=${onFetchBeadsPrompts}
-                onRunPrompt=${onRunBeadsPrompt}
-                onDelete=${(iss) => setDeleteTarget(iss)}
-                onToggleStatus=${handleToggleStatus}
-                onToggleDefer=${handleToggleDefer}
-                statusBusy=${statusBusy}
-                onSelectIssue=${handleSelectIssue}
-              />
-            `
-          : html`
-              <${Drawer}
-                dock
-                side="end"
-                onClose=${onReturnToConversation}
-                zClass="z-60"
-                rootStyle="--dock-w:40rem;--dock-maxw:85%"
-                widthClass="w-full"
-                panelClass="bg-mitto-sidebar shrink-0 h-full flex flex-col border-l border-mitto-border-1"
-              >
-                <div class="p-4 border-b border-mitto-border shrink-0">
-                  <div class="flex items-center gap-2">
-                    <div class="flex-1 min-w-0">
-                      <h2
-                        class="font-mono text-sm text-mitto-text truncate"
-                        title=${currentIssueId}
-                      >
-                        ${currentIssueId}
-                      </h2>
-                    </div>
-                    <button
-                      onClick=${onReturnToConversation}
-                      class="btn btn-ghost btn-square btn-sm shrink-0 inline-flex tooltip tooltip-bottom"
-                      data-tip="Close"
-                      aria-label="Close"
-                    >
-                      <${CloseIcon} className="w-5 h-5" />
-                    </button>
-                  </div>
-                </div>
-                <div class="flex-1 overflow-y-auto p-4">
-                  ${
-                    loadError
-                      ? html`
-                          <div
-                            role="alert"
-                            class="alert alert-error alert-soft text-sm"
-                          >
-                            <span>${loadError}</span>
-                            <button
-                              class="btn btn-ghost btn-xs"
-                              onClick=${refresh}
-                            >
-                              Retry
-                            </button>
-                          </div>
-                        `
-                      : html`
-                          <div
-                            class="p-4 text-center text-mitto-text-500"
-                            data-testid="beads-issue-loading"
-                          >
-                            <span
-                              class="loading loading-spinner w-5 h-5 mb-2 text-mitto-border-3"
-                            ></span>
-                            <p class="text-sm">Loading issue…</p>
-                          </div>
-                        `
-                  }
-                </div>
-              <//>
-            `
-      }
+      <${BeadsDetailPanel}
+        issue=${issue}
+        allIssues=${listIssues}
+        isCreating=${false}
+        workingDir=${workingDir}
+        initialFullscreen=${false}
+        onClose=${onReturnToConversation}
+        onUpdated=${refresh}
+        showToast=${showToast}
+        onFetchPrompts=${onFetchBeadsPrompts}
+        onRunPrompt=${onRunBeadsPrompt}
+        onDelete=${(iss) => setDeleteTarget(iss)}
+        onToggleStatus=${handleToggleStatus}
+        onToggleDefer=${handleToggleDefer}
+        statusBusy=${statusBusy}
+        onSelectIssue=${handleSelectIssue}
+        isLoading=${!issue}
+        loadingIssueId=${currentIssueId}
+        loadError=${loadError}
+        onRetry=${refresh}
+      />
       <${ConfirmDialog}
         isOpen=${!!deleteTarget}
         title="Delete issue"
