@@ -107,6 +107,11 @@ prompt: |-
       -d $'# Question\n\n<question text>\n\n# User\n\n<display name>\n\n# Links\n\n[Slack]({{ $ws }}/archives/{{ $channel }}/p<ts_without_dot>)\n' \
       --metadata '{"slack_thread_ts":"<ts>","slack_channel":"{{ $channel }}","slack_url":"<permalink>"}'
     ```
+    **Never pass a file path to `-d`.** `bd`'s `-d`/`--description` takes the description text
+    **literally** — it has **no `@file` expansion** (unlike `gh`). Writing the body to a temp file and
+    passing `-d @/tmp/....txt` (or `-d /tmp/....txt`) stores the raw path string as the description. If
+    the description is long enough that inline `$'...'` is awkward, write it to a file and read it back
+    with **`--body-file <path>`** (or `--stdin`), e.g. `bd create "<summary>" ... --body-file /tmp/desc.md`.
   - **Priority (`-p`):** set by **intervention urgency**, not customer impact — see **Priority =
     urgency of your intervention** below. A brand-new triaged bead is `state:triaged` → **P2**.
   - **Comments = full history.** Log every relevant message as a markdown comment (preserve layout
